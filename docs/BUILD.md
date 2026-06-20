@@ -77,13 +77,23 @@ reassessment did not unblock anything for this project):
   the `@test_module` suites compile but cannot execute here; runtime checks go
   through the enum/record/primitive harness in `scripts/verify.sh`.
 - **`out` is a reserved keyword** — it cannot be used as an identifier.
-- **`lyric-docker` does not build with v0.1.x or v0.2.4.** Its source uses a
-  `val` field name (P0051) and pipe syntax `|>` (P0080) that the published
-  compiler rejects — the library is ahead of releases. Until it (or the compiler)
-  is updated, the full web+docker server cannot be compiled end-to-end here; the
-  Docker-independent packages above are verified in isolation. `lyric-web` itself
-  builds fine. Track this when bumping the `lyric-lang` pin.
+- **`lyric-docker` originally did not build** (invalid `pub val` fields, a
+  `pub object`, and the non-existent `|>` operator, plus wrong stdlib API usage).
+  It has been rewritten to proper Lyric and now builds and synthesises under
+  v0.2.4 — see `patches/lyric-docker-proper-syntax.patch` and `patches/README.md`.
+  Apply that patch (and the stdlib one below) to the sibling `lyric-lang` clone.
 - The `dto*` / `findTimeZone` helpers in `lyric-stdlib`'s `Std.Time` leak extern
-  types (`DateTimeOffset`, `TimeZone`) across the contract boundary, which still
-  breaks downstream contract synthesis under v0.2.4; demote them to
-  package-private locally if you hit `unknown type name 'DateTimeOffset'`.
+  types (`DateTimeOffset`, `TimeZone`) across the contract boundary, which breaks
+  downstream contract synthesis (`unknown type name 'DateTimeOffset'`) for any
+  package that restores `Lyric.Stdlib` — including the rewritten `lyric-docker`.
+  Fix in `patches/lyric-stdlib-datetimeoffset-leak.patch` (demotes the four
+  helpers to package-private).
+- **Two compiler bugs** surfaced while fixing the above (compiler issues, not
+  library bugs): `await`ing a cross-package user-defined `async` function crashes
+  codegen (`emitPhaseBAwait`), and exposing an extern type in a public signature
+  breaks contract synthesis. Both are worked around in the docker rewrite.
+- **Remaining cloud-agents-side gap:** `src/docker_manager.l` calls a Docker API
+  (`defaultClient`, `createContainer`, `startContainer`, `getContainerLogs`, …)
+  that the placeholder `lyric-docker` does not provide — it offers
+  `makeDockerClient`/`ping`/`systemInfo`/`listContainers`/`listImages` over an
+  opaque `DockerClient`. Reconciling these is separate from the syntax fix.

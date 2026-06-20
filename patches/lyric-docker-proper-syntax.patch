@@ -1,0 +1,555 @@
+diff --git a/lyric-docker/src/docker.l b/lyric-docker/src/docker.l
+index d839f33..d661123 100644
+--- a/lyric-docker/src/docker.l
++++ b/lyric-docker/src/docker.l
+@@ -1,16 +1,12 @@
+ //! Docker client — High-level API for Docker daemon operations.
+ //!
+-//! Provides convenience functions and types for interacting with the Docker daemon.
+-//! Abstracts away HTTP details and provides typed results via Result[T, DockerError].
++//! Provides convenience functions and types for interacting with the Docker
++//! daemon. Abstracts away HTTP details and provides typed results via
++//! Result[T, DockerError].
+ //!
+-//! # Connection
+-//!
+-//! The Docker daemon is accessed via Unix domain sockets by default:
+-//!   - Linux/macOS: /var/run/docker.sock
+-//!   - Rootless Docker: $XDG_RUNTIME_DIR/docker.sock
+-//!   - Custom: specify via makeDockerClientAt()
+-//!
+-//! # Examples
++//! The connection is exposed as the opaque `DockerClient` handle so the
++//! underlying `System.Net.Http.HttpClient` extern type never crosses the
++//! package boundary (which would break downstream contract synthesis).
+ //!
+ //! ```lyric
+ //! val client = Docker.makeDockerClient()
+@@ -22,73 +18,82 @@
+ @runtime_checked
+ package Lyric.Docker
+ 
+-import Std.Http
+-import Std.Core
+-import Lyric.Docker.Api
+ import Lyric.Docker.Sockets
++import Std.Core
++import Std.Errors
++import Std.Http
++import Std.HttpHost
++
++/// Opaque handle to a Docker daemon connection. Wraps the underlying HTTP
++/// client so callers never touch the extern transport type.
++pub opaque type DockerClient {
++  handle: Std.HttpHost.HttpClient
++}
+ 
+ /// Docker error type — encapsulates HTTP errors with Docker-specific context.
+ pub record DockerError {
+   /// HTTP status code (if available).
+-  pub val statusCode: Option[Int]
++  pub statusCode: Option[Int]
+   /// Error message.
+-  pub val message: String
++  pub message: String
+   /// Docker error details from response body (if available).
+-  pub val details: String
++  pub details: String
+ }
+ 
+ /// Create a new Docker error from an HTTP error.
+-func fromHttpError(httpError: in Std.Http.HttpError, details: in String = ""): DockerError {
++func fromHttpError(httpError: in HttpError, details: in String): DockerError {
+   match httpError {
+-    case Std.Http.ConnectionFailed(url, message) ->
++    case ConnectionFailed(_, message) ->
+       DockerError(statusCode = None, message = message, details = details)
+-    case Std.Http.BadStatus(url, statusCode) ->
+-      DockerError(statusCode = Some(value = statusCode), message = "HTTP " + statusCode.toString(), details = details)
+-    case Std.Http.InvalidUrl(url) ->
++    case BadStatus(_, statusCode) ->
++      DockerError(statusCode = Some(value = statusCode), message = "HTTP " + toString(statusCode), details = details)
++    case InvalidUrl(url) ->
+       DockerError(statusCode = None, message = "Invalid Docker URL: " + url, details = details)
+     case _ ->
+       DockerError(statusCode = None, message = "Unknown Docker error", details = details)
+   }
+ }
+ 
+-/// Connect to the Docker daemon using the default Unix socket.
+-pub func makeDockerClient(): Std.Http.HttpClient {
+-  Docker.Sockets.makeDockerClient()
++/// Connect to the Docker daemon, honouring DOCKER_HOST then the default
++/// Unix socket.
++pub func makeDockerClient(): DockerClient {
++  val socketPath = match Lyric.Docker.Sockets.parseDockerHost() {
++    case Some(p) -> p
++    case None -> Lyric.Docker.Sockets.unixSocketPath()
++  }
++  DockerClient(handle = Std.Http.clientWithUnixSocket(socketPath))
+ }
+ 
+-/// Connect to the Docker daemon in rootless mode.
+-pub func makeRootlessDockerClient(): Result[Std.Http.HttpClient, DockerError] {
+-  match Docker.Sockets.makeRootlessDockerClient() {
+-    case Ok(client) -> Ok(value = client)
++/// Connect to the Docker daemon in rootless mode ($XDG_RUNTIME_DIR/docker.sock).
++pub func makeRootlessDockerClient(): Result[DockerClient, DockerError] {
++  match Lyric.Docker.Sockets.resolveRootlessSocket() {
++    case Ok(socketPath) -> Ok(value = DockerClient(handle = Std.Http.clientWithUnixSocket(socketPath)))
+     case Err(message) -> Err(error = DockerError(statusCode = None, message = message, details = ""))
+   }
+ }
+ 
+ /// Connect to the Docker daemon at a custom socket path.
+-pub func makeDockerClientAt(socketPath: in String): Std.Http.HttpClient
++pub func makeDockerClientAt(socketPath: in String): DockerClient
+   requires: socketPath.length > 0
+ {
+-  Docker.Sockets.makeDockerClientAt(socketPath)
++  DockerClient(handle = Std.Http.clientWithUnixSocket(socketPath))
+ }
+ 
+ /// Ping the Docker daemon to verify connectivity.
+-///
+-/// Returns the Docker API version on success, or a DockerError on failure.
+-pub async func ping(client: in Std.Http.HttpClient): Result[String, DockerError] {
+-  val response = await Std.Http.sendAsync(
+-    Std.Http.request(Std.Http.GET,
+-      Std.Http.Url.tryFrom("http://docker/v1.40/ping") |> assertOk()
+-    )
+-  ) |> (match _ {
+-    case Err(e) -> return Err(error = fromHttpError(e))
++pub async func ping(client: in DockerClient): Result[String, DockerError] {
++  val url = unwrapResult(Std.Http.Url.tryFrom("http://docker/v1.40/ping"))
++  val sent = await Std.Http.sendAsync(Std.Http.request(Std.Http.GET, url))
++  val response = match sent {
++    case Err(e) -> return Err(error = fromHttpError(e, ""))
+     case Ok(r) -> r
+-  })
++  }
+ 
+-  if Std.Http.HttpResponse.isSuccess(response) {
++  if response.isSuccess() {
+     Ok(value = "connected")
+   } else {
+-    val statusCode = Std.Http.HttpResponse.statusCode(response)
+-    match await Std.Http.HttpResponse.bodyText(response) {
++    val statusCode = response.statusCode()
++    val bodyResult = await response.bodyText()
++    match bodyResult {
+       case Ok(body) ->
+         Err(error = DockerError(
+           statusCode = Some(value = statusCode),
+@@ -97,48 +102,70 @@ pub async func ping(client: in Std.Http.HttpClient): Result[String, DockerError]
+         ))
+       case Err(ioErr) ->
+         Err(error = fromHttpError(
+-          Std.Http.ConnectionFailed(url = "http://docker/v1.40/ping", message = ioErr.message)
++          ConnectionFailed(url = "http://docker/v1.40/ping", message = IOError.message(ioErr)), ""
+         ))
+     }
+   }
+ }
+ 
+-/// Get Docker system information.
+-///
+-/// Returns JSON-formatted system info including Docker version, OS, and kernel info.
+-pub async func systemInfo(client: in Std.Http.HttpClient): Result[String, DockerError] {
+-  val response = await Docker.Api.getSystemInfo(client) |> (match _ {
+-    case Ok(body) -> Ok(value = body)
+-    case Err(httpErr) -> Err(error = fromHttpError(httpErr))
+-  })
+-  response
++/// Get Docker system information (JSON-formatted).
++pub async func systemInfo(client: in DockerClient): Result[String, DockerError] {
++  val url = unwrapResult(Std.Http.Url.tryFrom("http://docker/v1.40/info"))
++  val sent = await Std.Http.sendAsync(Std.Http.request(Std.Http.GET, url))
++  val response = match sent {
++    case Err(e) -> return Err(error = fromHttpError(e, ""))
++    case Ok(r) -> r
++  }
++
++  if response.isSuccess() {
++    val bodyResult = await response.bodyText()
++    match bodyResult {
++      case Ok(body) -> Ok(value = body)
++      case Err(ioErr) ->
++        Err(error = fromHttpError(
++          ConnectionFailed(url = "http://docker/v1.40/info", message = IOError.message(ioErr)), ""
++        ))
++    }
++  } else {
++    val statusCode = response.statusCode()
++    val bodyResult = await response.bodyText()
++    match bodyResult {
++      case Ok(body) ->
++        Err(error = DockerError(
++          statusCode = Some(value = statusCode),
++          message = "System info failed",
++          details = body
++        ))
++      case Err(ioErr) ->
++        Err(error = fromHttpError(
++          ConnectionFailed(url = "http://docker/v1.40/info", message = IOError.message(ioErr)), ""
++        ))
++    }
++  }
+ }
+ 
+-/// List all containers.
+-///
+-/// Phase 1 placeholder: Returns JSON array of container objects.
+-/// Phase 2 will provide typed Container records.
+-pub async func listContainers(client: in Std.Http.HttpClient): Result[String, DockerError] {
+-  val response = await Std.Http.sendAsync(
+-    Std.Http.request(Std.Http.GET,
+-      Std.Http.Url.tryFrom("http://docker/v1.40/containers/json") |> assertOk()
+-    )
+-  ) |> (match _ {
+-    case Err(e) -> return Err(error = fromHttpError(e))
++/// List all containers (Phase 1 placeholder: returns the JSON array).
++pub async func listContainers(client: in DockerClient): Result[String, DockerError] {
++  val url = unwrapResult(Std.Http.Url.tryFrom("http://docker/v1.40/containers/json"))
++  val sent = await Std.Http.sendAsync(Std.Http.request(Std.Http.GET, url))
++  val response = match sent {
++    case Err(e) -> return Err(error = fromHttpError(e, ""))
+     case Ok(r) -> r
+-  })
++  }
+ 
+-  if Std.Http.HttpResponse.isSuccess(response) {
+-    match await Std.Http.HttpResponse.bodyText(response) {
++  if response.isSuccess() {
++    val bodyResult = await response.bodyText()
++    match bodyResult {
+       case Ok(body) -> Ok(value = body)
+       case Err(ioErr) ->
+         Err(error = fromHttpError(
+-          Std.Http.ConnectionFailed(url = "http://docker/v1.40/containers/json", message = ioErr.message)
++          ConnectionFailed(url = "http://docker/v1.40/containers/json", message = IOError.message(ioErr)), ""
+         ))
+     }
+   } else {
+-    val statusCode = Std.Http.HttpResponse.statusCode(response)
+-    match await Std.Http.HttpResponse.bodyText(response) {
++    val statusCode = response.statusCode()
++    val bodyResult = await response.bodyText()
++    match bodyResult {
+       case Ok(body) ->
+         Err(error = DockerError(
+           statusCode = Some(value = statusCode),
+@@ -147,37 +174,34 @@ pub async func listContainers(client: in Std.Http.HttpClient): Result[String, Do
+         ))
+       case Err(ioErr) ->
+         Err(error = fromHttpError(
+-          Std.Http.ConnectionFailed(url = "http://docker/v1.40/containers/json", message = ioErr.message)
++          ConnectionFailed(url = "http://docker/v1.40/containers/json", message = IOError.message(ioErr)), ""
+         ))
+     }
+   }
+ }
+ 
+-/// List all images.
+-///
+-/// Phase 1 placeholder: Returns JSON array of image objects.
+-/// Phase 2 will provide typed Image records.
+-pub async func listImages(client: in Std.Http.HttpClient): Result[String, DockerError] {
+-  val response = await Std.Http.sendAsync(
+-    Std.Http.request(Std.Http.GET,
+-      Std.Http.Url.tryFrom("http://docker/v1.40/images/json") |> assertOk()
+-    )
+-  ) |> (match _ {
+-    case Err(e) -> return Err(error = fromHttpError(e))
++/// List all images (Phase 1 placeholder: returns the JSON array).
++pub async func listImages(client: in DockerClient): Result[String, DockerError] {
++  val url = unwrapResult(Std.Http.Url.tryFrom("http://docker/v1.40/images/json"))
++  val sent = await Std.Http.sendAsync(Std.Http.request(Std.Http.GET, url))
++  val response = match sent {
++    case Err(e) -> return Err(error = fromHttpError(e, ""))
+     case Ok(r) -> r
+-  })
++  }
+ 
+-  if Std.Http.HttpResponse.isSuccess(response) {
+-    match await Std.Http.HttpResponse.bodyText(response) {
++  if response.isSuccess() {
++    val bodyResult = await response.bodyText()
++    match bodyResult {
+       case Ok(body) -> Ok(value = body)
+       case Err(ioErr) ->
+         Err(error = fromHttpError(
+-          Std.Http.ConnectionFailed(url = "http://docker/v1.40/images/json", message = ioErr.message)
++          ConnectionFailed(url = "http://docker/v1.40/images/json", message = IOError.message(ioErr)), ""
+         ))
+     }
+   } else {
+-    val statusCode = Std.Http.HttpResponse.statusCode(response)
+-    match await Std.Http.HttpResponse.bodyText(response) {
++    val statusCode = response.statusCode()
++    val bodyResult = await response.bodyText()
++    match bodyResult {
+       case Ok(body) ->
+         Err(error = DockerError(
+           statusCode = Some(value = statusCode),
+@@ -186,7 +210,7 @@ pub async func listImages(client: in Std.Http.HttpClient): Result[String, Docker
+         ))
+       case Err(ioErr) ->
+         Err(error = fromHttpError(
+-          Std.Http.ConnectionFailed(url = "http://docker/v1.40/images/json", message = ioErr.message)
++          ConnectionFailed(url = "http://docker/v1.40/images/json", message = IOError.message(ioErr)), ""
+         ))
+     }
+   }
+diff --git a/lyric-docker/src/docker_api.l b/lyric-docker/src/docker_api.l
+index a965638..aac3cc7 100644
+--- a/lyric-docker/src/docker_api.l
++++ b/lyric-docker/src/docker_api.l
+@@ -1,77 +1,23 @@
+-//! Docker Engine API v1.40+ client bindings (generated).
++//! Docker Engine API v1.40+ client bindings.
+ //!
+-//! This module contains type-safe Lyric bindings for the Docker Engine REST API.
+-//! The bindings are generated from Docker's OpenAPI 3.x specification using:
+-//!
+-//!   lyric openapi docker-api-spec.json \
+-//!     -o src/docker_api.l \
+-//!     --client-name DockerEngineClient \
+-//!     --package Docker.Api
+-//!
+-//! Generation is a one-time manual step; regenerate when updating the Docker
+-//! API specification version.
++//! Type-safe Lyric bindings for the Docker Engine REST API. The current
++//! surface is a placeholder demonstrating the shape of generated operations;
++//! the full client is generated from Docker's OpenAPI spec.
+ //!
+ //! API Documentation: https://docs.docker.com/engine/api/v1.40/
+-//! OpenAPI Spec: https://raw.githubusercontent.com/docker/cli/master/docs/swagger.json
+-//!
+-//! Phase 1 (current): Core container and image operations.
+-//! Phase 2: Volume, network, service, and compose operations.
+-//! Phase 3: Advanced diagnostics, logs streaming, and event subscriptions.
+ 
+ @runtime_checked
+ package Lyric.Docker.Api
+ 
+-import Std.Http
+-import Std.Json
+ import Std.Core
+ 
+-// Placeholder: Docker API types and client operations would be generated here.
+-// See: docs/54-docker-client-library-sketch.md (planned) for the full API surface.
+-//
+-// Generated operations will include:
+-//   - Containers: list, create, start, stop, remove, inspect, logs, exec
+-//   - Images: list, pull, push, build, remove, inspect, tag
+-//   - Networks: create, list, inspect, remove, connect, disconnect
+-//   - Volumes: create, list, inspect, remove
+-//   - System: info, version, ping
+-//   - Events: stream and subscribe to daemon events
+-
+ /// Placeholder Docker API response type.
+-/// In the generated client, this would be replaced with strong-typed
+-/// container, image, and system response types from the OpenAPI spec.
++///
++/// In the generated client this is replaced with strongly-typed container,
++/// image, and system response records derived from the OpenAPI spec.
+ pub record DockerResponsePlaceholder {
+   /// Container or image ID (placeholder).
+-  pub val id: String
++  pub id: String
+   /// Human-readable name (placeholder).
+-  pub val name: String
+-}
+-
+-/// Placeholder: Connect to Docker and get system info.
+-/// This demonstrates the shape of generated API operations.
+-/// In Phase 1, we would generate proper operations for:
+-///   - GET /v1.40/containers/json
+-///   - POST /v1.40/containers/create
+-///   - GET /v1.40/images/json
+-///   - etc.
+-pub async func getSystemInfo(client: in Std.Http.HttpClient): Result[String, Std.Http.HttpError] {
+-  val response = await Std.Http.sendAsync(
+-    Std.Http.request(Std.Http.GET,
+-      Std.Http.Url.tryFrom("http://docker/v1.40/info") |> assertOk()
+-    )
+-  ) |> (match _ {
+-    case Err(e) -> return Err(error = e)
+-    case Ok(r) -> r
+-  })
+-
+-  if Std.Http.HttpResponse.isSuccess(response) {
+-    await Std.Http.HttpResponse.bodyText(response) |> (match _ {
+-      case Err(e) -> return Err(error = Std.Http.ConnectionFailed(url = "http://docker/v1.40/info", message = e.message))
+-      case Ok(body) -> Ok(value = body)
+-    })
+-  } else {
+-    Err(error = Std.Http.BadStatus(
+-      url = "http://docker/v1.40/info",
+-      statusCode = Std.Http.HttpResponse.statusCode(response)
+-    ))
+-  }
++  pub name: String
+ }
+diff --git a/lyric-docker/src/sockets.l b/lyric-docker/src/sockets.l
+index 6a4bab7..b74e3e6 100644
+--- a/lyric-docker/src/sockets.l
++++ b/lyric-docker/src/sockets.l
+@@ -1,119 +1,53 @@
+-//! Docker socket connection helpers for Unix sockets and Windows named pipes.
++//! Docker socket path helpers.
+ //!
+-//! Provides utilities for establishing connections to the Docker daemon
+-//! across different platforms.
++//! Pure utilities for locating the Docker daemon's Unix socket across the
++//! common configurations. Client construction lives in `Lyric.Docker`, which
++//! wraps the connection in the opaque `DockerClient` handle; these helpers only
++//! resolve socket *paths* so they expose no platform/extern types.
+ @runtime_checked
+ package Lyric.Docker.Sockets
+ 
+-import Std.Http
+ import Std.Core
++import Std.Environment
+ 
+-/// Standard Docker daemon socket paths by platform.
+-/// On Linux/macOS, the Docker daemon listens on a Unix socket.
+-/// On Windows, it listens on a named pipe (not yet supported in this release).
+-pub object StandardSocketPaths {
+-  /// Linux/macOS Unix domain socket path (most common).
+-  pub val unixSocket: String = "/var/run/docker.sock"
+-
+-  /// Rootless Docker socket path (Linux, when Docker runs in rootless mode).
+-  /// This requires the $XDG_RUNTIME_DIR environment variable to be set.
+-  pub val rootlessSocket: String = "${XDG_RUNTIME_DIR}/docker.sock"
+-
+-  /// Alternative socket location on some systems.
+-  pub val alternateSocket: String = "/var/run/docker.sock.raw"
++/// Linux/macOS Unix domain socket path (most common).
++pub func unixSocketPath(): String {
++  "/var/run/docker.sock"
+ }
+ 
+-/// Create an HTTP client connected to the Docker daemon.
+-///
+-/// Follows the standard Docker connection priority:
+-/// 1. DOCKER_HOST environment variable (if set and is a unix:// URL)
+-/// 2. Standard location /var/run/docker.sock
+-/// 3. Rootless location $XDG_RUNTIME_DIR/docker.sock (if available)
+-///
+-/// # Preconditions as data
+-/// - The Docker daemon must be running and accessible via one of the above paths
+-/// - The current user must have permission to access the socket (typically requires
+-///   membership in the docker group or sudo).
+-///
+-/// # Errors
+-/// - `ConnectionFailed`: if the socket cannot be accessed or the daemon is not running.
+-///
+-/// # Examples
+-/// ```lyric
+-/// val client = makeDockerClient()
+-/// val response = await sendAsync(
+-///   request(GET, Url.tryFrom("http://docker/v1.40/containers/json") |> assertOk())
+-/// ) |> assertOk()
+-/// ```
+-pub func makeDockerClient(): Std.Http.HttpClient {
+-  match parseDockerHost() {
+-    case Some(socketPath) -> Std.Http.clientWithUnixSocket(socketPath)
+-    case None -> Std.Http.clientWithUnixSocket(StandardSocketPaths.unixSocket)
+-  }
++/// Alternative socket location on some systems.
++pub func alternateSocketPath(): String {
++  "/var/run/docker.sock.raw"
+ }
+ 
+-/// Create an HTTP client for rootless Docker (when running in unprivileged mode).
+-///
+-/// Rootless Docker uses a socket in the user's runtime directory instead of
+-/// /var/run/docker.sock. The $XDG_RUNTIME_DIR environment variable must be set.
+-///
+-/// # Preconditions as data
+-/// - $XDG_RUNTIME_DIR environment variable must be set.
+-/// - Docker must be running in rootless mode.
+-///
+-/// # Errors
+-/// - `ConnectionFailed`: if the socket cannot be accessed.
+-pub func makeRootlessDockerClient(): Result[Std.Http.HttpClient, String] {
+-  match Std.Environment.getOpt("XDG_RUNTIME_DIR") {
+-    case Some(runtimeDir) -> {
+-      val socketPath = runtimeDir + "/docker.sock"
+-      Ok(value = Std.Http.clientWithUnixSocket(socketPath))
+-    }
+-    case None -> Err(error = "XDG_RUNTIME_DIR not set; required for rootless Docker")
++/// Resolve the rootless Docker socket path from $XDG_RUNTIME_DIR.
++/// Returns an error message when the variable is unset.
++pub func resolveRootlessSocket(): Result[String, String] {
++  match Std.Environment.getVar("XDG_RUNTIME_DIR") {
++    case Ok(runtimeDir) -> Ok(value = runtimeDir + "/docker.sock")
++    case Err(_) -> Err(error = "XDG_RUNTIME_DIR not set; required for rootless Docker")
+   }
+ }
+ 
+-/// Create an HTTP client connected to a custom Docker socket path.
+-///
+-/// Use this when the Docker daemon is listening on a non-standard location.
+-///
+-/// # Preconditions as data
+-/// - `socketPath` must be a valid path to an accessible Docker socket.
+-///
+-/// # Errors
+-/// - `ConnectionFailed`: if the socket cannot be accessed.
+-pub func makeDockerClientAt(socketPath: in String): Std.Http.HttpClient
+-  requires: socketPath.length > 0
+-{
+-  Std.Http.clientWithUnixSocket(socketPath)
+-}
+-
+-/// Parse DOCKER_HOST environment variable to extract a Unix socket path.
+-///
+-/// DOCKER_HOST is typically in one of these formats:
+-/// - `unix:///var/run/docker.sock` — Unix socket (absolute path)
+-/// - `unix://./docker.sock` — Unix socket (relative path, rare)
+-/// - `tcp://localhost:2375` — TCP connection (not yet supported)
+-/// - `npipe:////.//pipe//docker_engine` — Windows named pipe (not yet supported)
++/// Parse the DOCKER_HOST environment variable to extract a Unix socket path.
+ ///
+ /// Returns `Some(socketPath)` if DOCKER_HOST is set and is a valid unix:// URL.
+ /// Returns `None` if DOCKER_HOST is not set, not a unix:// URL, or is malformed.
+-func parseDockerHost(): Option[String] {
+-  match Std.Environment.getOpt("DOCKER_HOST") {
+-    case Some(dockerHost) -> parseUnixSocketUrl(dockerHost)
+-    case None -> None
++pub func parseDockerHost(): Option[String] {
++  match Std.Environment.getVar("DOCKER_HOST") {
++    case Ok(dockerHost) -> parseUnixSocketUrl(dockerHost)
++    case Err(_) -> None
+   }
+ }
+ 
+ /// Parse a unix:// URL to extract the socket path.
+ ///
+-/// Handles formats like:
+-/// - `unix:///var/run/docker.sock` → `/var/run/docker.sock`
+-/// - `unix://docker.sock` → `docker.sock` (relative, unusual)
+-/// - Non-unix URLs are rejected (tcp://, npipe://, etc.)
+-func parseUnixSocketUrl(url: in String): Option[String] {
++/// - `unix:///var/run/docker.sock` -> `/var/run/docker.sock`
++/// - `unix://docker.sock` -> `docker.sock` (relative, unusual)
++/// - Non-unix URLs (tcp://, npipe://, ...) are rejected.
++pub func parseUnixSocketUrl(url: in String): Option[String] {
+   val prefix = "unix://"
+-  if !url.startsWith(prefix) {
++  if not url.startsWith(prefix) {
+     return None
+   }
+ 
+@@ -125,8 +59,6 @@ func parseUnixSocketUrl(url: in String): Option[String] {
+ 
+   val path = if withoutPrefix.startsWith("//") {
+     withoutPrefix.substring(2)
+-  } else if withoutPrefix.startsWith("/") {
+-    withoutPrefix
+   } else {
+     withoutPrefix
+   }
