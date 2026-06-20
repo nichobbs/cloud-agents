@@ -99,3 +99,137 @@ pub func isWhitelisted(githubUserId: in String, csv: in String): Bool {
 pub func tokenCacheKey(token: in String): String {
   return "ghtoken:" + token
 }
+
+// ─── Validation cache ─────────────────────────────────────────────────────────
+//
+// Validating a token means a round-trip to api.github.com/user (~100-200ms),
+// so results are cached for the token lifetime (docs/phase3 §1). These helpers
+// own the pure expiry arithmetic; the cache store itself lives in the HTTP
+// layer.
+
+/// A cached, previously-validated identity.
+pub record CachedToken {
+  pub userId: String
+  pub login: String
+  pub expiresAtMillis: Long
+}
+
+/// Absolute expiry instant for a freshly validated token.
+pub func cacheExpiry(nowMillis: in Long, ttlSeconds: in Long): Long {
+  return nowMillis + ttlSeconds * 1000.toLong()
+}
+
+/// Whether a cache entry is still valid at `nowMillis`.
+pub func isCacheValid(entry: in CachedToken, nowMillis: in Long): Bool {
+  return nowMillis < entry.expiresAtMillis
+}
+
+// ─── Ownership ────────────────────────────────────────────────────────────────
+
+/// Whether the authenticated user owns the resource. A mismatch is a 403
+/// (docs/phase3 §4).
+pub func ownsResource(authedUserId: in String, ownerUserId: in String): Bool {
+  return authedUserId == ownerUserId
+}
+
+// ─── GitHub /user response parsing ────────────────────────────────────────────
+//
+// The validation call returns a JSON object containing at least `id` (number)
+// and `login` (string). These extractors pull those two fields without a full
+// JSON parser, so they are pure and runtime-testable. The handler layer turns
+// the results into a `GitHubUser` and rejects responses missing either field.
+
+/// First index of `needle` in `hay` at or after `from`, or -1 if not present.
+/// A manual scan — the compiler's `String.indexOf`/`Option` path is unreliable
+/// at runtime in the current toolchain, and this keeps the parsers on the
+/// String/Int operations that are known-good.
+pub func indexOfFrom(hay: in String, needle: in String, from: in Int): Int {
+  val hayLen = hay.length.toInt()
+  val needleLen = needle.length.toInt()
+  if needleLen == 0 {
+    return from
+  }
+  var i = from
+  val last = hayLen - needleLen
+  while i <= last {
+    var j = 0
+    var matched = true
+    while j < needleLen {
+      if hay.substring(i + j, 1) != needle.substring(j, 1) {
+        matched = false
+        j = needleLen
+      } else {
+        j = j + 1
+      }
+    }
+    if matched {
+      return i
+    }
+    i = i + 1
+  }
+  return -1
+}
+
+/// Extract a string field's value, or "" if the field is absent. Handles the
+/// `"field"` token, the following colon, and a double-quoted value.
+pub func parseJsonString(json: in String, field: in String): String {
+  val target = "\"" + field + "\""
+  val pos = indexOfFrom(json, target, 0)
+  if pos < 0 {
+    return ""
+  }
+  val jsonLen = json.length.toInt()
+  var i = pos + target.length.toInt()
+  var inValue = false
+  var start = 0
+  while i < jsonLen {
+    val c = json.substring(i, 1)
+    if not inValue {
+      if c == "\"" {
+        inValue = true
+        start = i + 1
+      }
+      i = i + 1
+    } else {
+      if c == "\"" {
+        return json.substring(start, i - start)
+      }
+      i = i + 1
+    }
+  }
+  return ""
+}
+
+/// Extract an unsigned integer field's value as a string of digits, or "" if
+/// the field is absent. (GitHub user ids are JSON numbers, not quoted.)
+pub func parseJsonNumber(json: in String, field: in String): String {
+  val target = "\"" + field + "\""
+  val pos = indexOfFrom(json, target, 0)
+  if pos < 0 {
+    return ""
+  }
+  val jsonLen = json.length.toInt()
+  var i = pos + target.length.toInt()
+  var seenColon = false
+  var acc = ""
+  while i < jsonLen {
+    val c = json.substring(i, 1)
+    if not seenColon {
+      if c == ":" {
+        seenColon = true
+      }
+      i = i + 1
+    } else if c == "0" or c == "1" or c == "2" or c == "3" or c == "4"
+           or c == "5" or c == "6" or c == "7" or c == "8" or c == "9" {
+      acc = acc + c
+      i = i + 1
+    } else if acc.length > 0 {
+      return acc
+    } else if c == " " {
+      i = i + 1
+    } else {
+      return ""
+    }
+  }
+  return acc
+}

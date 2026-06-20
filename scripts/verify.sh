@@ -50,34 +50,70 @@ output_assembly = "CloudAgentsVerify.dll"
 [dependencies]
 TOML
 
-# Runtime harness — exercises the SSE framing (pure inlined primitives, so it
-# runs without the per-package stdlib runtime DLLs).
+# Runtime harness — exercises the Docker-independent logic (streaming, the
+# Phase 2 state machine / recycling / SQL, and the Phase 3 auth helpers). These
+# use only enums, unions, records and primitives, so they run without the
+# per-package stdlib runtime DLLs.
 cat > "$WORK/src/main.l" <<'LYRIC'
 package CloudAgentsVerify
 import Std.Core
 import Std.Console as Console
 import CloudAgents.Streaming
+import CloudAgents.Db
+import CloudAgents.Auth
 
-func eq(actual: in String, expected: in String, label: in String): Unit {
-  if actual == expected {
-    Console.println("ok   - " + label)
-  } else {
-    Console.println("FAIL - " + label)
-    Console.println("  expected: [" + expected + "]")
-    Console.println("  actual:   [" + actual + "]")
-    panic("assertion failed: " + label)
-  }
+func eqs(a: in String, e: in String, l: in String): Unit {
+  if a == e { Console.println("ok   - " + l) }
+  else { Console.println("FAIL - " + l + " got [" + a + "]"); panic(l) }
 }
+func eqb(a: in Bool, e: in Bool, l: in String): Unit {
+  if a == e { Console.println("ok   - " + l) } else { Console.println("FAIL - " + l); panic(l) }
+}
+func tshow(t: in Transition): String { return match t { case To(s) -> statusToString(s); case Invalid -> "INVALID" } }
+func rshow(r: in RecycleAction): String { return match r { case StopAndIdle -> "STOP"; case EvictCold -> "EVICT"; case NoAction -> "NONE" } }
 
 pub func main(): Int {
-  eq(jsonEscape("x\"y\\z"), "x\\\"y\\\\z", "jsonEscape quotes + backslash")
-  eq(jsonEscape("line\nbreak"), "line\\nbreak", "jsonEscape newline")
-  eq(toSseChunk("hello"), "data: {\"chunk\":\"hello\"}\n\n", "toSseChunk basic")
-  eq(formatLogsAsSse("a\r\nb\n"),
-     "data: {\"chunk\":\"a\"}\n\n" + "data: {\"chunk\":\"b\"}\n\n" + "event: done\ndata: {}\n\n",
-     "formatLogsAsSse CRLF + trailing newline")
-  eq(formatLogsAsSse(""), "event: done\ndata: {}\n\n", "formatLogsAsSse empty")
-  Console.println("ALL STREAMING CHECKS PASSED")
+  // Phase 1 — SSE framing
+  eqs(toSseChunk("hello"), "data: {\"chunk\":\"hello\"}\n\n", "toSseChunk basic")
+  eqs(jsonEscape("x\"y\\z"), "x\\\"y\\\\z", "jsonEscape quotes + backslash")
+  eqs(formatLogsAsSse("a\r\nb\n"),
+      "data: {\"chunk\":\"a\"}\n\n" + "data: {\"chunk\":\"b\"}\n\n" + "event: done\ndata: {}\n\n",
+      "formatLogsAsSse CRLF + trailing")
+  eqs(formatLogsAsSse(""), "event: done\ndata: {}\n\n", "formatLogsAsSse empty")
+
+  // Phase 2 — state machine
+  eqs(tshow(nextStatus(Created, CloneStarted)), "CLONING", "Created+CloneStarted")
+  eqs(tshow(nextStatus(Idle, MessageReceived)), "RUNNING", "Idle+MessageReceived")
+  eqs(tshow(nextStatus(Running, ProcessExited)), "WARM", "Running+ProcessExited")
+  eqs(tshow(nextStatus(Warm, IdleTimeout)), "IDLE", "Warm+IdleTimeout")
+  eqs(tshow(nextStatus(Running, MessageReceived)), "INVALID", "illegal transition")
+  eqs(tshow(nextStatus(Destroyed, MessageReceived)), "INVALID", "terminal state")
+
+  // Phase 2 — idle recycling
+  eqs(rshow(recycleDecision(Warm, 300000.toLong())), "STOP", "Warm at 5min")
+  eqs(rshow(recycleDecision(Idle, 3600000.toLong())), "EVICT", "Idle at 1h")
+  eqs(rshow(recycleDecision(Running, 9999999.toLong())), "NONE", "Running not swept")
+
+  // Phase 2 — SQL (ownership-scoped)
+  eqb(deleteSessionSql() == "DELETE FROM sessions WHERE id = ? AND github_user_id = ?", true, "delete sql")
+  eqb(selectSessionByIdSql().endsWith("AND github_user_id = ?"), true, "select scoped by owner")
+
+  // Phase 3 — token cache + ownership
+  val entry = CachedToken(userId = "42", login = "octocat", expiresAtMillis = 1000.toLong())
+  eqb(isCacheValid(entry, 999.toLong()), true, "cache valid before expiry")
+  eqb(isCacheValid(entry, 1000.toLong()), false, "cache invalid at expiry")
+  eqs(toString(cacheExpiry(1000.toLong(), 3600.toLong())), "3601000", "cacheExpiry now+ttl")
+  eqb(ownsResource("42", "42"), true, "owns own resource")
+  eqb(ownsResource("42", "7"), false, "rejects other's resource")
+
+  // Phase 3 — GitHub /user parsing
+  val body = "{\"login\":\"octocat\",\"id\":583231,\"type\":\"User\"}"
+  eqs(parseJsonString(body, "login"), "octocat", "parse login")
+  eqs(parseJsonNumber(body, "id"), "583231", "parse id number")
+  eqs(parseJsonString(body, "missing"), "", "missing field -> empty")
+  eqs(parseJsonNumber("{\"id\": 42 }", "id"), "42", "parse id with spaces")
+
+  Console.println("ALL CLOUD-AGENTS LOGIC CHECKS PASSED")
   0
 }
 LYRIC
@@ -85,7 +121,7 @@ LYRIC
 echo "==> Compiling CloudAgents.Streaming / Db / Auth"
 ( cd "$WORK" && lyric build )
 
-echo "==> Runtime-verifying SSE framing"
+echo "==> Runtime-verifying streaming + Phase 2/3 logic"
 ( cd "$WORK" && lyric run )
 
 echo "==> Verification succeeded"

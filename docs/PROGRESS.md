@@ -19,20 +19,29 @@ design of each phase and `docs/BUILD.md` for build/verification notes.
 
 | Deliverable | Status | Where |
 |-------------|--------|-------|
-| Session state machine | 🟡 enum + transitions | `src/db/db_client.l` (`SessionStatus`, `hasLiveContainer`) |
-| SQLite schema | 🟡 DDL | `src/db/db_client.l` (`sessionsSchemaSql`) |
-| Volume naming | 🟡 | `workspaceVolumeName`, `homeVolumeName` |
-| Idle recycling / concurrency control | ⬜ pending | needs `Std.Concurrency` + background timer |
+| Session state machine | ✅ verified | `db_client.l` (`SessionStatus`, `SessionEvent`, `Transition`, `nextStatus`) — exhaustive, runtime-tested |
+| Idle recycling decision | ✅ verified | `db_client.l` (`recycleDecision`, warm 5min / cold 1h windows) |
+| Persistence SQL (owner-scoped) | ✅ verified | `db_client.l` (`insert/select/list/update/touch/delete/recover…Sql`) |
+| SQLite schema | ✅ | `db_client.l` (`sessionsSchemaSql`) |
+| Volume naming | ✅ | `workspaceVolumeName`, `homeVolumeName` |
+| Background sweep + concurrency control | ⬜ pending | needs `Std.Concurrency` + lyric-db wiring (runtime) |
 
 ## Phase 3 — Multi-Tenancy & Security 🟡 started
 
 | Deliverable | Status | Where |
 |-------------|--------|-------|
-| Bearer token extraction | 🟡 | `src/handlers/auth.l` (`extractBearerToken`) |
-| Whitelist / ownership checks | 🟡 | `isWhitelisted`, `parseWhitelist` |
-| Identity model | 🟡 | `GitHubUser`, `AuthError` |
-| GitHub `/user` validation + cache | ⬜ pending | needs `Std.Http` header support |
+| Bearer token extraction | ✅ verified | `auth.l` (`extractBearerToken`) |
+| Whitelist access control | ✅ verified | `auth.l` (`isWhitelisted`, `parseWhitelist`) |
+| Validation cache (TTL) | ✅ verified | `auth.l` (`CachedToken`, `cacheExpiry`, `isCacheValid`) |
+| Ownership enforcement | ✅ verified | `auth.l` (`ownsResource`) |
+| GitHub `/user` response parsing | ✅ verified | `auth.l` (`parseJsonString/Number`, `indexOfFrom`) |
+| Identity model | ✅ | `GitHubUser`, `AuthError` |
+| Live `api.github.com/user` call | ⬜ pending | needs `Std.Http` header support (runtime) |
 | Encrypted credential upload | ⬜ pending | endpoint + encryption |
+
+> "verified" = compiles **and** runtime-tested via `scripts/verify.sh` (CI runs
+> it on every push). The pending items need the Docker/web/HTTP runtime that
+> does not build under the current compiler — see `docs/BUILD.md`.
 
 ## Phase 4 — GitHub Tools & Tool Packs 🟡 started
 

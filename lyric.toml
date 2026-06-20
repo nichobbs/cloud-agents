@@ -27,6 +27,8 @@ output_assembly = "CloudAgents.dll"
 [project.tests]
 "CloudAgents.SessionTests"   = "tests/session_tests.l"
 "CloudAgents.StreamingTests" = "tests/streaming_tests.l"
+"CloudAgents.DbTests"        = "tests/db_tests.l"
+"CloudAgents.AuthTests"      = "tests/auth_tests.l"
 
 [dependencies]
 "Lyric.Web"    = { path = "../lyric-lang/lyric-web" }
