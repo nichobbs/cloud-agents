@@ -1,0 +1,14 @@
+# claude-code:data — Phase 4 tool pack.
+#
+# Extends the base runner with a Python data-science stack.
+# Build:  docker build -t claude-code:data -f docker/Dockerfile.data docker
+#
+# Requires claude-code:base to be built first.
+
+FROM claude-code:base
+
+USER root
+RUN pip3 install --no-cache-dir --break-system-packages \
+        pandas numpy jupyter
+
+USER claude-user

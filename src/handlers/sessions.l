@@ -4,6 +4,7 @@ import Std.Core
 import Web
 import CloudAgents.SessionStore
 import CloudAgents.Docker
+import CloudAgents.Streaming
 
 import Std.Uuid
 
@@ -79,8 +80,12 @@ pub func sendMessage(
     sessionId = id
   )
 
+  // Frame the captured container output as a Server-Sent Events stream:
+  // one `data: {"chunk":"..."}` frame per line, then a `done` event. ANSI
+  // colour codes are preserved in the payload and rendered on the frontend
+  // with ansi_up (see docs/phase1-core-loop.md).
   match runResult {
-    case Ok(logs) -> return Ok(value = logs)
+    case Ok(logs) -> return Ok(value = CloudAgents.Streaming.formatLogsAsSse(logs))
     case Err(err) -> return Err(Web.internalError("Failed to execute message: " + err))
   }
 }

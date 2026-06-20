@@ -1,0 +1,45 @@
+# Phase 5 deployment topology for a single VM.
+#
+# The api service talks to the host Docker daemon (via the mounted socket) to
+# launch ephemeral runner containers, so it must run with access to
+# /var/run/docker.sock. Caddy terminates TLS and reverse-proxies to the api and
+# frontend (see deploy/Caddyfile).
+
+services:
+  api:
+    build:
+      context: ..
+      dockerfile: deploy/api.Dockerfile
+    environment:
+      - ENCRYPTION_KEY=${ENCRYPTION_KEY:?set ENCRYPTION_KEY in .env}
+      - CLOUD_AGENTS_WHITELIST=${CLOUD_AGENTS_WHITELIST:-}
+      - LYRIC_CONFIG_WEB_SERVER_PORT=8080
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - user_data:/user-home
+    restart: unless-stopped
+
+  frontend:
+    image: nginx:alpine
+    volumes:
+      - ../frontend:/usr/share/nginx/html:ro
+    restart: unless-stopped
+
+  caddy:
+    image: caddy:2
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      - api
+      - frontend
+    restart: unless-stopped
+
+volumes:
+  user_data:
+  caddy_data:
+  caddy_config:

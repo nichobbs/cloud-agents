@@ -1,0 +1,57 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+
+# Cancel superseded runs on the same ref.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Build & verify
+    if: github.event.pull_request.draft == false
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 1
+
+      - name: Set up .NET 10
+        uses: actions/setup-dotnet@v5
+        with:
+          dotnet-version: '10.0.x'
+
+      - name: Install Lyric compiler
+        run: |
+          curl -fsSL https://raw.githubusercontent.com/nichobbs/lyric-lang/main/scripts/install.sh \
+            | sh -s -- --dir "$HOME/.local/bin" --no-path
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+      - name: Lyric version
+        run: lyric --version
+
+      # Shell + asset sanity checks (no Lyric toolchain needed).
+      - name: Lint shell scripts
+        run: |
+          for f in docker/entrypoint.sh deploy/install-docker.sh deploy/backup.sh scripts/verify.sh; do
+            bash -n "$f" && echo "ok: $f"
+          done
+
+      - name: Validate JSON templates
+        run: |
+          for f in docker/mcp.json.template docker/settings.json.template; do
+            python3 -m json.tool "$f" > /dev/null && echo "ok: $f"
+          done
+
+      # Build the Docker-independent Lyric packages and runtime-verify the SSE
+      # framing. verify.sh clones the lyric-lang workspace as needed. The full
+      # web+docker server is not built here because lyric-docker does not
+      # compile under the published compiler (see docs/BUILD.md).
+      - name: Build & verify Lyric packages
+        run: ./scripts/verify.sh

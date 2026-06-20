@@ -1,0 +1,126 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Cloud Agents — Phase 1 Prototype</title>
+  <!-- ansi_up renders ANSI colour codes from the streamed output (the backend
+       deliberately leaves ANSI intact; see docs/phase1-core-loop.md). -->
+  <script src="https://cdn.jsdelivr.net/npm/ansi_up@6.0.2/ansi_up.min.js"></script>
+  <style>
+    :root { color-scheme: light dark; }
+    body { font-family: system-ui, sans-serif; max-width: 820px; margin: 2rem auto; padding: 0 1rem; }
+    fieldset { border: 1px solid #8884; border-radius: 8px; margin-bottom: 1rem; }
+    label { display: block; font-size: .8rem; opacity: .8; margin-top: .5rem; }
+    input, textarea { width: 100%; box-sizing: border-box; padding: .5rem; font: inherit; }
+    button { padding: .5rem 1rem; font: inherit; cursor: pointer; margin-top: .5rem; }
+    #log { white-space: pre-wrap; background: #1113; padding: 1rem; border-radius: 8px;
+           font-family: ui-monospace, monospace; font-size: .85rem; min-height: 4rem; }
+    .status { font-size: .8rem; opacity: .75; }
+  </style>
+</head>
+<body>
+  <h1>Cloud Agents</h1>
+  <p class="status">Phase 1 streaming prototype. Set the API base + GitHub token, create a session, then send a message.</p>
+
+  <fieldset>
+    <legend>Connection</legend>
+    <label>API base URL</label>
+    <input id="apiBase" value="http://localhost:8080" />
+    <label>GitHub token (Bearer)</label>
+    <input id="token" type="password" placeholder="ghp_..." />
+  </fieldset>
+
+  <fieldset>
+    <legend>Session</legend>
+    <label>Repository URL</label>
+    <input id="repoUrl" value="https://github.com/nichobbs/cloud-agents" />
+    <label>Branch</label>
+    <input id="branch" value="main" />
+    <button id="createBtn">Create session</button>
+    <span id="sessionId" class="status"></span>
+  </fieldset>
+
+  <fieldset>
+    <legend>Message</legend>
+    <textarea id="prompt" rows="3">Summarise the project structure.</textarea>
+    <button id="sendBtn" disabled>Send</button>
+  </fieldset>
+
+  <h2>Output</h2>
+  <div id="log"></div>
+
+  <script>
+    const ansiUp = new AnsiUp();
+    const $ = (id) => document.getElementById(id);
+    let sessionId = null;
+
+    const authHeaders = () => {
+      const h = { 'Content-Type': 'application/json' };
+      const t = $('token').value.trim();
+      if (t) h['Authorization'] = `Bearer ${t}`;
+      return h;
+    };
+
+    $('createBtn').onclick = async () => {
+      const base = $('apiBase').value.replace(/\/$/, '');
+      const res = await fetch(`${base}/api/sessions`, {
+        method: 'POST',
+        headers: authHeaders(),
+        body: JSON.stringify({ repoUrl: $('repoUrl').value, branch: $('branch').value }),
+      });
+      if (!res.ok) { $('sessionId').textContent = `error: ${res.status}`; return; }
+      const data = await res.json();
+      sessionId = data.sessionId;
+      $('sessionId').textContent = `session: ${sessionId}`;
+      $('sendBtn').disabled = false;
+    };
+
+    $('sendBtn').onclick = async () => {
+      if (!sessionId) return;
+      const base = $('apiBase').value.replace(/\/$/, '');
+      const log = $('log');
+      log.innerHTML = '';
+      const res = await fetch(`${base}/api/sessions/${sessionId}/messages`, {
+        method: 'POST',
+        headers: authHeaders(),
+        body: JSON.stringify({ text: $('prompt').value }),
+      });
+      if (!res.body) { log.textContent = 'no response body'; return; }
+
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = '';
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        // SSE frames are separated by a blank line.
+        let idx;
+        while ((idx = buffer.indexOf('\n\n')) !== -1) {
+          const frame = buffer.slice(0, idx);
+          buffer = buffer.slice(idx + 2);
+          handleFrame(frame, log);
+        }
+      }
+    };
+
+    function handleFrame(frame, log) {
+      // A frame may carry an `event:` line and/or a `data:` line.
+      const lines = frame.split('\n');
+      let event = 'message';
+      let dataStr = '';
+      for (const line of lines) {
+        if (line.startsWith('event:')) event = line.slice(6).trim();
+        else if (line.startsWith('data:')) dataStr += line.slice(5).trim();
+      }
+      if (event === 'done') return;
+      if (!dataStr) return;
+      try {
+        const { chunk } = JSON.parse(dataStr);
+        log.innerHTML += ansiUp.ansi_to_html(chunk) + '\n';
+      } catch { /* ignore malformed frame */ }
+    }
+  </script>
+</body>
+</html>
