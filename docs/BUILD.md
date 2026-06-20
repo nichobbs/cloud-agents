@@ -54,24 +54,36 @@ lyric build
 lyric test
 ```
 
-## Verified vs. pending (compiler v0.1.x)
+## Verified vs. pending (compiler v0.2.4)
 
-The currently published Lyric compiler is early-stage; the following are known
-and were validated while building this phase:
+The currently published Lyric compiler is early-stage. The following were
+validated against **v0.2.4** (the v0.1.x findings below still hold — the v0.2.4
+reassessment did not unblock anything for this project):
 
 - **Pure-logic packages compile and run.** `CloudAgents.Streaming`,
-  `CloudAgents.Db`, and `CloudAgents.Auth` build cleanly with the toolchain
-  above, and the SSE framing in `CloudAgents.Streaming` is runtime-verified
-  (frame format, JSON escaping, CRLF/trailing-line handling, empty input).
-- **`String.split` is not available** in v0.1.x — split manually with a
-  character scan (`formatLogsAsSse` does this).
+  `CloudAgents.Db`, and `CloudAgents.Auth` build cleanly and are runtime-verified
+  end-to-end by `scripts/verify.sh` (24 assertions: SSE framing, the Phase 2
+  state machine + idle recycling + owner-scoped SQL, and the Phase 3 auth
+  helpers). These use only enums/unions/records/primitives.
+- **`String.split` is not available** — split manually with a character scan
+  (`formatLogsAsSse` does this).
+- **`String.indexOf` / `Option` are unreliable at runtime** in the standalone
+  install: not-found does not yield `None`, and matching the result NREs in some
+  contexts. The JSON extractors in `auth.l` use a hand-rolled `indexOfFrom`
+  substring scan instead.
+- **The stdlib runtime DLLs are not shipped** with the standalone binary, so any
+  code that touches `Option`, `slice`, `@generate(Json)`, or `Std.Testing` at
+  runtime fails to load `Lyric.Stdlib.Core` / `Lyric.Stdlib.Testing`. This is why
+  the `@test_module` suites compile but cannot execute here; runtime checks go
+  through the enum/record/primitive harness in `scripts/verify.sh`.
 - **`out` is a reserved keyword** — it cannot be used as an identifier.
-- **`lyric-docker` does not build with v0.1.x.** Its source uses pipe syntax
-  (`|>`) that the published compiler rejects (P0080). Until that library (or the
-  compiler) is updated, the full web+docker server cannot be compiled end-to-end
-  in this environment; the Docker-independent packages above are verified in
-  isolation. Track this when bumping the `lyric-lang` pin.
+- **`lyric-docker` does not build with v0.1.x or v0.2.4.** Its source uses a
+  `val` field name (P0051) and pipe syntax `|>` (P0080) that the published
+  compiler rejects — the library is ahead of releases. Until it (or the compiler)
+  is updated, the full web+docker server cannot be compiled end-to-end here; the
+  Docker-independent packages above are verified in isolation. `lyric-web` itself
+  builds fine. Track this when bumping the `lyric-lang` pin.
 - The `dto*` / `findTimeZone` helpers in `lyric-stdlib`'s `Std.Time` leak extern
-  types (`DateTimeOffset`, `TimeZone`) across the contract boundary, which breaks
-  downstream contract synthesis; demote them to package-private locally if you
-  hit `unknown type name 'DateTimeOffset'`.
+  types (`DateTimeOffset`, `TimeZone`) across the contract boundary, which still
+  breaks downstream contract synthesis under v0.2.4; demote them to
+  package-private locally if you hit `unknown type name 'DateTimeOffset'`.
