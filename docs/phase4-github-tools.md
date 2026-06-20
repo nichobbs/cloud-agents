@@ -33,7 +33,7 @@ The existing PWA already has GitHub panels. The frontend can use the user’s OA
 3. Tool Packs (Docker Images)
 
 Tag Extra packages Approx size
-claude-code:base python3, node, typescript, bash, make, git ~500 MB
+claude-code:base python3, node, lyric, dotnet, bash, make, git ~800 MB
 claude-code:rust + cargo, rustc ~800 MB
 claude-code:data + pandas, numpy, jupyter ~1.2 GB
 

@@ -63,7 +63,7 @@ Cold start latency: ~2-5 seconds. Frontend shows “Resuming session…” indic
 
 Per-session message queue: if a message arrives while the session is RUNNING or WARM, enqueue it. The SSE stream is returned only after the previous execution finishes.
 
-Implementation: in-memory map of session locks using promise-based queues.
+Implementation: in-memory map of session locks using Lyric's virtual-thread-safe async tasks and channels (`Std.Concurrency`).
 
 5. Credential Management (Preliminary)
 

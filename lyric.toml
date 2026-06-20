@@ -1,0 +1,34 @@
+[package]
+name        = "CloudAgents"
+version     = "0.1.0"
+authors     = ["Cloud Agents Developer"]
+license     = "MIT"
+description = "Cloud Agents backend API server written in Lyric targeting .NET 10"
+
+[features]
+default = ["dotnet", "sqlite"]
+dotnet  = []
+sqlite  = []
+
+[project]
+name            = "CloudAgents"
+output          = "single"
+output_assembly = "CloudAgents.dll"
+
+[project.packages]
+"CloudAgents"          = "src/main.l"
+"CloudAgents.SessionStore" = "src/sessions/session_manager.l"
+"CloudAgents.Handlers" = "src/handlers/sessions.l"
+"CloudAgents.Docker"   = "src/docker_manager.l"
+"CloudAgents.Db"       = "src/db/db_client.l"
+"CloudAgents.Auth"     = "src/handlers/auth.l"
+
+[project.tests]
+"CloudAgents.SessionTests" = "tests/session_tests.l"
+
+[dependencies]
+"Lyric.Web"    = { path = "../lyric-lang/lyric-web" }
+"Lyric.Docker" = { path = "../lyric-lang/lyric-docker" }
+"Std.Logging"  = { workspace = true }
+
+

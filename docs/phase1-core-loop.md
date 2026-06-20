@@ -6,39 +6,63 @@
 
 ## Implementation Details
 
-### 1. API Server (Node.js / Express or Fastify)
+### 1. API Server (Lyric / Web)
 
 #### Endpoints
 
 - `POST /api/sessions` – create a session (repo, branch), clone repo, return `sessionId`.
-- `POST /api/sessions/:id/messages` – accept `{ text }`, start container, stream SSE response.
-- `DELETE /api/sessions/:id` – remove container and volumes.
+- `POST /api/sessions/{id}/messages` – accept `{ text }`, start container, stream SSE response.
+- `DELETE /api/sessions/{id}` – remove container and volumes.
 
-#### Container management (dockerode / docker-py)
+#### Container management (Lyric.Docker)
 
-```js
-const container = await docker.createContainer({
-  Image: 'claude-code:base',
-  Env: [`PROMPT=${text}`, `REPO_URL=...`, `BRANCH=main`],
-  Volumes: { /* workspace + home mounts */ },
-  HostConfig: { Binds: [...] }
-});
-const stream = await container.attach({ stream: true, stdout: true, stderr: true });
-await container.start();
+```lyric
+import Std.Core
+import Web.{Request, Response, HttpError}
+import Docker
+
+// Example: Container start and streaming invocation in Lyric
+val client = Docker.makeDockerClient()
+val envs = [
+  "PROMPT=" + text,
+  "REPO_URL=" + repoUrl,
+  "BRANCH=" + branch
+]
+val config = Docker.CreateContainerRequest(
+  image = "claude-code:base",
+  env = envs
+  // binds = [ "/var/run/docker.sock:/var/run/docker.sock" ]
+)
+
+match await Docker.createContainer(client, config) {
+  case Ok(container) -> {
+    await Docker.startContainer(client, container.id)?
+    // Stream logs using Std.Http / custom stream chunking
+  }
+  case Err(e) -> Err(HttpError.internalError("Docker container failure: " + e.message))
+}
 ```
 
 SSE streaming
 
-Each stdout line is wrapped as data: {"chunk":"..."}\n\n. ANSI codes are stripped before sending (can also be done on the frontend with ansi_up).
+Each stdout line is wrapped as data: `{"chunk":"..."}\n\n`. ANSI codes are stripped before sending (can also be done on the frontend with `ansi_up`).
 
-2. Base Docker Image
+2. Base Docker Image (Runner Environment with Lyric SDK)
+
+The runner container requires node for `claude-code` and the .NET 10 / Lyric SDK to compile, format, and test the Lyric code inside the sandbox.
 
 Dockerfile:
 
 ```dockerfile
-FROM node:20-slim
+FROM mcr.microsoft.com/dotnet/sdk:10.0-slim
 RUN apt-get update && apt-get install -y git bash make python3 python3-pip curl \
+    && curl -fsSL https://deb.nodesource.com/setup_20.x | bash - \
+    && apt-get install -y nodejs \
     && npm install -g @anthropic-ai/claude-code
+
+# Install Lyric Compiler
+COPY --from=lyric-compiler-source /usr/local/bin/lyric /usr/local/bin/lyric
+
 COPY entrypoint.sh /entrypoint.sh
 CMD ["/entrypoint.sh"]
 ```
