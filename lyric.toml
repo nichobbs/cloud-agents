@@ -22,13 +22,15 @@ output_assembly = "CloudAgents.dll"
 "CloudAgents.Docker"   = "src/docker_manager.l"
 "CloudAgents.Db"       = "src/db/db_client.l"
 "CloudAgents.Auth"     = "src/handlers/auth.l"
+"CloudAgents.Streaming" = "src/streaming/streaming.l"
 
 [project.tests]
-"CloudAgents.SessionTests" = "tests/session_tests.l"
+"CloudAgents.SessionTests"   = "tests/session_tests.l"
+"CloudAgents.StreamingTests" = "tests/streaming_tests.l"
 
 [dependencies]
 "Lyric.Web"    = { path = "../lyric-lang/lyric-web" }
 "Lyric.Docker" = { path = "../lyric-lang/lyric-docker" }
-"Std.Logging"  = { workspace = true }
+"Std.Logging"  = { path = "../lyric-lang/lyric-logging" }
 
 

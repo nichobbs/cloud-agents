@@ -1,0 +1,28 @@
+# Phase 5 reverse proxy. TLS certificates are obtained automatically from
+# Let's Encrypt for the configured domain.
+#
+# Replace agent.example.com with your domain before deploying.
+
+agent.example.com {
+	# API routes go to the Lyric API server.
+	handle /api/* {
+		reverse_proxy api:8080
+	}
+
+	# Everything else is the static frontend.
+	handle {
+		reverse_proxy frontend:80
+	}
+
+	encode gzip
+
+	# Claude invocations can run for several minutes; keep the upstream
+	# connection open long enough to stream the full response.
+	@api path /api/*
+	reverse_proxy @api api:8080 {
+		flush_interval -1
+		transport http {
+			read_timeout 15m
+		}
+	}
+}
