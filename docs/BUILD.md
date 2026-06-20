@@ -77,23 +77,28 @@ reassessment did not unblock anything for this project):
   the `@test_module` suites compile but cannot execute here; runtime checks go
   through the enum/record/primitive harness in `scripts/verify.sh`.
 - **`out` is a reserved keyword** — it cannot be used as an identifier.
-- **`lyric-docker` originally did not build** (invalid `pub val` fields, a
-  `pub object`, and the non-existent `|>` operator, plus wrong stdlib API usage).
-  It has been rewritten to proper Lyric and now builds and synthesises under
-  v0.2.4 — see `patches/lyric-docker-proper-syntax.patch` and `patches/README.md`.
-  Apply that patch (and the stdlib one below) to the sibling `lyric-lang` clone.
+- **The full server now compiles.** `scripts/build-full.sh` builds all 7
+  packages — API + `Lyric.Web` + the in-repo `Lyric.Docker` — inside the
+  lyric-lang workspace (verified on v0.2.4 from a pristine clone). It runs the
+  same in CI. Test *execution* still needs the stdlib runtime DLLs noted above,
+  so it compiles rather than runs the suites.
+- **The Docker library lives in `vendor/lyric-docker`** (to be moved back to
+  `lyric-lang` core). It was rewritten from invalid syntax (`pub val` fields, a
+  `pub object`, the non-existent `|>` operator, wrong stdlib API) to proper
+  Lyric, given an opaque `DockerClient` so no extern type crosses the package
+  boundary, and extended with the container lifecycle the runner needs
+  (`defaultClient`, `createContainer`, `start`/`stop`/`removeContainer`,
+  `getContainerLogs`). `src/docker_manager.l` compiles against it.
 - The `dto*` / `findTimeZone` helpers in `lyric-stdlib`'s `Std.Time` leak extern
-  types (`DateTimeOffset`, `TimeZone`) across the contract boundary, which breaks
+  types (`DateTimeOffset`, `TimeZone`) across the contract boundary, breaking
   downstream contract synthesis (`unknown type name 'DateTimeOffset'`) for any
-  package that restores `Lyric.Stdlib` — including the rewritten `lyric-docker`.
-  Fix in `patches/lyric-stdlib-datetimeoffset-leak.patch` (demotes the four
-  helpers to package-private).
+  package that restores `Lyric.Stdlib`. Fixed by
+  `patches/lyric-stdlib-datetimeoffset-leak.patch` (applied by `build-full.sh`).
+- **Transport caveat:** `Std.Http.sendAsync` does not take a client, so the
+  unix-socket client returned by `makeDockerClient` is not yet used for
+  transport — the `DockerClient` is threaded through for API stability. Requests
+  will route correctly once the stdlib exposes a client-aware send.
 - **Two compiler bugs** surfaced while fixing the above (compiler issues, not
   library bugs): `await`ing a cross-package user-defined `async` function crashes
   codegen (`emitPhaseBAwait`), and exposing an extern type in a public signature
-  breaks contract synthesis. Both are worked around in the docker rewrite.
-- **Remaining cloud-agents-side gap:** `src/docker_manager.l` calls a Docker API
-  (`defaultClient`, `createContainer`, `startContainer`, `getContainerLogs`, …)
-  that the placeholder `lyric-docker` does not provide — it offers
-  `makeDockerClient`/`ping`/`systemInfo`/`listContainers`/`listImages` over an
-  opaque `DockerClient`. Reconciling these is separate from the syntax fix.
+  breaks contract synthesis. Both are worked around in the Docker library.

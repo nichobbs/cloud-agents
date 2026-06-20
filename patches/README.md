@@ -1,47 +1,34 @@
 # Upstream patches for `lyric-lang`
 
-These patches fix the `lyric-lang` workspace libraries this project depends on.
-They are kept here because the fixes live in the separate `nichobbs/lyric-lang`
-repository; apply them there (as a sibling clone — see `docs/BUILD.md`).
+These patch the `lyric-lang` workspace this project depends on, for fixes that
+live in the separate `nichobbs/lyric-lang` repo. Apply against a sibling clone
+(see `docs/BUILD.md`); `scripts/build-full.sh` applies them automatically.
 
-Apply from the root of a `lyric-lang` checkout:
+## The Docker library now lives in `vendor/lyric-docker`
 
-```sh
-cd ../lyric-lang
-git apply ../cloud-agents/patches/lyric-stdlib-datetimeoffset-leak.patch
-git apply ../cloud-agents/patches/lyric-docker-proper-syntax.patch
-```
-
-Then rebuild the dependency chain (see `docs/BUILD.md`).
-
-## `lyric-docker-proper-syntax.patch`
-
-Rewrites `lyric-docker` (packages `Lyric.Docker`, `Lyric.Docker.Api`,
-`Lyric.Docker.Sockets`) from invalid syntax to proper Lyric so it builds and its
-contract synthesises for downstream consumers. Verified with `lyric build` on
-compiler v0.2.4.
+The `lyric-docker` rewrite (proper syntax) **and** the new container operations
+have been copied into this repo at `vendor/lyric-docker` so they can be
+developed here, to be moved back into `lyric-lang` core later. That directory —
+not a patch — is the source of truth for the Docker library.
+`scripts/build-full.sh` drops it into the workspace's `lyric-docker` before
+building. What the rewrite fixed:
 
 - **Invalid syntax removed:** `pub val` record fields → `pub` fields; a
   `pub object { pub val … }` namespace → plain `pub func` accessors; the `|>`
-  pipe operator (12 sites, not a Lyric operator) → `match`/`unwrapResult`.
-- **Wrong stdlib API → correct calls:** `Std.Environment.getOpt` → `getVar`
-  (`Result`); error cases (`ConnectionFailed`/`BadStatus`/`InvalidUrl`/
-  `HttpError`) imported from `Std.Errors`, not `Std.Http`; `ioErr.message` →
-  `IOError.message(ioErr)`; `!x` → `not x`; removed an unsupported default
-  parameter value.
+  pipe operator (not a Lyric operator) → `match`/`unwrapResult`.
+- **Wrong stdlib API → correct calls:** `Std.Environment.getOpt` → `getVar`;
+  error cases from `Std.Errors`, not `Std.Http`; `ioErr.message` →
+  `IOError.message(ioErr)`; `!x` → `not x`; removed an unsupported default param.
 - **Boundary design:** the public API exposed the extern
-  `System.Net.Http.HttpClient`, which breaks downstream contract synthesis.
-  Wrapped it in an opaque `DockerClient` handle so no extern type crosses the
-  package boundary.
+  `System.Net.Http.HttpClient`. Wrapped it in an opaque `DockerClient` handle so
+  no extern type crosses the package boundary.
+- **New:** `defaultClient`, `createContainer`, `start`/`stop`/`removeContainer`,
+  `getContainerLogs` — the container lifecycle `src/docker_manager.l` needs.
 
-Two compiler bugs were worked around (these are compiler issues, not lib syntax;
-worth reporting upstream):
-
-1. `await`ing a cross-package user-defined `async` function crashes codegen
-   (`emitPhaseBAwait`). Worked around by inlining `systemInfo`'s HTTP call so
-   every `await` targets a stdlib async function.
-2. Exposing an extern type in a public signature breaks contract synthesis
-   (same class as the `DateTimeOffset` leak below).
+Two compiler bugs were worked around (compiler issues, not lib syntax; worth
+reporting upstream): `await`ing a cross-package user-defined `async` function
+crashes codegen (`emitPhaseBAwait`), and exposing an extern type in a public
+signature breaks contract synthesis.
 
 ## `lyric-stdlib-datetimeoffset-leak.patch`
 

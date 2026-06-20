@@ -49,9 +49,15 @@ jobs:
             python3 -m json.tool "$f" > /dev/null && echo "ok: $f"
           done
 
-      # Build the Docker-independent Lyric packages and runtime-verify the SSE
-      # framing. verify.sh clones the lyric-lang workspace as needed. The full
-      # web+docker server is not built here because lyric-docker does not
-      # compile under the published compiler (see docs/BUILD.md).
-      - name: Build & verify Lyric packages
+      # Runtime-verify the Docker-independent logic (SSE framing + Phase 2/3
+      # state machine, recycling, auth). verify.sh clones the lyric-lang
+      # workspace as needed.
+      - name: Verify Lyric logic (runtime)
         run: ./scripts/verify.sh
+
+      # Build the *entire* server — API + Web + the in-repo Docker library —
+      # inside the lyric-lang workspace. Compiles all 7 packages; running the
+      # @test_module suites additionally needs the stdlib runtime DLLs that the
+      # standalone install omits (see docs/BUILD.md).
+      - name: Build full server
+        run: ./scripts/build-full.sh

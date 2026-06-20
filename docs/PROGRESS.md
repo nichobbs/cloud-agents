@@ -3,6 +3,13 @@
 Status of each phase against its deliverables. See `docs/phaseN-*.md` for the
 design of each phase and `docs/BUILD.md` for build/verification notes.
 
+> **Build status:** the entire server now compiles end-to-end (all 7 packages,
+> API + Web + the in-repo Docker library) via `scripts/build-full.sh`, run in
+> CI. The Docker library was rewritten to proper Lyric and extended with the
+> container lifecycle, and now lives at `vendor/lyric-docker`. Running the
+> `@test_module` suites still needs stdlib runtime DLLs the standalone install
+> omits; runtime checks go through `scripts/verify.sh`.
+
 ## Phase 1 — Core Loop ✅ complete
 
 | Deliverable | Status | Where |
