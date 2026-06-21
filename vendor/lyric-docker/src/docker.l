@@ -5,8 +5,7 @@
 //! Result[T, DockerError].
 //!
 //! The connection is exposed as the opaque `DockerClient` handle so the
-//! underlying `System.Net.Http.HttpClient` extern type never crosses the
-//! package boundary (which would break downstream contract synthesis).
+//! underlying transport never crosses the package boundary.
 //!
 //! ```lyric
 //! val client = Docker.makeDockerClient()
@@ -22,12 +21,11 @@ import Lyric.Docker.Sockets
 import Std.Core
 import Std.Errors
 import Std.Http
-import Std.HttpHost
 
 /// Opaque handle to a Docker daemon connection. Wraps the underlying HTTP
 /// client so callers never touch the extern transport type.
 pub opaque type DockerClient {
-  handle: Std.HttpHost.HttpClient
+  handle: Std.Http.HttpClient
 }
 
 /// Docker error type — encapsulates HTTP errors with Docker-specific context.
@@ -82,7 +80,7 @@ pub func makeDockerClientAt(socketPath: in String): DockerClient
 /// Ping the Docker daemon to verify connectivity.
 pub async func ping(client: in DockerClient): Result[String, DockerError] {
   val url = unwrapResult(Std.Http.Url.tryFrom("http://docker/v1.40/ping"))
-  val sent = await Std.Http.sendAsync(Std.Http.request(Std.Http.GET, url))
+  val sent = await client.handle.send(Std.Http.request(Std.Http.GET, url))
   val response = match sent {
     case Err(e) -> return Err(error = fromHttpError(e, ""))
     case Ok(r) -> r
@@ -111,7 +109,7 @@ pub async func ping(client: in DockerClient): Result[String, DockerError] {
 /// Get Docker system information (JSON-formatted).
 pub async func systemInfo(client: in DockerClient): Result[String, DockerError] {
   val url = unwrapResult(Std.Http.Url.tryFrom("http://docker/v1.40/info"))
-  val sent = await Std.Http.sendAsync(Std.Http.request(Std.Http.GET, url))
+  val sent = await client.handle.send(Std.Http.request(Std.Http.GET, url))
   val response = match sent {
     case Err(e) -> return Err(error = fromHttpError(e, ""))
     case Ok(r) -> r
@@ -147,7 +145,7 @@ pub async func systemInfo(client: in DockerClient): Result[String, DockerError] 
 /// List all containers (Phase 1 placeholder: returns the JSON array).
 pub async func listContainers(client: in DockerClient): Result[String, DockerError] {
   val url = unwrapResult(Std.Http.Url.tryFrom("http://docker/v1.40/containers/json"))
-  val sent = await Std.Http.sendAsync(Std.Http.request(Std.Http.GET, url))
+  val sent = await client.handle.send(Std.Http.request(Std.Http.GET, url))
   val response = match sent {
     case Err(e) -> return Err(error = fromHttpError(e, ""))
     case Ok(r) -> r
@@ -183,7 +181,7 @@ pub async func listContainers(client: in DockerClient): Result[String, DockerErr
 /// List all images (Phase 1 placeholder: returns the JSON array).
 pub async func listImages(client: in DockerClient): Result[String, DockerError] {
   val url = unwrapResult(Std.Http.Url.tryFrom("http://docker/v1.40/images/json"))
-  val sent = await Std.Http.sendAsync(Std.Http.request(Std.Http.GET, url))
+  val sent = await client.handle.send(Std.Http.request(Std.Http.GET, url))
   val response = match sent {
     case Err(e) -> return Err(error = fromHttpError(e, ""))
     case Ok(r) -> r
@@ -222,12 +220,6 @@ pub async func listImages(client: in DockerClient): Result[String, DockerError] 
 // with env + volume binds, start/stop/remove it, and fetch its logs. Bodies are
 // built as JSON by hand (no reflection); responses are parsed with a small
 // field scanner.
-//
-// NOTE: `Std.Http.sendAsync` does not currently accept a client, so requests go
-// through the default HTTP client rather than the unix-socket client returned by
-// `makeDockerClient`. The `DockerClient` parameter is therefore threaded through
-// for API stability but not yet used for transport — tracked for when the stdlib
-// exposes a client-aware send.
 
 /// Default Docker connection (honours DOCKER_HOST, else the standard socket).
 pub func defaultClient(): DockerClient {
@@ -332,9 +324,14 @@ func extractJsonField(json: in String, field: in String): String {
 }
 
 /// Send a request expecting only success/failure (no useful body on success).
-async func sendExpectSuccess(urlStr: in String, method: in Std.Http.HttpMethod, failMsg: in String): Result[Unit, DockerError] {
+async func sendExpectSuccess(
+  client: in DockerClient,
+  urlStr: in String,
+  method: in Std.Http.HttpMethod,
+  failMsg: in String,
+): Result[Unit, DockerError] {
   val url = unwrapResult(Std.Http.Url.tryFrom(urlStr))
-  val sent = await Std.Http.sendAsync(Std.Http.request(method, url))
+  val sent = await client.handle.send(Std.Http.request(method, url))
   val response = match sent {
     case Err(e) -> return Err(error = fromHttpError(e, ""))
     case Ok(r) -> r
@@ -363,7 +360,7 @@ pub async func createContainer(
 ): Result[String, DockerError] {
   val url = unwrapResult(Std.Http.Url.tryFrom("http://docker/v1.40/containers/create"))
   val request = Std.Http.withJsonBody(Std.Http.request(Std.Http.POST, url), createContainerBody(image, env, binds))
-  val sent = await Std.Http.sendAsync(request)
+  val sent = await client.handle.send(request)
   val response = match sent {
     case Err(e) -> return Err(error = fromHttpError(e, ""))
     case Ok(r) -> r
@@ -401,6 +398,7 @@ pub async func startContainer(client: in DockerClient, containerId: in String): 
   requires: containerId.length > 0
 {
   await sendExpectSuccess(
+    client,
     "http://docker/v1.40/containers/" + containerId + "/start",
     Std.Http.POST,
     "Start container failed"
@@ -412,6 +410,7 @@ pub async func stopContainer(client: in DockerClient, containerId: in String): R
   requires: containerId.length > 0
 {
   await sendExpectSuccess(
+    client,
     "http://docker/v1.40/containers/" + containerId + "/stop",
     Std.Http.POST,
     "Stop container failed"
@@ -423,6 +422,7 @@ pub async func removeContainer(client: in DockerClient, containerId: in String):
   requires: containerId.length > 0
 {
   await sendExpectSuccess(
+    client,
     "http://docker/v1.40/containers/" + containerId + "?force=true",
     Std.Http.DELETE,
     "Remove container failed"
@@ -435,7 +435,7 @@ pub async func getContainerLogs(client: in DockerClient, containerId: in String)
 {
   val urlStr = "http://docker/v1.40/containers/" + containerId + "/logs?stdout=true&stderr=true"
   val url = unwrapResult(Std.Http.Url.tryFrom(urlStr))
-  val sent = await Std.Http.sendAsync(Std.Http.request(Std.Http.GET, url))
+  val sent = await client.handle.send(Std.Http.request(Std.Http.GET, url))
   val response = match sent {
     case Err(e) -> return Err(error = fromHttpError(e, ""))
     case Ok(r) -> r
