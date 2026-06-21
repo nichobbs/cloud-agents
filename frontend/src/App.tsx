@@ -4,6 +4,7 @@ import { SessionsProvider } from './context/SessionsContext';
 import { NewSession } from './pages/NewSession';
 import { SessionDetail } from './pages/SessionDetail';
 import { SessionList } from './pages/SessionList';
+import { Todos } from './pages/Todos';
 
 export function App() {
   return (
@@ -15,6 +16,7 @@ export function App() {
           <Route path="/sessions" element={<SessionList />} />
           <Route path="/sessions/new" element={<NewSession />} />
           <Route path="/sessions/:id" element={<SessionDetail />} />
+          <Route path="/sessions/:id/todos" element={<Todos />} />
         </Routes>
       </Router>
     </SessionsProvider>

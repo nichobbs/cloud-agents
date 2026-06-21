@@ -256,3 +256,154 @@ pub func recoverDanglingSessionsSql(): String {
   return "UPDATE sessions SET status = 'IDLE', container_id = '' " +
     "WHERE status = 'RUNNING' OR status = 'WARM'"
 }
+
+// ─── Conversation transcript, comments and todos ───────────────────────────────
+//
+// These tables back the "addressable agent responses" feature: each user
+// prompt and each agent reply is stored as a `messages` row with a stable id,
+// so comments and todo items can link back to a specific point in the run.
+//
+// The lyric-db parameter binding used for `sessions` above is not available
+// through the minimal CloudAgents.Sqlite driver, so statements that take values
+// are assembled here with `sqlLiteral` escaping. Every column is declared with
+// TEXT affinity so the driver can read each one with `GetString`.
+
+/// Quote and escape a value as a SQLite single-quoted string literal. The only
+/// metacharacter inside a single-quoted SQLite string is `'`, which is escaped
+/// by doubling it — this is injection-safe for any text interpolated into a
+/// quoted literal position.
+pub func sqlLiteral(s: in String): String {
+  var acc = "'"
+  var i = 0
+  while i < s.length {
+    val c = s.substring(i, 1)
+    if c == "'" {
+      acc = acc + "''"
+    } else {
+      acc = acc + c
+    }
+    i = i + 1
+  }
+  return acc + "'"
+}
+
+/// Left-pad a sequence number to a fixed width so lexical ordering on the TEXT
+/// `seq` column matches numeric ordering.
+pub func padSeq(n: in Int): String {
+  var s = toString(n)
+  while s.length < 12 {
+    s = "0" + s
+  }
+  return s
+}
+
+/// DDL for the conversation transcript. `role` is 'user' or 'agent'; `seq` is a
+/// zero-padded monotonic counter within a session.
+pub func messagesSchemaSql(): String {
+  return "CREATE TABLE IF NOT EXISTS messages (" +
+    "id TEXT PRIMARY KEY, " +
+    "session_id TEXT NOT NULL, " +
+    "role TEXT NOT NULL, " +
+    "content TEXT NOT NULL, " +
+    "seq TEXT NOT NULL, " +
+    "created_at TEXT NOT NULL)"
+}
+
+/// DDL for comments attached to a specific message.
+pub func commentsSchemaSql(): String {
+  return "CREATE TABLE IF NOT EXISTS comments (" +
+    "id TEXT PRIMARY KEY, " +
+    "message_id TEXT NOT NULL, " +
+    "session_id TEXT NOT NULL, " +
+    "body TEXT NOT NULL, " +
+    "created_at TEXT NOT NULL)"
+}
+
+/// DDL for todo / bookmark items. `message_id` links back to the source message
+/// (empty string when a todo is not anchored to a message). `done` is '0'/'1'.
+pub func todosSchemaSql(): String {
+  return "CREATE TABLE IF NOT EXISTS todos (" +
+    "id TEXT PRIMARY KEY, " +
+    "session_id TEXT NOT NULL, " +
+    "message_id TEXT NOT NULL, " +
+    "note TEXT NOT NULL, " +
+    "done TEXT NOT NULL, " +
+    "created_at TEXT NOT NULL)"
+}
+
+/// INSERT one transcript message with all values inlined as escaped literals.
+pub func insertMessageSql(
+  id: in String,
+  sessionId: in String,
+  role: in String,
+  content: in String,
+  seq: in String,
+  createdAt: in String
+): String {
+  return "INSERT INTO messages (id, session_id, role, content, seq, created_at) VALUES (" +
+    sqlLiteral(id) + ", " + sqlLiteral(sessionId) + ", " + sqlLiteral(role) + ", " +
+    sqlLiteral(content) + ", " + sqlLiteral(seq) + ", " + sqlLiteral(createdAt) + ")"
+}
+
+/// SELECT a session's transcript, oldest first. Column order matches the
+/// mapping in CloudAgents.Repository.
+pub func selectMessagesSql(sessionId: in String): String {
+  return "SELECT id, session_id, role, content, seq, created_at FROM messages " +
+    "WHERE session_id = " + sqlLiteral(sessionId) + " ORDER BY seq ASC"
+}
+
+/// COUNT messages in a session, cast to TEXT so the driver can read it with
+/// GetString. Used to compute the next `seq`.
+pub func countMessagesSql(sessionId: in String): String {
+  return "SELECT CAST(COUNT(*) AS TEXT) FROM messages WHERE session_id = " +
+    sqlLiteral(sessionId)
+}
+
+/// INSERT a comment on a message.
+pub func insertCommentSql(
+  id: in String,
+  messageId: in String,
+  sessionId: in String,
+  body: in String,
+  createdAt: in String
+): String {
+  return "INSERT INTO comments (id, message_id, session_id, body, created_at) VALUES (" +
+    sqlLiteral(id) + ", " + sqlLiteral(messageId) + ", " + sqlLiteral(sessionId) + ", " +
+    sqlLiteral(body) + ", " + sqlLiteral(createdAt) + ")"
+}
+
+/// SELECT comments on a message, oldest first.
+pub func selectCommentsSql(messageId: in String): String {
+  return "SELECT id, message_id, session_id, body, created_at FROM comments " +
+    "WHERE message_id = " + sqlLiteral(messageId) + " ORDER BY created_at ASC"
+}
+
+/// INSERT a todo / bookmark.
+pub func insertTodoSql(
+  id: in String,
+  sessionId: in String,
+  messageId: in String,
+  note: in String,
+  createdAt: in String
+): String {
+  return "INSERT INTO todos (id, session_id, message_id, note, done, created_at) VALUES (" +
+    sqlLiteral(id) + ", " + sqlLiteral(sessionId) + ", " + sqlLiteral(messageId) + ", " +
+    sqlLiteral(note) + ", '0', " + sqlLiteral(createdAt) + ")"
+}
+
+/// SELECT all todos for a session, newest first.
+pub func selectTodosSql(sessionId: in String): String {
+  return "SELECT id, session_id, message_id, note, done, created_at FROM todos " +
+    "WHERE session_id = " + sqlLiteral(sessionId) + " ORDER BY created_at DESC"
+}
+
+/// Toggle a todo's done flag by id.
+pub func toggleTodoSql(id: in String): String {
+  return "UPDATE todos SET done = CASE done WHEN '1' THEN '0' ELSE '1' END WHERE id = " +
+    sqlLiteral(id)
+}
+
+/// DELETE a todo by id.
+pub func deleteTodoSql(id: in String): String {
+  return "DELETE FROM todos WHERE id = " + sqlLiteral(id)
+}

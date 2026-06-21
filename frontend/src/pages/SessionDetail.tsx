@@ -1,19 +1,48 @@
-import { useRef, useState } from 'react';
-import { useNavigate, useParams } from 'react-router-dom';
+import { useCallback, useEffect, useRef, useState } from 'react';
+import { Link, useLocation, useNavigate, useParams } from 'react-router-dom';
+import { MessageBlock } from '../components/MessageBlock';
 import { Terminal } from '../components/Terminal';
 import { useSessions } from '../context/SessionsContext';
 import { useStreamMessage } from '../hooks/useStreamMessage';
 import { api } from '../lib/api';
+import type { Message } from '../types';
 
 export function SessionDetail() {
   const { id } = useParams<{ id: string }>();
+  const sessionId = id ?? '';
   const { getSession, removeSession } = useSessions();
   const navigate = useNavigate();
-  const session = getSession(id ?? '');
-  const { output, isStreaming, send } = useStreamMessage(id ?? '');
+  const location = useLocation();
+  const session = getSession(sessionId);
+  const { output, isStreaming, send, reset } = useStreamMessage(sessionId);
+
+  const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState('');
   const [deleting, setDeleting] = useState(false);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+
+  const highlightedId = location.hash.startsWith('#message-')
+    ? location.hash.slice('#message-'.length)
+    : null;
+
+  const reload = useCallback(async () => {
+    try {
+      setMessages(await api.getMessages(sessionId));
+    } catch {
+      // transcript may be empty or unavailable; leave as-is
+    }
+  }, [sessionId]);
+
+  useEffect(() => {
+    void reload();
+  }, [reload]);
+
+  // Deep-link: scroll to the message referenced by the URL hash once loaded.
+  useEffect(() => {
+    if (!highlightedId || messages.length === 0) return;
+    const el = document.getElementById(`message-${highlightedId}`);
+    el?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+  }, [highlightedId, messages]);
 
   if (!session) {
     return (
@@ -39,6 +68,8 @@ export function SessionDetail() {
     if (!text || isStreaming) return;
     setInput('');
     await send(text);
+    await reload();
+    reset();
     textareaRef.current?.focus();
   };
 
@@ -74,16 +105,41 @@ export function SessionDetail() {
             </span>
           </div>
         </div>
-        <button
-          style={deleteBtnStyle}
-          onClick={() => { void handleDelete(); }}
-          disabled={deleting}
-        >
-          {deleting ? 'Deleting…' : 'Delete session'}
-        </button>
+        <div style={{ display: 'flex', gap: '8px', flexShrink: 0 }}>
+          <Link to={`/sessions/${sessionId}/todos`} style={todosBtnStyle}>
+            Todos
+          </Link>
+          <button
+            style={deleteBtnStyle}
+            onClick={() => { void handleDelete(); }}
+            disabled={deleting}
+          >
+            {deleting ? 'Deleting…' : 'Delete'}
+          </button>
+        </div>
       </div>
 
-      <Terminal output={output} isStreaming={isStreaming} />
+      <div style={transcriptStyle}>
+        {messages.length === 0 && !isStreaming && (
+          <div style={emptyStyle}>
+            No messages yet — send a prompt below to start the session.
+          </div>
+        )}
+        {messages.map(m => (
+          <MessageBlock
+            key={m.id}
+            message={m}
+            highlighted={m.id === highlightedId}
+            onTodoAdded={() => { /* todos live on their own page */ }}
+          />
+        ))}
+        {isStreaming && (
+          <div style={liveWrapStyle}>
+            <div style={liveLabelStyle}>running…</div>
+            <Terminal output={output} isStreaming={isStreaming} />
+          </div>
+        )}
+      </div>
 
       <div style={inputRowStyle}>
         <textarea
@@ -140,6 +196,43 @@ const metaStyle: React.CSSProperties = {
   color: '#8b949e',
 };
 
+const transcriptStyle: React.CSSProperties = {
+  display: 'flex',
+  flexDirection: 'column',
+  gap: '12px',
+  flex: 1,
+};
+
+const emptyStyle: React.CSSProperties = {
+  color: '#6e7681',
+  fontSize: '14px',
+  textAlign: 'center',
+  padding: '32px',
+};
+
+const liveWrapStyle: React.CSSProperties = {
+  display: 'flex',
+  flexDirection: 'column',
+  gap: '6px',
+};
+
+const liveLabelStyle: React.CSSProperties = {
+  fontSize: '11px',
+  color: '#56d364',
+  textTransform: 'uppercase',
+  letterSpacing: '0.04em',
+};
+
+const todosBtnStyle: React.CSSProperties = {
+  padding: '5px 12px',
+  background: '#21262d',
+  color: '#c9d1d9',
+  border: '1px solid #30363d',
+  borderRadius: '6px',
+  fontSize: '13px',
+  textDecoration: 'none',
+};
+
 const deleteBtnStyle: React.CSSProperties = {
   padding: '5px 12px',
   background: 'transparent',
@@ -148,7 +241,6 @@ const deleteBtnStyle: React.CSSProperties = {
   borderRadius: '6px',
   fontSize: '13px',
   cursor: 'pointer',
-  flexShrink: 0,
 };
 
 const inputRowStyle: React.CSSProperties = {
