@@ -1,0 +1,34 @@
+diff --git a/lyric-stdlib/std/time.l b/lyric-stdlib/std/time.l
+index 152f169..389023e 100644
+--- a/lyric-stdlib/std/time.l
++++ b/lyric-stdlib/std/time.l
+@@ -129,17 +129,17 @@ pub func addDays(t: in Instant, n: in Double): Instant {
+ // the conversion as a one-call operation.
+ // =====================================================================
+ @stable(since = "1.0")
+-pub func dtoFromEpochMillis(n: in Long): DateTimeOffset {
++func dtoFromEpochMillis(n: in Long): DateTimeOffset {
+   hostDtoFromEpochMillis(n)
+ }
+ 
+ @stable(since = "1.0")
+-pub func dtoFromEpochSeconds(n: in Long): DateTimeOffset {
++func dtoFromEpochSeconds(n: in Long): DateTimeOffset {
+   hostDtoFromEpochSeconds(n)
+ }
+ 
+ @stable(since = "1.0")
+-pub func dtoUtcDateTime(d: in DateTimeOffset): Instant {
++func dtoUtcDateTime(d: in DateTimeOffset): Instant {
+   hostDtoUtcDateTime(d)
+ }
+ 
+@@ -170,7 +170,7 @@ pub func fromEpochSeconds(n: in Long): Instant {
+ // (UTC <-> zoned, DST detection) wait until programs need them.
+ // =====================================================================
+ @stable(since = "1.0")
+-pub func findTimeZone(id: in String): TimeZone {
++func findTimeZone(id: in String): TimeZone {
+   hostFindTimeZone(id)
+ }
+ 

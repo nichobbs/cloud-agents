@@ -1,0 +1,54 @@
+# lyric-docker — Type-safe Docker API client for Lyric.
+#
+# Provides a high-level Docker client for container, image, and volume operations.
+# Connects to the Docker daemon via Unix domain sockets (/var/run/docker.sock)
+# on Linux/macOS or named pipes on Windows.
+#
+# The API bindings are generated from Docker's OpenAPI 3.x specification using
+# the `lyric openapi` tool. See src/docker_api.l for the generated client.
+#
+# See docs/35-docker-client-sketch.md (planned).
+
+[package]
+name        = "Lyric.Docker"
+version     = "0.1.0"
+description = "Type-safe Docker API client with Unix socket and named pipe support."
+authors     = ["Lyric authors"]
+license     = "Apache-2.0"
+
+[features]
+default = ["dotnet"]
+# .NET target with Unix socket and named pipe support.
+dotnet = []
+# JVM target with Unix socket support via Java 16+ UnixDomainSocketAddress.
+jvm    = []
+
+[project]
+name            = "Lyric.Docker"
+output          = "single"
+output_assembly = "Docker.dll"
+
+[project.packages]
+# Docker API client (generated from OpenAPI spec).
+"Lyric.Docker.Api"      = "src/docker_api.l"
+# Convenience wrappers and helpers for common operations.
+"Lyric.Docker"          = "src/docker.l"
+# Connection helpers for Unix sockets and named pipes.
+"Lyric.Docker.Sockets"  = "src/sockets.l"
+
+[project.tests]
+# Integration tests require a running Docker daemon.
+# Run with: lyric test --manifest lyric-docker/lyric.toml
+# (Disabled by default; enable in CI with DOCKER_AVAILABLE=1)
+# "Docker.IntegrationTests" = "tests/integration_tests.l"
+
+[dependencies]
+# Core HTTP client (Unix socket support required).
+"Lyric.Stdlib"    = { workspace = true }
+
+[nuget]
+# No additional dependencies; uses System.Net.Http from the .NET SDK.
+# Unix sockets are available via System.Net.Sockets.UnixDomainSocketEndPoint (net5.0+).
+
+[maven]
+# JVM target uses java.net.UnixDomainSocketAddress (Java 16+).
