@@ -1,5 +1,7 @@
 /// <reference types="vite/client" />
 
+import type { Comment, Message, Todo } from '../types';
+
 const BASE = (import.meta.env['VITE_API_URL'] as string | undefined) ?? '';
 
 function authHeaders(): HeadersInit {
@@ -30,6 +32,7 @@ export const api = {
     sessionId: string,
     text: string,
     onChunk: (chunk: string) => void,
+    onDone?: (messageId: string) => void,
   ): Promise<void> => {
     const res = await fetch(`${BASE}/api/sessions/${sessionId}/messages`, {
       method: 'POST',
@@ -59,7 +62,17 @@ export const api = {
           if (line.startsWith('event:')) eventType = line.slice(6).trim();
           else if (line.startsWith('data:')) dataStr += line.slice(5).trim();
         }
-        if (eventType === 'done') return;
+        if (eventType === 'done') {
+          if (onDone && dataStr) {
+            try {
+              const parsed = JSON.parse(dataStr) as { messageId?: string };
+              if (parsed.messageId) onDone(parsed.messageId);
+            } catch {
+              // no message id in the done frame — fine
+            }
+          }
+          return;
+        }
         if (!dataStr) continue;
         try {
           const parsed = JSON.parse(dataStr) as { chunk?: string };
@@ -69,5 +82,74 @@ export const api = {
         }
       }
     }
+  },
+
+  // ─── Transcript ──────────────────────────────────────────────────────────────
+
+  getMessages: async (sessionId: string): Promise<Message[]> => {
+    const res = await fetch(`${BASE}/api/sessions/${sessionId}/messages`, {
+      headers: authHeaders(),
+    });
+    if (!res.ok) throw new Error(`${res.status} ${await res.text()}`);
+    const body = (await res.json()) as { messages?: Message[] };
+    return body.messages ?? [];
+  },
+
+  // ─── Comments ────────────────────────────────────────────────────────────────
+
+  getComments: async (messageId: string): Promise<Comment[]> => {
+    const res = await fetch(`${BASE}/api/messages/${messageId}/comments`, {
+      headers: authHeaders(),
+    });
+    if (!res.ok) throw new Error(`${res.status} ${await res.text()}`);
+    const body = (await res.json()) as { comments?: Comment[] };
+    return body.comments ?? [];
+  },
+
+  addComment: async (messageId: string, sessionId: string, body: string): Promise<Comment> => {
+    const res = await fetch(`${BASE}/api/messages/${messageId}/comments`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', ...authHeaders() },
+      body: JSON.stringify({ sessionId, body }),
+    });
+    if (!res.ok) throw new Error(`${res.status} ${await res.text()}`);
+    return res.json() as Promise<Comment>;
+  },
+
+  // ─── Todos / bookmarks ───────────────────────────────────────────────────────
+
+  getTodos: async (sessionId: string): Promise<Todo[]> => {
+    const res = await fetch(`${BASE}/api/sessions/${sessionId}/todos`, {
+      headers: authHeaders(),
+    });
+    if (!res.ok) throw new Error(`${res.status} ${await res.text()}`);
+    const body = (await res.json()) as { todos?: Todo[] };
+    return body.todos ?? [];
+  },
+
+  addTodo: async (sessionId: string, messageId: string, note: string): Promise<Todo> => {
+    const res = await fetch(`${BASE}/api/sessions/${sessionId}/todos`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', ...authHeaders() },
+      body: JSON.stringify({ messageId, note }),
+    });
+    if (!res.ok) throw new Error(`${res.status} ${await res.text()}`);
+    return res.json() as Promise<Todo>;
+  },
+
+  toggleTodo: async (todoId: string): Promise<void> => {
+    const res = await fetch(`${BASE}/api/todos/${todoId}/toggle`, {
+      method: 'POST',
+      headers: authHeaders(),
+    });
+    if (!res.ok) throw new Error(`${res.status} ${await res.text()}`);
+  },
+
+  deleteTodo: async (todoId: string): Promise<void> => {
+    const res = await fetch(`${BASE}/api/todos/${todoId}`, {
+      method: 'DELETE',
+      headers: authHeaders(),
+    });
+    if (!res.ok) throw new Error(`${res.status} ${await res.text()}`);
   },
 };

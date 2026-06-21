@@ -6,6 +6,7 @@ export interface StreamState {
   isStreaming: boolean;
   error: string | null;
   send: (text: string) => Promise<void>;
+  reset: () => void;
 }
 
 export function useStreamMessage(sessionId: string): StreamState {
@@ -42,5 +43,10 @@ export function useStreamMessage(sessionId: string): StreamState {
     [sessionId],
   );
 
-  return { output, isStreaming, error, send };
+  const reset = useCallback(() => {
+    setOutput('');
+    setError(null);
+  }, []);
+
+  return { output, isStreaming, error, send, reset };
 }

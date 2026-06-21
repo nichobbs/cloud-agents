@@ -67,3 +67,38 @@ test "Volume names key by user and session" {
   assertEqual(workspaceVolumeName("42", "abc"), "session-42-abc", "workspace volume")
   assertEqual(homeVolumeName("42"), "user-42-home", "home volume")
 }
+
+test "sqlLiteral wraps and escapes single quotes" {
+  assertEqual(sqlLiteral("hi"), "'hi'", "plain value wrapped")
+  assertEqual(sqlLiteral("it's"), "'it''s'", "single quote doubled")
+  assertEqual(sqlLiteral(""), "''", "empty value")
+}
+
+test "padSeq zero-pads to a fixed width" {
+  assertEqual(padSeq(0), "000000000000", "zero")
+  assertEqual(padSeq(42), "000000000042", "small number")
+  assertEqual(padSeq(7), "000000000007", "single digit")
+}
+
+test "message SQL builders inline escaped values" {
+  val sql = insertMessageSql("id1", "s1", "user", "he said 'hi'", "000000000000", "1000")
+  assertTrue(sql.startsWith("INSERT INTO messages"), "insert target")
+  assertTrue(sql.contains("'he said ''hi'''"), "content is escaped")
+  assertTrue(selectMessagesSql("s1").contains("ORDER BY seq ASC"), "transcript ordered by seq")
+  assertTrue(countMessagesSql("s1").contains("CAST(COUNT(*) AS TEXT)"), "count cast to text for GetString")
+}
+
+test "comment and todo SQL builders are scoped and escaped" {
+  assertTrue(insertCommentSql("c1", "m1", "s1", "body", "1").startsWith("INSERT INTO comments"), "comment insert")
+  assertTrue(selectCommentsSql("m1").contains("WHERE message_id = 'm1'"), "comments scoped to message")
+  assertTrue(insertTodoSql("t1", "s1", "m1", "note", "1").contains("'0'"), "new todo defaults to not done")
+  assertTrue(selectTodosSql("s1").contains("ORDER BY created_at DESC"), "todos newest first")
+  assertTrue(toggleTodoSql("t1").contains("CASE done"), "toggle flips done flag")
+  assertTrue(deleteTodoSql("t1").endsWith("'t1'"), "delete by id")
+}
+
+test "schema DDL is idempotent" {
+  assertTrue(messagesSchemaSql().contains("CREATE TABLE IF NOT EXISTS messages"), "messages ddl")
+  assertTrue(commentsSchemaSql().contains("CREATE TABLE IF NOT EXISTS comments"), "comments ddl")
+  assertTrue(todosSchemaSql().contains("CREATE TABLE IF NOT EXISTS todos"), "todos ddl")
+}

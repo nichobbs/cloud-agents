@@ -47,6 +47,12 @@ pub func sseDone(): String {
   return "event: done\ndata: {}\n\n"
 }
 
+/// Terminal SSE frame carrying the id of the persisted agent message, so the
+/// client can anchor comments and todos to this response.
+pub func sseDoneWithMessage(messageId: in String): String {
+  return "event: done\ndata: {\"messageId\":\"" + jsonEscape(messageId) + "\"}\n\n"
+}
+
 /// Convert a block of captured logs into an SSE stream body: one frame per
 /// line, terminated by a `done` event.
 ///
@@ -73,5 +79,30 @@ pub func formatLogsAsSse(logs: in String): String {
     acc = acc + toSseChunk(line)
   }
   acc = acc + sseDone()
+  return acc
+}
+
+/// Like `formatLogsAsSse`, but the terminal `done` frame carries the persisted
+/// agent message id (see CloudAgents.Repository.addMessage).
+pub func formatLogsAsSseWithId(logs: in String, messageId: in String): String {
+  var acc = ""
+  var line = ""
+  var i = 0
+  while i < logs.length {
+    val c = logs.substring(i, 1)
+    if c == "\n" {
+      acc = acc + toSseChunk(line)
+      line = ""
+    } else if c == "\r" {
+      // swallow CR so CRLF logs do not leave a trailing carriage return
+    } else {
+      line = line + c
+    }
+    i = i + 1
+  }
+  if line.length > 0 {
+    acc = acc + toSseChunk(line)
+  }
+  acc = acc + sseDoneWithMessage(messageId)
   return acc
 }

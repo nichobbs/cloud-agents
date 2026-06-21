@@ -5,6 +5,7 @@ import Web
 import CloudAgents.SessionStore
 import CloudAgents.Docker
 import CloudAgents.Streaming
+import CloudAgents.Repository
 
 import Std.Uuid
 
@@ -73,6 +74,13 @@ pub func sendMessage(
   }
   val session = maybeSession.unwrapOption()
 
+  // Persist the user's prompt as an addressable transcript message. Best-effort:
+  // a storage hiccup must not stop the agent from running.
+  match CloudAgents.Repository.addMessage(id, "user", req.text) {
+    case Ok(_)  -> ()
+    case Err(_) -> ()
+  }
+
   val runResult = CloudAgents.Docker.runSessionMessage(
     repoUrl = session.repoUrl,
     branch = session.branch,
@@ -84,8 +92,16 @@ pub func sendMessage(
   // one `data: {"chunk":"..."}` frame per line, then a `done` event. ANSI
   // colour codes are preserved in the payload and rendered on the frontend
   // with ansi_up (see docs/phase1-core-loop.md).
+  //
+  // The agent reply is persisted too; on success the `done` frame carries the
+  // stored message id so the client can attach comments/todos to this response.
   match runResult {
-    case Ok(logs) -> return Ok(value = CloudAgents.Streaming.formatLogsAsSse(logs))
+    case Ok(logs) -> {
+      match CloudAgents.Repository.addMessage(id, "agent", logs) {
+        case Ok(m)  -> return Ok(value = CloudAgents.Streaming.formatLogsAsSseWithId(logs, m.id))
+        case Err(_) -> return Ok(value = CloudAgents.Streaming.formatLogsAsSse(logs))
+      }
+    }
     case Err(err) -> return Err(Web.internalError("Failed to execute message: " + err))
   }
 }
