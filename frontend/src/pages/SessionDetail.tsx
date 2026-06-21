@@ -4,13 +4,14 @@ import { MessageBlock } from '../components/MessageBlock';
 import { Terminal } from '../components/Terminal';
 import { useSessions } from '../context/SessionsContext';
 import { useStreamMessage } from '../hooks/useStreamMessage';
+import { getHarness } from '../lib/harnesses';
 import { api } from '../lib/api';
 import type { Message } from '../types';
 
 export function SessionDetail() {
   const { id } = useParams<{ id: string }>();
   const sessionId = id ?? '';
-  const { getSession, removeSession } = useSessions();
+  const { getSession, removeSession, updateSession } = useSessions();
   const navigate = useNavigate();
   const location = useLocation();
   const session = getSession(sessionId);
@@ -19,6 +20,7 @@ export function SessionDetail() {
   const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState('');
   const [deleting, setDeleting] = useState(false);
+  const [modelSwitching, setModelSwitching] = useState(false);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
   const highlightedId = location.hash.startsWith('#message-')
@@ -80,6 +82,19 @@ export function SessionDetail() {
     }
   };
 
+  const handleModelChange = async (newModel: string) => {
+    if (!session || modelSwitching || isStreaming) return;
+    setModelSwitching(true);
+    try {
+      await api.updateSessionModel(session.sessionId, newModel);
+      updateSession(session.sessionId, { model: newModel });
+    } catch {
+      // best-effort; UI will stay on previous model selection
+    } finally {
+      setModelSwitching(false);
+    }
+  };
+
   const handleDelete = async () => {
     if (!confirm(`Delete session ${session.sessionId.slice(0, 8)}…?`)) return;
     setDeleting(true);
@@ -96,9 +111,27 @@ export function SessionDetail() {
     <div style={pageStyle}>
       <div style={headerStyle}>
         <div>
-          <div style={repoNameStyle}>{repoName}</div>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '4px' }}>
+            <div style={repoNameStyle}>{repoName}</div>
+            <span style={harnessBadgeStyle}>
+              {getHarness(session.harness ?? 'claude').label}
+            </span>
+          </div>
           <div style={metaStyle}>
             branch: <code style={{ color: '#79c0ff' }}>{session.branch}</code>
+            <span style={{ margin: '0 8px', color: '#30363d' }}>·</span>
+            model:{' '}
+            <select
+              style={modelSelectStyle}
+              value={session.model ?? ''}
+              onChange={e => { void handleModelChange(e.target.value); }}
+              disabled={modelSwitching || isStreaming}
+              title="Switch model (takes effect on next message)"
+            >
+              {getHarness(session.harness ?? 'claude').models.map(m => (
+                <option key={m.id} value={m.id}>{m.label}</option>
+              ))}
+            </select>
             <span style={{ margin: '0 8px', color: '#30363d' }}>·</span>
             <span style={{ fontFamily: 'monospace', fontSize: '11px' }}>
               {session.sessionId}
@@ -188,7 +221,28 @@ const repoNameStyle: React.CSSProperties = {
   fontSize: '16px',
   fontWeight: 600,
   color: '#c9d1d9',
-  marginBottom: '4px',
+};
+
+const harnessBadgeStyle: React.CSSProperties = {
+  fontSize: '11px',
+  fontWeight: 500,
+  color: '#8b949e',
+  background: '#21262d',
+  border: '1px solid #30363d',
+  borderRadius: '4px',
+  padding: '1px 6px',
+  whiteSpace: 'nowrap',
+};
+
+const modelSelectStyle: React.CSSProperties = {
+  background: 'transparent',
+  border: 'none',
+  color: '#79c0ff',
+  fontSize: '12px',
+  fontFamily: 'monospace',
+  cursor: 'pointer',
+  padding: 0,
+  outline: 'none',
 };
 
 const metaStyle: React.CSSProperties = {
