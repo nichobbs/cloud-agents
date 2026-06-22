@@ -56,6 +56,10 @@ cat > "$WS/lyric.toml" <<'TOML'
 [package]
 name = "CloudAgents"
 version = "0.1.0"
+[features]
+default = ["dotnet", "sqlite"]
+dotnet  = []
+sqlite  = []
 [project]
 name = "CloudAgents"
 output = "single"
