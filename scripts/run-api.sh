@@ -82,8 +82,8 @@ rm -rf "$WS"
 echo "==> built → $OUT"
 
 # ── 2. Run ──────────────────────────────────────────────────────────────────
+# Secrets (ENCRYPTION_KEY, CLOUD_AGENTS_WHITELIST) are read from the environment
+# by the .NET configuration system — do not pass them as CLI args where they
+# would be visible in process listings.
 echo "==> starting server on port ${PORT}"
-exec dotnet "$OUT" \
-  --urls "http://0.0.0.0:${PORT}" \
-  ${ENCRYPTION_KEY:+--EncryptionKey "$ENCRYPTION_KEY"} \
-  ${CLOUD_AGENTS_WHITELIST:+--Whitelist "$CLOUD_AGENTS_WHITELIST"}
+exec dotnet "$OUT" --urls "http://0.0.0.0:${PORT}"
