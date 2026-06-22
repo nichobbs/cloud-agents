@@ -18,6 +18,13 @@ pub func generateSessionId(): String {
 pub record CreateSessionRequest {
   pub repoUrl: String
   pub branch: String
+  pub harness: String
+  pub model: String
+}
+
+@generate(Json)
+pub record UpdateSessionRequest {
+  pub model: String
 }
 
 @generate(Json)
@@ -43,11 +50,16 @@ pub func createSession(
   }
 
   val sessionId = generateSessionId()
+  val harness = if req.harness.length == 0 { "claude" } else { req.harness }
+  val model = if req.model.length == 0 { CloudAgents.SessionStore.defaultModelForHarness(harness) } else { req.model }
   val session = makeAgentSession(
     sessionId = sessionId,
     repoUrl = req.repoUrl,
     branch = req.branch,
-    containerId = ""
+    containerId = "",
+    harness = harness,
+    model = model,
+    nativeSessionId = sessionId  // pre-assigned so every run gets a stable resume ID
   )
 
   addSession(session)
@@ -85,7 +97,10 @@ pub func sendMessage(
     repoUrl = session.repoUrl,
     branch = session.branch,
     prompt = req.text,
-    sessionId = id
+    sessionId = id,
+    harness = session.harness,
+    model = session.model,
+    nativeSessionId = session.nativeSessionId
   )
 
   // Frame the captured container output as a Server-Sent Events stream:
@@ -131,6 +146,27 @@ pub func deleteSession(
     case Ok(_) -> return Ok(())
     case Err(err) -> return Err(Web.internalError("Failed to terminate container: " + err))
   }
+}
+
+/// Switch the active model for a session (stays on the same harness).
+/// The next message will use this model; existing transcript is unaffected.
+@post("/api/sessions/{id}/model")
+pub func updateSessionModel(
+  id: in String,
+  @body req: in UpdateSessionRequest
+): Result[Unit, Web.ApiError] {
+  if id.length == 0 {
+    return Err(Web.badRequest("id is required"))
+  }
+  if req.model.length == 0 {
+    return Err(Web.badRequest("model is required"))
+  }
+  val maybeSession = getSession(id)
+  if maybeSession.isNone() {
+    return Err(Web.notFound("Session not found"))
+  }
+  CloudAgents.SessionStore.updateSessionModel(id, req.model)
+  return Ok(())
 }
 
 /// Retrieve status of the service.

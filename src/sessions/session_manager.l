@@ -9,19 +9,36 @@ pub record AgentSession {
   pub repoUrl: String
   pub branch: String
   pub containerId: String
+  pub harness: String
+  pub model: String
+  pub nativeSessionId: String
+}
+
+/// Default model for each harness, used when a session is created without an
+/// explicit model or when deserialising a legacy session that predates this field.
+pub func defaultModelForHarness(harness: in String): String {
+  if harness == "codex" { return "o4-mini" }
+  if harness == "opencode" { return "claude-sonnet-4-6" }
+  return "claude-opus-4-8"
 }
 
 pub func makeAgentSession(
   sessionId: in String,
   repoUrl: in String,
   branch: in String,
-  containerId: in String
+  containerId: in String,
+  harness: in String,
+  model: in String,
+  nativeSessionId: in String
 ): AgentSession {
   return AgentSession(
     sessionId = sessionId,
     repoUrl = repoUrl,
     branch = branch,
-    containerId = containerId
+    containerId = containerId,
+    harness = harness,
+    model = model,
+    nativeSessionId = nativeSessionId
   )
 }
 
@@ -60,7 +77,7 @@ pub func parseJsonField(objStr: in String, fieldName: in String): String {
       if not foundColon {
         return ""
       }
-      
+
       // Find opening quote for the value
       var quoteStart = 0
       var foundQuoteStart = false
@@ -78,7 +95,7 @@ pub func parseJsonField(objStr: in String, fieldName: in String): String {
       if not foundQuoteStart {
         return ""
       }
-      
+
       // Find closing quote
       var quoteEnd = 0
       var foundQuoteEnd = false
@@ -101,7 +118,7 @@ pub func parseJsonField(objStr: in String, fieldName: in String): String {
       if not foundQuoteEnd {
         return ""
       }
-      
+
       val valLen = quoteEnd - quoteStart - 1
       return objStr.substring(quoteStart + 1, valLen)
     }
@@ -113,7 +130,7 @@ pub func parseJsonField(objStr: in String, fieldName: in String): String {
 
 pub func parseSessionsJson(json: in String): List[AgentSession] {
   val list: List[AgentSession] = newList()
-  
+
   // Find where "[" begins
   var arrayStart = 0
   var foundArrayStart = false
@@ -124,11 +141,11 @@ pub func parseSessionsJson(json: in String): List[AgentSession] {
     }
     case None -> ()
   }
-  
+
   if not foundArrayStart {
     return list
   }
-  
+
   // Now we scan objects inside the array
   // Each object starts with '{' and ends with '}'
   var idx = arrayStart + 1
@@ -146,11 +163,11 @@ pub func parseSessionsJson(json: in String): List[AgentSession] {
         scan = scan + 1
       }
     }
-    
+
     if not foundObjStart {
       return list // no more objects
     }
-    
+
     // Find matching '}'
     var objEnd = 0
     var foundObjEnd = false
@@ -174,31 +191,45 @@ pub func parseSessionsJson(json: in String): List[AgentSession] {
         scan = scan + 1
       }
     }
-    
+
     if not foundObjEnd {
       return list // mismatched braces, invalid
     }
-    
+
     // We extracted one session object string
     val objStr = json.substring(objStart, objEnd - objStart + 1)
-    
-    // Parse fields of this session object
+
+    // Parse fields — new fields default gracefully for sessions created before this change
     val sessionId = parseJsonField(objStr, "sessionId")
     val repoUrl = parseJsonField(objStr, "repoUrl")
     val branch = parseJsonField(objStr, "branch")
     val containerId = parseJsonField(objStr, "containerId")
-    
+    val rawHarness = parseJsonField(objStr, "harness")
+    val rawModel = parseJsonField(objStr, "model")
+    val rawNativeId = parseJsonField(objStr, "nativeSessionId")
+
+    // Default harness to "claude" for legacy sessions
+    val harness = if rawHarness.length == 0 { "claude" } else { rawHarness }
+    // Default model to the harness's canonical default so legacy sessions don't
+    // pass an empty MODEL env var to the container (which would error).
+    val model = if rawModel.length == 0 { defaultModelForHarness(harness) } else { rawModel }
+    // Default nativeSessionId to sessionId so legacy sessions can resume
+    val nativeSessionId = if rawNativeId.length == 0 { sessionId } else { rawNativeId }
+
     val session = AgentSession(
       sessionId = sessionId,
       repoUrl = repoUrl,
       branch = branch,
-      containerId = containerId
+      containerId = containerId,
+      harness = harness,
+      model = model,
+      nativeSessionId = nativeSessionId
     )
     list.add(session)
-    
+
     idx = objEnd + 1
   }
-  
+
   return list
 }
 
@@ -215,7 +246,13 @@ pub func getSessionsSlice(): slice[AgentSession] {
 }
 
 pub func agentSessionToJson(s: in AgentSession): String {
-  return "{\"sessionId\":\"" + s.sessionId + "\",\"repoUrl\":\"" + s.repoUrl + "\",\"branch\":\"" + s.branch + "\",\"containerId\":\"" + s.containerId + "\"}"
+  return "{\"sessionId\":\"" + s.sessionId +
+    "\",\"repoUrl\":\"" + s.repoUrl +
+    "\",\"branch\":\"" + s.branch +
+    "\",\"containerId\":\"" + s.containerId +
+    "\",\"harness\":\"" + s.harness +
+    "\",\"model\":\"" + s.model +
+    "\",\"nativeSessionId\":\"" + s.nativeSessionId + "\"}"
 }
 
 pub func saveSessions(sessions: in slice[AgentSession]): Unit {
@@ -264,7 +301,34 @@ pub func updateSessionContainer(sessionId: in String, containerId: in String): U
         sessionId = s.sessionId,
         repoUrl = s.repoUrl,
         branch = s.branch,
-        containerId = containerId
+        containerId = containerId,
+        harness = s.harness,
+        model = s.model,
+        nativeSessionId = s.nativeSessionId
+      ))
+    } else {
+      updated.add(s)
+    }
+    i = i + 1
+  }
+  saveSessions(updated.toArray())
+}
+
+pub func updateSessionModel(sessionId: in String, model: in String): Unit {
+  val sessions = getSessionsSlice()
+  val updated: List[AgentSession] = newList()
+  var i = 0
+  while i < sessions.length {
+    val s = sessions[i]
+    if s.sessionId == sessionId {
+      updated.add(AgentSession(
+        sessionId = s.sessionId,
+        repoUrl = s.repoUrl,
+        branch = s.branch,
+        containerId = s.containerId,
+        harness = s.harness,
+        model = model,
+        nativeSessionId = s.nativeSessionId
       ))
     } else {
       updated.add(s)

@@ -10,7 +10,7 @@ function authHeaders(): HeadersInit {
 }
 
 export const api = {
-  createSession: async (body: { repoUrl: string; branch: string }): Promise<{ sessionId: string }> => {
+  createSession: async (body: { repoUrl: string; branch: string; harness: string; model: string }): Promise<{ sessionId: string }> => {
     const res = await fetch(`${BASE}/api/sessions`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', ...authHeaders() },
@@ -18,6 +18,15 @@ export const api = {
     });
     if (!res.ok) throw new Error(`${res.status} ${await res.text()}`);
     return res.json() as Promise<{ sessionId: string }>;
+  },
+
+  updateSessionModel: async (sessionId: string, model: string): Promise<void> => {
+    const res = await fetch(`${BASE}/api/sessions/${sessionId}/model`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', ...authHeaders() },
+      body: JSON.stringify({ model }),
+    });
+    if (!res.ok) throw new Error(`${res.status} ${await res.text()}`);
   },
 
   deleteSession: async (sessionId: string): Promise<void> => {

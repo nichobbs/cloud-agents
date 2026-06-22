@@ -3,6 +3,8 @@ export interface Session {
   repoUrl: string;
   branch: string;
   createdAt: string;
+  harness?: string;
+  model?: string;
 }
 
 /// One addressable entry in a session's transcript.

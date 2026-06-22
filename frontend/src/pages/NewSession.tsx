@@ -1,15 +1,25 @@
 import { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { api } from '../lib/api';
 import { useSessions } from '../context/SessionsContext';
+import { DEFAULT_HARNESS, HARNESSES, getHarness } from '../lib/harnesses';
+import { api } from '../lib/api';
 
 export function NewSession() {
   const [repoUrl, setRepoUrl] = useState('');
   const [branch, setBranch] = useState('main');
+  const [harness, setHarness] = useState(DEFAULT_HARNESS);
+  const [model, setModel] = useState(getHarness(DEFAULT_HARNESS).defaultModel);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   const { addSession } = useSessions();
   const navigate = useNavigate();
+
+  const harnessConfig = getHarness(harness);
+
+  const handleHarnessChange = (h: string) => {
+    setHarness(h);
+    setModel(getHarness(h).defaultModel);
+  };
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -17,8 +27,20 @@ export function NewSession() {
     setLoading(true);
     setError('');
     try {
-      const { sessionId } = await api.createSession({ repoUrl: repoUrl.trim(), branch: branch.trim() || 'main' });
-      addSession({ sessionId, repoUrl: repoUrl.trim(), branch: branch.trim() || 'main', createdAt: new Date().toISOString() });
+      const { sessionId } = await api.createSession({
+        repoUrl: repoUrl.trim(),
+        branch: branch.trim() || 'main',
+        harness,
+        model,
+      });
+      addSession({
+        sessionId,
+        repoUrl: repoUrl.trim(),
+        branch: branch.trim() || 'main',
+        createdAt: new Date().toISOString(),
+        harness,
+        model,
+      });
       navigate(`/sessions/${sessionId}`);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
@@ -30,7 +52,7 @@ export function NewSession() {
     <div style={pageStyle}>
       <h1 style={h1Style}>New session</h1>
       <p style={{ color: '#8b949e', fontSize: '14px', marginTop: 0, marginBottom: '28px' }}>
-        Clone a repository and start a Claude Code session.
+        Clone a repository and start an agent session.
       </p>
 
       <form onSubmit={e => { void handleSubmit(e); }}>
@@ -59,6 +81,37 @@ export function NewSession() {
             onChange={e => setBranch(e.target.value)}
             disabled={loading}
           />
+        </div>
+
+        <div style={{ display: 'flex', gap: '12px', marginBottom: '16px' }}>
+          <div style={{ flex: 1 }}>
+            <label style={labelStyle} htmlFor="harness">Agent</label>
+            <select
+              id="harness"
+              style={selectStyle}
+              value={harness}
+              onChange={e => handleHarnessChange(e.target.value)}
+              disabled={loading}
+            >
+              {Object.entries(HARNESSES).map(([id, cfg]) => (
+                <option key={id} value={id}>{cfg.label}</option>
+              ))}
+            </select>
+          </div>
+          <div style={{ flex: 1 }}>
+            <label style={labelStyle} htmlFor="model">Model</label>
+            <select
+              id="model"
+              style={selectStyle}
+              value={model}
+              onChange={e => setModel(e.target.value)}
+              disabled={loading}
+            >
+              {harnessConfig.models.map(m => (
+                <option key={m.id} value={m.id}>{m.label}</option>
+              ))}
+            </select>
+          </div>
         </div>
 
         {error && (
@@ -119,6 +172,20 @@ const inputStyle: React.CSSProperties = {
   fontSize: '14px',
   boxSizing: 'border-box',
   outline: 'none',
+};
+
+const selectStyle: React.CSSProperties = {
+  display: 'block',
+  width: '100%',
+  padding: '7px 10px',
+  background: '#0d1117',
+  border: '1px solid #30363d',
+  borderRadius: '6px',
+  color: '#c9d1d9',
+  fontSize: '14px',
+  boxSizing: 'border-box',
+  outline: 'none',
+  cursor: 'pointer',
 };
 
 const errorStyle: React.CSSProperties = {

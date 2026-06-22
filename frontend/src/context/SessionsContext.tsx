@@ -7,6 +7,7 @@ interface SessionsContextValue {
   addSession: (session: Session) => void;
   removeSession: (sessionId: string) => void;
   getSession: (sessionId: string) => Session | undefined;
+  updateSession: (sessionId: string, updates: Partial<Session>) => void;
 }
 
 const SessionsContext = createContext<SessionsContextValue | null>(null);
@@ -45,8 +46,16 @@ export function SessionsProvider({ children }: { children: ReactNode }) {
     [sessions],
   );
 
+  const updateSession = useCallback((sessionId: string, updates: Partial<Session>) => {
+    setSessions(prev => {
+      const next = prev.map(s => s.sessionId === sessionId ? { ...s, ...updates } : s);
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(next));
+      return next;
+    });
+  }, []);
+
   return (
-    <SessionsContext.Provider value={{ sessions, addSession, removeSession, getSession }}>
+    <SessionsContext.Provider value={{ sessions, addSession, removeSession, getSession, updateSession }}>
       {children}
     </SessionsContext.Provider>
   );

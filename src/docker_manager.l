@@ -15,31 +15,45 @@ pub record ResultCell {
 @externTarget("System.Threading.Tasks.Task.Wait")
 func taskWaitUnit[T](t: in T): Unit = ()
 
+/// Docker image name for the given harness.
+func imageForHarness(harness: in String): String {
+  if harness == "codex" { return "codex:base" }
+  if harness == "opencode" { return "opencode:base" }
+  return "claude-code:base"
+}
+
 /// Create an ephemeral container for the given session.
+/// HARNESS, MODEL, and NATIVE_SESSION_ID are passed as env vars so each
+/// container image can invoke the right CLI with the right resume flag.
 pub async func createRunnerContainer(
   repoUrl: in String,
   branch: in String,
   prompt: in String,
-  sessionId: in String
+  sessionId: in String,
+  harness: in String,
+  model: in String,
+  nativeSessionId: in String
 ): Result[String, String] {
   val client = defaultClient()
 
-  // Construct JSON body for container creation
-  // Binds the workspace volume and the user-home volume
   val workspaceVolume = "session-" + sessionId + "-workspace"
   val homeVolume = "claude-home-default" // Phase 1 default, Phase 3 user-specific
-  
+
   val envs = [
     "PROMPT=" + prompt,
     "REPO_URL=" + repoUrl,
-    "BRANCH=" + branch
+    "BRANCH=" + branch,
+    "HARNESS=" + harness,
+    "MODEL=" + model,
+    "NATIVE_SESSION_ID=" + nativeSessionId
   ]
   val binds = [
     workspaceVolume + ":/workspace",
     homeVolume + ":/home/claude-user"
   ]
 
-  val createRes = await createContainer(client, image = "claude-code:base", env = envs, binds = binds)
+  val image = imageForHarness(harness)
+  val createRes = await createContainer(client, image = image, env = envs, binds = binds)
   match createRes {
     case Ok(id) -> Ok(value = id)
     case Err(e) -> Err(error = "Docker API error: " + e.message)
@@ -86,15 +100,18 @@ pub async func getRunnerLogs(containerId: in String): Result[String, String] {
   }
 }
 
-/// Run a session message synchronously by orchestrating async container actions locally.
+/// Run a session message synchronously by orchestrating async container actions.
 pub func runSessionMessage(
   repoUrl: in String,
   branch: in String,
   prompt: in String,
-  sessionId: in String
+  sessionId: in String,
+  harness: in String,
+  model: in String,
+  nativeSessionId: in String
 ): Result[String, String] {
   val cell = ResultCell(isSuccess = false, output = "", error = "")
-  val t = runSessionMessageAsync(repoUrl, branch, prompt, sessionId, cell)
+  val t = runSessionMessageAsync(repoUrl, branch, prompt, sessionId, harness, model, nativeSessionId, cell)
   taskWaitUnit(t)
   if cell.isSuccess {
     return Ok(value = cell.output)
@@ -108,16 +125,19 @@ async func runSessionMessageAsync(
   branch: in String,
   prompt: in String,
   sessionId: in String,
+  harness: in String,
+  model: in String,
+  nativeSessionId: in String,
   cell: in ResultCell
 ): Unit {
-  val createResult = await createRunnerContainer(repoUrl, branch, prompt, sessionId)
+  val createResult = await createRunnerContainer(repoUrl, branch, prompt, sessionId, harness, model, nativeSessionId)
   if not createResult.isOk() {
     cell.isSuccess = false
     cell.error = createResult.unwrapErrOr("unknown error")
     return ()
   }
   val containerId = createResult.unwrapResult()
-  
+
   // Persist container ID to the session store
   CloudAgents.SessionStore.updateSessionContainer(sessionId, containerId)
 

@@ -18,6 +18,7 @@ func main(): Unit {
   router = Web.addPost(router,   "/api/sessions",             "CloudAgents.Handlers.createSession")
   router = Web.addPost(router,   "/api/sessions/{id}/messages", "CloudAgents.Handlers.sendMessage")
   router = Web.addDelete(router, "/api/sessions/{id}",        "CloudAgents.Handlers.deleteSession")
+  router = Web.addPost(router,   "/api/sessions/{id}/model",  "CloudAgents.Handlers.updateSessionModel")
 
   // Transcript: addressable agent/user messages for a session
   router = Web.addGet(router,    "/api/sessions/{id}/messages", "CloudAgents.Interactions.getMessages")
