@@ -1,0 +1,29 @@
+# codex:base — Codex CLI runner image.
+#
+# Provides the OpenAI Codex CLI inside an ephemeral container.
+# The API server sets HARNESS=codex, MODEL, NATIVE_SESSION_ID, PROMPT,
+# REPO_URL, BRANCH, and OPENAI_API_KEY at runtime.
+#
+# Build:  docker build -t codex:base -f docker/Dockerfile.codex docker
+# Arch:   linux/amd64
+
+FROM --platform=linux/amd64 node:20-slim
+
+ENV DEBIAN_FRONTEND=noninteractive
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        git bash curl ca-certificates \
+    && npm install -g @openai/codex \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN useradd --create-home --home-dir /home/codex-user --shell /bin/bash codex-user
+WORKDIR /workspace
+RUN chown codex-user:codex-user /workspace
+
+COPY entrypoint-codex.sh /usr/local/bin/entrypoint.sh
+RUN chmod +x /usr/local/bin/entrypoint.sh
+
+USER codex-user
+ENV HOME=/home/codex-user
+
+ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]

@@ -1,0 +1,29 @@
+# opencode:base — OpenCode runner image.
+#
+# Provides the OpenCode CLI inside an ephemeral container.
+# The API server sets HARNESS=opencode, MODEL, NATIVE_SESSION_ID, PROMPT,
+# REPO_URL, BRANCH, and the relevant API key at runtime.
+#
+# Build:  docker build -t opencode:base -f docker/Dockerfile.opencode docker
+# Arch:   linux/amd64
+
+FROM --platform=linux/amd64 node:20-slim
+
+ENV DEBIAN_FRONTEND=noninteractive
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        git bash curl ca-certificates \
+    && npm install -g opencode-ai \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN useradd --create-home --home-dir /home/opencode-user --shell /bin/bash opencode-user
+WORKDIR /workspace
+RUN chown opencode-user:opencode-user /workspace
+
+COPY entrypoint-opencode.sh /usr/local/bin/entrypoint.sh
+RUN chmod +x /usr/local/bin/entrypoint.sh
+
+USER opencode-user
+ENV HOME=/home/opencode-user
+
+ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]
