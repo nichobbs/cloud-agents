@@ -57,23 +57,51 @@ func referenceEqualsStrings(a: in String, b: in String): Bool = ()
 @externTarget("System.String.IsNullOrEmpty")
 func isNullOrEmpty(s: in String): Bool = ()
 
+/// First index of `needle` in `hay` at or after `from`, or -1 if not present.
+func indexOfFrom(hay: in String, needle: in String, from: in Int): Int {
+  val hayLen = hay.length.toInt()
+  val needleLen = needle.length.toInt()
+  if needleLen == 0 {
+    return from
+  }
+  var i = from
+  val last = hayLen - needleLen
+  while i <= last {
+    var j = 0
+    var matched = true
+    while j < needleLen {
+      if hay.substring(i + j, 1) != needle.substring(j, 1) {
+        matched = false
+        j = needleLen
+      } else {
+        j = j + 1
+      }
+    }
+    if matched {
+      return i
+    }
+    i = i + 1
+  }
+  return -1
+}
+
 pub func parseJsonField(objStr: in String, fieldName: in String): String {
   val target = "\"" + fieldName + "\""
-  val maybePos = objStr.indexOf(target)
-  if maybePos.isNone() {
+  val objLen = objStr.length.toInt()
+  val pos = indexOfFrom(objStr, target, 0)
+  if pos < 0 {
     return ""
   }
-  val pos = maybePos.unwrap()
 
   // Find colon after the target field name
   var colonPos = 0
   var foundColon = false
-  var i = pos + target.length
-  while i < objStr.length {
+  var i = pos + target.length.toInt()
+  while i < objLen {
     if objStr.substring(i, 1) == ":" {
       colonPos = i
       foundColon = true
-      i = objStr.length // break
+      i = objLen // break
     } else {
       i = i + 1
     }
@@ -86,12 +114,12 @@ pub func parseJsonField(objStr: in String, fieldName: in String): String {
   var quoteStart = 0
   var foundQuoteStart = false
   i = colonPos + 1
-  while i < objStr.length {
+  while i < objLen {
     val c = objStr.substring(i, 1)
     if c == "\"" {
       quoteStart = i
       foundQuoteStart = true
-      i = objStr.length // break
+      i = objLen // break
     } else {
       i = i + 1
     }
@@ -104,13 +132,13 @@ pub func parseJsonField(objStr: in String, fieldName: in String): String {
   var quoteEnd = 0
   var foundQuoteEnd = false
   i = quoteStart + 1
-  while i < objStr.length {
+  while i < objLen {
     val c = objStr.substring(i, 1)
     if c == "\"" {
       if objStr.substring(i - 1, 1) != "\\" {
         quoteEnd = i
         foundQuoteEnd = true
-        i = objStr.length // break
+        i = objLen // break
       } else {
         i = i + 1
       }
@@ -128,27 +156,27 @@ pub func parseJsonField(objStr: in String, fieldName: in String): String {
 
 pub func parseSessionsJson(json: in String): List[AgentSession] {
   val list: List[AgentSession] = newList()
+  val jsonLen = json.length.toInt()
 
   // Find where "[" begins
-  val maybeArrayStart = json.indexOf("[")
-  if maybeArrayStart.isNone() {
+  val arrayStart = indexOfFrom(json, "[", 0)
+  if arrayStart < 0 {
     return list
   }
-  val arrayStart = maybeArrayStart.unwrap()
 
   // Now we scan objects inside the array
   // Each object starts with '{' and ends with '}'
   var idx = arrayStart + 1
-  while idx < json.length {
+  while idx < jsonLen {
     // Find next '{'
     var objStart = 0
     var foundObjStart = false
     var scan = idx
-    while scan < json.length {
+    while scan < jsonLen {
       if json.substring(scan, 1) == "{" {
         objStart = scan
         foundObjStart = true
-        scan = json.length // break
+        scan = jsonLen // break
       } else {
         scan = scan + 1
       }
@@ -163,7 +191,7 @@ pub func parseSessionsJson(json: in String): List[AgentSession] {
     var foundObjEnd = false
     scan = objStart + 1
     var depth = 1
-    while scan < json.length {
+    while scan < jsonLen {
       val c = json.substring(scan, 1)
       if c == "{" {
         depth = depth + 1
@@ -173,7 +201,7 @@ pub func parseSessionsJson(json: in String): List[AgentSession] {
         if depth == 0 {
           objEnd = scan
           foundObjEnd = true
-          scan = json.length // break
+          scan = jsonLen // break
         } else {
           scan = scan + 1
         }

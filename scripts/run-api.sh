@@ -6,9 +6,11 @@
 #
 # Requirements: lyric (any v0.2.x), dotnet 10.x, Docker (for runner containers)
 # Env:
-#   LYRIC_LANG          path to lyric-lang checkout (default: ../lyric-lang)
-#   CLOUD_AGENTS_PORT   HTTP listen port (default: 8080)
-#   CLOUD_AGENTS_BIND   interface to bind (default: 127.0.0.1; set 0.0.0.0 for LAN)
+#   LYRIC_LANG               path to lyric-lang checkout (default: ../lyric-lang)
+#   CLOUD_AGENTS_PORT        HTTP listen port (default: 8080)
+#   CLOUD_AGENTS_BIND        interface to bind (default: 127.0.0.1; set 0.0.0.0 for LAN)
+#   ENCRYPTION_KEY           (secret) key for session data encryption — read from env by .NET
+#   CLOUD_AGENTS_WHITELIST   (secret) comma-separated GitHub user IDs allowed access
 
 set -euo pipefail
 
@@ -42,7 +44,7 @@ rm -rf "$LYRIC_LANG/lyric-docker/src"
 cp -r "$REPO_ROOT/vendor/lyric-docker/src" "$LYRIC_LANG/lyric-docker/src"
 
 echo "==> building dependency libraries"
-for lib in lyric-stdlib lyric-logging lyric-auth lyric-resilience lyric-docker lyric-web; do
+for lib in lyric-stdlib lyric-logging lyric-auth lyric-resilience lyric-web lyric-docker; do
   ( cd "$LYRIC_LANG/$lib" && rm -f lyric.lock && lyric build >/dev/null )
   echo "    built $lib"
 done

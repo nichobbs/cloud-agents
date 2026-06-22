@@ -43,7 +43,7 @@ rm -rf "$LYRIC_LANG/lyric-docker/src"
 cp -r "$REPO_ROOT/vendor/lyric-docker/src" "$LYRIC_LANG/lyric-docker/src"
 
 echo "==> building dependency libraries"
-for lib in lyric-stdlib lyric-logging lyric-auth lyric-resilience lyric-docker lyric-web; do
+for lib in lyric-stdlib lyric-logging lyric-auth lyric-resilience lyric-web lyric-docker; do
   ( cd "$LYRIC_LANG/$lib" && rm -f lyric.lock && lyric build >/dev/null )
   echo "    built $lib"
 done
