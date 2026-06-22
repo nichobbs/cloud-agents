@@ -14,6 +14,7 @@ set -euo pipefail
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 LYRIC_LANG="${LYRIC_LANG:-$(cd "$REPO_ROOT/.." && pwd)/lyric-lang}"
 PORT="${CLOUD_AGENTS_PORT:-8080}"
+BIND="${CLOUD_AGENTS_BIND:-127.0.0.1}"
 OUT="$REPO_ROOT/bin/CloudAgents.dll"
 
 command -v lyric  >/dev/null || { echo "run-api: 'lyric' not on PATH"  >&2; exit 1; }
@@ -85,5 +86,5 @@ echo "==> built → $OUT"
 # Secrets (ENCRYPTION_KEY, CLOUD_AGENTS_WHITELIST) are read from the environment
 # by the .NET configuration system — do not pass them as CLI args where they
 # would be visible in process listings.
-echo "==> starting server on port ${PORT}"
-exec dotnet "$OUT" --urls "http://0.0.0.0:${PORT}"
+echo "==> starting server on ${BIND}:${PORT}"
+exec dotnet "$OUT" --urls "http://${BIND}:${PORT}"
