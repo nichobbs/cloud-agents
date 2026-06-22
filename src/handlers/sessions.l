@@ -111,11 +111,9 @@ pub func sendMessage(
   // The agent reply is persisted too; on success the `done` frame carries the
   // stored message id so the client can attach comments/todos to this response.
   match runResult {
-    case Ok(logs) -> {
-      match CloudAgents.Repository.addMessage(id, "agent", logs) {
-        case Ok(m)  -> return Ok(value = CloudAgents.Streaming.formatLogsAsSseWithId(logs, m.id))
-        case Err(_) -> return Ok(value = CloudAgents.Streaming.formatLogsAsSse(logs))
-      }
+    case Ok(logs) -> match CloudAgents.Repository.addMessage(id, "agent", logs) {
+      case Ok(m)  -> return Ok(value = CloudAgents.Streaming.formatLogsAsSseWithId(logs, m.id))
+      case Err(_) -> return Ok(value = CloudAgents.Streaming.formatLogsAsSse(logs))
     }
     case Err(err) -> return Err(Web.internalError("Failed to execute message: " + err))
   }

@@ -8,6 +8,7 @@
 # Env:
 #   LYRIC_LANG          path to lyric-lang checkout (default: ../lyric-lang)
 #   CLOUD_AGENTS_PORT   HTTP listen port (default: 8080)
+#   CLOUD_AGENTS_BIND   interface to bind (default: 127.0.0.1; set 0.0.0.0 for LAN)
 
 set -euo pipefail
 

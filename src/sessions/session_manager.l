@@ -63,7 +63,7 @@ pub func parseJsonField(objStr: in String, fieldName: in String): String {
   if maybePos.isNone() {
     return ""
   }
-  val pos = maybePos.unwrapOption()
+  val pos = maybePos.unwrap()
 
   // Find colon after the target field name
   var colonPos = 0
@@ -134,7 +134,7 @@ pub func parseSessionsJson(json: in String): List[AgentSession] {
   if maybeArrayStart.isNone() {
     return list
   }
-  val arrayStart = maybeArrayStart.unwrapOption()
+  val arrayStart = maybeArrayStart.unwrap()
 
   // Now we scan objects inside the array
   // Each object starts with '{' and ends with '}'
