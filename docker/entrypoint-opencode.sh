@@ -52,4 +52,4 @@ fi
 
 cd /workspace
 
-exec opencode run --model "${MODEL}" "${PROMPT}"
+exec opencode run --model "${MODEL}" -- "${PROMPT}"

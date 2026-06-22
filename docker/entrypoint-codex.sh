@@ -38,4 +38,4 @@ fi
 
 cd /workspace
 
-exec codex --model "${MODEL}" --full-auto "${PROMPT}"
+exec codex --model "${MODEL}" --full-auto -- "${PROMPT}"
