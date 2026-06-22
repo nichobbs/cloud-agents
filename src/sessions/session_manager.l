@@ -14,6 +14,14 @@ pub record AgentSession {
   pub nativeSessionId: String
 }
 
+/// Default model for each harness, used when a session is created without an
+/// explicit model or when deserialising a legacy session that predates this field.
+pub func defaultModelForHarness(harness: in String): String {
+  if harness == "codex" { return "o4-mini" }
+  if harness == "opencode" { return "claude-sonnet-4-6" }
+  return "claude-opus-4-8"
+}
+
 pub func makeAgentSession(
   sessionId: in String,
   repoUrl: in String,
@@ -197,11 +205,14 @@ pub func parseSessionsJson(json: in String): List[AgentSession] {
     val branch = parseJsonField(objStr, "branch")
     val containerId = parseJsonField(objStr, "containerId")
     val rawHarness = parseJsonField(objStr, "harness")
-    val model = parseJsonField(objStr, "model")
+    val rawModel = parseJsonField(objStr, "model")
     val rawNativeId = parseJsonField(objStr, "nativeSessionId")
 
     // Default harness to "claude" for legacy sessions
     val harness = if rawHarness.length == 0 { "claude" } else { rawHarness }
+    // Default model to the harness's canonical default so legacy sessions don't
+    // pass an empty MODEL env var to the container (which would error).
+    val model = if rawModel.length == 0 { defaultModelForHarness(harness) } else { rawModel }
     // Default nativeSessionId to sessionId so legacy sessions can resume
     val nativeSessionId = if rawNativeId.length == 0 { sessionId } else { rawNativeId }
 

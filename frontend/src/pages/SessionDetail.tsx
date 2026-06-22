@@ -21,6 +21,7 @@ export function SessionDetail() {
   const [input, setInput] = useState('');
   const [deleting, setDeleting] = useState(false);
   const [modelSwitching, setModelSwitching] = useState(false);
+  const [modelError, setModelError] = useState('');
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
   const highlightedId = location.hash.startsWith('#message-')
@@ -85,11 +86,12 @@ export function SessionDetail() {
   const handleModelChange = async (newModel: string) => {
     if (!session || modelSwitching || isStreaming) return;
     setModelSwitching(true);
+    setModelError('');
     try {
       await api.updateSessionModel(session.sessionId, newModel);
       updateSession(session.sessionId, { model: newModel });
-    } catch {
-      // best-effort; UI will stay on previous model selection
+    } catch (err) {
+      setModelError(err instanceof Error ? err.message : 'Failed to switch model');
     } finally {
       setModelSwitching(false);
     }
@@ -137,6 +139,7 @@ export function SessionDetail() {
               {session.sessionId}
             </span>
           </div>
+          {modelError && <div style={modelErrorStyle}>Model switch failed: {modelError}</div>}
         </div>
         <div style={{ display: 'flex', gap: '8px', flexShrink: 0 }}>
           <Link to={`/sessions/${sessionId}/todos`} style={todosBtnStyle}>
@@ -243,6 +246,12 @@ const modelSelectStyle: React.CSSProperties = {
   cursor: 'pointer',
   padding: 0,
   outline: 'none',
+};
+
+const modelErrorStyle: React.CSSProperties = {
+  fontSize: '11px',
+  color: '#f85149',
+  marginTop: '4px',
 };
 
 const metaStyle: React.CSSProperties = {

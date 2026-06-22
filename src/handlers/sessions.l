@@ -51,13 +51,14 @@ pub func createSession(
 
   val sessionId = generateSessionId()
   val harness = if req.harness.length == 0 { "claude" } else { req.harness }
+  val model = if req.model.length == 0 { CloudAgents.SessionStore.defaultModelForHarness(harness) } else { req.model }
   val session = makeAgentSession(
     sessionId = sessionId,
     repoUrl = req.repoUrl,
     branch = req.branch,
     containerId = "",
     harness = harness,
-    model = req.model,
+    model = model,
     nativeSessionId = sessionId  // pre-assigned so every run gets a stable resume ID
   )
 
