@@ -9,6 +9,7 @@
 #   NATIVE_SESSION_ID   - session ID for conversation continuity (reserved for Phase 2)
 #   ANTHROPIC_API_KEY   - required when MODEL is a claude-* model
 #   OPENAI_API_KEY      - required when MODEL is a gpt-* or o* model
+#   GOOGLE_API_KEY      - required when MODEL is a gemini-* model
 #
 # State persists across runs via two mounted volumes:
 #   /workspace            - the cloned repository
@@ -31,6 +32,12 @@ case "$MODEL" in
     ;;
   gpt-*|o[0-9]*)
     [ -n "${OPENAI_API_KEY:-}" ] || { echo "entrypoint-opencode: OPENAI_API_KEY is required for model $MODEL" >&2; exit 64; }
+    ;;
+  gemini-*)
+    [ -n "${GOOGLE_API_KEY:-}" ] || { echo "entrypoint-opencode: GOOGLE_API_KEY is required for model $MODEL" >&2; exit 64; }
+    ;;
+  *)
+    echo "entrypoint-opencode: no API key validation for unknown model family '$MODEL' — ensure the correct key is set" >&2
     ;;
 esac
 
