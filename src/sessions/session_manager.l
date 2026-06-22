@@ -59,92 +59,82 @@ func isNullOrEmpty(s: in String): Bool = ()
 
 pub func parseJsonField(objStr: in String, fieldName: in String): String {
   val target = "\"" + fieldName + "\""
-  match objStr.indexOf(target) {
-    case Some(pos) -> {
-      // Find colon after the target field name
-      var colonPos = 0
-      var foundColon = false
-      var i = pos + target.length
-      while i < objStr.length {
-        if objStr.substring(i, 1) == ":" {
-          colonPos = i
-          foundColon = true
-          i = objStr.length // break
-        } else {
-          i = i + 1
-        }
-      }
-      if not foundColon {
-        return ""
-      }
+  val maybePos = objStr.indexOf(target)
+  if maybePos.isNone() {
+    return ""
+  }
+  val pos = maybePos.unwrapOption()
 
-      // Find opening quote for the value
-      var quoteStart = 0
-      var foundQuoteStart = false
-      i = colonPos + 1
-      while i < objStr.length {
-        val c = objStr.substring(i, 1)
-        if c == "\"" {
-          quoteStart = i
-          foundQuoteStart = true
-          i = objStr.length // break
-        } else {
-          i = i + 1
-        }
-      }
-      if not foundQuoteStart {
-        return ""
-      }
-
-      // Find closing quote
-      var quoteEnd = 0
-      var foundQuoteEnd = false
-      i = quoteStart + 1
-      while i < objStr.length {
-        val c = objStr.substring(i, 1)
-        if c == "\"" {
-          // check if escaped
-          if objStr.substring(i - 1, 1) != "\\" {
-            quoteEnd = i
-            foundQuoteEnd = true
-            i = objStr.length // break
-          } else {
-            i = i + 1
-          }
-        } else {
-          i = i + 1
-        }
-      }
-      if not foundQuoteEnd {
-        return ""
-      }
-
-      val valLen = quoteEnd - quoteStart - 1
-      return objStr.substring(quoteStart + 1, valLen)
-    }
-    case None -> {
-      return ""
+  // Find colon after the target field name
+  var colonPos = 0
+  var foundColon = false
+  var i = pos + target.length
+  while i < objStr.length {
+    if objStr.substring(i, 1) == ":" {
+      colonPos = i
+      foundColon = true
+      i = objStr.length // break
+    } else {
+      i = i + 1
     }
   }
+  if not foundColon {
+    return ""
+  }
+
+  // Find opening quote for the value
+  var quoteStart = 0
+  var foundQuoteStart = false
+  i = colonPos + 1
+  while i < objStr.length {
+    val c = objStr.substring(i, 1)
+    if c == "\"" {
+      quoteStart = i
+      foundQuoteStart = true
+      i = objStr.length // break
+    } else {
+      i = i + 1
+    }
+  }
+  if not foundQuoteStart {
+    return ""
+  }
+
+  // Find closing quote
+  var quoteEnd = 0
+  var foundQuoteEnd = false
+  i = quoteStart + 1
+  while i < objStr.length {
+    val c = objStr.substring(i, 1)
+    if c == "\"" {
+      if objStr.substring(i - 1, 1) != "\\" {
+        quoteEnd = i
+        foundQuoteEnd = true
+        i = objStr.length // break
+      } else {
+        i = i + 1
+      }
+    } else {
+      i = i + 1
+    }
+  }
+  if not foundQuoteEnd {
+    return ""
+  }
+
+  val valLen = quoteEnd - quoteStart - 1
+  return objStr.substring(quoteStart + 1, valLen)
 }
 
 pub func parseSessionsJson(json: in String): List[AgentSession] {
   val list: List[AgentSession] = newList()
 
   // Find where "[" begins
-  var arrayStart = 0
-  var foundArrayStart = false
-  match json.indexOf("[") {
-    case Some(pos) -> {
-      arrayStart = pos
-      foundArrayStart = true
-    }
-    case None -> ()
-  }
-
-  if not foundArrayStart {
+  val maybeArrayStart = json.indexOf("[")
+  if maybeArrayStart.isNone() {
     return list
   }
+  val arrayStart = maybeArrayStart.unwrapOption()
 
   // Now we scan objects inside the array
   // Each object starts with '{' and ends with '}'
