@@ -122,7 +122,7 @@ func openConn(): Result[SqliteConnection, DbError] {
 /// Returns the number of rows affected.
 pub func execute(sql: in String): Result[Int, DbError] {
   val conn = openConn()?
-  defer connClose(conn)
+  defer { connClose(conn) }
   return try {
     val cmd = connCreateCommand(conn)
     cmdSetText(cmd, sql)
@@ -135,7 +135,7 @@ pub func execute(sql: in String): Result[Int, DbError] {
 /// Run a query and read every row as a list of text columns.
 pub func query(sql: in String): Result[slice[Row], DbError] {
   val conn = openConn()?
-  defer connClose(conn)
+  defer { connClose(conn) }
   return try {
     val cmd = connCreateCommand(conn)
     cmdSetText(cmd, sql)

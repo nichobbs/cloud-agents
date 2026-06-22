@@ -6,6 +6,45 @@ import Std.Testing
 import CloudAgents.SessionStore
 import CloudAgents.Handlers
 
+// ── Helpers ──────────────────────────────────────────────────────────────────
+// Lyric match arms are `case Pattern -> expression` (no block form), so
+// multi-assertion checks are extracted into named functions.
+
+func verifyNewSession(s: in AgentSession, sessionId: in String): Unit {
+  assertEqual(s.sessionId, sessionId, "session ID matches")
+  assertEqual(s.repoUrl, "https://github.com/nic/repos/cloud-agents", "repoUrl matches")
+  assertEqual(s.branch, "main", "branch matches")
+  assertEqual(s.containerId, "", "container ID is initially empty")
+  assertEqual(s.harness, "claude", "harness matches")
+  assertEqual(s.model, "claude-opus-4-8", "model matches")
+  assertEqual(s.nativeSessionId, sessionId, "nativeSessionId matches")
+}
+
+func verifyContainerUpdate(s: in AgentSession): Unit {
+  assertEqual(s.containerId, "container-abc", "container ID was updated successfully")
+  assertEqual(s.model, "claude-opus-4-8", "model preserved across container update")
+}
+
+func verifyModelSwitch(s: in AgentSession, sessionId: in String): Unit {
+  assertEqual(s.model, "claude-sonnet-4-6", "model was switched")
+  assertEqual(s.nativeSessionId, sessionId, "nativeSessionId preserved across model switch")
+}
+
+func verifyAndCleanCreateSession(resp: in CreateSessionResponse): Unit {
+  assertTrue(resp.sessionId.length > 0, "generates a non-empty sessionId")
+  val _ = removeSession(resp.sessionId)
+}
+
+func verifyModelBackfill(resp: in CreateSessionResponse): Unit {
+  match getSession(resp.sessionId) {
+    case Some(s) -> assertEqual(s.model, "o4-mini", "empty model backfilled with codex default")
+    case None -> assertTrue(false, "created session should exist")
+  }
+  val _ = removeSession(resp.sessionId)
+}
+
+// ── Tests ─────────────────────────────────────────────────────────────────────
+
 test "Test Session Store CRUD Operations" {
   println("Testing Session Store operations...")
 
@@ -23,46 +62,29 @@ test "Test Session Store CRUD Operations" {
   // 1. Add session
   addSession(session)
 
-
   // 2. Get and verify session
   match getSession(sessionId) {
-    case Some(s) -> {
-      assertEqual(s.sessionId, sessionId, "session ID matches")
-      assertEqual(s.repoUrl, "https://github.com/nic/repos/cloud-agents", "repoUrl matches")
-      assertEqual(s.branch, "main", "branch matches")
-      assertEqual(s.containerId, "", "container ID is initially empty")
-      assertEqual(s.harness, "claude", "harness matches")
-      assertEqual(s.model, "claude-opus-4-8", "model matches")
-      assertEqual(s.nativeSessionId, sessionId, "nativeSessionId matches")
-    }
+    case Some(s) -> verifyNewSession(s, sessionId)
     case None -> assertTrue(false, "session should exist in store")
   }
 
   // 3. Update container ID
   updateSessionContainer(sessionId, "container-abc")
   match getSession(sessionId) {
-    case Some(s) -> {
-      assertEqual(s.containerId, "container-abc", "container ID was updated successfully")
-      assertEqual(s.model, "claude-opus-4-8", "model preserved across container update")
-    }
+    case Some(s) -> verifyContainerUpdate(s)
     case None -> assertTrue(false, "session should still exist in store")
   }
 
   // 4. Switch model (same harness)
   updateSessionModel(sessionId, "claude-sonnet-4-6")
   match getSession(sessionId) {
-    case Some(s) -> {
-      assertEqual(s.model, "claude-sonnet-4-6", "model was switched")
-      assertEqual(s.nativeSessionId, sessionId, "nativeSessionId preserved across model switch")
-    }
+    case Some(s) -> verifyModelSwitch(s, sessionId)
     case None -> assertTrue(false, "session should still exist in store")
   }
 
   // 5. Remove session
   match removeSession(sessionId) {
-    case Some(s) -> {
-      assertEqual(s.sessionId, sessionId, "removed session ID matches")
-    }
+    case Some(s) -> assertEqual(s.sessionId, sessionId, "removed session ID matches")
     case None -> assertTrue(false, "should successfully remove session")
   }
 
@@ -115,24 +137,14 @@ test "Test Handler createSession validation" {
   // Test successful session creation
   val req3 = CreateSessionRequest(repoUrl = "https://github.com/nic/repos/cloud-agents", branch = "main", harness = "claude", model = "claude-opus-4-8")
   match createSession(req3) {
-    case Ok(resp) -> {
-      assertTrue(resp.sessionId.length > 0, "generates a non-empty sessionId")
-      // Clean up the created session
-      val _ = removeSession(resp.sessionId)
-    }
+    case Ok(resp) -> verifyAndCleanCreateSession(resp)
     case Err(_) -> assertTrue(false, "should successfully create session")
   }
 
   // An empty model must be backfilled with the harness default, not stored empty.
   val req4 = CreateSessionRequest(repoUrl = "https://github.com/nic/repos/cloud-agents", branch = "main", harness = "codex", model = "")
   match createSession(req4) {
-    case Ok(resp) -> {
-      match getSession(resp.sessionId) {
-        case Some(s) -> assertEqual(s.model, "o4-mini", "empty model backfilled with codex default")
-        case None -> assertTrue(false, "created session should exist")
-      }
-      val _ = removeSession(resp.sessionId)
-    }
+    case Ok(resp) -> verifyModelBackfill(resp)
     case Err(_) -> assertTrue(false, "should create session with empty model")
   }
 

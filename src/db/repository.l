@@ -160,13 +160,13 @@ pub func addMessage(
 /// All messages in a session, oldest first.
 pub func listMessages(sessionId: in String): Result[slice[Message], CloudAgents.Sqlite.DbError] {
   val rows = CloudAgents.Sqlite.query(CloudAgents.Db.selectMessagesSql(sessionId))?
-  var out: slice[Message] = []
+  var acc: slice[Message] = []
   var i = 0
   while i < rows.length {
-    out = out.append(rowToMessage(rows[i]))
+    acc = acc.append(rowToMessage(rows[i]))
     i = i + 1
   }
-  return Ok(value = out)
+  return Ok(value = acc)
 }
 
 // ─── Comments ──────────────────────────────────────────────────────────────────
@@ -202,13 +202,13 @@ pub func addComment(
 /// All comments on a message, oldest first.
 pub func listComments(messageId: in String): Result[slice[Comment], CloudAgents.Sqlite.DbError] {
   val rows = CloudAgents.Sqlite.query(CloudAgents.Db.selectCommentsSql(messageId))?
-  var out: slice[Comment] = []
+  var acc: slice[Comment] = []
   var i = 0
   while i < rows.length {
-    out = out.append(rowToComment(rows[i]))
+    acc = acc.append(rowToComment(rows[i]))
     i = i + 1
   }
-  return Ok(value = out)
+  return Ok(value = acc)
 }
 
 // ─── Todos ─────────────────────────────────────────────────────────────────────
@@ -247,13 +247,13 @@ pub func addTodo(
 /// All todos for a session, newest first.
 pub func listTodos(sessionId: in String): Result[slice[Todo], CloudAgents.Sqlite.DbError] {
   val rows = CloudAgents.Sqlite.query(CloudAgents.Db.selectTodosSql(sessionId))?
-  var out: slice[Todo] = []
+  var acc: slice[Todo] = []
   var i = 0
   while i < rows.length {
-    out = out.append(rowToTodo(rows[i]))
+    acc = acc.append(rowToTodo(rows[i]))
     i = i + 1
   }
-  return Ok(value = out)
+  return Ok(value = acc)
 }
 
 /// Flip a todo's done flag.

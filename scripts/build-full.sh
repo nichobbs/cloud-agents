@@ -43,7 +43,7 @@ rm -rf "$LYRIC_LANG/lyric-docker/src"
 cp -r "$REPO_ROOT/vendor/lyric-docker/src" "$LYRIC_LANG/lyric-docker/src"
 
 echo "==> building dependency libraries"
-for lib in lyric-stdlib lyric-logging lyric-auth lyric-resilience lyric-docker lyric-web; do
+for lib in lyric-stdlib lyric-logging lyric-auth lyric-resilience lyric-web lyric-docker; do
   ( cd "$LYRIC_LANG/$lib" && rm -f lyric.lock && lyric build >/dev/null )
   echo "    built $lib"
 done
@@ -56,6 +56,10 @@ cat > "$WS/lyric.toml" <<'TOML'
 [package]
 name = "CloudAgents"
 version = "0.1.0"
+[features]
+default = ["dotnet", "sqlite"]
+dotnet  = []
+sqlite  = []
 [project]
 name = "CloudAgents"
 output = "single"
@@ -64,8 +68,11 @@ output_assembly = "CloudAgents.dll"
 "CloudAgents"              = "src/main.l"
 "CloudAgents.SessionStore" = "src/sessions/session_manager.l"
 "CloudAgents.Handlers"     = "src/handlers/sessions.l"
+"CloudAgents.Interactions" = "src/handlers/interactions.l"
 "CloudAgents.Docker"       = "src/docker_manager.l"
 "CloudAgents.Db"           = "src/db/db_client.l"
+"CloudAgents.Sqlite"       = "src/db/sqlite_driver.l"
+"CloudAgents.Repository"   = "src/db/repository.l"
 "CloudAgents.Auth"         = "src/handlers/auth.l"
 "CloudAgents.Streaming"    = "src/streaming/streaming.l"
 [dependencies]

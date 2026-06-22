@@ -1,4 +1,4 @@
-.PHONY: help dev test verify build docker docker-codex docker-opencode docker-all lint-sh
+.PHONY: help dev test verify build run docker docker-codex docker-opencode docker-all lint-sh
 
 help:
 	@echo "Usage: make <target>"
@@ -6,6 +6,7 @@ help:
 	@echo "  dev           Start the frontend Vite dev server (http://localhost:5173)"
 	@echo "  test          Runtime-verify Lyric logic (scripts/verify.sh)"
 	@echo "  build         Full server build — API + Web + Docker library"
+	@echo "  run           Build full server and start it on port 8080"
 	@echo "  docker        Build claude-code:base runner image"
 	@echo "  docker-codex  Build codex:base runner image"
 	@echo "  docker-opencode  Build opencode:base runner image"
@@ -20,6 +21,9 @@ test:
 
 build:
 	./scripts/build-full.sh
+
+run:
+	./scripts/run-api.sh
 
 docker:
 	./scripts/build-docker.sh claude
