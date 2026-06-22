@@ -2,10 +2,12 @@
 # Runner entrypoint for a single Claude Code invocation.
 #
 # Inputs (environment variables set by the API server):
-#   PROMPT        - the user's message text (required)
-#   REPO_URL      - git remote to clone on first run (required)
-#   BRANCH        - branch to check out (default: main)
-#   GITHUB_TOKEN  - PAT injected into the GitHub MCP server (Phase 4, optional)
+#   PROMPT            - the user's message text (required)
+#   REPO_URL          - git remote to clone on first run (required)
+#   BRANCH            - branch to check out (default: main)
+#   MODEL             - Claude model to use (default: claude-opus-4-8)
+#   NATIVE_SESSION_ID - session ID to resume; if non-empty passed to --resume
+#   GITHUB_TOKEN      - PAT injected into the GitHub MCP server (Phase 4, optional)
 #
 # State persists across runs via two mounted volumes:
 #   /workspace            - the cloned repository + .claude session files
@@ -17,6 +19,8 @@
 set -euo pipefail
 
 BRANCH="${BRANCH:-main}"
+MODEL="${MODEL:-claude-opus-4-8}"
+NATIVE_SESSION_ID="${NATIVE_SESSION_ID:-}"
 
 if [ -z "${PROMPT:-}" ]; then
     echo "entrypoint: PROMPT is required" >&2
@@ -48,9 +52,14 @@ fi
 
 # Very first invocation? Seed the session so --resume has history to attach to.
 if [ ! -f /workspace/.claude/history.jsonl ]; then
-    claude -p "Initialise session" --resume || true
+    claude -p "Initialise session" --model "${MODEL}" --resume || true
 fi
 
 # Run the actual prompt. stdout is captured by the API server and streamed to
-# the browser as SSE.
-exec claude -p "${PROMPT}" --resume
+# the browser as SSE. Resume a specific session if NATIVE_SESSION_ID is set;
+# otherwise resume the most recent session in the workspace volume.
+if [ -n "$NATIVE_SESSION_ID" ]; then
+    exec claude -p "${PROMPT}" --model "${MODEL}" --resume "${NATIVE_SESSION_ID}"
+else
+    exec claude -p "${PROMPT}" --model "${MODEL}" --resume
+fi
