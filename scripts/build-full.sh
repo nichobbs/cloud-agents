@@ -66,8 +66,17 @@ for lib in lyric-stdlib lyric-logging lyric-auth lyric-resilience lyric-web lyri
   AUTH_DLL="$LYRIC_LANG/lyric-auth/bin/Lyric.Auth.dll"
 
   if [ "$lib" = "lyric-web" ]; then
-    # lyric-web transitively builds lyric-auth from source when lyric-auth/bin is absent.
-    # If the build fails, diagnose the DLL lyric-web produced before propagating the error.
+    # lyric-web's lyric.toml declares Lyric.Auth as a path dep, triggering a
+    # Lyric 0.4.5 restore-code-path bug: the compiler builds lyric-auth from
+    # source, writes a valid DLL, then immediately rejects it with "Lyric.Contract.Auth
+    # resource is not valid JSON".  lyric-web does not import any Lyric.Auth
+    # symbols; removing the dep avoids the broken restore path entirely.
+    LYRIC_WEB_TOML="$LYRIC_LANG/lyric-web/lyric.toml"
+    if grep -q '"Lyric.Auth"' "$LYRIC_WEB_TOML" 2>/dev/null; then
+      sed -i '/"Lyric.Auth"/d' "$LYRIC_WEB_TOML"
+      echo "    removed Lyric.Auth path dep from lyric-web/lyric.toml (Lyric 0.4.5 restore-bug workaround)"
+    fi
+
     AUTH_SHA_BEFORE="$(sha256sum "$AUTH_DLL" 2>/dev/null | awk '{print $1}' || echo 'missing')"
     echo "    Lyric.Auth.dll SHA before lyric-web: $AUTH_SHA_BEFORE"
     set +e
