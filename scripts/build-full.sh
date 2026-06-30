@@ -65,6 +65,11 @@ echo "==> building dependency libraries"
 for lib in lyric-stdlib lyric-logging lyric-auth lyric-resilience lyric-web lyric-docker; do
   ( cd "$LYRIC_LANG/$lib" && rm -f lyric.lock && lyric build >/dev/null )
   echo "    built $lib"
+  # Track whether lyric-resilience rewrites the auth DLL (it depends on lyric-auth and
+  # may re-compile it in a different context, producing a corrupt contract for lyric-web).
+  AUTH_DLL="$LYRIC_LANG/lyric-auth/bin/Lyric.Auth.dll"
+  DLL_SHA="$(sha256sum "$AUTH_DLL" 2>/dev/null | awk '{print $1}' || echo 'missing')"
+  echo "    Lyric.Auth.dll SHA after $lib: $DLL_SHA"
   if [ "$lib" = "lyric-auth" ]; then
     echo "==> diagnosing Lyric.Contract.Auth resource"
     AUTH_DLL="$LYRIC_LANG/lyric-auth/bin/Lyric.Auth.dll"
