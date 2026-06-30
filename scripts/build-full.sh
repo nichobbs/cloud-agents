@@ -71,6 +71,10 @@ for lib in lyric-stdlib lyric-logging lyric-auth lyric-resilience lyric-web lyri
   DLL_SHA="$(sha256sum "$AUTH_DLL" 2>/dev/null | awk '{print $1}' || echo 'missing')"
   echo "    Lyric.Auth.dll SHA after $lib: $DLL_SHA"
   if [ "$lib" = "lyric-auth" ]; then
+    echo "==> files produced by lyric-auth build"
+    find "$LYRIC_LANG/lyric-auth" -type f \( -name '*.dll' -o -name '*.json' -o -name '*.lock' \) 2>/dev/null | sort | while read -r f; do
+      echo "    $(wc -c < "$f") bytes  $f"
+    done
     echo "==> diagnosing Lyric.Contract.Auth resource"
     AUTH_DLL="$LYRIC_LANG/lyric-auth/bin/Lyric.Auth.dll"
     DIAG_DIR="$(mktemp -d)"
@@ -78,28 +82,51 @@ for lib in lyric-stdlib lyric-logging lyric-auth lyric-resilience lyric-web lyri
 using System;
 using System.IO;
 using System.Reflection;
+using System.Reflection.Metadata;
+using System.Reflection.PortableExecutable;
 using System.Text;
 using System.Text.Json;
 
 var dllPath = Path.GetFullPath(args[0]);
+
+// --- Method 1: Assembly.LoadFile (reflection) ---
+Console.WriteLine("  [diag] === reflection API ===");
 var asm = Assembly.LoadFile(dllPath);
-var names = asm.GetManifestResourceNames();
-Console.WriteLine("  [diag] embedded resources: " + string.Join(", ", names));
-var anyInvalid = false;
-foreach (var name in names) {
+foreach (var name in asm.GetManifestResourceNames()) {
     if (!name.StartsWith("Lyric.Contract.")) continue;
-    using var stream = asm.GetManifestResourceStream(name)!;
-    var ms = new MemoryStream();
-    stream.CopyTo(ms);
-    var text = Encoding.UTF8.GetString(ms.ToArray());
-    Console.Write($"  [diag] {name}: {ms.Length} bytes — ");
-    try {
-        JsonDocument.Parse(text);
-        Console.WriteLine("VALID");
-    } catch (Exception e) {
-        Console.WriteLine($"INVALID: {e.Message}");
-        Console.WriteLine($"  [diag] {name} preview: " + text[..Math.Min(400, text.Length)]);
-        anyInvalid = true;
+    using var rs = asm.GetManifestResourceStream(name)!;
+    var ms = new MemoryStream(); rs.CopyTo(ms);
+    var txt = Encoding.UTF8.GetString(ms.ToArray());
+    Console.Write($"  [diag] {name}: {ms.Length}B — ");
+    try { JsonDocument.Parse(txt); Console.WriteLine("VALID"); }
+    catch (Exception e) { Console.WriteLine($"INVALID: {e.Message}"); Console.WriteLine("  [diag] preview: " + txt[..Math.Min(300,txt.Length)]); }
+}
+
+// --- Method 2: PEReader (raw PE parsing, same as Lyric compiler likely uses) ---
+Console.WriteLine("  [diag] === PEReader API ===");
+using var fs = File.OpenRead(dllPath);
+using var pe = new PEReader(fs);
+var md = pe.GetMetadataReader();
+var resDir = pe.PEHeaders.CorHeader!.ResourcesDirectory;
+// Resources section data pointer
+var resSection = pe.GetSectionData(resDir.RelativeVirtualAddress);
+var anyInvalid = false;
+foreach (var handle in md.ManifestResources) {
+    var res = md.GetManifestResource(handle);
+    var name = md.GetString(res.Name);
+    if (!name.StartsWith("Lyric.Contract.")) continue;
+    if (!res.Implementation.IsNil) continue;
+    // Offset into the resources blob; first 4 bytes are the length (little-endian)
+    var offset = res.Offset;
+    unsafe {
+        var ptr = resSection.Pointer + offset;
+        var len = *(int*)ptr;
+        var data = new byte[len];
+        for (var i = 0; i < len; i++) data[i] = *(ptr + 4 + i);
+        var txt = Encoding.UTF8.GetString(data);
+        Console.Write($"  [diag] {name}: {len}B — ");
+        try { JsonDocument.Parse(txt); Console.WriteLine("VALID"); }
+        catch (Exception e) { Console.WriteLine($"INVALID: {e.Message}"); Console.WriteLine("  [diag] preview: " + txt[..Math.Min(300,txt.Length)]); anyInvalid = true; }
     }
 }
 return anyInvalid ? 1 : 0;
@@ -110,7 +137,7 @@ CSEOF
     <OutputType>Exe</OutputType>
     <TargetFramework>net10.0</TargetFramework>
     <Nullable>enable</Nullable>
-    <AllowUnsafeBlocks>false</AllowUnsafeBlocks>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
   </PropertyGroup>
 </Project>
 PROJEOF
