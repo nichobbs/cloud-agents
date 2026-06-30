@@ -63,11 +63,74 @@ cp -r "$REPO_ROOT/vendor/lyric-docker/src" "$LYRIC_LANG/lyric-docker/src"
 
 echo "==> building dependency libraries"
 for lib in lyric-stdlib lyric-logging lyric-auth lyric-resilience lyric-web lyric-docker; do
+  AUTH_DLL="$LYRIC_LANG/lyric-auth/bin/Lyric.Auth.dll"
+
+  if [ "$lib" = "lyric-web" ]; then
+    # lyric-web transitively builds lyric-auth from source when lyric-auth/bin is absent.
+    # If the build fails, diagnose the DLL lyric-web produced before propagating the error.
+    AUTH_SHA_BEFORE="$(sha256sum "$AUTH_DLL" 2>/dev/null | awk '{print $1}' || echo 'missing')"
+    echo "    Lyric.Auth.dll SHA before lyric-web: $AUTH_SHA_BEFORE"
+    set +e
+    ( cd "$LYRIC_LANG/$lib" && rm -f lyric.lock && lyric build 2>&1 )
+    LYRIC_WEB_RC=$?
+    set -e
+    AUTH_SHA_AFTER="$(sha256sum "$AUTH_DLL" 2>/dev/null | awk '{print $1}' || echo 'missing')"
+    echo "    Lyric.Auth.dll SHA after lyric-web: $AUTH_SHA_AFTER"
+    if [ "$AUTH_SHA_AFTER" != "missing" ] && [ "$AUTH_SHA_BEFORE" != "$AUTH_SHA_AFTER" ]; then
+      echo "==> lyric-web produced a NEW Lyric.Auth.dll — diagnosing it"
+      DIAG_DIR2="$(mktemp -d)"
+      cat > "$DIAG_DIR2/diag.cs" <<'CSEOF2'
+using System;
+using System.IO;
+using System.Reflection;
+using System.Text;
+using System.Text.Json;
+
+var dllPath = Path.GetFullPath(args[0]);
+var asm = Assembly.LoadFile(dllPath);
+foreach (var name in asm.GetManifestResourceNames()) {
+    if (!name.StartsWith("Lyric.Contract.")) continue;
+    using var rs = asm.GetManifestResourceStream(name)!;
+    var ms = new MemoryStream(); rs.CopyTo(ms);
+    var bytes = ms.ToArray();
+    var hex16 = BitConverter.ToString(bytes[..Math.Min(16,bytes.Length)]).Replace("-"," ");
+    var txt = Encoding.UTF8.GetString(bytes);
+    Console.Write($"  [web-diag] {name}: {bytes.Length}B hex[0:16]=[{hex16}] — ");
+    try { JsonDocument.Parse(txt); Console.WriteLine("VALID"); }
+    catch (Exception e) { Console.WriteLine($"INVALID: {e.Message}"); }
+    Console.WriteLine($"  [web-diag] {name} FULL: {txt}");
+}
+return 0;
+CSEOF2
+      cat > "$DIAG_DIR2/diag.csproj" <<'PROJEOF2'
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0</TargetFramework>
+    <Nullable>enable</Nullable>
+  </PropertyGroup>
+</Project>
+PROJEOF2
+      ( cd "$DIAG_DIR2" && dotnet run --project diag.csproj -- "$AUTH_DLL" 2>&1 ) || true
+      rm -rf "$DIAG_DIR2"
+    elif [ "$AUTH_SHA_AFTER" = "missing" ]; then
+      echo "    lyric-web did NOT create Lyric.Auth.dll (still missing)"
+    else
+      echo "    Lyric.Auth.dll unchanged by lyric-web (DLL came from somewhere else)"
+    fi
+    if [ "$LYRIC_WEB_RC" -ne 0 ]; then
+      echo "==> lyric-web build failed (exit $LYRIC_WEB_RC) — re-running with full output to capture error"
+      ( cd "$LYRIC_LANG/$lib" && lyric build ) || true
+      exit "$LYRIC_WEB_RC"
+    fi
+    echo "    built $lib"
+    continue
+  fi
+
   ( cd "$LYRIC_LANG/$lib" && rm -f lyric.lock && lyric build >/dev/null )
   echo "    built $lib"
   # Track whether lyric-resilience rewrites the auth DLL (it depends on lyric-auth and
   # may re-compile it in a different context, producing a corrupt contract for lyric-web).
-  AUTH_DLL="$LYRIC_LANG/lyric-auth/bin/Lyric.Auth.dll"
   DLL_SHA="$(sha256sum "$AUTH_DLL" 2>/dev/null | awk '{print $1}' || echo 'missing')"
   echo "    Lyric.Auth.dll SHA after $lib: $DLL_SHA"
   if [ "$lib" = "lyric-auth" ]; then
