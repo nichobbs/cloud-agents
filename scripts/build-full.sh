@@ -80,16 +80,24 @@ var dllPath = Path.GetFullPath(args[0]);
 var asm = Assembly.LoadFile(dllPath);
 var names = asm.GetManifestResourceNames();
 Console.WriteLine("  [diag] embedded resources: " + string.Join(", ", names));
-using var stream = asm.GetManifestResourceStream("Lyric.Contract.Auth");
-if (stream == null) { Console.Error.WriteLine("  [diag] Lyric.Contract.Auth not found"); return 1; }
-var bytes = new byte[stream.Length];
-stream.Read(bytes, 0, bytes.Length);
-Console.WriteLine($"  [diag] resource length: {bytes.Length} bytes");
-var text = Encoding.UTF8.GetString(bytes);
-Console.WriteLine("  [diag] UTF-8 preview: " + text[..Math.Min(600, text.Length)]);
-try { JsonDocument.Parse(text); Console.WriteLine("  [diag] JSON is VALID"); }
-catch (Exception e) { Console.WriteLine("  [diag] JSON is INVALID: " + e.Message); }
-return 0;
+var anyInvalid = false;
+foreach (var name in names) {
+    if (!name.StartsWith("Lyric.Contract.")) continue;
+    using var stream = asm.GetManifestResourceStream(name)!;
+    var ms = new MemoryStream();
+    stream.CopyTo(ms);
+    var text = Encoding.UTF8.GetString(ms.ToArray());
+    Console.Write($"  [diag] {name}: {ms.Length} bytes — ");
+    try {
+        JsonDocument.Parse(text);
+        Console.WriteLine("VALID");
+    } catch (Exception e) {
+        Console.WriteLine($"INVALID: {e.Message}");
+        Console.WriteLine($"  [diag] {name} preview: " + text[..Math.Min(400, text.Length)]);
+        anyInvalid = true;
+    }
+}
+return anyInvalid ? 1 : 0;
 CSEOF
     cat > "$DIAG_DIR/diag.csproj" <<'PROJEOF'
 <Project Sdk="Microsoft.NET.Sdk">
