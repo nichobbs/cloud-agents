@@ -15,6 +15,11 @@ pub record ResultCell {
 @externTarget("System.Threading.Tasks.Task.Wait")
 func taskWaitUnit[T](t: in T): Unit = ()
 
+/// Returns true if the task completed within timeoutMs, false on timeout.
+@externInstance
+@externTarget("System.Threading.Tasks.Task.Wait")
+func taskWaitMs[T](t: in T, timeoutMs: in Int): Bool = false
+
 /// Docker image name for the given harness.
 func imageForHarness(harness: in String): String {
   if harness == "codex" { return "codex:base" }
@@ -122,7 +127,10 @@ pub func runSessionMessage(
 ): Result[String, String] {
   val cell = ResultCell(isSuccess = false, output = "", error = "")
   val t = runSessionMessageAsync(repoUrl, branch, prompt, sessionId, harness, model, nativeSessionId, cell)
-  taskWaitUnit(t)
+  val completed = taskWaitMs(t, 1800000) // 30-minute hard cap
+  if not completed {
+    return Err(error = "Container run timed out after 30 minutes")
+  }
   if cell.isSuccess {
     return Ok(value = cell.output)
   } else {

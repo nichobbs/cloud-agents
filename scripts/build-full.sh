@@ -43,6 +43,15 @@ git -C "$LYRIC_LANG" apply --reverse --check "$REPO_ROOT/patches/lyric-auth-cont
   && echo "    already applied" \
   || git -C "$LYRIC_LANG" apply "$REPO_ROOT/patches/lyric-auth-contract-leak.patch"
 
+echo "==> demoting Auth.Kernel.Net pub functions (contract-synthesis bug workaround)"
+AUTH_KERNEL="$LYRIC_LANG/lyric-auth/src/_kernel/net/auth_kernel.l"
+if [ -f "$AUTH_KERNEL" ] && grep -q 'pub func tryExtractClaim' "$AUTH_KERNEL"; then
+  sed -i 's/pub func tryExtractClaim/func tryExtractClaim/' "$AUTH_KERNEL"
+  echo "    demoted tryExtractClaim to package-private"
+else
+  echo "    tryExtractClaim already package-private or file not found"
+fi
+
 echo "==> installing the in-repo Docker library into the workspace"
 rm -rf "$LYRIC_LANG/lyric-docker/src"
 cp -r "$REPO_ROOT/vendor/lyric-docker/src" "$LYRIC_LANG/lyric-docker/src"

@@ -34,20 +34,6 @@ pub record CreateSessionRequest {
 }
 
 @generate(Json)
-pub record SessionSummary {
-  pub sessionId: String
-  pub repoUrl: String
-  pub branch: String
-  pub harness: String
-  pub model: String
-}
-
-@generate(Json)
-pub record SessionList {
-  pub sessions: slice[SessionSummary]
-}
-
-@generate(Json)
 pub record UpdateSessionRequest {
   pub model: String
 }
@@ -196,26 +182,6 @@ pub func updateSessionModel(
   }
   CloudAgents.SessionStore.updateSessionModel(id, req.model)
   return Ok(())
-}
-
-/// List all active sessions.
-@get("/api/sessions")
-pub func listSessions(): Result[SessionList, Web.ApiError] {
-  val sessions = CloudAgents.SessionStore.getSessionsSlice()
-  var summaries: slice[SessionSummary] = []
-  var i = 0
-  while i < sessions.length {
-    val s = sessions[i]
-    summaries = summaries.append(SessionSummary(
-      sessionId = s.sessionId,
-      repoUrl = s.repoUrl,
-      branch = s.branch,
-      harness = s.harness,
-      model = s.model
-    ))
-    i = i + 1
-  }
-  return Ok(SessionList(sessions = summaries))
 }
 
 /// Retrieve service health, including a live SQLite probe.
