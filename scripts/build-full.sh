@@ -43,14 +43,16 @@ git -C "$LYRIC_LANG" apply --reverse --check "$REPO_ROOT/patches/lyric-auth-cont
   && echo "    already applied" \
   || git -C "$LYRIC_LANG" apply "$REPO_ROOT/patches/lyric-auth-contract-leak.patch"
 
-echo "==> demoting Auth.Kernel.Net pub functions (contract-synthesis bug workaround)"
-AUTH_KERNEL="$LYRIC_LANG/lyric-auth/src/_kernel/net/auth_kernel.l"
-if [ -f "$AUTH_KERNEL" ] && grep -q 'pub func tryExtractClaim' "$AUTH_KERNEL"; then
-  sed -i 's/pub func tryExtractClaim/func tryExtractClaim/' "$AUTH_KERNEL"
-  echo "    demoted tryExtractClaim to package-private"
-else
-  echo "    tryExtractClaim already package-private or file not found"
-fi
+echo "==> demoting Auth.Kernel.Net pub declarations (contract-synthesis bug workaround)"
+# All pub funcs in lyric-auth/src/_kernel/ are in internal packages (Auth.Kernel.*)
+# that lyric-web never imports directly; demoting them to package-private prevents
+# the contract synthesizer from including their signatures in the contract JSON.
+find "$LYRIC_LANG/lyric-auth/src/_kernel" -name '*.l' -type f 2>/dev/null | while IFS= read -r f; do
+  if grep -qE '^pub (async )?func ' "$f"; then
+    sed -i 's/^pub func /func /g; s/^pub async func /async func /g' "$f"
+    echo "    demoted pub funcs in $f"
+  fi
+done
 
 echo "==> installing the in-repo Docker library into the workspace"
 rm -rf "$LYRIC_LANG/lyric-docker/src"
@@ -60,6 +62,38 @@ echo "==> building dependency libraries"
 for lib in lyric-stdlib lyric-logging lyric-auth lyric-resilience lyric-web lyric-docker; do
   ( cd "$LYRIC_LANG/$lib" && rm -f lyric.lock && lyric build >/dev/null )
   echo "    built $lib"
+  if [ "$lib" = "lyric-auth" ]; then
+    echo "==> diagnosing Lyric.Contract.Auth resource"
+    AUTH_DLL="$LYRIC_LANG/lyric-auth/bin/Lyric.Auth.dll"
+    python3 - "$AUTH_DLL" <<'PYEOF' 2>&1 || true
+import sys, re
+dll_path = sys.argv[1]
+with open(dll_path, 'rb') as f:
+    data = f.read()
+# Find the resource name then look for JSON content that follows it
+marker = b'Lyric.Contract.Auth'
+pos = data.find(marker)
+if pos < 0:
+    print("  [diag] resource name not found in DLL binary")
+    sys.exit(0)
+print(f"  [diag] resource name at offset {pos}")
+after = data[pos + len(marker):pos + len(marker) + 4096]
+for i, b in enumerate(after):
+    if chr(b) in ('{', '['):
+        snip = after[i:i+800]
+        printable = ''.join(chr(x) if 32 <= x < 127 else f'\\x{x:02x}' for x in snip)
+        print(f"  [diag] JSON-like content starts at +{i}:")
+        print(f"  [diag] {printable[:600]}")
+        import json
+        try:
+            raw = snip.split(b'\x00')[0]
+            json.loads(raw.decode('utf-8', errors='replace'))
+            print("  [diag] JSON is VALID")
+        except Exception as e:
+            print(f"  [diag] JSON is INVALID: {e}")
+        break
+PYEOF
+  fi
 done
 
 echo "==> building the full Cloud Agents project"
