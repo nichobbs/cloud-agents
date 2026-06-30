@@ -165,15 +165,29 @@ test "Test Handler createSession validation" {
 }
 
 test "Test listSessions returns current session store contents" {
-  val req = CreateSessionRequest(repoUrl = "https://github.com/nic/repos/cloud-agents", branch = "main", harness = "claude", model = "claude-opus-4-8")
+  val req = CreateSessionRequest(repoUrl = "https://github.com/nic/repos/cloud-agents", branch = "feat", harness = "codex", model = "o4-mini")
   match createSession(req) {
     case Err(_) -> assertTrue(false, "setup: createSession should succeed")
     case Ok(resp) -> {
-      val result = listSessions()
-      match result {
+      match listSessions() {
         case Err(_) -> assertTrue(false, "listSessions should not error")
         case Ok(list) -> {
           assertTrue(list.sessions.length > 0, "at least the created session is listed")
+          // Find our session in the list and verify all mapped fields
+          var found = false
+          var i = 0
+          while i < list.sessions.length {
+            val s = list.sessions[i]
+            if s.sessionId == resp.sessionId {
+              found = true
+              assertEqual(s.repoUrl, "https://github.com/nic/repos/cloud-agents", "repoUrl mapped correctly")
+              assertEqual(s.branch, "feat", "branch mapped correctly")
+              assertEqual(s.harness, "codex", "harness mapped correctly")
+              assertEqual(s.model, "o4-mini", "model mapped correctly")
+            }
+            i = i + 1
+          }
+          assertTrue(found, "created session appears in the list")
           val _ = removeSession(resp.sessionId)
         }
       }

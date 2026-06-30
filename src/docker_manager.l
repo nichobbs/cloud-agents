@@ -161,9 +161,17 @@ async func runSessionMessageAsync(
     return ()
   }
 
-  // Wait for the container process to exit before reading logs.
-  // Without this wait the log fetch may return partial or empty output.
-  val _ = await waitForContainer(containerId)
+  // Block until the container process exits. If the wait call itself fails
+  // (daemon unreachable, container vanished, etc.) we cannot safely fetch
+  // complete logs, so we clean up and surface the error immediately.
+  val waitResult = await waitForContainer(containerId)
+  if not waitResult.isOk() {
+    val _ = await deleteRunnerContainer(containerId)
+    CloudAgents.SessionStore.updateSessionContainer(sessionId, "")
+    cell.isSuccess = false
+    cell.error = waitResult.unwrapErrOr("unknown error")
+    return ()
+  }
 
   val logsResult = await getRunnerLogs(containerId)
 
