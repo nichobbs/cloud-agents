@@ -82,54 +82,25 @@ for lib in lyric-stdlib lyric-logging lyric-auth lyric-resilience lyric-web lyri
 using System;
 using System.IO;
 using System.Reflection;
-using System.Reflection.Metadata;
-using System.Reflection.PortableExecutable;
 using System.Text;
 using System.Text.Json;
 
 var dllPath = Path.GetFullPath(args[0]);
-
-// --- Method 1: Assembly.LoadFile (reflection) ---
-Console.WriteLine("  [diag] === reflection API ===");
 var asm = Assembly.LoadFile(dllPath);
 foreach (var name in asm.GetManifestResourceNames()) {
     if (!name.StartsWith("Lyric.Contract.")) continue;
     using var rs = asm.GetManifestResourceStream(name)!;
     var ms = new MemoryStream(); rs.CopyTo(ms);
-    var txt = Encoding.UTF8.GetString(ms.ToArray());
-    Console.Write($"  [diag] {name}: {ms.Length}B — ");
+    var bytes = ms.ToArray();
+    var hex16 = BitConverter.ToString(bytes[..Math.Min(16,bytes.Length)]).Replace("-"," ");
+    var txt = Encoding.UTF8.GetString(bytes);
+    Console.Write($"  [diag] {name}: {bytes.Length}B hex[0:16]=[{hex16}] — ");
     try { JsonDocument.Parse(txt); Console.WriteLine("VALID"); }
-    catch (Exception e) { Console.WriteLine($"INVALID: {e.Message}"); Console.WriteLine("  [diag] preview: " + txt[..Math.Min(300,txt.Length)]); }
+    catch (Exception e) { Console.WriteLine($"INVALID: {e.Message}"); }
+    // Print full content so we can see every character
+    Console.WriteLine($"  [diag] {name} FULL: {txt}");
 }
-
-// --- Method 2: PEReader (raw PE parsing, same as Lyric compiler likely uses) ---
-Console.WriteLine("  [diag] === PEReader API ===");
-using var fs = File.OpenRead(dllPath);
-using var pe = new PEReader(fs);
-var md = pe.GetMetadataReader();
-var resDir = pe.PEHeaders.CorHeader!.ResourcesDirectory;
-// Resources section data pointer
-var resSection = pe.GetSectionData(resDir.RelativeVirtualAddress);
-var anyInvalid = false;
-foreach (var handle in md.ManifestResources) {
-    var res = md.GetManifestResource(handle);
-    var name = md.GetString(res.Name);
-    if (!name.StartsWith("Lyric.Contract.")) continue;
-    if (!res.Implementation.IsNil) continue;
-    // Offset into the resources blob; first 4 bytes are the length (little-endian)
-    var offset = res.Offset;
-    unsafe {
-        var ptr = resSection.Pointer + offset;
-        var len = *(int*)ptr;
-        var data = new byte[len];
-        for (var i = 0; i < len; i++) data[i] = *(ptr + 4 + i);
-        var txt = Encoding.UTF8.GetString(data);
-        Console.Write($"  [diag] {name}: {len}B — ");
-        try { JsonDocument.Parse(txt); Console.WriteLine("VALID"); }
-        catch (Exception e) { Console.WriteLine($"INVALID: {e.Message}"); Console.WriteLine("  [diag] preview: " + txt[..Math.Min(300,txt.Length)]); anyInvalid = true; }
-    }
-}
-return anyInvalid ? 1 : 0;
+return 0;
 CSEOF
     cat > "$DIAG_DIR/diag.csproj" <<'PROJEOF'
 <Project Sdk="Microsoft.NET.Sdk">
@@ -143,6 +114,13 @@ CSEOF
 PROJEOF
     ( cd "$DIAG_DIR" && dotnet run --project diag.csproj -- "$AUTH_DLL" 2>&1 ) || true
     rm -rf "$DIAG_DIR"
+    # Both reflection and PEReader confirm all contracts are valid JSON, yet the
+    # Lyric 0.4.5 restore path rejects the DLL.  Clear the pre-built DLL so that
+    # lyric-web and downstream builds must compile lyric-auth from source instead
+    # of restoring from this DLL.  Building from source bypasses the restore code
+    # path entirely; the patched sources should produce a contract the compiler accepts.
+    echo "==> clearing lyric-auth/bin (force source build in downstream deps)"
+    rm -rf "$LYRIC_LANG/lyric-auth/bin"
   fi
 done
 
