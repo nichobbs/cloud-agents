@@ -38,6 +38,11 @@ git -C "$LYRIC_LANG" apply --reverse --check "$REPO_ROOT/patches/lyric-stdlib-da
   && echo "    already applied" \
   || git -C "$LYRIC_LANG" apply "$REPO_ROOT/patches/lyric-stdlib-datetimeoffset-leak.patch"
 
+echo "==> applying lyric-auth contract-leak patch (idempotent)"
+git -C "$LYRIC_LANG" apply --reverse --check "$REPO_ROOT/patches/lyric-auth-contract-leak.patch" 2>/dev/null \
+  && echo "    already applied" \
+  || git -C "$LYRIC_LANG" apply "$REPO_ROOT/patches/lyric-auth-contract-leak.patch"
+
 echo "==> installing the in-repo Docker library into the workspace"
 rm -rf "$LYRIC_LANG/lyric-docker/src"
 cp -r "$REPO_ROOT/vendor/lyric-docker/src" "$LYRIC_LANG/lyric-docker/src"

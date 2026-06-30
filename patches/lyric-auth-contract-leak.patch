@@ -1,0 +1,12 @@
+diff --git a/lyric-auth/src/auth_aspects.l b/lyric-auth/src/auth_aspects.l
+--- a/lyric-auth/src/auth_aspects.l
++++ b/lyric-auth/src/auth_aspects.l
+@@ -8,7 +8,7 @@
+ /// Err("API key is missing") when the key argument is empty.
+ @stable(since = "0.1")
+ @inline_template
+-pub aspect ValidateKey {
++aspect ValidateKey {
+   config {
+     enabled: Bool = true
+     @sensitive
