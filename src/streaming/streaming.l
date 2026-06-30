@@ -53,12 +53,9 @@ pub func sseDoneWithMessage(messageId: in String): String {
   return "event: done\ndata: {\"messageId\":\"" + jsonEscape(messageId) + "\"}\n\n"
 }
 
-/// Convert a block of captured logs into an SSE stream body: one frame per
-/// line, terminated by a `done` event.
-///
-/// Lines are split on `\n` with a manual scan rather than `String.split`,
-/// which the target compiler does not provide as a String method.
-pub func formatLogsAsSse(logs: in String): String {
+/// Scan `logs` line-by-line and produce one SSE data frame per line.
+/// CR is swallowed so CRLF output does not leave trailing carriage returns.
+func logsToFrames(logs: in String): String {
   var acc = ""
   var line = ""
   var i = 0
@@ -68,41 +65,26 @@ pub func formatLogsAsSse(logs: in String): String {
       acc = acc + toSseChunk(line)
       line = ""
     } else if c == "\r" {
-      // swallow CR so CRLF logs do not leave a trailing carriage return
+      // swallow
     } else {
       line = line + c
     }
     i = i + 1
   }
-  // Emit any trailing partial line that was not newline-terminated.
   if line.length > 0 {
     acc = acc + toSseChunk(line)
   }
-  acc = acc + sseDone()
   return acc
+}
+
+/// Convert a block of captured logs into an SSE stream body: one frame per
+/// line, terminated by a `done` event.
+pub func formatLogsAsSse(logs: in String): String {
+  return logsToFrames(logs) + sseDone()
 }
 
 /// Like `formatLogsAsSse`, but the terminal `done` frame carries the persisted
 /// agent message id (see CloudAgents.Repository.addMessage).
 pub func formatLogsAsSseWithId(logs: in String, messageId: in String): String {
-  var acc = ""
-  var line = ""
-  var i = 0
-  while i < logs.length {
-    val c = logs.substring(i, 1)
-    if c == "\n" {
-      acc = acc + toSseChunk(line)
-      line = ""
-    } else if c == "\r" {
-      // swallow CR so CRLF logs do not leave a trailing carriage return
-    } else {
-      line = line + c
-    }
-    i = i + 1
-  }
-  if line.length > 0 {
-    acc = acc + toSseChunk(line)
-  }
-  acc = acc + sseDoneWithMessage(messageId)
-  return acc
+  return logsToFrames(logs) + sseDoneWithMessage(messageId)
 }

@@ -15,6 +15,7 @@ func main(): Unit {
   var router = Web.create()
 
   // Register session routes
+  router = Web.addGet(router,    "/api/sessions",             "CloudAgents.Handlers.listSessions")
   router = Web.addPost(router,   "/api/sessions",             "CloudAgents.Handlers.createSession")
   router = Web.addPost(router,   "/api/sessions/{id}/messages", "CloudAgents.Handlers.sendMessage")
   router = Web.addDelete(router, "/api/sessions/{id}",        "CloudAgents.Handlers.deleteSession")

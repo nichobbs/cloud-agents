@@ -345,6 +345,12 @@ pub func insertMessageSql(
     sqlLiteral(content) + ", " + sqlLiteral(seq) + ", " + sqlLiteral(createdAt) + ")"
 }
 
+/// SELECT the session_id that owns a given message. Used by the comments
+/// handler to derive ownership without trusting the client.
+pub func selectMessageSessionIdSql(messageId: in String): String {
+  return "SELECT session_id FROM messages WHERE id = " + sqlLiteral(messageId)
+}
+
 /// SELECT a session's transcript, oldest first. Column order matches the
 /// mapping in CloudAgents.Repository.
 pub func selectMessagesSql(sessionId: in String): String {

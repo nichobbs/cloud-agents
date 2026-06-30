@@ -429,6 +429,19 @@ pub async func removeContainer(client: in DockerClient, containerId: in String):
   )
 }
 
+/// Block until a container exits. Returns when the container process terminates;
+/// callers should fetch logs only after this returns.
+pub async func waitContainer(client: in DockerClient, containerId: in String): Result[Unit, DockerError]
+  requires: containerId.length > 0
+{
+  await sendExpectSuccess(
+    client,
+    "http://docker/v1.40/containers/" + containerId + "/wait",
+    Std.Http.POST,
+    "Wait for container failed"
+  )
+}
+
 /// Fetch a container's combined stdout/stderr logs.
 pub async func getContainerLogs(client: in DockerClient, containerId: in String): Result[String, DockerError]
   requires: containerId.length > 0

@@ -104,6 +104,12 @@ func colAt(cols: in slice[String], i: in Int): String {
 
 // ─── Schema ────────────────────────────────────────────────────────────────────
 
+/// Verify the database is reachable. Used by the health endpoint.
+pub func ping(): Result[Unit, CloudAgents.Sqlite.DbError] {
+  CloudAgents.Sqlite.execute("SELECT 1")?
+  return Ok(value = ())
+}
+
 /// Create every table if it does not already exist. Safe to call at every
 /// startup.
 pub func initSchema(): Result[Unit, CloudAgents.Sqlite.DbError] {
@@ -167,6 +173,16 @@ pub func listMessages(sessionId: in String): Result[slice[Message], CloudAgents.
     i = i + 1
   }
   return Ok(value = acc)
+}
+
+/// Look up the session that owns a message. Used to bind comments to the
+/// correct session without trusting client-supplied sessionId values.
+pub func getMessageSessionId(messageId: in String): Result[Option[String], CloudAgents.Sqlite.DbError] {
+  val rows = CloudAgents.Sqlite.query(CloudAgents.Db.selectMessageSessionIdSql(messageId))?
+  if rows.length == 0 {
+    return Ok(value = None)
+  }
+  return Ok(value = Some(value = colAt(rows[0].cols, 0)))
 }
 
 // ─── Comments ──────────────────────────────────────────────────────────────────

@@ -2,10 +2,11 @@ package CloudAgents.Handlers
 
 import Std.Core
 import Web
-import CloudAgents.SessionStore
 import CloudAgents.Docker
-import CloudAgents.Streaming
 import CloudAgents.Repository
+import CloudAgents.SessionStore
+import CloudAgents.Sqlite
+import CloudAgents.Streaming
 
 import Std.Uuid
 
@@ -14,12 +15,36 @@ pub func generateSessionId(): String {
   return Std.Uuid.uuidToString(u)
 }
 
+val maxPromptLen = 131072
+val httpsPrefix = "https://"
+
+func isHttpsUrl(url: in String): Bool {
+  if url.length < httpsPrefix.length {
+    return false
+  }
+  return url.substring(0, httpsPrefix.length) == httpsPrefix
+}
+
 @generate(Json)
 pub record CreateSessionRequest {
   pub repoUrl: String
   pub branch: String
   pub harness: String
   pub model: String
+}
+
+@generate(Json)
+pub record SessionSummary {
+  pub sessionId: String
+  pub repoUrl: String
+  pub branch: String
+  pub harness: String
+  pub model: String
+}
+
+@generate(Json)
+pub record SessionList {
+  pub sessions: slice[SessionSummary]
 }
 
 @generate(Json)
@@ -44,6 +69,9 @@ pub func createSession(
 ): Result[CreateSessionResponse, Web.ApiError] {
   if req.repoUrl.length == 0 {
     return Err(Web.badRequest("repoUrl is required"))
+  }
+  if not isHttpsUrl(req.repoUrl) {
+    return Err(Web.badRequest("repoUrl must use the https:// scheme"))
   }
   if req.branch.length == 0 {
     return Err(Web.badRequest("branch is required"))
@@ -78,6 +106,9 @@ pub func sendMessage(
   }
   if req.text.length == 0 {
     return Err(Web.badRequest("text is required"))
+  }
+  if req.text.length > maxPromptLen {
+    return Err(Web.badRequest("text is too long (max 131072 characters)"))
   }
 
   val maybeSession = getSession(id)
@@ -167,8 +198,31 @@ pub func updateSessionModel(
   return Ok(())
 }
 
-/// Retrieve status of the service.
+/// List all active sessions.
+@get("/api/sessions")
+pub func listSessions(): Result[SessionList, Web.ApiError] {
+  val sessions = CloudAgents.SessionStore.getSessionsSlice()
+  var summaries: slice[SessionSummary] = []
+  var i = 0
+  while i < sessions.length {
+    val s = sessions[i]
+    summaries = summaries.append(SessionSummary(
+      sessionId = s.sessionId,
+      repoUrl = s.repoUrl,
+      branch = s.branch,
+      harness = s.harness,
+      model = s.model
+    ))
+    i = i + 1
+  }
+  return Ok(SessionList(sessions = summaries))
+}
+
+/// Retrieve service health, including a live SQLite probe.
 @get("/api/health")
 pub func checkHealth(): Result[String, Web.ApiError] {
-  return Ok("Healthy")
+  match CloudAgents.Repository.ping() {
+    case Ok(_)  -> return Ok("Healthy")
+    case Err(e) -> return Err(Web.internalError("database unavailable: " + CloudAgents.Sqlite.dbErrorMessage(e)))
+  }
 }

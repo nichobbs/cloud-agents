@@ -80,6 +80,16 @@ pub async func stopRunnerContainer(containerId: in String): Result[Unit, String]
   }
 }
 
+/// Wait for a container's process to exit before reading its output.
+pub async func waitForContainer(containerId: in String): Result[Unit, String] {
+  val client = defaultClient()
+  val waitRes = await waitContainer(client, containerId)
+  match waitRes {
+    case Ok(_) -> Ok(value = ())
+    case Err(e) -> Err(error = "Failed to wait for container: " + e.message)
+  }
+}
+
 /// Delete the container.
 pub async func deleteRunnerContainer(containerId: in String): Result[Unit, String] {
   val client = defaultClient()
@@ -145,10 +155,23 @@ async func runSessionMessageAsync(
   if not startResult.isOk() {
     cell.isSuccess = false
     cell.error = startResult.unwrapErrOr("unknown error")
+    // Best-effort cleanup: remove the container even if start failed
+    val _ = await deleteRunnerContainer(containerId)
+    CloudAgents.SessionStore.updateSessionContainer(sessionId, "")
     return ()
   }
 
+  // Wait for the container process to exit before reading logs.
+  // Without this wait the log fetch may return partial or empty output.
+  val _ = await waitForContainer(containerId)
+
   val logsResult = await getRunnerLogs(containerId)
+
+  // Always remove the ephemeral container after the run. Session state
+  // (workspace and home volumes) persists independently of the container.
+  val _ = await deleteRunnerContainer(containerId)
+  CloudAgents.SessionStore.updateSessionContainer(sessionId, "")
+
   if not logsResult.isOk() {
     cell.isSuccess = false
     cell.error = logsResult.unwrapErrOr("unknown error")
@@ -171,13 +194,10 @@ pub func terminateSessionContainer(containerId: in String): Result[Unit, String]
 }
 
 async func terminateSessionContainerAsync(containerId: in String, cell: in ResultCell): Unit {
-  val stopResult = await stopRunnerContainer(containerId)
+  // Stop is best-effort: the container may already have exited (Docker returns
+  // 304/404 in that case). We always attempt remove regardless.
+  val _ = await stopRunnerContainer(containerId)
   val deleteResult = await deleteRunnerContainer(containerId)
-  if not stopResult.isOk() {
-    cell.isSuccess = false
-    cell.error = "Stop failed: " + stopResult.unwrapErrOr("unknown")
-    return ()
-  }
   if not deleteResult.isOk() {
     cell.isSuccess = false
     cell.error = "Delete failed: " + deleteResult.unwrapErrOr("unknown")
