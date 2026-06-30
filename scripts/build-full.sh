@@ -209,7 +209,8 @@ cp -r "$REPO_ROOT/src" "$REPO_ROOT/tests" "$WS/"
 # though the DLL is valid; packages declared in [project.packages] are compiled
 # in-process and never go through the restore path.
 echo "==> inlining lyric-web packages into workspace"
-cp -r "$LYRIC_LANG/lyric-web/src" "$WS/lyric-web-src"
+mkdir -p "$WS/lyric-web-src"
+cp -r "$LYRIC_LANG/lyric-web/src" "$WS/lyric-web-src/"
 
 {
 cat <<'TOML_HEADER'
