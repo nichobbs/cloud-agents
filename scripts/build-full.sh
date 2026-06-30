@@ -43,16 +43,19 @@ git -C "$LYRIC_LANG" apply --reverse --check "$REPO_ROOT/patches/lyric-auth-cont
   && echo "    already applied" \
   || git -C "$LYRIC_LANG" apply "$REPO_ROOT/patches/lyric-auth-contract-leak.patch"
 
-echo "==> demoting Auth.Kernel.Net pub declarations (contract-synthesis bug workaround)"
-# All pub funcs in lyric-auth/src/_kernel/ are in internal packages (Auth.Kernel.*)
-# that lyric-web never imports directly; demoting them to package-private prevents
-# the contract synthesizer from including their signatures in the contract JSON.
-find "$LYRIC_LANG/lyric-auth/src/_kernel" -name '*.l' -type f 2>/dev/null | while IFS= read -r f; do
-  if grep -qE '^pub (async )?func ' "$f"; then
-    sed -i 's/^pub func /func /g; s/^pub async func /async func /g' "$f"
-    echo "    demoted pub funcs in $f"
-  fi
-done
+echo "==> demoting tryExtractClaim in Auth.Kernel.Net (out String param — contract synthesis bug)"
+# tryExtractClaim(token, claimKey, value: out String) has an out-param that the
+# contract synthesizer cannot serialise to JSON.  Demoting it to package-private
+# removes it from the exported contract; auth.l's extractClaim wrapper (in the same
+# project build) can still call it because Lyric project builds see package-private
+# members of sibling packages within the same project.
+AUTH_KERNEL_NET="$LYRIC_LANG/lyric-auth/src/_kernel/net/auth_kernel.l"
+if [ -f "$AUTH_KERNEL_NET" ] && grep -q '^pub func tryExtractClaim' "$AUTH_KERNEL_NET"; then
+  sed -i 's/^pub func tryExtractClaim/func tryExtractClaim/' "$AUTH_KERNEL_NET"
+  echo "    demoted tryExtractClaim to package-private"
+else
+  echo "    tryExtractClaim already package-private or file not found"
+fi
 
 echo "==> installing the in-repo Docker library into the workspace"
 rm -rf "$LYRIC_LANG/lyric-docker/src"
@@ -65,34 +68,41 @@ for lib in lyric-stdlib lyric-logging lyric-auth lyric-resilience lyric-web lyri
   if [ "$lib" = "lyric-auth" ]; then
     echo "==> diagnosing Lyric.Contract.Auth resource"
     AUTH_DLL="$LYRIC_LANG/lyric-auth/bin/Lyric.Auth.dll"
-    python3 - "$AUTH_DLL" <<'PYEOF' 2>&1 || true
-import sys, re
-dll_path = sys.argv[1]
-with open(dll_path, 'rb') as f:
-    data = f.read()
-# Find the resource name then look for JSON content that follows it
-marker = b'Lyric.Contract.Auth'
-pos = data.find(marker)
-if pos < 0:
-    print("  [diag] resource name not found in DLL binary")
-    sys.exit(0)
-print(f"  [diag] resource name at offset {pos}")
-after = data[pos + len(marker):pos + len(marker) + 4096]
-for i, b in enumerate(after):
-    if chr(b) in ('{', '['):
-        snip = after[i:i+800]
-        printable = ''.join(chr(x) if 32 <= x < 127 else f'\\x{x:02x}' for x in snip)
-        print(f"  [diag] JSON-like content starts at +{i}:")
-        print(f"  [diag] {printable[:600]}")
-        import json
-        try:
-            raw = snip.split(b'\x00')[0]
-            json.loads(raw.decode('utf-8', errors='replace'))
-            print("  [diag] JSON is VALID")
-        except Exception as e:
-            print(f"  [diag] JSON is INVALID: {e}")
-        break
-PYEOF
+    DIAG_DIR="$(mktemp -d)"
+    cat > "$DIAG_DIR/diag.cs" <<'CSEOF'
+using System;
+using System.IO;
+using System.Reflection;
+using System.Text;
+using System.Text.Json;
+
+var dllPath = Path.GetFullPath(args[0]);
+var asm = Assembly.LoadFile(dllPath);
+var names = asm.GetManifestResourceNames();
+Console.WriteLine("  [diag] embedded resources: " + string.Join(", ", names));
+using var stream = asm.GetManifestResourceStream("Lyric.Contract.Auth");
+if (stream == null) { Console.Error.WriteLine("  [diag] Lyric.Contract.Auth not found"); return 1; }
+var bytes = new byte[stream.Length];
+stream.Read(bytes, 0, bytes.Length);
+Console.WriteLine($"  [diag] resource length: {bytes.Length} bytes");
+var text = Encoding.UTF8.GetString(bytes);
+Console.WriteLine("  [diag] UTF-8 preview: " + text[..Math.Min(600, text.Length)]);
+try { JsonDocument.Parse(text); Console.WriteLine("  [diag] JSON is VALID"); }
+catch (Exception e) { Console.WriteLine("  [diag] JSON is INVALID: " + e.Message); }
+return 0;
+CSEOF
+    cat > "$DIAG_DIR/diag.csproj" <<'PROJEOF'
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <AllowUnsafeBlocks>false</AllowUnsafeBlocks>
+  </PropertyGroup>
+</Project>
+PROJEOF
+    ( cd "$DIAG_DIR" && dotnet run --project diag.csproj -- "$AUTH_DLL" 2>&1 ) || true
+    rm -rf "$DIAG_DIR"
   fi
 done
 
