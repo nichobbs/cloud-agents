@@ -202,7 +202,17 @@ echo "==> building the full Cloud Agents project"
 WS="$LYRIC_LANG/.cloud-agents-full"
 rm -rf "$WS"; mkdir -p "$WS"
 cp -r "$REPO_ROOT/src" "$REPO_ROOT/tests" "$WS/"
-cat > "$WS/lyric.toml" <<'TOML'
+
+# Inline lyric-web's source packages directly into the workspace [project.packages]
+# instead of listing it as a [dependencies] path dep.  The Lyric 0.4.5 restore code
+# path rejects Web.dll with "Lyric.Contract.Web resource is not valid JSON" even
+# though the DLL is valid; packages declared in [project.packages] are compiled
+# in-process and never go through the restore path.
+echo "==> inlining lyric-web packages into workspace"
+cp -r "$LYRIC_LANG/lyric-web/src" "$WS/lyric-web-src"
+
+{
+cat <<'TOML_HEADER'
 [package]
 name = "CloudAgents"
 version = "0.1.0"
@@ -225,11 +235,39 @@ output_assembly = "CloudAgents.dll"
 "CloudAgents.Repository"   = "src/db/repository.l"
 "CloudAgents.Auth"         = "src/handlers/auth.l"
 "CloudAgents.Streaming"    = "src/streaming/streaming.l"
+TOML_HEADER
+
+# Read lyric-web's [project.packages] and remap source paths into the workspace
+python3 - "$LYRIC_LANG/lyric-web/lyric.toml" <<'PYEOF'
+import sys
+with open(sys.argv[1]) as f:
+    content = f.read()
+in_section = False
+for line in content.split('\n'):
+    s = line.strip()
+    if s == '[project.packages]':
+        in_section = True
+        continue
+    if in_section:
+        if s.startswith('['):
+            break
+        if '=' in s and not s.startswith('#') and s:
+            k, v = s.split('=', 1)
+            k = k.strip().strip('"')
+            v = v.strip().strip('"').strip("'")
+            print(f'"{k}" = "lyric-web-src/{v}"')
+PYEOF
+
+cat <<'TOML_DEPS'
 [dependencies]
-"Lyric.Web"    = { path = "../lyric-web" }
 "Lyric.Docker" = { path = "../lyric-docker" }
 "Std.Logging"  = { path = "../lyric-logging" }
-TOML
+TOML_DEPS
+
+} > "$WS/lyric.toml"
+
+echo "==> workspace lyric.toml (lyric-web packages inlined):"
+cat "$WS/lyric.toml"
 
 ( cd "$WS" && lyric build )
 echo "==> Full build succeeded"
