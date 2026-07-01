@@ -52,13 +52,6 @@ func defaultClient(): HttpClient {
   Std.Http.clientWithUnixSocket(socketPath)
 }
 
-func rootlessClient(): Result[HttpClient, DockerError] {
-  match Lyric.Docker.Sockets.resolveRootlessSocket() {
-    case Ok(socketPath) -> Ok(value = Std.Http.clientWithUnixSocket(socketPath))
-    case Err(message) -> Err(error = DockerError(statusCode = None, message = message, details = ""))
-  }
-}
-
 /// Ping the Docker daemon to verify connectivity.
 pub async func ping(): Result[String, DockerError] {
   val client = defaultClient()
