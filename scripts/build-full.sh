@@ -216,6 +216,10 @@ echo "==> inlining lyric-docker packages into workspace"
 mkdir -p "$WS/lyric-docker-src"
 cp -r "$LYRIC_LANG/lyric-docker/src" "$WS/lyric-docker-src/"
 
+echo "==> inlining lyric-logging packages into workspace"
+mkdir -p "$WS/lyric-logging-src"
+cp -r "$LYRIC_LANG/lyric-logging/src" "$WS/lyric-logging-src/"
+
 {
 cat <<'TOML_HEADER'
 [package]
@@ -284,10 +288,26 @@ for line in content.split('\n'):
             print(f'"{k}" = "lyric-docker-src/{v}"')
 PYEOF2
 
-cat <<'TOML_DEPS'
-[dependencies]
-"Std.Logging"  = { path = "../lyric-logging" }
-TOML_DEPS
+# Read lyric-logging's [project.packages] and remap source paths into the workspace
+python3 - "$LYRIC_LANG/lyric-logging/lyric.toml" <<'PYEOF3'
+import sys
+with open(sys.argv[1]) as f:
+    content = f.read()
+in_section = False
+for line in content.split('\n'):
+    s = line.strip()
+    if s == '[project.packages]':
+        in_section = True
+        continue
+    if in_section:
+        if s.startswith('['):
+            break
+        if '=' in s and not s.startswith('#') and s:
+            k, v = s.split('=', 1)
+            k = k.strip().strip('"')
+            v = v.strip().strip('"').strip("'")
+            print(f'"{k}" = "lyric-logging-src/{v}"')
+PYEOF3
 
 } > "$WS/lyric.toml"
 
