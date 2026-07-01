@@ -22,9 +22,8 @@ import Std.Core
 import Std.Errors
 import Std.Http
 
-/// Opaque handle to a Docker daemon connection. Wraps the underlying HTTP
-/// client so callers never touch the extern transport type.
-pub opaque type DockerClient {
+/// Handle to a Docker daemon connection. Wraps the underlying HTTP client.
+pub record DockerClient {
   handle: Std.Http.HttpClient
 }
 
