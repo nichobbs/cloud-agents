@@ -320,6 +320,6 @@ TOML_NUGET
 echo "==> workspace lyric.toml (lyric-web packages inlined):"
 cat "$WS/lyric.toml"
 
-( cd "$WS" && lyric build )
+( cd "$WS" && lyric restore && lyric build )
 echo "==> Full build succeeded"
 rm -rf "$WS"
