@@ -127,6 +127,19 @@ test "Test Handler createSession validation" {
     case Err(err) -> assertEqualInt(err.status, 400, "returns 400 bad request")
   }
 
+  // Test non-https repoUrl validation
+  val req1b = CreateSessionRequest(repoUrl = "git@github.com:nic/repo.git", branch = "main", harness = "claude", model = "claude-opus-4-8")
+  match createSession(req1b) {
+    case Ok(_) -> assertTrue(false, "should reject non-https repoUrl")
+    case Err(err) -> assertEqualInt(err.status, 400, "non-https returns 400")
+  }
+
+  val req1c = CreateSessionRequest(repoUrl = "http://github.com/nic/repo", branch = "main", harness = "claude", model = "claude-opus-4-8")
+  match createSession(req1c) {
+    case Ok(_) -> assertTrue(false, "should reject http repoUrl")
+    case Err(err) -> assertEqualInt(err.status, 400, "http returns 400")
+  }
+
   // Test empty branch validation
   val req2 = CreateSessionRequest(repoUrl = "https://github.com/nic/repos/cloud-agents", branch = "", harness = "claude", model = "claude-opus-4-8")
   match createSession(req2) {
@@ -150,3 +163,4 @@ test "Test Handler createSession validation" {
 
   println("✓ Handler validation tests passed!")
 }
+

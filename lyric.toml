@@ -38,4 +38,7 @@ output_assembly = "CloudAgents.dll"
 "Lyric.Docker" = { path = "vendor/lyric-docker" }
 "Std.Logging"  = { path = "../lyric-lang/lyric-logging" }
 
+[nuget]
+"Microsoft.Data.Sqlite" = "8.0.0"
+
 

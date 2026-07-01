@@ -2,16 +2,27 @@ package CloudAgents.Handlers
 
 import Std.Core
 import Web
-import CloudAgents.SessionStore
 import CloudAgents.Docker
-import CloudAgents.Streaming
 import CloudAgents.Repository
+import CloudAgents.SessionStore
+import CloudAgents.Sqlite
+import CloudAgents.Streaming
 
 import Std.Uuid
 
 pub func generateSessionId(): String {
   val u = Std.Uuid.newUuid()
   return Std.Uuid.uuidToString(u)
+}
+
+val maxPromptLen = 131072
+val httpsPrefix = "https://"
+
+func isHttpsUrl(url: in String): Bool {
+  if url.length < httpsPrefix.length {
+    return false
+  }
+  return url.substring(0, httpsPrefix.length) == httpsPrefix
 }
 
 @generate(Json)
@@ -44,6 +55,9 @@ pub func createSession(
 ): Result[CreateSessionResponse, Web.ApiError] {
   if req.repoUrl.length == 0 {
     return Err(Web.badRequest("repoUrl is required"))
+  }
+  if not isHttpsUrl(req.repoUrl) {
+    return Err(Web.badRequest("repoUrl must use the https:// scheme"))
   }
   if req.branch.length == 0 {
     return Err(Web.badRequest("branch is required"))
@@ -78,6 +92,9 @@ pub func sendMessage(
   }
   if req.text.length == 0 {
     return Err(Web.badRequest("text is required"))
+  }
+  if req.text.length > maxPromptLen {
+    return Err(Web.badRequest("text is too long (max 131072 characters)"))
   }
 
   val maybeSession = getSession(id)
@@ -167,8 +184,11 @@ pub func updateSessionModel(
   return Ok(())
 }
 
-/// Retrieve status of the service.
+/// Retrieve service health, including a live SQLite probe.
 @get("/api/health")
 pub func checkHealth(): Result[String, Web.ApiError] {
-  return Ok("Healthy")
+  match CloudAgents.Repository.ping() {
+    case Ok(_)  -> return Ok("Healthy")
+    case Err(e) -> return Err(Web.internalError("database unavailable: " + CloudAgents.Sqlite.dbErrorMessage(e)))
+  }
 }

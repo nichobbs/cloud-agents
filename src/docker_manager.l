@@ -15,6 +15,11 @@ pub record ResultCell {
 @externTarget("System.Threading.Tasks.Task.Wait")
 func taskWaitUnit[T](t: in T): Unit = ()
 
+/// Returns true if the task completed within timeoutMs, false on timeout.
+@externInstance
+@externTarget("System.Threading.Tasks.Task.Wait")
+func taskWaitMs[T](t: in T, timeoutMs: in Int): Bool = false
+
 /// Docker image name for the given harness.
 func imageForHarness(harness: in String): String {
   if harness == "codex" { return "codex:base" }
@@ -34,8 +39,6 @@ pub async func createRunnerContainer(
   model: in String,
   nativeSessionId: in String
 ): Result[String, String] {
-  val client = defaultClient()
-
   val workspaceVolume = "session-" + sessionId + "-workspace"
   val homeVolume = "claude-home-default" // Phase 1 default, Phase 3 user-specific
 
@@ -53,7 +56,7 @@ pub async func createRunnerContainer(
   ]
 
   val image = imageForHarness(harness)
-  val createRes = await createContainer(client, image = image, env = envs, binds = binds)
+  val createRes = await createContainer(image = image, env = envs, binds = binds)
   match createRes {
     case Ok(id) -> Ok(value = id)
     case Err(e) -> Err(error = "Docker API error: " + e.message)
@@ -62,8 +65,7 @@ pub async func createRunnerContainer(
 
 /// Start the created runner container.
 pub async func startRunnerContainer(containerId: in String): Result[Unit, String] {
-  val client = defaultClient()
-  val startRes = await startContainer(client, containerId)
+  val startRes = await startContainer(containerId)
   match startRes {
     case Ok(_) -> Ok(value = ())
     case Err(e) -> Err(error = "Failed to start container: " + e.message)
@@ -72,18 +74,25 @@ pub async func startRunnerContainer(containerId: in String): Result[Unit, String
 
 /// Stop the running container.
 pub async func stopRunnerContainer(containerId: in String): Result[Unit, String] {
-  val client = defaultClient()
-  val stopRes = await stopContainer(client, containerId)
+  val stopRes = await stopContainer(containerId)
   match stopRes {
     case Ok(_) -> Ok(value = ())
     case Err(e) -> Err(error = "Failed to stop container: " + e.message)
   }
 }
 
+/// Wait for a container's process to exit before reading its output.
+pub async func waitForContainer(containerId: in String): Result[Unit, String] {
+  val waitRes = await waitContainer(containerId)
+  match waitRes {
+    case Ok(_) -> Ok(value = ())
+    case Err(e) -> Err(error = "Failed to wait for container: " + e.message)
+  }
+}
+
 /// Delete the container.
 pub async func deleteRunnerContainer(containerId: in String): Result[Unit, String] {
-  val client = defaultClient()
-  val deleteRes = await removeContainer(client, containerId)
+  val deleteRes = await removeContainer(containerId)
   match deleteRes {
     case Ok(_) -> Ok(value = ())
     case Err(e) -> Err(error = "Failed to delete container: " + e.message)
@@ -92,8 +101,7 @@ pub async func deleteRunnerContainer(containerId: in String): Result[Unit, Strin
 
 /// Retrieve output logs of the runner container.
 pub async func getRunnerLogs(containerId: in String): Result[String, String] {
-  val client = defaultClient()
-  val logsRes = await getContainerLogs(client, containerId)
+  val logsRes = await getContainerLogs(containerId)
   match logsRes {
     case Ok(logs) -> Ok(value = logs)
     case Err(e) -> Err(error = "Failed to retrieve logs: " + e.message)
@@ -112,7 +120,10 @@ pub func runSessionMessage(
 ): Result[String, String] {
   val cell = ResultCell(isSuccess = false, output = "", error = "")
   val t = runSessionMessageAsync(repoUrl, branch, prompt, sessionId, harness, model, nativeSessionId, cell)
-  taskWaitUnit(t)
+  val completed = taskWaitMs(t, 1800000) // 30-minute hard cap
+  if not completed {
+    return Err(error = "Container run timed out after 30 minutes")
+  }
   if cell.isSuccess {
     return Ok(value = cell.output)
   } else {
@@ -145,10 +156,31 @@ async func runSessionMessageAsync(
   if not startResult.isOk() {
     cell.isSuccess = false
     cell.error = startResult.unwrapErrOr("unknown error")
+    // Best-effort cleanup: remove the container even if start failed
+    val _ = await deleteRunnerContainer(containerId)
+    CloudAgents.SessionStore.updateSessionContainer(sessionId, "")
+    return ()
+  }
+
+  // Block until the container process exits. If the wait call itself fails
+  // (daemon unreachable, container vanished, etc.) we cannot safely fetch
+  // complete logs, so we clean up and surface the error immediately.
+  val waitResult = await waitForContainer(containerId)
+  if not waitResult.isOk() {
+    val _ = await deleteRunnerContainer(containerId)
+    CloudAgents.SessionStore.updateSessionContainer(sessionId, "")
+    cell.isSuccess = false
+    cell.error = waitResult.unwrapErrOr("unknown error")
     return ()
   }
 
   val logsResult = await getRunnerLogs(containerId)
+
+  // Always remove the ephemeral container after the run. Session state
+  // (workspace and home volumes) persists independently of the container.
+  val _ = await deleteRunnerContainer(containerId)
+  CloudAgents.SessionStore.updateSessionContainer(sessionId, "")
+
   if not logsResult.isOk() {
     cell.isSuccess = false
     cell.error = logsResult.unwrapErrOr("unknown error")
@@ -162,7 +194,10 @@ async func runSessionMessageAsync(
 pub func terminateSessionContainer(containerId: in String): Result[Unit, String] {
   val cell = ResultCell(isSuccess = false, output = "", error = "")
   val t = terminateSessionContainerAsync(containerId, cell)
-  taskWaitUnit(t)
+  val completed = taskWaitMs(t, 60000) // 60-second cap for stop+delete
+  if not completed {
+    return Err(error = "Container terminate timed out after 60 seconds")
+  }
   if cell.isSuccess {
     return Ok(value = ())
   } else {
@@ -171,13 +206,10 @@ pub func terminateSessionContainer(containerId: in String): Result[Unit, String]
 }
 
 async func terminateSessionContainerAsync(containerId: in String, cell: in ResultCell): Unit {
-  val stopResult = await stopRunnerContainer(containerId)
+  // Stop is best-effort: the container may already have exited (Docker returns
+  // 304/404 in that case). We always attempt remove regardless.
+  val _ = await stopRunnerContainer(containerId)
   val deleteResult = await deleteRunnerContainer(containerId)
-  if not stopResult.isOk() {
-    cell.isSuccess = false
-    cell.error = "Stop failed: " + stopResult.unwrapErrOr("unknown")
-    return ()
-  }
   if not deleteResult.isOk() {
     cell.isSuccess = false
     cell.error = "Delete failed: " + deleteResult.unwrapErrOr("unknown")

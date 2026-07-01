@@ -39,3 +39,17 @@ synthesis for any package that restores `Lyric.Stdlib`
 package-private; the public epoch API (`fromEpochMillis` / `fromEpochSeconds`,
 returning `Instant`) is unchanged. Required for `lyric-docker` (which depends on
 `Lyric.Stdlib`) to build.
+
+## `lyric-auth-contract-leak.patch`
+
+`Auth.Aspects` exposes an `@inline_template pub aspect ValidateKey` that
+triggers the same compiler contract-synthesis bug: the `@inline_template`
+attribute causes the contract synthesizer to embed the raw template body in the
+contract JSON, but the template body contains unescaped characters that produce
+malformed JSON. The patch removes both `@inline_template` and the `pub`
+visibility from `ValidateKey`. Additionally, `build-full.sh` uses a sed step to
+demote `pub func tryExtractClaim` (which has an `out String` parameter — a
+second edge case the synthesizer cannot serialise) to package-private. Both
+fixes together produce a valid `Lyric.Contract.Auth` resource. `lyric-web`
+imports the `Auth` package directly (not `Auth.Aspects`), so no dependent is
+broken.

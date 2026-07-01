@@ -86,6 +86,7 @@ test "message SQL builders inline escaped values" {
   assertTrue(sql.contains("'he said ''hi'''"), "content is escaped")
   assertTrue(selectMessagesSql("s1").contains("ORDER BY seq ASC"), "transcript ordered by seq")
   assertTrue(countMessagesSql("s1").contains("CAST(COUNT(*) AS TEXT)"), "count cast to text for GetString")
+  assertTrue(selectMessageSessionIdSql("m1").contains("WHERE id = 'm1'"), "message session lookup scoped by id")
 }
 
 test "comment and todo SQL builders are scoped and escaped" {

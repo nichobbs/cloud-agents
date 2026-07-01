@@ -7,7 +7,6 @@ import CloudAgents.Sqlite
 
 @generate(Json)
 pub record AddCommentRequest {
-  pub sessionId: String
   pub body: String
 }
 
@@ -16,6 +15,8 @@ pub record AddTodoRequest {
   pub messageId: String
   pub note: String
 }
+
+val maxBodyLen = 32768
 
 func dbError(e: in CloudAgents.Sqlite.DbError): Web.ApiError {
   return Web.internalError(CloudAgents.Sqlite.dbErrorMessage(e))
@@ -46,7 +47,16 @@ pub func addCommentHandler(
   if req.body.length == 0 {
     return Err(Web.badRequest("body is required"))
   }
-  match addComment(mid, req.sessionId, req.body) {
+  if req.body.length > maxBodyLen {
+    return Err(Web.badRequest("body is too long (max 32768 characters)"))
+  }
+  // Derive sessionId from the stored message rather than trusting the client.
+  val sessionId = match getMessageSessionId(mid) {
+    case Ok(Some(sid)) -> sid
+    case Ok(None) -> return Err(Web.notFound("message not found"))
+    case Err(e) -> return Err(dbError(e))
+  }
+  match addComment(mid, sessionId, req.body) {
     case Ok(c)  -> return Ok(c)
     case Err(e) -> return Err(dbError(e))
   }
@@ -87,6 +97,9 @@ pub func addTodoHandler(
   }
   if req.note.length == 0 {
     return Err(Web.badRequest("note is required"))
+  }
+  if req.note.length > maxBodyLen {
+    return Err(Web.badRequest("note is too long (max 32768 characters)"))
   }
   match addTodo(id, req.messageId, req.note) {
     case Ok(t)  -> return Ok(t)
