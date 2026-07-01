@@ -309,6 +309,12 @@ for line in content.split('\n'):
             print(f'"{k}" = "lyric-logging-src/{v}"')
 PYEOF3
 
+cat <<'TOML_NUGET'
+
+[nuget]
+"Microsoft.Data.Sqlite" = "8.0.0"
+TOML_NUGET
+
 } > "$WS/lyric.toml"
 
 echo "==> workspace lyric.toml (lyric-web packages inlined):"
