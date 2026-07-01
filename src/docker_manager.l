@@ -201,7 +201,10 @@ async func runSessionMessageAsync(
 pub func terminateSessionContainer(containerId: in String): Result[Unit, String] {
   val cell = ResultCell(isSuccess = false, output = "", error = "")
   val t = terminateSessionContainerAsync(containerId, cell)
-  taskWaitUnit(t)
+  val completed = taskWaitMs(t, 60000) // 60-second cap for stop+delete
+  if not completed {
+    return Err(error = "Container terminate timed out after 60 seconds")
+  }
   if cell.isSuccess {
     return Ok(value = ())
   } else {
