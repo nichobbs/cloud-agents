@@ -56,15 +56,17 @@ not a separate dependency, no restore-path workaround, no patching:
 "Lyric.Docker.Sockets" = "vendor/lyric-docker/src/sockets.l"
 ```
 
-Build from the repo root — no other setup required:
+Build from the repo root:
 
 ```sh
 lyric restore
-lyric build
+lyric build   # see "Compiler notes" below — this crashes on the checked-in
+              # manifest as-is; use scripts/build-full.sh, which works around it
 ```
 
-`scripts/build-full.sh` is a thin wrapper around those two commands for CI
-and local development. `scripts/verify.sh` is the test entry point — see
+`scripts/build-full.sh` wraps `lyric restore`/`lyric build` with the
+`[nuget]`-crash workaround described below — use it instead of calling
+`lyric build` directly. `scripts/verify.sh` is the test entry point — see
 "Running tests" below for why it isn't `lyric test`. `scripts/run-api.sh`
 builds the same way, then runs the compiled server.
 
@@ -78,12 +80,13 @@ it's caught up without checking, the way this project's own history did once.
 ## Running tests
 
 `lyric test` (the `cmdTestManifest` CLI path) currently crashes with an
-unhandled `System.InvalidCastException` on this project's manifest — verified
-against the real 0.4.10 compiler in CI, not a guess. This project has in fact
-never exercised `lyric test` successfully; even before the NuGet dependency
-migration, `scripts/verify.sh` avoided it in favor of a hand-rolled `main()`
-harness run via `lyric build && lyric run`. That's what `scripts/verify.sh`
-still does:
+unhandled `System.InvalidCastException` — verified against the real 0.4.10
+compiler in CI, not a guess. `scripts/verify.sh` avoids it, compiling a
+hand-rolled `main()` harness and running it via `lyric build && lyric run`
+instead (this project has in fact never exercised `lyric test`
+successfully — `scripts/verify.sh` took this approach even before the NuGet
+dependency migration, for what turns out to be the same underlying reason;
+see "Compiler notes" below):
 
 ```sh
 ./scripts/verify.sh
@@ -94,16 +97,32 @@ state machine + idle recycling + SQL builders, the Phase 3 auth helpers) —
 the same code the `@test_module` suites in `tests/*.l` describe. Those
 `tests/*.l` files remain the readable source of truth for intended behavior
 and should still be kept up to date; they just can't be *executed* by `lyric
-test` right now. Re-evaluate switching back to plain `lyric test` once that
-compiler crash is fixed upstream.
+test` right now. Re-evaluate switching back to plain `lyric test` once
+[lyric-lang#4925](https://github.com/nichobbs/lyric-lang/issues/4925) ships
+a fix.
 
 ## Compiler notes
 
 The following are compiler-level characteristics of the current Lyric
 toolchain, independent of how dependencies are packaged:
 
-- **`lyric test` crashes on this project's manifest** (see "Running tests"
-  above).
+- **`lyric build` and `lyric test` both crash with `InvalidCastException` on
+  any manifest with a populated `[nuget]` table** — filed as
+  [lyric-lang#4925](https://github.com/nichobbs/lyric-lang/issues/4925).
+  Root cause (from reading the compiler's own source): both CLI paths match
+  `manifest.nuget: Option[NugetSection]` directly, which hits the same
+  "bootstrap-emitter match quirk" the compiler's source already documents —
+  and already works around — for the structurally identical
+  `Manifest.features: Option[FeaturesSection]` field. This is **not**
+  specific to this project's manifest shape; empirically, stripping
+  `[project.tests]` (an earlier, wrong hypothesis) made no difference, while
+  stripping `[nuget]` does. `scripts/build-full.sh` works around it by
+  feeding `lyric build` a copy of `lyric.toml` with `[nuget]` stripped —
+  safe because the restored packages are located via `obj/project.assets.json`
+  on disk, not by re-reading `[nuget]` from the manifest at build time.
+  `scripts/verify.sh` sidesteps the whole problem by not declaring any
+  `[nuget]` deps in its scratch manifest at all. Re-check both workarounds
+  when bumping the Lyric compiler version.
 - **`String.indexOf` / `Option` were historically unreliable at runtime** in
   early standalone installs (not-found did not yield `None` in some
   contexts). The JSON extractors in `auth.l` and `session_manager.l` use a
