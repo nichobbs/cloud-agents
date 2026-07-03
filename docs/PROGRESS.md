@@ -3,7 +3,7 @@
 Status of each phase against its deliverables. See `docs/phaseN-*.md` for the
 design of each phase and `docs/BUILD.md` for build/verification notes.
 
-> **Build status:** the entire server compiles end-to-end (all 10 packages,
+> **Build status:** the entire server compiles end-to-end (all 12 packages,
 > API + Web + Docker) via `scripts/build-full.sh`, run in CI. Lyric.Web and
 > Std.Logging are consumed as published NuGet binaries; Lyric.Docker is not
 > — the published package lacks the container-lifecycle API this project
