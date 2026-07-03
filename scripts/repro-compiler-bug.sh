@@ -16,10 +16,11 @@
 # Only requires `lyric` on PATH — no `dotnet` needed, since the crash occurs
 # before the compiler gets to invoking the .NET toolchain.
 #
-# Exit code: 0 if the crash reproduces (confirms you're still on a
-# pre-#4955 compiler); 1 if `lyric build` succeeds (confirms your compiler
-# already has the fix — safe to remove this script and the workaround notes
-# it supports); 2 for any other unexpected failure.
+# Exit code (conventional Unix sense — 0 means "no problem found"): 0 if
+# `lyric build` succeeds (your compiler already has the #4955 fix — safe to
+# remove this script and the workaround notes it supports); 1 if the crash
+# reproduces (confirms you're still on a pre-#4955 compiler, the expected
+# result today); 2 for any other unexpected failure.
 set -uo pipefail
 
 command -v lyric >/dev/null || { echo "repro: 'lyric' not on PATH" >&2; exit 2; }
@@ -50,11 +51,11 @@ output="$(cd "$WORK" && lyric build 2>&1)"
 status=$?
 echo "$output"
 
-if [ "$status" -ne 0 ] && echo "$output" | grep -q "System.InvalidCastException"; then
-  echo "==> Reproduced: this compiler still has the workspace_builder.l bug (lyric-lang#4925/#4955)"
-  exit 0
-elif [ "$status" -eq 0 ]; then
+if [ "$status" -eq 0 ]; then
   echo "==> Did NOT crash: this compiler build already includes the lyric-lang#4955 fix"
+  exit 0
+elif echo "$output" | grep -q "System.InvalidCastException"; then
+  echo "==> Reproduced: this compiler still has the workspace_builder.l bug (lyric-lang#4925/#4955)"
   exit 1
 else
   echo "==> Unexpected failure (exit $status) — not the known crash signature, investigate separately" >&2

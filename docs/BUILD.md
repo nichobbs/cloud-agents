@@ -118,12 +118,13 @@ Unhandled exception. System.InvalidCastException: Specified cast is not valid.
 ==> Reproduced: this compiler still has the workspace_builder.l bug (lyric-lang#4925/#4955)
 ```
 
-Exit code 0 means it reproduced (you're still on a pre-#4955 compiler);
-exit code 1 means `lyric build` succeeded (your compiler already has the
-fix — safe to remove this script and the workaround notes below). Run
-above is from this session's own sandbox, where `lyric` (but not `dotnet`)
-is on PATH — sufficient to reproduce this specific crash, though not to do
-a full `lyric restore`/build of this project's actual dependency graph.
+Exit code 0 means `lyric build` succeeded (your compiler already has the
+fix — safe to remove this script and the workaround notes below); exit
+code 1 means it reproduced (you're still on a pre-#4955 compiler, the
+expected result today). Run above is from this session's own sandbox,
+where `lyric` (but not `dotnet`) is on PATH — sufficient to reproduce this
+specific crash, though not to do a full `lyric restore`/build of this
+project's actual dependency graph.
 
 `lyric build`, `lyric run`, and `lyric check` all hit it (they all call into
 `buildProject`); `lyric test` crashes the same way via a different entry

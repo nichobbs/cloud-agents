@@ -121,8 +121,10 @@ work on this project.
     associated `<label>`.
 14. Hardcoded hex colors repeated across every component instead of shared
     theme constants, despite `styles.css` existing.
-15. `cancelledRef` in `useStreamMessage.ts` is set up but never flipped to
-    `true` anywhere — a half-built cancel feature with no cancel button.
+15. ~~`cancelledRef` in `useStreamMessage.ts` is set up but never flipped to
+    `true` anywhere — a half-built cancel feature with no cancel button.~~
+    **Fixed on PR #84**: `cancelledRef` was replaced by `activeSessionRef`,
+    which the session-scoping fix on that PR actually wires up and uses.
 
 ## Docs / ops accuracy
 
