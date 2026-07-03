@@ -4,8 +4,12 @@
 # toolchain and runs the resulting .NET assembly. It needs the Docker CLI to
 # manage runner containers via the mounted host socket.
 #
-# NOTE: the build expects the lyric-lang workspace beside the project (see
-# docs/BUILD.md). Provide it via build context or a private registry in CI.
+# Lyric.Web, Std.Logging, and Microsoft.Data.Sqlite are declared as NuGet
+# packages in lyric.toml and fetched by `lyric restore`. Lyric.Docker is
+# compiled from vendor/lyric-docker as an ordinary local package (the
+# published NuGet Lyric.Docker package doesn't expose the container-lifecycle
+# API this project depends on) — no sibling lyric-lang checkout required
+# either way.
 
 FROM mcr.microsoft.com/dotnet/sdk:10.0 AS build
 
@@ -16,7 +20,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends curl ca-certifi
 
 WORKDIR /src
 COPY . .
-RUN lyric build && lyric test
+# build-full.sh handles the NuGet restore and a compiler workaround (see its
+# own comments and docs/BUILD.md); verify.sh is the working test harness —
+# `lyric test` crashes on this project's manifest under the current compiler.
+RUN ./scripts/build-full.sh && ./scripts/verify.sh
 
 FROM mcr.microsoft.com/dotnet/aspnet:10.0
 RUN apt-get update && apt-get install -y --no-install-recommends docker.io \

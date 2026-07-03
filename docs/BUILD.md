@@ -26,79 +26,107 @@ curl -fsSL -o /tmp/lyric.tgz \
 mkdir -p ~/.lyric/bin && tar -xzf /tmp/lyric.tgz -C ~/.lyric/bin
 ```
 
-## Workspace dependencies
+## Dependencies
 
-`lyric.toml` depends on libraries from the **lyric-lang** workspace via relative
-paths (`../lyric-lang/lyric-web`, `../lyric-lang/lyric-docker`,
-`../lyric-lang/lyric-logging`). Clone it as a sibling of this repo:
+`Lyric.Web`, `Std.Logging`, and `Microsoft.Data.Sqlite` are declared under
+`[nuget]` in `lyric.toml` and resolved as ordinary prebuilt binary packages —
+no sibling checkout, no source patching:
 
+```toml
+[nuget]
+"Lyric.Web"             = "0.4.10"
+"Std.Logging"           = "0.4.10"
+"Microsoft.Data.Sqlite" = "10.0.9"
 ```
-parent/
-├── cloud-agents/        # this repo
-└── lyric-lang/          # git clone https://github.com/nichobbs/lyric-lang
+
+`Lyric.Docker` is **not** on that list. The published `Lyric.Docker` 0.4.10
+package (confirmed by extracting the `.nupkg` from nuget.org and inspecting
+`Docker.dll`'s embedded contract) requires an explicit `client: DockerClient`
+argument on every call and has no `waitContainer` function at all — a
+materially different, incompatible API from what `src/docker_manager.l`
+depends on. `vendor/lyric-docker` is a local fork with the container-lifecycle
+operations this project needs (`createContainer`, `start/stop/removeContainer`,
+`waitContainer`, `getContainerLogs`), pending upstreaming. It's compiled as an
+ordinary local package via `[project.packages]` in the root `lyric.toml` —
+not a separate dependency, no restore-path workaround, no patching:
+
+```toml
+[project.packages]
+"Lyric.Docker"         = "vendor/lyric-docker/src/docker.l"
+"Lyric.Docker.Sockets" = "vendor/lyric-docker/src/sockets.l"
 ```
 
-Build the path dependencies first (their `bin/*.dll` must exist before this
-project restores them):
+Build from the repo root:
 
 ```sh
-for lib in lyric-stdlib lyric-logging lyric-auth lyric-resilience lyric-web lyric-docker; do
-  (cd ../lyric-lang/$lib && lyric build)
-done
+lyric restore
+lyric build   # see "Compiler notes" below — this crashes on the checked-in
+              # manifest as-is; use scripts/build-full.sh, which works around it
 ```
 
-Then build and test this project:
+`scripts/build-full.sh` wraps `lyric restore`/`lyric build` with the
+`[nuget]`-crash workaround described below — use it instead of calling
+`lyric build` directly. `scripts/verify.sh` is the test entry point — see
+"Running tests" below for why it isn't `lyric test`. `scripts/run-api.sh`
+builds the same way, then runs the compiled server.
+
+### Bumping a NuGet dependency version
+
+Edit the version string in `[nuget]` and re-run `lyric restore`. Before
+bumping `Lyric.Docker` back onto NuGet, re-check that the published package's
+API actually covers what `docker_manager.l` calls (see above) — don't assume
+it's caught up without checking, the way this project's own history did once.
+
+## Running tests
+
+`lyric test` (the `cmdTestManifest` CLI path) currently crashes with an
+unhandled `System.InvalidCastException` — verified against the real 0.4.10
+compiler in CI, not a guess. `scripts/verify.sh` avoids it, compiling a
+hand-rolled `main()` harness and running it via `lyric build && lyric run`
+instead (this project has in fact never exercised `lyric test`
+successfully — `scripts/verify.sh` took this approach even before the NuGet
+dependency migration, for what turns out to be the same underlying reason;
+see "Compiler notes" below):
 
 ```sh
-lyric build
-lyric test
+./scripts/verify.sh
 ```
 
-## Verified vs. pending (compiler v0.2.4)
+It exercises the Docker/Web-independent logic (SSE framing, the Phase 2
+state machine + idle recycling + SQL builders, the Phase 3 auth helpers) —
+the same code the `@test_module` suites in `tests/*.l` describe. Those
+`tests/*.l` files remain the readable source of truth for intended behavior
+and should still be kept up to date; they just can't be *executed* by `lyric
+test` right now. Re-evaluate switching back to plain `lyric test` once
+[lyric-lang#4925](https://github.com/nichobbs/lyric-lang/issues/4925) ships
+a fix.
 
-The currently published Lyric compiler is early-stage. The following were
-validated against **v0.2.4** (the v0.1.x findings below still hold — the v0.2.4
-reassessment did not unblock anything for this project):
+## Compiler notes
 
-- **Pure-logic packages compile and run.** `CloudAgents.Streaming`,
-  `CloudAgents.Db`, and `CloudAgents.Auth` build cleanly and are runtime-verified
-  end-to-end by `scripts/verify.sh` (24 assertions: SSE framing, the Phase 2
-  state machine + idle recycling + owner-scoped SQL, and the Phase 3 auth
-  helpers). These use only enums/unions/records/primitives.
-- **`String.split` is not available** — split manually with a character scan
-  (`formatLogsAsSse` does this).
-- **`String.indexOf` / `Option` are unreliable at runtime** in the standalone
-  install: not-found does not yield `None`, and matching the result NREs in some
-  contexts. The JSON extractors in `auth.l` use a hand-rolled `indexOfFrom`
-  substring scan instead.
-- **The stdlib runtime DLLs are not shipped** with the standalone binary, so any
-  code that touches `Option`, `slice`, `@generate(Json)`, or `Std.Testing` at
-  runtime fails to load `Lyric.Stdlib.Core` / `Lyric.Stdlib.Testing`. This is why
-  the `@test_module` suites compile but cannot execute here; runtime checks go
-  through the enum/record/primitive harness in `scripts/verify.sh`.
+The following are compiler-level characteristics of the current Lyric
+toolchain, independent of how dependencies are packaged:
+
+- **`lyric build` and `lyric test` both crash with `InvalidCastException` on
+  any manifest with a populated `[nuget]` table** — filed as
+  [lyric-lang#4925](https://github.com/nichobbs/lyric-lang/issues/4925).
+  Root cause (from reading the compiler's own source): both CLI paths match
+  `manifest.nuget: Option[NugetSection]` directly, which hits the same
+  "bootstrap-emitter match quirk" the compiler's source already documents —
+  and already works around — for the structurally identical
+  `Manifest.features: Option[FeaturesSection]` field. This is **not**
+  specific to this project's manifest shape; empirically, stripping
+  `[project.tests]` (an earlier, wrong hypothesis) made no difference, while
+  stripping `[nuget]` does. `scripts/build-full.sh` works around it by
+  feeding `lyric build` a copy of `lyric.toml` with `[nuget]` stripped —
+  safe because the restored packages are located via `obj/project.assets.json`
+  on disk, not by re-reading `[nuget]` from the manifest at build time.
+  `scripts/verify.sh` sidesteps the whole problem by not declaring any
+  `[nuget]` deps in its scratch manifest at all. Re-check both workarounds
+  when bumping the Lyric compiler version.
+- **`String.indexOf` / `Option` were historically unreliable at runtime** in
+  early standalone installs (not-found did not yield `None` in some
+  contexts). The JSON extractors in `auth.l` and `session_manager.l` use a
+  hand-rolled `indexOfFrom` substring scan instead of `String.indexOf` as a
+  defensive measure; revisit if a later compiler release confirms the stdlib
+  path is reliable.
 - **`out` is a reserved keyword** — it cannot be used as an identifier.
-- **The full server now compiles.** `scripts/build-full.sh` builds all 7
-  packages — API + `Lyric.Web` + the in-repo `Lyric.Docker` — inside the
-  lyric-lang workspace (verified on v0.2.4 from a pristine clone). It runs the
-  same in CI. Test *execution* still needs the stdlib runtime DLLs noted above,
-  so it compiles rather than runs the suites.
-- **The Docker library lives in `vendor/lyric-docker`** (to be moved back to
-  `lyric-lang` core). It was rewritten from invalid syntax (`pub val` fields, a
-  `pub object`, the non-existent `|>` operator, wrong stdlib API) to proper
-  Lyric, given an opaque `DockerClient` so no extern type crosses the package
-  boundary, and extended with the container lifecycle the runner needs
-  (`defaultClient`, `createContainer`, `start`/`stop`/`removeContainer`,
-  `getContainerLogs`). `src/docker_manager.l` compiles against it.
-- The `dto*` / `findTimeZone` helpers in `lyric-stdlib`'s `Std.Time` leak extern
-  types (`DateTimeOffset`, `TimeZone`) across the contract boundary, breaking
-  downstream contract synthesis (`unknown type name 'DateTimeOffset'`) for any
-  package that restores `Lyric.Stdlib`. Fixed by
-  `patches/lyric-stdlib-datetimeoffset-leak.patch` (applied by `build-full.sh`).
-- **Transport caveat:** `Std.Http.sendAsync` does not take a client, so the
-  unix-socket client returned by `makeDockerClient` is not yet used for
-  transport — the `DockerClient` is threaded through for API stability. Requests
-  will route correctly once the stdlib exposes a client-aware send.
-- **Two compiler bugs** surfaced while fixing the above (compiler issues, not
-  library bugs): `await`ing a cross-package user-defined `async` function crashes
-  codegen (`emitPhaseBAwait`), and exposing an extern type in a public signature
-  breaks contract synthesis. Both are worked around in the Docker library.

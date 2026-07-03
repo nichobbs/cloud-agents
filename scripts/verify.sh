@@ -1,34 +1,29 @@
 #!/usr/bin/env bash
-# verify.sh — build/verify the parts of Cloud Agents that compile under the
-# published Lyric compiler.
+# verify.sh — runtime-verify the Docker-independent logic.
 #
-# Why this is scoped: the full web+docker server depends on `lyric-docker`,
-# which does not build under Lyric v0.1.x (see docs/BUILD.md). This script
-# verifies the Docker-independent packages — CloudAgents.Streaming / Db / Auth —
-# which compile cleanly, and runtime-checks the SSE framing in
-# CloudAgents.Streaming.
+# `lyric test` (cmdTestManifest) crashes with an unhandled
+# System.InvalidCastException on this project's manifest under the current
+# compiler (confirmed on 0.4.10 in CI — see the PR that introduced this
+# comment for the exact stack trace). This project has in fact never
+# exercised `lyric test` successfully: prior to the NuGet dependency
+# migration this script already avoided it, instead compiling a small
+# hand-rolled `main()` harness and running it with `lyric build` + `lyric
+# run`. That's restored here, updated to run directly against this repo's
+# NuGet-based lyric.toml (no more sibling lyric-lang checkout needed).
+#
+# `tests/*.l` (the real `@test_module` suites) remain the source of truth
+# for intended behaviour and should still be read/maintained — they just
+# can't be executed by `lyric test` right now. Re-evaluate switching this
+# script back to a plain `lyric test` once that compiler bug is fixed
+# upstream.
 #
 # Requirements on PATH: `lyric`, `dotnet` (10.x).
-# Env:
-#   LYRIC_LANG   path to the lyric-lang workspace (default: ../lyric-lang,
-#                cloned if absent).
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-LYRIC_LANG="${LYRIC_LANG:-$(cd "$REPO_ROOT/.." && pwd)/lyric-lang}"
+WORK="$(mktemp -d)"
+trap 'rm -rf "$WORK"' EXIT
 
-command -v lyric  >/dev/null || { echo "verify: 'lyric' not on PATH"  >&2; exit 1; }
-command -v dotnet >/dev/null || { echo "verify: 'dotnet' not on PATH" >&2; exit 1; }
-
-# The compiler discovers the standard library sources by walking up to the
-# lyric-lang workspace, so the verification project must live inside it.
-if [ ! -d "$LYRIC_LANG/lyric-stdlib/std" ]; then
-  echo "verify: cloning lyric-lang into $LYRIC_LANG"
-  git clone --depth 1 https://github.com/nichobbs/lyric-lang.git "$LYRIC_LANG"
-fi
-
-WORK="$LYRIC_LANG/.cloud-agents-verify"
-rm -rf "$WORK"
 mkdir -p "$WORK/src/streaming" "$WORK/src/db" "$WORK/src/handlers"
 cp "$REPO_ROOT/src/streaming/streaming.l"   "$WORK/src/streaming/"
 cp "$REPO_ROOT/src/db/db_client.l"          "$WORK/src/db/"
@@ -47,13 +42,12 @@ output_assembly = "CloudAgentsVerify.dll"
 "CloudAgents.Db"        = "src/db/db_client.l"
 "CloudAgents.Auth"      = "src/handlers/auth.l"
 "CloudAgentsVerify"     = "src/main.l"
-[dependencies]
 TOML
 
 # Runtime harness — exercises the Docker-independent logic (streaming, the
 # Phase 2 state machine / recycling / SQL, and the Phase 3 auth helpers). These
-# use only enums, unions, records and primitives, so they run without the
-# per-package stdlib runtime DLLs.
+# use only enums, unions, records and primitives, so they run without any
+# external dependency.
 cat > "$WORK/src/main.l" <<'LYRIC'
 package CloudAgentsVerify
 import Std.Core
@@ -118,6 +112,9 @@ pub func main(): Int {
 }
 LYRIC
 
+command -v lyric  >/dev/null || { echo "verify: 'lyric' not on PATH"  >&2; exit 1; }
+command -v dotnet >/dev/null || { echo "verify: 'dotnet' not on PATH" >&2; exit 1; }
+
 echo "==> Compiling CloudAgents.Streaming / Db / Auth"
 ( cd "$WORK" && lyric build )
 
@@ -125,4 +122,3 @@ echo "==> Runtime-verifying streaming + Phase 2/3 logic"
 ( cd "$WORK" && lyric run )
 
 echo "==> Verification succeeded"
-rm -rf "$WORK"
