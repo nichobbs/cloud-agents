@@ -98,16 +98,32 @@ run, check, or test any Lyric project — including a trivial one-file
 hello-world with no dependencies.** This is not a characteristic of this
 project's manifest, dependencies, or source; it's a crash inside the
 compiler's own `buildProject`, before it does anything project-specific.
-Reproduced directly (not just from CI logs) — most recently in this
-session, running `lyric build` at this repo's root:
+
+**This is checked into the repo as a runnable reproduction, not just
+prose**: `scripts/repro-compiler-bug.sh` builds a trivial, dependency-free
+`lyric.toml`/`main.l` in a scratch directory and runs `lyric build` against
+it — no `[nuget]`, no `[workspace]`, nothing project-specific, and no
+`dotnet` required (the crash happens before the compiler would invoke the
+.NET toolchain). Run it yourself against any environment with `lyric` on
+PATH:
 
 ```
+$ ./scripts/repro-compiler-bug.sh
+==> lyric build against a trivial, dependency-free hello-world
 Unhandled exception. System.InvalidCastException: Specified cast is not valid.
    at Lyric.Cli.Program.buildProject(String, Option`1, CompileTarget, List`1, Boolean, Boolean, Boolean, Option`1) + 0x12c7
    at Lyric.Cli.Program.cmdBuild(String[]) + 0x115c
    at Lyric.Cli.Program.main(String[]) + 0x564
    at Lyric.Cli.Aot.Program.Main(String[] args) + 0x6
+==> Reproduced: this compiler still has the workspace_builder.l bug (lyric-lang#4925/#4955)
 ```
+
+Exit code 0 means it reproduced (you're still on a pre-#4955 compiler);
+exit code 1 means `lyric build` succeeded (your compiler already has the
+fix — safe to remove this script and the workaround notes below). Run
+above is from this session's own sandbox, where `lyric` (but not `dotnet`)
+is on PATH — sufficient to reproduce this specific crash, though not to do
+a full `lyric restore`/build of this project's actual dependency graph.
 
 `lyric build`, `lyric run`, and `lyric check` all hit it (they all call into
 `buildProject`); `lyric test` crashes the same way via a different entry

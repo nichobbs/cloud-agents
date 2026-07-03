@@ -33,10 +33,12 @@ any Lyric project at all** — a crash inside the compiler itself, not
 specific to this project. Root cause is found and fixed upstream
 ([lyric-lang#4955](https://github.com/nichobbs/lyric-lang/pull/4955),
 merged), but no release has shipped it yet as of this writing — every
-currently-downloadable binary still crashes. See `docs/BUILD.md` "Compiler
-notes" before assuming a local build failure needs a local fix; check
-[lyric-lang#4925](https://github.com/nichobbs/lyric-lang/issues/4925) for
-the latest release status.
+currently-downloadable binary still crashes. Run
+`./scripts/repro-compiler-bug.sh` (needs only `lyric` on PATH) to check
+whether your compiler still has the bug before assuming a local build
+failure needs a local fix. See `docs/BUILD.md` "Compiler notes" for detail
+and [lyric-lang#4925](https://github.com/nichobbs/lyric-lang/issues/4925)
+for the latest release status.
 
 Source files use `.l` extension. Entry point is `func main(): Unit` in the appropriate package.
 
