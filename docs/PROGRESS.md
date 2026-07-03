@@ -3,12 +3,12 @@
 Status of each phase against its deliverables. See `docs/phaseN-*.md` for the
 design of each phase and `docs/BUILD.md` for build/verification notes.
 
-> **Build status:** the entire server now compiles end-to-end (all 7 packages,
-> API + Web + the in-repo Docker library) via `scripts/build-full.sh`, run in
-> CI. The Docker library was rewritten to proper Lyric and extended with the
-> container lifecycle, and now lives at `vendor/lyric-docker`. Running the
-> `@test_module` suites still needs stdlib runtime DLLs the standalone install
-> omits; runtime checks go through `scripts/verify.sh`.
+> **Build status:** the entire server compiles end-to-end (all 10 packages,
+> API + Web + Docker) via `scripts/build-full.sh`, run in CI. Lyric.Web,
+> Lyric.Docker, and Std.Logging are consumed as published NuGet binaries (see
+> `docs/BUILD.md`) rather than a vendored/patched source checkout. The
+> `@test_module` suites run directly via `lyric test`; `scripts/verify.sh` is
+> a thin wrapper around it.
 
 ## Phase 1 — Core Loop ✅ complete
 
@@ -47,8 +47,13 @@ design of each phase and `docs/BUILD.md` for build/verification notes.
 | Encrypted credential upload | ⬜ pending | endpoint + encryption |
 
 > "verified" = compiles **and** runtime-tested via `scripts/verify.sh` (CI runs
-> it on every push). The pending items need the Docker/web/HTTP runtime that
-> does not build under the current compiler — see `docs/BUILD.md`.
+> it on every push). The pending items are no longer blocked by the toolchain
+> (Docker/Web/HTTP now build via NuGet — see `docs/BUILD.md`); they still need
+> to be implemented and wired into the live HTTP handlers. **The route
+> handlers in `src/handlers/sessions.l` and `src/handlers/interactions.l`
+> currently call none of the `auth.l` helpers, so every endpoint is
+> unauthenticated in the current codebase** — treat Phase 3 as not started
+> from a security standpoint regardless of the table above.
 
 ## Phase 4 — GitHub Tools & Tool Packs 🟡 started
 

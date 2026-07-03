@@ -11,10 +11,6 @@ pub record ResultCell {
   pub var error: String = ""
 }
 
-@externInstance
-@externTarget("System.Threading.Tasks.Task.Wait")
-func taskWaitUnit[T](t: in T): Unit = ()
-
 /// Returns true if the task completed within timeoutMs, false on timeout.
 @externInstance
 @externTarget("System.Threading.Tasks.Task.Wait")
