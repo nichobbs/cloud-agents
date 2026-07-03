@@ -73,14 +73,18 @@ jobs:
             python3 -m json.tool "$f" > /dev/null && echo "ok: $f"
           done
 
-      # Runs the @test_module suites (SSE framing, Phase 2/3 state machine,
-      # recycling, auth). All library deps (Lyric.Web, Lyric.Docker,
-      # Std.Logging, Microsoft.Data.Sqlite) restore from NuGet — no sibling
-      # lyric-lang checkout needed.
-      - name: Run tests
-        run: ./scripts/verify.sh
-
-      # Build the entire server — API + Web + Docker — against the same
-      # NuGet-restored dependencies.
+      # Build the entire server. Lyric.Web/Std.Logging/Microsoft.Data.Sqlite
+      # restore from NuGet; Lyric.Docker compiles from vendor/lyric-docker as
+      # an ordinary local package (the published NuGet Lyric.Docker package
+      # doesn't expose the container-lifecycle API this project needs — see
+      # docs/BUILD.md). No sibling lyric-lang checkout either way.
       - name: Build full server
         run: ./scripts/build-full.sh
+
+      # Runtime-verify the Docker/Web-independent logic (SSE framing, Phase
+      # 2/3 state machine, recycling, auth). Not `lyric test` — that crashes
+      # on this project's manifest under the current compiler, see
+      # docs/BUILD.md "Running tests". This harness has no external
+      # dependencies, so it doesn't need its own restore.
+      - name: Run tests
+        run: ./scripts/verify.sh

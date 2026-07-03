@@ -4,11 +4,14 @@ Status of each phase against its deliverables. See `docs/phaseN-*.md` for the
 design of each phase and `docs/BUILD.md` for build/verification notes.
 
 > **Build status:** the entire server compiles end-to-end (all 10 packages,
-> API + Web + Docker) via `scripts/build-full.sh`, run in CI. Lyric.Web,
-> Lyric.Docker, and Std.Logging are consumed as published NuGet binaries (see
-> `docs/BUILD.md`) rather than a vendored/patched source checkout. The
-> `@test_module` suites run directly via `lyric test`; `scripts/verify.sh` is
-> a thin wrapper around it.
+> API + Web + Docker) via `scripts/build-full.sh`, run in CI. Lyric.Web and
+> Std.Logging are consumed as published NuGet binaries; Lyric.Docker is not
+> — the published package lacks the container-lifecycle API this project
+> needs, so `vendor/lyric-docker` is still the source of truth, compiled as
+> an ordinary local package with no patching (see `docs/BUILD.md`). The
+> `@test_module` suites cannot currently run — `lyric test` crashes on this
+> project's manifest — so `scripts/verify.sh` runs an equivalent hand-rolled
+> runtime harness instead (also `docs/BUILD.md`).
 
 ## Phase 1 — Core Loop ✅ complete
 
