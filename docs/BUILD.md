@@ -34,10 +34,10 @@ source patching, no vendoring:
 
 ```toml
 [nuget]
-"Lyric.Web"             = "1.4.0"
-"Lyric.Docker"          = "1.3.0"
-"Std.Logging"           = "1.0.2"
-"Microsoft.Data.Sqlite" = "8.0.0"
+"Lyric.Web"             = "0.4.10"
+"Lyric.Docker"          = "0.4.10"
+"Std.Logging"           = "0.4.10"
+"Microsoft.Data.Sqlite" = "10.0.9"
 ```
 
 Build and test from the repo root — no other setup required:

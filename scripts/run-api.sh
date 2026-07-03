@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Build the full server and run it locally.
 #
-# Requirements: lyric (any v0.5.x+), dotnet 10.x, Docker (for runner containers)
+# Requirements: lyric 0.4.10+, dotnet 10.x, Docker (for runner containers)
 # Env:
 #   CLOUD_AGENTS_PORT        HTTP listen port (default: 8080)
 #   CLOUD_AGENTS_BIND        interface to bind (default: 127.0.0.1; set 0.0.0.0 for LAN)
