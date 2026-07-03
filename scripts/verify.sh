@@ -1,21 +1,24 @@
 #!/usr/bin/env bash
 # verify.sh — runtime-verify the Docker-independent logic.
 #
-# `lyric test` (cmdTestManifest) crashes with an unhandled
-# System.InvalidCastException on this project's manifest under the current
-# compiler (confirmed on 0.4.10 in CI — see the PR that introduced this
-# comment for the exact stack trace). This project has in fact never
-# exercised `lyric test` successfully: prior to the NuGet dependency
-# migration this script already avoided it, instead compiling a small
-# hand-rolled `main()` harness and running it with `lyric build` + `lyric
-# run`. That's restored here, updated to run directly against this repo's
-# NuGet-based lyric.toml (no more sibling lyric-lang checkout needed).
+# THIS CURRENTLY CANNOT SUCCEED with any released Lyric compiler, same as
+# scripts/build-full.sh — `lyric build`/`run`/`check`/`test` all crash with
+# an unhandled System.InvalidCastException on EVERY Lyric project (not just
+# this one's), confirmed locally across all 4 currently-released compiler
+# versions. See https://github.com/nichobbs/lyric-lang/issues/4925.
+#
+# This script compiles a small hand-rolled `main()` harness and runs it with
+# `lyric build` + `lyric run` rather than `lyric test`, on the theory that
+# `lyric test` (cmdTestManifest) was the specific thing crashing. That
+# theory turned out to be wrong — `lyric build`/`run` hit the identical
+# crash, inside the compiler itself, before touching anything harness- or
+# manifest-specific — but the approach is kept because it's still the
+# right shape once the compiler is fixed: no lyric-lang checkout, no NuGet
+# deps in the scratch manifest, nothing else to go wrong on our side.
 #
 # `tests/*.l` (the real `@test_module` suites) remain the source of truth
 # for intended behaviour and should still be read/maintained — they just
-# can't be executed by `lyric test` right now. Re-evaluate switching this
-# script back to a plain `lyric test` once that compiler bug is fixed
-# upstream.
+# can't be executed by any current `lyric` command.
 #
 # Requirements on PATH: `lyric`, `dotnet` (10.x).
 set -euo pipefail

@@ -3,15 +3,21 @@
 Status of each phase against its deliverables. See `docs/phaseN-*.md` for the
 design of each phase and `docs/BUILD.md` for build/verification notes.
 
-> **Build status:** the entire server compiles end-to-end (all 12 packages,
-> API + Web + Docker) via `scripts/build-full.sh`, run in CI. Lyric.Web and
-> Std.Logging are consumed as published NuGet binaries; Lyric.Docker is not
-> — the published package lacks the container-lifecycle API this project
-> needs, so `vendor/lyric-docker` is still the source of truth, compiled as
-> an ordinary local package with no patching (see `docs/BUILD.md`). The
-> `@test_module` suites cannot currently run — `lyric test` crashes on this
-> project's manifest — so `scripts/verify.sh` runs an equivalent hand-rolled
-> runtime harness instead (also `docs/BUILD.md`).
+> **Build status:** currently cannot be verified at all — **every released
+> Lyric compiler (0.4.7 through 0.4.10) crashes on `lyric build`/`run`/
+> `check`/`test` for any project**, not just this one; confirmed against a
+> trivial hello-world with no dependencies. This is an upstream compiler
+> bug, not something wrong with this project's manifest or source — filed
+> as [lyric-lang#4925](https://github.com/nichobbs/lyric-lang/issues/4925).
+> See `docs/BUILD.md` "Compiler notes" before assuming a local CI failure
+> here needs a local fix.
+>
+> The dependency/package structure itself is believed correct and was the
+> last thing verified working before this was discovered: all 12 packages
+> (API + Web + Docker), with Lyric.Web/Std.Logging as published NuGet
+> binaries and `vendor/lyric-docker` compiled as an ordinary local package
+> (the published `Lyric.Docker` package lacks the container-lifecycle API
+> this project needs — see `docs/BUILD.md`).
 
 ## Phase 1 — Core Loop ✅ complete
 

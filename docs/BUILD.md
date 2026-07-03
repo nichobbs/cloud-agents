@@ -60,15 +60,14 @@ Build from the repo root:
 
 ```sh
 lyric restore
-lyric build   # see "Compiler notes" below — this crashes on the checked-in
-              # manifest as-is; use scripts/build-full.sh, which works around it
+lyric build   # see "Compiler notes" below — this cannot currently succeed
+              # at all, with any released compiler version, on any project
 ```
 
-`scripts/build-full.sh` wraps `lyric restore`/`lyric build` with the
-`[nuget]`-crash workaround described below — use it instead of calling
-`lyric build` directly. `scripts/verify.sh` is the test entry point — see
-"Running tests" below for why it isn't `lyric test`. `scripts/run-api.sh`
-builds the same way, then runs the compiled server.
+`scripts/build-full.sh` wraps `lyric restore`/`lyric build`. `scripts/verify.sh`
+is the test entry point — see "Running tests" below for why it isn't `lyric
+test`. `scripts/run-api.sh` builds the same way, then runs the compiled
+server. **None of these can currently succeed** — see "Compiler notes".
 
 ### Bumping a NuGet dependency version
 
@@ -79,50 +78,52 @@ it's caught up without checking, the way this project's own history did once.
 
 ## Running tests
 
-`lyric test` (the `cmdTestManifest` CLI path) currently crashes with an
-unhandled `System.InvalidCastException` — verified against the real 0.4.10
-compiler in CI, not a guess. `scripts/verify.sh` avoids it, compiling a
+`lyric test` (the `cmdTestManifest` CLI path) crashes with an unhandled
+`System.InvalidCastException`. `scripts/verify.sh` avoids it by compiling a
 hand-rolled `main()` harness and running it via `lyric build && lyric run`
-instead (this project has in fact never exercised `lyric test`
-successfully — `scripts/verify.sh` took this approach even before the NuGet
-dependency migration, for what turns out to be the same underlying reason;
-see "Compiler notes" below):
-
-```sh
-./scripts/verify.sh
-```
-
-It exercises the Docker/Web-independent logic (SSE framing, the Phase 2
-state machine + idle recycling + SQL builders, the Phase 3 auth helpers) —
-the same code the `@test_module` suites in `tests/*.l` describe. Those
-`tests/*.l` files remain the readable source of truth for intended behavior
-and should still be kept up to date; they just can't be *executed* by `lyric
-test` right now. Re-evaluate switching back to plain `lyric test` once
-[lyric-lang#4925](https://github.com/nichobbs/lyric-lang/issues/4925) ships
-a fix.
+instead — **but as of this writing that doesn't work either**; see
+"Compiler notes" below. `scripts/verify.sh` is still the right entry point
+to use (`./scripts/verify.sh`) — the approach is correct, it's just blocked
+on an external bug, not something to route around differently. It exercises
+the Docker/Web-independent logic (SSE framing, the Phase 2 state machine +
+idle recycling + SQL builders, the Phase 3 auth helpers) — the same code
+the `@test_module` suites in `tests/*.l` describe. Those `tests/*.l` files
+remain the readable source of truth for intended behavior and should still
+be kept up to date.
 
 ## Compiler notes
 
-The following are compiler-level characteristics of the current Lyric
-toolchain, independent of how dependencies are packaged:
+**No currently-released Lyric compiler can build, run, check, or test any
+Lyric project — including a trivial one-file hello-world with no
+dependencies.** This is not a characteristic of this project's manifest,
+dependencies, or source; it's a crash inside the compiler's own
+`buildProject`, before it does anything project-specific. Confirmed locally
+(not just from CI logs) across all 4 currently-released compiler versions
+(0.4.7 through 0.4.10) — every one crashes identically on the same trivial
+project. `lyric build`, `lyric run`, and `lyric check` all hit it (they all
+call into `buildProject`); `lyric test` crashes the same way via a
+different entry point. Filed as
+[lyric-lang#4925](https://github.com/nichobbs/lyric-lang/issues/4925), with
+a disassembly of the actual crash site (a failing type cast, immediately
+followed by `String.IndexOf`/`String.Substring` calls on the miscast value
+— consistent with a text-scanning helper receiving a value of the wrong
+runtime type, inside NativeAOT-specific runtime frames).
 
-- **`lyric build` and `lyric test` both crash with `InvalidCastException` on
-  any manifest with a populated `[nuget]` table** — filed as
-  [lyric-lang#4925](https://github.com/nichobbs/lyric-lang/issues/4925).
-  Root cause (from reading the compiler's own source): both CLI paths match
-  `manifest.nuget: Option[NugetSection]` directly, which hits the same
-  "bootstrap-emitter match quirk" the compiler's source already documents —
-  and already works around — for the structurally identical
-  `Manifest.features: Option[FeaturesSection]` field. This is **not**
-  specific to this project's manifest shape; empirically, stripping
-  `[project.tests]` (an earlier, wrong hypothesis) made no difference, while
-  stripping `[nuget]` does. `scripts/build-full.sh` works around it by
-  feeding `lyric build` a copy of `lyric.toml` with `[nuget]` stripped —
-  safe because the restored packages are located via `obj/project.assets.json`
-  on disk, not by re-reading `[nuget]` from the manifest at build time.
-  `scripts/verify.sh` sidesteps the whole problem by not declaring any
-  `[nuget]` deps in its scratch manifest at all. Re-check both workarounds
-  when bumping the Lyric compiler version.
+An earlier version of this project's build scripts described a `[nuget]`-
+stripping workaround based on a theory that turned out to be wrong (that
+`manifest.nuget: Option[NugetSection]` was the specific trigger) — it was
+harmless but didn't actually fix anything, since the crash reproduces even
+with no `[nuget]` section at all. Removed once the real scope became clear;
+`scripts/build-full.sh` and `scripts/verify.sh` are back to their
+straightforward form. **There is nothing to fix on this project's side** —
+`lyric build`/`test` failing in CI is expected until
+[lyric-lang#4925](https://github.com/nichobbs/lyric-lang/issues/4925) is
+resolved upstream. Check that issue before spending time on a local
+workaround; if you find one that actually works, it belongs there too, not
+just here.
+
+Other compiler-level characteristics, independent of the above:
+
 - **`String.indexOf` / `Option` were historically unreliable at runtime** in
   early standalone installs (not-found did not yield `None` in some
   contexts). The JSON extractors in `auth.l` and `session_manager.l` use a

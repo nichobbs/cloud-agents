@@ -24,6 +24,19 @@ export function SessionDetail() {
   const [modelError, setModelError] = useState('');
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
+  // Tracks which session this component instance is currently showing, so a
+  // handleSend() call that outlives a navigation to a different session (a
+  // send can take up to 30 minutes) can tell it's stale and bail out instead
+  // of folding its result into the wrong session's view. SessionDetail isn't
+  // remounted on navigation between sessions, only re-rendered with a new
+  // `sessionId`, so a plain closure over `sessionId` inside handleSend isn't
+  // enough on its own — this ref is what lets that closure check itself
+  // against the *current* session after an awaited call returns.
+  const currentSessionRef = useRef(sessionId);
+  useEffect(() => {
+    currentSessionRef.current = sessionId;
+  }, [sessionId]);
+
   const highlightedId = location.hash.startsWith('#message-')
     ? location.hash.slice('#message-'.length)
     : null;
@@ -87,8 +100,20 @@ export function SessionDetail() {
   const handleSend = async () => {
     const text = input.trim();
     if (!text || isStreaming) return;
+    const forSession = sessionId;
     setInput('');
     const succeeded = await send(text);
+
+    if (currentSessionRef.current !== forSession) {
+      // The user navigated to a different session while this send was in
+      // flight. useStreamMessage already keeps its own output/error state
+      // from leaking across the switch; this guard does the same for the
+      // continuation below, which would otherwise reload() the *current*
+      // session's transcript with the *stale* session's messages, or steal
+      // focus into a textarea the user isn't looking at anymore.
+      return;
+    }
+
     if (succeeded) {
       // Fold the completed run into the persisted transcript and clear the
       // live panel.

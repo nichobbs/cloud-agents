@@ -1,4 +1,9 @@
-# AGENTS.md
+# Agent Instructions
+
+`CLAUDE.md` is a symlink to this file — keep everything here, don't fork the
+content across both. (Fixes the drift that happened before: `AGENTS.md` was
+a separate copy of `CLAUDE.md` and silently fell out of sync when only one
+got edited.)
 
 ## What this repo is
 
@@ -19,10 +24,12 @@ lyric prove          # SMT verification on @proof_required packages
 
 All commands discover `lyric.toml` by walking up from the working directory. No arguments needed from any subdir.
 
-`lyric test` currently crashes on this project's manifest under the installed
-compiler — use `./scripts/verify.sh` instead; see `docs/BUILD.md` "Running
-tests" for why. `./scripts/build-full.sh` wraps `lyric restore`/`lyric build`
-with a workaround for a related crash — see its comments and `docs/BUILD.md`.
+**No released Lyric compiler can currently build, run, check, or test any
+Lyric project at all** — a crash inside the compiler itself, confirmed
+against a trivial hello-world with no dependencies, across every released
+version. This is not specific to this project; see `docs/BUILD.md`
+"Compiler notes" and [lyric-lang#4925](https://github.com/nichobbs/lyric-lang/issues/4925)
+before assuming a local build failure needs a local fix.
 
 Source files use `.l` extension. Entry point is `func main(): Unit` in the appropriate package.
 
