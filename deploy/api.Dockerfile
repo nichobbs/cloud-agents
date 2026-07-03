@@ -20,10 +20,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends curl ca-certifi
 
 WORKDIR /src
 COPY . .
-# `lyric test` crashes on this project's manifest under the current compiler
-# (see scripts/verify.sh) — run the working runtime-verification harness
-# instead of the broken command.
-RUN lyric restore && lyric build && ./scripts/verify.sh
+# build-full.sh handles the NuGet restore and a compiler workaround (see its
+# own comments and docs/BUILD.md); verify.sh is the working test harness —
+# `lyric test` crashes on this project's manifest under the current compiler.
+RUN ./scripts/build-full.sh && ./scripts/verify.sh
 
 FROM mcr.microsoft.com/dotnet/aspnet:10.0
 RUN apt-get update && apt-get install -y --no-install-recommends docker.io \
