@@ -5,7 +5,8 @@ export interface StreamState {
   output: string;
   isStreaming: boolean;
   error: string | null;
-  send: (text: string) => Promise<void>;
+  /** Resolves to `false` if the send failed (see `error`), `true` on success. */
+  send: (text: string) => Promise<boolean>;
   reset: () => void;
 }
 
@@ -16,7 +17,7 @@ export function useStreamMessage(sessionId: string): StreamState {
   const cancelledRef = useRef(false);
 
   const send = useCallback(
-    async (text: string) => {
+    async (text: string): Promise<boolean> => {
       setIsStreaming(true);
       setError(null);
       cancelledRef.current = false;
@@ -24,6 +25,7 @@ export function useStreamMessage(sessionId: string): StreamState {
       // Show user prompt with a cyan prefix marker
       setOutput(prev => prev + `\x1b[1;36m❯ ${text}\x1b[0m\n`);
 
+      let succeeded = true;
       try {
         await api.sendMessage(sessionId, text, chunk => {
           if (!cancelledRef.current) {
@@ -31,6 +33,7 @@ export function useStreamMessage(sessionId: string): StreamState {
           }
         });
       } catch (err) {
+        succeeded = false;
         const msg = err instanceof Error ? err.message : String(err);
         setError(msg);
         setOutput(prev => prev + `\x1b[1;31mError: ${msg}\x1b[0m\n`);
@@ -39,6 +42,7 @@ export function useStreamMessage(sessionId: string): StreamState {
           setIsStreaming(false);
         }
       }
+      return succeeded;
     },
     [sessionId],
   );

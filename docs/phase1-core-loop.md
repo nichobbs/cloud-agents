@@ -4,6 +4,14 @@
 
 **Duration**: 2-3 weeks
 
+> **As shipped, the "real time" part of this goal is not yet met.**
+> `src/docker_manager.l`'s `runSessionMessage` blocks on the container fully
+> exiting before fetching logs at all, and `sendMessage` in
+> `src/handlers/sessions.l` sends the entire captured transcript as one SSE
+> response after the run completes — not incrementally while it runs. The
+> SSE *framing* below is real and implemented; the *live* part isn't. See
+> `docs/review-2026-07-03-followup.md`'s headline finding for detail.
+
 ## Implementation Details
 
 ### 1. API Server (Lyric / Web)
@@ -45,7 +53,7 @@ match await Docker.createContainer(client, config) {
 
 SSE streaming
 
-Each stdout line is wrapped as data: `{"chunk":"..."}\n\n`. ANSI codes are stripped before sending (can also be done on the frontend with `ansi_up`).
+Each stdout line is wrapped as data: `{"chunk":"..."}\n\n`. **As shipped, ANSI codes are preserved and sent as-is** — the frontend renders them with `ansi_up` (see `src/streaming/streaming.l` and `frontend/src/components/AnsiContent.tsx`), reversing the stripping approach originally sketched here.
 
 2. Base Docker Image (Runner Environment with Lyric SDK)
 
@@ -108,7 +116,7 @@ For Phase 1, mount a local ~/.claude folder manually as a bind mount. This is re
 5. Constraints & Risks
 
 · Architecture must be linux/amd64.
-· ANSI output may contain progress spinners; stripping them loses some visual feedback (acceptable for MVP).
+· ANSI output may contain progress spinners; as shipped this is preserved and rendered by the frontend rather than stripped (see "SSE streaming" above).
 · No concurrency control yet – two rapid messages on the same session may conflict. Added in Phase 2.
 
 Rejected Alternatives

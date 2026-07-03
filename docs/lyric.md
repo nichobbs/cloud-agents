@@ -39,14 +39,13 @@ Read `docs/lyric/gotchas.md` before making assumptions.
 | `docs/lyric/stdlib.md` | Before using Std.* imports |
 | `docs/lyric/idioms.md` | Canonical patterns — follow these |
 | `docs/lyric/gotchas.md` | If something won't compile |
-| `examples/` | Working code to pattern-match from |
+| `src/` | Working code to pattern-match from |
 
 ## Project layout
 
 ```
 src/          # application source (.l files)
 tests/        # @test_module files
-examples/     # canonical working examples
 docs/lyric/   # agent reference docs
 lyric.toml    # project manifest
 ```

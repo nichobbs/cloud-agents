@@ -15,7 +15,7 @@ export function SessionDetail() {
   const navigate = useNavigate();
   const location = useLocation();
   const session = getSession(sessionId);
-  const { output, isStreaming, send, reset } = useStreamMessage(sessionId);
+  const { output, isStreaming, error: sendError, send, reset } = useStreamMessage(sessionId);
 
   const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState('');
@@ -28,6 +28,8 @@ export function SessionDetail() {
     ? location.hash.slice('#message-'.length)
     : null;
 
+  // Used for explicit, one-off refreshes (e.g. right after a successful
+  // send) where there's no concurrent fetch to race against.
   const reload = useCallback(async () => {
     try {
       setMessages(await api.getMessages(sessionId));
@@ -37,8 +39,24 @@ export function SessionDetail() {
   }, [sessionId]);
 
   useEffect(() => {
-    void reload();
-  }, [reload]);
+    // Guard against a slow fetch for a previous session resolving after
+    // navigating to a new one and overwriting its transcript with stale data
+    // — session switches change `sessionId` without remounting this
+    // component, so a request in flight can outlive the session it was for.
+    // Same pattern as CommentThread.tsx's `active` flag.
+    let active = true;
+    api
+      .getMessages(sessionId)
+      .then(fetched => {
+        if (active) setMessages(fetched);
+      })
+      .catch(() => {
+        // transcript may be empty or unavailable; leave as-is
+      });
+    return () => {
+      active = false;
+    };
+  }, [sessionId]);
 
   // Deep-link: scroll to the message referenced by the URL hash once loaded.
   useEffect(() => {
@@ -70,9 +88,19 @@ export function SessionDetail() {
     const text = input.trim();
     if (!text || isStreaming) return;
     setInput('');
-    await send(text);
-    await reload();
-    reset();
+    const succeeded = await send(text);
+    if (succeeded) {
+      // Fold the completed run into the persisted transcript and clear the
+      // live panel.
+      await reload();
+      reset();
+    } else {
+      // Restore the prompt so a failed send (network error, container
+      // crash, backend 500) doesn't silently discard what the user typed —
+      // and leave `output`/`error` populated so the failure is visible
+      // instead of being wiped immediately.
+      setInput(text);
+    }
     textareaRef.current?.focus();
   };
 
@@ -156,7 +184,7 @@ export function SessionDetail() {
       </div>
 
       <div style={transcriptStyle}>
-        {messages.length === 0 && !isStreaming && (
+        {messages.length === 0 && !isStreaming && !sendError && (
           <div style={emptyStyle}>
             No messages yet — send a prompt below to start the session.
           </div>
@@ -169,9 +197,11 @@ export function SessionDetail() {
             onTodoAdded={() => { /* todos live on their own page */ }}
           />
         ))}
-        {isStreaming && (
+        {(isStreaming || sendError) && (
           <div style={liveWrapStyle}>
-            <div style={liveLabelStyle}>running…</div>
+            <div style={sendError ? liveErrorLabelStyle : liveLabelStyle}>
+              {isStreaming ? 'running…' : 'failed'}
+            </div>
             <Terminal output={output} isStreaming={isStreaming} />
           </div>
         )}
@@ -284,6 +314,11 @@ const liveLabelStyle: React.CSSProperties = {
   color: '#56d364',
   textTransform: 'uppercase',
   letterSpacing: '0.04em',
+};
+
+const liveErrorLabelStyle: React.CSSProperties = {
+  ...liveLabelStyle,
+  color: '#f85149',
 };
 
 const todosBtnStyle: React.CSSProperties = {
