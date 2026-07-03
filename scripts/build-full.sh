@@ -8,15 +8,15 @@
 # required. `lyric restore` fetches the NuGet packages, `lyric build`
 # compiles everything else.
 #
-# THIS CURRENTLY CANNOT SUCCEED with any released Lyric compiler. Confirmed
-# locally (not just from CI logs): `lyric build`/`run`/`check`/`test` all
-# crash with an unhandled System.InvalidCastException on EVERY Lyric
-# project, including a trivial one-file hello-world with no dependencies at
-# all — reproduced identically across all 4 currently-released compiler
-# versions (0.4.7 through 0.4.10). This is not something this project's
-# lyric.toml or source can work around; the crash is inside the compiler's
-# own `buildProject` before it does anything project-specific. Filed as
-# https://github.com/nichobbs/lyric-lang/issues/4925 — check that issue
+# THIS CURRENTLY CANNOT SUCCEED with any released Lyric compiler (0.4.7
+# through 0.4.10). `lyric build`/`run`/`check`/`test` all crash with an
+# unhandled System.InvalidCastException on EVERY standalone (non-workspace)
+# Lyric project — this is not something this project's lyric.toml or source
+# can work around; the crash is inside the compiler's own `buildProject`
+# before it does anything project-specific. Root cause is found and fixed
+# upstream (https://github.com/nichobbs/lyric-lang/pull/4955, merged) but
+# not released yet as of this writing — check
+# https://github.com/nichobbs/lyric-lang/issues/4925 for release status
 # before assuming a local build failure is something to fix here. An
 # earlier version of this comment described a `[nuget]`-stripping
 # workaround based on a since-disproven theory (it didn't actually fix

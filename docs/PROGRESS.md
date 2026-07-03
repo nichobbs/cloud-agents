@@ -5,11 +5,12 @@ design of each phase and `docs/BUILD.md` for build/verification notes.
 
 > **Build status:** currently cannot be verified at all — **every released
 > Lyric compiler (0.4.7 through 0.4.10) crashes on `lyric build`/`run`/
-> `check`/`test` for any project**, not just this one; confirmed against a
-> trivial hello-world with no dependencies. This is an upstream compiler
-> bug, not something wrong with this project's manifest or source — filed
-> as [lyric-lang#4925](https://github.com/nichobbs/lyric-lang/issues/4925).
-> See `docs/BUILD.md` "Compiler notes" before assuming a local CI failure
+> `check`/`test` for any project**, not just this one. This is an upstream
+> compiler bug, not something wrong with this project's manifest or source.
+> Root cause is found and fixed upstream
+> ([lyric-lang#4955](https://github.com/nichobbs/lyric-lang/pull/4955),
+> merged) but not released yet — see `docs/BUILD.md` "Compiler notes" for
+> detail and current release status before assuming a local CI failure
 > here needs a local fix.
 >
 > The dependency/package structure itself is believed correct and was the

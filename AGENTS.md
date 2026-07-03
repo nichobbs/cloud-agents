@@ -1,9 +1,13 @@
 # Agent Instructions
 
-`CLAUDE.md` is a symlink to this file — keep everything here, don't fork the
-content across both. (Fixes the drift that happened before: `AGENTS.md` was
-a separate copy of `CLAUDE.md` and silently fell out of sync when only one
-got edited.)
+This is the canonical file — keep everything here, don't fork the content
+into `CLAUDE.md` too. `CLAUDE.md` is a one-line pointer to this file (not a
+symlink: symlinks aren't resolved by GitHub's raw-file/contents-API
+endpoints or by checkouts without symlink support, so a symlinked
+`CLAUDE.md` can silently serve the literal text "AGENTS.md" instead of real
+content). This fixes the drift that happened before: `AGENTS.md` was a
+separate copy of `CLAUDE.md` and silently fell out of sync when only one
+got edited.
 
 ## What this repo is
 
@@ -24,12 +28,15 @@ lyric prove          # SMT verification on @proof_required packages
 
 All commands discover `lyric.toml` by walking up from the working directory. No arguments needed from any subdir.
 
-**No released Lyric compiler can currently build, run, check, or test any
-Lyric project at all** — a crash inside the compiler itself, confirmed
-against a trivial hello-world with no dependencies, across every released
-version. This is not specific to this project; see `docs/BUILD.md`
-"Compiler notes" and [lyric-lang#4925](https://github.com/nichobbs/lyric-lang/issues/4925)
-before assuming a local build failure needs a local fix.
+**No released Lyric compiler (through 0.4.10) can build, run, check, or test
+any Lyric project at all** — a crash inside the compiler itself, not
+specific to this project. Root cause is found and fixed upstream
+([lyric-lang#4955](https://github.com/nichobbs/lyric-lang/pull/4955),
+merged), but no release has shipped it yet as of this writing — every
+currently-downloadable binary still crashes. See `docs/BUILD.md` "Compiler
+notes" before assuming a local build failure needs a local fix; check
+[lyric-lang#4925](https://github.com/nichobbs/lyric-lang/issues/4925) for
+the latest release status.
 
 Source files use `.l` extension. Entry point is `func main(): Unit` in the appropriate package.
 

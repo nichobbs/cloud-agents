@@ -93,34 +93,61 @@ be kept up to date.
 
 ## Compiler notes
 
-**No currently-released Lyric compiler can build, run, check, or test any
-Lyric project — including a trivial one-file hello-world with no
-dependencies.** This is not a characteristic of this project's manifest,
-dependencies, or source; it's a crash inside the compiler's own
-`buildProject`, before it does anything project-specific. Confirmed locally
-(not just from CI logs) across all 4 currently-released compiler versions
-(0.4.7 through 0.4.10) — every one crashes identically on the same trivial
-project. `lyric build`, `lyric run`, and `lyric check` all hit it (they all
-call into `buildProject`); `lyric test` crashes the same way via a
-different entry point. Filed as
-[lyric-lang#4925](https://github.com/nichobbs/lyric-lang/issues/4925), with
-a disassembly of the actual crash site (a failing type cast, immediately
-followed by `String.IndexOf`/`String.Substring` calls on the miscast value
-— consistent with a text-scanning helper receiving a value of the wrong
-runtime type, inside NativeAOT-specific runtime frames).
+**No currently-released Lyric compiler (0.4.7 through 0.4.10) can build,
+run, check, or test any Lyric project — including a trivial one-file
+hello-world with no dependencies.** This is not a characteristic of this
+project's manifest, dependencies, or source; it's a crash inside the
+compiler's own `buildProject`, before it does anything project-specific.
+Reproduced directly (not just from CI logs) — most recently in this
+session, running `lyric build` at this repo's root:
+
+```
+Unhandled exception. System.InvalidCastException: Specified cast is not valid.
+   at Lyric.Cli.Program.buildProject(String, Option`1, CompileTarget, List`1, Boolean, Boolean, Boolean, Option`1) + 0x12c7
+   at Lyric.Cli.Program.cmdBuild(String[]) + 0x115c
+   at Lyric.Cli.Program.main(String[]) + 0x564
+   at Lyric.Cli.Aot.Program.Main(String[] args) + 0x6
+```
+
+`lyric build`, `lyric run`, and `lyric check` all hit it (they all call into
+`buildProject`); `lyric test` crashes the same way via a different entry
+point.
+
+**Root cause is found and a fix has been merged upstream — but not released
+yet.** [lyric-lang#4925](https://github.com/nichobbs/lyric-lang/issues/4925)
+is closed, fixed by
+[lyric-lang#4955](https://github.com/nichobbs/lyric-lang/pull/4955): the
+actual trigger is any project with **no `[workspace]` ancestor manifest** —
+`cli/workspace_builder.l`'s `buildWorkspaceDeps` constructed a bare `None`
+tuple element on its not-in-a-workspace path, which loses its type
+argument under the bootstrap emitter and fails to cast back to
+`Option[Ws.WorkspaceContext]` when `buildProject`/`cmdTestManifest`
+destructure it. Unrelated to `[nuget]` (see below) — this project, and any
+other standalone (non-workspace) Lyric project, hits it unconditionally.
+As of this writing the fix is merged to `main` but the latest tagged
+release is still `v0.4.10`, published *before* the fix merged, so every
+currently-downloadable binary still crashes exactly as shown above. Check
+[lyric-lang#4925](https://github.com/nichobbs/lyric-lang/issues/4925) for
+whether a release containing the fix has shipped before assuming a local
+build failure needs a local fix.
+
+Restructuring this project as a workspace member purely to dodge the bug on
+the *current* binary was considered and rejected: the fix is already merged
+upstream, a standalone (non-workspace) layout is a normal, fully-supported
+configuration per Lyric's own workspace design doc, and adding a workspace
+wrapper now would just be a new workaround to strip back out once a fixed
+release ships — the churn this section exists to avoid repeating.
 
 An earlier version of this project's build scripts described a `[nuget]`-
 stripping workaround based on a theory that turned out to be wrong (that
 `manifest.nuget: Option[NugetSection]` was the specific trigger) — it was
 harmless but didn't actually fix anything, since the crash reproduces even
-with no `[nuget]` section at all. Removed once the real scope became clear;
-`scripts/build-full.sh` and `scripts/verify.sh` are back to their
-straightforward form. **There is nothing to fix on this project's side** —
-`lyric build`/`test` failing in CI is expected until
-[lyric-lang#4925](https://github.com/nichobbs/lyric-lang/issues/4925) is
-resolved upstream. Check that issue before spending time on a local
-workaround; if you find one that actually works, it belongs there too, not
-just here.
+with no `[nuget]` section at all, and the real trigger (above) is unrelated
+to `[nuget]`. Removed once the real scope became clear; `scripts/build-full.sh`
+and `scripts/verify.sh` are back to their straightforward form. **There is
+nothing to fix on this project's side** — `lyric build`/`test` failing in
+CI is expected until a release containing
+[lyric-lang#4955](https://github.com/nichobbs/lyric-lang/pull/4955) ships.
 
 Other compiler-level characteristics, independent of the above:
 

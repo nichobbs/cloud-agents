@@ -3,9 +3,10 @@
 #
 # THIS CURRENTLY CANNOT SUCCEED with any released Lyric compiler, same as
 # scripts/build-full.sh — `lyric build`/`run`/`check`/`test` all crash with
-# an unhandled System.InvalidCastException on EVERY Lyric project (not just
-# this one's), confirmed locally across all 4 currently-released compiler
-# versions. See https://github.com/nichobbs/lyric-lang/issues/4925.
+# an unhandled System.InvalidCastException on EVERY standalone Lyric
+# project (not just this one's). Root cause found and fixed upstream
+# (https://github.com/nichobbs/lyric-lang/pull/4955, merged), not released
+# yet — see https://github.com/nichobbs/lyric-lang/issues/4925.
 #
 # This script compiles a small hand-rolled `main()` harness and runs it with
 # `lyric build` + `lyric run` rather than `lyric test`, on the theory that
