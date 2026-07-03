@@ -1,4 +1,4 @@
-# CLAUDE.md
+# AGENTS.md
 
 ## What this repo is
 
@@ -7,6 +7,7 @@ A Lyric application. Lyric is a safety-oriented language targeting .NET 10 (prim
 ## Build and run
 
 ```sh
+lyric restore        # fetch [nuget] dependencies (run before build/test)
 lyric build          # compile (discovers lyric.toml from any subdir)
 lyric run            # build + execute
 lyric test           # run all @test_module files
@@ -17,6 +18,11 @@ lyric prove          # SMT verification on @proof_required packages
 ```
 
 All commands discover `lyric.toml` by walking up from the working directory. No arguments needed from any subdir.
+
+`lyric test` currently crashes on this project's manifest under the installed
+compiler — use `./scripts/verify.sh` instead; see `docs/BUILD.md` "Running
+tests" for why. `./scripts/build-full.sh` wraps `lyric restore`/`lyric build`
+with a workaround for a related crash — see its comments and `docs/BUILD.md`.
 
 Source files use `.l` extension. Entry point is `func main(): Unit` in the appropriate package.
 
@@ -34,14 +40,13 @@ Read `docs/lyric/gotchas.md` before making assumptions.
 | `docs/lyric/stdlib.md` | Before using Std.* imports |
 | `docs/lyric/idioms.md` | Canonical patterns — follow these |
 | `docs/lyric/gotchas.md` | If something won't compile |
-| `examples/` | Working code to pattern-match from |
+| `src/` | Working code to pattern-match from |
 
 ## Project layout
 
 ```
 src/          # application source (.l files)
 tests/        # @test_module files
-examples/     # canonical working examples
 docs/lyric/   # agent reference docs
 lyric.toml    # project manifest
 ```

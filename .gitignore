@@ -1,3 +1,7 @@
 .lyric/
 .lyric-*/
 bin/
+obj/
+lyric.lock
+*-restore.csproj
+lyric.toml.bak
