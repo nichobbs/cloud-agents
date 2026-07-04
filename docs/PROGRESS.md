@@ -3,27 +3,29 @@
 Status of each phase against its deliverables. See `docs/phaseN-*.md` for the
 design of each phase and `docs/BUILD.md` for build/verification notes.
 
-> **Build status:** currently cannot be verified at all — **two independent
-> upstream compiler bugs**, not something wrong with this project's
-> manifest or source. Bug 1 (`buildProject` crash,
-> [lyric-lang#4925](https://github.com/nichobbs/lyric-lang/issues/4925)) is
-> fixed as of the
-> [v0.4.11 release](https://github.com/nichobbs/lyric-lang/releases/tag/v0.4.11).
-> Upgrading to it immediately exposed bug 2, apparently pre-existing and
-> simply never reachable before: `Std.Core`'s `Option`/`Result`/`Some`/
-> `None`/`Ok`/`Err` never resolve at any use site, on any compiler version
-> or project configuration — filed as
-> [lyric-lang#4980](https://github.com/nichobbs/lyric-lang/issues/4980)
-> (open). See `docs/BUILD.md` "Compiler notes" for full detail, evidence,
-> and current release status before assuming a local CI failure here needs
-> a local fix.
+> **Build status:** `scripts/verify.sh` now genuinely passes — all 24
+> Phase 1–3 logic checks (SSE framing, state machine, recycling, SQL, auth)
+> ran and succeeded for real for the first time in this project's history,
+> against the v0.4.12 compiler. Every "✅ verified" label below is now
+> backed by an actual successful compile and run, not just belief.
 >
-> **This also means every "✅ verified" label below has never actually been
-> confirmed by a real compiler run** — `scripts/verify.sh` (the thing
-> "verified" refers to) has never once succeeded, on any compiler version,
-> because of these two bugs. Treat "✅ verified" as "believed correct,
-> pending an actual successful compile" until bug 2 is fixed and
-> `scripts/verify.sh` is re-run for real.
+> The **full project build** (`lyric build` at the repo root, which needs
+> `main.l`'s `Web.create()` call) is still blocked by a third upstream bug —
+> not something wrong with this project's manifest or source. Two prior
+> bugs are fixed: bug 1 (`buildProject` crash,
+> [lyric-lang#4925](https://github.com/nichobbs/lyric-lang/issues/4925)),
+> fixed in [v0.4.11](https://github.com/nichobbs/lyric-lang/releases/tag/v0.4.11),
+> and bug 2 (`Std.Core`'s `Option`/`Result`/`Some`/`None`/`Ok`/`Err` never
+> resolving, [lyric-lang#4980](https://github.com/nichobbs/lyric-lang/issues/4980)),
+> fixed in [v0.4.12](https://github.com/nichobbs/lyric-lang/releases/tag/v0.4.12)
+> — that's what let `scripts/verify.sh` succeed above. Bug 3, still open: a
+> zero-argument function restored from a NuGet package (`Web.create()`) is
+> rejected as `"expected 1 argument(s), got 0"` even though it genuinely
+> takes zero parameters — filed as
+> [lyric-lang#5004](https://github.com/nichobbs/lyric-lang/issues/5004).
+> See `docs/BUILD.md` "Compiler notes" for full detail, evidence, and
+> current release status before assuming a local CI failure here needs a
+> local fix.
 >
 > The dependency/package structure itself is believed correct and was the
 > last thing verified working before bug 1 was discovered: all 12 packages

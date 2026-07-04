@@ -8,17 +8,17 @@
 # required. `lyric restore` fetches the NuGet packages, `lyric build`
 # compiles everything else.
 #
-# THIS CURRENTLY CANNOT SUCCEED with any released Lyric compiler — two
-# independent upstream bugs, one fixed, one open. The v0.4.10 buildProject
-# crash (https://github.com/nichobbs/lyric-lang/issues/4925, fixed by
-# merged https://github.com/nichobbs/lyric-lang/pull/4955) is confirmed
-# fixed in the v0.4.11 release. Upgrading to it exposes a second,
-# apparently pre-existing bug: Std.Core's Option/Result/Some/None/Ok/Err
-# never resolve at any use site, on any compiler version or project
-# configuration — filed as
-# https://github.com/nichobbs/lyric-lang/issues/4980 (open). Neither is
-# something this project's lyric.toml or source can work around; see
-# docs/BUILD.md "Compiler notes" for full detail. An earlier version of
+# THIS CURRENTLY CANNOT SUCCEED with any released Lyric compiler — three
+# independent upstream bugs found in sequence, two fixed, one open. Bug 1
+# (buildProject crash, https://github.com/nichobbs/lyric-lang/issues/4925)
+# is fixed as of v0.4.11; bug 2 (Std.Core's Option/Result/Some/None/Ok/Err
+# never resolving, https://github.com/nichobbs/lyric-lang/issues/4980) is
+# fixed as of v0.4.12. Bug 3, still open: a zero-arg function restored from
+# a NuGet package (Web.create(), called directly in src/main.l) is rejected
+# as "expected 1 argument(s), got 0" even though it takes zero parameters —
+# filed as https://github.com/nichobbs/lyric-lang/issues/5004. None of the
+# three is something this project's lyric.toml or source can work around;
+# see docs/BUILD.md "Compiler notes" for full detail. An earlier version of
 # this comment described a `[nuget]`-stripping workaround based on a
 # since-disproven theory (it didn't actually fix anything, though it was
 # harmless) — removed once the real scope became clear.

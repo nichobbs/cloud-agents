@@ -93,19 +93,20 @@ be kept up to date.
 
 ## Compiler notes
 
-**Two independent, upstream compiler bugs currently block `lyric build`/
-`run`/`check`/`test` for this project — one fixed as of v0.4.11, one still
-open.** Neither is a characteristic of this project's manifest,
-dependencies, or source.
+**Three independent upstream compiler bugs have blocked `lyric build`/
+`run`/`check`/`test` for this project, discovered one at a time as each
+prior one got fixed — two are now fixed (v0.4.11, v0.4.12), one is still
+open.** None is a characteristic of this project's manifest, dependencies,
+or source.
 
 **This is checked into the repo as a runnable reproduction, not just
-prose**: `scripts/repro-compiler-bug.sh` checks both bugs against trivial,
-dependency-free scratch projects (no `[nuget]`, no `[workspace]`, nothing
-project-specific, and no `dotnet` required — both bugs occur before the
-compiler would invoke the .NET toolchain). Run it yourself against any
-environment with `lyric` on PATH; exit 0 means both are fixed on your
-compiler and it's safe to remove this script and the workaround notes
-below.
+prose**: `scripts/repro-compiler-bug.sh` checks all three bugs against
+trivial scratch projects. Checks 1–2 need only `lyric` on PATH (both bugs
+occur before the compiler would invoke the .NET toolchain); check 3 needs
+a real `[nuget]` restore, so it additionally needs `dotnet` and network
+access, and is skipped (not failed) without `dotnet`. Run it yourself; exit
+0 means every bug that could be checked is fixed on your compiler and it's
+safe to remove this script and the workaround notes below.
 
 ### Bug 1 — `buildProject` crash (lyric-lang#4925/#4955) — **fixed in v0.4.11**
 
@@ -140,7 +141,7 @@ harmless but didn't actually fix anything, since the crash reproduced even
 with no `[nuget]` section at all, and the real trigger (above) is unrelated
 to `[nuget]`. Removed once the real scope became clear.
 
-### Bug 2 — `Std.Core`'s Option/Result never resolve (lyric-lang#4980) — **open, currently blocking**
+### Bug 2 — `Std.Core`'s Option/Result never resolve (lyric-lang#4980) — **fixed in v0.4.12**
 
 Upgrading to v0.4.11 to pick up the bug 1 fix immediately exposed a second,
 apparently pre-existing bug: `Option[T]`, `Result[T, E]`, and their
@@ -167,13 +168,48 @@ This affects this project's real source (`db_client.l`, `auth.l`,
 `session_manager.l` all use `Option`/`Some`/`None`) and its own test
 harness (`scripts/verify.sh`), and blocks the canonical `Result`/`Option`
 patterns `docs/lyric/idioms.md` itself recommends — i.e. no Lyric compiler
-has apparently ever been able to build a project using these idioms, since
-bug 1 always masked bug 2 until now. Filed as
-[lyric-lang#4980](https://github.com/nichobbs/lyric-lang/issues/4980).
+had apparently ever been able to build a project using these idioms, since
+bug 1 always masked bug 2 until v0.4.11. Filed as
+[lyric-lang#4980](https://github.com/nichobbs/lyric-lang/issues/4980),
+closed as fixed shortly before the
+[v0.4.12 release](https://github.com/nichobbs/lyric-lang/releases/tag/v0.4.12)
+— **confirmed fixed against that binary**: `Option[T]`/`Some`/`None` now
+resolve in a trivial scratch project.
 
-**There is nothing to fix on this project's side for either bug** —
-`lyric build`/`test` failing in CI is expected until a release fixing
-[lyric-lang#4980](https://github.com/nichobbs/lyric-lang/issues/4980)
+### Bug 3 — NuGet-restored zero-arg functions rejected (lyric-lang#5004) — **open, currently blocking**
+
+Upgrading to v0.4.12 to pick up the bug 2 fix immediately exposed a third
+bug: calling a **zero-argument function restored from a NuGet package**
+fails type-checking with `"expected 1 argument(s), got 0"` — even though
+the function genuinely takes zero parameters, confirmed two independent
+ways:
+
+- The package's own embedded `Lyric.Contract.Web` manifest resource says
+  `{"kind":"func","name":"create","repr":"pub func create(): Router"}`.
+- The actual compiled IL, inspected via .NET reflection
+  (`MethodInfo.GetParameters()`), also shows zero parameters.
+
+```
+$ lyric build
+WebTest: error[T0042] 6:16: expected 1 argument(s), got 0
+B0001 error [1:1]: project build failed (see stderr)
+```
+
+This hits `src/main.l`'s very first NuGet-consumed call —
+`var router = Web.create()` — immediately after bug 2's fix let the build
+get that far; every other `Web.addGet`/`addPost`/`addDelete` call (3–4 args
+each, same package, same file) type-checks fine, and a project-local
+(source-compiled, non-NuGet) zero-arg cross-package call type-checks fine
+too. So this looks specific to how the compiler derives an expected
+argument count from a NuGet package's serialized contract — plausibly a
+naive comma-count parse of a `repr` string like `"pub func create(): Router"`
+that doesn't special-case a genuinely-empty `()` parameter list. Filed as
+[lyric-lang#5004](https://github.com/nichobbs/lyric-lang/issues/5004)
+(open).
+
+**There is nothing to fix on this project's side for any of the three
+bugs** — `lyric build`/`test` failing in CI is expected until a release
+fixing [lyric-lang#5004](https://github.com/nichobbs/lyric-lang/issues/5004)
 ships. Check that issue for status before assuming a local build failure
 needs a local fix.
 

@@ -1,15 +1,16 @@
 #!/usr/bin/env bash
 # verify.sh — runtime-verify the Docker-independent logic.
 #
-# THIS CURRENTLY CANNOT SUCCEED with any released Lyric compiler, same as
-# scripts/build-full.sh — two independent upstream bugs, one fixed, one
-# open. See docs/BUILD.md "Compiler notes": the v0.4.10 buildProject crash
-# (https://github.com/nichobbs/lyric-lang/issues/4925) is fixed as of
-# v0.4.11, but upgrading exposes a second, apparently pre-existing bug
-# where Std.Core's Option/Result/Some/None/Ok/Err never resolve at any use
-# site — filed as https://github.com/nichobbs/lyric-lang/issues/4980
-# (open). This harness uses Option (CachedToken, statusFromString, etc.)
-# so it hits bug 2 directly.
+# AS OF v0.4.12, THIS ACTUALLY SUCCEEDS — the first time in this project's
+# history. Two upstream compiler bugs blocked it before: bug 1 (buildProject
+# crash, https://github.com/nichobbs/lyric-lang/issues/4925, fixed in
+# v0.4.11) and bug 2 (Std.Core's Option/Result/Some/None/Ok/Err never
+# resolving, https://github.com/nichobbs/lyric-lang/issues/4980, fixed in
+# v0.4.12 — this harness uses Option directly, e.g. CachedToken/
+# statusFromString, so it hit bug 2 head-on). See docs/BUILD.md "Compiler
+# notes" for detail, including bug 3 (still open), which blocks the *full*
+# project build (scripts/build-full.sh) but not this harness, since this
+# harness doesn't touch Lyric.Web.
 #
 # This script compiles a small hand-rolled `main()` harness and runs it with
 # `lyric build` + `lyric run` rather than `lyric test`, on the theory that
