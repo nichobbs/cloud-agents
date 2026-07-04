@@ -1,21 +1,29 @@
 #!/usr/bin/env bash
 # verify.sh — runtime-verify the Docker-independent logic.
 #
-# `lyric test` (cmdTestManifest) crashes with an unhandled
-# System.InvalidCastException on this project's manifest under the current
-# compiler (confirmed on 0.4.10 in CI — see the PR that introduced this
-# comment for the exact stack trace). This project has in fact never
-# exercised `lyric test` successfully: prior to the NuGet dependency
-# migration this script already avoided it, instead compiling a small
-# hand-rolled `main()` harness and running it with `lyric build` + `lyric
-# run`. That's restored here, updated to run directly against this repo's
-# NuGet-based lyric.toml (no more sibling lyric-lang checkout needed).
+# AS OF v0.4.12, THIS ACTUALLY SUCCEEDS — the first time in this project's
+# history. Two upstream compiler bugs blocked it before: bug 1 (buildProject
+# crash, https://github.com/nichobbs/lyric-lang/issues/4925, fixed in
+# v0.4.11) and bug 2 (Std.Core's Option/Result/Some/None/Ok/Err never
+# resolving, https://github.com/nichobbs/lyric-lang/issues/4980, fixed in
+# v0.4.12 — this harness uses Option directly, e.g. CachedToken/
+# statusFromString, so it hit bug 2 head-on). Bugs 3 and 4 (see docs/BUILD.md
+# "Compiler notes") don't affect this harness either — it has no [nuget]
+# table at all, so it never hits the NuGet-specific bugs that block the
+# *full* project build (scripts/build-full.sh) and run (scripts/run-api.sh).
+#
+# This script compiles a small hand-rolled `main()` harness and runs it with
+# `lyric build` + `lyric run` rather than `lyric test`, on the theory that
+# `lyric test` (cmdTestManifest) was the specific thing crashing. That
+# theory turned out to be wrong — `lyric build`/`run` hit the identical
+# crash, inside the compiler itself, before touching anything harness- or
+# manifest-specific — but the approach is kept because it's still the
+# right shape once the compiler is fixed: no lyric-lang checkout, no NuGet
+# deps in the scratch manifest, nothing else to go wrong on our side.
 #
 # `tests/*.l` (the real `@test_module` suites) remain the source of truth
 # for intended behaviour and should still be read/maintained — they just
-# can't be executed by `lyric test` right now. Re-evaluate switching this
-# script back to a plain `lyric test` once that compiler bug is fixed
-# upstream.
+# can't be executed by any current `lyric` command.
 #
 # Requirements on PATH: `lyric`, `dotnet` (10.x).
 set -euo pipefail

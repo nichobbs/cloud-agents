@@ -45,10 +45,38 @@ prune `session-*` workspace volumes for deleted sessions.
 
 - **Docker daemon restarted / VM rebooted:** runner containers are gone by
   design. On the next message the API recreates a container from the session's
-  volumes. Any session left in `RUNNING`/`WARM` should be reset to `IDLE` by the
-  startup recovery routine (Phase 2).
-- **API crash loop:** check `docker compose logs api`; most startup failures are
-  a missing required env var (`ENCRYPTION_KEY`) — config is fail-fast.
+  volumes. **The Phase 2 startup recovery routine that resets dangling
+  `RUNNING`/`WARM` sessions to `IDLE` is designed
+  (`recoverDanglingSessionsSql` in `src/db/db_client.l`) but not wired in
+  anywhere** — the live session record has no status field to reset in the
+  first place (see `docs/review-2026-07-03-followup.md` finding #4). In
+  practice a session simply starts a fresh container on its next message
+  regardless of what state it was in before the restart.
+- **API crash loop:** check `docker compose logs api`. `ENCRYPTION_KEY` is
+  required by `docker-compose.yml`'s `${ENCRYPTION_KEY:?...}` guard, which
+  fails at `docker compose` parse/start time if unset — but nothing in the
+  Lyric source actually reads this variable today, so don't expect an
+  app-level error message pointing at it; the compose-level guard is the
+  only enforcement.
+
+## Rollback
+
+If a deploy goes bad (new image fails health checks, crash-loops, or
+regresses behavior):
+
+```sh
+cd /opt/cloud-agents
+git log --oneline -5                     # find the last known-good commit/tag
+git checkout <previous-good-ref>
+cd deploy
+docker compose up -d --build             # rebuilds api/frontend from the reverted source
+```
+
+There's no image registry or version pinning in this setup — `docker compose
+up -d --build` always rebuilds from whatever's checked out locally, so
+rolling back is rolling back the checkout, then rebuilding. Runner container
+images (`claude-code:base`, etc.) are unaffected by an API/frontend rollback
+and don't need rebuilding unless the rollback also reverts `docker/`.
 
 ## Backups
 

@@ -8,14 +8,18 @@ Implementation Details
 
 1. GitHub MCP Server
 
-Include @anthropic/mcp-server-github in the base image. Generate .claude/mcp.json on container startup:
+Include @modelcontextprotocol/server-github in the base image (this is the
+real published package — an earlier draft of this doc named a package,
+`@anthropic/mcp-server-github`, that doesn't exist on npm). Generate
+.claude/mcp.json on container startup — implemented in
+`docker/mcp.json.template`, rendered by the entrypoint scripts:
 
 ```json
 {
   "mcpServers": {
     "github": {
       "command": "npx",
-      "args": ["-y", "@anthropic/mcp-server-github"],
+      "args": ["-y", "@modelcontextprotocol/server-github"],
       "env": {
         "GITHUB_PERSONAL_ACCESS_TOKEN": "${GITHUB_TOKEN}"
       }
@@ -26,9 +30,18 @@ Include @anthropic/mcp-server-github in the base image. Generate .claude/mcp.jso
 
 The GitHub PAT is injected from the user’s stored credentials. Placed in /workspace/.claude/mcp.json for session-specific use.
 
+**Not yet implemented:** nothing in `src/docker_manager.l` actually sets a
+`GITHUB_TOKEN` environment variable on the runner container, so the
+substitution above always resolves to an empty token today — the GitHub MCP
+server in every container can never authenticate. See
+`docs/review-2026-07-03-followup.md` finding #1.
+
 2. Frontend GitHub Panels
 
-The existing PWA already has GitHub panels. The frontend can use the user’s OAuth token directly to fetch PRs, issues, and commits from GitHub’s API.
+**Not yet implemented.** The frontend has no PR/issue/commit-fetching code —
+this section describes the intended design, not shipped behavior (correctly
+tracked as pending in `docs/PROGRESS.md`). The frontend would use the user’s
+OAuth token directly to fetch PRs, issues, and commits from GitHub’s API.
 
 3. Tool Packs (Docker Images)
 

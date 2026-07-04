@@ -42,6 +42,17 @@ r.mapErr { e -> transform(e) }: Result[T, F]
 r.andThen { v -> other(v) }: Result[U, E]  // flatMap
 ```
 
+Also available (free functions in `Std.Core`, callable via dot-syntax like the
+methods above — `docker_manager.l` uses these in production code, not just
+tests; don't confuse with the similarly-named `Std.Testing` assertion helper
+in the Testing section below, which is a distinct, test-only wrapper):
+```lyric
+r.unwrapResult(): T                    // same as .unwrap() — panics on Err
+r.unwrapResultOr(default: T): T        // same as .unwrapOr()
+r.unwrapErrOr(default: E): E           // .unwrap() for the Err side
+r.unwrapResultStr(): T                 // like .unwrapResult(), panic message includes the Err payload (E = String)
+```
+
 ### Option[T]
 
 ```lyric

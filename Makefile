@@ -47,6 +47,7 @@ lint-sh:
 	    scripts/verify.sh \
 	    scripts/build-full.sh \
 	    scripts/dev.sh \
-	    scripts/build-docker.sh; do \
+	    scripts/build-docker.sh \
+	    scripts/repro-compiler-bug.sh; do \
 	    bash -n "$$f" && echo "ok: $$f"; \
 	done

@@ -3,15 +3,45 @@
 Status of each phase against its deliverables. See `docs/phaseN-*.md` for the
 design of each phase and `docs/BUILD.md` for build/verification notes.
 
-> **Build status:** the entire server compiles end-to-end (all 12 packages,
-> API + Web + Docker) via `scripts/build-full.sh`, run in CI. Lyric.Web and
-> Std.Logging are consumed as published NuGet binaries; Lyric.Docker is not
-> — the published package lacks the container-lifecycle API this project
-> needs, so `vendor/lyric-docker` is still the source of truth, compiled as
-> an ordinary local package with no patching (see `docs/BUILD.md`). The
-> `@test_module` suites cannot currently run — `lyric test` crashes on this
-> project's manifest — so `scripts/verify.sh` runs an equivalent hand-rolled
-> runtime harness instead (also `docs/BUILD.md`).
+> **Build status:** `lyric build` now succeeds for the full project — all
+> 12 packages — for the first time in this project's history, as of the
+> v0.4.14 compiler. `scripts/verify.sh` also genuinely passes: all 24
+> Phase 1–3 logic checks (SSE framing, state machine, recycling, SQL, auth)
+> ran and succeeded for real. Every "✅ verified" label below is now backed
+> by an actual successful compile and run, not just belief.
+>
+> **Actually running the server** (`lyric run`/`scripts/run-api.sh`) is
+> still blocked by a fourth upstream bug — not something wrong with this
+> project's manifest or source. Three prior bugs are fixed in sequence,
+> each only reachable once the last one was: bug 1 (`buildProject` crash,
+> [lyric-lang#4925](https://github.com/nichobbs/lyric-lang/issues/4925),
+> fixed in [v0.4.11](https://github.com/nichobbs/lyric-lang/releases/tag/v0.4.11)),
+> bug 2 (`Std.Core`'s `Option`/`Result`/`Some`/`None`/`Ok`/`Err` never
+> resolving, [lyric-lang#4980](https://github.com/nichobbs/lyric-lang/issues/4980),
+> fixed in [v0.4.12](https://github.com/nichobbs/lyric-lang/releases/tag/v0.4.12)),
+> and bug 3 (NuGet-restored zero-arg functions rejected,
+> [lyric-lang#5004](https://github.com/nichobbs/lyric-lang/issues/5004),
+> fixed in [v0.4.14](https://github.com/nichobbs/lyric-lang/releases/tag/v0.4.14))
+> — that last one is what let the full build succeed. Bug 4, still open:
+> `lyric run` can't find NuGet-restored dependency DLLs (e.g. `Web.dll`) at
+> runtime, even though the build that produced them succeeded — filed as
+> [lyric-lang#5066](https://github.com/nichobbs/lyric-lang/issues/5066).
+> See `docs/BUILD.md` "Compiler notes" for full detail, evidence, and
+> current release status before assuming a local CI failure here needs a
+> local fix.
+>
+> Building the full project for the first time also surfaced one genuine
+> bug in this project's own source: `vendor/lyric-docker/src/docker.l`
+> called a nonexistent `unwrapResult(x)` function instead of the documented
+> `x.unwrap()` method, at four call sites — never caught before because the
+> compiler always crashed before type-checking this file. Fixed.
+>
+> The dependency/package structure itself is confirmed correct — all 12
+> packages (API + Web + Docker) now compile together, with Lyric.Web/
+> Std.Logging as published NuGet binaries and `vendor/lyric-docker`
+> compiled as an ordinary local package (the published `Lyric.Docker`
+> package lacks the container-lifecycle API this project needs — see
+> `docs/BUILD.md`).
 
 ## Phase 1 — Core Loop ✅ complete
 

@@ -8,27 +8,22 @@
 # required. `lyric restore` fetches the NuGet packages, `lyric build`
 # compiles everything else.
 #
-# `lyric build` (and `lyric test`) crash with an unhandled
-# System.InvalidCastException on ANY manifest with a populated `[nuget]`
-# table, confirmed against the real 0.4.10 compiler in CI. Root cause (see
-# https://github.com/nichobbs/lyric-lang/issues/4925): both commands match
-# `manifest.nuget: Option[NugetSection]` directly, which hits the same
-# "bootstrap-emitter match quirk" the compiler's own source documents (and
-# already works around) for the structurally identical `Option[FeaturesSection]`
-# field — just not yet for `.nuget`. This is not specific to this project's
-# manifest shape; it would hit any project with NuGet deps.
-#
-# Work around it by stripping `[nuget]` from the manifest fed to `lyric
-# build` only. This is safe: `resolveNugetAssets` (which actually locates the
-# restored DLLs for linking) reads `obj/project.assets.json` from disk,
-# independent of the manifest's `[nuget]` table at build time — `[nuget]` is
-# only consulted here to decide whether to print an "unresolved nuget deps"
-# warning, which is exactly the code path that crashes. `lyric restore` still
-# runs against the real manifest first, so the packages are on disk before
-# the stripped copy is used.
-#
-# Re-check this workaround (and file it as closed) once
-# https://github.com/nichobbs/lyric-lang/issues/4925 ships a fix upstream.
+# THIS NOW SUCCEEDS as of v0.4.14 — the first release where it ever has,
+# after four sequential upstream compiler bugs (three now fixed). Bug 1
+# (buildProject crash, https://github.com/nichobbs/lyric-lang/issues/4925)
+# fixed in v0.4.11; bug 2 (Std.Core's Option/Result/Some/None/Ok/Err never
+# resolving, https://github.com/nichobbs/lyric-lang/issues/4980) fixed in
+# v0.4.12; bug 3 (NuGet-restored zero-arg functions rejected,
+# https://github.com/nichobbs/lyric-lang/issues/5004) fixed in v0.4.14 —
+# that's what let this succeed. Bug 4, still open, blocks actually running
+# the built server (lyric run can't find NuGet dependency DLLs at runtime):
+# https://github.com/nichobbs/lyric-lang/issues/5066 — see scripts/run-api.sh
+# and docs/BUILD.md "Compiler notes" for detail. None of the four was ever
+# something this project's lyric.toml or source could work around. An
+# earlier version of this comment described a `[nuget]`-stripping
+# workaround based on a since-disproven theory (it didn't actually fix
+# anything, though it was harmless) — removed once the real scope became
+# clear.
 #
 # Requirements on PATH: lyric, dotnet (10.x).
 set -euo pipefail
@@ -43,13 +38,6 @@ echo "==> restoring NuGet dependencies"
 lyric restore
 
 echo "==> building the full Cloud Agents project"
-cp lyric.toml lyric.toml.bak
-trap 'mv lyric.toml.bak lyric.toml' EXIT
-awk '
-  /^\[nuget\]/ { skip=1; next }
-  /^\[/ && skip { skip=0 }
-  !skip         { print }
-' lyric.toml.bak > lyric.toml
 lyric build
 
 echo "==> Full build succeeded"

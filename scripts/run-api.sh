@@ -1,7 +1,14 @@
 #!/usr/bin/env bash
 # Build the full server and run it locally.
 #
-# Requirements: lyric 0.4.10+, dotnet 10.x, Docker (for runner containers)
+# THIS CURRENTLY CANNOT SUCCEED: `lyric build` works (see docs/BUILD.md —
+# fixed as of v0.4.14), but the built bin/CloudAgents.dll can't find its
+# NuGet-restored dependencies (Web.dll, etc.) at runtime — an open upstream
+# bug, https://github.com/nichobbs/lyric-lang/issues/5066. Not something
+# this script or lyric.toml can work around; see docs/BUILD.md "Compiler
+# notes" for detail and current release status.
+#
+# Requirements: lyric 0.4.14+, dotnet 10.x, Docker (for runner containers)
 # Env:
 #   CLOUD_AGENTS_PORT        HTTP listen port (default: 8080)
 #   CLOUD_AGENTS_BIND        interface to bind (default: 127.0.0.1; set 0.0.0.0 for LAN)

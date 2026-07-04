@@ -133,6 +133,23 @@ val x = if condition then a else b  // correct
 
 ## Functions and parameters
 
+**Some `Std.Core` generic free functions only resolve via dot-call (UFCS), not bare-call — but this isn't a general rule for all imported free functions.**
+```lyric
+import Std.Core
+// Std.Core declares: pub func unwrapResult[T, E](r: in Result[T, E]): T
+
+val bare = unwrapResult(someResult)        // compile error: unknown name 'unwrapResult'
+val ufcs = someResult.unwrapResult()       // correct
+```
+Confirmed for `Std.Core`'s `unwrapResult`/`unwrapResultOr`/`unwrapErrOr`/
+`unwrapResultStr`. But `Std.Testing`'s `assertTrue`/`assertEqual`/`isOk` (see
+`docs/lyric/reference.md`'s Testing section) resolve fine as bare calls — so
+this isn't "every imported free function needs dot-call," just something
+specific to (at least some of) `Std.Core`'s generic helpers. If a bare call
+to an imported function fails with "unknown name," try the dot-call form
+before assuming the function doesn't exist — but don't assume the reverse
+either.
+
 **`out` parameters must be assigned on ALL control flow paths before return.**
 The compiler will reject a function that might return without assigning an `out` param.
 

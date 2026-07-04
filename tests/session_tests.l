@@ -108,8 +108,7 @@ test "Test legacy session deserialisation defaults" {
   // A session JSON predating the harness/model/nativeSessionId fields must
   // deserialise with safe defaults rather than empty strings.
   val legacyJson = "{\"sessions\":[{\"sessionId\":\"legacy-1\",\"repoUrl\":\"https://github.com/nic/repo\",\"branch\":\"main\",\"containerId\":\"\"}]}"
-  val parsed = parseSessionsJson(legacyJson)
-  val sessions = parsed.toArray()
+  val sessions = parseSessionsJson(legacyJson)
   assertEqualInt(sessions.length, 1, "one legacy session parsed")
   val s = sessions[0]
   assertEqual(s.harness, "claude", "legacy harness defaults to claude")

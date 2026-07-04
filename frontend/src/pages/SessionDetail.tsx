@@ -15,30 +15,83 @@ export function SessionDetail() {
   const navigate = useNavigate();
   const location = useLocation();
   const session = getSession(sessionId);
-  const { output, isStreaming, send, reset } = useStreamMessage(sessionId);
+  const { output, isStreaming, error: sendError, send, reset } = useStreamMessage(sessionId);
 
   const [messages, setMessages] = useState<Message[]>([]);
+  const [messagesError, setMessagesError] = useState(false);
   const [input, setInput] = useState('');
   const [deleting, setDeleting] = useState(false);
   const [modelSwitching, setModelSwitching] = useState(false);
   const [modelError, setModelError] = useState('');
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
+  // Tracks which session this component instance is currently showing, so a
+  // handleSend() call that outlives a navigation to a different session (a
+  // send can take up to 30 minutes) can tell it's stale and bail out instead
+  // of folding its result into the wrong session's view. SessionDetail isn't
+  // remounted on navigation between sessions, only re-rendered with a new
+  // `sessionId`, so a plain closure over `sessionId` inside handleSend isn't
+  // enough on its own — this ref is what lets that closure check itself
+  // against the *current* session after an awaited call returns.
+  const currentSessionRef = useRef(sessionId);
+  useEffect(() => {
+    currentSessionRef.current = sessionId;
+  }, [sessionId]);
+
   const highlightedId = location.hash.startsWith('#message-')
     ? location.hash.slice('#message-'.length)
     : null;
 
-  const reload = useCallback(async () => {
+  // Single place that actually calls the transcript API and absorbs its
+  // errors (transcript may be empty or unavailable; leave state as-is on
+  // failure) — both call sites below just decide when to apply the result.
+  const fetchMessages = useCallback(async (forSessionId: string): Promise<Message[] | null> => {
     try {
-      setMessages(await api.getMessages(sessionId));
+      return await api.getMessages(forSessionId);
     } catch {
-      // transcript may be empty or unavailable; leave as-is
+      return null;
     }
-  }, [sessionId]);
+  }, []);
+
+  // Used for explicit, one-off refreshes (e.g. right after a successful
+  // send). No concurrent fetch to race against, but the user can still
+  // navigate to a different session while this fetch is in flight — guard
+  // against applying a stale session's result via the same currentSessionRef
+  // handleSend already uses for this purpose.
+  const reload = useCallback(async () => {
+    const forSessionId = sessionId;
+    const fetched = await fetchMessages(forSessionId);
+    if (fetched && currentSessionRef.current === forSessionId) {
+      setMessages(fetched);
+      setMessagesError(false);
+    }
+  }, [sessionId, fetchMessages]);
 
   useEffect(() => {
-    void reload();
-  }, [reload]);
+    // Guard against a slow fetch for a previous session resolving after
+    // navigating to a new one and overwriting its transcript with stale data
+    // — session switches change `sessionId` without remounting this
+    // component, so a request in flight can outlive the session it was for.
+    // Same pattern as CommentThread.tsx's `active` flag.
+    let active = true;
+    setMessagesError(false);
+    fetchMessages(sessionId).then(fetched => {
+      if (!active) return;
+      if (fetched) {
+        setMessages(fetched);
+      } else {
+        // A failed fetch right after switching sessions must not leave the
+        // previous session's transcript on screen under this session's
+        // header — clear it and surface the failure instead of silently
+        // showing someone else's conversation.
+        setMessages([]);
+        setMessagesError(true);
+      }
+    });
+    return () => {
+      active = false;
+    };
+  }, [sessionId, fetchMessages]);
 
   // Deep-link: scroll to the message referenced by the URL hash once loaded.
   useEffect(() => {
@@ -70,9 +123,42 @@ export function SessionDetail() {
     const text = input.trim();
     if (!text || isStreaming) return;
     setInput('');
-    await send(text);
-    await reload();
-    reset();
+    const { succeeded, stale } = await send(text);
+
+    if (stale) {
+      // Either the user navigated to a different session while this send
+      // was in flight, or they left this same session and came back before
+      // it resolved (a fresh generation) — useStreamMessage's own
+      // stillCurrent() check already caught this and left its
+      // output/isStreaming/error state alone. Bail out of the continuation
+      // below too: reload()/reset() would otherwise act on a
+      // completed-but-superseded send, corrupting a genuinely in-flight
+      // newer send on the same session (or the wrong session's transcript),
+      // and focus() would steal it from a textarea the user isn't looking
+      // at anymore.
+      return;
+    }
+
+    if (succeeded) {
+      // Fold the completed run into the persisted transcript and clear the
+      // live panel. `stale` above only reflects the state as of `send()`
+      // resolving — the user can still navigate away during `reload()`'s
+      // own fetch, so re-check before the unconditional `reset()`: reload()
+      // already guards its own setMessages call against this, but reset()
+      // (which touches useStreamMessage's output/error, now bound to
+      // whatever session is current) has no guard of its own.
+      const forSession = sessionId;
+      await reload();
+      if (currentSessionRef.current === forSession) {
+        reset();
+      }
+    } else {
+      // Restore the prompt so a failed send (network error, container
+      // crash, backend 500) doesn't silently discard what the user typed —
+      // and leave `output`/`error` populated so the failure is visible
+      // instead of being wiped immediately.
+      setInput(text);
+    }
     textareaRef.current?.focus();
   };
 
@@ -156,7 +242,12 @@ export function SessionDetail() {
       </div>
 
       <div style={transcriptStyle}>
-        {messages.length === 0 && !isStreaming && (
+        {messagesError && (
+          <div style={messagesErrorStyle}>
+            Failed to load transcript for this session.
+          </div>
+        )}
+        {messages.length === 0 && !isStreaming && !sendError && !messagesError && (
           <div style={emptyStyle}>
             No messages yet — send a prompt below to start the session.
           </div>
@@ -169,9 +260,11 @@ export function SessionDetail() {
             onTodoAdded={() => { /* todos live on their own page */ }}
           />
         ))}
-        {isStreaming && (
+        {(isStreaming || sendError) && (
           <div style={liveWrapStyle}>
-            <div style={liveLabelStyle}>running…</div>
+            <div style={sendError ? liveErrorLabelStyle : liveLabelStyle}>
+              {isStreaming ? 'running…' : 'failed'}
+            </div>
             <Terminal output={output} isStreaming={isStreaming} />
           </div>
         )}
@@ -266,6 +359,13 @@ const transcriptStyle: React.CSSProperties = {
   flex: 1,
 };
 
+const messagesErrorStyle: React.CSSProperties = {
+  color: '#f85149',
+  fontSize: '13px',
+  textAlign: 'center',
+  padding: '16px',
+};
+
 const emptyStyle: React.CSSProperties = {
   color: '#6e7681',
   fontSize: '14px',
@@ -284,6 +384,11 @@ const liveLabelStyle: React.CSSProperties = {
   color: '#56d364',
   textTransform: 'uppercase',
   letterSpacing: '0.04em',
+};
+
+const liveErrorLabelStyle: React.CSSProperties = {
+  ...liveLabelStyle,
+  color: '#f85149',
 };
 
 const todosBtnStyle: React.CSSProperties = {

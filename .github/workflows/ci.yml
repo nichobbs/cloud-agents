@@ -50,6 +50,15 @@ jobs:
       - name: Lyric version
         run: lyric --version
 
+      # Diagnostic, not a gate: reports which of the four known upstream
+      # compiler bugs (see docs/BUILD.md "Compiler notes") this runner's
+      # Lyric version still has. continue-on-error so a still-open bug here
+      # doesn't fail CI on its own — the Build/Run steps below are the real
+      # gate for whether this project actually builds.
+      - name: Check known compiler bug status
+        continue-on-error: true
+        run: ./scripts/repro-compiler-bug.sh
+
       # Shell + asset sanity checks (no Lyric toolchain needed).
       - name: Lint shell scripts
         run: |
@@ -63,7 +72,8 @@ jobs:
             scripts/build-full.sh \
             scripts/dev.sh \
             scripts/build-docker.sh \
-            scripts/run-api.sh; do
+            scripts/run-api.sh \
+            scripts/repro-compiler-bug.sh; do
             bash -n "$f" && echo "ok: $f"
           done
 
@@ -82,9 +92,10 @@ jobs:
         run: ./scripts/build-full.sh
 
       # Runtime-verify the Docker/Web-independent logic (SSE framing, Phase
-      # 2/3 state machine, recycling, auth). Not `lyric test` — that crashes
-      # on this project's manifest under the current compiler, see
-      # docs/BUILD.md "Running tests". This harness has no external
-      # dependencies, so it doesn't need its own restore.
+      # 2/3 state machine, recycling, auth). Not `lyric test` — as of
+      # v0.4.14 it no longer crashes but every test fails with a missing
+      # Lyric.Stdlib.dll assembly error, see docs/BUILD.md "Running tests".
+      # This harness has no external dependencies, so it doesn't need its
+      # own restore, and it genuinely passes.
       - name: Run tests
         run: ./scripts/verify.sh

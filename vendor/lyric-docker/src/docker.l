@@ -55,7 +55,7 @@ func defaultClient(): HttpClient {
 /// Ping the Docker daemon to verify connectivity.
 pub async func ping(): Result[String, DockerError] {
   val client = defaultClient()
-  val url = unwrapResult(Std.Http.Url.tryFrom("http://docker/v1.40/ping"))
+  val url = Std.Http.Url.tryFrom("http://docker/v1.40/ping").unwrap()
   val sent = await client.send(Std.Http.request(Std.Http.GET, url))
   val response = match sent {
     case Err(e) -> return Err(error = fromHttpError(e, ""))
@@ -162,7 +162,7 @@ async func sendExpectSuccess(
   method: in Std.Http.HttpMethod,
   failMsg: in String,
 ): Result[Unit, DockerError] {
-  val url = unwrapResult(Std.Http.Url.tryFrom(urlStr))
+  val url = Std.Http.Url.tryFrom(urlStr).unwrap()
   val sent = await client.send(Std.Http.request(method, url))
   val response = match sent {
     case Err(e) -> return Err(error = fromHttpError(e, ""))
@@ -189,7 +189,7 @@ pub async func createContainer(
   binds: in slice[String]
 ): Result[String, DockerError] {
   val client = defaultClient()
-  val url = unwrapResult(Std.Http.Url.tryFrom("http://docker/v1.40/containers/create"))
+  val url = Std.Http.Url.tryFrom("http://docker/v1.40/containers/create").unwrap()
   val request = Std.Http.withJsonBody(Std.Http.request(Std.Http.POST, url), createContainerBody(image, env, binds))
   val sent = await client.send(request)
   val response = match sent {
@@ -272,7 +272,7 @@ pub async func getContainerLogs(containerId: in String): Result[String, DockerEr
 {
   val client = defaultClient()
   val urlStr = "http://docker/v1.40/containers/" + containerId + "/logs?stdout=true&stderr=true"
-  val url = unwrapResult(Std.Http.Url.tryFrom(urlStr))
+  val url = Std.Http.Url.tryFrom(urlStr).unwrap()
   val sent = await client.send(Std.Http.request(Std.Http.GET, url))
   val response = match sent {
     case Err(e) -> return Err(error = fromHttpError(e, ""))
