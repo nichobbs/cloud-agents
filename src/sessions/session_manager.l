@@ -1,6 +1,5 @@
 package CloudAgents.SessionStore
 
-import Std.CollectionsHost.{List, newList}
 import Std.Core
 
 @generate(Json)
@@ -154,8 +153,8 @@ pub func parseJsonField(objStr: in String, fieldName: in String): String {
   return objStr.substring(quoteStart + 1, valLen)
 }
 
-pub func parseSessionsJson(json: in String): List[AgentSession] {
-  val list: List[AgentSession] = newList()
+pub func parseSessionsJson(json: in String): slice[AgentSession] {
+  var list: slice[AgentSession] = []
   val jsonLen = json.length.toInt()
 
   // Find where "[" begins
@@ -243,7 +242,7 @@ pub func parseSessionsJson(json: in String): List[AgentSession] {
       model = model,
       nativeSessionId = nativeSessionId
     )
-    list.add(session)
+    list = list.append(session)
 
     idx = objEnd + 1
   }
@@ -251,16 +250,12 @@ pub func parseSessionsJson(json: in String): List[AgentSession] {
   return list
 }
 
-pub func getSessionsList(): List[AgentSession] {
+pub func getSessions(): slice[AgentSession] {
   val json = getEnvVar("CLOUD_AGENTS_SESSIONS_JSON")
   if isNullOrEmpty(json) {
-    return newList()
+    return []
   }
   return parseSessionsJson(json)
-}
-
-pub func getSessionsSlice(): slice[AgentSession] {
-  return getSessionsList().toArray()
 }
 
 pub func agentSessionToJson(s: in AgentSession): String {
@@ -290,13 +285,12 @@ pub func saveSessions(sessions: in slice[AgentSession]): Unit {
 }
 
 pub func addSession(session: in AgentSession): Unit {
-  val sessions = getSessionsList()
-  sessions.add(session)
-  saveSessions(sessions.toArray())
+  val sessions = getSessions()
+  saveSessions(sessions.append(session))
 }
 
 pub func getSession(sessionId: in String): Option[AgentSession] {
-  val sessions = getSessionsSlice()
+  val sessions = getSessions()
   var i = 0
   while i < sessions.length {
     val s = sessions[i]
@@ -309,13 +303,13 @@ pub func getSession(sessionId: in String): Option[AgentSession] {
 }
 
 pub func updateSessionContainer(sessionId: in String, containerId: in String): Unit {
-  val sessions = getSessionsSlice()
-  val updated: List[AgentSession] = newList()
+  val sessions = getSessions()
+  var updated: slice[AgentSession] = []
   var i = 0
   while i < sessions.length {
     val s = sessions[i]
     if s.sessionId == sessionId {
-      updated.add(AgentSession(
+      updated = updated.append(AgentSession(
         sessionId = s.sessionId,
         repoUrl = s.repoUrl,
         branch = s.branch,
@@ -325,21 +319,21 @@ pub func updateSessionContainer(sessionId: in String, containerId: in String): U
         nativeSessionId = s.nativeSessionId
       ))
     } else {
-      updated.add(s)
+      updated = updated.append(s)
     }
     i = i + 1
   }
-  saveSessions(updated.toArray())
+  saveSessions(updated)
 }
 
 pub func updateSessionModel(sessionId: in String, model: in String): Unit {
-  val sessions = getSessionsSlice()
-  val updated: List[AgentSession] = newList()
+  val sessions = getSessions()
+  var updated: slice[AgentSession] = []
   var i = 0
   while i < sessions.length {
     val s = sessions[i]
     if s.sessionId == sessionId {
-      updated.add(AgentSession(
+      updated = updated.append(AgentSession(
         sessionId = s.sessionId,
         repoUrl = s.repoUrl,
         branch = s.branch,
@@ -349,16 +343,16 @@ pub func updateSessionModel(sessionId: in String, model: in String): Unit {
         nativeSessionId = s.nativeSessionId
       ))
     } else {
-      updated.add(s)
+      updated = updated.append(s)
     }
     i = i + 1
   }
-  saveSessions(updated.toArray())
+  saveSessions(updated)
 }
 
 pub func removeSession(sessionId: in String): Option[AgentSession] {
-  val sessions = getSessionsSlice()
-  val updated: List[AgentSession] = newList()
+  val sessions = getSessions()
+  var updated: slice[AgentSession] = []
   var removed: Option[AgentSession] = None
   var i = 0
   while i < sessions.length {
@@ -366,10 +360,10 @@ pub func removeSession(sessionId: in String): Option[AgentSession] {
     if s.sessionId == sessionId {
       removed = Some(value = s)
     } else {
-      updated.add(s)
+      updated = updated.append(s)
     }
     i = i + 1
   }
-  saveSessions(updated.toArray())
+  saveSessions(updated)
   return removed
 }

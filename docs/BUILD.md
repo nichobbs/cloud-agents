@@ -93,78 +93,89 @@ be kept up to date.
 
 ## Compiler notes
 
-**No currently-released Lyric compiler (0.4.7 through 0.4.10) can build,
-run, check, or test any Lyric project — including a trivial one-file
-hello-world with no dependencies.** This is not a characteristic of this
-project's manifest, dependencies, or source; it's a crash inside the
-compiler's own `buildProject`, before it does anything project-specific.
+**Two independent, upstream compiler bugs currently block `lyric build`/
+`run`/`check`/`test` for this project — one fixed as of v0.4.11, one still
+open.** Neither is a characteristic of this project's manifest,
+dependencies, or source.
 
 **This is checked into the repo as a runnable reproduction, not just
-prose**: `scripts/repro-compiler-bug.sh` builds a trivial, dependency-free
-`lyric.toml`/`main.l` in a scratch directory and runs `lyric build` against
-it — no `[nuget]`, no `[workspace]`, nothing project-specific, and no
-`dotnet` required (the crash happens before the compiler would invoke the
-.NET toolchain). Run it yourself against any environment with `lyric` on
-PATH:
+prose**: `scripts/repro-compiler-bug.sh` checks both bugs against trivial,
+dependency-free scratch projects (no `[nuget]`, no `[workspace]`, nothing
+project-specific, and no `dotnet` required — both bugs occur before the
+compiler would invoke the .NET toolchain). Run it yourself against any
+environment with `lyric` on PATH; exit 0 means both are fixed on your
+compiler and it's safe to remove this script and the workaround notes
+below.
+
+### Bug 1 — `buildProject` crash (lyric-lang#4925/#4955) — **fixed in v0.4.11**
+
+Every compiler through 0.4.10 crashed with an unhandled
+`System.InvalidCastException` inside `buildProject`, before it did anything
+project-specific, on any standalone (non-workspace) Lyric project:
 
 ```
-$ ./scripts/repro-compiler-bug.sh
-==> lyric build against a trivial, dependency-free hello-world
 Unhandled exception. System.InvalidCastException: Specified cast is not valid.
    at Lyric.Cli.Program.buildProject(String, Option`1, CompileTarget, List`1, Boolean, Boolean, Boolean, Option`1) + 0x12c7
    at Lyric.Cli.Program.cmdBuild(String[]) + 0x115c
    at Lyric.Cli.Program.main(String[]) + 0x564
    at Lyric.Cli.Aot.Program.Main(String[] args) + 0x6
-==> Reproduced: this compiler still has the workspace_builder.l bug (lyric-lang#4925/#4955)
 ```
 
-Exit code 0 means `lyric build` succeeded (your compiler already has the
-fix — safe to remove this script and the workaround notes below); exit
-code 1 means it reproduced (you're still on a pre-#4955 compiler, the
-expected result today). Run above is from this session's own sandbox,
-where `lyric` (but not `dotnet`) is on PATH — sufficient to reproduce this
-specific crash, though not to do a full `lyric restore`/build of this
-project's actual dependency graph.
-
-`lyric build`, `lyric run`, and `lyric check` all hit it (they all call into
-`buildProject`); `lyric test` crashes the same way via a different entry
-point.
-
-**Root cause is found and a fix has been merged upstream — but not released
-yet.** [lyric-lang#4925](https://github.com/nichobbs/lyric-lang/issues/4925)
-is closed, fixed by
-[lyric-lang#4955](https://github.com/nichobbs/lyric-lang/pull/4955): the
-actual trigger is any project with **no `[workspace]` ancestor manifest** —
+[lyric-lang#4925](https://github.com/nichobbs/lyric-lang/issues/4925) is
+closed, fixed by
+[lyric-lang#4955](https://github.com/nichobbs/lyric-lang/pull/4955):
 `cli/workspace_builder.l`'s `buildWorkspaceDeps` constructed a bare `None`
-tuple element on its not-in-a-workspace path, which loses its type
-argument under the bootstrap emitter and fails to cast back to
+tuple element on its not-in-a-workspace path, which loses its type argument
+under the bootstrap emitter and fails to cast back to
 `Option[Ws.WorkspaceContext]` when `buildProject`/`cmdTestManifest`
-destructure it. Unrelated to `[nuget]` (see below) — this project, and any
-other standalone (non-workspace) Lyric project, hits it unconditionally.
-As of this writing the fix is merged to `main` but the latest tagged
-release is still `v0.4.10`, published *before* the fix merged, so every
-currently-downloadable binary still crashes exactly as shown above. Check
-[lyric-lang#4925](https://github.com/nichobbs/lyric-lang/issues/4925) for
-whether a release containing the fix has shipped before assuming a local
-build failure needs a local fix.
-
-Restructuring this project as a workspace member purely to dodge the bug on
-the *current* binary was considered and rejected: the fix is already merged
-upstream, a standalone (non-workspace) layout is a normal, fully-supported
-configuration per Lyric's own workspace design doc, and adding a workspace
-wrapper now would just be a new workaround to strip back out once a fixed
-release ships — the churn this section exists to avoid repeating.
+destructure it — unrelated to `[nuget]` (see below). **Confirmed fixed in
+the [v0.4.11 release](https://github.com/nichobbs/lyric-lang/releases/tag/v0.4.11)**
+— `lyric build` against a trivial hello-world no longer crashes on that
+binary.
 
 An earlier version of this project's build scripts described a `[nuget]`-
 stripping workaround based on a theory that turned out to be wrong (that
 `manifest.nuget: Option[NugetSection]` was the specific trigger) — it was
-harmless but didn't actually fix anything, since the crash reproduces even
+harmless but didn't actually fix anything, since the crash reproduced even
 with no `[nuget]` section at all, and the real trigger (above) is unrelated
-to `[nuget]`. Removed once the real scope became clear; `scripts/build-full.sh`
-and `scripts/verify.sh` are back to their straightforward form. **There is
-nothing to fix on this project's side** — `lyric build`/`test` failing in
-CI is expected until a release containing
-[lyric-lang#4955](https://github.com/nichobbs/lyric-lang/pull/4955) ships.
+to `[nuget]`. Removed once the real scope became clear.
+
+### Bug 2 — `Std.Core`'s Option/Result never resolve (lyric-lang#4980) — **open, currently blocking**
+
+Upgrading to v0.4.11 to pick up the bug 1 fix immediately exposed a second,
+apparently pre-existing bug: `Option[T]`, `Result[T, E]`, and their
+constructors `Some`/`None`/`Ok`/`Err` — declared in `lyric-stdlib/std/core.l`
+and documented in `docs/lyric/stdlib.md` as available via a plain
+`import Std.Core` — fail to resolve at every use site:
+
+```
+error[T0010] 4:23: unknown type name 'Option'
+error[T0020] 5:21: unknown name 'Some'
+error[T0020] 6:10: unknown name 'None'
+```
+
+The `import Std.Core` line itself never errors, and even a fully-qualified
+`Std.Core.Result` reference fails the same way (`'Result' not found in
+scope`) — so this isn't an import-form issue. It reproduces in every
+configuration tried (standalone, multi-package, with/without `[nuget]`,
+workspace-wrapped), and on **both** 0.4.10 (once routed around bug 1 via
+workspace-wrapping) and 0.4.11 — meaning it predates bug 1 entirely and was
+simply never reachable before, since bug 1 always crashed first. True
+compiler builtins (`println`, `slice[T]`/`.append()`, `String` methods)
+resolve fine; only the stdlib's actually-*declared* non-builtin types fail.
+This affects this project's real source (`db_client.l`, `auth.l`,
+`session_manager.l` all use `Option`/`Some`/`None`) and its own test
+harness (`scripts/verify.sh`), and blocks the canonical `Result`/`Option`
+patterns `docs/lyric/idioms.md` itself recommends — i.e. no Lyric compiler
+has apparently ever been able to build a project using these idioms, since
+bug 1 always masked bug 2 until now. Filed as
+[lyric-lang#4980](https://github.com/nichobbs/lyric-lang/issues/4980).
+
+**There is nothing to fix on this project's side for either bug** —
+`lyric build`/`test` failing in CI is expected until a release fixing
+[lyric-lang#4980](https://github.com/nichobbs/lyric-lang/issues/4980)
+ships. Check that issue for status before assuming a local build failure
+needs a local fix.
 
 Other compiler-level characteristics, independent of the above:
 

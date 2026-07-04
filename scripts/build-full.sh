@@ -8,20 +8,20 @@
 # required. `lyric restore` fetches the NuGet packages, `lyric build`
 # compiles everything else.
 #
-# THIS CURRENTLY CANNOT SUCCEED with any released Lyric compiler (0.4.7
-# through 0.4.10). `lyric build`/`run`/`check`/`test` all crash with an
-# unhandled System.InvalidCastException on EVERY standalone (non-workspace)
-# Lyric project — this is not something this project's lyric.toml or source
-# can work around; the crash is inside the compiler's own `buildProject`
-# before it does anything project-specific. Root cause is found and fixed
-# upstream (https://github.com/nichobbs/lyric-lang/pull/4955, merged) but
-# not released yet as of this writing — check
-# https://github.com/nichobbs/lyric-lang/issues/4925 for release status
-# before assuming a local build failure is something to fix here. An
-# earlier version of this comment described a `[nuget]`-stripping
-# workaround based on a since-disproven theory (it didn't actually fix
-# anything, though it was harmless) — removed once the real scope became
-# clear.
+# THIS CURRENTLY CANNOT SUCCEED with any released Lyric compiler — two
+# independent upstream bugs, one fixed, one open. The v0.4.10 buildProject
+# crash (https://github.com/nichobbs/lyric-lang/issues/4925, fixed by
+# merged https://github.com/nichobbs/lyric-lang/pull/4955) is confirmed
+# fixed in the v0.4.11 release. Upgrading to it exposes a second,
+# apparently pre-existing bug: Std.Core's Option/Result/Some/None/Ok/Err
+# never resolve at any use site, on any compiler version or project
+# configuration — filed as
+# https://github.com/nichobbs/lyric-lang/issues/4980 (open). Neither is
+# something this project's lyric.toml or source can work around; see
+# docs/BUILD.md "Compiler notes" for full detail. An earlier version of
+# this comment described a `[nuget]`-stripping workaround based on a
+# since-disproven theory (it didn't actually fix anything, though it was
+# harmless) — removed once the real scope became clear.
 #
 # Requirements on PATH: lyric, dotnet (10.x).
 set -euo pipefail

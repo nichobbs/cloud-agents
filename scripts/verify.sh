@@ -2,11 +2,14 @@
 # verify.sh — runtime-verify the Docker-independent logic.
 #
 # THIS CURRENTLY CANNOT SUCCEED with any released Lyric compiler, same as
-# scripts/build-full.sh — `lyric build`/`run`/`check`/`test` all crash with
-# an unhandled System.InvalidCastException on EVERY standalone Lyric
-# project (not just this one's). Root cause found and fixed upstream
-# (https://github.com/nichobbs/lyric-lang/pull/4955, merged), not released
-# yet — see https://github.com/nichobbs/lyric-lang/issues/4925.
+# scripts/build-full.sh — two independent upstream bugs, one fixed, one
+# open. See docs/BUILD.md "Compiler notes": the v0.4.10 buildProject crash
+# (https://github.com/nichobbs/lyric-lang/issues/4925) is fixed as of
+# v0.4.11, but upgrading exposes a second, apparently pre-existing bug
+# where Std.Core's Option/Result/Some/None/Ok/Err never resolve at any use
+# site — filed as https://github.com/nichobbs/lyric-lang/issues/4980
+# (open). This harness uses Option (CachedToken, statusFromString, etc.)
+# so it hits bug 2 directly.
 #
 # This script compiles a small hand-rolled `main()` harness and runs it with
 # `lyric build` + `lyric run` rather than `lyric test`, on the theory that
