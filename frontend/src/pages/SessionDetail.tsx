@@ -126,9 +126,17 @@ export function SessionDetail() {
 
     if (succeeded) {
       // Fold the completed run into the persisted transcript and clear the
-      // live panel.
+      // live panel. `stale` above only reflects the state as of `send()`
+      // resolving — the user can still navigate away during `reload()`'s
+      // own fetch, so re-check before the unconditional `reset()`: reload()
+      // already guards its own setMessages call against this, but reset()
+      // (which touches useStreamMessage's output/error, now bound to
+      // whatever session is current) has no guard of its own.
+      const forSession = sessionId;
       await reload();
-      reset();
+      if (currentSessionRef.current === forSession) {
+        reset();
+      }
     } else {
       // Restore the prompt so a failed send (network error, container
       // crash, backend 500) doesn't silently discard what the user typed —
