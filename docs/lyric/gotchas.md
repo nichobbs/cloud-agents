@@ -133,6 +133,18 @@ val x = if condition then a else b  // correct
 
 ## Functions and parameters
 
+**Free functions imported from another package only resolve via dot-call (UFCS), not bare-call.**
+```lyric
+import Std.Core
+// Std.Core declares: pub func unwrapResult[T, E](r: in Result[T, E]): T
+
+val bare = unwrapResult(someResult)        // compile error: unknown name 'unwrapResult'
+val ufcs = someResult.unwrapResult()       // correct
+```
+This applies to any imported free function, not just this one — if `import`
+resolves fine but calling the function by its bare name doesn't, try calling
+it as a method on its first argument instead.
+
 **`out` parameters must be assigned on ALL control flow paths before return.**
 The compiler will reject a function that might return without assigning an `out` param.
 

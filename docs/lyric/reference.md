@@ -714,7 +714,7 @@ wire ProductionApp {
 }
 
 func main(): Unit {
-  val config = unwrapResult(AppConfig.load(RawConfig.readFromEnvironment()))
+  val config = AppConfig.load(RawConfig.readFromEnvironment()).unwrapResult()
   val app = ProductionApp.bootstrap(config, CancellationToken.none())
   HttpServer.run(app.transferService, config.port)
 }
@@ -1054,6 +1054,10 @@ assertEqual(actual, expected)
 expect(condition)          // fails test if false
 isOk(result): Bool         // for use with assertTrue
 unwrapResult(result): T    // panics on Err — use in setup, not assertions
+                           // (a distinct, test-only bare-call helper — see
+                           // docs/lyric/stdlib.md's Result section for the
+                           // general-purpose Std.Core dot-call versions:
+                           // r.unwrapResult()/.unwrapResultOr()/.unwrapErrOr())
 ```
 
 ### `@stubbable` interfaces
