@@ -42,15 +42,21 @@ built against.
 
 ## Build and run
 
-The backend requires the Lyric compiler and .NET 10 SDK — see
-[`docs/BUILD.md`](docs/BUILD.md) for installation and dependency notes
-(including a couple of current Lyric compiler workarounds you'll want to know
-about before debugging a build failure).
+The backend requires the Lyric compiler and .NET 10 SDK. **A full `lyric
+build` of this project cannot currently succeed with any released Lyric
+compiler** — an open upstream bug, not something to fix here; see
+[`docs/BUILD.md`](docs/BUILD.md) "Compiler notes" for the full history
+(three bugs found in sequence, two already fixed upstream) and
+`./scripts/repro-compiler-bug.sh` for a runnable check of your compiler's
+status. `./scripts/verify.sh`, on the other hand, **does genuinely pass** —
+it exercises the Docker/Web-independent core logic (SSE framing, session
+state machine, recycling, auth) without hitting the bug that blocks the
+full build.
 
 ```sh
-lyric restore && lyric build   # or: ./scripts/build-full.sh
-./scripts/verify.sh            # runtime-verify the core logic (see docs/BUILD.md — lyric test currently crashes)
-./scripts/run-api.sh           # build + start the API server locally
+lyric restore && lyric build   # or: ./scripts/build-full.sh — currently fails, see docs/BUILD.md
+./scripts/verify.sh            # runtime-verifies the core logic — currently passes
+./scripts/run-api.sh           # build + start the API server locally — blocked by the same build failure
 ```
 
 ```sh
