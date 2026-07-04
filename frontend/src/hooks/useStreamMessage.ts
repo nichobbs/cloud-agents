@@ -1,12 +1,27 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { api } from '../lib/api';
 
+export interface SendResult {
+  /** `false` if the send failed (see `error`), `true` on success. */
+  succeeded: boolean;
+  /**
+   * `true` if, by the time this send settled, it was no longer the current
+   * send for this hook instance — either the session changed, or the user
+   * left and returned to this *same* session before this send resolved (a
+   * fresh generation). Callers should treat a stale result as "ignore me":
+   * this hook's own output/isStreaming/error state has already discarded
+   * it, and any caller-side continuation (reload a transcript, reset local
+   * UI state, steal focus) should bail out too, rather than acting on a
+   * completed-but-superseded send.
+   */
+  stale: boolean;
+}
+
 export interface StreamState {
   output: string;
   isStreaming: boolean;
   error: string | null;
-  /** Resolves to `false` if the send failed (see `error`), `true` on success. */
-  send: (text: string) => Promise<boolean>;
+  send: (text: string) => Promise<SendResult>;
   reset: () => void;
 }
 
@@ -43,7 +58,7 @@ export function useStreamMessage(sessionId: string): StreamState {
   }, [sessionId]);
 
   const send = useCallback(
-    async (text: string): Promise<boolean> => {
+    async (text: string): Promise<SendResult> => {
       const forSession = sessionId;
       const forGeneration = generationRef.current;
       const stillCurrent = () =>
@@ -74,7 +89,7 @@ export function useStreamMessage(sessionId: string): StreamState {
           setIsStreaming(false);
         }
       }
-      return succeeded;
+      return { succeeded, stale: !stillCurrent() };
     },
     [sessionId],
   );

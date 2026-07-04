@@ -107,17 +107,20 @@ export function SessionDetail() {
   const handleSend = async () => {
     const text = input.trim();
     if (!text || isStreaming) return;
-    const forSession = sessionId;
     setInput('');
-    const succeeded = await send(text);
+    const { succeeded, stale } = await send(text);
 
-    if (currentSessionRef.current !== forSession) {
-      // The user navigated to a different session while this send was in
-      // flight. useStreamMessage already keeps its own output/error state
-      // from leaking across the switch; this guard does the same for the
-      // continuation below, which would otherwise reload() the *current*
-      // session's transcript with the *stale* session's messages, or steal
-      // focus into a textarea the user isn't looking at anymore.
+    if (stale) {
+      // Either the user navigated to a different session while this send
+      // was in flight, or they left this same session and came back before
+      // it resolved (a fresh generation) — useStreamMessage's own
+      // stillCurrent() check already caught this and left its
+      // output/isStreaming/error state alone. Bail out of the continuation
+      // below too: reload()/reset() would otherwise act on a
+      // completed-but-superseded send, corrupting a genuinely in-flight
+      // newer send on the same session (or the wrong session's transcript),
+      // and focus() would steal it from a textarea the user isn't looking
+      // at anymore.
       return;
     }
 
