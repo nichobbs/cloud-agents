@@ -49,6 +49,15 @@ dependency DLLs at runtime even though the build succeeded — filed as
 has before assuming a local failure needs a local fix. See `docs/BUILD.md`
 "Compiler notes" for full detail.
 
+**`lyric test` doesn't work either, for a separate reason.** It no longer
+crashes as of v0.4.11 (that was bug 1 above, which also hit this entry
+point), but every test now fails with `Could not load file or assembly
+'Lyric.Stdlib, ...'` — the same class of missing-assembly problem as bug 4,
+just for the compiler's own bundled stdlib instead of a NuGet dependency.
+Use `./scripts/verify.sh` instead — it avoids `lyric test` entirely via a
+hand-rolled harness, and **it genuinely passes**. See `docs/BUILD.md`
+"Running tests" for detail.
+
 Source files use `.l` extension. Entry point is `func main(): Unit` in the appropriate package.
 
 ## Before writing any Lyric code
