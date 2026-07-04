@@ -18,6 +18,7 @@ export function SessionDetail() {
   const { output, isStreaming, error: sendError, send, reset } = useStreamMessage(sessionId);
 
   const [messages, setMessages] = useState<Message[]>([]);
+  const [messagesError, setMessagesError] = useState(false);
   const [input, setInput] = useState('');
   const [deleting, setDeleting] = useState(false);
   const [modelSwitching, setModelSwitching] = useState(false);
@@ -70,8 +71,19 @@ export function SessionDetail() {
     // component, so a request in flight can outlive the session it was for.
     // Same pattern as CommentThread.tsx's `active` flag.
     let active = true;
+    setMessagesError(false);
     fetchMessages(sessionId).then(fetched => {
-      if (active && fetched) setMessages(fetched);
+      if (!active) return;
+      if (fetched) {
+        setMessages(fetched);
+      } else {
+        // A failed fetch right after switching sessions must not leave the
+        // previous session's transcript on screen under this session's
+        // header — clear it and surface the failure instead of silently
+        // showing someone else's conversation.
+        setMessages([]);
+        setMessagesError(true);
+      }
     });
     return () => {
       active = false;
@@ -227,7 +239,12 @@ export function SessionDetail() {
       </div>
 
       <div style={transcriptStyle}>
-        {messages.length === 0 && !isStreaming && !sendError && (
+        {messagesError && (
+          <div style={messagesErrorStyle}>
+            Failed to load transcript for this session.
+          </div>
+        )}
+        {messages.length === 0 && !isStreaming && !sendError && !messagesError && (
           <div style={emptyStyle}>
             No messages yet — send a prompt below to start the session.
           </div>
@@ -337,6 +354,13 @@ const transcriptStyle: React.CSSProperties = {
   flexDirection: 'column',
   gap: '12px',
   flex: 1,
+};
+
+const messagesErrorStyle: React.CSSProperties = {
+  color: '#f85149',
+  fontSize: '13px',
+  textAlign: 'center',
+  padding: '16px',
 };
 
 const emptyStyle: React.CSSProperties = {
