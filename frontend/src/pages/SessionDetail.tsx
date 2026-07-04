@@ -41,15 +41,23 @@ export function SessionDetail() {
     ? location.hash.slice('#message-'.length)
     : null;
 
+  // Single place that actually calls the transcript API and absorbs its
+  // errors (transcript may be empty or unavailable; leave state as-is on
+  // failure) — both call sites below just decide when to apply the result.
+  const fetchMessages = useCallback(async (forSessionId: string): Promise<Message[] | null> => {
+    try {
+      return await api.getMessages(forSessionId);
+    } catch {
+      return null;
+    }
+  }, []);
+
   // Used for explicit, one-off refreshes (e.g. right after a successful
   // send) where there's no concurrent fetch to race against.
   const reload = useCallback(async () => {
-    try {
-      setMessages(await api.getMessages(sessionId));
-    } catch {
-      // transcript may be empty or unavailable; leave as-is
-    }
-  }, [sessionId]);
+    const fetched = await fetchMessages(sessionId);
+    if (fetched) setMessages(fetched);
+  }, [sessionId, fetchMessages]);
 
   useEffect(() => {
     // Guard against a slow fetch for a previous session resolving after
@@ -58,18 +66,13 @@ export function SessionDetail() {
     // component, so a request in flight can outlive the session it was for.
     // Same pattern as CommentThread.tsx's `active` flag.
     let active = true;
-    api
-      .getMessages(sessionId)
-      .then(fetched => {
-        if (active) setMessages(fetched);
-      })
-      .catch(() => {
-        // transcript may be empty or unavailable; leave as-is
-      });
+    fetchMessages(sessionId).then(fetched => {
+      if (active && fetched) setMessages(fetched);
+    });
     return () => {
       active = false;
     };
-  }, [sessionId]);
+  }, [sessionId, fetchMessages]);
 
   // Deep-link: scroll to the message referenced by the URL hash once loaded.
   useEffect(() => {

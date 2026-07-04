@@ -16,6 +16,18 @@ export function useStreamMessage(sessionId: string): StreamState {
   const [error, setError] = useState<string | null>(null);
   const activeSessionRef = useRef(sessionId);
 
+  // Bumped every time `sessionId` changes, including a return trip to a
+  // session already visited earlier. This is what lets `send()` tell apart
+  // "the session changed" from "we're back on the same session, but this is
+  // a stale request from a previous visit" — checking `activeSessionRef`
+  // alone isn't enough for that second case, since the session id is
+  // identical both times. Without it, navigating away from session A mid-send
+  // and back to A, then sending a *new* message, could have the abandoned
+  // first send's `finally` clause fire after the second send's and
+  // incorrectly flip `isStreaming` back to false while the second send is
+  // still genuinely in flight.
+  const generationRef = useRef(0);
+
   // Reset all stream state whenever the session changes, and stop applying
   // updates from any send() still in flight for the *previous* session. The
   // page component that owns this hook (SessionDetail) isn't remounted on
@@ -24,6 +36,7 @@ export function useStreamMessage(sessionId: string): StreamState {
   // into session B's view after navigating away.
   useEffect(() => {
     activeSessionRef.current = sessionId;
+    generationRef.current += 1;
     setOutput('');
     setIsStreaming(false);
     setError(null);
@@ -32,6 +45,10 @@ export function useStreamMessage(sessionId: string): StreamState {
   const send = useCallback(
     async (text: string): Promise<boolean> => {
       const forSession = sessionId;
+      const forGeneration = generationRef.current;
+      const stillCurrent = () =>
+        activeSessionRef.current === forSession && generationRef.current === forGeneration;
+
       setIsStreaming(true);
       setError(null);
 
@@ -41,19 +58,19 @@ export function useStreamMessage(sessionId: string): StreamState {
       let succeeded = true;
       try {
         await api.sendMessage(sessionId, text, chunk => {
-          if (activeSessionRef.current === forSession) {
+          if (stillCurrent()) {
             setOutput(prev => prev + chunk);
           }
         });
       } catch (err) {
         succeeded = false;
         const msg = err instanceof Error ? err.message : String(err);
-        if (activeSessionRef.current === forSession) {
+        if (stillCurrent()) {
           setError(msg);
           setOutput(prev => prev + `\x1b[1;31mError: ${msg}\x1b[0m\n`);
         }
       } finally {
-        if (activeSessionRef.current === forSession) {
+        if (stillCurrent()) {
           setIsStreaming(false);
         }
       }
