@@ -42,21 +42,20 @@ built against.
 
 ## Build and run
 
-The backend requires the Lyric compiler and .NET 10 SDK. **A full `lyric
-build` of this project cannot currently succeed with any released Lyric
-compiler** — an open upstream bug, not something to fix here; see
-[`docs/BUILD.md`](docs/BUILD.md) "Compiler notes" for the full history
-(three bugs found in sequence, two already fixed upstream) and
+The backend requires the Lyric compiler (v0.4.14+) and .NET 10 SDK. **A
+full `lyric build` succeeds** — the first time in this project's history,
+after four sequential upstream compiler bugs (three now fixed). **Actually
+running the built server (`lyric run`) still doesn't work**: an open
+upstream bug means NuGet-restored dependency DLLs aren't copied to the
+output directory at runtime. See [`docs/BUILD.md`](docs/BUILD.md)
+"Compiler notes" for the full history and
 `./scripts/repro-compiler-bug.sh` for a runnable check of your compiler's
-status. `./scripts/verify.sh`, on the other hand, **does genuinely pass** —
-it exercises the Docker/Web-independent core logic (SSE framing, session
-state machine, recycling, auth) without hitting the bug that blocks the
-full build.
+status.
 
 ```sh
-lyric restore && lyric build   # or: ./scripts/build-full.sh — currently fails, see docs/BUILD.md
-./scripts/verify.sh            # runtime-verifies the core logic — currently passes
-./scripts/run-api.sh           # build + start the API server locally — blocked by the same build failure
+lyric restore && lyric build   # or: ./scripts/build-full.sh — succeeds as of v0.4.14
+./scripts/verify.sh            # runtime-verifies the core logic — genuinely passes
+./scripts/run-api.sh           # build + start the API server locally — still blocked, see docs/BUILD.md
 ```
 
 ```sh

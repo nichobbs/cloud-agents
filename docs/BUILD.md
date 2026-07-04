@@ -60,14 +60,17 @@ Build from the repo root:
 
 ```sh
 lyric restore
-lyric build   # see "Compiler notes" below — this cannot currently succeed
-              # at all, with any released compiler version, on any project
+lyric build   # succeeds as of v0.4.14 — see "Compiler notes" below for history
 ```
 
-`scripts/build-full.sh` wraps `lyric restore`/`lyric build`. `scripts/verify.sh`
+`scripts/build-full.sh` wraps `lyric restore`/`lyric build` — **this now
+succeeds** against v0.4.14 (the first release where it ever has). `scripts/verify.sh`
 is the test entry point — see "Running tests" below for why it isn't `lyric
-test`. `scripts/run-api.sh` builds the same way, then runs the compiled
-server. **None of these can currently succeed** — see "Compiler notes".
+test` — and **genuinely passes**. `scripts/run-api.sh` builds the same way,
+then runs the compiled server — this is still blocked: `lyric build`
+succeeds but `lyric run` (or running the built DLL directly) can't find its
+NuGet-restored dependencies at runtime (`lyric-lang#5066`, open) — see
+"Compiler notes".
 
 ### Bumping a NuGet dependency version
 
@@ -78,33 +81,40 @@ it's caught up without checking, the way this project's own history did once.
 
 ## Running tests
 
-`lyric test` (the `cmdTestManifest` CLI path) crashes with an unhandled
-`System.InvalidCastException`. `scripts/verify.sh` avoids it by compiling a
-hand-rolled `main()` harness and running it via `lyric build && lyric run`
-instead — **but as of this writing that doesn't work either**; see
-"Compiler notes" below. `scripts/verify.sh` is still the right entry point
-to use (`./scripts/verify.sh`) — the approach is correct, it's just blocked
-on an external bug, not something to route around differently. It exercises
-the Docker/Web-independent logic (SSE framing, the Phase 2 state machine +
-idle recycling + SQL builders, the Phase 3 auth helpers) — the same code
+`lyric test` (the `cmdTestManifest` CLI path) no longer crashes with
+`System.InvalidCastException` as of v0.4.11 (bug 1 below hit this entry
+point too) — but it still can't actually run: every test now fails with
+`Could not load file or assembly 'Lyric.Stdlib, Version=0.1.0.0...'`, the
+same class of missing-assembly problem as bug 4 below, just hitting
+`Lyric.Stdlib.dll` itself instead of a NuGet dependency. `scripts/verify.sh`
+avoids `lyric test` entirely by compiling a hand-rolled `main()` harness and
+running it via `lyric build && lyric run` instead, and **that now genuinely
+succeeds** — all 24 checks pass for real, for the first time in this
+project's history. `scripts/verify.sh` is still the right entry point to
+use (`./scripts/verify.sh`); it exercises the Docker/Web-independent logic
+(SSE framing, the Phase 2 state machine + idle recycling + SQL builders,
+the Phase 3 auth helpers) — the same code
 the `@test_module` suites in `tests/*.l` describe. Those `tests/*.l` files
 remain the readable source of truth for intended behavior and should still
 be kept up to date.
 
 ## Compiler notes
 
-**Three independent upstream compiler bugs have blocked `lyric build`/
-`run`/`check`/`test` for this project, discovered one at a time as each
-prior one got fixed — two are now fixed (v0.4.11, v0.4.12), one is still
-open.** None is a characteristic of this project's manifest, dependencies,
-or source.
+**Four independent upstream compiler bugs have blocked this project's
+build/run pipeline in sequence, each one only reachable once the previous
+one was fixed — three are now fixed (v0.4.11, v0.4.12, v0.4.14), one is
+still open.** `lyric build` **finally succeeds as of v0.4.14** — the full
+project, all 12 packages, for the first time in this project's history.
+`lyric run` (actually starting the server) is still blocked by the
+remaining open bug. None of the four is a characteristic of this project's
+manifest, dependencies, or source.
 
 **This is checked into the repo as a runnable reproduction, not just
-prose**: `scripts/repro-compiler-bug.sh` checks all three bugs against
+prose**: `scripts/repro-compiler-bug.sh` checks all four bugs against
 trivial scratch projects. Checks 1–2 need only `lyric` on PATH (both bugs
-occur before the compiler would invoke the .NET toolchain); check 3 needs
-a real `[nuget]` restore, so it additionally needs `dotnet` and network
-access, and is skipped (not failed) without `dotnet`. Run it yourself; exit
+occur before the compiler would invoke the .NET toolchain); checks 3–4 need
+a real `[nuget]` restore, so they additionally need `dotnet` and network
+access, and are skipped (not failed) without `dotnet`. Run it yourself; exit
 0 means every bug that could be checked is fixed on your compiler and it's
 safe to remove this script and the workaround notes below.
 
@@ -176,18 +186,17 @@ closed as fixed shortly before the
 — **confirmed fixed against that binary**: `Option[T]`/`Some`/`None` now
 resolve in a trivial scratch project.
 
-### Bug 3 — NuGet-restored zero-arg functions rejected (lyric-lang#5004) — **open, currently blocking**
+### Bug 3 — NuGet-restored zero-arg functions rejected (lyric-lang#5004) — **fixed in v0.4.14**
 
-Upgrading to v0.4.12 to pick up the bug 2 fix immediately exposed a third
-bug: calling a **zero-argument function restored from a NuGet package**
-fails type-checking with `"expected 1 argument(s), got 0"` — even though
-the function genuinely takes zero parameters, confirmed two independent
-ways:
+Upgrading to v0.4.12 to pick up the bug 2 fix exposed a third bug: calling
+a **zero-argument function restored from a NuGet package** failed
+type-checking with `"expected 1 argument(s), got 0"` — even though the
+function genuinely took zero parameters, confirmed two independent ways:
 
-- The package's own embedded `Lyric.Contract.Web` manifest resource says
+- The package's own embedded `Lyric.Contract.Web` manifest resource said
   `{"kind":"func","name":"create","repr":"pub func create(): Router"}`.
 - The actual compiled IL, inspected via .NET reflection
-  (`MethodInfo.GetParameters()`), also shows zero parameters.
+  (`MethodInfo.GetParameters()`), also showed zero parameters.
 
 ```
 $ lyric build
@@ -195,23 +204,65 @@ WebTest: error[T0042] 6:16: expected 1 argument(s), got 0
 B0001 error [1:1]: project build failed (see stderr)
 ```
 
-This hits `src/main.l`'s very first NuGet-consumed call —
+This hit `src/main.l`'s very first NuGet-consumed call —
 `var router = Web.create()` — immediately after bug 2's fix let the build
 get that far; every other `Web.addGet`/`addPost`/`addDelete` call (3–4 args
-each, same package, same file) type-checks fine, and a project-local
-(source-compiled, non-NuGet) zero-arg cross-package call type-checks fine
-too. So this looks specific to how the compiler derives an expected
-argument count from a NuGet package's serialized contract — plausibly a
-naive comma-count parse of a `repr` string like `"pub func create(): Router"`
-that doesn't special-case a genuinely-empty `()` parameter list. Filed as
-[lyric-lang#5004](https://github.com/nichobbs/lyric-lang/issues/5004)
+each, same package, same file) type-checked fine, and a project-local
+(source-compiled, non-NuGet) zero-arg cross-package call type-checked fine
+too — specific to how the compiler derived an expected argument count from
+a NuGet package's serialized contract. Filed as
+[lyric-lang#5004](https://github.com/nichobbs/lyric-lang/issues/5004),
+closed as fixed — **confirmed fixed in the
+[v0.4.14 release](https://github.com/nichobbs/lyric-lang/releases/tag/v0.4.14)**:
+`Web.create()` now resolves and the full project — all 12 packages —
+builds successfully for the first time in this project's history.
+
+(A separate, unrelated crash on the `dotnet tool install -g lyric` install
+path — `System.MissingFieldException` during NuGet asset resolution, filed
+as [lyric-lang#5010](https://github.com/nichobbs/lyric-lang/issues/5010) —
+could make bug 3 look unreproducible if tried that way; the release-tarball
+install path, what CI actually uses, is what gets far enough to hit it.)
+
+### Bug 4 — NuGet dependency DLLs not copied to the output directory (lyric-lang#5066) — **open, currently blocking `lyric run`**
+
+Bug 3's fix let the full project build succeed — but running the built
+server fails immediately:
+
+```
+$ lyric run
+built .../bin/CloudAgents.dll (12 package(s), ...)
+Unhandled exception. System.IO.FileNotFoundException: Could not load file or assembly 'Web, Version=0.4.0.0, Culture=neutral, PublicKeyToken=null'. The system cannot find the file specified.
+   at CloudAgents.Program.main()
+```
+
+`bin/` after a build only contains `CloudAgents.dll`, `Lyric.Stdlib.dll`,
+and a `runtimeconfig.json` — no `Web.dll` (or any other NuGet-restored
+dependency), and no `.deps.json` either. Confirmed this is purely a
+missing-file issue, not a deeper mismatch: manually copying the restored
+`Web.dll` from the NuGet cache into `bin/` and running the *already-built*
+DLL directly via `dotnet bin/CloudAgents.dll` works. Reproduces on a
+minimal single-dependency project too, so this isn't specific to
+`Lyric.Web` or to this project — any Lyric application that actually calls
+a NuGet-restored dependency at runtime is likely affected. Filed as
+[lyric-lang#5066](https://github.com/nichobbs/lyric-lang/issues/5066)
 (open).
 
-**There is nothing to fix on this project's side for any of the three
-bugs** — `lyric build`/`test` failing in CI is expected until a release
-fixing [lyric-lang#5004](https://github.com/nichobbs/lyric-lang/issues/5004)
-ships. Check that issue for status before assuming a local build failure
-needs a local fix.
+**There is nothing to fix on this project's manifest or build config for
+any of the four bugs** — `lyric run`/`scripts/run-api.sh` failing is
+expected until a release fixing
+[lyric-lang#5066](https://github.com/nichobbs/lyric-lang/issues/5066)
+ships. Check that issue for status before assuming a local failure needs a
+local fix.
+
+### A real bug this *did* surface in this project's own source
+
+Building the full project for the first time (past bug 3) found a genuine,
+previously-undetectable bug in `vendor/lyric-docker/src/docker.l`: four
+call sites used a nonexistent bare function `unwrapResult(x)` instead of
+the documented `Result`/`Option` method `x.unwrap()` (see
+`docs/lyric/stdlib.md`). This was never caught because the compiler always
+crashed before ever type-checking this file. Fixed by replacing all four
+call sites with `.unwrap()`.
 
 Other compiler-level characteristics, independent of the above:
 

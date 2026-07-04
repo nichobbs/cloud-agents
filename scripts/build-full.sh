@@ -8,20 +8,22 @@
 # required. `lyric restore` fetches the NuGet packages, `lyric build`
 # compiles everything else.
 #
-# THIS CURRENTLY CANNOT SUCCEED with any released Lyric compiler — three
-# independent upstream bugs found in sequence, two fixed, one open. Bug 1
+# THIS NOW SUCCEEDS as of v0.4.14 — the first release where it ever has,
+# after four sequential upstream compiler bugs (three now fixed). Bug 1
 # (buildProject crash, https://github.com/nichobbs/lyric-lang/issues/4925)
-# is fixed as of v0.4.11; bug 2 (Std.Core's Option/Result/Some/None/Ok/Err
-# never resolving, https://github.com/nichobbs/lyric-lang/issues/4980) is
-# fixed as of v0.4.12. Bug 3, still open: a zero-arg function restored from
-# a NuGet package (Web.create(), called directly in src/main.l) is rejected
-# as "expected 1 argument(s), got 0" even though it takes zero parameters —
-# filed as https://github.com/nichobbs/lyric-lang/issues/5004. None of the
-# three is something this project's lyric.toml or source can work around;
-# see docs/BUILD.md "Compiler notes" for full detail. An earlier version of
-# this comment described a `[nuget]`-stripping workaround based on a
-# since-disproven theory (it didn't actually fix anything, though it was
-# harmless) — removed once the real scope became clear.
+# fixed in v0.4.11; bug 2 (Std.Core's Option/Result/Some/None/Ok/Err never
+# resolving, https://github.com/nichobbs/lyric-lang/issues/4980) fixed in
+# v0.4.12; bug 3 (NuGet-restored zero-arg functions rejected,
+# https://github.com/nichobbs/lyric-lang/issues/5004) fixed in v0.4.14 —
+# that's what let this succeed. Bug 4, still open, blocks actually running
+# the built server (lyric run can't find NuGet dependency DLLs at runtime):
+# https://github.com/nichobbs/lyric-lang/issues/5066 — see scripts/run-api.sh
+# and docs/BUILD.md "Compiler notes" for detail. None of the four was ever
+# something this project's lyric.toml or source could work around. An
+# earlier version of this comment described a `[nuget]`-stripping
+# workaround based on a since-disproven theory (it didn't actually fix
+# anything, though it was harmless) — removed once the real scope became
+# clear.
 #
 # Requirements on PATH: lyric, dotnet (10.x).
 set -euo pipefail

@@ -3,7 +3,7 @@
 # compiler bugs referenced throughout docs/BUILD.md, docs/PROGRESS.md,
 # AGENTS.md, and this project's build scripts.
 #
-# Checks three independent, known compiler bugs, in order:
+# Checks four independent, known compiler bugs, in order:
 #
 # 1. lyric-lang#4925/#4955 (fixed as of v0.4.11): a trivial, dependency-free
 #    "hello world" project crashed `lyric build` with an unhandled
@@ -18,26 +18,33 @@
 #    This predated #1 and was simply never reachable before, since #1
 #    always crashed first.
 #
-# 3. lyric-lang#5004 (open, found while checking whether #4980's fix
-#    actually unblocks real builds): once #1 and #2 no longer reproduce, a
-#    zero-argument function restored from a NuGet package (e.g. `Lyric.Web`'s
-#    `create()`) is rejected with "expected 1 argument(s), got 0" — even
-#    though both the package's own embedded contract and its actual compiled
-#    IL agree the function takes zero parameters. A project-local
-#    (source-compiled, non-NuGet) zero-arg cross-package call is unaffected,
-#    so this looks specific to how the compiler derives an argument count
-#    from a NuGet package's serialized contract.
+# 3. lyric-lang#5004 (fixed as of v0.4.14): once #1 and #2 no longer
+#    reproduced, a zero-argument function restored from a NuGet package
+#    (e.g. `Lyric.Web`'s `create()`) was rejected with "expected 1
+#    argument(s), got 0" — even though both the package's own embedded
+#    contract and its actual compiled IL agreed the function took zero
+#    parameters.
+#
+# 4. lyric-lang#5066 (open, found the moment #5004's fix let a real project
+#    build succeed for the first time): `lyric build` now succeeds, but
+#    `lyric run` (or running the built DLL directly) crashes with
+#    System.IO.FileNotFoundException — the NuGet-restored dependency's DLL
+#    (e.g. Web.dll) is never copied into the output directory alongside the
+#    project's own compiled DLL, and no .deps.json is generated either.
+#    Confirmed this is purely a missing-file issue (not a deeper mismatch):
+#    manually copying the dependency DLL into bin/ and running the
+#    already-built DLL directly via `dotnet` works fine.
 #
 # Checks 1 and 2 only require `lyric` on PATH — no `dotnet` needed, since
-# both bugs occur before the compiler would invoke the .NET toolchain. Check
-# 3 needs a `[nuget]` restore (a real published Lyric.Web package), so it
-# additionally requires `dotnet` and network access to nuget.org; it's
-# skipped (not failed) if `dotnet` isn't on PATH.
+# both bugs occur before the compiler would invoke the .NET toolchain.
+# Checks 3 and 4 need a `[nuget]` restore (a real published Lyric.Web
+# package), so they additionally require `dotnet` and network access to
+# nuget.org; both are skipped (not failed) if `dotnet` isn't on PATH.
 #
 # Exit code (conventional Unix sense — 0 means "no problem found"): 0 if
-# every check that ran passed (your compiler can actually build a real
-# Lyric project — safe to remove this script and the workaround notes it
-# supports); 1 if any known bug reproduced; 2 for any other unexpected
+# every check that ran passed (your compiler can actually build AND run a
+# real Lyric project — safe to remove this script and the workaround notes
+# it supports); 1 if any known bug reproduced; 2 for any other unexpected
 # failure.
 set -uo pipefail
 
@@ -65,7 +72,7 @@ import Std.Core
 func main(): Unit { println("hello") }
 LYRIC
 
-echo "==> [1/3] lyric build against a trivial, dependency-free hello-world (lyric-lang#4925/#4955)"
+echo "==> [1/4] lyric build against a trivial, dependency-free hello-world (lyric-lang#4925/#4955)"
 crash_output="$(cd "$WORK/crash" && lyric build 2>&1)"
 crash_status=$?
 echo "$crash_output"
@@ -104,7 +111,7 @@ func find(x: in Int): Option[Int] {
 func main(): Unit { println("hello") }
 LYRIC
 
-echo "==> [2/3] lyric build against a trivial Option[Int]-returning function (lyric-lang#4980)"
+echo "==> [2/4] lyric build against a trivial Option[Int]-returning function (lyric-lang#4980)"
 stdcore_output="$(cd "$WORK/stdcore" && lyric build 2>&1)"
 stdcore_status=$?
 echo "$stdcore_output"
@@ -118,9 +125,9 @@ elif [ "$stdcore_status" -ne 0 ]; then
 fi
 echo "==> Did NOT fail: this compiler can resolve Std.Core's Option/Result — bug #4980 is fixed"
 
-# --- Check 3: lyric-lang#5004 (NuGet-contract zero-arg arg-count bug) ------
+# --- Checks 3-4 need a real [nuget] restore ---------------------------------
 if ! command -v dotnet >/dev/null; then
-  echo "==> [3/3] skipped (lyric-lang#5004): 'dotnet' not on PATH, needed for a [nuget] restore"
+  echo "==> [3-4/4] skipped (lyric-lang#5004/#5066): 'dotnet' not on PATH, needed for a [nuget] restore"
   exit 0
 fi
 
@@ -149,7 +156,7 @@ func main(): Unit {
 }
 LYRIC
 
-echo "==> [3/3] lyric build calling a zero-arg NuGet-restored function, Web.create() (lyric-lang#5004)"
+echo "==> [3/4] lyric build calling a zero-arg NuGet-restored function, Web.create() (lyric-lang#5004)"
 ( cd "$WORK/nugetzero" && lyric restore ) >/dev/null 2>&1
 nugetzero_output="$(cd "$WORK/nugetzero" && lyric build 2>&1)"
 nugetzero_status=$?
@@ -162,6 +169,20 @@ elif [ "$nugetzero_status" -ne 0 ]; then
   echo "==> Unexpected failure (exit $nugetzero_status) — not the known signature, investigate separately" >&2
   exit 2
 fi
+echo "==> Did NOT fail: this compiler resolves NuGet-restored zero-arg functions — bug #5004 is fixed"
 
-echo "==> Did NOT fail: all three known bugs are fixed on this compiler"
+echo "==> [4/4] lyric run against the same project — does it find Web.dll at runtime? (lyric-lang#5066)"
+run_output="$(cd "$WORK/nugetzero" && lyric run 2>&1)"
+run_status=$?
+echo "$run_output"
+
+if [ "$run_status" -ne 0 ] && echo "$run_output" | grep -q "FileNotFoundException"; then
+  echo "==> Reproduced: this compiler still doesn't copy NuGet dependency DLLs to the output dir (lyric-lang#5066)"
+  exit 1
+elif [ "$run_status" -ne 0 ]; then
+  echo "==> Unexpected failure (exit $run_status) — not the known signature, investigate separately" >&2
+  exit 2
+fi
+
+echo "==> Did NOT fail: all four known bugs are fixed on this compiler — full build AND run both work"
 exit 0

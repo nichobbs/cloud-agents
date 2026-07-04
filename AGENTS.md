@@ -28,23 +28,26 @@ lyric prove          # SMT verification on @proof_required packages
 
 All commands discover `lyric.toml` by walking up from the working directory. No arguments needed from any subdir.
 
-**No released Lyric compiler can do a full `lyric build` of this project yet
-— three independent upstream bugs found in sequence, two fixed, one open.**
-Not specific to this project. Bug 1 (`buildProject` crash,
+**`lyric build` finally succeeds for this project as of v0.4.14 — four
+upstream bugs found in sequence, three fixed, one still open blocking
+`lyric run`.** Not specific to this project. Bug 1 (`buildProject` crash,
 [lyric-lang#4925](https://github.com/nichobbs/lyric-lang/issues/4925)) is
 fixed in [v0.4.11](https://github.com/nichobbs/lyric-lang/releases/tag/v0.4.11);
 bug 2 (`Std.Core`'s `Option`/`Result`/`Some`/`None`/`Ok`/`Err` never
 resolving, [lyric-lang#4980](https://github.com/nichobbs/lyric-lang/issues/4980))
-is fixed in [v0.4.12](https://github.com/nichobbs/lyric-lang/releases/tag/v0.4.12)
-— **and with both fixed, `scripts/verify.sh` now genuinely passes for the
-first time**, confirming the Phase 1–3 logic for real. Bug 3, still open:
-a zero-arg function restored from a NuGet package (`Web.create()`) is
-rejected as `"expected 1 argument(s), got 0"` even though it takes zero
-parameters, blocking the full project build (`main.l` calls it directly).
-Filed as [lyric-lang#5004](https://github.com/nichobbs/lyric-lang/issues/5004)
-(open). Run `./scripts/repro-compiler-bug.sh` to check which bugs your
-compiler still has before assuming a local build failure needs a local
-fix. See `docs/BUILD.md` "Compiler notes" for full detail.
+is fixed in [v0.4.12](https://github.com/nichobbs/lyric-lang/releases/tag/v0.4.12);
+bug 3 (NuGet-restored zero-arg functions rejected,
+[lyric-lang#5004](https://github.com/nichobbs/lyric-lang/issues/5004)) is
+fixed in [v0.4.14](https://github.com/nichobbs/lyric-lang/releases/tag/v0.4.14)
+— **and with all three fixed, the full project (all 12 packages) builds
+successfully, and `scripts/verify.sh` genuinely passes**, both for the
+first time. Bug 4, still open: `lyric run` can't find NuGet-restored
+dependency DLLs at runtime even though the build succeeded — filed as
+[lyric-lang#5066](https://github.com/nichobbs/lyric-lang/issues/5066)
+(open), blocking `lyric run`/`scripts/run-api.sh`. Run
+`./scripts/repro-compiler-bug.sh` to check which bugs your compiler still
+has before assuming a local failure needs a local fix. See `docs/BUILD.md`
+"Compiler notes" for full detail.
 
 Source files use `.l` extension. Entry point is `func main(): Unit` in the appropriate package.
 
