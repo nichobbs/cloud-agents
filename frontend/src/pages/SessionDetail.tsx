@@ -53,10 +53,14 @@ export function SessionDetail() {
   }, []);
 
   // Used for explicit, one-off refreshes (e.g. right after a successful
-  // send) where there's no concurrent fetch to race against.
+  // send). No concurrent fetch to race against, but the user can still
+  // navigate to a different session while this fetch is in flight — guard
+  // against applying a stale session's result via the same currentSessionRef
+  // handleSend already uses for this purpose.
   const reload = useCallback(async () => {
-    const fetched = await fetchMessages(sessionId);
-    if (fetched) setMessages(fetched);
+    const forSessionId = sessionId;
+    const fetched = await fetchMessages(forSessionId);
+    if (fetched && currentSessionRef.current === forSessionId) setMessages(fetched);
   }, [sessionId, fetchMessages]);
 
   useEffect(() => {

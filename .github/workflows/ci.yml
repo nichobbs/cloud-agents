@@ -50,6 +50,15 @@ jobs:
       - name: Lyric version
         run: lyric --version
 
+      # Diagnostic, not a gate: reports which of the four known upstream
+      # compiler bugs (see docs/BUILD.md "Compiler notes") this runner's
+      # Lyric version still has. continue-on-error so a still-open bug here
+      # doesn't fail CI on its own — the Build/Run steps below are the real
+      # gate for whether this project actually builds.
+      - name: Check known compiler bug status
+        continue-on-error: true
+        run: ./scripts/repro-compiler-bug.sh
+
       # Shell + asset sanity checks (no Lyric toolchain needed).
       - name: Lint shell scripts
         run: |
