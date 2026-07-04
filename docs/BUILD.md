@@ -34,8 +34,8 @@ no sibling checkout, no source patching:
 
 ```toml
 [nuget]
-"Lyric.Web"             = "0.4.10"
-"Std.Logging"           = "0.4.10"
+"Lyric.Web"             = "0.4.11"
+"Std.Logging"           = "0.4.11"
 "Microsoft.Data.Sqlite" = "10.0.9"
 ```
 

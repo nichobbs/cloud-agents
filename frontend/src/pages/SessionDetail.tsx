@@ -61,7 +61,10 @@ export function SessionDetail() {
   const reload = useCallback(async () => {
     const forSessionId = sessionId;
     const fetched = await fetchMessages(forSessionId);
-    if (fetched && currentSessionRef.current === forSessionId) setMessages(fetched);
+    if (fetched && currentSessionRef.current === forSessionId) {
+      setMessages(fetched);
+      setMessagesError(false);
+    }
   }, [sessionId, fetchMessages]);
 
   useEffect(() => {
