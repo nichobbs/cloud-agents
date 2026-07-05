@@ -42,12 +42,13 @@ built against.
 
 ## Build and run
 
-The backend requires the Lyric compiler (v0.4.14+) and .NET 10 SDK. **A
+The backend requires the Lyric compiler (v0.4.15+) and .NET 10 SDK. **A
 full `lyric build` succeeds** — the first time in this project's history,
-after four sequential upstream compiler bugs (three now fixed). **Actually
+after five sequential upstream compiler bugs (four now fixed). **Actually
 running the built server (`lyric run`) still doesn't work**: an open
-upstream bug means NuGet-restored dependency DLLs aren't copied to the
-output directory at runtime. See [`docs/BUILD.md`](docs/BUILD.md)
+upstream bug means the real, multi-package server hits wrong cross-package
+field/method references at runtime, even though `lyric run` now works fine
+against a minimal project. See [`docs/BUILD.md`](docs/BUILD.md)
 "Compiler notes" for the full history and
 `./scripts/repro-compiler-bug.sh` for a runnable check of your compiler's
 status.

@@ -64,13 +64,15 @@ lyric build   # succeeds as of v0.4.14 — see "Compiler notes" below for histor
 ```
 
 `scripts/build-full.sh` wraps `lyric restore`/`lyric build` — **this now
-succeeds** against v0.4.14 (the first release where it ever has). `scripts/verify.sh`
+succeeds** against v0.4.14+ (the first release where it ever has). `scripts/verify.sh`
 is the test entry point — see "Running tests" below for why it isn't `lyric
 test` — and **genuinely passes**. `scripts/run-api.sh` builds the same way,
-then runs the compiled server — this is still blocked: `lyric build`
-succeeds but `lyric run` (or running the built DLL directly) can't find its
-NuGet-restored dependencies at runtime (`lyric-lang#5066`, open) — see
-"Compiler notes".
+then runs the compiled server — this is still blocked, but not by the same
+bug it used to be: `lyric build` succeeds and, as of v0.4.15, `lyric run`
+correctly finds its NuGet-restored dependencies at runtime
+(`lyric-lang#5066`, fixed) — but the real project now hits a *different*,
+newly-exposed bug at runtime (`lyric-lang#5177`, open) — see "Compiler
+notes".
 
 ### Bumping a NuGet dependency version
 
@@ -83,36 +85,46 @@ it's caught up without checking, the way this project's own history did once.
 
 `lyric test` (the `cmdTestManifest` CLI path) no longer crashes with
 `System.InvalidCastException` as of v0.4.11 (bug 1 below hit this entry
-point too) — but it still can't actually run: every test now fails with
-`Could not load file or assembly 'Lyric.Stdlib, Version=0.1.0.0...'`, the
-same class of missing-assembly problem as bug 4 below, just hitting
-`Lyric.Stdlib.dll` itself instead of a NuGet dependency. `scripts/verify.sh`
+point too), and as of v0.4.15 it no longer fails every test outright on a
+missing `Lyric.Stdlib.dll` either (that was the same underlying bug as bug
+4 below, just hitting the compiler's own bundled stdlib instead of a NuGet
+dependency — fixed by the same release). `lyric test` now genuinely
+*runs* — but most of it still fails, hitting bug 5 below (`lyric-lang#5177`)
+on real cross-package field/method access: `not ok ... Field not found:
+'CloudAgents.Db.SessionEvent.CloneFinished'.` and similar. `scripts/verify.sh`
 avoids `lyric test` entirely by compiling a hand-rolled `main()` harness and
-running it via `lyric build && lyric run` instead, and **that now genuinely
-succeeds** — all 24 checks pass for real, for the first time in this
-project's history. `scripts/verify.sh` is still the right entry point to
-use (`./scripts/verify.sh`); it exercises the Docker/Web-independent logic
+running it via `lyric build && lyric run` instead, and **that still
+genuinely succeeds** — all 24 checks pass for real, unaffected by bug 5
+(its harness doesn't happen to trigger the cross-package pattern that
+does). `scripts/verify.sh` is still the right entry point to use
+(`./scripts/verify.sh`); it exercises the Docker/Web-independent logic
 (SSE framing, the Phase 2 state machine + idle recycling + SQL builders,
 the Phase 3 auth helpers) — the same code
 the `@test_module` suites in `tests/*.l` describe. Those `tests/*.l` files
 remain the readable source of truth for intended behavior and should still
-be kept up to date.
+be kept up to date; once bug 5 is fixed upstream, `lyric test` should become
+the right entry point again.
 
 ## Compiler notes
 
-**Four independent upstream compiler bugs have blocked this project's
-build/run pipeline in sequence, each one only reachable once the previous
-one was fixed — three are now fixed (v0.4.11, v0.4.12, v0.4.14), one is
-still open.** `lyric build` **finally succeeds as of v0.4.14** — the full
-project, all 12 packages, for the first time in this project's history.
-`lyric run` (actually starting the server) is still blocked by the
-remaining open bug. None of the four is a characteristic of this project's
-manifest, dependencies, or source.
+**Five independent upstream compiler bugs have blocked this project's
+build/run/test pipeline in sequence, each one only reachable once the
+previous one was fixed — four are now fixed (v0.4.11, v0.4.12, v0.4.14,
+v0.4.15), one is still open.** `lyric build` **finally succeeds as of
+v0.4.14** — the full project, all 12 packages, for the first time in this
+project's history. `lyric run` **also succeeds against a minimal project as
+of v0.4.15** — but actually starting *this* real, multi-package server (or
+running most of its `lyric test` suites) is still blocked by the remaining
+open bug. None of the five is a characteristic of this project's manifest,
+dependencies, or source — each was found and root-caused using this
+project as the real-world test case that first got far enough to hit it.
 
 **This is checked into the repo as a runnable reproduction, not just
-prose**: `scripts/repro-compiler-bug.sh` checks all four bugs against
-trivial scratch projects. Checks 1–2 need only `lyric` on PATH (both bugs
-occur before the compiler would invoke the .NET toolchain); checks 3–4 need
+prose**: `scripts/repro-compiler-bug.sh` checks all five bugs — checks 1-4
+against trivial scratch projects, check 5 (which needs this project's own
+real scale/shape to reproduce — see below) against the real manifest in
+place via `lyric test`. Checks 1–2 need only `lyric` on PATH (both bugs
+occur before the compiler would invoke the .NET toolchain); checks 3–5 need
 a real `[nuget]` restore, so they additionally need `dotnet` and network
 access, and are skipped (not failed) without `dotnet`. Run it yourself; exit
 0 means every bug that could be checked is fixed on your compiler and it's
@@ -223,10 +235,10 @@ as [lyric-lang#5010](https://github.com/nichobbs/lyric-lang/issues/5010) —
 could make bug 3 look unreproducible if tried that way; the release-tarball
 install path, what CI actually uses, is what gets far enough to hit it.)
 
-### Bug 4 — NuGet dependency DLLs not copied to the output directory (lyric-lang#5066) — **open, currently blocking `lyric run`**
+### Bug 4 — NuGet dependency DLLs not copied to the output directory (lyric-lang#5066) — **fixed in v0.4.15**
 
 Bug 3's fix let the full project build succeed — but running the built
-server fails immediately:
+server used to fail immediately:
 
 ```
 $ lyric run
@@ -235,22 +247,66 @@ Unhandled exception. System.IO.FileNotFoundException: Could not load file or ass
    at CloudAgents.Program.main()
 ```
 
-`bin/` after a build only contains `CloudAgents.dll`, `Lyric.Stdlib.dll`,
+`bin/` after a build only contained `CloudAgents.dll`, `Lyric.Stdlib.dll`,
 and a `runtimeconfig.json` — no `Web.dll` (or any other NuGet-restored
-dependency), and no `.deps.json` either. Confirmed this is purely a
+dependency), and no `.deps.json` either. Confirmed this was purely a
 missing-file issue, not a deeper mismatch: manually copying the restored
 `Web.dll` from the NuGet cache into `bin/` and running the *already-built*
-DLL directly via `dotnet bin/CloudAgents.dll` works. Reproduces on a
-minimal single-dependency project too, so this isn't specific to
-`Lyric.Web` or to this project — any Lyric application that actually calls
-a NuGet-restored dependency at runtime is likely affected. Filed as
-[lyric-lang#5066](https://github.com/nichobbs/lyric-lang/issues/5066)
+DLL directly via `dotnet bin/CloudAgents.dll` worked. Reproduced on a
+minimal single-dependency project too, so this wasn't specific to
+`Lyric.Web` or to this project. Filed as
+[lyric-lang#5066](https://github.com/nichobbs/lyric-lang/issues/5066),
+fixed upstream in [lyric-lang#5074](https://github.com/nichobbs/lyric-lang/pull/5074)
+(two independent root causes sharing the symptom — see that PR's
+description) — **confirmed fixed in the
+[v0.4.15 release](https://github.com/nichobbs/lyric-lang/releases/tag/v0.4.15)**:
+`bin/` now contains every NuGet-restored dependency DLL and the stdlib
+bundle, and the minimal `Web.create()` repro's `lyric run` prints `hi`
+instead of crashing.
+
+### Bug 5 — cross-package field/method metadata tokens resolve to the wrong member on real, multi-package builds (lyric-lang#5177) — **open, currently blocking `lyric run`/most of `lyric test`**
+
+Bug 4's fix let `lyric run` succeed against a minimal project for the first
+time — which is what exposed this: running (or testing) *this* real,
+12-package project hits `MissingFieldException`/`FieldAccessException` on
+enum literals that provably exist in the built assembly, e.g.:
+
+```
+$ dotnet bin/CloudAgents.dll --urls http://127.0.0.1:8080
+Unhandled exception. System.MissingFieldException: Field not found: 'CloudAgents.Db.RecycleAction.StopAndIdle'.
+   at CloudAgents.Sqlite.Program.dbErrorMessage(DbError)
+   at CloudAgents.Program.main()
+```
+
+Inspected the built DLL's raw metadata directly with
+`System.Reflection.Metadata.PEReader` (bypassing normal type-loading) to
+rule out the field actually being absent — it's there, `public static
+Literal`, exactly as expected. `dbErrorMessage`'s own source has no
+reference to `RecycleAction` at all — it only pattern-matches an unrelated
+`DbError` union in a different file/package. `lyric test` hits the same
+class of error against two more types (`SessionEvent.CloneFinished`,
+`AuthError.value__`), plus an analogous wrong-*method*-token variant
+(`"unsupported method 'append' on the receiver type"` for a `slice[T]`
+method that succeeds dozens of other times in the exact same build) — all
+consistent with one underlying cause: wrong metadata tokens after merging
+separately-compiled packages into a single output assembly, not something
+specific to enums, `Microsoft.Data.Sqlite`, or FFI.
+
+Could **not** reproduce this in an isolated synthetic project — tried
+scaling one up to 9 packages (short of this project's real 12, but no
+change in outcome as the count increased), a `[project.tests]` section, the
+`@runtime_checked` attribute, and real `[nuget]`/FFI bindings to
+`Microsoft.Data.Sqlite`, all in isolation and combined, with no luck. Needs
+this project's actual real code shape/scale to trigger, so it's filed
+against the real project itself (100% reliably reproducible, unlike a
+distilled minimal case) as
+[lyric-lang#5177](https://github.com/nichobbs/lyric-lang/issues/5177)
 (open).
 
 **There is nothing to fix on this project's manifest or build config for
-any of the four bugs** — `lyric run`/`scripts/run-api.sh` failing is
-expected until a release fixing
-[lyric-lang#5066](https://github.com/nichobbs/lyric-lang/issues/5066)
+any of the five bugs** — `lyric run`/`scripts/run-api.sh` failing, and most
+of `lyric test` failing, is expected until a release fixing
+[lyric-lang#5177](https://github.com/nichobbs/lyric-lang/issues/5177)
 ships. Check that issue for status before assuming a local failure needs a
 local fix.
 
