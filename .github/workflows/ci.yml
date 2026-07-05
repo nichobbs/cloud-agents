@@ -50,7 +50,7 @@ jobs:
       - name: Lyric version
         run: lyric --version
 
-      # Diagnostic, not a gate: reports which of the four known upstream
+      # Diagnostic, not a gate: reports which of the five known upstream
       # compiler bugs (see docs/BUILD.md "Compiler notes") this runner's
       # Lyric version still has. continue-on-error so a still-open bug here
       # doesn't fail CI on its own — the Build/Run steps below are the real

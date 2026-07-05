@@ -10,25 +10,33 @@ design of each phase and `docs/BUILD.md` for build/verification notes.
 > ran and succeeded for real. Every "✅ verified" label below is now backed
 > by an actual successful compile and run, not just belief.
 >
-> **Actually running the server** (`lyric run`/`scripts/run-api.sh`) is
-> still blocked by a fourth upstream bug — not something wrong with this
-> project's manifest or source. Three prior bugs are fixed in sequence,
-> each only reachable once the last one was: bug 1 (`buildProject` crash,
+> **Actually running the server** (`lyric run`/`scripts/run-api.sh`), and
+> most of `lyric test`, are still blocked by a fifth upstream bug — not
+> something wrong with this project's manifest or source. Four prior bugs
+> are fixed in sequence, each only reachable once the last one was: bug 1
+> (`buildProject` crash,
 > [lyric-lang#4925](https://github.com/nichobbs/lyric-lang/issues/4925),
 > fixed in [v0.4.11](https://github.com/nichobbs/lyric-lang/releases/tag/v0.4.11)),
 > bug 2 (`Std.Core`'s `Option`/`Result`/`Some`/`None`/`Ok`/`Err` never
 > resolving, [lyric-lang#4980](https://github.com/nichobbs/lyric-lang/issues/4980),
 > fixed in [v0.4.12](https://github.com/nichobbs/lyric-lang/releases/tag/v0.4.12)),
-> and bug 3 (NuGet-restored zero-arg functions rejected,
+> bug 3 (NuGet-restored zero-arg functions rejected,
 > [lyric-lang#5004](https://github.com/nichobbs/lyric-lang/issues/5004),
-> fixed in [v0.4.14](https://github.com/nichobbs/lyric-lang/releases/tag/v0.4.14))
-> — that last one is what let the full build succeed. Bug 4, still open:
-> `lyric run` can't find NuGet-restored dependency DLLs (e.g. `Web.dll`) at
-> runtime, even though the build that produced them succeeded — filed as
-> [lyric-lang#5066](https://github.com/nichobbs/lyric-lang/issues/5066).
-> See `docs/BUILD.md` "Compiler notes" for full detail, evidence, and
-> current release status before assuming a local CI failure here needs a
-> local fix.
+> fixed in [v0.4.14](https://github.com/nichobbs/lyric-lang/releases/tag/v0.4.14)),
+> and bug 4 (NuGet dependency DLLs not copied to the output directory,
+> [lyric-lang#5066](https://github.com/nichobbs/lyric-lang/issues/5066),
+> fixed in [v0.4.15](https://github.com/nichobbs/lyric-lang/releases/tag/v0.4.15))
+> — that last one is what let `lyric run` succeed against a minimal project
+> for the first time, which is exactly what exposed bug 5: running or
+> testing *this* real, multi-package project hits
+> `MissingFieldException`/`FieldAccessException` on enum literals that
+> provably exist in the built assembly's own metadata (confirmed by
+> inspecting it directly), plus an analogous wrong-method-token error for an
+> ordinary method call that succeeds everywhere else in the same build —
+> filed as [lyric-lang#5177](https://github.com/nichobbs/lyric-lang/issues/5177)
+> (open). See `docs/BUILD.md` "Compiler notes" for full detail, evidence,
+> and current release status before assuming a local CI failure here needs
+> a local fix.
 >
 > Building the full project for the first time also surfaced one genuine
 > bug in this project's own source: `vendor/lyric-docker/src/docker.l`

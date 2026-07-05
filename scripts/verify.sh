@@ -7,10 +7,13 @@
 # v0.4.11) and bug 2 (Std.Core's Option/Result/Some/None/Ok/Err never
 # resolving, https://github.com/nichobbs/lyric-lang/issues/4980, fixed in
 # v0.4.12 — this harness uses Option directly, e.g. CachedToken/
-# statusFromString, so it hit bug 2 head-on). Bugs 3 and 4 (see docs/BUILD.md
-# "Compiler notes") don't affect this harness either — it has no [nuget]
-# table at all, so it never hits the NuGet-specific bugs that block the
-# *full* project build (scripts/build-full.sh) and run (scripts/run-api.sh).
+# statusFromString, so it hit bug 2 head-on). Bugs 3, 4, and 5 (see
+# docs/BUILD.md "Compiler notes") don't affect this harness either — it has
+# no [nuget] table at all, so it never hits the NuGet-specific bugs that
+# block the *full* project build (scripts/build-full.sh), and its single,
+# small, self-contained `main()` doesn't happen to trigger bug 5's
+# cross-package metadata-token corruption either, unlike the real project's
+# `lyric run` (scripts/run-api.sh) and `lyric test`.
 #
 # This script compiles a small hand-rolled `main()` harness and runs it with
 # `lyric build` + `lyric run` rather than `lyric test`, on the theory that
