@@ -268,7 +268,7 @@ instead of crashing.
 
 Bug 4's fix let `lyric run` succeed against a minimal project for the first
 time — which is what exposed this: running (or testing) *this* real,
-9-package project hits `MissingFieldException`/`FieldAccessException` on
+12-package project hits `MissingFieldException`/`FieldAccessException` on
 enum literals that provably exist in the built assembly, e.g.:
 
 ```
@@ -293,7 +293,8 @@ separately-compiled packages into a single output assembly, not something
 specific to enums, `Microsoft.Data.Sqlite`, or FFI.
 
 Could **not** reproduce this in an isolated synthetic project — tried
-matching package count (9), a `[project.tests]` section, the
+scaling one up to 9 packages (short of this project's real 12, but no
+change in outcome as the count increased), a `[project.tests]` section, the
 `@runtime_checked` attribute, and real `[nuget]`/FFI bindings to
 `Microsoft.Data.Sqlite`, all in isolation and combined, with no luck. Needs
 this project's actual real code shape/scale to trigger, so it's filed

@@ -226,11 +226,15 @@ if [ "$real_restore_status" -ne 0 ]; then
   exit 0
 fi
 real_test_output="$(cd "$REPO_ROOT" && lyric test 2>&1)"
+real_test_status=$?
 echo "$real_test_output"
 
 if echo "$real_test_output" | grep -qE "Field not found:|unsupported method '.*' on the receiver type|to access field '.*' failed"; then
   echo "==> Reproduced: this compiler still corrupts cross-package field/method metadata tokens in real multi-package builds (lyric-lang#5177)"
   exit 1
+elif [ "$real_test_status" -ne 0 ]; then
+  echo "==> Unexpected failure (exit $real_test_status) — not the known signature, investigate separately" >&2
+  exit 2
 fi
 
 echo "==> Did NOT reproduce: all five known bugs are fixed on this compiler — full build, run, and test all work"
