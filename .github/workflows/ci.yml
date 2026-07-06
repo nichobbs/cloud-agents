@@ -50,7 +50,7 @@ jobs:
       - name: Lyric version
         run: lyric --version
 
-      # Diagnostic, not a gate: reports which of the six known upstream
+      # Diagnostic, not a gate: reports which of the seven known upstream
       # compiler bugs (see docs/BUILD.md "Compiler notes") this runner's
       # Lyric version still has. continue-on-error so a still-open bug here
       # doesn't fail CI on its own — the Build/Run steps below are the real
@@ -94,11 +94,12 @@ jobs:
       # Runtime-verify the Docker/Web-independent logic (SSE framing, Phase
       # 2/3 state machine, recycling, auth). Not `lyric test` — it no longer
       # crashes (v0.4.11), fails outright on a missing Lyric.Stdlib.dll
-      # (v0.4.15), or corrupts cross-package field/method tokens (v0.4.17,
-      # lyric-lang#5177), but two suites still fail on lyric-lang#5244
-      # (slice[T].append() throwing at runtime), see docs/BUILD.md
-      # "Running tests"/"Compiler notes". This harness has no external
-      # dependencies, doesn't call .append(), so it doesn't need its own
-      # restore, and it genuinely passes.
+      # (v0.4.15), corrupts cross-package field/method tokens (v0.4.17,
+      # lyric-lang#5177), or fails on slice[T].append() (v0.4.18,
+      # lyric-lang#5244), but one case still fails on lyric-lang#5298 (an
+      # untyped top-level String val's `.length` throwing an IList cast),
+      # see docs/BUILD.md "Running tests"/"Compiler notes". This harness has
+      # no external dependencies, doesn't read such a val's `.length`, so it
+      # doesn't need its own restore, and it genuinely passes.
       - name: Run tests
         run: ./scripts/verify.sh

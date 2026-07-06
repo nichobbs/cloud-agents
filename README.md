@@ -42,13 +42,14 @@ built against.
 
 ## Build and run
 
-The backend requires the Lyric compiler (v0.4.17+) and .NET 10 SDK. **A
+The backend requires the Lyric compiler (v0.4.18+) and .NET 10 SDK. **A
 full `lyric build` succeeds, and `lyric run` actually starts the server** —
-both for the first time in this project's history, after six sequential
-upstream compiler bugs (five now fixed). One open bug remains
-([lyric-lang#5244](https://github.com/nichobbs/lyric-lang/issues/5244)):
-`slice[T].append()` throws at runtime, which fails two `lyric test` suites
-but not `scripts/run-api.sh`'s startup path. See
+both for the first time in this project's history, after seven sequential
+upstream compiler bugs (six now fixed). One open bug remains
+([lyric-lang#5298](https://github.com/nichobbs/lyric-lang/issues/5298)): an
+untyped top-level `String val`'s `.length` throws an `IList` cast exception
+at runtime, which fails one `lyric test` case but not
+`scripts/run-api.sh`'s startup path. See
 [`docs/BUILD.md`](docs/BUILD.md) "Compiler notes" for the full history and
 `./scripts/repro-compiler-bug.sh` for a runnable check of your compiler's
 status.

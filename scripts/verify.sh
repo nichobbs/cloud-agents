@@ -14,8 +14,11 @@
 # small, self-contained `main()` doesn't happen to trigger bug 5's
 # (now-fixed) cross-package metadata-token corruption either, unlike the
 # real project's `lyric run` (scripts/run-api.sh) and `lyric test`. Bug 6
-# (`slice[T].append()` throwing at runtime, still open) doesn't affect it
-# either, since this harness never calls `.append()`.
+# (`slice[T].append()` throwing at runtime, fixed in v0.4.18) never
+# affected it either, since this harness never calls `.append()`. Bug 7
+# (an untyped top-level String val's `.length` throwing an IList cast,
+# still open, lyric-lang#5298) doesn't affect it either, since this
+# harness has no such top-level val.
 #
 # This script compiles a small hand-rolled `main()` harness and runs it with
 # `lyric build` + `lyric run` rather than `lyric test`, on the theory that
