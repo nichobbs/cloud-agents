@@ -78,11 +78,16 @@
 # neither NuGet nor network — just `dotnet` to run a plain, dependency-free
 # build. All are skipped (not failed) if `dotnet` isn't on PATH.
 #
+# Every check below always runs, regardless of what an earlier check found —
+# one check hitting a known or unexpected failure must never prevent later,
+# independent checks from running and reporting their own status.
+#
 # Exit code (conventional Unix sense — 0 means "no problem found"): 0 if
 # every check that ran passed (your compiler can actually build AND run a
 # real Lyric project — safe to remove this script and the workaround notes
-# it supports); 1 if any known bug reproduced; 2 for any other unexpected
-# failure.
+# it supports); 1 if any known bug reproduced; 2 if any check hit an
+# unexpected failure (not a bug signature this script knows about) — 2 wins
+# over 1 if both occurred across different checks.
 set -uo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -91,6 +96,13 @@ command -v lyric >/dev/null || { echo "repro: 'lyric' not on PATH" >&2; exit 2; 
 
 WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT
+
+# Worst outcome seen across all checks so far: 0 = clean, 1 = a known bug
+# reproduced, 2 = an unexpected failure. Only ever raised, never lowered,
+# and only actually exited on at the very end of the script.
+worst=0
+note_reproduced() { [ "$worst" -lt 1 ] && worst=1; return 0; }
+note_unexpected() { worst=2; return 0; }
 
 # --- Check 1: lyric-lang#4925/#4955 (buildProject crash) -------------------
 mkdir -p "$WORK/crash/src"
@@ -118,12 +130,13 @@ echo "$crash_output"
 
 if [ "$crash_status" -ne 0 ] && echo "$crash_output" | grep -q "System.InvalidCastException"; then
   echo "==> Reproduced: this compiler still has the workspace_builder.l crash (lyric-lang#4925/#4955)"
-  exit 1
+  note_reproduced
 elif [ "$crash_status" -ne 0 ]; then
   echo "==> Unexpected failure (exit $crash_status) — not the known crash signature, investigate separately" >&2
-  exit 2
+  note_unexpected
+else
+  echo "==> Did NOT crash: this compiler build already includes the lyric-lang#4955 fix"
 fi
-echo "==> Did NOT crash: this compiler build already includes the lyric-lang#4955 fix"
 
 # --- Check 2: lyric-lang#4980 (Std.Core Option/Result resolution) ----------
 mkdir -p "$WORK/stdcore/src"
@@ -157,17 +170,18 @@ echo "$stdcore_output"
 
 if [ "$stdcore_status" -ne 0 ] && echo "$stdcore_output" | grep -q "unknown type name 'Option'"; then
   echo "==> Reproduced: this compiler still can't resolve Std.Core's Option/Result (lyric-lang#4980)"
-  exit 1
+  note_reproduced
 elif [ "$stdcore_status" -ne 0 ]; then
   echo "==> Unexpected failure (exit $stdcore_status) — not the known signature, investigate separately" >&2
-  exit 2
+  note_unexpected
+else
+  echo "==> Did NOT fail: this compiler can resolve Std.Core's Option/Result — bug #4980 is fixed"
 fi
-echo "==> Did NOT fail: this compiler can resolve Std.Core's Option/Result — bug #4980 is fixed"
 
 # --- Checks 3-6 need dotnet (3-5 also need a real [nuget] restore) ---------
 if ! command -v dotnet >/dev/null; then
   echo "==> [3-6/6] skipped (lyric-lang#5004/#5066/#5177/#5244): 'dotnet' not on PATH"
-  exit 0
+  exit "$worst"
 fi
 
 mkdir -p "$WORK/nugetzero/src"
@@ -195,8 +209,6 @@ func main(): Unit {
 }
 LYRIC
 
-any_check_reproduced=0
-
 echo "==> [3/6] lyric build calling a zero-arg NuGet-restored function, Web.create() (lyric-lang#5004)"
 restore_output="$(cd "$WORK/nugetzero" && lyric restore 2>&1)"
 restore_status=$?
@@ -211,10 +223,11 @@ else
 
   if [ "$nugetzero_status" -ne 0 ] && echo "$nugetzero_output" | grep -q "expected 1 argument(s), got 0"; then
     echo "==> Reproduced: this compiler still miscounts NuGet-restored zero-arg functions (lyric-lang#5004)"
-    any_check_reproduced=1
+    note_reproduced
   elif [ "$nugetzero_status" -ne 0 ]; then
     echo "==> Unexpected failure (exit $nugetzero_status) — not the known signature, investigate separately" >&2
-    exit 2
+    note_unexpected
+    echo "==> [4/6] skipped: check 3's build didn't succeed, nothing to run" >&2
   else
     echo "==> Did NOT fail: this compiler resolves NuGet-restored zero-arg functions — bug #5004 is fixed"
 
@@ -225,10 +238,10 @@ else
 
     if [ "$run_status" -ne 0 ] && echo "$run_output" | grep -q "FileNotFoundException"; then
       echo "==> Reproduced: this compiler still doesn't copy NuGet dependency DLLs to the output dir (lyric-lang#5066)"
-      any_check_reproduced=1
+      note_reproduced
     elif [ "$run_status" -ne 0 ]; then
       echo "==> Unexpected failure (exit $run_status) — not the known signature, investigate separately" >&2
-      exit 2
+      note_unexpected
     else
       echo "==> Did NOT fail: this compiler copies NuGet dependency DLLs to the output dir — bug #5066 is fixed"
     fi
@@ -256,7 +269,7 @@ else
 
     if echo "$real_test_output" | grep -qE "Field not found:|to access field '.*' failed"; then
       echo "==> Reproduced: this compiler still corrupts cross-package field/method metadata tokens in real multi-package builds (lyric-lang#5177)"
-      any_check_reproduced=1
+      note_reproduced
     elif [ "$real_test_status" -ne 0 ] && [ "$not_ok_count" -gt 0 ] && [ "$not_ok_count" -eq "$known_append_count" ]; then
       # lyric test is expected to fail right now — but only on lyric-lang#5244
       # (checked separately by check 6), not #5177's signature. Every failing
@@ -267,7 +280,7 @@ else
       echo "==> Did NOT reproduce: this compiler no longer corrupts cross-package metadata tokens — bug #5177 is fixed (remaining failures are lyric-lang#5244, see check 6)"
     elif [ "$real_test_status" -ne 0 ]; then
       echo "==> Unexpected failure (exit $real_test_status) — not a known signature, investigate separately" >&2
-      exit 2
+      note_unexpected
     else
       echo "==> Did NOT reproduce: this compiler no longer corrupts cross-package metadata tokens — bug #5177 is fixed"
     fi
@@ -278,6 +291,8 @@ fi
 # The compiler's own documented idiom for building up a slice, verbatim.
 # Reproduces in complete isolation — no packages, no NuGet, no async — so
 # unlike check 5 this runs against a trivial scratch project like checks 1-2.
+# Always runs, regardless of what checks 3-5 found — this bug is completely
+# independent of NuGet/network availability and of anything checks 3-5 hit.
 mkdir -p "$WORK/appendtest/src"
 cat > "$WORK/appendtest/lyric.toml" <<'TOML'
 [package]
@@ -308,26 +323,26 @@ echo "$append_build_output"
 
 if [ "$append_build_status" -ne 0 ]; then
   echo "==> Unexpected failure (exit $append_build_status) — expected this to build fine, investigate separately" >&2
-  exit 2
-fi
-
-append_run_output="$(cd "$WORK/appendtest" && dotnet bin/AppendTest.dll 2>&1)"
-append_run_status=$?
-echo "$append_run_output"
-
-if [ "$append_run_status" -ne 0 ] && echo "$append_run_output" | grep -q "unsupported method 'append' on the receiver type"; then
-  echo "==> Reproduced: this compiler still can't lower slice[T].append() to real IL at runtime (lyric-lang#5244)"
-  any_check_reproduced=1
-elif [ "$append_run_status" -ne 0 ]; then
-  echo "==> Unexpected failure (exit $append_run_status) — not the known signature, investigate separately" >&2
-  exit 2
+  note_unexpected
 else
-  echo "==> Did NOT fail: this compiler resolves slice[T].append() at runtime — bug #5244 is fixed"
+  append_run_output="$(cd "$WORK/appendtest" && dotnet bin/AppendTest.dll 2>&1)"
+  append_run_status=$?
+  echo "$append_run_output"
+
+  if [ "$append_run_status" -ne 0 ] && echo "$append_run_output" | grep -q "unsupported method 'append' on the receiver type"; then
+    echo "==> Reproduced: this compiler still can't lower slice[T].append() to real IL at runtime (lyric-lang#5244)"
+    note_reproduced
+  elif [ "$append_run_status" -ne 0 ]; then
+    echo "==> Unexpected failure (exit $append_run_status) — not the known signature, investigate separately" >&2
+    note_unexpected
+  else
+    echo "==> Did NOT fail: this compiler resolves slice[T].append() at runtime — bug #5244 is fixed"
+  fi
 fi
 
-if [ "$any_check_reproduced" -ne 0 ]; then
-  exit 1
-fi
-
-echo "==> Did NOT reproduce: all six known bugs are fixed on this compiler — full build, run, and test all work"
-exit 0
+case "$worst" in
+  0) echo "==> Did NOT reproduce: all six known bugs are fixed on this compiler — full build, run, and test all work" ;;
+  1) echo "==> At least one known bug reproduced — see above for which" >&2 ;;
+  2) echo "==> At least one check hit an unexpected failure — see above for which, investigate separately" >&2 ;;
+esac
+exit "$worst"
