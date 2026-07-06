@@ -94,10 +94,16 @@ point too), no longer fails every test outright on a missing
 4 below), and no longer corrupts cross-package field/method tokens as of
 v0.4.17 (bug 5 below, `lyric-lang#5177`) — `CloudAgents.DbTests` (the
 suite that used to hit that corruption directly) now passes 11/11.
-**Two suites still fail**, both on a separate, still-open bug (bug 6,
+**Two suites still fail**, mostly on a separate, still-open bug (bug 6,
 `lyric-lang#5244`): `CloudAgents.SessionTests` and one
 `CloudAgents.AuthTests` case both call `slice[T].append()`, which throws
-`"unsupported method 'append'"` at runtime unconditionally. `scripts/verify.sh`
+`"unsupported method 'append'"` at runtime unconditionally. One further
+`SessionTests` case (`Test Handler createSession validation`) fails a
+*different*, distinct, not-yet-diagnosed way — `Unable to cast object of
+type 'System.String' to type 'System.Collections.IList'.` — not
+attributable to any of the six bugs on this page and not yet filed
+upstream; `Web.badRequest`'s own contract (checked via reflection) matches
+its call site exactly, so the cause is somewhere else. `scripts/verify.sh`
 avoids `lyric test` entirely by compiling a hand-rolled `main()` harness and
 running it via `lyric build && lyric run` instead, and **that genuinely
 succeeds** — all 24 checks pass for real, since its harness doesn't happen
@@ -345,7 +351,9 @@ until bugs 1–5 stopped masking it (every earlier blocker crashed before
 is why `CloudAgents.SessionTests` and one `CloudAgents.AuthTests` case
 (`Whitelist access control`) still fail `lyric test` — `scripts/verify.sh`'s
 own harness doesn't happen to call `.append()`, so it's unaffected and
-still genuinely passes. Filed as
+still genuinely passes. (One further `SessionTests` case fails a third,
+distinct, not-yet-diagnosed way — see "Running tests" above — not this bug
+either.) Filed as
 [lyric-lang#5244](https://github.com/nichobbs/lyric-lang/issues/5244)
 (open).
 

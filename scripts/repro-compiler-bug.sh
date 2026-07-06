@@ -62,10 +62,13 @@
 #    runtime, meaning typecheck accepts the call but MSIL codegen never
 #    actually lowers it. Not a regression — reproduces identically back to
 #    at least v0.4.15 — just never runtime-exercised in this project until
-#    bugs 1-5 stopped masking it. This is what's now causing the remaining
-#    `lyric test` failures in `CloudAgents.SessionTests`/`AuthTests`,
+#    bugs 1-5 stopped masking it. This is what's now causing most of the
+#    remaining `lyric test` failures in `CloudAgents.SessionTests`/`AuthTests`,
 #    previously indistinguishable from bug 5's symptoms until isolated to a
-#    standalone repro.
+#    standalone repro. One further `SessionTests` case fails a third,
+#    distinct, not-yet-diagnosed way (an IList cast exception) — check 5's
+#    grep below accounts for this by requiring every `not ok` to match the
+#    #5244 signature, not just checking that the signature is present.
 #
 # Checks 1 and 2 only require `lyric` on PATH — no `dotnet` needed, since
 # both bugs occur before the compiler would invoke the .NET toolchain.
@@ -248,9 +251,23 @@ else
     real_test_status=$?
     echo "$real_test_output"
 
+    not_ok_count="$(echo "$real_test_output" | grep -c '^not ok')"
+    known_append_count="$(echo "$real_test_output" | grep -c "unsupported method 'append' on the receiver type")"
+
     if echo "$real_test_output" | grep -qE "Field not found:|to access field '.*' failed"; then
       echo "==> Reproduced: this compiler still corrupts cross-package field/method metadata tokens in real multi-package builds (lyric-lang#5177)"
       any_check_reproduced=1
+    elif [ "$real_test_status" -ne 0 ] && [ "$not_ok_count" -gt 0 ] && [ "$not_ok_count" -eq "$known_append_count" ]; then
+      # lyric test is expected to fail right now — but only on lyric-lang#5244
+      # (checked separately by check 6), not #5177's signature. Every failing
+      # test must match the #5244 signature for this branch — if even one
+      # `not ok` doesn't (e.g. some other, unrelated failure), that's a
+      # mismatch and falls through to the unexpected-failure branch below,
+      # rather than being silently masked by the #5244 failures alongside it.
+      echo "==> Did NOT reproduce: this compiler no longer corrupts cross-package metadata tokens — bug #5177 is fixed (remaining failures are lyric-lang#5244, see check 6)"
+    elif [ "$real_test_status" -ne 0 ]; then
+      echo "==> Unexpected failure (exit $real_test_status) — not a known signature, investigate separately" >&2
+      exit 2
     else
       echo "==> Did NOT reproduce: this compiler no longer corrupts cross-package metadata tokens — bug #5177 is fixed"
     fi

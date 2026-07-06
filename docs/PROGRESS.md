@@ -43,10 +43,14 @@ design of each phase and `docs/BUILD.md` for build/verification notes.
 > just never runtime-exercised in this project until bugs 1-5 stopped
 > masking it. Filed as
 > [lyric-lang#5244](https://github.com/nichobbs/lyric-lang/issues/5244)
-> (open); it's what's causing the remaining `CloudAgents.SessionTests`/one
-> `AuthTests` case failure in `lyric test`. See `docs/BUILD.md` "Compiler
-> notes" for full detail, evidence, and current release status before
-> assuming a local CI failure here needs a local fix.
+> (open); it's what's causing most of the remaining
+> `CloudAgents.SessionTests`/one `AuthTests` case failures in `lyric test`.
+> One further `SessionTests` case fails a third, distinct, not-yet-diagnosed
+> way (`Unable to cast object of type 'System.String' to type
+> 'System.Collections.IList'.`) — not attributable to any known bug and not
+> yet filed upstream. See `docs/BUILD.md` "Compiler notes"/"Running tests"
+> for full detail, evidence, and current release status before assuming a
+> local CI failure here needs a local fix.
 >
 > Building the full project for the first time also surfaced one genuine
 > bug in this project's own source: `vendor/lyric-docker/src/docker.l`

@@ -72,9 +72,14 @@ fails every test outright on a missing `Lyric.Stdlib.dll` as of v0.4.15
 field corruption as of v0.4.17 (bug 5) — `CloudAgents.DbTests` is fully
 green. `CloudAgents.SessionTests` and one `CloudAgents.AuthTests` case
 still fail on bug 6's `slice[T].append()` runtime error, since both call
-it directly. `./scripts/verify.sh` remains useful as a `lyric test`-free
-harness (it doesn't happen to call `.append()` either), and **it genuinely
-passes**. See `docs/BUILD.md` "Running tests" for detail.
+it directly — except one `SessionTests` case (`Test Handler createSession
+validation`), which fails a different, distinct, not-yet-diagnosed way
+(`Unable to cast object of type 'System.String' to type
+'System.Collections.IList'.`); not attributable to any of the six bugs
+above, and not yet filed upstream. `./scripts/verify.sh` remains useful as
+a `lyric test`-free harness (it doesn't happen to call `.append()` either),
+and **it genuinely passes**. See `docs/BUILD.md` "Running tests" for
+detail.
 
 Source files use `.l` extension. Entry point is `func main(): Unit` in the appropriate package.
 
