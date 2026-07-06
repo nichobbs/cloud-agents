@@ -12,8 +12,10 @@
 # no [nuget] table at all, so it never hits the NuGet-specific bugs that
 # block the *full* project build (scripts/build-full.sh), and its single,
 # small, self-contained `main()` doesn't happen to trigger bug 5's
-# cross-package metadata-token corruption either, unlike the real project's
-# `lyric run` (scripts/run-api.sh) and `lyric test`.
+# (now-fixed) cross-package metadata-token corruption either, unlike the
+# real project's `lyric run` (scripts/run-api.sh) and `lyric test`. Bug 6
+# (`slice[T].append()` throwing at runtime, still open) doesn't affect it
+# either, since this harness never calls `.append()`.
 #
 # This script compiles a small hand-rolled `main()` harness and runs it with
 # `lyric build` + `lyric run` rather than `lyric test`, on the theory that

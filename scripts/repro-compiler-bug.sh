@@ -3,7 +3,7 @@
 # compiler bugs referenced throughout docs/BUILD.md, docs/PROGRESS.md,
 # AGENTS.md, and this project's build scripts.
 #
-# Checks five independent, known compiler bugs, in order:
+# Checks six independent, known compiler bugs, in order:
 #
 # 1. lyric-lang#4925/#4955 (fixed as of v0.4.11): a trivial, dependency-free
 #    "hello world" project crashed `lyric build` with an unhandled
@@ -36,27 +36,42 @@
 #    bin/ and running the already-built DLL directly via `dotnet` worked
 #    fine. Fixed upstream in lyric-lang#5074.
 #
-# 5. lyric-lang#5177 (open, found the moment #5066's fix let this project's
-#    own real, multi-package build actually execute for the first time):
-#    running/testing the real `cloud-agents` project itself (not the
-#    minimal synthetic project checks 1-4 use) hits `MissingFieldException`/
-#    `FieldAccessException` on enum literals that provably exist in the
-#    built assembly's own metadata (confirmed via raw PE/metadata
-#    inspection), and an analogous "unsupported method ... on the receiver
-#    type" for an ordinary method call that succeeds everywhere else in the
-#    same build — all symptoms of the same underlying cause (wrong
-#    metadata tokens after merging separately-compiled packages into one
-#    output assembly). Not reproducible in a synthetic minimal project no
-#    matter how many packages/features were added — needs this project's
-#    actual real code shape/scale, so this check runs against the real
-#    manifest in-place (via `lyric test`) rather than a scratch project
-#    like checks 1-4.
+# 5. lyric-lang#5177 (fixed as of v0.4.17): once #5066's fix let this
+#    project's own real, multi-package build actually execute for the
+#    first time, running/testing the real `cloud-agents` project itself
+#    (not the minimal synthetic project checks 1-4 use) hit
+#    `MissingFieldException`/`FieldAccessException` on enum literals that
+#    provably exist in the built assembly's own metadata (confirmed via raw
+#    PE/metadata inspection) — wrong metadata tokens after merging
+#    separately-compiled packages into one output assembly. Root-caused
+#    (after gaining direct access to nichobbs/lyric-lang) to an `async
+#    func` awaiting an unqualified call into a package declared *later* in
+#    `[project.packages]` (this project's `CloudAgents.Docker` → its
+#    `import Lyric.Docker`, the last package in the bundle); a minimal
+#    4-package repro is in this issue's history. Fixed upstream in
+#    lyric-lang#5220. This check runs against the real manifest in place
+#    (via `lyric test`) rather than a scratch project, since it was never
+#    reproducible in an isolated synthetic project no matter how it was
+#    scaled.
+#
+# 6. lyric-lang#5244 (open, found while re-verifying #5177 against v0.4.17):
+#    `slice[T].append(x)` — the compiler's own documented idiom for
+#    building up a slice — throws `"unsupported method 'append'"` at
+#    runtime unconditionally, for any element type, with no package
+#    structure or async code involved at all. Builds fine; fails only at
+#    runtime, meaning typecheck accepts the call but MSIL codegen never
+#    actually lowers it. Not a regression — reproduces identically back to
+#    at least v0.4.15 — just never runtime-exercised in this project until
+#    bugs 1-5 stopped masking it. This is what's now causing the remaining
+#    `lyric test` failures in `CloudAgents.SessionTests`/`AuthTests`,
+#    previously indistinguishable from bug 5's symptoms until isolated to a
+#    standalone repro.
 #
 # Checks 1 and 2 only require `lyric` on PATH — no `dotnet` needed, since
 # both bugs occur before the compiler would invoke the .NET toolchain.
-# Checks 3-5 need a `[nuget]` restore (a real published Lyric.Web package),
+# Checks 3-6 need a `[nuget]` restore (a real published Lyric.Web package),
 # so they additionally require `dotnet` and network access to nuget.org;
-# all three are skipped (not failed) if `dotnet` isn't on PATH.
+# all four are skipped (not failed) if `dotnet` isn't on PATH.
 #
 # Exit code (conventional Unix sense — 0 means "no problem found"): 0 if
 # every check that ran passed (your compiler can actually build AND run a
@@ -91,7 +106,7 @@ import Std.Core
 func main(): Unit { println("hello") }
 LYRIC
 
-echo "==> [1/5] lyric build against a trivial, dependency-free hello-world (lyric-lang#4925/#4955)"
+echo "==> [1/6] lyric build against a trivial, dependency-free hello-world (lyric-lang#4925/#4955)"
 crash_output="$(cd "$WORK/crash" && lyric build 2>&1)"
 crash_status=$?
 echo "$crash_output"
@@ -130,7 +145,7 @@ func find(x: in Int): Option[Int] {
 func main(): Unit { println("hello") }
 LYRIC
 
-echo "==> [2/5] lyric build against a trivial Option[Int]-returning function (lyric-lang#4980)"
+echo "==> [2/6] lyric build against a trivial Option[Int]-returning function (lyric-lang#4980)"
 stdcore_output="$(cd "$WORK/stdcore" && lyric build 2>&1)"
 stdcore_status=$?
 echo "$stdcore_output"
@@ -144,9 +159,9 @@ elif [ "$stdcore_status" -ne 0 ]; then
 fi
 echo "==> Did NOT fail: this compiler can resolve Std.Core's Option/Result — bug #4980 is fixed"
 
-# --- Checks 3-5 need a real [nuget] restore ---------------------------------
+# --- Checks 3-6 need dotnet (3-5 also need a real [nuget] restore) ---------
 if ! command -v dotnet >/dev/null; then
-  echo "==> [3-5/5] skipped (lyric-lang#5004/#5066/#5177): 'dotnet' not on PATH, needed for a [nuget] restore"
+  echo "==> [3-6/6] skipped (lyric-lang#5004/#5066/#5177/#5244): 'dotnet' not on PATH"
   exit 0
 fi
 
@@ -175,67 +190,125 @@ func main(): Unit {
 }
 LYRIC
 
-echo "==> [3/5] lyric build calling a zero-arg NuGet-restored function, Web.create() (lyric-lang#5004)"
+any_nuget_reproduced=0
+
+echo "==> [3/6] lyric build calling a zero-arg NuGet-restored function, Web.create() (lyric-lang#5004)"
 restore_output="$(cd "$WORK/nugetzero" && lyric restore 2>&1)"
 restore_status=$?
 if [ "$restore_status" -ne 0 ]; then
   echo "$restore_output" >&2
-  echo "==> [3-5/5] skipped (lyric-lang#5004/#5066/#5177): 'lyric restore' failed (exit $restore_status)" \
+  echo "==> [3-5/6] skipped (lyric-lang#5004/#5066/#5177): 'lyric restore' failed (exit $restore_status)" \
        "— likely no network access to nuget.org, not a compiler bug" >&2
-  exit 0
-fi
-nugetzero_output="$(cd "$WORK/nugetzero" && lyric build 2>&1)"
-nugetzero_status=$?
-echo "$nugetzero_output"
+else
+  nugetzero_output="$(cd "$WORK/nugetzero" && lyric build 2>&1)"
+  nugetzero_status=$?
+  echo "$nugetzero_output"
 
-if [ "$nugetzero_status" -ne 0 ] && echo "$nugetzero_output" | grep -q "expected 1 argument(s), got 0"; then
-  echo "==> Reproduced: this compiler still miscounts NuGet-restored zero-arg functions (lyric-lang#5004)"
-  exit 1
-elif [ "$nugetzero_status" -ne 0 ]; then
-  echo "==> Unexpected failure (exit $nugetzero_status) — not the known signature, investigate separately" >&2
+  if [ "$nugetzero_status" -ne 0 ] && echo "$nugetzero_output" | grep -q "expected 1 argument(s), got 0"; then
+    echo "==> Reproduced: this compiler still miscounts NuGet-restored zero-arg functions (lyric-lang#5004)"
+    any_nuget_reproduced=1
+  elif [ "$nugetzero_status" -ne 0 ]; then
+    echo "==> Unexpected failure (exit $nugetzero_status) — not the known signature, investigate separately" >&2
+    exit 2
+  else
+    echo "==> Did NOT fail: this compiler resolves NuGet-restored zero-arg functions — bug #5004 is fixed"
+
+    echo "==> [4/6] lyric run against the same project — does it find Web.dll at runtime? (lyric-lang#5066)"
+    run_output="$(cd "$WORK/nugetzero" && lyric run 2>&1)"
+    run_status=$?
+    echo "$run_output"
+
+    if [ "$run_status" -ne 0 ] && echo "$run_output" | grep -q "FileNotFoundException"; then
+      echo "==> Reproduced: this compiler still doesn't copy NuGet dependency DLLs to the output dir (lyric-lang#5066)"
+      any_nuget_reproduced=1
+    elif [ "$run_status" -ne 0 ]; then
+      echo "==> Unexpected failure (exit $run_status) — not the known signature, investigate separately" >&2
+      exit 2
+    else
+      echo "==> Did NOT fail: this compiler copies NuGet dependency DLLs to the output dir — bug #5066 is fixed"
+    fi
+  fi
+
+  # --- Check 5: lyric-lang#5177 (cross-package metadata token corruption) --
+  # Not reproducible in a synthetic project like checks 1-4 no matter how
+  # many packages/features were added — needs this project's own real,
+  # multi-package build, so this runs against the real manifest in place via
+  # `lyric test` rather than a scratch project.
+  echo "==> [5/6] lyric test against this project's own real manifest (lyric-lang#5177)"
+  real_restore_output="$(cd "$REPO_ROOT" && lyric restore 2>&1)"
+  real_restore_status=$?
+  if [ "$real_restore_status" -ne 0 ]; then
+    echo "$real_restore_output" >&2
+    echo "==> [5/6] skipped (lyric-lang#5177): 'lyric restore' failed (exit $real_restore_status)" \
+         "— likely no network access to nuget.org, not a compiler bug" >&2
+  else
+    real_test_output="$(cd "$REPO_ROOT" && lyric test 2>&1)"
+    real_test_status=$?
+    echo "$real_test_output"
+
+    if echo "$real_test_output" | grep -qE "Field not found:|to access field '.*' failed"; then
+      echo "==> Reproduced: this compiler still corrupts cross-package field/method metadata tokens in real multi-package builds (lyric-lang#5177)"
+      any_nuget_reproduced=1
+    else
+      echo "==> Did NOT reproduce: this compiler no longer corrupts cross-package metadata tokens — bug #5177 is fixed"
+    fi
+  fi
+fi
+
+# --- Check 6: lyric-lang#5244 (slice[T].append() unsupported at runtime) ---
+# The compiler's own documented idiom for building up a slice, verbatim.
+# Reproduces in complete isolation — no packages, no NuGet, no async — so
+# unlike check 5 this runs against a trivial scratch project like checks 1-2.
+mkdir -p "$WORK/appendtest/src"
+cat > "$WORK/appendtest/lyric.toml" <<'TOML'
+[package]
+name = "AppendTest"
+version = "0.1.0"
+[project]
+name = "AppendTest"
+output = "single"
+output_assembly = "AppendTest.dll"
+[project.packages]
+"AppendTest" = "src/main.l"
+TOML
+cat > "$WORK/appendtest/src/main.l" <<'LYRIC'
+package AppendTest
+import Std.Core
+
+func main(): Unit {
+  val dynamic: slice[Int] = [1, 2, 3]
+  val ys = dynamic.append(42)
+  println(ys.length)
+}
+LYRIC
+
+echo "==> [6/6] slice[Int].append() against a trivial single-file project (lyric-lang#5244)"
+append_build_output="$(cd "$WORK/appendtest" && lyric build 2>&1)"
+append_build_status=$?
+echo "$append_build_output"
+
+if [ "$append_build_status" -ne 0 ]; then
+  echo "==> Unexpected failure (exit $append_build_status) — expected this to build fine, investigate separately" >&2
   exit 2
 fi
-echo "==> Did NOT fail: this compiler resolves NuGet-restored zero-arg functions — bug #5004 is fixed"
 
-echo "==> [4/5] lyric run against the same project — does it find Web.dll at runtime? (lyric-lang#5066)"
-run_output="$(cd "$WORK/nugetzero" && lyric run 2>&1)"
-run_status=$?
-echo "$run_output"
+append_run_output="$(cd "$WORK/appendtest" && dotnet bin/AppendTest.dll 2>&1)"
+append_run_status=$?
+echo "$append_run_output"
 
-if [ "$run_status" -ne 0 ] && echo "$run_output" | grep -q "FileNotFoundException"; then
-  echo "==> Reproduced: this compiler still doesn't copy NuGet dependency DLLs to the output dir (lyric-lang#5066)"
-  exit 1
-elif [ "$run_status" -ne 0 ]; then
-  echo "==> Unexpected failure (exit $run_status) — not the known signature, investigate separately" >&2
+if [ "$append_run_status" -ne 0 ] && echo "$append_run_output" | grep -q "unsupported method 'append' on the receiver type"; then
+  echo "==> Reproduced: this compiler still can't lower slice[T].append() to real IL at runtime (lyric-lang#5244)"
+  any_nuget_reproduced=1
+elif [ "$append_run_status" -ne 0 ]; then
+  echo "==> Unexpected failure (exit $append_run_status) — not the known signature, investigate separately" >&2
   exit 2
+else
+  echo "==> Did NOT fail: this compiler resolves slice[T].append() at runtime — bug #5244 is fixed"
 fi
-echo "==> Did NOT fail: this compiler copies NuGet dependency DLLs to the output dir — bug #5066 is fixed"
 
-# --- Check 5: lyric-lang#5177 (cross-package metadata token corruption) ----
-# Not reproducible in a synthetic project like checks 1-4 no matter how many
-# packages/features were added — needs this project's own real, multi-package
-# build, so this runs against the real manifest in-place via `lyric test`
-# rather than a scratch project.
-echo "==> [5/5] lyric test against this project's own real manifest (lyric-lang#5177)"
-real_restore_output="$(cd "$REPO_ROOT" && lyric restore 2>&1)"
-real_restore_status=$?
-if [ "$real_restore_status" -ne 0 ]; then
-  echo "$real_restore_output" >&2
-  echo "==> [5/5] skipped (lyric-lang#5177): 'lyric restore' failed (exit $real_restore_status)" \
-       "— likely no network access to nuget.org, not a compiler bug" >&2
-  exit 0
-fi
-real_test_output="$(cd "$REPO_ROOT" && lyric test 2>&1)"
-real_test_status=$?
-echo "$real_test_output"
-
-if echo "$real_test_output" | grep -qE "Field not found:|unsupported method '.*' on the receiver type|to access field '.*' failed"; then
-  echo "==> Reproduced: this compiler still corrupts cross-package field/method metadata tokens in real multi-package builds (lyric-lang#5177)"
+if [ "$any_nuget_reproduced" -ne 0 ]; then
   exit 1
-elif [ "$real_test_status" -ne 0 ]; then
-  echo "==> Unexpected failure (exit $real_test_status) — not the known signature, investigate separately" >&2
-  exit 2
 fi
 
-echo "==> Did NOT reproduce: all five known bugs are fixed on this compiler — full build, run, and test all work"
+echo "==> Did NOT reproduce: all six known bugs are fixed on this compiler — full build, run, and test all work"
 exit 0

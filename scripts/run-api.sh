@@ -1,16 +1,25 @@
 #!/usr/bin/env bash
 # Build the full server and run it locally.
 #
-# THIS CURRENTLY CANNOT SUCCEED: `lyric build` works (see docs/BUILD.md —
-# fixed as of v0.4.14), and as of v0.4.15 `lyric run` correctly finds
-# NuGet-restored dependencies at runtime too (lyric-lang#5066, fixed) — but
-# this real, multi-package server now crashes at runtime a different way:
-# wrong cross-package field/method metadata references, an open upstream
-# bug, https://github.com/nichobbs/lyric-lang/issues/5177. Not something
-# this script or lyric.toml can work around; see docs/BUILD.md "Compiler
-# notes" for detail and current release status.
+# THIS NOW SUCCEEDS as of v0.4.17 — the first release where it ever has.
+# `lyric build` works (fixed as of v0.4.14, see docs/BUILD.md); v0.4.15
+# fixed `lyric run` not finding NuGet-restored dependencies at runtime
+# (lyric-lang#5066); v0.4.17 fixed this real, multi-package server's
+# cross-package field/method metadata references, which used to crash
+# immediately on startup (lyric-lang#5177). See docs/BUILD.md "Compiler
+# notes" for full detail and current release status.
 #
-# Requirements: lyric 0.4.15+, dotnet 10.x, Docker (for runner containers)
+# Not yet investigated: on at least one sandboxed test environment, the
+# server printed a caught, non-fatal SQLite native-library warning at
+# startup (unrelated to the compiler bugs above — looked like a
+# missing/misconfigured native e_sqlite3 binary for that specific
+# environment) and the process later exited on its own rather than
+# continuing to serve indefinitely. Investigate if `scripts/run-api.sh`
+# doesn't stay up under normal use; may be an environment issue, a
+# `Lyric.Web`/`Web.start()` lifecycle question, or something in this
+# project's own `main()` — not yet root-caused either way.
+#
+# Requirements: lyric 0.4.17+, dotnet 10.x, Docker (for runner containers)
 # Env:
 #   CLOUD_AGENTS_PORT        HTTP listen port (default: 8080)
 #   CLOUD_AGENTS_BIND        interface to bind (default: 127.0.0.1; set 0.0.0.0 for LAN)

@@ -10,11 +10,10 @@ design of each phase and `docs/BUILD.md` for build/verification notes.
 > ran and succeeded for real. Every "✅ verified" label below is now backed
 > by an actual successful compile and run, not just belief.
 >
-> **Actually running the server** (`lyric run`/`scripts/run-api.sh`), and
-> most of `lyric test`, are still blocked by a fifth upstream bug — not
-> something wrong with this project's manifest or source. Four prior bugs
-> are fixed in sequence, each only reachable once the last one was: bug 1
-> (`buildProject` crash,
+> **The server actually starts now** (`lyric run`/`scripts/run-api.sh`), for
+> the first time in this project's history, as of the v0.4.17 compiler.
+> Five upstream bugs are now fixed in sequence, each only reachable once the
+> last one was: bug 1 (`buildProject` crash,
 > [lyric-lang#4925](https://github.com/nichobbs/lyric-lang/issues/4925),
 > fixed in [v0.4.11](https://github.com/nichobbs/lyric-lang/releases/tag/v0.4.11)),
 > bug 2 (`Std.Core`'s `Option`/`Result`/`Some`/`None`/`Ok`/`Err` never
@@ -23,20 +22,31 @@ design of each phase and `docs/BUILD.md` for build/verification notes.
 > bug 3 (NuGet-restored zero-arg functions rejected,
 > [lyric-lang#5004](https://github.com/nichobbs/lyric-lang/issues/5004),
 > fixed in [v0.4.14](https://github.com/nichobbs/lyric-lang/releases/tag/v0.4.14)),
-> and bug 4 (NuGet dependency DLLs not copied to the output directory,
+> bug 4 (NuGet dependency DLLs not copied to the output directory,
 > [lyric-lang#5066](https://github.com/nichobbs/lyric-lang/issues/5066),
-> fixed in [v0.4.15](https://github.com/nichobbs/lyric-lang/releases/tag/v0.4.15))
-> — that last one is what let `lyric run` succeed against a minimal project
-> for the first time, which is exactly what exposed bug 5: running or
-> testing *this* real, multi-package project hits
-> `MissingFieldException`/`FieldAccessException` on enum literals that
-> provably exist in the built assembly's own metadata (confirmed by
-> inspecting it directly), plus an analogous wrong-method-token error for an
-> ordinary method call that succeeds everywhere else in the same build —
-> filed as [lyric-lang#5177](https://github.com/nichobbs/lyric-lang/issues/5177)
-> (open). See `docs/BUILD.md` "Compiler notes" for full detail, evidence,
-> and current release status before assuming a local CI failure here needs
-> a local fix.
+> fixed in [v0.4.15](https://github.com/nichobbs/lyric-lang/releases/tag/v0.4.15)),
+> and bug 5 (wrong cross-package field/method metadata tokens —
+> root-caused to an `async func` awaiting an unqualified call into a
+> *later*-declared package, exactly this project's `CloudAgents.Docker` →
+> `Lyric.Docker` shape, corrupting token bookkeeping for every package
+> declared in between,
+> [lyric-lang#5177](https://github.com/nichobbs/lyric-lang/issues/5177),
+> fixed in [v0.4.17](https://github.com/nichobbs/lyric-lang/releases/tag/v0.4.17)).
+> `CloudAgents.DbTests` (the suite that used to hit bug 5's corruption
+> directly) now passes 11/11.
+>
+> **A sixth upstream bug is still open**, unrelated to bug 5's package-order
+> mechanism: `slice[T].append(x)` — the compiler's own documented idiom for
+> building up a slice — throws `"unsupported method 'append'"` at runtime
+> unconditionally, for any element type, in complete isolation (no packages,
+> no async). Not a regression — it's been broken since at least v0.4.15 —
+> just never runtime-exercised in this project until bugs 1-5 stopped
+> masking it. Filed as
+> [lyric-lang#5244](https://github.com/nichobbs/lyric-lang/issues/5244)
+> (open); it's what's causing the remaining `CloudAgents.SessionTests`/one
+> `AuthTests` case failure in `lyric test`. See `docs/BUILD.md` "Compiler
+> notes" for full detail, evidence, and current release status before
+> assuming a local CI failure here needs a local fix.
 >
 > Building the full project for the first time also surfaced one genuine
 > bug in this project's own source: `vendor/lyric-docker/src/docker.l`
@@ -79,7 +89,7 @@ design of each phase and `docs/BUILD.md` for build/verification notes.
 | Deliverable | Status | Where |
 |-------------|--------|-------|
 | Bearer token extraction | ✅ verified | `auth.l` (`extractBearerToken`) |
-| Whitelist access control | ✅ verified | `auth.l` (`isWhitelisted`, `parseWhitelist`) |
+| Whitelist access control | ❌ broken at runtime | `auth.l` (`isWhitelisted`, `parseWhitelist`) — not covered by `scripts/verify.sh`; `lyric test`'s `auth_tests.l` confirms `parseWhitelist` throws on [lyric-lang#5244](https://github.com/nichobbs/lyric-lang/issues/5244) (`slice[String].append()`) |
 | Validation cache (TTL) | ✅ verified | `auth.l` (`CachedToken`, `cacheExpiry`, `isCacheValid`) |
 | Ownership enforcement | ✅ verified | `auth.l` (`ownsResource`) |
 | GitHub `/user` response parsing | ✅ verified | `auth.l` (`parseJsonString/Number`, `indexOfFrom`) |

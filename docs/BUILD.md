@@ -67,12 +67,16 @@ lyric build   # succeeds as of v0.4.14 — see "Compiler notes" below for histor
 succeeds** against v0.4.14+ (the first release where it ever has). `scripts/verify.sh`
 is the test entry point — see "Running tests" below for why it isn't `lyric
 test` — and **genuinely passes**. `scripts/run-api.sh` builds the same way,
-then runs the compiled server — this is still blocked, but not by the same
-bug it used to be: `lyric build` succeeds and, as of v0.4.15, `lyric run`
-correctly finds its NuGet-restored dependencies at runtime
-(`lyric-lang#5066`, fixed) — but the real project now hits a *different*,
-newly-exposed bug at runtime (`lyric-lang#5177`, open) — see "Compiler
-notes".
+then runs the compiled server —**this now works**, for the first time in
+this project's history: `lyric build` succeeds, `lyric run` finds its
+NuGet-restored dependencies at runtime (`lyric-lang#5066`, fixed in
+v0.4.15), and the real project's own cross-package field/method tokens now
+resolve correctly too (`lyric-lang#5177`, fixed in v0.4.17) — see "Compiler
+notes" for both. A separate, still-open bug
+([lyric-lang#5244](https://github.com/nichobbs/lyric-lang/issues/5244))
+means `slice[T].append()` throws at runtime, which affects some `lyric
+test` suites (see "Running tests") but not `scripts/run-api.sh`'s startup
+path.
 
 ### Bumping a NuGet dependency version
 
@@ -85,50 +89,51 @@ it's caught up without checking, the way this project's own history did once.
 
 `lyric test` (the `cmdTestManifest` CLI path) no longer crashes with
 `System.InvalidCastException` as of v0.4.11 (bug 1 below hit this entry
-point too), and as of v0.4.15 it no longer fails every test outright on a
-missing `Lyric.Stdlib.dll` either (that was the same underlying bug as bug
-4 below, just hitting the compiler's own bundled stdlib instead of a NuGet
-dependency — fixed by the same release). `lyric test` now genuinely
-*runs* — but most of it still fails, hitting bug 5 below (`lyric-lang#5177`)
-on real cross-package field/method access: `not ok ... Field not found:
-'CloudAgents.Db.SessionEvent.CloneFinished'.` and similar. `scripts/verify.sh`
+point too), no longer fails every test outright on a missing
+`Lyric.Stdlib.dll` as of v0.4.15 (that was the same underlying bug as bug
+4 below), and no longer corrupts cross-package field/method tokens as of
+v0.4.17 (bug 5 below, `lyric-lang#5177`) — `CloudAgents.DbTests` (the
+suite that used to hit that corruption directly) now passes 11/11.
+**Two suites still fail**, both on a separate, still-open bug (bug 6,
+`lyric-lang#5244`): `CloudAgents.SessionTests` and one
+`CloudAgents.AuthTests` case both call `slice[T].append()`, which throws
+`"unsupported method 'append'"` at runtime unconditionally. `scripts/verify.sh`
 avoids `lyric test` entirely by compiling a hand-rolled `main()` harness and
-running it via `lyric build && lyric run` instead, and **that still
-genuinely succeeds** — all 24 checks pass for real, unaffected by bug 5
-(its harness doesn't happen to trigger the cross-package pattern that
-does). `scripts/verify.sh` is still the right entry point to use
-(`./scripts/verify.sh`); it exercises the Docker/Web-independent logic
-(SSE framing, the Phase 2 state machine + idle recycling + SQL builders,
-the Phase 3 auth helpers) — the same code
+running it via `lyric build && lyric run` instead, and **that genuinely
+succeeds** — all 24 checks pass for real, since its harness doesn't happen
+to call `.append()` either. `scripts/verify.sh` is still the right entry
+point to use (`./scripts/verify.sh`); it exercises the Docker/Web-independent
+logic (SSE framing, the Phase 2 state machine + idle recycling + SQL
+builders, the Phase 3 auth helpers) — the same code
 the `@test_module` suites in `tests/*.l` describe. Those `tests/*.l` files
 remain the readable source of truth for intended behavior and should still
-be kept up to date; once bug 5 is fixed upstream, `lyric test` should become
-the right entry point again.
+be kept up to date; once bug 6 is fixed upstream, `lyric test` should
+become the right entry point again.
 
 ## Compiler notes
 
-**Five independent upstream compiler bugs have blocked this project's
+**Six independent upstream compiler bugs have blocked this project's
 build/run/test pipeline in sequence, each one only reachable once the
-previous one was fixed — four are now fixed (v0.4.11, v0.4.12, v0.4.14,
-v0.4.15), one is still open.** `lyric build` **finally succeeds as of
-v0.4.14** — the full project, all 12 packages, for the first time in this
-project's history. `lyric run` **also succeeds against a minimal project as
-of v0.4.15** — but actually starting *this* real, multi-package server (or
-running most of its `lyric test` suites) is still blocked by the remaining
-open bug. None of the five is a characteristic of this project's manifest,
-dependencies, or source — each was found and root-caused using this
-project as the real-world test case that first got far enough to hit it.
+previous one was fixed — five are now fixed (v0.4.11, v0.4.12, v0.4.14,
+v0.4.15, v0.4.17), one is still open.** `lyric build` **finally succeeds as
+of v0.4.14** — the full project, all 12 packages, for the first time in
+this project's history. `lyric run` **actually starts this real,
+multi-package server as of v0.4.17** — also for the first time. Only two
+`lyric test` suites still fail, on the remaining open bug (bug 6). None of
+the six is a characteristic of this project's manifest, dependencies, or
+source — each was found and root-caused using this project as the
+real-world test case that first got far enough to hit it.
 
 **This is checked into the repo as a runnable reproduction, not just
-prose**: `scripts/repro-compiler-bug.sh` checks all five bugs — checks 1-4
-against trivial scratch projects, check 5 (which needs this project's own
-real scale/shape to reproduce — see below) against the real manifest in
-place via `lyric test`. Checks 1–2 need only `lyric` on PATH (both bugs
-occur before the compiler would invoke the .NET toolchain); checks 3–5 need
-a real `[nuget]` restore, so they additionally need `dotnet` and network
-access, and are skipped (not failed) without `dotnet`. Run it yourself; exit
-0 means every bug that could be checked is fixed on your compiler and it's
-safe to remove this script and the workaround notes below.
+prose**: `scripts/repro-compiler-bug.sh` checks all six bugs — checks 1-4
+and 6 against trivial scratch projects, check 5 (which needed this
+project's own real scale/shape to reproduce — see below) against the real
+manifest in place via `lyric test`. Checks 1–2 need only `lyric` on PATH
+(both bugs occur before the compiler would invoke the .NET toolchain);
+checks 3–6 need `dotnet` (3–5 additionally need a real `[nuget]` restore),
+and are skipped (not failed) without it. Run it yourself; exit 0 means
+every bug that could be checked is fixed on your compiler and it's safe to
+remove this script and the workaround notes below.
 
 ### Bug 1 — `buildProject` crash (lyric-lang#4925/#4955) — **fixed in v0.4.11**
 
@@ -184,8 +189,10 @@ configuration tried (standalone, multi-package, with/without `[nuget]`,
 workspace-wrapped), and on **both** 0.4.10 (once routed around bug 1 via
 workspace-wrapping) and 0.4.11 — meaning it predates bug 1 entirely and was
 simply never reachable before, since bug 1 always crashed first. True
-compiler builtins (`println`, `slice[T]`/`.append()`, `String` methods)
-resolve fine; only the stdlib's actually-*declared* non-builtin types fail.
+compiler builtins (`println`, `slice[T]` indexing/`.length`, `String`
+methods) resolve fine; only the stdlib's actually-*declared* non-builtin
+types fail. (`slice[T].append()` specifically does *not* resolve, at
+runtime — that's an unrelated, separate bug, see bug 6 below.)
 This affects this project's real source (`db_client.l`, `auth.l`,
 `session_manager.l` all use `Option`/`Some`/`None`) and its own test
 harness (`scripts/verify.sh`), and blocks the canonical `Result`/`Option`
@@ -264,12 +271,12 @@ description) — **confirmed fixed in the
 bundle, and the minimal `Web.create()` repro's `lyric run` prints `hi`
 instead of crashing.
 
-### Bug 5 — cross-package field/method metadata tokens resolve to the wrong member on real, multi-package builds (lyric-lang#5177) — **open, currently blocking `lyric run`/most of `lyric test`**
+### Bug 5 — cross-package field/method metadata tokens resolve to the wrong member on real, multi-package builds (lyric-lang#5177) — **fixed in v0.4.17**
 
 Bug 4's fix let `lyric run` succeed against a minimal project for the first
 time — which is what exposed this: running (or testing) *this* real,
-12-package project hits `MissingFieldException`/`FieldAccessException` on
-enum literals that provably exist in the built assembly, e.g.:
+12-package project used to hit `MissingFieldException`/`FieldAccessException`
+on enum literals that provably existed in the built assembly, e.g.:
 
 ```
 $ dotnet bin/CloudAgents.dll --urls http://127.0.0.1:8080
@@ -280,35 +287,72 @@ Unhandled exception. System.MissingFieldException: Field not found: 'CloudAgents
 
 Inspected the built DLL's raw metadata directly with
 `System.Reflection.Metadata.PEReader` (bypassing normal type-loading) to
-rule out the field actually being absent — it's there, `public static
+rule out the field actually being absent — it was there, `public static
 Literal`, exactly as expected. `dbErrorMessage`'s own source has no
 reference to `RecycleAction` at all — it only pattern-matches an unrelated
-`DbError` union in a different file/package. `lyric test` hits the same
+`DbError` union in a different file/package. `lyric test` hit the same
 class of error against two more types (`SessionEvent.CloneFinished`,
-`AuthError.value__`), plus an analogous wrong-*method*-token variant
-(`"unsupported method 'append' on the receiver type"` for a `slice[T]`
-method that succeeds dozens of other times in the exact same build) — all
-consistent with one underlying cause: wrong metadata tokens after merging
-separately-compiled packages into a single output assembly, not something
-specific to enums, `Microsoft.Data.Sqlite`, or FFI.
+`AuthError.value__`).
 
-Could **not** reproduce this in an isolated synthetic project — tried
-scaling one up to 9 packages (short of this project's real 12, but no
-change in outcome as the count increased), a `[project.tests]` section, the
-`@runtime_checked` attribute, and real `[nuget]`/FFI bindings to
-`Microsoft.Data.Sqlite`, all in isolation and combined, with no luck. Needs
-this project's actual real code shape/scale to trigger, so it's filed
-against the real project itself (100% reliably reproducible, unlike a
-distilled minimal case) as
-[lyric-lang#5177](https://github.com/nichobbs/lyric-lang/issues/5177)
+Could **not** reproduce this in an isolated synthetic project no matter how
+it was scaled — until gaining direct access to `nichobbs/lyric-lang` itself
+made it possible to root-cause properly: **an `async func` that `await`s a
+call to a function only *defined* in a later-declared `[project.packages]`
+entry corrupts field/method tokens for every package declared in
+between**, in an `output = "single"` bundle. This project's
+`CloudAgents.Docker` package has several `async func`s that `await`
+(unqualified, via `import Lyric.Docker`) functions actually defined in
+`Lyric.Docker` — the very last package in the bundle — so every package
+declared between them (`Db`, `Sqlite`, `Repository`, `Auth`, `Streaming`)
+was exactly where the corruption showed up. A minimal 4-package repro
+(one `async func` in package A awaiting an unqualified call into package
+C, with an unrelated package B declared in between that crashes on a
+completely unrelated function) reproduces it in isolation — see the issue
+thread for the full repro and ablation. Filed as
+[lyric-lang#5177](https://github.com/nichobbs/lyric-lang/issues/5177),
+fixed upstream in [lyric-lang#5220](https://github.com/nichobbs/lyric-lang/pull/5220)
+— **confirmed fixed in the
+[v0.4.17 release](https://github.com/nichobbs/lyric-lang/releases/tag/v0.4.17)**:
+`scripts/run-api.sh` starts the server for the first time in this
+project's history, and `CloudAgents.DbTests` passes 11/11.
+
+### Bug 6 — `slice[T].append()` throws "unsupported method 'append'" at runtime (lyric-lang#5244) — **open, currently blocking two `lyric test` suites**
+
+Re-verifying bug 5 against v0.4.17 surfaced this: `slice[T].append(x)` —
+the compiler's own documented idiom for building up a slice (see
+`docs/lyric/reference.md`'s own "Arrays and slices" section, which mirrors
+the compiler's own docs verbatim) — throws at runtime, unconditionally, for
+any element type:
+
+```
+$ lyric build   # succeeds — this only fails at runtime
+$ dotnet bin/Test.dll
+Unhandled exception. System.Exception: unsupported method 'append' on the receiver type at this call site (no matching user method, extern binding, or built-in intrinsic)
+```
+
+Reproduces in complete isolation — a single package, a single function,
+`val dynamic: slice[Int] = [1, 2, 3]; val ys = dynamic.append(42)`, no
+`[project.packages]`, no NuGet, no async involved at all. Confirmed the
+same for `slice[String]` and a plain 2-field `record` element type.
+Read-only slice operations (`.length`, indexing) are unaffected — this is
+scoped specifically to the mutation-style methods. **Not a regression** —
+reproduces identically on v0.4.15 and v0.4.17 both, so it's been broken at
+least that long; it was simply never runtime-exercised in this project
+until bugs 1–5 stopped masking it (every earlier blocker crashed before
+`lyric test` ever got far enough to execute a function that calls
+`.append()`). `src/handlers/auth.l`'s `parseWhitelist` and
+`src/sessions/session_manager.l`'s session-list helpers both call it, which
+is why `CloudAgents.SessionTests` and one `CloudAgents.AuthTests` case
+(`Whitelist access control`) still fail `lyric test` — `scripts/verify.sh`'s
+own harness doesn't happen to call `.append()`, so it's unaffected and
+still genuinely passes. Filed as
+[lyric-lang#5244](https://github.com/nichobbs/lyric-lang/issues/5244)
 (open).
 
-**There is nothing to fix on this project's manifest or build config for
-any of the five bugs** — `lyric run`/`scripts/run-api.sh` failing, and most
-of `lyric test` failing, is expected until a release fixing
-[lyric-lang#5177](https://github.com/nichobbs/lyric-lang/issues/5177)
-ships. Check that issue for status before assuming a local failure needs a
-local fix.
+**There is nothing to fix on this project's manifest, build config, or
+source for either of the two bugs above** — check
+[lyric-lang#5244](https://github.com/nichobbs/lyric-lang/issues/5244) for
+status before assuming a local `lyric test` failure needs a local fix.
 
 ### A real bug this *did* surface in this project's own source
 

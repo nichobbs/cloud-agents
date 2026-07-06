@@ -9,7 +9,7 @@
 # compiles everything else.
 #
 # THIS NOW SUCCEEDS as of v0.4.14 — the first release where it ever has,
-# after five sequential upstream compiler bugs (four now fixed). Bug 1
+# after six sequential upstream compiler bugs (five now fixed). Bug 1
 # (buildProject crash, https://github.com/nichobbs/lyric-lang/issues/4925)
 # fixed in v0.4.11; bug 2 (Std.Core's Option/Result/Some/None/Ok/Err never
 # resolving, https://github.com/nichobbs/lyric-lang/issues/4980) fixed in
@@ -17,15 +17,19 @@
 # https://github.com/nichobbs/lyric-lang/issues/5004) fixed in v0.4.14 —
 # that's what let this succeed. Bug 4 (NuGet dependency DLLs not copied to
 # the output directory, https://github.com/nichobbs/lyric-lang/issues/5066)
-# fixed in v0.4.15. Bug 5, still open, blocks actually running the built
-# server (wrong cross-package field/method metadata references at
-# runtime): https://github.com/nichobbs/lyric-lang/issues/5177 — see
-# scripts/run-api.sh and docs/BUILD.md "Compiler notes" for detail. None of
-# the five was ever something this project's lyric.toml or source could
-# work around. An earlier version of this comment described a
-# `[nuget]`-stripping workaround based on a since-disproven theory (it
-# didn't actually fix anything, though it was harmless) — removed once the
-# real scope became clear.
+# fixed in v0.4.15; bug 5 (wrong cross-package field/method metadata
+# tokens from an async func awaiting a later-declared package,
+# https://github.com/nichobbs/lyric-lang/issues/5177) fixed in v0.4.17 —
+# that's what let scripts/run-api.sh finally start the server. Bug 6, still
+# open (slice[T].append() throws at runtime):
+# https://github.com/nichobbs/lyric-lang/issues/5244 — doesn't affect this
+# script, but does affect some `lyric test` suites; see
+# docs/BUILD.md "Compiler notes" for detail. None of the six was ever
+# something this project's lyric.toml or source could work around. An
+# earlier version of this comment described a `[nuget]`-stripping
+# workaround based on a since-disproven theory (it didn't actually fix
+# anything, though it was harmless) — removed once the real scope became
+# clear.
 #
 # Requirements on PATH: lyric, dotnet (10.x).
 set -euo pipefail
