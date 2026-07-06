@@ -9,7 +9,7 @@
 # compiles everything else.
 #
 # THIS NOW SUCCEEDS as of v0.4.14 — the first release where it ever has,
-# after six sequential upstream compiler bugs (five now fixed). Bug 1
+# after seven sequential upstream compiler bugs (six now fixed). Bug 1
 # (buildProject crash, https://github.com/nichobbs/lyric-lang/issues/4925)
 # fixed in v0.4.11; bug 2 (Std.Core's Option/Result/Some/None/Ok/Err never
 # resolving, https://github.com/nichobbs/lyric-lang/issues/4980) fixed in
@@ -20,11 +20,13 @@
 # fixed in v0.4.15; bug 5 (wrong cross-package field/method metadata
 # tokens from an async func awaiting a later-declared package,
 # https://github.com/nichobbs/lyric-lang/issues/5177) fixed in v0.4.17 —
-# that's what let scripts/run-api.sh finally start the server. Bug 6, still
-# open (slice[T].append() throws at runtime):
-# https://github.com/nichobbs/lyric-lang/issues/5244 — doesn't affect this
-# script, but does affect some `lyric test` suites; see
-# docs/BUILD.md "Compiler notes" for detail. None of the six was ever
+# that's what let scripts/run-api.sh finally start the server. Bug 6
+# (slice[T].append() throwing at runtime,
+# https://github.com/nichobbs/lyric-lang/issues/5244) fixed in v0.4.18.
+# Bug 7, still open (an untyped top-level String val's `.length` throwing
+# an IList cast): https://github.com/nichobbs/lyric-lang/issues/5298 —
+# doesn't affect this script, but does affect one `lyric test` case; see
+# docs/BUILD.md "Compiler notes" for detail. None of the seven was ever
 # something this project's lyric.toml or source could work around. An
 # earlier version of this comment described a `[nuget]`-stripping
 # workaround based on a since-disproven theory (it didn't actually fix

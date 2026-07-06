@@ -35,22 +35,40 @@ design of each phase and `docs/BUILD.md` for build/verification notes.
 > `CloudAgents.DbTests` (the suite that used to hit bug 5's corruption
 > directly) now passes 11/11.
 >
-> **A sixth upstream bug is still open**, unrelated to bug 5's package-order
-> mechanism: `slice[T].append(x)` — the compiler's own documented idiom for
-> building up a slice — throws `"unsupported method 'append'"` at runtime
-> unconditionally, for any element type, in complete isolation (no packages,
-> no async). Not a regression — it's been broken since at least v0.4.15 —
-> just never runtime-exercised in this project until bugs 1-5 stopped
-> masking it. Filed as
-> [lyric-lang#5244](https://github.com/nichobbs/lyric-lang/issues/5244)
-> (open); it's what's causing most of the remaining
-> `CloudAgents.SessionTests`/one `AuthTests` case failures in `lyric test`.
-> One further `SessionTests` case fails a third, distinct, not-yet-diagnosed
-> way (`Unable to cast object of type 'System.String' to type
-> 'System.Collections.IList'.`) — not attributable to any known bug and not
-> yet filed upstream. See `docs/BUILD.md` "Compiler notes"/"Running tests"
-> for full detail, evidence, and current release status before assuming a
-> local CI failure here needs a local fix.
+> **A sixth upstream bug, unrelated to bug 5's package-order mechanism, is
+> now fixed**: `slice[T].append(x)` — the compiler's own documented idiom
+> for building up a slice — used to throw `"unsupported method 'append'"`
+> at runtime unconditionally, for any element type, in complete isolation
+> (no packages, no async). Not a regression — it had been broken since at
+> least v0.4.15 — just never runtime-exercised in this project until bugs
+> 1-5 stopped masking it. Filed as
+> [lyric-lang#5244](https://github.com/nichobbs/lyric-lang/issues/5244),
+> **fixed in [v0.4.18](https://github.com/nichobbs/lyric-lang/releases/tag/v0.4.18)** —
+> `CloudAgents.AuthTests` now passes 5/5.
+>
+> **A seventh upstream bug is still open**, found while diagnosing the one
+> `CloudAgents.SessionTests` case bug 6's fix didn't clear (`Test Handler
+> createSession validation`, previously indistinguishable from bug 6's
+> symptoms): a package-scope (top-level) `val` with no explicit type
+> annotation, initialized to a string literal, crashes `.length` at runtime
+> with `System.InvalidCastException: Unable to cast object of type
+> 'System.String' to type 'System.Collections.IList'` — same-package,
+> unqualified, no cross-package reference needed. Root-caused (with direct
+> access to `nichobbs/lyric-lang`) to `lyric-compiler/msil/codegen.l`'s
+> package-level val/const pre-scan defaulting an untyped declaration's MSIL
+> type to `MObject` instead of inferring it from the initializer, which
+> later routes `.length` through a fallback that assumes any object-typed
+> receiver is a List-backed slice. `src/handlers/sessions.l`'s
+> `createSession` reads exactly such a `val` (`httpsPrefix`), which is why
+> that one test case still fails. Filed as
+> [lyric-lang#5298](https://github.com/nichobbs/lyric-lang/issues/5298)
+> (open) — distinct from
+> [lyric-lang#5258](https://github.com/nichobbs/lyric-lang/issues/5258) (a
+> related but different MSIL bug, fixed the same day, about *cross*-package
+> qualified `pub val` access; its fix doesn't cover this same-package,
+> untyped-inference gap). See `docs/BUILD.md` "Compiler notes"/"Running
+> tests" for full detail, evidence, and current release status before
+> assuming a local CI failure here needs a local fix.
 >
 > Building the full project for the first time also surfaced one genuine
 > bug in this project's own source: `vendor/lyric-docker/src/docker.l`
@@ -93,7 +111,7 @@ design of each phase and `docs/BUILD.md` for build/verification notes.
 | Deliverable | Status | Where |
 |-------------|--------|-------|
 | Bearer token extraction | ✅ verified | `auth.l` (`extractBearerToken`) |
-| Whitelist access control | ❌ broken at runtime | `auth.l` (`isWhitelisted`, `parseWhitelist`) — not covered by `scripts/verify.sh`; `lyric test`'s `auth_tests.l` confirms `parseWhitelist` throws on [lyric-lang#5244](https://github.com/nichobbs/lyric-lang/issues/5244) (`slice[String].append()`) |
+| Whitelist access control | ✅ verified | `auth.l` (`isWhitelisted`, `parseWhitelist`) — not covered by `scripts/verify.sh`, but `lyric test`'s `auth_tests.l` now passes since [lyric-lang#5244](https://github.com/nichobbs/lyric-lang/issues/5244) (`slice[String].append()`) was fixed in v0.4.18 |
 | Validation cache (TTL) | ✅ verified | `auth.l` (`CachedToken`, `cacheExpiry`, `isCacheValid`) |
 | Ownership enforcement | ✅ verified | `auth.l` (`ownsResource`) |
 | GitHub `/user` response parsing | ✅ verified | `auth.l` (`parseJsonString/Number`, `indexOfFrom`) |

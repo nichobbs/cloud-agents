@@ -72,11 +72,13 @@ this project's history: `lyric build` succeeds, `lyric run` finds its
 NuGet-restored dependencies at runtime (`lyric-lang#5066`, fixed in
 v0.4.15), and the real project's own cross-package field/method tokens now
 resolve correctly too (`lyric-lang#5177`, fixed in v0.4.17) — see "Compiler
-notes" for both. A separate, still-open bug
-([lyric-lang#5244](https://github.com/nichobbs/lyric-lang/issues/5244))
-means `slice[T].append()` throws at runtime, which affects some `lyric
-test` suites (see "Running tests") but not `scripts/run-api.sh`'s startup
-path.
+notes" for both. `slice[T].append()`
+([lyric-lang#5244](https://github.com/nichobbs/lyric-lang/issues/5244)) is
+fixed as of v0.4.18. A separate, still-open bug
+([lyric-lang#5298](https://github.com/nichobbs/lyric-lang/issues/5298))
+means an untyped top-level `String val`'s `.length` throws an `IList` cast
+exception at runtime, which affects one `lyric test` case (see "Running
+tests") but not `scripts/run-api.sh`'s startup path.
 
 **Not yet investigated:** on at least one sandboxed test environment,
 `scripts/run-api.sh` printed a caught, non-fatal SQLite native-library
@@ -84,7 +86,7 @@ warning at startup (`The type initializer for
 'Microsoft.Data.Sqlite.SqliteConnection' threw an exception`) and the
 server process later exited on its own rather than continuing to serve
 indefinitely, after successfully answering at least one HTTP request. Both
-are unrelated to the six compiler bugs on this page — the warning looked
+are unrelated to the seven compiler bugs on this page — the warning looked
 like a missing/misconfigured native `e_sqlite3` binary specific to that
 environment, not a build or compiler issue. Investigate if
 `scripts/run-api.sh` doesn't stay up under normal use; candidates not yet
@@ -107,52 +109,51 @@ it's caught up without checking, the way this project's own history did once.
 `System.InvalidCastException` as of v0.4.11 (bug 1 below hit this entry
 point too), no longer fails every test outright on a missing
 `Lyric.Stdlib.dll` as of v0.4.15 (that was the same underlying bug as bug
-4 below), and no longer corrupts cross-package field/method tokens as of
-v0.4.17 (bug 5 below, `lyric-lang#5177`) — `CloudAgents.DbTests` (the
-suite that used to hit that corruption directly) now passes 11/11.
-**Two suites still fail**, mostly on a separate, still-open bug (bug 6,
-`lyric-lang#5244`): `CloudAgents.SessionTests` and one
-`CloudAgents.AuthTests` case both call `slice[T].append()`, which throws
-`"unsupported method 'append'"` at runtime unconditionally. One further
-`SessionTests` case (`Test Handler createSession validation`) fails a
-*different*, distinct, not-yet-diagnosed way — `Unable to cast object of
-type 'System.String' to type 'System.Collections.IList'.` — not
-attributable to any of the six bugs on this page and not yet filed
-upstream; `Web.badRequest`'s own contract (checked via reflection) matches
-its call site exactly, so the cause is somewhere else. `scripts/verify.sh`
-avoids `lyric test` entirely by compiling a hand-rolled `main()` harness and
-running it via `lyric build && lyric run` instead, and **that genuinely
-succeeds** — all 24 checks pass for real, since its harness doesn't happen
-to call `.append()` either. `scripts/verify.sh` is still the right entry
+4 below), no longer corrupts cross-package field/method tokens as of
+v0.4.17 (bug 5 below, `lyric-lang#5177`), and no longer fails on
+`slice[T].append()` as of v0.4.18 (bug 6 below, `lyric-lang#5244`) —
+`CloudAgents.DbTests`, `CloudAgents.StreamingTests`, and
+`CloudAgents.AuthTests` are all fully green. **One case still fails**, on a
+separate, still-open bug (bug 7, `lyric-lang#5298`): `Test Handler
+createSession validation` in `CloudAgents.SessionTests` — `Unable to cast
+object of type 'System.String' to type 'System.Collections.IList'.` —
+root-caused to `src/handlers/sessions.l`'s top-level
+`val httpsPrefix = "https://"` (no type annotation): reading its `.length`
+crashes at runtime, exactly bug 7's trigger; see bug 7 below for the
+compiler-side root cause. `scripts/verify.sh` avoids `lyric test` entirely
+by compiling a hand-rolled `main()` harness and running it via
+`lyric build && lyric run` instead, and **that genuinely succeeds** — all
+24 checks pass for real, since its harness doesn't happen to read that
+val's `.length` either. `scripts/verify.sh` is still the right entry
 point to use (`./scripts/verify.sh`); it exercises the Docker/Web-independent
 logic (SSE framing, the Phase 2 state machine + idle recycling + SQL
 builders, the Phase 3 auth helpers) — the same code
 the `@test_module` suites in `tests/*.l` describe. Those `tests/*.l` files
 remain the readable source of truth for intended behavior and should still
-be kept up to date; once bug 6 is fixed upstream, `lyric test` should
+be kept up to date; once bug 7 is fixed upstream, `lyric test` should
 become the right entry point again.
 
 ## Compiler notes
 
-**Six independent upstream compiler bugs have blocked this project's
+**Seven independent upstream compiler bugs have blocked this project's
 build/run/test pipeline in sequence, each one only reachable once the
-previous one was fixed — five are now fixed (v0.4.11, v0.4.12, v0.4.14,
-v0.4.15, v0.4.17), one is still open.** `lyric build` **finally succeeds as
+previous one was fixed — six are now fixed (v0.4.11, v0.4.12, v0.4.14,
+v0.4.15, v0.4.17, v0.4.18), one is still open.** `lyric build` **finally succeeds as
 of v0.4.14** — the full project, all 12 packages, for the first time in
 this project's history. `lyric run` **actually starts this real,
-multi-package server as of v0.4.17** — also for the first time. Only two
-`lyric test` suites still fail, on the remaining open bug (bug 6). None of
-the six is a characteristic of this project's manifest, dependencies, or
+multi-package server as of v0.4.17** — also for the first time. Only one
+`lyric test` case still fails, on the remaining open bug (bug 7). None of
+the seven is a characteristic of this project's manifest, dependencies, or
 source — each was found and root-caused using this project as the
 real-world test case that first got far enough to hit it.
 
 **This is checked into the repo as a runnable reproduction, not just
-prose**: `scripts/repro-compiler-bug.sh` checks all six bugs — checks 1-4
-and 6 against trivial scratch projects, check 5 (which needed this
+prose**: `scripts/repro-compiler-bug.sh` checks all seven bugs — checks 1-4
+and 6-7 against trivial scratch projects, check 5 (which needed this
 project's own real scale/shape to reproduce — see below) against the real
 manifest in place via `lyric test`. Checks 1–2 need only `lyric` on PATH
 (both bugs occur before the compiler would invoke the .NET toolchain);
-checks 3–6 need `dotnet` (3–5 additionally need a real `[nuget]` restore),
+checks 3–7 need `dotnet` (3–5 additionally need a real `[nuget]` restore),
 and are skipped (not failed) without it. Run it yourself; exit 0 means
 every bug that could be checked is fixed on your compiler and it's safe to
 remove this script and the workaround notes below.
@@ -338,44 +339,93 @@ fixed upstream in [lyric-lang#5220](https://github.com/nichobbs/lyric-lang/pull/
 `scripts/run-api.sh` starts the server for the first time in this
 project's history, and `CloudAgents.DbTests` passes 11/11.
 
-### Bug 6 — `slice[T].append()` throws "unsupported method 'append'" at runtime (lyric-lang#5244) — **open, currently blocking two `lyric test` suites**
+### Bug 6 — `slice[T].append()` threw "unsupported method 'append'" at runtime (lyric-lang#5244) — **fixed in v0.4.18**
 
 Re-verifying bug 5 against v0.4.17 surfaced this: `slice[T].append(x)` —
 the compiler's own documented idiom for building up a slice (see
 `docs/lyric/reference.md`'s own "Arrays and slices" section, which mirrors
-the compiler's own docs verbatim) — throws at runtime, unconditionally, for
+the compiler's own docs verbatim) — threw at runtime, unconditionally, for
 any element type:
 
 ```
-$ lyric build   # succeeds — this only fails at runtime
+$ lyric build   # succeeded — this only failed at runtime
 $ dotnet bin/Test.dll
 Unhandled exception. System.Exception: unsupported method 'append' on the receiver type at this call site (no matching user method, extern binding, or built-in intrinsic)
 ```
 
-Reproduces in complete isolation — a single package, a single function,
+Reproduced in complete isolation — a single package, a single function,
 `val dynamic: slice[Int] = [1, 2, 3]; val ys = dynamic.append(42)`, no
 `[project.packages]`, no NuGet, no async involved at all. Confirmed the
 same for `slice[String]` and a plain 2-field `record` element type.
-Read-only slice operations (`.length`, indexing) are unaffected — this is
+Read-only slice operations (`.length`, indexing) were unaffected — this was
 scoped specifically to the mutation-style methods. **Not a regression** —
-reproduces identically on v0.4.15 and v0.4.17 both, so it's been broken at
+reproduced identically on v0.4.15 and v0.4.17 both, so it had been broken at
 least that long; it was simply never runtime-exercised in this project
 until bugs 1–5 stopped masking it (every earlier blocker crashed before
 `lyric test` ever got far enough to execute a function that calls
 `.append()`). `src/handlers/auth.l`'s `parseWhitelist` and
 `src/sessions/session_manager.l`'s session-list helpers both call it, which
 is why `CloudAgents.SessionTests` and one `CloudAgents.AuthTests` case
-(`Whitelist access control`) still fail `lyric test` — `scripts/verify.sh`'s
-own harness doesn't happen to call `.append()`, so it's unaffected and
-still genuinely passes. (One further `SessionTests` case fails a third,
-distinct, not-yet-diagnosed way — see "Running tests" above — not this bug
-either.) Filed as
-[lyric-lang#5244](https://github.com/nichobbs/lyric-lang/issues/5244)
+(`Whitelist access control`) used to fail `lyric test`. Filed as
+[lyric-lang#5244](https://github.com/nichobbs/lyric-lang/issues/5244) —
+**confirmed fixed in the
+[v0.4.18 release](https://github.com/nichobbs/lyric-lang/releases/tag/v0.4.18)**:
+`slice[T].append()` now resolves at runtime for `Int`/`String`/record
+element types, and `CloudAgents.AuthTests` passes 5/5.
+
+### Bug 7 — untyped top-level `val` of inferred String type crashes `.length` with an IList cast (lyric-lang#5298) — **open, currently blocking one `lyric test` case**
+
+Diagnosing the one `CloudAgents.SessionTests` case bug 6's fix didn't
+clear (`Test Handler createSession validation`) surfaced a seventh,
+distinct bug: a package-scope (top-level) `val` declared **without an
+explicit type annotation**, whose initializer is a string literal, crashes
+at runtime with `System.InvalidCastException: Unable to cast object of
+type 'System.String' to type 'System.Collections.IList'` when its
+`.length` is read — anywhere in the program, including same-package,
+unqualified, no cross-package reference involved:
+
+```
+$ lyric build   # succeeds — this only fails at runtime
+$ dotnet bin/Test.dll
+Unhandled exception. System.InvalidCastException: Unable to cast object of type 'System.String' to type 'System.Collections.IList'.
+   at Test.Program.main()
+```
+
+Reproduces in complete isolation — a single package, a single file:
+`val prefix = "https://"; func main(): Unit { println(prefix.length.toString()) }`
+— no `@post`/`@body`/`@generate(Json)`, no NuGet, no multi-package
+structure, no `lyric test` harness needed at all (a plain `main()` run via
+`dotnet` reproduces it directly). Confirmed the same holds for `pub val`
+and plain `val`; confirmed a top-level `val` with an *explicit* type
+annotation (e.g. `slice[String]`) and a top-level `Int` literal `val` are
+both unaffected — the bug is specific to an untyped declaration whose
+inferred type is `String`. Root-caused (with direct access to
+`nichobbs/lyric-lang`) to `lyric-compiler/msil/codegen.l`'s package-level
+`val`/`const` pre-scan: it only records a declaration's MSIL type when
+there's an explicit type annotation (`decl.ty = Some(...)`); when the type
+must be inferred from the initializer, it silently defaults to `MObject`.
+A later read site's `.length` dispatch has a fallback that assumes any
+`MObject`-typed receiver reaching `.length` is a `List`-backed slice
+(correct for slices, whose static type also often erases to `MObject`) and
+unconditionally casts to `IList` — wrong for a boxed `System.String`, hence
+the `InvalidCastException`. **Not a regression** — this is a longstanding
+gap in the pre-scan, independent of (though similarly-shaped to)
+[lyric-lang#5258](https://github.com/nichobbs/lyric-lang/issues/5258) (a
+related but different MSIL bug — *cross*-package qualified `pub val`
+access resolving to null — fixed the same day; its fix added qualified
+lookup keys but didn't touch this same-package, untyped-inference gap).
+`src/handlers/sessions.l`'s `createSession` reads exactly such a top-level
+`val` (`httpsPrefix = "https://"`, no annotation) via `.length`, which is
+why `CloudAgents.SessionTests`' "Test Handler createSession validation"
+case still fails `lyric test` even with bug 6 fixed —
+`scripts/verify.sh`'s own harness doesn't happen to read that val's
+`.length`, so it's unaffected and still genuinely passes. Filed as
+[lyric-lang#5298](https://github.com/nichobbs/lyric-lang/issues/5298)
 (open).
 
 **There is nothing to fix on this project's manifest, build config, or
-source for either of the two bugs above** — check
-[lyric-lang#5244](https://github.com/nichobbs/lyric-lang/issues/5244) for
+source for bug 7 above** — check
+[lyric-lang#5298](https://github.com/nichobbs/lyric-lang/issues/5298) for
 status before assuming a local `lyric test` failure needs a local fix.
 
 ### A real bug this *did* surface in this project's own source

@@ -3,7 +3,7 @@
 # compiler bugs referenced throughout docs/BUILD.md, docs/PROGRESS.md,
 # AGENTS.md, and this project's build scripts.
 #
-# Checks six independent, known compiler bugs, in order:
+# Checks seven independent, known compiler bugs, in order:
 #
 # 1. lyric-lang#4925/#4955 (fixed as of v0.4.11): a trivial, dependency-free
 #    "hello world" project crashed `lyric build` with an unhandled
@@ -54,29 +54,50 @@
 #    reproducible in an isolated synthetic project no matter how it was
 #    scaled.
 #
-# 6. lyric-lang#5244 (open, found while re-verifying #5177 against v0.4.17):
-#    `slice[T].append(x)` — the compiler's own documented idiom for
-#    building up a slice — throws `"unsupported method 'append'"` at
-#    runtime unconditionally, for any element type, with no package
-#    structure or async code involved at all. Builds fine; fails only at
-#    runtime, meaning typecheck accepts the call but MSIL codegen never
-#    actually lowers it. Not a regression — reproduces identically back to
-#    at least v0.4.15 — just never runtime-exercised in this project until
-#    bugs 1-5 stopped masking it. This is what's now causing most of the
-#    remaining `lyric test` failures in `CloudAgents.SessionTests`/`AuthTests`,
-#    previously indistinguishable from bug 5's symptoms until isolated to a
-#    standalone repro. One further `SessionTests` case fails a third,
-#    distinct, not-yet-diagnosed way (an IList cast exception) — check 5's
-#    grep below accounts for this by requiring every `not ok` to match the
-#    #5244 signature, not just checking that the signature is present.
+# 6. lyric-lang#5244 (fixed as of v0.4.18): `slice[T].append(x)` — the
+#    compiler's own documented idiom for building up a slice — threw
+#    `"unsupported method 'append'"` at runtime unconditionally, for any
+#    element type, with no package structure or async code involved at all.
+#    Built fine; failed only at runtime, meaning typecheck accepted the call
+#    but MSIL codegen never actually lowered it. Not a regression — it
+#    reproduced identically back to at least v0.4.15 — just never
+#    runtime-exercised in this project until bugs 1-5 stopped masking it.
+#    This was causing most of the `lyric test` failures in
+#    `CloudAgents.SessionTests`/`AuthTests`, previously indistinguishable
+#    from bug 5's symptoms until isolated to a standalone repro.
+#
+# 7. lyric-lang#5298 (open, found while diagnosing the one `SessionTests`
+#    case that survived bug 6's fix): a package-scope (top-level) `val`
+#    declared *without* an explicit type annotation, whose initializer is a
+#    string literal, crashes at runtime with `System.InvalidCastException:
+#    Unable to cast object of type 'System.String' to type
+#    'System.Collections.IList'` when its `.length` is read anywhere in the
+#    program — including same-package, unqualified, no cross-package
+#    reference involved. Root-caused (after gaining direct access to
+#    nichobbs/lyric-lang) to `lyric-compiler/msil/codegen.l`'s package-level
+#    `val`/`const` pre-scan: it only records the declared MSIL type when
+#    there's an explicit type annotation; when the type must be inferred
+#    from the initializer, it silently defaults to `MObject`, which later
+#    routes `.length` through a fallback that assumes any object-typed
+#    receiver is a List-backed slice and unconditionally casts to `IList` —
+#    fine for slices, wrong for a boxed `System.String`. Distinct from
+#    lyric-lang#5258 (a related but different MSIL bug, *cross*-package
+#    qualified `pub val` access resolving to null, fixed same-day): #5258's
+#    fix added qualified lookup keys but didn't touch the untyped-inference
+#    gap this bug is about, so it doesn't cover this same-package case.
+#    `src/handlers/sessions.l`'s `createSession` reads exactly such a
+#    top-level `val` (`httpsPrefix`), which is why `CloudAgents.SessionTests`'
+#    "Test Handler createSession validation" case still fails `lyric test`
+#    even with bug 6 fixed.
 #
 # Checks 1 and 2 only require `lyric` on PATH — no `dotnet` needed, since
 # both bugs occur before the compiler would invoke the .NET toolchain.
-# Checks 3-6 all need `dotnet` on PATH (to run the built output); checks 3-5
+# Checks 3-7 all need `dotnet` on PATH (to run the built output); checks 3-5
 # additionally need a `[nuget]` restore (a real published Lyric.Web
-# package), so they also require network access to nuget.org. Check 6 needs
-# neither NuGet nor network — just `dotnet` to run a plain, dependency-free
-# build. All are skipped (not failed) if `dotnet` isn't on PATH.
+# package), so they also require network access to nuget.org. Checks 6-7
+# need neither NuGet nor network — just `dotnet` to run a plain,
+# dependency-free build. All are skipped (not failed) if `dotnet` isn't on
+# PATH.
 #
 # Every check below always runs, regardless of what an earlier check found —
 # one check hitting a known or unexpected failure must never prevent later,
@@ -123,7 +144,7 @@ import Std.Core
 func main(): Unit { println("hello") }
 LYRIC
 
-echo "==> [1/6] lyric build against a trivial, dependency-free hello-world (lyric-lang#4925/#4955)"
+echo "==> [1/7] lyric build against a trivial, dependency-free hello-world (lyric-lang#4925/#4955)"
 crash_output="$(cd "$WORK/crash" && lyric build 2>&1)"
 crash_status=$?
 echo "$crash_output"
@@ -163,7 +184,7 @@ func find(x: in Int): Option[Int] {
 func main(): Unit { println("hello") }
 LYRIC
 
-echo "==> [2/6] lyric build against a trivial Option[Int]-returning function (lyric-lang#4980)"
+echo "==> [2/7] lyric build against a trivial Option[Int]-returning function (lyric-lang#4980)"
 stdcore_output="$(cd "$WORK/stdcore" && lyric build 2>&1)"
 stdcore_status=$?
 echo "$stdcore_output"
@@ -178,9 +199,9 @@ else
   echo "==> Did NOT fail: this compiler can resolve Std.Core's Option/Result — bug #4980 is fixed"
 fi
 
-# --- Checks 3-6 need dotnet (3-5 also need a real [nuget] restore) ---------
+# --- Checks 3-7 need dotnet (3-5 also need a real [nuget] restore) ---------
 if ! command -v dotnet >/dev/null; then
-  echo "==> [3-6/6] skipped (lyric-lang#5004/#5066/#5177/#5244): 'dotnet' not on PATH"
+  echo "==> [3-7/7] skipped (lyric-lang#5004/#5066/#5177/#5244/#5298): 'dotnet' not on PATH"
   exit "$worst"
 fi
 
@@ -209,12 +230,12 @@ func main(): Unit {
 }
 LYRIC
 
-echo "==> [3/6] lyric build calling a zero-arg NuGet-restored function, Web.create() (lyric-lang#5004)"
+echo "==> [3/7] lyric build calling a zero-arg NuGet-restored function, Web.create() (lyric-lang#5004)"
 restore_output="$(cd "$WORK/nugetzero" && lyric restore 2>&1)"
 restore_status=$?
 if [ "$restore_status" -ne 0 ]; then
   echo "$restore_output" >&2
-  echo "==> [3-4/6] skipped (lyric-lang#5004/#5066): 'lyric restore' failed (exit $restore_status)" \
+  echo "==> [3-4/7] skipped (lyric-lang#5004/#5066): 'lyric restore' failed (exit $restore_status)" \
        "— likely no network access to nuget.org, not a compiler bug" >&2
 else
   nugetzero_output="$(cd "$WORK/nugetzero" && lyric build 2>&1)"
@@ -227,11 +248,11 @@ else
   elif [ "$nugetzero_status" -ne 0 ]; then
     echo "==> Unexpected failure (exit $nugetzero_status) — not the known signature, investigate separately" >&2
     note_unexpected
-    echo "==> [4/6] skipped: check 3's build didn't succeed, nothing to run" >&2
+    echo "==> [4/7] skipped: check 3's build didn't succeed, nothing to run" >&2
   else
     echo "==> Did NOT fail: this compiler resolves NuGet-restored zero-arg functions — bug #5004 is fixed"
 
-    echo "==> [4/6] lyric run against the same project — does it find Web.dll at runtime? (lyric-lang#5066)"
+    echo "==> [4/7] lyric run against the same project — does it find Web.dll at runtime? (lyric-lang#5066)"
     run_output="$(cd "$WORK/nugetzero" && lyric run 2>&1)"
     run_status=$?
     echo "$run_output"
@@ -256,12 +277,12 @@ fi
 # outcome — its own restore/build is entirely independent of the synthetic
 # nugetzero project those checks use, so a failure there (or `dotnet` itself
 # being unavailable, already checked above) must not skip this one too.
-echo "==> [5/6] lyric test against this project's own real manifest (lyric-lang#5177)"
+echo "==> [5/7] lyric test against this project's own real manifest (lyric-lang#5177)"
 real_restore_output="$(cd "$REPO_ROOT" && lyric restore 2>&1)"
 real_restore_status=$?
 if [ "$real_restore_status" -ne 0 ]; then
   echo "$real_restore_output" >&2
-  echo "==> [5/6] skipped (lyric-lang#5177): 'lyric restore' failed (exit $real_restore_status)" \
+  echo "==> [5/7] skipped (lyric-lang#5177): 'lyric restore' failed (exit $real_restore_status)" \
        "— likely no network access to nuget.org, not a compiler bug" >&2
 else
   real_test_output="$(cd "$REPO_ROOT" && lyric test 2>&1)"
@@ -272,8 +293,9 @@ else
   # Positional pairing, not a raw count comparison: for each `not ok` line,
   # look at the very next line (this harness's TAP-like output always prints
   # exactly one indented failure-detail line right after `not ok`) and
-  # require it to match the #5244 signature. A count comparison alone would
-  # be fooled if that substring ever appeared more than once for a single
+  # require it to match a KNOWN signature — either #5244's (open on older
+  # compilers) or #5298's (open now). A count comparison alone would be
+  # fooled if either substring ever appeared more than once for a single
   # failing test; this can't be, since it checks each failure's own detail
   # line individually. Resets `detail` before each `getline` and checks its
   # return value AND content explicitly: `getline` returns <= 0 only on true
@@ -287,7 +309,7 @@ else
       detail = ""
       got = getline detail
       if (got <= 0 || detail ~ /^not ok/) { print "(no detail line found after: " $0 ")"; next }
-      if (detail !~ /unsupported method .append. on the receiver type/) print detail
+      if (detail !~ /unsupported method .append. on the receiver type/ && detail !~ /Unable to cast object of type .System.String. to type .System.Collections.IList./) print detail
     }
   ')"
 
@@ -295,14 +317,14 @@ else
     echo "==> Reproduced: this compiler still corrupts cross-package field/method metadata tokens in real multi-package builds (lyric-lang#5177)"
     note_reproduced
   elif [ "$real_test_status" -ne 0 ] && [ "$not_ok_count" -gt 0 ] && [ -z "$unmatched_failure_detail" ]; then
-    # lyric test is expected to fail right now — but only on lyric-lang#5244
-    # (checked separately by check 6), not #5177's signature. Every failing
-    # test's own detail line must match the #5244 signature for this
-    # branch — if even one doesn't (e.g. some other, unrelated failure),
-    # that's a mismatch and falls through to the unexpected-failure branch
-    # below, rather than being silently masked by the #5244 failures
-    # alongside it.
-    echo "==> Did NOT reproduce: this compiler no longer corrupts cross-package metadata tokens — bug #5177 is fixed (remaining failures are lyric-lang#5244, see check 6)"
+    # lyric test may still fail right now — but only on lyric-lang#5244
+    # (checked separately by check 6) and/or #5298 (checked by check 7), not
+    # #5177's signature. Every failing test's own detail line must match one
+    # of those known signatures for this branch — if even one doesn't (e.g.
+    # some other, unrelated failure), that's a mismatch and falls through to
+    # the unexpected-failure branch below, rather than being silently masked
+    # by the known failures alongside it.
+    echo "==> Did NOT reproduce: this compiler no longer corrupts cross-package metadata tokens — bug #5177 is fixed (remaining failures are lyric-lang#5244/#5298, see checks 6-7)"
   elif [ "$real_test_status" -ne 0 ]; then
     echo "==> Unexpected failure (exit $real_test_status) — not a known signature, investigate separately" >&2
     note_unexpected
@@ -317,6 +339,8 @@ fi
 # unlike check 5 this runs against a trivial scratch project like checks 1-2.
 # Always runs, regardless of what checks 3-5 found — this bug is completely
 # independent of NuGet/network availability and of anything checks 3-5 hit.
+# Fixed as of v0.4.18 — kept here so this script still catches a regression
+# or flags an older compiler that hasn't picked up the fix yet.
 mkdir -p "$WORK/appendtest/src"
 cat > "$WORK/appendtest/lyric.toml" <<'TOML'
 [package]
@@ -340,7 +364,7 @@ func main(): Unit {
 }
 LYRIC
 
-echo "==> [6/6] slice[Int].append() against a trivial single-file project (lyric-lang#5244)"
+echo "==> [6/7] slice[Int].append() against a trivial single-file project (lyric-lang#5244)"
 append_build_output="$(cd "$WORK/appendtest" && lyric build 2>&1)"
 append_build_status=$?
 echo "$append_build_output"
@@ -364,8 +388,61 @@ else
   fi
 fi
 
+# --- Check 7: lyric-lang#5298 (top-level untyped String val .length) -------
+# A package-scope `val` with no explicit type annotation, initialized to a
+# string literal, crashes `.length` with an IList cast at runtime — same
+# package, unqualified, no NuGet/async/multi-package structure needed.
+# Reproduces in complete isolation, just like check 6, so it runs the same
+# way regardless of what checks 3-6 found.
+mkdir -p "$WORK/topval/src"
+cat > "$WORK/topval/lyric.toml" <<'TOML'
+[package]
+name = "TopValTest"
+version = "0.1.0"
+[project]
+name = "TopValTest"
+output = "single"
+output_assembly = "TopValTest.dll"
+[project.packages]
+"TopValTest" = "src/main.l"
+TOML
+cat > "$WORK/topval/src/main.l" <<'LYRIC'
+package TopValTest
+import Std.Core
+
+val prefix = "https://"
+
+func main(): Unit {
+  println("n=" + prefix.length.toString())
+}
+LYRIC
+
+echo "==> [7/7] untyped top-level String val's .length against a trivial single-file project (lyric-lang#5298)"
+topval_build_output="$(cd "$WORK/topval" && lyric build 2>&1)"
+topval_build_status=$?
+echo "$topval_build_output"
+
+if [ "$topval_build_status" -ne 0 ]; then
+  echo "==> Unexpected failure (exit $topval_build_status) — expected this to build fine, investigate separately" >&2
+  note_unexpected
+else
+  topval_run_output="$(cd "$WORK/topval" && dotnet bin/TopValTest.dll 2>&1)"
+  topval_run_status=$?
+  echo "$topval_run_output"
+
+  if [ "$topval_run_status" -ne 0 ] && echo "$topval_run_output" | grep -q "Unable to cast object of type 'System.String' to type 'System.Collections.IList'"; then
+    echo "==> Reproduced: this compiler still crashes an untyped top-level String val's .length (lyric-lang#5298)"
+    note_reproduced
+  elif [ "$topval_run_status" -ne 0 ]; then
+    echo "==> Unexpected failure (exit $topval_run_status) — not the known signature, investigate separately" >&2
+    note_unexpected
+  else
+    echo "==> Did NOT fail: this compiler resolves an untyped top-level String val's .length — bug #5298 is fixed"
+  fi
+fi
+
 case "$worst" in
-  0) echo "==> Did NOT reproduce: all six known bugs are fixed on this compiler — full build, run, and test all work" ;;
+  0) echo "==> Did NOT reproduce: all seven known bugs are fixed on this compiler — full build, run, and test all work" ;;
   1) echo "==> At least one known bug reproduced — see above for which" >&2 ;;
   2) echo "==> At least one check hit an unexpected failure — see above for which, investigate separately" >&2 ;;
 esac
