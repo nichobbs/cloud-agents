@@ -69,9 +69,11 @@
 #
 # Checks 1 and 2 only require `lyric` on PATH — no `dotnet` needed, since
 # both bugs occur before the compiler would invoke the .NET toolchain.
-# Checks 3-6 need a `[nuget]` restore (a real published Lyric.Web package),
-# so they additionally require `dotnet` and network access to nuget.org;
-# all four are skipped (not failed) if `dotnet` isn't on PATH.
+# Checks 3-6 all need `dotnet` on PATH (to run the built output); checks 3-5
+# additionally need a `[nuget]` restore (a real published Lyric.Web
+# package), so they also require network access to nuget.org. Check 6 needs
+# neither NuGet nor network — just `dotnet` to run a plain, dependency-free
+# build. All are skipped (not failed) if `dotnet` isn't on PATH.
 #
 # Exit code (conventional Unix sense — 0 means "no problem found"): 0 if
 # every check that ran passed (your compiler can actually build AND run a
@@ -190,7 +192,7 @@ func main(): Unit {
 }
 LYRIC
 
-any_nuget_reproduced=0
+any_check_reproduced=0
 
 echo "==> [3/6] lyric build calling a zero-arg NuGet-restored function, Web.create() (lyric-lang#5004)"
 restore_output="$(cd "$WORK/nugetzero" && lyric restore 2>&1)"
@@ -206,7 +208,7 @@ else
 
   if [ "$nugetzero_status" -ne 0 ] && echo "$nugetzero_output" | grep -q "expected 1 argument(s), got 0"; then
     echo "==> Reproduced: this compiler still miscounts NuGet-restored zero-arg functions (lyric-lang#5004)"
-    any_nuget_reproduced=1
+    any_check_reproduced=1
   elif [ "$nugetzero_status" -ne 0 ]; then
     echo "==> Unexpected failure (exit $nugetzero_status) — not the known signature, investigate separately" >&2
     exit 2
@@ -220,7 +222,7 @@ else
 
     if [ "$run_status" -ne 0 ] && echo "$run_output" | grep -q "FileNotFoundException"; then
       echo "==> Reproduced: this compiler still doesn't copy NuGet dependency DLLs to the output dir (lyric-lang#5066)"
-      any_nuget_reproduced=1
+      any_check_reproduced=1
     elif [ "$run_status" -ne 0 ]; then
       echo "==> Unexpected failure (exit $run_status) — not the known signature, investigate separately" >&2
       exit 2
@@ -248,7 +250,7 @@ else
 
     if echo "$real_test_output" | grep -qE "Field not found:|to access field '.*' failed"; then
       echo "==> Reproduced: this compiler still corrupts cross-package field/method metadata tokens in real multi-package builds (lyric-lang#5177)"
-      any_nuget_reproduced=1
+      any_check_reproduced=1
     else
       echo "==> Did NOT reproduce: this compiler no longer corrupts cross-package metadata tokens — bug #5177 is fixed"
     fi
@@ -298,7 +300,7 @@ echo "$append_run_output"
 
 if [ "$append_run_status" -ne 0 ] && echo "$append_run_output" | grep -q "unsupported method 'append' on the receiver type"; then
   echo "==> Reproduced: this compiler still can't lower slice[T].append() to real IL at runtime (lyric-lang#5244)"
-  any_nuget_reproduced=1
+  any_check_reproduced=1
 elif [ "$append_run_status" -ne 0 ]; then
   echo "==> Unexpected failure (exit $append_run_status) — not the known signature, investigate separately" >&2
   exit 2
@@ -306,7 +308,7 @@ else
   echo "==> Did NOT fail: this compiler resolves slice[T].append() at runtime — bug #5244 is fixed"
 fi
 
-if [ "$any_nuget_reproduced" -ne 0 ]; then
+if [ "$any_check_reproduced" -ne 0 ]; then
   exit 1
 fi
 
