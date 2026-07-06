@@ -12,9 +12,11 @@ import Std.Core
 /// via `ansi_up`, which keeps the backend free of the ESC-byte handling that
 /// Lyric string literals do not express cleanly. The frontend renders colour;
 /// the backend only frames and JSON-escapes.
-
 /// Escape a string so it is safe to embed inside a JSON string literal.
-pub func jsonEscape(s: in String): String {
+pub func jsonEscape(
+
+  s: in String,
+): String {
   var acc = ""
   var i = 0
   while i < s.length {

@@ -13,9 +13,9 @@ import Std.Core
 /// it is wired in; this module owns the pure, host-independent pieces — the
 /// status vocabulary and the schema text — so they can be unit-tested without
 /// a database.
-
 /// Lifecycle state of a session.
 pub enum SessionStatus {
+
   case Created
   case Cloning
   case Idle
@@ -79,7 +79,6 @@ pub func hasLiveContainer(s: in SessionStatus): Bool {
 // total function so the compiler's exhaustiveness check guarantees every
 // (state, event) pair is considered — illegal pairs return `Invalid` rather
 // than silently doing the wrong thing.
-
 /// Events that can drive a session between states.
 pub enum SessionEvent {
   case CloneStarted
@@ -100,46 +99,11 @@ pub union Transition {
 /// Compute the next state for a (current state, event) pair.
 pub func nextStatus(current: in SessionStatus, event: in SessionEvent): Transition {
   return match current {
-    case Created -> match event {
-      case CloneStarted -> To(status = Cloning)
-      case Deleted -> To(status = Destroyed)
-      case CloneFinished -> Invalid
-      case MessageReceived -> Invalid
-      case ProcessExited -> Invalid
-      case IdleTimeout -> Invalid
-    }
-    case Cloning -> match event {
-      case CloneFinished -> To(status = Idle)
-      case Deleted -> To(status = Destroyed)
-      case CloneStarted -> Invalid
-      case MessageReceived -> Invalid
-      case ProcessExited -> Invalid
-      case IdleTimeout -> Invalid
-    }
-    case Idle -> match event {
-      case MessageReceived -> To(status = Running)
-      case Deleted -> To(status = Destroyed)
-      case CloneStarted -> Invalid
-      case CloneFinished -> Invalid
-      case ProcessExited -> Invalid
-      case IdleTimeout -> Invalid
-    }
-    case Running -> match event {
-      case ProcessExited -> To(status = Warm)
-      case Deleted -> To(status = Destroyed)
-      case CloneStarted -> Invalid
-      case CloneFinished -> Invalid
-      case MessageReceived -> Invalid
-      case IdleTimeout -> Invalid
-    }
-    case Warm -> match event {
-      case MessageReceived -> To(status = Running)
-      case IdleTimeout -> To(status = Idle)
-      case Deleted -> To(status = Destroyed)
-      case CloneStarted -> Invalid
-      case CloneFinished -> Invalid
-      case ProcessExited -> Invalid
-    }
+    case Created -> match event { case CloneStarted -> To(status = Cloning); case Deleted -> To(status = Destroyed); case CloneFinished -> Invalid; case MessageReceived -> Invalid; case ProcessExited -> Invalid; case IdleTimeout -> Invalid }
+    case Cloning -> match event { case CloneFinished -> To(status = Idle); case Deleted -> To(status = Destroyed); case CloneStarted -> Invalid; case MessageReceived -> Invalid; case ProcessExited -> Invalid; case IdleTimeout -> Invalid }
+    case Idle -> match event { case MessageReceived -> To(status = Running); case Deleted -> To(status = Destroyed); case CloneStarted -> Invalid; case CloneFinished -> Invalid; case ProcessExited -> Invalid; case IdleTimeout -> Invalid }
+    case Running -> match event { case ProcessExited -> To(status = Warm); case Deleted -> To(status = Destroyed); case CloneStarted -> Invalid; case CloneFinished -> Invalid; case MessageReceived -> Invalid; case IdleTimeout -> Invalid }
+    case Warm -> match event { case MessageReceived -> To(status = Running); case IdleTimeout -> To(status = Idle); case Deleted -> To(status = Destroyed); case CloneStarted -> Invalid; case CloneFinished -> Invalid; case ProcessExited -> Invalid }
     case Destroyed -> Invalid
   }
 }
@@ -148,7 +112,6 @@ pub func nextStatus(current: in SessionStatus, event: in SessionEvent): Transiti
 //
 // A background sweep stops warm containers after a short grace window and
 // evicts the container metadata of long-idle sessions (docs/phase2 §2).
-
 /// Grace period a container stays warm after a run before being stopped (5 min).
 pub func warmWindowMillis(): Long {
   return 300000.toLong()
@@ -184,9 +147,7 @@ pub func recycleDecision(status: in SessionStatus, idleMillis: in Long): Recycle
 /// docs/phase2-session-management.md. Applied at startup with
 /// `CREATE TABLE IF NOT EXISTS`, so it is safe to run repeatedly.
 pub func sessionsSchemaSql(): String {
-  return "CREATE TABLE IF NOT EXISTS sessions (" +
-    "id TEXT PRIMARY KEY, " +
-    "github_user_id INTEGER NOT NULL, " +
+  return "CREATE TABLE IF NOT EXISTS sessions (" + "id TEXT PRIMARY KEY, " + "github_user_id INTEGER NOT NULL, " +
     "repo_url TEXT, " +
     "branch TEXT DEFAULT 'main', " +
     "status TEXT, " +
@@ -211,7 +172,6 @@ pub func homeVolumeName(githubUserId: in String): String {
 // Statements use `?` placeholders bound by the lyric-db layer. Every read and
 // mutation is scoped by `github_user_id` so a user can only ever touch their
 // own sessions (Phase 3 ownership enforcement, docs/phase3 §4).
-
 /// INSERT a new session row.
 /// Params: id, github_user_id, repo_url, branch, status, container_id,
 /// volume_name, created_at, last_message_at.
@@ -253,8 +213,7 @@ pub func deleteSessionSql(): String {
 /// startup recovery routine after a Docker daemon or VM restart (docs/phase2
 /// §Constraints). No params.
 pub func recoverDanglingSessionsSql(): String {
-  return "UPDATE sessions SET status = 'IDLE', container_id = '' " +
-    "WHERE status = 'RUNNING' OR status = 'WARM'"
+  return "UPDATE sessions SET status = 'IDLE', container_id = '' " + "WHERE status = 'RUNNING' OR status = 'WARM'"
 }
 
 // ─── Conversation transcript, comments and todos ───────────────────────────────
@@ -267,7 +226,6 @@ pub func recoverDanglingSessionsSql(): String {
 // through the minimal CloudAgents.Sqlite driver, so statements that take values
 // are assembled here with `sqlLiteral` escaping. Every column is declared with
 // TEXT affinity so the driver can read each one with `GetString`.
-
 /// Quote and escape a value as a SQLite single-quoted string literal. The only
 /// metacharacter inside a single-quoted SQLite string is `'`, which is escaped
 /// by doubling it — this is injection-safe for any text interpolated into a
@@ -300,9 +258,7 @@ pub func padSeq(n: in Int): String {
 /// DDL for the conversation transcript. `role` is 'user' or 'agent'; `seq` is a
 /// zero-padded monotonic counter within a session.
 pub func messagesSchemaSql(): String {
-  return "CREATE TABLE IF NOT EXISTS messages (" +
-    "id TEXT PRIMARY KEY, " +
-    "session_id TEXT NOT NULL, " +
+  return "CREATE TABLE IF NOT EXISTS messages (" + "id TEXT PRIMARY KEY, " + "session_id TEXT NOT NULL, " +
     "role TEXT NOT NULL, " +
     "content TEXT NOT NULL, " +
     "seq TEXT NOT NULL, " +
@@ -311,9 +267,7 @@ pub func messagesSchemaSql(): String {
 
 /// DDL for comments attached to a specific message.
 pub func commentsSchemaSql(): String {
-  return "CREATE TABLE IF NOT EXISTS comments (" +
-    "id TEXT PRIMARY KEY, " +
-    "message_id TEXT NOT NULL, " +
+  return "CREATE TABLE IF NOT EXISTS comments (" + "id TEXT PRIMARY KEY, " + "message_id TEXT NOT NULL, " +
     "session_id TEXT NOT NULL, " +
     "body TEXT NOT NULL, " +
     "created_at TEXT NOT NULL)"
@@ -322,9 +276,7 @@ pub func commentsSchemaSql(): String {
 /// DDL for todo / bookmark items. `message_id` links back to the source message
 /// (empty string when a todo is not anchored to a message). `done` is '0'/'1'.
 pub func todosSchemaSql(): String {
-  return "CREATE TABLE IF NOT EXISTS todos (" +
-    "id TEXT PRIMARY KEY, " +
-    "session_id TEXT NOT NULL, " +
+  return "CREATE TABLE IF NOT EXISTS todos (" + "id TEXT PRIMARY KEY, " + "session_id TEXT NOT NULL, " +
     "message_id TEXT NOT NULL, " +
     "note TEXT NOT NULL, " +
     "done TEXT NOT NULL, " +
@@ -338,11 +290,19 @@ pub func insertMessageSql(
   role: in String,
   content: in String,
   seq: in String,
-  createdAt: in String
+  createdAt: in String,
 ): String {
-  return "INSERT INTO messages (id, session_id, role, content, seq, created_at) VALUES (" +
-    sqlLiteral(id) + ", " + sqlLiteral(sessionId) + ", " + sqlLiteral(role) + ", " +
-    sqlLiteral(content) + ", " + sqlLiteral(seq) + ", " + sqlLiteral(createdAt) + ")"
+  return "INSERT INTO messages (id, session_id, role, content, seq, created_at) VALUES (" + sqlLiteral(id) + ", " +
+    sqlLiteral(sessionId) +
+    ", " +
+    sqlLiteral(role) +
+    ", " +
+    sqlLiteral(content) +
+    ", " +
+    sqlLiteral(seq) +
+    ", " +
+    sqlLiteral(createdAt) +
+    ")"
 }
 
 /// SELECT the session_id that owns a given message. Used by the comments
@@ -354,15 +314,15 @@ pub func selectMessageSessionIdSql(messageId: in String): String {
 /// SELECT a session's transcript, oldest first. Column order matches the
 /// mapping in CloudAgents.Repository.
 pub func selectMessagesSql(sessionId: in String): String {
-  return "SELECT id, session_id, role, content, seq, created_at FROM messages " +
-    "WHERE session_id = " + sqlLiteral(sessionId) + " ORDER BY seq ASC"
+  return "SELECT id, session_id, role, content, seq, created_at FROM messages " + "WHERE session_id = " +
+    sqlLiteral(sessionId) +
+    " ORDER BY seq ASC"
 }
 
 /// COUNT messages in a session, cast to TEXT so the driver can read it with
 /// GetString. Used to compute the next `seq`.
 pub func countMessagesSql(sessionId: in String): String {
-  return "SELECT CAST(COUNT(*) AS TEXT) FROM messages WHERE session_id = " +
-    sqlLiteral(sessionId)
+  return "SELECT CAST(COUNT(*) AS TEXT) FROM messages WHERE session_id = " + sqlLiteral(sessionId)
 }
 
 /// INSERT a comment on a message.
@@ -371,42 +331,51 @@ pub func insertCommentSql(
   messageId: in String,
   sessionId: in String,
   body: in String,
-  createdAt: in String
+  createdAt: in String,
 ): String {
-  return "INSERT INTO comments (id, message_id, session_id, body, created_at) VALUES (" +
-    sqlLiteral(id) + ", " + sqlLiteral(messageId) + ", " + sqlLiteral(sessionId) + ", " +
-    sqlLiteral(body) + ", " + sqlLiteral(createdAt) + ")"
+  return "INSERT INTO comments (id, message_id, session_id, body, created_at) VALUES (" + sqlLiteral(id) + ", " +
+    sqlLiteral(messageId) +
+    ", " +
+    sqlLiteral(sessionId) +
+    ", " +
+    sqlLiteral(body) +
+    ", " +
+    sqlLiteral(createdAt) +
+    ")"
 }
 
 /// SELECT comments on a message, oldest first.
 pub func selectCommentsSql(messageId: in String): String {
-  return "SELECT id, message_id, session_id, body, created_at FROM comments " +
-    "WHERE message_id = " + sqlLiteral(messageId) + " ORDER BY created_at ASC"
+  return "SELECT id, message_id, session_id, body, created_at FROM comments " + "WHERE message_id = " +
+    sqlLiteral(messageId) +
+    " ORDER BY created_at ASC"
 }
 
 /// INSERT a todo / bookmark.
 pub func insertTodoSql(
-  id: in String,
-  sessionId: in String,
-  messageId: in String,
-  note: in String,
-  createdAt: in String
+  id: in String, sessionId: in String, messageId: in String, note: in String, createdAt: in String
 ): String {
-  return "INSERT INTO todos (id, session_id, message_id, note, done, created_at) VALUES (" +
-    sqlLiteral(id) + ", " + sqlLiteral(sessionId) + ", " + sqlLiteral(messageId) + ", " +
-    sqlLiteral(note) + ", '0', " + sqlLiteral(createdAt) + ")"
+  return "INSERT INTO todos (id, session_id, message_id, note, done, created_at) VALUES (" + sqlLiteral(id) + ", " +
+    sqlLiteral(sessionId) +
+    ", " +
+    sqlLiteral(messageId) +
+    ", " +
+    sqlLiteral(note) +
+    ", '0', " +
+    sqlLiteral(createdAt) +
+    ")"
 }
 
 /// SELECT all todos for a session, newest first.
 pub func selectTodosSql(sessionId: in String): String {
-  return "SELECT id, session_id, message_id, note, done, created_at FROM todos " +
-    "WHERE session_id = " + sqlLiteral(sessionId) + " ORDER BY created_at DESC"
+  return "SELECT id, session_id, message_id, note, done, created_at FROM todos " + "WHERE session_id = " +
+    sqlLiteral(sessionId) +
+    " ORDER BY created_at DESC"
 }
 
 /// Toggle a todo's done flag by id.
 pub func toggleTodoSql(id: in String): String {
-  return "UPDATE todos SET done = CASE done WHEN '1' THEN '0' ELSE '1' END WHERE id = " +
-    sqlLiteral(id)
+  return "UPDATE todos SET done = CASE done WHEN '1' THEN '0' ELSE '1' END WHERE id = " + sqlLiteral(id)
 }
 
 /// DELETE a todo by id.

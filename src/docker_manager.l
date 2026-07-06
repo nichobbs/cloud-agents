@@ -18,8 +18,12 @@ func taskWaitMs[T](t: in T, timeoutMs: in Int): Bool = false
 
 /// Docker image name for the given harness.
 func imageForHarness(harness: in String): String {
-  if harness == "codex" { return "codex:base" }
-  if harness == "opencode" { return "opencode:base" }
+  if harness == "codex" {
+    return "codex:base"
+  }
+  if harness == "opencode" {
+    return "opencode:base"
+  }
   return "claude-code:base"
 }
 
@@ -33,7 +37,7 @@ pub async func createRunnerContainer(
   sessionId: in String,
   harness: in String,
   model: in String,
-  nativeSessionId: in String
+  nativeSessionId: in String,
 ): Result[String, String] {
   val workspaceVolume = "session-" + sessionId + "-workspace"
   val homeVolume = "claude-home-default" // Phase 1 default, Phase 3 user-specific
@@ -46,10 +50,7 @@ pub async func createRunnerContainer(
     "MODEL=" + model,
     "NATIVE_SESSION_ID=" + nativeSessionId
   ]
-  val binds = [
-    workspaceVolume + ":/workspace",
-    homeVolume + ":/home/claude-user"
-  ]
+  val binds = [workspaceVolume + ":/workspace", homeVolume + ":/home/claude-user"]
 
   val image = imageForHarness(harness)
   val createRes = await createContainer(image = image, env = envs, binds = binds)
@@ -112,7 +113,7 @@ pub func runSessionMessage(
   sessionId: in String,
   harness: in String,
   model: in String,
-  nativeSessionId: in String
+  nativeSessionId: in String,
 ): Result[String, String] {
   val cell = ResultCell(isSuccess = false, output = "", error = "")
   val t = runSessionMessageAsync(repoUrl, branch, prompt, sessionId, harness, model, nativeSessionId, cell)
@@ -135,7 +136,7 @@ async func runSessionMessageAsync(
   harness: in String,
   model: in String,
   nativeSessionId: in String,
-  cell: in ResultCell
+  cell: in ResultCell,
 ): Unit {
   val createResult = await createRunnerContainer(repoUrl, branch, prompt, sessionId, harness, model, nativeSessionId)
   if not createResult.isOk() {

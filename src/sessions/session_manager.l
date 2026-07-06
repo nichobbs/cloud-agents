@@ -1,6 +1,8 @@
 package CloudAgents.SessionStore
 
 import Std.Core
+import extern System.Environment as Env
+import extern System.String as DotNetString
 
 @generate(Json)
 pub record AgentSession {
@@ -16,8 +18,12 @@ pub record AgentSession {
 /// Default model for each harness, used when a session is created without an
 /// explicit model or when deserialising a legacy session that predates this field.
 pub func defaultModelForHarness(harness: in String): String {
-  if harness == "codex" { return "o4-mini" }
-  if harness == "opencode" { return "claude-sonnet-4-6" }
+  if harness == "codex" {
+    return "o4-mini"
+  }
+  if harness == "opencode" {
+    return "claude-sonnet-4-6"
+  }
   return "claude-opus-4-8"
 }
 
@@ -28,7 +34,7 @@ pub func makeAgentSession(
   containerId: in String,
   harness: in String,
   model: in String,
-  nativeSessionId: in String
+  nativeSessionId: in String,
 ): AgentSession {
   return AgentSession(
     sessionId = sessionId,
@@ -41,20 +47,55 @@ pub func makeAgentSession(
   )
 }
 
-// ─── Concrete FFI for System.Environment storing JSON String ──────────────────
-extern type Environment = "System.Environment"
 
-@externTarget("System.Environment.GetEnvironmentVariable")
-func getEnvVar(name: in String): String = ()
+extern type Type = "System.Type"
 
-@externTarget("System.Environment.SetEnvironmentVariable")
-func setEnvVar(name: in String, value: in String): Unit = ()
+extern type AgentSessionArray = "CloudAgents.SessionStore.AgentSession[]"
 
-@externTarget("System.Object.ReferenceEquals")
-func referenceEqualsStrings(a: in String, b: in String): Bool = ()
+@externInstance
+@externTarget("System.Object.GetType")
+func getAgentSessionType(obj: in AgentSession): Type = ()
 
-@externTarget("System.String.IsNullOrEmpty")
-func isNullOrEmpty(s: in String): Bool = ()
+@externTarget("System.Array.CreateInstance")
+func createSessionArray(elementType: in Type, length: in Int): AgentSessionArray = ()
+
+@externTarget("System.Array.Copy")
+func copySessionArray(
+  sourceArray: in AgentSessionArray,
+  sourceIndex: in Int,
+  destinationArray: in AgentSessionArray,
+  destinationIndex: in Int,
+  length: in Int,
+): Unit = ()
+
+@externInstance
+@externTarget("System.Array.get_Length")
+pub func getSessionArrayLength(arr: in AgentSessionArray): Int = ()
+
+@externInstance
+@externTarget("System.Array.SetValue")
+func setSessionArrayValue(arr: in AgentSessionArray, value: in AgentSession, index: in Int): Unit = ()
+
+@externInstance
+@externTarget("System.Array.GetValue")
+pub func getSessionArrayValue(arr: in AgentSessionArray, index: in Int): AgentSession = ()
+
+pub func appendSession(arr: in AgentSessionArray, item: in AgentSession): AgentSessionArray {
+  val oldLen = getSessionArrayLength(arr)
+  val sessionType = getAgentSessionType(item)
+  val newArr = createSessionArray(sessionType, oldLen + 1)
+  if oldLen > 0 {
+    copySessionArray(arr, 0, newArr, 0, oldLen)
+  }
+  setSessionArrayValue(newArr, item, oldLen)
+  return newArr
+}
+
+pub func createEmptySessionArray(): AgentSessionArray {
+  val dummy = makeAgentSession("", "", "", "", "", "", "")
+  val sessionType = getAgentSessionType(dummy)
+  return createSessionArray(sessionType, 0)
+}
 
 /// First index of `needle` in `hay` at or after `from`, or -1 if not present.
 func indexOfFrom(hay: in String, needle: in String, from: in Int): Int {
@@ -153,8 +194,8 @@ pub func parseJsonField(objStr: in String, fieldName: in String): String {
   return objStr.substring(quoteStart + 1, valLen)
 }
 
-pub func parseSessionsJson(json: in String): slice[AgentSession] {
-  var list: slice[AgentSession] = []
+pub func parseSessionsJson(json: in String): AgentSessionArray {
+  var list = createEmptySessionArray()
   val jsonLen = json.length.toInt()
 
   // Find where "[" begins
@@ -242,7 +283,7 @@ pub func parseSessionsJson(json: in String): slice[AgentSession] {
       model = model,
       nativeSessionId = nativeSessionId
     )
-    list = list.append(session)
+    list = appendSession(list, session)
 
     idx = objEnd + 1
   }
@@ -250,50 +291,55 @@ pub func parseSessionsJson(json: in String): slice[AgentSession] {
   return list
 }
 
-pub func getSessions(): slice[AgentSession] {
-  val json = getEnvVar("CLOUD_AGENTS_SESSIONS_JSON")
-  if isNullOrEmpty(json) {
-    return []
+pub func getSessions(): AgentSessionArray {
+  val json = Env.GetEnvironmentVariable("CLOUD_AGENTS_SESSIONS_JSON")
+  if DotNetString.IsNullOrEmpty(json) {
+    return createEmptySessionArray()
   }
   return parseSessionsJson(json)
 }
 
 pub func agentSessionToJson(s: in AgentSession): String {
-  return "{\"sessionId\":\"" + s.sessionId +
-    "\",\"repoUrl\":\"" + s.repoUrl +
-    "\",\"branch\":\"" + s.branch +
-    "\",\"containerId\":\"" + s.containerId +
-    "\",\"harness\":\"" + s.harness +
-    "\",\"model\":\"" + s.model +
-    "\",\"nativeSessionId\":\"" + s.nativeSessionId + "\"}"
+  return "{\"sessionId\":\"" + s.sessionId + "\",\"repoUrl\":\"" + s.repoUrl + "\",\"branch\":\"" + s.branch +
+    "\",\"containerId\":\"" +
+    s.containerId +
+    "\",\"harness\":\"" +
+    s.harness +
+    "\",\"model\":\"" +
+    s.model +
+    "\",\"nativeSessionId\":\"" +
+    s.nativeSessionId +
+    "\"}"
 }
 
-pub func saveSessions(sessions: in slice[AgentSession]): Unit {
+pub func saveSessions(sessions: in AgentSessionArray): Unit {
   var json = "{\"sessions\":["
   var i = 0
-  while i < sessions.length {
-    val s = sessions[i]
+  val len = getSessionArrayLength(sessions)
+  while i < len {
+    val s = getSessionArrayValue(sessions, i)
     val sJson = agentSessionToJson(s)
     json = json + sJson
-    if i < sessions.length - 1 {
+    if i < len - 1 {
       json = json + ","
     }
     i = i + 1
   }
   json = json + "]}"
-  setEnvVar("CLOUD_AGENTS_SESSIONS_JSON", json)
+  Env.SetEnvironmentVariable("CLOUD_AGENTS_SESSIONS_JSON", json)
 }
 
 pub func addSession(session: in AgentSession): Unit {
   val sessions = getSessions()
-  saveSessions(sessions.append(session))
+  saveSessions(appendSession(sessions, session))
 }
 
 pub func getSession(sessionId: in String): Option[AgentSession] {
   val sessions = getSessions()
   var i = 0
-  while i < sessions.length {
-    val s = sessions[i]
+  val len = getSessionArrayLength(sessions)
+  while i < len {
+    val s = getSessionArrayValue(sessions, i)
     if s.sessionId == sessionId {
       return Some(value = s)
     }
@@ -304,22 +350,26 @@ pub func getSession(sessionId: in String): Option[AgentSession] {
 
 pub func updateSessionContainer(sessionId: in String, containerId: in String): Unit {
   val sessions = getSessions()
-  var updated: slice[AgentSession] = []
+  var updated = createEmptySessionArray()
   var i = 0
-  while i < sessions.length {
-    val s = sessions[i]
+  val len = getSessionArrayLength(sessions)
+  while i < len {
+    val s = getSessionArrayValue(sessions, i)
     if s.sessionId == sessionId {
-      updated = updated.append(AgentSession(
-        sessionId = s.sessionId,
-        repoUrl = s.repoUrl,
-        branch = s.branch,
-        containerId = containerId,
-        harness = s.harness,
-        model = s.model,
-        nativeSessionId = s.nativeSessionId
-      ))
+      updated = appendSession(
+        updated,
+        AgentSession(
+          sessionId = s.sessionId,
+          repoUrl = s.repoUrl,
+          branch = s.branch,
+          containerId = containerId,
+          harness = s.harness,
+          model = s.model,
+          nativeSessionId = s.nativeSessionId
+        )
+      )
     } else {
-      updated = updated.append(s)
+      updated = appendSession(updated, s)
     }
     i = i + 1
   }
@@ -328,22 +378,26 @@ pub func updateSessionContainer(sessionId: in String, containerId: in String): U
 
 pub func updateSessionModel(sessionId: in String, model: in String): Unit {
   val sessions = getSessions()
-  var updated: slice[AgentSession] = []
+  var updated = createEmptySessionArray()
   var i = 0
-  while i < sessions.length {
-    val s = sessions[i]
+  val len = getSessionArrayLength(sessions)
+  while i < len {
+    val s = getSessionArrayValue(sessions, i)
     if s.sessionId == sessionId {
-      updated = updated.append(AgentSession(
-        sessionId = s.sessionId,
-        repoUrl = s.repoUrl,
-        branch = s.branch,
-        containerId = s.containerId,
-        harness = s.harness,
-        model = model,
-        nativeSessionId = s.nativeSessionId
-      ))
+      updated = appendSession(
+        updated,
+        AgentSession(
+          sessionId = s.sessionId,
+          repoUrl = s.repoUrl,
+          branch = s.branch,
+          containerId = s.containerId,
+          harness = s.harness,
+          model = model,
+          nativeSessionId = s.nativeSessionId
+        )
+      )
     } else {
-      updated = updated.append(s)
+      updated = appendSession(updated, s)
     }
     i = i + 1
   }
@@ -352,15 +406,16 @@ pub func updateSessionModel(sessionId: in String, model: in String): Unit {
 
 pub func removeSession(sessionId: in String): Option[AgentSession] {
   val sessions = getSessions()
-  var updated: slice[AgentSession] = []
+  var updated = createEmptySessionArray()
   var removed: Option[AgentSession] = None
   var i = 0
-  while i < sessions.length {
-    val s = sessions[i]
+  val len = getSessionArrayLength(sessions)
+  while i < len {
+    val s = getSessionArrayValue(sessions, i)
     if s.sessionId == sessionId {
       removed = Some(value = s)
     } else {
-      updated = updated.append(s)
+      updated = appendSession(updated, s)
     }
     i = i + 1
   }

@@ -30,14 +30,10 @@ pub record DockerError {
 
 func fromHttpError(httpError: in HttpError, details: in String): DockerError {
   match httpError {
-    case ConnectionFailed(_, message) ->
-      DockerError(statusCode = None, message = message, details = details)
-    case BadStatus(_, statusCode) ->
-      DockerError(statusCode = Some(value = statusCode), message = "HTTP " + toString(statusCode), details = details)
-    case InvalidUrl(url) ->
-      DockerError(statusCode = None, message = "Invalid Docker URL: " + url, details = details)
-    case _ ->
-      DockerError(statusCode = None, message = "Unknown Docker error", details = details)
+    case ConnectionFailed(_, message) -> DockerError(statusCode = None, message = message, details = details)
+    case BadStatus(_, statusCode) -> DockerError(statusCode = Some(value = statusCode), message = "HTTP " + toString(statusCode), details = details)
+    case InvalidUrl(url) -> DockerError(statusCode = None, message = "Invalid Docker URL: " + url, details = details)
+    case _ -> DockerError(statusCode = None, message = "Unknown Docker error", details = details)
   }
 }
 
@@ -57,26 +53,20 @@ pub async func ping(): Result[String, DockerError] {
   val client = defaultClient()
   val url = Std.Http.Url.tryFrom("http://docker/v1.40/ping").unwrap()
   val sent = await client.send(Std.Http.request(Std.Http.GET, url))
-  val response = match sent {
-    case Err(e) -> return Err(error = fromHttpError(e, ""))
-    case Ok(r) -> r
-  }
+  val response = match sent { case Err(e) -> return Err(error = fromHttpError(e, "")); case Ok(r) -> r }
   if response.isSuccess() {
     Ok(value = "connected")
   } else {
     val statusCode = response.statusCode()
     val bodyResult = await response.bodyText()
     match bodyResult {
-      case Ok(body) ->
-        Err(error = DockerError(statusCode = Some(value = statusCode), message = "Ping failed", details = body))
-      case Err(ioErr) ->
-        Err(error = fromHttpError(ConnectionFailed(url = "http://docker/v1.40/ping", message = IOError.message(ioErr)), ""))
+      case Ok(body) -> Err(error = DockerError(statusCode = Some(value = statusCode), message = "Ping failed", details = body))
+      case Err(ioErr) -> Err(error = fromHttpError(ConnectionFailed(url = "http://docker/v1.40/ping", message = IOError.message(ioErr)), ""))
     }
   }
 }
 
 // ─── Container lifecycle ──────────────────────────────────────────────────────
-
 /// Escape a string for embedding in a JSON string literal.
 func jsonEscapeValue(s: in String): String {
   var acc = ""
@@ -99,7 +89,9 @@ func jsonStringArray(items: in slice[String]): String {
   var acc = "["
   var i = 0
   while i < items.length {
-    if i > 0 { acc = acc + "," }
+    if i > 0 {
+      acc = acc + ","
+    }
     acc = acc + "\"" + jsonEscapeValue(items[i]) + "\""
     i = i + 1
   }
@@ -107,15 +99,18 @@ func jsonStringArray(items: in slice[String]): String {
 }
 
 func createContainerBody(image: in String, env: in slice[String], binds: in slice[String]): String {
-  return "{\"Image\":\"" + jsonEscapeValue(image) + "\"," +
-    "\"Env\":" + jsonStringArray(env) + "," +
-    "\"HostConfig\":{\"Binds\":" + jsonStringArray(binds) + "}}"
+  return "{\"Image\":\"" + jsonEscapeValue(image) + "\"," + "\"Env\":" + jsonStringArray(env) + "," +
+    "\"HostConfig\":{\"Binds\":" +
+    jsonStringArray(binds) +
+    "}}"
 }
 
 func indexOfSub(hay: in String, needle: in String): Int {
   val hayLen = hay.length.toInt()
   val needleLen = needle.length.toInt()
-  if needleLen == 0 { return 0 }
+  if needleLen == 0 {
+    return 0
+  }
   var i = 0
   val last = hayLen - needleLen
   while i <= last {
@@ -129,7 +124,9 @@ func indexOfSub(hay: in String, needle: in String): Int {
         j = j + 1
       }
     }
-    if matched { return i }
+    if matched {
+      return i
+    }
     i = i + 1
   }
   return -1
@@ -138,7 +135,9 @@ func indexOfSub(hay: in String, needle: in String): Int {
 func extractJsonField(json: in String, field: in String): String {
   val target = "\"" + field + "\""
   val pos = indexOfSub(json, target)
-  if pos < 0 { return "" }
+  if pos < 0 {
+    return ""
+  }
   val jsonLen = json.length.toInt()
   var i = pos + target.length.toInt()
   var inValue = false
@@ -146,10 +145,15 @@ func extractJsonField(json: in String, field: in String): String {
   while i < jsonLen {
     val c = json.substring(i, 1)
     if not inValue {
-      if c == "\"" { inValue = true; start = i + 1 }
+      if c == "\"" {
+        inValue = true
+        start = i + 1
+      }
       i = i + 1
     } else {
-      if c == "\"" { return json.substring(start, i - start) }
+      if c == "\"" {
+        return json.substring(start, i - start)
+      }
       i = i + 1
     }
   }
@@ -164,19 +168,13 @@ async func sendExpectSuccess(
 ): Result[Unit, DockerError] {
   val url = Std.Http.Url.tryFrom(urlStr).unwrap()
   val sent = await client.send(Std.Http.request(method, url))
-  val response = match sent {
-    case Err(e) -> return Err(error = fromHttpError(e, ""))
-    case Ok(r) -> r
-  }
+  val response = match sent { case Err(e) -> return Err(error = fromHttpError(e, "")); case Ok(r) -> r }
   if response.isSuccess() {
     Ok(value = ())
   } else {
     val statusCode = response.statusCode()
     val bodyResult = await response.bodyText()
-    val details = match bodyResult {
-      case Ok(b) -> b
-      case Err(_) -> ""
-    }
+    val details = match bodyResult { case Ok(b) -> b; case Err(_) -> "" }
     Err(error = DockerError(statusCode = Some(value = statusCode), message = failMsg, details = details))
   }
 }
@@ -184,18 +182,13 @@ async func sendExpectSuccess(
 /// Create a container from an image with environment variables and volume binds.
 /// Returns the new container id.
 pub async func createContainer(
-  image: in String,
-  env: in slice[String],
-  binds: in slice[String]
+  image: in String, env: in slice[String], binds: in slice[String]
 ): Result[String, DockerError] {
   val client = defaultClient()
   val url = Std.Http.Url.tryFrom("http://docker/v1.40/containers/create").unwrap()
   val request = Std.Http.withJsonBody(Std.Http.request(Std.Http.POST, url), createContainerBody(image, env, binds))
   val sent = await client.send(request)
-  val response = match sent {
-    case Err(e) -> return Err(error = fromHttpError(e, ""))
-    case Ok(r) -> r
-  }
+  val response = match sent { case Err(e) -> return Err(error = fromHttpError(e, "")); case Ok(r) -> r }
   if response.isSuccess() {
     val bodyResult = await response.bodyText()
     match bodyResult {
@@ -207,14 +200,15 @@ pub async func createContainer(
           Err(error = DockerError(statusCode = None, message = "Create container returned no Id", details = body))
         }
       }
-      case Err(ioErr) ->
-        Err(error = fromHttpError(ConnectionFailed(url = "http://docker/v1.40/containers/create", message = IOError.message(ioErr)), ""))
+      case Err(ioErr) -> Err(error = fromHttpError(ConnectionFailed(url = "http://docker/v1.40/containers/create", message = IOError.message(ioErr)), ""))
     }
   } else {
     val statusCode = response.statusCode()
     val bodyResult = await response.bodyText()
     val details = match bodyResult { case Ok(b) -> b; case Err(_) -> "" }
-    Err(error = DockerError(statusCode = Some(value = statusCode), message = "Create container failed", details = details))
+    Err(
+      error = DockerError(statusCode = Some(value = statusCode), message = "Create container failed", details = details)
+    )
   }
 }
 
@@ -222,48 +216,28 @@ pub async func createContainer(
 pub async func startContainer(containerId: in String): Result[Unit, DockerError]
   requires: containerId.length > 0
 {
-  await sendExpectSuccess(
-    defaultClient(),
-    "http://docker/v1.40/containers/" + containerId + "/start",
-    Std.Http.POST,
-    "Start container failed"
-  )
+  await sendExpectSuccess(defaultClient(), "http://docker/v1.40/containers/" + containerId + "/start", Std.Http.POST, "Start container failed")
 }
 
 /// Stop a running container.
 pub async func stopContainer(containerId: in String): Result[Unit, DockerError]
   requires: containerId.length > 0
 {
-  await sendExpectSuccess(
-    defaultClient(),
-    "http://docker/v1.40/containers/" + containerId + "/stop",
-    Std.Http.POST,
-    "Stop container failed"
-  )
+  await sendExpectSuccess(defaultClient(), "http://docker/v1.40/containers/" + containerId + "/stop", Std.Http.POST, "Stop container failed")
 }
 
 /// Remove a container.
 pub async func removeContainer(containerId: in String): Result[Unit, DockerError]
   requires: containerId.length > 0
 {
-  await sendExpectSuccess(
-    defaultClient(),
-    "http://docker/v1.40/containers/" + containerId + "?force=true",
-    Std.Http.DELETE,
-    "Remove container failed"
-  )
+  await sendExpectSuccess(defaultClient(), "http://docker/v1.40/containers/" + containerId + "?force=true", Std.Http.DELETE, "Remove container failed")
 }
 
 /// Block until a container exits.
 pub async func waitContainer(containerId: in String): Result[Unit, DockerError]
   requires: containerId.length > 0
 {
-  await sendExpectSuccess(
-    defaultClient(),
-    "http://docker/v1.40/containers/" + containerId + "/wait",
-    Std.Http.POST,
-    "Wait for container failed"
-  )
+  await sendExpectSuccess(defaultClient(), "http://docker/v1.40/containers/" + containerId + "/wait", Std.Http.POST, "Wait for container failed")
 }
 
 /// Fetch a container's combined stdout/stderr logs.
@@ -274,16 +248,12 @@ pub async func getContainerLogs(containerId: in String): Result[String, DockerEr
   val urlStr = "http://docker/v1.40/containers/" + containerId + "/logs?stdout=true&stderr=true"
   val url = Std.Http.Url.tryFrom(urlStr).unwrap()
   val sent = await client.send(Std.Http.request(Std.Http.GET, url))
-  val response = match sent {
-    case Err(e) -> return Err(error = fromHttpError(e, ""))
-    case Ok(r) -> r
-  }
+  val response = match sent { case Err(e) -> return Err(error = fromHttpError(e, "")); case Ok(r) -> r }
   if response.isSuccess() {
     val bodyResult = await response.bodyText()
     match bodyResult {
       case Ok(body) -> Ok(value = body)
-      case Err(ioErr) ->
-        Err(error = fromHttpError(ConnectionFailed(url = urlStr, message = IOError.message(ioErr)), ""))
+      case Err(ioErr) -> Err(error = fromHttpError(ConnectionFailed(url = urlStr, message = IOError.message(ioErr)), ""))
     }
   } else {
     val statusCode = response.statusCode()

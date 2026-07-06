@@ -9,10 +9,10 @@ import Std.Core
 /// the token lifetime. That network call belongs in the HTTP boundary layer;
 /// the pure pieces — extracting the token, parsing the identity, and access
 /// control — live here so they can be unit-tested without a network.
-
 /// Authenticated GitHub identity, the stable per-tenant key.
 @generate(Json)
 pub record GitHubUser {
+
   pub id: Long
   pub login: String
 }
@@ -50,11 +50,59 @@ pub func extractBearerToken(headerValue: in String): Option[String] {
   return Some(value = token)
 }
 
+extern type Type = "System.Type"
+
+extern type StringArray = "System.String[]"
+
+@externInstance
+@externTarget("System.Object.GetType")
+func getStringType(obj: in String): Type = ()
+
+@externTarget("System.Array.CreateInstance")
+func createStringArray(elementType: in Type, length: in Int): StringArray = ()
+
+@externTarget("System.Array.Copy")
+func copyStringArray(
+  sourceArray: in StringArray,
+  sourceIndex: in Int,
+  destinationArray: in StringArray,
+  destinationIndex: in Int,
+  length: in Int,
+): Unit = ()
+
+@externInstance
+@externTarget("System.Array.get_Length")
+func getStringArrayLength(arr: in StringArray): Int = ()
+
+@externInstance
+@externTarget("System.Array.SetValue")
+func setStringArrayValue(arr: in StringArray, value: in String, index: in Int): Unit = ()
+
+@externInstance
+@externTarget("System.Array.GetValue")
+func getStringArrayValue(arr: in StringArray, index: in Int): String = ()
+
+pub func appendString(arr: in StringArray, item: in String): StringArray {
+  val oldLen = getStringArrayLength(arr)
+  val stringType = getStringType("")
+  val newArr = createStringArray(stringType, oldLen + 1)
+  if oldLen > 0 {
+    copyStringArray(arr, 0, newArr, 0, oldLen)
+  }
+  setStringArrayValue(newArr, item, oldLen)
+  return newArr
+}
+
+pub func createEmptyStringArray(): StringArray {
+  val stringType = getStringType("")
+  return createStringArray(stringType, 0)
+}
+
 /// Split a comma-separated whitelist into trimmed, non-empty entries.
 /// A whitelist is configured via an environment variable (e.g.
 /// `CLOUD_AGENTS_WHITELIST=12345,67890`).
-pub func parseWhitelist(csv: in String): slice[String] {
-  var entries: slice[String] = []
+pub func parseWhitelist(csv: in String): StringArray {
+  var entries = createEmptyStringArray()
   var current = ""
   var i = 0
   while i < csv.length {
@@ -62,7 +110,7 @@ pub func parseWhitelist(csv: in String): slice[String] {
     if c == "," {
       val trimmed = current.trim()
       if trimmed.length > 0 {
-        entries = entries.append(trimmed)
+        entries = appendString(entries, trimmed)
       }
       current = ""
     } else {
@@ -72,7 +120,7 @@ pub func parseWhitelist(csv: in String): slice[String] {
   }
   val lastTrimmed = current.trim()
   if lastTrimmed.length > 0 {
-    entries = entries.append(lastTrimmed)
+    entries = appendString(entries, lastTrimmed)
   }
   return entries
 }
@@ -81,12 +129,13 @@ pub func parseWhitelist(csv: in String): slice[String] {
 /// An empty whitelist means "open access" (any authenticated user).
 pub func isWhitelisted(githubUserId: in String, csv: in String): Bool {
   val entries = parseWhitelist(csv)
-  if entries.length == 0 {
+  val len = getStringArrayLength(entries)
+  if len == 0 {
     return true
   }
   var i = 0
-  while i < entries.length {
-    if entries[i] == githubUserId {
+  while i < len {
+    if getStringArrayValue(entries, i) == githubUserId {
       return true
     }
     i = i + 1
@@ -106,7 +155,6 @@ pub func tokenCacheKey(token: in String): String {
 // so results are cached for the token lifetime (docs/phase3 §1). These helpers
 // own the pure expiry arithmetic; the cache store itself lives in the HTTP
 // layer.
-
 /// A cached, previously-validated identity.
 pub record CachedToken {
   pub userId: String
@@ -125,7 +173,6 @@ pub func isCacheValid(entry: in CachedToken, nowMillis: in Long): Bool {
 }
 
 // ─── Ownership ────────────────────────────────────────────────────────────────
-
 /// Whether the authenticated user owns the resource. A mismatch is a 403
 /// (docs/phase3 §4).
 pub func ownsResource(authedUserId: in String, ownerUserId: in String): Bool {
@@ -138,7 +185,6 @@ pub func ownsResource(authedUserId: in String, ownerUserId: in String): Bool {
 // and `login` (string). These extractors pull those two fields without a full
 // JSON parser, so they are pure and runtime-testable. The handler layer turns
 // the results into a `GitHubUser` and rejects responses missing either field.
-
 /// First index of `needle` in `hay` at or after `from`, or -1 if not present.
 /// A manual scan — the compiler's `String.indexOf`/`Option` path is unreliable
 /// at runtime in the current toolchain, and this keeps the parsers on the
@@ -219,8 +265,7 @@ pub func parseJsonNumber(json: in String, field: in String): String {
         seenColon = true
       }
       i = i + 1
-    } else if c == "0" or c == "1" or c == "2" or c == "3" or c == "4"
-           or c == "5" or c == "6" or c == "7" or c == "8" or c == "9" {
+    } else if c == "0" or c == "1" or c == "2" or c == "3" or c == "4" or c == "5" or c == "6" or c == "7" or c == "8" or c == "9" {
       acc = acc + c
       i = i + 1
     } else if acc.length > 0 {
