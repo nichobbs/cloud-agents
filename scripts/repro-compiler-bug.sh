@@ -214,7 +214,7 @@ restore_output="$(cd "$WORK/nugetzero" && lyric restore 2>&1)"
 restore_status=$?
 if [ "$restore_status" -ne 0 ]; then
   echo "$restore_output" >&2
-  echo "==> [3-5/6] skipped (lyric-lang#5004/#5066/#5177): 'lyric restore' failed (exit $restore_status)" \
+  echo "==> [3-4/6] skipped (lyric-lang#5004/#5066): 'lyric restore' failed (exit $restore_status)" \
        "— likely no network access to nuget.org, not a compiler bug" >&2
 else
   nugetzero_output="$(cd "$WORK/nugetzero" && lyric build 2>&1)"
@@ -275,9 +275,18 @@ else
   # require it to match the #5244 signature. A count comparison alone would
   # be fooled if that substring ever appeared more than once for a single
   # failing test; this can't be, since it checks each failure's own detail
-  # line individually.
+  # line individually. Resets `detail` before each `getline` and checks its
+  # return value explicitly — `getline` on EOF (a `not ok` with no following
+  # line, or two back-to-back `not ok`s) leaves the variable untouched
+  # rather than clearing it, which would otherwise let a stale match from an
+  # earlier failure silently mask this one.
   unmatched_failure_detail="$(echo "$real_test_output" | awk '
-    /^not ok/ { getline detail; if (detail !~ /unsupported method .append. on the receiver type/) print detail }
+    /^not ok/ {
+      detail = ""
+      got = getline detail
+      if (got <= 0) { print "(no detail line found after: " $0 ")"; next }
+      if (detail !~ /unsupported method .append. on the receiver type/) print detail
+    }
   ')"
 
   if echo "$real_test_output" | grep -qE "Field not found:|to access field '.*' failed"; then

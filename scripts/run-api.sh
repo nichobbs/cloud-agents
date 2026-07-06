@@ -10,8 +10,8 @@
 # notes" for full detail and current release status.
 #
 # Not yet investigated: this may not stay running indefinitely under
-# normal use in every environment — see docs/BUILD.md's "Build from the
-# repo root" section (the "Not yet investigated" paragraph) for what's
+# normal use in every environment — see the "Not yet investigated"
+# paragraph under docs/BUILD.md's "## Dependencies" heading for what's
 # been observed and what hasn't been ruled out yet.
 #
 # Requirements: lyric 0.4.17+, dotnet 10.x, Docker (for runner containers)
