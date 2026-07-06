@@ -276,15 +276,17 @@ else
   # be fooled if that substring ever appeared more than once for a single
   # failing test; this can't be, since it checks each failure's own detail
   # line individually. Resets `detail` before each `getline` and checks its
-  # return value explicitly — `getline` on EOF (a `not ok` with no following
-  # line, or two back-to-back `not ok`s) leaves the variable untouched
-  # rather than clearing it, which would otherwise let a stale match from an
-  # earlier failure silently mask this one.
+  # return value AND content explicitly: `getline` returns <= 0 only on true
+  # EOF (a trailing `not ok` with nothing after it) — it does NOT fail on
+  # two back-to-back `not ok` lines, since reading the next `not ok` line
+  # into `detail` is a perfectly normal successful read. Also reject that
+  # case explicitly (`detail` itself starting with `not ok`), rather than
+  # relying on it happening to fail the signature match below by accident.
   unmatched_failure_detail="$(echo "$real_test_output" | awk '
     /^not ok/ {
       detail = ""
       got = getline detail
-      if (got <= 0) { print "(no detail line found after: " $0 ")"; next }
+      if (got <= 0 || detail ~ /^not ok/) { print "(no detail line found after: " $0 ")"; next }
       if (detail !~ /unsupported method .append. on the receiver type/) print detail
     }
   ')"
