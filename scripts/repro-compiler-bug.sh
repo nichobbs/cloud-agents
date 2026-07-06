@@ -246,54 +246,57 @@ else
       echo "==> Did NOT fail: this compiler copies NuGet dependency DLLs to the output dir — bug #5066 is fixed"
     fi
   fi
+fi
 
-  # --- Check 5: lyric-lang#5177 (cross-package metadata token corruption) --
-  # Not reproducible in a synthetic project like checks 1-4 no matter how
-  # many packages/features were added — needs this project's own real,
-  # multi-package build, so this runs against the real manifest in place via
-  # `lyric test` rather than a scratch project.
-  echo "==> [5/6] lyric test against this project's own real manifest (lyric-lang#5177)"
-  real_restore_output="$(cd "$REPO_ROOT" && lyric restore 2>&1)"
-  real_restore_status=$?
-  if [ "$real_restore_status" -ne 0 ]; then
-    echo "$real_restore_output" >&2
-    echo "==> [5/6] skipped (lyric-lang#5177): 'lyric restore' failed (exit $real_restore_status)" \
-         "— likely no network access to nuget.org, not a compiler bug" >&2
+# --- Check 5: lyric-lang#5177 (cross-package metadata token corruption) ----
+# Not reproducible in a synthetic project like checks 1-4 no matter how many
+# packages/features were added — needs this project's own real, multi-package
+# build, so this runs against the real manifest in place via `lyric test`
+# rather than a scratch project. Always runs regardless of checks 3-4's
+# outcome — its own restore/build is entirely independent of the synthetic
+# nugetzero project those checks use, so a failure there (or `dotnet` itself
+# being unavailable, already checked above) must not skip this one too.
+echo "==> [5/6] lyric test against this project's own real manifest (lyric-lang#5177)"
+real_restore_output="$(cd "$REPO_ROOT" && lyric restore 2>&1)"
+real_restore_status=$?
+if [ "$real_restore_status" -ne 0 ]; then
+  echo "$real_restore_output" >&2
+  echo "==> [5/6] skipped (lyric-lang#5177): 'lyric restore' failed (exit $real_restore_status)" \
+       "— likely no network access to nuget.org, not a compiler bug" >&2
+else
+  real_test_output="$(cd "$REPO_ROOT" && lyric test 2>&1)"
+  real_test_status=$?
+  echo "$real_test_output"
+
+  not_ok_count="$(echo "$real_test_output" | grep -c '^not ok')"
+  # Positional pairing, not a raw count comparison: for each `not ok` line,
+  # look at the very next line (this harness's TAP-like output always prints
+  # exactly one indented failure-detail line right after `not ok`) and
+  # require it to match the #5244 signature. A count comparison alone would
+  # be fooled if that substring ever appeared more than once for a single
+  # failing test; this can't be, since it checks each failure's own detail
+  # line individually.
+  unmatched_failure_detail="$(echo "$real_test_output" | awk '
+    /^not ok/ { getline detail; if (detail !~ /unsupported method .append. on the receiver type/) print detail }
+  ')"
+
+  if echo "$real_test_output" | grep -qE "Field not found:|to access field '.*' failed"; then
+    echo "==> Reproduced: this compiler still corrupts cross-package field/method metadata tokens in real multi-package builds (lyric-lang#5177)"
+    note_reproduced
+  elif [ "$real_test_status" -ne 0 ] && [ "$not_ok_count" -gt 0 ] && [ -z "$unmatched_failure_detail" ]; then
+    # lyric test is expected to fail right now — but only on lyric-lang#5244
+    # (checked separately by check 6), not #5177's signature. Every failing
+    # test's own detail line must match the #5244 signature for this
+    # branch — if even one doesn't (e.g. some other, unrelated failure),
+    # that's a mismatch and falls through to the unexpected-failure branch
+    # below, rather than being silently masked by the #5244 failures
+    # alongside it.
+    echo "==> Did NOT reproduce: this compiler no longer corrupts cross-package metadata tokens — bug #5177 is fixed (remaining failures are lyric-lang#5244, see check 6)"
+  elif [ "$real_test_status" -ne 0 ]; then
+    echo "==> Unexpected failure (exit $real_test_status) — not a known signature, investigate separately" >&2
+    note_unexpected
   else
-    real_test_output="$(cd "$REPO_ROOT" && lyric test 2>&1)"
-    real_test_status=$?
-    echo "$real_test_output"
-
-    not_ok_count="$(echo "$real_test_output" | grep -c '^not ok')"
-    # Positional pairing, not a raw count comparison: for each `not ok` line,
-    # look at the very next line (this harness's TAP-like output always
-    # prints exactly one indented failure-detail line right after `not ok`)
-    # and require it to match the #5244 signature. A count comparison alone
-    # would be fooled if that substring ever appeared more than once for a
-    # single failing test; this can't be, since it checks each failure's own
-    # detail line individually.
-    unmatched_failure_detail="$(echo "$real_test_output" | awk '
-      /^not ok/ { getline detail; if (detail !~ /unsupported method .append. on the receiver type/) print detail }
-    ')"
-
-    if echo "$real_test_output" | grep -qE "Field not found:|to access field '.*' failed"; then
-      echo "==> Reproduced: this compiler still corrupts cross-package field/method metadata tokens in real multi-package builds (lyric-lang#5177)"
-      note_reproduced
-    elif [ "$real_test_status" -ne 0 ] && [ "$not_ok_count" -gt 0 ] && [ -z "$unmatched_failure_detail" ]; then
-      # lyric test is expected to fail right now — but only on lyric-lang#5244
-      # (checked separately by check 6), not #5177's signature. Every failing
-      # test's own detail line must match the #5244 signature for this
-      # branch — if even one doesn't (e.g. some other, unrelated failure),
-      # that's a mismatch and falls through to the unexpected-failure branch
-      # below, rather than being silently masked by the #5244 failures
-      # alongside it.
-      echo "==> Did NOT reproduce: this compiler no longer corrupts cross-package metadata tokens — bug #5177 is fixed (remaining failures are lyric-lang#5244, see check 6)"
-    elif [ "$real_test_status" -ne 0 ]; then
-      echo "==> Unexpected failure (exit $real_test_status) — not a known signature, investigate separately" >&2
-      note_unexpected
-    else
-      echo "==> Did NOT reproduce: this compiler no longer corrupts cross-package metadata tokens — bug #5177 is fixed"
-    fi
+    echo "==> Did NOT reproduce: this compiler no longer corrupts cross-package metadata tokens — bug #5177 is fixed"
   fi
 fi
 

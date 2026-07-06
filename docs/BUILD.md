@@ -67,7 +67,7 @@ lyric build   # succeeds as of v0.4.14 — see "Compiler notes" below for histor
 succeeds** against v0.4.14+ (the first release where it ever has). `scripts/verify.sh`
 is the test entry point — see "Running tests" below for why it isn't `lyric
 test` — and **genuinely passes**. `scripts/run-api.sh` builds the same way,
-then runs the compiled server —**this now works**, for the first time in
+then runs the compiled server — **this now works**, for the first time in
 this project's history: `lyric build` succeeds, `lyric run` finds its
 NuGet-restored dependencies at runtime (`lyric-lang#5066`, fixed in
 v0.4.15), and the real project's own cross-package field/method tokens now
