@@ -9,15 +9,10 @@
 # immediately on startup (lyric-lang#5177). See docs/BUILD.md "Compiler
 # notes" for full detail and current release status.
 #
-# Not yet investigated: on at least one sandboxed test environment, the
-# server printed a caught, non-fatal SQLite native-library warning at
-# startup (unrelated to the compiler bugs above — looked like a
-# missing/misconfigured native e_sqlite3 binary for that specific
-# environment) and the process later exited on its own rather than
-# continuing to serve indefinitely. Investigate if `scripts/run-api.sh`
-# doesn't stay up under normal use; may be an environment issue, a
-# `Lyric.Web`/`Web.start()` lifecycle question, or something in this
-# project's own `main()` — not yet root-caused either way.
+# Not yet investigated: this may not stay running indefinitely under
+# normal use in every environment — see docs/BUILD.md's "Build from the
+# repo root" section (the "Not yet investigated" paragraph) for what's
+# been observed and what hasn't been ruled out yet.
 #
 # Requirements: lyric 0.4.17+, dotnet 10.x, Docker (for runner containers)
 # Env:

@@ -78,6 +78,22 @@ means `slice[T].append()` throws at runtime, which affects some `lyric
 test` suites (see "Running tests") but not `scripts/run-api.sh`'s startup
 path.
 
+**Not yet investigated:** on at least one sandboxed test environment,
+`scripts/run-api.sh` printed a caught, non-fatal SQLite native-library
+warning at startup (`The type initializer for
+'Microsoft.Data.Sqlite.SqliteConnection' threw an exception`) and the
+server process later exited on its own rather than continuing to serve
+indefinitely, after successfully answering at least one HTTP request. Both
+are unrelated to the six compiler bugs on this page — the warning looked
+like a missing/misconfigured native `e_sqlite3` binary specific to that
+environment, not a build or compiler issue. Investigate if
+`scripts/run-api.sh` doesn't stay up under normal use; candidates not yet
+ruled out are an environment issue, a `Lyric.Web`/`Web.start()` lifecycle
+question, or something in this project's own `main()` (`Web.start(router)`
+is expected to block). Not filed upstream or in this project's own issue
+tracker yet, since it hasn't been reproduced outside that one sandboxed
+run.
+
 ### Bumping a NuGet dependency version
 
 Edit the version string in `[nuget]` and re-run `lyric restore`. Before
