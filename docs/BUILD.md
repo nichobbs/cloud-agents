@@ -83,8 +83,10 @@ fixed as of v0.4.19 — all seven known upstream compiler bugs are now fixed.
 even if it did, it would not serve this project's actual API yet.** Both
 findings are in `Lyric.Web` itself (the NuGet package), not in this
 project's own source, and are 100% reproducible: the process binds and
-stays up indefinitely while idle, but exits the instant it finishes
-answering any request.
+stays up indefinitely while idle, but exits while *attempting* to answer
+its first request — the client sees a `200` status line (headers commit
+before the crash), but the body write fails partway through and the
+process exits before completing it, not after a successful round-trip.
 
 1. **Crash on first request.** `Lyric.Web` 0.4.11 (the version pinned
    above) builds its HTTP response body via an `@externTarget`-wrapped call
@@ -106,7 +108,12 @@ answering any request.
    matching instance method found in .NET metadata`, from a rewritten,
    newer-style extern binding) and additionally turns the silent exit into
    a loud one (`Console.error` + exit 1), which at least surfaces the
-   failure instead of masking it.
+   failure instead of masking it. Checked into the repo as a runnable
+   reproduction, not just prose, mirroring `scripts/repro-compiler-bug.sh`'s
+   convention: run `./scripts/repro-web-bug.sh` to check whether this is
+   still reproducible against the `Lyric.Web` version currently pinned in
+   `lyric.toml` — kept as a separate, sibling script since this is a
+   library bug, not one of the seven compiler bugs tracked above.
 2. **No real request dispatch exists yet, independent of the crash.**
    Confirmed by reading `lyric-web/src/web.l` at both the pinned v0.4.11
    tag and current `main`: every request, regardless of method or path,
