@@ -73,17 +73,25 @@ jobs:
           fi
           echo "Lyric $RESOLVED >= required minimum $MIN_VERSION"
 
+      # Download the exact resolved release directly rather than going
+      # through install.sh's own (unverified) --version handling — this
+      # step's entire job is to install precisely the version the previous
+      # step just checked >= MIN_VERSION, and a positive, direct download
+      # of that exact tag makes that guarantee airtight instead of trusting
+      # install.sh to honor an untested flag (review #146; empirically
+      # confirmed separately that install.sh --version does work as
+      # documented, by installing v0.4.15 this way and behaviorally
+      # verifying it still reproduces lyric-lang#5244, which v0.4.18+
+      # fixes — but this project shouldn't have to depend on that holding
+      # forever when a direct download is just as simple and removes the
+      # question entirely).
       - name: Install Lyric compiler
         run: |
           mkdir -p "$HOME/.local/bin"
           ver="${{ steps.resolve_lyric.outputs.version }}"
-          if ! curl -fsSL https://raw.githubusercontent.com/nichobbs/lyric-lang/main/scripts/install.sh \
-              | sh -s -- --version "$ver" --dir "$HOME/.local/bin" --no-path; then
-            echo "primary installer failed — falling back to direct release download"
-            curl -fsSL -o /tmp/lyric.tgz \
-              "https://github.com/nichobbs/lyric-lang/releases/download/v${ver}/lyric-${ver}-linux-x64.tar.gz"
-            tar -xzf /tmp/lyric.tgz -C "$HOME/.local/bin"
-          fi
+          curl -fsSL -o /tmp/lyric.tgz \
+            "https://github.com/nichobbs/lyric-lang/releases/download/v${ver}/lyric-${ver}-linux-x64.tar.gz"
+          tar -xzf /tmp/lyric.tgz -C "$HOME/.local/bin"
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
 
       # NOTE: `lyric --version` is known to always print "lyric 0.1.0"
