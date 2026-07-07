@@ -7,7 +7,6 @@ import CloudAgents.Repository
 import CloudAgents.SessionStore
 import CloudAgents.Sqlite
 import CloudAgents.Streaming
-
 import Std.Uuid
 
 pub func generateSessionId(): String {
@@ -16,13 +15,13 @@ pub func generateSessionId(): String {
 }
 
 val maxPromptLen = 131072
-val httpsPrefix = "https://"
 
 func isHttpsUrl(url: in String): Bool {
-  if url.length < httpsPrefix.length {
+  val prefix = "https://"
+  if url.length < prefix.length {
     return false
   }
-  return url.substring(0, httpsPrefix.length) == httpsPrefix
+  return url.substring(0, prefix.length) == prefix
 }
 
 @generate(Json)
@@ -50,9 +49,7 @@ pub record SendMessageRequest {
 
 /// Create a persistent session workspace.
 @post("/api/sessions")
-pub func createSession(
-  @body req: in CreateSessionRequest
-): Result[CreateSessionResponse, Web.ApiError] {
+pub func createSession(@body req: in CreateSessionRequest): Result[CreateSessionResponse, Web.ApiError] {
   if req.repoUrl.length == 0 {
     return Err(Web.badRequest("repoUrl is required"))
   }
@@ -73,8 +70,8 @@ pub func createSession(
     containerId = "",
     harness = harness,
     model = model,
-    nativeSessionId = sessionId  // pre-assigned so every run gets a stable resume ID
-  )
+    nativeSessionId = sessionId
+  )  // pre-assigned so every run gets a stable resume ID
 
   addSession(session)
 
@@ -83,10 +80,7 @@ pub func createSession(
 
 /// Accept user prompt, run container, and return output synchronously.
 @post("/api/sessions/{id}/messages")
-pub func sendMessage(
-  id: in String,
-  @body req: in SendMessageRequest
-): Result[String, Web.ApiError] {
+pub func sendMessage(id: in String, @body req: in SendMessageRequest): Result[String, Web.ApiError] {
   if id.length == 0 {
     return Err(Web.badRequest("id is required"))
   }
@@ -98,78 +92,70 @@ pub func sendMessage(
   }
 
   val maybeSession = getSession(id)
-  if maybeSession.isNone() {
-    return Err(Web.notFound("Session not found"))
-  }
-  val session = maybeSession.unwrapOption()
+  match maybeSession {
+    case None -> return Err(Web.notFound("Session not found"))
+    case Some(session) -> {
+      // Persist the user's prompt as an addressable transcript message. Best-effort:
+      // a storage hiccup must not stop the agent from running.
+      match CloudAgents.Repository.addMessage(id, "user", req.text) {
+        case Ok(_) -> ()
+        case Err(_) -> ()
+      }
 
-  // Persist the user's prompt as an addressable transcript message. Best-effort:
-  // a storage hiccup must not stop the agent from running.
-  match CloudAgents.Repository.addMessage(id, "user", req.text) {
-    case Ok(_)  -> ()
-    case Err(_) -> ()
-  }
+      val runResult = CloudAgents.Docker.runSessionMessage(
+        repoUrl = session.repoUrl,
+        branch = session.branch,
+        prompt = req.text,
+        sessionId = id,
+        harness = session.harness,
+        model = session.model,
+        nativeSessionId = session.nativeSessionId
+      )
 
-  val runResult = CloudAgents.Docker.runSessionMessage(
-    repoUrl = session.repoUrl,
-    branch = session.branch,
-    prompt = req.text,
-    sessionId = id,
-    harness = session.harness,
-    model = session.model,
-    nativeSessionId = session.nativeSessionId
-  )
-
-  // Frame the captured container output as a Server-Sent Events stream:
-  // one `data: {"chunk":"..."}` frame per line, then a `done` event. ANSI
-  // colour codes are preserved in the payload and rendered on the frontend
-  // with ansi_up (see docs/phase1-core-loop.md).
-  //
-  // The agent reply is persisted too; on success the `done` frame carries the
-  // stored message id so the client can attach comments/todos to this response.
-  match runResult {
-    case Ok(logs) -> match CloudAgents.Repository.addMessage(id, "agent", logs) {
-      case Ok(m)  -> return Ok(value = CloudAgents.Streaming.formatLogsAsSseWithId(logs, m.id))
-      case Err(_) -> return Ok(value = CloudAgents.Streaming.formatLogsAsSse(logs))
+      // Frame the captured container output as a Server-Sent Events stream:
+      // one `data: {"chunk":"..."}` frame per line, then a `done` event. ANSI
+      // colour codes are preserved in the payload and rendered on the frontend
+      // with ansi_up (see docs/phase1-core-loop.md).
+      //
+      // The agent reply is persisted too; on success the `done` frame carries the
+      // stored message id so the client can attach comments/todos to this response.
+      match runResult {
+        case Ok(logs) -> match CloudAgents.Repository.addMessage(id, "agent", logs) { case Ok(m) -> return Ok(value = CloudAgents.Streaming.formatLogsAsSseWithId(logs, m.id)); case Err(_) -> return Ok(value = CloudAgents.Streaming.formatLogsAsSse(logs)) }
+        case Err(err) -> return Err(Web.internalError("Failed to execute message: " + err))
+      }
     }
-    case Err(err) -> return Err(Web.internalError("Failed to execute message: " + err))
   }
 }
 
 /// Stop and tear down container and associated session synchronously.
 @delete("/api/sessions/{id}")
-pub func deleteSession(
-  id: in String
-): Result[Unit, Web.ApiError] {
+pub func deleteSession(id: in String): Result[Unit, Web.ApiError] {
   if id.length == 0 {
     return Err(Web.badRequest("id is required"))
   }
 
   val maybeSession = removeSession(id)
-  if maybeSession.isNone() {
-    return Err(Web.notFound("Session not found"))
-  }
-  val session = maybeSession.unwrapOption()
+  match maybeSession {
+    case None -> return Err(Web.notFound("Session not found"))
+    case Some(session) -> {
+      val containerId = session.containerId
+      if containerId.length == 0 {
+        return Ok(())
+      }
 
-  val containerId = session.containerId
-  if containerId.length == 0 {
-    return Ok(())
-  }
-
-  val terminateResult = CloudAgents.Docker.terminateSessionContainer(containerId)
-  match terminateResult {
-    case Ok(_) -> return Ok(())
-    case Err(err) -> return Err(Web.internalError("Failed to terminate container: " + err))
+      val terminateResult = CloudAgents.Docker.terminateSessionContainer(containerId)
+      match terminateResult {
+        case Ok(_) -> return Ok(())
+        case Err(err) -> return Err(Web.internalError("Failed to terminate container: " + err))
+      }
+    }
   }
 }
 
 /// Switch the active model for a session (stays on the same harness).
 /// The next message will use this model; existing transcript is unaffected.
 @post("/api/sessions/{id}/model")
-pub func updateSessionModel(
-  id: in String,
-  @body req: in UpdateSessionRequest
-): Result[Unit, Web.ApiError] {
+pub func updateSessionModel(id: in String, @body req: in UpdateSessionRequest): Result[Unit, Web.ApiError] {
   if id.length == 0 {
     return Err(Web.badRequest("id is required"))
   }
@@ -177,18 +163,20 @@ pub func updateSessionModel(
     return Err(Web.badRequest("model is required"))
   }
   val maybeSession = getSession(id)
-  if maybeSession.isNone() {
-    return Err(Web.notFound("Session not found"))
+  match maybeSession {
+    case None -> return Err(Web.notFound("Session not found"))
+    case Some(_) -> {
+      CloudAgents.SessionStore.updateSessionModel(id, req.model)
+      return Ok(())
+    }
   }
-  CloudAgents.SessionStore.updateSessionModel(id, req.model)
-  return Ok(())
 }
 
 /// Retrieve service health, including a live SQLite probe.
 @get("/api/health")
 pub func checkHealth(): Result[String, Web.ApiError] {
   match CloudAgents.Repository.ping() {
-    case Ok(_)  -> return Ok("Healthy")
+    case Ok(_) -> return Ok("Healthy")
     case Err(e) -> return Err(Web.internalError("database unavailable: " + CloudAgents.Sqlite.dbErrorMessage(e)))
   }
 }

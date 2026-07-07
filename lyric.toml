@@ -46,5 +46,7 @@ output_assembly = "CloudAgents.dll"
 "Lyric.Web"             = "0.4.11"
 "Std.Logging"           = "0.4.11"
 "Microsoft.Data.Sqlite" = "10.0.9"
+"SourceGear.sqlite3"    = "3.53.3"
+"SQLitePCLRaw.provider.dynamic_cdecl" = "3.0.3"
 
 

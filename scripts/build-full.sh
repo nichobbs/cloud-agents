@@ -48,4 +48,24 @@ lyric restore
 echo "==> building the full Cloud Agents project"
 lyric build
 
+# Copy native SQLite binaries to bin/ if Microsoft.Data.Sqlite is restored
+NUGET_DIR="${NUGET_PACKAGES:-$HOME/.nuget/packages}"
+if [ -d "$NUGET_DIR/sqlitepclraw.lib.e_sqlite3" ]; then
+  SQLITE_RUNTIMES_DIR=$(find "$NUGET_DIR/sqlitepclraw.lib.e_sqlite3" -maxdepth 2 -name "runtimes" | head -n 1)
+  if [ -n "$SQLITE_RUNTIMES_DIR" ] && [ -d "$SQLITE_RUNTIMES_DIR" ]; then
+    echo "==> copying native SQLite runtimes to bin/runtimes"
+    mkdir -p "$REPO_ROOT/bin"
+    cp -R "$SQLITE_RUNTIMES_DIR/" "$REPO_ROOT/bin/runtimes/"
+    
+    # On macOS, also copy the appropriate dylib to the root bin/ directory to ensure FFI loads it correctly
+    ARCH="$(uname -m)"
+    if [ "$ARCH" = "arm64" ] && [ -f "$SQLITE_RUNTIMES_DIR/osx-arm64/native/libe_sqlite3.dylib" ]; then
+      cp "$SQLITE_RUNTIMES_DIR/osx-arm64/native/libe_sqlite3.dylib" "$REPO_ROOT/bin/libe_sqlite3.dylib"
+    elif [ "$ARCH" = "x86_64" ] && [ -f "$SQLITE_RUNTIMES_DIR/osx-x64/native/libe_sqlite3.dylib" ]; then
+      cp "$SQLITE_RUNTIMES_DIR/osx-x64/native/libe_sqlite3.dylib" "$REPO_ROOT/bin/libe_sqlite3.dylib"
+    fi
+  fi
+fi
+
 echo "==> Full build succeeded"
+

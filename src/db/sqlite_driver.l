@@ -15,69 +15,119 @@
 package CloudAgents.Sqlite
 
 import Std.Core
+import extern Microsoft.Data.Sqlite.SqliteConnection as SqliteConnection
+import extern Microsoft.Data.Sqlite.SqliteCommand as SqliteCommand
+import extern Microsoft.Data.Sqlite.SqliteDataReader as SqliteDataReader
+import extern System.Environment as Env
+import extern System.String as DotNetString
+import extern System.Type as DotNetType
+import extern SQLitePCL.SQLite3Provider_dynamic_cdecl as SQLiteProvider
 
-extern type SqliteConnection = "Microsoft.Data.Sqlite.SqliteConnection"
-extern type SqliteCommand    = "Microsoft.Data.Sqlite.SqliteCommand"
-extern type SqliteDataReader = "Microsoft.Data.Sqlite.SqliteDataReader"
+@externTarget("SQLitePCL.raw.SetProvider")
+func sqliteSetProvider(provider: in SQLiteProvider): Unit = ()
 
-// new SqliteConnection(connectionString)
-@externTarget("Microsoft.Data.Sqlite.SqliteConnection..ctor")
-func ctorConnection(connectionString: in String): SqliteConnection = ()
+@externTarget("SQLitePCL.raw.FreezeProvider")
+func sqliteFreezeProvider(): Unit = ()
 
-@externInstance
-@externTarget("Microsoft.Data.Sqlite.SqliteConnection.Open")
-func connOpen(conn: in SqliteConnection): Unit = ()
+extern type Type = "System.Type"
 
-@externInstance
-@externTarget("Microsoft.Data.Sqlite.SqliteConnection.Close")
-func connClose(conn: in SqliteConnection): Unit = ()
+extern type StringArray = "System.String[]"
 
-@externInstance
-@externTarget("Microsoft.Data.Sqlite.SqliteConnection.CreateCommand")
-func connCreateCommand(conn: in SqliteConnection): SqliteCommand = ()
-
-@externInstance
-@externTarget("Microsoft.Data.Sqlite.SqliteCommand.set_CommandText")
-func cmdSetText(cmd: in SqliteCommand, text: in String): Unit = ()
+extern type RowArray = "CloudAgents.Sqlite.Row[]"
 
 @externInstance
-@externTarget("Microsoft.Data.Sqlite.SqliteCommand.ExecuteNonQuery")
-func cmdExecuteNonQuery(cmd: in SqliteCommand): Int = ()
+@externTarget("System.Object.GetType")
+func getStringType(obj: in String): Type = ()
 
 @externInstance
-@externTarget("Microsoft.Data.Sqlite.SqliteCommand.ExecuteReader")
-func cmdExecuteReader(cmd: in SqliteCommand): SqliteDataReader = ()
+@externTarget("System.Object.GetType")
+func getRowType(obj: in Row): Type = ()
+
+@externTarget("System.Array.CreateInstance")
+func createStringArray(elementType: in Type, length: in Int): StringArray = ()
+
+@externTarget("System.Array.CreateInstance")
+func createRowArray(elementType: in Type, length: in Int): RowArray = ()
+
+@externTarget("System.Array.Copy")
+func copyStringArray(
+  sourceArray: in StringArray,
+  sourceIndex: in Int,
+  destinationArray: in StringArray,
+  destinationIndex: in Int,
+  length: in Int,
+): Unit = ()
+
+@externTarget("System.Array.Copy")
+func copyRowArray(
+  sourceArray: in RowArray,
+  sourceIndex: in Int,
+  destinationArray: in RowArray,
+  destinationIndex: in Int,
+  length: in Int,
+): Unit = ()
 
 @externInstance
-@externTarget("Microsoft.Data.Sqlite.SqliteDataReader.Read")
-func readerRead(reader: in SqliteDataReader): Bool = ()
+@externTarget("System.Array.get_Length")
+pub func getStringArrayLength(arr: in StringArray): Int = ()
 
 @externInstance
-@externTarget("Microsoft.Data.Sqlite.SqliteDataReader.get_FieldCount")
-func readerFieldCount(reader: in SqliteDataReader): Int = ()
+@externTarget("System.Array.get_Length")
+pub func getRowArrayLength(arr: in RowArray): Int = ()
 
 @externInstance
-@externTarget("Microsoft.Data.Sqlite.SqliteDataReader.IsDBNull")
-func readerIsNull(reader: in SqliteDataReader, ordinal: in Int): Bool = ()
+@externTarget("System.Array.SetValue")
+func setStringArrayValue(arr: in StringArray, value: in String, index: in Int): Unit = ()
 
 @externInstance
-@externTarget("Microsoft.Data.Sqlite.SqliteDataReader.GetString")
-func readerGetString(reader: in SqliteDataReader, ordinal: in Int): String = ()
+@externTarget("System.Array.SetValue")
+func setRowArrayValue(arr: in RowArray, value: in Row, index: in Int): Unit = ()
 
 @externInstance
-@externTarget("Microsoft.Data.Sqlite.SqliteDataReader.Close")
-func readerClose(reader: in SqliteDataReader): Unit = ()
+@externTarget("System.Array.GetValue")
+pub func getStringArrayValue(arr: in StringArray, index: in Int): String = ()
 
-@externTarget("System.Environment.GetEnvironmentVariable")
-func getEnvVar(name: in String): String = ()
+@externInstance
+@externTarget("System.Array.GetValue")
+pub func getRowArrayValue(arr: in RowArray, index: in Int): Row = ()
 
-@externTarget("System.String.IsNullOrEmpty")
-func isNullOrEmpty(s: in String): Bool = ()
+pub func appendString(arr: in StringArray, item: in String): StringArray {
+  val oldLen = getStringArrayLength(arr)
+  val stringType = getStringType("")
+  val newArr = createStringArray(stringType, oldLen + 1)
+  if oldLen > 0 {
+    copyStringArray(arr, 0, newArr, 0, oldLen)
+  }
+  setStringArrayValue(newArr, item, oldLen)
+  return newArr
+}
+
+pub func createEmptyStringArray(): StringArray {
+  val stringType = getStringType("")
+  return createStringArray(stringType, 0)
+}
+
+pub func appendRow(arr: in RowArray, item: in Row): RowArray {
+  val oldLen = getRowArrayLength(arr)
+  val rowType = getRowType(item)
+  val newArr = createRowArray(rowType, oldLen + 1)
+  if oldLen > 0 {
+    copyRowArray(arr, 0, newArr, 0, oldLen)
+  }
+  setRowArrayValue(newArr, item, oldLen)
+  return newArr
+}
+
+pub func createEmptyRowArray(): RowArray {
+  val dummy = Row(cols = createEmptyStringArray())
+  val rowType = getRowType(dummy)
+  return createRowArray(rowType, 0)
+}
 
 /// One result row: every column is read as text (the schema stores all columns
 /// with TEXT affinity, so `GetString` is always valid — see CloudAgents.Db).
 pub record Row {
-  pub cols: slice[String]
+  pub cols: StringArray
 }
 
 /// Failure modes at the database boundary.
@@ -88,7 +138,7 @@ pub union DbError {
 
 pub func dbErrorMessage(e: in DbError): String {
   return match e {
-    case OpenFailed(m)      -> "failed to open database: " + m
+    case OpenFailed(m) -> "failed to open database: " + m
     case ExecFailed(sql, m) -> "query failed (" + sql + "): " + m
   }
 }
@@ -97,8 +147,8 @@ pub func dbErrorMessage(e: in DbError): String {
 /// tests and deployments can point at different files; defaults to a file in
 /// the working directory.
 pub func dbPath(): String {
-  val p = getEnvVar("CLOUD_AGENTS_DB_PATH")
-  if isNullOrEmpty(p) {
+  val p = Env.GetEnvironmentVariable("CLOUD_AGENTS_DB_PATH")
+  if DotNetString.IsNullOrEmpty(p) {
     return "cloud-agents.db"
   }
   return p
@@ -109,9 +159,15 @@ pub func connectionString(): String {
 }
 
 func openConn(): Result[SqliteConnection, DbError] {
+  try {
+    sqliteSetProvider(SQLiteProvider.new())
+    sqliteFreezeProvider()
+  } catch Bug as b {
+    // Already set or failed, ignore
+  }
   return try {
-    val conn = ctorConnection(connectionString())
-    connOpen(conn)
+    val conn = SqliteConnection.new(connectionString())
+    conn.Open()
     Ok(value = conn)
   } catch Bug as b {
     Err(error = OpenFailed(message = b.message))
@@ -122,40 +178,44 @@ func openConn(): Result[SqliteConnection, DbError] {
 /// Returns the number of rows affected.
 pub func execute(sql: in String): Result[Int, DbError] {
   val conn = openConn()?
-  defer { connClose(conn) }
+  defer {
+    conn.Close()
+  }
   return try {
-    val cmd = connCreateCommand(conn)
-    cmdSetText(cmd, sql)
-    Ok(value = cmdExecuteNonQuery(cmd))
+    val cmd = conn.CreateCommand()
+    cmd.set_CommandText(sql)
+    Ok(value = cmd.ExecuteNonQuery())
   } catch Bug as b {
     Err(error = ExecFailed(sql = sql, message = b.message))
   }
 }
 
 /// Run a query and read every row as a list of text columns.
-pub func query(sql: in String): Result[slice[Row], DbError] {
+pub func query(sql: in String): Result[RowArray, DbError] {
   val conn = openConn()?
-  defer { connClose(conn) }
+  defer {
+    conn.Close()
+  }
   return try {
-    val cmd = connCreateCommand(conn)
-    cmdSetText(cmd, sql)
-    val reader = cmdExecuteReader(cmd)
-    val fields = readerFieldCount(reader)
-    var rows: slice[Row] = []
-    while readerRead(reader) {
-      var cols: slice[String] = []
+    val cmd = conn.CreateCommand()
+    cmd.set_CommandText(sql)
+    val reader = cmd.ExecuteReader()
+    val fields = reader.get_FieldCount()
+    var rows = createEmptyRowArray()
+    while reader.Read() {
+      var cols = createEmptyStringArray()
       var i = 0
       while i < fields {
-        if readerIsNull(reader, i) {
-          cols = cols.append("")
+        if reader.IsDBNull(i) {
+          cols = appendString(cols, "")
         } else {
-          cols = cols.append(readerGetString(reader, i))
+          cols = appendString(cols, reader.GetString(i))
         }
         i = i + 1
       }
-      rows = rows.append(Row(cols = cols))
+      rows = appendRow(rows, Row(cols = cols))
     }
-    readerClose(reader)
+    reader.Close()
     Ok(value = rows)
   } catch Bug as b {
     Err(error = ExecFailed(sql = sql, message = b.message))

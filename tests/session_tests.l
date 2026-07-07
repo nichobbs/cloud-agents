@@ -109,8 +109,8 @@ test "Test legacy session deserialisation defaults" {
   // deserialise with safe defaults rather than empty strings.
   val legacyJson = "{\"sessions\":[{\"sessionId\":\"legacy-1\",\"repoUrl\":\"https://github.com/nic/repo\",\"branch\":\"main\",\"containerId\":\"\"}]}"
   val sessions = parseSessionsJson(legacyJson)
-  assertEqualInt(sessions.length, 1, "one legacy session parsed")
-  val s = sessions[0]
+  assertEqualInt(getSessionArrayLength(sessions), 1, "one legacy session parsed")
+  val s = getSessionArrayValue(sessions, 0)
   assertEqual(s.harness, "claude", "legacy harness defaults to claude")
   assertEqual(s.model, "claude-opus-4-8", "legacy model defaults to harness default, not empty")
   assertEqual(s.nativeSessionId, "legacy-1", "legacy nativeSessionId defaults to sessionId")

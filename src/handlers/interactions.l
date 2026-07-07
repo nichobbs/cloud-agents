@@ -31,16 +31,13 @@ pub func getMessages(id: in String): Result[MessageList, Web.ApiError] {
   }
   match listMessages(id) {
     case Ok(msgs) -> return Ok(MessageList(messages = msgs))
-    case Err(e)   -> return Err(dbError(e))
+    case Err(e) -> return Err(dbError(e))
   }
 }
 
 /// Attach a comment to a specific message.
 @post("/api/messages/{mid}/comments")
-pub func addCommentHandler(
-  mid: in String,
-  @body req: in AddCommentRequest
-): Result[Comment, Web.ApiError] {
+pub func addCommentHandler(mid: in String, @body req: in AddCommentRequest): Result[Comment, Web.ApiError] {
   if mid.length == 0 {
     return Err(Web.badRequest("message id is required"))
   }
@@ -57,7 +54,7 @@ pub func addCommentHandler(
     case Err(e) -> return Err(dbError(e))
   }
   match addComment(mid, sessionId, req.body) {
-    case Ok(c)  -> return Ok(c)
+    case Ok(c) -> return Ok(c)
     case Err(e) -> return Err(dbError(e))
   }
 }
@@ -88,10 +85,7 @@ pub func getTodos(id: in String): Result[TodoList, Web.ApiError] {
 
 /// Create a todo / bookmark, optionally linked to a source message.
 @post("/api/sessions/{id}/todos")
-pub func addTodoHandler(
-  id: in String,
-  @body req: in AddTodoRequest
-): Result[Todo, Web.ApiError] {
+pub func addTodoHandler(id: in String, @body req: in AddTodoRequest): Result[Todo, Web.ApiError] {
   if id.length == 0 {
     return Err(Web.badRequest("id is required"))
   }
@@ -102,7 +96,7 @@ pub func addTodoHandler(
     return Err(Web.badRequest("note is too long (max 32768 characters)"))
   }
   match addTodo(id, req.messageId, req.note) {
-    case Ok(t)  -> return Ok(t)
+    case Ok(t) -> return Ok(t)
     case Err(e) -> return Err(dbError(e))
   }
 }
@@ -114,7 +108,7 @@ pub func toggleTodoHandler(tid: in String): Result[Unit, Web.ApiError] {
     return Err(Web.badRequest("todo id is required"))
   }
   match toggleTodo(tid) {
-    case Ok(_)  -> return Ok(())
+    case Ok(_) -> return Ok(())
     case Err(e) -> return Err(dbError(e))
   }
 }
@@ -126,7 +120,7 @@ pub func deleteTodoHandler(tid: in String): Result[Unit, Web.ApiError] {
     return Err(Web.badRequest("todo id is required"))
   }
   match deleteTodo(tid) {
-    case Ok(_)  -> return Ok(())
+    case Ok(_) -> return Ok(())
     case Err(e) -> return Err(dbError(e))
   }
 }

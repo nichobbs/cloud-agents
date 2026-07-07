@@ -58,7 +58,6 @@ pub record TodoList {
 }
 
 // ─── Small helpers ─────────────────────────────────────────────────────────────
-
 func newId(): String {
   return Std.Uuid.uuidToString(Std.Uuid.newUuid())
 }
@@ -68,16 +67,36 @@ func nowMillis(): String {
 }
 
 func digitValue(c: in String): Int {
-  if c == "0" { return 0 }
-  if c == "1" { return 1 }
-  if c == "2" { return 2 }
-  if c == "3" { return 3 }
-  if c == "4" { return 4 }
-  if c == "5" { return 5 }
-  if c == "6" { return 6 }
-  if c == "7" { return 7 }
-  if c == "8" { return 8 }
-  if c == "9" { return 9 }
+  if c == "0" {
+    return 0
+  }
+  if c == "1" {
+    return 1
+  }
+  if c == "2" {
+    return 2
+  }
+  if c == "3" {
+    return 3
+  }
+  if c == "4" {
+    return 4
+  }
+  if c == "5" {
+    return 5
+  }
+  if c == "6" {
+    return 6
+  }
+  if c == "7" {
+    return 7
+  }
+  if c == "8" {
+    return 8
+  }
+  if c == "9" {
+    return 9
+  }
   return -1
 }
 
@@ -95,15 +114,15 @@ func parseNatString(s: in String): Int {
   return n
 }
 
-func colAt(cols: in slice[String], i: in Int): String {
-  if i < cols.length {
-    return cols[i]
+func colAt(cols: in CloudAgents.Sqlite.StringArray, i: in Int): String {
+  val len = CloudAgents.Sqlite.getStringArrayLength(cols)
+  if i < len {
+    return CloudAgents.Sqlite.getStringArrayValue(cols, i)
   }
   return ""
 }
 
 // ─── Schema ────────────────────────────────────────────────────────────────────
-
 /// Verify the database is reachable. Used by the health endpoint.
 pub func ping(): Result[Unit, CloudAgents.Sqlite.DbError] {
   CloudAgents.Sqlite.execute("SELECT 1")?
@@ -120,7 +139,6 @@ pub func initSchema(): Result[Unit, CloudAgents.Sqlite.DbError] {
 }
 
 // ─── Messages ──────────────────────────────────────────────────────────────────
-
 func rowToMessage(r: in CloudAgents.Sqlite.Row): Message {
   return Message(
     id = colAt(r.cols, 0),
@@ -135,32 +153,27 @@ func rowToMessage(r: in CloudAgents.Sqlite.Row): Message {
 /// Next sequence number for a session (its current message count).
 func nextSeq(sessionId: in String): Result[Int, CloudAgents.Sqlite.DbError] {
   val rows = CloudAgents.Sqlite.query(CloudAgents.Db.countMessagesSql(sessionId))?
-  if rows.length == 0 {
+  val len = CloudAgents.Sqlite.getRowArrayLength(rows)
+  if len == 0 {
     return Ok(value = 0)
   }
-  return Ok(value = parseNatString(colAt(rows[0].cols, 0)))
+  val r0 = CloudAgents.Sqlite.getRowArrayValue(rows, 0)
+  return Ok(value = parseNatString(colAt(r0.cols, 0)))
 }
 
 /// Append a message to a session's transcript and return the stored record
 /// (with its freshly minted id and sequence number).
 pub func addMessage(
-  sessionId: in String,
-  role: in String,
-  content: in String
+  sessionId: in String, role: in String, content: in String
 ): Result[Message, CloudAgents.Sqlite.DbError] {
   val seqN = nextSeq(sessionId)?
   val id = newId()
   val ts = nowMillis()
   val seqStr = CloudAgents.Db.padSeq(seqN)
   CloudAgents.Sqlite.execute(CloudAgents.Db.insertMessageSql(id, sessionId, role, content, seqStr, ts))?
-  return Ok(value = Message(
-    id = id,
-    sessionId = sessionId,
-    role = role,
-    content = content,
-    seq = seqStr,
-    createdAt = ts
-  ))
+  return Ok(
+    value = Message(id = id, sessionId = sessionId, role = role, content = content, seq = seqStr, createdAt = ts)
+  )
 }
 
 /// All messages in a session, oldest first.
@@ -168,8 +181,9 @@ pub func listMessages(sessionId: in String): Result[slice[Message], CloudAgents.
   val rows = CloudAgents.Sqlite.query(CloudAgents.Db.selectMessagesSql(sessionId))?
   var acc: slice[Message] = []
   var i = 0
-  while i < rows.length {
-    acc = acc.append(rowToMessage(rows[i]))
+  val len = CloudAgents.Sqlite.getRowArrayLength(rows)
+  while i < len {
+    acc = acc.append(rowToMessage(CloudAgents.Sqlite.getRowArrayValue(rows, i)))
     i = i + 1
   }
   return Ok(value = acc)
@@ -179,14 +193,15 @@ pub func listMessages(sessionId: in String): Result[slice[Message], CloudAgents.
 /// correct session without trusting client-supplied sessionId values.
 pub func getMessageSessionId(messageId: in String): Result[Option[String], CloudAgents.Sqlite.DbError] {
   val rows = CloudAgents.Sqlite.query(CloudAgents.Db.selectMessageSessionIdSql(messageId))?
-  if rows.length == 0 {
+  val len = CloudAgents.Sqlite.getRowArrayLength(rows)
+  if len == 0 {
     return Ok(value = None)
   }
-  return Ok(value = Some(value = colAt(rows[0].cols, 0)))
+  val r0 = CloudAgents.Sqlite.getRowArrayValue(rows, 0)
+  return Ok(value = Some(value = colAt(r0.cols, 0)))
 }
 
 // ─── Comments ──────────────────────────────────────────────────────────────────
-
 func rowToComment(r: in CloudAgents.Sqlite.Row): Comment {
   return Comment(
     id = colAt(r.cols, 0),
@@ -199,20 +214,12 @@ func rowToComment(r: in CloudAgents.Sqlite.Row): Comment {
 
 /// Attach a comment to a message.
 pub func addComment(
-  messageId: in String,
-  sessionId: in String,
-  body: in String
+  messageId: in String, sessionId: in String, body: in String
 ): Result[Comment, CloudAgents.Sqlite.DbError] {
   val id = newId()
   val ts = nowMillis()
   CloudAgents.Sqlite.execute(CloudAgents.Db.insertCommentSql(id, messageId, sessionId, body, ts))?
-  return Ok(value = Comment(
-    id = id,
-    messageId = messageId,
-    sessionId = sessionId,
-    body = body,
-    createdAt = ts
-  ))
+  return Ok(value = Comment(id = id, messageId = messageId, sessionId = sessionId, body = body, createdAt = ts))
 }
 
 /// All comments on a message, oldest first.
@@ -220,15 +227,15 @@ pub func listComments(messageId: in String): Result[slice[Comment], CloudAgents.
   val rows = CloudAgents.Sqlite.query(CloudAgents.Db.selectCommentsSql(messageId))?
   var acc: slice[Comment] = []
   var i = 0
-  while i < rows.length {
-    acc = acc.append(rowToComment(rows[i]))
+  val len = CloudAgents.Sqlite.getRowArrayLength(rows)
+  while i < len {
+    acc = acc.append(rowToComment(CloudAgents.Sqlite.getRowArrayValue(rows, i)))
     i = i + 1
   }
   return Ok(value = acc)
 }
 
 // ─── Todos ─────────────────────────────────────────────────────────────────────
-
 func rowToTodo(r: in CloudAgents.Sqlite.Row): Todo {
   return Todo(
     id = colAt(r.cols, 0),
@@ -242,22 +249,13 @@ func rowToTodo(r: in CloudAgents.Sqlite.Row): Todo {
 
 /// Create a todo / bookmark, optionally anchored to a message (pass "" for a
 /// free-standing todo).
-pub func addTodo(
-  sessionId: in String,
-  messageId: in String,
-  note: in String
-): Result[Todo, CloudAgents.Sqlite.DbError] {
+pub func addTodo(sessionId: in String, messageId: in String, note: in String): Result[Todo, CloudAgents.Sqlite.DbError] {
   val id = newId()
   val ts = nowMillis()
   CloudAgents.Sqlite.execute(CloudAgents.Db.insertTodoSql(id, sessionId, messageId, note, ts))?
-  return Ok(value = Todo(
-    id = id,
-    sessionId = sessionId,
-    messageId = messageId,
-    note = note,
-    done = "0",
-    createdAt = ts
-  ))
+  return Ok(
+    value = Todo(id = id, sessionId = sessionId, messageId = messageId, note = note, done = "0", createdAt = ts)
+  )
 }
 
 /// All todos for a session, newest first.
@@ -265,8 +263,9 @@ pub func listTodos(sessionId: in String): Result[slice[Todo], CloudAgents.Sqlite
   val rows = CloudAgents.Sqlite.query(CloudAgents.Db.selectTodosSql(sessionId))?
   var acc: slice[Todo] = []
   var i = 0
-  while i < rows.length {
-    acc = acc.append(rowToTodo(rows[i]))
+  val len = CloudAgents.Sqlite.getRowArrayLength(rows)
+  while i < len {
+    acc = acc.append(rowToTodo(CloudAgents.Sqlite.getRowArrayValue(rows, i)))
     i = i + 1
   }
   return Ok(value = acc)

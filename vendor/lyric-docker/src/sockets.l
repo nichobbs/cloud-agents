@@ -57,11 +57,7 @@ pub func parseUnixSocketUrl(url: in String): Option[String] {
     return None
   }
 
-  val path = if withoutPrefix.startsWith("//") {
-    withoutPrefix.substring(2)
-  } else {
-    withoutPrefix
-  }
+  val path = if withoutPrefix.startsWith("//") { withoutPrefix.substring(2) } else { withoutPrefix }
 
   if path.length > 0 {
     Some(value = path)
