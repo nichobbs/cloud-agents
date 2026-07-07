@@ -97,6 +97,15 @@ jobs:
         continue-on-error: true
         run: ./scripts/repro-compiler-bug.sh
 
+      # Diagnostic, not a gate: reports whether the Lyric.Web library bug
+      # documented in docs/BUILD.md "Dependencies" (Encoding.GetBytes
+      # extern-binding crash, lyric-lang#3887) still reproduces against the
+      # currently-pinned Lyric.Web version. continue-on-error since this
+      # project doesn't yet rely on the HTTP server actually working.
+      - name: Check known Lyric.Web bug status
+        continue-on-error: true
+        run: ./scripts/repro-web-bug.sh
+
       # Shell + asset sanity checks (no Lyric toolchain needed).
       - name: Lint shell scripts
         run: |
@@ -111,7 +120,8 @@ jobs:
             scripts/dev.sh \
             scripts/build-docker.sh \
             scripts/run-api.sh \
-            scripts/repro-compiler-bug.sh; do
+            scripts/repro-compiler-bug.sh \
+            scripts/repro-web-bug.sh; do
             bash -n "$f" && echo "ok: $f"
           done
 
