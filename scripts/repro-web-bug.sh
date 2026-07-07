@@ -99,6 +99,17 @@ func encodingUtf8(): Encoding = ()
 // the compiler inferring instance-vs-static without a hint — lyric-lang#3887's
 // own remaining-work section is specifically about making that inference
 // correct), not "best practice" Lyric written from scratch.
+//
+// docs/lyric/gotchas.md's "default is static, forgetting @externInstance =
+// wrong call instruction" is accurate guidance for writing new Lyric, but
+// is NOT an exceptionless description of the compiler's actual runtime
+// resolution — verified directly: four other real BCL instance methods
+// (HttpListener's ctor, get_Prefixes, Start, Close; HttpListenerPrefixCollection's
+// Add), declared the same unannotated way, all resolve and run correctly on
+// the same compiler that fails on this one. The unannotated-instance-call
+// fallback works for single-overload methods; Encoding.GetBytes has several
+// BCL overloads and is specifically where that fallback breaks — a
+// narrower, real defect, not a blanket missing-annotation mistake.
 @externTarget("System.Text.Encoding.GetBytes")
 func encodingGetBytes(enc: in Encoding, str: in String): slice[Byte] = ()
 
