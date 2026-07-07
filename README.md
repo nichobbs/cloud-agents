@@ -50,10 +50,17 @@ fixed. See [`docs/BUILD.md`](docs/BUILD.md) "Compiler notes" for the full
 history and `./scripts/repro-compiler-bug.sh` for a runnable check of your
 compiler's status.
 
+**The HTTP server itself is not yet usable**: it binds and stays up while
+idle, but `Lyric.Web` crashes on the first real request it answers, and
+even without that crash it doesn't dispatch requests to this project's
+handlers yet (every request gets an identical hardcoded diagnostic
+payload). Both are root-caused, upstream `Lyric.Web` gaps — see
+[`docs/BUILD.md`](docs/BUILD.md) "Dependencies" for detail and evidence.
+
 ```sh
 lyric restore && lyric build   # or: ./scripts/build-full.sh — succeeds as of v0.4.14
 ./scripts/verify.sh            # runtime-verifies the core logic — genuinely passes
-./scripts/run-api.sh           # build + start the API server locally — works as of v0.4.17
+./scripts/run-api.sh           # builds + starts the process — binds, but can't yet serve a real request (see docs/BUILD.md)
 ```
 
 ```sh
