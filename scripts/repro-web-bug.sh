@@ -53,7 +53,7 @@ REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 command -v lyric  >/dev/null || { echo "repro-web-bug: 'lyric' not on PATH"  >&2; exit 2; }
 command -v dotnet >/dev/null || { echo "repro-web-bug: 'dotnet' not on PATH" >&2; exit 2; }
 
-WEB_VERSION="$(sed -n 's/^"Lyric.Web"[[:space:]]*=[[:space:]]*"\([0-9.]*\)".*/\1/p' "$REPO_ROOT/lyric.toml" | head -1)"
+WEB_VERSION="$(sed -n 's/^"Lyric\.Web"[[:space:]]*=[[:space:]]*"\([0-9.]*\)".*/\1/p' "$REPO_ROOT/lyric.toml" | head -1)"
 [ -n "$WEB_VERSION" ] || { echo "repro-web-bug: could not read Lyric.Web version from lyric.toml" >&2; exit 2; }
 
 WORK="$(mktemp -d)"
