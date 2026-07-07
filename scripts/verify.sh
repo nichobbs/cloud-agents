@@ -17,7 +17,7 @@
 # (`slice[T].append()` throwing at runtime, fixed in v0.4.18) never
 # affected it either, since this harness never calls `.append()`. Bug 7
 # (an untyped top-level String val's `.length` throwing an IList cast,
-# still open, lyric-lang#5298) doesn't affect it either, since this
+# fixed in v0.4.19, lyric-lang#5298) never affected it either, since this
 # harness has no such top-level val.
 #
 # This script compiles a small hand-rolled `main()` harness and runs it with

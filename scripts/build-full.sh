@@ -9,7 +9,7 @@
 # compiles everything else.
 #
 # THIS NOW SUCCEEDS as of v0.4.14 — the first release where it ever has,
-# after seven sequential upstream compiler bugs (six now fixed). Bug 1
+# after seven sequential upstream compiler bugs, all now fixed. Bug 1
 # (buildProject crash, https://github.com/nichobbs/lyric-lang/issues/4925)
 # fixed in v0.4.11; bug 2 (Std.Core's Option/Result/Some/None/Ok/Err never
 # resolving, https://github.com/nichobbs/lyric-lang/issues/4980) fixed in
@@ -23,15 +23,15 @@
 # that's what let scripts/run-api.sh finally start the server. Bug 6
 # (slice[T].append() throwing at runtime,
 # https://github.com/nichobbs/lyric-lang/issues/5244) fixed in v0.4.18.
-# Bug 7, still open (an untyped top-level String val's `.length` throwing
-# an IList cast): https://github.com/nichobbs/lyric-lang/issues/5298 —
-# doesn't affect this script, but does affect one `lyric test` case; see
-# docs/BUILD.md "Compiler notes" for detail. None of the seven was ever
-# something this project's lyric.toml or source could work around. An
-# earlier version of this comment described a `[nuget]`-stripping
-# workaround based on a since-disproven theory (it didn't actually fix
-# anything, though it was harmless) — removed once the real scope became
-# clear.
+# Bug 7 (an untyped top-level String val's `.length` throwing an IList
+# cast): https://github.com/nichobbs/lyric-lang/issues/5298, fixed in
+# v0.4.19 — didn't affect this script, but did affect one `lyric test`
+# case; see docs/BUILD.md "Compiler notes" for detail. None of the seven
+# was ever something this project's lyric.toml or source could work
+# around. An earlier version of this comment described a `[nuget]`-
+# stripping workaround based on a since-disproven theory (it didn't
+# actually fix anything, though it was harmless) — removed once the real
+# scope became clear.
 #
 # Requirements on PATH: lyric, dotnet (10.x).
 set -euo pipefail

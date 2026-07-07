@@ -46,29 +46,31 @@ design of each phase and `docs/BUILD.md` for build/verification notes.
 > **fixed in [v0.4.18](https://github.com/nichobbs/lyric-lang/releases/tag/v0.4.18)** —
 > `CloudAgents.AuthTests` now passes 5/5.
 >
-> **A seventh upstream bug is still open**, found while diagnosing the one
+> **A seventh upstream bug, found while diagnosing the one
 > `CloudAgents.SessionTests` case bug 6's fix didn't clear (`Test Handler
 > createSession validation`, previously indistinguishable from bug 6's
-> symptoms): a package-scope (top-level) `val` with no explicit type
-> annotation, initialized to a string literal, crashes `.length` at runtime
-> with `System.InvalidCastException: Unable to cast object of type
-> 'System.String' to type 'System.Collections.IList'` — same-package,
-> unqualified, no cross-package reference needed. Root-caused (with direct
-> access to `nichobbs/lyric-lang`) to `lyric-compiler/msil/codegen.l`'s
-> package-level val/const pre-scan defaulting an untyped declaration's MSIL
-> type to `MObject` instead of inferring it from the initializer, which
-> later routes `.length` through a fallback that assumes any object-typed
-> receiver is a List-backed slice. `src/handlers/sessions.l`'s
-> `createSession` reads exactly such a `val` (`httpsPrefix`), which is why
-> that one test case still fails. Filed as
-> [lyric-lang#5298](https://github.com/nichobbs/lyric-lang/issues/5298)
-> (open) — distinct from
+> symptoms), is now also fixed**: a package-scope (top-level) `val` with no
+> explicit type annotation, initialized to a string literal, used to crash
+> `.length` at runtime with `System.InvalidCastException: Unable to cast
+> object of type 'System.String' to type 'System.Collections.IList'` —
+> same-package, unqualified, no cross-package reference needed. Root-caused
+> (with direct access to `nichobbs/lyric-lang`) to
+> `lyric-compiler/msil/codegen.l`'s package-level val/const pre-scan
+> defaulting an untyped declaration's MSIL type to `MObject` instead of
+> inferring it from the initializer, which routed `.length` through a
+> fallback that assumed any object-typed receiver is a List-backed slice.
+> `src/handlers/sessions.l`'s `createSession` reads exactly such a `val`
+> (`httpsPrefix`), which is why that one test case used to fail. Filed as
+> [lyric-lang#5298](https://github.com/nichobbs/lyric-lang/issues/5298),
+> **fixed in [v0.4.19](https://github.com/nichobbs/lyric-lang/releases/tag/v0.4.19)** —
+> distinct from
 > [lyric-lang#5258](https://github.com/nichobbs/lyric-lang/issues/5258) (a
-> related but different MSIL bug, fixed the same day, about *cross*-package
-> qualified `pub val` access; its fix doesn't cover this same-package,
-> untyped-inference gap). See `docs/BUILD.md` "Compiler notes"/"Running
-> tests" for full detail, evidence, and current release status before
-> assuming a local CI failure here needs a local fix.
+> related but different MSIL bug, fixed a day earlier, about *cross*-package
+> qualified `pub val` access; that fix didn't cover this same-package,
+> untyped-inference gap). **All seven known upstream compiler bugs are now
+> fixed** — `lyric test` is 24/24 across every suite for the first time in
+> this project's history. See `docs/BUILD.md` "Compiler notes"/"Running
+> tests" for full detail and evidence.
 >
 > Building the full project for the first time also surfaced one genuine
 > bug in this project's own source: `vendor/lyric-docker/src/docker.l`

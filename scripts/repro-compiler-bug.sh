@@ -66,29 +66,31 @@
 #    `CloudAgents.SessionTests`/`AuthTests`, previously indistinguishable
 #    from bug 5's symptoms until isolated to a standalone repro.
 #
-# 7. lyric-lang#5298 (open, found while diagnosing the one `SessionTests`
-#    case that survived bug 6's fix): a package-scope (top-level) `val`
-#    declared *without* an explicit type annotation, whose initializer is a
-#    string literal, crashes at runtime with `System.InvalidCastException:
-#    Unable to cast object of type 'System.String' to type
-#    'System.Collections.IList'` when its `.length` is read anywhere in the
-#    program — including same-package, unqualified, no cross-package
-#    reference involved. Root-caused (after gaining direct access to
-#    nichobbs/lyric-lang) to `lyric-compiler/msil/codegen.l`'s package-level
-#    `val`/`const` pre-scan: it only records the declared MSIL type when
-#    there's an explicit type annotation; when the type must be inferred
-#    from the initializer, it silently defaults to `MObject`, which later
-#    routes `.length` through a fallback that assumes any object-typed
-#    receiver is a List-backed slice and unconditionally casts to `IList` —
-#    fine for slices, wrong for a boxed `System.String`. Distinct from
-#    lyric-lang#5258 (a related but different MSIL bug, *cross*-package
-#    qualified `pub val` access resolving to null, fixed same-day): #5258's
-#    fix added qualified lookup keys but didn't touch the untyped-inference
-#    gap this bug is about, so it doesn't cover this same-package case.
-#    `src/handlers/sessions.l`'s `createSession` reads exactly such a
-#    top-level `val` (`httpsPrefix`), which is why `CloudAgents.SessionTests`'
-#    "Test Handler createSession validation" case still fails `lyric test`
-#    even with bug 6 fixed.
+# 7. lyric-lang#5298 (fixed as of v0.4.19), found while diagnosing the one
+#    `SessionTests` case that survived bug 6's fix: a package-scope
+#    (top-level) `val` declared *without* an explicit type annotation, whose
+#    initializer is a string literal, crashed at runtime with
+#    `System.InvalidCastException: Unable to cast object of type
+#    'System.String' to type 'System.Collections.IList'` when its `.length`
+#    was read anywhere in the program — including same-package, unqualified,
+#    no cross-package reference involved. Root-caused (after gaining direct
+#    access to nichobbs/lyric-lang) to `lyric-compiler/msil/codegen.l`'s
+#    package-level `val`/`const` pre-scan: it only recorded the declared
+#    MSIL type when there was an explicit type annotation; when the type had
+#    to be inferred from the initializer, it silently defaulted to
+#    `MObject`, which routed `.length` through a fallback that assumed any
+#    object-typed receiver is a List-backed slice and unconditionally cast
+#    to `IList` — fine for slices, wrong for a boxed `System.String`.
+#    Distinct from lyric-lang#5258 (a related but different MSIL bug,
+#    *cross*-package qualified `pub val` access resolving to null, fixed a
+#    day earlier): #5258's fix added qualified lookup keys but didn't touch
+#    the untyped-inference gap this bug was about, so it didn't cover this
+#    same-package case. `src/handlers/sessions.l`'s `createSession` reads
+#    exactly such a top-level `val` (`httpsPrefix`), which is why
+#    `CloudAgents.SessionTests`' "Test Handler createSession validation"
+#    case used to fail `lyric test` even with bug 6 fixed — with bug 7 fixed
+#    too, the full suite is 24/24 for the first time in this project's
+#    history.
 #
 # Checks 1 and 2 only require `lyric` on PATH — no `dotnet` needed, since
 # both bugs occur before the compiler would invoke the .NET toolchain.
@@ -293,8 +295,9 @@ else
   # Positional pairing, not a raw count comparison: for each `not ok` line,
   # look at the very next line (this harness's TAP-like output always prints
   # exactly one indented failure-detail line right after `not ok`) and
-  # require it to match a KNOWN signature — either #5244's (open on older
-  # compilers) or #5298's (open now). A count comparison alone would be
+  # require it to match a KNOWN signature — either #5244's or #5298's (both
+  # now fixed upstream, kept here to catch a regression). A count comparison
+  # alone would be
   # fooled if either substring ever appeared more than once for a single
   # failing test; this can't be, since it checks each failure's own detail
   # line individually. Resets `detail` before each `getline` and checks its
@@ -317,10 +320,10 @@ else
     echo "==> Reproduced: this compiler still corrupts cross-package field/method metadata tokens in real multi-package builds (lyric-lang#5177)"
     note_reproduced
   elif [ "$real_test_status" -ne 0 ] && [ "$not_ok_count" -gt 0 ] && [ -z "$unmatched_failure_detail" ]; then
-    # lyric test may still fail right now — but only on lyric-lang#5244
-    # (checked separately by check 6) and/or #5298 (checked by check 7), not
-    # #5177's signature. Every failing test's own detail line must match one
-    # of those known signatures for this branch — if even one doesn't (e.g.
+    # lyric test may still fail on a regression of lyric-lang#5244 (checked
+    # separately by check 6) and/or #5298 (checked by check 7), not #5177's
+    # signature. Every failing test's own detail line must match one of
+    # those known signatures for this branch — if even one doesn't (e.g.
     # some other, unrelated failure), that's a mismatch and falls through to
     # the unexpected-failure branch below, rather than being silently masked
     # by the known failures alongside it.
