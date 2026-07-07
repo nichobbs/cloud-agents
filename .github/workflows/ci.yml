@@ -34,19 +34,20 @@ jobs:
       # release ever regresses one of the seven known bugs (see "Compiler
       # notes") — rather than the new hard-gating `lyric test` step below
       # failing opaquely on an unrelated application PR. Passing the
-      # resolved version to --version also pins what actually gets
+      # resolved version to the install step also pins what actually gets
       # installed, instead of both this step and the installer separately
       # re-resolving "latest" (a small deterministic-CI bonus, not just a
       # gating one). This endpoint used to be hit only as an opportunistic
       # fallback; it's now a hard dependency of every run, so retry a few
       # times with brief backoff rather than failing the whole job on one
-      # transient blip (review #142).
+      # transient blip, and bound each attempt with a timeout so a hung
+      # connection fails fast instead of stalling the job.
       - name: Resolve latest Lyric release
         id: resolve_lyric
         run: |
           ver=""
           for attempt in 1 2 3; do
-            ver=$(curl -sI https://github.com/nichobbs/lyric-lang/releases/latest \
+            ver=$(curl -sI --connect-timeout 10 --max-time 30 https://github.com/nichobbs/lyric-lang/releases/latest \
                     | sed -n 's/.*tag\/v\([0-9.]*\).*/\1/p' | tr -d '\r')
             [ -n "$ver" ] && break
             echo "attempt $attempt: could not resolve latest Lyric release tag, retrying..." >&2
@@ -59,16 +60,18 @@ jobs:
       # Fails fast with a clear diagnostic if a future Lyric release ever
       # drops below the version this project's docs/BUILD.md documents as
       # having all seven known upstream compiler bugs fixed — see
-      # nichobbs/cloud-agents#140 and docs/BUILD.md "Compiler notes", which
-      # cross-references this floor so the two stay in sync (review #144).
-      # Bump both together if a new bug is found and fixed later.
+      # nichobbs/cloud-agents#140. The floor itself lives in the single
+      # checked-in MIN_LYRIC_VERSION file (also referenced from
+      # docs/BUILD.md "Compiler notes"), rather than being duplicated as a
+      # literal in both places, so the two can't drift out of sync — bump
+      # that one file if a new bug is found and fixed later.
       - name: Verify minimum Lyric version
         run: |
-          MIN_VERSION="0.4.19"
+          MIN_VERSION="$(cat MIN_LYRIC_VERSION)"
           RESOLVED="${{ steps.resolve_lyric.outputs.version }}"
           lowest="$(printf '%s\n%s\n' "$MIN_VERSION" "$RESOLVED" | sort -V | head -1)"
           if [ "$lowest" != "$MIN_VERSION" ]; then
-            echo "::error::Latest Lyric release ($RESOLVED) is older than $MIN_VERSION, the version docs/BUILD.md 'Compiler notes' documents as having all seven known upstream bugs fixed. If this is a genuine downgrade/regression, investigate via ./scripts/repro-compiler-bug.sh and consider marking the 'Run lyric test' step continue-on-error again until it's resolved upstream." >&2
+            echo "::error::Latest Lyric release ($RESOLVED) is older than $MIN_VERSION (see MIN_LYRIC_VERSION), the version docs/BUILD.md 'Compiler notes' documents as having all seven known upstream bugs fixed. If this is a genuine downgrade/regression, investigate via ./scripts/repro-compiler-bug.sh and consider marking the 'Run lyric test' step continue-on-error again until it's resolved upstream." >&2
             exit 1
           fi
           echo "Lyric $RESOLVED >= required minimum $MIN_VERSION"
@@ -78,18 +81,17 @@ jobs:
       # step's entire job is to install precisely the version the previous
       # step just checked >= MIN_VERSION, and a positive, direct download
       # of that exact tag makes that guarantee airtight instead of trusting
-      # install.sh to honor an untested flag (review #146; empirically
-      # confirmed separately that install.sh --version does work as
-      # documented, by installing v0.4.15 this way and behaviorally
-      # verifying it still reproduces lyric-lang#5244, which v0.4.18+
-      # fixes — but this project shouldn't have to depend on that holding
-      # forever when a direct download is just as simple and removes the
-      # question entirely).
+      # install.sh to honor an untested flag (empirically confirmed
+      # separately that install.sh --version does work as documented, by
+      # installing v0.4.15 this way and behaviorally verifying it still
+      # reproduces lyric-lang#5244, which v0.4.18+ fixes — but this project
+      # shouldn't have to depend on that holding forever when a direct
+      # download is just as simple and removes the question entirely).
       - name: Install Lyric compiler
         run: |
           mkdir -p "$HOME/.local/bin"
           ver="${{ steps.resolve_lyric.outputs.version }}"
-          curl -fsSL -o /tmp/lyric.tgz \
+          curl -fsSL --connect-timeout 10 --max-time 120 -o /tmp/lyric.tgz \
             "https://github.com/nichobbs/lyric-lang/releases/download/v${ver}/lyric-${ver}-linux-x64.tar.gz"
           tar -xzf /tmp/lyric.tgz -C "$HOME/.local/bin"
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
