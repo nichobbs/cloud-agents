@@ -25,6 +25,16 @@
 # is enough to check whether the fix has landed — no separate version to
 # keep in sync by hand.
 #
+# NOTE for anyone tempted to add @externInstance to the encodingGetBytes
+# declaration below: don't. Lyric.Web's own real source doesn't have it
+# either (confirmed at both the pinned v0.4.11 tag and current main), and
+# adding it makes this specific call resolve correctly on every compiler
+# version tried so far — including ones that provably still crash inside
+# Lyric.Web's actual compiled serve() at runtime. This script exists to
+# model the exact unannotated shape Lyric.Web ships, not "best practice"
+# Lyric written from scratch — see the inline comment at the declaration
+# for the full reasoning.
+#
 # Requirements: lyric on PATH, dotnet on PATH, network access to nuget.org
 # (a real [nuget] restore is needed — this isn't reproducible without one,
 # since it's Lyric.Web's own compiled code that's at fault, not this
@@ -72,6 +82,17 @@ extern type Encoding = "System.Text.Encoding"
 @externTarget("System.Text.Encoding.get_UTF8")
 func encodingUtf8(): Encoding = ()
 
+// Deliberately NOT @externInstance, matching Lyric.Web's own real source
+// exactly (lyric-web/src/web.l, both the pinned v0.4.11 tag and current
+// main both declare this identically): adding @externInstance here makes
+// this call resolve correctly on every compiler version tried so far,
+// including the ones that provably still crash inside Lyric.Web's actual
+// compiled serve() at runtime — annotating it would make this script
+// silently stop testing the thing it exists to test. This is intentionally
+// modeling the unannotated shape Lyric.Web actually ships (which relies on
+// the compiler inferring instance-vs-static without a hint — lyric-lang#3887's
+// own remaining-work section is specifically about making that inference
+// correct), not "best practice" Lyric written from scratch.
 @externTarget("System.Text.Encoding.GetBytes")
 func encodingGetBytes(enc: in Encoding, str: in String): slice[Byte] = ()
 
