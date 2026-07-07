@@ -37,31 +37,41 @@ jobs:
       # resolved version to --version also pins what actually gets
       # installed, instead of both this step and the installer separately
       # re-resolving "latest" (a small deterministic-CI bonus, not just a
-      # gating one).
+      # gating one). This endpoint used to be hit only as an opportunistic
+      # fallback; it's now a hard dependency of every run, so retry a few
+      # times with brief backoff rather than failing the whole job on one
+      # transient blip (review #142).
       - name: Resolve latest Lyric release
         id: resolve_lyric
         run: |
-          ver=$(curl -sI https://github.com/nichobbs/lyric-lang/releases/latest \
-                  | sed -n 's/.*tag\/v\([0-9.]*\).*/\1/p' | tr -d '\r')
-          [ -n "$ver" ] || { echo "could not resolve latest Lyric release tag" >&2; exit 1; }
+          ver=""
+          for attempt in 1 2 3; do
+            ver=$(curl -sI https://github.com/nichobbs/lyric-lang/releases/latest \
+                    | sed -n 's/.*tag\/v\([0-9.]*\).*/\1/p' | tr -d '\r')
+            [ -n "$ver" ] && break
+            echo "attempt $attempt: could not resolve latest Lyric release tag, retrying..." >&2
+            sleep 3
+          done
+          [ -n "$ver" ] || { echo "could not resolve latest Lyric release tag after 3 attempts" >&2; exit 1; }
           echo "Resolved latest Lyric release: v$ver"
           echo "version=$ver" >> "$GITHUB_OUTPUT"
 
       # Fails fast with a clear diagnostic if a future Lyric release ever
       # drops below the version this project's docs/BUILD.md documents as
       # having all seven known upstream compiler bugs fixed — see
-      # nichobbs/cloud-agents#140. Bump MIN_VERSION alongside "Compiler
-      # notes" if a new bug is found and fixed later.
+      # nichobbs/cloud-agents#140 and docs/BUILD.md "Compiler notes", which
+      # cross-references this floor so the two stay in sync (review #144).
+      # Bump both together if a new bug is found and fixed later.
       - name: Verify minimum Lyric version
         run: |
           MIN_VERSION="0.4.19"
-          INSTALLED="${{ steps.resolve_lyric.outputs.version }}"
-          lowest="$(printf '%s\n%s\n' "$MIN_VERSION" "$INSTALLED" | sort -V | head -1)"
+          RESOLVED="${{ steps.resolve_lyric.outputs.version }}"
+          lowest="$(printf '%s\n%s\n' "$MIN_VERSION" "$RESOLVED" | sort -V | head -1)"
           if [ "$lowest" != "$MIN_VERSION" ]; then
-            echo "::error::Latest Lyric release ($INSTALLED) is older than $MIN_VERSION, the version docs/BUILD.md 'Compiler notes' documents as having all seven known upstream bugs fixed. If this is a genuine downgrade/regression, investigate via ./scripts/repro-compiler-bug.sh and consider marking the 'Run lyric test' step continue-on-error again until it's resolved upstream." >&2
+            echo "::error::Latest Lyric release ($RESOLVED) is older than $MIN_VERSION, the version docs/BUILD.md 'Compiler notes' documents as having all seven known upstream bugs fixed. If this is a genuine downgrade/regression, investigate via ./scripts/repro-compiler-bug.sh and consider marking the 'Run lyric test' step continue-on-error again until it's resolved upstream." >&2
             exit 1
           fi
-          echo "Lyric $INSTALLED >= required minimum $MIN_VERSION"
+          echo "Lyric $RESOLVED >= required minimum $MIN_VERSION"
 
       - name: Install Lyric compiler
         run: |

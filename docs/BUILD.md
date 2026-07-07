@@ -138,6 +138,13 @@ manifest, dependencies, or source — each was found and root-caused using
 this project as the real-world test case that first got far enough to hit
 it.
 
+**CI enforces a version floor matching this status**: `.github/workflows/ci.yml`'s
+"Verify minimum Lyric version" step hardcodes `MIN_VERSION="0.4.19"` and
+fails fast with a clear diagnostic if a future release ever resolves to
+something older — rather than the `lyric test` step below failing opaquely
+on an unrelated application PR (see nichobbs/cloud-agents#140). Bump
+`MIN_VERSION` alongside this section if a new bug is ever found and fixed.
+
 **This is checked into the repo as a runnable reproduction, not just
 prose**: `scripts/repro-compiler-bug.sh` checks all seven bugs — checks 1-4
 and 6-7 against trivial scratch projects, check 5 (which needed this
