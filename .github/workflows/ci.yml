@@ -74,7 +74,7 @@ jobs:
           ver: ${{ steps.resolve_lyric.outputs.version }}
         run: |
           mkdir -p "$HOME/.local/bin"
-          curl -fsSL --connect-timeout 10 --max-time 120 -o /tmp/lyric.tgz \
+          curl -fsSL --connect-timeout 10 --max-time 120 --retry 3 --retry-delay 3 -o /tmp/lyric.tgz \
             "https://github.com/nichobbs/lyric-lang/releases/download/v${ver}/lyric-${ver}-linux-x64.tar.gz"
           tar -xzf /tmp/lyric.tgz -C "$HOME/.local/bin"
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
