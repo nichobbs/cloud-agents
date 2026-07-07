@@ -14,7 +14,9 @@
 # paragraph under docs/BUILD.md's "## Dependencies" heading for what's
 # been observed and what hasn't been ruled out yet.
 #
-# Requirements: lyric 0.4.17+, dotnet 10.x, Docker (for runner containers)
+# Requirements: lyric 0.4.19+ (see docs/BUILD.md for the full bug history —
+# this script itself only needed 0.4.17+), dotnet 10.x, Docker (for runner
+# containers)
 # Env:
 #   CLOUD_AGENTS_PORT        HTTP listen port (default: 8080)
 #   CLOUD_AGENTS_BIND        interface to bind (default: 127.0.0.1; set 0.0.0.0 for LAN)

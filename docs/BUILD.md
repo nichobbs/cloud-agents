@@ -74,11 +74,10 @@ v0.4.15), and the real project's own cross-package field/method tokens now
 resolve correctly too (`lyric-lang#5177`, fixed in v0.4.17) — see "Compiler
 notes" for both. `slice[T].append()`
 ([lyric-lang#5244](https://github.com/nichobbs/lyric-lang/issues/5244)) is
-fixed as of v0.4.18. A separate, still-open bug
-([lyric-lang#5298](https://github.com/nichobbs/lyric-lang/issues/5298))
-means an untyped top-level `String val`'s `.length` throws an `IList` cast
-exception at runtime, which affects one `lyric test` case (see "Running
-tests") but not `scripts/run-api.sh`'s startup path.
+fixed as of v0.4.18. An untyped top-level `String val`'s `.length` throwing
+an `IList` cast exception at runtime
+([lyric-lang#5298](https://github.com/nichobbs/lyric-lang/issues/5298)) is
+fixed as of v0.4.19 — all seven known upstream compiler bugs are now fixed.
 
 **Not yet investigated:** on at least one sandboxed test environment,
 `scripts/run-api.sh` printed a caught, non-fatal SQLite native-library
@@ -110,42 +109,34 @@ it's caught up without checking, the way this project's own history did once.
 point too), no longer fails every test outright on a missing
 `Lyric.Stdlib.dll` as of v0.4.15 (that was the same underlying bug as bug
 4 below), no longer corrupts cross-package field/method tokens as of
-v0.4.17 (bug 5 below, `lyric-lang#5177`), and no longer fails on
-`slice[T].append()` as of v0.4.18 (bug 6 below, `lyric-lang#5244`) —
-`CloudAgents.DbTests`, `CloudAgents.StreamingTests`, and
-`CloudAgents.AuthTests` are all fully green. **One case still fails**, on a
-separate, still-open bug (bug 7, `lyric-lang#5298`): `Test Handler
-createSession validation` in `CloudAgents.SessionTests` — `Unable to cast
-object of type 'System.String' to type 'System.Collections.IList'.` —
-root-caused to `src/handlers/sessions.l`'s top-level
-`val httpsPrefix = "https://"` (no type annotation): reading its `.length`
-crashes at runtime, exactly bug 7's trigger; see bug 7 below for the
-compiler-side root cause. `scripts/verify.sh` avoids `lyric test` entirely
-by compiling a hand-rolled `main()` harness and running it via
-`lyric build && lyric run` instead, and **that genuinely succeeds** — all
-24 checks pass for real, since its harness doesn't happen to read that
-val's `.length` either. `scripts/verify.sh` is still the right entry
-point to use (`./scripts/verify.sh`); it exercises the Docker/Web-independent
-logic (SSE framing, the Phase 2 state machine + idle recycling + SQL
-builders, the Phase 3 auth helpers) — the same code
-the `@test_module` suites in `tests/*.l` describe. Those `tests/*.l` files
-remain the readable source of truth for intended behavior and should still
-be kept up to date; once bug 7 is fixed upstream, `lyric test` should
-become the right entry point again.
+v0.4.17 (bug 5 below, `lyric-lang#5177`), no longer fails on
+`slice[T].append()` as of v0.4.18 (bug 6 below, `lyric-lang#5244`), and no
+longer crashes an untyped top-level `String val`'s `.length` as of v0.4.19
+(bug 7 below, `lyric-lang#5298`) — `CloudAgents.SessionTests`,
+`CloudAgents.StreamingTests`, `CloudAgents.DbTests`, and
+`CloudAgents.AuthTests` are now **all fully green, 24/24**, for the first
+time in this project's history. `src/handlers/sessions.l`'s top-level `val
+httpsPrefix = "https://"` (no type annotation) — read via `.length` in
+`createSession` — was exactly bug 7's trigger; see bug 7 below for the
+compiler-side root cause. `scripts/verify.sh` remains a useful,
+`lyric test`-free harness (a hand-rolled `main()` run via
+`lyric build && lyric run`) and still genuinely passes all 24 checks, but
+`lyric test` is now the right entry point again — both agree.
 
 ## Compiler notes
 
-**Seven independent upstream compiler bugs have blocked this project's
+**Seven independent upstream compiler bugs blocked this project's
 build/run/test pipeline in sequence, each one only reachable once the
-previous one was fixed — six are now fixed (v0.4.11, v0.4.12, v0.4.14,
-v0.4.15, v0.4.17, v0.4.18), one is still open.** `lyric build` **finally succeeds as
-of v0.4.14** — the full project, all 12 packages, for the first time in
-this project's history. `lyric run` **actually starts this real,
-multi-package server as of v0.4.17** — also for the first time. Only one
-`lyric test` case still fails, on the remaining open bug (bug 7). None of
-the seven is a characteristic of this project's manifest, dependencies, or
-source — each was found and root-caused using this project as the
-real-world test case that first got far enough to hit it.
+previous one was fixed — all seven are now fixed (v0.4.11, v0.4.12,
+v0.4.14, v0.4.15, v0.4.17, v0.4.18, v0.4.19).** `lyric build` **finally
+succeeds as of v0.4.14** — the full project, all 12 packages, for the
+first time in this project's history. `lyric run` **actually starts this
+real, multi-package server as of v0.4.17** — also for the first time.
+`lyric test` **passes every case, 24/24, as of v0.4.19** — also for the
+first time. None of the seven is a characteristic of this project's
+manifest, dependencies, or source — each was found and root-caused using
+this project as the real-world test case that first got far enough to hit
+it.
 
 **This is checked into the repo as a runnable reproduction, not just
 prose**: `scripts/repro-compiler-bug.sh` checks all seven bugs — checks 1-4
@@ -373,7 +364,7 @@ is why `CloudAgents.SessionTests` and one `CloudAgents.AuthTests` case
 `slice[T].append()` now resolves at runtime for `Int`/`String`/record
 element types, and `CloudAgents.AuthTests` passes 5/5.
 
-### Bug 7 — untyped top-level `val` of inferred String type crashes `.length` with an IList cast (lyric-lang#5298) — **open, currently blocking one `lyric test` case**
+### Bug 7 — untyped top-level `val` of inferred String type crashes `.length` with an IList cast (lyric-lang#5298) — **fixed in v0.4.19**
 
 Diagnosing the one `CloudAgents.SessionTests` case bug 6's fix didn't
 clear (`Test Handler createSession validation`) surfaced a seventh,
@@ -417,16 +408,21 @@ lookup keys but didn't touch this same-package, untyped-inference gap).
 `src/handlers/sessions.l`'s `createSession` reads exactly such a top-level
 `val` (`httpsPrefix = "https://"`, no annotation) via `.length`, which is
 why `CloudAgents.SessionTests`' "Test Handler createSession validation"
-case still fails `lyric test` even with bug 6 fixed —
+case used to fail `lyric test` even with bug 6 fixed —
 `scripts/verify.sh`'s own harness doesn't happen to read that val's
-`.length`, so it's unaffected and still genuinely passes. Filed as
-[lyric-lang#5298](https://github.com/nichobbs/lyric-lang/issues/5298)
-(open).
+`.length`, so it was unaffected and still genuinely passed throughout.
+Filed as
+[lyric-lang#5298](https://github.com/nichobbs/lyric-lang/issues/5298) —
+**confirmed fixed in the
+[v0.4.19 release](https://github.com/nichobbs/lyric-lang/releases/tag/v0.4.19)**:
+an untyped top-level `String val`'s `.length` now resolves correctly at
+runtime, and `CloudAgents.SessionTests` passes 4/4 — the full `lyric test`
+suite is 24/24 for the first time in this project's history.
 
-**There is nothing to fix on this project's manifest, build config, or
-source for bug 7 above** — check
-[lyric-lang#5298](https://github.com/nichobbs/lyric-lang/issues/5298) for
-status before assuming a local `lyric test` failure needs a local fix.
+**All seven known upstream compiler bugs are now fixed.** Nothing on this
+project's manifest, build config, or source needs to change for bug 7 —
+check `./scripts/repro-compiler-bug.sh` if a future `lyric` release
+regresses any of the seven.
 
 ### A real bug this *did* surface in this project's own source
 

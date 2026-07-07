@@ -28,9 +28,9 @@ lyric prove          # SMT verification on @proof_required packages
 
 All commands discover `lyric.toml` by walking up from the working directory. No arguments needed from any subdir.
 
-**`lyric run` finally works against this real project as of v0.4.17 — seven
-upstream bugs found in sequence, six fixed, one still open.** Not specific
-to this project. Bug 1 (`buildProject` crash,
+**`lyric run` finally works against this real project as of v0.4.17 — all
+seven upstream bugs found in sequence are now fixed, as of v0.4.19.** Not
+specific to this project. Bug 1 (`buildProject` crash,
 [lyric-lang#4925](https://github.com/nichobbs/lyric-lang/issues/4925)) is
 fixed in [v0.4.11](https://github.com/nichobbs/lyric-lang/releases/tag/v0.4.11);
 bug 2 (`Std.Core`'s `Option`/`Result`/`Some`/`None`/`Ok`/`Err` never
@@ -57,41 +57,40 @@ for the first time in this project's history. Bug 6
 a slice — threw `"unsupported method 'append'"` at runtime unconditionally,
 builds fine, failed only when actually called,
 [lyric-lang#5244](https://github.com/nichobbs/lyric-lang/issues/5244)) is
-**fixed in [v0.4.18](https://github.com/nichobbs/lyric-lang/releases/tag/v0.4.18)**.
-Bug 7, still open: found while diagnosing the one test case bug 6's fix
-didn't clear — a package-scope (top-level) `val` with no explicit type
-annotation, initialized to a string literal, crashes `.length` at runtime
-with `System.InvalidCastException: Unable to cast object of type
-'System.String' to type 'System.Collections.IList'` — same-package,
-unqualified, no cross-package reference needed. Root-caused to
+fixed in [v0.4.18](https://github.com/nichobbs/lyric-lang/releases/tag/v0.4.18).
+Bug 7 (found while diagnosing the one test case bug 6's fix didn't clear —
+a package-scope (top-level) `val` with no explicit type annotation,
+initialized to a string literal, crashed `.length` at runtime with
+`System.InvalidCastException: Unable to cast object of type 'System.String'
+to type 'System.Collections.IList'` — same-package, unqualified, no
+cross-package reference needed; root-caused to
 `lyric-compiler/msil/codegen.l`'s package-level val/const pre-scan
 defaulting an untyped declaration's MSIL type to `MObject` instead of
 inferring it from the initializer; filed as
-[lyric-lang#5298](https://github.com/nichobbs/lyric-lang/issues/5298). Not
+[lyric-lang#5298](https://github.com/nichobbs/lyric-lang/issues/5298); not
 a regression, not specific to this project, and distinct from
-[lyric-lang#5258](https://github.com/nichobbs/lyric-lang/issues/5258) (a
-related but different MSIL bug, fixed the same day, about *cross*-package
-qualified `pub val` access — its fix doesn't touch this same-package,
-untyped-inference gap). Run `./scripts/repro-compiler-bug.sh` to check
-which bugs your compiler still has before assuming a local failure needs a
-local fix. See `docs/BUILD.md` "Compiler notes" for full detail.
+[lyric-lang#5258](https://github.com/nichobbs/lyric-lang/issues/5258), a
+related but different MSIL bug about *cross*-package qualified `pub val`
+access) is **fixed in [v0.4.19](https://github.com/nichobbs/lyric-lang/releases/tag/v0.4.19)**.
+Run `./scripts/repro-compiler-bug.sh` to check which bugs your compiler
+still has before assuming a local failure needs a local fix. See
+`docs/BUILD.md` "Compiler notes" for full detail.
 
-**`lyric test` runs (as of v0.4.15) and mostly passes now (as of v0.4.18),
-but one case still fails on bug 7 above.** It no longer crashes as of
-v0.4.11 (that was bug 1 above, which also hit this entry point), no longer
-fails every test outright on a missing `Lyric.Stdlib.dll` as of v0.4.15
-(the same underlying fix as bug 4), no longer fails on cross-package field
-corruption as of v0.4.17 (bug 5), and no longer fails on
-`slice[T].append()` as of v0.4.18 (bug 6) — `CloudAgents.DbTests`,
-`CloudAgents.StreamingTests`, and `CloudAgents.AuthTests` are all fully
-green. Only one `CloudAgents.SessionTests` case (`Test Handler
-createSession validation`) still fails, on bug 7 above:
-`src/handlers/sessions.l`'s `createSession` reads a top-level
-`val httpsPrefix = "https://"` (no type annotation) via `.length`, which is
-exactly bug 7's trigger. `./scripts/verify.sh` remains useful as a
-`lyric test`-free harness (its hand-rolled `main()` harness doesn't happen
-to read that val's `.length` either), and **it genuinely passes**. See
-`docs/BUILD.md` "Running tests" for detail.
+**`lyric test` runs (as of v0.4.15) and fully passes now, as of v0.4.19 —
+24/24 across all four suites, for the first time in this project's
+history.** It no longer crashes as of v0.4.11 (that was bug 1 above, which
+also hit this entry point), no longer fails every test outright on a
+missing `Lyric.Stdlib.dll` as of v0.4.15 (the same underlying fix as bug
+4), no longer fails on cross-package field corruption as of v0.4.17 (bug
+5), no longer fails on `slice[T].append()` as of v0.4.18 (bug 6), and no
+longer fails on the top-level untyped `val`'s `.length` as of v0.4.19 (bug
+7) — `CloudAgents.SessionTests`, `CloudAgents.StreamingTests`,
+`CloudAgents.DbTests`, and `CloudAgents.AuthTests` are all fully green,
+including the previously-failing `Test Handler createSession validation`
+case (`src/handlers/sessions.l`'s `createSession` reads a top-level `val
+httpsPrefix = "https://"` via `.length`, exactly bug 7's trigger).
+`./scripts/verify.sh` also still genuinely passes. See `docs/BUILD.md`
+"Running tests" for detail.
 
 Source files use `.l` extension. Entry point is `func main(): Unit` in the appropriate package.
 

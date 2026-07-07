@@ -92,14 +92,17 @@ jobs:
         run: ./scripts/build-full.sh
 
       # Runtime-verify the Docker/Web-independent logic (SSE framing, Phase
-      # 2/3 state machine, recycling, auth). Not `lyric test` — it no longer
-      # crashes (v0.4.11), fails outright on a missing Lyric.Stdlib.dll
-      # (v0.4.15), corrupts cross-package field/method tokens (v0.4.17,
-      # lyric-lang#5177), or fails on slice[T].append() (v0.4.18,
-      # lyric-lang#5244), but one case still fails on lyric-lang#5298 (an
-      # untyped top-level String val's `.length` throwing an IList cast),
-      # see docs/BUILD.md "Running tests"/"Compiler notes". This harness has
-      # no external dependencies, doesn't read such a val's `.length`, so it
-      # doesn't need its own restore, and it genuinely passes.
+      # 2/3 state machine, recycling, auth) via a hand-rolled `main()`
+      # harness rather than `lyric test` — kept as its own, dependency-free
+      # check even now that `lyric test` (below) is fully green; see
+      # docs/BUILD.md "Running tests"/"Compiler notes" for why this harness
+      # existed in the first place.
       - name: Run tests
         run: ./scripts/verify.sh
+
+      # The real @test_module suites. All seven known upstream compiler bugs
+      # (see docs/BUILD.md "Compiler notes") are now fixed as of v0.4.19, so
+      # this is expected to pass 24/24 — the first time in this project's
+      # history that `lyric test` has been a viable CI gate.
+      - name: Run lyric test
+        run: lyric test
