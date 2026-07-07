@@ -39,16 +39,22 @@
 # (a real [nuget] restore is needed — this isn't reproducible without one,
 # since it's Lyric.Web's own compiled code that's at fault, not this
 # project's source).
+#
+# Exit codes match scripts/repro-compiler-bug.sh's convention: 0 = did not
+# reproduce (fixed, or skipped because nuget.org wasn't reachable), 1 = bug
+# reproduced, 2 = couldn't run the check at all (missing tool, unexpected
+# build failure) — distinct from 1 so a setup problem is never mistaken for
+# a confirmed-still-broken result.
 
 set -uo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
-command -v lyric  >/dev/null || { echo "repro-web-bug: 'lyric' not on PATH"  >&2; exit 1; }
-command -v dotnet >/dev/null || { echo "repro-web-bug: 'dotnet' not on PATH" >&2; exit 1; }
+command -v lyric  >/dev/null || { echo "repro-web-bug: 'lyric' not on PATH"  >&2; exit 2; }
+command -v dotnet >/dev/null || { echo "repro-web-bug: 'dotnet' not on PATH" >&2; exit 2; }
 
 WEB_VERSION="$(sed -n 's/^"Lyric.Web"[[:space:]]*=[[:space:]]*"\([0-9.]*\)".*/\1/p' "$REPO_ROOT/lyric.toml" | head -1)"
-[ -n "$WEB_VERSION" ] || { echo "repro-web-bug: could not read Lyric.Web version from lyric.toml" >&2; exit 1; }
+[ -n "$WEB_VERSION" ] || { echo "repro-web-bug: could not read Lyric.Web version from lyric.toml" >&2; exit 2; }
 
 WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT
