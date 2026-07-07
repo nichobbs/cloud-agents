@@ -27,26 +27,64 @@ jobs:
         with:
           dotnet-version: '10.0.x'
 
-      # The installer's "resolve latest release" step calls api.github.com,
-      # which is occasionally rate-limited/blocked for unauthenticated
-      # runners (see docs/BUILD.md). Fall back to resolving the release tag
-      # from the unauthenticated github.com redirect and downloading the
-      # release asset directly, same as the documented manual workaround.
+      # Resolve the release tag up front via the unauthenticated github.com
+      # redirect (see docs/BUILD.md — api.github.com is sometimes
+      # rate-limited for unauthenticated runners), so both the version-floor
+      # check and the install step below use the same, single resolution
+      # instead of each re-resolving "latest" independently. Retried with a
+      # timeout per attempt since this is now a hard dependency of every
+      # run, not just an opportunistic fallback.
+      - name: Resolve latest Lyric release
+        id: resolve_lyric
+        run: |
+          ver=""
+          for attempt in 1 2 3; do
+            ver=$(curl -sI --connect-timeout 10 --max-time 30 https://github.com/nichobbs/lyric-lang/releases/latest \
+                    | sed -n 's/.*tag\/v\([0-9.]*\).*/\1/p' | tr -d '\r')
+            [ -n "$ver" ] && break
+            echo "attempt $attempt: could not resolve latest Lyric release tag, retrying..." >&2
+            sleep 3
+          done
+          [ -n "$ver" ] || { echo "could not resolve latest Lyric release tag after 3 attempts" >&2; exit 1; }
+          echo "Resolved latest Lyric release: v$ver"
+          echo "version=$ver" >> "$GITHUB_OUTPUT"
+
+      # Fails fast with a clear diagnostic if a release ever drops below
+      # MIN_LYRIC_VERSION (see nichobbs/cloud-agents#140) — a single
+      # checked-in file, also referenced from docs/BUILD.md, so the floor
+      # can't drift out of sync between the two.
+      - name: Verify minimum Lyric version
+        env:
+          RESOLVED: ${{ steps.resolve_lyric.outputs.version }}
+        run: |
+          MIN_VERSION="$(cat MIN_LYRIC_VERSION)"
+          lowest="$(printf '%s\n%s\n' "$MIN_VERSION" "$RESOLVED" | sort -V | head -1)"
+          if [ "$lowest" != "$MIN_VERSION" ]; then
+            echo "::error::Latest Lyric release ($RESOLVED) is older than $MIN_VERSION (see MIN_LYRIC_VERSION), the version docs/BUILD.md 'Compiler notes' documents as having all seven known upstream bugs fixed. If this is a genuine downgrade/regression, investigate via ./scripts/repro-compiler-bug.sh and consider marking the 'Run lyric test' step continue-on-error again until it's resolved upstream." >&2
+            exit 1
+          fi
+          echo "Lyric $RESOLVED >= required minimum $MIN_VERSION"
+
+      # Download the exact resolved release directly rather than going
+      # through install.sh's own --version handling, so installing exactly
+      # what the previous step just verified >= MIN_LYRIC_VERSION doesn't
+      # depend on trusting an unverified flag.
       - name: Install Lyric compiler
+        env:
+          ver: ${{ steps.resolve_lyric.outputs.version }}
         run: |
           mkdir -p "$HOME/.local/bin"
-          if ! curl -fsSL https://raw.githubusercontent.com/nichobbs/lyric-lang/main/scripts/install.sh \
-              | sh -s -- --dir "$HOME/.local/bin" --no-path; then
-            echo "primary installer failed — falling back to direct release download"
-            ver=$(curl -sI https://github.com/nichobbs/lyric-lang/releases/latest \
-                    | sed -n 's/.*tag\/v\([0-9.]*\).*/\1/p' | tr -d '\r')
-            [ -n "$ver" ] || { echo "could not resolve latest Lyric release tag" >&2; exit 1; }
-            curl -fsSL -o /tmp/lyric.tgz \
-              "https://github.com/nichobbs/lyric-lang/releases/download/v${ver}/lyric-${ver}-linux-x64.tar.gz"
-            tar -xzf /tmp/lyric.tgz -C "$HOME/.local/bin"
-          fi
+          curl -fsSL --connect-timeout 10 --max-time 120 --retry 3 --retry-delay 3 -o /tmp/lyric.tgz \
+            "https://github.com/nichobbs/lyric-lang/releases/download/v${ver}/lyric-${ver}-linux-x64.tar.gz"
+          tar -xzf /tmp/lyric.tgz -C "$HOME/.local/bin"
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
 
+      # NOTE: `lyric --version` is known to always print "lyric 0.1.0"
+      # regardless of the actual installed release (confirmed against both
+      # v0.4.18 and v0.4.19) — a separate, minor CLI bug, unrelated to the
+      # seven tracked here. Don't rely on this step's output for anything;
+      # the "Resolve latest Lyric release" step above is the source of
+      # truth for what actually got installed.
       - name: Lyric version
         run: lyric --version
 
