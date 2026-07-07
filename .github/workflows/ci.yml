@@ -27,21 +27,13 @@ jobs:
         with:
           dotnet-version: '10.0.x'
 
-      # Resolve the latest release tag via the unauthenticated github.com
-      # redirect (works even when api.github.com is rate-limited/blocked for
-      # unauthenticated runners, see docs/BUILD.md) *before* installing, so
-      # we can assert a version floor with a clear diagnostic if a future
-      # release ever regresses one of the seven known bugs (see "Compiler
-      # notes") — rather than the new hard-gating `lyric test` step below
-      # failing opaquely on an unrelated application PR. Passing the
-      # resolved version to the install step also pins what actually gets
-      # installed, instead of both this step and the installer separately
-      # re-resolving "latest" (a small deterministic-CI bonus, not just a
-      # gating one). This endpoint used to be hit only as an opportunistic
-      # fallback; it's now a hard dependency of every run, so retry a few
-      # times with brief backoff rather than failing the whole job on one
-      # transient blip, and bound each attempt with a timeout so a hung
-      # connection fails fast instead of stalling the job.
+      # Resolve the release tag up front via the unauthenticated github.com
+      # redirect (see docs/BUILD.md — api.github.com is sometimes
+      # rate-limited for unauthenticated runners), so both the version-floor
+      # check and the install step below use the same, single resolution
+      # instead of each re-resolving "latest" independently. Retried with a
+      # timeout per attempt since this is now a hard dependency of every
+      # run, not just an opportunistic fallback.
       - name: Resolve latest Lyric release
         id: resolve_lyric
         run: |
@@ -57,18 +49,15 @@ jobs:
           echo "Resolved latest Lyric release: v$ver"
           echo "version=$ver" >> "$GITHUB_OUTPUT"
 
-      # Fails fast with a clear diagnostic if a future Lyric release ever
-      # drops below the version this project's docs/BUILD.md documents as
-      # having all seven known upstream compiler bugs fixed — see
-      # nichobbs/cloud-agents#140. The floor itself lives in the single
-      # checked-in MIN_LYRIC_VERSION file (also referenced from
-      # docs/BUILD.md "Compiler notes"), rather than being duplicated as a
-      # literal in both places, so the two can't drift out of sync — bump
-      # that one file if a new bug is found and fixed later.
+      # Fails fast with a clear diagnostic if a release ever drops below
+      # MIN_LYRIC_VERSION (see nichobbs/cloud-agents#140) — a single
+      # checked-in file, also referenced from docs/BUILD.md, so the floor
+      # can't drift out of sync between the two.
       - name: Verify minimum Lyric version
+        env:
+          RESOLVED: ${{ steps.resolve_lyric.outputs.version }}
         run: |
           MIN_VERSION="$(cat MIN_LYRIC_VERSION)"
-          RESOLVED="${{ steps.resolve_lyric.outputs.version }}"
           lowest="$(printf '%s\n%s\n' "$MIN_VERSION" "$RESOLVED" | sort -V | head -1)"
           if [ "$lowest" != "$MIN_VERSION" ]; then
             echo "::error::Latest Lyric release ($RESOLVED) is older than $MIN_VERSION (see MIN_LYRIC_VERSION), the version docs/BUILD.md 'Compiler notes' documents as having all seven known upstream bugs fixed. If this is a genuine downgrade/regression, investigate via ./scripts/repro-compiler-bug.sh and consider marking the 'Run lyric test' step continue-on-error again until it's resolved upstream." >&2
@@ -77,20 +66,14 @@ jobs:
           echo "Lyric $RESOLVED >= required minimum $MIN_VERSION"
 
       # Download the exact resolved release directly rather than going
-      # through install.sh's own (unverified) --version handling — this
-      # step's entire job is to install precisely the version the previous
-      # step just checked >= MIN_VERSION, and a positive, direct download
-      # of that exact tag makes that guarantee airtight instead of trusting
-      # install.sh to honor an untested flag (empirically confirmed
-      # separately that install.sh --version does work as documented, by
-      # installing v0.4.15 this way and behaviorally verifying it still
-      # reproduces lyric-lang#5244, which v0.4.18+ fixes — but this project
-      # shouldn't have to depend on that holding forever when a direct
-      # download is just as simple and removes the question entirely).
+      # through install.sh's own --version handling, so installing exactly
+      # what the previous step just verified >= MIN_LYRIC_VERSION doesn't
+      # depend on trusting an unverified flag.
       - name: Install Lyric compiler
+        env:
+          ver: ${{ steps.resolve_lyric.outputs.version }}
         run: |
           mkdir -p "$HOME/.local/bin"
-          ver="${{ steps.resolve_lyric.outputs.version }}"
           curl -fsSL --connect-timeout 10 --max-time 120 -o /tmp/lyric.tgz \
             "https://github.com/nichobbs/lyric-lang/releases/download/v${ver}/lyric-${ver}-linux-x64.tar.gz"
           tar -xzf /tmp/lyric.tgz -C "$HOME/.local/bin"
