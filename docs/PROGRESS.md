@@ -11,8 +11,12 @@ design of each phase and `docs/BUILD.md` for build/verification notes.
 > by an actual successful compile and run, not just belief.
 >
 > **The server actually starts now** (`lyric run`/`scripts/run-api.sh`), for
-> the first time in this project's history, as of the v0.4.17 compiler.
-> Five upstream bugs are now fixed in sequence, each only reachable once the
+> the first time in this project's history, as of the v0.4.17 compiler —
+> but it cannot yet serve a real request: `Lyric.Web` crashes on the first
+> one it answers, and even without that crash doesn't dispatch to this
+> project's handlers yet. Both are root-caused, upstream `Lyric.Web` gaps,
+> not compiler bugs — see `docs/BUILD.md` "Dependencies" for detail.
+> Five upstream *compiler* bugs are now fixed in sequence, each only reachable once the
 > last one was: bug 1 (`buildProject` crash,
 > [lyric-lang#4925](https://github.com/nichobbs/lyric-lang/issues/4925),
 > fixed in [v0.4.11](https://github.com/nichobbs/lyric-lang/releases/tag/v0.4.11)),

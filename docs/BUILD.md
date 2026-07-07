@@ -79,21 +79,51 @@ an `IList` cast exception at runtime
 ([lyric-lang#5298](https://github.com/nichobbs/lyric-lang/issues/5298)) is
 fixed as of v0.4.19 — all seven known upstream compiler bugs are now fixed.
 
-**Not yet investigated:** on at least one sandboxed test environment,
-`scripts/run-api.sh` printed a caught, non-fatal SQLite native-library
-warning at startup (`The type initializer for
-'Microsoft.Data.Sqlite.SqliteConnection' threw an exception`) and the
-server process later exited on its own rather than continuing to serve
-indefinitely, after successfully answering at least one HTTP request. Both
-are unrelated to the seven compiler bugs on this page — the warning looked
-like a missing/misconfigured native `e_sqlite3` binary specific to that
-environment, not a build or compiler issue. Investigate if
-`scripts/run-api.sh` doesn't stay up under normal use; candidates not yet
-ruled out are an environment issue, a `Lyric.Web`/`Web.start()` lifecycle
-question, or something in this project's own `main()` (`Web.start(router)`
-is expected to block). Not filed upstream or in this project's own issue
-tracker yet, since it hasn't been reproduced outside that one sandboxed
-run.
+**Root-caused: the server does not survive its first HTTP request, and
+even if it did, it would not serve this project's actual API yet.** Both
+findings are in `Lyric.Web` itself (the NuGet package), not in this
+project's own source, and are 100% reproducible: the process binds and
+stays up indefinitely while idle, but exits the instant it finishes
+answering any request.
+
+1. **Crash on first request.** `Lyric.Web` 0.4.11 (the version pinned
+   above) builds its HTTP response body via an `@externTarget`-wrapped call
+   equivalent to `Encoding.GetBytes(payload)`. That call fails at runtime
+   with `Method not found: 'Byte[] System.Text.Encoding.GetBytes(System.Text.Encoding, System.String)'`
+   — the compiler's extern-instance-method binding mis-generates the call,
+   treating the `Encoding` receiver as an ordinary first argument instead
+   of the implicit `this`. `serve()`'s per-request `catch Bug` treats this
+   as a normal shutdown signal (silently sets its running-flag to false and
+   returns), so the process exits with code 0 and zero error output —
+   which is why this looked like "just stops running" rather than an
+   obvious crash. Confirmed via a minimal standalone repro replicating
+   v0.4.11's exact extern-binding sequence. This is a known, already-open
+   upstream defect class — [lyric-lang#3887](https://github.com/nichobbs/lyric-lang/issues/3887)
+   ("BCL `@externTarget` metadata resolution") explicitly lists
+   `Encoding.GetBytes` as one of the affected instance methods. Bumping to
+   `Lyric.Web` 0.4.19 does not fix this — it fails on the *same* call for a
+   different reason (`unresolved extern instance method 'GetBytes' ...: no
+   matching instance method found in .NET metadata`, from a rewritten,
+   newer-style extern binding) and additionally turns the silent exit into
+   a loud one (`Console.error` + exit 1), which at least surfaces the
+   failure instead of masking it.
+2. **No real request dispatch exists yet, independent of the crash.**
+   Confirmed by reading `lyric-web/src/web.l` at both the pinned v0.4.11
+   tag and current `main`: every request, regardless of method or path,
+   gets an identical hardcoded diagnostic JSON payload
+   (`{"lyric-web":"phase-8-pathfinder", "routes": {...}, ...}`) describing
+   the registered routes — there is no dispatch to `createSession`,
+   `sendMessage`, or any other handler. This matches the file's own doc
+   comment: `Stability: @experimental — ... the end-to-end pipeline ...
+   has not been exercised against a live HTTP client in CI` and `Discovery
+   via DLL reflection is planned once Lyric's annotation reflection
+   ships`. Route *registration* (`Web.addPost` etc.) is fully implemented
+   and works; invoking those routes over HTTP is not implemented yet.
+
+Net effect: `scripts/run-api.sh` builds and starts correctly, and the
+seven compiler bugs tracked on this page are genuinely all fixed — but the
+HTTP server cannot yet serve this project's API. Nothing here is fixable
+in this project's own source; both are `Lyric.Web` gaps to track upstream.
 
 ### Bumping a NuGet dependency version
 

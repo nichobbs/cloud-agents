@@ -52,7 +52,9 @@ bookkeeping for every package in between,
 [lyric-lang#5177](https://github.com/nichobbs/lyric-lang/issues/5177)) is
 fixed in [v0.4.17](https://github.com/nichobbs/lyric-lang/releases/tag/v0.4.17)
 — **`scripts/run-api.sh`/`lyric run` now actually starts the API server**,
-for the first time in this project's history. Bug 6
+for the first time in this project's history (starts and binds only — it
+cannot yet survive or correctly answer a real HTTP request; see
+`docs/BUILD.md` "Dependencies" for the root-caused `Lyric.Web` gaps). Bug 6
 (`slice[T].append(x)` — the compiler's own documented idiom for building up
 a slice — threw `"unsupported method 'append'"` at runtime unconditionally,
 builds fine, failed only when actually called,
