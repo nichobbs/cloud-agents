@@ -59,37 +59,63 @@ pub record RenderedPrompt {
   pub rendered: String
 }
 
-/// Replace every occurrence of `needle` in `s` with `repl` (manual scan — the
-/// toolchain's String.replace is not relied on here, matching the codebase's
-/// habit of staying on known-good String ops).
-func replaceAll(s: in String, needle: in String, repl: in String): String {
-  if needle.length == 0 {
-    return s
-  }
-  var acc = ""
-  var i = 0
-  val n = needle.length
-  while i < s.length {
-    if i + n <= s.length and s.substring(i, n) == needle {
-      acc = acc + repl
-      i = i + n
-    } else {
-      acc = acc + s.substring(i, 1)
-      i = i + 1
+/// The index of `key` in `keys` (over the first `n` entries), or -1.
+func indexOfKey(keys: in slice[String], key: in String, n: in Int): Int {
+  var k = 0
+  while k < n {
+    if keys[k] == key {
+      return k
     }
+    k = k + 1
   }
-  return acc
+  return -1
 }
 
 /// Render a prompt body by substituting `{{key}}` placeholders with the paired
 /// value. Unbound placeholders are left intact. Pub for direct unit testing.
+///
+/// Single left-to-right pass: once a `{{key}}` is replaced, scanning resumes
+/// AFTER the substituted value, so a value that itself contains `{{...}}` text
+/// is never re-expanded (#265) — one variable's value can't inject another
+/// variable reference. The old approach ran replaceAll per key over the whole
+/// growing string, which did re-expand.
 pub func renderTemplate(body: in String, keys: in slice[String], values: in slice[String]): String {
-  var acc = body
+  val n = if keys.length < values.length { keys.length.toInt() } else { values.length.toInt() }
+  val blen = body.length.toInt()
+  var acc = ""
   var i = 0
-  val n = if keys.length < values.length { keys.length } else { values.length }
-  while i < n {
-    acc = replaceAll(acc, "{{" + keys[i] + "}}", values[i])
-    i = i + 1
+  while i < blen {
+    if i + 2 <= blen and body.substring(i, 2) == "{{" {
+      // Find the closing "}}".
+      var j = i + 2
+      var closeAt = -1
+      while j + 2 <= blen and closeAt < 0 {
+        if body.substring(j, 2) == "}}" {
+          closeAt = j
+        } else {
+          j = j + 1
+        }
+      }
+      if closeAt < 0 {
+        // No closing "}}" — emit the "{{" literally and continue past it.
+        acc = acc + "{{"
+        i = i + 2
+      } else {
+        val key = body.substring(i + 2, closeAt - (i + 2))
+        val vidx = indexOfKey(keys, key, n)
+        if vidx < 0 {
+          // Unbound — leave the "{{" literal; the rest re-scans as plain text.
+          acc = acc + "{{"
+          i = i + 2
+        } else {
+          acc = acc + values[vidx]
+          i = closeAt + 2 // resume AFTER "}}", not inside the substituted value
+        }
+      }
+    } else {
+      acc = acc + body.substring(i, 1)
+      i = i + 1
+    }
   }
   return acc
 }

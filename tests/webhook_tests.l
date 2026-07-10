@@ -37,6 +37,14 @@ test "webhook URL validation requires a clean https URL" {
   assertTrue(not isValidWebhookUrl("https://172.31.255.255/hook"), "end of 172.16/12 rejected")
   assertTrue(isValidWebhookUrl("https://172.32.0.1/hook"), "public 172.32 allowed")
   assertTrue(isValidWebhookUrl("https://172.15.0.1/hook"), "public 172.15 allowed")
+  // #264: a long-digit 172. host must not overflow/panic. It isn't in the
+  // 16-31 range so it's simply allowed — the point is the call COMPLETES
+  // (a panic would crash this test) rather than what it returns.
+  val _ = isValidWebhookUrl("https://172.99999999999999999999999/hook")
+  assertTrue(true, "long-digit 172 host handled without overflow/panic")
+  // #266: non-dotted IP-literal forms rejected.
+  assertTrue(not isValidWebhookUrl("https://2130706433/hook"), "decimal ip literal rejected")
+  assertTrue(not isValidWebhookUrl("https://0x7f000001/hook"), "hex ip literal rejected")
 }
 
 // ── SQL builder shape ─────────────────────────────────────────────────────────

@@ -140,6 +140,10 @@ test "renderTemplate substitutes bound placeholders and leaves others" {
   assertEqual(renderTemplate("{{a}}-{{b}}-{{a}}", ["a", "b"], ["1", "2"]), "1-2-1", "repeated + multiple vars")
   assertEqual(renderTemplate("no vars here", [], []), "no vars here", "no vars")
   assertEqual(renderTemplate("keep {{unbound}}", ["x"], ["y"]), "keep {{unbound}}", "unbound placeholder left intact")
+  // #265: a substituted value that itself contains "{{...}}" must NOT be
+  // re-expanded — one variable can't inject a reference to another.
+  assertEqual(renderTemplate("{{a}}", ["a", "b"], ["{{b}}", "secret"]), "{{b}}", "value is not re-scanned for placeholders")
+  assertEqual(renderTemplate("no close {{a", ["a"], ["x"]), "no close {{a", "unclosed placeholder left intact")
 }
 
 test "Popular prompts are ordered by use count" {

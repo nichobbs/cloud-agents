@@ -121,7 +121,10 @@ func digitVal(c: in String): Int {
 }
 
 /// Whether `host` is in the 172.16.0.0/12 private range (172.16.x – 172.31.x) —
-/// which includes Docker's default bridge subnet (#260).
+/// which includes Docker's default bridge subnet (#260). The octet accumulator
+/// is capped at 256 so a crafted long-digit host (e.g. "172." + thousands of
+/// digits) can't overflow Int and panic (#264) — any value past 255 is out of
+/// the 16–31 range anyway.
 func isPrivate172(host: in String): Bool {
   if not host.startsWith("172.") {
     return false
@@ -138,9 +141,27 @@ func isPrivate172(host: in String): Bool {
       oct = oct * 10 + d
       seen = true
       i = i + 1
+      if oct > 255 {
+        stop = true // bounded: already past any valid octet, and no overflow
+      }
     }
   }
   return seen and oct >= 16 and oct <= 31
+}
+
+/// Whether every character of `s` is a decimal digit (and `s` is non-empty).
+func isAllDigits(s: in String): Bool {
+  if s.length == 0 {
+    return false
+  }
+  var i = 0
+  while i < s.length {
+    if digitVal(s.substring(i, 1)) < 0 {
+      return false
+    }
+    i = i + 1
+  }
+  return true
 }
 
 /// Whether a host is an obvious internal/loopback/private target a webhook must
@@ -159,6 +180,14 @@ pub func isBlockedWebhookHost(host: in String): Bool {
     return true
   }
   if h.startsWith("127.") or h.startsWith("10.") or h.startsWith("192.168.") or h.startsWith("169.254.") {
+    return true
+  }
+  // Non-dotted IP literal forms (#266): a bare decimal integer (e.g. 2130706433
+  // == 127.0.0.1) or a hex literal (0x7f...) sidesteps the dotted-decimal
+  // checks above. A purely numeric or 0x-prefixed host is never a real DNS
+  // name, so reject it outright. (Comprehensive IP-literal normalisation —
+  // octal, mixed — remains the external deliverer's responsibility.)
+  if isAllDigits(h) or h.startsWith("0x") {
     return true
   }
   return isPrivate172(h)
