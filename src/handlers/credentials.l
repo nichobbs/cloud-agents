@@ -29,13 +29,23 @@ pub record PutCredentialRequest {
   pub value: String
 }
 
-/// Env-var names the runner itself sets (see src/docker_manager.l). A user
-/// credential with one of these names would be appended after the runner's
-/// own value and, since Docker keeps the last value for a duplicate key,
-/// silently override something the container depends on. Reserved.
+/// Env-var names a credential must never claim, because injecting them into the
+/// runner container would either break it or hijack it. Two groups:
+///   1. Vars the runner itself sets (see src/docker_manager.l) — a duplicate key
+///      is appended after the runner's value and, since Docker keeps the last
+///      value, would silently override something the container depends on.
+///   2. System- and loader-critical vars every process inherits. A credential
+///      named PATH or HOME would break command resolution / the home directory;
+///      LD_PRELOAD / LD_LIBRARY_PATH are worse — they let an injected value load
+///      arbitrary shared objects into the runner, so they are blocked as a
+///      hardening measure, not just for correctness.
+/// GITHUB_TOKEN is deliberately NOT reserved: uploading it is the whole point of
+/// the credential store, and the entrypoint renders it into mcp.json safely.
 func isReservedEnvName(name: in String): Bool {
   return name == "PROMPT" or name == "REPO_URL" or name == "BRANCH" or name == "HARNESS" or name == "MODEL" or
-    name == "NATIVE_SESSION_ID"
+    name == "NATIVE_SESSION_ID" or
+    name == "PATH" or name == "HOME" or name == "USER" or name == "SHELL" or name == "PWD" or name == "IFS" or
+    name == "LD_PRELOAD" or name == "LD_LIBRARY_PATH"
 }
 
 /// Env-var name rules: a leading letter or underscore, then letters, digits

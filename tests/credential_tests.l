@@ -116,6 +116,16 @@ test "Credential handler rejects invalid and reserved names" {
     case Ok(_) -> assertTrue(false, "reserved name NATIVE_SESSION_ID must be rejected")
     case Err(err) -> assertEqualInt(err.status, 400, "reserved name -> 400")
   }
+  // System- and loader-critical env vars are reserved too: PATH/HOME would
+  // break the runner, LD_PRELOAD/LD_LIBRARY_PATH could hijack it (#226).
+  match putCredentialHandler(PutCredentialRequest(name = "PATH", value = "x")) {
+    case Ok(_) -> assertTrue(false, "reserved name PATH must be rejected")
+    case Err(err) -> assertEqualInt(err.status, 400, "reserved name -> 400")
+  }
+  match putCredentialHandler(PutCredentialRequest(name = "LD_PRELOAD", value = "x")) {
+    case Ok(_) -> assertTrue(false, "reserved name LD_PRELOAD must be rejected")
+    case Err(err) -> assertEqualInt(err.status, 400, "reserved name -> 400")
+  }
   // Malformed env-var names rejected too.
   match putCredentialHandler(PutCredentialRequest(name = "1BAD", value = "x")) {
     case Ok(_) -> assertTrue(false, "leading digit must be rejected")

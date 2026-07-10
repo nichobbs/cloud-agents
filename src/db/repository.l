@@ -164,14 +164,19 @@ pub func ping(): Result[Unit, CloudAgents.Sqlite.DbError] {
 /// Create every table if it does not already exist. Safe to call at every
 /// startup.
 pub func initSchema(): Result[Unit, CloudAgents.Sqlite.DbError] {
+  // Create every table before any index. Each statement is `IF NOT EXISTS`, so
+  // this is safe to re-run, but ordering matters for robustness: if an index
+  // statement ever fails (e.g. a hand-migrated DB whose table predates a column
+  // the index needs), all tables still exist rather than aborting partway and
+  // leaving a later table — credentials in particular — uncreated.
   CloudAgents.Sqlite.execute(CloudAgents.Db.messagesSchemaSql())?
   CloudAgents.Sqlite.execute(CloudAgents.Db.commentsSchemaSql())?
   CloudAgents.Sqlite.execute(CloudAgents.Db.todosSchemaSql())?
   CloudAgents.Sqlite.execute(CloudAgents.Db.promptsSchemaSql())?
   CloudAgents.Sqlite.execute(CloudAgents.Db.sessionsSchemaSql())?
+  CloudAgents.Sqlite.execute(CloudAgents.Db.credentialsSchemaSql())?
   CloudAgents.Sqlite.execute(CloudAgents.Db.promptsUserIndexSql())?
   CloudAgents.Sqlite.execute(CloudAgents.Db.sessionsUserIndexSql())?
-  CloudAgents.Sqlite.execute(CloudAgents.Db.credentialsSchemaSql())?
   CloudAgents.Sqlite.execute(CloudAgents.Db.credentialsUserIndexSql())?
   return Ok(value = ())
 }
