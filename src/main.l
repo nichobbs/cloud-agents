@@ -106,6 +106,14 @@ func main(): Unit {
   router = Web.addPost(router, "/api/profiles/{pid}", "CloudAgents.Profiles.updateProfileHandler")
   router = Web.addDelete(router, "/api/profiles/{pid}", "CloudAgents.Profiles.deleteProfileHandler")
 
+  // Webhooks: run-completion notifications (outbox delivered by an external
+  // worker that polls /pending and marks events delivered).
+  router = Web.addGet(router, "/api/webhooks", "CloudAgents.Webhooks.listWebhooksHandler")
+  router = Web.addPost(router, "/api/webhooks", "CloudAgents.Webhooks.registerWebhookHandler")
+  router = Web.addGet(router, "/api/webhooks/pending", "CloudAgents.Webhooks.pendingWebhookEventsHandler")
+  router = Web.addPost(router, "/api/webhooks/events/{id}/delivered", "CloudAgents.Webhooks.markWebhookDeliveredHandler")
+  router = Web.addDelete(router, "/api/webhooks/{id}", "CloudAgents.Webhooks.deleteWebhookHandler")
+
   // Register health route
   router = Web.addGet(router, "/api/health", "CloudAgents.Handlers.checkHealth")
 

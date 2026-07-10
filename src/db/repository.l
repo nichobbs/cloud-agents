@@ -223,6 +223,15 @@ pub func allMigrations(): slice[Migration] {
         CloudAgents.Db.promptTagsPromptIndexSql(),
         CloudAgents.Db.promptTagsTagIndexSql()
       ]
+    ),
+    Migration(
+      version = "0006_webhooks",
+      statements = [
+        CloudAgents.Db.webhooksSchemaSql(),
+        CloudAgents.Db.webhookEventsSchemaSql(),
+        CloudAgents.Db.webhooksUserIndexSql(),
+        CloudAgents.Db.webhookEventsPendingIndexSql()
+      ]
     )
   ]
 }
@@ -829,6 +838,105 @@ pub func listRuns(sessionId: in String, userId: in String): Result[slice[Run], C
     i = i + 1
   }
   return Ok(value = acc)
+}
+
+// ─── Webhooks (transactional outbox) ─────────────────────────────────────────────
+//
+// Registered target URLs + an outbox of run-completion events. HTTP delivery is
+// external (a worker polls listPendingWebhookEvents and marks rows delivered),
+// so this layer is pure storage — see CloudAgents.Db for the design note.
+@generate(Json)
+pub record Webhook {
+  pub id: String
+  pub userId: String
+  pub url: String
+  pub createdAt: String
+}
+
+@generate(Json)
+pub record WebhookList {
+  pub webhooks: slice[Webhook]
+}
+
+@generate(Json)
+pub record WebhookEvent {
+  pub id: String
+  pub userId: String
+  pub sessionId: String
+  pub runId: String
+  pub status: String
+  pub createdAt: String
+}
+
+@generate(Json)
+pub record WebhookEventList {
+  pub events: slice[WebhookEvent]
+}
+
+/// Register a webhook target URL (idempotent per (user, url)); returns the record.
+pub func addWebhook(userId: in String, url: in String): Result[Webhook, CloudAgents.Sqlite.DbError] {
+  val id = newId()
+  val ts = nowMillis()
+  CloudAgents.Sqlite.execute(CloudAgents.Db.insertWebhookSql(id, userId, url, ts))?
+  return Ok(value = Webhook(id = id, userId = userId, url = url, createdAt = ts))
+}
+
+/// A user's registered webhooks, newest first.
+pub func listWebhooks(userId: in String): Result[slice[Webhook], CloudAgents.Sqlite.DbError] {
+  val rows = CloudAgents.Sqlite.query(CloudAgents.Db.selectWebhooksSql(userId))?
+  var acc: slice[Webhook] = []
+  var i = 0
+  val len = CloudAgents.Sqlite.getRowArrayLength(rows)
+  while i < len {
+    val r = CloudAgents.Sqlite.getRowArrayValue(rows, i)
+    acc = acc.append(Webhook(id = colAt(r.cols, 0), userId = colAt(r.cols, 1), url = colAt(r.cols, 2), createdAt = colAt(r.cols, 3)))
+    i = i + 1
+  }
+  return Ok(value = acc)
+}
+
+/// Delete a webhook by id. Returns rows affected (0 = not found).
+pub func deleteWebhook(id: in String, userId: in String): Result[Int, CloudAgents.Sqlite.DbError] {
+  return CloudAgents.Sqlite.execute(CloudAgents.Db.deleteWebhookSql(id, userId))
+}
+
+/// Enqueue a run-completion event for delivery. Best-effort bookkeeping — a
+/// failure here must not affect the run, so callers ignore the error.
+pub func enqueueWebhookEvent(
+  userId: in String, sessionId: in String, runId: in String, status: in String
+): Result[Unit, CloudAgents.Sqlite.DbError] {
+  val id = newId()
+  val ts = nowMillis()
+  CloudAgents.Sqlite.execute(CloudAgents.Db.insertWebhookEventSql(id, userId, sessionId, runId, status, ts))?
+  return Ok(value = ())
+}
+
+/// A user's undelivered outbox events, oldest first (for the external deliverer).
+pub func listPendingWebhookEvents(userId: in String): Result[slice[WebhookEvent], CloudAgents.Sqlite.DbError] {
+  val rows = CloudAgents.Sqlite.query(CloudAgents.Db.selectPendingWebhookEventsSql(userId))?
+  var acc: slice[WebhookEvent] = []
+  var i = 0
+  val len = CloudAgents.Sqlite.getRowArrayLength(rows)
+  while i < len {
+    val r = CloudAgents.Sqlite.getRowArrayValue(rows, i)
+    acc = acc.append(
+      WebhookEvent(
+        id = colAt(r.cols, 0),
+        userId = colAt(r.cols, 1),
+        sessionId = colAt(r.cols, 2),
+        runId = colAt(r.cols, 3),
+        status = colAt(r.cols, 4),
+        createdAt = colAt(r.cols, 5)
+      )
+    )
+    i = i + 1
+  }
+  return Ok(value = acc)
+}
+
+/// Mark an outbox event delivered. Returns rows affected (0 = not found).
+pub func markWebhookEventDelivered(id: in String, userId: in String): Result[Int, CloudAgents.Sqlite.DbError] {
+  return CloudAgents.Sqlite.execute(CloudAgents.Db.markWebhookEventDeliveredSql(id, userId))
 }
 
 /// The granted credential names for a profile (empty for 'all' mode).

@@ -934,6 +934,94 @@ pub func reapSessionContainerSql(id: in String): String {
   return "UPDATE sessions SET status = 'IDLE', container_id = '' WHERE id = " + sqlLiteral(id)
 }
 
+// ─── Webhooks (transactional outbox) ────────────────────────────────────────────
+//
+// Run-completion notifications. Registered target URLs live in `webhooks`; each
+// finished run enqueues a `webhook_events` row (an outbox). Actual HTTP delivery
+// is done by an external worker that polls the pending endpoint and marks rows
+// delivered — the same "expose to an external scheduler" approach as reaping,
+// since Lyric.Web has no in-process timer and reliable outbound HTTPS from Lyric
+// isn't available yet. delivered is '0'/'1'. All TEXT affinity, user_id-scoped.
+/// DDL for registered webhook target URLs.
+pub func webhooksSchemaSql(): String {
+  return "CREATE TABLE IF NOT EXISTS webhooks (" + "id TEXT PRIMARY KEY, " + "user_id TEXT NOT NULL, " +
+    "url TEXT NOT NULL, " +
+    "created_at TEXT NOT NULL, " +
+    "UNIQUE(user_id, url))"
+}
+
+/// DDL for the outbox of run-completion events awaiting delivery.
+pub func webhookEventsSchemaSql(): String {
+  return "CREATE TABLE IF NOT EXISTS webhook_events (" + "id TEXT PRIMARY KEY, " + "user_id TEXT NOT NULL, " +
+    "session_id TEXT NOT NULL, " +
+    "run_id TEXT NOT NULL, " +
+    "status TEXT NOT NULL, " +
+    "delivered TEXT NOT NULL, " +
+    "created_at TEXT NOT NULL)"
+}
+
+pub func webhooksUserIndexSql(): String {
+  return "CREATE INDEX IF NOT EXISTS idx_webhooks_user_id ON webhooks(user_id)"
+}
+
+/// Index for the pending-events poll (owner + delivered flag).
+pub func webhookEventsPendingIndexSql(): String {
+  return "CREATE INDEX IF NOT EXISTS idx_webhook_events_pending ON webhook_events(user_id, delivered)"
+}
+
+/// INSERT (register) a webhook URL, idempotent per (user, url).
+pub func insertWebhookSql(id: in String, userId: in String, url: in String, createdAt: in String): String {
+  return "INSERT INTO webhooks (id, user_id, url, created_at) VALUES (" + sqlLiteral(id) + ", " + sqlLiteral(userId) +
+    ", " +
+    sqlLiteral(url) +
+    ", " +
+    sqlLiteral(createdAt) +
+    ") ON CONFLICT(user_id, url) DO NOTHING"
+}
+
+/// SELECT a user's registered webhooks, newest first.
+pub func selectWebhooksSql(userId: in String): String {
+  return "SELECT id, user_id, url, created_at FROM webhooks WHERE user_id = " + sqlLiteral(userId) +
+    " ORDER BY created_at DESC"
+}
+
+/// DELETE a webhook by id, scoped by owner.
+pub func deleteWebhookSql(id: in String, userId: in String): String {
+  return "DELETE FROM webhooks WHERE id = " + sqlLiteral(id) + " AND user_id = " + sqlLiteral(userId)
+}
+
+/// INSERT a run-completion event into the outbox (delivered '0').
+pub func insertWebhookEventSql(
+  id: in String, userId: in String, sessionId: in String, runId: in String, status: in String, createdAt: in String
+): String {
+  return "INSERT INTO webhook_events (id, user_id, session_id, run_id, status, delivered, created_at) VALUES (" +
+    sqlLiteral(id) +
+    ", " +
+    sqlLiteral(userId) +
+    ", " +
+    sqlLiteral(sessionId) +
+    ", " +
+    sqlLiteral(runId) +
+    ", " +
+    sqlLiteral(status) +
+    ", '0', " +
+    sqlLiteral(createdAt) +
+    ")"
+}
+
+/// SELECT a user's undelivered events, oldest first (FIFO delivery).
+pub func selectPendingWebhookEventsSql(userId: in String): String {
+  return "SELECT id, user_id, session_id, run_id, status, created_at FROM webhook_events " + "WHERE user_id = " +
+    sqlLiteral(userId) +
+    " AND delivered = '0' ORDER BY created_at ASC"
+}
+
+/// Mark an outbox event delivered. Scoped by owner.
+pub func markWebhookEventDeliveredSql(id: in String, userId: in String): String {
+  return "UPDATE webhook_events SET delivered = '1' WHERE id = " + sqlLiteral(id) + " AND user_id = " +
+    sqlLiteral(userId)
+}
+
 // ─── Schema migrations ────────────────────────────────────────────────────────
 //
 // A tiny versioned-migration ledger. Every schema change is expressed as an

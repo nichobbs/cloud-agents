@@ -345,6 +345,8 @@ pub func sendMessage(id: in String, @body req: in SendMessageRequest): Result[St
           if runId.length > 0 {
             val _ = CloudAgents.Repository.recordRunEnd(runId, CloudAgents.Auth.currentUserId(), "succeeded")
           }
+          // Enqueue a run-completion webhook event (best-effort outbox).
+          val _ = CloudAgents.Repository.enqueueWebhookEvent(CloudAgents.Auth.currentUserId(), id, runId, "succeeded")
           match CloudAgents.Repository.addMessage(id, "agent", logs) {
             case Ok(m) -> return Ok(value = CloudAgents.Streaming.formatLogsAsSseWithId(logs, m.id))
             case Err(_) -> return Ok(value = CloudAgents.Streaming.formatLogsAsSse(logs))
@@ -354,6 +356,7 @@ pub func sendMessage(id: in String, @body req: in SendMessageRequest): Result[St
           if runId.length > 0 {
             val _ = CloudAgents.Repository.recordRunEnd(runId, CloudAgents.Auth.currentUserId(), "failed")
           }
+          val _ = CloudAgents.Repository.enqueueWebhookEvent(CloudAgents.Auth.currentUserId(), id, runId, "failed")
           return Err(Web.internalError("Failed to execute message: " + err))
         }
       }

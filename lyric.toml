@@ -29,6 +29,7 @@ output_assembly = "CloudAgents.dll"
 "CloudAgents.Crypto"   = "src/crypto/crypto.l"
 "CloudAgents.Credentials" = "src/handlers/credentials.l"
 "CloudAgents.Profiles" = "src/handlers/profiles.l"
+"CloudAgents.Webhooks" = "src/handlers/webhooks.l"
 "CloudAgents.Streaming" = "src/streaming/streaming.l"
 
 # Lyric.Docker and Lyric.Docker.Sockets are NOT the published NuGet package —
@@ -51,6 +52,7 @@ output_assembly = "CloudAgents.dll"
 "CloudAgents.CryptoTests"    = "tests/crypto_tests.l"
 "CloudAgents.CredentialTests" = "tests/credential_tests.l"
 "CloudAgents.ProfileTests"   = "tests/profile_tests.l"
+"CloudAgents.WebhookTests"   = "tests/webhook_tests.l"
 
 [nuget]
 "Lyric.Web"             = "0.4.11"
