@@ -77,6 +77,16 @@ func jsonEscapeValue(s: in String): String {
       acc = acc + "\\\""
     } else if c == "\\" {
       acc = acc + "\\\\"
+    } else if c == "\n" {
+      // The daemon's JSON decoder rejects raw control characters in string
+      // literals, and env values routinely contain newlines (multi-line
+      // PROMPT). Without these escapes any multi-line prompt made the whole
+      // create-container body unparseable.
+      acc = acc + "\\n"
+    } else if c == "\r" {
+      acc = acc + "\\r"
+    } else if c == "\t" {
+      acc = acc + "\\t"
     } else {
       acc = acc + c
     }
