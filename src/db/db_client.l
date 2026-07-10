@@ -990,6 +990,12 @@ pub func deleteWebhookSql(id: in String, userId: in String): String {
   return "DELETE FROM webhooks WHERE id = " + sqlLiteral(id) + " AND user_id = " + sqlLiteral(userId)
 }
 
+/// COUNT a user's registered webhooks (as TEXT for the GetString-only driver),
+/// so an event is only enqueued when there is somewhere to deliver it.
+pub func countWebhooksSql(userId: in String): String {
+  return "SELECT CAST(COUNT(*) AS TEXT) FROM webhooks WHERE user_id = " + sqlLiteral(userId)
+}
+
 /// INSERT a run-completion event into the outbox (delivered '0').
 pub func insertWebhookEventSql(
   id: in String, userId: in String, sessionId: in String, runId: in String, status: in String, createdAt: in String

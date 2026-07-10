@@ -37,9 +37,42 @@ func containsControlChar(s: in String): Bool {
   return false
 }
 
-/// A webhook URL must be https, well-formed enough to store, and free of
-/// whitespace/control characters. (The external deliverer is responsible for
-/// egress/SSRF policy; this is basic hygiene at registration time.)
+/// The host component of an https URL (between "https://" and the next
+/// '/', ':', '?' or '#'). Assumes the "https://" prefix is already verified.
+pub func webhookHost(url: in String): String {
+  val rest = url.substring(8, url.length - 8)
+  var host = ""
+  var i = 0
+  while i < rest.length {
+    val c = rest.substring(i, 1)
+    if c == "/" or c == ":" or c == "?" or c == "#" {
+      return host
+    }
+    host = host + c
+    i = i + 1
+  }
+  return host
+}
+
+/// Whether a host is an obvious internal/loopback target that a webhook must
+/// not point at. Defense-in-depth at registration (#253) — the external
+/// deliverer is still responsible for full egress/SSRF policy (172.16/12, DNS
+/// rebinding, redirects), which this can't cover.
+pub func isBlockedWebhookHost(host: in String): Bool {
+  if host.length == 0 {
+    return true
+  }
+  if host.startsWith("[") {
+    return true // IPv6 literal (e.g. [::1]) — conservatively rejected
+  }
+  if host == "localhost" or host == "0.0.0.0" {
+    return true
+  }
+  return host.startsWith("127.") or host.startsWith("10.") or host.startsWith("192.168.") or host.startsWith("169.254.")
+}
+
+/// A webhook URL must be https, well-formed enough to store, free of
+/// whitespace/control characters, and not point at an obvious internal host.
 pub func isValidWebhookUrl(url: in String): Bool {
   if url.length == 0 or url.length > maxWebhookUrlLen {
     return false
@@ -54,7 +87,10 @@ pub func isValidWebhookUrl(url: in String): Bool {
   if url.contains(" ") or url.contains("\"") or url.contains("\\") {
     return false
   }
-  return not containsControlChar(url)
+  if containsControlChar(url) {
+    return false
+  }
+  return not isBlockedWebhookHost(webhookHost(url))
 }
 
 /// Register a webhook target URL for run-completion notifications.

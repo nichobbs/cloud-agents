@@ -415,6 +415,8 @@ pub func cancelRun(id: in String): Result[Unit, Web.ApiError] {
       match CloudAgents.Docker.terminateSessionContainer(session.containerId) {
         case Ok(_) -> {
           val _ = CloudAgents.Repository.finishSessionRuns(id, userId, "cancelled")
+          // A cancel is a run completion too — notify like succeeded/failed (#252).
+          val _ = CloudAgents.Repository.enqueueWebhookEvent(userId, id, "", "cancelled")
           return Ok(())
         }
         case Err(e) -> return Err(Web.internalError("failed to terminate container: " + e))

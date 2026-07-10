@@ -12,6 +12,8 @@ import CloudAgents.Sqlite
 
 val maxPromptNameLen = 200
 val maxPromptBodyLen = 131072
+val maxRenderVars = 100
+val maxRenderValueLen = 8192
 
 @generate(Json)
 pub record SavePromptRequest {
@@ -157,6 +159,18 @@ pub func listPromptsByTagHandler(tag: in String): Result[PromptList, Web.ApiErro
 pub func renderPromptHandler(pid: in String, @body req: in RenderPromptRequest): Result[RenderedPrompt, Web.ApiError] {
   if pid.length == 0 {
     return Err(Web.badRequest("prompt id is required"))
+  }
+  // Bound the substitution work (#249): too many keys, or an oversized value,
+  // would make each replaceAll pass over the body arbitrarily expensive.
+  if req.keys.length > maxRenderVars or req.values.length > maxRenderVars {
+    return Err(Web.badRequest("too many template variables (max 100)"))
+  }
+  var vi = 0
+  while vi < req.values.length {
+    if req.values[vi].length > maxRenderValueLen {
+      return Err(Web.badRequest("a template value is too long (max 8192 characters)"))
+    }
+    vi = vi + 1
   }
   val userId = CloudAgents.Auth.currentUserId()
   val prompt = match getPrompt(pid, userId) {

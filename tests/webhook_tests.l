@@ -19,6 +19,14 @@ test "webhook URL validation requires a clean https URL" {
   assertTrue(not isValidWebhookUrl(""), "empty rejected")
   assertTrue(not isValidWebhookUrl("https://ex ample.com"), "whitespace rejected")
   assertTrue(not isValidWebhookUrl("ftp://example.com"), "non-https scheme rejected")
+  // SSRF defense-in-depth (#253): internal/loopback hosts rejected.
+  assertTrue(not isValidWebhookUrl("https://localhost/hook"), "localhost rejected")
+  assertTrue(not isValidWebhookUrl("https://127.0.0.1/hook"), "loopback ip rejected")
+  assertTrue(not isValidWebhookUrl("https://10.0.0.5/hook"), "private 10/8 rejected")
+  assertTrue(not isValidWebhookUrl("https://192.168.1.1/hook"), "private 192.168 rejected")
+  assertTrue(not isValidWebhookUrl("https://169.254.169.254/latest"), "link-local metadata rejected")
+  assertTrue(isValidWebhookUrl("https://example.com:8443/hook"), "https with a port is fine")
+  assertEqual(webhookHost("https://example.com:8443/hook"), "example.com", "host extracted before port")
 }
 
 // ── SQL builder shape ─────────────────────────────────────────────────────────
@@ -110,6 +118,8 @@ test "Run-completion events flow through the outbox" {
     cleanupTestDb(dbPath)
   }
   val userId = "default"
+  // Events are only enqueued when the user has a registered webhook (#251).
+  val _ = mustWebhook(addWebhook(userId, "https://example.com/hook"))
   match enqueueWebhookEvent(userId, "s1", "r1", "succeeded") {
     case Ok(_) -> ()
     case Err(e) -> assertTrue(false, "enqueue failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
@@ -128,6 +138,18 @@ test "Run-completion events flow through the outbox" {
   val after = mustEvents(listPendingWebhookEvents(userId))
   assertEqualInt(after.length.toInt(), 1, "one event still pending")
   assertEqual(after[0].sessionId, "s2", "remaining event is the undelivered one")
+}
+
+test "Events are not enqueued without a registered webhook (#251)" {
+  val dbPath = useFreshTestDb("webhook-gate")
+  defer {
+    cleanupTestDb(dbPath)
+  }
+  match enqueueWebhookEvent("default", "s1", "r1", "succeeded") {
+    case Ok(_) -> ()
+    case Err(e) -> assertTrue(false, "enqueue failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+  }
+  assertEqualInt(mustEvents(listPendingWebhookEvents("default")).length.toInt(), 0, "no event enqueued when no webhook is registered")
 }
 
 test "Webhook handlers validate and 404 correctly" {

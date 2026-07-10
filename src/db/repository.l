@@ -587,12 +587,20 @@ pub func markPromptUsed(id: in String, userId: in String): Result[Int, CloudAgen
   return CloudAgents.Sqlite.execute(CloudAgents.Db.touchPromptUsedSql(id, userId, ts))
 }
 
-/// Delete a prompt and its tags. Returns rows affected on the prompt (0 = not
-/// found). Tag cleanup is best-effort — orphaned tag rows are unreachable once
-/// the prompt is gone.
+/// Delete a prompt and its tags in one transaction (#254), consistent with the
+/// atomicity standard used for profiles and prompt writes. Returns rows affected
+/// on the prompt (0 = not found); existence is pre-checked for that signal since
+/// executeTransaction returns no count, mirroring deleteProfile.
 pub func deletePrompt(id: in String, userId: in String): Result[Int, CloudAgents.Sqlite.DbError] {
-  val _ = CloudAgents.Sqlite.execute(CloudAgents.Db.deletePromptTagsSql(id, userId))
-  return CloudAgents.Sqlite.execute(CloudAgents.Db.deletePromptSql(id, userId))
+  match getPrompt(id, userId)? {
+    case None -> return Ok(value = 0)
+    case Some(_) -> ()
+  }
+  var stmts: slice[String] = []
+  stmts = stmts.append(CloudAgents.Db.deletePromptTagsSql(id, userId))
+  stmts = stmts.append(CloudAgents.Db.deletePromptSql(id, userId))
+  CloudAgents.Sqlite.executeTransaction(stmts)?
+  return Ok(value = 1)
 }
 
 // ─── Credentials ─────────────────────────────────────────────────────────────
@@ -900,11 +908,26 @@ pub func deleteWebhook(id: in String, userId: in String): Result[Int, CloudAgent
   return CloudAgents.Sqlite.execute(CloudAgents.Db.deleteWebhookSql(id, userId))
 }
 
-/// Enqueue a run-completion event for delivery. Best-effort bookkeeping — a
-/// failure here must not affect the run, so callers ignore the error.
+/// Whether a user has at least one registered webhook.
+pub func userHasWebhooks(userId: in String): Result[Bool, CloudAgents.Sqlite.DbError] {
+  val rows = CloudAgents.Sqlite.query(CloudAgents.Db.countWebhooksSql(userId))?
+  val len = CloudAgents.Sqlite.getRowArrayLength(rows)
+  if len == 0 {
+    return Ok(value = false)
+  }
+  return Ok(value = parseNatString(colAt(CloudAgents.Sqlite.getRowArrayValue(rows, 0).cols, 0)) > 0)
+}
+
+/// Enqueue a run-completion event for delivery — but only when the user has a
+/// registered webhook, so the outbox doesn't grow unbounded on a deployment
+/// that never configured one (#251). Best-effort bookkeeping: a failure here
+/// must not affect the run, so callers ignore the error.
 pub func enqueueWebhookEvent(
   userId: in String, sessionId: in String, runId: in String, status: in String
 ): Result[Unit, CloudAgents.Sqlite.DbError] {
+  if not userHasWebhooks(userId)? {
+    return Ok(value = ())
+  }
   val id = newId()
   val ts = nowMillis()
   CloudAgents.Sqlite.execute(CloudAgents.Db.insertWebhookEventSql(id, userId, sessionId, runId, status, ts))?
