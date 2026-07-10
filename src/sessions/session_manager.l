@@ -553,6 +553,29 @@ pub func addSession(session: in AgentSession): Result[Unit, CloudAgents.Sqlite.D
   return Ok(value = ())
 }
 
+/// Run-state projection used by the live-output endpoint: the status column
+/// (the authoritative RUNNING signal, set synchronously by tryBeginRun before
+/// the container exists) plus the container id (empty until the container is
+/// created mid-run).
+pub record SessionRunInfo {
+  pub status: String
+  pub containerId: String
+}
+
+pub func getSessionRunInfo(sessionId: in String): Result[Option[SessionRunInfo], CloudAgents.Sqlite.DbError] {
+  val rows = CloudAgents.Sqlite.query(
+    CloudAgents.Db.selectSessionByIdSql(sessionId, CloudAgents.Auth.currentUserId())
+  )?
+  val len = CloudAgents.Sqlite.getRowArrayLength(rows)
+  if len == 0 {
+    return Ok(value = None)
+  }
+  val r = CloudAgents.Sqlite.getRowArrayValue(rows, 0)
+  // Column order (CloudAgents.Db.sessionColumns): ..., container_id(4), ...,
+  // status(8), ...
+  return Ok(value = Some(value = SessionRunInfo(status = colAt(r.cols, 8), containerId = colAt(r.cols, 4))))
+}
+
 /// A single session owned by the current user, or None.
 pub func getSession(sessionId: in String): Result[Option[AgentSession], CloudAgents.Sqlite.DbError] {
   val rows = CloudAgents.Sqlite.query(

@@ -106,11 +106,14 @@ export const api = {
     }
   },
 
-  /** Poll live output for an in-progress run (see useStreamMessage). */
+  /** Poll live output for an in-progress run (see useStreamMessage). The
+   *  backend sends `running` as the string "true"/"false" (TEXT-only JSON
+   *  records); normalise it to a boolean here. */
   getRunOutput: async (sessionId: string): Promise<{ running: boolean; output: string }> => {
     const res = await fetch(`${BASE}/api/sessions/${sessionId}/output`, { headers: authHeaders() });
     if (!res.ok) throw new Error(`${res.status} ${await res.text()}`);
-    return res.json() as Promise<{ running: boolean; output: string }>;
+    const body = (await res.json()) as { running?: string; output?: string };
+    return { running: body.running === 'true', output: body.output ?? '' };
   },
 
   // ─── Transcript ──────────────────────────────────────────────────────────────

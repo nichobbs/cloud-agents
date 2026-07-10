@@ -405,8 +405,8 @@ test "Handler getRunOutput validates and reports run state" {
   )))
   match getRunOutput("out-1") {
     case Ok(ro) -> {
-      assertFalse(ro.running, "no container -> not running")
-      assertEqual(ro.output, "", "no container -> empty output")
+      assertEqual(ro.running, "false", "idle session -> not running")
+      assertEqual(ro.output, "", "idle session -> empty output")
     }
     case Err(_) -> assertTrue(false, "getRunOutput should succeed for an idle session")
   }

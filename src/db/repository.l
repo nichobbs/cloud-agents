@@ -457,9 +457,12 @@ pub func deleteCredential(userId: in String, name: in String): Result[Int, Cloud
   return CloudAgents.Sqlite.execute(CloudAgents.Db.deleteCredentialSql(userId, name))
 }
 
-/// Decrypt every credential a user has stored, for injection into a container
-/// environment. A single undecryptable row (wrong key, tampering) fails the
-/// whole batch rather than silently dropping a secret.
+/// Decrypt a user's stored credentials for injection into a container
+/// environment. Best-effort per credential: a single undecryptable row (a
+/// rotated ENCRYPTION_KEY, a tampered value) is skipped with a warning rather
+/// than failing the whole batch — otherwise one bad secret would block every
+/// future run, including runs that never needed it. A database-read failure
+/// (can't reach the store at all) is still fatal.
 pub func decryptedCredentials(userId: in String): Result[slice[CredentialValue], CredentialError] {
   val rows = match CloudAgents.Sqlite.query(CloudAgents.Db.selectCredentialsForInjectionSql(userId)) {
     case Ok(r) -> r
@@ -471,11 +474,10 @@ pub func decryptedCredentials(userId: in String): Result[slice[CredentialValue],
   while i < len {
     val r = CloudAgents.Sqlite.getRowArrayValue(rows, i)
     val name = colAt(r.cols, 0)
-    val plain = match CloudAgents.Crypto.decrypt(colAt(r.cols, 1)) {
-      case Ok(p) -> p
-      case Err(e) -> return Err(Crypto(error = e))
+    match CloudAgents.Crypto.decrypt(colAt(r.cols, 1)) {
+      case Ok(p) -> acc = acc.append(CredentialValue(name = name, value = p))
+      case Err(e) -> println("WARNING: skipping undecryptable credential '" + name + "': " + CloudAgents.Crypto.cryptoErrorMessage(e))
     }
-    acc = acc.append(CredentialValue(name = name, value = plain))
     i = i + 1
   }
   return Ok(value = acc)
