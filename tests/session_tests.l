@@ -3,8 +3,9 @@ package CloudAgents.SessionTests
 
 import Std.Core
 import Std.Testing
-import CloudAgents.SessionStore
 import CloudAgents.Handlers
+import CloudAgents.SessionStore
+import CloudAgents.Streaming
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 // Lyric match arms are `case Pattern -> expression` (no block form), so
@@ -150,6 +151,27 @@ test "Session store JSON escapes and round-trips special characters" {
   val parsed = parseSessionsJson(json)
   assertEqualInt(getSessionArrayLength(parsed), 1, "one session parsed")
   verifyEscapedRoundTrip(getSessionArrayValue(parsed, 0))
+}
+
+test "Session store round-trips control characters in fields" {
+  // The handler boundary rejects control chars today, but the store must not
+  // depend on every future writer validating (review #170). charFromCode
+  // comes from CloudAgents.Streaming since Lyric literals can't express ESC.
+  val esc = charFromCode(27)
+  val s = makeAgentSession(
+    sessionId = "ctl-1",
+    repoUrl = "https://github.com/nic/repo",
+    branch = "main",
+    containerId = "id" + esc + "tail",
+    harness = "claude",
+    model = "claude-opus-4-8",
+    nativeSessionId = "ctl-1"
+  )
+  val json = "{\"sessions\":[" + agentSessionToJson(s) + "]}"
+  assertTrue(json.contains("\\u001b"), "control char stored as unicode escape")
+  val parsed = parseSessionsJson(json)
+  assertEqualInt(getSessionArrayLength(parsed), 1, "one session parsed")
+  assertEqual(getSessionArrayValue(parsed, 0).containerId, "id" + esc + "tail", "control char round-trips")
 }
 
 test "Session store parsing survives braces inside field values" {
