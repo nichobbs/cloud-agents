@@ -1159,12 +1159,29 @@ pub func decryptedCredentialsForProfile(
       if p.credentialMode != "selected" {
         return decryptedCredentials(userId)
       }
-      val all = decryptedCredentials(userId)?
+      // Least-privilege at the crypto boundary (#267): decrypt ONLY the granted
+      // credentials, rather than decrypting every one and discarding the rest.
+      // Fetch the raw rows, filter by granted name, then decrypt just those
+      // (best-effort per credential, exactly like decryptedCredentials).
+      val rows = match CloudAgents.Sqlite.query(CloudAgents.Db.selectCredentialsForInjectionSql(userId)) {
+        case Ok(r) -> r
+        case Err(e) -> return Err(Db(error = e))
+      }
       var acc: slice[CredentialValue] = []
       var i = 0
-      while i < all.length {
-        if sliceContains(p.credentials, all[i].name) {
-          acc = acc.append(all[i])
+      val len = CloudAgents.Sqlite.getRowArrayLength(rows)
+      while i < len {
+        val r = CloudAgents.Sqlite.getRowArrayValue(rows, i)
+        val name = colAt(r.cols, 0)
+        if sliceContains(p.credentials, name) {
+          match CloudAgents.Crypto.decrypt(colAt(r.cols, 1)) {
+            case Ok(pt) -> {
+              acc = acc.append(CredentialValue(name = name, value = pt))
+            }
+            case Err(e) -> {
+              println("WARNING: skipping undecryptable credential '" + name + "': " + CloudAgents.Crypto.cryptoErrorMessage(e))
+            }
+          }
         }
         i = i + 1
       }
