@@ -122,15 +122,6 @@ pub record SendMessageRequest {
   pub text: String
 }
 
-@generate(Json)
-pub record RunOutput {
-  // "true"/"false" as a String, not Bool: every @generate(Json) record in
-  // this project uses TEXT-only fields (Todo.done is a String '0'/'1' for the
-  // same reason) — a Bool field trips the JSON source generator at runtime
-  // ("The signature is incorrect").
-  pub running: String
-  pub output: String
-}
 
 /// Create a persistent session workspace.
 @post("/api/sessions")
@@ -293,30 +284,39 @@ pub func sendMessage(id: in String, @body req: in SendMessageRequest): Result[St
 /// when the run starts, cleared when it ends). While running, we return the
 /// container's logs-so-far; otherwise `running` is false and the client stops
 /// polling and reloads the persisted transcript.
+/// Returns `{"running":"true|false","output":"..."}` as a hand-built JSON
+/// string, mirroring listSessions — no @generate(Json) response record on this
+/// path (a fresh record here tripped the JSON source generator at runtime with
+/// "The signature is incorrect").
 @get("/api/sessions/{id}/output")
-pub func getRunOutput(id: in String): Result[RunOutput, Web.ApiError] {
+pub func getRunOutput(id: in String): Result[String, Web.ApiError] {
   if id.length == 0 {
     return Err(Web.badRequest("id is required"))
   }
-  val maybeInfo = match CloudAgents.SessionStore.getSessionRunInfo(id) {
+  val maybeStatus = match CloudAgents.SessionStore.sessionStatus(id) {
     case Ok(m) -> m
     case Err(e) -> return Err(Web.internalError("session lookup failed: " + CloudAgents.Sqlite.dbErrorMessage(e)))
   }
-  match maybeInfo {
+  match maybeStatus {
     case None -> return Err(Web.notFound("Session not found"))
-    case Some(info) -> {
+    case Some(status) -> {
       // A run is in progress while status is RUNNING (set synchronously at
       // send time, before the container is created). Basing this on the
       // container id would make the first poll — which races container
       // creation — see an empty id and report "not running", causing the
       // client to stop polling for the whole run.
-      if info.status != "RUNNING" {
-        return Ok(RunOutput(running = "false", output = ""))
+      if status != "RUNNING" {
+        return Ok(value = "{\"running\":\"false\",\"output\":\"\"}")
       }
       // Logs only once the container exists; until then the run is up but has
       // produced nothing to fetch yet.
-      val logs = if info.containerId.length > 0 { CloudAgents.Docker.partialContainerLogs(info.containerId) } else { "" }
-      return Ok(RunOutput(running = "true", output = logs))
+      val containerId = match getSession(id) {
+        case Ok(Some(s)) -> s.containerId
+        case Ok(None) -> ""
+        case Err(e) -> return Err(Web.internalError("session lookup failed: " + CloudAgents.Sqlite.dbErrorMessage(e)))
+      }
+      val logs = if containerId.length > 0 { CloudAgents.Docker.partialContainerLogs(containerId) } else { "" }
+      return Ok(value = "{\"running\":\"true\",\"output\":\"" + CloudAgents.Streaming.jsonEscape(logs) + "\"}")
     }
   }
 }

@@ -404,9 +404,9 @@ test "Handler getRunOutput validates and reports run state" {
     nativeSessionId = "out-1"
   )))
   match getRunOutput("out-1") {
-    case Ok(ro) -> {
-      assertEqual(ro.running, "false", "idle session -> not running")
-      assertEqual(ro.output, "", "idle session -> empty output")
+    case Ok(body) -> {
+      assertTrue(body.contains("\"running\":\"false\""), "idle session -> not running")
+      assertTrue(body.contains("\"output\":\"\""), "idle session -> empty output")
     }
     case Err(_) -> assertTrue(false, "getRunOutput should succeed for an idle session")
   }
