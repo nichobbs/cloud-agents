@@ -242,9 +242,9 @@ pub union AuthOutcome {
 /// configured `apiToken`.
 ///
 /// - An empty `apiToken` means auth is not configured. Callers decide per
-///   route whether that is acceptable: general endpoints stay open (matching
+/////   route whether that is acceptable: general endpoints stay open (matching
 ///   today's behaviour), but credential endpoints must refuse rather than
-///   expose secrets unauthenticated — see `requireConfiguredAuth`.
+///   expose secrets unauthenticated — see `authorizeSecret`.
 /// - A configured token requires a well-formed bearer header whose token
 ///   matches in constant time.
 pub func authorize(authHeaderValue: in String, apiToken: in String): AuthOutcome {

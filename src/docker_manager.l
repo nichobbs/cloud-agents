@@ -54,9 +54,11 @@ pub async func createRunnerContainer(
   ]
 
   // Inject the user's stored credentials (GitHub token, cloud creds, arbitrary
-  // secrets) as additional env vars, decrypted here and never logged. A
-  // decryption failure (e.g. a rotated/absent ENCRYPTION_KEY) aborts the run
-  // rather than starting the agent without the secrets it was configured with.
+  // secrets) as additional env vars, decrypted here and never logged. Decryption
+  // is best-effort per credential: an individual undecryptable secret (rotated
+  // ENCRYPTION_KEY, tampered value) is skipped inside decryptedCredentials with
+  // a warning so one bad row can't block every run, while a database-read
+  // failure (can't reach the store at all) still aborts the run below.
   // GITHUB_TOKEN in particular flows on to the container's mcp.json via the
   // entrypoint template, finally wiring up the GitHub MCP server.
   match CloudAgents.Repository.decryptedCredentials(CloudAgents.Auth.currentUserId()) {
