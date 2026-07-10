@@ -60,8 +60,15 @@ func isSafeBranchName(branch: in String): Bool {
   if branch.length == 0 or branch.length > maxBranchLen {
     return false
   }
+  if branch == "@" {
+    return false // reserved ref name
+  }
   if branch.startsWith("-") or branch.startsWith("/") or branch.endsWith("/") or branch.endsWith(".") or
     branch.endsWith(".lock") {
+    return false
+  }
+  // No component may start with '.' (covers a leading '.' and 'x/.y').
+  if branch.startsWith(".") or branch.contains("/.") {
     return false
   }
   if branch.contains(" ") or branch.contains("\"") or branch.contains("\\") or branch.contains("~") or

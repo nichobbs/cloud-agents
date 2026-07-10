@@ -257,6 +257,19 @@ test "Handler createSession rejects unsafe inputs" {
     case Ok(_) -> assertTrue(false, "should reject whitespace in model")
     case Err(err) -> assertEqualInt(err.status, 400, "whitespace model -> 400")
   }
+
+  // git check-ref-format edge cases: reserved '@' and dot-leading components
+  val r6 = CreateSessionRequest(repoUrl = "https://github.com/nic/repo", branch = "@", harness = "claude", model = "")
+  match createSession(r6) {
+    case Ok(_) -> assertTrue(false, "should reject reserved '@' branch")
+    case Err(err) -> assertEqualInt(err.status, 400, "'@' branch -> 400")
+  }
+
+  val r7 = CreateSessionRequest(repoUrl = "https://github.com/nic/repo", branch = "feat/.wip", harness = "claude", model = "")
+  match createSession(r7) {
+    case Ok(_) -> assertTrue(false, "should reject dot-leading component")
+    case Err(err) -> assertEqualInt(err.status, 400, "dot-leading component -> 400")
+  }
 }
 
 test "Handler listSessions returns stored sessions" {
