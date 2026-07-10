@@ -289,15 +289,21 @@ pub func sendMessage(id: in String, @body req: in SendMessageRequest): Result[St
       }
 
       // The session's profile (if any) governs credential injection and network
-      // access for this run, and pins the harness if it sets one. A lookup
-      // failure is non-fatal — fall back to no profile (legacy behaviour)
-      // rather than blocking the run.
+      // access for this run, and pins the harness if it sets one. A DB error
+      // resolving the profile must FAIL the run, not fall through to "no
+      // profile" — treating a transient read failure as "unconfigured" would
+      // silently re-open full credentials/network for a session that was
+      // deliberately locked down (#232). Ok(None) genuinely means no profile.
       val profileId = match CloudAgents.SessionStore.sessionProfileId(id) {
         case Ok(Some(pid)) -> pid
         case Ok(None) -> ""
-        case Err(_) -> ""
+        case Err(e) -> return Err(Web.internalError("failed to resolve session profile: " + CloudAgents.Sqlite.dbErrorMessage(e)))
       }
       // Resolve the profile's pinned harness (empty = use the session's own).
+      // Harness is not a privilege boundary, so a lookup miss/error here is
+      // best-effort (falls back to the session's own harness); the credential
+      // and network policy — which ARE boundaries — fail closed in the layers
+      // below (decryptedCredentialsForProfile and profileNetworkPolicy).
       var harness = session.harness
       if profileId.length > 0 {
         match CloudAgents.Repository.getProfile(profileId, CloudAgents.Auth.currentUserId()) {
@@ -305,6 +311,13 @@ pub func sendMessage(id: in String, @body req: in SendMessageRequest): Result[St
           case Ok(None) -> ()
           case Err(_) -> ()
         }
+      }
+
+      // Record the run in history (status 'running'). Best-effort bookkeeping:
+      // a failure here must not stop the run, so we proceed with an empty run id.
+      val runId = match CloudAgents.Repository.recordRunStart(id, CloudAgents.Auth.currentUserId(), req.text, harness, session.model) {
+        case Ok(rid) -> rid
+        case Err(_) -> ""
       }
 
       val runResult = CloudAgents.Docker.runSessionMessage(
@@ -325,12 +338,110 @@ pub func sendMessage(id: in String, @body req: in SendMessageRequest): Result[St
       //
       // The agent reply is persisted too; on success the `done` frame carries the
       // stored message id so the client can attach comments/todos to this response.
+      // The run record is closed out here (write-once: a concurrent cancel that
+      // already marked it 'cancelled' wins).
       match runResult {
-        case Ok(logs) -> match CloudAgents.Repository.addMessage(id, "agent", logs) { case Ok(m) -> return Ok(value = CloudAgents.Streaming.formatLogsAsSseWithId(logs, m.id)); case Err(_) -> return Ok(value = CloudAgents.Streaming.formatLogsAsSse(logs)) }
-        case Err(err) -> return Err(Web.internalError("Failed to execute message: " + err))
+        case Ok(logs) -> {
+          if runId.length > 0 {
+            val _ = CloudAgents.Repository.recordRunEnd(runId, CloudAgents.Auth.currentUserId(), "succeeded")
+          }
+          match CloudAgents.Repository.addMessage(id, "agent", logs) {
+            case Ok(m) -> return Ok(value = CloudAgents.Streaming.formatLogsAsSseWithId(logs, m.id))
+            case Err(_) -> return Ok(value = CloudAgents.Streaming.formatLogsAsSse(logs))
+          }
+        }
+        case Err(err) -> {
+          if runId.length > 0 {
+            val _ = CloudAgents.Repository.recordRunEnd(runId, CloudAgents.Auth.currentUserId(), "failed")
+          }
+          return Err(Web.internalError("Failed to execute message: " + err))
+        }
       }
     }
   }
+}
+
+/// Cancel an in-progress run by terminating its container. The blocking send
+/// then fails and its `defer` releases the session; the run's history row is
+/// marked 'cancelled' first (write-once, so the send's own 'failed' won't
+/// overwrite it). 409 when nothing is running. Note: if the container has not
+/// been created yet (the claim is set synchronously, just before creation),
+/// there is nothing to terminate and the send proceeds — cancellation takes
+/// effect once the container exists.
+@post("/api/sessions/{id}/cancel")
+pub func cancelRun(id: in String): Result[Unit, Web.ApiError] {
+  if id.length == 0 {
+    return Err(Web.badRequest("id is required"))
+  }
+  val userId = CloudAgents.Auth.currentUserId()
+  val maybeSession = match getSession(id) {
+    case Ok(m) -> m
+    case Err(e) -> return Err(Web.internalError("session lookup failed: " + CloudAgents.Sqlite.dbErrorMessage(e)))
+  }
+  match maybeSession {
+    case None -> return Err(Web.notFound("Session not found"))
+    case Some(session) -> {
+      val status = match CloudAgents.SessionStore.sessionStatus(id) {
+        case Ok(s) -> s
+        case Err(e) -> return Err(Web.internalError("status lookup failed: " + CloudAgents.Sqlite.dbErrorMessage(e)))
+      }
+      val isRunning = match status {
+        case Some(s) -> s == "RUNNING"
+        case None -> false
+      }
+      if not isRunning {
+        return Err(Web.conflict("no run is in progress for this session"))
+      }
+      // Mark history first (write-once), then terminate the container.
+      val _ = CloudAgents.Repository.finishSessionRuns(id, userId, "cancelled")
+      if session.containerId.length > 0 {
+        match CloudAgents.Docker.terminateSessionContainer(session.containerId) {
+          case Ok(_) -> ()
+          case Err(e) -> return Err(Web.internalError("failed to terminate container: " + e))
+        }
+      }
+      return Ok(())
+    }
+  }
+}
+
+/// A session's run history, newest first.
+@get("/api/sessions/{id}/runs")
+pub func getRuns(id: in String): Result[RunList, Web.ApiError] {
+  if id.length == 0 {
+    return Err(Web.badRequest("id is required"))
+  }
+  match CloudAgents.Repository.listRuns(id, CloudAgents.Auth.currentUserId()) {
+    case Ok(rs) -> return Ok(RunList(runs = rs))
+    case Err(e) -> return Err(Web.internalError("failed to list runs: " + CloudAgents.Sqlite.dbErrorMessage(e)))
+  }
+}
+
+/// Stop WARM containers idle past the warm window and free their session rows.
+/// A maintenance endpoint for an external scheduler to poll (Lyric.Web has no
+/// in-process timer yet); safe to call repeatedly — it no-ops when nothing is
+/// reapable. Returns `{"reaped":N}`.
+@post("/api/maintenance/reap")
+pub func reapContainers(): Result[String, Web.ApiError] {
+  val targets = match CloudAgents.SessionStore.reapableWarmContainers() {
+    case Ok(t) -> t
+    case Err(e) -> return Err(Web.internalError("failed to list reapable containers: " + CloudAgents.Sqlite.dbErrorMessage(e)))
+  }
+  var reaped = 0
+  var i = 0
+  while i < targets.length {
+    val t = targets[i]
+    // Terminate is best-effort (the container may already be gone); blank the
+    // session row regardless so it returns to IDLE.
+    match CloudAgents.Docker.terminateSessionContainer(t.containerId) {
+      case Ok(_) -> ()
+      case Err(_) -> ()
+    }
+    val _ = CloudAgents.SessionStore.reapSessionContainer(t.sessionId)
+    reaped = reaped + 1
+    i = i + 1
+  }
+  return Ok(value = "{\"reaped\":" + toString(reaped) + "}")
 }
 
 /// Live output for an in-progress run. The frontend polls this while a send is

@@ -419,3 +419,110 @@ test "Handler listSessions returns stored sessions" {
   }
 }
 
+// ── Session lifecycle: run history, cancel, profile wiring ────────────────────
+
+func mustRunId(r: in Result[String, CloudAgents.Sqlite.DbError]): String {
+  return match r {
+    case Ok(rid) -> rid
+    case Err(e) -> panic("recordRunStart failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+  }
+}
+
+func mustRuns(r: in Result[slice[Run], CloudAgents.Sqlite.DbError]): slice[Run] {
+  return match r {
+    case Ok(rs) -> rs
+    case Err(e) -> panic("listRuns failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+  }
+}
+
+test "Run history records, lists, and finishes write-once" {
+  val dbPath = useFreshTestDb("run-history")
+  defer {
+    cleanupTestDb(dbPath)
+  }
+  val userId = "default"
+  val runId = mustRunId(CloudAgents.Repository.recordRunStart("rh-1", userId, "do a thing", "claude", "opus"))
+  assertTrue(runId.length > 0, "run id returned")
+
+  val running = mustRuns(CloudAgents.Repository.listRuns("rh-1", userId))
+  assertEqualInt(running.length.toInt(), 1, "one run recorded")
+  assertEqual(running[0].status, "running", "run starts running")
+
+  match CloudAgents.Repository.recordRunEnd(runId, userId, "succeeded") {
+    case Ok(_) -> ()
+    case Err(e) -> assertTrue(false, "recordRunEnd failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+  }
+  assertEqual(mustRuns(CloudAgents.Repository.listRuns("rh-1", userId))[0].status, "succeeded", "run moved to succeeded")
+
+  // Write-once: a late 'failed' does not overwrite the terminal status.
+  match CloudAgents.Repository.recordRunEnd(runId, userId, "failed") {
+    case Ok(_) -> ()
+    case Err(_) -> ()
+  }
+  assertEqual(mustRuns(CloudAgents.Repository.listRuns("rh-1", userId))[0].status, "succeeded", "terminal status is write-once")
+}
+
+test "cancelRun validates session state" {
+  val dbPath = useFreshTestDb("cancel")
+  defer {
+    cleanupTestDb(dbPath)
+  }
+  match cancelRun("nope") {
+    case Ok(_) -> assertTrue(false, "unknown session should 404")
+    case Err(err) -> assertEqualInt(err.status, 404, "unknown session -> 404")
+  }
+  mustUnit(addSession(makeAgentSession(
+    sessionId = "cx-1",
+    repoUrl = "https://github.com/nic/repo",
+    branch = "main",
+    containerId = "",
+    harness = "claude",
+    model = "claude-opus-4-8",
+    nativeSessionId = "cx-1"
+  )))
+  // Idle (not running) session -> 409.
+  match cancelRun("cx-1") {
+    case Ok(_) -> assertTrue(false, "idle session cannot be cancelled")
+    case Err(err) -> assertEqualInt(err.status, 409, "idle session -> 409")
+  }
+}
+
+test "setSessionProfileHandler validates session and profile (#235)" {
+  val dbPath = useFreshTestDb("set-profile")
+  defer {
+    cleanupTestDb(dbPath)
+  }
+  match setSessionProfileHandler("nope", SetProfileRequest(profileId = "")) {
+    case Ok(_) -> assertTrue(false, "unknown session should 404")
+    case Err(err) -> assertEqualInt(err.status, 404, "unknown session -> 404")
+  }
+  mustUnit(addSession(makeAgentSession(
+    sessionId = "sp-1",
+    repoUrl = "https://github.com/nic/repo",
+    branch = "main",
+    containerId = "",
+    harness = "claude",
+    model = "claude-opus-4-8",
+    nativeSessionId = "sp-1"
+  )))
+  // Unknown profile -> 400.
+  match setSessionProfileHandler("sp-1", SetProfileRequest(profileId = "ghost")) {
+    case Ok(_) -> assertTrue(false, "unknown profile should 400")
+    case Err(err) -> assertEqualInt(err.status, 400, "unknown profile -> 400")
+  }
+  // Attach a real profile; it reads back on the session.
+  val prof = match CloudAgents.Repository.addProfile("default", "p", "", "none", "all", []) {
+    case Ok(p) -> p
+    case Err(e) -> panic("addProfile failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+  }
+  match setSessionProfileHandler("sp-1", SetProfileRequest(profileId = prof.id)) {
+    case Ok(_) -> ()
+    case Err(_) -> assertTrue(false, "attaching a valid profile should succeed")
+  }
+  match CloudAgents.SessionStore.sessionProfileId("sp-1") {
+    case Ok(Some(pid)) -> assertEqual(pid, prof.id, "profile attached to session")
+    case Ok(None) -> assertTrue(false, "profile should be set")
+    case Err(e) -> assertTrue(false, "sessionProfileId failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+  }
+}
+

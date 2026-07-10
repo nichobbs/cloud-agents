@@ -704,6 +704,12 @@ pub func selectProfileByIdSql(id: in String, userId: in String): String {
     sqlLiteral(userId)
 }
 
+/// SELECT the id of a user's profile with a given name (for duplicate-name
+/// detection so a UNIQUE clash returns 400, not a 500). Empty result = free.
+pub func selectProfileIdByNameSql(userId: in String, name: in String): String {
+  return "SELECT id FROM profiles WHERE user_id = " + sqlLiteral(userId) + " AND name = " + sqlLiteral(name)
+}
+
 /// UPDATE a profile's settings.
 pub func updateProfileSql(
   id: in String,
@@ -758,6 +764,115 @@ pub func selectProfileCredentialsSql(profileId: in String, userId: in String): S
 pub func deleteProfileCredentialsSql(profileId: in String, userId: in String): String {
   return "DELETE FROM profile_credentials WHERE profile_id = " + sqlLiteral(profileId) + " AND user_id = " +
     sqlLiteral(userId)
+}
+
+// ─── Run history ──────────────────────────────────────────────────────────────
+//
+// One row per agent run (a send that actually claimed the session): a compact
+// audit/usage record with status and timing, separate from the full transcript
+// in `messages`. `prompt_preview` is a bounded slice of the prompt (the full
+// text lives in messages), so this table stays lean even for long prompts.
+// Scoped by user_id. status: 'running' | 'succeeded' | 'failed' | 'cancelled'.
+/// DDL for the run-history table.
+pub func runsSchemaSql(): String {
+  return "CREATE TABLE IF NOT EXISTS runs (" + "id TEXT PRIMARY KEY, " + "session_id TEXT NOT NULL, " +
+    "user_id TEXT NOT NULL, " +
+    "prompt_preview TEXT NOT NULL, " +
+    "harness TEXT NOT NULL, " +
+    "model TEXT NOT NULL, " +
+    "status TEXT NOT NULL, " +
+    "started_at TEXT NOT NULL, " +
+    "ended_at TEXT NOT NULL)"
+}
+
+/// Indexes for the two lookups run history uses (per session, per user).
+pub func runsSessionIndexSql(): String {
+  return "CREATE INDEX IF NOT EXISTS idx_runs_session_id ON runs(session_id)"
+}
+
+pub func runsUserIndexSql(): String {
+  return "CREATE INDEX IF NOT EXISTS idx_runs_user_id ON runs(user_id)"
+}
+
+/// INSERT a run at the moment it is claimed (status 'running', ended_at '').
+pub func insertRunSql(
+  id: in String,
+  sessionId: in String,
+  userId: in String,
+  promptPreview: in String,
+  harness: in String,
+  model: in String,
+  startedAt: in String,
+): String {
+  return "INSERT INTO runs (id, session_id, user_id, prompt_preview, harness, model, status, started_at, ended_at) VALUES (" +
+    sqlLiteral(id) +
+    ", " +
+    sqlLiteral(sessionId) +
+    ", " +
+    sqlLiteral(userId) +
+    ", " +
+    sqlLiteral(promptPreview) +
+    ", " +
+    sqlLiteral(harness) +
+    ", " +
+    sqlLiteral(model) +
+    ", 'running', " +
+    sqlLiteral(startedAt) +
+    ", '')"
+}
+
+/// UPDATE a run to a terminal status with its end time. Scoped by owner, and
+/// write-once (only a still-'running' run is moved), so a cancel that already
+/// marked the run 'cancelled' from another request is not overwritten by the
+/// run's own 'failed'/'succeeded' when its terminated container makes it exit.
+pub func finishRunSql(id: in String, userId: in String, status: in String, endedAt: in String): String {
+  return "UPDATE runs SET status = " + sqlLiteral(status) + ", ended_at = " + sqlLiteral(endedAt) + " WHERE id = " +
+    sqlLiteral(id) +
+    " AND user_id = " +
+    sqlLiteral(userId) +
+    " AND status = 'running'"
+}
+
+/// SELECT a session's run history, newest first. Scoped by owner.
+pub func selectRunsBySessionSql(sessionId: in String, userId: in String): String {
+  return "SELECT id, session_id, user_id, prompt_preview, harness, model, status, started_at, ended_at FROM runs " +
+    "WHERE session_id = " +
+    sqlLiteral(sessionId) +
+    " AND user_id = " +
+    sqlLiteral(userId) +
+    " ORDER BY started_at DESC"
+}
+
+/// Mark any still-'running' runs for a session as the given terminal status.
+/// Used when a run ends without the caller holding the run id (e.g. a cancel
+/// from another request), so history doesn't leave phantom 'running' rows.
+pub func finishSessionRunsSql(sessionId: in String, userId: in String, status: in String, endedAt: in String): String {
+  return "UPDATE runs SET status = " + sqlLiteral(status) + ", ended_at = " + sqlLiteral(endedAt) + " WHERE session_id = " +
+    sqlLiteral(sessionId) +
+    " AND user_id = " +
+    sqlLiteral(userId) +
+    " AND status = 'running'"
+}
+
+// ─── Idle container reaping ─────────────────────────────────────────────────────
+/// Sessions (system-wide) that still hold a WARM container that has been idle
+/// at least `warmWindowMillis`, i.e. ready for the reaper to stop. The age
+/// filter is done in SQL (SQLite's integer arithmetic is 64-bit) so Lyric never
+/// has to parse epoch-millis into a Long. Returns (id, container_id). Un-scoped:
+/// reaping is a system maintenance task, not a per-user request.
+pub func selectReapableWarmSql(nowMillis: in String, warmWindowMillis: in String): String {
+  return "SELECT id, container_id FROM sessions WHERE status = 'WARM' AND container_id <> '' AND (CAST(" +
+    sqlLiteral(nowMillis) +
+    " AS INTEGER) - CAST(last_message_at AS INTEGER)) >= CAST(" +
+    sqlLiteral(warmWindowMillis) +
+    " AS INTEGER)"
+}
+
+/// Stop tracking a session's container after its container has been reaped:
+/// blank the container id and return the session to IDLE. Un-scoped (system
+/// maintenance). Params: id.
+pub func reapSessionContainerSql(id: in String): String {
+  return "UPDATE sessions SET status = 'IDLE', container_id = '' WHERE id = " + sqlLiteral(id)
 }
 
 // ─── Schema migrations ────────────────────────────────────────────────────────

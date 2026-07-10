@@ -44,6 +44,35 @@ pub func isValidProfileHarness(h: in String): Bool {
   return h == "" or h == "claude" or h == "codex" or h == "opencode"
 }
 
+/// A credential grant name must be a valid environment-variable name (the same
+/// charset the credential store enforces on the name it injects) — a leading
+/// letter or underscore, then letters/digits/underscores. Guards against junk
+/// grants that could never match a real credential (#237).
+pub func isValidGrantName(name: in String): Bool {
+  if name.length == 0 or name.length > 256 {
+    return false
+  }
+  var i = 0
+  while i < name.length {
+    val c = name.substring(i, 1)
+    val isUpper = c >= "A" and c <= "Z"
+    val isLower = c >= "a" and c <= "z"
+    val isDigit = c >= "0" and c <= "9"
+    val isUnderscore = c == "_"
+    if i == 0 {
+      if not (isUpper or isLower or isUnderscore) {
+        return false
+      }
+    } else {
+      if not (isUpper or isLower or isDigit or isUnderscore) {
+        return false
+      }
+    }
+    i = i + 1
+  }
+  return true
+}
+
 func validateSaveProfile(req: in SaveProfileRequest): Option[Web.ApiError] {
   if req.name.trim().length == 0 {
     return Some(value = Web.badRequest("name is required"))
@@ -59,6 +88,16 @@ func validateSaveProfile(req: in SaveProfileRequest): Option[Web.ApiError] {
   }
   if not isValidProfileHarness(req.harness) {
     return Some(value = Web.badRequest("harness must be empty or one of: claude, codex, opencode"))
+  }
+  // In 'selected' mode, every granted name must be a valid env-var name.
+  if req.credentialMode == "selected" {
+    var i = 0
+    while i < req.credentials.length {
+      if not isValidGrantName(req.credentials[i]) {
+        return Some(value = Web.badRequest("credential grant names must be valid environment variable names"))
+      }
+      i = i + 1
+    }
   }
   return None
 }
@@ -90,14 +129,15 @@ pub func addProfileHandler(@body req: in SaveProfileRequest): Result[Profile, We
     case Some(err) -> return Err(err)
     case None -> ()
   }
-  match addProfile(
-    CloudAgents.Auth.currentUserId(),
-    req.name.trim(),
-    req.harness,
-    req.networkPolicy,
-    req.credentialMode,
-    grantsFor(req)
-  ) {
+  val userId = CloudAgents.Auth.currentUserId()
+  val name = req.name.trim()
+  // Turn a duplicate name into a 400 rather than a UNIQUE-constraint 500 (#236).
+  match profileIdByName(userId, name) {
+    case Ok(Some(_)) -> return Err(Web.badRequest("a profile with this name already exists"))
+    case Ok(None) -> ()
+    case Err(e) -> return Err(dbError(e))
+  }
+  match addProfile(userId, name, req.harness, req.networkPolicy, req.credentialMode, grantsFor(req)) {
     case Ok(p) -> return Ok(p)
     case Err(e) -> return Err(dbError(e))
   }
@@ -114,15 +154,14 @@ pub func updateProfileHandler(pid: in String, @body req: in SaveProfileRequest):
     case None -> ()
   }
   val userId = CloudAgents.Auth.currentUserId()
-  val affected = match updateProfile(
-    pid,
-    userId,
-    req.name.trim(),
-    req.harness,
-    req.networkPolicy,
-    req.credentialMode,
-    grantsFor(req)
-  ) {
+  val name = req.name.trim()
+  // A rename that collides with another profile's name is a 400, not a 500.
+  match profileIdByName(userId, name) {
+    case Ok(Some(otherId)) -> if otherId != pid { return Err(Web.badRequest("a profile with this name already exists")) }
+    case Ok(None) -> ()
+    case Err(e) -> return Err(dbError(e))
+  }
+  val affected = match updateProfile(pid, userId, name, req.harness, req.networkPolicy, req.credentialMode, grantsFor(req)) {
     case Ok(n) -> n
     case Err(e) -> return Err(dbError(e))
   }

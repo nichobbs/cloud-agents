@@ -118,6 +118,27 @@ test "schema DDL is idempotent" {
   assertTrue(todosSchemaSql().contains("CREATE TABLE IF NOT EXISTS todos"), "todos ddl")
 }
 
+test "run-history SQL builders are scoped and well-formed" {
+  assertTrue(runsSchemaSql().contains("CREATE TABLE IF NOT EXISTS runs"), "runs ddl")
+  val ins = insertRunSql("r1", "s1", "u1", "do the thing", "claude", "opus", "1000")
+  assertTrue(ins.startsWith("INSERT INTO runs"), "insert target")
+  assertTrue(ins.contains("'running'"), "run starts running")
+  val fin = finishRunSql("r1", "u1", "succeeded", "2000")
+  assertTrue(fin.contains("AND user_id = 'u1'"), "finish scoped by owner")
+  assertTrue(fin.endsWith("AND status = 'running'"), "finish is write-once from running")
+  assertTrue(selectRunsBySessionSql("s1", "u1").contains("ORDER BY started_at DESC"), "history newest first")
+  assertTrue(selectRunsBySessionSql("s1", "u1").contains("AND user_id = 'u1'"), "history scoped by owner")
+  assertTrue(finishSessionRunsSql("s1", "u1", "cancelled", "3000").endsWith("AND status = 'running'"), "cancel only affects running runs")
+}
+
+test "reap SQL filters by warm window in SQL" {
+  val sel = selectReapableWarmSql("1000000", "300000")
+  assertTrue(sel.contains("status = 'WARM'"), "reaps warm sessions")
+  assertTrue(sel.contains("container_id <> ''"), "only sessions with a container")
+  assertTrue(sel.contains("- CAST(last_message_at AS INTEGER)) >= CAST('300000' AS INTEGER)"), "age filter in SQL")
+  assertTrue(reapSessionContainerSql("s1").contains("SET status = 'IDLE', container_id = ''"), "reap frees the row")
+}
+
 test "migration ledger SQL is well-formed" {
   assertTrue(migrationsSchemaSql().contains("CREATE TABLE IF NOT EXISTS schema_migrations"), "ledger ddl")
   assertTrue(migrationsSchemaSql().contains("version TEXT PRIMARY KEY"), "version is the key")

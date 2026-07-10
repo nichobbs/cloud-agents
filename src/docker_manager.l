@@ -6,6 +6,7 @@ import Lyric.Docker
 import CloudAgents.Auth
 import CloudAgents.Repository
 import CloudAgents.SessionStore
+import CloudAgents.Sqlite
 import extern System.Environment as Env
 import extern System.String as DotNetString
 
@@ -109,9 +110,13 @@ pub async func createRunnerContainer(
   // Resolve the profile's network policy: sets the container NetworkMode and,
   // for 'restricted', any proxy env vars. A lookup failure is non-fatal — fall
   // back to full network rather than blocking the run on a metadata read.
+  // A DB error must FAIL the run, not fall open to full network: a transient
+  // read failure on a locked-down session must never silently re-open its
+  // network (#233), mirroring the credential path above (which propagates its
+  // DB error). Both privilege boundaries fail closed together.
   val policy = match CloudAgents.Repository.profileNetworkPolicy(userId, profileId) {
     case Ok(p) -> p
-    case Err(_) -> "full"
+    case Err(e) -> return Err(error = "Failed to resolve network policy: " + CloudAgents.Sqlite.dbErrorMessage(e))
   }
   val proxyEnv = proxyEnvForPolicy(policy)
   var pi = 0

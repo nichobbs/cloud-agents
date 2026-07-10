@@ -202,24 +202,30 @@ pub func executeTransaction(sqls: in slice[String]): Result[Unit, DbError] {
   defer {
     conn.Close()
   }
+  // Track the statement in flight so a failure names the offending SQL (#234)
+  // rather than an opaque "transaction". Starts on BEGIN.
+  var currentSql = "BEGIN"
   return try {
     val begin = conn.CreateCommand()
-    begin.set_CommandText("BEGIN")
+    begin.set_CommandText(currentSql)
     val _ = begin.ExecuteNonQuery()
     var i = 0
     while i < sqls.length {
+      currentSql = sqls[i]
       val cmd = conn.CreateCommand()
-      cmd.set_CommandText(sqls[i])
+      cmd.set_CommandText(currentSql)
       val _ = cmd.ExecuteNonQuery()
       i = i + 1
     }
+    currentSql = "COMMIT"
     val commit = conn.CreateCommand()
-    commit.set_CommandText("COMMIT")
+    commit.set_CommandText(currentSql)
     val _ = commit.ExecuteNonQuery()
     Ok(value = ())
   } catch Bug as b {
-    // Roll back so nothing from this batch persists, then surface the error.
-    // The rollback is itself best-effort (the connection may already be broken).
+    // Roll back so nothing from this batch persists, then surface the error
+    // with the statement that failed. The rollback is itself best-effort (the
+    // connection may already be broken).
     try {
       val rb = conn.CreateCommand()
       rb.set_CommandText("ROLLBACK")
@@ -227,7 +233,7 @@ pub func executeTransaction(sqls: in slice[String]): Result[Unit, DbError] {
     } catch Bug as b2 {
       // connection unusable; Close() in the defer still runs
     }
-    Err(error = ExecFailed(sql = "transaction", message = b.message))
+    Err(error = ExecFailed(sql = currentSql, message = b.message))
   }
 }
 

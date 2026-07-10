@@ -66,6 +66,11 @@ func main(): Unit {
   // Live output polling for an in-progress run
   router = Web.addGet(router, "/api/sessions/{id}/output", "CloudAgents.Handlers.getRunOutput")
 
+  // Session lifecycle: cancel an in-flight run, run history, container reaping.
+  router = Web.addPost(router, "/api/sessions/{id}/cancel", "CloudAgents.Handlers.cancelRun")
+  router = Web.addGet(router, "/api/sessions/{id}/runs", "CloudAgents.Handlers.getRuns")
+  router = Web.addPost(router, "/api/maintenance/reap", "CloudAgents.Handlers.reapContainers")
+
   // Transcript: addressable agent/user messages for a session
   router = Web.addGet(router, "/api/sessions/{id}/messages", "CloudAgents.Interactions.getMessages")
 

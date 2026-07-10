@@ -112,6 +112,42 @@ func hasCred(creds: in slice[CredentialValue], name: in String): Bool {
   return false
 }
 
+test "Profile handlers validate enums, grants, and reject duplicates" {
+  val dbPath = useFreshTestDb("profile-handlers")
+  defer {
+    cleanupTestDb(dbPath)
+  }
+  // Bad network policy -> 400.
+  match addProfileHandler(SaveProfileRequest(name = "p", harness = "", networkPolicy = "open", credentialMode = "all", credentials = [])) {
+    case Ok(_) -> assertTrue(false, "bad policy should be rejected")
+    case Err(err) -> assertEqualInt(err.status, 400, "bad policy -> 400")
+  }
+  // Invalid grant name (#237) -> 400.
+  match addProfileHandler(SaveProfileRequest(name = "p2", harness = "", networkPolicy = "none", credentialMode = "selected", credentials = ["bad name"])) {
+    case Ok(_) -> assertTrue(false, "bad grant name should be rejected")
+    case Err(err) -> assertEqualInt(err.status, 400, "bad grant -> 400")
+  }
+  // Happy path.
+  match addProfileHandler(SaveProfileRequest(name = "prod", harness = "", networkPolicy = "none", credentialMode = "all", credentials = [])) {
+    case Ok(p) -> assertEqual(p.name, "prod", "profile created")
+    case Err(_) -> assertTrue(false, "valid profile should create")
+  }
+  // Duplicate name (#236) -> 400, not a 500 from the UNIQUE constraint.
+  match addProfileHandler(SaveProfileRequest(name = "prod", harness = "", networkPolicy = "full", credentialMode = "all", credentials = [])) {
+    case Ok(_) -> assertTrue(false, "duplicate name should be rejected")
+    case Err(err) -> assertEqualInt(err.status, 400, "duplicate name -> 400")
+  }
+  // Unknown ids are 404s.
+  match updateProfileHandler("nope", SaveProfileRequest(name = "x", harness = "", networkPolicy = "full", credentialMode = "all", credentials = [])) {
+    case Ok(_) -> assertTrue(false, "unknown update should 404")
+    case Err(err) -> assertEqualInt(err.status, 404, "unknown update -> 404")
+  }
+  match deleteProfileHandler("nope") {
+    case Ok(_) -> assertTrue(false, "unknown delete should 404")
+    case Err(err) -> assertEqualInt(err.status, 404, "unknown delete -> 404")
+  }
+}
+
 test "Profile CRUD round-trips with its credential grants" {
   val dbPath = useFreshTestDb("profile-crud")
   defer {

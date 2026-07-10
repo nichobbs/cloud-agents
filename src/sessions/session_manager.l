@@ -675,6 +675,39 @@ pub func recoverDanglingSessions(): Result[Int, CloudAgents.Sqlite.DbError] {
   return CloudAgents.Sqlite.execute(CloudAgents.Db.recoverDanglingSessionsSql())
 }
 
+// ─── Idle container reaping ─────────────────────────────────────────────────────
+/// A WARM session whose container is past the warm window and should be stopped.
+pub record ReapTarget {
+  pub sessionId: String
+  pub containerId: String
+}
+
+/// Sessions whose WARM container has been idle past the warm window — ready for
+/// the reaper to stop. System-wide (reaping is maintenance, not per-request).
+/// The age filter runs in SQL; the caller (which can reach CloudAgents.Docker)
+/// terminates each container, then calls reapSessionContainer to blank the row.
+pub func reapableWarmContainers(): Result[slice[ReapTarget], CloudAgents.Sqlite.DbError] {
+  val rows = CloudAgents.Sqlite.query(
+    CloudAgents.Db.selectReapableWarmSql(CloudAgents.Repository.nowMillis(), toString(CloudAgents.Db.warmWindowMillis()))
+  )?
+  var acc: slice[ReapTarget] = []
+  var i = 0
+  val len = CloudAgents.Sqlite.getRowArrayLength(rows)
+  while i < len {
+    val r = CloudAgents.Sqlite.getRowArrayValue(rows, i)
+    acc = acc.append(ReapTarget(sessionId = colAt(r.cols, 0), containerId = colAt(r.cols, 1)))
+    i = i + 1
+  }
+  return Ok(value = acc)
+}
+
+/// Return a reaped session to IDLE and blank its container id. System-wide (no
+/// per-user scoping — the reaper acts on the whole deployment).
+pub func reapSessionContainer(sessionId: in String): Result[Unit, CloudAgents.Sqlite.DbError] {
+  CloudAgents.Sqlite.execute(CloudAgents.Db.reapSessionContainerSql(sessionId))?
+  return Ok(value = ())
+}
+
 // ─── Legacy env-var store import ──────────────────────────────────────────────
 /// One-time migration: sessions created before the SQLite store lived as JSON
 /// in CLOUD_AGENTS_SESSIONS_JSON. Import any that aren't already in the

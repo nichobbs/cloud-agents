@@ -206,6 +206,14 @@ pub func allMigrations(): slice[Migration] {
       statements = [
         CloudAgents.Db.alterSessionsAddProfileSql()
       ]
+    ),
+    Migration(
+      version = "0004_runs",
+      statements = [
+        CloudAgents.Db.runsSchemaSql(),
+        CloudAgents.Db.runsSessionIndexSql(),
+        CloudAgents.Db.runsUserIndexSql()
+      ]
     )
   ]
 }
@@ -617,6 +625,94 @@ func sliceContains(xs: in slice[String], target: in String): Bool {
   return false
 }
 
+// ─── Run history ───────────────────────────────────────────────────────────────
+//
+// A compact per-run record (status + timing + a bounded prompt preview) for
+// history/usage views. The full prompt lives in `messages`; this table is the
+// lifecycle/audit surface. Scoped by user_id.
+val runPreviewMaxLen = 500
+
+@generate(Json)
+pub record Run {
+  pub id: String
+  pub sessionId: String
+  pub userId: String
+  pub promptPreview: String
+  pub harness: String
+  pub model: String
+  pub status: String
+  pub startedAt: String
+  pub endedAt: String
+}
+
+@generate(Json)
+pub record RunList {
+  pub runs: slice[Run]
+}
+
+func rowToRun(r: in CloudAgents.Sqlite.Row): Run {
+  return Run(
+    id = colAt(r.cols, 0),
+    sessionId = colAt(r.cols, 1),
+    userId = colAt(r.cols, 2),
+    promptPreview = colAt(r.cols, 3),
+    harness = colAt(r.cols, 4),
+    model = colAt(r.cols, 5),
+    status = colAt(r.cols, 6),
+    startedAt = colAt(r.cols, 7),
+    endedAt = colAt(r.cols, 8)
+  )
+}
+
+/// First `runPreviewMaxLen` characters of a prompt, for the lean run record.
+func promptPreview(prompt: in String): String {
+  if prompt.length <= runPreviewMaxLen {
+    return prompt
+  }
+  return prompt.substring(0, runPreviewMaxLen)
+}
+
+/// Record the start of a run (status 'running'), returning the run id so the
+/// caller can finish it. Best-effort bookkeeping — a failure here must not stop
+/// the actual run, so callers ignore the error and pass "" as the run id.
+pub func recordRunStart(
+  sessionId: in String, userId: in String, prompt: in String, harness: in String, model: in String
+): Result[String, CloudAgents.Sqlite.DbError] {
+  val id = newId()
+  val ts = nowMillis()
+  CloudAgents.Sqlite.execute(
+    CloudAgents.Db.insertRunSql(id, sessionId, userId, promptPreview(prompt), harness, model, ts)
+  )?
+  return Ok(value = id)
+}
+
+/// Move a run to a terminal status ('succeeded' | 'failed' | 'cancelled').
+pub func recordRunEnd(runId: in String, userId: in String, status: in String): Result[Unit, CloudAgents.Sqlite.DbError] {
+  CloudAgents.Sqlite.execute(CloudAgents.Db.finishRunSql(runId, userId, status, nowMillis()))?
+  return Ok(value = ())
+}
+
+/// Mark every still-'running' run for a session terminal — used when a run ends
+/// without the run id in hand (a cancel from another request), so history never
+/// strands a phantom 'running' row.
+pub func finishSessionRuns(sessionId: in String, userId: in String, status: in String): Result[Unit, CloudAgents.Sqlite.DbError] {
+  CloudAgents.Sqlite.execute(CloudAgents.Db.finishSessionRunsSql(sessionId, userId, status, nowMillis()))?
+  return Ok(value = ())
+}
+
+/// A session's run history, newest first.
+pub func listRuns(sessionId: in String, userId: in String): Result[slice[Run], CloudAgents.Sqlite.DbError] {
+  val rows = CloudAgents.Sqlite.query(CloudAgents.Db.selectRunsBySessionSql(sessionId, userId))?
+  var acc: slice[Run] = []
+  var i = 0
+  val len = CloudAgents.Sqlite.getRowArrayLength(rows)
+  while i < len {
+    acc = acc.append(rowToRun(CloudAgents.Sqlite.getRowArrayValue(rows, i)))
+    i = i + 1
+  }
+  return Ok(value = acc)
+}
+
 /// The granted credential names for a profile (empty for 'all' mode).
 func profileCredentialNames(profileId: in String, userId: in String): Result[slice[String], CloudAgents.Sqlite.DbError] {
   val rows = CloudAgents.Sqlite.query(CloudAgents.Db.selectProfileCredentialsSql(profileId, userId))?
@@ -703,6 +799,18 @@ pub func listProfiles(userId: in String): Result[slice[Profile], CloudAgents.Sql
     i = i + 1
   }
   return Ok(value = acc)
+}
+
+/// The id of a user's profile with the given name, or None if the name is
+/// free. Used to turn a duplicate name into a 400 instead of a UNIQUE-constraint
+/// 500 (#236).
+pub func profileIdByName(userId: in String, name: in String): Result[Option[String], CloudAgents.Sqlite.DbError] {
+  val rows = CloudAgents.Sqlite.query(CloudAgents.Db.selectProfileIdByNameSql(userId, name))?
+  val len = CloudAgents.Sqlite.getRowArrayLength(rows)
+  if len == 0 {
+    return Ok(value = None)
+  }
+  return Ok(value = Some(value = colAt(CloudAgents.Sqlite.getRowArrayValue(rows, 0).cols, 0)))
 }
 
 /// A single profile owned by a user (with its granted credentials), or None.
