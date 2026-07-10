@@ -143,18 +143,22 @@ pub func recycleDecision(status: in SessionStatus, idleMillis: in Long): Recycle
   }
 }
 
-/// DDL for the `sessions` table (Phase 2). Mirrors the schema in
-/// docs/phase2-session-management.md. Applied at startup with
-/// `CREATE TABLE IF NOT EXISTS`, so it is safe to run repeatedly.
+/// DDL for the `sessions` table. Every column is TEXT affinity so the
+/// CloudAgents.Sqlite driver can read rows with GetString (same rule as the
+/// messages/comments/todos/prompts tables — the original Phase 2 draft used
+/// INTEGER/TIMESTAMP columns, which the GetString-only driver cannot read).
+/// Applied at startup with `CREATE TABLE IF NOT EXISTS`.
 pub func sessionsSchemaSql(): String {
-  return "CREATE TABLE IF NOT EXISTS sessions (" + "id TEXT PRIMARY KEY, " + "github_user_id INTEGER NOT NULL, " +
-    "repo_url TEXT, " +
-    "branch TEXT DEFAULT 'main', " +
-    "status TEXT, " +
-    "container_id TEXT, " +
-    "volume_name TEXT, " +
-    "created_at TIMESTAMP, " +
-    "last_message_at TIMESTAMP)"
+  return "CREATE TABLE IF NOT EXISTS sessions (" + "id TEXT PRIMARY KEY, " + "user_id TEXT NOT NULL, " +
+    "repo_url TEXT NOT NULL, " +
+    "branch TEXT NOT NULL, " +
+    "container_id TEXT NOT NULL, " +
+    "harness TEXT NOT NULL, " +
+    "model TEXT NOT NULL, " +
+    "native_session_id TEXT NOT NULL, " +
+    "status TEXT NOT NULL, " +
+    "created_at TEXT NOT NULL, " +
+    "last_message_at TEXT NOT NULL)"
 }
 
 /// Name of the per-session workspace volume (Phase 3 keys by GitHub user).
@@ -167,46 +171,95 @@ pub func homeVolumeName(githubUserId: in String): String {
   return "user-" + githubUserId + "-home"
 }
 
-// ─── Parameterised SQL ────────────────────────────────────────────────────────
+// ─── Session SQL ──────────────────────────────────────────────────────────────
 //
-// Statements use `?` placeholders bound by the lyric-db layer. Every read and
-// mutation is scoped by `github_user_id` so a user can only ever touch their
-// own sessions (Phase 3 ownership enforcement, docs/phase3 §4).
-/// INSERT a new session row.
-/// Params: id, github_user_id, repo_url, branch, status, container_id,
-/// volume_name, created_at, last_message_at.
-pub func insertSessionSql(): String {
-  return "INSERT INTO sessions " +
-    "(id, github_user_id, repo_url, branch, status, container_id, volume_name, created_at, last_message_at) " +
-    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)"
+// Assembled with `sqlLiteral` escaping like every other statement in this
+// package (an earlier draft used `?` placeholders for a lyric-db binding
+// layer that was never wired in — the CloudAgents.Sqlite driver does no
+// parameter binding). Every read and mutation is scoped by `user_id` so a
+// user can only ever touch their own sessions (Phase 3 ownership
+// enforcement, docs/phase3 §4).
+val sessionColumns = "id, user_id, repo_url, branch, container_id, harness, model, native_session_id, status, created_at, last_message_at"
+
+/// INSERT a new session row (status starts IDLE; last_message_at = created_at).
+pub func insertSessionSql(
+  id: in String,
+  userId: in String,
+  repoUrl: in String,
+  branch: in String,
+  containerId: in String,
+  harness: in String,
+  model: in String,
+  nativeSessionId: in String,
+  createdAt: in String,
+): String {
+  return "INSERT INTO sessions (" + sessionColumns + ") VALUES (" + sqlLiteral(id) + ", " + sqlLiteral(userId) +
+    ", " +
+    sqlLiteral(repoUrl) +
+    ", " +
+    sqlLiteral(branch) +
+    ", " +
+    sqlLiteral(containerId) +
+    ", " +
+    sqlLiteral(harness) +
+    ", " +
+    sqlLiteral(model) +
+    ", " +
+    sqlLiteral(nativeSessionId) +
+    ", 'IDLE', " +
+    sqlLiteral(createdAt) +
+    ", " +
+    sqlLiteral(createdAt) +
+    ")"
 }
 
-/// SELECT a single session owned by a user. Params: id, github_user_id.
-pub func selectSessionByIdSql(): String {
-  return "SELECT id, github_user_id, repo_url, branch, status, container_id, volume_name, created_at, last_message_at " +
-    "FROM sessions WHERE id = ? AND github_user_id = ?"
+/// SELECT a single session owned by a user.
+pub func selectSessionByIdSql(id: in String, userId: in String): String {
+  return "SELECT " + sessionColumns + " FROM sessions WHERE id = " + sqlLiteral(id) + " AND user_id = " +
+    sqlLiteral(userId)
 }
 
-/// SELECT all sessions owned by a user, newest first. Param: github_user_id.
-pub func listSessionsByUserSql(): String {
-  return "SELECT id, github_user_id, repo_url, branch, status, container_id, volume_name, created_at, last_message_at " +
-    "FROM sessions WHERE github_user_id = ? ORDER BY last_message_at DESC"
+/// SELECT all sessions owned by a user, most recently active first.
+pub func listSessionsByUserSql(userId: in String): String {
+  return "SELECT " + sessionColumns + " FROM sessions WHERE user_id = " + sqlLiteral(userId) +
+    " ORDER BY last_message_at DESC"
 }
 
-/// UPDATE a session's status and container id.
-/// Params: status, container_id, id, github_user_id.
-pub func updateSessionStatusSql(): String {
-  return "UPDATE sessions SET status = ?, container_id = ? WHERE id = ? AND github_user_id = ?"
+/// UPDATE a session's container id.
+pub func updateSessionContainerSql(id: in String, userId: in String, containerId: in String): String {
+  return "UPDATE sessions SET container_id = " + sqlLiteral(containerId) + " WHERE id = " + sqlLiteral(id) +
+    " AND user_id = " +
+    sqlLiteral(userId)
 }
 
-/// Record that a message was received. Params: last_message_at, id, github_user_id.
-pub func touchLastMessageSql(): String {
-  return "UPDATE sessions SET last_message_at = ? WHERE id = ? AND github_user_id = ?"
+/// UPDATE a session's model.
+pub func updateSessionModelSql(id: in String, userId: in String, model: in String): String {
+  return "UPDATE sessions SET model = " + sqlLiteral(model) + " WHERE id = " + sqlLiteral(id) + " AND user_id = " +
+    sqlLiteral(userId)
 }
 
-/// DELETE a session. Params: id, github_user_id.
-pub func deleteSessionSql(): String {
-  return "DELETE FROM sessions WHERE id = ? AND github_user_id = ?"
+/// Atomically claim a session for a run: flips status to RUNNING only when
+/// it is not already RUNNING, in one statement, so two concurrent sends
+/// cannot both win (rows affected = 1 means the claim succeeded).
+pub func tryBeginRunSql(id: in String, userId: in String, ts: in String): String {
+  return "UPDATE sessions SET status = 'RUNNING', last_message_at = " + sqlLiteral(ts) + " WHERE id = " +
+    sqlLiteral(id) +
+    " AND user_id = " +
+    sqlLiteral(userId) +
+    " AND status <> 'RUNNING'"
+}
+
+/// Return a session to IDLE after a run completes (success or failure).
+pub func endRunSql(id: in String, userId: in String, ts: in String): String {
+  return "UPDATE sessions SET status = 'IDLE', last_message_at = " + sqlLiteral(ts) + " WHERE id = " +
+    sqlLiteral(id) +
+    " AND user_id = " +
+    sqlLiteral(userId)
+}
+
+/// DELETE a session.
+pub func deleteSessionSql(id: in String, userId: in String): String {
+  return "DELETE FROM sessions WHERE id = " + sqlLiteral(id) + " AND user_id = " + sqlLiteral(userId)
 }
 
 /// Reset any sessions still marked RUNNING or WARM back to IDLE. Used by the

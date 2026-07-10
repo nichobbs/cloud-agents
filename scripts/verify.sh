@@ -104,9 +104,12 @@ pub func main(): Int {
   eqs(rshow(recycleDecision(Idle, 3600000.toLong())), "EVICT", "Idle at 1h")
   eqs(rshow(recycleDecision(Running, 9999999.toLong())), "NONE", "Running not swept")
 
-  // Phase 2 — SQL (ownership-scoped)
-  eqb(deleteSessionSql() == "DELETE FROM sessions WHERE id = ? AND github_user_id = ?", true, "delete sql")
-  eqb(selectSessionByIdSql().endsWith("AND github_user_id = ?"), true, "select scoped by owner")
+  // Phase 2 — SQL (ownership-scoped, sqlLiteral-inlined like every other
+  // statement; the `?`-placeholder forms were dead code for a binding layer
+  // that never existed)
+  eqb(deleteSessionSql("s1", "u1") == "DELETE FROM sessions WHERE id = 's1' AND user_id = 'u1'", true, "delete sql")
+  eqb(selectSessionByIdSql("s1", "u1").endsWith("AND user_id = 'u1'"), true, "select scoped by owner")
+  eqb(tryBeginRunSql("s1", "u1", "1000").contains("AND status <> 'RUNNING'"), true, "run claim is status-guarded")
 
   // Phase 3 — token cache + ownership
   val entry = CachedToken(userId = "42", login = "octocat", expiresAtMillis = 1000.toLong())

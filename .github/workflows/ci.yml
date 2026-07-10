@@ -106,6 +106,15 @@ jobs:
         continue-on-error: true
         run: ./scripts/repro-web-bug.sh
 
+      # Frontend: typecheck + production build (review #179). Node 20 is
+      # preinstalled on ubuntu-latest runners.
+      - name: Build frontend
+        working-directory: frontend
+        run: |
+          npm ci --no-audit --no-fund
+          npx tsc --noEmit
+          npx vite build
+
       # Shell + asset sanity checks (no Lyric toolchain needed).
       - name: Lint shell scripts
         run: |

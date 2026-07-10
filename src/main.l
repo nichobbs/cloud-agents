@@ -3,16 +3,28 @@ package CloudAgents
 import Std.Core
 import Web
 import CloudAgents.Repository
+import CloudAgents.SessionStore
 import CloudAgents.Sqlite
 import extern System.Environment as Env
 import extern System.String as DotNetString
 
 func main(): Unit {
-  // Ensure the SQLite transcript/comments/todos tables exist before serving.
+  // Ensure the SQLite tables (transcript/comments/todos/prompts/sessions)
+  // exist before serving.
   match CloudAgents.Repository.initSchema() {
     case Ok(_) -> ()
     case Err(e) -> println("WARNING: failed to initialise database schema: " + CloudAgents.Sqlite.dbErrorMessage(e))
   }
+
+  // Sessions stranded RUNNING by a crash/restart can never be claimed again
+  // (the concurrency guard would 409 forever) — reset them to IDLE.
+  match CloudAgents.SessionStore.recoverDanglingSessions() {
+    case Ok(_) -> ()
+    case Err(e) -> println("WARNING: failed to recover dangling sessions: " + CloudAgents.Sqlite.dbErrorMessage(e))
+  }
+
+  // One-time migration of sessions from the legacy env-var store.
+  CloudAgents.SessionStore.importLegacyEnvSessions()
 
   var router = Web.create()
 

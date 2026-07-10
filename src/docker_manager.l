@@ -128,6 +128,11 @@ pub func runSessionMessage(
   }
 }
 
+// NOTE: all Result inspection below is match-based. The Std.Core convenience
+// methods (.isOk(), .unwrapResult(), .unwrapErrOr()) compile as dot-calls but
+// fail at runtime with "unsupported method" in the current toolchain — see
+// docs/lyric/gotchas.md. This code had used them before any container run
+// path had ever actually executed.
 async func runSessionMessageAsync(
   repoUrl: in String,
   branch: in String,
@@ -139,36 +144,45 @@ async func runSessionMessageAsync(
   cell: in ResultCell,
 ): Unit {
   val createResult = await createRunnerContainer(repoUrl, branch, prompt, sessionId, harness, model, nativeSessionId)
-  if not createResult.isOk() {
-    cell.isSuccess = false
-    cell.error = createResult.unwrapErrOr("unknown error")
-    return ()
+  val containerId = match createResult {
+    case Ok(id) -> id
+    case Err(msg) -> {
+      cell.isSuccess = false
+      cell.error = msg
+      return ()
+    }
   }
-  val containerId = createResult.unwrapResult()
 
-  // Persist container ID to the session store
-  CloudAgents.SessionStore.updateSessionContainer(sessionId, containerId)
+  // Persist container ID to the session store (best-effort: the run matters
+  // more than the bookkeeping).
+  val _ = CloudAgents.SessionStore.updateSessionContainer(sessionId, containerId)
 
   val startResult = await startRunnerContainer(containerId)
-  if not startResult.isOk() {
-    cell.isSuccess = false
-    cell.error = startResult.unwrapErrOr("unknown error")
-    // Best-effort cleanup: remove the container even if start failed
-    val _ = await deleteRunnerContainer(containerId)
-    CloudAgents.SessionStore.updateSessionContainer(sessionId, "")
-    return ()
+  match startResult {
+    case Ok(_) -> ()
+    case Err(msg) -> {
+      cell.isSuccess = false
+      cell.error = msg
+      // Best-effort cleanup: remove the container even if start failed
+      val _ = await deleteRunnerContainer(containerId)
+      val _ = CloudAgents.SessionStore.updateSessionContainer(sessionId, "")
+      return ()
+    }
   }
 
   // Block until the container process exits. If the wait call itself fails
   // (daemon unreachable, container vanished, etc.) we cannot safely fetch
   // complete logs, so we clean up and surface the error immediately.
   val waitResult = await waitForContainer(containerId)
-  if not waitResult.isOk() {
-    val _ = await deleteRunnerContainer(containerId)
-    CloudAgents.SessionStore.updateSessionContainer(sessionId, "")
-    cell.isSuccess = false
-    cell.error = waitResult.unwrapErrOr("unknown error")
-    return ()
+  match waitResult {
+    case Ok(_) -> ()
+    case Err(msg) -> {
+      val _ = await deleteRunnerContainer(containerId)
+      val _ = CloudAgents.SessionStore.updateSessionContainer(sessionId, "")
+      cell.isSuccess = false
+      cell.error = msg
+      return ()
+    }
   }
 
   val logsResult = await getRunnerLogs(containerId)
@@ -176,15 +190,18 @@ async func runSessionMessageAsync(
   // Always remove the ephemeral container after the run. Session state
   // (workspace and home volumes) persists independently of the container.
   val _ = await deleteRunnerContainer(containerId)
-  CloudAgents.SessionStore.updateSessionContainer(sessionId, "")
+  val _ = CloudAgents.SessionStore.updateSessionContainer(sessionId, "")
 
-  if not logsResult.isOk() {
-    cell.isSuccess = false
-    cell.error = logsResult.unwrapErrOr("unknown error")
-    return ()
+  match logsResult {
+    case Ok(logs) -> {
+      cell.isSuccess = true
+      cell.output = logs
+    }
+    case Err(msg) -> {
+      cell.isSuccess = false
+      cell.error = msg
+    }
   }
-  cell.isSuccess = true
-  cell.output = logsResult.unwrapResult()
 }
 
 /// Terminate and delete a session container synchronously.
@@ -207,11 +224,14 @@ async func terminateSessionContainerAsync(containerId: in String, cell: in Resul
   // 304/404 in that case). We always attempt remove regardless.
   val _ = await stopRunnerContainer(containerId)
   val deleteResult = await deleteRunnerContainer(containerId)
-  if not deleteResult.isOk() {
-    cell.isSuccess = false
-    cell.error = "Delete failed: " + deleteResult.unwrapErrOr("unknown")
-    return ()
+  match deleteResult {
+    case Ok(_) -> {
+      cell.isSuccess = true
+      cell.output = ""
+    }
+    case Err(msg) -> {
+      cell.isSuccess = false
+      cell.error = "Delete failed: " + msg
+    }
   }
-  cell.isSuccess = true
-  cell.output = ""
 }

@@ -160,9 +160,10 @@ pub func createSession(@body req: in CreateSessionRequest): Result[CreateSession
     nativeSessionId = sessionId
   )  // pre-assigned so every run gets a stable resume ID
 
-  addSession(session)
-
-  return Ok(CreateSessionResponse(sessionId = sessionId))
+  match addSession(session) {
+    case Ok(_) -> return Ok(CreateSessionResponse(sessionId = sessionId))
+    case Err(e) -> return Err(Web.internalError("failed to persist session: " + CloudAgents.Sqlite.dbErrorMessage(e)))
+  }
 }
 
 /// Public projection of a session for the list endpoint: only what a client
@@ -186,7 +187,10 @@ func sessionSummaryJson(s: in AgentSession): String {
 /// instead of stranding server-side sessions forever.
 @get("/api/sessions")
 pub func listSessions(): Result[String, Web.ApiError] {
-  val arr = CloudAgents.SessionStore.getSessions()
+  val arr = match CloudAgents.SessionStore.getSessions() {
+    case Ok(a) -> a
+    case Err(e) -> return Err(Web.internalError("failed to list sessions: " + CloudAgents.Sqlite.dbErrorMessage(e)))
+  }
   var json = "{\"sessions\":["
   var i = 0
   val len = CloudAgents.SessionStore.getSessionArrayLength(arr)
@@ -213,10 +217,24 @@ pub func sendMessage(id: in String, @body req: in SendMessageRequest): Result[St
     return Err(Web.badRequest("text is too long (max 131072 characters)"))
   }
 
-  val maybeSession = getSession(id)
+  val maybeSession = match getSession(id) {
+    case Ok(m) -> m
+    case Err(e) -> return Err(Web.internalError("session lookup failed: " + CloudAgents.Sqlite.dbErrorMessage(e)))
+  }
   match maybeSession {
     case None -> return Err(Web.notFound("Session not found"))
     case Some(session) -> {
+      // One run per session at a time: atomically claim the RUNNING status
+      // (a single guarded UPDATE, so two concurrent sends cannot both win).
+      // Without this, concurrent runs race the same workspace volume.
+      val began = match CloudAgents.SessionStore.tryBeginRun(id) {
+        case Ok(b) -> b
+        case Err(e) -> return Err(Web.internalError("failed to claim session for run: " + CloudAgents.Sqlite.dbErrorMessage(e)))
+      }
+      if not began {
+        return Err(Web.conflict("a run is already in progress for this session"))
+      }
+
       // Persist the user's prompt as an addressable transcript message. Best-effort:
       // a storage hiccup must not stop the agent from running.
       match CloudAgents.Repository.addMessage(id, "user", req.text) {
@@ -233,6 +251,10 @@ pub func sendMessage(id: in String, @body req: in SendMessageRequest): Result[St
         model = session.model,
         nativeSessionId = session.nativeSessionId
       )
+
+      // Release the claim whatever the outcome; a crash before this line is
+      // handled by the startup recovery (RUNNING -> IDLE).
+      val _ = CloudAgents.SessionStore.endRun(id)
 
       // Frame the captured container output as a Server-Sent Events stream:
       // one `data: {"chunk":"..."}` frame per line, then a `done` event. ANSI
@@ -259,7 +281,10 @@ pub func deleteSession(id: in String): Result[Unit, Web.ApiError] {
   // Terminate the container BEFORE dropping the session record: if teardown
   // fails, the session (and its containerId) survives so the delete can be
   // retried, instead of orphaning a running container with no record of it.
-  val maybeSession = getSession(id)
+  val maybeSession = match getSession(id) {
+    case Ok(m) -> m
+    case Err(e) -> return Err(Web.internalError("session lookup failed: " + CloudAgents.Sqlite.dbErrorMessage(e)))
+  }
   match maybeSession {
     case None -> return Err(Web.notFound("Session not found"))
     case Some(session) -> {
@@ -271,8 +296,10 @@ pub func deleteSession(id: in String): Result[Unit, Web.ApiError] {
           case Err(err) -> return Err(Web.internalError("Failed to terminate container (session retained, retry delete): " + err))
         }
       }
-      val _ = removeSession(id)
-      return Ok(())
+      match removeSession(id) {
+        case Ok(_) -> return Ok(())
+        case Err(e) -> return Err(Web.internalError("failed to remove session: " + CloudAgents.Sqlite.dbErrorMessage(e)))
+      }
     }
   }
 }
@@ -290,12 +317,15 @@ pub func updateSessionModel(id: in String, @body req: in UpdateSessionRequest): 
   if not isSafeModelName(req.model) {
     return Err(Web.badRequest("model contains invalid characters or is too long"))
   }
-  val maybeSession = getSession(id)
+  val maybeSession = match getSession(id) {
+    case Ok(m) -> m
+    case Err(e) -> return Err(Web.internalError("session lookup failed: " + CloudAgents.Sqlite.dbErrorMessage(e)))
+  }
   match maybeSession {
     case None -> return Err(Web.notFound("Session not found"))
-    case Some(_) -> {
-      CloudAgents.SessionStore.updateSessionModel(id, req.model)
-      return Ok(())
+    case Some(_) -> match CloudAgents.SessionStore.updateSessionModel(id, req.model) {
+      case Ok(_) -> return Ok(())
+      case Err(e) -> return Err(Web.internalError("failed to update model: " + CloudAgents.Sqlite.dbErrorMessage(e)))
     }
   }
 }
