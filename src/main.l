@@ -36,6 +36,13 @@ func main(): Unit {
   router = Web.addPost(router, "/api/todos/{tid}/toggle", "CloudAgents.Interactions.toggleTodoHandler")
   router = Web.addDelete(router, "/api/todos/{tid}", "CloudAgents.Interactions.deleteTodoHandler")
 
+  // Prompt library: saved, reusable prompts
+  router = Web.addGet(router, "/api/prompts", "CloudAgents.Prompts.listPromptsHandler")
+  router = Web.addPost(router, "/api/prompts", "CloudAgents.Prompts.addPromptHandler")
+  router = Web.addPost(router, "/api/prompts/{pid}", "CloudAgents.Prompts.updatePromptHandler")
+  router = Web.addPost(router, "/api/prompts/{pid}/use", "CloudAgents.Prompts.usePromptHandler")
+  router = Web.addDelete(router, "/api/prompts/{pid}", "CloudAgents.Prompts.deletePromptHandler")
+
   // Register health route
   router = Web.addGet(router, "/api/health", "CloudAgents.Handlers.checkHealth")
 

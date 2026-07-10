@@ -25,6 +25,7 @@ output_assembly = "CloudAgents.dll"
 "CloudAgents.Sqlite"   = "src/db/sqlite_driver.l"
 "CloudAgents.Repository" = "src/db/repository.l"
 "CloudAgents.Auth"     = "src/handlers/auth.l"
+"CloudAgents.Prompts"  = "src/handlers/prompts.l"
 "CloudAgents.Streaming" = "src/streaming/streaming.l"
 
 # Lyric.Docker and Lyric.Docker.Sockets are NOT the published NuGet package —
@@ -43,6 +44,7 @@ output_assembly = "CloudAgents.dll"
 "CloudAgents.AuthTests"      = "tests/auth_tests.l"
 "CloudAgents.DockerClientTests" = "tests/docker_client_tests.l"
 "CloudAgents.MainTests"      = "tests/main_tests.l"
+"CloudAgents.PromptTests"    = "tests/prompt_tests.l"
 
 [nuget]
 "Lyric.Web"             = "0.4.11"

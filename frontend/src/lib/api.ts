@@ -1,6 +1,6 @@
 /// <reference types="vite/client" />
 
-import type { Comment, Message, Todo } from '../types';
+import type { Comment, Message, Prompt, Todo } from '../types';
 
 const BASE = (import.meta.env['VITE_API_URL'] as string | undefined) ?? '';
 
@@ -138,6 +138,52 @@ export const api = {
     });
     if (!res.ok) throw new Error(`${res.status} ${await res.text()}`);
     return res.json() as Promise<Comment>;
+  },
+
+  // ─── Prompt library ──────────────────────────────────────────────────────────
+
+  getPrompts: async (): Promise<Prompt[]> => {
+    const res = await fetch(`${BASE}/api/prompts`, { headers: authHeaders() });
+    if (!res.ok) throw new Error(`${res.status} ${await res.text()}`);
+    const body = (await res.json()) as { prompts?: Prompt[] };
+    return body.prompts ?? [];
+  },
+
+  addPrompt: async (name: string, body: string): Promise<Prompt> => {
+    const res = await fetch(`${BASE}/api/prompts`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', ...authHeaders() },
+      body: JSON.stringify({ name, body }),
+    });
+    if (!res.ok) throw new Error(`${res.status} ${await res.text()}`);
+    return res.json() as Promise<Prompt>;
+  },
+
+  updatePrompt: async (promptId: string, name: string, body: string): Promise<Prompt> => {
+    const res = await fetch(`${BASE}/api/prompts/${promptId}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', ...authHeaders() },
+      body: JSON.stringify({ name, body }),
+    });
+    if (!res.ok) throw new Error(`${res.status} ${await res.text()}`);
+    return res.json() as Promise<Prompt>;
+  },
+
+  /** Best-effort usage bookkeeping; callers may fire-and-forget. */
+  usePrompt: async (promptId: string): Promise<void> => {
+    const res = await fetch(`${BASE}/api/prompts/${promptId}/use`, {
+      method: 'POST',
+      headers: authHeaders(),
+    });
+    if (!res.ok) throw new Error(`${res.status} ${await res.text()}`);
+  },
+
+  deletePrompt: async (promptId: string): Promise<void> => {
+    const res = await fetch(`${BASE}/api/prompts/${promptId}`, {
+      method: 'DELETE',
+      headers: authHeaders(),
+    });
+    if (!res.ok) throw new Error(`${res.status} ${await res.text()}`);
   },
 
   // ─── Todos / bookmarks ───────────────────────────────────────────────────────

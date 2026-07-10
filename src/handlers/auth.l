@@ -179,6 +179,15 @@ pub func ownsResource(authedUserId: in String, ownerUserId: in String): Bool {
   return authedUserId == ownerUserId
 }
 
+/// The identity that owns per-user data (prompts, credentials, sessions) for
+/// the current request. Static-token phase: one operator identity for the
+/// whole deployment. The GitHub-OAuth follow-up replaces this body with the
+/// id of the validated bearer token's user — every schema and query is
+/// already scoped by this value, so that change stays contained here.
+pub func currentUserId(): String {
+  return "default"
+}
+
 // ─── GitHub /user response parsing ────────────────────────────────────────────
 //
 // The validation call returns a JSON object containing at least `id` (number)

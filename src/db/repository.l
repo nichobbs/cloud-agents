@@ -43,6 +43,22 @@ pub record Todo {
 }
 
 @generate(Json)
+pub record Prompt {
+  pub id: String
+  pub userId: String
+  pub name: String
+  pub body: String
+  pub useCount: String
+  pub createdAt: String
+  pub updatedAt: String
+}
+
+@generate(Json)
+pub record PromptList {
+  pub prompts: slice[Prompt]
+}
+
+@generate(Json)
 pub record MessageList {
   pub messages: slice[Message]
 }
@@ -135,6 +151,7 @@ pub func initSchema(): Result[Unit, CloudAgents.Sqlite.DbError] {
   CloudAgents.Sqlite.execute(CloudAgents.Db.messagesSchemaSql())?
   CloudAgents.Sqlite.execute(CloudAgents.Db.commentsSchemaSql())?
   CloudAgents.Sqlite.execute(CloudAgents.Db.todosSchemaSql())?
+  CloudAgents.Sqlite.execute(CloudAgents.Db.promptsSchemaSql())?
   return Ok(value = ())
 }
 
@@ -281,4 +298,71 @@ pub func toggleTodo(id: in String): Result[Unit, CloudAgents.Sqlite.DbError] {
 pub func deleteTodo(id: in String): Result[Unit, CloudAgents.Sqlite.DbError] {
   CloudAgents.Sqlite.execute(CloudAgents.Db.deleteTodoSql(id))?
   return Ok(value = ())
+}
+
+// ─── Prompt library ────────────────────────────────────────────────────────────
+func rowToPrompt(r: in CloudAgents.Sqlite.Row): Prompt {
+  return Prompt(
+    id = colAt(r.cols, 0),
+    userId = colAt(r.cols, 1),
+    name = colAt(r.cols, 2),
+    body = colAt(r.cols, 3),
+    useCount = colAt(r.cols, 4),
+    createdAt = colAt(r.cols, 5),
+    updatedAt = colAt(r.cols, 6)
+  )
+}
+
+/// Save a new prompt to a user's library and return the stored record.
+pub func addPrompt(userId: in String, name: in String, body: in String): Result[Prompt, CloudAgents.Sqlite.DbError] {
+  val id = newId()
+  val ts = nowMillis()
+  CloudAgents.Sqlite.execute(CloudAgents.Db.insertPromptSql(id, userId, name, body, ts))?
+  return Ok(
+    value = Prompt(id = id, userId = userId, name = name, body = body, useCount = "0", createdAt = ts, updatedAt = ts)
+  )
+}
+
+/// All prompts in a user's library, alphabetical by name.
+pub func listPrompts(userId: in String): Result[slice[Prompt], CloudAgents.Sqlite.DbError] {
+  val rows = CloudAgents.Sqlite.query(CloudAgents.Db.selectPromptsSql(userId))?
+  var acc: slice[Prompt] = []
+  var i = 0
+  val len = CloudAgents.Sqlite.getRowArrayLength(rows)
+  while i < len {
+    acc = acc.append(rowToPrompt(CloudAgents.Sqlite.getRowArrayValue(rows, i)))
+    i = i + 1
+  }
+  return Ok(value = acc)
+}
+
+/// A single prompt owned by a user, or None.
+pub func getPrompt(id: in String, userId: in String): Result[Option[Prompt], CloudAgents.Sqlite.DbError] {
+  val rows = CloudAgents.Sqlite.query(CloudAgents.Db.selectPromptByIdSql(id, userId))?
+  val len = CloudAgents.Sqlite.getRowArrayLength(rows)
+  if len == 0 {
+    return Ok(value = None)
+  }
+  return Ok(value = Some(value = rowToPrompt(CloudAgents.Sqlite.getRowArrayValue(rows, 0))))
+}
+
+/// Update a prompt's name/body. Returns the number of rows affected (0 when
+/// the prompt does not exist or is not owned by the user — the handler maps
+/// that to 404).
+pub func updatePrompt(
+  id: in String, userId: in String, name: in String, body: in String
+): Result[Int, CloudAgents.Sqlite.DbError] {
+  val ts = nowMillis()
+  return CloudAgents.Sqlite.execute(CloudAgents.Db.updatePromptSql(id, userId, name, body, ts))
+}
+
+/// Record one use of a prompt. Returns rows affected (0 = not found).
+pub func markPromptUsed(id: in String, userId: in String): Result[Int, CloudAgents.Sqlite.DbError] {
+  val ts = nowMillis()
+  return CloudAgents.Sqlite.execute(CloudAgents.Db.touchPromptUsedSql(id, userId, ts))
+}
+
+/// Delete a prompt. Returns rows affected (0 = not found).
+pub func deletePrompt(id: in String, userId: in String): Result[Int, CloudAgents.Sqlite.DbError] {
+  return CloudAgents.Sqlite.execute(CloudAgents.Db.deletePromptSql(id, userId))
 }

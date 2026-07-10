@@ -17,6 +17,12 @@ export function Nav() {
           Sessions
         </Link>
         <Link
+          to="/prompts"
+          style={{ ...linkStyle, color: pathname === '/prompts' ? '#c9d1d9' : '#8b949e' }}
+        >
+          Prompts
+        </Link>
+        <Link
           to="/sessions/new"
           style={{
             ...btnStyle,

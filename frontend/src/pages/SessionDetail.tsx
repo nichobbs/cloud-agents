@@ -6,7 +6,7 @@ import { useSessions } from '../context/SessionsContext';
 import { useStreamMessage } from '../hooks/useStreamMessage';
 import { getHarness } from '../lib/harnesses';
 import { api } from '../lib/api';
-import type { Message } from '../types';
+import type { Message, Prompt } from '../types';
 
 export function SessionDetail() {
   const { id } = useParams<{ id: string }>();
@@ -23,7 +23,26 @@ export function SessionDetail() {
   const [deleting, setDeleting] = useState(false);
   const [modelSwitching, setModelSwitching] = useState(false);
   const [modelError, setModelError] = useState('');
+  const [prompts, setPrompts] = useState<Prompt[]>([]);
+  const [savingPrompt, setSavingPrompt] = useState(false);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+
+  // Prompt library for the composer picker. Best-effort: an older backend
+  // without the endpoint just leaves the picker hidden.
+  useEffect(() => {
+    let active = true;
+    api
+      .getPrompts()
+      .then(ps => {
+        if (active) setPrompts(ps);
+      })
+      .catch(() => {
+        /* library unavailable — hide the picker */
+      });
+    return () => {
+      active = false;
+    };
+  }, []);
 
   // Tracks which session this component instance is currently showing, so a
   // handleSend() call that outlives a navigation to a different session (a
@@ -183,6 +202,33 @@ export function SessionDetail() {
     }
   };
 
+  const handleInsertPrompt = (promptId: string) => {
+    const p = prompts.find(x => x.id === promptId);
+    if (!p) return;
+    // Insert (append to any draft) rather than replace, so a prompt can be
+    // combined with typed context.
+    setInput(prev => (prev.trim() ? `${prev.trimEnd()}\n\n${p.body}` : p.body));
+    // Usage bookkeeping is best-effort; the count just informs the library UI.
+    api.usePrompt(p.id).catch(() => { /* non-fatal */ });
+    textareaRef.current?.focus();
+  };
+
+  const handleSavePrompt = async () => {
+    const text = input.trim();
+    if (!text || savingPrompt) return;
+    const promptName = prompt('Name for this prompt:', text.split('\n')[0]?.slice(0, 60) ?? '');
+    if (!promptName?.trim()) return;
+    setSavingPrompt(true);
+    try {
+      const created = await api.addPrompt(promptName.trim(), text);
+      setPrompts(prev => [...prev, created].sort((a, b) => a.name.localeCompare(b.name)));
+    } catch (err) {
+      alert(err instanceof Error ? `Failed to save prompt: ${err.message}` : 'Failed to save prompt');
+    } finally {
+      setSavingPrompt(false);
+    }
+  };
+
   const handleDelete = async () => {
     if (!confirm(`Delete session ${session.sessionId.slice(0, 8)}…?`)) return;
     setDeleting(true);
@@ -268,6 +314,35 @@ export function SessionDetail() {
             <Terminal output={output} isStreaming={isStreaming} />
           </div>
         )}
+      </div>
+
+      <div style={composerToolsStyle}>
+        {prompts.length > 0 && (
+          <select
+            style={promptPickerStyle}
+            value=""
+            onChange={e => {
+              if (e.target.value) handleInsertPrompt(e.target.value);
+            }}
+            disabled={isStreaming}
+            aria-label="Insert a saved prompt"
+          >
+            <option value="">Insert prompt…</option>
+            {prompts.map(p => (
+              <option key={p.id} value={p.id}>
+                {p.name}
+              </option>
+            ))}
+          </select>
+        )}
+        <button
+          style={{ ...savePromptBtnStyle, opacity: input.trim() && !savingPrompt ? 1 : 0.5 }}
+          onClick={() => { void handleSavePrompt(); }}
+          disabled={!input.trim() || savingPrompt}
+          title="Save the current draft to the prompt library"
+        >
+          {savingPrompt ? 'Saving…' : 'Save as prompt'}
+        </button>
       </div>
 
       <div style={inputRowStyle}>
@@ -408,6 +483,34 @@ const deleteBtnStyle: React.CSSProperties = {
   border: '1px solid #f85149',
   borderRadius: '6px',
   fontSize: '13px',
+  cursor: 'pointer',
+};
+
+const composerToolsStyle: React.CSSProperties = {
+  display: 'flex',
+  gap: '8px',
+  justifyContent: 'flex-end',
+  marginBottom: '-8px',
+};
+
+const promptPickerStyle: React.CSSProperties = {
+  background: '#0d1117',
+  border: '1px solid #30363d',
+  borderRadius: '6px',
+  color: '#8b949e',
+  fontSize: '12px',
+  padding: '3px 8px',
+  outline: 'none',
+  cursor: 'pointer',
+};
+
+const savePromptBtnStyle: React.CSSProperties = {
+  padding: '3px 10px',
+  background: 'transparent',
+  color: '#8b949e',
+  border: '1px solid #30363d',
+  borderRadius: '6px',
+  fontSize: '12px',
   cursor: 'pointer',
 };
 

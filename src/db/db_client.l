@@ -382,3 +382,82 @@ pub func toggleTodoSql(id: in String): String {
 pub func deleteTodoSql(id: in String): String {
   return "DELETE FROM todos WHERE id = " + sqlLiteral(id)
 }
+
+// ─── Prompt library ───────────────────────────────────────────────────────────
+//
+// Saved, reusable prompts. Scoped by `user_id` from day one (Phase 3
+// multi-tenancy readiness): in the current static-token deployment every
+// request resolves to the single operator identity, but the schema and every
+// query are already ownership-scoped so the GitHub-OAuth follow-up only has
+// to change where the identity comes from. Every column is TEXT affinity so
+// the CloudAgents.Sqlite driver can read rows with GetString.
+/// DDL for the prompt library.
+pub func promptsSchemaSql(): String {
+  return "CREATE TABLE IF NOT EXISTS prompts (" + "id TEXT PRIMARY KEY, " + "user_id TEXT NOT NULL, " +
+    "name TEXT NOT NULL, " +
+    "body TEXT NOT NULL, " +
+    "use_count TEXT NOT NULL, " +
+    "created_at TEXT NOT NULL, " +
+    "updated_at TEXT NOT NULL)"
+}
+
+/// INSERT a new saved prompt (use_count starts at '0').
+pub func insertPromptSql(
+  id: in String, userId: in String, name: in String, body: in String, createdAt: in String
+): String {
+  return "INSERT INTO prompts (id, user_id, name, body, use_count, created_at, updated_at) VALUES (" +
+    sqlLiteral(id) +
+    ", " +
+    sqlLiteral(userId) +
+    ", " +
+    sqlLiteral(name) +
+    ", " +
+    sqlLiteral(body) +
+    ", '0', " +
+    sqlLiteral(createdAt) +
+    ", " +
+    sqlLiteral(createdAt) +
+    ")"
+}
+
+/// SELECT one user's prompts, alphabetical by name.
+pub func selectPromptsSql(userId: in String): String {
+  return "SELECT id, user_id, name, body, use_count, created_at, updated_at FROM prompts " + "WHERE user_id = " +
+    sqlLiteral(userId) +
+    " ORDER BY name ASC"
+}
+
+/// SELECT a single prompt owned by a user.
+pub func selectPromptByIdSql(id: in String, userId: in String): String {
+  return "SELECT id, user_id, name, body, use_count, created_at, updated_at FROM prompts " + "WHERE id = " +
+    sqlLiteral(id) +
+    " AND user_id = " +
+    sqlLiteral(userId)
+}
+
+/// UPDATE a prompt's name and body.
+pub func updatePromptSql(
+  id: in String, userId: in String, name: in String, body: in String, updatedAt: in String
+): String {
+  return "UPDATE prompts SET name = " + sqlLiteral(name) + ", body = " + sqlLiteral(body) + ", updated_at = " +
+    sqlLiteral(updatedAt) +
+    " WHERE id = " +
+    sqlLiteral(id) +
+    " AND user_id = " +
+    sqlLiteral(userId)
+}
+
+/// Record one use of a prompt (numeric bump on the TEXT column).
+pub func touchPromptUsedSql(id: in String, userId: in String, usedAt: in String): String {
+  return "UPDATE prompts SET use_count = CAST(CAST(use_count AS INTEGER) + 1 AS TEXT), updated_at = " +
+    sqlLiteral(usedAt) +
+    " WHERE id = " +
+    sqlLiteral(id) +
+    " AND user_id = " +
+    sqlLiteral(userId)
+}
+
+/// DELETE a prompt owned by a user.
+pub func deletePromptSql(id: in String, userId: in String): String {
+  return "DELETE FROM prompts WHERE id = " + sqlLiteral(id) + " AND user_id = " + sqlLiteral(userId)
+}
