@@ -524,3 +524,65 @@ pub func promptsUserIndexSql(): String {
 pub func sessionsUserIndexSql(): String {
   return "CREATE INDEX IF NOT EXISTS idx_sessions_user_id ON sessions(user_id)"
 }
+
+// ─── Credential store ─────────────────────────────────────────────────────────
+//
+// Per-user secrets (GitHub tokens, cloud credentials, arbitrary env vars),
+// encrypted at rest by CloudAgents.Crypto before they ever reach this layer —
+// `value_encrypted` is always ciphertext, never plaintext. Scoped by
+// (user_id, name); a fresh upsert replaces the previous value. The value is
+// never selected back out to any HTTP response; it is only decrypted
+// server-side when building a runner container's environment.
+/// DDL for the credential store. `name` is the env-var name injected into
+/// containers; `value_encrypted` is the base64 AES-GCM blob.
+pub func credentialsSchemaSql(): String {
+  return "CREATE TABLE IF NOT EXISTS credentials (" + "id TEXT PRIMARY KEY, " + "user_id TEXT NOT NULL, " +
+    "name TEXT NOT NULL, " +
+    "value_encrypted TEXT NOT NULL, " +
+    "created_at TEXT NOT NULL, " +
+    "updated_at TEXT NOT NULL, " +
+    "UNIQUE(user_id, name))"
+}
+
+/// Composite index for the (owner, name) lookups every query uses.
+pub func credentialsUserIndexSql(): String {
+  return "CREATE INDEX IF NOT EXISTS idx_credentials_user_id ON credentials(user_id)"
+}
+
+/// UPSERT a credential: insert, or replace the encrypted value on name clash.
+/// (SQLite UPSERT keeps the original id/created_at on conflict.)
+pub func upsertCredentialSql(
+  id: in String, userId: in String, name: in String, valueEncrypted: in String, ts: in String
+): String {
+  return "INSERT INTO credentials (id, user_id, name, value_encrypted, created_at, updated_at) VALUES (" +
+    sqlLiteral(id) +
+    ", " +
+    sqlLiteral(userId) +
+    ", " +
+    sqlLiteral(name) +
+    ", " +
+    sqlLiteral(valueEncrypted) +
+    ", " +
+    sqlLiteral(ts) +
+    ", " +
+    sqlLiteral(ts) +
+    ") ON CONFLICT(user_id, name) DO UPDATE SET value_encrypted = " +
+    sqlLiteral(valueEncrypted) +
+    ", updated_at = " +
+    sqlLiteral(ts)
+}
+
+/// SELECT the names of a user's credentials (never the values), alphabetical.
+pub func selectCredentialNamesSql(userId: in String): String {
+  return "SELECT name, updated_at FROM credentials WHERE user_id = " + sqlLiteral(userId) + " ORDER BY name ASC"
+}
+
+/// SELECT every (name, encrypted value) for a user, for container injection.
+pub func selectCredentialsForInjectionSql(userId: in String): String {
+  return "SELECT name, value_encrypted FROM credentials WHERE user_id = " + sqlLiteral(userId) + " ORDER BY name ASC"
+}
+
+/// DELETE one credential by name.
+pub func deleteCredentialSql(userId: in String, name: in String): String {
+  return "DELETE FROM credentials WHERE user_id = " + sqlLiteral(userId) + " AND name = " + sqlLiteral(name)
+}

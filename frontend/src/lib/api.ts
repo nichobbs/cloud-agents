@@ -186,6 +186,32 @@ export const api = {
     if (!res.ok) throw new Error(`${res.status} ${await res.text()}`);
   },
 
+  // ─── Credentials (write-only: values are never read back) ─────────────────────
+
+  getCredentialNames: async (): Promise<{ name: string; updatedAt: string }[]> => {
+    const res = await fetch(`${BASE}/api/credentials`, { headers: authHeaders() });
+    if (!res.ok) throw new Error(`${res.status} ${await res.text()}`);
+    const body = (await res.json()) as { credentials?: { name: string; updatedAt: string }[] };
+    return body.credentials ?? [];
+  },
+
+  putCredential: async (name: string, value: string): Promise<void> => {
+    const res = await fetch(`${BASE}/api/credentials`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', ...authHeaders() },
+      body: JSON.stringify({ name, value }),
+    });
+    if (!res.ok) throw new Error(`${res.status} ${await res.text()}`);
+  },
+
+  deleteCredential: async (name: string): Promise<void> => {
+    const res = await fetch(`${BASE}/api/credentials/${encodeURIComponent(name)}`, {
+      method: 'DELETE',
+      headers: authHeaders(),
+    });
+    if (!res.ok) throw new Error(`${res.status} ${await res.text()}`);
+  },
+
   // ─── Todos / bookmarks ───────────────────────────────────────────────────────
 
   getTodos: async (sessionId: string): Promise<Todo[]> => {

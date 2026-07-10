@@ -188,6 +188,81 @@ pub func currentUserId(): String {
   return "default"
 }
 
+// ─── Static-token authentication ──────────────────────────────────────────────
+//
+// Phase-1 auth: a single shared secret in CLOUD_AGENTS_API_TOKEN. Requests
+// present it as `Authorization: Bearer <token>`; the middleware compares it to
+// the configured value in constant time. This is the interim scheme the PR
+// series wires in ahead of GitHub OAuth (docs/phase3 §1) — `authorize()` is
+// the one function OAuth will replace, resolving a real user id instead of the
+// fixed operator identity.
+//
+// NB: enforcement at the HTTP boundary depends on Lyric.Web exposing the
+// request's Authorization header to handlers, which the pinned version does
+// not yet do (docs/BUILD.md "Dependencies"). The pure decision logic below is
+// fully unit-tested now so that wiring it in is a one-line change once the
+// framework supports it.
+/// Constant-time string equality. Avoids leaking how many leading characters
+/// of a candidate token matched via response timing. Always compares the full
+/// length of the longer string.
+pub func constantTimeEquals(a: in String, b: in String): Bool {
+  val aLen = a.length.toInt()
+  val bLen = b.length.toInt()
+  val maxLen = if aLen > bLen then aLen else bLen
+  var diff = if aLen == bLen then 0 else 1
+  var i = 0
+  while i < maxLen {
+    val ca = if i < aLen then a.substring(i, 1) else ""
+    val cb = if i < bLen then b.substring(i, 1) else ""
+    if ca != cb {
+      diff = 1
+    }
+    i = i + 1
+  }
+  return diff == 0
+}
+
+/// Outcome of authenticating a request.
+pub union AuthOutcome {
+  case Allowed(userId: String)
+  case Denied(error: AuthError)
+}
+
+/// Decide whether a request bearing `authHeaderValue` may proceed, given the
+/// configured `apiToken`.
+///
+/// - An empty `apiToken` means auth is not configured. Callers decide per
+///   route whether that is acceptable: general endpoints stay open (matching
+///   today's behaviour), but credential endpoints must refuse rather than
+///   expose secrets unauthenticated — see `requireConfiguredAuth`.
+/// - A configured token requires a well-formed bearer header whose token
+///   matches in constant time.
+pub func authorize(authHeaderValue: in String, apiToken: in String): AuthOutcome {
+  if apiToken.length == 0 {
+    return Allowed(userId = currentUserId())
+  }
+  match extractBearerToken(authHeaderValue) {
+    case None -> return Denied(error = MissingToken)
+    case Some(token) -> {
+      if constantTimeEquals(token, apiToken) {
+        return Allowed(userId = currentUserId())
+      }
+      return Denied(error = InvalidToken)
+    }
+  }
+}
+
+/// Whether a route that must never run unauthenticated (credential storage)
+/// may proceed. Distinct from `authorize`: here a missing/empty configured
+/// token is itself a denial, so secrets can never be served on an
+/// unauthenticated deployment.
+pub func authorizeSecret(authHeaderValue: in String, apiToken: in String): AuthOutcome {
+  if apiToken.length == 0 {
+    return Denied(error = NotAuthorized)
+  }
+  return authorize(authHeaderValue, apiToken)
+}
+
 // ─── GitHub /user response parsing ────────────────────────────────────────────
 //
 // The validation call returns a JSON object containing at least `id` (number)

@@ -3,6 +3,8 @@ package CloudAgents.Docker
 import Std.Core
 import Std.Task
 import Lyric.Docker
+import CloudAgents.Auth
+import CloudAgents.Repository
 import CloudAgents.SessionStore
 
 pub record ResultCell {
@@ -42,7 +44,7 @@ pub async func createRunnerContainer(
   val workspaceVolume = "session-" + sessionId + "-workspace"
   val homeVolume = "claude-home-default" // Phase 1 default, Phase 3 user-specific
 
-  val envs = [
+  var envs = [
     "PROMPT=" + prompt,
     "REPO_URL=" + repoUrl,
     "BRANCH=" + branch,
@@ -50,6 +52,24 @@ pub async func createRunnerContainer(
     "MODEL=" + model,
     "NATIVE_SESSION_ID=" + nativeSessionId
   ]
+
+  // Inject the user's stored credentials (GitHub token, cloud creds, arbitrary
+  // secrets) as additional env vars, decrypted here and never logged. A
+  // decryption failure (e.g. a rotated/absent ENCRYPTION_KEY) aborts the run
+  // rather than starting the agent without the secrets it was configured with.
+  // GITHUB_TOKEN in particular flows on to the container's mcp.json via the
+  // entrypoint template, finally wiring up the GitHub MCP server.
+  match CloudAgents.Repository.decryptedCredentials(CloudAgents.Auth.currentUserId()) {
+    case Ok(creds) -> {
+      var i = 0
+      while i < creds.length {
+        envs = envs.append(creds[i].name + "=" + creds[i].value)
+        i = i + 1
+      }
+    }
+    case Err(e) -> return Err(error = "Failed to load credentials: " + CloudAgents.Repository.credentialErrorMessage(e))
+  }
+
   val binds = [workspaceVolume + ":/workspace", homeVolume + ":/home/claude-user"]
 
   val image = imageForHarness(harness)

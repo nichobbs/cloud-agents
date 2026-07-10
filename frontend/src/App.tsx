@@ -1,6 +1,7 @@
 import { Navigate, Route, BrowserRouter as Router, Routes } from 'react-router-dom';
 import { Nav } from './components/Nav';
 import { SessionsProvider } from './context/SessionsContext';
+import { Credentials } from './pages/Credentials';
 import { NewSession } from './pages/NewSession';
 import { Prompts } from './pages/Prompts';
 import { SessionDetail } from './pages/SessionDetail';
@@ -19,6 +20,7 @@ export function App() {
           <Route path="/sessions/:id" element={<SessionDetail />} />
           <Route path="/sessions/:id/todos" element={<Todos />} />
           <Route path="/prompts" element={<Prompts />} />
+          <Route path="/credentials" element={<Credentials />} />
         </Routes>
       </Router>
     </SessionsProvider>

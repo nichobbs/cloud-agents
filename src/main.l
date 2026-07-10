@@ -55,6 +55,12 @@ func main(): Unit {
   router = Web.addPost(router, "/api/prompts/{pid}/use", "CloudAgents.Prompts.usePromptHandler")
   router = Web.addDelete(router, "/api/prompts/{pid}", "CloudAgents.Prompts.deletePromptHandler")
 
+  // Credential store: per-user secrets injected into runner containers.
+  // Write-only — values are never read back, only their names.
+  router = Web.addGet(router, "/api/credentials", "CloudAgents.Credentials.listCredentialsHandler")
+  router = Web.addPost(router, "/api/credentials", "CloudAgents.Credentials.putCredentialHandler")
+  router = Web.addDelete(router, "/api/credentials/{name}", "CloudAgents.Credentials.deleteCredentialHandler")
+
   // Register health route
   router = Web.addGet(router, "/api/health", "CloudAgents.Handlers.checkHealth")
 

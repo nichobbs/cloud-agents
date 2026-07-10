@@ -23,6 +23,12 @@ export function Nav() {
           Prompts
         </Link>
         <Link
+          to="/credentials"
+          style={{ ...linkStyle, color: pathname === '/credentials' ? '#c9d1d9' : '#8b949e' }}
+        >
+          Credentials
+        </Link>
+        <Link
           to="/sessions/new"
           style={{
             ...btnStyle,

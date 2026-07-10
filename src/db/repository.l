@@ -9,6 +9,7 @@ package CloudAgents.Repository
 
 import Std.Core
 import Std.Uuid
+import CloudAgents.Crypto
 import CloudAgents.Db
 import CloudAgents.Sqlite
 
@@ -170,6 +171,8 @@ pub func initSchema(): Result[Unit, CloudAgents.Sqlite.DbError] {
   CloudAgents.Sqlite.execute(CloudAgents.Db.sessionsSchemaSql())?
   CloudAgents.Sqlite.execute(CloudAgents.Db.promptsUserIndexSql())?
   CloudAgents.Sqlite.execute(CloudAgents.Db.sessionsUserIndexSql())?
+  CloudAgents.Sqlite.execute(CloudAgents.Db.credentialsSchemaSql())?
+  CloudAgents.Sqlite.execute(CloudAgents.Db.credentialsUserIndexSql())?
   return Ok(value = ())
 }
 
@@ -383,4 +386,97 @@ pub func markPromptUsed(id: in String, userId: in String): Result[Int, CloudAgen
 /// Delete a prompt. Returns rows affected (0 = not found).
 pub func deletePrompt(id: in String, userId: in String): Result[Int, CloudAgents.Sqlite.DbError] {
   return CloudAgents.Sqlite.execute(CloudAgents.Db.deletePromptSql(id, userId))
+}
+
+// ─── Credentials ─────────────────────────────────────────────────────────────
+//
+// Values are AES-GCM encrypted (CloudAgents.Crypto) before they touch SQLite,
+// and decrypted only when building a container's environment — never returned
+// to any HTTP response. The store surfaces credential *names* to the API, not
+// their values.
+@generate(Json)
+pub record CredentialName {
+  pub name: String
+  pub updatedAt: String
+}
+
+@generate(Json)
+pub record CredentialNameList {
+  pub credentials: slice[CredentialName]
+}
+
+/// One decrypted secret ready to inject into a container's environment.
+pub record CredentialValue {
+  pub name: String
+  pub value: String
+}
+
+/// Failure at the credential layer: either the database or the crypto boundary.
+pub union CredentialError {
+  case Db(error: CloudAgents.Sqlite.DbError)
+  case Crypto(error: CloudAgents.Crypto.CryptoError)
+}
+
+pub func credentialErrorMessage(e: in CredentialError): String {
+  return match e {
+    case Db(dbErr) -> CloudAgents.Sqlite.dbErrorMessage(dbErr)
+    case Crypto(cErr) -> CloudAgents.Crypto.cryptoErrorMessage(cErr)
+  }
+}
+
+/// Store (or replace) a user's credential, encrypting the value at rest.
+pub func putCredential(userId: in String, name: in String, value: in String): Result[Unit, CredentialError] {
+  val encrypted = match CloudAgents.Crypto.encrypt(value) {
+    case Ok(blob) -> blob
+    case Err(e) -> return Err(Crypto(error = e))
+  }
+  val id = newId()
+  val ts = nowMillis()
+  match CloudAgents.Sqlite.execute(CloudAgents.Db.upsertCredentialSql(id, userId, name, encrypted, ts)) {
+    case Ok(_) -> return Ok(value = ())
+    case Err(e) -> return Err(Db(error = e))
+  }
+}
+
+/// List a user's credential names (never values).
+pub func listCredentialNames(userId: in String): Result[slice[CredentialName], CloudAgents.Sqlite.DbError] {
+  val rows = CloudAgents.Sqlite.query(CloudAgents.Db.selectCredentialNamesSql(userId))?
+  var acc: slice[CredentialName] = []
+  var i = 0
+  val len = CloudAgents.Sqlite.getRowArrayLength(rows)
+  while i < len {
+    val r = CloudAgents.Sqlite.getRowArrayValue(rows, i)
+    acc = acc.append(CredentialName(name = colAt(r.cols, 0), updatedAt = colAt(r.cols, 1)))
+    i = i + 1
+  }
+  return Ok(value = acc)
+}
+
+/// Delete a credential by name. Returns rows affected (0 = not found).
+pub func deleteCredential(userId: in String, name: in String): Result[Int, CloudAgents.Sqlite.DbError] {
+  return CloudAgents.Sqlite.execute(CloudAgents.Db.deleteCredentialSql(userId, name))
+}
+
+/// Decrypt every credential a user has stored, for injection into a container
+/// environment. A single undecryptable row (wrong key, tampering) fails the
+/// whole batch rather than silently dropping a secret.
+pub func decryptedCredentials(userId: in String): Result[slice[CredentialValue], CredentialError] {
+  val rows = match CloudAgents.Sqlite.query(CloudAgents.Db.selectCredentialsForInjectionSql(userId)) {
+    case Ok(r) -> r
+    case Err(e) -> return Err(Db(error = e))
+  }
+  var acc: slice[CredentialValue] = []
+  var i = 0
+  val len = CloudAgents.Sqlite.getRowArrayLength(rows)
+  while i < len {
+    val r = CloudAgents.Sqlite.getRowArrayValue(rows, i)
+    val name = colAt(r.cols, 0)
+    val plain = match CloudAgents.Crypto.decrypt(colAt(r.cols, 1)) {
+      case Ok(p) -> p
+      case Err(e) -> return Err(Crypto(error = e))
+    }
+    acc = acc.append(CredentialValue(name = name, value = plain))
+    i = i + 1
+  }
+  return Ok(value = acc)
 }
