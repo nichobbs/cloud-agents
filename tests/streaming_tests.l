@@ -22,6 +22,16 @@ test "toSseChunk JSON-escapes the payload" {
   assertEqual(chunk, "data: {\"chunk\":\"a\\\"b\"}\n\n", "quote inside chunk is escaped")
 }
 
+test "jsonEscape escapes raw control characters as unicode escapes" {
+  // JSON forbids raw control chars in strings; browsers' JSON.parse rejects
+  // them, and the frontend then drops the whole frame. ESC (0x1B) — the ANSI
+  // colour introducer — is the case that used to eat every coloured line.
+  assertEqual(jsonEscape(charFromCode(27)), "\\u001b", "ESC escapes to \\u001b")
+  assertEqual(jsonEscape(charFromCode(1) + "x"), "\\u0001x", "SOH followed by text")
+  assertEqual(jsonEscape("a" + charFromCode(8) + "b"), "a\\u0008b", "backspace mid-string")
+  assertEqual(jsonEscape("line\nbreak"), "line\\nbreak", "newline still uses the short escape")
+}
+
 test "formatLogsAsSse emits one frame per line plus a done event" {
   val body = formatLogsAsSse("one\ntwo")
   val expected =
