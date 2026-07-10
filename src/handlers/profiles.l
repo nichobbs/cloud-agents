@@ -45,11 +45,12 @@ pub func isValidProfileHarness(h: in String): Bool {
 }
 
 /// A credential grant name must be a valid environment-variable name (the same
-/// charset the credential store enforces on the name it injects) — a leading
-/// letter or underscore, then letters/digits/underscores. Guards against junk
-/// grants that could never match a real credential (#237).
+/// charset AND max length the credential store enforces on the name it injects,
+/// CloudAgents.Credentials.isValidCredentialName — a leading letter or
+/// underscore, then letters/digits/underscores, ≤128 chars). Guards against
+/// junk grants that could never match a storable credential (#237/#262).
 pub func isValidGrantName(name: in String): Bool {
-  if name.length == 0 or name.length > 256 {
+  if name.length == 0 or name.length > 128 {
     return false
   }
   var i = 0

@@ -604,9 +604,14 @@ pub func deletePromptTagsSql(promptId: in String, userId: in String): String {
   return "DELETE FROM prompt_tags WHERE prompt_id = " + sqlLiteral(promptId) + " AND user_id = " + sqlLiteral(userId)
 }
 
-/// SELECT the ids of a user's prompts carrying a given tag.
+/// SELECT the ids of a user's prompts carrying a given tag, ordered by prompt
+/// name (joined so the "alphabetical" contract the repository documents holds).
 pub func selectPromptIdsByTagSql(userId: in String, tag: in String): String {
-  return "SELECT prompt_id FROM prompt_tags WHERE user_id = " + sqlLiteral(userId) + " AND tag = " + sqlLiteral(tag)
+  return "SELECT pt.prompt_id FROM prompt_tags pt JOIN prompts p ON p.id = pt.prompt_id " + "WHERE pt.user_id = " +
+    sqlLiteral(userId) +
+    " AND pt.tag = " +
+    sqlLiteral(tag) +
+    " ORDER BY p.name ASC"
 }
 
 /// Index for the owner column every session query filters on.
