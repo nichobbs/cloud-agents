@@ -160,6 +160,13 @@ CloudAgents.SessionStore` alphabetically flipped which `updateSessionModel` a
 test called). Fully qualify any name exported by more than one imported
 package.
 
+**`Std.Time.Instant.now()` is broken at runtime in the current toolchain** —
+it compiles, then fails with `Method not found: 'Void System.DateTime.now()'`
+(a lowercase `now` MemberRef the BCL has never had). Confirmed on v0.4.19 by
+this repo's live-DB tests, the first code that ever executed it. Work around
+with a direct BCL binding (`System.DateTimeOffset.get_UtcNow` +
+`ToUnixTimeMilliseconds`) — see `CloudAgents.Repository.nowMillis`.
+
 **`Option[T].isSome()`/`.isNone()` do not resolve at runtime in the current
 toolchain** — despite being documented in `docs/lyric/stdlib.md`. A call
 compiles but fails at runtime with `unsupported method 'isSome' on the

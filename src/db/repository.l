@@ -9,7 +9,6 @@ package CloudAgents.Repository
 
 import Std.Core
 import Std.Uuid
-import Std.Time.{Instant}
 import CloudAgents.Db
 import CloudAgents.Sqlite
 
@@ -78,8 +77,24 @@ func newId(): String {
   return Std.Uuid.uuidToString(Std.Uuid.newUuid())
 }
 
-func nowMillis(): String {
-  return toString(Instant.now().toEpochMillis())
+// Std.Time.Instant.now() emits a broken extern binding in the current
+// toolchain — it fails at runtime with "Method not found: 'Void
+// System.DateTime.now()'" (lowercase `now`, which the BCL has never had).
+// Surfaced by the live-DB tests, the first code path to ever execute this;
+// bind the BCL clock directly instead. See docs/lyric/gotchas.md.
+extern type DateTimeOffset = "System.DateTimeOffset"
+
+@externTarget("System.DateTimeOffset.get_UtcNow")
+func dtoUtcNow(): DateTimeOffset = ()
+
+@externInstance
+@externTarget("System.DateTimeOffset.ToUnixTimeMilliseconds")
+func dtoToUnixMillis(t: in DateTimeOffset): Long = ()
+
+/// Wall-clock epoch milliseconds as the TEXT the schema stores. Exported so
+/// other storage packages (SessionStore) share one working clock binding.
+pub func nowMillis(): String {
+  return toString(dtoToUnixMillis(dtoUtcNow()))
 }
 
 func digitValue(c: in String): Int {
