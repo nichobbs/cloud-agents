@@ -57,10 +57,24 @@ test "Idle recycling honours the warm and cold windows" {
 }
 
 test "SQL statements are scoped by owner" {
-  assertTrue(selectSessionByIdSql().endsWith("AND github_user_id = ?"), "select scoped by owner")
-  assertTrue(listSessionsByUserSql().contains("WHERE github_user_id = ?"), "list scoped by owner")
-  assertTrue(deleteSessionSql().contains("AND github_user_id = ?"), "delete scoped by owner")
-  assertTrue(updateSessionStatusSql().contains("AND github_user_id = ?"), "update scoped by owner")
+  assertTrue(selectSessionByIdSql("s1", "u1").endsWith("AND user_id = 'u1'"), "select scoped by owner")
+  assertTrue(listSessionsByUserSql("u1").contains("WHERE user_id = 'u1'"), "list scoped by owner")
+  assertTrue(deleteSessionSql("s1", "u1").endsWith("AND user_id = 'u1'"), "delete scoped by owner")
+  assertTrue(updateSessionContainerSql("s1", "u1", "c1").contains("AND user_id = 'u1'"), "container update scoped by owner")
+  assertTrue(updateSessionModelSql("s1", "u1", "m1").contains("AND user_id = 'u1'"), "model update scoped by owner")
+  assertTrue(insertSessionSql("s1", "u1", "r", "b", "", "claude", "m", "n", "1000").contains("'IDLE'"), "insert starts IDLE")
+}
+
+test "run-claim SQL is atomic and status-guarded" {
+  // 'end' (and defensively 'begin') are reserved keywords in Lyric (P0051),
+  // hence the Sql-suffixed binding names.
+  val claimSql = tryBeginRunSql("s1", "u1", "1000")
+  assertTrue(claimSql.contains("SET status = 'RUNNING'"), "claim sets RUNNING")
+  assertTrue(claimSql.contains("AND status <> 'RUNNING'"), "claim refuses an already-running session")
+  assertTrue(claimSql.contains("AND user_id = 'u1'"), "claim scoped by owner")
+  val releaseSql = endRunSql("s1", "u1", "2000")
+  assertTrue(releaseSql.contains("SET status = 'IDLE'"), "end returns to IDLE")
+  assertTrue(recoverDanglingSessionsSql().contains("WHERE status = 'RUNNING' OR status = 'WARM'"), "recovery targets stranded sessions")
 }
 
 test "Volume names key by user and session" {

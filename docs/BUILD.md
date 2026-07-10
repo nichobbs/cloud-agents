@@ -151,7 +151,7 @@ v0.4.17 (bug 5 below, `lyric-lang#5177`), no longer fails on
 longer crashes an untyped top-level `String val`'s `.length` as of v0.4.19
 (bug 7 below, `lyric-lang#5298`) — `CloudAgents.SessionTests`,
 `CloudAgents.StreamingTests`, `CloudAgents.DbTests`, and
-`CloudAgents.AuthTests` are now **all fully green, 24/24**, for the first
+`CloudAgents.AuthTests` are now **all fully green**, for the first
 time in this project's history. `src/handlers/sessions.l`'s top-level `val
 httpsPrefix = "https://"` (no type annotation) — read via `.length` in
 `createSession` — was exactly bug 7's trigger; see bug 7 below for the
@@ -159,6 +159,22 @@ compiler-side root cause. `scripts/verify.sh` remains a useful,
 `lyric test`-free harness (a hand-rolled `main()` run via
 `lyric build && lyric run`) and still genuinely passes all 24 checks, but
 `lyric test` is now the right entry point again — both agree.
+
+**Live-database suites need the native SQLite library on the loader path.**
+`tests/prompt_tests.l` (and later suites) open real `Microsoft.Data.Sqlite`
+connections against a temp file; `SqliteConnection`'s type initializer loads
+the native `libe_sqlite3.so`, which the test runner does not resolve from
+the NuGet cache by itself. Run `./scripts/build-full.sh` once (it copies the
+native runtimes to `bin/runtimes/`), then:
+
+```sh
+export LD_LIBRARY_PATH="$PWD/bin/runtimes/linux-x64/native:$LD_LIBRARY_PATH"
+lyric test
+```
+
+CI's "Run lyric test" step does exactly this. Without it the live-DB tests
+fail with `The type initializer for 'Microsoft.Data.Sqlite.SqliteConnection'
+threw an exception` while every non-DB suite still passes.
 
 ## Compiler notes
 
@@ -169,7 +185,7 @@ v0.4.14, v0.4.15, v0.4.17, v0.4.18, v0.4.19).** `lyric build` **finally
 succeeds as of v0.4.14** — the full project, all 12 packages, for the
 first time in this project's history. `lyric run` **actually starts this
 real, multi-package server as of v0.4.17** — also for the first time.
-`lyric test` **passes every case, 24/24, as of v0.4.19** — also for the
+`lyric test` **passes every case as of v0.4.19** — also for the
 first time. None of the seven is a characteristic of this project's
 manifest, dependencies, or source — each was found and root-caused using
 this project as the real-world test case that first got far enough to hit
@@ -465,7 +481,7 @@ Filed as
 [v0.4.19 release](https://github.com/nichobbs/lyric-lang/releases/tag/v0.4.19)**:
 an untyped top-level `String val`'s `.length` now resolves correctly at
 runtime, and `CloudAgents.SessionTests` passes 4/4 — the full `lyric test`
-suite is 24/24 for the first time in this project's history.
+suite passes fully for the first time in this project's history. (The suite roster lives in lyric.toml's [project.tests]; per-suite counts aren't duplicated here.)
 
 **All seven known upstream compiler bugs are now fixed.** Nothing on this
 project's manifest, build config, or source needs to change for bug 7 —

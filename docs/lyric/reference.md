@@ -1053,11 +1053,12 @@ assertEqualInt(actual, expected, "message")
 assertEqual(actual, expected)
 expect(condition)          // fails test if false
 isOk(result): Bool         // for use with assertTrue
-unwrapResult(result): T    // panics on Err — use in setup, not assertions
-                           // (a distinct, test-only bare-call helper — see
-                           // docs/lyric/stdlib.md's Result section for the
-                           // general-purpose Std.Core dot-call versions:
-                           // r.unwrapResult()/.unwrapResultOr()/.unwrapErrOr())
+// unwrapResult: AVOID in this toolchain. The bare call `unwrapResult(r)`
+// fails to compile (T0020 "unknown name"); the dot-call `r.unwrapResult()`
+// compiles but then fails at RUNTIME ("unsupported method", confirmed on
+// v0.4.19 by CloudAgents.PromptTests). Neither form is usable — `match` on
+// Ok/Err instead (e.g. the mustX helpers in tests/prompt_tests.l). See the
+// Result/Option convenience-methods entry in docs/lyric/gotchas.md.
 ```
 
 ### `@stubbable` interfaces

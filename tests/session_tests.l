@@ -3,9 +3,59 @@ package CloudAgents.SessionTests
 
 import Std.Core
 import Std.Testing
+import Std.Uuid
 import CloudAgents.Handlers
+import CloudAgents.Repository
 import CloudAgents.SessionStore
+import CloudAgents.Sqlite
 import CloudAgents.Streaming
+import extern System.Environment as Env
+
+// ── Live-DB plumbing (same pattern as tests/prompt_tests.l) ───────────────────
+
+@externTarget("System.IO.File.Delete")
+func fileDelete(path: in String): Unit = ()
+
+func useFreshTestDb(tag: in String): String {
+  val path = "/tmp/cloud-agents-tests-" + tag + "-" + Std.Uuid.uuidToString(Std.Uuid.newUuid()) + ".db"
+  Env.SetEnvironmentVariable("CLOUD_AGENTS_DB_PATH", path)
+  match CloudAgents.Repository.initSchema() {
+    case Ok(_) -> ()
+    case Err(e) -> assertTrue(false, "initSchema failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+  }
+  return path
+}
+
+func cleanupTestDb(path: in String): Unit {
+  try {
+    fileDelete(path)
+  } catch Bug as b {
+    // locked or already gone — fine for a temp file
+  }
+}
+
+// Result convenience methods fail at runtime (docs/lyric/gotchas.md) —
+// unwrap via match+panic.
+func mustUnit(r: in Result[Unit, CloudAgents.Sqlite.DbError]): Unit {
+  return match r {
+    case Ok(_) -> ()
+    case Err(e) -> panic("session store op failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+  }
+}
+
+func mustOptSession(r: in Result[Option[AgentSession], CloudAgents.Sqlite.DbError]): Option[AgentSession] {
+  return match r {
+    case Ok(o) -> o
+    case Err(e) -> panic("session lookup failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+  }
+}
+
+func mustClaim(r: in Result[Bool, CloudAgents.Sqlite.DbError]): Bool {
+  return match r {
+    case Ok(b) -> b
+    case Err(e) -> panic("run claim failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+  }
+}
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 // Lyric match arms are `case Pattern -> expression` (no block form), so
@@ -33,15 +83,15 @@ func verifyModelSwitch(s: in AgentSession, sessionId: in String): Unit {
 
 func verifyAndCleanCreateSession(resp: in CreateSessionResponse): Unit {
   assertTrue(resp.sessionId.length > 0, "generates a non-empty sessionId")
-  val _ = removeSession(resp.sessionId)
+  val _ = mustOptSession(removeSession(resp.sessionId))
 }
 
 func verifyModelBackfill(resp: in CreateSessionResponse): Unit {
-  match getSession(resp.sessionId) {
+  match mustOptSession(getSession(resp.sessionId)) {
     case Some(s) -> assertEqual(s.model, "o4-mini", "empty model backfilled with codex default")
     case None -> assertTrue(false, "created session should exist")
   }
-  val _ = removeSession(resp.sessionId)
+  val _ = mustOptSession(removeSession(resp.sessionId))
 }
 
 func verifyEscapedRoundTrip(p: in AgentSession): Unit {
@@ -64,6 +114,10 @@ func verifyListSessionsBody(body: in String): Unit {
 // ── Tests ─────────────────────────────────────────────────────────────────────
 
 test "Test Session Store CRUD Operations" {
+  val dbPath = useFreshTestDb("session-crud")
+  defer {
+    cleanupTestDb(dbPath)
+  }
   println("Testing Session Store operations...")
 
   val sessionId = "test-session-123"
@@ -78,17 +132,17 @@ test "Test Session Store CRUD Operations" {
   )
 
   // 1. Add session
-  addSession(session)
+  mustUnit(addSession(session))
 
   // 2. Get and verify session
-  match getSession(sessionId) {
+  match mustOptSession(getSession(sessionId)) {
     case Some(s) -> verifyNewSession(s, sessionId)
     case None -> assertTrue(false, "session should exist in store")
   }
 
   // 3. Update container ID
-  updateSessionContainer(sessionId, "container-abc")
-  match getSession(sessionId) {
+  mustUnit(updateSessionContainer(sessionId, "container-abc"))
+  match mustOptSession(getSession(sessionId)) {
     case Some(s) -> verifyContainerUpdate(s)
     case None -> assertTrue(false, "session should still exist in store")
   }
@@ -98,25 +152,47 @@ test "Test Session Store CRUD Operations" {
   // ambiguity silently by import order rather than erroring — an unqualified
   // call here bound to the Handlers overload (wrong argument type, runtime
   // cast crash) when the imports were reordered.
-  CloudAgents.SessionStore.updateSessionModel(sessionId, "claude-sonnet-4-6")
-  match getSession(sessionId) {
+  mustUnit(CloudAgents.SessionStore.updateSessionModel(sessionId, "claude-sonnet-4-6"))
+  match mustOptSession(getSession(sessionId)) {
     case Some(s) -> verifyModelSwitch(s, sessionId)
     case None -> assertTrue(false, "session should still exist in store")
   }
 
   // 5. Remove session
-  match removeSession(sessionId) {
+  match mustOptSession(removeSession(sessionId)) {
     case Some(s) -> assertEqual(s.sessionId, sessionId, "removed session ID matches")
     case None -> assertTrue(false, "should successfully remove session")
   }
 
   // 6. Verify removed
-  match getSession(sessionId) {
+  match mustOptSession(getSession(sessionId)) {
     case Some(_) -> assertTrue(false, "session should no longer exist")
     case None -> ()
   }
 
   println("✓ Session Store tests passed!")
+}
+
+test "Run claim is exclusive per session" {
+  val dbPath = useFreshTestDb("session-claim")
+  defer {
+    cleanupTestDb(dbPath)
+  }
+  mustUnit(addSession(makeAgentSession(
+    sessionId = "claim-1",
+    repoUrl = "https://github.com/nic/repo",
+    branch = "main",
+    containerId = "",
+    harness = "claude",
+    model = "claude-opus-4-8",
+    nativeSessionId = "claim-1"
+  )))
+
+  assertTrue(mustClaim(CloudAgents.SessionStore.tryBeginRun("claim-1")), "first claim wins")
+  assertFalse(mustClaim(CloudAgents.SessionStore.tryBeginRun("claim-1")), "second claim refused while running")
+  mustUnit(CloudAgents.SessionStore.endRun("claim-1"))
+  assertTrue(mustClaim(CloudAgents.SessionStore.tryBeginRun("claim-1")), "claim available again after endRun")
+  assertFalse(mustClaim(CloudAgents.SessionStore.tryBeginRun("missing")), "claiming a nonexistent session fails")
 }
 
 test "Test default model per harness" {
@@ -204,6 +280,10 @@ test "Session store parsing survives braces inside field values" {
 }
 
 test "Test Handler createSession validation" {
+  val dbPath = useFreshTestDb("session-create")
+  defer {
+    cleanupTestDb(dbPath)
+  }
   println("Testing Handler createSession validation...")
 
   // Test empty repoUrl validation
@@ -298,8 +378,24 @@ test "Handler createSession rejects unsafe inputs" {
   }
 }
 
+// NOTE: getRunOutput has no unit test. Every attempt to invoke it from a test
+// fails at runtime with "The signature is incorrect" — the same class of
+// toolchain quirk documented in docs/lyric/gotchas.md for other v0.4.19
+// runtime failures. The failure survived three complete rewrites of the
+// handler (records with a Bool field, records with a String field, and the
+// current hand-built JSON String return), which rules out the handler's shape
+// as the cause and points at the test-runner's dispatch of that specific
+// signature. The handler itself is exercised end-to-end once Lyric.Web can
+// dispatch HTTP requests to handlers (see docs/BUILD.md); until then its
+// validation (empty -> 400, unknown -> 404) mirrors the other session
+// handlers that ARE covered above.
+
 test "Handler listSessions returns stored sessions" {
-  addSession(makeAgentSession(
+  val dbPath = useFreshTestDb("session-list")
+  defer {
+    cleanupTestDb(dbPath)
+  }
+  mustUnit(addSession(makeAgentSession(
     sessionId = "ls-1",
     repoUrl = "https://github.com/nic/repo",
     branch = "main",
@@ -307,8 +403,8 @@ test "Handler listSessions returns stored sessions" {
     harness = "claude",
     model = "claude-opus-4-8",
     nativeSessionId = "ls-1"
-  ))
-  addSession(makeAgentSession(
+  )))
+  mustUnit(addSession(makeAgentSession(
     sessionId = "ls-2",
     repoUrl = "https://github.com/nic/other",
     branch = "main",
@@ -316,21 +412,10 @@ test "Handler listSessions returns stored sessions" {
     harness = "codex",
     model = "o4-mini",
     nativeSessionId = "ls-2"
-  ))
+  )))
   match listSessions() {
     case Ok(body) -> verifyListSessionsBody(body)
     case Err(_) -> assertTrue(false, "listSessions should succeed")
-  }
-  // Cleanup via match: Option.isSome() does not resolve at runtime in the
-  // current toolchain (same class of issue as the String.indexOf caveat in
-  // CloudAgents.Auth).
-  match removeSession("ls-1") {
-    case Some(_) -> ()
-    case None -> assertTrue(false, "ls-1 should have been stored")
-  }
-  match removeSession("ls-2") {
-    case Some(_) -> ()
-    case None -> assertTrue(false, "ls-2 should have been stored")
   }
 }
 

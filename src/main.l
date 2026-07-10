@@ -2,17 +2,56 @@ package CloudAgents
 
 import Std.Core
 import Web
+import CloudAgents.Crypto
+import CloudAgents.Docker
 import CloudAgents.Repository
+import CloudAgents.SessionStore
 import CloudAgents.Sqlite
 import extern System.Environment as Env
 import extern System.String as DotNetString
 
 func main(): Unit {
-  // Ensure the SQLite transcript/comments/todos tables exist before serving.
+  // Ensure the SQLite tables (transcript/comments/todos/prompts/sessions)
+  // exist before serving.
   match CloudAgents.Repository.initSchema() {
     case Ok(_) -> ()
     case Err(e) -> println("WARNING: failed to initialise database schema: " + CloudAgents.Sqlite.dbErrorMessage(e))
   }
+
+  // Sessions stranded RUNNING/WARM by a crash/restart can never be claimed
+  // again (the concurrency guard would 409 forever). Terminate any container
+  // they still reference before blanking it, so nothing is orphaned, then
+  // reset the rows to IDLE.
+  match CloudAgents.SessionStore.strandedContainerIds() {
+    case Ok(ids) -> {
+      for cid in ids {
+        match CloudAgents.Docker.terminateSessionContainer(cid) {
+          case Ok(_) -> ()
+          case Err(e) -> println("WARNING: could not terminate stranded container " + cid + ": " + e)
+        }
+      }
+    }
+    case Err(e) -> println("WARNING: could not list stranded containers: " + CloudAgents.Sqlite.dbErrorMessage(e))
+  }
+  match CloudAgents.SessionStore.recoverDanglingSessions() {
+    case Ok(_) -> ()
+    case Err(e) -> println("WARNING: failed to recover dangling sessions: " + CloudAgents.Sqlite.dbErrorMessage(e))
+  }
+
+  // Fail loudly at startup — not at first credential use — if ENCRYPTION_KEY
+  // is set but unusable (wrong length, bad base64). A configured-but-broken
+  // key would otherwise only surface when a user first stores a credential.
+  if CloudAgents.Crypto.isConfigured() {
+    match CloudAgents.Crypto.encrypt("startup-self-check") {
+      case Ok(_) -> ()
+      case Err(e) -> println("WARNING: ENCRYPTION_KEY is set but invalid — credential storage will fail: " + CloudAgents.Crypto.cryptoErrorMessage(e))
+    }
+  } else {
+    println("NOTE: ENCRYPTION_KEY is not set — the credential store is disabled")
+  }
+
+  // One-time migration of sessions from the legacy env-var store.
+  CloudAgents.SessionStore.importLegacyEnvSessions()
 
   var router = Web.create()
 
@@ -22,6 +61,9 @@ func main(): Unit {
   router = Web.addPost(router, "/api/sessions/{id}/messages", "CloudAgents.Handlers.sendMessage")
   router = Web.addDelete(router, "/api/sessions/{id}", "CloudAgents.Handlers.deleteSession")
   router = Web.addPost(router, "/api/sessions/{id}/model", "CloudAgents.Handlers.updateSessionModel")
+
+  // Live output polling for an in-progress run
+  router = Web.addGet(router, "/api/sessions/{id}/output", "CloudAgents.Handlers.getRunOutput")
 
   // Transcript: addressable agent/user messages for a session
   router = Web.addGet(router, "/api/sessions/{id}/messages", "CloudAgents.Interactions.getMessages")
@@ -35,6 +77,19 @@ func main(): Unit {
   router = Web.addPost(router, "/api/sessions/{id}/todos", "CloudAgents.Interactions.addTodoHandler")
   router = Web.addPost(router, "/api/todos/{tid}/toggle", "CloudAgents.Interactions.toggleTodoHandler")
   router = Web.addDelete(router, "/api/todos/{tid}", "CloudAgents.Interactions.deleteTodoHandler")
+
+  // Prompt library: saved, reusable prompts
+  router = Web.addGet(router, "/api/prompts", "CloudAgents.Prompts.listPromptsHandler")
+  router = Web.addPost(router, "/api/prompts", "CloudAgents.Prompts.addPromptHandler")
+  router = Web.addPost(router, "/api/prompts/{pid}", "CloudAgents.Prompts.updatePromptHandler")
+  router = Web.addPost(router, "/api/prompts/{pid}/use", "CloudAgents.Prompts.usePromptHandler")
+  router = Web.addDelete(router, "/api/prompts/{pid}", "CloudAgents.Prompts.deletePromptHandler")
+
+  // Credential store: per-user secrets injected into runner containers.
+  // Write-only — values are never read back, only their names.
+  router = Web.addGet(router, "/api/credentials", "CloudAgents.Credentials.listCredentialsHandler")
+  router = Web.addPost(router, "/api/credentials", "CloudAgents.Credentials.putCredentialHandler")
+  router = Web.addDelete(router, "/api/credentials/{name}", "CloudAgents.Credentials.deleteCredentialHandler")
 
   // Register health route
   router = Web.addGet(router, "/api/health", "CloudAgents.Handlers.checkHealth")

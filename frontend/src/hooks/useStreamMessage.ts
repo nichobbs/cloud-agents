@@ -67,14 +67,62 @@ export function useStreamMessage(sessionId: string): StreamState {
       setIsStreaming(true);
       setError(null);
 
-      // Show user prompt with a cyan prefix marker
-      setOutput(prev => prev + `\x1b[1;36m❯ ${text}\x1b[0m\n`);
+      // Show user prompt with a cyan prefix marker, and capture everything on
+      // screen up to and including it as this send's immutable base. The poll
+      // below rebuilds only the live-tail region on top of `base`, so output
+      // accumulated by earlier sends is preserved rather than wiped.
+      const marker = `\x1b[1;36m❯ ${text}\x1b[0m\n`;
+      let base = marker;
+      setOutput(prev => {
+        base = prev + marker;
+        return base;
+      });
+
+      // The send request blocks until the whole run finishes (the backend
+      // cannot stream a response yet), so poll the run-output endpoint in
+      // parallel to surface incremental container output as it accumulates.
+      // Each tick the endpoint returns logs-so-far (not a delta), so the tail
+      // is rebuilt as `base + partial`; earlier content in `base` is never
+      // overwritten. Polling stops as soon as the send settles or the run
+      // reports finished, and yields to real streamed chunks. Failures are
+      // swallowed — polling is best-effort and must never fail the send.
+      let polling = true;
+      let liveTail = '';
+      const poll = async () => {
+        while (polling && stillCurrent()) {
+          try {
+            const { running, output: partial } = await api.getRunOutput(sessionId);
+            if (!polling || !stillCurrent()) break;
+            if (partial && partial !== liveTail) {
+              liveTail = partial;
+              setOutput(base + partial);
+            }
+            if (!running) break;
+          } catch {
+            // ignore transient poll failures
+          }
+          await new Promise(r => setTimeout(r, 1500));
+        }
+      };
+      void poll();
 
       let succeeded = true;
+      let firstRealChunk = true;
       try {
         await api.sendMessage(sessionId, text, chunk => {
+          polling = false; // real streamed chunks win over polling
           if (stillCurrent()) {
-            setOutput(prev => prev + chunk);
+            if (firstRealChunk) {
+              // On completion the backend replays the whole captured log as
+              // chunk frames — the same docker-logs content polling has been
+              // rendering. Drop the polled tail back to `base` on the first
+              // real chunk so the authoritative stream replaces it instead of
+              // appending a duplicate copy.
+              firstRealChunk = false;
+              setOutput(base + chunk);
+            } else {
+              setOutput(prev => prev + chunk);
+            }
           }
         });
       } catch (err) {
@@ -85,6 +133,7 @@ export function useStreamMessage(sessionId: string): StreamState {
           setOutput(prev => prev + `\x1b[1;31mError: ${msg}\x1b[0m\n`);
         }
       } finally {
+        polling = false;
         if (stillCurrent()) {
           setIsStreaming(false);
         }

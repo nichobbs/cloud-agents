@@ -1,6 +1,10 @@
 package CloudAgents.SessionStore
 
 import Std.Core
+import CloudAgents.Auth
+import CloudAgents.Db
+import CloudAgents.Repository
+import CloudAgents.Sqlite
 import extern System.Environment as Env
 import extern System.String as DotNetString
 
@@ -337,12 +341,48 @@ pub func parseSessionsJson(json: in String): AgentSessionArray {
   return list
 }
 
-pub func getSessions(): AgentSessionArray {
-  val json = Env.GetEnvironmentVariable("CLOUD_AGENTS_SESSIONS_JSON")
-  if DotNetString.IsNullOrEmpty(json) {
-    return createEmptySessionArray()
+// ─── SQLite-backed store ──────────────────────────────────────────────────────
+//
+// Sessions live in the same SQLite database as the transcript (schema created
+// by CloudAgents.Repository.initSchema), so they survive restarts and two
+// concurrent requests cannot lose each other's writes — both defects of the
+// previous CLOUD_AGENTS_SESSIONS_JSON env-var store. The env-var JSON
+// helpers below are retained for the one-time legacy import at startup (and
+// their tests).
+func colAt(cols: in CloudAgents.Sqlite.StringArray, i: in Int): String {
+  val len = CloudAgents.Sqlite.getStringArrayLength(cols)
+  if i < len {
+    return CloudAgents.Sqlite.getStringArrayValue(cols, i)
   }
-  return parseSessionsJson(json)
+  return ""
+}
+
+// Column order matches CloudAgents.Db's sessionColumns:
+// id, user_id, repo_url, branch, container_id, harness, model,
+// native_session_id, status, created_at, last_message_at.
+func rowToSession(r: in CloudAgents.Sqlite.Row): AgentSession {
+  return AgentSession(
+    sessionId = colAt(r.cols, 0),
+    repoUrl = colAt(r.cols, 2),
+    branch = colAt(r.cols, 3),
+    containerId = colAt(r.cols, 4),
+    harness = colAt(r.cols, 5),
+    model = colAt(r.cols, 6),
+    nativeSessionId = colAt(r.cols, 7)
+  )
+}
+
+/// All of the current user's sessions, most recently active first.
+pub func getSessions(): Result[AgentSessionArray, CloudAgents.Sqlite.DbError] {
+  val rows = CloudAgents.Sqlite.query(CloudAgents.Db.listSessionsByUserSql(CloudAgents.Auth.currentUserId()))?
+  var list = createEmptySessionArray()
+  var i = 0
+  val len = CloudAgents.Sqlite.getRowArrayLength(rows)
+  while i < len {
+    list = appendSession(list, rowToSession(CloudAgents.Sqlite.getRowArrayValue(rows, i)))
+    i = i + 1
+  }
+  return Ok(value = list)
 }
 
 // ── Control-character helpers ─────────────────────────────────────────────────
@@ -495,113 +535,159 @@ pub func agentSessionToJson(s: in AgentSession): String {
     "\"}"
 }
 
-pub func saveSessions(sessions: in AgentSessionArray): Unit {
-  var json = "{\"sessions\":["
+/// Persist a new session (status starts IDLE, owned by the current user).
+pub func addSession(session: in AgentSession): Result[Unit, CloudAgents.Sqlite.DbError] {
+  CloudAgents.Sqlite.execute(
+    CloudAgents.Db.insertSessionSql(
+      session.sessionId,
+      CloudAgents.Auth.currentUserId(),
+      session.repoUrl,
+      session.branch,
+      session.containerId,
+      session.harness,
+      session.model,
+      session.nativeSessionId,
+      CloudAgents.Repository.nowMillis()
+    )
+  )?
+  return Ok(value = ())
+}
+
+/// The status column of a session (the authoritative RUNNING signal, set
+/// synchronously by tryBeginRun before the container exists), or None. Shaped
+/// like getMessageSessionId — a plain Option[String], deliberately avoiding a
+/// custom record on this path.
+pub func sessionStatus(sessionId: in String): Result[Option[String], CloudAgents.Sqlite.DbError] {
+  val rows = CloudAgents.Sqlite.query(
+    CloudAgents.Db.selectSessionByIdSql(sessionId, CloudAgents.Auth.currentUserId())
+  )?
+  val len = CloudAgents.Sqlite.getRowArrayLength(rows)
+  if len == 0 {
+    return Ok(value = None)
+  }
+  // Column order (CloudAgents.Db.sessionColumns): status is index 8.
+  return Ok(value = Some(value = colAt(CloudAgents.Sqlite.getRowArrayValue(rows, 0).cols, 8)))
+}
+
+/// A single session owned by the current user, or None.
+pub func getSession(sessionId: in String): Result[Option[AgentSession], CloudAgents.Sqlite.DbError] {
+  val rows = CloudAgents.Sqlite.query(
+    CloudAgents.Db.selectSessionByIdSql(sessionId, CloudAgents.Auth.currentUserId())
+  )?
+  val len = CloudAgents.Sqlite.getRowArrayLength(rows)
+  if len == 0 {
+    return Ok(value = None)
+  }
+  return Ok(value = Some(value = rowToSession(CloudAgents.Sqlite.getRowArrayValue(rows, 0))))
+}
+
+pub func updateSessionContainer(sessionId: in String, containerId: in String): Result[Unit, CloudAgents.Sqlite.DbError] {
+  CloudAgents.Sqlite.execute(
+    CloudAgents.Db.updateSessionContainerSql(sessionId, CloudAgents.Auth.currentUserId(), containerId)
+  )?
+  return Ok(value = ())
+}
+
+pub func updateSessionModel(sessionId: in String, model: in String): Result[Unit, CloudAgents.Sqlite.DbError] {
+  CloudAgents.Sqlite.execute(
+    CloudAgents.Db.updateSessionModelSql(sessionId, CloudAgents.Auth.currentUserId(), model)
+  )?
+  return Ok(value = ())
+}
+
+/// Remove a session, returning the record that was removed (None when it did
+/// not exist or is not owned by the current user).
+pub func removeSession(sessionId: in String): Result[Option[AgentSession], CloudAgents.Sqlite.DbError] {
+  val existing = getSession(sessionId)?
+  match existing {
+    case None -> return Ok(value = None)
+    case Some(_) -> ()
+  }
+  CloudAgents.Sqlite.execute(CloudAgents.Db.deleteSessionSql(sessionId, CloudAgents.Auth.currentUserId()))?
+  return Ok(value = existing)
+}
+
+// ─── Run status ───────────────────────────────────────────────────────────────
+/// Atomically claim a session for a run. Ok(false) means another run is
+/// already in progress (the caller should respond 409); the single UPDATE
+/// with a status guard makes two concurrent sends unable to both win.
+pub func tryBeginRun(sessionId: in String): Result[Bool, CloudAgents.Sqlite.DbError] {
+  val n = CloudAgents.Sqlite.execute(
+    CloudAgents.Db.tryBeginRunSql(sessionId, CloudAgents.Auth.currentUserId(), CloudAgents.Repository.nowMillis())
+  )?
+  return Ok(value = n > 0)
+}
+
+/// Return a session to IDLE after a run (success or failure) and record the
+/// activity time.
+pub func endRun(sessionId: in String): Result[Unit, CloudAgents.Sqlite.DbError] {
+  CloudAgents.Sqlite.execute(
+    CloudAgents.Db.endRunSql(sessionId, CloudAgents.Auth.currentUserId(), CloudAgents.Repository.nowMillis())
+  )?
+  return Ok(value = ())
+}
+
+/// Container ids of sessions stranded RUNNING/WARM by a crash/restart. The
+/// startup sweep terminates these before recoverDanglingSessions blanks the
+/// container_id column, so no container is orphaned. (SessionStore cannot
+/// terminate them itself — that would need CloudAgents.Docker, which already
+/// depends on SessionStore; main() owns the cleanup to avoid the cycle.)
+pub func strandedContainerIds(): Result[slice[String], CloudAgents.Sqlite.DbError] {
+  val rows = CloudAgents.Sqlite.query(CloudAgents.Db.selectStrandedContainerIdsSql())?
+  var acc: slice[String] = []
   var i = 0
+  val len = CloudAgents.Sqlite.getRowArrayLength(rows)
+  while i < len {
+    acc = acc.append(colAt(CloudAgents.Sqlite.getRowArrayValue(rows, i).cols, 0))
+    i = i + 1
+  }
+  return Ok(value = acc)
+}
+
+/// Reset sessions stranded RUNNING/WARM by a crash or restart back to IDLE.
+/// Called once at startup, after the schema is created and any stranded
+/// containers have been terminated (see strandedContainerIds).
+pub func recoverDanglingSessions(): Result[Int, CloudAgents.Sqlite.DbError] {
+  return CloudAgents.Sqlite.execute(CloudAgents.Db.recoverDanglingSessionsSql())
+}
+
+// ─── Legacy env-var store import ──────────────────────────────────────────────
+/// One-time migration: sessions created before the SQLite store lived as JSON
+/// in CLOUD_AGENTS_SESSIONS_JSON. Import any that aren't already in the
+/// database, then clear the env var so this never re-runs. Best-effort — a
+/// failed import leaves the env var in place and warns rather than aborting
+/// startup.
+pub func importLegacyEnvSessions(): Unit {
+  val json = Env.GetEnvironmentVariable("CLOUD_AGENTS_SESSIONS_JSON")
+  if DotNetString.IsNullOrEmpty(json) {
+    return ()
+  }
+  val sessions = parseSessionsJson(json)
   val len = getSessionArrayLength(sessions)
+  var i = 0
+  var failures = 0
   while i < len {
     val s = getSessionArrayValue(sessions, i)
-    val sJson = agentSessionToJson(s)
-    json = json + sJson
-    if i < len - 1 {
-      json = json + ","
+    match getSession(s.sessionId) {
+      case Ok(Some(_)) -> ()
+      case Ok(None) -> match addSession(s) {
+        case Ok(_) -> ()
+        case Err(e) -> {
+          failures = failures + 1
+          println("WARNING: failed to import legacy session " + s.sessionId + ": " + CloudAgents.Sqlite.dbErrorMessage(e))
+        }
+      }
+      case Err(e) -> {
+        failures = failures + 1
+        println("WARNING: failed to check legacy session " + s.sessionId + ": " + CloudAgents.Sqlite.dbErrorMessage(e))
+      }
     }
     i = i + 1
   }
-  json = json + "]}"
-  Env.SetEnvironmentVariable("CLOUD_AGENTS_SESSIONS_JSON", json)
-}
-
-pub func addSession(session: in AgentSession): Unit {
-  val sessions = getSessions()
-  saveSessions(appendSession(sessions, session))
-}
-
-pub func getSession(sessionId: in String): Option[AgentSession] {
-  val sessions = getSessions()
-  var i = 0
-  val len = getSessionArrayLength(sessions)
-  while i < len {
-    val s = getSessionArrayValue(sessions, i)
-    if s.sessionId == sessionId {
-      return Some(value = s)
+  if failures == 0 {
+    Env.SetEnvironmentVariable("CLOUD_AGENTS_SESSIONS_JSON", "")
+    if len > 0 {
+      println("Imported " + toString(len) + " legacy session(s) from CLOUD_AGENTS_SESSIONS_JSON into SQLite")
     }
-    i = i + 1
   }
-  return None
-}
-
-pub func updateSessionContainer(sessionId: in String, containerId: in String): Unit {
-  val sessions = getSessions()
-  var updated = createEmptySessionArray()
-  var i = 0
-  val len = getSessionArrayLength(sessions)
-  while i < len {
-    val s = getSessionArrayValue(sessions, i)
-    if s.sessionId == sessionId {
-      updated = appendSession(
-        updated,
-        AgentSession(
-          sessionId = s.sessionId,
-          repoUrl = s.repoUrl,
-          branch = s.branch,
-          containerId = containerId,
-          harness = s.harness,
-          model = s.model,
-          nativeSessionId = s.nativeSessionId
-        )
-      )
-    } else {
-      updated = appendSession(updated, s)
-    }
-    i = i + 1
-  }
-  saveSessions(updated)
-}
-
-pub func updateSessionModel(sessionId: in String, model: in String): Unit {
-  val sessions = getSessions()
-  var updated = createEmptySessionArray()
-  var i = 0
-  val len = getSessionArrayLength(sessions)
-  while i < len {
-    val s = getSessionArrayValue(sessions, i)
-    if s.sessionId == sessionId {
-      updated = appendSession(
-        updated,
-        AgentSession(
-          sessionId = s.sessionId,
-          repoUrl = s.repoUrl,
-          branch = s.branch,
-          containerId = s.containerId,
-          harness = s.harness,
-          model = model,
-          nativeSessionId = s.nativeSessionId
-        )
-      )
-    } else {
-      updated = appendSession(updated, s)
-    }
-    i = i + 1
-  }
-  saveSessions(updated)
-}
-
-pub func removeSession(sessionId: in String): Option[AgentSession] {
-  val sessions = getSessions()
-  var updated = createEmptySessionArray()
-  var removed: Option[AgentSession] = None
-  var i = 0
-  val len = getSessionArrayLength(sessions)
-  while i < len {
-    val s = getSessionArrayValue(sessions, i)
-    if s.sessionId == sessionId {
-      removed = Some(value = s)
-    } else {
-      updated = appendSession(updated, s)
-    }
-    i = i + 1
-  }
-  saveSessions(updated)
-  return removed
 }

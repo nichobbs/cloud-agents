@@ -26,6 +26,17 @@ export interface Comment {
   createdAt: string;
 }
 
+/// A saved, reusable prompt from the user's library.
+export interface Prompt {
+  id: string;
+  userId: string;
+  name: string;
+  body: string;
+  useCount: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
 /// A todo / bookmark, optionally linked back to a source message.
 export interface Todo {
   id: string;

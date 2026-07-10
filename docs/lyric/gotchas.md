@@ -148,7 +148,10 @@ this isn't "every imported free function needs dot-call," just something
 specific to (at least some of) `Std.Core`'s generic helpers. If a bare call
 to an imported function fails with "unknown name," try the dot-call form
 before assuming the function doesn't exist — but don't assume the reverse
-either.
+either. **And compiling via dot-call does not mean it runs**: the
+`unwrapResult` family compiles as a dot-call and then fails at runtime with
+"unsupported method" — see the Result/Option convenience-methods entry
+below. Match on the union instead.
 
 **Ambiguous names across whole-module imports resolve silently by import
 order — no compile error, no argument type-check.** If two imported packages
@@ -159,6 +162,40 @@ v0.4.19: reordering `import CloudAgents.Handlers`/`import
 CloudAgents.SessionStore` alphabetically flipped which `updateSessionModel` a
 test called). Fully qualify any name exported by more than one imported
 package.
+
+**Package-qualified record construction fails at runtime.**
+`CloudAgents.Prompts.SavePromptRequest(name = ..., body = ...)` compiles but
+dies with `unsupported method 'SavePromptRequest' on the receiver type`
+(confirmed on v0.4.19 by CloudAgents.PromptTests). Import the module and
+construct with the unqualified name — `SavePromptRequest(...)`. Qualified
+*function* calls (`CloudAgents.Sqlite.execute(...)`) work fine; it is only
+record constructors that must be unqualified.
+
+**`Result`/`Option` convenience methods fail at runtime even as dot-calls.**
+`r.unwrapResult()` (and by the same mechanism `.unwrapResultOr()`,
+`.unwrapErrOr()`, and `Option.isSome()`/`.isNone()` below) compiles but dies
+at runtime with `unsupported method 'unwrapResult' on the receiver type`
+(confirmed on v0.4.19 by this repo's CloudAgents.PromptTests). `.isOk()` is
+in the same suspect family. **Match on `Ok`/`Err` / `Some`/`None` for
+everything**; the `?` operator is confirmed working at runtime and is fine.
+The Std.String methods (`.length`, `.substring`, `.contains`, ...) and
+`slice` indexing/`.append()` are confirmed working.
+
+**`Int.toNat()` does not resolve at runtime** — `unsupported method 'toNat'
+on the receiver type` (confirmed on v0.4.19 by CloudAgents.CryptoTests). The
+reverse, `Nat.toInt()`, works fine. And you can't dodge it with `var i: Nat =
+0` either: integer literals are typed `Int` with no implicit Nat coercion, so
+that fails to compile (`T0061`/`T0033`, Nat-vs-Int). Practical consequence:
+iterating with a `Nat` counter to index a `slice[Byte]` is awkward — prefer
+working over `String`/base64 (whose `.length.toInt()` + `.substring` are
+known-good) when you need an index-driven loop.
+
+**`Std.Time.Instant.now()` is broken at runtime in the current toolchain** —
+it compiles, then fails with `Method not found: 'Void System.DateTime.now()'`
+(a lowercase `now` MemberRef the BCL has never had). Confirmed on v0.4.19 by
+this repo's live-DB tests, the first code that ever executed it. Work around
+with a direct BCL binding (`System.DateTimeOffset.get_UtcNow` +
+`ToUnixTimeMilliseconds`) — see `CloudAgents.Repository.nowMillis`.
 
 **`Option[T].isSome()`/`.isNone()` do not resolve at runtime in the current
 toolchain** — despite being documented in `docs/lyric/stdlib.md`. A call

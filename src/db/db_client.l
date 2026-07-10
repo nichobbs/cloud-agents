@@ -143,18 +143,22 @@ pub func recycleDecision(status: in SessionStatus, idleMillis: in Long): Recycle
   }
 }
 
-/// DDL for the `sessions` table (Phase 2). Mirrors the schema in
-/// docs/phase2-session-management.md. Applied at startup with
-/// `CREATE TABLE IF NOT EXISTS`, so it is safe to run repeatedly.
+/// DDL for the `sessions` table. Every column is TEXT affinity so the
+/// CloudAgents.Sqlite driver can read rows with GetString (same rule as the
+/// messages/comments/todos/prompts tables — the original Phase 2 draft used
+/// INTEGER/TIMESTAMP columns, which the GetString-only driver cannot read).
+/// Applied at startup with `CREATE TABLE IF NOT EXISTS`.
 pub func sessionsSchemaSql(): String {
-  return "CREATE TABLE IF NOT EXISTS sessions (" + "id TEXT PRIMARY KEY, " + "github_user_id INTEGER NOT NULL, " +
-    "repo_url TEXT, " +
-    "branch TEXT DEFAULT 'main', " +
-    "status TEXT, " +
-    "container_id TEXT, " +
-    "volume_name TEXT, " +
-    "created_at TIMESTAMP, " +
-    "last_message_at TIMESTAMP)"
+  return "CREATE TABLE IF NOT EXISTS sessions (" + "id TEXT PRIMARY KEY, " + "user_id TEXT NOT NULL, " +
+    "repo_url TEXT NOT NULL, " +
+    "branch TEXT NOT NULL, " +
+    "container_id TEXT NOT NULL, " +
+    "harness TEXT NOT NULL, " +
+    "model TEXT NOT NULL, " +
+    "native_session_id TEXT NOT NULL, " +
+    "status TEXT NOT NULL, " +
+    "created_at TEXT NOT NULL, " +
+    "last_message_at TEXT NOT NULL)"
 }
 
 /// Name of the per-session workspace volume (Phase 3 keys by GitHub user).
@@ -167,46 +171,103 @@ pub func homeVolumeName(githubUserId: in String): String {
   return "user-" + githubUserId + "-home"
 }
 
-// ─── Parameterised SQL ────────────────────────────────────────────────────────
+// ─── Session SQL ──────────────────────────────────────────────────────────────
 //
-// Statements use `?` placeholders bound by the lyric-db layer. Every read and
-// mutation is scoped by `github_user_id` so a user can only ever touch their
-// own sessions (Phase 3 ownership enforcement, docs/phase3 §4).
-/// INSERT a new session row.
-/// Params: id, github_user_id, repo_url, branch, status, container_id,
-/// volume_name, created_at, last_message_at.
-pub func insertSessionSql(): String {
-  return "INSERT INTO sessions " +
-    "(id, github_user_id, repo_url, branch, status, container_id, volume_name, created_at, last_message_at) " +
-    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)"
+// Assembled with `sqlLiteral` escaping like every other statement in this
+// package (an earlier draft used `?` placeholders for a lyric-db binding
+// layer that was never wired in — the CloudAgents.Sqlite driver does no
+// parameter binding). Every read and mutation is scoped by `user_id` so a
+// user can only ever touch their own sessions (Phase 3 ownership
+// enforcement, docs/phase3 §4).
+val sessionColumns = "id, user_id, repo_url, branch, container_id, harness, model, native_session_id, status, created_at, last_message_at"
+
+/// INSERT a new session row (status starts IDLE; last_message_at = created_at).
+pub func insertSessionSql(
+  id: in String,
+  userId: in String,
+  repoUrl: in String,
+  branch: in String,
+  containerId: in String,
+  harness: in String,
+  model: in String,
+  nativeSessionId: in String,
+  createdAt: in String,
+): String {
+  return "INSERT INTO sessions (" + sessionColumns + ") VALUES (" + sqlLiteral(id) + ", " + sqlLiteral(userId) +
+    ", " +
+    sqlLiteral(repoUrl) +
+    ", " +
+    sqlLiteral(branch) +
+    ", " +
+    sqlLiteral(containerId) +
+    ", " +
+    sqlLiteral(harness) +
+    ", " +
+    sqlLiteral(model) +
+    ", " +
+    sqlLiteral(nativeSessionId) +
+    ", 'IDLE', " +
+    sqlLiteral(createdAt) +
+    ", " +
+    sqlLiteral(createdAt) +
+    ")"
 }
 
-/// SELECT a single session owned by a user. Params: id, github_user_id.
-pub func selectSessionByIdSql(): String {
-  return "SELECT id, github_user_id, repo_url, branch, status, container_id, volume_name, created_at, last_message_at " +
-    "FROM sessions WHERE id = ? AND github_user_id = ?"
+/// SELECT a single session owned by a user.
+pub func selectSessionByIdSql(id: in String, userId: in String): String {
+  return "SELECT " + sessionColumns + " FROM sessions WHERE id = " + sqlLiteral(id) + " AND user_id = " +
+    sqlLiteral(userId)
 }
 
-/// SELECT all sessions owned by a user, newest first. Param: github_user_id.
-pub func listSessionsByUserSql(): String {
-  return "SELECT id, github_user_id, repo_url, branch, status, container_id, volume_name, created_at, last_message_at " +
-    "FROM sessions WHERE github_user_id = ? ORDER BY last_message_at DESC"
+/// SELECT all sessions owned by a user, most recently active first.
+pub func listSessionsByUserSql(userId: in String): String {
+  return "SELECT " + sessionColumns + " FROM sessions WHERE user_id = " + sqlLiteral(userId) +
+    " ORDER BY last_message_at DESC"
 }
 
-/// UPDATE a session's status and container id.
-/// Params: status, container_id, id, github_user_id.
-pub func updateSessionStatusSql(): String {
-  return "UPDATE sessions SET status = ?, container_id = ? WHERE id = ? AND github_user_id = ?"
+/// UPDATE a session's container id.
+pub func updateSessionContainerSql(id: in String, userId: in String, containerId: in String): String {
+  return "UPDATE sessions SET container_id = " + sqlLiteral(containerId) + " WHERE id = " + sqlLiteral(id) +
+    " AND user_id = " +
+    sqlLiteral(userId)
 }
 
-/// Record that a message was received. Params: last_message_at, id, github_user_id.
-pub func touchLastMessageSql(): String {
-  return "UPDATE sessions SET last_message_at = ? WHERE id = ? AND github_user_id = ?"
+/// UPDATE a session's model.
+pub func updateSessionModelSql(id: in String, userId: in String, model: in String): String {
+  return "UPDATE sessions SET model = " + sqlLiteral(model) + " WHERE id = " + sqlLiteral(id) + " AND user_id = " +
+    sqlLiteral(userId)
 }
 
-/// DELETE a session. Params: id, github_user_id.
-pub func deleteSessionSql(): String {
-  return "DELETE FROM sessions WHERE id = ? AND github_user_id = ?"
+/// Atomically claim a session for a run: flips status to RUNNING only when
+/// it is not already RUNNING, in one statement, so two concurrent sends
+/// cannot both win (rows affected = 1 means the claim succeeded).
+pub func tryBeginRunSql(id: in String, userId: in String, ts: in String): String {
+  return "UPDATE sessions SET status = 'RUNNING', last_message_at = " + sqlLiteral(ts) + " WHERE id = " +
+    sqlLiteral(id) +
+    " AND user_id = " +
+    sqlLiteral(userId) +
+    " AND status <> 'RUNNING'"
+}
+
+/// Return a session to IDLE after a run completes (success or failure).
+pub func endRunSql(id: in String, userId: in String, ts: in String): String {
+  return "UPDATE sessions SET status = 'IDLE', last_message_at = " + sqlLiteral(ts) + " WHERE id = " +
+    sqlLiteral(id) +
+    " AND user_id = " +
+    sqlLiteral(userId)
+}
+
+/// DELETE a session.
+pub func deleteSessionSql(id: in String, userId: in String): String {
+  return "DELETE FROM sessions WHERE id = " + sqlLiteral(id) + " AND user_id = " + sqlLiteral(userId)
+}
+
+/// Container ids of sessions stranded RUNNING/WARM (across all users), for the
+/// startup sweep to terminate before recoverDanglingSessionsSql blanks them —
+/// otherwise those containers are orphaned. Un-scoped: startup recovery is
+/// system-wide, not per-request.
+pub func selectStrandedContainerIdsSql(): String {
+  return "SELECT container_id FROM sessions WHERE (status = 'RUNNING' OR status = 'WARM') AND container_id <> ''"
 }
 
 /// Reset any sessions still marked RUNNING or WARM back to IDLE. Used by the
@@ -381,4 +442,155 @@ pub func toggleTodoSql(id: in String): String {
 /// DELETE a todo by id.
 pub func deleteTodoSql(id: in String): String {
   return "DELETE FROM todos WHERE id = " + sqlLiteral(id)
+}
+
+// ─── Prompt library ───────────────────────────────────────────────────────────
+//
+// Saved, reusable prompts. Scoped by `user_id` from day one (Phase 3
+// multi-tenancy readiness): in the current static-token deployment every
+// request resolves to the single operator identity, but the schema and every
+// query are already ownership-scoped so the GitHub-OAuth follow-up only has
+// to change where the identity comes from. Every column is TEXT affinity so
+// the CloudAgents.Sqlite driver can read rows with GetString.
+/// DDL for the prompt library.
+pub func promptsSchemaSql(): String {
+  return "CREATE TABLE IF NOT EXISTS prompts (" + "id TEXT PRIMARY KEY, " + "user_id TEXT NOT NULL, " +
+    "name TEXT NOT NULL, " +
+    "body TEXT NOT NULL, " +
+    "use_count TEXT NOT NULL, " +
+    "created_at TEXT NOT NULL, " +
+    "updated_at TEXT NOT NULL)"
+}
+
+/// INSERT a new saved prompt (use_count starts at '0').
+pub func insertPromptSql(
+  id: in String, userId: in String, name: in String, body: in String, createdAt: in String
+): String {
+  return "INSERT INTO prompts (id, user_id, name, body, use_count, created_at, updated_at) VALUES (" +
+    sqlLiteral(id) +
+    ", " +
+    sqlLiteral(userId) +
+    ", " +
+    sqlLiteral(name) +
+    ", " +
+    sqlLiteral(body) +
+    ", '0', " +
+    sqlLiteral(createdAt) +
+    ", " +
+    sqlLiteral(createdAt) +
+    ")"
+}
+
+/// SELECT one user's prompts, alphabetical by name.
+pub func selectPromptsSql(userId: in String): String {
+  return "SELECT id, user_id, name, body, use_count, created_at, updated_at FROM prompts " + "WHERE user_id = " +
+    sqlLiteral(userId) +
+    " ORDER BY name ASC"
+}
+
+/// SELECT a single prompt owned by a user.
+pub func selectPromptByIdSql(id: in String, userId: in String): String {
+  return "SELECT id, user_id, name, body, use_count, created_at, updated_at FROM prompts " + "WHERE id = " +
+    sqlLiteral(id) +
+    " AND user_id = " +
+    sqlLiteral(userId)
+}
+
+/// UPDATE a prompt's name and body.
+pub func updatePromptSql(
+  id: in String, userId: in String, name: in String, body: in String, updatedAt: in String
+): String {
+  return "UPDATE prompts SET name = " + sqlLiteral(name) + ", body = " + sqlLiteral(body) + ", updated_at = " +
+    sqlLiteral(updatedAt) +
+    " WHERE id = " +
+    sqlLiteral(id) +
+    " AND user_id = " +
+    sqlLiteral(userId)
+}
+
+/// Record one use of a prompt (numeric bump on the TEXT column).
+pub func touchPromptUsedSql(id: in String, userId: in String, usedAt: in String): String {
+  return "UPDATE prompts SET use_count = CAST(CAST(use_count AS INTEGER) + 1 AS TEXT), updated_at = " +
+    sqlLiteral(usedAt) +
+    " WHERE id = " +
+    sqlLiteral(id) +
+    " AND user_id = " +
+    sqlLiteral(userId)
+}
+
+/// DELETE a prompt owned by a user.
+pub func deletePromptSql(id: in String, userId: in String): String {
+  return "DELETE FROM prompts WHERE id = " + sqlLiteral(id) + " AND user_id = " + sqlLiteral(userId)
+}
+
+/// Index for the owner column every prompt query filters on (review #182).
+pub func promptsUserIndexSql(): String {
+  return "CREATE INDEX IF NOT EXISTS idx_prompts_user_id ON prompts(user_id)"
+}
+
+/// Index for the owner column every session query filters on.
+pub func sessionsUserIndexSql(): String {
+  return "CREATE INDEX IF NOT EXISTS idx_sessions_user_id ON sessions(user_id)"
+}
+
+// ─── Credential store ─────────────────────────────────────────────────────────
+//
+// Per-user secrets (GitHub tokens, cloud credentials, arbitrary env vars),
+// encrypted at rest by CloudAgents.Crypto before they ever reach this layer —
+// `value_encrypted` is always ciphertext, never plaintext. Scoped by
+// (user_id, name); a fresh upsert replaces the previous value. The value is
+// never selected back out to any HTTP response; it is only decrypted
+// server-side when building a runner container's environment.
+/// DDL for the credential store. `name` is the env-var name injected into
+/// containers; `value_encrypted` is the base64 AES-256-CBC + HMAC-SHA256 blob.
+pub func credentialsSchemaSql(): String {
+  return "CREATE TABLE IF NOT EXISTS credentials (" + "id TEXT PRIMARY KEY, " + "user_id TEXT NOT NULL, " +
+    "name TEXT NOT NULL, " +
+    "value_encrypted TEXT NOT NULL, " +
+    "created_at TEXT NOT NULL, " +
+    "updated_at TEXT NOT NULL, " +
+    "UNIQUE(user_id, name))"
+}
+
+/// Composite index for the (owner, name) lookups every query uses.
+pub func credentialsUserIndexSql(): String {
+  return "CREATE INDEX IF NOT EXISTS idx_credentials_user_id ON credentials(user_id)"
+}
+
+/// UPSERT a credential: insert, or replace the encrypted value on name clash.
+/// (SQLite UPSERT keeps the original id/created_at on conflict.)
+pub func upsertCredentialSql(
+  id: in String, userId: in String, name: in String, valueEncrypted: in String, ts: in String
+): String {
+  return "INSERT INTO credentials (id, user_id, name, value_encrypted, created_at, updated_at) VALUES (" +
+    sqlLiteral(id) +
+    ", " +
+    sqlLiteral(userId) +
+    ", " +
+    sqlLiteral(name) +
+    ", " +
+    sqlLiteral(valueEncrypted) +
+    ", " +
+    sqlLiteral(ts) +
+    ", " +
+    sqlLiteral(ts) +
+    ") ON CONFLICT(user_id, name) DO UPDATE SET value_encrypted = " +
+    sqlLiteral(valueEncrypted) +
+    ", updated_at = " +
+    sqlLiteral(ts)
+}
+
+/// SELECT the names of a user's credentials (never the values), alphabetical.
+pub func selectCredentialNamesSql(userId: in String): String {
+  return "SELECT name, updated_at FROM credentials WHERE user_id = " + sqlLiteral(userId) + " ORDER BY name ASC"
+}
+
+/// SELECT every (name, encrypted value) for a user, for container injection.
+pub func selectCredentialsForInjectionSql(userId: in String): String {
+  return "SELECT name, value_encrypted FROM credentials WHERE user_id = " + sqlLiteral(userId) + " ORDER BY name ASC"
+}
+
+/// DELETE one credential by name.
+pub func deleteCredentialSql(userId: in String, name: in String): String {
+  return "DELETE FROM credentials WHERE user_id = " + sqlLiteral(userId) + " AND name = " + sqlLiteral(name)
 }
