@@ -17,6 +17,7 @@ func main(): Unit {
   var router = Web.create()
 
   // Register session routes
+  router = Web.addGet(router, "/api/sessions", "CloudAgents.Handlers.listSessions")
   router = Web.addPost(router, "/api/sessions", "CloudAgents.Handlers.createSession")
   router = Web.addPost(router, "/api/sessions/{id}/messages", "CloudAgents.Handlers.sendMessage")
   router = Web.addDelete(router, "/api/sessions/{id}", "CloudAgents.Handlers.deleteSession")
@@ -31,7 +32,6 @@ func main(): Unit {
 
   // Todos / bookmarks, optionally linked back to a message
   router = Web.addGet(router, "/api/sessions/{id}/todos", "CloudAgents.Interactions.getTodos")
-  router = Web.addPost(router, "/api/sessions/{id}/todos", "CloudAgents.Interactions.addTodoHandler")
   router = Web.addPost(router, "/api/sessions/{id}/todos", "CloudAgents.Interactions.addTodoHandler")
   router = Web.addPost(router, "/api/todos/{tid}/toggle", "CloudAgents.Interactions.toggleTodoHandler")
   router = Web.addDelete(router, "/api/todos/{tid}", "CloudAgents.Interactions.deleteTodoHandler")
@@ -56,11 +56,8 @@ func main(): Unit {
     idx = idx + 1
   }
 
-  // If set via CLI, override the environment variable
-  if not DotNetString.IsNullOrEmpty(portStr) {
-    Env.SetEnvironmentVariable("LYRIC_CONFIG_WEB_SERVER_PORT", portStr)
-  } else {
-    // Otherwise read from env var
+  // CLI takes precedence; otherwise read from env var
+  if DotNetString.IsNullOrEmpty(portStr) {
     portStr = Env.GetEnvironmentVariable("LYRIC_CONFIG_WEB_SERVER_PORT")
   }
 
@@ -69,8 +66,68 @@ func main(): Unit {
     portStr = "8080"
   }
 
+  // The Web.Server config range-checks this env var at startup and panics on
+  // violation; validating here turns a typo into a warning instead of a crash.
+  if not isValidPort(portStr) {
+    println("WARNING: '" + portStr + "' is not a valid TCP port (1-65535); using 8080")
+    portStr = "8080"
+  }
+  Env.SetEnvironmentVariable("LYRIC_CONFIG_WEB_SERVER_PORT", portStr)
+
   println("Starting Cloud Agents API Server on port " + portStr + "...")
   Web.start(router)
+}
+
+func digitValue(c: in String): Int {
+  if c == "0" {
+    return 0
+  }
+  if c == "1" {
+    return 1
+  }
+  if c == "2" {
+    return 2
+  }
+  if c == "3" {
+    return 3
+  }
+  if c == "4" {
+    return 4
+  }
+  if c == "5" {
+    return 5
+  }
+  if c == "6" {
+    return 6
+  }
+  if c == "7" {
+    return 7
+  }
+  if c == "8" {
+    return 8
+  }
+  if c == "9" {
+    return 9
+  }
+  return -1
+}
+
+/// Whether `s` is a decimal TCP port in 1..65535.
+pub func isValidPort(s: in String): Bool {
+  if s.length == 0 or s.length > 5 {
+    return false
+  }
+  var n = 0
+  var i = 0
+  while i < s.length {
+    val d = digitValue(s.substring(i, 1))
+    if d < 0 {
+      return false
+    }
+    n = n * 10 + d
+    i = i + 1
+  }
+  return n >= 1 and n <= 65535
 }
 
 pub func parseCommandLine(cmdLine: in String): StringArray {

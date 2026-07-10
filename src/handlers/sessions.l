@@ -15,6 +15,9 @@ pub func generateSessionId(): String {
 }
 
 val maxPromptLen = 131072
+val maxRepoUrlLen = 2048
+val maxBranchLen = 255
+val maxModelLen = 128
 
 func isHttpsUrl(url: in String): Bool {
   val prefix = "https://"
@@ -22,6 +25,71 @@ func isHttpsUrl(url: in String): Bool {
     return false
   }
   return url.substring(0, prefix.length) == prefix
+}
+
+@externTarget("System.String.CompareOrdinal")
+func strCompareOrdinal(a: in String, b: in String): Int = ()
+
+/// True when any character is a raw control character (below U+0020). These
+/// have no place in a URL, ref name, or model id, and would otherwise flow
+/// into the session store and the container environment.
+func containsControlChar(s: in String): Bool {
+  var i = 0
+  while i < s.length {
+    if strCompareOrdinal(s.substring(i, 1), " ") < 0 {
+      return true
+    }
+    i = i + 1
+  }
+  return false
+}
+
+func isSafeRepoUrl(url: in String): Bool {
+  if url.length > maxRepoUrlLen {
+    return false
+  }
+  if url.contains(" ") or url.contains("\"") or url.contains("\\") {
+    return false
+  }
+  return not containsControlChar(url)
+}
+
+/// Git ref-name safety: rejects names git itself refuses, plus anything that
+/// could be misread as a command-line option (leading '-').
+func isSafeBranchName(branch: in String): Bool {
+  if branch.length == 0 or branch.length > maxBranchLen {
+    return false
+  }
+  if branch.startsWith("-") or branch.startsWith("/") or branch.endsWith("/") or branch.endsWith(".") or
+    branch.endsWith(".lock") {
+    return false
+  }
+  if branch.contains(" ") or branch.contains("\"") or branch.contains("\\") or branch.contains("~") or
+    branch.contains("^") or
+    branch.contains(":") or
+    branch.contains("?") or
+    branch.contains("*") or
+    branch.contains("[") or
+    branch.contains("..") or
+    branch.contains("@{") {
+    return false
+  }
+  return not containsControlChar(branch)
+}
+
+func isSafeModelName(model: in String): Bool {
+  if model.length > maxModelLen {
+    return false
+  }
+  if model.contains(" ") or model.contains("\"") or model.contains("\\") or model.contains("{") or
+    model.contains("}") {
+    return false
+  }
+  return not containsControlChar(model)
+}
+
+func isKnownHarness(harness: in String): Bool {
+  return harness == "claude" or harness == "codex" or harness == "opencode"
 }
 
 @generate(Json)
@@ -56,8 +124,20 @@ pub func createSession(@body req: in CreateSessionRequest): Result[CreateSession
   if not isHttpsUrl(req.repoUrl) {
     return Err(Web.badRequest("repoUrl must use the https:// scheme"))
   }
+  if not isSafeRepoUrl(req.repoUrl) {
+    return Err(Web.badRequest("repoUrl contains invalid characters or is too long"))
+  }
   if req.branch.length == 0 {
     return Err(Web.badRequest("branch is required"))
+  }
+  if not isSafeBranchName(req.branch) {
+    return Err(Web.badRequest("branch is not a valid git branch name"))
+  }
+  if req.harness.length > 0 and not isKnownHarness(req.harness) {
+    return Err(Web.badRequest("harness must be one of: claude, codex, opencode"))
+  }
+  if not isSafeModelName(req.model) {
+    return Err(Web.badRequest("model contains invalid characters or is too long"))
   }
 
   val sessionId = generateSessionId()
@@ -76,6 +156,26 @@ pub func createSession(@body req: in CreateSessionRequest): Result[CreateSession
   addSession(session)
 
   return Ok(CreateSessionResponse(sessionId = sessionId))
+}
+
+/// List every stored session as `{"sessions":[...]}`. Lets a client rebuild
+/// its session list after local state is lost (new browser, cleared storage)
+/// instead of stranding server-side sessions forever. Serialised with the
+/// same escaping-aware builder the store itself uses.
+@get("/api/sessions")
+pub func listSessions(): Result[String, Web.ApiError] {
+  val arr = CloudAgents.SessionStore.getSessions()
+  var json = "{\"sessions\":["
+  var i = 0
+  val len = CloudAgents.SessionStore.getSessionArrayLength(arr)
+  while i < len {
+    if i > 0 {
+      json = json + ","
+    }
+    json = json + CloudAgents.SessionStore.agentSessionToJson(CloudAgents.SessionStore.getSessionArrayValue(arr, i))
+    i = i + 1
+  }
+  return Ok(value = json + "]}")
 }
 
 /// Accept user prompt, run container, and return output synchronously.
@@ -134,20 +234,23 @@ pub func deleteSession(id: in String): Result[Unit, Web.ApiError] {
     return Err(Web.badRequest("id is required"))
   }
 
-  val maybeSession = removeSession(id)
+  // Terminate the container BEFORE dropping the session record: if teardown
+  // fails, the session (and its containerId) survives so the delete can be
+  // retried, instead of orphaning a running container with no record of it.
+  val maybeSession = getSession(id)
   match maybeSession {
     case None -> return Err(Web.notFound("Session not found"))
     case Some(session) -> {
       val containerId = session.containerId
-      if containerId.length == 0 {
-        return Ok(())
+      if containerId.length > 0 {
+        val terminateResult = CloudAgents.Docker.terminateSessionContainer(containerId)
+        match terminateResult {
+          case Ok(_) -> ()
+          case Err(err) -> return Err(Web.internalError("Failed to terminate container (session retained, retry delete): " + err))
+        }
       }
-
-      val terminateResult = CloudAgents.Docker.terminateSessionContainer(containerId)
-      match terminateResult {
-        case Ok(_) -> return Ok(())
-        case Err(err) -> return Err(Web.internalError("Failed to terminate container: " + err))
-      }
+      val _ = removeSession(id)
+      return Ok(())
     }
   }
 }
@@ -161,6 +264,9 @@ pub func updateSessionModel(id: in String, @body req: in UpdateSessionRequest): 
   }
   if req.model.length == 0 {
     return Err(Web.badRequest("model is required"))
+  }
+  if not isSafeModelName(req.model) {
+    return Err(Web.badRequest("model contains invalid characters or is too long"))
   }
   val maybeSession = getSession(id)
   match maybeSession {
