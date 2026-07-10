@@ -28,7 +28,7 @@ func mustDecrypt(blob: in String): String {
   }
 }
 
-test "AES-GCM round-trips plaintext" {
+test "AES-CBC+HMAC round-trips plaintext" {
   useTestKey()
   assertEqual(mustDecrypt(mustEncrypt("hello")), "hello", "short value round-trips")
   assertEqual(mustDecrypt(mustEncrypt("")), "", "empty value round-trips")
@@ -52,7 +52,7 @@ test "Tampered ciphertext fails authentication" {
   useTestKey()
   val blob = mustEncrypt("authentic")
   // Flip the final base64 character to a different valid one — corrupts the
-  // GCM tag, which must fail decryption rather than return garbage.
+  // HMAC tag, which must fail decryption rather than return garbage.
   val lastChar = blob.substring(blob.length.toInt() - 1, 1)
   val replacement = if lastChar == "A" then "B" else "A"
   val tampered = blob.substring(0, blob.length.toInt() - 1) + replacement

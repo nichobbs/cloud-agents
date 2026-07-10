@@ -534,7 +534,7 @@ pub func sessionsUserIndexSql(): String {
 // never selected back out to any HTTP response; it is only decrypted
 // server-side when building a runner container's environment.
 /// DDL for the credential store. `name` is the env-var name injected into
-/// containers; `value_encrypted` is the base64 AES-GCM blob.
+/// containers; `value_encrypted` is the base64 AES-256-CBC + HMAC-SHA256 blob.
 pub func credentialsSchemaSql(): String {
   return "CREATE TABLE IF NOT EXISTS credentials (" + "id TEXT PRIMARY KEY, " + "user_id TEXT NOT NULL, " +
     "name TEXT NOT NULL, " +

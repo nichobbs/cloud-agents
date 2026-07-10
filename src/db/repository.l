@@ -390,7 +390,7 @@ pub func deletePrompt(id: in String, userId: in String): Result[Int, CloudAgents
 
 // ─── Credentials ─────────────────────────────────────────────────────────────
 //
-// Values are AES-GCM encrypted (CloudAgents.Crypto) before they touch SQLite,
+// Values are AES-256-CBC + HMAC-SHA256 encrypted (CloudAgents.Crypto) before they touch SQLite,
 // and decrypted only when building a container's environment — never returned
 // to any HTTP response. The store surfaces credential *names* to the API, not
 // their values.

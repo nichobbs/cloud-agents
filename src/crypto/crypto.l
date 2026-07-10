@@ -26,6 +26,7 @@ import extern System.String as DotNetString
 
 extern type Encoding = "System.Text.Encoding"
 extern type Aes = "System.Security.Cryptography.Aes"
+extern type CryptoTransform = "System.Security.Cryptography.ICryptoTransform"
 extern type HmacSha256 = "System.Security.Cryptography.HMACSHA256"
 
 pub union CryptoError {
@@ -73,15 +74,29 @@ func aesCreate(): Aes = ()
 @externTarget("System.Security.Cryptography.Aes.set_Key")
 func aesSetKey(self: in Aes, key: in slice[Byte]): Unit = ()
 
-// PaddingMode.PKCS7 = 2. EncryptCbc/DecryptCbc take (byte[], byte[],
-// PaddingMode) and return byte[].
 @externInstance
-@externTarget("System.Security.Cryptography.Aes.EncryptCbc")
-func aesEncryptCbc(self: in Aes, plaintext: in slice[Byte], iv: in slice[Byte], padding: in Int): slice[Byte] = []
+@externTarget("System.Security.Cryptography.Aes.set_IV")
+func aesSetIV(self: in Aes, iv: in slice[Byte]): Unit = ()
+
+// Aes defaults to CipherMode.CBC + PaddingMode.PKCS7, so the transform path
+// needs no enum argument (EncryptCbc/DecryptCbc take a PaddingMode enum, which
+// the boundary marshals as Int32 and .NET then can't resolve). CreateEncryptor
+// /CreateDecryptor + ICryptoTransform.TransformFinalBlock use only byte[]/int.
+@externInstance
+@externTarget("System.Security.Cryptography.Aes.CreateEncryptor")
+func aesCreateEncryptor(self: in Aes): CryptoTransform = ()
 
 @externInstance
-@externTarget("System.Security.Cryptography.Aes.DecryptCbc")
-func aesDecryptCbc(self: in Aes, ciphertext: in slice[Byte], iv: in slice[Byte], padding: in Int): slice[Byte] = []
+@externTarget("System.Security.Cryptography.Aes.CreateDecryptor")
+func aesCreateDecryptor(self: in Aes): CryptoTransform = ()
+
+@externInstance
+@externTarget("System.Security.Cryptography.ICryptoTransform.TransformFinalBlock")
+func transformFinal(self: in CryptoTransform, input: in slice[Byte], offset: in Int, count: in Int): slice[Byte] = []
+
+@externInstance
+@externTarget("System.IDisposable.Dispose")
+func transformDispose(self: in CryptoTransform): Unit = ()
 
 @externInstance
 @externTarget("System.IDisposable.Dispose")
@@ -100,7 +115,6 @@ func hmacDispose(self: in HmacSha256): Unit = ()
 
 val ivLen = 16
 val macLen = 32
-val pkcs7 = 2
 
 /// Constant-time equality of two byte slices. Compares the full length of the
 /// longer slice so a forged tag leaks nothing about where it first diverges.
@@ -164,7 +178,10 @@ pub func encrypt(plaintext: in String): Result[String, CryptoError] {
     val iv = rngGetBytes(ivLen)
     val aes = aesCreate()
     aesSetKey(aes, key)
-    val ct = aesEncryptCbc(aes, ptBytes, iv, pkcs7)
+    aesSetIV(aes, iv)
+    val enc = aesCreateEncryptor(aes)
+    val ct = transformFinal(enc, ptBytes, 0, ptBytes.length.toInt())
+    transformDispose(enc)
     aesDispose(aes)
 
     val ivAndCt = iv.concat(ct)
@@ -195,7 +212,10 @@ pub func decrypt(blob: in String): Result[String, CryptoError] {
         val ct = all.slice(ivLen, ivLen + ctLen)
         val aes = aesCreate()
         aesSetKey(aes, key)
-        val pt = aesDecryptCbc(aes, ct, iv, pkcs7)
+        aesSetIV(aes, iv)
+        val dec = aesCreateDecryptor(aes)
+        val pt = transformFinal(dec, ct, 0, ct.length.toInt())
+        transformDispose(dec)
         aesDispose(aes)
         Ok(value = encGetString(utf8(), pt))
       }

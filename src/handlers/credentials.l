@@ -2,7 +2,7 @@
 //!
 //! Write-only by design: values can be stored and deleted, and their *names*
 //! listed, but a stored secret is never returned to any response. Values are
-//! AES-GCM encrypted at rest (CloudAgents.Crypto) and only ever decrypted
+//! encrypted at rest (CloudAgents.Crypto) and only ever decrypted
 //! server-side when building a runner container's environment
 //! (CloudAgents.Docker). Every route is scoped to the caller's identity
 //! (CloudAgents.Auth.currentUserId()).
