@@ -985,6 +985,13 @@ pub func selectWebhooksSql(userId: in String): String {
     " ORDER BY created_at DESC"
 }
 
+/// SELECT a single webhook by (user, url) — used after an idempotent register
+/// to return the actually-persisted row rather than a freshly-minted one.
+pub func selectWebhookByUrlSql(userId: in String, url: in String): String {
+  return "SELECT id, user_id, url, created_at FROM webhooks WHERE user_id = " + sqlLiteral(userId) + " AND url = " +
+    sqlLiteral(url)
+}
+
 /// DELETE a webhook by id, scoped by owner.
 pub func deleteWebhookSql(id: in String, userId: in String): String {
   return "DELETE FROM webhooks WHERE id = " + sqlLiteral(id) + " AND user_id = " + sqlLiteral(userId)

@@ -100,8 +100,10 @@ test "Webhook registration is idempotent and per-user" {
   }
   val mine = mustWebhook(addWebhook("default", "https://example.com/hook"))
   assertTrue(mine.id.length > 0, "registered webhook has an id")
-  // Re-registering the same URL is a no-op (UNIQUE), not a duplicate.
-  val _ = mustWebhook(addWebhook("default", "https://example.com/hook"))
+  // Re-registering the same URL is a no-op (UNIQUE) and must return the SAME
+  // persisted row, not a freshly-minted id/timestamp (#255).
+  val again = mustWebhook(addWebhook("default", "https://example.com/hook"))
+  assertEqual(again.id, mine.id, "re-register returns the existing row's id")
   assertEqualInt(mustWebhooks(listWebhooks("default")).length.toInt(), 1, "same url not duplicated")
 
   // Another user's webhook is invisible.

@@ -881,12 +881,24 @@ pub record WebhookEventList {
   pub events: slice[WebhookEvent]
 }
 
-/// Register a webhook target URL (idempotent per (user, url)); returns the record.
+/// Register a webhook target URL (idempotent per (user, url)); returns the
+/// actually-persisted record. Because the insert is ON CONFLICT DO NOTHING, a
+/// re-registration is a no-op — so we read the row back by (user, url) and
+/// return its real id/created_at rather than the freshly-minted ones, which for
+/// an already-registered URL would not match any stored row (#255).
 pub func addWebhook(userId: in String, url: in String): Result[Webhook, CloudAgents.Sqlite.DbError] {
   val id = newId()
   val ts = nowMillis()
   CloudAgents.Sqlite.execute(CloudAgents.Db.insertWebhookSql(id, userId, url, ts))?
-  return Ok(value = Webhook(id = id, userId = userId, url = url, createdAt = ts))
+  val rows = CloudAgents.Sqlite.query(CloudAgents.Db.selectWebhookByUrlSql(userId, url))?
+  val len = CloudAgents.Sqlite.getRowArrayLength(rows)
+  if len == 0 {
+    // Defensive: we just inserted or it already existed, so a row should be
+    // present; fall back to the minted values rather than error.
+    return Ok(value = Webhook(id = id, userId = userId, url = url, createdAt = ts))
+  }
+  val r = CloudAgents.Sqlite.getRowArrayValue(rows, 0)
+  return Ok(value = Webhook(id = colAt(r.cols, 0), userId = colAt(r.cols, 1), url = colAt(r.cols, 2), createdAt = colAt(r.cols, 3)))
 }
 
 /// A user's registered webhooks, newest first.
