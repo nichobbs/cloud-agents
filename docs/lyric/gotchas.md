@@ -150,6 +150,13 @@ to an imported function fails with "unknown name," try the dot-call form
 before assuming the function doesn't exist — but don't assume the reverse
 either.
 
+**`Option[T].isSome()`/`.isNone()` do not resolve at runtime in the current
+toolchain** — despite being documented in `docs/lyric/stdlib.md`. A call
+compiles but fails at runtime with `unsupported method 'isSome' on the
+receiver type` (confirmed on v0.4.19 by CI on this repo's
+`CloudAgents.SessionTests`). Use a full `match` on `Some`/`None` instead.
+`Result.isOk()` is fine — `docker_manager.l` uses it in production.
+
 **`out` parameters must be assigned on ALL control flow paths before return.**
 The compiler will reject a function that might return without assigning an `out` param.
 
