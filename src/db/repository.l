@@ -456,14 +456,29 @@ pub func setPromptTags(promptId: in String, userId: in String, tags: in slice[St
 }
 
 /// Save a new prompt to a user's library and return the stored record (no tags
-/// yet — the handler sets them via setPromptTags and re-reads).
+/// yet). Kept for callers/tests that don't set tags; the handler uses the
+/// transactional addPromptWithTags.
 pub func addPrompt(userId: in String, name: in String, body: in String): Result[Prompt, CloudAgents.Sqlite.DbError] {
+  val noTags: slice[String] = []
+  return addPromptWithTags(userId, name, body, noTags)
+}
+
+/// Save a new prompt AND its tag set in a single transaction (#244), returning
+/// the stored record with tags attached — so the prompt row and its tags are
+/// never left inconsistent by a partial failure.
+pub func addPromptWithTags(
+  userId: in String, name: in String, body: in String, tags: in slice[String]
+): Result[Prompt, CloudAgents.Sqlite.DbError] {
   val id = newId()
   val ts = nowMillis()
-  CloudAgents.Sqlite.execute(CloudAgents.Db.insertPromptSql(id, userId, name, body, ts))?
-  val noTags: slice[String] = []
+  var stmts: slice[String] = []
+  stmts = stmts.append(CloudAgents.Db.insertPromptSql(id, userId, name, body, ts))
+  for t in tags {
+    stmts = stmts.append(CloudAgents.Db.insertPromptTagSql(newId(), id, userId, t))
+  }
+  CloudAgents.Sqlite.executeTransaction(stmts)?
   return Ok(
-    value = Prompt(id = id, userId = userId, name = name, body = body, useCount = "0", createdAt = ts, updatedAt = ts, tags = noTags)
+    value = Prompt(id = id, userId = userId, name = name, body = body, useCount = "0", createdAt = ts, updatedAt = ts, tags = tags)
   )
 }
 
@@ -533,6 +548,28 @@ pub func updatePrompt(
 ): Result[Int, CloudAgents.Sqlite.DbError] {
   val ts = nowMillis()
   return CloudAgents.Sqlite.execute(CloudAgents.Db.updatePromptSql(id, userId, name, body, ts))
+}
+
+/// Update a prompt's name/body AND replace its tag set in one transaction
+/// (#244). Returns rows affected on the prompt (0 = not found / not owned).
+/// Existence is pre-checked for the 0-rows signal since executeTransaction
+/// returns no count, mirroring updateProfile.
+pub func updatePromptWithTags(
+  id: in String, userId: in String, name: in String, body: in String, tags: in slice[String]
+): Result[Int, CloudAgents.Sqlite.DbError] {
+  match getPrompt(id, userId)? {
+    case None -> return Ok(value = 0)
+    case Some(_) -> ()
+  }
+  val ts = nowMillis()
+  var stmts: slice[String] = []
+  stmts = stmts.append(CloudAgents.Db.updatePromptSql(id, userId, name, body, ts))
+  stmts = stmts.append(CloudAgents.Db.deletePromptTagsSql(id, userId))
+  for t in tags {
+    stmts = stmts.append(CloudAgents.Db.insertPromptTagSql(newId(), id, userId, t))
+  }
+  CloudAgents.Sqlite.executeTransaction(stmts)?
+  return Ok(value = 1)
 }
 
 /// Record one use of a prompt. Returns rows affected (0 = not found).

@@ -182,18 +182,10 @@ pub func addPromptHandler(@body req: in SavePromptRequest): Result[Prompt, Web.A
   // surrounding whitespace the check quietly ignored. Body is stored as-is
   // (leading/trailing whitespace in a prompt body can be meaningful).
   val userId = CloudAgents.Auth.currentUserId()
-  val created = match addPrompt(userId, req.name.trim(), req.body) {
-    case Ok(p) -> p
-    case Err(e) -> return Err(dbError(e))
-  }
-  // Persist tags, then return the prompt with its tags attached.
-  match setPromptTags(created.id, userId, req.tags) {
-    case Ok(_) -> ()
-    case Err(e) -> return Err(dbError(e))
-  }
-  match getPrompt(created.id, userId) {
-    case Ok(Some(p)) -> return Ok(p)
-    case Ok(None) -> return Ok(created)
+  // Prompt row + its tags commit together (#244); the returned record carries
+  // its tags, so no re-read is needed.
+  match addPromptWithTags(userId, req.name.trim(), req.body, req.tags) {
+    case Ok(p) -> return Ok(p)
     case Err(e) -> return Err(dbError(e))
   }
 }
@@ -210,17 +202,13 @@ pub func updatePromptHandler(pid: in String, @body req: in SavePromptRequest): R
   }
   val userId = CloudAgents.Auth.currentUserId()
   // Store the trimmed name for the same reason as addPromptHandler above.
-  val affected = match updatePrompt(pid, userId, req.name.trim(), req.body) {
+  // Name/body + the replaced tag set commit together (#244).
+  val affected = match updatePromptWithTags(pid, userId, req.name.trim(), req.body, req.tags) {
     case Ok(n) -> n
     case Err(e) -> return Err(dbError(e))
   }
   if affected == 0 {
     return Err(Web.notFound("prompt not found"))
-  }
-  // Replace the tag set to match the request.
-  match setPromptTags(pid, userId, req.tags) {
-    case Ok(_) -> ()
-    case Err(e) -> return Err(dbError(e))
   }
   // Return the stored record so the client gets the fresh updated_at + tags.
   match getPrompt(pid, userId) {
