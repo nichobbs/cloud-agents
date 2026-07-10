@@ -27,7 +27,6 @@ import extern System.String as DotNetString
 extern type Encoding = "System.Text.Encoding"
 extern type Aes = "System.Security.Cryptography.Aes"
 extern type CryptoTransform = "System.Security.Cryptography.ICryptoTransform"
-extern type HmacSha256 = "System.Security.Cryptography.HMACSHA256"
 
 pub union CryptoError {
   case NotConfigured
@@ -102,16 +101,12 @@ func transformDispose(self: in CryptoTransform): Unit = ()
 @externTarget("System.IDisposable.Dispose")
 func aesDispose(self: in Aes): Unit = ()
 
-@externTarget("System.Security.Cryptography.HMACSHA256.new")
-func hmacNew(key: in slice[Byte]): HmacSha256 = ()
-
-@externInstance
-@externTarget("System.Security.Cryptography.HMACSHA256.ComputeHash")
-func hmacCompute(self: in HmacSha256, data: in slice[Byte]): slice[Byte] = []
-
-@externInstance
-@externTarget("System.IDisposable.Dispose")
-func hmacDispose(self: in HmacSha256): Unit = ()
+// Static one-shot HMAC (byte[] key, byte[] source) -> byte[]. Avoids the
+// HMACSHA256(byte[]) constructor, whose `.new` extern binding does not
+// resolve (CI: `Method not found: ...HMACSHA256.new(Byte[])`), the same way
+// SHA256.HashData is used above.
+@externTarget("System.Security.Cryptography.HMACSHA256.HashData")
+func hmacHashData(key: in slice[Byte], source: in slice[Byte]): slice[Byte] = []
 
 val ivLen = 16
 val macLen = 32
@@ -164,10 +159,7 @@ func macKeyFor(aesKey: in slice[Byte]): slice[Byte] {
 }
 
 func macOf(macKey: in slice[Byte], data: in slice[Byte]): slice[Byte] {
-  val h = hmacNew(macKey)
-  val tag = hmacCompute(h, data)
-  hmacDispose(h)
-  return tag
+  return hmacHashData(macKey, data)
 }
 
 /// Encrypt a plaintext value, returning base64(IV ‖ ciphertext ‖ tag).
