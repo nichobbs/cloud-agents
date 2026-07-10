@@ -112,8 +112,7 @@ jobs:
         working-directory: frontend
         run: |
           npm ci --no-audit --no-fund
-          npx tsc --noEmit
-          npx vite build
+          npm run build   # tsc && vite build — see frontend/package.json
 
       # Shell + asset sanity checks (no Lyric toolchain needed).
       - name: Lint shell scripts

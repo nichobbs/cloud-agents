@@ -24,7 +24,9 @@ func dbError(e: in CloudAgents.Sqlite.DbError): Web.ApiError {
 }
 
 func validateSavePrompt(req: in SavePromptRequest): Option[Web.ApiError] {
-  if req.name.length == 0 {
+  // Trim before the empty check so a whitespace-only name (which a direct API
+  // call can send) is rejected, not stored as a blank-looking prompt.
+  if req.name.trim().length == 0 {
     return Some(value = Web.badRequest("name is required"))
   }
   if req.name.length > maxPromptNameLen {

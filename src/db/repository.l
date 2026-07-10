@@ -475,8 +475,12 @@ pub func decryptedCredentials(userId: in String): Result[slice[CredentialValue],
     val r = CloudAgents.Sqlite.getRowArrayValue(rows, i)
     val name = colAt(r.cols, 0)
     match CloudAgents.Crypto.decrypt(colAt(r.cols, 1)) {
-      case Ok(p) -> acc = acc.append(CredentialValue(name = name, value = p))
-      case Err(e) -> println("WARNING: skipping undecryptable credential '" + name + "': " + CloudAgents.Crypto.cryptoErrorMessage(e))
+      case Ok(p) -> {
+        acc = acc.append(CredentialValue(name = name, value = p))
+      }
+      case Err(e) -> {
+        println("WARNING: skipping undecryptable credential '" + name + "': " + CloudAgents.Crypto.cryptoErrorMessage(e))
+      }
     }
     i = i + 1
   }

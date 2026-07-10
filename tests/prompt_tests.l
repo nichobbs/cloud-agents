@@ -147,7 +147,12 @@ test "Prompt ownership scoping hides other users' prompts" {
   assertEqualInt(myList.length.toInt(), 1, "only my prompt listed")
   assertEqual(myList[0].id, mine.id, "listed prompt is mine")
 
-  // Cross-user update/delete must not touch rows.
+  // Cross-user read/use/update/delete must all no-op against another user's row.
+  match mustOptPrompt(getPrompt(theirs.id, "default")) {
+    case Some(_) -> assertTrue(false, "cannot read another user's prompt")
+    case None -> ()
+  }
+  assertEqualInt(mustRows(markPromptUsed(theirs.id, "default")), 0, "cannot mark another user's prompt used")
   assertEqualInt(mustRows(updatePrompt(theirs.id, "default", "x", "y")), 0, "cannot update another user's prompt")
   assertEqualInt(mustRows(deletePrompt(theirs.id, "default")), 0, "cannot delete another user's prompt")
 }

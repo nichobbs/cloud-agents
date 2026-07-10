@@ -2,6 +2,8 @@ package CloudAgents
 
 import Std.Core
 import Web
+import CloudAgents.Crypto
+import CloudAgents.Docker
 import CloudAgents.Repository
 import CloudAgents.SessionStore
 import CloudAgents.Sqlite
@@ -16,11 +18,36 @@ func main(): Unit {
     case Err(e) -> println("WARNING: failed to initialise database schema: " + CloudAgents.Sqlite.dbErrorMessage(e))
   }
 
-  // Sessions stranded RUNNING by a crash/restart can never be claimed again
-  // (the concurrency guard would 409 forever) — reset them to IDLE.
+  // Sessions stranded RUNNING/WARM by a crash/restart can never be claimed
+  // again (the concurrency guard would 409 forever). Terminate any container
+  // they still reference before blanking it, so nothing is orphaned, then
+  // reset the rows to IDLE.
+  match CloudAgents.SessionStore.strandedContainerIds() {
+    case Ok(ids) -> {
+      for cid in ids {
+        match CloudAgents.Docker.terminateSessionContainer(cid) {
+          case Ok(_) -> ()
+          case Err(e) -> println("WARNING: could not terminate stranded container " + cid + ": " + e)
+        }
+      }
+    }
+    case Err(e) -> println("WARNING: could not list stranded containers: " + CloudAgents.Sqlite.dbErrorMessage(e))
+  }
   match CloudAgents.SessionStore.recoverDanglingSessions() {
     case Ok(_) -> ()
     case Err(e) -> println("WARNING: failed to recover dangling sessions: " + CloudAgents.Sqlite.dbErrorMessage(e))
+  }
+
+  // Fail loudly at startup — not at first credential use — if ENCRYPTION_KEY
+  // is set but unusable (wrong length, bad base64). A configured-but-broken
+  // key would otherwise only surface when a user first stores a credential.
+  if CloudAgents.Crypto.isConfigured() {
+    match CloudAgents.Crypto.encrypt("startup-self-check") {
+      case Ok(_) -> ()
+      case Err(e) -> println("WARNING: ENCRYPTION_KEY is set but invalid — credential storage will fail: " + CloudAgents.Crypto.cryptoErrorMessage(e))
+    }
+  } else {
+    println("NOTE: ENCRYPTION_KEY is not set — the credential store is disabled")
   }
 
   // One-time migration of sessions from the legacy env-var store.

@@ -262,6 +262,14 @@ pub func deleteSessionSql(id: in String, userId: in String): String {
   return "DELETE FROM sessions WHERE id = " + sqlLiteral(id) + " AND user_id = " + sqlLiteral(userId)
 }
 
+/// Container ids of sessions stranded RUNNING/WARM (across all users), for the
+/// startup sweep to terminate before recoverDanglingSessionsSql blanks them —
+/// otherwise those containers are orphaned. Un-scoped: startup recovery is
+/// system-wide, not per-request.
+pub func selectStrandedContainerIdsSql(): String {
+  return "SELECT container_id FROM sessions WHERE (status = 'RUNNING' OR status = 'WARM') AND container_id <> ''"
+}
+
 /// Reset any sessions still marked RUNNING or WARM back to IDLE. Used by the
 /// startup recovery routine after a Docker daemon or VM restart (docs/phase2
 /// §Constraints). No params.

@@ -41,9 +41,13 @@ cd /workspace
 mkdir -p /workspace/.claude
 
 # Phase 4: render the GitHub MCP server config and safe auto-approvals from the
-# templates baked into the image, substituting the injected token.
+# templates baked into the image, substituting the injected token. The token
+# is escaped for sed's replacement text first — a raw '&', '|' or '\' in the
+# value (possible now that arbitrary secrets flow through the credential store)
+# would otherwise corrupt the substitution or the rendered JSON.
 if [ -f /etc/claude/mcp.json.template ] && [ ! -f /workspace/.claude/mcp.json ]; then
-    sed "s|\${GITHUB_TOKEN}|${GITHUB_TOKEN:-}|g" \
+    gh_token_escaped=$(printf '%s' "${GITHUB_TOKEN:-}" | sed -e 's/[&|\\]/\\&/g')
+    sed "s|\${GITHUB_TOKEN}|${gh_token_escaped}|g" \
         /etc/claude/mcp.json.template > /workspace/.claude/mcp.json
 fi
 if [ -f /etc/claude/settings.json.template ] && [ ! -f /workspace/.claude/settings.json ]; then

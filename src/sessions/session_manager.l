@@ -634,8 +634,26 @@ pub func endRun(sessionId: in String): Result[Unit, CloudAgents.Sqlite.DbError] 
   return Ok(value = ())
 }
 
+/// Container ids of sessions stranded RUNNING/WARM by a crash/restart. The
+/// startup sweep terminates these before recoverDanglingSessions blanks the
+/// container_id column, so no container is orphaned. (SessionStore cannot
+/// terminate them itself — that would need CloudAgents.Docker, which already
+/// depends on SessionStore; main() owns the cleanup to avoid the cycle.)
+pub func strandedContainerIds(): Result[slice[String], CloudAgents.Sqlite.DbError] {
+  val rows = CloudAgents.Sqlite.query(CloudAgents.Db.selectStrandedContainerIdsSql())?
+  var acc: slice[String] = []
+  var i = 0
+  val len = CloudAgents.Sqlite.getRowArrayLength(rows)
+  while i < len {
+    acc = acc.append(colAt(CloudAgents.Sqlite.getRowArrayValue(rows, i).cols, 0))
+    i = i + 1
+  }
+  return Ok(value = acc)
+}
+
 /// Reset sessions stranded RUNNING/WARM by a crash or restart back to IDLE.
-/// Called once at startup, after the schema is created.
+/// Called once at startup, after the schema is created and any stranded
+/// containers have been terminated (see strandedContainerIds).
 pub func recoverDanglingSessions(): Result[Int, CloudAgents.Sqlite.DbError] {
   return CloudAgents.Sqlite.execute(CloudAgents.Db.recoverDanglingSessionsSql())
 }
