@@ -113,16 +113,23 @@ val macLen = 32
 
 /// Constant-time equality of two byte slices. Compares the full length of the
 /// longer slice so a forged tag leaks nothing about where it first diverges.
+/// Indexed with a native Nat counter and comparing Byte values directly —
+/// Int.toNat() does not resolve at runtime in the current toolchain (see
+/// docs/lyric/gotchas.md), so slice indices are kept Nat throughout.
 func constantTimeEqualsBytes(a: in slice[Byte], b: in slice[Byte]): Bool {
-  val aLen = a.length.toInt()
-  val bLen = b.length.toInt()
+  val aLen = a.length
+  val bLen = b.length
   val maxLen = if aLen > bLen then aLen else bLen
   var diff = if aLen == bLen then 0 else 1
-  var i = 0
+  var i: Nat = 0
   while i < maxLen {
-    val ba = if i < aLen then a[i.toNat()].toInt() else -1
-    val bb = if i < bLen then b[i.toNat()].toInt() else -2
-    if ba != bb {
+    val inA = i < aLen
+    val inB = i < bLen
+    if inA and inB {
+      if a[i] != b[i] {
+        diff = 1
+      }
+    } else {
       diff = 1
     }
     i = i + 1

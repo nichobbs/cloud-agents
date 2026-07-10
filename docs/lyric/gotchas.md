@@ -181,6 +181,11 @@ everything**; the `?` operator is confirmed working at runtime and is fine.
 The Std.String methods (`.length`, `.substring`, `.contains`, ...) and
 `slice` indexing/`.append()` are confirmed working.
 
+**`Int.toNat()` does not resolve at runtime** — `unsupported method 'toNat'
+on the receiver type` (confirmed on v0.4.19 by CloudAgents.CryptoTests). The
+reverse, `Nat.toInt()`, works fine. Keep loop counters/indices as `Nat` from
+the start (`var i: Nat = 0`) rather than converting an `Int` with `.toNat()`.
+
 **`Std.Time.Instant.now()` is broken at runtime in the current toolchain** —
 it compiles, then fails with `Method not found: 'Void System.DateTime.now()'`
 (a lowercase `now` MemberRef the BCL has never had). Confirmed on v0.4.19 by
