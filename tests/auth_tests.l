@@ -59,18 +59,19 @@ test "Static-token authorization" {
   assertEqual(outcomeLabel(authorize("", "")), "allow:default", "unconfigured token allows")
   assertEqual(outcomeLabel(authorize("Bearer anything", "")), "allow:default", "unconfigured ignores header")
 
-  // Configured token -> must present a matching bearer.
+  // Configured token -> must present a matching bearer. Messages are
+  // scheme-neutral (no "GitHub"), since this is the static-token flow.
   assertEqual(outcomeLabel(authorize("Bearer secret", "secret")), "allow:default", "correct token allowed")
-  assertEqual(outcomeLabel(authorize("Bearer wrong", "secret")), "deny:invalid or expired GitHub token", "wrong token denied")
+  assertEqual(outcomeLabel(authorize("Bearer wrong", "secret")), "deny:invalid or expired token", "wrong token denied")
   assertEqual(outcomeLabel(authorize("", "secret")), "deny:missing Authorization bearer token", "missing header denied")
   assertEqual(outcomeLabel(authorize("Basic secret", "secret")), "deny:missing Authorization bearer token", "wrong scheme denied")
 }
 
 test "Secret routes refuse unconfigured auth" {
   // Credential endpoints must never run open, even where general routes would.
-  assertEqual(outcomeLabel(authorizeSecret("", "")), "deny:user is not on the access whitelist", "no token -> secret route denied")
+  assertEqual(outcomeLabel(authorizeSecret("", "")), "deny:authentication is not configured; access is disabled", "no token -> secret route denied")
   assertEqual(outcomeLabel(authorizeSecret("Bearer secret", "secret")), "allow:default", "configured + correct -> allowed")
-  assertEqual(outcomeLabel(authorizeSecret("Bearer wrong", "secret")), "deny:invalid or expired GitHub token", "configured + wrong -> denied")
+  assertEqual(outcomeLabel(authorizeSecret("Bearer wrong", "secret")), "deny:invalid or expired token", "configured + wrong -> denied")
 }
 
 test "GitHub /user response parsing" {

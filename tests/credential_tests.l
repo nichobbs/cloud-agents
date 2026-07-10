@@ -4,6 +4,7 @@ package CloudAgents.CredentialTests
 import Std.Core
 import Std.Testing
 import Std.Uuid
+import CloudAgents.Credentials
 import CloudAgents.Db
 import CloudAgents.Repository
 import CloudAgents.Sqlite
@@ -98,6 +99,37 @@ test "Upsert replaces a credential value in place" {
 
   assertEqualInt(mustNames(userId).length.toInt(), 1, "upsert does not duplicate the name")
   assertEqual(findValue(mustDecrypted(userId), "API_KEY"), "new-value", "value was replaced")
+}
+
+test "Credential handler rejects invalid and reserved names" {
+  val dbPath = useFreshTestDb("cred-validate")
+  defer {
+    cleanupTestDb(dbPath)
+  }
+  // Reserved runner env-var names must not be storable (would override the
+  // runner's own value on injection).
+  match putCredentialHandler(PutCredentialRequest(name = "MODEL", value = "x")) {
+    case Ok(_) -> assertTrue(false, "reserved name MODEL must be rejected")
+    case Err(err) -> assertEqualInt(err.status, 400, "reserved name -> 400")
+  }
+  match putCredentialHandler(PutCredentialRequest(name = "NATIVE_SESSION_ID", value = "x")) {
+    case Ok(_) -> assertTrue(false, "reserved name NATIVE_SESSION_ID must be rejected")
+    case Err(err) -> assertEqualInt(err.status, 400, "reserved name -> 400")
+  }
+  // Malformed env-var names rejected too.
+  match putCredentialHandler(PutCredentialRequest(name = "1BAD", value = "x")) {
+    case Ok(_) -> assertTrue(false, "leading digit must be rejected")
+    case Err(err) -> assertEqualInt(err.status, 400, "bad name -> 400")
+  }
+  match putCredentialHandler(PutCredentialRequest(name = "has space", value = "x")) {
+    case Ok(_) -> assertTrue(false, "space must be rejected")
+    case Err(err) -> assertEqualInt(err.status, 400, "bad name -> 400")
+  }
+  // A valid, non-reserved name succeeds.
+  match putCredentialHandler(PutCredentialRequest(name = "GITHUB_TOKEN", value = "ok")) {
+    case Ok(_) -> assertTrue(true, "valid name accepted")
+    case Err(_) -> assertTrue(false, "valid credential should store")
+  }
 }
 
 test "Credentials are per-user isolated and deletable" {

@@ -29,6 +29,15 @@ pub record PutCredentialRequest {
   pub value: String
 }
 
+/// Env-var names the runner itself sets (see src/docker_manager.l). A user
+/// credential with one of these names would be appended after the runner's
+/// own value and, since Docker keeps the last value for a duplicate key,
+/// silently override something the container depends on. Reserved.
+func isReservedEnvName(name: in String): Bool {
+  return name == "PROMPT" or name == "REPO_URL" or name == "BRANCH" or name == "HARNESS" or name == "MODEL" or
+    name == "NATIVE_SESSION_ID"
+}
+
 /// Env-var name rules: a leading letter or underscore, then letters, digits
 /// or underscores. Keeps injected names shell- and Docker-safe.
 func isValidCredentialName(name: in String): Bool {
@@ -70,6 +79,9 @@ pub func listCredentialsHandler(): Result[CredentialNameList, Web.ApiError] {
 pub func putCredentialHandler(@body req: in PutCredentialRequest): Result[Unit, Web.ApiError] {
   if not isValidCredentialName(req.name) {
     return Err(Web.badRequest("name must be a valid environment variable name (letters, digits, underscore; no leading digit)"))
+  }
+  if isReservedEnvName(req.name) {
+    return Err(Web.badRequest("name is reserved by the runner and cannot be used as a credential"))
   }
   if req.value.length == 0 {
     return Err(Web.badRequest("value is required"))

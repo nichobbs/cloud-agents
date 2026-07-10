@@ -17,19 +17,29 @@ pub record GitHubUser {
   pub login: String
 }
 
-/// Reasons authentication can fail.
+/// Reasons authentication can fail. Shared by the static-token flow
+/// (authorize/authorizeSecret) and the future GitHub-OAuth flow, so the
+/// messages avoid naming a specific scheme except where one genuinely applies
+/// (NotWhitelisted is OAuth-only).
 pub enum AuthError {
   case MissingToken
   case InvalidToken
-  case NotAuthorized
+  case AuthNotConfigured
+  case NotWhitelisted
 }
 
 pub func authErrorMessage(e: in AuthError): String {
   return match e {
     case MissingToken -> "missing Authorization bearer token"
-    case InvalidToken -> "invalid or expired GitHub token"
-    case NotAuthorized -> "user is not on the access whitelist"
+    case InvalidToken -> "invalid or expired token"
+    case AuthNotConfigured -> "authentication is not configured; access is disabled"
+    case NotWhitelisted -> "user is not on the access whitelist"
   }
+}
+
+/// Message for the GitHub-token validation failure (used by the OAuth path).
+pub func githubTokenInvalidMessage(): String {
+  return "invalid or expired GitHub token"
 }
 
 /// Extract the raw token from an `Authorization: Bearer <token>` header value.
@@ -258,7 +268,7 @@ pub func authorize(authHeaderValue: in String, apiToken: in String): AuthOutcome
 /// unauthenticated deployment.
 pub func authorizeSecret(authHeaderValue: in String, apiToken: in String): AuthOutcome {
   if apiToken.length == 0 {
-    return Denied(error = NotAuthorized)
+    return Denied(error = AuthNotConfigured)
   }
   return authorize(authHeaderValue, apiToken)
 }
