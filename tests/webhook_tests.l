@@ -27,6 +27,16 @@ test "webhook URL validation requires a clean https URL" {
   assertTrue(not isValidWebhookUrl("https://169.254.169.254/latest"), "link-local metadata rejected")
   assertTrue(isValidWebhookUrl("https://example.com:8443/hook"), "https with a port is fine")
   assertEqual(webhookHost("https://example.com:8443/hook"), "example.com", "host extracted before port")
+  // #257: case and embedded userinfo must not bypass the blocklist.
+  assertTrue(not isValidWebhookUrl("https://LOCALHOST/hook"), "uppercase localhost rejected")
+  assertTrue(not isValidWebhookUrl("https://evil@127.0.0.1/hook"), "userinfo can't hide the real host")
+  assertEqual(webhookHost("https://evil@127.0.0.1/hook"), "127.0.0.1", "userinfo stripped from host")
+  assertEqual(webhookHost("https://user:pw@example.com:443/x"), "example.com", "userinfo+port stripped")
+  // #260: 172.16/12 (Docker's bridge range) rejected; a public 172.x is fine.
+  assertTrue(not isValidWebhookUrl("https://172.17.0.1/hook"), "docker bridge subnet rejected")
+  assertTrue(not isValidWebhookUrl("https://172.31.255.255/hook"), "end of 172.16/12 rejected")
+  assertTrue(isValidWebhookUrl("https://172.32.0.1/hook"), "public 172.32 allowed")
+  assertTrue(isValidWebhookUrl("https://172.15.0.1/hook"), "public 172.15 allowed")
 }
 
 // ── SQL builder shape ─────────────────────────────────────────────────────────

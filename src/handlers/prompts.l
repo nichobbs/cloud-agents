@@ -13,6 +13,7 @@ import CloudAgents.Sqlite
 val maxPromptNameLen = 200
 val maxPromptBodyLen = 131072
 val maxRenderVars = 100
+val maxRenderKeyLen = 128
 val maxRenderValueLen = 8192
 
 @generate(Json)
@@ -164,6 +165,13 @@ pub func renderPromptHandler(pid: in String, @body req: in RenderPromptRequest):
   // would make each replaceAll pass over the body arbitrarily expensive.
   if req.keys.length > maxRenderVars or req.values.length > maxRenderVars {
     return Err(Web.badRequest("too many template variables (max 100)"))
+  }
+  var ki = 0
+  while ki < req.keys.length {
+    if req.keys[ki].length > maxRenderKeyLen {
+      return Err(Web.badRequest("a template key is too long (max 128 characters)"))
+    }
+    ki = ki + 1
   }
   var vi = 0
   while vi < req.values.length {

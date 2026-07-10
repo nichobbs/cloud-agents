@@ -37,38 +37,131 @@ func containsControlChar(s: in String): Bool {
   return false
 }
 
-/// The host component of an https URL (between "https://" and the next
-/// '/', ':', '?' or '#'). Assumes the "https://" prefix is already verified.
+@externInstance
+@externTarget("System.String.ToLowerInvariant")
+func strToLower(s: in String): String = ()
+
+/// The host component of an https URL. Parses the authority properly so it
+/// can't be fooled by embedded userinfo or a port (#257): takes the substring
+/// after "https://" up to the first '/', '?' or '#', drops any `userinfo@`
+/// prefix, and strips a `:port` suffix (keeping a bracketed IPv6 literal whole).
+/// Assumes the "https://" prefix is already verified.
 pub func webhookHost(url: in String): String {
   val rest = url.substring(8, url.length - 8)
-  var host = ""
+  // Authority = up to the first '/', '?' or '#'.
+  var authority = ""
   var i = 0
-  while i < rest.length {
+  var done = false
+  while i < rest.length and not done {
     val c = rest.substring(i, 1)
-    if c == "/" or c == ":" or c == "?" or c == "#" {
-      return host
+    if c == "/" or c == "?" or c == "#" {
+      done = true
+    } else {
+      authority = authority + c
+      i = i + 1
     }
-    host = host + c
-    i = i + 1
+  }
+  // Drop userinfo: everything up to and including the LAST '@'.
+  var atIdx = -1
+  var j = 0
+  while j < authority.length {
+    if authority.substring(j, 1) == "@" {
+      atIdx = j
+    }
+    j = j + 1
+  }
+  var hostport = authority
+  if atIdx >= 0 {
+    hostport = authority.substring(atIdx + 1, authority.length - atIdx - 1)
+  }
+  // IPv6 literal [....](:port) — keep the bracketed part.
+  if hostport.startsWith("[") {
+    var host6 = ""
+    var k = 0
+    var closed = false
+    while k < hostport.length and not closed {
+      val c = hostport.substring(k, 1)
+      host6 = host6 + c
+      if c == "]" {
+        closed = true
+      } else {
+        k = k + 1
+      }
+    }
+    return host6
+  }
+  // Strip ':port'.
+  var host = ""
+  var m = 0
+  var stop = false
+  while m < hostport.length and not stop {
+    val c = hostport.substring(m, 1)
+    if c == ":" {
+      stop = true
+    } else {
+      host = host + c
+      m = m + 1
+    }
   }
   return host
 }
 
-/// Whether a host is an obvious internal/loopback target that a webhook must
-/// not point at. Defense-in-depth at registration (#253) — the external
-/// deliverer is still responsible for full egress/SSRF policy (172.16/12, DNS
-/// rebinding, redirects), which this can't cover.
+func digitVal(c: in String): Int {
+  if c == "0" { return 0 }
+  if c == "1" { return 1 }
+  if c == "2" { return 2 }
+  if c == "3" { return 3 }
+  if c == "4" { return 4 }
+  if c == "5" { return 5 }
+  if c == "6" { return 6 }
+  if c == "7" { return 7 }
+  if c == "8" { return 8 }
+  if c == "9" { return 9 }
+  return -1
+}
+
+/// Whether `host` is in the 172.16.0.0/12 private range (172.16.x – 172.31.x) —
+/// which includes Docker's default bridge subnet (#260).
+func isPrivate172(host: in String): Bool {
+  if not host.startsWith("172.") {
+    return false
+  }
+  var oct = 0
+  var seen = false
+  var i = 4
+  var stop = false
+  while i < host.length and not stop {
+    val d = digitVal(host.substring(i, 1))
+    if d < 0 {
+      stop = true
+    } else {
+      oct = oct * 10 + d
+      seen = true
+      i = i + 1
+    }
+  }
+  return seen and oct >= 16 and oct <= 31
+}
+
+/// Whether a host is an obvious internal/loopback/private target a webhook must
+/// not point at. Defense-in-depth at registration (#253/#257/#260) — the
+/// external deliverer still owns full egress/SSRF policy (DNS rebinding,
+/// redirects), which this can't cover. Case-insensitive.
 pub func isBlockedWebhookHost(host: in String): Bool {
   if host.length == 0 {
     return true
   }
-  if host.startsWith("[") {
+  val h = strToLower(host)
+  if h.startsWith("[") {
     return true // IPv6 literal (e.g. [::1]) — conservatively rejected
   }
-  if host == "localhost" or host == "0.0.0.0" {
+  if h == "localhost" or h == "0.0.0.0" {
     return true
   }
-  return host.startsWith("127.") or host.startsWith("10.") or host.startsWith("192.168.") or host.startsWith("169.254.")
+  if h.startsWith("127.") or h.startsWith("10.") or h.startsWith("192.168.") or h.startsWith("169.254.") {
+    return true
+  }
+  return isPrivate172(h)
 }
 
 /// A webhook URL must be https, well-formed enough to store, free of
