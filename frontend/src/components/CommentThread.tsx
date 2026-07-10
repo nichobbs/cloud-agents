@@ -4,13 +4,12 @@ import type { Comment } from '../types';
 
 interface CommentThreadProps {
   messageId: string;
-  sessionId: string;
   onCountChange?: (count: number) => void;
 }
 
 /// Comments anchored to a single message: lists existing comments and lets the
 /// user add a new one.
-export function CommentThread({ messageId, sessionId, onCountChange }: CommentThreadProps) {
+export function CommentThread({ messageId, onCountChange }: CommentThreadProps) {
   const [comments, setComments] = useState<Comment[]>([]);
   const [draft, setDraft] = useState('');
   const [saving, setSaving] = useState(false);
@@ -42,7 +41,7 @@ export function CommentThread({ messageId, sessionId, onCountChange }: CommentTh
     setSaving(true);
     setError(null);
     try {
-      const created = await api.addComment(messageId, sessionId, body);
+      const created = await api.addComment(messageId, body);
       setComments(prev => {
         const next = [...prev, created];
         onCountChange?.(next.length);
