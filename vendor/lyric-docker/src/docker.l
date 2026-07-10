@@ -165,11 +165,27 @@ func jsonStringArray(items: in slice[String]): String {
   return acc + "]"
 }
 
-func createContainerBody(image: in String, env: in slice[String], binds: in slice[String]): String {
+func createContainerBody(
+  image: in String, env: in slice[String], binds: in slice[String], networkMode: in String
+): String {
+  // NetworkMode is only emitted when set, so callers that don't care keep the
+  // Docker default (bridge). An empty networkMode -> field omitted.
+  var hostConfig = "\"Binds\":" + jsonStringArray(binds)
+  if networkMode.length > 0 {
+    hostConfig = hostConfig + ",\"NetworkMode\":\"" + jsonEscapeValue(networkMode) + "\""
+  }
   return "{\"Image\":\"" + jsonEscapeValue(image) + "\"," + "\"Env\":" + jsonStringArray(env) + "," +
-    "\"HostConfig\":{\"Binds\":" +
-    jsonStringArray(binds) +
+    "\"HostConfig\":{" +
+    hostConfig +
     "}}"
+}
+
+/// Pure builder exposed for tests: the create-container request body with an
+/// explicit NetworkMode (empty = Docker default).
+pub func containerBodyWithNetwork(
+  image: in String, env: in slice[String], binds: in slice[String], networkMode: in String
+): String {
+  return createContainerBody(image, env, binds, networkMode)
 }
 
 func indexOfSub(hay: in String, needle: in String): Int {
@@ -247,13 +263,21 @@ async func sendExpectSuccess(
 }
 
 /// Create a container from an image with environment variables and volume binds.
-/// Returns the new container id.
+/// Returns the new container id. Uses the Docker default network.
 pub async func createContainer(
   image: in String, env: in slice[String], binds: in slice[String]
 ): Result[String, DockerError] {
+  return await createContainerWithNetwork(image, env, binds, "")
+}
+
+/// Create a container, additionally pinning the container's NetworkMode (e.g.
+/// "none" for full isolation). An empty networkMode keeps the Docker default.
+pub async func createContainerWithNetwork(
+  image: in String, env: in slice[String], binds: in slice[String], networkMode: in String
+): Result[String, DockerError] {
   val client = defaultClient()
   val url = Std.Http.Url.tryFrom("http://docker/v1.40/containers/create").unwrap()
-  val request = Std.Http.withJsonBody(Std.Http.request(Std.Http.POST, url), createContainerBody(image, env, binds))
+  val request = Std.Http.withJsonBody(Std.Http.request(Std.Http.POST, url), createContainerBody(image, env, binds, networkMode))
   val sent = await client.send(request)
   val response = match sent { case Err(e) -> return Err(error = fromHttpError(e, "")); case Ok(r) -> r }
   if response.isSuccess() {

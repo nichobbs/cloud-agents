@@ -85,3 +85,26 @@ test "GitHub /user response parsing" {
   assertEqual(toString(indexOfFrom("hello world", "world", 0)), "6", "indexOfFrom found")
   assertEqual(toString(indexOfFrom("hello", "zzz", 0)), "-1", "indexOfFrom not found")
 }
+
+test "GitHub OAuth authorization derives a user id and applies the whitelist" {
+  val body = "{\"login\":\"octocat\",\"id\":583231,\"type\":\"User\"}"
+  assertEqual(githubUserIdFromJson(body), "583231", "id parsed from /user response")
+  assertEqual(githubLoginFromJson(body), "octocat", "login parsed from /user response")
+  assertEqual(userIdForGitHubId("583231"), "gh-583231", "stable prefixed user id")
+  // Whitelisted (or open) -> Allowed with the gh- user id.
+  assertEqual(outcomeLabel(authorizeGitHub("583231", "")), "allow:gh-583231", "open whitelist allows")
+  assertEqual(outcomeLabel(authorizeGitHub("583231", "1,583231,9")), "allow:gh-583231", "listed id allowed")
+  assertEqual(outcomeLabel(authorizeGitHub("7", "1,583231")), "deny:user is not on the access whitelist", "unlisted id denied")
+  assertEqual(outcomeLabel(authorizeGitHub("", "")), "deny:invalid or expired token", "unparseable identity denied")
+}
+
+test "Per-request enforcement classifies secret routes" {
+  assertTrue(routeRequiresSecret("/api/credentials"), "credential root is secret")
+  assertTrue(routeRequiresSecret("/api/credentials/GITHUB_TOKEN"), "credential sub-path is secret")
+  assertFalse(routeRequiresSecret("/api/prompts"), "prompts are not secret")
+  assertFalse(routeRequiresSecret("/api/sessions"), "sessions are not secret")
+  // enforce() picks the right scheme per route.
+  assertEqual(outcomeLabel(enforce("/api/credentials", "", "")), "deny:authentication is not configured; access is disabled", "secret route refuses unconfigured")
+  assertEqual(outcomeLabel(enforce("/api/prompts", "", "")), "allow:default", "general route open when unconfigured")
+  assertEqual(outcomeLabel(enforce("/api/credentials", "Bearer s", "s")), "allow:default", "secret route allows with a correct token")
+}

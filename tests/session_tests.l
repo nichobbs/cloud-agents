@@ -419,3 +419,201 @@ test "Handler listSessions returns stored sessions" {
   }
 }
 
+test "getRuns 404s for an unknown session (#239)" {
+  val dbPath = useFreshTestDb("get-runs")
+  defer {
+    cleanupTestDb(dbPath)
+  }
+  match getRuns("nope") {
+    case Ok(_) -> assertTrue(false, "unknown session should 404")
+    case Err(err) -> assertEqualInt(err.status, 404, "unknown session -> 404")
+  }
+  mustUnit(addSession(makeAgentSession(
+    sessionId = "gr-1",
+    repoUrl = "https://github.com/nic/repo",
+    branch = "main",
+    containerId = "",
+    harness = "claude",
+    model = "claude-opus-4-8",
+    nativeSessionId = "gr-1"
+  )))
+  match getRuns("gr-1") {
+    case Ok(rl) -> assertEqualInt(rl.runs.length.toInt(), 0, "known session with no runs -> empty list")
+    case Err(_) -> assertTrue(false, "known session should succeed")
+  }
+}
+
+test "reapableWarmContainers finds and frees aged WARM sessions (#241)" {
+  val dbPath = useFreshTestDb("reap")
+  defer {
+    cleanupTestDb(dbPath)
+  }
+  mustUnit(addSession(makeAgentSession(
+    sessionId = "warm-1",
+    repoUrl = "https://github.com/nic/repo",
+    branch = "main",
+    containerId = "",
+    harness = "claude",
+    model = "claude-opus-4-8",
+    nativeSessionId = "warm-1"
+  )))
+  // Force it WARM with an ancient last_message_at (epoch 0) and a container id,
+  // so it is unambiguously past the warm window.
+  match CloudAgents.Sqlite.execute("UPDATE sessions SET status = 'WARM', container_id = 'c-warm', last_message_at = '0' WHERE id = 'warm-1'") {
+    case Ok(_) -> ()
+    case Err(e) -> assertTrue(false, "setup update failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+  }
+  val targets = match CloudAgents.SessionStore.reapableWarmContainers() {
+    case Ok(t) -> t
+    case Err(e) -> panic("reapableWarmContainers failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+  }
+  assertEqualInt(targets.length.toInt(), 1, "aged warm session is reapable")
+  assertEqual(targets[0].containerId, "c-warm", "reap target carries the container id")
+
+  match CloudAgents.SessionStore.reapSessionContainer("warm-1") {
+    case Ok(_) -> ()
+    case Err(e) -> assertTrue(false, "reapSessionContainer failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+  }
+  val after = match CloudAgents.SessionStore.reapableWarmContainers() {
+    case Ok(t) -> t
+    case Err(e) -> panic("reapableWarmContainers failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+  }
+  assertEqualInt(after.length.toInt(), 0, "reaped session is no longer reapable")
+}
+
+test "Session ownership isolation hides other users' sessions (#207)" {
+  val dbPath = useFreshTestDb("session-isolation")
+  defer {
+    cleanupTestDb(dbPath)
+  }
+  // Insert a session owned by another user directly (the store's own writes are
+  // hardcoded to the current user, so a raw insert is the only way to stage a
+  // cross-user row). profile_id defaults to ''.
+  match CloudAgents.Sqlite.execute("INSERT INTO sessions (id, user_id, repo_url, branch, container_id, harness, model, native_session_id, status, created_at, last_message_at) VALUES ('foreign-1', 'other-user', 'https://github.com/x/y', 'main', '', 'claude', 'm', 'foreign-1', 'IDLE', '1000', '1000')") {
+    case Ok(_) -> ()
+    case Err(e) -> assertTrue(false, "setup insert failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+  }
+  // The current user ("default") cannot read another user's session by id...
+  match getSession("foreign-1") {
+    case Ok(Some(_)) -> assertTrue(false, "must not read another user's session")
+    case Ok(None) -> ()
+    case Err(e) -> assertTrue(false, "getSession failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+  }
+  // ...nor see it in the list.
+  match CloudAgents.SessionStore.getSessions() {
+    case Ok(arr) -> assertEqualInt(CloudAgents.SessionStore.getSessionArrayLength(arr), 0, "foreign session not listed")
+    case Err(e) -> assertTrue(false, "getSessions failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+  }
+  // The current user's own session is visible.
+  mustUnit(addSession(makeAgentSession(
+    sessionId = "mine-1",
+    repoUrl = "https://github.com/nic/repo",
+    branch = "main",
+    containerId = "",
+    harness = "claude",
+    model = "claude-opus-4-8",
+    nativeSessionId = "mine-1"
+  )))
+  match getSession("mine-1") {
+    case Ok(Some(_)) -> ()
+    case Ok(None) -> assertTrue(false, "own session should be visible")
+    case Err(e) -> assertTrue(false, "getSession failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+  }
+  // The list now holds exactly my one session — the foreign row stays hidden.
+  match CloudAgents.SessionStore.getSessions() {
+    case Ok(arr) -> assertEqualInt(CloudAgents.SessionStore.getSessionArrayLength(arr), 1, "only my own session listed")
+    case Err(e) -> assertTrue(false, "getSessions failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+  }
+}
+
+// ── Session lifecycle: run history, cancel, profile wiring ────────────────────
+
+func mustRunId(r: in Result[String, CloudAgents.Sqlite.DbError]): String {
+  return match r {
+    case Ok(rid) -> rid
+    case Err(e) -> panic("recordRunStart failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+  }
+}
+
+func mustRuns(r: in Result[slice[Run], CloudAgents.Sqlite.DbError]): slice[Run] {
+  return match r {
+    case Ok(rs) -> rs
+    case Err(e) -> panic("listRuns failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+  }
+}
+
+test "Run history records, lists, and finishes write-once" {
+  val dbPath = useFreshTestDb("run-history")
+  defer {
+    cleanupTestDb(dbPath)
+  }
+  val userId = "default"
+  val runId = mustRunId(CloudAgents.Repository.recordRunStart("rh-1", userId, "do a thing", "claude", "opus"))
+  assertTrue(runId.length > 0, "run id returned")
+
+  val running = mustRuns(CloudAgents.Repository.listRuns("rh-1", userId))
+  assertEqualInt(running.length.toInt(), 1, "one run recorded")
+  assertEqual(running[0].status, "running", "run starts running")
+
+  match CloudAgents.Repository.recordRunEnd(runId, userId, "succeeded") {
+    case Ok(_) -> ()
+    case Err(e) -> assertTrue(false, "recordRunEnd failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+  }
+  assertEqual(mustRuns(CloudAgents.Repository.listRuns("rh-1", userId))[0].status, "succeeded", "run moved to succeeded")
+
+  // Write-once: a late 'failed' does not overwrite the terminal status.
+  match CloudAgents.Repository.recordRunEnd(runId, userId, "failed") {
+    case Ok(_) -> ()
+    case Err(_) -> ()
+  }
+  assertEqual(mustRuns(CloudAgents.Repository.listRuns("rh-1", userId))[0].status, "succeeded", "terminal status is write-once")
+}
+
+// NOTE: cancelRun has no unit test. Like getRunOutput, it transitively
+// references CloudAgents.Docker (terminateSessionContainer), and invoking a
+// Docker-referencing handler from the test harness fails at runtime with "The
+// signature is incorrect" — the same v0.4.19 toolchain quirk documented in
+// docs/lyric/gotchas.md (handlers that don't pull in Docker, like
+// setSessionProfileHandler below, invoke fine). Its validation (empty -> 400,
+// unknown -> 404, not-running -> 409) mirrors the covered handlers; it
+// activates end-to-end once Lyric.Web dispatches HTTP requests.
+
+test "setSessionProfileHandler validates session and profile (#235)" {
+  val dbPath = useFreshTestDb("set-profile")
+  defer {
+    cleanupTestDb(dbPath)
+  }
+  match setSessionProfileHandler("nope", SetProfileRequest(profileId = "")) {
+    case Ok(_) -> assertTrue(false, "unknown session should 404")
+    case Err(err) -> assertEqualInt(err.status, 404, "unknown session -> 404")
+  }
+  mustUnit(addSession(makeAgentSession(
+    sessionId = "sp-1",
+    repoUrl = "https://github.com/nic/repo",
+    branch = "main",
+    containerId = "",
+    harness = "claude",
+    model = "claude-opus-4-8",
+    nativeSessionId = "sp-1"
+  )))
+  // Unknown profile -> 400.
+  match setSessionProfileHandler("sp-1", SetProfileRequest(profileId = "ghost")) {
+    case Ok(_) -> assertTrue(false, "unknown profile should 400")
+    case Err(err) -> assertEqualInt(err.status, 400, "unknown profile -> 400")
+  }
+  // Attach a real profile; it reads back on the session.
+  val prof = match CloudAgents.Repository.addProfile("default", "p", "", "none", "all", []) {
+    case Ok(p) -> p
+    case Err(e) -> panic("addProfile failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+  }
+  match setSessionProfileHandler("sp-1", SetProfileRequest(profileId = prof.id)) {
+    case Ok(_) -> ()
+    case Err(_) -> assertTrue(false, "attaching a valid profile should succeed")
+  }
+  match CloudAgents.SessionStore.sessionProfileId("sp-1") {
+    case Ok(Some(pid)) -> assertEqual(pid, prof.id, "profile attached to session")
+    case Ok(None) -> assertTrue(false, "profile should be set")
+    case Err(e) -> assertTrue(false, "sessionProfileId failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+  }
+}
+

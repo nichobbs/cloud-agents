@@ -277,6 +277,28 @@ pub func recoverDanglingSessionsSql(): String {
   return "UPDATE sessions SET status = 'IDLE', container_id = '' " + "WHERE status = 'RUNNING' OR status = 'WARM'"
 }
 
+/// ALTER adding the profile association to an existing sessions table. A
+/// non-idempotent statement (ADD COLUMN fails if the column already exists),
+/// so it lives in a versioned migration that runs exactly once. The DEFAULT ''
+/// backfills every existing row to "no profile" (legacy behaviour). Appended as
+/// the last column, so the fixed sessionColumns indices above are unaffected.
+pub func alterSessionsAddProfileSql(): String {
+  return "ALTER TABLE sessions ADD COLUMN profile_id TEXT NOT NULL DEFAULT ''"
+}
+
+/// Set (or clear) a session's profile association. Scoped by owner.
+pub func updateSessionProfileSql(id: in String, userId: in String, profileId: in String): String {
+  return "UPDATE sessions SET profile_id = " + sqlLiteral(profileId) + " WHERE id = " + sqlLiteral(id) +
+    " AND user_id = " +
+    sqlLiteral(userId)
+}
+
+/// Read a session's profile id (empty string when none). Kept off the fixed
+/// sessionColumns projection so that column order stays stable.
+pub func selectSessionProfileIdSql(id: in String, userId: in String): String {
+  return "SELECT profile_id FROM sessions WHERE id = " + sqlLiteral(id) + " AND user_id = " + sqlLiteral(userId)
+}
+
 // ─── Conversation transcript, comments and todos ───────────────────────────────
 //
 // These tables back the "addressable agent responses" feature: each user
@@ -488,6 +510,14 @@ pub func selectPromptsSql(userId: in String): String {
     " ORDER BY name ASC"
 }
 
+/// SELECT one user's prompts, most-used first (ties broken alphabetically). The
+/// TEXT use_count is CAST to INTEGER so ordering is numeric, not lexical.
+pub func selectPromptsByUsageSql(userId: in String): String {
+  return "SELECT id, user_id, name, body, use_count, created_at, updated_at FROM prompts " + "WHERE user_id = " +
+    sqlLiteral(userId) +
+    " ORDER BY CAST(use_count AS INTEGER) DESC, name ASC"
+}
+
 /// SELECT a single prompt owned by a user.
 pub func selectPromptByIdSql(id: in String, userId: in String): String {
   return "SELECT id, user_id, name, body, use_count, created_at, updated_at FROM prompts " + "WHERE id = " +
@@ -526,6 +556,62 @@ pub func deletePromptSql(id: in String, userId: in String): String {
 /// Index for the owner column every prompt query filters on (review #182).
 pub func promptsUserIndexSql(): String {
   return "CREATE INDEX IF NOT EXISTS idx_prompts_user_id ON prompts(user_id)"
+}
+
+// ─── Prompt tags ────────────────────────────────────────────────────────────────
+//
+// Tags/categories for prompts, in a join table (same shape as
+// profile_credentials) so the prompts column mapping stays stable. user_id is
+// denormalised so every read is ownership-scoped.
+/// DDL for the prompt-tag join table.
+pub func promptTagsSchemaSql(): String {
+  return "CREATE TABLE IF NOT EXISTS prompt_tags (" + "id TEXT PRIMARY KEY, " + "prompt_id TEXT NOT NULL, " +
+    "user_id TEXT NOT NULL, " +
+    "tag TEXT NOT NULL, " +
+    "UNIQUE(prompt_id, tag))"
+}
+
+/// Index for per-prompt tag reads.
+pub func promptTagsPromptIndexSql(): String {
+  return "CREATE INDEX IF NOT EXISTS idx_prompt_tags_prompt_id ON prompt_tags(prompt_id)"
+}
+
+/// Index for tag-filtered listing (owner + tag).
+pub func promptTagsTagIndexSql(): String {
+  return "CREATE INDEX IF NOT EXISTS idx_prompt_tags_user_tag ON prompt_tags(user_id, tag)"
+}
+
+/// INSERT one tag for a prompt (idempotent per (prompt, tag)).
+pub func insertPromptTagSql(id: in String, promptId: in String, userId: in String, tag: in String): String {
+  return "INSERT INTO prompt_tags (id, prompt_id, user_id, tag) VALUES (" + sqlLiteral(id) + ", " +
+    sqlLiteral(promptId) +
+    ", " +
+    sqlLiteral(userId) +
+    ", " +
+    sqlLiteral(tag) +
+    ") ON CONFLICT(prompt_id, tag) DO NOTHING"
+}
+
+/// SELECT a prompt's tags, alphabetical.
+pub func selectPromptTagsSql(promptId: in String, userId: in String): String {
+  return "SELECT tag FROM prompt_tags WHERE prompt_id = " + sqlLiteral(promptId) + " AND user_id = " +
+    sqlLiteral(userId) +
+    " ORDER BY tag ASC"
+}
+
+/// DELETE all of a prompt's tags (to replace the set on update / clean up on delete).
+pub func deletePromptTagsSql(promptId: in String, userId: in String): String {
+  return "DELETE FROM prompt_tags WHERE prompt_id = " + sqlLiteral(promptId) + " AND user_id = " + sqlLiteral(userId)
+}
+
+/// SELECT the ids of a user's prompts carrying a given tag, ordered by prompt
+/// name (joined so the "alphabetical" contract the repository documents holds).
+pub func selectPromptIdsByTagSql(userId: in String, tag: in String): String {
+  return "SELECT pt.prompt_id FROM prompt_tags pt JOIN prompts p ON p.id = pt.prompt_id " + "WHERE pt.user_id = " +
+    sqlLiteral(userId) +
+    " AND pt.tag = " +
+    sqlLiteral(tag) +
+    " ORDER BY p.name ASC"
 }
 
 /// Index for the owner column every session query filters on.
@@ -593,4 +679,390 @@ pub func selectCredentialsForInjectionSql(userId: in String): String {
 /// DELETE one credential by name.
 pub func deleteCredentialSql(userId: in String, name: in String): String {
   return "DELETE FROM credentials WHERE user_id = " + sqlLiteral(userId) + " AND name = " + sqlLiteral(name)
+}
+
+// ─── Profiles ─────────────────────────────────────────────────────────────────
+//
+// A profile is a per-container policy object (à la Claude remote environments):
+// which harness runs, what network access the container gets, and which of the
+// user's credentials are injected (least privilege). A session may reference a
+// profile; with none, the legacy behaviour applies (all credentials, full
+// network). Scoped by user_id like every other resource. All TEXT affinity.
+//
+//   network_policy  : 'full' (default bridge) | 'none' (isolated) | 'restricted'
+//                     ('restricted' is a documented seam — sets proxy env vars,
+//                      egress allowlist enforcement is a follow-up)
+//   credential_mode : 'all' (inject every credential) | 'selected'
+//                     (inject only names listed in profile_credentials)
+//   harness         : '' (session chooses) | a specific harness the profile pins
+/// DDL for the profiles table.
+pub func profilesSchemaSql(): String {
+  return "CREATE TABLE IF NOT EXISTS profiles (" + "id TEXT PRIMARY KEY, " + "user_id TEXT NOT NULL, " +
+    "name TEXT NOT NULL, " +
+    "harness TEXT NOT NULL, " +
+    "network_policy TEXT NOT NULL, " +
+    "credential_mode TEXT NOT NULL, " +
+    "created_at TEXT NOT NULL, " +
+    "updated_at TEXT NOT NULL, " +
+    "UNIQUE(user_id, name))"
+}
+
+/// DDL for the join table naming which credentials a 'selected'-mode profile
+/// grants. user_id is denormalised so every read stays ownership-scoped.
+pub func profileCredentialsSchemaSql(): String {
+  return "CREATE TABLE IF NOT EXISTS profile_credentials (" + "id TEXT PRIMARY KEY, " + "profile_id TEXT NOT NULL, " +
+    "user_id TEXT NOT NULL, " +
+    "credential_name TEXT NOT NULL, " +
+    "UNIQUE(profile_id, credential_name))"
+}
+
+/// Index for the owner column every profile query filters on.
+pub func profilesUserIndexSql(): String {
+  return "CREATE INDEX IF NOT EXISTS idx_profiles_user_id ON profiles(user_id)"
+}
+
+/// Index for the profile_id lookups the injection path uses.
+pub func profileCredentialsProfileIndexSql(): String {
+  return "CREATE INDEX IF NOT EXISTS idx_profile_credentials_profile_id ON profile_credentials(profile_id)"
+}
+
+/// INSERT a new profile.
+pub func insertProfileSql(
+  id: in String,
+  userId: in String,
+  name: in String,
+  harness: in String,
+  networkPolicy: in String,
+  credentialMode: in String,
+  createdAt: in String,
+): String {
+  return "INSERT INTO profiles (id, user_id, name, harness, network_policy, credential_mode, created_at, updated_at) VALUES (" +
+    sqlLiteral(id) +
+    ", " +
+    sqlLiteral(userId) +
+    ", " +
+    sqlLiteral(name) +
+    ", " +
+    sqlLiteral(harness) +
+    ", " +
+    sqlLiteral(networkPolicy) +
+    ", " +
+    sqlLiteral(credentialMode) +
+    ", " +
+    sqlLiteral(createdAt) +
+    ", " +
+    sqlLiteral(createdAt) +
+    ")"
+}
+
+val profileColumns = "id, user_id, name, harness, network_policy, credential_mode, created_at, updated_at"
+
+/// SELECT one user's profiles, alphabetical by name.
+pub func selectProfilesSql(userId: in String): String {
+  return "SELECT " + profileColumns + " FROM profiles WHERE user_id = " + sqlLiteral(userId) + " ORDER BY name ASC"
+}
+
+/// SELECT a single profile owned by a user.
+pub func selectProfileByIdSql(id: in String, userId: in String): String {
+  return "SELECT " + profileColumns + " FROM profiles WHERE id = " + sqlLiteral(id) + " AND user_id = " +
+    sqlLiteral(userId)
+}
+
+/// SELECT the id of a user's profile with a given name (for duplicate-name
+/// detection so a UNIQUE clash returns 400, not a 500). Empty result = free.
+pub func selectProfileIdByNameSql(userId: in String, name: in String): String {
+  return "SELECT id FROM profiles WHERE user_id = " + sqlLiteral(userId) + " AND name = " + sqlLiteral(name)
+}
+
+/// UPDATE a profile's settings.
+pub func updateProfileSql(
+  id: in String,
+  userId: in String,
+  name: in String,
+  harness: in String,
+  networkPolicy: in String,
+  credentialMode: in String,
+  updatedAt: in String,
+): String {
+  return "UPDATE profiles SET name = " + sqlLiteral(name) + ", harness = " + sqlLiteral(harness) +
+    ", network_policy = " +
+    sqlLiteral(networkPolicy) +
+    ", credential_mode = " +
+    sqlLiteral(credentialMode) +
+    ", updated_at = " +
+    sqlLiteral(updatedAt) +
+    " WHERE id = " +
+    sqlLiteral(id) +
+    " AND user_id = " +
+    sqlLiteral(userId)
+}
+
+/// DELETE a profile owned by a user.
+pub func deleteProfileSql(id: in String, userId: in String): String {
+  return "DELETE FROM profiles WHERE id = " + sqlLiteral(id) + " AND user_id = " + sqlLiteral(userId)
+}
+
+/// INSERT one credential grant for a profile.
+pub func insertProfileCredentialSql(
+  id: in String, profileId: in String, userId: in String, credentialName: in String
+): String {
+  return "INSERT INTO profile_credentials (id, profile_id, user_id, credential_name) VALUES (" + sqlLiteral(id) + ", " +
+    sqlLiteral(profileId) +
+    ", " +
+    sqlLiteral(userId) +
+    ", " +
+    sqlLiteral(credentialName) +
+    ") ON CONFLICT(profile_id, credential_name) DO NOTHING"
+}
+
+/// SELECT the credential names a profile grants, alphabetical.
+pub func selectProfileCredentialsSql(profileId: in String, userId: in String): String {
+  return "SELECT credential_name FROM profile_credentials WHERE profile_id = " + sqlLiteral(profileId) +
+    " AND user_id = " +
+    sqlLiteral(userId) +
+    " ORDER BY credential_name ASC"
+}
+
+/// DELETE every credential grant for a profile (used to replace the set on
+/// update, and to clean up when a profile is deleted).
+pub func deleteProfileCredentialsSql(profileId: in String, userId: in String): String {
+  return "DELETE FROM profile_credentials WHERE profile_id = " + sqlLiteral(profileId) + " AND user_id = " +
+    sqlLiteral(userId)
+}
+
+// ─── Run history ──────────────────────────────────────────────────────────────
+//
+// One row per agent run (a send that actually claimed the session): a compact
+// audit/usage record with status and timing, separate from the full transcript
+// in `messages`. `prompt_preview` is a bounded slice of the prompt (the full
+// text lives in messages), so this table stays lean even for long prompts.
+// Scoped by user_id. status: 'running' | 'succeeded' | 'failed' | 'cancelled'.
+/// DDL for the run-history table.
+pub func runsSchemaSql(): String {
+  return "CREATE TABLE IF NOT EXISTS runs (" + "id TEXT PRIMARY KEY, " + "session_id TEXT NOT NULL, " +
+    "user_id TEXT NOT NULL, " +
+    "prompt_preview TEXT NOT NULL, " +
+    "harness TEXT NOT NULL, " +
+    "model TEXT NOT NULL, " +
+    "status TEXT NOT NULL, " +
+    "started_at TEXT NOT NULL, " +
+    "ended_at TEXT NOT NULL)"
+}
+
+/// Indexes for the two lookups run history uses (per session, per user).
+pub func runsSessionIndexSql(): String {
+  return "CREATE INDEX IF NOT EXISTS idx_runs_session_id ON runs(session_id)"
+}
+
+pub func runsUserIndexSql(): String {
+  return "CREATE INDEX IF NOT EXISTS idx_runs_user_id ON runs(user_id)"
+}
+
+/// INSERT a run at the moment it is claimed (status 'running', ended_at '').
+pub func insertRunSql(
+  id: in String,
+  sessionId: in String,
+  userId: in String,
+  promptPreview: in String,
+  harness: in String,
+  model: in String,
+  startedAt: in String,
+): String {
+  return "INSERT INTO runs (id, session_id, user_id, prompt_preview, harness, model, status, started_at, ended_at) VALUES (" +
+    sqlLiteral(id) +
+    ", " +
+    sqlLiteral(sessionId) +
+    ", " +
+    sqlLiteral(userId) +
+    ", " +
+    sqlLiteral(promptPreview) +
+    ", " +
+    sqlLiteral(harness) +
+    ", " +
+    sqlLiteral(model) +
+    ", 'running', " +
+    sqlLiteral(startedAt) +
+    ", '')"
+}
+
+/// UPDATE a run to a terminal status with its end time. Scoped by owner, and
+/// write-once (only a still-'running' run is moved), so a cancel that already
+/// marked the run 'cancelled' from another request is not overwritten by the
+/// run's own 'failed'/'succeeded' when its terminated container makes it exit.
+pub func finishRunSql(id: in String, userId: in String, status: in String, endedAt: in String): String {
+  return "UPDATE runs SET status = " + sqlLiteral(status) + ", ended_at = " + sqlLiteral(endedAt) + " WHERE id = " +
+    sqlLiteral(id) +
+    " AND user_id = " +
+    sqlLiteral(userId) +
+    " AND status = 'running'"
+}
+
+/// SELECT a session's run history, newest first. Scoped by owner.
+pub func selectRunsBySessionSql(sessionId: in String, userId: in String): String {
+  return "SELECT id, session_id, user_id, prompt_preview, harness, model, status, started_at, ended_at FROM runs " +
+    "WHERE session_id = " +
+    sqlLiteral(sessionId) +
+    " AND user_id = " +
+    sqlLiteral(userId) +
+    " ORDER BY started_at DESC"
+}
+
+/// Mark any still-'running' runs for a session as the given terminal status.
+/// Used when a run ends without the caller holding the run id (e.g. a cancel
+/// from another request), so history doesn't leave phantom 'running' rows.
+pub func finishSessionRunsSql(sessionId: in String, userId: in String, status: in String, endedAt: in String): String {
+  return "UPDATE runs SET status = " + sqlLiteral(status) + ", ended_at = " + sqlLiteral(endedAt) + " WHERE session_id = " +
+    sqlLiteral(sessionId) +
+    " AND user_id = " +
+    sqlLiteral(userId) +
+    " AND status = 'running'"
+}
+
+// ─── Idle container reaping ─────────────────────────────────────────────────────
+/// Sessions (system-wide) that still hold a WARM container that has been idle
+/// at least `warmWindowMillis`, i.e. ready for the reaper to stop. The age
+/// filter is done in SQL (SQLite's integer arithmetic is 64-bit) so Lyric never
+/// has to parse epoch-millis into a Long. Returns (id, container_id). Un-scoped:
+/// reaping is a system maintenance task, not a per-user request.
+pub func selectReapableWarmSql(nowMillis: in String, warmWindowMillis: in String): String {
+  return "SELECT id, container_id FROM sessions WHERE status = 'WARM' AND container_id <> '' AND (CAST(" +
+    sqlLiteral(nowMillis) +
+    " AS INTEGER) - CAST(last_message_at AS INTEGER)) >= CAST(" +
+    sqlLiteral(warmWindowMillis) +
+    " AS INTEGER)"
+}
+
+/// Stop tracking a session's container after its container has been reaped:
+/// blank the container id and return the session to IDLE. Un-scoped (system
+/// maintenance). Params: id.
+pub func reapSessionContainerSql(id: in String): String {
+  return "UPDATE sessions SET status = 'IDLE', container_id = '' WHERE id = " + sqlLiteral(id)
+}
+
+// ─── Webhooks (transactional outbox) ────────────────────────────────────────────
+//
+// Run-completion notifications. Registered target URLs live in `webhooks`; each
+// finished run enqueues a `webhook_events` row (an outbox). Actual HTTP delivery
+// is done by an external worker that polls the pending endpoint and marks rows
+// delivered — the same "expose to an external scheduler" approach as reaping,
+// since Lyric.Web has no in-process timer and reliable outbound HTTPS from Lyric
+// isn't available yet. delivered is '0'/'1'. All TEXT affinity, user_id-scoped.
+/// DDL for registered webhook target URLs.
+pub func webhooksSchemaSql(): String {
+  return "CREATE TABLE IF NOT EXISTS webhooks (" + "id TEXT PRIMARY KEY, " + "user_id TEXT NOT NULL, " +
+    "url TEXT NOT NULL, " +
+    "created_at TEXT NOT NULL, " +
+    "UNIQUE(user_id, url))"
+}
+
+/// DDL for the outbox of run-completion events awaiting delivery.
+pub func webhookEventsSchemaSql(): String {
+  return "CREATE TABLE IF NOT EXISTS webhook_events (" + "id TEXT PRIMARY KEY, " + "user_id TEXT NOT NULL, " +
+    "session_id TEXT NOT NULL, " +
+    "run_id TEXT NOT NULL, " +
+    "status TEXT NOT NULL, " +
+    "delivered TEXT NOT NULL, " +
+    "created_at TEXT NOT NULL)"
+}
+
+pub func webhooksUserIndexSql(): String {
+  return "CREATE INDEX IF NOT EXISTS idx_webhooks_user_id ON webhooks(user_id)"
+}
+
+/// Index for the pending-events poll (owner + delivered flag).
+pub func webhookEventsPendingIndexSql(): String {
+  return "CREATE INDEX IF NOT EXISTS idx_webhook_events_pending ON webhook_events(user_id, delivered)"
+}
+
+/// INSERT (register) a webhook URL, idempotent per (user, url).
+pub func insertWebhookSql(id: in String, userId: in String, url: in String, createdAt: in String): String {
+  return "INSERT INTO webhooks (id, user_id, url, created_at) VALUES (" + sqlLiteral(id) + ", " + sqlLiteral(userId) +
+    ", " +
+    sqlLiteral(url) +
+    ", " +
+    sqlLiteral(createdAt) +
+    ") ON CONFLICT(user_id, url) DO NOTHING"
+}
+
+/// SELECT a user's registered webhooks, newest first.
+pub func selectWebhooksSql(userId: in String): String {
+  return "SELECT id, user_id, url, created_at FROM webhooks WHERE user_id = " + sqlLiteral(userId) +
+    " ORDER BY created_at DESC"
+}
+
+/// SELECT a single webhook by (user, url) — used after an idempotent register
+/// to return the actually-persisted row rather than a freshly-minted one.
+pub func selectWebhookByUrlSql(userId: in String, url: in String): String {
+  return "SELECT id, user_id, url, created_at FROM webhooks WHERE user_id = " + sqlLiteral(userId) + " AND url = " +
+    sqlLiteral(url)
+}
+
+/// DELETE a webhook by id, scoped by owner.
+pub func deleteWebhookSql(id: in String, userId: in String): String {
+  return "DELETE FROM webhooks WHERE id = " + sqlLiteral(id) + " AND user_id = " + sqlLiteral(userId)
+}
+
+/// COUNT a user's registered webhooks (as TEXT for the GetString-only driver),
+/// so an event is only enqueued when there is somewhere to deliver it.
+pub func countWebhooksSql(userId: in String): String {
+  return "SELECT CAST(COUNT(*) AS TEXT) FROM webhooks WHERE user_id = " + sqlLiteral(userId)
+}
+
+/// INSERT a run-completion event into the outbox (delivered '0').
+pub func insertWebhookEventSql(
+  id: in String, userId: in String, sessionId: in String, runId: in String, status: in String, createdAt: in String
+): String {
+  return "INSERT INTO webhook_events (id, user_id, session_id, run_id, status, delivered, created_at) VALUES (" +
+    sqlLiteral(id) +
+    ", " +
+    sqlLiteral(userId) +
+    ", " +
+    sqlLiteral(sessionId) +
+    ", " +
+    sqlLiteral(runId) +
+    ", " +
+    sqlLiteral(status) +
+    ", '0', " +
+    sqlLiteral(createdAt) +
+    ")"
+}
+
+/// SELECT a user's undelivered events, oldest first (FIFO delivery).
+pub func selectPendingWebhookEventsSql(userId: in String): String {
+  return "SELECT id, user_id, session_id, run_id, status, created_at FROM webhook_events " + "WHERE user_id = " +
+    sqlLiteral(userId) +
+    " AND delivered = '0' ORDER BY created_at ASC"
+}
+
+/// Mark an outbox event delivered. Scoped by owner.
+pub func markWebhookEventDeliveredSql(id: in String, userId: in String): String {
+  return "UPDATE webhook_events SET delivered = '1' WHERE id = " + sqlLiteral(id) + " AND user_id = " +
+    sqlLiteral(userId)
+}
+
+// ─── Schema migrations ────────────────────────────────────────────────────────
+//
+// A tiny versioned-migration ledger. Every schema change is expressed as an
+// ordered migration with a stable version id; `schema_migrations` records which
+// versions have run so non-idempotent statements (ALTER TABLE ADD COLUMN, which
+// errors if the column already exists) execute exactly once. Idempotent DDL
+// (CREATE TABLE/INDEX IF NOT EXISTS) is still safe to re-run, but the ledger is
+// what lets later migrations evolve existing tables without a bespoke detect-
+// and-patch dance (the class of upgrade hazard raised in review #225).
+/// DDL for the migration ledger itself. Applied before any migration runs.
+pub func migrationsSchemaSql(): String {
+  return "CREATE TABLE IF NOT EXISTS schema_migrations (" + "version TEXT PRIMARY KEY, " + "applied_at TEXT NOT NULL)"
+}
+
+/// Count (as TEXT so the GetString-only driver can read it) how many times a
+/// version has been recorded — 0 means the migration still needs to run.
+pub func countMigrationSql(version: in String): String {
+  return "SELECT CAST(COUNT(*) AS TEXT) FROM schema_migrations WHERE version = " + sqlLiteral(version)
+}
+
+/// Record a migration as applied.
+pub func recordMigrationSql(version: in String, appliedAt: in String): String {
+  return "INSERT INTO schema_migrations (version, applied_at) VALUES (" + sqlLiteral(version) + ", " +
+    sqlLiteral(appliedAt) +
+    ")"
 }

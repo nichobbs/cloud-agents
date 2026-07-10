@@ -372,3 +372,66 @@ pub func parseJsonNumber(json: in String, field: in String): String {
   }
   return acc
 }
+
+// ─── GitHub OAuth authorization (behind the Lyric.Web gate) ─────────────────────
+//
+// The token->identity network call (GET api.github.com/user) is the
+// HTTP-boundary piece Lyric.Web must host; the pure pieces — turning that
+// response into a stable user id and applying the whitelist — live here and are
+// unit-tested. Kept as strings (the id as its digit form) so no Long parse is
+// needed and everything lines up with isWhitelisted's string interface.
+/// The GitHub numeric id (digit string, "" if absent) from a /user response.
+pub func githubUserIdFromJson(json: in String): String {
+  return parseJsonNumber(json, "id")
+}
+
+/// The login ("" if absent) from a /user response.
+pub func githubLoginFromJson(json: in String): String {
+  return parseJsonString(json, "login")
+}
+
+/// The stable per-tenant user id for a GitHub numeric id. Prefixed so it can
+/// never collide with the static-token "default" identity. This is the value
+/// currentUserId() returns once OAuth is wired in — every schema/query is
+/// already scoped by it, so the switch stays contained.
+pub func userIdForGitHubId(githubId: in String): String {
+  return "gh-" + githubId
+}
+
+/// Access decision for a validated GitHub identity against the whitelist. A
+/// missing id (unparseable /user response) is InvalidToken; an id absent from a
+/// non-empty whitelist is NotWhitelisted; otherwise Allowed with the
+/// GitHub-derived user id. The caller obtains `githubId` by validating the
+/// bearer token at the HTTP boundary — the one gated piece.
+pub func authorizeGitHub(githubId: in String, whitelistCsv: in String): AuthOutcome {
+  if githubId.length == 0 {
+    return Denied(error = InvalidToken)
+  }
+  if not isWhitelisted(githubId, whitelistCsv) {
+    return Denied(error = NotWhitelisted)
+  }
+  return Allowed(userId = userIdForGitHubId(githubId))
+}
+
+// ─── Per-request enforcement (behind the Lyric.Web gate) ────────────────────────
+//
+// Once Lyric.Web exposes the request's Authorization header, main() wires
+// `enforce()` as a pre-handler guard. Secret routes (credential storage) use
+// authorizeSecret so they refuse when no token is configured; all others use
+// authorize (open when unconfigured, matching today's behaviour). Both the
+// classification and the decision are pure and tested here, so wiring is a
+// one-line change when the framework supports it.
+/// Whether a request path must never run unauthenticated — the credential
+/// routes, which read/write secrets. Matches the /api/credentials prefix.
+pub func routeRequiresSecret(path: in String): Bool {
+  return path == "/api/credentials" or path.startsWith("/api/credentials/")
+}
+
+/// The auth decision for a request: authorizeSecret for secret routes,
+/// authorize otherwise.
+pub func enforce(path: in String, authHeaderValue: in String, apiToken: in String): AuthOutcome {
+  if routeRequiresSecret(path) {
+    return authorizeSecret(authHeaderValue, apiToken)
+  }
+  return authorize(authHeaderValue, apiToken)
+}

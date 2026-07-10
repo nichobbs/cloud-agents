@@ -21,3 +21,14 @@ test "jsonEscapeValue escapes raw control characters as unicode escapes" {
   assertEqual(jsonEscapeValue(charFromCode(7)), "\\u0007", "BEL escaped")
   assertEqual(jsonEscapeValue("a" + charFromCode(1) + "b"), "a\\u0001b", "SOH mid-string escaped")
 }
+
+test "containerBodyWithNetwork sets NetworkMode only when provided" {
+  val env = ["A=1"]
+  val binds = ["v:/w"]
+  val dflt = containerBodyWithNetwork("img", env, binds, "")
+  assertTrue(dflt.contains("\"Binds\":"), "binds always present")
+  assertTrue(not dflt.contains("NetworkMode"), "no NetworkMode field for the default network")
+  val isolated = containerBodyWithNetwork("img", env, binds, "none")
+  assertTrue(isolated.contains("\"NetworkMode\":\"none\""), "NetworkMode set when a policy pins it")
+  assertTrue(isolated.contains("\"Binds\":"), "binds preserved alongside NetworkMode")
+}

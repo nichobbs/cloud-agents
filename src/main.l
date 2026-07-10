@@ -61,9 +61,15 @@ func main(): Unit {
   router = Web.addPost(router, "/api/sessions/{id}/messages", "CloudAgents.Handlers.sendMessage")
   router = Web.addDelete(router, "/api/sessions/{id}", "CloudAgents.Handlers.deleteSession")
   router = Web.addPost(router, "/api/sessions/{id}/model", "CloudAgents.Handlers.updateSessionModel")
+  router = Web.addPost(router, "/api/sessions/{id}/profile", "CloudAgents.Handlers.setSessionProfileHandler")
 
   // Live output polling for an in-progress run
   router = Web.addGet(router, "/api/sessions/{id}/output", "CloudAgents.Handlers.getRunOutput")
+
+  // Session lifecycle: cancel an in-flight run, run history, container reaping.
+  router = Web.addPost(router, "/api/sessions/{id}/cancel", "CloudAgents.Handlers.cancelRun")
+  router = Web.addGet(router, "/api/sessions/{id}/runs", "CloudAgents.Handlers.getRuns")
+  router = Web.addPost(router, "/api/maintenance/reap", "CloudAgents.Handlers.reapContainers")
 
   // Transcript: addressable agent/user messages for a session
   router = Web.addGet(router, "/api/sessions/{id}/messages", "CloudAgents.Interactions.getMessages")
@@ -80,9 +86,12 @@ func main(): Unit {
 
   // Prompt library: saved, reusable prompts
   router = Web.addGet(router, "/api/prompts", "CloudAgents.Prompts.listPromptsHandler")
+  router = Web.addGet(router, "/api/prompts/popular", "CloudAgents.Prompts.listPopularPromptsHandler")
+  router = Web.addGet(router, "/api/prompts/tag/{tag}", "CloudAgents.Prompts.listPromptsByTagHandler")
   router = Web.addPost(router, "/api/prompts", "CloudAgents.Prompts.addPromptHandler")
   router = Web.addPost(router, "/api/prompts/{pid}", "CloudAgents.Prompts.updatePromptHandler")
   router = Web.addPost(router, "/api/prompts/{pid}/use", "CloudAgents.Prompts.usePromptHandler")
+  router = Web.addPost(router, "/api/prompts/{pid}/render", "CloudAgents.Prompts.renderPromptHandler")
   router = Web.addDelete(router, "/api/prompts/{pid}", "CloudAgents.Prompts.deletePromptHandler")
 
   // Credential store: per-user secrets injected into runner containers.
@@ -90,6 +99,20 @@ func main(): Unit {
   router = Web.addGet(router, "/api/credentials", "CloudAgents.Credentials.listCredentialsHandler")
   router = Web.addPost(router, "/api/credentials", "CloudAgents.Credentials.putCredentialHandler")
   router = Web.addDelete(router, "/api/credentials/{name}", "CloudAgents.Credentials.deleteCredentialHandler")
+
+  // Profiles: per-container policy (harness, network access, injected creds).
+  router = Web.addGet(router, "/api/profiles", "CloudAgents.Profiles.listProfilesHandler")
+  router = Web.addPost(router, "/api/profiles", "CloudAgents.Profiles.addProfileHandler")
+  router = Web.addPost(router, "/api/profiles/{pid}", "CloudAgents.Profiles.updateProfileHandler")
+  router = Web.addDelete(router, "/api/profiles/{pid}", "CloudAgents.Profiles.deleteProfileHandler")
+
+  // Webhooks: run-completion notifications (outbox delivered by an external
+  // worker that polls /pending and marks events delivered).
+  router = Web.addGet(router, "/api/webhooks", "CloudAgents.Webhooks.listWebhooksHandler")
+  router = Web.addPost(router, "/api/webhooks", "CloudAgents.Webhooks.registerWebhookHandler")
+  router = Web.addGet(router, "/api/webhooks/pending", "CloudAgents.Webhooks.pendingWebhookEventsHandler")
+  router = Web.addPost(router, "/api/webhooks/events/{id}/delivered", "CloudAgents.Webhooks.markWebhookDeliveredHandler")
+  router = Web.addDelete(router, "/api/webhooks/{id}", "CloudAgents.Webhooks.deleteWebhookHandler")
 
   // Register health route
   router = Web.addGet(router, "/api/health", "CloudAgents.Handlers.checkHealth")

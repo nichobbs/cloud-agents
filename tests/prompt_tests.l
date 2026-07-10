@@ -100,6 +100,91 @@ func mustRows(r: in Result[Int, CloudAgents.Sqlite.DbError]): Int {
   }
 }
 
+test "Migrations are idempotent and back-fill the ledger" {
+  val dbPath = useFreshTestDb("migrations")
+  defer {
+    cleanupTestDb(dbPath)
+  }
+  // useFreshTestDb already ran initSchema (-> runMigrations) once. Running it
+  // again must be a clean no-op: the ledger already records 0001_init, so no
+  // statement re-executes, and prompt CRUD still works afterwards.
+  match CloudAgents.Repository.runMigrations() {
+    case Ok(_) -> ()
+    case Err(e) -> assertTrue(false, "second runMigrations should no-op: " + CloudAgents.Sqlite.dbErrorMessage(e))
+  }
+  val created = mustPrompt(addPrompt("default", "post-migrate", "still works"))
+  assertTrue(created.id.length > 0, "schema is usable after a repeat migration run")
+}
+
+test "executeTransaction rolls back the whole batch on failure" {
+  val dbPath = useFreshTestDb("txn-rollback")
+  defer {
+    cleanupTestDb(dbPath)
+  }
+  // The atomicity the migration runner relies on (#229): a batch whose second
+  // statement is invalid must leave no trace of the first.
+  val goodInsert = insertPromptSql("txn-1", "default", "should-not-persist", "body", "1000")
+  match CloudAgents.Sqlite.executeTransaction([goodInsert, "THIS IS NOT SQL"]) {
+    case Ok(_) -> assertTrue(false, "a batch with an invalid statement must fail")
+    case Err(_) -> ()
+  }
+  match getPrompt("txn-1", "default") {
+    case Ok(Some(_)) -> assertTrue(false, "rolled-back insert must not persist")
+    case Ok(None) -> ()
+    case Err(e) -> assertTrue(false, "getPrompt failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+  }
+}
+
+test "renderTemplate substitutes bound placeholders and leaves others" {
+  assertEqual(renderTemplate("Hello {{name}}!", ["name"], ["world"]), "Hello world!", "single var")
+  assertEqual(renderTemplate("{{a}}-{{b}}-{{a}}", ["a", "b"], ["1", "2"]), "1-2-1", "repeated + multiple vars")
+  assertEqual(renderTemplate("no vars here", [], []), "no vars here", "no vars")
+  assertEqual(renderTemplate("keep {{unbound}}", ["x"], ["y"]), "keep {{unbound}}", "unbound placeholder left intact")
+  // #265: a substituted value that itself contains "{{...}}" must NOT be
+  // re-expanded — one variable can't inject a reference to another.
+  assertEqual(renderTemplate("{{a}}", ["a", "b"], ["{{b}}", "secret"]), "{{b}}", "value is not re-scanned for placeholders")
+  assertEqual(renderTemplate("no close {{a", ["a"], ["x"]), "no close {{a", "unclosed placeholder left intact")
+}
+
+test "Popular prompts are ordered by use count" {
+  val dbPath = useFreshTestDb("prompt-popular")
+  defer {
+    cleanupTestDb(dbPath)
+  }
+  val userId = "default"
+  val a = mustPrompt(addPrompt(userId, "alpha", "a"))
+  val b = mustPrompt(addPrompt(userId, "beta", "b"))
+  // Use beta twice, alpha once -> beta is more popular.
+  mustRows(markPromptUsed(b.id, userId))
+  mustRows(markPromptUsed(b.id, userId))
+  mustRows(markPromptUsed(a.id, userId))
+  val popular = mustPrompts(listPromptsByUsage(userId))
+  assertEqualInt(popular.length.toInt(), 2, "two prompts listed")
+  assertEqual(popular[0].name, "beta", "most-used first")
+  assertEqual(popular[1].name, "alpha", "less-used second")
+}
+
+test "renderPromptHandler renders a template and counts a use" {
+  val dbPath = useFreshTestDb("prompt-render")
+  defer {
+    cleanupTestDb(dbPath)
+  }
+  val created = mustPrompt(addPrompt("default", "greet", "Hi {{who}} on {{repo}}"))
+  match renderPromptHandler(created.id, RenderPromptRequest(keys = ["who", "repo"], values = ["Nic", "cloud-agents"])) {
+    case Ok(r) -> assertEqual(r.rendered, "Hi Nic on cloud-agents", "template rendered with bindings")
+    case Err(_) -> assertTrue(false, "render should succeed")
+  }
+  match renderPromptHandler("nope", RenderPromptRequest(keys = [], values = [])) {
+    case Ok(_) -> assertTrue(false, "unknown id should 404")
+    case Err(err) -> assertEqualInt(err.status, 404, "unknown prompt -> 404")
+  }
+  match getPrompt(created.id, "default") {
+    case Ok(Some(p)) -> assertEqual(p.useCount, "1", "render counted as a use")
+    case Ok(None) -> assertTrue(false, "prompt should exist")
+    case Err(e) -> assertTrue(false, "getPrompt failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+  }
+}
+
 test "Prompt CRUD round-trips through SQLite" {
   val dbPath = useFreshTestDb("prompt-crud")
   defer {
@@ -164,6 +249,31 @@ func verifyCreatedPromptHandler(p: in Prompt): Unit {
   assertTrue(p.id.length > 0, "handler returns stored id")
 }
 
+test "Prompt tags round-trip, replace, and filter" {
+  val dbPath = useFreshTestDb("prompt-tags")
+  defer {
+    cleanupTestDb(dbPath)
+  }
+  val userId = "default"
+  val p = mustPrompt(addPrompt(userId, "tagged", "body"))
+  match setPromptTags(p.id, userId, ["red", "blue"]) {
+    case Ok(_) -> ()
+    case Err(e) -> assertTrue(false, "setPromptTags failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+  }
+  match getPrompt(p.id, userId) {
+    case Ok(Some(gp)) -> assertEqualInt(gp.tags.length.toInt(), 2, "two tags attached to the prompt")
+    case Ok(None) -> assertTrue(false, "prompt should exist")
+    case Err(e) -> assertTrue(false, "getPrompt failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+  }
+  // setPromptTags is a full replace, not an append.
+  match setPromptTags(p.id, userId, ["green"]) {
+    case Ok(_) -> ()
+    case Err(_) -> ()
+  }
+  assertEqualInt(mustPrompts(listPromptsByTag(userId, "green")).length.toInt(), 1, "found under the new tag")
+  assertEqualInt(mustPrompts(listPromptsByTag(userId, "red")).length.toInt(), 0, "old tag no longer matches")
+}
+
 test "Prompt handlers validate, store and 404 correctly" {
   val dbPath = useFreshTestDb("prompt-handlers")
   defer {
@@ -171,17 +281,22 @@ test "Prompt handlers validate, store and 404 correctly" {
   }
 
   // Validation: empty name / empty body are 400s.
-  match addPromptHandler(SavePromptRequest(name = "", body = "b")) {
+  match addPromptHandler(SavePromptRequest(name = "", body = "b", tags = [])) {
     case Ok(_) -> assertTrue(false, "empty name should be rejected")
     case Err(err) -> assertEqualInt(err.status, 400, "empty name -> 400")
   }
-  match addPromptHandler(SavePromptRequest(name = "n", body = "")) {
+  match addPromptHandler(SavePromptRequest(name = "n", body = "", tags = [])) {
     case Ok(_) -> assertTrue(false, "empty body should be rejected")
     case Err(err) -> assertEqualInt(err.status, 400, "empty body -> 400")
   }
+  // Invalid tag -> 400.
+  match addPromptHandler(SavePromptRequest(name = "n", body = "b", tags = ["bad tag"])) {
+    case Ok(_) -> assertTrue(false, "invalid tag should be rejected")
+    case Err(err) -> assertEqualInt(err.status, 400, "invalid tag -> 400")
+  }
 
-  // Happy path: create, then see it in the list handler.
-  match addPromptHandler(SavePromptRequest(name = "handler prompt", body = "hello")) {
+  // Happy path with tags: create, then see it in the list + tag handlers.
+  match addPromptHandler(SavePromptRequest(name = "handler prompt", body = "hello", tags = ["ci", "deploy"])) {
     case Ok(p) -> verifyCreatedPromptHandler(p)
     case Err(_) -> assertTrue(false, "valid prompt should be created")
   }
@@ -189,9 +304,18 @@ test "Prompt handlers validate, store and 404 correctly" {
     case Ok(pl) -> assertEqualInt(pl.prompts.length.toInt(), 1, "list handler returns the stored prompt")
     case Err(_) -> assertTrue(false, "list handler should succeed")
   }
+  // Tag filter finds it under 'ci' and not under a foreign tag.
+  match listPromptsByTagHandler("ci") {
+    case Ok(pl) -> assertEqualInt(pl.prompts.length.toInt(), 1, "tag filter finds the tagged prompt")
+    case Err(_) -> assertTrue(false, "tag filter should succeed")
+  }
+  match listPromptsByTagHandler("nonexistent") {
+    case Ok(pl) -> assertEqualInt(pl.prompts.length.toInt(), 0, "unknown tag returns nothing")
+    case Err(_) -> assertTrue(false, "tag filter should succeed")
+  }
 
   // Unknown ids are 404s.
-  match updatePromptHandler("nope", SavePromptRequest(name = "n", body = "b")) {
+  match updatePromptHandler("nope", SavePromptRequest(name = "n", body = "b", tags = [])) {
     case Ok(_) -> assertTrue(false, "unknown id update should 404")
     case Err(err) -> assertEqualInt(err.status, 404, "update unknown -> 404")
   }
