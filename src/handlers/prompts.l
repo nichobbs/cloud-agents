@@ -57,7 +57,11 @@ pub func addPromptHandler(@body req: in SavePromptRequest): Result[Prompt, Web.A
     case Some(err) -> return Err(err)
     case None -> ()
   }
-  match addPrompt(CloudAgents.Auth.currentUserId(), req.name, req.body) {
+  // Store the trimmed name — validation trims for the emptiness check, so the
+  // stored value must match or a " foo " name would round-trip with the
+  // surrounding whitespace the check quietly ignored. Body is stored as-is
+  // (leading/trailing whitespace in a prompt body can be meaningful).
+  match addPrompt(CloudAgents.Auth.currentUserId(), req.name.trim(), req.body) {
     case Ok(p) -> return Ok(p)
     case Err(e) -> return Err(dbError(e))
   }
@@ -74,7 +78,8 @@ pub func updatePromptHandler(pid: in String, @body req: in SavePromptRequest): R
     case None -> ()
   }
   val userId = CloudAgents.Auth.currentUserId()
-  val affected = match updatePrompt(pid, userId, req.name, req.body) {
+  // Store the trimmed name for the same reason as addPromptHandler above.
+  val affected = match updatePrompt(pid, userId, req.name.trim(), req.body) {
     case Ok(n) -> n
     case Err(e) -> return Err(dbError(e))
   }

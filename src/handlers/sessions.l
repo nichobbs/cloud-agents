@@ -280,10 +280,13 @@ pub func sendMessage(id: in String, @body req: in SendMessageRequest): Result[St
 /// outstanding to show incremental container output, since the send itself
 /// blocks until the run finishes and Lyric.Web cannot stream a response.
 ///
-/// A run is in progress exactly when the session has a live container id (set
-/// when the run starts, cleared when it ends). While running, we return the
-/// container's logs-so-far; otherwise `running` is false and the client stops
-/// polling and reloads the persisted transcript.
+/// A run is in progress exactly when the session's status is `RUNNING` (set
+/// synchronously at send time, before the container exists, and cleared when
+/// the run ends). While running, we return the container's logs-so-far once it
+/// exists; otherwise `running` is false and the client stops polling and
+/// reloads the persisted transcript. Status — not container id — drives this,
+/// so the first poll (which races container creation) doesn't see an empty id
+/// and wrongly report "not running"; see the inline comment below.
 /// Returns `{"running":"true|false","output":"..."}` as a hand-built JSON
 /// string, mirroring listSessions — no @generate(Json) response record on this
 /// path (a fresh record here tripped the JSON source generator at runtime with
