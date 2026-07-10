@@ -594,3 +594,30 @@ pub func selectCredentialsForInjectionSql(userId: in String): String {
 pub func deleteCredentialSql(userId: in String, name: in String): String {
   return "DELETE FROM credentials WHERE user_id = " + sqlLiteral(userId) + " AND name = " + sqlLiteral(name)
 }
+
+// ─── Schema migrations ────────────────────────────────────────────────────────
+//
+// A tiny versioned-migration ledger. Every schema change is expressed as an
+// ordered migration with a stable version id; `schema_migrations` records which
+// versions have run so non-idempotent statements (ALTER TABLE ADD COLUMN, which
+// errors if the column already exists) execute exactly once. Idempotent DDL
+// (CREATE TABLE/INDEX IF NOT EXISTS) is still safe to re-run, but the ledger is
+// what lets later migrations evolve existing tables without a bespoke detect-
+// and-patch dance (the class of upgrade hazard raised in review #225).
+/// DDL for the migration ledger itself. Applied before any migration runs.
+pub func migrationsSchemaSql(): String {
+  return "CREATE TABLE IF NOT EXISTS schema_migrations (" + "version TEXT PRIMARY KEY, " + "applied_at TEXT NOT NULL)"
+}
+
+/// Count (as TEXT so the GetString-only driver can read it) how many times a
+/// version has been recorded — 0 means the migration still needs to run.
+pub func countMigrationSql(version: in String): String {
+  return "SELECT CAST(COUNT(*) AS TEXT) FROM schema_migrations WHERE version = " + sqlLiteral(version)
+}
+
+/// Record a migration as applied.
+pub func recordMigrationSql(version: in String, appliedAt: in String): String {
+  return "INSERT INTO schema_migrations (version, applied_at) VALUES (" + sqlLiteral(version) + ", " +
+    sqlLiteral(appliedAt) +
+    ")"
+}

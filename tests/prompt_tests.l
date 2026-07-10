@@ -100,6 +100,22 @@ func mustRows(r: in Result[Int, CloudAgents.Sqlite.DbError]): Int {
   }
 }
 
+test "Migrations are idempotent and back-fill the ledger" {
+  val dbPath = useFreshTestDb("migrations")
+  defer {
+    cleanupTestDb(dbPath)
+  }
+  // useFreshTestDb already ran initSchema (-> runMigrations) once. Running it
+  // again must be a clean no-op: the ledger already records 0001_init, so no
+  // statement re-executes, and prompt CRUD still works afterwards.
+  match CloudAgents.Repository.runMigrations() {
+    case Ok(_) -> ()
+    case Err(e) -> assertTrue(false, "second runMigrations should no-op: " + CloudAgents.Sqlite.dbErrorMessage(e))
+  }
+  val created = mustPrompt(addPrompt("default", "post-migrate", "still works"))
+  assertTrue(created.id.length > 0, "schema is usable after a repeat migration run")
+}
+
 test "Prompt CRUD round-trips through SQLite" {
   val dbPath = useFreshTestDb("prompt-crud")
   defer {

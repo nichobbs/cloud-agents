@@ -117,3 +117,12 @@ test "schema DDL is idempotent" {
   assertTrue(commentsSchemaSql().contains("CREATE TABLE IF NOT EXISTS comments"), "comments ddl")
   assertTrue(todosSchemaSql().contains("CREATE TABLE IF NOT EXISTS todos"), "todos ddl")
 }
+
+test "migration ledger SQL is well-formed" {
+  assertTrue(migrationsSchemaSql().contains("CREATE TABLE IF NOT EXISTS schema_migrations"), "ledger ddl")
+  assertTrue(migrationsSchemaSql().contains("version TEXT PRIMARY KEY"), "version is the key")
+  assertTrue(countMigrationSql("0001_init").contains("CAST(COUNT(*) AS TEXT)"), "count cast to text for GetString")
+  assertTrue(countMigrationSql("0001_init").contains("WHERE version = '0001_init'"), "count scoped by version")
+  assertTrue(recordMigrationSql("0001_init", "1000").startsWith("INSERT INTO schema_migrations"), "record inserts")
+  assertTrue(recordMigrationSql("0001_init", "1000").contains("'0001_init'"), "record carries the version")
+}

@@ -161,24 +161,72 @@ pub func ping(): Result[Unit, CloudAgents.Sqlite.DbError] {
   return Ok(value = ())
 }
 
-/// Create every table if it does not already exist. Safe to call at every
-/// startup.
-pub func initSchema(): Result[Unit, CloudAgents.Sqlite.DbError] {
-  // Create every table before any index. Each statement is `IF NOT EXISTS`, so
-  // this is safe to re-run, but ordering matters for robustness: if an index
-  // statement ever fails (e.g. a hand-migrated DB whose table predates a column
-  // the index needs), all tables still exist rather than aborting partway and
-  // leaving a later table — credentials in particular — uncreated.
-  CloudAgents.Sqlite.execute(CloudAgents.Db.messagesSchemaSql())?
-  CloudAgents.Sqlite.execute(CloudAgents.Db.commentsSchemaSql())?
-  CloudAgents.Sqlite.execute(CloudAgents.Db.todosSchemaSql())?
-  CloudAgents.Sqlite.execute(CloudAgents.Db.promptsSchemaSql())?
-  CloudAgents.Sqlite.execute(CloudAgents.Db.sessionsSchemaSql())?
-  CloudAgents.Sqlite.execute(CloudAgents.Db.credentialsSchemaSql())?
-  CloudAgents.Sqlite.execute(CloudAgents.Db.promptsUserIndexSql())?
-  CloudAgents.Sqlite.execute(CloudAgents.Db.sessionsUserIndexSql())?
-  CloudAgents.Sqlite.execute(CloudAgents.Db.credentialsUserIndexSql())?
+/// One ordered schema migration: a stable version id and the statements that
+/// bring the schema up to that version. Statements run in order, exactly once
+/// per database (tracked in the schema_migrations ledger).
+pub record Migration {
+  pub version: String
+  pub statements: slice[String]
+}
+
+/// Every migration, oldest first. Append new migrations to the END with a new
+/// version id — never edit or reorder an applied one, or databases will diverge.
+///
+/// 0001_init is the full baseline: all tables + indexes as they stood before
+/// the ledger existed. Its statements are all `IF NOT EXISTS`, so recording it
+/// against a pre-ledger database that already has these tables is a harmless
+/// no-op that simply back-fills the ledger.
+pub func allMigrations(): slice[Migration] {
+  return [
+    Migration(
+      version = "0001_init",
+      statements = [
+        CloudAgents.Db.messagesSchemaSql(),
+        CloudAgents.Db.commentsSchemaSql(),
+        CloudAgents.Db.todosSchemaSql(),
+        CloudAgents.Db.promptsSchemaSql(),
+        CloudAgents.Db.sessionsSchemaSql(),
+        CloudAgents.Db.credentialsSchemaSql(),
+        CloudAgents.Db.promptsUserIndexSql(),
+        CloudAgents.Db.sessionsUserIndexSql(),
+        CloudAgents.Db.credentialsUserIndexSql()
+      ]
+    )
+  ]
+}
+
+/// Whether a migration version has already been recorded as applied.
+func migrationApplied(version: in String): Result[Bool, CloudAgents.Sqlite.DbError] {
+  val rows = CloudAgents.Sqlite.query(CloudAgents.Db.countMigrationSql(version))?
+  val len = CloudAgents.Sqlite.getRowArrayLength(rows)
+  if len == 0 {
+    return Ok(value = false)
+  }
+  val r0 = CloudAgents.Sqlite.getRowArrayValue(rows, 0)
+  return Ok(value = parseNatString(colAt(r0.cols, 0)) > 0)
+}
+
+/// Apply every not-yet-applied migration in order, recording each in the
+/// ledger. Idempotent: a database already at the latest version is a no-op.
+pub func runMigrations(): Result[Unit, CloudAgents.Sqlite.DbError] {
+  CloudAgents.Sqlite.execute(CloudAgents.Db.migrationsSchemaSql())?
+  for m in allMigrations() {
+    val applied = migrationApplied(m.version)?
+    if not applied {
+      for stmt in m.statements {
+        CloudAgents.Sqlite.execute(stmt)?
+      }
+      CloudAgents.Sqlite.execute(CloudAgents.Db.recordMigrationSql(m.version, nowMillis()))?
+    }
+  }
   return Ok(value = ())
+}
+
+/// Bring the database schema up to date. Safe to call at every startup.
+/// Delegates to the versioned migration runner (`runMigrations`); the name is
+/// kept for its many call sites (main, tests).
+pub func initSchema(): Result[Unit, CloudAgents.Sqlite.DbError] {
+  return runMigrations()
 }
 
 // ─── Messages ──────────────────────────────────────────────────────────────────
