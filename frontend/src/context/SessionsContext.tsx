@@ -1,5 +1,6 @@
-import { createContext, useCallback, useContext, useState } from 'react';
+import { createContext, useCallback, useContext, useEffect, useState } from 'react';
 import type { ReactNode } from 'react';
+import { api } from '../lib/api';
 import type { Session } from '../types';
 
 interface SessionsContextValue {
@@ -24,6 +25,34 @@ function load(): Session[] {
 
 export function SessionsProvider({ children }: { children: ReactNode }) {
   const [sessions, setSessions] = useState<Session[]>(load);
+
+  // One-shot hydrate from the server (GET /api/sessions) so sessions survive
+  // cleared browser storage / a different device. Local entries win on
+  // conflict — they carry `createdAt`, which the server record doesn't.
+  useEffect(() => {
+    let active = true;
+    api
+      .listSessions()
+      .then(remote => {
+        if (!active || remote.length === 0) return;
+        setSessions(prev => {
+          const known = new Set(prev.map(s => s.sessionId));
+          const added: Session[] = remote
+            .filter(r => !known.has(r.sessionId))
+            .map(r => ({ ...r, createdAt: '' }));
+          if (added.length === 0) return prev;
+          const next = [...prev, ...added];
+          localStorage.setItem(STORAGE_KEY, JSON.stringify(next));
+          return next;
+        });
+      })
+      .catch(() => {
+        /* offline or older backend without the endpoint — local list stands */
+      });
+    return () => {
+      active = false;
+    };
+  }, []);
 
   const addSession = useCallback((session: Session) => {
     setSessions(prev => {
