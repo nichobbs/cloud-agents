@@ -168,30 +168,37 @@ pub func parseJsonField(objStr: in String, fieldName: in String): String {
     return ""
   }
 
-  // Find closing quote
-  var quoteEnd = 0
-  var foundQuoteEnd = false
+  // Scan forward to the closing quote, unescaping as we go. Forward scanning
+  // (consume the char after every backslash) is the only correct way to find
+  // the closing quote: a look-behind check misreads a value ending in an
+  // escaped backslash (`"a\\"`) as an escaped quote and overruns the value.
+  var acc = ""
   i = quoteStart + 1
   while i < objLen {
     val c = objStr.substring(i, 1)
-    if c == "\"" {
-      if objStr.substring(i - 1, 1) != "\\" {
-        quoteEnd = i
-        foundQuoteEnd = true
-        i = objLen // break
-      } else {
-        i = i + 1
+    if c == "\\" {
+      if i + 1 >= objLen {
+        return "" // dangling backslash: malformed
       }
+      val esc = objStr.substring(i + 1, 1)
+      if esc == "n" {
+        acc = acc + "\n"
+      } else if esc == "r" {
+        acc = acc + "\r"
+      } else if esc == "t" {
+        acc = acc + "\t"
+      } else {
+        acc = acc + esc // \" -> ", \\ -> \; anything else kept literally
+      }
+      i = i + 2
+    } else if c == "\"" {
+      return acc
     } else {
+      acc = acc + c
       i = i + 1
     }
   }
-  if not foundQuoteEnd {
-    return ""
-  }
-
-  val valLen = quoteEnd - quoteStart - 1
-  return objStr.substring(quoteStart + 1, valLen)
+  return "" // no closing quote: malformed
 }
 
 pub func parseSessionsJson(json: in String): AgentSessionArray {
@@ -226,14 +233,30 @@ pub func parseSessionsJson(json: in String): AgentSessionArray {
       return list // no more objects
     }
 
-    // Find matching '}'
+    // Find matching '}'. String literals are skipped wholesale so braces
+    // inside field values (a repoUrl containing '{', say) cannot desync the
+    // depth count.
     var objEnd = 0
     var foundObjEnd = false
     scan = objStart + 1
     var depth = 1
     while scan < jsonLen {
       val c = json.substring(scan, 1)
-      if c == "{" {
+      if c == "\"" {
+        scan = scan + 1
+        var closed = false
+        while scan < jsonLen and not closed {
+          val sc = json.substring(scan, 1)
+          if sc == "\\" {
+            scan = scan + 2
+          } else if sc == "\"" {
+            closed = true
+            scan = scan + 1
+          } else {
+            scan = scan + 1
+          }
+        }
+      } else if c == "{" {
         depth = depth + 1
         scan = scan + 1
       } else if c == "}" {
@@ -299,16 +322,44 @@ pub func getSessions(): AgentSessionArray {
   return parseSessionsJson(json)
 }
 
+/// Escape a field value for embedding in the session-store JSON. Without this,
+/// a quote or backslash in any user-supplied field (repoUrl, branch, model...)
+/// corrupts the whole store — or forges sibling fields on re-parse.
+pub func jsonEscapeField(s: in String): String {
+  var acc = ""
+  var i = 0
+  while i < s.length {
+    val c = s.substring(i, 1)
+    if c == "\"" {
+      acc = acc + "\\\""
+    } else if c == "\\" {
+      acc = acc + "\\\\"
+    } else if c == "\n" {
+      acc = acc + "\\n"
+    } else if c == "\r" {
+      acc = acc + "\\r"
+    } else if c == "\t" {
+      acc = acc + "\\t"
+    } else {
+      acc = acc + c
+    }
+    i = i + 1
+  }
+  return acc
+}
+
 pub func agentSessionToJson(s: in AgentSession): String {
-  return "{\"sessionId\":\"" + s.sessionId + "\",\"repoUrl\":\"" + s.repoUrl + "\",\"branch\":\"" + s.branch +
+  return "{\"sessionId\":\"" + jsonEscapeField(s.sessionId) + "\",\"repoUrl\":\"" + jsonEscapeField(s.repoUrl) +
+    "\",\"branch\":\"" +
+    jsonEscapeField(s.branch) +
     "\",\"containerId\":\"" +
-    s.containerId +
+    jsonEscapeField(s.containerId) +
     "\",\"harness\":\"" +
-    s.harness +
+    jsonEscapeField(s.harness) +
     "\",\"model\":\"" +
-    s.model +
+    jsonEscapeField(s.model) +
     "\",\"nativeSessionId\":\"" +
-    s.nativeSessionId +
+    jsonEscapeField(s.nativeSessionId) +
     "\"}"
 }
 

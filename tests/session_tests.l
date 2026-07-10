@@ -43,6 +43,20 @@ func verifyModelBackfill(resp: in CreateSessionResponse): Unit {
   val _ = removeSession(resp.sessionId)
 }
 
+func verifyEscapedRoundTrip(p: in AgentSession): Unit {
+  assertEqual(p.repoUrl, "https://github.com/nic/re\"po", "quote round-trips")
+  assertEqual(p.branch, "feat\\wip", "backslash round-trips")
+  assertEqual(p.containerId, "a\\", "trailing backslash round-trips")
+  assertEqual(p.model, "claude-opus-4-8", "fields after escapes are intact")
+  assertEqual(p.nativeSessionId, "esc-1", "last field intact")
+}
+
+func verifyListSessionsBody(body: in String): Unit {
+  assertTrue(body.startsWith("{\"sessions\":["), "list body is a sessions object")
+  assertTrue(body.contains("\"sessionId\":\"ls-1\""), "first session listed")
+  assertTrue(body.contains("\"sessionId\":\"ls-2\""), "second session listed")
+}
+
 // ── Tests ─────────────────────────────────────────────────────────────────────
 
 test "Test Session Store CRUD Operations" {
@@ -116,6 +130,50 @@ test "Test legacy session deserialisation defaults" {
   assertEqual(s.nativeSessionId, "legacy-1", "legacy nativeSessionId defaults to sessionId")
 }
 
+test "Session store JSON escapes and round-trips special characters" {
+  // Before jsonEscapeField, a quote or backslash in any user-supplied field
+  // corrupted the entire store on the next save (and a value ending in a
+  // backslash desynced the old look-behind quote scanner).
+  val s = makeAgentSession(
+    sessionId = "esc-1",
+    repoUrl = "https://github.com/nic/re\"po",
+    branch = "feat\\wip",
+    containerId = "a\\",
+    harness = "claude",
+    model = "claude-opus-4-8",
+    nativeSessionId = "esc-1"
+  )
+  val json = "{\"sessions\":[" + agentSessionToJson(s) + "]}"
+  val parsed = parseSessionsJson(json)
+  assertEqualInt(getSessionArrayLength(parsed), 1, "one session parsed")
+  verifyEscapedRoundTrip(getSessionArrayValue(parsed, 0))
+}
+
+test "Session store parsing survives braces inside field values" {
+  val s1 = makeAgentSession(
+    sessionId = "brace-1",
+    repoUrl = "https://github.com/nic/repo{x}",
+    branch = "main",
+    containerId = "",
+    harness = "claude",
+    model = "claude-opus-4-8",
+    nativeSessionId = "brace-1"
+  )
+  val s2 = makeAgentSession(
+    sessionId = "brace-2",
+    repoUrl = "https://github.com/nic/other",
+    branch = "main",
+    containerId = "",
+    harness = "claude",
+    model = "claude-opus-4-8",
+    nativeSessionId = "brace-2"
+  )
+  val json = "{\"sessions\":[" + agentSessionToJson(s1) + "," + agentSessionToJson(s2) + "]}"
+  val parsed = parseSessionsJson(json)
+  assertEqualInt(getSessionArrayLength(parsed), 2, "brace in a value must not desync object splitting")
+  assertEqual(getSessionArrayValue(parsed, 1).sessionId, "brace-2", "second session parsed intact")
+}
+
 test "Test Handler createSession validation" {
   println("Testing Handler createSession validation...")
 
@@ -161,5 +219,69 @@ test "Test Handler createSession validation" {
   }
 
   println("✓ Handler validation tests passed!")
+}
+
+test "Handler createSession rejects unsafe inputs" {
+  // A branch starting with '-' could be misread as a git command-line option.
+  val r1 = CreateSessionRequest(repoUrl = "https://github.com/nic/repo", branch = "-evil", harness = "claude", model = "")
+  match createSession(r1) {
+    case Ok(_) -> assertTrue(false, "should reject leading-dash branch")
+    case Err(err) -> assertEqualInt(err.status, 400, "leading-dash branch -> 400")
+  }
+
+  val r2 = CreateSessionRequest(repoUrl = "https://github.com/nic/repo", branch = "a..b", harness = "claude", model = "")
+  match createSession(r2) {
+    case Ok(_) -> assertTrue(false, "should reject '..' in branch")
+    case Err(err) -> assertEqualInt(err.status, 400, "'..' branch -> 400")
+  }
+
+  val r3 = CreateSessionRequest(repoUrl = "https://github.com/nic/repo", branch = "main", harness = "garbage", model = "")
+  match createSession(r3) {
+    case Ok(_) -> assertTrue(false, "should reject unknown harness")
+    case Err(err) -> assertEqualInt(err.status, 400, "unknown harness -> 400")
+  }
+
+  // A quote in the repoUrl used to corrupt (or forge fields in) the session
+  // store JSON; now rejected at the boundary as well as escaped in the store.
+  val r4 = CreateSessionRequest(repoUrl = "https://github.com/nic/re\"po", branch = "main", harness = "claude", model = "")
+  match createSession(r4) {
+    case Ok(_) -> assertTrue(false, "should reject quote in repoUrl")
+    case Err(err) -> assertEqualInt(err.status, 400, "quoted repoUrl -> 400")
+  }
+
+  val r5 = CreateSessionRequest(repoUrl = "https://github.com/nic/repo", branch = "main", harness = "claude", model = "bad model")
+  match createSession(r5) {
+    case Ok(_) -> assertTrue(false, "should reject whitespace in model")
+    case Err(err) -> assertEqualInt(err.status, 400, "whitespace model -> 400")
+  }
+}
+
+test "Handler listSessions returns stored sessions" {
+  addSession(makeAgentSession(
+    sessionId = "ls-1",
+    repoUrl = "https://github.com/nic/repo",
+    branch = "main",
+    containerId = "",
+    harness = "claude",
+    model = "claude-opus-4-8",
+    nativeSessionId = "ls-1"
+  ))
+  addSession(makeAgentSession(
+    sessionId = "ls-2",
+    repoUrl = "https://github.com/nic/other",
+    branch = "main",
+    containerId = "",
+    harness = "codex",
+    model = "o4-mini",
+    nativeSessionId = "ls-2"
+  ))
+  match listSessions() {
+    case Ok(body) -> verifyListSessionsBody(body)
+    case Err(_) -> assertTrue(false, "listSessions should succeed")
+  }
+  val removedFirst = removeSession("ls-1")
+  val removedSecond = removeSession("ls-2")
+  assertTrue(removedFirst.isSome(), "ls-1 cleaned up")
+  assertTrue(removedSecond.isSome(), "ls-2 cleaned up")
 }
 
