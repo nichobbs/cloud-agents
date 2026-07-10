@@ -125,6 +125,38 @@ pub async func getRunnerLogs(containerId: in String): Result[String, String] {
   }
 }
 
+/// Read a running (or just-finished) container's logs-so-far synchronously,
+/// without waiting for it to exit. Docker's logs endpoint returns the current
+/// buffered output immediately, so this is safe to poll while a run is in
+/// flight to drive incremental output. Returns "" (not an error) if the logs
+/// cannot be fetched — a transient fetch failure during polling should not
+/// surface as a hard error to the client.
+pub func partialContainerLogs(containerId: in String): String {
+  val cell = ResultCell(isSuccess = false, output = "", error = "")
+  val t = partialContainerLogsAsync(containerId, cell)
+  val completed = taskWaitMs(t, 10000) // 10s cap; polling is best-effort
+  if not completed {
+    return ""
+  }
+  if cell.isSuccess {
+    return cell.output
+  }
+  return ""
+}
+
+async func partialContainerLogsAsync(containerId: in String, cell: in ResultCell): Unit {
+  val logsResult = await getRunnerLogs(containerId)
+  match logsResult {
+    case Ok(logs) -> {
+      cell.isSuccess = true
+      cell.output = logs
+    }
+    case Err(_) -> {
+      cell.isSuccess = false
+    }
+  }
+}
+
 /// Run a session message synchronously by orchestrating async container actions.
 pub func runSessionMessage(
   repoUrl: in String,

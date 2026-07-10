@@ -122,6 +122,12 @@ pub record SendMessageRequest {
   pub text: String
 }
 
+@generate(Json)
+pub record RunOutput {
+  pub running: Bool
+  pub output: String
+}
+
 /// Create a persistent session workspace.
 @post("/api/sessions")
 pub func createSession(@body req: in CreateSessionRequest): Result[CreateSessionResponse, Web.ApiError] {
@@ -267,6 +273,35 @@ pub func sendMessage(id: in String, @body req: in SendMessageRequest): Result[St
         case Ok(logs) -> match CloudAgents.Repository.addMessage(id, "agent", logs) { case Ok(m) -> return Ok(value = CloudAgents.Streaming.formatLogsAsSseWithId(logs, m.id)); case Err(_) -> return Ok(value = CloudAgents.Streaming.formatLogsAsSse(logs)) }
         case Err(err) -> return Err(Web.internalError("Failed to execute message: " + err))
       }
+    }
+  }
+}
+
+/// Live output for an in-progress run. The frontend polls this while a send is
+/// outstanding to show incremental container output, since the send itself
+/// blocks until the run finishes and Lyric.Web cannot stream a response.
+///
+/// A run is in progress exactly when the session has a live container id (set
+/// when the run starts, cleared when it ends). While running, we return the
+/// container's logs-so-far; otherwise `running` is false and the client stops
+/// polling and reloads the persisted transcript.
+@get("/api/sessions/{id}/output")
+pub func getRunOutput(id: in String): Result[RunOutput, Web.ApiError] {
+  if id.length == 0 {
+    return Err(Web.badRequest("id is required"))
+  }
+  val maybeSession = match getSession(id) {
+    case Ok(m) -> m
+    case Err(e) -> return Err(Web.internalError("session lookup failed: " + CloudAgents.Sqlite.dbErrorMessage(e)))
+  }
+  match maybeSession {
+    case None -> return Err(Web.notFound("Session not found"))
+    case Some(session) -> {
+      if session.containerId.length == 0 {
+        return Ok(RunOutput(running = false, output = ""))
+      }
+      val logs = CloudAgents.Docker.partialContainerLogs(session.containerId)
+      return Ok(RunOutput(running = true, output = logs))
     }
   }
 }

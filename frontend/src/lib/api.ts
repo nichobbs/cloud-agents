@@ -106,6 +106,13 @@ export const api = {
     }
   },
 
+  /** Poll live output for an in-progress run (see useStreamMessage). */
+  getRunOutput: async (sessionId: string): Promise<{ running: boolean; output: string }> => {
+    const res = await fetch(`${BASE}/api/sessions/${sessionId}/output`, { headers: authHeaders() });
+    if (!res.ok) throw new Error(`${res.status} ${await res.text()}`);
+    return res.json() as Promise<{ running: boolean; output: string }>;
+  },
+
   // ─── Transcript ──────────────────────────────────────────────────────────────
 
   getMessages: async (sessionId: string): Promise<Message[]> => {

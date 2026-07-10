@@ -70,9 +70,40 @@ export function useStreamMessage(sessionId: string): StreamState {
       // Show user prompt with a cyan prefix marker
       setOutput(prev => prev + `\x1b[1;36m❯ ${text}\x1b[0m\n`);
 
+      // The send request blocks until the whole run finishes (the backend
+      // cannot stream a response yet), so poll the run-output endpoint in
+      // parallel to surface incremental container output as it accumulates.
+      // The poll replaces the live tail wholesale each tick (the endpoint
+      // returns logs-so-far, not a delta); it stops as soon as the send
+      // settles or the run reports finished. Failures are swallowed — polling
+      // is best-effort and must never fail the send.
+      let polling = true;
+      let liveTail = '';
+      const basePrefix = `\x1b[1;36m❯ ${text}\x1b[0m\n`;
+      const poll = async () => {
+        while (polling && stillCurrent()) {
+          try {
+            const { running, output: partial } = await api.getRunOutput(sessionId);
+            if (!polling || !stillCurrent()) break;
+            if (partial && partial !== liveTail) {
+              liveTail = partial;
+              // Rebuild output as prompt-marker + latest full tail so repeated
+              // polls don't duplicate content.
+              setOutput(basePrefix + partial);
+            }
+            if (!running) break;
+          } catch {
+            // ignore transient poll failures
+          }
+          await new Promise(r => setTimeout(r, 1500));
+        }
+      };
+      void poll();
+
       let succeeded = true;
       try {
         await api.sendMessage(sessionId, text, chunk => {
+          polling = false; // real streamed chunks win over polling
           if (stillCurrent()) {
             setOutput(prev => prev + chunk);
           }
@@ -85,6 +116,7 @@ export function useStreamMessage(sessionId: string): StreamState {
           setOutput(prev => prev + `\x1b[1;31mError: ${msg}\x1b[0m\n`);
         }
       } finally {
+        polling = false;
         if (stillCurrent()) {
           setIsStreaming(false);
         }

@@ -35,6 +35,9 @@ func main(): Unit {
   router = Web.addDelete(router, "/api/sessions/{id}", "CloudAgents.Handlers.deleteSession")
   router = Web.addPost(router, "/api/sessions/{id}/model", "CloudAgents.Handlers.updateSessionModel")
 
+  // Live output polling for an in-progress run
+  router = Web.addGet(router, "/api/sessions/{id}/output", "CloudAgents.Handlers.getRunOutput")
+
   // Transcript: addressable agent/user messages for a session
   router = Web.addGet(router, "/api/sessions/{id}/messages", "CloudAgents.Interactions.getMessages")
 
