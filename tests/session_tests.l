@@ -93,8 +93,12 @@ test "Test Session Store CRUD Operations" {
     case None -> assertTrue(false, "session should still exist in store")
   }
 
-  // 4. Switch model (same harness)
-  updateSessionModel(sessionId, "claude-sonnet-4-6")
+  // 4. Switch model (same harness). Fully qualified: both SessionStore and
+  // Handlers export an `updateSessionModel`, and the compiler resolves the
+  // ambiguity silently by import order rather than erroring — an unqualified
+  // call here bound to the Handlers overload (wrong argument type, runtime
+  // cast crash) when the imports were reordered.
+  CloudAgents.SessionStore.updateSessionModel(sessionId, "claude-sonnet-4-6")
   match getSession(sessionId) {
     case Some(s) -> verifyModelSwitch(s, sessionId)
     case None -> assertTrue(false, "session should still exist in store")
