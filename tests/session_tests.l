@@ -481,6 +481,51 @@ test "reapableWarmContainers finds and frees aged WARM sessions (#241)" {
   assertEqualInt(after.length.toInt(), 0, "reaped session is no longer reapable")
 }
 
+test "Session ownership isolation hides other users' sessions (#207)" {
+  val dbPath = useFreshTestDb("session-isolation")
+  defer {
+    cleanupTestDb(dbPath)
+  }
+  // Insert a session owned by another user directly (the store's own writes are
+  // hardcoded to the current user, so a raw insert is the only way to stage a
+  // cross-user row). profile_id defaults to ''.
+  match CloudAgents.Sqlite.execute("INSERT INTO sessions (id, user_id, repo_url, branch, container_id, harness, model, native_session_id, status, created_at, last_message_at) VALUES ('foreign-1', 'other-user', 'https://github.com/x/y', 'main', '', 'claude', 'm', 'foreign-1', 'IDLE', '1000', '1000')") {
+    case Ok(_) -> ()
+    case Err(e) -> assertTrue(false, "setup insert failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+  }
+  // The current user ("default") cannot read another user's session by id...
+  match getSession("foreign-1") {
+    case Ok(Some(_)) -> assertTrue(false, "must not read another user's session")
+    case Ok(None) -> ()
+    case Err(e) -> assertTrue(false, "getSession failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+  }
+  // ...nor see it in the list.
+  match CloudAgents.SessionStore.getSessions() {
+    case Ok(arr) -> assertEqualInt(CloudAgents.SessionStore.getSessionArrayLength(arr), 0, "foreign session not listed")
+    case Err(e) -> assertTrue(false, "getSessions failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+  }
+  // The current user's own session is visible.
+  mustUnit(addSession(makeAgentSession(
+    sessionId = "mine-1",
+    repoUrl = "https://github.com/nic/repo",
+    branch = "main",
+    containerId = "",
+    harness = "claude",
+    model = "claude-opus-4-8",
+    nativeSessionId = "mine-1"
+  )))
+  match getSession("mine-1") {
+    case Ok(Some(_)) -> ()
+    case Ok(None) -> assertTrue(false, "own session should be visible")
+    case Err(e) -> assertTrue(false, "getSession failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+  }
+  // The list now holds exactly my one session — the foreign row stays hidden.
+  match CloudAgents.SessionStore.getSessions() {
+    case Ok(arr) -> assertEqualInt(CloudAgents.SessionStore.getSessionArrayLength(arr), 1, "only my own session listed")
+    case Err(e) -> assertTrue(false, "getSessions failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+  }
+}
+
 // ── Session lifecycle: run history, cancel, profile wiring ────────────────────
 
 func mustRunId(r: in Result[String, CloudAgents.Sqlite.DbError]): String {

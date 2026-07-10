@@ -278,7 +278,14 @@ pub func sendMessage(id: in String, @body req: in SendMessageRequest): Result[St
       // would 409 every future send until a restart's recovery sweep). `defer`
       // runs on all scope exits.
       defer {
-        val _ = CloudAgents.SessionStore.endRun(id)
+        // Log a failed release rather than swallowing it (#208): if endRun
+        // fails, the session stays RUNNING until the startup recovery sweep, so
+        // the operator should see why. (A retry can't help here — the same DB
+        // error would recur — so surfacing it is the useful action.)
+        match CloudAgents.SessionStore.endRun(id) {
+          case Ok(_) -> ()
+          case Err(e) -> println("WARNING: failed to release run claim for session " + id + " (stays RUNNING until recovery): " + CloudAgents.Sqlite.dbErrorMessage(e))
+        }
       }
 
       // Persist the user's prompt as an addressable transcript message. Best-effort:
@@ -526,6 +533,18 @@ pub func deleteSession(id: in String): Result[Unit, Web.ApiError] {
   match maybeSession {
     case None -> return Err(Web.notFound("Session not found"))
     case Some(session) -> {
+      // Refuse to delete a session with a run in flight (#210): a mid-run delete
+      // would race the blocking send (which still holds the claim and writes the
+      // run record on exit), risking an orphaned container the send re-creates
+      // and a dangling run row. Cancel the run first, then delete.
+      val status = match CloudAgents.SessionStore.sessionStatus(id) {
+        case Ok(s) -> s
+        case Err(e) -> return Err(Web.internalError("status lookup failed: " + CloudAgents.Sqlite.dbErrorMessage(e)))
+      }
+      match status {
+        case Some(s) -> if s == "RUNNING" { return Err(Web.conflict("a run is in progress; cancel it before deleting the session")) }
+        case None -> ()
+      }
       val containerId = session.containerId
       if containerId.length > 0 {
         val terminateResult = CloudAgents.Docker.terminateSessionContainer(containerId)
