@@ -392,15 +392,23 @@ pub func cancelRun(id: in String): Result[Unit, Web.ApiError] {
       if not isRunning {
         return Err(Web.conflict("no run is in progress for this session"))
       }
-      // Mark history first (write-once), then terminate the container.
-      val _ = CloudAgents.Repository.finishSessionRuns(id, userId, "cancelled")
-      if session.containerId.length > 0 {
-        match CloudAgents.Docker.terminateSessionContainer(session.containerId) {
-          case Ok(_) -> ()
-          case Err(e) -> return Err(Web.internalError("failed to terminate container: " + e))
-        }
+      // The status flips to RUNNING synchronously, before the container is
+      // created. If we get here in that window (no container id yet), there is
+      // nothing to terminate and the run would keep executing — so DON'T mark
+      // history 'cancelled' (write-once would then block the real terminal
+      // status forever, #243). Report that the run is still starting instead.
+      if session.containerId.length == 0 {
+        return Err(Web.conflict("run is still starting (container not created yet) — retry shortly"))
       }
-      return Ok(())
+      // Terminate first; only record 'cancelled' once the container is actually
+      // gone, so history never claims a cancel that didn't take effect.
+      match CloudAgents.Docker.terminateSessionContainer(session.containerId) {
+        case Ok(_) -> {
+          val _ = CloudAgents.Repository.finishSessionRuns(id, userId, "cancelled")
+          return Ok(())
+        }
+        case Err(e) -> return Err(Web.internalError("failed to terminate container: " + e))
+      }
     }
   }
 }
