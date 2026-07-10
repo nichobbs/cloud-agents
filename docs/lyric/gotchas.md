@@ -163,6 +163,14 @@ CloudAgents.SessionStore` alphabetically flipped which `updateSessionModel` a
 test called). Fully qualify any name exported by more than one imported
 package.
 
+**Package-qualified record construction fails at runtime.**
+`CloudAgents.Prompts.SavePromptRequest(name = ..., body = ...)` compiles but
+dies with `unsupported method 'SavePromptRequest' on the receiver type`
+(confirmed on v0.4.19 by CloudAgents.PromptTests). Import the module and
+construct with the unqualified name — `SavePromptRequest(...)`. Qualified
+*function* calls (`CloudAgents.Sqlite.execute(...)`) work fine; it is only
+record constructors that must be unqualified.
+
 **`Result`/`Option` convenience methods fail at runtime even as dot-calls.**
 `r.unwrapResult()` (and by the same mechanism `.unwrapResultOr()`,
 `.unwrapErrOr()`, and `Option.isSome()`/`.isNone()` below) compiles but dies

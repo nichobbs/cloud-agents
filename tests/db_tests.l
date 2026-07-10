@@ -66,12 +66,14 @@ test "SQL statements are scoped by owner" {
 }
 
 test "run-claim SQL is atomic and status-guarded" {
-  val begin = tryBeginRunSql("s1", "u1", "1000")
-  assertTrue(begin.contains("SET status = 'RUNNING'"), "claim sets RUNNING")
-  assertTrue(begin.contains("AND status <> 'RUNNING'"), "claim refuses an already-running session")
-  assertTrue(begin.contains("AND user_id = 'u1'"), "claim scoped by owner")
-  val end = endRunSql("s1", "u1", "2000")
-  assertTrue(end.contains("SET status = 'IDLE'"), "end returns to IDLE")
+  // 'end' (and defensively 'begin') are reserved keywords in Lyric (P0051),
+  // hence the Sql-suffixed binding names.
+  val claimSql = tryBeginRunSql("s1", "u1", "1000")
+  assertTrue(claimSql.contains("SET status = 'RUNNING'"), "claim sets RUNNING")
+  assertTrue(claimSql.contains("AND status <> 'RUNNING'"), "claim refuses an already-running session")
+  assertTrue(claimSql.contains("AND user_id = 'u1'"), "claim scoped by owner")
+  val releaseSql = endRunSql("s1", "u1", "2000")
+  assertTrue(releaseSql.contains("SET status = 'IDLE'"), "end returns to IDLE")
   assertTrue(recoverDanglingSessionsSql().contains("WHERE status = 'RUNNING' OR status = 'WARM'"), "recovery targets stranded sessions")
 }
 

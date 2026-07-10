@@ -78,21 +78,23 @@ Run `./scripts/repro-compiler-bug.sh` to check which bugs your compiler
 still has before assuming a local failure needs a local fix. See
 `docs/BUILD.md` "Compiler notes" for full detail.
 
-**`lyric test` runs (as of v0.4.15) and fully passes now, as of v0.4.19 —
-24/24 across all four suites, for the first time in this project's
-history.** It no longer crashes as of v0.4.11 (that was bug 1 above, which
-also hit this entry point), no longer fails every test outright on a
-missing `Lyric.Stdlib.dll` as of v0.4.15 (the same underlying fix as bug
-4), no longer fails on cross-package field corruption as of v0.4.17 (bug
-5), no longer fails on `slice[T].append()` as of v0.4.18 (bug 6), and no
-longer fails on the top-level untyped `val`'s `.length` as of v0.4.19 (bug
-7) — `CloudAgents.SessionTests`, `CloudAgents.StreamingTests`,
-`CloudAgents.DbTests`, and `CloudAgents.AuthTests` are all fully green,
-including the previously-failing `Test Handler createSession validation`
-case (`src/handlers/sessions.l`'s `createSession` reads a top-level `val
-httpsPrefix = "https://"` via `.length`, exactly bug 7's trigger).
-`./scripts/verify.sh` also still genuinely passes. See `docs/BUILD.md`
-"Running tests" for detail.
+**`lyric test` runs (as of v0.4.15) and fully passes as of v0.4.19 — every
+suite in `lyric.toml`'s `[project.tests]` (the authoritative roster; counts
+here would go stale as suites are added).** It no longer crashes as of
+v0.4.11 (that was bug 1 above, which also hit this entry point), no longer
+fails every test outright on a missing `Lyric.Stdlib.dll` as of v0.4.15
+(the same underlying fix as bug 4), no longer fails on cross-package field
+corruption as of v0.4.17 (bug 5), no longer fails on `slice[T].append()`
+as of v0.4.18 (bug 6), and no longer fails on the top-level untyped
+`val`'s `.length` as of v0.4.19 (bug 7 — the previously-failing `Test
+Handler createSession validation` case read a top-level `val httpsPrefix =
+"https://"` via `.length`, exactly bug 7's trigger).
+`./scripts/verify.sh` also still genuinely passes. The live-database
+suites additionally need the native SQLite library on the loader path —
+see `docs/BUILD.md` "Running tests". More runtime gotchas found since
+(broken `Instant.now()`, `unwrapResult`-family methods, qualified record
+construction) are catalogued in `docs/lyric/gotchas.md` — read it before
+writing runtime-executed code.
 
 Source files use `.l` extension. Entry point is `func main(): Unit` in the appropriate package.
 

@@ -166,35 +166,35 @@ test "Prompt handlers validate, store and 404 correctly" {
   }
 
   // Validation: empty name / empty body are 400s.
-  match CloudAgents.Prompts.addPromptHandler(CloudAgents.Prompts.SavePromptRequest(name = "", body = "b")) {
+  match addPromptHandler(SavePromptRequest(name = "", body = "b")) {
     case Ok(_) -> assertTrue(false, "empty name should be rejected")
     case Err(err) -> assertEqualInt(err.status, 400, "empty name -> 400")
   }
-  match CloudAgents.Prompts.addPromptHandler(CloudAgents.Prompts.SavePromptRequest(name = "n", body = "")) {
+  match addPromptHandler(SavePromptRequest(name = "n", body = "")) {
     case Ok(_) -> assertTrue(false, "empty body should be rejected")
     case Err(err) -> assertEqualInt(err.status, 400, "empty body -> 400")
   }
 
   // Happy path: create, then see it in the list handler.
-  match CloudAgents.Prompts.addPromptHandler(CloudAgents.Prompts.SavePromptRequest(name = "handler prompt", body = "hello")) {
+  match addPromptHandler(SavePromptRequest(name = "handler prompt", body = "hello")) {
     case Ok(p) -> verifyCreatedPromptHandler(p)
     case Err(_) -> assertTrue(false, "valid prompt should be created")
   }
-  match CloudAgents.Prompts.listPromptsHandler() {
+  match listPromptsHandler() {
     case Ok(pl) -> assertEqualInt(pl.prompts.length.toInt(), 1, "list handler returns the stored prompt")
     case Err(_) -> assertTrue(false, "list handler should succeed")
   }
 
   // Unknown ids are 404s.
-  match CloudAgents.Prompts.updatePromptHandler("nope", CloudAgents.Prompts.SavePromptRequest(name = "n", body = "b")) {
+  match updatePromptHandler("nope", SavePromptRequest(name = "n", body = "b")) {
     case Ok(_) -> assertTrue(false, "unknown id update should 404")
     case Err(err) -> assertEqualInt(err.status, 404, "update unknown -> 404")
   }
-  match CloudAgents.Prompts.usePromptHandler("nope") {
+  match usePromptHandler("nope") {
     case Ok(_) -> assertTrue(false, "unknown id use should 404")
     case Err(err) -> assertEqualInt(err.status, 404, "use unknown -> 404")
   }
-  match CloudAgents.Prompts.deletePromptHandler("nope") {
+  match deletePromptHandler("nope") {
     case Ok(_) -> assertTrue(false, "unknown id delete should 404")
     case Err(err) -> assertEqualInt(err.status, 404, "delete unknown -> 404")
   }

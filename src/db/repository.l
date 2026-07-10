@@ -168,6 +168,8 @@ pub func initSchema(): Result[Unit, CloudAgents.Sqlite.DbError] {
   CloudAgents.Sqlite.execute(CloudAgents.Db.todosSchemaSql())?
   CloudAgents.Sqlite.execute(CloudAgents.Db.promptsSchemaSql())?
   CloudAgents.Sqlite.execute(CloudAgents.Db.sessionsSchemaSql())?
+  CloudAgents.Sqlite.execute(CloudAgents.Db.promptsUserIndexSql())?
+  CloudAgents.Sqlite.execute(CloudAgents.Db.sessionsUserIndexSql())?
   return Ok(value = ())
 }
 

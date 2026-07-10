@@ -514,3 +514,13 @@ pub func touchPromptUsedSql(id: in String, userId: in String, usedAt: in String)
 pub func deletePromptSql(id: in String, userId: in String): String {
   return "DELETE FROM prompts WHERE id = " + sqlLiteral(id) + " AND user_id = " + sqlLiteral(userId)
 }
+
+/// Index for the owner column every prompt query filters on (review #182).
+pub func promptsUserIndexSql(): String {
+  return "CREATE INDEX IF NOT EXISTS idx_prompts_user_id ON prompts(user_id)"
+}
+
+/// Index for the owner column every session query filters on.
+pub func sessionsUserIndexSql(): String {
+  return "CREATE INDEX IF NOT EXISTS idx_sessions_user_id ON sessions(user_id)"
+}
