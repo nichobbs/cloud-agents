@@ -183,8 +183,12 @@ The Std.String methods (`.length`, `.substring`, `.contains`, ...) and
 
 **`Int.toNat()` does not resolve at runtime** — `unsupported method 'toNat'
 on the receiver type` (confirmed on v0.4.19 by CloudAgents.CryptoTests). The
-reverse, `Nat.toInt()`, works fine. Keep loop counters/indices as `Nat` from
-the start (`var i: Nat = 0`) rather than converting an `Int` with `.toNat()`.
+reverse, `Nat.toInt()`, works fine. And you can't dodge it with `var i: Nat =
+0` either: integer literals are typed `Int` with no implicit Nat coercion, so
+that fails to compile (`T0061`/`T0033`, Nat-vs-Int). Practical consequence:
+iterating with a `Nat` counter to index a `slice[Byte]` is awkward — prefer
+working over `String`/base64 (whose `.length.toInt()` + `.substring` are
+known-good) when you need an index-driven loop.
 
 **`Std.Time.Instant.now()` is broken at runtime in the current toolchain** —
 it compiles, then fails with `Method not found: 'Void System.DateTime.now()'`
