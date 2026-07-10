@@ -279,9 +279,16 @@ test "Handler listSessions returns stored sessions" {
     case Ok(body) -> verifyListSessionsBody(body)
     case Err(_) -> assertTrue(false, "listSessions should succeed")
   }
-  val removedFirst = removeSession("ls-1")
-  val removedSecond = removeSession("ls-2")
-  assertTrue(removedFirst.isSome(), "ls-1 cleaned up")
-  assertTrue(removedSecond.isSome(), "ls-2 cleaned up")
+  // Cleanup via match: Option.isSome() does not resolve at runtime in the
+  // current toolchain (same class of issue as the String.indexOf caveat in
+  // CloudAgents.Auth).
+  match removeSession("ls-1") {
+    case Some(_) -> ()
+    case None -> assertTrue(false, "ls-1 should have been stored")
+  }
+  match removeSession("ls-2") {
+    case Some(_) -> ()
+    case None -> assertTrue(false, "ls-2 should have been stored")
+  }
 }
 
