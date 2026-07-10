@@ -67,8 +67,67 @@ pub async func ping(): Result[String, DockerError] {
 }
 
 // ─── Container lifecycle ──────────────────────────────────────────────────────
-/// Escape a string for embedding in a JSON string literal.
-func jsonEscapeValue(s: in String): String {
+//
+// The daemon's JSON decoder rejects raw control characters (U+0000–U+001F) in
+// string literals, and env values routinely contain them: multi-line PROMPT
+// (newlines) or pasted terminal output (ESC and friends). Without full
+// escaping any such prompt made the whole create-container body unparseable.
+// Lyric string literals cannot express these bytes, so the helpers below go
+// through the BCL — same approach as CloudAgents.Streaming.
+@externTarget("System.String.CompareOrdinal")
+func strCompareOrdinal(a: in String, b: in String): Int = ()
+
+/// The single-character string for a Unicode code point. Exposed so tests can
+/// construct control characters that Lyric literals cannot express.
+@externTarget("System.Char.ConvertFromUtf32")
+pub func charFromCode(code: in Int): String = ()
+
+/// True for a single UTF-16 unit below U+0020. Ordinal comparison against " "
+/// is exact here: any unit >= 0x20 (including lone surrogates) compares >= 0.
+func isControlChar(c: in String): Bool {
+  return strCompareOrdinal(c, " ") < 0
+}
+
+func hexDigit(n: in Int): String {
+  if n == 10 {
+    return "a"
+  }
+  if n == 11 {
+    return "b"
+  }
+  if n == 12 {
+    return "c"
+  }
+  if n == 13 {
+    return "d"
+  }
+  if n == 14 {
+    return "e"
+  }
+  if n == 15 {
+    return "f"
+  }
+  return toString(n)
+}
+
+/// The `\u00XX` escape for a control character (code point below 0x20).
+func controlEscape(c: in String): String {
+  var code = 0
+  while code < 32 {
+    if charFromCode(code) == c {
+      if code < 16 {
+        return "\\u000" + hexDigit(code)
+      }
+      return "\\u001" + hexDigit(code - 16)
+    }
+    code = code + 1
+  }
+  return c // unreachable: isControlChar guarantees code < 32
+}
+
+/// Escape a string for embedding in a JSON string literal. Pub for test
+/// coverage — createContainerBody feeds every env value through this.
+pub func jsonEscapeValue(s: in String): String {
   var acc = ""
   var i = 0
   while i < s.length {
@@ -77,6 +136,14 @@ func jsonEscapeValue(s: in String): String {
       acc = acc + "\\\""
     } else if c == "\\" {
       acc = acc + "\\\\"
+    } else if c == "\n" {
+      acc = acc + "\\n"
+    } else if c == "\r" {
+      acc = acc + "\\r"
+    } else if c == "\t" {
+      acc = acc + "\\t"
+    } else if isControlChar(c) {
+      acc = acc + controlEscape(c)
     } else {
       acc = acc + c
     }

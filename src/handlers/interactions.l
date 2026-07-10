@@ -95,6 +95,19 @@ pub func addTodoHandler(id: in String, @body req: in AddTodoRequest): Result[Tod
   if req.note.length > maxBodyLen {
     return Err(Web.badRequest("note is too long (max 32768 characters)"))
   }
+  // When the todo is anchored to a message, the anchor must exist and belong
+  // to this session — otherwise todos can point at other sessions' transcripts
+  // (or at nothing).
+  if req.messageId.length > 0 {
+    val ownerSid = match getMessageSessionId(req.messageId) {
+      case Ok(Some(sid)) -> sid
+      case Ok(None) -> return Err(Web.notFound("message not found"))
+      case Err(e) -> return Err(dbError(e))
+    }
+    if ownerSid != id {
+      return Err(Web.badRequest("messageId does not belong to this session"))
+    }
+  }
   match addTodo(id, req.messageId, req.note) {
     case Ok(t) -> return Ok(t)
     case Err(e) -> return Err(dbError(e))

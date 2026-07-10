@@ -31,12 +31,73 @@ pub func jsonEscape(
       acc = acc + "\\r"
     } else if c == "\t" {
       acc = acc + "\\t"
+    } else if isControlChar(c) {
+      acc = acc + controlEscape(c)
     } else {
       acc = acc + c
     }
     i = i + 1
   }
   return acc
+}
+
+// ── Control characters ────────────────────────────────────────────────────────
+//
+// JSON forbids raw control characters (U+0000–U+001F) inside string literals;
+// browsers' JSON.parse rejects frames containing them, and the frontend then
+// silently drops the "malformed" chunk. ESC (0x1B) is exactly such a byte, so
+// without this every ANSI-coloured log line vanished from the stream. Lyric
+// string literals cannot express these bytes, so the helpers go through the
+// BCL.
+@externTarget("System.String.CompareOrdinal")
+func strCompareOrdinal(a: in String, b: in String): Int = ()
+
+/// The single-character string for a Unicode code point. Exposed so tests can
+/// construct control characters that Lyric literals cannot express.
+@externTarget("System.Char.ConvertFromUtf32")
+pub func charFromCode(code: in Int): String = ()
+
+/// True for a single UTF-16 unit below U+0020. Ordinal comparison against " "
+/// is exact here: any unit >= 0x20 (including lone surrogates) compares >= 0.
+func isControlChar(c: in String): Bool {
+  return strCompareOrdinal(c, " ") < 0
+}
+
+func hexDigit(n: in Int): String {
+  if n == 10 {
+    return "a"
+  }
+  if n == 11 {
+    return "b"
+  }
+  if n == 12 {
+    return "c"
+  }
+  if n == 13 {
+    return "d"
+  }
+  if n == 14 {
+    return "e"
+  }
+  if n == 15 {
+    return "f"
+  }
+  return toString(n)
+}
+
+/// The `\u00XX` escape for a control character (code point below 0x20).
+func controlEscape(c: in String): String {
+  var code = 0
+  while code < 32 {
+    if charFromCode(code) == c {
+      if code < 16 {
+        return "\\u000" + hexDigit(code)
+      }
+      return "\\u001" + hexDigit(code - 16)
+    }
+    code = code + 1
+  }
+  return c // unreachable: isControlChar guarantees code < 32
 }
 
 /// Wrap a single output line as one SSE data frame.

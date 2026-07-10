@@ -10,6 +10,19 @@ function authHeaders(): HeadersInit {
 }
 
 export const api = {
+  /** Server-side session list (`GET /api/sessions`). `createdAt` is not part
+   *  of the server record, so entries come back without it. */
+  listSessions: async (): Promise<
+    { sessionId: string; repoUrl: string; branch: string; harness?: string; model?: string }[]
+  > => {
+    const res = await fetch(`${BASE}/api/sessions`, { headers: authHeaders() });
+    if (!res.ok) throw new Error(`${res.status} ${await res.text()}`);
+    const body = (await res.json()) as {
+      sessions?: { sessionId: string; repoUrl: string; branch: string; harness?: string; model?: string }[];
+    };
+    return body.sessions ?? [];
+  },
+
   createSession: async (body: { repoUrl: string; branch: string; harness: string; model: string }): Promise<{ sessionId: string }> => {
     const res = await fetch(`${BASE}/api/sessions`, {
       method: 'POST',
@@ -115,11 +128,13 @@ export const api = {
     return body.comments ?? [];
   },
 
-  addComment: async (messageId: string, sessionId: string, body: string): Promise<Comment> => {
+  addComment: async (messageId: string, body: string): Promise<Comment> => {
+    // No sessionId in the payload: the backend's AddCommentRequest doesn't
+    // declare one — it derives the owning session from the stored message.
     const res = await fetch(`${BASE}/api/messages/${messageId}/comments`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', ...authHeaders() },
-      body: JSON.stringify({ sessionId, body }),
+      body: JSON.stringify({ body }),
     });
     if (!res.ok) throw new Error(`${res.status} ${await res.text()}`);
     return res.json() as Promise<Comment>;

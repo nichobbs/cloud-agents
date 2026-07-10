@@ -78,7 +78,6 @@ export function MessageBlock({ message, highlighted, onTodoAdded }: MessageBlock
       {showComments && (
         <CommentThread
           messageId={message.id}
-          sessionId={message.sessionId}
           onCountChange={setCommentCount}
         />
       )}
