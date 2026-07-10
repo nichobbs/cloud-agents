@@ -70,8 +70,8 @@ func grantsFor(req: in SaveProfileRequest): slice[String] {
   if req.credentialMode == "selected" {
     return req.credentials
   }
-  val none: slice[String] = []
-  return none
+  val empty: slice[String] = []
+  return empty
 }
 
 /// List the caller's profiles, alphabetical by name.

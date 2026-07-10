@@ -186,8 +186,8 @@ test "Selected-mode profile injects only its granted credentials" {
   assertTrue(not hasCred(injected, "AWS_KEY"), "ungranted credential withheld")
 
   // 'all' profile injects every credential.
-  val open = mustProfile(addProfile(userId, "all-creds", "", "full", "all", []))
-  val allInjected = mustProfileCreds(decryptedCredentialsForProfile(userId, open.id))
+  val allProfile = mustProfile(addProfile(userId, "all-creds", "", "full", "all", []))
+  val allInjected = mustProfileCreds(decryptedCredentialsForProfile(userId, allProfile.id))
   assertEqualInt(allInjected.length.toInt(), 3, "all mode injects every credential")
 
   // No profile (empty id) falls open to all credentials (legacy behaviour).

@@ -48,13 +48,13 @@ func networkModeForPolicy(policy: in String): String {
 /// container simply gets the default network and no proxy vars (enforcement is
 /// the proxy's job, tracked as a follow-up).
 func proxyEnvForPolicy(policy: in String): slice[String] {
-  val out: slice[String] = []
+  val empty: slice[String] = []
   if policy != "restricted" {
-    return out
+    return empty
   }
   val proxy = Env.GetEnvironmentVariable("CLOUD_AGENTS_EGRESS_PROXY")
   if DotNetString.IsNullOrEmpty(proxy) {
-    return out
+    return empty
   }
   return ["HTTP_PROXY=" + proxy, "HTTPS_PROXY=" + proxy, "http_proxy=" + proxy, "https_proxy=" + proxy]
 }
