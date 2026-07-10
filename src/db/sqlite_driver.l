@@ -190,6 +190,47 @@ pub func execute(sql: in String): Result[Int, DbError] {
   }
 }
 
+/// Run several statements on a single connection inside one transaction —
+/// all-or-nothing. On any failure the whole batch is rolled back, so a partial
+/// migration (or any multi-step change) never persists. This is the ONLY way to
+/// get atomicity across statements here: `execute` opens a fresh connection per
+/// call, so a BEGIN in one `execute` and the DDL in the next would not share a
+/// transaction. Used by the migration runner so a migration and its ledger row
+/// commit together, making every retry of a failed migration safe (review #229).
+pub func executeTransaction(sqls: in slice[String]): Result[Unit, DbError] {
+  val conn = openConn()?
+  defer {
+    conn.Close()
+  }
+  return try {
+    val begin = conn.CreateCommand()
+    begin.set_CommandText("BEGIN")
+    val _ = begin.ExecuteNonQuery()
+    var i = 0
+    while i < sqls.length {
+      val cmd = conn.CreateCommand()
+      cmd.set_CommandText(sqls[i])
+      val _ = cmd.ExecuteNonQuery()
+      i = i + 1
+    }
+    val commit = conn.CreateCommand()
+    commit.set_CommandText("COMMIT")
+    val _ = commit.ExecuteNonQuery()
+    Ok(value = ())
+  } catch Bug as b {
+    // Roll back so nothing from this batch persists, then surface the error.
+    // The rollback is itself best-effort (the connection may already be broken).
+    try {
+      val rb = conn.CreateCommand()
+      rb.set_CommandText("ROLLBACK")
+      val _ = rb.ExecuteNonQuery()
+    } catch Bug as b2 {
+      // connection unusable; Close() in the defer still runs
+    }
+    Err(error = ExecFailed(sql = "transaction", message = b.message))
+  }
+}
+
 /// Run a query and read every row as a list of text columns.
 pub func query(sql: in String): Result[RowArray, DbError] {
   val conn = openConn()?

@@ -191,6 +191,15 @@ pub func allMigrations(): slice[Migration] {
         CloudAgents.Db.sessionsUserIndexSql(),
         CloudAgents.Db.credentialsUserIndexSql()
       ]
+    ),
+    Migration(
+      version = "0002_profiles",
+      statements = [
+        CloudAgents.Db.profilesSchemaSql(),
+        CloudAgents.Db.profileCredentialsSchemaSql(),
+        CloudAgents.Db.profilesUserIndexSql(),
+        CloudAgents.Db.profileCredentialsProfileIndexSql()
+      ]
     )
   ]
 }
@@ -213,10 +222,14 @@ pub func runMigrations(): Result[Unit, CloudAgents.Sqlite.DbError] {
   for m in allMigrations() {
     val applied = migrationApplied(m.version)?
     if not applied {
-      for stmt in m.statements {
-        CloudAgents.Sqlite.execute(stmt)?
-      }
-      CloudAgents.Sqlite.execute(CloudAgents.Db.recordMigrationSql(m.version, nowMillis()))?
+      // Run the migration's statements AND its ledger record in one
+      // transaction: either the whole migration applies and is recorded, or
+      // nothing is, so a mid-migration failure (e.g. a bad ALTER) leaves the
+      // database at the prior version and the next startup retries cleanly
+      // rather than getting stuck half-applied (review #229).
+      var stmts = m.statements
+      stmts = stmts.append(CloudAgents.Db.recordMigrationSql(m.version, nowMillis()))
+      CloudAgents.Sqlite.executeTransaction(stmts)?
     }
   }
   return Ok(value = ())
@@ -538,4 +551,200 @@ pub func decryptedCredentials(userId: in String): Result[slice[CredentialValue],
     i = i + 1
   }
   return Ok(value = acc)
+}
+
+// ─── Profiles ──────────────────────────────────────────────────────────────────
+//
+// A per-container policy: which harness runs, what network access the container
+// gets, and which credentials are injected (least privilege). See
+// CloudAgents.Db profiles DDL for the field vocabulary. The `credentials` slice
+// on the record is the set of granted credential names (empty unless
+// credentialMode == "selected").
+@generate(Json)
+pub record Profile {
+  pub id: String
+  pub userId: String
+  pub name: String
+  pub harness: String
+  pub networkPolicy: String
+  pub credentialMode: String
+  pub credentials: slice[String]
+  pub createdAt: String
+  pub updatedAt: String
+}
+
+@generate(Json)
+pub record ProfileList {
+  pub profiles: slice[Profile]
+}
+
+/// Whether a string slice contains a value (small linear scan).
+func sliceContains(xs: in slice[String], target: in String): Bool {
+  var i = 0
+  while i < xs.length {
+    if xs[i] == target {
+      return true
+    }
+    i = i + 1
+  }
+  return false
+}
+
+/// The granted credential names for a profile (empty for 'all' mode).
+func profileCredentialNames(profileId: in String, userId: in String): Result[slice[String], CloudAgents.Sqlite.DbError] {
+  val rows = CloudAgents.Sqlite.query(CloudAgents.Db.selectProfileCredentialsSql(profileId, userId))?
+  var acc: slice[String] = []
+  var i = 0
+  val len = CloudAgents.Sqlite.getRowArrayLength(rows)
+  while i < len {
+    acc = acc.append(colAt(CloudAgents.Sqlite.getRowArrayValue(rows, i).cols, 0))
+    i = i + 1
+  }
+  return Ok(value = acc)
+}
+
+func rowToProfile(r: in CloudAgents.Sqlite.Row, creds: in slice[String]): Profile {
+  return Profile(
+    id = colAt(r.cols, 0),
+    userId = colAt(r.cols, 1),
+    name = colAt(r.cols, 2),
+    harness = colAt(r.cols, 3),
+    networkPolicy = colAt(r.cols, 4),
+    credentialMode = colAt(r.cols, 5),
+    credentials = creds,
+    createdAt = colAt(r.cols, 6),
+    updatedAt = colAt(r.cols, 7)
+  )
+}
+
+/// Replace a profile's granted credential set: clear then re-insert, so the
+/// stored set always matches the request.
+func setProfileCredentials(
+  profileId: in String, userId: in String, names: in slice[String]
+): Result[Unit, CloudAgents.Sqlite.DbError] {
+  CloudAgents.Sqlite.execute(CloudAgents.Db.deleteProfileCredentialsSql(profileId, userId))?
+  for name in names {
+    CloudAgents.Sqlite.execute(CloudAgents.Db.insertProfileCredentialSql(newId(), profileId, userId, name))?
+  }
+  return Ok(value = ())
+}
+
+/// Save a new profile and its granted credential set, returning the stored record.
+pub func addProfile(
+  userId: in String,
+  name: in String,
+  harness: in String,
+  networkPolicy: in String,
+  credentialMode: in String,
+  credentials: in slice[String],
+): Result[Profile, CloudAgents.Sqlite.DbError] {
+  val id = newId()
+  val ts = nowMillis()
+  CloudAgents.Sqlite.execute(
+    CloudAgents.Db.insertProfileSql(id, userId, name, harness, networkPolicy, credentialMode, ts)
+  )?
+  setProfileCredentials(id, userId, credentials)?
+  return Ok(
+    value = Profile(
+      id = id,
+      userId = userId,
+      name = name,
+      harness = harness,
+      networkPolicy = networkPolicy,
+      credentialMode = credentialMode,
+      credentials = credentials,
+      createdAt = ts,
+      updatedAt = ts
+    )
+  )
+}
+
+/// All of a user's profiles (each with its granted credential names), by name.
+pub func listProfiles(userId: in String): Result[slice[Profile], CloudAgents.Sqlite.DbError] {
+  val rows = CloudAgents.Sqlite.query(CloudAgents.Db.selectProfilesSql(userId))?
+  var acc: slice[Profile] = []
+  var i = 0
+  val len = CloudAgents.Sqlite.getRowArrayLength(rows)
+  while i < len {
+    val r = CloudAgents.Sqlite.getRowArrayValue(rows, i)
+    val creds = profileCredentialNames(colAt(r.cols, 0), userId)?
+    acc = acc.append(rowToProfile(r, creds))
+    i = i + 1
+  }
+  return Ok(value = acc)
+}
+
+/// A single profile owned by a user (with its granted credentials), or None.
+pub func getProfile(id: in String, userId: in String): Result[Option[Profile], CloudAgents.Sqlite.DbError] {
+  val rows = CloudAgents.Sqlite.query(CloudAgents.Db.selectProfileByIdSql(id, userId))?
+  val len = CloudAgents.Sqlite.getRowArrayLength(rows)
+  if len == 0 {
+    return Ok(value = None)
+  }
+  val r = CloudAgents.Sqlite.getRowArrayValue(rows, 0)
+  val creds = profileCredentialNames(id, userId)?
+  return Ok(value = Some(value = rowToProfile(r, creds)))
+}
+
+/// Update a profile's settings and granted credentials. Returns rows affected
+/// on the profiles row (0 = not found / not owned, mapped to 404 by the handler).
+pub func updateProfile(
+  id: in String,
+  userId: in String,
+  name: in String,
+  harness: in String,
+  networkPolicy: in String,
+  credentialMode: in String,
+  credentials: in slice[String],
+): Result[Int, CloudAgents.Sqlite.DbError] {
+  val ts = nowMillis()
+  val affected = CloudAgents.Sqlite.execute(
+    CloudAgents.Db.updateProfileSql(id, userId, name, harness, networkPolicy, credentialMode, ts)
+  )?
+  if affected == 0 {
+    return Ok(value = 0)
+  }
+  setProfileCredentials(id, userId, credentials)?
+  return Ok(value = affected)
+}
+
+/// Delete a profile and its credential grants. Returns rows affected (0 = not found).
+pub func deleteProfile(id: in String, userId: in String): Result[Int, CloudAgents.Sqlite.DbError] {
+  CloudAgents.Sqlite.execute(CloudAgents.Db.deleteProfileCredentialsSql(id, userId))?
+  return CloudAgents.Sqlite.execute(CloudAgents.Db.deleteProfileSql(id, userId))
+}
+
+/// Decrypt only the credentials a profile grants, for least-privilege
+/// injection. In 'all' mode this is every credential (identical to
+/// decryptedCredentials); in 'selected' mode only the named grants are
+/// included. Best-effort per credential, exactly like decryptedCredentials.
+/// An unknown/absent profile falls open to legacy behaviour (all credentials).
+pub func decryptedCredentialsForProfile(
+  userId: in String, profileId: in String
+): Result[slice[CredentialValue], CredentialError] {
+  if profileId.length == 0 {
+    return decryptedCredentials(userId)
+  }
+  val profile = match getProfile(profileId, userId) {
+    case Ok(p) -> p
+    case Err(e) -> return Err(Db(error = e))
+  }
+  match profile {
+    case None -> return decryptedCredentials(userId)
+    case Some(p) -> {
+      if p.credentialMode != "selected" {
+        return decryptedCredentials(userId)
+      }
+      val all = decryptedCredentials(userId)?
+      var acc: slice[CredentialValue] = []
+      var i = 0
+      while i < all.length {
+        if sliceContains(p.credentials, all[i].name) {
+          acc = acc.append(all[i])
+        }
+        i = i + 1
+      }
+      return Ok(value = acc)
+    }
+  }
 }

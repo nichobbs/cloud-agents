@@ -116,6 +116,25 @@ test "Migrations are idempotent and back-fill the ledger" {
   assertTrue(created.id.length > 0, "schema is usable after a repeat migration run")
 }
 
+test "executeTransaction rolls back the whole batch on failure" {
+  val dbPath = useFreshTestDb("txn-rollback")
+  defer {
+    cleanupTestDb(dbPath)
+  }
+  // The atomicity the migration runner relies on (#229): a batch whose second
+  // statement is invalid must leave no trace of the first.
+  val goodInsert = insertPromptSql("txn-1", "default", "should-not-persist", "body", "1000")
+  match CloudAgents.Sqlite.executeTransaction([goodInsert, "THIS IS NOT SQL"]) {
+    case Ok(_) -> assertTrue(false, "a batch with an invalid statement must fail")
+    case Err(_) -> ()
+  }
+  match getPrompt("txn-1", "default") {
+    case Ok(Some(_)) -> assertTrue(false, "rolled-back insert must not persist")
+    case Ok(None) -> ()
+    case Err(e) -> assertTrue(false, "getPrompt failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+  }
+}
+
 test "Prompt CRUD round-trips through SQLite" {
   val dbPath = useFreshTestDb("prompt-crud")
   defer {

@@ -595,6 +595,149 @@ pub func deleteCredentialSql(userId: in String, name: in String): String {
   return "DELETE FROM credentials WHERE user_id = " + sqlLiteral(userId) + " AND name = " + sqlLiteral(name)
 }
 
+// ─── Profiles ─────────────────────────────────────────────────────────────────
+//
+// A profile is a per-container policy object (à la Claude remote environments):
+// which harness runs, what network access the container gets, and which of the
+// user's credentials are injected (least privilege). A session may reference a
+// profile; with none, the legacy behaviour applies (all credentials, full
+// network). Scoped by user_id like every other resource. All TEXT affinity.
+//
+//   network_policy  : 'full' (default bridge) | 'none' (isolated) | 'restricted'
+//                     ('restricted' is a documented seam — sets proxy env vars,
+//                      egress allowlist enforcement is a follow-up)
+//   credential_mode : 'all' (inject every credential) | 'selected'
+//                     (inject only names listed in profile_credentials)
+//   harness         : '' (session chooses) | a specific harness the profile pins
+/// DDL for the profiles table.
+pub func profilesSchemaSql(): String {
+  return "CREATE TABLE IF NOT EXISTS profiles (" + "id TEXT PRIMARY KEY, " + "user_id TEXT NOT NULL, " +
+    "name TEXT NOT NULL, " +
+    "harness TEXT NOT NULL, " +
+    "network_policy TEXT NOT NULL, " +
+    "credential_mode TEXT NOT NULL, " +
+    "created_at TEXT NOT NULL, " +
+    "updated_at TEXT NOT NULL, " +
+    "UNIQUE(user_id, name))"
+}
+
+/// DDL for the join table naming which credentials a 'selected'-mode profile
+/// grants. user_id is denormalised so every read stays ownership-scoped.
+pub func profileCredentialsSchemaSql(): String {
+  return "CREATE TABLE IF NOT EXISTS profile_credentials (" + "id TEXT PRIMARY KEY, " + "profile_id TEXT NOT NULL, " +
+    "user_id TEXT NOT NULL, " +
+    "credential_name TEXT NOT NULL, " +
+    "UNIQUE(profile_id, credential_name))"
+}
+
+/// Index for the owner column every profile query filters on.
+pub func profilesUserIndexSql(): String {
+  return "CREATE INDEX IF NOT EXISTS idx_profiles_user_id ON profiles(user_id)"
+}
+
+/// Index for the profile_id lookups the injection path uses.
+pub func profileCredentialsProfileIndexSql(): String {
+  return "CREATE INDEX IF NOT EXISTS idx_profile_credentials_profile_id ON profile_credentials(profile_id)"
+}
+
+/// INSERT a new profile.
+pub func insertProfileSql(
+  id: in String,
+  userId: in String,
+  name: in String,
+  harness: in String,
+  networkPolicy: in String,
+  credentialMode: in String,
+  createdAt: in String,
+): String {
+  return "INSERT INTO profiles (id, user_id, name, harness, network_policy, credential_mode, created_at, updated_at) VALUES (" +
+    sqlLiteral(id) +
+    ", " +
+    sqlLiteral(userId) +
+    ", " +
+    sqlLiteral(name) +
+    ", " +
+    sqlLiteral(harness) +
+    ", " +
+    sqlLiteral(networkPolicy) +
+    ", " +
+    sqlLiteral(credentialMode) +
+    ", " +
+    sqlLiteral(createdAt) +
+    ", " +
+    sqlLiteral(createdAt) +
+    ")"
+}
+
+val profileColumns = "id, user_id, name, harness, network_policy, credential_mode, created_at, updated_at"
+
+/// SELECT one user's profiles, alphabetical by name.
+pub func selectProfilesSql(userId: in String): String {
+  return "SELECT " + profileColumns + " FROM profiles WHERE user_id = " + sqlLiteral(userId) + " ORDER BY name ASC"
+}
+
+/// SELECT a single profile owned by a user.
+pub func selectProfileByIdSql(id: in String, userId: in String): String {
+  return "SELECT " + profileColumns + " FROM profiles WHERE id = " + sqlLiteral(id) + " AND user_id = " +
+    sqlLiteral(userId)
+}
+
+/// UPDATE a profile's settings.
+pub func updateProfileSql(
+  id: in String,
+  userId: in String,
+  name: in String,
+  harness: in String,
+  networkPolicy: in String,
+  credentialMode: in String,
+  updatedAt: in String,
+): String {
+  return "UPDATE profiles SET name = " + sqlLiteral(name) + ", harness = " + sqlLiteral(harness) +
+    ", network_policy = " +
+    sqlLiteral(networkPolicy) +
+    ", credential_mode = " +
+    sqlLiteral(credentialMode) +
+    ", updated_at = " +
+    sqlLiteral(updatedAt) +
+    " WHERE id = " +
+    sqlLiteral(id) +
+    " AND user_id = " +
+    sqlLiteral(userId)
+}
+
+/// DELETE a profile owned by a user.
+pub func deleteProfileSql(id: in String, userId: in String): String {
+  return "DELETE FROM profiles WHERE id = " + sqlLiteral(id) + " AND user_id = " + sqlLiteral(userId)
+}
+
+/// INSERT one credential grant for a profile.
+pub func insertProfileCredentialSql(
+  id: in String, profileId: in String, userId: in String, credentialName: in String
+): String {
+  return "INSERT INTO profile_credentials (id, profile_id, user_id, credential_name) VALUES (" + sqlLiteral(id) + ", " +
+    sqlLiteral(profileId) +
+    ", " +
+    sqlLiteral(userId) +
+    ", " +
+    sqlLiteral(credentialName) +
+    ") ON CONFLICT(profile_id, credential_name) DO NOTHING"
+}
+
+/// SELECT the credential names a profile grants, alphabetical.
+pub func selectProfileCredentialsSql(profileId: in String, userId: in String): String {
+  return "SELECT credential_name FROM profile_credentials WHERE profile_id = " + sqlLiteral(profileId) +
+    " AND user_id = " +
+    sqlLiteral(userId) +
+    " ORDER BY credential_name ASC"
+}
+
+/// DELETE every credential grant for a profile (used to replace the set on
+/// update, and to clean up when a profile is deleted).
+pub func deleteProfileCredentialsSql(profileId: in String, userId: in String): String {
+  return "DELETE FROM profile_credentials WHERE profile_id = " + sqlLiteral(profileId) + " AND user_id = " +
+    sqlLiteral(userId)
+}
+
 // ─── Schema migrations ────────────────────────────────────────────────────────
 //
 // A tiny versioned-migration ledger. Every schema change is expressed as an

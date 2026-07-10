@@ -91,6 +91,12 @@ func main(): Unit {
   router = Web.addPost(router, "/api/credentials", "CloudAgents.Credentials.putCredentialHandler")
   router = Web.addDelete(router, "/api/credentials/{name}", "CloudAgents.Credentials.deleteCredentialHandler")
 
+  // Profiles: per-container policy (harness, network access, injected creds).
+  router = Web.addGet(router, "/api/profiles", "CloudAgents.Profiles.listProfilesHandler")
+  router = Web.addPost(router, "/api/profiles", "CloudAgents.Profiles.addProfileHandler")
+  router = Web.addPost(router, "/api/profiles/{pid}", "CloudAgents.Profiles.updateProfileHandler")
+  router = Web.addDelete(router, "/api/profiles/{pid}", "CloudAgents.Profiles.deleteProfileHandler")
+
   // Register health route
   router = Web.addGet(router, "/api/health", "CloudAgents.Handlers.checkHealth")
 
