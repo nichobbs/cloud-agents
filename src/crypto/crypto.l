@@ -131,16 +131,16 @@ func newBytes(length: in Int): ByteArray {
 func concatBytes(a: in ByteArray, b: in ByteArray): ByteArray {
   val aLen = byteArrayLength(a)
   val bLen = byteArrayLength(b)
-  val out = newBytes(aLen + bLen)
-  copyBytes(a, 0, out, 0, aLen)
-  copyBytes(b, 0, out, aLen, bLen)
-  return out
+  val dst = newBytes(aLen + bLen)
+  copyBytes(a, 0, dst, 0, aLen)
+  copyBytes(b, 0, dst, aLen, bLen)
+  return dst
 }
 
 func sliceBytes(src: in ByteArray, start: in Int, length: in Int): ByteArray {
-  val out = newBytes(length)
-  copyBytes(src, start, out, 0, length)
-  return out
+  val dst = newBytes(length)
+  copyBytes(src, start, dst, 0, length)
+  return dst
 }
 
 /// Constant-time equality of two base64 strings (the two MACs). Both are a
