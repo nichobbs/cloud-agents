@@ -33,58 +33,75 @@ test "prompt SQL builders are owner-scoped and escaped" {
 // native e_sqlite3 library isn't reachable from the test runner — see
 // docs/BUILD.md.
 
+@externTarget("System.IO.File.Delete")
+func fileDelete(path: in String): Unit = ()
+
 /// Point the driver at a fresh, unique database file and create the schema.
-func useFreshTestDb(tag: in String): Unit {
+/// Returns the file path so the test can clean it up (review #175).
+func useFreshTestDb(tag: in String): String {
   val path = "/tmp/cloud-agents-tests-" + tag + "-" + Std.Uuid.uuidToString(Std.Uuid.newUuid()) + ".db"
   Env.SetEnvironmentVariable("CLOUD_AGENTS_DB_PATH", path)
   match CloudAgents.Repository.initSchema() {
     case Ok(_) -> ()
     case Err(e) -> assertTrue(false, "initSchema failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
   }
+  return path
+}
+
+/// Best-effort removal of a test database file. A failed assertion earlier in
+/// the test skips this — acceptable, the paths are unique per run.
+func cleanupTestDb(path: in String): Unit {
+  try {
+    fileDelete(path)
+  } catch Bug as b {
+    // locked or already gone — fine for a temp file
+  }
 }
 
 test "Prompt CRUD round-trips through SQLite" {
-  useFreshTestDb("prompt-crud")
+  val dbPath = useFreshTestDb("prompt-crud")
   val userId = "default"
 
-  val created = unwrapResult(addPrompt(userId, "greeting", "Say hello to the repo"))
+  val created = addPrompt(userId, "greeting", "Say hello to the repo").unwrapResult()
   assertTrue(created.id.length > 0, "created prompt has an id")
   assertEqual(created.useCount, "0", "new prompt starts unused")
 
-  val listed = unwrapResult(listPrompts(userId))
+  val listed = listPrompts(userId).unwrapResult()
   assertEqualInt(listed.length.toInt(), 1, "one prompt listed")
   assertEqual(listed[0].name, "greeting", "listed prompt name matches")
 
-  val updated = unwrapResult(updatePrompt(created.id, userId, "greeting v2", "Say hello twice"))
+  val updated = updatePrompt(created.id, userId, "greeting v2", "Say hello twice").unwrapResult()
   assertEqualInt(updated, 1, "update touches one row")
-  match unwrapResult(getPrompt(created.id, userId)) {
+  match getPrompt(created.id, userId).unwrapResult() {
     case Some(p) -> assertEqual(p.name, "greeting v2", "update persisted")
     case None -> assertTrue(false, "updated prompt should exist")
   }
 
-  val used = unwrapResult(markPromptUsed(created.id, userId))
+  val used = markPromptUsed(created.id, userId).unwrapResult()
   assertEqualInt(used, 1, "use touches one row")
-  match unwrapResult(getPrompt(created.id, userId)) {
+  match getPrompt(created.id, userId).unwrapResult() {
     case Some(p) -> assertEqual(p.useCount, "1", "use count bumped")
     case None -> assertTrue(false, "used prompt should exist")
   }
 
-  val deleted = unwrapResult(deletePrompt(created.id, userId))
+  val deleted = deletePrompt(created.id, userId).unwrapResult()
   assertEqualInt(deleted, 1, "delete touches one row")
-  val after = unwrapResult(listPrompts(userId))
+  val after = listPrompts(userId).unwrapResult()
   assertEqualInt(after.length.toInt(), 0, "library empty after delete")
+  cleanupTestDb(dbPath)
 }
 
 test "Prompt ownership scoping hides other users' prompts" {
-  useFreshTestDb("prompt-scope")
-  val mine = unwrapResult(addPrompt("default", "mine", "my body"))
-  val theirs = unwrapResult(addPrompt("someone-else", "theirs", "their body"))
+  val dbPath = useFreshTestDb("prompt-scope")
+  val mine = addPrompt("default", "mine", "my body").unwrapResult()
+  val theirs = addPrompt("someone-else", "theirs", "their body").unwrapResult()
 
-  val myList = unwrapResult(listPrompts("default"))
+  val myList = listPrompts("default").unwrapResult()
   assertEqualInt(myList.length.toInt(), 1, "only my prompt listed")
   assertEqual(myList[0].id, mine.id, "listed prompt is mine")
 
   // Cross-user update/delete must not touch rows.
-  assertEqualInt(unwrapResult(updatePrompt(theirs.id, "default", "x", "y")), 0, "cannot update another user's prompt")
-  assertEqualInt(unwrapResult(deletePrompt(theirs.id, "default")), 0, "cannot delete another user's prompt")
+  assertEqualInt(updatePrompt(theirs.id, "default", "x", "y").unwrapResult(), 0, "cannot update another user's prompt")
+  assertEqualInt(deletePrompt(theirs.id, "default").unwrapResult(), 0, "cannot delete another user's prompt")
+  cleanupTestDb(dbPath)
 }

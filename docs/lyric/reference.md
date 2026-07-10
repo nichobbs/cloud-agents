@@ -1053,11 +1053,14 @@ assertEqualInt(actual, expected, "message")
 assertEqual(actual, expected)
 expect(condition)          // fails test if false
 isOk(result): Bool         // for use with assertTrue
-unwrapResult(result): T    // panics on Err — use in setup, not assertions
-                           // (a distinct, test-only bare-call helper — see
-                           // docs/lyric/stdlib.md's Result section for the
-                           // general-purpose Std.Core dot-call versions:
-                           // r.unwrapResult()/.unwrapResultOr()/.unwrapErrOr())
+r.unwrapResult(): T        // panics on Err — use in setup, not assertions.
+                           // NOTE: only the Std.Core DOT-CALL form resolves.
+                           // An earlier revision of this doc claimed a
+                           // test-only bare-call `unwrapResult(r)` helper —
+                           // that does NOT exist: bare calls fail to compile
+                           // with T0020 "unknown name" (confirmed on v0.4.19
+                           // by CI on this repo's CloudAgents.PromptTests).
+                           // See docs/lyric/gotchas.md's dot-call section.
 ```
 
 ### `@stubbable` interfaces
