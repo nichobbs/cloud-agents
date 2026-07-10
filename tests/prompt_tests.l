@@ -135,6 +135,52 @@ test "executeTransaction rolls back the whole batch on failure" {
   }
 }
 
+test "renderTemplate substitutes bound placeholders and leaves others" {
+  assertEqual(renderTemplate("Hello {{name}}!", ["name"], ["world"]), "Hello world!", "single var")
+  assertEqual(renderTemplate("{{a}}-{{b}}-{{a}}", ["a", "b"], ["1", "2"]), "1-2-1", "repeated + multiple vars")
+  assertEqual(renderTemplate("no vars here", [], []), "no vars here", "no vars")
+  assertEqual(renderTemplate("keep {{unbound}}", ["x"], ["y"]), "keep {{unbound}}", "unbound placeholder left intact")
+}
+
+test "Popular prompts are ordered by use count" {
+  val dbPath = useFreshTestDb("prompt-popular")
+  defer {
+    cleanupTestDb(dbPath)
+  }
+  val userId = "default"
+  val a = mustPrompt(addPrompt(userId, "alpha", "a"))
+  val b = mustPrompt(addPrompt(userId, "beta", "b"))
+  // Use beta twice, alpha once -> beta is more popular.
+  mustRows(markPromptUsed(b.id, userId))
+  mustRows(markPromptUsed(b.id, userId))
+  mustRows(markPromptUsed(a.id, userId))
+  val popular = mustPrompts(listPromptsByUsage(userId))
+  assertEqualInt(popular.length.toInt(), 2, "two prompts listed")
+  assertEqual(popular[0].name, "beta", "most-used first")
+  assertEqual(popular[1].name, "alpha", "less-used second")
+}
+
+test "renderPromptHandler renders a template and counts a use" {
+  val dbPath = useFreshTestDb("prompt-render")
+  defer {
+    cleanupTestDb(dbPath)
+  }
+  val created = mustPrompt(addPrompt("default", "greet", "Hi {{who}} on {{repo}}"))
+  match renderPromptHandler(created.id, RenderPromptRequest(keys = ["who", "repo"], values = ["Nic", "cloud-agents"])) {
+    case Ok(r) -> assertEqual(r.rendered, "Hi Nic on cloud-agents", "template rendered with bindings")
+    case Err(_) -> assertTrue(false, "render should succeed")
+  }
+  match renderPromptHandler("nope", RenderPromptRequest(keys = [], values = [])) {
+    case Ok(_) -> assertTrue(false, "unknown id should 404")
+    case Err(err) -> assertEqualInt(err.status, 404, "unknown prompt -> 404")
+  }
+  match getPrompt(created.id, "default") {
+    case Ok(Some(p)) -> assertEqual(p.useCount, "1", "render counted as a use")
+    case Ok(None) -> assertTrue(false, "prompt should exist")
+    case Err(e) -> assertTrue(false, "getPrompt failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+  }
+}
+
 test "Prompt CRUD round-trips through SQLite" {
   val dbPath = useFreshTestDb("prompt-crud")
   defer {

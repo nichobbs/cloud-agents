@@ -86,9 +86,11 @@ func main(): Unit {
 
   // Prompt library: saved, reusable prompts
   router = Web.addGet(router, "/api/prompts", "CloudAgents.Prompts.listPromptsHandler")
+  router = Web.addGet(router, "/api/prompts/popular", "CloudAgents.Prompts.listPopularPromptsHandler")
   router = Web.addPost(router, "/api/prompts", "CloudAgents.Prompts.addPromptHandler")
   router = Web.addPost(router, "/api/prompts/{pid}", "CloudAgents.Prompts.updatePromptHandler")
   router = Web.addPost(router, "/api/prompts/{pid}/use", "CloudAgents.Prompts.usePromptHandler")
+  router = Web.addPost(router, "/api/prompts/{pid}/render", "CloudAgents.Prompts.renderPromptHandler")
   router = Web.addDelete(router, "/api/prompts/{pid}", "CloudAgents.Prompts.deletePromptHandler")
 
   // Credential store: per-user secrets injected into runner containers.

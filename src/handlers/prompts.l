@@ -19,6 +19,55 @@ pub record SavePromptRequest {
   pub body: String
 }
 
+/// Variable bindings for rendering a prompt template. Parallel slices (rather
+/// than a nested key/value record) keep the JSON shape flat and within the
+/// toolchain's reliable @generate(Json) surface.
+@generate(Json)
+pub record RenderPromptRequest {
+  pub keys: slice[String]
+  pub values: slice[String]
+}
+
+@generate(Json)
+pub record RenderedPrompt {
+  pub rendered: String
+}
+
+/// Replace every occurrence of `needle` in `s` with `repl` (manual scan — the
+/// toolchain's String.replace is not relied on here, matching the codebase's
+/// habit of staying on known-good String ops).
+func replaceAll(s: in String, needle: in String, repl: in String): String {
+  if needle.length == 0 {
+    return s
+  }
+  var acc = ""
+  var i = 0
+  val n = needle.length
+  while i < s.length {
+    if i + n <= s.length and s.substring(i, n) == needle {
+      acc = acc + repl
+      i = i + n
+    } else {
+      acc = acc + s.substring(i, 1)
+      i = i + 1
+    }
+  }
+  return acc
+}
+
+/// Render a prompt body by substituting `{{key}}` placeholders with the paired
+/// value. Unbound placeholders are left intact. Pub for direct unit testing.
+pub func renderTemplate(body: in String, keys: in slice[String], values: in slice[String]): String {
+  var acc = body
+  var i = 0
+  val n = if keys.length < values.length { keys.length } else { values.length }
+  while i < n {
+    acc = replaceAll(acc, "{{" + keys[i] + "}}", values[i])
+    i = i + 1
+  }
+  return acc
+}
+
 func dbError(e: in CloudAgents.Sqlite.DbError): Web.ApiError {
   return Web.internalError(CloudAgents.Sqlite.dbErrorMessage(e))
 }
@@ -48,6 +97,35 @@ pub func listPromptsHandler(): Result[PromptList, Web.ApiError] {
     case Ok(ps) -> return Ok(PromptList(prompts = ps))
     case Err(e) -> return Err(dbError(e))
   }
+}
+
+/// List the caller's prompts most-used first — the "popular" ordering the UI
+/// uses to surface frequently-run prompts.
+@get("/api/prompts/popular")
+pub func listPopularPromptsHandler(): Result[PromptList, Web.ApiError] {
+  match listPromptsByUsage(CloudAgents.Auth.currentUserId()) {
+    case Ok(ps) -> return Ok(PromptList(prompts = ps))
+    case Err(e) -> return Err(dbError(e))
+  }
+}
+
+/// Render a prompt template with variable bindings and return the result.
+/// Rendering counts as a use (bumps use_count). 404 for an unknown prompt.
+@post("/api/prompts/{pid}/render")
+pub func renderPromptHandler(pid: in String, @body req: in RenderPromptRequest): Result[RenderedPrompt, Web.ApiError] {
+  if pid.length == 0 {
+    return Err(Web.badRequest("prompt id is required"))
+  }
+  val userId = CloudAgents.Auth.currentUserId()
+  val prompt = match getPrompt(pid, userId) {
+    case Ok(Some(p)) -> p
+    case Ok(None) -> return Err(Web.notFound("prompt not found"))
+    case Err(e) -> return Err(dbError(e))
+  }
+  val rendered = renderTemplate(prompt.body, req.keys, req.values)
+  // Rendering a prompt is a use; best-effort bookkeeping.
+  val _ = markPromptUsed(pid, userId)
+  return Ok(RenderedPrompt(rendered = rendered))
 }
 
 /// Save a new prompt to the library.

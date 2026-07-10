@@ -510,6 +510,14 @@ pub func selectPromptsSql(userId: in String): String {
     " ORDER BY name ASC"
 }
 
+/// SELECT one user's prompts, most-used first (ties broken alphabetically). The
+/// TEXT use_count is CAST to INTEGER so ordering is numeric, not lexical.
+pub func selectPromptsByUsageSql(userId: in String): String {
+  return "SELECT id, user_id, name, body, use_count, created_at, updated_at FROM prompts " + "WHERE user_id = " +
+    sqlLiteral(userId) +
+    " ORDER BY CAST(use_count AS INTEGER) DESC, name ASC"
+}
+
 /// SELECT a single prompt owned by a user.
 pub func selectPromptByIdSql(id: in String, userId: in String): String {
   return "SELECT id, user_id, name, body, use_count, created_at, updated_at FROM prompts " + "WHERE id = " +

@@ -437,6 +437,19 @@ pub func listPrompts(userId: in String): Result[slice[Prompt], CloudAgents.Sqlit
   return Ok(value = acc)
 }
 
+/// A user's prompts, most-used first (ties alphabetical).
+pub func listPromptsByUsage(userId: in String): Result[slice[Prompt], CloudAgents.Sqlite.DbError] {
+  val rows = CloudAgents.Sqlite.query(CloudAgents.Db.selectPromptsByUsageSql(userId))?
+  var acc: slice[Prompt] = []
+  var i = 0
+  val len = CloudAgents.Sqlite.getRowArrayLength(rows)
+  while i < len {
+    acc = acc.append(rowToPrompt(CloudAgents.Sqlite.getRowArrayValue(rows, i)))
+    i = i + 1
+  }
+  return Ok(value = acc)
+}
+
 /// A single prompt owned by a user, or None.
 pub func getPrompt(id: in String, userId: in String): Result[Option[Prompt], CloudAgents.Sqlite.DbError] {
   val rows = CloudAgents.Sqlite.query(CloudAgents.Db.selectPromptByIdSql(id, userId))?
