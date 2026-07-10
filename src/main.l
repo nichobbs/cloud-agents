@@ -87,6 +87,7 @@ func main(): Unit {
   // Prompt library: saved, reusable prompts
   router = Web.addGet(router, "/api/prompts", "CloudAgents.Prompts.listPromptsHandler")
   router = Web.addGet(router, "/api/prompts/popular", "CloudAgents.Prompts.listPopularPromptsHandler")
+  router = Web.addGet(router, "/api/prompts/tag/{tag}", "CloudAgents.Prompts.listPromptsByTagHandler")
   router = Web.addPost(router, "/api/prompts", "CloudAgents.Prompts.addPromptHandler")
   router = Web.addPost(router, "/api/prompts/{pid}", "CloudAgents.Prompts.updatePromptHandler")
   router = Web.addPost(router, "/api/prompts/{pid}/use", "CloudAgents.Prompts.usePromptHandler")

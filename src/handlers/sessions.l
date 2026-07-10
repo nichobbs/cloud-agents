@@ -405,11 +405,17 @@ pub func cancelRun(id: in String): Result[Unit, Web.ApiError] {
   }
 }
 
-/// A session's run history, newest first.
+/// A session's run history, newest first. 404 for an unknown/foreign session,
+/// consistent with the other session sub-resource endpoints (#239).
 @get("/api/sessions/{id}/runs")
 pub func getRuns(id: in String): Result[RunList, Web.ApiError] {
   if id.length == 0 {
     return Err(Web.badRequest("id is required"))
+  }
+  match getSession(id) {
+    case Ok(Some(_)) -> ()
+    case Ok(None) -> return Err(Web.notFound("Session not found"))
+    case Err(e) -> return Err(Web.internalError("session lookup failed: " + CloudAgents.Sqlite.dbErrorMessage(e)))
   }
   match CloudAgents.Repository.listRuns(id, CloudAgents.Auth.currentUserId()) {
     case Ok(rs) -> return Ok(RunList(runs = rs))

@@ -419,6 +419,68 @@ test "Handler listSessions returns stored sessions" {
   }
 }
 
+test "getRuns 404s for an unknown session (#239)" {
+  val dbPath = useFreshTestDb("get-runs")
+  defer {
+    cleanupTestDb(dbPath)
+  }
+  match getRuns("nope") {
+    case Ok(_) -> assertTrue(false, "unknown session should 404")
+    case Err(err) -> assertEqualInt(err.status, 404, "unknown session -> 404")
+  }
+  mustUnit(addSession(makeAgentSession(
+    sessionId = "gr-1",
+    repoUrl = "https://github.com/nic/repo",
+    branch = "main",
+    containerId = "",
+    harness = "claude",
+    model = "claude-opus-4-8",
+    nativeSessionId = "gr-1"
+  )))
+  match getRuns("gr-1") {
+    case Ok(rl) -> assertEqualInt(rl.runs.length.toInt(), 0, "known session with no runs -> empty list")
+    case Err(_) -> assertTrue(false, "known session should succeed")
+  }
+}
+
+test "reapableWarmContainers finds and frees aged WARM sessions (#241)" {
+  val dbPath = useFreshTestDb("reap")
+  defer {
+    cleanupTestDb(dbPath)
+  }
+  mustUnit(addSession(makeAgentSession(
+    sessionId = "warm-1",
+    repoUrl = "https://github.com/nic/repo",
+    branch = "main",
+    containerId = "",
+    harness = "claude",
+    model = "claude-opus-4-8",
+    nativeSessionId = "warm-1"
+  )))
+  // Force it WARM with an ancient last_message_at (epoch 0) and a container id,
+  // so it is unambiguously past the warm window.
+  match CloudAgents.Sqlite.execute("UPDATE sessions SET status = 'WARM', container_id = 'c-warm', last_message_at = '0' WHERE id = 'warm-1'") {
+    case Ok(_) -> ()
+    case Err(e) -> assertTrue(false, "setup update failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+  }
+  val targets = match CloudAgents.SessionStore.reapableWarmContainers() {
+    case Ok(t) -> t
+    case Err(e) -> panic("reapableWarmContainers failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+  }
+  assertEqualInt(targets.length.toInt(), 1, "aged warm session is reapable")
+  assertEqual(targets[0].containerId, "c-warm", "reap target carries the container id")
+
+  match CloudAgents.SessionStore.reapSessionContainer("warm-1") {
+    case Ok(_) -> ()
+    case Err(e) -> assertTrue(false, "reapSessionContainer failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+  }
+  val after = match CloudAgents.SessionStore.reapableWarmContainers() {
+    case Ok(t) -> t
+    case Err(e) -> panic("reapableWarmContainers failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+  }
+  assertEqualInt(after.length.toInt(), 0, "reaped session is no longer reapable")
+}
+
 // ── Session lifecycle: run history, cancel, profile wiring ────────────────────
 
 func mustRunId(r: in Result[String, CloudAgents.Sqlite.DbError]): String {

@@ -51,6 +51,7 @@ pub record Prompt {
   pub useCount: String
   pub createdAt: String
   pub updatedAt: String
+  pub tags: slice[String]
 }
 
 @generate(Json)
@@ -213,6 +214,14 @@ pub func allMigrations(): slice[Migration] {
         CloudAgents.Db.runsSchemaSql(),
         CloudAgents.Db.runsSessionIndexSql(),
         CloudAgents.Db.runsUserIndexSql()
+      ]
+    ),
+    Migration(
+      version = "0005_prompt_tags",
+      statements = [
+        CloudAgents.Db.promptTagsSchemaSql(),
+        CloudAgents.Db.promptTagsPromptIndexSql(),
+        CloudAgents.Db.promptTagsTagIndexSql()
       ]
     )
   ]
@@ -402,7 +411,7 @@ pub func deleteTodo(id: in String): Result[Unit, CloudAgents.Sqlite.DbError] {
 }
 
 // ─── Prompt library ────────────────────────────────────────────────────────────
-func rowToPrompt(r: in CloudAgents.Sqlite.Row): Prompt {
+func rowToPrompt(r: in CloudAgents.Sqlite.Row, tags: in slice[String]): Prompt {
   return Prompt(
     id = colAt(r.cols, 0),
     userId = colAt(r.cols, 1),
@@ -410,28 +419,63 @@ func rowToPrompt(r: in CloudAgents.Sqlite.Row): Prompt {
     body = colAt(r.cols, 3),
     useCount = colAt(r.cols, 4),
     createdAt = colAt(r.cols, 5),
-    updatedAt = colAt(r.cols, 6)
+    updatedAt = colAt(r.cols, 6),
+    tags = tags
   )
 }
 
-/// Save a new prompt to a user's library and return the stored record.
+/// A prompt's tags, alphabetical (empty when none).
+func promptTagNames(promptId: in String, userId: in String): Result[slice[String], CloudAgents.Sqlite.DbError] {
+  val rows = CloudAgents.Sqlite.query(CloudAgents.Db.selectPromptTagsSql(promptId, userId))?
+  var acc: slice[String] = []
+  var i = 0
+  val len = CloudAgents.Sqlite.getRowArrayLength(rows)
+  while i < len {
+    acc = acc.append(colAt(CloudAgents.Sqlite.getRowArrayValue(rows, i).cols, 0))
+    i = i + 1
+  }
+  return Ok(value = acc)
+}
+
+/// Build a Prompt from a row, fetching its tags.
+func rowToPromptWithTags(r: in CloudAgents.Sqlite.Row, userId: in String): Result[Prompt, CloudAgents.Sqlite.DbError] {
+  val tags = promptTagNames(colAt(r.cols, 0), userId)?
+  return Ok(value = rowToPrompt(r, tags))
+}
+
+/// Replace a prompt's tag set atomically (clear, then insert each). Returned by
+/// callers through executeTransaction so the set is consistent on partial fail.
+pub func setPromptTags(promptId: in String, userId: in String, tags: in slice[String]): Result[Unit, CloudAgents.Sqlite.DbError] {
+  var stmts: slice[String] = []
+  stmts = stmts.append(CloudAgents.Db.deletePromptTagsSql(promptId, userId))
+  for t in tags {
+    stmts = stmts.append(CloudAgents.Db.insertPromptTagSql(newId(), promptId, userId, t))
+  }
+  CloudAgents.Sqlite.executeTransaction(stmts)?
+  return Ok(value = ())
+}
+
+/// Save a new prompt to a user's library and return the stored record (no tags
+/// yet — the handler sets them via setPromptTags and re-reads).
 pub func addPrompt(userId: in String, name: in String, body: in String): Result[Prompt, CloudAgents.Sqlite.DbError] {
   val id = newId()
   val ts = nowMillis()
   CloudAgents.Sqlite.execute(CloudAgents.Db.insertPromptSql(id, userId, name, body, ts))?
+  val noTags: slice[String] = []
   return Ok(
-    value = Prompt(id = id, userId = userId, name = name, body = body, useCount = "0", createdAt = ts, updatedAt = ts)
+    value = Prompt(id = id, userId = userId, name = name, body = body, useCount = "0", createdAt = ts, updatedAt = ts, tags = noTags)
   )
 }
 
-/// All prompts in a user's library, alphabetical by name.
+/// All prompts in a user's library, alphabetical by name (each with its tags).
 pub func listPrompts(userId: in String): Result[slice[Prompt], CloudAgents.Sqlite.DbError] {
   val rows = CloudAgents.Sqlite.query(CloudAgents.Db.selectPromptsSql(userId))?
   var acc: slice[Prompt] = []
   var i = 0
   val len = CloudAgents.Sqlite.getRowArrayLength(rows)
   while i < len {
-    acc = acc.append(rowToPrompt(CloudAgents.Sqlite.getRowArrayValue(rows, i)))
+    val p = rowToPromptWithTags(CloudAgents.Sqlite.getRowArrayValue(rows, i), userId)?
+    acc = acc.append(p)
     i = i + 1
   }
   return Ok(value = acc)
@@ -444,20 +488,41 @@ pub func listPromptsByUsage(userId: in String): Result[slice[Prompt], CloudAgent
   var i = 0
   val len = CloudAgents.Sqlite.getRowArrayLength(rows)
   while i < len {
-    acc = acc.append(rowToPrompt(CloudAgents.Sqlite.getRowArrayValue(rows, i)))
+    val p = rowToPromptWithTags(CloudAgents.Sqlite.getRowArrayValue(rows, i), userId)?
+    acc = acc.append(p)
     i = i + 1
   }
   return Ok(value = acc)
 }
 
-/// A single prompt owned by a user, or None.
+/// A user's prompts carrying a given tag, alphabetical by name.
+pub func listPromptsByTag(userId: in String, tag: in String): Result[slice[Prompt], CloudAgents.Sqlite.DbError] {
+  val idRows = CloudAgents.Sqlite.query(CloudAgents.Db.selectPromptIdsByTagSql(userId, tag))?
+  var acc: slice[Prompt] = []
+  var i = 0
+  val len = CloudAgents.Sqlite.getRowArrayLength(idRows)
+  while i < len {
+    val pid = colAt(CloudAgents.Sqlite.getRowArrayValue(idRows, i).cols, 0)
+    match getPrompt(pid, userId)? {
+      case Some(p) -> {
+        acc = acc.append(p)
+      }
+      case None -> ()
+    }
+    i = i + 1
+  }
+  return Ok(value = acc)
+}
+
+/// A single prompt owned by a user (with tags), or None.
 pub func getPrompt(id: in String, userId: in String): Result[Option[Prompt], CloudAgents.Sqlite.DbError] {
   val rows = CloudAgents.Sqlite.query(CloudAgents.Db.selectPromptByIdSql(id, userId))?
   val len = CloudAgents.Sqlite.getRowArrayLength(rows)
   if len == 0 {
     return Ok(value = None)
   }
-  return Ok(value = Some(value = rowToPrompt(CloudAgents.Sqlite.getRowArrayValue(rows, 0))))
+  val p = rowToPromptWithTags(CloudAgents.Sqlite.getRowArrayValue(rows, 0), userId)?
+  return Ok(value = Some(value = p))
 }
 
 /// Update a prompt's name/body. Returns the number of rows affected (0 when
@@ -476,8 +541,11 @@ pub func markPromptUsed(id: in String, userId: in String): Result[Int, CloudAgen
   return CloudAgents.Sqlite.execute(CloudAgents.Db.touchPromptUsedSql(id, userId, ts))
 }
 
-/// Delete a prompt. Returns rows affected (0 = not found).
+/// Delete a prompt and its tags. Returns rows affected on the prompt (0 = not
+/// found). Tag cleanup is best-effort — orphaned tag rows are unreachable once
+/// the prompt is gone.
 pub func deletePrompt(id: in String, userId: in String): Result[Int, CloudAgents.Sqlite.DbError] {
+  val _ = CloudAgents.Sqlite.execute(CloudAgents.Db.deletePromptTagsSql(id, userId))
   return CloudAgents.Sqlite.execute(CloudAgents.Db.deletePromptSql(id, userId))
 }
 

@@ -245,6 +245,31 @@ func verifyCreatedPromptHandler(p: in Prompt): Unit {
   assertTrue(p.id.length > 0, "handler returns stored id")
 }
 
+test "Prompt tags round-trip, replace, and filter" {
+  val dbPath = useFreshTestDb("prompt-tags")
+  defer {
+    cleanupTestDb(dbPath)
+  }
+  val userId = "default"
+  val p = mustPrompt(addPrompt(userId, "tagged", "body"))
+  match setPromptTags(p.id, userId, ["red", "blue"]) {
+    case Ok(_) -> ()
+    case Err(e) -> assertTrue(false, "setPromptTags failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+  }
+  match getPrompt(p.id, userId) {
+    case Ok(Some(gp)) -> assertEqualInt(gp.tags.length.toInt(), 2, "two tags attached to the prompt")
+    case Ok(None) -> assertTrue(false, "prompt should exist")
+    case Err(e) -> assertTrue(false, "getPrompt failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+  }
+  // setPromptTags is a full replace, not an append.
+  match setPromptTags(p.id, userId, ["green"]) {
+    case Ok(_) -> ()
+    case Err(_) -> ()
+  }
+  assertEqualInt(mustPrompts(listPromptsByTag(userId, "green")).length.toInt(), 1, "found under the new tag")
+  assertEqualInt(mustPrompts(listPromptsByTag(userId, "red")).length.toInt(), 0, "old tag no longer matches")
+}
+
 test "Prompt handlers validate, store and 404 correctly" {
   val dbPath = useFreshTestDb("prompt-handlers")
   defer {
@@ -252,17 +277,22 @@ test "Prompt handlers validate, store and 404 correctly" {
   }
 
   // Validation: empty name / empty body are 400s.
-  match addPromptHandler(SavePromptRequest(name = "", body = "b")) {
+  match addPromptHandler(SavePromptRequest(name = "", body = "b", tags = [])) {
     case Ok(_) -> assertTrue(false, "empty name should be rejected")
     case Err(err) -> assertEqualInt(err.status, 400, "empty name -> 400")
   }
-  match addPromptHandler(SavePromptRequest(name = "n", body = "")) {
+  match addPromptHandler(SavePromptRequest(name = "n", body = "", tags = [])) {
     case Ok(_) -> assertTrue(false, "empty body should be rejected")
     case Err(err) -> assertEqualInt(err.status, 400, "empty body -> 400")
   }
+  // Invalid tag -> 400.
+  match addPromptHandler(SavePromptRequest(name = "n", body = "b", tags = ["bad tag"])) {
+    case Ok(_) -> assertTrue(false, "invalid tag should be rejected")
+    case Err(err) -> assertEqualInt(err.status, 400, "invalid tag -> 400")
+  }
 
-  // Happy path: create, then see it in the list handler.
-  match addPromptHandler(SavePromptRequest(name = "handler prompt", body = "hello")) {
+  // Happy path with tags: create, then see it in the list + tag handlers.
+  match addPromptHandler(SavePromptRequest(name = "handler prompt", body = "hello", tags = ["ci", "deploy"])) {
     case Ok(p) -> verifyCreatedPromptHandler(p)
     case Err(_) -> assertTrue(false, "valid prompt should be created")
   }
@@ -270,9 +300,18 @@ test "Prompt handlers validate, store and 404 correctly" {
     case Ok(pl) -> assertEqualInt(pl.prompts.length.toInt(), 1, "list handler returns the stored prompt")
     case Err(_) -> assertTrue(false, "list handler should succeed")
   }
+  // Tag filter finds it under 'ci' and not under a foreign tag.
+  match listPromptsByTagHandler("ci") {
+    case Ok(pl) -> assertEqualInt(pl.prompts.length.toInt(), 1, "tag filter finds the tagged prompt")
+    case Err(_) -> assertTrue(false, "tag filter should succeed")
+  }
+  match listPromptsByTagHandler("nonexistent") {
+    case Ok(pl) -> assertEqualInt(pl.prompts.length.toInt(), 0, "unknown tag returns nothing")
+    case Err(_) -> assertTrue(false, "tag filter should succeed")
+  }
 
   // Unknown ids are 404s.
-  match updatePromptHandler("nope", SavePromptRequest(name = "n", body = "b")) {
+  match updatePromptHandler("nope", SavePromptRequest(name = "n", body = "b", tags = [])) {
     case Ok(_) -> assertTrue(false, "unknown id update should 404")
     case Err(err) -> assertEqualInt(err.status, 404, "update unknown -> 404")
   }

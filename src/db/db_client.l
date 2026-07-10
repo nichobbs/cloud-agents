@@ -558,6 +558,57 @@ pub func promptsUserIndexSql(): String {
   return "CREATE INDEX IF NOT EXISTS idx_prompts_user_id ON prompts(user_id)"
 }
 
+// ─── Prompt tags ────────────────────────────────────────────────────────────────
+//
+// Tags/categories for prompts, in a join table (same shape as
+// profile_credentials) so the prompts column mapping stays stable. user_id is
+// denormalised so every read is ownership-scoped.
+/// DDL for the prompt-tag join table.
+pub func promptTagsSchemaSql(): String {
+  return "CREATE TABLE IF NOT EXISTS prompt_tags (" + "id TEXT PRIMARY KEY, " + "prompt_id TEXT NOT NULL, " +
+    "user_id TEXT NOT NULL, " +
+    "tag TEXT NOT NULL, " +
+    "UNIQUE(prompt_id, tag))"
+}
+
+/// Index for per-prompt tag reads.
+pub func promptTagsPromptIndexSql(): String {
+  return "CREATE INDEX IF NOT EXISTS idx_prompt_tags_prompt_id ON prompt_tags(prompt_id)"
+}
+
+/// Index for tag-filtered listing (owner + tag).
+pub func promptTagsTagIndexSql(): String {
+  return "CREATE INDEX IF NOT EXISTS idx_prompt_tags_user_tag ON prompt_tags(user_id, tag)"
+}
+
+/// INSERT one tag for a prompt (idempotent per (prompt, tag)).
+pub func insertPromptTagSql(id: in String, promptId: in String, userId: in String, tag: in String): String {
+  return "INSERT INTO prompt_tags (id, prompt_id, user_id, tag) VALUES (" + sqlLiteral(id) + ", " +
+    sqlLiteral(promptId) +
+    ", " +
+    sqlLiteral(userId) +
+    ", " +
+    sqlLiteral(tag) +
+    ") ON CONFLICT(prompt_id, tag) DO NOTHING"
+}
+
+/// SELECT a prompt's tags, alphabetical.
+pub func selectPromptTagsSql(promptId: in String, userId: in String): String {
+  return "SELECT tag FROM prompt_tags WHERE prompt_id = " + sqlLiteral(promptId) + " AND user_id = " +
+    sqlLiteral(userId) +
+    " ORDER BY tag ASC"
+}
+
+/// DELETE all of a prompt's tags (to replace the set on update / clean up on delete).
+pub func deletePromptTagsSql(promptId: in String, userId: in String): String {
+  return "DELETE FROM prompt_tags WHERE prompt_id = " + sqlLiteral(promptId) + " AND user_id = " + sqlLiteral(userId)
+}
+
+/// SELECT the ids of a user's prompts carrying a given tag.
+pub func selectPromptIdsByTagSql(userId: in String, tag: in String): String {
+  return "SELECT prompt_id FROM prompt_tags WHERE user_id = " + sqlLiteral(userId) + " AND tag = " + sqlLiteral(tag)
+}
+
 /// Index for the owner column every session query filters on.
 pub func sessionsUserIndexSql(): String {
   return "CREATE INDEX IF NOT EXISTS idx_sessions_user_id ON sessions(user_id)"

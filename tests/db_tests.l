@@ -131,6 +131,15 @@ test "run-history SQL builders are scoped and well-formed" {
   assertTrue(finishSessionRunsSql("s1", "u1", "cancelled", "3000").endsWith("AND status = 'running'"), "cancel only affects running runs")
 }
 
+test "prompt-tag SQL builders are scoped and idempotent" {
+  assertTrue(promptTagsSchemaSql().contains("CREATE TABLE IF NOT EXISTS prompt_tags"), "tags ddl")
+  assertTrue(promptTagsSchemaSql().contains("UNIQUE(prompt_id, tag)"), "unique per prompt+tag")
+  assertTrue(insertPromptTagSql("t1", "p1", "u1", "ci").contains("ON CONFLICT(prompt_id, tag) DO NOTHING"), "tag insert idempotent")
+  assertTrue(selectPromptTagsSql("p1", "u1").contains("AND user_id = 'u1'"), "tag read scoped by owner")
+  assertTrue(selectPromptIdsByTagSql("u1", "ci").endsWith("AND tag = 'ci'"), "filter by tag")
+  assertTrue(selectPromptsByUsageSql("u1").contains("ORDER BY CAST(use_count AS INTEGER) DESC"), "usage ordering is numeric")
+}
+
 test "reap SQL filters by warm window in SQL" {
   val sel = selectReapableWarmSql("1000000", "300000")
   assertTrue(sel.contains("status = 'WARM'"), "reaps warm sessions")

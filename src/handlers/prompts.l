@@ -17,6 +17,29 @@ val maxPromptBodyLen = 131072
 pub record SavePromptRequest {
   pub name: String
   pub body: String
+  pub tags: slice[String]
+}
+
+val maxTagLen = 64
+
+/// A tag is a short label: letters, digits, dash or underscore, non-empty. Dupes
+/// are collapsed by the UNIQUE(prompt_id, tag) constraint at the DB layer.
+pub func isValidTag(tag: in String): Bool {
+  if tag.length == 0 or tag.length > maxTagLen {
+    return false
+  }
+  var i = 0
+  while i < tag.length {
+    val c = tag.substring(i, 1)
+    val isUpper = c >= "A" and c <= "Z"
+    val isLower = c >= "a" and c <= "z"
+    val isDigit = c >= "0" and c <= "9"
+    if not (isUpper or isLower or isDigit or c == "-" or c == "_") {
+      return false
+    }
+    i = i + 1
+  }
+  return true
 }
 
 /// Variable bindings for rendering a prompt template. Parallel slices (rather
@@ -87,6 +110,13 @@ func validateSavePrompt(req: in SavePromptRequest): Option[Web.ApiError] {
   if req.body.length > maxPromptBodyLen {
     return Some(value = Web.badRequest("body is too long (max 131072 characters)"))
   }
+  var i = 0
+  while i < req.tags.length {
+    if not isValidTag(req.tags[i]) {
+      return Some(value = Web.badRequest("tags must be short labels of letters, digits, dash or underscore"))
+    }
+    i = i + 1
+  }
   return None
 }
 
@@ -104,6 +134,18 @@ pub func listPromptsHandler(): Result[PromptList, Web.ApiError] {
 @get("/api/prompts/popular")
 pub func listPopularPromptsHandler(): Result[PromptList, Web.ApiError] {
   match listPromptsByUsage(CloudAgents.Auth.currentUserId()) {
+    case Ok(ps) -> return Ok(PromptList(prompts = ps))
+    case Err(e) -> return Err(dbError(e))
+  }
+}
+
+/// List the caller's prompts carrying a given tag, alphabetical by name.
+@get("/api/prompts/tag/{tag}")
+pub func listPromptsByTagHandler(tag: in String): Result[PromptList, Web.ApiError] {
+  if tag.length == 0 {
+    return Err(Web.badRequest("tag is required"))
+  }
+  match listPromptsByTag(CloudAgents.Auth.currentUserId(), tag) {
     case Ok(ps) -> return Ok(PromptList(prompts = ps))
     case Err(e) -> return Err(dbError(e))
   }
@@ -139,8 +181,19 @@ pub func addPromptHandler(@body req: in SavePromptRequest): Result[Prompt, Web.A
   // stored value must match or a " foo " name would round-trip with the
   // surrounding whitespace the check quietly ignored. Body is stored as-is
   // (leading/trailing whitespace in a prompt body can be meaningful).
-  match addPrompt(CloudAgents.Auth.currentUserId(), req.name.trim(), req.body) {
-    case Ok(p) -> return Ok(p)
+  val userId = CloudAgents.Auth.currentUserId()
+  val created = match addPrompt(userId, req.name.trim(), req.body) {
+    case Ok(p) -> p
+    case Err(e) -> return Err(dbError(e))
+  }
+  // Persist tags, then return the prompt with its tags attached.
+  match setPromptTags(created.id, userId, req.tags) {
+    case Ok(_) -> ()
+    case Err(e) -> return Err(dbError(e))
+  }
+  match getPrompt(created.id, userId) {
+    case Ok(Some(p)) -> return Ok(p)
+    case Ok(None) -> return Ok(created)
     case Err(e) -> return Err(dbError(e))
   }
 }
@@ -164,7 +217,12 @@ pub func updatePromptHandler(pid: in String, @body req: in SavePromptRequest): R
   if affected == 0 {
     return Err(Web.notFound("prompt not found"))
   }
-  // Return the stored record so the client gets the fresh updated_at.
+  // Replace the tag set to match the request.
+  match setPromptTags(pid, userId, req.tags) {
+    case Ok(_) -> ()
+    case Err(e) -> return Err(dbError(e))
+  }
+  // Return the stored record so the client gets the fresh updated_at + tags.
   match getPrompt(pid, userId) {
     case Ok(Some(p)) -> return Ok(p)
     case Ok(None) -> return Err(Web.notFound("prompt not found"))
