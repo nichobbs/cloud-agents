@@ -107,11 +107,22 @@ export function useStreamMessage(sessionId: string): StreamState {
       void poll();
 
       let succeeded = true;
+      let firstRealChunk = true;
       try {
         await api.sendMessage(sessionId, text, chunk => {
           polling = false; // real streamed chunks win over polling
           if (stillCurrent()) {
-            setOutput(prev => prev + chunk);
+            if (firstRealChunk) {
+              // On completion the backend replays the whole captured log as
+              // chunk frames — the same docker-logs content polling has been
+              // rendering. Drop the polled tail back to `base` on the first
+              // real chunk so the authoritative stream replaces it instead of
+              // appending a duplicate copy.
+              firstRealChunk = false;
+              setOutput(base + chunk);
+            } else {
+              setOutput(prev => prev + chunk);
+            }
           }
         });
       } catch (err) {

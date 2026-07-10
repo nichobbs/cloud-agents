@@ -378,6 +378,40 @@ test "Handler createSession rejects unsafe inputs" {
   }
 }
 
+test "Handler getRunOutput validates and reports run state" {
+  val dbPath = useFreshTestDb("session-output")
+  defer {
+    cleanupTestDb(dbPath)
+  }
+  // Empty id -> 400.
+  match getRunOutput("") {
+    case Ok(_) -> assertTrue(false, "empty id should be rejected")
+    case Err(err) -> assertEqualInt(err.status, 400, "empty id -> 400")
+  }
+  // Unknown id -> 404.
+  match getRunOutput("nope") {
+    case Ok(_) -> assertTrue(false, "unknown id should 404")
+    case Err(err) -> assertEqualInt(err.status, 404, "unknown id -> 404")
+  }
+  // A session with no live container -> running=false (no Docker call).
+  mustUnit(addSession(makeAgentSession(
+    sessionId = "out-1",
+    repoUrl = "https://github.com/nic/repo",
+    branch = "main",
+    containerId = "",
+    harness = "claude",
+    model = "claude-opus-4-8",
+    nativeSessionId = "out-1"
+  )))
+  match getRunOutput("out-1") {
+    case Ok(ro) -> {
+      assertFalse(ro.running, "no container -> not running")
+      assertEqual(ro.output, "", "no container -> empty output")
+    }
+    case Err(_) -> assertTrue(false, "getRunOutput should succeed for an idle session")
+  }
+}
+
 test "Handler listSessions returns stored sessions" {
   val dbPath = useFreshTestDb("session-list")
   defer {
