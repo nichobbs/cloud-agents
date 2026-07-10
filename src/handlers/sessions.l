@@ -158,10 +158,25 @@ pub func createSession(@body req: in CreateSessionRequest): Result[CreateSession
   return Ok(CreateSessionResponse(sessionId = sessionId))
 }
 
+/// Public projection of a session for the list endpoint: only what a client
+/// needs to rebuild its list. Internal fields (containerId, nativeSessionId)
+/// are deliberately excluded — this is the first bulk-read surface for
+/// session data and should not enumerate infrastructure handles.
+func sessionSummaryJson(s: in AgentSession): String {
+  return "{\"sessionId\":\"" + CloudAgents.SessionStore.jsonEscapeField(s.sessionId) + "\",\"repoUrl\":\"" +
+    CloudAgents.SessionStore.jsonEscapeField(s.repoUrl) +
+    "\",\"branch\":\"" +
+    CloudAgents.SessionStore.jsonEscapeField(s.branch) +
+    "\",\"harness\":\"" +
+    CloudAgents.SessionStore.jsonEscapeField(s.harness) +
+    "\",\"model\":\"" +
+    CloudAgents.SessionStore.jsonEscapeField(s.model) +
+    "\"}"
+}
+
 /// List every stored session as `{"sessions":[...]}`. Lets a client rebuild
 /// its session list after local state is lost (new browser, cleared storage)
-/// instead of stranding server-side sessions forever. Serialised with the
-/// same escaping-aware builder the store itself uses.
+/// instead of stranding server-side sessions forever.
 @get("/api/sessions")
 pub func listSessions(): Result[String, Web.ApiError] {
   val arr = CloudAgents.SessionStore.getSessions()
@@ -172,7 +187,7 @@ pub func listSessions(): Result[String, Web.ApiError] {
     if i > 0 {
       json = json + ","
     }
-    json = json + CloudAgents.SessionStore.agentSessionToJson(CloudAgents.SessionStore.getSessionArrayValue(arr, i))
+    json = json + sessionSummaryJson(CloudAgents.SessionStore.getSessionArrayValue(arr, i))
     i = i + 1
   }
   return Ok(value = json + "]}")

@@ -55,6 +55,9 @@ func verifyListSessionsBody(body: in String): Unit {
   assertTrue(body.startsWith("{\"sessions\":["), "list body is a sessions object")
   assertTrue(body.contains("\"sessionId\":\"ls-1\""), "first session listed")
   assertTrue(body.contains("\"sessionId\":\"ls-2\""), "second session listed")
+  // The list is a public projection: infrastructure handles must not leak.
+  assertFalse(body.contains("containerId"), "containerId excluded from list")
+  assertFalse(body.contains("nativeSessionId"), "nativeSessionId excluded from list")
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────────

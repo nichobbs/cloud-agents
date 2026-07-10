@@ -41,6 +41,7 @@ output_assembly = "CloudAgents.dll"
 "CloudAgents.StreamingTests" = "tests/streaming_tests.l"
 "CloudAgents.DbTests"        = "tests/db_tests.l"
 "CloudAgents.AuthTests"      = "tests/auth_tests.l"
+"CloudAgents.DockerClientTests" = "tests/docker_client_tests.l"
 
 [nuget]
 "Lyric.Web"             = "0.4.11"
