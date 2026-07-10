@@ -200,6 +200,12 @@ pub func allMigrations(): slice[Migration] {
         CloudAgents.Db.profilesUserIndexSql(),
         CloudAgents.Db.profileCredentialsProfileIndexSql()
       ]
+    ),
+    Migration(
+      version = "0003_session_profile",
+      statements = [
+        CloudAgents.Db.alterSessionsAddProfileSql()
+      ]
     )
   ]
 }
@@ -578,6 +584,27 @@ pub record ProfileList {
   pub profiles: slice[Profile]
 }
 
+/// The network policy a session's profile pins. Drives the container's
+/// NetworkMode in CloudAgents.Docker. Consistent with decryptedCredentialsForProfile
+/// (#231): an empty profileId means "no profile" -> "full" (legacy default),
+/// but a non-empty profileId that can't be resolved fails closed to "none"
+/// (isolated), so a session whose profile was deleted doesn't silently regain
+/// full network access.
+pub func profileNetworkPolicy(userId: in String, profileId: in String): Result[String, CloudAgents.Sqlite.DbError] {
+  if profileId.length == 0 {
+    return Ok(value = "full")
+  }
+  match getProfile(profileId, userId)? {
+    case None -> return Ok(value = "none")
+    case Some(p) -> {
+      if p.networkPolicy.length == 0 {
+        return Ok(value = "full")
+      }
+      return Ok(value = p.networkPolicy)
+    }
+  }
+}
+
 /// Whether a string slice contains a value (small linear scan).
 func sliceContains(xs: in slice[String], target: in String): Bool {
   var i = 0
@@ -617,16 +644,17 @@ func rowToProfile(r: in CloudAgents.Sqlite.Row, creds: in slice[String]): Profil
   )
 }
 
-/// Replace a profile's granted credential set: clear then re-insert, so the
-/// stored set always matches the request.
-func setProfileCredentials(
-  profileId: in String, userId: in String, names: in slice[String]
-): Result[Unit, CloudAgents.Sqlite.DbError] {
-  CloudAgents.Sqlite.execute(CloudAgents.Db.deleteProfileCredentialsSql(profileId, userId))?
+/// Statements that replace a profile's granted credential set: clear, then one
+/// insert per name. Returned as a list (not executed) so callers can run them
+/// in the same transaction as the profile row itself (review #230), keeping the
+/// profile and its grants consistent on partial failure.
+func profileCredentialStatements(profileId: in String, userId: in String, names: in slice[String]): slice[String] {
+  var stmts: slice[String] = []
+  stmts = stmts.append(CloudAgents.Db.deleteProfileCredentialsSql(profileId, userId))
   for name in names {
-    CloudAgents.Sqlite.execute(CloudAgents.Db.insertProfileCredentialSql(newId(), profileId, userId, name))?
+    stmts = stmts.append(CloudAgents.Db.insertProfileCredentialSql(newId(), profileId, userId, name))
   }
-  return Ok(value = ())
+  return stmts
 }
 
 /// Save a new profile and its granted credential set, returning the stored record.
@@ -640,10 +668,13 @@ pub func addProfile(
 ): Result[Profile, CloudAgents.Sqlite.DbError] {
   val id = newId()
   val ts = nowMillis()
-  CloudAgents.Sqlite.execute(
-    CloudAgents.Db.insertProfileSql(id, userId, name, harness, networkPolicy, credentialMode, ts)
-  )?
-  setProfileCredentials(id, userId, credentials)?
+  // Profile row + its credential grants commit together (#230).
+  var stmts: slice[String] = []
+  stmts = stmts.append(CloudAgents.Db.insertProfileSql(id, userId, name, harness, networkPolicy, credentialMode, ts))
+  for s in profileCredentialStatements(id, userId, credentials) {
+    stmts = stmts.append(s)
+  }
+  CloudAgents.Sqlite.executeTransaction(stmts)?
   return Ok(
     value = Profile(
       id = id,
@@ -697,28 +728,48 @@ pub func updateProfile(
   credentialMode: in String,
   credentials: in slice[String],
 ): Result[Int, CloudAgents.Sqlite.DbError] {
-  val ts = nowMillis()
-  val affected = CloudAgents.Sqlite.execute(
-    CloudAgents.Db.updateProfileSql(id, userId, name, harness, networkPolicy, credentialMode, ts)
-  )?
-  if affected == 0 {
-    return Ok(value = 0)
+  // Pre-check existence for the 404 signal: executeTransaction returns no
+  // rows-affected count, so the caller's "0 = not found" contract is derived
+  // from this ownership-scoped lookup instead.
+  match getProfile(id, userId)? {
+    case None -> return Ok(value = 0)
+    case Some(_) -> ()
   }
-  setProfileCredentials(id, userId, credentials)?
-  return Ok(value = affected)
+  val ts = nowMillis()
+  // Profile row + its credential grants commit together (#230).
+  var stmts: slice[String] = []
+  stmts = stmts.append(CloudAgents.Db.updateProfileSql(id, userId, name, harness, networkPolicy, credentialMode, ts))
+  for s in profileCredentialStatements(id, userId, credentials) {
+    stmts = stmts.append(s)
+  }
+  CloudAgents.Sqlite.executeTransaction(stmts)?
+  return Ok(value = 1)
 }
 
-/// Delete a profile and its credential grants. Returns rows affected (0 = not found).
+/// Delete a profile and its credential grants (atomically, #230). Returns rows
+/// affected (0 = not found / not owned).
 pub func deleteProfile(id: in String, userId: in String): Result[Int, CloudAgents.Sqlite.DbError] {
-  CloudAgents.Sqlite.execute(CloudAgents.Db.deleteProfileCredentialsSql(id, userId))?
-  return CloudAgents.Sqlite.execute(CloudAgents.Db.deleteProfileSql(id, userId))
+  match getProfile(id, userId)? {
+    case None -> return Ok(value = 0)
+    case Some(_) -> ()
+  }
+  var stmts: slice[String] = []
+  stmts = stmts.append(CloudAgents.Db.deleteProfileCredentialsSql(id, userId))
+  stmts = stmts.append(CloudAgents.Db.deleteProfileSql(id, userId))
+  CloudAgents.Sqlite.executeTransaction(stmts)?
+  return Ok(value = 1)
 }
 
 /// Decrypt only the credentials a profile grants, for least-privilege
 /// injection. In 'all' mode this is every credential (identical to
 /// decryptedCredentials); in 'selected' mode only the named grants are
 /// included. Best-effort per credential, exactly like decryptedCredentials.
-/// An unknown/absent profile falls open to legacy behaviour (all credentials).
+///
+/// Fail-closed on an unresolved profile (review #231): an EMPTY profileId means
+/// "no profile" and falls open to all credentials (the explicit legacy opt-out),
+/// but a NON-EMPTY profileId that can't be resolved (e.g. the profile was
+/// deleted after the session was created) injects NOTHING rather than silently
+/// escalating a scoped session to every secret.
 pub func decryptedCredentialsForProfile(
   userId: in String, profileId: in String
 ): Result[slice[CredentialValue], CredentialError] {
@@ -730,7 +781,11 @@ pub func decryptedCredentialsForProfile(
     case Err(e) -> return Err(Db(error = e))
   }
   match profile {
-    case None -> return decryptedCredentials(userId)
+    case None -> {
+      // Referenced profile is gone: fail closed, inject no credentials.
+      val empty: slice[CredentialValue] = []
+      return Ok(value = empty)
+    }
     case Some(p) -> {
       if p.credentialMode != "selected" {
         return decryptedCredentials(userId)

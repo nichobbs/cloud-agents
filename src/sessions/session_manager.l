@@ -569,6 +569,30 @@ pub func sessionStatus(sessionId: in String): Result[Option[String], CloudAgents
   return Ok(value = Some(value = colAt(CloudAgents.Sqlite.getRowArrayValue(rows, 0).cols, 8)))
 }
 
+/// Associate a session with a profile (empty string clears it). Scoped to the
+/// current user. Kept off the AgentSession record — the profile drives
+/// container construction, not the client-facing session shape — and read back
+/// via sessionProfileId, mirroring sessionStatus.
+pub func setSessionProfile(sessionId: in String, profileId: in String): Result[Unit, CloudAgents.Sqlite.DbError] {
+  CloudAgents.Sqlite.execute(
+    CloudAgents.Db.updateSessionProfileSql(sessionId, CloudAgents.Auth.currentUserId(), profileId)
+  )?
+  return Ok(value = ())
+}
+
+/// The profile id a session runs under ("" when none), or None if the session
+/// does not exist / is not owned by the current user.
+pub func sessionProfileId(sessionId: in String): Result[Option[String], CloudAgents.Sqlite.DbError] {
+  val rows = CloudAgents.Sqlite.query(
+    CloudAgents.Db.selectSessionProfileIdSql(sessionId, CloudAgents.Auth.currentUserId())
+  )?
+  val len = CloudAgents.Sqlite.getRowArrayLength(rows)
+  if len == 0 {
+    return Ok(value = None)
+  }
+  return Ok(value = Some(value = colAt(CloudAgents.Sqlite.getRowArrayValue(rows, 0).cols, 0)))
+}
+
 /// A single session owned by the current user, or None.
 pub func getSession(sessionId: in String): Result[Option[AgentSession], CloudAgents.Sqlite.DbError] {
   val rows = CloudAgents.Sqlite.query(

@@ -277,6 +277,28 @@ pub func recoverDanglingSessionsSql(): String {
   return "UPDATE sessions SET status = 'IDLE', container_id = '' " + "WHERE status = 'RUNNING' OR status = 'WARM'"
 }
 
+/// ALTER adding the profile association to an existing sessions table. A
+/// non-idempotent statement (ADD COLUMN fails if the column already exists),
+/// so it lives in a versioned migration that runs exactly once. The DEFAULT ''
+/// backfills every existing row to "no profile" (legacy behaviour). Appended as
+/// the last column, so the fixed sessionColumns indices above are unaffected.
+pub func alterSessionsAddProfileSql(): String {
+  return "ALTER TABLE sessions ADD COLUMN profile_id TEXT NOT NULL DEFAULT ''"
+}
+
+/// Set (or clear) a session's profile association. Scoped by owner.
+pub func updateSessionProfileSql(id: in String, userId: in String, profileId: in String): String {
+  return "UPDATE sessions SET profile_id = " + sqlLiteral(profileId) + " WHERE id = " + sqlLiteral(id) +
+    " AND user_id = " +
+    sqlLiteral(userId)
+}
+
+/// Read a session's profile id (empty string when none). Kept off the fixed
+/// sessionColumns projection so that column order stays stable.
+pub func selectSessionProfileIdSql(id: in String, userId: in String): String {
+  return "SELECT profile_id FROM sessions WHERE id = " + sqlLiteral(id) + " AND user_id = " + sqlLiteral(userId)
+}
+
 // ─── Conversation transcript, comments and todos ───────────────────────────────
 //
 // These tables back the "addressable agent responses" feature: each user

@@ -193,4 +193,32 @@ test "Selected-mode profile injects only its granted credentials" {
   // No profile (empty id) falls open to all credentials (legacy behaviour).
   val legacy = mustProfileCreds(decryptedCredentialsForProfile(userId, ""))
   assertEqualInt(legacy.length.toInt(), 3, "empty profile id -> all credentials")
+
+  // Fail closed (#231): a NON-EMPTY profile id that can't be resolved (deleted
+  // profile) injects nothing rather than escalating to every credential.
+  val orphaned = mustProfileCreds(decryptedCredentialsForProfile(userId, "does-not-exist"))
+  assertEqualInt(orphaned.length.toInt(), 0, "unknown profile id -> no credentials (fail closed)")
+}
+
+test "Network policy resolves and fails closed for unknown profiles" {
+  val dbPath = useFreshTestDb("profile-network")
+  defer {
+    cleanupTestDb(dbPath)
+  }
+  val userId = "default"
+  val isolated = mustProfile(addProfile(userId, "isolated", "", "none", "all", []))
+
+  match profileNetworkPolicy(userId, isolated.id) {
+    case Ok(p) -> assertEqual(p, "none", "profile network policy read back")
+    case Err(e) -> assertTrue(false, "policy read failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+  }
+  // Empty profile -> full (legacy default); unknown non-empty -> none (closed).
+  match profileNetworkPolicy(userId, "") {
+    case Ok(p) -> assertEqual(p, "full", "no profile -> full network")
+    case Err(e) -> assertTrue(false, "policy read failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+  }
+  match profileNetworkPolicy(userId, "does-not-exist") {
+    case Ok(p) -> assertEqual(p, "none", "unknown profile -> isolated (fail closed)")
+    case Err(e) -> assertTrue(false, "policy read failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+  }
 }

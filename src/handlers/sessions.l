@@ -2,6 +2,7 @@ package CloudAgents.Handlers
 
 import Std.Core
 import Web
+import CloudAgents.Auth
 import CloudAgents.Docker
 import CloudAgents.Repository
 import CloudAgents.SessionStore
@@ -108,6 +109,11 @@ pub record CreateSessionRequest {
 }
 
 @generate(Json)
+pub record SetProfileRequest {
+  pub profileId: String
+}
+
+@generate(Json)
 pub record UpdateSessionRequest {
   pub model: String
 }
@@ -164,6 +170,37 @@ pub func createSession(@body req: in CreateSessionRequest): Result[CreateSession
   match addSession(session) {
     case Ok(_) -> return Ok(CreateSessionResponse(sessionId = sessionId))
     case Err(e) -> return Err(Web.internalError("failed to persist session: " + CloudAgents.Sqlite.dbErrorMessage(e)))
+  }
+}
+
+/// Attach a profile to a session (or clear it with an empty profileId). The
+/// profile governs credential injection and network access on the session's
+/// runs, and pins the harness if it sets one (applied at send time). Kept
+/// separate from session creation so existing create-session clients are
+/// unaffected and a session's profile can be changed later.
+@post("/api/sessions/{id}/profile")
+pub func setSessionProfileHandler(id: in String, @body req: in SetProfileRequest): Result[Unit, Web.ApiError] {
+  if id.length == 0 {
+    return Err(Web.badRequest("id is required"))
+  }
+  val userId = CloudAgents.Auth.currentUserId()
+  // The session must exist and be owned by the caller.
+  match getSession(id) {
+    case Ok(Some(_)) -> ()
+    case Ok(None) -> return Err(Web.notFound("Session not found"))
+    case Err(e) -> return Err(Web.internalError("session lookup failed: " + CloudAgents.Sqlite.dbErrorMessage(e)))
+  }
+  // A non-empty profile must exist and be owned by the caller.
+  if req.profileId.length > 0 {
+    match CloudAgents.Repository.getProfile(req.profileId, userId) {
+      case Ok(Some(_)) -> ()
+      case Ok(None) -> return Err(Web.badRequest("profileId does not reference a known profile"))
+      case Err(e) -> return Err(Web.internalError("profile lookup failed: " + CloudAgents.Sqlite.dbErrorMessage(e)))
+    }
+  }
+  match CloudAgents.SessionStore.setSessionProfile(id, req.profileId) {
+    case Ok(_) -> return Ok(())
+    case Err(e) -> return Err(Web.internalError("failed to attach profile: " + CloudAgents.Sqlite.dbErrorMessage(e)))
   }
 }
 
@@ -251,14 +288,34 @@ pub func sendMessage(id: in String, @body req: in SendMessageRequest): Result[St
         case Err(_) -> ()
       }
 
+      // The session's profile (if any) governs credential injection and network
+      // access for this run, and pins the harness if it sets one. A lookup
+      // failure is non-fatal — fall back to no profile (legacy behaviour)
+      // rather than blocking the run.
+      val profileId = match CloudAgents.SessionStore.sessionProfileId(id) {
+        case Ok(Some(pid)) -> pid
+        case Ok(None) -> ""
+        case Err(_) -> ""
+      }
+      // Resolve the profile's pinned harness (empty = use the session's own).
+      var harness = session.harness
+      if profileId.length > 0 {
+        match CloudAgents.Repository.getProfile(profileId, CloudAgents.Auth.currentUserId()) {
+          case Ok(Some(p)) -> if p.harness.length > 0 { harness = p.harness }
+          case Ok(None) -> ()
+          case Err(_) -> ()
+        }
+      }
+
       val runResult = CloudAgents.Docker.runSessionMessage(
         repoUrl = session.repoUrl,
         branch = session.branch,
         prompt = req.text,
         sessionId = id,
-        harness = session.harness,
+        harness = harness,
         model = session.model,
-        nativeSessionId = session.nativeSessionId
+        nativeSessionId = session.nativeSessionId,
+        profileId = profileId
       )
 
       // Frame the captured container output as a Server-Sent Events stream:

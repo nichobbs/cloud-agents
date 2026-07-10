@@ -6,6 +6,8 @@ import Lyric.Docker
 import CloudAgents.Auth
 import CloudAgents.Repository
 import CloudAgents.SessionStore
+import extern System.Environment as Env
+import extern System.String as DotNetString
 
 pub record ResultCell {
   pub var isSuccess: Bool = false
@@ -29,9 +31,39 @@ func imageForHarness(harness: in String): String {
   return "claude-code:base"
 }
 
+/// Docker NetworkMode for a profile's network policy. "none" fully isolates
+/// the container; "full"/"restricted" (and no profile) keep the default bridge
+/// — "restricted" additionally routes egress through a proxy via env vars (see
+/// proxyEnvForPolicy), the documented allowlist seam.
+func networkModeForPolicy(policy: in String): String {
+  if policy == "none" {
+    return "none"
+  }
+  return ""
+}
+
+/// Proxy env vars for the 'restricted' network policy: point the container at
+/// the egress proxy named by CLOUD_AGENTS_EGRESS_PROXY, if configured. This is
+/// the seam an allowlisting proxy plugs into; with no proxy configured the
+/// container simply gets the default network and no proxy vars (enforcement is
+/// the proxy's job, tracked as a follow-up).
+func proxyEnvForPolicy(policy: in String): slice[String] {
+  val out: slice[String] = []
+  if policy != "restricted" {
+    return out
+  }
+  val proxy = Env.GetEnvironmentVariable("CLOUD_AGENTS_EGRESS_PROXY")
+  if DotNetString.IsNullOrEmpty(proxy) {
+    return out
+  }
+  return ["HTTP_PROXY=" + proxy, "HTTPS_PROXY=" + proxy, "http_proxy=" + proxy, "https_proxy=" + proxy]
+}
+
 /// Create an ephemeral container for the given session.
 /// HARNESS, MODEL, and NATIVE_SESSION_ID are passed as env vars so each
-/// container image can invoke the right CLI with the right resume flag.
+/// container image can invoke the right CLI with the right resume flag. The
+/// session's profile (profileId, "" for none) governs which credentials are
+/// injected (least privilege) and the container's network access.
 pub async func createRunnerContainer(
   repoUrl: in String,
   branch: in String,
@@ -40,9 +72,11 @@ pub async func createRunnerContainer(
   harness: in String,
   model: in String,
   nativeSessionId: in String,
+  profileId: in String,
 ): Result[String, String] {
   val workspaceVolume = "session-" + sessionId + "-workspace"
   val homeVolume = "claude-home-default" // Phase 1 default, Phase 3 user-specific
+  val userId = CloudAgents.Auth.currentUserId()
 
   var envs = [
     "PROMPT=" + prompt,
@@ -53,15 +87,15 @@ pub async func createRunnerContainer(
     "NATIVE_SESSION_ID=" + nativeSessionId
   ]
 
-  // Inject the user's stored credentials (GitHub token, cloud creds, arbitrary
-  // secrets) as additional env vars, decrypted here and never logged. Decryption
-  // is best-effort per credential: an individual undecryptable secret (rotated
-  // ENCRYPTION_KEY, tampered value) is skipped inside decryptedCredentials with
-  // a warning so one bad row can't block every run, while a database-read
-  // failure (can't reach the store at all) still aborts the run below.
+  // Inject the credentials the profile grants (least privilege): 'selected'
+  // profiles inject only their named grants, 'all'/no-profile inject every
+  // credential. Decrypted here and never logged. Best-effort per credential —
+  // an individual undecryptable secret (rotated ENCRYPTION_KEY, tampered value)
+  // is skipped with a warning so one bad row can't block every run, while a
+  // database-read failure (can't reach the store at all) still aborts the run.
   // GITHUB_TOKEN in particular flows on to the container's mcp.json via the
   // entrypoint template, finally wiring up the GitHub MCP server.
-  match CloudAgents.Repository.decryptedCredentials(CloudAgents.Auth.currentUserId()) {
+  match CloudAgents.Repository.decryptedCredentialsForProfile(userId, profileId) {
     case Ok(creds) -> {
       var i = 0
       while i < creds.length {
@@ -72,10 +106,25 @@ pub async func createRunnerContainer(
     case Err(e) -> return Err(error = "Failed to load credentials: " + CloudAgents.Repository.credentialErrorMessage(e))
   }
 
+  // Resolve the profile's network policy: sets the container NetworkMode and,
+  // for 'restricted', any proxy env vars. A lookup failure is non-fatal — fall
+  // back to full network rather than blocking the run on a metadata read.
+  val policy = match CloudAgents.Repository.profileNetworkPolicy(userId, profileId) {
+    case Ok(p) -> p
+    case Err(_) -> "full"
+  }
+  val proxyEnv = proxyEnvForPolicy(policy)
+  var pi = 0
+  while pi < proxyEnv.length {
+    envs = envs.append(proxyEnv[pi])
+    pi = pi + 1
+  }
+  val networkMode = networkModeForPolicy(policy)
+
   val binds = [workspaceVolume + ":/workspace", homeVolume + ":/home/claude-user"]
 
   val image = imageForHarness(harness)
-  val createRes = await createContainer(image = image, env = envs, binds = binds)
+  val createRes = await createContainerWithNetwork(image = image, env = envs, binds = binds, networkMode = networkMode)
   match createRes {
     case Ok(id) -> Ok(value = id)
     case Err(e) -> Err(error = "Docker API error: " + e.message)
@@ -168,9 +217,10 @@ pub func runSessionMessage(
   harness: in String,
   model: in String,
   nativeSessionId: in String,
+  profileId: in String,
 ): Result[String, String] {
   val cell = ResultCell(isSuccess = false, output = "", error = "")
-  val t = runSessionMessageAsync(repoUrl, branch, prompt, sessionId, harness, model, nativeSessionId, cell)
+  val t = runSessionMessageAsync(repoUrl, branch, prompt, sessionId, harness, model, nativeSessionId, profileId, cell)
   val completed = taskWaitMs(t, 1800000) // 30-minute hard cap
   if not completed {
     return Err(error = "Container run timed out after 30 minutes")
@@ -195,9 +245,10 @@ async func runSessionMessageAsync(
   harness: in String,
   model: in String,
   nativeSessionId: in String,
+  profileId: in String,
   cell: in ResultCell,
 ): Unit {
-  val createResult = await createRunnerContainer(repoUrl, branch, prompt, sessionId, harness, model, nativeSessionId)
+  val createResult = await createRunnerContainer(repoUrl, branch, prompt, sessionId, harness, model, nativeSessionId, profileId)
   val containerId = match createResult {
     case Ok(id) -> id
     case Err(msg) -> {
