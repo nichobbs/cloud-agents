@@ -29,9 +29,11 @@ test "prompt SQL builders are owner-scoped and escaped" {
 //
 // First live-DB coverage in the repo: points CLOUD_AGENTS_DB_PATH at a unique
 // temp file, creates the schema, and exercises the real Repository functions
-// through Microsoft.Data.Sqlite. If these fail in CI with OpenFailed, the
-// native e_sqlite3 library isn't reachable from the test runner — see
-// docs/BUILD.md.
+// through Microsoft.Data.Sqlite. If these fail with OpenFailed / a
+// SqliteConnection type-initializer error, the native libe_sqlite3.so isn't
+// reachable from the test runner — CI exports LD_LIBRARY_PATH pointing at
+// bin/runtimes/linux-x64/native (populated by scripts/build-full.sh) before
+// `lyric test` for exactly this reason; do the same locally.
 
 @externTarget("System.IO.File.Delete")
 func fileDelete(path: in String): Unit = ()

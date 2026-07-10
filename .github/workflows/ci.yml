@@ -150,7 +150,17 @@ jobs:
 
       # The real @test_module suites. All seven known upstream compiler bugs
       # (see docs/BUILD.md "Compiler notes") are now fixed as of v0.4.19, so
-      # this is expected to pass 24/24 — the first time in this project's
-      # history that `lyric test` has been a viable CI gate.
+      # this is expected to pass — the first time in this project's history
+      # that `lyric test` has been a viable CI gate.
+      #
+      # LD_LIBRARY_PATH: the live-database suites (prompt/session tests) open
+      # real SQLite connections, and Microsoft.Data.Sqlite's type initializer
+      # needs the native libe_sqlite3.so, which the test runner does not
+      # resolve from the NuGet cache on its own. build-full.sh (above) already
+      # copied the native runtimes to bin/runtimes — expose them to dlopen.
       - name: Run lyric test
-        run: lyric test
+        run: |
+          if [ -d "$PWD/bin/runtimes/linux-x64/native" ]; then
+            export LD_LIBRARY_PATH="$PWD/bin/runtimes/linux-x64/native:${LD_LIBRARY_PATH:-}"
+          fi
+          lyric test

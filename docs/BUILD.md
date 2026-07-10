@@ -160,6 +160,22 @@ compiler-side root cause. `scripts/verify.sh` remains a useful,
 `lyric build && lyric run`) and still genuinely passes all 24 checks, but
 `lyric test` is now the right entry point again — both agree.
 
+**Live-database suites need the native SQLite library on the loader path.**
+`tests/prompt_tests.l` (and later suites) open real `Microsoft.Data.Sqlite`
+connections against a temp file; `SqliteConnection`'s type initializer loads
+the native `libe_sqlite3.so`, which the test runner does not resolve from
+the NuGet cache by itself. Run `./scripts/build-full.sh` once (it copies the
+native runtimes to `bin/runtimes/`), then:
+
+```sh
+export LD_LIBRARY_PATH="$PWD/bin/runtimes/linux-x64/native:$LD_LIBRARY_PATH"
+lyric test
+```
+
+CI's "Run lyric test" step does exactly this. Without it the live-DB tests
+fail with `The type initializer for 'Microsoft.Data.Sqlite.SqliteConnection'
+threw an exception` while every non-DB suite still passes.
+
 ## Compiler notes
 
 **Seven independent upstream compiler bugs blocked this project's
