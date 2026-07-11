@@ -53,6 +53,7 @@ output_assembly = "CloudAgents.dll"
 "CloudAgents.CredentialTests" = "tests/credential_tests.l"
 "CloudAgents.ProfileTests"   = "tests/profile_tests.l"
 "CloudAgents.WebhookTests"   = "tests/webhook_tests.l"
+"CloudAgents.NetworkPolicyTests" = "tests/network_policy_tests.l"
 
 [nuget]
 "Lyric.Web"             = "0.4.11"

@@ -42,7 +42,7 @@ func imageForHarness(harness: in String): String {
 /// closed to full isolation ("none") rather than the default bridge. This is
 /// network-level enforcement: the advisory HTTP(S)_PROXY vars from
 /// proxyEnvForPolicy alone don't restrict anything (a process can ignore them).
-func networkModeForPolicy(policy: in String): String {
+pub func networkModeForPolicy(policy: in String): String {
   if policy == "none" {
     return "none"
   }
@@ -62,7 +62,7 @@ func networkModeForPolicy(policy: in String): String {
 /// enforcement in networkModeForPolicy (which fails closed to full isolation
 /// when no restricted network is configured) — they do not themselves restrict
 /// egress. With no proxy configured the container gets no proxy vars.
-func proxyEnvForPolicy(policy: in String): slice[String] {
+pub func proxyEnvForPolicy(policy: in String): slice[String] {
   val empty: slice[String] = []
   if policy != "restricted" {
     return empty
