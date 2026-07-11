@@ -8,6 +8,7 @@ import CloudAgents.Repository
 import CloudAgents.SessionStore
 import CloudAgents.Sqlite
 import CloudAgents.Streaming
+import CloudAgents.Webhooks
 import Std.Uuid
 
 pub func generateSessionId(): String {
@@ -53,6 +54,16 @@ func isSafeRepoUrl(url: in String): Bool {
     return false
   }
   return not containsControlChar(url)
+}
+
+/// Whether a repoUrl points at an internal/loopback/private host that the runner
+/// must not `git clone` from (SSRF, #33). Reuses the webhook registration
+/// blocklist — the same loopback/private/link-local + non-dotted-IP-literal
+/// rules, already hardened against authority-parsing bypasses (#257/#260/#264/
+/// #266) — rather than duplicating (and risking drift from) that logic. Assumes
+/// the `https://` prefix is already verified (webhookHost parses from offset 8).
+func isBlockedRepoHost(url: in String): Bool {
+  return CloudAgents.Webhooks.isBlockedWebhookHost(CloudAgents.Webhooks.webhookHost(url))
 }
 
 /// Git ref-name safety: rejects names git itself refuses, plus anything that
@@ -145,6 +156,11 @@ pub func createSession(@body req: in CreateSessionRequest): Result[CreateSession
   }
   if not isSafeRepoUrl(req.repoUrl) {
     return Err(Web.badRequest("repoUrl contains invalid characters or is too long"))
+  }
+  // Reject internal/loopback/private targets before the runner clones the repo
+  // (SSRF, #33). isHttpsUrl above guarantees the prefix webhookHost expects.
+  if isBlockedRepoHost(req.repoUrl) {
+    return Err(Web.badRequest("repoUrl must not point at an internal, loopback, or private host"))
   }
   if req.branch.length == 0 {
     return Err(Web.badRequest("branch is required"))
@@ -371,9 +387,12 @@ pub func sendMessage(id: in String, @body req: in SendMessageRequest): Result[St
         case Ok(logs) -> {
           if runId.length > 0 {
             val _ = CloudAgents.Repository.recordRunEnd(runId, CloudAgents.Auth.currentUserId(), "succeeded")
+            // Enqueue a run-completion webhook event (best-effort outbox). Only
+            // when we actually have a run id — recordRunStart may have failed,
+            // leaving runId empty, and an event with no run_id is useless to the
+            // deliverer (#256). Same guard as recordRunEnd above.
+            val _ = CloudAgents.Repository.enqueueWebhookEvent(CloudAgents.Auth.currentUserId(), id, runId, "succeeded")
           }
-          // Enqueue a run-completion webhook event (best-effort outbox).
-          val _ = CloudAgents.Repository.enqueueWebhookEvent(CloudAgents.Auth.currentUserId(), id, runId, "succeeded")
           match CloudAgents.Repository.addMessage(id, "agent", logs) {
             case Ok(m) -> return Ok(value = CloudAgents.Streaming.formatLogsAsSseWithId(logs, m.id))
             case Err(_) -> return Ok(value = CloudAgents.Streaming.formatLogsAsSse(logs))
@@ -382,8 +401,9 @@ pub func sendMessage(id: in String, @body req: in SendMessageRequest): Result[St
         case Err(err) -> {
           if runId.length > 0 {
             val _ = CloudAgents.Repository.recordRunEnd(runId, CloudAgents.Auth.currentUserId(), "failed")
+            // Gated on a real run id for the same reason as the success path (#256).
+            val _ = CloudAgents.Repository.enqueueWebhookEvent(CloudAgents.Auth.currentUserId(), id, runId, "failed")
           }
-          val _ = CloudAgents.Repository.enqueueWebhookEvent(CloudAgents.Auth.currentUserId(), id, runId, "failed")
           return Err(Web.internalError("Failed to execute message: " + err))
         }
       }
@@ -430,13 +450,34 @@ pub func cancelRun(id: in String): Result[Unit, Web.ApiError] {
       if session.containerId.length == 0 {
         return Err(Web.conflict("run is still starting (container not created yet) — retry shortly"))
       }
+      // Capture the active run's id BEFORE finishSessionRuns marks it
+      // 'cancelled', so the completion webhook can carry the real run id rather
+      // than an empty one (#258). Best-effort: on a lookup miss/error we skip
+      // the event rather than emit one with an empty run_id (same rationale as
+      // #256). There is at most one 'running' row per session.
+      var runId = ""
+      match CloudAgents.Repository.listRuns(id, userId) {
+        case Ok(runs) -> {
+          var k = 0
+          while k < runs.length and runId.length == 0 {
+            if runs[k].status == "running" {
+              runId = runs[k].id
+            }
+            k = k + 1
+          }
+        }
+        case Err(_) -> ()
+      }
       // Terminate first; only record 'cancelled' once the container is actually
       // gone, so history never claims a cancel that didn't take effect.
       match CloudAgents.Docker.terminateSessionContainer(session.containerId) {
         case Ok(_) -> {
           val _ = CloudAgents.Repository.finishSessionRuns(id, userId, "cancelled")
-          // A cancel is a run completion too — notify like succeeded/failed (#252).
-          val _ = CloudAgents.Repository.enqueueWebhookEvent(userId, id, "", "cancelled")
+          // A cancel is a run completion too — notify like succeeded/failed
+          // (#252), but only with a real run id (#258).
+          if runId.length > 0 {
+            val _ = CloudAgents.Repository.enqueueWebhookEvent(userId, id, runId, "cancelled")
+          }
           return Ok(())
         }
         case Err(e) -> return Err(Web.internalError("failed to terminate container: " + e))
@@ -614,6 +655,12 @@ pub func updateSessionModel(id: in String, @body req: in UpdateSessionRequest): 
 pub func checkHealth(): Result[String, Web.ApiError] {
   match CloudAgents.Repository.ping() {
     case Ok(_) -> return Ok("Healthy")
-    case Err(e) -> return Err(Web.internalError("database unavailable: " + CloudAgents.Sqlite.dbErrorMessage(e)))
+    case Err(e) -> {
+      // /api/health is reachable unauthenticated; the raw DB error can include
+      // the SQLite file path, so log the detail server-side and return a
+      // generic message to the caller (#55).
+      println("WARNING: health probe failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+      return Err(Web.internalError("database unavailable"))
+    }
   }
 }
