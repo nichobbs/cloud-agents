@@ -172,9 +172,12 @@ export function SessionDetail() {
   }, [templatePrompt, rendering, closeTemplate]);
 
   // Close the template modal when navigating to a different session — it was
-  // opened for the previous session's prompt and composer (#282).
+  // opened for the previous session's prompt and composer (#282). Also clear
+  // the in-flight render flag so a fresh modal opened in the new session
+  // starts clean rather than inheriting a prior session's submit state (#288).
   useEffect(() => {
     setTemplatePrompt(null);
+    setRendering(false);
   }, [sessionId]);
 
   // Tracks which session this component instance is currently showing, so a
@@ -352,8 +355,13 @@ export function SessionDetail() {
       // The change didn't take effect, so stop suppressing the mount-time
       // fetch — otherwise a failed change would leave the selector stuck at
       // its reset value for the rest of the session even though the server
-      // still has the real profile (#285).
-      profileTouchedRef.current = false;
+      // still has the real profile (#285). Only do this while still on the
+      // session the change was for: after navigating away, the ref belongs to
+      // the new session (possibly guarding its own manual change), so clearing
+      // it here would clobber that (#289).
+      if (currentSessionRef.current === forSession) {
+        profileTouchedRef.current = false;
+      }
       alert(err instanceof Error ? `Failed to set profile: ${err.message}` : 'Failed to set profile');
     } finally {
       setProfileSaving(false);
@@ -425,18 +433,23 @@ export function SessionDetail() {
     setTemplateError('');
     try {
       const text = await api.renderPrompt(templatePrompt.prompt.id, templateValues);
-      if (currentSessionRef.current !== forSession) {
-        // Navigated away mid-render — discard rather than insert into the
-        // now-current session, and close the stale modal.
-        setTemplatePrompt(null);
-        return;
-      }
+      // If the user navigated to a different session mid-render, the modal
+      // this submit belonged to has already been closed (and rendering reset)
+      // by the close-on-navigate effect — and the shared modal state may now
+      // back a *newly opened* modal for the current session. Mutating
+      // templatePrompt/rendering/error here would close or corrupt that newer
+      // modal (#288), so bail without touching any of it.
+      if (currentSessionRef.current !== forSession) return;
+      setRendering(false);
       setTemplatePrompt(null);
       insertText(text);
     } catch (err) {
-      setTemplateError(err instanceof Error ? err.message : 'Failed to render prompt');
-    } finally {
-      setRendering(false);
+      // Same guard on the error path: only surface the failure on the modal
+      // that issued the request (#288).
+      if (currentSessionRef.current === forSession) {
+        setTemplateError(err instanceof Error ? err.message : 'Failed to render prompt');
+        setRendering(false);
+      }
     }
   };
 
