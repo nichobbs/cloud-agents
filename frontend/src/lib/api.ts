@@ -1,12 +1,17 @@
 /// <reference types="vite/client" />
 
-import type { Comment, Message, Prompt, Todo } from '../types';
+import type { Comment, Message, Profile, Prompt, Run, Todo, Webhook } from '../types';
 
 const BASE = (import.meta.env['VITE_API_URL'] as string | undefined) ?? '';
 
 function authHeaders(): HeadersInit {
   const token = localStorage.getItem('cloud_agents_token');
   return token ? { Authorization: `Bearer ${token}` } : {};
+}
+
+/** Ensure `tags` is always an array (older responses may omit it). */
+function normalisePrompt(p: Prompt): Prompt {
+  return { ...p, tags: p.tags ?? [] };
 }
 
 export const api = {
@@ -48,6 +53,33 @@ export const api = {
       headers: authHeaders(),
     });
     if (!res.ok) throw new Error(`${res.status} ${await res.text()}`);
+  },
+
+  /** Attach a profile to a session (empty string clears it). */
+  setSessionProfile: async (sessionId: string, profileId: string): Promise<void> => {
+    const res = await fetch(`${BASE}/api/sessions/${sessionId}/profile`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', ...authHeaders() },
+      body: JSON.stringify({ profileId }),
+    });
+    if (!res.ok) throw new Error(`${res.status} ${await res.text()}`);
+  },
+
+  /** Cancel an in-flight run (terminates its container). 409 if nothing is running. */
+  cancelRun: async (sessionId: string): Promise<void> => {
+    const res = await fetch(`${BASE}/api/sessions/${sessionId}/cancel`, {
+      method: 'POST',
+      headers: authHeaders(),
+    });
+    if (!res.ok) throw new Error(`${res.status} ${await res.text()}`);
+  },
+
+  /** A session's run history, newest first. */
+  getRuns: async (sessionId: string): Promise<Run[]> => {
+    const res = await fetch(`${BASE}/api/sessions/${sessionId}/runs`, { headers: authHeaders() });
+    if (!res.ok) throw new Error(`${res.status} ${await res.text()}`);
+    const body = (await res.json()) as { runs?: Run[] };
+    return body.runs ?? [];
   },
 
   sendMessage: async (
@@ -156,27 +188,58 @@ export const api = {
     const res = await fetch(`${BASE}/api/prompts`, { headers: authHeaders() });
     if (!res.ok) throw new Error(`${res.status} ${await res.text()}`);
     const body = (await res.json()) as { prompts?: Prompt[] };
-    return body.prompts ?? [];
+    return (body.prompts ?? []).map(normalisePrompt);
   },
 
-  addPrompt: async (name: string, body: string): Promise<Prompt> => {
+  /** Prompts ordered most-used first (`GET /api/prompts/popular`). */
+  getPopularPrompts: async (): Promise<Prompt[]> => {
+    const res = await fetch(`${BASE}/api/prompts/popular`, { headers: authHeaders() });
+    if (!res.ok) throw new Error(`${res.status} ${await res.text()}`);
+    const body = (await res.json()) as { prompts?: Prompt[] };
+    return (body.prompts ?? []).map(normalisePrompt);
+  },
+
+  /** Prompts carrying a given tag (`GET /api/prompts/tag/{tag}`). */
+  getPromptsByTag: async (tag: string): Promise<Prompt[]> => {
+    const res = await fetch(`${BASE}/api/prompts/tag/${encodeURIComponent(tag)}`, { headers: authHeaders() });
+    if (!res.ok) throw new Error(`${res.status} ${await res.text()}`);
+    const body = (await res.json()) as { prompts?: Prompt[] };
+    return (body.prompts ?? []).map(normalisePrompt);
+  },
+
+  addPrompt: async (name: string, body: string, tags: string[] = []): Promise<Prompt> => {
     const res = await fetch(`${BASE}/api/prompts`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', ...authHeaders() },
-      body: JSON.stringify({ name, body }),
+      body: JSON.stringify({ name, body, tags }),
     });
     if (!res.ok) throw new Error(`${res.status} ${await res.text()}`);
-    return res.json() as Promise<Prompt>;
+    return normalisePrompt((await res.json()) as Prompt);
   },
 
-  updatePrompt: async (promptId: string, name: string, body: string): Promise<Prompt> => {
+  updatePrompt: async (promptId: string, name: string, body: string, tags: string[] = []): Promise<Prompt> => {
     const res = await fetch(`${BASE}/api/prompts/${promptId}`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', ...authHeaders() },
-      body: JSON.stringify({ name, body }),
+      body: JSON.stringify({ name, body, tags }),
     });
     if (!res.ok) throw new Error(`${res.status} ${await res.text()}`);
-    return res.json() as Promise<Prompt>;
+    return normalisePrompt((await res.json()) as Prompt);
+  },
+
+  /** Render a prompt's `{{var}}` placeholders and return the result. Counts as
+   *  a use. `vars` is a flat key→value map. */
+  renderPrompt: async (promptId: string, vars: Record<string, string>): Promise<string> => {
+    const keys = Object.keys(vars);
+    const values = keys.map(k => vars[k] ?? '');
+    const res = await fetch(`${BASE}/api/prompts/${promptId}/render`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', ...authHeaders() },
+      body: JSON.stringify({ keys, values }),
+    });
+    if (!res.ok) throw new Error(`${res.status} ${await res.text()}`);
+    const out = (await res.json()) as { rendered?: string };
+    return out.rendered ?? '';
   },
 
   /** Best-effort usage bookkeeping; callers may fire-and-forget. */
@@ -258,4 +321,82 @@ export const api = {
     });
     if (!res.ok) throw new Error(`${res.status} ${await res.text()}`);
   },
+
+  // ─── Profiles (per-container policy: creds, harness, network) ──────────────────
+
+  getProfiles: async (): Promise<Profile[]> => {
+    const res = await fetch(`${BASE}/api/profiles`, { headers: authHeaders() });
+    if (!res.ok) throw new Error(`${res.status} ${await res.text()}`);
+    const body = (await res.json()) as { profiles?: Profile[] };
+    return (body.profiles ?? []).map(normaliseProfile);
+  },
+
+  addProfile: async (p: {
+    name: string;
+    harness: string;
+    networkPolicy: string;
+    credentialMode: string;
+    credentials: string[];
+  }): Promise<Profile> => {
+    const res = await fetch(`${BASE}/api/profiles`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', ...authHeaders() },
+      body: JSON.stringify(p),
+    });
+    if (!res.ok) throw new Error(`${res.status} ${await res.text()}`);
+    return normaliseProfile((await res.json()) as Profile);
+  },
+
+  updateProfile: async (
+    profileId: string,
+    p: { name: string; harness: string; networkPolicy: string; credentialMode: string; credentials: string[] },
+  ): Promise<Profile> => {
+    const res = await fetch(`${BASE}/api/profiles/${profileId}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', ...authHeaders() },
+      body: JSON.stringify(p),
+    });
+    if (!res.ok) throw new Error(`${res.status} ${await res.text()}`);
+    return normaliseProfile((await res.json()) as Profile);
+  },
+
+  deleteProfile: async (profileId: string): Promise<void> => {
+    const res = await fetch(`${BASE}/api/profiles/${profileId}`, {
+      method: 'DELETE',
+      headers: authHeaders(),
+    });
+    if (!res.ok) throw new Error(`${res.status} ${await res.text()}`);
+  },
+
+  // ─── Webhooks (run-completion notifications) ──────────────────────────────────
+
+  getWebhooks: async (): Promise<Webhook[]> => {
+    const res = await fetch(`${BASE}/api/webhooks`, { headers: authHeaders() });
+    if (!res.ok) throw new Error(`${res.status} ${await res.text()}`);
+    const body = (await res.json()) as { webhooks?: Webhook[] };
+    return body.webhooks ?? [];
+  },
+
+  registerWebhook: async (url: string): Promise<Webhook> => {
+    const res = await fetch(`${BASE}/api/webhooks`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', ...authHeaders() },
+      body: JSON.stringify({ url }),
+    });
+    if (!res.ok) throw new Error(`${res.status} ${await res.text()}`);
+    return res.json() as Promise<Webhook>;
+  },
+
+  deleteWebhook: async (webhookId: string): Promise<void> => {
+    const res = await fetch(`${BASE}/api/webhooks/${webhookId}`, {
+      method: 'DELETE',
+      headers: authHeaders(),
+    });
+    if (!res.ok) throw new Error(`${res.status} ${await res.text()}`);
+  },
 };
+
+/** Ensure a profile's optional array fields are always arrays. */
+function normaliseProfile(p: Profile): Profile {
+  return { ...p, credentials: p.credentials ?? [] };
+}

@@ -3,10 +3,12 @@ import { Nav } from './components/Nav';
 import { SessionsProvider } from './context/SessionsContext';
 import { Credentials } from './pages/Credentials';
 import { NewSession } from './pages/NewSession';
+import { Profiles } from './pages/Profiles';
 import { Prompts } from './pages/Prompts';
 import { SessionDetail } from './pages/SessionDetail';
 import { SessionList } from './pages/SessionList';
 import { Todos } from './pages/Todos';
+import { Webhooks } from './pages/Webhooks';
 
 export function App() {
   return (
@@ -20,7 +22,9 @@ export function App() {
           <Route path="/sessions/:id" element={<SessionDetail />} />
           <Route path="/sessions/:id/todos" element={<Todos />} />
           <Route path="/prompts" element={<Prompts />} />
+          <Route path="/profiles" element={<Profiles />} />
           <Route path="/credentials" element={<Credentials />} />
+          <Route path="/webhooks" element={<Webhooks />} />
         </Routes>
       </Router>
     </SessionsProvider>

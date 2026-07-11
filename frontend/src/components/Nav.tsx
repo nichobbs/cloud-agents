@@ -23,10 +23,22 @@ export function Nav() {
           Prompts
         </Link>
         <Link
+          to="/profiles"
+          style={{ ...linkStyle, color: pathname === '/profiles' ? '#c9d1d9' : '#8b949e' }}
+        >
+          Profiles
+        </Link>
+        <Link
           to="/credentials"
           style={{ ...linkStyle, color: pathname === '/credentials' ? '#c9d1d9' : '#8b949e' }}
         >
           Credentials
+        </Link>
+        <Link
+          to="/webhooks"
+          style={{ ...linkStyle, color: pathname === '/webhooks' ? '#c9d1d9' : '#8b949e' }}
+        >
+          Webhooks
         </Link>
         <Link
           to="/sessions/new"

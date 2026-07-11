@@ -3,6 +3,22 @@ import { api } from '../lib/api';
 import type { Prompt } from '../types';
 
 /// The prompt library: list, create, edit and delete saved prompts.
+type View = { kind: 'all' } | { kind: 'popular' } | { kind: 'tag'; tag: string };
+
+/** Split a comma/space separated tag input into a clean, de-duplicated list. */
+function parseTags(input: string): string[] {
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const raw of input.split(/[,\s]+/)) {
+    const t = raw.trim();
+    if (t && !seen.has(t)) {
+      seen.add(t);
+      out.push(t);
+    }
+  }
+  return out;
+}
+
 export function Prompts() {
   const [prompts, setPrompts] = useState<Prompt[]>([]);
   const [loading, setLoading] = useState(true);
@@ -10,11 +26,20 @@ export function Prompts() {
   const [editingId, setEditingId] = useState<string | null>(null);
   const [name, setName] = useState('');
   const [body, setBody] = useState('');
+  const [tagsInput, setTagsInput] = useState('');
   const [saving, setSaving] = useState(false);
+  const [view, setView] = useState<View>({ kind: 'all' });
 
-  const reload = async () => {
+  const load = async (v: View) => {
+    setLoading(true);
     try {
-      setPrompts(await api.getPrompts());
+      const list =
+        v.kind === 'popular'
+          ? await api.getPopularPrompts()
+          : v.kind === 'tag'
+            ? await api.getPromptsByTag(v.tag)
+            : await api.getPrompts();
+      setPrompts(list);
       setError('');
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to load prompts');
@@ -23,32 +48,37 @@ export function Prompts() {
     }
   };
 
+  const reload = async () => { await load(view); };
+
   useEffect(() => {
-    void reload();
+    void load(view);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [view]);
 
   const startEdit = (p: Prompt) => {
     setEditingId(p.id);
     setName(p.name);
     setBody(p.body);
+    setTagsInput(p.tags.join(', '));
   };
 
   const clearForm = () => {
     setEditingId(null);
     setName('');
     setBody('');
+    setTagsInput('');
   };
 
   const save = async () => {
     if (!name.trim() || !body.trim() || saving) return;
     setSaving(true);
     setError('');
+    const tags = parseTags(tagsInput);
     try {
       if (editingId) {
-        await api.updatePrompt(editingId, name.trim(), body);
+        await api.updatePrompt(editingId, name.trim(), body, tags);
       } else {
-        await api.addPrompt(name.trim(), body);
+        await api.addPrompt(name.trim(), body, tags);
       }
       clearForm();
       await reload();
@@ -75,6 +105,29 @@ export function Prompts() {
     <div style={pageStyle}>
       <h2 style={titleStyle}>Prompt library</h2>
 
+      <div style={filterBarStyle}>
+        <button
+          style={filterBtnStyle(view.kind === 'all')}
+          onClick={() => setView({ kind: 'all' })}
+        >
+          All
+        </button>
+        <button
+          style={filterBtnStyle(view.kind === 'popular')}
+          onClick={() => setView({ kind: 'popular' })}
+        >
+          Most used
+        </button>
+        {view.kind === 'tag' && (
+          <span style={activeTagStyle}>
+            tag: {view.tag}
+            <button style={clearTagBtnStyle} onClick={() => setView({ kind: 'all' })} aria-label="Clear tag filter">
+              ×
+            </button>
+          </span>
+        )}
+      </div>
+
       <div style={formStyle}>
         <input
           style={nameInputStyle}
@@ -86,9 +139,16 @@ export function Prompts() {
         <textarea
           style={bodyInputStyle}
           rows={5}
-          placeholder="Prompt text…"
+          placeholder="Prompt text… use {{name}} for variables to fill in at run time"
           value={body}
           onChange={e => setBody(e.target.value)}
+        />
+        <input
+          style={nameInputStyle}
+          placeholder="Tags (comma-separated, e.g. deploy, ci)"
+          value={tagsInput}
+          onChange={e => setTagsInput(e.target.value)}
+          aria-label="Prompt tags"
         />
         <div style={{ display: 'flex', gap: '8px' }}>
           <button
@@ -133,6 +193,20 @@ export function Prompts() {
             </div>
           </div>
           <pre style={promptBodyStyle}>{p.body}</pre>
+          {p.tags.length > 0 && (
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px' }}>
+              {p.tags.map(t => (
+                <button
+                  key={t}
+                  style={tagChipStyle}
+                  onClick={() => setView({ kind: 'tag', tag: t })}
+                  title={`Filter by "${t}"`}
+                >
+                  {t}
+                </button>
+              ))}
+            </div>
+          )}
         </div>
       ))}
     </div>
@@ -258,4 +332,48 @@ const mutedStyle: React.CSSProperties = {
   color: '#6e7681',
   textAlign: 'center',
   padding: '16px',
+};
+
+const filterBarStyle: React.CSSProperties = { display: 'flex', gap: '8px', alignItems: 'center', flexWrap: 'wrap' };
+
+const filterBtnStyle = (on: boolean): React.CSSProperties => ({
+  padding: '4px 12px',
+  background: on ? '#1f6feb' : 'transparent',
+  color: on ? '#fff' : '#8b949e',
+  border: `1px solid ${on ? '#1f6feb' : '#30363d'}`,
+  borderRadius: '14px',
+  fontSize: '12px',
+  cursor: 'pointer',
+});
+
+const activeTagStyle: React.CSSProperties = {
+  display: 'inline-flex',
+  alignItems: 'center',
+  gap: '4px',
+  fontSize: '12px',
+  color: '#79c0ff',
+  background: '#1f6feb22',
+  border: '1px solid #1f6feb',
+  borderRadius: '14px',
+  padding: '3px 10px',
+};
+
+const clearTagBtnStyle: React.CSSProperties = {
+  background: 'transparent',
+  border: 'none',
+  color: '#79c0ff',
+  cursor: 'pointer',
+  fontSize: '14px',
+  lineHeight: 1,
+  padding: 0,
+};
+
+const tagChipStyle: React.CSSProperties = {
+  fontSize: '11px',
+  color: '#8b949e',
+  background: '#161b22',
+  border: '1px solid #30363d',
+  borderRadius: '10px',
+  padding: '2px 8px',
+  cursor: 'pointer',
 };

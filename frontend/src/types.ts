@@ -35,6 +35,42 @@ export interface Prompt {
   useCount: string;
   createdAt: string;
   updatedAt: string;
+  tags: string[];
+}
+
+/// A per-container policy: which harness runs, what network access the
+/// container gets, and which credentials are injected (least privilege).
+export interface Profile {
+  id: string;
+  userId: string;
+  name: string;
+  harness: string; // '' = session chooses
+  networkPolicy: 'full' | 'none' | 'restricted';
+  credentialMode: 'all' | 'selected';
+  credentials: string[]; // granted credential names (selected mode)
+  createdAt: string;
+  updatedAt: string;
+}
+
+/// One agent run in a session's history.
+export interface Run {
+  id: string;
+  sessionId: string;
+  userId: string;
+  promptPreview: string;
+  harness: string;
+  model: string;
+  status: 'running' | 'succeeded' | 'failed' | 'cancelled';
+  startedAt: string;
+  endedAt: string;
+}
+
+/// A registered run-completion webhook target.
+export interface Webhook {
+  id: string;
+  userId: string;
+  url: string;
+  createdAt: string;
 }
 
 /// A todo / bookmark, optionally linked back to a source message.
