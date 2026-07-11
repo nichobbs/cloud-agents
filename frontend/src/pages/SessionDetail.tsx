@@ -47,7 +47,18 @@ export function SessionDetail() {
   const [runs, setRuns] = useState<Run[]>([]);
   const [showRuns, setShowRuns] = useState(false);
   const [cancelling, setCancelling] = useState(false);
+  // Multi-variable prompt templating: when a picked prompt has {{placeholders}},
+  // collect every value in one modal instead of sequential window.prompt()
+  // dialogs (#275).
+  const [templatePrompt, setTemplatePrompt] = useState<{ prompt: Prompt; vars: string[] } | null>(null);
+  const [templateValues, setTemplateValues] = useState<Record<string, string>>({});
+  const [rendering, setRendering] = useState(false);
+  const [templateError, setTemplateError] = useState('');
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  // Set once the user manually changes the profile for this session, so the
+  // mount-time GET of the attached profile can't overwrite that choice when it
+  // resolves after the change (#276). Reset per session in the fetch effect.
+  const profileTouchedRef = useRef(false);
 
   // Prompt library for the composer picker. Best-effort: an older backend
   // without the endpoint just leaves the picker hidden.
@@ -89,11 +100,15 @@ export function SessionDetail() {
   // (#273).
   useEffect(() => {
     let active = true;
+    profileTouchedRef.current = false;
     setProfileId('');
     api
       .getSessionProfile(sessionId)
       .then(pid => {
-        if (active) setProfileId(pid);
+        // Don't clobber a manual profile change made while this fetch was
+        // still in flight (#276) — the response reflects the server's
+        // pre-change value, so applying it would silently revert the user.
+        if (active && !profileTouchedRef.current) setProfileId(pid);
       })
       .catch(() => {
         /* profile lookup unavailable — leave the selector at its default */
@@ -263,6 +278,9 @@ export function SessionDetail() {
 
   const handleProfileChange = async (pid: string) => {
     if (profileSaving) return;
+    // Mark before the await so a still-in-flight mount-time fetch won't revert
+    // this choice when it resolves (#276).
+    profileTouchedRef.current = true;
     setProfileSaving(true);
     try {
       await api.setSessionProfile(sessionId, pid);
@@ -298,34 +316,46 @@ export function SessionDetail() {
     }
   };
 
-  const handleInsertPrompt = async (promptId: string) => {
-    const p = prompts.find(x => x.id === promptId);
-    if (!p) return;
-    // If the body has {{var}} placeholders, collect values and render server-side
-    // (which also counts the use); otherwise insert the body verbatim.
-    const vars = extractVarNames(p.body);
-    let text = p.body;
-    if (vars.length > 0) {
-      const bindings: Record<string, string> = {};
-      for (const name of vars) {
-        const value = window.prompt(`Value for {{${name}}}:`, '');
-        if (value === null) return; // cancelled — insert nothing
-        bindings[name] = value;
-      }
-      try {
-        text = await api.renderPrompt(p.id, bindings);
-      } catch (err) {
-        alert(err instanceof Error ? `Failed to render prompt: ${err.message}` : 'Failed to render prompt');
-        return;
-      }
-    } else {
-      // Usage bookkeeping is best-effort; the count just informs the library UI.
-      api.usePrompt(p.id).catch(() => { /* non-fatal */ });
-    }
-    // Insert (append to any draft) rather than replace, so a prompt can be
-    // combined with typed context.
+  // Append to any existing draft rather than replace, so a prompt can be
+  // combined with typed context.
+  const insertText = useCallback((text: string) => {
     setInput(prev => (prev.trim() ? `${prev.trimEnd()}\n\n${text}` : text));
     textareaRef.current?.focus();
+  }, []);
+
+  const handleInsertPrompt = (promptId: string) => {
+    const p = prompts.find(x => x.id === promptId);
+    if (!p) return;
+    const vars = extractVarNames(p.body);
+    if (vars.length > 0) {
+      // Open the modal to collect all placeholder values at once (#275);
+      // rendering + use-count happen server-side on submit.
+      const initial: Record<string, string> = {};
+      for (const name of vars) initial[name] = '';
+      setTemplateValues(initial);
+      setTemplateError('');
+      setTemplatePrompt({ prompt: p, vars });
+      return;
+    }
+    // No placeholders — insert verbatim. Usage bookkeeping is best-effort;
+    // the count just informs the library UI.
+    api.usePrompt(p.id).catch(() => { /* non-fatal */ });
+    insertText(p.body);
+  };
+
+  const submitTemplate = async () => {
+    if (!templatePrompt || rendering) return;
+    setRendering(true);
+    setTemplateError('');
+    try {
+      const text = await api.renderPrompt(templatePrompt.prompt.id, templateValues);
+      setTemplatePrompt(null);
+      insertText(text);
+    } catch (err) {
+      setTemplateError(err instanceof Error ? err.message : 'Failed to render prompt');
+    } finally {
+      setRendering(false);
+    }
   };
 
   const handleSavePrompt = async () => {
@@ -358,6 +388,61 @@ export function SessionDetail() {
 
   return (
     <div style={pageStyle}>
+      {templatePrompt && (
+        <div
+          style={modalOverlayStyle}
+          onClick={() => { if (!rendering) setTemplatePrompt(null); }}
+        >
+          <div style={modalStyle} onClick={e => e.stopPropagation()}>
+            <div style={modalTitleStyle}>
+              Fill in “{templatePrompt.prompt.name}”
+            </div>
+            <div style={modalSubtitleStyle}>
+              {templatePrompt.vars.length === 1
+                ? '1 variable'
+                : `${templatePrompt.vars.length} variables`}
+            </div>
+            {templatePrompt.vars.map((name, i) => (
+              <label key={name} style={modalFieldStyle}>
+                <span style={modalLabelStyle}>{`{{${name}}}`}</span>
+                <textarea
+                  autoFocus={i === 0}
+                  rows={2}
+                  style={modalInputStyle}
+                  value={templateValues[name] ?? ''}
+                  onChange={e =>
+                    setTemplateValues(prev => ({ ...prev, [name]: e.target.value }))
+                  }
+                  onKeyDown={e => {
+                    if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) {
+                      e.preventDefault();
+                      void submitTemplate();
+                    }
+                  }}
+                />
+              </label>
+            ))}
+            {templateError && <div style={modalErrorStyle}>{templateError}</div>}
+            <div style={modalActionsStyle}>
+              <button
+                style={modalCancelBtnStyle}
+                onClick={() => setTemplatePrompt(null)}
+                disabled={rendering}
+              >
+                Cancel
+              </button>
+              <button
+                style={modalInsertBtnStyle}
+                onClick={() => { void submitTemplate(); }}
+                disabled={rendering}
+                title="Insert (⌘/Ctrl+Enter)"
+              >
+                {rendering ? 'Rendering…' : 'Insert'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
       <div style={headerStyle}>
         <div>
           <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '4px' }}>
@@ -555,6 +640,101 @@ const pageStyle: React.CSSProperties = {
   flexDirection: 'column',
   gap: '16px',
   minHeight: 'calc(100vh - 57px)',
+};
+
+const modalOverlayStyle: React.CSSProperties = {
+  position: 'fixed',
+  inset: 0,
+  background: 'rgba(1, 4, 9, 0.7)',
+  display: 'flex',
+  alignItems: 'center',
+  justifyContent: 'center',
+  padding: '24px',
+  zIndex: 100,
+};
+
+const modalStyle: React.CSSProperties = {
+  width: '100%',
+  maxWidth: '480px',
+  maxHeight: '80vh',
+  overflowY: 'auto',
+  background: '#161b22',
+  border: '1px solid #30363d',
+  borderRadius: '10px',
+  padding: '20px',
+  display: 'flex',
+  flexDirection: 'column',
+  gap: '12px',
+};
+
+const modalTitleStyle: React.CSSProperties = {
+  fontSize: '15px',
+  fontWeight: 600,
+  color: '#c9d1d9',
+};
+
+const modalSubtitleStyle: React.CSSProperties = {
+  fontSize: '12px',
+  color: '#8b949e',
+  marginTop: '-8px',
+};
+
+const modalFieldStyle: React.CSSProperties = {
+  display: 'flex',
+  flexDirection: 'column',
+  gap: '4px',
+};
+
+const modalLabelStyle: React.CSSProperties = {
+  fontSize: '12px',
+  fontFamily: 'monospace',
+  color: '#79c0ff',
+};
+
+const modalInputStyle: React.CSSProperties = {
+  padding: '8px 10px',
+  background: '#0d1117',
+  border: '1px solid #30363d',
+  borderRadius: '6px',
+  color: '#c9d1d9',
+  fontSize: '13px',
+  fontFamily: 'inherit',
+  resize: 'vertical',
+  outline: 'none',
+  boxSizing: 'border-box',
+};
+
+const modalErrorStyle: React.CSSProperties = {
+  fontSize: '12px',
+  color: '#f85149',
+};
+
+const modalActionsStyle: React.CSSProperties = {
+  display: 'flex',
+  justifyContent: 'flex-end',
+  gap: '8px',
+  marginTop: '4px',
+};
+
+const modalCancelBtnStyle: React.CSSProperties = {
+  padding: '6px 14px',
+  background: 'transparent',
+  color: '#8b949e',
+  border: '1px solid #30363d',
+  borderRadius: '6px',
+  fontSize: '13px',
+  cursor: 'pointer',
+};
+
+const modalInsertBtnStyle: React.CSSProperties = {
+  padding: '6px 14px',
+  background: '#1f6feb',
+  color: '#fff',
+  border: 'none',
+  borderRadius: '6px',
+  fontSize: '13px',
+  fontWeight: 500,
+  cursor: 'pointer',
 };
 
 const cancelRunBtnStyle: React.CSSProperties = {
