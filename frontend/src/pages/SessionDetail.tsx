@@ -134,6 +134,10 @@ export function SessionDetail() {
   // is trapped within it, so keyboard focus can't wander behind the overlay.
   useEffect(() => {
     if (!templatePrompt) return;
+    // Lock background scroll while the modal is open (#287); aria-modal already
+    // marks the background inert for assistive tech.
+    const prevOverflow = document.body.style.overflow;
+    document.body.style.overflow = 'hidden';
     const onKey = (e: KeyboardEvent) => {
       if (e.key === 'Escape') {
         if (!rendering) {
@@ -161,7 +165,10 @@ export function SessionDetail() {
       }
     };
     document.addEventListener('keydown', onKey);
-    return () => document.removeEventListener('keydown', onKey);
+    return () => {
+      document.body.style.overflow = prevOverflow;
+      document.removeEventListener('keydown', onKey);
+    };
   }, [templatePrompt, rendering, closeTemplate]);
 
   // Close the template modal when navigating to a different session — it was
@@ -342,6 +349,11 @@ export function SessionDetail() {
       // under a different session's selector.
       if (currentSessionRef.current === forSession) setProfileId(pid);
     } catch (err) {
+      // The change didn't take effect, so stop suppressing the mount-time
+      // fetch — otherwise a failed change would leave the selector stuck at
+      // its reset value for the rest of the session even though the server
+      // still has the real profile (#285).
+      profileTouchedRef.current = false;
       alert(err instanceof Error ? `Failed to set profile: ${err.message}` : 'Failed to set profile');
     } finally {
       setProfileSaving(false);
@@ -646,7 +658,7 @@ export function SessionDetail() {
             style={promptPickerStyle}
             value=""
             onChange={e => {
-              if (e.target.value) void handleInsertPrompt(e.target.value);
+              if (e.target.value) handleInsertPrompt(e.target.value);
             }}
             disabled={isStreaming}
             aria-label="Insert a saved prompt"
