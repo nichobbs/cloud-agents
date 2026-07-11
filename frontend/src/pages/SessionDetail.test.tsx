@@ -268,3 +268,4 @@ describe('SessionDetail live output retention', () => {
     expect(reset).not.toHaveBeenCalled();
   });
 });
+

@@ -213,6 +213,14 @@ export function SessionDetail() {
     generationRef.current += 1;
   }, [sessionId]);
 
+  // Latest isStreaming, readable from an awaited continuation without a stale
+  // closure — lets foldRunIntoTranscript tell whether a *new* run has started
+  // streaming since the one it's folding finished (#320).
+  const isStreamingRef = useRef(isStreaming);
+  useEffect(() => {
+    isStreamingRef.current = isStreaming;
+  }, [isStreaming]);
+
   const highlightedId = location.hash.startsWith('#message-')
     ? location.hash.slice('#message-'.length)
     : null;
@@ -255,13 +263,18 @@ export function SessionDetail() {
     const forSession = sessionId;
     const forGeneration = generationRef.current;
     const reloaded = await reload();
-    if (currentSessionRef.current === forSession && generationRef.current === forGeneration) {
-      if (reloaded) {
-        reset();
-        setKeepOutput(false);
-      } else {
-        setKeepOutput(true);
-      }
+    if (currentSessionRef.current !== forSession || generationRef.current !== forGeneration) return;
+    // A new run may have started streaming during reload() — a fresh same-
+    // session send (the composer re-enables the moment the prior run ends) or a
+    // reattach. It now owns the live panel, so don't reset()/keepOutput and
+    // clobber its output (#320). Same session + generation, so the guards above
+    // can't catch this — the isStreaming ref can.
+    if (isStreamingRef.current) return;
+    if (reloaded) {
+      reset();
+      setKeepOutput(false);
+    } else {
+      setKeepOutput(true);
     }
   }, [sessionId, reload, reset]);
 
