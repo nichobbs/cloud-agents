@@ -1,0 +1,72 @@
+name: Close actioned review findings
+
+# The Claude Code Review workflow opens a `review-finding` tracking issue per
+# finding, labeled `pr-<N>` for the PR that INTRODUCED it. Its own auto-close
+# step only reconsiders issues carrying the *current* PR's label — so a finding
+# from PR #A that gets fixed in a later PR #B is never closed, because #B's
+# review only looks at `pr-B` issues. That gap is why review-finding issues pile
+# up open long after they're actioned.
+#
+# This workflow closes that gap deterministically: when a PR merges, it closes
+# any OPEN `review-finding` issue whose number is referenced in the merged PR's
+# commit messages or title. That matches the repo's commit convention of naming
+# the actioned finding in the subject, e.g. `fix(ui): … (#288, #289)`.
+
+on:
+  pull_request:
+    types: [closed]
+
+permissions:
+  contents: read
+  pull-requests: read
+  issues: write
+
+jobs:
+  close-findings:
+    # Only when the PR actually merged — a closed-without-merge PR actioned
+    # nothing.
+    if: github.event.pull_request.merged == true
+    runs-on: ubuntu-latest
+    steps:
+      - name: Close review-finding issues referenced by this PR
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          PR_TITLE: ${{ github.event.pull_request.title }}
+        run: |
+          set -euo pipefail
+
+          # Collect every "#NNN" reference from this PR's commit messages plus
+          # its title. The title is included because a squash merge may only
+          # preserve the PR title, not the individual commit subjects.
+          commit_text="$(gh pr view "$PR_NUMBER" --repo "$REPO" --json commits \
+            --jq '.commits[] | .messageHeadline + "\n" + (.messageBody // "")' 2>/dev/null || true)"
+          all_text="$(printf '%s\n%s\n' "$PR_TITLE" "$commit_text")"
+
+          nums="$(printf '%s' "$all_text" | grep -oE '#[0-9]+' | tr -d '#' | sort -u || true)"
+          if [ -z "$nums" ]; then
+            echo "No issue references found in PR #$PR_NUMBER title/commits."
+            exit 0
+          fi
+
+          echo "Referenced numbers: $(echo "$nums" | tr '\n' ' ')"
+          for n in $nums; do
+            # Skip its own number, and never touch a PR that merely shares the
+            # number: `gh issue view` errors on a PR, leaving $info empty.
+            [ "$n" = "$PR_NUMBER" ] && continue
+            info="$(gh issue view "$n" --repo "$REPO" --json state,labels 2>/dev/null || true)"
+            if [ -z "$info" ]; then
+              echo "#$n: not an issue (likely a PR) — skipping"
+              continue
+            fi
+            state="$(printf '%s' "$info" | jq -r '.state')"
+            is_finding="$(printf '%s' "$info" | jq -r '[.labels[].name] | index("review-finding") != null')"
+            if [ "$state" = "OPEN" ] && [ "$is_finding" = "true" ]; then
+              echo "Closing review-finding #$n (actioned by PR #$PR_NUMBER)"
+              gh issue close "$n" --repo "$REPO" --reason completed \
+                --comment "Resolved by PR #$PR_NUMBER (merged), whose commits reference #$n. Closed automatically by the \`close-review-findings\` workflow."
+            else
+              echo "#$n: state=$state review-finding=$is_finding — skipping"
+            fi
+          done
