@@ -23,12 +23,28 @@ export interface StreamState {
   error: string | null;
   send: (text: string) => Promise<SendResult>;
   reset: () => void;
+  /**
+   * Incremented each time a run this hook *reattached to* (via the mount-time
+   * resume, not a local send()) finishes. The owner watches it to fold the
+   * finished run into the transcript — the same post-run handling send() gets
+   * from its caller — so a reattached run's output doesn't vanish on
+   * completion (#316). Never bumped for a locally-initiated send() (its caller
+   * already handles that) or for a cancelled/superseded reattach.
+   */
+  reattachEnded: number;
 }
 
 export function useStreamMessage(sessionId: string): StreamState {
   const [output, setOutput] = useState('');
   const [isStreaming, setIsStreaming] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // Bumped when a reattached run finishes so the owner can fold it into the
+  // transcript (#316); see StreamState.reattachEnded.
+  const [reattachEnded, setReattachEnded] = useState(0);
+  // True while a local send() is running. The reattach resume() yields to it so
+  // the two don't both drive output/isStreaming if a send starts in the narrow
+  // window before resume()'s first getRunOutput resolves (#317).
+  const sendInFlightRef = useRef(false);
   const activeSessionRef = useRef(sessionId);
 
   // Bumped every time `sessionId` changes, including a return trip to a
@@ -55,6 +71,76 @@ export function useStreamMessage(sessionId: string): StreamState {
     setOutput('');
     setIsStreaming(false);
     setError(null);
+    // Clear the send-in-flight guard on navigation too (#318): a send for the
+    // previous session is now stale, and leaving it set would block the new
+    // session's reattach from ever showing live output until that abandoned
+    // (possibly minutes-long) send finally settles.
+    sendInFlightRef.current = false;
+  }, [sessionId]);
+
+  // Reattach to a run already in progress for this session. send() only polls
+  // for runs it started, so a page reload or a second tab (no send() driving
+  // the poll) would show nothing until the run finished (#217). Runs after the
+  // reset effect above (declaration order), so it re-populates what reset just
+  // cleared only when there genuinely is a running run. Guarded by the same
+  // session id + generation as send(), plus a `cancelled` flag for unmount.
+  useEffect(() => {
+    const forSession = sessionId;
+    const forGeneration = generationRef.current;
+    let cancelled = false;
+    const alive = () =>
+      !cancelled &&
+      activeSessionRef.current === forSession &&
+      generationRef.current === forGeneration;
+
+    const resume = async () => {
+      let first: { running: boolean; output: string };
+      try {
+        first = await api.getRunOutput(forSession);
+      } catch {
+        return; // no run in progress / endpoint unavailable
+      }
+      // Yield to a send() that started during the initial check — it owns the
+      // stream from here, so don't double-drive output/isStreaming (#317).
+      if (!alive() || sendInFlightRef.current || !first.running) return;
+      setIsStreaming(true);
+      let last = first.output;
+      if (last) setOutput(last);
+      let delay = 1500;
+      const maxDelay = 6000;
+      let finished = false;
+      while (alive()) {
+        await new Promise(r => setTimeout(r, delay));
+        if (!alive()) return;
+        try {
+          const next = await api.getRunOutput(forSession);
+          if (!alive()) return;
+          if (next.output && next.output !== last) {
+            last = next.output;
+            setOutput(last);
+            delay = 1500; // fresh output — poll responsively again (#216)
+          }
+          if (!next.running) {
+            finished = true;
+            break;
+          }
+        } catch {
+          // ignore transient poll failures
+        }
+        delay = Math.min(Math.round(delay * 1.5), maxDelay);
+      }
+      if (alive()) {
+        setIsStreaming(false);
+        // The reattached run actually finished (vs. we were cancelled) — signal
+        // the owner to fold it into the transcript so its output doesn't vanish
+        // (#316).
+        if (finished) setReattachEnded(n => n + 1);
+      }
+    };
+    void resume();
+    return () => {
+      cancelled = true;
+    };
   }, [sessionId]);
 
   const send = useCallback(
@@ -64,6 +150,7 @@ export function useStreamMessage(sessionId: string): StreamState {
       const stillCurrent = () =>
         activeSessionRef.current === forSession && generationRef.current === forGeneration;
 
+      sendInFlightRef.current = true; // let a concurrent reattach yield to us (#317)
       setIsStreaming(true);
       setError(null);
 
@@ -145,7 +232,12 @@ export function useStreamMessage(sessionId: string): StreamState {
         }
       } finally {
         polling = false;
+        // Only clear the guard if this send is still the current one — a stale
+        // send resolving after navigation must not clear a flag that now
+        // belongs to a newer send (the reset effect already cleared ours on
+        // navigation) (#318).
         if (stillCurrent()) {
+          sendInFlightRef.current = false;
           setIsStreaming(false);
         }
       }
@@ -159,5 +251,5 @@ export function useStreamMessage(sessionId: string): StreamState {
     setError(null);
   }, []);
 
-  return { output, isStreaming, error, send, reset };
+  return { output, isStreaming, error, send, reset, reattachEnded };
 }

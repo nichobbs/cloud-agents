@@ -32,7 +32,7 @@ export function SessionDetail() {
   const navigate = useNavigate();
   const location = useLocation();
   const session = getSession(sessionId);
-  const { output, isStreaming, error: sendError, send, reset } = useStreamMessage(sessionId);
+  const { output, isStreaming, error: sendError, send, reset, reattachEnded } = useStreamMessage(sessionId);
 
   const [messages, setMessages] = useState<Message[]>([]);
   const [messagesError, setMessagesError] = useState(false);
@@ -202,9 +202,24 @@ export function SessionDetail() {
   // enough on its own — this ref is what lets that closure check itself
   // against the *current* session after an awaited call returns.
   const currentSessionRef = useRef(sessionId);
+  // Bumped on every sessionId change — including leaving this session and
+  // returning to it — so an awaited continuation can tell "same session, but a
+  // fresh visit" apart from "still the same visit". A session-id check alone
+  // can't (the id is identical across an A→B→A round trip), which is the gap
+  // #314 flags for handleSend's post-reload state updates.
+  const generationRef = useRef(0);
   useEffect(() => {
     currentSessionRef.current = sessionId;
+    generationRef.current += 1;
   }, [sessionId]);
+
+  // Latest isStreaming, readable from an awaited continuation without a stale
+  // closure — lets foldRunIntoTranscript tell whether a *new* run has started
+  // streaming since the one it's folding finished (#320).
+  const isStreamingRef = useRef(isStreaming);
+  useEffect(() => {
+    isStreamingRef.current = isStreaming;
+  }, [isStreaming]);
 
   const highlightedId = location.hash.startsWith('#message-')
     ? location.hash.slice('#message-'.length)
@@ -236,6 +251,43 @@ export function SessionDetail() {
     }
     return false;
   }, [sessionId, fetchMessages]);
+
+  // Fold a just-finished run into the persisted transcript: reload it, then
+  // clear the live panel only if the reload applied fresh messages — otherwise
+  // keep the completed output visible instead of losing it (#214/#312). Gated
+  // on session id + generation so a navigate-away-and-back mid-reload can't
+  // apply a stale result (#314). Shared by handleSend's success path and the
+  // reattach-completion effect below, so a reattached run gets the same
+  // post-run handling a locally-sent one does (#316).
+  const foldRunIntoTranscript = useCallback(async () => {
+    const forSession = sessionId;
+    const forGeneration = generationRef.current;
+    const reloaded = await reload();
+    if (currentSessionRef.current !== forSession || generationRef.current !== forGeneration) return;
+    // A new run may have started streaming during reload() — a fresh same-
+    // session send (the composer re-enables the moment the prior run ends) or a
+    // reattach. It now owns the live panel, so don't reset()/keepOutput and
+    // clobber its output (#320). Same session + generation, so the guards above
+    // can't catch this — the isStreaming ref can.
+    if (isStreamingRef.current) return;
+    if (reloaded) {
+      reset();
+      setKeepOutput(false);
+    } else {
+      setKeepOutput(true);
+    }
+  }, [sessionId, reload, reset]);
+
+  // A reattached run finished (the hook bumps reattachEnded) — fold it into the
+  // transcript exactly as a completed send() does (#316). Tracked against the
+  // previous value so this only fires on a real increment, not when
+  // foldRunIntoTranscript's identity changes on navigation.
+  const prevReattachEnded = useRef(reattachEnded);
+  useEffect(() => {
+    if (reattachEnded === prevReattachEnded.current) return;
+    prevReattachEnded.current = reattachEnded;
+    void foldRunIntoTranscript();
+  }, [reattachEnded, foldRunIntoTranscript]);
 
   useEffect(() => {
     // Guard against a slow fetch for a previous session resolving after
@@ -312,28 +364,9 @@ export function SessionDetail() {
     }
 
     if (succeeded) {
-      // Fold the completed run into the persisted transcript, then clear the
-      // live panel — but ONLY if the transcript actually refreshed. `stale`
-      // above only reflects the state as of `send()` resolving; the user can
-      // still navigate away during `reload()`'s own fetch (reload() guards its
-      // own setMessages, reset() has no guard), and reload() can also just
-      // fail. If it didn't apply fresh messages, keep the live output so the
-      // completed run's response stays visible instead of vanishing with no
-      // transcript entry to replace it (#214).
-      const forSession = sessionId;
-      const reloaded = await reload();
-      if (currentSessionRef.current === forSession) {
-        if (reloaded) {
-          // Response is now in the transcript — clear the live panel.
-          reset();
-          setKeepOutput(false);
-        } else {
-          // Transcript refresh failed; keep the completed run's output panel
-          // on screen (isStreaming is already false, so it would otherwise
-          // vanish with the response nowhere to be seen) (#214/#312).
-          setKeepOutput(true);
-        }
-      }
+      // Fold the completed run into the transcript (reload + keep-or-clear the
+      // live panel), shared with the reattach path. See foldRunIntoTranscript.
+      await foldRunIntoTranscript();
     } else {
       // Restore the prompt so a failed send (network error, container
       // crash, backend 500) doesn't silently discard what the user typed —
