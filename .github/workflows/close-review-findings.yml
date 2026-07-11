@@ -23,9 +23,12 @@ permissions:
 
 jobs:
   close-findings:
-    # Only when the PR actually merged — a closed-without-merge PR actioned
-    # nothing.
-    if: github.event.pull_request.merged == true
+    # Only when the PR actually merged into the default branch — a
+    # closed-without-merge PR actioned nothing, and a merge into some other
+    # branch hasn't landed the fix on the line reviewers track.
+    if: >-
+      github.event.pull_request.merged == true &&
+      github.event.pull_request.base.ref == github.event.repository.default_branch
     runs-on: ubuntu-latest
     steps:
       - name: Close review-finding issues referenced by this PR
@@ -37,12 +40,17 @@ jobs:
         run: |
           set -euo pipefail
 
-          # Collect every "#NNN" reference from this PR's commit messages plus
-          # its title. The title is included because a squash merge may only
-          # preserve the PR title, not the individual commit subjects.
-          commit_text="$(gh pr view "$PR_NUMBER" --repo "$REPO" --json commits \
-            --jq '.commits[] | .messageHeadline + "\n" + (.messageBody // "")' 2>/dev/null || true)"
-          all_text="$(printf '%s\n%s\n' "$PR_TITLE" "$commit_text")"
+          # Collect "#NNN" references only from commit SUBJECTS and the PR
+          # title — the positions where this repo's convention names the
+          # actioned finding, e.g. "fix(ui): … (#288, #289)". Commit BODIES and
+          # PR descriptions are deliberately excluded: they carry rationale
+          # cross-references to *other* findings (e.g. "resolves the same class
+          # as #265"), and scanning them would close issues a commit merely
+          # mentions rather than fixes. The title is included because a squash
+          # merge may only preserve the PR title, not the individual subjects.
+          commit_subjects="$(gh pr view "$PR_NUMBER" --repo "$REPO" --json commits \
+            --jq '.commits[].messageHeadline' 2>/dev/null || true)"
+          all_text="$(printf '%s\n%s\n' "$PR_TITLE" "$commit_subjects")"
 
           nums="$(printf '%s' "$all_text" | grep -oE '#[0-9]+' | tr -d '#' | sort -u || true)"
           if [ -z "$nums" ]; then
