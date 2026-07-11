@@ -114,6 +114,13 @@ jobs:
           npm ci --no-audit --no-fund
           npm run build   # tsc && vite build — see frontend/package.json
 
+      # Frontend unit tests (Vitest + Testing Library, jsdom): SessionDetail's
+      # template modal and the profile-fetch race guard (#281). Reuses the
+      # deps installed by the build step above.
+      - name: Test frontend
+        working-directory: frontend
+        run: npm test   # vitest run — see frontend/package.json
+
       # Shell + asset sanity checks (no Lyric toolchain needed).
       - name: Lint shell scripts
         run: |

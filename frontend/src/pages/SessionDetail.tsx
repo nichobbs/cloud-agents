@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 import { Link, useLocation, useNavigate, useParams } from 'react-router-dom';
 import { MessageBlock } from '../components/MessageBlock';
 import { Terminal } from '../components/Terminal';
@@ -9,7 +10,7 @@ import { api } from '../lib/api';
 import type { Message, Profile, Prompt, Run } from '../types';
 
 /** Unique `{{name}}` placeholder names in a prompt body, in first-seen order. */
-function extractVarNames(body: string): string[] {
+export function extractVarNames(body: string): string[] {
   const seen = new Set<string>();
   const out: string[] = [];
   const re = /\{\{([^}]+)\}\}/g;
@@ -134,10 +135,15 @@ export function SessionDetail() {
   // is trapped within it, so keyboard focus can't wander behind the overlay.
   useEffect(() => {
     if (!templatePrompt) return;
-    // Lock background scroll while the modal is open (#287); aria-modal already
-    // marks the background inert for assistive tech.
+    // Lock background scroll while the modal is open (#287).
     const prevOverflow = document.body.style.overflow;
     document.body.style.overflow = 'hidden';
+    // Mark the app root inert so assistive tech, Tab, and pointer input can't
+    // reach background content while the modal is open (#287) — aria-modal
+    // alone isn't reliable across screen readers. The modal is portaled to
+    // <body>, outside #root, so it stays interactive.
+    const appRoot = document.getElementById('root');
+    appRoot?.setAttribute('inert', '');
     const onKey = (e: KeyboardEvent) => {
       if (e.key === 'Escape') {
         if (!rendering) {
@@ -167,6 +173,7 @@ export function SessionDetail() {
     document.addEventListener('keydown', onKey);
     return () => {
       document.body.style.overflow = prevOverflow;
+      appRoot?.removeAttribute('inert');
       document.removeEventListener('keydown', onKey);
     };
   }, [templatePrompt, rendering, closeTemplate]);
@@ -483,7 +490,7 @@ export function SessionDetail() {
 
   return (
     <div style={pageStyle}>
-      {templatePrompt && (
+      {templatePrompt && createPortal(
         <div
           style={modalOverlayStyle}
           onClick={() => { if (!rendering) closeTemplate(); }}
@@ -543,7 +550,8 @@ export function SessionDetail() {
               </button>
             </div>
           </div>
-        </div>
+        </div>,
+        document.body,
       )}
       <div style={headerStyle}>
         <div>
