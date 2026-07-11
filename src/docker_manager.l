@@ -32,22 +32,36 @@ func imageForHarness(harness: in String): String {
   return "claude-code:base"
 }
 
-/// Docker NetworkMode for a profile's network policy. "none" fully isolates
-/// the container; "full"/"restricted" (and no profile) keep the default bridge
-/// — "restricted" additionally routes egress through a proxy via env vars (see
-/// proxyEnvForPolicy), the documented allowlist seam.
+/// Docker NetworkMode for a profile's network policy. "none" fully isolates the
+/// container; "full" (and no profile) keeps the default bridge (full egress).
+///
+/// "restricted" must never fall through to full egress (#247). If the operator
+/// has provisioned an egress network — CLOUD_AGENTS_RESTRICTED_NETWORK, a Docker
+/// network (typically created `--internal`) whose only route out is an
+/// allowlisting proxy — the container joins it; otherwise "restricted" fails
+/// closed to full isolation ("none") rather than the default bridge. This is
+/// network-level enforcement: the advisory HTTP(S)_PROXY vars from
+/// proxyEnvForPolicy alone don't restrict anything (a process can ignore them).
 func networkModeForPolicy(policy: in String): String {
   if policy == "none" {
     return "none"
+  }
+  if policy == "restricted" {
+    val net = Env.GetEnvironmentVariable("CLOUD_AGENTS_RESTRICTED_NETWORK")
+    if DotNetString.IsNullOrEmpty(net) {
+      return "none"
+    }
+    return net
   }
   return ""
 }
 
 /// Proxy env vars for the 'restricted' network policy: point the container at
-/// the egress proxy named by CLOUD_AGENTS_EGRESS_PROXY, if configured. This is
-/// the seam an allowlisting proxy plugs into; with no proxy configured the
-/// container simply gets the default network and no proxy vars (enforcement is
-/// the proxy's job, tracked as a follow-up).
+/// the egress proxy named by CLOUD_AGENTS_EGRESS_PROXY, if configured. These
+/// are a convenience for proxy-aware clients on top of the network-level
+/// enforcement in networkModeForPolicy (which fails closed to full isolation
+/// when no restricted network is configured) — they do not themselves restrict
+/// egress. With no proxy configured the container gets no proxy vars.
 func proxyEnvForPolicy(policy: in String): slice[String] {
   val empty: slice[String] = []
   if policy != "restricted" {
@@ -274,7 +288,7 @@ async func runSessionMessageAsync(
       cell.error = msg
       // Best-effort cleanup: remove the container even if start failed
       val _ = await deleteRunnerContainer(containerId)
-      val _ = CloudAgents.SessionStore.updateSessionContainer(sessionId, "")
+      val _ = CloudAgents.SessionStore.clearSessionContainerIfMatches(sessionId, containerId)
       return ()
     }
   }
@@ -287,7 +301,7 @@ async func runSessionMessageAsync(
     case Ok(_) -> ()
     case Err(msg) -> {
       val _ = await deleteRunnerContainer(containerId)
-      val _ = CloudAgents.SessionStore.updateSessionContainer(sessionId, "")
+      val _ = CloudAgents.SessionStore.clearSessionContainerIfMatches(sessionId, containerId)
       cell.isSuccess = false
       cell.error = msg
       return ()
@@ -299,7 +313,7 @@ async func runSessionMessageAsync(
   // Always remove the ephemeral container after the run. Session state
   // (workspace and home volumes) persists independently of the container.
   val _ = await deleteRunnerContainer(containerId)
-  val _ = CloudAgents.SessionStore.updateSessionContainer(sessionId, "")
+  val _ = CloudAgents.SessionStore.clearSessionContainerIfMatches(sessionId, containerId)
 
   match logsResult {
     case Ok(logs) -> {
