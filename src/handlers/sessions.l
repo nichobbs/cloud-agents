@@ -616,7 +616,10 @@ pub func deleteSession(id: in String): Result[Unit, Web.ApiError] {
           case Err(err) -> return Err(Web.internalError("Failed to terminate container (session retained, retry delete): " + err))
         }
       }
-      match removeSession(id) {
+      // We already fetched and existence-checked the session above, so delete
+      // the row directly rather than via removeSession (which would re-read it)
+      // — avoids a redundant second lookup (#172).
+      match CloudAgents.SessionStore.deleteSessionRecord(id) {
         case Ok(_) -> return Ok(())
         case Err(e) -> return Err(Web.internalError("failed to remove session: " + CloudAgents.Sqlite.dbErrorMessage(e)))
       }

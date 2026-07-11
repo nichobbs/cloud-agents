@@ -165,7 +165,12 @@ pub async func getRunnerLogs(containerId: in String): Result[String, String] {
 pub func partialContainerLogs(containerId: in String): String {
   val cell = ResultCell(isSuccess = false, output = "", error = "")
   val t = partialContainerLogsAsync(containerId, cell)
-  val completed = taskWaitMs(t, 10000) // 10s cap; polling is best-effort
+  // Cap the block at the client's ~1.5s poll interval, not 10s (#227): partial
+  // log fetches are normally sub-second, and a longer block lets requests pile
+  // up faster than they drain once Lyric.Web dispatches them concurrently. A
+  // fetch that doesn't finish in time returns "" — partial logs are best-effort
+  // and the next poll retries.
+  val completed = taskWaitMs(t, 1500)
   if not completed {
     return ""
   }

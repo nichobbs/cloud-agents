@@ -395,6 +395,12 @@ func strCompareOrdinal(a: in String, b: in String): Int = ()
 @externTarget("System.Char.ConvertFromUtf32")
 func charFromCode(code: in Int): String = ()
 
+/// Inverse of charFromCode: the code point of the char at `index` in `s`. Lets
+/// controlEscape resolve a control char in O(1) instead of scanning all 32
+/// control codes (#171).
+@externTarget("System.Char.ConvertToUtf32")
+func codeFromChar(s: in String, index: in Int): Int = ()
+
 func isControlChar(c: in String): Bool {
   return strCompareOrdinal(c, " ") < 0
 }
@@ -476,17 +482,13 @@ func hexValue(c: in String): Int {
 
 /// The `\u00XX` escape for a control character (code point below 0x20).
 func controlEscape(c: in String): String {
-  var code = 0
-  while code < 32 {
-    if charFromCode(code) == c {
-      if code < 16 {
-        return "\\u000" + hexDigit(code)
-      }
-      return "\\u001" + hexDigit(code - 16)
-    }
-    code = code + 1
+  // Read the code point directly (O(1)) instead of scanning charFromCode for
+  // all 32 control codes to find the one matching `c` (#171).
+  val code = codeFromChar(c, 0)
+  if code < 16 {
+    return "\\u000" + hexDigit(code)
   }
-  return c // unreachable: isControlChar guarantees code < 32
+  return "\\u001" + hexDigit(code - 16)
 }
 
 /// Escape a field value for embedding in the session-store JSON. Without this,
@@ -639,6 +641,15 @@ pub func removeSession(sessionId: in String): Result[Option[AgentSession], Cloud
   }
   CloudAgents.Sqlite.execute(CloudAgents.Db.deleteSessionSql(sessionId, CloudAgents.Auth.currentUserId()))?
   return Ok(value = existing)
+}
+
+/// Delete a session row without re-reading it first — for callers that have
+/// already fetched and existence-checked the session (e.g. deleteSession, which
+/// looks it up to terminate the container), avoiding a redundant second lookup
+/// (#172). The DELETE is owner-scoped and a no-op if the row is already gone.
+pub func deleteSessionRecord(sessionId: in String): Result[Unit, CloudAgents.Sqlite.DbError] {
+  CloudAgents.Sqlite.execute(CloudAgents.Db.deleteSessionSql(sessionId, CloudAgents.Auth.currentUserId()))?
+  return Ok(value = ())
 }
 
 // ─── Run status ───────────────────────────────────────────────────────────────
