@@ -164,6 +164,12 @@ export function SessionDetail() {
     return () => document.removeEventListener('keydown', onKey);
   }, [templatePrompt, rendering, closeTemplate]);
 
+  // Close the template modal when navigating to a different session — it was
+  // opened for the previous session's prompt and composer (#282).
+  useEffect(() => {
+    setTemplatePrompt(null);
+  }, [sessionId]);
+
   // Tracks which session this component instance is currently showing, so a
   // handleSend() call that outlives a navigation to a different session (a
   // send can take up to 30 minutes) can tell it's stale and bail out instead
@@ -327,10 +333,14 @@ export function SessionDetail() {
     // Mark before the await so a still-in-flight mount-time fetch won't revert
     // this choice when it resolves (#276).
     profileTouchedRef.current = true;
+    const forSession = sessionId;
     setProfileSaving(true);
     try {
-      await api.setSessionProfile(sessionId, pid);
-      setProfileId(pid);
+      await api.setSessionProfile(forSession, pid);
+      // Only reflect the change if still on the session it was made for (#283)
+      // — a navigation during the await would otherwise show this profile
+      // under a different session's selector.
+      if (currentSessionRef.current === forSession) setProfileId(pid);
     } catch (err) {
       alert(err instanceof Error ? `Failed to set profile: ${err.message}` : 'Failed to set profile');
     } finally {
@@ -393,10 +403,22 @@ export function SessionDetail() {
 
   const submitTemplate = async () => {
     if (!templatePrompt || rendering) return;
+    // The server render is a round trip; the user can navigate to a different
+    // session before it resolves (SessionDetail re-renders without remounting).
+    // Capture the session so a late result isn't dropped into the wrong
+    // session's composer (#282) — same guard handleSend uses via
+    // currentSessionRef.
+    const forSession = sessionId;
     setRendering(true);
     setTemplateError('');
     try {
       const text = await api.renderPrompt(templatePrompt.prompt.id, templateValues);
+      if (currentSessionRef.current !== forSession) {
+        // Navigated away mid-render — discard rather than insert into the
+        // now-current session, and close the stale modal.
+        setTemplatePrompt(null);
+        return;
+      }
       setTemplatePrompt(null);
       insertText(text);
     } catch (err) {
@@ -477,7 +499,7 @@ export function SessionDetail() {
                 />
               </label>
             ))}
-            {templateError && <div style={modalErrorStyle}>{templateError}</div>}
+            {templateError && <div role="alert" style={modalErrorStyle}>{templateError}</div>}
             <div style={modalActionsStyle}>
               <button
                 style={modalCancelBtnStyle}
