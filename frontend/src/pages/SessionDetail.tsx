@@ -56,6 +56,9 @@ export function SessionDetail() {
   const [templateError, setTemplateError] = useState('');
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const modalRef = useRef<HTMLDivElement>(null);
+  // The element focused when the template modal opened (the prompt picker), so
+  // focus can be returned there when the modal is dismissed (#279).
+  const modalTriggerRef = useRef<HTMLElement | null>(null);
   // Set once the user manually changes the profile for this session, so the
   // mount-time GET of the attached profile can't overwrite that choice when it
   // resolves after the change (#276). Reset per session in the fetch effect.
@@ -119,6 +122,14 @@ export function SessionDetail() {
     };
   }, [sessionId]);
 
+  // Dismiss the modal without inserting and return focus to whatever opened it
+  // (#279). The successful-submit path deliberately does NOT use this — there
+  // focus should follow the inserted text to the composer textarea.
+  const closeTemplate = useCallback(() => {
+    setTemplatePrompt(null);
+    modalTriggerRef.current?.focus();
+  }, []);
+
   // Dialog semantics for the template modal (#278): Escape closes it and Tab
   // is trapped within it, so keyboard focus can't wander behind the overlay.
   useEffect(() => {
@@ -127,7 +138,7 @@ export function SessionDetail() {
       if (e.key === 'Escape') {
         if (!rendering) {
           e.preventDefault();
-          setTemplatePrompt(null);
+          closeTemplate();
         }
         return;
       }
@@ -151,7 +162,7 @@ export function SessionDetail() {
     };
     document.addEventListener('keydown', onKey);
     return () => document.removeEventListener('keydown', onKey);
-  }, [templatePrompt, rendering]);
+  }, [templatePrompt, rendering, closeTemplate]);
 
   // Tracks which session this component instance is currently showing, so a
   // handleSend() call that outlives a navigation to a different session (a
@@ -364,7 +375,9 @@ export function SessionDetail() {
     const vars = extractVarNames(p.body);
     if (vars.length > 0) {
       // Open the modal to collect all placeholder values at once (#275);
-      // rendering + use-count happen server-side on submit.
+      // rendering + use-count happen server-side on submit. Remember the
+      // trigger element so focus can return to it on dismiss (#279).
+      modalTriggerRef.current = document.activeElement as HTMLElement | null;
       const initial: Record<string, string> = {};
       for (const name of vars) initial[name] = '';
       setTemplateValues(initial);
@@ -426,7 +439,7 @@ export function SessionDetail() {
       {templatePrompt && (
         <div
           style={modalOverlayStyle}
-          onClick={() => { if (!rendering) setTemplatePrompt(null); }}
+          onClick={() => { if (!rendering) closeTemplate(); }}
         >
           <div
             ref={modalRef}
@@ -468,7 +481,7 @@ export function SessionDetail() {
             <div style={modalActionsStyle}>
               <button
                 style={modalCancelBtnStyle}
-                onClick={() => setTemplatePrompt(null)}
+                onClick={closeTemplate}
                 disabled={rendering}
               >
                 Cancel
