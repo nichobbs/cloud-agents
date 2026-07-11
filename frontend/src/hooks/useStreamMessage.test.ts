@@ -35,6 +35,22 @@ describe('useStreamMessage reattachment (#217)', () => {
     expect(api.getRunOutput).toHaveBeenCalledWith('s1');
   });
 
+  it('signals reattachEnded when a reattached run finishes (#316)', async () => {
+    vi.mocked(api.getRunOutput)
+      .mockResolvedValueOnce({ running: true, output: 'working' })
+      .mockResolvedValue({ running: false, output: 'working\ndone' });
+
+    const { result } = renderHook(() => useStreamMessage('s1'));
+
+    await waitFor(() => expect(result.current.isStreaming).toBe(true));
+    // After the next poll (past the 1.5s floor) the run reports finished, so
+    // the hook stops streaming and bumps the completion signal so the owner can
+    // fold the run into the transcript.
+    await waitFor(() => expect(result.current.reattachEnded).toBe(1), { timeout: 3000 });
+    expect(result.current.isStreaming).toBe(false);
+    expect(result.current.output).toBe('working\ndone');
+  });
+
   it('does not attach when no run is in progress', async () => {
     vi.mocked(api.getRunOutput).mockResolvedValue({ running: false, output: '' });
 

@@ -32,7 +32,7 @@ export function SessionDetail() {
   const navigate = useNavigate();
   const location = useLocation();
   const session = getSession(sessionId);
-  const { output, isStreaming, error: sendError, send, reset } = useStreamMessage(sessionId);
+  const { output, isStreaming, error: sendError, send, reset, reattachEnded } = useStreamMessage(sessionId);
 
   const [messages, setMessages] = useState<Message[]>([]);
   const [messagesError, setMessagesError] = useState(false);
@@ -244,6 +244,38 @@ export function SessionDetail() {
     return false;
   }, [sessionId, fetchMessages]);
 
+  // Fold a just-finished run into the persisted transcript: reload it, then
+  // clear the live panel only if the reload applied fresh messages — otherwise
+  // keep the completed output visible instead of losing it (#214/#312). Gated
+  // on session id + generation so a navigate-away-and-back mid-reload can't
+  // apply a stale result (#314). Shared by handleSend's success path and the
+  // reattach-completion effect below, so a reattached run gets the same
+  // post-run handling a locally-sent one does (#316).
+  const foldRunIntoTranscript = useCallback(async () => {
+    const forSession = sessionId;
+    const forGeneration = generationRef.current;
+    const reloaded = await reload();
+    if (currentSessionRef.current === forSession && generationRef.current === forGeneration) {
+      if (reloaded) {
+        reset();
+        setKeepOutput(false);
+      } else {
+        setKeepOutput(true);
+      }
+    }
+  }, [sessionId, reload, reset]);
+
+  // A reattached run finished (the hook bumps reattachEnded) — fold it into the
+  // transcript exactly as a completed send() does (#316). Tracked against the
+  // previous value so this only fires on a real increment, not when
+  // foldRunIntoTranscript's identity changes on navigation.
+  const prevReattachEnded = useRef(reattachEnded);
+  useEffect(() => {
+    if (reattachEnded === prevReattachEnded.current) return;
+    prevReattachEnded.current = reattachEnded;
+    void foldRunIntoTranscript();
+  }, [reattachEnded, foldRunIntoTranscript]);
+
   useEffect(() => {
     // Guard against a slow fetch for a previous session resolving after
     // navigating to a new one and overwriting its transcript with stale data
@@ -319,32 +351,9 @@ export function SessionDetail() {
     }
 
     if (succeeded) {
-      // Fold the completed run into the persisted transcript, then clear the
-      // live panel — but ONLY if the transcript actually refreshed. `stale`
-      // above only reflects the state as of `send()` resolving; the user can
-      // still navigate away during `reload()`'s own fetch (reload() guards its
-      // own setMessages, reset() has no guard), and reload() can also just
-      // fail. If it didn't apply fresh messages, keep the live output so the
-      // completed run's response stays visible instead of vanishing with no
-      // transcript entry to replace it (#214).
-      const forSession = sessionId;
-      const forGeneration = generationRef.current;
-      const reloaded = await reload();
-      // Gate on the generation too, not just the session id: if the user left
-      // and returned to this same session while reload() was in flight, this is
-      // a fresh view and applying the old send's result would clobber it (#314).
-      if (currentSessionRef.current === forSession && generationRef.current === forGeneration) {
-        if (reloaded) {
-          // Response is now in the transcript — clear the live panel.
-          reset();
-          setKeepOutput(false);
-        } else {
-          // Transcript refresh failed; keep the completed run's output panel
-          // on screen (isStreaming is already false, so it would otherwise
-          // vanish with the response nowhere to be seen) (#214/#312).
-          setKeepOutput(true);
-        }
-      }
+      // Fold the completed run into the transcript (reload + keep-or-clear the
+      // live panel), shared with the reattach path. See foldRunIntoTranscript.
+      await foldRunIntoTranscript();
     } else {
       // Restore the prompt so a failed send (network error, container
       // crash, backend 500) doesn't silently discard what the user typed —

@@ -33,6 +33,7 @@ const stream = vi.hoisted(() => ({
     error: null as string | null,
     send: (async () => ({ succeeded: true, stale: false })) as (t: string) => Promise<{ succeeded: boolean; stale: boolean }>,
     reset: (() => {}) as () => void,
+    reattachEnded: 0,
   },
 }));
 vi.mock('../hooks/useStreamMessage', () => ({
@@ -122,6 +123,7 @@ beforeEach(() => {
     error: null,
     send: async () => ({ succeeded: true, stale: false }),
     reset: () => {},
+    reattachEnded: 0,
   };
 });
 
@@ -247,6 +249,7 @@ describe('SessionDetail live output retention', () => {
       error: null,
       send: async () => ({ succeeded: true, stale: false }),
       reset,
+      reattachEnded: 0,
     };
     // Clean transcript on mount, then fail the post-send reload.
     vi.mocked(api.getMessages).mockReset();
