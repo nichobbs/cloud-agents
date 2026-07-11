@@ -59,7 +59,12 @@ jobs:
           # ignored, so a commit that merely references an unrelated finding
           # can't close it (#292).
           paren_refs="$(printf '%s' "$all_text" | grep -oiE '\(#[0-9]+([[:space:],]+#[0-9]+)*\)' || true)"
-          kw_refs="$(printf '%s' "$all_text" | grep -oiE '(close|closes|closed|fix|fixes|fixed|resolve|resolves|resolved)[[:space:]]+#[0-9]+' || true)"
+          # \b anchors the keyword to a word boundary so it isn't matched as the
+          # tail of a longer word — without it "resolved #5" matches inside
+          # "unresolved #5", "fix #5" inside "prefix #5", "close #5" inside
+          # "disclose #5", which would close a ticket a subject calls unresolved
+          # (#297).
+          kw_refs="$(printf '%s' "$all_text" | grep -oiE '\b(close|closes|closed|fix|fixes|fixed|resolve|resolves|resolved)[[:space:]]+#[0-9]+' || true)"
           nums="$(printf '%s\n%s\n' "$paren_refs" "$kw_refs" | grep -oE '#[0-9]+' | tr -d '#' | sort -u || true)"
           if [ -z "$nums" ]; then
             echo "No issue references found in PR #$PR_NUMBER title/commits."
