@@ -52,7 +52,15 @@ jobs:
             --jq '.commits[].messageHeadline' 2>/dev/null || true)"
           all_text="$(printf '%s\n%s\n' "$PR_TITLE" "$commit_subjects")"
 
-          nums="$(printf '%s' "$all_text" | grep -oE '#[0-9]+' | tr -d '#' | sort -u || true)"
+          # Treat a "#NNN" as a resolution only where it denotes one: inside a
+          # parenthesized reference group like "(#288, #289)" (this repo's fix
+          # convention) or after a standard closing keyword (Closes/Fixes/
+          # Resolves #NNN). A bare mention anywhere else in the subject/title is
+          # ignored, so a commit that merely references an unrelated finding
+          # can't close it (#292).
+          paren_refs="$(printf '%s' "$all_text" | grep -oiE '\(#[0-9]+([[:space:],]+#[0-9]+)*\)' || true)"
+          kw_refs="$(printf '%s' "$all_text" | grep -oiE '(close|closes|closed|fix|fixes|fixed|resolve|resolves|resolved)[[:space:]]+#[0-9]+' || true)"
+          nums="$(printf '%s\n%s\n' "$paren_refs" "$kw_refs" | grep -oE '#[0-9]+' | tr -d '#' | sort -u || true)"
           if [ -z "$nums" ]; then
             echo "No issue references found in PR #$PR_NUMBER title/commits."
             exit 0
@@ -72,8 +80,15 @@ jobs:
             is_finding="$(printf '%s' "$info" | jq -r '[.labels[].name] | index("review-finding") != null')"
             if [ "$state" = "OPEN" ] && [ "$is_finding" = "true" ]; then
               echo "Closing review-finding #$n (actioned by PR #$PR_NUMBER)"
-              gh issue close "$n" --repo "$REPO" --reason completed \
-                --comment "Resolved by PR #$PR_NUMBER (merged), whose commits reference #$n. Closed automatically by the \`close-review-findings\` workflow."
+              # Guard the close so one failure (transient API error, a race with
+              # a manual close) doesn't abort the loop under `set -e` and skip
+              # the PR's other referenced findings (#294).
+              if gh issue close "$n" --repo "$REPO" --reason completed \
+                --comment "Resolved by PR #$PR_NUMBER (merged), whose commits reference #$n. Closed automatically by the \`close-review-findings\` workflow."; then
+                echo "  closed #$n"
+              else
+                echo "::warning::failed to close #$n — continuing with the rest"
+              fi
             else
               echo "#$n: state=$state review-finding=$is_finding — skipping"
             fi
