@@ -71,6 +71,11 @@ export function useStreamMessage(sessionId: string): StreamState {
     setOutput('');
     setIsStreaming(false);
     setError(null);
+    // Clear the send-in-flight guard on navigation too (#318): a send for the
+    // previous session is now stale, and leaving it set would block the new
+    // session's reattach from ever showing live output until that abandoned
+    // (possibly minutes-long) send finally settles.
+    sendInFlightRef.current = false;
   }, [sessionId]);
 
   // Reattach to a run already in progress for this session. send() only polls
@@ -227,8 +232,12 @@ export function useStreamMessage(sessionId: string): StreamState {
         }
       } finally {
         polling = false;
-        sendInFlightRef.current = false;
+        // Only clear the guard if this send is still the current one — a stale
+        // send resolving after navigation must not clear a flag that now
+        // belongs to a newer send (the reset effect already cleared ours on
+        // navigation) (#318).
         if (stillCurrent()) {
+          sendInFlightRef.current = false;
           setIsStreaming(false);
         }
       }

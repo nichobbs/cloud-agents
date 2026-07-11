@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { renderHook, waitFor } from '@testing-library/react';
+import { renderHook, waitFor, act } from '@testing-library/react';
 
 vi.mock('../lib/api', () => ({
   api: {
@@ -60,5 +60,31 @@ describe('useStreamMessage reattachment (#217)', () => {
     await new Promise(r => setTimeout(r, 25));
     expect(result.current.isStreaming).toBe(false);
     expect(result.current.output).toBe('');
+  });
+
+  it('reattaches after navigating from a session with an in-flight send (#318)', async () => {
+    // A send that never resolves keeps the in-flight guard set for session 'a'.
+    vi.mocked(api.sendMessage).mockImplementation(() => new Promise(() => {}));
+    vi.mocked(api.getRunOutput).mockResolvedValue({ running: false, output: '' });
+
+    const { result, rerender } = renderHook(({ id }: { id: string }) => useStreamMessage(id), {
+      initialProps: { id: 'a' },
+    });
+
+    // Start a send on 'a' — it blocks forever, leaving isStreaming/guard set.
+    act(() => {
+      void result.current.send('hi');
+    });
+    await waitFor(() => expect(result.current.isStreaming).toBe(true));
+
+    // Navigate to 'b', which has a genuinely in-progress run.
+    vi.mocked(api.getRunOutput).mockResolvedValue({ running: true, output: 'B running' });
+    rerender({ id: 'b' });
+
+    // 'b' must reattach — not stay blocked by 'a's abandoned in-flight send.
+    await waitFor(() => {
+      expect(result.current.output).toBe('B running');
+      expect(result.current.isStreaming).toBe(true);
+    });
   });
 });
