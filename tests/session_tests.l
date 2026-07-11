@@ -596,6 +596,11 @@ test "setSessionProfileHandler validates session and profile (#235)" {
     model = "claude-opus-4-8",
     nativeSessionId = "sp-1"
   )))
+  // A session with no profile attached reports an empty profileId (#272).
+  match getSessionProfileHandler("sp-1") {
+    case Ok(ref) -> assertEqual(ref.profileId, "", "no-profile session reports empty profileId")
+    case Err(_) -> assertTrue(false, "getSessionProfileHandler should succeed for a known session")
+  }
   // Unknown profile -> 400.
   match setSessionProfileHandler("sp-1", SetProfileRequest(profileId = "ghost")) {
     case Ok(_) -> assertTrue(false, "unknown profile should 400")
@@ -614,6 +619,16 @@ test "setSessionProfileHandler validates session and profile (#235)" {
     case Ok(Some(pid)) -> assertEqual(pid, prof.id, "profile attached to session")
     case Ok(None) -> assertTrue(false, "profile should be set")
     case Err(e) -> assertTrue(false, "sessionProfileId failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+  }
+  // getSessionProfileHandler reflects the attached profile (#270)...
+  match getSessionProfileHandler("sp-1") {
+    case Ok(ref) -> assertEqual(ref.profileId, prof.id, "handler reports the attached profile")
+    case Err(_) -> assertTrue(false, "getSessionProfileHandler should succeed")
+  }
+  // ...and 404s for an unknown session.
+  match getSessionProfileHandler("nope") {
+    case Ok(_) -> assertTrue(false, "unknown session should 404")
+    case Err(err) -> assertEqualInt(err.status, 404, "unknown session -> 404")
   }
 }
 

@@ -114,6 +114,11 @@ pub record SetProfileRequest {
 }
 
 @generate(Json)
+pub record SessionProfileRef {
+  pub profileId: String
+}
+
+@generate(Json)
 pub record UpdateSessionRequest {
   pub model: String
 }
@@ -201,6 +206,21 @@ pub func setSessionProfileHandler(id: in String, @body req: in SetProfileRequest
   match CloudAgents.SessionStore.setSessionProfile(id, req.profileId) {
     case Ok(_) -> return Ok(())
     case Err(e) -> return Err(Web.internalError("failed to attach profile: " + CloudAgents.Sqlite.dbErrorMessage(e)))
+  }
+}
+
+/// The profile currently attached to a session ("" when none). Lets the UI
+/// reflect the stored profile — the session list projection doesn't carry it.
+/// 404 for an unknown/foreign session (#270).
+@get("/api/sessions/{id}/profile")
+pub func getSessionProfileHandler(id: in String): Result[SessionProfileRef, Web.ApiError] {
+  if id.length == 0 {
+    return Err(Web.badRequest("id is required"))
+  }
+  match CloudAgents.SessionStore.sessionProfileId(id) {
+    case Ok(Some(pid)) -> return Ok(SessionProfileRef(profileId = pid))
+    case Ok(None) -> return Err(Web.notFound("Session not found"))
+    case Err(e) -> return Err(Web.internalError("session profile lookup failed: " + CloudAgents.Sqlite.dbErrorMessage(e)))
   }
 }
 
