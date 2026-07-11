@@ -57,6 +57,59 @@ export function useStreamMessage(sessionId: string): StreamState {
     setError(null);
   }, [sessionId]);
 
+  // Reattach to a run already in progress for this session. send() only polls
+  // for runs it started, so a page reload or a second tab (no send() driving
+  // the poll) would show nothing until the run finished (#217). Runs after the
+  // reset effect above (declaration order), so it re-populates what reset just
+  // cleared only when there genuinely is a running run. Guarded by the same
+  // session id + generation as send(), plus a `cancelled` flag for unmount.
+  useEffect(() => {
+    const forSession = sessionId;
+    const forGeneration = generationRef.current;
+    let cancelled = false;
+    const alive = () =>
+      !cancelled &&
+      activeSessionRef.current === forSession &&
+      generationRef.current === forGeneration;
+
+    const resume = async () => {
+      let first: { running: boolean; output: string };
+      try {
+        first = await api.getRunOutput(forSession);
+      } catch {
+        return; // no run in progress / endpoint unavailable
+      }
+      if (!alive() || !first.running) return;
+      setIsStreaming(true);
+      let last = first.output;
+      if (last) setOutput(last);
+      let delay = 1500;
+      const maxDelay = 6000;
+      while (alive()) {
+        await new Promise(r => setTimeout(r, delay));
+        if (!alive()) return;
+        try {
+          const next = await api.getRunOutput(forSession);
+          if (!alive()) return;
+          if (next.output && next.output !== last) {
+            last = next.output;
+            setOutput(last);
+            delay = 1500; // fresh output — poll responsively again (#216)
+          }
+          if (!next.running) break;
+        } catch {
+          // ignore transient poll failures
+        }
+        delay = Math.min(Math.round(delay * 1.5), maxDelay);
+      }
+      if (alive()) setIsStreaming(false);
+    };
+    void resume();
+    return () => {
+      cancelled = true;
+    };
+  }, [sessionId]);
+
   const send = useCallback(
     async (text: string): Promise<SendResult> => {
       const forSession = sessionId;

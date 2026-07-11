@@ -202,8 +202,15 @@ export function SessionDetail() {
   // enough on its own — this ref is what lets that closure check itself
   // against the *current* session after an awaited call returns.
   const currentSessionRef = useRef(sessionId);
+  // Bumped on every sessionId change — including leaving this session and
+  // returning to it — so an awaited continuation can tell "same session, but a
+  // fresh visit" apart from "still the same visit". A session-id check alone
+  // can't (the id is identical across an A→B→A round trip), which is the gap
+  // #314 flags for handleSend's post-reload state updates.
+  const generationRef = useRef(0);
   useEffect(() => {
     currentSessionRef.current = sessionId;
+    generationRef.current += 1;
   }, [sessionId]);
 
   const highlightedId = location.hash.startsWith('#message-')
@@ -321,8 +328,12 @@ export function SessionDetail() {
       // completed run's response stays visible instead of vanishing with no
       // transcript entry to replace it (#214).
       const forSession = sessionId;
+      const forGeneration = generationRef.current;
       const reloaded = await reload();
-      if (currentSessionRef.current === forSession) {
+      // Gate on the generation too, not just the session id: if the user left
+      // and returned to this same session while reload() was in flight, this is
+      // a fresh view and applying the old send's result would clobber it (#314).
+      if (currentSessionRef.current === forSession && generationRef.current === forGeneration) {
         if (reloaded) {
           // Response is now in the transcript — clear the live panel.
           reset();
