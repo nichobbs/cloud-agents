@@ -615,5 +615,15 @@ test "setSessionProfileHandler validates session and profile (#235)" {
     case Ok(None) -> assertTrue(false, "profile should be set")
     case Err(e) -> assertTrue(false, "sessionProfileId failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
   }
+  // getSessionProfileHandler reflects the attached profile (#270)...
+  match getSessionProfileHandler("sp-1") {
+    case Ok(ref) -> assertEqual(ref.profileId, prof.id, "handler reports the attached profile")
+    case Err(_) -> assertTrue(false, "getSessionProfileHandler should succeed")
+  }
+  // ...and 404s for an unknown session.
+  match getSessionProfileHandler("nope") {
+    case Ok(_) -> assertTrue(false, "unknown session should 404")
+    case Err(err) -> assertEqualInt(err.status, 404, "unknown session -> 404")
+  }
 }
 

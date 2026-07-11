@@ -8,6 +8,22 @@ import { getHarness } from '../lib/harnesses';
 import { api } from '../lib/api';
 import type { Message, Profile, Prompt, Run } from '../types';
 
+/** Unique `{{name}}` placeholder names in a prompt body, in first-seen order. */
+function extractVarNames(body: string): string[] {
+  const seen = new Set<string>();
+  const out: string[] = [];
+  const re = /\{\{([^}]+)\}\}/g;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(body)) !== null) {
+    const name = (m[1] ?? '').trim();
+    if (name && !seen.has(name)) {
+      seen.add(name);
+      out.push(name);
+    }
+  }
+  return out;
+}
+
 export function SessionDetail() {
   const { id } = useParams<{ id: string }>();
   const sessionId = id ?? '';
@@ -50,9 +66,7 @@ export function SessionDetail() {
     };
   }, []);
 
-  // Profiles for the run-profile selector. Best-effort — the current session's
-  // attached profile isn't exposed by the read API, so the selector applies a
-  // choice rather than reflecting stored state.
+  // Profiles for the run-profile selector.
   useEffect(() => {
     let active = true;
     api
@@ -67,6 +81,24 @@ export function SessionDetail() {
       active = false;
     };
   }, []);
+
+  // Reflect the session's actually-attached profile in the selector (#270).
+  // Best-effort and session-scoped: a slow fetch for a previous session must
+  // not overwrite the current one's selection.
+  useEffect(() => {
+    let active = true;
+    api
+      .getSessionProfile(sessionId)
+      .then(pid => {
+        if (active) setProfileId(pid);
+      })
+      .catch(() => {
+        /* profile lookup unavailable — leave the selector at its default */
+      });
+    return () => {
+      active = false;
+    };
+  }, [sessionId]);
 
   // Tracks which session this component instance is currently showing, so a
   // handleSend() call that outlives a navigation to a different session (a
@@ -263,14 +295,33 @@ export function SessionDetail() {
     }
   };
 
-  const handleInsertPrompt = (promptId: string) => {
+  const handleInsertPrompt = async (promptId: string) => {
     const p = prompts.find(x => x.id === promptId);
     if (!p) return;
+    // If the body has {{var}} placeholders, collect values and render server-side
+    // (which also counts the use); otherwise insert the body verbatim.
+    const vars = extractVarNames(p.body);
+    let text = p.body;
+    if (vars.length > 0) {
+      const bindings: Record<string, string> = {};
+      for (const name of vars) {
+        const value = window.prompt(`Value for {{${name}}}:`, '');
+        if (value === null) return; // cancelled — insert nothing
+        bindings[name] = value;
+      }
+      try {
+        text = await api.renderPrompt(p.id, bindings);
+      } catch (err) {
+        alert(err instanceof Error ? `Failed to render prompt: ${err.message}` : 'Failed to render prompt');
+        return;
+      }
+    } else {
+      // Usage bookkeeping is best-effort; the count just informs the library UI.
+      api.usePrompt(p.id).catch(() => { /* non-fatal */ });
+    }
     // Insert (append to any draft) rather than replace, so a prompt can be
     // combined with typed context.
-    setInput(prev => (prev.trim() ? `${prev.trimEnd()}\n\n${p.body}` : p.body));
-    // Usage bookkeeping is best-effort; the count just informs the library UI.
-    api.usePrompt(p.id).catch(() => { /* non-fatal */ });
+    setInput(prev => (prev.trim() ? `${prev.trimEnd()}\n\n${text}` : text));
     textareaRef.current?.focus();
   };
 
@@ -430,7 +481,7 @@ export function SessionDetail() {
             style={promptPickerStyle}
             value=""
             onChange={e => {
-              if (e.target.value) handleInsertPrompt(e.target.value);
+              if (e.target.value) void handleInsertPrompt(e.target.value);
             }}
             disabled={isStreaming}
             aria-label="Insert a saved prompt"

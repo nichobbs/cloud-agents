@@ -55,6 +55,14 @@ export const api = {
     if (!res.ok) throw new Error(`${res.status} ${await res.text()}`);
   },
 
+  /** The profile currently attached to a session ('' when none). */
+  getSessionProfile: async (sessionId: string): Promise<string> => {
+    const res = await fetch(`${BASE}/api/sessions/${sessionId}/profile`, { headers: authHeaders() });
+    if (!res.ok) throw new Error(`${res.status} ${await res.text()}`);
+    const body = (await res.json()) as { profileId?: string };
+    return body.profileId ?? '';
+  },
+
   /** Attach a profile to a session (empty string clears it). */
   setSessionProfile: async (sessionId: string, profileId: string): Promise<void> => {
     const res = await fetch(`${BASE}/api/sessions/${sessionId}/profile`, {
