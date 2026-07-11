@@ -101,7 +101,10 @@ pub func renderTemplate(body: in String, keys: in slice[String], values: in slic
         acc = acc + "{{"
         i = i + 2
       } else {
-        val key = body.substring(i + 2, closeAt - (i + 2))
+        // Trim the key so `{{ name }}` (natural spacing) matches the key
+        // `name` — callers send trimmed keys, so the extracted token must be
+        // trimmed too or the value would be silently dropped (#274).
+        val key = body.substring(i + 2, closeAt - (i + 2)).trim()
         val vidx = indexOfKey(keys, key, n)
         if vidx < 0 {
           // Unbound — leave the "{{" literal; the rest re-scans as plain text.
