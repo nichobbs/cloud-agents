@@ -6,7 +6,7 @@ import { useSessions } from '../context/SessionsContext';
 import { useStreamMessage } from '../hooks/useStreamMessage';
 import { getHarness } from '../lib/harnesses';
 import { api } from '../lib/api';
-import type { Message, Prompt } from '../types';
+import type { Message, Profile, Prompt, Run } from '../types';
 
 export function SessionDetail() {
   const { id } = useParams<{ id: string }>();
@@ -25,6 +25,12 @@ export function SessionDetail() {
   const [modelError, setModelError] = useState('');
   const [prompts, setPrompts] = useState<Prompt[]>([]);
   const [savingPrompt, setSavingPrompt] = useState(false);
+  const [profiles, setProfiles] = useState<Profile[]>([]);
+  const [profileId, setProfileId] = useState('');
+  const [profileSaving, setProfileSaving] = useState(false);
+  const [runs, setRuns] = useState<Run[]>([]);
+  const [showRuns, setShowRuns] = useState(false);
+  const [cancelling, setCancelling] = useState(false);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
   // Prompt library for the composer picker. Best-effort: an older backend
@@ -38,6 +44,24 @@ export function SessionDetail() {
       })
       .catch(() => {
         /* library unavailable — hide the picker */
+      });
+    return () => {
+      active = false;
+    };
+  }, []);
+
+  // Profiles for the run-profile selector. Best-effort — the current session's
+  // attached profile isn't exposed by the read API, so the selector applies a
+  // choice rather than reflecting stored state.
+  useEffect(() => {
+    let active = true;
+    api
+      .getProfiles()
+      .then(ps => {
+        if (active) setProfiles(ps);
+      })
+      .catch(() => {
+        /* profiles unavailable — hide the selector */
       });
     return () => {
       active = false;
@@ -202,6 +226,43 @@ export function SessionDetail() {
     }
   };
 
+  const handleProfileChange = async (pid: string) => {
+    if (profileSaving) return;
+    setProfileSaving(true);
+    try {
+      await api.setSessionProfile(sessionId, pid);
+      setProfileId(pid);
+    } catch (err) {
+      alert(err instanceof Error ? `Failed to set profile: ${err.message}` : 'Failed to set profile');
+    } finally {
+      setProfileSaving(false);
+    }
+  };
+
+  const handleCancel = async () => {
+    if (cancelling) return;
+    setCancelling(true);
+    try {
+      await api.cancelRun(sessionId);
+    } catch (err) {
+      alert(err instanceof Error ? `Cancel failed: ${err.message}` : 'Cancel failed');
+    } finally {
+      setCancelling(false);
+    }
+  };
+
+  const toggleRuns = async () => {
+    const next = !showRuns;
+    setShowRuns(next);
+    if (next) {
+      try {
+        setRuns(await api.getRuns(sessionId));
+      } catch {
+        /* run history unavailable — leave the list empty */
+      }
+    }
+  };
+
   const handleInsertPrompt = (promptId: string) => {
     const p = prompts.find(x => x.id === promptId);
     if (!p) return;
@@ -266,6 +327,24 @@ export function SessionDetail() {
                 <option key={m.id} value={m.id}>{m.label}</option>
               ))}
             </select>
+            {profiles.length > 0 && (
+              <>
+                <span style={{ margin: '0 8px', color: '#30363d' }}>·</span>
+                profile:{' '}
+                <select
+                  style={modelSelectStyle}
+                  value={profileId}
+                  onChange={e => { void handleProfileChange(e.target.value); }}
+                  disabled={profileSaving || isStreaming}
+                  title="Attach a profile (credentials, network, harness) for this session's runs"
+                >
+                  <option value="">none</option>
+                  {profiles.map(p => (
+                    <option key={p.id} value={p.id}>{p.name}</option>
+                  ))}
+                </select>
+              </>
+            )}
             <span style={{ margin: '0 8px', color: '#30363d' }}>·</span>
             <span style={{ fontFamily: 'monospace', fontSize: '11px' }}>
               {session.sessionId}
@@ -274,6 +353,9 @@ export function SessionDetail() {
           {modelError && <div style={modelErrorStyle}>Model switch failed: {modelError}</div>}
         </div>
         <div style={{ display: 'flex', gap: '8px', flexShrink: 0 }}>
+          <button style={todosBtnStyle} onClick={() => { void toggleRuns(); }}>
+            {showRuns ? 'Hide runs' : 'Runs'}
+          </button>
           <Link to={`/sessions/${sessionId}/todos`} style={todosBtnStyle}>
             Todos
           </Link>
@@ -286,6 +368,20 @@ export function SessionDetail() {
           </button>
         </div>
       </div>
+
+      {showRuns && (
+        <div style={runsPanelStyle}>
+          <div style={runsHeaderStyle}>Run history</div>
+          {runs.length === 0 && <div style={runsEmptyStyle}>No runs recorded yet.</div>}
+          {runs.map(r => (
+            <div key={r.id} style={runRowStyle}>
+              <span style={runStatusStyle(r.status)}>{r.status}</span>
+              <span style={runPreviewStyle} title={r.promptPreview}>{r.promptPreview || '(no prompt)'}</span>
+              <span style={runMetaStyle}>{formatRunTime(r.startedAt)}</span>
+            </div>
+          ))}
+        </div>
+      )}
 
       <div style={transcriptStyle}>
         {messagesError && (
@@ -308,8 +404,20 @@ export function SessionDetail() {
         ))}
         {(isStreaming || sendError) && (
           <div style={liveWrapStyle}>
-            <div style={sendError ? liveErrorLabelStyle : liveLabelStyle}>
-              {isStreaming ? 'running…' : 'failed'}
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+              <div style={sendError ? liveErrorLabelStyle : liveLabelStyle}>
+                {isStreaming ? 'running…' : 'failed'}
+              </div>
+              {isStreaming && (
+                <button
+                  style={cancelRunBtnStyle}
+                  onClick={() => { void handleCancel(); }}
+                  disabled={cancelling}
+                  title="Terminate the running container"
+                >
+                  {cancelling ? 'Cancelling…' : 'Cancel run'}
+                </button>
+              )}
             </div>
             <Terminal output={output} isStreaming={isStreaming} />
           </div>
@@ -372,6 +480,19 @@ export function SessionDetail() {
   );
 }
 
+function formatRunTime(epochMillis: string): string {
+  const n = Number(epochMillis);
+  if (!Number.isFinite(n) || n <= 0) return '';
+  return new Date(n).toLocaleString();
+}
+
+const runStatusColor: Record<string, string> = {
+  running: '#d29922',
+  succeeded: '#3fb950',
+  failed: '#f85149',
+  cancelled: '#8b949e',
+};
+
 const pageStyle: React.CSSProperties = {
   maxWidth: '900px',
   margin: '0 auto',
@@ -381,6 +502,61 @@ const pageStyle: React.CSSProperties = {
   gap: '16px',
   minHeight: 'calc(100vh - 57px)',
 };
+
+const cancelRunBtnStyle: React.CSSProperties = {
+  padding: '3px 10px',
+  background: 'transparent',
+  color: '#f85149',
+  border: '1px solid #f85149',
+  borderRadius: '6px',
+  fontSize: '12px',
+  cursor: 'pointer',
+};
+
+const runsPanelStyle: React.CSSProperties = {
+  display: 'flex',
+  flexDirection: 'column',
+  gap: '6px',
+  background: '#0d1117',
+  border: '1px solid #21262d',
+  borderRadius: '8px',
+  padding: '12px 14px',
+};
+
+const runsHeaderStyle: React.CSSProperties = {
+  fontSize: '12px',
+  color: '#8b949e',
+  textTransform: 'uppercase',
+  letterSpacing: '0.04em',
+};
+
+const runsEmptyStyle: React.CSSProperties = { fontSize: '12px', color: '#6e7681' };
+
+const runRowStyle: React.CSSProperties = {
+  display: 'flex',
+  alignItems: 'center',
+  gap: '10px',
+  fontSize: '12px',
+  padding: '4px 0',
+  borderTop: '1px solid #161b22',
+};
+
+const runStatusStyle = (status: string): React.CSSProperties => ({
+  color: runStatusColor[status] ?? '#8b949e',
+  fontWeight: 600,
+  minWidth: '72px',
+  flexShrink: 0,
+});
+
+const runPreviewStyle: React.CSSProperties = {
+  flex: 1,
+  color: '#8b949e',
+  whiteSpace: 'nowrap',
+  overflow: 'hidden',
+  textOverflow: 'ellipsis',
+};
+
+const runMetaStyle: React.CSSProperties = { color: '#6e7681', whiteSpace: 'nowrap', flexShrink: 0 };
 
 const headerStyle: React.CSSProperties = {
   display: 'flex',
