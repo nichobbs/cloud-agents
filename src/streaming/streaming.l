@@ -57,6 +57,12 @@ func strCompareOrdinal(a: in String, b: in String): Int = ()
 @externTarget("System.Char.ConvertFromUtf32")
 pub func charFromCode(code: in Int): String = ()
 
+/// The Unicode code point of the character at `index` in `s`. The inverse of
+/// charFromCode, used to escape a control char in O(1) rather than scanning all
+/// 32 control codes (#171).
+@externTarget("System.Char.ConvertToUtf32")
+func codeFromChar(s: in String, index: in Int): Int = ()
+
 /// True for a single UTF-16 unit below U+0020. Ordinal comparison against " "
 /// is exact here: any unit >= 0x20 (including lone surrogates) compares >= 0.
 func isControlChar(c: in String): Bool {
@@ -87,17 +93,13 @@ func hexDigit(n: in Int): String {
 
 /// The `\u00XX` escape for a control character (code point below 0x20).
 func controlEscape(c: in String): String {
-  var code = 0
-  while code < 32 {
-    if charFromCode(code) == c {
-      if code < 16 {
-        return "\\u000" + hexDigit(code)
-      }
-      return "\\u001" + hexDigit(code - 16)
-    }
-    code = code + 1
+  // Read the code point directly (O(1)) instead of scanning charFromCode for
+  // all 32 control codes to find the one that matches `c` (#171).
+  val code = codeFromChar(c, 0)
+  if code < 16 {
+    return "\\u000" + hexDigit(code)
   }
-  return c // unreachable: isControlChar guarantees code < 32
+  return "\\u001" + hexDigit(code - 16)
 }
 
 /// Wrap a single output line as one SSE data frame.
