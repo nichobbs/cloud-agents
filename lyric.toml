@@ -57,8 +57,8 @@ output_assembly = "CloudAgents.dll"
 "CloudAgents.NetworkPolicyTests" = "tests/network_policy_tests.l"
 
 [nuget]
-"Lyric.Web"             = "0.4.11"
-"Std.Logging"           = "0.4.11"
+"Lyric.Web"             = "0.4.19"
+"Std.Logging"           = "0.4.20"
 "Microsoft.Data.Sqlite" = "10.0.9"
 "SourceGear.sqlite3"    = "3.53.3"
 "SQLitePCLRaw.provider.dynamic_cdecl" = "3.0.3"
