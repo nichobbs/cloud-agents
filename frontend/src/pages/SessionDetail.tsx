@@ -220,13 +220,15 @@ export function SessionDetail() {
   // navigate to a different session while this fetch is in flight — guard
   // against applying a stale session's result via the same currentSessionRef
   // handleSend already uses for this purpose.
-  const reload = useCallback(async () => {
+  const reload = useCallback(async (): Promise<boolean> => {
     const forSessionId = sessionId;
     const fetched = await fetchMessages(forSessionId);
     if (fetched && currentSessionRef.current === forSessionId) {
       setMessages(fetched);
       setMessagesError(false);
+      return true;
     }
+    return false;
   }, [sessionId, fetchMessages]);
 
   useEffect(() => {
@@ -302,16 +304,17 @@ export function SessionDetail() {
     }
 
     if (succeeded) {
-      // Fold the completed run into the persisted transcript and clear the
-      // live panel. `stale` above only reflects the state as of `send()`
-      // resolving — the user can still navigate away during `reload()`'s
-      // own fetch, so re-check before the unconditional `reset()`: reload()
-      // already guards its own setMessages call against this, but reset()
-      // (which touches useStreamMessage's output/error, now bound to
-      // whatever session is current) has no guard of its own.
+      // Fold the completed run into the persisted transcript, then clear the
+      // live panel — but ONLY if the transcript actually refreshed. `stale`
+      // above only reflects the state as of `send()` resolving; the user can
+      // still navigate away during `reload()`'s own fetch (reload() guards its
+      // own setMessages, reset() has no guard), and reload() can also just
+      // fail. If it didn't apply fresh messages, keep the live output so the
+      // completed run's response stays visible instead of vanishing with no
+      // transcript entry to replace it (#214).
       const forSession = sessionId;
-      await reload();
-      if (currentSessionRef.current === forSession) {
+      const reloaded = await reload();
+      if (reloaded && currentSessionRef.current === forSession) {
         reset();
       }
     } else {

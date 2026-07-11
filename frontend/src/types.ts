@@ -73,6 +73,13 @@ export interface Webhook {
   createdAt: string;
 }
 
+/// A stored credential's public metadata. Values are write-only — the server
+/// never returns a secret — so this carries only the name and last-updated time.
+export interface Credential {
+  name: string;
+  updatedAt: string;
+}
+
 /// A todo / bookmark, optionally linked back to a source message.
 export interface Todo {
   id: string;
