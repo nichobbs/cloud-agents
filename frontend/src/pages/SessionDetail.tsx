@@ -36,6 +36,12 @@ export function SessionDetail() {
 
   const [messages, setMessages] = useState<Message[]>([]);
   const [messagesError, setMessagesError] = useState(false);
+  // Keep the completed run's live-output panel on screen when a successful
+  // send's transcript refresh failed — otherwise the panel (gated on
+  // isStreaming, already false by the time reload() runs) is gone and the
+  // response is nowhere on screen (#214/#312). Cleared on a fresh send, on a
+  // successful reload, and on navigation.
+  const [keepOutput, setKeepOutput] = useState(false);
   const [input, setInput] = useState('');
   const [deleting, setDeleting] = useState(false);
   const [modelSwitching, setModelSwitching] = useState(false);
@@ -220,13 +226,15 @@ export function SessionDetail() {
   // navigate to a different session while this fetch is in flight — guard
   // against applying a stale session's result via the same currentSessionRef
   // handleSend already uses for this purpose.
-  const reload = useCallback(async () => {
+  const reload = useCallback(async (): Promise<boolean> => {
     const forSessionId = sessionId;
     const fetched = await fetchMessages(forSessionId);
     if (fetched && currentSessionRef.current === forSessionId) {
       setMessages(fetched);
       setMessagesError(false);
+      return true;
     }
+    return false;
   }, [sessionId, fetchMessages]);
 
   useEffect(() => {
@@ -237,6 +245,7 @@ export function SessionDetail() {
     // Same pattern as CommentThread.tsx's `active` flag.
     let active = true;
     setMessagesError(false);
+    setKeepOutput(false); // a retained prior-session response must not linger here
     fetchMessages(sessionId).then(fetched => {
       if (!active) return;
       if (fetched) {
@@ -285,6 +294,7 @@ export function SessionDetail() {
     const text = input.trim();
     if (!text || isStreaming) return;
     setInput('');
+    setKeepOutput(false); // a fresh run supersedes any retained prior output
     const { succeeded, stale } = await send(text);
 
     if (stale) {
@@ -302,17 +312,27 @@ export function SessionDetail() {
     }
 
     if (succeeded) {
-      // Fold the completed run into the persisted transcript and clear the
-      // live panel. `stale` above only reflects the state as of `send()`
-      // resolving — the user can still navigate away during `reload()`'s
-      // own fetch, so re-check before the unconditional `reset()`: reload()
-      // already guards its own setMessages call against this, but reset()
-      // (which touches useStreamMessage's output/error, now bound to
-      // whatever session is current) has no guard of its own.
+      // Fold the completed run into the persisted transcript, then clear the
+      // live panel — but ONLY if the transcript actually refreshed. `stale`
+      // above only reflects the state as of `send()` resolving; the user can
+      // still navigate away during `reload()`'s own fetch (reload() guards its
+      // own setMessages, reset() has no guard), and reload() can also just
+      // fail. If it didn't apply fresh messages, keep the live output so the
+      // completed run's response stays visible instead of vanishing with no
+      // transcript entry to replace it (#214).
       const forSession = sessionId;
-      await reload();
+      const reloaded = await reload();
       if (currentSessionRef.current === forSession) {
-        reset();
+        if (reloaded) {
+          // Response is now in the transcript — clear the live panel.
+          reset();
+          setKeepOutput(false);
+        } else {
+          // Transcript refresh failed; keep the completed run's output panel
+          // on screen (isStreaming is already false, so it would otherwise
+          // vanish with the response nowhere to be seen) (#214/#312).
+          setKeepOutput(true);
+        }
       }
     } else {
       // Restore the prompt so a failed send (network error, container
@@ -638,7 +658,7 @@ export function SessionDetail() {
             Failed to load transcript for this session.
           </div>
         )}
-        {messages.length === 0 && !isStreaming && !sendError && !messagesError && (
+        {messages.length === 0 && !isStreaming && !sendError && !messagesError && !keepOutput && (
           <div style={emptyStyle}>
             No messages yet — send a prompt below to start the session.
           </div>
@@ -651,11 +671,11 @@ export function SessionDetail() {
             onTodoAdded={() => { /* todos live on their own page */ }}
           />
         ))}
-        {(isStreaming || sendError) && (
+        {(isStreaming || sendError || keepOutput) && (
           <div style={liveWrapStyle}>
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
               <div style={sendError ? liveErrorLabelStyle : liveLabelStyle}>
-                {isStreaming ? 'running…' : 'failed'}
+                {isStreaming ? 'running…' : sendError ? 'failed' : 'done — could not refresh transcript'}
               </div>
               {isStreaming && (
                 <button

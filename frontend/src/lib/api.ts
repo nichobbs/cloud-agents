@@ -1,6 +1,6 @@
 /// <reference types="vite/client" />
 
-import type { Comment, Message, Profile, Prompt, Run, Todo, Webhook } from '../types';
+import type { Comment, Credential, Message, Profile, Prompt, Run, Todo, Webhook } from '../types';
 
 const BASE = (import.meta.env['VITE_API_URL'] as string | undefined) ?? '';
 
@@ -269,10 +269,10 @@ export const api = {
 
   // ─── Credentials (write-only: values are never read back) ─────────────────────
 
-  getCredentialNames: async (): Promise<{ name: string; updatedAt: string }[]> => {
+  getCredentialNames: async (): Promise<Credential[]> => {
     const res = await fetch(`${BASE}/api/credentials`, { headers: authHeaders() });
     if (!res.ok) throw new Error(`${res.status} ${await res.text()}`);
-    const body = (await res.json()) as { credentials?: { name: string; updatedAt: string }[] };
+    const body = (await res.json()) as { credentials?: Credential[] };
     return body.credentials ?? [];
   },
 

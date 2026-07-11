@@ -1,12 +1,13 @@
 import { useEffect, useState } from 'react';
 import { api } from '../lib/api';
+import type { Credential } from '../types';
 
 /// The credential store: add named secrets (GitHub token, cloud credentials,
 /// arbitrary env vars) that are injected into every runner container. Values
 /// are write-only — the server never returns a stored secret, so this page can
 /// list names but never display a value.
 export function Credentials() {
-  const [names, setNames] = useState<{ name: string; updatedAt: string }[]>([]);
+  const [names, setNames] = useState<Credential[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [name, setName] = useState('');
@@ -73,6 +74,10 @@ export function Credentials() {
           onChange={e => setName(e.target.value)}
           maxLength={128}
           aria-label="Credential name"
+          autoComplete="off"
+          autoCapitalize="off"
+          autoCorrect="off"
+          spellCheck={false}
         />
         <input
           style={inputStyle}
@@ -81,6 +86,10 @@ export function Credentials() {
           value={value}
           onChange={e => setValue(e.target.value)}
           aria-label="Credential value"
+          autoComplete="new-password"
+          autoCapitalize="off"
+          autoCorrect="off"
+          spellCheck={false}
         />
         <button
           style={{ ...saveBtnStyle, opacity: name.trim() && value && !saving ? 1 : 0.5 }}

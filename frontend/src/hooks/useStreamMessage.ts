@@ -88,6 +88,15 @@ export function useStreamMessage(sessionId: string): StreamState {
       // swallowed — polling is best-effort and must never fail the send.
       let polling = true;
       let liveTail = '';
+      // Poll responsively at first, then back off toward a cap so a long,
+      // quiet run doesn't re-fetch the full log every 1.5s for its whole
+      // duration (#216). The interval resets to 1.5s whenever new output
+      // arrives, so an actively-producing run stays responsive. (The endpoint
+      // returns the full log each tick, not a delta — real deltas would need
+      // backend support and are out of scope here.)
+      const minPollMs = 1500;
+      const maxPollMs = 6000;
+      let pollDelay = minPollMs;
       const poll = async () => {
         while (polling && stillCurrent()) {
           try {
@@ -96,12 +105,14 @@ export function useStreamMessage(sessionId: string): StreamState {
             if (partial && partial !== liveTail) {
               liveTail = partial;
               setOutput(base + partial);
+              pollDelay = minPollMs;
             }
             if (!running) break;
           } catch {
             // ignore transient poll failures
           }
-          await new Promise(r => setTimeout(r, 1500));
+          await new Promise(r => setTimeout(r, pollDelay));
+          pollDelay = Math.min(Math.round(pollDelay * 1.5), maxPollMs);
         }
       };
       void poll();
