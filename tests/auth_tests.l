@@ -52,6 +52,13 @@ test "Constant-time equality" {
   assertFalse(constantTimeEquals("abc", "abcd"), "different lengths differ")
   assertFalse(constantTimeEquals("", "x"), "empty vs non-empty differ")
   assertTrue(constantTimeEquals("", ""), "empty equals empty")
+  // The loop is now bounded by the expected (second) argument's length, not
+  // max(candidate, expected) (#212). A candidate longer than the secret, or
+  // shorter, must still fail — with the correct prefix or not.
+  assertFalse(constantTimeEquals("abcdef", "abc"), "candidate longer than secret differs")
+  assertFalse(constantTimeEquals("ab", "abc"), "candidate shorter than secret differs")
+  assertFalse(constantTimeEquals("xyzuvw", "abc"), "longer wrong candidate differs")
+  assertFalse(constantTimeEquals("abc", ""), "non-empty candidate vs empty secret differs")
 }
 
 test "Static-token authorization" {

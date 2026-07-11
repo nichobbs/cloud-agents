@@ -213,18 +213,31 @@ pub func currentUserId(): String {
 // fully unit-tested now so that wiring it in is a one-line change once the
 // framework supports it.
 /// Constant-time string equality. Avoids leaking how many leading characters
-/// of a candidate token matched via response timing. Always compares the full
-/// length of the longer string.
-pub func constantTimeEquals(a: in String, b: in String): Bool {
-  val aLen = a.length.toInt()
-  val bLen = b.length.toInt()
-  val maxLen = if aLen > bLen then aLen else bLen
-  var diff = if aLen == bLen then 0 else 1
+/// of a candidate token matched via response timing.
+///
+/// The loop iterates over the trusted `expected` value's length only, never the
+/// candidate's — so the number of comparisons (and thus the running time) does
+/// not depend on the attacker-controlled candidate at all. The previous
+/// implementation bounded the loop by max(candidate, expected), which produced
+/// a timing "elbow" as the candidate grew past `expected` that leaked the
+/// configured token's length (#212); now a candidate shorter, equal, or longer
+/// than the secret all cost the same. A length mismatch is folded in up front
+/// so a right-length-wrong-content and a wrong-length candidate both fail.
+///
+/// Pass the trusted secret as `expected` (as the sole caller `authorize` does:
+/// `constantTimeEquals(token, apiToken)`).
+pub func constantTimeEquals(candidate: in String, expected: in String): Bool {
+  val candLen = candidate.length.toInt()
+  val expectedLen = expected.length.toInt()
+  var diff = if candLen == expectedLen then 0 else 1
   var i = 0
-  while i < maxLen {
-    val ca = if i < aLen then a.substring(i, 1) else ""
-    val cb = if i < bLen then b.substring(i, 1) else ""
-    if ca != cb {
+  while i < expectedLen {
+    val ce = expected.substring(i, 1)
+    // Past the candidate's end, compare `ce` against itself so the step is a
+    // no-op: the length mismatch is already recorded in `diff`, and this keeps
+    // per-iteration work uniform without introducing a content-dependent branch.
+    val cc = if i < candLen then candidate.substring(i, 1) else ce
+    if cc != ce {
       diff = 1
     }
     i = i + 1

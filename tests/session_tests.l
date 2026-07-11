@@ -306,6 +306,30 @@ test "Test Handler createSession validation" {
     case Err(err) -> assertEqualInt(err.status, 400, "http returns 400")
   }
 
+  // SSRF: a repoUrl pointing at a loopback/link-local/private host must be
+  // rejected before the runner clones it (#33).
+  val ssrfLoopback = CreateSessionRequest(repoUrl = "https://127.0.0.1/nic/repo", branch = "main", harness = "claude", model = "claude-opus-4-8")
+  match createSession(ssrfLoopback) {
+    case Ok(_) -> assertTrue(false, "should reject loopback repoUrl")
+    case Err(err) -> assertEqualInt(err.status, 400, "loopback repoUrl returns 400")
+  }
+  val ssrfMetadata = CreateSessionRequest(repoUrl = "https://169.254.169.254/latest/meta-data", branch = "main", harness = "claude", model = "claude-opus-4-8")
+  match createSession(ssrfMetadata) {
+    case Ok(_) -> assertTrue(false, "should reject link-local metadata repoUrl")
+    case Err(err) -> assertEqualInt(err.status, 400, "link-local repoUrl returns 400")
+  }
+  val ssrfLocalhost = CreateSessionRequest(repoUrl = "https://localhost/nic/repo", branch = "main", harness = "claude", model = "claude-opus-4-8")
+  match createSession(ssrfLocalhost) {
+    case Ok(_) -> assertTrue(false, "should reject localhost repoUrl")
+    case Err(err) -> assertEqualInt(err.status, 400, "localhost repoUrl returns 400")
+  }
+  // Userinfo must not smuggle a public host past the check (authority parsing).
+  val ssrfUserinfo = CreateSessionRequest(repoUrl = "https://github.com@127.0.0.1/repo", branch = "main", harness = "claude", model = "claude-opus-4-8")
+  match createSession(ssrfUserinfo) {
+    case Ok(_) -> assertTrue(false, "should reject userinfo-smuggled loopback repoUrl")
+    case Err(err) -> assertEqualInt(err.status, 400, "userinfo loopback repoUrl returns 400")
+  }
+
   // Test empty branch validation
   val req2 = CreateSessionRequest(repoUrl = "https://github.com/nic/repos/cloud-agents", branch = "", harness = "claude", model = "claude-opus-4-8")
   match createSession(req2) {
