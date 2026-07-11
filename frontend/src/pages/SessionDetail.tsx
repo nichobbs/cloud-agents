@@ -55,6 +55,7 @@ export function SessionDetail() {
   const [rendering, setRendering] = useState(false);
   const [templateError, setTemplateError] = useState('');
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const modalRef = useRef<HTMLDivElement>(null);
   // Set once the user manually changes the profile for this session, so the
   // mount-time GET of the attached profile can't overwrite that choice when it
   // resolves after the change (#276). Reset per session in the fetch effect.
@@ -117,6 +118,40 @@ export function SessionDetail() {
       active = false;
     };
   }, [sessionId]);
+
+  // Dialog semantics for the template modal (#278): Escape closes it and Tab
+  // is trapped within it, so keyboard focus can't wander behind the overlay.
+  useEffect(() => {
+    if (!templatePrompt) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        if (!rendering) {
+          e.preventDefault();
+          setTemplatePrompt(null);
+        }
+        return;
+      }
+      if (e.key === 'Tab' && modalRef.current) {
+        const nodes = Array.from(
+          modalRef.current.querySelectorAll<HTMLElement>(
+            'button:not([disabled]), textarea, input, [tabindex]:not([tabindex="-1"])',
+          ),
+        );
+        const first = nodes[0];
+        const last = nodes[nodes.length - 1];
+        if (!first || !last) return;
+        if (e.shiftKey && document.activeElement === first) {
+          e.preventDefault();
+          last.focus();
+        } else if (!e.shiftKey && document.activeElement === last) {
+          e.preventDefault();
+          first.focus();
+        }
+      }
+    };
+    document.addEventListener('keydown', onKey);
+    return () => document.removeEventListener('keydown', onKey);
+  }, [templatePrompt, rendering]);
 
   // Tracks which session this component instance is currently showing, so a
   // handleSend() call that outlives a navigation to a different session (a
@@ -393,8 +428,15 @@ export function SessionDetail() {
           style={modalOverlayStyle}
           onClick={() => { if (!rendering) setTemplatePrompt(null); }}
         >
-          <div style={modalStyle} onClick={e => e.stopPropagation()}>
-            <div style={modalTitleStyle}>
+          <div
+            ref={modalRef}
+            style={modalStyle}
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="template-modal-title"
+            onClick={e => e.stopPropagation()}
+          >
+            <div id="template-modal-title" style={modalTitleStyle}>
               Fill in “{templatePrompt.prompt.name}”
             </div>
             <div style={modalSubtitleStyle}>
