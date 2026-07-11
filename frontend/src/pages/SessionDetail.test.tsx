@@ -23,16 +23,20 @@ vi.mock('../lib/api', () => ({
   },
 }));
 
-// A no-op stream hook: these tests never exercise a live run, so a static
-// idle state is enough (and keeps the composer/selectors enabled).
-vi.mock('../hooks/useStreamMessage', () => ({
-  useStreamMessage: () => ({
-    output: '',
+// A configurable stream-hook stub. Most tests want a static idle state; the
+// #214 test overrides `send`/`output` to drive a completed send. `.current` is
+// swapped per test (reset in beforeEach) so the hoisted mock stays stable.
+const stream = vi.hoisted(() => ({
+  current: {
+    output: '' as string,
     isStreaming: false,
-    error: null,
-    send: vi.fn(),
-    reset: vi.fn(),
-  }),
+    error: null as string | null,
+    send: (async () => ({ succeeded: true, stale: false })) as (t: string) => Promise<{ succeeded: boolean; stale: boolean }>,
+    reset: (() => {}) as () => void,
+  },
+}));
+vi.mock('../hooks/useStreamMessage', () => ({
+  useStreamMessage: () => stream.current,
 }));
 
 vi.mock('../context/SessionsContext', () => ({
@@ -112,6 +116,13 @@ beforeEach(() => {
   vi.mocked(api.getMessages).mockResolvedValue([]);
   vi.mocked(api.usePrompt).mockResolvedValue(undefined);
   vi.mocked(api.setSessionProfile).mockResolvedValue(undefined);
+  stream.current = {
+    output: '',
+    isStreaming: false,
+    error: null,
+    send: async () => ({ succeeded: true, stale: false }),
+    reset: () => {},
+  };
 });
 
 afterEach(() => {
@@ -224,5 +235,33 @@ describe('SessionDetail profile selector', () => {
     gate.resolve('pa');
     // …and must not clobber the manual choice.
     await waitFor(() => expect(profileSelect.value).toBe('pb'));
+  });
+});
+
+describe('SessionDetail live output retention', () => {
+  it('keeps the completed run visible when the post-send transcript refresh fails (#214)', async () => {
+    const reset = vi.fn();
+    stream.current = {
+      output: 'AGENT REPLY',
+      isStreaming: false,
+      error: null,
+      send: async () => ({ succeeded: true, stale: false }),
+      reset,
+    };
+    // Clean transcript on mount, then fail the post-send reload.
+    vi.mocked(api.getMessages).mockReset();
+    vi.mocked(api.getMessages).mockResolvedValueOnce([]).mockRejectedValue(new Error('boom'));
+    renderPage();
+    const user = userEvent.setup();
+
+    const composer = await screen.findByPlaceholderText(/Send a message/);
+    await user.type(composer, 'hello');
+    await user.click(screen.getByRole('button', { name: 'Send' }));
+
+    // The panel stays on screen (via keepOutput) with the "couldn't refresh"
+    // label, instead of the completed run vanishing…
+    await screen.findByText(/could not refresh transcript/);
+    // …and it wasn't reset, so the run's output is retained.
+    expect(reset).not.toHaveBeenCalled();
   });
 });
