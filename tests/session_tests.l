@@ -596,6 +596,11 @@ test "setSessionProfileHandler validates session and profile (#235)" {
     model = "claude-opus-4-8",
     nativeSessionId = "sp-1"
   )))
+  // A session with no profile attached reports an empty profileId (#272).
+  match getSessionProfileHandler("sp-1") {
+    case Ok(ref) -> assertEqual(ref.profileId, "", "no-profile session reports empty profileId")
+    case Err(_) -> assertTrue(false, "getSessionProfileHandler should succeed for a known session")
+  }
   // Unknown profile -> 400.
   match setSessionProfileHandler("sp-1", SetProfileRequest(profileId = "ghost")) {
     case Ok(_) -> assertTrue(false, "unknown profile should 400")

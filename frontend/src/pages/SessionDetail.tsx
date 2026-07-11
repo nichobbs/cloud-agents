@@ -84,9 +84,12 @@ export function SessionDetail() {
 
   // Reflect the session's actually-attached profile in the selector (#270).
   // Best-effort and session-scoped: a slow fetch for a previous session must
-  // not overwrite the current one's selection.
+  // not overwrite the current one's selection. Reset to '' first so the
+  // previous session's profile doesn't flash while the new fetch is in flight
+  // (#273).
   useEffect(() => {
     let active = true;
+    setProfileId('');
     api
       .getSessionProfile(sessionId)
       .then(pid => {
