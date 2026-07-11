@@ -13,6 +13,13 @@ services:
     environment:
       - ENCRYPTION_KEY=${ENCRYPTION_KEY:?set ENCRYPTION_KEY in .env}
       - CLOUD_AGENTS_WHITELIST=${CLOUD_AGENTS_WHITELIST:-}
+      # Network policy for the 'restricted' profile: the Docker network runner
+      # containers join, and an optional egress proxy. Unset -> 'restricted'
+      # fails closed to no network (#306). The API reads these to set each
+      # runner container's NetworkMode; they must be forwarded here or the
+      # 'restricted' join-network branch is unreachable.
+      - CLOUD_AGENTS_RESTRICTED_NETWORK=${CLOUD_AGENTS_RESTRICTED_NETWORK:-}
+      - CLOUD_AGENTS_EGRESS_PROXY=${CLOUD_AGENTS_EGRESS_PROXY:-}
       - LYRIC_CONFIG_WEB_SERVER_PORT=8080
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock

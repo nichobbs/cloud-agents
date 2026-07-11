@@ -612,6 +612,16 @@ pub func updateSessionContainer(sessionId: in String, containerId: in String): R
   return Ok(value = ())
 }
 
+/// Compare-and-clear the container id: only clears it if it still equals
+/// `containerId`, so a late-finishing orphaned run can't wipe the container id a
+/// newer run for the same session has since stored (#45).
+pub func clearSessionContainerIfMatches(sessionId: in String, containerId: in String): Result[Unit, CloudAgents.Sqlite.DbError] {
+  CloudAgents.Sqlite.execute(
+    CloudAgents.Db.clearSessionContainerIfMatchesSql(sessionId, CloudAgents.Auth.currentUserId(), containerId)
+  )?
+  return Ok(value = ())
+}
+
 pub func updateSessionModel(sessionId: in String, model: in String): Result[Unit, CloudAgents.Sqlite.DbError] {
   CloudAgents.Sqlite.execute(
     CloudAgents.Db.updateSessionModelSql(sessionId, CloudAgents.Auth.currentUserId(), model)

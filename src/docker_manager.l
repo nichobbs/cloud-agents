@@ -4,11 +4,10 @@ import Std.Core
 import Std.Task
 import Lyric.Docker
 import CloudAgents.Auth
+import CloudAgents.NetworkPolicy
 import CloudAgents.Repository
 import CloudAgents.SessionStore
 import CloudAgents.Sqlite
-import extern System.Environment as Env
-import extern System.String as DotNetString
 
 pub record ResultCell {
   pub var isSuccess: Bool = false
@@ -32,33 +31,10 @@ func imageForHarness(harness: in String): String {
   return "claude-code:base"
 }
 
-/// Docker NetworkMode for a profile's network policy. "none" fully isolates
-/// the container; "full"/"restricted" (and no profile) keep the default bridge
-/// — "restricted" additionally routes egress through a proxy via env vars (see
-/// proxyEnvForPolicy), the documented allowlist seam.
-func networkModeForPolicy(policy: in String): String {
-  if policy == "none" {
-    return "none"
-  }
-  return ""
-}
-
-/// Proxy env vars for the 'restricted' network policy: point the container at
-/// the egress proxy named by CLOUD_AGENTS_EGRESS_PROXY, if configured. This is
-/// the seam an allowlisting proxy plugs into; with no proxy configured the
-/// container simply gets the default network and no proxy vars (enforcement is
-/// the proxy's job, tracked as a follow-up).
-func proxyEnvForPolicy(policy: in String): slice[String] {
-  val empty: slice[String] = []
-  if policy != "restricted" {
-    return empty
-  }
-  val proxy = Env.GetEnvironmentVariable("CLOUD_AGENTS_EGRESS_PROXY")
-  if DotNetString.IsNullOrEmpty(proxy) {
-    return empty
-  }
-  return ["HTTP_PROXY=" + proxy, "HTTPS_PROXY=" + proxy, "http_proxy=" + proxy, "https_proxy=" + proxy]
-}
+// Network-policy resolution (networkModeForPolicy / proxyEnvForPolicy) lives in
+// the pure CloudAgents.NetworkPolicy package so it can be unit-tested — a test
+// can't invoke functions in this async package without hitting the "signature
+// is incorrect" harness limitation (docs/lyric/gotchas.md), even pure ones.
 
 /// Create an ephemeral container for the given session.
 /// HARNESS, MODEL, and NATIVE_SESSION_ID are passed as env vars so each
@@ -117,13 +93,13 @@ pub async func createRunnerContainer(
     case Ok(p) -> p
     case Err(e) -> return Err(error = "Failed to resolve network policy: " + CloudAgents.Sqlite.dbErrorMessage(e))
   }
-  val proxyEnv = proxyEnvForPolicy(policy)
+  val proxyEnv = CloudAgents.NetworkPolicy.proxyEnvForPolicy(policy)
   var pi = 0
   while pi < proxyEnv.length {
     envs = envs.append(proxyEnv[pi])
     pi = pi + 1
   }
-  val networkMode = networkModeForPolicy(policy)
+  val networkMode = CloudAgents.NetworkPolicy.networkModeForPolicy(policy)
 
   val binds = [workspaceVolume + ":/workspace", homeVolume + ":/home/claude-user"]
 
@@ -274,7 +250,7 @@ async func runSessionMessageAsync(
       cell.error = msg
       // Best-effort cleanup: remove the container even if start failed
       val _ = await deleteRunnerContainer(containerId)
-      val _ = CloudAgents.SessionStore.updateSessionContainer(sessionId, "")
+      val _ = CloudAgents.SessionStore.clearSessionContainerIfMatches(sessionId, containerId)
       return ()
     }
   }
@@ -287,7 +263,7 @@ async func runSessionMessageAsync(
     case Ok(_) -> ()
     case Err(msg) -> {
       val _ = await deleteRunnerContainer(containerId)
-      val _ = CloudAgents.SessionStore.updateSessionContainer(sessionId, "")
+      val _ = CloudAgents.SessionStore.clearSessionContainerIfMatches(sessionId, containerId)
       cell.isSuccess = false
       cell.error = msg
       return ()
@@ -299,7 +275,7 @@ async func runSessionMessageAsync(
   // Always remove the ephemeral container after the run. Session state
   // (workspace and home volumes) persists independently of the container.
   val _ = await deleteRunnerContainer(containerId)
-  val _ = CloudAgents.SessionStore.updateSessionContainer(sessionId, "")
+  val _ = CloudAgents.SessionStore.clearSessionContainerIfMatches(sessionId, containerId)
 
   match logsResult {
     case Ok(logs) -> {

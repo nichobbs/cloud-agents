@@ -46,11 +46,17 @@ mkdir -p /workspace/.claude
 # through the credential store, and GITHUB_TOKEN is not a reserved credential
 # name — its value can contain any byte. Escape in two stages so neither the
 # JSON nor the sed substitution is corrupted:
+#   0. strip C0 control bytes (0x00-0x1F) — a JSON string may not contain a raw
+#      newline/tab/etc., so a token carrying one would otherwise produce invalid
+#      JSON (#222). A real GITHUB_TOKEN never contains control bytes, so this is
+#      a no-op for valid input and fails safe (a cleaned, then-invalid token
+#      simply fails auth) for malformed input.
 #   1. JSON-escape the value ('\' then '"') so it is a valid JSON string body.
 #   2. sed-escape the result ('&', '|', '\') so sed writes it literally.
 # Order matters: JSON-escaping adds backslashes that stage 2 must then protect.
 if [ -f /etc/claude/mcp.json.template ] && [ ! -f /workspace/.claude/mcp.json ]; then
-    gh_token_json=$(printf '%s' "${GITHUB_TOKEN:-}" | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g')
+    gh_token_clean=$(printf '%s' "${GITHUB_TOKEN:-}" | tr -d '\000-\037')
+    gh_token_json=$(printf '%s' "${gh_token_clean}" | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g')
     gh_token_escaped=$(printf '%s' "${gh_token_json}" | sed -e 's/[&|\\]/\\&/g')
     sed "s|\${GITHUB_TOKEN}|${gh_token_escaped}|g" \
         /etc/claude/mcp.json.template > /workspace/.claude/mcp.json

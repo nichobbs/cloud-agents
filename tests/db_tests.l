@@ -63,6 +63,12 @@ test "SQL statements are scoped by owner" {
   assertTrue(updateSessionContainerSql("s1", "u1", "c1").contains("AND user_id = 'u1'"), "container update scoped by owner")
   assertTrue(updateSessionModelSql("s1", "u1", "m1").contains("AND user_id = 'u1'"), "model update scoped by owner")
   assertTrue(insertSessionSql("s1", "u1", "r", "b", "", "claude", "m", "n", "1000").contains("'IDLE'"), "insert starts IDLE")
+  // Compare-and-clear: only clears the container id when it still matches, so a
+  // late orphaned run can't wipe a newer run's container id (#45).
+  val clearSql = clearSessionContainerIfMatchesSql("s1", "u1", "c1")
+  assertTrue(clearSql.contains("container_id = ''"), "compare-and-clear sets container_id empty")
+  assertTrue(clearSql.contains("AND container_id = 'c1'"), "compare-and-clear guards on the current container id")
+  assertTrue(clearSql.contains("AND user_id = 'u1'"), "compare-and-clear scoped by owner")
 }
 
 test "run-claim SQL is atomic and status-guarded" {

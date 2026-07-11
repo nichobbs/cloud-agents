@@ -232,6 +232,17 @@ pub func updateSessionContainerSql(id: in String, userId: in String, containerId
     sqlLiteral(userId)
 }
 
+/// Clear the container id only if it still equals `containerId` — a
+/// compare-and-clear (#45). A run whose outer request already timed out can
+/// finish long after a newer run for the same session started and stored a new
+/// container id; an unconditional clear would then wipe the newer id and orphan
+/// its container.
+pub func clearSessionContainerIfMatchesSql(id: in String, userId: in String, containerId: in String): String {
+  return "UPDATE sessions SET container_id = '' WHERE id = " + sqlLiteral(id) +
+    " AND user_id = " + sqlLiteral(userId) +
+    " AND container_id = " + sqlLiteral(containerId)
+}
+
 /// UPDATE a session's model.
 pub func updateSessionModelSql(id: in String, userId: in String, model: in String): String {
   return "UPDATE sessions SET model = " + sqlLiteral(model) + " WHERE id = " + sqlLiteral(id) + " AND user_id = " +
