@@ -309,6 +309,36 @@ test "listPrompts attaches each prompt's own tags from one batched read (#246)" 
   assertEqual(listed[1].tags[0], "blue", "beta has only its own tag, not alpha's")
 }
 
+test "listPromptsByUsage attaches each prompt's own tags from the batched read (#338)" {
+  val dbPath = useFreshTestDb("prompt-usage-tags")
+  defer {
+    cleanupTestDb(dbPath)
+  }
+  val userId = "default"
+  val a = mustPrompt(addPrompt(userId, "alpha", "a"))
+  val b = mustPrompt(addPrompt(userId, "beta", "b"))
+  match setPromptTags(a.id, userId, ["red", "green"]) {
+    case Ok(_) -> ()
+    case Err(e) -> assertTrue(false, "setPromptTags a failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+  }
+  match setPromptTags(b.id, userId, ["blue"]) {
+    case Ok(_) -> ()
+    case Err(e) -> assertTrue(false, "setPromptTags b failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+  }
+  // Use beta once so the usage ordering is deterministic (beta first).
+  mustRows(markPromptUsed(b.id, userId))
+
+  val popular = mustPrompts(listPromptsByUsage(userId))
+  assertEqualInt(popular.length.toInt(), 2, "two prompts listed")
+  assertEqual(popular[0].name, "beta", "most-used first")
+  assertEqualInt(popular[0].tags.length.toInt(), 1, "beta keeps its one tag")
+  assertEqual(popular[0].tags[0], "blue", "beta tag under the usage ordering")
+  assertEqual(popular[1].name, "alpha", "less-used second")
+  assertEqualInt(popular[1].tags.length.toInt(), 2, "alpha keeps its two tags")
+  assertEqual(popular[1].tags[0], "green", "alpha tags alphabetical: green first")
+  assertEqual(popular[1].tags[1], "red", "alpha second tag")
+}
+
 test "Prompt handlers validate, store and 404 correctly" {
   val dbPath = useFreshTestDb("prompt-handlers")
   defer {
