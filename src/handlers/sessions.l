@@ -29,7 +29,7 @@ func isHttpsUrl(url: in String): Bool {
 }
 
 func isSafeRepoUrl(url: in String): Bool {
-  if url.length > maxRepoUrlLen {
+  if not CloudAgents.Text.withinMaxLength(url, maxRepoUrlLen) {
     return false
   }
   if url.contains(" ") or url.contains("\"") or url.contains("\\") {
@@ -61,7 +61,7 @@ func isBlockedRepoHost(url: in String): Bool {
 /// Git ref-name safety: rejects names git itself refuses, plus anything that
 /// could be misread as a command-line option (leading '-').
 func isSafeBranchName(branch: in String): Bool {
-  if branch.length == 0 or branch.length > maxBranchLen {
+  if branch.length == 0 or not CloudAgents.Text.withinMaxLength(branch, maxBranchLen) {
     return false
   }
   if branch == "@" {
@@ -89,7 +89,7 @@ func isSafeBranchName(branch: in String): Bool {
 }
 
 func isSafeModelName(model: in String): Bool {
-  if model.length > maxModelLen {
+  if not CloudAgents.Text.withinMaxLength(model, maxModelLen) {
     return false
   }
   if model.contains(" ") or model.contains("\"") or model.contains("\\") or model.contains("{") or

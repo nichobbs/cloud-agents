@@ -32,8 +32,9 @@ pub func containsControlChar(s: in String): Bool {
 }
 
 /// True when `s`'s character length is at or under `max` — shared by every
-/// request-body length cap so the comparison logic can't drift between call
-/// sites (#43). Deliberately returns `Bool`, not a `Web.ApiError`-carrying
+/// request-field length cap in sessions.l/interactions.l (#43/#365) so the
+/// comparison logic can't drift between call sites. Deliberately returns
+/// `Bool`, not a `Web.ApiError`-carrying
 /// `Result`: this package has no `[nuget]` dependencies (scripts/verify.sh
 /// compiles it into a scratch manifest with no `[nuget]` table at all, by
 /// design — see that script's header comment), so pulling in `Web` here
