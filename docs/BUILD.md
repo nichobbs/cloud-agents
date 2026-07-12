@@ -107,12 +107,15 @@ investigation time:
    of the still-open upstream defect class
    [lyric-lang#3887](https://github.com/nichobbs/lyric-lang/issues/3887)
    ("BCL `@externTarget` metadata resolution"), which explicitly lists
-   `Encoding.GetBytes` as one of the affected instance methods — the fix
-   landed in a later `Lyric.Web` release (confirmed no longer reproducing
-   against 0.4.19 by CI's `repro-web-bug.sh` diagnostic step; genuinely
-   resolved as of the 0.4.26 pin). `./scripts/repro-web-bug.sh` remains
-   checked in to mechanically re-check this against whatever version is
-   currently pinned, should a future bump ever regress it.
+   `Encoding.GetBytes` as one of the affected instance methods — still
+   reproduced against the 0.4.19 pin (see `repro-web-bug.sh`'s own header
+   comment for that history), but is genuinely fixed as of the 0.4.26 pin:
+   CI's `repro-web-bug.sh` diagnostic step, which reads whichever version is
+   *currently* pinned in `lyric.toml` rather than a hardcoded number,
+   reports "Lyric.Web 0.4.26 resolves `Encoding.GetBytes` at runtime —
+   lyric-lang#3887 is fixed for this call". `./scripts/repro-web-bug.sh`
+   remains checked in to mechanically re-check this against whatever
+   version is currently pinned, should a future bump ever regress it.
 2. **No real request dispatch — fixed as of `Lyric.Web` 0.4.26.** Earlier
    `Lyric.Web` releases (through 0.4.19) returned an identical hardcoded
    diagnostic JSON payload for every request regardless of method or path —
