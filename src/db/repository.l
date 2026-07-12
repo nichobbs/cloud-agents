@@ -556,20 +556,19 @@ pub func listPromptsByUsage(userId: in String): Result[slice[Prompt], CloudAgent
   return Ok(value = acc)
 }
 
-/// A user's prompts carrying a given tag, alphabetical by name.
+/// A user's prompts carrying a given tag, alphabetical by name. Each prompt
+/// carries its *full* tag set (not just the filter tag). Fetches the matching
+/// rows and all tag pairs in two queries rather than a per-prompt getPrompt
+/// round trip (#339), reusing the same batching as listPrompts (#246).
 pub func listPromptsByTag(userId: in String, tag: in String): Result[slice[Prompt], CloudAgents.Sqlite.DbError] {
-  val idRows = CloudAgents.Sqlite.query(CloudAgents.Db.selectPromptIdsByTagSql(userId, tag))?
+  val rows = CloudAgents.Sqlite.query(CloudAgents.Db.selectPromptsByTagSql(userId, tag))?
+  val tagPairs = allPromptTagPairs(userId)?
   var acc: slice[Prompt] = []
   var i = 0
-  val len = CloudAgents.Sqlite.getRowArrayLength(idRows)
+  val len = CloudAgents.Sqlite.getRowArrayLength(rows)
   while i < len {
-    val pid = colAt(CloudAgents.Sqlite.getRowArrayValue(idRows, i).cols, 0)
-    match getPrompt(pid, userId)? {
-      case Some(p) -> {
-        acc = acc.append(p)
-      }
-      case None -> ()
-    }
+    val r = CloudAgents.Sqlite.getRowArrayValue(rows, i)
+    acc = acc.append(rowToPrompt(r, tagsForPrompt(tagPairs, colAt(r.cols, 0))))
     i = i + 1
   }
   return Ok(value = acc)

@@ -142,8 +142,9 @@ test "prompt-tag SQL builders are scoped and idempotent" {
   assertTrue(promptTagsSchemaSql().contains("UNIQUE(prompt_id, tag)"), "unique per prompt+tag")
   assertTrue(insertPromptTagSql("t1", "p1", "u1", "ci").contains("ON CONFLICT(prompt_id, tag) DO NOTHING"), "tag insert idempotent")
   assertTrue(selectPromptTagsSql("p1", "u1").contains("AND user_id = 'u1'"), "tag read scoped by owner")
-  assertTrue(selectPromptIdsByTagSql("u1", "ci").contains("AND pt.tag = 'ci'"), "filter by tag")
-  assertTrue(selectPromptIdsByTagSql("u1", "ci").contains("ORDER BY p.name ASC"), "tag results ordered by name")
+  assertTrue(selectPromptsByTagSql("u1", "ci").contains("AND pt.tag = 'ci'"), "filter by tag")
+  assertTrue(selectPromptsByTagSql("u1", "ci").contains("ORDER BY p.name ASC"), "tag results ordered by name")
+  assertTrue(selectPromptsByTagSql("u1", "ci").contains("p.body"), "selects full prompt columns for one-query listing")
   assertTrue(selectPromptsByUsageSql("u1").contains("ORDER BY CAST(use_count AS INTEGER) DESC"), "usage ordering is numeric")
 }
 

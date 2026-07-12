@@ -277,6 +277,40 @@ test "Prompt tags round-trip, replace, and filter" {
   assertEqualInt(mustPrompts(listPromptsByTag(userId, "red")).length.toInt(), 0, "old tag no longer matches")
 }
 
+test "listPromptsByTag returns each matching prompt with its full tag set (#339)" {
+  val dbPath = useFreshTestDb("prompt-by-tag-tags")
+  defer {
+    cleanupTestDb(dbPath)
+  }
+  val userId = "default"
+  val a = mustPrompt(addPrompt(userId, "alpha", "a"))
+  val b = mustPrompt(addPrompt(userId, "beta", "b"))
+  match setPromptTags(a.id, userId, ["red", "green"]) {
+    case Ok(_) -> ()
+    case Err(e) -> assertTrue(false, "setPromptTags a failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+  }
+  match setPromptTags(b.id, userId, ["blue"]) {
+    case Ok(_) -> ()
+    case Err(e) -> assertTrue(false, "setPromptTags b failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+  }
+
+  // Filtering by one of alpha's tags returns only alpha — but with its whole
+  // tag set attached (green, red), not just the filter tag, and never beta's.
+  val byRed = mustPrompts(listPromptsByTag(userId, "red"))
+  assertEqualInt(byRed.length.toInt(), 1, "only alpha carries 'red'")
+  assertEqual(byRed[0].name, "alpha", "the match is alpha")
+  assertEqualInt(byRed[0].tags.length.toInt(), 2, "alpha's full tag set is attached")
+  assertEqual(byRed[0].tags[0], "green", "full tags alphabetical: green first")
+  assertEqual(byRed[0].tags[1], "red", "full tags alphabetical: red second")
+
+  // The other tag returns only beta with its own single tag.
+  val byBlue = mustPrompts(listPromptsByTag(userId, "blue"))
+  assertEqualInt(byBlue.length.toInt(), 1, "only beta carries 'blue'")
+  assertEqual(byBlue[0].name, "beta", "the match is beta")
+  assertEqualInt(byBlue[0].tags.length.toInt(), 1, "beta has only its own tag")
+  assertEqual(byBlue[0].tags[0], "blue", "beta tag")
+}
+
 test "listPrompts attaches each prompt's own tags from one batched read (#246)" {
   val dbPath = useFreshTestDb("prompt-list-tags")
   defer {
