@@ -1,6 +1,7 @@
 package CloudAgents.Auth
 
 import Std.Core
+import CloudAgents.Text
 
 /// Phase 3 groundwork: GitHub-OAuth-based authentication helpers.
 ///
@@ -292,42 +293,11 @@ pub func authorizeSecret(authHeaderValue: in String, apiToken: in String): AuthO
 // and `login` (string). These extractors pull those two fields without a full
 // JSON parser, so they are pure and runtime-testable. The handler layer turns
 // the results into a `GitHubUser` and rejects responses missing either field.
-/// First index of `needle` in `hay` at or after `from`, or -1 if not present.
-/// A manual scan — the compiler's `String.indexOf`/`Option` path is unreliable
-/// at runtime in the current toolchain, and this keeps the parsers on the
-/// String/Int operations that are known-good.
-pub func indexOfFrom(hay: in String, needle: in String, from: in Int): Int {
-  val hayLen = hay.length.toInt()
-  val needleLen = needle.length.toInt()
-  if needleLen == 0 {
-    return from
-  }
-  var i = from
-  val last = hayLen - needleLen
-  while i <= last {
-    var j = 0
-    var matched = true
-    while j < needleLen {
-      if hay.substring(i + j, 1) != needle.substring(j, 1) {
-        matched = false
-        j = needleLen
-      } else {
-        j = j + 1
-      }
-    }
-    if matched {
-      return i
-    }
-    i = i + 1
-  }
-  return -1
-}
-
 /// Extract a string field's value, or "" if the field is absent. Handles the
 /// `"field"` token, the following colon, and a double-quoted value.
 pub func parseJsonString(json: in String, field: in String): String {
   val target = "\"" + field + "\""
-  val pos = indexOfFrom(json, target, 0)
+  val pos = CloudAgents.Text.indexOfFrom(json, target, 0)
   if pos < 0 {
     return ""
   }
@@ -357,7 +327,7 @@ pub func parseJsonString(json: in String, field: in String): String {
 /// the field is absent. (GitHub user ids are JSON numbers, not quoted.)
 pub func parseJsonNumber(json: in String, field: in String): String {
   val target = "\"" + field + "\""
-  val pos = indexOfFrom(json, target, 0)
+  val pos = CloudAgents.Text.indexOfFrom(json, target, 0)
   if pos < 0 {
     return ""
   }

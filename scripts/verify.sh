@@ -44,6 +44,11 @@ mkdir -p "$WORK/src/streaming" "$WORK/src/db" "$WORK/src/handlers"
 cp "$REPO_ROOT/src/streaming/streaming.l"   "$WORK/src/streaming/"
 cp "$REPO_ROOT/src/db/db_client.l"          "$WORK/src/db/"
 cp "$REPO_ROOT/src/handlers/auth.l"         "$WORK/src/handlers/"
+# streaming.l and auth.l call into CloudAgents.Text (isControlChar /
+# indexOfFrom), so the shared package must be part of this scratch build too —
+# otherwise those cross-package calls link to nothing and the CLR rejects the
+# method at runtime (InvalidProgramException in jsonEscape).
+cp "$REPO_ROOT/src/text.l"                  "$WORK/src/"
 
 cat > "$WORK/lyric.toml" <<'TOML'
 [package]
@@ -54,6 +59,7 @@ name = "CloudAgentsVerify"
 output = "single"
 output_assembly = "CloudAgentsVerify.dll"
 [project.packages]
+"CloudAgents.Text"      = "src/text.l"
 "CloudAgents.Streaming" = "src/streaming/streaming.l"
 "CloudAgents.Db"        = "src/db/db_client.l"
 "CloudAgents.Auth"      = "src/handlers/auth.l"

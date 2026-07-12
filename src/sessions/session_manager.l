@@ -5,6 +5,7 @@ import CloudAgents.Auth
 import CloudAgents.Db
 import CloudAgents.Repository
 import CloudAgents.Sqlite
+import CloudAgents.Text
 import extern System.Environment as Env
 import extern System.String as DotNetString
 
@@ -101,38 +102,10 @@ pub func createEmptySessionArray(): AgentSessionArray {
   return createSessionArray(sessionType, 0)
 }
 
-/// First index of `needle` in `hay` at or after `from`, or -1 if not present.
-func indexOfFrom(hay: in String, needle: in String, from: in Int): Int {
-  val hayLen = hay.length.toInt()
-  val needleLen = needle.length.toInt()
-  if needleLen == 0 {
-    return from
-  }
-  var i = from
-  val last = hayLen - needleLen
-  while i <= last {
-    var j = 0
-    var matched = true
-    while j < needleLen {
-      if hay.substring(i + j, 1) != needle.substring(j, 1) {
-        matched = false
-        j = needleLen
-      } else {
-        j = j + 1
-      }
-    }
-    if matched {
-      return i
-    }
-    i = i + 1
-  }
-  return -1
-}
-
 pub func parseJsonField(objStr: in String, fieldName: in String): String {
   val target = "\"" + fieldName + "\""
   val objLen = objStr.length.toInt()
-  val pos = indexOfFrom(objStr, target, 0)
+  val pos = CloudAgents.Text.indexOfFrom(objStr, target, 0)
   if pos < 0 {
     return ""
   }
@@ -233,7 +206,7 @@ pub func parseSessionsJson(json: in String): AgentSessionArray {
   val jsonLen = json.length.toInt()
 
   // Find where "[" begins
-  val arrayStart = indexOfFrom(json, "[", 0)
+  val arrayStart = CloudAgents.Text.indexOfFrom(json, "[", 0)
   if arrayStart < 0 {
     return list
   }
@@ -388,10 +361,9 @@ pub func getSessions(): Result[AgentSessionArray, CloudAgents.Sqlite.DbError] {
 // ── Control-character helpers ─────────────────────────────────────────────────
 // Same approach as CloudAgents.Streaming / Lyric.Docker: JSON forbids raw
 // control characters in string literals, and Lyric literals cannot express
-// them, so detection/construction goes through the BCL.
-@externTarget("System.String.CompareOrdinal")
-func strCompareOrdinal(a: in String, b: in String): Int = ()
-
+// them, so construction goes through the BCL. The single-char control-character
+// test lives in CloudAgents.Text (isControlChar); these char<->code-point
+// externs are session-store-specific.
 @externTarget("System.Char.ConvertFromUtf32")
 func charFromCode(code: in Int): String = ()
 
@@ -400,10 +372,6 @@ func charFromCode(code: in Int): String = ()
 /// control codes (#171).
 @externTarget("System.Char.ConvertToUtf32")
 func codeFromChar(s: in String, index: in Int): Int = ()
-
-func isControlChar(c: in String): Bool {
-  return strCompareOrdinal(c, " ") < 0
-}
 
 func hexDigit(n: in Int): String {
   if n == 10 {
@@ -512,7 +480,7 @@ pub func jsonEscapeField(s: in String): String {
       acc = acc + "\\r"
     } else if c == "\t" {
       acc = acc + "\\t"
-    } else if isControlChar(c) {
+    } else if CloudAgents.Text.isControlChar(c) {
       acc = acc + controlEscape(c)
     } else {
       acc = acc + c

@@ -89,8 +89,9 @@ test "GitHub /user response parsing" {
   assertEqual(parseJsonString(body, "missing"), "", "missing string field -> empty")
   assertEqual(parseJsonNumber(body, "missing"), "", "missing number field -> empty")
   assertEqual(parseJsonNumber("{\"id\": 42 }", "id"), "42", "number with surrounding spaces")
-  assertEqual(toString(indexOfFrom("hello world", "world", 0)), "6", "indexOfFrom found")
-  assertEqual(toString(indexOfFrom("hello", "zzz", 0)), "-1", "indexOfFrom not found")
+  // indexOfFrom itself now lives in CloudAgents.Text and is covered directly by
+  // CloudAgents.TextTests; parseJsonString/parseJsonNumber above still exercise
+  // it transitively here.
 }
 
 test "GitHub OAuth authorization derives a user id and applies the whitelist" {
