@@ -10,6 +10,7 @@ import CloudAgents.SessionStore
 import CloudAgents.Sqlite
 import CloudAgents.Streaming
 import extern System.Environment as Env
+import extern System.String as DotNetString
 
 // ── Live-DB plumbing (same pattern as tests/prompt_tests.l) ───────────────────
 
@@ -54,6 +55,13 @@ func mustClaim(r: in Result[Bool, CloudAgents.Sqlite.DbError]): Bool {
   return match r {
     case Ok(b) -> b
     case Err(e) -> panic("run claim failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+  }
+}
+
+func mustInt(r: in Result[Int, CloudAgents.Sqlite.DbError]): Int {
+  return match r {
+    case Ok(n) -> n
+    case Err(e) -> panic("expected Ok(Int): " + CloudAgents.Sqlite.dbErrorMessage(e))
   }
 }
 
@@ -193,6 +201,88 @@ test "Run claim is exclusive per session" {
   mustUnit(CloudAgents.SessionStore.endRun("claim-1"))
   assertTrue(mustClaim(CloudAgents.SessionStore.tryBeginRun("claim-1")), "claim available again after endRun")
   assertFalse(mustClaim(CloudAgents.SessionStore.tryBeginRun("missing")), "claiming a nonexistent session fails")
+}
+
+test "deleteSessionRecord removes the row and is a no-op when already gone (#310)" {
+  val dbPath = useFreshTestDb("session-delete-record")
+  defer {
+    cleanupTestDb(dbPath)
+  }
+  val sessionId = "del-rec-1"
+  mustUnit(addSession(makeAgentSession(
+    sessionId = sessionId,
+    repoUrl = "https://github.com/nic/repo",
+    branch = "main",
+    containerId = "",
+    harness = "claude",
+    model = "claude-opus-4-8",
+    nativeSessionId = sessionId
+  )))
+  // Present before the delete.
+  match mustOptSession(getSession(sessionId)) {
+    case Some(_) -> ()
+    case None -> assertTrue(false, "session should exist before deleteSessionRecord")
+  }
+  // deleteSessionRecord drops the row without re-reading it first (#172).
+  mustUnit(deleteSessionRecord(sessionId))
+  match mustOptSession(getSession(sessionId)) {
+    case Some(_) -> assertTrue(false, "session should be gone after deleteSessionRecord")
+    case None -> ()
+  }
+  // Deleting an already-gone row is a no-op success, not an error.
+  mustUnit(deleteSessionRecord(sessionId))
+}
+
+test "recoverDanglingSessions frees sessions stuck RUNNING on restart (#198)" {
+  val dbPath = useFreshTestDb("recover-dangling")
+  defer {
+    cleanupTestDb(dbPath)
+  }
+  mustUnit(addSession(makeAgentSession(
+    sessionId = "dangling-1",
+    repoUrl = "https://github.com/nic/repo",
+    branch = "main",
+    containerId = "",
+    harness = "claude",
+    model = "claude-opus-4-8",
+    nativeSessionId = "dangling-1"
+  )))
+  // Claim it so it is RUNNING, then "crash" — the process dies without ever
+  // calling endRun, leaving the row dangling. A second claim is refused.
+  assertTrue(mustClaim(CloudAgents.SessionStore.tryBeginRun("dangling-1")), "claim wins")
+  assertFalse(mustClaim(CloudAgents.SessionStore.tryBeginRun("dangling-1")), "second claim refused while RUNNING")
+  // Startup recovery resets the dangling RUNNING row back to a usable state.
+  val recovered = mustInt(recoverDanglingSessions())
+  assertTrue(recovered >= 1, "at least one dangling session recovered")
+  assertTrue(mustClaim(CloudAgents.SessionStore.tryBeginRun("dangling-1")), "claim available again after recovery")
+}
+
+test "importLegacyEnvSessions inserts env sessions into the store and clears the env (#198)" {
+  val dbPath = useFreshTestDb("legacy-import")
+  defer {
+    cleanupTestDb(dbPath)
+  }
+  val s = makeAgentSession(
+    sessionId = "legacy-import-1",
+    repoUrl = "https://github.com/nic/repo",
+    branch = "main",
+    containerId = "",
+    harness = "claude",
+    model = "claude-opus-4-8",
+    nativeSessionId = "legacy-import-1"
+  )
+  Env.SetEnvironmentVariable("CLOUD_AGENTS_SESSIONS_JSON", "{\"sessions\":[" + agentSessionToJson(s) + "]}")
+  importLegacyEnvSessions()
+  // The env session is now persisted in SQLite...
+  match mustOptSession(getSession("legacy-import-1")) {
+    case Some(imported) -> assertEqual(imported.sessionId, "legacy-import-1", "imported session id matches")
+    case None -> assertTrue(false, "legacy env session should have been imported into the store")
+  }
+  // ...and the env var is cleared so a restart doesn't re-import it.
+  assertTrue(
+    DotNetString.IsNullOrEmpty(Env.GetEnvironmentVariable("CLOUD_AGENTS_SESSIONS_JSON")),
+    "CLOUD_AGENTS_SESSIONS_JSON cleared after a successful import"
+  )
 }
 
 test "Test default model per harness" {
