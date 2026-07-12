@@ -6,14 +6,14 @@ import Std.Testing
 import CloudAgents.Text
 
 test "indexOfFrom finds needles, respects the start offset, and reports absence" {
-  assertEqual(indexOfFrom("hello world", "world", 0), 6, "finds a substring")
-  assertEqual(indexOfFrom("hello", "hello", 0), 0, "matches at the start")
-  assertEqual(indexOfFrom("abcabc", "abc", 1), 3, "skips a match before `from`")
-  assertEqual(indexOfFrom("hello", "xyz", 0), -1, "reports -1 when absent")
+  assertEqualInt(indexOfFrom("hello world", "world", 0), 6, "finds a substring")
+  assertEqualInt(indexOfFrom("hello", "hello", 0), 0, "matches at the start")
+  assertEqualInt(indexOfFrom("abcabc", "abc", 1), 3, "skips a match before `from`")
+  assertEqualInt(indexOfFrom("hello", "xyz", 0), -1, "reports -1 when absent")
   // An empty needle returns `from` unchanged (matches the documented contract
   // relied on by the JSON field scanners).
-  assertEqual(indexOfFrom("hello", "", 2), 2, "empty needle returns from")
-  assertEqual(indexOfFrom("hi", "hello", 0), -1, "needle longer than haystack is absent")
+  assertEqualInt(indexOfFrom("hello", "", 2), 2, "empty needle returns from")
+  assertEqualInt(indexOfFrom("hi", "hello", 0), -1, "needle longer than haystack is absent")
 }
 
 test "isControlChar flags units below U+0020 and passes printable text" {

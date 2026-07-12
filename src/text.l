@@ -1,11 +1,10 @@
+//! Shared string utilities that were previously copy-pasted across packages
+//! (#28, #169, #263). Pure and sync, so it can sit below every consumer in the
+//! package order and be unit-tested directly (no async in this package means no
+//! "signature is incorrect" test limitation — see docs/lyric/gotchas.md).
 package CloudAgents.Text
 
 import Std.Core
-
-/// Shared string utilities that were previously copy-pasted across packages
-/// (#28, #169, #263). Pure and sync, so it can sit below every consumer in the
-/// package order and be unit-tested directly (no async in this package means no
-/// "signature is incorrect" test limitation — see docs/lyric/gotchas.md).
 
 // JSON forbids raw control characters and Lyric string literals cannot express
 // them, so detection goes through the BCL ordinal compare rather than a literal.
