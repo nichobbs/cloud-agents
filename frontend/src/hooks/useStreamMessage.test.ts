@@ -123,6 +123,36 @@ describe('useStreamMessage reattachment (#217)', () => {
     }
   });
 
+  it('backs off the reattach poll interval while output is static (#216/#330)', async () => {
+    vi.useFakeTimers();
+    try {
+      // A run is in progress with unchanging output, so the reattach poll loop
+      // should keep running and grow its interval.
+      vi.mocked(api.getRunOutput).mockResolvedValue({ running: true, output: 'x' });
+
+      renderHook(() => useStreamMessage('s1'));
+      // The initial probe fires and reattaches (call #1).
+      await act(async () => { await vi.advanceTimersByTimeAsync(0); });
+      expect(api.getRunOutput).toHaveBeenCalledTimes(1);
+
+      // The loop waits before each subsequent poll, backing off 1500 → 2250 →
+      // 3375ms between calls.
+      await act(async () => { await vi.advanceTimersByTimeAsync(1500); });
+      expect(api.getRunOutput).toHaveBeenCalledTimes(2);
+      await act(async () => { await vi.advanceTimersByTimeAsync(2250); });
+      expect(api.getRunOutput).toHaveBeenCalledTimes(3);
+      await act(async () => { await vi.advanceTimersByTimeAsync(3375); });
+      expect(api.getRunOutput).toHaveBeenCalledTimes(4);
+
+      // After the 4th poll the interval is ~5063ms, so 1500ms more triggers no
+      // further poll — proving the reattach loop genuinely backed off too.
+      await act(async () => { await vi.advanceTimersByTimeAsync(1500); });
+      expect(api.getRunOutput).toHaveBeenCalledTimes(4);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('reattach yields to a send that starts during its initial getRunOutput (#317/#319)', async () => {
     // Hold the reattach effect's first getRunOutput open so a send() can start
     // and set sendInFlightRef before it resolves — the #317 race window.
