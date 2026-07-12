@@ -144,11 +144,14 @@ the seven compiler bugs tracked on this page) — but that this compiles and
 the diagnostic script confirms `Encoding.GetBytes` resolves is not the same
 as confirming the server correctly serves a real HTTP request end-to-end.
 An unrelated defect (constructing a `Web.Request` record crashes at
-runtime — see #354) currently blocks writing an automated test that drives
-`Handler.handle()`/`Middleware.wrap()` directly, so "the server dispatches
-and enforces auth correctly" is believed-true from the code compiling and
-manual reasoning about the framework's own (different) internal request
-construction, not confirmed by an automated end-to-end test.
+runtime — see #354, mechanically re-checked by
+`./scripts/repro-web-request-crash.sh` the same way `repro-web-bug.sh`
+tracks the `Encoding.GetBytes` crash above) currently blocks writing an
+automated test that drives `Handler.handle()`/`Middleware.wrap()`
+directly, so "the server dispatches and enforces auth correctly" is
+believed-true from the code compiling and manual reasoning about the
+framework's own (different) internal request construction, not confirmed
+by an automated end-to-end test.
 
 ### Bumping a NuGet dependency version
 

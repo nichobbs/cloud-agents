@@ -37,3 +37,13 @@ test "withinMaxLength allows values at or under the cap and rejects values over 
   assertTrue(withinMaxLength("0123456789", 10), "value exactly at the cap is within it")
   assertFalse(withinMaxLength("0123456789X", 10), "value over the cap is not within it")
 }
+
+test "constantTimeEquals matches equal strings and rejects differing ones, any length (#204/#366)" {
+  assertTrue(constantTimeEquals("abc", "abc"), "equal strings match")
+  assertTrue(constantTimeEquals("", ""), "empty equals empty")
+  assertFalse(constantTimeEquals("abc", "abd"), "differing content differs")
+  assertFalse(constantTimeEquals("abc", "abcd"), "candidate shorter than expected differs")
+  assertFalse(constantTimeEquals("abcde", "abc"), "candidate longer than expected differs")
+  assertFalse(constantTimeEquals("", "x"), "empty candidate vs non-empty expected differs")
+  assertFalse(constantTimeEquals("x", ""), "non-empty candidate vs empty expected differs")
+}
