@@ -17,12 +17,11 @@ import CloudAgents.Webhooks
 import extern System.Environment as Env
 import extern System.String as DotNetString
 
-// SPIKE (Lyric.Web 0.4.26): the framework replaced string-based route
-// registration ("addGet(router, pattern, handlerName)") with a Handler-interface
-// model ("addGet(router, pattern, handler: Handler)"). This adapter bridges one
-// existing handler function (checkHealth) into the new Handler shape to prove the
-// dispatch model builds and serves before migrating all ~40 routes.
-record HealthHandler {}
+// Lyric.Web 0.4.26 dispatches to a Handler object per route ("addGet(router,
+// pattern, handler: Handler)") rather than a handler-name string. This adapter
+// bridges checkHealth() into that shape — see "Handler-adapter plumbing" below
+// for the pattern all ~39 routes follow.
+pub record HealthHandler {}
 
 impl Web.Handler for HealthHandler {
   func handle(req: in Web.Request): Web.Response {
@@ -41,7 +40,7 @@ impl Web.Handler for HealthHandler {
 // regular check stays open (no lockout) — only credential routes require a
 // token unconditionally. /api/health is excluded so liveness checks don't
 // need a token.
-record AuthMiddleware {}
+pub record AuthMiddleware {}
 
 impl Web.Middleware for AuthMiddleware {
   func wrap(req: in Web.Request, next: in Web.Handler): Web.Response {
@@ -84,7 +83,7 @@ func badBody(): Web.Response {
   return Web.errorResponse(Web.badRequest("invalid JSON body"))
 }
 
-func unitResp(r: in Result[Unit, Web.ApiError]): Web.Response {
+pub func unitResp(r: in Result[Unit, Web.ApiError]): Web.Response {
   return match r {
     case Ok(_) -> Web.noContent()
     case Err(e) -> Web.errorResponse(e)
@@ -93,7 +92,7 @@ func unitResp(r: in Result[Unit, Web.ApiError]): Web.Response {
 
 // listSessions / reapContainers / getRunOutput already build a complete JSON
 // string themselves (see their bodies in sessions.l) — pass it through as-is.
-func jsonStringResp(r: in Result[String, Web.ApiError]): Web.Response {
+pub func jsonStringResp(r: in Result[String, Web.ApiError]): Web.Response {
   return match r {
     case Ok(s) -> Web.json(200, s)
     case Err(e) -> Web.errorResponse(e)

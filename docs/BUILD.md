@@ -34,13 +34,18 @@ no sibling checkout, no source patching:
 
 ```toml
 [nuget]
-"Lyric.Web"             = "0.4.19"
+"Lyric.Web"             = "0.4.26"
 "Std.Logging"           = "0.4.20"
 "Microsoft.Data.Sqlite" = "10.0.9"
 ```
 
-These track the latest published versions: `Lyric.Web` 0.4.19 (matching the
-compiler floor in `MIN_LYRIC_VERSION`) and `Std.Logging` 0.4.20.
+These track the latest published versions as of each package's own release
+cadence — `Lyric.Web` and the compiler (`MIN_LYRIC_VERSION`) are two
+independent version numbers on separate release schedules; they will not
+generally match, and `Lyric.Web` 0.4.26 is intentionally ahead of the
+0.4.19 compiler floor (see "Root-caused" below for why). `Std.Logging`
+stays at 0.4.20 — nothing in `src/` imports it (the project logs via
+`println`), so there's no reason to chase its latest.
 `Microsoft.Data.Sqlite` stays at 10.0.9 — the newest *stable*; the 11.0.0
 line is preview-only. The two SQLite-native packages
 (`SourceGear.sqlite3` 3.53.3, `SQLitePCLRaw.provider.dynamic_cdecl` 3.0.3)
@@ -86,55 +91,52 @@ an `IList` cast exception at runtime
 ([lyric-lang#5298](https://github.com/nichobbs/lyric-lang/issues/5298)) is
 fixed as of v0.4.19 — all seven known upstream compiler bugs are now fixed.
 
-**Root-caused: the server does not survive its first HTTP request, and
-even if it did, it would not serve this project's actual API yet.** Both
-findings are in `Lyric.Web` itself (the NuGet package), not in this
-project's own source, and are 100% reproducible: the process binds and
-stays up indefinitely while idle, but exits while *attempting* to answer
-its first request — the client sees a `200` status line (headers commit
-before the crash), but the body write fails partway through and the
-process exits before completing it, not after a successful round-trip.
+**Both previously-blocking `Lyric.Web` gaps are fixed as of the 0.4.26
+pin — the server now actually dispatches requests to this project's
+handlers, and auth enforcement (#78/#211/#76) is wired end-to-end.** Kept
+here as history, since both were 100% reproducible and cost real
+investigation time:
 
-1. **Crash on first request.** `Lyric.Web` (now pinned 0.4.19 — see the
-   `[nuget]` block above) builds its HTTP response body via an
-   `@externTarget`-wrapped call equivalent to `Encoding.GetBytes(payload)`,
-   which fails at runtime with `unresolved extern instance method 'GetBytes'
-   ...: no matching instance method found in .NET metadata` — the compiler's
-   extern-instance-method binding mis-generates the call, treating the
-   `Encoding` receiver as an ordinary first argument instead of the implicit
-   `this`. The process logs the error (`Console.error`) and exits 1. This is
-   a known, already-open upstream defect class —
+1. **Crash on first request — fixed.** `Lyric.Web` (0.4.11 through 0.4.19)
+   built its HTTP response body via an `@externTarget`-wrapped call
+   equivalent to `Encoding.GetBytes(payload)`, which failed at runtime with
+   `unresolved extern instance method 'GetBytes' ...: no matching instance
+   method found in .NET metadata` — the compiler's extern-instance-method
+   binding mis-generated the call, treating the `Encoding` receiver as an
+   ordinary first argument instead of the implicit `this`. Tracked as part
+   of the still-open upstream defect class
    [lyric-lang#3887](https://github.com/nichobbs/lyric-lang/issues/3887)
-   ("BCL `@externTarget` metadata resolution") explicitly lists
-   `Encoding.GetBytes` as one of the affected instance methods. (The older
-   0.4.11 pin failed on the *same* call with a different message — `Method
-   not found: 'Byte[] System.Text.Encoding.GetBytes(System.Text.Encoding,
-   System.String)'` — and worse: `serve()`'s per-request `catch Bug` treated
-   it as a normal shutdown, so the process exited 0 with zero output, which
-   is why it originally looked like "just stops running". The 0.4.19 pin at
-   least surfaces the failure loudly.) Checked into the repo as a runnable
-   reproduction, not just prose, mirroring `scripts/repro-compiler-bug.sh`'s
-   convention: run `./scripts/repro-web-bug.sh` to check whether this is
-   still reproducible against the `Lyric.Web` version currently pinned in
-   `lyric.toml` — kept as a separate, sibling script since this is a
-   library bug, not one of the seven compiler bugs tracked above.
-2. **No real request dispatch exists yet, independent of the crash.**
-   Confirmed by reading `lyric-web/src/web.l` at both the pinned tag
-   and current `main`: every request, regardless of method or path,
-   gets an identical hardcoded diagnostic JSON payload
-   (`{"lyric-web":"phase-8-pathfinder", "routes": {...}, ...}`) describing
-   the registered routes — there is no dispatch to `createSession`,
-   `sendMessage`, or any other handler. This matches the file's own doc
-   comment: `Stability: @experimental — ... the end-to-end pipeline ...
-   has not been exercised against a live HTTP client in CI` and `Discovery
-   via DLL reflection is planned once Lyric's annotation reflection
-   ships`. Route *registration* (`Web.addPost` etc.) is fully implemented
-   and works; invoking those routes over HTTP is not implemented yet.
+   ("BCL `@externTarget` metadata resolution"), which explicitly lists
+   `Encoding.GetBytes` as one of the affected instance methods — the fix
+   landed in a later `Lyric.Web` release (confirmed no longer reproducing
+   against 0.4.19 by CI's `repro-web-bug.sh` diagnostic step; genuinely
+   resolved as of the 0.4.26 pin). `./scripts/repro-web-bug.sh` remains
+   checked in to mechanically re-check this against whatever version is
+   currently pinned, should a future bump ever regress it.
+2. **No real request dispatch — fixed as of `Lyric.Web` 0.4.26.** Earlier
+   `Lyric.Web` releases (through 0.4.19) returned an identical hardcoded
+   diagnostic JSON payload for every request regardless of method or path —
+   confirmed by reading `lyric-web/src/web.l`'s own doc comment at the time:
+   `Stability: @experimental — ... the end-to-end pipeline ... has not been
+   exercised against a live HTTP client in CI` and `Discovery via DLL
+   reflection is planned once Lyric's annotation reflection ships`. 0.4.26
+   replaced the old name-string route registration
+   (`addGet(router, pattern, "Package.handlerName")`) with a `Handler`-
+   interface model (`addGet(router, pattern, handler: Handler)`,
+   `dispatch(router, req): Response`) that genuinely dispatches to the
+   registered handler, and added request-header access
+   (`header(req, name): Option[String]`) and a `Middleware` interface. This
+   project's route registration in `src/main.l` was migrated accordingly —
+   see the "Handler-adapter plumbing" comment block there for the pattern:
+   one small stateless adapter record per route that decodes the request,
+   calls the (unchanged) existing handler function, and encodes the
+   response, plus an `AuthMiddleware` that finally calls
+   `CloudAgents.Auth.enforce` on every request.
 
-Net effect: `scripts/run-api.sh` builds and starts correctly, and the
-seven compiler bugs tracked on this page are genuinely all fixed — but the
-HTTP server cannot yet serve this project's API. Nothing here is fixable
-in this project's own source; both are `Lyric.Web` gaps to track upstream.
+Net effect: `scripts/run-api.sh` builds, starts, and now genuinely serves
+this project's API with auth enforcement active — the last two `Lyric.Web`
+gaps blocking that are resolved, alongside the seven compiler bugs tracked
+on this page.
 
 ### Bumping a NuGet dependency version
 
