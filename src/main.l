@@ -28,6 +28,32 @@ impl Web.Handler for HealthHandler {
   }
 }
 
+// SPIKE: the auth-enforcement seam the whole 0.4.26 adoption is for (#78/#211).
+// Reads the Authorization header (now exposed by Lyric.Web) and runs it through
+// the existing, already-unit-tested CloudAgents.Auth.authorize. With no
+// CLOUD_AGENTS_API_TOKEN configured, authorize() returns Allowed, so this stays
+// open until a token is set — no lockout. (The real migration will exclude
+// genuinely-public routes like /api/health; applied router-wide here only to
+// prove the middleware wiring compiles and dispatches.)
+record AuthMiddleware {}
+
+impl Web.Middleware for AuthMiddleware {
+  func wrap(req: in Web.Request, next: in Web.Handler): Web.Response {
+    var apiToken = Env.GetEnvironmentVariable("CLOUD_AGENTS_API_TOKEN")
+    if DotNetString.IsNullOrEmpty(apiToken) {
+      apiToken = ""
+    }
+    val authHeader = match Web.header(req, "Authorization") {
+      case Some(h) -> h
+      case None -> ""
+    }
+    match CloudAgents.Auth.authorize(authHeader, apiToken) {
+      case Allowed(_) -> return next.handle(req)
+      case Denied(_) -> return Web.errorResponse(Web.unauthorized("authentication required"))
+    }
+  }
+}
+
 func main(): Unit {
   // Ensure the SQLite tables (transcript/comments/todos/prompts/sessions)
   // exist before serving.
@@ -78,6 +104,7 @@ func main(): Unit {
   // slice is confirmed green end-to-end.
   var router = Web.create()
   router = Web.addGet(router, "/api/health", HealthHandler())
+  router = Web.withMiddleware(router, AuthMiddleware())
 
   // Parse command line arguments for --port or -p
   val cmdLine = Env.get_CommandLine()
