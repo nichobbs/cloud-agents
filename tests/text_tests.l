@@ -32,7 +32,7 @@ test "containsControlChar detects an embedded control char anywhere in the strin
   assertTrue(containsControlChar("trailing\n"), "a trailing newline is detected")
 }
 
-test "withinMaxLength allows values at or under the cap and rejects values over it (#43/#59)" {
+test "withinMaxLength allows values at or under the cap and rejects values over it (#43)" {
   assertTrue(withinMaxLength("short", 10), "value under the cap is within it")
   assertTrue(withinMaxLength("0123456789", 10), "value exactly at the cap is within it")
   assertFalse(withinMaxLength("0123456789X", 10), "value over the cap is not within it")

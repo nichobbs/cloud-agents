@@ -17,7 +17,7 @@ pub record AddTodoRequest {
   pub note: String
 }
 
-val maxBodyLen: Nat = 32768
+val maxBodyLen = 32768
 
 func dbError(e: in CloudAgents.Sqlite.DbError): Web.ApiError {
   return Web.internalError(CloudAgents.Sqlite.dbErrorMessage(e))

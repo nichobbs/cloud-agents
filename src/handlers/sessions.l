@@ -17,7 +17,7 @@ pub func generateSessionId(): String {
   return Std.Uuid.uuidToString(u)
 }
 
-val maxPromptLen: Nat = 131072
+val maxPromptLen = 131072
 val maxRepoUrlLen = 2048
 val maxBranchLen = 255
 val maxModelLen = 128

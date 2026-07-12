@@ -40,11 +40,16 @@ pub func containsControlChar(s: in String): Bool {
 /// would break that. Callers build their own message from the same `max`
 /// they passed in, so the constant and the message still can't drift apart.
 ///
-/// .toInt() normalizes both sides before comparing — bare `s.length <= max`
-/// fails to type-check here (T0033: "got Int and Nat") even though both are
-/// documented Nat, matching indexOfFrom's existing workaround just above.
-pub func withinMaxLength(s: in String, max: Nat): Bool {
-  return s.length.toInt() <= max.toInt()
+/// `max` is deliberately `Int`, not `Nat` (#361): a `Nat`-typed cross-package
+/// argument here reproducibly crashed `CloudAgents.InteractionsTests` at
+/// runtime with `InvalidProgramException` — the same crash signature #354
+/// tracks for `Web.Request` construction, but triggered here purely by a
+/// `Nat` value crossing the `Interactions` → `Text` package boundary in a
+/// function call, no `Web` involved at all. `s.length.toInt()` normalizes
+/// the (genuinely `Nat`) `.length` down to `Int` before comparing, matching
+/// `indexOfFrom`'s existing workaround just above.
+pub func withinMaxLength(s: in String, max: Int): Bool {
+  return s.length.toInt() <= max
 }
 
 /// Constant-time string equality, for comparing an untrusted `candidate`
