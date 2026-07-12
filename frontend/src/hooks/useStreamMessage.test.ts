@@ -11,6 +11,15 @@ vi.mock('../lib/api', () => ({
 import { api } from '../lib/api';
 import { useStreamMessage } from './useStreamMessage';
 
+/** A promise whose resolution the test controls, for driving race orderings. */
+function deferred<T>(): { promise: Promise<T>; resolve: (v: T) => void } {
+  let resolve!: (v: T) => void;
+  const promise = new Promise<T>(r => {
+    resolve = r;
+  });
+  return { promise, resolve };
+}
+
 describe('useStreamMessage reattachment (#217)', () => {
   beforeEach(() => {
     vi.mocked(api.getRunOutput).mockReset();
@@ -112,6 +121,38 @@ describe('useStreamMessage reattachment (#217)', () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  it('reattach yields to a send that starts during its initial getRunOutput (#317/#319)', async () => {
+    // Hold the reattach effect's first getRunOutput open so a send() can start
+    // and set sendInFlightRef before it resolves — the #317 race window.
+    const gate = deferred<{ running: boolean; output: string }>();
+    let firstCall = true;
+    vi.mocked(api.getRunOutput).mockImplementation(() => {
+      if (firstCall) {
+        firstCall = false;
+        return gate.promise; // the reattach resume()'s initial probe
+      }
+      return Promise.resolve({ running: true, output: 'SEND-POLL' }); // send()'s own poll
+    });
+    // The send request blocks so its poll loop keeps driving the stream.
+    vi.mocked(api.sendMessage).mockImplementation(() => new Promise(() => {}));
+
+    const { result } = renderHook(() => useStreamMessage('s1'));
+
+    // Start a send while the reattach's initial getRunOutput is still pending.
+    act(() => {
+      void result.current.send('hi');
+    });
+    await waitFor(() => expect(result.current.isStreaming).toBe(true));
+
+    // Now let the reattach probe resolve as a genuinely-running run. Because a
+    // send is in flight (sendInFlightRef set), resume() must yield rather than
+    // double-drive output — so its REATTACH-OUTPUT is never rendered.
+    gate.resolve({ running: true, output: 'REATTACH-OUTPUT' });
+    await waitFor(() => expect(result.current.output).toContain('SEND-POLL'));
+    expect(result.current.output).not.toContain('REATTACH-OUTPUT');
+    expect(result.current.output).toContain('hi'); // the send's own prompt marker
   });
 
   it('reattaches after navigating from a session with an in-flight send (#318)', async () => {
