@@ -12,10 +12,16 @@ design of each phase and `docs/BUILD.md` for build/verification notes.
 >
 > **The server actually starts now** (`lyric run`/`scripts/run-api.sh`), for
 > the first time in this project's history, as of the v0.4.17 compiler —
-> but it cannot yet serve a real request: `Lyric.Web` crashes on the first
-> one it answers, and even without that crash doesn't dispatch to this
-> project's handlers yet. Both are root-caused, upstream `Lyric.Web` gaps,
-> not compiler bugs — see `docs/BUILD.md` "Dependencies" for detail.
+> at that point it could not yet serve a real request: `Lyric.Web` crashed
+> on the first one it answered, and even without that crash didn't dispatch
+> to this project's handlers yet. Both were root-caused, upstream
+> `Lyric.Web` gaps, not compiler bugs. **Both are fixed as of the
+> `Lyric.Web` 0.4.26 pin** — real request dispatch and request-header access
+> now exist, and `src/main.l` was migrated to the new `Handler`/`Middleware`
+> model accordingly, wiring in auth enforcement — see `docs/BUILD.md`
+> "Dependencies" for detail, including the important caveat that this is
+> confirmed by compiling and `repro-web-bug.sh`'s diagnostic, not yet by an
+> automated end-to-end HTTP test (nichobbs/cloud-agents#354).
 > Five upstream *compiler* bugs are now fixed in sequence, each only reachable once the
 > last one was: bug 1 (`buildProject` crash,
 > [lyric-lang#4925](https://github.com/nichobbs/lyric-lang/issues/4925),
