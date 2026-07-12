@@ -1,6 +1,7 @@
 package CloudAgents.Streaming
 
 import Std.Core
+import CloudAgents.Text
 
 /// Server-Sent Events helpers for Phase 1 streaming.
 ///
@@ -31,7 +32,7 @@ pub func jsonEscape(
       acc = acc + "\\r"
     } else if c == "\t" {
       acc = acc + "\\t"
-    } else if isControlChar(c) {
+    } else if CloudAgents.Text.isControlChar(c) {
       acc = acc + controlEscape(c)
     } else {
       acc = acc + c
@@ -48,9 +49,8 @@ pub func jsonEscape(
 // silently drops the "malformed" chunk. ESC (0x1B) is exactly such a byte, so
 // without this every ANSI-coloured log line vanished from the stream. Lyric
 // string literals cannot express these bytes, so the helpers go through the
-// BCL.
-@externTarget("System.String.CompareOrdinal")
-func strCompareOrdinal(a: in String, b: in String): Int = ()
+// BCL. The single-char control-character test lives in CloudAgents.Text
+// (isControlChar); the char<->code-point externs below are streaming-specific.
 
 /// The single-character string for a Unicode code point. Exposed so tests can
 /// construct control characters that Lyric literals cannot express.
@@ -62,12 +62,6 @@ pub func charFromCode(code: in Int): String = ()
 /// 32 control codes (#171).
 @externTarget("System.Char.ConvertToUtf32")
 func codeFromChar(s: in String, index: in Int): Int = ()
-
-/// True for a single UTF-16 unit below U+0020. Ordinal comparison against " "
-/// is exact here: any unit >= 0x20 (including lone surrogates) compares >= 0.
-func isControlChar(c: in String): Bool {
-  return strCompareOrdinal(c, " ") < 0
-}
 
 func hexDigit(n: in Int): String {
   if n == 10 {

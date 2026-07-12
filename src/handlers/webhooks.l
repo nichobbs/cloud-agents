@@ -11,6 +11,7 @@ import Web
 import CloudAgents.Auth
 import CloudAgents.Repository
 import CloudAgents.Sqlite
+import CloudAgents.Text
 
 val maxWebhookUrlLen = 2048
 
@@ -21,20 +22,6 @@ pub record RegisterWebhookRequest {
 
 func dbError(e: in CloudAgents.Sqlite.DbError): Web.ApiError {
   return Web.internalError(CloudAgents.Sqlite.dbErrorMessage(e))
-}
-
-@externTarget("System.String.CompareOrdinal")
-func strCompareOrdinal(a: in String, b: in String): Int = ()
-
-func containsControlChar(s: in String): Bool {
-  var i = 0
-  while i < s.length {
-    if strCompareOrdinal(s.substring(i, 1), " ") < 0 {
-      return true
-    }
-    i = i + 1
-  }
-  return false
 }
 
 @externInstance
@@ -209,7 +196,7 @@ pub func isValidWebhookUrl(url: in String): Bool {
   if url.contains(" ") or url.contains("\"") or url.contains("\\") {
     return false
   }
-  if containsControlChar(url) {
+  if CloudAgents.Text.containsControlChar(url) {
     return false
   }
   return not isBlockedWebhookHost(webhookHost(url))

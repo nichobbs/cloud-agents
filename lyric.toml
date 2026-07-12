@@ -17,6 +17,7 @@ output_assembly = "CloudAgents.dll"
 
 [project.packages]
 "CloudAgents"          = "src/main.l"
+"CloudAgents.Text"     = "src/text.l"
 "CloudAgents.SessionStore" = "src/sessions/session_manager.l"
 "CloudAgents.Handlers" = "src/handlers/sessions.l"
 "CloudAgents.Interactions" = "src/handlers/interactions.l"
@@ -55,6 +56,7 @@ output_assembly = "CloudAgents.dll"
 "CloudAgents.ProfileTests"   = "tests/profile_tests.l"
 "CloudAgents.WebhookTests"   = "tests/webhook_tests.l"
 "CloudAgents.NetworkPolicyTests" = "tests/network_policy_tests.l"
+"CloudAgents.TextTests"      = "tests/text_tests.l"
 
 [nuget]
 "Lyric.Web"             = "0.4.19"

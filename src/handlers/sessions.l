@@ -8,6 +8,7 @@ import CloudAgents.Repository
 import CloudAgents.SessionStore
 import CloudAgents.Sqlite
 import CloudAgents.Streaming
+import CloudAgents.Text
 import CloudAgents.Webhooks
 import Std.Uuid
 
@@ -27,23 +28,6 @@ func isHttpsUrl(url: in String): Bool {
   return url.startsWith("https://")
 }
 
-@externTarget("System.String.CompareOrdinal")
-func strCompareOrdinal(a: in String, b: in String): Int = ()
-
-/// True when any character is a raw control character (below U+0020). These
-/// have no place in a URL, ref name, or model id, and would otherwise flow
-/// into the session store and the container environment.
-func containsControlChar(s: in String): Bool {
-  var i = 0
-  while i < s.length {
-    if strCompareOrdinal(s.substring(i, 1), " ") < 0 {
-      return true
-    }
-    i = i + 1
-  }
-  return false
-}
-
 func isSafeRepoUrl(url: in String): Bool {
   if url.length > maxRepoUrlLen {
     return false
@@ -51,7 +35,7 @@ func isSafeRepoUrl(url: in String): Bool {
   if url.contains(" ") or url.contains("\"") or url.contains("\\") {
     return false
   }
-  return not containsControlChar(url)
+  return not CloudAgents.Text.containsControlChar(url)
 }
 
 /// Whether a repoUrl points at an internal/loopback/private host that the runner
@@ -91,7 +75,7 @@ func isSafeBranchName(branch: in String): Bool {
     branch.contains("@{") {
     return false
   }
-  return not containsControlChar(branch)
+  return not CloudAgents.Text.containsControlChar(branch)
 }
 
 func isSafeModelName(model: in String): Bool {
@@ -102,7 +86,7 @@ func isSafeModelName(model: in String): Bool {
     model.contains("}") {
     return false
   }
-  return not containsControlChar(model)
+  return not CloudAgents.Text.containsControlChar(model)
 }
 
 func isKnownHarness(harness: in String): Bool {
