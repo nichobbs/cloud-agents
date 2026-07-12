@@ -3,12 +3,17 @@ package CloudAgents
 import Std.Core
 import Web
 import CloudAgents.Auth
+import CloudAgents.Credentials
 import CloudAgents.Crypto
 import CloudAgents.Docker
 import CloudAgents.Handlers
+import CloudAgents.Interactions
+import CloudAgents.Profiles
+import CloudAgents.Prompts
 import CloudAgents.Repository
 import CloudAgents.SessionStore
 import CloudAgents.Sqlite
+import CloudAgents.Webhooks
 import extern System.Environment as Env
 import extern System.String as DotNetString
 
@@ -28,17 +33,21 @@ impl Web.Handler for HealthHandler {
   }
 }
 
-// SPIKE: the auth-enforcement seam the whole 0.4.26 adoption is for (#78/#211).
-// Reads the Authorization header (now exposed by Lyric.Web) and runs it through
-// the existing, already-unit-tested CloudAgents.Auth.authorize. With no
-// CLOUD_AGENTS_API_TOKEN configured, authorize() returns Allowed, so this stays
-// open until a token is set — no lockout. (The real migration will exclude
-// genuinely-public routes like /api/health; applied router-wide here only to
-// prove the middleware wiring compiles and dispatches.)
+// Auth-enforcement middleware — the seam the whole 0.4.26 adoption is for
+// (#78/#211/#76). Reads the Authorization header (now exposed by Lyric.Web) and
+// runs it through CloudAgents.Auth.enforce, which applies the stricter
+// default-deny check to credential routes (authorizeSecret) and the regular
+// check elsewhere (#347). With no CLOUD_AGENTS_API_TOKEN configured, the
+// regular check stays open (no lockout) — only credential routes require a
+// token unconditionally. /api/health is excluded so liveness checks don't
+// need a token.
 record AuthMiddleware {}
 
 impl Web.Middleware for AuthMiddleware {
   func wrap(req: in Web.Request, next: in Web.Handler): Web.Response {
+    if req.path == "/api/health" {
+      return next.handle(req)
+    }
     var apiToken = Env.GetEnvironmentVariable("CLOUD_AGENTS_API_TOKEN")
     if DotNetString.IsNullOrEmpty(apiToken) {
       apiToken = ""
@@ -47,10 +56,509 @@ impl Web.Middleware for AuthMiddleware {
       case Some(h) -> h
       case None -> ""
     }
-    match CloudAgents.Auth.authorize(authHeader, apiToken) {
+    match CloudAgents.Auth.enforce(req.path, authHeader, apiToken) {
       case Allowed(_) -> return next.handle(req)
-      case Denied(_) -> return Web.errorResponse(Web.unauthorized("authentication required"))
+      case Denied(e) -> return Web.errorResponse(Web.unauthorized(CloudAgents.Auth.authErrorMessage(e)))
     }
+  }
+}
+
+// ─── Handler-adapter plumbing ───────────────────────────────────────────────
+//
+// Lyric.Web 0.4.26 dispatches to a `Handler` object (`func handle(req): Response`)
+// per route rather than a string handler name. The handler functions in
+// src/handlers/*.l are untouched — each adapter below just extracts path
+// params / decodes the @body record, calls the existing function, and maps its
+// `Result[T, Web.ApiError]` to a `Response`. One response-mapping helper per
+// distinct T (shared across routes that return the same type); one small
+// stateless adapter record per route.
+
+func pparam(req: in Web.Request, name: in String): String {
+  return match Web.pathParam(req, name) {
+    case Some(s) -> s
+    case None -> ""
+  }
+}
+
+func badBody(): Web.Response {
+  return Web.errorResponse(Web.badRequest("invalid JSON body"))
+}
+
+func unitResp(r: in Result[Unit, Web.ApiError]): Web.Response {
+  return match r {
+    case Ok(_) -> Web.noContent()
+    case Err(e) -> Web.errorResponse(e)
+  }
+}
+
+// listSessions / reapContainers / getRunOutput already build a complete JSON
+// string themselves (see their bodies in sessions.l) — pass it through as-is.
+func jsonStringResp(r: in Result[String, Web.ApiError]): Web.Response {
+  return match r {
+    case Ok(s) -> Web.json(200, s)
+    case Err(e) -> Web.errorResponse(e)
+  }
+}
+
+func createSessionResp(r: in Result[CreateSessionResponse, Web.ApiError]): Web.Response {
+  return match r {
+    case Ok(v) -> Web.json(200, v.toJson())
+    case Err(e) -> Web.errorResponse(e)
+  }
+}
+
+func sessionProfileResp(r: in Result[SessionProfileRef, Web.ApiError]): Web.Response {
+  return match r {
+    case Ok(v) -> Web.json(200, v.toJson())
+    case Err(e) -> Web.errorResponse(e)
+  }
+}
+
+func runListResp(r: in Result[RunList, Web.ApiError]): Web.Response {
+  return match r {
+    case Ok(v) -> Web.json(200, v.toJson())
+    case Err(e) -> Web.errorResponse(e)
+  }
+}
+
+func messageListResp(r: in Result[MessageList, Web.ApiError]): Web.Response {
+  return match r {
+    case Ok(v) -> Web.json(200, v.toJson())
+    case Err(e) -> Web.errorResponse(e)
+  }
+}
+
+func commentResp(r: in Result[Comment, Web.ApiError]): Web.Response {
+  return match r {
+    case Ok(v) -> Web.json(200, v.toJson())
+    case Err(e) -> Web.errorResponse(e)
+  }
+}
+
+func commentListResp(r: in Result[CommentList, Web.ApiError]): Web.Response {
+  return match r {
+    case Ok(v) -> Web.json(200, v.toJson())
+    case Err(e) -> Web.errorResponse(e)
+  }
+}
+
+func todoResp(r: in Result[Todo, Web.ApiError]): Web.Response {
+  return match r {
+    case Ok(v) -> Web.json(200, v.toJson())
+    case Err(e) -> Web.errorResponse(e)
+  }
+}
+
+func todoListResp(r: in Result[TodoList, Web.ApiError]): Web.Response {
+  return match r {
+    case Ok(v) -> Web.json(200, v.toJson())
+    case Err(e) -> Web.errorResponse(e)
+  }
+}
+
+func promptListResp(r: in Result[PromptList, Web.ApiError]): Web.Response {
+  return match r {
+    case Ok(v) -> Web.json(200, v.toJson())
+    case Err(e) -> Web.errorResponse(e)
+  }
+}
+
+func renderedPromptResp(r: in Result[RenderedPrompt, Web.ApiError]): Web.Response {
+  return match r {
+    case Ok(v) -> Web.json(200, v.toJson())
+    case Err(e) -> Web.errorResponse(e)
+  }
+}
+
+func promptResp(r: in Result[Prompt, Web.ApiError]): Web.Response {
+  return match r {
+    case Ok(v) -> Web.json(200, v.toJson())
+    case Err(e) -> Web.errorResponse(e)
+  }
+}
+
+func credentialNameListResp(r: in Result[CredentialNameList, Web.ApiError]): Web.Response {
+  return match r {
+    case Ok(v) -> Web.json(200, v.toJson())
+    case Err(e) -> Web.errorResponse(e)
+  }
+}
+
+func profileListResp(r: in Result[ProfileList, Web.ApiError]): Web.Response {
+  return match r {
+    case Ok(v) -> Web.json(200, v.toJson())
+    case Err(e) -> Web.errorResponse(e)
+  }
+}
+
+func profileResp(r: in Result[Profile, Web.ApiError]): Web.Response {
+  return match r {
+    case Ok(v) -> Web.json(200, v.toJson())
+    case Err(e) -> Web.errorResponse(e)
+  }
+}
+
+func webhookResp(r: in Result[Webhook, Web.ApiError]): Web.Response {
+  return match r {
+    case Ok(v) -> Web.json(200, v.toJson())
+    case Err(e) -> Web.errorResponse(e)
+  }
+}
+
+func webhookListResp(r: in Result[WebhookList, Web.ApiError]): Web.Response {
+  return match r {
+    case Ok(v) -> Web.json(200, v.toJson())
+    case Err(e) -> Web.errorResponse(e)
+  }
+}
+
+func webhookEventListResp(r: in Result[WebhookEventList, Web.ApiError]): Web.Response {
+  return match r {
+    case Ok(v) -> Web.json(200, v.toJson())
+    case Err(e) -> Web.errorResponse(e)
+  }
+}
+
+// ─── CloudAgents.Handlers routes (sessions.l) ───────────────────────────────
+
+record RouteCreateSession {}
+impl Web.Handler for RouteCreateSession {
+  func handle(req: in Web.Request): Web.Response {
+    val decoded = match CreateSessionRequest.fromJson(req.body) {
+      case Ok(d) -> d
+      case Err(_) -> return badBody()
+    }
+    return createSessionResp(CloudAgents.Handlers.createSession(decoded))
+  }
+}
+
+record RouteSetSessionProfile {}
+impl Web.Handler for RouteSetSessionProfile {
+  func handle(req: in Web.Request): Web.Response {
+    val id = pparam(req, "id")
+    val decoded = match SetProfileRequest.fromJson(req.body) {
+      case Ok(d) -> d
+      case Err(_) -> return badBody()
+    }
+    return unitResp(CloudAgents.Handlers.setSessionProfileHandler(id, decoded))
+  }
+}
+
+record RouteGetSessionProfile {}
+impl Web.Handler for RouteGetSessionProfile {
+  func handle(req: in Web.Request): Web.Response {
+    return sessionProfileResp(CloudAgents.Handlers.getSessionProfileHandler(pparam(req, "id")))
+  }
+}
+
+record RouteListSessions {}
+impl Web.Handler for RouteListSessions {
+  func handle(req: in Web.Request): Web.Response {
+    return jsonStringResp(CloudAgents.Handlers.listSessions())
+  }
+}
+
+record RouteSendMessage {}
+impl Web.Handler for RouteSendMessage {
+  func handle(req: in Web.Request): Web.Response {
+    val id = pparam(req, "id")
+    val decoded = match SendMessageRequest.fromJson(req.body) {
+      case Ok(d) -> d
+      case Err(_) -> return badBody()
+    }
+    // The captured run output is pre-formatted as SSE frames (see
+    // CloudAgents.Streaming), not JSON — text, not json, response.
+    return match CloudAgents.Handlers.sendMessage(id, decoded) {
+      case Ok(s) -> Web.text(200, s)
+      case Err(e) -> Web.errorResponse(e)
+    }
+  }
+}
+
+record RouteCancelRun {}
+impl Web.Handler for RouteCancelRun {
+  func handle(req: in Web.Request): Web.Response {
+    return unitResp(CloudAgents.Handlers.cancelRun(pparam(req, "id")))
+  }
+}
+
+record RouteGetRuns {}
+impl Web.Handler for RouteGetRuns {
+  func handle(req: in Web.Request): Web.Response {
+    return runListResp(CloudAgents.Handlers.getRuns(pparam(req, "id")))
+  }
+}
+
+record RouteReapContainers {}
+impl Web.Handler for RouteReapContainers {
+  func handle(req: in Web.Request): Web.Response {
+    return jsonStringResp(CloudAgents.Handlers.reapContainers())
+  }
+}
+
+record RouteGetRunOutput {}
+impl Web.Handler for RouteGetRunOutput {
+  func handle(req: in Web.Request): Web.Response {
+    return jsonStringResp(CloudAgents.Handlers.getRunOutput(pparam(req, "id")))
+  }
+}
+
+record RouteDeleteSession {}
+impl Web.Handler for RouteDeleteSession {
+  func handle(req: in Web.Request): Web.Response {
+    return unitResp(CloudAgents.Handlers.deleteSession(pparam(req, "id")))
+  }
+}
+
+record RouteUpdateSessionModel {}
+impl Web.Handler for RouteUpdateSessionModel {
+  func handle(req: in Web.Request): Web.Response {
+    val id = pparam(req, "id")
+    val decoded = match UpdateSessionRequest.fromJson(req.body) {
+      case Ok(d) -> d
+      case Err(_) -> return badBody()
+    }
+    return unitResp(CloudAgents.Handlers.updateSessionModel(id, decoded))
+  }
+}
+
+// ─── CloudAgents.Interactions routes (interactions.l) ───────────────────────
+
+record RouteGetMessages {}
+impl Web.Handler for RouteGetMessages {
+  func handle(req: in Web.Request): Web.Response {
+    return messageListResp(CloudAgents.Interactions.getMessages(pparam(req, "id")))
+  }
+}
+
+record RouteAddComment {}
+impl Web.Handler for RouteAddComment {
+  func handle(req: in Web.Request): Web.Response {
+    val mid = pparam(req, "mid")
+    val decoded = match AddCommentRequest.fromJson(req.body) {
+      case Ok(d) -> d
+      case Err(_) -> return badBody()
+    }
+    return commentResp(CloudAgents.Interactions.addCommentHandler(mid, decoded))
+  }
+}
+
+record RouteGetComments {}
+impl Web.Handler for RouteGetComments {
+  func handle(req: in Web.Request): Web.Response {
+    return commentListResp(CloudAgents.Interactions.getComments(pparam(req, "mid")))
+  }
+}
+
+record RouteGetTodos {}
+impl Web.Handler for RouteGetTodos {
+  func handle(req: in Web.Request): Web.Response {
+    return todoListResp(CloudAgents.Interactions.getTodos(pparam(req, "id")))
+  }
+}
+
+record RouteAddTodo {}
+impl Web.Handler for RouteAddTodo {
+  func handle(req: in Web.Request): Web.Response {
+    val id = pparam(req, "id")
+    val decoded = match AddTodoRequest.fromJson(req.body) {
+      case Ok(d) -> d
+      case Err(_) -> return badBody()
+    }
+    return todoResp(CloudAgents.Interactions.addTodoHandler(id, decoded))
+  }
+}
+
+record RouteToggleTodo {}
+impl Web.Handler for RouteToggleTodo {
+  func handle(req: in Web.Request): Web.Response {
+    return unitResp(CloudAgents.Interactions.toggleTodoHandler(pparam(req, "tid")))
+  }
+}
+
+record RouteDeleteTodo {}
+impl Web.Handler for RouteDeleteTodo {
+  func handle(req: in Web.Request): Web.Response {
+    return unitResp(CloudAgents.Interactions.deleteTodoHandler(pparam(req, "tid")))
+  }
+}
+
+// ─── CloudAgents.Prompts routes (prompts.l) ─────────────────────────────────
+
+record RouteListPrompts {}
+impl Web.Handler for RouteListPrompts {
+  func handle(req: in Web.Request): Web.Response {
+    return promptListResp(CloudAgents.Prompts.listPromptsHandler())
+  }
+}
+
+record RouteListPopularPrompts {}
+impl Web.Handler for RouteListPopularPrompts {
+  func handle(req: in Web.Request): Web.Response {
+    return promptListResp(CloudAgents.Prompts.listPopularPromptsHandler())
+  }
+}
+
+record RouteListPromptsByTag {}
+impl Web.Handler for RouteListPromptsByTag {
+  func handle(req: in Web.Request): Web.Response {
+    return promptListResp(CloudAgents.Prompts.listPromptsByTagHandler(pparam(req, "tag")))
+  }
+}
+
+record RouteRenderPrompt {}
+impl Web.Handler for RouteRenderPrompt {
+  func handle(req: in Web.Request): Web.Response {
+    val pid = pparam(req, "pid")
+    val decoded = match RenderPromptRequest.fromJson(req.body) {
+      case Ok(d) -> d
+      case Err(_) -> return badBody()
+    }
+    return renderedPromptResp(CloudAgents.Prompts.renderPromptHandler(pid, decoded))
+  }
+}
+
+record RouteAddPrompt {}
+impl Web.Handler for RouteAddPrompt {
+  func handle(req: in Web.Request): Web.Response {
+    val decoded = match SavePromptRequest.fromJson(req.body) {
+      case Ok(d) -> d
+      case Err(_) -> return badBody()
+    }
+    return promptResp(CloudAgents.Prompts.addPromptHandler(decoded))
+  }
+}
+
+record RouteUpdatePrompt {}
+impl Web.Handler for RouteUpdatePrompt {
+  func handle(req: in Web.Request): Web.Response {
+    val pid = pparam(req, "pid")
+    val decoded = match SavePromptRequest.fromJson(req.body) {
+      case Ok(d) -> d
+      case Err(_) -> return badBody()
+    }
+    return promptResp(CloudAgents.Prompts.updatePromptHandler(pid, decoded))
+  }
+}
+
+record RouteUsePrompt {}
+impl Web.Handler for RouteUsePrompt {
+  func handle(req: in Web.Request): Web.Response {
+    return unitResp(CloudAgents.Prompts.usePromptHandler(pparam(req, "pid")))
+  }
+}
+
+record RouteDeletePrompt {}
+impl Web.Handler for RouteDeletePrompt {
+  func handle(req: in Web.Request): Web.Response {
+    return unitResp(CloudAgents.Prompts.deletePromptHandler(pparam(req, "pid")))
+  }
+}
+
+// ─── CloudAgents.Credentials routes (credentials.l) ─────────────────────────
+
+record RouteListCredentials {}
+impl Web.Handler for RouteListCredentials {
+  func handle(req: in Web.Request): Web.Response {
+    return credentialNameListResp(CloudAgents.Credentials.listCredentialsHandler())
+  }
+}
+
+record RoutePutCredential {}
+impl Web.Handler for RoutePutCredential {
+  func handle(req: in Web.Request): Web.Response {
+    val decoded = match PutCredentialRequest.fromJson(req.body) {
+      case Ok(d) -> d
+      case Err(_) -> return badBody()
+    }
+    return unitResp(CloudAgents.Credentials.putCredentialHandler(decoded))
+  }
+}
+
+record RouteDeleteCredential {}
+impl Web.Handler for RouteDeleteCredential {
+  func handle(req: in Web.Request): Web.Response {
+    return unitResp(CloudAgents.Credentials.deleteCredentialHandler(pparam(req, "name")))
+  }
+}
+
+// ─── CloudAgents.Profiles routes (profiles.l) ───────────────────────────────
+
+record RouteListProfiles {}
+impl Web.Handler for RouteListProfiles {
+  func handle(req: in Web.Request): Web.Response {
+    return profileListResp(CloudAgents.Profiles.listProfilesHandler())
+  }
+}
+
+record RouteAddProfile {}
+impl Web.Handler for RouteAddProfile {
+  func handle(req: in Web.Request): Web.Response {
+    val decoded = match SaveProfileRequest.fromJson(req.body) {
+      case Ok(d) -> d
+      case Err(_) -> return badBody()
+    }
+    return profileResp(CloudAgents.Profiles.addProfileHandler(decoded))
+  }
+}
+
+record RouteUpdateProfile {}
+impl Web.Handler for RouteUpdateProfile {
+  func handle(req: in Web.Request): Web.Response {
+    val pid = pparam(req, "pid")
+    val decoded = match SaveProfileRequest.fromJson(req.body) {
+      case Ok(d) -> d
+      case Err(_) -> return badBody()
+    }
+    return profileResp(CloudAgents.Profiles.updateProfileHandler(pid, decoded))
+  }
+}
+
+record RouteDeleteProfile {}
+impl Web.Handler for RouteDeleteProfile {
+  func handle(req: in Web.Request): Web.Response {
+    return unitResp(CloudAgents.Profiles.deleteProfileHandler(pparam(req, "pid")))
+  }
+}
+
+// ─── CloudAgents.Webhooks routes (webhooks.l) ───────────────────────────────
+
+record RouteRegisterWebhook {}
+impl Web.Handler for RouteRegisterWebhook {
+  func handle(req: in Web.Request): Web.Response {
+    val decoded = match RegisterWebhookRequest.fromJson(req.body) {
+      case Ok(d) -> d
+      case Err(_) -> return badBody()
+    }
+    return webhookResp(CloudAgents.Webhooks.registerWebhookHandler(decoded))
+  }
+}
+
+record RouteListWebhooks {}
+impl Web.Handler for RouteListWebhooks {
+  func handle(req: in Web.Request): Web.Response {
+    return webhookListResp(CloudAgents.Webhooks.listWebhooksHandler())
+  }
+}
+
+record RouteDeleteWebhook {}
+impl Web.Handler for RouteDeleteWebhook {
+  func handle(req: in Web.Request): Web.Response {
+    return unitResp(CloudAgents.Webhooks.deleteWebhookHandler(pparam(req, "id")))
+  }
+}
+
+record RoutePendingWebhookEvents {}
+impl Web.Handler for RoutePendingWebhookEvents {
+  func handle(req: in Web.Request): Web.Response {
+    return webhookEventListResp(CloudAgents.Webhooks.pendingWebhookEventsHandler())
+  }
+}
+
+record RouteMarkWebhookDelivered {}
+impl Web.Handler for RouteMarkWebhookDelivered {
+  func handle(req: in Web.Request): Web.Response {
+    return unitResp(CloudAgents.Webhooks.markWebhookDeliveredHandler(pparam(req, "id")))
   }
 }
 
@@ -97,13 +605,71 @@ func main(): Unit {
   // One-time migration of sessions from the legacy env-var store.
   CloudAgents.SessionStore.importLegacyEnvSessions()
 
-  // SPIKE (Lyric.Web 0.4.26 migration): wire ONLY /api/health through the new
-  // Handler-interface model to prove the dispatch model builds and serves. The
-  // other ~39 routes still exist as annotated handler functions but are not
-  // registered here yet — they'll be migrated to Handler adapters once this
-  // slice is confirmed green end-to-end.
   var router = Web.create()
+
+  // Register session routes
+  router = Web.addGet(router, "/api/sessions", RouteListSessions())
+  router = Web.addPost(router, "/api/sessions", RouteCreateSession())
+  router = Web.addPost(router, "/api/sessions/{id}/messages", RouteSendMessage())
+  router = Web.addDelete(router, "/api/sessions/{id}", RouteDeleteSession())
+  router = Web.addPost(router, "/api/sessions/{id}/model", RouteUpdateSessionModel())
+  router = Web.addPost(router, "/api/sessions/{id}/profile", RouteSetSessionProfile())
+  router = Web.addGet(router, "/api/sessions/{id}/profile", RouteGetSessionProfile())
+
+  // Live output polling for an in-progress run
+  router = Web.addGet(router, "/api/sessions/{id}/output", RouteGetRunOutput())
+
+  // Session lifecycle: cancel an in-flight run, run history, container reaping.
+  router = Web.addPost(router, "/api/sessions/{id}/cancel", RouteCancelRun())
+  router = Web.addGet(router, "/api/sessions/{id}/runs", RouteGetRuns())
+  router = Web.addPost(router, "/api/maintenance/reap", RouteReapContainers())
+
+  // Transcript: addressable agent/user messages for a session
+  router = Web.addGet(router, "/api/sessions/{id}/messages", RouteGetMessages())
+
+  // Comments anchored to a specific message
+  router = Web.addPost(router, "/api/messages/{mid}/comments", RouteAddComment())
+  router = Web.addGet(router, "/api/messages/{mid}/comments", RouteGetComments())
+
+  // Todos / bookmarks, optionally linked back to a message
+  router = Web.addGet(router, "/api/sessions/{id}/todos", RouteGetTodos())
+  router = Web.addPost(router, "/api/sessions/{id}/todos", RouteAddTodo())
+  router = Web.addPost(router, "/api/todos/{tid}/toggle", RouteToggleTodo())
+  router = Web.addDelete(router, "/api/todos/{tid}", RouteDeleteTodo())
+
+  // Prompt library: saved, reusable prompts
+  router = Web.addGet(router, "/api/prompts", RouteListPrompts())
+  router = Web.addGet(router, "/api/prompts/popular", RouteListPopularPrompts())
+  router = Web.addGet(router, "/api/prompts/tag/{tag}", RouteListPromptsByTag())
+  router = Web.addPost(router, "/api/prompts", RouteAddPrompt())
+  router = Web.addPost(router, "/api/prompts/{pid}", RouteUpdatePrompt())
+  router = Web.addPost(router, "/api/prompts/{pid}/use", RouteUsePrompt())
+  router = Web.addPost(router, "/api/prompts/{pid}/render", RouteRenderPrompt())
+  router = Web.addDelete(router, "/api/prompts/{pid}", RouteDeletePrompt())
+
+  // Credential store: per-user secrets injected into runner containers.
+  // Write-only — values are never read back, only their names.
+  router = Web.addGet(router, "/api/credentials", RouteListCredentials())
+  router = Web.addPost(router, "/api/credentials", RoutePutCredential())
+  router = Web.addDelete(router, "/api/credentials/{name}", RouteDeleteCredential())
+
+  // Profiles: per-container policy (harness, network access, injected creds).
+  router = Web.addGet(router, "/api/profiles", RouteListProfiles())
+  router = Web.addPost(router, "/api/profiles", RouteAddProfile())
+  router = Web.addPost(router, "/api/profiles/{pid}", RouteUpdateProfile())
+  router = Web.addDelete(router, "/api/profiles/{pid}", RouteDeleteProfile())
+
+  // Webhooks: run-completion notifications (outbox delivered by an external
+  // worker that polls /pending and marks events delivered).
+  router = Web.addGet(router, "/api/webhooks", RouteListWebhooks())
+  router = Web.addPost(router, "/api/webhooks", RouteRegisterWebhook())
+  router = Web.addGet(router, "/api/webhooks/pending", RoutePendingWebhookEvents())
+  router = Web.addPost(router, "/api/webhooks/events/{id}/delivered", RouteMarkWebhookDelivered())
+  router = Web.addDelete(router, "/api/webhooks/{id}", RouteDeleteWebhook())
+
+  // Register health route
   router = Web.addGet(router, "/api/health", HealthHandler())
+
   router = Web.withMiddleware(router, AuthMiddleware())
 
   // Parse command line arguments for --port or -p
