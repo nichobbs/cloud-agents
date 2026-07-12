@@ -26,6 +26,13 @@ docker compose up -d
 
 Set your domain in `Caddyfile` (replace `agent.example.com`) before starting.
 
+> **Optional — `restricted` network policy:** to use profiles with the
+> `restricted` network policy, first create the internal egress network named
+> by `CLOUD_AGENTS_RESTRICTED_NETWORK` in `.env`, e.g.
+> `docker network create --internal egress-net`. If it isn't created, a
+> `restricted` profile fails closed to full isolation (no network) rather than
+> silently opening the network. See `docs/phase5-deployment.md` for details.
+
 ## Routine operations
 
 | Task | Command |

@@ -1,9 +1,11 @@
 //! Docker socket path helpers.
 //!
 //! Pure utilities for locating the Docker daemon's Unix socket across the
-//! common configurations. Client construction lives in `Lyric.Docker`, which
-//! wraps the connection in the opaque `DockerClient` handle; these helpers only
-//! resolve socket *paths* so they expose no platform/extern types.
+//! common configurations. Connection handling lives in `Lyric.Docker`, whose
+//! public functions (e.g. `ping()`, `createContainer(...)`) open a connection
+//! internally via a package-private `defaultClient()` — no client handle is
+//! exposed; these helpers only resolve socket *paths* so they expose no
+//! platform/extern types.
 @runtime_checked
 package Lyric.Docker.Sockets
 
