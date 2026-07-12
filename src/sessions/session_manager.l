@@ -750,7 +750,7 @@ pub func importLegacyEnvSessions(): Unit {
     match getSession(s.sessionId) {
       case Ok(Some(_)) -> ()
       case Ok(None) -> match addSession(s) {
-        case Ok(_) -> inserted = inserted + 1
+        case Ok(_) -> { inserted = inserted + 1 }
         case Err(e) -> {
           failures = failures + 1
           println("WARNING: failed to import legacy session " + s.sessionId + ": " + CloudAgents.Sqlite.dbErrorMessage(e))
