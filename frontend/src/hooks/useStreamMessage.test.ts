@@ -11,6 +11,15 @@ vi.mock('../lib/api', () => ({
 import { api } from '../lib/api';
 import { useStreamMessage } from './useStreamMessage';
 
+/** A promise whose resolution the test controls, for driving race orderings. */
+function deferred<T>(): { promise: Promise<T>; resolve: (v: T) => void } {
+  let resolve!: (v: T) => void;
+  const promise = new Promise<T>(r => {
+    resolve = r;
+  });
+  return { promise, resolve };
+}
+
 describe('useStreamMessage reattachment (#217)', () => {
   beforeEach(() => {
     vi.mocked(api.getRunOutput).mockReset();
@@ -60,6 +69,90 @@ describe('useStreamMessage reattachment (#217)', () => {
     await new Promise(r => setTimeout(r, 25));
     expect(result.current.isStreaming).toBe(false);
     expect(result.current.output).toBe('');
+  });
+
+  it('backs off the poll interval while output is static and resets on new output (#216/#313)', async () => {
+    vi.useFakeTimers();
+    try {
+      // The send request blocks forever so the parallel poll loop keeps
+      // running for the whole test.
+      vi.mocked(api.sendMessage).mockImplementation(() => new Promise(() => {}));
+      // No in-progress run at mount, so the reattach effect bails and doesn't
+      // pollute the poll-call count we assert on below.
+      vi.mocked(api.getRunOutput).mockResolvedValue({ running: false, output: '' });
+
+      const { result } = renderHook(() => useStreamMessage('s1'));
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(0); // let the mount reattach resolve + bail
+      });
+
+      // From here the run is in progress with unchanging output, so each poll
+      // sees no new output and the interval should grow.
+      vi.mocked(api.getRunOutput).mockResolvedValue({ running: true, output: 'x' });
+      vi.mocked(api.getRunOutput).mockClear();
+
+      await act(async () => {
+        void result.current.send('hi');
+        await vi.advanceTimersByTimeAsync(0); // first poll fires immediately
+      });
+      expect(api.getRunOutput).toHaveBeenCalledTimes(1);
+
+      // Gaps between successive polls grow 1500 → 2250 → 3375 (×1.5 each).
+      await act(async () => { await vi.advanceTimersByTimeAsync(1500); });
+      expect(api.getRunOutput).toHaveBeenCalledTimes(2);
+      await act(async () => { await vi.advanceTimersByTimeAsync(2250); });
+      expect(api.getRunOutput).toHaveBeenCalledTimes(3);
+      await act(async () => { await vi.advanceTimersByTimeAsync(3375); });
+      expect(api.getRunOutput).toHaveBeenCalledTimes(4);
+
+      // After the 4th poll the interval is ~5063ms, so advancing only 1500ms
+      // must NOT trigger another poll — proving it genuinely backed off.
+      await act(async () => { await vi.advanceTimersByTimeAsync(1500); });
+      expect(api.getRunOutput).toHaveBeenCalledTimes(4);
+
+      // New output arrives on the next poll — the interval resets to 1500ms.
+      vi.mocked(api.getRunOutput).mockResolvedValue({ running: true, output: 'x-more' });
+      await act(async () => { await vi.advanceTimersByTimeAsync(3600); }); // finish the ~5063 wait → 5th poll, resets
+      const afterReset = vi.mocked(api.getRunOutput).mock.calls.length;
+      // A responsive 1500ms poll should now fire again, unlike the backed-off
+      // interval that needed >1500ms above.
+      await act(async () => { await vi.advanceTimersByTimeAsync(1500); });
+      expect(vi.mocked(api.getRunOutput).mock.calls.length).toBe(afterReset + 1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('reattach yields to a send that starts during its initial getRunOutput (#317/#319)', async () => {
+    // Hold the reattach effect's first getRunOutput open so a send() can start
+    // and set sendInFlightRef before it resolves — the #317 race window.
+    const gate = deferred<{ running: boolean; output: string }>();
+    let firstCall = true;
+    vi.mocked(api.getRunOutput).mockImplementation(() => {
+      if (firstCall) {
+        firstCall = false;
+        return gate.promise; // the reattach resume()'s initial probe
+      }
+      return Promise.resolve({ running: true, output: 'SEND-POLL' }); // send()'s own poll
+    });
+    // The send request blocks so its poll loop keeps driving the stream.
+    vi.mocked(api.sendMessage).mockImplementation(() => new Promise(() => {}));
+
+    const { result } = renderHook(() => useStreamMessage('s1'));
+
+    // Start a send while the reattach's initial getRunOutput is still pending.
+    act(() => {
+      void result.current.send('hi');
+    });
+    await waitFor(() => expect(result.current.isStreaming).toBe(true));
+
+    // Now let the reattach probe resolve as a genuinely-running run. Because a
+    // send is in flight (sendInFlightRef set), resume() must yield rather than
+    // double-drive output — so its REATTACH-OUTPUT is never rendered.
+    gate.resolve({ running: true, output: 'REATTACH-OUTPUT' });
+    await waitFor(() => expect(result.current.output).toContain('SEND-POLL'));
+    expect(result.current.output).not.toContain('REATTACH-OUTPUT');
+    expect(result.current.output).toContain('hi'); // the send's own prompt marker
   });
 
   it('reattaches after navigating from a session with an in-flight send (#318)', async () => {

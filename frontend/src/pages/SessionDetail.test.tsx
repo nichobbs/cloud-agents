@@ -240,6 +240,61 @@ describe('SessionDetail profile selector', () => {
   });
 });
 
+describe('SessionDetail reattach-completion fold (#319)', () => {
+  it('folds a finished reattached run into the transcript when reattachEnded increments', async () => {
+    const reset = vi.fn();
+    stream.current = {
+      output: 'REATTACHED RUN OUTPUT',
+      isStreaming: false,
+      error: null,
+      send: async () => ({ succeeded: true, stale: false }),
+      reset,
+      reattachEnded: 0,
+    };
+    // Empty transcript on mount; after the reattached run finishes and folds,
+    // the reload returns the now-persisted agent row.
+    const agentMsg = {
+      id: 'm1',
+      sessionId: 's1',
+      role: 'agent' as const,
+      content: 'persisted agent reply',
+      seq: '1',
+      createdAt: '0',
+    };
+    vi.mocked(api.getMessages).mockReset();
+    vi.mocked(api.getMessages).mockResolvedValueOnce([]).mockResolvedValue([agentMsg]);
+
+    // A fresh element per render — passing the *same* element object to
+    // rerender() hits React's identity bailout and skips reconciliation.
+    const makeUi = () => (
+      <MemoryRouter initialEntries={['/sessions/s1']}>
+        <Routes>
+          <Route path="/sessions/:id" element={<SessionDetail />} />
+        </Routes>
+      </MemoryRouter>
+    );
+    const root = document.createElement('div');
+    root.id = 'root';
+    document.body.appendChild(root);
+    const { rerender } = render(makeUi(), { container: root });
+
+    // Wait for the page to mount (reattachEnded still 0, so the fold effect
+    // hasn't run and reset() hasn't been called yet).
+    await screen.findByPlaceholderText(/Send a message/);
+    expect(reset).not.toHaveBeenCalled();
+
+    // The reattached run finishes — the hook bumps reattachEnded. Swap the mock
+    // to the incremented value and re-render so the component's effect fires.
+    stream.current = { ...stream.current, reattachEnded: 1 };
+    rerender(makeUi());
+
+    // foldRunIntoTranscript reloads the transcript (now non-empty), so it folds
+    // the live panel away: reset() is called and the persisted row is shown.
+    await screen.findByText('persisted agent reply');
+    await waitFor(() => expect(reset).toHaveBeenCalled());
+  });
+});
+
 describe('SessionDetail live output retention', () => {
   it('keeps the completed run visible when the post-send transcript refresh fails (#214)', async () => {
     const reset = vi.fn();

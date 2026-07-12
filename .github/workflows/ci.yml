@@ -27,6 +27,14 @@ jobs:
         with:
           dotnet-version: '10.0.x'
 
+      # Pin the frontend's Node version rather than relying on whatever
+      # ubuntu-latest happens to preinstall (#223) — otherwise a runner-image
+      # bump could silently change the Node the build/test steps run under.
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
       # Resolve the release tag up front via the unauthenticated github.com
       # redirect (see docs/BUILD.md — api.github.com is sometimes
       # rate-limited for unauthenticated runners), so both the version-floor
@@ -106,8 +114,8 @@ jobs:
         continue-on-error: true
         run: ./scripts/repro-web-bug.sh
 
-      # Frontend: typecheck + production build (review #179). Node 20 is
-      # preinstalled on ubuntu-latest runners.
+      # Frontend: typecheck + production build (review #179). Node is pinned by
+      # the "Set up Node" step above (#223), not taken from the runner image.
       - name: Build frontend
         working-directory: frontend
         run: |
