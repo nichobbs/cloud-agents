@@ -92,10 +92,12 @@ an `IList` cast exception at runtime
 fixed as of v0.4.19 — all seven known upstream compiler bugs are now fixed.
 
 **Both previously-blocking `Lyric.Web` gaps are fixed as of the 0.4.26
-pin — the server now actually dispatches requests to this project's
-handlers, and auth enforcement (#78/#211/#76) is wired end-to-end.** Kept
-here as history, since both were 100% reproducible and cost real
-investigation time:
+pin — the server now has the machinery to dispatch requests to this
+project's handlers, and auth enforcement (#78/#211/#76) is wired in
+(`src/main.l`'s `AuthMiddleware`).** Kept here as history, since both were
+100% reproducible and cost real investigation time. See "Net effect"
+below for the important caveat on how much of this is actually confirmed
+by an automated test versus believed from the code compiling:
 
 1. **Crash on first request — fixed.** `Lyric.Web` (0.4.11 through 0.4.19)
    built its HTTP response body via an `@externTarget`-wrapped call
@@ -136,10 +138,17 @@ investigation time:
    response, plus an `AuthMiddleware` that finally calls
    `CloudAgents.Auth.enforce` on every request.
 
-Net effect: `scripts/run-api.sh` builds, starts, and now genuinely serves
-this project's API with auth enforcement active — the last two `Lyric.Web`
-gaps blocking that are resolved, alongside the seven compiler bugs tracked
-on this page.
+Net effect: `scripts/run-api.sh` builds and starts, and the two `Lyric.Web`
+gaps that previously blocked real request dispatch are resolved (alongside
+the seven compiler bugs tracked on this page) — but that this compiles and
+the diagnostic script confirms `Encoding.GetBytes` resolves is not the same
+as confirming the server correctly serves a real HTTP request end-to-end.
+An unrelated defect (constructing a `Web.Request` record crashes at
+runtime — see #354) currently blocks writing an automated test that drives
+`Handler.handle()`/`Middleware.wrap()` directly, so "the server dispatches
+and enforces auth correctly" is believed-true from the code compiling and
+manual reasoning about the framework's own (different) internal request
+construction, not confirmed by an automated end-to-end test.
 
 ### Bumping a NuGet dependency version
 

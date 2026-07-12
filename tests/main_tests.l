@@ -19,7 +19,7 @@ test "jsonStringResp passes a pre-built JSON string through with a 200, maps Err
 
 // NOT covered here: HealthHandler.handle() / AuthMiddleware.wrap() end-to-end
 // against a hand-constructed Web.Request. Filed as a tracked upstream defect
-// (nichobbs/cloud-agents#355) rather than left only as this comment — see that
+// (nichobbs/cloud-agents#354) rather than left only as this comment — see that
 // issue for the full reproduction. Summary: constructing a Web.Request record
 // (unqualified, per docs/lyric/gotchas.md's package-qualified-record-
 // construction rule; with `import Std.Collections` for Map, ruled out as the
