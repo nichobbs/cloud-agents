@@ -2,13 +2,31 @@ package CloudAgents
 
 import Std.Core
 import Web
+import CloudAgents.Auth
 import CloudAgents.Crypto
 import CloudAgents.Docker
+import CloudAgents.Handlers
 import CloudAgents.Repository
 import CloudAgents.SessionStore
 import CloudAgents.Sqlite
 import extern System.Environment as Env
 import extern System.String as DotNetString
+
+// SPIKE (Lyric.Web 0.4.26): the framework replaced string-based route
+// registration ("addGet(router, pattern, handlerName)") with a Handler-interface
+// model ("addGet(router, pattern, handler: Handler)"). This adapter bridges one
+// existing handler function (checkHealth) into the new Handler shape to prove the
+// dispatch model builds and serves before migrating all ~40 routes.
+record HealthHandler {}
+
+impl Web.Handler for HealthHandler {
+  func handle(req: in Web.Request): Web.Response {
+    match CloudAgents.Handlers.checkHealth() {
+      case Ok(msg) -> return Web.json(200, "{\"status\":\"" + msg + "\"}")
+      case Err(e) -> return Web.errorResponse(e)
+    }
+  }
+}
 
 func main(): Unit {
   // Ensure the SQLite tables (transcript/comments/todos/prompts/sessions)
@@ -53,70 +71,13 @@ func main(): Unit {
   // One-time migration of sessions from the legacy env-var store.
   CloudAgents.SessionStore.importLegacyEnvSessions()
 
+  // SPIKE (Lyric.Web 0.4.26 migration): wire ONLY /api/health through the new
+  // Handler-interface model to prove the dispatch model builds and serves. The
+  // other ~39 routes still exist as annotated handler functions but are not
+  // registered here yet — they'll be migrated to Handler adapters once this
+  // slice is confirmed green end-to-end.
   var router = Web.create()
-
-  // Register session routes
-  router = Web.addGet(router, "/api/sessions", "CloudAgents.Handlers.listSessions")
-  router = Web.addPost(router, "/api/sessions", "CloudAgents.Handlers.createSession")
-  router = Web.addPost(router, "/api/sessions/{id}/messages", "CloudAgents.Handlers.sendMessage")
-  router = Web.addDelete(router, "/api/sessions/{id}", "CloudAgents.Handlers.deleteSession")
-  router = Web.addPost(router, "/api/sessions/{id}/model", "CloudAgents.Handlers.updateSessionModel")
-  router = Web.addPost(router, "/api/sessions/{id}/profile", "CloudAgents.Handlers.setSessionProfileHandler")
-  router = Web.addGet(router, "/api/sessions/{id}/profile", "CloudAgents.Handlers.getSessionProfileHandler")
-
-  // Live output polling for an in-progress run
-  router = Web.addGet(router, "/api/sessions/{id}/output", "CloudAgents.Handlers.getRunOutput")
-
-  // Session lifecycle: cancel an in-flight run, run history, container reaping.
-  router = Web.addPost(router, "/api/sessions/{id}/cancel", "CloudAgents.Handlers.cancelRun")
-  router = Web.addGet(router, "/api/sessions/{id}/runs", "CloudAgents.Handlers.getRuns")
-  router = Web.addPost(router, "/api/maintenance/reap", "CloudAgents.Handlers.reapContainers")
-
-  // Transcript: addressable agent/user messages for a session
-  router = Web.addGet(router, "/api/sessions/{id}/messages", "CloudAgents.Interactions.getMessages")
-
-  // Comments anchored to a specific message
-  router = Web.addPost(router, "/api/messages/{mid}/comments", "CloudAgents.Interactions.addCommentHandler")
-  router = Web.addGet(router, "/api/messages/{mid}/comments", "CloudAgents.Interactions.getComments")
-
-  // Todos / bookmarks, optionally linked back to a message
-  router = Web.addGet(router, "/api/sessions/{id}/todos", "CloudAgents.Interactions.getTodos")
-  router = Web.addPost(router, "/api/sessions/{id}/todos", "CloudAgents.Interactions.addTodoHandler")
-  router = Web.addPost(router, "/api/todos/{tid}/toggle", "CloudAgents.Interactions.toggleTodoHandler")
-  router = Web.addDelete(router, "/api/todos/{tid}", "CloudAgents.Interactions.deleteTodoHandler")
-
-  // Prompt library: saved, reusable prompts
-  router = Web.addGet(router, "/api/prompts", "CloudAgents.Prompts.listPromptsHandler")
-  router = Web.addGet(router, "/api/prompts/popular", "CloudAgents.Prompts.listPopularPromptsHandler")
-  router = Web.addGet(router, "/api/prompts/tag/{tag}", "CloudAgents.Prompts.listPromptsByTagHandler")
-  router = Web.addPost(router, "/api/prompts", "CloudAgents.Prompts.addPromptHandler")
-  router = Web.addPost(router, "/api/prompts/{pid}", "CloudAgents.Prompts.updatePromptHandler")
-  router = Web.addPost(router, "/api/prompts/{pid}/use", "CloudAgents.Prompts.usePromptHandler")
-  router = Web.addPost(router, "/api/prompts/{pid}/render", "CloudAgents.Prompts.renderPromptHandler")
-  router = Web.addDelete(router, "/api/prompts/{pid}", "CloudAgents.Prompts.deletePromptHandler")
-
-  // Credential store: per-user secrets injected into runner containers.
-  // Write-only — values are never read back, only their names.
-  router = Web.addGet(router, "/api/credentials", "CloudAgents.Credentials.listCredentialsHandler")
-  router = Web.addPost(router, "/api/credentials", "CloudAgents.Credentials.putCredentialHandler")
-  router = Web.addDelete(router, "/api/credentials/{name}", "CloudAgents.Credentials.deleteCredentialHandler")
-
-  // Profiles: per-container policy (harness, network access, injected creds).
-  router = Web.addGet(router, "/api/profiles", "CloudAgents.Profiles.listProfilesHandler")
-  router = Web.addPost(router, "/api/profiles", "CloudAgents.Profiles.addProfileHandler")
-  router = Web.addPost(router, "/api/profiles/{pid}", "CloudAgents.Profiles.updateProfileHandler")
-  router = Web.addDelete(router, "/api/profiles/{pid}", "CloudAgents.Profiles.deleteProfileHandler")
-
-  // Webhooks: run-completion notifications (outbox delivered by an external
-  // worker that polls /pending and marks events delivered).
-  router = Web.addGet(router, "/api/webhooks", "CloudAgents.Webhooks.listWebhooksHandler")
-  router = Web.addPost(router, "/api/webhooks", "CloudAgents.Webhooks.registerWebhookHandler")
-  router = Web.addGet(router, "/api/webhooks/pending", "CloudAgents.Webhooks.pendingWebhookEventsHandler")
-  router = Web.addPost(router, "/api/webhooks/events/{id}/delivered", "CloudAgents.Webhooks.markWebhookDeliveredHandler")
-  router = Web.addDelete(router, "/api/webhooks/{id}", "CloudAgents.Webhooks.deleteWebhookHandler")
-
-  // Register health route
-  router = Web.addGet(router, "/api/health", "CloudAgents.Handlers.checkHealth")
+  router = Web.addGet(router, "/api/health", HealthHandler())
 
   // Parse command line arguments for --port or -p
   val cmdLine = Env.get_CommandLine()
