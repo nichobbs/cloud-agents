@@ -36,7 +36,10 @@ pub func containsControlChar(s: in String): Bool {
 /// naming `fieldName` and `max` — shared by every request-body length cap so
 /// the constant and its error message can't drift apart (#43).
 pub func checkMaxLength(s: in String, max: Nat, fieldName: in String): Result[Unit, Web.ApiError] {
-  if s.length > max {
+  // .toInt() normalizes both sides before comparing — bare `s.length > max`
+  // fails to type-check here (T0033: "got Int and Nat") even though both are
+  // documented Nat, matching indexOfFrom's existing workaround just above.
+  if s.length.toInt() > max.toInt() {
     return Err(Web.badRequest(fieldName + " is too long (max " + max.toString() + " characters)"))
   }
   return Ok(())

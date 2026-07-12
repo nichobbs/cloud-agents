@@ -208,6 +208,19 @@ iterating with a `Nat` counter to index a `slice[Byte]` is awkward — prefer
 working over `String`/base64 (whose `.length.toInt()` + `.substring` are
 known-good) when you need an index-driven loop.
 
+**`String.length` compared directly against an explicitly-`Nat`-typed value
+is a T0033 compile error ("comparison operands must be matching ordered
+types (got Int and Nat)")**, despite `String.length` being documented `Nat`.
+Confirmed on Lyric.Web 0.4.26 by `CloudAgents.Text.checkMaxLength`:
+`s.length > max` (with `max: Nat` an explicit function parameter) fails to
+compile, even though `s.length > 131072` (an untyped `Int` literal) compiles
+fine elsewhere in this codebase — so whichever side `.length` unifies to
+depends on the other operand, and an explicitly-typed `Nat` on the other
+side doesn't unify the way the docs would suggest. Normalize both sides
+through `.toInt()` before comparing (`s.length.toInt() > max.toInt()`) —
+the same workaround `indexOfFrom` (just above) already uses for the same
+reason.
+
 **`Std.Time.Instant.now()` is broken at runtime in the current toolchain** —
 it compiles, then fails with `Method not found: 'Void System.DateTime.now()'`
 (a lowercase `now` MemberRef the BCL has never had). Confirmed on v0.4.19 by

@@ -44,6 +44,16 @@ func isSafeRepoUrl(url: in String): Bool {
 /// rules, already hardened against authority-parsing bypasses (#257/#260/#264/
 /// #266) — rather than duplicating (and risking drift from) that logic. Assumes
 /// the `https://` prefix is already verified (webhookHost parses from offset 8).
+///
+/// Only inspects the literal hostname string, not a resolved IP — a public DNS
+/// name an attacker controls (e.g. resolving to 169.254.169.254) passes this
+/// check and the actual SSRF happens later, at `git clone` time, when the clone
+/// runs inside the session's Docker container (#300). Unlike the webhook path
+/// this reuses the blocklist from, there is no secondary backstop here for the
+/// common case: a session's default `network_policy` is `'full'` (unrestricted
+/// bridge network — see `createRunnerContainer` in docker_manager.l) unless its
+/// profile explicitly sets `'restricted'`/`'none'`, so this hostname check is
+/// the only control against metadata-endpoint SSRF via `git clone` today.
 func isBlockedRepoHost(url: in String): Bool {
   return CloudAgents.Webhooks.isBlockedWebhookHost(CloudAgents.Webhooks.webhookHost(url))
 }
