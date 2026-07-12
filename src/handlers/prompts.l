@@ -153,7 +153,6 @@ func validateSavePrompt(req: in SavePromptRequest): Option[Web.ApiError] {
 }
 
 /// List the caller's saved prompts, alphabetical by name.
-@get("/api/prompts")
 pub func listPromptsHandler(): Result[PromptList, Web.ApiError] {
   match listPrompts(CloudAgents.Auth.currentUserId()) {
     case Ok(ps) -> return Ok(PromptList(prompts = ps))
@@ -163,7 +162,6 @@ pub func listPromptsHandler(): Result[PromptList, Web.ApiError] {
 
 /// List the caller's prompts most-used first — the "popular" ordering the UI
 /// uses to surface frequently-run prompts.
-@get("/api/prompts/popular")
 pub func listPopularPromptsHandler(): Result[PromptList, Web.ApiError] {
   match listPromptsByUsage(CloudAgents.Auth.currentUserId()) {
     case Ok(ps) -> return Ok(PromptList(prompts = ps))
@@ -172,7 +170,6 @@ pub func listPopularPromptsHandler(): Result[PromptList, Web.ApiError] {
 }
 
 /// List the caller's prompts carrying a given tag, alphabetical by name.
-@get("/api/prompts/tag/{tag}")
 pub func listPromptsByTagHandler(tag: in String): Result[PromptList, Web.ApiError] {
   if tag.length == 0 {
     return Err(Web.badRequest("tag is required"))
@@ -185,8 +182,7 @@ pub func listPromptsByTagHandler(tag: in String): Result[PromptList, Web.ApiErro
 
 /// Render a prompt template with variable bindings and return the result.
 /// Rendering counts as a use (bumps use_count). 404 for an unknown prompt.
-@post("/api/prompts/{pid}/render")
-pub func renderPromptHandler(pid: in String, @body req: in RenderPromptRequest): Result[RenderedPrompt, Web.ApiError] {
+pub func renderPromptHandler(pid: in String, req: in RenderPromptRequest): Result[RenderedPrompt, Web.ApiError] {
   if pid.length == 0 {
     return Err(Web.badRequest("prompt id is required"))
   }
@@ -222,8 +218,7 @@ pub func renderPromptHandler(pid: in String, @body req: in RenderPromptRequest):
 }
 
 /// Save a new prompt to the library.
-@post("/api/prompts")
-pub func addPromptHandler(@body req: in SavePromptRequest): Result[Prompt, Web.ApiError] {
+pub func addPromptHandler(req: in SavePromptRequest): Result[Prompt, Web.ApiError] {
   match validateSavePrompt(req) {
     case Some(err) -> return Err(err)
     case None -> ()
@@ -242,8 +237,7 @@ pub func addPromptHandler(@body req: in SavePromptRequest): Result[Prompt, Web.A
 }
 
 /// Update an existing prompt's name and body.
-@post("/api/prompts/{pid}")
-pub func updatePromptHandler(pid: in String, @body req: in SavePromptRequest): Result[Prompt, Web.ApiError] {
+pub func updatePromptHandler(pid: in String, req: in SavePromptRequest): Result[Prompt, Web.ApiError] {
   if pid.length == 0 {
     return Err(Web.badRequest("prompt id is required"))
   }
@@ -271,7 +265,6 @@ pub func updatePromptHandler(pid: in String, @body req: in SavePromptRequest): R
 
 /// Record one use of a prompt (bumps use_count; the client fetches the body
 /// from its own list, so this is fire-and-forget bookkeeping).
-@post("/api/prompts/{pid}/use")
 pub func usePromptHandler(pid: in String): Result[Unit, Web.ApiError] {
   if pid.length == 0 {
     return Err(Web.badRequest("prompt id is required"))
@@ -287,7 +280,6 @@ pub func usePromptHandler(pid: in String): Result[Unit, Web.ApiError] {
 }
 
 /// Delete a prompt from the library.
-@delete("/api/prompts/{pid}")
 pub func deletePromptHandler(pid: in String): Result[Unit, Web.ApiError] {
   if pid.length == 0 {
     return Err(Web.badRequest("prompt id is required"))

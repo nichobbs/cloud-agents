@@ -171,6 +171,24 @@ construct with the unqualified name — `SavePromptRequest(...)`. Qualified
 *function* calls (`CloudAgents.Sqlite.execute(...)`) work fine; it is only
 record constructors that must be unqualified.
 
+**Constructing a `Lyric.Web` `Request` record crashes with a bare
+`InvalidProgramException`.** Unlike the package-qualified-construction entry
+above, this is already unqualified (`Request(...)` after `import Web`) and
+still crashes — with a different, lower-level CLR error ("Common Language
+Runtime detected an invalid program") — even when every field is a value of
+the documented type (`Map.empty[String, String]()` for `pathParams`/
+`queryParams`/`headers`, plain strings for `method`/`path`/`body`).
+Confirmed on Lyric.Web 0.4.26 by `CloudAgents.MainTests`, isolated to the
+construction itself: a handler that never reads a single field off `req`
+still crashed when the test harness built the `req` it was passed. Filed as
+[nichobbs/cloud-agents#354](https://github.com/nichobbs/cloud-agents/issues/354);
+run `./scripts/repro-web-request-crash.sh` to check whether your pinned
+Lyric.Web version still has it. Does not affect production code — this
+project's `src/main.l` Handler/Middleware adapters only ever *receive* a
+`Request` from the framework (reading it via `Web.header()`/
+`Web.pathParam()`), never construct one — so it only blocks
+constructing a `Request` yourself, e.g. in a test harness.
+
 **`Result`/`Option` convenience methods fail at runtime even as dot-calls.**
 `r.unwrapResult()` (and by the same mechanism `.unwrapResultOr()`,
 `.unwrapErrOr()`, and `Option.isSome()`/`.isNone()` below) compiles but dies
@@ -189,6 +207,36 @@ that fails to compile (`T0061`/`T0033`, Nat-vs-Int). Practical consequence:
 iterating with a `Nat` counter to index a `slice[Byte]` is awkward — prefer
 working over `String`/base64 (whose `.length.toInt()` + `.substring` are
 known-good) when you need an index-driven loop.
+
+**`String.length` compared directly against an explicitly-`Nat`-typed value
+is a T0033 compile error ("comparison operands must be matching ordered
+types (got Int and Nat)")**, despite `String.length` being documented `Nat`.
+Confirmed on Lyric.Web 0.4.26 by an early draft of
+`CloudAgents.Text.withinMaxLength`: `s.length > max` (with `max: Nat` an
+explicit function parameter) failed to compile, even though `s.length >
+131072` (an untyped `Int` literal) compiles fine elsewhere in this
+codebase — so whichever side `.length` unifies to depends on the other
+operand, and an explicitly-typed `Nat` on the other side doesn't unify the
+way the docs would suggest.
+
+**A `Nat`-typed function argument crossing a package boundary can crash the
+*caller* at runtime with a bare `InvalidProgramException`, with no compile
+error at all.** Confirmed on Lyric.Web 0.4.26: `CloudAgents.Interactions`
+calling `CloudAgents.Text.withinMaxLength(s, max)` with `max: Nat` compiled
+cleanly but crashed every `CloudAgents.InteractionsTests` case that reached
+it — the exact same "Common Language Runtime detected an invalid program"
+signature `docs/lyric/gotchas.md`'s #354 entry (`Web.Request` construction)
+tracks, but with no `Web` involved anywhere on this call path; the shared
+trigger appears to be `Nat` specifically, not `Web`. Combined with the
+T0033 comparison gotcha above and the pre-existing `Int.toNat()`-doesn't-
+resolve and `Option.isSome()`-doesn't-resolve entries elsewhere in this
+file, `Nat` has more confirmed compile- and runtime-level defects in this
+toolchain than any other primitive — **prefer `Int` for cross-package
+function parameters and return types even where `Nat` would be the more
+"correct" documented type**, normalizing via `.toInt()` at the boundary
+(`s.length.toInt()`) the way `indexOfFrom` already does. Not yet isolated
+to a minimal repro (unlike #354) — if you hit this again, that's the next
+step.
 
 **`Std.Time.Instant.now()` is broken at runtime in the current toolchain** —
 it compiles, then fails with `Method not found: 'Void System.DateTime.now()'`

@@ -17,6 +17,11 @@ import CloudAgents.Webhooks
 import extern System.Environment as Env
 import extern System.String as DotNetString
 
+@generate(Json)
+pub record HealthStatus {
+  pub status: String
+}
+
 // Lyric.Web 0.4.26 dispatches to a Handler object per route ("addGet(router,
 // pattern, handler: Handler)") rather than a handler-name string. This adapter
 // bridges checkHealth() into that shape — see "Handler-adapter plumbing" below
@@ -26,7 +31,7 @@ pub record HealthHandler {}
 impl Web.Handler for HealthHandler {
   func handle(req: in Web.Request): Web.Response {
     match CloudAgents.Handlers.checkHealth() {
-      case Ok(msg) -> return Web.json(200, "{\"status\":\"" + msg + "\"}")
+      case Ok(msg) -> return Web.json(200, HealthStatus(status = msg).toJson())
       case Err(e) -> return Web.errorResponse(e)
     }
   }
@@ -67,7 +72,7 @@ impl Web.Middleware for AuthMiddleware {
 // Lyric.Web 0.4.26 dispatches to a `Handler` object (`func handle(req): Response`)
 // per route rather than a string handler name. The handler functions in
 // src/handlers/*.l are untouched — each adapter below just extracts path
-// params / decodes the @body record, calls the existing function, and maps its
+// params / decodes the request-body record, calls the existing function, and maps its
 // `Result[T, Web.ApiError]` to a `Response`. One response-mapping helper per
 // distinct T (shared across routes that return the same type); one small
 // stateless adapter record per route.

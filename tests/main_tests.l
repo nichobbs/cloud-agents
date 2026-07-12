@@ -17,6 +17,10 @@ test "jsonStringResp passes a pre-built JSON string through with a 200, maps Err
   assertEqualInt(jsonStringResp(Err(error = Web.internalError("db down"))).status, 500, "Err(internalError) -> 500")
 }
 
+test "HealthStatus.toJson() encodes the status field (#346/#360)" {
+  assertEqual(HealthStatus(status = "Healthy").toJson(), "{\"status\":\"Healthy\"}", "matches the old hand-rolled shape")
+}
+
 // NOT covered here: HealthHandler.handle() / AuthMiddleware.wrap() end-to-end
 // against a hand-constructed Web.Request. Filed as a tracked upstream defect
 // (nichobbs/cloud-agents#354) rather than left only as this comment — see that

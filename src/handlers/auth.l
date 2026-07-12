@@ -228,23 +228,13 @@ pub func currentUserId(): String {
 ///
 /// Pass the trusted secret as `expected` (as the sole caller `authorize` does:
 /// `constantTimeEquals(token, apiToken)`).
+///
+/// Thin re-export of CloudAgents.Text.constantTimeEquals (#204) — kept as a
+/// named function here (rather than inlining the qualified call at the one
+/// caller) so this package's own public API and this file's existing tests
+/// don't need to change.
 pub func constantTimeEquals(candidate: in String, expected: in String): Bool {
-  val candLen = candidate.length.toInt()
-  val expectedLen = expected.length.toInt()
-  var diff = if candLen == expectedLen then 0 else 1
-  var i = 0
-  while i < expectedLen {
-    val ce = expected.substring(i, 1)
-    // Past the candidate's end, compare `ce` against itself so the step is a
-    // no-op: the length mismatch is already recorded in `diff`, and this keeps
-    // per-iteration work uniform without introducing a content-dependent branch.
-    val cc = if i < candLen then candidate.substring(i, 1) else ce
-    if cc != ce {
-      diff = 1
-    }
-    i = i + 1
-  }
-  return diff == 0
+  return CloudAgents.Text.constantTimeEquals(candidate, expected)
 }
 
 /// Outcome of authenticating a request.

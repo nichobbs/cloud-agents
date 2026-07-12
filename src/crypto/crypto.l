@@ -21,6 +21,7 @@
 package CloudAgents.Crypto
 
 import Std.Core
+import CloudAgents.Text
 import extern System.Environment as Env
 import extern System.String as DotNetString
 
@@ -114,24 +115,15 @@ val macLen = 32
 /// Constant-time equality of two base64 strings (the two 44-char MAC tags).
 /// Comparing the base64 encodings sidesteps byte-slice indexing (which needs
 /// Nat indices, and Int.toNat() is broken at runtime — see
-/// docs/lyric/gotchas.md); String.substring/.length are known-good. Compares
-/// the full length of the longer string, so a forged tag leaks nothing about
-/// where it first diverges.
-func constantTimeEqualsB64(a: in String, b: in String): Bool {
-  val aLen = a.length.toInt()
-  val bLen = b.length.toInt()
-  val maxLen = if aLen > bLen then aLen else bLen
-  var diff = if aLen == bLen then 0 else 1
-  var i = 0
-  while i < maxLen {
-    val ca = if i < aLen then a.substring(i, 1) else ""
-    val cb = if i < bLen then b.substring(i, 1) else " "
-    if ca != cb {
-      diff = 1
-    }
-    i = i + 1
-  }
-  return diff == 0
+/// docs/lyric/gotchas.md); String.substring/.length are known-good.
+///
+/// Thin re-export of CloudAgents.Text.constantTimeEquals (#204) — that
+/// shared implementation is the already-hardened, expected-length-bound
+/// shape #212 fixed CloudAgents.Auth's copy to; this function used to be an
+/// independently maintained, max-length-bound copy — a latent variant of
+/// the same timing leak #212 fixed in the token check.
+func constantTimeEqualsB64(presented: in String, expected: in String): Bool {
+  return CloudAgents.Text.constantTimeEquals(presented, expected)
 }
 
 /// Whether credential encryption is available (ENCRYPTION_KEY present).

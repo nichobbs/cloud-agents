@@ -76,7 +76,6 @@ func isValidCredentialName(name: in String): Bool {
 }
 
 /// List the caller's stored credential names (never values).
-@get("/api/credentials")
 pub func listCredentialsHandler(): Result[CredentialNameList, Web.ApiError] {
   match listCredentialNames(CloudAgents.Auth.currentUserId()) {
     case Ok(names) -> return Ok(CredentialNameList(credentials = names))
@@ -85,8 +84,7 @@ pub func listCredentialsHandler(): Result[CredentialNameList, Web.ApiError] {
 }
 
 /// Store or replace a credential.
-@post("/api/credentials")
-pub func putCredentialHandler(@body req: in PutCredentialRequest): Result[Unit, Web.ApiError] {
+pub func putCredentialHandler(req: in PutCredentialRequest): Result[Unit, Web.ApiError] {
   if not isValidCredentialName(req.name) {
     return Err(Web.badRequest("name must be a valid environment variable name (letters, digits, underscore; no leading digit)"))
   }
@@ -106,7 +104,6 @@ pub func putCredentialHandler(@body req: in PutCredentialRequest): Result[Unit, 
 }
 
 /// Delete a credential by name.
-@delete("/api/credentials/{name}")
 pub func deleteCredentialHandler(name: in String): Result[Unit, Web.ApiError] {
   if name.length == 0 {
     return Err(Web.badRequest("credential name is required"))
