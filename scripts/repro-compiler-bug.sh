@@ -3,6 +3,20 @@
 # compiler bugs referenced throughout docs/BUILD.md, docs/PROGRESS.md,
 # AGENTS.md, and this project's build scripts.
 #
+# "Minimal" applies to checks 1-4 and 6-7, each a tiny scratch project in a
+# mktemp'd workdir. Check 5 (lyric-lang#5177) is the one exception (#119):
+# it needs this project's own real, multi-package build to reproduce at all
+# (see that check's own comment), so it runs a full `lyric restore` + `lyric
+# test` against REPO_ROOT in place — effectively duplicating the restore/
+# build work the later "Build full server" step does and the `lyric test`
+# run the later "Run lyric test" step does (not "Run tests", which runs
+# scripts/verify.sh — a separate, dependency-free scratch harness that
+# never touches the real manifest), moments later in the same job. That's
+# an accepted, currently
+# un-cached cost (not this script's own network/NuGet restore, so no
+# `actions/cache` wiring shares it with those later steps) for catching a
+# bug that genuinely can't be reproduced any smaller.
+#
 # Checks seven independent, known compiler bugs, in order:
 #
 # 1. lyric-lang#4925/#4955 (fixed as of v0.4.11): a trivial, dependency-free
