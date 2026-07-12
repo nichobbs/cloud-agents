@@ -277,6 +277,38 @@ test "Prompt tags round-trip, replace, and filter" {
   assertEqualInt(mustPrompts(listPromptsByTag(userId, "red")).length.toInt(), 0, "old tag no longer matches")
 }
 
+test "listPrompts attaches each prompt's own tags from one batched read (#246)" {
+  val dbPath = useFreshTestDb("prompt-list-tags")
+  defer {
+    cleanupTestDb(dbPath)
+  }
+  val userId = "default"
+  val a = mustPrompt(addPrompt(userId, "alpha", "body-a"))
+  val b = mustPrompt(addPrompt(userId, "beta", "body-b"))
+  match setPromptTags(a.id, userId, ["red", "green"]) {
+    case Ok(_) -> ()
+    case Err(e) -> assertTrue(false, "setPromptTags a failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+  }
+  match setPromptTags(b.id, userId, ["blue"]) {
+    case Ok(_) -> ()
+    case Err(e) -> assertTrue(false, "setPromptTags b failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+  }
+
+  // listPrompts now fetches all tags in one query and attaches each prompt's
+  // own set — the batched path must still give every prompt exactly its tags,
+  // alphabetically, and never another prompt's.
+  val listed = mustPrompts(listPrompts(userId))
+  assertEqualInt(listed.length.toInt(), 2, "both prompts listed")
+  // selectPromptsSql is name-ordered: alpha then beta.
+  assertEqual(listed[0].name, "alpha", "first prompt is alpha")
+  assertEqualInt(listed[0].tags.length.toInt(), 2, "alpha keeps its two tags")
+  assertEqual(listed[0].tags[0], "green", "alpha tags alphabetical: green first")
+  assertEqual(listed[0].tags[1], "red", "alpha tags alphabetical: red second")
+  assertEqual(listed[1].name, "beta", "second prompt is beta")
+  assertEqualInt(listed[1].tags.length.toInt(), 1, "beta keeps its one tag")
+  assertEqual(listed[1].tags[0], "blue", "beta has only its own tag, not alpha's")
+}
+
 test "Prompt handlers validate, store and 404 correctly" {
   val dbPath = useFreshTestDb("prompt-handlers")
   defer {

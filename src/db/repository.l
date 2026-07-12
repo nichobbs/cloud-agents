@@ -452,6 +452,41 @@ func rowToPromptWithTags(r: in CloudAgents.Sqlite.Row, userId: in String): Resul
   return Ok(value = rowToPrompt(r, tags))
 }
 
+/// A (prompt_id, tag) pair, used to attach tags to a whole list of prompts from
+/// a single query rather than one lookup per prompt (#246).
+pub record PromptTag {
+  pub promptId: String
+  pub tag: String
+}
+
+/// All of a user's (prompt_id, tag) pairs in one query, so listing N prompts
+/// costs 2 queries instead of 1 + N (#246). Ordered by tag within each prompt,
+/// matching promptTagNames' alphabetical contract.
+func allPromptTagPairs(userId: in String): Result[slice[PromptTag], CloudAgents.Sqlite.DbError] {
+  val rows = CloudAgents.Sqlite.query(CloudAgents.Db.selectAllPromptTagsSql(userId))?
+  var acc: slice[PromptTag] = []
+  var i = 0
+  val len = CloudAgents.Sqlite.getRowArrayLength(rows)
+  while i < len {
+    val r = CloudAgents.Sqlite.getRowArrayValue(rows, i)
+    acc = acc.append(PromptTag(promptId = colAt(r.cols, 0), tag = colAt(r.cols, 1)))
+    i = i + 1
+  }
+  return Ok(value = acc)
+}
+
+/// The tags belonging to one prompt id, filtered from the pre-fetched pair list.
+/// The pairs are already tag-ordered per prompt, so the result stays alphabetical.
+func tagsForPrompt(pairs: in slice[PromptTag], promptId: in String): slice[String] {
+  var acc: slice[String] = []
+  for p in pairs {
+    if p.promptId == promptId {
+      acc = acc.append(p.tag)
+    }
+  }
+  return acc
+}
+
 /// Replace a prompt's tag set atomically (clear, then insert each). Returned by
 /// callers through executeTransaction so the set is consistent on partial fail.
 pub func setPromptTags(promptId: in String, userId: in String, tags: in slice[String]): Result[Unit, CloudAgents.Sqlite.DbError] {
@@ -494,12 +529,13 @@ pub func addPromptWithTags(
 /// All prompts in a user's library, alphabetical by name (each with its tags).
 pub func listPrompts(userId: in String): Result[slice[Prompt], CloudAgents.Sqlite.DbError] {
   val rows = CloudAgents.Sqlite.query(CloudAgents.Db.selectPromptsSql(userId))?
+  val tagPairs = allPromptTagPairs(userId)?
   var acc: slice[Prompt] = []
   var i = 0
   val len = CloudAgents.Sqlite.getRowArrayLength(rows)
   while i < len {
-    val p = rowToPromptWithTags(CloudAgents.Sqlite.getRowArrayValue(rows, i), userId)?
-    acc = acc.append(p)
+    val r = CloudAgents.Sqlite.getRowArrayValue(rows, i)
+    acc = acc.append(rowToPrompt(r, tagsForPrompt(tagPairs, colAt(r.cols, 0))))
     i = i + 1
   }
   return Ok(value = acc)
@@ -508,12 +544,13 @@ pub func listPrompts(userId: in String): Result[slice[Prompt], CloudAgents.Sqlit
 /// A user's prompts, most-used first (ties alphabetical).
 pub func listPromptsByUsage(userId: in String): Result[slice[Prompt], CloudAgents.Sqlite.DbError] {
   val rows = CloudAgents.Sqlite.query(CloudAgents.Db.selectPromptsByUsageSql(userId))?
+  val tagPairs = allPromptTagPairs(userId)?
   var acc: slice[Prompt] = []
   var i = 0
   val len = CloudAgents.Sqlite.getRowArrayLength(rows)
   while i < len {
-    val p = rowToPromptWithTags(CloudAgents.Sqlite.getRowArrayValue(rows, i), userId)?
-    acc = acc.append(p)
+    val r = CloudAgents.Sqlite.getRowArrayValue(rows, i)
+    acc = acc.append(rowToPrompt(r, tagsForPrompt(tagPairs, colAt(r.cols, 0))))
     i = i + 1
   }
   return Ok(value = acc)
