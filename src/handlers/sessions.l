@@ -22,11 +22,9 @@ val maxBranchLen = 255
 val maxModelLen = 128
 
 func isHttpsUrl(url: in String): Bool {
-  val prefix = "https://"
-  if url.length < prefix.length {
-    return false
-  }
-  return url.substring(0, prefix.length) == prefix
+  // startsWith already handles a URL shorter than the prefix; no need to
+  // hand-roll the length check + substring compare (#44).
+  return url.startsWith("https://")
 }
 
 @externTarget("System.String.CompareOrdinal")
@@ -395,7 +393,13 @@ pub func sendMessage(id: in String, @body req: in SendMessageRequest): Result[St
           }
           match CloudAgents.Repository.addMessage(id, "agent", logs) {
             case Ok(m) -> return Ok(value = CloudAgents.Streaming.formatLogsAsSseWithId(logs, m.id))
-            case Err(_) -> return Ok(value = CloudAgents.Streaming.formatLogsAsSse(logs))
+            case Err(e) -> {
+              // The run's output is still returned to the client below; log the
+              // persistence failure rather than dropping it silently (#29), so
+              // an operator can see the transcript row wasn't written.
+              println("WARNING: failed to persist agent message for session " + id + ": " + CloudAgents.Sqlite.dbErrorMessage(e))
+              return Ok(value = CloudAgents.Streaming.formatLogsAsSse(logs))
+            }
           }
         }
         case Err(err) -> {

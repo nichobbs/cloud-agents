@@ -744,12 +744,13 @@ pub func importLegacyEnvSessions(): Unit {
   val len = getSessionArrayLength(sessions)
   var i = 0
   var failures = 0
+  var inserted = 0
   while i < len {
     val s = getSessionArrayValue(sessions, i)
     match getSession(s.sessionId) {
       case Ok(Some(_)) -> ()
       case Ok(None) -> match addSession(s) {
-        case Ok(_) -> ()
+        case Ok(_) -> inserted = inserted + 1
         case Err(e) -> {
           failures = failures + 1
           println("WARNING: failed to import legacy session " + s.sessionId + ": " + CloudAgents.Sqlite.dbErrorMessage(e))
@@ -764,8 +765,10 @@ pub func importLegacyEnvSessions(): Unit {
   }
   if failures == 0 {
     Env.SetEnvironmentVariable("CLOUD_AGENTS_SESSIONS_JSON", "")
-    if len > 0 {
-      println("Imported " + toString(len) + " legacy session(s) from CLOUD_AGENTS_SESSIONS_JSON into SQLite")
+    if inserted > 0 {
+      // Report rows actually inserted, not the total considered — sessions that
+      // already existed are skipped, so `len` would overstate the import (#209).
+      println("Imported " + toString(inserted) + " legacy session(s) from CLOUD_AGENTS_SESSIONS_JSON into SQLite")
     }
   }
 }
