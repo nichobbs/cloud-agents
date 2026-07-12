@@ -278,7 +278,8 @@ describe('SessionDetail reattach-completion fold (#319)', () => {
     document.body.appendChild(root);
     const { rerender } = render(makeUi(), { container: root });
 
-    // Initial mount: live panel shows the reattached run's output, no reset yet.
+    // Wait for the page to mount (reattachEnded still 0, so the fold effect
+    // hasn't run and reset() hasn't been called yet).
     await screen.findByPlaceholderText(/Send a message/);
     expect(reset).not.toHaveBeenCalled();
 
