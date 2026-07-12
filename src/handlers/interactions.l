@@ -44,7 +44,7 @@ pub func addCommentHandler(mid: in String, req: in AddCommentRequest): Result[Co
     return Err(Web.badRequest("body is required"))
   }
   if not CloudAgents.Text.withinMaxLength(req.body, maxBodyLen) {
-    return Err(Web.badRequest("body is too long (max " + maxBodyLen.toString() + " characters)"))
+    return Err(Web.badRequest("body is too long (max " + toString(maxBodyLen) + " characters)"))
   }
   // Derive sessionId from the stored message rather than trusting the client.
   val sessionId = match getMessageSessionId(mid) {
@@ -89,7 +89,7 @@ pub func addTodoHandler(id: in String, req: in AddTodoRequest): Result[Todo, Web
     return Err(Web.badRequest("note is required"))
   }
   if not CloudAgents.Text.withinMaxLength(req.note, maxBodyLen) {
-    return Err(Web.badRequest("note is too long (max " + maxBodyLen.toString() + " characters)"))
+    return Err(Web.badRequest("note is too long (max " + toString(maxBodyLen) + " characters)"))
   }
   // When the todo is anchored to a message, the anchor must exist and belong
   // to this session — otherwise todos can point at other sessions' transcripts
