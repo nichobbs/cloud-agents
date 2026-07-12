@@ -118,6 +118,17 @@ jobs:
         continue-on-error: true
         run: ./scripts/repro-web-bug.sh
 
+      # Diagnostic, not a gate: reports whether the second, distinct
+      # Lyric.Web bug tracked as nichobbs/cloud-agents#354 (constructing a
+      # Web.Request record crashes with InvalidProgramException) still
+      # reproduces against the currently-pinned Lyric.Web version.
+      # continue-on-error since production code never constructs a Request
+      # itself (only receives one from the framework) — see the script's
+      # header comment for the full distinction from repro-web-bug.sh.
+      - name: Check known Web.Request construction bug status
+        continue-on-error: true
+        run: ./scripts/repro-web-request-crash.sh
+
       # Frontend: typecheck + production build (review #179). Node is pinned by
       # the "Set up Node" step above (#223), not taken from the runner image.
       - name: Build frontend
@@ -148,7 +159,8 @@ jobs:
             scripts/build-docker.sh \
             scripts/run-api.sh \
             scripts/repro-compiler-bug.sh \
-            scripts/repro-web-bug.sh; do
+            scripts/repro-web-bug.sh \
+            scripts/repro-web-request-crash.sh; do
             bash -n "$f" && echo "ok: $f"
           done
 

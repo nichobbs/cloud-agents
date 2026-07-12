@@ -24,7 +24,6 @@ func dbError(e: in CloudAgents.Sqlite.DbError): Web.ApiError {
 
 /// Return a session's full transcript (user prompts and agent replies), each
 /// with a stable id so the client can anchor comments and todos to it.
-@get("/api/sessions/{id}/messages")
 pub func getMessages(id: in String): Result[MessageList, Web.ApiError] {
   if id.length == 0 {
     return Err(Web.badRequest("id is required"))
@@ -36,8 +35,7 @@ pub func getMessages(id: in String): Result[MessageList, Web.ApiError] {
 }
 
 /// Attach a comment to a specific message.
-@post("/api/messages/{mid}/comments")
-pub func addCommentHandler(mid: in String, @body req: in AddCommentRequest): Result[Comment, Web.ApiError] {
+pub func addCommentHandler(mid: in String, req: in AddCommentRequest): Result[Comment, Web.ApiError] {
   if mid.length == 0 {
     return Err(Web.badRequest("message id is required"))
   }
@@ -60,7 +58,6 @@ pub func addCommentHandler(mid: in String, @body req: in AddCommentRequest): Res
 }
 
 /// List comments on a message.
-@get("/api/messages/{mid}/comments")
 pub func getComments(mid: in String): Result[CommentList, Web.ApiError] {
   if mid.length == 0 {
     return Err(Web.badRequest("message id is required"))
@@ -72,7 +69,6 @@ pub func getComments(mid: in String): Result[CommentList, Web.ApiError] {
 }
 
 /// List a session's todos / bookmarks.
-@get("/api/sessions/{id}/todos")
 pub func getTodos(id: in String): Result[TodoList, Web.ApiError] {
   if id.length == 0 {
     return Err(Web.badRequest("id is required"))
@@ -84,8 +80,7 @@ pub func getTodos(id: in String): Result[TodoList, Web.ApiError] {
 }
 
 /// Create a todo / bookmark, optionally linked to a source message.
-@post("/api/sessions/{id}/todos")
-pub func addTodoHandler(id: in String, @body req: in AddTodoRequest): Result[Todo, Web.ApiError] {
+pub func addTodoHandler(id: in String, req: in AddTodoRequest): Result[Todo, Web.ApiError] {
   if id.length == 0 {
     return Err(Web.badRequest("id is required"))
   }
@@ -115,7 +110,6 @@ pub func addTodoHandler(id: in String, @body req: in AddTodoRequest): Result[Tod
 }
 
 /// Toggle a todo's done flag.
-@post("/api/todos/{tid}/toggle")
 pub func toggleTodoHandler(tid: in String): Result[Unit, Web.ApiError] {
   if tid.length == 0 {
     return Err(Web.badRequest("todo id is required"))
@@ -127,7 +121,6 @@ pub func toggleTodoHandler(tid: in String): Result[Unit, Web.ApiError] {
 }
 
 /// Delete a todo.
-@delete("/api/todos/{tid}")
 pub func deleteTodoHandler(tid: in String): Result[Unit, Web.ApiError] {
   if tid.length == 0 {
     return Err(Web.badRequest("todo id is required"))

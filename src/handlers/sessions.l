@@ -128,8 +128,7 @@ pub record SendMessageRequest {
 
 
 /// Create a persistent session workspace.
-@post("/api/sessions")
-pub func createSession(@body req: in CreateSessionRequest): Result[CreateSessionResponse, Web.ApiError] {
+pub func createSession(req: in CreateSessionRequest): Result[CreateSessionResponse, Web.ApiError] {
   if req.repoUrl.length == 0 {
     return Err(Web.badRequest("repoUrl is required"))
   }
@@ -181,8 +180,7 @@ pub func createSession(@body req: in CreateSessionRequest): Result[CreateSession
 /// runs, and pins the harness if it sets one (applied at send time). Kept
 /// separate from session creation so existing create-session clients are
 /// unaffected and a session's profile can be changed later.
-@post("/api/sessions/{id}/profile")
-pub func setSessionProfileHandler(id: in String, @body req: in SetProfileRequest): Result[Unit, Web.ApiError] {
+pub func setSessionProfileHandler(id: in String, req: in SetProfileRequest): Result[Unit, Web.ApiError] {
   if id.length == 0 {
     return Err(Web.badRequest("id is required"))
   }
@@ -210,7 +208,6 @@ pub func setSessionProfileHandler(id: in String, @body req: in SetProfileRequest
 /// The profile currently attached to a session ("" when none). Lets the UI
 /// reflect the stored profile — the session list projection doesn't carry it.
 /// 404 for an unknown/foreign session (#270).
-@get("/api/sessions/{id}/profile")
 pub func getSessionProfileHandler(id: in String): Result[SessionProfileRef, Web.ApiError] {
   if id.length == 0 {
     return Err(Web.badRequest("id is required"))
@@ -241,7 +238,6 @@ func sessionSummaryJson(s: in AgentSession): String {
 /// List every stored session as `{"sessions":[...]}`. Lets a client rebuild
 /// its session list after local state is lost (new browser, cleared storage)
 /// instead of stranding server-side sessions forever.
-@get("/api/sessions")
 pub func listSessions(): Result[String, Web.ApiError] {
   val arr = match CloudAgents.SessionStore.getSessions() {
     case Ok(a) -> a
@@ -261,8 +257,7 @@ pub func listSessions(): Result[String, Web.ApiError] {
 }
 
 /// Accept user prompt, run container, and return output synchronously.
-@post("/api/sessions/{id}/messages")
-pub func sendMessage(id: in String, @body req: in SendMessageRequest): Result[String, Web.ApiError] {
+pub func sendMessage(id: in String, req: in SendMessageRequest): Result[String, Web.ApiError] {
   if id.length == 0 {
     return Err(Web.badRequest("id is required"))
   }
@@ -406,7 +401,6 @@ pub func sendMessage(id: in String, @body req: in SendMessageRequest): Result[St
 /// been created yet (the claim is set synchronously, just before creation),
 /// there is nothing to terminate and the send proceeds — cancellation takes
 /// effect once the container exists.
-@post("/api/sessions/{id}/cancel")
 pub func cancelRun(id: in String): Result[Unit, Web.ApiError] {
   if id.length == 0 {
     return Err(Web.badRequest("id is required"))
@@ -476,7 +470,6 @@ pub func cancelRun(id: in String): Result[Unit, Web.ApiError] {
 
 /// A session's run history, newest first. 404 for an unknown/foreign session,
 /// consistent with the other session sub-resource endpoints (#239).
-@get("/api/sessions/{id}/runs")
 pub func getRuns(id: in String): Result[RunList, Web.ApiError] {
   if id.length == 0 {
     return Err(Web.badRequest("id is required"))
@@ -496,7 +489,6 @@ pub func getRuns(id: in String): Result[RunList, Web.ApiError] {
 /// A maintenance endpoint for an external scheduler to poll (Lyric.Web has no
 /// in-process timer yet); safe to call repeatedly — it no-ops when nothing is
 /// reapable. Returns `{"reaped":N}`.
-@post("/api/maintenance/reap")
 pub func reapContainers(): Result[String, Web.ApiError] {
   val targets = match CloudAgents.SessionStore.reapableWarmContainers() {
     case Ok(t) -> t
@@ -534,7 +526,6 @@ pub func reapContainers(): Result[String, Web.ApiError] {
 /// string, mirroring listSessions — no @generate(Json) response record on this
 /// path (a fresh record here tripped the JSON source generator at runtime with
 /// "The signature is incorrect").
-@get("/api/sessions/{id}/output")
 pub func getRunOutput(id: in String): Result[String, Web.ApiError] {
   if id.length == 0 {
     return Err(Web.badRequest("id is required"))
@@ -568,7 +559,6 @@ pub func getRunOutput(id: in String): Result[String, Web.ApiError] {
 }
 
 /// Stop and tear down container and associated session synchronously.
-@delete("/api/sessions/{id}")
 pub func deleteSession(id: in String): Result[Unit, Web.ApiError] {
   if id.length == 0 {
     return Err(Web.badRequest("id is required"))
@@ -617,8 +607,7 @@ pub func deleteSession(id: in String): Result[Unit, Web.ApiError] {
 
 /// Switch the active model for a session (stays on the same harness).
 /// The next message will use this model; existing transcript is unaffected.
-@post("/api/sessions/{id}/model")
-pub func updateSessionModel(id: in String, @body req: in UpdateSessionRequest): Result[Unit, Web.ApiError] {
+pub func updateSessionModel(id: in String, req: in UpdateSessionRequest): Result[Unit, Web.ApiError] {
   if id.length == 0 {
     return Err(Web.badRequest("id is required"))
   }
@@ -642,7 +631,6 @@ pub func updateSessionModel(id: in String, @body req: in UpdateSessionRequest): 
 }
 
 /// Retrieve service health, including a live SQLite probe.
-@get("/api/health")
 pub func checkHealth(): Result[String, Web.ApiError] {
   match CloudAgents.Repository.ping() {
     case Ok(_) -> return Ok("Healthy")

@@ -203,8 +203,7 @@ pub func isValidWebhookUrl(url: in String): Bool {
 }
 
 /// Register a webhook target URL for run-completion notifications.
-@post("/api/webhooks")
-pub func registerWebhookHandler(@body req: in RegisterWebhookRequest): Result[Webhook, Web.ApiError] {
+pub func registerWebhookHandler(req: in RegisterWebhookRequest): Result[Webhook, Web.ApiError] {
   if not isValidWebhookUrl(req.url) {
     return Err(Web.badRequest("url must be a valid https:// URL"))
   }
@@ -215,7 +214,6 @@ pub func registerWebhookHandler(@body req: in RegisterWebhookRequest): Result[We
 }
 
 /// List the caller's registered webhooks.
-@get("/api/webhooks")
 pub func listWebhooksHandler(): Result[WebhookList, Web.ApiError] {
   match listWebhooks(CloudAgents.Auth.currentUserId()) {
     case Ok(ws) -> return Ok(WebhookList(webhooks = ws))
@@ -224,7 +222,6 @@ pub func listWebhooksHandler(): Result[WebhookList, Web.ApiError] {
 }
 
 /// Delete a registered webhook.
-@delete("/api/webhooks/{id}")
 pub func deleteWebhookHandler(id: in String): Result[Unit, Web.ApiError] {
   if id.length == 0 {
     return Err(Web.badRequest("webhook id is required"))
@@ -242,7 +239,6 @@ pub func deleteWebhookHandler(id: in String): Result[Unit, Web.ApiError] {
 /// Undelivered run-completion events, oldest first — the queue an external
 /// delivery worker polls. It POSTs each event to the caller's registered
 /// webhook URLs, then calls the mark-delivered endpoint.
-@get("/api/webhooks/pending")
 pub func pendingWebhookEventsHandler(): Result[WebhookEventList, Web.ApiError] {
   match listPendingWebhookEvents(CloudAgents.Auth.currentUserId()) {
     case Ok(es) -> return Ok(WebhookEventList(events = es))
@@ -251,7 +247,6 @@ pub func pendingWebhookEventsHandler(): Result[WebhookEventList, Web.ApiError] {
 }
 
 /// Mark an outbox event delivered (called by the external deliverer).
-@post("/api/webhooks/events/{id}/delivered")
 pub func markWebhookDeliveredHandler(id: in String): Result[Unit, Web.ApiError] {
   if id.length == 0 {
     return Err(Web.badRequest("event id is required"))

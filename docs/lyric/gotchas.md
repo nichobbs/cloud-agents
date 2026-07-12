@@ -171,6 +171,24 @@ construct with the unqualified name — `SavePromptRequest(...)`. Qualified
 *function* calls (`CloudAgents.Sqlite.execute(...)`) work fine; it is only
 record constructors that must be unqualified.
 
+**Constructing a `Lyric.Web` `Request` record crashes with a bare
+`InvalidProgramException`.** Unlike the package-qualified-construction entry
+above, this is already unqualified (`Request(...)` after `import Web`) and
+still crashes — with a different, lower-level CLR error ("Common Language
+Runtime detected an invalid program") — even when every field is a value of
+the documented type (`Map.empty[String, String]()` for `pathParams`/
+`queryParams`/`headers`, plain strings for `method`/`path`/`body`).
+Confirmed on Lyric.Web 0.4.26 by `CloudAgents.MainTests`, isolated to the
+construction itself: a handler that never reads a single field off `req`
+still crashed when the test harness built the `req` it was passed. Filed as
+[nichobbs/cloud-agents#354](https://github.com/nichobbs/cloud-agents/issues/354);
+run `./scripts/repro-web-request-crash.sh` to check whether your pinned
+Lyric.Web version still has it. Does not affect production code — this
+project's `src/main.l` Handler/Middleware adapters only ever *receive* a
+`Request` from the framework (reading it via `Web.header()`/
+`Web.pathParam()`), never construct one — so it only blocks
+constructing a `Request` yourself, e.g. in a test harness.
+
 **`Result`/`Option` convenience methods fail at runtime even as dot-calls.**
 `r.unwrapResult()` (and by the same mechanism `.unwrapResultOr()`,
 `.unwrapErrOr()`, and `Option.isSome()`/`.isNone()` below) compiles but dies

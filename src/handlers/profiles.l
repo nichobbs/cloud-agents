@@ -115,7 +115,6 @@ func grantsFor(req: in SaveProfileRequest): slice[String] {
 }
 
 /// List the caller's profiles, alphabetical by name.
-@get("/api/profiles")
 pub func listProfilesHandler(): Result[ProfileList, Web.ApiError] {
   match listProfiles(CloudAgents.Auth.currentUserId()) {
     case Ok(ps) -> return Ok(ProfileList(profiles = ps))
@@ -124,8 +123,7 @@ pub func listProfilesHandler(): Result[ProfileList, Web.ApiError] {
 }
 
 /// Create a new profile.
-@post("/api/profiles")
-pub func addProfileHandler(@body req: in SaveProfileRequest): Result[Profile, Web.ApiError] {
+pub func addProfileHandler(req: in SaveProfileRequest): Result[Profile, Web.ApiError] {
   match validateSaveProfile(req) {
     case Some(err) -> return Err(err)
     case None -> ()
@@ -145,8 +143,7 @@ pub func addProfileHandler(@body req: in SaveProfileRequest): Result[Profile, We
 }
 
 /// Update an existing profile.
-@post("/api/profiles/{pid}")
-pub func updateProfileHandler(pid: in String, @body req: in SaveProfileRequest): Result[Profile, Web.ApiError] {
+pub func updateProfileHandler(pid: in String, req: in SaveProfileRequest): Result[Profile, Web.ApiError] {
   if pid.length == 0 {
     return Err(Web.badRequest("profile id is required"))
   }
@@ -177,7 +174,6 @@ pub func updateProfileHandler(pid: in String, @body req: in SaveProfileRequest):
 }
 
 /// Delete a profile (and its credential grants).
-@delete("/api/profiles/{pid}")
 pub func deleteProfileHandler(pid: in String): Result[Unit, Web.ApiError] {
   if pid.length == 0 {
     return Err(Web.badRequest("profile id is required"))
