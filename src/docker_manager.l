@@ -253,8 +253,12 @@ async func runSessionMessageAsync(
     case Err(msg) -> {
       cell.isSuccess = false
       cell.error = msg
-      // Best-effort cleanup: remove the container even if start failed
-      val _ = await deleteRunnerContainer(containerId)
+      // Best-effort cleanup: remove the container even if start failed, but
+      // log a delete failure rather than dropping it silently (#42).
+      match await deleteRunnerContainer(containerId) {
+        case Ok(_) -> ()
+        case Err(e) -> println("WARNING: failed to remove container " + containerId + ": " + e)
+      }
       val _ = CloudAgents.SessionStore.clearSessionContainerIfMatches(sessionId, containerId)
       return ()
     }
@@ -267,7 +271,10 @@ async func runSessionMessageAsync(
   match waitResult {
     case Ok(_) -> ()
     case Err(msg) -> {
-      val _ = await deleteRunnerContainer(containerId)
+      match await deleteRunnerContainer(containerId) {
+        case Ok(_) -> ()
+        case Err(e) -> println("WARNING: failed to remove container " + containerId + ": " + e)
+      }
       val _ = CloudAgents.SessionStore.clearSessionContainerIfMatches(sessionId, containerId)
       cell.isSuccess = false
       cell.error = msg
@@ -279,7 +286,10 @@ async func runSessionMessageAsync(
 
   // Always remove the ephemeral container after the run. Session state
   // (workspace and home volumes) persists independently of the container.
-  val _ = await deleteRunnerContainer(containerId)
+  match await deleteRunnerContainer(containerId) {
+    case Ok(_) -> ()
+    case Err(e) -> println("WARNING: failed to remove container " + containerId + ": " + e)
+  }
   val _ = CloudAgents.SessionStore.clearSessionContainerIfMatches(sessionId, containerId)
 
   match logsResult {
