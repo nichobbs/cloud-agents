@@ -208,11 +208,12 @@ pub func currentUserId(): String {
 // the one function OAuth will replace, resolving a real user id instead of the
 // fixed operator identity.
 //
-// NB: enforcement at the HTTP boundary depends on Lyric.Web exposing the
-// request's Authorization header to handlers, which the pinned version does
-// not yet do (docs/BUILD.md "Dependencies"). The pure decision logic below is
-// fully unit-tested now so that wiring it in is a one-line change once the
-// framework supports it.
+// NB: enforcement at the HTTP boundary is wired in as of the Lyric.Web 0.4.26
+// pin, which exposes the request's Authorization header (docs/BUILD.md
+// "Dependencies") — see AuthMiddleware in src/main.l, which calls enforce()
+// below via Web.header(req, "Authorization"). The pure decision logic below
+// was fully unit-tested before that wiring landed, which is why it was a
+// one-line change once the framework supported it.
 /// Constant-time string equality. Avoids leaking how many leading characters
 /// of a candidate token matched via response timing.
 ///
@@ -396,14 +397,15 @@ pub func authorizeGitHub(githubId: in String, whitelistCsv: in String): AuthOutc
   return Allowed(userId = userIdForGitHubId(githubId))
 }
 
-// ─── Per-request enforcement (behind the Lyric.Web gate) ────────────────────────
+// ─── Per-request enforcement ──────────────────────────────────────────────────
 //
-// Once Lyric.Web exposes the request's Authorization header, main() wires
-// `enforce()` as a pre-handler guard. Secret routes (credential storage) use
-// authorizeSecret so they refuse when no token is configured; all others use
-// authorize (open when unconfigured, matching today's behaviour). Both the
-// classification and the decision are pure and tested here, so wiring is a
-// one-line change when the framework supports it.
+// main.l's AuthMiddleware wires this in as a pre-handler guard (Lyric.Web
+// 0.4.26 exposes the request's Authorization header via Web.header). Secret
+// routes (credential storage) use authorizeSecret so they refuse when no
+// token is configured; all others use authorize (open when unconfigured,
+// matching today's behaviour). Both the classification and the decision
+// stayed pure and unit-tested throughout, so wiring them in was a one-line
+// change once the framework supported it.
 /// Whether a request path must never run unauthenticated — the credential
 /// routes, which read/write secrets. Matches the /api/credentials prefix.
 pub func routeRequiresSecret(path: in String): Bool {
