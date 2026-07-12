@@ -4,6 +4,7 @@ import Std.Core
 import Web
 import CloudAgents.Repository
 import CloudAgents.Sqlite
+import CloudAgents.Text
 
 @generate(Json)
 pub record AddCommentRequest {
@@ -16,7 +17,7 @@ pub record AddTodoRequest {
   pub note: String
 }
 
-val maxBodyLen = 32768
+val maxBodyLen: Nat = 32768
 
 func dbError(e: in CloudAgents.Sqlite.DbError): Web.ApiError {
   return Web.internalError(CloudAgents.Sqlite.dbErrorMessage(e))
@@ -42,8 +43,9 @@ pub func addCommentHandler(mid: in String, req: in AddCommentRequest): Result[Co
   if req.body.length == 0 {
     return Err(Web.badRequest("body is required"))
   }
-  if req.body.length > maxBodyLen {
-    return Err(Web.badRequest("body is too long (max 32768 characters)"))
+  match CloudAgents.Text.checkMaxLength(req.body, maxBodyLen, "body") {
+    case Err(e) -> return Err(e)
+    case Ok(_) -> ()
   }
   // Derive sessionId from the stored message rather than trusting the client.
   val sessionId = match getMessageSessionId(mid) {
@@ -87,8 +89,9 @@ pub func addTodoHandler(id: in String, req: in AddTodoRequest): Result[Todo, Web
   if req.note.length == 0 {
     return Err(Web.badRequest("note is required"))
   }
-  if req.note.length > maxBodyLen {
-    return Err(Web.badRequest("note is too long (max 32768 characters)"))
+  match CloudAgents.Text.checkMaxLength(req.note, maxBodyLen, "note") {
+    case Err(e) -> return Err(e)
+    case Ok(_) -> ()
   }
   // When the todo is anchored to a message, the anchor must exist and belong
   // to this session — otherwise todos can point at other sessions' transcripts

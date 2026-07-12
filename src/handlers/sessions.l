@@ -17,7 +17,7 @@ pub func generateSessionId(): String {
   return Std.Uuid.uuidToString(u)
 }
 
-val maxPromptLen = 131072
+val maxPromptLen: Nat = 131072
 val maxRepoUrlLen = 2048
 val maxBranchLen = 255
 val maxModelLen = 128
@@ -264,8 +264,9 @@ pub func sendMessage(id: in String, req: in SendMessageRequest): Result[String, 
   if req.text.length == 0 {
     return Err(Web.badRequest("text is required"))
   }
-  if req.text.length > maxPromptLen {
-    return Err(Web.badRequest("text is too long (max 131072 characters)"))
+  match CloudAgents.Text.checkMaxLength(req.text, maxPromptLen, "text") {
+    case Err(e) -> return Err(e)
+    case Ok(_) -> ()
   }
 
   val maybeSession = match getSession(id) {
