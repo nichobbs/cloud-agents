@@ -3,7 +3,6 @@ package CloudAgents.TextTests
 
 import Std.Core
 import Std.Testing
-import Web
 import CloudAgents.Text
 
 test "indexOfFrom finds needles, respects the start offset, and reports absence" {
@@ -33,17 +32,8 @@ test "containsControlChar detects an embedded control char anywhere in the strin
   assertTrue(containsControlChar("trailing\n"), "a trailing newline is detected")
 }
 
-test "checkMaxLength allows values at or under the cap and rejects values over it (#43/#59)" {
-  match checkMaxLength("short", 10, "text") {
-    case Ok(_) -> ()
-    case Err(_) -> assertTrue(false, "expected Ok for a value under the cap")
-  }
-  match checkMaxLength("0123456789", 10, "text") {
-    case Ok(_) -> ()
-    case Err(_) -> assertTrue(false, "expected Ok for a value exactly at the cap")
-  }
-  match checkMaxLength("0123456789X", 10, "text") {
-    case Ok(_) -> assertTrue(false, "expected Err for a value over the cap")
-    case Err(e) -> assertEqualInt(Web.errorResponse(e).status, 400, "over-cap value maps to 400")
-  }
+test "withinMaxLength allows values at or under the cap and rejects values over it (#43/#59)" {
+  assertTrue(withinMaxLength("short", 10), "value under the cap is within it")
+  assertTrue(withinMaxLength("0123456789", 10), "value exactly at the cap is within it")
+  assertFalse(withinMaxLength("0123456789X", 10), "value over the cap is not within it")
 }

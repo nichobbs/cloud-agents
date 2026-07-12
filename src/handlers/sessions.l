@@ -274,9 +274,8 @@ pub func sendMessage(id: in String, req: in SendMessageRequest): Result[String, 
   if req.text.length == 0 {
     return Err(Web.badRequest("text is required"))
   }
-  match CloudAgents.Text.checkMaxLength(req.text, maxPromptLen, "text") {
-    case Err(e) -> return Err(e)
-    case Ok(_) -> ()
+  if not CloudAgents.Text.withinMaxLength(req.text, maxPromptLen) {
+    return Err(Web.badRequest("text is too long (max " + maxPromptLen.toString() + " characters)"))
   }
 
   val maybeSession = match getSession(id) {

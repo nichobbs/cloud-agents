@@ -211,7 +211,7 @@ known-good) when you need an index-driven loop.
 **`String.length` compared directly against an explicitly-`Nat`-typed value
 is a T0033 compile error ("comparison operands must be matching ordered
 types (got Int and Nat)")**, despite `String.length` being documented `Nat`.
-Confirmed on Lyric.Web 0.4.26 by `CloudAgents.Text.checkMaxLength`:
+Confirmed on Lyric.Web 0.4.26 by `CloudAgents.Text.withinMaxLength`:
 `s.length > max` (with `max: Nat` an explicit function parameter) fails to
 compile, even though `s.length > 131072` (an untyped `Int` literal) compiles
 fine elsewhere in this codebase — so whichever side `.length` unifies to

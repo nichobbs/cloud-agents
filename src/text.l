@@ -5,7 +5,6 @@
 package CloudAgents.Text
 
 import Std.Core
-import Web
 
 // JSON forbids raw control characters and Lyric string literals cannot express
 // them, so detection goes through the BCL ordinal compare rather than a literal.
@@ -32,17 +31,20 @@ pub func containsControlChar(s: in String): Bool {
   return false
 }
 
-/// Rejects `s` when its character length exceeds `max`, with a 400 message
-/// naming `fieldName` and `max` — shared by every request-body length cap so
-/// the constant and its error message can't drift apart (#43).
-pub func checkMaxLength(s: in String, max: Nat, fieldName: in String): Result[Unit, Web.ApiError] {
-  // .toInt() normalizes both sides before comparing — bare `s.length > max`
-  // fails to type-check here (T0033: "got Int and Nat") even though both are
-  // documented Nat, matching indexOfFrom's existing workaround just above.
-  if s.length.toInt() > max.toInt() {
-    return Err(Web.badRequest(fieldName + " is too long (max " + max.toString() + " characters)"))
-  }
-  return Ok(())
+/// True when `s`'s character length is at or under `max` — shared by every
+/// request-body length cap so the comparison logic can't drift between call
+/// sites (#43). Deliberately returns `Bool`, not a `Web.ApiError`-carrying
+/// `Result`: this package has no `[nuget]` dependencies (scripts/verify.sh
+/// compiles it into a scratch manifest with no `[nuget]` table at all, by
+/// design — see that script's header comment), so pulling in `Web` here
+/// would break that. Callers build their own message from the same `max`
+/// they passed in, so the constant and the message still can't drift apart.
+///
+/// .toInt() normalizes both sides before comparing — bare `s.length <= max`
+/// fails to type-check here (T0033: "got Int and Nat") even though both are
+/// documented Nat, matching indexOfFrom's existing workaround just above.
+pub func withinMaxLength(s: in String, max: Nat): Bool {
+  return s.length.toInt() <= max.toInt()
 }
 
 /// Constant-time string equality, for comparing an untrusted `candidate`
