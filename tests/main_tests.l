@@ -3,40 +3,8 @@ package CloudAgents.MainTests
 
 import Std.Core
 import Std.Testing
-import Std.Collections
 import CloudAgents
 import Web
-import extern System.Environment as Env
-
-// A stub next-in-chain Handler for driving AuthMiddleware.wrap() directly —
-// returns a response distinguishable from AuthMiddleware's own 401 denial.
-record NextOkHandler {}
-impl Web.Handler for NextOkHandler {
-  func handle(req: in Web.Request): Web.Response {
-    return Web.noContent()
-  }
-}
-
-// Package-qualified record construction fails at runtime (docs/lyric/gotchas.md)
-// — construct Request unqualified (Web is imported above) rather than as
-// Web.Request(...). Map[K, V] lives under Std.Collections, not Std.Core — an
-// earlier version of this test omitted that import and every test touching
-// Map/Request crashed with a bare "invalid program" at runtime instead of a
-// compile error (review #352 caught the missing import).
-func makeRequest(path: in String, authHeader: in String): Web.Request {
-  var headers = Map.empty[String, String]()
-  if authHeader.length > 0 {
-    headers = headers.put("Authorization", authHeader)
-  }
-  return Request(
-    method = "GET",
-    path = path,
-    pathParams = Map.empty[String, String](),
-    queryParams = Map.empty[String, String](),
-    headers = headers,
-    body = "",
-  )
-}
 
 test "unitResp maps Ok to 204 and Err to the error's own status (#351)" {
   assertEqualInt(unitResp(Ok(value = ())).status, 204, "Ok(Unit) -> 204 No Content")
@@ -49,45 +17,22 @@ test "jsonStringResp passes a pre-built JSON string through with a 200, maps Err
   assertEqualInt(jsonStringResp(Err(error = Web.internalError("db down"))).status, 500, "Err(internalError) -> 500")
 }
 
-test "HealthHandler.handle returns a real HTTP status (#351)" {
-  // checkHealth() pings the DB; this suite's default env may or may not have
-  // one configured. Either way the adapter must route through
-  // Web.json/Web.errorResponse without crashing.
-  val resp = HealthHandler().handle(makeRequest("/api/health", ""))
-  assertTrue(resp.status == 200 or resp.status == 500, "health check completes with a real HTTP status")
-}
-
-test "AuthMiddleware allows /api/health through with no token configured (#351)" {
-  Env.SetEnvironmentVariable("CLOUD_AGENTS_API_TOKEN", "")
-  val resp = AuthMiddleware().wrap(makeRequest("/api/health", ""), NextOkHandler())
-  assertEqualInt(resp.status, 204, "health bypasses auth entirely")
-}
-
-test "AuthMiddleware lets requests through when no API token is configured (#351)" {
-  Env.SetEnvironmentVariable("CLOUD_AGENTS_API_TOKEN", "")
-  val resp = AuthMiddleware().wrap(makeRequest("/api/sessions", ""), NextOkHandler())
-  assertEqualInt(resp.status, 204, "unconfigured token means auth is open (matches authorize()'s documented contract)")
-}
-
-test "AuthMiddleware denies a missing or wrong bearer token once CLOUD_AGENTS_API_TOKEN is configured (#78/#211/#351)" {
-  Env.SetEnvironmentVariable("CLOUD_AGENTS_API_TOKEN", "secret-token")
-  val noAuth = AuthMiddleware().wrap(makeRequest("/api/sessions", ""), NextOkHandler())
-  assertEqualInt(noAuth.status, 401, "missing Authorization header is denied")
-  val wrongAuth = AuthMiddleware().wrap(makeRequest("/api/sessions", "Bearer nope"), NextOkHandler())
-  assertEqualInt(wrongAuth.status, 401, "wrong token is denied")
-  val rightAuth = AuthMiddleware().wrap(makeRequest("/api/sessions", "Bearer secret-token"), NextOkHandler())
-  assertEqualInt(rightAuth.status, 204, "correct token is let through")
-  Env.SetEnvironmentVariable("CLOUD_AGENTS_API_TOKEN", "")
-}
-
-test "AuthMiddleware's default-deny on credential routes holds even with no token configured (#78/#211/#351)" {
-  // routeRequiresSecret gates /api/credentials specifically: with no token
-  // configured at all, the general authorize() path is wide open, but
-  // authorizeSecret's default-deny still refuses credential routes.
-  Env.SetEnvironmentVariable("CLOUD_AGENTS_API_TOKEN", "")
-  val resp = AuthMiddleware().wrap(makeRequest("/api/credentials", ""), NextOkHandler())
-  assertEqualInt(resp.status, 401, "credential routes refuse even when no token is configured")
-}
+// NOT covered here: HealthHandler.handle() / AuthMiddleware.wrap() end-to-end
+// against a hand-constructed Web.Request. Filed as a tracked upstream defect
+// (nichobbs/cloud-agents#355) rather than left only as this comment — see that
+// issue for the full reproduction. Summary: constructing a Web.Request record
+// (unqualified, per docs/lyric/gotchas.md's package-qualified-record-
+// construction rule; with `import Std.Collections` for Map, ruled out as the
+// cause by direct test) crashes at runtime with a bare "Common Language
+// Runtime detected an invalid program" — reproduced twice, isolated to
+// construction itself (HealthHandler.handle(req) fails even though it never
+// reads a field of req). Web's public API has no alternative
+// Request-constructing function to route around this. Does not prove the live
+// server is broken: main.l's adapters only ever RECEIVE a Request as a
+// parameter (from the framework) and read/query it — they never construct
+// one, unlike this reverted test harness — so Handler/Middleware runtime
+// behavior is exercised only implicitly via the real server
+// (scripts/run-api.sh), not by an automated test, until this is resolved.
 
 test "isValidPort accepts valid TCP ports" {
   assertTrue(isValidPort("1"), "minimum port")
