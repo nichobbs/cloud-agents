@@ -11,6 +11,14 @@ name: Close actioned review findings
 # any OPEN `review-finding` issue whose number is referenced in the merged PR's
 # commit messages or title. That matches the repo's commit convention of naming
 # the actioned finding in the subject, e.g. `fix(ui): … (#288, #289)`.
+#
+# LIMITATION (#298): this uses the plain `pull_request` trigger, so a merged PR
+# whose head branch is a FORK gets a read-only `GITHUB_TOKEN` regardless of the
+# `issues: write` below, and the `gh issue close` calls silently no-op (each is
+# wrapped to warn-and-continue, so the job still reports success). That's fine
+# for this single-maintainer repo where PRs come from same-repo branches; if
+# fork PRs ever need to close findings, switch to `pull_request_target` (taking
+# the usual care — this workflow has no checkout step and must not gain one).
 
 on:
   pull_request:

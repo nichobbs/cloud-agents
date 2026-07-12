@@ -285,6 +285,60 @@ test "importLegacyEnvSessions inserts env sessions into the store and clears the
   )
 }
 
+test "importLegacyEnvSessions imports only sessions not already in the store (#323)" {
+  val dbPath = useFreshTestDb("legacy-import-mixed")
+  defer {
+    cleanupTestDb(dbPath)
+  }
+  // A session that already exists in the store.
+  mustUnit(addSession(makeAgentSession(
+    sessionId = "legacy-existing",
+    repoUrl = "https://github.com/nic/original",
+    branch = "main",
+    containerId = "",
+    harness = "claude",
+    model = "claude-opus-4-8",
+    nativeSessionId = "legacy-existing"
+  )))
+  // The env carries a *changed* copy of that existing session plus a brand-new
+  // one. Import must insert only the new session and leave the existing row
+  // untouched (skipped), not overwrite it with the env copy.
+  val existingChanged = makeAgentSession(
+    sessionId = "legacy-existing",
+    repoUrl = "https://github.com/nic/CHANGED",
+    branch = "main",
+    containerId = "",
+    harness = "claude",
+    model = "claude-opus-4-8",
+    nativeSessionId = "legacy-existing"
+  )
+  val fresh = makeAgentSession(
+    sessionId = "legacy-new",
+    repoUrl = "https://github.com/nic/new",
+    branch = "main",
+    containerId = "",
+    harness = "claude",
+    model = "claude-opus-4-8",
+    nativeSessionId = "legacy-new"
+  )
+  Env.SetEnvironmentVariable(
+    "CLOUD_AGENTS_SESSIONS_JSON",
+    "{\"sessions\":[" + agentSessionToJson(existingChanged) + "," + agentSessionToJson(fresh) + "]}"
+  )
+  importLegacyEnvSessions()
+
+  // The new session was inserted.
+  match mustOptSession(getSession("legacy-new")) {
+    case Some(_) -> ()
+    case None -> assertTrue(false, "the new legacy session should have been imported")
+  }
+  // The pre-existing session was skipped, not overwritten by the env copy.
+  match mustOptSession(getSession("legacy-existing")) {
+    case Some(s) -> assertEqual(s.repoUrl, "https://github.com/nic/original", "existing session left untouched (not overwritten by the env copy)")
+    case None -> assertTrue(false, "existing session should still be present after import")
+  }
+}
+
 test "Test default model per harness" {
   assertEqual(defaultModelForHarness("claude"), "claude-opus-4-8", "claude default model")
   assertEqual(defaultModelForHarness("codex"), "o4-mini", "codex default model")
