@@ -624,10 +624,13 @@ pub func deletePromptTagsSql(promptId: in String, userId: in String): String {
   return "DELETE FROM prompt_tags WHERE prompt_id = " + sqlLiteral(promptId) + " AND user_id = " + sqlLiteral(userId)
 }
 
-/// SELECT the ids of a user's prompts carrying a given tag, ordered by prompt
-/// name (joined so the "alphabetical" contract the repository documents holds).
-pub func selectPromptIdsByTagSql(userId: in String, tag: in String): String {
-  return "SELECT pt.prompt_id FROM prompt_tags pt JOIN prompts p ON p.id = pt.prompt_id " + "WHERE pt.user_id = " +
+/// SELECT the full prompt rows carrying a given tag, ordered by name — so
+/// listPromptsByTag can fetch matching prompts in one query (then attach tags in
+/// a second batched query) instead of a per-id getPrompt round trip (#339). The
+/// column list matches selectPromptsSql so rowToPrompt reads the same indices.
+pub func selectPromptsByTagSql(userId: in String, tag: in String): String {
+  return "SELECT p.id, p.user_id, p.name, p.body, p.use_count, p.created_at, p.updated_at " +
+    "FROM prompts p JOIN prompt_tags pt ON pt.prompt_id = p.id " + "WHERE pt.user_id = " +
     sqlLiteral(userId) +
     " AND pt.tag = " +
     sqlLiteral(tag) +
