@@ -610,6 +610,15 @@ pub func selectPromptTagsSql(promptId: in String, userId: in String): String {
     " ORDER BY tag ASC"
 }
 
+/// SELECT every (prompt_id, tag) pair for a user's prompts in one query, so a
+/// list of N prompts can attach tags with 2 queries instead of 1 + N (#246).
+/// Ordered by tag within each prompt so tags come out alphabetical, matching
+/// selectPromptTagsSql.
+pub func selectAllPromptTagsSql(userId: in String): String {
+  return "SELECT prompt_id, tag FROM prompt_tags WHERE user_id = " + sqlLiteral(userId) +
+    " ORDER BY prompt_id ASC, tag ASC"
+}
+
 /// DELETE all of a prompt's tags (to replace the set on update / clean up on delete).
 pub func deletePromptTagsSql(promptId: in String, userId: in String): String {
   return "DELETE FROM prompt_tags WHERE prompt_id = " + sqlLiteral(promptId) + " AND user_id = " + sqlLiteral(userId)
