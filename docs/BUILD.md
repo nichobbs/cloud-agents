@@ -35,7 +35,7 @@ binary packages — no sibling checkout, no source patching:
 ```toml
 [nuget]
 "Lyric.Web"             = "0.4.26"
-"Lyric.Docker"          = "0.4.28"
+"Lyric.Docker"          = "0.4.29"
 "Std.Logging"           = "0.4.20"
 "Microsoft.Data.Sqlite" = "10.0.9"
 ```
@@ -75,7 +75,9 @@ all now closed upstream:
    `lyric-docker` was never wired into CI. Closed in
    [lyric-lang#5705](https://github.com/nichobbs/lyric-lang/pull/5705).
 
-With all three fixed (published as `Lyric.Docker` 0.4.28), `src/docker_manager.l`
+With all three fixed (published as `Lyric.Docker` 0.4.28; bumped to 0.4.29 to
+pick up `makeDockerClientTcp`, an opt-in TCP-transport constructor used by
+`dockerClient()` in `src/docker_manager.l`), `src/docker_manager.l`
 consumes the published package directly, calling its `Lyric.Docker.*`
 functions unqualified (`makeDockerClient()`, `createContainerWithNetwork(client, ...)`,
 etc. — the names are unqualified because `import Lyric.Docker` brings them
