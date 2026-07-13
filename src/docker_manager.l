@@ -104,7 +104,8 @@ pub async func createRunnerContainer(
   val binds = [workspaceVolume + ":/workspace", homeVolume + ":/home/claude-user"]
 
   val image = imageForHarness(harness)
-  val createRes = await createContainerWithNetwork(image = image, env = envs, binds = binds, networkMode = networkMode)
+  val client = makeDockerClient()
+  val createRes = await createContainerWithNetwork(client, image, envs, binds, networkMode)
   match createRes {
     case Ok(id) -> Ok(value = id)
     case Err(e) -> Err(error = "Docker API error: " + e.message)
@@ -113,7 +114,8 @@ pub async func createRunnerContainer(
 
 /// Start the created runner container.
 pub async func startRunnerContainer(containerId: in String): Result[Unit, String] {
-  val startRes = await startContainer(containerId)
+  val client = makeDockerClient()
+  val startRes = await startContainer(client, containerId)
   match startRes {
     case Ok(_) -> Ok(value = ())
     case Err(e) -> Err(error = "Failed to start container: " + e.message)
@@ -122,7 +124,8 @@ pub async func startRunnerContainer(containerId: in String): Result[Unit, String
 
 /// Stop the running container.
 pub async func stopRunnerContainer(containerId: in String): Result[Unit, String] {
-  val stopRes = await stopContainer(containerId)
+  val client = makeDockerClient()
+  val stopRes = await stopContainer(client, containerId)
   match stopRes {
     case Ok(_) -> Ok(value = ())
     case Err(e) -> Err(error = "Failed to stop container: " + e.message)
@@ -131,7 +134,8 @@ pub async func stopRunnerContainer(containerId: in String): Result[Unit, String]
 
 /// Wait for a container's process to exit before reading its output.
 pub async func waitForContainer(containerId: in String): Result[Unit, String] {
-  val waitRes = await waitContainer(containerId)
+  val client = makeDockerClient()
+  val waitRes = await waitContainer(client, containerId)
   match waitRes {
     case Ok(_) -> Ok(value = ())
     case Err(e) -> Err(error = "Failed to wait for container: " + e.message)
@@ -140,7 +144,8 @@ pub async func waitForContainer(containerId: in String): Result[Unit, String] {
 
 /// Delete the container.
 pub async func deleteRunnerContainer(containerId: in String): Result[Unit, String] {
-  val deleteRes = await removeContainer(containerId)
+  val client = makeDockerClient()
+  val deleteRes = await removeContainer(client, containerId)
   match deleteRes {
     case Ok(_) -> Ok(value = ())
     case Err(e) -> Err(error = "Failed to delete container: " + e.message)
@@ -161,7 +166,8 @@ async func cleanupRunnerContainer(containerId: in String, sessionId: in String):
 
 /// Retrieve output logs of the runner container.
 pub async func getRunnerLogs(containerId: in String): Result[String, String] {
-  val logsRes = await getContainerLogs(containerId)
+  val client = makeDockerClient()
+  val logsRes = await getContainerLogs(client, containerId)
   match logsRes {
     case Ok(logs) -> Ok(value = logs)
     case Err(e) -> Err(error = "Failed to retrieve logs: " + e.message)
