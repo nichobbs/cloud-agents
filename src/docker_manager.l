@@ -24,6 +24,13 @@ pub record ResultCell {
 /// comment). Run `dockerd -H unix:///var/run/docker.sock -H tcp://127.0.0.1:2375`
 /// and set `CLOUD_AGENTS_DOCKER_TCP_HOST=127.0.0.1:2375` until that's fixed
 /// upstream.
+///
+/// SECURITY: the Docker Engine API has no authentication of its own — anyone
+/// who can reach the TCP host:port can create/exec/delete containers with
+/// host-level privileges. Only ever point `CLOUD_AGENTS_DOCKER_TCP_HOST` at
+/// `127.0.0.1`/a loopback-only listener, never a host/port reachable from
+/// outside this machine (no `0.0.0.0`, no public/LAN interface). This is a
+/// local dev/CI workaround, not a deployment-ready transport.
 func dockerClient(): DockerClient {
   match Std.Environment.getVar("CLOUD_AGENTS_DOCKER_TCP_HOST") {
     case Ok(hostPort) -> if hostPort.length > 0 { makeDockerClientTcp(hostPort) } else { makeDockerClient() }
