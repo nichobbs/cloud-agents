@@ -15,6 +15,7 @@ Full API: run `lyric doc` in the project to generate rendered docs from stdlib s
 | File I/O | `import Std.File` |
 | HTTP client | `import Std.Http` |
 | REST client | `import Std.Rest` |
+| Environment variables | `import Std.Environment` |
 
 Builtins always available without import: `println`, `panic`, `assert`, `toString`.
 
@@ -217,6 +218,25 @@ File.exists(path: String): Bool
 File.delete(path: String): Result[Unit, IoError]
 File.listDir(path: String): Result[slice[String], IoError]
 ```
+
+---
+
+## Std.Environment
+
+```lyric
+import Std.Environment
+
+Std.Environment.getVar(key: String): Result[String, IOError]
+Std.Environment.getVarOrDefault(key: String, default: String): String
+Std.Environment.setVar(key: String, value: String): Unit
+Std.Environment.args(): slice[String]
+```
+
+`getVar` returns `Err` when the variable isn't set — match on it (or use
+`getVarOrDefault`) rather than assuming a bare `String`. Used by
+`docker_manager.l`'s `dockerClient()` to opt into the TCP transport via
+`CLOUD_AGENTS_DOCKER_TCP_HOST` when set, falling back to the Unix-socket
+default otherwise.
 
 ---
 
