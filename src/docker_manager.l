@@ -1,6 +1,7 @@
 package CloudAgents.Docker
 
 import Std.Core
+import Std.Environment
 import Std.Task
 import Lyric.Docker
 import CloudAgents.Auth
@@ -13,6 +14,21 @@ pub record ResultCell {
   pub var isSuccess: Bool = false
   pub var output: String = ""
   pub var error: String = ""
+}
+
+/// Connect to the Docker daemon. Prefers `CLOUD_AGENTS_DOCKER_TCP_HOST`
+/// ("host:port") when set, over the Unix-socket default `makeDockerClient()`
+/// uses — the socket transport depends on `Lyric.Cli.Aot.UnixSocketHttpClient`,
+/// which is absent from a standalone compiled program's output outside the
+/// `lyric` CLI process itself (see `Lyric.Docker.makeDockerClientTcp`'s doc
+/// comment). Run `dockerd -H unix:///var/run/docker.sock -H tcp://127.0.0.1:2375`
+/// and set `CLOUD_AGENTS_DOCKER_TCP_HOST=127.0.0.1:2375` until that's fixed
+/// upstream.
+func dockerClient(): DockerClient {
+  match Std.Environment.getVar("CLOUD_AGENTS_DOCKER_TCP_HOST") {
+    case Ok(hostPort) -> if hostPort.length > 0 { makeDockerClientTcp(hostPort) } else { makeDockerClient() }
+    case Err(_) -> makeDockerClient()
+  }
 }
 
 /// Returns true if the task completed within timeoutMs, false on timeout.
@@ -197,7 +213,7 @@ async func partialContainerLogsAsync(containerId: in String, cell: in ResultCell
   // A standalone poll (called repeatedly on a timer while a run is in
   // flight), not part of one sequential lifecycle chain, so it creates its
   // own client rather than sharing one threaded through runSessionMessageAsync.
-  val client = makeDockerClient()
+  val client = dockerClient()
   val logsResult = await getRunnerLogs(client, containerId)
   match logsResult {
     case Ok(logs) -> {
@@ -252,7 +268,7 @@ async func runSessionMessageAsync(
 ): Unit {
   // One client for the whole create-start-wait-logs-delete lifecycle below,
   // instead of a fresh client per call (#372).
-  val client = makeDockerClient()
+  val client = dockerClient()
   val createResult = await createRunnerContainer(client, repoUrl, branch, prompt, sessionId, harness, model, nativeSessionId, profileId)
   val containerId = match createResult {
     case Ok(id) -> id
@@ -328,7 +344,7 @@ pub func terminateSessionContainer(containerId: in String): Result[Unit, String]
 
 async func terminateSessionContainerAsync(containerId: in String, cell: in ResultCell): Unit {
   // One client shared across the stop+delete pair below (#372).
-  val client = makeDockerClient()
+  val client = dockerClient()
   // Stop is best-effort: the container may already have exited (Docker returns
   // 304/404 in that case). We always attempt remove regardless.
   val _ = await stopRunnerContainer(client, containerId)
