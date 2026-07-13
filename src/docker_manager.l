@@ -42,6 +42,7 @@ func imageForHarness(harness: in String): String {
 /// session's profile (profileId, "" for none) governs which credentials are
 /// injected (least privilege) and the container's network access.
 pub async func createRunnerContainer(
+  client: in DockerClient,
   repoUrl: in String,
   branch: in String,
   prompt: in String,
@@ -104,7 +105,6 @@ pub async func createRunnerContainer(
   val binds = [workspaceVolume + ":/workspace", homeVolume + ":/home/claude-user"]
 
   val image = imageForHarness(harness)
-  val client = makeDockerClient()
   val createRes = await createContainerWithNetwork(client, image, envs, binds, networkMode)
   match createRes {
     case Ok(id) -> Ok(value = id)
@@ -113,8 +113,7 @@ pub async func createRunnerContainer(
 }
 
 /// Start the created runner container.
-pub async func startRunnerContainer(containerId: in String): Result[Unit, String] {
-  val client = makeDockerClient()
+pub async func startRunnerContainer(client: in DockerClient, containerId: in String): Result[Unit, String] {
   val startRes = await startContainer(client, containerId)
   match startRes {
     case Ok(_) -> Ok(value = ())
@@ -123,8 +122,7 @@ pub async func startRunnerContainer(containerId: in String): Result[Unit, String
 }
 
 /// Stop the running container.
-pub async func stopRunnerContainer(containerId: in String): Result[Unit, String] {
-  val client = makeDockerClient()
+pub async func stopRunnerContainer(client: in DockerClient, containerId: in String): Result[Unit, String] {
   val stopRes = await stopContainer(client, containerId)
   match stopRes {
     case Ok(_) -> Ok(value = ())
@@ -133,8 +131,7 @@ pub async func stopRunnerContainer(containerId: in String): Result[Unit, String]
 }
 
 /// Wait for a container's process to exit before reading its output.
-pub async func waitForContainer(containerId: in String): Result[Unit, String] {
-  val client = makeDockerClient()
+pub async func waitForContainer(client: in DockerClient, containerId: in String): Result[Unit, String] {
   val waitRes = await waitContainer(client, containerId)
   match waitRes {
     case Ok(_) -> Ok(value = ())
@@ -143,8 +140,7 @@ pub async func waitForContainer(containerId: in String): Result[Unit, String] {
 }
 
 /// Delete the container.
-pub async func deleteRunnerContainer(containerId: in String): Result[Unit, String] {
-  val client = makeDockerClient()
+pub async func deleteRunnerContainer(client: in DockerClient, containerId: in String): Result[Unit, String] {
   val deleteRes = await removeContainer(client, containerId)
   match deleteRes {
     case Ok(_) -> Ok(value = ())
@@ -156,8 +152,8 @@ pub async func deleteRunnerContainer(containerId: in String): Result[Unit, Strin
 /// the session's stored container id. A delete failure is logged (not fatal)
 /// rather than silently dropped (#42) — the run's own outcome is decided by the
 /// caller. Factored out of the three identical cleanup sites below (#322).
-async func cleanupRunnerContainer(containerId: in String, sessionId: in String): Unit {
-  match await deleteRunnerContainer(containerId) {
+async func cleanupRunnerContainer(client: in DockerClient, containerId: in String, sessionId: in String): Unit {
+  match await deleteRunnerContainer(client, containerId) {
     case Ok(_) -> ()
     case Err(e) -> println("WARNING: failed to remove container " + containerId + ": " + e)
   }
@@ -165,8 +161,7 @@ async func cleanupRunnerContainer(containerId: in String, sessionId: in String):
 }
 
 /// Retrieve output logs of the runner container.
-pub async func getRunnerLogs(containerId: in String): Result[String, String] {
-  val client = makeDockerClient()
+pub async func getRunnerLogs(client: in DockerClient, containerId: in String): Result[String, String] {
   val logsRes = await getContainerLogs(client, containerId)
   match logsRes {
     case Ok(logs) -> Ok(value = logs)
@@ -199,7 +194,11 @@ pub func partialContainerLogs(containerId: in String): String {
 }
 
 async func partialContainerLogsAsync(containerId: in String, cell: in ResultCell): Unit {
-  val logsResult = await getRunnerLogs(containerId)
+  // A standalone poll (called repeatedly on a timer while a run is in
+  // flight), not part of one sequential lifecycle chain, so it creates its
+  // own client rather than sharing one threaded through runSessionMessageAsync.
+  val client = makeDockerClient()
+  val logsResult = await getRunnerLogs(client, containerId)
   match logsResult {
     case Ok(logs) -> {
       cell.isSuccess = true
@@ -251,7 +250,10 @@ async func runSessionMessageAsync(
   profileId: in String,
   cell: in ResultCell,
 ): Unit {
-  val createResult = await createRunnerContainer(repoUrl, branch, prompt, sessionId, harness, model, nativeSessionId, profileId)
+  // One client for the whole create-start-wait-logs-delete lifecycle below,
+  // instead of a fresh client per call (#372).
+  val client = makeDockerClient()
+  val createResult = await createRunnerContainer(client, repoUrl, branch, prompt, sessionId, harness, model, nativeSessionId, profileId)
   val containerId = match createResult {
     case Ok(id) -> id
     case Err(msg) -> {
@@ -265,14 +267,14 @@ async func runSessionMessageAsync(
   // more than the bookkeeping).
   val _ = CloudAgents.SessionStore.updateSessionContainer(sessionId, containerId)
 
-  val startResult = await startRunnerContainer(containerId)
+  val startResult = await startRunnerContainer(client, containerId)
   match startResult {
     case Ok(_) -> ()
     case Err(msg) -> {
       cell.isSuccess = false
       cell.error = msg
       // Best-effort cleanup: remove the container even if start failed.
-      await cleanupRunnerContainer(containerId, sessionId)
+      await cleanupRunnerContainer(client, containerId, sessionId)
       return ()
     }
   }
@@ -280,22 +282,22 @@ async func runSessionMessageAsync(
   // Block until the container process exits. If the wait call itself fails
   // (daemon unreachable, container vanished, etc.) we cannot safely fetch
   // complete logs, so we clean up and surface the error immediately.
-  val waitResult = await waitForContainer(containerId)
+  val waitResult = await waitForContainer(client, containerId)
   match waitResult {
     case Ok(_) -> ()
     case Err(msg) -> {
-      await cleanupRunnerContainer(containerId, sessionId)
+      await cleanupRunnerContainer(client, containerId, sessionId)
       cell.isSuccess = false
       cell.error = msg
       return ()
     }
   }
 
-  val logsResult = await getRunnerLogs(containerId)
+  val logsResult = await getRunnerLogs(client, containerId)
 
   // Always remove the ephemeral container after the run. Session state
   // (workspace and home volumes) persists independently of the container.
-  await cleanupRunnerContainer(containerId, sessionId)
+  await cleanupRunnerContainer(client, containerId, sessionId)
 
   match logsResult {
     case Ok(logs) -> {
@@ -325,10 +327,12 @@ pub func terminateSessionContainer(containerId: in String): Result[Unit, String]
 }
 
 async func terminateSessionContainerAsync(containerId: in String, cell: in ResultCell): Unit {
+  // One client shared across the stop+delete pair below (#372).
+  val client = makeDockerClient()
   // Stop is best-effort: the container may already have exited (Docker returns
   // 304/404 in that case). We always attempt remove regardless.
-  val _ = await stopRunnerContainer(containerId)
-  val deleteResult = await deleteRunnerContainer(containerId)
+  val _ = await stopRunnerContainer(client, containerId)
+  val deleteResult = await deleteRunnerContainer(client, containerId)
   match deleteResult {
     case Ok(_) -> {
       cell.isSuccess = true

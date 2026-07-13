@@ -170,11 +170,9 @@ jobs:
             python3 -m json.tool "$f" > /dev/null && echo "ok: $f"
           done
 
-      # Build the entire server. Lyric.Web/Std.Logging/Microsoft.Data.Sqlite
-      # restore from NuGet; Lyric.Docker compiles from vendor/lyric-docker as
-      # an ordinary local package (the published NuGet Lyric.Docker package
-      # doesn't expose the container-lifecycle API this project needs — see
-      # docs/BUILD.md). No sibling lyric-lang checkout either way.
+      # Build the entire server. Lyric.Web/Lyric.Docker/Std.Logging/
+      # Microsoft.Data.Sqlite all restore from NuGet — see docs/BUILD.md.
+      # No sibling lyric-lang checkout.
       - name: Build full server
         run: ./scripts/build-full.sh
 
