@@ -28,20 +28,21 @@ mkdir -p ~/.lyric/bin && tar -xzf /tmp/lyric.tgz -C ~/.lyric/bin
 
 ## Dependencies
 
-`Lyric.Web`, `Std.Logging`, and `Microsoft.Data.Sqlite` are declared under
-`[nuget]` in `lyric.toml` and resolved as ordinary prebuilt binary packages —
-no sibling checkout, no source patching:
+`Lyric.Web`, `Lyric.Docker`, `Std.Logging`, and `Microsoft.Data.Sqlite` are
+declared under `[nuget]` in `lyric.toml` and resolved as ordinary prebuilt
+binary packages — no sibling checkout, no source patching:
 
 ```toml
 [nuget]
 "Lyric.Web"             = "0.4.26"
+"Lyric.Docker"          = "0.4.28"
 "Std.Logging"           = "0.4.20"
 "Microsoft.Data.Sqlite" = "10.0.9"
 ```
 
 These track the latest published versions as of each package's own release
-cadence — `Lyric.Web` and the compiler (`MIN_LYRIC_VERSION`) are two
-independent version numbers on separate release schedules; they will not
+cadence — `Lyric.Web`/`Lyric.Docker` and the compiler (`MIN_LYRIC_VERSION`)
+are independent version numbers on separate release schedules; they will not
 generally match, and `Lyric.Web` 0.4.26 is intentionally ahead of the
 0.4.19 compiler floor (see "Root-caused" below for why). `Std.Logging`
 stays at 0.4.20 — nothing in `src/` imports it (the project logs via
@@ -51,22 +52,45 @@ line is preview-only. The two SQLite-native packages
 (`SourceGear.sqlite3` 3.53.3, `SQLitePCLRaw.provider.dynamic_cdecl` 3.0.3)
 are likewise already at their latest stable.
 
-`Lyric.Docker` is **not** on that list. The published `Lyric.Docker` 0.4.10
-package (confirmed by extracting the `.nupkg` from nuget.org and inspecting
-`Docker.dll`'s embedded contract) requires an explicit `client: DockerClient`
-argument on every call and has no `waitContainer` function at all — a
-materially different, incompatible API from what `src/docker_manager.l`
-depends on. `vendor/lyric-docker` is a local fork with the container-lifecycle
-operations this project needs (`createContainer`, `start/stop/removeContainer`,
-`waitContainer`, `getContainerLogs`), pending upstreaming. It's compiled as an
-ordinary local package via `[project.packages]` in the root `lyric.toml` —
-not a separate dependency, no restore-path workaround, no patching:
+`Lyric.Docker` used to be vendored (`vendor/lyric-docker`) rather than
+consumed from NuGet. Three gaps blocked switching to the published package,
+all now closed upstream:
 
-```toml
-[project.packages]
-"Lyric.Docker"         = "vendor/lyric-docker/src/docker.l"
-"Lyric.Docker.Sockets" = "vendor/lyric-docker/src/sockets.l"
-```
+1. The published 0.4.10 package required an explicit `client: DockerClient`
+   argument on every call and had no `waitContainer` function — a materially
+   different API from what the vendored fork exposed. `waitContainer` shipped
+   in a later release; the `client: DockerClient`-threaded call convention was
+   never changed (it's the correct design — the vendored fork's implicit
+   per-call socket resolution was a workaround, not an improvement) and is
+   what `src/docker_manager.l` now uses directly.
+2. `createContainer` had no way to pin a container's `NetworkMode`, which
+   this project's network-policy enforcement (`none`/`restricted`/full
+   egress, see `CloudAgents.NetworkPolicy`) depends on. Closed in
+   [lyric-docker#5697](https://github.com/nichobbs/lyric-lang/pull/5697) via
+   `createContainerWithNetwork(client, image, env, binds, networkMode)`.
+3. The published package was, separately, broken at runtime: `jsonEscapeValue`
+   (called by every `createContainer`/`createContainerWithNetwork`) called a
+   nonexistent `String.codePointAt` method that compiled cleanly but crashed
+   unconditionally on first use — undetected for ~4 releases because
+   `lyric-docker` was never wired into CI. Closed in
+   [lyric-lang#5705](https://github.com/nichobbs/lyric-lang/pull/5705).
+
+With all three fixed (published as `Lyric.Docker` 0.4.28), `src/docker_manager.l`
+consumes the published package directly, calling its `Lyric.Docker.*`
+functions unqualified (`makeDockerClient()`, `createContainerWithNetwork(client, ...)`,
+etc. — the names are unqualified because `import Lyric.Docker` brings them
+into scope) and threading the resulting `DockerClient` through each call.
+The vendor directory has been removed.
+
+**Gotcha:** every `await` into `Lyric.Docker` in `src/docker_manager.l` must
+call the imported names unqualified, not as `Lyric.Docker.foo(...)`. A
+fully-qualified cross-package `await` hits a real, currently-open compiler
+bug ([lyric-lang#5222](https://github.com/nichobbs/lyric-lang/issues/5222):
+`emitPhaseBAwait: await index N exceeds pre-allocated resume labels` — a
+mismatch between the await pre-scan and the actual codegen for the
+qualified-path form) that crashes `lyric build` outright. Non-`await` calls
+(e.g. the pure `createContainerBodyWithNetwork`/`extractJsonField` helpers
+used in `tests/docker_client_tests.l`) are unaffected and can stay qualified.
 
 Build from the repo root:
 

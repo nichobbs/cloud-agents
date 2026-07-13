@@ -1,12 +1,11 @@
 #!/usr/bin/env bash
 # build-full.sh — build the complete Cloud Agents server (API + web + docker).
 #
-# Lyric.Web/Std.Logging/Microsoft.Data.Sqlite are consumed as published NuGet
-# binaries declared in `[nuget]` in lyric.toml; Lyric.Docker compiles from
-# vendor/lyric-docker as an ordinary local package (see docs/BUILD.md for
-# why). No sibling lyric-lang checkout, source patching, or package inlining
-# required. `lyric restore` fetches the NuGet packages, `lyric build`
-# compiles everything else.
+# Lyric.Web/Lyric.Docker/Std.Logging/Microsoft.Data.Sqlite are all consumed
+# as published NuGet binaries declared in `[nuget]` in lyric.toml (see
+# docs/BUILD.md). No sibling lyric-lang checkout, source patching, or
+# package inlining required. `lyric restore` fetches the NuGet packages,
+# `lyric build` compiles everything else.
 #
 # THIS NOW SUCCEEDS as of v0.4.14 — the first release where it ever has,
 # after seven sequential upstream compiler bugs, all now fixed. Bug 1

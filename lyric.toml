@@ -34,15 +34,6 @@ output_assembly = "CloudAgents.dll"
 "CloudAgents.Webhooks" = "src/handlers/webhooks.l"
 "CloudAgents.Streaming" = "src/streaming/streaming.l"
 
-# Lyric.Docker and Lyric.Docker.Sockets are NOT the published NuGet package —
-# the published `Lyric.Docker` 0.4.10 package requires an explicit
-# `client: DockerClient` argument on every call and has no `waitContainer`
-# function at all, which src/docker_manager.l depends on. This is a local,
-# in-repo package (vendor/lyric-docker) pending upstreaming, compiled
-# directly as part of this project — not a restore-path workaround.
-"Lyric.Docker"         = "vendor/lyric-docker/src/docker.l"
-"Lyric.Docker.Sockets" = "vendor/lyric-docker/src/sockets.l"
-
 [project.tests]
 "CloudAgents.SessionTests"   = "tests/session_tests.l"
 "CloudAgents.StreamingTests" = "tests/streaming_tests.l"
@@ -61,6 +52,7 @@ output_assembly = "CloudAgents.dll"
 
 [nuget]
 "Lyric.Web"             = "0.4.26"
+"Lyric.Docker"          = "0.4.28"
 "Std.Logging"           = "0.4.20"
 "Microsoft.Data.Sqlite" = "10.0.9"
 "SourceGear.sqlite3"    = "3.53.3"
