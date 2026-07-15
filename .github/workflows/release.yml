@@ -1,0 +1,269 @@
+name: Release
+
+# Triggered when a version tag is pushed (e.g. `git tag v0.1.0 && git push --tags`)
+# or manually via workflow_dispatch for pre-release testing.
+on:
+  push:
+    tags:
+      - 'v[0-9]*'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version to stamp this release with (e.g. 0.1.0, no leading v)'
+        required: true
+        type: string
+
+permissions:
+  contents: write   # create the release and upload assets
+
+# Serialize release runs — a dispatch racing a tag push (or two dispatches)
+# must not both try to create the same draft release.
+concurrency:
+  group: release-cloud-agents
+  cancel-in-progress: false
+
+env:
+  DOTNET_SKIP_FIRST_TIME_EXPERIENCE: true
+  DOTNET_NOLOGO: true
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # Create the GitHub Release (as a draft) before building any binaries, so a
+  # build failure never leaves a "release" up with some but not all archives.
+  # finalize-release below flips it to non-draft only once every matrix leg
+  # has uploaded its asset.
+  # ---------------------------------------------------------------------------
+  create-release:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.ver.outputs.VERSION }}
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Resolve version
+        id: ver
+        run: |
+          set -euo pipefail
+          if [[ "${GITHUB_REF}" == refs/tags/v* ]]; then
+            echo "VERSION=${GITHUB_REF#refs/tags/v}" >> "$GITHUB_OUTPUT"
+          else
+            echo "VERSION=${{ inputs.version }}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_VERSION: ${{ steps.ver.outputs.VERSION }}
+        run: |
+          set -euo pipefail
+          TAG="v${RELEASE_VERSION}"
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "Release $TAG already exists; reusing it (re-run of a failed build leg)."
+          else
+            gh release create "$TAG" --draft --target "${GITHUB_SHA}" --title "$TAG" \
+              --notes "Cloud Agents backend release."
+          fi
+
+  # ---------------------------------------------------------------------------
+  # Build a self-contained (framework-included, single-machine-deployable)
+  # native executable per target and upload it as a release asset.
+  #
+  # NOT true Native AOT (PublishAot): that currently crashes at startup with a
+  # silent miscompile, reproduced down to a minimal slice[Record]-literal +
+  # for-in-loop case unrelated to anything CloudAgents-specific — tracked
+  # upstream at nichobbs/lyric-lang#5781. dist/CloudAgents.Native.csproj
+  # defaults PublishAot to false until that's fixed; re-enable it there (and
+  # this workflow needs no change) once it ships.
+  #
+  # Scoped to Linux (this project's actual deployment target — it orchestrates
+  # Docker containers, which macOS/Windows hosts for this workload are not a
+  # realistic target for) and both common server architectures.
+  # ---------------------------------------------------------------------------
+  build:
+    needs: [create-release]
+    strategy:
+      fail-fast: false
+      matrix:
+        rid: [linux-x64, linux-arm64]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Set up .NET 10
+        uses: actions/setup-dotnet@v5
+        with:
+          dotnet-version: '10.0.x'
+
+      # Same resolve-then-verify-floor sequence as ci.yml's "Resolve latest
+      # Lyric release" / "Verify minimum Lyric version" steps, so a release
+      # build fails fast on the same regressed-compiler condition CI already
+      # guards against, instead of silently building against whatever
+      # "latest" happens to resolve to.
+      - name: Resolve latest Lyric release
+        id: resolve_lyric
+        run: |
+          set -euo pipefail
+          ver=""
+          for attempt in 1 2 3; do
+            ver=$(curl -sI --connect-timeout 10 --max-time 30 https://github.com/nichobbs/lyric-lang/releases/latest \
+                    | sed -n 's/.*tag\/v\([0-9.]*\).*/\1/p' | tr -d '\r')
+            [ -n "$ver" ] && break
+            echo "attempt $attempt: could not resolve latest Lyric release tag, retrying..." >&2
+            sleep 3
+          done
+          [ -n "$ver" ] || { echo "could not resolve latest Lyric release tag after 3 attempts" >&2; exit 1; }
+          echo "Resolved latest Lyric release: v$ver"
+          echo "version=$ver" >> "$GITHUB_OUTPUT"
+
+      - name: Verify minimum Lyric version
+        env:
+          RESOLVED: ${{ steps.resolve_lyric.outputs.version }}
+        run: |
+          set -euo pipefail
+          MIN_VERSION="$(cat MIN_LYRIC_VERSION)"
+          lowest="$(printf '%s\n%s\n' "$MIN_VERSION" "$RESOLVED" | sort -V | head -1)"
+          if [ "$lowest" != "$MIN_VERSION" ]; then
+            echo "::error::Latest Lyric release ($RESOLVED) is older than $MIN_VERSION (see MIN_LYRIC_VERSION) — refusing to cut a release against a regressed compiler." >&2
+            exit 1
+          fi
+          echo "Lyric $RESOLVED >= required minimum $MIN_VERSION"
+
+      # Reuses scripts/install.sh's own install logic (the same installer a
+      # developer runs locally), pinned to the exact version just verified
+      # above rather than letting it re-resolve "latest" independently.
+      # dotnet is already provided by setup-dotnet above, and the NuGet
+      # restore happens explicitly in "Build CloudAgents.dll" below, so both
+      # of install.sh's other side effects are skipped.
+      - name: Install Lyric compiler
+        env:
+          LYRIC_VERSION: ${{ steps.resolve_lyric.outputs.version }}
+        run: |
+          set -euo pipefail
+          SKIP_DOTNET=1 SKIP_RESTORE=1 ./scripts/install.sh
+          echo "$HOME/.lyric/bin" >> "$GITHUB_PATH"
+
+      # Uses build-full.sh rather than a bare `lyric restore && lyric build`:
+      # the latter does NOT populate bin/runtimes/ (that directory only
+      # exists because build-full.sh separately copies
+      # Microsoft.Data.Sqlite's native e_sqlite3 library there from the NuGet
+      # package cache) — confirmed by a clean-checkout repro after this
+      # workflow's first version assumed otherwise. The "Stage SQLite native
+      # runtime" step below depends on bin/runtimes/<rid>/native/ existing.
+      - name: Build CloudAgents.dll (including native SQLite runtimes)
+        run: ./scripts/build-full.sh
+
+      # Publishes dist/CloudAgents.Native — a thin C# trampoline into the
+      # already-built CloudAgents.dll (see that project's own comments) — as
+      # a self-contained deployable for this RID. `--self-contained true` is
+      # also the csproj default (SelfContained=true), set explicitly here so
+      # this step's intent doesn't depend on that default staying in sync.
+      - name: Publish self-contained executable (${{ matrix.rid }})
+        run: |
+          dotnet publish dist/CloudAgents.Native/CloudAgents.Native.csproj \
+            --configuration Release \
+            --runtime ${{ matrix.rid }} \
+            --self-contained true \
+            --output "publish/${{ matrix.rid }}"
+
+      # `lyric build` already NuGet-restored Microsoft.Data.Sqlite's native
+      # e_sqlite3 library for every RID (not just the host's) into
+      # bin/runtimes/. The trampoline project references CloudAgents.dll's
+      # sibling DLLs via a loose-file glob rather than a real project/package
+      # reference, so `dotnet publish` has no runtime-asset metadata to copy
+      # this from automatically — stage it manually, then bundle a wrapper
+      # script that points the native loader (LD_LIBRARY_PATH) at it. A bare
+      # `runtimes/<rid>/native/` layout next to the executable was verified
+      # NOT to be auto-discovered in this project's publish shape, so the
+      # wrapper is required, not just a convenience (docs/BUILD.md
+      # "Distribution").
+      - name: Stage SQLite native runtime + launcher wrapper
+        run: |
+          set -euo pipefail
+          OUT="publish/${{ matrix.rid }}"
+          mkdir -p "$OUT/runtimes/${{ matrix.rid }}/native"
+          cp "bin/runtimes/${{ matrix.rid }}/native/"*.so "$OUT/runtimes/${{ matrix.rid }}/native/"
+          mv "$OUT/cloud-agents" "$OUT/cloud-agents.bin"
+          cat > "$OUT/cloud-agents" <<WRAPPER
+          #!/usr/bin/env bash
+          set -euo pipefail
+          DIR="\$(cd "\$(dirname "\${BASH_SOURCE[0]}")" && pwd)"
+          export LD_LIBRARY_PATH="\$DIR/runtimes/${{ matrix.rid }}/native:\${LD_LIBRARY_PATH:-}"
+          exec "\$DIR/cloud-agents.bin" "\$@"
+          WRAPPER
+          chmod +x "$OUT/cloud-agents" "$OUT/cloud-agents.bin"
+
+      # Runs the actual published artifact and hits a real endpoint over a
+      # real socket — the same bar as the manual E2E verification this
+      # release tooling exists to automate (docs/BUILD.md "Net effect").
+      # arm64 is cross-published on this x64 runner and can't be executed
+      # here; its correctness rests on the identical linux-x64 leg passing
+      # plus the shared publish/staging steps above being RID-parameterized,
+      # not hardcoded per architecture.
+      - name: Smoke-test the published executable
+        if: matrix.rid == 'linux-x64'
+        run: |
+          set -euo pipefail
+          ./publish/${{ matrix.rid }}/cloud-agents --port 18123 &
+          PID=$!
+          trap 'kill "$PID" 2>/dev/null || true' EXIT
+          ok=""
+          for _ in $(seq 1 20); do
+            if curl -fsS http://127.0.0.1:18123/api/health 2>/dev/null | grep -q '"status":"Healthy"'; then
+              ok=1
+              break
+            fi
+            sleep 1
+          done
+          [ -n "$ok" ] || { echo "::error::published executable never became healthy" >&2; exit 1; }
+          echo "Smoke test passed: /api/health reported Healthy from the published ${{ matrix.rid }} executable."
+
+      - name: Package archive
+        run: |
+          set -euo pipefail
+          VERSION="${{ needs.create-release.outputs.version }}"
+          ARCHIVE="cloud-agents-${VERSION}-${{ matrix.rid }}.tar.gz"
+          tar -czf "$ARCHIVE" -C "publish/${{ matrix.rid }}" .
+          echo "ARCHIVE=$ARCHIVE" >> "$GITHUB_ENV"
+
+      - name: Upload release asset
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_VERSION: ${{ needs.create-release.outputs.version }}
+        run: gh release upload "v${RELEASE_VERSION}" "$ARCHIVE"
+
+  # ---------------------------------------------------------------------------
+  # Delete the draft release if any build leg failed, so a broken release
+  # never lingers half-populated.
+  # ---------------------------------------------------------------------------
+  cleanup-on-failure:
+    runs-on: ubuntu-latest
+    needs: [create-release, build]
+    if: >-
+      always() &&
+      needs.create-release.result == 'success' &&
+      (needs.build.result == 'failure' || needs.build.result == 'cancelled')
+    steps:
+      - name: Delete draft release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_VERSION: ${{ needs.create-release.outputs.version }}
+        run: |
+          set -euo pipefail
+          gh release delete "v${RELEASE_VERSION}" --yes --repo "${{ github.repository }}" || true
+
+  # ---------------------------------------------------------------------------
+  # Mark the release as ready (non-draft) once every build leg has uploaded
+  # its asset.
+  # ---------------------------------------------------------------------------
+  finalize-release:
+    runs-on: ubuntu-latest
+    needs: [create-release, build]
+    if: always() && needs.create-release.result == 'success' && needs.build.result == 'success'
+    steps:
+      - name: Mark release as ready
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_VERSION: ${{ needs.create-release.outputs.version }}
+        run: |
+          set -euo pipefail
+          gh release edit "v${RELEASE_VERSION}" --draft=false --repo "${{ github.repository }}"

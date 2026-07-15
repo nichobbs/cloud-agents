@@ -554,3 +554,84 @@ Other compiler-level characteristics, independent of the above:
   defensive measure; revisit if a later compiler release confirms the stdlib
   path is reliable.
 - **`out` is a reserved keyword** — it cannot be used as an identifier.
+
+## Distribution
+
+Two ways to get a runnable Cloud Agents build:
+
+- **Development**: `./scripts/install.sh` installs Lyric (if not already on
+  `PATH`) and the .NET 10 SDK (if not already on `PATH`, skippable with
+  `SKIP_DOTNET`), then runs `lyric restore`. See the script's own header
+  comment for env overrides (`LYRIC_VERSION`, `LYRIC_DIR`, `SKIP_RESTORE`).
+- **Release**: `.github/workflows/release.yml` (triggered by pushing a
+  `vX.Y.Z` tag, or manually via `workflow_dispatch`) builds a self-contained
+  native executable per target platform and attaches it to a GitHub Release,
+  the same way lyric-lang's own `publish.yml` does for the `lyric` binary.
+
+### Why self-contained, not true Native AOT
+
+`dist/CloudAgents.Native/` is a thin C# trampoline project (`Program.cs`
+calling straight into the Lyric-emitted `CloudAgents.Program.main()`) whose
+only job is to let `dotnet publish` turn the already-compiled
+`bin/CloudAgents.dll` (plus its full NuGet-restored dependency closure —
+`Lyric.Web`, `Lyric.Docker`, the `Lyric.Stdlib.*` closure,
+`Microsoft.Data.Sqlite` + `SQLitePCLRaw`) into one deployable artifact per
+platform, mirroring the pattern `bootstrap/src/Lyric.Cli.Aot/` already uses
+to publish the `lyric` compiler itself.
+
+The obvious next step — `PublishAot=true`, a genuine ahead-of-time-compiled
+native binary — publishes cleanly with **zero ILC warnings**, but the
+resulting executable **crashes on startup**:
+
+```
+Unhandled exception. System.IndexOutOfRangeException: Index was outside the bounds of the array.
+   at System.Array.GetFlattenedIndex(Int32) + 0x1f
+   at CloudAgents.Repository.Program.runMigrations() + ...
+```
+
+This was tracked down to a general, project-independent bug in the
+self-hosted Lyric compiler's Native-AOT compatibility, reproduced with a
+minimal `slice[Record]` array literal iterated by a `for...in` loop (no
+Docker, no async, no I/O — just that shape) — filed upstream as
+[lyric-lang#5781](https://github.com/nichobbs/lyric-lang/issues/5781). Until
+that's fixed, `dist/CloudAgents.Native/CloudAgents.Native.csproj` pins
+`PublishAot` to `false` and `SelfContained` to `true`: the .NET runtime is
+still bundled into the published output (no separate `dotnet` install
+needed on the target machine), but the assemblies stay managed IL (JIT'd at
+startup) rather than ahead-of-time compiled. Verified to behave identically
+to a normal `dotnet bin/CloudAgents.dll` run, including serving a real
+`/api/health` request correctly (the release workflow's smoke-test step
+checks this on every build). Re-enable `PublishAot` once lyric-lang#5781 is
+fixed — no other change to this project should be needed.
+
+### The SQLite native-library wrapper script
+
+The trampoline project references `bin/*.dll` via a loose-file glob rather
+than a real project/package reference, so `dotnet publish` has no runtime-
+asset metadata telling it to copy `Microsoft.Data.Sqlite`'s native
+`libe_sqlite3.so` alongside the executable — and a bare
+`runtimes/<rid>/native/` directory placed next to the published executable
+was verified NOT to be auto-discovered in this project's publish shape
+(confirmed by direct experiment: the server starts but every SQLite call
+fails with `SqliteConnection`'s type initializer throwing). The release
+workflow works around this by staging the native library into
+`runtimes/<rid>/native/` next to the executable and renaming the real
+executable to `cloud-agents.bin`, then generating a `cloud-agents` wrapper
+shell script that sets `LD_LIBRARY_PATH` to that directory before `exec`-ing
+the real binary — verified working end-to-end (a real HTTP request against
+a real SQLite-backed endpoint succeeds through the wrapper, fails without
+it). Released archives should always be run via the `cloud-agents` wrapper,
+not `cloud-agents.bin` directly.
+
+### Scope: Linux only
+
+The release workflow currently builds `linux-x64` and `linux-arm64` only.
+This project orchestrates Docker containers server-side — macOS/Windows
+are not realistic deployment targets for this workload — so the smaller,
+fully-verified Linux-only slice was chosen over a broader but untested
+multi-platform matrix. `linux-arm64` is cross-published from an x64 runner
+(self-contained non-AOT publish needs no cross-compilation toolchain, just
+the target RID's runtime pack) and is not executed by the workflow's smoke
+test (no arm64 execution environment available in CI); its correctness
+rests on the identical `linux-x64` leg passing through the same
+RID-parameterized steps.
