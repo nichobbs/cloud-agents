@@ -95,16 +95,50 @@ package DockerCrashTest
 
 import Lyric.Docker
 import Std.Core
+import Std.Task
 
-pub func main(): Int {
-  await run()
+record ResultCell {
+  var isSuccess: Bool = false
+  var message: String = ""
 }
 
-async func run(): Int {
+// main() can't be async (Lyric entry points are synchronous), so bridge
+// into the async listContainers() call the same way
+// CloudAgents.Docker's src/docker_manager.l does for its sync entry
+// points (see terminateSessionContainer): kick off the async work, block
+// on the returned task with taskWaitMs, then read the result back out of
+// a shared mutable cell.
+@externInstance
+@externTarget("System.Threading.Tasks.Task.Wait")
+func taskWaitMs[T](t: in T, timeoutMs: in Int): Bool = false
+
+pub func main(): Int {
+  val cell = ResultCell(isSuccess = false, message = "")
+  val t = run(cell)
+  val completed = taskWaitMs(t, 30000)
+  if not completed {
+    println("listContainers timed out after 30 seconds")
+    return 1
+  }
+  if cell.isSuccess {
+    println("listContainers ok")
+    return 0
+  } else {
+    println("listContainers error: " + cell.message)
+    return 1
+  }
+}
+
+async func run(cell: in ResultCell): Unit {
   val client = makeDockerClientTcp("$DOCKER_HOST_PORT")
   match await listContainers(client) {
-    case Ok(_) -> { println("listContainers ok"); 0 }
-    case Err(e) -> { println("listContainers error: " + e.message); 1 }
+    case Ok(_) -> {
+      cell.isSuccess = true
+    }
+    case Err(e) -> {
+      cell.isSuccess = false
+      cell.message = e.message
+    }
   }
 }
 LYRIC
