@@ -191,16 +191,22 @@ fixed doing this (neither is a cloud-agents defect):
    published artifact predating an unrelated async-codegen fix already on
    `lyric-lang` `main`; rebuilding from source reproduced nothing. Fixed
    here by bumping the pin to `0.4.31` (already published, contains the
-   fix) — see the `[nuget]` table above.
+   fix) — see the `[nuget]` table above. `./scripts/repro-docker-crash.sh`
+   is checked in as a runnable reproduction (mirroring
+   `repro-web-bug.sh`'s convention): point it at a live daemon via
+   `CLOUD_AGENTS_DOCKER_TCP_HOST` and it mechanically re-checks whichever
+   `Lyric.Docker` version is currently pinned, should a future bump ever
+   regress it. Not wired into CI (no Docker daemon there); run manually.
 2. `getContainerLogs` misdetected raw-vs-multiplexed log streams (the
    `/logs` response's own `Content-Type` header is not a reliable signal
    for this — it reports `application/vnd.docker.raw-stream`
    unconditionally regardless of the container's actual TTY setting),
    causing every non-TTY container's log read to fail with `"Failed to
-   decode container logs as UTF-8"`. Fixed upstream in
+   decode container logs as UTF-8"`. Fix submitted upstream in
    [lyric-lang#5773](https://github.com/nichobbs/lyric-lang/pull/5773)
-   (merged); **not yet in any published `Lyric.Docker` release** — bump
-   the pin again once a release containing that fix ships (check
+   (open, not yet merged as of this writing); **not yet in any published
+   `Lyric.Docker` release either way** — bump the pin again once a
+   release containing that fix ships (check
    https://www.nuget.org/packages/Lyric.Docker for a version newer than
    0.4.31, or re-run `./scripts/repro-compiler-bug.sh`-style verification
    against a live daemon after bumping).
