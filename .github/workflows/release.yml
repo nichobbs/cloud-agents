@@ -94,21 +94,63 @@ jobs:
         with:
           dotnet-version: '10.0.x'
 
-      # Reuses scripts/install.sh's own Lyric-resolution/install logic (the
-      # same installer a developer runs locally) rather than duplicating it
-      # here — dotnet is already provided by setup-dotnet above, and the
-      # NuGet restore happens explicitly in "Build CloudAgents.dll" below, so
-      # both of install.sh's other side effects are skipped.
+      # Same resolve-then-verify-floor sequence as ci.yml's "Resolve latest
+      # Lyric release" / "Verify minimum Lyric version" steps, so a release
+      # build fails fast on the same regressed-compiler condition CI already
+      # guards against, instead of silently building against whatever
+      # "latest" happens to resolve to.
+      - name: Resolve latest Lyric release
+        id: resolve_lyric
+        run: |
+          set -euo pipefail
+          ver=""
+          for attempt in 1 2 3; do
+            ver=$(curl -sI --connect-timeout 10 --max-time 30 https://github.com/nichobbs/lyric-lang/releases/latest \
+                    | sed -n 's/.*tag\/v\([0-9.]*\).*/\1/p' | tr -d '\r')
+            [ -n "$ver" ] && break
+            echo "attempt $attempt: could not resolve latest Lyric release tag, retrying..." >&2
+            sleep 3
+          done
+          [ -n "$ver" ] || { echo "could not resolve latest Lyric release tag after 3 attempts" >&2; exit 1; }
+          echo "Resolved latest Lyric release: v$ver"
+          echo "version=$ver" >> "$GITHUB_OUTPUT"
+
+      - name: Verify minimum Lyric version
+        env:
+          RESOLVED: ${{ steps.resolve_lyric.outputs.version }}
+        run: |
+          set -euo pipefail
+          MIN_VERSION="$(cat MIN_LYRIC_VERSION)"
+          lowest="$(printf '%s\n%s\n' "$MIN_VERSION" "$RESOLVED" | sort -V | head -1)"
+          if [ "$lowest" != "$MIN_VERSION" ]; then
+            echo "::error::Latest Lyric release ($RESOLVED) is older than $MIN_VERSION (see MIN_LYRIC_VERSION) — refusing to cut a release against a regressed compiler." >&2
+            exit 1
+          fi
+          echo "Lyric $RESOLVED >= required minimum $MIN_VERSION"
+
+      # Reuses scripts/install.sh's own install logic (the same installer a
+      # developer runs locally), pinned to the exact version just verified
+      # above rather than letting it re-resolve "latest" independently.
+      # dotnet is already provided by setup-dotnet above, and the NuGet
+      # restore happens explicitly in "Build CloudAgents.dll" below, so both
+      # of install.sh's other side effects are skipped.
       - name: Install Lyric compiler
+        env:
+          LYRIC_VERSION: ${{ steps.resolve_lyric.outputs.version }}
         run: |
           set -euo pipefail
           SKIP_DOTNET=1 SKIP_RESTORE=1 ./scripts/install.sh
           echo "$HOME/.lyric/bin" >> "$GITHUB_PATH"
 
-      - name: Build CloudAgents.dll
-        run: |
-          lyric restore
-          lyric build
+      # Uses build-full.sh rather than a bare `lyric restore && lyric build`:
+      # the latter does NOT populate bin/runtimes/ (that directory only
+      # exists because build-full.sh separately copies
+      # Microsoft.Data.Sqlite's native e_sqlite3 library there from the NuGet
+      # package cache) — confirmed by a clean-checkout repro after this
+      # workflow's first version assumed otherwise. The "Stage SQLite native
+      # runtime" step below depends on bin/runtimes/<rid>/native/ existing.
+      - name: Build CloudAgents.dll (including native SQLite runtimes)
+        run: ./scripts/build-full.sh
 
       # Publishes dist/CloudAgents.Native — a thin C# trampoline into the
       # already-built CloudAgents.dll (see that project's own comments) — as
