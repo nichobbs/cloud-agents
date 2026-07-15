@@ -160,7 +160,8 @@ jobs:
             scripts/run-api.sh \
             scripts/repro-compiler-bug.sh \
             scripts/repro-web-bug.sh \
-            scripts/repro-web-request-crash.sh; do
+            scripts/repro-web-request-crash.sh \
+            scripts/repro-docker-crash.sh; do
             bash -n "$f" && echo "ok: $f"
           done
 

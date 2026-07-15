@@ -52,7 +52,7 @@ output_assembly = "CloudAgents.dll"
 
 [nuget]
 "Lyric.Web"             = "0.4.26"
-"Lyric.Docker"          = "0.4.29"
+"Lyric.Docker"          = "0.4.31"
 "Std.Logging"           = "0.4.20"
 "Microsoft.Data.Sqlite" = "10.0.9"
 "SourceGear.sqlite3"    = "3.53.3"
