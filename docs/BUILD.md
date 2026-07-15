@@ -164,20 +164,55 @@ by an automated test versus believed from the code compiling:
    response, plus an `AuthMiddleware` that finally calls
    `CloudAgents.Auth.enforce` on every request.
 
-Net effect: `scripts/run-api.sh` builds and starts, and the two `Lyric.Web`
-gaps that previously blocked real request dispatch are resolved (alongside
-the seven compiler bugs tracked on this page) — but that this compiles and
-the diagnostic script confirms `Encoding.GetBytes` resolves is not the same
-as confirming the server correctly serves a real HTTP request end-to-end.
-An unrelated defect (constructing a `Web.Request` record crashes at
-runtime — see #354, mechanically re-checked by
-`./scripts/repro-web-request-crash.sh` the same way `repro-web-bug.sh`
-tracks the `Encoding.GetBytes` crash above) currently blocks writing an
-automated test that drives `Handler.handle()`/`Middleware.wrap()`
-directly, so "the server dispatches and enforces auth correctly" is
-believed-true from the code compiling and manual reasoning about the
-framework's own (different) internal request construction, not confirmed
-by an automated end-to-end test.
+**Net effect, now genuinely confirmed end-to-end (2026-07-15), not just
+believed from compiling.** `scripts/run-api.sh` builds and starts, and a
+real running server was driven with real `curl` requests against
+`--urls http://127.0.0.1:<port>`: `GET /api/health`, `GET /api/sessions`,
+`GET /api/prompts` all returned correct `200` responses with real JSON
+bodies, dispatched through the actual `Handler`/`Middleware`/
+`AuthMiddleware` chain over a real socket — not a diagnostic script, an
+actual client hitting the actual listener. This resolves the "believed,
+not confirmed" gap #354 left open (the `Web.Request`-construction crash
+that blocked writing an *automated* end-to-end test is unrelated to
+whether the server itself works, and `repro-web-request-crash.sh` still
+tracks that specific construction bug on its own terms).
+
+**Container creation was also verified genuinely end-to-end against a
+real Docker daemon**, including the full production path: `POST
+/api/sessions` followed by `POST /api/sessions/{id}/messages` spawned a
+real `claude-code:base` container via `CloudAgents.Docker`, which cloned
+a real GitHub repo and streamed real output back through the session's
+SSE endpoint. Two real bugs in the `Lyric.Docker` library were found and
+fixed doing this (neither is a cloud-agents defect):
+
+1. `Lyric.Docker` 0.4.29 (the previously-pinned NuGet version) crashed
+   with `InvalidProgramException` on *any* live-daemon call
+   (`ping`/`createContainerWithNetwork`/etc.) — confirmed to be a stale
+   published artifact predating an unrelated async-codegen fix already on
+   `lyric-lang` `main`; rebuilding from source reproduced nothing. Fixed
+   here by bumping the pin to `0.4.31` (already published, contains the
+   fix) — see the `[nuget]` table above.
+2. `getContainerLogs` misdetected raw-vs-multiplexed log streams (the
+   `/logs` response's own `Content-Type` header is not a reliable signal
+   for this — it reports `application/vnd.docker.raw-stream`
+   unconditionally regardless of the container's actual TTY setting),
+   causing every non-TTY container's log read to fail with `"Failed to
+   decode container logs as UTF-8"`. Fixed upstream in
+   [lyric-lang#5773](https://github.com/nichobbs/lyric-lang/pull/5773)
+   (merged); **not yet in any published `Lyric.Docker` release** — bump
+   the pin again once a release containing that fix ships (check
+   https://www.nuget.org/packages/Lyric.Docker for a version newer than
+   0.4.31, or re-run `./scripts/repro-compiler-bug.sh`-style verification
+   against a live daemon after bumping).
+
+A separate, narrower gap surfaced during this verification and remains
+open: the container's own `entrypoint.sh`/CLI invocation errored on a
+first-run session (`--resume requires a valid session ID or session
+title`), and the session's polled `GET /api/sessions/{id}/output`
+endpoint returned an empty `output` even though the SSE stream carried
+real chunks during the run — both are `src/` / `docker/entrypoint.sh`
+concerns, not `Lyric.Docker`/compiler issues, and are unexplored past this
+point. Tracked as a follow-up rather than blocking this verification pass.
 
 ### Bumping a NuGet dependency version
 

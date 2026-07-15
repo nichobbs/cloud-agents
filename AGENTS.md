@@ -56,10 +56,15 @@ for the first time in this project's history. At that point it could not
 yet survive or correctly answer a real HTTP request — two root-caused
 `Lyric.Web` gaps. **Both are now fixed as of the `Lyric.Web` 0.4.26 pin**
 (real request dispatch + header access), and `src/main.l` was migrated to
-the resulting `Handler`/`Middleware` model, wiring in auth enforcement; see
-`docs/BUILD.md` "Dependencies" for detail, including the caveat that this
-is confirmed by compiling and `repro-web-bug.sh`'s diagnostic, not yet by
-an automated end-to-end HTTP test (nichobbs/cloud-agents#354). Bug 6
+the resulting `Handler`/`Middleware` model, wiring in auth enforcement.
+**Genuinely confirmed end-to-end as of 2026-07-15** (not just compiling):
+a real running server answered real `curl` requests correctly, and a real
+session creation spawned a real Docker container that cloned a real repo
+and streamed real output back — see `docs/BUILD.md` "Dependencies" /
+"Net effect" for the full verification, including two `Lyric.Docker`
+bugs found and fixed along the way (nichobbs/cloud-agents#354's automated-test
+gap remains open, but the server behavior it was blocking on confirming is
+now independently confirmed by manual live verification). Bug 6
 (`slice[T].append(x)` — the compiler's own documented idiom for building up
 a slice — threw `"unsupported method 'append'"` at runtime unconditionally,
 builds fine, failed only when actually called,
