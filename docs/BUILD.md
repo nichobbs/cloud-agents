@@ -35,7 +35,7 @@ binary packages — no sibling checkout, no source patching:
 ```toml
 [nuget]
 "Lyric.Web"             = "0.4.26"
-"Lyric.Docker"          = "0.4.29"
+"Lyric.Docker"          = "0.4.31"
 "Std.Logging"           = "0.4.20"
 "Microsoft.Data.Sqlite" = "10.0.9"
 ```
@@ -205,14 +205,18 @@ fixed doing this (neither is a cloud-agents defect):
    0.4.31, or re-run `./scripts/repro-compiler-bug.sh`-style verification
    against a live daemon after bumping).
 
-A separate, narrower gap surfaced during this verification and remains
-open: the container's own `entrypoint.sh`/CLI invocation errored on a
-first-run session (`--resume requires a valid session ID or session
-title`), and the session's polled `GET /api/sessions/{id}/output`
-endpoint returned an empty `output` even though the SSE stream carried
-real chunks during the run — both are `src/` / `docker/entrypoint.sh`
-concerns, not `Lyric.Docker`/compiler issues, and are unexplored past this
-point. Tracked as a follow-up rather than blocking this verification pass.
+Two separate, narrower gaps surfaced during this verification and remain
+open, both `src/` / `docker/entrypoint.sh` concerns, not `Lyric.Docker`/
+compiler issues: the container's own `entrypoint.sh`/CLI invocation
+errored on a first-run session (`--resume requires a valid session ID
+or session title`), tracked as
+[#386](https://github.com/nichobbs/cloud-agents/issues/386); and the
+session's polled `GET /api/sessions/{id}/output` endpoint returned an
+empty `output` even though the SSE stream carried real chunks during
+the run, tracked as
+[#387](https://github.com/nichobbs/cloud-agents/issues/387). Neither is
+explored past the point of filing; tracked as follow-ups rather than
+blocking this verification pass.
 
 ### Bumping a NuGet dependency version
 
