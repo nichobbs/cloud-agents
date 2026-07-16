@@ -100,7 +100,7 @@ func isSafeModelName(model: in String): Bool {
 }
 
 func isKnownHarness(harness: in String): Bool {
-  return harness == "claude" or harness == "codex" or harness == "opencode"
+  return harness == "claude" or harness == "codex" or harness == "opencode" or harness == "gemini"
 }
 
 @generate(Json)
@@ -160,7 +160,7 @@ pub func createSession(req: in CreateSessionRequest): Result[CreateSessionRespon
     return Err(Web.badRequest("branch is not a valid git branch name"))
   }
   if req.harness.length > 0 and not isKnownHarness(req.harness) {
-    return Err(Web.badRequest("harness must be one of: claude, codex, opencode"))
+    return Err(Web.badRequest("harness must be one of: claude, codex, opencode, gemini"))
   }
   if not isSafeModelName(req.model) {
     return Err(Web.badRequest("model contains invalid characters or is too long"))
@@ -229,41 +229,17 @@ pub func getSessionProfileHandler(id: in String): Result[SessionProfileRef, Web.
   }
 }
 
-/// Public projection of a session for the list endpoint: only what a client
-/// needs to rebuild its list. Internal fields (containerId, nativeSessionId)
-/// are deliberately excluded — this is the first bulk-read surface for
-/// session data and should not enumerate infrastructure handles.
-func sessionSummaryJson(s: in AgentSession): String {
-  return "{\"sessionId\":\"" + CloudAgents.SessionStore.jsonEscapeField(s.sessionId) + "\",\"repoUrl\":\"" +
-    CloudAgents.SessionStore.jsonEscapeField(s.repoUrl) +
-    "\",\"branch\":\"" +
-    CloudAgents.SessionStore.jsonEscapeField(s.branch) +
-    "\",\"harness\":\"" +
-    CloudAgents.SessionStore.jsonEscapeField(s.harness) +
-    "\",\"model\":\"" +
-    CloudAgents.SessionStore.jsonEscapeField(s.model) +
-    "\"}"
-}
-
 /// List every stored session as `{"sessions":[...]}`. Lets a client rebuild
 /// its session list after local state is lost (new browser, cleared storage)
-/// instead of stranding server-side sessions forever.
+/// instead of stranding server-side sessions forever. The projection —
+/// including status/createdAt/lastMessageAt, excluding infrastructure handles
+/// (containerId, nativeSessionId) — is built in CloudAgents.SessionStore,
+/// where the raw rows with those bookkeeping columns are visible.
 pub func listSessions(): Result[String, Web.ApiError] {
-  val arr = match CloudAgents.SessionStore.getSessions() {
-    case Ok(a) -> a
+  match CloudAgents.SessionStore.sessionSummariesJson() {
+    case Ok(json) -> return Ok(value = json)
     case Err(e) -> return Err(Web.internalError("failed to list sessions: " + CloudAgents.Sqlite.dbErrorMessage(e)))
   }
-  var json = "{\"sessions\":["
-  var i = 0
-  val len = CloudAgents.SessionStore.getSessionArrayLength(arr)
-  while i < len {
-    if i > 0 {
-      json = json + ","
-    }
-    json = json + sessionSummaryJson(CloudAgents.SessionStore.getSessionArrayValue(arr, i))
-    i = i + 1
-  }
-  return Ok(value = json + "]}")
 }
 
 /// Accept user prompt, run container, and return output synchronously.

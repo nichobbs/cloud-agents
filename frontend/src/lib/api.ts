@@ -4,6 +4,18 @@ import type { Comment, Credential, Message, Profile, Prompt, Run, Todo, Webhook 
 
 const BASE = (import.meta.env['VITE_API_URL'] as string | undefined) ?? '';
 
+/** One entry of GET /api/sessions. */
+export interface ServerSession {
+  sessionId: string;
+  repoUrl: string;
+  branch: string;
+  harness?: string;
+  model?: string;
+  status?: string;
+  createdAt?: string;
+  lastMessageAt?: string;
+}
+
 function authHeaders(): HeadersInit {
   const token = localStorage.getItem('cloud_agents_token');
   return token ? { Authorization: `Bearer ${token}` } : {};
@@ -15,16 +27,13 @@ function normalisePrompt(p: Prompt): Prompt {
 }
 
 export const api = {
-  /** Server-side session list (`GET /api/sessions`). `createdAt` is not part
-   *  of the server record, so entries come back without it. */
-  listSessions: async (): Promise<
-    { sessionId: string; repoUrl: string; branch: string; harness?: string; model?: string }[]
-  > => {
+  /** Server-side session list (`GET /api/sessions`). Newer backends include
+   *  status/createdAt/lastMessageAt (epoch-millis strings); older ones omit
+   *  them, so all are optional here. */
+  listSessions: async (): Promise<ServerSession[]> => {
     const res = await fetch(`${BASE}/api/sessions`, { headers: authHeaders() });
     if (!res.ok) throw new Error(`${res.status} ${await res.text()}`);
-    const body = (await res.json()) as {
-      sessions?: { sessionId: string; repoUrl: string; branch: string; harness?: string; model?: string }[];
-    };
+    const body = (await res.json()) as { sessions?: ServerSession[] };
     return body.sessions ?? [];
   },
 

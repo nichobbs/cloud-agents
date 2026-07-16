@@ -2,12 +2,13 @@
 # Build harness runner images for local development and deployment.
 #
 # Usage:  ./scripts/build-docker.sh [target]
-#   target: claude (default) | codex | opencode | all
+#   target: claude (default) | codex | opencode | gemini | all
 #
 # Images produced:
 #   claude-code:base  — Claude Code CLI runner
 #   codex:base        — OpenAI Codex CLI runner
 #   opencode:base     — OpenCode runner
+#   gemini:base       — Google Gemini CLI runner
 
 set -euo pipefail
 
@@ -35,14 +36,21 @@ build_opencode() {
     echo "    opencode:base  ✓"
 }
 
+build_gemini() {
+    echo "==> Building gemini:base"
+    docker build -t gemini:base -f "$DOCKER_DIR/Dockerfile.gemini" "$DOCKER_DIR"
+    echo "    gemini:base  ✓"
+}
+
 case "$TARGET" in
     claude)   build_claude ;;
     codex)    build_codex ;;
     opencode) build_opencode ;;
-    all)      build_claude; build_codex; build_opencode ;;
+    gemini)   build_gemini ;;
+    all)      build_claude; build_codex; build_opencode; build_gemini ;;
     *)
         echo "build-docker: unknown target '$TARGET'" >&2
-        echo "  usage: $0 [claude|codex|opencode|all]" >&2
+        echo "  usage: $0 [claude|codex|opencode|gemini|all]" >&2
         exit 1
         ;;
 esac

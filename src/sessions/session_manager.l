@@ -29,6 +29,9 @@ pub func defaultModelForHarness(harness: in String): String {
   if harness == "opencode" {
     return "claude-sonnet-4-6"
   }
+  if harness == "gemini" {
+    return "gemini-2.5-pro"
+  }
   return "claude-opus-4-8"
 }
 
@@ -343,6 +346,44 @@ func rowToSession(r: in CloudAgents.Sqlite.Row): AgentSession {
     model = colAt(r.cols, 6),
     nativeSessionId = colAt(r.cols, 7)
   )
+}
+
+/// The session-list projection as a complete `{"sessions":[...]}` JSON string,
+/// most recently active first. Unlike getSessions()/AgentSession this includes
+/// the bookkeeping columns the UI needs to show *when* things happened and
+/// what a session is doing right now — status, created_at, last_message_at —
+/// while still excluding infrastructure handles (container_id,
+/// native_session_id). Built here rather than in CloudAgents.Handlers because
+/// this package is where the raw rows (with those extra columns) are visible.
+pub func sessionSummariesJson(): Result[String, CloudAgents.Sqlite.DbError] {
+  val rows = CloudAgents.Sqlite.query(CloudAgents.Db.listSessionsByUserSql(CloudAgents.Auth.currentUserId()))?
+  var json = "{\"sessions\":["
+  var i = 0
+  val len = CloudAgents.Sqlite.getRowArrayLength(rows)
+  while i < len {
+    if i > 0 {
+      json = json + ","
+    }
+    val r = CloudAgents.Sqlite.getRowArrayValue(rows, i)
+    // Column order matches CloudAgents.Db's sessionColumns (see rowToSession).
+    json = json + "{\"sessionId\":\"" + jsonEscapeField(colAt(r.cols, 0)) + "\",\"repoUrl\":\"" +
+      jsonEscapeField(colAt(r.cols, 2)) +
+      "\",\"branch\":\"" +
+      jsonEscapeField(colAt(r.cols, 3)) +
+      "\",\"harness\":\"" +
+      jsonEscapeField(colAt(r.cols, 5)) +
+      "\",\"model\":\"" +
+      jsonEscapeField(colAt(r.cols, 6)) +
+      "\",\"status\":\"" +
+      jsonEscapeField(colAt(r.cols, 8)) +
+      "\",\"createdAt\":\"" +
+      jsonEscapeField(colAt(r.cols, 9)) +
+      "\",\"lastMessageAt\":\"" +
+      jsonEscapeField(colAt(r.cols, 10)) +
+      "\"}"
+    i = i + 1
+  }
+  return Ok(value = json + "]}")
 }
 
 /// All of the current user's sessions, most recently active first.

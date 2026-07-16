@@ -102,6 +102,14 @@ func verifyModelBackfill(resp: in CreateSessionResponse): Unit {
   val _ = mustOptSession(removeSession(resp.sessionId))
 }
 
+func verifyGeminiBackfill(resp: in CreateSessionResponse): Unit {
+  match mustOptSession(getSession(resp.sessionId)) {
+    case Some(s) -> assertEqual(s.model, "gemini-2.5-pro", "empty model backfilled with gemini default")
+    case None -> assertTrue(false, "created session should exist")
+  }
+  val _ = mustOptSession(removeSession(resp.sessionId))
+}
+
 func verifyEscapedRoundTrip(p: in AgentSession): Unit {
   assertEqual(p.repoUrl, "https://github.com/nic/re\"po", "quote round-trips")
   assertEqual(p.branch, "feat\\wip", "backslash round-trips")
@@ -114,6 +122,10 @@ func verifyListSessionsBody(body: in String): Unit {
   assertTrue(body.startsWith("{\"sessions\":["), "list body is a sessions object")
   assertTrue(body.contains("\"sessionId\":\"ls-1\""), "first session listed")
   assertTrue(body.contains("\"sessionId\":\"ls-2\""), "second session listed")
+  // Bookkeeping columns the UI shows (when created / last active / running?).
+  assertTrue(body.contains("\"status\":\"IDLE\""), "status included in list")
+  assertTrue(body.contains("\"createdAt\":\""), "createdAt included in list")
+  assertTrue(body.contains("\"lastMessageAt\":\""), "lastMessageAt included in list")
   // The list is a public projection: infrastructure handles must not leak.
   assertFalse(body.contains("containerId"), "containerId excluded from list")
   assertFalse(body.contains("nativeSessionId"), "nativeSessionId excluded from list")
@@ -343,6 +355,7 @@ test "Test default model per harness" {
   assertEqual(defaultModelForHarness("claude"), "claude-opus-4-8", "claude default model")
   assertEqual(defaultModelForHarness("codex"), "o4-mini", "codex default model")
   assertEqual(defaultModelForHarness("opencode"), "claude-sonnet-4-6", "opencode default model")
+  assertEqual(defaultModelForHarness("gemini"), "gemini-2.5-pro", "gemini default model")
   assertEqual(defaultModelForHarness("unknown"), "claude-opus-4-8", "unknown harness falls back to claude default")
 }
 
@@ -493,6 +506,13 @@ test "Test Handler createSession validation" {
   match createSession(req4) {
     case Ok(resp) -> verifyModelBackfill(resp)
     case Err(_) -> assertTrue(false, "should create session with empty model")
+  }
+
+  // The gemini harness is accepted and gets its own default model.
+  val req5 = CreateSessionRequest(repoUrl = "https://github.com/nic/repos/cloud-agents", branch = "main", harness = "gemini", model = "")
+  match createSession(req5) {
+    case Ok(resp) -> verifyGeminiBackfill(resp)
+    case Err(_) -> assertTrue(false, "should accept the gemini harness")
   }
 
   println("✓ Handler validation tests passed!")
