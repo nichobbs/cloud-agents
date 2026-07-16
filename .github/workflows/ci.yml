@@ -151,12 +151,14 @@ jobs:
             docker/entrypoint.sh \
             docker/entrypoint-codex.sh \
             docker/entrypoint-opencode.sh \
+            docker/entrypoint-gemini.sh \
             deploy/install-docker.sh \
             deploy/backup.sh \
             scripts/verify.sh \
             scripts/build-full.sh \
             scripts/dev.sh \
             scripts/build-docker.sh \
+            scripts/upload-credentials.sh \
             scripts/run-api.sh \
             scripts/repro-compiler-bug.sh \
             scripts/repro-web-bug.sh \

@@ -53,8 +53,11 @@ upload() {
         echo "would upload ${name}  (${source})"
         return 0
     fi
+    # Secret goes through the environment, not argv — process arguments are
+    # world-readable via ps/procfs, environment variables are not.
     local payload
-    payload=$(python3 -c 'import json,sys; print(json.dumps({"name": sys.argv[1], "value": sys.argv[2]}))' "$name" "$value")
+    payload=$(CRED_NAME="$name" CRED_VALUE="$value" python3 -c \
+        'import json,os; print(json.dumps({"name": os.environ["CRED_NAME"], "value": os.environ["CRED_VALUE"]}))')
     local code
     code=$(curl -sS -o /dev/null -w '%{http_code}' -X POST "${BASE_URL}/api/credentials" \
         -H 'Content-Type: application/json' \
