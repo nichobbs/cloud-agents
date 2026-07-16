@@ -1,12 +1,15 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { Link, useLocation, useNavigate, useParams } from 'react-router-dom';
+import { GitHubPanel } from '../components/GitHubPanel';
 import { MessageBlock } from '../components/MessageBlock';
 import { Terminal } from '../components/Terminal';
 import { useSessions } from '../context/SessionsContext';
 import { useStreamMessage } from '../hooks/useStreamMessage';
-import { getHarness } from '../lib/harnesses';
+import { getHarness, type ModelOption } from '../lib/harnesses';
 import { api } from '../lib/api';
+import { discoverModels } from '../lib/models';
+import { formatElapsed, formatFullTimestamp, formatTimestamp, parseTimestamp } from '../lib/time';
 import type { Message, Profile, Prompt, Run } from '../types';
 
 /** Unique `{{name}}` placeholder names in a prompt body, in first-seen order. */
@@ -220,6 +223,52 @@ export function SessionDetail() {
   useEffect(() => {
     isStreamingRef.current = isStreaming;
   }, [isStreaming]);
+
+  // Run timing for the live-output panel: when streaming starts, stamp the
+  // start; when it ends, stamp the finish. A 1s ticker drives the elapsed
+  // readout while the run is live, so it's always clear when a run began and
+  // how long it has been going.
+  const [runStartedAt, setRunStartedAt] = useState<number | null>(null);
+  const [runEndedAt, setRunEndedAt] = useState<number | null>(null);
+  const [nowTick, setNowTick] = useState(() => Date.now());
+  const prevStreamingRef = useRef(false);
+  useEffect(() => {
+    if (isStreaming && !prevStreamingRef.current) {
+      setRunStartedAt(Date.now());
+      setRunEndedAt(null);
+    } else if (!isStreaming && prevStreamingRef.current) {
+      setRunEndedAt(Date.now());
+    }
+    prevStreamingRef.current = isStreaming;
+  }, [isStreaming]);
+  useEffect(() => {
+    if (!isStreaming) return;
+    const t = setInterval(() => setNowTick(Date.now()), 1000);
+    return () => clearInterval(t);
+  }, [isStreaming]);
+  // Timing belongs to a single session's run; clear it on navigation.
+  useEffect(() => {
+    setRunStartedAt(null);
+    setRunEndedAt(null);
+  }, [sessionId]);
+
+  // Live model discovery for this session's harness (static catalog fallback;
+  // see lib/models.ts). The session's *current* model is always selectable
+  // even when a provider listing omits it.
+  const sessionHarness = session?.harness ?? 'claude';
+  const [availableModels, setAvailableModels] = useState<ModelOption[]>(
+    () => getHarness(sessionHarness).models,
+  );
+  useEffect(() => {
+    let active = true;
+    setAvailableModels(getHarness(sessionHarness).models);
+    discoverModels(sessionHarness).then(({ models }) => {
+      if (active) setAvailableModels(models);
+    });
+    return () => {
+      active = false;
+    };
+  }, [sessionHarness]);
 
   const highlightedId = location.hash.startsWith('#message-')
     ? location.hash.slice('#message-'.length)
@@ -625,7 +674,10 @@ export function SessionDetail() {
               disabled={modelSwitching || isStreaming}
               title="Switch model (takes effect on next message)"
             >
-              {getHarness(session.harness ?? 'claude').models.map(m => (
+              {(session.model && !availableModels.some(m => m.id === session.model)
+                ? [{ id: session.model, label: session.model }, ...availableModels]
+                : availableModels
+              ).map(m => (
                 <option key={m.id} value={m.id}>{m.label}</option>
               ))}
             </select>
@@ -651,6 +703,14 @@ export function SessionDetail() {
             <span style={{ fontFamily: 'monospace', fontSize: '11px' }}>
               {session.sessionId}
             </span>
+            {formatTimestamp(session.createdAt) && (
+              <>
+                <span style={{ margin: '0 8px', color: '#30363d' }}>·</span>
+                <span title={formatFullTimestamp(session.createdAt)}>
+                  created {formatTimestamp(session.createdAt)}
+                </span>
+              </>
+            )}
           </div>
           {modelError && <div style={modelErrorStyle}>Model switch failed: {modelError}</div>}
         </div>
@@ -671,6 +731,8 @@ export function SessionDetail() {
         </div>
       </div>
 
+      <GitHubPanel repoUrl={session.repoUrl} branch={session.branch} />
+
       {showRuns && (
         <div style={runsPanelStyle}>
           <div style={runsHeaderStyle}>Run history</div>
@@ -679,7 +741,10 @@ export function SessionDetail() {
             <div key={r.id} style={runRowStyle}>
               <span style={runStatusStyle(r.status)}>{r.status}</span>
               <span style={runPreviewStyle} title={r.promptPreview}>{r.promptPreview || '(no prompt)'}</span>
-              <span style={runMetaStyle}>{formatRunTime(r.startedAt)}</span>
+              <span style={runMetaStyle} title={formatFullTimestamp(r.startedAt)}>
+                {formatTimestamp(r.startedAt)}
+                {runDuration(r) ? ` · ${runDuration(r)}` : ''}
+              </span>
             </div>
           ))}
         </div>
@@ -709,6 +774,14 @@ export function SessionDetail() {
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
               <div style={sendError ? liveErrorLabelStyle : liveLabelStyle}>
                 {isStreaming ? 'running…' : sendError ? 'failed' : 'done — could not refresh transcript'}
+                {runStartedAt !== null && (
+                  <span style={liveTimingStyle} title={new Date(runStartedAt).toLocaleString()}>
+                    {' '}· started {formatTimestamp(String(runStartedAt))}
+                    {isStreaming && ` · ${formatElapsed(nowTick - runStartedAt)}`}
+                    {!isStreaming && runEndedAt !== null &&
+                      ` · finished ${formatTimestamp(String(runEndedAt))} (${formatElapsed(runEndedAt - runStartedAt)})`}
+                  </span>
+                )}
               </div>
               {isStreaming && (
                 <button
@@ -782,10 +855,12 @@ export function SessionDetail() {
   );
 }
 
-function formatRunTime(epochMillis: string): string {
-  const n = Number(epochMillis);
-  if (!Number.isFinite(n) || n <= 0) return '';
-  return new Date(n).toLocaleString();
+/** "2:13" duration for a finished run, '' while running / on bad data. */
+function runDuration(r: Run): string {
+  const started = parseTimestamp(r.startedAt);
+  const ended = parseTimestamp(r.endedAt);
+  if (!Number.isFinite(started) || !Number.isFinite(ended) || ended < started) return '';
+  return formatElapsed(ended - started);
 }
 
 const runStatusColor: Record<string, string> = {
@@ -1037,6 +1112,12 @@ const liveLabelStyle: React.CSSProperties = {
 const liveErrorLabelStyle: React.CSSProperties = {
   ...liveLabelStyle,
   color: '#f85149',
+};
+
+const liveTimingStyle: React.CSSProperties = {
+  color: '#8b949e',
+  textTransform: 'none',
+  letterSpacing: 'normal',
 };
 
 const todosBtnStyle: React.CSSProperties = {

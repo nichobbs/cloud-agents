@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react';
+import { Link } from 'react-router-dom';
 import { api } from '../lib/api';
 import type { Credential } from '../types';
 
@@ -63,7 +64,11 @@ export function Credentials() {
       <p style={subtitleStyle}>
         Secrets stored here are encrypted at rest and injected as environment variables into every
         runner container (e.g. <code>GITHUB_TOKEN</code>, <code>GOOGLE_APPLICATION_CREDENTIALS</code>).
-        Values are write-only — they are never shown again after saving.
+        Values are write-only — they are never shown again after saving. For provider API keys,
+        prefer the <Link to="/integrations" style={{ color: '#58a6ff' }}>Integrations</Link> page:
+        it validates the key, uploads it here under its canonical name, and unlocks live model
+        discovery and GitHub panels. <code>scripts/upload-credentials.sh</code> can auto-import
+        credentials from your local harness installs (Claude Code, Codex, OpenCode, Gemini, gh).
       </p>
 
       <div style={formStyle}>

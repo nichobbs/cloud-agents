@@ -1,20 +1,57 @@
-import { useState } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useEffect, useState } from 'react';
+import { useNavigate, useSearchParams } from 'react-router-dom';
 import { useSessions } from '../context/SessionsContext';
-import { DEFAULT_HARNESS, HARNESSES, getHarness } from '../lib/harnesses';
+import { DEFAULT_HARNESS, HARNESSES, getHarness, type ModelOption } from '../lib/harnesses';
 import { api } from '../lib/api';
+import { isGitHubConnected, listRepos } from '../lib/github';
+import { discoverModels } from '../lib/models';
 
 export function NewSession() {
-  const [repoUrl, setRepoUrl] = useState('');
-  const [branch, setBranch] = useState('main');
+  // The Repos page links here with ?repoUrl=…&branch=… pre-filled.
+  const [searchParams] = useSearchParams();
+  const [repoUrl, setRepoUrl] = useState(searchParams.get('repoUrl') ?? '');
+  const [branch, setBranch] = useState(searchParams.get('branch') ?? 'main');
   const [harness, setHarness] = useState(DEFAULT_HARNESS);
   const [model, setModel] = useState(getHarness(DEFAULT_HARNESS).defaultModel);
+  const [models, setModels] = useState<ModelOption[]>(getHarness(DEFAULT_HARNESS).models);
+  const [modelSource, setModelSource] = useState<'live' | 'static'>('static');
+  const [repoSuggestions, setRepoSuggestions] = useState<string[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   const { addSession } = useSessions();
   const navigate = useNavigate();
 
-  const harnessConfig = getHarness(harness);
+  // Live model discovery for the chosen harness (falls back to the static
+  // catalog when no provider key is connected — see lib/models.ts).
+  useEffect(() => {
+    let active = true;
+    discoverModels(harness).then(({ models: discovered, source }) => {
+      if (!active) return;
+      setModels(discovered);
+      setModelSource(source);
+      // Keep the current selection if the discovered list still has it.
+      setModel(prev => (discovered.some(m => m.id === prev) ? prev : getHarness(harness).defaultModel));
+    });
+    return () => {
+      active = false;
+    };
+  }, [harness]);
+
+  // Clone-URL autocomplete from the connected GitHub account.
+  useEffect(() => {
+    if (!isGitHubConnected()) return;
+    let active = true;
+    listRepos(2)
+      .then(rs => {
+        if (active) setRepoSuggestions(rs.map(r => r.cloneUrl));
+      })
+      .catch(() => {
+        /* suggestions are a bonus — the field still accepts any URL */
+      });
+    return () => {
+      active = false;
+    };
+  }, []);
 
   const handleHarnessChange = (h: string) => {
     setHarness(h);
@@ -67,7 +104,15 @@ export function NewSession() {
             onChange={e => setRepoUrl(e.target.value)}
             required
             disabled={loading}
+            list={repoSuggestions.length > 0 ? 'repo-suggestions' : undefined}
           />
+          {repoSuggestions.length > 0 && (
+            <datalist id="repo-suggestions">
+              {repoSuggestions.map(url => (
+                <option key={url} value={url} />
+              ))}
+            </datalist>
+          )}
         </div>
 
         <div style={fieldStyle}>
@@ -99,7 +144,19 @@ export function NewSession() {
             </select>
           </div>
           <div style={{ flex: 1 }}>
-            <label style={labelStyle} htmlFor="model">Model</label>
+            <label style={labelStyle} htmlFor="model">
+              Model{' '}
+              <span
+                style={modelSourceStyle}
+                title={
+                  modelSource === 'live'
+                    ? 'Listed live from the provider API using your connected key'
+                    : 'Static catalog — connect a provider key on the Integrations page for live discovery'
+                }
+              >
+                {modelSource === 'live' ? '(live)' : '(catalog)'}
+              </span>
+            </label>
             <select
               id="model"
               style={selectStyle}
@@ -107,7 +164,7 @@ export function NewSession() {
               onChange={e => setModel(e.target.value)}
               disabled={loading}
             >
-              {harnessConfig.models.map(m => (
+              {models.map(m => (
                 <option key={m.id} value={m.id}>{m.label}</option>
               ))}
             </select>
@@ -186,6 +243,12 @@ const selectStyle: React.CSSProperties = {
   boxSizing: 'border-box',
   outline: 'none',
   cursor: 'pointer',
+};
+
+const modelSourceStyle: React.CSSProperties = {
+  fontSize: '11px',
+  fontWeight: 400,
+  color: '#6e7681',
 };
 
 const errorStyle: React.CSSProperties = {

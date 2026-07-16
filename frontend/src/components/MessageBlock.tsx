@@ -1,5 +1,6 @@
 import { useState } from 'react';
 import { api } from '../lib/api';
+import { formatFullTimestamp, formatTimestamp } from '../lib/time';
 import type { Message } from '../types';
 import { AnsiContent } from './AnsiContent';
 import { CommentThread } from './CommentThread';
@@ -50,7 +51,9 @@ export function MessageBlock({ message, highlighted, onTodoAdded }: MessageBlock
         <span style={{ ...roleBadge, ...(isUser ? userBadge : agentBadge) }}>
           {isUser ? 'you' : 'agent'}
         </span>
-        <span style={tsStyle}>{formatTime(message.createdAt)}</span>
+        <span style={tsStyle} title={formatFullTimestamp(message.createdAt)}>
+          {formatTimestamp(message.createdAt)}
+        </span>
         <div style={{ flex: 1 }} />
         <button
           style={actionBtn}
@@ -89,12 +92,6 @@ function defaultNote(m: Message): string {
   const firstLine = m.content.split('\n')[0] ?? '';
   const clean = firstLine.replace(/\x1b\[[0-9;]*m/g, '').trim();
   return clean.slice(0, 80);
-}
-
-function formatTime(epochMillis: string): string {
-  const n = Number(epochMillis);
-  if (!Number.isFinite(n) || n <= 0) return '';
-  return new Date(n).toLocaleString();
 }
 
 const blockStyle: React.CSSProperties = {

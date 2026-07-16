@@ -17,6 +17,12 @@ export function Nav() {
           Sessions
         </Link>
         <Link
+          to="/repos"
+          style={{ ...linkStyle, color: pathname === '/repos' ? '#c9d1d9' : '#8b949e' }}
+        >
+          Repos
+        </Link>
+        <Link
           to="/prompts"
           style={{ ...linkStyle, color: pathname === '/prompts' ? '#c9d1d9' : '#8b949e' }}
         >
@@ -33,6 +39,12 @@ export function Nav() {
           style={{ ...linkStyle, color: pathname === '/credentials' ? '#c9d1d9' : '#8b949e' }}
         >
           Credentials
+        </Link>
+        <Link
+          to="/integrations"
+          style={{ ...linkStyle, color: pathname === '/integrations' ? '#c9d1d9' : '#8b949e' }}
+        >
+          Integrations
         </Link>
         <Link
           to="/webhooks"

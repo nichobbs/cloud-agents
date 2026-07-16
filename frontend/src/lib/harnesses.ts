@@ -1,3 +1,5 @@
+import type { ProviderId } from './connections';
+
 export interface ModelOption {
   id: string;
   label: string;
@@ -5,8 +7,11 @@ export interface ModelOption {
 
 export interface HarnessConfig {
   label: string;
+  /** Static fallback catalog, used when live discovery is unavailable. */
   models: ModelOption[];
   defaultModel: string;
+  /** Providers whose model listings apply to this harness (live discovery). */
+  providers: ProviderId[];
 }
 
 export const HARNESSES: Record<string, HarnessConfig> = {
@@ -18,6 +23,7 @@ export const HARNESSES: Record<string, HarnessConfig> = {
       { id: 'claude-haiku-4-5-20251001', label: 'Haiku 4.5' },
     ],
     defaultModel: 'claude-opus-4-8',
+    providers: ['anthropic'],
   },
   codex: {
     label: 'Codex CLI',
@@ -27,6 +33,7 @@ export const HARNESSES: Record<string, HarnessConfig> = {
       { id: 'gpt-4o', label: 'GPT-4o' },
     ],
     defaultModel: 'o4-mini',
+    providers: ['openai'],
   },
   opencode: {
     label: 'OpenCode',
@@ -37,6 +44,16 @@ export const HARNESSES: Record<string, HarnessConfig> = {
       { id: 'gemini-2.5-pro', label: 'Gemini 2.5 Pro' },
     ],
     defaultModel: 'claude-sonnet-4-6',
+    providers: ['anthropic', 'openai', 'google'],
+  },
+  gemini: {
+    label: 'Gemini CLI',
+    models: [
+      { id: 'gemini-2.5-pro', label: 'Gemini 2.5 Pro' },
+      { id: 'gemini-2.5-flash', label: 'Gemini 2.5 Flash' },
+    ],
+    defaultModel: 'gemini-2.5-pro',
+    providers: ['google'],
   },
 };
 

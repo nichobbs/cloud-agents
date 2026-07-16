@@ -1,4 +1,4 @@
-.PHONY: help dev test verify build run docker docker-codex docker-opencode docker-all lint-sh
+.PHONY: help dev test verify build run docker docker-codex docker-opencode docker-gemini docker-all lint-sh
 
 help:
 	@echo "Usage: make <target>"
@@ -10,7 +10,8 @@ help:
 	@echo "  docker        Build claude-code:base runner image"
 	@echo "  docker-codex  Build codex:base runner image"
 	@echo "  docker-opencode  Build opencode:base runner image"
-	@echo "  docker-all    Build all three harness runner images"
+	@echo "  docker-gemini Build gemini:base runner image"
+	@echo "  docker-all    Build all four harness runner images"
 	@echo "  lint-sh       Syntax-check all shell scripts (bash -n)"
 
 dev:
@@ -34,6 +35,9 @@ docker-codex:
 docker-opencode:
 	./scripts/build-docker.sh opencode
 
+docker-gemini:
+	./scripts/build-docker.sh gemini
+
 docker-all:
 	./scripts/build-docker.sh all
 
@@ -42,12 +46,14 @@ lint-sh:
 	    docker/entrypoint.sh \
 	    docker/entrypoint-codex.sh \
 	    docker/entrypoint-opencode.sh \
+	    docker/entrypoint-gemini.sh \
 	    deploy/install-docker.sh \
 	    deploy/backup.sh \
 	    scripts/verify.sh \
 	    scripts/build-full.sh \
 	    scripts/dev.sh \
 	    scripts/build-docker.sh \
+	    scripts/upload-credentials.sh \
 	    scripts/repro-compiler-bug.sh; do \
 	    bash -n "$$f" && echo "ok: $$f"; \
 	done

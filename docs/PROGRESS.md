@@ -147,7 +147,7 @@ design of each phase and `docs/BUILD.md` for build/verification notes.
 | GitHub MCP config | 🟡 | `docker/mcp.json.template` + entrypoint rendering |
 | Auto-approval settings | 🟡 | `docker/settings.json.template` |
 | Tool pack images | 🟡 | `docker/Dockerfile.rust`, `docker/Dockerfile.data` |
-| Frontend GitHub panels | ⬜ pending | frontend work |
+| Frontend GitHub panels | ✅ added | `frontend/src/components/GitHubPanel.tsx` (per-session repo/PR/CI status), `frontend/src/pages/Repos.tsx` (repo browser), `frontend/src/lib/github.ts` — browser-side calls to `api.github.com` with a locally-connected token (`frontend/src/pages/Integrations.tsx`), since the Lyric backend has no outbound HTTPS |
 
 ## Phase 5 — Deployment & Monitoring 🟡 started
 

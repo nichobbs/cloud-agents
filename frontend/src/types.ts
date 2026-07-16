@@ -2,9 +2,14 @@ export interface Session {
   sessionId: string;
   repoUrl: string;
   branch: string;
+  /** Epoch-millis string (server) or ISO string (locally created). */
   createdAt: string;
   harness?: string;
   model?: string;
+  /** Server-side lifecycle status: IDLE | RUNNING | WARM. */
+  status?: string;
+  /** Epoch-millis string of the last run activity. */
+  lastMessageAt?: string;
 }
 
 /// One addressable entry in a session's transcript.

@@ -50,3 +50,35 @@ storage (see `docs/phase3-multi-tenancy.md`):
 
 The GitHub OAuth token is **never** stored — it is only used to validate
 identity per request (`CloudAgents.Auth`).
+
+## Auto-uploading harness credentials
+
+Two convenience paths feed the credential vault (`POST /api/credentials`)
+without hand-typing names and values:
+
+- **Integrations page (frontend).** Connect a provider key (Anthropic, OpenAI,
+  Google, GitHub): the key is validated against the provider's API, uploaded
+  to the vault under its canonical env-var name (`ANTHROPIC_API_KEY`,
+  `OPENAI_API_KEY`, `GEMINI_API_KEY`, `GITHUB_TOKEN`), and kept locally in the
+  browser to power live model discovery and the GitHub repo/PR/CI panels
+  (the vault is write-only, so the UI cannot read the key back). The page also
+  imports pasted credential files — `~/.claude/.credentials.json` (Claude Code
+  OAuth → `CLAUDE_CODE_OAUTH_TOKEN`), `~/.codex/auth.json`, and OpenCode's
+  `auth.json` — recognising each secret and uploading it under the right name.
+- **`scripts/upload-credentials.sh` (CLI).** Auto-detects credentials on your
+  workstation (the env vars above, the same three credential files, and
+  `gh auth token`) and uploads whatever it finds. Supports `--dry-run`;
+  configure `CLOUD_AGENTS_URL` / `CLOUD_AGENTS_API_TOKEN`.
+
+**Security note on local connections.** The browser-side copy kept by the
+Integrations page lives in `localStorage`, and the UI calls provider APIs
+(Anthropic/OpenAI/Google/GitHub) directly from the browser. This is a
+deliberate trade-off forced by the write-only vault plus the Lyric backend's
+lack of outbound HTTPS — but it means any XSS on the frontend origin could
+read those keys. Mitigations: use least-privilege keys (fine-grained GitHub
+PATs scoped to the repos you need; provider keys with spend limits), the
+frontend renders no untrusted HTML except ANSI-converted run output
+(`ansi_up` escapes HTML), and "Disconnect" on the Integrations page removes
+the local copy without touching the vault. Skip connecting a provider
+entirely if you only need runner-container injection — the vault upload on
+the Credentials page never keeps a local copy.

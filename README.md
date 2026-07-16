@@ -1,11 +1,25 @@
 # Cloud Agents
 
 A self-hosted web platform for running [Claude Code](https://claude.com/claude-code),
-[Codex](https://openai.com/index/introducing-codex/), and
-[OpenCode](https://opencode.ai/) sessions against a git repository from a
-browser, instead of a local terminal. Each message you send spins up an
-ephemeral Docker container that clones the repo, runs the selected CLI
-non-interactively, and returns its output.
+[Codex](https://openai.com/index/introducing-codex/),
+[OpenCode](https://opencode.ai/), and
+[Gemini CLI](https://github.com/google-gemini/gemini-cli) sessions against a
+git repository from a browser, instead of a local terminal. Each message you
+send spins up an ephemeral Docker container that clones the repo, runs the
+selected CLI non-interactively, and returns its output.
+
+(Google's Antigravity is an IDE without a headless CLI, so it can't run as a
+container harness; the Gemini CLI harness covers Google models instead.)
+
+Frontend highlights: every transcript message and live run is timestamped
+(start / elapsed / finish); model pickers list models live from the provider
+APIs when a key is connected (static catalog otherwise); an **Integrations**
+page validates provider keys, auto-uploads them to the credential vault under
+their canonical env names, and imports pasted harness credential files
+(`~/.claude/.credentials.json`, Codex/OpenCode `auth.json` —
+`scripts/upload-credentials.sh` does the same from a terminal); with GitHub
+connected, a **Repos** page lists every repository your token can access and
+each session shows repo, PR, and CI status for its branch.
 
 **Status: early / personal-scale.** See [`docs/PROGRESS.md`](docs/PROGRESS.md)
 for what's actually shipped vs. designed, and
@@ -27,7 +41,7 @@ traffic.
   sessions, send messages, watch output, and anchor comments/todos to
   specific agent responses.
 - **`docker/`** — runner images for each harness (`claude-code:base`,
-  `codex:base`, `opencode:base`), plus tool-pack variants
+  `codex:base`, `opencode:base`, `gemini:base`), plus tool-pack variants
   (`Dockerfile.rust`, `Dockerfile.data`) and the entrypoint scripts that
   render MCP/settings config into each container.
 - **`deploy/`** — a `docker-compose.yml` topology (API + frontend + Caddy
@@ -50,17 +64,16 @@ fixed. See [`docs/BUILD.md`](docs/BUILD.md) "Compiler notes" for the full
 history and `./scripts/repro-compiler-bug.sh` for a runnable check of your
 compiler's status.
 
-**The HTTP server itself is not yet usable**: it binds and stays up while
-idle, but `Lyric.Web` crashes on the first real request it answers, and
-even without that crash it doesn't dispatch requests to this project's
-handlers yet (every request gets an identical hardcoded diagnostic
-payload). Both are root-caused, upstream `Lyric.Web` gaps — see
-[`docs/BUILD.md`](docs/BUILD.md) "Dependencies" for detail and evidence.
+**The HTTP server now works end-to-end** (as of the `Lyric.Web` 0.4.26 pin,
+verified 2026-07-15): a running server answers real requests, and a real
+session creation spawns a real container that clones a repo and streams
+output back — see [`docs/BUILD.md`](docs/BUILD.md) "Dependencies" / "Net
+effect" for the verification detail.
 
 ```sh
 lyric restore && lyric build   # or: ./scripts/build-full.sh — succeeds as of v0.4.14
 ./scripts/verify.sh            # runtime-verifies the core logic — genuinely passes
-./scripts/run-api.sh           # builds + starts the process — binds, but can't yet serve a real request (see docs/BUILD.md)
+./scripts/run-api.sh           # builds + starts the API server on port 8080
 ```
 
 ```sh

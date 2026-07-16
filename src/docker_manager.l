@@ -51,6 +51,9 @@ func imageForHarness(harness: in String): String {
   if harness == "opencode" {
     return "opencode:base"
   }
+  if harness == "gemini" {
+    return "gemini:base"
+  }
   return "claude-code:base"
 }
 
