@@ -1,4 +1,4 @@
-import { createContext, useCallback, useContext, useEffect, useState } from 'react';
+import { createContext, useCallback, useContext, useEffect, useRef, useState } from 'react';
 import type { ReactNode } from 'react';
 import { api } from '../lib/api';
 import type { Session } from '../types';
@@ -32,9 +32,19 @@ export function SessionsProvider({ children }: { children: ReactNode }) {
   // fields (status, createdAt, lastMessageAt) into known entries so the list
   // can show live status and real timestamps. A locally-stored createdAt is
   // kept when the server doesn't send one (older backend).
+  // Guards the awaited continuation below: a refresh still in flight when the
+  // provider unmounts (tests, HMR) must not call setSessions afterwards.
+  const mountedRef = useRef(true);
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+    };
+  }, []);
+
   const refreshSessions = useCallback(async () => {
     const remote = await api.listSessions();
-    if (remote.length === 0) return;
+    if (remote.length === 0 || !mountedRef.current) return;
     setSessions(prev => {
       const byId = new Map(prev.map(s => [s.sessionId, s]));
       let changed = false;

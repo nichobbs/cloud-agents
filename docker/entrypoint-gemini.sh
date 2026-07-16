@@ -9,9 +9,11 @@
 #   NATIVE_SESSION_ID - session ID for conversation continuity (reserved for Phase 2)
 #   GEMINI_API_KEY    - Gemini API key (required; GOOGLE_API_KEY accepted as an alias)
 #
-# State persists across runs via two mounted volumes:
-#   /workspace          - the cloned repository
-#   /home/gemini-user   - Gemini CLI config and session history
+# The cloned repository persists across runs via the /workspace session
+# volume. NOTE: the API server currently mounts the shared home volume at
+# /home/claude-user for every harness (see createRunnerContainer in
+# src/docker_manager.l), so Gemini CLI config/history under $HOME does NOT
+# persist between runs yet — tracked in nichobbs/cloud-agents#409.
 
 set -euo pipefail
 

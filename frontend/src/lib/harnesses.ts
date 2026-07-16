@@ -12,8 +12,6 @@ export interface HarnessConfig {
   defaultModel: string;
   /** Providers whose model listings apply to this harness (live discovery). */
   providers: ProviderId[];
-  /** Vault credential names a run on this harness typically needs. */
-  requiredCredentials: string[];
 }
 
 export const HARNESSES: Record<string, HarnessConfig> = {
@@ -26,7 +24,6 @@ export const HARNESSES: Record<string, HarnessConfig> = {
     ],
     defaultModel: 'claude-opus-4-8',
     providers: ['anthropic'],
-    requiredCredentials: ['ANTHROPIC_API_KEY'],
   },
   codex: {
     label: 'Codex CLI',
@@ -37,7 +34,6 @@ export const HARNESSES: Record<string, HarnessConfig> = {
     ],
     defaultModel: 'o4-mini',
     providers: ['openai'],
-    requiredCredentials: ['OPENAI_API_KEY'],
   },
   opencode: {
     label: 'OpenCode',
@@ -49,7 +45,6 @@ export const HARNESSES: Record<string, HarnessConfig> = {
     ],
     defaultModel: 'claude-sonnet-4-6',
     providers: ['anthropic', 'openai', 'google'],
-    requiredCredentials: ['ANTHROPIC_API_KEY'],
   },
   gemini: {
     label: 'Gemini CLI',
@@ -59,7 +54,6 @@ export const HARNESSES: Record<string, HarnessConfig> = {
     ],
     defaultModel: 'gemini-2.5-pro',
     providers: ['google'],
-    requiredCredentials: ['GEMINI_API_KEY'],
   },
 };
 

@@ -92,9 +92,11 @@ export function filterGoogleModels(models: GoogleModel[]): ModelOption[] {
 }
 
 async function fetchGoogleModels(key: string): Promise<ModelOption[]> {
-  const res = await fetch(
-    `https://generativelanguage.googleapis.com/v1beta/models?pageSize=200&key=${encodeURIComponent(key)}`,
-  );
+  // Key goes in the x-goog-api-key header, not a ?key= query param — URLs
+  // end up in proxy/browser logs, headers don't.
+  const res = await fetch('https://generativelanguage.googleapis.com/v1beta/models?pageSize=200', {
+    headers: { 'x-goog-api-key': key },
+  });
   if (!res.ok) throw new Error(`Google models API: ${res.status}`);
   const body = (await res.json()) as { models?: GoogleModel[] };
   return filterGoogleModels(body.models ?? []);
