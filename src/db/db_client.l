@@ -171,6 +171,28 @@ pub func homeVolumeName(githubUserId: in String): String {
   return "user-" + githubUserId + "-home"
 }
 
+/// Home-volume bind (volume:containerPath) for a harness's runner container.
+/// Each harness image runs as its own user with its own $HOME, so each
+/// harness gets its own shared volume mounted at that image's home path —
+/// previously every harness shared claude's volume mounted at
+/// /home/claude-user, so Codex/OpenCode/Gemini CLI config and history never
+/// persisted between runs (#409). Claude keeps its legacy volume name so
+/// existing installs keep their authenticated ~/.claude. Kept in this pure
+/// package (not CloudAgents.Docker) so tests can invoke it — a @test_module
+/// cannot call into an async-bearing package (docs/lyric/gotchas.md).
+pub func homeVolumeBindForHarness(harness: in String): String {
+  if harness == "codex" {
+    return "codex-home-default:/home/codex-user"
+  }
+  if harness == "opencode" {
+    return "opencode-home-default:/home/opencode-user"
+  }
+  if harness == "gemini" {
+    return "gemini-home-default:/home/gemini-user"
+  }
+  return "claude-home-default:/home/claude-user"
+}
+
 // ─── Session SQL ──────────────────────────────────────────────────────────────
 //
 // Assembled with `sqlLiteral` escaping like every other statement in this
