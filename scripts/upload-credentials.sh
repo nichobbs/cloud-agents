@@ -27,6 +27,7 @@ DRY_RUN=0
 [ "${1:-}" = "--dry-run" ] && DRY_RUN=1
 
 command -v curl >/dev/null || { echo "upload-credentials: 'curl' not on PATH" >&2; exit 1; }
+command -v python3 >/dev/null || { echo "upload-credentials: 'python3' not on PATH (needed for JSON handling)" >&2; exit 1; }
 
 json_extract() {
     # json_extract <file> <python-expression over parsed `d`>
@@ -58,11 +59,13 @@ upload() {
     local payload
     payload=$(CRED_NAME="$name" CRED_VALUE="$value" python3 -c \
         'import json,os; print(json.dumps({"name": os.environ["CRED_NAME"], "value": os.environ["CRED_VALUE"]}))')
+    # Payload arrives via stdin (--data @-), not argv — same ps/procfs
+    # rationale as the env-var hand-off above.
     local code
-    code=$(curl -sS -o /dev/null -w '%{http_code}' -X POST "${BASE_URL}/api/credentials" \
+    code=$(printf '%s' "$payload" | curl -sS -o /dev/null -w '%{http_code}' -X POST "${BASE_URL}/api/credentials" \
         -H 'Content-Type: application/json' \
         ${API_TOKEN:+-H "Authorization: Bearer ${API_TOKEN}"} \
-        --data "$payload") || code=000
+        --data @-) || code=000
     if [ "$code" = "204" ] || [ "$code" = "200" ]; then
         echo "uploaded ${name}  (${source})"
         uploaded=$((uploaded + 1))
