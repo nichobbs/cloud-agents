@@ -11,10 +11,11 @@ import { parseCredentialInput, type ImportedCredential } from '../lib/credential
 import { clearRepoCache, validateGitHubToken } from '../lib/github';
 import { clearModelCache, validateModelProviderKey } from '../lib/models';
 
-/** A different key means every cached provider listing may be stale. */
-function clearProviderCaches(): void {
-  clearModelCache();
-  clearRepoCache();
+/** A changed key invalidates only that provider's cached listings: the repo
+ *  cache is GitHub's, the model cache belongs to the model providers (#418). */
+function clearCachesFor(provider: ProviderId): void {
+  if (provider === 'github') clearRepoCache();
+  else clearModelCache();
 }
 
 /// One-stop provider setup. Connecting a provider does two things at once:
@@ -72,7 +73,7 @@ function ProviderCard({ provider }: { provider: ProviderId }) {
       // Local copy first — model discovery and GitHub panels work even if the
       // vault is unavailable (e.g. ENCRYPTION_KEY not configured server-side).
       setConnection(provider, value);
-      clearProviderCaches();
+      clearCachesFor(provider);
       setConnected(true);
       setKey('');
       try {
@@ -94,7 +95,7 @@ function ProviderCard({ provider }: { provider: ProviderId }) {
 
   const disconnect = () => {
     clearConnection(provider);
-    clearProviderCaches();
+    clearCachesFor(provider);
     setConnected(false);
     setStatus('Disconnected on this device. The vault copy (if any) is unchanged — manage it on the Credentials page.');
   };
@@ -168,20 +169,29 @@ function SmartImport() {
     setError('');
     const done: string[] = [];
     const failed: string[] = [];
+    const connectedProviders: ProviderId[] = [];
+    const connectionFor: Record<string, ProviderId> = {
+      ANTHROPIC_API_KEY: 'anthropic',
+      OPENAI_API_KEY: 'openai',
+      GEMINI_API_KEY: 'google',
+      GITHUB_TOKEN: 'github',
+    };
     for (const cred of found) {
       try {
         await api.putCredential(cred.name, cred.value);
         done.push(cred.name);
         // Keys the UI itself can use also become local connections.
-        if (cred.name === 'ANTHROPIC_API_KEY') setConnection('anthropic', cred.value);
-        if (cred.name === 'OPENAI_API_KEY') setConnection('openai', cred.value);
-        if (cred.name === 'GEMINI_API_KEY') setConnection('google', cred.value);
-        if (cred.name === 'GITHUB_TOKEN') setConnection('github', cred.value);
+        const provider = connectionFor[cred.name];
+        if (provider) {
+          setConnection(provider, cred.value);
+          connectedProviders.push(provider);
+        }
       } catch (err) {
         failed.push(`${cred.name} (${err instanceof Error ? err.message : 'error'})`);
       }
     }
-    clearProviderCaches();
+    // Invalidate only the caches whose provider key actually changed (#418).
+    for (const provider of connectedProviders) clearCachesFor(provider);
     if (done.length > 0) {
       setResult(`Uploaded to vault: ${done.join(', ')}.`);
       setText('');

@@ -16,12 +16,17 @@ This populates `~/.claude` with the OAuth credentials. For Phase 1 the platform
 mounts that folder directly into the runner container as the user-home volume.
 
 The API server starts runner containers with two mounts (see
-`src/docker_manager.l`):
+`src/docker_manager.l`; the home bind comes from
+`CloudAgents.Db.homeVolumeBindForHarness`, one shared volume per harness so
+each CLI's config/history persists at its image's real `$HOME` — #409):
 
 | Host / volume | Container path | Purpose |
 |---------------|----------------|---------|
 | `session-<id>-workspace` | `/workspace` | cloned repo + `.claude` session files |
-| `claude-home-default` (Phase 1) | `/home/claude-user` | authenticated `~/.claude` |
+| `claude-home-default` (claude, Phase 1) | `/home/claude-user` | authenticated `~/.claude` |
+| `codex-home-default` (codex) | `/home/codex-user` | Codex CLI config + history |
+| `opencode-home-default` (opencode) | `/home/opencode-user` | OpenCode config + history |
+| `gemini-home-default` (gemini) | `/home/gemini-user` | Gemini CLI config + history |
 
 To seed the shared home volume from your local credentials during development:
 
