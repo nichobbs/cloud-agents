@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { isGitHubConnected, listRepos, type GitHubRepo } from '../lib/github';
 import { timeAgo } from '../lib/time';
@@ -14,27 +14,37 @@ export function Repos() {
   const connected = isGitHubConnected();
   const navigate = useNavigate();
 
+  // Mount-time load hits the 10-minute cache; the Refresh button bypasses it.
+  const activeRef = useRef(true);
   useEffect(() => {
-    if (!connected) return;
-    let active = true;
+    activeRef.current = true;
+    return () => {
+      activeRef.current = false;
+    };
+  }, []);
+
+  const load = useCallback((force: boolean) => {
     setLoading(true);
-    listRepos()
+    listRepos(5, force)
       .then(rs => {
-        if (active) {
+        if (activeRef.current) {
           setRepos(rs);
           setError('');
         }
       })
       .catch(err => {
-        if (active) setError(err instanceof Error ? err.message : 'Failed to list repositories');
+        if (activeRef.current) {
+          setError(err instanceof Error ? err.message : 'Failed to list repositories');
+        }
       })
       .finally(() => {
-        if (active) setLoading(false);
+        if (activeRef.current) setLoading(false);
       });
-    return () => {
-      active = false;
-    };
-  }, [connected]);
+  }, []);
+
+  useEffect(() => {
+    if (connected) load(false);
+  }, [connected, load]);
 
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();
@@ -60,9 +70,19 @@ export function Repos() {
     <div style={pageStyle}>
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', gap: '12px', flexWrap: 'wrap' }}>
         <h2 style={titleStyle}>Repositories</h2>
-        <span style={countStyle}>
-          {loading ? 'Loading…' : `${filtered.length} of ${repos.length}`}
-        </span>
+        <div style={{ display: 'flex', gap: '10px', alignItems: 'baseline' }}>
+          <span style={countStyle}>
+            {loading ? 'Loading…' : `${filtered.length} of ${repos.length}`}
+          </span>
+          <button
+            style={refreshBtnStyle}
+            onClick={() => load(true)}
+            disabled={loading}
+            title="Refetch from GitHub (bypasses the 10-minute cache)"
+          >
+            Refresh
+          </button>
+        </div>
       </div>
       <input
         style={searchStyle}
@@ -190,5 +210,15 @@ const emptyStyle: React.CSSProperties = {
 };
 
 const errStyle: React.CSSProperties = { fontSize: '13px', color: '#f85149' };
+
+const refreshBtnStyle: React.CSSProperties = {
+  padding: '3px 10px',
+  background: 'transparent',
+  color: '#8b949e',
+  border: '1px solid #30363d',
+  borderRadius: '6px',
+  fontSize: '12px',
+  cursor: 'pointer',
+};
 
 const linkStyle: React.CSSProperties = { color: '#58a6ff' };

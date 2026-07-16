@@ -129,9 +129,36 @@ export async function validateGitHubToken(token: string): Promise<string> {
   return me.login;
 }
 
+const REPO_CACHE_KEY = 'cloud_agents_repo_cache';
+const REPO_CACHE_TTL_MS = 10 * 60 * 1000;
+
+interface RepoCache {
+  fetchedAt: number;
+  maxPages: number;
+  repos: GitHubRepo[];
+}
+
+/** Drop the cached repo listing (e.g. after connecting a different token). */
+export function clearRepoCache(): void {
+  localStorage.removeItem(REPO_CACHE_KEY);
+}
+
 /** Every repo the token can access, most recently pushed first. Paginates up
- *  to `maxPages` × 100 repos. */
-export async function listRepos(maxPages = 5): Promise<GitHubRepo[]> {
+ *  to `maxPages` × 100 repos. Cached for 10 minutes (a full listing is up to
+ *  five sequential API calls — too heavy to redo on every page visit, #413);
+ *  `force` bypasses the cache, and a smaller cached fetch never satisfies a
+ *  larger request. */
+export async function listRepos(maxPages = 5, force = false): Promise<GitHubRepo[]> {
+  if (!force) {
+    try {
+      const hit = JSON.parse(localStorage.getItem(REPO_CACHE_KEY) ?? 'null') as RepoCache | null;
+      if (hit && Date.now() - hit.fetchedAt < REPO_CACHE_TTL_MS && hit.maxPages >= maxPages) {
+        return hit.repos;
+      }
+    } catch {
+      /* corrupt cache — refetch */
+    }
+  }
   const out: GitHubRepo[] = [];
   for (let page = 1; page <= maxPages; page++) {
     const batch = await get<RawRepo[]>(
@@ -139,6 +166,14 @@ export async function listRepos(maxPages = 5): Promise<GitHubRepo[]> {
     );
     out.push(...batch.map(mapRepo));
     if (batch.length < 100) break;
+  }
+  try {
+    localStorage.setItem(
+      REPO_CACHE_KEY,
+      JSON.stringify({ fetchedAt: Date.now(), maxPages, repos: out } satisfies RepoCache),
+    );
+  } catch {
+    /* quota — listing still works, just uncached */
   }
   return out;
 }

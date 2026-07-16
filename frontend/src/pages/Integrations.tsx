@@ -8,8 +8,14 @@ import {
   type ProviderId,
 } from '../lib/connections';
 import { parseCredentialInput, type ImportedCredential } from '../lib/credentialImport';
-import { validateGitHubToken } from '../lib/github';
+import { clearRepoCache, validateGitHubToken } from '../lib/github';
 import { clearModelCache, validateModelProviderKey } from '../lib/models';
+
+/** A different key means every cached provider listing may be stale. */
+function clearProviderCaches(): void {
+  clearModelCache();
+  clearRepoCache();
+}
 
 /// One-stop provider setup. Connecting a provider does two things at once:
 ///  1. uploads the key to the server-side vault under its canonical env-var
@@ -66,7 +72,7 @@ function ProviderCard({ provider }: { provider: ProviderId }) {
       // Local copy first — model discovery and GitHub panels work even if the
       // vault is unavailable (e.g. ENCRYPTION_KEY not configured server-side).
       setConnection(provider, value);
-      clearModelCache();
+      clearProviderCaches();
       setConnected(true);
       setKey('');
       try {
@@ -88,7 +94,7 @@ function ProviderCard({ provider }: { provider: ProviderId }) {
 
   const disconnect = () => {
     clearConnection(provider);
-    clearModelCache();
+    clearProviderCaches();
     setConnected(false);
     setStatus('Disconnected on this device. The vault copy (if any) is unchanged — manage it on the Credentials page.');
   };
@@ -175,7 +181,7 @@ function SmartImport() {
         failed.push(`${cred.name} (${err instanceof Error ? err.message : 'error'})`);
       }
     }
-    clearModelCache();
+    clearProviderCaches();
     if (done.length > 0) {
       setResult(`Uploaded to vault: ${done.join(', ')}.`);
       setText('');

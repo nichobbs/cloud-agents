@@ -5,6 +5,7 @@ import Std.Environment
 import Std.Task
 import Lyric.Docker
 import CloudAgents.Auth
+import CloudAgents.Db
 import CloudAgents.NetworkPolicy
 import CloudAgents.Repository
 import CloudAgents.SessionStore
@@ -79,7 +80,6 @@ pub async func createRunnerContainer(
   profileId: in String,
 ): Result[String, String] {
   val workspaceVolume = "session-" + sessionId + "-workspace"
-  val homeVolume = "claude-home-default" // Phase 1 default, Phase 3 user-specific
   val userId = CloudAgents.Auth.currentUserId()
 
   var envs = [
@@ -128,7 +128,9 @@ pub async func createRunnerContainer(
   }
   val networkMode = CloudAgents.NetworkPolicy.networkModeForPolicy(policy)
 
-  val binds = [workspaceVolume + ":/workspace", homeVolume + ":/home/claude-user"]
+  // Per-harness home volume so each CLI's config/history persists at the
+  // right $HOME (#409); Phase 3 makes these user-specific.
+  val binds = [workspaceVolume + ":/workspace", CloudAgents.Db.homeVolumeBindForHarness(harness)]
 
   val image = imageForHarness(harness)
   val createRes = await createContainerWithNetwork(client, image, envs, binds, networkMode)
