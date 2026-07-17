@@ -57,7 +57,9 @@ services:
       - SERVICE_FQDN_CADDY_80
     volumes:
       - ./Caddyfile.coolify:/etc/caddy/Caddyfile:ro
-      - caddy_data:/data
+      # No caddy_data volume here (unlike docker-compose.yml) — this caddy
+      # serves plain HTTP only and never obtains its own ACME/TLS cert, so
+      # there's nothing under /data worth persisting across restarts.
       - caddy_config:/config
     depends_on:
       - api
@@ -66,5 +68,4 @@ services:
 
 volumes:
   user_data:
-  caddy_data:
   caddy_config:

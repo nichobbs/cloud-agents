@@ -10,8 +10,15 @@
 # environment variable declared in docker-compose.coolify.yml.
 
 http://{$SERVICE_FQDN_CADDY_80} {
+	# Claude invocations can run for several minutes; keep the upstream
+	# connection open long enough to stream the full response.
 	handle /api/* {
-		reverse_proxy api:8080
+		reverse_proxy api:8080 {
+			flush_interval -1
+			transport http {
+				read_timeout 15m
+			}
+		}
 	}
 
 	handle {
@@ -19,14 +26,4 @@ http://{$SERVICE_FQDN_CADDY_80} {
 	}
 
 	encode gzip
-
-	# Claude invocations can run for several minutes; keep the upstream
-	# connection open long enough to stream the full response.
-	@api path /api/*
-	reverse_proxy @api api:8080 {
-		flush_interval -1
-		transport http {
-			read_timeout 15m
-		}
-	}
 }
