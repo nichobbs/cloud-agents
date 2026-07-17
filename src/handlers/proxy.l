@@ -321,6 +321,14 @@ pub func modelsHandler(harness: in String): Result[String, Web.ApiError] {
   if not isKnownProxyHarness(harness) {
     return Err(Web.badRequest("harness must be one of: claude, codex, opencode, gemini"))
   }
+  // Providers are queried SEQUENTIALLY by design (#446): making this
+  // concurrent would require async funcs, and an async func anywhere in this
+  // package makes the whole package uninvokable from @test_module suites
+  // (docs/lyric/gotchas.md) — the validators and no-credential paths below
+  // are only testable because the package stays sync. Worst case is 3
+  // providers x the 15s HTTP timeout on a totally dark network; the normal
+  // case is 3 sub-second calls, and the frontend caches the result for an
+  // hour, so the latency trade is taken knowingly.
   var entries = ""
   var count = 0
   for p in providersForHarness(harness) {

@@ -139,15 +139,18 @@ func getByteType(b: in Byte): Type = ()
 @externTarget("System.Array.CreateInstance")
 func createByteArray(elementType: in Type, length: in Int): ByteArray = ()
 
-@externInstance
-@externTarget("System.Array.SetValue")
-func setByteArrayValue(arr: in ByteArray, value: in Byte, index: in Int): Unit = ()
-
 // Named encGetStringRange (not encGetString) so it never shadows or clashes
 // with crypto.l's whole-array GetString binding if the two are ever merged.
 @externInstance
 @externTarget("System.Text.Encoding.GetString")
 func encGetStringRange(enc: in Encoding, bytes: in ByteArray, index: in Int, count: in Int): String = ()
+
+/// Read up to `count` bytes into `buf` at `offset`; returns bytes read
+/// (0 = end of stream). Lets readAllUtf8 fill its buffer in blocks instead
+/// of one FFI round trip per byte (#445).
+@externInstance
+@externTarget("System.IO.Stream.Read")
+func streamRead(s: in NetStream, buf: in ByteArray, offset: in Int, count: in Int): Int = 0
 
 val requestTimeoutMillis = 15000
 
@@ -183,17 +186,20 @@ func readAll(s: in NetStream): String {
 
 /// Read a response stream to a string, decoding it as UTF-8 (unlike readAll,
 /// which widens byte-per-char and mangles non-ASCII), capped at
-/// maxProxyResponseBytes. The bytes accumulate in a pre-allocated byte[] and
-/// are decoded in one Encoding.GetString(bytes, 0, total) call at the end.
+/// maxProxyResponseBytes. Bytes land in a pre-allocated byte[] via block
+/// Stream.Read calls — not one ReadByte FFI round trip per byte, which for a
+/// 1 MB cap would mean up to a million extern calls per proxied response
+/// (#445) — and are decoded in one Encoding.GetString(bytes, 0, total) call.
 func readAllUtf8(s: in NetStream): String {
   val byteType = getByteType(intToByte(0))
   val buf = createByteArray(byteType, maxProxyResponseBytes)
   var total = 0
-  var b = streamReadByte(s)
-  while b >= 0 and total < maxProxyResponseBytes {
-    setByteArrayValue(buf, intToByte(b), total)
-    total = total + 1
-    b = streamReadByte(s)
+  var n = 1
+  while n > 0 and total < maxProxyResponseBytes {
+    n = streamRead(s, buf, total, maxProxyResponseBytes - total)
+    if n > 0 {
+      total = total + n
+    }
   }
   return encGetStringRange(utf8(), buf, 0, total)
 }

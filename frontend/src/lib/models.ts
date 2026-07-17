@@ -239,26 +239,32 @@ export interface DiscoveredModels {
   source: 'live' | 'static';
 }
 
-/** Models for a harness: the backend models proxy first (vault keys — no
- *  browser-held key needed), then direct provider listings with locally
- *  connected keys, else the static fallback catalog. Never rejects. */
+/** Models for a harness: the backend models proxy (vault keys — no
+ *  browser-held key needed) MERGED with direct provider listings from any
+ *  locally connected keys, else the static fallback catalog. Merging (rather
+ *  than proxy-wins, #444) matters for multi-provider harnesses: the vault
+ *  may hold only Anthropic's key while the browser holds OpenAI's — the
+ *  picker should show both providers' models. Direct listings are attempted
+ *  only for providers with a local key, so this adds no cost when none are
+ *  connected. Never rejects. */
 export async function discoverModels(harnessId: string, force = false): Promise<DiscoveredModels> {
   const harness = getHarness(harnessId);
-  let live: ModelOption[] = (await proxyDiscover(harnessId, force)) ?? [];
-  const seen = new Set<string>(live.map(m => m.id));
-  if (live.length === 0) {
-    // Proxy couldn't help — the original direct path with local keys.
-    const listings = await Promise.all(harness.providers.map(p => providerModels(p, force)));
-    live = [];
-    for (const listing of listings) {
-      for (const m of listing ?? []) {
-        if (!seen.has(m.id)) {
-          seen.add(m.id);
-          live.push(m);
-        }
+  const live: ModelOption[] = [];
+  const seen = new Set<string>();
+  const merge = (listing: ModelOption[] | null) => {
+    for (const m of listing ?? []) {
+      if (!seen.has(m.id)) {
+        seen.add(m.id);
+        live.push(m);
       }
     }
-  }
+  };
+  const [proxied, ...direct] = await Promise.all([
+    proxyDiscover(harnessId, force),
+    ...harness.providers.map(p => providerModels(p, force)),
+  ]);
+  merge(proxied);
+  for (const listing of direct) merge(listing);
   if (live.length === 0) {
     return { models: harness.models, source: 'static' };
   }

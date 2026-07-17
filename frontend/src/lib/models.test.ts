@@ -178,3 +178,34 @@ describe('discoverModels', () => {
     expect(out.models.length).toBeGreaterThan(0);
   });
 });
+
+describe('#444: proxy and direct listings merge for multi-provider harnesses', () => {
+  it('adds locally-keyed providers the vault does not cover', async () => {
+    localStorage.setItem(
+      'cloud_agents_connections',
+      JSON.stringify({ openai: 'sk-local-openai' }),
+    );
+    // Vault covers only Anthropic (via the proxy)…
+    vi.mocked(proxyModels).mockResolvedValue({
+      providers: [
+        {
+          provider: 'anthropic',
+          body: JSON.stringify({ data: [{ id: 'claude-vaulted', display_name: 'Vaulted' }] }),
+        },
+      ],
+    });
+    // …while the browser holds an OpenAI key served by the direct path.
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue({
+        ok: true,
+        json: () => Promise.resolve({ data: [{ id: 'gpt-local' }] }),
+      }),
+    );
+    const out = await discoverModels('opencode', true);
+    vi.unstubAllGlobals();
+    expect(out.source).toBe('live');
+    expect(out.models.some(m => m.id === 'claude-vaulted')).toBe(true);
+    expect(out.models.some(m => m.id === 'gpt-local')).toBe(true);
+  });
+});
