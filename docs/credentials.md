@@ -89,6 +89,13 @@ OAuth setup" below).
    "Sign out" forgets the device's copy **and** invalidates the server's
    validation-cache row for that token.
 
+   Note the asymmetry (#439): sign-out does **not** delete the vaulted
+   `GITHUB_TOKEN` (your containers keep working across sign-ins by design)
+   and cannot revoke the token at GitHub. For full revocation, delete the
+   credential on the Credentials page and revoke the app grant at
+   github.com/settings/applications — revoking there invalidates every copy
+   at once.
+
 The static `CLOUD_AGENTS_API_TOKEN` keeps working as the single-operator
 fallback; a bearer matching it authenticates as the `default` tenant exactly
 as before.
