@@ -161,15 +161,10 @@ pub func sessionsSchemaSql(): String {
     "last_message_at TEXT NOT NULL)"
 }
 
-/// Name of the per-session workspace volume (Phase 3 keys by GitHub user).
-pub func workspaceVolumeName(githubUserId: in String, sessionId: in String): String {
-  return "session-" + githubUserId + "-" + sessionId
-}
-
-/// Name of the per-user home volume holding the `.claude` credentials.
-pub func homeVolumeName(githubUserId: in String): String {
-  return "user-" + githubUserId + "-home"
-}
+// (The Phase-3 draft helpers workspaceVolumeName/homeVolumeName were removed
+// as dead code (#443): they were never wired into docker_manager.l and used a
+// naming shape inconsistent with the *BindFor functions below that actually
+// mount volumes — docs/review-2026-07-03*.md reference them historically.)
 
 /// Container-side $HOME mount path for a harness image. Each harness image
 /// runs as its own user with its own home directory (#409); unknown or empty

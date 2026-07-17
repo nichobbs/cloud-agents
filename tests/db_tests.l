@@ -84,8 +84,6 @@ test "run-claim SQL is atomic and status-guarded" {
 }
 
 test "Volume names key by user and session" {
-  assertEqual(workspaceVolumeName("42", "abc"), "session-42-abc", "workspace volume")
-  assertEqual(homeVolumeName("42"), "user-42-home", "home volume")
   assertEqual(homeVolumeBindForHarness("claude"), "claude-home-default:/home/claude-user", "claude keeps its legacy home volume")
   assertEqual(homeVolumeBindForHarness("codex"), "codex-home-default:/home/codex-user", "codex home volume bind")
   assertEqual(homeVolumeBindForHarness("opencode"), "opencode-home-default:/home/opencode-user", "opencode home volume bind")

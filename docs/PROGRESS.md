@@ -115,7 +115,7 @@ design of each phase and `docs/BUILD.md` for build/verification notes.
 | Idle recycling decision | ✅ verified | `db_client.l` (`recycleDecision`, warm 5min / cold 1h windows) |
 | Persistence SQL (owner-scoped) | ✅ verified | `db_client.l` (`insert/select/list/update/touch/delete/recover…Sql`) |
 | SQLite schema | ✅ | `db_client.l` (`sessionsSchemaSql`) |
-| Volume naming | ✅ | `db_client.l` (`workspaceVolumeBindFor`, `homeVolumeBindFor`, `homeMountPathForHarness`; older `workspaceVolumeName`/`homeVolumeName` helpers remain) |
+| Volume naming | ✅ | `db_client.l` (`workspaceVolumeBindFor`, `homeVolumeBindFor`, `homeMountPathForHarness`; the never-wired Phase-3 draft helpers were removed as dead code, #443) |
 | Background sweep + concurrency control | ⬜ pending | needs `Std.Concurrency` + lyric-db wiring (runtime) |
 
 ## Phase 3 — Multi-Tenancy & Security 🟡 started

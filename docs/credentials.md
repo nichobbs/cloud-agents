@@ -84,10 +84,12 @@ OAuth setup" below).
    tenant) and connects GitHub in the UI (repo browser, PR/CI panels) in
    one step. The requested scopes are `repo read:user`.
 4. Signing in also stores the token as a `GITHUB_TOKEN` credential in the
-   vault for your tenant (when `ENCRYPTION_KEY` is configured), so runner
-   containers and server-side GitHub features work right after sign-in;
-   "Sign out" forgets the device's copy **and** invalidates the server's
-   validation-cache row for that token.
+   vault for your tenant (when `ENCRYPTION_KEY` is configured) — but **only
+   if none exists yet** (#441): a manually-configured `GITHUB_TOKEN` (e.g. a
+   deliberately-scoped fine-grained PAT) is never silently replaced by
+   sign-in. If an auto-vaulted token goes stale, delete the credential and
+   sign in again to refresh it. "Sign out" forgets the device's copy **and**
+   invalidates the server's validation-cache row for that token.
 
    Note the asymmetry (#439): sign-out does **not** delete the vaulted
    `GITHUB_TOKEN` (your containers keep working across sign-ins by design)

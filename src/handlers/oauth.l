@@ -159,6 +159,25 @@ pub func isConfirmedAuthRejection(errorText: in String): Bool {
   return errorText.contains("(401)") or errorText.contains("(403)")
 }
 
+/// Whether the tenant already has a GITHUB_TOKEN in the credential vault
+/// (name check only — no decryption). Fails closed to "present" on a DB
+/// error so a transient read failure can't cause an overwrite (#441).
+func hasGitHubTokenCredential(userId: in String): Bool {
+  match CloudAgents.Repository.listCredentialNames(userId) {
+    case Ok(names) -> {
+      var i = 0
+      while i < names.length {
+        if names[i].name == "GITHUB_TOKEN" {
+          return true
+        }
+        i = i + 1
+      }
+      return false
+    }
+    case Err(_) -> return true
+  }
+}
+
 /// Validate a token against api.github.com/user and parse the identity.
 func fetchIdentity(token: in String): Result[GitHubIdentity, String] {
   val json = CloudAgents.GitHubApi.httpGetWithBearer(githubUserUrl(), token, userAgent())?
@@ -245,12 +264,19 @@ pub func exchangeCode(req: in ExchangeRequest): Result[TokenGrant, Web.ApiError]
       // at rest via putCredential), so runner containers' GITHUB_TOKEN and
       // server-side GitHub features work right after sign-in with no
       // separate Integrations step. GITHUB_TOKEN is deliberately NOT a
-      // reserved credential name (see credentials.l). BEST-EFFORT: a vault
-      // miss (e.g. ENCRYPTION_KEY unconfigured) must never fail a
+      // reserved credential name (see credentials.l). ONLY when the tenant
+      // has no GITHUB_TOKEN yet (#441): an existing credential may be a
+      // deliberately-scoped fine-grained PAT the user configured by hand —
+      // sign-in must never silently replace it. (Consequence: a stale
+      // auto-vaulted token is refreshed by deleting the credential and
+      // signing in again — documented in docs/credentials.md.) BEST-EFFORT:
+      // a vault miss (e.g. ENCRYPTION_KEY unconfigured) must never fail a
       // successful login — log a NOTE and continue.
-      match CloudAgents.Repository.putCredential(userId, "GITHUB_TOKEN", token) {
-        case Ok(_) -> ()
-        case Err(e) -> println("NOTE: could not store GITHUB_TOKEN in the credential vault: " + CloudAgents.Repository.credentialErrorMessage(e))
+      if not hasGitHubTokenCredential(userId) {
+        match CloudAgents.Repository.putCredential(userId, "GITHUB_TOKEN", token) {
+          case Ok(_) -> ()
+          case Err(e) -> println("NOTE: could not store GITHUB_TOKEN in the credential vault: " + CloudAgents.Repository.credentialErrorMessage(e))
+        }
       }
       return Ok(TokenGrant(token = token, login = identity.login, userId = userId))
     }

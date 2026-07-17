@@ -728,6 +728,14 @@ func main(): Unit {
   // returns only the log bytes past {offset} (incremental polling — see
   // getRunOutputFrom); the plain route returns the full log each tick and is
   // kept untouched for older clients.
+  //
+  // NOTE (#442): the offset route is this codebase's first multi-path-param
+  // pattern (the proxy routes below add more), and like every route it can't
+  // be exercised against a live server in CI yet (#354 blocks an automated
+  // HTTP harness). If multi-param matching proves broken at runtime, clients
+  // degrade gracefully rather than break: useStreamMessage falls back to the
+  // plain full-log route on any delta error, and the proxy clients fall back
+  // to direct GitHub/provider calls.
   router = Web.addGet(router, "/api/sessions/{id}/output", RouteGetRunOutput())
   router = Web.addGet(router, "/api/sessions/{id}/output/{offset}", RouteGetRunOutputFrom())
 
