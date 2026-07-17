@@ -1,6 +1,7 @@
 import { Navigate, Route, BrowserRouter as Router, Routes } from 'react-router-dom';
 import { Nav } from './components/Nav';
 import { SessionsProvider } from './context/SessionsContext';
+import { AuthCallback } from './pages/AuthCallback';
 import { Credentials } from './pages/Credentials';
 import { Integrations } from './pages/Integrations';
 import { NewSession } from './pages/NewSession';
@@ -29,6 +30,7 @@ export function App() {
           <Route path="/credentials" element={<Credentials />} />
           <Route path="/integrations" element={<Integrations />} />
           <Route path="/webhooks" element={<Webhooks />} />
+          <Route path="/auth/callback" element={<AuthCallback />} />
         </Routes>
       </Router>
     </SessionsProvider>

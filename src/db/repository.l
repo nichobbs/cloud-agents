@@ -232,6 +232,12 @@ pub func allMigrations(): slice[Migration] {
         CloudAgents.Db.webhooksUserIndexSql(),
         CloudAgents.Db.webhookEventsPendingIndexSql()
       ]
+    ),
+    Migration(
+      version = "0007_github_token_cache",
+      statements = [
+        CloudAgents.Db.githubTokenCacheSchemaSql()
+      ]
     )
   ]
 }
@@ -1224,4 +1230,50 @@ pub func decryptedCredentialsForProfile(
       return Ok(value = acc)
     }
   }
+}
+
+// ─── GitHub OAuth token-validation cache ────────────────────────────────────
+//
+// Successful bearer validations (api.github.com/user round trips) are cached
+// for a short TTL, keyed by the token's SHA-256 so the table never stores a
+// usable secret. Reads exclude expired rows in SQL (CAST comparison, like the
+// warm-reap query); writes opportunistically sweep expired rows first.
+/// A cached, still-valid token validation.
+pub record GitHubTokenCacheEntry {
+  pub userId: String
+  pub login: String
+}
+
+/// How long a validated GitHub token stays trusted before revalidation (10
+/// minutes, as a millis string for the SQL expiry arithmetic).
+func githubTokenTtlMillis(): String {
+  return "600000"
+}
+
+/// Cache a successful validation. The expired-row sweep is best-effort.
+pub func cacheGitHubToken(
+  tokenHash: in String, userId: in String, login: in String
+): Result[Unit, CloudAgents.Sqlite.DbError] {
+  val now = nowMillis()
+  match CloudAgents.Sqlite.execute(CloudAgents.Db.deleteExpiredGitHubTokensSql(now)) {
+    case Ok(_) -> ()
+    case Err(_) -> ()
+  }
+  CloudAgents.Sqlite.execute(
+    CloudAgents.Db.upsertGitHubTokenSql(tokenHash, userId, login, now, githubTokenTtlMillis())
+  )?
+  return Ok(value = ())
+}
+
+/// The still-valid cache entry for a token hash, or None (missing or expired).
+pub func cachedGitHubToken(
+  tokenHash: in String
+): Result[Option[GitHubTokenCacheEntry], CloudAgents.Sqlite.DbError] {
+  val rows = CloudAgents.Sqlite.query(CloudAgents.Db.selectGitHubTokenSql(tokenHash, nowMillis()))?
+  val len = CloudAgents.Sqlite.getRowArrayLength(rows)
+  if len == 0 {
+    return Ok(value = None)
+  }
+  val r0 = CloudAgents.Sqlite.getRowArrayValue(rows, 0)
+  return Ok(value = Some(value = GitHubTokenCacheEntry(userId = colAt(r0.cols, 0), login = colAt(r0.cols, 1))))
 }

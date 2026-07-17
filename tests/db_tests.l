@@ -169,3 +169,14 @@ test "migration ledger SQL is well-formed" {
   assertTrue(recordMigrationSql("0001_init", "1000").startsWith("INSERT INTO schema_migrations"), "record inserts")
   assertTrue(recordMigrationSql("0001_init", "1000").contains("'0001_init'"), "record carries the version")
 }
+
+test "GitHub token-cache SQL is hash-keyed and expiry-aware" {
+  assertTrue(githubTokenCacheSchemaSql().contains("token_hash TEXT PRIMARY KEY"), "cache keyed by token hash")
+  val upsert = upsertGitHubTokenSql("h4sh", "gh-42", "octocat", "1000", "600000")
+  assertTrue(upsert.contains("INSERT OR REPLACE INTO github_token_cache"), "upsert replaces on conflict")
+  assertTrue(upsert.contains("CAST('1000' AS INTEGER) + CAST('600000' AS INTEGER)"), "expiry computed in SQL")
+  val select = selectGitHubTokenSql("h4sh", "2000")
+  assertTrue(select.contains("token_hash = 'h4sh'"), "select scoped by hash")
+  assertTrue(select.contains("CAST(expires_at AS INTEGER) > CAST('2000' AS INTEGER)"), "select excludes expired rows")
+  assertTrue(deleteExpiredGitHubTokensSql("2000").contains("<= CAST('2000' AS INTEGER)"), "sweep drops expired rows")
+}

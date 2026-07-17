@@ -54,7 +54,26 @@ storage (see `docs/phase3-multi-tenancy.md`):
   `workspaceVolumeName`).
 
 The GitHub OAuth token is **never** stored — it is only used to validate
-identity per request (`CloudAgents.Auth`).
+identity per request (`CloudAgents.Auth`); the server keeps only a
+short-TTL cache row keyed by the token's SHA-256 (`github_token_cache`).
+
+## GitHub OAuth setup
+
+1. Create a GitHub OAuth app (Settings → Developer settings → OAuth Apps)
+   with the callback URL `https://<your-host>/auth/callback` (or
+   `http://localhost:5173/auth/callback` for the Vite dev server).
+2. Set `CLOUD_AGENTS_GITHUB_CLIENT_ID` and
+   `CLOUD_AGENTS_GITHUB_CLIENT_SECRET` in the API server's environment, and
+   optionally `CLOUD_AGENTS_WHITELIST` to a comma-separated list of GitHub
+   numeric user ids allowed in (empty = any authenticated GitHub user).
+3. "Sign in with GitHub" appears in the nav. Signing in stores the OAuth
+   token as the API bearer (all data becomes scoped to your `gh-<id>`
+   tenant) and connects GitHub in the UI (repo browser, PR/CI panels) in
+   one step. The requested scopes are `repo read:user`.
+
+The static `CLOUD_AGENTS_API_TOKEN` keeps working as the single-operator
+fallback; a bearer matching it authenticates as the `default` tenant exactly
+as before.
 
 ## Auto-uploading harness credentials
 

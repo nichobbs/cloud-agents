@@ -124,21 +124,21 @@ design of each phase and `docs/BUILD.md` for build/verification notes.
 |-------------|--------|-------|
 | Bearer token extraction | ✅ verified | `auth.l` (`extractBearerToken`) |
 | Whitelist access control | ✅ verified | `auth.l` (`isWhitelisted`, `parseWhitelist`) — not covered by `scripts/verify.sh`, but `lyric test`'s `auth_tests.l` now passes since [lyric-lang#5244](https://github.com/nichobbs/lyric-lang/issues/5244) (`slice[String].append()`) was fixed in v0.4.18 |
-| Validation cache (TTL) | ✅ verified | `auth.l` (`CachedToken`, `cacheExpiry`, `isCacheValid`) |
+| Validation cache (TTL) | ✅ added | SQLite-backed, keyed by token SHA-256 — `github_token_cache` (migration 0007), `repository.l` (`cacheGitHubToken`/`cachedGitHubToken`), exercised by `oauth_tests.l` |
 | Ownership enforcement | ✅ verified | `auth.l` (`ownsResource`) |
 | GitHub `/user` response parsing | ✅ verified | `auth.l` (`parseJsonString/Number`, `indexOfFrom`) |
 | Identity model | ✅ | `GitHubUser`, `AuthError` |
-| Live `api.github.com/user` call | ⬜ pending | needs `Std.Http` header support (runtime) |
+| Live `api.github.com/user` call | ✅ added | `github_api.l` (`httpGetWithBearer`) — direct `HttpWebRequest` externs; `Std.Http`'s documented surface has no request-header support, so the BCL binding route (the same one `crypto.l`/`nowMillis` use) unblocked this |
+| GitHub OAuth login (web flow) | ✅ added | `oauth.l` (`exchangeCode` via `POST /api/auth/github/exchange`, config via `GET /api/auth/github/config`), frontend `lib/auth.ts` + `pages/AuthCallback.tsx` + Nav sign-in/out |
+| Per-request identity | ✅ added | `AuthMiddleware` stamps the authenticated user id thread-locally (`Auth.setCurrentUserId`); the async Docker path takes the owner explicitly since thread-locals don't flow to worker threads |
 | Encrypted credential upload | ⬜ pending | endpoint + encryption |
 
 > "verified" = compiles **and** runtime-tested via `scripts/verify.sh` (CI runs
-> it on every push). The pending items are no longer blocked by the toolchain
-> (Docker/Web/HTTP now build via NuGet — see `docs/BUILD.md`); they still need
-> to be implemented and wired into the live HTTP handlers. **The route
-> handlers in `src/handlers/sessions.l` and `src/handlers/interactions.l`
-> currently call none of the `auth.l` helpers, so every endpoint is
-> unauthenticated in the current codebase** — treat Phase 3 as not started
-> from a security standpoint regardless of the table above.
+> it on every push). With the OAuth rows above, requests bearing a GitHub
+> OAuth token now resolve a real per-tenant identity (`gh-<id>`), whitelisted
+> via `CLOUD_AGENTS_WHITELIST`; the static `CLOUD_AGENTS_API_TOKEN` scheme
+> remains the single-operator fallback and unauthenticated deployments stay
+> open (credential routes excepted) exactly as before.
 
 ## Phase 4 — GitHub Tools & Tool Packs 🟡 started
 

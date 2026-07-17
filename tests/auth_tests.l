@@ -116,3 +116,26 @@ test "Per-request enforcement classifies secret routes" {
   assertEqual(outcomeLabel(enforce("/api/prompts", "", "")), "allow:default", "general route open when unconfigured")
   assertEqual(outcomeLabel(enforce("/api/credentials", "Bearer s", "s")), "allow:default", "secret route allows with a correct token")
 }
+
+test "Per-request identity: thread-local set/read/reset roundtrip" {
+  // Nothing stamped on this thread yet -> the operator identity.
+  assertEqual(currentUserId(), operatorUserId(), "unset defaults to the operator identity")
+
+  // The middleware's stamp is what every downstream query scopes by.
+  setCurrentUserId("gh-583231")
+  assertEqual(currentUserId(), "gh-583231", "stamped identity is read back")
+
+  // Overwriting (a pooled thread serving the next request) fully replaces it.
+  setCurrentUserId("gh-777")
+  assertEqual(currentUserId(), "gh-777", "restamp replaces the identity")
+
+  // Reset for any test running later on this thread: an empty stamp reads as
+  // unset (IsNullOrEmpty), falling back to the operator identity.
+  setCurrentUserId("")
+  assertEqual(currentUserId(), operatorUserId(), "empty stamp falls back to operator")
+}
+
+test "Cross-package outcome constructors mirror the union cases" {
+  assertEqual(outcomeLabel(allowedOutcome("gh-1")), "allow:gh-1", "allowedOutcome constructs Allowed")
+  assertEqual(outcomeLabel(deniedOutcome(invalidTokenError())), "deny:invalid or expired token", "deniedOutcome constructs Denied")
+}

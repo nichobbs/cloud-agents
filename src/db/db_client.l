@@ -1111,3 +1111,54 @@ pub func recordMigrationSql(version: in String, appliedAt: in String): String {
     sqlLiteral(appliedAt) +
     ")"
 }
+
+// ─── GitHub OAuth token-validation cache ────────────────────────────────────
+//
+// Validating a GitHub bearer means a round trip to api.github.com/user, so
+// successful validations are cached (docs/phase3 §1). The table stores the
+// token's SHA-256 (never the token) and an absolute expiry in epoch millis —
+// TEXT affinity like every other column, with CAST-based comparisons like
+// selectReapableWarmSql.
+/// DDL for the GitHub-token validation cache.
+pub func githubTokenCacheSchemaSql(): String {
+  return "CREATE TABLE IF NOT EXISTS github_token_cache (" + "token_hash TEXT PRIMARY KEY, " +
+    "user_id TEXT NOT NULL, " +
+    "login TEXT NOT NULL, " +
+    "expires_at TEXT NOT NULL)"
+}
+
+/// Upsert a validated token's identity. The expiry is computed in SQL
+/// (now + ttl) so no epoch arithmetic happens on TEXT values in Lyric.
+pub func upsertGitHubTokenSql(
+  tokenHash: in String,
+  userId: in String,
+  login: in String,
+  nowMillis: in String,
+  ttlMillis: in String,
+): String {
+  return "INSERT OR REPLACE INTO github_token_cache (token_hash, user_id, login, expires_at) VALUES (" +
+    sqlLiteral(tokenHash) +
+    ", " +
+    sqlLiteral(userId) +
+    ", " +
+    sqlLiteral(login) +
+    ", CAST(CAST(" +
+    sqlLiteral(nowMillis) +
+    " AS INTEGER) + CAST(" +
+    sqlLiteral(ttlMillis) +
+    " AS INTEGER) AS TEXT))"
+}
+
+/// SELECT a still-valid cache entry for a token hash (expired rows never match).
+pub func selectGitHubTokenSql(tokenHash: in String, nowMillis: in String): String {
+  return "SELECT user_id, login FROM github_token_cache WHERE token_hash = " + sqlLiteral(tokenHash) +
+    " AND CAST(expires_at AS INTEGER) > CAST(" +
+    sqlLiteral(nowMillis) +
+    " AS INTEGER)"
+}
+
+/// Housekeeping: drop expired entries (run opportunistically on cache writes).
+pub func deleteExpiredGitHubTokensSql(nowMillis: in String): String {
+  return "DELETE FROM github_token_cache WHERE CAST(expires_at AS INTEGER) <= CAST(" + sqlLiteral(nowMillis) +
+    " AS INTEGER)"
+}

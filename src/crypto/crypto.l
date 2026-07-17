@@ -112,6 +112,13 @@ func hmacHashData(key: in slice[Byte], source: in slice[Byte]): slice[Byte] = []
 val ivLen = 16
 val macLen = 32
 
+/// Base64 SHA-256 of a UTF-8 string. Used to key the GitHub-token validation
+/// cache by a token's hash instead of the token itself, so the cache table
+/// never stores a usable secret.
+pub func sha256Base64(s: in String): String {
+  return toBase64(sha256(encGetBytes(utf8(), s)))
+}
+
 /// Constant-time equality of two base64 strings (the two 44-char MAC tags).
 /// Comparing the base64 encodings sidesteps byte-slice indexing (which needs
 /// Nat indices, and Int.toNat() is broken at runtime — see
