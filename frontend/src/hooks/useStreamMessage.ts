@@ -210,19 +210,19 @@ export function useStreamMessage(sessionId: string): StreamState {
         return base;
       });
 
-      // The send request blocks until the whole run finishes (the backend
-      // cannot stream a response yet — see docs/upstream/lyric-web-streaming.md
-      // for the Lyric.Web feature request), so poll the run-output endpoint in
-      // parallel to surface incremental container output as it accumulates.
-      // The incremental endpoint (getRunOutputDelta) is preferred: each tick
-      // only the bytes past the server-acknowledged offset travel, and the
-      // accumulated tail is rebuilt as `base + liveTail`; earlier content in
-      // `base` is never overwritten. On an older backend without the delta
-      // route the first delta call throws and polling falls back to the
-      // original full-log endpoint for the rest of the run. Polling stops as
-      // soon as the send settles or the run reports finished, and yields to
-      // real streamed chunks. Failures are swallowed — polling is best-effort
-      // and must never fail the send.
+      // The backend now streams the run's output as live SSE `data:` frames
+      // (Lyric.Web 0.4.33 streaming handler — src/handlers/sessions.l
+      // streamSendMessage), delivered via api.sendMessage's onChunk below. This
+      // parallel poll is now only a BRIDGE for the brief window before the first
+      // real chunk arrives (container startup/clone) and a FALLBACK for an older
+      // backend that still buffers. The incremental endpoint (getRunOutputDelta)
+      // is preferred: each tick only the bytes past the server-acknowledged
+      // offset travel, and the accumulated tail is rebuilt as `base + liveTail`;
+      // earlier content in `base` is never overwritten. On an older backend
+      // without the delta route the first delta call throws and polling falls
+      // back to the full-log endpoint. Polling stops the instant a real streamed
+      // chunk arrives (see `polling = false` below) or the run reports finished.
+      // Failures are swallowed — polling is best-effort and must never fail the send.
       let polling = true;
       let liveTail = '';
       // Server-authoritative offset for the delta endpoint: the next poll asks
@@ -300,11 +300,12 @@ export function useStreamMessage(sessionId: string): StreamState {
           polling = false; // real streamed chunks win over polling
           if (stillCurrent()) {
             if (firstRealChunk) {
-              // On completion the backend replays the whole captured log as
-              // chunk frames — the same docker-logs content polling has been
-              // rendering. Drop the polled tail back to `base` on the first
-              // real chunk so the authoritative stream replaces it instead of
-              // appending a duplicate copy.
+              // The authoritative stream now owns the live tail. Drop whatever
+              // the poll bridge rendered back to `base` and start the tail from
+              // this first real chunk, so the stream replaces the polled copy
+              // instead of appending a duplicate. Subsequent chunks append. (On
+              // an older buffered backend the first "chunk" is the whole log,
+              // and this same reset still produces the right result.)
               firstRealChunk = false;
               setOutput(base + chunk);
             } else {

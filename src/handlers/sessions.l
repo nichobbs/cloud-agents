@@ -383,27 +383,49 @@ pub func extraReposEnvValue(repos: in slice[CloudAgents.Repository.SessionRepo])
   return acc
 }
 
-/// Accept user prompt, run container, and return output synchronously.
-pub func sendMessage(id: in String, req: in SendMessageRequest): Result[String, Web.ApiError] {
+/// Write a pre-stream error as a normal (non-streamed) HTTP response: a status
+/// code + JSON body, committed before any SSE chunk. Used for validation and
+/// lookup failures the client should see as a real 4xx/5xx (the frontend's
+/// api.sendMessage throws on a non-2xx, exactly as it did for the old buffered
+/// handler). Safe only before the first writeChunk — once output has streamed,
+/// the 200/headers are already on the wire.
+func writeStreamError(w: in Web.ResponseWriter, code: in Int, msg: in String): Unit {
+  Web.writeStatus(w, code)
+  Web.writeHeader(w, "Content-Type", "application/json")
+  val _ = Web.writeChunk(w, "{\"error\":\"" + CloudAgents.Streaming.jsonEscape(msg) + "\"}")
+  return ()
+}
+
+/// Accept a user prompt and STREAM the container's output back as it is
+/// produced, using Lyric.Web 0.4.33's streaming-handler API: each new slice of
+/// container output is written as a `data: {"chunk":"..."}` SSE frame the
+/// moment it appears, and a terminal `done` frame carries the persisted agent
+/// message id. This replaces the old buffer-the-whole-run-then-return handler;
+/// the `/output` + `/output/{offset}` polling endpoints remain only as a bridge
+/// for the pre-first-chunk window and as a fallback for older clients.
+///
+/// Lifecycle (claim run -> persist prompt -> resolve profile/harness -> record
+/// run -> stream -> persist reply -> done frame) mirrors the old handler; only
+/// the transport changed. An error BEFORE the first chunk becomes a real
+/// 4xx/5xx via writeStreamError; a failure once streaming has begun is surfaced
+/// as an error line in the stream, since status/headers are already committed.
+pub func streamSendMessage(id: in String, text: in String, w: in Web.ResponseWriter): Unit {
   if id.length == 0 {
-    return Err(Web.badRequest("id is required"))
+    writeStreamError(w, 400, "id is required")
+    return ()
   }
-  if req.text.length == 0 {
-    return Err(Web.badRequest("text is required"))
+  if text.length == 0 {
+    writeStreamError(w, 400, "text is required")
+    return ()
   }
-  if not CloudAgents.Text.withinMaxLength(req.text, maxPromptLen) {
-    return Err(Web.badRequest("text is too long (max " + toString(maxPromptLen) + " characters)"))
+  if not CloudAgents.Text.withinMaxLength(text, maxPromptLen) {
+    writeStreamError(w, 400, "text is too long (max " + toString(maxPromptLen) + " characters)")
+    return ()
   }
 
-  // Capture the request's identity once, on the request thread: the container
-  // run below executes on async worker threads where the thread-local
-  // identity does not flow, so it must travel as an explicit parameter.
+  // Capture identity + linked repos on the request thread (the async run body
+  // can't read the thread-local identity) — same rationale as the old handler.
   val userId = CloudAgents.Auth.currentUserId()
-
-  // Any repositories linked to this session travel to the container as a single
-  // EXTRA_REPOS env value, built here on the request thread for the same reason
-  // as userId. Best-effort: extra repos are additive, so a lookup failure just
-  // runs against the primary repo rather than failing the send.
   val extraRepos = match CloudAgents.Repository.listSessionRepos(id) {
     case Ok(rs) -> extraReposEnvValue(rs)
     case Err(_) -> ""
@@ -411,60 +433,61 @@ pub func sendMessage(id: in String, req: in SendMessageRequest): Result[String, 
 
   val maybeSession = match getSession(id) {
     case Ok(m) -> m
-    case Err(e) -> return Err(Web.internalError("session lookup failed: " + CloudAgents.Sqlite.dbErrorMessage(e)))
+    case Err(e) -> {
+      writeStreamError(w, 500, "session lookup failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+      return ()
+    }
   }
   match maybeSession {
-    case None -> return Err(Web.notFound("Session not found"))
+    case None -> {
+      writeStreamError(w, 404, "Session not found")
+      return ()
+    }
     case Some(session) -> {
-      // One run per session at a time: atomically claim the RUNNING status
-      // (a single guarded UPDATE, so two concurrent sends cannot both win).
-      // Without this, concurrent runs race the same workspace volume.
+      // One run per session: atomically claim RUNNING (a guarded UPDATE) so two
+      // concurrent sends cannot both win and race the workspace volume.
       val began = match CloudAgents.SessionStore.tryBeginRun(id) {
         case Ok(b) -> b
-        case Err(e) -> return Err(Web.internalError("failed to claim session for run: " + CloudAgents.Sqlite.dbErrorMessage(e)))
+        case Err(e) -> {
+          writeStreamError(w, 500, "failed to claim session for run: " + CloudAgents.Sqlite.dbErrorMessage(e))
+          return ()
+        }
       }
       if not began {
-        return Err(Web.conflict("a run is already in progress for this session"))
+        writeStreamError(w, 409, "a run is already in progress for this session")
+        return ()
       }
 
-      // Release the claim on every exit — normal return, error, or a Bug/panic
-      // mid-run — so a failure can never strand the session in RUNNING (which
-      // would 409 every future send until a restart's recovery sweep). `defer`
-      // runs on all scope exits.
+      // Release the claim on every exit (normal, error, or a Bug/panic) so a
+      // failure can never strand the session in RUNNING (#208).
       defer {
-        // Log a failed release rather than swallowing it (#208): if endRun
-        // fails, the session stays RUNNING until the startup recovery sweep, so
-        // the operator should see why. (A retry can't help here — the same DB
-        // error would recur — so surfacing it is the useful action.)
         match CloudAgents.SessionStore.endRun(id) {
           case Ok(_) -> ()
           case Err(e) -> println("WARNING: failed to release run claim for session " + id + " (stays RUNNING until recovery): " + CloudAgents.Sqlite.dbErrorMessage(e))
         }
       }
 
-      // Persist the user's prompt as an addressable transcript message. Best-effort:
-      // a storage hiccup must not stop the agent from running.
-      match CloudAgents.Repository.addMessage(id, "user", req.text) {
+      // Persist the user's prompt (best-effort — a storage hiccup must not stop
+      // the run).
+      match CloudAgents.Repository.addMessage(id, "user", text) {
         case Ok(_) -> ()
         case Err(_) -> ()
       }
 
-      // The session's profile (if any) governs credential injection and network
-      // access for this run, and pins the harness if it sets one. A DB error
-      // resolving the profile must FAIL the run, not fall through to "no
-      // profile" — treating a transient read failure as "unconfigured" would
-      // silently re-open full credentials/network for a session that was
-      // deliberately locked down (#232). Ok(None) genuinely means no profile.
+      // The session's profile governs credential injection and network access;
+      // a DB error resolving it must FAIL the run, not fall open to "no profile"
+      // (#232). Ok(None) genuinely means no profile.
       val profileId = match CloudAgents.SessionStore.sessionProfileId(id) {
         case Ok(Some(pid)) -> pid
         case Ok(None) -> ""
-        case Err(e) -> return Err(Web.internalError("failed to resolve session profile: " + CloudAgents.Sqlite.dbErrorMessage(e)))
+        case Err(e) -> {
+          writeStreamError(w, 500, "failed to resolve session profile: " + CloudAgents.Sqlite.dbErrorMessage(e))
+          return ()
+        }
       }
-      // Resolve the profile's pinned harness (empty = use the session's own).
-      // Harness is not a privilege boundary, so a lookup miss/error here is
-      // best-effort (falls back to the session's own harness); the credential
-      // and network policy — which ARE boundaries — fail closed in the layers
-      // below (decryptedCredentialsForProfile and profileNetworkPolicy).
+      // Profile-pinned harness (empty = the session's own). Not a privilege
+      // boundary, so a lookup miss/error is best-effort; credentials and network
+      // fail closed in the layers below.
       var harness = session.harness
       if profileId.length > 0 {
         match CloudAgents.Repository.getProfile(profileId, userId) {
@@ -474,63 +497,57 @@ pub func sendMessage(id: in String, req: in SendMessageRequest): Result[String, 
         }
       }
 
-      // Record the run in history (status 'running'). Best-effort bookkeeping:
-      // a failure here must not stop the run, so we proceed with an empty run id.
-      val runId = match CloudAgents.Repository.recordRunStart(id, userId, req.text, harness, session.model) {
+      // Record the run (best-effort bookkeeping; proceed with an empty id).
+      val runId = match CloudAgents.Repository.recordRunStart(id, userId, text, harness, session.model) {
         case Ok(rid) -> rid
         case Err(_) -> ""
       }
 
-      val runResult = CloudAgents.Docker.runSessionMessage(
+      // Commit the SSE stream: headers are still settable (no chunk written
+      // yet), then hand the writer to the streaming run loop.
+      Web.writeHeader(w, "Content-Type", "text/event-stream")
+      Web.writeHeader(w, "Cache-Control", "no-cache")
+
+      val streamResult = CloudAgents.Docker.streamSessionMessage(
         repoUrl = session.repoUrl,
         branch = session.branch,
-        prompt = req.text,
+        prompt = text,
         sessionId = id,
         harness = harness,
         model = session.model,
         nativeSessionId = session.nativeSessionId,
         profileId = profileId,
         userId = userId,
-        extraRepos = extraRepos
+        extraRepos = extraRepos,
+        w = w
       )
 
-      // Frame the captured container output as a Server-Sent Events stream:
-      // one `data: {"chunk":"..."}` frame per line, then a `done` event. ANSI
-      // colour codes are preserved in the payload and rendered on the frontend
-      // with ansi_up (see docs/phase1-core-loop.md).
-      //
-      // The agent reply is persisted too; on success the `done` frame carries the
-      // stored message id so the client can attach comments/todos to this response.
-      // The run record is closed out here (write-once: a concurrent cancel that
-      // already marked it 'cancelled' wins).
-      match runResult {
+      match streamResult {
         case Ok(logs) -> {
           if runId.length > 0 {
             val _ = CloudAgents.Repository.recordRunEnd(runId, userId, "succeeded")
-            // Enqueue a run-completion webhook event (best-effort outbox). Only
-            // when we actually have a run id — recordRunStart may have failed,
-            // leaving runId empty, and an event with no run_id is useless to the
-            // deliverer (#256). Same guard as recordRunEnd above.
             val _ = CloudAgents.Repository.enqueueWebhookEvent(userId, id, runId, "succeeded")
           }
+          // Persist the agent reply and close the stream with a done frame that
+          // carries the message id (so the client can anchor comments/todos).
           match CloudAgents.Repository.addMessage(id, "agent", logs) {
-            case Ok(m) -> return Ok(value = CloudAgents.Streaming.formatLogsAsSseWithId(logs, m.id))
+            case Ok(m) -> { val _ = Web.writeChunk(w, CloudAgents.Streaming.sseDoneWithMessage(m.id)) }
             case Err(e) -> {
-              // The run's output is still returned to the client below; log the
-              // persistence failure rather than dropping it silently (#29), so
-              // an operator can see the transcript row wasn't written.
               println("WARNING: failed to persist agent message for session " + id + ": " + CloudAgents.Sqlite.dbErrorMessage(e))
-              return Ok(value = CloudAgents.Streaming.formatLogsAsSse(logs))
+              val _ = Web.writeChunk(w, CloudAgents.Streaming.sseDone())
             }
           }
         }
         case Err(err) -> {
           if runId.length > 0 {
             val _ = CloudAgents.Repository.recordRunEnd(runId, userId, "failed")
-            // Gated on a real run id for the same reason as the success path (#256).
             val _ = CloudAgents.Repository.enqueueWebhookEvent(userId, id, runId, "failed")
           }
-          return Err(Web.internalError("Failed to execute message: " + err))
+          // Status/headers are already committed, so surface the failure as an
+          // error line in the stream and close it. A client-disconnect error
+          // makes these writes fail harmlessly.
+          val _ = Web.writeChunk(w, CloudAgents.Streaming.toSseChunk("Error: " + err))
+          val _ = Web.writeChunk(w, CloudAgents.Streaming.sseDone())
         }
       }
     }

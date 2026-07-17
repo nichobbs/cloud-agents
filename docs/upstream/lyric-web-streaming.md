@@ -1,9 +1,19 @@
 # Feature request: chunked/streamed HTTP responses in Lyric.Web
 
-> **Status: ready to file.** This document is written to be filed verbatim as
-> a `lyric-lang` issue against Lyric.Web by the maintainer (this session
-> cannot file it). Written against `Lyric.Web` 0.4.26, the version pinned in
-> this repo's `lyric.toml`.
+> **Status: DELIVERED and adopted.** This shipped in `Lyric.Web 0.4.33`
+> (lyric-lang PR #5983) as Option A below — a `StreamingHandler`
+> (`handleStream(req, w: ResponseWriter)`) plus a separate `StreamingRoutes`
+> table served by `startStreaming`/`serveStreaming`, with
+> `writeStatus`/`writeHeader`/`writeChunk` and a `Result` from `writeChunk`
+> whose `Err` signals client disconnect. This project pins `Lyric.Web 0.4.33`
+> and `POST /api/sessions/{id}/messages` now streams live via
+> `CloudAgents.Handlers.streamSendMessage` /
+> `CloudAgents.Docker.streamSessionMessage`. The `/output` +
+> `/output/{offset}` polling endpoints are retained only as a pre-first-chunk
+> bridge and an older-client fallback. The original request is kept below for
+> history.
+>
+> _(Originally written against `Lyric.Web 0.4.26` as a ready-to-file request.)_
 
 ## Summary
 

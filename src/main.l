@@ -291,20 +291,26 @@ impl Web.Handler for RouteListSessions {
   }
 }
 
-record RouteSendMessage {}
-impl Web.Handler for RouteSendMessage {
-  func handle(req: in Web.Request): Web.Response {
+// POST /api/sessions/{id}/messages is a STREAMING route (Lyric.Web 0.4.33): the
+// handler writes SSE `data:` frames to the ResponseWriter as the container
+// produces output, instead of buffering the whole run and returning one body.
+// Registered in the separate StreamingRoutes table in main(), not the Router.
+record SendMessageStreamHandler {}
+impl Web.StreamingHandler for SendMessageStreamHandler {
+  func handleStream(req: in Web.Request, w: in Web.ResponseWriter): Unit {
     val id = pparam(req, "id")
     val decoded = match SendMessageRequest.fromJson(req.body) {
       case Ok(d) -> d
-      case Err(_) -> return badBody()
+      case Err(_) -> {
+        // No chunk written yet, so a real 400 is still possible.
+        Web.writeStatus(w, 400)
+        Web.writeHeader(w, "Content-Type", "application/json")
+        val _ = Web.writeChunk(w, "{\"error\":\"invalid JSON body\"}")
+        return ()
+      }
     }
-    // The captured run output is pre-formatted as SSE frames (see
-    // CloudAgents.Streaming), not JSON — text, not json, response.
-    return match CloudAgents.Handlers.sendMessage(id, decoded) {
-      case Ok(s) -> Web.text(200, s)
-      case Err(e) -> Web.errorResponse(e)
-    }
+    CloudAgents.Handlers.streamSendMessage(id, decoded.text, w)
+    return ()
   }
 }
 
@@ -755,10 +761,10 @@ func main(): Unit {
 
   var router = Web.create()
 
-  // Register session routes
+  // Register session routes. NOTE: POST /api/sessions/{id}/messages is NOT here
+  // — it's a streaming route registered in the StreamingRoutes table below.
   router = Web.addGet(router, "/api/sessions", RouteListSessions())
   router = Web.addPost(router, "/api/sessions", RouteCreateSession())
-  router = Web.addPost(router, "/api/sessions/{id}/messages", RouteSendMessage())
   router = Web.addDelete(router, "/api/sessions/{id}", RouteDeleteSession())
   router = Web.addPost(router, "/api/sessions/{id}/model", RouteUpdateSessionModel())
   router = Web.addPost(router, "/api/sessions/{id}/profile", RouteSetSessionProfile())
@@ -862,6 +868,14 @@ func main(): Unit {
 
   router = Web.withMiddleware(router, AuthMiddleware())
 
+  // Streaming routes (Lyric.Web 0.4.33), served alongside the Router by
+  // startStreaming below. A request that doesn't match a streaming route falls
+  // through to the Router unchanged; router.middlewares (AuthMiddleware) run
+  // first for BOTH tables, so the streaming send endpoint is auth-enforced and
+  // identity-stamped exactly like every other route.
+  var streaming = Web.emptyStreamingRoutes()
+  streaming = Web.addStreamingPost(streaming, "/api/sessions/{id}/messages", SendMessageStreamHandler())
+
   // Parse command line arguments for --port or -p
   val cmdLine = Env.get_CommandLine()
   val args = parseCommandLine(cmdLine)
@@ -898,7 +912,7 @@ func main(): Unit {
   Env.SetEnvironmentVariable("LYRIC_CONFIG_WEB_SERVER_PORT", portStr)
 
   println("Starting Cloud Agents API Server on port " + portStr + "...")
-  Web.start(router)
+  Web.startStreaming(router, streaming)
 }
 
 func digitValue(c: in String): Int {

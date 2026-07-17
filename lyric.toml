@@ -57,7 +57,7 @@ output_assembly = "CloudAgents.dll"
 "CloudAgents.RepositoryTests" = "tests/repository_tests.l"
 
 [nuget]
-"Lyric.Web"             = "0.4.26"
+"Lyric.Web"             = "0.4.33"
 "Lyric.Docker"          = "0.4.31"
 "Std.Logging"           = "0.4.20"
 "Microsoft.Data.Sqlite" = "10.0.9"

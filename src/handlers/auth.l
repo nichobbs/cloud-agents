@@ -203,7 +203,7 @@ pub func ownsResource(authedUserId: in String, ownerUserId: in String): Bool {
 // synchronously on one thread, so thread data is sound there. It does NOT
 // flow onto the worker threads Docker's async runs execute on — which is why
 // the container path takes an explicit userId parameter, captured on the
-// request thread (see CloudAgents.Docker.runSessionMessage), instead of
+// request thread (see CloudAgents.Docker.streamSessionMessage), instead of
 // reading this ambient value.
 extern type DataSlot = "System.LocalDataStoreSlot"
 

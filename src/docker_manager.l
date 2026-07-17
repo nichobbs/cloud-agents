@@ -3,12 +3,14 @@ package CloudAgents.Docker
 import Std.Core
 import Std.Environment
 import Std.Task
+import Web
 import Lyric.Docker
 import CloudAgents.Db
 import CloudAgents.NetworkPolicy
 import CloudAgents.Repository
 import CloudAgents.SessionStore
 import CloudAgents.Sqlite
+import CloudAgents.Streaming
 
 pub record ResultCell {
   pub var isSuccess: Bool = false
@@ -256,10 +258,20 @@ async func partialContainerLogsAsync(containerId: in String, cell: in ResultCell
   }
 }
 
-/// Run a session message synchronously by orchestrating async container
-/// actions. `userId` must be the request's authenticated identity, captured
-/// on the request thread — the async body cannot read it ambiently.
-pub func runSessionMessage(
+/// Run a session message and stream the container's output to `w` as SSE
+/// `data:` frames while it runs, returning the full captured logs on success
+/// (for transcript persistence) or an error. `userId` must be the request's
+/// authenticated identity, captured on the request thread.
+///
+/// The run itself is driven by the unchanged `runSessionMessageAsync`
+/// (create → start → wait → logs → cleanup); this wrapper only OBSERVES that
+/// task's container, polling its logs-so-far on a short interval and writing
+/// just the new bytes. `taskWaitMs` on the run task doubles as the poll timer
+/// AND the completion signal. A bug in this loop can't corrupt the run or the
+/// persisted transcript — worst case the live view is imperfect and the client
+/// reloads the transcript. On a client disconnect (writeChunk `Err`) the
+/// container is terminated so the run doesn't continue into the void.
+pub func streamSessionMessage(
   repoUrl: in String,
   branch: in String,
   prompt: in String,
@@ -270,18 +282,64 @@ pub func runSessionMessage(
   profileId: in String,
   userId: in String,
   extraRepos: in String,
+  w: in Web.ResponseWriter,
 ): Result[String, String] {
   val cell = ResultCell(isSuccess = false, output = "", error = "")
   val t = runSessionMessageAsync(repoUrl, branch, prompt, sessionId, harness, model, nativeSessionId, profileId, userId, extraRepos, cell)
-  val completed = taskWaitMs(t, 1800000) // 30-minute hard cap
-  if not completed {
-    return Err(error = "Container run timed out after 30 minutes")
+  var offset = 0
+  var finished = false
+  var clientGone = false
+  // Poll every ~400ms. taskWaitMs blocks up to that waiting for the run to
+  // finish (true = the whole run completed), so the loop wakes on either a
+  // timer tick or run completion.
+  while not finished and not clientGone {
+    finished = taskWaitMs(t, 400)
+    // The container id is stored by the async task via updateSessionContainerFor
+    // shortly after creation; getSession is owner-scoped and runs on the request
+    // thread where the identity is stamped, matching getRunOutputFrom.
+    val containerId = match CloudAgents.SessionStore.getSession(sessionId) {
+      case Ok(Some(s)) -> s.containerId
+      case Ok(None) -> ""
+      case Err(_) -> ""
+    }
+    if containerId.length > 0 {
+      val logs = partialContainerLogs(containerId)
+      val total = logs.length.toInt()
+      if total > offset {
+        val delta = logs.substring(offset, total - offset)
+        offset = total
+        match Web.writeChunk(w, CloudAgents.Streaming.toSseChunk(delta)) {
+          case Ok(_) -> ()
+          case Err(_) -> clientGone = true
+        }
+      }
+    }
   }
+  if clientGone {
+    // Terminate the orphaned container so a 30-minute run doesn't keep going
+    // after the browser hung up.
+    match CloudAgents.SessionStore.getSession(sessionId) {
+      case Ok(Some(s)) -> if s.containerId.length > 0 { val _ = terminateSessionContainer(s.containerId) }
+      case Ok(None) -> ()
+      case Err(_) -> ()
+    }
+    return Err(error = "client disconnected")
+  }
+  // The run finished: flush any output produced since the last poll (the
+  // captured logs are authoritative and may run slightly ahead of the last
+  // partial fetch).
   if cell.isSuccess {
-    return Ok(value = cell.output)
-  } else {
-    return Err(error = cell.error)
+    val finalLogs = cell.output
+    val total = finalLogs.length.toInt()
+    if total > offset {
+      match Web.writeChunk(w, CloudAgents.Streaming.toSseChunk(finalLogs.substring(offset, total - offset))) {
+        case Ok(_) -> ()
+        case Err(_) -> ()
+      }
+    }
+    return Ok(value = finalLogs)
   }
+  return Err(error = cell.error)
 }
 
 // NOTE: all Result inspection below is match-based. The Std.Core convenience
