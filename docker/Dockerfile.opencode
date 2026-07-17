@@ -22,7 +22,8 @@ WORKDIR /workspace
 RUN chown opencode-user:opencode-user /workspace
 
 COPY entrypoint-opencode.sh /usr/local/bin/entrypoint.sh
-RUN chmod +x /usr/local/bin/entrypoint.sh
+COPY reconcile-repos.sh /usr/local/bin/reconcile-repos.sh
+RUN chmod +x /usr/local/bin/entrypoint.sh /usr/local/bin/reconcile-repos.sh
 
 USER opencode-user
 ENV HOME=/home/opencode-user

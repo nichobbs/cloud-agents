@@ -152,6 +152,7 @@ jobs:
             docker/entrypoint-codex.sh \
             docker/entrypoint-opencode.sh \
             docker/entrypoint-gemini.sh \
+            docker/reconcile-repos.sh \
             deploy/install-docker.sh \
             deploy/backup.sh \
             scripts/verify.sh \
