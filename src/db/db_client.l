@@ -1309,3 +1309,55 @@ pub func countActiveRejectedOAuthCodesSql(nowMillis: in String): String {
     sqlLiteral(nowMillis) +
     " AS INTEGER)"
 }
+
+// ─── Model-listing cache ────────────────────────────────────────────────────
+//
+// The models proxy (CloudAgents.Proxy.modelsHandler) calls each provider's
+// models API sequentially on every request. This caches each provider's raw
+// response body per user for a short TTL so the sequential fetch cost is paid
+// at most once per window rather than on every call (#446). Scoped by
+// (user_id, provider) — a provider's catalogue can differ by key/tenant, so a
+// user only ever reads back a listing fetched with their own vault key. All
+// TEXT affinity, CAST-based freshness comparison like the token cache.
+/// DDL for the model-listing cache.
+pub func modelListingCacheSchemaSql(): String {
+  return "CREATE TABLE IF NOT EXISTS model_listing_cache (" + "user_id TEXT NOT NULL, " + "provider TEXT NOT NULL, " +
+    "body TEXT NOT NULL, " +
+    "fetched_at TEXT NOT NULL, " +
+    "PRIMARY KEY(user_id, provider))"
+}
+
+/// Upsert a provider's freshly-fetched listing for a user.
+pub func upsertModelListingSql(userId: in String, provider: in String, body: in String, fetchedAt: in String): String {
+  return "INSERT OR REPLACE INTO model_listing_cache (user_id, provider, body, fetched_at) VALUES (" +
+    sqlLiteral(userId) +
+    ", " +
+    sqlLiteral(provider) +
+    ", " +
+    sqlLiteral(body) +
+    ", " +
+    sqlLiteral(fetchedAt) +
+    ")"
+}
+
+/// SELECT a still-fresh cached listing (rows older than the TTL never match).
+/// Freshness is `now - fetched_at < ttl`, computed in SQL so no epoch
+/// arithmetic touches the TEXT values in Lyric.
+pub func selectModelListingSql(userId: in String, provider: in String, nowMillis: in String, ttlMillis: in String): String {
+  return "SELECT body FROM model_listing_cache WHERE user_id = " + sqlLiteral(userId) + " AND provider = " +
+    sqlLiteral(provider) +
+    " AND (CAST(" +
+    sqlLiteral(nowMillis) +
+    " AS INTEGER) - CAST(fetched_at AS INTEGER)) < CAST(" +
+    sqlLiteral(ttlMillis) +
+    " AS INTEGER)"
+}
+
+/// Housekeeping: drop entries older than the TTL (run opportunistically on
+/// cache writes, like the token cache's expired-row sweep #432).
+pub func deleteExpiredModelListingsSql(nowMillis: in String, ttlMillis: in String): String {
+  return "DELETE FROM model_listing_cache WHERE (CAST(" + sqlLiteral(nowMillis) +
+    " AS INTEGER) - CAST(fetched_at AS INTEGER)) >= CAST(" +
+    sqlLiteral(ttlMillis) +
+    " AS INTEGER)"
+}

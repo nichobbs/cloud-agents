@@ -245,6 +245,12 @@ pub func allMigrations(): slice[Migration] {
         CloudAgents.Db.sessionReposSchemaSql(),
         CloudAgents.Db.sessionReposSessionIndexSql()
       ]
+    ),
+    Migration(
+      version = "0009_model_listing_cache",
+      statements = [
+        CloudAgents.Db.modelListingCacheSchemaSql()
+      ]
     )
   ]
 }
@@ -1465,5 +1471,42 @@ pub func cachedGitHubToken(
 /// still Ok — logout is idempotent.
 pub func invalidateGitHubToken(tokenHash: in String): Result[Unit, CloudAgents.Sqlite.DbError] {
   CloudAgents.Sqlite.execute(CloudAgents.Db.deleteGitHubTokenSql(tokenHash))?
+  return Ok(value = ())
+}
+
+// ─── Model-listing cache ────────────────────────────────────────────────────
+//
+// The models proxy calls each provider's models API sequentially on every
+// request. Caching each provider's raw body per (user, provider) for a short
+// TTL amortises that cost to at most once per window (#446). The catalogue
+// itself isn't secret, but it's scoped by user so a listing fetched with one
+// tenant's key is never served to another.
+/// How long a cached provider listing stays fresh (1 hour, as a millis string
+/// for the SQL arithmetic — matches the frontend's per-harness cache TTL).
+func modelListingTtlMillis(): String {
+  return "3600000"
+}
+
+/// A still-fresh cached listing body for (user, provider), or None.
+pub func cachedModelListing(userId: in String, provider: in String): Result[Option[String], CloudAgents.Sqlite.DbError] {
+  val rows = CloudAgents.Sqlite.query(
+    CloudAgents.Db.selectModelListingSql(userId, provider, nowMillis(), modelListingTtlMillis())
+  )?
+  val len = CloudAgents.Sqlite.getRowArrayLength(rows)
+  if len == 0 {
+    return Ok(value = None)
+  }
+  return Ok(value = Some(value = colAt(CloudAgents.Sqlite.getRowArrayValue(rows, 0).cols, 0)))
+}
+
+/// Cache a provider's freshly-fetched listing body for a user. Sweeps expired
+/// rows first (best-effort), mirroring the token cache's write path (#432).
+pub func cacheModelListing(userId: in String, provider: in String, body: in String): Result[Unit, CloudAgents.Sqlite.DbError] {
+  val now = nowMillis()
+  match CloudAgents.Sqlite.execute(CloudAgents.Db.deleteExpiredModelListingsSql(now, modelListingTtlMillis())) {
+    case Ok(_) -> ()
+    case Err(_) -> ()
+  }
+  CloudAgents.Sqlite.execute(CloudAgents.Db.upsertModelListingSql(userId, provider, body, now))?
   return Ok(value = ())
 }

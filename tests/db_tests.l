@@ -223,6 +223,19 @@ test "session-repo SQL builders are session-scoped and well-formed" {
   assertTrue(deleteSessionReposForSessionSql("s1").endsWith("session_id = 's1'"), "bulk delete scoped by session")
 }
 
+test "model-listing cache SQL is user+provider-scoped and TTL-aware" {
+  assertTrue(modelListingCacheSchemaSql().contains("CREATE TABLE IF NOT EXISTS model_listing_cache"), "cache ddl")
+  assertTrue(modelListingCacheSchemaSql().contains("PRIMARY KEY(user_id, provider)"), "keyed by user+provider")
+  val up = upsertModelListingSql("gh-42", "anthropic", "{\"data\":[]}", "1000")
+  assertTrue(up.contains("INSERT OR REPLACE INTO model_listing_cache"), "upsert replaces on conflict")
+  assertTrue(up.contains("'anthropic'"), "provider inlined")
+  val sel = selectModelListingSql("gh-42", "anthropic", "5000", "3600000")
+  assertTrue(sel.contains("user_id = 'gh-42'"), "select scoped by user")
+  assertTrue(sel.contains("provider = 'anthropic'"), "select scoped by provider")
+  assertTrue(sel.contains("(CAST('5000' AS INTEGER) - CAST(fetched_at AS INTEGER)) < CAST('3600000' AS INTEGER)"), "select excludes stale rows")
+  assertTrue(deleteExpiredModelListingsSql("5000", "3600000").contains(">= CAST('3600000' AS INTEGER)"), "sweep drops stale rows")
+}
+
 test "GitHub token-cache SQL is hash-keyed and expiry-aware" {
   assertTrue(githubTokenCacheSchemaSql().contains("token_hash TEXT PRIMARY KEY"), "cache keyed by token hash")
   val upsert = upsertGitHubTokenSql("h4sh", "gh-42", "octocat", "1000", "600000")

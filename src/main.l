@@ -770,21 +770,22 @@ func main(): Unit {
   // kept untouched for older clients.
   //
   // NOTE (#442): the offset route is this codebase's first multi-path-param
-  // pattern (the proxy routes below add more), and like every route it can't
-  // be exercised against a live server in CI yet (#354 blocks an automated
-  // HTTP harness). If multi-param matching proves broken at runtime, clients
-  // degrade gracefully rather than break: useStreamMessage falls back to the
-  // plain full-log route on any delta error, and the proxy clients fall back
-  // to direct GitHub/provider calls.
+  // pattern (the proxy routes below add more). @test_module suites can't
+  // exercise it (Web.Request can't be constructed in a test, #354), so
+  // scripts/e2e-http.sh now starts the built server in CI and curls this exact
+  // route (expecting a 404 for an unknown session) to prove multi-param
+  // dispatch works. Clients also degrade gracefully if it ever regresses:
+  // useStreamMessage falls back to the plain full-log route on any delta
+  // error, and the proxy clients fall back to direct GitHub/provider calls.
   router = Web.addGet(router, "/api/sessions/{id}/output", RouteGetRunOutput())
   router = Web.addGet(router, "/api/sessions/{id}/output/{offset}", RouteGetRunOutputFrom())
 
   // Linked repositories (multi-repo sessions): list, add, and remove extra
   // repositories an agent works across in one run. The DELETE route is a
-  // two-path-param pattern ({id} and {rid}) — like the /output/{offset} route
-  // it can't be exercised against a live server in CI yet (#354/#442); the
-  // frontend degrades gracefully (hides the panel) if the routes 404 on an
-  // older backend.
+  // two-path-param pattern ({id} and {rid}); multi-param dispatch is now
+  // covered in CI by scripts/e2e-http.sh via the /output/{offset} route
+  // (#442). The frontend also degrades gracefully (hides the panel) if the
+  // routes 404 on an older backend.
   router = Web.addGet(router, "/api/sessions/{id}/repos", RouteListSessionRepos())
   router = Web.addPost(router, "/api/sessions/{id}/repos", RouteAddSessionRepo())
   router = Web.addDelete(router, "/api/sessions/{id}/repos/{rid}", RouteDeleteSessionRepo())

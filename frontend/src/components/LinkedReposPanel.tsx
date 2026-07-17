@@ -96,7 +96,13 @@ export function LinkedReposPanel({ sessionId, primaryRepoUrl, primaryBranch }: L
   };
 
   const handleRemove = async (repo: SessionRepo) => {
-    if (!confirm(`Unlink ${repoLabel(repo.repoUrl)} from this session?`)) return;
+    if (
+      !confirm(
+        `Unlink ${repoLabel(repo.repoUrl)} from this session?\n\n` +
+          "Its checkout is removed from the workspace on the next run, so any uncommitted changes there are lost.",
+      )
+    )
+      return;
     try {
       await api.removeSessionRepo(sessionId, repo.id);
       await load();
@@ -136,7 +142,11 @@ export function LinkedReposPanel({ sessionId, primaryRepoUrl, primaryBranch }: L
           <span style={extraBadgeStyle}>repo</span>
           <span style={repoNameCellStyle} title={r.repoUrl}>{repoLabel(r.repoUrl)}</span>
           <span style={branchCellStyle}>{r.branch || 'default'}</span>
-          <button style={removeBtnStyle} onClick={() => { void handleRemove(r); }}>
+          <button
+            style={removeBtnStyle}
+            onClick={() => { void handleRemove(r); }}
+            title="Unlink this repo; its checkout is removed from the workspace on the next run"
+          >
             Remove
           </button>
         </div>

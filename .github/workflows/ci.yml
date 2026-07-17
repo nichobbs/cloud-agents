@@ -160,6 +160,7 @@ jobs:
             scripts/build-docker.sh \
             scripts/upload-credentials.sh \
             scripts/run-api.sh \
+            scripts/e2e-http.sh \
             scripts/repro-compiler-bug.sh \
             scripts/repro-web-bug.sh \
             scripts/repro-web-request-crash.sh \
@@ -204,3 +205,13 @@ jobs:
             export LD_LIBRARY_PATH="$PWD/bin/runtimes/linux-x64/native:${LD_LIBRARY_PATH:-}"
           fi
           lyric test
+
+      # Real end-to-end HTTP check against the built server (nichobbs/cloud-agents#442):
+      # starts bin/CloudAgents.dll on a throwaway DB/port and curls a multi-param
+      # route (/api/sessions/{id}/output/{offset}) plus the proxy routes — the
+      # dispatch paths @test_module suites can't reach because Web.Request can't
+      # be constructed in a test (#354). No Docker needed. This is the automated
+      # proof that multi-param routing works; the script dumps the server log and
+      # fails the job on any assertion miss.
+      - name: E2E HTTP smoke test
+        run: ./scripts/e2e-http.sh
