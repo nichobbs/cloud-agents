@@ -171,26 +171,74 @@ pub func homeVolumeName(githubUserId: in String): String {
   return "user-" + githubUserId + "-home"
 }
 
-/// Home-volume bind (volume:containerPath) for a harness's runner container.
-/// Each harness image runs as its own user with its own $HOME, so each
-/// harness gets its own shared volume mounted at that image's home path —
-/// previously every harness shared claude's volume mounted at
-/// /home/claude-user, so Codex/OpenCode/Gemini CLI config and history never
-/// persisted between runs (#409). Claude keeps its legacy volume name so
-/// existing installs keep their authenticated ~/.claude. Kept in this pure
-/// package (not CloudAgents.Docker) so tests can invoke it — a @test_module
-/// cannot call into an async-bearing package (docs/lyric/gotchas.md).
-pub func homeVolumeBindForHarness(harness: in String): String {
+/// Container-side $HOME mount path for a harness image. Each harness image
+/// runs as its own user with its own home directory (#409); unknown or empty
+/// harness falls back to the claude image's path, matching
+/// `homeVolumeBindForHarness`.
+pub func homeMountPathForHarness(harness: in String): String {
   if harness == "codex" {
-    return "codex-home-default:/home/codex-user"
+    return "/home/codex-user"
   }
   if harness == "opencode" {
-    return "opencode-home-default:/home/opencode-user"
+    return "/home/opencode-user"
   }
   if harness == "gemini" {
-    return "gemini-home-default:/home/gemini-user"
+    return "/home/gemini-user"
   }
-  return "claude-home-default:/home/claude-user"
+  return "/home/claude-user"
+}
+
+/// Home-volume bind (volume:containerPath) for a harness's runner container,
+/// shared across all legacy/operator sessions. Each harness image runs as
+/// its own user with its own $HOME, so each harness gets its own shared
+/// volume mounted at that image's home path — previously every harness
+/// shared claude's volume mounted at /home/claude-user, so
+/// Codex/OpenCode/Gemini CLI config and history never persisted between runs
+/// (#409). Claude keeps its legacy volume name so existing installs keep
+/// their authenticated ~/.claude. Kept in this pure package (not
+/// CloudAgents.Docker) so tests can invoke it — a @test_module cannot call
+/// into an async-bearing package (docs/lyric/gotchas.md). OAuth tenants get
+/// per-user volumes instead — see `homeVolumeBindFor`.
+pub func homeVolumeBindForHarness(harness: in String): String {
+  if harness == "codex" {
+    return "codex-home-default:" + homeMountPathForHarness(harness)
+  }
+  if harness == "opencode" {
+    return "opencode-home-default:" + homeMountPathForHarness(harness)
+  }
+  if harness == "gemini" {
+    return "gemini-home-default:" + homeMountPathForHarness(harness)
+  }
+  return "claude-home-default:" + homeMountPathForHarness(harness)
+}
+
+/// Home-volume bind (volume:containerPath) keyed by tenant. The operator
+/// identity ("default" — see CloudAgents.Auth.operatorUserId; empty is
+/// treated the same defensively) keeps the legacy per-harness shared volumes
+/// from `homeVolumeBindForHarness` so existing installs keep their
+/// authenticated ~/.claude etc. OAuth tenants (gh-<digits>) get a per-user
+/// volume per harness: `user-<userId>-<harness>-home`. An empty harness is
+/// normalised to "claude" in the volume name so it matches the image
+/// actually used (imageForHarness falls back to the claude image).
+pub func homeVolumeBindFor(userId: in String, harness: in String): String {
+  if userId == "" or userId == "default" {
+    return homeVolumeBindForHarness(harness)
+  }
+  val harnessName = if harness == "" then "claude" else harness
+  return "user-" + userId + "-" + harnessName + "-home:" + homeMountPathForHarness(harness)
+}
+
+/// Workspace-volume bind (volume:/workspace) keyed by tenant. The operator
+/// identity ("default"/empty) keeps the legacy `session-<sessionId>-workspace`
+/// name so existing installs keep their workspaces; OAuth tenants get
+/// `session-<userId>-<sessionId>-workspace`. Docker volume names allow
+/// [a-zA-Z0-9_.-]; user ids are gh-<digits> and session ids are UUIDs, both
+/// safe to embed verbatim.
+pub func workspaceVolumeBindFor(userId: in String, sessionId: in String): String {
+  if userId == "" or userId == "default" {
+    return "session-" + sessionId + "-workspace:/workspace"
+  }
+  return "session-" + userId + "-" + sessionId + "-workspace:/workspace"
 }
 
 // ─── Session SQL ──────────────────────────────────────────────────────────────

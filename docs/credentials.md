@@ -28,6 +28,14 @@ each CLI's config/history persists at its image's real `$HOME` — #409):
 | `opencode-home-default` (opencode) | `/home/opencode-user` | OpenCode config + history |
 | `gemini-home-default` (gemini) | `/home/gemini-user` | Gemini CLI config + history |
 
+The names above are the single-operator (`default` tenant) shapes.
+OAuth-authenticated tenants get per-user volumes instead —
+`user-<userId>-<harness>-home` (empty harness normalised to `claude`) and
+`session-<userId>-<sessionId>-workspace`, via
+`CloudAgents.Db.homeVolumeBindFor` / `workspaceVolumeBindFor` — while the
+operator identity keeps the legacy shared names so existing installs keep
+their authenticated `~/.claude` and workspaces.
+
 To seed the shared home volume from your local credentials during development:
 
 ```sh
@@ -49,9 +57,11 @@ storage (see `docs/phase3-multi-tenancy.md`):
   the GitHub user ID as associated data, stored as `credentials/<githubId>.enc`.
 - On container start the blob is decrypted to a temp dir, mounted at
   `/home/claude-user/.claude`, and securely wiped after the container exits.
-- Volumes become per-user: `user-<githubId>-home`,
-  `session-<githubId>-<sessionId>` (see `CloudAgents.Db.homeVolumeName` /
-  `workspaceVolumeName`).
+- Volumes are per-user **(implemented)**: OAuth tenants mount
+  `user-<userId>-<harness>-home` and `session-<userId>-<sessionId>-workspace`
+  (see `CloudAgents.Db.homeVolumeBindFor` / `workspaceVolumeBindFor`), while
+  the operator `default` identity keeps the legacy shared names from the
+  Phase 1 table above.
 
 The GitHub OAuth token is **never** stored — it is only used to validate
 identity per request (`CloudAgents.Auth`); the server keeps only a
