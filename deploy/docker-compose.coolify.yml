@@ -17,6 +17,15 @@
 # Variables tab (see .env.example), and set SERVICE_FQDN_CADDY_80 to your
 # domain (or leave it for Coolify to assign a subdomain). See COOLIFY.md.
 #
+# Relative paths below (build context, bind mounts) are written relative to
+# the repo root, not to this file's own deploy/ directory. Coolify invokes
+# `docker compose` with `--project-directory` set to the repo root checkout
+# — unlike the standalone-VM flow in RUNBOOK.md, which `cd`s into deploy/
+# first — and an explicit --project-directory overrides Compose's normal
+# compose-file-relative path resolution. Using `..`/`./Caddyfile.coolify` as
+# in docker-compose.yml breaks under that invocation (confirmed by a real
+# failed deploy: build context resolved one directory above the checkout).
+#
 # The /var/run/docker.sock bind mount below is unchanged from
 # docker-compose.yml, but Coolify has had bugs where a file-path bind mount
 # gets created as a directory instead of passed through — after first
@@ -27,7 +36,7 @@
 services:
   api:
     build:
-      context: ..
+      context: .
       dockerfile: deploy/api.Dockerfile
     environment:
       - ENCRYPTION_KEY=${ENCRYPTION_KEY:?set ENCRYPTION_KEY in Coolify's environment variables}
@@ -45,7 +54,7 @@ services:
   frontend:
     image: nginx:alpine
     volumes:
-      - ../frontend:/usr/share/nginx/html:ro
+      - ./frontend:/usr/share/nginx/html:ro
     restart: unless-stopped
 
   caddy:
@@ -57,7 +66,7 @@ services:
       # exposes 443 and 2019, which would otherwise be ambiguous).
       - SERVICE_FQDN_CADDY_80
     volumes:
-      - ./Caddyfile.coolify:/etc/caddy/Caddyfile:ro
+      - ./deploy/Caddyfile.coolify:/etc/caddy/Caddyfile:ro
       # No caddy_data volume here (unlike docker-compose.yml) — this caddy
       # serves plain HTTP only and never obtains its own ACME/TLS cert, so
       # there's nothing under /data worth persisting across restarts.
