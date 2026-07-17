@@ -52,6 +52,10 @@ pub func userAgent(): String {
   return "cloud-agents"
 }
 
+/// Distinct failed validations tolerated per negative-cache window (1 min)
+/// before the flood backstop stops validating unrecognised bearers (#425).
+val maxRecentValidationFailures = 30
+
 func envOr(name: in String): String {
   var v = Env.GetEnvironmentVariable(name)
   if DotNetString.IsNullOrEmpty(v) {
@@ -244,6 +248,25 @@ pub func authenticateGitHubBearer(token: in String): AuthOutcome {
     // an optimisation, not an authority.
     case Err(_) -> ()
   }
+  // Flood backstop (#425): the negative cache only blunts REPEATS of the
+  // same bad bearer — a flood of distinct garbage tokens would still cost
+  // one outbound round trip each (blocking a request thread for up to the
+  // HTTP timeout). Every distinct bad bearer leaves a 1-minute negative row,
+  // so the count of active negative rows is a sliding-window rate of recent
+  // failures; past a threshold no plausible number of legitimate new sign-ins
+  // produces, stop validating unrecognised bearers outright until the window
+  // drains. Already-validated (positively cached) users are unaffected; a
+  // legitimate brand-new token during an active flood is refused for up to a
+  // minute — an acceptable failure mode for a backstop. Fails open on a DB
+  // error: the cache is an optimisation, not the authority.
+  val recentFailures = match CloudAgents.Repository.activeNegativeGitHubTokens() {
+    case Ok(n) -> n
+    case Err(_) -> 0
+  }
+  if recentFailures >= maxRecentValidationFailures {
+    return CloudAgents.Auth.deniedOutcome(CloudAgents.Auth.invalidTokenError())
+  }
+
   val identity = match fetchIdentity(token) {
     case Ok(idn) -> idn
     case Err(_) -> {

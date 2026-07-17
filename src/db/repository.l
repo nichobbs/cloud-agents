@@ -1278,6 +1278,19 @@ pub func cacheGitHubTokenDenied(tokenHash: in String): Result[Unit, CloudAgents.
   return Ok(value = ())
 }
 
+/// How many distinct bad bearers are currently negatively cached (i.e. seen
+/// within the last minute). The authentication path uses this as a global
+/// flood backstop (#425).
+pub func activeNegativeGitHubTokens(): Result[Int, CloudAgents.Sqlite.DbError] {
+  val rows = CloudAgents.Sqlite.query(CloudAgents.Db.countActiveNegativeGitHubTokensSql(nowMillis()))?
+  val len = CloudAgents.Sqlite.getRowArrayLength(rows)
+  if len == 0 {
+    return Ok(value = 0)
+  }
+  val r0 = CloudAgents.Sqlite.getRowArrayValue(rows, 0)
+  return Ok(value = parseNatString(colAt(r0.cols, 0)))
+}
+
 /// The still-valid cache entry for a token hash, or None (missing or expired).
 pub func cachedGitHubToken(
   tokenHash: in String

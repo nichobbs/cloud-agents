@@ -1162,3 +1162,12 @@ pub func deleteExpiredGitHubTokensSql(nowMillis: in String): String {
   return "DELETE FROM github_token_cache WHERE CAST(expires_at AS INTEGER) <= CAST(" + sqlLiteral(nowMillis) +
     " AS INTEGER)"
 }
+
+/// Count (as TEXT for the GetString-only driver) the still-active negative
+/// cache entries — one per distinct bad bearer seen in the last minute. The
+/// flood backstop reads this before spending an outbound validation (#425).
+pub func countActiveNegativeGitHubTokensSql(nowMillis: in String): String {
+  return "SELECT CAST(COUNT(*) AS TEXT) FROM github_token_cache WHERE user_id = '' AND CAST(expires_at AS INTEGER) > CAST(" +
+    sqlLiteral(nowMillis) +
+    " AS INTEGER)"
+}

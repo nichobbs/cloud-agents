@@ -57,6 +57,14 @@ func setContentType(req: in HttpWebRequest, contentType: in String): Unit = ()
 @externTarget("System.Net.HttpWebRequest.set_Timeout")
 func setTimeout(req: in HttpWebRequest, millis: in Int): Unit = ()
 
+/// Milliseconds a body read/write may stall. Timeout above only bounds
+/// GetResponse(); without this, body reads default to .NET's 5-minute
+/// ReadWriteTimeout and a slow peer could pin a request thread far longer
+/// than the 15s the connect timeout suggests (#427).
+@externInstance
+@externTarget("System.Net.HttpWebRequest.set_ReadWriteTimeout")
+func setReadWriteTimeout(req: in HttpWebRequest, millis: in Int): Unit = ()
+
 @externInstance
 @externTarget("System.Net.HttpWebRequest.get_Headers")
 func getHeaders(req: in HttpWebRequest): WebHeaderCollection = ()
@@ -141,6 +149,7 @@ pub func httpGetWithBearer(url: in String, bearerToken: in String, userAgent: in
     val req = createRequest(url)
     setMethod(req, "GET")
     setTimeout(req, requestTimeoutMillis)
+    setReadWriteTimeout(req, requestTimeoutMillis)
     setUserAgent(req, userAgent)
     setAccept(req, "application/json")
     headerSet(getHeaders(req), "Authorization", "Bearer " + bearerToken)
@@ -169,6 +178,7 @@ pub func httpPostForm(url: in String, formBody: in String, userAgent: in String)
     val req = createRequest(url)
     setMethod(req, "POST")
     setTimeout(req, requestTimeoutMillis)
+    setReadWriteTimeout(req, requestTimeoutMillis)
     setUserAgent(req, userAgent)
     setAccept(req, "application/json")
     setContentType(req, "application/x-www-form-urlencoded")

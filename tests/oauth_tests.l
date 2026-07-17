@@ -235,6 +235,71 @@ test "negative cache entries refuse a bad bearer without a round trip (#425)" {
   clearOAuthEnv()
 }
 
+test "a validated OAuth bearer satisfies secret routes without a static token (#428)" {
+  val dbPath = useFreshTestDb("oauth-secret-route")
+  defer {
+    cleanupTestDb(dbPath)
+  }
+  Env.SetEnvironmentVariable("CLOUD_AGENTS_GITHUB_CLIENT_ID", "cid")
+  Env.SetEnvironmentVariable("CLOUD_AGENTS_GITHUB_CLIENT_SECRET", "sec")
+  val token = "gho_secretroute"
+  match CloudAgents.Repository.cacheGitHubToken(CloudAgents.Crypto.sha256Base64(token), "gh-42", "octocat") {
+    case Ok(_) -> ()
+    case Err(e) -> assertTrue(false, "cache write failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+  }
+  // A validated GitHub identity is real authentication — credential routes
+  // accept it even with no CLOUD_AGENTS_API_TOKEN configured.
+  match authenticateRequest("/api/credentials", "Bearer " + token, "") {
+    case Allowed(uid) -> assertEqual(uid, "gh-42", "OAuth identity allowed on secret route")
+    case Denied(_) -> assertTrue(false, "validated OAuth bearer must satisfy secret routes")
+  }
+  // But an absent bearer on a secret route still refuses (unchanged).
+  match authenticateRequest("/api/credentials", "", "") {
+    case Allowed(_) -> assertTrue(false, "secret route must refuse without any credential")
+    case Denied(_) -> ()
+  }
+  clearOAuthEnv()
+}
+
+test "the flood backstop stops validating unrecognised bearers (#425)" {
+  val dbPath = useFreshTestDb("oauth-flood")
+  defer {
+    cleanupTestDb(dbPath)
+  }
+  Env.SetEnvironmentVariable("CLOUD_AGENTS_GITHUB_CLIENT_ID", "cid")
+  Env.SetEnvironmentVariable("CLOUD_AGENTS_GITHUB_CLIENT_SECRET", "sec")
+  // Simulate a flood: 30 distinct bad bearers negatively cached in-window.
+  var i = 0
+  while i < 30 {
+    match CloudAgents.Repository.cacheGitHubTokenDenied(CloudAgents.Crypto.sha256Base64("gho_flood" + toString(i))) {
+      case Ok(_) -> ()
+      case Err(e) -> assertTrue(false, "negative cache write failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+    }
+    i = i + 1
+  }
+  match CloudAgents.Repository.activeNegativeGitHubTokens() {
+    case Ok(n) -> assertEqualInt(n, 30, "all negative entries counted")
+    case Err(e) -> assertTrue(false, "counter failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+  }
+  // A fresh, never-seen bearer is refused WITHOUT a network round trip (if
+  // the backstop didn't fire, this test would need the network to proceed).
+  match authenticateRequest("/api/sessions", "Bearer gho_fresh_during_flood", "") {
+    case Allowed(_) -> assertTrue(false, "backstop must refuse during a flood")
+    case Denied(_) -> ()
+  }
+  // Positively cached users are unaffected by the backstop.
+  val good = "gho_stillgood"
+  match CloudAgents.Repository.cacheGitHubToken(CloudAgents.Crypto.sha256Base64(good), "gh-42", "octocat") {
+    case Ok(_) -> ()
+    case Err(e) -> assertTrue(false, "cache write failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+  }
+  match authenticateRequest("/api/sessions", "Bearer " + good, "") {
+    case Allowed(uid) -> assertEqual(uid, "gh-42", "validated users ride out the flood")
+    case Denied(_) -> assertTrue(false, "positively cached user must not be blocked by the backstop")
+  }
+  clearOAuthEnv()
+}
+
 test "expired cache entries never match" {
   val dbPath = useFreshTestDb("oauth-cache-expiry")
   defer {
