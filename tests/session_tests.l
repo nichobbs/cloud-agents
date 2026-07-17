@@ -892,3 +892,110 @@ test "setSessionProfileHandler validates session and profile (#235)" {
   }
 }
 
+// ── Multi-repo sessions ───────────────────────────────────────────────────────
+
+test "extraReposEnvValue formats url|branch entries space-separated" {
+  val repos = [
+    SessionRepo(id = "r1", sessionId = "s1", repoUrl = "https://github.com/a/b", branch = "main", createdAt = "1"),
+    SessionRepo(id = "r2", sessionId = "s1", repoUrl = "https://github.com/c/d", branch = "", createdAt = "2")
+  ]
+  assertEqual(
+    extraReposEnvValue(repos),
+    "https://github.com/a/b|main https://github.com/c/d|",
+    "url|branch entries space-separated; an empty branch is a trailing pipe"
+  )
+  val none: slice[SessionRepo] = []
+  assertEqual(extraReposEnvValue(none), "", "no linked repos -> empty env value")
+}
+
+test "session-repo handlers validate, link, list and unlink (#multi-repo)" {
+  val dbPath = useFreshTestDb("session-repos")
+  defer {
+    cleanupTestDb(dbPath)
+  }
+  // All three 404 for an unknown/foreign session.
+  match listSessionReposHandler("nope") {
+    case Ok(_) -> assertTrue(false, "list unknown session should 404")
+    case Err(err) -> assertEqualInt(err.status, 404, "list unknown -> 404")
+  }
+  match addSessionRepoHandler("nope", AddRepoRequest(repoUrl = "https://github.com/a/b", branch = "main")) {
+    case Ok(_) -> assertTrue(false, "add to unknown session should 404")
+    case Err(err) -> assertEqualInt(err.status, 404, "add unknown -> 404")
+  }
+
+  mustUnit(addSession(makeAgentSession(
+    sessionId = "sr-1",
+    repoUrl = "https://github.com/nic/repo",
+    branch = "main",
+    containerId = "",
+    harness = "claude",
+    model = "claude-opus-4-8",
+    nativeSessionId = "sr-1"
+  )))
+
+  // Initially empty.
+  match listSessionReposHandler("sr-1") {
+    case Ok(rl) -> assertEqualInt(rl.repos.length.toInt(), 0, "no linked repos initially")
+    case Err(_) -> assertTrue(false, "list should succeed for a known session")
+  }
+
+  // Same validation as session creation: non-https, SSRF host, unsafe branch.
+  match addSessionRepoHandler("sr-1", AddRepoRequest(repoUrl = "http://github.com/a/b", branch = "main")) {
+    case Ok(_) -> assertTrue(false, "non-https should 400")
+    case Err(err) -> assertEqualInt(err.status, 400, "non-https -> 400")
+  }
+  match addSessionRepoHandler("sr-1", AddRepoRequest(repoUrl = "https://127.0.0.1/a/b", branch = "main")) {
+    case Ok(_) -> assertTrue(false, "loopback should 400")
+    case Err(err) -> assertEqualInt(err.status, 400, "loopback repoUrl -> 400")
+  }
+  match addSessionRepoHandler("sr-1", AddRepoRequest(repoUrl = "https://github.com/a/b", branch = "-bad")) {
+    case Ok(_) -> assertTrue(false, "leading-dash branch should 400")
+    case Err(err) -> assertEqualInt(err.status, 400, "bad branch -> 400")
+  }
+  // A '|' in the url or branch would corrupt the EXTRA_REPOS "url|branch"
+  // packing, so it is rejected specifically for linked repos (#449).
+  match addSessionRepoHandler("sr-1", AddRepoRequest(repoUrl = "https://github.com/a/b|c", branch = "main")) {
+    case Ok(_) -> assertTrue(false, "pipe in repoUrl should 400")
+    case Err(err) -> assertEqualInt(err.status, 400, "pipe in repoUrl -> 400")
+  }
+  match addSessionRepoHandler("sr-1", AddRepoRequest(repoUrl = "https://github.com/a/b", branch = "ma|in")) {
+    case Ok(_) -> assertTrue(false, "pipe in branch should 400")
+    case Err(err) -> assertEqualInt(err.status, 400, "pipe in branch -> 400")
+  }
+
+  // A valid link with an empty branch (the repo's default branch is allowed).
+  val addedId = match addSessionRepoHandler("sr-1", AddRepoRequest(repoUrl = "https://github.com/nic/extra", branch = "")) {
+    case Ok(repo) -> repo.id
+    case Err(_) -> panic("linking a valid repo should have succeeded")
+  }
+  assertTrue(addedId.length > 0, "link returns a repo id")
+
+  // Re-linking the same URL is a duplicate -> 400.
+  match addSessionRepoHandler("sr-1", AddRepoRequest(repoUrl = "https://github.com/nic/extra", branch = "dev")) {
+    case Ok(_) -> assertTrue(false, "duplicate url should 400")
+    case Err(err) -> assertEqualInt(err.status, 400, "duplicate -> 400")
+  }
+
+  // Now listed once.
+  match listSessionReposHandler("sr-1") {
+    case Ok(rl) -> assertEqualInt(rl.repos.length.toInt(), 1, "one linked repo after add")
+    case Err(_) -> assertTrue(false, "list should succeed")
+  }
+
+  // Unlinking a repo id that isn't linked -> 404.
+  match deleteSessionRepoHandler("sr-1", "ghost") {
+    case Ok(_) -> assertTrue(false, "unknown repo id should 404")
+    case Err(err) -> assertEqualInt(err.status, 404, "unknown repo -> 404")
+  }
+
+  // Unlink the real one, then the list is empty again.
+  match deleteSessionRepoHandler("sr-1", addedId) {
+    case Ok(_) -> ()
+    case Err(_) -> assertTrue(false, "unlinking a linked repo should succeed")
+  }
+  match listSessionReposHandler("sr-1") {
+    case Ok(rl) -> assertEqualInt(rl.repos.length.toInt(), 0, "no linked repos after unlink")
+    case Err(_) -> assertTrue(false, "list should succeed")
+  }
+}
+

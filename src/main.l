@@ -140,6 +140,20 @@ func runListResp(r: in Result[RunList, Web.ApiError]): Web.Response {
   }
 }
 
+func sessionRepoResp(r: in Result[SessionRepo, Web.ApiError]): Web.Response {
+  return match r {
+    case Ok(v) -> Web.json(200, v.toJson())
+    case Err(e) -> Web.errorResponse(e)
+  }
+}
+
+func sessionRepoListResp(r: in Result[SessionRepoList, Web.ApiError]): Web.Response {
+  return match r {
+    case Ok(v) -> Web.json(200, v.toJson())
+    case Err(e) -> Web.errorResponse(e)
+  }
+}
+
 func messageListResp(r: in Result[MessageList, Web.ApiError]): Web.Response {
   return match r {
     case Ok(v) -> Web.json(200, v.toJson())
@@ -345,6 +359,32 @@ impl Web.Handler for RouteUpdateSessionModel {
       case Err(_) -> return badBody()
     }
     return unitResp(CloudAgents.Handlers.updateSessionModel(id, decoded))
+  }
+}
+
+record RouteListSessionRepos {}
+impl Web.Handler for RouteListSessionRepos {
+  func handle(req: in Web.Request): Web.Response {
+    return sessionRepoListResp(CloudAgents.Handlers.listSessionReposHandler(pparam(req, "id")))
+  }
+}
+
+record RouteAddSessionRepo {}
+impl Web.Handler for RouteAddSessionRepo {
+  func handle(req: in Web.Request): Web.Response {
+    val id = pparam(req, "id")
+    val decoded = match AddRepoRequest.fromJson(req.body) {
+      case Ok(d) -> d
+      case Err(_) -> return badBody()
+    }
+    return sessionRepoResp(CloudAgents.Handlers.addSessionRepoHandler(id, decoded))
+  }
+}
+
+record RouteDeleteSessionRepo {}
+impl Web.Handler for RouteDeleteSessionRepo {
+  func handle(req: in Web.Request): Web.Response {
+    return unitResp(CloudAgents.Handlers.deleteSessionRepoHandler(pparam(req, "id"), pparam(req, "rid")))
   }
 }
 
@@ -738,6 +778,16 @@ func main(): Unit {
   // to direct GitHub/provider calls.
   router = Web.addGet(router, "/api/sessions/{id}/output", RouteGetRunOutput())
   router = Web.addGet(router, "/api/sessions/{id}/output/{offset}", RouteGetRunOutputFrom())
+
+  // Linked repositories (multi-repo sessions): list, add, and remove extra
+  // repositories an agent works across in one run. The DELETE route is a
+  // two-path-param pattern ({id} and {rid}) — like the /output/{offset} route
+  // it can't be exercised against a live server in CI yet (#354/#442); the
+  // frontend degrades gracefully (hides the panel) if the routes 404 on an
+  // older backend.
+  router = Web.addGet(router, "/api/sessions/{id}/repos", RouteListSessionRepos())
+  router = Web.addPost(router, "/api/sessions/{id}/repos", RouteAddSessionRepo())
+  router = Web.addDelete(router, "/api/sessions/{id}/repos/{rid}", RouteDeleteSessionRepo())
 
   // Session lifecycle: cancel an in-flight run, run history, container reaping.
   router = Web.addPost(router, "/api/sessions/{id}/cancel", RouteCancelRun())

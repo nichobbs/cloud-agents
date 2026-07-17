@@ -238,6 +238,13 @@ pub func allMigrations(): slice[Migration] {
       statements = [
         CloudAgents.Db.githubTokenCacheSchemaSql()
       ]
+    ),
+    Migration(
+      version = "0008_session_repos",
+      statements = [
+        CloudAgents.Db.sessionReposSchemaSql(),
+        CloudAgents.Db.sessionReposSessionIndexSql()
+      ]
     )
   ]
 }
@@ -916,6 +923,86 @@ pub func listRuns(sessionId: in String, userId: in String): Result[slice[Run], C
     i = i + 1
   }
   return Ok(value = acc)
+}
+
+// ─── Session repositories (multi-repo sessions) ─────────────────────────────
+//
+// Extra git repositories linked to a session beyond its primary repo, so an
+// agent can work across several checkouts in one run. Access is always scoped
+// through an owner-checked session lookup in the handler layer (the table has
+// no user_id of its own), the same indirection comments/todos use.
+@generate(Json)
+pub record SessionRepo {
+  pub id: String
+  pub sessionId: String
+  pub repoUrl: String
+  pub branch: String
+  pub createdAt: String
+}
+
+@generate(Json)
+pub record SessionRepoList {
+  pub repos: slice[SessionRepo]
+}
+
+func rowToSessionRepo(r: in CloudAgents.Sqlite.Row): SessionRepo {
+  return SessionRepo(
+    id = colAt(r.cols, 0),
+    sessionId = colAt(r.cols, 1),
+    repoUrl = colAt(r.cols, 2),
+    branch = colAt(r.cols, 3),
+    createdAt = colAt(r.cols, 4)
+  )
+}
+
+/// A session's linked repositories, oldest first.
+pub func listSessionRepos(sessionId: in String): Result[slice[SessionRepo], CloudAgents.Sqlite.DbError] {
+  val rows = CloudAgents.Sqlite.query(CloudAgents.Db.selectSessionReposSql(sessionId))?
+  var acc: slice[SessionRepo] = []
+  var i = 0
+  val len = CloudAgents.Sqlite.getRowArrayLength(rows)
+  while i < len {
+    acc = acc.append(rowToSessionRepo(CloudAgents.Sqlite.getRowArrayValue(rows, i)))
+    i = i + 1
+  }
+  return Ok(value = acc)
+}
+
+/// How many repositories are linked to a session (for the per-session cap).
+pub func countSessionRepos(sessionId: in String): Result[Int, CloudAgents.Sqlite.DbError] {
+  val rows = CloudAgents.Sqlite.query(CloudAgents.Db.countSessionReposSql(sessionId))?
+  val len = CloudAgents.Sqlite.getRowArrayLength(rows)
+  if len == 0 {
+    return Ok(value = 0)
+  }
+  return Ok(value = parseNatString(colAt(CloudAgents.Sqlite.getRowArrayValue(rows, 0).cols, 0)))
+}
+
+/// Whether a session already has a repo linked at the given URL (duplicate guard).
+pub func sessionRepoUrlExists(sessionId: in String, repoUrl: in String): Result[Bool, CloudAgents.Sqlite.DbError] {
+  val rows = CloudAgents.Sqlite.query(CloudAgents.Db.selectSessionRepoByUrlSql(sessionId, repoUrl))?
+  return Ok(value = CloudAgents.Sqlite.getRowArrayLength(rows) > 0)
+}
+
+/// Link a repository to a session and return the stored record.
+pub func addSessionRepo(
+  sessionId: in String, repoUrl: in String, branch: in String
+): Result[SessionRepo, CloudAgents.Sqlite.DbError] {
+  val id = newId()
+  val ts = nowMillis()
+  CloudAgents.Sqlite.execute(CloudAgents.Db.insertSessionRepoSql(id, sessionId, repoUrl, branch, ts))?
+  return Ok(value = SessionRepo(id = id, sessionId = sessionId, repoUrl = repoUrl, branch = branch, createdAt = ts))
+}
+
+/// Unlink a repository from a session. Returns rows affected (0 = not found).
+pub func deleteSessionRepo(sessionId: in String, repoId: in String): Result[Int, CloudAgents.Sqlite.DbError] {
+  return CloudAgents.Sqlite.execute(CloudAgents.Db.deleteSessionRepoSql(sessionId, repoId))
+}
+
+/// Remove every repository linked to a session (session-deletion cleanup).
+pub func deleteSessionReposForSession(sessionId: in String): Result[Unit, CloudAgents.Sqlite.DbError] {
+  CloudAgents.Sqlite.execute(CloudAgents.Db.deleteSessionReposForSessionSql(sessionId))?
+  return Ok(value = ())
 }
 
 // ─── Webhooks (transactional outbox) ─────────────────────────────────────────────

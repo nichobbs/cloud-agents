@@ -13,7 +13,12 @@
 # Usage:
 #   CLOUD_AGENTS_URL=http://localhost:8080 \
 #   CLOUD_AGENTS_API_TOKEN=... \
-#   ./scripts/upload-credentials.sh [--dry-run]
+#   ./scripts/upload-credentials.sh [--dry-run] [--claude-home]
+#
+# --claude-home additionally bundles the essential files of ~/.claude (the
+# subscription/OAuth login the API key can't carry) as a base64 tar.gz and
+# uploads it as the CLAUDE_HOME_TARBALL_B64 credential; the claude runner
+# entrypoint unpacks it on a fresh home volume. See docs/credentials.md.
 #
 # The API token is required whenever the server has CLOUD_AGENTS_API_TOKEN
 # configured (credential routes always require it there). Values are sent
@@ -24,7 +29,19 @@ set -euo pipefail
 BASE_URL="${CLOUD_AGENTS_URL:-http://localhost:8080}"
 API_TOKEN="${CLOUD_AGENTS_API_TOKEN:-}"
 DRY_RUN=0
-[ "${1:-}" = "--dry-run" ] && DRY_RUN=1
+CLAUDE_HOME_BUNDLE=0
+for arg in "$@"; do
+    case "$arg" in
+        --dry-run) DRY_RUN=1 ;;
+        --claude-home) CLAUDE_HOME_BUNDLE=1 ;;
+        *) echo "upload-credentials: unknown argument '$arg' (accepts --dry-run, --claude-home)" >&2; exit 2 ;;
+    esac
+done
+
+# The vault rejects a credential value over this many characters (see
+# maxCredentialValueLen in src/handlers/credentials.l); the base64 bundle must
+# fit under it.
+MAX_CREDENTIAL_VALUE_LEN=65536
 
 command -v curl >/dev/null || { echo "upload-credentials: 'curl' not on PATH" >&2; exit 1; }
 command -v python3 >/dev/null || { echo "upload-credentials: 'python3' not on PATH (needed for JSON handling)" >&2; exit 1; }
@@ -83,6 +100,37 @@ elif [ -f "$HOME/.claude/.credentials.json" ]; then
     upload CLAUDE_CODE_OAUTH_TOKEN "$token" "~/.claude/.credentials.json"
 fi
 [ -n "${ANTHROPIC_API_KEY:-}" ] && upload ANTHROPIC_API_KEY "$ANTHROPIC_API_KEY" "env"
+
+# ── Claude subscription (OAuth) home bundle (opt-in: --claude-home) ────────────
+# A Claude *subscription* login lives as a directory (~/.claude/.credentials.json),
+# not a single API key, so it can't be uploaded as one env var. Bundle just the
+# auth essentials — never the bulky projects/ todos/ statsig/ history — as a
+# base64 tar.gz and upload it as one credential; the claude entrypoint unpacks
+# it on a fresh home volume.
+upload_claude_home() {
+    local claude_dir="$HOME/.claude"
+    if [ ! -f "$claude_dir/.credentials.json" ]; then
+        echo "claude-home: no ${claude_dir}/.credentials.json — sign in with 'claude' first (nothing to bundle)" >&2
+        return 0
+    fi
+    command -v tar >/dev/null || { echo "claude-home: 'tar' not on PATH" >&2; failed=$((failed + 1)); return 0; }
+    command -v base64 >/dev/null || { echo "claude-home: 'base64' not on PATH" >&2; failed=$((failed + 1)); return 0; }
+    # Include only the small auth-essential files that actually exist.
+    local includes=(".credentials.json")
+    [ -f "$claude_dir/settings.json" ] && includes+=("settings.json")
+    local blob
+    blob=$(tar -czf - -C "$claude_dir" "${includes[@]}" 2>/dev/null | base64 | tr -d '\n') || {
+        echo "claude-home: failed to build the bundle" >&2; failed=$((failed + 1)); return 0
+    }
+    local size=${#blob}
+    if [ "$size" -gt "$MAX_CREDENTIAL_VALUE_LEN" ]; then
+        echo "claude-home: bundle is ${size} chars, over the ${MAX_CREDENTIAL_VALUE_LEN} vault limit — included files:" >&2
+        for f in "${includes[@]}"; do echo "  - ${f} ($(wc -c < "${claude_dir}/${f}" 2>/dev/null || echo '?') bytes)" >&2; done
+        failed=$((failed + 1)); return 0
+    fi
+    upload CLAUDE_HOME_TARBALL_B64 "$blob" "~/.claude bundle: ${#includes[@]} files, ${size} b64 chars"
+}
+[ "$CLAUDE_HOME_BUNDLE" = "1" ] && upload_claude_home
 
 # ── Codex CLI ─────────────────────────────────────────────────────────────────
 if [ -n "${OPENAI_API_KEY:-}" ]; then

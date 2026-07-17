@@ -43,7 +43,7 @@ pub record PutCredentialRequest {
 /// the credential store, and the entrypoint renders it into mcp.json safely.
 func isReservedEnvName(name: in String): Bool {
   return name == "PROMPT" or name == "REPO_URL" or name == "BRANCH" or name == "HARNESS" or name == "MODEL" or
-    name == "NATIVE_SESSION_ID" or
+    name == "NATIVE_SESSION_ID" or name == "EXTRA_REPOS" or
     name == "PATH" or name == "HOME" or name == "USER" or name == "SHELL" or name == "PWD" or name == "IFS" or
     name == "LD_PRELOAD" or name == "LD_LIBRARY_PATH"
 }

@@ -27,6 +27,19 @@ if [ -z "${PROMPT:-}" ]; then
     exit 64
 fi
 
+# Restore a Claude subscription (OAuth) login from the vault on a fresh home
+# volume. A subscription login is a ~/.claude directory, not an API key, so it
+# ships as a base64 tar.gz in the CLAUDE_HOME_TARBALL_B64 credential (see
+# scripts/upload-credentials.sh --claude-home). Unpack it only when the
+# persisted home volume has no credentials yet, so an existing — possibly
+# token-refreshed — login is never overwritten. The blob is never echoed.
+: "${HOME:=/home/claude-user}"
+if [ -n "${CLAUDE_HOME_TARBALL_B64:-}" ] && [ ! -f "$HOME/.claude/.credentials.json" ]; then
+    echo "entrypoint: restoring ~/.claude auth from the vault bundle" >&2
+    mkdir -p "$HOME/.claude"
+    printf '%s' "${CLAUDE_HOME_TARBALL_B64}" | base64 -d | tar -xzf - -C "$HOME/.claude"
+fi
+
 # Clone the repository on first run; reuse the volume afterwards.
 if [ ! -d /workspace/.git ]; then
     if [ -z "${REPO_URL:-}" ]; then
@@ -35,6 +48,43 @@ if [ ! -d /workspace/.git ]; then
     fi
     echo "entrypoint: cloning ${REPO_URL} (${BRANCH})" >&2
     git clone "${REPO_URL}" --branch "${BRANCH}" /workspace
+fi
+
+# Clone any additional linked repositories (multi-repo sessions). EXTRA_REPOS is
+# a space-separated list of "url|branch" entries (an empty branch — "url|" —
+# means the repo's default branch). Values are validated server-side, so no
+# space or '|' can appear inside a url or branch and word-splitting is safe;
+# `set -f` disables globbing so a '?'/'*' in a url can't be pathname-expanded.
+# Each repo clones into /workspace/repos/<name> on first run and is reused from
+# the persisted workspace volume afterwards, so the agent can work across repos.
+if [ -n "${EXTRA_REPOS:-}" ]; then
+    mkdir -p /workspace/repos
+    set -f
+    for entry in ${EXTRA_REPOS}; do
+        extra_url="${entry%%|*}"
+        extra_branch="${entry#*|}"
+        # A branchless entry (no '|') leaves the whole string in extra_branch;
+        # normalise that to an empty branch. (The server always emits 'url|'.)
+        [ "${extra_branch}" = "${entry}" ] && extra_branch=""
+        [ -z "${extra_url}" ] && continue
+        # Derive a collision-free directory from the whole URL, not just its
+        # basename: two different repos sharing a basename (a/repo and b/repo)
+        # would otherwise map to the same dir and the second clone would be
+        # skipped (#450). Drop the scheme and a trailing .git, then slugify the
+        # rest (host + path) to a filesystem-safe name.
+        repo_slug=$(printf '%s' "${extra_url}" | sed -E -e 's#^[a-zA-Z][a-zA-Z0-9+.-]*://##' -e 's#/+$##' -e 's#\.git$##' -e 's#[^A-Za-z0-9._-]+#-#g' -e 's#^-+##' -e 's#-+$##')
+        [ -z "${repo_slug}" ] && repo_slug="repo"
+        repo_dir="/workspace/repos/${repo_slug}"
+        if [ ! -d "${repo_dir}/.git" ]; then
+            echo "entrypoint: cloning extra repo ${extra_url} (${extra_branch:-default branch})" >&2
+            if [ -n "${extra_branch}" ]; then
+                git clone "${extra_url}" --branch "${extra_branch}" "${repo_dir}"
+            else
+                git clone "${extra_url}" "${repo_dir}"
+            fi
+        fi
+    done
+    set +f
 fi
 
 cd /workspace
