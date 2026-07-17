@@ -121,9 +121,10 @@ test "Per-user volume binds isolate tenants; operator keeps legacy names" {
   assertEqual(homeVolumeBindFor("gh-42", "codex"), "user-gh-42-codex-home:/home/codex-user", "tenant codex home bind")
   assertEqual(homeVolumeBindFor("gh-42", "opencode"), "user-gh-42-opencode-home:/home/opencode-user", "tenant opencode home bind")
   assertEqual(homeVolumeBindFor("gh-42", "gemini"), "user-gh-42-gemini-home:/home/gemini-user", "tenant gemini home bind")
-  // Empty harness normalises to "claude" in the volume name so the volume
-  // matches the image actually used.
+  // Any unrecognised harness — not just empty — normalises to "claude" in the
+  // volume name, agreeing with the mount path and image fallbacks (#437).
   assertEqual(homeVolumeBindFor("gh-42", ""), "user-gh-42-claude-home:/home/claude-user", "tenant empty harness normalised to claude")
+  assertEqual(homeVolumeBindFor("gh-42", "bogus"), "user-gh-42-claude-home:/home/claude-user", "tenant unknown harness normalised to claude (#437)")
 }
 
 test "sqlLiteral wraps and escapes single quotes" {

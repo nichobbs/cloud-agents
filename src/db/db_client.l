@@ -224,7 +224,13 @@ pub func homeVolumeBindFor(userId: in String, harness: in String): String {
   if userId == "" or userId == "default" {
     return homeVolumeBindForHarness(harness)
   }
-  val harnessName = if harness == "" then "claude" else harness
+  // Normalise ANYTHING that isn't a recognised harness to "claude" — not
+  // just the empty string — so the volume name always agrees with the mount
+  // path and image, which both fall back to claude's for unknown values
+  // (homeMountPathForHarness / imageForHarness). Unreachable today
+  // (isKnownHarness rejects unknown harnesses upstream), but a divergent
+  // name here would silently split a tenant's claude state in two (#437).
+  val harnessName = if harness == "codex" or harness == "opencode" or harness == "gemini" then harness else "claude"
   return "user-" + userId + "-" + harnessName + "-home:" + homeMountPathForHarness(harness)
 }
 
