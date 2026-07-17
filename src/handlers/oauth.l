@@ -277,23 +277,26 @@ pub func authenticateGitHubBearer(token: in String): AuthOutcome {
       return CloudAgents.Auth.deniedOutcome(CloudAgents.Auth.invalidTokenError())
     }
   }
+  // The token is genuinely valid at this point — cache the IDENTITY
+  // regardless of the whitelist verdict, and let the per-hit whitelist check
+  // above enforce access. That makes whitelist changes symmetric and instant
+  // in both directions (#424/#429): a removal locks the user out on their
+  // next request, and an addition lets a previously-refused user straight in
+  // — no negative row to wait out. (Negative rows are only for tokens GitHub
+  // itself rejected, where there is no identity to re-check.) This also
+  // means an unlisted-but-valid token stops costing outbound round trips,
+  // exactly like a listed one.
+  match CloudAgents.Repository.cacheGitHubToken(
+    tokenHash,
+    CloudAgents.Auth.userIdForGitHubId(identity.githubId),
+    identity.login
+  ) {
+    case Ok(_) -> ()
+    case Err(_) -> ()
+  }
   match CloudAgents.Auth.authorizeGitHub(identity.githubId, whitelistCsv()) {
-    case Allowed(userId) -> {
-      match CloudAgents.Repository.cacheGitHubToken(tokenHash, userId, identity.login) {
-        case Ok(_) -> ()
-        case Err(_) -> ()
-      }
-      return CloudAgents.Auth.allowedOutcome(userId)
-    }
-    case Denied(e) -> {
-      // A whitelist miss is a real identity that isn't allowed in — cache the
-      // denial too, so hammering with the same token can't farm round trips.
-      match CloudAgents.Repository.cacheGitHubTokenDenied(tokenHash) {
-        case Ok(_) -> ()
-        case Err(_) -> ()
-      }
-      return CloudAgents.Auth.deniedOutcome(e)
-    }
+    case Allowed(userId) -> return CloudAgents.Auth.allowedOutcome(userId)
+    case Denied(e) -> return CloudAgents.Auth.deniedOutcome(e)
   }
 }
 

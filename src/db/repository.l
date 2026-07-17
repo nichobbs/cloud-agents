@@ -1250,6 +1250,13 @@ func githubTokenTtlMillis(): String {
   return "600000"
 }
 
+/// How long a denial stays negatively cached (1 minute — deliberately short
+/// so a transient-network denial can't lock a valid token out for long; the
+/// named constant is here so the two TTLs read side by side, #430).
+func githubTokenDeniedTtlMillis(): String {
+  return "60000"
+}
+
 /// Cache a successful validation. The expired-row sweep is best-effort.
 pub func cacheGitHubToken(
   tokenHash: in String, userId: in String, login: in String
@@ -1265,15 +1272,24 @@ pub func cacheGitHubToken(
   return Ok(value = ())
 }
 
-/// Cache a *denial* (unknown token, whitelist miss) briefly — an empty
-/// userId marks the entry as negative. Blunts repeated presentations of the
-/// same bad bearer, which would otherwise each cost an outbound GitHub round
-/// trip that blocks a request thread (#425). The TTL is deliberately short
-/// (1 minute) so a denial produced by a transient network failure cannot
-/// lock a genuinely valid token out for long.
+/// Cache a *denial* briefly — an empty userId marks the entry as negative.
+/// Only for tokens GitHub itself rejected (no identity to re-check); a
+/// whitelist miss caches the real identity positively instead, so whitelist
+/// additions take effect immediately (#429). Blunts repeated presentations
+/// of the same bad bearer, which would otherwise each cost an outbound
+/// GitHub round trip that blocks a request thread (#425).
 pub func cacheGitHubTokenDenied(tokenHash: in String): Result[Unit, CloudAgents.Sqlite.DbError] {
+  val now = nowMillis()
+  // Sweep expired rows on THIS write path too (#432): during a sustained
+  // flood of distinct bad bearers this is the only path writing at all, and
+  // without the sweep those rows would accumulate until a legitimate
+  // sign-in happened to run the positive path's sweep.
+  match CloudAgents.Sqlite.execute(CloudAgents.Db.deleteExpiredGitHubTokensSql(now)) {
+    case Ok(_) -> ()
+    case Err(_) -> ()
+  }
   CloudAgents.Sqlite.execute(
-    CloudAgents.Db.upsertGitHubTokenSql(tokenHash, "", "", nowMillis(), "60000")
+    CloudAgents.Db.upsertGitHubTokenSql(tokenHash, "", "", now, githubTokenDeniedTtlMillis())
   )?
   return Ok(value = ())
 }

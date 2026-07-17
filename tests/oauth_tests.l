@@ -210,6 +210,14 @@ test "cache hits re-apply the whitelist so removals take effect immediately (#42
     case Allowed(_) -> assertTrue(false, "de-whitelisted user must be refused despite the cache")
     case Denied(_) -> ()
   }
+  // ...and additions are just as immediate (#429): the identity row is
+  // cached positively even while unlisted, so re-adding the user lets their
+  // next request straight in — no negative entry to wait out.
+  Env.SetEnvironmentVariable("CLOUD_AGENTS_WHITELIST", "999,42")
+  match authenticateRequest("/api/sessions", "Bearer " + token, "") {
+    case Allowed(uid) -> assertEqual(uid, "gh-42", "re-whitelisted user allowed immediately")
+    case Denied(_) -> assertTrue(false, "whitelist addition must take effect on the next request")
+  }
   Env.SetEnvironmentVariable("CLOUD_AGENTS_WHITELIST", "")
   clearOAuthEnv()
 }

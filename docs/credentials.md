@@ -75,11 +75,15 @@ The static `CLOUD_AGENTS_API_TOKEN` keeps working as the single-operator
 fallback; a bearer matching it authenticates as the `default` tenant exactly
 as before.
 
-Validation-cache latencies: whitelist changes take effect on the affected
-user's **next request** (the whitelist is re-applied on every cache hit);
-revoking the OAuth token *at GitHub* is only noticed at revalidation, i.e.
-within the 10-minute cache TTL. Denials are negatively cached for 1 minute
-so repeated bad bearers don't each cost an outbound GitHub round trip.
+Validation-cache latencies: whitelist changes — removals *and* additions —
+take effect on the affected user's **next request** (the whitelist is
+re-applied on every cache hit, and a whitelist-miss caches the identity
+positively rather than negatively); revoking the OAuth token *at GitHub* is
+only noticed at revalidation, i.e. within the 10-minute cache TTL. Tokens
+GitHub itself rejects are negatively cached for 1 minute so repeated bad
+bearers don't each cost an outbound round trip, with a global backstop that
+stops validating unrecognised bearers entirely once 30 distinct failures are
+in-window.
 
 ## Auto-uploading harness credentials
 
