@@ -48,6 +48,10 @@ export interface CheckRun {
 }
 
 export interface BranchChecks {
+  /** Tip commit sha — BEST-EFFORT (#447): the direct path always resolves it
+   *  (a dedicated commit lookup), but the proxy path derives it from the
+   *  check runs' own head_sha and returns '' when a branch has no runs.
+   *  Treat '' as "unknown", never as an error. */
   sha: string;
   total: number;
   runs: CheckRun[];
@@ -282,7 +286,8 @@ function mapChecks(checks: RawChecks, sha: string): BranchChecks {
 export async function getBranchChecks(owner: string, repo: string, ref: string): Promise<BranchChecks> {
   try {
     // The proxy resolves the branch server-side in one call and returns the
-    // raw check-runs payload; the tip sha comes off the runs themselves.
+    // raw check-runs payload; the tip sha comes off the runs themselves —
+    // '' when the branch has no runs (sha is best-effort by contract, #447).
     const checks = await proxyGithubChecks<RawChecks>(owner, repo, ref);
     return mapChecks(checks, checks.check_runs[0]?.head_sha ?? '');
   } catch {
