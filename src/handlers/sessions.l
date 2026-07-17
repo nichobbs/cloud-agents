@@ -550,6 +550,139 @@ pub func getRunOutput(id: in String): Result[String, Web.ApiError] {
   }
 }
 
+// ── Incremental run output ────────────────────────────────────────────────────
+
+// Decimal digit value of a single-character string, -1 when not a digit.
+// Mirrors the parser helper in src/main.l's isValidPort — that digitValue is
+// package CloudAgents (non-pub) and not importable from here, so Handlers
+// keeps its own copy.
+func digitValue(c: in String): Int {
+  if c == "0" {
+    return 0
+  }
+  if c == "1" {
+    return 1
+  }
+  if c == "2" {
+    return 2
+  }
+  if c == "3" {
+    return 3
+  }
+  if c == "4" {
+    return 4
+  }
+  if c == "5" {
+    return 5
+  }
+  if c == "6" {
+    return 6
+  }
+  if c == "7" {
+    return 7
+  }
+  if c == "8" {
+    return 8
+  }
+  if c == "9" {
+    return 9
+  }
+  return -1
+}
+
+/// Parse a client-supplied output offset: 1..9 decimal digits, so the value
+/// fits comfortably in Int (999,999,999 is far beyond any realistic container
+/// log). Returns -1 for anything else — empty, too long, sign, non-digit —
+/// which getRunOutputFrom maps to a 400. pub so the test suite can cover the
+/// validation boundary directly (the handler itself references
+/// CloudAgents.Docker and cannot be invoked from tests — see the getRunOutput
+/// NOTE in tests/session_tests.l).
+pub func parseOutputOffset(offsetStr: in String): Int {
+  if offsetStr.length == 0 or offsetStr.length > 9 {
+    return -1
+  }
+  var n = 0
+  var i = 0
+  while i < offsetStr.length {
+    val d = digitValue(offsetStr.substring(i, 1))
+    if d < 0 {
+      return -1
+    }
+    n = n * 10 + d
+    i = i + 1
+  }
+  return n
+}
+
+/// Build the `{"running":..,"length":..,"chunk":..}` body for the incremental
+/// output endpoint. `length` is the CURRENT total log length; the client feeds
+/// it back as its next offset. All values are strings, matching the TEXT-only
+/// hand-built JSON style of getRunOutput/listSessions (a fresh
+/// @generate(Json) record on this path tripped the JSON source generator at
+/// runtime — see getRunOutput's doc comment).
+///
+/// IMPORTANT resync subtlety: an offset PAST the current total means the
+/// client polled across a log truncation (e.g. a new run replaced the
+/// container, so the log restarted from empty). That offset is treated as
+/// offset = 0 and the FULL log is returned as the chunk with the new length —
+/// the client sees `length` below the offset it sent and REPLACES its
+/// accumulated output instead of appending, resyncing in one round trip. An
+/// offset EQUAL to the total means the client is caught up: empty chunk.
+pub func runOutputDeltaJson(running: in Bool, logs: in String, offset: in Int): String {
+  val total = logs.length.toInt()
+  val effective = if offset > total { 0 } else { offset }
+  val chunk = if effective >= total { "" } else { logs.substring(effective, total - effective) }
+  val runningStr = if running { "true" } else { "false" }
+  return "{\"running\":\"" + runningStr + "\",\"length\":\"" + toString(total) +
+    "\",\"chunk\":\"" + CloudAgents.Streaming.jsonEscape(chunk) + "\"}"
+}
+
+/// Incremental live output for an in-progress run — GET
+/// /api/sessions/{id}/output/{offset}. Same status/container lookups as
+/// getRunOutput above, but instead of returning the ENTIRE container log on
+/// every poll tick, returns only the bytes past the client's `offset` as
+/// `{"running":"true|false","length":"<total>","chunk":"<escaped>"}`, so a
+/// long, chatty run's polling cost is proportional to NEW output rather than
+/// to the whole accumulated log on every tick. The client feeds the returned
+/// `length` back as its next offset; when `length` comes back below the
+/// offset it sent, the chunk is the full (truncated/replaced) log and the
+/// client resyncs — see runOutputDeltaJson for the exact rule.
+///
+/// `offsetStr` must be 1..9 decimal digits (parseOutputOffset); anything else
+/// is a 400. When the session is not RUNNING the body is
+/// `{"running":"false","length":"0","chunk":""}` and the client stops
+/// polling. The plain /output route is kept untouched for older clients.
+pub func getRunOutputFrom(id: in String, offsetStr: in String): Result[String, Web.ApiError] {
+  if id.length == 0 {
+    return Err(Web.badRequest("id is required"))
+  }
+  val offset = parseOutputOffset(offsetStr)
+  if offset < 0 {
+    return Err(Web.badRequest("offset must be a decimal integer of 1 to 9 digits"))
+  }
+  val maybeStatus = match CloudAgents.SessionStore.sessionStatus(id) {
+    case Ok(m) -> m
+    case Err(e) -> return Err(Web.internalError("session lookup failed: " + CloudAgents.Sqlite.dbErrorMessage(e)))
+  }
+  match maybeStatus {
+    case None -> return Err(Web.notFound("Session not found"))
+    case Some(status) -> {
+      // Status — not container id — decides "running", for the same
+      // first-poll-races-container-creation reason documented on getRunOutput.
+      if status != "RUNNING" {
+        return Ok(value = runOutputDeltaJson(false, "", 0))
+      }
+      val containerId = match getSession(id) {
+        case Ok(Some(s)) -> s.containerId
+        case Ok(None) -> ""
+        case Err(e) -> return Err(Web.internalError("session lookup failed: " + CloudAgents.Sqlite.dbErrorMessage(e)))
+      }
+      val logs = if containerId.length > 0 { CloudAgents.Docker.partialContainerLogs(containerId) } else { "" }
+      return Ok(value = runOutputDeltaJson(true, logs, offset))
+    }
+  }
+}
+
 /// Stop and tear down container and associated session synchronously.
 pub func deleteSession(id: in String): Result[Unit, Web.ApiError] {
   if id.length == 0 {

@@ -105,6 +105,15 @@ export function useStreamMessage(sessionId: string): StreamState {
       if (!alive() || sendInFlightRef.current || !first.running) return;
       setIsStreaming(true);
       let last = first.output;
+      // Server-authoritative offset for the incremental endpoint: the initial
+      // probe returned the full log, so subsequent polls only need the bytes
+      // past it. The server echoes back its current total as `length`, which
+      // becomes the next offset.
+      let offset = first.output.length;
+      // Prefer the incremental endpoint; on the first throw (older backend
+      // without the /output/{offset} route) fall back to full-log polling for
+      // the rest of this run.
+      let deltaSupported = true;
       if (last) setOutput(last);
       let delay = 1500;
       const maxDelay = 6000;
@@ -113,14 +122,35 @@ export function useStreamMessage(sessionId: string): StreamState {
         await new Promise(r => setTimeout(r, delay));
         if (!alive()) return;
         try {
-          const next = await api.getRunOutput(forSession);
+          let running: boolean;
+          let next: string;
+          if (deltaSupported) {
+            try {
+              const d = await api.getRunOutputDelta(forSession, offset);
+              // A length below the offset we sent means the log was
+              // truncated/replaced (new run): the chunk is the full new log —
+              // replace the accumulated output instead of appending (resync).
+              next = d.length < offset ? d.chunk : last + d.chunk;
+              offset = d.length;
+              running = d.running;
+            } catch {
+              deltaSupported = false;
+              const full = await api.getRunOutput(forSession);
+              running = full.running;
+              next = full.output;
+            }
+          } else {
+            const full = await api.getRunOutput(forSession);
+            running = full.running;
+            next = full.output;
+          }
           if (!alive()) return;
-          if (next.output && next.output !== last) {
-            last = next.output;
+          if (next !== last) {
+            last = next;
             setOutput(last);
             delay = 1500; // fresh output — poll responsively again (#216)
           }
-          if (!next.running) {
+          if (!running) {
             finished = true;
             break;
           }
@@ -166,32 +196,65 @@ export function useStreamMessage(sessionId: string): StreamState {
       });
 
       // The send request blocks until the whole run finishes (the backend
-      // cannot stream a response yet), so poll the run-output endpoint in
+      // cannot stream a response yet — see docs/upstream/lyric-web-streaming.md
+      // for the Lyric.Web feature request), so poll the run-output endpoint in
       // parallel to surface incremental container output as it accumulates.
-      // Each tick the endpoint returns logs-so-far (not a delta), so the tail
-      // is rebuilt as `base + partial`; earlier content in `base` is never
-      // overwritten. Polling stops as soon as the send settles or the run
-      // reports finished, and yields to real streamed chunks. Failures are
-      // swallowed — polling is best-effort and must never fail the send.
+      // The incremental endpoint (getRunOutputDelta) is preferred: each tick
+      // only the bytes past the server-acknowledged offset travel, and the
+      // accumulated tail is rebuilt as `base + liveTail`; earlier content in
+      // `base` is never overwritten. On an older backend without the delta
+      // route the first delta call throws and polling falls back to the
+      // original full-log endpoint for the rest of the run. Polling stops as
+      // soon as the send settles or the run reports finished, and yields to
+      // real streamed chunks. Failures are swallowed — polling is best-effort
+      // and must never fail the send.
       let polling = true;
       let liveTail = '';
+      // Server-authoritative offset for the delta endpoint: the next poll asks
+      // only for log bytes past this point; the server's returned `length`
+      // becomes the next offset.
+      let liveOffset = 0;
+      let deltaSupported = true;
       // Poll responsively at first, then back off toward a cap so a long,
-      // quiet run doesn't re-fetch the full log every 1.5s for its whole
-      // duration (#216). The interval resets to 1.5s whenever new output
-      // arrives, so an actively-producing run stays responsive. (The endpoint
-      // returns the full log each tick, not a delta — real deltas would need
-      // backend support and are out of scope here.)
+      // quiet run doesn't re-poll every 1.5s for its whole duration (#216).
+      // The interval resets to 1.5s whenever new output arrives, so an
+      // actively-producing run stays responsive.
       const minPollMs = 1500;
       const maxPollMs = 6000;
       let pollDelay = minPollMs;
       const poll = async () => {
         while (polling && stillCurrent()) {
           try {
-            const { running, output: partial } = await api.getRunOutput(sessionId);
+            let running: boolean;
+            let next: string;
+            if (deltaSupported) {
+              try {
+                const d = await api.getRunOutputDelta(sessionId, liveOffset);
+                // A length below the offset we sent means the log was
+                // truncated/replaced (new run): the chunk is the full new log
+                // — replace the accumulated tail instead of appending
+                // (resync).
+                next = d.length < liveOffset ? d.chunk : liveTail + d.chunk;
+                liveOffset = d.length;
+                running = d.running;
+              } catch {
+                // Older backend without the delta route (or, in tests, an api
+                // mock that doesn't define getRunOutputDelta) — fall back to
+                // full-log polling for the rest of this run.
+                deltaSupported = false;
+                const full = await api.getRunOutput(sessionId);
+                running = full.running;
+                next = full.output;
+              }
+            } else {
+              const full = await api.getRunOutput(sessionId);
+              running = full.running;
+              next = full.output;
+            }
             if (!polling || !stillCurrent()) break;
-            if (partial && partial !== liveTail) {
-              liveTail = partial;
-              setOutput(base + partial);
+            if (next !== liveTail) {
+              liveTail = next;
+              setOutput(base + next);
               pollDelay = minPollMs;
             }
             if (!running) break;

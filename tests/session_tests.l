@@ -579,6 +579,76 @@ test "Handler createSession rejects unsafe inputs" {
 // dispatch HTTP requests to handlers (see docs/BUILD.md); until then its
 // validation (empty -> 400, unknown -> 404) mirrors the other session
 // handlers that ARE covered above.
+//
+// getRunOutputFrom (the incremental /output/{offset} variant) shares that
+// fate for direct invocation — it references CloudAgents.Docker
+// (partialContainerLogs) too, so its unknown-session -> 404 path cannot be
+// invoked from here either. Its Docker-free logic is therefore extracted
+// into pure pub helpers and covered below instead: parseOutputOffset is the
+// entire bad-offset -> 400 boundary (the handler 400s exactly when it
+// returns -1), and runOutputDeltaJson builds the exact response bodies for
+// both the non-RUNNING ("running":"false") and RUNNING paths, including the
+// offset-past-total client-resync rule. The handler itself is a thin
+// composition of those two plus the same status/container lookups
+// getRunOutput makes.
+
+test "parseOutputOffset accepts 1..9 digits and rejects everything else (-> 400)" {
+  assertEqualInt(parseOutputOffset("0"), 0, "zero parses")
+  assertEqualInt(parseOutputOffset("42"), 42, "small offset parses")
+  assertEqualInt(parseOutputOffset("999999999"), 999999999, "nine digits (max) parse")
+  assertEqualInt(parseOutputOffset(""), -1, "empty rejected")
+  assertEqualInt(parseOutputOffset("1234567890"), -1, "ten digits rejected")
+  assertEqualInt(parseOutputOffset("-1"), -1, "sign rejected")
+  assertEqualInt(parseOutputOffset("12a"), -1, "trailing non-digit rejected")
+  assertEqualInt(parseOutputOffset(" 1"), -1, "leading whitespace rejected")
+}
+
+test "runOutputDeltaJson returns only the log past the offset" {
+  assertEqual(
+    runOutputDeltaJson(true, "hello world", 6),
+    "{\"running\":\"true\",\"length\":\"11\",\"chunk\":\"world\"}",
+    "chunk is the log past the offset, length is the new total"
+  )
+  assertEqual(
+    runOutputDeltaJson(true, "abc", 0),
+    "{\"running\":\"true\",\"length\":\"3\",\"chunk\":\"abc\"}",
+    "offset 0 returns the full log"
+  )
+}
+
+test "runOutputDeltaJson caught-up and non-RUNNING bodies" {
+  assertEqual(
+    runOutputDeltaJson(true, "abc", 3),
+    "{\"running\":\"true\",\"length\":\"3\",\"chunk\":\"\"}",
+    "offset == total -> empty chunk (client is caught up)"
+  )
+  // The body getRunOutputFrom returns whenever the session is not RUNNING.
+  assertEqual(
+    runOutputDeltaJson(false, "", 0),
+    "{\"running\":\"false\",\"length\":\"0\",\"chunk\":\"\"}",
+    "non-RUNNING body signals the client to stop polling"
+  )
+}
+
+test "runOutputDeltaJson treats an offset past the total as 0 (client resync)" {
+  // The client's offset outlived the log (a new run truncated/replaced it):
+  // return the FULL log with the new length — the client sees length below
+  // the offset it sent and replaces its accumulated output instead of
+  // appending.
+  assertEqual(
+    runOutputDeltaJson(true, "new", 500),
+    "{\"running\":\"true\",\"length\":\"3\",\"chunk\":\"new\"}",
+    "offset > total -> full log as the chunk (resync)"
+  )
+}
+
+test "runOutputDeltaJson JSON-escapes the chunk" {
+  assertEqual(
+    runOutputDeltaJson(true, "a\"b\nc", 0),
+    "{\"running\":\"true\",\"length\":\"5\",\"chunk\":\"a\\\"b\\nc\"}",
+    "quotes and newlines in container output are escaped"
+  )
+}
 
 test "Handler listSessions returns stored sessions" {
   val dbPath = useFreshTestDb("session-list")

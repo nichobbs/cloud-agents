@@ -164,6 +164,12 @@ by an automated test versus believed from the code compiling:
    response, plus an `AuthMiddleware` that finally calls
    `CloudAgents.Auth.enforce` on every request.
 
+One `Lyric.Web` gap remains by design of its current API — a handler can
+only return a single complete `Web.Response`, so live run output has to be
+polled (`getRunOutput`, and the incremental `getRunOutputFrom`) instead of
+streamed — written up as a ready-to-file upstream feature request in
+`docs/upstream/lyric-web-streaming.md`.
+
 **Net effect, now genuinely confirmed end-to-end (2026-07-15), not just
 believed from compiling.** `scripts/run-api.sh` builds and starts, and a
 real running server was driven with real `curl` requests against

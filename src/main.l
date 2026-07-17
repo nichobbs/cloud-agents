@@ -321,6 +321,13 @@ impl Web.Handler for RouteGetRunOutput {
   }
 }
 
+record RouteGetRunOutputFrom {}
+impl Web.Handler for RouteGetRunOutputFrom {
+  func handle(req: in Web.Request): Web.Response {
+    return jsonStringResp(CloudAgents.Handlers.getRunOutputFrom(pparam(req, "id"), pparam(req, "offset")))
+  }
+}
+
 record RouteDeleteSession {}
 impl Web.Handler for RouteDeleteSession {
   func handle(req: in Web.Request): Web.Response {
@@ -672,8 +679,12 @@ func main(): Unit {
   router = Web.addPost(router, "/api/sessions/{id}/profile", RouteSetSessionProfile())
   router = Web.addGet(router, "/api/sessions/{id}/profile", RouteGetSessionProfile())
 
-  // Live output polling for an in-progress run
+  // Live output polling for an in-progress run. The offset-suffixed route
+  // returns only the log bytes past {offset} (incremental polling — see
+  // getRunOutputFrom); the plain route returns the full log each tick and is
+  // kept untouched for older clients.
   router = Web.addGet(router, "/api/sessions/{id}/output", RouteGetRunOutput())
+  router = Web.addGet(router, "/api/sessions/{id}/output/{offset}", RouteGetRunOutputFrom())
 
   // Session lifecycle: cancel an in-flight run, run history, container reaping.
   router = Web.addPost(router, "/api/sessions/{id}/cancel", RouteCancelRun())

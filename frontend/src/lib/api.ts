@@ -197,6 +197,33 @@ export const api = {
     return { running: body.running === 'true', output: body.output ?? '' };
   },
 
+  /** Incremental live output: only the log bytes past `offset` travel, so a
+   *  long run's polling cost is proportional to new output rather than the
+   *  whole accumulated log each tick. `length` is the server's current total
+   *  log length — feed it back as the next offset. A `length` below the
+   *  offset you sent means the log was truncated/replaced (new run) and
+   *  `chunk` is the full new log: replace your accumulated output (resync).
+   *  Newer backends only — callers fall back to getRunOutput when this
+   *  throws (e.g. a 404 route miss on an older backend). Values arrive as
+   *  strings (TEXT-only hand-built JSON, like getRunOutput's `running`) and
+   *  are normalised here. */
+  getRunOutputDelta: async (
+    sessionId: string,
+    offset: number,
+  ): Promise<{ running: boolean; length: number; chunk: string }> => {
+    const res = await fetch(`${BASE}/api/sessions/${sessionId}/output/${offset}`, {
+      headers: authHeaders(),
+    });
+    if (!res.ok) throw new Error(`${res.status} ${await res.text()}`);
+    const body = (await res.json()) as { running?: string; length?: string; chunk?: string };
+    const total = Number(body.length ?? '0');
+    return {
+      running: body.running === 'true',
+      length: Number.isFinite(total) ? total : 0,
+      chunk: body.chunk ?? '',
+    };
+  },
+
   // ─── Transcript ──────────────────────────────────────────────────────────────
 
   getMessages: async (sessionId: string): Promise<Message[]> => {
