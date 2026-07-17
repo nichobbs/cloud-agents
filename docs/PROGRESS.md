@@ -133,7 +133,7 @@ design of each phase and `docs/BUILD.md` for build/verification notes.
 | GitHub OAuth login (web flow) | ✅ added | `oauth.l` (`exchangeCode` via `POST /api/auth/github/exchange`, config via `GET /api/auth/github/config`), frontend `lib/auth.ts` + `pages/AuthCallback.tsx` + Nav sign-in/out |
 | Per-request identity | ✅ added | `AuthMiddleware` stamps the authenticated user id thread-locally (`Auth.setCurrentUserId`); the async Docker path takes the owner explicitly since thread-locals don't flow to worker threads |
 | Per-user volumes | ✅ added | `db_client.l` (`workspaceVolumeBindFor`, `homeVolumeBindFor`) wired into `docker_manager.l` — OAuth tenants get `user-<id>-<harness>-home` + `session-<id>-<sessionId>-workspace`; the operator `default` identity keeps the legacy shared names (see `docs/credentials.md`) |
-| Encrypted credential upload | ⬜ pending | endpoint + encryption |
+| Encrypted credential upload | ✅ added | write-only vault (`POST /api/credentials`, AES-256 at rest); `scripts/upload-credentials.sh` auto-detects keys, and `--claude-home` bundles the `~/.claude` subscription (OAuth) login as a base64 tar.gz credential (`CLAUDE_HOME_TARBALL_B64`) the claude entrypoint unpacks onto a fresh home volume — the one auth state an env-var key can't carry. See `docs/credentials.md` |
 
 > "verified" = compiles **and** runtime-tested via `scripts/verify.sh` (CI runs
 > it on every push). With the OAuth rows above, requests bearing a GitHub

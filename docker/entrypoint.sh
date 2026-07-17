@@ -27,6 +27,19 @@ if [ -z "${PROMPT:-}" ]; then
     exit 64
 fi
 
+# Restore a Claude subscription (OAuth) login from the vault on a fresh home
+# volume. A subscription login is a ~/.claude directory, not an API key, so it
+# ships as a base64 tar.gz in the CLAUDE_HOME_TARBALL_B64 credential (see
+# scripts/upload-credentials.sh --claude-home). Unpack it only when the
+# persisted home volume has no credentials yet, so an existing — possibly
+# token-refreshed — login is never overwritten. The blob is never echoed.
+: "${HOME:=/home/claude-user}"
+if [ -n "${CLAUDE_HOME_TARBALL_B64:-}" ] && [ ! -f "$HOME/.claude/.credentials.json" ]; then
+    echo "entrypoint: restoring ~/.claude auth from the vault bundle" >&2
+    mkdir -p "$HOME/.claude"
+    printf '%s' "${CLAUDE_HOME_TARBALL_B64}" | base64 -d | tar -xzf - -C "$HOME/.claude"
+fi
+
 # Clone the repository on first run; reuse the volume afterwards.
 if [ ! -d /workspace/.git ]; then
     if [ -z "${REPO_URL:-}" ]; then

@@ -146,8 +146,54 @@ without hand-typing names and values:
   `auth.json` — recognising each secret and uploading it under the right name.
 - **`scripts/upload-credentials.sh` (CLI).** Auto-detects credentials on your
   workstation (the env vars above, the same three credential files, and
-  `gh auth token`) and uploads whatever it finds. Supports `--dry-run`;
-  configure `CLOUD_AGENTS_URL` / `CLOUD_AGENTS_API_TOKEN`.
+  `gh auth token`) and uploads whatever it finds. Supports `--dry-run` and
+  `--claude-home` (see below); configure `CLOUD_AGENTS_URL` /
+  `CLOUD_AGENTS_API_TOKEN`.
+
+## Claude subscription (OAuth) credentials
+
+A Claude Code **API key** (`ANTHROPIC_API_KEY`) is a single value and rides the
+normal credential vault like any other secret. A Claude Code **subscription
+login** is different: it's not an API key but an OAuth session stored as a
+`~/.claude` directory (`~/.claude/.credentials.json`, with a refreshable access
+token). There's no single value to hand a container as one env var, and no
+browser OAuth flow inside a headless runner — so a subscription login needs the
+directory itself.
+
+`--claude-home` bundles the essentials of that directory and ships them through
+the same vault:
+
+```sh
+CLOUD_AGENTS_URL=http://localhost:8080 \
+CLOUD_AGENTS_API_TOKEN=... \
+./scripts/upload-credentials.sh --claude-home
+```
+
+- **What's in the bundle.** Only `~/.claude/.credentials.json` (the login) plus
+  `~/.claude/settings.json` if present — tarred, gzipped, and base64-encoded
+  into a single credential named `CLAUDE_HOME_TARBALL_B64`. The bulky
+  `projects/`, `todos/`, `statsig/`, and cache directories are deliberately
+  excluded so the bundle stays small.
+- **Size cap.** The vault rejects a credential value over **65536 characters**
+  (`maxCredentialValueLen`), so the base64 bundle must fit under it. The script
+  fails with the included files and their sizes if it doesn't — trim `~/.claude`
+  (it's almost always the excluded dirs bloating it) and retry.
+- **How it's delivered.** `CLAUDE_HOME_TARBALL_B64` is injected into the claude
+  runner container as an env var like any vault credential (no backend change —
+  the injection path is generic). The claude entrypoint (`docker/entrypoint.sh`)
+  unpacks it into `$HOME/.claude` **only on a fresh home volume** — i.e. when no
+  `.credentials.json` is already present — so an existing, possibly
+  token-refreshed, login is never overwritten. The blob is never echoed.
+- **Rotation.** Re-run `--claude-home` to upload a new bundle; **new** sessions
+  (fresh home volumes) pick it up. An existing session's home volume keeps its
+  current `~/.claude` until that volume is cleared, by design — the entrypoint
+  won't clobber a live login.
+- **Security.** The bundle is encrypted at rest in the write-only vault like
+  every other credential; it is decrypted server-side only when building the
+  container env, and then lives as an env var inside that container — the same
+  trust domain as the agent running there (which can already read every other
+  injected secret). Treat it as equivalent to handing that container your Claude
+  login, because that is exactly what it does.
 
 **Security note on local connections.** UI features that call provider APIs
 (live model discovery, the GitHub repo/PR/CI panels) now go through the
