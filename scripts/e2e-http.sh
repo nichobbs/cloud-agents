@@ -46,9 +46,13 @@ trap cleanup EXIT
 echo "==> starting server on ${BASE} (db=${DB})"
 # No CLOUD_AGENTS_API_TOKEN and no GitHub OAuth config => open mode, so the
 # non-exempt routes below dispatch (and hit their own not-found/empty-vault
-# paths) without needing a token. --port is read by main.l; --urls mirrors
-# scripts/run-api.sh.
-dotnet "$OUT" --port "$PORT" --urls "$BASE" >"$LOG" 2>&1 &
+# paths) without needing a token. The port is driven through main.l's own
+# mechanism: it reads --port (and, as a belt-and-suspenders, the
+# LYRIC_CONFIG_WEB_SERVER_PORT env it ultimately sets) — no --urls, which
+# main.l's argument parser never reads (#467). The host defaults to all
+# interfaces, which 127.0.0.1 below reaches.
+export LYRIC_CONFIG_WEB_SERVER_PORT="$PORT"
+dotnet "$OUT" --port "$PORT" >"$LOG" 2>&1 &
 SERVER_PID=$!
 
 ready=0
