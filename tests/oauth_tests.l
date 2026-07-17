@@ -308,6 +308,55 @@ test "the flood backstop stops validating unrecognised bearers (#425)" {
   clearOAuthEnv()
 }
 
+test "the exchange endpoint has its own flood backstop, independent of bearers (#434)" {
+  val dbPath = useFreshTestDb("oauth-code-flood")
+  defer {
+    cleanupTestDb(dbPath)
+  }
+  Env.SetEnvironmentVariable("CLOUD_AGENTS_GITHUB_CLIENT_ID", "cid")
+  Env.SetEnvironmentVariable("CLOUD_AGENTS_GITHUB_CLIENT_SECRET", "sec")
+
+  // A code GitHub already rejected is refused while its negative row lives —
+  // no second outbound exchange for the same code.
+  match CloudAgents.Repository.cacheOAuthCodeRejected(CloudAgents.Crypto.sha256Base64("oauth-code:replayedcode")) {
+    case Ok(_) -> ()
+    case Err(e) -> assertTrue(false, "code-rejection write failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+  }
+  match exchangeCode(ExchangeRequest(code = "replayedcode")) {
+    case Ok(_) -> assertTrue(false, "recently rejected code must be refused")
+    case Err(e) -> assertEqualInt(e.status, 400, "replayed code -> 400 without a round trip")
+  }
+
+  // 30 distinct rejected codes trip the exchange backstop for fresh codes...
+  var i = 0
+  while i < 30 {
+    match CloudAgents.Repository.cacheOAuthCodeRejected(CloudAgents.Crypto.sha256Base64("oauth-code:bad" + toString(i))) {
+      case Ok(_) -> ()
+      case Err(e) -> assertTrue(false, "code-rejection write failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+    }
+    i = i + 1
+  }
+  match exchangeCode(ExchangeRequest(code = "freshcodeduringflood")) {
+    case Ok(_) -> assertTrue(false, "exchange backstop must refuse during a code flood")
+    case Err(e) -> assertEqualInt(e.status, 400, "code flood -> 400 without a round trip")
+  }
+
+  // ...but rejected codes never count toward the BEARER backstop (#433's
+  // blast-radius argument stays intact).
+  match CloudAgents.Repository.activeNegativeGitHubTokens() {
+    case Ok(n) -> assertEqualInt(n, 0, "code rejections don't pollute the bearer counter")
+    case Err(e) -> assertTrue(false, "counter failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+  }
+  clearOAuthEnv()
+}
+
+test "only confirmed auth rejections are classified for negative caching (#435)" {
+  assertTrue(isConfirmedAuthRejection("GET https://api.github.com/user failed: The remote server returned an error: (401) Unauthorized."), "401 is a confirmed rejection")
+  assertTrue(isConfirmedAuthRejection("GET https://api.github.com/user failed: The remote server returned an error: (403) Forbidden."), "403 is a confirmed rejection")
+  assertTrue(not isConfirmedAuthRejection("GET https://api.github.com/user failed: The remote name could not be resolved: 'api.github.com'"), "DNS failure is not a rejection")
+  assertTrue(not isConfirmedAuthRejection("GET https://api.github.com/user failed: The operation has timed out."), "timeout is not a rejection")
+}
+
 test "expired cache entries never match" {
   val dbPath = useFreshTestDb("oauth-cache-expiry")
   defer {

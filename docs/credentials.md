@@ -93,6 +93,14 @@ users (positive cache) or new sign-ins (the exchange endpoint validates
 directly and primes the cache) — only bearers that never went through this
 server's exchange, which re-running "Sign in with GitHub" self-heals.
 
+The exchange endpoint has its own, independent backstop (#434): a code
+GitHub already rejected is refused while its 1-minute negative row lives,
+and 30 distinct rejected codes in-window pause outbound exchanges. The two
+counters are separate, so a garbage-bearer flood can never lock out
+sign-ins and a garbage-code flood only throttles the exchange itself. Only
+confirmed GitHub rejections (HTTP 401/403) are negatively cached — transport
+failures fail the request but are never cached or counted (#435).
+
 ## Auto-uploading harness credentials
 
 Two convenience paths feed the credential vault (`POST /api/credentials`)

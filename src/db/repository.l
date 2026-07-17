@@ -1307,6 +1307,31 @@ pub func activeNegativeGitHubTokens(): Result[Int, CloudAgents.Sqlite.DbError] {
   return Ok(value = parseNatString(colAt(r0.cols, 0)))
 }
 
+/// Record a GitHub-rejected authorization code (marker login 'oauth-code',
+/// so these never count toward the bearer backstop and vice versa — #434).
+pub func cacheOAuthCodeRejected(codeHash: in String): Result[Unit, CloudAgents.Sqlite.DbError] {
+  val now = nowMillis()
+  match CloudAgents.Sqlite.execute(CloudAgents.Db.deleteExpiredGitHubTokensSql(now)) {
+    case Ok(_) -> ()
+    case Err(_) -> ()
+  }
+  CloudAgents.Sqlite.execute(
+    CloudAgents.Db.upsertGitHubTokenSql(codeHash, "", "oauth-code", now, githubTokenDeniedTtlMillis())
+  )?
+  return Ok(value = ())
+}
+
+/// How many distinct GitHub-rejected authorization codes are in-window (#434).
+pub func activeRejectedOAuthCodes(): Result[Int, CloudAgents.Sqlite.DbError] {
+  val rows = CloudAgents.Sqlite.query(CloudAgents.Db.countActiveRejectedOAuthCodesSql(nowMillis()))?
+  val len = CloudAgents.Sqlite.getRowArrayLength(rows)
+  if len == 0 {
+    return Ok(value = 0)
+  }
+  val r0 = CloudAgents.Sqlite.getRowArrayValue(rows, 0)
+  return Ok(value = parseNatString(colAt(r0.cols, 0)))
+}
+
 /// The still-valid cache entry for a token hash, or None (missing or expired).
 pub func cachedGitHubToken(
   tokenHash: in String

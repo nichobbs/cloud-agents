@@ -1164,10 +1164,21 @@ pub func deleteExpiredGitHubTokensSql(nowMillis: in String): String {
 }
 
 /// Count (as TEXT for the GetString-only driver) the still-active negative
-/// cache entries — one per distinct bad bearer seen in the last minute. The
-/// flood backstop reads this before spending an outbound validation (#425).
+/// BEARER entries — one per distinct bad bearer seen in the last minute
+/// (rejected-code entries carry the 'oauth-code' login marker and are
+/// counted separately, #434). The flood backstop reads this before spending
+/// an outbound validation (#425).
 pub func countActiveNegativeGitHubTokensSql(nowMillis: in String): String {
-  return "SELECT CAST(COUNT(*) AS TEXT) FROM github_token_cache WHERE user_id = '' AND CAST(expires_at AS INTEGER) > CAST(" +
+  return "SELECT CAST(COUNT(*) AS TEXT) FROM github_token_cache WHERE user_id = '' AND login = '' AND CAST(expires_at AS INTEGER) > CAST(" +
+    sqlLiteral(nowMillis) +
+    " AS INTEGER)"
+}
+
+/// Count still-active REJECTED-CODE entries (login marker 'oauth-code').
+/// Kept separate from the bearer counter so a bearer flood can never trip
+/// the sign-in backstop and vice versa (#433/#434).
+pub func countActiveRejectedOAuthCodesSql(nowMillis: in String): String {
+  return "SELECT CAST(COUNT(*) AS TEXT) FROM github_token_cache WHERE user_id = '' AND login = 'oauth-code' AND CAST(expires_at AS INTEGER) > CAST(" +
     sqlLiteral(nowMillis) +
     " AS INTEGER)"
 }

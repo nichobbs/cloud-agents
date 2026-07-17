@@ -149,6 +149,16 @@ pub record GitHubIdentity {
   pub login: String
 }
 
+/// Whether a github_api.l error string reflects GitHub actually refusing the
+/// credential (HTTP 401/403 in the WebException text) rather than a
+/// transport failure. Textual matching is inherently approximate, but the
+/// runner images and deploy containers run under the invariant culture, so
+/// .NET's "(401) Unauthorized"-style message text is stable there; a missed
+/// match merely skips the negative-cache write (fail-safe) (#435).
+pub func isConfirmedAuthRejection(errorText: in String): Bool {
+  return errorText.contains("(401)") or errorText.contains("(403)")
+}
+
 /// Validate a token against api.github.com/user and parse the identity.
 func fetchIdentity(token: in String): Result[GitHubIdentity, String] {
   val json = CloudAgents.GitHubApi.httpGetWithBearer(githubUserUrl(), token, userAgent())?
@@ -169,6 +179,26 @@ pub func exchangeCode(req: in ExchangeRequest): Result[TokenGrant, Web.ApiError]
   if not isSafeOAuthCode(req.code) {
     return Err(Web.badRequest("code is missing or not a valid GitHub authorization code"))
   }
+  // Exchange flood protection (#434), mirroring the bearer path's backstop
+  // but on its OWN counter (rejected-code rows carry the 'oauth-code'
+  // marker), so a garbage-bearer flood can never lock out sign-ins and a
+  // garbage-code flood only throttles the exchange endpoint itself. A code
+  // GitHub already rejected is refused outright while its negative row
+  // lives; past the threshold of distinct rejected codes, stop spending
+  // outbound exchanges until the window drains.
+  val codeHash = CloudAgents.Crypto.sha256Base64("oauth-code:" + req.code)
+  match CloudAgents.Repository.cachedGitHubToken(codeHash) {
+    case Ok(Some(_)) -> return Err(Web.badRequest("this authorization code was recently rejected — restart the sign-in flow"))
+    case Ok(None) -> ()
+    case Err(_) -> ()
+  }
+  val recentRejections = match CloudAgents.Repository.activeRejectedOAuthCodes() {
+    case Ok(n) -> n
+    case Err(_) -> 0
+  }
+  if recentRejections >= maxRecentValidationFailures {
+    return Err(Web.badRequest("too many recent failed sign-in attempts on this server — try again in a minute"))
+  }
   // The exchange endpoint is reachable unauthenticated by design, so raw
   // transport errors (which can carry internal host/proxy detail) are logged
   // server-side and callers get a generic message — same rule as
@@ -186,6 +216,12 @@ pub func exchangeCode(req: in ExchangeRequest): Result[TokenGrant, Web.ApiError]
   }
   val token = accessTokenFromExchangeJson(body)
   if token.length == 0 {
+    // GitHub answered and said no — an unambiguous rejection, safe to count
+    // toward the exchange backstop (#434). Best-effort write.
+    match CloudAgents.Repository.cacheOAuthCodeRejected(codeHash) {
+      case Ok(_) -> ()
+      case Err(_) -> ()
+    }
     val detail = exchangeErrorFromJson(body)
     val reason = if detail.length > 0 { detail } else { "no access token in GitHub's response" }
     return Err(Web.badRequest("GitHub rejected the authorization code: " + reason))
@@ -279,10 +315,17 @@ pub func authenticateGitHubBearer(token: in String): AuthOutcome {
 
   val identity = match fetchIdentity(token) {
     case Ok(idn) -> idn
-    case Err(_) -> {
-      match CloudAgents.Repository.cacheGitHubTokenDenied(tokenHash) {
-        case Ok(_) -> ()
-        case Err(_) -> ()
+    case Err(e) -> {
+      // Negatively cache only CONFIRMED rejections — GitHub answered with an
+      // auth-failure status — never transport failures (DNS, outage,
+      // timeout), which would otherwise lock a valid token out for the
+      // negative TTL and pollute the flood counter during a GitHub blip
+      // (#435). The request itself still fails closed either way.
+      if isConfirmedAuthRejection(e) {
+        match CloudAgents.Repository.cacheGitHubTokenDenied(tokenHash) {
+          case Ok(_) -> ()
+          case Err(_) -> ()
+        }
       }
       return CloudAgents.Auth.deniedOutcome(CloudAgents.Auth.invalidTokenError())
     }
