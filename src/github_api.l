@@ -107,15 +107,16 @@ func charFromCode(code: in Int): String = ()
 val requestTimeoutMillis = 15000
 
 /// Read a response stream to a string, one byte per char (see module doc for
-/// the deliberate ASCII-only guarantee).
+/// the deliberate ASCII-only guarantee). NB: `out` is a reserved keyword in
+/// Lyric (P0051), hence `acc`.
 func readAll(s: in NetStream): String {
-  var out = ""
+  var acc = ""
   var b = streamReadByte(s)
   while b >= 0 {
-    out = out + charFromCode(b)
+    acc = acc + charFromCode(b)
     b = streamReadByte(s)
   }
-  return out
+  return acc
 }
 
 /// GET `url` with an Authorization bearer header. GitHub's API additionally
