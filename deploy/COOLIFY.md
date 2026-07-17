@@ -46,8 +46,13 @@ instead of the real file/socket. After the first deploy, confirm it worked:
 docker compose exec api test -S /var/run/docker.sock && echo ok
 ```
 
-If that fails, the mount didn't come through as a socket and the API's
-Docker connectivity health check will fail too.
+If that fails, the mount didn't come through as a socket — and note
+`/api/health` won't tell you that: `checkHealth()`
+(`src/handlers/sessions.l:759`) only probes SQLite, there's no Docker
+connectivity check anywhere in the stack. Uptime monitoring pointed at
+`/api/health` (per `RUNBOOK.md`) will report healthy even with a broken
+`docker.sock` mount — the `test -S` command above is the only way to catch
+this failure mode.
 
 ## Runner base images
 
