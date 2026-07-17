@@ -1,0 +1,70 @@
+# Coolify variant of docker-compose.yml.
+#
+# Coolify runs its own edge proxy (Traefik) on the shared host's :80/:443 for
+# every app it manages, so — unlike docker-compose.yml — this variant:
+#   - does not publish host ports on `caddy` (a second process binding 80/443
+#     directly would conflict with Coolify's own proxy and its other apps);
+#   - does not have `caddy` obtain its own Let's Encrypt certificate — TLS is
+#     terminated at Coolify's proxy, which forwards plain HTTP to `caddy`
+#     over the internal Docker network using the SERVICE_FQDN_CADDY_80 magic
+#     env var below (Coolify docs: docker/compose, "Magic Environment
+#     Variables"). `caddy` still does the path-based split between `api` and
+#     `frontend` — see Caddyfile.coolify.
+#
+# Deploy: in Coolify, add a new "Docker Compose" resource pointed at this
+# file, set ENCRYPTION_KEY / CLOUD_AGENTS_WHITELIST / etc. in its Environment
+# Variables tab (see .env.example), and set SERVICE_FQDN_CADDY_80 to your
+# domain (or leave it for Coolify to assign a subdomain). See COOLIFY.md.
+#
+# The /var/run/docker.sock bind mount below is unchanged from
+# docker-compose.yml, but Coolify has had bugs where a file-path bind mount
+# gets created as a directory instead of passed through — after first
+# deploy, confirm it actually landed as a socket inside the `api` container
+# (e.g. `docker compose exec api test -S /var/run/docker.sock`) before
+# trusting it.
+
+services:
+  api:
+    build:
+      context: ..
+      dockerfile: deploy/api.Dockerfile
+    environment:
+      - ENCRYPTION_KEY=${ENCRYPTION_KEY:?set ENCRYPTION_KEY in Coolify's environment variables}
+      - CLOUD_AGENTS_WHITELIST=${CLOUD_AGENTS_WHITELIST:-}
+      # See docker-compose.yml for what these two control (runner container
+      # network policy) — same meaning here.
+      - CLOUD_AGENTS_RESTRICTED_NETWORK=${CLOUD_AGENTS_RESTRICTED_NETWORK:-}
+      - CLOUD_AGENTS_EGRESS_PROXY=${CLOUD_AGENTS_EGRESS_PROXY:-}
+      - LYRIC_CONFIG_WEB_SERVER_PORT=8080
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - user_data:/user-home
+    restart: unless-stopped
+
+  frontend:
+    image: nginx:alpine
+    volumes:
+      - ../frontend:/usr/share/nginx/html:ro
+    restart: unless-stopped
+
+  caddy:
+    image: caddy:2
+    environment:
+      # Bare reference (no value) — Coolify detects this and manages the
+      # domain assignment for it in the resource's Environment Variables UI.
+      # The _80 suffix pins the target to caddy:2's port 80 (the image also
+      # exposes 443 and 2019, which would otherwise be ambiguous).
+      - SERVICE_FQDN_CADDY_80
+    volumes:
+      - ./Caddyfile.coolify:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      - api
+      - frontend
+    restart: unless-stopped
+
+volumes:
+  user_data:
+  caddy_data:
+  caddy_config:

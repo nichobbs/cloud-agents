@@ -1,0 +1,32 @@
+# Coolify variant of Caddyfile.
+#
+# Coolify's own proxy terminates TLS and forwards plain HTTP here, so this
+# site block uses an explicit http:// address — that tells Caddy to serve
+# plain HTTP only and skip its own automatic HTTPS/Let's Encrypt, which
+# would otherwise fail anyway since Coolify's proxy (not this container)
+# holds the host's :80/:443.
+#
+# {$SERVICE_FQDN_CADDY_80} is populated by Coolify from the matching
+# environment variable declared in docker-compose.coolify.yml.
+
+http://{$SERVICE_FQDN_CADDY_80} {
+	handle /api/* {
+		reverse_proxy api:8080
+	}
+
+	handle {
+		reverse_proxy frontend:80
+	}
+
+	encode gzip
+
+	# Claude invocations can run for several minutes; keep the upstream
+	# connection open long enough to stream the full response.
+	@api path /api/*
+	reverse_proxy @api api:8080 {
+		flush_interval -1
+		transport http {
+			read_timeout 15m
+		}
+	}
+}
