@@ -7,24 +7,28 @@
 # takes effect on the next run and "Remove" takes the checkout off disk. An
 # agent can then work across several repositories in one run.
 #
-# Invoked by each entrypoint as: reconcile-repos.sh <log-prefix>
-# Reads EXTRA_REPOS from the environment: a space-separated list of "url|branch"
-# entries (an empty branch — "url|" — means the repo's default branch). Values
-# are validated server-side, so no space or '|' can appear inside a url or
-# branch and word-splitting is safe; `set -f` disables globbing during the split
-# so a '?'/'*' in a url can't be pathname-expanded.
+# Invoked by each entrypoint as: reconcile-repos.sh <log-prefix> [workspace-root]
+# The workspace root is a positional arg (default /workspace) rather than an env
+# var, so the reconcile can be exercised against a temp dir in a test without
+# introducing a new container-injectable variable. Reads EXTRA_REPOS from the
+# environment: a space-separated list of "url|branch" entries (an empty branch —
+# "url|" — means the repo's default branch). Values are validated server-side,
+# so no space or '|' can appear inside a url or branch and word-splitting is
+# safe; `set -f` disables globbing during the split so a '?'/'*' in a url can't
+# be pathname-expanded.
 set -euo pipefail
 
 prefix="${1:-entrypoint}"
+repos_dir="${2:-/workspace}/repos"
 
 # Nothing linked and no existing checkouts to prune -> nothing to do. (Runs even
-# when EXTRA_REPOS is empty but /workspace/repos exists, so unlinking the last
-# repo still prunes it.)
-if [ -z "${EXTRA_REPOS:-}" ] && [ ! -d /workspace/repos ]; then
+# when EXTRA_REPOS is empty but the repos dir exists, so unlinking the last repo
+# still prunes it.)
+if [ -z "${EXTRA_REPOS:-}" ] && [ ! -d "${repos_dir}" ]; then
     exit 0
 fi
 
-mkdir -p /workspace/repos
+mkdir -p "${repos_dir}"
 wanted=""
 set -f
 for entry in ${EXTRA_REPOS:-}; do
@@ -42,7 +46,7 @@ for entry in ${EXTRA_REPOS:-}; do
     repo_slug=$(printf '%s' "${extra_url}" | sed -E -e 's#^[a-zA-Z][a-zA-Z0-9+.-]*://##' -e 's#/+$##' -e 's#\.git$##' -e 's#[^A-Za-z0-9._-]+#-#g' -e 's#^-+##' -e 's#-+$##')
     [ -z "${repo_slug}" ] && repo_slug="repo"
     wanted="${wanted} ${repo_slug}"
-    repo_dir="/workspace/repos/${repo_slug}"
+    repo_dir="${repos_dir}/${repo_slug}"
     if [ ! -d "${repo_dir}/.git" ]; then
         echo "${prefix}: cloning extra repo ${extra_url} (${extra_branch:-default branch})" >&2
         if [ -n "${extra_branch}" ]; then
@@ -55,7 +59,7 @@ done
 set +f
 
 # Prune checkouts that are no longer linked (globbing back on for the scan).
-for existing in /workspace/repos/*; do
+for existing in "${repos_dir}"/*; do
     [ -e "${existing}" ] || continue
     base=$(basename "${existing}")
     case " ${wanted} " in
