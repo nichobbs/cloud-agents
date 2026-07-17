@@ -503,8 +503,11 @@ pub func streamSendMessage(id: in String, text: in String, w: in Web.ResponseWri
         case Err(_) -> ""
       }
 
-      // Commit the SSE stream: headers are still settable (no chunk written
-      // yet), then hand the writer to the streaming run loop.
+      // Commit the SSE stream: status + headers are still settable (no chunk
+      // written yet), then hand the writer to the streaming run loop. 200 is
+      // set explicitly (it is also the default) to mirror the error paths and
+      // the upstream usage example.
+      Web.writeStatus(w, 200)
       Web.writeHeader(w, "Content-Type", "text/event-stream")
       Web.writeHeader(w, "Cache-Control", "no-cache")
 

@@ -258,6 +258,17 @@ async func partialContainerLogsAsync(containerId: in String, cell: in ResultCell
   }
 }
 
+/// The session's current container id ("" when unknown / not owned by the
+/// caller). Owner-scoped via getSession; runs on the request thread where the
+/// identity is stamped, matching getRunOutputFrom.
+func sessionContainerId(sessionId: in String): String {
+  return match CloudAgents.SessionStore.getSession(sessionId) {
+    case Ok(Some(s)) -> s.containerId
+    case Ok(None) -> ""
+    case Err(_) -> ""
+  }
+}
+
 /// Run a session message and stream the container's output to `w` as SSE
 /// `data:` frames while it runs, returning the full captured logs on success
 /// (for transcript persistence) or an error. `userId` must be the request's
@@ -286,21 +297,25 @@ pub func streamSessionMessage(
 ): Result[String, String] {
   val cell = ResultCell(isSuccess = false, output = "", error = "")
   val t = runSessionMessageAsync(repoUrl, branch, prompt, sessionId, harness, model, nativeSessionId, profileId, userId, extraRepos, cell)
+  val startMs = CloudAgents.Repository.nowMillisLong()
+  val runTimeoutMs = 1800000.toLong() // 30-minute hard cap (matches the old runSessionMessage)
   var offset = 0
   var finished = false
   var clientGone = false
+  var timedOut = false
+  // The container id is stored by the async task via updateSessionContainerFor
+  // shortly after creation. Resolve it once and cache it — re-querying the DB
+  // every ~400ms tick for the whole run is needless load (#483). getSession is
+  // owner-scoped and runs on the request thread where the identity is stamped,
+  // matching getRunOutputFrom.
+  var containerId = ""
   // Poll every ~400ms. taskWaitMs blocks up to that waiting for the run to
   // finish (true = the whole run completed), so the loop wakes on either a
   // timer tick or run completion.
-  while not finished and not clientGone {
+  while not finished and not clientGone and not timedOut {
     finished = taskWaitMs(t, 400)
-    // The container id is stored by the async task via updateSessionContainerFor
-    // shortly after creation; getSession is owner-scoped and runs on the request
-    // thread where the identity is stamped, matching getRunOutputFrom.
-    val containerId = match CloudAgents.SessionStore.getSession(sessionId) {
-      case Ok(Some(s)) -> s.containerId
-      case Ok(None) -> ""
-      case Err(_) -> ""
+    if containerId.length == 0 {
+      containerId = sessionContainerId(sessionId)
     }
     if containerId.length > 0 {
       val logs = partialContainerLogs(containerId)
@@ -314,14 +329,24 @@ pub func streamSessionMessage(
         }
       }
     }
+    // Hard cap the whole run (#481): a hung container with a still-connected
+    // client would otherwise hold the session's RUNNING claim forever, where
+    // the old runSessionMessage bounded it with a 30-minute taskWaitMs.
+    if CloudAgents.Repository.nowMillisLong() - startMs > runTimeoutMs {
+      timedOut = true
+    }
   }
-  if clientGone {
-    // Terminate the orphaned container so a 30-minute run doesn't keep going
-    // after the browser hung up.
-    match CloudAgents.SessionStore.getSession(sessionId) {
-      case Ok(Some(s)) -> if s.containerId.length > 0 { val _ = terminateSessionContainer(s.containerId) }
-      case Ok(None) -> ()
-      case Err(_) -> ()
+  if clientGone or timedOut {
+    // Terminate the orphaned container so the run doesn't keep going after the
+    // browser hung up (clientGone) or past the hard cap (timedOut).
+    if containerId.length == 0 {
+      containerId = sessionContainerId(sessionId)
+    }
+    if containerId.length > 0 {
+      val _ = terminateSessionContainer(containerId)
+    }
+    if timedOut {
+      return Err(error = "Container run timed out after 30 minutes")
     }
     return Err(error = "client disconnected")
   }

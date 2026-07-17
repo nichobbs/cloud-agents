@@ -99,6 +99,13 @@ pub func nowMillis(): String {
   return toString(dtoToUnixMillis(dtoUtcNow()))
 }
 
+/// Wall-clock epoch milliseconds as a numeric Long, for callers that compare or
+/// subtract timestamps (e.g. the streaming run loop's elapsed-time cap) rather
+/// than store them as TEXT.
+pub func nowMillisLong(): Long {
+  return dtoToUnixMillis(dtoUtcNow())
+}
+
 func digitValue(c: in String): Int {
   if c == "0" {
     return 0
