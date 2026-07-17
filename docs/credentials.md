@@ -85,6 +85,14 @@ bearers don't each cost an outbound round trip, with a global backstop that
 stops validating unrecognised bearers entirely once 30 distinct failures are
 in-window.
 
+The backstop is global rather than per-IP by design (#433): the only
+per-caller signal, `X-Forwarded-For`, is attacker-controlled on
+direct-exposure deployments, and partitioning by it would let a flooder
+escape its own bucket. A tripped backstop does **not** affect signed-in
+users (positive cache) or new sign-ins (the exchange endpoint validates
+directly and primes the cache) — only bearers that never went through this
+server's exchange, which re-running "Sign in with GitHub" self-heals.
+
 ## Auto-uploading harness credentials
 
 Two convenience paths feed the credential vault (`POST /api/credentials`)

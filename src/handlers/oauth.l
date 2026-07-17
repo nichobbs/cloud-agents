@@ -255,10 +255,20 @@ pub func authenticateGitHubBearer(token: in String): AuthOutcome {
   // so the count of active negative rows is a sliding-window rate of recent
   // failures; past a threshold no plausible number of legitimate new sign-ins
   // produces, stop validating unrecognised bearers outright until the window
-  // drains. Already-validated (positively cached) users are unaffected; a
-  // legitimate brand-new token during an active flood is refused for up to a
-  // minute — an acceptable failure mode for a backstop. Fails open on a DB
-  // error: the cache is an optimisation, not the authority.
+  // drains. Fails open on a DB error: the cache is an optimisation, not the
+  // authority.
+  //
+  // The counter is deliberately GLOBAL, not per-caller (#433): the only
+  // per-caller signal available here is X-Forwarded-For, which an attacker
+  // sets freely on direct-exposure deployments — partitioning by it would
+  // let them escape their own bucket and reopen the unbounded-outbound hole
+  // this exists to close. The blast radius of a tripped backstop is narrow
+  // by construction: already-validated users ride on the positive cache, and
+  // NEW sign-ins are unaffected because exchangeCode validates directly and
+  // primes the positive cache — so the only callers refused during a flood
+  // are bearers that never went through this server's exchange (e.g. the
+  // same token pasted onto a second device), and re-running the sign-in flow
+  // there self-heals. See docs/credentials.md.
   val recentFailures = match CloudAgents.Repository.activeNegativeGitHubTokens() {
     case Ok(n) -> n
     case Err(_) -> 0
