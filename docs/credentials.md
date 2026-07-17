@@ -63,9 +63,12 @@ storage (see `docs/phase3-multi-tenancy.md`):
   the operator `default` identity keeps the legacy shared names from the
   Phase 1 table above.
 
-The GitHub OAuth token is **never** stored — it is only used to validate
-identity per request (`CloudAgents.Auth`); the server keeps only a
-short-TTL cache row keyed by the token's SHA-256 (`github_token_cache`).
+The auth layer **never** stores the GitHub OAuth token — per-request
+validation (`CloudAgents.Auth`) keeps only a short-TTL cache row keyed by
+the token's SHA-256 (`github_token_cache`). The one place it is persisted
+is the credential vault, encrypted at rest: signing in stores it as your
+tenant's `GITHUB_TOKEN` when `ENCRYPTION_KEY` is configured (see "GitHub
+OAuth setup" below).
 
 ## GitHub OAuth setup
 
@@ -80,6 +83,11 @@ short-TTL cache row keyed by the token's SHA-256 (`github_token_cache`).
    token as the API bearer (all data becomes scoped to your `gh-<id>`
    tenant) and connects GitHub in the UI (repo browser, PR/CI panels) in
    one step. The requested scopes are `repo read:user`.
+4. Signing in also stores the token as a `GITHUB_TOKEN` credential in the
+   vault for your tenant (when `ENCRYPTION_KEY` is configured), so runner
+   containers and server-side GitHub features work right after sign-in;
+   "Sign out" forgets the device's copy **and** invalidates the server's
+   validation-cache row for that token.
 
 The static `CLOUD_AGENTS_API_TOKEN` keeps working as the single-operator
 fallback; a bearer matching it authenticates as the `default` tenant exactly

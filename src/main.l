@@ -603,6 +603,21 @@ impl Web.Handler for RouteOAuthExchange {
   }
 }
 
+// Server-side logout: reads the Authorization header exactly as
+// AuthMiddleware does and invalidates that bearer's validation-cache row.
+// Lives under the auth-exempt /api/auth/ prefix, which is correct here:
+// invalidating a cache row requires knowing the token itself.
+record RouteOAuthLogout {}
+impl Web.Handler for RouteOAuthLogout {
+  func handle(req: in Web.Request): Web.Response {
+    val authHeader = match Web.header(req, "Authorization") {
+      case Some(h) -> h
+      case None -> ""
+    }
+    return unitResp(CloudAgents.OAuth.logout(authHeader))
+  }
+}
+
 func main(): Unit {
   // Ensure the SQLite tables (transcript/comments/todos/prompts/sessions)
   // exist before serving.
@@ -708,10 +723,13 @@ func main(): Unit {
   router = Web.addPost(router, "/api/webhooks/events/{id}/delivered", RouteMarkWebhookDelivered())
   router = Web.addDelete(router, "/api/webhooks/{id}", RouteDeleteWebhook())
 
-  // GitHub OAuth: public login configuration and the code-for-token exchange
-  // (both exempt from auth enforcement — they exist to obtain a token).
+  // GitHub OAuth: public login configuration, the code-for-token exchange,
+  // and logout (all exempt from auth enforcement — config/exchange exist to
+  // obtain a token, and logout only ever invalidates the cache row of the
+  // exact token presented).
   router = Web.addGet(router, "/api/auth/github/config", RouteOAuthConfig())
   router = Web.addPost(router, "/api/auth/github/exchange", RouteOAuthExchange())
+  router = Web.addPost(router, "/api/auth/github/logout", RouteOAuthLogout())
 
   // Register health route
   router = Web.addGet(router, "/api/health", HealthHandler())

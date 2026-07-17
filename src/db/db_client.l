@@ -1205,6 +1205,12 @@ pub func selectGitHubTokenSql(tokenHash: in String, nowMillis: in String): Strin
     " AS INTEGER)"
 }
 
+/// DELETE one token's cache row (server-side logout): the next presentation
+/// of that token must go through live validation again.
+pub func deleteGitHubTokenSql(tokenHash: in String): String {
+  return "DELETE FROM github_token_cache WHERE token_hash = " + sqlLiteral(tokenHash)
+}
+
 /// Housekeeping: drop expired entries (run opportunistically on cache writes).
 pub func deleteExpiredGitHubTokensSql(nowMillis: in String): String {
   return "DELETE FROM github_token_cache WHERE CAST(expires_at AS INTEGER) <= CAST(" + sqlLiteral(nowMillis) +

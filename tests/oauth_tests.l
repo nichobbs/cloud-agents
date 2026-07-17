@@ -357,6 +357,56 @@ test "only confirmed auth rejections are classified for negative caching (#435)"
   assertTrue(not isConfirmedAuthRejection("GET https://api.github.com/user failed: The operation has timed out."), "timeout is not a rejection")
 }
 
+// NB: exchangeCode's SUCCESS path (which, besides priming the cache, vaults
+// the token as the tenant's GITHUB_TOKEN credential) needs a live GitHub
+// round trip, so it cannot be exercised here — CI covers it via compilation
+// only.
+
+test "logout invalidates the token-validation cache row" {
+  val dbPath = useFreshTestDb("oauth-logout")
+  defer {
+    cleanupTestDb(dbPath)
+  }
+  Env.SetEnvironmentVariable("CLOUD_AGENTS_GITHUB_CLIENT_ID", "cid")
+  Env.SetEnvironmentVariable("CLOUD_AGENTS_GITHUB_CLIENT_SECRET", "sec")
+
+  // Prime the cache exactly as a successful exchange would...
+  val token = "gho_loggingout"
+  val hash = CloudAgents.Crypto.sha256Base64(token)
+  match CloudAgents.Repository.cacheGitHubToken(hash, "gh-42", "octocat") {
+    case Ok(_) -> ()
+    case Err(e) -> assertTrue(false, "cache write failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+  }
+  // ...confirm the bearer authenticates via the cache...
+  match authenticateRequest("/api/sessions", "Bearer " + token, "") {
+    case Allowed(uid) -> assertEqual(uid, "gh-42", "cached token authenticates before logout")
+    case Denied(_) -> assertTrue(false, "cached token must authenticate before logout")
+  }
+  // ...log out, and the row is gone (the next presentation would revalidate
+  // live — which this test must not do, so only assert the cache side).
+  match logout("Bearer " + token) {
+    case Ok(_) -> ()
+    case Err(_) -> assertTrue(false, "logout with a cached bearer must succeed")
+  }
+  match CloudAgents.Repository.cachedGitHubToken(hash) {
+    case Ok(Some(_)) -> assertTrue(false, "cache row must be gone after logout")
+    case Ok(None) -> ()
+    case Err(e) -> assertTrue(false, "cache read failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+  }
+
+  // Idempotent: no header, or one that is not a well-formed bearer, means
+  // nothing to invalidate — still Ok.
+  match logout("") {
+    case Ok(_) -> ()
+    case Err(_) -> assertTrue(false, "logout with no header must be Ok")
+  }
+  match logout("garbage-not-a-bearer") {
+    case Ok(_) -> ()
+    case Err(_) -> assertTrue(false, "logout with a garbage header must be Ok")
+  }
+  clearOAuthEnv()
+}
+
 test "expired cache entries never match" {
   val dbPath = useFreshTestDb("oauth-cache-expiry")
   defer {

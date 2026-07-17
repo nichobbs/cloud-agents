@@ -1344,3 +1344,11 @@ pub func cachedGitHubToken(
   val r0 = CloudAgents.Sqlite.getRowArrayValue(rows, 0)
   return Ok(value = Some(value = GitHubTokenCacheEntry(userId = colAt(r0.cols, 0), login = colAt(r0.cols, 1))))
 }
+
+/// Server-side logout: delete a token's cache row so the next presentation of
+/// that token must revalidate live. Deleting a row that does not exist is
+/// still Ok — logout is idempotent.
+pub func invalidateGitHubToken(tokenHash: in String): Result[Unit, CloudAgents.Sqlite.DbError] {
+  CloudAgents.Sqlite.execute(CloudAgents.Db.deleteGitHubTokenSql(tokenHash))?
+  return Ok(value = ())
+}

@@ -48,6 +48,17 @@ export const api = {
     return res.json() as Promise<{ token: string; login: string; userId: string }>;
   },
 
+  /** Server-side sign-out: invalidate the presented bearer's validation-cache
+   *  row so its next presentation must revalidate live. Throws on failure —
+   *  the caller (lib/auth signOut) treats it as best-effort. */
+  logout: async (): Promise<void> => {
+    const res = await fetch(`${BASE}/api/auth/github/logout`, {
+      method: 'POST',
+      headers: authHeaders(),
+    });
+    if (!res.ok) throw new Error(`${res.status} ${await res.text()}`);
+  },
+
   /** Server-side session list (`GET /api/sessions`). Newer backends include
    *  status/createdAt/lastMessageAt (epoch-millis strings); older ones omit
    *  them, so all are optional here. */

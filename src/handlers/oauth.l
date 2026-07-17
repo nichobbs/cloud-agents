@@ -241,11 +241,45 @@ pub func exchangeCode(req: in ExchangeRequest): Result[TokenGrant, Web.ApiError]
         case Ok(_) -> ()
         case Err(_) -> ()
       }
+      // Vault the token as the tenant's GITHUB_TOKEN credential (encrypted
+      // at rest via putCredential), so runner containers' GITHUB_TOKEN and
+      // server-side GitHub features work right after sign-in with no
+      // separate Integrations step. GITHUB_TOKEN is deliberately NOT a
+      // reserved credential name (see credentials.l). BEST-EFFORT: a vault
+      // miss (e.g. ENCRYPTION_KEY unconfigured) must never fail a
+      // successful login — log a NOTE and continue.
+      match CloudAgents.Repository.putCredential(userId, "GITHUB_TOKEN", token) {
+        case Ok(_) -> ()
+        case Err(e) -> println("NOTE: could not store GITHUB_TOKEN in the credential vault: " + CloudAgents.Repository.credentialErrorMessage(e))
+      }
       return Ok(TokenGrant(token = token, login = identity.login, userId = userId))
     }
     // Web.unauthorized is the closest proven response helper (this codebase
     // has no Web.forbidden call site to pattern-match against).
     case Denied(e) -> return Err(Web.unauthorized(CloudAgents.Auth.authErrorMessage(e)))
+  }
+}
+
+// ─── Logout: server-side cache invalidation ──────────────────────────────────
+
+/// POST /api/auth/github/logout: delete the presented bearer's
+/// validation-cache row. Deleting the cache row forces the next presentation
+/// of this token through live validation; the token itself stays valid at
+/// GitHub until revoked there. Idempotent: a missing or malformed
+/// Authorization header means there is nothing to invalidate, so it returns
+/// Ok (as does deleting a row that was never cached).
+pub func logout(authHeaderValue: in String): Result[Unit, Web.ApiError] {
+  match CloudAgents.Auth.extractBearerToken(authHeaderValue) {
+    case None -> return Ok(())
+    case Some(token) -> {
+      match CloudAgents.Repository.invalidateGitHubToken(CloudAgents.Crypto.sha256Base64(token)) {
+        case Ok(_) -> return Ok(())
+        case Err(e) -> {
+          println("WARNING: logout could not invalidate the token-validation cache row: " + CloudAgents.Sqlite.dbErrorMessage(e))
+          return Err(Web.internalError("logout failed"))
+        }
+      }
+    }
   }
 }
 

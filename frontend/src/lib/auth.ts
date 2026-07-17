@@ -5,6 +5,7 @@
 /// so every existing api.ts call picks it up unchanged) and doubles as the
 /// GitHub connection powering the repo browser and PR/CI panels.
 
+import { api } from './api';
 import { setConnection, clearConnection } from './connections';
 import { clearRepoCache } from './github';
 
@@ -66,8 +67,16 @@ export function completeLogin(token: string, login: string): void {
   clearRepoCache();
 }
 
-/** Forget everything this device knows about the signed-in user. */
+/** Forget everything this device knows about the signed-in user, and ask the
+ *  server (best-effort) to drop the token's validation-cache row so its next
+ *  presentation must revalidate live. The server call fires FIRST — while the
+ *  token is still in storage for authHeaders() — but the local forget is
+ *  synchronous and unconditional: a failed or slow server round trip never
+ *  blocks or cancels signing out on this device. */
 export function signOut(): void {
+  void api.logout().catch(() => {
+    /* best-effort — the device forgets the token regardless */
+  });
   localStorage.removeItem(TOKEN_KEY);
   localStorage.removeItem(LOGIN_KEY);
   clearConnection('github');
