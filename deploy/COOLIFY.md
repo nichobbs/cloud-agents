@@ -30,10 +30,14 @@ compose file for what differs and why.
 ## Docker socket
 
 `api` still needs `/var/run/docker.sock` mounted to launch runner
-containers as siblings of itself — same as the standalone-VM setup, and the
-same host-Docker-root-equivalent-access tradeoff applies (see the PR
-discussion / commit history for context, since Coolify has no built-in
-more-restricted transport for this as of writing).
+containers as siblings of itself — same as the standalone-VM setup, but the
+blast radius is bigger here: this host also runs your other Coolify
+projects, and the mounted socket gives `api` (and anything that compromises
+it) root-equivalent control over their containers too, not just this app's.
+Coolify has no built-in more-restricted transport for this as of writing
+(see the PR discussion / commit history for context) — if that matters more
+than convenience, put this app on its own VM instead of a shared Coolify
+host.
 
 Coolify has had bugs where a file-path bind mount lands as a directory
 instead of the real file/socket. After the first deploy, confirm it worked:
@@ -55,8 +59,21 @@ Build them from `docker/` on the host directly (SSH in and run the relevant
 `docker build` from `docker/Dockerfile*`) — Coolify's own build only covers
 the compose file's services.
 
+## Backups
+
+`backup.sh` defaults to volume name `deploy_user_data` — Compose's
+`<project>_<volume>` naming when run from a directory literally called
+`deploy`, which is how the standalone-VM setup invokes it. Coolify assigns
+its own project name, so the real volume will be named differently. Find it
+with `docker volume ls | grep user_data` after first deploy, then either
+edit `USER_DATA_VOLUME` in your cron invocation or export it before running
+`backup.sh` — the script accepts it as an override
+(`VOLUME="${USER_DATA_VOLUME:-deploy_user_data}"`). Skipping this doesn't
+error: `docker run -v <wrong-name>:...` silently creates and archives an
+empty volume, so backups would look like they're working while being empty.
+
 ## Everything else
 
-Backups (`backup.sh`), routine operations, and recovery notes in
-`RUNBOOK.md` apply unchanged — they operate on the same volume names and
-container roles regardless of which compose file brought them up.
+Routine operations and recovery notes in `RUNBOOK.md` apply unchanged —
+they operate on the same container roles regardless of which compose file
+brought them up.

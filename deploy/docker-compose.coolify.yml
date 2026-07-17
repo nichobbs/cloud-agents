@@ -6,10 +6,11 @@
 #     directly would conflict with Coolify's own proxy and its other apps);
 #   - does not have `caddy` obtain its own Let's Encrypt certificate — TLS is
 #     terminated at Coolify's proxy, which forwards plain HTTP to `caddy`
-#     over the internal Docker network using the SERVICE_FQDN_CADDY_80 magic
-#     env var below (Coolify docs: docker/compose, "Magic Environment
-#     Variables"). `caddy` still does the path-based split between `api` and
-#     `frontend` — see Caddyfile.coolify.
+#     over the internal Docker network. The SERVICE_FQDN_CADDY_80 magic env
+#     var below (Coolify docs: docker/compose, "Magic Environment
+#     Variables") tells Coolify which domain + port to route here; Caddy
+#     itself never reads its value — see Caddyfile.coolify for why. `caddy`
+#     still does the path-based split between `api` and `frontend`.
 #
 # Deploy: in Coolify, add a new "Docker Compose" resource pointed at this
 # file, set ENCRYPTION_KEY / CLOUD_AGENTS_WHITELIST / etc. in its Environment

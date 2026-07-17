@@ -1,15 +1,26 @@
 # Coolify variant of Caddyfile.
 #
-# Coolify's own proxy terminates TLS and forwards plain HTTP here, so this
-# site block uses an explicit http:// address — that tells Caddy to serve
-# plain HTTP only and skip its own automatic HTTPS/Let's Encrypt, which
-# would otherwise fail anyway since Coolify's proxy (not this container)
-# holds the host's :80/:443.
+# Coolify's own proxy terminates TLS and does domain-based routing itself —
+# by the time a request reaches this container, Coolify has already decided
+# it belongs here, so this Caddyfile doesn't need to know the public domain
+# at all. It listens on a fixed :80 and has `auto_https off` so it never
+# tries to obtain its own Let's Encrypt cert (which would fail anyway, since
+# Coolify's proxy — not this container — holds the host's :80/:443).
 #
-# {$SERVICE_FQDN_CADDY_80} is populated by Coolify from the matching
-# environment variable declared in docker-compose.coolify.yml.
+# Deliberately does NOT interpolate SERVICE_FQDN_CADDY_80's value into the
+# site address. Coolify's docs describe SERVICE_FQDN_<NAME> as hostname-only
+# and SERVICE_URL_<NAME> as including the scheme, but coollabsio/coolify#2702
+# reports the two swapped in practice and was closed as not planned — so
+# which format you actually get is not something to build a site address
+# around. The env var is still declared in docker-compose.coolify.yml so
+# Coolify detects it and knows which domain + port to route to this service;
+# Caddy itself just doesn't care what the value looks like.
 
-http://{$SERVICE_FQDN_CADDY_80} {
+{
+	auto_https off
+}
+
+:80 {
 	# Claude invocations can run for several minutes; keep the upstream
 	# connection open long enough to stream the full response.
 	handle /api/* {
