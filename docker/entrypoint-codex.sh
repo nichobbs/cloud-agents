@@ -51,7 +51,14 @@ if [ -n "${EXTRA_REPOS:-}" ]; then
         extra_branch="${entry#*|}"
         [ "${extra_branch}" = "${entry}" ] && extra_branch=""
         [ -z "${extra_url}" ] && continue
-        repo_dir="/workspace/repos/$(basename "${extra_url}" .git)"
+        # Derive a collision-free directory from the whole URL, not just its
+        # basename: two different repos sharing a basename (a/repo and b/repo)
+        # would otherwise map to the same dir and the second clone would be
+        # skipped (#450). Drop the scheme and a trailing .git, then slugify the
+        # rest (host + path) to a filesystem-safe name.
+        repo_slug=$(printf '%s' "${extra_url}" | sed -E -e 's#^[a-zA-Z][a-zA-Z0-9+.-]*://##' -e 's#/+$##' -e 's#\.git$##' -e 's#[^A-Za-z0-9._-]+#-#g' -e 's#^-+##' -e 's#-+$##')
+        [ -z "${repo_slug}" ] && repo_slug="repo"
+        repo_dir="/workspace/repos/${repo_slug}"
         if [ ! -d "${repo_dir}/.git" ]; then
             echo "entrypoint-codex: cloning extra repo ${extra_url} (${extra_branch:-default branch})" >&2
             if [ -n "${extra_branch}" ]; then

@@ -305,6 +305,16 @@ pub func addSessionRepoHandler(id: in String, req: in AddRepoRequest): Result[Se
   if req.branch.length > 0 and not isSafeBranchName(req.branch) {
     return Err(Web.badRequest("branch is not a valid git branch name"))
   }
+  // A '|' would corrupt the "url|branch" packing these linked repos travel in
+  // (EXTRA_REPOS) — unlike the primary repo, which rides its own REPO_URL /
+  // BRANCH env vars — so reject it here specifically. The general validators
+  // above don't cover it because it's only a delimiter in this one encoding.
+  if req.repoUrl.contains("|") {
+    return Err(Web.badRequest("repoUrl must not contain the '|' character"))
+  }
+  if req.branch.contains("|") {
+    return Err(Web.badRequest("branch must not contain the '|' character"))
+  }
   // The session must exist and be owned by the caller (getSession is owner-scoped).
   match getSession(id) {
     case Ok(Some(_)) -> ()

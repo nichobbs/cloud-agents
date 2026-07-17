@@ -68,6 +68,15 @@ describe('LinkedReposPanel', () => {
     expect(container).toBeEmptyDOMElement();
   });
 
+  it('stays visible with an inline error on a non-404 load failure (#452)', async () => {
+    vi.mocked(api.listSessionRepos).mockRejectedValue(new Error('500 internal error'));
+    renderPanel();
+    // The panel does NOT vanish — the primary repo and a load error are shown.
+    await waitFor(() => expect(screen.getByText('Linked repositories')).toBeInTheDocument());
+    expect(screen.getByText('nic/primary')).toBeInTheDocument();
+    expect(screen.getByRole('alert')).toHaveTextContent('500');
+  });
+
   it('links a repo via the form, then refreshes the list', async () => {
     vi.mocked(api.listSessionRepos)
       .mockResolvedValueOnce([]) // initial load

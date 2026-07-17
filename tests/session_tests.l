@@ -952,6 +952,16 @@ test "session-repo handlers validate, link, list and unlink (#multi-repo)" {
     case Ok(_) -> assertTrue(false, "leading-dash branch should 400")
     case Err(err) -> assertEqualInt(err.status, 400, "bad branch -> 400")
   }
+  // A '|' in the url or branch would corrupt the EXTRA_REPOS "url|branch"
+  // packing, so it is rejected specifically for linked repos (#449).
+  match addSessionRepoHandler("sr-1", AddRepoRequest(repoUrl = "https://github.com/a/b|c", branch = "main")) {
+    case Ok(_) -> assertTrue(false, "pipe in repoUrl should 400")
+    case Err(err) -> assertEqualInt(err.status, 400, "pipe in repoUrl -> 400")
+  }
+  match addSessionRepoHandler("sr-1", AddRepoRequest(repoUrl = "https://github.com/a/b", branch = "ma|in")) {
+    case Ok(_) -> assertTrue(false, "pipe in branch should 400")
+    case Err(err) -> assertEqualInt(err.status, 400, "pipe in branch -> 400")
+  }
 
   // A valid link with an empty branch (the repo's default branch is allowed).
   val addedId = match addSessionRepoHandler("sr-1", AddRepoRequest(repoUrl = "https://github.com/nic/extra", branch = "")) {

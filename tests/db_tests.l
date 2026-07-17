@@ -205,6 +205,8 @@ test "migration ledger SQL is well-formed" {
 test "session-repo SQL builders are session-scoped and well-formed" {
   assertTrue(sessionReposSchemaSql().contains("CREATE TABLE IF NOT EXISTS session_repos"), "session_repos ddl")
   assertTrue(sessionReposSchemaSql().contains("repo_url TEXT NOT NULL"), "repo_url column")
+  // UNIQUE(session_id, repo_url) makes the duplicate-URL guard race-proof (#451).
+  assertTrue(sessionReposSchemaSql().contains("UNIQUE(session_id, repo_url)"), "unique per session+url")
   assertTrue(sessionReposSessionIndexSql().contains("ON session_repos(session_id)"), "index on session_id")
   val ins = insertSessionRepoSql("r1", "s1", "https://github.com/nic/repo", "main", "1000")
   assertTrue(ins.startsWith("INSERT INTO session_repos"), "insert target")

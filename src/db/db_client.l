@@ -389,12 +389,16 @@ pub func selectSessionProfileIdSql(id: in String, userId: in String): String {
 // comments/todos rely on), so this table carries no user_id of its own —
 // ownership is enforced by the getSession() check the handler makes first. All
 // TEXT affinity; `branch` may be '' meaning the repo's default branch.
-/// DDL for the session-repositories table.
+/// DDL for the session-repositories table. UNIQUE(session_id, repo_url) makes
+/// the handler's duplicate-URL pre-check race-proof: a concurrent second link
+/// of the same URL hits the constraint (a DB error the handler surfaces)
+/// instead of inserting a duplicate row (#451).
 pub func sessionReposSchemaSql(): String {
   return "CREATE TABLE IF NOT EXISTS session_repos (" + "id TEXT PRIMARY KEY, " + "session_id TEXT NOT NULL, " +
     "repo_url TEXT NOT NULL, " +
     "branch TEXT NOT NULL, " +
-    "created_at TEXT NOT NULL)"
+    "created_at TEXT NOT NULL, " +
+    "UNIQUE(session_id, repo_url))"
 }
 
 /// Index for the per-session lookups every session-repo query filters on.

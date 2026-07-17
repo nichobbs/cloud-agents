@@ -30,6 +30,7 @@ export function LinkedReposPanel({ sessionId, primaryRepoUrl, primaryBranch }: L
   const [url, setUrl] = useState('');
   const [branch, setBranch] = useState('');
   const [error, setError] = useState('');
+  const [loadError, setLoadError] = useState('');
   const [ghRepos, setGhRepos] = useState<GitHubRepo[]>([]);
   const connected = isGitHubConnected();
 
@@ -37,11 +38,20 @@ export function LinkedReposPanel({ sessionId, primaryRepoUrl, primaryBranch }: L
     try {
       setRepos(await api.listSessionRepos(sessionId));
       setUnavailable(false);
-    } catch {
-      // Older backend without the routes (404), or a transient failure — hide
-      // the panel body rather than surfacing a scary error for a feature the
-      // server may simply not have.
-      setUnavailable(true);
+      setLoadError('');
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : '';
+      // A 404 means the backend has no /repos routes (an older server) — hide
+      // the panel entirely, the feature genuinely isn't there. Any other
+      // failure (network, 500) is transient: keep the panel visible with the
+      // primary repo shown and surface the error so the user can retry,
+      // rather than silently vanishing (#452).
+      if (msg.startsWith('404') || msg.includes(' 404 ') || msg.includes(' 404')) {
+        setUnavailable(true);
+      } else {
+        setUnavailable(false);
+        setLoadError(msg || 'Failed to load linked repositories');
+      }
     }
   }, [sessionId]);
 
@@ -177,6 +187,7 @@ export function LinkedReposPanel({ sessionId, primaryRepoUrl, primaryBranch }: L
         </div>
       )}
 
+      {loadError && <div role="alert" style={errorStyle}>{loadError}</div>}
       {error && <div role="alert" style={errorStyle}>{error}</div>}
     </div>
   );
