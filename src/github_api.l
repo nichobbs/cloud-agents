@@ -15,7 +15,10 @@
 //! design: every field the OAuth flow extracts (access_token, id, login,
 //! error) is ASCII, and extraction is by substring search, so mangled bytes
 //! elsewhere in the body cannot corrupt it. Do not reuse this module for
-//! responses where non-ASCII content matters.
+//! responses where non-ASCII content matters — the proxy endpoints
+//! (CloudAgents.Proxy), which pass provider JSON through to the browser
+//! verbatim, use httpGetWithHeaders/readAllUtf8 below instead, which decode
+//! the response as real UTF-8.
 package CloudAgents.GitHubApi
 
 import Std.Core
@@ -112,11 +115,49 @@ func encGetBytes(enc: in Encoding, s: in String): slice[Byte] = []
 @externTarget("System.Char.ConvertFromUtf32")
 func charFromCode(code: in Int): String = ()
 
+// ─── UTF-8 body reading (proxy endpoints) ────────────────────────────────────
+//
+// The byte-per-char readAll below mangles non-ASCII, which is fine for the
+// OAuth flow's ASCII fields but not for passthrough proxying (repo
+// descriptions, model display names). These bindings assemble a real byte[]
+// (via the System.Array externs pattern used by sqlite_driver.l / main.l —
+// there is no constructor-binding form of @externTarget, so the array comes
+// from Array.CreateInstance) and decode it with Encoding.GetString(byte[],
+// int, int). NB: an `extern type = "System.Byte[]"` value marshals as
+// System.Object across the boundary (see crypto.l's module doc), which is
+// exactly what the System.Array-typed methods here accept.
+extern type ByteArray = "System.Byte[]"
+extern type Type = "System.Type"
+
+@externTarget("System.Convert.ToByte")
+func intToByte(v: in Int): Byte = ()
+
+@externInstance
+@externTarget("System.Object.GetType")
+func getByteType(b: in Byte): Type = ()
+
+@externTarget("System.Array.CreateInstance")
+func createByteArray(elementType: in Type, length: in Int): ByteArray = ()
+
+@externInstance
+@externTarget("System.Array.SetValue")
+func setByteArrayValue(arr: in ByteArray, value: in Byte, index: in Int): Unit = ()
+
+// Named encGetStringRange (not encGetString) so it never shadows or clashes
+// with crypto.l's whole-array GetString binding if the two are ever merged.
+@externInstance
+@externTarget("System.Text.Encoding.GetString")
+func encGetStringRange(enc: in Encoding, bytes: in ByteArray, index: in Int, count: in Int): String = ()
+
 val requestTimeoutMillis = 15000
 
 // GitHub's exchange and /user responses are ~1-2 KB; anything past this cap
 // is not a response this module should be parsing (#423).
 val maxResponseBytes = 65536
+
+// Proxied listings (100 repos with descriptions, model catalogs) run to
+// ~100 KB+; cap the UTF-8 reader at 1 MB.
+val maxProxyResponseBytes = 1048576
 
 /// Read a response stream to a string, one byte per char (see module doc for
 /// the deliberate ASCII-only guarantee), capped at maxResponseBytes. A
@@ -138,6 +179,63 @@ func readAll(s: in NetStream): String {
     b = streamReadByte(s)
   }
   return acc + chunk
+}
+
+/// Read a response stream to a string, decoding it as UTF-8 (unlike readAll,
+/// which widens byte-per-char and mangles non-ASCII), capped at
+/// maxProxyResponseBytes. The bytes accumulate in a pre-allocated byte[] and
+/// are decoded in one Encoding.GetString(bytes, 0, total) call at the end.
+func readAllUtf8(s: in NetStream): String {
+  val byteType = getByteType(intToByte(0))
+  val buf = createByteArray(byteType, maxProxyResponseBytes)
+  var total = 0
+  var b = streamReadByte(s)
+  while b >= 0 and total < maxProxyResponseBytes {
+    setByteArrayValue(buf, intToByte(b), total)
+    total = total + 1
+    b = streamReadByte(s)
+  }
+  return encGetStringRange(utf8(), buf, 0, total)
+}
+
+/// GET `url` setting each (headerNames[i], headerValues[i]) pair on the
+/// request's header collection, reading the response as real UTF-8
+/// (readAllUtf8) — the variant the proxy endpoints use for passthrough
+/// bodies. Authorization, x-api-key, anthropic-version and x-goog-api-key
+/// are all settable via Headers.Set; Accept/User-Agent are "restricted"
+/// headers and stay property-set, exactly like the functions above. Extra
+/// entries in the longer slice are ignored when the lengths differ.
+pub func httpGetWithHeaders(
+  url: in String, headerNames: in slice[String], headerValues: in slice[String], userAgent: in String
+): Result[String, String] {
+  return try {
+    val req = createRequest(url)
+    setMethod(req, "GET")
+    setTimeout(req, requestTimeoutMillis)
+    setReadWriteTimeout(req, requestTimeoutMillis)
+    setUserAgent(req, userAgent)
+    setAccept(req, "application/json")
+    val hdrs = getHeaders(req)
+    var i = 0
+    while i < headerNames.length and i < headerValues.length {
+      headerSet(hdrs, headerNames[i], headerValues[i])
+      i = i + 1
+    }
+    val resp = getResponse(req)
+    // Same defer-based disposal as httpGetWithBearer (#421): runs on ALL
+    // scope exits, stream before response.
+    defer {
+      responseDispose(resp)
+    }
+    val stream = getResponseStream(resp)
+    defer {
+      streamDispose(stream)
+    }
+    val body = readAllUtf8(stream)
+    Ok(value = body)
+  } catch Bug as b {
+    Err(error = "GET " + url + " failed: " + b.message)
+  }
 }
 
 /// GET `url` with an Authorization bearer header. GitHub's API additionally

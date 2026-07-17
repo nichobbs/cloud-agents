@@ -1,5 +1,20 @@
-import { describe, it, expect } from 'vitest';
-import { filterGoogleModels, filterOpenAiModelIds } from './models';
+import { describe, it, expect, beforeEach, vi } from 'vitest';
+
+// Mock the backend proxy wrapper so discoverModels' proxy-first/fallback
+// ordering can be exercised without a server.
+vi.mock('./api', () => ({
+  proxyModels: vi.fn(),
+}));
+
+import { proxyModels } from './api';
+import {
+  discoverModels,
+  filterGoogleModels,
+  filterOpenAiModelIds,
+  mapAnthropicModels,
+  mapGoogleModels,
+  mapOpenAiModels,
+} from './models';
 
 describe('filterOpenAiModelIds', () => {
   it('keeps chat/agent model families', () => {
@@ -52,5 +67,114 @@ describe('filterGoogleModels', () => {
       { name: 'models/gemini-2.5-flash', supportedGenerationMethods: ['generateContent'] },
     ]);
     expect(out).toEqual([{ id: 'gemini-2.5-flash', label: 'gemini-2.5-flash' }]);
+  });
+});
+
+// ── Shared response→ModelOption mappings (used by proxy AND direct paths) ────
+
+describe('mapAnthropicModels', () => {
+  it('maps ids with display names, defaulting the label to the id', () => {
+    expect(
+      mapAnthropicModels({
+        data: [{ id: 'claude-a', display_name: 'Claude A' }, { id: 'claude-b' }],
+      }),
+    ).toEqual([
+      { id: 'claude-a', label: 'Claude A' },
+      { id: 'claude-b', label: 'claude-b' },
+    ]);
+  });
+
+  it('is empty for a payload without data', () => {
+    expect(mapAnthropicModels({})).toEqual([]);
+  });
+});
+
+describe('mapOpenAiModels', () => {
+  it('applies the chat/agent-family filter', () => {
+    expect(
+      mapOpenAiModels({ data: [{ id: 'gpt-4o' }, { id: 'whisper-1' }, { id: 'o3' }] }),
+    ).toEqual([
+      { id: 'gpt-4o', label: 'gpt-4o' },
+      { id: 'o3', label: 'o3' },
+    ]);
+  });
+});
+
+describe('mapGoogleModels', () => {
+  it('applies the generateContent/gemini filter', () => {
+    expect(
+      mapGoogleModels({
+        models: [
+          {
+            name: 'models/gemini-2.5-pro',
+            displayName: 'Gemini 2.5 Pro',
+            supportedGenerationMethods: ['generateContent'],
+          },
+          { name: 'models/embedding-001', supportedGenerationMethods: ['embedContent'] },
+        ],
+      }),
+    ).toEqual([{ id: 'gemini-2.5-pro', label: 'Gemini 2.5 Pro' }]);
+  });
+});
+
+// ── discoverModels: proxy first, direct/static fallback ──────────────────────
+
+describe('discoverModels', () => {
+  beforeEach(() => {
+    localStorage.clear();
+    vi.mocked(proxyModels).mockReset();
+  });
+
+  it('uses proxied provider listings when the backend has vault keys', async () => {
+    vi.mocked(proxyModels).mockResolvedValue({
+      providers: [
+        {
+          provider: 'anthropic',
+          body: JSON.stringify({ data: [{ id: 'claude-test-1', display_name: 'Test 1' }] }),
+        },
+      ],
+    });
+    const out = await discoverModels('claude', true);
+    expect(out.source).toBe('live');
+    expect(out.models.some(m => m.id === 'claude-test-1')).toBe(true);
+    expect(proxyModels).toHaveBeenCalledWith('claude');
+  });
+
+  it('skips an unparseable provider body without sinking the rest', async () => {
+    vi.mocked(proxyModels).mockResolvedValue({
+      providers: [
+        { provider: 'openai', body: 'not json' },
+        {
+          provider: 'anthropic',
+          body: JSON.stringify({ data: [{ id: 'claude-test-2', display_name: 'Test 2' }] }),
+        },
+      ],
+    });
+    const out = await discoverModels('opencode', true);
+    expect(out.source).toBe('live');
+    expect(out.models.some(m => m.id === 'claude-test-2')).toBe(true);
+  });
+
+  it('caches the proxied listing per harness for subsequent calls', async () => {
+    vi.mocked(proxyModels).mockResolvedValue({
+      providers: [
+        {
+          provider: 'anthropic',
+          body: JSON.stringify({ data: [{ id: 'claude-cached', display_name: 'Cached' }] }),
+        },
+      ],
+    });
+    await discoverModels('claude', true);
+    vi.mocked(proxyModels).mockClear();
+    const out = await discoverModels('claude', false);
+    expect(out.models.some(m => m.id === 'claude-cached')).toBe(true);
+    expect(proxyModels).not.toHaveBeenCalled();
+  });
+
+  it('falls back to the static catalog when the proxy fails and no local keys exist', async () => {
+    vi.mocked(proxyModels).mockRejectedValue(new Error('404 no provider API keys in the credential vault'));
+    const out = await discoverModels('claude', true);
+    expect(out.source).toBe('static');
+    expect(out.models.length).toBeGreaterThan(0);
   });
 });

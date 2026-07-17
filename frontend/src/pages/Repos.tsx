@@ -42,9 +42,12 @@ export function Repos() {
       });
   }, []);
 
+  // Always attempt the load: listRepos tries the backend proxy (vault token)
+  // first, so the page can work with no locally-connected token at all. The
+  // connect hint only appears when BOTH the proxy and the direct path failed.
   useEffect(() => {
-    if (connected) load(false);
-  }, [connected, load]);
+    load(false);
+  }, [load]);
 
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();
@@ -54,7 +57,7 @@ export function Repos() {
     );
   }, [repos, query]);
 
-  if (!connected) {
+  if (!connected && error && repos.length === 0) {
     return (
       <div style={pageStyle}>
         <h2 style={titleStyle}>Repositories</h2>

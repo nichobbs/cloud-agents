@@ -1,10 +1,16 @@
-/// Browser-side GitHub API client.
+/// GitHub API client: backend proxy first, direct browser calls as fallback.
 ///
-/// Uses the locally-held GitHub token (lib/connections.ts) — api.github.com is
-/// CORS-enabled, and the Lyric backend has no outbound HTTPS, so the frontend
-/// talks to GitHub directly. Powers the repo browser, the New Session repo
-/// picker, and the per-session repo/PR/CI status panel.
+/// The backend's proxy endpoints (ADR-006) call api.github.com with the
+/// credential vault's GITHUB_TOKEN and pass GitHub's raw JSON through, so no
+/// locally-held token is needed when the vault has one. Any proxy failure —
+/// 404 (no vault token, or an older backend without the routes), a branch
+/// with '/' that doesn't fit the proxy's path segment, network trouble —
+/// falls back to the original direct path using the locally-held token
+/// (lib/connections.ts; api.github.com is CORS-enabled). Powers the repo
+/// browser, the New Session repo picker, and the per-session repo/PR/CI
+/// status panel.
 
+import { proxyGithubChecks, proxyGithubPulls, proxyGithubRepo, proxyGithubRepos } from './api';
 import { getConnection } from './connections';
 
 const API = 'https://api.github.com';
@@ -159,13 +165,12 @@ export async function listRepos(maxPages = 5, force = false): Promise<GitHubRepo
       /* corrupt cache — refetch */
     }
   }
-  const out: GitHubRepo[] = [];
-  for (let page = 1; page <= maxPages; page++) {
-    const batch = await get<RawRepo[]>(
-      `/user/repos?per_page=100&page=${page}&sort=pushed&direction=desc`,
-    );
-    out.push(...batch.map(mapRepo));
-    if (batch.length < 100) break;
+  let out: GitHubRepo[];
+  try {
+    out = await listReposViaProxy(maxPages);
+  } catch {
+    // No vault token (404), older backend, or proxy trouble — direct path.
+    out = await listReposDirect(maxPages);
   }
   try {
     localStorage.setItem(
@@ -178,8 +183,34 @@ export async function listRepos(maxPages = 5, force = false): Promise<GitHubRepo
   return out;
 }
 
+async function listReposViaProxy(maxPages: number): Promise<GitHubRepo[]> {
+  const out: GitHubRepo[] = [];
+  for (let page = 1; page <= maxPages; page++) {
+    const batch = await proxyGithubRepos<RawRepo[]>(page);
+    out.push(...batch.map(mapRepo));
+    if (batch.length < 100) break;
+  }
+  return out;
+}
+
+async function listReposDirect(maxPages: number): Promise<GitHubRepo[]> {
+  const out: GitHubRepo[] = [];
+  for (let page = 1; page <= maxPages; page++) {
+    const batch = await get<RawRepo[]>(
+      `/user/repos?per_page=100&page=${page}&sort=pushed&direction=desc`,
+    );
+    out.push(...batch.map(mapRepo));
+    if (batch.length < 100) break;
+  }
+  return out;
+}
+
 export async function getRepo(owner: string, repo: string): Promise<GitHubRepo> {
-  return mapRepo(await get<RawRepo>(`/repos/${owner}/${repo}`));
+  try {
+    return mapRepo(await proxyGithubRepo<RawRepo>(owner, repo));
+  } catch {
+    return mapRepo(await get<RawRepo>(`/repos/${owner}/${repo}`));
+  }
 }
 
 interface RawPull {
@@ -210,22 +241,33 @@ function mapPull(p: RawPull): GitHubPull {
 
 /** Open PRs, optionally narrowed to a head branch. */
 export async function listPulls(owner: string, repo: string, headBranch?: string): Promise<GitHubPull[]> {
+  if (headBranch) {
+    try {
+      const pulls = await proxyGithubPulls<RawPull[]>(owner, repo, headBranch);
+      return pulls.map(mapPull);
+    } catch {
+      /* no vault token / older backend / slashed branch — direct path */
+    }
+  }
   const head = headBranch ? `&head=${encodeURIComponent(`${owner}:${headBranch}`)}` : '';
   const pulls = await get<RawPull[]>(`/repos/${owner}/${repo}/pulls?state=open&per_page=20${head}`);
   return pulls.map(mapPull);
 }
 
-/** CI check runs for the tip of a branch (or any ref). */
-export async function getBranchChecks(owner: string, repo: string, ref: string): Promise<BranchChecks> {
-  const commit = await get<{ sha: string }>(
-    `/repos/${owner}/${repo}/commits/${encodeURIComponent(ref)}`,
-  );
-  const checks = await get<{
-    total_count: number;
-    check_runs: { name: string; status: string; conclusion: string | null; html_url: string }[];
-  }>(`/repos/${owner}/${repo}/commits/${commit.sha}/check-runs?per_page=50`);
+interface RawChecks {
+  total_count: number;
+  check_runs: {
+    name: string;
+    status: string;
+    conclusion: string | null;
+    html_url: string;
+    head_sha?: string;
+  }[];
+}
+
+function mapChecks(checks: RawChecks, sha: string): BranchChecks {
   return {
-    sha: commit.sha,
+    sha,
     total: checks.total_count,
     runs: checks.check_runs.map(c => ({
       name: c.name,
@@ -234,6 +276,25 @@ export async function getBranchChecks(owner: string, repo: string, ref: string):
       htmlUrl: c.html_url,
     })),
   };
+}
+
+/** CI check runs for the tip of a branch (or any ref). */
+export async function getBranchChecks(owner: string, repo: string, ref: string): Promise<BranchChecks> {
+  try {
+    // The proxy resolves the branch server-side in one call and returns the
+    // raw check-runs payload; the tip sha comes off the runs themselves.
+    const checks = await proxyGithubChecks<RawChecks>(owner, repo, ref);
+    return mapChecks(checks, checks.check_runs[0]?.head_sha ?? '');
+  } catch {
+    /* no vault token / older backend / slashed branch — direct path */
+  }
+  const commit = await get<{ sha: string }>(
+    `/repos/${owner}/${repo}/commits/${encodeURIComponent(ref)}`,
+  );
+  const checks = await get<RawChecks>(
+    `/repos/${owner}/${repo}/commits/${commit.sha}/check-runs?per_page=50`,
+  );
+  return mapChecks(checks, commit.sha);
 }
 
 /** Roll a set of check runs up to one badge state. */

@@ -135,8 +135,10 @@ without hand-typing names and values:
   Google, GitHub): the key is validated against the provider's API, uploaded
   to the vault under its canonical env-var name (`ANTHROPIC_API_KEY`,
   `OPENAI_API_KEY`, `GEMINI_API_KEY`, `GITHUB_TOKEN`), and kept locally in the
-  browser to power live model discovery and the GitHub repo/PR/CI panels
-  (the vault is write-only, so the UI cannot read the key back). The page also
+  browser as a *fallback* for live model discovery and the GitHub repo/PR/CI
+  panels (the vault is write-only, so the UI cannot read the key back; the
+  primary path for those features is now the backend proxy, which uses the
+  vault copy server-side — see the security note below). The page also
   imports pasted credential files — `~/.claude/.credentials.json` (Claude Code
   OAuth → `CLAUDE_CODE_OAUTH_TOKEN`), `~/.codex/auth.json`, and OpenCode's
   `auth.json` — recognising each secret and uploading it under the right name.
@@ -145,15 +147,20 @@ without hand-typing names and values:
   `gh auth token`) and uploads whatever it finds. Supports `--dry-run`;
   configure `CLOUD_AGENTS_URL` / `CLOUD_AGENTS_API_TOKEN`.
 
-**Security note on local connections.** The browser-side copy kept by the
-Integrations page lives in `localStorage`, and the UI calls provider APIs
-(Anthropic/OpenAI/Google/GitHub) directly from the browser. This is a
-deliberate trade-off forced by the write-only vault plus the Lyric backend's
-lack of outbound HTTPS — but it means any XSS on the frontend origin could
-read those keys. Mitigations: use least-privilege keys (fine-grained GitHub
-PATs scoped to the repos you need; provider keys with spend limits), the
-frontend renders no untrusted HTML except ANSI-converted run output
-(`ansi_up` escapes HTML), and "Disconnect" on the Integrations page removes
-the local copy without touching the vault. Skip connecting a provider
-entirely if you only need runner-container injection — the vault upload on
-the Credentials page never keeps a local copy.
+**Security note on local connections.** UI features that call provider APIs
+(live model discovery, the GitHub repo/PR/CI panels) now go through the
+backend's proxy endpoints (`/api/github/*`, `/api/models/{harness}` — see
+ADR-006), which use the *vault* copy of each key server-side. Locally-held
+Integrations keys are therefore **optional** for those features whenever the
+vault has the key: the browser tries the proxy first and only uses its
+`localStorage` copy as a fallback (no key in the vault, an older backend
+without the proxy routes, or a branch name containing `/`, which doesn't fit
+the proxy's single path segment). Where the fallback is used, the original
+trade-off still applies: any XSS on the frontend origin could read the
+locally-held keys. Mitigations: skip connecting locally at all when the
+vault has the key (the proxy covers the UI features), use least-privilege
+keys (fine-grained GitHub PATs scoped to the repos you need; provider keys
+with spend limits), the frontend renders no untrusted HTML except
+ANSI-converted run output (`ansi_up` escapes HTML), and "Disconnect" on the
+Integrations page removes the local copy without touching the vault. The
+vault upload on the Credentials page never keeps a local copy.

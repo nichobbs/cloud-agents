@@ -476,3 +476,48 @@ export const api = {
 function normaliseProfile(p: Profile): Profile {
   return { ...p, credentials: p.credentials ?? [] };
 }
+
+// ─── Server-side provider proxies (ADR-006) ───────────────────────────────────
+//
+// The backend calls GitHub / model-provider APIs with credential-vault keys
+// and passes each provider's raw JSON through untouched, so the browser needs
+// no locally-held key. 404 means "no key in the vault" (or an older backend
+// without these routes) — callers fall back to the direct browser-side path.
+
+async function proxyGet<T>(path: string): Promise<T> {
+  const res = await fetch(`${BASE}${path}`, { headers: authHeaders() });
+  if (!res.ok) throw new Error(`${res.status} ${await res.text()}`);
+  return res.json() as Promise<T>;
+}
+
+/** One page (100 repos) of the vault token's accessible repositories — GitHub's raw JSON. */
+export function proxyGithubRepos<T = unknown>(page: number): Promise<T> {
+  return proxyGet<T>(`/api/github/repos/${page}`);
+}
+
+/** A single repository — GitHub's raw JSON. */
+export function proxyGithubRepo<T = unknown>(owner: string, repo: string): Promise<T> {
+  return proxyGet<T>(`/api/github/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}`);
+}
+
+/** Open PRs whose head is owner:branch — GitHub's raw JSON. Branches with '/'
+ *  don't fit the single path segment; callers fall back to the direct path. */
+export function proxyGithubPulls<T = unknown>(owner: string, repo: string, branch: string): Promise<T> {
+  return proxyGet<T>(
+    `/api/github/pulls/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/${encodeURIComponent(branch)}`,
+  );
+}
+
+/** Check runs for the tip of a branch — GitHub's raw check-runs payload. */
+export function proxyGithubChecks<T = unknown>(owner: string, repo: string, branch: string): Promise<T> {
+  return proxyGet<T>(
+    `/api/github/checks/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/${encodeURIComponent(branch)}`,
+  );
+}
+
+/** Raw model listings from every provider the vault has a key for, one
+ *  JSON-string body per provider — the caller parses each with its existing
+ *  per-provider filter functions. */
+export function proxyModels(harness: string): Promise<{ providers?: { provider: string; body: string }[] }> {
+  return proxyGet(`/api/models/${encodeURIComponent(harness)}`);
+}

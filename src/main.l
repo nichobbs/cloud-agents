@@ -11,6 +11,7 @@ import CloudAgents.Interactions
 import CloudAgents.OAuth
 import CloudAgents.Profiles
 import CloudAgents.Prompts
+import CloudAgents.Proxy
 import CloudAgents.Repository
 import CloudAgents.SessionStore
 import CloudAgents.Sqlite
@@ -587,6 +588,50 @@ impl Web.Handler for RouteMarkWebhookDelivered {
   }
 }
 
+// ─── CloudAgents.Proxy routes (proxy.l) ─────────────────────────────────────
+//
+// Server-side provider proxies (ADR-006): every handler returns a complete
+// passthrough JSON body as a String, so all five map through jsonStringResp.
+
+record RouteProxyGithubRepos {}
+impl Web.Handler for RouteProxyGithubRepos {
+  func handle(req: in Web.Request): Web.Response {
+    return jsonStringResp(CloudAgents.Proxy.githubReposHandler(pparam(req, "page")))
+  }
+}
+
+record RouteProxyGithubRepo {}
+impl Web.Handler for RouteProxyGithubRepo {
+  func handle(req: in Web.Request): Web.Response {
+    return jsonStringResp(CloudAgents.Proxy.githubRepoHandler(pparam(req, "owner"), pparam(req, "repo")))
+  }
+}
+
+record RouteProxyGithubPulls {}
+impl Web.Handler for RouteProxyGithubPulls {
+  func handle(req: in Web.Request): Web.Response {
+    return jsonStringResp(
+      CloudAgents.Proxy.githubPullsHandler(pparam(req, "owner"), pparam(req, "repo"), pparam(req, "branch"))
+    )
+  }
+}
+
+record RouteProxyGithubChecks {}
+impl Web.Handler for RouteProxyGithubChecks {
+  func handle(req: in Web.Request): Web.Response {
+    return jsonStringResp(
+      CloudAgents.Proxy.githubChecksHandler(pparam(req, "owner"), pparam(req, "repo"), pparam(req, "branch"))
+    )
+  }
+}
+
+record RouteProxyModels {}
+impl Web.Handler for RouteProxyModels {
+  func handle(req: in Web.Request): Web.Response {
+    return jsonStringResp(CloudAgents.Proxy.modelsHandler(pparam(req, "harness")))
+  }
+}
+
 // ─── CloudAgents.OAuth routes (oauth.l) ─────────────────────────────────────
 
 record RouteOAuthConfig {}
@@ -733,6 +778,17 @@ func main(): Unit {
   router = Web.addGet(router, "/api/webhooks/pending", RoutePendingWebhookEvents())
   router = Web.addPost(router, "/api/webhooks/events/{id}/delivered", RouteMarkWebhookDelivered())
   router = Web.addDelete(router, "/api/webhooks/{id}", RouteDeleteWebhook())
+
+  // Server-side provider proxies (ADR-006): GitHub listings and model
+  // discovery with vault credentials, so the browser needs no local keys.
+  // NOTE: a branch name containing '/' cannot match the single {branch}
+  // segment below — an accepted limitation; the frontend falls back to
+  // direct GitHub calls when the proxy 404s/errors on such branches.
+  router = Web.addGet(router, "/api/github/repos/{page}", RouteProxyGithubRepos())
+  router = Web.addGet(router, "/api/github/repos/{owner}/{repo}", RouteProxyGithubRepo())
+  router = Web.addGet(router, "/api/github/pulls/{owner}/{repo}/{branch}", RouteProxyGithubPulls())
+  router = Web.addGet(router, "/api/github/checks/{owner}/{repo}/{branch}", RouteProxyGithubChecks())
+  router = Web.addGet(router, "/api/models/{harness}", RouteProxyModels())
 
   // GitHub OAuth: public login configuration, the code-for-token exchange,
   // and logout (all exempt from auth enforcement — config/exchange exist to

@@ -35,6 +35,7 @@ output_assembly = "CloudAgents.dll"
 "CloudAgents.Profiles" = "src/handlers/profiles.l"
 "CloudAgents.Webhooks" = "src/handlers/webhooks.l"
 "CloudAgents.Streaming" = "src/streaming/streaming.l"
+"CloudAgents.Proxy"    = "src/handlers/proxy.l"
 
 [project.tests]
 "CloudAgents.SessionTests"   = "tests/session_tests.l"
@@ -52,6 +53,7 @@ output_assembly = "CloudAgents.dll"
 "CloudAgents.NetworkPolicyTests" = "tests/network_policy_tests.l"
 "CloudAgents.TextTests"      = "tests/text_tests.l"
 "CloudAgents.InteractionsTests" = "tests/interactions_tests.l"
+"CloudAgents.ProxyTests"     = "tests/proxy_tests.l"
 
 [nuget]
 "Lyric.Web"             = "0.4.26"
