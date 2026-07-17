@@ -127,22 +127,37 @@ export function useStreamMessage(sessionId: string): StreamState {
           if (deltaSupported) {
             try {
               const d = await api.getRunOutputDelta(forSession, offset);
-              // A length below the offset we sent means the log was
-              // truncated/replaced (new run): the chunk is the full new log —
-              // replace the accumulated output instead of appending (resync).
-              next = d.length < offset ? d.chunk : last + d.chunk;
-              offset = d.length;
               running = d.running;
+              if (!d.running && d.length === 0) {
+                // The endpoint's not-running SENTINEL ({running:false,
+                // length:0, chunk:""}) is a status signal, not log data —
+                // treating its length as a truncation resync would blank the
+                // just-produced output on every completed run (#440; the
+                // pre-delta code guarded this with `next.output &&`). Keep
+                // the accumulated output untouched.
+                next = last;
+              } else if (d.length < offset) {
+                // A shorter (but real) log means it was truncated/replaced
+                // (new run): the chunk is the full new log — replace instead
+                // of appending (resync).
+                next = d.chunk;
+                offset = d.length;
+              } else {
+                next = last + d.chunk;
+                offset = d.length;
+              }
             } catch {
               deltaSupported = false;
               const full = await api.getRunOutput(forSession);
               running = full.running;
-              next = full.output;
+              // Same sentinel rule for the legacy endpoint: an empty full log
+              // never overwrites accumulated output (#440).
+              next = full.output ? full.output : last;
             }
           } else {
             const full = await api.getRunOutput(forSession);
             running = full.running;
-            next = full.output;
+            next = full.output ? full.output : last;
           }
           if (!alive()) return;
           if (next !== last) {
@@ -230,13 +245,22 @@ export function useStreamMessage(sessionId: string): StreamState {
             if (deltaSupported) {
               try {
                 const d = await api.getRunOutputDelta(sessionId, liveOffset);
-                // A length below the offset we sent means the log was
-                // truncated/replaced (new run): the chunk is the full new log
-                // — replace the accumulated tail instead of appending
-                // (resync).
-                next = d.length < liveOffset ? d.chunk : liveTail + d.chunk;
-                liveOffset = d.length;
                 running = d.running;
+                if (!d.running && d.length === 0) {
+                  // Not-running sentinel, not log data — never let it blank
+                  // the accumulated tail (#440; the pre-delta code guarded
+                  // this with `partial &&`).
+                  next = liveTail;
+                } else if (d.length < liveOffset) {
+                  // A shorter (but real) log was truncated/replaced (new
+                  // run): the chunk is the full new log — replace the
+                  // accumulated tail instead of appending (resync).
+                  next = d.chunk;
+                  liveOffset = d.length;
+                } else {
+                  next = liveTail + d.chunk;
+                  liveOffset = d.length;
+                }
               } catch {
                 // Older backend without the delta route (or, in tests, an api
                 // mock that doesn't define getRunOutputDelta) — fall back to
@@ -244,12 +268,14 @@ export function useStreamMessage(sessionId: string): StreamState {
                 deltaSupported = false;
                 const full = await api.getRunOutput(sessionId);
                 running = full.running;
-                next = full.output;
+                next = full.output ? full.output : liveTail;
               }
             } else {
               const full = await api.getRunOutput(sessionId);
               running = full.running;
-              next = full.output;
+              // An empty full log (the endpoint's not-running response) never
+              // overwrites the accumulated tail (#440).
+              next = full.output ? full.output : liveTail;
             }
             if (!polling || !stillCurrent()) break;
             if (next !== liveTail) {

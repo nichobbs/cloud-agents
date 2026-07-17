@@ -120,3 +120,44 @@ describe('useStreamMessage incremental (delta) polling', () => {
     expect(api.getRunOutputDelta).toHaveBeenCalledTimes(1);
   });
 });
+
+describe('#440: the not-running sentinel never blanks accumulated output', () => {
+  it('reattach keeps the accumulated output when the finishing tick arrives', async () => {
+    // Probe seeds 5 chars; one real delta appends; then the run finishes and
+    // the endpoint returns its sentinel ({running:false,length:0,chunk:''}).
+    // Before the #440 fix, length(0) < offset(10) read as a truncation resync
+    // and replaced the output with ''.
+    vi.mocked(api.getRunOutput).mockResolvedValue({ running: true, output: 'start' });
+    vi.mocked(api.getRunOutputDelta)
+      .mockResolvedValueOnce({ running: true, length: 10, chunk: '-more' })
+      .mockResolvedValue({ running: false, length: 0, chunk: '' });
+
+    const { result } = renderHook(() => useStreamMessage('s1'));
+
+    await waitFor(() => expect(result.current.output).toBe('start-more'), { timeout: 3000 });
+    await waitFor(() => expect(result.current.reattachEnded).toBe(1), { timeout: 5000 });
+    // The finishing sentinel arrived (running:false ended the loop) and the
+    // output survived it.
+    expect(result.current.output).toBe('start-more');
+  });
+
+  it('send-path polling keeps the live tail when the finishing tick arrives', async () => {
+    // sendMessage stays pending so the poll loop owns the panel; the second
+    // delta tick is the sentinel.
+    vi.mocked(api.sendMessage).mockImplementation(() => new Promise(() => {}));
+    vi.mocked(api.getRunOutput).mockResolvedValueOnce({ running: false, output: '' }); // mount probe
+    vi.mocked(api.getRunOutputDelta)
+      .mockResolvedValueOnce({ running: true, length: 4, chunk: 'tail' })
+      .mockResolvedValue({ running: false, length: 0, chunk: '' });
+
+    const { result } = renderHook(() => useStreamMessage('s1'));
+    act(() => {
+      void result.current.send('hi');
+    });
+
+    await waitFor(() => expect(result.current.output).toContain('tail'), { timeout: 3000 });
+    // Give the sentinel tick time to land, then confirm the tail survived.
+    await new Promise(r => setTimeout(r, 2500));
+    expect(result.current.output).toContain('tail');
+  });
+});
