@@ -163,6 +163,7 @@ jobs:
             scripts/run-api.sh \
             scripts/e2e-http.sh \
             scripts/test-reconcile-repos.sh \
+            scripts/check-compose-paths.sh \
             scripts/repro-compiler-bug.sh \
             scripts/repro-web-bug.sh \
             scripts/repro-web-request-crash.sh \
@@ -181,6 +182,15 @@ jobs:
       # workspace — no Docker, no network, no Lyric toolchain.
       - name: Test reconcile-repos.sh
         run: ./scripts/test-reconcile-repos.sh
+
+      # Guards against the class of bug in nichobbs/cloud-agents#464: the two
+      # deploy compose files use different relative-path conventions (one
+      # assumes `cd deploy/` first, the other assumes Coolify's
+      # --project-directory=repo-root invocation), and `docker compose
+      # config` alone doesn't catch a path resolving to a directory that
+      # doesn't exist — see the script for detail.
+      - name: Validate deploy compose file path resolution
+        run: ./scripts/check-compose-paths.sh
 
       # Build the entire server. Lyric.Web/Lyric.Docker/Std.Logging/
       # Microsoft.Data.Sqlite all restore from NuGet — see docs/BUILD.md.
