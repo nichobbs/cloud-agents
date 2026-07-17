@@ -175,8 +175,13 @@ pub func httpPostForm(url: in String, formBody: in String, userAgent: in String)
     val bytes = encGetBytes(utf8(), formBody)
     val reqStream = getRequestStream(req)
     // The request stream must be closed BEFORE GetResponse (it finalises the
-    // request body), so it gets an explicit dispose rather than a defer; the
-    // response/stream pair defers guard the exception paths (#421).
+    // request body), hence the explicit dispose after the write. The defer is
+    // the exception-path guard: if streamWrite throws mid-body, the stream
+    // still gets released (Stream.Dispose is idempotent, so the double
+    // dispose on the success path is harmless) (#421).
+    defer {
+      streamDispose(reqStream)
+    }
     streamWrite(reqStream, bytes, 0, bytes.length.toInt())
     streamDispose(reqStream)
     val resp = getResponse(req)

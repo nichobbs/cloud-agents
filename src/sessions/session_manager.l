@@ -619,8 +619,9 @@ pub func getSession(sessionId: in String): Result[Option[AgentSession], CloudAge
 // The two container-bookkeeping writes below run on Docker's async worker
 // threads (see CloudAgents.Docker), where the per-request thread-local
 // identity does NOT flow — so they take the owner explicitly, captured on the
-// request thread. The parameterless-identity forms remain for request-thread
-// callers and tests.
+// request thread. Deliberately NO parameterless ambient-identity forms: they
+// were dead in production and an invitation to reintroduce the
+// wrong-tenant-on-a-worker-thread bug (#426).
 pub func updateSessionContainerFor(
   sessionId: in String, userId: in String, containerId: in String
 ): Result[Unit, CloudAgents.Sqlite.DbError] {
@@ -628,10 +629,6 @@ pub func updateSessionContainerFor(
     CloudAgents.Db.updateSessionContainerSql(sessionId, userId, containerId)
   )?
   return Ok(value = ())
-}
-
-pub func updateSessionContainer(sessionId: in String, containerId: in String): Result[Unit, CloudAgents.Sqlite.DbError] {
-  return updateSessionContainerFor(sessionId, CloudAgents.Auth.currentUserId(), containerId)
 }
 
 /// Compare-and-clear the container id: only clears it if it still equals
@@ -644,10 +641,6 @@ pub func clearSessionContainerIfMatchesFor(
     CloudAgents.Db.clearSessionContainerIfMatchesSql(sessionId, userId, containerId)
   )?
   return Ok(value = ())
-}
-
-pub func clearSessionContainerIfMatches(sessionId: in String, containerId: in String): Result[Unit, CloudAgents.Sqlite.DbError] {
-  return clearSessionContainerIfMatchesFor(sessionId, CloudAgents.Auth.currentUserId(), containerId)
 }
 
 pub func updateSessionModel(sessionId: in String, model: in String): Result[Unit, CloudAgents.Sqlite.DbError] {
