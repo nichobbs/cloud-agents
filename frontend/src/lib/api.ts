@@ -48,6 +48,17 @@ export const api = {
     return res.json() as Promise<{ token: string; login: string; userId: string }>;
   },
 
+  /** Server-side sign-out: invalidate the presented bearer's validation-cache
+   *  row so its next presentation must revalidate live. Throws on failure —
+   *  the caller (lib/auth signOut) treats it as best-effort. */
+  logout: async (): Promise<void> => {
+    const res = await fetch(`${BASE}/api/auth/github/logout`, {
+      method: 'POST',
+      headers: authHeaders(),
+    });
+    if (!res.ok) throw new Error(`${res.status} ${await res.text()}`);
+  },
+
   /** Server-side session list (`GET /api/sessions`). Newer backends include
    *  status/createdAt/lastMessageAt (epoch-millis strings); older ones omit
    *  them, so all are optional here. */
@@ -184,6 +195,33 @@ export const api = {
     if (!res.ok) throw new Error(`${res.status} ${await res.text()}`);
     const body = (await res.json()) as { running?: string; output?: string };
     return { running: body.running === 'true', output: body.output ?? '' };
+  },
+
+  /** Incremental live output: only the log bytes past `offset` travel, so a
+   *  long run's polling cost is proportional to new output rather than the
+   *  whole accumulated log each tick. `length` is the server's current total
+   *  log length — feed it back as the next offset. A `length` below the
+   *  offset you sent means the log was truncated/replaced (new run) and
+   *  `chunk` is the full new log: replace your accumulated output (resync).
+   *  Newer backends only — callers fall back to getRunOutput when this
+   *  throws (e.g. a 404 route miss on an older backend). Values arrive as
+   *  strings (TEXT-only hand-built JSON, like getRunOutput's `running`) and
+   *  are normalised here. */
+  getRunOutputDelta: async (
+    sessionId: string,
+    offset: number,
+  ): Promise<{ running: boolean; length: number; chunk: string }> => {
+    const res = await fetch(`${BASE}/api/sessions/${sessionId}/output/${offset}`, {
+      headers: authHeaders(),
+    });
+    if (!res.ok) throw new Error(`${res.status} ${await res.text()}`);
+    const body = (await res.json()) as { running?: string; length?: string; chunk?: string };
+    const total = Number(body.length ?? '0');
+    return {
+      running: body.running === 'true',
+      length: Number.isFinite(total) ? total : 0,
+      chunk: body.chunk ?? '',
+    };
   },
 
   // ─── Transcript ──────────────────────────────────────────────────────────────
@@ -437,4 +475,49 @@ export const api = {
 /** Ensure a profile's optional array fields are always arrays. */
 function normaliseProfile(p: Profile): Profile {
   return { ...p, credentials: p.credentials ?? [] };
+}
+
+// ─── Server-side provider proxies (ADR-006) ───────────────────────────────────
+//
+// The backend calls GitHub / model-provider APIs with credential-vault keys
+// and passes each provider's raw JSON through untouched, so the browser needs
+// no locally-held key. 404 means "no key in the vault" (or an older backend
+// without these routes) — callers fall back to the direct browser-side path.
+
+async function proxyGet<T>(path: string): Promise<T> {
+  const res = await fetch(`${BASE}${path}`, { headers: authHeaders() });
+  if (!res.ok) throw new Error(`${res.status} ${await res.text()}`);
+  return res.json() as Promise<T>;
+}
+
+/** One page (100 repos) of the vault token's accessible repositories — GitHub's raw JSON. */
+export function proxyGithubRepos<T = unknown>(page: number): Promise<T> {
+  return proxyGet<T>(`/api/github/repos/${page}`);
+}
+
+/** A single repository — GitHub's raw JSON. */
+export function proxyGithubRepo<T = unknown>(owner: string, repo: string): Promise<T> {
+  return proxyGet<T>(`/api/github/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}`);
+}
+
+/** Open PRs whose head is owner:branch — GitHub's raw JSON. Branches with '/'
+ *  don't fit the single path segment; callers fall back to the direct path. */
+export function proxyGithubPulls<T = unknown>(owner: string, repo: string, branch: string): Promise<T> {
+  return proxyGet<T>(
+    `/api/github/pulls/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/${encodeURIComponent(branch)}`,
+  );
+}
+
+/** Check runs for the tip of a branch — GitHub's raw check-runs payload. */
+export function proxyGithubChecks<T = unknown>(owner: string, repo: string, branch: string): Promise<T> {
+  return proxyGet<T>(
+    `/api/github/checks/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/${encodeURIComponent(branch)}`,
+  );
+}
+
+/** Raw model listings from every provider the vault has a key for, one
+ *  JSON-string body per provider — the caller parses each with its existing
+ *  per-provider filter functions. */
+export function proxyModels(harness: string): Promise<{ providers?: { provider: string; body: string }[] }> {
+  return proxyGet(`/api/models/${encodeURIComponent(harness)}`);
 }

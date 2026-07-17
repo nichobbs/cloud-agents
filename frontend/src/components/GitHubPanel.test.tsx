@@ -72,15 +72,25 @@ describe('GitHubPanel', () => {
     expect(getRepo).not.toHaveBeenCalled();
   });
 
-  it('shows a connect hint (and fetches nothing) when GitHub is not connected', () => {
+  it('shows a connect hint when not connected AND the proxy-backed fetch fails', async () => {
     vi.mocked(isGitHubConnected).mockReturnValue(false);
+    vi.mocked(getRepo).mockRejectedValue(new Error('404 no GITHUB_TOKEN in the credential vault'));
     renderPanel();
-    expect(screen.getByText(/Connect GitHub/)).toBeInTheDocument();
+    // The fetch is attempted even without a local token (lib/github tries the
+    // backend proxy first); only its total failure collapses to the hint.
+    await waitFor(() => expect(screen.getByText(/Connect GitHub/)).toBeInTheDocument());
     expect(screen.getByRole('link', { name: 'Integrations' })).toHaveAttribute(
       'href',
       '/integrations',
     );
-    expect(getRepo).not.toHaveBeenCalled();
+    expect(getRepo).toHaveBeenCalled();
+  });
+
+  it('renders the panel when the proxy serves data without a local token', async () => {
+    vi.mocked(isGitHubConnected).mockReturnValue(false);
+    renderPanel();
+    await waitFor(() => expect(screen.getByText('passing')).toBeInTheDocument());
+    expect(screen.getByRole('link', { name: /#42 Fix everything/ })).toBeInTheDocument();
   });
 
   it('shows repo info, CI state, and PRs for the session branch', async () => {

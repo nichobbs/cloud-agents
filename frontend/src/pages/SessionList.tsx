@@ -1,6 +1,7 @@
 import { Link } from 'react-router-dom';
 import { useSessions } from '../context/SessionsContext';
 import { SessionCard } from '../components/SessionCard';
+import { getLogin, isSignedIn } from '../lib/auth';
 
 export function SessionList() {
   const { sessions } = useSessions();
@@ -15,6 +16,11 @@ export function SessionList() {
               ? 'No sessions yet.'
               : `${sessions.length} session${sessions.length === 1 ? '' : 's'}`}
           </p>
+          {isSignedIn() && (
+            <p style={{ color: '#8b949e', fontSize: '13px', margin: '4px 0 0' }}>
+              Signed in as {getLogin()} — sessions and credentials are scoped to your account.
+            </p>
+          )}
         </div>
       </div>
 

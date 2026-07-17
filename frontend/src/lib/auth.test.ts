@@ -1,4 +1,12 @@
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach, vi } from 'vitest';
+
+// signOut fires a best-effort server-side logout through lib/api; mock it so
+// these tests never touch the network.
+vi.mock('./api', () => ({
+  api: { logout: vi.fn().mockResolvedValue(undefined) },
+}));
+
+import { api } from './api';
 import {
   authorizeUrl,
   completeLogin,
@@ -14,6 +22,8 @@ import { getConnection } from './connections';
 beforeEach(() => {
   localStorage.clear();
   sessionStorage.clear();
+  vi.mocked(api.logout).mockClear();
+  vi.mocked(api.logout).mockResolvedValue(undefined);
 });
 
 describe('newOAuthState', () => {
@@ -56,13 +66,27 @@ describe('completeLogin / signOut', () => {
     expect(getConnection('github')).toBe('gho_tok');
   });
 
-  it('signOut forgets token, login, and connection', () => {
+  it('signOut forgets token, login, and connection, and calls the server-side logout', () => {
     completeLogin('gho_tok', 'octocat');
     signOut();
+    expect(api.logout).toHaveBeenCalledTimes(1);
     expect(getApiToken()).toBe('');
     expect(getLogin()).toBe('');
     expect(isSignedIn()).toBe(false);
     expect(getConnection('github')).toBe('');
+  });
+
+  it('signOut still clears storage when the server-side logout rejects', async () => {
+    completeLogin('gho_tok', 'octocat');
+    vi.mocked(api.logout).mockRejectedValueOnce(new Error('server unreachable'));
+    signOut();
+    expect(api.logout).toHaveBeenCalledTimes(1);
+    expect(getApiToken()).toBe('');
+    expect(getLogin()).toBe('');
+    expect(isSignedIn()).toBe(false);
+    expect(getConnection('github')).toBe('');
+    // Let the swallowed rejection settle so it can't surface as unhandled.
+    await Promise.resolve();
   });
 
   it('is not signed in with only one half present', () => {

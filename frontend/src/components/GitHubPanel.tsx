@@ -18,9 +18,11 @@ interface GitHubPanelProps {
   branch: string;
 }
 
-/// Repo / PR / CI status for the session's repository and branch, fetched
-/// straight from GitHub with the locally-connected token. Collapsed into a
-/// hint when GitHub isn't connected; hidden entirely for non-GitHub remotes.
+/// Repo / PR / CI status for the session's repository and branch, fetched via
+/// the backend proxy (vault token) with the locally-connected token as
+/// fallback (see lib/github.ts). The fetch is always attempted; the connect
+/// hint only shows when it fails AND no local token is connected (i.e. both
+/// paths are unavailable). Hidden entirely for non-GitHub remotes.
 export function GitHubPanel({ repoUrl, branch }: GitHubPanelProps) {
   const target = parseGitHubUrl(repoUrl);
   const connected = isGitHubConnected();
@@ -53,15 +55,17 @@ export function GitHubPanel({ repoUrl, branch }: GitHubPanelProps) {
   }, [target?.owner, target?.repo, branch]); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
-    if (!connected || !target) return;
+    if (!target) return;
     // Refetch when the session's repo/branch changes.
     const key = `${target.owner}/${target.repo}#${branch}`;
     if (key !== loadedFor) void refresh();
-  }, [connected, target?.owner, target?.repo, branch, loadedFor, refresh]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [target?.owner, target?.repo, branch, loadedFor, refresh]); // eslint-disable-line react-hooks/exhaustive-deps
 
   if (!target) return null;
 
-  if (!connected) {
+  // Total failure with no local token: neither the backend proxy nor a direct
+  // call can serve this panel — point at Integrations.
+  if (!connected && error && !repo) {
     return (
       <div style={hintStyle}>
         Connect GitHub on the <Link to="/integrations" style={{ color: '#58a6ff' }}>Integrations</Link>{' '}

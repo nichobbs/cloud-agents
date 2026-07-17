@@ -28,6 +28,14 @@ each CLI's config/history persists at its image's real `$HOME` — #409):
 | `opencode-home-default` (opencode) | `/home/opencode-user` | OpenCode config + history |
 | `gemini-home-default` (gemini) | `/home/gemini-user` | Gemini CLI config + history |
 
+The names above are the single-operator (`default` tenant) shapes.
+OAuth-authenticated tenants get per-user volumes instead —
+`user-<userId>-<harness>-home` (empty harness normalised to `claude`) and
+`session-<userId>-<sessionId>-workspace`, via
+`CloudAgents.Db.homeVolumeBindFor` / `workspaceVolumeBindFor` — while the
+operator identity keeps the legacy shared names so existing installs keep
+their authenticated `~/.claude` and workspaces.
+
 To seed the shared home volume from your local credentials during development:
 
 ```sh
@@ -49,13 +57,18 @@ storage (see `docs/phase3-multi-tenancy.md`):
   the GitHub user ID as associated data, stored as `credentials/<githubId>.enc`.
 - On container start the blob is decrypted to a temp dir, mounted at
   `/home/claude-user/.claude`, and securely wiped after the container exits.
-- Volumes become per-user: `user-<githubId>-home`,
-  `session-<githubId>-<sessionId>` (see `CloudAgents.Db.homeVolumeName` /
-  `workspaceVolumeName`).
+- Volumes are per-user **(implemented)**: OAuth tenants mount
+  `user-<userId>-<harness>-home` and `session-<userId>-<sessionId>-workspace`
+  (see `CloudAgents.Db.homeVolumeBindFor` / `workspaceVolumeBindFor`), while
+  the operator `default` identity keeps the legacy shared names from the
+  Phase 1 table above.
 
-The GitHub OAuth token is **never** stored — it is only used to validate
-identity per request (`CloudAgents.Auth`); the server keeps only a
-short-TTL cache row keyed by the token's SHA-256 (`github_token_cache`).
+The auth layer **never** stores the GitHub OAuth token — per-request
+validation (`CloudAgents.Auth`) keeps only a short-TTL cache row keyed by
+the token's SHA-256 (`github_token_cache`). The one place it is persisted
+is the credential vault, encrypted at rest: signing in stores it as your
+tenant's `GITHUB_TOKEN` when `ENCRYPTION_KEY` is configured (see "GitHub
+OAuth setup" below).
 
 ## GitHub OAuth setup
 
@@ -70,6 +83,20 @@ short-TTL cache row keyed by the token's SHA-256 (`github_token_cache`).
    token as the API bearer (all data becomes scoped to your `gh-<id>`
    tenant) and connects GitHub in the UI (repo browser, PR/CI panels) in
    one step. The requested scopes are `repo read:user`.
+4. Signing in also stores the token as a `GITHUB_TOKEN` credential in the
+   vault for your tenant (when `ENCRYPTION_KEY` is configured) — but **only
+   if none exists yet** (#441): a manually-configured `GITHUB_TOKEN` (e.g. a
+   deliberately-scoped fine-grained PAT) is never silently replaced by
+   sign-in. If an auto-vaulted token goes stale, delete the credential and
+   sign in again to refresh it. "Sign out" forgets the device's copy **and**
+   invalidates the server's validation-cache row for that token.
+
+   Note the asymmetry (#439): sign-out does **not** delete the vaulted
+   `GITHUB_TOKEN` (your containers keep working across sign-ins by design)
+   and cannot revoke the token at GitHub. For full revocation, delete the
+   credential on the Credentials page and revoke the app grant at
+   github.com/settings/applications — revoking there invalidates every copy
+   at once.
 
 The static `CLOUD_AGENTS_API_TOKEN` keeps working as the single-operator
 fallback; a bearer matching it authenticates as the `default` tenant exactly
@@ -110,8 +137,10 @@ without hand-typing names and values:
   Google, GitHub): the key is validated against the provider's API, uploaded
   to the vault under its canonical env-var name (`ANTHROPIC_API_KEY`,
   `OPENAI_API_KEY`, `GEMINI_API_KEY`, `GITHUB_TOKEN`), and kept locally in the
-  browser to power live model discovery and the GitHub repo/PR/CI panels
-  (the vault is write-only, so the UI cannot read the key back). The page also
+  browser as a *fallback* for live model discovery and the GitHub repo/PR/CI
+  panels (the vault is write-only, so the UI cannot read the key back; the
+  primary path for those features is now the backend proxy, which uses the
+  vault copy server-side — see the security note below). The page also
   imports pasted credential files — `~/.claude/.credentials.json` (Claude Code
   OAuth → `CLAUDE_CODE_OAUTH_TOKEN`), `~/.codex/auth.json`, and OpenCode's
   `auth.json` — recognising each secret and uploading it under the right name.
@@ -120,15 +149,20 @@ without hand-typing names and values:
   `gh auth token`) and uploads whatever it finds. Supports `--dry-run`;
   configure `CLOUD_AGENTS_URL` / `CLOUD_AGENTS_API_TOKEN`.
 
-**Security note on local connections.** The browser-side copy kept by the
-Integrations page lives in `localStorage`, and the UI calls provider APIs
-(Anthropic/OpenAI/Google/GitHub) directly from the browser. This is a
-deliberate trade-off forced by the write-only vault plus the Lyric backend's
-lack of outbound HTTPS — but it means any XSS on the frontend origin could
-read those keys. Mitigations: use least-privilege keys (fine-grained GitHub
-PATs scoped to the repos you need; provider keys with spend limits), the
-frontend renders no untrusted HTML except ANSI-converted run output
-(`ansi_up` escapes HTML), and "Disconnect" on the Integrations page removes
-the local copy without touching the vault. Skip connecting a provider
-entirely if you only need runner-container injection — the vault upload on
-the Credentials page never keeps a local copy.
+**Security note on local connections.** UI features that call provider APIs
+(live model discovery, the GitHub repo/PR/CI panels) now go through the
+backend's proxy endpoints (`/api/github/*`, `/api/models/{harness}` — see
+ADR-006), which use the *vault* copy of each key server-side. Locally-held
+Integrations keys are therefore **optional** for those features whenever the
+vault has the key: the browser tries the proxy first and only uses its
+`localStorage` copy as a fallback (no key in the vault, an older backend
+without the proxy routes, or a branch name containing `/`, which doesn't fit
+the proxy's single path segment). Where the fallback is used, the original
+trade-off still applies: any XSS on the frontend origin could read the
+locally-held keys. Mitigations: skip connecting locally at all when the
+vault has the key (the proxy covers the UI features), use least-privilege
+keys (fine-grained GitHub PATs scoped to the repos you need; provider keys
+with spend limits), the frontend renders no untrusted HTML except
+ANSI-converted run output (`ansi_up` escapes HTML), and "Disconnect" on the
+Integrations page removes the local copy without touching the vault. The
+vault upload on the Credentials page never keeps a local copy.

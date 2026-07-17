@@ -105,6 +105,15 @@ export function useStreamMessage(sessionId: string): StreamState {
       if (!alive() || sendInFlightRef.current || !first.running) return;
       setIsStreaming(true);
       let last = first.output;
+      // Server-authoritative offset for the incremental endpoint: the initial
+      // probe returned the full log, so subsequent polls only need the bytes
+      // past it. The server echoes back its current total as `length`, which
+      // becomes the next offset.
+      let offset = first.output.length;
+      // Prefer the incremental endpoint; on the first throw (older backend
+      // without the /output/{offset} route) fall back to full-log polling for
+      // the rest of this run.
+      let deltaSupported = true;
       if (last) setOutput(last);
       let delay = 1500;
       const maxDelay = 6000;
@@ -113,14 +122,50 @@ export function useStreamMessage(sessionId: string): StreamState {
         await new Promise(r => setTimeout(r, delay));
         if (!alive()) return;
         try {
-          const next = await api.getRunOutput(forSession);
+          let running: boolean;
+          let next: string;
+          if (deltaSupported) {
+            try {
+              const d = await api.getRunOutputDelta(forSession, offset);
+              running = d.running;
+              if (!d.running && d.length === 0) {
+                // The endpoint's not-running SENTINEL ({running:false,
+                // length:0, chunk:""}) is a status signal, not log data —
+                // treating its length as a truncation resync would blank the
+                // just-produced output on every completed run (#440; the
+                // pre-delta code guarded this with `next.output &&`). Keep
+                // the accumulated output untouched.
+                next = last;
+              } else if (d.length < offset) {
+                // A shorter (but real) log means it was truncated/replaced
+                // (new run): the chunk is the full new log — replace instead
+                // of appending (resync).
+                next = d.chunk;
+                offset = d.length;
+              } else {
+                next = last + d.chunk;
+                offset = d.length;
+              }
+            } catch {
+              deltaSupported = false;
+              const full = await api.getRunOutput(forSession);
+              running = full.running;
+              // Same sentinel rule for the legacy endpoint: an empty full log
+              // never overwrites accumulated output (#440).
+              next = full.output ? full.output : last;
+            }
+          } else {
+            const full = await api.getRunOutput(forSession);
+            running = full.running;
+            next = full.output ? full.output : last;
+          }
           if (!alive()) return;
-          if (next.output && next.output !== last) {
-            last = next.output;
+          if (next !== last) {
+            last = next;
             setOutput(last);
             delay = 1500; // fresh output — poll responsively again (#216)
           }
-          if (!next.running) {
+          if (!running) {
             finished = true;
             break;
           }
@@ -166,32 +211,76 @@ export function useStreamMessage(sessionId: string): StreamState {
       });
 
       // The send request blocks until the whole run finishes (the backend
-      // cannot stream a response yet), so poll the run-output endpoint in
+      // cannot stream a response yet — see docs/upstream/lyric-web-streaming.md
+      // for the Lyric.Web feature request), so poll the run-output endpoint in
       // parallel to surface incremental container output as it accumulates.
-      // Each tick the endpoint returns logs-so-far (not a delta), so the tail
-      // is rebuilt as `base + partial`; earlier content in `base` is never
-      // overwritten. Polling stops as soon as the send settles or the run
-      // reports finished, and yields to real streamed chunks. Failures are
-      // swallowed — polling is best-effort and must never fail the send.
+      // The incremental endpoint (getRunOutputDelta) is preferred: each tick
+      // only the bytes past the server-acknowledged offset travel, and the
+      // accumulated tail is rebuilt as `base + liveTail`; earlier content in
+      // `base` is never overwritten. On an older backend without the delta
+      // route the first delta call throws and polling falls back to the
+      // original full-log endpoint for the rest of the run. Polling stops as
+      // soon as the send settles or the run reports finished, and yields to
+      // real streamed chunks. Failures are swallowed — polling is best-effort
+      // and must never fail the send.
       let polling = true;
       let liveTail = '';
+      // Server-authoritative offset for the delta endpoint: the next poll asks
+      // only for log bytes past this point; the server's returned `length`
+      // becomes the next offset.
+      let liveOffset = 0;
+      let deltaSupported = true;
       // Poll responsively at first, then back off toward a cap so a long,
-      // quiet run doesn't re-fetch the full log every 1.5s for its whole
-      // duration (#216). The interval resets to 1.5s whenever new output
-      // arrives, so an actively-producing run stays responsive. (The endpoint
-      // returns the full log each tick, not a delta — real deltas would need
-      // backend support and are out of scope here.)
+      // quiet run doesn't re-poll every 1.5s for its whole duration (#216).
+      // The interval resets to 1.5s whenever new output arrives, so an
+      // actively-producing run stays responsive.
       const minPollMs = 1500;
       const maxPollMs = 6000;
       let pollDelay = minPollMs;
       const poll = async () => {
         while (polling && stillCurrent()) {
           try {
-            const { running, output: partial } = await api.getRunOutput(sessionId);
+            let running: boolean;
+            let next: string;
+            if (deltaSupported) {
+              try {
+                const d = await api.getRunOutputDelta(sessionId, liveOffset);
+                running = d.running;
+                if (!d.running && d.length === 0) {
+                  // Not-running sentinel, not log data — never let it blank
+                  // the accumulated tail (#440; the pre-delta code guarded
+                  // this with `partial &&`).
+                  next = liveTail;
+                } else if (d.length < liveOffset) {
+                  // A shorter (but real) log was truncated/replaced (new
+                  // run): the chunk is the full new log — replace the
+                  // accumulated tail instead of appending (resync).
+                  next = d.chunk;
+                  liveOffset = d.length;
+                } else {
+                  next = liveTail + d.chunk;
+                  liveOffset = d.length;
+                }
+              } catch {
+                // Older backend without the delta route (or, in tests, an api
+                // mock that doesn't define getRunOutputDelta) — fall back to
+                // full-log polling for the rest of this run.
+                deltaSupported = false;
+                const full = await api.getRunOutput(sessionId);
+                running = full.running;
+                next = full.output ? full.output : liveTail;
+              }
+            } else {
+              const full = await api.getRunOutput(sessionId);
+              running = full.running;
+              // An empty full log (the endpoint's not-running response) never
+              // overwrites the accumulated tail (#440).
+              next = full.output ? full.output : liveTail;
+            }
             if (!polling || !stillCurrent()) break;
-            if (partial && partial !== liveTail) {
-              liveTail = partial;
-              setOutput(base + partial);
+            if (next !== liveTail) {
+              liveTail = next;
+              setOutput(base + next);
               pollDelay = minPollMs;
             }
             if (!running) break;

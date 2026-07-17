@@ -11,6 +11,7 @@ import CloudAgents.Interactions
 import CloudAgents.OAuth
 import CloudAgents.Profiles
 import CloudAgents.Prompts
+import CloudAgents.Proxy
 import CloudAgents.Repository
 import CloudAgents.SessionStore
 import CloudAgents.Sqlite
@@ -321,6 +322,13 @@ impl Web.Handler for RouteGetRunOutput {
   }
 }
 
+record RouteGetRunOutputFrom {}
+impl Web.Handler for RouteGetRunOutputFrom {
+  func handle(req: in Web.Request): Web.Response {
+    return jsonStringResp(CloudAgents.Handlers.getRunOutputFrom(pparam(req, "id"), pparam(req, "offset")))
+  }
+}
+
 record RouteDeleteSession {}
 impl Web.Handler for RouteDeleteSession {
   func handle(req: in Web.Request): Web.Response {
@@ -580,6 +588,50 @@ impl Web.Handler for RouteMarkWebhookDelivered {
   }
 }
 
+// ─── CloudAgents.Proxy routes (proxy.l) ─────────────────────────────────────
+//
+// Server-side provider proxies (ADR-006): every handler returns a complete
+// passthrough JSON body as a String, so all five map through jsonStringResp.
+
+record RouteProxyGithubRepos {}
+impl Web.Handler for RouteProxyGithubRepos {
+  func handle(req: in Web.Request): Web.Response {
+    return jsonStringResp(CloudAgents.Proxy.githubReposHandler(pparam(req, "page")))
+  }
+}
+
+record RouteProxyGithubRepo {}
+impl Web.Handler for RouteProxyGithubRepo {
+  func handle(req: in Web.Request): Web.Response {
+    return jsonStringResp(CloudAgents.Proxy.githubRepoHandler(pparam(req, "owner"), pparam(req, "repo")))
+  }
+}
+
+record RouteProxyGithubPulls {}
+impl Web.Handler for RouteProxyGithubPulls {
+  func handle(req: in Web.Request): Web.Response {
+    return jsonStringResp(
+      CloudAgents.Proxy.githubPullsHandler(pparam(req, "owner"), pparam(req, "repo"), pparam(req, "branch"))
+    )
+  }
+}
+
+record RouteProxyGithubChecks {}
+impl Web.Handler for RouteProxyGithubChecks {
+  func handle(req: in Web.Request): Web.Response {
+    return jsonStringResp(
+      CloudAgents.Proxy.githubChecksHandler(pparam(req, "owner"), pparam(req, "repo"), pparam(req, "branch"))
+    )
+  }
+}
+
+record RouteProxyModels {}
+impl Web.Handler for RouteProxyModels {
+  func handle(req: in Web.Request): Web.Response {
+    return jsonStringResp(CloudAgents.Proxy.modelsHandler(pparam(req, "harness")))
+  }
+}
+
 // ─── CloudAgents.OAuth routes (oauth.l) ─────────────────────────────────────
 
 record RouteOAuthConfig {}
@@ -600,6 +652,21 @@ impl Web.Handler for RouteOAuthExchange {
       case Ok(grant) -> Web.json(200, grant.toJson())
       case Err(e) -> Web.errorResponse(e)
     }
+  }
+}
+
+// Server-side logout: reads the Authorization header exactly as
+// AuthMiddleware does and invalidates that bearer's validation-cache row.
+// Lives under the auth-exempt /api/auth/ prefix, which is correct here:
+// invalidating a cache row requires knowing the token itself.
+record RouteOAuthLogout {}
+impl Web.Handler for RouteOAuthLogout {
+  func handle(req: in Web.Request): Web.Response {
+    val authHeader = match Web.header(req, "Authorization") {
+      case Some(h) -> h
+      case None -> ""
+    }
+    return unitResp(CloudAgents.OAuth.logout(authHeader))
   }
 }
 
@@ -657,8 +724,20 @@ func main(): Unit {
   router = Web.addPost(router, "/api/sessions/{id}/profile", RouteSetSessionProfile())
   router = Web.addGet(router, "/api/sessions/{id}/profile", RouteGetSessionProfile())
 
-  // Live output polling for an in-progress run
+  // Live output polling for an in-progress run. The offset-suffixed route
+  // returns only the log bytes past {offset} (incremental polling — see
+  // getRunOutputFrom); the plain route returns the full log each tick and is
+  // kept untouched for older clients.
+  //
+  // NOTE (#442): the offset route is this codebase's first multi-path-param
+  // pattern (the proxy routes below add more), and like every route it can't
+  // be exercised against a live server in CI yet (#354 blocks an automated
+  // HTTP harness). If multi-param matching proves broken at runtime, clients
+  // degrade gracefully rather than break: useStreamMessage falls back to the
+  // plain full-log route on any delta error, and the proxy clients fall back
+  // to direct GitHub/provider calls.
   router = Web.addGet(router, "/api/sessions/{id}/output", RouteGetRunOutput())
+  router = Web.addGet(router, "/api/sessions/{id}/output/{offset}", RouteGetRunOutputFrom())
 
   // Session lifecycle: cancel an in-flight run, run history, container reaping.
   router = Web.addPost(router, "/api/sessions/{id}/cancel", RouteCancelRun())
@@ -708,10 +787,24 @@ func main(): Unit {
   router = Web.addPost(router, "/api/webhooks/events/{id}/delivered", RouteMarkWebhookDelivered())
   router = Web.addDelete(router, "/api/webhooks/{id}", RouteDeleteWebhook())
 
-  // GitHub OAuth: public login configuration and the code-for-token exchange
-  // (both exempt from auth enforcement — they exist to obtain a token).
+  // Server-side provider proxies (ADR-006): GitHub listings and model
+  // discovery with vault credentials, so the browser needs no local keys.
+  // NOTE: a branch name containing '/' cannot match the single {branch}
+  // segment below — an accepted limitation; the frontend falls back to
+  // direct GitHub calls when the proxy 404s/errors on such branches.
+  router = Web.addGet(router, "/api/github/repos/{page}", RouteProxyGithubRepos())
+  router = Web.addGet(router, "/api/github/repos/{owner}/{repo}", RouteProxyGithubRepo())
+  router = Web.addGet(router, "/api/github/pulls/{owner}/{repo}/{branch}", RouteProxyGithubPulls())
+  router = Web.addGet(router, "/api/github/checks/{owner}/{repo}/{branch}", RouteProxyGithubChecks())
+  router = Web.addGet(router, "/api/models/{harness}", RouteProxyModels())
+
+  // GitHub OAuth: public login configuration, the code-for-token exchange,
+  // and logout (all exempt from auth enforcement — config/exchange exist to
+  // obtain a token, and logout only ever invalidates the cache row of the
+  // exact token presented).
   router = Web.addGet(router, "/api/auth/github/config", RouteOAuthConfig())
   router = Web.addPost(router, "/api/auth/github/exchange", RouteOAuthExchange())
+  router = Web.addPost(router, "/api/auth/github/logout", RouteOAuthLogout())
 
   // Register health route
   router = Web.addGet(router, "/api/health", HealthHandler())

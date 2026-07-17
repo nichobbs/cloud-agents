@@ -57,14 +57,26 @@ beforeEach(() => {
 });
 
 describe('Repos', () => {
-  it('points at Integrations when GitHub is not connected', () => {
+  it('points at Integrations only when both the proxy and the direct path fail', async () => {
+    vi.mocked(isGitHubConnected).mockReturnValue(false);
+    vi.mocked(listRepos).mockRejectedValue(new Error('404 no GITHUB_TOKEN in the credential vault'));
+    renderRepos();
+    // The load is attempted even without a local token (the backend proxy may
+    // have a vault token); the hint appears only after that total failure.
+    await waitFor(() =>
+      expect(screen.getByRole('link', { name: 'Integrations' })).toHaveAttribute(
+        'href',
+        '/integrations',
+      ),
+    );
+    expect(listRepos).toHaveBeenCalled();
+  });
+
+  it('lists repos via the backend proxy even when no local token is connected', async () => {
     vi.mocked(isGitHubConnected).mockReturnValue(false);
     renderRepos();
-    expect(screen.getByRole('link', { name: 'Integrations' })).toHaveAttribute(
-      'href',
-      '/integrations',
-    );
-    expect(listRepos).not.toHaveBeenCalled();
+    await waitFor(() => expect(screen.getByText('owner/alpha')).toBeInTheDocument());
+    expect(screen.getByText('owner/beta')).toBeInTheDocument();
   });
 
   it('lists accessible repos with metadata', async () => {

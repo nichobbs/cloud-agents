@@ -744,6 +744,34 @@ pub func decryptedCredentials(userId: in String): Result[slice[CredentialValue],
   return Ok(value = acc)
 }
 
+/// Decrypt a single named credential for server-side use (the CloudAgents.Proxy
+/// endpoints call provider APIs with vault keys). Returns Ok(None) when the
+/// user has no credential of that name — decided BEFORE any decryption, so a
+/// deployment without ENCRYPTION_KEY (or with an unreadable blob) still
+/// answers "absent" cleanly for an empty vault instead of erroring. Unlike
+/// the injection paths above, a present-but-undecryptable value is an error,
+/// not a skip: the caller asked for exactly this credential, so silently
+/// treating it as absent would misreport a rotated-key problem as "no key".
+pub func decryptedCredentialValue(userId: in String, name: in String): Result[Option[String], CredentialError] {
+  val rows = match CloudAgents.Sqlite.query(CloudAgents.Db.selectCredentialsForInjectionSql(userId)) {
+    case Ok(r) -> r
+    case Err(e) -> return Err(Db(error = e))
+  }
+  var i = 0
+  val len = CloudAgents.Sqlite.getRowArrayLength(rows)
+  while i < len {
+    val r = CloudAgents.Sqlite.getRowArrayValue(rows, i)
+    if colAt(r.cols, 0) == name {
+      match CloudAgents.Crypto.decrypt(colAt(r.cols, 1)) {
+        case Ok(p) -> return Ok(value = Some(value = p))
+        case Err(e) -> return Err(Crypto(error = e))
+      }
+    }
+    i = i + 1
+  }
+  return Ok(value = None)
+}
+
 // ─── Profiles ──────────────────────────────────────────────────────────────────
 //
 // A per-container policy: which harness runs, what network access the container
@@ -1343,4 +1371,12 @@ pub func cachedGitHubToken(
   }
   val r0 = CloudAgents.Sqlite.getRowArrayValue(rows, 0)
   return Ok(value = Some(value = GitHubTokenCacheEntry(userId = colAt(r0.cols, 0), login = colAt(r0.cols, 1))))
+}
+
+/// Server-side logout: delete a token's cache row so the next presentation of
+/// that token must revalidate live. Deleting a row that does not exist is
+/// still Ok — logout is idempotent.
+pub func invalidateGitHubToken(tokenHash: in String): Result[Unit, CloudAgents.Sqlite.DbError] {
+  CloudAgents.Sqlite.execute(CloudAgents.Db.deleteGitHubTokenSql(tokenHash))?
+  return Ok(value = ())
 }

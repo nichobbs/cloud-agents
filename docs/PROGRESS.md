@@ -115,7 +115,7 @@ design of each phase and `docs/BUILD.md` for build/verification notes.
 | Idle recycling decision | ✅ verified | `db_client.l` (`recycleDecision`, warm 5min / cold 1h windows) |
 | Persistence SQL (owner-scoped) | ✅ verified | `db_client.l` (`insert/select/list/update/touch/delete/recover…Sql`) |
 | SQLite schema | ✅ | `db_client.l` (`sessionsSchemaSql`) |
-| Volume naming | ✅ | `workspaceVolumeName`, `homeVolumeName` |
+| Volume naming | ✅ | `db_client.l` (`workspaceVolumeBindFor`, `homeVolumeBindFor`, `homeMountPathForHarness`; the never-wired Phase-3 draft helpers were removed as dead code, #443) |
 | Background sweep + concurrency control | ⬜ pending | needs `Std.Concurrency` + lyric-db wiring (runtime) |
 
 ## Phase 3 — Multi-Tenancy & Security 🟡 started
@@ -131,6 +131,7 @@ design of each phase and `docs/BUILD.md` for build/verification notes.
 | Live `api.github.com/user` call | ✅ added | `github_api.l` (`httpGetWithBearer`) — direct `HttpWebRequest` externs; `Std.Http`'s documented surface has no request-header support, so the BCL binding route (the same one `crypto.l`/`nowMillis` use) unblocked this |
 | GitHub OAuth login (web flow) | ✅ added | `oauth.l` (`exchangeCode` via `POST /api/auth/github/exchange`, config via `GET /api/auth/github/config`), frontend `lib/auth.ts` + `pages/AuthCallback.tsx` + Nav sign-in/out |
 | Per-request identity | ✅ added | `AuthMiddleware` stamps the authenticated user id thread-locally (`Auth.setCurrentUserId`); the async Docker path takes the owner explicitly since thread-locals don't flow to worker threads |
+| Per-user volumes | ✅ added | `db_client.l` (`workspaceVolumeBindFor`, `homeVolumeBindFor`) wired into `docker_manager.l` — OAuth tenants get `user-<id>-<harness>-home` + `session-<id>-<sessionId>-workspace`; the operator `default` identity keeps the legacy shared names (see `docs/credentials.md`) |
 | Encrypted credential upload | ⬜ pending | endpoint + encryption |
 
 > "verified" = compiles **and** runtime-tested via `scripts/verify.sh` (CI runs

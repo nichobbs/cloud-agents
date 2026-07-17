@@ -84,8 +84,6 @@ pub async func createRunnerContainer(
   profileId: in String,
   userId: in String,
 ): Result[String, String] {
-  val workspaceVolume = "session-" + sessionId + "-workspace"
-
   var envs = [
     "PROMPT=" + prompt,
     "REPO_URL=" + repoUrl,
@@ -132,9 +130,13 @@ pub async func createRunnerContainer(
   }
   val networkMode = CloudAgents.NetworkPolicy.networkModeForPolicy(policy)
 
-  // Per-harness home volume so each CLI's config/history persists at the
-  // right $HOME (#409); Phase 3 makes these user-specific.
-  val binds = [workspaceVolume + ":/workspace", CloudAgents.Db.homeVolumeBindForHarness(harness)]
+  // Per-user, per-harness volumes so tenants never share workspace or home
+  // state: OAuth tenants (gh-<id>) get user-<id>-<harness>-home and
+  // session-<id>-<sessionId>-workspace, while the operator identity
+  // ("default") keeps the legacy shared names — per-harness home volumes
+  // (#409) and session-<sessionId>-workspace — so existing installs keep
+  // their authenticated ~/.claude and workspaces.
+  val binds = [CloudAgents.Db.workspaceVolumeBindFor(userId, sessionId), CloudAgents.Db.homeVolumeBindFor(userId, harness)]
 
   val image = imageForHarness(harness)
   val createRes = await createContainerWithNetwork(client, image, envs, binds, networkMode)

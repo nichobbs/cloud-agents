@@ -124,22 +124,36 @@ read-write so the UI could fetch keys on demand instead.
   best end state. *Update (GitHub OAuth PR):* outbound HTTPS with request
   headers is now proven from the backend via direct `HttpWebRequest` externs
   (`src/github_api.l`, used by the OAuth flow), so this migration is
-  unblocked and is the recommended next step.
-- Local-copy-on-connect (current) — the vault stays write-only; the
-  Integrations page keeps a browser-side copy of only the keys the user
-  explicitly connects, documented with mitigations in `docs/credentials.md`.
+  unblocked and is the recommended next step. *Update (proxy PR): landed —
+  see below.*
+- Local-copy-on-connect — the vault stays write-only; the Integrations page
+  keeps a browser-side copy of only the keys the user explicitly connects,
+  documented with mitigations in `docs/credentials.md`. Now the *fallback*
+  path rather than the only path.
 
-**Decision**: Keep the vault write-only; keep browser-side copies scoped to
-explicitly-connected keys. Migrate the UI's provider calls behind backend
-proxy endpoints when Lyric gains a usable outbound HTTP client, at which
-point the local copies (and this ADR's trade-off) can be removed entirely.
+**Decision**: Keep the vault write-only. **The proxy migration has landed**:
+`GET /api/github/repos/{page}`, `/api/github/repos/{owner}/{repo}`,
+`/api/github/pulls/{owner}/{repo}/{branch}`,
+`/api/github/checks/{owner}/{repo}/{branch}` and `/api/models/{harness}`
+(`src/handlers/proxy.l`) call GitHub and the model providers server-side with
+vault keys and pass the raw JSON through; the frontend
+(`lib/github.ts`/`lib/models.ts`) tries the proxy first and keeps the
+browser-side copies only as a fallback (no vault key stored, an older
+backend without the routes, or a branch name with `/` that doesn't fit the
+proxy's single path segment). Browser-held provider keys are therefore now
+**optional** for the repo browser, PR/CI panels and live model discovery.
 
 **Consequences**:
 
 - Vault compromise via the web surface stays limited to *writing* secrets,
-  never reading them; a hostile write is visible (names are listable) and
-  recoverable (rotate + overwrite).
-- The browser holds at most the four connect-able provider keys, each also
-  revocable at the provider; "Disconnect" removes the local copy without
-  touching the vault.
-- Two copies of a connected key exist until the proxy migration lands.
+  never reading them: the proxy endpoints return provider *responses*
+  (listings), never the keys themselves; a hostile write is visible (names
+  are listable) and recoverable (rotate + overwrite).
+- The browser holds at most the four connect-able provider keys, and only if
+  the user explicitly connects them for the fallback path; each is revocable
+  at the provider, and "Disconnect" removes the local copy without touching
+  the vault. With vault keys present, connecting locally is unnecessary.
+- Two copies of a connected key exist only for users still relying on the
+  fallback; the direct browser path (and this ADR's remaining trade-off) can
+  be removed entirely once slashed-branch routing lands and old backends age
+  out.
