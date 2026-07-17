@@ -54,7 +54,52 @@ storage (see `docs/phase3-multi-tenancy.md`):
   `workspaceVolumeName`).
 
 The GitHub OAuth token is **never** stored — it is only used to validate
-identity per request (`CloudAgents.Auth`).
+identity per request (`CloudAgents.Auth`); the server keeps only a
+short-TTL cache row keyed by the token's SHA-256 (`github_token_cache`).
+
+## GitHub OAuth setup
+
+1. Create a GitHub OAuth app (Settings → Developer settings → OAuth Apps)
+   with the callback URL `https://<your-host>/auth/callback` (or
+   `http://localhost:5173/auth/callback` for the Vite dev server).
+2. Set `CLOUD_AGENTS_GITHUB_CLIENT_ID` and
+   `CLOUD_AGENTS_GITHUB_CLIENT_SECRET` in the API server's environment, and
+   optionally `CLOUD_AGENTS_WHITELIST` to a comma-separated list of GitHub
+   numeric user ids allowed in (empty = any authenticated GitHub user).
+3. "Sign in with GitHub" appears in the nav. Signing in stores the OAuth
+   token as the API bearer (all data becomes scoped to your `gh-<id>`
+   tenant) and connects GitHub in the UI (repo browser, PR/CI panels) in
+   one step. The requested scopes are `repo read:user`.
+
+The static `CLOUD_AGENTS_API_TOKEN` keeps working as the single-operator
+fallback; a bearer matching it authenticates as the `default` tenant exactly
+as before.
+
+Validation-cache latencies: whitelist changes — removals *and* additions —
+take effect on the affected user's **next request** (the whitelist is
+re-applied on every cache hit, and a whitelist-miss caches the identity
+positively rather than negatively); revoking the OAuth token *at GitHub* is
+only noticed at revalidation, i.e. within the 10-minute cache TTL. Tokens
+GitHub itself rejects are negatively cached for 1 minute so repeated bad
+bearers don't each cost an outbound round trip, with a global backstop that
+stops validating unrecognised bearers entirely once 30 distinct failures are
+in-window.
+
+The backstop is global rather than per-IP by design (#433): the only
+per-caller signal, `X-Forwarded-For`, is attacker-controlled on
+direct-exposure deployments, and partitioning by it would let a flooder
+escape its own bucket. A tripped backstop does **not** affect signed-in
+users (positive cache) or new sign-ins (the exchange endpoint validates
+directly and primes the cache) — only bearers that never went through this
+server's exchange, which re-running "Sign in with GitHub" self-heals.
+
+The exchange endpoint has its own, independent backstop (#434): a code
+GitHub already rejected is refused while its 1-minute negative row lives,
+and 30 distinct rejected codes in-window pause outbound exchanges. The two
+counters are separate, so a garbage-bearer flood can never lock out
+sign-ins and a garbage-code flood only throttles the exchange itself. Only
+confirmed GitHub rejections (HTTP 401/403) are negatively cached — transport
+failures fail the request but are never cached or counted (#435).
 
 ## Auto-uploading harness credentials
 

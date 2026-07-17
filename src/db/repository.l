@@ -232,6 +232,12 @@ pub func allMigrations(): slice[Migration] {
         CloudAgents.Db.webhooksUserIndexSql(),
         CloudAgents.Db.webhookEventsPendingIndexSql()
       ]
+    ),
+    Migration(
+      version = "0007_github_token_cache",
+      statements = [
+        CloudAgents.Db.githubTokenCacheSchemaSql()
+      ]
     )
   ]
 }
@@ -1224,4 +1230,117 @@ pub func decryptedCredentialsForProfile(
       return Ok(value = acc)
     }
   }
+}
+
+// ─── GitHub OAuth token-validation cache ────────────────────────────────────
+//
+// Successful bearer validations (api.github.com/user round trips) are cached
+// for a short TTL, keyed by the token's SHA-256 so the table never stores a
+// usable secret. Reads exclude expired rows in SQL (CAST comparison, like the
+// warm-reap query); writes opportunistically sweep expired rows first.
+/// A cached, still-valid token validation.
+pub record GitHubTokenCacheEntry {
+  pub userId: String
+  pub login: String
+}
+
+/// How long a validated GitHub token stays trusted before revalidation (10
+/// minutes, as a millis string for the SQL expiry arithmetic).
+func githubTokenTtlMillis(): String {
+  return "600000"
+}
+
+/// How long a denial stays negatively cached (1 minute — deliberately short
+/// so a transient-network denial can't lock a valid token out for long; the
+/// named constant is here so the two TTLs read side by side, #430).
+func githubTokenDeniedTtlMillis(): String {
+  return "60000"
+}
+
+/// Cache a successful validation. The expired-row sweep is best-effort.
+pub func cacheGitHubToken(
+  tokenHash: in String, userId: in String, login: in String
+): Result[Unit, CloudAgents.Sqlite.DbError] {
+  val now = nowMillis()
+  match CloudAgents.Sqlite.execute(CloudAgents.Db.deleteExpiredGitHubTokensSql(now)) {
+    case Ok(_) -> ()
+    case Err(_) -> ()
+  }
+  CloudAgents.Sqlite.execute(
+    CloudAgents.Db.upsertGitHubTokenSql(tokenHash, userId, login, now, githubTokenTtlMillis())
+  )?
+  return Ok(value = ())
+}
+
+/// Cache a *denial* briefly — an empty userId marks the entry as negative.
+/// Only for tokens GitHub itself rejected (no identity to re-check); a
+/// whitelist miss caches the real identity positively instead, so whitelist
+/// additions take effect immediately (#429). Blunts repeated presentations
+/// of the same bad bearer, which would otherwise each cost an outbound
+/// GitHub round trip that blocks a request thread (#425).
+pub func cacheGitHubTokenDenied(tokenHash: in String): Result[Unit, CloudAgents.Sqlite.DbError] {
+  val now = nowMillis()
+  // Sweep expired rows on THIS write path too (#432): during a sustained
+  // flood of distinct bad bearers this is the only path writing at all, and
+  // without the sweep those rows would accumulate until a legitimate
+  // sign-in happened to run the positive path's sweep.
+  match CloudAgents.Sqlite.execute(CloudAgents.Db.deleteExpiredGitHubTokensSql(now)) {
+    case Ok(_) -> ()
+    case Err(_) -> ()
+  }
+  CloudAgents.Sqlite.execute(
+    CloudAgents.Db.upsertGitHubTokenSql(tokenHash, "", "", now, githubTokenDeniedTtlMillis())
+  )?
+  return Ok(value = ())
+}
+
+/// How many distinct bad bearers are currently negatively cached (i.e. seen
+/// within the last minute). The authentication path uses this as a global
+/// flood backstop (#425).
+pub func activeNegativeGitHubTokens(): Result[Int, CloudAgents.Sqlite.DbError] {
+  val rows = CloudAgents.Sqlite.query(CloudAgents.Db.countActiveNegativeGitHubTokensSql(nowMillis()))?
+  val len = CloudAgents.Sqlite.getRowArrayLength(rows)
+  if len == 0 {
+    return Ok(value = 0)
+  }
+  val r0 = CloudAgents.Sqlite.getRowArrayValue(rows, 0)
+  return Ok(value = parseNatString(colAt(r0.cols, 0)))
+}
+
+/// Record a GitHub-rejected authorization code (marker login 'oauth-code',
+/// so these never count toward the bearer backstop and vice versa — #434).
+pub func cacheOAuthCodeRejected(codeHash: in String): Result[Unit, CloudAgents.Sqlite.DbError] {
+  val now = nowMillis()
+  match CloudAgents.Sqlite.execute(CloudAgents.Db.deleteExpiredGitHubTokensSql(now)) {
+    case Ok(_) -> ()
+    case Err(_) -> ()
+  }
+  CloudAgents.Sqlite.execute(
+    CloudAgents.Db.upsertGitHubTokenSql(codeHash, "", "oauth-code", now, githubTokenDeniedTtlMillis())
+  )?
+  return Ok(value = ())
+}
+
+/// How many distinct GitHub-rejected authorization codes are in-window (#434).
+pub func activeRejectedOAuthCodes(): Result[Int, CloudAgents.Sqlite.DbError] {
+  val rows = CloudAgents.Sqlite.query(CloudAgents.Db.countActiveRejectedOAuthCodesSql(nowMillis()))?
+  val len = CloudAgents.Sqlite.getRowArrayLength(rows)
+  if len == 0 {
+    return Ok(value = 0)
+  }
+  val r0 = CloudAgents.Sqlite.getRowArrayValue(rows, 0)
+  return Ok(value = parseNatString(colAt(r0.cols, 0)))
+}
+
+/// The still-valid cache entry for a token hash, or None (missing or expired).
+pub func cachedGitHubToken(
+  tokenHash: in String
+): Result[Option[GitHubTokenCacheEntry], CloudAgents.Sqlite.DbError] {
+  val rows = CloudAgents.Sqlite.query(CloudAgents.Db.selectGitHubTokenSql(tokenHash, nowMillis()))?
+  val len = CloudAgents.Sqlite.getRowArrayLength(rows)
+  if len == 0 {
+    return Ok(value = None)
+  }
+  val r0 = CloudAgents.Sqlite.getRowArrayValue(rows, 0)
+  return Ok(value = Some(value = GitHubTokenCacheEntry(userId = colAt(r0.cols, 0), login = colAt(r0.cols, 1))))
 }

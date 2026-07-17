@@ -121,9 +121,10 @@ read-write so the UI could fetch keys on demand instead.
   secret, once stored, only ever flows server→container.
 - Backend proxy endpoints (`/api/github/*`, `/api/models/*`) that use vault
   credentials server-side — the browser never holds a key at all. This is the
-  best end state, but it is blocked today: Lyric has no reliable outbound
-  HTTPS (the same constraint behind the webhook outbox, see
-  `src/handlers/webhooks.l`).
+  best end state. *Update (GitHub OAuth PR):* outbound HTTPS with request
+  headers is now proven from the backend via direct `HttpWebRequest` externs
+  (`src/github_api.l`, used by the OAuth flow), so this migration is
+  unblocked and is the recommended next step.
 - Local-copy-on-connect (current) — the vault stays write-only; the
   Integrations page keeps a browser-side copy of only the keys the user
   explicitly connects, documented with mitigations in `docs/credentials.md`.

@@ -8,6 +8,7 @@ import CloudAgents.Crypto
 import CloudAgents.Docker
 import CloudAgents.Handlers
 import CloudAgents.Interactions
+import CloudAgents.OAuth
 import CloudAgents.Profiles
 import CloudAgents.Prompts
 import CloudAgents.Repository
@@ -38,18 +39,28 @@ impl Web.Handler for HealthHandler {
 }
 
 // Auth-enforcement middleware — the seam the whole 0.4.26 adoption is for
-// (#78/#211/#76). Reads the Authorization header (now exposed by Lyric.Web) and
-// runs it through CloudAgents.Auth.enforce, which applies the stricter
-// default-deny check to credential routes (authorizeSecret) and the regular
-// check elsewhere (#347). With no CLOUD_AGENTS_API_TOKEN configured, the
-// regular check stays open (no lockout) — only credential routes require a
-// token unconditionally. /api/health is excluded so liveness checks don't
-// need a token.
+// (#78/#211/#76). Reads the Authorization header (now exposed by Lyric.Web)
+// and runs it through CloudAgents.OAuth.authenticateRequest: a bearer
+// matching the static CLOUD_AGENTS_API_TOKEN authenticates as the operator
+// (unchanged); any other bearer, when GitHub OAuth is configured, is
+// validated as a GitHub token (cached, whitelisted) and resolves a real
+// per-tenant identity; everything else keeps the pre-OAuth semantics
+// (open when unconfigured, credential routes always refusing to run
+// unauthenticated — #347). The resolved identity is stamped into the
+// request thread before dispatch so Auth.currentUserId() scopes every
+// query to the caller.
+//
+// /api/health is excluded so liveness checks don't need a token, and
+// /api/auth/* is excluded because those endpoints exist to *obtain* a token.
 pub record AuthMiddleware {}
 
 impl Web.Middleware for AuthMiddleware {
   func wrap(req: in Web.Request, next: in Web.Handler): Web.Response {
-    if req.path == "/api/health" {
+    if req.path == "/api/health" or req.path.startsWith("/api/auth/") {
+      // These handlers never read the per-request identity, but stamp the
+      // operator id anyway so a pooled thread can't carry a previous
+      // request's identity into any future code on these paths (#420).
+      CloudAgents.Auth.setCurrentUserId(CloudAgents.Auth.operatorUserId())
       return next.handle(req)
     }
     var apiToken = Env.GetEnvironmentVariable("CLOUD_AGENTS_API_TOKEN")
@@ -60,8 +71,11 @@ impl Web.Middleware for AuthMiddleware {
       case Some(h) -> h
       case None -> ""
     }
-    match CloudAgents.Auth.enforce(req.path, authHeader, apiToken) {
-      case Allowed(_) -> return next.handle(req)
+    match CloudAgents.OAuth.authenticateRequest(req.path, authHeader, apiToken) {
+      case Allowed(userId) -> {
+        CloudAgents.Auth.setCurrentUserId(userId)
+        return next.handle(req)
+      }
       case Denied(e) -> return Web.errorResponse(Web.unauthorized(CloudAgents.Auth.authErrorMessage(e)))
     }
   }
@@ -566,6 +580,29 @@ impl Web.Handler for RouteMarkWebhookDelivered {
   }
 }
 
+// ─── CloudAgents.OAuth routes (oauth.l) ─────────────────────────────────────
+
+record RouteOAuthConfig {}
+impl Web.Handler for RouteOAuthConfig {
+  func handle(req: in Web.Request): Web.Response {
+    return Web.json(200, CloudAgents.OAuth.configJson())
+  }
+}
+
+record RouteOAuthExchange {}
+impl Web.Handler for RouteOAuthExchange {
+  func handle(req: in Web.Request): Web.Response {
+    val decoded = match ExchangeRequest.fromJson(req.body) {
+      case Ok(d) -> d
+      case Err(_) -> return badBody()
+    }
+    return match CloudAgents.OAuth.exchangeCode(decoded) {
+      case Ok(grant) -> Web.json(200, grant.toJson())
+      case Err(e) -> Web.errorResponse(e)
+    }
+  }
+}
+
 func main(): Unit {
   // Ensure the SQLite tables (transcript/comments/todos/prompts/sessions)
   // exist before serving.
@@ -670,6 +707,11 @@ func main(): Unit {
   router = Web.addGet(router, "/api/webhooks/pending", RoutePendingWebhookEvents())
   router = Web.addPost(router, "/api/webhooks/events/{id}/delivered", RouteMarkWebhookDelivered())
   router = Web.addDelete(router, "/api/webhooks/{id}", RouteDeleteWebhook())
+
+  // GitHub OAuth: public login configuration and the code-for-token exchange
+  // (both exempt from auth enforcement — they exist to obtain a token).
+  router = Web.addGet(router, "/api/auth/github/config", RouteOAuthConfig())
+  router = Web.addPost(router, "/api/auth/github/exchange", RouteOAuthExchange())
 
   // Register health route
   router = Web.addGet(router, "/api/health", HealthHandler())

@@ -4,7 +4,6 @@ import Std.Core
 import Std.Environment
 import Std.Task
 import Lyric.Docker
-import CloudAgents.Auth
 import CloudAgents.Db
 import CloudAgents.NetworkPolicy
 import CloudAgents.Repository
@@ -68,6 +67,11 @@ func imageForHarness(harness: in String): String {
 /// container image can invoke the right CLI with the right resume flag. The
 /// session's profile (profileId, "" for none) governs which credentials are
 /// injected (least privilege) and the container's network access.
+///
+/// `userId` is passed explicitly (captured on the request thread by the
+/// caller) because this async body runs on a worker thread, where the
+/// per-request thread-local identity in CloudAgents.Auth does not flow —
+/// reading currentUserId() here would silently resolve the wrong tenant.
 pub async func createRunnerContainer(
   client: in DockerClient,
   repoUrl: in String,
@@ -78,9 +82,9 @@ pub async func createRunnerContainer(
   model: in String,
   nativeSessionId: in String,
   profileId: in String,
+  userId: in String,
 ): Result[String, String] {
   val workspaceVolume = "session-" + sessionId + "-workspace"
-  val userId = CloudAgents.Auth.currentUserId()
 
   var envs = [
     "PROMPT=" + prompt,
@@ -180,12 +184,14 @@ pub async func deleteRunnerContainer(client: in DockerClient, containerId: in St
 /// the session's stored container id. A delete failure is logged (not fatal)
 /// rather than silently dropped (#42) — the run's own outcome is decided by the
 /// caller. Factored out of the three identical cleanup sites below (#322).
-async func cleanupRunnerContainer(client: in DockerClient, containerId: in String, sessionId: in String): Unit {
+/// `userId` is explicit for the same worker-thread reason as
+/// createRunnerContainer.
+async func cleanupRunnerContainer(client: in DockerClient, containerId: in String, sessionId: in String, userId: in String): Unit {
   match await deleteRunnerContainer(client, containerId) {
     case Ok(_) -> ()
     case Err(e) -> println("WARNING: failed to remove container " + containerId + ": " + e)
   }
-  val _ = CloudAgents.SessionStore.clearSessionContainerIfMatches(sessionId, containerId)
+  val _ = CloudAgents.SessionStore.clearSessionContainerIfMatchesFor(sessionId, userId, containerId)
 }
 
 /// Retrieve output logs of the runner container.
@@ -238,7 +244,9 @@ async func partialContainerLogsAsync(containerId: in String, cell: in ResultCell
   }
 }
 
-/// Run a session message synchronously by orchestrating async container actions.
+/// Run a session message synchronously by orchestrating async container
+/// actions. `userId` must be the request's authenticated identity, captured
+/// on the request thread — the async body cannot read it ambiently.
 pub func runSessionMessage(
   repoUrl: in String,
   branch: in String,
@@ -248,9 +256,10 @@ pub func runSessionMessage(
   model: in String,
   nativeSessionId: in String,
   profileId: in String,
+  userId: in String,
 ): Result[String, String] {
   val cell = ResultCell(isSuccess = false, output = "", error = "")
-  val t = runSessionMessageAsync(repoUrl, branch, prompt, sessionId, harness, model, nativeSessionId, profileId, cell)
+  val t = runSessionMessageAsync(repoUrl, branch, prompt, sessionId, harness, model, nativeSessionId, profileId, userId, cell)
   val completed = taskWaitMs(t, 1800000) // 30-minute hard cap
   if not completed {
     return Err(error = "Container run timed out after 30 minutes")
@@ -276,12 +285,13 @@ async func runSessionMessageAsync(
   model: in String,
   nativeSessionId: in String,
   profileId: in String,
+  userId: in String,
   cell: in ResultCell,
 ): Unit {
   // One client for the whole create-start-wait-logs-delete lifecycle below,
   // instead of a fresh client per call (#372).
   val client = dockerClient()
-  val createResult = await createRunnerContainer(client, repoUrl, branch, prompt, sessionId, harness, model, nativeSessionId, profileId)
+  val createResult = await createRunnerContainer(client, repoUrl, branch, prompt, sessionId, harness, model, nativeSessionId, profileId, userId)
   val containerId = match createResult {
     case Ok(id) -> id
     case Err(msg) -> {
@@ -293,7 +303,7 @@ async func runSessionMessageAsync(
 
   // Persist container ID to the session store (best-effort: the run matters
   // more than the bookkeeping).
-  val _ = CloudAgents.SessionStore.updateSessionContainer(sessionId, containerId)
+  val _ = CloudAgents.SessionStore.updateSessionContainerFor(sessionId, userId, containerId)
 
   val startResult = await startRunnerContainer(client, containerId)
   match startResult {
@@ -302,7 +312,7 @@ async func runSessionMessageAsync(
       cell.isSuccess = false
       cell.error = msg
       // Best-effort cleanup: remove the container even if start failed.
-      await cleanupRunnerContainer(client, containerId, sessionId)
+      await cleanupRunnerContainer(client, containerId, sessionId, userId)
       return ()
     }
   }
@@ -314,7 +324,7 @@ async func runSessionMessageAsync(
   match waitResult {
     case Ok(_) -> ()
     case Err(msg) -> {
-      await cleanupRunnerContainer(client, containerId, sessionId)
+      await cleanupRunnerContainer(client, containerId, sessionId, userId)
       cell.isSuccess = false
       cell.error = msg
       return ()
@@ -325,7 +335,7 @@ async func runSessionMessageAsync(
 
   // Always remove the ephemeral container after the run. Session state
   // (workspace and home volumes) persists independently of the container.
-  await cleanupRunnerContainer(client, containerId, sessionId)
+  await cleanupRunnerContainer(client, containerId, sessionId, userId)
 
   match logsResult {
     case Ok(logs) -> {

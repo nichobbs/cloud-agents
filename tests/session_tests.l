@@ -160,8 +160,10 @@ test "Test Session Store CRUD Operations" {
     case None -> assertTrue(false, "session should exist in store")
   }
 
-  // 3. Update container ID
-  mustUnit(updateSessionContainer(sessionId, "container-abc"))
+  // 3. Update container ID ("default" = the operator identity addSession
+  // stored the session under on this test thread; the explicit-owner form is
+  // the only one — see #426)
+  mustUnit(updateSessionContainerFor(sessionId, "default", "container-abc"))
   match mustOptSession(getSession(sessionId)) {
     case Some(s) -> verifyContainerUpdate(s)
     case None -> assertTrue(false, "session should still exist in store")

@@ -27,6 +27,27 @@ function normalisePrompt(p: Prompt): Prompt {
 }
 
 export const api = {
+  // ─── GitHub OAuth ───────────────────────────────────────────────────────────
+
+  /** Whether the server has a GitHub OAuth app configured, and its client id. */
+  getAuthConfig: async (): Promise<{ configured: boolean; clientId: string }> => {
+    const res = await fetch(`${BASE}/api/auth/github/config`);
+    if (!res.ok) throw new Error(`${res.status} ${await res.text()}`);
+    const body = (await res.json()) as { configured?: string; clientId?: string };
+    return { configured: body.configured === 'true', clientId: body.clientId ?? '' };
+  },
+
+  /** Swap the OAuth callback code for the user's token (+ identity). */
+  exchangeCode: async (code: string): Promise<{ token: string; login: string; userId: string }> => {
+    const res = await fetch(`${BASE}/api/auth/github/exchange`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ code }),
+    });
+    if (!res.ok) throw new Error(`${res.status} ${await res.text()}`);
+    return res.json() as Promise<{ token: string; login: string; userId: string }>;
+  },
+
   /** Server-side session list (`GET /api/sessions`). Newer backends include
    *  status/createdAt/lastMessageAt (epoch-millis strings); older ones omit
    *  them, so all are optional here. */

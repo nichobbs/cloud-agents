@@ -254,6 +254,11 @@ pub func sendMessage(id: in String, req: in SendMessageRequest): Result[String, 
     return Err(Web.badRequest("text is too long (max " + toString(maxPromptLen) + " characters)"))
   }
 
+  // Capture the request's identity once, on the request thread: the container
+  // run below executes on async worker threads where the thread-local
+  // identity does not flow, so it must travel as an explicit parameter.
+  val userId = CloudAgents.Auth.currentUserId()
+
   val maybeSession = match getSession(id) {
     case Ok(m) -> m
     case Err(e) -> return Err(Web.internalError("session lookup failed: " + CloudAgents.Sqlite.dbErrorMessage(e)))
@@ -312,7 +317,7 @@ pub func sendMessage(id: in String, req: in SendMessageRequest): Result[String, 
       // below (decryptedCredentialsForProfile and profileNetworkPolicy).
       var harness = session.harness
       if profileId.length > 0 {
-        match CloudAgents.Repository.getProfile(profileId, CloudAgents.Auth.currentUserId()) {
+        match CloudAgents.Repository.getProfile(profileId, userId) {
           case Ok(Some(p)) -> if p.harness.length > 0 { harness = p.harness }
           case Ok(None) -> ()
           case Err(_) -> ()
@@ -321,7 +326,7 @@ pub func sendMessage(id: in String, req: in SendMessageRequest): Result[String, 
 
       // Record the run in history (status 'running'). Best-effort bookkeeping:
       // a failure here must not stop the run, so we proceed with an empty run id.
-      val runId = match CloudAgents.Repository.recordRunStart(id, CloudAgents.Auth.currentUserId(), req.text, harness, session.model) {
+      val runId = match CloudAgents.Repository.recordRunStart(id, userId, req.text, harness, session.model) {
         case Ok(rid) -> rid
         case Err(_) -> ""
       }
@@ -334,7 +339,8 @@ pub func sendMessage(id: in String, req: in SendMessageRequest): Result[String, 
         harness = harness,
         model = session.model,
         nativeSessionId = session.nativeSessionId,
-        profileId = profileId
+        profileId = profileId,
+        userId = userId
       )
 
       // Frame the captured container output as a Server-Sent Events stream:
@@ -349,12 +355,12 @@ pub func sendMessage(id: in String, req: in SendMessageRequest): Result[String, 
       match runResult {
         case Ok(logs) -> {
           if runId.length > 0 {
-            val _ = CloudAgents.Repository.recordRunEnd(runId, CloudAgents.Auth.currentUserId(), "succeeded")
+            val _ = CloudAgents.Repository.recordRunEnd(runId, userId, "succeeded")
             // Enqueue a run-completion webhook event (best-effort outbox). Only
             // when we actually have a run id — recordRunStart may have failed,
             // leaving runId empty, and an event with no run_id is useless to the
             // deliverer (#256). Same guard as recordRunEnd above.
-            val _ = CloudAgents.Repository.enqueueWebhookEvent(CloudAgents.Auth.currentUserId(), id, runId, "succeeded")
+            val _ = CloudAgents.Repository.enqueueWebhookEvent(userId, id, runId, "succeeded")
           }
           match CloudAgents.Repository.addMessage(id, "agent", logs) {
             case Ok(m) -> return Ok(value = CloudAgents.Streaming.formatLogsAsSseWithId(logs, m.id))
@@ -369,9 +375,9 @@ pub func sendMessage(id: in String, req: in SendMessageRequest): Result[String, 
         }
         case Err(err) -> {
           if runId.length > 0 {
-            val _ = CloudAgents.Repository.recordRunEnd(runId, CloudAgents.Auth.currentUserId(), "failed")
+            val _ = CloudAgents.Repository.recordRunEnd(runId, userId, "failed")
             // Gated on a real run id for the same reason as the success path (#256).
-            val _ = CloudAgents.Repository.enqueueWebhookEvent(CloudAgents.Auth.currentUserId(), id, runId, "failed")
+            val _ = CloudAgents.Repository.enqueueWebhookEvent(userId, id, runId, "failed")
           }
           return Err(Web.internalError("Failed to execute message: " + err))
         }

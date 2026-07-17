@@ -2,6 +2,7 @@ package CloudAgents.Auth
 
 import Std.Core
 import CloudAgents.Text
+import extern System.String as DotNetString
 
 /// Phase 3 groundwork: GitHub-OAuth-based authentication helpers.
 ///
@@ -190,13 +191,59 @@ pub func ownsResource(authedUserId: in String, ownerUserId: in String): Bool {
   return authedUserId == ownerUserId
 }
 
-/// The identity that owns per-user data (prompts, credentials, sessions) for
-/// the current request. Static-token phase: one operator identity for the
-/// whole deployment. The GitHub-OAuth follow-up replaces this body with the
-/// id of the validated bearer token's user — every schema and query is
-/// already scoped by this value, so that change stays contained here.
-pub func currentUserId(): String {
+// ─── Per-request identity ─────────────────────────────────────────────────────
+//
+// The middleware authenticates each request and stamps the resolved user id
+// into a named thread-data slot before dispatching the handler; everything
+// downstream reads it back via currentUserId(). Thread data (not a plain
+// package-level var) because Lyric.Web dispatches requests concurrently — a
+// shared var would let one request's identity bleed into another's queries.
+//
+// The whole request pipeline (middleware + handler + repository calls) runs
+// synchronously on one thread, so thread data is sound there. It does NOT
+// flow onto the worker threads Docker's async runs execute on — which is why
+// the container path takes an explicit userId parameter, captured on the
+// request thread (see CloudAgents.Docker.runSessionMessage), instead of
+// reading this ambient value.
+extern type DataSlot = "System.LocalDataStoreSlot"
+
+@externTarget("System.Threading.Thread.GetNamedDataSlot")
+func getNamedDataSlot(name: in String): DataSlot = ()
+
+// Thread.SetData's parameter is object; passing String binds fine — the same
+// assignability sqlite_driver.l relies on for Array.SetValue.
+@externTarget("System.Threading.Thread.SetData")
+func threadSetData(slot: in DataSlot, data: in String): Unit = ()
+
+// Returns null when nothing was stored on this thread; declared String and
+// null-checked via DotNetString, the same pattern main.l uses for
+// GetEnvironmentVariable.
+@externTarget("System.Threading.Thread.GetData")
+func threadGetData(slot: in DataSlot): String = ""
+
+/// The single-operator identity: static-token auth and unauthenticated-open
+/// deployments resolve to this, exactly as before OAuth existed.
+pub func operatorUserId(): String {
   return "default"
+}
+
+/// Stamp the authenticated user id for the current request's thread. Called
+/// by the middleware on every allowed request (so a pooled thread can never
+/// leak the previous request's identity into this one).
+pub func setCurrentUserId(userId: in String): Unit {
+  threadSetData(getNamedDataSlot("cloud-agents-current-user"), userId)
+}
+
+/// The identity that owns per-user data (prompts, credentials, sessions) for
+/// the current request: whatever the middleware stamped for this thread, or
+/// the operator identity when nothing was (tests, startup code, static-token
+/// deployments). Every schema and query is scoped by this value.
+pub func currentUserId(): String {
+  val v = threadGetData(getNamedDataSlot("cloud-agents-current-user"))
+  if DotNetString.IsNullOrEmpty(v) {
+    return operatorUserId()
+  }
+  return v
 }
 
 // ─── Static-token authentication ──────────────────────────────────────────────
@@ -243,6 +290,22 @@ pub union AuthOutcome {
   case Denied(error: AuthError)
 }
 
+// Constructor helpers for other packages (CloudAgents.OAuth): union-case
+// construction from outside the declaring package is in the same risk family
+// as the package-qualified record-construction runtime failure documented in
+// docs/lyric/gotchas.md, so cross-package callers go through these instead.
+pub func allowedOutcome(userId: in String): AuthOutcome {
+  return Allowed(userId = userId)
+}
+
+pub func deniedOutcome(error: in AuthError): AuthOutcome {
+  return Denied(error = error)
+}
+
+pub func invalidTokenError(): AuthError {
+  return InvalidToken
+}
+
 /// Decide whether a request bearing `authHeaderValue` may proceed, given the
 /// configured `apiToken`.
 ///
@@ -253,14 +316,21 @@ pub union AuthOutcome {
 /// - A configured token requires a well-formed bearer header whose token
 ///   matches in constant time.
 pub func authorize(authHeaderValue: in String, apiToken: in String): AuthOutcome {
+  // Both Allowed arms resolve the OPERATOR identity explicitly — never
+  // currentUserId(). currentUserId() reads the per-thread stamp left by the
+  // *previous* request on a pooled thread, so reading it while deciding this
+  // request's identity would let an unauthenticated (open-access) or
+  // static-token request silently inherit an unrelated OAuth user's identity
+  // (#420). The stamp is only ever written from an outcome, after this
+  // decision.
   if apiToken.length == 0 {
-    return Allowed(userId = currentUserId())
+    return Allowed(userId = operatorUserId())
   }
   match extractBearerToken(authHeaderValue) {
     case None -> return Denied(error = MissingToken)
     case Some(token) -> {
       if constantTimeEquals(token, apiToken) {
-        return Allowed(userId = currentUserId())
+        return Allowed(userId = operatorUserId())
       }
       return Denied(error = InvalidToken)
     }
@@ -370,6 +440,23 @@ pub func githubLoginFromJson(json: in String): String {
 /// already scoped by it, so the switch stays contained.
 pub func userIdForGitHubId(githubId: in String): String {
   return "gh-" + githubId
+}
+
+/// Inverse of userIdForGitHubId: the raw GitHub numeric id from a per-tenant
+/// user id, or "" when the id is not a GitHub identity. Lets the cached-token
+/// path re-apply the whitelist (a pure env check) on every hit, so removing a
+/// user from CLOUD_AGENTS_WHITELIST takes effect on their next request
+/// instead of after the cache TTL (#424).
+pub func githubIdFromUserId(userId: in String): String {
+  val prefix = "gh-"
+  if userId.length <= prefix.length {
+    return ""
+  }
+  val head = userId.substring(0, prefix.length)
+  if head != prefix {
+    return ""
+  }
+  return userId.substring(prefix.length, userId.length - prefix.length)
 }
 
 /// Access decision for a validated GitHub identity against the whitelist. A

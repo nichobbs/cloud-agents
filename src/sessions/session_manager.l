@@ -616,9 +616,17 @@ pub func getSession(sessionId: in String): Result[Option[AgentSession], CloudAge
   return Ok(value = Some(value = rowToSession(CloudAgents.Sqlite.getRowArrayValue(rows, 0))))
 }
 
-pub func updateSessionContainer(sessionId: in String, containerId: in String): Result[Unit, CloudAgents.Sqlite.DbError] {
+// The two container-bookkeeping writes below run on Docker's async worker
+// threads (see CloudAgents.Docker), where the per-request thread-local
+// identity does NOT flow — so they take the owner explicitly, captured on the
+// request thread. Deliberately NO parameterless ambient-identity forms: they
+// were dead in production and an invitation to reintroduce the
+// wrong-tenant-on-a-worker-thread bug (#426).
+pub func updateSessionContainerFor(
+  sessionId: in String, userId: in String, containerId: in String
+): Result[Unit, CloudAgents.Sqlite.DbError] {
   CloudAgents.Sqlite.execute(
-    CloudAgents.Db.updateSessionContainerSql(sessionId, CloudAgents.Auth.currentUserId(), containerId)
+    CloudAgents.Db.updateSessionContainerSql(sessionId, userId, containerId)
   )?
   return Ok(value = ())
 }
@@ -626,9 +634,11 @@ pub func updateSessionContainer(sessionId: in String, containerId: in String): R
 /// Compare-and-clear the container id: only clears it if it still equals
 /// `containerId`, so a late-finishing orphaned run can't wipe the container id a
 /// newer run for the same session has since stored (#45).
-pub func clearSessionContainerIfMatches(sessionId: in String, containerId: in String): Result[Unit, CloudAgents.Sqlite.DbError] {
+pub func clearSessionContainerIfMatchesFor(
+  sessionId: in String, userId: in String, containerId: in String
+): Result[Unit, CloudAgents.Sqlite.DbError] {
   CloudAgents.Sqlite.execute(
-    CloudAgents.Db.clearSessionContainerIfMatchesSql(sessionId, CloudAgents.Auth.currentUserId(), containerId)
+    CloudAgents.Db.clearSessionContainerIfMatchesSql(sessionId, userId, containerId)
   )?
   return Ok(value = ())
 }
