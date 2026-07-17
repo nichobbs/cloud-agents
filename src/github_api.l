@@ -106,17 +106,30 @@ func charFromCode(code: in Int): String = ()
 
 val requestTimeoutMillis = 15000
 
+// GitHub's exchange and /user responses are ~1-2 KB; anything past this cap
+// is not a response this module should be parsing (#423).
+val maxResponseBytes = 65536
+
 /// Read a response stream to a string, one byte per char (see module doc for
-/// the deliberate ASCII-only guarantee). NB: `out` is a reserved keyword in
-/// Lyric (P0051), hence `acc`.
+/// the deliberate ASCII-only guarantee), capped at maxResponseBytes. A
+/// two-level accumulator (flush a small chunk into the result every 1 KB)
+/// keeps the concatenation cost linear-ish instead of O(n²) (#423). NB:
+/// `out` is a reserved keyword in Lyric (P0051), hence `acc`.
 func readAll(s: in NetStream): String {
   var acc = ""
+  var chunk = ""
+  var total = 0
   var b = streamReadByte(s)
-  while b >= 0 {
-    acc = acc + charFromCode(b)
+  while b >= 0 and total < maxResponseBytes {
+    chunk = chunk + charFromCode(b)
+    total = total + 1
+    if chunk.length >= 1024 {
+      acc = acc + chunk
+      chunk = ""
+    }
     b = streamReadByte(s)
   }
-  return acc
+  return acc + chunk
 }
 
 /// GET `url` with an Authorization bearer header. GitHub's API additionally
@@ -132,10 +145,17 @@ pub func httpGetWithBearer(url: in String, bearerToken: in String, userAgent: in
     setAccept(req, "application/json")
     headerSet(getHeaders(req), "Authorization", "Bearer " + bearerToken)
     val resp = getResponse(req)
+    // defer runs on ALL scope exits, including a Bug thrown mid-read, so the
+    // response/stream can't leak on exception paths (#421). Reverse
+    // declaration order disposes the stream before the response.
+    defer {
+      responseDispose(resp)
+    }
     val stream = getResponseStream(resp)
+    defer {
+      streamDispose(stream)
+    }
     val body = readAll(stream)
-    streamDispose(stream)
-    responseDispose(resp)
     Ok(value = body)
   } catch Bug as b {
     Err(error = "GET " + url + " failed: " + b.message)
@@ -154,13 +174,20 @@ pub func httpPostForm(url: in String, formBody: in String, userAgent: in String)
     setContentType(req, "application/x-www-form-urlencoded")
     val bytes = encGetBytes(utf8(), formBody)
     val reqStream = getRequestStream(req)
+    // The request stream must be closed BEFORE GetResponse (it finalises the
+    // request body), so it gets an explicit dispose rather than a defer; the
+    // response/stream pair defers guard the exception paths (#421).
     streamWrite(reqStream, bytes, 0, bytes.length.toInt())
     streamDispose(reqStream)
     val resp = getResponse(req)
+    defer {
+      responseDispose(resp)
+    }
     val respStream = getResponseStream(resp)
+    defer {
+      streamDispose(respStream)
+    }
     val body = readAll(respStream)
-    streamDispose(respStream)
-    responseDispose(resp)
     Ok(value = body)
   } catch Bug as b {
     Err(error = "POST " + url + " failed: " + b.message)

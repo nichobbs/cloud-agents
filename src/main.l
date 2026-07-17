@@ -57,6 +57,10 @@ pub record AuthMiddleware {}
 impl Web.Middleware for AuthMiddleware {
   func wrap(req: in Web.Request, next: in Web.Handler): Web.Response {
     if req.path == "/api/health" or req.path.startsWith("/api/auth/") {
+      // These handlers never read the per-request identity, but stamp the
+      // operator id anyway so a pooled thread can't carry a previous
+      // request's identity into any future code on these paths (#420).
+      CloudAgents.Auth.setCurrentUserId(CloudAgents.Auth.operatorUserId())
       return next.handle(req)
     }
     var apiToken = Env.GetEnvironmentVariable("CLOUD_AGENTS_API_TOKEN")

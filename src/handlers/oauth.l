@@ -165,13 +165,20 @@ pub func exchangeCode(req: in ExchangeRequest): Result[TokenGrant, Web.ApiError]
   if not isSafeOAuthCode(req.code) {
     return Err(Web.badRequest("code is missing or not a valid GitHub authorization code"))
   }
+  // The exchange endpoint is reachable unauthenticated by design, so raw
+  // transport errors (which can carry internal host/proxy detail) are logged
+  // server-side and callers get a generic message — same rule as
+  // checkHealth's DB probe (#55, review #422).
   val body = match CloudAgents.GitHubApi.httpPostForm(
     exchangeUrl(),
     exchangeFormBody(oauthClientId(), oauthClientSecret(), req.code),
     userAgent()
   ) {
     case Ok(b) -> b
-    case Err(e) -> return Err(Web.internalError("token exchange with GitHub failed: " + e))
+    case Err(e) -> {
+      println("WARNING: GitHub token exchange failed: " + e)
+      return Err(Web.internalError("token exchange with GitHub failed"))
+    }
   }
   val token = accessTokenFromExchangeJson(body)
   if token.length == 0 {
@@ -181,7 +188,10 @@ pub func exchangeCode(req: in ExchangeRequest): Result[TokenGrant, Web.ApiError]
   }
   val identity = match fetchIdentity(token) {
     case Ok(idn) -> idn
-    case Err(e) -> return Err(Web.internalError("validating the new token failed: " + e))
+    case Err(e) -> {
+      println("WARNING: validating a freshly exchanged GitHub token failed: " + e)
+      return Err(Web.internalError("validating the new token with GitHub failed"))
+    }
   }
   match CloudAgents.Auth.authorizeGitHub(identity.githubId, whitelistCsv()) {
     case Allowed(userId) -> {

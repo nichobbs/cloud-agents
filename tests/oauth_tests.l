@@ -134,6 +134,23 @@ test "authenticateRequest keeps static-token semantics" {
   }
 }
 
+test "open-access decision never inherits a stale thread identity (#420)" {
+  clearOAuthEnv()
+  // Simulate a pooled thread that just served an OAuth user: the per-thread
+  // stamp is still set when the next (unauthenticated) request's decision
+  // runs. The decision must resolve the operator identity, not the stale one.
+  setCurrentUserId("gh-99999")
+  match authenticateRequest("/api/sessions", "", "") {
+    case Allowed(uid) -> assertEqual(uid, operatorUserId(), "open access resolves the operator, never the stale stamp")
+    case Denied(_) -> assertTrue(false, "open access should be allowed")
+  }
+  match authenticateRequest("/api/sessions", "Bearer s3cret", "s3cret") {
+    case Allowed(uid) -> assertEqual(uid, operatorUserId(), "static match resolves the operator, never the stale stamp")
+    case Denied(_) -> assertTrue(false, "static match should be allowed")
+  }
+  setCurrentUserId("")
+}
+
 // ── Token-validation cache (live DB, no network) ─────────────────────────────
 
 test "cached bearer authenticates without a network round trip" {

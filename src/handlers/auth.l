@@ -316,14 +316,21 @@ pub func invalidTokenError(): AuthError {
 /// - A configured token requires a well-formed bearer header whose token
 ///   matches in constant time.
 pub func authorize(authHeaderValue: in String, apiToken: in String): AuthOutcome {
+  // Both Allowed arms resolve the OPERATOR identity explicitly — never
+  // currentUserId(). currentUserId() reads the per-thread stamp left by the
+  // *previous* request on a pooled thread, so reading it while deciding this
+  // request's identity would let an unauthenticated (open-access) or
+  // static-token request silently inherit an unrelated OAuth user's identity
+  // (#420). The stamp is only ever written from an outcome, after this
+  // decision.
   if apiToken.length == 0 {
-    return Allowed(userId = currentUserId())
+    return Allowed(userId = operatorUserId())
   }
   match extractBearerToken(authHeaderValue) {
     case None -> return Denied(error = MissingToken)
     case Some(token) -> {
       if constantTimeEquals(token, apiToken) {
-        return Allowed(userId = currentUserId())
+        return Allowed(userId = operatorUserId())
       }
       return Denied(error = InvalidToken)
     }
