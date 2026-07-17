@@ -22,7 +22,8 @@ WORKDIR /workspace
 RUN chown codex-user:codex-user /workspace
 
 COPY entrypoint-codex.sh /usr/local/bin/entrypoint.sh
-RUN chmod +x /usr/local/bin/entrypoint.sh
+COPY reconcile-repos.sh /usr/local/bin/reconcile-repos.sh
+RUN chmod +x /usr/local/bin/entrypoint.sh /usr/local/bin/reconcile-repos.sh
 
 USER codex-user
 ENV HOME=/home/codex-user

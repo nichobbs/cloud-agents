@@ -152,6 +152,7 @@ jobs:
             docker/entrypoint-codex.sh \
             docker/entrypoint-opencode.sh \
             docker/entrypoint-gemini.sh \
+            docker/reconcile-repos.sh \
             deploy/install-docker.sh \
             deploy/backup.sh \
             scripts/verify.sh \
@@ -161,6 +162,7 @@ jobs:
             scripts/upload-credentials.sh \
             scripts/run-api.sh \
             scripts/e2e-http.sh \
+            scripts/test-reconcile-repos.sh \
             scripts/repro-compiler-bug.sh \
             scripts/repro-web-bug.sh \
             scripts/repro-web-request-crash.sh \
@@ -173,6 +175,12 @@ jobs:
           for f in docker/mcp.json.template docker/settings.json.template; do
             python3 -m json.tool "$f" > /dev/null && echo "ok: $f"
           done
+
+      # Regression test for the shared multi-repo reconcile/prune script
+      # (docker/reconcile-repos.sh, #471). Uses a mock `git` against a temp
+      # workspace — no Docker, no network, no Lyric toolchain.
+      - name: Test reconcile-repos.sh
+        run: ./scripts/test-reconcile-repos.sh
 
       # Build the entire server. Lyric.Web/Lyric.Docker/Std.Logging/
       # Microsoft.Data.Sqlite all restore from NuGet — see docs/BUILD.md.

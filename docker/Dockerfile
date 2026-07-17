@@ -31,9 +31,10 @@ WORKDIR /workspace
 RUN chown claude-user:claude-user /workspace
 
 COPY entrypoint.sh /usr/local/bin/entrypoint.sh
+COPY reconcile-repos.sh /usr/local/bin/reconcile-repos.sh
 COPY mcp.json.template /etc/claude/mcp.json.template
 COPY settings.json.template /etc/claude/settings.json.template
-RUN chmod +x /usr/local/bin/entrypoint.sh
+RUN chmod +x /usr/local/bin/entrypoint.sh /usr/local/bin/reconcile-repos.sh
 
 USER claude-user
 ENV HOME=/home/claude-user
