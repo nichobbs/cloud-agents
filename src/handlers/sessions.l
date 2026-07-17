@@ -136,6 +136,16 @@ pub record SendMessageRequest {
   pub text: String
 }
 
+@generate(Json)
+pub record AddRepoRequest {
+  pub repoUrl: String
+  pub branch: String
+}
+
+/// Upper bound on repositories linked to one session, so the EXTRA_REPOS env
+/// value passed to a container stays bounded.
+val maxSessionRepos = 20
+
 
 /// Create a persistent session workspace.
 pub func createSession(req: in CreateSessionRequest): Result[CreateSessionResponse, Web.ApiError] {
@@ -242,6 +252,127 @@ pub func listSessions(): Result[String, Web.ApiError] {
   }
 }
 
+// ── Linked repositories (multi-repo sessions) ────────────────────────────────
+//
+// A session may have additional repositories linked beyond its primary repo, so
+// an agent can work across several checkouts in one run. These handlers touch
+// only CloudAgents.Repository + CloudAgents.SessionStore (no CloudAgents.Docker),
+// so — unlike sendMessage — they can be invoked directly from the test harness.
+
+/// The extra repositories linked to a session (beyond its primary repo). 404
+/// for an unknown/foreign session, consistent with the other session
+/// sub-resource endpoints.
+pub func listSessionReposHandler(id: in String): Result[SessionRepoList, Web.ApiError] {
+  if id.length == 0 {
+    return Err(Web.badRequest("id is required"))
+  }
+  match getSession(id) {
+    case Ok(Some(_)) -> ()
+    case Ok(None) -> return Err(Web.notFound("Session not found"))
+    case Err(e) -> return Err(Web.internalError("session lookup failed: " + CloudAgents.Sqlite.dbErrorMessage(e)))
+  }
+  match CloudAgents.Repository.listSessionRepos(id) {
+    case Ok(repos) -> return Ok(SessionRepoList(repos = repos))
+    case Err(e) -> return Err(Web.internalError("failed to list linked repositories: " + CloudAgents.Sqlite.dbErrorMessage(e)))
+  }
+}
+
+/// Link an additional repository to a session. Same URL / host / branch
+/// validation as session creation, except the branch may be empty (meaning the
+/// repo's default branch). 404 unknown session; 400 invalid input, duplicate,
+/// or over the per-session cap.
+pub func addSessionRepoHandler(id: in String, req: in AddRepoRequest): Result[SessionRepo, Web.ApiError] {
+  if id.length == 0 {
+    return Err(Web.badRequest("id is required"))
+  }
+  if req.repoUrl.length == 0 {
+    return Err(Web.badRequest("repoUrl is required"))
+  }
+  if not isHttpsUrl(req.repoUrl) {
+    return Err(Web.badRequest("repoUrl must use the https:// scheme"))
+  }
+  if not isSafeRepoUrl(req.repoUrl) {
+    return Err(Web.badRequest("repoUrl contains invalid characters or is too long"))
+  }
+  // Reject internal/loopback/private targets before the runner ever clones the
+  // repo (SSRF, #33), exactly as createSession does for the primary repo.
+  if isBlockedRepoHost(req.repoUrl) {
+    return Err(Web.badRequest("repoUrl must not point at an internal, loopback, or private host"))
+  }
+  // Branch is optional for a linked repo: empty means the repo's default
+  // branch (the entrypoint clones without --branch). A non-empty branch must
+  // still be a valid git ref name.
+  if req.branch.length > 0 and not isSafeBranchName(req.branch) {
+    return Err(Web.badRequest("branch is not a valid git branch name"))
+  }
+  // The session must exist and be owned by the caller (getSession is owner-scoped).
+  match getSession(id) {
+    case Ok(Some(_)) -> ()
+    case Ok(None) -> return Err(Web.notFound("Session not found"))
+    case Err(e) -> return Err(Web.internalError("session lookup failed: " + CloudAgents.Sqlite.dbErrorMessage(e)))
+  }
+  // Cap the number of linked repos (keeps the EXTRA_REPOS env bounded).
+  match CloudAgents.Repository.countSessionRepos(id) {
+    case Ok(n) -> if n >= maxSessionRepos { return Err(Web.badRequest("too many linked repositories (max " + toString(maxSessionRepos) + ")")) }
+    case Err(e) -> return Err(Web.internalError("failed to count linked repositories: " + CloudAgents.Sqlite.dbErrorMessage(e)))
+  }
+  // Refuse a duplicate URL so a repo is never cloned twice into the workspace.
+  match CloudAgents.Repository.sessionRepoUrlExists(id, req.repoUrl) {
+    case Ok(exists) -> if exists { return Err(Web.badRequest("repository already linked to this session")) }
+    case Err(e) -> return Err(Web.internalError("failed to check linked repositories: " + CloudAgents.Sqlite.dbErrorMessage(e)))
+  }
+  match CloudAgents.Repository.addSessionRepo(id, req.repoUrl, req.branch) {
+    case Ok(repo) -> return Ok(repo)
+    case Err(e) -> return Err(Web.internalError("failed to link repository: " + CloudAgents.Sqlite.dbErrorMessage(e)))
+  }
+}
+
+/// Unlink a repository from a session. 404 for an unknown session or an unknown
+/// repo id under it.
+pub func deleteSessionRepoHandler(id: in String, repoId: in String): Result[Unit, Web.ApiError] {
+  if id.length == 0 {
+    return Err(Web.badRequest("id is required"))
+  }
+  if repoId.length == 0 {
+    return Err(Web.badRequest("repo id is required"))
+  }
+  match getSession(id) {
+    case Ok(Some(_)) -> ()
+    case Ok(None) -> return Err(Web.notFound("Session not found"))
+    case Err(e) -> return Err(Web.internalError("session lookup failed: " + CloudAgents.Sqlite.dbErrorMessage(e)))
+  }
+  match CloudAgents.Repository.deleteSessionRepo(id, repoId) {
+    case Ok(n) -> {
+      if n > 0 {
+        return Ok(())
+      }
+      return Err(Web.notFound("Linked repository not found"))
+    }
+    case Err(e) -> return Err(Web.internalError("failed to unlink repository: " + CloudAgents.Sqlite.dbErrorMessage(e)))
+  }
+}
+
+/// Build the EXTRA_REPOS env value from a session's linked repos: one
+/// `url|branch` entry per repo, space-separated. Values are pre-validated at
+/// link time (no spaces, quotes, or backslashes in a URL; git-ref-safe
+/// branches), so neither the space separators nor the '|' delimiter can ever
+/// appear inside a value — the entrypoint splits on them unambiguously. An
+/// empty branch is emitted as `url|`, which the entrypoint reads as "clone the
+/// default branch". pub so the formatting can be tested without invoking the
+/// Docker-referencing send path.
+pub func extraReposEnvValue(repos: in slice[CloudAgents.Repository.SessionRepo]): String {
+  var acc = ""
+  var i = 0
+  while i < repos.length {
+    if i > 0 {
+      acc = acc + " "
+    }
+    acc = acc + repos[i].repoUrl + "|" + repos[i].branch
+    i = i + 1
+  }
+  return acc
+}
+
 /// Accept user prompt, run container, and return output synchronously.
 pub func sendMessage(id: in String, req: in SendMessageRequest): Result[String, Web.ApiError] {
   if id.length == 0 {
@@ -258,6 +389,15 @@ pub func sendMessage(id: in String, req: in SendMessageRequest): Result[String, 
   // run below executes on async worker threads where the thread-local
   // identity does not flow, so it must travel as an explicit parameter.
   val userId = CloudAgents.Auth.currentUserId()
+
+  // Any repositories linked to this session travel to the container as a single
+  // EXTRA_REPOS env value, built here on the request thread for the same reason
+  // as userId. Best-effort: extra repos are additive, so a lookup failure just
+  // runs against the primary repo rather than failing the send.
+  val extraRepos = match CloudAgents.Repository.listSessionRepos(id) {
+    case Ok(rs) -> extraReposEnvValue(rs)
+    case Err(_) -> ""
+  }
 
   val maybeSession = match getSession(id) {
     case Ok(m) -> m
@@ -340,7 +480,8 @@ pub func sendMessage(id: in String, req: in SendMessageRequest): Result[String, 
         model = session.model,
         nativeSessionId = session.nativeSessionId,
         profileId = profileId,
-        userId = userId
+        userId = userId,
+        extraRepos = extraRepos
       )
 
       // Frame the captured container output as a Server-Sent Events stream:
@@ -719,6 +860,10 @@ pub func deleteSession(id: in String): Result[Unit, Web.ApiError] {
           case Err(err) -> return Err(Web.internalError("Failed to terminate container (session retained, retry delete): " + err))
         }
       }
+      // Drop any linked repositories first (best-effort: leftover rows are
+      // only reachable through this now-deleted session, so a failure here is
+      // harmless bookkeeping, not a blocker for the delete).
+      val _ = CloudAgents.Repository.deleteSessionReposForSession(id)
       // We already fetched and existence-checked the session above, so delete
       // the row directly rather than via removeSession (which would re-read it)
       // — avoids a redundant second lookup (#172).

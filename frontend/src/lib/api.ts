@@ -4,6 +4,14 @@ import type { Comment, Credential, Message, Profile, Prompt, Run, Todo, Webhook 
 
 const BASE = (import.meta.env['VITE_API_URL'] as string | undefined) ?? '';
 
+/** One repository linked to a session (multi-repo sessions). `branch` is '' for
+ *  the repo's default branch. */
+export interface SessionRepo {
+  id: string;
+  repoUrl: string;
+  branch: string;
+}
+
 /** One entry of GET /api/sessions. */
 export interface ServerSession {
   sessionId: string;
@@ -90,6 +98,40 @@ export const api = {
 
   deleteSession: async (sessionId: string): Promise<void> => {
     const res = await fetch(`${BASE}/api/sessions/${sessionId}`, {
+      method: 'DELETE',
+      headers: authHeaders(),
+    });
+    if (!res.ok) throw new Error(`${res.status} ${await res.text()}`);
+  },
+
+  // ─── Linked repositories (multi-repo sessions) ───────────────────────────────
+
+  /** Repositories linked to a session beyond its primary repo. Newer backends
+   *  only — an older one 404s these routes; callers treat a failure as "feature
+   *  unavailable" and hide the panel. */
+  listSessionRepos: async (sessionId: string): Promise<SessionRepo[]> => {
+    const res = await fetch(`${BASE}/api/sessions/${sessionId}/repos`, { headers: authHeaders() });
+    if (!res.ok) throw new Error(`${res.status} ${await res.text()}`);
+    const body = (await res.json()) as { repos?: SessionRepo[] };
+    return body.repos ?? [];
+  },
+
+  /** Link another repository to a session. `branch` may be '' (the repo's
+   *  default branch). Throws with the backend's message on invalid input,
+   *  duplicate, or over the per-session cap. */
+  addSessionRepo: async (sessionId: string, repoUrl: string, branch: string): Promise<SessionRepo> => {
+    const res = await fetch(`${BASE}/api/sessions/${sessionId}/repos`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', ...authHeaders() },
+      body: JSON.stringify({ repoUrl, branch }),
+    });
+    if (!res.ok) throw new Error(`${res.status} ${await res.text()}`);
+    return res.json() as Promise<SessionRepo>;
+  },
+
+  /** Unlink a repository from a session. */
+  removeSessionRepo: async (sessionId: string, repoId: string): Promise<void> => {
+    const res = await fetch(`${BASE}/api/sessions/${sessionId}/repos/${repoId}`, {
       method: 'DELETE',
       headers: authHeaders(),
     });

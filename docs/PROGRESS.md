@@ -117,6 +117,7 @@ design of each phase and `docs/BUILD.md` for build/verification notes.
 | SQLite schema | ✅ | `db_client.l` (`sessionsSchemaSql`) |
 | Volume naming | ✅ | `db_client.l` (`workspaceVolumeBindFor`, `homeVolumeBindFor`, `homeMountPathForHarness`; the never-wired Phase-3 draft helpers were removed as dead code, #443) |
 | Background sweep + concurrency control | ⬜ pending | needs `Std.Concurrency` + lyric-db wiring (runtime) |
+| Multi-repo sessions | ✅ added | `session_repos` table (migration 0008), `db_client.l`/`repository.l` CRUD, `sessions.l` (`list/add/deleteSessionRepoHandler`, `extraReposEnvValue`), routes `GET/POST /api/sessions/{id}/repos` + `DELETE …/{rid}`; `EXTRA_REPOS` threaded through `docker_manager.l` to all four entrypoints (clone into `/workspace/repos/<name>`); frontend `LinkedReposPanel` — an agent can work across several checkouts in one run |
 
 ## Phase 3 — Multi-Tenancy & Security 🟡 started
 

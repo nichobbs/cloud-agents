@@ -202,6 +202,25 @@ test "migration ledger SQL is well-formed" {
   assertTrue(recordMigrationSql("0001_init", "1000").contains("'0001_init'"), "record carries the version")
 }
 
+test "session-repo SQL builders are session-scoped and well-formed" {
+  assertTrue(sessionReposSchemaSql().contains("CREATE TABLE IF NOT EXISTS session_repos"), "session_repos ddl")
+  assertTrue(sessionReposSchemaSql().contains("repo_url TEXT NOT NULL"), "repo_url column")
+  assertTrue(sessionReposSessionIndexSql().contains("ON session_repos(session_id)"), "index on session_id")
+  val ins = insertSessionRepoSql("r1", "s1", "https://github.com/nic/repo", "main", "1000")
+  assertTrue(ins.startsWith("INSERT INTO session_repos"), "insert target")
+  assertTrue(ins.contains("'https://github.com/nic/repo'"), "repo url inlined")
+  assertTrue(selectSessionReposSql("s1").contains("WHERE session_id = 's1'"), "list scoped by session")
+  assertTrue(selectSessionReposSql("s1").contains("ORDER BY created_at ASC"), "linked repos oldest first")
+  assertTrue(countSessionReposSql("s1").contains("CAST(COUNT(*) AS TEXT)"), "count cast to text for GetString")
+  assertTrue(selectSessionRepoByUrlSql("s1", "u").contains("AND repo_url = 'u'"), "dup check by url")
+  // Delete is scoped by BOTH the repo id and the session, so a repo id can't be
+  // unlinked from another user's session.
+  val del = deleteSessionRepoSql("s1", "r1")
+  assertTrue(del.contains("id = 'r1'"), "delete by repo id")
+  assertTrue(del.contains("AND session_id = 's1'"), "delete scoped by session")
+  assertTrue(deleteSessionReposForSessionSql("s1").endsWith("session_id = 's1'"), "bulk delete scoped by session")
+}
+
 test "GitHub token-cache SQL is hash-keyed and expiry-aware" {
   assertTrue(githubTokenCacheSchemaSql().contains("token_hash TEXT PRIMARY KEY"), "cache keyed by token hash")
   val upsert = upsertGitHubTokenSql("h4sh", "gh-42", "octocat", "1000", "600000")

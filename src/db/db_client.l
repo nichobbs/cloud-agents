@@ -381,6 +381,74 @@ pub func selectSessionProfileIdSql(id: in String, userId: in String): String {
   return "SELECT profile_id FROM sessions WHERE id = " + sqlLiteral(id) + " AND user_id = " + sqlLiteral(userId)
 }
 
+// ─── Session repositories (multi-repo sessions) ─────────────────────────────
+//
+// Extra git repositories linked to a session beyond its primary repo_url, so an
+// agent can work across several checkouts in one run. Rows are reached only
+// through an owner-scoped session lookup in the handler (the same indirection
+// comments/todos rely on), so this table carries no user_id of its own —
+// ownership is enforced by the getSession() check the handler makes first. All
+// TEXT affinity; `branch` may be '' meaning the repo's default branch.
+/// DDL for the session-repositories table.
+pub func sessionReposSchemaSql(): String {
+  return "CREATE TABLE IF NOT EXISTS session_repos (" + "id TEXT PRIMARY KEY, " + "session_id TEXT NOT NULL, " +
+    "repo_url TEXT NOT NULL, " +
+    "branch TEXT NOT NULL, " +
+    "created_at TEXT NOT NULL)"
+}
+
+/// Index for the per-session lookups every session-repo query filters on.
+pub func sessionReposSessionIndexSql(): String {
+  return "CREATE INDEX IF NOT EXISTS idx_session_repos_session_id ON session_repos(session_id)"
+}
+
+/// INSERT a linked repository for a session.
+pub func insertSessionRepoSql(
+  id: in String, sessionId: in String, repoUrl: in String, branch: in String, createdAt: in String
+): String {
+  return "INSERT INTO session_repos (id, session_id, repo_url, branch, created_at) VALUES (" + sqlLiteral(id) + ", " +
+    sqlLiteral(sessionId) +
+    ", " +
+    sqlLiteral(repoUrl) +
+    ", " +
+    sqlLiteral(branch) +
+    ", " +
+    sqlLiteral(createdAt) +
+    ")"
+}
+
+/// SELECT a session's linked repositories, oldest first.
+pub func selectSessionReposSql(sessionId: in String): String {
+  return "SELECT id, session_id, repo_url, branch, created_at FROM session_repos " + "WHERE session_id = " +
+    sqlLiteral(sessionId) +
+    " ORDER BY created_at ASC"
+}
+
+/// COUNT a session's linked repositories (as TEXT for the GetString-only
+/// driver), so the handler can cap how many a session may carry.
+pub func countSessionReposSql(sessionId: in String): String {
+  return "SELECT CAST(COUNT(*) AS TEXT) FROM session_repos WHERE session_id = " + sqlLiteral(sessionId)
+}
+
+/// SELECT the id of a session's linked repo with a given URL (duplicate
+/// detection so re-linking the same repo returns 400, not a second clone).
+pub func selectSessionRepoByUrlSql(sessionId: in String, repoUrl: in String): String {
+  return "SELECT id FROM session_repos WHERE session_id = " + sqlLiteral(sessionId) + " AND repo_url = " +
+    sqlLiteral(repoUrl)
+}
+
+/// DELETE one linked repository from a session (scoped by session so a repo id
+/// can't be unlinked from another user's session).
+pub func deleteSessionRepoSql(sessionId: in String, repoId: in String): String {
+  return "DELETE FROM session_repos WHERE id = " + sqlLiteral(repoId) + " AND session_id = " + sqlLiteral(sessionId)
+}
+
+/// DELETE every linked repository for a session (cleanup when the session is
+/// deleted).
+pub func deleteSessionReposForSessionSql(sessionId: in String): String {
+  return "DELETE FROM session_repos WHERE session_id = " + sqlLiteral(sessionId)
+}
+
 // ─── Conversation transcript, comments and todos ───────────────────────────────
 //
 // These tables back the "addressable agent responses" feature: each user

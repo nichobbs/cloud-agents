@@ -83,6 +83,7 @@ pub async func createRunnerContainer(
   nativeSessionId: in String,
   profileId: in String,
   userId: in String,
+  extraRepos: in String,
 ): Result[String, String] {
   var envs = [
     "PROMPT=" + prompt,
@@ -92,6 +93,15 @@ pub async func createRunnerContainer(
     "MODEL=" + model,
     "NATIVE_SESSION_ID=" + nativeSessionId
   ]
+
+  // Additional repositories linked to this session (multi-repo sessions): a
+  // single space-separated "url|branch ..." value the entrypoint clones into
+  // /workspace/repos/<name>. Only set when non-empty so single-repo sessions
+  // pass no EXTRA_REPOS at all. Values are validated at link time, so they are
+  // safe to embed in the env value verbatim.
+  if extraRepos.length > 0 {
+    envs = envs.append("EXTRA_REPOS=" + extraRepos)
+  }
 
   // Inject the credentials the profile grants (least privilege): 'selected'
   // profiles inject only their named grants, 'all'/no-profile inject every
@@ -259,9 +269,10 @@ pub func runSessionMessage(
   nativeSessionId: in String,
   profileId: in String,
   userId: in String,
+  extraRepos: in String,
 ): Result[String, String] {
   val cell = ResultCell(isSuccess = false, output = "", error = "")
-  val t = runSessionMessageAsync(repoUrl, branch, prompt, sessionId, harness, model, nativeSessionId, profileId, userId, cell)
+  val t = runSessionMessageAsync(repoUrl, branch, prompt, sessionId, harness, model, nativeSessionId, profileId, userId, extraRepos, cell)
   val completed = taskWaitMs(t, 1800000) // 30-minute hard cap
   if not completed {
     return Err(error = "Container run timed out after 30 minutes")
@@ -288,12 +299,13 @@ async func runSessionMessageAsync(
   nativeSessionId: in String,
   profileId: in String,
   userId: in String,
+  extraRepos: in String,
   cell: in ResultCell,
 ): Unit {
   // One client for the whole create-start-wait-logs-delete lifecycle below,
   // instead of a fresh client per call (#372).
   val client = dockerClient()
-  val createResult = await createRunnerContainer(client, repoUrl, branch, prompt, sessionId, harness, model, nativeSessionId, profileId, userId)
+  val createResult = await createRunnerContainer(client, repoUrl, branch, prompt, sessionId, harness, model, nativeSessionId, profileId, userId, extraRepos)
   val containerId = match createResult {
     case Ok(id) -> id
     case Err(msg) -> {

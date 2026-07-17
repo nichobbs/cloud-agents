@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { Link, useLocation, useNavigate, useParams } from 'react-router-dom';
 import { GitHubPanel } from '../components/GitHubPanel';
+import { LinkedReposPanel } from '../components/LinkedReposPanel';
 import { MessageBlock } from '../components/MessageBlock';
 import { Terminal } from '../components/Terminal';
 import { useSessions } from '../context/SessionsContext';
@@ -732,6 +733,12 @@ export function SessionDetail() {
       </div>
 
       <GitHubPanel repoUrl={session.repoUrl} branch={session.branch} />
+
+      <LinkedReposPanel
+        sessionId={sessionId}
+        primaryRepoUrl={session.repoUrl}
+        primaryBranch={session.branch}
+      />
 
       {showRuns && (
         <div style={runsPanelStyle}>
