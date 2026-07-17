@@ -1,0 +1,89 @@
+name: Auto-merge
+
+# Merges a PR automatically once both of its required checks are green:
+#   - "Build & verify" (ci.yml's build/test job)
+#   - "claude-review" (claude-code-review.yml's job — already engineered to
+#     fail itself when the review:changes-required label is set; see that
+#     workflow's "Fail if changes are required" step)
+#
+# Deliberately does NOT rely on GitHub's native "required status checks" +
+# auto-merge feature: that needs branch-protection config and the repo's
+# "Allow auto-merge" toggle, neither of which this workflow assumes are set.
+# Instead it checks both named check runs itself via the API and merges
+# directly once they're both green — self-contained, no repo-settings
+# dependency. If branch protection does end up requiring something else
+# (e.g. human review approval), `gh pr merge` below simply fails and this
+# workflow logs a warning; it does not attempt to bypass that.
+#
+# check_suite events bundle every GitHub Actions workflow run for a given
+# commit into one suite, so "completed" fires only once everything
+# (ci.yml, claude-code-review.yml, etc.) has finished for that SHA — by
+# then both checks we care about are already in their final state.
+# `check_suite.pull_requests` is only populated for same-repo branches, so
+# fork PRs are (intentionally) never auto-merged by this workflow.
+on:
+  check_suite:
+    types: [completed]
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+
+concurrency:
+  group: auto-merge-${{ github.event.check_suite.head_sha || github.event.pull_request.head.sha }}
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+  pull-requests: write
+  checks: read
+
+jobs:
+  auto-merge:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Find candidate PR(s) for this event
+        id: find_prs
+        uses: actions/github-script@v7
+        with:
+          script: |
+            let prNumbers = [];
+            if (context.eventName === 'check_suite') {
+              prNumbers = (context.payload.check_suite.pull_requests || []).map(pr => pr.number);
+            } else if (context.eventName === 'pull_request') {
+              prNumbers = [context.payload.pull_request.number];
+            }
+            core.setOutput('prs', JSON.stringify(prNumbers));
+
+      - name: Evaluate and merge each candidate PR
+        if: steps.find_prs.outputs.prs != '[]'
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          PRS_JSON: ${{ steps.find_prs.outputs.prs }}
+        run: |
+          set -euo pipefail
+          for pr in $(echo "$PRS_JSON" | jq -r '.[]'); do
+            echo "== PR #$pr =="
+
+            info=$(gh pr view "$pr" --repo "$REPO" --json state,isDraft,headRefOid \
+              --jq '"\(.state)|\(.isDraft)|\(.headRefOid)"')
+            IFS='|' read -r state draft sha <<< "$info"
+
+            if [ "$state" != "OPEN" ] || [ "$draft" == "true" ]; then
+              echo "skip: not an open, ready-for-review PR (state=$state draft=$draft)"
+              continue
+            fi
+
+            checks=$(gh api "repos/$REPO/commits/$sha/check-runs" --paginate --jq '.check_runs')
+            ci_conclusion=$(echo "$checks" | jq -sr 'add | [.[] | select(.name == "Build & verify")] | sort_by(.started_at) | last | .conclusion // "pending"')
+            review_conclusion=$(echo "$checks" | jq -sr 'add | [.[] | select(.name == "claude-review")] | sort_by(.started_at) | last | .conclusion // "pending"')
+
+            echo "Build & verify: $ci_conclusion | claude-review: $review_conclusion"
+
+            if [ "$ci_conclusion" == "success" ] && [ "$review_conclusion" == "success" ]; then
+              echo "Both required checks green — merging #$pr"
+              gh pr merge "$pr" --repo "$REPO" --merge || \
+                echo "::warning::merge attempt for #$pr failed (may already be merged, or another required condition — e.g. a branch-protection rule this workflow doesn't know about — is unmet)"
+            else
+              echo "not yet green — no action"
+            fi
+          done
