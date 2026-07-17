@@ -310,7 +310,7 @@ pub func streamSessionMessage(
         offset = total
         match Web.writeChunk(w, CloudAgents.Streaming.toSseChunk(delta)) {
           case Ok(_) -> ()
-          case Err(_) -> clientGone = true
+          case Err(_) -> { clientGone = true }
         }
       }
     }
