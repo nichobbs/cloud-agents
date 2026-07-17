@@ -160,5 +160,29 @@ design of each phase and `docs/BUILD.md` for build/verification notes.
 | VM provisioning | 🟡 | `deploy/install-docker.sh` |
 | Backups | 🟡 | `deploy/backup.sh` |
 | Runbook | 🟡 | `deploy/RUNBOOK.md` |
+| Automated e2e HTTP smoke test | ✅ added | `scripts/e2e-http.sh` (wired into `ci.yml`) starts the built server on a throwaway DB/port and curls a multi-param route (`/api/sessions/{id}/output/{offset}`) plus the proxy routes — the automated proof of multi-param dispatch that `@test_module` can't give (Web.Request isn't constructible in a test, #354), closing #442 |
+
+## Recent hardening (2026-07)
+
+- **Model-listing cache (#446).** The models proxy now caches each provider's
+  raw listing per `(user, provider)` for 1h in `model_listing_cache` (migration
+  0009), so the sequential provider fetch cost is paid at most once per window
+  instead of on every call — `db_client.l`/`repository.l`
+  (`cachedModelListing`/`cacheModelListing`), consumed in
+  `proxy.l` (`cachedOrFetchedModelsBody`). Best-effort: a cache read/write
+  failure falls back to a live fetch.
+- **Multi-repo cleanup (#460).** Unlinking a repo now removes its checkout from
+  `/workspace/repos` on the next run (the entrypoints reconcile — clone linked,
+  prune unlinked — rather than only ever adding), and the UI's "Remove" makes
+  the on-disk consequence explicit.
+- **SQLite concurrency (WAL).** `sqlite_driver.l` now applies
+  `PRAGMA journal_mode=WAL` + `busy_timeout=5000` on every connection
+  (best-effort): readers and a writer no longer block each other, and a held
+  write lock makes a connection wait rather than failing with `SQLITE_BUSY`.
+  This is the cheap single-node win from the SQLite review — the store stays
+  SQLite (single-VM/personal scale); the `db_client.l`/`repository.l` seam keeps
+  a Postgres driver swap feasible if multi-node/HA is ever needed, and the
+  TEXT-only driver (not SQLite itself) is the bigger constraint to revisit
+  first.
 
 Legend: ✅ done · 🟡 in progress / scaffolded · ⬜ not started

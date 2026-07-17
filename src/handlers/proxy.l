@@ -287,6 +287,28 @@ func keyForProvider(provider: in String): Option[String] {
   return None
 }
 
+/// A provider's listing body for a user: the still-fresh server-cached copy if
+/// present, otherwise a live upstream fetch which is then cached (#446). Cache
+/// read/write failures are non-fatal (logged) and simply fall back to a live
+/// fetch, so a broken cache never breaks discovery.
+func cachedOrFetchedModelsBody(userId: in String, provider: in String, key: in String): Result[String, String] {
+  match CloudAgents.Repository.cachedModelListing(userId, provider) {
+    case Ok(Some(body)) -> return Ok(value = body)
+    case Ok(None) -> ()
+    case Err(_) -> println("WARNING: model-listing cache read failed for " + provider)
+  }
+  match providerModelsBody(provider, key) {
+    case Ok(body) -> {
+      match CloudAgents.Repository.cacheModelListing(userId, provider, body) {
+        case Ok(_) -> ()
+        case Err(_) -> println("WARNING: model-listing cache write failed for " + provider)
+      }
+      return Ok(value = body)
+    }
+    case Err(e) -> return Err(error = e)
+  }
+}
+
 /// One provider's models listing, raw. Keys travel in headers, never URLs
 /// (URLs end up in proxy logs).
 func providerModelsBody(provider: in String, key: in String): Result[String, String] {
@@ -325,17 +347,20 @@ pub func modelsHandler(harness: in String): Result[String, Web.ApiError] {
   // concurrent would require async funcs, and an async func anywhere in this
   // package makes the whole package uninvokable from @test_module suites
   // (docs/lyric/gotchas.md) — the validators and no-credential paths below
-  // are only testable because the package stays sync. Worst case is 3
-  // providers x the 15s HTTP timeout on a totally dark network; the normal
-  // case is 3 sub-second calls, and the frontend caches the result for an
-  // hour, so the latency trade is taken knowingly.
+  // are only testable because the package stays sync. A per-(user,provider)
+  // server-side cache (cachedOrFetchedModelsBody, 1h TTL) now amortises the
+  // fetch cost to at most once per window, so the sequential worst case (3
+  // providers x the 15s HTTP timeout on a dark network) is only paid on a cold
+  // cache; the frontend also caches for an hour, so the latency trade is taken
+  // knowingly.
+  val userId = CloudAgents.Auth.currentUserId()
   var entries = ""
   var count = 0
   for p in providersForHarness(harness) {
     match keyForProvider(p) {
       case None -> ()
       case Some(key) -> {
-        match providerModelsBody(p, key) {
+        match cachedOrFetchedModelsBody(userId, p, key) {
           case Ok(body) -> {
             if count > 0 {
               entries = entries + ","

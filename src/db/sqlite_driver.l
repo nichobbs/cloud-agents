@@ -158,6 +158,28 @@ pub func connectionString(): String {
   return "Data Source=" + dbPath()
 }
 
+/// Apply connection tuning pragmas (best-effort). WAL lets readers and a
+/// writer proceed concurrently instead of blocking each other, and
+/// busy_timeout makes a connection wait for a held write lock rather than
+/// failing immediately with SQLITE_BUSY — both matter here because every
+/// execute/query opens its own connection (docs: the SQLite recommendation to
+/// stay single-node but take the cheap WAL win). journal_mode is persistent on
+/// the database file; busy_timeout is per-connection, so it is re-applied on
+/// each open. A failure (e.g. a filesystem that can't do WAL) must not stop the
+/// connection from being used, so it is swallowed.
+func applyPragmas(conn: in SqliteConnection): Unit {
+  try {
+    val c1 = conn.CreateCommand()
+    c1.set_CommandText("PRAGMA busy_timeout=5000")
+    val _ = c1.ExecuteNonQuery()
+    val c2 = conn.CreateCommand()
+    c2.set_CommandText("PRAGMA journal_mode=WAL")
+    val _ = c2.ExecuteNonQuery()
+  } catch Bug as b {
+    // Pragmas are tuning, not correctness — proceed without them.
+  }
+}
+
 func openConn(): Result[SqliteConnection, DbError] {
   try {
     sqliteSetProvider(SQLiteProvider.new())
@@ -168,6 +190,7 @@ func openConn(): Result[SqliteConnection, DbError] {
   return try {
     val conn = SqliteConnection.new(connectionString())
     conn.Open()
+    applyPragmas(conn)
     Ok(value = conn)
   } catch Bug as b {
     Err(error = OpenFailed(message = b.message))
