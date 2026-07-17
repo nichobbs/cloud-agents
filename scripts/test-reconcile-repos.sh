@@ -14,10 +14,12 @@ BIN="$WORK/bin"
 WS="$WORK/ws"
 mkdir -p "$BIN" "$WS/repos"
 
-# Mock git: `git clone [--branch B] URL DIR` just creates DIR/.git.
+# Mock git: `git clone [--branch B] URL DIR` just creates DIR/.git. The last
+# positional arg is the target dir; grab it portably (no bash 4.3+ negative
+# array indexing, so this still runs on stock macOS bash 3.2 — #473).
 cat > "$BIN/git" <<'MOCK'
 #!/bin/bash
-args=("$@"); dir="${args[-1]}"; mkdir -p "$dir/.git"
+dir=""; for a in "$@"; do dir="$a"; done; mkdir -p "$dir/.git"
 MOCK
 chmod +x "$BIN/git"
 export PATH="$BIN:$PATH"
