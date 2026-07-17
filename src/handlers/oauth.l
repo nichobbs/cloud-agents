@@ -213,11 +213,32 @@ pub func exchangeCode(req: in ExchangeRequest): Result[TokenGrant, Web.ApiError]
 
 /// Authenticate a GitHub OAuth bearer: SQLite cache first (keyed by the
 /// token's SHA-256, never the token itself), then a live /user validation
-/// with whitelist enforcement, caching the success.
+/// with whitelist enforcement, caching the outcome either way.
+///
+/// Cache-hit semantics:
+///  - an empty cached userId is a short-lived NEGATIVE entry (#425) — the
+///    same bad bearer is refused without another outbound round trip;
+///  - a positive hit still re-applies the whitelist (a pure env check, no
+///    network), so removing a user from CLOUD_AGENTS_WHITELIST takes effect
+///    on their next request, not after the cache TTL (#424). Revocation of
+///    the token *at GitHub* is still only noticed at revalidation — that
+///    latency (≤10 min) is inherent to caching and documented in
+///    docs/credentials.md.
 pub func authenticateGitHubBearer(token: in String): AuthOutcome {
   val tokenHash = CloudAgents.Crypto.sha256Base64(token)
   match CloudAgents.Repository.cachedGitHubToken(tokenHash) {
-    case Ok(Some(entry)) -> return CloudAgents.Auth.allowedOutcome(entry.userId)
+    case Ok(Some(entry)) -> {
+      if entry.userId.length == 0 {
+        return CloudAgents.Auth.deniedOutcome(CloudAgents.Auth.invalidTokenError())
+      }
+      return match CloudAgents.Auth.authorizeGitHub(
+        CloudAgents.Auth.githubIdFromUserId(entry.userId),
+        whitelistCsv()
+      ) {
+        case Allowed(userId) -> CloudAgents.Auth.allowedOutcome(userId)
+        case Denied(e) -> CloudAgents.Auth.deniedOutcome(e)
+      }
+    }
     case Ok(None) -> ()
     // A cache-read failure falls through to live validation — the cache is
     // an optimisation, not an authority.
@@ -225,7 +246,13 @@ pub func authenticateGitHubBearer(token: in String): AuthOutcome {
   }
   val identity = match fetchIdentity(token) {
     case Ok(idn) -> idn
-    case Err(_) -> return CloudAgents.Auth.deniedOutcome(CloudAgents.Auth.invalidTokenError())
+    case Err(_) -> {
+      match CloudAgents.Repository.cacheGitHubTokenDenied(tokenHash) {
+        case Ok(_) -> ()
+        case Err(_) -> ()
+      }
+      return CloudAgents.Auth.deniedOutcome(CloudAgents.Auth.invalidTokenError())
+    }
   }
   match CloudAgents.Auth.authorizeGitHub(identity.githubId, whitelistCsv()) {
     case Allowed(userId) -> {
@@ -235,7 +262,15 @@ pub func authenticateGitHubBearer(token: in String): AuthOutcome {
       }
       return CloudAgents.Auth.allowedOutcome(userId)
     }
-    case Denied(e) -> return CloudAgents.Auth.deniedOutcome(e)
+    case Denied(e) -> {
+      // A whitelist miss is a real identity that isn't allowed in — cache the
+      // denial too, so hammering with the same token can't farm round trips.
+      match CloudAgents.Repository.cacheGitHubTokenDenied(tokenHash) {
+        case Ok(_) -> ()
+        case Err(_) -> ()
+      }
+      return CloudAgents.Auth.deniedOutcome(e)
+    }
   }
 }
 

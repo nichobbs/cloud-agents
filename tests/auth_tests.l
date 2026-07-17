@@ -139,3 +139,10 @@ test "Cross-package outcome constructors mirror the union cases" {
   assertEqual(outcomeLabel(allowedOutcome("gh-1")), "allow:gh-1", "allowedOutcome constructs Allowed")
   assertEqual(outcomeLabel(deniedOutcome(invalidTokenError())), "deny:invalid or expired token", "deniedOutcome constructs Denied")
 }
+
+test "githubIdFromUserId inverts userIdForGitHubId" {
+  assertEqual(githubIdFromUserId(userIdForGitHubId("583231")), "583231", "round-trips a numeric id")
+  assertEqual(githubIdFromUserId("default"), "", "operator identity is not a GitHub id")
+  assertEqual(githubIdFromUserId("gh-"), "", "empty id rejected")
+  assertEqual(githubIdFromUserId(""), "", "empty string rejected")
+}

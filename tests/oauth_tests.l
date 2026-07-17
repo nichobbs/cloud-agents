@@ -185,6 +185,56 @@ test "cached bearer authenticates without a network round trip" {
   clearOAuthEnv()
 }
 
+test "cache hits re-apply the whitelist so removals take effect immediately (#424)" {
+  val dbPath = useFreshTestDb("oauth-cache-whitelist")
+  defer {
+    cleanupTestDb(dbPath)
+  }
+  Env.SetEnvironmentVariable("CLOUD_AGENTS_GITHUB_CLIENT_ID", "cid")
+  Env.SetEnvironmentVariable("CLOUD_AGENTS_GITHUB_CLIENT_SECRET", "sec")
+  val token = "gho_whitelisted"
+  match CloudAgents.Repository.cacheGitHubToken(CloudAgents.Crypto.sha256Base64(token), "gh-42", "octocat") {
+    case Ok(_) -> ()
+    case Err(e) -> assertTrue(false, "cache write failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+  }
+  // Whitelist allows 42 -> cached identity resolves.
+  Env.SetEnvironmentVariable("CLOUD_AGENTS_WHITELIST", "42")
+  match authenticateRequest("/api/sessions", "Bearer " + token, "") {
+    case Allowed(uid) -> assertEqual(uid, "gh-42", "whitelisted cache hit allowed")
+    case Denied(_) -> assertTrue(false, "whitelisted cache hit must be allowed")
+  }
+  // Operator removes the user: the very next request is refused, cache TTL
+  // notwithstanding.
+  Env.SetEnvironmentVariable("CLOUD_AGENTS_WHITELIST", "999")
+  match authenticateRequest("/api/sessions", "Bearer " + token, "") {
+    case Allowed(_) -> assertTrue(false, "de-whitelisted user must be refused despite the cache")
+    case Denied(_) -> ()
+  }
+  Env.SetEnvironmentVariable("CLOUD_AGENTS_WHITELIST", "")
+  clearOAuthEnv()
+}
+
+test "negative cache entries refuse a bad bearer without a round trip (#425)" {
+  val dbPath = useFreshTestDb("oauth-cache-negative")
+  defer {
+    cleanupTestDb(dbPath)
+  }
+  Env.SetEnvironmentVariable("CLOUD_AGENTS_GITHUB_CLIENT_ID", "cid")
+  Env.SetEnvironmentVariable("CLOUD_AGENTS_GITHUB_CLIENT_SECRET", "sec")
+  val token = "gho_knownbad"
+  match CloudAgents.Repository.cacheGitHubTokenDenied(CloudAgents.Crypto.sha256Base64(token)) {
+    case Ok(_) -> ()
+    case Err(e) -> assertTrue(false, "negative cache write failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+  }
+  // If this ever tried a live validation it would need the network — a
+  // denial here proves the negative entry short-circuits.
+  match authenticateRequest("/api/sessions", "Bearer " + token, "") {
+    case Allowed(_) -> assertTrue(false, "negatively cached bearer must be refused")
+    case Denied(_) -> ()
+  }
+  clearOAuthEnv()
+}
+
 test "expired cache entries never match" {
   val dbPath = useFreshTestDb("oauth-cache-expiry")
   defer {

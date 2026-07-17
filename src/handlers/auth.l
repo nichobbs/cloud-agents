@@ -442,6 +442,23 @@ pub func userIdForGitHubId(githubId: in String): String {
   return "gh-" + githubId
 }
 
+/// Inverse of userIdForGitHubId: the raw GitHub numeric id from a per-tenant
+/// user id, or "" when the id is not a GitHub identity. Lets the cached-token
+/// path re-apply the whitelist (a pure env check) on every hit, so removing a
+/// user from CLOUD_AGENTS_WHITELIST takes effect on their next request
+/// instead of after the cache TTL (#424).
+pub func githubIdFromUserId(userId: in String): String {
+  val prefix = "gh-"
+  if userId.length <= prefix.length {
+    return ""
+  }
+  val head = userId.substring(0, prefix.length)
+  if head != prefix {
+    return ""
+  }
+  return userId.substring(prefix.length, userId.length - prefix.length)
+}
+
 /// Access decision for a validated GitHub identity against the whitelist. A
 /// missing id (unparseable /user response) is InvalidToken; an id absent from a
 /// non-empty whitelist is NotWhitelisted; otherwise Allowed with the

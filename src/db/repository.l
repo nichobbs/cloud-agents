@@ -1265,6 +1265,19 @@ pub func cacheGitHubToken(
   return Ok(value = ())
 }
 
+/// Cache a *denial* (unknown token, whitelist miss) briefly — an empty
+/// userId marks the entry as negative. Blunts repeated presentations of the
+/// same bad bearer, which would otherwise each cost an outbound GitHub round
+/// trip that blocks a request thread (#425). The TTL is deliberately short
+/// (1 minute) so a denial produced by a transient network failure cannot
+/// lock a genuinely valid token out for long.
+pub func cacheGitHubTokenDenied(tokenHash: in String): Result[Unit, CloudAgents.Sqlite.DbError] {
+  CloudAgents.Sqlite.execute(
+    CloudAgents.Db.upsertGitHubTokenSql(tokenHash, "", "", nowMillis(), "60000")
+  )?
+  return Ok(value = ())
+}
+
 /// The still-valid cache entry for a token hash, or None (missing or expired).
 pub func cachedGitHubToken(
   tokenHash: in String
