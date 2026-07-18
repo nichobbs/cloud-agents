@@ -18,7 +18,7 @@ credentials), not in the containers.
 ## First-time setup
 
 ```sh
-sudo ./install-docker.sh                 # install Docker + build claude-code:base
+sudo ./install-docker.sh                 # install Docker + build all four runner images
 sudo mkdir -p /opt/cloud-agents && sudo rsync -a . /opt/cloud-agents/
 cd /opt/cloud-agents/deploy
 cp .env.example .env && edit .env        # set ENCRYPTION_KEY, CLOUD_AGENTS_WHITELIST

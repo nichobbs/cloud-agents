@@ -192,6 +192,49 @@ jobs:
       - name: Validate deploy compose file path resolution
         run: ./scripts/check-compose-paths.sh
 
+      # deploy/api.Dockerfile pins an explicit Lyric compiler version rather
+      # than always fetching "latest" (nichobbs/cloud-agents#515 — a
+      # since-fixed upstream compiler bug resurfaced in production because
+      # that RUN step's Docker layer cache silently froze on an old
+      # "latest"). Guards that pin from drifting below the documented
+      # known-good floor without anyone noticing — same sort -V idiom as
+      # "Verify minimum Lyric version" above, just checking the Dockerfile's
+      # pin instead of the resolved release.
+      - name: Verify api.Dockerfile's pinned Lyric version meets the floor
+        run: |
+          MIN_VERSION="$(cat MIN_LYRIC_VERSION)"
+          PINNED="$(sed -n 's/^ARG LYRIC_VERSION=\(.*\)$/\1/p' deploy/api.Dockerfile)"
+          if [ -z "$PINNED" ]; then
+            echo "::error::could not find 'ARG LYRIC_VERSION=' in deploy/api.Dockerfile" >&2
+            exit 1
+          fi
+          lowest="$(printf '%s\n%s\n' "$MIN_VERSION" "$PINNED" | sort -V | head -1)"
+          if [ "$lowest" != "$MIN_VERSION" ]; then
+            echo "::error::deploy/api.Dockerfile pins Lyric $PINNED, below MIN_LYRIC_VERSION ($MIN_VERSION) — bump ARG LYRIC_VERSION in deploy/api.Dockerfile." >&2
+            exit 1
+          fi
+          echo "deploy/api.Dockerfile pins Lyric $PINNED >= required minimum $MIN_VERSION"
+
+      # The floor check above only validates ordering — it doesn't confirm
+      # the pinned release's tarball actually exists. Nothing else in this
+      # job builds deploy/api.Dockerfile itself, so a typo'd or since-yanked
+      # LYRIC_VERSION would otherwise pass CI green and only be discovered
+      # at actual image-build/deploy time. Downloads it for real (the same
+      # proven URL pattern the "Install Lyric compiler" step above already
+      # uses successfully) rather than a HEAD-only check, since GitHub's
+      # release-asset redirect target's HEAD support isn't something to
+      # assume without being able to verify it directly.
+      - name: Verify api.Dockerfile's pinned Lyric release actually exists
+        run: |
+          PINNED="$(sed -n 's/^ARG LYRIC_VERSION=\(.*\)$/\1/p' deploy/api.Dockerfile)"
+          URL="https://github.com/nichobbs/lyric-lang/releases/download/v${PINNED}/lyric-${PINNED}-linux-x64.tar.gz"
+          if ! curl -fsSL --connect-timeout 10 --max-time 120 --retry 3 --retry-delay 3 -o /tmp/pinned-lyric.tgz "$URL"; then
+            echo "::error::deploy/api.Dockerfile pins Lyric $PINNED, but $URL failed to download (typo, or that release/asset doesn't exist)." >&2
+            exit 1
+          fi
+          rm -f /tmp/pinned-lyric.tgz
+          echo "Confirmed $URL resolves"
+
       # Build the entire server. Lyric.Web/Lyric.Docker/Std.Logging/
       # Microsoft.Data.Sqlite all restore from NuGet — see docs/BUILD.md.
       # No sibling lyric-lang checkout.
