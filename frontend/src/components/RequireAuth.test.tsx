@@ -41,10 +41,12 @@ beforeEach(() => {
 });
 
 describe('RequireAuth', () => {
-  it('renders nothing while auth config is still loading', () => {
+  it('shows the standard Loading… placeholder while auth config is still loading', () => {
     mockUseAuthConfig.mockReturnValue({ configured: null, clientId: '' });
-    const { container } = renderGuarded();
-    expect(container).toBeEmptyDOMElement();
+    renderGuarded();
+    expect(screen.getByText('Loading…')).toBeInTheDocument();
+    expect(screen.queryByTestId('protected-page')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('login-page')).not.toBeInTheDocument();
   });
 
   it('renders children when sign-in is not configured on this deployment', () => {

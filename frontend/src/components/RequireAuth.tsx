@@ -26,11 +26,20 @@ export function RequireAuth({ children }: { children: ReactNode }) {
     return () => window.removeEventListener(AUTH_CHANGED_EVENT, refresh);
   }, []);
 
-  // Still waiting to learn whether GitHub sign-in is even offered — render
-  // nothing rather than flash protected content or redirect prematurely.
-  if (configured === null) return null;
+  // Still waiting to learn whether GitHub sign-in is even offered — show the
+  // same loading placeholder every other data-fetching page uses (Prompts,
+  // Profiles, Credentials) rather than flashing protected content or
+  // redirecting prematurely.
+  if (configured === null) return <div style={mutedStyle}>Loading…</div>;
 
   if (!configured || signedIn) return <>{children}</>;
 
   return <Navigate to="/login" state={{ from: location }} replace />;
 }
+
+const mutedStyle: React.CSSProperties = {
+  fontSize: '13px',
+  color: '#6e7681',
+  textAlign: 'center',
+  padding: '16px',
+};

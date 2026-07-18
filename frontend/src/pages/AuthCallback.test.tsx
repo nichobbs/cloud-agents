@@ -15,7 +15,7 @@ vi.mock('../lib/auth', async importOriginal => ({
 }));
 
 import { api } from '../lib/api';
-import { completeLogin, takeStoredState } from '../lib/auth';
+import { completeLogin, setReturnPath, takeReturnPath, takeStoredState } from '../lib/auth';
 import { AuthCallback } from './AuthCallback';
 
 function renderCallback(query: string) {
@@ -31,6 +31,7 @@ function renderCallback(query: string) {
 }
 
 beforeEach(() => {
+  sessionStorage.clear();
   vi.mocked(api.exchangeCode).mockReset();
   vi.mocked(completeLogin).mockReset();
   vi.mocked(takeStoredState).mockReset().mockReturnValue('state123');
@@ -69,5 +70,16 @@ describe('AuthCallback', () => {
     expect(await screen.findByText(/GitHub rejected the authorization code/)).toBeInTheDocument();
     expect(screen.getByRole('link', { name: 'Back to sessions' })).toBeInTheDocument();
     expect(completeLogin).not.toHaveBeenCalled();
+  });
+
+  it('consumes a stored return path even when the exchange fails, so it cannot leak into a later attempt', async () => {
+    setReturnPath('/prompts');
+    vi.mocked(api.exchangeCode).mockRejectedValue(new Error('exchange failed'));
+    renderCallback('?code=abc123&state=state123');
+    await screen.findByText(/exchange failed/);
+    // A later, unrelated sign-in (e.g. via the nav bar, which never sets a
+    // return path) must fall back to /repos, not this failed attempt's
+    // stale target.
+    expect(takeReturnPath()).toBe('');
   });
 });

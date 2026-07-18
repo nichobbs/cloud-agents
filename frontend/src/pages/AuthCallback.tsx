@@ -19,6 +19,13 @@ export function AuthCallback() {
     if (startedRef.current) return;
     startedRef.current = true;
 
+    // Consumed unconditionally, up front, regardless of how this callback
+    // ultimately resolves — otherwise a return path set by a guard redirect
+    // survives a declined/mismatched/failed attempt and wrongly leaks into
+    // a later, unrelated sign-in (e.g. one triggered from the nav bar,
+    // which expects the plain /repos fallback).
+    const returnPath = takeReturnPath();
+
     const code = searchParams.get('code') ?? '';
     const state = searchParams.get('state') ?? '';
     const ghError = searchParams.get('error_description') ?? searchParams.get('error') ?? '';
@@ -42,7 +49,7 @@ export function AuthCallback() {
         // Send the user back to wherever RequireAuth redirected them from;
         // falls back to /repos when sign-in didn't originate from a guard
         // redirect (e.g. the nav bar's button).
-        navigate(takeReturnPath() || '/repos', { replace: true });
+        navigate(returnPath || '/repos', { replace: true });
       })
       .catch(err => {
         setError(err instanceof Error ? err.message : 'Token exchange failed');
