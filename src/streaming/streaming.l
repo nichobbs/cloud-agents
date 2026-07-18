@@ -101,9 +101,31 @@ pub func toSseChunk(line: in String): String {
   return "data: {\"chunk\":\"" + jsonEscape(line) + "\"}\n\n"
 }
 
+/// The portion of `logs` past `offset` — the newly-produced output the
+/// streaming run loop should write. Empty when the caller is caught up
+/// (`offset >= length`). Pure and unit-tested so the loop's delta/offset math
+/// (the part most prone to an off-by-one) has coverage without Docker (#486).
+pub func outputDelta(logs: in String, offset: in Int): String {
+  val total = logs.length.toInt()
+  if offset >= total {
+    return ""
+  }
+  return logs.substring(offset, total - offset)
+}
+
 /// Terminal SSE frame signalling the stream is complete.
 pub func sseDone(): String {
   return "event: done\ndata: {}\n\n"
+}
+
+/// Terminal SSE frame signalling the run FAILED after the response was already
+/// committed (200 + headers sent, so an HTTP error status is no longer
+/// possible). Emitted as a distinct `event: error` frame — not a plain data
+/// chunk — so the frontend's stream reader can recognise it and mark the send
+/// failed (#485), rather than folding a failed run into the transcript as if it
+/// succeeded.
+pub func sseError(message: in String): String {
+  return "event: error\ndata: {\"error\":\"" + jsonEscape(message) + "\"}\n\n"
 }
 
 /// Terminal SSE frame carrying the id of the persisted agent message, so the

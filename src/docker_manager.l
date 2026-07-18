@@ -318,11 +318,9 @@ pub func streamSessionMessage(
       containerId = sessionContainerId(sessionId)
     }
     if containerId.length > 0 {
-      val logs = partialContainerLogs(containerId)
-      val total = logs.length.toInt()
-      if total > offset {
-        val delta = logs.substring(offset, total - offset)
-        offset = total
+      val delta = CloudAgents.Streaming.outputDelta(partialContainerLogs(containerId), offset)
+      if delta.length > 0 {
+        offset = offset + delta.length.toInt()
         match Web.writeChunk(w, CloudAgents.Streaming.toSseChunk(delta)) {
           case Ok(_) -> ()
           case Err(_) -> { clientGone = true }
@@ -339,6 +337,15 @@ pub func streamSessionMessage(
   if clientGone or timedOut {
     // Terminate the orphaned container so the run doesn't keep going after the
     // browser hung up (clientGone) or past the hard cap (timedOut).
+    //
+    // The background run task (runSessionMessageAsync, `t`) is still live and
+    // will ALSO try to remove this container in its own cleanup — but that race
+    // is benign (#487): removeContainer on an already-removed container is
+    // best-effort (Docker 304/404, swallowed), and the container-id clear is a
+    // compare-and-clear (clearSessionContainerIfMatchesFor, #45) that only wipes
+    // the row if it still points at THIS container, so a newer run's id is never
+    // clobbered. Terminating here just makes the still-running task's blocking
+    // waitContainer return promptly instead of hanging for the full run.
     if containerId.length == 0 {
       containerId = sessionContainerId(sessionId)
     }

@@ -546,11 +546,13 @@ pub func streamSendMessage(id: in String, text: in String, w: in Web.ResponseWri
             val _ = CloudAgents.Repository.recordRunEnd(runId, userId, "failed")
             val _ = CloudAgents.Repository.enqueueWebhookEvent(userId, id, runId, "failed")
           }
-          // Status/headers are already committed, so surface the failure as an
-          // error line in the stream and close it. A client-disconnect error
-          // makes these writes fail harmlessly.
-          val _ = Web.writeChunk(w, CloudAgents.Streaming.toSseChunk("Error: " + err))
-          val _ = Web.writeChunk(w, CloudAgents.Streaming.sseDone())
+          // Status/headers are already committed (200 sent at the first chunk),
+          // so the failure can't be an HTTP status. Emit a distinct `event:
+          // error` frame the frontend recognises as a failed send (#485) — NOT
+          // a plain data chunk, which the client would fold into the transcript
+          // as if the run succeeded. A client-disconnect error makes this write
+          // fail harmlessly.
+          val _ = Web.writeChunk(w, CloudAgents.Streaming.sseError(err))
         }
       }
     }

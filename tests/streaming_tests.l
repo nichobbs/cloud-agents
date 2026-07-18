@@ -17,6 +17,23 @@ test "toSseChunk wraps a line as an SSE data frame" {
   assertEqual(chunk, "data: {\"chunk\":\"hello\"}\n\n", "frame is well formed")
 }
 
+test "outputDelta returns only the bytes past the offset (#486)" {
+  assertEqual(outputDelta("hello world", 6), "world", "delta is the log past the offset")
+  assertEqual(outputDelta("abc", 0), "abc", "offset 0 returns the whole log")
+  assertEqual(outputDelta("abc", 3), "", "offset == length -> caught up, empty")
+  assertEqual(outputDelta("abc", 5), "", "offset past the end -> empty, no overrun")
+  assertEqual(outputDelta("", 0), "", "empty log -> empty delta")
+}
+
+test "sseError frames a committed-stream failure as an error event (#485)" {
+  assertEqual(
+    sseError("boom"),
+    "event: error\ndata: {\"error\":\"boom\"}\n\n",
+    "error frame is a distinct SSE event, not a data chunk"
+  )
+  assertTrue(sseError("a \"quote\"").contains("\\\"quote\\\""), "error message is JSON-escaped")
+}
+
 test "toSseChunk JSON-escapes the payload" {
   val chunk = toSseChunk("a\"b")
   assertEqual(chunk, "data: {\"chunk\":\"a\\\"b\"}\n\n", "quote inside chunk is escaped")
