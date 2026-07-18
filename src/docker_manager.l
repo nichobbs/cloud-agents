@@ -63,7 +63,6 @@ func imageForHarness(harness: in String): String {
 // the pure CloudAgents.NetworkPolicy package so it can be unit-tested — a test
 // can't invoke functions in this async package without hitting the "signature
 // is incorrect" harness limitation (docs/lyric/gotchas.md), even pure ones.
-
 /// Create an ephemeral container for the given session.
 /// HARNESS, MODEL, and NATIVE_SESSION_ID are passed as env vars so each
 /// container image can invoke the right CLI with the right resume flag. The
@@ -105,6 +104,27 @@ pub async func createRunnerContainer(
     envs = envs.append("EXTRA_REPOS=" + extraRepos)
   }
 
+  // Phase 6 (docs/phase6-mcp-callbacks.md §2/§5/§6 stage 2): mint a per-session
+  // callback bearer token and inject it plus the host API's callback origin,
+  // so the in-container MCP shim (stage 3, not shipped yet) can request
+  // permission decisions, ask the human a question, and report progress
+  // mid-run. Entirely gated behind CLOUD_AGENTS_MCP_CALLBACKS — off by
+  // default, so nothing about this run changes until an operator opts in AND
+  // the shim binary actually ships in the runner image
+  // (docker/entrypoint.sh/mcp.json.template are gated by the same flag).
+  // Best-effort: a mint failure must not abort the run — callbacks simply
+  // won't work for this one run, same tolerance as the credential/network
+  // resolution failures logged elsewhere in this function.
+  if CloudAgents.NetworkPolicy.callbacksFeatureEnabled() {
+    match CloudAgents.SessionStore.mintCallbackToken(sessionId, userId) {
+      case Ok(token) -> {
+        envs = envs.append("CLOUD_AGENTS_API_URL=" + CloudAgents.NetworkPolicy.callbackApiUrl())
+        envs = envs.append("CLOUD_AGENTS_CALLBACK_TOKEN=" + token)
+      }
+      case Err(e) -> println("WARNING: failed to mint MCP-callback token for session " + sessionId + ": " + CloudAgents.Sqlite.dbErrorMessage(e))
+    }
+  }
+
   // Inject the credentials the profile grants (least privilege): 'selected'
   // profiles inject only their named grants, 'all'/no-profile inject every
   // credential. Decrypted here and never logged. Best-effort per credential —
@@ -140,7 +160,14 @@ pub async func createRunnerContainer(
     envs = envs.append(proxyEnv[pi])
     pi = pi + 1
   }
-  val networkMode = CloudAgents.NetworkPolicy.networkModeForPolicy(policy)
+  // Extends "none" to also admit the callback origin when callbacks are
+  // enabled AND an operator has provisioned a dedicated callback-only network
+  // (CLOUD_AGENTS_CALLBACK_NETWORK) — a no-op, identical to
+  // networkModeForPolicy, in every other configuration (docs/phase6 §5).
+  val networkMode = CloudAgents.NetworkPolicy.networkModeForPolicyWithCallbacks(
+    policy,
+    CloudAgents.NetworkPolicy.callbacksFeatureEnabled()
+  )
 
   // Per-user, per-harness volumes so tenants never share workspace or home
   // state: OAuth tenants (gh-<id>) get user-<id>-<harness>-home and
@@ -148,7 +175,10 @@ pub async func createRunnerContainer(
   // ("default") keeps the legacy shared names — per-harness home volumes
   // (#409) and session-<sessionId>-workspace — so existing installs keep
   // their authenticated ~/.claude and workspaces.
-  val binds = [CloudAgents.Db.workspaceVolumeBindFor(userId, sessionId), CloudAgents.Db.homeVolumeBindFor(userId, harness)]
+  val binds = [
+    CloudAgents.Db.workspaceVolumeBindFor(userId, sessionId),
+    CloudAgents.Db.homeVolumeBindFor(userId, harness)
+  ]
 
   val image = imageForHarness(harness)
   val createRes = await createContainerWithNetwork(client, image, envs, binds, networkMode)
@@ -219,7 +249,12 @@ pub async func deleteRunnerContainer(client: in DockerClient, containerId: in St
 /// caller. Factored out of the three identical cleanup sites below (#322).
 /// `userId` is explicit for the same worker-thread reason as
 /// createRunnerContainer.
-async func cleanupRunnerContainer(client: in DockerClient, containerId: in String, sessionId: in String, userId: in String): Unit {
+async func cleanupRunnerContainer(
+  client: in DockerClient,
+  containerId: in String,
+  sessionId: in String,
+  userId: in String,
+): Unit {
   match await deleteRunnerContainer(client, containerId) {
     case Ok(_) -> ()
     case Err(e) -> println("WARNING: failed to remove container " + containerId + ": " + e)
@@ -315,7 +350,19 @@ pub func streamSessionMessage(
   w: in Web.ResponseWriter,
 ): Result[String, String] {
   val cell = ResultCell(isSuccess = false, output = "", error = "")
-  val t = runSessionMessageAsync(repoUrl, branch, prompt, sessionId, harness, model, nativeSessionId, profileId, userId, extraRepos, cell)
+  val t = runSessionMessageAsync(
+    repoUrl,
+    branch,
+    prompt,
+    sessionId,
+    harness,
+    model,
+    nativeSessionId,
+    profileId,
+    userId,
+    extraRepos,
+    cell
+  )
   val startMs = CloudAgents.Repository.nowMillisLong()
   val runTimeoutMs = 1800000.toLong() // 30-minute hard cap (matches the old runSessionMessage)
   // Give up on the client only after several CONSECUTIVE failed writes, not the
@@ -344,6 +391,20 @@ pub func streamSessionMessage(
   // owner-scoped and runs on the request thread where the identity is stamped,
   // matching getRunOutputFrom.
   var containerId = ""
+  // Phase 6 (docs/phase6-mcp-callbacks.md §5): when MCP callbacks are enabled,
+  // this same poll loop also watches for new permission requests / user
+  // questions / progress reports the container's MCP calls create mid-run,
+  // and forwards each as its own SSE event. This is the only place in the
+  // whole request lifecycle holding an open ResponseWriter for the session's
+  // active stream — the callback HANDLERS themselves (CloudAgents.Callbacks)
+  // run on a SEPARATE HTTP request from the container and have no writer to
+  // push through directly. Cursors start at the run's own start time so a
+  // request/question/progress report from a PRIOR run is never re-emitted.
+  val callbacksOn = CloudAgents.NetworkPolicy.callbacksFeatureEnabled()
+  var permissionCursor = toString(startMs)
+  var questionCursor = toString(startMs)
+  var lastProgressSummary = ""
+  var lastProgressPercent = ""
   // Poll on a ~1s cadence. taskWaitMs blocks up to that waiting for the run to
   // finish (true = the whole run completed), so the loop wakes on either a
   // timer tick or run completion. The interval is deliberately NOT tighter
@@ -399,6 +460,57 @@ pub func streamSessionMessage(
         // doubling-and-cap math lives in a pure, unit-tested helper so the
         // backoff has coverage without Docker (#498).
         pollMs = CloudAgents.Streaming.nextPollMs(pollMs, maxPollMs)
+      }
+    }
+    // Phase 6 (docs/phase6-mcp-callbacks.md §5): forward any permission
+    // requests / user questions / progress reports the container's MCP calls
+    // created since the last tick. Best-effort — a write or read failure here
+    // must never affect the run's own success/failure or trip the
+    // output-stream disconnect counter above, since these are supplementary
+    // events on top of the primary output stream.
+    if callbacksOn {
+      match CloudAgents.Repository.permissionRequestsCreatedAfter(sessionId, permissionCursor) {
+        case Ok(reqs) -> {
+          var ri = 0
+          while ri < reqs.length {
+            val pr = reqs[ri]
+            match Web.writeChunk(w, CloudAgents.Streaming.ssePermissionRequest(pr.id, pr.toolName, pr.inputJson)) {
+              case Ok(_) -> ()
+              case Err(_) -> ()
+            }
+            permissionCursor = pr.createdAt
+            ri = ri + 1
+          }
+        }
+        case Err(_) -> ()
+      }
+      match CloudAgents.Repository.userQuestionsCreatedAfter(sessionId, questionCursor) {
+        case Ok(qs) -> {
+          var qi = 0
+          while qi < qs.length {
+            val q = qs[qi]
+            match Web.writeChunk(w, CloudAgents.Streaming.sseUserQuestion(q.id, q.question, q.optionsJson)) {
+              case Ok(_) -> ()
+              case Err(_) -> ()
+            }
+            questionCursor = q.createdAt
+            qi = qi + 1
+          }
+        }
+        case Err(_) -> ()
+      }
+      match CloudAgents.Repository.sessionProgress(sessionId) {
+        case Ok(p) -> {
+          if p.summary.length > 0 and (p.summary != lastProgressSummary or p.percent != lastProgressPercent) {
+            lastProgressSummary = p.summary
+            lastProgressPercent = p.percent
+            match Web.writeChunk(w, CloudAgents.Streaming.sseProgressUpdate(p.summary, p.percent)) {
+              case Ok(_) -> ()
+              case Err(_) -> ()
+            }
+          }
+        }
+        case Err(_) -> ()
       }
     }
     // Hard cap the whole run (#481): a hung container with a still-connected
