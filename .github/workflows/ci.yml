@@ -215,6 +215,26 @@ jobs:
           fi
           echo "deploy/api.Dockerfile pins Lyric $PINNED >= required minimum $MIN_VERSION"
 
+      # The floor check above only validates ordering — it doesn't confirm
+      # the pinned release's tarball actually exists. Nothing else in this
+      # job builds deploy/api.Dockerfile itself, so a typo'd or since-yanked
+      # LYRIC_VERSION would otherwise pass CI green and only be discovered
+      # at actual image-build/deploy time. Downloads it for real (the same
+      # proven URL pattern the "Install Lyric compiler" step above already
+      # uses successfully) rather than a HEAD-only check, since GitHub's
+      # release-asset redirect target's HEAD support isn't something to
+      # assume without being able to verify it directly.
+      - name: Verify api.Dockerfile's pinned Lyric release actually exists
+        run: |
+          PINNED="$(sed -n 's/^ARG LYRIC_VERSION=\(.*\)$/\1/p' deploy/api.Dockerfile)"
+          URL="https://github.com/nichobbs/lyric-lang/releases/download/v${PINNED}/lyric-${PINNED}-linux-x64.tar.gz"
+          if ! curl -fsSL --connect-timeout 10 --max-time 120 --retry 3 --retry-delay 3 -o /tmp/pinned-lyric.tgz "$URL"; then
+            echo "::error::deploy/api.Dockerfile pins Lyric $PINNED, but $URL failed to download (typo, or that release/asset doesn't exist)." >&2
+            exit 1
+          fi
+          rm -f /tmp/pinned-lyric.tgz
+          echo "Confirmed $URL resolves"
+
       # Build the entire server. Lyric.Web/Lyric.Docker/Std.Logging/
       # Microsoft.Data.Sqlite all restore from NuGet — see docs/BUILD.md.
       # No sibling lyric-lang checkout.
