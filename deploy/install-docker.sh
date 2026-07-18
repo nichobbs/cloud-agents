@@ -30,10 +30,21 @@ apt-get install -y docker-ce docker-ce-cli containerd.io \
 
 systemctl enable --now docker
 
-# Build the base runner image so the first session does not pay the cost.
-if [ -f /opt/cloud-agents/docker/Dockerfile ]; then
-    docker build -t claude-code:base -f /opt/cloud-agents/docker/Dockerfile /opt/cloud-agents/docker
-fi
+# Build every harness's runner image so the first session (whichever harness
+# it picks) does not pay the cost. Tags must match imageForHarness()
+# (src/docker_manager.l) exactly.
+for spec in \
+    "Dockerfile claude-code:base" \
+    "Dockerfile.codex codex:base" \
+    "Dockerfile.opencode opencode:base" \
+    "Dockerfile.gemini gemini:base"
+do
+    dockerfile="${spec%% *}"
+    tag="${spec#* }"
+    if [ -f "/opt/cloud-agents/docker/${dockerfile}" ]; then
+        docker build -t "$tag" -f "/opt/cloud-agents/docker/${dockerfile}" /opt/cloud-agents/docker
+    fi
+done
 
 echo "Docker $(docker --version) installed."
 echo "Next: copy the repo to /opt/cloud-agents, create deploy/.env, then run:"

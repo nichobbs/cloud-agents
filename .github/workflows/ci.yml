@@ -192,6 +192,29 @@ jobs:
       - name: Validate deploy compose file path resolution
         run: ./scripts/check-compose-paths.sh
 
+      # deploy/api.Dockerfile pins an explicit Lyric compiler version rather
+      # than always fetching "latest" (nichobbs/cloud-agents#515 — a
+      # since-fixed upstream compiler bug resurfaced in production because
+      # that RUN step's Docker layer cache silently froze on an old
+      # "latest"). Guards that pin from drifting below the documented
+      # known-good floor without anyone noticing — same sort -V idiom as
+      # "Verify minimum Lyric version" above, just checking the Dockerfile's
+      # pin instead of the resolved release.
+      - name: Verify api.Dockerfile's pinned Lyric version meets the floor
+        run: |
+          MIN_VERSION="$(cat MIN_LYRIC_VERSION)"
+          PINNED="$(sed -n 's/^ARG LYRIC_VERSION=\(.*\)$/\1/p' deploy/api.Dockerfile)"
+          if [ -z "$PINNED" ]; then
+            echo "::error::could not find 'ARG LYRIC_VERSION=' in deploy/api.Dockerfile" >&2
+            exit 1
+          fi
+          lowest="$(printf '%s\n%s\n' "$MIN_VERSION" "$PINNED" | sort -V | head -1)"
+          if [ "$lowest" != "$MIN_VERSION" ]; then
+            echo "::error::deploy/api.Dockerfile pins Lyric $PINNED, below MIN_LYRIC_VERSION ($MIN_VERSION) — bump ARG LYRIC_VERSION in deploy/api.Dockerfile." >&2
+            exit 1
+          fi
+          echo "deploy/api.Dockerfile pins Lyric $PINNED >= required minimum $MIN_VERSION"
+
       # Build the entire server. Lyric.Web/Lyric.Docker/Std.Logging/
       # Microsoft.Data.Sqlite all restore from NuGet — see docs/BUILD.md.
       # No sibling lyric-lang checkout.
