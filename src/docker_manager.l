@@ -309,11 +309,15 @@ pub func streamSessionMessage(
   // owner-scoped and runs on the request thread where the identity is stamped,
   // matching getRunOutputFrom.
   var containerId = ""
-  // Poll every ~400ms. taskWaitMs blocks up to that waiting for the run to
+  // Poll on a ~1s cadence. taskWaitMs blocks up to that waiting for the run to
   // finish (true = the whole run completed), so the loop wakes on either a
-  // timer tick or run completion.
+  // timer tick or run completion. The interval is deliberately NOT tighter
+  // (#489): each tick's partialContainerLogs blocks up to ~1.5s AND refetches
+  // the WHOLE container log (Lyric.Docker's logs wrapper has no incremental
+  // fetch), so a shorter interval just multiplies full-log refetches for a
+  // long, chatty run without meaningfully improving perceived latency.
   while not finished and not clientGone and not timedOut {
-    finished = taskWaitMs(t, 400)
+    finished = taskWaitMs(t, 1000)
     if containerId.length == 0 {
       containerId = sessionContainerId(sessionId)
     }

@@ -302,10 +302,9 @@ impl Web.StreamingHandler for SendMessageStreamHandler {
     val decoded = match SendMessageRequest.fromJson(req.body) {
       case Ok(d) -> d
       case Err(_) -> {
-        // No chunk written yet, so a real 400 is still possible.
-        Web.writeStatus(w, 400)
-        Web.writeHeader(w, "Content-Type", "application/json")
-        val _ = Web.writeChunk(w, "{\"error\":\"invalid JSON body\"}")
+        // No chunk written yet, so a real 400 is still possible — reuse the
+        // handler's shared pre-stream error writer (#490).
+        CloudAgents.Handlers.writeStreamError(w, 400, "invalid JSON body")
         return ()
       }
     }

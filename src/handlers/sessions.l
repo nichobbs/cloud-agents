@@ -389,7 +389,7 @@ pub func extraReposEnvValue(repos: in slice[CloudAgents.Repository.SessionRepo])
 /// api.sendMessage throws on a non-2xx, exactly as it did for the old buffered
 /// handler). Safe only before the first writeChunk — once output has streamed,
 /// the 200/headers are already on the wire.
-func writeStreamError(w: in Web.ResponseWriter, code: in Int, msg: in String): Unit {
+pub func writeStreamError(w: in Web.ResponseWriter, code: in Int, msg: in String): Unit {
   Web.writeStatus(w, code)
   Web.writeHeader(w, "Content-Type", "application/json")
   val _ = Web.writeChunk(w, "{\"error\":\"" + CloudAgents.Streaming.jsonEscape(msg) + "\"}")
