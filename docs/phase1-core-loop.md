@@ -4,13 +4,23 @@
 
 **Duration**: 2-3 weeks
 
-> **As shipped, the "real time" part of this goal is not yet met.**
-> `src/docker_manager.l`'s `runSessionMessage` blocks on the container fully
-> exiting before fetching logs at all, and `sendMessage` in
-> `src/handlers/sessions.l` sends the entire captured transcript as one SSE
-> response after the run completes — not incrementally while it runs. The
-> SSE *framing* below is real and implemented; the *live* part isn't. See
-> `docs/review-2026-07-03-followup.md`'s headline finding for detail.
+> **The "real time" part of this goal is now met (#496).** `POST
+> /api/sessions/{id}/messages` streams the container's output as live SSE
+> `data:` frames while the run executes, using `Lyric.Web 0.4.33`'s
+> chunked-response streaming API (`StreamingHandler` / `startStreaming` — the
+> feature this project filed upstream, see
+> `docs/upstream/lyric-web-streaming.md`).
+> `CloudAgents.Handlers.streamSendMessage` (`src/handlers/sessions.l`) drives
+> the run and hands a `ResponseWriter` to
+> `CloudAgents.Docker.streamSessionMessage` (`src/docker_manager.l`), which
+> observes the container and writes each new output slice as it appears.
+>
+> _History: originally this was unmet — `runSessionMessage` blocked on the
+> container fully exiting and `sendMessage` sent the whole captured transcript
+> as one SSE body after the run completed (only the SSE *framing* was live).
+> The `/output` + `/output/{offset}` polling endpoints remain as a
+> pre-first-chunk bridge and older-client fallback. See
+> `docs/review-2026-07-03-followup.md` for the original finding._
 
 ## Implementation Details
 
