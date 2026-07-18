@@ -33,6 +33,7 @@ RUN chown claude-user:claude-user /workspace
 COPY entrypoint.sh /usr/local/bin/entrypoint.sh
 COPY reconcile-repos.sh /usr/local/bin/reconcile-repos.sh
 COPY mcp.json.template /etc/claude/mcp.json.template
+COPY mcp-callbacks.json.template /etc/claude/mcp-callbacks.json.template
 COPY settings.json.template /etc/claude/settings.json.template
 RUN chmod +x /usr/local/bin/entrypoint.sh /usr/local/bin/reconcile-repos.sh
 

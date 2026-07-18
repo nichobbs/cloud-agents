@@ -1,0 +1,12 @@
+{
+  "mcpServers": {
+    "cloud-agents": {
+      "command": "cloud-agents-shim",
+      "env": {
+        "CLOUD_AGENTS_API_URL": "${CLOUD_AGENTS_API_URL}",
+        "CLOUD_AGENTS_CALLBACK_TOKEN": "${CLOUD_AGENTS_CALLBACK_TOKEN}",
+        "CLOUD_AGENTS_SESSION_ID": "${CLOUD_AGENTS_SESSION_ID}"
+      }
+    }
+  }
+}
