@@ -414,6 +414,15 @@ pub func sqrt(x: in Double): Double
 
 **No reflection.** `Type.GetField`, `Activator.CreateInstance` etc. are not available. Use source generators (`@generate`) for code that would otherwise use reflection.
 
+**`@externInstance` + `@externTarget("System.Object.GetType")` on a boxed value-type argument (e.g. `Byte`) crashes the process with `AccessViolationException`, not a catchable exception.** Confirmed in production: `getByteType(b: in Byte): Type` (an instance-bound call to `b.GetType()`, used only to feed `Array.CreateInstance` when assembling a typed array) took down the entire server — the crash's own stack trace showed the compiled call site's parameter type as `Int32`, not `Byte`, meaning the boxed instance actually passed doesn't match what the generated call expects. If you need a `Type` value (e.g. for `Array.CreateInstance`), bind the plain static `System.Type.GetType(string)` instead — no instance/boxing involved, so this miscompilation path never triggers:
+```
+@externTarget("System.Type.GetType")
+func typeFromName(name: in String): Type = ()
+...
+val byteType = typeFromName("System.Byte")
+```
+More generally: treat any `@externInstance` call whose target is itself reflection (`GetType`, and by extension anything `Array.CreateInstance`-adjacent) as suspect for value-type arguments specifically — this is the same "no reflection" territory as the item above, just reachable through an instance-method extern binding rather than a direct `Type.GetField`/`Activator.CreateInstance` call.
+
 **`@externInstance` must be explicit for instance methods.** Default is static. Forgetting it on an instance method = wrong call instruction emitted.
 
 **Unresolvable `@externTarget` on .NET = compile-time error.** On JVM = `NoClassDefFoundError` at runtime.
