@@ -57,7 +57,14 @@ json_std="$(cd "$REPO_ROOT/deploy" && ENCRYPTION_KEY=ci-check docker compose con
 check_json_paths "docker-compose.yml" "$json_std"
 
 echo "== docker-compose.coolify.yml (--project-directory repo-root, per Coolify) =="
-json_coolify="$(cd "$REPO_ROOT" && ENCRYPTION_KEY=ci-check docker compose --project-directory . -f deploy/docker-compose.coolify.yml config --format json)"
+# codex-base/opencode-base/gemini-base are gated behind Compose profiles
+# (opted into via COMPOSE_PROFILES, not active by default — see the compose
+# file's own comments) so a build failure in one of them can't take down
+# api/frontend/caddy too. `docker compose config` only renders a profiled
+# service when its profile is active, so activate all of them here purely
+# to validate their paths too — this check has nothing to do with whether
+# they're active on a real deploy.
+json_coolify="$(cd "$REPO_ROOT" && ENCRYPTION_KEY=ci-check COMPOSE_PROFILES=codex,opencode,gemini docker compose --project-directory . -f deploy/docker-compose.coolify.yml config --format json)"
 check_json_paths "docker-compose.coolify.yml" "$json_coolify"
 
 exit $FAIL
