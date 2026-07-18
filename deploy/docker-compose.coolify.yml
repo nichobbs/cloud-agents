@@ -52,9 +52,8 @@ services:
     restart: unless-stopped
 
   frontend:
-    image: nginx:alpine
-    volumes:
-      - ./frontend:/usr/share/nginx/html:ro
+    build:
+      context: ./frontend
     restart: unless-stopped
 
   caddy:
