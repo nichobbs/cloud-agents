@@ -129,12 +129,15 @@ func charFromCode(code: in Int): String = ()
 extern type ByteArray = "System.Byte[]"
 extern type Type = "System.Type"
 
-@externTarget("System.Convert.ToByte")
-func intToByte(v: in Int): Byte = ()
-
-@externInstance
-@externTarget("System.Object.GetType")
-func getByteType(b: in Byte): Type = ()
+// Getting `typeof(byte)` via `@externInstance`+`System.Object.GetType()` on a
+// boxed Byte crashed the whole process with an AccessViolationException —
+// the compiled call site's parameter type came back as Int32 in the crash
+// stack trace, not Byte, so the boxed instance the runtime actually receives
+// doesn't match what the generated call expects. Type.GetType(string) is a
+// plain static call with no instance/boxing involved, sidestepping whatever
+// miscompiles the instance-call form for a Byte-typed argument.
+@externTarget("System.Type.GetType")
+func typeFromName(name: in String): Type = ()
 
 @externTarget("System.Array.CreateInstance")
 func createByteArray(elementType: in Type, length: in Int): ByteArray = ()
@@ -191,7 +194,7 @@ func readAll(s: in NetStream): String {
 /// 1 MB cap would mean up to a million extern calls per proxied response
 /// (#445) — and are decoded in one Encoding.GetString(bytes, 0, total) call.
 func readAllUtf8(s: in NetStream): String {
-  val byteType = getByteType(intToByte(0))
+  val byteType = typeFromName("System.Byte")
   val buf = createByteArray(byteType, maxProxyResponseBytes)
   var total = 0
   var n = 1
