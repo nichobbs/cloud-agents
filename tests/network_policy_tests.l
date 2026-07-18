@@ -33,3 +33,71 @@ test "proxyEnvForPolicy only emits proxy vars for restricted, when a proxy is se
   assertEqual(vars[0], "HTTP_PROXY=http://proxy:3128", "first var is HTTP_PROXY")
   Env.SetEnvironmentVariable("CLOUD_AGENTS_EGRESS_PROXY", "")
 }
+
+// ── Phase 6: MCP callbacks (docs/phase6-mcp-callbacks.md) ───────────────────
+test "callbacksFeatureEnabled is off unless explicitly set to \"1\"" {
+  Env.SetEnvironmentVariable("CLOUD_AGENTS_MCP_CALLBACKS", "")
+  assertFalse(callbacksFeatureEnabled(), "unset -> off by default")
+  Env.SetEnvironmentVariable("CLOUD_AGENTS_MCP_CALLBACKS", "0")
+  assertFalse(callbacksFeatureEnabled(), "explicit \"0\" -> off")
+  Env.SetEnvironmentVariable("CLOUD_AGENTS_MCP_CALLBACKS", "true")
+  assertFalse(callbacksFeatureEnabled(), "anything other than the literal \"1\" -> off")
+  Env.SetEnvironmentVariable("CLOUD_AGENTS_MCP_CALLBACKS", "1")
+  assertTrue(callbacksFeatureEnabled(), "explicit \"1\" -> on")
+  Env.SetEnvironmentVariable("CLOUD_AGENTS_MCP_CALLBACKS", "")
+}
+
+test "callbackApiUrl defaults to host.docker.internal, overridable" {
+  Env.SetEnvironmentVariable("CLOUD_AGENTS_CALLBACK_API_URL", "")
+  assertEqual(callbackApiUrl(), "http://host.docker.internal:8080", "default reachable-from-container URL")
+  Env.SetEnvironmentVariable("CLOUD_AGENTS_CALLBACK_API_URL", "http://cloud-agents-api:8080")
+  assertEqual(callbackApiUrl(), "http://cloud-agents-api:8080", "operator override wins")
+  Env.SetEnvironmentVariable("CLOUD_AGENTS_CALLBACK_API_URL", "")
+}
+
+test "networkModeForPolicyWithCallbacks matches networkModeForPolicy except opted-in 'none'+callbacks" {
+  Env.SetEnvironmentVariable("CLOUD_AGENTS_RESTRICTED_NETWORK", "")
+  Env.SetEnvironmentVariable("CLOUD_AGENTS_CALLBACK_NETWORK", "")
+
+  // Callbacks off: identical to networkModeForPolicy in every case, including
+  // 'none' — the whole point of the flag being off by default (#6).
+  assertEqual(networkModeForPolicyWithCallbacks("none", false), "none", "callbacks off: 'none' still fully isolates")
+  assertEqual(networkModeForPolicyWithCallbacks("full", false), "", "callbacks off: 'full' unchanged")
+  assertEqual(
+    networkModeForPolicyWithCallbacks("restricted", false),
+    "none",
+    "callbacks off: 'restricted' unchanged (fails closed)"
+  )
+
+  // Callbacks on but NO dedicated callback network configured: 'none' still
+  // stays fully isolated — the extension is opt-in on both axes, not just one.
+  assertEqual(
+    networkModeForPolicyWithCallbacks("none", true),
+    "none",
+    "callbacks on with no callback network: still isolated"
+  )
+  // 'full'/'restricted' are never touched by this function regardless of the
+  // callbacks flag — only 'none' has a callbacks-specific carve-out (#5).
+  assertEqual(networkModeForPolicyWithCallbacks("full", true), "", "callbacks on: 'full' still unchanged")
+  assertEqual(
+    networkModeForPolicyWithCallbacks("restricted", true),
+    "none",
+    "callbacks on: 'restricted' still fails closed without its own egress network"
+  )
+
+  // Callbacks on AND a dedicated callback-only network configured: 'none'
+  // joins it instead of full isolation — exactly enough to reach the
+  // callback origin (#5).
+  Env.SetEnvironmentVariable("CLOUD_AGENTS_CALLBACK_NETWORK", "callback-only-net")
+  assertEqual(
+    networkModeForPolicyWithCallbacks("none", true),
+    "callback-only-net",
+    "callbacks on + configured network: 'none' joins the callback-only network"
+  )
+  assertEqual(
+    networkModeForPolicyWithCallbacks("none", false),
+    "none",
+    "the callback network is only consulted when callbacksEnabled is true"
+  )
+  Env.SetEnvironmentVariable("CLOUD_AGENTS_CALLBACK_NETWORK", "")
+}

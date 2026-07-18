@@ -40,10 +40,7 @@ test "Resource ownership" {
 }
 
 func outcomeLabel(o: in AuthOutcome): String {
-  return match o {
-    case Allowed(uid) -> "allow:" + uid
-    case Denied(e) -> "deny:" + authErrorMessage(e)
-  }
+  return match o { case Allowed(uid) -> "allow:" + uid; case Denied(e) -> "deny:" + authErrorMessage(e) }
 }
 
 test "Constant-time equality" {
@@ -71,14 +68,30 @@ test "Static-token authorization" {
   assertEqual(outcomeLabel(authorize("Bearer secret", "secret")), "allow:default", "correct token allowed")
   assertEqual(outcomeLabel(authorize("Bearer wrong", "secret")), "deny:invalid or expired token", "wrong token denied")
   assertEqual(outcomeLabel(authorize("", "secret")), "deny:missing Authorization bearer token", "missing header denied")
-  assertEqual(outcomeLabel(authorize("Basic secret", "secret")), "deny:missing Authorization bearer token", "wrong scheme denied")
+  assertEqual(
+    outcomeLabel(authorize("Basic secret", "secret")),
+    "deny:missing Authorization bearer token",
+    "wrong scheme denied"
+  )
 }
 
 test "Secret routes refuse unconfigured auth" {
   // Credential endpoints must never run open, even where general routes would.
-  assertEqual(outcomeLabel(authorizeSecret("", "")), "deny:authentication is not configured; access is disabled", "no token -> secret route denied")
-  assertEqual(outcomeLabel(authorizeSecret("Bearer secret", "secret")), "allow:default", "configured + correct -> allowed")
-  assertEqual(outcomeLabel(authorizeSecret("Bearer wrong", "secret")), "deny:invalid or expired token", "configured + wrong -> denied")
+  assertEqual(
+    outcomeLabel(authorizeSecret("", "")),
+    "deny:authentication is not configured; access is disabled",
+    "no token -> secret route denied"
+  )
+  assertEqual(
+    outcomeLabel(authorizeSecret("Bearer secret", "secret")),
+    "allow:default",
+    "configured + correct -> allowed"
+  )
+  assertEqual(
+    outcomeLabel(authorizeSecret("Bearer wrong", "secret")),
+    "deny:invalid or expired token",
+    "configured + wrong -> denied"
+  )
 }
 
 test "GitHub /user response parsing" {
@@ -102,7 +115,11 @@ test "GitHub OAuth authorization derives a user id and applies the whitelist" {
   // Whitelisted (or open) -> Allowed with the gh- user id.
   assertEqual(outcomeLabel(authorizeGitHub("583231", "")), "allow:gh-583231", "open whitelist allows")
   assertEqual(outcomeLabel(authorizeGitHub("583231", "1,583231,9")), "allow:gh-583231", "listed id allowed")
-  assertEqual(outcomeLabel(authorizeGitHub("7", "1,583231")), "deny:user is not on the access whitelist", "unlisted id denied")
+  assertEqual(
+    outcomeLabel(authorizeGitHub("7", "1,583231")),
+    "deny:user is not on the access whitelist",
+    "unlisted id denied"
+  )
   assertEqual(outcomeLabel(authorizeGitHub("", "")), "deny:invalid or expired token", "unparseable identity denied")
 }
 
@@ -112,9 +129,17 @@ test "Per-request enforcement classifies secret routes" {
   assertFalse(routeRequiresSecret("/api/prompts"), "prompts are not secret")
   assertFalse(routeRequiresSecret("/api/sessions"), "sessions are not secret")
   // enforce() picks the right scheme per route.
-  assertEqual(outcomeLabel(enforce("/api/credentials", "", "")), "deny:authentication is not configured; access is disabled", "secret route refuses unconfigured")
+  assertEqual(
+    outcomeLabel(enforce("/api/credentials", "", "")),
+    "deny:authentication is not configured; access is disabled",
+    "secret route refuses unconfigured"
+  )
   assertEqual(outcomeLabel(enforce("/api/prompts", "", "")), "allow:default", "general route open when unconfigured")
-  assertEqual(outcomeLabel(enforce("/api/credentials", "Bearer s", "s")), "allow:default", "secret route allows with a correct token")
+  assertEqual(
+    outcomeLabel(enforce("/api/credentials", "Bearer s", "s")),
+    "allow:default",
+    "secret route allows with a correct token"
+  )
 }
 
 test "Per-request identity: thread-local set/read/reset roundtrip" {
@@ -137,7 +162,11 @@ test "Per-request identity: thread-local set/read/reset roundtrip" {
 
 test "Cross-package outcome constructors mirror the union cases" {
   assertEqual(outcomeLabel(allowedOutcome("gh-1")), "allow:gh-1", "allowedOutcome constructs Allowed")
-  assertEqual(outcomeLabel(deniedOutcome(invalidTokenError())), "deny:invalid or expired token", "deniedOutcome constructs Denied")
+  assertEqual(
+    outcomeLabel(deniedOutcome(invalidTokenError())),
+    "deny:invalid or expired token",
+    "deniedOutcome constructs Denied"
+  )
 }
 
 test "githubIdFromUserId inverts userIdForGitHubId" {
@@ -145,4 +174,44 @@ test "githubIdFromUserId inverts userIdForGitHubId" {
   assertEqual(githubIdFromUserId("default"), "", "operator identity is not a GitHub id")
   assertEqual(githubIdFromUserId("gh-"), "", "empty id rejected")
   assertEqual(githubIdFromUserId(""), "", "empty string rejected")
+}
+
+test "authorizeCallback compares a bearer token against the session's stored callback token" {
+  assertTrue(authorizeCallback("Bearer secret-token", "secret-token"), "matching bearer token authorizes")
+  assertFalse(authorizeCallback("Bearer wrong-token", "secret-token"), "wrong bearer token denied")
+  assertFalse(authorizeCallback("", "secret-token"), "missing header denied")
+  assertFalse(authorizeCallback("Basic secret-token", "secret-token"), "wrong scheme denied")
+  assertFalse(
+    authorizeCallback("Bearer secret-token", ""),
+    "an empty expected token never authorizes (callbacks not enabled)"
+  )
+}
+
+test "isContainerCallbackRoute exempts container create/poll routes but not the human answer routes" {
+  assertTrue(
+    isContainerCallbackRoute("/api/sessions/abc-123/callbacks/permission"),
+    "POST create is container-originated"
+  )
+  assertTrue(
+    isContainerCallbackRoute("/api/sessions/abc-123/callbacks/permission/req-1"),
+    "GET poll is container-originated"
+  )
+  assertTrue(
+    isContainerCallbackRoute("/api/sessions/abc-123/callbacks/question"),
+    "question create is container-originated"
+  )
+  assertTrue(
+    isContainerCallbackRoute("/api/sessions/abc-123/callbacks/progress"),
+    "progress report is container-originated"
+  )
+  assertFalse(
+    isContainerCallbackRoute("/api/sessions/abc-123/callbacks/permission/req-1/answer"),
+    "the human answer route is NOT container-originated — it needs normal user auth"
+  )
+  assertFalse(
+    isContainerCallbackRoute("/api/sessions/abc-123/callbacks/question/req-1/answer"),
+    "the question answer route is NOT container-originated either"
+  )
+  assertFalse(isContainerCallbackRoute("/api/sessions/abc-123"), "an unrelated route is never exempt")
+  assertFalse(isContainerCallbackRoute("/api/health"), "the health route is unaffected by this predicate")
 }
