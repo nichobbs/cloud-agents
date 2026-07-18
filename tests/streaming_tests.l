@@ -62,3 +62,33 @@ test "jsonEscape escapes raw control characters as unicode escapes" {
   assertEqual(jsonEscape("a" + charFromCode(8) + "b"), "a\\u0008b", "backspace mid-string")
   assertEqual(jsonEscape("line\nbreak"), "line\\nbreak", "newline still uses the short escape")
 }
+
+// ── Phase 6: MCP-callback SSE event framing (docs/phase6-mcp-callbacks.md §5) ─
+test "ssePermissionRequest frames a permission_request SSE event" {
+  val frame = ssePermissionRequest("req-1", "Bash", "{\"command\":\"ls\"}")
+  assertEqual(
+    frame,
+    "event: permission_request\ndata: {\"id\":\"req-1\",\"toolName\":\"Bash\",\"inputJson\":\"{\\\"command\\\":\\\"ls\\\"}\"}\n\n",
+    "permission_request frame is well formed and JSON-escapes the input"
+  )
+  assertTrue(frame.startsWith("event: permission_request\n"), "distinct event type, not a plain data chunk")
+}
+
+test "sseUserQuestion frames a user_question SSE event" {
+  val frame = sseUserQuestion("q-1", "Which package?", "[\"A\",\"B\"]")
+  assertEqual(
+    frame,
+    "event: user_question\ndata: {\"id\":\"q-1\",\"question\":\"Which package?\",\"optionsJson\":\"[\\\"A\\\",\\\"B\\\"]\"}\n\n",
+    "user_question frame is well formed and JSON-escapes the options"
+  )
+}
+
+test "sseProgressUpdate frames a progress_update SSE event" {
+  val frame = sseProgressUpdate("cloning repo", "10")
+  assertEqual(
+    frame,
+    "event: progress_update\ndata: {\"summary\":\"cloning repo\",\"percentComplete\":\"10\"}\n\n",
+    "progress_update frame is well formed"
+  )
+  assertTrue(sseProgressUpdate("say \"hi\"", "").contains("\\\"hi\\\""), "summary is JSON-escaped")
+}

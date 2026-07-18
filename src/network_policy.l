@@ -54,3 +54,54 @@ pub func proxyEnvForPolicy(policy: in String): slice[String] {
   }
   return ["HTTP_PROXY=" + proxy, "HTTPS_PROXY=" + proxy, "http_proxy=" + proxy, "https_proxy=" + proxy]
 }
+
+// ─── Phase 6: MCP callbacks (docs/phase6-mcp-callbacks.md) ───────────────────
+//
+// Off by default until the in-container shim (`cloud-agents-shim`, stage 3)
+// actually ships in the runner images — see CloudAgents.Docker, which reads
+// this flag before minting a callback token or injecting the two callback env
+// vars, and docker/entrypoint.sh, which reads the SAME env var name before
+// registering the shim's MCP-server entry or adding
+// `--permission-prompt-tool`.
+/// Whether the MCP-callback feature is enabled for this deployment.
+pub func callbacksFeatureEnabled(): Bool {
+  return Env.GetEnvironmentVariable("CLOUD_AGENTS_MCP_CALLBACKS") == "1"
+}
+
+/// Base URL of the host API as reachable from the container network — the
+/// value injected as CLOUD_AGENTS_API_URL (docs/phase6 §2). Configurable
+/// because the reachable address depends entirely on the deployment's Docker
+/// networking (bridge vs. host-gateway vs. a custom network); the
+/// `host.docker.internal` default only works out of the box on Docker
+/// Desktop.
+pub func callbackApiUrl(): String {
+  val url = Env.GetEnvironmentVariable("CLOUD_AGENTS_CALLBACK_API_URL")
+  if DotNetString.IsNullOrEmpty(url) {
+    return "http://host.docker.internal:8080"
+  }
+  return url
+}
+
+/// networkModeForPolicy, extended to admit outbound calls to the host
+/// callback API for a "none" (fully isolated) session when callbacks are
+/// enabled — exactly enough to reach the callback origin, and nothing else
+/// new (#docs/phase6 §5). Only takes effect when BOTH `callbacksEnabled` is
+/// true AND the operator has configured a dedicated callback-only Docker
+/// network via CLOUD_AGENTS_CALLBACK_NETWORK (typically an `--internal`
+/// network whose only reachable host is this API — the same "provision an
+/// egress network" pattern 'restricted' already uses via
+/// CLOUD_AGENTS_RESTRICTED_NETWORK). Without that opt-in, behaviour is
+/// byte-for-byte identical to networkModeForPolicy — a "none" session stays
+/// fully isolated, and 'restricted'/'full' are untouched (an operator who
+/// wants restricted sessions to reach the callback API adds the callback
+/// origin to their existing egress allowlist, same as any other required
+/// egress).
+pub func networkModeForPolicyWithCallbacks(policy: in String, callbacksEnabled: in Bool): String {
+  if callbacksEnabled and policy == "none" {
+    val net = Env.GetEnvironmentVariable("CLOUD_AGENTS_CALLBACK_NETWORK")
+    if not DotNetString.IsNullOrEmpty(net) {
+      return net
+    }
+  }
+  return networkModeForPolicy(policy)
+}

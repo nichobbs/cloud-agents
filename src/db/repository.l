@@ -209,12 +209,7 @@ pub func allMigrations(): slice[Migration] {
         CloudAgents.Db.profileCredentialsProfileIndexSql()
       ]
     ),
-    Migration(
-      version = "0003_session_profile",
-      statements = [
-        CloudAgents.Db.alterSessionsAddProfileSql()
-      ]
-    ),
+    Migration(version = "0003_session_profile", statements = [CloudAgents.Db.alterSessionsAddProfileSql()]),
     Migration(
       version = "0004_runs",
       statements = [
@@ -240,23 +235,24 @@ pub func allMigrations(): slice[Migration] {
         CloudAgents.Db.webhookEventsPendingIndexSql()
       ]
     ),
-    Migration(
-      version = "0007_github_token_cache",
-      statements = [
-        CloudAgents.Db.githubTokenCacheSchemaSql()
-      ]
-    ),
+    Migration(version = "0007_github_token_cache", statements = [CloudAgents.Db.githubTokenCacheSchemaSql()]),
     Migration(
       version = "0008_session_repos",
-      statements = [
-        CloudAgents.Db.sessionReposSchemaSql(),
-        CloudAgents.Db.sessionReposSessionIndexSql()
-      ]
+      statements = [CloudAgents.Db.sessionReposSchemaSql(), CloudAgents.Db.sessionReposSessionIndexSql()]
     ),
+    Migration(version = "0009_model_listing_cache", statements = [CloudAgents.Db.modelListingCacheSchemaSql()]),
     Migration(
-      version = "0009_model_listing_cache",
+      version = "0010_mcp_callbacks",
       statements = [
-        CloudAgents.Db.modelListingCacheSchemaSql()
+        CloudAgents.Db.alterSessionsAddCallbackTokenSql(),
+        CloudAgents.Db.alterSessionsAddProgressSql(),
+        CloudAgents.Db.alterSessionsAddProgressPercentSql(),
+        CloudAgents.Db.permissionRequestsSchemaSql(),
+        CloudAgents.Db.permissionRequestsSessionIndexSql(),
+        CloudAgents.Db.permissionRulesSchemaSql(),
+        CloudAgents.Db.permissionRulesSessionIndexSql(),
+        CloudAgents.Db.userQuestionsSchemaSql(),
+        CloudAgents.Db.userQuestionsSessionIndexSql()
       ]
     )
   ]
@@ -515,7 +511,9 @@ func tagsForPrompt(pairs: in slice[PromptTag], promptId: in String): slice[Strin
 
 /// Replace a prompt's tag set atomically (clear, then insert each). Returned by
 /// callers through executeTransaction so the set is consistent on partial fail.
-pub func setPromptTags(promptId: in String, userId: in String, tags: in slice[String]): Result[Unit, CloudAgents.Sqlite.DbError] {
+pub func setPromptTags(
+  promptId: in String, userId: in String, tags: in slice[String]
+): Result[Unit, CloudAgents.Sqlite.DbError] {
   var stmts: slice[String] = []
   stmts = stmts.append(CloudAgents.Db.deletePromptTagsSql(promptId, userId))
   for t in tags {
@@ -548,7 +546,16 @@ pub func addPromptWithTags(
   }
   CloudAgents.Sqlite.executeTransaction(stmts)?
   return Ok(
-    value = Prompt(id = id, userId = userId, name = name, body = body, useCount = "0", createdAt = ts, updatedAt = ts, tags = tags)
+    value = Prompt(
+      id = id,
+      userId = userId,
+      name = name,
+      body = body,
+      useCount = "0",
+      createdAt = ts,
+      updatedAt = ts,
+      tags = tags
+    )
   )
 }
 
@@ -905,9 +912,7 @@ pub func recordRunStart(
 ): Result[String, CloudAgents.Sqlite.DbError] {
   val id = newId()
   val ts = nowMillis()
-  CloudAgents.Sqlite.execute(
-    CloudAgents.Db.insertRunSql(id, sessionId, userId, promptPreview(prompt), harness, model, ts)
-  )?
+  CloudAgents.Sqlite.execute(CloudAgents.Db.insertRunSql(id, sessionId, userId, promptPreview(prompt), harness, model, ts))?
   return Ok(value = id)
 }
 
@@ -920,7 +925,9 @@ pub func recordRunEnd(runId: in String, userId: in String, status: in String): R
 /// Mark every still-'running' run for a session terminal — used when a run ends
 /// without the run id in hand (a cancel from another request), so history never
 /// strands a phantom 'running' row.
-pub func finishSessionRuns(sessionId: in String, userId: in String, status: in String): Result[Unit, CloudAgents.Sqlite.DbError] {
+pub func finishSessionRuns(
+  sessionId: in String, userId: in String, status: in String
+): Result[Unit, CloudAgents.Sqlite.DbError] {
   CloudAgents.Sqlite.execute(CloudAgents.Db.finishSessionRunsSql(sessionId, userId, status, nowMillis()))?
   return Ok(value = ())
 }
@@ -1068,7 +1075,14 @@ pub func addWebhook(userId: in String, url: in String): Result[Webhook, CloudAge
     return Ok(value = Webhook(id = id, userId = userId, url = url, createdAt = ts))
   }
   val r = CloudAgents.Sqlite.getRowArrayValue(rows, 0)
-  return Ok(value = Webhook(id = colAt(r.cols, 0), userId = colAt(r.cols, 1), url = colAt(r.cols, 2), createdAt = colAt(r.cols, 3)))
+  return Ok(
+    value = Webhook(
+      id = colAt(r.cols, 0),
+      userId = colAt(r.cols, 1),
+      url = colAt(r.cols, 2),
+      createdAt = colAt(r.cols, 3)
+    )
+  )
 }
 
 /// A user's registered webhooks, newest first.
@@ -1079,7 +1093,14 @@ pub func listWebhooks(userId: in String): Result[slice[Webhook], CloudAgents.Sql
   val len = CloudAgents.Sqlite.getRowArrayLength(rows)
   while i < len {
     val r = CloudAgents.Sqlite.getRowArrayValue(rows, i)
-    acc = acc.append(Webhook(id = colAt(r.cols, 0), userId = colAt(r.cols, 1), url = colAt(r.cols, 2), createdAt = colAt(r.cols, 3)))
+    acc = acc.append(
+      Webhook(
+        id = colAt(r.cols, 0),
+        userId = colAt(r.cols, 1),
+        url = colAt(r.cols, 2),
+        createdAt = colAt(r.cols, 3)
+      )
+    )
     i = i + 1
   }
   return Ok(value = acc)
@@ -1315,10 +1336,7 @@ pub func decryptedCredentialsForProfile(
   if profileId.length == 0 {
     return decryptedCredentials(userId)
   }
-  val profile = match getProfile(profileId, userId) {
-    case Ok(p) -> p
-    case Err(e) -> return Err(Db(error = e))
-  }
+  val profile = match getProfile(profileId, userId) { case Ok(p) -> p; case Err(e) -> return Err(Db(error = e)) }
   match profile {
     case None -> {
       // Referenced profile is gone: fail closed, inject no credentials.
@@ -1394,9 +1412,7 @@ pub func cacheGitHubToken(
     case Ok(_) -> ()
     case Err(_) -> ()
   }
-  CloudAgents.Sqlite.execute(
-    CloudAgents.Db.upsertGitHubTokenSql(tokenHash, userId, login, now, githubTokenTtlMillis())
-  )?
+  CloudAgents.Sqlite.execute(CloudAgents.Db.upsertGitHubTokenSql(tokenHash, userId, login, now, githubTokenTtlMillis()))?
   return Ok(value = ())
 }
 
@@ -1416,9 +1432,7 @@ pub func cacheGitHubTokenDenied(tokenHash: in String): Result[Unit, CloudAgents.
     case Ok(_) -> ()
     case Err(_) -> ()
   }
-  CloudAgents.Sqlite.execute(
-    CloudAgents.Db.upsertGitHubTokenSql(tokenHash, "", "", now, githubTokenDeniedTtlMillis())
-  )?
+  CloudAgents.Sqlite.execute(CloudAgents.Db.upsertGitHubTokenSql(tokenHash, "", "", now, githubTokenDeniedTtlMillis()))?
   return Ok(value = ())
 }
 
@@ -1443,9 +1457,7 @@ pub func cacheOAuthCodeRejected(codeHash: in String): Result[Unit, CloudAgents.S
     case Ok(_) -> ()
     case Err(_) -> ()
   }
-  CloudAgents.Sqlite.execute(
-    CloudAgents.Db.upsertGitHubTokenSql(codeHash, "", "oauth-code", now, githubTokenDeniedTtlMillis())
-  )?
+  CloudAgents.Sqlite.execute(CloudAgents.Db.upsertGitHubTokenSql(codeHash, "", "oauth-code", now, githubTokenDeniedTtlMillis()))?
   return Ok(value = ())
 }
 
@@ -1461,9 +1473,7 @@ pub func activeRejectedOAuthCodes(): Result[Int, CloudAgents.Sqlite.DbError] {
 }
 
 /// The still-valid cache entry for a token hash, or None (missing or expired).
-pub func cachedGitHubToken(
-  tokenHash: in String
-): Result[Option[GitHubTokenCacheEntry], CloudAgents.Sqlite.DbError] {
+pub func cachedGitHubToken(tokenHash: in String): Result[Option[GitHubTokenCacheEntry], CloudAgents.Sqlite.DbError] {
   val rows = CloudAgents.Sqlite.query(CloudAgents.Db.selectGitHubTokenSql(tokenHash, nowMillis()))?
   val len = CloudAgents.Sqlite.getRowArrayLength(rows)
   if len == 0 {
@@ -1496,9 +1506,7 @@ func modelListingTtlMillis(): String {
 
 /// A still-fresh cached listing body for (user, provider), or None.
 pub func cachedModelListing(userId: in String, provider: in String): Result[Option[String], CloudAgents.Sqlite.DbError] {
-  val rows = CloudAgents.Sqlite.query(
-    CloudAgents.Db.selectModelListingSql(userId, provider, nowMillis(), modelListingTtlMillis())
-  )?
+  val rows = CloudAgents.Sqlite.query(CloudAgents.Db.selectModelListingSql(userId, provider, nowMillis(), modelListingTtlMillis()))?
   val len = CloudAgents.Sqlite.getRowArrayLength(rows)
   if len == 0 {
     return Ok(value = None)
@@ -1508,7 +1516,9 @@ pub func cachedModelListing(userId: in String, provider: in String): Result[Opti
 
 /// Cache a provider's freshly-fetched listing body for a user. Sweeps expired
 /// rows first (best-effort), mirroring the token cache's write path (#432).
-pub func cacheModelListing(userId: in String, provider: in String, body: in String): Result[Unit, CloudAgents.Sqlite.DbError] {
+pub func cacheModelListing(
+  userId: in String, provider: in String, body: in String
+): Result[Unit, CloudAgents.Sqlite.DbError] {
   val now = nowMillis()
   match CloudAgents.Sqlite.execute(CloudAgents.Db.deleteExpiredModelListingsSql(now, modelListingTtlMillis())) {
     case Ok(_) -> ()
@@ -1516,4 +1526,248 @@ pub func cacheModelListing(userId: in String, provider: in String, body: in Stri
   }
   CloudAgents.Sqlite.execute(CloudAgents.Db.upsertModelListingSql(userId, provider, body, now))?
   return Ok(value = ())
+}
+
+// ─── Phase 6: MCP callbacks ──────────────────────────────────────────────────
+//
+// Permission requests / user questions / allow-always rules / progress
+// (docs/phase6-mcp-callbacks.md; schema in CloudAgents.Db). Every function
+// here is deliberately UNSCOPED by user_id: a container's callback bearer
+// token (verified one layer up, in CloudAgents.Callbacks) is the
+// authorization, not a user identity the container doesn't have — and the
+// human "answer" path derives its ownership check from the parent session
+// lookup (CloudAgents.SessionStore.getSession, owner-scoped) before ever
+// reaching these functions, the same indirection comments/todos use via
+// getMessageSessionId.
+@generate(Json)
+pub record PermissionRequest {
+  pub id: String
+  pub sessionId: String
+  pub toolName: String
+  pub inputJson: String
+  pub status: String
+  pub updatedInputJson: String
+  pub note: String
+  pub createdAt: String
+  pub decidedAt: String
+}
+
+@generate(Json)
+pub record UserQuestion {
+  pub id: String
+  pub sessionId: String
+  pub question: String
+  pub optionsJson: String
+  pub status: String
+  pub answer: String
+  pub createdAt: String
+  pub decidedAt: String
+}
+
+@generate(Json)
+pub record SessionProgress {
+  pub summary: String
+  pub percent: String
+}
+
+func rowToPermissionRequest(r: in CloudAgents.Sqlite.Row): PermissionRequest {
+  return PermissionRequest(
+    id = colAt(r.cols, 0),
+    sessionId = colAt(r.cols, 1),
+    toolName = colAt(r.cols, 2),
+    inputJson = colAt(r.cols, 3),
+    status = colAt(r.cols, 4),
+    updatedInputJson = colAt(r.cols, 5),
+    note = colAt(r.cols, 6),
+    createdAt = colAt(r.cols, 7),
+    decidedAt = colAt(r.cols, 8)
+  )
+}
+
+func rowToUserQuestion(r: in CloudAgents.Sqlite.Row): UserQuestion {
+  return UserQuestion(
+    id = colAt(r.cols, 0),
+    sessionId = colAt(r.cols, 1),
+    question = colAt(r.cols, 2),
+    optionsJson = colAt(r.cols, 3),
+    status = colAt(r.cols, 4),
+    answer = colAt(r.cols, 5),
+    createdAt = colAt(r.cols, 6),
+    decidedAt = colAt(r.cols, 7)
+  )
+}
+
+/// Create a permission request. When `preApproved` is true (an allow-always
+/// rule already matched this exact (tool, input) pair for the session) the
+/// row is created already decided ('allowed', with an explanatory note) so
+/// the container's very first poll sees the decision — no prompt round trip.
+pub func createPermissionRequest(
+  sessionId: in String, toolName: in String, inputJson: in String, preApproved: in Bool
+): Result[PermissionRequest, CloudAgents.Sqlite.DbError] {
+  val id = newId()
+  val ts = nowMillis()
+  val status = if preApproved { "allowed" } else { "pending" }
+  val note = if preApproved { "allow-always rule matched" } else { "" }
+  val decidedAt = if preApproved { ts } else { "" }
+  CloudAgents.Sqlite.execute(CloudAgents.Db.insertPermissionRequestSql(id, sessionId, toolName, inputJson, status, note, ts, decidedAt))?
+  return Ok(
+    value = PermissionRequest(
+      id = id,
+      sessionId = sessionId,
+      toolName = toolName,
+      inputJson = inputJson,
+      status = status,
+      updatedInputJson = "",
+      note = note,
+      createdAt = ts,
+      decidedAt = decidedAt
+    )
+  )
+}
+
+/// A permission request by id, or None.
+pub func getPermissionRequest(id: in String): Result[Option[PermissionRequest], CloudAgents.Sqlite.DbError] {
+  val rows = CloudAgents.Sqlite.query(CloudAgents.Db.selectPermissionRequestByIdSql(id))?
+  val len = CloudAgents.Sqlite.getRowArrayLength(rows)
+  if len == 0 {
+    return Ok(value = None)
+  }
+  return Ok(value = Some(value = rowToPermissionRequest(CloudAgents.Sqlite.getRowArrayValue(rows, 0))))
+}
+
+/// Permission requests created for a session strictly after `afterCreatedAt`,
+/// oldest first — used by the streaming poll loop to discover new requests to
+/// emit as SSE events.
+pub func permissionRequestsCreatedAfter(
+  sessionId: in String, afterCreatedAt: in String
+): Result[slice[PermissionRequest], CloudAgents.Sqlite.DbError] {
+  val rows = CloudAgents.Sqlite.query(CloudAgents.Db.selectPermissionRequestsCreatedAfterSql(sessionId, afterCreatedAt))?
+  var acc: slice[PermissionRequest] = []
+  var i = 0
+  val len = CloudAgents.Sqlite.getRowArrayLength(rows)
+  while i < len {
+    acc = acc.append(rowToPermissionRequest(CloudAgents.Sqlite.getRowArrayValue(rows, i)))
+    i = i + 1
+  }
+  return Ok(value = acc)
+}
+
+/// Answer a still-pending permission request. Returns rows affected (0 = not
+/// pending anymore — already answered, or already timed out — the handler
+/// maps that to 409).
+pub func answerPermissionRequest(
+  id: in String, status: in String, updatedInputJson: in String, note: in String
+): Result[Int, CloudAgents.Sqlite.DbError] {
+  return CloudAgents.Sqlite.execute(
+    CloudAgents.Db.answerPermissionRequestSql(id, status, updatedInputJson, note, nowMillis())
+  )
+}
+
+/// Host-side fail-closed timeout backstop (docs/phase6-mcp-callbacks.md §3
+/// step 4): deny a still-pending request once it has been pending at least
+/// `timeoutMillis`. Write-once — safe to call on every poll.
+pub func timeoutPendingPermissionRequest(
+  id: in String, timeoutMillis: in Long
+): Result[Unit, CloudAgents.Sqlite.DbError] {
+  CloudAgents.Sqlite.execute(CloudAgents.Db.timeoutPendingPermissionRequestSql(id, nowMillis(), toString(timeoutMillis)))?
+  return Ok(value = ())
+}
+
+/// Whether an allow-always rule exists for this exact (session, tool, input).
+pub func permissionRuleMatches(
+  sessionId: in String, toolName: in String, inputJson: in String
+): Result[Bool, CloudAgents.Sqlite.DbError] {
+  val rows = CloudAgents.Sqlite.query(CloudAgents.Db.selectPermissionRuleMatchSql(sessionId, toolName, inputJson))?
+  return Ok(value = CloudAgents.Sqlite.getRowArrayLength(rows) > 0)
+}
+
+/// Persist an allow-always rule for a (session, tool, input) triple.
+/// Idempotent (ON CONFLICT DO NOTHING at the SQL layer).
+pub func addPermissionRule(
+  sessionId: in String, toolName: in String, inputJson: in String
+): Result[Unit, CloudAgents.Sqlite.DbError] {
+  CloudAgents.Sqlite.execute(CloudAgents.Db.insertPermissionRuleSql(newId(), sessionId, toolName, inputJson, nowMillis()))?
+  return Ok(value = ())
+}
+
+/// Create a user question (ask_user MCP tool). `optionsJson` is "" for a
+/// free-text question or a JSON array of choices for multiple-choice.
+pub func createUserQuestion(
+  sessionId: in String, question: in String, optionsJson: in String
+): Result[UserQuestion, CloudAgents.Sqlite.DbError] {
+  val id = newId()
+  val ts = nowMillis()
+  CloudAgents.Sqlite.execute(CloudAgents.Db.insertUserQuestionSql(id, sessionId, question, optionsJson, ts))?
+  return Ok(
+    value = UserQuestion(
+      id = id,
+      sessionId = sessionId,
+      question = question,
+      optionsJson = optionsJson,
+      status = "pending",
+      answer = "",
+      createdAt = ts,
+      decidedAt = ""
+    )
+  )
+}
+
+/// A user question by id, or None.
+pub func getUserQuestion(id: in String): Result[Option[UserQuestion], CloudAgents.Sqlite.DbError] {
+  val rows = CloudAgents.Sqlite.query(CloudAgents.Db.selectUserQuestionByIdSql(id))?
+  val len = CloudAgents.Sqlite.getRowArrayLength(rows)
+  if len == 0 {
+    return Ok(value = None)
+  }
+  return Ok(value = Some(value = rowToUserQuestion(CloudAgents.Sqlite.getRowArrayValue(rows, 0))))
+}
+
+/// User questions created for a session strictly after `afterCreatedAt`,
+/// oldest first — mirrors permissionRequestsCreatedAfter for SSE emission.
+pub func userQuestionsCreatedAfter(
+  sessionId: in String, afterCreatedAt: in String
+): Result[slice[UserQuestion], CloudAgents.Sqlite.DbError] {
+  val rows = CloudAgents.Sqlite.query(CloudAgents.Db.selectUserQuestionsCreatedAfterSql(sessionId, afterCreatedAt))?
+  var acc: slice[UserQuestion] = []
+  var i = 0
+  val len = CloudAgents.Sqlite.getRowArrayLength(rows)
+  while i < len {
+    acc = acc.append(rowToUserQuestion(CloudAgents.Sqlite.getRowArrayValue(rows, i)))
+    i = i + 1
+  }
+  return Ok(value = acc)
+}
+
+/// Answer a still-pending question. Returns rows affected (0 = already
+/// answered/timed out — the handler maps that to 409).
+pub func answerUserQuestion(id: in String, answer: in String): Result[Int, CloudAgents.Sqlite.DbError] {
+  return CloudAgents.Sqlite.execute(CloudAgents.Db.answerUserQuestionSql(id, answer, nowMillis()))
+}
+
+/// Host-side fail-closed timeout backstop for questions: marks a still-pending
+/// question 'timed_out' (distinct from an empty-string answer) once it has
+/// been pending at least `timeoutMillis`.
+pub func timeoutPendingUserQuestion(id: in String, timeoutMillis: in Long): Result[Unit, CloudAgents.Sqlite.DbError] {
+  CloudAgents.Sqlite.execute(CloudAgents.Db.timeoutPendingUserQuestionSql(id, nowMillis(), toString(timeoutMillis)))?
+  return Ok(value = ())
+}
+
+/// Set a session's latest reported progress (report_progress MCP tool,
+/// fire-and-forget).
+pub func updateSessionProgress(
+  sessionId: in String, summary: in String, percent: in String
+): Result[Unit, CloudAgents.Sqlite.DbError] {
+  CloudAgents.Sqlite.execute(CloudAgents.Db.updateSessionProgressSql(sessionId, summary, percent))?
+  return Ok(value = ())
+}
+
+/// A session's latest reported progress (both fields "" if never reported).
+pub func sessionProgress(sessionId: in String): Result[SessionProgress, CloudAgents.Sqlite.DbError] {
+  val rows = CloudAgents.Sqlite.query(CloudAgents.Db.selectSessionProgressSql(sessionId))?
+  val len = CloudAgents.Sqlite.getRowArrayLength(rows)
+  if len == 0 {
+    return Ok(value = SessionProgress(summary = "", percent = ""))
+  }
+  val r0 = CloudAgents.Sqlite.getRowArrayValue(rows, 0)
+  return Ok(value = SessionProgress(summary = colAt(r0.cols, 0), percent = colAt(r0.cols, 1)))
 }

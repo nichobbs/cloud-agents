@@ -51,7 +51,6 @@ pub func jsonEscape(
 // string literals cannot express these bytes, so the helpers go through the
 // BCL. The single-char control-character test lives in CloudAgents.Text
 // (isControlChar); the char<->code-point externs below are streaming-specific.
-
 /// The single-character string for a Unicode code point. Exposed so tests can
 /// construct control characters that Lyric literals cannot express.
 @externTarget("System.Char.ConvertFromUtf32")
@@ -164,6 +163,43 @@ pub func nextPollMs(current: in Int, maxMs: in Int): Int {
     return maxMs
   }
   return next
+}
+
+// ─── Phase 6: MCP-callback SSE events ────────────────────────────────────────
+//
+// docs/phase6-mcp-callbacks.md §5: three new event types pushed on the same
+// session output stream as the existing `data:`/`done`/`error` frames above —
+// `permission_request` / `user_question` when the container creates one
+// (CloudAgents.Callbacks), and `progress_update` on a report_progress call.
+// Emission itself happens from CloudAgents.Docker's existing per-run poll
+// loop (the only place holding an open ResponseWriter for a session's active
+// stream); these are the pure framing functions, unit-tested exactly like
+// toSseChunk/sseDone/sseError above.
+/// A newly created permission request, for the human to answer in the UI.
+/// `inputJson` is the tool's pending input, passed through opaque and
+/// JSON-escaped like every other string field on this stream.
+pub func ssePermissionRequest(id: in String, toolName: in String, inputJson: in String): String {
+  return "event: permission_request\ndata: {\"id\":\"" + jsonEscape(id) + "\",\"toolName\":\"" + jsonEscape(toolName) +
+    "\",\"inputJson\":\"" +
+    jsonEscape(inputJson) +
+    "\"}\n\n"
+}
+
+/// A newly created user question (ask_user MCP tool). `optionsJson` is "" for
+/// a free-text question or a JSON array of choices for multiple-choice.
+pub func sseUserQuestion(id: in String, question: in String, optionsJson: in String): String {
+  return "event: user_question\ndata: {\"id\":\"" + jsonEscape(id) + "\",\"question\":\"" + jsonEscape(question) +
+    "\",\"optionsJson\":\"" +
+    jsonEscape(optionsJson) +
+    "\"}\n\n"
+}
+
+/// A fire-and-forget progress report (report_progress MCP tool).
+/// `percentComplete` is "" when the tool call omitted it.
+pub func sseProgressUpdate(summary: in String, percentComplete: in String): String {
+  return "event: progress_update\ndata: {\"summary\":\"" + jsonEscape(summary) + "\",\"percentComplete\":\"" +
+    jsonEscape(percentComplete) +
+    "\"}\n\n"
 }
 
 // (The whole-log framing helpers logsToFrames/formatLogsAsSse/

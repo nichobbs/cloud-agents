@@ -165,7 +165,6 @@ pub func sessionsSchemaSql(): String {
 // as dead code (#443): they were never wired into docker_manager.l and used a
 // naming shape inconsistent with the *BindFor functions below that actually
 // mount volumes — docs/review-2026-07-03*.md reference them historically.)
-
 /// Container-side $HOME mount path for a harness image. Each harness image
 /// runs as its own user with its own home directory (#409); unknown or empty
 /// harness falls back to the claude image's path, matching
@@ -264,8 +263,7 @@ pub func insertSessionSql(
   nativeSessionId: in String,
   createdAt: in String,
 ): String {
-  return "INSERT INTO sessions (" + sessionColumns + ") VALUES (" + sqlLiteral(id) + ", " + sqlLiteral(userId) +
-    ", " +
+  return "INSERT INTO sessions (" + sessionColumns + ") VALUES (" + sqlLiteral(id) + ", " + sqlLiteral(userId) + ", " +
     sqlLiteral(repoUrl) +
     ", " +
     sqlLiteral(branch) +
@@ -309,9 +307,9 @@ pub func updateSessionContainerSql(id: in String, userId: in String, containerId
 /// container id; an unconditional clear would then wipe the newer id and orphan
 /// its container.
 pub func clearSessionContainerIfMatchesSql(id: in String, userId: in String, containerId: in String): String {
-  return "UPDATE sessions SET container_id = '' WHERE id = " + sqlLiteral(id) +
-    " AND user_id = " + sqlLiteral(userId) +
-    " AND container_id = " + sqlLiteral(containerId)
+  return "UPDATE sessions SET container_id = '' WHERE id = " + sqlLiteral(id) + " AND user_id = " + sqlLiteral(userId) +
+    " AND container_id = " +
+    sqlLiteral(containerId)
 }
 
 /// UPDATE a session's model.
@@ -324,8 +322,7 @@ pub func updateSessionModelSql(id: in String, userId: in String, model: in Strin
 /// it is not already RUNNING, in one statement, so two concurrent sends
 /// cannot both win (rows affected = 1 means the claim succeeded).
 pub func tryBeginRunSql(id: in String, userId: in String, ts: in String): String {
-  return "UPDATE sessions SET status = 'RUNNING', last_message_at = " + sqlLiteral(ts) + " WHERE id = " +
-    sqlLiteral(id) +
+  return "UPDATE sessions SET status = 'RUNNING', last_message_at = " + sqlLiteral(ts) + " WHERE id = " + sqlLiteral(id) +
     " AND user_id = " +
     sqlLiteral(userId) +
     " AND status <> 'RUNNING'"
@@ -333,8 +330,7 @@ pub func tryBeginRunSql(id: in String, userId: in String, ts: in String): String
 
 /// Return a session to IDLE after a run completes (success or failure).
 pub func endRunSql(id: in String, userId: in String, ts: in String): String {
-  return "UPDATE sessions SET status = 'IDLE', last_message_at = " + sqlLiteral(ts) + " WHERE id = " +
-    sqlLiteral(id) +
+  return "UPDATE sessions SET status = 'IDLE', last_message_at = " + sqlLiteral(ts) + " WHERE id = " + sqlLiteral(id) +
     " AND user_id = " +
     sqlLiteral(userId)
 }
@@ -408,7 +404,11 @@ pub func sessionReposSessionIndexSql(): String {
 
 /// INSERT a linked repository for a session.
 pub func insertSessionRepoSql(
-  id: in String, sessionId: in String, repoUrl: in String, branch: in String, createdAt: in String
+  id: in String,
+  sessionId: in String,
+  repoUrl: in String,
+  branch: in String,
+  createdAt: in String,
 ): String {
   return "INSERT INTO session_repos (id, session_id, repo_url, branch, created_at) VALUES (" + sqlLiteral(id) + ", " +
     sqlLiteral(sessionId) +
@@ -642,8 +642,7 @@ pub func promptsSchemaSql(): String {
 pub func insertPromptSql(
   id: in String, userId: in String, name: in String, body: in String, createdAt: in String
 ): String {
-  return "INSERT INTO prompts (id, user_id, name, body, use_count, created_at, updated_at) VALUES (" +
-    sqlLiteral(id) +
+  return "INSERT INTO prompts (id, user_id, name, body, use_count, created_at, updated_at) VALUES (" + sqlLiteral(id) +
     ", " +
     sqlLiteral(userId) +
     ", " +
@@ -737,8 +736,7 @@ pub func promptTagsTagIndexSql(): String {
 
 /// INSERT one tag for a prompt (idempotent per (prompt, tag)).
 pub func insertPromptTagSql(id: in String, promptId: in String, userId: in String, tag: in String): String {
-  return "INSERT INTO prompt_tags (id, prompt_id, user_id, tag) VALUES (" + sqlLiteral(id) + ", " +
-    sqlLiteral(promptId) +
+  return "INSERT INTO prompt_tags (id, prompt_id, user_id, tag) VALUES (" + sqlLiteral(id) + ", " + sqlLiteral(promptId) +
     ", " +
     sqlLiteral(userId) +
     ", " +
@@ -773,7 +771,8 @@ pub func deletePromptTagsSql(promptId: in String, userId: in String): String {
 /// column list matches selectPromptsSql so rowToPrompt reads the same indices.
 pub func selectPromptsByTagSql(userId: in String, tag: in String): String {
   return "SELECT p.id, p.user_id, p.name, p.body, p.use_count, p.created_at, p.updated_at " +
-    "FROM prompts p JOIN prompt_tags pt ON pt.prompt_id = p.id " + "WHERE pt.user_id = " +
+    "FROM prompts p JOIN prompt_tags pt ON pt.prompt_id = p.id " +
+    "WHERE pt.user_id = " +
     sqlLiteral(userId) +
     " AND pt.tag = " +
     sqlLiteral(tag) +
@@ -950,8 +949,7 @@ pub func updateProfileSql(
   credentialMode: in String,
   updatedAt: in String,
 ): String {
-  return "UPDATE profiles SET name = " + sqlLiteral(name) + ", harness = " + sqlLiteral(harness) +
-    ", network_policy = " +
+  return "UPDATE profiles SET name = " + sqlLiteral(name) + ", harness = " + sqlLiteral(harness) + ", network_policy = " +
     sqlLiteral(networkPolicy) +
     ", credential_mode = " +
     sqlLiteral(credentialMode) +
@@ -1077,7 +1075,8 @@ pub func selectRunsBySessionSql(sessionId: in String, userId: in String): String
 /// Used when a run ends without the caller holding the run id (e.g. a cancel
 /// from another request), so history doesn't leave phantom 'running' rows.
 pub func finishSessionRunsSql(sessionId: in String, userId: in String, status: in String, endedAt: in String): String {
-  return "UPDATE runs SET status = " + sqlLiteral(status) + ", ended_at = " + sqlLiteral(endedAt) + " WHERE session_id = " +
+  return "UPDATE runs SET status = " + sqlLiteral(status) + ", ended_at = " + sqlLiteral(endedAt) +
+    " WHERE session_id = " +
     sqlLiteral(sessionId) +
     " AND user_id = " +
     sqlLiteral(userId) +
@@ -1176,7 +1175,12 @@ pub func countWebhooksSql(userId: in String): String {
 
 /// INSERT a run-completion event into the outbox (delivered '0').
 pub func insertWebhookEventSql(
-  id: in String, userId: in String, sessionId: in String, runId: in String, status: in String, createdAt: in String
+  id: in String,
+  userId: in String,
+  sessionId: in String,
+  runId: in String,
+  status: in String,
+  createdAt: in String,
 ): String {
   return "INSERT INTO webhook_events (id, user_id, session_id, run_id, status, delivered, created_at) VALUES (" +
     sqlLiteral(id) +
@@ -1242,8 +1246,7 @@ pub func recordMigrationSql(version: in String, appliedAt: in String): String {
 // selectReapableWarmSql.
 /// DDL for the GitHub-token validation cache.
 pub func githubTokenCacheSchemaSql(): String {
-  return "CREATE TABLE IF NOT EXISTS github_token_cache (" + "token_hash TEXT PRIMARY KEY, " +
-    "user_id TEXT NOT NULL, " +
+  return "CREATE TABLE IF NOT EXISTS github_token_cache (" + "token_hash TEXT PRIMARY KEY, " + "user_id TEXT NOT NULL, " +
     "login TEXT NOT NULL, " +
     "expires_at TEXT NOT NULL)"
 }
@@ -1343,7 +1346,9 @@ pub func upsertModelListingSql(userId: in String, provider: in String, body: in 
 /// SELECT a still-fresh cached listing (rows older than the TTL never match).
 /// Freshness is `now - fetched_at < ttl`, computed in SQL so no epoch
 /// arithmetic touches the TEXT values in Lyric.
-pub func selectModelListingSql(userId: in String, provider: in String, nowMillis: in String, ttlMillis: in String): String {
+pub func selectModelListingSql(
+  userId: in String, provider: in String, nowMillis: in String, ttlMillis: in String
+): String {
   return "SELECT body FROM model_listing_cache WHERE user_id = " + sqlLiteral(userId) + " AND provider = " +
     sqlLiteral(provider) +
     " AND (CAST(" +
@@ -1359,5 +1364,288 @@ pub func deleteExpiredModelListingsSql(nowMillis: in String, ttlMillis: in Strin
   return "DELETE FROM model_listing_cache WHERE (CAST(" + sqlLiteral(nowMillis) +
     " AS INTEGER) - CAST(fetched_at AS INTEGER)) >= CAST(" +
     sqlLiteral(ttlMillis) +
+    " AS INTEGER)"
+}
+
+// ─── Phase 6: MCP callbacks (permission requests, user questions, progress) ──
+//
+// docs/phase6-mcp-callbacks.md. A per-session callback bearer token (minted at
+// container creation, stored on the session row) authenticates
+// container-originated calls; permission_requests / user_questions are the
+// pending/answered records the in-container MCP shim polls and a human
+// answers from the UI; permission_rules stores session-scoped "allow always"
+// rules so an identical (tool, input) pair is auto-approved without prompting
+// again; progress_summary/progress_percent on `sessions` hold the latest
+// fire-and-forget report_progress state. All TEXT affinity, sqlLiteral-escaped
+// like every other statement in this package.
+/// ALTER adding the per-session callback bearer token. Empty means callbacks
+/// were never minted for this session (pre-Phase-6 session, or the
+/// CLOUD_AGENTS_MCP_CALLBACKS feature flag is off) — CloudAgents.Callbacks
+/// treats an empty stored token as "callbacks not enabled" rather than a
+/// comparable secret.
+pub func alterSessionsAddCallbackTokenSql(): String {
+  return "ALTER TABLE sessions ADD COLUMN callback_token TEXT NOT NULL DEFAULT ''"
+}
+
+/// ALTER adding the latest report_progress summary. Empty means no progress
+/// has been reported yet.
+pub func alterSessionsAddProgressSql(): String {
+  return "ALTER TABLE sessions ADD COLUMN progress_summary TEXT NOT NULL DEFAULT ''"
+}
+
+/// ALTER adding the latest report_progress percent-complete (as digit text,
+/// "" when unknown).
+pub func alterSessionsAddProgressPercentSql(): String {
+  return "ALTER TABLE sessions ADD COLUMN progress_percent TEXT NOT NULL DEFAULT ''"
+}
+
+/// Set (or clear) a session's callback bearer token. Scoped by owner — minted
+/// server-side at container creation with the owning user id already known
+/// (the same explicit-userId pattern as updateSessionContainerSql, since this
+/// runs off the request thread).
+pub func updateSessionCallbackTokenSql(id: in String, userId: in String, token: in String): String {
+  return "UPDATE sessions SET callback_token = " + sqlLiteral(token) + " WHERE id = " + sqlLiteral(id) +
+    " AND user_id = " +
+    sqlLiteral(userId)
+}
+
+/// Read a session's callback token by id ONLY — deliberately unscoped by
+/// user_id. The container presenting this token has no user identity of its
+/// own yet; the token itself, compared in constant time against this stored
+/// value, IS the authentication (mirrors the GitHub-token-cache's hash-keyed
+/// lookup, not an ownership check).
+pub func selectSessionCallbackTokenSql(id: in String): String {
+  return "SELECT callback_token FROM sessions WHERE id = " + sqlLiteral(id)
+}
+
+/// Set a session's latest reported progress. Unscoped (system-style write,
+/// like reapSessionContainerSql) — authorization happens one layer up, at the
+/// callback-token check.
+pub func updateSessionProgressSql(id: in String, summary: in String, percent: in String): String {
+  return "UPDATE sessions SET progress_summary = " + sqlLiteral(summary) + ", progress_percent = " + sqlLiteral(percent) +
+    " WHERE id = " +
+    sqlLiteral(id)
+}
+
+/// Read a session's latest reported progress (summary, percent). Unscoped by
+/// user_id like the write above.
+pub func selectSessionProgressSql(id: in String): String {
+  return "SELECT progress_summary, progress_percent FROM sessions WHERE id = " + sqlLiteral(id)
+}
+
+// ─── Permission requests ──────────────────────────────────────────────────────
+//
+// One row per `request_permission` MCP-tool call: created by the container
+// (status 'pending', or already 'allowed' when an allow-always rule matches
+// at creation time), polled by the container, and terminally decided either
+// by a human's answer or by the host-side timeout backstop (status 'denied',
+// fail-closed — docs/phase6-mcp-callbacks.md §3 step 4).
+val permissionRequestColumns = "id, session_id, tool_name, input_json, status, updated_input_json, note, created_at, decided_at"
+
+pub func permissionRequestsSchemaSql(): String {
+  return "CREATE TABLE IF NOT EXISTS permission_requests (" + "id TEXT PRIMARY KEY, " + "session_id TEXT NOT NULL, " +
+    "tool_name TEXT NOT NULL, " +
+    "input_json TEXT NOT NULL, " +
+    "status TEXT NOT NULL, " +
+    "updated_input_json TEXT NOT NULL DEFAULT '', " +
+    "note TEXT NOT NULL DEFAULT '', " +
+    "created_at TEXT NOT NULL, " +
+    "decided_at TEXT NOT NULL DEFAULT '')"
+}
+
+pub func permissionRequestsSessionIndexSql(): String {
+  return "CREATE INDEX IF NOT EXISTS idx_permission_requests_session_id ON permission_requests(session_id)"
+}
+
+/// INSERT a permission request. `status` is 'pending' for a fresh request or
+/// 'allowed' when an allow-always rule matched at creation time (in which case
+/// the caller also supplies a populated `note`/`decidedAt`).
+pub func insertPermissionRequestSql(
+  id: in String,
+  sessionId: in String,
+  toolName: in String,
+  inputJson: in String,
+  status: in String,
+  note: in String,
+  createdAt: in String,
+  decidedAt: in String,
+): String {
+  return "INSERT INTO permission_requests (" + permissionRequestColumns + ") VALUES (" + sqlLiteral(id) + ", " +
+    sqlLiteral(sessionId) +
+    ", " +
+    sqlLiteral(toolName) +
+    ", " +
+    sqlLiteral(inputJson) +
+    ", " +
+    sqlLiteral(status) +
+    ", '', " +
+    sqlLiteral(note) +
+    ", " +
+    sqlLiteral(createdAt) +
+    ", " +
+    sqlLiteral(decidedAt) +
+    ")"
+}
+
+pub func selectPermissionRequestByIdSql(id: in String): String {
+  return "SELECT " + permissionRequestColumns + " FROM permission_requests WHERE id = " + sqlLiteral(id)
+}
+
+/// SELECT permission requests created for a session strictly after
+/// `afterCreatedAt`, oldest first — the poll-loop's "what's new since I last
+/// looked" query for SSE emission.
+pub func selectPermissionRequestsCreatedAfterSql(sessionId: in String, afterCreatedAt: in String): String {
+  return "SELECT " + permissionRequestColumns + " FROM permission_requests WHERE session_id = " + sqlLiteral(sessionId) +
+    " AND created_at > " +
+    sqlLiteral(afterCreatedAt) +
+    " ORDER BY created_at ASC"
+}
+
+/// Answer a still-pending request (write-once: only a 'pending' row is
+/// updated, so a second answer — or an answer racing the timeout sweep — sees
+/// 0 rows affected rather than clobbering the first decision).
+pub func answerPermissionRequestSql(
+  id: in String,
+  status: in String,
+  updatedInputJson: in String,
+  note: in String,
+  decidedAt: in String,
+): String {
+  return "UPDATE permission_requests SET status = " + sqlLiteral(status) + ", updated_input_json = " +
+    sqlLiteral(updatedInputJson) +
+    ", note = " +
+    sqlLiteral(note) +
+    ", decided_at = " +
+    sqlLiteral(decidedAt) +
+    " WHERE id = " +
+    sqlLiteral(id) +
+    " AND status = 'pending'"
+}
+
+/// Host-side fail-closed timeout backstop: deny a still-pending request once
+/// it has been pending at least `timeoutMillis`. Write-once (status = 'pending'
+/// guard), so this can be called on every poll with no effect once the request
+/// is already decided.
+pub func timeoutPendingPermissionRequestSql(id: in String, nowMillis: in String, timeoutMillis: in String): String {
+  return "UPDATE permission_requests SET status = 'denied', note = 'timed out waiting for a human response', decided_at = " +
+    sqlLiteral(nowMillis) +
+    " WHERE id = " +
+    sqlLiteral(id) +
+    " AND status = 'pending' AND (CAST(" +
+    sqlLiteral(nowMillis) +
+    " AS INTEGER) - CAST(created_at AS INTEGER)) >= CAST(" +
+    sqlLiteral(timeoutMillis) +
+    " AS INTEGER)"
+}
+
+// ─── Permission rules ("allow always") ───────────────────────────────────────
+//
+// Session-scoped in v1 (docs/phase6-mcp-callbacks.md §3): an exact (session,
+// tool, input) match auto-approves a subsequent identical request without
+// prompting again.
+pub func permissionRulesSchemaSql(): String {
+  return "CREATE TABLE IF NOT EXISTS permission_rules (" + "id TEXT PRIMARY KEY, " + "session_id TEXT NOT NULL, " +
+    "tool_name TEXT NOT NULL, " +
+    "input_json TEXT NOT NULL, " +
+    "created_at TEXT NOT NULL, " +
+    "UNIQUE(session_id, tool_name, input_json))"
+}
+
+pub func permissionRulesSessionIndexSql(): String {
+  return "CREATE INDEX IF NOT EXISTS idx_permission_rules_session_id ON permission_rules(session_id)"
+}
+
+pub func insertPermissionRuleSql(
+  id: in String,
+  sessionId: in String,
+  toolName: in String,
+  inputJson: in String,
+  createdAt: in String,
+): String {
+  return "INSERT INTO permission_rules (id, session_id, tool_name, input_json, created_at) VALUES (" + sqlLiteral(id) +
+    ", " +
+    sqlLiteral(sessionId) +
+    ", " +
+    sqlLiteral(toolName) +
+    ", " +
+    sqlLiteral(inputJson) +
+    ", " +
+    sqlLiteral(createdAt) +
+    ") ON CONFLICT(session_id, tool_name, input_json) DO NOTHING"
+}
+
+pub func selectPermissionRuleMatchSql(sessionId: in String, toolName: in String, inputJson: in String): String {
+  return "SELECT id FROM permission_rules WHERE session_id = " + sqlLiteral(sessionId) + " AND tool_name = " +
+    sqlLiteral(toolName) +
+    " AND input_json = " +
+    sqlLiteral(inputJson)
+}
+
+// ─── User questions ───────────────────────────────────────────────────────────
+//
+// One row per `ask_user` MCP-tool call: created by the container (status
+// 'pending'), polled by the container, and terminally 'answered' by a human or
+// 'timed_out' by the host-side backstop (distinct from an empty-string
+// answer).
+val userQuestionColumns = "id, session_id, question, options_json, status, answer, created_at, decided_at"
+
+pub func userQuestionsSchemaSql(): String {
+  return "CREATE TABLE IF NOT EXISTS user_questions (" + "id TEXT PRIMARY KEY, " + "session_id TEXT NOT NULL, " +
+    "question TEXT NOT NULL, " +
+    "options_json TEXT NOT NULL DEFAULT '', " +
+    "status TEXT NOT NULL, " +
+    "answer TEXT NOT NULL DEFAULT '', " +
+    "created_at TEXT NOT NULL, " +
+    "decided_at TEXT NOT NULL DEFAULT '')"
+}
+
+pub func userQuestionsSessionIndexSql(): String {
+  return "CREATE INDEX IF NOT EXISTS idx_user_questions_session_id ON user_questions(session_id)"
+}
+
+pub func insertUserQuestionSql(
+  id: in String,
+  sessionId: in String,
+  question: in String,
+  optionsJson: in String,
+  createdAt: in String,
+): String {
+  return "INSERT INTO user_questions (" + userQuestionColumns + ") VALUES (" + sqlLiteral(id) + ", " +
+    sqlLiteral(sessionId) +
+    ", " +
+    sqlLiteral(question) +
+    ", " +
+    sqlLiteral(optionsJson) +
+    ", 'pending', '', " +
+    sqlLiteral(createdAt) +
+    ", '')"
+}
+
+pub func selectUserQuestionByIdSql(id: in String): String {
+  return "SELECT " + userQuestionColumns + " FROM user_questions WHERE id = " + sqlLiteral(id)
+}
+
+pub func selectUserQuestionsCreatedAfterSql(sessionId: in String, afterCreatedAt: in String): String {
+  return "SELECT " + userQuestionColumns + " FROM user_questions WHERE session_id = " + sqlLiteral(sessionId) +
+    " AND created_at > " +
+    sqlLiteral(afterCreatedAt) +
+    " ORDER BY created_at ASC"
+}
+
+pub func answerUserQuestionSql(id: in String, answer: in String, decidedAt: in String): String {
+  return "UPDATE user_questions SET status = 'answered', answer = " + sqlLiteral(answer) + ", decided_at = " +
+    sqlLiteral(decidedAt) +
+    " WHERE id = " +
+    sqlLiteral(id) +
+    " AND status = 'pending'"
+}
+
+pub func timeoutPendingUserQuestionSql(id: in String, nowMillis: in String, timeoutMillis: in String): String {
+  return "UPDATE user_questions SET status = 'timed_out', decided_at = " + sqlLiteral(nowMillis) + " WHERE id = " +
+    sqlLiteral(id) +
+    " AND status = 'pending' AND (CAST(" +
+    sqlLiteral(nowMillis) +
+    " AS INTEGER) - CAST(created_at AS INTEGER)) >= CAST(" +
+    sqlLiteral(timeoutMillis) +
     " AS INTEGER)"
 }
