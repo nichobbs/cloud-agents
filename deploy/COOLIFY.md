@@ -60,23 +60,35 @@ this failure mode.
 
 ## Runner base images
 
-`docker-compose.coolify.yml` builds these directly (`claude-code-base`,
+`docker-compose.coolify.yml` can build these directly (`claude-code-base`,
 `codex-base`, `opencode-base`, `gemini-base`) — no manual `docker build` on
-the host needed. Each is a normal Compose service with `build:` pointed at
-the matching `docker/Dockerfile*`, but an explicit `image:` tag overriding
-Compose's default `<project>-<service>` naming so the built image lands
-under the exact name `imageForHarness()` (`src/docker_manager.l`) looks for
-(`claude-code:base`, etc.) — and `entrypoint: ["true"]` + `restart: "no"` so
-the "service" does nothing at runtime beyond getting built. Coolify runs
-`docker compose build`/`up` as part of every deploy, so these get
-(re)built automatically alongside `api`/`frontend`.
+the host needed for whichever are enabled. Each is a normal Compose service
+with `build:` pointed at the matching `docker/Dockerfile*`, but an explicit
+`image:` tag overriding Compose's default `<project>-<service>` naming so
+the built image lands under the exact name `imageForHarness()`
+(`src/docker_manager.l`) looks for (`claude-code:base`, etc.) — and
+`entrypoint: ["true"]` + `restart: "no"` so the "service" does nothing at
+runtime beyond getting built.
 
-Expect these four to show as **"Exited (0)"** in Coolify's service list —
+**Only `claude-code-base` is enabled by default** — `codex-base`/
+`opencode-base`/`gemini-base` are commented out. This isn't just about
+build time: `docker compose build` (how Coolify invokes it, no service
+argument) builds every enabled service in one shot, and a failure in *any
+one* fails the whole command — which blocks `api`/`frontend`/`caddy` from
+deploying too, not just the broken harness. This happened for real:
+`Dockerfile.codex`'s `npm install -g @openai/codex` step failed mid-build
+and took the entire deploy down with it, even though nothing about
+`api`/`frontend` had changed. Before uncommenting a harness, confirm its
+Dockerfile actually builds cleanly on its own first —
+`docker build -f docker/Dockerfile.codex docker` (swap in the relevant
+Dockerfile) — so a bad runner image can't block every future deploy of the
+whole app.
+
+Enabled services show as **"Exited (0)"** in Coolify's service list —
 that's the intended behavior, not a failure; only the built image matters.
-If you don't use every harness, comment out the ones you don't need in
-`docker-compose.coolify.yml` to skip their build on every deploy (the
-runner Dockerfiles force `--platform=linux/amd64`, so building on an arm64
-Coolify host means QEMU emulation — noticeably slower).
+The runner Dockerfiles force `--platform=linux/amd64`, so building on an
+arm64 Coolify host means QEMU emulation — noticeably slower, another
+reason to only enable the harnesses you actually use.
 
 ## Backups
 

@@ -64,18 +64,28 @@ services:
 
   # Runner base images — the ephemeral, per-message containers `api` spawns
   # via docker_manager.l's imageForHarness(). Coolify's own build only
-  # covers services in this compose file (api/frontend/the four below); it
-  # never runs deploy/install-docker.sh, so without these, container
-  # creation fails with "no such image" the first time anyone sends a
-  # message. Each service's sole job is to get its image *built* and tagged
-  # with the exact name imageForHarness() expects (image: overrides
+  # covers services in this compose file; it never runs
+  # deploy/install-docker.sh, so without one of these, container creation
+  # fails with "no such image" the first time anyone sends a message on
+  # that harness. Each service's sole job is to get its image *built* and
+  # tagged with the exact name imageForHarness() expects (image: overrides
   # Compose's default <project>-<service> tag) — the container itself does
   # nothing (`entrypoint: ["true"]`, exits 0 immediately, never restarts).
   # Expect these to show as "Exited (0)" in Coolify's service list — that's
-  # normal, not a failure; only the built image is the point. Comment out
-  # any harness you don't use to skip its (possibly slow, e.g. requires
-  # --platform=linux/amd64 emulation on an arm64 host — see
-  # docker/Dockerfile's header) build on every deploy.
+  # normal, not a failure; only the built image is the point.
+  #
+  # IMPORTANT: `docker compose build` (no service argument, which is how
+  # Coolify invokes it) builds every service in this file in one shot — a
+  # build failure in ANY of them fails the WHOLE command, which blocks
+  # `api`/`frontend`/`caddy` from deploying too, not just the broken
+  # harness (confirmed by a real failed deploy when Dockerfile.codex's
+  # `npm install -g @openai/codex` failed mid-build). Only `claude-code-base`
+  # is enabled by default for that reason — it's the one harness actually
+  # confirmed to build cleanly here. Uncomment codex-base/opencode-base/
+  # gemini-base below only after confirming its Dockerfile builds
+  # successfully on its own (e.g. `docker build -f docker/Dockerfile.codex
+  # docker`) — don't let an untested runner image risk blocking every
+  # future deploy of the whole app.
   claude-code-base:
     image: claude-code:base
     build:
@@ -84,29 +94,29 @@ services:
     entrypoint: ["true"]
     restart: "no"
 
-  codex-base:
-    image: codex:base
-    build:
-      context: ./docker
-      dockerfile: Dockerfile.codex
-    entrypoint: ["true"]
-    restart: "no"
+  # codex-base:
+  #   image: codex:base
+  #   build:
+  #     context: ./docker
+  #     dockerfile: Dockerfile.codex
+  #   entrypoint: ["true"]
+  #   restart: "no"
 
-  opencode-base:
-    image: opencode:base
-    build:
-      context: ./docker
-      dockerfile: Dockerfile.opencode
-    entrypoint: ["true"]
-    restart: "no"
+  # opencode-base:
+  #   image: opencode:base
+  #   build:
+  #     context: ./docker
+  #     dockerfile: Dockerfile.opencode
+  #   entrypoint: ["true"]
+  #   restart: "no"
 
-  gemini-base:
-    image: gemini:base
-    build:
-      context: ./docker
-      dockerfile: Dockerfile.gemini
-    entrypoint: ["true"]
-    restart: "no"
+  # gemini-base:
+  #   image: gemini:base
+  #   build:
+  #     context: ./docker
+  #     dockerfile: Dockerfile.gemini
+  #   entrypoint: ["true"]
+  #   restart: "no"
 
   caddy:
     image: caddy:2
