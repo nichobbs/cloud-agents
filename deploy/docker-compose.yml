@@ -13,6 +13,12 @@ services:
     environment:
       - ENCRYPTION_KEY=${ENCRYPTION_KEY:?set ENCRYPTION_KEY in .env}
       - CLOUD_AGENTS_WHITELIST=${CLOUD_AGENTS_WHITELIST:-}
+      # GitHub OAuth app credentials (optional). Unset -> oauthConfigured()
+      # is false, the frontend never shows "Sign in with GitHub" or
+      # enforces the login guard, and the app is open access — same as
+      # today if you don't set these.
+      - CLOUD_AGENTS_GITHUB_CLIENT_ID=${CLOUD_AGENTS_GITHUB_CLIENT_ID:-}
+      - CLOUD_AGENTS_GITHUB_CLIENT_SECRET=${CLOUD_AGENTS_GITHUB_CLIENT_SECRET:-}
       # Network policy for the 'restricted' profile: the Docker network runner
       # containers join, and an optional egress proxy. Unset -> 'restricted'
       # fails closed to no network (#306). The API reads these to set each

@@ -18,6 +18,10 @@ compose file for what differs and why.
    (see `.env.example` for what each does):
    - `ENCRYPTION_KEY` (required — generate with `openssl rand -base64 32`)
    - `CLOUD_AGENTS_WHITELIST` (optional)
+   - `CLOUD_AGENTS_GITHUB_CLIENT_ID`, `CLOUD_AGENTS_GITHUB_CLIENT_SECRET`
+     (optional — from a GitHub OAuth App with its callback URL set to
+     `https://<your-domain>/auth/callback`; leave both empty to run with no
+     sign-in requirement)
    - `CLOUD_AGENTS_RESTRICTED_NETWORK`, `CLOUD_AGENTS_EGRESS_PROXY` (optional,
      only needed for the `restricted` network policy)
    - `SERVICE_FQDN_CADDY_80` — Coolify manages this one itself once it
