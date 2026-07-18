@@ -8,7 +8,8 @@ containers managed by `docker-compose.yml`:
 - **caddy** — TLS termination + reverse proxy (ports 80/443).
 - **api** — the Lyric API server; launches ephemeral `claude-code:*` runner
   containers via the mounted Docker socket.
-- **frontend** — static prototype served by nginx.
+- **frontend** — the Vite/React app, built in a Docker multi-stage build
+  (`frontend/Dockerfile`) and served as static files by nginx.
 
 Runner containers are **ephemeral**: one per message, removed after the run.
 Session state lives on Docker volumes (`session-*` workspaces, `user-*-home`
