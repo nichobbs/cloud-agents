@@ -41,6 +41,12 @@ services:
     environment:
       - ENCRYPTION_KEY=${ENCRYPTION_KEY:?set ENCRYPTION_KEY in Coolify's environment variables}
       - CLOUD_AGENTS_WHITELIST=${CLOUD_AGENTS_WHITELIST:-}
+      # GitHub OAuth app credentials (optional). Unset -> oauthConfigured()
+      # is false, the frontend never shows "Sign in with GitHub" or
+      # enforces the login guard, and the app is open access — same as
+      # today if you don't set these.
+      - CLOUD_AGENTS_GITHUB_CLIENT_ID=${CLOUD_AGENTS_GITHUB_CLIENT_ID:-}
+      - CLOUD_AGENTS_GITHUB_CLIENT_SECRET=${CLOUD_AGENTS_GITHUB_CLIENT_SECRET:-}
       # See docker-compose.yml for what these two control (runner container
       # network policy) — same meaning here.
       - CLOUD_AGENTS_RESTRICTED_NETWORK=${CLOUD_AGENTS_RESTRICTED_NETWORK:-}
