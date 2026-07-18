@@ -95,6 +95,9 @@ pub func main(): Int {
   eqs(outputDelta("hello world", 6), "world", "outputDelta past offset")
   eqs(outputDelta("abc", 3), "", "outputDelta caught up")
   eqs(sseError("boom"), "event: error\ndata: {\"error\":\"boom\"}\n\n", "sseError frame")
+  eqs(toString(nextPollMs(1000, 5000)), "2000", "nextPollMs doubles below cap")
+  eqs(toString(nextPollMs(4000, 5000)), "5000", "nextPollMs caps the doubling")
+  eqs(sseKeepalive(), ": keepalive\n\n", "sseKeepalive comment frame")
 
   // Phase 2 — state machine
   eqs(tshow(nextStatus(Created, CloneStarted)), "CLONING", "Created+CloneStarted")

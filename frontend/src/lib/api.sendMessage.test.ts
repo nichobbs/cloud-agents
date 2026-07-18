@@ -44,4 +44,16 @@ describe('api.sendMessage SSE parsing', () => {
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue(sseResponse(body)));
     await expect(api.sendMessage('s1', 'hi', () => {})).rejects.toThrow('run failed');
   });
+
+  it('ignores keepalive comment frames interleaved with chunks (#499)', async () => {
+    // The backend emits `: keepalive\n\n` comment frames during quiet stretches
+    // to detect a vanished client. They carry no data line, so the parser must
+    // skip them without emitting a chunk or ending the stream.
+    const body =
+      ': keepalive\n\ndata: {"chunk":"out"}\n\n: keepalive\n\nevent: done\ndata: {}\n\n';
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(sseResponse(body)));
+    const chunks: string[] = [];
+    await api.sendMessage('s1', 'hi', c => chunks.push(c));
+    expect(chunks).toEqual(['out']);
+  });
 });

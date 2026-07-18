@@ -357,9 +357,29 @@ pub func streamSessionMessage(
           }
         }
       } else {
-        // Quiet tick — back off (doubling, capped) to spare the Docker daemon.
-        val next = pollMs * 2
-        pollMs = if next > maxPollMs { maxPollMs } else { next }
+        // Quiet tick — no new output. Send a keepalive comment frame (#499): the
+        // only way to learn the client has vanished is to attempt a write, and
+        // writes otherwise happen solely when there IS new output, so a client
+        // that disconnects during a long silence would go undetected until the
+        // next chunk or the 30-minute cap. The keepalive carries no data (the
+        // frontend parser skips it), so it costs nothing in the transcript but
+        // exercises the connection — a gone client fails it and is concluded gone
+        // via the same consecutive-failure counter as a real chunk.
+        match Web.writeChunk(w, CloudAgents.Streaming.sseKeepalive()) {
+          case Ok(_) -> {
+            writeFailures = 0
+          }
+          case Err(_) -> {
+            writeFailures = writeFailures + 1
+            if writeFailures >= maxConsecutiveWriteFailures {
+              clientGone = true
+            }
+          }
+        }
+        // Back off (doubling, capped) to spare the Docker daemon. The
+        // doubling-and-cap math lives in a pure, unit-tested helper so the
+        // backoff has coverage without Docker (#498).
+        pollMs = CloudAgents.Streaming.nextPollMs(pollMs, maxPollMs)
       }
     }
     // Hard cap the whole run (#481): a hung container with a still-connected
@@ -414,6 +434,13 @@ pub func streamSessionMessage(
     }
     return Ok(value = finalLogs)
   }
+  // Failure path: no final flush is attempted here (#497). runSessionMessageAsync
+  // only ever writes cell.output on SUCCESS — on failure cell.output stays "" and
+  // cell.error carries the reason — so an outputDelta against it would be a no-op.
+  // Any partial container output the run DID produce before failing was already
+  // streamed by the loop above (it writes each delta as it appears, independent of
+  // the eventual success/failure). The caller (streamSendMessage) turns this Err
+  // into a terminal `event: error` SSE frame.
   return Err(error = cell.error)
 }
 

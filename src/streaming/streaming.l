@@ -121,6 +121,18 @@ pub func outputDelta(logs: in String, offset: in Int): String {
   return logs.substring(offset, total - offset)
 }
 
+/// An SSE comment frame ("`: ...`") used as a keepalive during quiet stretches
+/// of a run (#499). It carries no `data:`/`event:` line, so the frontend's frame
+/// parser skips it (`if (!dataStr) continue`) — it never reaches the transcript.
+/// Its purpose is the WRITE, not the payload: the run loop only discovers a
+/// vanished client on an attempted `writeChunk`, and writes otherwise happen
+/// only when there is new output. Emitting a keepalive on each quiet tick means a
+/// client that disconnects mid-silence is detected within a poll interval instead
+/// of lingering until the next output chunk or the 30-minute hard cap.
+pub func sseKeepalive(): String {
+  return ": keepalive\n\n"
+}
+
 /// Terminal SSE frame signalling the stream is complete.
 pub func sseDone(): String {
   return "event: done\ndata: {}\n\n"
@@ -140,6 +152,18 @@ pub func sseError(message: in String): String {
 /// client can anchor comments and todos to this response.
 pub func sseDoneWithMessage(messageId: in String): String {
   return "event: done\ndata: {\"messageId\":\"" + jsonEscape(messageId) + "\"}\n\n"
+}
+
+/// Next poll interval after a QUIET streaming tick: double the current interval,
+/// capped at `maxMs`. The run loop resets to its floor itself the moment output
+/// arrives, so this only ever grows the interval — pure and unit-tested so the
+/// backoff math has coverage without Docker (#495/#498).
+pub func nextPollMs(current: in Int, maxMs: in Int): Int {
+  val next = current * 2
+  if next > maxMs {
+    return maxMs
+  }
+  return next
 }
 
 // (The whole-log framing helpers logsToFrames/formatLogsAsSse/
