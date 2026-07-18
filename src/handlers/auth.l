@@ -310,7 +310,7 @@ pub func invalidTokenError(): AuthError {
 /// configured `apiToken`.
 ///
 /// - An empty `apiToken` means auth is not configured. Callers decide per
-/////   route whether that is acceptable: general endpoints stay open (matching
+/// //   route whether that is acceptable: general endpoints stay open (matching
 ///   today's behaviour), but credential endpoints must refuse rather than
 ///   expose secrets unauthenticated — see `authorizeSecret`.
 /// - A configured token requires a well-formed bearer header whose token
@@ -496,4 +496,36 @@ pub func enforce(path: in String, authHeaderValue: in String, apiToken: in Strin
     return authorizeSecret(authHeaderValue, apiToken)
   }
   return authorize(authHeaderValue, apiToken)
+}
+
+// ─── Phase 6: MCP-callback authentication ────────────────────────────────────
+//
+// Container-originated calls (create/poll a permission request or question,
+// report progress) authenticate with a per-session callback bearer token —
+// never the user's OAuth/static token — so they bypass the normal
+// AuthMiddleware bearer check entirely (see isContainerCallbackRoute below)
+// and are checked directly against the session's stored token by
+// CloudAgents.Callbacks. docs/phase6-mcp-callbacks.md §2/§5.
+/// Whether `authHeaderValue` carries a bearer token matching `expectedToken`
+/// (constant-time, same shape as the static-token check above). Pure so it is
+/// unit-testable without a database; CloudAgents.Callbacks supplies the
+/// session's stored token looked up via CloudAgents.SessionStore.
+pub func authorizeCallback(authHeaderValue: in String, expectedToken: in String): Bool {
+  match extractBearerToken(authHeaderValue) {
+    case None -> false
+    case Some(token) -> constantTimeEquals(token, expectedToken)
+  }
+}
+
+/// Whether a request path is a container-originated MCP-callback endpoint —
+/// the create/poll routes under `/api/sessions/{id}/callbacks/...`. These
+/// authenticate themselves (authorizeCallback, above) against the session's
+/// own bearer token, so AuthMiddleware must NOT run its normal user-auth
+/// check against them (the container has no user token to present). The
+/// `.../answer` sub-route is the opposite case — a human answering a pending
+/// request/question from the UI — and is deliberately NOT exempt: it flows
+/// through normal user auth plus an ownership check in the handler, exactly
+/// like every other session sub-resource route.
+pub func isContainerCallbackRoute(path: in String): Bool {
+  return path.contains("/callbacks/") and not path.endsWith("/answer")
 }
