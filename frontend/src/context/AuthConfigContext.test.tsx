@@ -44,14 +44,41 @@ describe('AuthConfigProvider', () => {
     );
   });
 
-  it('falls back to unconfigured when the fetch rejects (older backend or network hiccup)', async () => {
-    vi.mocked(api.getAuthConfig).mockRejectedValue(new Error('404'));
+  it('falls back to unconfigured on a 404 (older backend without the endpoint)', async () => {
+    vi.mocked(api.getAuthConfig).mockRejectedValue(new Error('404 Not Found'));
     render(
       <AuthConfigProvider>
         <Consumer />
       </AuthConfigProvider>,
     );
     await waitFor(() => expect(screen.getByTestId('consumer')).toHaveTextContent('unconfigured'));
+  });
+
+  it('stays loading (does not fail open) on a real server error', async () => {
+    vi.mocked(api.getAuthConfig).mockRejectedValue(new Error('500 Internal Server Error'));
+    render(
+      <AuthConfigProvider>
+        <Consumer />
+      </AuthConfigProvider>,
+    );
+    // Let the rejection settle, then confirm it did NOT get conflated with
+    // "not configured" — that would silently open access on a transient
+    // backend problem instead of surfacing it.
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(screen.getByTestId('consumer')).toHaveTextContent('loading');
+  });
+
+  it('stays loading (does not fail open) on a network failure with no status', async () => {
+    vi.mocked(api.getAuthConfig).mockRejectedValue(new TypeError('Failed to fetch'));
+    render(
+      <AuthConfigProvider>
+        <Consumer />
+      </AuthConfigProvider>,
+    );
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(screen.getByTestId('consumer')).toHaveTextContent('loading');
   });
 
   it('does not update state after unmounting mid-fetch', async () => {
