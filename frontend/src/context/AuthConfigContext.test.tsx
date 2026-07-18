@@ -81,6 +81,62 @@ describe('AuthConfigProvider', () => {
     expect(screen.getByTestId('consumer')).toHaveTextContent('loading');
   });
 
+  it('retries after a non-404 failure and recovers once the backend responds', async () => {
+    vi.useFakeTimers();
+    try {
+      vi.mocked(api.getAuthConfig)
+        .mockRejectedValueOnce(new Error('500 Internal Server Error'))
+        .mockResolvedValueOnce({ configured: true, clientId: 'cid123' });
+
+      render(
+        <AuthConfigProvider>
+          <Consumer />
+        </AuthConfigProvider>,
+      );
+
+      // First attempt rejects — must not fail open, and must not have
+      // retried yet (that's what the fixed delay is for).
+      await vi.advanceTimersByTimeAsync(0);
+      expect(screen.getByTestId('consumer')).toHaveTextContent('loading');
+      expect(api.getAuthConfig).toHaveBeenCalledTimes(1);
+
+      // The scheduled retry fires and this time succeeds — a signed-out
+      // user is never stranded on the spinner past a transient hiccup.
+      await vi.advanceTimersByTimeAsync(5000);
+      expect(api.getAuthConfig).toHaveBeenCalledTimes(2);
+      // The retry's own promise settles on a fresh microtask tick, same as
+      // the initial attempt above — flush once more before asserting.
+      await vi.advanceTimersByTimeAsync(0);
+      expect(screen.getByTestId('consumer')).toHaveTextContent('configured:cid123');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('stops retrying once unmounted', async () => {
+    vi.useFakeTimers();
+    try {
+      vi.mocked(api.getAuthConfig).mockRejectedValue(new Error('500 Internal Server Error'));
+
+      const { unmount } = render(
+        <AuthConfigProvider>
+          <Consumer />
+        </AuthConfigProvider>,
+      );
+      await vi.advanceTimersByTimeAsync(0);
+      expect(api.getAuthConfig).toHaveBeenCalledTimes(1);
+
+      unmount();
+
+      // No further attempts once unmounted, even past when a retry would
+      // otherwise have fired.
+      await vi.advanceTimersByTimeAsync(10_000);
+      expect(api.getAuthConfig).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('does not update state after unmounting mid-fetch', async () => {
     let resolveFetch: (cfg: { configured: boolean; clientId: string }) => void = () => {};
     vi.mocked(api.getAuthConfig).mockReturnValue(

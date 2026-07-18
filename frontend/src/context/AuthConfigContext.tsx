@@ -10,6 +10,8 @@ interface AuthConfigValue {
 
 const AuthConfigContext = createContext<AuthConfigValue>({ configured: null, clientId: '' });
 
+const RETRY_DELAY_MS = 5000;
+
 /// Fetches GET /api/auth/github/config once for the whole app — whether
 /// GitHub sign-in is offered, and if so, the client ID to authorize with.
 /// Shared by Nav (the sign-in button) and RequireAuth (the route guard) so
@@ -20,29 +22,39 @@ export function AuthConfigProvider({ children }: { children: ReactNode }) {
 
   useEffect(() => {
     let active = true;
-    api
-      .getAuthConfig()
-      .then(cfg => {
-        if (active) setValue(cfg);
-      })
-      .catch((err: unknown) => {
-        if (!active) return;
-        // A 404 (api.ts throws `${status} ${text}`) means an older backend
-        // genuinely predates this endpoint — safe to treat as "not
-        // configured", matching how Nav always behaved. Any other failure
-        // (a real server error, a network blip, a timeout) is NOT safe to
-        // conflate with "not configured": doing so would silently open
-        // access on a transient backend problem instead of surfacing it.
-        // Leave `configured` at its current value (null on first load,
-        // i.e. still "loading") so RequireAuth keeps waiting rather than
-        // either granting unguarded access or offering Login's sign-in
-        // button with no client ID to authorize against.
-        if (err instanceof Error && /^404\b/.test(err.message)) {
-          setValue({ configured: false, clientId: '' });
-        }
-      });
+    let retryTimer: ReturnType<typeof setTimeout> | undefined;
+
+    const attempt = () => {
+      api
+        .getAuthConfig()
+        .then(cfg => {
+          if (active) setValue(cfg);
+        })
+        .catch((err: unknown) => {
+          if (!active) return;
+          // A 404 (api.ts throws `${status} ${text}`) means an older
+          // backend genuinely predates this endpoint — safe to treat as
+          // "not configured", matching how Nav always behaved.
+          if (err instanceof Error && /^404\b/.test(err.message)) {
+            setValue({ configured: false, clientId: '' });
+            return;
+          }
+          // Any other failure (a real server error, a network blip, a
+          // timeout) is NOT safe to conflate with "not configured": doing
+          // so would silently open access on a transient backend problem
+          // instead of surfacing it. But leaving `configured` at null
+          // forever would strand a signed-out user on an indefinite
+          // "Loading…" across every guarded route — retry until the
+          // backend recovers or this unmounts, instead.
+          retryTimer = setTimeout(attempt, RETRY_DELAY_MS);
+        });
+    };
+
+    attempt();
+
     return () => {
       active = false;
+      clearTimeout(retryTimer);
     };
   }, []);
 
