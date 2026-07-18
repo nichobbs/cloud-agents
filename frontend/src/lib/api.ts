@@ -207,6 +207,20 @@ export const api = {
           if (line.startsWith('event:')) eventType = line.slice(6).trim();
           else if (line.startsWith('data:')) dataStr += line.slice(5).trim();
         }
+        if (eventType === 'error') {
+          // The backend committed 200 then the run failed mid-stream, so the
+          // failure arrives in-band as an `event: error` frame (#485). Throw so
+          // the caller (useStreamMessage) marks the send failed — surfacing the
+          // error banner and NOT folding the run into the transcript as done.
+          let msg = 'run failed';
+          try {
+            const parsed = JSON.parse(dataStr) as { error?: string };
+            if (parsed.error) msg = parsed.error;
+          } catch {
+            // non-JSON error payload — keep the generic message
+          }
+          throw new Error(msg);
+        }
         if (eventType === 'done') {
           if (onDone && dataStr) {
             try {

@@ -44,13 +44,18 @@ cleanup() {
 trap cleanup EXIT
 
 echo "==> starting server on ${BASE} (db=${DB})"
-# No CLOUD_AGENTS_API_TOKEN and no GitHub OAuth config => open mode, so the
-# non-exempt routes below dispatch (and hit their own not-found/empty-vault
-# paths) without needing a token. The port is driven through main.l's own
-# mechanism: it reads --port (and, as a belt-and-suspenders, the
+# Run with a STATIC API token configured (auth-enforced mode) so this harness
+# can prove AuthMiddleware protects every non-exempt route — including the
+# STREAMING send route, which moved onto a separate StreamingRoutes table and
+# whose middleware coverage was otherwise only asserted in a code comment
+# (#482). Auth-exempt routes (/api/health, /api/auth/*) still answer without a
+# token; everything else needs the bearer. The port is driven through main.l's
+# own mechanism: it reads --port (and, belt-and-suspenders, the
 # LYRIC_CONFIG_WEB_SERVER_PORT env it ultimately sets) — no --urls, which
 # main.l's argument parser never reads (#467). The host defaults to all
 # interfaces, which 127.0.0.1 below reaches.
+TOKEN="e2e-smoke-token"
+export CLOUD_AGENTS_API_TOKEN="$TOKEN"
 export LYRIC_CONFIG_WEB_SERVER_PORT="$PORT"
 dotnet "$OUT" --port "$PORT" >"$LOG" 2>&1 &
 SERVER_PID=$!
@@ -62,7 +67,7 @@ for _ in $(seq 1 60); do
     sed -e 's/^/  /' "$LOG" >&2
     exit 1
   fi
-  code=$(curl -sS -o /dev/null -w '%{http_code}' "${BASE}/api/health" 2>/dev/null || echo 000)
+  code=$(curl -sS --connect-timeout 5 --max-time 10 -o /dev/null -w '%{http_code}' "${BASE}/api/health" 2>/dev/null || echo 000)
   if [ "$code" = "200" ]; then ready=1; break; fi
   sleep 1
 done
@@ -74,35 +79,53 @@ fi
 echo "==> server is healthy"
 
 fails=0
-# assert <description> <path> <expected-http-code> <expected-body-substring>
+# assert <desc> <method> <path> <auth:yes|no> <want-code> <want-substr> [body]
+# Sends the bearer only when <auth> is "yes"; sends a JSON body when provided.
 assert() {
-  local desc="$1" path="$2" want_code="$3" want_sub="$4"
-  local out code body
-  out=$(curl -sS -w $'\n%{http_code}' "${BASE}${path}" 2>/dev/null || printf '\n000')
+  local desc="$1" method="$2" path="$3" auth="$4" want_code="$5" want_sub="$6" body="${7:-}"
+  # --max-time bounds every request so a bug in the (brand-new) middleware ->
+  # streaming-handler hand-off that hangs the response fails the job fast
+  # instead of stalling CI for hours (#494). These endpoints all answer in
+  # milliseconds; 20s is pure slack.
+  local args=(-sS --connect-timeout 5 --max-time 20 -X "$method" -w $'\n%{http_code}')
+  [ "$auth" = "yes" ] && args+=(-H "Authorization: Bearer ${TOKEN}")
+  [ -n "$body" ] && args+=(-H "Content-Type: application/json" --data "$body")
+  local out code out_body
+  out=$(curl "${args[@]}" "${BASE}${path}" 2>/dev/null || printf '\n000')
   code="${out##*$'\n'}"
-  body="${out%$'\n'*}"
+  out_body="${out%$'\n'*}"
   if [ "$code" != "$want_code" ]; then
-    echo "FAIL ${desc}: expected HTTP ${want_code}, got ${code} — body: ${body}" >&2
+    echo "FAIL ${desc}: expected HTTP ${want_code}, got ${code} — body: ${out_body}" >&2
     fails=$((fails + 1)); return
   fi
-  case "$body" in
+  case "$out_body" in
     *"$want_sub"*) echo "ok   ${desc} (HTTP ${code})" ;;
-    *) echo "FAIL ${desc}: body missing '${want_sub}' — got: ${body}" >&2; fails=$((fails + 1)) ;;
+    *) echo "FAIL ${desc}: body missing '${want_sub}' — got: ${out_body}" >&2; fails=$((fails + 1)) ;;
   esac
 }
 
-# Health + an auth-exempt route.
-assert "health"                       "/api/health"                          200 "status"
-assert "oauth config (auth-exempt)"   "/api/auth/github/config"              200 "configured"
+# Auth-exempt routes answer without a bearer.
+assert "health"                        GET  "/api/health"                           no  200 "status"
+assert "oauth config (auth-exempt)"    GET  "/api/auth/github/config"               no  200 "configured"
+# A non-exempt route with NO bearer must be rejected by AuthMiddleware (auth is
+# configured) — proves the middleware is actually enforcing.
+assert "output route rejects no-auth"  GET  "/api/sessions/x/output/0"              no  401 ""
 # THE point of this harness (#442/#354): a two-path-param route dispatching at
-# all. Unknown session => 404 JSON. A 500, a blank body, or a route miss here
-# would mean multi-param matching is broken.
-assert "multi-param output route"     "/api/sessions/does-not-exist/output/0" 404 "Session"
+# all. With a valid bearer, an unknown session => 404 JSON. A 500, blank body,
+# or route miss would mean multi-param matching is broken.
+assert "multi-param output route"      GET  "/api/sessions/does-not-exist/output/0" yes 404 "Session"
 # Proxy routes with an empty vault => 404 JSON (the frontend's fall-back signal),
-# proving the proxy routes dispatch and short-circuit cleanly (no crash, no
-# outbound call).
-assert "github repos proxy (no token)" "/api/github/repos/1"                 404 "vault"
-assert "models proxy (no keys)"        "/api/models/claude"                  404 "vault"
+# proving they dispatch and short-circuit cleanly (no crash, no outbound call).
+assert "github repos proxy (no vault)" GET  "/api/github/repos/1"                   yes 404 "vault"
+assert "models proxy (no vault keys)"  GET  "/api/models/claude"                    yes 404 "vault"
+# STREAMING send route (#482): it moved onto the StreamingRoutes table, so verify
+# AuthMiddleware still runs for it (rejects no-auth) AND that a valid bearer
+# dispatches THROUGH the middleware into the streaming handler (unknown session
+# => the handler's pre-stream 404). Together these prove the middleware->
+# streaming-handler hand-off works and the route is auth-enforced. No Docker is
+# reached (the 404 is returned before any container work).
+assert "streaming send rejects no-auth" POST "/api/sessions/x/messages"              no  401 ""                 '{"text":"hi"}'
+assert "streaming send dispatches (auth)" POST "/api/sessions/does-not-exist/messages" yes 404 "Session" '{"text":"hi"}'
 
 if [ "$fails" -ne 0 ]; then
   echo "==> e2e-http: ${fails} assertion(s) failed" >&2

@@ -164,6 +164,20 @@ design of each phase and `docs/BUILD.md` for build/verification notes.
 
 ## Recent hardening (2026-07)
 
+- **Live output streaming.** `POST /api/sessions/{id}/messages` now streams the
+  container's output as real SSE `data:` frames while the run executes, using
+  `Lyric.Web 0.4.33`'s chunked-response API (`StreamingHandler` +
+  `startStreaming`; the feature this project filed upstream — see
+  `docs/upstream/lyric-web-streaming.md`). `CloudAgents.Handlers.streamSendMessage`
+  drives the run lifecycle and hands the `ResponseWriter` to
+  `CloudAgents.Docker.streamSessionMessage`, which polls the container's
+  logs-so-far and writes each delta, stopping (and terminating the container)
+  when `writeChunk` reports the client disconnected. The old buffer-the-whole-
+  run handler is gone; the `/output` + `/output/{offset}` polling endpoints are
+  kept only as a pre-first-chunk bridge and older-client fallback (the frontend
+  hook drops to real chunks the instant they arrive). NOTE: compile-verified in
+  CI; the live run loop itself isn't exercised by CI (no Docker), so it's
+  runtime-verified manually — same class as the #354/#442 caveat.
 - **Model-listing cache (#446).** The models proxy now caches each provider's
   raw listing per `(user, provider)` for 1h in `model_listing_cache` (migration
   0009), so the sequential provider fetch cost is paid at most once per window

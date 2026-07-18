@@ -3,12 +3,14 @@ package CloudAgents.Docker
 import Std.Core
 import Std.Environment
 import Std.Task
+import Web
 import Lyric.Docker
 import CloudAgents.Db
 import CloudAgents.NetworkPolicy
 import CloudAgents.Repository
 import CloudAgents.SessionStore
 import CloudAgents.Sqlite
+import CloudAgents.Streaming
 
 pub record ResultCell {
   pub var isSuccess: Bool = false
@@ -256,10 +258,31 @@ async func partialContainerLogsAsync(containerId: in String, cell: in ResultCell
   }
 }
 
-/// Run a session message synchronously by orchestrating async container
-/// actions. `userId` must be the request's authenticated identity, captured
-/// on the request thread — the async body cannot read it ambiently.
-pub func runSessionMessage(
+/// The session's current container id ("" when unknown / not owned by the
+/// caller). Owner-scoped via getSession; runs on the request thread where the
+/// identity is stamped, matching getRunOutputFrom.
+func sessionContainerId(sessionId: in String): String {
+  return match CloudAgents.SessionStore.getSession(sessionId) {
+    case Ok(Some(s)) -> s.containerId
+    case Ok(None) -> ""
+    case Err(_) -> ""
+  }
+}
+
+/// Run a session message and stream the container's output to `w` as SSE
+/// `data:` frames while it runs, returning the full captured logs on success
+/// (for transcript persistence) or an error. `userId` must be the request's
+/// authenticated identity, captured on the request thread.
+///
+/// The run itself is driven by the unchanged `runSessionMessageAsync`
+/// (create → start → wait → logs → cleanup); this wrapper only OBSERVES that
+/// task's container, polling its logs-so-far on a short interval and writing
+/// just the new bytes. `taskWaitMs` on the run task doubles as the poll timer
+/// AND the completion signal. A bug in this loop can't corrupt the run or the
+/// persisted transcript — worst case the live view is imperfect and the client
+/// reloads the transcript. On a client disconnect (writeChunk `Err`) the
+/// container is terminated so the run doesn't continue into the void.
+pub func streamSessionMessage(
   repoUrl: in String,
   branch: in String,
   prompt: in String,
@@ -270,18 +293,155 @@ pub func runSessionMessage(
   profileId: in String,
   userId: in String,
   extraRepos: in String,
+  w: in Web.ResponseWriter,
 ): Result[String, String] {
   val cell = ResultCell(isSuccess = false, output = "", error = "")
   val t = runSessionMessageAsync(repoUrl, branch, prompt, sessionId, harness, model, nativeSessionId, profileId, userId, extraRepos, cell)
-  val completed = taskWaitMs(t, 1800000) // 30-minute hard cap
-  if not completed {
-    return Err(error = "Container run timed out after 30 minutes")
+  val startMs = CloudAgents.Repository.nowMillisLong()
+  val runTimeoutMs = 1800000.toLong() // 30-minute hard cap (matches the old runSessionMessage)
+  // Give up on the client only after several CONSECUTIVE failed writes, not the
+  // first (#491): a single writeChunk Err can be a transient proxy/network blip,
+  // and terminating on it would discard an in-progress run the old buffered
+  // handler would have survived. On a failure we keep the offset put so the same
+  // delta is retried next tick; a genuinely-gone client fails every retry and is
+  // concluded gone within a few seconds.
+  val maxConsecutiveWriteFailures = 3
+  var writeFailures = 0
+  // Adaptive poll cadence (#495): poll responsively while output is flowing,
+  // but back off toward maxPollMs during quiet stretches so a long, idle run
+  // doesn't refetch the whole container log every second (each tick opens a
+  // fresh Docker client + refetches the full log), matching the frontend's own
+  // 1.5s->6s backoff. Reset to minPollMs the moment new output appears.
+  val minPollMs = 1000
+  val maxPollMs = 5000
+  var pollMs = minPollMs
+  var offset = 0
+  var finished = false
+  var clientGone = false
+  var timedOut = false
+  // The container id is stored by the async task via updateSessionContainerFor
+  // shortly after creation. Resolve it once and cache it — re-querying the DB
+  // every ~400ms tick for the whole run is needless load (#483). getSession is
+  // owner-scoped and runs on the request thread where the identity is stamped,
+  // matching getRunOutputFrom.
+  var containerId = ""
+  // Poll on a ~1s cadence. taskWaitMs blocks up to that waiting for the run to
+  // finish (true = the whole run completed), so the loop wakes on either a
+  // timer tick or run completion. The interval is deliberately NOT tighter
+  // (#489): each tick's partialContainerLogs blocks up to ~1.5s AND refetches
+  // the WHOLE container log (Lyric.Docker's logs wrapper has no incremental
+  // fetch), so a shorter interval just multiplies full-log refetches for a
+  // long, chatty run without meaningfully improving perceived latency.
+  while not finished and not clientGone and not timedOut {
+    finished = taskWaitMs(t, pollMs)
+    if containerId.length == 0 {
+      containerId = sessionContainerId(sessionId)
+    }
+    if containerId.length > 0 {
+      val delta = CloudAgents.Streaming.outputDelta(partialContainerLogs(containerId), offset)
+      if delta.length > 0 {
+        // Fresh output — stay responsive.
+        pollMs = minPollMs
+        match Web.writeChunk(w, CloudAgents.Streaming.toSseChunk(delta)) {
+          case Ok(_) -> {
+            // Only advance PAST bytes actually delivered, so a failed write
+            // re-sends the same delta next tick rather than losing it (#491).
+            offset = offset + delta.length.toInt()
+            writeFailures = 0
+          }
+          case Err(_) -> {
+            writeFailures = writeFailures + 1
+            if writeFailures >= maxConsecutiveWriteFailures {
+              clientGone = true
+            }
+          }
+        }
+      } else {
+        // Quiet tick — no new output. Send a keepalive comment frame (#499): the
+        // only way to learn the client has vanished is to attempt a write, and
+        // writes otherwise happen solely when there IS new output, so a client
+        // that disconnects during a long silence would go undetected until the
+        // next chunk or the 30-minute cap. The keepalive carries no data (the
+        // frontend parser skips it), so it costs nothing in the transcript but
+        // exercises the connection — a gone client fails it and is concluded gone
+        // via the same consecutive-failure counter as a real chunk.
+        match Web.writeChunk(w, CloudAgents.Streaming.sseKeepalive()) {
+          case Ok(_) -> {
+            writeFailures = 0
+          }
+          case Err(_) -> {
+            writeFailures = writeFailures + 1
+            if writeFailures >= maxConsecutiveWriteFailures {
+              clientGone = true
+            }
+          }
+        }
+        // Back off (doubling, capped) to spare the Docker daemon. The
+        // doubling-and-cap math lives in a pure, unit-tested helper so the
+        // backoff has coverage without Docker (#498).
+        pollMs = CloudAgents.Streaming.nextPollMs(pollMs, maxPollMs)
+      }
+    }
+    // Hard cap the whole run (#481): a hung container with a still-connected
+    // client would otherwise hold the session's RUNNING claim forever, where
+    // the old runSessionMessage bounded it with a 30-minute taskWaitMs.
+    if CloudAgents.Repository.nowMillisLong() - startMs > runTimeoutMs {
+      timedOut = true
+    }
   }
+  // Bail ONLY when the run did not actually finish (#488). A client disconnect
+  // is only detectable on an attempted write, and writes only happen when there
+  // is new output — so a client that vanished during a quiet stretch is often
+  // "discovered" on the run's FINAL flush, the same tick `finished` becomes
+  // true. `finished` therefore wins: a completed run's real outcome
+  // (cell.isSuccess) must be honoured — its reply persisted and history marked
+  // succeeded — even if clientGone/timedOut also flipped on that last tick.
+  if not finished {
+    // The run is still executing (we bailed early on a mid-run disconnect or the
+    // hard cap), so terminate its container.
+    //
+    // The background run task (runSessionMessageAsync, `t`) is still live and
+    // will ALSO try to remove this container in its own cleanup — but that race
+    // is benign (#487): removeContainer on an already-removed container is
+    // best-effort (Docker 304/404, swallowed), and the container-id clear is a
+    // compare-and-clear (clearSessionContainerIfMatchesFor, #45) that only wipes
+    // the row if it still points at THIS container, so a newer run's id is never
+    // clobbered. Terminating here just makes the still-running task's blocking
+    // waitContainer return promptly instead of hanging for the full run.
+    if containerId.length == 0 {
+      containerId = sessionContainerId(sessionId)
+    }
+    if containerId.length > 0 {
+      val _ = terminateSessionContainer(containerId)
+    }
+    if timedOut {
+      return Err(error = "Container run timed out after 30 minutes")
+    }
+    return Err(error = "client disconnected")
+  }
+  // The run finished. Honour its real outcome regardless of a last-tick
+  // disconnect (a gone client just won't receive the final frames).
   if cell.isSuccess {
-    return Ok(value = cell.output)
-  } else {
-    return Err(error = cell.error)
+    // Flush any output produced since the last poll (best-effort — the write
+    // fails harmlessly if the client is gone). cell.output is authoritative.
+    val finalLogs = cell.output
+    val delta = CloudAgents.Streaming.outputDelta(finalLogs, offset)
+    if delta.length > 0 {
+      match Web.writeChunk(w, CloudAgents.Streaming.toSseChunk(delta)) {
+        case Ok(_) -> ()
+        case Err(_) -> ()
+      }
+    }
+    return Ok(value = finalLogs)
   }
+  // Failure path: no final flush is attempted here (#497). runSessionMessageAsync
+  // only ever writes cell.output on SUCCESS — on failure cell.output stays "" and
+  // cell.error carries the reason — so an outputDelta against it would be a no-op.
+  // Any partial container output the run DID produce before failing was already
+  // streamed by the loop above (it writes each delta as it appears, independent of
+  // the eventual success/failure). The caller (streamSendMessage) turns this Err
+  // into a terminal `event: error` SSE frame.
+  return Err(error = cell.error)
 }
 
 // NOTE: all Result inspection below is match-based. The Std.Core convenience
