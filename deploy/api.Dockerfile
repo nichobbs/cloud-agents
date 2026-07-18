@@ -4,18 +4,32 @@
 # toolchain and runs the resulting .NET assembly. It needs the Docker CLI to
 # manage runner containers via the mounted host socket.
 #
-# Lyric.Web, Std.Logging, and Microsoft.Data.Sqlite are declared as NuGet
-# packages in lyric.toml and fetched by `lyric restore`. Lyric.Docker is
-# compiled from vendor/lyric-docker as an ordinary local package (the
-# published NuGet Lyric.Docker package doesn't expose the container-lifecycle
-# API this project depends on) — no sibling lyric-lang checkout required
-# either way.
+# Lyric.Web, Lyric.Docker, Std.Logging, and Microsoft.Data.Sqlite are all
+# declared as NuGet packages in lyric.toml and fetched by `lyric restore` —
+# no sibling lyric-lang checkout or vendored package required.
 
 FROM mcr.microsoft.com/dotnet/sdk:10.0 AS build
 
+# Pinned explicitly rather than `curl .../install.sh | sh`'s old approach of
+# always fetching "latest": that RUN step has no cache-busting mechanism of
+# its own, so once Docker caches this layer it stays cached indefinitely
+# regardless of new commits or new upstream Lyric releases — this image
+# could silently keep compiling with whatever version happened to be
+# "latest" the very first time it was ever built on a given host, with no
+# visible signal that anything's stale. An explicit version pin makes an
+# upgrade a deliberate, visible Dockerfile change that naturally busts the
+# cache on its own. Bump this alongside MIN_LYRIC_VERSION when upgrading.
+# Downloads the exact tarball directly rather than trusting install.sh's own
+# --version flag, mirroring .github/workflows/ci.yml's same reasoning
+# (see its "Install Lyric compiler" step and docs/BUILD.md).
+ARG LYRIC_VERSION=0.4.33
 RUN apt-get update && apt-get install -y --no-install-recommends curl ca-certificates \
-    && curl -fsSL https://raw.githubusercontent.com/nichobbs/lyric-lang/main/scripts/install.sh \
-        | sh -s -- --dir /usr/local/bin --no-path \
+    && curl -fsSL --connect-timeout 10 --max-time 120 --retry 3 --retry-delay 3 \
+        -o /tmp/lyric.tgz \
+        "https://github.com/nichobbs/lyric-lang/releases/download/v${LYRIC_VERSION}/lyric-${LYRIC_VERSION}-linux-x64.tar.gz" \
+    && mkdir -p /usr/local/bin \
+    && tar -xzf /tmp/lyric.tgz -C /usr/local/bin \
+    && rm -f /tmp/lyric.tgz \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /src

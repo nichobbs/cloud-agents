@@ -154,7 +154,17 @@ pub async func createRunnerContainer(
   val createRes = await createContainerWithNetwork(client, image, envs, binds, networkMode)
   match createRes {
     case Ok(id) -> Ok(value = id)
-    case Err(e) -> Err(error = "Docker API error: " + e.message)
+    case Err(e) -> {
+      // Previously silent server-side (only the caller's SSE error frame
+      // carried any detail, and even that was just e.message verbatim) —
+      // a missing runner image ("no such image") is the single most common
+      // cause (Coolify deploys don't build these automatically; see
+      // deploy/COOLIFY.md), so name which image was being created in both
+      // the log line and the returned message rather than making an
+      // operator guess or reproduce from the frontend to find out.
+      println("WARNING: container creation failed for session " + sessionId + " (image " + image + "): " + e.message)
+      return Err(error = "Docker API error creating container from image '" + image + "': " + e.message)
+    }
   }
 }
 
@@ -163,7 +173,10 @@ pub async func startRunnerContainer(client: in DockerClient, containerId: in Str
   val startRes = await startContainer(client, containerId)
   match startRes {
     case Ok(_) -> Ok(value = ())
-    case Err(e) -> Err(error = "Failed to start container: " + e.message)
+    case Err(e) -> {
+      println("WARNING: failed to start container " + containerId + ": " + e.message)
+      return Err(error = "Failed to start container: " + e.message)
+    }
   }
 }
 
@@ -172,7 +185,10 @@ pub async func stopRunnerContainer(client: in DockerClient, containerId: in Stri
   val stopRes = await stopContainer(client, containerId)
   match stopRes {
     case Ok(_) -> Ok(value = ())
-    case Err(e) -> Err(error = "Failed to stop container: " + e.message)
+    case Err(e) -> {
+      println("WARNING: failed to stop container " + containerId + ": " + e.message)
+      return Err(error = "Failed to stop container: " + e.message)
+    }
   }
 }
 
@@ -181,7 +197,10 @@ pub async func waitForContainer(client: in DockerClient, containerId: in String)
   val waitRes = await waitContainer(client, containerId)
   match waitRes {
     case Ok(_) -> Ok(value = ())
-    case Err(e) -> Err(error = "Failed to wait for container: " + e.message)
+    case Err(e) -> {
+      println("WARNING: failed to wait for container " + containerId + ": " + e.message)
+      return Err(error = "Failed to wait for container: " + e.message)
+    }
   }
 }
 
@@ -517,6 +536,7 @@ async func runSessionMessageAsync(
       cell.output = logs
     }
     case Err(msg) -> {
+      println("WARNING: failed to retrieve final logs for container " + containerId + ": " + msg)
       cell.isSuccess = false
       cell.error = msg
     }

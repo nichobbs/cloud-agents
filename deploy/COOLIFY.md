@@ -60,13 +60,23 @@ this failure mode.
 
 ## Runner base images
 
-Coolify only builds the `api` and `frontend` services in the compose file —
-it doesn't run `install-docker.sh`. The `claude-code:base` (and other
-runner) images that `install-docker.sh` builds on a standalone VM still need
-to exist on the Coolify host before sessions can spawn runner containers.
-Build them from `docker/` on the host directly (SSH in and run the relevant
-`docker build` from `docker/Dockerfile*`) — Coolify's own build only covers
-the compose file's services.
+`docker-compose.coolify.yml` builds these directly (`claude-code-base`,
+`codex-base`, `opencode-base`, `gemini-base`) — no manual `docker build` on
+the host needed. Each is a normal Compose service with `build:` pointed at
+the matching `docker/Dockerfile*`, but an explicit `image:` tag overriding
+Compose's default `<project>-<service>` naming so the built image lands
+under the exact name `imageForHarness()` (`src/docker_manager.l`) looks for
+(`claude-code:base`, etc.) — and `entrypoint: ["true"]` + `restart: "no"` so
+the "service" does nothing at runtime beyond getting built. Coolify runs
+`docker compose build`/`up` as part of every deploy, so these get
+(re)built automatically alongside `api`/`frontend`.
+
+Expect these four to show as **"Exited (0)"** in Coolify's service list —
+that's the intended behavior, not a failure; only the built image matters.
+If you don't use every harness, comment out the ones you don't need in
+`docker-compose.coolify.yml` to skip their build on every deploy (the
+runner Dockerfiles force `--platform=linux/amd64`, so building on an arm64
+Coolify host means QEMU emulation — noticeably slower).
 
 ## Backups
 
