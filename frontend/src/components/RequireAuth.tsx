@@ -26,13 +26,18 @@ export function RequireAuth({ children }: { children: ReactNode }) {
     return () => window.removeEventListener(AUTH_CHANGED_EVENT, refresh);
   }, []);
 
-  // Still waiting to learn whether GitHub sign-in is even offered — show the
-  // same loading placeholder every other data-fetching page uses (Prompts,
-  // Profiles, Credentials) rather than flashing protected content or
-  // redirecting prematurely.
+  // Already signed in (a synchronous localStorage read, unlike `configured`)
+  // — nothing to gate regardless of OAuth config, so skip the loading wait
+  // entirely rather than flashing "Loading…" on every return visit.
+  if (signedIn) return <>{children}</>;
+
+  // Not signed in: still waiting to learn whether GitHub sign-in is even
+  // offered — show the same loading placeholder every other data-fetching
+  // page uses (Prompts, Profiles, Credentials) rather than redirecting
+  // prematurely.
   if (configured === null) return <div style={mutedStyle}>Loading…</div>;
 
-  if (!configured || signedIn) return <>{children}</>;
+  if (!configured) return <>{children}</>;
 
   return <Navigate to="/login" state={{ from: location }} replace />;
 }

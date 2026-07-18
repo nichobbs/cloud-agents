@@ -69,6 +69,16 @@ describe('RequireAuth', () => {
     expect(screen.getByTestId('protected-page')).toBeInTheDocument();
   });
 
+  it('renders children immediately when already signed in, even before auth config resolves', () => {
+    completeLogin('gho_tok', 'octocat');
+    // Simulates the auth-config fetch still being in flight — sign-in state
+    // is a synchronous localStorage read and shouldn't wait on it.
+    mockUseAuthConfig.mockReturnValue({ configured: null, clientId: '' });
+    renderGuarded();
+    expect(screen.getByTestId('protected-page')).toBeInTheDocument();
+    expect(screen.queryByText('Loading…')).not.toBeInTheDocument();
+  });
+
   it('redirects immediately on sign-out, without waiting for a route change', async () => {
     completeLogin('gho_tok', 'octocat');
     mockUseAuthConfig.mockReturnValue({ configured: true, clientId: 'cid' });
