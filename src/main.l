@@ -3,6 +3,7 @@ package CloudAgents
 import Std.Core
 import Web
 import CloudAgents.Auth
+import CloudAgents.Callbacks
 import CloudAgents.Credentials
 import CloudAgents.Crypto
 import CloudAgents.Docker
@@ -28,7 +29,8 @@ pub record HealthStatus {
 // pattern, handler: Handler)") rather than a handler-name string. This adapter
 // bridges checkHealth() into that shape — see "Handler-adapter plumbing" below
 // for the pattern all ~39 routes follow.
-pub record HealthHandler {}
+pub record HealthHandler {
+}
 
 impl Web.Handler for HealthHandler {
   func handle(req: in Web.Request): Web.Response {
@@ -53,14 +55,19 @@ impl Web.Handler for HealthHandler {
 //
 // /api/health is excluded so liveness checks don't need a token, and
 // /api/auth/* is excluded because those endpoints exist to *obtain* a token.
-pub record AuthMiddleware {}
+pub record AuthMiddleware {
+}
 
 impl Web.Middleware for AuthMiddleware {
   func wrap(req: in Web.Request, next: in Web.Handler): Web.Response {
-    if req.path == "/api/health" or req.path.startsWith("/api/auth/") {
+    if req.path == "/api/health" or req.path.startsWith("/api/auth/") or CloudAgents.Auth.isContainerCallbackRoute(req.path) {
       // These handlers never read the per-request identity, but stamp the
       // operator id anyway so a pooled thread can't carry a previous
       // request's identity into any future code on these paths (#420).
+      // Container-originated MCP-callback routes (docs/phase6-mcp-callbacks.md
+      // §5) authenticate themselves against the session's own callback
+      // bearer token in CloudAgents.Callbacks — they carry no user
+      // OAuth/static token to check here at all.
       CloudAgents.Auth.setCurrentUserId(CloudAgents.Auth.operatorUserId())
       return next.handle(req)
     }
@@ -68,10 +75,7 @@ impl Web.Middleware for AuthMiddleware {
     if DotNetString.IsNullOrEmpty(apiToken) {
       apiToken = ""
     }
-    val authHeader = match Web.header(req, "Authorization") {
-      case Some(h) -> h
-      case None -> ""
-    }
+    val authHeader = match Web.header(req, "Authorization") { case Some(h) -> h; case None -> "" }
     match CloudAgents.OAuth.authenticateRequest(req.path, authHeader, apiToken) {
       case Allowed(userId) -> {
         CloudAgents.Auth.setCurrentUserId(userId)
@@ -91,12 +95,8 @@ impl Web.Middleware for AuthMiddleware {
 // `Result[T, Web.ApiError]` to a `Response`. One response-mapping helper per
 // distinct T (shared across routes that return the same type); one small
 // stateless adapter record per route.
-
 func pparam(req: in Web.Request, name: in String): String {
-  return match Web.pathParam(req, name) {
-    case Some(s) -> s
-    case None -> ""
-  }
+  return match Web.pathParam(req, name) { case Some(s) -> s; case None -> "" }
 }
 
 func badBody(): Web.Response {
@@ -104,187 +104,141 @@ func badBody(): Web.Response {
 }
 
 pub func unitResp(r: in Result[Unit, Web.ApiError]): Web.Response {
-  return match r {
-    case Ok(_) -> Web.noContent()
-    case Err(e) -> Web.errorResponse(e)
-  }
+  return match r { case Ok(_) -> Web.noContent(); case Err(e) -> Web.errorResponse(e) }
 }
 
 // listSessions / reapContainers / getRunOutput already build a complete JSON
 // string themselves (see their bodies in sessions.l) — pass it through as-is.
 pub func jsonStringResp(r: in Result[String, Web.ApiError]): Web.Response {
-  return match r {
-    case Ok(s) -> Web.json(200, s)
-    case Err(e) -> Web.errorResponse(e)
-  }
+  return match r { case Ok(s) -> Web.json(200, s); case Err(e) -> Web.errorResponse(e) }
 }
 
 func createSessionResp(r: in Result[CreateSessionResponse, Web.ApiError]): Web.Response {
-  return match r {
-    case Ok(v) -> Web.json(200, v.toJson())
-    case Err(e) -> Web.errorResponse(e)
-  }
+  return match r { case Ok(v) -> Web.json(200, v.toJson()); case Err(e) -> Web.errorResponse(e) }
 }
 
 func sessionProfileResp(r: in Result[SessionProfileRef, Web.ApiError]): Web.Response {
-  return match r {
-    case Ok(v) -> Web.json(200, v.toJson())
-    case Err(e) -> Web.errorResponse(e)
-  }
+  return match r { case Ok(v) -> Web.json(200, v.toJson()); case Err(e) -> Web.errorResponse(e) }
 }
 
 func runListResp(r: in Result[RunList, Web.ApiError]): Web.Response {
-  return match r {
-    case Ok(v) -> Web.json(200, v.toJson())
-    case Err(e) -> Web.errorResponse(e)
-  }
+  return match r { case Ok(v) -> Web.json(200, v.toJson()); case Err(e) -> Web.errorResponse(e) }
 }
 
 func sessionRepoResp(r: in Result[SessionRepo, Web.ApiError]): Web.Response {
-  return match r {
-    case Ok(v) -> Web.json(200, v.toJson())
-    case Err(e) -> Web.errorResponse(e)
-  }
+  return match r { case Ok(v) -> Web.json(200, v.toJson()); case Err(e) -> Web.errorResponse(e) }
 }
 
 func sessionRepoListResp(r: in Result[SessionRepoList, Web.ApiError]): Web.Response {
-  return match r {
-    case Ok(v) -> Web.json(200, v.toJson())
-    case Err(e) -> Web.errorResponse(e)
-  }
+  return match r { case Ok(v) -> Web.json(200, v.toJson()); case Err(e) -> Web.errorResponse(e) }
 }
 
 func messageListResp(r: in Result[MessageList, Web.ApiError]): Web.Response {
-  return match r {
-    case Ok(v) -> Web.json(200, v.toJson())
-    case Err(e) -> Web.errorResponse(e)
-  }
+  return match r { case Ok(v) -> Web.json(200, v.toJson()); case Err(e) -> Web.errorResponse(e) }
 }
 
 func commentResp(r: in Result[Comment, Web.ApiError]): Web.Response {
-  return match r {
-    case Ok(v) -> Web.json(200, v.toJson())
-    case Err(e) -> Web.errorResponse(e)
-  }
+  return match r { case Ok(v) -> Web.json(200, v.toJson()); case Err(e) -> Web.errorResponse(e) }
 }
 
 func commentListResp(r: in Result[CommentList, Web.ApiError]): Web.Response {
-  return match r {
-    case Ok(v) -> Web.json(200, v.toJson())
-    case Err(e) -> Web.errorResponse(e)
-  }
+  return match r { case Ok(v) -> Web.json(200, v.toJson()); case Err(e) -> Web.errorResponse(e) }
 }
 
 func todoResp(r: in Result[Todo, Web.ApiError]): Web.Response {
-  return match r {
-    case Ok(v) -> Web.json(200, v.toJson())
-    case Err(e) -> Web.errorResponse(e)
-  }
+  return match r { case Ok(v) -> Web.json(200, v.toJson()); case Err(e) -> Web.errorResponse(e) }
 }
 
 func todoListResp(r: in Result[TodoList, Web.ApiError]): Web.Response {
-  return match r {
-    case Ok(v) -> Web.json(200, v.toJson())
-    case Err(e) -> Web.errorResponse(e)
-  }
+  return match r { case Ok(v) -> Web.json(200, v.toJson()); case Err(e) -> Web.errorResponse(e) }
 }
 
 func promptListResp(r: in Result[PromptList, Web.ApiError]): Web.Response {
-  return match r {
-    case Ok(v) -> Web.json(200, v.toJson())
-    case Err(e) -> Web.errorResponse(e)
-  }
+  return match r { case Ok(v) -> Web.json(200, v.toJson()); case Err(e) -> Web.errorResponse(e) }
 }
 
 func renderedPromptResp(r: in Result[RenderedPrompt, Web.ApiError]): Web.Response {
-  return match r {
-    case Ok(v) -> Web.json(200, v.toJson())
-    case Err(e) -> Web.errorResponse(e)
-  }
+  return match r { case Ok(v) -> Web.json(200, v.toJson()); case Err(e) -> Web.errorResponse(e) }
 }
 
 func promptResp(r: in Result[Prompt, Web.ApiError]): Web.Response {
-  return match r {
-    case Ok(v) -> Web.json(200, v.toJson())
-    case Err(e) -> Web.errorResponse(e)
-  }
+  return match r { case Ok(v) -> Web.json(200, v.toJson()); case Err(e) -> Web.errorResponse(e) }
 }
 
 func credentialNameListResp(r: in Result[CredentialNameList, Web.ApiError]): Web.Response {
-  return match r {
-    case Ok(v) -> Web.json(200, v.toJson())
-    case Err(e) -> Web.errorResponse(e)
-  }
+  return match r { case Ok(v) -> Web.json(200, v.toJson()); case Err(e) -> Web.errorResponse(e) }
 }
 
 func profileListResp(r: in Result[ProfileList, Web.ApiError]): Web.Response {
-  return match r {
-    case Ok(v) -> Web.json(200, v.toJson())
-    case Err(e) -> Web.errorResponse(e)
-  }
+  return match r { case Ok(v) -> Web.json(200, v.toJson()); case Err(e) -> Web.errorResponse(e) }
 }
 
 func profileResp(r: in Result[Profile, Web.ApiError]): Web.Response {
-  return match r {
-    case Ok(v) -> Web.json(200, v.toJson())
-    case Err(e) -> Web.errorResponse(e)
-  }
+  return match r { case Ok(v) -> Web.json(200, v.toJson()); case Err(e) -> Web.errorResponse(e) }
 }
 
 func webhookResp(r: in Result[Webhook, Web.ApiError]): Web.Response {
-  return match r {
-    case Ok(v) -> Web.json(200, v.toJson())
-    case Err(e) -> Web.errorResponse(e)
-  }
+  return match r { case Ok(v) -> Web.json(200, v.toJson()); case Err(e) -> Web.errorResponse(e) }
 }
 
 func webhookListResp(r: in Result[WebhookList, Web.ApiError]): Web.Response {
-  return match r {
-    case Ok(v) -> Web.json(200, v.toJson())
-    case Err(e) -> Web.errorResponse(e)
-  }
+  return match r { case Ok(v) -> Web.json(200, v.toJson()); case Err(e) -> Web.errorResponse(e) }
 }
 
 func webhookEventListResp(r: in Result[WebhookEventList, Web.ApiError]): Web.Response {
-  return match r {
-    case Ok(v) -> Web.json(200, v.toJson())
-    case Err(e) -> Web.errorResponse(e)
-  }
+  return match r { case Ok(v) -> Web.json(200, v.toJson()); case Err(e) -> Web.errorResponse(e) }
+}
+
+func createPermissionRequestResp(r: in Result[CreatePermissionRequestResponse, Web.ApiError]): Web.Response {
+  return match r { case Ok(v) -> Web.json(200, v.toJson()); case Err(e) -> Web.errorResponse(e) }
+}
+
+func permissionDecisionResp(r: in Result[PermissionDecision, Web.ApiError]): Web.Response {
+  return match r { case Ok(v) -> Web.json(200, v.toJson()); case Err(e) -> Web.errorResponse(e) }
+}
+
+func createUserQuestionResp(r: in Result[CreateUserQuestionResponse, Web.ApiError]): Web.Response {
+  return match r { case Ok(v) -> Web.json(200, v.toJson()); case Err(e) -> Web.errorResponse(e) }
+}
+
+func userQuestionAnswerResp(r: in Result[UserQuestionAnswer, Web.ApiError]): Web.Response {
+  return match r { case Ok(v) -> Web.json(200, v.toJson()); case Err(e) -> Web.errorResponse(e) }
 }
 
 // ─── CloudAgents.Handlers routes (sessions.l) ───────────────────────────────
+record RouteCreateSession {
+}
 
-record RouteCreateSession {}
 impl Web.Handler for RouteCreateSession {
   func handle(req: in Web.Request): Web.Response {
-    val decoded = match CreateSessionRequest.fromJson(req.body) {
-      case Ok(d) -> d
-      case Err(_) -> return badBody()
-    }
+    val decoded = match CreateSessionRequest.fromJson(req.body) { case Ok(d) -> d; case Err(_) -> return badBody() }
     return createSessionResp(CloudAgents.Handlers.createSession(decoded))
   }
 }
 
-record RouteSetSessionProfile {}
+record RouteSetSessionProfile {
+}
+
 impl Web.Handler for RouteSetSessionProfile {
   func handle(req: in Web.Request): Web.Response {
     val id = pparam(req, "id")
-    val decoded = match SetProfileRequest.fromJson(req.body) {
-      case Ok(d) -> d
-      case Err(_) -> return badBody()
-    }
+    val decoded = match SetProfileRequest.fromJson(req.body) { case Ok(d) -> d; case Err(_) -> return badBody() }
     return unitResp(CloudAgents.Handlers.setSessionProfileHandler(id, decoded))
   }
 }
 
-record RouteGetSessionProfile {}
+record RouteGetSessionProfile {
+}
+
 impl Web.Handler for RouteGetSessionProfile {
   func handle(req: in Web.Request): Web.Response {
     return sessionProfileResp(CloudAgents.Handlers.getSessionProfileHandler(pparam(req, "id")))
   }
 }
 
-record RouteListSessions {}
+record RouteListSessions {
+}
+
 impl Web.Handler for RouteListSessions {
   func handle(req: in Web.Request): Web.Response {
     return jsonStringResp(CloudAgents.Handlers.listSessions())
@@ -295,7 +249,9 @@ impl Web.Handler for RouteListSessions {
 // handler writes SSE `data:` frames to the ResponseWriter as the container
 // produces output, instead of buffering the whole run and returning one body.
 // Registered in the separate StreamingRoutes table in main(), not the Router.
-record SendMessageStreamHandler {}
+record SendMessageStreamHandler {
+}
+
 impl Web.StreamingHandler for SendMessageStreamHandler {
   func handleStream(req: in Web.Request, w: in Web.ResponseWriter): Unit {
     val id = pparam(req, "id")
@@ -313,80 +269,94 @@ impl Web.StreamingHandler for SendMessageStreamHandler {
   }
 }
 
-record RouteCancelRun {}
+record RouteCancelRun {
+}
+
 impl Web.Handler for RouteCancelRun {
   func handle(req: in Web.Request): Web.Response {
     return unitResp(CloudAgents.Handlers.cancelRun(pparam(req, "id")))
   }
 }
 
-record RouteGetRuns {}
+record RouteGetRuns {
+}
+
 impl Web.Handler for RouteGetRuns {
   func handle(req: in Web.Request): Web.Response {
     return runListResp(CloudAgents.Handlers.getRuns(pparam(req, "id")))
   }
 }
 
-record RouteReapContainers {}
+record RouteReapContainers {
+}
+
 impl Web.Handler for RouteReapContainers {
   func handle(req: in Web.Request): Web.Response {
     return jsonStringResp(CloudAgents.Handlers.reapContainers())
   }
 }
 
-record RouteGetRunOutput {}
+record RouteGetRunOutput {
+}
+
 impl Web.Handler for RouteGetRunOutput {
   func handle(req: in Web.Request): Web.Response {
     return jsonStringResp(CloudAgents.Handlers.getRunOutput(pparam(req, "id")))
   }
 }
 
-record RouteGetRunOutputFrom {}
+record RouteGetRunOutputFrom {
+}
+
 impl Web.Handler for RouteGetRunOutputFrom {
   func handle(req: in Web.Request): Web.Response {
     return jsonStringResp(CloudAgents.Handlers.getRunOutputFrom(pparam(req, "id"), pparam(req, "offset")))
   }
 }
 
-record RouteDeleteSession {}
+record RouteDeleteSession {
+}
+
 impl Web.Handler for RouteDeleteSession {
   func handle(req: in Web.Request): Web.Response {
     return unitResp(CloudAgents.Handlers.deleteSession(pparam(req, "id")))
   }
 }
 
-record RouteUpdateSessionModel {}
+record RouteUpdateSessionModel {
+}
+
 impl Web.Handler for RouteUpdateSessionModel {
   func handle(req: in Web.Request): Web.Response {
     val id = pparam(req, "id")
-    val decoded = match UpdateSessionRequest.fromJson(req.body) {
-      case Ok(d) -> d
-      case Err(_) -> return badBody()
-    }
+    val decoded = match UpdateSessionRequest.fromJson(req.body) { case Ok(d) -> d; case Err(_) -> return badBody() }
     return unitResp(CloudAgents.Handlers.updateSessionModel(id, decoded))
   }
 }
 
-record RouteListSessionRepos {}
+record RouteListSessionRepos {
+}
+
 impl Web.Handler for RouteListSessionRepos {
   func handle(req: in Web.Request): Web.Response {
     return sessionRepoListResp(CloudAgents.Handlers.listSessionReposHandler(pparam(req, "id")))
   }
 }
 
-record RouteAddSessionRepo {}
+record RouteAddSessionRepo {
+}
+
 impl Web.Handler for RouteAddSessionRepo {
   func handle(req: in Web.Request): Web.Response {
     val id = pparam(req, "id")
-    val decoded = match AddRepoRequest.fromJson(req.body) {
-      case Ok(d) -> d
-      case Err(_) -> return badBody()
-    }
+    val decoded = match AddRepoRequest.fromJson(req.body) { case Ok(d) -> d; case Err(_) -> return badBody() }
     return sessionRepoResp(CloudAgents.Handlers.addSessionRepoHandler(id, decoded))
   }
 }
 
-record RouteDeleteSessionRepo {}
+record RouteDeleteSessionRepo {
+}
+
 impl Web.Handler for RouteDeleteSessionRepo {
   func handle(req: in Web.Request): Web.Response {
     return unitResp(CloudAgents.Handlers.deleteSessionRepoHandler(pparam(req, "id"), pparam(req, "rid")))
@@ -394,60 +364,67 @@ impl Web.Handler for RouteDeleteSessionRepo {
 }
 
 // ─── CloudAgents.Interactions routes (interactions.l) ───────────────────────
+record RouteGetMessages {
+}
 
-record RouteGetMessages {}
 impl Web.Handler for RouteGetMessages {
   func handle(req: in Web.Request): Web.Response {
     return messageListResp(CloudAgents.Interactions.getMessages(pparam(req, "id")))
   }
 }
 
-record RouteAddComment {}
+record RouteAddComment {
+}
+
 impl Web.Handler for RouteAddComment {
   func handle(req: in Web.Request): Web.Response {
     val mid = pparam(req, "mid")
-    val decoded = match AddCommentRequest.fromJson(req.body) {
-      case Ok(d) -> d
-      case Err(_) -> return badBody()
-    }
+    val decoded = match AddCommentRequest.fromJson(req.body) { case Ok(d) -> d; case Err(_) -> return badBody() }
     return commentResp(CloudAgents.Interactions.addCommentHandler(mid, decoded))
   }
 }
 
-record RouteGetComments {}
+record RouteGetComments {
+}
+
 impl Web.Handler for RouteGetComments {
   func handle(req: in Web.Request): Web.Response {
     return commentListResp(CloudAgents.Interactions.getComments(pparam(req, "mid")))
   }
 }
 
-record RouteGetTodos {}
+record RouteGetTodos {
+}
+
 impl Web.Handler for RouteGetTodos {
   func handle(req: in Web.Request): Web.Response {
     return todoListResp(CloudAgents.Interactions.getTodos(pparam(req, "id")))
   }
 }
 
-record RouteAddTodo {}
+record RouteAddTodo {
+}
+
 impl Web.Handler for RouteAddTodo {
   func handle(req: in Web.Request): Web.Response {
     val id = pparam(req, "id")
-    val decoded = match AddTodoRequest.fromJson(req.body) {
-      case Ok(d) -> d
-      case Err(_) -> return badBody()
-    }
+    val decoded = match AddTodoRequest.fromJson(req.body) { case Ok(d) -> d; case Err(_) -> return badBody() }
     return todoResp(CloudAgents.Interactions.addTodoHandler(id, decoded))
   }
 }
 
-record RouteToggleTodo {}
+record RouteToggleTodo {
+}
+
 impl Web.Handler for RouteToggleTodo {
   func handle(req: in Web.Request): Web.Response {
     return unitResp(CloudAgents.Interactions.toggleTodoHandler(pparam(req, "tid")))
   }
 }
 
-record RouteDeleteTodo {}
+record RouteDeleteTodo {
+}
+
 impl Web.Handler for RouteDeleteTodo {
   func handle(req: in Web.Request): Web.Response {
     return unitResp(CloudAgents.Interactions.deleteTodoHandler(pparam(req, "tid")))
@@ -455,71 +432,77 @@ impl Web.Handler for RouteDeleteTodo {
 }
 
 // ─── CloudAgents.Prompts routes (prompts.l) ─────────────────────────────────
+record RouteListPrompts {
+}
 
-record RouteListPrompts {}
 impl Web.Handler for RouteListPrompts {
   func handle(req: in Web.Request): Web.Response {
     return promptListResp(CloudAgents.Prompts.listPromptsHandler())
   }
 }
 
-record RouteListPopularPrompts {}
+record RouteListPopularPrompts {
+}
+
 impl Web.Handler for RouteListPopularPrompts {
   func handle(req: in Web.Request): Web.Response {
     return promptListResp(CloudAgents.Prompts.listPopularPromptsHandler())
   }
 }
 
-record RouteListPromptsByTag {}
+record RouteListPromptsByTag {
+}
+
 impl Web.Handler for RouteListPromptsByTag {
   func handle(req: in Web.Request): Web.Response {
     return promptListResp(CloudAgents.Prompts.listPromptsByTagHandler(pparam(req, "tag")))
   }
 }
 
-record RouteRenderPrompt {}
+record RouteRenderPrompt {
+}
+
 impl Web.Handler for RouteRenderPrompt {
   func handle(req: in Web.Request): Web.Response {
     val pid = pparam(req, "pid")
-    val decoded = match RenderPromptRequest.fromJson(req.body) {
-      case Ok(d) -> d
-      case Err(_) -> return badBody()
-    }
+    val decoded = match RenderPromptRequest.fromJson(req.body) { case Ok(d) -> d; case Err(_) -> return badBody() }
     return renderedPromptResp(CloudAgents.Prompts.renderPromptHandler(pid, decoded))
   }
 }
 
-record RouteAddPrompt {}
+record RouteAddPrompt {
+}
+
 impl Web.Handler for RouteAddPrompt {
   func handle(req: in Web.Request): Web.Response {
-    val decoded = match SavePromptRequest.fromJson(req.body) {
-      case Ok(d) -> d
-      case Err(_) -> return badBody()
-    }
+    val decoded = match SavePromptRequest.fromJson(req.body) { case Ok(d) -> d; case Err(_) -> return badBody() }
     return promptResp(CloudAgents.Prompts.addPromptHandler(decoded))
   }
 }
 
-record RouteUpdatePrompt {}
+record RouteUpdatePrompt {
+}
+
 impl Web.Handler for RouteUpdatePrompt {
   func handle(req: in Web.Request): Web.Response {
     val pid = pparam(req, "pid")
-    val decoded = match SavePromptRequest.fromJson(req.body) {
-      case Ok(d) -> d
-      case Err(_) -> return badBody()
-    }
+    val decoded = match SavePromptRequest.fromJson(req.body) { case Ok(d) -> d; case Err(_) -> return badBody() }
     return promptResp(CloudAgents.Prompts.updatePromptHandler(pid, decoded))
   }
 }
 
-record RouteUsePrompt {}
+record RouteUsePrompt {
+}
+
 impl Web.Handler for RouteUsePrompt {
   func handle(req: in Web.Request): Web.Response {
     return unitResp(CloudAgents.Prompts.usePromptHandler(pparam(req, "pid")))
   }
 }
 
-record RouteDeletePrompt {}
+record RouteDeletePrompt {
+}
+
 impl Web.Handler for RouteDeletePrompt {
   func handle(req: in Web.Request): Web.Response {
     return unitResp(CloudAgents.Prompts.deletePromptHandler(pparam(req, "pid")))
@@ -527,26 +510,28 @@ impl Web.Handler for RouteDeletePrompt {
 }
 
 // ─── CloudAgents.Credentials routes (credentials.l) ─────────────────────────
+record RouteListCredentials {
+}
 
-record RouteListCredentials {}
 impl Web.Handler for RouteListCredentials {
   func handle(req: in Web.Request): Web.Response {
     return credentialNameListResp(CloudAgents.Credentials.listCredentialsHandler())
   }
 }
 
-record RoutePutCredential {}
+record RoutePutCredential {
+}
+
 impl Web.Handler for RoutePutCredential {
   func handle(req: in Web.Request): Web.Response {
-    val decoded = match PutCredentialRequest.fromJson(req.body) {
-      case Ok(d) -> d
-      case Err(_) -> return badBody()
-    }
+    val decoded = match PutCredentialRequest.fromJson(req.body) { case Ok(d) -> d; case Err(_) -> return badBody() }
     return unitResp(CloudAgents.Credentials.putCredentialHandler(decoded))
   }
 }
 
-record RouteDeleteCredential {}
+record RouteDeleteCredential {
+}
+
 impl Web.Handler for RouteDeleteCredential {
   func handle(req: in Web.Request): Web.Response {
     return unitResp(CloudAgents.Credentials.deleteCredentialHandler(pparam(req, "name")))
@@ -554,38 +539,39 @@ impl Web.Handler for RouteDeleteCredential {
 }
 
 // ─── CloudAgents.Profiles routes (profiles.l) ───────────────────────────────
+record RouteListProfiles {
+}
 
-record RouteListProfiles {}
 impl Web.Handler for RouteListProfiles {
   func handle(req: in Web.Request): Web.Response {
     return profileListResp(CloudAgents.Profiles.listProfilesHandler())
   }
 }
 
-record RouteAddProfile {}
+record RouteAddProfile {
+}
+
 impl Web.Handler for RouteAddProfile {
   func handle(req: in Web.Request): Web.Response {
-    val decoded = match SaveProfileRequest.fromJson(req.body) {
-      case Ok(d) -> d
-      case Err(_) -> return badBody()
-    }
+    val decoded = match SaveProfileRequest.fromJson(req.body) { case Ok(d) -> d; case Err(_) -> return badBody() }
     return profileResp(CloudAgents.Profiles.addProfileHandler(decoded))
   }
 }
 
-record RouteUpdateProfile {}
+record RouteUpdateProfile {
+}
+
 impl Web.Handler for RouteUpdateProfile {
   func handle(req: in Web.Request): Web.Response {
     val pid = pparam(req, "pid")
-    val decoded = match SaveProfileRequest.fromJson(req.body) {
-      case Ok(d) -> d
-      case Err(_) -> return badBody()
-    }
+    val decoded = match SaveProfileRequest.fromJson(req.body) { case Ok(d) -> d; case Err(_) -> return badBody() }
     return profileResp(CloudAgents.Profiles.updateProfileHandler(pid, decoded))
   }
 }
 
-record RouteDeleteProfile {}
+record RouteDeleteProfile {
+}
+
 impl Web.Handler for RouteDeleteProfile {
   func handle(req: in Web.Request): Web.Response {
     return unitResp(CloudAgents.Profiles.deleteProfileHandler(pparam(req, "pid")))
@@ -593,43 +579,151 @@ impl Web.Handler for RouteDeleteProfile {
 }
 
 // ─── CloudAgents.Webhooks routes (webhooks.l) ───────────────────────────────
+record RouteRegisterWebhook {
+}
 
-record RouteRegisterWebhook {}
 impl Web.Handler for RouteRegisterWebhook {
   func handle(req: in Web.Request): Web.Response {
-    val decoded = match RegisterWebhookRequest.fromJson(req.body) {
-      case Ok(d) -> d
-      case Err(_) -> return badBody()
-    }
+    val decoded = match RegisterWebhookRequest.fromJson(req.body) { case Ok(d) -> d; case Err(_) -> return badBody() }
     return webhookResp(CloudAgents.Webhooks.registerWebhookHandler(decoded))
   }
 }
 
-record RouteListWebhooks {}
+record RouteListWebhooks {
+}
+
 impl Web.Handler for RouteListWebhooks {
   func handle(req: in Web.Request): Web.Response {
     return webhookListResp(CloudAgents.Webhooks.listWebhooksHandler())
   }
 }
 
-record RouteDeleteWebhook {}
+record RouteDeleteWebhook {
+}
+
 impl Web.Handler for RouteDeleteWebhook {
   func handle(req: in Web.Request): Web.Response {
     return unitResp(CloudAgents.Webhooks.deleteWebhookHandler(pparam(req, "id")))
   }
 }
 
-record RoutePendingWebhookEvents {}
+record RoutePendingWebhookEvents {
+}
+
 impl Web.Handler for RoutePendingWebhookEvents {
   func handle(req: in Web.Request): Web.Response {
     return webhookEventListResp(CloudAgents.Webhooks.pendingWebhookEventsHandler())
   }
 }
 
-record RouteMarkWebhookDelivered {}
+record RouteMarkWebhookDelivered {
+}
+
 impl Web.Handler for RouteMarkWebhookDelivered {
   func handle(req: in Web.Request): Web.Response {
     return unitResp(CloudAgents.Webhooks.markWebhookDeliveredHandler(pparam(req, "id")))
+  }
+}
+
+// ─── CloudAgents.Callbacks routes (callbacks.l) ─────────────────────────────
+//
+// docs/phase6-mcp-callbacks.md. Create/poll routes are container-originated
+// (callback-bearer-token authenticated, exempt from AuthMiddleware's normal
+// check — see CloudAgents.Auth.isContainerCallbackRoute above); the
+// `.../answer` routes are user-originated and flow through normal auth like
+// every other route in this file.
+func callbackAuthHeader(req: in Web.Request): String {
+  return match Web.header(req, "Authorization") { case Some(h) -> h; case None -> "" }
+}
+
+record RouteCreatePermissionRequest {
+}
+
+impl Web.Handler for RouteCreatePermissionRequest {
+  func handle(req: in Web.Request): Web.Response {
+    val id = pparam(req, "id")
+    val decoded = match CreatePermissionRequestRequest.fromJson(req.body) {
+      case Ok(d) -> d
+      case Err(_) -> return badBody()
+    }
+    return createPermissionRequestResp(
+      CloudAgents.Callbacks.createPermissionRequestHandler(id, callbackAuthHeader(req), decoded)
+    )
+  }
+}
+
+record RouteGetPermissionRequest {
+}
+
+impl Web.Handler for RouteGetPermissionRequest {
+  func handle(req: in Web.Request): Web.Response {
+    return permissionDecisionResp(
+      CloudAgents.Callbacks.getPermissionRequestHandler(
+        pparam(req, "id"),
+        pparam(req, "rid"),
+        callbackAuthHeader(req)
+      )
+    )
+  }
+}
+
+record RouteAnswerPermissionRequest {
+}
+
+impl Web.Handler for RouteAnswerPermissionRequest {
+  func handle(req: in Web.Request): Web.Response {
+    val id = pparam(req, "id")
+    val rid = pparam(req, "rid")
+    val decoded = match AnswerPermissionRequestRequest.fromJson(req.body) {
+      case Ok(d) -> d
+      case Err(_) -> return badBody()
+    }
+    return unitResp(CloudAgents.Callbacks.answerPermissionRequestHandler(id, rid, decoded))
+  }
+}
+
+record RouteCreateUserQuestion {
+}
+
+impl Web.Handler for RouteCreateUserQuestion {
+  func handle(req: in Web.Request): Web.Response {
+    val id = pparam(req, "id")
+    val decoded = match CreateUserQuestionRequest.fromJson(req.body) { case Ok(d) -> d; case Err(_) -> return badBody() }
+    return createUserQuestionResp(CloudAgents.Callbacks.createUserQuestionHandler(id, callbackAuthHeader(req), decoded))
+  }
+}
+
+record RouteGetUserQuestion {
+}
+
+impl Web.Handler for RouteGetUserQuestion {
+  func handle(req: in Web.Request): Web.Response {
+    return userQuestionAnswerResp(
+      CloudAgents.Callbacks.getUserQuestionHandler(pparam(req, "id"), pparam(req, "rid"), callbackAuthHeader(req))
+    )
+  }
+}
+
+record RouteAnswerUserQuestion {
+}
+
+impl Web.Handler for RouteAnswerUserQuestion {
+  func handle(req: in Web.Request): Web.Response {
+    val id = pparam(req, "id")
+    val rid = pparam(req, "rid")
+    val decoded = match AnswerUserQuestionRequest.fromJson(req.body) { case Ok(d) -> d; case Err(_) -> return badBody() }
+    return unitResp(CloudAgents.Callbacks.answerUserQuestionHandler(id, rid, decoded))
+  }
+}
+
+record RouteReportProgress {
+}
+
+impl Web.Handler for RouteReportProgress {
+  func handle(req: in Web.Request): Web.Response {
+    val id = pparam(req, "id")
+    val decoded = match ReportProgressRequest.fromJson(req.body) { case Ok(d) -> d; case Err(_) -> return badBody() }
+    return unitResp(CloudAgents.Callbacks.reportProgressHandler(id, callbackAuthHeader(req), decoded))
   }
 }
 
@@ -637,22 +731,27 @@ impl Web.Handler for RouteMarkWebhookDelivered {
 //
 // Server-side provider proxies (ADR-006): every handler returns a complete
 // passthrough JSON body as a String, so all five map through jsonStringResp.
+record RouteProxyGithubRepos {
+}
 
-record RouteProxyGithubRepos {}
 impl Web.Handler for RouteProxyGithubRepos {
   func handle(req: in Web.Request): Web.Response {
     return jsonStringResp(CloudAgents.Proxy.githubReposHandler(pparam(req, "page")))
   }
 }
 
-record RouteProxyGithubRepo {}
+record RouteProxyGithubRepo {
+}
+
 impl Web.Handler for RouteProxyGithubRepo {
   func handle(req: in Web.Request): Web.Response {
     return jsonStringResp(CloudAgents.Proxy.githubRepoHandler(pparam(req, "owner"), pparam(req, "repo")))
   }
 }
 
-record RouteProxyGithubPulls {}
+record RouteProxyGithubPulls {
+}
+
 impl Web.Handler for RouteProxyGithubPulls {
   func handle(req: in Web.Request): Web.Response {
     return jsonStringResp(
@@ -661,7 +760,9 @@ impl Web.Handler for RouteProxyGithubPulls {
   }
 }
 
-record RouteProxyGithubChecks {}
+record RouteProxyGithubChecks {
+}
+
 impl Web.Handler for RouteProxyGithubChecks {
   func handle(req: in Web.Request): Web.Response {
     return jsonStringResp(
@@ -670,7 +771,9 @@ impl Web.Handler for RouteProxyGithubChecks {
   }
 }
 
-record RouteProxyModels {}
+record RouteProxyModels {
+}
+
 impl Web.Handler for RouteProxyModels {
   func handle(req: in Web.Request): Web.Response {
     return jsonStringResp(CloudAgents.Proxy.modelsHandler(pparam(req, "harness")))
@@ -678,21 +781,21 @@ impl Web.Handler for RouteProxyModels {
 }
 
 // ─── CloudAgents.OAuth routes (oauth.l) ─────────────────────────────────────
+record RouteOAuthConfig {
+}
 
-record RouteOAuthConfig {}
 impl Web.Handler for RouteOAuthConfig {
   func handle(req: in Web.Request): Web.Response {
     return Web.json(200, CloudAgents.OAuth.configJson())
   }
 }
 
-record RouteOAuthExchange {}
+record RouteOAuthExchange {
+}
+
 impl Web.Handler for RouteOAuthExchange {
   func handle(req: in Web.Request): Web.Response {
-    val decoded = match ExchangeRequest.fromJson(req.body) {
-      case Ok(d) -> d
-      case Err(_) -> return badBody()
-    }
+    val decoded = match ExchangeRequest.fromJson(req.body) { case Ok(d) -> d; case Err(_) -> return badBody() }
     return match CloudAgents.OAuth.exchangeCode(decoded) {
       case Ok(grant) -> Web.json(200, grant.toJson())
       case Err(e) -> Web.errorResponse(e)
@@ -704,13 +807,12 @@ impl Web.Handler for RouteOAuthExchange {
 // AuthMiddleware does and invalidates that bearer's validation-cache row.
 // Lives under the auth-exempt /api/auth/ prefix, which is correct here:
 // invalidating a cache row requires knowing the token itself.
-record RouteOAuthLogout {}
+record RouteOAuthLogout {
+}
+
 impl Web.Handler for RouteOAuthLogout {
   func handle(req: in Web.Request): Web.Response {
-    val authHeader = match Web.header(req, "Authorization") {
-      case Some(h) -> h
-      case None -> ""
-    }
+    val authHeader = match Web.header(req, "Authorization") { case Some(h) -> h; case None -> "" }
     return unitResp(CloudAgents.OAuth.logout(authHeader))
   }
 }
@@ -842,6 +944,21 @@ func main(): Unit {
   router = Web.addGet(router, "/api/webhooks/pending", RoutePendingWebhookEvents())
   router = Web.addPost(router, "/api/webhooks/events/{id}/delivered", RouteMarkWebhookDelivered())
   router = Web.addDelete(router, "/api/webhooks/{id}", RouteDeleteWebhook())
+
+  // MCP callbacks (docs/phase6-mcp-callbacks.md): permission requests, user
+  // questions, and progress reports from the in-container MCP shim (stage 3,
+  // not shipped yet — CLOUD_AGENTS_MCP_CALLBACKS is off by default so no
+  // container ever calls these today). Create/poll routes are
+  // container-originated (callback-bearer-token auth, exempt from
+  // AuthMiddleware — see isContainerCallbackRoute); the .../answer routes are
+  // user-originated and auth-enforced like every other route below.
+  router = Web.addPost(router, "/api/sessions/{id}/callbacks/permission", RouteCreatePermissionRequest())
+  router = Web.addGet(router, "/api/sessions/{id}/callbacks/permission/{rid}", RouteGetPermissionRequest())
+  router = Web.addPost(router, "/api/sessions/{id}/callbacks/permission/{rid}/answer", RouteAnswerPermissionRequest())
+  router = Web.addPost(router, "/api/sessions/{id}/callbacks/question", RouteCreateUserQuestion())
+  router = Web.addGet(router, "/api/sessions/{id}/callbacks/question/{rid}", RouteGetUserQuestion())
+  router = Web.addPost(router, "/api/sessions/{id}/callbacks/question/{rid}/answer", RouteAnswerUserQuestion())
+  router = Web.addPost(router, "/api/sessions/{id}/callbacks/progress", RouteReportProgress())
 
   // Server-side provider proxies (ADR-006): GitHub listings and model
   // discovery with vault credentials, so the browser needs no local keys.
@@ -1009,7 +1126,6 @@ pub func createEmptyStringArray(): StringArray {
 extern type Type = "System.Type"
 
 extern type StringArray = "System.String[]"
-
 
 @externInstance
 @externTarget("System.Array.get_Length")
