@@ -299,6 +299,14 @@ pub func streamSessionMessage(
   val t = runSessionMessageAsync(repoUrl, branch, prompt, sessionId, harness, model, nativeSessionId, profileId, userId, extraRepos, cell)
   val startMs = CloudAgents.Repository.nowMillisLong()
   val runTimeoutMs = 1800000.toLong() // 30-minute hard cap (matches the old runSessionMessage)
+  // Give up on the client only after several CONSECUTIVE failed writes, not the
+  // first (#491): a single writeChunk Err can be a transient proxy/network blip,
+  // and terminating on it would discard an in-progress run the old buffered
+  // handler would have survived. On a failure we keep the offset put so the same
+  // delta is retried next tick; a genuinely-gone client fails every retry and is
+  // concluded gone within a few seconds.
+  val maxConsecutiveWriteFailures = 3
+  var writeFailures = 0
   var offset = 0
   var finished = false
   var clientGone = false
@@ -324,10 +332,19 @@ pub func streamSessionMessage(
     if containerId.length > 0 {
       val delta = CloudAgents.Streaming.outputDelta(partialContainerLogs(containerId), offset)
       if delta.length > 0 {
-        offset = offset + delta.length.toInt()
         match Web.writeChunk(w, CloudAgents.Streaming.toSseChunk(delta)) {
-          case Ok(_) -> ()
-          case Err(_) -> { clientGone = true }
+          case Ok(_) -> {
+            // Only advance PAST bytes actually delivered, so a failed write
+            // re-sends the same delta next tick rather than losing it (#491).
+            offset = offset + delta.length.toInt()
+            writeFailures = 0
+          }
+          case Err(_) -> {
+            writeFailures = writeFailures + 1
+            if writeFailures >= maxConsecutiveWriteFailures {
+              clientGone = true
+            }
+          }
         }
       }
     }

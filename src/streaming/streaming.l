@@ -105,6 +105,14 @@ pub func toSseChunk(line: in String): String {
 /// streaming run loop should write. Empty when the caller is caught up
 /// (`offset >= length`). Pure and unit-tested so the loop's delta/offset math
 /// (the part most prone to an off-by-one) has coverage without Docker (#486).
+///
+/// Surrogate-pair safety (#493): the caller only ever passes an `offset` equal
+/// to a PRIOR full length of the (append-only-growing) log, and the delta runs
+/// to the current full length. A UTF-16 surrogate pair is contiguous inside the
+/// string, so it lies wholly on one side of any such full-length boundary — the
+/// cut can't split an emoji across two frames unless the log itself contained a
+/// lone surrogate, which UTF-8-decoded container output does not produce
+/// (invalid sequences decode to U+FFFD, not a bare surrogate).
 pub func outputDelta(logs: in String, offset: in Int): String {
   val total = logs.length.toInt()
   if offset >= total {
@@ -134,38 +142,9 @@ pub func sseDoneWithMessage(messageId: in String): String {
   return "event: done\ndata: {\"messageId\":\"" + jsonEscape(messageId) + "\"}\n\n"
 }
 
-/// Scan `logs` line-by-line and produce one SSE data frame per line.
-/// CR is swallowed so CRLF output does not leave trailing carriage returns.
-func logsToFrames(logs: in String): String {
-  var acc = ""
-  var line = ""
-  var i = 0
-  while i < logs.length {
-    val c = logs.substring(i, 1)
-    if c == "\n" {
-      acc = acc + toSseChunk(line)
-      line = ""
-    } else if c == "\r" {
-      // swallow
-    } else {
-      line = line + c
-    }
-    i = i + 1
-  }
-  if line.length > 0 {
-    acc = acc + toSseChunk(line)
-  }
-  return acc
-}
-
-/// Convert a block of captured logs into an SSE stream body: one frame per
-/// line, terminated by a `done` event.
-pub func formatLogsAsSse(logs: in String): String {
-  return logsToFrames(logs) + sseDone()
-}
-
-/// Like `formatLogsAsSse`, but the terminal `done` frame carries the persisted
-/// agent message id (see CloudAgents.Repository.addMessage).
-pub func formatLogsAsSseWithId(logs: in String, messageId: in String): String {
-  return logsToFrames(logs) + sseDoneWithMessage(messageId)
-}
+// (The whole-log framing helpers logsToFrames/formatLogsAsSse/
+// formatLogsAsSseWithId were removed as dead code (#492): they buffered a
+// completed run's captured log into one SSE body, which the streaming handler
+// (streamSessionMessage writing per-delta toSseChunk frames + a terminal
+// sseDone/sseDoneWithMessage) replaced. Nothing in src/ called them once
+// sendMessage was migrated.)

@@ -48,12 +48,3 @@ test "jsonEscape escapes raw control characters as unicode escapes" {
   assertEqual(jsonEscape("a" + charFromCode(8) + "b"), "a\\u0008b", "backspace mid-string")
   assertEqual(jsonEscape("line\nbreak"), "line\\nbreak", "newline still uses the short escape")
 }
-
-test "formatLogsAsSse emits one frame per line plus a done event" {
-  val body = formatLogsAsSse("one\ntwo")
-  val expected =
-    "data: {\"chunk\":\"one\"}\n\n" +
-    "data: {\"chunk\":\"two\"}\n\n" +
-    "event: done\ndata: {}\n\n"
-  assertEqual(body, expected, "two lines produce two data frames and a done frame")
-}
