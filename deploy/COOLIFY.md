@@ -70,19 +70,30 @@ the built image lands under the exact name `imageForHarness()`
 `entrypoint: ["true"]` + `restart: "no"` so the "service" does nothing at
 runtime beyond getting built.
 
-**Only `claude-code-base` is enabled by default** — `codex-base`/
-`opencode-base`/`gemini-base` are commented out. This isn't just about
-build time: `docker compose build` (how Coolify invokes it, no service
-argument) builds every enabled service in one shot, and a failure in *any
-one* fails the whole command — which blocks `api`/`frontend`/`caddy` from
-deploying too, not just the broken harness. This happened for real:
-`Dockerfile.codex`'s `npm install -g @openai/codex` step failed mid-build
-and took the entire deploy down with it, even though nothing about
-`api`/`frontend` had changed. Before uncommenting a harness, confirm its
-Dockerfile actually builds cleanly on its own first —
-`docker build -f docker/Dockerfile.codex docker` (swap in the relevant
-Dockerfile) — so a bad runner image can't block every future deploy of the
-whole app.
+**Only `claude-code-base` is active by default.** `codex-base`/
+`opencode-base`/`gemini-base` are gated behind Compose `profiles:` — this
+isn't just about build time: `docker compose build` (how Coolify invokes
+it, no service argument) builds every *active* service in one shot, and a
+failure in *any one* fails the whole command, which blocks
+`api`/`frontend`/`caddy` from deploying too, not just the broken harness.
+This happened for real: `Dockerfile.codex`'s `npm install -g @openai/codex`
+step failed mid-build and took the entire deploy down with it, even though
+nothing about `api`/`frontend` had changed.
+
+A profiled service (`profiles: ["codex"]`, etc.) is skipped entirely —
+build included — unless its profile is active, via the `COMPOSE_PROFILES`
+env var (comma-separated) or a `--profile` flag; Coolify's own deploy
+passes neither, so these three stay off unless you opt in. To enable one:
+
+1. **Confirm its Dockerfile actually builds standalone first** —
+   `docker build -f docker/Dockerfile.codex docker` (swap in the relevant
+   Dockerfile) — before wiring it into the shared deploy at all. Don't let
+   an untested runner image risk blocking every future deploy of the whole
+   app.
+2. Set `COMPOSE_PROFILES` in Coolify's Environment Variables tab to the
+   harness(es) you want built automatically, e.g. `codex` or
+   `codex,gemini`. `claude-code-base` has no `profiles:` key, so it's
+   always active regardless of this setting.
 
 Enabled services show as **"Exited (0)"** in Coolify's service list —
 that's the intended behavior, not a failure; only the built image matters.

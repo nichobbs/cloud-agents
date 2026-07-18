@@ -75,17 +75,23 @@ services:
   # normal, not a failure; only the built image is the point.
   #
   # IMPORTANT: `docker compose build` (no service argument, which is how
-  # Coolify invokes it) builds every service in this file in one shot — a
-  # build failure in ANY of them fails the WHOLE command, which blocks
-  # `api`/`frontend`/`caddy` from deploying too, not just the broken
+  # Coolify invokes it) builds every ACTIVE service in this file in one
+  # shot — a build failure in any of them fails the WHOLE command, which
+  # blocks api/frontend/caddy from deploying too, not just the broken
   # harness (confirmed by a real failed deploy when Dockerfile.codex's
-  # `npm install -g @openai/codex` failed mid-build). Only `claude-code-base`
-  # is enabled by default for that reason — it's the one harness actually
-  # confirmed to build cleanly here. Uncomment codex-base/opencode-base/
-  # gemini-base below only after confirming its Dockerfile builds
-  # successfully on its own (e.g. `docker build -f docker/Dockerfile.codex
-  # docker`) — don't let an untested runner image risk blocking every
-  # future deploy of the whole app.
+  # `npm install -g @openai/codex` failed mid-build). codex-base/
+  # opencode-base/gemini-base are therefore gated behind Compose
+  # `profiles:` rather than being active by default — Compose skips a
+  # profiled service entirely (build included) unless one of its profiles
+  # is listed in the COMPOSE_PROFILES env var (comma-separated) or a
+  # --profile flag, neither of which Coolify's own deploy passes. Only
+  # claude-code-base (no profiles: key, so always active) is on by
+  # default — it's the one harness actually confirmed to build cleanly
+  # here. To opt a harness in, first confirm its Dockerfile actually
+  # builds standalone (e.g. `docker build -f docker/Dockerfile.codex
+  # docker`), THEN set COMPOSE_PROFILES (e.g. `codex` or `codex,gemini`)
+  # in Coolify's environment variables — don't let an untested runner
+  # image risk blocking every future deploy of the whole app.
   claude-code-base:
     image: claude-code:base
     build:
@@ -94,29 +100,32 @@ services:
     entrypoint: ["true"]
     restart: "no"
 
-  # codex-base:
-  #   image: codex:base
-  #   build:
-  #     context: ./docker
-  #     dockerfile: Dockerfile.codex
-  #   entrypoint: ["true"]
-  #   restart: "no"
+  codex-base:
+    image: codex:base
+    profiles: ["codex"]
+    build:
+      context: ./docker
+      dockerfile: Dockerfile.codex
+    entrypoint: ["true"]
+    restart: "no"
 
-  # opencode-base:
-  #   image: opencode:base
-  #   build:
-  #     context: ./docker
-  #     dockerfile: Dockerfile.opencode
-  #   entrypoint: ["true"]
-  #   restart: "no"
+  opencode-base:
+    image: opencode:base
+    profiles: ["opencode"]
+    build:
+      context: ./docker
+      dockerfile: Dockerfile.opencode
+    entrypoint: ["true"]
+    restart: "no"
 
-  # gemini-base:
-  #   image: gemini:base
-  #   build:
-  #     context: ./docker
-  #     dockerfile: Dockerfile.gemini
-  #   entrypoint: ["true"]
-  #   restart: "no"
+  gemini-base:
+    image: gemini:base
+    profiles: ["gemini"]
+    build:
+      context: ./docker
+      dockerfile: Dockerfile.gemini
+    entrypoint: ["true"]
+    restart: "no"
 
   caddy:
     image: caddy:2
