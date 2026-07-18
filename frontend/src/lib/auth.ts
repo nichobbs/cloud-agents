@@ -12,6 +12,17 @@ import { clearRepoCache } from './github';
 const TOKEN_KEY = 'cloud_agents_token';
 const LOGIN_KEY = 'cloud_agents_login';
 const STATE_KEY = 'cloud_agents_oauth_state';
+const RETURN_TO_KEY = 'cloud_agents_oauth_return_to';
+
+/** Fired after completeLogin()/signOut() change sign-in state, so listeners
+ *  that aren't themselves triggering the change (e.g. RequireAuth guarding
+ *  a different render than the one showing the sign-out button) notice
+ *  immediately rather than waiting for the next route change. */
+export const AUTH_CHANGED_EVENT = 'cloud-agents-auth-changed';
+
+function notifyAuthChanged(): void {
+  window.dispatchEvent(new Event(AUTH_CHANGED_EVENT));
+}
 
 export function getApiToken(): string {
   return localStorage.getItem(TOKEN_KEY) ?? '';
@@ -58,6 +69,21 @@ export function takeStoredState(): string {
   return s;
 }
 
+/** Remember the page RequireAuth redirected from, so AuthCallback can send
+ *  the user back there instead of always landing on /repos. */
+export function setReturnPath(path: string): void {
+  sessionStorage.setItem(RETURN_TO_KEY, path);
+}
+
+/** The path stored before login began ('' if none — e.g. sign-in was
+ *  triggered from the nav bar rather than a RequireAuth redirect), cleared
+ *  on read. */
+export function takeReturnPath(): string {
+  const p = sessionStorage.getItem(RETURN_TO_KEY) ?? '';
+  sessionStorage.removeItem(RETURN_TO_KEY);
+  return p;
+}
+
 /** Persist a successful exchange: bearer token, display login, and the
  *  GitHub connection for the repo/PR/CI panels (fresh token → fresh caches). */
 export function completeLogin(token: string, login: string): void {
@@ -65,6 +91,7 @@ export function completeLogin(token: string, login: string): void {
   localStorage.setItem(LOGIN_KEY, login);
   setConnection('github', token);
   clearRepoCache();
+  notifyAuthChanged();
 }
 
 /** Forget everything this device knows about the signed-in user, and ask the
@@ -81,4 +108,5 @@ export function signOut(): void {
   localStorage.removeItem(LOGIN_KEY);
   clearConnection('github');
   clearRepoCache();
+  notifyAuthChanged();
 }

@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { Link, useNavigate, useSearchParams } from 'react-router-dom';
 import { api } from '../lib/api';
-import { completeLogin, takeStoredState } from '../lib/auth';
+import { completeLogin, takeReturnPath, takeStoredState } from '../lib/auth';
 
 /// GitHub redirects here with ?code=…&state=… after the user authorizes the
 /// app. Verify the state matches the one this device generated (CSRF
@@ -18,6 +18,13 @@ export function AuthCallback() {
   useEffect(() => {
     if (startedRef.current) return;
     startedRef.current = true;
+
+    // Consumed unconditionally, up front, regardless of how this callback
+    // ultimately resolves — otherwise a return path set by a guard redirect
+    // survives a declined/mismatched/failed attempt and wrongly leaks into
+    // a later, unrelated sign-in (e.g. one triggered from the nav bar,
+    // which expects the plain /repos fallback).
+    const returnPath = takeReturnPath();
 
     const code = searchParams.get('code') ?? '';
     const state = searchParams.get('state') ?? '';
@@ -39,7 +46,10 @@ export function AuthCallback() {
       .exchangeCode(code)
       .then(({ token, login }) => {
         completeLogin(token, login);
-        navigate('/repos', { replace: true });
+        // Send the user back to wherever RequireAuth redirected them from;
+        // falls back to /repos when sign-in didn't originate from a guard
+        // redirect (e.g. the nav bar's button).
+        navigate(returnPath || '/repos', { replace: true });
       })
       .catch(err => {
         setError(err instanceof Error ? err.message : 'Token exchange failed');
