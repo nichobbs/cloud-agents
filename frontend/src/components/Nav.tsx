@@ -1,36 +1,23 @@
 import { useEffect, useState } from 'react';
 import { Link, useLocation } from 'react-router-dom';
-import { api } from '../lib/api';
+import { useAuthConfig } from '../context/AuthConfigContext';
 import { beginLogin, getLogin, isSignedIn, signOut } from '../lib/auth';
 
 export function Nav() {
   const { pathname } = useLocation();
   const isNew = pathname === '/sessions/new';
   const [signedIn, setSignedIn] = useState(isSignedIn);
-  const [oauth, setOauth] = useState<{ configured: boolean; clientId: string } | null>(null);
+  // Whether the server offers GitHub sign-in — shared with RequireAuth so
+  // both agree on the same answer instead of each polling the endpoint
+  // separately (best-effort; older backends without the endpoint just
+  // resolve to "not configured", hiding the button).
+  const { configured, clientId } = useAuthConfig();
 
   // Login state can change on other pages (the OAuth callback, a sign-out);
   // re-read it whenever the route changes.
   useEffect(() => {
     setSignedIn(isSignedIn());
   }, [pathname]);
-
-  // Whether the server offers GitHub sign-in (best-effort; older backends
-  // without the endpoint just don't show the button).
-  useEffect(() => {
-    let active = true;
-    api
-      .getAuthConfig()
-      .then(cfg => {
-        if (active) setOauth(cfg);
-      })
-      .catch(() => {
-        /* endpoint unavailable — hide the button */
-      });
-    return () => {
-      active = false;
-    };
-  }, []);
 
   const handleSignOut = () => {
     signOut();
@@ -105,10 +92,10 @@ export function Nav() {
             </button>
           </span>
         ) : (
-          oauth?.configured && (
+          configured && (
             <button
               style={signInBtnStyle}
-              onClick={() => beginLogin(oauth.clientId)}
+              onClick={() => beginLogin(clientId)}
               title="Sign in with GitHub (OAuth)"
             >
               Sign in with GitHub

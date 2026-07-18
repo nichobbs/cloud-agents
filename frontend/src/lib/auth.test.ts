@@ -8,13 +8,16 @@ vi.mock('./api', () => ({
 
 import { api } from './api';
 import {
+  AUTH_CHANGED_EVENT,
   authorizeUrl,
   completeLogin,
   getApiToken,
   getLogin,
   isSignedIn,
   newOAuthState,
+  setReturnPath,
   signOut,
+  takeReturnPath,
   takeStoredState,
 } from './auth';
 import { getConnection } from './connections';
@@ -55,6 +58,18 @@ describe('takeStoredState', () => {
   });
 });
 
+describe('setReturnPath / takeReturnPath', () => {
+  it('returns the stored path exactly once', () => {
+    setReturnPath('/prompts');
+    expect(takeReturnPath()).toBe('/prompts');
+    expect(takeReturnPath()).toBe('');
+  });
+
+  it('is empty when nothing was stored', () => {
+    expect(takeReturnPath()).toBe('');
+  });
+});
+
 describe('completeLogin / signOut', () => {
   it('completeLogin stores the bearer, the login, and the GitHub connection', () => {
     completeLogin('gho_tok', 'octocat');
@@ -66,6 +81,14 @@ describe('completeLogin / signOut', () => {
     expect(getConnection('github')).toBe('gho_tok');
   });
 
+  it('completeLogin fires AUTH_CHANGED_EVENT so RequireAuth notices without a route change', () => {
+    const handler = vi.fn();
+    window.addEventListener(AUTH_CHANGED_EVENT, handler);
+    completeLogin('gho_tok', 'octocat');
+    window.removeEventListener(AUTH_CHANGED_EVENT, handler);
+    expect(handler).toHaveBeenCalledTimes(1);
+  });
+
   it('signOut forgets token, login, and connection, and calls the server-side logout', () => {
     completeLogin('gho_tok', 'octocat');
     signOut();
@@ -74,6 +97,15 @@ describe('completeLogin / signOut', () => {
     expect(getLogin()).toBe('');
     expect(isSignedIn()).toBe(false);
     expect(getConnection('github')).toBe('');
+  });
+
+  it('signOut fires AUTH_CHANGED_EVENT so RequireAuth notices without a route change', () => {
+    completeLogin('gho_tok', 'octocat');
+    const handler = vi.fn();
+    window.addEventListener(AUTH_CHANGED_EVENT, handler);
+    signOut();
+    window.removeEventListener(AUTH_CHANGED_EVENT, handler);
+    expect(handler).toHaveBeenCalledTimes(1);
   });
 
   it('signOut still clears storage when the server-side logout rejects', async () => {
