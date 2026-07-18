@@ -18,7 +18,18 @@ FROM mcr.microsoft.com/dotnet/sdk:10.0 AS build
 # "latest" the very first time it was ever built on a given host, with no
 # visible signal that anything's stale. An explicit version pin makes an
 # upgrade a deliberate, visible Dockerfile change that naturally busts the
-# cache on its own. Bump this alongside MIN_LYRIC_VERSION when upgrading.
+# cache on its own.
+#
+# Relationship to MIN_LYRIC_VERSION (repo root): that file is the floor
+# ci.yml enforces against whatever "latest" resolves to at CI run time —
+# it's a check on the compiler's own release stream, unrelated to what any
+# particular built artifact happens to be pinned to. LYRIC_VERSION here is
+# the actual version THIS image compiles with, and should never be pinned
+# below MIN_LYRIC_VERSION (that would mean deliberately deploying with a
+# compiler older than the documented known-good floor) — but it doesn't need
+# to equal it either; being ahead of the floor is normal and fine. Bump this
+# whenever you want the deployed image to use a newer compiler; there's no
+# requirement to bump it in lockstep with MIN_LYRIC_VERSION.
 # Downloads the exact tarball directly rather than trusting install.sh's own
 # --version flag, mirroring .github/workflows/ci.yml's same reasoning
 # (see its "Install Lyric compiler" step and docs/BUILD.md).
