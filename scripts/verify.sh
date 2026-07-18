@@ -92,10 +92,9 @@ pub func main(): Int {
   // Phase 1 — SSE framing
   eqs(toSseChunk("hello"), "data: {\"chunk\":\"hello\"}\n\n", "toSseChunk basic")
   eqs(jsonEscape("x\"y\\z"), "x\\\"y\\\\z", "jsonEscape quotes + backslash")
-  eqs(formatLogsAsSse("a\r\nb\n"),
-      "data: {\"chunk\":\"a\"}\n\n" + "data: {\"chunk\":\"b\"}\n\n" + "event: done\ndata: {}\n\n",
-      "formatLogsAsSse CRLF + trailing")
-  eqs(formatLogsAsSse(""), "event: done\ndata: {}\n\n", "formatLogsAsSse empty")
+  eqs(outputDelta("hello world", 6), "world", "outputDelta past offset")
+  eqs(outputDelta("abc", 3), "", "outputDelta caught up")
+  eqs(sseError("boom"), "event: error\ndata: {\"error\":\"boom\"}\n\n", "sseError frame")
 
   // Phase 2 — state machine
   eqs(tshow(nextStatus(Created, CloneStarted)), "CLONING", "Created+CloneStarted")
