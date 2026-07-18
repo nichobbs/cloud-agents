@@ -67,7 +67,7 @@ for _ in $(seq 1 60); do
     sed -e 's/^/  /' "$LOG" >&2
     exit 1
   fi
-  code=$(curl -sS -o /dev/null -w '%{http_code}' "${BASE}/api/health" 2>/dev/null || echo 000)
+  code=$(curl -sS --connect-timeout 5 --max-time 10 -o /dev/null -w '%{http_code}' "${BASE}/api/health" 2>/dev/null || echo 000)
   if [ "$code" = "200" ]; then ready=1; break; fi
   sleep 1
 done
@@ -83,7 +83,11 @@ fails=0
 # Sends the bearer only when <auth> is "yes"; sends a JSON body when provided.
 assert() {
   local desc="$1" method="$2" path="$3" auth="$4" want_code="$5" want_sub="$6" body="${7:-}"
-  local args=(-sS -X "$method" -w $'\n%{http_code}')
+  # --max-time bounds every request so a bug in the (brand-new) middleware ->
+  # streaming-handler hand-off that hangs the response fails the job fast
+  # instead of stalling CI for hours (#494). These endpoints all answer in
+  # milliseconds; 20s is pure slack.
+  local args=(-sS --connect-timeout 5 --max-time 20 -X "$method" -w $'\n%{http_code}')
   [ "$auth" = "yes" ] && args+=(-H "Authorization: Bearer ${TOKEN}")
   [ -n "$body" ] && args+=(-H "Content-Type: application/json" --data "$body")
   local out code out_body

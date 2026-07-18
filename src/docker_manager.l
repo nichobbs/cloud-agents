@@ -307,6 +307,14 @@ pub func streamSessionMessage(
   // concluded gone within a few seconds.
   val maxConsecutiveWriteFailures = 3
   var writeFailures = 0
+  // Adaptive poll cadence (#495): poll responsively while output is flowing,
+  // but back off toward maxPollMs during quiet stretches so a long, idle run
+  // doesn't refetch the whole container log every second (each tick opens a
+  // fresh Docker client + refetches the full log), matching the frontend's own
+  // 1.5s->6s backoff. Reset to minPollMs the moment new output appears.
+  val minPollMs = 1000
+  val maxPollMs = 5000
+  var pollMs = minPollMs
   var offset = 0
   var finished = false
   var clientGone = false
@@ -325,13 +333,15 @@ pub func streamSessionMessage(
   // fetch), so a shorter interval just multiplies full-log refetches for a
   // long, chatty run without meaningfully improving perceived latency.
   while not finished and not clientGone and not timedOut {
-    finished = taskWaitMs(t, 1000)
+    finished = taskWaitMs(t, pollMs)
     if containerId.length == 0 {
       containerId = sessionContainerId(sessionId)
     }
     if containerId.length > 0 {
       val delta = CloudAgents.Streaming.outputDelta(partialContainerLogs(containerId), offset)
       if delta.length > 0 {
+        // Fresh output — stay responsive.
+        pollMs = minPollMs
         match Web.writeChunk(w, CloudAgents.Streaming.toSseChunk(delta)) {
           case Ok(_) -> {
             // Only advance PAST bytes actually delivered, so a failed write
@@ -346,6 +356,10 @@ pub func streamSessionMessage(
             }
           }
         }
+      } else {
+        // Quiet tick — back off (doubling, capped) to spare the Docker daemon.
+        val next = pollMs * 2
+        pollMs = if next > maxPollMs { maxPollMs } else { next }
       }
     }
     // Hard cap the whole run (#481): a hung container with a still-connected
