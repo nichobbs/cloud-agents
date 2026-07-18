@@ -334,9 +334,16 @@ pub func streamSessionMessage(
       timedOut = true
     }
   }
-  if clientGone or timedOut {
-    // Terminate the orphaned container so the run doesn't keep going after the
-    // browser hung up (clientGone) or past the hard cap (timedOut).
+  // Bail ONLY when the run did not actually finish (#488). A client disconnect
+  // is only detectable on an attempted write, and writes only happen when there
+  // is new output — so a client that vanished during a quiet stretch is often
+  // "discovered" on the run's FINAL flush, the same tick `finished` becomes
+  // true. `finished` therefore wins: a completed run's real outcome
+  // (cell.isSuccess) must be honoured — its reply persisted and history marked
+  // succeeded — even if clientGone/timedOut also flipped on that last tick.
+  if not finished {
+    // The run is still executing (we bailed early on a mid-run disconnect or the
+    // hard cap), so terminate its container.
     //
     // The background run task (runSessionMessageAsync, `t`) is still live and
     // will ALSO try to remove this container in its own cleanup — but that race
@@ -357,14 +364,15 @@ pub func streamSessionMessage(
     }
     return Err(error = "client disconnected")
   }
-  // The run finished: flush any output produced since the last poll (the
-  // captured logs are authoritative and may run slightly ahead of the last
-  // partial fetch).
+  // The run finished. Honour its real outcome regardless of a last-tick
+  // disconnect (a gone client just won't receive the final frames).
   if cell.isSuccess {
+    // Flush any output produced since the last poll (best-effort — the write
+    // fails harmlessly if the client is gone). cell.output is authoritative.
     val finalLogs = cell.output
-    val total = finalLogs.length.toInt()
-    if total > offset {
-      match Web.writeChunk(w, CloudAgents.Streaming.toSseChunk(finalLogs.substring(offset, total - offset))) {
+    val delta = CloudAgents.Streaming.outputDelta(finalLogs, offset)
+    if delta.length > 0 {
+      match Web.writeChunk(w, CloudAgents.Streaming.toSseChunk(delta)) {
         case Ok(_) -> ()
         case Err(_) -> ()
       }
