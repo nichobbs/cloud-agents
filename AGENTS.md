@@ -90,9 +90,10 @@ a real running server answered real `curl` requests correctly, and a real
 session creation spawned a real Docker container that cloned a real repo
 and streamed real output back — see `docs/BUILD.md` "Dependencies" /
 "Net effect" for the full verification, including two `Lyric.Docker`
-bugs found and fixed along the way (nichobbs/cloud-agents#354's automated-test
-gap remains open, but the server behavior it was blocking on confirming is
-now independently confirmed by manual live verification). Bug 6
+bugs found and fixed along the way (the automated end-to-end test that
+nichobbs/cloud-agents#354 asked for still doesn't exist, but the behavior it
+was concerned about is now independently confirmed by manual live
+verification). Bug 6
 (`slice[T].append(x)` — the compiler's own documented idiom for building up
 a slice — threw `"unsupported method 'append'"` at runtime unconditionally,
 builds fine, failed only when actually called,
