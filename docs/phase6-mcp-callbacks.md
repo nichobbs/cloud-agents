@@ -1,8 +1,24 @@
 # Phase 6 — In-container MCP callback server
 
-Status: spec (agreed build plan). Upstream prerequisite:
-`nichobbs/lyric-lang` `docs/62-jsonrpc-mcp.md` (the `Lyric.JsonRpc` /
-`Lyric.Mcp` libraries this phase consumes via the `[nuget]` pin).
+Status: §6 steps 1-3 shipped. Step 1 (host-side callback endpoints, DB,
+tests) landed in PR #525. Step 2 (token minting, env injection, mcp.json/
+entrypoint rendering behind `CLOUD_AGENTS_MCP_CALLBACKS`) landed in the same
+PR. Step 3 (the shim itself, `shim/` — `CloudAgentsShim` on
+`Lyric.Mcp`/`Lyric.JsonRpc` 0.4.34, three tools, `shim/tests/`, wired into
+`scripts/build-docker.sh`/`docker/Dockerfile` and CI) is this change.
+Genuinely confirmed end-to-end: a real spawned `cloud-agents-shim` process
+completed a real MCP `initialize`/`tools/list` handshake over stdio, and a
+real `request_permission`/`report_progress` `tools/call` round trip against
+an unreachable host correctly failed closed (deny) and fired-and-forgot
+respectively — not just unit-tested against the in-memory fake in
+`shim/tests/fakes.l`. Step 4 (flip the `claude` runner's default to
+`--permission-prompt-tool`, tighten `settings.json.template`) is
+intentionally **not** part of this change — `CLOUD_AGENTS_MCP_CALLBACKS`
+stays off by default; see §6.
+
+Upstream prerequisite: `nichobbs/lyric-lang` `docs/62-jsonrpc-mcp.md` (the
+`Lyric.JsonRpc` / `Lyric.Mcp` libraries this phase consumes via the
+`[nuget]` pin) — published 2026-07-19 at version 0.4.34.
 
 ## 1. Problem
 
