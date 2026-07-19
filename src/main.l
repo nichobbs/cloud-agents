@@ -817,7 +817,13 @@ impl Web.Handler for RouteOAuthLogout {
   }
 }
 
-func main(): Unit {
+// pub: dist/CloudAgents.Native/Program.cs (a separate assembly) calls into
+// this entry point directly (global::CloudAgents.Program.main()). Without
+// pub this is package-private per Lyric's documented visibility rules
+// ("Package = visibility unit", docs/lyric/reference.md "Visibility") and
+// only worked so far because .NET codegen doesn't yet enforce that across
+// assembly boundaries — see nichobbs/cloud-agents#397.
+pub func main(): Unit {
   // Ensure the SQLite tables (transcript/comments/todos/prompts/sessions)
   // exist before serving.
   match CloudAgents.Repository.initSchema() {

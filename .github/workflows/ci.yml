@@ -160,6 +160,7 @@ jobs:
             scripts/dev.sh \
             scripts/build-docker.sh \
             scripts/upload-credentials.sh \
+            scripts/install.sh \
             scripts/run-api.sh \
             scripts/e2e-http.sh \
             scripts/test-reconcile-repos.sh \
