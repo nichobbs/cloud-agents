@@ -13,12 +13,15 @@
 //!   CLOUD_AGENTS_CALLBACK_TIMEOUT_MS   client-side long-poll deadline in ms
 //!     (default 600000 = 10 min); shares its name with
 //!     CloudAgents.Callbacks.callbackTimeoutMillis's host-side backstop of
-//!     the same default, so one env var conceptually tunes both ends.
+//!     the same default, and CloudAgents.Docker forwards the host's value
+//!     into the container at session creation, so setting it once on the
+//!     host genuinely tunes both ends (#528).
 package CloudAgents.Shim
 
 import Std.Core
 import Mcp
 import Mcp.Server
+import CloudAgents.Shim.Config
 import CloudAgents.Shim.Transport
 import CloudAgents.Shim.Callbacks
 import CloudAgents.Shim.Tools
@@ -34,10 +37,6 @@ import extern System.String as DotNetString
 // instead sidesteps it entirely.
 /// Poll cadence between long-poll GETs (docs/phase6 §3: "25s poll").
 val defaultPollIntervalMs: Int = 25000
-
-/// Overall client-side deadline for request_permission/ask_user
-/// (docs/phase6 §3: "overall timeout from env (default 10 min)").
-val defaultTimeoutMs: Int = 600000
 
 func readEnv(name: in String): String {
   val raw = Env.GetEnvironmentVariable(name)
@@ -58,73 +57,8 @@ func requireEnv(name: in String): String {
   return v
 }
 
-func digitValue(c: in String): Int {
-  if c == "0" {
-    return 0
-  }
-  if c == "1" {
-    return 1
-  }
-  if c == "2" {
-    return 2
-  }
-  if c == "3" {
-    return 3
-  }
-  if c == "4" {
-    return 4
-  }
-  if c == "5" {
-    return 5
-  }
-  if c == "6" {
-    return 6
-  }
-  if c == "7" {
-    return 7
-  }
-  if c == "8" {
-    return 8
-  }
-  if c == "9" {
-    return 9
-  }
-  return -1
-}
-
-/// Parse a run of decimal digits (only) into an Int, or -1 for anything
-/// else (empty, too long, non-digit) — mirrors
-/// CloudAgents.Callbacks.tryParseMillis (cloud-agents' host-side twin) so
-/// both ends of CLOUD_AGENTS_CALLBACK_TIMEOUT_MS parse identically. Bounded
-/// to 9 digits: realistic timeouts are minutes, not decades of
-/// milliseconds, and this only ever reads an operator-set env var.
-func tryParseMillis(s: in String): Int {
-  if s.length == 0 or s.length > 9 {
-    return -1
-  }
-  var n = 0
-  var i = 0
-  while i < s.length {
-    val d = digitValue(s.substring(i, 1))
-    if d < 0 {
-      return -1
-    }
-    n = n * 10 + d
-    i = i + 1
-  }
-  return n
-}
-
 func readTimeoutMs(): Int {
-  val raw = readEnv("CLOUD_AGENTS_CALLBACK_TIMEOUT_MS")
-  if raw.length == 0 {
-    return defaultTimeoutMs
-  }
-  val n = tryParseMillis(raw)
-  if n < 0 {
-    return defaultTimeoutMs
-  }
-  return n
+  CloudAgents.Shim.Config.timeoutFromRaw(readEnv("CLOUD_AGENTS_CALLBACK_TIMEOUT_MS"))
 }
 
 func main(): Unit {

@@ -120,6 +120,10 @@ pub async func createRunnerContainer(
       case Ok(token) -> {
         envs = envs.append("CLOUD_AGENTS_API_URL=" + CloudAgents.NetworkPolicy.callbackApiUrl())
         envs = envs.append("CLOUD_AGENTS_CALLBACK_TOKEN=" + token)
+        val timeoutOverride = CloudAgents.NetworkPolicy.callbackTimeoutOverride()
+        if timeoutOverride.length > 0 {
+          envs = envs.append("CLOUD_AGENTS_CALLBACK_TIMEOUT_MS=" + timeoutOverride)
+        }
       }
       case Err(e) -> println("WARNING: failed to mint MCP-callback token for session " + sessionId + ": " + CloudAgents.Sqlite.dbErrorMessage(e))
     }

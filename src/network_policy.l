@@ -74,6 +74,19 @@ pub func callbacksFeatureEnabled(): Bool {
 /// networking (bridge vs. host-gateway vs. a custom network); the
 /// `host.docker.internal` default only works out of the box on Docker
 /// Desktop.
+/// The operator-set CLOUD_AGENTS_CALLBACK_TIMEOUT_MS, or "" when unset.
+/// Forwarded verbatim into session containers by CloudAgents.Docker so the
+/// shim's client-side deadline and the host-side backstop share one knob
+/// (#528). Not validated here — both consumers fall back to their default
+/// on an unparseable value.
+pub func callbackTimeoutOverride(): String {
+  val raw = Env.GetEnvironmentVariable("CLOUD_AGENTS_CALLBACK_TIMEOUT_MS")
+  if DotNetString.IsNullOrEmpty(raw) {
+    return ""
+  }
+  return raw
+}
+
 pub func callbackApiUrl(): String {
   val url = Env.GetEnvironmentVariable("CLOUD_AGENTS_CALLBACK_API_URL")
   if DotNetString.IsNullOrEmpty(url) {
