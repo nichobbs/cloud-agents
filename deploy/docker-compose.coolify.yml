@@ -81,7 +81,14 @@ services:
   # Compose's default <project>-<service> tag) — the container itself does
   # nothing (`entrypoint: ["true"]`, exits 0 immediately, never restarts).
   # Expect these to show as "Exited (0)" in Coolify's service list — that's
-  # normal, not a failure; only the built image is the point.
+  # normal, not a failure; only the built image is the point. Each also sets
+  # `exclude_from_hc: true` (#516) — Coolify's documented flag to skip a
+  # service in its own healthcheck evaluation
+  # (https://coolify.io/docs/knowledge-base/docker/compose), meant for
+  # exactly this one-shot/build-only shape (its own docs use a `migrate`
+  # service as the example). Without it, Coolify could plausibly treat a
+  # non-restarting exited container as a failed/unhealthy deployment signal;
+  # this heads that off rather than waiting to find out on a real redeploy.
   #
   # IMPORTANT: `docker compose build` (no service argument, which is how
   # Coolify invokes it) builds every ACTIVE service in this file in one
@@ -108,6 +115,7 @@ services:
       dockerfile: Dockerfile
     entrypoint: ["true"]
     restart: "no"
+    exclude_from_hc: true
 
   codex-base:
     image: codex:base
@@ -117,6 +125,7 @@ services:
       dockerfile: Dockerfile.codex
     entrypoint: ["true"]
     restart: "no"
+    exclude_from_hc: true
 
   opencode-base:
     image: opencode:base
@@ -126,6 +135,7 @@ services:
       dockerfile: Dockerfile.opencode
     entrypoint: ["true"]
     restart: "no"
+    exclude_from_hc: true
 
   gemini-base:
     image: gemini:base
@@ -135,6 +145,7 @@ services:
       dockerfile: Dockerfile.gemini
     entrypoint: ["true"]
     restart: "no"
+    exclude_from_hc: true
 
   caddy:
     image: caddy:2
