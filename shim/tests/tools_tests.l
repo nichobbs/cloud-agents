@@ -138,6 +138,18 @@ test "request_permission tool denies with a message when 'tool_name' is missing"
   assertTrue(onlyText(result).contains("tool_name"), "deny message names the missing field: " + onlyText(result))
 }
 
+test "request_permission denies when 'input' is missing" {
+  val fake = newFakeTransport()
+  val tool = RequestPermissionTool(transport = fake, pollIntervalMs = 1, timeoutMs = 1000)
+
+  val args = Some(value = JObject(fields = [JsonField(name = "tool_name", value = JString(value = "Bash"))]))
+  val result = match tool.call(args) { case Ok(r) -> r; case Err(e) -> panic("unexpected Err: " + e) }
+  assertTrue(not result.isError, "a deny payload is a successful tool result, not a protocol error")
+  assertTrue(onlyText(result).contains("\"behavior\":\"deny\""), "missing 'input' fails closed to deny (#538)")
+  assertTrue(onlyText(result).contains("input"), "deny message names the missing field: " + onlyText(result))
+  assertEqualInt(fake.pollPermissionCallCount, 0, "the host is never contacted for a malformed call")
+}
+
 test "request_permission tool denies for safety when the host's updatedInput is malformed" {
   val fake = newFakeTransport()
   fake.createPermissionOk = true

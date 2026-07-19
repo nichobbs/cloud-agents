@@ -151,7 +151,13 @@ func handleRequestPermission(tool: in RequestPermissionTool, args: in Option[Jso
     case Some(t) -> t
     case None -> return deny("missing required argument 'tool_name'")
   }
-  val inputValue = match getField(a, "input") { case Some(v) -> v; case None -> JObject(fields = newList()) }
+  val inputValue = match getField(a, "input") {
+    case Some(v) -> v
+    // The schema declares `input` required — reject a missing value the
+    // same fail-closed way as a missing `tool_name` (#538) instead of
+    // silently substituting an empty object.
+    case None -> return deny("missing required argument 'input'")
+  }
   val inputJson = writeValue(inputValue)
   val outcome = CloudAgents.Shim.Callbacks.requestPermission(
     tool.transport,
