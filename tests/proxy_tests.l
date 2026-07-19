@@ -123,6 +123,47 @@ test "isKnownProxyHarness knows exactly the four harnesses" {
   assertTrue(not isKnownProxyHarness("Claude"), "case-sensitive")
 }
 
+// ── Harness availability (#523) ────────────────────────────────────────────
+//
+// Env.SetEnvironmentVariable("CLOUD_AGENTS_ENABLED_HARNESSES", "") unsets it
+// (.NET treats an empty value as removal) — used to reset the process-global
+// var back to its default "unset" state so these tests can't leak into
+// whichever test runs next.
+
+test "isHarnessEnabled reports every harness enabled when unset (fail open)" {
+  Env.SetEnvironmentVariable("CLOUD_AGENTS_ENABLED_HARNESSES", "")
+  assertTrue(isHarnessEnabled("claude"), "claude enabled by default")
+  assertTrue(isHarnessEnabled("codex"), "codex enabled by default")
+  assertTrue(isHarnessEnabled("opencode"), "opencode enabled by default")
+  assertTrue(isHarnessEnabled("gemini"), "gemini enabled by default")
+}
+
+test "isHarnessEnabled restricts to the configured comma-separated list" {
+  Env.SetEnvironmentVariable("CLOUD_AGENTS_ENABLED_HARNESSES", "claude, codex")
+  assertTrue(isHarnessEnabled("claude"), "claude listed")
+  assertTrue(isHarnessEnabled("codex"), "codex listed (surrounding whitespace trimmed)")
+  assertTrue(not isHarnessEnabled("opencode"), "opencode not listed")
+  assertTrue(not isHarnessEnabled("gemini"), "gemini not listed")
+  Env.SetEnvironmentVariable("CLOUD_AGENTS_ENABLED_HARNESSES", "")
+}
+
+test "harnessesHandler reports the JSON enabled list, restricted or not" {
+  Env.SetEnvironmentVariable("CLOUD_AGENTS_ENABLED_HARNESSES", "")
+  val allEnabled = harnessesHandler()
+  assertTrue(allEnabled.contains("\"claude\""), "claude present when unset")
+  assertTrue(allEnabled.contains("\"codex\""), "codex present when unset")
+  assertTrue(allEnabled.contains("\"opencode\""), "opencode present when unset")
+  assertTrue(allEnabled.contains("\"gemini\""), "gemini present when unset")
+
+  Env.SetEnvironmentVariable("CLOUD_AGENTS_ENABLED_HARNESSES", "claude,gemini")
+  val restricted = harnessesHandler()
+  assertTrue(restricted.contains("\"claude\""), "claude present")
+  assertTrue(restricted.contains("\"gemini\""), "gemini present")
+  assertTrue(not restricted.contains("\"codex\""), "codex absent")
+  assertTrue(not restricted.contains("\"opencode\""), "opencode absent")
+  Env.SetEnvironmentVariable("CLOUD_AGENTS_ENABLED_HARNESSES", "")
+}
+
 // ── Handler validation (no DB, no network) ────────────────────────────────────
 
 test "proxy handlers reject invalid inputs with 400 before any lookup" {

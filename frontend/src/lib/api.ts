@@ -526,6 +526,22 @@ export const api = {
     });
     if (!res.ok) throw new Error(`${res.status} ${await res.text()}`);
   },
+
+  // ─── Harness availability (#523) ───────────────────────────────────────────
+
+  /** Which harnesses have a runner image on this deployment, or null when
+   *  the backend doesn't report it (older backend, network failure) — the
+   *  caller should treat null as "unknown" and fail open (show everything). */
+  getEnabledHarnesses: async (): Promise<string[] | null> => {
+    try {
+      const res = await fetch(`${BASE}/api/harnesses`, { headers: authHeaders() });
+      if (!res.ok) return null;
+      const body = (await res.json()) as { enabled?: string[] };
+      return body.enabled ?? null;
+    } catch {
+      return null;
+    }
+  },
 };
 
 /** Ensure a profile's optional array fields are always arrays. */
