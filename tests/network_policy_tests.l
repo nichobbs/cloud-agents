@@ -101,3 +101,41 @@ test "networkModeForPolicyWithCallbacks matches networkModeForPolicy except opte
   )
   Env.SetEnvironmentVariable("CLOUD_AGENTS_CALLBACK_NETWORK", "")
 }
+
+// ── Docker transport selection (#377) ────────────────────────────────────────
+//
+// dockerClient()'s branching (env var set-and-non-empty -> TCP; set-but-empty
+// -> socket fallback; unset/error -> socket fallback) lived entirely inside
+// CloudAgents.Docker, an async-bearing package a @test_module can't invoke
+// even a single pure function from (docs/lyric/gotchas.md) — so it had zero
+// coverage. The decision itself is now the pure dockerTransportFor here.
+func transportLabel(t: in DockerTransport): String {
+  return match t {
+    case Tcp(hostPort) -> "tcp:" + hostPort
+    case Socket -> "socket"
+  }
+}
+
+test "dockerTransportFor selects TCP for a set, non-empty host:port (#377)" {
+  assertEqual(
+    transportLabel(dockerTransportFor(Some(value = "127.0.0.1:2375"))),
+    "tcp:127.0.0.1:2375",
+    "a configured CLOUD_AGENTS_DOCKER_TCP_HOST selects the TCP transport at that host:port"
+  )
+}
+
+test "dockerTransportFor falls back to the socket transport when the var is set but empty (#377)" {
+  assertEqual(
+    transportLabel(dockerTransportFor(Some(value = ""))),
+    "socket",
+    "an explicitly empty CLOUD_AGENTS_DOCKER_TCP_HOST falls back to the socket transport, not an empty-host TCP client"
+  )
+}
+
+test "dockerTransportFor falls back to the socket transport when the var is absent (#377)" {
+  assertEqual(
+    transportLabel(dockerTransportFor(None)),
+    "socket",
+    "an absent/unreadable CLOUD_AGENTS_DOCKER_TCP_HOST falls back to the socket transport"
+  )
+}
