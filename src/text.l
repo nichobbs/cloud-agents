@@ -11,6 +11,24 @@ import Std.Core
 @externTarget("System.String.CompareOrdinal")
 func strCompareOrdinal(a: in String, b: in String): Int = ()
 
+// `.length` (used by withinMaxLength below) is a character count, not a UTF-8
+// byte count — they diverge for multi-byte characters (CJK, emoji), where the
+// UTF-8 encoding can be up to ~4x the character count (#64). A cap that
+// exists to bound actual payload/storage size needs the real byte count, so
+// it's read directly off the BCL's UTF-8 encoder. Same binding shape as
+// CloudAgents.Crypto's `utf8()`/`encGetBytes` (a separate two-line copy here,
+// not a shared import: this package is deliberately [nuget]-free — see
+// withinMaxLength's doc comment below — and the whole point would be lost by
+// pulling in a dependency to save two lines).
+extern type Encoding = "System.Text.Encoding"
+
+@externTarget("System.Text.Encoding.get_UTF8")
+func utf8Encoding(): Encoding = ()
+
+@externInstance
+@externTarget("System.Text.Encoding.GetByteCount")
+func utf8ByteCount(enc: in Encoding, s: in String): Int = ()
+
 /// True for a single UTF-16 unit below U+0020. Ordinal comparison against " "
 /// is exact here: any unit >= 0x20 (including lone surrogates) compares >= 0.
 pub func isControlChar(c: in String): Bool {
@@ -51,6 +69,19 @@ pub func containsControlChar(s: in String): Bool {
 /// `indexOfFrom`'s existing workaround just above.
 pub func withinMaxLength(s: in String, max: Int): Bool {
   return s.length.toInt() <= max
+}
+
+/// True when `s`'s UTF-8-encoded byte size is at or under `max` (#64). Use
+/// this — not `withinMaxLength` — for caps whose purpose is bounding actual
+/// payload/storage size (`maxPromptLen` in sessions.l, `maxBodyLen` in
+/// interactions.l): a char-count cap alone understates the true wire size
+/// for multi-byte text, letting a crafted payload land up to ~4x over the
+/// stated budget. `withinMaxLength` remains the right choice for caps that
+/// are really about character-set validation (URLs, branch names, model
+/// ids), where the values are already restricted to a narrow ASCII charset
+/// and the char/byte distinction doesn't matter.
+pub func withinMaxByteLength(s: in String, max: Int): Bool {
+  return utf8ByteCount(utf8Encoding(), s) <= max
 }
 
 /// Constant-time string equality, for comparing an untrusted `candidate`

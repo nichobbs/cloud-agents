@@ -418,8 +418,12 @@ pub func streamSendMessage(id: in String, text: in String, w: in Web.ResponseWri
     writeStreamError(w, 400, "text is required")
     return ()
   }
-  if not CloudAgents.Text.withinMaxLength(text, maxPromptLen) {
-    writeStreamError(w, 400, "text is too long (max " + toString(maxPromptLen) + " characters)")
+  // maxPromptLen bounds actual payload/storage size (memory pressure), so it
+  // must be checked against UTF-8 byte size, not character count — a
+  // char-count check alone lets a multi-byte-heavy payload (CJK, emoji) land
+  // up to ~4x over the stated budget (#64).
+  if not CloudAgents.Text.withinMaxByteLength(text, maxPromptLen) {
+    writeStreamError(w, 400, "text is too long (max " + toString(maxPromptLen) + " bytes)")
     return ()
   }
 
