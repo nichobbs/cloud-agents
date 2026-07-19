@@ -629,25 +629,31 @@ pub func updatePrompt(
 }
 
 /// Update a prompt's name/body AND replace its tag set in one transaction
-/// (#244). Returns rows affected on the prompt (0 = not found / not owned).
-/// Existence is pre-checked for the 0-rows signal since executeTransaction
-/// returns no count, mirroring updateProfile.
+/// (#244). Returns rows affected on the prompt (0 = not found / not owned) —
+/// taken from the transaction's own UPDATE on the prompts row (deliberately
+/// the last statement), not from the pre-check below, so a prompt removed by
+/// a concurrent request between the pre-check and this transaction correctly
+/// reports 0 rather than a stale 1 (same class of gap as #238, fixed the same
+/// way here since executeTransaction now returns a rows-affected count).
 pub func updatePromptWithTags(
   id: in String, userId: in String, name: in String, body: in String, tags: in slice[String]
 ): Result[Int, CloudAgents.Sqlite.DbError] {
+  // Cheap early-exit only — see the affected-count rationale on updateProfile.
   match getPrompt(id, userId)? {
     case None -> return Ok(value = 0)
     case Some(_) -> ()
   }
   val ts = nowMillis()
+  // The prompt UPDATE is deliberately LAST so executeTransaction's
+  // rows-affected return (which reports the last statement) reflects it.
   var stmts: slice[String] = []
-  stmts = stmts.append(CloudAgents.Db.updatePromptSql(id, userId, name, body, ts))
   stmts = stmts.append(CloudAgents.Db.deletePromptTagsSql(id, userId))
   for t in tags {
     stmts = stmts.append(CloudAgents.Db.insertPromptTagSql(newId(), id, userId, t))
   }
-  CloudAgents.Sqlite.executeTransaction(stmts)?
-  return Ok(value = 1)
+  stmts = stmts.append(CloudAgents.Db.updatePromptSql(id, userId, name, body, ts))
+  val affected = CloudAgents.Sqlite.executeTransaction(stmts)?
+  return Ok(value = affected)
 }
 
 /// Record one use of a prompt. Returns rows affected (0 = not found).
@@ -657,10 +663,12 @@ pub func markPromptUsed(id: in String, userId: in String): Result[Int, CloudAgen
 }
 
 /// Delete a prompt and its tags in one transaction (#254), consistent with the
-/// atomicity standard used for profiles and prompt writes. Returns rows affected
-/// on the prompt (0 = not found); existence is pre-checked for that signal since
-/// executeTransaction returns no count, mirroring deleteProfile.
+/// atomicity standard used for profiles and prompt writes. Returns rows
+/// affected on the prompt (0 = not found) — taken from the transaction's own
+/// DELETE on the prompts row (deliberately the last statement), not from the
+/// pre-check below, for the same reason as deleteProfile (#238).
 pub func deletePrompt(id: in String, userId: in String): Result[Int, CloudAgents.Sqlite.DbError] {
+  // Cheap early-exit only — see the affected-count rationale on updateProfile.
   match getPrompt(id, userId)? {
     case None -> return Ok(value = 0)
     case Some(_) -> ()
@@ -668,8 +676,8 @@ pub func deletePrompt(id: in String, userId: in String): Result[Int, CloudAgents
   var stmts: slice[String] = []
   stmts = stmts.append(CloudAgents.Db.deletePromptTagsSql(id, userId))
   stmts = stmts.append(CloudAgents.Db.deletePromptSql(id, userId))
-  CloudAgents.Sqlite.executeTransaction(stmts)?
-  return Ok(value = 1)
+  val affected = CloudAgents.Sqlite.executeTransaction(stmts)?
+  return Ok(value = affected)
 }
 
 // ─── Credentials ─────────────────────────────────────────────────────────────
@@ -1288,27 +1296,37 @@ pub func updateProfile(
   credentialMode: in String,
   credentials: in slice[String],
 ): Result[Int, CloudAgents.Sqlite.DbError] {
-  // Pre-check existence for the 404 signal: executeTransaction returns no
-  // rows-affected count, so the caller's "0 = not found" contract is derived
-  // from this ownership-scoped lookup instead.
+  // Cheap early-exit so an unmistakably-missing profile skips the transaction
+  // entirely — NOT the source of truth for the 0-vs-success return (#238): a
+  // profile deleted by a concurrent request between this check and the
+  // transaction below would make this pass but the UPDATE affect 0 rows, and
+  // the actual affected count (not this pre-check) is what gets returned.
   match getProfile(id, userId)? {
     case None -> return Ok(value = 0)
     case Some(_) -> ()
   }
   val ts = nowMillis()
-  // Profile row + its credential grants commit together (#230).
+  // Profile row + its credential grants commit together (#230). The profile
+  // UPDATE is deliberately LAST so executeTransaction's rows-affected return
+  // (which reports the last statement) reflects it, not a credential-grant
+  // statement (#238).
   var stmts: slice[String] = []
-  stmts = stmts.append(CloudAgents.Db.updateProfileSql(id, userId, name, harness, networkPolicy, credentialMode, ts))
   for s in profileCredentialStatements(id, userId, credentials) {
     stmts = stmts.append(s)
   }
-  CloudAgents.Sqlite.executeTransaction(stmts)?
-  return Ok(value = 1)
+  stmts = stmts.append(CloudAgents.Db.updateProfileSql(id, userId, name, harness, networkPolicy, credentialMode, ts))
+  val affected = CloudAgents.Sqlite.executeTransaction(stmts)?
+  return Ok(value = affected)
 }
 
 /// Delete a profile and its credential grants (atomically, #230). Returns rows
-/// affected (0 = not found / not owned).
+/// affected (0 = not found / not owned) — taken from the transaction's own
+/// DELETE on the profiles row (deliberately the last statement), not from the
+/// pre-check below, so a profile removed by a concurrent request between the
+/// pre-check and this transaction correctly reports 0 rather than a stale 1
+/// (#238).
 pub func deleteProfile(id: in String, userId: in String): Result[Int, CloudAgents.Sqlite.DbError] {
+  // Cheap early-exit only — see the affected-count rationale on updateProfile.
   match getProfile(id, userId)? {
     case None -> return Ok(value = 0)
     case Some(_) -> ()
@@ -1316,8 +1334,8 @@ pub func deleteProfile(id: in String, userId: in String): Result[Int, CloudAgent
   var stmts: slice[String] = []
   stmts = stmts.append(CloudAgents.Db.deleteProfileCredentialsSql(id, userId))
   stmts = stmts.append(CloudAgents.Db.deleteProfileSql(id, userId))
-  CloudAgents.Sqlite.executeTransaction(stmts)?
-  return Ok(value = 1)
+  val affected = CloudAgents.Sqlite.executeTransaction(stmts)?
+  return Ok(value = affected)
 }
 
 /// Decrypt only the credentials a profile grants, for least-privilege

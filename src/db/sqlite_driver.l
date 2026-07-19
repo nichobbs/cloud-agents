@@ -220,7 +220,17 @@ pub func execute(sql: in String): Result[Int, DbError] {
 /// call, so a BEGIN in one `execute` and the DDL in the next would not share a
 /// transaction. Used by the migration runner so a migration and its ledger row
 /// commit together, making every retry of a failed migration safe (review #229).
-pub func executeTransaction(sqls: in slice[String]): Result[Unit, DbError] {
+///
+/// Returns the rows affected by the LAST statement in `sqls` (mirroring
+/// `execute()`'s single-statement return), so a caller whose transaction ends
+/// with the mutation it actually cares about (e.g. a profile UPDATE/DELETE run
+/// alongside its credential-grant replacement) can derive its 0-vs-success
+/// signal from the mutation itself instead of from a pre-check performed
+/// before the transaction ran, which can go stale under concurrent access
+/// (#238). Order statements accordingly when a caller needs this signal;
+/// callers that don't care about the count (migrations, inserts) just discard
+/// it.
+pub func executeTransaction(sqls: in slice[String]): Result[Int, DbError] {
   val conn = openConn()?
   defer {
     conn.Close()
@@ -233,18 +243,19 @@ pub func executeTransaction(sqls: in slice[String]): Result[Unit, DbError] {
     begin.set_CommandText(currentSql)
     val _ = begin.ExecuteNonQuery()
     var i = 0
+    var lastAffected = 0
     while i < sqls.length {
       currentSql = sqls[i]
       val cmd = conn.CreateCommand()
       cmd.set_CommandText(currentSql)
-      val _ = cmd.ExecuteNonQuery()
+      lastAffected = cmd.ExecuteNonQuery()
       i = i + 1
     }
     currentSql = "COMMIT"
     val commit = conn.CreateCommand()
     commit.set_CommandText(currentSql)
     val _ = commit.ExecuteNonQuery()
-    Ok(value = ())
+    Ok(value = lastAffected)
   } catch Bug as b {
     // Roll back so nothing from this batch persists, then surface the error
     // with the statement that failed. The rollback is itself best-effort (the
