@@ -34,9 +34,19 @@ pub record ResultCell {
 /// outside this machine (no `0.0.0.0`, no public/LAN interface). This is a
 /// local dev/CI workaround, not a deployment-ready transport.
 func dockerClient(): DockerClient {
-  match Std.Environment.getVar("CLOUD_AGENTS_DOCKER_TCP_HOST") {
-    case Ok(hostPort) -> if hostPort.length > 0 { makeDockerClientTcp(hostPort) } else { makeDockerClient() }
-    case Err(_) -> makeDockerClient()
+  // The branch decision itself (TCP / empty-falls-back / absent-falls-back)
+  // is a pure function in CloudAgents.NetworkPolicy so it's unit-testable
+  // (#377) — this function only does the env lookup (normalizing
+  // Std.Environment.getVar's Result to an Option so the pure package stays
+  // free of Std.Environment's error type) and the actual client construction,
+  // neither of which can run outside this async package anyway.
+  val hostPortVar = match Std.Environment.getVar("CLOUD_AGENTS_DOCKER_TCP_HOST") {
+    case Ok(hostPort) -> Some(value = hostPort)
+    case Err(_) -> None
+  }
+  match CloudAgents.NetworkPolicy.dockerTransportFor(hostPortVar) {
+    case Tcp(hostPort) -> makeDockerClientTcp(hostPort)
+    case Socket -> makeDockerClient()
   }
 }
 
