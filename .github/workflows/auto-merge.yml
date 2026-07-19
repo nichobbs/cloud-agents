@@ -1,19 +1,24 @@
 name: Auto-merge
 
-# Merges a PR automatically once both of its required checks are green:
+# Merges a PR automatically once all of its required conditions are green:
 #   - "Build & verify" (ci.yml's build/test job)
 #   - "claude-review" (claude-code-review.yml's job — already engineered to
 #     fail itself when the review:changes-required label is set; see that
 #     workflow's "Fail if changes are required" step)
+#   - at least one human APPROVED review (nichobbs/cloud-agents#478 — the
+#     two checks above are both automated, so without this a PR could reach
+#     `main` with zero human eyes on the diff; see "Require human approval"
+#     below)
 #
 # Deliberately does NOT rely on GitHub's native "required status checks" +
 # auto-merge feature: that needs branch-protection config and the repo's
 # "Allow auto-merge" toggle, neither of which this workflow assumes are set.
-# Instead it checks both named check runs itself via the API and merges
-# directly once they're both green — self-contained, no repo-settings
-# dependency. If branch protection does end up requiring something else
-# (e.g. human review approval), the merge call below simply fails and this
-# workflow logs a warning; it does not attempt to bypass that.
+# Instead it checks both named check runs (and, per #478, human review
+# state) itself via the API and merges directly once everything's green —
+# self-contained, no repo-settings dependency. If branch protection does end
+# up requiring something else this workflow doesn't know about, the merge
+# call below simply fails and this workflow logs a warning; it does not
+# attempt to bypass that.
 #
 # check_suite is the ONLY trigger — deliberately no `pull_request` trigger.
 # A same-repo pull_request-triggered workflow runs the workflow FILE VERSION
@@ -46,6 +51,16 @@ permissions:
 jobs:
   auto-merge:
     runs-on: ubuntu-latest
+    # nichobbs/cloud-agents#479: check_suite fires for every completed suite,
+    # including failed/cancelled ones. When the triggering suite itself
+    # didn't succeed, the per-check-name lookups below can never all read
+    # "success" for this sha (at least one of the runs composing the suite
+    # didn't succeed), so the job is guaranteed to end in "not yet green —
+    # no action" for every candidate PR regardless. Skip the job outright in
+    # that case instead of still paying for a full run (checkout-free, but
+    # still a `gh pr view` + paginated `gh api .../check-runs` per candidate)
+    # for a guaranteed no-op.
+    if: github.event.check_suite.conclusion == 'success'
     steps:
       - name: Find candidate PR(s) for this event
         id: find_prs
@@ -87,10 +102,39 @@ jobs:
             ci_conclusion=$(echo "$checks" | jq -sr 'add | [.[] | select(.name == "Build & verify")] | sort_by(.started_at) | last | .conclusion // "pending"')
             review_conclusion=$(echo "$checks" | jq -sr 'add | [.[] | select(.name == "claude-review")] | sort_by(.started_at) | last | .conclusion // "pending"')
 
-            echo "Build & verify: $ci_conclusion | claude-review: $review_conclusion"
+            # Require human approval (nichobbs/cloud-agents#478): "Build &
+            # verify" and "claude-review" above are both automated, so
+            # without this a PR could merge to main with zero human eyes on
+            # the diff. Below, take each reviewers most recent review (a
+            # stale APPROVED must not count if that reviewer later
+            # requested changes) and require at least one such latest
+            # review, from a non-bot account, to be APPROVED. NOTE: this jq
+            # filter must stay apostrophe-free — it is embedded in a bash
+            # single-quoted string, and bash single quotes cannot be escaped,
+            # so any apostrophe here would silently truncate the script.
+            # COMMENTED (and unsubmitted PENDING draft) reviews do not
+            # change a reviewers approval stance on GitHub, unlike
+            # APPROVED/CHANGES_REQUESTED/DISMISSED, so they are excluded
+            # before picking each reviewers latest review by submit time.
+            reviews=$(gh api "repos/$REPO/pulls/$pr/reviews" --paginate --jq '.')
+            if [ $? -ne 0 ]; then
+              echo "::warning::failed to fetch reviews for PR #$pr, skipping"
+              continue
+            fi
+            human_approvals=$(echo "$reviews" | jq -sr '
+              add
+              | map(select(.user.type != "Bot"))
+              | map(select(.state == "APPROVED" or .state == "CHANGES_REQUESTED" or .state == "DISMISSED"))
+              | group_by(.user.login)
+              | map(max_by(.submitted_at))
+              | map(select(.state == "APPROVED"))
+              | length
+            ')
 
-            if [ "$ci_conclusion" == "success" ] && [ "$review_conclusion" == "success" ]; then
-              echo "Both required checks green — merging #$pr at $sha"
+            echo "Build & verify: $ci_conclusion | claude-review: $review_conclusion | human approvals: $human_approvals"
+
+            if [ "$ci_conclusion" == "success" ] && [ "$review_conclusion" == "success" ] && [ "$human_approvals" -gt 0 ]; then
+              echo "Required checks green and human-approved — merging #$pr at $sha"
               # Pass `sha` explicitly (REST API's merge endpoint: "SHA that
               # pull request head must match to allow merge") so this only
               # merges the exact commit whose checks were just verified —
