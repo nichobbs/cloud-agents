@@ -65,6 +65,14 @@ func mustInt(r: in Result[Int, CloudAgents.Sqlite.DbError]): Int {
   }
 }
 
+// Async wrapper so a run claim can be `spawn`ed inside a `scope` block (#206)
+// — `tryBeginRun` itself is a plain synchronous func, so a genuinely
+// concurrent test needs an async entry point to race it under `spawn`/`await`
+// rather than calling it twice, sequentially, on one thread.
+async func claimAsync(sessionId: in String): Bool {
+  return mustClaim(CloudAgents.SessionStore.tryBeginRun(sessionId))
+}
+
 // ── Helpers ──────────────────────────────────────────────────────────────────
 // Lyric match arms are `case Pattern -> expression` (no block form), so
 // multi-assertion checks are extracted into named functions.
@@ -215,6 +223,45 @@ test "Run claim is exclusive per session" {
   mustUnit(CloudAgents.SessionStore.endRun("claim-1"))
   assertTrue(mustClaim(CloudAgents.SessionStore.tryBeginRun("claim-1")), "claim available again after endRun")
   assertFalse(mustClaim(CloudAgents.SessionStore.tryBeginRun("missing")), "claiming a nonexistent session fails")
+}
+
+test "Run claim is exclusive under real concurrent contention (#206)" {
+  // The test above only proves the guard's logic (status check, scoping) by
+  // calling tryBeginRun twice in sequence on one thread — it never actually
+  // races two callers against the same row, so it doesn't exercise the
+  // atomicity property tryBeginRunSql's guarded UPDATE
+  // (`status <> 'RUNNING'`, rows-affected = 1 means the claim won) is meant to
+  // guarantee under real contention. This test spawns two callers inside one
+  // `scope` — both `spawn`s are issued before either is `await`ed, so the two
+  // underlying tryBeginRun UPDATEs are genuinely in flight together, not run
+  // one at a time — and asserts exactly one wins.
+  val dbPath = useFreshTestDb("session-claim-concurrent")
+  defer {
+    cleanupTestDb(dbPath)
+  }
+  mustUnit(addSession(makeAgentSession(
+    sessionId = "claim-race",
+    repoUrl = "https://github.com/nic/repo",
+    branch = "main",
+    containerId = "",
+    harness = "claude",
+    model = "claude-opus-4-8",
+    nativeSessionId = "claim-race"
+  )))
+
+  scope {
+    val t1 = spawn claimAsync("claim-race")
+    val t2 = spawn claimAsync("claim-race")
+    val r1 = await t1
+    val r2 = await t2
+    assertTrue(r1 xor r2, "exactly one concurrent claim wins under real contention")
+  }
+
+  // The loser's failure was contention, not a stuck row: the winner's run is
+  // still open (endRun not yet called), so a further claim must still refuse.
+  assertFalse(mustClaim(CloudAgents.SessionStore.tryBeginRun("claim-race")), "session stays claimed after the race")
+  mustUnit(CloudAgents.SessionStore.endRun("claim-race"))
+  assertTrue(mustClaim(CloudAgents.SessionStore.tryBeginRun("claim-race")), "claim available again after endRun")
 }
 
 test "deleteSessionRecord removes the row and is a no-op when already gone (#310)" {
