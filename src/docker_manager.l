@@ -8,6 +8,7 @@ import Lyric.Docker
 import CloudAgents.Db
 import CloudAgents.NetworkPolicy
 import CloudAgents.Repository
+import CloudAgents.RunnerEnv
 import CloudAgents.SessionStore
 import CloudAgents.Sqlite
 import CloudAgents.Streaming
@@ -86,23 +87,19 @@ pub async func createRunnerContainer(
   userId: in String,
   extraRepos: in String,
 ): Result[String, String] {
-  var envs = [
-    "PROMPT=" + prompt,
-    "REPO_URL=" + repoUrl,
-    "BRANCH=" + branch,
-    "HARNESS=" + harness,
-    "MODEL=" + model,
-    "NATIVE_SESSION_ID=" + nativeSessionId
-  ]
+  // Base env list + EXTRA_REPOS live in the pure CloudAgents.RunnerEnv package
+  // so they can be unit-tested — a @test_module can't invoke anything from
+  // this async package, even a pure leaf function (docs/lyric/gotchas.md), the
+  // same reason network-policy resolution lives in CloudAgents.NetworkPolicy
+  // rather than here.
+  var envs = CloudAgents.RunnerEnv.baseRunnerEnvs(prompt, repoUrl, branch, harness, model, nativeSessionId)
 
   // Additional repositories linked to this session (multi-repo sessions): a
   // single space-separated "url|branch ..." value the entrypoint clones into
   // /workspace/repos/<name>. Only set when non-empty so single-repo sessions
   // pass no EXTRA_REPOS at all. Values are validated at link time, so they are
   // safe to embed in the env value verbatim.
-  if extraRepos.length > 0 {
-    envs = envs.append("EXTRA_REPOS=" + extraRepos)
-  }
+  envs = CloudAgents.RunnerEnv.withExtraRepos(envs, extraRepos)
 
   // Phase 6 (docs/phase6-mcp-callbacks.md §2/§5/§6 stage 2): mint a per-session
   // callback bearer token and inject it plus the host API's callback origin,
@@ -133,13 +130,25 @@ pub async func createRunnerContainer(
   // database-read failure (can't reach the store at all) still aborts the run.
   // GITHUB_TOKEN in particular flows on to the container's mcp.json via the
   // entrypoint template, finally wiring up the GitHub MCP server.
+  //
+  // The DB/crypto fetch itself can't be unit-tested from CloudAgents.Docker
+  // (same async-package harness limitation as above) but IS covered directly
+  // against CloudAgents.Repository.decryptedCredentialsForProfile in
+  // tests/profile_tests.l ("Selected-mode profile injects only its granted
+  // credentials"). What's tested here, via CloudAgents.RunnerEnv, is the
+  // NAME=VALUE formatting/ordering this function applies to whatever that
+  // call returns (#221).
   match CloudAgents.Repository.decryptedCredentialsForProfile(userId, profileId) {
     case Ok(creds) -> {
+      var credNames: slice[String] = []
+      var credValues: slice[String] = []
       var i = 0
       while i < creds.length {
-        envs = envs.append(creds[i].name + "=" + creds[i].value)
+        credNames = credNames.append(creds[i].name)
+        credValues = credValues.append(creds[i].value)
         i = i + 1
       }
+      envs = CloudAgents.RunnerEnv.withCredentialEnvs(envs, credNames, credValues)
     }
     case Err(e) -> return Err(error = "Failed to load credentials: " + CloudAgents.Repository.credentialErrorMessage(e))
   }
