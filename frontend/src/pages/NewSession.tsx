@@ -3,6 +3,7 @@ import { useNavigate, useSearchParams } from 'react-router-dom';
 import { useSessions } from '../context/SessionsContext';
 import { DEFAULT_HARNESS, HARNESSES, getHarness, type ModelOption } from '../lib/harnesses';
 import { api } from '../lib/api';
+import { enabledHarnesses } from '../lib/harnessAvailability';
 import { isGitHubConnected, listRepos } from '../lib/github';
 import { discoverModels } from '../lib/models';
 
@@ -18,8 +19,22 @@ export function NewSession() {
   const [repoSuggestions, setRepoSuggestions] = useState<string[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
+  const [enabledHarnessIds, setEnabledHarnessIds] = useState<Set<string> | null>(null);
   const { addSession } = useSessions();
   const navigate = useNavigate();
+
+  // Which harnesses actually have a runner image on this deployment (#523).
+  // null (unknown, e.g. an older backend) is treated as "every harness
+  // available" — see lib/harnessAvailability.
+  useEffect(() => {
+    let active = true;
+    enabledHarnesses().then(ids => {
+      if (active) setEnabledHarnessIds(ids);
+    });
+    return () => {
+      active = false;
+    };
+  }, []);
 
   // Live model discovery for the chosen harness (falls back to the static
   // catalog when no provider key is connected — see lib/models.ts).
@@ -138,10 +153,21 @@ export function NewSession() {
               onChange={e => handleHarnessChange(e.target.value)}
               disabled={loading}
             >
-              {Object.entries(HARNESSES).map(([id, cfg]) => (
-                <option key={id} value={id}>{cfg.label}</option>
-              ))}
+              {Object.entries(HARNESSES).map(([id, cfg]) => {
+                const available = enabledHarnessIds === null || enabledHarnessIds.has(id);
+                return (
+                  <option key={id} value={id} disabled={!available}>
+                    {cfg.label}{available ? '' : ' (not available on this deployment)'}
+                  </option>
+                );
+              })}
             </select>
+            {enabledHarnessIds !== null && !enabledHarnessIds.has(harness) && (
+              <p style={hintStyle}>
+                This harness has no runner image built on this deployment yet — starting a session will
+                fail. Ask an operator to enable it (see deploy/COOLIFY.md).
+              </p>
+            )}
           </div>
           <div style={{ flex: 1 }}>
             <label style={labelStyle} htmlFor="model">
@@ -243,6 +269,12 @@ const selectStyle: React.CSSProperties = {
   boxSizing: 'border-box',
   outline: 'none',
   cursor: 'pointer',
+};
+
+const hintStyle: React.CSSProperties = {
+  margin: '6px 0 0',
+  fontSize: '12px',
+  color: '#d29922',
 };
 
 const modelSourceStyle: React.CSSProperties = {

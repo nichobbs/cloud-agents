@@ -780,6 +780,18 @@ impl Web.Handler for RouteProxyModels {
   }
 }
 
+// GET /api/harnesses (#523): which harnesses have a runner image on this
+// deployment. Always succeeds — no Result to unwrap, unlike the other Proxy
+// routes above.
+record RouteHarnesses {
+}
+
+impl Web.Handler for RouteHarnesses {
+  func handle(req: in Web.Request): Web.Response {
+    return Web.json(200, CloudAgents.Proxy.harnessesHandler())
+  }
+}
+
 // ─── CloudAgents.OAuth routes (oauth.l) ─────────────────────────────────────
 record RouteOAuthConfig {
 }
@@ -970,6 +982,7 @@ func main(): Unit {
   router = Web.addGet(router, "/api/github/pulls/{owner}/{repo}/{branch}", RouteProxyGithubPulls())
   router = Web.addGet(router, "/api/github/checks/{owner}/{repo}/{branch}", RouteProxyGithubChecks())
   router = Web.addGet(router, "/api/models/{harness}", RouteProxyModels())
+  router = Web.addGet(router, "/api/harnesses", RouteHarnesses())
 
   // GitHub OAuth: public login configuration, the code-for-token exchange,
   // and logout (all exempt from auth enforcement — config/exchange exist to
