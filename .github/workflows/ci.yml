@@ -153,6 +153,7 @@ jobs:
             docker/entrypoint-opencode.sh \
             docker/entrypoint-gemini.sh \
             docker/reconcile-repos.sh \
+            docker/cloud-agents-shim \
             deploy/install-docker.sh \
             deploy/backup.sh \
             scripts/verify.sh \
@@ -173,7 +174,7 @@ jobs:
 
       - name: Validate JSON templates
         run: |
-          for f in docker/mcp.json.template docker/settings.json.template; do
+          for f in docker/mcp.json.template docker/settings.json.template docker/mcp-callbacks.json.template; do
             python3 -m json.tool "$f" > /dev/null && echo "ok: $f"
           done
 
@@ -276,3 +277,15 @@ jobs:
       # fails the job on any assertion miss.
       - name: E2E HTTP smoke test
         run: ./scripts/e2e-http.sh
+
+      # cloud-agents-shim (docs/phase6-mcp-callbacks.md §5, stage 3): the
+      # in-container MCP callback server, built and tested as its own
+      # project via --manifest, same as the root project above. Restores
+      # Lyric.Mcp (and its transitive Lyric.JsonRpc dependency) from NuGet.
+      - name: Build cloud-agents-shim
+        run: |
+          lyric restore --manifest shim/lyric.toml
+          lyric build --manifest shim/lyric.toml
+
+      - name: Run cloud-agents-shim tests
+        run: lyric test --manifest shim/lyric.toml

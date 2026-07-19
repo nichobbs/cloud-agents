@@ -5,3 +5,4 @@ obj/
 lyric.lock
 *-restore.csproj
 lyric.toml.bak
+docker/shim-dist/
