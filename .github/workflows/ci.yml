@@ -268,16 +268,6 @@ jobs:
           fi
           lyric test
 
-      # Real end-to-end HTTP check against the built server (nichobbs/cloud-agents#442):
-      # starts bin/CloudAgents.dll on a throwaway DB/port and curls a multi-param
-      # route (/api/sessions/{id}/output/{offset}) plus the proxy routes — the
-      # dispatch paths @test_module suites can't reach because Web.Request can't
-      # be constructed in a test (#354). No Docker needed. This is the automated
-      # proof that multi-param routing works; the script dumps the server log and
-      # fails the job on any assertion miss.
-      - name: E2E HTTP smoke test
-        run: ./scripts/e2e-http.sh
-
       # cloud-agents-shim (docs/phase6-mcp-callbacks.md §5, stage 3): the
       # in-container MCP callback server, built and tested as its own
       # project via --manifest, same as the root project above. Restores
@@ -289,3 +279,16 @@ jobs:
 
       - name: Run cloud-agents-shim tests
         run: lyric test --manifest shim/lyric.toml
+
+      # Real end-to-end HTTP check against the built server (nichobbs/cloud-agents#442):
+      # starts bin/CloudAgents.dll on a throwaway DB/port and curls a multi-param
+      # route (/api/sessions/{id}/output/{offset}) plus the proxy routes — the
+      # dispatch paths @test_module suites can't reach because Web.Request can't
+      # be constructed in a test (#354). No Docker needed. This is the automated
+      # proof that multi-param routing works; the script dumps the server log and
+      # fails the job on any assertion miss. Runs AFTER the shim build: the
+      # script also drives the real cloud-agents-shim binary over MCP stdio
+      # against the running server (#531), so shim/bin must exist.
+      - name: E2E HTTP smoke test
+        run: ./scripts/e2e-http.sh
+

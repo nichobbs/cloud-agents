@@ -137,7 +137,9 @@ v2 candidates (design notes only, not built now):
 
 Every flow is testable Docker-free: handler tests hit the endpoints
 in-process (as `tests/main_tests.l` does today), the shim's
-request/poll/answer state machine is tested against a stub HTTP server,
+request/poll/answer state machine is tested against an in-memory
+transport fake (`shim/tests/fakes.l`), the real HTTP boundary is driven by
+`scripts/e2e-http.sh`'s shim leg (real MCP stdio against the live server),
 and the timeout/fail-closed path has an explicit test.
 
 ## 6. Sequencing

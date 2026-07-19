@@ -48,7 +48,11 @@ generally match, and `Lyric.Web` is intentionally ahead of the
 bumped 0.4.26 → 0.4.33 for the chunked-response streaming API (lyric-lang
 PR #5983): `POST /api/sessions/{id}/messages` now streams container output
 live via `startStreaming`/`StreamingHandler` instead of buffering the whole
-run — see `docs/upstream/lyric-web-streaming.md`.** `Std.Logging`
+run — see `docs/upstream/lyric-web-streaming.md`. Bumped again
+0.4.33 → 0.4.34 with the MCP-callback shim work: 0.4.34's stdlib retired
+the `HttpListener` server path (older Lyric.Web pins crash at startup with
+`MissingMethodException` under a 0.4.34+ toolchain) and renamed
+`StreamingHandler.handleStream` → `streamHandle` (lyric-lang#5993).** `Std.Logging`
 stays at 0.4.20 — nothing in `src/` imports it (the project logs via
 `println`), so there's no reason to chase its latest.
 `Microsoft.Data.Sqlite` stays at 10.0.9 — the newest *stable*; the 11.0.0

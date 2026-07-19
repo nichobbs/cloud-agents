@@ -2,7 +2,11 @@
 
 > **Status: DELIVERED and adopted.** This shipped in `Lyric.Web 0.4.33`
 > (lyric-lang PR #5983) as Option A below — a `StreamingHandler`
-> (`handleStream(req, w: ResponseWriter)`) plus a separate `StreamingRoutes`
+> (`handleStream(req, w: ResponseWriter)`; renamed to
+> `streamHandle(req, w)` in `Lyric.Web 0.4.34` because the `handle*`
+> prefix collided with `Web.Aspects`' `matches: name like "handle*"`
+> convention, lyric-lang#5993 — this project adopted the rename with the
+> 0.4.34 pin bump) plus a separate `StreamingRoutes`
 > table served by `startStreaming`/`serveStreaming`, with
 > `writeStatus`/`writeHeader`/`writeChunk` and a `Result` from `writeChunk`
 > whose `Err` signals client disconnect. This project pins `Lyric.Web 0.4.33`
