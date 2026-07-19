@@ -1,0 +1,35 @@
+[package]
+name        = "CloudAgentsShim"
+version     = "0.1.0"
+authors     = ["Cloud Agents Developer"]
+license     = "MIT"
+description = "In-container MCP callback server for Cloud Agents runner containers (docs/phase6-mcp-callbacks.md)"
+
+[features]
+default = ["dotnet"]
+dotnet  = []
+
+[project]
+name            = "CloudAgentsShim"
+output          = "single"
+output_assembly = "cloud-agents-shim.dll"
+
+[project.packages]
+"CloudAgents.Shim"           = "src/main.l"
+"CloudAgents.Shim.Transport" = "src/transport.l"
+"CloudAgents.Shim.Callbacks" = "src/callbacks_client.l"
+"CloudAgents.Shim.Tools"     = "src/tools.l"
+# Test-only fakes (FakeTransport), registered as a regular package rather
+# than under [project.tests] so both test files below can `import` it by
+# name — see tests/fakes.l's header comment.
+"CloudAgents.Shim.TestFakes" = "tests/fakes.l"
+
+[project.tests]
+"CloudAgents.Shim.CallbacksClientTests" = "tests/callbacks_client_tests.l"
+"CloudAgents.Shim.ToolsTests"           = "tests/tools_tests.l"
+
+[nuget]
+# Lyric.JsonRpc is a transitive dependency of Lyric.Mcp's own published
+# nuspec (confirmed: Lyric.Mcp 0.4.34 depends on Lyric.JsonRpc 0.4.34) and
+# does not need a separate pin here.
+"Lyric.Mcp" = "0.4.34"
