@@ -234,6 +234,39 @@ the run, tracked as
 explored past the point of filing; tracked as follow-ups rather than
 blocking this verification pass.
 
+**#387 does not share a root cause with the `getContainerLogs`
+raw/multiplex bug above** (checked per
+[#393](https://github.com/nichobbs/cloud-agents/issues/393), which raised
+this as a plausible connection worth ruling out before separate `src/`
+investigation). Two things pin this down from static reading of
+`src/handlers/sessions.l` and `src/docker_manager.l`, without needing a
+live repro:
+1. `getRunOutput` (`src/handlers/sessions.l`, the handler behind
+   `GET /api/sessions/{id}/output`) returns the hardcoded literal
+   `{"running":"false","output":""}` whenever the session's status is not
+   `RUNNING` — it never calls `partialContainerLogs`/`getContainerLogs` on
+   that path at all, so a bug in raw-vs-multiplexed log decoding cannot be
+   the proximate cause of the empty string returned there; the code
+   simply never asks Docker for logs once the run has ended. This is
+   by design — the doc comment on `getRunOutput` says the client is
+   expected to stop polling and "reload the persisted transcript"
+   through a different endpoint once `running` goes `false` — but #387's
+   repro polls `/output` itself, which will read back `""` regardless of
+   whether `getContainerLogs` is healthy.
+2. #387's own repro description says the SSE stream carried real log
+   chunks *during* the run. That live streaming path
+   (`streamSessionMessage` in `src/docker_manager.l`) polls logs through
+   the same `partialContainerLogs` → `getRunnerLogs` → `getContainerLogs`
+   chain the raw/multiplex bug affects — so if that bug were active for
+   this container, the live SSE output would have come back empty too,
+   not just the post-run poll. Real output during the run is evidence
+   `getContainerLogs` was decoding this container's logs correctly at the
+   time.
+
+Net: #387 is a separate `src/` output-persistence/routing concern (nothing
+reads back a persisted transcript on this endpoint once the run ends) and
+will not resolve for free once `lyric-lang#5773` ships.
+
 ### Bumping a NuGet dependency version
 
 Edit the version string in `[nuget]` and re-run `lyric restore`. Before
