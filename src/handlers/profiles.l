@@ -27,6 +27,21 @@ func dbError(e: in CloudAgents.Sqlite.DbError): Web.ApiError {
   return Web.internalError(CloudAgents.Sqlite.dbErrorMessage(e))
 }
 
+/// Whether a DbError is the profiles table's `UNIQUE(user_id, name)`
+/// constraint firing at INSERT/UPDATE time. The name-uniqueness pre-check in
+/// addProfileHandler/updateProfileHandler (#236) is not atomic with the
+/// mutation that follows it — a concurrent create/rename using the same name
+/// can slip between the two — so the constraint itself is the actual guarantee
+/// (#245); this lets the mutation's own failure be turned into the same clean
+/// 400 the pre-check produces in the non-racy case, instead of a raw
+/// UNIQUE-constraint 500. SQLite's own error text ("UNIQUE constraint
+/// failed: ...") is stable across the Microsoft.Data.Sqlite driver, and
+/// `profiles` has exactly one UNIQUE constraint, so no more specific match is
+/// needed.
+func isDuplicateNameError(e: in CloudAgents.Sqlite.DbError): Bool {
+  return CloudAgents.Sqlite.dbErrorMessage(e).contains("UNIQUE constraint")
+}
+
 /// Network policy vocabulary — see CloudAgents.Db profiles DDL.
 pub func isValidNetworkPolicy(p: in String): Bool {
   return p == "full" or p == "none" or p == "restricted"
@@ -138,7 +153,15 @@ pub func addProfileHandler(req: in SaveProfileRequest): Result[Profile, Web.ApiE
   }
   match addProfile(userId, name, req.harness, req.networkPolicy, req.credentialMode, grantsFor(req)) {
     case Ok(p) -> return Ok(p)
-    case Err(e) -> return Err(dbError(e))
+    case Err(e) -> {
+      // A concurrent create with the same name can slip past the pre-check
+      // above and only fail here, at the UNIQUE constraint (#245) — report it
+      // the same way the pre-check would have, not as a raw 500.
+      if isDuplicateNameError(e) {
+        return Err(Web.badRequest("a profile with this name already exists"))
+      }
+      return Err(dbError(e))
+    }
   }
 }
 
@@ -161,7 +184,15 @@ pub func updateProfileHandler(pid: in String, req: in SaveProfileRequest): Resul
   }
   val affected = match updateProfile(pid, userId, name, req.harness, req.networkPolicy, req.credentialMode, grantsFor(req)) {
     case Ok(n) -> n
-    case Err(e) -> return Err(dbError(e))
+    case Err(e) -> {
+      // A concurrent rename onto the same name can slip past the pre-check
+      // above and only fail here, at the UNIQUE constraint (#245) — report it
+      // the same way the pre-check would have, not as a raw 500.
+      if isDuplicateNameError(e) {
+        return Err(Web.badRequest("a profile with this name already exists"))
+      }
+      return Err(dbError(e))
+    }
   }
   if affected == 0 {
     return Err(Web.notFound("profile not found"))
