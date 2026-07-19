@@ -105,15 +105,19 @@ func streamDispose(s: in NetStream): Unit = ()
 @externTarget("System.IDisposable.Dispose")
 func responseDispose(r: in WebResponse): Unit = ()
 
+// pub (#514) so the regression test can decode via the exact same Encoding
+// readAllUtf8 uses.
 @externTarget("System.Text.Encoding.get_UTF8")
-func utf8(): Encoding = ()
+pub func utf8(): Encoding = ()
 
 @externInstance
 @externTarget("System.Text.Encoding.GetBytes")
 func encGetBytes(enc: in Encoding, s: in String): slice[Byte] = []
 
+// pub (#514) so tests/github_api_tests.l can cover it directly — see that
+// file's NOTE on why readAllUtf8/readAll themselves stay untested.
 @externTarget("System.Char.ConvertFromUtf32")
-func charFromCode(code: in Int): String = ()
+pub func charFromCode(code: in Int): String = ()
 
 // ─── UTF-8 body reading (proxy endpoints) ────────────────────────────────────
 //
@@ -136,17 +140,28 @@ extern type Type = "System.Type"
 // doesn't match what the generated call expects. Type.GetType(string) is a
 // plain static call with no instance/boxing involved, sidestepping whatever
 // miscompiles the instance-call form for a Byte-typed argument.
+// pub (#514) so tests/github_api_tests.l can exercise the exact Type.GetType
+// call that replaced the crash-prone instance-bound GetType() on a boxed
+// Byte (see the comment above and docs/lyric/gotchas.md's matching entry) —
+// this is the single FFI step PR #512's fix touched.
 @externTarget("System.Type.GetType")
-func typeFromName(name: in String): Type = ()
+pub func typeFromName(name: in String): Type = ()
 
+// pub (#514), same rationale as typeFromName above: lets the regression test
+// chain Type.GetType -> Array.CreateInstance -> Encoding.GetString exactly as
+// readAllUtf8 does, without needing a live network Stream (see the module
+// NOTE in tests/github_api_tests.l for why readAllUtf8 itself can't be
+// invoked from a test).
 @externTarget("System.Array.CreateInstance")
-func createByteArray(elementType: in Type, length: in Int): ByteArray = ()
+pub func createByteArray(elementType: in Type, length: in Int): ByteArray = ()
 
 // Named encGetStringRange (not encGetString) so it never shadows or clashes
 // with crypto.l's whole-array GetString binding if the two are ever merged.
+// pub (#514), completing the typeFromName/createByteArray chain above for
+// direct testing.
 @externInstance
 @externTarget("System.Text.Encoding.GetString")
-func encGetStringRange(enc: in Encoding, bytes: in ByteArray, index: in Int, count: in Int): String = ()
+pub func encGetStringRange(enc: in Encoding, bytes: in ByteArray, index: in Int, count: in Int): String = ()
 
 /// Read up to `count` bytes into `buf` at `offset`; returns bytes read
 /// (0 = end of stream). Lets readAllUtf8 fill its buffer in blocks instead
