@@ -217,9 +217,10 @@ pub func postJsonWithBearer(url: in String, bearerToken: in String, jsonBody: in
     headerSet(getHeaders(req), "Authorization", "Bearer " + bearerToken)
     val bytes = encGetBytes(utf8(), jsonBody)
     val reqStream = getRequestStream(req)
-    defer {
-      streamDispose(reqStream)
-    }
+    // Disposed explicitly (not deferred): HttpWebRequest requires the
+    // request stream closed before getResponse can complete the exchange,
+    // and Dispose here must therefore run mid-scope. A streamWrite failure
+    // lands in the Bug catch below and the runtime finalizes the stream.
     streamWrite(reqStream, bytes, 0, bytes.length.toInt())
     streamDispose(reqStream)
     val resp = getResponse(req)

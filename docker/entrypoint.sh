@@ -106,10 +106,18 @@ if [ -f /etc/claude/mcp.json.template ] && [ ! -f /workspace/.claude/mcp.json ];
         session_id_clean=$(printf '%s' "${NATIVE_SESSION_ID}" | tr -d '\000-\037')
         session_id_json=$(printf '%s' "${session_id_clean}" | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g')
         session_id_escaped=$(printf '%s' "${session_id_json}" | sed -e 's/[&|\\]/\\&/g')
+        # Optional timeout override (docs/phase6 §2, #533): MCP servers only
+        # receive env vars listed in mcp.json, so the container-level value
+        # must be re-listed here. Unset renders as "" and the shim falls
+        # back to its default.
+        timeout_ms_clean=$(printf '%s' "${CLOUD_AGENTS_CALLBACK_TIMEOUT_MS:-}" | tr -d '\000-\037')
+        timeout_ms_json=$(printf '%s' "${timeout_ms_clean}" | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g')
+        timeout_ms_escaped=$(printf '%s' "${timeout_ms_json}" | sed -e 's/[&|\\]/\\&/g')
         callbacks_fragment=$(sed \
             -e "s|\${CLOUD_AGENTS_API_URL}|${api_url_escaped}|g" \
             -e "s|\${CLOUD_AGENTS_CALLBACK_TOKEN}|${token_escaped}|g" \
             -e "s|\${CLOUD_AGENTS_SESSION_ID}|${session_id_escaped}|g" \
+            -e "s|\${CLOUD_AGENTS_CALLBACK_TIMEOUT_MS}|${timeout_ms_escaped}|g" \
             /etc/claude/mcp-callbacks.json.template)
         merged=$(jq -s '.[0].mcpServers += .[1].mcpServers | .[0]' \
             /workspace/.claude/mcp.json <(printf '%s' "${callbacks_fragment}"))

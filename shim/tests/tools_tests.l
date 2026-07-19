@@ -207,3 +207,20 @@ test "report_progress tool always reports success, even when the transport fails
   assertTrue(not result.isError, "fire-and-forget: a transport failure never surfaces as a tool error")
   assertEqualInt(fake.reportProgressCallCount, 1, "the transport was still called")
 }
+
+test "report_progress truncates a fractional percentComplete instead of dropping it" {
+  val fake = newFakeTransport()
+  val tool = ReportProgressTool(transport = fake)
+
+  val args = Some(
+    value = JObject(
+      fields = [
+        JsonField(name = "summary", value = JString(value = "building")),
+        JsonField(name = "percentComplete", value = JFloat(value = 62.5))
+      ]
+    )
+  )
+  val result = match tool.call(args) { case Ok(r) -> r; case Err(e) -> panic("unexpected Err: " + e) }
+  assertTrue(not result.isError, "fractional progress is accepted")
+  assertEqual(fake.lastProgressPercent, "62", "62.5 truncates to a whole percent (#537), not the empty string")
+}

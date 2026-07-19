@@ -68,12 +68,6 @@ pub func callbacksFeatureEnabled(): Bool {
   return Env.GetEnvironmentVariable("CLOUD_AGENTS_MCP_CALLBACKS") == "1"
 }
 
-/// Base URL of the host API as reachable from the container network — the
-/// value injected as CLOUD_AGENTS_API_URL (docs/phase6 §2). Configurable
-/// because the reachable address depends entirely on the deployment's Docker
-/// networking (bridge vs. host-gateway vs. a custom network); the
-/// `host.docker.internal` default only works out of the box on Docker
-/// Desktop.
 /// The operator-set CLOUD_AGENTS_CALLBACK_TIMEOUT_MS, or "" when unset.
 /// Forwarded verbatim into session containers by CloudAgents.Docker so the
 /// shim's client-side deadline and the host-side backstop share one knob
@@ -87,6 +81,12 @@ pub func callbackTimeoutOverride(): String {
   return raw
 }
 
+/// Base URL of the host API as reachable from the container network — the
+/// value injected as CLOUD_AGENTS_API_URL (docs/phase6 §2). Configurable
+/// because the reachable address depends entirely on the deployment's Docker
+/// networking (bridge vs. host-gateway vs. a custom network); the
+/// `host.docker.internal` default only works out of the box on Docker
+/// Desktop.
 pub func callbackApiUrl(): String {
   val url = Env.GetEnvironmentVariable("CLOUD_AGENTS_CALLBACK_API_URL")
   if DotNetString.IsNullOrEmpty(url) {

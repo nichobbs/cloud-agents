@@ -48,6 +48,9 @@ pub record FakeTransport {
   pub var reportProgressOk: Bool
   pub var reportProgressError: String
   pub var reportProgressCallCount: Int
+  /// Last percentComplete string the tool passed through — lets tests
+  /// assert the fractional-truncation path (#537).
+  pub var lastProgressPercent: String
 }
 
 /// A ready-to-use fake with sensible not-configured-yet defaults: creating
@@ -66,6 +69,7 @@ pub func newFakeTransport(): FakeTransport {
     pollQuestionBodies = newList(),
     pollQuestionCallCount = 0,
     reportProgressOk = true,
+    lastProgressPercent = "",
     reportProgressError = "",
     reportProgressCallCount = 0
   )
@@ -107,6 +111,7 @@ impl CallbackTransport for FakeTransport {
 
   func reportProgress(summary: in String, percentComplete: in String): Result[Unit, String] {
     self.reportProgressCallCount = self.reportProgressCallCount + 1
+    self.lastProgressPercent = percentComplete
     if self.reportProgressOk {
       Ok(value = ())
     } else {

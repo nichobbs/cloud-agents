@@ -298,7 +298,12 @@ func handleReportProgress(tool: in ReportProgressTool, args: in Option[JsonValue
   }
   val percent = match getInt(a, "percentComplete") {
     case Some(n) -> toString(n)
-    case None -> match getString(a, "percentComplete") { case Some(s) -> s; case None -> "" }
+    case None -> match getFloat(a, "percentComplete") {
+      // Fractional progress (e.g. 62.5) truncates to a whole percent
+      // rather than being dropped (#537) — the host column is integral.
+      case Some(f) -> toString(f.toInt())
+      case None -> match getString(a, "percentComplete") { case Some(s) -> s; case None -> "" }
+    }
   }
   CloudAgents.Shim.Callbacks.reportProgress(tool.transport, summary, percent)
   return toolTextResult("progress reported")
