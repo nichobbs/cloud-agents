@@ -217,10 +217,15 @@ pub func postJsonWithBearer(url: in String, bearerToken: in String, jsonBody: in
     headerSet(getHeaders(req), "Authorization", "Bearer " + bearerToken)
     val bytes = encGetBytes(utf8(), jsonBody)
     val reqStream = getRequestStream(req)
-    // Disposed explicitly (not deferred): HttpWebRequest requires the
-    // request stream closed before getResponse can complete the exchange,
-    // and Dispose here must therefore run mid-scope. A streamWrite failure
-    // lands in the Bug catch below and the runtime finalizes the stream.
+    // The request stream must be closed BEFORE getResponse (it finalises
+    // the request body), hence the explicit dispose after the write. The
+    // defer is the exception-path guard: if streamWrite throws mid-body,
+    // the stream still gets released (Stream.Dispose is idempotent, so the
+    // double dispose on the success path is harmless) — the same pattern
+    // as src/github_api.l (#421, #539).
+    defer {
+      streamDispose(reqStream)
+    }
     streamWrite(reqStream, bytes, 0, bytes.length.toInt())
     streamDispose(reqStream)
     val resp = getResponse(req)
