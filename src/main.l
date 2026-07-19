@@ -245,7 +245,7 @@ impl Web.Handler for RouteListSessions {
   }
 }
 
-// POST /api/sessions/{id}/messages is a STREAMING route (Lyric.Web 0.4.33): the
+// POST /api/sessions/{id}/messages is a STREAMING route (Lyric.Web 0.4.34): the
 // handler writes SSE `data:` frames to the ResponseWriter as the container
 // produces output, instead of buffering the whole run and returning one body.
 // Registered in the separate StreamingRoutes table in main(), not the Router.
@@ -253,7 +253,7 @@ record SendMessageStreamHandler {
 }
 
 impl Web.StreamingHandler for SendMessageStreamHandler {
-  func handleStream(req: in Web.Request, w: in Web.ResponseWriter): Unit {
+  func streamHandle(req: in Web.Request, w: in Web.ResponseWriter): Unit {
     val id = pparam(req, "id")
     val decoded = match SendMessageRequest.fromJson(req.body) {
       case Ok(d) -> d

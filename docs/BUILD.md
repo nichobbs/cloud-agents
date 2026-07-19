@@ -34,8 +34,8 @@ binary packages — no sibling checkout, no source patching:
 
 ```toml
 [nuget]
-"Lyric.Web"             = "0.4.33"
-"Lyric.Docker"          = "0.4.31"
+"Lyric.Web"             = "0.4.34"
+"Lyric.Docker"          = "0.4.34"
 "Std.Logging"           = "0.4.20"
 "Microsoft.Data.Sqlite" = "10.0.9"
 ```
