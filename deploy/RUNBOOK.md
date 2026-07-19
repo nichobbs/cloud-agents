@@ -27,6 +27,14 @@ docker compose up -d
 
 Set your domain in `Caddyfile` (replace `agent.example.com`) before starting.
 
+> **Optional — GitHub OAuth sign-in:** set `CLOUD_AGENTS_GITHUB_CLIENT_ID` and
+> `CLOUD_AGENTS_GITHUB_CLIENT_SECRET` in `.env` (see `.env.example`) to enable
+> "Sign in with GitHub" and enforce its login guard. Create the OAuth App at
+> GitHub -> Settings -> Developer settings -> OAuth Apps, with "Authorization
+> callback URL" set to `https://<your-domain>/auth/callback`. Leave both
+> empty (the default) to run with no sign-in requirement, same as before
+> these existed.
+
 > **Optional — `restricted` network policy:** to use profiles with the
 > `restricted` network policy, first create the internal egress network named
 > by `CLOUD_AGENTS_RESTRICTED_NETWORK` in `.env`, e.g.
