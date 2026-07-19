@@ -999,3 +999,55 @@ test "session-repo handlers validate, link, list and unlink (#multi-repo)" {
   }
 }
 
+// ── #334: sendMessage's prompt cap and checkHealth's DB-failure path ─────────
+//
+// Both were left uncovered by PR #333 (#35/#57's Handlers-side half): they
+// live in CloudAgents.Handlers, which imports the async CloudAgents.Docker,
+// and streamSendMessage itself calls into CloudAgents.Docker further down —
+// so it can't be invoked from this harness at all (same class of gap as
+// cancelRun/getRunOutput above). promptExceedsMaxLength is a pub, pure
+// extraction of exactly the check streamSendMessage runs before it ever
+// touches Docker (mirroring parseOutputOffset/runOutputDeltaJson's existing
+// split). checkHealth, by contrast, never references CloudAgents.Docker at
+// all — only CloudAgents.Repository.ping() — so it needs no such extraction
+// and is invoked directly below.
+
+// A string of exactly `totalLen` 'x' characters, built by doubling (like
+// tests/interactions_tests.l's overLongText) rather than looping totalLen
+// times.
+func repeatedChar(totalLen: in Int): String {
+  var s = "x"
+  while s.length.toInt() < totalLen {
+    s = s + s
+  }
+  return s.substring(0, totalLen)
+}
+
+test "promptExceedsMaxLength enforces the 131072-char cap streamSendMessage relies on (#334/#35)" {
+  assertFalse(promptExceedsMaxLength("short prompt"), "a short prompt is well under the cap")
+  assertFalse(promptExceedsMaxLength(repeatedChar(131072)), "text exactly at the cap is not over")
+  assertTrue(promptExceedsMaxLength(repeatedChar(131073)), "text one character over the cap is over")
+}
+
+test "checkHealth reports healthy against a live DB and 500s when the DB is unreachable (#334/#57)" {
+  val dbPath = useFreshTestDb("health-ok")
+  defer {
+    cleanupTestDb(dbPath)
+  }
+  match checkHealth() {
+    case Ok(msg) -> assertEqual(msg, "Healthy", "a live, migrated DB reports healthy")
+    case Err(_) -> assertTrue(false, "checkHealth should succeed against a live, migrated DB")
+  }
+
+  // Point CLOUD_AGENTS_DB_PATH at a file under a directory that does not
+  // exist: SQLite cannot open (or create) a database file there, so
+  // CloudAgents.Repository.ping() -> Err(OpenFailed) and checkHealth must map
+  // that to a 500 — not leak the raw DB error message to the unauthenticated
+  // /api/health caller (#55).
+  Env.SetEnvironmentVariable("CLOUD_AGENTS_DB_PATH", "/nonexistent-dir-cloud-agents-334/unreachable.db")
+  match checkHealth() {
+    case Ok(_) -> assertTrue(false, "checkHealth must fail when the database is unreachable")
+    case Err(err) -> assertEqualInt(err.status, 500, "DB failure maps to a 500 internal error")
+  }
+}
+

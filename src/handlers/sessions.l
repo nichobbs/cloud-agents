@@ -396,6 +396,20 @@ pub func writeStreamError(w: in Web.ResponseWriter, code: in Int, msg: in String
   return ()
 }
 
+/// Whether `text` is over streamSendMessage's prompt-length cap (#334). pub +
+/// pure so the exact cap enforcement can be tested directly: streamSendMessage
+/// itself calls CloudAgents.Docker.streamSessionMessage further down and so
+/// cannot be invoked from the test harness at all (docs/lyric/gotchas.md — a
+/// @test_module can't invoke a function that reaches an async-bearing
+/// package), the same reason cancelRun/getRunOutput have no direct test (see
+/// tests/session_tests.l). Thin wrapper over CloudAgents.Text.withinMaxLength
+/// (already generically tested in tests/text_tests.l) so the maxPromptLen
+/// constant itself — the thing a future refactor could accidentally remove or
+/// raise — is what's actually pinned by a test using this function.
+pub func promptExceedsMaxLength(text: in String): Bool {
+  return not CloudAgents.Text.withinMaxLength(text, maxPromptLen)
+}
+
 /// Accept a user prompt and STREAM the container's output back as it is
 /// produced, using Lyric.Web 0.4.33's streaming-handler API: each new slice of
 /// container output is written as a `data: {"chunk":"..."}` SSE frame the
@@ -418,7 +432,7 @@ pub func streamSendMessage(id: in String, text: in String, w: in Web.ResponseWri
     writeStreamError(w, 400, "text is required")
     return ()
   }
-  if not CloudAgents.Text.withinMaxLength(text, maxPromptLen) {
+  if promptExceedsMaxLength(text) {
     writeStreamError(w, 400, "text is too long (max " + toString(maxPromptLen) + " characters)")
     return ()
   }
