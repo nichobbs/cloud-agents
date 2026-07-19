@@ -131,8 +131,10 @@ assert "streaming send dispatches (auth)" POST "/api/sessions/does-not-exist/mes
 # Drive the REAL shim binary (shim/bin, built by the CI step before this
 # script) over genuine MCP stdio against the REAL server above: initialize
 # handshake, then a tools/call request_permission whose HTTP POST hits the
-# live callback endpoint with an invalid bearer token. The server answers
-# 401, and the shim's fail-closed path must surface a deny payload — this
+# live callback endpoint for a session that does not exist. The server
+# rejects it (404 — the session-existence check runs before the bearer
+# comparison, so the invalid token below is never what fires; #541), and
+# the shim's fail-closed path must surface a deny payload — this
 # exercises transport.l's actual HTTP boundary (URL handling, request
 # write, response read) end to end, which the in-memory FakeTransport
 # suites deliberately do not. The full allowed-path round trip (valid
@@ -158,7 +160,7 @@ case "$shim_stdout" in
   *) echo "FAIL shim: no initialize response — got: ${shim_stdout}" >&2; fails=$((fails + 1)) ;;
 esac
 case "$shim_stdout" in
-  *'deny'*) echo "ok   shim: real HTTP 401 from live server fails closed (deny)" ;;
+  *'deny'*) echo "ok   shim: live-server rejection (404 unknown session) fails closed (deny)" ;;
   *) echo "FAIL shim: tools/call did not fail closed — got: ${shim_stdout}" >&2; fails=$((fails + 1)) ;;
 esac
 
