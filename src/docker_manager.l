@@ -6,6 +6,7 @@ import Std.Task
 import Web
 import Lyric.Docker
 import CloudAgents.Db
+import CloudAgents.DockerPolicy
 import CloudAgents.NetworkPolicy
 import CloudAgents.Repository
 import CloudAgents.RunnerEnv
@@ -232,15 +233,49 @@ pub async func stopRunnerContainer(client: in DockerClient, containerId: in Stri
 }
 
 /// Wait for a container's process to exit before reading its output.
+///
+/// Retries a `/wait` failure (bounded two independent ways — an attempt cap
+/// and a 30-minute wall-clock deadline) instead of surfacing it immediately,
+/// since a failure here could be the underlying `Std.Http.HttpClient`'s own
+/// request timeout firing before the container actually finished rather
+/// than a real Docker-reported error. See
+/// `CloudAgents.DockerPolicy.shouldRetryContainerWait`'s doc comment for the
+/// full rationale (#56) — this project cannot configure `DockerClient`'s
+/// HTTP timeout directly, so retrying is the only available mitigation.
 pub async func waitForContainer(client: in DockerClient, containerId: in String): Result[Unit, String] {
-  val waitRes = await waitContainer(client, containerId)
-  match waitRes {
-    case Ok(_) -> Ok(value = ())
-    case Err(e) -> {
-      println("WARNING: failed to wait for container " + containerId + ": " + e.message)
-      return Err(error = "Failed to wait for container: " + e.message)
+  val deadlineMs = CloudAgents.Repository.nowMillisLong() + 1800000.toLong()
+  val maxAttempts = 20
+  var attempts = 0
+  var settled = false
+  var succeeded = false
+  var lastMessage = ""
+  while not settled {
+    attempts = attempts + 1
+    val waitRes = await waitContainer(client, containerId)
+    match waitRes {
+      case Ok(_) -> {
+        succeeded = true
+        settled = true
+      }
+      case Err(e) -> {
+        lastMessage = e.message
+        val retry = CloudAgents.DockerPolicy.shouldRetryContainerWait(
+          attempts,
+          maxAttempts,
+          CloudAgents.Repository.nowMillisLong(),
+          deadlineMs
+        )
+        if not retry {
+          settled = true
+        }
+      }
     }
   }
+  if succeeded {
+    return Ok(value = ())
+  }
+  println("WARNING: failed to wait for container " + containerId + ": " + lastMessage)
+  return Err(error = "Failed to wait for container: " + lastMessage)
 }
 
 /// Delete the container.
@@ -524,8 +559,12 @@ pub func streamSessionMessage(
     }
     // Hard cap the whole run (#481): a hung container with a still-connected
     // client would otherwise hold the session's RUNNING claim forever, where
-    // the old runSessionMessage bounded it with a 30-minute taskWaitMs.
-    if CloudAgents.Repository.nowMillisLong() - startMs > runTimeoutMs {
+    // the old runSessionMessage bounded it with a 30-minute taskWaitMs. The
+    // boundary check itself lives in the pure CloudAgents.DockerPolicy
+    // package so it has direct test coverage (#67) — this async package's
+    // functions can't be reached from a @test_module at all, pure or not
+    // (docs/lyric/gotchas.md).
+    if CloudAgents.DockerPolicy.hasExceededRunTimeout(CloudAgents.Repository.nowMillisLong(), startMs, runTimeoutMs) {
       timedOut = true
     }
   }

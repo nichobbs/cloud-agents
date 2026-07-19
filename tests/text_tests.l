@@ -38,6 +38,24 @@ test "withinMaxLength allows values at or under the cap and rejects values over 
   assertFalse(withinMaxLength("0123456789X", 10), "value over the cap is not within it")
 }
 
+test "withinMaxByteLength measures UTF-8 byte size, not character count (#64)" {
+  // Plain ASCII: one byte per character, so byte length and char length agree.
+  assertTrue(withinMaxByteLength("short", 10), "ASCII value under the cap is within it")
+  assertTrue(withinMaxByteLength("0123456789", 10), "ASCII value exactly at the cap is within it")
+  assertFalse(withinMaxByteLength("0123456789X", 10), "ASCII value over the cap is not within it")
+
+  // U+3042 (HIRAGANA A) is one .NET/Lyric character but three UTF-8 bytes —
+  // exactly the divergence #64 is about. "あああ" is 3 characters / 9 bytes.
+  val threeWide = "あああ"
+  assertEqualInt(threeWide.length.toInt(), 3, "sanity: three multi-byte characters")
+  // A char-count cap of 3 would let this through (that's the bug #64 flags);
+  // the byte-count cap correctly rejects it once the true size (9) is over.
+  assertTrue(withinMaxLength(threeWide, 3), "char-count check alone is fooled by multi-byte characters")
+  assertFalse(withinMaxByteLength(threeWide, 3), "byte-count check catches what the char-count check misses")
+  assertTrue(withinMaxByteLength(threeWide, 9), "byte-count check allows the value at its true byte size")
+  assertFalse(withinMaxByteLength(threeWide, 8), "byte-count check rejects one byte under the true size")
+}
+
 test "constantTimeEquals matches equal strings and rejects differing ones, any length (#204/#366)" {
   assertTrue(constantTimeEquals("abc", "abc"), "equal strings match")
   assertTrue(constantTimeEquals("", ""), "empty equals empty")
