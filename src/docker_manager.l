@@ -550,8 +550,12 @@ pub func streamSessionMessage(
     }
     // Hard cap the whole run (#481): a hung container with a still-connected
     // client would otherwise hold the session's RUNNING claim forever, where
-    // the old runSessionMessage bounded it with a 30-minute taskWaitMs.
-    if CloudAgents.Repository.nowMillisLong() - startMs > runTimeoutMs {
+    // the old runSessionMessage bounded it with a 30-minute taskWaitMs. The
+    // boundary check itself lives in the pure CloudAgents.DockerPolicy
+    // package so it has direct test coverage (#67) — this async package's
+    // functions can't be reached from a @test_module at all, pure or not
+    // (docs/lyric/gotchas.md).
+    if CloudAgents.DockerPolicy.hasExceededRunTimeout(CloudAgents.Repository.nowMillisLong(), startMs, runTimeoutMs) {
       timedOut = true
     }
   }

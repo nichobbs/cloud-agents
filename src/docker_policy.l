@@ -11,6 +11,18 @@ package CloudAgents.DockerPolicy
 
 import Std.Core
 
+/// Whether a run that started at `startMs` has exceeded `timeoutMs` as of
+/// `nowMs`. Backs the 30-minute hard cap `streamSessionMessage` enforces
+/// around the whole run (#481) — split out here so the boundary condition
+/// (exactly at the cap does NOT count as exceeded; only strictly over it
+/// does) has direct test coverage (#67) instead of only being exercised in
+/// docker_manager.l's `CloudAgents.Docker` package, which the current
+/// toolchain's @test_module harness cannot import from at all (see the
+/// module doc comment above).
+pub func hasExceededRunTimeout(nowMs: in Long, startMs: in Long, timeoutMs: in Long): Bool {
+  return nowMs - startMs > timeoutMs
+}
+
 /// Whether `waitForContainer` should retry a failed Docker `/wait` call
 /// rather than surface the failure immediately (#56).
 ///
