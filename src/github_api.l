@@ -110,9 +110,10 @@ func responseDispose(r: in WebResponse): Unit = ()
 @externTarget("System.Text.Encoding.get_UTF8")
 pub func utf8(): Encoding = ()
 
+// pub (#514) so the regression test can drive the exact same round trip.
 @externInstance
 @externTarget("System.Text.Encoding.GetBytes")
-func encGetBytes(enc: in Encoding, s: in String): slice[Byte] = []
+pub func encGetBytes(enc: in Encoding, s: in String): slice[Byte] = []
 
 // pub (#514) so the regression test can decode via the exact chain
 // readAllUtf8 uses. Full-array form, mirroring crypto.l's encGetString —
