@@ -22,10 +22,10 @@ command -v docker >/dev/null || { echo "build-docker: 'docker' not on PATH" >&2;
 # stage its output into the docker/ build context as docker/shim-dist/ —
 # `docker build`'s context here is docker/ itself (see build_claude below),
 # which cannot COPY anything from ../shim/, so the compiled bin/ directory
-# is copied in ahead of time. Always staged (not conditional on the
-# CLOUD_AGENTS_MCP_CALLBACKS runtime flag, which stays off by default in
-# docker/entrypoint.sh regardless of whether the binary is present in the
-# image) so the image is ready the moment the flag is flipped.
+# is copied in ahead of time. Always staged regardless of the
+# CLOUD_AGENTS_MCP_CALLBACKS runtime flag (on by default in
+# docker/entrypoint.sh as of stage 4, §8 — an operator opts out with =0) so
+# the image always has the binary the flag's default now expects to find.
 stage_shim() {
     command -v lyric >/dev/null || { echo "build-docker: 'lyric' not on PATH (needed to build shim/)" >&2; exit 1; }
     echo "==> Building cloud-agents-shim (shim/)"

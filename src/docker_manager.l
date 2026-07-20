@@ -104,17 +104,19 @@ pub async func createRunnerContainer(
     envs = envs.append("EXTRA_REPOS=" + extraRepos)
   }
 
-  // Phase 6 (docs/phase6-mcp-callbacks.md §2/§5/§6 stage 2): mint a per-session
-  // callback bearer token and inject it plus the host API's callback origin,
-  // so the in-container MCP shim (cloud-agents-shim, shipped in every runner
-  // image since stage 3) can request permission decisions, ask the human a
-  // question, and report progress mid-run. Entirely gated behind
-  // CLOUD_AGENTS_MCP_CALLBACKS — off by default, so nothing about this run
-  // changes until an operator opts in
-  // (docker/entrypoint.sh/mcp.json.template are gated by the same flag).
+  // Phase 6 (docs/phase6-mcp-callbacks.md §2/§5/§6 stage 2, §8 stage 4): mint
+  // a per-session callback bearer token and inject it plus the host API's
+  // callback origin, so the in-container MCP shim (cloud-agents-shim,
+  // shipped in every runner image since stage 3) can request permission
+  // decisions, ask the human a question, and report progress mid-run.
+  // Gated behind CLOUD_AGENTS_MCP_CALLBACKS — on by default as of stage 4;
+  // an operator opts out with =0 (docker/entrypoint.sh/mcp.json.template are
+  // gated by the same flag with the same on-unless-"0" default in shell).
   // Best-effort: a mint failure must not abort the run — callbacks simply
-  // won't work for this one run, same tolerance as the credential/network
-  // resolution failures logged elsewhere in this function.
+  // won't work for this one run (the entrypoint's own guards mean a run with
+  // no minted token behaves exactly as it did before Phase 6 existed), same
+  // tolerance as the credential/network resolution failures logged elsewhere
+  // in this function.
   if CloudAgents.NetworkPolicy.callbacksFeatureEnabled() {
     match CloudAgents.SessionStore.mintCallbackToken(sessionId, userId) {
       case Ok(token) -> {

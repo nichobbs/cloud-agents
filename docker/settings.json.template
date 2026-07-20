@@ -2,7 +2,8 @@
   "permissions": {
     "allow": [
       "Read",
-      "Bash(git:*)"
+      "Glob",
+      "Grep"
     ]
   }
 }

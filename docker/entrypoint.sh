@@ -8,10 +8,17 @@
 #   MODEL             - Claude model to use (default: claude-opus-4-8)
 #   NATIVE_SESSION_ID - session ID to resume; if non-empty passed to --resume
 #   GITHUB_TOKEN      - PAT injected into the GitHub MCP server (Phase 4, optional)
-#   CLOUD_AGENTS_MCP_CALLBACKS  - "1" to enable the Phase 6 MCP-callback shim
-#                                 (docs/phase6-mcp-callbacks.md); default off.
-#                                 Only takes effect once cloud-agents-shim
-#                                 actually ships in this image (stage 3).
+#   CLOUD_AGENTS_MCP_CALLBACKS  - "0" to disable the Phase 6 MCP-callback shim
+#                                 (docs/phase6-mcp-callbacks.md); on by
+#                                 default as of stage 4 (§8). Mirrors
+#                                 CloudAgents.NetworkPolicy.callbacksFeatureEnabled's
+#                                 on-unless-"0" default — keep the two in
+#                                 sync. Registering the shim's MCP-server
+#                                 entry below is additionally guarded on the
+#                                 template file actually existing in this
+#                                 image, so an image built before stage 3
+#                                 shipped the shim still runs fine with the
+#                                 flag on.
 #   CLOUD_AGENTS_API_URL        - host API base URL, as reachable from this
 #                                 container (only used when the flag above is
 #                                 set; minted by CloudAgents.Docker)
@@ -29,7 +36,19 @@ set -euo pipefail
 BRANCH="${BRANCH:-main}"
 MODEL="${MODEL:-claude-opus-4-8}"
 NATIVE_SESSION_ID="${NATIVE_SESSION_ID:-}"
-CLOUD_AGENTS_MCP_CALLBACKS="${CLOUD_AGENTS_MCP_CALLBACKS:-0}"
+# Default-on unless explicitly "0" — mirrors
+# CloudAgents.NetworkPolicy.callbacksFeatureEnabled()'s Lyric-side default
+# (docs/phase6 §8). Deliberately NOT "${CLOUD_AGENTS_MCP_CALLBACKS:-1}": that
+# form only substitutes when the var is unset/empty, which happens to give
+# the same on-unless-"0" result for every value the var actually takes, but
+# spells out the "off-unless-1" default this stage replaced — normalizing
+# through the explicit comparison below keeps the intent obvious and matches
+# the Lyric side's `!= "0"` check byte-for-byte.
+if [ "${CLOUD_AGENTS_MCP_CALLBACKS:-}" = "0" ]; then
+    CLOUD_AGENTS_MCP_CALLBACKS="0"
+else
+    CLOUD_AGENTS_MCP_CALLBACKS="1"
+fi
 
 if [ -z "${PROMPT:-}" ]; then
     echo "entrypoint: PROMPT is required" >&2
@@ -89,14 +108,21 @@ if [ -f /etc/claude/mcp.json.template ] && [ ! -f /workspace/.claude/mcp.json ];
 
     # Phase 6 (docs/phase6-mcp-callbacks.md): register the cloud-agents MCP
     # server so the agent can request permission decisions / ask the human a
-    # question / report progress mid-run. Gated behind
-    # CLOUD_AGENTS_MCP_CALLBACKS until the shim binary (cloud-agents-shim,
-    # built from shim/, stage 3) actually ships in this image — without the
-    # gate, `claude` would try to spawn a nonexistent command on every run.
+    # question / report progress mid-run. On by default as of stage 4 (§8);
+    # gated behind CLOUD_AGENTS_MCP_CALLBACKS (opt out with =0), the
+    # mcp-callbacks.json.template file actually existing in this image
+    # (without this guard, an image built before stage 3 shipped the shim
+    # would have `claude` try to spawn a nonexistent command on every run),
+    # AND a non-empty CLOUD_AGENTS_CALLBACK_TOKEN — docker_manager.l mints
+    # the token best-effort and simply omits both callback env vars on
+    # failure (§8: "the entrypoint's existing guards keep runs working when
+    # no token was minted"), and cloud-agents-shim's main.l panics at
+    # startup on a missing required env var, so registering the server
+    # without a token would only ever produce a broken MCP server entry.
     # jq merges the base mcp.json with the rendered callbacks fragment so
     # both server entries coexist regardless of future additions to either
     # template.
-    if [ "${CLOUD_AGENTS_MCP_CALLBACKS}" = "1" ] && [ -f /etc/claude/mcp-callbacks.json.template ] && command -v jq >/dev/null 2>&1; then
+    if [ "${CLOUD_AGENTS_MCP_CALLBACKS}" = "1" ] && [ -f /etc/claude/mcp-callbacks.json.template ] && [ -n "${CLOUD_AGENTS_CALLBACK_TOKEN:-}" ] && command -v jq >/dev/null 2>&1; then
         api_url_clean=$(printf '%s' "${CLOUD_AGENTS_API_URL:-}" | tr -d '\000-\037')
         api_url_json=$(printf '%s' "${api_url_clean}" | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g')
         api_url_escaped=$(printf '%s' "${api_url_json}" | sed -e 's/[&|\\]/\\&/g')
@@ -124,6 +150,16 @@ if [ -f /etc/claude/mcp.json.template ] && [ ! -f /workspace/.claude/mcp.json ];
         printf '%s' "${merged}" > /workspace/.claude/mcp.json
     fi
 fi
+# Phase 6 (docs/phase6-mcp-callbacks.md §8): settings.json.template's
+# "allow" list is deliberately a genuinely-safe base set — file reads and
+# read-only inspection only (Read, Glob, Grep). No blanket Bash grant: every
+# tool call outside this tiny allowlist now routes through
+# --permission-prompt-tool above (on by default as of stage 4), which pauses
+# for a human decision instead of the tool either auto-approving or failing
+# closed with no recourse. NOTE: this comment lives here, not inside
+# settings.json.template itself — that file must stay strict, comment-free
+# JSON, since CI validates it with `python3 -m json.tool` (.github/workflows/
+# ci.yml "Validate JSON templates"), which rejects JSON5/JSONC comments.
 if [ -f /etc/claude/settings.json.template ] && [ ! -f /workspace/.claude/settings.json ]; then
     cp /etc/claude/settings.json.template /workspace/.claude/settings.json
 fi
@@ -133,14 +169,19 @@ if [ ! -f /workspace/.claude/history.jsonl ]; then
     claude -p "Initialise session" --model "${MODEL}" --resume || true
 fi
 
-# Phase 6 (docs/phase6-mcp-callbacks.md §3): route Claude Code's own
+# Phase 6 (docs/phase6-mcp-callbacks.md §3, §8): route Claude Code's own
 # permission prompts through the cloud-agents MCP server instead of the
 # static settings.json allowlist, so a tool call outside that allowlist pauses
-# for a human decision instead of failing closed. Gated behind the same flag
-# as the mcp.json registration above — an empty array is a no-op when the
-# flag is off.
+# for a human decision instead of failing closed. On by default as of stage 4.
+# Gated on the SAME condition as the mcp.json registration above (flag on AND
+# a token for THIS run) rather than just the flag: pointing
+# --permission-prompt-tool at an MCP server entry that was never actually
+# registered (no token minted this run — mint is best-effort, see
+# docker_manager.l) would make Claude Code route every permission decision
+# through a tool that can't answer, instead of the pre-Phase-6 behavior this
+# run must fall back to. An empty array is a no-op either way.
 PERMISSION_PROMPT_ARGS=()
-if [ "${CLOUD_AGENTS_MCP_CALLBACKS}" = "1" ]; then
+if [ "${CLOUD_AGENTS_MCP_CALLBACKS}" = "1" ] && [ -n "${CLOUD_AGENTS_CALLBACK_TOKEN:-}" ]; then
     PERMISSION_PROMPT_ARGS=(--permission-prompt-tool "mcp__cloud-agents__request_permission")
 fi
 

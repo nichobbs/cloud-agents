@@ -946,12 +946,12 @@ func main(): Unit {
   router = Web.addDelete(router, "/api/webhooks/{id}", RouteDeleteWebhook())
 
   // MCP callbacks (docs/phase6-mcp-callbacks.md): permission requests, user
-  // questions, and progress reports from the in-container MCP shim (stage 3,
-  // not shipped yet — CLOUD_AGENTS_MCP_CALLBACKS is off by default so no
-  // container ever calls these today). Create/poll routes are
-  // container-originated (callback-bearer-token auth, exempt from
-  // AuthMiddleware — see isContainerCallbackRoute); the .../answer routes are
-  // user-originated and auth-enforced like every other route below.
+  // questions, and progress reports from the in-container MCP shim (stage 3;
+  // CLOUD_AGENTS_MCP_CALLBACKS is on by default as of stage 4, §8 — an
+  // operator opts out with =0). Create/poll routes are container-originated
+  // (callback-bearer-token auth, exempt from AuthMiddleware — see
+  // isContainerCallbackRoute); the .../answer routes are user-originated and
+  // auth-enforced like every other route below.
   router = Web.addPost(router, "/api/sessions/{id}/callbacks/permission", RouteCreatePermissionRequest())
   router = Web.addGet(router, "/api/sessions/{id}/callbacks/permission/{rid}", RouteGetPermissionRequest())
   router = Web.addPost(router, "/api/sessions/{id}/callbacks/permission/{rid}/answer", RouteAnswerPermissionRequest())

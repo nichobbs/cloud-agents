@@ -718,7 +718,8 @@ pub func reapSessionContainer(sessionId: in String): Result[Unit, CloudAgents.Sq
 // ─── Phase 6: MCP-callback bearer token ──────────────────────────────────────
 //
 // Minted at container creation (see CloudAgents.Docker.createRunnerContainer,
-// gated by the CLOUD_AGENTS_MCP_CALLBACKS feature flag) and injected into the
+// gated by the CLOUD_AGENTS_MCP_CALLBACKS feature flag, on by default as of
+// stage 4 — docs/phase6 §8) and injected into the
 // container as CLOUD_AGENTS_CALLBACK_TOKEN. The token authenticates the
 // container's own calls into CloudAgents.Callbacks — it is never the user's
 // OAuth/static token. Runs on Docker's worker thread (see the container-
