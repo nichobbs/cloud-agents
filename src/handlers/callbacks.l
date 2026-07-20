@@ -702,6 +702,10 @@ val maxArtifactMimeTypeLen = 256
 
 val maxArtifactDescriptionLen = 2048
 
+/// Matches CloudAgents.Handlers.maxRepoUrlLen (sessions.l) — repoKey is a
+/// normalized, always-shorter derivative of a repo_url (#612).
+val maxRepoKeyQueryLen = 2048
+
 /// 8 MiB, the decoded-bytes cap (docs/phase6 §7.3).
 val maxArtifactBytes = 8388608
 
@@ -771,10 +775,37 @@ record ArtifactRepoScope {
   repoKey: String
 }
 
+/// Whether `s` contains a `..` path-traversal segment. `repoKey` is spliced
+/// directly into a filesystem path (artifactsBaseDir()/repo/<repoKey>/...)
+/// for repo-scoped artifacts — unlike repo memory, which only ever uses
+/// repoKey as a SQL-escaped column value, never a path component. repoKeyOf
+/// deliberately preserves every path segment (nested-group hosts like
+/// GitLab's owner/subgroup/repo need this — docs/lyric #597), so it does
+/// NOT itself reject `..`; a crafted repoUrl (e.g.
+/// "https://github.com/../../../etc") that survives isHttpsUrl/isSafeRepoUrl
+/// validation in sessions.l can normalize to a repoKey containing `..`
+/// segments, which the underlying file APIs then resolve — an arbitrary
+/// file write/read on the host via report_artifact. A plain substring check
+/// is sufficient: no legitimate host/owner/repo path segment is ever
+/// literally "..".
+func containsPathTraversal(s: in String): Bool {
+  var i = 0
+  while i + 1 < s.length {
+    if s.substring(i, 2) == ".." {
+      return true
+    }
+    i = i + 1
+  }
+  return false
+}
+
 /// Resolve the owning user + normalized repo key for a repo-scoped artifact
 /// upload, mirroring resolveMemoryScope's lookup exactly (same session ->
 /// owner + repo_url -> repoKeyOf pipeline) but with an artifact-specific
-/// error message for the no-repo case.
+/// error message for the no-repo case. Rejects a repoKey containing a `..`
+/// path-traversal segment (see containsPathTraversal) since — unlike
+/// memory's SQL-only use — this repoKey is about to become a filesystem
+/// path component.
 func resolveArtifactRepoScope(id: in String): Result[ArtifactRepoScope, Web.ApiError] {
   val ownerRepo = match CloudAgents.Repository.sessionOwnerAndRepo(id) {
     case Ok(Some(sr)) -> sr
@@ -784,6 +815,9 @@ func resolveArtifactRepoScope(id: in String): Result[ArtifactRepoScope, Web.ApiE
   val repoKey = CloudAgents.RepoKey.repoKeyOf(ownerRepo.repoUrl)
   if repoKey.length == 0 {
     return Err(Web.badRequest("this session has no repository to scope this artifact to"))
+  }
+  if containsPathTraversal(repoKey) {
+    return Err(Web.badRequest("this session's repository cannot be used to scope an artifact"))
   }
   return Ok(ArtifactRepoScope(userId = ownerRepo.userId, repoKey = repoKey))
 }
@@ -808,10 +842,17 @@ pub record UploadArtifactResponse {
 /// The API-facing shape of a stored artifact — deliberately omits
 /// CloudAgents.Repository.Artifact's internal `storedName` field (an
 /// on-disk implementation detail, not something a client needs or should
-/// see).
+/// see). Includes `sessionId` (the artifact's ORIGINATING session, not
+/// necessarily the caller's current one) because it's required to build the
+/// only download route, `GET /api/sessions/{sessionId}/artifacts/{id}` — the
+/// repo-scoped listing below (`listRepoArtifactsHandler`) can return an
+/// artifact from a session other than the one the caller is currently
+/// looking at, so without this field a repo-scoped artifact would be
+/// listable but never downloadable (#611).
 @generate(Json)
 pub record ArtifactSummary {
   pub id: String
+  pub sessionId: String
   pub fileName: String
   pub mimeType: String
   pub description: String
@@ -827,6 +868,7 @@ pub record ArtifactListResponse {
 func artifactSummaryOf(a: in CloudAgents.Repository.Artifact): ArtifactSummary {
   return ArtifactSummary(
     id = a.id,
+    sessionId = a.sessionId,
     fileName = a.fileName,
     mimeType = a.mimeType,
     description = a.description,
@@ -943,6 +985,14 @@ pub func listRepoArtifactsHandler(repoKey: in String): Result[ArtifactListRespon
   if repoKey.length == 0 {
     return Err(Web.badRequest("repoKey is required"))
   }
+  // repoKey is a normalized, always-shorter derivative of a repo_url — bound
+  // it the same as CloudAgents.Handlers.maxRepoUrlLen (#612) for consistency
+  // with every other user-supplied string in this file; it's already
+  // sqlLiteral-escaped before reaching SQL, so this is a sanity/consistency
+  // bound, not a security one.
+  if not CloudAgents.Text.withinMaxLength(repoKey, maxRepoKeyQueryLen) {
+    return Err(Web.badRequest("repoKey is too long (max " + toString(maxRepoKeyQueryLen) + " characters)"))
+  }
   match CloudAgents.Repository.listRepoArtifacts(CloudAgents.Auth.currentUserId(), repoKey) {
     case Ok(arts) -> {
       var acc: slice[ArtifactSummary] = []
@@ -997,7 +1047,14 @@ pub func downloadArtifactHandler(id: in String, aid: in String): Result[Web.Resp
   }
   // repo_key empty -> the original session path (unchanged); non-empty ->
   // the repo-keyed path a repo-scoped upload was written under
-  // (docs/phase7-autonomy.md §6).
+  // (docs/phase7-autonomy.md §6). Defense in depth: resolveArtifactRepoScope
+  // already rejects a `..`-bearing repoKey at write time (the only path that
+  // ever stores one), but re-checking here means a stored row can never
+  // walk this read path outside artifactsBaseDir() regardless of how it got
+  // written.
+  if containsPathTraversal(a.repoKey) {
+    return Err(Web.internalError("stored artifact has an invalid repo scope"))
+  }
   val artifactDir = if a.repoKey.length > 0 {
     CloudAgents.Repository.artifactsBaseDir() + "/repo/" + a.repoKey
   } else {

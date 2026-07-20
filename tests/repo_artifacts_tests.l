@@ -209,6 +209,31 @@ test "GET repo artifacts requires a repoKey" {
   }
 }
 
+/// A string at least `minLen` characters long, built by doubling (O(n))
+/// rather than single-character concatenation (O(n^2) — unworkably slow at
+/// this size). Mirrors tests/callbacks_v2_tests.l's own helper of the same
+/// name/shape (duplicated per this codebase's per-@test_module-file
+/// convention rather than imported).
+func atLeast(minLen: in Int): String {
+  var s = "A"
+  while s.length < minLen {
+    s = s + s
+  }
+  return s
+}
+
+test "GET repo artifacts rejects an over-length repoKey (#612)" {
+  val dbPath = useFreshTestDb("repo-artifact-long-key")
+  defer {
+    cleanupTestDb(dbPath)
+  }
+  CloudAgents.Auth.setCurrentUserId("default")
+  match listRepoArtifactsHandler(atLeast(2049)) {
+    case Ok(_) -> assertTrue(false, "a repoKey over 2048 characters must be rejected")
+    case Err(e) -> assertEqualInt(e.status, 400, "over-length repoKey -> 400")
+  }
+}
+
 test "report_artifact rejects an invalid scope value and rejects scope=repo when the session has no repo" {
   val dbPath = useFreshTestDb("repo-artifact-scope-validation")
   defer {
@@ -270,5 +295,63 @@ test "legacy scope='' and scope='session' uploads are byte-identical to today's 
   match listRepoArtifactsHandler("github.com/nic/repo") {
     case Ok(l) -> assertEqualInt(l.artifacts.length.toInt(), 0, "session-scoped artifacts never appear in a repo listing")
     case Err(e) -> assertTrue(false, "repo list failed: " + toString(e.status))
+  }
+}
+
+// ── path traversal (#610) ─────────────────────────────────────────────────────
+test "report_artifact rejects a repo-scoped upload whose repo URL normalizes to a path-traversal repoKey" {
+  val dbPath = useFreshTestDb("repo-artifact-traversal")
+  defer {
+    cleanupTestDb(dbPath)
+  }
+  CloudAgents.Auth.setCurrentUserId("default")
+  val sid = "sess-repo-artifact-traversal"
+  // Passes isHttpsUrl/isSafeRepoUrl (scheme + character-class checks only —
+  // neither rejects '..' path segments) but repoKeyOf preserves every path
+  // segment (nested-group hosts need this — #597), so this normalizes to a
+  // repoKey containing '..' — exactly the input #610 describes.
+  mkSessionRepo(sid, "https://github.com/../../../../tmp/pwn")
+  val token = mintToken(sid, "default")
+
+  match uploadArtifactHandler(sid, bearer(token), UploadArtifactRequest(fileName = "x.txt", mimeType = "text/plain", description = "", contentBase64 = base64Of("payload"), artifactScope = "repo")) {
+    case Ok(_) -> assertTrue(false, "a repoKey containing '..' must never be used to build a filesystem path")
+    case Err(e) -> assertEqualInt(e.status, 400, "path-traversal repoKey -> 400, not a write outside artifactsBaseDir()")
+  }
+}
+
+// ── downloadable from a different session (#611) ─────────────────────────────
+test "a repo-scoped artifact discovered from a LATER session on the same repo is actually downloadable" {
+  val dbPath = useFreshTestDb("repo-artifact-cross-session-download")
+  defer {
+    cleanupTestDb(dbPath)
+  }
+  CloudAgents.Auth.setCurrentUserId("default")
+
+  // Session A uploads a repo-scoped artifact.
+  val sidA = "sess-repo-artifact-download-A"
+  mkSession(sidA)
+  val tokenA = mintToken(sidA, "default")
+  val uploaded = uploadOk(sidA, tokenA, "handoff.txt", "repo")
+
+  // Session B (a later session on the same repo) discovers it via the repo
+  // listing — NOT via its own GET /api/sessions/{sidB}/artifacts, which
+  // would never show sidA's row.
+  val sidB = "sess-repo-artifact-download-B"
+  mkSession(sidB)
+  val discovered = match listRepoArtifactsHandler("github.com/nic/repo") {
+    case Ok(l) -> {
+      assertEqualInt(l.artifacts.length.toInt(), 1, "session B sees the artifact session A reported")
+      l.artifacts[0]
+    }
+    case Err(e) -> panic("repo list failed: " + toString(e.status))
+  }
+  assertEqual(discovered.sessionId, sidA, "the summary names the artifact's ORIGINATING session, not session B's")
+
+  // The only download route needs the originating session's id — exactly
+  // what `discovered.sessionId` now provides. Without it (#611) this artifact
+  // would be listable but never downloadable outside session A.
+  match downloadArtifactHandler(discovered.sessionId, discovered.id) {
+    case Ok(resp) -> assertEqualInt(resp.status, 200, "downloadable using the sessionId from the repo listing")
+    case Err(e) -> assertTrue(false, "download via the discovered sessionId failed: " + toString(e.status))
   }
 }
