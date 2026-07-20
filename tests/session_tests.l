@@ -234,15 +234,19 @@ test "Run claim is exclusive under real concurrent contention (#206)" {
   defer {
     cleanupTestDb(dbPath)
   }
-  mustUnit(addSession(makeAgentSession(
-    sessionId = "claim-race",
-    repoUrl = "https://github.com/nic/repo",
-    branch = "main",
-    containerId = "",
-    harness = "claude",
-    model = "claude-opus-4-8",
-    nativeSessionId = "claim-race"
-  )))
+  mustUnit(
+    addSession(
+      makeAgentSession(
+        sessionId = "claim-race",
+        repoUrl = "https://github.com/nic/repo",
+        branch = "main",
+        containerId = "",
+        harness = "claude",
+        model = "claude-opus-4-8",
+        nativeSessionId = "claim-race"
+      )
+    )
+  )
 
   scope {
     val t1 = spawn claimAsync("claim-race")
@@ -712,20 +716,35 @@ test "createSession rejects a known-but-disabled harness (#560)" {
   // isHarnessEnabled gate specifically — a name isKnownHarness accepts, but
   // this deployment's CLOUD_AGENTS_ENABLED_HARNESSES doesn't include.
   Env.SetEnvironmentVariable("CLOUD_AGENTS_ENABLED_HARNESSES", "codex")
-  val disabled = CreateSessionRequest(repoUrl = "https://github.com/nic/repo", branch = "main", harness = "claude", model = "")
+  val disabled = CreateSessionRequest(
+    repoUrl = "https://github.com/nic/repo",
+    branch = "main",
+    harness = "claude",
+    model = ""
+  )
   match createSession(disabled) {
     case Ok(_) -> assertTrue(false, "should reject a harness this deployment disabled")
     case Err(err) -> assertEqualInt(err.status, 400, "disabled harness -> 400")
   }
   // The resolved-default path (empty harness -> "claude") must be checked
   // too, not just an explicitly-requested one.
-  val disabledDefault = CreateSessionRequest(repoUrl = "https://github.com/nic/repo", branch = "main", harness = "", model = "")
+  val disabledDefault = CreateSessionRequest(
+    repoUrl = "https://github.com/nic/repo",
+    branch = "main",
+    harness = "",
+    model = ""
+  )
   match createSession(disabledDefault) {
     case Ok(_) -> assertTrue(false, "should reject when the default harness itself is disabled")
     case Err(err) -> assertEqualInt(err.status, 400, "disabled default harness -> 400")
   }
   Env.SetEnvironmentVariable("CLOUD_AGENTS_ENABLED_HARNESSES", "")
-  val reenabled = CreateSessionRequest(repoUrl = "https://github.com/nic/repo", branch = "main", harness = "claude", model = "")
+  val reenabled = CreateSessionRequest(
+    repoUrl = "https://github.com/nic/repo",
+    branch = "main",
+    harness = "claude",
+    model = ""
+  )
   match createSession(reenabled) {
     case Ok(_) -> ()
     case Err(err) -> assertTrue(false, "claude should be accepted once re-enabled (status " + toString(err.status) + ")")
@@ -1216,7 +1235,6 @@ test "session-repo handlers validate, link, list and unlink (#multi-repo)" {
 // split). checkHealth, by contrast, never references CloudAgents.Docker at
 // all — only CloudAgents.Repository.ping() — so it needs no such extraction
 // and is invoked directly below.
-
 // A string of exactly `totalLen` 'x' characters, built by doubling (like
 // tests/interactions_tests.l's overLongText) rather than looping totalLen
 // times.
