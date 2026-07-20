@@ -210,3 +210,106 @@ impl McpToolHandler for ReportArtifactTool {
     }
   }
 }
+
+// ── remember (phase 7 §4) ─────────────────────────────────────────────────────
+pub func rememberSchema(): JsonValue {
+  JObject(
+    fields = [
+      JsonField(name = "type", value = JString(value = "object")),
+      JsonField(
+        name = "properties",
+        value = JObject(
+          fields = [
+            stringSchemaField(
+              "key",
+              "A short stable label for this memory (e.g. 'build-steps', 'test-layout'). Re-using a key overwrites its value."
+            ),
+            stringSchemaField(
+              "value",
+              "The information to remember for future sessions on this repository."
+            )
+          ]
+        )
+      ),
+      JsonField(name = "required", value = JArray(items = [JString(value = "key"), JString(value = "value")]))
+    ]
+  )
+}
+
+pub record RememberTool {
+  pub transport: V2CallbackTransport
+}
+
+func handleRemember(tool: in RememberTool, args: in Option[JsonValue]): McpToolResult {
+  val a = match args {
+    case Some(v) -> v
+    case None -> return toolErrorResult("missing arguments: 'key' and 'value' are required")
+  }
+  val key = match getString(a, "key") {
+    case Some(k) -> k
+    case None -> return toolErrorResult("missing required argument 'key'")
+  }
+  val value = match getString(a, "value") {
+    case Some(v) -> v
+    case None -> return toolErrorResult("missing required argument 'value'")
+  }
+  return match CloudAgents.Shim.V2Client.remember(tool.transport, key, value) {
+    case Ok(msg) -> toolTextResult(msg)
+    case Err(message) -> toolErrorResult(message)
+  }
+}
+
+impl McpToolHandler for RememberTool {
+  func call(args: in Option[JsonValue]): Result[McpToolResult, String] {
+    try {
+      Ok(value = handleRemember(self, args))
+    } catch Bug as b {
+      Ok(value = toolErrorResult("internal error in cloud-agents-shim: " + b.message))
+    }
+  }
+}
+
+// ── recall (phase 7 §4) ───────────────────────────────────────────────────────
+pub func recallSchema(): JsonValue {
+  JObject(
+    fields = [
+      JsonField(name = "type", value = JString(value = "object")),
+      JsonField(
+        name = "properties",
+        value = JObject(
+          fields = [
+            stringSchemaField(
+              "key",
+              "Optional. The specific memory key to recall. Omit to return everything remembered for this repository."
+            )
+          ]
+        )
+      )
+    ]
+  )
+}
+
+pub record RecallTool {
+  pub transport: V2CallbackTransport
+}
+
+func handleRecall(tool: in RecallTool, args: in Option[JsonValue]): McpToolResult {
+  val key = match args {
+    case Some(v) -> match getString(v, "key") { case Some(k) -> k; case None -> "" }
+    case None -> ""
+  }
+  return match CloudAgents.Shim.V2Client.recall(tool.transport, key) {
+    case Ok(text) -> toolTextResult(text)
+    case Err(message) -> toolErrorResult(message)
+  }
+}
+
+impl McpToolHandler for RecallTool {
+  func call(args: in Option[JsonValue]): Result[McpToolResult, String] {
+    try {
+      Ok(value = handleRecall(self, args))
+    } catch Bug as b {
+      Ok(value = toolErrorResult("internal error in cloud-agents-shim: " + b.message))
+    }
+  }
+}

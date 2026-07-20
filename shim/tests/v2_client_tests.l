@@ -148,6 +148,89 @@ test "addFollowupTask surfaces a transport failure" {
   }
 }
 
+// ── remember / recall (phase 7 §4) ────────────────────────────────────────────
+test "remember returns a confirmation and sends key+value to the host" {
+  val fake = newFakeV2Transport()
+  fake.rememberOk = true
+  fake.rememberBody = "{\"key\":\"build\"}"
+
+  match remember(fake, "build", "make lyric") {
+    case Ok(msg) -> assertTrue(msg.contains("build"), "confirmation names the key: " + msg)
+    case Err(message) -> assertTrue(false, "expected Ok, got Err: " + message)
+  }
+  assertEqual(fake.lastRememberKey, "build", "the key was sent to the host")
+  assertEqual(fake.lastRememberValue, "make lyric", "the value was sent to the host")
+}
+
+test "remember surfaces a transport failure" {
+  val fake = newFakeV2Transport()
+  fake.rememberOk = false
+  fake.rememberError = "connection refused"
+
+  match remember(fake, "k", "v") {
+    case Ok(msg) -> assertTrue(false, "expected Err, got Ok(" + msg + ")")
+    case Err(message) -> assertTrue(message.contains("connection refused"), "error carries the transport failure: " + message)
+  }
+}
+
+test "recall with no key returns every entry as key: value lines" {
+  val fake = newFakeV2Transport()
+  fake.recallOk = true
+  fake.recallBody = "{\"entries\":[{\"key\":\"build\",\"value\":\"make lyric\"},{\"key\":\"tests\",\"value\":\"lyric test\"}]}"
+
+  match recall(fake, "") {
+    case Ok(text) -> {
+      assertTrue(text.contains("build: make lyric"), "first entry rendered: " + text)
+      assertTrue(text.contains("tests: lyric test"), "second entry rendered: " + text)
+    }
+    case Err(message) -> assertTrue(false, "expected Ok, got Err: " + message)
+  }
+}
+
+test "recall with a key returns just that entry's value" {
+  val fake = newFakeV2Transport()
+  fake.recallOk = true
+  fake.recallBody = "{\"entries\":[{\"key\":\"build\",\"value\":\"make lyric\"},{\"key\":\"tests\",\"value\":\"lyric test\"}]}"
+
+  match recall(fake, "tests") {
+    case Ok(text) -> assertEqual(text, "lyric test", "returns only the requested key's value")
+    case Err(message) -> assertTrue(false, "expected Ok, got Err: " + message)
+  }
+}
+
+test "recall with an unknown key reports nothing stored under it" {
+  val fake = newFakeV2Transport()
+  fake.recallOk = true
+  fake.recallBody = "{\"entries\":[{\"key\":\"build\",\"value\":\"make lyric\"}]}"
+
+  match recall(fake, "nope") {
+    case Ok(text) -> assertTrue(text.contains("no memory"), "explains the key is unknown: " + text)
+    case Err(message) -> assertTrue(false, "expected Ok, got Err: " + message)
+  }
+}
+
+test "recall with an empty store reports nothing remembered yet" {
+  val fake = newFakeV2Transport()
+  fake.recallOk = true
+  fake.recallBody = "{\"entries\":[]}"
+
+  match recall(fake, "") {
+    case Ok(text) -> assertTrue(text.contains("no memory"), "explains the store is empty: " + text)
+    case Err(message) -> assertTrue(false, "expected Ok, got Err: " + message)
+  }
+}
+
+test "recall surfaces a transport failure" {
+  val fake = newFakeV2Transport()
+  fake.recallOk = false
+  fake.recallError = "connection refused"
+
+  match recall(fake, "") {
+    case Ok(text) -> assertTrue(false, "expected Err, got Ok(" + text + ")")
+    case Err(message) -> assertTrue(message.contains("connection refused"), "error carries the transport failure: " + message)
+  }
+}
+
 // ── report_artifact ─────────────────────────────────────────────────────────
 func writeTempFile(name: in String, content: in String): String {
   val path = "/tmp/cloud-agents-shim-test-" + name
@@ -230,6 +313,14 @@ impl V2CallbackTransport for ClockJumpingV2Transport {
     fileName: in String, mimeType: in String, description: in String, contentBase64: in String
   ): Result[String, String] {
     Ok(value = "{\"id\":\"cj-artifact\"}")
+  }
+
+  func remember(key: in String, value: in String): Result[String, String] {
+    Ok(value = "{\"key\":\"cj\"}")
+  }
+
+  func recallAll(): Result[String, String] {
+    Ok(value = "{\"entries\":[]}")
   }
 }
 

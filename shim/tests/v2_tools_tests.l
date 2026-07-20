@@ -248,3 +248,78 @@ test "report_artifact tool denies for missing required arguments without contact
 
   assertEqualInt(fake.uploadArtifactCallCount, 0, "the host is never contacted for a malformed call")
 }
+
+// ── remember / recall (phase 7 §4) ────────────────────────────────────────────
+test "remember tool forwards key+value and returns a confirmation" {
+  val fake = newFakeV2Transport()
+  fake.rememberOk = true
+  fake.rememberBody = "{\"key\":\"build\"}"
+  val tool = RememberTool(transport = fake)
+
+  val args = Some(
+    value = JObject(
+      fields = [
+        JsonField(name = "key", value = JString(value = "build")),
+        JsonField(name = "value", value = JString(value = "make lyric"))
+      ]
+    )
+  )
+  val result = match tool.call(args) { case Ok(r) -> r; case Err(e) -> panic("unexpected Err: " + e) }
+  assertTrue(not result.isError, "a successful remember is not a tool error")
+  assertTrue(onlyText(result).contains("build"), "confirmation names the key: " + onlyText(result))
+  assertEqual(fake.lastRememberKey, "build", "the key was forwarded")
+  assertEqual(fake.lastRememberValue, "make lyric", "the value was forwarded")
+}
+
+test "remember tool denies for a missing value without contacting the host" {
+  val fake = newFakeV2Transport()
+  val tool = RememberTool(transport = fake)
+
+  val missingValue = Some(value = JObject(fields = [JsonField(name = "key", value = JString(value = "k"))]))
+  val result = match tool.call(missingValue) { case Ok(r) -> r; case Err(e) -> panic("unexpected Err: " + e) }
+  assertTrue(result.isError, "missing 'value' is a tool error")
+  assertTrue(onlyText(result).contains("value"), "error names the missing field: " + onlyText(result))
+  assertEqual(fake.lastRememberKey, "", "the host is never contacted for a malformed call")
+}
+
+test "recall tool with no key returns all entries" {
+  val fake = newFakeV2Transport()
+  fake.recallOk = true
+  fake.recallBody = "{\"entries\":[{\"key\":\"build\",\"value\":\"make lyric\"}]}"
+  val tool = RecallTool(transport = fake)
+
+  val args = Some(value = JObject(fields = newList()))
+  val result = match tool.call(args) { case Ok(r) -> r; case Err(e) -> panic("unexpected Err: " + e) }
+  assertTrue(not result.isError, "a successful recall is not a tool error")
+  assertTrue(onlyText(result).contains("build: make lyric"), "renders the entry: " + onlyText(result))
+}
+
+test "recall tool with a key returns only that value" {
+  val fake = newFakeV2Transport()
+  fake.recallOk = true
+  fake.recallBody = "{\"entries\":[{\"key\":\"build\",\"value\":\"make lyric\"},{\"key\":\"tests\",\"value\":\"lyric test\"}]}"
+  val tool = RecallTool(transport = fake)
+
+  val args = Some(value = JObject(fields = [JsonField(name = "key", value = JString(value = "tests"))]))
+  val result = match tool.call(args) { case Ok(r) -> r; case Err(e) -> panic("unexpected Err: " + e) }
+  assertEqual(onlyText(result), "lyric test", "returns only the requested key's value")
+}
+
+test "recall tool works with no arguments at all (key is optional)" {
+  val fake = newFakeV2Transport()
+  fake.recallOk = true
+  fake.recallBody = "{\"entries\":[]}"
+  val tool = RecallTool(transport = fake)
+
+  val noArgs: Option[JsonValue] = None
+  val result = match tool.call(noArgs) { case Ok(r) -> r; case Err(e) -> panic("unexpected Err: " + e) }
+  assertTrue(not result.isError, "recall with no args is valid (loads everything)")
+  assertTrue(onlyText(result).contains("no memory"), "empty-store message: " + onlyText(result))
+}
+
+test "recallSchema declares no required field" {
+  val schema = recallSchema()
+  val schemaJson = writeValue(schema)
+  assertTrue(schemaJson.contains("\"key\""), "schema mentions the optional 'key'")
+  assertTrue(not schemaJson.contains("\"required\""), "recall has no required fields")
+}

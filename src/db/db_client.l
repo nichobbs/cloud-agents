@@ -2292,3 +2292,80 @@ pub func selectArtifactsCreatedAfterSql(sessionId: in String, afterCreatedAt: in
     sqlLiteral(afterCreatedAt) +
     " ORDER BY created_at ASC"
 }
+
+// ─── Phase 7: repo-scoped memory (remember / recall) ─────────────────────────
+//
+// docs/phase7-autonomy.md §4. A key/value store scoped to
+// (user_id, repo_key), where repo_key is the normalized host/owner/repo
+// identity (CloudAgents.RepoKey), so a later session on the same repo can read
+// back what an earlier one learned. `mem_key` avoids SQL's reserved `key`.
+/// Read a session's owning user id AND primary repo_url by id ONLY —
+/// deliberately unscoped by the current identity, mirroring
+/// selectSessionOwnerIdSql. The repo-memory callback endpoints are
+/// container-originated (the caller is stamped as the operator, not the
+/// session owner), so scoping memory to the owner + the session's repo needs
+/// this unscoped lookup.
+pub func selectSessionOwnerAndRepoSql(id: in String): String {
+  return "SELECT user_id, repo_url FROM sessions WHERE id = " + sqlLiteral(id)
+}
+
+val memoryColumns = "id, user_id, repo_key, mem_key, value, created_at, updated_at"
+
+pub func repoMemorySchemaSql(): String {
+  return "CREATE TABLE IF NOT EXISTS memory (" + "id TEXT PRIMARY KEY, " + "user_id TEXT NOT NULL, " +
+    "repo_key TEXT NOT NULL, " +
+    "mem_key TEXT NOT NULL, " +
+    "value TEXT NOT NULL, " +
+    "created_at TEXT NOT NULL, " +
+    "updated_at TEXT NOT NULL, " +
+    "UNIQUE(user_id, repo_key, mem_key))"
+}
+
+pub func repoMemoryIndexSql(): String {
+  return "CREATE INDEX IF NOT EXISTS idx_memory_user_repo ON memory(user_id, repo_key)"
+}
+
+/// Upsert one memory entry: insert, or overwrite value + updated_at on the
+/// (user_id, repo_key, mem_key) conflict. created_at is preserved on update
+/// (never re-written), so it records first-seen time.
+pub func upsertMemorySql(
+  id: in String,
+  userId: in String,
+  repoKey: in String,
+  memKey: in String,
+  value: in String,
+  createdAt: in String,
+  updatedAt: in String,
+): String {
+  return "INSERT INTO memory (" + memoryColumns + ") VALUES (" + sqlLiteral(id) + ", " + sqlLiteral(userId) + ", " +
+    sqlLiteral(repoKey) +
+    ", " +
+    sqlLiteral(memKey) +
+    ", " +
+    sqlLiteral(value) +
+    ", " +
+    sqlLiteral(createdAt) +
+    ", " +
+    sqlLiteral(updatedAt) +
+    ") ON CONFLICT(user_id, repo_key, mem_key) DO UPDATE SET value = " +
+    sqlLiteral(value) +
+    ", updated_at = " +
+    sqlLiteral(updatedAt)
+}
+
+/// All memory entries for (user_id, repo_key), ordered by key for stable
+/// listing (recall with no key).
+pub func selectMemoryBySql(userId: in String, repoKey: in String): String {
+  return "SELECT " + memoryColumns + " FROM memory WHERE user_id = " + sqlLiteral(userId) + " AND repo_key = " +
+    sqlLiteral(repoKey) +
+    " ORDER BY mem_key ASC"
+}
+
+/// One memory entry by (user_id, repo_key, mem_key), or no rows (recall with
+/// a key).
+pub func selectMemoryEntrySql(userId: in String, repoKey: in String, memKey: in String): String {
+  return "SELECT " + memoryColumns + " FROM memory WHERE user_id = " + sqlLiteral(userId) + " AND repo_key = " +
+    sqlLiteral(repoKey) +
+    " AND mem_key = " +
+    sqlLiteral(memKey)
+}

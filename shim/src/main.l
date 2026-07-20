@@ -129,6 +129,25 @@ func main(): Unit {
       handler = ReportArtifactTool(transport = v2Transport)
     )
   )
+  // Phase 7 §4 repo-scoped memory (docs/phase7-autonomy.md).
+  addTool(
+    server,
+    McpToolDef(
+      name = "remember",
+      description = "Save a note keyed to this repository so future sessions on the same repo can read it back — avoids re-learning the repo each time.",
+      inputSchema = CloudAgents.Shim.V2Tools.rememberSchema(),
+      handler = RememberTool(transport = v2Transport)
+    )
+  )
+  addTool(
+    server,
+    McpToolDef(
+      name = "recall",
+      description = "Read back what earlier sessions remembered about this repository. Omit 'key' to load everything; pass a key for one entry.",
+      inputSchema = CloudAgents.Shim.V2Tools.recallSchema(),
+      handler = RecallTool(transport = v2Transport)
+    )
+  )
 
   match serveStdio(server) {
     case Ok(_) -> ()

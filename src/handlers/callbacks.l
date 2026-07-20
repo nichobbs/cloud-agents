@@ -26,6 +26,7 @@ import Std.Uuid
 import Web
 import CloudAgents.Auth
 import CloudAgents.Repository
+import CloudAgents.RepoKey
 import CloudAgents.SessionStore
 import CloudAgents.Sqlite
 import CloudAgents.Text
@@ -925,4 +926,126 @@ pub func downloadArtifactHandler(id: in String, aid: in String): Result[Web.Resp
       "attachment; filename=\"" + contentDispositionQuoted(a.fileName) + "\""
     )
   )
+}
+
+// ─── Phase 7 §4: repo-scoped memory (remember / recall) ──────────────────────
+//
+// docs/phase7-autonomy.md §4. A key/value store scoped to
+// (session-owner user_id, normalized repo_key) so a later session on the same
+// repo can read back what an earlier one learned. Container-originated writes
+// and reads authenticate with the callback token; the user-facing list
+// endpoint uses normal owner auth. No SSE event — memory is not a live
+// notification surface, and the `memory` row's updated_at is its own audit
+// trail (docs/phase7 §4.2).
+val maxMemoryKeyLen = 256
+
+/// 64 KiB — a memory value is short accumulated context (build quirks, test
+/// layout, deploy steps), not a file; report_artifact is the path for bytes.
+val maxMemoryValueLen = 65536
+
+@generate(Json)
+pub record RememberRequest {
+  pub key: String
+  pub value: String
+}
+
+@generate(Json)
+pub record RememberResponse {
+  pub key: String
+}
+
+@generate(Json)
+pub record MemoryEntry {
+  pub key: String
+  pub value: String
+}
+
+@generate(Json)
+pub record MemoryListResponse {
+  pub entries: slice[MemoryEntry]
+}
+
+/// The (owner, repo) a session's memory is scoped to.
+record SessionMemoryScope {
+  userId: String
+  repoKey: String
+}
+
+/// Resolve the owning user + normalized repo key for a session, or an
+/// ApiError. A session whose repo_url yields no usable key (empty / host-only)
+/// is rejected rather than writing an unscoped row.
+func resolveMemoryScope(id: in String): Result[SessionMemoryScope, Web.ApiError] {
+  val ownerRepo = match CloudAgents.Repository.sessionOwnerAndRepo(id) {
+    case Ok(Some(sr)) -> sr
+    case Ok(None) -> return Err(Web.notFound("Session not found"))
+    case Err(e) -> return Err(dbError(e))
+  }
+  val repoKey = CloudAgents.RepoKey.repoKeyOf(ownerRepo.repoUrl)
+  if repoKey.length == 0 {
+    return Err(Web.badRequest("this session has no repository to scope memory to"))
+  }
+  return Ok(SessionMemoryScope(userId = ownerRepo.userId, repoKey = repoKey))
+}
+
+func memoryListFor(id: in String): Result[MemoryListResponse, Web.ApiError] {
+  val memScope = resolveMemoryScope(id)?
+  match CloudAgents.Repository.listMemory(memScope.userId, memScope.repoKey) {
+    case Ok(rows) -> {
+      var acc: slice[MemoryEntry] = []
+      for m in rows {
+        acc = acc.append(MemoryEntry(key = m.memKey, value = m.value))
+      }
+      return Ok(MemoryListResponse(entries = acc))
+    }
+    case Err(e) -> return Err(dbError(e))
+  }
+}
+
+/// POST /api/sessions/{id}/callbacks/memory — container-originated
+/// (remember MCP tool). Upserts one entry for the session's repo.
+pub func rememberHandler(
+  id: in String, authHeaderValue: in String, req: in RememberRequest
+): Result[RememberResponse, Web.ApiError] {
+  if id.length == 0 {
+    return Err(Web.badRequest("id is required"))
+  }
+  authorizeCallbackToken(id, authHeaderValue)?
+  if req.key.length == 0 {
+    return Err(Web.badRequest("key is required"))
+  }
+  if not CloudAgents.Text.withinMaxLength(req.key, maxMemoryKeyLen) {
+    return Err(Web.badRequest("key is too long (max " + toString(maxMemoryKeyLen) + " characters)"))
+  }
+  if req.value.length == 0 {
+    return Err(Web.badRequest("value is required"))
+  }
+  if not CloudAgents.Text.withinMaxLength(req.value, maxMemoryValueLen) {
+    return Err(Web.badRequest("value is too long (max " + toString(maxMemoryValueLen) + " characters)"))
+  }
+  val memScope = resolveMemoryScope(id)?
+  match CloudAgents.Repository.upsertMemory(memScope.userId, memScope.repoKey, req.key, req.value) {
+    case Ok(_) -> return Ok(RememberResponse(key = req.key))
+    case Err(e) -> return Err(dbError(e))
+  }
+}
+
+/// GET /api/sessions/{id}/callbacks/memory — container-originated (recall MCP
+/// tool). Returns every entry for the session's repo; the shim filters to a
+/// single key client-side when `recall(key)` is called with one.
+pub func recallHandler(id: in String, authHeaderValue: in String): Result[MemoryListResponse, Web.ApiError] {
+  if id.length == 0 {
+    return Err(Web.badRequest("id is required"))
+  }
+  authorizeCallbackToken(id, authHeaderValue)?
+  return memoryListFor(id)
+}
+
+/// GET /api/sessions/{id}/memory — user-originated. Lets the UI inspect a
+/// session's repo memory.
+pub func listMemoryHandler(id: in String): Result[MemoryListResponse, Web.ApiError] {
+  if id.length == 0 {
+    return Err(Web.badRequest("id is required"))
+  }
+  requireOwnedSession(id)?
+  return memoryListFor(id)
 }

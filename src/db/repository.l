@@ -286,6 +286,10 @@ pub func allMigrations(): slice[Migration] {
         CloudAgents.Db.profileSubagentsProfileIndexSql(),
         CloudAgents.Db.profileMcpServersProfileIndexSql()
       ]
+    ),
+    Migration(
+      version = "0013_repo_memory",
+      statements = [CloudAgents.Db.repoMemorySchemaSql(), CloudAgents.Db.repoMemoryIndexSql()]
     )
   ]
 }
@@ -2607,6 +2611,75 @@ pub func listArtifacts(sessionId: in String): Result[slice[Artifact], CloudAgent
     i = i + 1
   }
   return Ok(value = acc)
+}
+
+// ─── Phase 7: repo-scoped memory (remember / recall) ─────────────────────────
+//
+// docs/phase7-autonomy.md §4. Memory is scoped to (user_id, repo_key); the
+// callback handler resolves both from the session (owner + normalized
+// repo_url) before calling in here.
+/// A session's owning user id + primary repo_url, resolved together for the
+/// container-originated memory endpoints (unscoped by current identity).
+pub record SessionOwnerRepo {
+  pub userId: String
+  pub repoUrl: String
+}
+
+pub func sessionOwnerAndRepo(id: in String): Result[Option[SessionOwnerRepo], CloudAgents.Sqlite.DbError] {
+  val rows = CloudAgents.Sqlite.query(CloudAgents.Db.selectSessionOwnerAndRepoSql(id))?
+  val len = CloudAgents.Sqlite.getRowArrayLength(rows)
+  if len == 0 {
+    return Ok(value = None)
+  }
+  val r0 = CloudAgents.Sqlite.getRowArrayValue(rows, 0)
+  return Ok(value = Some(value = SessionOwnerRepo(userId = colAt(r0.cols, 0), repoUrl = colAt(r0.cols, 1))))
+}
+
+/// One stored memory entry (the API-relevant columns of a `memory` row).
+pub record MemoryRecord {
+  pub memKey: String
+  pub value: String
+  pub updatedAt: String
+}
+
+func rowToMemory(r: in CloudAgents.Sqlite.Row): MemoryRecord {
+  return MemoryRecord(memKey = colAt(r.cols, 3), value = colAt(r.cols, 4), updatedAt = colAt(r.cols, 6))
+}
+
+/// Upsert a memory entry, overwriting any existing value under the same
+/// (user, repo, key). created_at is preserved on overwrite (first-seen time).
+pub func upsertMemory(
+  userId: in String, repoKey: in String, memKey: in String, value: in String
+): Result[Unit, CloudAgents.Sqlite.DbError] {
+  val id = newId()
+  val ts = nowMillis()
+  CloudAgents.Sqlite.execute(CloudAgents.Db.upsertMemorySql(id, userId, repoKey, memKey, value, ts, ts))?
+  return Ok(value = ())
+}
+
+/// All memory entries for (user, repo), key-ordered.
+pub func listMemory(userId: in String, repoKey: in String): Result[slice[MemoryRecord], CloudAgents.Sqlite.DbError] {
+  val rows = CloudAgents.Sqlite.query(CloudAgents.Db.selectMemoryBySql(userId, repoKey))?
+  var acc: slice[MemoryRecord] = []
+  var i = 0
+  val len = CloudAgents.Sqlite.getRowArrayLength(rows)
+  while i < len {
+    acc = acc.append(rowToMemory(CloudAgents.Sqlite.getRowArrayValue(rows, i)))
+    i = i + 1
+  }
+  return Ok(value = acc)
+}
+
+/// One memory entry by key, or None.
+pub func getMemory(
+  userId: in String, repoKey: in String, memKey: in String
+): Result[Option[MemoryRecord], CloudAgents.Sqlite.DbError] {
+  val rows = CloudAgents.Sqlite.query(CloudAgents.Db.selectMemoryEntrySql(userId, repoKey, memKey))?
+  val len = CloudAgents.Sqlite.getRowArrayLength(rows)
+  if len == 0 {
+    return Ok(value = None)
+  }
+  return Ok(value = Some(value = rowToMemory(CloudAgents.Sqlite.getRowArrayValue(rows, 0))))
 }
 
 /// Artifacts reported for a session strictly after `afterCreatedAt`, oldest
