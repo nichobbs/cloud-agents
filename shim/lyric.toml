@@ -15,20 +15,26 @@ output          = "single"
 output_assembly = "cloud-agents-shim.dll"
 
 [project.packages]
-"CloudAgents.Shim"           = "src/main.l"
-"CloudAgents.Shim.Config"    = "src/config.l"
-"CloudAgents.Shim.Transport" = "src/transport.l"
-"CloudAgents.Shim.Callbacks" = "src/callbacks_client.l"
-"CloudAgents.Shim.Tools"     = "src/tools.l"
-# Test-only fakes (FakeTransport), registered as a regular package rather
-# than under [project.tests] so both test files below can `import` it by
-# name — see tests/fakes.l's header comment.
-"CloudAgents.Shim.TestFakes" = "tests/fakes.l"
+"CloudAgents.Shim"             = "src/main.l"
+"CloudAgents.Shim.Config"      = "src/config.l"
+"CloudAgents.Shim.Transport"   = "src/transport.l"
+"CloudAgents.Shim.Callbacks"   = "src/callbacks_client.l"
+"CloudAgents.Shim.Tools"       = "src/tools.l"
+"CloudAgents.Shim.V2Transport" = "src/v2_transport.l"
+"CloudAgents.Shim.V2Client"    = "src/v2_client.l"
+"CloudAgents.Shim.V2Tools"     = "src/v2_tools.l"
+# Test-only fakes (FakeTransport / FakeV2Transport), registered as regular
+# packages rather than under [project.tests] so multiple test files can
+# `import` them by name — see tests/fakes.l's header comment.
+"CloudAgents.Shim.TestFakes"   = "tests/fakes.l"
+"CloudAgents.Shim.V2TestFakes" = "tests/v2_fakes.l"
 
 [project.tests]
 "CloudAgents.Shim.CallbacksClientTests" = "tests/callbacks_client_tests.l"
 "CloudAgents.Shim.ToolsTests"           = "tests/tools_tests.l"
 "CloudAgents.Shim.ConfigTests"          = "tests/config_tests.l"
+"CloudAgents.Shim.V2ClientTests"        = "tests/v2_client_tests.l"
+"CloudAgents.Shim.V2ToolsTests"         = "tests/v2_tools_tests.l"
 
 [nuget]
 # Lyric.JsonRpc is a transitive dependency of Lyric.Mcp's own published

@@ -25,6 +25,8 @@ import CloudAgents.Shim.Config
 import CloudAgents.Shim.Transport
 import CloudAgents.Shim.Callbacks
 import CloudAgents.Shim.Tools
+import CloudAgents.Shim.V2Transport
+import CloudAgents.Shim.V2Tools
 import extern System.Environment as Env
 import extern System.String as DotNetString
 
@@ -69,6 +71,7 @@ func main(): Unit {
   val pollIntervalMs = defaultPollIntervalMs
 
   val transport = HttpCallbackTransport(baseUrl = apiUrl, sessionId = sessionId, token = token)
+  val v2Transport = HttpV2CallbackTransport(baseUrl = apiUrl, sessionId = sessionId, token = token)
 
   val server = newServer(McpImplementation(name = "cloud-agents", version = "0.1.0"))
   addTool(
@@ -96,6 +99,38 @@ func main(): Unit {
       description = "Report a short status update on the current run, shown live in the session UI.",
       inputSchema = CloudAgents.Shim.Tools.reportProgressSchema(),
       handler = ReportProgressTool(transport = transport)
+    )
+  )
+  // Phase 6 §7 v2 tools (docs/phase6-mcp-callbacks.md).
+  addTool(
+    server,
+    McpToolDef(
+      name = "request_secret",
+      description = "Ask the human to reveal a stored credential by name. Returns a local file path containing the value on approval — the value itself never appears in the tool result.",
+      inputSchema = CloudAgents.Shim.V2Tools.requestSecretSchema(),
+      handler = CloudAgents.Shim.V2Tools.RequestSecretTool(
+        transport = v2Transport,
+        pollIntervalMs = pollIntervalMs,
+        timeoutMs = timeoutMs
+      )
+    )
+  )
+  addTool(
+    server,
+    McpToolDef(
+      name = "add_followup_task",
+      description = "Leave a note for the human to follow up on later, without blocking the current run.",
+      inputSchema = CloudAgents.Shim.V2Tools.addFollowupTaskSchema(),
+      handler = CloudAgents.Shim.V2Tools.AddFollowupTaskTool(transport = v2Transport)
+    )
+  )
+  addTool(
+    server,
+    McpToolDef(
+      name = "report_artifact",
+      description = "Upload a file from inside the container as a downloadable artifact on the session (max 8 MiB).",
+      inputSchema = CloudAgents.Shim.V2Tools.reportArtifactSchema(),
+      handler = CloudAgents.Shim.V2Tools.ReportArtifactTool(transport = v2Transport)
     )
   )
 
