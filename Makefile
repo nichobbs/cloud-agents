@@ -1,4 +1,4 @@
-.PHONY: help dev test verify build run docker docker-codex docker-opencode docker-gemini docker-all lint-sh
+.PHONY: help dev test verify build run docker docker-codex docker-opencode docker-gemini docker-all lint-sh shim-test
 
 help:
 	@echo "Usage: make <target>"
@@ -7,7 +7,8 @@ help:
 	@echo "  test          Runtime-verify Lyric logic (scripts/verify.sh)"
 	@echo "  build         Full server build — API + Web + Docker library"
 	@echo "  run           Build full server and start it on port 8080"
-	@echo "  docker        Build claude-code:base runner image"
+	@echo "  shim-test     Build + test cloud-agents-shim (shim/, docs/phase6-mcp-callbacks.md)"
+	@echo "  docker        Build claude-code:base runner image (includes cloud-agents-shim)"
 	@echo "  docker-codex  Build codex:base runner image"
 	@echo "  docker-opencode  Build opencode:base runner image"
 	@echo "  docker-gemini Build gemini:base runner image"
@@ -25,6 +26,11 @@ build:
 
 run:
 	./scripts/run-api.sh
+
+shim-test:
+	lyric restore --manifest shim/lyric.toml
+	lyric build --manifest shim/lyric.toml
+	lyric test --manifest shim/lyric.toml
 
 docker:
 	./scripts/build-docker.sh claude
@@ -47,6 +53,7 @@ lint-sh:
 	    docker/entrypoint-codex.sh \
 	    docker/entrypoint-opencode.sh \
 	    docker/entrypoint-gemini.sh \
+	    docker/cloud-agents-shim \
 	    deploy/install-docker.sh \
 	    deploy/backup.sh \
 	    scripts/verify.sh \

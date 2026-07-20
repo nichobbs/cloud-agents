@@ -109,6 +109,14 @@ match maybeUser {
 
 ---
 
+**Storing a `Result[T,E]` in a record field breaks `match` on read-back (upstream, lyric-lang#6231).**
+Reading the field and matching panics `"match not exhaustive"` at runtime
+even though both cases are handled. Reconstruct `Ok`/`Err` fresh in an
+accessor instead of storing/returning a `Result`-typed field — see
+`shim/tests/fakes.l` for the worked pattern.
+
+---
+
 ## Operators
 
 **No bitwise operators.**
@@ -279,6 +287,16 @@ package Foo
 //! This is correct module-level doc — goes before `package`
 package Foo
 ```
+
+---
+
+**A cross-package `pub val` used to construct several record types in one function crashes at JIT (upstream, lyric-lang#6232).**
+`System.InvalidProgramException` for the whole function, at runtime, no
+compile error. Related: a qualified constant read inside an `impl` method
+body crashes the same way (lyric-lang#6134), and reads through a
+*restored-DLL* dependency can silently produce `0`/null instead
+(lyric-lang#6133). Have the consuming package own such constants as its
+own literals — see `shim/src/main.l`'s header note.
 
 ---
 

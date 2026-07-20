@@ -127,6 +127,43 @@ assert "models proxy (no vault keys)"  GET  "/api/models/claude"                
 assert "streaming send rejects no-auth" POST "/api/sessions/x/messages"              no  401 ""                 '{"text":"hi"}'
 assert "streaming send dispatches (auth)" POST "/api/sessions/does-not-exist/messages" yes 404 "Session" '{"text":"hi"}'
 
+# ── cloud-agents-shim integration leg (#531) ─────────────────────────────────
+# Drive the REAL shim binary (shim/bin, built by the CI step before this
+# script) over genuine MCP stdio against the REAL server above: initialize
+# handshake, then a tools/call request_permission whose HTTP POST hits the
+# live callback endpoint for a session that does not exist. The server
+# rejects it (404 — the session-existence check runs before the bearer
+# comparison, so the invalid token below is never what fires; #541), and
+# the shim's fail-closed path must surface a deny payload — this
+# exercises transport.l's actual HTTP boundary (URL handling, request
+# write, response read) end to end, which the in-memory FakeTransport
+# suites deliberately do not. The full allowed-path round trip (valid
+# token, human answer) needs a seeded session and stays manual for now.
+SHIM_OUT="$REPO_ROOT/shim/bin/cloud-agents-shim.dll"
+if [ ! -f "$SHIM_OUT" ]; then
+  echo "e2e-http: $SHIM_OUT not found — run 'lyric build --manifest shim/lyric.toml' first" >&2
+  exit 1
+fi
+shim_stdout="$(timeout 60 env \
+    CLOUD_AGENTS_API_URL="$BASE" \
+    CLOUD_AGENTS_CALLBACK_TOKEN="e2e-invalid-token" \
+    CLOUD_AGENTS_SESSION_ID="e2e-session" \
+    CLOUD_AGENTS_CALLBACK_TIMEOUT_MS=5000 \
+    dotnet "$SHIM_OUT" <<'MCP' || true
+{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"e2e-http","version":"0"}}}
+{"jsonrpc":"2.0","method":"notifications/initialized"}
+{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"request_permission","arguments":{"tool_name":"Bash","input":{"command":"ls"}}}}
+MCP
+)"
+case "$shim_stdout" in
+  *'"protocolVersion"'*) echo "ok   shim: MCP initialize handshake over stdio" ;;
+  *) echo "FAIL shim: no initialize response — got: ${shim_stdout}" >&2; fails=$((fails + 1)) ;;
+esac
+case "$shim_stdout" in
+  *'deny'*) echo "ok   shim: live-server rejection (404 unknown session) fails closed (deny)" ;;
+  *) echo "FAIL shim: tools/call did not fail closed — got: ${shim_stdout}" >&2; fails=$((fails + 1)) ;;
+esac
+
 if [ "$fails" -ne 0 ]; then
   echo "==> e2e-http: ${fails} assertion(s) failed" >&2
   echo "---- server log ----" >&2

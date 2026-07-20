@@ -106,11 +106,11 @@ pub async func createRunnerContainer(
 
   // Phase 6 (docs/phase6-mcp-callbacks.md §2/§5/§6 stage 2): mint a per-session
   // callback bearer token and inject it plus the host API's callback origin,
-  // so the in-container MCP shim (stage 3, not shipped yet) can request
-  // permission decisions, ask the human a question, and report progress
-  // mid-run. Entirely gated behind CLOUD_AGENTS_MCP_CALLBACKS — off by
-  // default, so nothing about this run changes until an operator opts in AND
-  // the shim binary actually ships in the runner image
+  // so the in-container MCP shim (cloud-agents-shim, shipped in every runner
+  // image since stage 3) can request permission decisions, ask the human a
+  // question, and report progress mid-run. Entirely gated behind
+  // CLOUD_AGENTS_MCP_CALLBACKS — off by default, so nothing about this run
+  // changes until an operator opts in
   // (docker/entrypoint.sh/mcp.json.template are gated by the same flag).
   // Best-effort: a mint failure must not abort the run — callbacks simply
   // won't work for this one run, same tolerance as the credential/network
@@ -120,6 +120,10 @@ pub async func createRunnerContainer(
       case Ok(token) -> {
         envs = envs.append("CLOUD_AGENTS_API_URL=" + CloudAgents.NetworkPolicy.callbackApiUrl())
         envs = envs.append("CLOUD_AGENTS_CALLBACK_TOKEN=" + token)
+        val timeoutOverride = CloudAgents.NetworkPolicy.callbackTimeoutOverride()
+        if timeoutOverride.length > 0 {
+          envs = envs.append("CLOUD_AGENTS_CALLBACK_TIMEOUT_MS=" + timeoutOverride)
+        }
       }
       case Err(e) -> println("WARNING: failed to mint MCP-callback token for session " + sessionId + ": " + CloudAgents.Sqlite.dbErrorMessage(e))
     }
