@@ -1098,6 +1098,12 @@ pub func forgetHandler(
   if req.key.length == 0 {
     return Err(Web.badRequest("key is required"))
   }
+  // Validate the key length the same way rememberHandler does, for
+  // consistency (#594) — a valid key can never exceed this, so an over-length
+  // key is a malformed request, not a lookup that should quietly miss.
+  if not CloudAgents.Text.withinMaxLength(req.key, maxMemoryKeyLen) {
+    return Err(Web.badRequest("key is too long (max " + toString(maxMemoryKeyLen) + " characters)"))
+  }
   val memScope = resolveMemoryScope(id)?
   match CloudAgents.Repository.deleteMemory(memScope.userId, memScope.repoKey, req.key) {
     case Ok(true) -> return Ok(ForgetResponse(key = req.key, status = "deleted"))

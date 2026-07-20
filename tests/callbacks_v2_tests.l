@@ -595,6 +595,15 @@ test "forget deletes an entry, frees a slot under the cap, and is idempotent (#5
     case Ok(_) -> assertTrue(false, "a wrong callback token must be rejected")
     case Err(e) -> assertEqualInt(e.status, 401, "bad token -> 401")
   }
+  // Key validation matches remember: empty and over-length keys are 400 (#594).
+  match forgetHandler(sid, bearer(token), ForgetRequest(key = "")) {
+    case Ok(_) -> assertTrue(false, "an empty key must be rejected")
+    case Err(e) -> assertEqualInt(e.status, 400, "empty key -> 400")
+  }
+  match forgetHandler(sid, bearer(token), ForgetRequest(key = atLeast(257))) {
+    case Ok(_) -> assertTrue(false, "an over-length key must be rejected")
+    case Err(e) -> assertEqualInt(e.status, 400, "over-length key -> 400")
+  }
 }
 
 test "remember caps the number of distinct keys per repo but always allows overwrites (#575)" {
