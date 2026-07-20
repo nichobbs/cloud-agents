@@ -290,7 +290,7 @@ test "list_tasks rejects an invalid status filter" {
 // blocks the next add_task; completing ONE existing task frees exactly one
 // slot for a new task (docs/phase7-autonomy.md §8's headline design
 // decision).
-test "add_task caps the number of OPEN tasks per repo; completing one frees a slot (#600)" {
+test "add_task caps the number of OPEN tasks per repo; completing one frees a slot" {
   val dbPath = useFreshTestDb("tasks-cap")
   defer {
     cleanupTestDb(dbPath)

@@ -2409,8 +2409,9 @@ pub func repoTasksIndexSql(): String {
   return "CREATE INDEX IF NOT EXISTS idx_repo_tasks_user_repo_status ON repo_tasks(user_id, repo_key, status)"
 }
 
-/// Atomic capped insert of a brand-new task, always status 'open' (#600). A
-/// single statement so the per-repo OPEN-task cap is enforced race-free, the
+/// Atomic capped insert of a brand-new task, always status 'open' (the cap
+/// counts open tasks only — docs/phase7-autonomy.md §8). A single statement
+/// so the per-repo OPEN-task cap is enforced race-free, the
 /// same technique as upsertMemoryCappedSql: SQLite serializes writers, and
 /// the WHERE sub-select is evaluated within the one statement. Simpler than
 /// memory's version — there is no existing-key overwrite branch, since every

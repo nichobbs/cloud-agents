@@ -258,6 +258,53 @@ pub interface V2CallbackTransport {
   func completeTask(taskId: in String): Result[String, String]
 }
 
+/// Percent-encodes a query-string VALUE (not a full URL) before it's
+/// concatenated into `listTasks`'s request. `status` is meant to be a small
+/// closed enum (`open`/`done`), but the shim builds the URL by raw string
+/// concatenation, so a value containing a query-string metacharacter (`&`,
+/// `#`, `%`, `=`, `+`, `?`, whitespace, quotes, or a CR/LF) would otherwise
+/// corrupt the query string or inject an extra parameter. Escapes exactly
+/// that metacharacter set (each as its literal `%XX` percent-encoding) and
+/// passes every other character through unchanged — sufficient for this
+/// parameter's actual shape without needing a full RFC 3986 encoder or a
+/// char-code primitive this codebase doesn't otherwise rely on. The host's
+/// own `status` validation (`CloudAgents.Callbacks`) is the authoritative
+/// check regardless; this is defense in depth on the request-building side.
+func percentEncodeQueryValue(s: in String): String {
+  var acc = ""
+  var i = 0
+  while i < s.length {
+    val c = s.substring(i, 1)
+    if c == " " {
+      acc = acc + "%20"
+    } else if c == "&" {
+      acc = acc + "%26"
+    } else if c == "#" {
+      acc = acc + "%23"
+    } else if c == "%" {
+      acc = acc + "%25"
+    } else if c == "=" {
+      acc = acc + "%3D"
+    } else if c == "+" {
+      acc = acc + "%2B"
+    } else if c == "?" {
+      acc = acc + "%3F"
+    } else if c == "\"" {
+      acc = acc + "%22"
+    } else if c == "'" {
+      acc = acc + "%27"
+    } else if c == "\r" {
+      acc = acc + "%0D"
+    } else if c == "\n" {
+      acc = acc + "%0A"
+    } else {
+      acc = acc + c
+    }
+    i = i + 1
+  }
+  return acc
+}
+
 /// Real V2CallbackTransport against the cloud-agents host API. Route shapes
 /// match CloudAgents.Callbacks / src/main.l's route table exactly
 /// (docs/phase6-mcp-callbacks.md §7): POST .../callbacks/secret, GET
@@ -342,7 +389,7 @@ impl V2CallbackTransport for HttpV2CallbackTransport {
 
   func listTasks(statusFilter: in String): Result[String, String] {
     val url = if statusFilter.length > 0 {
-      self.baseUrl + "/api/sessions/" + self.sessionId + "/callbacks/tasks?status=" + statusFilter
+      self.baseUrl + "/api/sessions/" + self.sessionId + "/callbacks/tasks?status=" + percentEncodeQueryValue(statusFilter)
     } else {
       self.baseUrl + "/api/sessions/" + self.sessionId + "/callbacks/tasks"
     }
