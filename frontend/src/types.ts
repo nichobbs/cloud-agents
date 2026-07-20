@@ -53,6 +53,54 @@ export interface Profile {
   networkPolicy: 'full' | 'none' | 'restricted';
   credentialMode: 'all' | 'selected';
   credentials: string[]; // granted credential names (selected mode)
+  skillIds: string[]; // granted Skill ids (library.ts)
+  subagentIds: string[]; // granted Subagent ids
+  mcpServerIds: string[]; // granted McpServer ids
+  createdAt: string;
+  updatedAt: string;
+}
+
+/// A reusable SKILL.md-format instruction set — the format has converged
+/// across Claude Code, Codex CLI, Gemini CLI, and OpenCode as of 2026, so one
+/// stored body renders unchanged into every harness's own skills directory.
+/// Grant to a profile on the Profiles page.
+export interface Skill {
+  id: string;
+  userId: string;
+  name: string;
+  description: string;
+  body: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+/// A reusable subagent definition: rendered into each harness's own native
+/// subagent format (name/description/system-prompt everywhere; model is
+/// optional and only honored by harnesses that support an override).
+export interface Subagent {
+  id: string;
+  userId: string;
+  name: string;
+  description: string;
+  systemPrompt: string;
+  model: string; // '' = harness default
+  createdAt: string;
+  updatedAt: string;
+}
+
+/// A reusable MCP server definition: a stdio command or a remote URL,
+/// rendered into each harness's own native MCP config. `env` entries are
+/// literal, non-secret config ("DEBUG=1") — grant a matching credential name
+/// on the profile for anything secret.
+export interface McpServer {
+  id: string;
+  userId: string;
+  name: string;
+  transport: 'stdio' | 'url';
+  command: string; // stdio only
+  args: string[]; // stdio only, ordered
+  url: string; // url only
+  env: string[]; // "KEY=VALUE" entries, stdio only
   createdAt: string;
   updatedAt: string;
 }

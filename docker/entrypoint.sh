@@ -210,6 +210,12 @@ elif [ -f /etc/claude/settings.json.template ]; then
     cp /etc/claude/settings.json.template /workspace/.claude/settings.json
 fi
 
+# Render the session's profile-granted skills/subagents/MCP servers into
+# Claude's own native config (docker/inject-library.sh). Reconciled every
+# message like the mcp.json entries above; best-effort so a rendering hiccup
+# never blocks the actual prompt run.
+/usr/local/bin/inject-library.sh "claude" || echo "entrypoint: library injection failed, continuing without it" >&2
+
 # Very first invocation? Seed the session so --resume has history to attach to.
 if [ ! -f /workspace/.claude/history.jsonl ]; then
     claude -p "Initialise session" --model "${MODEL}" --resume || true

@@ -944,7 +944,7 @@ test "setSessionProfileHandler validates session and profile (#235)" {
     case Err(err) -> assertEqualInt(err.status, 400, "unknown profile -> 400")
   }
   // Attach a real profile; it reads back on the session.
-  val prof = match CloudAgents.Repository.addProfile("default", "p", "", "none", "all", []) {
+  val prof = match CloudAgents.Repository.addProfile("default", "p", "", "none", "all", [], [], [], []) {
     case Ok(p) -> p
     case Err(e) -> panic("addProfile failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
   }

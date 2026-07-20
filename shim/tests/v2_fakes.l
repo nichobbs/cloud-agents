@@ -36,6 +36,22 @@ pub record FakeV2Transport {
   pub var lastUploadDescription: String
   pub var lastUploadContentBase64: String
   pub var uploadArtifactCallCount: Int
+
+  pub var rememberOk: Bool
+  pub var rememberBody: String
+  pub var rememberError: String
+  pub var lastRememberKey: String
+  pub var lastRememberValue: String
+
+  pub var recallOk: Bool
+  pub var recallBody: String
+  pub var recallError: String
+  pub var recallCallCount: Int
+
+  pub var forgetOk: Bool
+  pub var forgetBody: String
+  pub var forgetError: String
+  pub var lastForgetKey: String
 }
 
 /// A ready-to-use fake with sensible not-configured-yet defaults: creating
@@ -61,7 +77,20 @@ pub func newFakeV2Transport(): FakeV2Transport {
     lastUploadMimeType = "",
     lastUploadDescription = "",
     lastUploadContentBase64 = "",
-    uploadArtifactCallCount = 0
+    uploadArtifactCallCount = 0,
+    rememberOk = false,
+    rememberBody = "",
+    rememberError = "FakeV2Transport: remember not configured",
+    lastRememberKey = "",
+    lastRememberValue = "",
+    recallOk = false,
+    recallBody = "",
+    recallError = "FakeV2Transport: recallAll not configured",
+    recallCallCount = 0,
+    forgetOk = false,
+    forgetBody = "",
+    forgetError = "FakeV2Transport: forget not configured",
+    lastForgetKey = ""
   )
 }
 
@@ -108,6 +137,34 @@ impl V2CallbackTransport for FakeV2Transport {
       Ok(value = self.uploadArtifactBody)
     } else {
       Err(error = self.uploadArtifactError)
+    }
+  }
+
+  func remember(key: in String, value: in String): Result[String, String] {
+    self.lastRememberKey = key
+    self.lastRememberValue = value
+    if self.rememberOk {
+      Ok(value = self.rememberBody)
+    } else {
+      Err(error = self.rememberError)
+    }
+  }
+
+  func recallAll(): Result[String, String] {
+    self.recallCallCount = self.recallCallCount + 1
+    if self.recallOk {
+      Ok(value = self.recallBody)
+    } else {
+      Err(error = self.recallError)
+    }
+  }
+
+  func forget(key: in String): Result[String, String] {
+    self.lastForgetKey = key
+    if self.forgetOk {
+      Ok(value = self.forgetBody)
+    } else {
+      Err(error = self.forgetError)
     }
   }
 }

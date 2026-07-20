@@ -20,6 +20,31 @@ pub record ResultCell {
   pub var error: String = ""
 }
 
+// ─── BCL bindings for base64-encoding a JSON blob for env-var transport ───────
+// (slice[Byte] ⇄ byte[] pattern mirrored from CloudAgents.Crypto rather than
+// imported, matching CloudAgents.Callbacks' own local base64 extern —
+// docs/lyric/gotchas.md notes cross-package `pub val`/extern reuse has its own
+// sharp edges, so each package that needs this binds it directly.)
+extern type Encoding = "System.Text.Encoding"
+
+@externTarget("System.Text.Encoding.get_UTF8")
+func utf8(): Encoding = ()
+
+@externInstance
+@externTarget("System.Text.Encoding.GetBytes")
+func encGetBytes(enc: in Encoding, s: in String): slice[Byte] = []
+
+@externTarget("System.Convert.ToBase64String")
+func toBase64(b: in slice[Byte]): String = ""
+
+/// Encode a JSON string as base64 for env-var transport into a runner
+/// container (docker/inject-library.sh decodes it with `base64 -d`) — avoids
+/// any shell-quoting hazard from arbitrary user-authored skill/subagent/MCP
+/// server content landing directly in an env var value.
+func base64Json(json: in String): String {
+  return toBase64(encGetBytes(utf8(), json))
+}
+
 /// Connect to the Docker daemon. Prefers `CLOUD_AGENTS_DOCKER_TCP_HOST`
 /// ("host:port") when set, over the Unix-socket default `makeDockerClient()`
 /// uses — the socket transport depends on `Lyric.Cli.Aot.UnixSocketHttpClient`,
@@ -168,6 +193,39 @@ pub async func createRunnerContainer(
       envs = CloudAgents.RunnerEnv.withCredentialEnvs(envs, credNames, credValues)
     }
     case Err(e) -> return Err(error = "Failed to load credentials: " + CloudAgents.Repository.credentialErrorMessage(e))
+  }
+
+  // Inject the library items the profile grants (skills, subagents, MCP
+  // servers): each resolved list is base64(JSON)-encoded and handed to
+  // docker/inject-library.sh (invoked by every harness's entrypoint script),
+  // which renders it into that harness's own native skills/agents/MCP config
+  // location. Unlike credentials/network policy above, these are optional
+  // capability grants rather than an access-control boundary, so a read
+  // failure is best-effort (log and continue with no grants for that kind)
+  // rather than aborting the run.
+  match CloudAgents.Repository.skillsForProfile(userId, profileId) {
+    case Ok(skills) -> {
+      if skills.length > 0 {
+        envs = envs.append("CLOUD_AGENTS_SKILLS_B64=" + base64Json(SkillList(skills = skills).toJson()))
+      }
+    }
+    case Err(e) -> println("WARNING: failed to load granted skills for session " + sessionId + ": " + CloudAgents.Sqlite.dbErrorMessage(e))
+  }
+  match CloudAgents.Repository.subagentsForProfile(userId, profileId) {
+    case Ok(subagents) -> {
+      if subagents.length > 0 {
+        envs = envs.append("CLOUD_AGENTS_SUBAGENTS_B64=" + base64Json(SubagentList(subagents = subagents).toJson()))
+      }
+    }
+    case Err(e) -> println("WARNING: failed to load granted subagents for session " + sessionId + ": " + CloudAgents.Sqlite.dbErrorMessage(e))
+  }
+  match CloudAgents.Repository.mcpServersForProfile(userId, profileId) {
+    case Ok(mcpServers) -> {
+      if mcpServers.length > 0 {
+        envs = envs.append("CLOUD_AGENTS_MCP_SERVERS_B64=" + base64Json(McpServerList(mcpServers = mcpServers).toJson()))
+      }
+    }
+    case Err(e) -> println("WARNING: failed to load granted MCP servers for session " + sessionId + ": " + CloudAgents.Sqlite.dbErrorMessage(e))
   }
 
   // Resolve the profile's network policy: sets the container NetworkMode and,

@@ -42,11 +42,12 @@ COPY cloud-agents-shim /usr/local/bin/cloud-agents-shim
 
 COPY entrypoint.sh /usr/local/bin/entrypoint.sh
 COPY reconcile-repos.sh /usr/local/bin/reconcile-repos.sh
+COPY inject-library.sh /usr/local/bin/inject-library.sh
 COPY mcp.json.template /etc/claude/mcp.json.template
 COPY mcp-callbacks.json.template /etc/claude/mcp-callbacks.json.template
 COPY settings.json.template /etc/claude/settings.json.template
 COPY settings-callbacks.json.template /etc/claude/settings-callbacks.json.template
-RUN chmod +x /usr/local/bin/entrypoint.sh /usr/local/bin/reconcile-repos.sh /usr/local/bin/cloud-agents-shim
+RUN chmod +x /usr/local/bin/entrypoint.sh /usr/local/bin/reconcile-repos.sh /usr/local/bin/inject-library.sh /usr/local/bin/cloud-agents-shim
 
 USER claude-user
 ENV HOME=/home/claude-user

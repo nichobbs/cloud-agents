@@ -9,6 +9,7 @@ import CloudAgents.Crypto
 import CloudAgents.Docker
 import CloudAgents.Handlers
 import CloudAgents.Interactions
+import CloudAgents.Library
 import CloudAgents.OAuth
 import CloudAgents.Profiles
 import CloudAgents.Prompts
@@ -185,6 +186,30 @@ pub func profileResp(r: in Result[Profile, Web.ApiError]): Web.Response {
   return match r { case Ok(v) -> Web.json(200, v.toJson()); case Err(e) -> Web.errorResponse(e) }
 }
 
+func skillListResp(r: in Result[SkillList, Web.ApiError]): Web.Response {
+  return match r { case Ok(v) -> Web.json(200, v.toJson()); case Err(e) -> Web.errorResponse(e) }
+}
+
+func skillResp(r: in Result[Skill, Web.ApiError]): Web.Response {
+  return match r { case Ok(v) -> Web.json(200, v.toJson()); case Err(e) -> Web.errorResponse(e) }
+}
+
+func subagentListResp(r: in Result[SubagentList, Web.ApiError]): Web.Response {
+  return match r { case Ok(v) -> Web.json(200, v.toJson()); case Err(e) -> Web.errorResponse(e) }
+}
+
+func subagentResp(r: in Result[Subagent, Web.ApiError]): Web.Response {
+  return match r { case Ok(v) -> Web.json(200, v.toJson()); case Err(e) -> Web.errorResponse(e) }
+}
+
+func mcpServerListResp(r: in Result[McpServerList, Web.ApiError]): Web.Response {
+  return match r { case Ok(v) -> Web.json(200, v.toJson()); case Err(e) -> Web.errorResponse(e) }
+}
+
+func mcpServerResp(r: in Result[McpServer, Web.ApiError]): Web.Response {
+  return match r { case Ok(v) -> Web.json(200, v.toJson()); case Err(e) -> Web.errorResponse(e) }
+}
+
 pub func webhookResp(r: in Result[Webhook, Web.ApiError]): Web.Response {
   return match r { case Ok(v) -> Web.json(200, v.toJson()); case Err(e) -> Web.errorResponse(e) }
 }
@@ -230,6 +255,18 @@ func uploadArtifactResp(r: in Result[UploadArtifactResponse, Web.ApiError]): Web
 }
 
 func artifactListResp(r: in Result[ArtifactListResponse, Web.ApiError]): Web.Response {
+  return match r { case Ok(v) -> Web.json(200, v.toJson()); case Err(e) -> Web.errorResponse(e) }
+}
+
+func rememberResp(r: in Result[RememberResponse, Web.ApiError]): Web.Response {
+  return match r { case Ok(v) -> Web.json(200, v.toJson()); case Err(e) -> Web.errorResponse(e) }
+}
+
+func memoryListResp(r: in Result[MemoryListResponse, Web.ApiError]): Web.Response {
+  return match r { case Ok(v) -> Web.json(200, v.toJson()); case Err(e) -> Web.errorResponse(e) }
+}
+
+func forgetResp(r: in Result[ForgetResponse, Web.ApiError]): Web.Response {
   return match r { case Ok(v) -> Web.json(200, v.toJson()); case Err(e) -> Web.errorResponse(e) }
 }
 
@@ -606,6 +643,124 @@ impl Web.Handler for RouteDeleteProfile {
   }
 }
 
+// ─── CloudAgents.Library routes (library.l) ─────────────────────────────────
+record RouteListSkills {
+}
+
+impl Web.Handler for RouteListSkills {
+  func handle(req: in Web.Request): Web.Response {
+    return skillListResp(CloudAgents.Library.listSkillsHandler())
+  }
+}
+
+record RouteAddSkill {
+}
+
+impl Web.Handler for RouteAddSkill {
+  func handle(req: in Web.Request): Web.Response {
+    val decoded = match SaveSkillRequest.fromJson(req.body) { case Ok(d) -> d; case Err(_) -> return badBody() }
+    return skillResp(CloudAgents.Library.addSkillHandler(decoded))
+  }
+}
+
+record RouteUpdateSkill {
+}
+
+impl Web.Handler for RouteUpdateSkill {
+  func handle(req: in Web.Request): Web.Response {
+    val sid = pparam(req, "sid")
+    val decoded = match SaveSkillRequest.fromJson(req.body) { case Ok(d) -> d; case Err(_) -> return badBody() }
+    return skillResp(CloudAgents.Library.updateSkillHandler(sid, decoded))
+  }
+}
+
+record RouteDeleteSkill {
+}
+
+impl Web.Handler for RouteDeleteSkill {
+  func handle(req: in Web.Request): Web.Response {
+    return unitResp(CloudAgents.Library.deleteSkillHandler(pparam(req, "sid")))
+  }
+}
+
+record RouteListSubagents {
+}
+
+impl Web.Handler for RouteListSubagents {
+  func handle(req: in Web.Request): Web.Response {
+    return subagentListResp(CloudAgents.Library.listSubagentsHandler())
+  }
+}
+
+record RouteAddSubagent {
+}
+
+impl Web.Handler for RouteAddSubagent {
+  func handle(req: in Web.Request): Web.Response {
+    val decoded = match SaveSubagentRequest.fromJson(req.body) { case Ok(d) -> d; case Err(_) -> return badBody() }
+    return subagentResp(CloudAgents.Library.addSubagentHandler(decoded))
+  }
+}
+
+record RouteUpdateSubagent {
+}
+
+impl Web.Handler for RouteUpdateSubagent {
+  func handle(req: in Web.Request): Web.Response {
+    val aid = pparam(req, "aid")
+    val decoded = match SaveSubagentRequest.fromJson(req.body) { case Ok(d) -> d; case Err(_) -> return badBody() }
+    return subagentResp(CloudAgents.Library.updateSubagentHandler(aid, decoded))
+  }
+}
+
+record RouteDeleteSubagent {
+}
+
+impl Web.Handler for RouteDeleteSubagent {
+  func handle(req: in Web.Request): Web.Response {
+    return unitResp(CloudAgents.Library.deleteSubagentHandler(pparam(req, "aid")))
+  }
+}
+
+record RouteListMcpServers {
+}
+
+impl Web.Handler for RouteListMcpServers {
+  func handle(req: in Web.Request): Web.Response {
+    return mcpServerListResp(CloudAgents.Library.listMcpServersHandler())
+  }
+}
+
+record RouteAddMcpServer {
+}
+
+impl Web.Handler for RouteAddMcpServer {
+  func handle(req: in Web.Request): Web.Response {
+    val decoded = match SaveMcpServerRequest.fromJson(req.body) { case Ok(d) -> d; case Err(_) -> return badBody() }
+    return mcpServerResp(CloudAgents.Library.addMcpServerHandler(decoded))
+  }
+}
+
+record RouteUpdateMcpServer {
+}
+
+impl Web.Handler for RouteUpdateMcpServer {
+  func handle(req: in Web.Request): Web.Response {
+    val mid = pparam(req, "mid")
+    val decoded = match SaveMcpServerRequest.fromJson(req.body) { case Ok(d) -> d; case Err(_) -> return badBody() }
+    return mcpServerResp(CloudAgents.Library.updateMcpServerHandler(mid, decoded))
+  }
+}
+
+record RouteDeleteMcpServer {
+}
+
+impl Web.Handler for RouteDeleteMcpServer {
+  func handle(req: in Web.Request): Web.Response {
+    return unitResp(CloudAgents.Library.deleteMcpServerHandler(pparam(req, "mid")))
+  }
+}
+
 // ─── CloudAgents.Webhooks routes (webhooks.l) ───────────────────────────────
 record RouteRegisterWebhook {
 }
@@ -831,6 +986,47 @@ impl Web.Handler for RouteDownloadArtifact {
       case Ok(resp) -> resp
       case Err(e) -> Web.errorResponse(e)
     }
+  }
+}
+
+// ─── Phase 7 §4: repo-scoped memory (callbacks.l) ───────────────────────────
+record RouteRemember {
+}
+
+impl Web.Handler for RouteRemember {
+  func handle(req: in Web.Request): Web.Response {
+    val id = pparam(req, "id")
+    val decoded = match RememberRequest.fromJson(req.body) { case Ok(d) -> d; case Err(_) -> return badBody() }
+    return rememberResp(CloudAgents.Callbacks.rememberHandler(id, callbackAuthHeader(req), decoded))
+  }
+}
+
+record RouteRecall {
+}
+
+impl Web.Handler for RouteRecall {
+  func handle(req: in Web.Request): Web.Response {
+    return memoryListResp(CloudAgents.Callbacks.recallHandler(pparam(req, "id"), callbackAuthHeader(req)))
+  }
+}
+
+record RouteListMemory {
+}
+
+impl Web.Handler for RouteListMemory {
+  func handle(req: in Web.Request): Web.Response {
+    return memoryListResp(CloudAgents.Callbacks.listMemoryHandler(pparam(req, "id")))
+  }
+}
+
+record RouteForget {
+}
+
+impl Web.Handler for RouteForget {
+  func handle(req: in Web.Request): Web.Response {
+    val id = pparam(req, "id")
+    val decoded = match ForgetRequest.fromJson(req.body) { case Ok(d) -> d; case Err(_) -> return badBody() }
+    return forgetResp(CloudAgents.Callbacks.forgetHandler(id, callbackAuthHeader(req), decoded))
   }
 }
 
@@ -1062,6 +1258,22 @@ pub func main(): Unit {
   router = Web.addPost(router, "/api/profiles/{pid}", RouteUpdateProfile())
   router = Web.addDelete(router, "/api/profiles/{pid}", RouteDeleteProfile())
 
+  // Library: skills, subagents, and MCP servers a profile can grant to a
+  // session — rendered into each harness's own native config at container
+  // start (CloudAgents.Docker / docker/inject-library.sh).
+  router = Web.addGet(router, "/api/library/skills", RouteListSkills())
+  router = Web.addPost(router, "/api/library/skills", RouteAddSkill())
+  router = Web.addPost(router, "/api/library/skills/{sid}", RouteUpdateSkill())
+  router = Web.addDelete(router, "/api/library/skills/{sid}", RouteDeleteSkill())
+  router = Web.addGet(router, "/api/library/subagents", RouteListSubagents())
+  router = Web.addPost(router, "/api/library/subagents", RouteAddSubagent())
+  router = Web.addPost(router, "/api/library/subagents/{aid}", RouteUpdateSubagent())
+  router = Web.addDelete(router, "/api/library/subagents/{aid}", RouteDeleteSubagent())
+  router = Web.addGet(router, "/api/library/mcp-servers", RouteListMcpServers())
+  router = Web.addPost(router, "/api/library/mcp-servers", RouteAddMcpServer())
+  router = Web.addPost(router, "/api/library/mcp-servers/{mid}", RouteUpdateMcpServer())
+  router = Web.addDelete(router, "/api/library/mcp-servers/{mid}", RouteDeleteMcpServer())
+
   // Webhooks: run-completion notifications (outbox delivered by an external
   // worker that polls /pending and marks events delivered).
   router = Web.addGet(router, "/api/webhooks", RouteListWebhooks())
@@ -1094,6 +1306,10 @@ pub func main(): Unit {
   router = Web.addPost(router, "/api/sessions/{id}/callbacks/artifact", RouteUploadArtifact())
   router = Web.addGet(router, "/api/sessions/{id}/artifacts", RouteListArtifacts())
   router = Web.addGet(router, "/api/sessions/{id}/artifacts/{aid}", RouteDownloadArtifact())
+  router = Web.addPost(router, "/api/sessions/{id}/callbacks/memory", RouteRemember())
+  router = Web.addGet(router, "/api/sessions/{id}/callbacks/memory", RouteRecall())
+  router = Web.addPost(router, "/api/sessions/{id}/callbacks/memory/forget", RouteForget())
+  router = Web.addGet(router, "/api/sessions/{id}/memory", RouteListMemory())
 
   // Server-side provider proxies (ADR-006): GitHub listings and model
   // discovery with vault credentials, so the browser needs no local keys.

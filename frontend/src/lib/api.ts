@@ -1,6 +1,6 @@
 /// <reference types="vite/client" />
 
-import type { Comment, Credential, Message, Profile, Prompt, Run, Todo, Webhook } from '../types';
+import type { Comment, Credential, McpServer, Message, Profile, Prompt, Run, Skill, Subagent, Todo, Webhook } from '../types';
 
 const BASE = (import.meta.env['VITE_API_URL'] as string | undefined) ?? '';
 
@@ -469,6 +469,9 @@ export const api = {
     networkPolicy: string;
     credentialMode: string;
     credentials: string[];
+    skillIds: string[];
+    subagentIds: string[];
+    mcpServerIds: string[];
   }): Promise<Profile> => {
     const res = await fetch(`${BASE}/api/profiles`, {
       method: 'POST',
@@ -481,7 +484,16 @@ export const api = {
 
   updateProfile: async (
     profileId: string,
-    p: { name: string; harness: string; networkPolicy: string; credentialMode: string; credentials: string[] },
+    p: {
+      name: string;
+      harness: string;
+      networkPolicy: string;
+      credentialMode: string;
+      credentials: string[];
+      skillIds: string[];
+      subagentIds: string[];
+      mcpServerIds: string[];
+    },
   ): Promise<Profile> => {
     const res = await fetch(`${BASE}/api/profiles/${profileId}`, {
       method: 'POST',
@@ -497,6 +509,112 @@ export const api = {
       method: 'DELETE',
       headers: authHeaders(),
     });
+    if (!res.ok) throw new Error(`${res.status} ${await res.text()}`);
+  },
+
+  // ─── Library (skills, subagents, MCP servers a profile can grant) ─────────────
+
+  getSkills: async (): Promise<Skill[]> => {
+    const res = await fetch(`${BASE}/api/library/skills`, { headers: authHeaders() });
+    if (!res.ok) throw new Error(`${res.status} ${await res.text()}`);
+    const body = (await res.json()) as { skills?: Skill[] };
+    return body.skills ?? [];
+  },
+
+  addSkill: async (s: { name: string; description: string; body: string }): Promise<Skill> => {
+    const res = await fetch(`${BASE}/api/library/skills`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', ...authHeaders() },
+      body: JSON.stringify(s),
+    });
+    if (!res.ok) throw new Error(`${res.status} ${await res.text()}`);
+    return res.json() as Promise<Skill>;
+  },
+
+  updateSkill: async (id: string, s: { name: string; description: string; body: string }): Promise<Skill> => {
+    const res = await fetch(`${BASE}/api/library/skills/${id}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', ...authHeaders() },
+      body: JSON.stringify(s),
+    });
+    if (!res.ok) throw new Error(`${res.status} ${await res.text()}`);
+    return res.json() as Promise<Skill>;
+  },
+
+  deleteSkill: async (id: string): Promise<void> => {
+    const res = await fetch(`${BASE}/api/library/skills/${id}`, { method: 'DELETE', headers: authHeaders() });
+    if (!res.ok) throw new Error(`${res.status} ${await res.text()}`);
+  },
+
+  getSubagents: async (): Promise<Subagent[]> => {
+    const res = await fetch(`${BASE}/api/library/subagents`, { headers: authHeaders() });
+    if (!res.ok) throw new Error(`${res.status} ${await res.text()}`);
+    const body = (await res.json()) as { subagents?: Subagent[] };
+    return body.subagents ?? [];
+  },
+
+  addSubagent: async (s: { name: string; description: string; systemPrompt: string; model: string }): Promise<Subagent> => {
+    const res = await fetch(`${BASE}/api/library/subagents`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', ...authHeaders() },
+      body: JSON.stringify(s),
+    });
+    if (!res.ok) throw new Error(`${res.status} ${await res.text()}`);
+    return res.json() as Promise<Subagent>;
+  },
+
+  updateSubagent: async (
+    id: string,
+    s: { name: string; description: string; systemPrompt: string; model: string },
+  ): Promise<Subagent> => {
+    const res = await fetch(`${BASE}/api/library/subagents/${id}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', ...authHeaders() },
+      body: JSON.stringify(s),
+    });
+    if (!res.ok) throw new Error(`${res.status} ${await res.text()}`);
+    return res.json() as Promise<Subagent>;
+  },
+
+  deleteSubagent: async (id: string): Promise<void> => {
+    const res = await fetch(`${BASE}/api/library/subagents/${id}`, { method: 'DELETE', headers: authHeaders() });
+    if (!res.ok) throw new Error(`${res.status} ${await res.text()}`);
+  },
+
+  getMcpServers: async (): Promise<McpServer[]> => {
+    const res = await fetch(`${BASE}/api/library/mcp-servers`, { headers: authHeaders() });
+    if (!res.ok) throw new Error(`${res.status} ${await res.text()}`);
+    const body = (await res.json()) as { mcpServers?: McpServer[] };
+    return body.mcpServers ?? [];
+  },
+
+  addMcpServer: async (
+    s: { name: string; transport: string; command: string; args: string[]; url: string; env: string[] },
+  ): Promise<McpServer> => {
+    const res = await fetch(`${BASE}/api/library/mcp-servers`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', ...authHeaders() },
+      body: JSON.stringify(s),
+    });
+    if (!res.ok) throw new Error(`${res.status} ${await res.text()}`);
+    return res.json() as Promise<McpServer>;
+  },
+
+  updateMcpServer: async (
+    id: string,
+    s: { name: string; transport: string; command: string; args: string[]; url: string; env: string[] },
+  ): Promise<McpServer> => {
+    const res = await fetch(`${BASE}/api/library/mcp-servers/${id}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', ...authHeaders() },
+      body: JSON.stringify(s),
+    });
+    if (!res.ok) throw new Error(`${res.status} ${await res.text()}`);
+    return res.json() as Promise<McpServer>;
+  },
+
+  deleteMcpServer: async (id: string): Promise<void> => {
+    const res = await fetch(`${BASE}/api/library/mcp-servers/${id}`, { method: 'DELETE', headers: authHeaders() });
     if (!res.ok) throw new Error(`${res.status} ${await res.text()}`);
   },
 
@@ -546,7 +664,13 @@ export const api = {
 
 /** Ensure a profile's optional array fields are always arrays. */
 function normaliseProfile(p: Profile): Profile {
-  return { ...p, credentials: p.credentials ?? [] };
+  return {
+    ...p,
+    credentials: p.credentials ?? [],
+    skillIds: p.skillIds ?? [],
+    subagentIds: p.subagentIds ?? [],
+    mcpServerIds: p.mcpServerIds ?? [],
+  };
 }
 
 // ─── Server-side provider proxies (ADR-006) ───────────────────────────────────

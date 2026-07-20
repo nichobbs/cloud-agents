@@ -60,6 +60,41 @@ pub record UploadArtifactResponse {
   pub id: String
 }
 
+// Phase 7 §4 repo-scoped memory (remember / recall) — mirror
+// CloudAgents.Callbacks field-for-field.
+@generate(Json)
+pub record RememberRequest {
+  pub key: String
+  pub value: String
+}
+
+@generate(Json)
+pub record RememberResponse {
+  pub key: String
+}
+
+@generate(Json)
+pub record MemoryEntry {
+  pub key: String
+  pub value: String
+}
+
+@generate(Json)
+pub record MemoryListResponse {
+  pub entries: slice[MemoryEntry]
+}
+
+@generate(Json)
+pub record ForgetRequest {
+  pub key: String
+}
+
+@generate(Json)
+pub record ForgetResponse {
+  pub key: String
+  pub status: String
+}
+
 // ── Decoding helpers ─────────────────────────────────────────────────────────
 // Same defensive shape as CloudAgents.Shim.Transport's tryDecode* helpers: a
 // syntactically invalid JSON body throws a raw JsonException instead of
@@ -108,6 +143,39 @@ pub func tryDecodeUploadArtifactResponse(body: in String): Option[UploadArtifact
   }
 }
 
+pub func tryDecodeRememberResponse(body: in String): Option[RememberResponse] {
+  try {
+    match RememberResponse.fromJson(body) {
+      case Ok(r) -> Some(value = r)
+      case Err(_) -> None
+    }
+  } catch Bug as b {
+    None
+  }
+}
+
+pub func tryDecodeMemoryListResponse(body: in String): Option[MemoryListResponse] {
+  try {
+    match MemoryListResponse.fromJson(body) {
+      case Ok(r) -> Some(value = r)
+      case Err(_) -> None
+    }
+  } catch Bug as b {
+    None
+  }
+}
+
+pub func tryDecodeForgetResponse(body: in String): Option[ForgetResponse] {
+  try {
+    match ForgetResponse.fromJson(body) {
+      case Ok(r) -> Some(value = r)
+      case Err(_) -> None
+    }
+  } catch Bug as b {
+    None
+  }
+}
+
 // ── Transport seam ───────────────────────────────────────────────────────────
 /// The shim's outbound calls to the host for the v2 tools, as an interface
 /// so CloudAgents.Shim.V2Client's state machines can be tested against an
@@ -117,6 +185,9 @@ pub interface V2CallbackTransport {
   func pollSecret(requestId: in String): Result[String, String]
   func createTodo(description: in String): Result[String, String]
   func uploadArtifact(fileName: in String, mimeType: in String, description: in String, contentBase64: in String): Result[String, String]
+  func remember(key: in String, value: in String): Result[String, String]
+  func recallAll(): Result[String, String]
+  func forget(key: in String): Result[String, String]
 }
 
 /// Real V2CallbackTransport against the cloud-agents host API. Route shapes
@@ -162,6 +233,31 @@ impl V2CallbackTransport for HttpV2CallbackTransport {
     val body = UploadArtifactRequest(fileName = fileName, mimeType = mimeType, description = description, contentBase64 = contentBase64).toJson()
     CloudAgents.Shim.Transport.postJsonWithBearer(
       self.baseUrl + "/api/sessions/" + self.sessionId + "/callbacks/artifact",
+      self.token,
+      body
+    )
+  }
+
+  func remember(key: in String, value: in String): Result[String, String] {
+    val body = RememberRequest(key = key, value = value).toJson()
+    CloudAgents.Shim.Transport.postJsonWithBearer(
+      self.baseUrl + "/api/sessions/" + self.sessionId + "/callbacks/memory",
+      self.token,
+      body
+    )
+  }
+
+  func recallAll(): Result[String, String] {
+    CloudAgents.Shim.Transport.getWithBearer(
+      self.baseUrl + "/api/sessions/" + self.sessionId + "/callbacks/memory",
+      self.token
+    )
+  }
+
+  func forget(key: in String): Result[String, String] {
+    val body = ForgetRequest(key = key).toJson()
+    CloudAgents.Shim.Transport.postJsonWithBearer(
+      self.baseUrl + "/api/sessions/" + self.sessionId + "/callbacks/memory/forget",
       self.token,
       body
     )

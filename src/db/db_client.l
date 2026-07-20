@@ -994,6 +994,461 @@ pub func deleteProfileCredentialsSql(profileId: in String, userId: in String): S
     sqlLiteral(userId)
 }
 
+// ─── Library: skills, subagents, MCP servers ───────────────────────────────────
+//
+// A per-user library of harness-agnostic building blocks a profile can grant
+// to a session: skills (SKILL.md-format instructions — the format has
+// converged across Claude Code, Codex CLI, Gemini CLI, and OpenCode as of
+// 2026, so one stored body renders unchanged into every harness's own skills
+// directory), subagents (a name/description/system-prompt triple rendered
+// into each harness's own subagent format), and MCP servers (a stdio command
+// or remote URL rendered into each harness's own MCP config). Library items
+// are owned resources like profiles/credentials/prompts; a profile grants a
+// subset via the profile_skills/profile_subagents/profile_mcp_servers join
+// tables (mirroring profile_credentials). All TEXT affinity, user_id-scoped.
+//
+// mcp_server_args / mcp_server_env hold the ordered argv / env entries for a
+// stdio-transport server as one row per entry (like profile_credentials, not
+// a delimited blob) — `position` is a plain base-10 string ("0", "1", ...,
+// "11") and callers sort with `CAST(position AS INTEGER)` rather than
+// zero-padding, since string ops beyond `.length`/`.substring`/`.append()`
+// are not reliably confirmed working in this toolchain (docs/lyric/gotchas.md).
+/// DDL for the skills table.
+pub func skillsSchemaSql(): String {
+  return "CREATE TABLE IF NOT EXISTS skills (" + "id TEXT PRIMARY KEY, " + "user_id TEXT NOT NULL, " +
+    "name TEXT NOT NULL, " +
+    "description TEXT NOT NULL, " +
+    "body TEXT NOT NULL, " +
+    "created_at TEXT NOT NULL, " +
+    "updated_at TEXT NOT NULL, " +
+    "UNIQUE(user_id, name))"
+}
+
+/// DDL for the subagents table.
+pub func subagentsSchemaSql(): String {
+  return "CREATE TABLE IF NOT EXISTS subagents (" + "id TEXT PRIMARY KEY, " + "user_id TEXT NOT NULL, " +
+    "name TEXT NOT NULL, " +
+    "description TEXT NOT NULL, " +
+    "system_prompt TEXT NOT NULL, " +
+    "model TEXT NOT NULL, " +
+    "created_at TEXT NOT NULL, " +
+    "updated_at TEXT NOT NULL, " +
+    "UNIQUE(user_id, name))"
+}
+
+/// DDL for the MCP servers table. transport: 'stdio' (command + args + env)
+/// | 'url' (remote endpoint). `env` entries here are literal, non-secret
+/// config only ("DEBUG=1") — anything secret flows through the existing
+/// credential-grant mechanism by matching env var name, so this feature does
+/// not introduce a second secret store.
+pub func mcpServersSchemaSql(): String {
+  return "CREATE TABLE IF NOT EXISTS mcp_servers (" + "id TEXT PRIMARY KEY, " + "user_id TEXT NOT NULL, " +
+    "name TEXT NOT NULL, " +
+    "transport TEXT NOT NULL, " +
+    "command TEXT NOT NULL, " +
+    "url TEXT NOT NULL, " +
+    "created_at TEXT NOT NULL, " +
+    "updated_at TEXT NOT NULL, " +
+    "UNIQUE(user_id, name))"
+}
+
+/// DDL for a stdio MCP server's ordered command-line arguments.
+pub func mcpServerArgsSchemaSql(): String {
+  return "CREATE TABLE IF NOT EXISTS mcp_server_args (" + "id TEXT PRIMARY KEY, " + "mcp_server_id TEXT NOT NULL, " +
+    "user_id TEXT NOT NULL, " +
+    "position TEXT NOT NULL, " +
+    "value TEXT NOT NULL)"
+}
+
+/// DDL for a stdio MCP server's literal (non-secret) env entries, each a
+/// full "KEY=VALUE" string.
+pub func mcpServerEnvSchemaSql(): String {
+  return "CREATE TABLE IF NOT EXISTS mcp_server_env (" + "id TEXT PRIMARY KEY, " + "mcp_server_id TEXT NOT NULL, " +
+    "user_id TEXT NOT NULL, " +
+    "position TEXT NOT NULL, " +
+    "value TEXT NOT NULL)"
+}
+
+/// DDL for the join table naming which skills a profile grants.
+pub func profileSkillsSchemaSql(): String {
+  return "CREATE TABLE IF NOT EXISTS profile_skills (" + "id TEXT PRIMARY KEY, " + "profile_id TEXT NOT NULL, " +
+    "user_id TEXT NOT NULL, " +
+    "skill_id TEXT NOT NULL, " +
+    "UNIQUE(profile_id, skill_id))"
+}
+
+/// DDL for the join table naming which subagents a profile grants.
+pub func profileSubagentsSchemaSql(): String {
+  return "CREATE TABLE IF NOT EXISTS profile_subagents (" + "id TEXT PRIMARY KEY, " + "profile_id TEXT NOT NULL, " +
+    "user_id TEXT NOT NULL, " +
+    "subagent_id TEXT NOT NULL, " +
+    "UNIQUE(profile_id, subagent_id))"
+}
+
+/// DDL for the join table naming which MCP servers a profile grants.
+pub func profileMcpServersSchemaSql(): String {
+  return "CREATE TABLE IF NOT EXISTS profile_mcp_servers (" + "id TEXT PRIMARY KEY, " + "profile_id TEXT NOT NULL, " +
+    "user_id TEXT NOT NULL, " +
+    "mcp_server_id TEXT NOT NULL, " +
+    "UNIQUE(profile_id, mcp_server_id))"
+}
+
+pub func skillsUserIndexSql(): String {
+  return "CREATE INDEX IF NOT EXISTS idx_skills_user_id ON skills(user_id)"
+}
+
+pub func subagentsUserIndexSql(): String {
+  return "CREATE INDEX IF NOT EXISTS idx_subagents_user_id ON subagents(user_id)"
+}
+
+pub func mcpServersUserIndexSql(): String {
+  return "CREATE INDEX IF NOT EXISTS idx_mcp_servers_user_id ON mcp_servers(user_id)"
+}
+
+pub func mcpServerArgsServerIndexSql(): String {
+  return "CREATE INDEX IF NOT EXISTS idx_mcp_server_args_server_id ON mcp_server_args(mcp_server_id)"
+}
+
+pub func mcpServerEnvServerIndexSql(): String {
+  return "CREATE INDEX IF NOT EXISTS idx_mcp_server_env_server_id ON mcp_server_env(mcp_server_id)"
+}
+
+pub func profileSkillsProfileIndexSql(): String {
+  return "CREATE INDEX IF NOT EXISTS idx_profile_skills_profile_id ON profile_skills(profile_id)"
+}
+
+pub func profileSubagentsProfileIndexSql(): String {
+  return "CREATE INDEX IF NOT EXISTS idx_profile_subagents_profile_id ON profile_subagents(profile_id)"
+}
+
+pub func profileMcpServersProfileIndexSql(): String {
+  return "CREATE INDEX IF NOT EXISTS idx_profile_mcp_servers_profile_id ON profile_mcp_servers(profile_id)"
+}
+
+// ─── Skills ─────────────────────────────────────────────────────────────────
+pub func insertSkillSql(
+  id: in String,
+  userId: in String,
+  name: in String,
+  description: in String,
+  body: in String,
+  createdAt: in String,
+): String {
+  return "INSERT INTO skills (id, user_id, name, description, body, created_at, updated_at) VALUES (" + sqlLiteral(id) +
+    ", " +
+    sqlLiteral(userId) +
+    ", " +
+    sqlLiteral(name) +
+    ", " +
+    sqlLiteral(description) +
+    ", " +
+    sqlLiteral(body) +
+    ", " +
+    sqlLiteral(createdAt) +
+    ", " +
+    sqlLiteral(createdAt) +
+    ")"
+}
+
+val skillColumns = "id, user_id, name, description, body, created_at, updated_at"
+
+pub func selectSkillsSql(userId: in String): String {
+  return "SELECT " + skillColumns + " FROM skills WHERE user_id = " + sqlLiteral(userId) + " ORDER BY name ASC"
+}
+
+pub func selectSkillByIdSql(id: in String, userId: in String): String {
+  return "SELECT " + skillColumns + " FROM skills WHERE id = " + sqlLiteral(id) + " AND user_id = " + sqlLiteral(userId)
+}
+
+pub func selectSkillIdByNameSql(userId: in String, name: in String): String {
+  return "SELECT id FROM skills WHERE user_id = " + sqlLiteral(userId) + " AND name = " + sqlLiteral(name)
+}
+
+pub func updateSkillSql(
+  id: in String,
+  userId: in String,
+  name: in String,
+  description: in String,
+  body: in String,
+  updatedAt: in String,
+): String {
+  return "UPDATE skills SET name = " + sqlLiteral(name) + ", description = " + sqlLiteral(description) + ", body = " +
+    sqlLiteral(body) +
+    ", updated_at = " +
+    sqlLiteral(updatedAt) +
+    " WHERE id = " +
+    sqlLiteral(id) +
+    " AND user_id = " +
+    sqlLiteral(userId)
+}
+
+pub func deleteSkillSql(id: in String, userId: in String): String {
+  return "DELETE FROM skills WHERE id = " + sqlLiteral(id) + " AND user_id = " + sqlLiteral(userId)
+}
+
+// ─── Subagents ──────────────────────────────────────────────────────────────
+pub func insertSubagentSql(
+  id: in String,
+  userId: in String,
+  name: in String,
+  description: in String,
+  systemPrompt: in String,
+  model: in String,
+  createdAt: in String,
+): String {
+  return "INSERT INTO subagents (id, user_id, name, description, system_prompt, model, created_at, updated_at) VALUES (" +
+    sqlLiteral(id) +
+    ", " +
+    sqlLiteral(userId) +
+    ", " +
+    sqlLiteral(name) +
+    ", " +
+    sqlLiteral(description) +
+    ", " +
+    sqlLiteral(systemPrompt) +
+    ", " +
+    sqlLiteral(model) +
+    ", " +
+    sqlLiteral(createdAt) +
+    ", " +
+    sqlLiteral(createdAt) +
+    ")"
+}
+
+val subagentColumns = "id, user_id, name, description, system_prompt, model, created_at, updated_at"
+
+pub func selectSubagentsSql(userId: in String): String {
+  return "SELECT " + subagentColumns + " FROM subagents WHERE user_id = " + sqlLiteral(userId) + " ORDER BY name ASC"
+}
+
+pub func selectSubagentByIdSql(id: in String, userId: in String): String {
+  return "SELECT " + subagentColumns + " FROM subagents WHERE id = " + sqlLiteral(id) + " AND user_id = " +
+    sqlLiteral(userId)
+}
+
+pub func selectSubagentIdByNameSql(userId: in String, name: in String): String {
+  return "SELECT id FROM subagents WHERE user_id = " + sqlLiteral(userId) + " AND name = " + sqlLiteral(name)
+}
+
+pub func updateSubagentSql(
+  id: in String,
+  userId: in String,
+  name: in String,
+  description: in String,
+  systemPrompt: in String,
+  model: in String,
+  updatedAt: in String,
+): String {
+  return "UPDATE subagents SET name = " + sqlLiteral(name) + ", description = " + sqlLiteral(description) +
+    ", system_prompt = " +
+    sqlLiteral(systemPrompt) +
+    ", model = " +
+    sqlLiteral(model) +
+    ", updated_at = " +
+    sqlLiteral(updatedAt) +
+    " WHERE id = " +
+    sqlLiteral(id) +
+    " AND user_id = " +
+    sqlLiteral(userId)
+}
+
+pub func deleteSubagentSql(id: in String, userId: in String): String {
+  return "DELETE FROM subagents WHERE id = " + sqlLiteral(id) + " AND user_id = " + sqlLiteral(userId)
+}
+
+// ─── MCP servers ────────────────────────────────────────────────────────────
+pub func insertMcpServerSql(
+  id: in String,
+  userId: in String,
+  name: in String,
+  transport: in String,
+  command: in String,
+  url: in String,
+  createdAt: in String,
+): String {
+  return "INSERT INTO mcp_servers (id, user_id, name, transport, command, url, created_at, updated_at) VALUES (" +
+    sqlLiteral(id) +
+    ", " +
+    sqlLiteral(userId) +
+    ", " +
+    sqlLiteral(name) +
+    ", " +
+    sqlLiteral(transport) +
+    ", " +
+    sqlLiteral(command) +
+    ", " +
+    sqlLiteral(url) +
+    ", " +
+    sqlLiteral(createdAt) +
+    ", " +
+    sqlLiteral(createdAt) +
+    ")"
+}
+
+val mcpServerColumns = "id, user_id, name, transport, command, url, created_at, updated_at"
+
+pub func selectMcpServersSql(userId: in String): String {
+  return "SELECT " + mcpServerColumns + " FROM mcp_servers WHERE user_id = " + sqlLiteral(userId) + " ORDER BY name ASC"
+}
+
+pub func selectMcpServerByIdSql(id: in String, userId: in String): String {
+  return "SELECT " + mcpServerColumns + " FROM mcp_servers WHERE id = " + sqlLiteral(id) + " AND user_id = " +
+    sqlLiteral(userId)
+}
+
+pub func selectMcpServerIdByNameSql(userId: in String, name: in String): String {
+  return "SELECT id FROM mcp_servers WHERE user_id = " + sqlLiteral(userId) + " AND name = " + sqlLiteral(name)
+}
+
+pub func updateMcpServerSql(
+  id: in String,
+  userId: in String,
+  name: in String,
+  transport: in String,
+  command: in String,
+  url: in String,
+  updatedAt: in String,
+): String {
+  return "UPDATE mcp_servers SET name = " + sqlLiteral(name) + ", transport = " + sqlLiteral(transport) + ", command = " +
+    sqlLiteral(command) +
+    ", url = " +
+    sqlLiteral(url) +
+    ", updated_at = " +
+    sqlLiteral(updatedAt) +
+    " WHERE id = " +
+    sqlLiteral(id) +
+    " AND user_id = " +
+    sqlLiteral(userId)
+}
+
+pub func deleteMcpServerSql(id: in String, userId: in String): String {
+  return "DELETE FROM mcp_servers WHERE id = " + sqlLiteral(id) + " AND user_id = " + sqlLiteral(userId)
+}
+
+pub func insertMcpServerArgSql(
+  id: in String,
+  mcpServerId: in String,
+  userId: in String,
+  position: in String,
+  value: in String,
+): String {
+  return "INSERT INTO mcp_server_args (id, mcp_server_id, user_id, position, value) VALUES (" + sqlLiteral(id) + ", " +
+    sqlLiteral(mcpServerId) +
+    ", " +
+    sqlLiteral(userId) +
+    ", " +
+    sqlLiteral(position) +
+    ", " +
+    sqlLiteral(value) +
+    ")"
+}
+
+pub func selectMcpServerArgsSql(mcpServerId: in String, userId: in String): String {
+  return "SELECT value FROM mcp_server_args WHERE mcp_server_id = " + sqlLiteral(mcpServerId) + " AND user_id = " +
+    sqlLiteral(userId) +
+    " ORDER BY CAST(position AS INTEGER) ASC"
+}
+
+pub func deleteMcpServerArgsSql(mcpServerId: in String, userId: in String): String {
+  return "DELETE FROM mcp_server_args WHERE mcp_server_id = " + sqlLiteral(mcpServerId) + " AND user_id = " +
+    sqlLiteral(userId)
+}
+
+pub func insertMcpServerEnvSql(
+  id: in String,
+  mcpServerId: in String,
+  userId: in String,
+  position: in String,
+  value: in String,
+): String {
+  return "INSERT INTO mcp_server_env (id, mcp_server_id, user_id, position, value) VALUES (" + sqlLiteral(id) + ", " +
+    sqlLiteral(mcpServerId) +
+    ", " +
+    sqlLiteral(userId) +
+    ", " +
+    sqlLiteral(position) +
+    ", " +
+    sqlLiteral(value) +
+    ")"
+}
+
+pub func selectMcpServerEnvSql(mcpServerId: in String, userId: in String): String {
+  return "SELECT value FROM mcp_server_env WHERE mcp_server_id = " + sqlLiteral(mcpServerId) + " AND user_id = " +
+    sqlLiteral(userId) +
+    " ORDER BY CAST(position AS INTEGER) ASC"
+}
+
+pub func deleteMcpServerEnvSql(mcpServerId: in String, userId: in String): String {
+  return "DELETE FROM mcp_server_env WHERE mcp_server_id = " + sqlLiteral(mcpServerId) + " AND user_id = " +
+    sqlLiteral(userId)
+}
+
+// ─── Profile grants: skills / subagents / MCP servers ──────────────────────────
+pub func insertProfileSkillSql(id: in String, profileId: in String, userId: in String, skillId: in String): String {
+  return "INSERT INTO profile_skills (id, profile_id, user_id, skill_id) VALUES (" + sqlLiteral(id) + ", " +
+    sqlLiteral(profileId) +
+    ", " +
+    sqlLiteral(userId) +
+    ", " +
+    sqlLiteral(skillId) +
+    ") ON CONFLICT(profile_id, skill_id) DO NOTHING"
+}
+
+pub func selectProfileSkillIdsSql(profileId: in String, userId: in String): String {
+  return "SELECT skill_id FROM profile_skills WHERE profile_id = " + sqlLiteral(profileId) + " AND user_id = " +
+    sqlLiteral(userId) +
+    " ORDER BY skill_id ASC"
+}
+
+pub func deleteProfileSkillsSql(profileId: in String, userId: in String): String {
+  return "DELETE FROM profile_skills WHERE profile_id = " + sqlLiteral(profileId) + " AND user_id = " +
+    sqlLiteral(userId)
+}
+
+pub func insertProfileSubagentSql(id: in String, profileId: in String, userId: in String, subagentId: in String): String {
+  return "INSERT INTO profile_subagents (id, profile_id, user_id, subagent_id) VALUES (" + sqlLiteral(id) + ", " +
+    sqlLiteral(profileId) +
+    ", " +
+    sqlLiteral(userId) +
+    ", " +
+    sqlLiteral(subagentId) +
+    ") ON CONFLICT(profile_id, subagent_id) DO NOTHING"
+}
+
+pub func selectProfileSubagentIdsSql(profileId: in String, userId: in String): String {
+  return "SELECT subagent_id FROM profile_subagents WHERE profile_id = " + sqlLiteral(profileId) + " AND user_id = " +
+    sqlLiteral(userId) +
+    " ORDER BY subagent_id ASC"
+}
+
+pub func deleteProfileSubagentsSql(profileId: in String, userId: in String): String {
+  return "DELETE FROM profile_subagents WHERE profile_id = " + sqlLiteral(profileId) + " AND user_id = " +
+    sqlLiteral(userId)
+}
+
+pub func insertProfileMcpServerSql(
+  id: in String, profileId: in String, userId: in String, mcpServerId: in String
+): String {
+  return "INSERT INTO profile_mcp_servers (id, profile_id, user_id, mcp_server_id) VALUES (" + sqlLiteral(id) + ", " +
+    sqlLiteral(profileId) +
+    ", " +
+    sqlLiteral(userId) +
+    ", " +
+    sqlLiteral(mcpServerId) +
+    ") ON CONFLICT(profile_id, mcp_server_id) DO NOTHING"
+}
+
+pub func selectProfileMcpServerIdsSql(profileId: in String, userId: in String): String {
+  return "SELECT mcp_server_id FROM profile_mcp_servers WHERE profile_id = " + sqlLiteral(profileId) + " AND user_id = " +
+    sqlLiteral(userId) +
+    " ORDER BY mcp_server_id ASC"
+}
+
+pub func deleteProfileMcpServersSql(profileId: in String, userId: in String): String {
+  return "DELETE FROM profile_mcp_servers WHERE profile_id = " + sqlLiteral(profileId) + " AND user_id = " +
+    sqlLiteral(userId)
+}
+
 // ─── Run history ──────────────────────────────────────────────────────────────
 //
 // One row per agent run (a send that actually claimed the session): a compact
@@ -1836,4 +2291,96 @@ pub func selectArtifactsCreatedAfterSql(sessionId: in String, afterCreatedAt: in
     " AND created_at > " +
     sqlLiteral(afterCreatedAt) +
     " ORDER BY created_at ASC"
+}
+
+// ─── Phase 7: repo-scoped memory (remember / recall) ─────────────────────────
+//
+// docs/phase7-autonomy.md §4. A key/value store scoped to
+// (user_id, repo_key), where repo_key is the normalized host/owner/repo
+// identity (CloudAgents.RepoKey), so a later session on the same repo can read
+// back what an earlier one learned. `mem_key` avoids SQL's reserved `key`.
+/// Read a session's owning user id AND primary repo_url by id ONLY —
+/// deliberately unscoped by the current identity, mirroring
+/// selectSessionOwnerIdSql. The repo-memory callback endpoints are
+/// container-originated (the caller is stamped as the operator, not the
+/// session owner), so scoping memory to the owner + the session's repo needs
+/// this unscoped lookup.
+pub func selectSessionOwnerAndRepoSql(id: in String): String {
+  return "SELECT user_id, repo_url FROM sessions WHERE id = " + sqlLiteral(id)
+}
+
+val memoryColumns = "id, user_id, repo_key, mem_key, value, created_at, updated_at"
+
+pub func repoMemorySchemaSql(): String {
+  return "CREATE TABLE IF NOT EXISTS memories (" + "id TEXT PRIMARY KEY, " + "user_id TEXT NOT NULL, " +
+    "repo_key TEXT NOT NULL, " +
+    "mem_key TEXT NOT NULL, " +
+    "value TEXT NOT NULL, " +
+    "created_at TEXT NOT NULL, " +
+    "updated_at TEXT NOT NULL, " +
+    "UNIQUE(user_id, repo_key, mem_key))"
+}
+
+pub func repoMemoryIndexSql(): String {
+  return "CREATE INDEX IF NOT EXISTS idx_memories_user_repo ON memories(user_id, repo_key)"
+}
+
+/// Atomic capped upsert of one memory entry (#575, #586). A single statement,
+/// so the per-repo entry cap is enforced race-free: SQLite serializes writers,
+/// and the `WHERE` sub-selects are evaluated against committed state within the
+/// one statement. The row is written when EITHER the repo is under `maxEntries`
+/// (a new key) OR the key already exists (an overwrite is always allowed and
+/// doesn't grow the store); `ON CONFLICT … DO UPDATE` performs the overwrite.
+/// created_at is preserved on overwrite (records first-seen time). Affects 1
+/// row when written, 0 when the cap blocked a new key.
+pub func upsertMemoryCappedSql(
+  id: in String,
+  userId: in String,
+  repoKey: in String,
+  memKey: in String,
+  value: in String,
+  createdAt: in String,
+  updatedAt: in String,
+  maxEntries: in Int,
+): String {
+  val scopeClause = "user_id = " + sqlLiteral(userId) + " AND repo_key = " + sqlLiteral(repoKey)
+  return "INSERT INTO memories (" + memoryColumns + ") SELECT " + sqlLiteral(id) + ", " + sqlLiteral(userId) + ", " +
+    sqlLiteral(repoKey) +
+    ", " +
+    sqlLiteral(memKey) +
+    ", " +
+    sqlLiteral(value) +
+    ", " +
+    sqlLiteral(createdAt) +
+    ", " +
+    sqlLiteral(updatedAt) +
+    " WHERE ((SELECT COUNT(*) FROM memories WHERE " +
+    scopeClause +
+    ") < " +
+    toString(maxEntries) +
+    " OR EXISTS(SELECT 1 FROM memories WHERE " +
+    scopeClause +
+    " AND mem_key = " +
+    sqlLiteral(memKey) +
+    ")) ON CONFLICT(user_id, repo_key, mem_key) DO UPDATE SET value = " +
+    sqlLiteral(value) +
+    ", updated_at = " +
+    sqlLiteral(updatedAt)
+}
+
+/// All memory entries for (user_id, repo_key), ordered by key for stable
+/// listing (recall with no key).
+pub func selectMemoryBySql(userId: in String, repoKey: in String): String {
+  return "SELECT " + memoryColumns + " FROM memories WHERE user_id = " + sqlLiteral(userId) + " AND repo_key = " +
+    sqlLiteral(repoKey) +
+    " ORDER BY mem_key ASC"
+}
+
+/// Delete one memory entry by key (#592, backs the `forget` tool so an entry
+/// can be pruned to free a slot under the cap). Affects 1 row when the key
+/// existed, 0 otherwise.
+pub func deleteMemorySql(userId: in String, repoKey: in String, memKey: in String): String {
+  return "DELETE FROM memories WHERE user_id = " + sqlLiteral(userId) + " AND repo_key = " + sqlLiteral(repoKey) +
+    " AND mem_key = " +
+    sqlLiteral(memKey)
 }
