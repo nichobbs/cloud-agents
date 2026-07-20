@@ -119,27 +119,27 @@ test "Profile handlers validate enums, grants, and reject duplicates" {
     cleanupTestDb(dbPath)
   }
   // Bad network policy -> 400.
-  match addProfileHandler(SaveProfileRequest(name = "p", harness = "", networkPolicy = "open", credentialMode = "all", credentials = [])) {
+  match addProfileHandler(SaveProfileRequest(name = "p", harness = "", networkPolicy = "open", credentialMode = "all", credentials = [], skillIds = [], subagentIds = [], mcpServerIds = [])) {
     case Ok(_) -> assertTrue(false, "bad policy should be rejected")
     case Err(err) -> assertEqualInt(err.status, 400, "bad policy -> 400")
   }
   // Invalid grant name (#237) -> 400.
-  match addProfileHandler(SaveProfileRequest(name = "p2", harness = "", networkPolicy = "none", credentialMode = "selected", credentials = ["bad name"])) {
+  match addProfileHandler(SaveProfileRequest(name = "p2", harness = "", networkPolicy = "none", credentialMode = "selected", credentials = ["bad name"], skillIds = [], subagentIds = [], mcpServerIds = [])) {
     case Ok(_) -> assertTrue(false, "bad grant name should be rejected")
     case Err(err) -> assertEqualInt(err.status, 400, "bad grant -> 400")
   }
   // Happy path.
-  match addProfileHandler(SaveProfileRequest(name = "prod", harness = "", networkPolicy = "none", credentialMode = "all", credentials = [])) {
+  match addProfileHandler(SaveProfileRequest(name = "prod", harness = "", networkPolicy = "none", credentialMode = "all", credentials = [], skillIds = [], subagentIds = [], mcpServerIds = [])) {
     case Ok(p) -> assertEqual(p.name, "prod", "profile created")
     case Err(_) -> assertTrue(false, "valid profile should create")
   }
   // Duplicate name (#236) -> 400, not a 500 from the UNIQUE constraint.
-  match addProfileHandler(SaveProfileRequest(name = "prod", harness = "", networkPolicy = "full", credentialMode = "all", credentials = [])) {
+  match addProfileHandler(SaveProfileRequest(name = "prod", harness = "", networkPolicy = "full", credentialMode = "all", credentials = [], skillIds = [], subagentIds = [], mcpServerIds = [])) {
     case Ok(_) -> assertTrue(false, "duplicate name should be rejected")
     case Err(err) -> assertEqualInt(err.status, 400, "duplicate name -> 400")
   }
   // Unknown ids are 404s.
-  match updateProfileHandler("nope", SaveProfileRequest(name = "x", harness = "", networkPolicy = "full", credentialMode = "all", credentials = [])) {
+  match updateProfileHandler("nope", SaveProfileRequest(name = "x", harness = "", networkPolicy = "full", credentialMode = "all", credentials = [], skillIds = [], subagentIds = [], mcpServerIds = [])) {
     case Ok(_) -> assertTrue(false, "unknown update should 404")
     case Err(err) -> assertEqualInt(err.status, 404, "unknown update -> 404")
   }
@@ -156,7 +156,7 @@ test "Profile CRUD round-trips with its credential grants" {
   }
   val userId = "default"
 
-  val created = mustProfile(addProfile(userId, "locked-down", "claude", "none", "selected", ["GITHUB_TOKEN"]))
+  val created = mustProfile(addProfile(userId, "locked-down", "claude", "none", "selected", ["GITHUB_TOKEN"], [], [], []))
   assertTrue(created.id.length > 0, "created profile has an id")
   assertEqual(created.networkPolicy, "none", "network policy stored")
   assertEqualInt(created.credentials.length.toInt(), 1, "one credential granted")
@@ -167,7 +167,7 @@ test "Profile CRUD round-trips with its credential grants" {
   assertEqualInt(listed[0].credentials.length.toInt(), 1, "grants come back with the profile")
 
   // Update: switch to full network + all credentials (grants should clear).
-  val updated = mustRows(updateProfile(created.id, userId, "opened-up", "", "full", "all", []))
+  val updated = mustRows(updateProfile(created.id, userId, "opened-up", "", "full", "all", [], [], [], []))
   assertEqualInt(updated, 1, "update touches one row")
   match getProfile(created.id, userId) {
     case Ok(Some(p)) -> {
@@ -189,8 +189,8 @@ test "Profile ownership scoping hides other users' profiles" {
   defer {
     cleanupTestDb(dbPath)
   }
-  val mine = mustProfile(addProfile("default", "mine", "", "full", "all", []))
-  val theirs = mustProfile(addProfile("someone-else", "theirs", "", "full", "all", []))
+  val mine = mustProfile(addProfile("default", "mine", "", "full", "all", [], [], [], []))
+  val theirs = mustProfile(addProfile("someone-else", "theirs", "", "full", "all", [], [], [], []))
 
   val myList = mustProfiles(listProfiles("default"))
   assertEqualInt(myList.length.toInt(), 1, "only my profile listed")
@@ -201,7 +201,7 @@ test "Profile ownership scoping hides other users' profiles" {
     case Ok(None) -> ()
     case Err(e) -> assertTrue(false, "getProfile failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
   }
-  assertEqualInt(mustRows(updateProfile(theirs.id, "default", "x", "", "full", "all", [])), 0, "cannot update another user's profile")
+  assertEqualInt(mustRows(updateProfile(theirs.id, "default", "x", "", "full", "all", [], [], [], [])), 0, "cannot update another user's profile")
   assertEqualInt(mustRows(deleteProfile(theirs.id, "default")), 0, "cannot delete another user's profile")
 }
 
@@ -216,14 +216,14 @@ test "Selected-mode profile injects only its granted credentials" {
   mustPutCredential(userId, "OPENAI_KEY", "oai_secret")
 
   // 'selected' profile grants only GITHUB_TOKEN.
-  val locked = mustProfile(addProfile(userId, "gh-only", "", "none", "selected", ["GITHUB_TOKEN"]))
+  val locked = mustProfile(addProfile(userId, "gh-only", "", "none", "selected", ["GITHUB_TOKEN"], [], [], []))
   val injected = mustProfileCreds(decryptedCredentialsForProfile(userId, locked.id))
   assertEqualInt(injected.length.toInt(), 1, "only the granted credential is injected")
   assertTrue(hasCred(injected, "GITHUB_TOKEN"), "granted credential present")
   assertTrue(not hasCred(injected, "AWS_KEY"), "ungranted credential withheld")
 
   // 'all' profile injects every credential.
-  val allProfile = mustProfile(addProfile(userId, "all-creds", "", "full", "all", []))
+  val allProfile = mustProfile(addProfile(userId, "all-creds", "", "full", "all", [], [], [], []))
   val allInjected = mustProfileCreds(decryptedCredentialsForProfile(userId, allProfile.id))
   assertEqualInt(allInjected.length.toInt(), 3, "all mode injects every credential")
 
@@ -243,7 +243,7 @@ test "Network policy resolves and fails closed for unknown profiles" {
     cleanupTestDb(dbPath)
   }
   val userId = "default"
-  val isolated = mustProfile(addProfile(userId, "isolated", "", "none", "all", []))
+  val isolated = mustProfile(addProfile(userId, "isolated", "", "none", "all", [], [], [], []))
 
   match profileNetworkPolicy(userId, isolated.id) {
     case Ok(p) -> assertEqual(p, "none", "profile network policy read back")

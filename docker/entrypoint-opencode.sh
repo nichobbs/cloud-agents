@@ -56,4 +56,10 @@ fi
 /usr/local/bin/reconcile-repos.sh "entrypoint-opencode"
 cd /workspace
 
+# Render the session's profile-granted skills/subagents/MCP servers into
+# OpenCode's own native config (docker/inject-library.sh). Reconciled every
+# message; best-effort so a rendering hiccup never blocks the actual prompt
+# run.
+/usr/local/bin/inject-library.sh "opencode" || echo "entrypoint-opencode: library injection failed, continuing without it" >&2
+
 exec opencode run --model "${MODEL}" -- "${PROMPT}"

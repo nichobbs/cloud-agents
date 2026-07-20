@@ -6,6 +6,7 @@ import { SessionsProvider } from './context/SessionsContext';
 import { AuthCallback } from './pages/AuthCallback';
 import { Credentials } from './pages/Credentials';
 import { Integrations } from './pages/Integrations';
+import { Library } from './pages/Library';
 import { Login } from './pages/Login';
 import { NewSession } from './pages/NewSession';
 import { Profiles } from './pages/Profiles';
@@ -45,6 +46,7 @@ export function App() {
             <Route path="/repos" element={<RequireAuth><Repos /></RequireAuth>} />
             <Route path="/prompts" element={<RequireAuth><Prompts /></RequireAuth>} />
             <Route path="/profiles" element={<RequireAuth><Profiles /></RequireAuth>} />
+            <Route path="/library" element={<RequireAuth><Library /></RequireAuth>} />
             <Route
               path="/credentials"
               element={<RequireAuth><Credentials /></RequireAuth>}

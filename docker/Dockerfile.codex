@@ -13,7 +13,7 @@ ENV DEBIAN_FRONTEND=noninteractive
 
 # TODO: pin @openai/codex to a specific tested version, e.g. @openai/codex@0.1.x
 RUN apt-get update && apt-get install -y --no-install-recommends \
-        git bash curl ca-certificates \
+        git bash curl ca-certificates jq \
     && npm install -g @openai/codex \
     && rm -rf /var/lib/apt/lists/*
 
@@ -23,7 +23,8 @@ RUN chown codex-user:codex-user /workspace
 
 COPY entrypoint-codex.sh /usr/local/bin/entrypoint.sh
 COPY reconcile-repos.sh /usr/local/bin/reconcile-repos.sh
-RUN chmod +x /usr/local/bin/entrypoint.sh /usr/local/bin/reconcile-repos.sh
+COPY inject-library.sh /usr/local/bin/inject-library.sh
+RUN chmod +x /usr/local/bin/entrypoint.sh /usr/local/bin/reconcile-repos.sh /usr/local/bin/inject-library.sh
 
 USER codex-user
 ENV HOME=/home/codex-user

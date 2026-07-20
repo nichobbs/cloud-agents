@@ -55,6 +55,12 @@ export function Nav() {
           Profiles
         </Link>
         <Link
+          to="/library"
+          style={{ ...linkStyle, color: pathname === '/library' ? '#c9d1d9' : '#8b949e' }}
+        >
+          Library
+        </Link>
+        <Link
           to="/credentials"
           style={{ ...linkStyle, color: pathname === '/credentials' ? '#c9d1d9' : '#8b949e' }}
         >

@@ -42,4 +42,10 @@ fi
 /usr/local/bin/reconcile-repos.sh "entrypoint-codex"
 cd /workspace
 
+# Render the session's profile-granted skills/subagents/MCP servers into
+# Codex's own native config (docker/inject-library.sh). Reconciled every
+# message; best-effort so a rendering hiccup never blocks the actual prompt
+# run.
+/usr/local/bin/inject-library.sh "codex" || echo "entrypoint-codex: library injection failed, continuing without it" >&2
+
 exec codex --model "${MODEL}" --full-auto -- "${PROMPT}"

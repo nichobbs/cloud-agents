@@ -1,13 +1,17 @@
 import { useEffect, useState } from 'react';
 import { api } from '../lib/api';
-import type { Profile } from '../types';
+import type { McpServer, Profile, Skill, Subagent } from '../types';
 
 /// Container profiles: a per-container policy bundling which harness runs, what
-/// network access the container gets, and which credentials are injected
-/// (least privilege). Attach a profile to a session on its detail page.
+/// network access the container gets, which credentials are injected (least
+/// privilege), and which library skills/subagents/MCP servers are granted.
+/// Attach a profile to a session on its detail page.
 export function Profiles() {
   const [profiles, setProfiles] = useState<Profile[]>([]);
   const [credNames, setCredNames] = useState<string[]>([]);
+  const [skills, setSkills] = useState<Skill[]>([]);
+  const [subagents, setSubagents] = useState<Subagent[]>([]);
+  const [mcpServers, setMcpServers] = useState<McpServer[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [saving, setSaving] = useState(false);
@@ -18,12 +22,24 @@ export function Profiles() {
   const [networkPolicy, setNetworkPolicy] = useState('full');
   const [credentialMode, setCredentialMode] = useState('all');
   const [grants, setGrants] = useState<string[]>([]);
+  const [skillGrants, setSkillGrants] = useState<string[]>([]);
+  const [subagentGrants, setSubagentGrants] = useState<string[]>([]);
+  const [mcpServerGrants, setMcpServerGrants] = useState<string[]>([]);
 
   const reload = async () => {
     try {
-      const [ps, creds] = await Promise.all([api.getProfiles(), api.getCredentialNames()]);
+      const [ps, creds, sk, sa, mcp] = await Promise.all([
+        api.getProfiles(),
+        api.getCredentialNames(),
+        api.getSkills(),
+        api.getSubagents(),
+        api.getMcpServers(),
+      ]);
       setProfiles(ps);
       setCredNames(creds.map(c => c.name));
+      setSkills(sk);
+      setSubagents(sa);
+      setMcpServers(mcp);
       setError('');
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to load profiles');
@@ -44,6 +60,9 @@ export function Profiles() {
     setNetworkPolicy('full');
     setCredentialMode('all');
     setGrants([]);
+    setSkillGrants([]);
+    setSubagentGrants([]);
+    setMcpServerGrants([]);
   };
 
   const startEdit = (p: Profile) => {
@@ -53,11 +72,21 @@ export function Profiles() {
     setNetworkPolicy(p.networkPolicy);
     setCredentialMode(p.credentialMode);
     setGrants(p.credentials);
+    setSkillGrants(p.skillIds);
+    setSubagentGrants(p.subagentIds);
+    setMcpServerGrants(p.mcpServerIds);
   };
 
   const toggleGrant = (grantName: string) => {
     setGrants(g => (g.includes(grantName) ? g.filter(x => x !== grantName) : [...g, grantName]));
   };
+
+  const toggleIn = (setter: React.Dispatch<React.SetStateAction<string[]>>) => (id: string) => {
+    setter(ids => (ids.includes(id) ? ids.filter(x => x !== id) : [...ids, id]));
+  };
+  const toggleSkill = toggleIn(setSkillGrants);
+  const toggleSubagent = toggleIn(setSubagentGrants);
+  const toggleMcpServer = toggleIn(setMcpServerGrants);
 
   const save = async () => {
     if (!name.trim() || saving) return;
@@ -69,6 +98,9 @@ export function Profiles() {
       networkPolicy,
       credentialMode,
       credentials: credentialMode === 'selected' ? grants : [],
+      skillIds: skillGrants,
+      subagentIds: subagentGrants,
+      mcpServerIds: mcpServerGrants,
     };
     try {
       if (editingId) {
@@ -174,6 +206,66 @@ export function Profiles() {
           </div>
         )}
 
+        <div style={grantsBoxStyle}>
+          <div style={labelStyle}>Grant these skills:</div>
+          {skills.length === 0 && (
+            <div style={mutedStyle}>No skills yet — add some on the Library page.</div>
+          )}
+          <div style={{ display: 'flex', flexWrap: 'wrap', gap: '8px' }}>
+            {skills.map(s => (
+              <label key={s.id} style={grantChipStyle(skillGrants.includes(s.id))}>
+                <input
+                  type="checkbox"
+                  checked={skillGrants.includes(s.id)}
+                  onChange={() => toggleSkill(s.id)}
+                  style={{ marginRight: '6px' }}
+                />
+                {s.name}
+              </label>
+            ))}
+          </div>
+        </div>
+
+        <div style={grantsBoxStyle}>
+          <div style={labelStyle}>Grant these subagents:</div>
+          {subagents.length === 0 && (
+            <div style={mutedStyle}>No subagents yet — add some on the Library page.</div>
+          )}
+          <div style={{ display: 'flex', flexWrap: 'wrap', gap: '8px' }}>
+            {subagents.map(s => (
+              <label key={s.id} style={grantChipStyle(subagentGrants.includes(s.id))}>
+                <input
+                  type="checkbox"
+                  checked={subagentGrants.includes(s.id)}
+                  onChange={() => toggleSubagent(s.id)}
+                  style={{ marginRight: '6px' }}
+                />
+                {s.name}
+              </label>
+            ))}
+          </div>
+        </div>
+
+        <div style={grantsBoxStyle}>
+          <div style={labelStyle}>Grant these MCP servers:</div>
+          {mcpServers.length === 0 && (
+            <div style={mutedStyle}>No MCP servers yet — add some on the Library page.</div>
+          )}
+          <div style={{ display: 'flex', flexWrap: 'wrap', gap: '8px' }}>
+            {mcpServers.map(s => (
+              <label key={s.id} style={grantChipStyle(mcpServerGrants.includes(s.id))}>
+                <input
+                  type="checkbox"
+                  checked={mcpServerGrants.includes(s.id)}
+                  onChange={() => toggleMcpServer(s.id)}
+                  style={{ marginRight: '6px' }}
+                />
+                {s.name}
+              </label>
+            ))}
+          </div>
+        </div>
+
         <div style={{ display: 'flex', gap: '8px' }}>
           <button
             style={{ ...saveBtnStyle, opacity: name.trim() && !saving ? 1 : 0.5 }}
@@ -217,6 +309,9 @@ export function Profiles() {
             <span style={badgeStyle}>
               creds: {p.credentialMode === 'all' ? 'all' : `${p.credentials.length} selected`}
             </span>
+            {p.skillIds.length > 0 && <span style={badgeStyle}>skills: {p.skillIds.length}</span>}
+            {p.subagentIds.length > 0 && <span style={badgeStyle}>subagents: {p.subagentIds.length}</span>}
+            {p.mcpServerIds.length > 0 && <span style={badgeStyle}>mcp: {p.mcpServerIds.length}</span>}
           </div>
           {p.credentialMode === 'selected' && p.credentials.length > 0 && (
             <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px' }}>

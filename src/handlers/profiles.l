@@ -21,6 +21,9 @@ pub record SaveProfileRequest {
   pub networkPolicy: String
   pub credentialMode: String
   pub credentials: slice[String]
+  pub skillIds: slice[String]
+  pub subagentIds: slice[String]
+  pub mcpServerIds: slice[String]
 }
 
 func dbError(e: in CloudAgents.Sqlite.DbError): Web.ApiError {
@@ -136,7 +139,7 @@ pub func addProfileHandler(req: in SaveProfileRequest): Result[Profile, Web.ApiE
     case Ok(None) -> ()
     case Err(e) -> return Err(dbError(e))
   }
-  match addProfile(userId, name, req.harness, req.networkPolicy, req.credentialMode, grantsFor(req)) {
+  match addProfile(userId, name, req.harness, req.networkPolicy, req.credentialMode, grantsFor(req), req.skillIds, req.subagentIds, req.mcpServerIds) {
     case Ok(p) -> return Ok(p)
     case Err(e) -> return Err(dbError(e))
   }
@@ -159,7 +162,7 @@ pub func updateProfileHandler(pid: in String, req: in SaveProfileRequest): Resul
     case Ok(None) -> ()
     case Err(e) -> return Err(dbError(e))
   }
-  val affected = match updateProfile(pid, userId, name, req.harness, req.networkPolicy, req.credentialMode, grantsFor(req)) {
+  val affected = match updateProfile(pid, userId, name, req.harness, req.networkPolicy, req.credentialMode, grantsFor(req), req.skillIds, req.subagentIds, req.mcpServerIds) {
     case Ok(n) -> n
     case Err(e) -> return Err(dbError(e))
   }
