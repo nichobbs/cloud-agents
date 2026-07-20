@@ -265,6 +265,102 @@ test "forget surfaces a transport failure" {
   }
 }
 
+// ── add_task / list_tasks / complete_task (phase 7 §8) ────────────────────────
+test "addTask returns the created id on success and sends the description" {
+  val fake = newFakeV2Transport()
+  fake.createTaskOk = true
+  fake.createTaskBody = "{\"id\":\"task-1\"}"
+
+  match addTask(fake, "migrate the auth module") {
+    case Ok(id) -> assertEqual(id, "task-1", "the created id round-trips")
+    case Err(message) -> assertTrue(false, "expected Ok, got Err: " + message)
+  }
+  assertEqual(fake.lastTaskDescription, "migrate the auth module", "the description was sent to the host")
+}
+
+test "addTask surfaces a transport failure" {
+  val fake = newFakeV2Transport()
+  fake.createTaskOk = false
+  fake.createTaskError = "connection refused"
+
+  match addTask(fake, "x") {
+    case Ok(id) -> assertTrue(false, "expected Err, got Ok(" + id + ")")
+    case Err(message) -> assertTrue(message.contains("connection refused"), "error carries the transport failure: " + message)
+  }
+}
+
+test "listTasks with no filter renders every task as id [status]: description lines" {
+  val fake = newFakeV2Transport()
+  fake.listTasksOk = true
+  fake.listTasksBody = "{\"tasks\":[{\"id\":\"t1\",\"description\":\"migrate auth\",\"status\":\"open\",\"createdAt\":\"1\",\"updatedAt\":\"1\"},{\"id\":\"t2\",\"description\":\"write docs\",\"status\":\"done\",\"createdAt\":\"2\",\"updatedAt\":\"2\"}]}"
+
+  match listTasks(fake, "") {
+    case Ok(text) -> {
+      assertTrue(text.contains("t1 [open]: migrate auth"), "first task rendered: " + text)
+      assertTrue(text.contains("t2 [done]: write docs"), "second task rendered: " + text)
+    }
+    case Err(message) -> assertTrue(false, "expected Ok, got Err: " + message)
+  }
+  assertEqual(fake.lastTaskStatusFilter, "", "an empty filter was sent to the host")
+}
+
+test "listTasks forwards a status filter to the host" {
+  val fake = newFakeV2Transport()
+  fake.listTasksOk = true
+  fake.listTasksBody = "{\"tasks\":[]}"
+
+  match listTasks(fake, "open") {
+    case Ok(_) -> ()
+    case Err(message) -> assertTrue(false, "expected Ok, got Err: " + message)
+  }
+  assertEqual(fake.lastTaskStatusFilter, "open", "the status filter was sent to the host")
+}
+
+test "listTasks with an empty store reports nothing stored" {
+  val fake = newFakeV2Transport()
+  fake.listTasksOk = true
+  fake.listTasksBody = "{\"tasks\":[]}"
+
+  match listTasks(fake, "") {
+    case Ok(text) -> assertTrue(text.contains("no tasks"), "explains the backlog is empty: " + text)
+    case Err(message) -> assertTrue(false, "expected Ok, got Err: " + message)
+  }
+}
+
+test "listTasks surfaces a transport failure" {
+  val fake = newFakeV2Transport()
+  fake.listTasksOk = false
+  fake.listTasksError = "connection refused"
+
+  match listTasks(fake, "") {
+    case Ok(text) -> assertTrue(false, "expected Err, got Ok(" + text + ")")
+    case Err(message) -> assertTrue(message.contains("connection refused"), "error carries the transport failure: " + message)
+  }
+}
+
+test "completeTask reports success and sends the task id" {
+  val fake = newFakeV2Transport()
+  fake.completeTaskOk = true
+  fake.completeTaskBody = "{\"id\":\"task-1\",\"status\":\"done\"}"
+
+  match completeTask(fake, "task-1") {
+    case Ok(msg) -> assertTrue(msg.contains("task-1"), "confirmation names the task: " + msg)
+    case Err(message) -> assertTrue(false, "expected Ok, got Err: " + message)
+  }
+  assertEqual(fake.lastCompleteTaskId, "task-1", "the task id was sent to the host")
+}
+
+test "completeTask surfaces a transport failure (e.g. an unknown/cross-scope task id)" {
+  val fake = newFakeV2Transport()
+  fake.completeTaskOk = false
+  fake.completeTaskError = "POST .../callbacks/tasks/nope/complete failed: (404) Not Found: task not found"
+
+  match completeTask(fake, "nope") {
+    case Ok(msg) -> assertTrue(false, "expected Err, got Ok(" + msg + ")")
+    case Err(message) -> assertTrue(message.contains("task not found"), "error surfaces the host's error: " + message)
+  }
+}
+
 // ── report_artifact ─────────────────────────────────────────────────────────
 func writeTempFile(name: in String, content: in String): String {
   val path = "/tmp/cloud-agents-shim-test-" + name
@@ -359,6 +455,18 @@ impl V2CallbackTransport for ClockJumpingV2Transport {
 
   func forget(key: in String): Result[String, String] {
     Ok(value = "{\"key\":\"cj\",\"status\":\"absent\"}")
+  }
+
+  func createTask(description: in String): Result[String, String] {
+    Ok(value = "{\"id\":\"cj-task\"}")
+  }
+
+  func listTasks(statusFilter: in String): Result[String, String] {
+    Ok(value = "{\"tasks\":[]}")
+  }
+
+  func completeTask(taskId: in String): Result[String, String] {
+    Ok(value = "{\"id\":\"cj-task\",\"status\":\"done\"}")
   }
 }
 

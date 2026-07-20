@@ -290,6 +290,10 @@ pub func allMigrations(): slice[Migration] {
     Migration(
       version = "0013_repo_memory",
       statements = [CloudAgents.Db.repoMemorySchemaSql(), CloudAgents.Db.repoMemoryIndexSql()]
+    ),
+    Migration(
+      version = "0017_repo_tasks",
+      statements = [CloudAgents.Db.repoTasksSchemaSql(), CloudAgents.Db.repoTasksIndexSql()]
     )
   ]
 }
@@ -2719,4 +2723,103 @@ pub func artifactsCreatedAfter(
     i = i + 1
   }
   return Ok(value = acc)
+}
+
+// ─── Phase 7 §8: repo-scoped task list (add_task / list_tasks / complete_task)
+//
+// docs/phase7-autonomy.md §8. A cross-session, repo-scoped worklist with an
+// open->done lifecycle, distinct from the session-scoped, human-facing
+// `addTodo`/`listTodos` (add_followup_task): this is an agent-completable
+// shared backlog scoped to (user_id, repo_key), reusing sessionOwnerAndRepo
+// and CloudAgents.RepoKey exactly as the memory slice does.
+/// One stored task (the API-relevant columns of a `repo_tasks` row).
+pub record RepoTask {
+  pub id: String
+  pub description: String
+  pub status: String
+  pub createdAt: String
+  pub updatedAt: String
+}
+
+func rowToRepoTask(r: in CloudAgents.Sqlite.Row): RepoTask {
+  return RepoTask(
+    id = colAt(r.cols, 0),
+    description = colAt(r.cols, 3),
+    status = colAt(r.cols, 4),
+    createdAt = colAt(r.cols, 5),
+    updatedAt = colAt(r.cols, 6)
+  )
+}
+
+/// The outcome of a capped task creation: whether a new row was actually
+/// written (false = the open-task cap blocked it), and the id that was (or
+/// would have been) minted — a record rather than a tuple since this crosses
+/// the CloudAgents.Callbacks package boundary (idioms: named records over
+/// tuples for pub functions).
+pub record AddTaskResult {
+  pub created: Bool
+  pub id: String
+}
+
+/// Create a brand-new OPEN task under a per-repo OPEN-task entry cap,
+/// atomically (mirrors upsertMemoryCapped, but simpler: there is no existing
+/// key to overwrite, every call is a fresh row). The cap counts only
+/// currently-open tasks, so completing a task frees capacity for a new one.
+pub func addTaskCapped(
+  userId: in String, repoKey: in String, description: in String, maxOpenTasks: in Int
+): Result[AddTaskResult, CloudAgents.Sqlite.DbError] {
+  val id = newId()
+  val ts = nowMillis()
+  val affected = CloudAgents.Sqlite.execute(CloudAgents.Db.insertTaskCappedSql(id, userId, repoKey, description, ts, ts, maxOpenTasks))?
+  return Ok(value = AddTaskResult(created = affected > 0, id = id))
+}
+
+/// All tasks for (user, repo), newest first. `statusFilter` None/empty means
+/// every status; Some("open")/Some("done") filters to just that status.
+pub func listTasks(
+  userId: in String, repoKey: in String, statusFilter: in Option[String]
+): Result[slice[RepoTask], CloudAgents.Sqlite.DbError] {
+  val filter = match statusFilter { case Some(s) -> s; case None -> "" }
+  val rows = CloudAgents.Sqlite.query(CloudAgents.Db.selectTasksSql(userId, repoKey, filter))?
+  var acc: slice[RepoTask] = []
+  var i = 0
+  val len = CloudAgents.Sqlite.getRowArrayLength(rows)
+  while i < len {
+    acc = acc.append(rowToRepoTask(CloudAgents.Sqlite.getRowArrayValue(rows, i)))
+    i = i + 1
+  }
+  return Ok(value = acc)
+}
+
+/// The result of attempting to complete a task: whether it existed in this
+/// exact (user, repo) scope at all, and if so, whether this call is the one
+/// that flipped it to done (as opposed to it already being done — a
+/// no-op success per complete_task's idempotency contract, docs/phase7 §8).
+pub union CompleteTaskOutcome {
+  case TaskNotFound
+  case TaskAlreadyDone
+  case TaskCompleted
+}
+
+/// Mark a task done. Looks the task up scoped to (userId, repoKey) FIRST, so
+/// a task id that exists but belongs to a different scope reports
+/// TaskNotFound exactly like a genuinely absent id (no scope leak, mirroring
+/// downloadArtifactHandler's session-scope check) — then applies a
+/// write-once guarded UPDATE (status = 'open' in the WHERE clause) so a
+/// concurrent second completion can never double-apply.
+pub func completeTask(
+  userId: in String, repoKey: in String, taskId: in String
+): Result[CompleteTaskOutcome, CloudAgents.Sqlite.DbError] {
+  val rows = CloudAgents.Sqlite.query(CloudAgents.Db.selectTaskByIdScopedSql(taskId, userId, repoKey))?
+  val len = CloudAgents.Sqlite.getRowArrayLength(rows)
+  if len == 0 {
+    return Ok(value = TaskNotFound)
+  }
+  val r0 = CloudAgents.Sqlite.getRowArrayValue(rows, 0)
+  if colAt(r0.cols, 4) == "done" {
+    return Ok(value = TaskAlreadyDone)
+  }
+  val ts = nowMillis()
+  CloudAgents.Sqlite.execute(CloudAgents.Db.completeTaskSql(taskId, userId, repoKey, ts))?
+  return Ok(value = TaskCompleted)
 }

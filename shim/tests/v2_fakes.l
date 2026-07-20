@@ -52,6 +52,21 @@ pub record FakeV2Transport {
   pub var forgetBody: String
   pub var forgetError: String
   pub var lastForgetKey: String
+
+  pub var createTaskOk: Bool
+  pub var createTaskBody: String
+  pub var createTaskError: String
+  pub var lastTaskDescription: String
+
+  pub var listTasksOk: Bool
+  pub var listTasksBody: String
+  pub var listTasksError: String
+  pub var lastTaskStatusFilter: String
+
+  pub var completeTaskOk: Bool
+  pub var completeTaskBody: String
+  pub var completeTaskError: String
+  pub var lastCompleteTaskId: String
 }
 
 /// A ready-to-use fake with sensible not-configured-yet defaults: creating
@@ -90,7 +105,19 @@ pub func newFakeV2Transport(): FakeV2Transport {
     forgetOk = false,
     forgetBody = "",
     forgetError = "FakeV2Transport: forget not configured",
-    lastForgetKey = ""
+    lastForgetKey = "",
+    createTaskOk = false,
+    createTaskBody = "",
+    createTaskError = "FakeV2Transport: createTask not configured",
+    lastTaskDescription = "",
+    listTasksOk = false,
+    listTasksBody = "",
+    listTasksError = "FakeV2Transport: listTasks not configured",
+    lastTaskStatusFilter = "",
+    completeTaskOk = false,
+    completeTaskBody = "",
+    completeTaskError = "FakeV2Transport: completeTask not configured",
+    lastCompleteTaskId = ""
   )
 }
 
@@ -165,6 +192,33 @@ impl V2CallbackTransport for FakeV2Transport {
       Ok(value = self.forgetBody)
     } else {
       Err(error = self.forgetError)
+    }
+  }
+
+  func createTask(description: in String): Result[String, String] {
+    self.lastTaskDescription = description
+    if self.createTaskOk {
+      Ok(value = self.createTaskBody)
+    } else {
+      Err(error = self.createTaskError)
+    }
+  }
+
+  func listTasks(statusFilter: in String): Result[String, String] {
+    self.lastTaskStatusFilter = statusFilter
+    if self.listTasksOk {
+      Ok(value = self.listTasksBody)
+    } else {
+      Err(error = self.listTasksError)
+    }
+  }
+
+  func completeTask(taskId: in String): Result[String, String] {
+    self.lastCompleteTaskId = taskId
+    if self.completeTaskOk {
+      Ok(value = self.completeTaskBody)
+    } else {
+      Err(error = self.completeTaskError)
     }
   }
 }

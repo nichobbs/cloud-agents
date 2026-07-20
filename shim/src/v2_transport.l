@@ -95,6 +95,38 @@ pub record ForgetResponse {
   pub status: String
 }
 
+// Phase 7 §8 repo-scoped task list (add_task / list_tasks / complete_task) —
+// mirror CloudAgents.Callbacks field-for-field.
+@generate(Json)
+pub record CreateTaskRequest {
+  pub description: String
+}
+
+@generate(Json)
+pub record CreateTaskResponse {
+  pub id: String
+}
+
+@generate(Json)
+pub record TaskSummary {
+  pub id: String
+  pub description: String
+  pub status: String
+  pub createdAt: String
+  pub updatedAt: String
+}
+
+@generate(Json)
+pub record TaskListResponse {
+  pub tasks: slice[TaskSummary]
+}
+
+@generate(Json)
+pub record CompleteTaskResponse {
+  pub id: String
+  pub status: String
+}
+
 // ── Decoding helpers ─────────────────────────────────────────────────────────
 // Same defensive shape as CloudAgents.Shim.Transport's tryDecode* helpers: a
 // syntactically invalid JSON body throws a raw JsonException instead of
@@ -176,6 +208,39 @@ pub func tryDecodeForgetResponse(body: in String): Option[ForgetResponse] {
   }
 }
 
+pub func tryDecodeCreateTaskResponse(body: in String): Option[CreateTaskResponse] {
+  try {
+    match CreateTaskResponse.fromJson(body) {
+      case Ok(r) -> Some(value = r)
+      case Err(_) -> None
+    }
+  } catch Bug as b {
+    None
+  }
+}
+
+pub func tryDecodeTaskListResponse(body: in String): Option[TaskListResponse] {
+  try {
+    match TaskListResponse.fromJson(body) {
+      case Ok(r) -> Some(value = r)
+      case Err(_) -> None
+    }
+  } catch Bug as b {
+    None
+  }
+}
+
+pub func tryDecodeCompleteTaskResponse(body: in String): Option[CompleteTaskResponse] {
+  try {
+    match CompleteTaskResponse.fromJson(body) {
+      case Ok(r) -> Some(value = r)
+      case Err(_) -> None
+    }
+  } catch Bug as b {
+    None
+  }
+}
+
 // ── Transport seam ───────────────────────────────────────────────────────────
 /// The shim's outbound calls to the host for the v2 tools, as an interface
 /// so CloudAgents.Shim.V2Client's state machines can be tested against an
@@ -188,6 +253,56 @@ pub interface V2CallbackTransport {
   func remember(key: in String, value: in String): Result[String, String]
   func recallAll(): Result[String, String]
   func forget(key: in String): Result[String, String]
+  func createTask(description: in String): Result[String, String]
+  func listTasks(statusFilter: in String): Result[String, String]
+  func completeTask(taskId: in String): Result[String, String]
+}
+
+/// Percent-encodes a query-string VALUE (not a full URL) before it's
+/// concatenated into `listTasks`'s request. `status` is meant to be a small
+/// closed enum (`open`/`done`), but the shim builds the URL by raw string
+/// concatenation, so a value containing a query-string metacharacter (`&`,
+/// `#`, `%`, `=`, `+`, `?`, whitespace, quotes, or a CR/LF) would otherwise
+/// corrupt the query string or inject an extra parameter. Escapes exactly
+/// that metacharacter set (each as its literal `%XX` percent-encoding) and
+/// passes every other character through unchanged — sufficient for this
+/// parameter's actual shape without needing a full RFC 3986 encoder or a
+/// char-code primitive this codebase doesn't otherwise rely on. The host's
+/// own `status` validation (`CloudAgents.Callbacks`) is the authoritative
+/// check regardless; this is defense in depth on the request-building side.
+func percentEncodeQueryValue(s: in String): String {
+  var acc = ""
+  var i = 0
+  while i < s.length {
+    val c = s.substring(i, 1)
+    if c == " " {
+      acc = acc + "%20"
+    } else if c == "&" {
+      acc = acc + "%26"
+    } else if c == "#" {
+      acc = acc + "%23"
+    } else if c == "%" {
+      acc = acc + "%25"
+    } else if c == "=" {
+      acc = acc + "%3D"
+    } else if c == "+" {
+      acc = acc + "%2B"
+    } else if c == "?" {
+      acc = acc + "%3F"
+    } else if c == "\"" {
+      acc = acc + "%22"
+    } else if c == "'" {
+      acc = acc + "%27"
+    } else if c == "\r" {
+      acc = acc + "%0D"
+    } else if c == "\n" {
+      acc = acc + "%0A"
+    } else {
+      acc = acc + c
+    }
+    i = i + 1
+  }
+  return acc
 }
 
 /// Real V2CallbackTransport against the cloud-agents host API. Route shapes
@@ -260,6 +375,32 @@ impl V2CallbackTransport for HttpV2CallbackTransport {
       self.baseUrl + "/api/sessions/" + self.sessionId + "/callbacks/memory/forget",
       self.token,
       body
+    )
+  }
+
+  func createTask(description: in String): Result[String, String] {
+    val body = CreateTaskRequest(description = description).toJson()
+    CloudAgents.Shim.Transport.postJsonWithBearer(
+      self.baseUrl + "/api/sessions/" + self.sessionId + "/callbacks/tasks",
+      self.token,
+      body
+    )
+  }
+
+  func listTasks(statusFilter: in String): Result[String, String] {
+    val url = if statusFilter.length > 0 {
+      self.baseUrl + "/api/sessions/" + self.sessionId + "/callbacks/tasks?status=" + percentEncodeQueryValue(statusFilter)
+    } else {
+      self.baseUrl + "/api/sessions/" + self.sessionId + "/callbacks/tasks"
+    }
+    CloudAgents.Shim.Transport.getWithBearer(url, self.token)
+  }
+
+  func completeTask(taskId: in String): Result[String, String] {
+    CloudAgents.Shim.Transport.postJsonWithBearer(
+      self.baseUrl + "/api/sessions/" + self.sessionId + "/callbacks/tasks/" + taskId + "/complete",
+      self.token,
+      ""
     )
   }
 }

@@ -2384,3 +2384,102 @@ pub func deleteMemorySql(userId: in String, repoKey: in String, memKey: in Strin
     " AND mem_key = " +
     sqlLiteral(memKey)
 }
+
+// ─── Phase 7 §8: repo-scoped task list (add_task / list_tasks / complete_task)
+//
+// docs/phase7-autonomy.md §8. Same (user_id, repo_key) scoping as repo
+// memory, but with an open/done lifecycle instead of a key/value overwrite:
+// `add_task` always inserts a brand-new row (there is no natural unique key
+// to conflict on, unlike memory's mem_key), so the capped insert only needs
+// the plain "under the cap" WHERE guard, no ON CONFLICT branch. The cap
+// counts OPEN tasks only — completing a task frees capacity for a new one,
+// since done tasks are history, not backlog.
+val taskColumns = "id, user_id, repo_key, description, status, created_at, updated_at"
+
+pub func repoTasksSchemaSql(): String {
+  return "CREATE TABLE IF NOT EXISTS repo_tasks (" + "id TEXT PRIMARY KEY, " + "user_id TEXT NOT NULL, " +
+    "repo_key TEXT NOT NULL, " +
+    "description TEXT NOT NULL, " +
+    "status TEXT NOT NULL, " +
+    "created_at TEXT NOT NULL, " +
+    "updated_at TEXT NOT NULL)"
+}
+
+pub func repoTasksIndexSql(): String {
+  return "CREATE INDEX IF NOT EXISTS idx_repo_tasks_user_repo_status ON repo_tasks(user_id, repo_key, status)"
+}
+
+/// Atomic capped insert of a brand-new task, always status 'open' (the cap
+/// counts open tasks only — docs/phase7-autonomy.md §8). A single statement
+/// so the per-repo OPEN-task cap is enforced race-free, the
+/// same technique as upsertMemoryCappedSql: SQLite serializes writers, and
+/// the WHERE sub-select is evaluated within the one statement. Simpler than
+/// memory's version — there is no existing-key overwrite branch, since every
+/// call inserts a distinct new row. Affects 1 row when written, 0 when the
+/// cap blocked the insert.
+pub func insertTaskCappedSql(
+  id: in String,
+  userId: in String,
+  repoKey: in String,
+  description: in String,
+  createdAt: in String,
+  updatedAt: in String,
+  maxOpenTasks: in Int,
+): String {
+  return "INSERT INTO repo_tasks (" + taskColumns + ") SELECT " + sqlLiteral(id) + ", " + sqlLiteral(userId) + ", " +
+    sqlLiteral(repoKey) +
+    ", " +
+    sqlLiteral(description) +
+    ", 'open', " +
+    sqlLiteral(createdAt) +
+    ", " +
+    sqlLiteral(updatedAt) +
+    " WHERE (SELECT COUNT(*) FROM repo_tasks WHERE user_id = " +
+    sqlLiteral(userId) +
+    " AND repo_key = " +
+    sqlLiteral(repoKey) +
+    " AND status = 'open') < " +
+    toString(maxOpenTasks)
+}
+
+/// All tasks for (user_id, repo_key), newest first, optionally filtered to a
+/// single status. `statusFilter` empty means "all statuses" (list_tasks with
+/// no argument).
+pub func selectTasksSql(userId: in String, repoKey: in String, statusFilter: in String): String {
+  var sql = "SELECT " + taskColumns + " FROM repo_tasks WHERE user_id = " + sqlLiteral(userId) + " AND repo_key = " +
+    sqlLiteral(repoKey)
+  if statusFilter.length > 0 {
+    sql = sql + " AND status = " + sqlLiteral(statusFilter)
+  }
+  return sql + " ORDER BY created_at DESC"
+}
+
+/// A single task, scoped to (id, user_id, repo_key) — used by complete_task
+/// to distinguish "not found in this scope" (no row) from "already done"
+/// (row present, status already 'done') before attempting the guarded update
+/// below, mirroring the 404-on-wrong-scope pattern downloadArtifactHandler
+/// uses.
+pub func selectTaskByIdScopedSql(id: in String, userId: in String, repoKey: in String): String {
+  return "SELECT " + taskColumns + " FROM repo_tasks WHERE id = " + sqlLiteral(id) + " AND user_id = " +
+    sqlLiteral(userId) +
+    " AND repo_key = " +
+    sqlLiteral(repoKey)
+}
+
+/// Mark a task done, guarded by `status = 'open'` so a concurrent second
+/// completion never double-applies (the same write-once guard shape as
+/// answerSecretRequestSql's `WHERE status = 'pending'`). Affects 1 row when
+/// this call is the one that flipped it, 0 when it was already done (caller
+/// pre-checks existence/scope with selectTaskByIdScopedSql, so a 0 here
+/// after that check means a race lost to a concurrent completion — still a
+/// success from the caller's point of view, since the task ends up done
+/// either way).
+pub func completeTaskSql(id: in String, userId: in String, repoKey: in String, updatedAt: in String): String {
+  return "UPDATE repo_tasks SET status = 'done', updated_at = " + sqlLiteral(updatedAt) + " WHERE id = " +
+    sqlLiteral(id) +
+    " AND user_id = " +
+    sqlLiteral(userId) +
+    " AND repo_key = " +
+    sqlLiteral(repoKey) +
+    " AND status = 'open'"
+}

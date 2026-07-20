@@ -1120,3 +1120,201 @@ pub func forgetHandler(
     case Err(e) -> return Err(dbError(e))
   }
 }
+
+// ─── Phase 7 §8: repo-scoped task list (add_task / list_tasks / complete_task)
+//
+// docs/phase7-autonomy.md §8. A cross-session, repo-scoped worklist with an
+// open->done lifecycle: one session leaves a task, a later session on the
+// same repo lists the open ones, does one, and marks it done. Distinct from
+// Phase 6 §7's add_followup_task (createFollowupTaskHandler, above):
+// add_followup_task writes a SESSION-scoped todo for the HUMAN
+// (CloudAgents.Repository.addTodo), with no cross-session visibility and no
+// agent-driven completion; this is a REPO-scoped, agent-facing shared
+// backlog an agent can both create AND complete. Both stay — see docs/phase7
+// §8 for the full distinction. Same (user_id, repo_key) scoping, same
+// container/user auth split, and the same resolve-scope-then-act shape as
+// the memory slice (resolveMemoryScope above); kept as its own small local
+// helper (resolveTaskScope) rather than reusing SessionMemoryScope, per this
+// codebase's preference for small local duplication over premature shared
+// abstraction across unrelated features.
+val maxTaskDescriptionLen = 32768
+
+/// Per-repo cap on OPEN tasks (not lifetime total): completing a task frees
+/// capacity for a new one, since done tasks are history, not backlog. Reuses
+/// maxMemoryEntries' value (256) for consistency with the memory slice's cap.
+val maxOpenTasks = 256
+
+@generate(Json)
+pub record CreateTaskRequest {
+  pub description: String
+}
+
+@generate(Json)
+pub record CreateTaskResponse {
+  pub id: String
+}
+
+@generate(Json)
+pub record TaskSummary {
+  pub id: String
+  pub description: String
+  pub status: String
+  pub createdAt: String
+  pub updatedAt: String
+}
+
+@generate(Json)
+pub record TaskListResponse {
+  pub tasks: slice[TaskSummary]
+}
+
+@generate(Json)
+pub record CompleteTaskResponse {
+  pub id: String
+  pub status: String
+}
+
+/// The (owner, repo) a session's task list is scoped to.
+record SessionTaskScope {
+  userId: String
+  repoKey: String
+}
+
+/// Resolve the owning user + normalized repo key for a session's task list,
+/// or an ApiError — the same shape as resolveMemoryScope, with a
+/// tasks-specific message.
+func resolveTaskScope(id: in String): Result[SessionTaskScope, Web.ApiError] {
+  val ownerRepo = match CloudAgents.Repository.sessionOwnerAndRepo(id) {
+    case Ok(Some(sr)) -> sr
+    case Ok(None) -> return Err(Web.notFound("Session not found"))
+    case Err(e) -> return Err(dbError(e))
+  }
+  val repoKey = CloudAgents.RepoKey.repoKeyOf(ownerRepo.repoUrl)
+  if repoKey.length == 0 {
+    return Err(Web.badRequest("this session has no repository to scope tasks to"))
+  }
+  return Ok(SessionTaskScope(userId = ownerRepo.userId, repoKey = repoKey))
+}
+
+func taskSummaryOf(t: in CloudAgents.Repository.RepoTask): TaskSummary {
+  return TaskSummary(
+    id = t.id,
+    description = t.description,
+    status = t.status,
+    createdAt = t.createdAt,
+    updatedAt = t.updatedAt
+  )
+}
+
+func taskListFor(id: in String, statusFilter: in Option[String]): Result[TaskListResponse, Web.ApiError] {
+  val taskScope = resolveTaskScope(id)?
+  match CloudAgents.Repository.listTasks(taskScope.userId, taskScope.repoKey, statusFilter) {
+    case Ok(rows) -> {
+      var acc: slice[TaskSummary] = []
+      for t in rows {
+        acc = acc.append(taskSummaryOf(t))
+      }
+      return Ok(TaskListResponse(tasks = acc))
+    }
+    case Err(e) -> return Err(dbError(e))
+  }
+}
+
+/// "" / absent means "every status"; anything else must be exactly "open" or
+/// "done" — a malformed filter is a client error, not a silent empty result.
+func normalizeStatusFilter(raw: in Option[String]): Result[Option[String], Web.ApiError] {
+  match raw {
+    case None -> return Ok(value = None)
+    case Some(s) -> {
+      if s.length == 0 {
+        return Ok(value = None)
+      }
+      if s != "open" and s != "done" {
+        return Err(Web.badRequest("status must be 'open' or 'done'"))
+      }
+      return Ok(value = Some(value = s))
+    }
+  }
+}
+
+/// POST /api/sessions/{id}/callbacks/tasks — container-originated (add_task
+/// MCP tool). Creates a new OPEN task for the session's repo, subject to the
+/// per-repo open-task cap.
+pub func createTaskHandler(
+  id: in String, authHeaderValue: in String, req: in CreateTaskRequest
+): Result[CreateTaskResponse, Web.ApiError] {
+  if id.length == 0 {
+    return Err(Web.badRequest("id is required"))
+  }
+  authorizeCallbackToken(id, authHeaderValue)?
+  if req.description.length == 0 {
+    return Err(Web.badRequest("description is required"))
+  }
+  if not CloudAgents.Text.withinMaxLength(req.description, maxTaskDescriptionLen) {
+    return Err(Web.badRequest("description is too long (max " + toString(maxTaskDescriptionLen) + " characters)"))
+  }
+  val taskScope = resolveTaskScope(id)?
+  match CloudAgents.Repository.addTaskCapped(taskScope.userId, taskScope.repoKey, req.description, maxOpenTasks) {
+    case Ok(r) -> {
+      if r.created {
+        return Ok(CreateTaskResponse(id = r.id))
+      }
+      return Err(
+        Web.badRequest(
+          "this repository is at the open task limit (max " + toString(maxOpenTasks) +
+            " open tasks); complete an existing task before adding another"
+        )
+      )
+    }
+    case Err(e) -> return Err(dbError(e))
+  }
+}
+
+/// GET /api/sessions/{id}/callbacks/tasks?status= — container-originated
+/// (list_tasks MCP tool). `status` is optional; omit/empty for every task,
+/// or pass "open"/"done" to filter.
+pub func listTasksHandler(
+  id: in String, authHeaderValue: in String, statusFilterRaw: in Option[String]
+): Result[TaskListResponse, Web.ApiError] {
+  if id.length == 0 {
+    return Err(Web.badRequest("id is required"))
+  }
+  authorizeCallbackToken(id, authHeaderValue)?
+  val statusFilter = normalizeStatusFilter(statusFilterRaw)?
+  return taskListFor(id, statusFilter)
+}
+
+/// GET /api/sessions/{id}/tasks — user-originated. Lets the UI inspect a
+/// session's repo task list (mirrors listMemoryHandler).
+pub func listSessionTasksHandler(id: in String): Result[TaskListResponse, Web.ApiError] {
+  if id.length == 0 {
+    return Err(Web.badRequest("id is required"))
+  }
+  requireOwnedSession(id)?
+  return taskListFor(id, None)
+}
+
+/// POST /api/sessions/{id}/callbacks/tasks/{tid}/complete — container-
+/// originated (complete_task MCP tool). Idempotent: completing an
+/// already-done task succeeds as a no-op (status "done" either way). A task
+/// id that doesn't exist in this exact session's (user, repo) scope 404s —
+/// this never leaks whether the id exists under a DIFFERENT scope, mirroring
+/// downloadArtifactHandler's session-scope check.
+pub func completeTaskHandler(
+  id: in String, authHeaderValue: in String, tid: in String
+): Result[CompleteTaskResponse, Web.ApiError] {
+  if id.length == 0 {
+    return Err(Web.badRequest("id is required"))
+  }
+  authorizeCallbackToken(id, authHeaderValue)?
+  if tid.length == 0 {
+    return Err(Web.badRequest("task id is required"))
+  }
+  val taskScope = resolveTaskScope(id)?
+  match CloudAgents.Repository.completeTask(taskScope.userId, taskScope.repoKey, tid) {
+    case Ok(TaskNotFound) -> return Err(Web.notFound("task not found"))
+    case Ok(TaskAlreadyDone) -> return Ok(CompleteTaskResponse(id = tid, status = "done"))
+    case Ok(TaskCompleted) -> return Ok(CompleteTaskResponse(id = tid, status = "done"))
+    case Err(e) -> return Err(dbError(e))
+  }
+}

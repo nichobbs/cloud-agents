@@ -157,6 +157,37 @@ func main(): Unit {
       handler = ForgetTool(transport = v2Transport)
     )
   )
+  // Phase 7 §8 repo-scoped task list (docs/phase7-autonomy.md). Distinct
+  // from add_followup_task: this is a repo-scoped, agent-completable shared
+  // backlog with an open->done lifecycle, not a session-scoped note for the
+  // human.
+  addTool(
+    server,
+    McpToolDef(
+      name = "add_task",
+      description = "Add a task to this repository's shared backlog for a future session (possibly a different agent) to pick up and complete. Distinct from add_followup_task, which leaves a session-scoped note for a HUMAN — this is repo-scoped and agent-completable via complete_task.",
+      inputSchema = CloudAgents.Shim.V2Tools.addTaskSchema(),
+      handler = AddTaskTool(transport = v2Transport)
+    )
+  )
+  addTool(
+    server,
+    McpToolDef(
+      name = "list_tasks",
+      description = "List this repository's shared backlog of tasks, optionally filtered by status ('open' or 'done').",
+      inputSchema = CloudAgents.Shim.V2Tools.listTasksSchema(),
+      handler = ListTasksTool(transport = v2Transport)
+    )
+  )
+  addTool(
+    server,
+    McpToolDef(
+      name = "complete_task",
+      description = "Mark a task in this repository's shared backlog as done. Idempotent — completing an already-done task succeeds without error.",
+      inputSchema = CloudAgents.Shim.V2Tools.completeTaskSchema(),
+      handler = CompleteTaskTool(transport = v2Transport)
+    )
+  )
 
   match serveStdio(server) {
     case Ok(_) -> ()
