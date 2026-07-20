@@ -65,6 +65,19 @@ func isAllDigits(s: in String): Bool {
 /// Normalize a git remote URL to `host/owner/repo`, lowercased. Returns ""
 /// when the input has no usable path (empty, or host-only). See
 /// docs/phase7-autonomy.md §3 for the exact rules and examples.
+///
+/// Deliberately general (#595): it accepts every common git remote form —
+/// https/http/ssh/git schemes, scp-style `git@host:owner/repo`, embedded
+/// credentials, explicit ports. Today the only caller feeds it a
+/// `sessions.repo_url`, which `CloudAgents.Handlers` gates to `https://`
+/// (`isHttpsUrl` in src/handlers/sessions.l), so the ssh/scp/port branches
+/// are unreachable against *current* persisted data. They are kept — as a
+/// pure, self-contained, fully-tested (#574/#585) function with a contract
+/// independent of any caller — precisely so this stays correct if repo-URL
+/// validation ever broadens to SSH remotes: trimming them would make an
+/// `git@host:owner/repo` input silently mis-normalize and collide two
+/// distinct repos onto one memory key. This is forward-compatibility, not
+/// accidental complexity.
 pub func repoKeyOf(url: in String): String {
   if DotNetString.IsNullOrEmpty(url) {
     return ""
