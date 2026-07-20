@@ -91,7 +91,19 @@ echo "== docker-compose.coolify.yml (--project-directory repo-root, per Coolify)
 # service when its profile is active, so activate all of them here purely
 # to validate their paths too — this check has nothing to do with whether
 # they're active on a real deploy.
-json_coolify="$(cd "$REPO_ROOT" && ENCRYPTION_KEY=ci-check COMPOSE_PROFILES=codex,opencode,gemini docker compose --project-directory . -f deploy/docker-compose.coolify.yml config --format json)"
+#
+# exclude_from_hc (nichobbs/cloud-agents#516) is a real, documented Coolify
+# service property (https://coolify.io/docs/knowledge-base/docker/compose)
+# — Coolify's own deploy-time parser accepts it fine — but it isn't part of
+# the upstream Compose Specification, so the real `docker compose` CLI used
+# here purely to resolve/validate paths rejects it outright ("additional
+# properties 'exclude_from_hc' not allowed"). Strip it from a scratch copy
+# before running that CLI against it; the committed file (with the field
+# Coolify actually needs) is untouched.
+coolify_scratch="$(mktemp "$REPO_ROOT/deploy/.coolify-path-check.XXXXXX.yml")"
+trap 'rm -f "$coolify_scratch"' EXIT
+grep -v 'exclude_from_hc:' deploy/docker-compose.coolify.yml > "$coolify_scratch"
+json_coolify="$(cd "$REPO_ROOT" && ENCRYPTION_KEY=ci-check COMPOSE_PROFILES=codex,opencode,gemini docker compose --project-directory . -f "$coolify_scratch" config --format json)"
 check_json_paths "docker-compose.coolify.yml" "$json_coolify"
 
 exit $FAIL
