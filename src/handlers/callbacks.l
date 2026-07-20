@@ -1318,3 +1318,96 @@ pub func completeTaskHandler(
     case Err(e) -> return Err(dbError(e))
   }
 }
+// ─── Phase 7 §5: notify ───────────────────────────────────────────────────────
+//
+// docs/phase7-autonomy.md §5. Fire-and-forget push to the human that an
+// autonomous run reached a milestone. Persists a `notifications` row and the
+// run's poll loop (CloudAgents.Docker, same place artifact_reported /
+// secret_request are forwarded) emits a `notification` SSE event on the
+// session's output stream. Session-scoped only — unlike memory, notify has
+// no repo-scoping story in v1.
+@generate(Json)
+pub record NotifyRequest {
+  pub summary: String
+  pub level: String
+}
+
+@generate(Json)
+pub record NotifyResponse {
+  pub id: String
+}
+
+/// The API-facing shape of a stored notification, for the UI feed.
+@generate(Json)
+pub record NotificationSummary {
+  pub id: String
+  pub level: String
+  pub summary: String
+  pub createdAt: String
+}
+
+@generate(Json)
+pub record NotificationListResponse {
+  pub notifications: slice[NotificationSummary]
+}
+
+/// `level` is "" (defaults to "info"), "info", "done", or "blocked" — anything
+/// else is a validation error (docs/phase7 §5).
+func isValidNotifyLevel(level: in String): Bool {
+  return level == "" or level == "info" or level == "done" or level == "blocked"
+}
+
+func normalizedNotifyLevel(level: in String): String {
+  if level.length == 0 {
+    return "info"
+  }
+  return level
+}
+
+func notificationSummaryOf(n: in CloudAgents.Repository.Notification): NotificationSummary {
+  return NotificationSummary(id = n.id, level = n.level, summary = n.summary, createdAt = n.createdAt)
+}
+
+/// POST /api/sessions/{id}/callbacks/notify — container-originated (notify
+/// MCP tool).
+pub func createNotificationHandler(
+  id: in String, authHeaderValue: in String, req: in NotifyRequest
+): Result[NotifyResponse, Web.ApiError] {
+  if id.length == 0 {
+    return Err(Web.badRequest("id is required"))
+  }
+  authorizeCallbackToken(id, authHeaderValue)?
+  if req.summary.length == 0 {
+    return Err(Web.badRequest("summary is required"))
+  }
+  // Reuses maxProgressSummaryLen (report_progress's summary cap) for
+  // consistency — both are short human-facing status strings.
+  if not CloudAgents.Text.withinMaxLength(req.summary, maxProgressSummaryLen) {
+    return Err(Web.badRequest("summary is too long (max " + toString(maxProgressSummaryLen) + " characters)"))
+  }
+  if not isValidNotifyLevel(req.level) {
+    return Err(Web.badRequest("level must be one of: info, done, blocked"))
+  }
+  match CloudAgents.Repository.createNotification(id, normalizedNotifyLevel(req.level), req.summary) {
+    case Ok(n) -> return Ok(NotifyResponse(id = n.id))
+    case Err(e) -> return Err(dbError(e))
+  }
+}
+
+/// GET /api/sessions/{id}/notifications — user-originated, for the UI feed.
+pub func listNotificationsHandler(id: in String): Result[NotificationListResponse, Web.ApiError] {
+  if id.length == 0 {
+    return Err(Web.badRequest("id is required"))
+  }
+  requireOwnedSession(id)?
+  match CloudAgents.Repository.listNotifications(id) {
+    case Ok(ns) -> {
+      var acc: slice[NotificationSummary] = []
+      for n in ns {
+        acc = acc.append(notificationSummaryOf(n))
+      }
+      return Ok(NotificationListResponse(notifications = acc))
+    }
+    case Err(e) -> return Err(dbError(e))
+  }
+}

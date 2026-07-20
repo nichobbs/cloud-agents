@@ -67,6 +67,13 @@ pub record FakeV2Transport {
   pub var completeTaskBody: String
   pub var completeTaskError: String
   pub var lastCompleteTaskId: String
+
+  pub var notifyOk: Bool
+  pub var notifyBody: String
+  pub var notifyError: String
+  pub var lastNotifySummary: String
+  pub var lastNotifyLevel: String
+  pub var notifyCallCount: Int
 }
 
 /// A ready-to-use fake with sensible not-configured-yet defaults: creating
@@ -117,7 +124,13 @@ pub func newFakeV2Transport(): FakeV2Transport {
     completeTaskOk = false,
     completeTaskBody = "",
     completeTaskError = "FakeV2Transport: completeTask not configured",
-    lastCompleteTaskId = ""
+    lastCompleteTaskId = "",
+    notifyOk = false,
+    notifyBody = "",
+    notifyError = "FakeV2Transport: notify not configured",
+    lastNotifySummary = "",
+    lastNotifyLevel = "",
+    notifyCallCount = 0
   )
 }
 
@@ -219,6 +232,17 @@ impl V2CallbackTransport for FakeV2Transport {
       Ok(value = self.completeTaskBody)
     } else {
       Err(error = self.completeTaskError)
+    }
+  }
+
+  func notify(summary: in String, level: in String): Result[String, String] {
+    self.notifyCallCount = self.notifyCallCount + 1
+    self.lastNotifySummary = summary
+    self.lastNotifyLevel = level
+    if self.notifyOk {
+      Ok(value = self.notifyBody)
+    } else {
+      Err(error = self.notifyError)
     }
   }
 }

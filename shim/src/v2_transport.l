@@ -127,6 +127,18 @@ pub record CompleteTaskResponse {
   pub status: String
 }
 
+// Phase 7 §5 notify — mirror CloudAgents.Callbacks field-for-field.
+@generate(Json)
+pub record NotifyRequest {
+  pub summary: String
+  pub level: String
+}
+
+@generate(Json)
+pub record NotifyResponse {
+  pub id: String
+}
+
 // ── Decoding helpers ─────────────────────────────────────────────────────────
 // Same defensive shape as CloudAgents.Shim.Transport's tryDecode* helpers: a
 // syntactically invalid JSON body throws a raw JsonException instead of
@@ -241,6 +253,17 @@ pub func tryDecodeCompleteTaskResponse(body: in String): Option[CompleteTaskResp
   }
 }
 
+pub func tryDecodeNotifyResponse(body: in String): Option[NotifyResponse] {
+  try {
+    match NotifyResponse.fromJson(body) {
+      case Ok(r) -> Some(value = r)
+      case Err(_) -> None
+    }
+  } catch Bug as b {
+    None
+  }
+}
+
 // ── Transport seam ───────────────────────────────────────────────────────────
 /// The shim's outbound calls to the host for the v2 tools, as an interface
 /// so CloudAgents.Shim.V2Client's state machines can be tested against an
@@ -256,6 +279,7 @@ pub interface V2CallbackTransport {
   func createTask(description: in String): Result[String, String]
   func listTasks(statusFilter: in String): Result[String, String]
   func completeTask(taskId: in String): Result[String, String]
+  func notify(summary: in String, level: in String): Result[String, String]
 }
 
 /// Percent-encodes a query-string VALUE (not a full URL) before it's
@@ -401,6 +425,15 @@ impl V2CallbackTransport for HttpV2CallbackTransport {
       self.baseUrl + "/api/sessions/" + self.sessionId + "/callbacks/tasks/" + taskId + "/complete",
       self.token,
       ""
+    )
+  }
+
+  func notify(summary: in String, level: in String): Result[String, String] {
+    val body = NotifyRequest(summary = summary, level = level).toJson()
+    CloudAgents.Shim.Transport.postJsonWithBearer(
+      self.baseUrl + "/api/sessions/" + self.sessionId + "/callbacks/notify",
+      self.token,
+      body
     )
   }
 }

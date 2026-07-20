@@ -294,6 +294,10 @@ pub func allMigrations(): slice[Migration] {
     Migration(
       version = "0017_repo_tasks",
       statements = [CloudAgents.Db.repoTasksSchemaSql(), CloudAgents.Db.repoTasksIndexSql()]
+    ),
+    Migration(
+      version = "0014_notifications",
+      statements = [CloudAgents.Db.notificationsSchemaSql(), CloudAgents.Db.notificationsSessionIndexSql()]
     )
   ]
 }
@@ -2822,4 +2826,77 @@ pub func completeTask(
   val ts = nowMillis()
   CloudAgents.Sqlite.execute(CloudAgents.Db.completeTaskSql(taskId, userId, repoKey, ts))?
   return Ok(value = TaskCompleted)
+}
+
+// ─── Phase 7 §5: notify ─────────────────────────────────────────────────────────
+//
+// docs/phase7-autonomy.md §5. A fire-and-forget push a container sends the
+// human at a milestone (done/blocked/needs input). Session-scoped, unlike
+// memory — notify has no repo-scoping story in v1.
+pub record Notification {
+  pub id: String
+  pub sessionId: String
+  pub level: String
+  pub summary: String
+  pub createdAt: String
+  pub readAt: String
+}
+
+func rowToNotification(r: in CloudAgents.Sqlite.Row): Notification {
+  return Notification(
+    id = colAt(r.cols, 0),
+    sessionId = colAt(r.cols, 1),
+    level = colAt(r.cols, 2),
+    summary = colAt(r.cols, 3),
+    createdAt = colAt(r.cols, 4),
+    readAt = colAt(r.cols, 5)
+  )
+}
+
+/// Record a fire-and-forget notification for a session.
+pub func createNotification(
+  sessionId: in String, level: in String, summary: in String
+): Result[Notification, CloudAgents.Sqlite.DbError] {
+  val id = newId()
+  val ts = nowMillis()
+  CloudAgents.Sqlite.execute(CloudAgents.Db.insertNotificationSql(id, sessionId, level, summary, ts))?
+  return Ok(
+    value = Notification(
+      id = id,
+      sessionId = sessionId,
+      level = level,
+      summary = summary,
+      createdAt = ts,
+      readAt = ""
+    )
+  )
+}
+
+/// A session's notifications, newest first — for the UI feed.
+pub func listNotifications(sessionId: in String): Result[slice[Notification], CloudAgents.Sqlite.DbError] {
+  val rows = CloudAgents.Sqlite.query(CloudAgents.Db.selectNotificationsBySessionSql(sessionId))?
+  var acc: slice[Notification] = []
+  var i = 0
+  val len = CloudAgents.Sqlite.getRowArrayLength(rows)
+  while i < len {
+    acc = acc.append(rowToNotification(CloudAgents.Sqlite.getRowArrayValue(rows, i)))
+    i = i + 1
+  }
+  return Ok(value = acc)
+}
+
+/// Notifications for a session strictly after `afterCreatedAt`, oldest
+/// first — for the `notification` SSE event, mirroring artifactsCreatedAfter.
+pub func notificationsCreatedAfter(
+  sessionId: in String, afterCreatedAt: in String
+): Result[slice[Notification], CloudAgents.Sqlite.DbError] {
+  val rows = CloudAgents.Sqlite.query(CloudAgents.Db.selectNotificationsCreatedAfterSql(sessionId, afterCreatedAt))?
+  var acc: slice[Notification] = []
+  var i = 0
+  val len = CloudAgents.Sqlite.getRowArrayLength(rows)
+  while i < len {
+    acc = acc.append(rowToNotification(CloudAgents.Sqlite.getRowArrayValue(rows, i)))
+    i = i + 1
+  }
+  return Ok(value = acc)
 }

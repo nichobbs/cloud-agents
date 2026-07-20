@@ -361,6 +361,58 @@ impl McpToolHandler for ForgetTool {
   }
 }
 
+// ── notify (phase 7 §5) ───────────────────────────────────────────────────────
+pub func notifySchema(): JsonValue {
+  JObject(
+    fields = [
+      JsonField(name = "type", value = JString(value = "object")),
+      JsonField(
+        name = "properties",
+        value = JObject(
+          fields = [
+            stringSchemaField(
+              "summary",
+              "A short status update to push to the human right now (e.g. what finished, or what you're blocked on)."
+            ),
+            stringSchemaField(
+              "level",
+              "Optional. One of 'info', 'done', or 'blocked'. Defaults to 'info' when omitted."
+            )
+          ]
+        )
+      ),
+      JsonField(name = "required", value = JArray(items = [JString(value = "summary")]))
+    ]
+  )
+}
+
+pub record NotifyTool {
+  pub transport: V2CallbackTransport
+}
+
+func handleNotify(tool: in NotifyTool, args: in Option[JsonValue]): McpToolResult {
+  val a = match args { case Some(v) -> v; case None -> return toolErrorResult("missing required argument 'summary'") }
+  val summary = match getString(a, "summary") {
+    case Some(s) -> s
+    case None -> return toolErrorResult("missing required argument 'summary'")
+  }
+  val level = match getString(a, "level") { case Some(l) -> l; case None -> "" }
+  return match CloudAgents.Shim.V2Client.notify(tool.transport, summary, level) {
+    case Ok(id) -> toolTextResult("sent notification " + id)
+    case Err(message) -> toolErrorResult(message)
+  }
+}
+
+impl McpToolHandler for NotifyTool {
+  func call(args: in Option[JsonValue]): Result[McpToolResult, String] {
+    try {
+      Ok(value = handleNotify(self, args))
+    } catch Bug as b {
+      Ok(value = toolErrorResult("internal error in cloud-agents-shim: " + b.message))
+    }
+  }
+}
+
 // ── add_task (phase 7 §8) ─────────────────────────────────────────────────────
 pub func addTaskSchema(): JsonValue {
   JObject(
