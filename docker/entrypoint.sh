@@ -171,6 +171,23 @@ elif [ "${CALLBACKS_ACTIVE}" = "1" ]; then
     # tool at an entry we could not reconcile (#548).
     CALLBACKS_ACTIVE=0
 fi
+
+# Final authority (#548): CALLBACKS_ACTIVE is derived from the ACTUAL persisted
+# mcp.json, not just the preconditions above. Even after the reconcile, a
+# silently-empty jq merge or an unexpected file state could leave the
+# cloud-agents server absent while CALLBACKS_ACTIVE=1 — which would wire
+# --permission-prompt-tool at a server that isn't there. So if callbacks are
+# meant to be live but the persisted mcp.json doesn't actually contain the
+# cloud-agents server entry, downgrade to inactive. From here down,
+# CALLBACKS_ACTIVE == "the callback server is genuinely registered", and it is
+# the single source of truth for both the settings allowlist and the prompt
+# tool, so the two can never disagree.
+if [ "${CALLBACKS_ACTIVE}" = "1" ]; then
+    if [ ! -f /workspace/.claude/mcp.json ] || ! grep -q '"cloud-agents"' /workspace/.claude/mcp.json; then
+        CALLBACKS_ACTIVE=0
+    fi
+fi
+
 # Choose the static settings.json allowlist by whether callbacks are live, and
 # re-derive it EVERY message (not persist-once) so it always matches this run's
 # CALLBACKS_ACTIVE / --permission-prompt-tool state (#548 — settings.json
