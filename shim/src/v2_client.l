@@ -15,11 +15,13 @@ package CloudAgents.Shim.V2Client
 
 import Std.Core
 import Std.Collections
+import Std.Environment
 import Std.Errors
 import Std.File
 import Std.Process
 import extern System.IO.FileInfo as FileInfo
 import CloudAgents.Shim.Transport
+import CloudAgents.Shim.Callbacks
 import CloudAgents.Shim.V2Transport
 
 /// 8 MiB — matches CloudAgents.Callbacks' maxArtifactBytes exactly
@@ -75,16 +77,26 @@ func sanitizedSecretFileName(name: in String): String {
   return acc
 }
 
-/// Base directory for the secret file. `/run` is tmpfs (memory-backed, not
-/// persisted to disk) on essentially every Linux container runtime, so it
-/// is preferred when present; if it doesn't exist at all in this
-/// environment, fall back to a container-local tmp path rather than
-/// failing the whole tool call (docs/phase6 §7.1: "tmpfs when available").
-func secretsBaseDir(): String {
-  if Std.File.dirExists("/run") {
-    return "/run/cloud-agents-secrets"
+/// Ordered candidate base directories for the secret file. An explicit
+/// `CLOUD_AGENTS_SECRETS_DIR` override wins (deployments with an unusual
+/// layout, and tests that need a writable throwaway dir). Otherwise `/run`
+/// is preferred — tmpfs (memory-backed, not persisted to disk) on
+/// essentially every Linux container runtime (docs/phase6 §7.1: "tmpfs
+/// when available") — with a container-local `/tmp` path as the fallback.
+/// `writeSecretFile` tries each in turn and uses the first whose directory
+/// it can actually create: `/run` *exists* on Linux even when it is not
+/// writable by a non-root shim user, so presence alone is not enough — the
+/// fallback must trigger on a failed create, not just an absent path.
+func secretsBaseDirCandidates(): List[String] {
+  val candidates: List[String] = newList()
+  val override = Std.Environment.getVarOrDefault("CLOUD_AGENTS_SECRETS_DIR", "")
+  if override.length > 0 {
+    candidates.add(override)
+    return candidates
   }
-  return "/tmp/cloud-agents-secrets"
+  candidates.add("/run/cloud-agents-secrets")
+  candidates.add("/tmp/cloud-agents-secrets")
+  return candidates
 }
 
 /// Best-effort `chmod`, the most restrictive permission-setting mechanism
@@ -117,11 +129,28 @@ func chmodBestEffort(path: in String, mode: in String): Result[Unit, String] {
 /// as far as this one write call — never logged, never returned to any
 /// caller of this function.
 func writeSecretFile(name: in String, value: in String): Result[String, String] {
-  val dir = secretsBaseDir()
-  match Std.File.createDir(dir) {
-    case Ok(_) -> ()
-    case Err(e) -> return Err(error = "failed to create the secrets directory " + dir + ": " + IOError.message(e))
+  val candidates = secretsBaseDirCandidates()
+  var chosen = ""
+  var lastErr = ""
+  var i = 0
+  while i < candidates.length and chosen.length == 0 {
+    val cand = candidates[i]
+    val created = match Std.File.createDir(cand) {
+      case Ok(_) -> true
+      case Err(e) -> {
+        lastErr = "failed to create the secrets directory " + cand + ": " + IOError.message(e)
+        false
+      }
+    }
+    if created {
+      chosen = cand
+    }
+    i = i + 1
   }
+  if chosen.length == 0 {
+    return Err(error = lastErr)
+  }
+  val dir = chosen
   match chmodBestEffort(dir, "700") {
     case Ok(_) -> ()
     case Err(msg) -> CloudAgents.Shim.Transport.eprintln("cloud-agents-shim: " + msg + " (secrets directory permissions may be looser than intended)")
@@ -151,6 +180,24 @@ pub func requestSecret(
   pollIntervalMs: in Int,
   timeoutMs: in Int,
 ): SecretOutcome {
+  val clock: CloudAgents.Shim.Callbacks.Clock = SystemClock()
+  return requestSecretWithClock(transport, name, reason, pollIntervalMs, timeoutMs, clock)
+}
+
+/// `requestSecret`, with an injectable `Clock` (#540) — reuses the exact
+/// wall-clock seam CloudAgents.Shim.Callbacks defines, so the secret
+/// long-poll deadline is real elapsed time, not an iteration count that
+/// could drift past `timeoutMs` under slow polls. Thin `SystemClock`
+/// wrapper above keeps main.l/the tool handler on the 5-arg signature;
+/// tests call this directly with a `ManualClock`.
+pub func requestSecretWithClock(
+  transport: in V2CallbackTransport,
+  name: in String,
+  reason: in String,
+  pollIntervalMs: in Int,
+  timeoutMs: in Int,
+  clock: in CloudAgents.Shim.Callbacks.Clock,
+): SecretOutcome {
   val createResult: Result[String, String] = transport.createSecret(name, reason)
   val created = match createResult {
     case Ok(body) -> body
@@ -162,9 +209,9 @@ pub func requestSecret(
   }
 
   val interval = safePollIntervalMs(pollIntervalMs)
-  var elapsedMs = 0
+  val deadline = clock.nowMillis() + timeoutMs.toLong()
   var decision: Option[SecretDecision] = None
-  while elapsedMs < timeoutMs {
+  while clock.nowMillis() < deadline {
     val polled = match transport.pollSecret(createdResp.id) {
       case Ok(body) -> body
       case Err(e) -> return Refused(message = "failed to reach the cloud-agents host while polling for a decision: " + e)
@@ -177,8 +224,12 @@ pub func requestSecret(
       decision = Some(value = d)
       break
     }
-    CloudAgents.Shim.Transport.sleepMillis(interval)
-    elapsedMs = elapsedMs + interval
+    val remaining = deadline - clock.nowMillis()
+    if remaining <= 0i64 {
+      break
+    }
+    val sleepFor = if remaining < interval.toLong() { remaining } else { interval.toLong() }
+    CloudAgents.Shim.Transport.sleepMillis(sleepFor.toInt())
   }
 
   val finalDecision = match decision {

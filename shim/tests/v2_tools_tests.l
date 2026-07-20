@@ -4,6 +4,7 @@ package CloudAgents.Shim.V2ToolsTests
 import Std.Core
 import Std.Testing
 import Std.Collections
+import Std.Environment
 import Std.File
 import JsonRpc.Json
 import Mcp
@@ -31,6 +32,7 @@ func onlyText(r: in McpToolResult): String {
 
 // ── request_secret ──────────────────────────────────────────────────────────
 test "request_secret tool returns the file path on approval, never the value" {
+  Std.Environment.setVar("CLOUD_AGENTS_SECRETS_DIR", Std.Environment.currentDirectory() + "/.lyric-test-secrets")
   val fake = newFakeV2Transport()
   fake.createSecretOk = true
   fake.createSecretBody = "{\"id\":\"sr1\",\"status\":\"pending\"}"

@@ -150,18 +150,33 @@ if [ -f /etc/claude/mcp.json.template ] && [ ! -f /workspace/.claude/mcp.json ];
         printf '%s' "${merged}" > /workspace/.claude/mcp.json
     fi
 fi
-# Phase 6 (docs/phase6-mcp-callbacks.md §8): settings.json.template's
-# "allow" list is deliberately a genuinely-safe base set — file reads and
-# read-only inspection only (Read, Glob, Grep). No blanket Bash grant: every
-# tool call outside this tiny allowlist now routes through
-# --permission-prompt-tool above (on by default as of stage 4), which pauses
-# for a human decision instead of the tool either auto-approving or failing
-# closed with no recourse. NOTE: this comment lives here, not inside
-# settings.json.template itself — that file must stay strict, comment-free
-# JSON, since CI validates it with `python3 -m json.tool` (.github/workflows/
-# ci.yml "Validate JSON templates"), which rejects JSON5/JSONC comments.
-if [ -f /etc/claude/settings.json.template ] && [ ! -f /workspace/.claude/settings.json ]; then
-    cp /etc/claude/settings.json.template /workspace/.claude/settings.json
+# Phase 6 (docs/phase6-mcp-callbacks.md §8): whether request_permission is
+# actually live for THIS run — the flag is on AND a callback token was minted
+# (mint is best-effort; docker_manager.l). This is the SAME condition that
+# gates the mcp.json registration and --permission-prompt-tool below, computed
+# once here so the settings allowlist and the prompt tool can never disagree.
+CALLBACKS_ACTIVE=0
+if [ "${CLOUD_AGENTS_MCP_CALLBACKS}" = "1" ] && [ -n "${CLOUD_AGENTS_CALLBACK_TOKEN:-}" ]; then
+    CALLBACKS_ACTIVE=1
+fi
+
+# Choose the static settings.json allowlist by whether callbacks are live:
+#   - callbacks active  -> the tight read-only set (settings-callbacks.json.template:
+#     Read/Glob/Grep); everything else routes through --permission-prompt-tool,
+#     which pauses for a human decision.
+#   - callbacks inactive -> the broader pre-Phase-6 set (settings.json.template:
+#     Read + Bash(git:*)). With no prompt tool wired this run, tightening the
+#     allowlist would fail those tool calls closed with no recourse — so the
+#     tightening MUST be gated on callbacks being active (#543).
+# NOTE: both templates must stay strict, comment-free JSON — CI validates them
+# with `python3 -m json.tool` (.github/workflows/ci.yml "Validate JSON
+# templates"), which rejects JSON5/JSONC comments; this rationale lives here.
+if [ ! -f /workspace/.claude/settings.json ]; then
+    if [ "${CALLBACKS_ACTIVE}" = "1" ] && [ -f /etc/claude/settings-callbacks.json.template ]; then
+        cp /etc/claude/settings-callbacks.json.template /workspace/.claude/settings.json
+    elif [ -f /etc/claude/settings.json.template ]; then
+        cp /etc/claude/settings.json.template /workspace/.claude/settings.json
+    fi
 fi
 
 # Very first invocation? Seed the session so --resume has history to attach to.
@@ -181,7 +196,7 @@ fi
 # through a tool that can't answer, instead of the pre-Phase-6 behavior this
 # run must fall back to. An empty array is a no-op either way.
 PERMISSION_PROMPT_ARGS=()
-if [ "${CLOUD_AGENTS_MCP_CALLBACKS}" = "1" ] && [ -n "${CLOUD_AGENTS_CALLBACK_TOKEN:-}" ]; then
+if [ "${CALLBACKS_ACTIVE}" = "1" ]; then
     PERMISSION_PROMPT_ARGS=(--permission-prompt-tool "mcp__cloud-agents__request_permission")
 fi
 

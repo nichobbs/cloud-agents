@@ -6,6 +6,7 @@ import Std.Testing
 import Std.Collections
 import Std.File
 import CloudAgents.Shim.V2Transport
+import CloudAgents.Shim.Callbacks
 import CloudAgents.Shim.V2Client
 import CloudAgents.Shim.V2TestFakes
 
@@ -13,11 +14,15 @@ import CloudAgents.Shim.V2TestFakes
 // /tmp/cloud-agents-secrets (CloudAgents.Shim.V2Client.secretsBaseDir). CI
 // containers always have /run, so assert against whichever this environment
 // actually resolves by probing the same way the production code does.
-func expectedSecretsDir(): String {
-  if Std.File.dirExists("/run") {
-    return "/run/cloud-agents-secrets"
-  }
-  return "/tmp/cloud-agents-secrets"
+// Point the secret writer at a writable throwaway dir so the test never
+// depends on /run being writable by the (non-root) test runner — the CI
+// failure that surfaced the writable-vs-present fallback bug. Call at the
+// top of a secret-writing test BEFORE requestSecret runs (it sets the
+// override the writer reads), and use the returned dir in assertions.
+func useTempSecretsDir(): String {
+  val dir = Std.Environment.currentDirectory() + "/.lyric-test-secrets"
+  Std.Environment.setVar("CLOUD_AGENTS_SECRETS_DIR", dir)
+  return dir
 }
 
 func readBackOrPanic(path: in String): String {
@@ -40,6 +45,7 @@ func atLeast(minLen: in Int): String {
 
 // ── request_secret ──────────────────────────────────────────────────────────
 test "requestSecret approve: writes the value to a local file and returns ONLY the path" {
+  val secretsDir = useTempSecretsDir()
   val fake = newFakeV2Transport()
   fake.createSecretOk = true
   fake.createSecretBody = "{\"id\":\"sr1\",\"status\":\"pending\"}"
@@ -48,7 +54,7 @@ test "requestSecret approve: writes the value to a local file and returns ONLY t
   val outcome = requestSecret(fake, "GITHUB_TOKEN", "push a branch", 1, 5000)
   match outcome {
     case Approved(path) -> {
-      assertTrue(path.startsWith(expectedSecretsDir()), "the file lives under the secrets base dir: " + path)
+      assertTrue(path.startsWith(secretsDir), "the file lives under the secrets base dir: " + path)
       assertTrue(path.contains("GITHUB_TOKEN"), "the file name reflects the credential name: " + path)
       assertEqual(readBackOrPanic(path), "ghp_super_secret_value", "the value was actually written to disk")
       // The defining property this feature exists for: the value itself
@@ -191,5 +197,56 @@ test "reportArtifact surfaces a missing file as a clear error" {
   match reportArtifact(fake, "/tmp/cloud-agents-shim-test-does-not-exist.bin", "text/plain", "") {
     case Ok(id) -> assertTrue(false, "a missing file must not succeed, got id " + id)
     case Err(message) -> assertTrue(message.length > 0, "a clear error is returned")
+  }
+}
+
+// ── wall-clock deadline (#540) for request_secret ────────────────────────────
+// Mirrors the v1 ClockJumpingTransport test: pollSecret always reports
+// "pending" but jumps a shared ManualClock past the deadline as a side
+// effect, proving requestSecretWithClock stops after exactly one poll on a
+// wall-clock timeout regardless of pollIntervalMs.
+record ClockJumpingV2Transport {
+  var clock: ManualClock
+  var jumpToMillis: Long
+  var pollSecretCallCount: Int
+}
+
+impl V2CallbackTransport for ClockJumpingV2Transport {
+  func createSecret(name: in String, reason: in String): Result[String, String] {
+    Ok(value = "{\"id\":\"cj-secret\",\"status\":\"pending\"}")
+  }
+
+  func pollSecret(requestId: in String): Result[String, String] {
+    self.pollSecretCallCount = self.pollSecretCallCount + 1
+    self.clock.millis = self.jumpToMillis
+    Ok(value = "{\"status\":\"pending\",\"value\":\"\"}")
+  }
+
+  func createTodo(description: in String): Result[String, String] {
+    Ok(value = "{\"id\":\"cj-todo\"}")
+  }
+
+  func uploadArtifact(
+    fileName: in String, mimeType: in String, description: in String, contentBase64: in String
+  ): Result[String, String] {
+    Ok(value = "{\"id\":\"cj-artifact\"}")
+  }
+}
+
+test "requestSecretWithClock refuses via a wall-clock deadline, not an iteration count" {
+  val clock = manualClock(0i64)
+  val transport = ClockJumpingV2Transport(clock = clock, jumpToMillis = 999999i64, pollSecretCallCount = 0)
+
+  val outcome = requestSecretWithClock(transport, "GITHUB_TOKEN", "push", 25000, 1000, clock)
+  match outcome {
+    case Approved(path) -> assertTrue(false, "expected a fail-closed Refused on a wall-clock timeout, got Approved(" + path + ")")
+    case Refused(message) -> {
+      assertTrue(message.contains("timed out"), "timeout refusal explains why: " + message)
+      assertEqualInt(
+        transport.pollSecretCallCount,
+        1,
+        "the wall-clock deadline fired after exactly one poll, despite pollIntervalMs=25000"
+      )
+    }
   }
 }

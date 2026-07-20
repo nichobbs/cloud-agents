@@ -9,7 +9,8 @@ injection, mcp.json/entrypoint rendering) landed in the same PR; step 3
 `scripts/build-docker.sh`/`docker/Dockerfile` and CI) landed in PR #526,
 genuinely confirmed end-to-end over real MCP stdio. Step 4 is this
 change: `CLOUD_AGENTS_MCP_CALLBACKS` now defaults on (opt out with
-`=0`), `settings.json.template` shrinks to the read-only base set, and
+`=0`), the static allowlist tightens to read-only ONLY when callbacks are
+live (broad pre-Phase-6 set otherwise, #543), and
 the §8 follow-ups shipped alongside (wall-clock long-poll deadline,
 seeded-session e2e legs). **§7's v2 tools (`request_secret`,
 `add_followup_task`, `report_artifact`) also ship in this change** —
@@ -229,15 +230,22 @@ Content-Disposition from the stored name). Path traversal in
   `CLOUD_AGENTS_CALLBACK_TOKEN`, so a doomed-to-panic shim (its
   `requireEnv` panics on a missing required var) is never registered as
   the thing standing between the agent and every tool call.
-- `docker/settings.json.template` shrinks to the genuinely-safe base
-  set (`Read`, `Glob`, `Grep` — file reads and read-only inspection; no
-  blanket `Bash(git:*)`), with everything else routed through
-  `request_permission`. The claude runner keeps `--permission-prompt-tool`
-  (already wired, now active by default). The posture rationale lives as
-  a comment in `docker/entrypoint.sh` next to where the template is
-  copied, not inside the template itself — CI validates
-  `settings.json.template` with `python3 -m json.tool`, which rejects
-  JSONC-style comments.
+- The static settings allowlist is chosen by whether callbacks are live
+  for the run (flag on AND a token minted — the `CALLBACKS_ACTIVE` gate
+  in `entrypoint.sh`, the same condition that wires
+  `--permission-prompt-tool`), NOT unconditionally (#543):
+  - **callbacks active** → `settings-callbacks.json.template`, the
+    genuinely-safe read-only set (`Read`, `Glob`, `Grep`); everything
+    else routes through `request_permission`.
+  - **callbacks inactive** → `settings.json.template`, the broader
+    pre-Phase-6 set (`Read`, `Bash(git:*)`). With no prompt tool wired
+    this run, tightening the allowlist would fail those tool calls closed
+    with no recourse — so the tightening must be gated on callbacks being
+    active, preserving safe degradation.
+  The posture rationale lives as a comment in `docker/entrypoint.sh` next
+  to where the template is copied, not inside the templates — CI
+  validates both with `python3 -m json.tool`, which rejects JSONC-style
+  comments.
 - Non-claude runners keep their documented posture (no equivalent
   flag), unchanged by the flip.
 
