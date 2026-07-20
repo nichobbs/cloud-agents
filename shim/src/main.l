@@ -134,7 +134,7 @@ func main(): Unit {
     server,
     McpToolDef(
       name = "remember",
-      description = "Save a note keyed to this repository so future sessions on the same repo can read it back — avoids re-learning the repo each time.",
+      description = "Save a note keyed to this repository so future sessions on the same repo can read it back — avoids re-learning the repo each time. Do NOT store secrets, tokens, or credentials here: memory is kept in plaintext and readable by any future session on this repo. Use request_secret for credentials.",
       inputSchema = CloudAgents.Shim.V2Tools.rememberSchema(),
       handler = RememberTool(transport = v2Transport)
     )

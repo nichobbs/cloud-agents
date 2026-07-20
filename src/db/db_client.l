@@ -2312,7 +2312,7 @@ pub func selectSessionOwnerAndRepoSql(id: in String): String {
 val memoryColumns = "id, user_id, repo_key, mem_key, value, created_at, updated_at"
 
 pub func repoMemorySchemaSql(): String {
-  return "CREATE TABLE IF NOT EXISTS memory (" + "id TEXT PRIMARY KEY, " + "user_id TEXT NOT NULL, " +
+  return "CREATE TABLE IF NOT EXISTS memories (" + "id TEXT PRIMARY KEY, " + "user_id TEXT NOT NULL, " +
     "repo_key TEXT NOT NULL, " +
     "mem_key TEXT NOT NULL, " +
     "value TEXT NOT NULL, " +
@@ -2322,7 +2322,7 @@ pub func repoMemorySchemaSql(): String {
 }
 
 pub func repoMemoryIndexSql(): String {
-  return "CREATE INDEX IF NOT EXISTS idx_memory_user_repo ON memory(user_id, repo_key)"
+  return "CREATE INDEX IF NOT EXISTS idx_memories_user_repo ON memories(user_id, repo_key)"
 }
 
 /// Atomic capped upsert of one memory entry (#575, #586). A single statement,
@@ -2344,7 +2344,7 @@ pub func upsertMemoryCappedSql(
   maxEntries: in Int,
 ): String {
   val scopeClause = "user_id = " + sqlLiteral(userId) + " AND repo_key = " + sqlLiteral(repoKey)
-  return "INSERT INTO memory (" + memoryColumns + ") SELECT " + sqlLiteral(id) + ", " + sqlLiteral(userId) + ", " +
+  return "INSERT INTO memories (" + memoryColumns + ") SELECT " + sqlLiteral(id) + ", " + sqlLiteral(userId) + ", " +
     sqlLiteral(repoKey) +
     ", " +
     sqlLiteral(memKey) +
@@ -2354,11 +2354,11 @@ pub func upsertMemoryCappedSql(
     sqlLiteral(createdAt) +
     ", " +
     sqlLiteral(updatedAt) +
-    " WHERE ((SELECT COUNT(*) FROM memory WHERE " +
+    " WHERE ((SELECT COUNT(*) FROM memories WHERE " +
     scopeClause +
     ") < " +
     toString(maxEntries) +
-    " OR EXISTS(SELECT 1 FROM memory WHERE " +
+    " OR EXISTS(SELECT 1 FROM memories WHERE " +
     scopeClause +
     " AND mem_key = " +
     sqlLiteral(memKey) +
@@ -2371,7 +2371,7 @@ pub func upsertMemoryCappedSql(
 /// All memory entries for (user_id, repo_key), ordered by key for stable
 /// listing (recall with no key).
 pub func selectMemoryBySql(userId: in String, repoKey: in String): String {
-  return "SELECT " + memoryColumns + " FROM memory WHERE user_id = " + sqlLiteral(userId) + " AND repo_key = " +
+  return "SELECT " + memoryColumns + " FROM memories WHERE user_id = " + sqlLiteral(userId) + " AND repo_key = " +
     sqlLiteral(repoKey) +
     " ORDER BY mem_key ASC"
 }

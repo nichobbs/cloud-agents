@@ -48,7 +48,7 @@ tool, and adds the operator control the growing tool surface now needs:
   repo memory never leaks into another user's sessions on the same public
   repo. `user_id` is the session's owner, already on `sessions`.
 - **Honest about enforceability.** Where a proposed tool cannot be
-  enforced with today's plumbing (the network-allowlist tool — see §7),
+  enforced with today's plumbing (the network-allowlist tool — see §9.2),
   it is specced as deferred with the concrete plumbing it needs, not
   shipped as a stub that pretends to work.
 
@@ -59,7 +59,7 @@ primary repo is a raw `repo_url TEXT` column on `sessions`
 (`src/db/db_client.l`); a session can also touch several repos via
 `session_repos` (max 20). Phase-7 memory is scoped to the session's
 **primary repo** (`sessions.repo_url`) in v1; multi-repo memory is a
-follow-up (§10).
+follow-up (§11).
 
 The stable key is derived by normalizing the git URL, in a pure,
 unit-testable package `CloudAgents.RepoKey` (`src/repo_key.l`) — pure and
@@ -132,7 +132,7 @@ that persists across sessions.
 - No SSE event: memory is not a live-notification surface. The `memory`
   table's `updated_at` is its own audit trail (who/when is implicit in
   `user_id`), consistent with phase 6's per-feature-row audit model
-  (there is no general audit table — §8).
+  (there is no general audit table).
 
 ### 4.3 Shim side
 
@@ -167,7 +167,7 @@ for `pushManager`/`push_subscriptions`/VAPID). `notify` v1 therefore:
 A UI badge / list reads the rows via a user-auth
 `GET /api/sessions/{id}/notifications`.
 
-**True out-of-tab push (web-push) is a follow-up (§10):** it needs a
+**True out-of-tab push (web-push) is a follow-up (§11):** it needs a
 `push_subscriptions` table, a VAPID keypair, the service worker's
 `push`/`notificationclick` handlers, and a host-side sender. The PWA
 service worker (phase-PWA, `frontend/src/pwaOptions.ts`) is the natural
@@ -197,7 +197,41 @@ sessions on the same repo:
 Kept a separate slice because it touches the artifact download path and
 the on-disk layout; memory (slice 1) is the cleaner first landing.
 
-## Slice 5 — repo-scoped task list (`add_task` / `list_tasks` / `complete_task`)
+## 7. Slice 4 — per-profile tool enablement
+
+The user's requirement: *a profile should define which tools are
+available*. The existing per-profile credential-grant mechanism is the
+exact shape to mirror.
+
+Today a `Profile` has `credentialMode` ∈ {all, selected} plus a
+`profile_credentials(profile_id, user_id, credential_name)` join table;
+`docker_manager.l` injects only the granted credential names in
+`selected` mode (fail-closed). Phase 7 mirrors this for tools:
+
+- Add `tool_mode TEXT NOT NULL DEFAULT 'all'` to `profiles` and a
+  `profile_tools(id, profile_id, user_id, tool_name, UNIQUE(profile_id,
+  tool_name))` join table (migration `0016`).
+- `all` (default) → every shim tool is registered, preserving today's
+  behaviour exactly. `selected` → only the named tools are registered.
+- **Enforcement point:** `docker_manager.l` resolves the session's
+  profile at container creation and injects
+  `CLOUD_AGENTS_ENABLED_TOOLS` (a comma-separated allowlist) into the
+  container, the same place and way it injects resolved credentials. The
+  shim's `main.l` reads it and only `addTool`s a tool whose name is in
+  the list; an empty/unset value means "all" (default-on, so a
+  pre-phase-7 container or an `all`-mode profile is unchanged).
+- **Defense in depth (hardening follow-up):** the host callback handlers
+  can additionally reject a disabled tool's endpoint (403) by consulting
+  the same profile policy, so a tampered container cannot re-enable a
+  tool the operator disabled. v1 relies on the shim not registering it;
+  the host-side gate is tracked as a follow-up.
+
+The tool names are the stable MCP names already in `shim/src/main.l`:
+`request_permission`, `ask_user`, `report_progress`, `request_secret`,
+`add_followup_task`, `report_artifact`, and the phase-7 additions
+(`remember`, `recall`, `notify`). Enablement is per-name.
+
+## 8. Slice 5 — repo-scoped task list (`add_task` / `list_tasks` / `complete_task`)
 
 A cross-session, repo-scoped **worklist with a done-state**. Where memory
 (slice 1) stores durable *facts* an agent recalls, this stores *actionable
@@ -241,43 +275,9 @@ near-copy of the memory slice), and it fills a real gap (`add_followup_task`
 can't be completed by an agent or seen by a later session). Sequenced after
 the memory slice merges to avoid migration-number churn.
 
-## 7. Per-profile tool enablement
+## 9. Two open questions answered
 
-The user's requirement: *a profile should define which tools are
-available*. The existing per-profile credential-grant mechanism is the
-exact shape to mirror.
-
-Today a `Profile` has `credentialMode` ∈ {all, selected} plus a
-`profile_credentials(profile_id, user_id, credential_name)` join table;
-`docker_manager.l` injects only the granted credential names in
-`selected` mode (fail-closed). Phase 7 mirrors this for tools:
-
-- Add `tool_mode TEXT NOT NULL DEFAULT 'all'` to `profiles` and a
-  `profile_tools(id, profile_id, user_id, tool_name, UNIQUE(profile_id,
-  tool_name))` join table (migration `0016`).
-- `all` (default) → every shim tool is registered, preserving today's
-  behaviour exactly. `selected` → only the named tools are registered.
-- **Enforcement point:** `docker_manager.l` resolves the session's
-  profile at container creation and injects
-  `CLOUD_AGENTS_ENABLED_TOOLS` (a comma-separated allowlist) into the
-  container, the same place and way it injects resolved credentials. The
-  shim's `main.l` reads it and only `addTool`s a tool whose name is in
-  the list; an empty/unset value means "all" (default-on, so a
-  pre-phase-7 container or an `all`-mode profile is unchanged).
-- **Defense in depth (hardening follow-up):** the host callback handlers
-  can additionally reject a disabled tool's endpoint (403) by consulting
-  the same profile policy, so a tampered container cannot re-enable a
-  tool the operator disabled. v1 relies on the shim not registering it;
-  the host-side gate is tracked as a follow-up.
-
-The tool names are the stable MCP names already in `shim/src/main.l`:
-`request_permission`, `ask_user`, `report_progress`, `request_secret`,
-`add_followup_task`, `report_artifact`, and the phase-7 additions
-(`remember`, `recall`, `notify`). Enablement is per-name.
-
-## 8. Two open questions answered
-
-### 8.1 Do we need a shell / bash MCP tool?
+### 9.1 Do we need a shell / bash MCP tool?
 
 **No.** Shell execution is a first-class, built-in capability of every
 coding-agent CLI this project runs (Claude Code's `Bash` tool;
@@ -294,7 +294,7 @@ permission gating (an MCP tool call is not itself subject to
 `--permission-prompt-tool`), widening the exact attack surface phase 6
 narrowed. So: shell stays built-in and permission-gated; no MCP tool.
 
-### 8.2 A "request to whitelist a destination" tool in a restricted env?
+### 9.2 A "request to whitelist a destination" tool in a restricted env?
 
 **Not enforceable today — deferred, needs new plumbing.** The restricted
 network environment is only coarsely built out. `CloudAgents.NetworkPolicy`
@@ -320,12 +320,12 @@ reload. Both are a meaningful piece of infrastructure and a security
 surface in their own right (an agent asking to open egress to an
 arbitrary host is precisely the exfiltration channel the restricted mode
 exists to close), so this is out of scope for phase 7's first tools and
-tracked as a design item (§10). The honest status is: the restricted env
+tracked as a design item (§11). The honest status is: the restricted env
 enforces *coarsely* (join-a-network / fully-isolated) and delegates fine
 filtering to an out-of-repo proxy, so there is no in-repo knob a tool
 could turn yet.
 
-## 9. Sequencing (slices)
+## 10. Sequencing (slices)
 
 1. **Slice 1 — memory** (`remember`/`recall`): migration `0013`,
    `CloudAgents.RepoKey`, repository + handlers + routes, shim
@@ -348,7 +348,7 @@ tests hit the endpoints in-process; the shim's client is tested against
 the in-memory `V2CallbackTransport` fake; `scripts/e2e-http.sh` can gain
 a real-HTTP leg per tool.
 
-## 10. Deferred / future
+## 11. Deferred / future
 
 - **Web-push notify** — `push_subscriptions` + VAPID + service-worker
   `push`/`notificationclick` + host sender, so `notify` reaches a closed
@@ -360,14 +360,14 @@ a real-HTTP leg per tool.
 - **`request_capability`** — a coarser, session-scoped capability grant
   (elevate the whole session once) as an alternative to per-call
   `request_permission`. A profile/permission-rule extension.
-- **`request_destination`** — the network-allowlist tool from §8.2, once
+- **`request_destination`** — the network-allowlist tool from §9.2, once
   the restricted-env proxy grows a host-controlled allowlist.
 - **Multi-repo memory** — scope memory to any repo in `session_repos`,
   not just the primary `repo_url`.
 - **`spawn_subagent`** — let a run fan out a scoped sub-task into its own
   container. Depends on the scheduler work above.
 
-## 11. Doc/book sync
+## 12. Doc/book sync
 
 Per `AGENTS.md`, shipped tools update the relevant docs. Each slice
 updates this file's status line and, where the tool is user-visible, the

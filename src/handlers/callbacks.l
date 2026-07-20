@@ -1046,7 +1046,12 @@ pub func rememberHandler(
 
 /// GET /api/sessions/{id}/callbacks/memory — container-originated (recall MCP
 /// tool). Returns every entry for the session's repo; the shim filters to a
-/// single key client-side when `recall(key)` is called with one.
+/// single key client-side when `recall(key)` is called with one. Fetching the
+/// whole set even for a keyed recall (#590) is deliberate: the store is
+/// hard-capped (maxMemoryEntries, 256 entries) so the response is bounded and
+/// small, and one list endpoint keeps the host simple and avoids URL-encoding
+/// a free-form key into a query string. A dedicated single-key endpoint is a
+/// cheap future optimization if a real store ever grows large.
 pub func recallHandler(id: in String, authHeaderValue: in String): Result[MemoryListResponse, Web.ApiError] {
   if id.length == 0 {
     return Err(Web.badRequest("id is required"))

@@ -518,6 +518,16 @@ test "remember validates key/value and rejects a session with no repo to scope t
     case Ok(_) -> assertTrue(false, "empty value must be rejected")
     case Err(e) -> assertEqualInt(e.status, 400, "empty value -> 400")
   }
+  // An over-length key (> 256) and an over-length value (> 64 KiB) are both
+  // rejected before any write (#589).
+  match rememberHandler(sid, bearer(token), RememberRequest(key = atLeast(257), value = "v")) {
+    case Ok(_) -> assertTrue(false, "an over-length key must be rejected")
+    case Err(e) -> assertEqualInt(e.status, 400, "over-length key -> 400")
+  }
+  match rememberHandler(sid, bearer(token), RememberRequest(key = "k", value = atLeast(65537))) {
+    case Ok(_) -> assertTrue(false, "an over-length value must be rejected")
+    case Err(e) -> assertEqualInt(e.status, 400, "over-length value -> 400")
+  }
 
   val sidNoRepo = "sess-memory-norepo"
   mkSessionRepo(sidNoRepo, "")
