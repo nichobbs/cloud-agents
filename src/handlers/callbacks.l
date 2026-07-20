@@ -939,8 +939,10 @@ pub func downloadArtifactHandler(id: in String, aid: in String): Result[Web.Resp
 // trail (docs/phase7 §4.2).
 val maxMemoryKeyLen = 256
 
-/// 64 KiB — a memory value is short accumulated context (build quirks, test
-/// layout, deploy steps), not a file; report_artifact is the path for bytes.
+/// 65,536 characters (UTF-16 code units, as CloudAgents.Text.withinMaxLength
+/// counts — not bytes, #596). A memory value is short accumulated context
+/// (build quirks, test layout, deploy steps), not a file; report_artifact is
+/// the path for bytes.
 val maxMemoryValueLen = 65536
 
 /// Per-repo memory entry cap (#575): bounds a repo's store at

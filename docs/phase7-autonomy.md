@@ -126,7 +126,8 @@ that persists across sessions.
   - `POST /api/sessions/{id}/callbacks/memory` `{key, value}` —
     container-originated (`authorizeCallbackToken`), resolves the
     session's `user_id` + normalized `repo_key`, upserts. Bounded key
-    (256) and value (64 KiB) lengths, and a per-repo cap of 256 distinct
+    (256) and value (65,536) lengths — character counts, not bytes — and a
+    per-repo cap of 256 distinct
     keys (overwrites of an existing key are always allowed; only a new key
     past the cap is rejected) so the store can't grow unbounded.
   - `GET /api/sessions/{id}/callbacks/memory` — container-originated,

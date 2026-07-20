@@ -46,6 +46,19 @@ test "repoKeyOf treats a numeric scp path segment as a path, not a port (#585)" 
   )
 }
 
+test "repoKeyOf strips query strings and fragments but keeps nested path segments (#597)" {
+  val want = "github.com/nichobbs/cloud-agents"
+  assertEqual(repoKeyOf("https://github.com/nichobbs/cloud-agents?ref=main"), want, "query string dropped")
+  assertEqual(repoKeyOf("https://github.com/nichobbs/cloud-agents.git?token=x"), want, "query after .git dropped")
+  assertEqual(repoKeyOf("https://github.com/nichobbs/cloud-agents#readme"), want, "fragment dropped")
+  // Nested-group hosts keep every path segment — truncating would merge repos.
+  assertEqual(
+    repoKeyOf("https://gitlab.com/group/subgroup/repo.git"),
+    "gitlab.com/group/subgroup/repo",
+    "GitLab subgroup path is preserved, not truncated"
+  )
+}
+
 test "repoKeyOf lowercases so case never forks a repo's identity" {
   assertEqual(
     repoKeyOf("https://github.com/NicHobbs/Cloud-Agents.git"),

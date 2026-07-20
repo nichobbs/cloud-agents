@@ -121,6 +121,19 @@ pub func repoKeyOf(url: in String): String {
       s = before + "/" + after
     }
   }
+  // Drop any query string or fragment — never part of repo identity, so
+  // `…/repo?ref=x` and `…/repo#readme` scope to the same memory as the bare
+  // `…/repo` (#597). Extra path segments are deliberately NOT trimmed:
+  // nested-group hosts (GitLab `group/subgroup/repo`) make them part of the
+  // identity, so truncating to owner/repo would merge distinct repos.
+  val q = firstIndexOf(s, "?")
+  if q >= 0 {
+    s = s.substring(0, q)
+  }
+  val frag = firstIndexOf(s, "#")
+  if frag >= 0 {
+    s = s.substring(0, frag)
+  }
   // Strip a trailing '/', then a trailing '.git', then any resulting '/'.
   if s.endsWith("/") {
     s = dropLast(s, 1)
