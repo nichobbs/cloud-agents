@@ -321,6 +321,20 @@ pub func recall(transport: in V2CallbackTransport, key: in String): Result[Strin
   return Ok(value = acc)
 }
 
+/// Delete a memory entry for this session's repo, freeing a slot under the
+/// cap (#592). Reports whether the key existed; forgetting an absent key is a
+/// success, not an error.
+pub func forget(transport: in V2CallbackTransport, key: in String): Result[String, String] {
+  val body = match transport.forget(key) {
+    case Ok(b) -> b
+    case Err(e) -> return Err(error = "failed to reach the cloud-agents host: " + e)
+  }
+  return match tryDecodeForgetResponse(body) {
+    case Some(r) -> if r.status == "deleted" { Ok(value = "forgot '" + r.key + "'") } else { Ok(value = "no memory stored under '" + r.key + "' for this repository") }
+    case None -> Err(error = "malformed response from the cloud-agents host when forgetting memory")
+  }
+}
+
 // ── report_artifact ───────────────────────────────────────────────────────────
 @externTarget("System.Convert.ToBase64String")
 func encodeBase64(b: in slice[Byte]): String = ""

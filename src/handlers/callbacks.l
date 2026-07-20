@@ -970,6 +970,20 @@ pub record MemoryListResponse {
   pub entries: slice[MemoryEntry]
 }
 
+@generate(Json)
+pub record ForgetRequest {
+  pub key: String
+}
+
+/// `status` is "deleted" (a row was removed) or "absent" (no such key) — a
+/// String rather than a Bool since this schema's JSON records are all
+/// TEXT-valued.
+@generate(Json)
+pub record ForgetResponse {
+  pub key: String
+  pub status: String
+}
+
 /// The (owner, repo) a session's memory is scoped to.
 record SessionMemoryScope {
   userId: String
@@ -1068,4 +1082,26 @@ pub func listMemoryHandler(id: in String): Result[MemoryListResponse, Web.ApiErr
   }
   requireOwnedSession(id)?
   return memoryListFor(id)
+}
+
+/// POST /api/sessions/{id}/callbacks/memory/forget — container-originated
+/// (forget MCP tool, #592). Deletes one entry for the session's repo so a slot
+/// can be freed under the cap. Idempotent: forgetting an absent key is a
+/// success with status "absent", not an error.
+pub func forgetHandler(
+  id: in String, authHeaderValue: in String, req: in ForgetRequest
+): Result[ForgetResponse, Web.ApiError] {
+  if id.length == 0 {
+    return Err(Web.badRequest("id is required"))
+  }
+  authorizeCallbackToken(id, authHeaderValue)?
+  if req.key.length == 0 {
+    return Err(Web.badRequest("key is required"))
+  }
+  val memScope = resolveMemoryScope(id)?
+  match CloudAgents.Repository.deleteMemory(memScope.userId, memScope.repoKey, req.key) {
+    case Ok(true) -> return Ok(ForgetResponse(key = req.key, status = "deleted"))
+    case Ok(false) -> return Ok(ForgetResponse(key = req.key, status = "absent"))
+    case Err(e) -> return Err(dbError(e))
+  }
 }

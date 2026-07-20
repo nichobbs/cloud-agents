@@ -2678,6 +2678,15 @@ pub func listMemory(userId: in String, repoKey: in String): Result[slice[MemoryR
   return Ok(value = acc)
 }
 
+/// Delete a memory entry by key (#592). Returns true when a row was removed,
+/// false when no entry existed under that key.
+pub func deleteMemory(
+  userId: in String, repoKey: in String, memKey: in String
+): Result[Bool, CloudAgents.Sqlite.DbError] {
+  val affected = CloudAgents.Sqlite.execute(CloudAgents.Db.deleteMemorySql(userId, repoKey, memKey))?
+  return Ok(value = affected > 0)
+}
+
 /// Artifacts reported for a session strictly after `afterCreatedAt`, oldest
 /// first — for the `artifact_reported` SSE event.
 pub func artifactsCreatedAfter(

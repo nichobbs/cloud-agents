@@ -106,17 +106,22 @@ that persists across sessions.
   Without `key`, returns every entry (key + value) for the repo, so an
   agent can load the whole accumulated context at the start of a session
   in one call — the "pick it up next time" flow.
+- `forget(key)` — delete one entry for this session's repo (#592), so
+  stale notes can be pruned and a slot freed when the entry cap is
+  reached. Idempotent: forgetting an absent key succeeds (reports
+  "absent"), it is not an error.
 
 ### 4.2 Host side
 
 - Migration `0013_repo_memory`: table
-  `memory(id, user_id, repo_key, mem_key, value, created_at, updated_at)`
+  `memories(id, user_id, repo_key, mem_key, value, created_at, updated_at)`
   with `UNIQUE(user_id, repo_key, mem_key)`, plus an index on
   `(user_id, repo_key)`. All columns `TEXT` (schema convention).
-- `CloudAgents.Repository`: `upsertMemory(userId, repoKey, key, value)`
-  (INSERT … ON CONFLICT(user_id, repo_key, mem_key) DO UPDATE SET
-  value=…, updated_at=…) and `listMemory(userId, repoKey)` /
-  `getMemory(userId, repoKey, key)`.
+- `CloudAgents.Repository`: `upsertMemoryCapped(userId, repoKey, key,
+  value, maxEntries)` (a single atomic
+  `INSERT … SELECT … WHERE … ON CONFLICT DO UPDATE` that enforces the cap
+  race-free), `listMemory(userId, repoKey)`, and `deleteMemory(userId,
+  repoKey, key)`.
 - `CloudAgents.Callbacks`:
   - `POST /api/sessions/{id}/callbacks/memory` `{key, value}` —
     container-originated (`authorizeCallbackToken`), resolves the
@@ -127,9 +132,11 @@ that persists across sessions.
   - `GET /api/sessions/{id}/callbacks/memory` — container-originated,
     returns all entries for the repo as JSON (`recall` with no key reads
     this; `recall(key)` filters client-side in the shim).
+  - `POST /api/sessions/{id}/callbacks/memory/forget` `{key}` —
+    container-originated, deletes one entry (`forget`, #592). Idempotent.
   - `GET /api/sessions/{id}/memory` — user-originated
     (`requireOwnedSession`), so the UI can show/inspect a repo's memory.
-- No SSE event: memory is not a live-notification surface. The `memory`
+- No SSE event: memory is not a live-notification surface. The `memories`
   table's `updated_at` is its own audit trail (who/when is implicit in
   `user_id`), consistent with phase 6's per-feature-row audit model
   (there is no general audit table).
@@ -139,14 +146,16 @@ that persists across sessions.
 Mirrors `add_followup_task` field-for-field:
 
 - `CloudAgents.Shim.V2Transport`: `RememberRequest{key,value}`,
-  `MemoryEntry{key,value}`, `MemoryListResponse{entries}` wire records;
-  `remember`/`recallAll` on the `V2CallbackTransport` interface + the
-  `HttpV2CallbackTransport` impl (`POST`/`GET …/callbacks/memory`).
+  `MemoryEntry{key,value}`, `MemoryListResponse{entries}`,
+  `ForgetRequest{key}` / `ForgetResponse{key,status}` wire records;
+  `remember`/`recallAll`/`forget` on the `V2CallbackTransport` interface +
+  the `HttpV2CallbackTransport` impl (`POST`/`GET …/callbacks/memory`,
+  `POST …/callbacks/memory/forget`).
 - `CloudAgents.Shim.V2Client`: `remember(transport, key, value)` (single
-  POST) and `recall(transport, keyOpt)` (single GET, filters by key when
-  present).
-- `CloudAgents.Shim.V2Tools`: `RememberTool` / `RecallTool` with their
-  schemas; registered in `shim/src/main.l` via `addTool`.
+  POST), `recall(transport, keyOpt)` (single GET, filters by key when
+  present), and `forget(transport, key)` (single POST).
+- `CloudAgents.Shim.V2Tools`: `RememberTool` / `RecallTool` / `ForgetTool`
+  with their schemas; registered in `shim/src/main.l` via `addTool`.
 
 ## 5. Slice 2 — `notify(summary, level?)`
 

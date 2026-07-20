@@ -313,3 +313,50 @@ impl McpToolHandler for RecallTool {
     }
   }
 }
+
+// ── forget (phase 7 §4, #592) ─────────────────────────────────────────────────
+pub func forgetSchema(): JsonValue {
+  JObject(
+    fields = [
+      JsonField(name = "type", value = JString(value = "object")),
+      JsonField(
+        name = "properties",
+        value = JObject(
+          fields = [
+            stringSchemaField(
+              "key",
+              "The memory key to delete for this repository — frees a slot under the entry limit."
+            )
+          ]
+        )
+      ),
+      JsonField(name = "required", value = JArray(items = [JString(value = "key")]))
+    ]
+  )
+}
+
+pub record ForgetTool {
+  pub transport: V2CallbackTransport
+}
+
+func handleForget(tool: in ForgetTool, args: in Option[JsonValue]): McpToolResult {
+  val a = match args { case Some(v) -> v; case None -> return toolErrorResult("missing arguments: 'key' is required") }
+  val key = match getString(a, "key") {
+    case Some(k) -> k
+    case None -> return toolErrorResult("missing required argument 'key'")
+  }
+  return match CloudAgents.Shim.V2Client.forget(tool.transport, key) {
+    case Ok(text) -> toolTextResult(text)
+    case Err(message) -> toolErrorResult(message)
+  }
+}
+
+impl McpToolHandler for ForgetTool {
+  func call(args: in Option[JsonValue]): Result[McpToolResult, String] {
+    try {
+      Ok(value = handleForget(self, args))
+    } catch Bug as b {
+      Ok(value = toolErrorResult("internal error in cloud-agents-shim: " + b.message))
+    }
+  }
+}

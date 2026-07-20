@@ -323,3 +323,27 @@ test "recallSchema declares no required field" {
   assertTrue(schemaJson.contains("\"key\""), "schema mentions the optional 'key'")
   assertTrue(not schemaJson.contains("\"required\""), "recall has no required fields")
 }
+
+test "forget tool deletes a key and reports it" {
+  val fake = newFakeV2Transport()
+  fake.forgetOk = true
+  fake.forgetBody = "{\"key\":\"build\",\"status\":\"deleted\"}"
+  val tool = ForgetTool(transport = fake)
+
+  val args = Some(value = JObject(fields = [JsonField(name = "key", value = JString(value = "build"))]))
+  val result = match tool.call(args) { case Ok(r) -> r; case Err(e) -> panic("unexpected Err: " + e) }
+  assertTrue(not result.isError, "a successful forget is not a tool error")
+  assertTrue(onlyText(result).contains("build"), "result names the forgotten key: " + onlyText(result))
+  assertEqual(fake.lastForgetKey, "build", "the key was forwarded")
+}
+
+test "forget tool denies for a missing key without contacting the host" {
+  val fake = newFakeV2Transport()
+  val tool = ForgetTool(transport = fake)
+
+  val args = Some(value = JObject(fields = newList()))
+  val result = match tool.call(args) { case Ok(r) -> r; case Err(e) -> panic("unexpected Err: " + e) }
+  assertTrue(result.isError, "a missing key is a tool error")
+  assertTrue(onlyText(result).contains("key"), "error names the missing field: " + onlyText(result))
+  assertEqual(fake.lastForgetKey, "", "the host is never contacted for a malformed call")
+}

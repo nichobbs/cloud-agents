@@ -231,6 +231,40 @@ test "recall surfaces a transport failure" {
   }
 }
 
+test "forget reports a deleted key and sends it to the host" {
+  val fake = newFakeV2Transport()
+  fake.forgetOk = true
+  fake.forgetBody = "{\"key\":\"build\",\"status\":\"deleted\"}"
+
+  match forget(fake, "build") {
+    case Ok(msg) -> assertTrue(msg.contains("forgot") and msg.contains("build"), "confirms deletion: " + msg)
+    case Err(message) -> assertTrue(false, "expected Ok, got Err: " + message)
+  }
+  assertEqual(fake.lastForgetKey, "build", "the key was sent to the host")
+}
+
+test "forget of an absent key is a success, not an error" {
+  val fake = newFakeV2Transport()
+  fake.forgetOk = true
+  fake.forgetBody = "{\"key\":\"nope\",\"status\":\"absent\"}"
+
+  match forget(fake, "nope") {
+    case Ok(msg) -> assertTrue(msg.contains("no memory"), "reports the key was absent: " + msg)
+    case Err(message) -> assertTrue(false, "an absent key must not be an error: " + message)
+  }
+}
+
+test "forget surfaces a transport failure" {
+  val fake = newFakeV2Transport()
+  fake.forgetOk = false
+  fake.forgetError = "connection refused"
+
+  match forget(fake, "k") {
+    case Ok(msg) -> assertTrue(false, "expected Err, got Ok(" + msg + ")")
+    case Err(message) -> assertTrue(message.contains("connection refused"), "error carries the transport failure: " + message)
+  }
+}
+
 // ── report_artifact ─────────────────────────────────────────────────────────
 func writeTempFile(name: in String, content: in String): String {
   val path = "/tmp/cloud-agents-shim-test-" + name
@@ -321,6 +355,10 @@ impl V2CallbackTransport for ClockJumpingV2Transport {
 
   func recallAll(): Result[String, String] {
     Ok(value = "{\"entries\":[]}")
+  }
+
+  func forget(key: in String): Result[String, String] {
+    Ok(value = "{\"key\":\"cj\",\"status\":\"absent\"}")
   }
 }
 

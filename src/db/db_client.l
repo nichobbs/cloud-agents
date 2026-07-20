@@ -2375,3 +2375,12 @@ pub func selectMemoryBySql(userId: in String, repoKey: in String): String {
     sqlLiteral(repoKey) +
     " ORDER BY mem_key ASC"
 }
+
+/// Delete one memory entry by key (#592, backs the `forget` tool so an entry
+/// can be pruned to free a slot under the cap). Affects 1 row when the key
+/// existed, 0 otherwise.
+pub func deleteMemorySql(userId: in String, repoKey: in String, memKey: in String): String {
+  return "DELETE FROM memories WHERE user_id = " + sqlLiteral(userId) + " AND repo_key = " + sqlLiteral(repoKey) +
+    " AND mem_key = " +
+    sqlLiteral(memKey)
+}

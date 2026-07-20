@@ -562,6 +562,41 @@ test "recall requires a valid callback token; the owner can list via the user ro
   }
 }
 
+test "forget deletes an entry, frees a slot under the cap, and is idempotent (#592)" {
+  val dbPath = useFreshTestDb("memory-forget")
+  defer {
+    cleanupTestDb(dbPath)
+  }
+  CloudAgents.Auth.setCurrentUserId("default")
+  val sid = "sess-memory-forget"
+  mkSession(sid)
+  val token = mintToken(sid, "default")
+
+  match rememberHandler(sid, bearer(token), RememberRequest(key = "build", value = "make lyric")) {
+    case Ok(_) -> ()
+    case Err(e) -> assertTrue(false, "remember failed: " + toString(e.status))
+  }
+  // Forgetting a present key deletes it.
+  match forgetHandler(sid, bearer(token), ForgetRequest(key = "build")) {
+    case Ok(r) -> assertEqual(r.status, "deleted", "an existing key reports deleted")
+    case Err(e) -> assertTrue(false, "forget failed: " + toString(e.status))
+  }
+  match recallHandler(sid, bearer(token)) {
+    case Ok(l) -> assertEqualInt(l.entries.length.toInt(), 0, "the entry is gone after forget")
+    case Err(e) -> assertTrue(false, "recall failed: " + toString(e.status))
+  }
+  // Forgetting an absent key is a success, not an error (idempotent).
+  match forgetHandler(sid, bearer(token), ForgetRequest(key = "build")) {
+    case Ok(r) -> assertEqual(r.status, "absent", "a missing key reports absent, not an error")
+    case Err(e) -> assertTrue(false, "idempotent forget must not error: " + toString(e.status))
+  }
+  // A wrong callback token is rejected.
+  match forgetHandler(sid, bearer("wrong-token"), ForgetRequest(key = "build")) {
+    case Ok(_) -> assertTrue(false, "a wrong callback token must be rejected")
+    case Err(e) -> assertEqualInt(e.status, 401, "bad token -> 401")
+  }
+}
+
 test "remember caps the number of distinct keys per repo but always allows overwrites (#575)" {
   val dbPath = useFreshTestDb("memory-cap")
   defer {

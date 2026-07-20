@@ -148,6 +148,15 @@ func main(): Unit {
       handler = RecallTool(transport = v2Transport)
     )
   )
+  addTool(
+    server,
+    McpToolDef(
+      name = "forget",
+      description = "Delete one remembered entry for this repository by key — use it to prune stale notes or free a slot when the memory limit is reached.",
+      inputSchema = CloudAgents.Shim.V2Tools.forgetSchema(),
+      handler = ForgetTool(transport = v2Transport)
+    )
+  )
 
   match serveStdio(server) {
     case Ok(_) -> ()

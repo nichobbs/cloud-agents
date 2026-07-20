@@ -47,6 +47,11 @@ pub record FakeV2Transport {
   pub var recallBody: String
   pub var recallError: String
   pub var recallCallCount: Int
+
+  pub var forgetOk: Bool
+  pub var forgetBody: String
+  pub var forgetError: String
+  pub var lastForgetKey: String
 }
 
 /// A ready-to-use fake with sensible not-configured-yet defaults: creating
@@ -81,7 +86,11 @@ pub func newFakeV2Transport(): FakeV2Transport {
     recallOk = false,
     recallBody = "",
     recallError = "FakeV2Transport: recallAll not configured",
-    recallCallCount = 0
+    recallCallCount = 0,
+    forgetOk = false,
+    forgetBody = "",
+    forgetError = "FakeV2Transport: forget not configured",
+    lastForgetKey = ""
   )
 }
 
@@ -147,6 +156,15 @@ impl V2CallbackTransport for FakeV2Transport {
       Ok(value = self.recallBody)
     } else {
       Err(error = self.recallError)
+    }
+  }
+
+  func forget(key: in String): Result[String, String] {
+    self.lastForgetKey = key
+    if self.forgetOk {
+      Ok(value = self.forgetBody)
+    } else {
+      Err(error = self.forgetError)
     }
   }
 }
