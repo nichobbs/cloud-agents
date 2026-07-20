@@ -197,6 +197,50 @@ sessions on the same repo:
 Kept a separate slice because it touches the artifact download path and
 the on-disk layout; memory (slice 1) is the cleaner first landing.
 
+## Slice 5 — repo-scoped task list (`add_task` / `list_tasks` / `complete_task`)
+
+A cross-session, repo-scoped **worklist with a done-state**. Where memory
+(slice 1) stores durable *facts* an agent recalls, this stores *actionable
+work items* that outlive a session: one session leaves "still need to
+migrate the auth module," a later session on the same repo lists the open
+items, does one, and marks it done.
+
+**Distinct from phase-6 `add_followup_task`** (deliberately not a rename of
+it). `add_followup_task` writes a **session-scoped** todo — a note *for the
+human* on the current session (`CloudAgents.Repository.addTodo` →
+`listTodos(sessionId)`), with no cross-session visibility and no
+agent-driven completion. This slice is a **repo-scoped, agent-facing shared
+backlog** with an open→done lifecycle. Both stay; the doc and tool
+descriptions call out the difference so an agent picks the right one (leave
+a note for the human on this run → `add_followup_task`; queue/track work for
+future sessions on this repo → `add_task`).
+
+Design mirrors the memory slice almost exactly (same callback channel, same
+`(user_id, repo_key)` scoping, same auth split):
+
+- Migration `0017`: table `repo_tasks(id, user_id, repo_key, description,
+  status, created_at, updated_at)` where `status ∈ {open, done}`, index on
+  `(user_id, repo_key, status)`. Same per-repo entry cap as memory so a
+  runaway loop can't flood the backlog.
+- Host (`CloudAgents.Callbacks`): `POST …/callbacks/tasks` `{description}`
+  (create, open), `GET …/callbacks/tasks?status=` (list, container-auth),
+  `POST …/callbacks/tasks/{tid}/complete` (mark done), and a user-auth
+  `GET /api/sessions/{id}/tasks` for the UI. Resolves owner + repo_key
+  exactly as memory does. `complete_task` is idempotent and repo-scoped
+  (a task id only completes within its own repo).
+- Shim: `add_task(description)`, `list_tasks(status?)`,
+  `complete_task(id)` tools, same transport/client/tool structure as
+  `remember`/`recall`.
+
+No SSE event needed (the UI polls, like todos already do); the `repo_tasks`
+row's `status` + `updated_at` are its own audit trail.
+
+**Recommendation: yes, worth building** — it's the natural companion to
+memory for genuinely autonomous multi-session work, it's low-risk (a
+near-copy of the memory slice), and it fills a real gap (`add_followup_task`
+can't be completed by an agent or seen by a later session). Sequenced after
+the memory slice merges to avoid migration-number churn.
+
 ## 7. Per-profile tool enablement
 
 The user's requirement: *a profile should define which tools are
@@ -294,6 +338,10 @@ could turn yet.
 4. **Slice 4 — per-profile tool enablement**: `profiles.tool_mode` +
    `profile_tools`, `docker_manager.l` `CLOUD_AGENTS_ENABLED_TOOLS`
    injection, shim conditional registration, profile UI/API surface.
+5. **Slice 5 — repo-scoped task list** (`add_task` / `list_tasks` /
+   `complete_task`): migration `0017` (`repo_tasks`), handlers + shim
+   tools, tests. A near-copy of the memory slice with an open→done
+   status; see the "Slice 5" section above.
 
 Each slice is testable Docker-free the same way phase 6 is: handler
 tests hit the endpoints in-process; the shim's client is tested against
