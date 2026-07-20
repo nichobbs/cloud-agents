@@ -891,6 +891,17 @@ pub func profileCredentialsProfileIndexSql(): String {
   return "CREATE INDEX IF NOT EXISTS idx_profile_credentials_profile_id ON profile_credentials(profile_id)"
 }
 
+/// ALTER adding tool-enablement mode to an existing profiles table
+/// (docs/phase7-autonomy.md §7). Mirrors alterSessionsAddProfileSql's
+/// "backfill via DEFAULT" pattern: DEFAULT 'all' means every existing
+/// profile keeps today's behaviour exactly — no tool restriction, so the
+/// shim registers every tool just as it did before this column existed.
+/// Non-idempotent (ADD COLUMN fails if the column already exists), so it
+/// lives in a versioned migration that runs exactly once.
+pub func alterProfilesAddToolModeSql(): String {
+  return "ALTER TABLE profiles ADD COLUMN tool_mode TEXT NOT NULL DEFAULT 'all'"
+}
+
 /// INSERT a new profile.
 pub func insertProfileSql(
   id: in String,
@@ -899,9 +910,10 @@ pub func insertProfileSql(
   harness: in String,
   networkPolicy: in String,
   credentialMode: in String,
+  toolMode: in String,
   createdAt: in String,
 ): String {
-  return "INSERT INTO profiles (id, user_id, name, harness, network_policy, credential_mode, created_at, updated_at) VALUES (" +
+  return "INSERT INTO profiles (id, user_id, name, harness, network_policy, credential_mode, tool_mode, created_at, updated_at) VALUES (" +
     sqlLiteral(id) +
     ", " +
     sqlLiteral(userId) +
@@ -914,13 +926,18 @@ pub func insertProfileSql(
     ", " +
     sqlLiteral(credentialMode) +
     ", " +
+    sqlLiteral(toolMode) +
+    ", " +
     sqlLiteral(createdAt) +
     ", " +
     sqlLiteral(createdAt) +
     ")"
 }
 
-val profileColumns = "id, user_id, name, harness, network_policy, credential_mode, created_at, updated_at"
+// tool_mode is appended as the LAST column (like sessions.profile_id) so the
+// fixed positional indices every other reader uses (colAt(r.cols, N) in
+// rowToProfile) stay stable across the ALTER.
+val profileColumns = "id, user_id, name, harness, network_policy, credential_mode, created_at, updated_at, tool_mode"
 
 /// SELECT one user's profiles, alphabetical by name.
 pub func selectProfilesSql(userId: in String): String {
@@ -947,12 +964,15 @@ pub func updateProfileSql(
   harness: in String,
   networkPolicy: in String,
   credentialMode: in String,
+  toolMode: in String,
   updatedAt: in String,
 ): String {
   return "UPDATE profiles SET name = " + sqlLiteral(name) + ", harness = " + sqlLiteral(harness) + ", network_policy = " +
     sqlLiteral(networkPolicy) +
     ", credential_mode = " +
     sqlLiteral(credentialMode) +
+    ", tool_mode = " +
+    sqlLiteral(toolMode) +
     ", updated_at = " +
     sqlLiteral(updatedAt) +
     " WHERE id = " +
@@ -991,6 +1011,46 @@ pub func selectProfileCredentialsSql(profileId: in String, userId: in String): S
 /// update, and to clean up when a profile is deleted).
 pub func deleteProfileCredentialsSql(profileId: in String, userId: in String): String {
   return "DELETE FROM profile_credentials WHERE profile_id = " + sqlLiteral(profileId) + " AND user_id = " +
+    sqlLiteral(userId)
+}
+
+/// DDL for the join table naming which tools a 'selected'-mode profile
+/// enables (docs/phase7-autonomy.md §7). Mirrors profile_credentials exactly
+/// — tool_name plays the same role credential_name does above.
+pub func profileToolsSchemaSql(): String {
+  return "CREATE TABLE IF NOT EXISTS profile_tools (" + "id TEXT PRIMARY KEY, " + "profile_id TEXT NOT NULL, " +
+    "user_id TEXT NOT NULL, " +
+    "tool_name TEXT NOT NULL, " +
+    "UNIQUE(profile_id, tool_name))"
+}
+
+/// Index for the profile_id lookups the tool-enablement resolution path uses.
+pub func profileToolsProfileIndexSql(): String {
+  return "CREATE INDEX IF NOT EXISTS idx_profile_tools_profile_id ON profile_tools(profile_id)"
+}
+
+/// INSERT one tool grant for a profile.
+pub func insertProfileToolSql(id: in String, profileId: in String, userId: in String, toolName: in String): String {
+  return "INSERT INTO profile_tools (id, profile_id, user_id, tool_name) VALUES (" + sqlLiteral(id) + ", " +
+    sqlLiteral(profileId) +
+    ", " +
+    sqlLiteral(userId) +
+    ", " +
+    sqlLiteral(toolName) +
+    ") ON CONFLICT(profile_id, tool_name) DO NOTHING"
+}
+
+/// SELECT the tool names a profile enables, alphabetical.
+pub func selectProfileToolsSql(profileId: in String, userId: in String): String {
+  return "SELECT tool_name FROM profile_tools WHERE profile_id = " + sqlLiteral(profileId) + " AND user_id = " +
+    sqlLiteral(userId) +
+    " ORDER BY tool_name ASC"
+}
+
+/// DELETE every tool grant for a profile (used to replace the set on update,
+/// and to clean up when a profile is deleted).
+pub func deleteProfileToolsSql(profileId: in String, userId: in String): String {
+  return "DELETE FROM profile_tools WHERE profile_id = " + sqlLiteral(profileId) + " AND user_id = " +
     sqlLiteral(userId)
 }
 

@@ -14,6 +14,27 @@ import CloudAgents.Sqlite
 
 val maxProfileNameLen = 200
 
+// The stable MCP tool names the in-container shim can register (see
+// shim/src/main.l — an entirely separate Lyric project with its own
+// lyric.toml/build, so there is no dependency edge to share this list
+// through code; it is kept in sync by hand). This is exactly the set
+// profile_tools.tool_name may be drawn from in 'selected' mode
+// (docs/phase7-autonomy.md §7).
+val validShimToolNames: slice[String] = [
+  "request_permission",
+  "ask_user",
+  "report_progress",
+  "request_secret",
+  "add_followup_task",
+  "report_artifact",
+  "remember",
+  "recall",
+  "forget",
+  "add_task",
+  "list_tasks",
+  "complete_task"
+]
+
 @generate(Json)
 pub record SaveProfileRequest {
   pub name: String
@@ -24,6 +45,8 @@ pub record SaveProfileRequest {
   pub skillIds: slice[String]
   pub subagentIds: slice[String]
   pub mcpServerIds: slice[String]
+  pub toolMode: String
+  pub tools: slice[String]
 }
 
 func dbError(e: in CloudAgents.Sqlite.DbError): Web.ApiError {
@@ -67,6 +90,25 @@ pub func isValidNetworkPolicy(p: in String): Bool {
 /// grants.
 pub func isValidCredentialMode(m: in String): Bool {
   return m == "all" or m == "selected"
+}
+
+/// Tool-enablement mode: every shim tool registered, or only the named tools
+/// (docs/phase7-autonomy.md §7). Mirrors isValidCredentialMode exactly.
+pub func isValidToolMode(m: in String): Bool {
+  return m == "all" or m == "selected"
+}
+
+/// Whether `name` is one of the stable MCP tool names the shim can
+/// register — see validShimToolNames' doc comment above.
+pub func isValidToolName(name: in String): Bool {
+  var i = 0
+  while i < validShimToolNames.length {
+    if validShimToolNames[i] == name {
+      return true
+    }
+    i = i + 1
+  }
+  return false
 }
 
 /// Harness the profile pins, or "" to let the session choose. Mirrors the
@@ -121,6 +163,9 @@ func validateSaveProfile(req: in SaveProfileRequest): Option[Web.ApiError] {
   if not isValidProfileHarness(req.harness) {
     return Some(value = Web.badRequest("harness must be empty or one of: claude, codex, opencode, gemini"))
   }
+  if not isValidToolMode(req.toolMode) {
+    return Some(value = Web.badRequest("toolMode must be one of: all, selected"))
+  }
   // In 'selected' mode, every granted name must be a valid env-var name, and
   // no name may repeat: profileCredentialStatements inserts one row per
   // credential into profile_credentials, whose own UNIQUE(profile_id,
@@ -145,6 +190,17 @@ func validateSaveProfile(req: in SaveProfileRequest): Option[Web.ApiError] {
       i = i + 1
     }
   }
+  // In 'selected' mode, every enabled tool must be one of the shim's known
+  // tool names (docs/phase7-autonomy.md §7).
+  if req.toolMode == "selected" {
+    var ti = 0
+    while ti < req.tools.length {
+      if not isValidToolName(req.tools[ti]) {
+        return Some(value = Web.badRequest("unknown tool name: " + req.tools[ti]))
+      }
+      ti = ti + 1
+    }
+  }
   return None
 }
 
@@ -154,6 +210,18 @@ func validateSaveProfile(req: in SaveProfileRequest): Option[Web.ApiError] {
 func grantsFor(req: in SaveProfileRequest): slice[String] {
   if req.credentialMode == "selected" {
     return req.credentials
+  }
+  val empty: slice[String] = []
+  return empty
+}
+
+/// The tool grants to persist: only meaningful in 'selected' mode, so an
+/// 'all'-mode profile always stores an empty set (avoids a stale list
+/// lingering if the mode is later flipped without re-sending the names).
+/// Mirrors grantsFor exactly (docs/phase7-autonomy.md §7).
+func toolsFor(req: in SaveProfileRequest): slice[String] {
+  if req.toolMode == "selected" {
+    return req.tools
   }
   val empty: slice[String] = []
   return empty
@@ -181,7 +249,7 @@ pub func addProfileHandler(req: in SaveProfileRequest): Result[Profile, Web.ApiE
     case Ok(None) -> ()
     case Err(e) -> return Err(dbError(e))
   }
-  match addProfile(userId, name, req.harness, req.networkPolicy, req.credentialMode, grantsFor(req), req.skillIds, req.subagentIds, req.mcpServerIds) {
+  match addProfile(userId, name, req.harness, req.networkPolicy, req.credentialMode, grantsFor(req), req.skillIds, req.subagentIds, req.mcpServerIds, req.toolMode, toolsFor(req)) {
     case Ok(p) -> return Ok(p)
     case Err(e) -> {
       // A concurrent create with the same name can slip past the pre-check
@@ -212,7 +280,7 @@ pub func updateProfileHandler(pid: in String, req: in SaveProfileRequest): Resul
     case Ok(None) -> ()
     case Err(e) -> return Err(dbError(e))
   }
-  val affected = match updateProfile(pid, userId, name, req.harness, req.networkPolicy, req.credentialMode, grantsFor(req), req.skillIds, req.subagentIds, req.mcpServerIds) {
+  val affected = match updateProfile(pid, userId, name, req.harness, req.networkPolicy, req.credentialMode, grantsFor(req), req.skillIds, req.subagentIds, req.mcpServerIds, req.toolMode, toolsFor(req)) {
     case Ok(n) -> n
     case Err(e) -> {
       // A concurrent rename onto the same name can slip past the pre-check

@@ -259,7 +259,9 @@ test "Profile grants resolve skills, subagents, and MCP servers, skipping dangli
       noArgs,
       [skill.id],
       [],
-      [server.id, "dangling-id"]
+      [server.id, "dangling-id"],
+      "all",
+      noArgs
     )
   )
   assertEqualInt(profile.skillIds.length.toInt(), 1, "skill grant stored on the profile")
