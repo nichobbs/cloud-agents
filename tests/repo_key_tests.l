@@ -30,6 +30,22 @@ test "repoKeyOf drops an explicit port but keeps the scp-style separator (#574)"
   assertEqual(repoKeyOf("git@github.com:nichobbs/cloud-agents.git"), want, "scp-style colon is not a port")
 }
 
+test "repoKeyOf treats a numeric scp path segment as a path, not a port (#585)" {
+  // scp-style has no port: a numeric first segment is a real owner/group id
+  // and must be kept, so two distinct numeric-owner repos don't collide.
+  assertEqual(repoKeyOf("git@gitlab.example:1234/repo.git"), "gitlab.example/1234/repo", "numeric scp owner is kept")
+  assertTrue(
+    repoKeyOf("git@gitlab.example:1234/repo") != repoKeyOf("git@gitlab.example:5678/repo"),
+    "different numeric scp owners stay distinct"
+  )
+  // But a scheme-bearing URL's numeric segment before '/' is still a port.
+  assertEqual(
+    repoKeyOf("ssh://git@gitlab.example:22/1234/repo"),
+    "gitlab.example/1234/repo",
+    "URL port dropped, path kept"
+  )
+}
+
 test "repoKeyOf lowercases so case never forks a repo's identity" {
   assertEqual(
     repoKeyOf("https://github.com/NicHobbs/Cloud-Agents.git"),

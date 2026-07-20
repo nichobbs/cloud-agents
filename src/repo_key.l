@@ -70,7 +70,12 @@ pub func repoKeyOf(url: in String): String {
     return ""
   }
   var s = strToLower(url)
-  // Strip a scheme prefix.
+  // Strip a scheme prefix, remembering whether one was present. Only the
+  // URL forms carry an explicit `host:port`; scp-style `git@host:path` never
+  // does — its ':' is always the path separator, even when the path segment
+  // happens to be numeric (#585).
+  val hadScheme = s.startsWith("https://") or s.startsWith("http://") or s.startsWith("ssh://") or
+    s.startsWith("git://")
   s = stripPrefix(s, "https://")
   s = stripPrefix(s, "http://")
   s = stripPrefix(s, "ssh://")
@@ -84,16 +89,17 @@ pub func repoKeyOf(url: in String): String {
   }
   // Resolve a ':' that precedes the first '/'. Two distinct cases share this
   // syntax (#574):
-  //   - an explicit port (`host:22/owner/repo`, or `ssh://…:2222/…`) — the
-  //     token between ':' and the next '/' is all digits; drop `:port`.
-  //   - the scp-style separator (`host:owner/repo`) — turn the ':' into '/'.
+  //   - an explicit port (`ssh://…:2222/…`, `https://host:443/…`) — ONLY in a
+  //     scheme-bearing URL, token all digits; drop `:port`.
+  //   - the scp-style separator (`git@host:owner/repo`, no scheme) — turn the
+  //     ':' into '/', even when the segment is numeric (#585).
   val colon = firstIndexOf(s, ":")
   val slash2 = firstIndexOf(s, "/")
   if colon >= 0 and (slash2 < 0 or colon < slash2) {
     val tokEnd = if slash2 < 0 { s.length } else { slash2 }
     val token = s.substring(colon + 1, tokEnd - colon - 1)
     val before = s.substring(0, colon)
-    if isAllDigits(token) {
+    if hadScheme and isAllDigits(token) {
       // host:port[/path] -> host[/path] (drop the ":port").
       val after = s.substring(tokEnd, s.length - tokEnd)
       s = before + after

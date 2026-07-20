@@ -1028,32 +1028,18 @@ pub func rememberHandler(
     return Err(Web.badRequest("value is too long (max " + toString(maxMemoryValueLen) + " characters)"))
   }
   val memScope = resolveMemoryScope(id)?
-  // Per-repo entry cap (#575): overwriting an existing key is always allowed
-  // (it doesn't grow the store), but a NEW key is rejected once the repo is
-  // at the cap, so a runaway agent can't fill the store unbounded.
-  val existing = match CloudAgents.Repository.getMemory(memScope.userId, memScope.repoKey, req.key) {
-    case Ok(o) -> o
-    case Err(e) -> return Err(dbError(e))
-  }
-  match existing {
-    case Some(_) -> ()
-    case None -> {
-      val count = match CloudAgents.Repository.countMemory(memScope.userId, memScope.repoKey) {
-        case Ok(n) -> n
-        case Err(e) -> return Err(dbError(e))
-      }
-      if count >= maxMemoryEntries {
-        return Err(
-          Web.badRequest(
-            "this repository is at the memory limit (max " + toString(maxMemoryEntries) +
-              " entries); update or remove an existing key instead"
-          )
-        )
-      }
-    }
-  }
-  match CloudAgents.Repository.upsertMemory(memScope.userId, memScope.repoKey, req.key, req.value) {
-    case Ok(_) -> return Ok(RememberResponse(key = req.key))
+  // Per-repo entry cap (#575), enforced atomically (#586): overwriting an
+  // existing key is always allowed (it doesn't grow the store); a NEW key is
+  // written only while the repo is under the cap. A `false` result means the
+  // cap blocked a new key.
+  match CloudAgents.Repository.upsertMemoryCapped(memScope.userId, memScope.repoKey, req.key, req.value, maxMemoryEntries) {
+    case Ok(true) -> return Ok(RememberResponse(key = req.key))
+    case Ok(false) -> return Err(
+      Web.badRequest(
+        "this repository is at the memory limit (max " + toString(maxMemoryEntries) +
+          " entries); update or remove an existing key instead"
+      )
+    )
     case Err(e) -> return Err(dbError(e))
   }
 }

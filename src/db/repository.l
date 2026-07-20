@@ -2646,15 +2646,23 @@ func rowToMemory(r: in CloudAgents.Sqlite.Row): MemoryRecord {
   return MemoryRecord(memKey = colAt(r.cols, 3), value = colAt(r.cols, 4), updatedAt = colAt(r.cols, 6))
 }
 
-/// Upsert a memory entry, overwriting any existing value under the same
-/// (user, repo, key). created_at is preserved on overwrite (first-seen time).
-pub func upsertMemory(
-  userId: in String, repoKey: in String, memKey: in String, value: in String
-): Result[Unit, CloudAgents.Sqlite.DbError] {
+/// Upsert a memory entry under a per-repo entry cap, atomically (#575, #586).
+/// Overwriting an existing key is always allowed (it doesn't grow the store);
+/// a NEW key is written only while the repo holds fewer than `maxEntries`.
+/// created_at is preserved on overwrite. Returns true when the entry was
+/// written, false when the cap blocked a new key — race-free, since the whole
+/// decision is a single serialized SQLite statement, not a check-then-act.
+pub func upsertMemoryCapped(
+  userId: in String,
+  repoKey: in String,
+  memKey: in String,
+  value: in String,
+  maxEntries: in Int,
+): Result[Bool, CloudAgents.Sqlite.DbError] {
   val id = newId()
   val ts = nowMillis()
-  CloudAgents.Sqlite.execute(CloudAgents.Db.upsertMemorySql(id, userId, repoKey, memKey, value, ts, ts))?
-  return Ok(value = ())
+  val affected = CloudAgents.Sqlite.execute(CloudAgents.Db.upsertMemoryCappedSql(id, userId, repoKey, memKey, value, ts, ts, maxEntries))?
+  return Ok(value = affected > 0)
 }
 
 /// All memory entries for (user, repo), key-ordered.
@@ -2668,30 +2676,6 @@ pub func listMemory(userId: in String, repoKey: in String): Result[slice[MemoryR
     i = i + 1
   }
   return Ok(value = acc)
-}
-
-/// One memory entry by key, or None.
-pub func getMemory(
-  userId: in String, repoKey: in String, memKey: in String
-): Result[Option[MemoryRecord], CloudAgents.Sqlite.DbError] {
-  val rows = CloudAgents.Sqlite.query(CloudAgents.Db.selectMemoryEntrySql(userId, repoKey, memKey))?
-  val len = CloudAgents.Sqlite.getRowArrayLength(rows)
-  if len == 0 {
-    return Ok(value = None)
-  }
-  return Ok(value = Some(value = rowToMemory(CloudAgents.Sqlite.getRowArrayValue(rows, 0))))
-}
-
-/// Number of memory entries stored for (user, repo). Backs the per-repo
-/// entry cap (#575).
-pub func countMemory(userId: in String, repoKey: in String): Result[Int, CloudAgents.Sqlite.DbError] {
-  val rows = CloudAgents.Sqlite.query(CloudAgents.Db.countMemorySql(userId, repoKey))?
-  val len = CloudAgents.Sqlite.getRowArrayLength(rows)
-  if len == 0 {
-    return Ok(value = 0)
-  }
-  val r0 = CloudAgents.Sqlite.getRowArrayValue(rows, 0)
-  return Ok(value = parseNatString(colAt(r0.cols, 0)))
 }
 
 /// Artifacts reported for a session strictly after `afterCreatedAt`, oldest

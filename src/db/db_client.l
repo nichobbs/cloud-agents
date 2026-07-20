@@ -2325,10 +2325,15 @@ pub func repoMemoryIndexSql(): String {
   return "CREATE INDEX IF NOT EXISTS idx_memory_user_repo ON memory(user_id, repo_key)"
 }
 
-/// Upsert one memory entry: insert, or overwrite value + updated_at on the
-/// (user_id, repo_key, mem_key) conflict. created_at is preserved on update
-/// (never re-written), so it records first-seen time.
-pub func upsertMemorySql(
+/// Atomic capped upsert of one memory entry (#575, #586). A single statement,
+/// so the per-repo entry cap is enforced race-free: SQLite serializes writers,
+/// and the `WHERE` sub-selects are evaluated against committed state within the
+/// one statement. The row is written when EITHER the repo is under `maxEntries`
+/// (a new key) OR the key already exists (an overwrite is always allowed and
+/// doesn't grow the store); `ON CONFLICT … DO UPDATE` performs the overwrite.
+/// created_at is preserved on overwrite (records first-seen time). Affects 1
+/// row when written, 0 when the cap blocked a new key.
+pub func upsertMemoryCappedSql(
   id: in String,
   userId: in String,
   repoKey: in String,
@@ -2336,8 +2341,10 @@ pub func upsertMemorySql(
   value: in String,
   createdAt: in String,
   updatedAt: in String,
+  maxEntries: in Int,
 ): String {
-  return "INSERT INTO memory (" + memoryColumns + ") VALUES (" + sqlLiteral(id) + ", " + sqlLiteral(userId) + ", " +
+  val scopeClause = "user_id = " + sqlLiteral(userId) + " AND repo_key = " + sqlLiteral(repoKey)
+  return "INSERT INTO memory (" + memoryColumns + ") SELECT " + sqlLiteral(id) + ", " + sqlLiteral(userId) + ", " +
     sqlLiteral(repoKey) +
     ", " +
     sqlLiteral(memKey) +
@@ -2347,7 +2354,15 @@ pub func upsertMemorySql(
     sqlLiteral(createdAt) +
     ", " +
     sqlLiteral(updatedAt) +
-    ") ON CONFLICT(user_id, repo_key, mem_key) DO UPDATE SET value = " +
+    " WHERE ((SELECT COUNT(*) FROM memory WHERE " +
+    scopeClause +
+    ") < " +
+    toString(maxEntries) +
+    " OR EXISTS(SELECT 1 FROM memory WHERE " +
+    scopeClause +
+    " AND mem_key = " +
+    sqlLiteral(memKey) +
+    ")) ON CONFLICT(user_id, repo_key, mem_key) DO UPDATE SET value = " +
     sqlLiteral(value) +
     ", updated_at = " +
     sqlLiteral(updatedAt)
@@ -2359,19 +2374,4 @@ pub func selectMemoryBySql(userId: in String, repoKey: in String): String {
   return "SELECT " + memoryColumns + " FROM memory WHERE user_id = " + sqlLiteral(userId) + " AND repo_key = " +
     sqlLiteral(repoKey) +
     " ORDER BY mem_key ASC"
-}
-
-/// One memory entry by (user_id, repo_key, mem_key), or no rows (recall with
-/// a key).
-pub func selectMemoryEntrySql(userId: in String, repoKey: in String, memKey: in String): String {
-  return "SELECT " + memoryColumns + " FROM memory WHERE user_id = " + sqlLiteral(userId) + " AND repo_key = " +
-    sqlLiteral(repoKey) +
-    " AND mem_key = " +
-    sqlLiteral(memKey)
-}
-
-/// Count of memory entries for (user_id, repo_key) — backs the per-repo
-/// entry cap (#575) so memory can't grow unbounded.
-pub func countMemorySql(userId: in String, repoKey: in String): String {
-  return "SELECT COUNT(*) FROM memory WHERE user_id = " + sqlLiteral(userId) + " AND repo_key = " + sqlLiteral(repoKey)
 }
