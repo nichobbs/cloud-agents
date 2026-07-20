@@ -7,6 +7,7 @@ import { MessageBlock } from '../components/MessageBlock';
 import { Terminal } from '../components/Terminal';
 import { useSessions } from '../context/SessionsContext';
 import { useStreamMessage } from '../hooks/useStreamMessage';
+import { clearFailedDraft, saveFailedDraft, takeFailedDraft } from '../lib/drafts';
 import { getHarness, type ModelOption } from '../lib/harnesses';
 import { api } from '../lib/api';
 import { discoverModels } from '../lib/models';
@@ -47,6 +48,11 @@ export function SessionDetail() {
   // successful reload, and on navigation.
   const [keepOutput, setKeepOutput] = useState(false);
   const [input, setInput] = useState('');
+  // Set when this session's composer was just populated from a persisted
+  // failed draft (#104) rather than the user's own typing, so a small note
+  // can explain why there's text already sitting there. Cleared as soon as
+  // the user edits it or sends/discards it.
+  const [recoveredDraft, setRecoveredDraft] = useState(false);
   const [deleting, setDeleting] = useState(false);
   const [modelSwitching, setModelSwitching] = useState(false);
   const [modelError, setModelError] = useState('');
@@ -195,6 +201,28 @@ export function SessionDetail() {
   useEffect(() => {
     setTemplatePrompt(null);
     setRendering(false);
+  }, [sessionId]);
+
+  // Recover a failed send's prompt text left behind by a PREVIOUS visit to
+  // this session (#104): handleSend() below persists it via saveFailedDraft
+  // when the user navigated away before the send settled, since restoring it
+  // straight into `input` at that point would land in whatever session the
+  // user had since navigated to. One-shot: takeFailedDraft clears it, so
+  // returning to this session again later won't keep re-surfacing it.
+  useEffect(() => {
+    const draft = takeFailedDraft(sessionId);
+    if (draft) {
+      setInput(draft);
+      setRecoveredDraft(true);
+    } else {
+      // Without this branch, a draft recovered for a PREVIOUS session (or
+      // whatever the user was mid-typing there) stayed in `input`/
+      // `recoveredDraft` when navigating to a session with no draft of its
+      // own (#564) — showing the wrong session's leftover text, and its
+      // stale "recovered draft" banner, and misdirecting it if sent.
+      setInput('');
+      setRecoveredDraft(false);
+    }
   }, [sessionId]);
 
   // Tracks which session this component instance is currently showing, so a
@@ -395,7 +423,12 @@ export function SessionDetail() {
   const handleSend = async () => {
     const text = input.trim();
     if (!text || isStreaming) return;
+    // Fixed at call time to whichever session this send was actually for —
+    // `sessionId` may point somewhere else by the time this async function
+    // resumes below (#104).
+    const forSessionAtSend = sessionId;
     setInput('');
+    setRecoveredDraft(false);
     setKeepOutput(false); // a fresh run supersedes any retained prior output
     const { succeeded, stale } = await send(text);
 
@@ -410,10 +443,29 @@ export function SessionDetail() {
       // newer send on the same session (or the wrong session's transcript),
       // and focus() would steal it from a textarea the user isn't looking
       // at anymore.
+      if (!succeeded) {
+        // The usual restore (setInput(text) below) can't run here — it
+        // would land in whatever session's composer is on screen NOW, not
+        // the one this send actually failed for. Persist it against
+        // forSessionAtSend instead, so it isn't silently lost (#104): the
+        // recovery effect above hands it back the next time that session is
+        // opened.
+        saveFailedDraft(forSessionAtSend, text);
+      } else {
+        // Mirrors the non-stale success path below: a fresh send for
+        // forSessionAtSend just succeeded, so any EARLIER failed draft still
+        // persisted for it is now moot — clear it here too, not just in the
+        // non-stale branch, otherwise a stale-but-successful send left a
+        // now-obsolete draft sitting in storage forever (#581).
+        clearFailedDraft(forSessionAtSend);
+      }
       return;
     }
 
     if (succeeded) {
+      // This session's outstanding failed draft, if any, is now moot — a
+      // fresh send for it just succeeded.
+      clearFailedDraft(forSessionAtSend);
       // Fold the completed run into the transcript (reload + keep-or-clear the
       // live panel), shared with the reattach path. See foldRunIntoTranscript.
       await foldRunIntoTranscript();
@@ -587,6 +639,10 @@ export function SessionDetail() {
     } catch {
       // server-side errors are best-effort; remove from local list regardless
     }
+    // Otherwise a deleted session's persisted failed-draft entry (#104)
+    // lingers in localStorage forever (#572) — nothing else ever visits a
+    // deleted session's id again to read/clear it via takeFailedDraft.
+    clearFailedDraft(session.sessionId);
     removeSession(session.sessionId);
     navigate('/sessions');
   };
@@ -835,6 +891,12 @@ export function SessionDetail() {
         </button>
       </div>
 
+      {recoveredDraft && (
+        <div style={recoveredDraftStyle}>
+          A message you sent to this session earlier failed to go through, and you'd navigated away
+          before it could be restored — we saved it below. Send it again, or clear it and start fresh.
+        </div>
+      )}
       <div style={inputRowStyle}>
         <textarea
           ref={textareaRef}
@@ -842,7 +904,7 @@ export function SessionDetail() {
           rows={3}
           placeholder="Send a message… (Enter to send, Shift+Enter for newline)"
           value={input}
-          onChange={e => setInput(e.target.value)}
+          onChange={e => { setRecoveredDraft(false); setInput(e.target.value); }}
           onKeyDown={handleKeyDown}
           disabled={isStreaming}
         />
@@ -1094,6 +1156,16 @@ const messagesErrorStyle: React.CSSProperties = {
   fontSize: '13px',
   textAlign: 'center',
   padding: '16px',
+};
+
+const recoveredDraftStyle: React.CSSProperties = {
+  color: '#d29922',
+  fontSize: '12px',
+  padding: '6px 10px',
+  marginBottom: '6px',
+  background: '#2d2a12',
+  border: '1px solid #4a3f0f',
+  borderRadius: '6px',
 };
 
 const emptyStyle: React.CSSProperties = {

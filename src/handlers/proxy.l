@@ -23,6 +23,8 @@ import CloudAgents.Auth
 import CloudAgents.GitHubApi
 import CloudAgents.Repository
 import CloudAgents.SessionStore
+import extern System.Environment as Env
+import extern System.String as DotNetString
 
 /// User-Agent for proxied calls — api.github.com rejects requests without one.
 val proxyUserAgent = "cloud-agents"
@@ -381,4 +383,86 @@ pub func modelsHandler(harness: in String): Result[String, Web.ApiError] {
     return Err(Web.notFound("no provider API keys in the credential vault"))
   }
   return Ok(value = "{\"providers\":[" + entries + "]}")
+}
+
+// ─── Harness availability (#523) ─────────────────────────────────────────────
+//
+// deploy/docker-compose.coolify.yml only builds the claude-code:base runner
+// image by default — codex-base/opencode-base/gemini-base are gated behind
+// Compose `profiles:` (COMPOSE_PROFILES) so a broken runner Dockerfile can't
+// block the whole app's deploy. Picking a harness whose image was never
+// built fails at container-creation time with a raw Docker "no such image"
+// error (docker_manager.l's imageForHarness). Rather than let the frontend
+// guess, the api service mirrors its own COMPOSE_PROFILES into
+// CLOUD_AGENTS_ENABLED_HARNESSES (see docker-compose.coolify.yml) and this
+// endpoint reports it, so the picker can show only what will actually work.
+
+func envOr(name: in String): String {
+  var v = Env.GetEnvironmentVariable(name)
+  if DotNetString.IsNullOrEmpty(v) {
+    return ""
+  }
+  return v
+}
+
+/// True if `needle` appears as a trimmed, comma-separated entry of `csv`.
+/// Same split-trim-compare algorithm as CloudAgents.Auth.parseWhitelist,
+/// inlined here rather than shared cross-package since that helper's
+/// supporting StringArray accessors aren't `pub`.
+func csvContains(csv: in String, needle: in String): Bool {
+  var current = ""
+  var i = 0
+  while i < csv.length {
+    val c = csv.substring(i, 1)
+    if c == "," {
+      if current.trim() == needle {
+        return true
+      }
+      current = ""
+    } else {
+      current = current + c
+    }
+    i = i + 1
+  }
+  return current.trim() == needle
+}
+
+/// CLOUD_AGENTS_ENABLED_HARNESSES, unset/blank on any deployment that
+/// doesn't gate its runner images (e.g. the standalone-VM RUNBOOK path,
+/// whose install-docker.sh builds all four unconditionally).
+func enabledHarnessesCsv(): String {
+  return envOr("CLOUD_AGENTS_ENABLED_HARNESSES")
+}
+
+/// Whether `harness` is enabled on this deployment. Unset/blank config means
+/// "no restriction known" and reports every harness enabled — fail OPEN, so
+/// an operator who hasn't set the var (every deployment before this existed)
+/// sees no change in behavior; a request only gets a "not available" signal
+/// when CLOUD_AGENTS_ENABLED_HARNESSES is actually configured and excludes it.
+pub func isHarnessEnabled(harness: in String): Bool {
+  val csv = enabledHarnessesCsv()
+  if csv.trim().length == 0 {
+    return true
+  }
+  return csvContains(csv, harness)
+}
+
+/// GET /api/harnesses: `{"enabled":["claude","codex",...]}` — which of the
+/// four known harnesses have a runner image on this deployment, per
+/// CLOUD_AGENTS_ENABLED_HARNESSES. Always succeeds (no vault/network access),
+/// unlike the other proxy handlers above.
+pub func harnessesHandler(): String {
+  val all: slice[String] = ["claude", "codex", "opencode", "gemini"]
+  var entries = ""
+  var count = 0
+  for h in all {
+    if isHarnessEnabled(h) {
+      if count > 0 {
+        entries = entries + ","
+      }
+      entries = entries + "\"" + h + "\""
+      count = count + 1
+    }
+  }
+  return "{\"enabled\":[" + entries + "]}"
 }

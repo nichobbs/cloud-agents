@@ -1,6 +1,14 @@
 import { useEffect, useState } from 'react';
 import { api } from '../lib/api';
+import { enabledHarnesses } from '../lib/harnessAvailability';
 import type { McpServer, Profile, Skill, Subagent } from '../types';
+
+/// Harness ids offered by this form. Kept in sync by hand with the `<option>`
+/// list below (this form predates lib/harnesses.ts's HARNESSES catalog and
+/// doesn't currently offer "gemini" — out of scope for #523's availability
+/// fix, which only concerns which of these already-offered harnesses is
+/// enabled on this deployment).
+const PROFILE_HARNESS_IDS = ['claude', 'codex', 'opencode'];
 
 /// Container profiles: a per-container policy bundling which harness runs, what
 /// network access the container gets, which credentials are injected (least
@@ -25,6 +33,19 @@ export function Profiles() {
   const [skillGrants, setSkillGrants] = useState<string[]>([]);
   const [subagentGrants, setSubagentGrants] = useState<string[]>([]);
   const [mcpServerGrants, setMcpServerGrants] = useState<string[]>([]);
+  const [enabledHarnessIds, setEnabledHarnessIds] = useState<Set<string> | null>(null);
+
+  // Which harnesses actually have a runner image on this deployment (#523).
+  // null (unknown) is treated as "every harness available".
+  useEffect(() => {
+    let active = true;
+    enabledHarnesses().then(ids => {
+      if (active) setEnabledHarnessIds(ids);
+    });
+    return () => {
+      active = false;
+    };
+  }, []);
 
   const reload = async () => {
     try {
@@ -153,9 +174,14 @@ export function Profiles() {
             <span style={labelStyle}>Harness</span>
             <select style={selectStyle} value={harness} onChange={e => setHarness(e.target.value)}>
               <option value="">Session chooses</option>
-              <option value="claude">claude</option>
-              <option value="codex">codex</option>
-              <option value="opencode">opencode</option>
+              {PROFILE_HARNESS_IDS.map(id => {
+                const available = enabledHarnessIds === null || enabledHarnessIds.has(id);
+                return (
+                  <option key={id} value={id} disabled={!available}>
+                    {id}{available ? '' : ' (not built on this deployment)'}
+                  </option>
+                );
+              })}
             </select>
           </label>
 

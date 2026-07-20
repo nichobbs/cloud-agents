@@ -105,55 +105,67 @@ func streamDispose(s: in NetStream): Unit = ()
 @externTarget("System.IDisposable.Dispose")
 func responseDispose(r: in WebResponse): Unit = ()
 
+// pub (#514) so the regression test can decode via the exact same Encoding
+// readAllUtf8 uses.
 @externTarget("System.Text.Encoding.get_UTF8")
-func utf8(): Encoding = ()
+pub func utf8(): Encoding = ()
 
+// pub (#514) so the regression test can drive the exact same round trip.
 @externInstance
 @externTarget("System.Text.Encoding.GetBytes")
-func encGetBytes(enc: in Encoding, s: in String): slice[Byte] = []
+pub func encGetBytes(enc: in Encoding, s: in String): slice[Byte] = []
 
+// pub (#514) so the regression test can decode via the exact chain
+// readAllUtf8 uses. Full-array form, mirroring crypto.l's encGetString —
+// slice[Byte] as an argument (not an in-place-mutated buffer) is the
+// direction already proven to marshal correctly.
+@externInstance
+@externTarget("System.Text.Encoding.GetString")
+pub func encGetStringBytes(enc: in Encoding, bytes: in slice[Byte]): String = ""
+
+// pub (#514) so tests/github_api_tests.l can cover it directly — see that
+// file's NOTE on why readAllUtf8/readAll themselves stay untested.
 @externTarget("System.Char.ConvertFromUtf32")
-func charFromCode(code: in Int): String = ()
+pub func charFromCode(code: in Int): String = ()
 
 // ─── UTF-8 body reading (proxy endpoints) ────────────────────────────────────
 //
 // The byte-per-char readAll below mangles non-ASCII, which is fine for the
 // OAuth flow's ASCII fields but not for passthrough proxying (repo
-// descriptions, model display names). These bindings assemble a real byte[]
-// (via the System.Array externs pattern used by sqlite_driver.l / main.l —
-// there is no constructor-binding form of @externTarget, so the array comes
-// from Array.CreateInstance) and decode it with Encoding.GetString(byte[],
-// int, int). NB: an `extern type = "System.Byte[]"` value marshals as
-// System.Object across the boundary (see crypto.l's module doc), which is
-// exactly what the System.Array-typed methods here accept.
-extern type ByteArray = "System.Byte[]"
-extern type Type = "System.Type"
-
-// Getting `typeof(byte)` via `@externInstance`+`System.Object.GetType()` on a
-// boxed Byte crashed the whole process with an AccessViolationException —
-// the compiled call site's parameter type came back as Int32 in the crash
-// stack trace, not Byte, so the boxed instance the runtime actually receives
-// doesn't match what the generated call expects. Type.GetType(string) is a
-// plain static call with no instance/boxing involved, sidestepping whatever
-// miscompiles the instance-call form for a Byte-typed argument.
-@externTarget("System.Type.GetType")
-func typeFromName(name: in String): Type = ()
-
-@externTarget("System.Array.CreateInstance")
-func createByteArray(elementType: in Type, length: in Int): ByteArray = ()
-
-// Named encGetStringRange (not encGetString) so it never shadows or clashes
-// with crypto.l's whole-array GetString binding if the two are ever merged.
-@externInstance
-@externTarget("System.Text.Encoding.GetString")
-func encGetStringRange(enc: in Encoding, bytes: in ByteArray, index: in Int, count: in Int): String = ()
-
-/// Read up to `count` bytes into `buf` at `offset`; returns bytes read
-/// (0 = end of stream). Lets readAllUtf8 fill its buffer in blocks instead
-/// of one FFI round trip per byte (#445).
-@externInstance
-@externTarget("System.IO.Stream.Read")
-func streamRead(s: in NetStream, buf: in ByteArray, offset: in Int, count: in Int): Int = 0
+// descriptions, model display names).
+//
+// A prior version of this section assembled a real byte[] via
+// Array.CreateInstance (System.Type.GetType("System.Byte") -> CreateInstance
+// -> Encoding.GetString(bytes, index, count)) and read into it with
+// Stream.Read, on the theory that an `extern type = "System.Byte[]"` value
+// marshals as System.Object and "matches the System.Array-typed methods
+// here" (crypto.l's module doc). That reasoning holds for methods declared
+// ON System.Array itself (get_Length/GetValue/SetValue, as sqlite_driver.l/
+// main.l/auth.l use for their String[] helpers) but not for
+// Encoding.GetString, which is declared on System.Text.Encoding with a
+// genuine `byte[]`-typed parameter — the generated call referenced a
+// nonexistent `GetString(System.Object, Int32, Int32)` overload and threw
+// `Method not found` the moment a real HTTP response ever exercised it
+// (nichobbs/cloud-agents#514's own regression test caught this, the first
+// time this path was ever compiler-verified end to end). A from-scratch
+// Stream.Read-into-slice[Byte] redesign was considered instead, but
+// docs/lyric/reference.md documents slice ops as always returning a NEW
+// slice ("no in-place mutation") — relying on a byte[]-marshaled slice[Byte]
+// argument being mutated in place by Stream.Read isn't a safe assumption
+// under that model, and getting it wrong would fail silently (a buffer that
+// silently stays all-zero) rather than loudly.
+//
+// Instead, this reuses only extern-binding SHAPES already proven correct in
+// production: charFromCode (readAll below, and every OAuth field) folds each
+// raw byte into readAllUtf8's accumulator as a single Latin-1 code point —
+// a lossless 1:1 mapping for 0-255, unlike decoding it as UTF-8 per byte,
+// which is exactly what corrupts multi-byte sequences in readAll. Encoding's
+// GetBytes(string)/GetString(byte[]) round trip (crypto.l's
+// encGetBytes/encGetString) then converts that accumulated Latin-1 string
+// back to the real raw bytes and re-decodes them as actual UTF-8.
+// pub (#514) so the regression test can drive the exact same round trip.
+@externTarget("System.Text.Encoding.get_Latin1")
+pub func latin1(): Encoding = ()
 
 val requestTimeoutMillis = 15000
 
@@ -187,24 +199,33 @@ func readAll(s: in NetStream): String {
   return acc + chunk
 }
 
-/// Read a response stream to a string, decoding it as UTF-8 (unlike readAll,
-/// which widens byte-per-char and mangles non-ASCII), capped at
-/// maxProxyResponseBytes. Bytes land in a pre-allocated byte[] via block
-/// Stream.Read calls — not one ReadByte FFI round trip per byte, which for a
-/// 1 MB cap would mean up to a million extern calls per proxied response
-/// (#445) — and are decoded in one Encoding.GetString(bytes, 0, total) call.
+/// Read a response stream to a string, decoding it as real UTF-8 (unlike
+/// readAll, which widens byte-per-char and mangles non-ASCII), capped at
+/// maxProxyResponseBytes. Reads via the same streamReadByte + chunked-
+/// concatenation shape as readAll (#423's O(n)-not-O(n^2) fix) rather than a
+/// block Stream.Read — see the module comment above this function's sibling
+/// bindings for why the block-read design this replaced never actually
+/// worked. This is still one FFI round trip per byte (#445's concern, not
+/// resolved here — flagged as a follow-up, not silently dropped), but that
+/// is what readAll already does today in production, and correctness over
+/// an until-now-untested, always-broken path takes priority.
 func readAllUtf8(s: in NetStream): String {
-  val byteType = typeFromName("System.Byte")
-  val buf = createByteArray(byteType, maxProxyResponseBytes)
+  var raw = ""
+  var chunk = ""
   var total = 0
-  var n = 1
-  while n > 0 and total < maxProxyResponseBytes {
-    n = streamRead(s, buf, total, maxProxyResponseBytes - total)
-    if n > 0 {
-      total = total + n
+  var b = streamReadByte(s)
+  while b >= 0 and total < maxProxyResponseBytes {
+    chunk = chunk + charFromCode(b)
+    total = total + 1
+    if chunk.length >= 1024 {
+      raw = raw + chunk
+      chunk = ""
     }
+    b = streamReadByte(s)
   }
-  return encGetStringRange(utf8(), buf, 0, total)
+  raw = raw + chunk
+  val bytes = encGetBytes(latin1(), raw)
+  return encGetStringBytes(utf8(), bytes)
 }
 
 /// GET `url` setting each (headerNames[i], headerValues[i]) pair on the

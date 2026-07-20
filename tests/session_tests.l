@@ -65,6 +65,14 @@ func mustInt(r: in Result[Int, CloudAgents.Sqlite.DbError]): Int {
   }
 }
 
+// Async wrapper so a run claim can be `spawn`ed inside a `scope` block (#206)
+// — `tryBeginRun` itself is a plain synchronous func, so a genuinely
+// concurrent test needs an async entry point to race it under `spawn`/`await`
+// rather than calling it twice, sequentially, on one thread.
+async func claimAsync(sessionId: in String): Bool {
+  return mustClaim(CloudAgents.SessionStore.tryBeginRun(sessionId))
+}
+
 // ── Helpers ──────────────────────────────────────────────────────────────────
 // Lyric match arms are `case Pattern -> expression` (no block form), so
 // multi-assertion checks are extracted into named functions.
@@ -215,6 +223,45 @@ test "Run claim is exclusive per session" {
   mustUnit(CloudAgents.SessionStore.endRun("claim-1"))
   assertTrue(mustClaim(CloudAgents.SessionStore.tryBeginRun("claim-1")), "claim available again after endRun")
   assertFalse(mustClaim(CloudAgents.SessionStore.tryBeginRun("missing")), "claiming a nonexistent session fails")
+}
+
+test "Run claim is exclusive under real concurrent contention (#206)" {
+  // The test above only proves the guard's logic (status check, scoping) by
+  // calling tryBeginRun twice in sequence on one thread — it never actually
+  // races two callers against the same row, so it doesn't exercise the
+  // atomicity property tryBeginRunSql's guarded UPDATE
+  // (`status <> 'RUNNING'`, rows-affected = 1 means the claim won) is meant to
+  // guarantee under real contention. This test spawns two callers inside one
+  // `scope` — both `spawn`s are issued before either is `await`ed, so the two
+  // underlying tryBeginRun UPDATEs are genuinely in flight together, not run
+  // one at a time — and asserts exactly one wins.
+  val dbPath = useFreshTestDb("session-claim-concurrent")
+  defer {
+    cleanupTestDb(dbPath)
+  }
+  mustUnit(addSession(makeAgentSession(
+    sessionId = "claim-race",
+    repoUrl = "https://github.com/nic/repo",
+    branch = "main",
+    containerId = "",
+    harness = "claude",
+    model = "claude-opus-4-8",
+    nativeSessionId = "claim-race"
+  )))
+
+  scope {
+    val t1 = spawn claimAsync("claim-race")
+    val t2 = spawn claimAsync("claim-race")
+    val r1 = await t1
+    val r2 = await t2
+    assertTrue(r1 xor r2, "exactly one concurrent claim wins under real contention")
+  }
+
+  // The loser's failure was contention, not a stuck row: the winner's run is
+  // still open (endRun not yet called), so a further claim must still refuse.
+  assertFalse(mustClaim(CloudAgents.SessionStore.tryBeginRun("claim-race")), "session stays claimed after the race")
+  mustUnit(CloudAgents.SessionStore.endRun("claim-race"))
+  assertTrue(mustClaim(CloudAgents.SessionStore.tryBeginRun("claim-race")), "claim available again after endRun")
 }
 
 test "deleteSessionRecord removes the row and is a no-op when already gone (#310)" {
@@ -565,6 +612,36 @@ test "Handler createSession rejects unsafe inputs" {
   match createSession(r7) {
     case Ok(_) -> assertTrue(false, "should reject dot-leading component")
     case Err(err) -> assertEqualInt(err.status, 400, "dot-leading component -> 400")
+  }
+}
+
+test "createSession rejects a known-but-disabled harness (#560)" {
+  val dbPath = useFreshTestDb("session-create-harness-gate")
+  defer {
+    cleanupTestDb(dbPath)
+  }
+  // Distinct from the "unknown harness" case above (isKnownHarness rejects a
+  // name this deployment never recognizes at all); this exercises the
+  // isHarnessEnabled gate specifically — a name isKnownHarness accepts, but
+  // this deployment's CLOUD_AGENTS_ENABLED_HARNESSES doesn't include.
+  Env.SetEnvironmentVariable("CLOUD_AGENTS_ENABLED_HARNESSES", "codex")
+  val disabled = CreateSessionRequest(repoUrl = "https://github.com/nic/repo", branch = "main", harness = "claude", model = "")
+  match createSession(disabled) {
+    case Ok(_) -> assertTrue(false, "should reject a harness this deployment disabled")
+    case Err(err) -> assertEqualInt(err.status, 400, "disabled harness -> 400")
+  }
+  // The resolved-default path (empty harness -> "claude") must be checked
+  // too, not just an explicitly-requested one.
+  val disabledDefault = CreateSessionRequest(repoUrl = "https://github.com/nic/repo", branch = "main", harness = "", model = "")
+  match createSession(disabledDefault) {
+    case Ok(_) -> assertTrue(false, "should reject when the default harness itself is disabled")
+    case Err(err) -> assertEqualInt(err.status, 400, "disabled default harness -> 400")
+  }
+  Env.SetEnvironmentVariable("CLOUD_AGENTS_ENABLED_HARNESSES", "")
+  val reenabled = CreateSessionRequest(repoUrl = "https://github.com/nic/repo", branch = "main", harness = "claude", model = "")
+  match createSession(reenabled) {
+    case Ok(_) -> ()
+    case Err(err) -> assertTrue(false, "claude should be accepted once re-enabled (status " + toString(err.status) + ")")
   }
 }
 
@@ -996,6 +1073,63 @@ test "session-repo handlers validate, link, list and unlink (#multi-repo)" {
   match listSessionReposHandler("sr-1") {
     case Ok(rl) -> assertEqualInt(rl.repos.length.toInt(), 0, "no linked repos after unlink")
     case Err(_) -> assertTrue(false, "list should succeed")
+  }
+}
+
+// ── #334: sendMessage's prompt cap and checkHealth's DB-failure path ─────────
+//
+// Both were left uncovered by PR #333 (#35/#57's Handlers-side half): they
+// live in CloudAgents.Handlers, which imports the async CloudAgents.Docker,
+// and streamSendMessage itself calls into CloudAgents.Docker further down —
+// so it can't be invoked from this harness at all (same class of gap as
+// cancelRun/getRunOutput above). promptExceedsMaxLength is a pub, pure
+// extraction of exactly the check streamSendMessage runs before it ever
+// touches Docker (mirroring parseOutputOffset/runOutputDeltaJson's existing
+// split). checkHealth, by contrast, never references CloudAgents.Docker at
+// all — only CloudAgents.Repository.ping() — so it needs no such extraction
+// and is invoked directly below.
+
+// A string of exactly `totalLen` 'x' characters, built by doubling (like
+// tests/interactions_tests.l's overLongText) rather than looping totalLen
+// times.
+func repeatedChar(totalLen: in Int): String {
+  var s = "x"
+  while s.length.toInt() < totalLen {
+    s = s + s
+  }
+  return s.substring(0, totalLen)
+}
+
+test "promptExceedsMaxLength enforces the 131072-char cap streamSendMessage relies on (#334/#35)" {
+  assertFalse(promptExceedsMaxLength("short prompt"), "a short prompt is well under the cap")
+  assertFalse(promptExceedsMaxLength(repeatedChar(131072)), "text exactly at the cap is not over")
+  assertTrue(promptExceedsMaxLength(repeatedChar(131073)), "text one character over the cap is over")
+}
+
+test "checkHealth reports healthy against a live DB and 500s when the DB is unreachable (#334/#57)" {
+  val dbPath = useFreshTestDb("health-ok")
+  defer {
+    cleanupTestDb(dbPath)
+    // Otherwise this test's own next line leaves CLOUD_AGENTS_DB_PATH
+    // pointed at a permanently-broken path for the rest of the process
+    // (#579) — restore it to the fresh path useFreshTestDb set, exactly
+    // what it was before this test's own DB-unreachable mutation below.
+    Env.SetEnvironmentVariable("CLOUD_AGENTS_DB_PATH", dbPath)
+  }
+  match checkHealth() {
+    case Ok(msg) -> assertEqual(msg, "Healthy", "a live, migrated DB reports healthy")
+    case Err(_) -> assertTrue(false, "checkHealth should succeed against a live, migrated DB")
+  }
+
+  // Point CLOUD_AGENTS_DB_PATH at a file under a directory that does not
+  // exist: SQLite cannot open (or create) a database file there, so
+  // CloudAgents.Repository.ping() -> Err(OpenFailed) and checkHealth must map
+  // that to a 500 — not leak the raw DB error message to the unauthenticated
+  // /api/health caller (#55).
+  Env.SetEnvironmentVariable("CLOUD_AGENTS_DB_PATH", "/nonexistent-dir-cloud-agents-334/unreachable.db")
+  match checkHealth() {
+    case Ok(_) -> assertTrue(false, "checkHealth must fail when the database is unreachable")
+    case Err(err) -> assertEqualInt(err.status, 500, "DB failure maps to a 500 internal error")
   }
 }
 

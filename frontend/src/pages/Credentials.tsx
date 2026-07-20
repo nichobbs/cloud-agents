@@ -7,10 +7,36 @@ import type { Credential } from '../types';
 /// arbitrary env vars) that are injected into every runner container. Values
 /// are write-only — the server never returns a stored secret, so this page can
 /// list names but never display a value.
+/// Unlike every other RequireAuth-guarded route, the backend never falls
+/// back to open access for /api/credentials — CloudAgents.Auth.authorizeSecret
+/// always denies with AuthNotConfigured when no static token is set,
+/// regardless of GitHub OAuth state (credential storage must never run
+/// unauthenticated). RequireAuth itself still renders this page unguarded on
+/// a deployment with no auth configured at all (matching the *general*
+/// backend fallback other routes use), so every request this page makes
+/// then 401s. Detecting that specific response here — rather than teaching
+/// RequireAuth a route-specific exception — lets this page show a clear
+/// "not available on this deployment" state instead of a raw fetch error
+/// (#503).
+///
+/// Matched by exact message text against `src/handlers/auth.l`'s
+/// `authErrorMessage`'s `AuthNotConfigured` case, not a loose substring —
+/// there's no separate machine-readable error code in the API's error body
+/// (`{"error": "<message>"}` is the whole shape) to match on instead, so
+/// this stays inherently coupled to that exact string (#571). If that
+/// backend message ever changes, this needs to change with it — nothing
+/// else guards against the two silently drifting apart.
+const AUTH_NOT_CONFIGURED_MESSAGE = 'authentication is not configured; access is disabled';
+
+function isAuthNotConfiguredError(err: unknown): boolean {
+  return err instanceof Error && err.message.startsWith('401') && err.message.includes(AUTH_NOT_CONFIGURED_MESSAGE);
+}
+
 export function Credentials() {
   const [names, setNames] = useState<Credential[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
+  const [unavailable, setUnavailable] = useState(false);
   const [name, setName] = useState('');
   const [value, setValue] = useState('');
   const [saving, setSaving] = useState(false);
@@ -20,7 +46,11 @@ export function Credentials() {
       setNames(await api.getCredentialNames());
       setError('');
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to load credentials');
+      if (isAuthNotConfiguredError(err)) {
+        setUnavailable(true);
+      } else {
+        setError(err instanceof Error ? err.message : 'Failed to load credentials');
+      }
     } finally {
       setLoading(false);
     }
@@ -57,6 +87,20 @@ export function Credentials() {
       setError(err instanceof Error ? err.message : 'Failed to delete credential');
     }
   };
+
+  if (unavailable) {
+    return (
+      <div style={pageStyle}>
+        <h2 style={titleStyle}>Credentials</h2>
+        <div style={mutedStyle}>
+          Credential storage isn't available on this deployment — authentication isn't
+          configured, and credential routes always require it, unlike the rest of the app.
+          <br />
+          <Link to="/" style={{ color: '#58a6ff' }}>Back home</Link>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div style={pageStyle}>

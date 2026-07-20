@@ -96,11 +96,19 @@ impl Web.Middleware for AuthMiddleware {
 // `Result[T, Web.ApiError]` to a `Response`. One response-mapping helper per
 // distinct T (shared across routes that return the same type); one small
 // stateless adapter record per route.
+//
+// badBody() and every *Resp helper below are `pub` (#351) so tests/main_tests.l
+// can cover the Result -> Response mapping directly: they take/return only
+// application records and Web.Response/Web.ApiError, none of which need a
+// constructed Web.Request, unlike the RouteX.handle()/AuthMiddleware.wrap()
+// adapters themselves (blocked by nichobbs/cloud-agents#354, see the NOTE in
+// main_tests.l). pparam() is NOT exposed the same way — it takes a
+// Web.Request, so it stays behind the same #354 wall as the route adapters.
 func pparam(req: in Web.Request, name: in String): String {
   return match Web.pathParam(req, name) { case Some(s) -> s; case None -> "" }
 }
 
-func badBody(): Web.Response {
+pub func badBody(): Web.Response {
   return Web.errorResponse(Web.badRequest("invalid JSON body"))
 }
 
@@ -114,67 +122,67 @@ pub func jsonStringResp(r: in Result[String, Web.ApiError]): Web.Response {
   return match r { case Ok(s) -> Web.json(200, s); case Err(e) -> Web.errorResponse(e) }
 }
 
-func createSessionResp(r: in Result[CreateSessionResponse, Web.ApiError]): Web.Response {
+pub func createSessionResp(r: in Result[CreateSessionResponse, Web.ApiError]): Web.Response {
   return match r { case Ok(v) -> Web.json(200, v.toJson()); case Err(e) -> Web.errorResponse(e) }
 }
 
-func sessionProfileResp(r: in Result[SessionProfileRef, Web.ApiError]): Web.Response {
+pub func sessionProfileResp(r: in Result[SessionProfileRef, Web.ApiError]): Web.Response {
   return match r { case Ok(v) -> Web.json(200, v.toJson()); case Err(e) -> Web.errorResponse(e) }
 }
 
-func runListResp(r: in Result[RunList, Web.ApiError]): Web.Response {
+pub func runListResp(r: in Result[RunList, Web.ApiError]): Web.Response {
   return match r { case Ok(v) -> Web.json(200, v.toJson()); case Err(e) -> Web.errorResponse(e) }
 }
 
-func sessionRepoResp(r: in Result[SessionRepo, Web.ApiError]): Web.Response {
+pub func sessionRepoResp(r: in Result[SessionRepo, Web.ApiError]): Web.Response {
   return match r { case Ok(v) -> Web.json(200, v.toJson()); case Err(e) -> Web.errorResponse(e) }
 }
 
-func sessionRepoListResp(r: in Result[SessionRepoList, Web.ApiError]): Web.Response {
+pub func sessionRepoListResp(r: in Result[SessionRepoList, Web.ApiError]): Web.Response {
   return match r { case Ok(v) -> Web.json(200, v.toJson()); case Err(e) -> Web.errorResponse(e) }
 }
 
-func messageListResp(r: in Result[MessageList, Web.ApiError]): Web.Response {
+pub func messageListResp(r: in Result[MessageList, Web.ApiError]): Web.Response {
   return match r { case Ok(v) -> Web.json(200, v.toJson()); case Err(e) -> Web.errorResponse(e) }
 }
 
-func commentResp(r: in Result[Comment, Web.ApiError]): Web.Response {
+pub func commentResp(r: in Result[Comment, Web.ApiError]): Web.Response {
   return match r { case Ok(v) -> Web.json(200, v.toJson()); case Err(e) -> Web.errorResponse(e) }
 }
 
-func commentListResp(r: in Result[CommentList, Web.ApiError]): Web.Response {
+pub func commentListResp(r: in Result[CommentList, Web.ApiError]): Web.Response {
   return match r { case Ok(v) -> Web.json(200, v.toJson()); case Err(e) -> Web.errorResponse(e) }
 }
 
-func todoResp(r: in Result[Todo, Web.ApiError]): Web.Response {
+pub func todoResp(r: in Result[Todo, Web.ApiError]): Web.Response {
   return match r { case Ok(v) -> Web.json(200, v.toJson()); case Err(e) -> Web.errorResponse(e) }
 }
 
-func todoListResp(r: in Result[TodoList, Web.ApiError]): Web.Response {
+pub func todoListResp(r: in Result[TodoList, Web.ApiError]): Web.Response {
   return match r { case Ok(v) -> Web.json(200, v.toJson()); case Err(e) -> Web.errorResponse(e) }
 }
 
-func promptListResp(r: in Result[PromptList, Web.ApiError]): Web.Response {
+pub func promptListResp(r: in Result[PromptList, Web.ApiError]): Web.Response {
   return match r { case Ok(v) -> Web.json(200, v.toJson()); case Err(e) -> Web.errorResponse(e) }
 }
 
-func renderedPromptResp(r: in Result[RenderedPrompt, Web.ApiError]): Web.Response {
+pub func renderedPromptResp(r: in Result[RenderedPrompt, Web.ApiError]): Web.Response {
   return match r { case Ok(v) -> Web.json(200, v.toJson()); case Err(e) -> Web.errorResponse(e) }
 }
 
-func promptResp(r: in Result[Prompt, Web.ApiError]): Web.Response {
+pub func promptResp(r: in Result[Prompt, Web.ApiError]): Web.Response {
   return match r { case Ok(v) -> Web.json(200, v.toJson()); case Err(e) -> Web.errorResponse(e) }
 }
 
-func credentialNameListResp(r: in Result[CredentialNameList, Web.ApiError]): Web.Response {
+pub func credentialNameListResp(r: in Result[CredentialNameList, Web.ApiError]): Web.Response {
   return match r { case Ok(v) -> Web.json(200, v.toJson()); case Err(e) -> Web.errorResponse(e) }
 }
 
-func profileListResp(r: in Result[ProfileList, Web.ApiError]): Web.Response {
+pub func profileListResp(r: in Result[ProfileList, Web.ApiError]): Web.Response {
   return match r { case Ok(v) -> Web.json(200, v.toJson()); case Err(e) -> Web.errorResponse(e) }
 }
 
-func profileResp(r: in Result[Profile, Web.ApiError]): Web.Response {
+pub func profileResp(r: in Result[Profile, Web.ApiError]): Web.Response {
   return match r { case Ok(v) -> Web.json(200, v.toJson()); case Err(e) -> Web.errorResponse(e) }
 }
 
@@ -202,31 +210,31 @@ func mcpServerResp(r: in Result[McpServer, Web.ApiError]): Web.Response {
   return match r { case Ok(v) -> Web.json(200, v.toJson()); case Err(e) -> Web.errorResponse(e) }
 }
 
-func webhookResp(r: in Result[Webhook, Web.ApiError]): Web.Response {
+pub func webhookResp(r: in Result[Webhook, Web.ApiError]): Web.Response {
   return match r { case Ok(v) -> Web.json(200, v.toJson()); case Err(e) -> Web.errorResponse(e) }
 }
 
-func webhookListResp(r: in Result[WebhookList, Web.ApiError]): Web.Response {
+pub func webhookListResp(r: in Result[WebhookList, Web.ApiError]): Web.Response {
   return match r { case Ok(v) -> Web.json(200, v.toJson()); case Err(e) -> Web.errorResponse(e) }
 }
 
-func webhookEventListResp(r: in Result[WebhookEventList, Web.ApiError]): Web.Response {
+pub func webhookEventListResp(r: in Result[WebhookEventList, Web.ApiError]): Web.Response {
   return match r { case Ok(v) -> Web.json(200, v.toJson()); case Err(e) -> Web.errorResponse(e) }
 }
 
-func createPermissionRequestResp(r: in Result[CreatePermissionRequestResponse, Web.ApiError]): Web.Response {
+pub func createPermissionRequestResp(r: in Result[CreatePermissionRequestResponse, Web.ApiError]): Web.Response {
   return match r { case Ok(v) -> Web.json(200, v.toJson()); case Err(e) -> Web.errorResponse(e) }
 }
 
-func permissionDecisionResp(r: in Result[PermissionDecision, Web.ApiError]): Web.Response {
+pub func permissionDecisionResp(r: in Result[PermissionDecision, Web.ApiError]): Web.Response {
   return match r { case Ok(v) -> Web.json(200, v.toJson()); case Err(e) -> Web.errorResponse(e) }
 }
 
-func createUserQuestionResp(r: in Result[CreateUserQuestionResponse, Web.ApiError]): Web.Response {
+pub func createUserQuestionResp(r: in Result[CreateUserQuestionResponse, Web.ApiError]): Web.Response {
   return match r { case Ok(v) -> Web.json(200, v.toJson()); case Err(e) -> Web.errorResponse(e) }
 }
 
-func userQuestionAnswerResp(r: in Result[UserQuestionAnswer, Web.ApiError]): Web.Response {
+pub func userQuestionAnswerResp(r: in Result[UserQuestionAnswer, Web.ApiError]): Web.Response {
   return match r { case Ok(v) -> Web.json(200, v.toJson()); case Err(e) -> Web.errorResponse(e) }
 }
 
@@ -1075,6 +1083,18 @@ impl Web.Handler for RouteProxyModels {
   }
 }
 
+// GET /api/harnesses (#523): which harnesses have a runner image on this
+// deployment. Always succeeds — no Result to unwrap, unlike the other Proxy
+// routes above.
+record RouteHarnesses {
+}
+
+impl Web.Handler for RouteHarnesses {
+  func handle(req: in Web.Request): Web.Response {
+    return Web.json(200, CloudAgents.Proxy.harnessesHandler())
+  }
+}
+
 // ─── CloudAgents.OAuth routes (oauth.l) ─────────────────────────────────────
 record RouteOAuthConfig {
 }
@@ -1112,7 +1132,13 @@ impl Web.Handler for RouteOAuthLogout {
   }
 }
 
-func main(): Unit {
+// pub: dist/CloudAgents.Native/Program.cs (a separate assembly) calls into
+// this entry point directly (global::CloudAgents.Program.main()). Without
+// pub this is package-private per Lyric's documented visibility rules
+// ("Package = visibility unit", docs/lyric/reference.md "Visibility") and
+// only worked so far because .NET codegen doesn't yet enforce that across
+// assembly boundaries — see nichobbs/cloud-agents#397.
+pub func main(): Unit {
   // Ensure the SQLite tables (transcript/comments/todos/prompts/sessions)
   // exist before serving.
   match CloudAgents.Repository.initSchema() {
@@ -1295,6 +1321,7 @@ func main(): Unit {
   router = Web.addGet(router, "/api/github/pulls/{owner}/{repo}/{branch}", RouteProxyGithubPulls())
   router = Web.addGet(router, "/api/github/checks/{owner}/{repo}/{branch}", RouteProxyGithubChecks())
   router = Web.addGet(router, "/api/models/{harness}", RouteProxyModels())
+  router = Web.addGet(router, "/api/harnesses", RouteHarnesses())
 
   // GitHub OAuth: public login configuration, the code-for-token exchange,
   // and logout (all exempt from auth enforcement — config/exchange exist to
@@ -1434,8 +1461,8 @@ pub func parseCommandLine(cmdLine: in String): StringArray {
 
 pub func appendString(arr: in StringArray, item: in String): StringArray {
   val oldLen = getStringArrayLength(arr)
-  val stringType = getStringType("")
-  val newArr = createStringArray(stringType, oldLen + 1)
+  val strType = stringType("System.String")
+  val newArr = createStringArray(strType, oldLen + 1)
   if oldLen > 0 {
     copyStringArray(arr, 0, newArr, 0, oldLen)
   }
@@ -1444,8 +1471,8 @@ pub func appendString(arr: in StringArray, item: in String): StringArray {
 }
 
 pub func createEmptyStringArray(): StringArray {
-  val stringType = getStringType("")
-  return createStringArray(stringType, 0)
+  val strType = stringType("System.String")
+  return createStringArray(strType, 0)
 }
 
 extern type Type = "System.Type"
@@ -1476,6 +1503,11 @@ func copyStringArray(
   length: in Int,
 ): Unit = ()
 
-@externInstance
-@externTarget("System.Object.GetType")
-func getStringType(obj: in String): Type = ()
+// Static Type.GetType(string), not an @externInstance-bound Object.GetType()
+// on a boxed argument (#513) — the same instance-bound GetType() shape that
+// crashed the process with an uncatchable AccessViolationException for a
+// boxed Byte (docs/lyric/gotchas.md), migrated here as defense-in-depth even
+// though String is a reference type and the specific boxing-mismatch
+// mechanism described there is scoped to value-type arguments.
+@externTarget("System.Type.GetType")
+func stringType(name: in String): Type = ()

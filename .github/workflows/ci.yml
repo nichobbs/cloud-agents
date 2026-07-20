@@ -161,9 +161,11 @@ jobs:
             scripts/dev.sh \
             scripts/build-docker.sh \
             scripts/upload-credentials.sh \
+            scripts/install.sh \
             scripts/run-api.sh \
             scripts/e2e-http.sh \
             scripts/test-reconcile-repos.sh \
+            scripts/test-opencode-entrypoint.sh \
             scripts/check-compose-paths.sh \
             scripts/repro-compiler-bug.sh \
             scripts/repro-web-bug.sh \
@@ -183,6 +185,15 @@ jobs:
       # workspace — no Docker, no network, no Lyric toolchain.
       - name: Test reconcile-repos.sh
         run: ./scripts/test-reconcile-repos.sh
+
+      # Regression test for docker/entrypoint-opencode.sh's `opencode run`
+      # invocation (#17): pins the invocation shape (subcommand, --model,
+      # -- separator, positional prompt) verified against the real OpenCode
+      # CLI docs — see the script for the full verification and the
+      # documented --model provider/model discrepancy it deliberately does
+      # not attempt to fix.
+      - name: Test opencode entrypoint invocation
+        run: ./scripts/test-opencode-entrypoint.sh
 
       # Guards against the class of bug in nichobbs/cloud-agents#464: the two
       # deploy compose files use different relative-path conventions (one

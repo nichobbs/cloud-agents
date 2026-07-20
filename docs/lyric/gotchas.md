@@ -179,6 +179,28 @@ construct with the unqualified name — `SavePromptRequest(...)`. Qualified
 *function* calls (`CloudAgents.Sqlite.execute(...)`) work fine; it is only
 record constructors that must be unqualified.
 
+**A specific unqualified, imported record type can crash on construction
+with a bare `InvalidProgramException`, while structurally-identical
+siblings from the same package construct fine.** Confirmed on v0.4.34 by
+`CloudAgents.MainTests`: `Comment(id = ..., messageId = ..., sessionId =
+..., body = ..., createdAt = ...)` — a plain, unqualified construction of a
+`CloudAgents.Repository` record after `import CloudAgents.Repository`,
+same as the package-qualified-construction entry's documented workaround —
+crashed with "Common Language Runtime detected an invalid program", while
+`Todo`/`Message`/`MessageList`/`CommentList`/`TodoList` from the exact same
+package, constructed the same unqualified way in adjacent tests in the same
+file, all worked. No trigger condition identified (field count/types don't
+obviously differ enough to explain it — `Todo` has one more `String` field
+than `Comment` and is unaffected). If a record construction you'd expect to
+work throws this exact error, don't assume the whole type/pattern is
+broken — isolate to a single minimal test first; only the exact one
+construction may be affected. Confirm whether it also affects production:
+if the type in question is only ever constructed inside its own home
+package (check with a grep for `TypeName(` outside that package) and
+callers elsewhere only ever *receive* an already-built value, production
+is unaffected — this was the case here (`Comment` is only constructed in
+`repository.l`'s own `rowToComment`/`addComment`).
+
 **Constructing a `Lyric.Web` `Request` record crashes with a bare
 `InvalidProgramException`.** Unlike the package-qualified-construction entry
 above, this is already unqualified (`Request(...)` after `import Web`) and

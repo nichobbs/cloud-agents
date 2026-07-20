@@ -6,8 +6,10 @@ import Std.Task
 import Web
 import Lyric.Docker
 import CloudAgents.Db
+import CloudAgents.DockerPolicy
 import CloudAgents.NetworkPolicy
 import CloudAgents.Repository
+import CloudAgents.RunnerEnv
 import CloudAgents.SessionStore
 import CloudAgents.Sqlite
 import CloudAgents.Streaming
@@ -59,9 +61,19 @@ func base64Json(json: in String): String {
 /// outside this machine (no `0.0.0.0`, no public/LAN interface). This is a
 /// local dev/CI workaround, not a deployment-ready transport.
 func dockerClient(): DockerClient {
-  match Std.Environment.getVar("CLOUD_AGENTS_DOCKER_TCP_HOST") {
-    case Ok(hostPort) -> if hostPort.length > 0 { makeDockerClientTcp(hostPort) } else { makeDockerClient() }
-    case Err(_) -> makeDockerClient()
+  // The branch decision itself (TCP / empty-falls-back / absent-falls-back)
+  // is a pure function in CloudAgents.NetworkPolicy so it's unit-testable
+  // (#377) — this function only does the env lookup (normalizing
+  // Std.Environment.getVar's Result to an Option so the pure package stays
+  // free of Std.Environment's error type) and the actual client construction,
+  // neither of which can run outside this async package anyway.
+  val hostPortVar = match Std.Environment.getVar("CLOUD_AGENTS_DOCKER_TCP_HOST") {
+    case Ok(hostPort) -> Some(value = hostPort)
+    case Err(_) -> None
+  }
+  match CloudAgents.NetworkPolicy.dockerTransportFor(hostPortVar) {
+    case Tcp(hostPort) -> makeDockerClientTcp(hostPort)
+    case Socket -> makeDockerClient()
   }
 }
 
@@ -111,23 +123,19 @@ pub async func createRunnerContainer(
   userId: in String,
   extraRepos: in String,
 ): Result[String, String] {
-  var envs = [
-    "PROMPT=" + prompt,
-    "REPO_URL=" + repoUrl,
-    "BRANCH=" + branch,
-    "HARNESS=" + harness,
-    "MODEL=" + model,
-    "NATIVE_SESSION_ID=" + nativeSessionId
-  ]
+  // Base env list + EXTRA_REPOS live in the pure CloudAgents.RunnerEnv package
+  // so they can be unit-tested — a @test_module can't invoke anything from
+  // this async package, even a pure leaf function (docs/lyric/gotchas.md), the
+  // same reason network-policy resolution lives in CloudAgents.NetworkPolicy
+  // rather than here.
+  var envs = CloudAgents.RunnerEnv.baseRunnerEnvs(prompt, repoUrl, branch, harness, model, nativeSessionId)
 
   // Additional repositories linked to this session (multi-repo sessions): a
   // single space-separated "url|branch ..." value the entrypoint clones into
   // /workspace/repos/<name>. Only set when non-empty so single-repo sessions
   // pass no EXTRA_REPOS at all. Values are validated at link time, so they are
   // safe to embed in the env value verbatim.
-  if extraRepos.length > 0 {
-    envs = envs.append("EXTRA_REPOS=" + extraRepos)
-  }
+  envs = CloudAgents.RunnerEnv.withExtraRepos(envs, extraRepos)
 
   // Phase 6 (docs/phase6-mcp-callbacks.md §2/§5/§6 stage 2, §8 stage 4): mint
   // a per-session callback bearer token and inject it plus the host API's
@@ -164,13 +172,25 @@ pub async func createRunnerContainer(
   // database-read failure (can't reach the store at all) still aborts the run.
   // GITHUB_TOKEN in particular flows on to the container's mcp.json via the
   // entrypoint template, finally wiring up the GitHub MCP server.
+  //
+  // The DB/crypto fetch itself can't be unit-tested from CloudAgents.Docker
+  // (same async-package harness limitation as above) but IS covered directly
+  // against CloudAgents.Repository.decryptedCredentialsForProfile in
+  // tests/profile_tests.l ("Selected-mode profile injects only its granted
+  // credentials"). What's tested here, via CloudAgents.RunnerEnv, is the
+  // NAME=VALUE formatting/ordering this function applies to whatever that
+  // call returns (#221).
   match CloudAgents.Repository.decryptedCredentialsForProfile(userId, profileId) {
     case Ok(creds) -> {
+      var credNames: slice[String] = []
+      var credValues: slice[String] = []
       var i = 0
       while i < creds.length {
-        envs = envs.append(creds[i].name + "=" + creds[i].value)
+        credNames = credNames.append(creds[i].name)
+        credValues = credValues.append(creds[i].value)
         i = i + 1
       }
+      envs = CloudAgents.RunnerEnv.withCredentialEnvs(envs, credNames, credValues)
     }
     case Err(e) -> return Err(error = "Failed to load credentials: " + CloudAgents.Repository.credentialErrorMessage(e))
   }
@@ -286,16 +306,57 @@ pub async func stopRunnerContainer(client: in DockerClient, containerId: in Stri
   }
 }
 
+// 30-minute hard cap on a run's total wall-clock time (matches the old
+// runSessionMessage). Shared by waitForContainer's retry deadline and
+// streamSessionMessage's run-timeout check (#561) — previously duplicated
+// as the same literal in both places, an easy value to update in one spot
+// and silently miss in the other.
+val runWallClockCapMs = 1800000.toLong()
+
 /// Wait for a container's process to exit before reading its output.
+///
+/// Retries a `/wait` failure (bounded two independent ways — an attempt cap
+/// and a 30-minute wall-clock deadline) instead of surfacing it immediately,
+/// since a failure here could be the underlying `Std.Http.HttpClient`'s own
+/// request timeout firing before the container actually finished rather
+/// than a real Docker-reported error. See
+/// `CloudAgents.DockerPolicy.shouldRetryContainerWait`'s doc comment for the
+/// full rationale (#56) — this project cannot configure `DockerClient`'s
+/// HTTP timeout directly, so retrying is the only available mitigation.
 pub async func waitForContainer(client: in DockerClient, containerId: in String): Result[Unit, String] {
-  val waitRes = await waitContainer(client, containerId)
-  match waitRes {
-    case Ok(_) -> Ok(value = ())
-    case Err(e) -> {
-      println("WARNING: failed to wait for container " + containerId + ": " + e.message)
-      return Err(error = "Failed to wait for container: " + e.message)
+  val deadlineMs = CloudAgents.Repository.nowMillisLong() + runWallClockCapMs
+  val maxAttempts = 20
+  var attempts = 0
+  var settled = false
+  var succeeded = false
+  var lastMessage = ""
+  while not settled {
+    attempts = attempts + 1
+    val waitRes = await waitContainer(client, containerId)
+    match waitRes {
+      case Ok(_) -> {
+        succeeded = true
+        settled = true
+      }
+      case Err(e) -> {
+        lastMessage = e.message
+        val retry = CloudAgents.DockerPolicy.shouldRetryContainerWait(
+          attempts,
+          maxAttempts,
+          CloudAgents.Repository.nowMillisLong(),
+          deadlineMs
+        )
+        if not retry {
+          settled = true
+        }
+      }
     }
   }
+  if succeeded {
+    return Ok(value = ())
+  }
+  println("WARNING: failed to wait for container " + containerId + ": " + lastMessage)
+  return Err(error = "Failed to wait for container: " + lastMessage)
 }
 
 /// Delete the container.
@@ -428,7 +489,7 @@ pub func streamSessionMessage(
     cell
   )
   val startMs = CloudAgents.Repository.nowMillisLong()
-  val runTimeoutMs = 1800000.toLong() // 30-minute hard cap (matches the old runSessionMessage)
+  val runTimeoutMs = runWallClockCapMs
   // Give up on the client only after several CONSECUTIVE failed writes, not the
   // first (#491): a single writeChunk Err can be a transient proxy/network blip,
   // and terminating on it would discard an in-progress run the old buffered
@@ -616,8 +677,12 @@ pub func streamSessionMessage(
     }
     // Hard cap the whole run (#481): a hung container with a still-connected
     // client would otherwise hold the session's RUNNING claim forever, where
-    // the old runSessionMessage bounded it with a 30-minute taskWaitMs.
-    if CloudAgents.Repository.nowMillisLong() - startMs > runTimeoutMs {
+    // the old runSessionMessage bounded it with a 30-minute taskWaitMs. The
+    // boundary check itself lives in the pure CloudAgents.DockerPolicy
+    // package so it has direct test coverage (#67) — this async package's
+    // functions can't be reached from a @test_module at all, pure or not
+    // (docs/lyric/gotchas.md).
+    if CloudAgents.DockerPolicy.hasExceededRunTimeout(CloudAgents.Repository.nowMillisLong(), startMs, runTimeoutMs) {
       timedOut = true
     }
   }

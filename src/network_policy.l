@@ -124,3 +124,37 @@ pub func networkModeForPolicyWithCallbacks(policy: in String, callbacksEnabled: 
   }
   return networkModeForPolicy(policy)
 }
+
+// ─── Docker transport selection (#377) ───────────────────────────────────────
+//
+// CloudAgents.Docker.dockerClient() picks between the TCP and Unix-socket
+// Docker transports based on CLOUD_AGENTS_DOCKER_TCP_HOST — see that
+// function's doc comment for the full rationale (the socket transport's
+// upstream dependency is absent from a standalone compiled program's
+// output). The branch DECISION is pure (env var present-and-non-empty -> TCP
+// at that host:port; present-but-empty or absent -> socket) but lived
+// entirely inside CloudAgents.Docker, an async-bearing package a
+// @test_module can't invoke even a single pure function from (docs/lyric/
+// gotchas.md) — so it had zero test coverage. Extracted here, the same way
+// networkModeForPolicy/proxyEnvForPolicy were split out of CloudAgents.Docker
+// for exactly this reason, so the three branches (TCP / empty-falls-back-to-
+// socket / absent-falls-back-to-socket) are unit-testable.
+/// Which Docker transport dockerClient() should use, given the result of
+/// looking up CLOUD_AGENTS_DOCKER_TCP_HOST (`Some(value)` when the env var is
+/// set, `None` when it is absent or unreadable — the caller normalizes
+/// Std.Environment.getVar's `Result[String, IOError]` to this before calling,
+/// so this package stays free of any Std.Environment error type).
+pub union DockerTransport {
+  case Tcp(hostPort: String)
+  case Socket
+}
+
+/// Pure decision: a set-and-non-empty value selects TCP at that host:port;
+/// a set-but-empty value or an absent value both fall back to the
+/// Unix-socket default.
+pub func dockerTransportFor(hostPortVar: in Option[String]): DockerTransport {
+  return match hostPortVar {
+    case Some(hostPort) -> if hostPort.length > 0 { Tcp(hostPort = hostPort) } else { Socket }
+    case None -> Socket
+  }
+}

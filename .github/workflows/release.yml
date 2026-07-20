@@ -57,10 +57,10 @@ jobs:
         run: |
           set -euo pipefail
           TAG="v${RELEASE_VERSION}"
-          if gh release view "$TAG" >/dev/null 2>&1; then
+          if gh release view "$TAG" --repo "${{ github.repository }}" >/dev/null 2>&1; then
             echo "Release $TAG already exists; reusing it (re-run of a failed build leg)."
           else
-            gh release create "$TAG" --draft --target "${GITHUB_SHA}" --title "$TAG" \
+            gh release create "$TAG" --repo "${{ github.repository }}" --draft --target "${GITHUB_SHA}" --title "$TAG" \
               --notes "Cloud Agents backend release."
           fi
 
@@ -225,11 +225,15 @@ jobs:
           tar -czf "$ARCHIVE" -C "publish/${{ matrix.rid }}" .
           echo "ARCHIVE=$ARCHIVE" >> "$GITHUB_ENV"
 
+      # --clobber: a full workflow re-run (as opposed to only re-running the
+      # failed matrix leg) must not fail on a leg whose asset already made it
+      # onto the still-draft release from a prior attempt — same re-run
+      # tolerance the "Create GitHub Release" step above already has.
       - name: Upload release asset
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           RELEASE_VERSION: ${{ needs.create-release.outputs.version }}
-        run: gh release upload "v${RELEASE_VERSION}" "$ARCHIVE"
+        run: gh release upload "v${RELEASE_VERSION}" "$ARCHIVE" --clobber --repo "${{ github.repository }}"
 
   # ---------------------------------------------------------------------------
   # Delete the draft release if any build leg failed, so a broken release

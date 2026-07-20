@@ -35,9 +35,20 @@ extern type StringArray = "System.String[]"
 
 extern type RowArray = "CloudAgents.Sqlite.Row[]"
 
-@externInstance
-@externTarget("System.Object.GetType")
-func getStringType(obj: in String): Type = ()
+// Static Type.GetType(string), not an @externInstance-bound Object.GetType()
+// on a boxed argument (#513) — the same instance-bound GetType() shape that
+// crashed the process with an uncatchable AccessViolationException for a
+// boxed Byte (docs/lyric/gotchas.md), migrated here as defense-in-depth even
+// though String is a reference type and the specific boxing-mismatch
+// mechanism described there is scoped to value-type arguments. getRowType
+// below is left on the instance-bound form: Row is a reference type too
+// (same lower-risk category as String), but migrating it needs the exact
+// runtime-emitted type name for a Lyric record, which isn't safely
+// guessable without the compiler to verify against — a wrong string here
+// breaks Array.CreateInstance outright, trading a currently-working (if
+// same-shaped) call for a worse failure.
+@externTarget("System.Type.GetType")
+func stringType(name: in String): Type = ()
 
 @externInstance
 @externTarget("System.Object.GetType")
@@ -93,8 +104,8 @@ pub func getRowArrayValue(arr: in RowArray, index: in Int): Row = ()
 
 pub func appendString(arr: in StringArray, item: in String): StringArray {
   val oldLen = getStringArrayLength(arr)
-  val stringType = getStringType("")
-  val newArr = createStringArray(stringType, oldLen + 1)
+  val strType = stringType("System.String")
+  val newArr = createStringArray(strType, oldLen + 1)
   if oldLen > 0 {
     copyStringArray(arr, 0, newArr, 0, oldLen)
   }
@@ -103,8 +114,8 @@ pub func appendString(arr: in StringArray, item: in String): StringArray {
 }
 
 pub func createEmptyStringArray(): StringArray {
-  val stringType = getStringType("")
-  return createStringArray(stringType, 0)
+  val strType = stringType("System.String")
+  return createStringArray(strType, 0)
 }
 
 pub func appendRow(arr: in RowArray, item: in Row): RowArray {
@@ -220,7 +231,17 @@ pub func execute(sql: in String): Result[Int, DbError] {
 /// call, so a BEGIN in one `execute` and the DDL in the next would not share a
 /// transaction. Used by the migration runner so a migration and its ledger row
 /// commit together, making every retry of a failed migration safe (review #229).
-pub func executeTransaction(sqls: in slice[String]): Result[Unit, DbError] {
+///
+/// Returns the rows affected by the LAST statement in `sqls` (mirroring
+/// `execute()`'s single-statement return), so a caller whose transaction ends
+/// with the mutation it actually cares about (e.g. a profile UPDATE/DELETE run
+/// alongside its credential-grant replacement) can derive its 0-vs-success
+/// signal from the mutation itself instead of from a pre-check performed
+/// before the transaction ran, which can go stale under concurrent access
+/// (#238). Order statements accordingly when a caller needs this signal;
+/// callers that don't care about the count (migrations, inserts) just discard
+/// it.
+pub func executeTransaction(sqls: in slice[String]): Result[Int, DbError] {
   val conn = openConn()?
   defer {
     conn.Close()
@@ -233,18 +254,19 @@ pub func executeTransaction(sqls: in slice[String]): Result[Unit, DbError] {
     begin.set_CommandText(currentSql)
     val _ = begin.ExecuteNonQuery()
     var i = 0
+    var lastAffected = 0
     while i < sqls.length {
       currentSql = sqls[i]
       val cmd = conn.CreateCommand()
       cmd.set_CommandText(currentSql)
-      val _ = cmd.ExecuteNonQuery()
+      lastAffected = cmd.ExecuteNonQuery()
       i = i + 1
     }
     currentSql = "COMMIT"
     val commit = conn.CreateCommand()
     commit.set_CommandText(currentSql)
     val _ = commit.ExecuteNonQuery()
-    Ok(value = ())
+    Ok(value = lastAffected)
   } catch Bug as b {
     // Roll back so nothing from this batch persists, then surface the error
     // with the statement that failed. The rollback is itself best-effort (the

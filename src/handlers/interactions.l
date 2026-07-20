@@ -43,8 +43,12 @@ pub func addCommentHandler(mid: in String, req: in AddCommentRequest): Result[Co
   if req.body.length == 0 {
     return Err(Web.badRequest("body is required"))
   }
-  if not CloudAgents.Text.withinMaxLength(req.body, maxBodyLen) {
-    return Err(Web.badRequest("body is too long (max " + toString(maxBodyLen) + " characters)"))
+  // maxBodyLen bounds actual payload/storage size (memory pressure), so it
+  // must be checked against UTF-8 byte size, not character count — a
+  // char-count check alone lets a multi-byte-heavy body (CJK, emoji) land up
+  // to ~4x over the stated budget (#64).
+  if not CloudAgents.Text.withinMaxByteLength(req.body, maxBodyLen) {
+    return Err(Web.badRequest("body is too long (max " + toString(maxBodyLen) + " bytes)"))
   }
   // Derive sessionId from the stored message rather than trusting the client.
   val sessionId = match getMessageSessionId(mid) {
@@ -88,8 +92,9 @@ pub func addTodoHandler(id: in String, req: in AddTodoRequest): Result[Todo, Web
   if req.note.length == 0 {
     return Err(Web.badRequest("note is required"))
   }
-  if not CloudAgents.Text.withinMaxLength(req.note, maxBodyLen) {
-    return Err(Web.badRequest("note is too long (max " + toString(maxBodyLen) + " characters)"))
+  // Same UTF-8-byte-size rationale as addCommentHandler above (#64).
+  if not CloudAgents.Text.withinMaxByteLength(req.note, maxBodyLen) {
+    return Err(Web.badRequest("note is too long (max " + toString(maxBodyLen) + " bytes)"))
   }
   // When the todo is anchored to a message, the anchor must exist and belong
   // to this session — otherwise todos can point at other sessions' transcripts

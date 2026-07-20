@@ -13,6 +13,34 @@ got edited.
 
 A Lyric application. Lyric is a safety-oriented language targeting .NET 10 (primary) and JVM (Java 21). Syntax is Kotlin/C#/TypeScript-adjacent. It is not TypeScript or Kotlin — read the docs before writing code.
 
+## Installing the Lyric compiler (if `lyric` isn't on PATH)
+
+In a fresh agent session the `lyric` CLI usually isn't installed yet. Install it with:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/nichobbs/lyric-lang/main/scripts/install.sh | sh
+```
+
+or, for a pinned version, download the release tarball directly (adjust the version):
+
+```sh
+curl -fsSL -o lyric.tar.gz https://github.com/nichobbs/lyric-lang/releases/download/v0.4.33/lyric-0.4.33-linux-x64.tar.gz
+```
+
+**In a Claude Code remote/cloud session**, both of the above go through the session's
+GitHub egress proxy, which blocks direct downloads from `github.com/nichobbs/lyric-lang`
+release assets (`api.github.com`/`github.com` requests for a repo return 403 "GitHub
+access to this repository is not enabled for this session") until that repo is added to
+the session's scope — `raw.githubusercontent.com` fetches (e.g. the installer script
+itself) are not gated the same way, but the release-asset download inside the script
+still is. Add the repo first with the `add_repo` tool (owner `nichobbs`, repo
+`lyric-lang`) before running the installer or curling a release tarball. If `add_repo`
+(or any other `claude-code-remote`-server tool) fails with "MCP tool call requires
+approval" even after the user approves, that's a session-level connection issue with
+that MCP server, not a real permission denial — retrying the same call won't fix it;
+ask the user to grant access via the Claude GitHub settings UI (claude.ai admin
+settings) instead of continuing to retry the tool call.
+
 ## Build and run
 
 ```sh
@@ -62,9 +90,10 @@ a real running server answered real `curl` requests correctly, and a real
 session creation spawned a real Docker container that cloned a real repo
 and streamed real output back — see `docs/BUILD.md` "Dependencies" /
 "Net effect" for the full verification, including two `Lyric.Docker`
-bugs found and fixed along the way (nichobbs/cloud-agents#354's automated-test
-gap remains open, but the server behavior it was blocking on confirming is
-now independently confirmed by manual live verification). Bug 6
+bugs found and fixed along the way (the automated end-to-end test that
+nichobbs/cloud-agents#354 asked for still doesn't exist, but the behavior it
+was concerned about is now independently confirmed by manual live
+verification). Bug 6
 (`slice[T].append(x)` — the compiler's own documented idiom for building up
 a slice — threw `"unsupported method 'append'"` at runtime unconditionally,
 builds fine, failed only when actually called,

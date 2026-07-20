@@ -52,7 +52,7 @@ docker compose exec api test -S /var/run/docker.sock && echo ok
 
 If that fails, the mount didn't come through as a socket — and note
 `/api/health` won't tell you that: `checkHealth()`
-(`src/handlers/sessions.l:759`) only probes SQLite, there's no Docker
+(`src/handlers/sessions.l`) only probes SQLite, there's no Docker
 connectivity check anywhere in the stack. Uptime monitoring pointed at
 `/api/health` (per `RUNBOOK.md`) will report healthy even with a broken
 `docker.sock` mount — the `test -S` command above is the only way to catch
@@ -97,9 +97,15 @@ passes neither, so these three stay off unless you opt in. To enable one:
 
 Enabled services show as **"Exited (0)"** in Coolify's service list —
 that's the intended behavior, not a failure; only the built image matters.
-The runner Dockerfiles force `--platform=linux/amd64`, so building on an
-arm64 Coolify host means QEMU emulation — noticeably slower, another
-reason to only enable the harnesses you actually use.
+Each runner-image service also sets Coolify's documented `exclude_from_hc:
+true` flag (#516) so Coolify's own healthcheck evaluation skips it rather
+than treating the non-restarting exited container as an unhealthy/failed
+deployment signal — see
+[Coolify's Docker Compose docs](https://coolify.io/docs/knowledge-base/docker/compose),
+which use the same one-shot-service shape (a `migrate` container) as their
+own example. The runner Dockerfiles force `--platform=linux/amd64`, so
+building on an arm64 Coolify host means QEMU emulation — noticeably
+slower, another reason to only enable the harnesses you actually use.
 
 ## Backups
 

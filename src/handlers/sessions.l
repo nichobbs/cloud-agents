@@ -4,6 +4,7 @@ import Std.Core
 import Web
 import CloudAgents.Auth
 import CloudAgents.Docker
+import CloudAgents.Proxy
 import CloudAgents.Repository
 import CloudAgents.SessionStore
 import CloudAgents.Sqlite
@@ -178,6 +179,17 @@ pub func createSession(req: in CreateSessionRequest): Result[CreateSessionRespon
 
   val sessionId = generateSessionId()
   val harness = if req.harness.length == 0 { "claude" } else { req.harness }
+  // CLOUD_AGENTS_ENABLED_HARNESSES (#523) was UI-only — nothing server-side
+  // enforced it at session-creation time, so bypassing the frontend picker
+  // still reached createRunnerContainer with a harness this deployment never
+  // built a runner image for, only to fail later with an opaque Docker
+  // "image not found" instead of a clean 400 (#560). Checked on the
+  // RESOLVED harness (after the empty -> "claude" default above), not just
+  // an explicitly-requested one, so a deployment that disables the default
+  // harness itself is covered too.
+  if not CloudAgents.Proxy.isHarnessEnabled(harness) {
+    return Err(Web.badRequest("harness '" + harness + "' is not enabled on this deployment"))
+  }
   val model = if req.model.length == 0 { CloudAgents.SessionStore.defaultModelForHarness(harness) } else { req.model }
   val session = makeAgentSession(
     sessionId = sessionId,
@@ -396,6 +408,23 @@ pub func writeStreamError(w: in Web.ResponseWriter, code: in Int, msg: in String
   return ()
 }
 
+/// Whether `text` is over streamSendMessage's prompt-length cap (#334). pub +
+/// pure so the exact cap enforcement can be tested directly: streamSendMessage
+/// itself calls CloudAgents.Docker.streamSessionMessage further down and so
+/// cannot be invoked from the test harness at all (docs/lyric/gotchas.md — a
+/// @test_module can't invoke a function that reaches an async-bearing
+/// package), the same reason cancelRun/getRunOutput have no direct test (see
+/// tests/session_tests.l). Thin wrapper over CloudAgents.Text.withinMaxByteLength
+/// (already generically tested in tests/text_tests.l) so the maxPromptLen
+/// constant itself — the thing a future refactor could accidentally remove or
+/// raise — is what's actually pinned by a test using this function. Byte, not
+/// char, length: maxPromptLen bounds actual payload/storage size (memory
+/// pressure), and a char-count check alone lets a multi-byte-heavy payload
+/// (CJK, emoji) land up to ~4x over the stated budget (#64).
+pub func promptExceedsMaxLength(text: in String): Bool {
+  return not CloudAgents.Text.withinMaxByteLength(text, maxPromptLen)
+}
+
 /// Accept a user prompt and STREAM the container's output back as it is
 /// produced, using Lyric.Web 0.4.33's streaming-handler API: each new slice of
 /// container output is written as a `data: {"chunk":"..."}` SSE frame the
@@ -418,8 +447,8 @@ pub func streamSendMessage(id: in String, text: in String, w: in Web.ResponseWri
     writeStreamError(w, 400, "text is required")
     return ()
   }
-  if not CloudAgents.Text.withinMaxLength(text, maxPromptLen) {
-    writeStreamError(w, 400, "text is too long (max " + toString(maxPromptLen) + " characters)")
+  if promptExceedsMaxLength(text) {
+    writeStreamError(w, 400, "text is too long (max " + toString(maxPromptLen) + " bytes)")
     return ()
   }
 
