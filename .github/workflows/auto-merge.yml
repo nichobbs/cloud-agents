@@ -116,20 +116,30 @@ jobs:
             # change a reviewers approval stance on GitHub, unlike
             # APPROVED/CHANGES_REQUESTED/DISMISSED, so they are excluded
             # before picking each reviewers latest review by submit time.
+            # Reviews are also filtered to commit_id == $sha (nichobbs/
+            # cloud-agents#554): without this, an approval left on an older
+            # commit still counted after new, unreviewed commits were pushed
+            # and passed CI/claude-review — defeating the whole point of
+            # requiring a human to have actually looked at what's merging.
             reviews=$(gh api "repos/$REPO/pulls/$pr/reviews" --paginate --jq '.')
             if [ $? -ne 0 ]; then
               echo "::warning::failed to fetch reviews for PR #$pr, skipping"
               continue
             fi
-            human_approvals=$(echo "$reviews" | jq -sr '
+            human_approvals=$(echo "$reviews" | jq -sr --arg sha "$sha" '
               add
               | map(select(.user.type != "Bot"))
+              | map(select(.commit_id == $sha))
               | map(select(.state == "APPROVED" or .state == "CHANGES_REQUESTED" or .state == "DISMISSED"))
               | group_by(.user.login)
               | map(max_by(.submitted_at))
               | map(select(.state == "APPROVED"))
               | length
             ')
+            if [ $? -ne 0 ]; then
+              echo "::warning::failed to compute human approvals for PR #$pr, skipping"
+              continue
+            fi
 
             echo "Build & verify: $ci_conclusion | claude-review: $review_conclusion | human approvals: $human_approvals"
 

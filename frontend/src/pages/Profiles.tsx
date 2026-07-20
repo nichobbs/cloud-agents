@@ -145,7 +145,7 @@ export function Profiles() {
               {PROFILE_HARNESS_IDS.map(id => {
                 const available = enabledHarnessIds === null || enabledHarnessIds.has(id);
                 return (
-                  <option key={id} value={id}>
+                  <option key={id} value={id} disabled={!available}>
                     {id}{available ? '' : ' (not built on this deployment)'}
                   </option>
                 );
