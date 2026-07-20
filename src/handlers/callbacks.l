@@ -873,6 +873,26 @@ pub func listArtifactsHandler(id: in String): Result[ArtifactListResponse, Web.A
 }
 
 /// GET /api/sessions/{id}/artifacts/{aid} — user-originated. Streams the
+/// Escape a filename for an RFC 6266 `filename="..."` quoted-string: a `"`
+/// or `\` in the (already basename-sanitized) name would otherwise break
+/// out of the quotes, and a CR/LF would split the header — so backslash-
+/// escape the two quoted-string metacharacters and drop control characters
+/// (< 0x20) entirely (#547).
+pub func contentDispositionQuoted(name: in String): String {
+  var escaped = ""
+  var i = 0
+  while i < name.length {
+    val c = name.substring(i, 1)
+    if c == "\"" or c == "\\" {
+      escaped = escaped + "\\" + c
+    } else if c >= " " {
+      escaped = escaped + c
+    }
+    i = i + 1
+  }
+  return escaped
+}
+
 /// stored bytes with Content-Disposition set from the sanitized fileName.
 /// Returns the full Response directly (not a JSON body) since this is a
 /// binary download.
@@ -898,5 +918,11 @@ pub func downloadArtifactHandler(id: in String, aid: in String): Result[Web.Resp
     case Err(e) -> return Err(Web.internalError("failed to read artifact: " + IOError.message(e)))
   }
   val resp = Web.bytesResponse(200, a.mimeType, bytes.toArray())
-  return Ok(Web.withResponseHeader(resp, "Content-Disposition", "attachment; filename=\"" + a.fileName + "\""))
+  return Ok(
+    Web.withResponseHeader(
+      resp,
+      "Content-Disposition",
+      "attachment; filename=\"" + contentDispositionQuoted(a.fileName) + "\""
+    )
+  )
 }

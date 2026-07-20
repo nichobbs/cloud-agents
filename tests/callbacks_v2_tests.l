@@ -392,3 +392,25 @@ test "v2 callback endpoints reject an empty session id before touching the datab
     case Err(e) -> assertEqualInt(e.status, 400, "empty id returns 400")
   }
 }
+
+test "contentDispositionQuoted escapes quotes/backslashes and strips control chars (#547)" {
+  // A quote in an (already basename-sanitized) fileName must be escaped so
+  // it can't break out of the Content-Disposition quoted-string.
+  assertEqual(
+    CloudAgents.Callbacks.contentDispositionQuoted("re\"port.txt"),
+    "re\\\"port.txt",
+    "a double quote is backslash-escaped"
+  )
+  assertEqual(CloudAgents.Callbacks.contentDispositionQuoted("a\\b"), "a\\\\b", "a backslash is doubled")
+  // A CR/LF would split the header — dropped, not passed through.
+  assertEqual(
+    CloudAgents.Callbacks.contentDispositionQuoted("a\r\nb"),
+    "ab",
+    "control characters are stripped so the header cannot be split"
+  )
+  assertEqual(
+    CloudAgents.Callbacks.contentDispositionQuoted("normal.txt"),
+    "normal.txt",
+    "an ordinary name is unchanged"
+  )
+}
