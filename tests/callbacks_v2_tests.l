@@ -70,10 +70,10 @@ func cleanupTestDb(path: in String): Unit {
   CloudAgents.Auth.setCurrentUserId("default")
 }
 
-func mkSession(id: in String): Unit {
+func mkSessionRepo(id: in String, repoUrl: in String): Unit {
   val s = makeAgentSession(
     sessionId = id,
-    repoUrl = "https://github.com/nic/repo",
+    repoUrl = repoUrl,
     branch = "main",
     containerId = "",
     harness = "claude",
@@ -84,6 +84,10 @@ func mkSession(id: in String): Unit {
     case Ok(_) -> ()
     case Err(e) -> panic("addSession failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
   }
+}
+
+func mkSession(id: in String): Unit {
+  mkSessionRepo(id, "https://github.com/nic/repo")
 }
 
 func mintToken(id: in String, ownerUserId: in String): String {
@@ -413,4 +417,224 @@ test "contentDispositionQuoted escapes quotes/backslashes and strips control cha
     "normal.txt",
     "an ordinary name is unchanged"
   )
+}
+
+// ── remember / recall (phase 7 §4) ────────────────────────────────────────────
+test "remember then recall round-trips, overwrites by key, and stays repo-scoped" {
+  val dbPath = useFreshTestDb("memory-roundtrip")
+  defer {
+    cleanupTestDb(dbPath)
+  }
+  CloudAgents.Auth.setCurrentUserId("default")
+  val sid = "sess-memory-1"
+  mkSession(sid)
+  val token = mintToken(sid, "default")
+
+  match rememberHandler(sid, bearer(token), RememberRequest(key = "build", value = "make lyric")) {
+    case Ok(r) -> assertEqual(r.key, "build", "remember echoes the stored key")
+    case Err(e) -> assertTrue(false, "remember failed: " + toString(e.status))
+  }
+  match rememberHandler(sid, bearer(token), RememberRequest(key = "tests", value = "lyric test")) {
+    case Ok(_) -> ()
+    case Err(e) -> assertTrue(false, "second remember failed: " + toString(e.status))
+  }
+
+  match recallHandler(sid, bearer(token)) {
+    case Ok(l) -> {
+      assertEqualInt(l.entries.length.toInt(), 2, "both entries recalled")
+      assertEqual(l.entries[0].key, "build", "entries are key-ordered")
+      assertEqual(l.entries[0].value, "make lyric", "value round-trips")
+      assertEqual(l.entries[1].key, "tests", "second key present")
+    }
+    case Err(e) -> assertTrue(false, "recall failed: " + toString(e.status))
+  }
+
+  // Re-remembering the same key overwrites the value rather than adding a row.
+  match rememberHandler(sid, bearer(token), RememberRequest(key = "build", value = "make lyric && ./scripts/verify.sh")) {
+    case Ok(_) -> ()
+    case Err(e) -> assertTrue(false, "overwrite remember failed: " + toString(e.status))
+  }
+  match recallHandler(sid, bearer(token)) {
+    case Ok(l) -> {
+      assertEqualInt(l.entries.length.toInt(), 2, "overwrite does not add a row")
+      assertEqual(l.entries[0].value, "make lyric && ./scripts/verify.sh", "the value was overwritten")
+    }
+    case Err(e) -> assertTrue(false, "recall after overwrite failed: " + toString(e.status))
+  }
+}
+
+test "memory carries across sessions on the same repo, isolated from other repos" {
+  val dbPath = useFreshTestDb("memory-cross-session")
+  defer {
+    cleanupTestDb(dbPath)
+  }
+  CloudAgents.Auth.setCurrentUserId("default")
+
+  val sidA = "sess-memory-A"
+  mkSession(sidA)
+  val tokenA = mintToken(sidA, "default")
+  match rememberHandler(sidA, bearer(tokenA), RememberRequest(key = "quirk", value = "sqlite native lib needed")) {
+    case Ok(_) -> ()
+    case Err(e) -> assertTrue(false, "remember A failed: " + toString(e.status))
+  }
+
+  // A brand-new session on the SAME repo recalls the earlier note — the point.
+  val sidB = "sess-memory-B"
+  mkSession(sidB)
+  val tokenB = mintToken(sidB, "default")
+  match recallHandler(sidB, bearer(tokenB)) {
+    case Ok(l) -> {
+      assertEqualInt(l.entries.length.toInt(), 1, "a new session on the same repo inherits the memory")
+      assertEqual(l.entries[0].value, "sqlite native lib needed", "the earlier session's note is readable")
+    }
+    case Err(e) -> assertTrue(false, "recall B failed: " + toString(e.status))
+  }
+
+  // A session on a DIFFERENT repo sees none of it.
+  val sidC = "sess-memory-C"
+  mkSessionRepo(sidC, "https://github.com/nic/other")
+  val tokenC = mintToken(sidC, "default")
+  match recallHandler(sidC, bearer(tokenC)) {
+    case Ok(l) -> assertEqualInt(l.entries.length.toInt(), 0, "a different repo shares no memory")
+    case Err(e) -> assertTrue(false, "recall C failed: " + toString(e.status))
+  }
+}
+
+test "remember validates key/value and rejects a session with no repo to scope to" {
+  val dbPath = useFreshTestDb("memory-validation")
+  defer {
+    cleanupTestDb(dbPath)
+  }
+  CloudAgents.Auth.setCurrentUserId("default")
+  val sid = "sess-memory-val"
+  mkSession(sid)
+  val token = mintToken(sid, "default")
+
+  match rememberHandler(sid, bearer(token), RememberRequest(key = "", value = "v")) {
+    case Ok(_) -> assertTrue(false, "empty key must be rejected")
+    case Err(e) -> assertEqualInt(e.status, 400, "empty key -> 400")
+  }
+  match rememberHandler(sid, bearer(token), RememberRequest(key = "k", value = "")) {
+    case Ok(_) -> assertTrue(false, "empty value must be rejected")
+    case Err(e) -> assertEqualInt(e.status, 400, "empty value -> 400")
+  }
+  // An over-length key (> 256) and an over-length value (> 64 KiB) are both
+  // rejected before any write (#589).
+  match rememberHandler(sid, bearer(token), RememberRequest(key = atLeast(257), value = "v")) {
+    case Ok(_) -> assertTrue(false, "an over-length key must be rejected")
+    case Err(e) -> assertEqualInt(e.status, 400, "over-length key -> 400")
+  }
+  match rememberHandler(sid, bearer(token), RememberRequest(key = "k", value = atLeast(65537))) {
+    case Ok(_) -> assertTrue(false, "an over-length value must be rejected")
+    case Err(e) -> assertEqualInt(e.status, 400, "over-length value -> 400")
+  }
+
+  val sidNoRepo = "sess-memory-norepo"
+  mkSessionRepo(sidNoRepo, "")
+  val tokenNoRepo = mintToken(sidNoRepo, "default")
+  match rememberHandler(sidNoRepo, bearer(tokenNoRepo), RememberRequest(key = "k", value = "v")) {
+    case Ok(_) -> assertTrue(false, "a session with no repo must be rejected")
+    case Err(e) -> assertEqualInt(e.status, 400, "no repo -> 400")
+  }
+}
+
+test "recall requires a valid callback token; the owner can list via the user route" {
+  val dbPath = useFreshTestDb("memory-auth")
+  defer {
+    cleanupTestDb(dbPath)
+  }
+  CloudAgents.Auth.setCurrentUserId("default")
+  val sid = "sess-memory-auth"
+  mkSession(sid)
+  val token = mintToken(sid, "default")
+
+  match recallHandler(sid, bearer("wrong-token")) {
+    case Ok(_) -> assertTrue(false, "a wrong callback token must be rejected")
+    case Err(e) -> assertEqualInt(e.status, 401, "bad token -> 401")
+  }
+  match rememberHandler(sid, bearer(token), RememberRequest(key = "k", value = "v")) {
+    case Ok(_) -> ()
+    case Err(e) -> assertTrue(false, "remember failed: " + toString(e.status))
+  }
+  match listMemoryHandler(sid) {
+    case Ok(l) -> assertEqualInt(l.entries.length.toInt(), 1, "the owner can list repo memory")
+    case Err(e) -> assertTrue(false, "listMemory failed: " + toString(e.status))
+  }
+}
+
+test "forget deletes an entry, frees a slot under the cap, and is idempotent (#592)" {
+  val dbPath = useFreshTestDb("memory-forget")
+  defer {
+    cleanupTestDb(dbPath)
+  }
+  CloudAgents.Auth.setCurrentUserId("default")
+  val sid = "sess-memory-forget"
+  mkSession(sid)
+  val token = mintToken(sid, "default")
+
+  match rememberHandler(sid, bearer(token), RememberRequest(key = "build", value = "make lyric")) {
+    case Ok(_) -> ()
+    case Err(e) -> assertTrue(false, "remember failed: " + toString(e.status))
+  }
+  // Forgetting a present key deletes it.
+  match forgetHandler(sid, bearer(token), ForgetRequest(key = "build")) {
+    case Ok(r) -> assertEqual(r.status, "deleted", "an existing key reports deleted")
+    case Err(e) -> assertTrue(false, "forget failed: " + toString(e.status))
+  }
+  match recallHandler(sid, bearer(token)) {
+    case Ok(l) -> assertEqualInt(l.entries.length.toInt(), 0, "the entry is gone after forget")
+    case Err(e) -> assertTrue(false, "recall failed: " + toString(e.status))
+  }
+  // Forgetting an absent key is a success, not an error (idempotent).
+  match forgetHandler(sid, bearer(token), ForgetRequest(key = "build")) {
+    case Ok(r) -> assertEqual(r.status, "absent", "a missing key reports absent, not an error")
+    case Err(e) -> assertTrue(false, "idempotent forget must not error: " + toString(e.status))
+  }
+  // A wrong callback token is rejected.
+  match forgetHandler(sid, bearer("wrong-token"), ForgetRequest(key = "build")) {
+    case Ok(_) -> assertTrue(false, "a wrong callback token must be rejected")
+    case Err(e) -> assertEqualInt(e.status, 401, "bad token -> 401")
+  }
+  // Key validation matches remember: empty and over-length keys are 400 (#594).
+  match forgetHandler(sid, bearer(token), ForgetRequest(key = "")) {
+    case Ok(_) -> assertTrue(false, "an empty key must be rejected")
+    case Err(e) -> assertEqualInt(e.status, 400, "empty key -> 400")
+  }
+  match forgetHandler(sid, bearer(token), ForgetRequest(key = atLeast(257))) {
+    case Ok(_) -> assertTrue(false, "an over-length key must be rejected")
+    case Err(e) -> assertEqualInt(e.status, 400, "over-length key -> 400")
+  }
+}
+
+test "remember caps the number of distinct keys per repo but always allows overwrites (#575)" {
+  val dbPath = useFreshTestDb("memory-cap")
+  defer {
+    cleanupTestDb(dbPath)
+  }
+  CloudAgents.Auth.setCurrentUserId("default")
+  val sid = "sess-memory-cap"
+  mkSession(sid)
+  val token = mintToken(sid, "default")
+
+  // Fill the repo to exactly the cap (256 distinct keys).
+  var i = 0
+  while i < 256 {
+    match rememberHandler(sid, bearer(token), RememberRequest(key = "k" + toString(i), value = "v")) {
+      case Ok(_) -> ()
+      case Err(e) -> assertTrue(false, "remember " + toString(i) + " failed: " + toString(e.status))
+    }
+    i = i + 1
+  }
+
+  // A 257th distinct key is rejected.
+  match rememberHandler(sid, bearer(token), RememberRequest(key = "one-too-many", value = "v")) {
+    case Ok(_) -> assertTrue(false, "a new key past the cap must be rejected")
+    case Err(e) -> assertEqualInt(e.status, 400, "over-cap new key -> 400")
+  }
+
+  // Overwriting an EXISTING key is still allowed even at the cap.
+  match rememberHandler(sid, bearer(token), RememberRequest(key = "k0", value = "updated")) {
+    case Ok(_) -> ()
+    case Err(e) -> assertTrue(false, "overwriting an existing key at the cap must still work: " + toString(e.status))
+  }
 }

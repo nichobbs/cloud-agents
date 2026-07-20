@@ -2292,3 +2292,95 @@ pub func selectArtifactsCreatedAfterSql(sessionId: in String, afterCreatedAt: in
     sqlLiteral(afterCreatedAt) +
     " ORDER BY created_at ASC"
 }
+
+// ─── Phase 7: repo-scoped memory (remember / recall) ─────────────────────────
+//
+// docs/phase7-autonomy.md §4. A key/value store scoped to
+// (user_id, repo_key), where repo_key is the normalized host/owner/repo
+// identity (CloudAgents.RepoKey), so a later session on the same repo can read
+// back what an earlier one learned. `mem_key` avoids SQL's reserved `key`.
+/// Read a session's owning user id AND primary repo_url by id ONLY —
+/// deliberately unscoped by the current identity, mirroring
+/// selectSessionOwnerIdSql. The repo-memory callback endpoints are
+/// container-originated (the caller is stamped as the operator, not the
+/// session owner), so scoping memory to the owner + the session's repo needs
+/// this unscoped lookup.
+pub func selectSessionOwnerAndRepoSql(id: in String): String {
+  return "SELECT user_id, repo_url FROM sessions WHERE id = " + sqlLiteral(id)
+}
+
+val memoryColumns = "id, user_id, repo_key, mem_key, value, created_at, updated_at"
+
+pub func repoMemorySchemaSql(): String {
+  return "CREATE TABLE IF NOT EXISTS memories (" + "id TEXT PRIMARY KEY, " + "user_id TEXT NOT NULL, " +
+    "repo_key TEXT NOT NULL, " +
+    "mem_key TEXT NOT NULL, " +
+    "value TEXT NOT NULL, " +
+    "created_at TEXT NOT NULL, " +
+    "updated_at TEXT NOT NULL, " +
+    "UNIQUE(user_id, repo_key, mem_key))"
+}
+
+pub func repoMemoryIndexSql(): String {
+  return "CREATE INDEX IF NOT EXISTS idx_memories_user_repo ON memories(user_id, repo_key)"
+}
+
+/// Atomic capped upsert of one memory entry (#575, #586). A single statement,
+/// so the per-repo entry cap is enforced race-free: SQLite serializes writers,
+/// and the `WHERE` sub-selects are evaluated against committed state within the
+/// one statement. The row is written when EITHER the repo is under `maxEntries`
+/// (a new key) OR the key already exists (an overwrite is always allowed and
+/// doesn't grow the store); `ON CONFLICT … DO UPDATE` performs the overwrite.
+/// created_at is preserved on overwrite (records first-seen time). Affects 1
+/// row when written, 0 when the cap blocked a new key.
+pub func upsertMemoryCappedSql(
+  id: in String,
+  userId: in String,
+  repoKey: in String,
+  memKey: in String,
+  value: in String,
+  createdAt: in String,
+  updatedAt: in String,
+  maxEntries: in Int,
+): String {
+  val scopeClause = "user_id = " + sqlLiteral(userId) + " AND repo_key = " + sqlLiteral(repoKey)
+  return "INSERT INTO memories (" + memoryColumns + ") SELECT " + sqlLiteral(id) + ", " + sqlLiteral(userId) + ", " +
+    sqlLiteral(repoKey) +
+    ", " +
+    sqlLiteral(memKey) +
+    ", " +
+    sqlLiteral(value) +
+    ", " +
+    sqlLiteral(createdAt) +
+    ", " +
+    sqlLiteral(updatedAt) +
+    " WHERE ((SELECT COUNT(*) FROM memories WHERE " +
+    scopeClause +
+    ") < " +
+    toString(maxEntries) +
+    " OR EXISTS(SELECT 1 FROM memories WHERE " +
+    scopeClause +
+    " AND mem_key = " +
+    sqlLiteral(memKey) +
+    ")) ON CONFLICT(user_id, repo_key, mem_key) DO UPDATE SET value = " +
+    sqlLiteral(value) +
+    ", updated_at = " +
+    sqlLiteral(updatedAt)
+}
+
+/// All memory entries for (user_id, repo_key), ordered by key for stable
+/// listing (recall with no key).
+pub func selectMemoryBySql(userId: in String, repoKey: in String): String {
+  return "SELECT " + memoryColumns + " FROM memories WHERE user_id = " + sqlLiteral(userId) + " AND repo_key = " +
+    sqlLiteral(repoKey) +
+    " ORDER BY mem_key ASC"
+}
+
+/// Delete one memory entry by key (#592, backs the `forget` tool so an entry
+/// can be pruned to free a slot under the cap). Affects 1 row when the key
+/// existed, 0 otherwise.
+pub func deleteMemorySql(userId: in String, repoKey: in String, memKey: in String): String {
+  return "DELETE FROM memories WHERE user_id = " + sqlLiteral(userId) + " AND repo_key = " + sqlLiteral(repoKey) +
+    " AND mem_key = " +
+    sqlLiteral(memKey)
+}

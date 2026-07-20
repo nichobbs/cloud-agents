@@ -267,6 +267,74 @@ pub func addFollowupTask(transport: in V2CallbackTransport, description: in Stri
   }
 }
 
+// ── remember / recall (phase 7 §4) ────────────────────────────────────────────
+/// Store a memory entry for this session's repo, returning a short
+/// confirmation. Overwrites any existing value under the same key.
+pub func remember(transport: in V2CallbackTransport, key: in String, value: in String): Result[String, String] {
+  val created = match transport.remember(key, value) {
+    case Ok(body) -> body
+    case Err(e) -> return Err(error = "failed to reach the cloud-agents host: " + e)
+  }
+  return match tryDecodeRememberResponse(created) {
+    case Some(r) -> Ok(value = "remembered '" + r.key + "' for this repository")
+    case None -> Err(error = "malformed response from the cloud-agents host when storing memory")
+  }
+}
+
+/// Read memory for this session's repo. With a non-empty `key`, return just
+/// that entry's value (or a not-found message). With an empty `key`, return
+/// every entry as `key: value` lines — the "load everything at session start"
+/// flow so a later session picks up what an earlier one learned.
+pub func recall(transport: in V2CallbackTransport, key: in String): Result[String, String] {
+  val body = match transport.recallAll() {
+    case Ok(b) -> b
+    case Err(e) -> return Err(error = "failed to reach the cloud-agents host: " + e)
+  }
+  val list = match tryDecodeMemoryListResponse(body) {
+    case Some(r) -> r
+    case None -> return Err(error = "malformed response from the cloud-agents host when reading memory")
+  }
+  if key.length > 0 {
+    var j = 0
+    while j < list.entries.length {
+      val e = list.entries[j]
+      if e.key == key {
+        return Ok(value = e.value)
+      }
+      j = j + 1
+    }
+    return Ok(value = "no memory stored under '" + key + "' for this repository")
+  }
+  if list.entries.length == 0 {
+    return Ok(value = "no memory stored yet for this repository")
+  }
+  var acc = ""
+  var i = 0
+  while i < list.entries.length {
+    val e = list.entries[i]
+    if i > 0 {
+      acc = acc + "\n"
+    }
+    acc = acc + e.key + ": " + e.value
+    i = i + 1
+  }
+  return Ok(value = acc)
+}
+
+/// Delete a memory entry for this session's repo, freeing a slot under the
+/// cap (#592). Reports whether the key existed; forgetting an absent key is a
+/// success, not an error.
+pub func forget(transport: in V2CallbackTransport, key: in String): Result[String, String] {
+  val body = match transport.forget(key) {
+    case Ok(b) -> b
+    case Err(e) -> return Err(error = "failed to reach the cloud-agents host: " + e)
+  }
+  return match tryDecodeForgetResponse(body) {
+    case Some(r) -> if r.status == "deleted" { Ok(value = "forgot '" + r.key + "'") } else { Ok(value = "no memory stored under '" + r.key + "' for this repository") }
+    case None -> Err(error = "malformed response from the cloud-agents host when forgetting memory")
+  }
+}
+
 // ── report_artifact ───────────────────────────────────────────────────────────
 @externTarget("System.Convert.ToBase64String")
 func encodeBase64(b: in slice[Byte]): String = ""

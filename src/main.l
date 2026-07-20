@@ -250,6 +250,18 @@ func artifactListResp(r: in Result[ArtifactListResponse, Web.ApiError]): Web.Res
   return match r { case Ok(v) -> Web.json(200, v.toJson()); case Err(e) -> Web.errorResponse(e) }
 }
 
+func rememberResp(r: in Result[RememberResponse, Web.ApiError]): Web.Response {
+  return match r { case Ok(v) -> Web.json(200, v.toJson()); case Err(e) -> Web.errorResponse(e) }
+}
+
+func memoryListResp(r: in Result[MemoryListResponse, Web.ApiError]): Web.Response {
+  return match r { case Ok(v) -> Web.json(200, v.toJson()); case Err(e) -> Web.errorResponse(e) }
+}
+
+func forgetResp(r: in Result[ForgetResponse, Web.ApiError]): Web.Response {
+  return match r { case Ok(v) -> Web.json(200, v.toJson()); case Err(e) -> Web.errorResponse(e) }
+}
+
 // ─── CloudAgents.Handlers routes (sessions.l) ───────────────────────────────
 record RouteCreateSession {
 }
@@ -969,6 +981,47 @@ impl Web.Handler for RouteDownloadArtifact {
   }
 }
 
+// ─── Phase 7 §4: repo-scoped memory (callbacks.l) ───────────────────────────
+record RouteRemember {
+}
+
+impl Web.Handler for RouteRemember {
+  func handle(req: in Web.Request): Web.Response {
+    val id = pparam(req, "id")
+    val decoded = match RememberRequest.fromJson(req.body) { case Ok(d) -> d; case Err(_) -> return badBody() }
+    return rememberResp(CloudAgents.Callbacks.rememberHandler(id, callbackAuthHeader(req), decoded))
+  }
+}
+
+record RouteRecall {
+}
+
+impl Web.Handler for RouteRecall {
+  func handle(req: in Web.Request): Web.Response {
+    return memoryListResp(CloudAgents.Callbacks.recallHandler(pparam(req, "id"), callbackAuthHeader(req)))
+  }
+}
+
+record RouteListMemory {
+}
+
+impl Web.Handler for RouteListMemory {
+  func handle(req: in Web.Request): Web.Response {
+    return memoryListResp(CloudAgents.Callbacks.listMemoryHandler(pparam(req, "id")))
+  }
+}
+
+record RouteForget {
+}
+
+impl Web.Handler for RouteForget {
+  func handle(req: in Web.Request): Web.Response {
+    val id = pparam(req, "id")
+    val decoded = match ForgetRequest.fromJson(req.body) { case Ok(d) -> d; case Err(_) -> return badBody() }
+    return forgetResp(CloudAgents.Callbacks.forgetHandler(id, callbackAuthHeader(req), decoded))
+  }
+}
+
 // ─── CloudAgents.Proxy routes (proxy.l) ─────────────────────────────────────
 //
 // Server-side provider proxies (ADR-006): every handler returns a complete
@@ -1227,6 +1280,10 @@ func main(): Unit {
   router = Web.addPost(router, "/api/sessions/{id}/callbacks/artifact", RouteUploadArtifact())
   router = Web.addGet(router, "/api/sessions/{id}/artifacts", RouteListArtifacts())
   router = Web.addGet(router, "/api/sessions/{id}/artifacts/{aid}", RouteDownloadArtifact())
+  router = Web.addPost(router, "/api/sessions/{id}/callbacks/memory", RouteRemember())
+  router = Web.addGet(router, "/api/sessions/{id}/callbacks/memory", RouteRecall())
+  router = Web.addPost(router, "/api/sessions/{id}/callbacks/memory/forget", RouteForget())
+  router = Web.addGet(router, "/api/sessions/{id}/memory", RouteListMemory())
 
   // Server-side provider proxies (ADR-006): GitHub listings and model
   // discovery with vault credentials, so the browser needs no local keys.
