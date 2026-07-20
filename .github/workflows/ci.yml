@@ -174,7 +174,7 @@ jobs:
 
       - name: Validate JSON templates
         run: |
-          for f in docker/mcp.json.template docker/settings.json.template docker/mcp-callbacks.json.template; do
+          for f in docker/mcp.json.template docker/settings.json.template docker/settings-callbacks.json.template docker/mcp-callbacks.json.template; do
             python3 -m json.tool "$f" > /dev/null && echo "ok: $f"
           done
 

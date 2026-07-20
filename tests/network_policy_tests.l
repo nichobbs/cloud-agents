@@ -35,13 +35,14 @@ test "proxyEnvForPolicy only emits proxy vars for restricted, when a proxy is se
 }
 
 // ── Phase 6: MCP callbacks (docs/phase6-mcp-callbacks.md) ───────────────────
-test "callbacksFeatureEnabled is off unless explicitly set to \"1\"" {
+// Stage 4 (docs/phase6 §8): default-on, opt out with the literal "0".
+test "callbacksFeatureEnabled is on unless explicitly set to \"0\"" {
   Env.SetEnvironmentVariable("CLOUD_AGENTS_MCP_CALLBACKS", "")
-  assertFalse(callbacksFeatureEnabled(), "unset -> off by default")
+  assertTrue(callbacksFeatureEnabled(), "unset -> on by default")
   Env.SetEnvironmentVariable("CLOUD_AGENTS_MCP_CALLBACKS", "0")
   assertFalse(callbacksFeatureEnabled(), "explicit \"0\" -> off")
-  Env.SetEnvironmentVariable("CLOUD_AGENTS_MCP_CALLBACKS", "true")
-  assertFalse(callbacksFeatureEnabled(), "anything other than the literal \"1\" -> off")
+  Env.SetEnvironmentVariable("CLOUD_AGENTS_MCP_CALLBACKS", "false")
+  assertTrue(callbacksFeatureEnabled(), "anything other than the literal \"0\" -> on")
   Env.SetEnvironmentVariable("CLOUD_AGENTS_MCP_CALLBACKS", "1")
   assertTrue(callbacksFeatureEnabled(), "explicit \"1\" -> on")
   Env.SetEnvironmentVariable("CLOUD_AGENTS_MCP_CALLBACKS", "")

@@ -19,6 +19,10 @@
 package CloudAgents.Callbacks
 
 import Std.Core
+import Std.Collections
+import Std.Errors
+import Std.File
+import Std.Uuid
 import Web
 import CloudAgents.Auth
 import CloudAgents.Repository
@@ -448,4 +452,477 @@ pub func reportProgressHandler(
     case Ok(_) -> return Ok(())
     case Err(e) -> return Err(dbError(e))
   }
+}
+
+// ─── Phase 6 §7: request_secret ──────────────────────────────────────────────
+//
+// docs/phase6-mcp-callbacks.md §7.1. Threat model: the primary risk is
+// prompt-injected exfiltration, so the credential VALUE never enters an
+// SSE frame, never gets logged, and is returned from the long-poll response
+// AT MOST ONCE (CloudAgents.Repository.markSecretRequestDelivered's
+// write-once guard). No allow-always — every request prompts a human.
+val maxSecretNameLen = 128
+
+val maxSecretReasonLen = 2048
+
+@generate(Json)
+pub record CreateSecretRequestRequest {
+  pub name: String
+  pub reason: String
+}
+
+@generate(Json)
+pub record CreateSecretRequestResponse {
+  pub id: String
+  pub status: String
+}
+
+@generate(Json)
+pub record SecretDecision {
+  pub status: String
+  pub value: String
+}
+
+@generate(Json)
+pub record AnswerSecretRequestRequest {
+  pub decision: String
+}
+
+/// POST /api/sessions/{id}/callbacks/secret — container-originated. Fails
+/// fast (400) when the named credential isn't configured for the session
+/// owner, instead of creating a pending row a human could only ever deny —
+/// the error names the requested name but reveals nothing about which
+/// OTHER credentials exist (docs/phase6 §7.1).
+pub func createSecretRequestHandler(
+  id: in String, authHeaderValue: in String, req: in CreateSecretRequestRequest
+): Result[CreateSecretRequestResponse, Web.ApiError] {
+  if id.length == 0 {
+    return Err(Web.badRequest("id is required"))
+  }
+  authorizeCallbackToken(id, authHeaderValue)?
+  if req.name.length == 0 {
+    return Err(Web.badRequest("name is required"))
+  }
+  if not CloudAgents.Text.withinMaxLength(req.name, maxSecretNameLen) {
+    return Err(Web.badRequest("name is too long (max " + toString(maxSecretNameLen) + " characters)"))
+  }
+  if not CloudAgents.Text.withinMaxLength(req.reason, maxSecretReasonLen) {
+    return Err(Web.badRequest("reason is too long (max " + toString(maxSecretReasonLen) + " characters)"))
+  }
+  val ownerUserId = match CloudAgents.SessionStore.sessionOwnerUserId(id) {
+    case Ok(Some(u)) -> u
+    case Ok(None) -> return Err(Web.notFound("Session not found"))
+    case Err(e) -> return Err(dbError(e))
+  }
+  val credentialExists = match CloudAgents.Repository.credentialNameExists(ownerUserId, req.name) {
+    case Ok(b) -> b
+    case Err(e) -> return Err(dbError(e))
+  }
+  if not credentialExists {
+    return Err(Web.badRequest("no credential named '" + req.name + "' is configured for this session"))
+  }
+  match CloudAgents.Repository.createSecretRequest(id, req.name, req.reason) {
+    case Ok(sr) -> return Ok(CreateSecretRequestResponse(id = sr.id, status = sr.status))
+    case Err(e) -> return Err(dbError(e))
+  }
+}
+
+/// GET /api/sessions/{id}/callbacks/secret/{rid} — container-originated
+/// long-poll. On the FIRST poll to observe an 'approved' decision, decrypts
+/// and returns the value; every later poll of the same request sees
+/// status='approved' with an empty value (docs/phase6 §7.1 step 3 — the
+/// value is handed back exactly once).
+pub func getSecretRequestHandler(
+  id: in String, rid: in String, authHeaderValue: in String
+): Result[SecretDecision, Web.ApiError] {
+  if id.length == 0 {
+    return Err(Web.badRequest("id is required"))
+  }
+  if rid.length == 0 {
+    return Err(Web.badRequest("request id is required"))
+  }
+  authorizeCallbackToken(id, authHeaderValue)?
+  match CloudAgents.Repository.timeoutPendingSecretRequest(rid, callbackTimeoutMillis()) {
+    case Ok(_) -> ()
+    case Err(_) -> ()
+  }
+  val sr = match CloudAgents.Repository.getSecretRequest(rid) {
+    case Ok(Some(s)) -> s
+    case Ok(None) -> return Err(Web.notFound("secret request not found"))
+    case Err(e) -> return Err(dbError(e))
+  }
+  if sr.sessionId != id {
+    return Err(Web.notFound("secret request not found"))
+  }
+  if sr.status != "approved" {
+    return Ok(SecretDecision(status = sr.status, value = ""))
+  }
+  val delivering = match CloudAgents.Repository.markSecretRequestDelivered(rid) {
+    case Ok(b) -> b
+    case Err(e) -> return Err(dbError(e))
+  }
+  if not delivering {
+    // Already delivered on an earlier poll — same decision, never the value
+    // twice.
+    return Ok(SecretDecision(status = "approved", value = ""))
+  }
+  val ownerUserId = match CloudAgents.SessionStore.sessionOwnerUserId(id) {
+    case Ok(Some(u)) -> u
+    // The session vanished between approval and delivery — nothing sane to
+    // decrypt against; fail closed to an empty value rather than erroring
+    // out a poll that already consumed its one delivery attempt.
+    case Ok(None) -> return Ok(SecretDecision(status = "approved", value = ""))
+    case Err(e) -> return Err(dbError(e))
+  }
+  return match CloudAgents.Repository.decryptedCredentialValue(ownerUserId, sr.name) {
+    case Ok(Some(v)) -> Ok(SecretDecision(status = "approved", value = v))
+    // Credential deleted between create/approve and this delivery, or
+    // undecryptable (rotated key) — fail closed to an empty value; the
+    // delivery slot is already consumed either way.
+    case Ok(None) -> Ok(SecretDecision(status = "approved", value = ""))
+    case Err(_) -> Ok(SecretDecision(status = "approved", value = ""))
+  }
+}
+
+/// POST /api/sessions/{id}/callbacks/secret/{rid}/answer — user-originated.
+/// `decision` is "approve" or "deny" — no allow-always (docs/phase6 §7.1:
+/// "every request prompts"). The secret_requests row IS the audit record
+/// (session, name, reason, decision, decidedAt); the value is never written
+/// to it or anywhere else outside the existing encrypted credential store.
+pub func answerSecretRequestHandler(
+  id: in String, rid: in String, req: in AnswerSecretRequestRequest
+): Result[Unit, Web.ApiError] {
+  if id.length == 0 {
+    return Err(Web.badRequest("id is required"))
+  }
+  if rid.length == 0 {
+    return Err(Web.badRequest("request id is required"))
+  }
+  if req.decision != "approve" and req.decision != "deny" {
+    return Err(Web.badRequest("decision must be one of: approve, deny"))
+  }
+  requireOwnedSession(id)?
+  val sr = match CloudAgents.Repository.getSecretRequest(rid) {
+    case Ok(Some(s)) -> s
+    case Ok(None) -> return Err(Web.notFound("secret request not found"))
+    case Err(e) -> return Err(dbError(e))
+  }
+  if sr.sessionId != id {
+    return Err(Web.notFound("secret request not found"))
+  }
+  if req.decision == "approve" {
+    // Defensive re-check: the create path already fails fast on a missing
+    // credential, so this only fires on the race where it was deleted
+    // between create and this answer. requireOwnedSession above already
+    // established the current caller owns this session, so currentUserId()
+    // IS the session owner here.
+    val credentialExists = match CloudAgents.Repository.credentialNameExists(CloudAgents.Auth.currentUserId(), sr.name) {
+      case Ok(b) -> b
+      case Err(e) -> return Err(dbError(e))
+    }
+    if not credentialExists {
+      return Err(Web.badRequest("the credential '" + sr.name + "' no longer exists; you can only deny this request"))
+    }
+  }
+  val status = if req.decision == "deny" { "denied" } else { "approved" }
+  val affected = match CloudAgents.Repository.answerSecretRequest(rid, status) {
+    case Ok(n) -> n
+    case Err(e) -> return Err(dbError(e))
+  }
+  if affected == 0 {
+    return Err(Web.conflict("secret request has already been decided"))
+  }
+  return Ok(())
+}
+
+// ─── Phase 6 §7: add_followup_task ────────────────────────────────────────────
+//
+// docs/phase6-mcp-callbacks.md §7.2. Reuses the same storage
+// CloudAgents.Interactions.addTodoHandler uses (CloudAgents.Repository.addTodo)
+// — unanchored (no messageId), since a container-originated tool call has no
+// specific transcript message to anchor to.
+val maxFollowupDescriptionLen = 32768
+
+@generate(Json)
+pub record CreateFollowupTaskRequest {
+  pub description: String
+}
+
+@generate(Json)
+pub record CreateFollowupTaskResponse {
+  pub id: String
+}
+
+/// POST /api/sessions/{id}/callbacks/todo — container-originated
+/// (add_followup_task MCP tool). No new SSE event: this codebase has no
+/// existing todo SSE signal today — todos are refreshed by the frontend's
+/// own GET /api/sessions/{id}/todos poll on page load / manual actions, the
+/// same path a human-created todo already goes through. Reusing that
+/// existing (REST, not SSE) refresh path is docs/phase6 §7.2's "reuse the
+/// existing todo SSE/refresh signal" — there is no dedicated SSE frame type
+/// to reuse, so nothing new is invented here.
+pub func createFollowupTaskHandler(
+  id: in String, authHeaderValue: in String, req: in CreateFollowupTaskRequest
+): Result[CreateFollowupTaskResponse, Web.ApiError] {
+  if id.length == 0 {
+    return Err(Web.badRequest("id is required"))
+  }
+  authorizeCallbackToken(id, authHeaderValue)?
+  if req.description.length == 0 {
+    return Err(Web.badRequest("description is required"))
+  }
+  if not CloudAgents.Text.withinMaxLength(req.description, maxFollowupDescriptionLen) {
+    return Err(Web.badRequest("description is too long (max " + toString(maxFollowupDescriptionLen) + " characters)"))
+  }
+  match CloudAgents.Repository.addTodo(id, "", req.description) {
+    case Ok(t) -> return Ok(CreateFollowupTaskResponse(id = t.id))
+    case Err(e) -> return Err(dbError(e))
+  }
+}
+
+// ─── Phase 6 §7: report_artifact ─────────────────────────────────────────────
+//
+// docs/phase6-mcp-callbacks.md §7.3. Metadata lives in CloudAgents.Repository's
+// `artifacts` table; bytes live on disk under artifactsBaseDir()/<sessionId>/
+// <storedName> — never in SQLite. The 8 MiB cap is enforced twice: a cheap
+// pre-decode length check on the base64 text, then the authoritative check
+// on the actual decoded byte count (non-standard base64 padding can't be
+// used to sneak past the first check).
+val maxArtifactFileNameLen = 255
+
+val maxArtifactMimeTypeLen = 256
+
+val maxArtifactDescriptionLen = 2048
+
+/// 8 MiB, the decoded-bytes cap (docs/phase6 §7.3).
+val maxArtifactBytes = 8388608
+
+/// ceil(maxArtifactBytes / 3) * 4 — the largest base64 text that could
+/// possibly decode to <= maxArtifactBytes, used as a cheap pre-decode reject
+/// so an oversized upload never reaches the (comparatively expensive)
+/// base64 decode at all.
+val maxArtifactBase64Len = 11184812
+
+@externTarget("System.Convert.FromBase64String")
+func decodeBase64Bytes(s: in String): slice[Byte] = []
+
+func tryDecodeArtifactBytes(base64: in String): Result[slice[Byte], String] {
+  return try {
+    Ok(value = decodeBase64Bytes(base64))
+  } catch Bug as b {
+    Err(error = "contentBase64 is not valid base64")
+  }
+}
+
+/// `slice[Byte]` -> `List[Byte]`, for Std.File.writeBytes (which takes
+/// `List[Byte]`, not `slice[Byte]`). `slice[Byte].toList()` compiles but
+/// fails at runtime ("unsupported method 'toList'", confirmed by this
+/// package's own tests) — the same "convenience method that compiles but
+/// doesn't resolve at runtime" family docs/lyric/gotchas.md catalogues for
+/// Result/Option methods, so build the list by hand instead, mirroring
+/// CloudAgents.Repository.sliceContains' plain-Int indexing loop.
+func sliceBytesToList(b: in slice[Byte]): List[Byte] {
+  val acc: List[Byte] = newList()
+  var i = 0
+  while i < b.length {
+    acc.add(b[i])
+    i = i + 1
+  }
+  return acc
+}
+
+/// The final path segment of `name`, defending against `../` traversal in a
+/// client-supplied fileName (docs/phase6 §7.3: "neutralized server-side —
+/// basename only"). None for a result that is empty, '.', or '..' — a name
+/// with no separator that would still resolve to a directory entry.
+func basenameOf(name: in String): Option[String] {
+  var lastSep = -1
+  var i = 0
+  while i < name.length {
+    val c = name.substring(i, 1)
+    if c == "/" or c == "\\" {
+      lastSep = i
+    }
+    i = i + 1
+  }
+  val base = if lastSep < 0 { name } else { name.substring(lastSep + 1, name.length - lastSep - 1) }
+  if base.length == 0 or base == "." or base == ".." {
+    return None
+  }
+  return Some(value = base)
+}
+
+@generate(Json)
+pub record UploadArtifactRequest {
+  pub fileName: String
+  pub mimeType: String
+  pub description: String
+  pub contentBase64: String
+}
+
+@generate(Json)
+pub record UploadArtifactResponse {
+  pub id: String
+}
+
+/// The API-facing shape of a stored artifact — deliberately omits
+/// CloudAgents.Repository.Artifact's internal `storedName` field (an
+/// on-disk implementation detail, not something a client needs or should
+/// see).
+@generate(Json)
+pub record ArtifactSummary {
+  pub id: String
+  pub fileName: String
+  pub mimeType: String
+  pub description: String
+  pub sizeBytes: String
+  pub createdAt: String
+}
+
+@generate(Json)
+pub record ArtifactListResponse {
+  pub artifacts: slice[ArtifactSummary]
+}
+
+func artifactSummaryOf(a: in CloudAgents.Repository.Artifact): ArtifactSummary {
+  return ArtifactSummary(
+    id = a.id,
+    fileName = a.fileName,
+    mimeType = a.mimeType,
+    description = a.description,
+    sizeBytes = a.sizeBytes,
+    createdAt = a.createdAt
+  )
+}
+
+/// POST /api/sessions/{id}/callbacks/artifact — container-originated
+/// (report_artifact MCP tool).
+pub func uploadArtifactHandler(
+  id: in String, authHeaderValue: in String, req: in UploadArtifactRequest
+): Result[UploadArtifactResponse, Web.ApiError] {
+  if id.length == 0 {
+    return Err(Web.badRequest("id is required"))
+  }
+  authorizeCallbackToken(id, authHeaderValue)?
+  if req.fileName.length == 0 {
+    return Err(Web.badRequest("fileName is required"))
+  }
+  if not CloudAgents.Text.withinMaxLength(req.fileName, maxArtifactFileNameLen) {
+    return Err(Web.badRequest("fileName is too long (max " + toString(maxArtifactFileNameLen) + " characters)"))
+  }
+  val fileName = match basenameOf(req.fileName) {
+    case Some(b) -> b
+    case None -> return Err(Web.badRequest("fileName is invalid"))
+  }
+  if req.mimeType.length == 0 {
+    return Err(Web.badRequest("mimeType is required"))
+  }
+  if not CloudAgents.Text.withinMaxLength(req.mimeType, maxArtifactMimeTypeLen) {
+    return Err(Web.badRequest("mimeType is too long (max " + toString(maxArtifactMimeTypeLen) + " characters)"))
+  }
+  if not CloudAgents.Text.withinMaxLength(req.description, maxArtifactDescriptionLen) {
+    return Err(Web.badRequest("description is too long (max " + toString(maxArtifactDescriptionLen) + " characters)"))
+  }
+  if req.contentBase64.length == 0 {
+    return Err(Web.badRequest("contentBase64 is required"))
+  }
+  if not CloudAgents.Text.withinMaxLength(req.contentBase64, maxArtifactBase64Len) {
+    return Err(Web.badRequest("artifact exceeds the 8 MiB size limit"))
+  }
+  val bytes = match tryDecodeArtifactBytes(req.contentBase64) {
+    case Ok(b) -> b
+    case Err(msg) -> return Err(Web.badRequest(msg))
+  }
+  val sizeBytes = bytes.length.toInt()
+  if sizeBytes > maxArtifactBytes {
+    return Err(Web.badRequest("artifact exceeds the 8 MiB size limit"))
+  }
+  val artifactId = Std.Uuid.uuidToString(Std.Uuid.newUuid())
+  val storedName = artifactId + "_" + fileName
+  val sessionDir = CloudAgents.Repository.artifactsBaseDir() + "/" + id
+  match Std.File.createDir(sessionDir) {
+    case Ok(_) -> ()
+    case Err(e) -> return Err(Web.internalError("failed to create artifact storage: " + IOError.message(e)))
+  }
+  match Std.File.writeBytes(sessionDir + "/" + storedName, sliceBytesToList(bytes)) {
+    case Ok(_) -> ()
+    case Err(e) -> return Err(Web.internalError("failed to store artifact: " + IOError.message(e)))
+  }
+  match CloudAgents.Repository.createArtifact(id, fileName, storedName, req.mimeType, req.description, toString(sizeBytes)) {
+    case Ok(a) -> return Ok(UploadArtifactResponse(id = a.id))
+    case Err(e) -> return Err(dbError(e))
+  }
+}
+
+/// GET /api/sessions/{id}/artifacts — user-originated.
+pub func listArtifactsHandler(id: in String): Result[ArtifactListResponse, Web.ApiError] {
+  if id.length == 0 {
+    return Err(Web.badRequest("id is required"))
+  }
+  requireOwnedSession(id)?
+  match CloudAgents.Repository.listArtifacts(id) {
+    case Ok(arts) -> {
+      var acc: slice[ArtifactSummary] = []
+      for a in arts {
+        acc = acc.append(artifactSummaryOf(a))
+      }
+      return Ok(ArtifactListResponse(artifacts = acc))
+    }
+    case Err(e) -> return Err(dbError(e))
+  }
+}
+
+/// GET /api/sessions/{id}/artifacts/{aid} — user-originated. Streams the
+/// Escape a filename for an RFC 6266 `filename="..."` quoted-string: a `"`
+/// or `\` in the (already basename-sanitized) name would otherwise break
+/// out of the quotes, and a CR/LF would split the header — so backslash-
+/// escape the two quoted-string metacharacters and drop control characters
+/// (< 0x20) entirely (#547).
+pub func contentDispositionQuoted(name: in String): String {
+  var escaped = ""
+  var i = 0
+  while i < name.length {
+    val c = name.substring(i, 1)
+    if c == "\"" or c == "\\" {
+      escaped = escaped + "\\" + c
+    } else if c >= " " {
+      escaped = escaped + c
+    }
+    i = i + 1
+  }
+  return escaped
+}
+
+/// stored bytes with Content-Disposition set from the sanitized fileName.
+/// Returns the full Response directly (not a JSON body) since this is a
+/// binary download.
+pub func downloadArtifactHandler(id: in String, aid: in String): Result[Web.Response, Web.ApiError] {
+  if id.length == 0 {
+    return Err(Web.badRequest("id is required"))
+  }
+  if aid.length == 0 {
+    return Err(Web.badRequest("artifact id is required"))
+  }
+  requireOwnedSession(id)?
+  val a = match CloudAgents.Repository.getArtifact(aid) {
+    case Ok(Some(art)) -> art
+    case Ok(None) -> return Err(Web.notFound("artifact not found"))
+    case Err(e) -> return Err(dbError(e))
+  }
+  if a.sessionId != id {
+    return Err(Web.notFound("artifact not found"))
+  }
+  val path = CloudAgents.Repository.artifactsBaseDir() + "/" + id + "/" + a.storedName
+  val bytes = match Std.File.readBytes(path) {
+    case Ok(b) -> b
+    case Err(e) -> return Err(Web.internalError("failed to read artifact: " + IOError.message(e)))
+  }
+  val resp = Web.bytesResponse(200, a.mimeType, bytes.toArray())
+  return Ok(
+    Web.withResponseHeader(
+      resp,
+      "Content-Disposition",
+      "attachment; filename=\"" + contentDispositionQuoted(a.fileName) + "\""
+    )
+  )
 }

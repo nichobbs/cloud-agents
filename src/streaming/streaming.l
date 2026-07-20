@@ -202,6 +202,30 @@ pub func sseProgressUpdate(summary: in String, percentComplete: in String): Stri
     "\"}\n\n"
 }
 
+// ─── Phase 6 §7: v2 MCP-callback SSE events ──────────────────────────────────
+//
+// docs/phase6-mcp-callbacks.md §7. `secret_request` deliberately carries only
+// `name` and `reason` — the SAME two fields CloudAgents.Callbacks accepts
+// from the container's create call — never a value, so it is safe to stream
+// unconditionally even before a human has decided anything.
+/// A newly created secret request, for the human to approve or deny in the
+/// UI. Never carries the credential value.
+pub func sseSecretRequest(id: in String, name: in String, reason: in String): String {
+  return "event: secret_request\ndata: {\"id\":\"" + jsonEscape(id) + "\",\"name\":\"" + jsonEscape(name) +
+    "\",\"reason\":\"" +
+    jsonEscape(reason) +
+    "\"}\n\n"
+}
+
+/// A newly uploaded artifact (report_artifact MCP tool). Carries only the
+/// metadata the artifact list already exposes — never the file's bytes.
+pub func sseArtifactReported(id: in String, fileName: in String, mimeType: in String): String {
+  return "event: artifact_reported\ndata: {\"id\":\"" + jsonEscape(id) + "\",\"fileName\":\"" + jsonEscape(fileName) +
+    "\",\"mimeType\":\"" +
+    jsonEscape(mimeType) +
+    "\"}\n\n"
+}
+
 // (The whole-log framing helpers logsToFrames/formatLogsAsSse/
 // formatLogsAsSseWithId were removed as dead code (#492): they buffered a
 // completed run's captured log into one SSE body, which the streaming handler

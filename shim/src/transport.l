@@ -33,10 +33,6 @@ extern type WebHeaderCollection = "System.Net.WebHeaderCollection"
 
 extern type Encoding = "System.Text.Encoding"
 
-extern type ByteArray = "System.Byte[]"
-
-extern type Type = "System.Type"
-
 extern type TextWriter = "System.IO.TextWriter"
 
 @externTarget("System.Net.WebRequest.Create")
@@ -89,9 +85,22 @@ func getResponseStream(resp: in WebResponse): NetStream = ()
 @externTarget("System.IO.Stream.Write")
 func streamWrite(s: in NetStream, bytes: in slice[Byte], offset: in Int, count: in Int): Unit = ()
 
+// `buf` is `slice[Byte]` — deliberately NOT an `extern type = "System.Byte[]"`
+// alias (the `ByteArray`/`Array.CreateInstance` shape this file used before):
+// an extern-type-alias value marshals as `System.Object` across the FFI
+// boundary and only matches `System.Array`-typed overloads, so a
+// `ByteArray`-typed parameter here resolves to a nonexistent
+// `Stream.Read(System.Object, Int32, Int32)` overload — confirmed at runtime
+// (`Method not found`) by the #541 e2e seeded-session leg, the first thing
+// in this codebase to actually read a real, successful HTTP response body
+// over this transport (every other caller only ever hit an error status,
+// which throws before any read happens). `slice[Byte]` marshals directly to
+// `byte[]` (docs/lyric/reference.md "Cross-boundary marshalling": "Slices →
+// arrays") and is the pattern `src/crypto/crypto.l` documents as the fix for
+// this exact class of bug.
 @externInstance
 @externTarget("System.IO.Stream.Read")
-func streamRead(s: in NetStream, buf: in ByteArray, offset: in Int, count: in Int): Int = 0
+func streamRead(s: in NetStream, buf: in slice[Byte], offset: in Int, count: in Int): Int = 0
 
 @externInstance
 @externTarget("System.IDisposable.Dispose")
@@ -108,19 +117,9 @@ func utf8(): Encoding = ()
 @externTarget("System.Text.Encoding.GetBytes")
 func encGetBytes(enc: in Encoding, s: in String): slice[Byte] = []
 
-// Static Type.GetType(string), not an instance GetType() call — deliberately
-// avoids the AccessViolationException documented in docs/lyric/gotchas.md
-// ("@externInstance + System.Object.GetType() on a boxed value-type
-// argument crashes the process") by never boxing a Byte instance at all.
-@externTarget("System.Type.GetType")
-func typeFromName(name: in String): Type = ()
-
-@externTarget("System.Array.CreateInstance")
-func createByteArray(elementType: in Type, length: in Int): ByteArray = ()
-
 @externInstance
 @externTarget("System.Text.Encoding.GetString")
-func encGetStringRange(enc: in Encoding, bytes: in ByteArray, index: in Int, count: in Int): String = ()
+func encGetStringRange(enc: in Encoding, bytes: in slice[Byte], index: in Int, count: in Int): String = ()
 
 // ── stderr — never write to stdout ──────────────────────────────────────────
 // serveStdio (Mcp.Server, via JsonRpc.Stdio's NdjsonTransport) frames every
@@ -161,21 +160,44 @@ val requestTimeoutMillis = 15000
 // against a misbehaving peer, mirroring github_api.l's maxProxyResponseBytes.
 val maxResponseBytes = 1048576
 
+// Fixed-size read buffer, built once per call by appending Byte zeros —
+// `slice[Byte]` has no direct "allocate N zeroed elements" constructor, and
+// `Stream.Read(byte[], offset, count)` needs a real, already-sized
+// destination array to write into (unlike `Stream.Write`, which just
+// consumes an existing `slice[Byte]` — see `streamWrite` above, which never
+// needed this). 8 KiB keeps the append loop trivially fast while still
+// reading a typical callback body in one or two calls.
+val chunkSize = 8192
+
+func zeroedChunk(): slice[Byte] {
+  var buf: slice[Byte] = []
+  var i = 0
+  while i < chunkSize {
+    buf = buf.append(0.toByte())
+    i = i + 1
+  }
+  return buf
+}
+
 /// Read a response stream to a String, decoded as real UTF-8 (see module
-/// doc — callback bodies carry human-authored text). Mirrors
-/// github_api.l's `readAllUtf8`.
+/// doc — callback bodies carry human-authored text), chunk by chunk so no
+/// single oversized buffer allocation is needed. Mirrors github_api.l's
+/// `readAllUtf8` in spirit (same UTF-8-safe block-read idea), but reads into
+/// a reused fixed-size `slice[Byte]` chunk and decodes+concatenates each
+/// chunk's valid prefix, rather than one `maxResponseBytes`-sized buffer.
 func readAllUtf8(s: in NetStream): String {
-  val byteType = typeFromName("System.Byte")
-  val buf = createByteArray(byteType, maxResponseBytes)
+  val buf = zeroedChunk()
+  var result = ""
   var total = 0
   var n = 1
   while n > 0 and total < maxResponseBytes {
-    n = streamRead(s, buf, total, maxResponseBytes - total)
+    n = streamRead(s, buf, 0, chunkSize)
     if n > 0 {
+      result = result + encGetStringRange(utf8(), buf, 0, n)
       total = total + n
     }
   }
-  return encGetStringRange(utf8(), buf, 0, total)
+  return result
 }
 
 /// GET `url` with an Authorization bearer header, returning the raw

@@ -1,20 +1,31 @@
 # Phase 6 — In-container MCP callback server
 
-Status: §6 steps 1-3 shipped. Step 1 (host-side callback endpoints, DB,
-tests) landed in PR #525. Step 2 (token minting, env injection, mcp.json/
-entrypoint rendering behind `CLOUD_AGENTS_MCP_CALLBACKS`) landed in the same
-PR. Step 3 (the shim itself, `shim/` — `CloudAgentsShim` on
-`Lyric.Mcp`/`Lyric.JsonRpc` 0.4.34, three tools, `shim/tests/`, wired into
-`scripts/build-docker.sh`/`docker/Dockerfile` and CI) is this change.
-Genuinely confirmed end-to-end: a real spawned `cloud-agents-shim` process
-completed a real MCP `initialize`/`tools/list` handshake over stdio, and a
-real `request_permission`/`report_progress` `tools/call` round trip against
-an unreachable host correctly failed closed (deny) and fired-and-forgot
-respectively — not just unit-tested against the in-memory fake in
-`shim/tests/fakes.l`. Step 4 (flip the `claude` runner's default to
-`--permission-prompt-tool`, tighten `settings.json.template`) is
-intentionally **not** part of this change — `CLOUD_AGENTS_MCP_CALLBACKS`
-stays off by default; see §6.
+Status: complete — §6 steps 1-4, the §8 follow-ups (#540, #541), and
+§7's three v2 tools are all shipped. Step 1 (host-side callback
+endpoints, DB, tests) landed in PR #525; step 2 (token minting, env
+injection, mcp.json/entrypoint rendering) landed in the same PR; step 3
+(the shim itself, `shim/` — `CloudAgentsShim` on
+`Lyric.Mcp`/`Lyric.JsonRpc` 0.4.34, the v1 tools, wired into
+`scripts/build-docker.sh`/`docker/Dockerfile` and CI) landed in PR #526,
+genuinely confirmed end-to-end over real MCP stdio. Step 4 is this
+change: `CLOUD_AGENTS_MCP_CALLBACKS` now defaults on (opt out with
+`=0`), the static allowlist tightens to read-only ONLY when callbacks are
+live (broad pre-Phase-6 set otherwise, #543), and
+the §8 follow-ups shipped alongside (wall-clock long-poll deadline,
+seeded-session e2e legs). **§7's v2 tools (`request_secret`,
+`add_followup_task`, `report_artifact`) also ship in this change** —
+host endpoints (`src/handlers/callbacks.l`), migration `0011`
+(`secret_requests` + `artifacts` tables), the `secret_request`/
+`artifact_reported` SSE events, and the shim side
+(`shim/src/v2_transport.l`/`v2_client.l`/`v2_tools.l`, registered in
+`shim/src/main.l`), each with handler/state-machine/tool-level tests
+(`tests/callbacks_v2_tests.l`, `shim/tests/v2_client_tests.l`,
+`shim/tests/v2_tools_tests.l`). `request_secret`'s write-once value
+delivery, the fail-fast missing-credential check, the 0600-permission
+secret file (best-effort `chmod`; `Std.File` has no permission-setting
+primitive — see `CloudAgents.Shim.V2Client`'s module doc), the 8 MiB
+artifact cap (client- and server-side), and `fileName` basename
+sanitization are all covered by tests.
 
 Upstream prerequisite: `nichobbs/lyric-lang` `docs/62-jsonrpc-mcp.md` (the
 `Lyric.JsonRpc` / `Lyric.Mcp` libraries this phase consumes via the
@@ -102,15 +113,7 @@ each at most):
   status line persisted on the session and pushed over SSE; the UI can
   show live "what is it doing" without parsing raw stdout.
 
-v2 candidates (design notes only, not built now):
-
-- `request_secret(name, reason)` — gated, audited handout from the
-  credentials store; needs its own threat-model pass first.
-- `add_followup_task(description)` — agent appends to the session's
-  todo list (the `interactions.l` todos), closing the loop with the
-  existing annotation feature.
-- `report_artifact(path, mimeType)` — register a build artifact for
-  download from the session page.
+v2 tools are specced in §7.
 
 ## 5. Host-side changes (this repo)
 
@@ -153,3 +156,122 @@ and the timeout/fail-closed path has an explicit test.
    switch).
 4. Flip claude runner to `--permission-prompt-tool`, tighten
    `settings.json.template`.
+
+## 7. v2 tools — agreed designs
+
+All three ride the existing authenticated shim↔host HTTPS channel and
+the existing SSE/approval machinery. No new Docker-daemon capability is
+required: the shim already runs inside the container, so it can write
+files in (secrets) and read files out (artifacts) itself.
+
+### 7.1 `request_secret(name, reason)`
+
+Threat model: the primary risk is prompt-injected exfiltration — an
+agent tricked into requesting a credential and echoing it onward. The
+design therefore never lets the secret value enter the agent-visible
+transcript, and never grants without a human in the loop:
+
+1. Shim `POST …/callbacks/secret` `{name, reason}` → pending row in a
+   new `secret_requests` table + `secret_request` SSE event. Reuses the
+   permission long-poll shape.
+2. Human approves or denies in the UI (normal user auth + ownership).
+   **No allow-always for secrets — every request prompts.** The
+   credential must exist in the session owner's credential store; the
+   approval flow shows only the credential *name*, never the value.
+3. On approval the host returns the decrypted value **once** in the
+   long-poll response body (the channel is already bearer-authenticated
+   HTTPS carrying the callback token). The host writes an audit row
+   (session, name, reason, decision, timestamp) — the value is never
+   logged or persisted outside the existing encrypted store.
+4. The shim writes the value to a container-local file
+   (`/run/cloud-agents-secrets/<name>`, 0600, tmpfs when available) and
+   the MCP tool result returns **only the file path**. The value itself
+   never appears in tool-result text, so it cannot land in stored
+   transcripts or streamed output.
+5. Timeout/deny → tool result is a denial message; fail closed.
+
+### 7.2 `add_followup_task(description)`
+
+Shim `POST …/callbacks/todo` `{description}` → the same todo storage
+`CloudAgents.Interactions.addTodoHandler` uses (anchored to the
+session's latest message, or unanchored if the schema allows), emits
+the existing todo SSE/refresh signal, returns the created id. Available
+to every runner with MCP support, giving agents a deliberate "leave a
+note for the human" primitive.
+
+### 7.3 `report_artifact(path, mimeType, description?)`
+
+Container files die with the container, so the shim pushes content out
+at report time: it reads `path` from inside the container (size cap
+8 MiB v1 — reject larger with a clear message), base64s it, and
+`POST …/callbacks/artifact` `{fileName, mimeType, description,
+contentBase64}`. Host stores the bytes under a per-session artifacts
+directory (outside the DB), writes an `artifacts` metadata row, emits
+an `artifact_reported` SSE event, and serves
+`GET /api/sessions/{id}/artifacts` (list, user auth) +
+`GET /api/sessions/{id}/artifacts/{aid}` (download, user auth,
+Content-Disposition from the stored name). Path traversal in
+`fileName` is neutralized server-side (basename only).
+
+## 8. Stage 4 and follow-ups
+
+**Shipped.** Stage 4 (flip the default):
+
+- `callbacksFeatureEnabled()` is default-on: enabled unless
+  `CLOUD_AGENTS_MCP_CALLBACKS=0` (`src/network_policy.l`).
+  `docker/entrypoint.sh` mirrors the same on-unless-"0" default in shell
+  (it reads the env var directly rather than calling into Lyric). The
+  entrypoint's existing guards (template present, env vars minted) keep
+  runs working when the host side is unavailable — a run without a
+  minted callback token (mint is best-effort; see
+  `docker_manager.l`) behaves exactly as before the feature existed:
+  neither the callback MCP-server entry nor `--permission-prompt-tool`
+  is added unless THIS run's container actually has a non-empty
+  `CLOUD_AGENTS_CALLBACK_TOKEN`, so a doomed-to-panic shim (its
+  `requireEnv` panics on a missing required var) is never registered as
+  the thing standing between the agent and every tool call.
+- The static settings allowlist is chosen by whether callbacks are live
+  for the run (flag on AND a token minted — the `CALLBACKS_ACTIVE` gate
+  in `entrypoint.sh`, the same condition that wires
+  `--permission-prompt-tool`), NOT unconditionally (#543):
+  - **callbacks active** → `settings-callbacks.json.template`, the
+    genuinely-safe read-only set (`Read`, `Glob`, `Grep`); everything
+    else routes through `request_permission`.
+  - **callbacks inactive** → `settings.json.template`, the broader
+    pre-Phase-6 set (`Read`, `Bash(git:*)`). With no prompt tool wired
+    this run, tightening the allowlist would fail those tool calls closed
+    with no recourse — so the tightening must be gated on callbacks being
+    active, preserving safe degradation.
+  The posture rationale lives as a comment in `docker/entrypoint.sh` next
+  to where the template is copied, not inside the templates — CI
+  validates both with `python3 -m json.tool`, which rejects JSONC-style
+  comments.
+- Non-claude runners keep their documented posture (no equivalent
+  flag), unchanged by the flip.
+
+Follow-ups (both shipped):
+
+- #540: `shim/src/callbacks_client.l`'s long-poll deadline is wall-clock
+  now — a `Clock` interface (mirroring lyric-cache's `Clock`, including
+  keeping every `impl Clock for ...` in the same package per that
+  library's own self-hosted-MSIL-backend caveat) with `SystemClock`
+  (real `Std.Time.nowEpochMillis()`) in production and `ManualClock` in
+  tests, instead of iteration-count × nominal interval. The public
+  `requestPermission`/`askUser` signatures are unchanged (thin
+  `SystemClock` wrappers), so `shim/src/tools.l`/`main.l` needed no
+  changes; `requestPermissionWithClock`/`askUserWithClock` are the new
+  testable entry points. `shim/tests/callbacks_client_tests.l` proves
+  the wall-clock behavior with a transport that jumps a shared
+  `ManualClock` straight past the deadline mid-poll, despite a
+  pollIntervalMs implying many more iterations remained.
+- #541: `scripts/e2e-http.sh` gained a seeded-session leg — a plain
+  `sqlite3` CLI `INSERT` (guarded by a `command -v sqlite3` check) adds
+  a session + plaintext `callback_token` row to the throwaway DB after
+  migrations have run, then drives the real shim binary once with a
+  wrong bearer (401-driven deny, `SELECT COUNT(*) FROM
+  permission_requests` stays 0) and once with the right bearer and
+  `CLOUD_AGENTS_CALLBACK_TIMEOUT_MS=1000` (a pending row IS created,
+  count becomes 1, then the shim's own #540 wall-clock deadline fires a
+  timeout deny in ~1s instead of the old code's ~25s) — covering both
+  halves of `authorizeCallbackToken` the unknown-session 404 leg cannot
+  reach.

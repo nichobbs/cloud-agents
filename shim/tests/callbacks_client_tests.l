@@ -126,6 +126,95 @@ test "askUser fails with a client-side timeout when the host never resolves" {
   }
 }
 
+// ── wall-clock deadline (#540) ───────────────────────────────────────────────
+// A transport whose poll always reports "pending" but, as a side effect of
+// being polled, jumps a shared ManualClock straight past the caller's
+// deadline — simulating either a slow poll or the wall clock advancing
+// during it. Proves the deadline is checked against real elapsed time
+// (clock.nowMillis()), not an iteration count: pollIntervalMs below is
+// deliberately huge (25000ms) so the OLD elapsedMs-counting implementation
+// would have kept "budget" for a poll to return within a whole extra
+// interval regardless of how much real time had already passed, and would
+// have slept the full interval in real wall-clock time before ever
+// rechecking. The fixed implementation stops after exactly one poll.
+record ClockJumpingTransport {
+  var clock: ManualClock
+  var jumpToMillis: Long
+  var pollPermissionCallCount: Int
+  var pollQuestionCallCount: Int
+}
+
+impl CallbackTransport for ClockJumpingTransport {
+  func createPermission(toolName: in String, inputJson: in String): Result[String, String] {
+    Ok(value = "{\"id\":\"cj1\",\"status\":\"pending\"}")
+  }
+
+  func pollPermission(requestId: in String): Result[String, String] {
+    self.pollPermissionCallCount = self.pollPermissionCallCount + 1
+    self.clock.millis = self.jumpToMillis
+    Ok(value = "{\"status\":\"pending\",\"updatedInputJson\":\"\",\"note\":\"\"}")
+  }
+
+  func createQuestion(question: in String, optionsJson: in String): Result[String, String] {
+    Ok(value = "{\"id\":\"cj1\"}")
+  }
+
+  func pollQuestion(requestId: in String): Result[String, String] {
+    self.pollQuestionCallCount = self.pollQuestionCallCount + 1
+    self.clock.millis = self.jumpToMillis
+    Ok(value = "{\"status\":\"pending\",\"answer\":\"\"}")
+  }
+
+  func reportProgress(summary: in String, percentComplete: in String): Result[Unit, String] {
+    Ok(value = ())
+  }
+}
+
+test "requestPermissionWithClock denies via a wall-clock deadline, not an iteration count" {
+  val clock = manualClock(0i64)
+  val transport = ClockJumpingTransport(
+    clock = clock,
+    jumpToMillis = 999999i64,
+    pollPermissionCallCount = 0,
+    pollQuestionCallCount = 0
+  )
+
+  val outcome = requestPermissionWithClock(transport, "Bash", "{}", 25000, 1000, clock)
+  match outcome {
+    case Allow(_) -> assertTrue(false, "expected a fail-closed Deny on a wall-clock timeout, got Allow")
+    case Deny(message) -> {
+      assertTrue(message.contains("timed out"), "timeout deny message explains why: " + message)
+      assertEqualInt(
+        transport.pollPermissionCallCount,
+        1,
+        "the wall-clock deadline fired after exactly one poll, despite pollIntervalMs=25000 implying many more"
+      )
+    }
+  }
+}
+
+test "askUserWithClock fails via a wall-clock deadline, not an iteration count" {
+  val clock = manualClock(0i64)
+  val transport = ClockJumpingTransport(
+    clock = clock,
+    jumpToMillis = 999999i64,
+    pollPermissionCallCount = 0,
+    pollQuestionCallCount = 0
+  )
+
+  match askUserWithClock(transport, "Proceed?", "", 25000, 1000, clock) {
+    case Ok(answer) -> assertTrue(false, "expected Err on a wall-clock timeout, got Ok(" + answer + ")")
+    case Err(message) -> {
+      assertTrue(message.contains("timed out"), "error message explains the timeout: " + message)
+      assertEqualInt(
+        transport.pollQuestionCallCount,
+        1,
+        "the wall-clock deadline fired after exactly one poll, despite pollIntervalMs=25000 implying many more"
+      )
+    }
+  }
+}
+
 // ── report_progress / reportProgress ────────────────────────────────────────
 test "reportProgress is fire-and-forget and never raises even when the transport fails" {
   val fake = newFakeTransport()
