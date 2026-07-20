@@ -2,8 +2,19 @@
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
     <title>Cloud Agents</title>
+    <meta name="description" content="Launch, watch, and steer coding-agent sessions from anywhere." />
+    <!-- PWA: the manifest link + service-worker registration are injected by
+         vite-plugin-pwa at build time. These tags cover what the plugin does
+         not: the theme color (address bar / status bar) and the iOS
+         home-screen icon + standalone hints (iOS ignores the web manifest). -->
+    <meta name="theme-color" content="#0d1117" />
+    <link rel="icon" href="/favicon.ico" sizes="any" />
+    <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    <meta name="apple-mobile-web-app-title" content="Cloud Agents" />
   </head>
   <body>
     <div id="root"></div>
