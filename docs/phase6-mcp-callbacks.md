@@ -1,21 +1,30 @@
 # Phase 6 — In-container MCP callback server
 
-Status: §6 steps 1-4 done; the §8 follow-ups (#540, #541) are done; the
-§7 v2 tools are in progress as a separate change. Step 1 (host-side callback
-endpoints, DB, tests) landed in PR #525. Step 2 (token minting, env
-injection, mcp.json/entrypoint rendering behind `CLOUD_AGENTS_MCP_CALLBACKS`)
-landed in the same PR. Step 3 (the shim itself, `shim/` — `CloudAgentsShim`
-on `Lyric.Mcp`/`Lyric.JsonRpc` 0.4.34, three tools, `shim/tests/`, wired into
-`scripts/build-docker.sh`/`docker/Dockerfile` and CI) landed in PR #526.
-Genuinely confirmed end-to-end: a real spawned `cloud-agents-shim` process
-completed a real MCP `initialize`/`tools/list` handshake over stdio, and a
-real `request_permission`/`report_progress` `tools/call` round trip against
-an unreachable host correctly failed closed (deny) and fired-and-forgot
-respectively — not just unit-tested against the in-memory fake in
-`shim/tests/fakes.l`. Step 4 (flip the `claude` runner's default to
-`--permission-prompt-tool`, tighten `settings.json.template`) is this
-change — `CLOUD_AGENTS_MCP_CALLBACKS` now defaults on (opt out with `=0`);
-see §8.
+Status: complete — §6 steps 1-4, the §8 follow-ups (#540, #541), and
+§7's three v2 tools are all shipped. Step 1 (host-side callback
+endpoints, DB, tests) landed in PR #525; step 2 (token minting, env
+injection, mcp.json/entrypoint rendering) landed in the same PR; step 3
+(the shim itself, `shim/` — `CloudAgentsShim` on
+`Lyric.Mcp`/`Lyric.JsonRpc` 0.4.34, the v1 tools, wired into
+`scripts/build-docker.sh`/`docker/Dockerfile` and CI) landed in PR #526,
+genuinely confirmed end-to-end over real MCP stdio. Step 4 is this
+change: `CLOUD_AGENTS_MCP_CALLBACKS` now defaults on (opt out with
+`=0`), `settings.json.template` shrinks to the read-only base set, and
+the §8 follow-ups shipped alongside (wall-clock long-poll deadline,
+seeded-session e2e legs). **§7's v2 tools (`request_secret`,
+`add_followup_task`, `report_artifact`) also ship in this change** —
+host endpoints (`src/handlers/callbacks.l`), migration `0011`
+(`secret_requests` + `artifacts` tables), the `secret_request`/
+`artifact_reported` SSE events, and the shim side
+(`shim/src/v2_transport.l`/`v2_client.l`/`v2_tools.l`, registered in
+`shim/src/main.l`), each with handler/state-machine/tool-level tests
+(`tests/callbacks_v2_tests.l`, `shim/tests/v2_client_tests.l`,
+`shim/tests/v2_tools_tests.l`). `request_secret`'s write-once value
+delivery, the fail-fast missing-credential check, the 0600-permission
+secret file (best-effort `chmod`; `Std.File` has no permission-setting
+primitive — see `CloudAgents.Shim.V2Client`'s module doc), the 8 MiB
+artifact cap (client- and server-side), and `fileName` basename
+sanitization are all covered by tests.
 
 Upstream prerequisite: `nichobbs/lyric-lang` `docs/62-jsonrpc-mcp.md` (the
 `Lyric.JsonRpc` / `Lyric.Mcp` libraries this phase consumes via the
