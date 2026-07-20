@@ -66,9 +66,15 @@ extern type Type = "System.Type"
 
 extern type StringArray = "System.String[]"
 
-@externInstance
-@externTarget("System.Object.GetType")
-func getStringType(obj: in String): Type = ()
+// Static Type.GetType(string), not an @externInstance-bound Object.GetType()
+// on a boxed argument (#513) — the same instance-bound GetType() shape that
+// crashed the process with an uncatchable AccessViolationException for a
+// boxed Byte (docs/lyric/gotchas.md), migrated here as defense-in-depth even
+// though String is a reference type and the specific boxing-mismatch
+// mechanism described there is scoped to value-type arguments. Same pattern
+// as src/github_api.l's typeFromName.
+@externTarget("System.Type.GetType")
+func stringType(name: in String): Type = ()
 
 @externTarget("System.Array.CreateInstance")
 func createStringArray(elementType: in Type, length: in Int): StringArray = ()
@@ -96,8 +102,8 @@ func getStringArrayValue(arr: in StringArray, index: in Int): String = ()
 
 pub func appendString(arr: in StringArray, item: in String): StringArray {
   val oldLen = getStringArrayLength(arr)
-  val stringType = getStringType("")
-  val newArr = createStringArray(stringType, oldLen + 1)
+  val strType = stringType("System.String")
+  val newArr = createStringArray(strType, oldLen + 1)
   if oldLen > 0 {
     copyStringArray(arr, 0, newArr, 0, oldLen)
   }
@@ -106,8 +112,8 @@ pub func appendString(arr: in StringArray, item: in String): StringArray {
 }
 
 pub func createEmptyStringArray(): StringArray {
-  val stringType = getStringType("")
-  return createStringArray(stringType, 0)
+  val strType = stringType("System.String")
+  return createStringArray(strType, 0)
 }
 
 /// Split a comma-separated whitelist into trimmed, non-empty entries.
