@@ -262,19 +262,34 @@ future sessions on this repo → `add_task`).
 Design mirrors the memory slice almost exactly (same callback channel, same
 `(user_id, repo_key)` scoping, same auth split):
 
-- Migration `0017`: table `repo_tasks(id, user_id, repo_key, description,
-  status, created_at, updated_at)` where `status ∈ {open, done}`, index on
-  `(user_id, repo_key, status)`. Same per-repo entry cap as memory so a
-  runaway loop can't flood the backlog.
+- Migration `0017_repo_tasks`: table `repo_tasks(id, user_id, repo_key,
+  description, status, created_at, updated_at)` where `status ∈ {open,
+  done}`, index on `(user_id, repo_key, status)`. A per-repo cap of 256
+  entries, same value as memory's cap for consistency — but **counting
+  OPEN tasks only, not lifetime total**: this is the one place the cap
+  logic genuinely differs from memory's. Memory's cap counts every distinct
+  key ever written (an overwrite doesn't grow it, but nothing ever shrinks
+  it either); a task backlog needs the opposite property, since `done` tasks
+  are history, not backlog — completing a task must free capacity for a new
+  one, or a long-running agent would eventually deadlock itself out of being
+  able to add any further work. The atomic capped insert
+  (`insertTaskCappedSql`) is correspondingly simpler than memory's: since
+  `add_task` always creates a brand-new row (there is no natural unique key
+  to `ON CONFLICT` against, unlike memory's `mem_key`), the guard is a plain
+  `WHERE (SELECT COUNT(*) FROM repo_tasks WHERE … AND status = 'open') <
+  256`, with no overwrite branch.
 - Host (`CloudAgents.Callbacks`): `POST …/callbacks/tasks` `{description}`
   (create, open), `GET …/callbacks/tasks?status=` (list, container-auth),
   `POST …/callbacks/tasks/{tid}/complete` (mark done), and a user-auth
   `GET /api/sessions/{id}/tasks` for the UI. Resolves owner + repo_key
-  exactly as memory does. `complete_task` is idempotent and repo-scoped
-  (a task id only completes within its own repo).
+  exactly as memory does. `complete_task` is idempotent (completing an
+  already-done task is a success no-op, not an error) and repo-scoped (a
+  task id only completes within its own (user, repo) scope — a task id that
+  exists but belongs to a different scope 404s exactly like an absent id,
+  mirroring `downloadArtifactHandler`'s session-scope check).
 - Shim: `add_task(description)`, `list_tasks(status?)`,
   `complete_task(id)` tools, same transport/client/tool structure as
-  `remember`/`recall`.
+  `remember`/`recall`/`forget`.
 
 No SSE event needed (the UI polls, like todos already do); the `repo_tasks`
 row's `status` + `updated_at` are its own audit trail.

@@ -360,3 +360,145 @@ impl McpToolHandler for ForgetTool {
     }
   }
 }
+
+// ── add_task (phase 7 §8) ─────────────────────────────────────────────────────
+pub func addTaskSchema(): JsonValue {
+  JObject(
+    fields = [
+      JsonField(name = "type", value = JString(value = "object")),
+      JsonField(
+        name = "properties",
+        value = JObject(
+          fields = [
+            stringSchemaField(
+              "description",
+              "A short description of work to track for future sessions on this repository (e.g. 'migrate the auth module'). Distinct from add_followup_task: this is a repo-scoped backlog item a future AGENT can complete, not a session-scoped note for the human."
+            )
+          ]
+        )
+      ),
+      JsonField(name = "required", value = JArray(items = [JString(value = "description")]))
+    ]
+  )
+}
+
+pub record AddTaskTool {
+  pub transport: V2CallbackTransport
+}
+
+func handleAddTask(tool: in AddTaskTool, args: in Option[JsonValue]): McpToolResult {
+  val a = match args {
+    case Some(v) -> v
+    case None -> return toolErrorResult("missing arguments: 'description' is required")
+  }
+  val description = match getString(a, "description") {
+    case Some(d) -> d
+    case None -> return toolErrorResult("missing required argument 'description'")
+  }
+  return match CloudAgents.Shim.V2Client.addTask(tool.transport, description) {
+    case Ok(id) -> toolTextResult("created task " + id)
+    case Err(message) -> toolErrorResult(message)
+  }
+}
+
+impl McpToolHandler for AddTaskTool {
+  func call(args: in Option[JsonValue]): Result[McpToolResult, String] {
+    try {
+      Ok(value = handleAddTask(self, args))
+    } catch Bug as b {
+      Ok(value = toolErrorResult("internal error in cloud-agents-shim: " + b.message))
+    }
+  }
+}
+
+// ── list_tasks (phase 7 §8) ───────────────────────────────────────────────────
+pub func listTasksSchema(): JsonValue {
+  JObject(
+    fields = [
+      JsonField(name = "type", value = JString(value = "object")),
+      JsonField(
+        name = "properties",
+        value = JObject(
+          fields = [
+            stringSchemaField(
+              "status",
+              "Optional. Filter to 'open' or 'done'. Omit to list every task regardless of status."
+            )
+          ]
+        )
+      )
+    ]
+  )
+}
+
+pub record ListTasksTool {
+  pub transport: V2CallbackTransport
+}
+
+func handleListTasks(tool: in ListTasksTool, args: in Option[JsonValue]): McpToolResult {
+  val statusFilter = match args {
+    case Some(v) -> match getString(v, "status") { case Some(s) -> s; case None -> "" }
+    case None -> ""
+  }
+  return match CloudAgents.Shim.V2Client.listTasks(tool.transport, statusFilter) {
+    case Ok(text) -> toolTextResult(text)
+    case Err(message) -> toolErrorResult(message)
+  }
+}
+
+impl McpToolHandler for ListTasksTool {
+  func call(args: in Option[JsonValue]): Result[McpToolResult, String] {
+    try {
+      Ok(value = handleListTasks(self, args))
+    } catch Bug as b {
+      Ok(value = toolErrorResult("internal error in cloud-agents-shim: " + b.message))
+    }
+  }
+}
+
+// ── complete_task (phase 7 §8) ────────────────────────────────────────────────
+pub func completeTaskSchema(): JsonValue {
+  JObject(
+    fields = [
+      JsonField(name = "type", value = JString(value = "object")),
+      JsonField(
+        name = "properties",
+        value = JObject(
+          fields = [
+            stringSchemaField(
+              "id",
+              "The id of the task to mark done (returned by add_task/list_tasks)."
+            )
+          ]
+        )
+      ),
+      JsonField(name = "required", value = JArray(items = [JString(value = "id")]))
+    ]
+  )
+}
+
+pub record CompleteTaskTool {
+  pub transport: V2CallbackTransport
+}
+
+func handleCompleteTask(tool: in CompleteTaskTool, args: in Option[JsonValue]): McpToolResult {
+  val a = match args { case Some(v) -> v; case None -> return toolErrorResult("missing arguments: 'id' is required") }
+  val id = match getString(a, "id") {
+    case Some(i) -> i
+    case None -> return toolErrorResult("missing required argument 'id'")
+  }
+  return match CloudAgents.Shim.V2Client.completeTask(tool.transport, id) {
+    case Ok(text) -> toolTextResult(text)
+    case Err(message) -> toolErrorResult(message)
+  }
+}
+
+impl McpToolHandler for CompleteTaskTool {
+  func call(args: in Option[JsonValue]): Result[McpToolResult, String] {
+    try {
+      Ok(value = handleCompleteTask(self, args))
+    } catch Bug as b {
+      Ok(value = toolErrorResult("internal error in cloud-agents-shim: " + b.message))
+    }
+  }
+}

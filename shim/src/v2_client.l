@@ -335,6 +335,60 @@ pub func forget(transport: in V2CallbackTransport, key: in String): Result[Strin
   }
 }
 
+// ── add_task / list_tasks / complete_task (phase 7 §8) ───────────────────────
+/// Create a repo-scoped task, returning its host-assigned id.
+pub func addTask(transport: in V2CallbackTransport, description: in String): Result[String, String] {
+  val created = match transport.createTask(description) {
+    case Ok(body) -> body
+    case Err(e) -> return Err(error = "failed to reach the cloud-agents host: " + e)
+  }
+  return match tryDecodeCreateTaskResponse(created) {
+    case Some(r) -> Ok(value = r.id)
+    case None -> Err(error = "malformed response from the cloud-agents host when creating the task")
+  }
+}
+
+/// List repo-scoped tasks, optionally filtered by status ("open"/"done"; an
+/// empty filter returns every status). Renders as `id [status]: description`
+/// lines, newest first (the host's own ordering).
+pub func listTasks(transport: in V2CallbackTransport, statusFilter: in String): Result[String, String] {
+  val body = match transport.listTasks(statusFilter) {
+    case Ok(b) -> b
+    case Err(e) -> return Err(error = "failed to reach the cloud-agents host: " + e)
+  }
+  val list = match tryDecodeTaskListResponse(body) {
+    case Some(r) -> r
+    case None -> return Err(error = "malformed response from the cloud-agents host when listing tasks")
+  }
+  if list.tasks.length == 0 {
+    return Ok(value = "no tasks stored for this repository")
+  }
+  var acc = ""
+  var i = 0
+  while i < list.tasks.length {
+    val t = list.tasks[i]
+    if i > 0 {
+      acc = acc + "\n"
+    }
+    acc = acc + t.id + " [" + t.status + "]: " + t.description
+    i = i + 1
+  }
+  return Ok(value = acc)
+}
+
+/// Mark a repo-scoped task done. Idempotent: completing an already-done task
+/// is reported as a success, not an error.
+pub func completeTask(transport: in V2CallbackTransport, taskId: in String): Result[String, String] {
+  val body = match transport.completeTask(taskId) {
+    case Ok(b) -> b
+    case Err(e) -> return Err(error = "failed to reach the cloud-agents host: " + e)
+  }
+  return match tryDecodeCompleteTaskResponse(body) {
+    case Some(r) -> Ok(value = "completed task '" + r.id + "'")
+    case None -> Err(error = "malformed response from the cloud-agents host when completing the task")
+  }
+}
+
 // ── report_artifact ───────────────────────────────────────────────────────────
 @externTarget("System.Convert.ToBase64String")
 func encodeBase64(b: in slice[Byte]): String = ""

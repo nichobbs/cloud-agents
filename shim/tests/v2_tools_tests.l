@@ -347,3 +347,107 @@ test "forget tool denies for a missing key without contacting the host" {
   assertTrue(onlyText(result).contains("key"), "error names the missing field: " + onlyText(result))
   assertEqual(fake.lastForgetKey, "", "the host is never contacted for a malformed call")
 }
+
+// ── add_task / list_tasks / complete_task (phase 7 §8) ────────────────────────
+test "add_task tool forwards the description and returns the created task id" {
+  val fake = newFakeV2Transport()
+  fake.createTaskOk = true
+  fake.createTaskBody = "{\"id\":\"task-1\"}"
+  val tool = AddTaskTool(transport = fake)
+
+  val args = Some(
+    value = JObject(
+      fields = [JsonField(name = "description", value = JString(value = "migrate the auth module"))]
+    )
+  )
+  val result = match tool.call(args) { case Ok(r) -> r; case Err(e) -> panic("unexpected Err: " + e) }
+  assertTrue(not result.isError, "a successful add_task is not a tool error")
+  assertTrue(onlyText(result).contains("task-1"), "result names the created id: " + onlyText(result))
+  assertEqual(fake.lastTaskDescription, "migrate the auth module", "the description was forwarded")
+}
+
+test "add_task tool denies for a missing description without contacting the host" {
+  val fake = newFakeV2Transport()
+  val tool = AddTaskTool(transport = fake)
+
+  val args = Some(value = JObject(fields = newList()))
+  val result = match tool.call(args) { case Ok(r) -> r; case Err(e) -> panic("unexpected Err: " + e) }
+  assertTrue(result.isError, "a missing description is a tool error")
+  assertTrue(onlyText(result).contains("description"), "error names the missing field: " + onlyText(result))
+  assertEqual(fake.lastTaskDescription, "", "the host is never contacted for a malformed call")
+}
+
+test "addTaskSchema declares description as required" {
+  val schema = addTaskSchema()
+  val schemaJson = writeValue(schema)
+  assertTrue(schemaJson.contains("\"description\""), "schema mentions 'description'")
+  assertTrue(schemaJson.contains("\"required\""), "schema declares required fields")
+}
+
+test "list_tasks tool with no arguments lists every task (status is optional)" {
+  val fake = newFakeV2Transport()
+  fake.listTasksOk = true
+  fake.listTasksBody = "{\"tasks\":[{\"id\":\"t1\",\"description\":\"migrate auth\",\"status\":\"open\",\"createdAt\":\"1\",\"updatedAt\":\"1\"}]}"
+  val tool = ListTasksTool(transport = fake)
+
+  val noArgs: Option[JsonValue] = None
+  val result = match tool.call(noArgs) { case Ok(r) -> r; case Err(e) -> panic("unexpected Err: " + e) }
+  assertTrue(not result.isError, "list_tasks with no args is valid (lists everything)")
+  assertTrue(onlyText(result).contains("t1 [open]: migrate auth"), "renders the task: " + onlyText(result))
+  assertEqual(fake.lastTaskStatusFilter, "", "no filter was sent when status is omitted")
+}
+
+test "list_tasks tool forwards the status filter" {
+  val fake = newFakeV2Transport()
+  fake.listTasksOk = true
+  fake.listTasksBody = "{\"tasks\":[]}"
+  val tool = ListTasksTool(transport = fake)
+
+  val args = Some(value = JObject(fields = [JsonField(name = "status", value = JString(value = "done"))]))
+  val result = match tool.call(args) { case Ok(r) -> r; case Err(e) -> panic("unexpected Err: " + e) }
+  assertTrue(not result.isError, "a successful filtered list is not a tool error")
+  assertEqual(fake.lastTaskStatusFilter, "done", "the status filter was forwarded")
+}
+
+test "listTasksSchema declares no required field" {
+  val schema = listTasksSchema()
+  val schemaJson = writeValue(schema)
+  assertTrue(schemaJson.contains("\"status\""), "schema mentions the optional 'status'")
+  assertTrue(not schemaJson.contains("\"required\""), "list_tasks has no required fields")
+}
+
+test "complete_task tool marks a task done and reports success" {
+  val fake = newFakeV2Transport()
+  fake.completeTaskOk = true
+  fake.completeTaskBody = "{\"id\":\"task-1\",\"status\":\"done\"}"
+  val tool = CompleteTaskTool(transport = fake)
+
+  val args = Some(value = JObject(fields = [JsonField(name = "id", value = JString(value = "task-1"))]))
+  val result = match tool.call(args) { case Ok(r) -> r; case Err(e) -> panic("unexpected Err: " + e) }
+  assertTrue(not result.isError, "a successful completion is not a tool error")
+  assertTrue(onlyText(result).contains("task-1"), "result names the completed task: " + onlyText(result))
+  assertEqual(fake.lastCompleteTaskId, "task-1", "the task id was forwarded")
+}
+
+test "complete_task tool denies for a missing id without contacting the host" {
+  val fake = newFakeV2Transport()
+  val tool = CompleteTaskTool(transport = fake)
+
+  val args = Some(value = JObject(fields = newList()))
+  val result = match tool.call(args) { case Ok(r) -> r; case Err(e) -> panic("unexpected Err: " + e) }
+  assertTrue(result.isError, "a missing id is a tool error")
+  assertTrue(onlyText(result).contains("id"), "error names the missing field: " + onlyText(result))
+  assertEqual(fake.lastCompleteTaskId, "", "the host is never contacted for a malformed call")
+}
+
+test "complete_task tool surfaces a not-found error for an unknown/cross-scope id" {
+  val fake = newFakeV2Transport()
+  fake.completeTaskOk = false
+  fake.completeTaskError = "POST .../callbacks/tasks/nope/complete failed: (404) Not Found: task not found"
+  val tool = CompleteTaskTool(transport = fake)
+
+  val args = Some(value = JObject(fields = [JsonField(name = "id", value = JString(value = "nope"))]))
+  val result = match tool.call(args) { case Ok(r) -> r; case Err(e) -> panic("unexpected Err: " + e) }
+  assertTrue(result.isError, "a not-found completion is a tool error")
+  assertTrue(onlyText(result).contains("task not found"), "error surfaces the host's message: " + onlyText(result))
+}
