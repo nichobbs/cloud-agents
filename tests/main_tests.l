@@ -140,6 +140,7 @@ test "credential/profile Resp helpers map Ok to 200 and Err to the error's own s
   assertEqualInt(profileListResp(Err(error = Web.badRequest("bad"))).status, 400, "profileListResp Err -> 400")
 
   val noProfileCreds: slice[String] = []
+  val noProfileGrants: slice[String] = []
   val profile = Profile(
     id = "p1",
     userId = "u1",
@@ -148,6 +149,9 @@ test "credential/profile Resp helpers map Ok to 200 and Err to the error's own s
     networkPolicy = "full",
     credentialMode = "all",
     credentials = noProfileCreds,
+    skillIds = noProfileGrants,
+    subagentIds = noProfileGrants,
+    mcpServerIds = noProfileGrants,
     createdAt = "1",
     updatedAt = "1"
   )
