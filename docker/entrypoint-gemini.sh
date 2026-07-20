@@ -50,6 +50,12 @@ fi
 /usr/local/bin/reconcile-repos.sh "entrypoint-gemini"
 cd /workspace
 
+# Render the session's profile-granted skills/subagents/MCP servers into
+# Gemini CLI's own native config (docker/inject-library.sh). Reconciled every
+# message; best-effort so a rendering hiccup never blocks the actual prompt
+# run.
+/usr/local/bin/inject-library.sh "gemini" || echo "entrypoint-gemini: library injection failed, continuing without it" >&2
+
 # Non-interactive single invocation; --yolo auto-approves tool calls (the
 # container itself is the sandbox, same trust model as the other harnesses).
 exec gemini --model "${MODEL}" --yolo --prompt "${PROMPT}"
