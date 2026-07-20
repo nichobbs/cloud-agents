@@ -1,6 +1,8 @@
 # Phase 6 — In-container MCP callback server
 
-Status: §6 steps 1-3 shipped. Step 1 (host-side callback endpoints, DB,
+Status: §6 steps 1-4 in progress — steps 1-3 shipped (PRs #525/#526);
+step 4 (default-on flip + allowlist tightening), the §8 follow-ups, and
+the §7 v2 tools are the current change. Step 1 (host-side callback endpoints, DB,
 tests) landed in PR #525. Step 2 (token minting, env injection, mcp.json/
 entrypoint rendering behind `CLOUD_AGENTS_MCP_CALLBACKS`) landed in the same
 PR. Step 3 (the shim itself, `shim/` — `CloudAgentsShim` on
@@ -102,15 +104,7 @@ each at most):
   status line persisted on the session and pushed over SSE; the UI can
   show live "what is it doing" without parsing raw stdout.
 
-v2 candidates (design notes only, not built now):
-
-- `request_secret(name, reason)` — gated, audited handout from the
-  credentials store; needs its own threat-model pass first.
-- `add_followup_task(description)` — agent appends to the session's
-  todo list (the `interactions.l` todos), closing the loop with the
-  existing annotation feature.
-- `report_artifact(path, mimeType)` — register a build artifact for
-  download from the session page.
+v2 tools are specced in §7.
 
 ## 5. Host-side changes (this repo)
 
@@ -153,3 +147,90 @@ and the timeout/fail-closed path has an explicit test.
    switch).
 4. Flip claude runner to `--permission-prompt-tool`, tighten
    `settings.json.template`.
+
+## 7. v2 tools — agreed designs
+
+All three ride the existing authenticated shim↔host HTTPS channel and
+the existing SSE/approval machinery. No new Docker-daemon capability is
+required: the shim already runs inside the container, so it can write
+files in (secrets) and read files out (artifacts) itself.
+
+### 7.1 `request_secret(name, reason)`
+
+Threat model: the primary risk is prompt-injected exfiltration — an
+agent tricked into requesting a credential and echoing it onward. The
+design therefore never lets the secret value enter the agent-visible
+transcript, and never grants without a human in the loop:
+
+1. Shim `POST …/callbacks/secret` `{name, reason}` → pending row in a
+   new `secret_requests` table + `secret_request` SSE event. Reuses the
+   permission long-poll shape.
+2. Human approves or denies in the UI (normal user auth + ownership).
+   **No allow-always for secrets — every request prompts.** The
+   credential must exist in the session owner's credential store; the
+   approval flow shows only the credential *name*, never the value.
+3. On approval the host returns the decrypted value **once** in the
+   long-poll response body (the channel is already bearer-authenticated
+   HTTPS carrying the callback token). The host writes an audit row
+   (session, name, reason, decision, timestamp) — the value is never
+   logged or persisted outside the existing encrypted store.
+4. The shim writes the value to a container-local file
+   (`/run/cloud-agents-secrets/<name>`, 0600, tmpfs when available) and
+   the MCP tool result returns **only the file path**. The value itself
+   never appears in tool-result text, so it cannot land in stored
+   transcripts or streamed output.
+5. Timeout/deny → tool result is a denial message; fail closed.
+
+### 7.2 `add_followup_task(description)`
+
+Shim `POST …/callbacks/todo` `{description}` → the same todo storage
+`CloudAgents.Interactions.addTodoHandler` uses (anchored to the
+session's latest message, or unanchored if the schema allows), emits
+the existing todo SSE/refresh signal, returns the created id. Available
+to every runner with MCP support, giving agents a deliberate "leave a
+note for the human" primitive.
+
+### 7.3 `report_artifact(path, mimeType, description?)`
+
+Container files die with the container, so the shim pushes content out
+at report time: it reads `path` from inside the container (size cap
+8 MiB v1 — reject larger with a clear message), base64s it, and
+`POST …/callbacks/artifact` `{fileName, mimeType, description,
+contentBase64}`. Host stores the bytes under a per-session artifacts
+directory (outside the DB), writes an `artifacts` metadata row, emits
+an `artifact_reported` SSE event, and serves
+`GET /api/sessions/{id}/artifacts` (list, user auth) +
+`GET /api/sessions/{id}/artifacts/{aid}` (download, user auth,
+Content-Disposition from the stored name). Path traversal in
+`fileName` is neutralized server-side (basename only).
+
+## 8. Stage 4 and follow-ups
+
+Stage 4 (flip the default):
+
+- `callbacksFeatureEnabled()` becomes default-on: enabled unless
+  `CLOUD_AGENTS_MCP_CALLBACKS=0`. The entrypoint's existing guards
+  (template present, env vars minted) keep runs working when the host
+  side is unavailable — a run without a callback token simply behaves
+  as before the feature existed.
+- `docker/settings.json.template` shrinks to the genuinely-safe base
+  set (file reads and read-only inspection; no blanket `Bash(git:*)`),
+  with everything else routed through `request_permission`. The claude
+  runner keeps `--permission-prompt-tool` (already wired, now active
+  by default).
+- Non-claude runners keep their documented posture (no equivalent
+  flag), unchanged by the flip.
+
+Follow-ups:
+
+- #540: `callbacks_client.l` long-poll deadline becomes wall-clock
+  (epoch-millis clock seam injected as an interface per the
+  lyric-cache `Clock` pattern, fake-driven in tests) instead of
+  iteration-count × nominal interval.
+- #541: `scripts/e2e-http.sh` gains a seeded-session leg — insert a
+  session + callback-token row into the throwaway sqlite DB, then
+  drive the shim once with a wrong bearer (expect 401-driven deny
+  before any prompt is created) and once with the right bearer and a
+  1s timeout (expect a pending prompt row created, then timeout deny)
+  — covering both halves of `authorizeCallback` that the unknown-
+  session 404 leg cannot reach.
