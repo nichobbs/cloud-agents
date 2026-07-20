@@ -202,7 +202,11 @@ export function NewSession() {
         )}
 
         <div style={{ display: 'flex', gap: '10px', marginTop: '24px' }}>
-          <button type="submit" style={primaryBtnStyle} disabled={loading || !repoUrl.trim()}>
+          <button
+            type="submit"
+            style={primaryBtnStyle}
+            disabled={loading || !repoUrl.trim() || (enabledHarnessIds !== null && !enabledHarnessIds.has(harness))}
+          >
             {loading ? 'Creating…' : 'Create session'}
           </button>
           <button

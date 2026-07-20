@@ -15,7 +15,15 @@ type DraftMap = Record<string, string>;
 
 function loadAll(): DraftMap {
   try {
-    return JSON.parse(localStorage.getItem(STORAGE_KEY) ?? '{}') as DraftMap;
+    const parsed: unknown = JSON.parse(localStorage.getItem(STORAGE_KEY) ?? '{}');
+    // JSON.parse only throws on malformed syntax — valid-but-wrong-shaped
+    // JSON (null, an array, a bare number/string) parses fine and would
+    // otherwise be cast straight through as a DraftMap (#573), then throw or
+    // misbehave the moment a caller tries to index/assign into it.
+    if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
+      return {};
+    }
+    return parsed as DraftMap;
   } catch {
     return {};
   }

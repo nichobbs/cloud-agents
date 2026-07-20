@@ -32,6 +32,13 @@ import CloudAgents.Text
 import extern System.Environment as Env
 import extern System.String as DotNetString
 
+// Caps below are checked with withinMaxByteLength, not withinMaxLength,
+// wherever the field is free text or JSON that could hold multi-byte UTF-8
+// (a char-count check alone lets such a payload land up to ~4x over the
+// stated budget, #64/#566) — except maxToolNameLen/maxSecretNameLen/
+// maxArtifactMimeTypeLen (narrow-charset identifiers, where char vs byte
+// doesn't matter) and maxArtifactBase64Len (base64 is pure ASCII by
+// construction, so char count and byte count are always equal).
 val maxToolNameLen = 256
 
 val maxInputJsonLen = 65536
@@ -226,8 +233,8 @@ pub func createPermissionRequestHandler(
   if not CloudAgents.Text.withinMaxLength(req.toolName, maxToolNameLen) {
     return Err(Web.badRequest("toolName is too long (max " + toString(maxToolNameLen) + " characters)"))
   }
-  if not CloudAgents.Text.withinMaxLength(req.inputJson, maxInputJsonLen) {
-    return Err(Web.badRequest("inputJson is too long (max " + toString(maxInputJsonLen) + " characters)"))
+  if not CloudAgents.Text.withinMaxByteLength(req.inputJson, maxInputJsonLen) {
+    return Err(Web.badRequest("inputJson is too long (max " + toString(maxInputJsonLen) + " bytes)"))
   }
   val ruleMatched = match CloudAgents.Repository.permissionRuleMatches(id, req.toolName, req.inputJson) {
     case Ok(b) -> b
@@ -284,11 +291,11 @@ pub func answerPermissionRequestHandler(
   if req.decision != "allow" and req.decision != "deny" and req.decision != "allow_always" {
     return Err(Web.badRequest("decision must be one of: allow, deny, allow_always"))
   }
-  if not CloudAgents.Text.withinMaxLength(req.note, maxNoteLen) {
-    return Err(Web.badRequest("note is too long (max " + toString(maxNoteLen) + " characters)"))
+  if not CloudAgents.Text.withinMaxByteLength(req.note, maxNoteLen) {
+    return Err(Web.badRequest("note is too long (max " + toString(maxNoteLen) + " bytes)"))
   }
-  if not CloudAgents.Text.withinMaxLength(req.updatedInputJson, maxInputJsonLen) {
-    return Err(Web.badRequest("updatedInputJson is too long (max " + toString(maxInputJsonLen) + " characters)"))
+  if not CloudAgents.Text.withinMaxByteLength(req.updatedInputJson, maxInputJsonLen) {
+    return Err(Web.badRequest("updatedInputJson is too long (max " + toString(maxInputJsonLen) + " bytes)"))
   }
   requireOwnedSession(id)?
   val pr = match CloudAgents.Repository.getPermissionRequest(rid) {
@@ -350,11 +357,11 @@ pub func createUserQuestionHandler(
   if req.question.length == 0 {
     return Err(Web.badRequest("question is required"))
   }
-  if not CloudAgents.Text.withinMaxLength(req.question, maxQuestionLen) {
-    return Err(Web.badRequest("question is too long (max " + toString(maxQuestionLen) + " characters)"))
+  if not CloudAgents.Text.withinMaxByteLength(req.question, maxQuestionLen) {
+    return Err(Web.badRequest("question is too long (max " + toString(maxQuestionLen) + " bytes)"))
   }
-  if not CloudAgents.Text.withinMaxLength(req.optionsJson, maxOptionsJsonLen) {
-    return Err(Web.badRequest("optionsJson is too long (max " + toString(maxOptionsJsonLen) + " characters)"))
+  if not CloudAgents.Text.withinMaxByteLength(req.optionsJson, maxOptionsJsonLen) {
+    return Err(Web.badRequest("optionsJson is too long (max " + toString(maxOptionsJsonLen) + " bytes)"))
   }
   match CloudAgents.Repository.createUserQuestion(id, req.question, req.optionsJson) {
     case Ok(q) -> return Ok(CreateUserQuestionResponse(id = q.id))
@@ -402,8 +409,8 @@ pub func answerUserQuestionHandler(
   if rid.length == 0 {
     return Err(Web.badRequest("question id is required"))
   }
-  if not CloudAgents.Text.withinMaxLength(req.answer, maxAnswerLen) {
-    return Err(Web.badRequest("answer is too long (max " + toString(maxAnswerLen) + " characters)"))
+  if not CloudAgents.Text.withinMaxByteLength(req.answer, maxAnswerLen) {
+    return Err(Web.badRequest("answer is too long (max " + toString(maxAnswerLen) + " bytes)"))
   }
   requireOwnedSession(id)?
   val q = match CloudAgents.Repository.getUserQuestion(rid) {
@@ -442,8 +449,8 @@ pub func reportProgressHandler(
     return Err(Web.badRequest("id is required"))
   }
   authorizeCallbackToken(id, authHeaderValue)?
-  if not CloudAgents.Text.withinMaxLength(req.summary, maxProgressSummaryLen) {
-    return Err(Web.badRequest("summary is too long (max " + toString(maxProgressSummaryLen) + " characters)"))
+  if not CloudAgents.Text.withinMaxByteLength(req.summary, maxProgressSummaryLen) {
+    return Err(Web.badRequest("summary is too long (max " + toString(maxProgressSummaryLen) + " bytes)"))
   }
   if not isValidPercent(req.percentComplete) {
     return Err(Web.badRequest("percentComplete must be a decimal 0-100"))
@@ -506,8 +513,8 @@ pub func createSecretRequestHandler(
   if not CloudAgents.Text.withinMaxLength(req.name, maxSecretNameLen) {
     return Err(Web.badRequest("name is too long (max " + toString(maxSecretNameLen) + " characters)"))
   }
-  if not CloudAgents.Text.withinMaxLength(req.reason, maxSecretReasonLen) {
-    return Err(Web.badRequest("reason is too long (max " + toString(maxSecretReasonLen) + " characters)"))
+  if not CloudAgents.Text.withinMaxByteLength(req.reason, maxSecretReasonLen) {
+    return Err(Web.badRequest("reason is too long (max " + toString(maxSecretReasonLen) + " bytes)"))
   }
   val ownerUserId = match CloudAgents.SessionStore.sessionOwnerUserId(id) {
     case Ok(Some(u)) -> u
@@ -671,8 +678,8 @@ pub func createFollowupTaskHandler(
   if req.description.length == 0 {
     return Err(Web.badRequest("description is required"))
   }
-  if not CloudAgents.Text.withinMaxLength(req.description, maxFollowupDescriptionLen) {
-    return Err(Web.badRequest("description is too long (max " + toString(maxFollowupDescriptionLen) + " characters)"))
+  if not CloudAgents.Text.withinMaxByteLength(req.description, maxFollowupDescriptionLen) {
+    return Err(Web.badRequest("description is too long (max " + toString(maxFollowupDescriptionLen) + " bytes)"))
   }
   match CloudAgents.Repository.addTodo(id, "", req.description) {
     case Ok(t) -> return Ok(CreateFollowupTaskResponse(id = t.id))
@@ -807,8 +814,8 @@ pub func uploadArtifactHandler(
   if req.fileName.length == 0 {
     return Err(Web.badRequest("fileName is required"))
   }
-  if not CloudAgents.Text.withinMaxLength(req.fileName, maxArtifactFileNameLen) {
-    return Err(Web.badRequest("fileName is too long (max " + toString(maxArtifactFileNameLen) + " characters)"))
+  if not CloudAgents.Text.withinMaxByteLength(req.fileName, maxArtifactFileNameLen) {
+    return Err(Web.badRequest("fileName is too long (max " + toString(maxArtifactFileNameLen) + " bytes)"))
   }
   val fileName = match basenameOf(req.fileName) {
     case Some(b) -> b
@@ -820,8 +827,8 @@ pub func uploadArtifactHandler(
   if not CloudAgents.Text.withinMaxLength(req.mimeType, maxArtifactMimeTypeLen) {
     return Err(Web.badRequest("mimeType is too long (max " + toString(maxArtifactMimeTypeLen) + " characters)"))
   }
-  if not CloudAgents.Text.withinMaxLength(req.description, maxArtifactDescriptionLen) {
-    return Err(Web.badRequest("description is too long (max " + toString(maxArtifactDescriptionLen) + " characters)"))
+  if not CloudAgents.Text.withinMaxByteLength(req.description, maxArtifactDescriptionLen) {
+    return Err(Web.badRequest("description is too long (max " + toString(maxArtifactDescriptionLen) + " bytes)"))
   }
   if req.contentBase64.length == 0 {
     return Err(Web.badRequest("contentBase64 is required"))

@@ -102,7 +102,7 @@ echo "== docker-compose.coolify.yml (--project-directory repo-root, per Coolify)
 # Coolify actually needs) is untouched.
 coolify_scratch="$(mktemp "$REPO_ROOT/deploy/.coolify-path-check.XXXXXX.yml")"
 trap 'rm -f "$coolify_scratch"' EXIT
-grep -v 'exclude_from_hc:' deploy/docker-compose.coolify.yml > "$coolify_scratch"
+grep -v 'exclude_from_hc:' "$REPO_ROOT/deploy/docker-compose.coolify.yml" > "$coolify_scratch"
 json_coolify="$(cd "$REPO_ROOT" && ENCRYPTION_KEY=ci-check COMPOSE_PROFILES=codex,opencode,gemini docker compose --project-directory . -f "$coolify_scratch" config --format json)"
 check_json_paths "docker-compose.coolify.yml" "$json_coolify"
 

@@ -23,6 +23,12 @@ concurrency:
   group: dist-native-ci-${{ github.ref }}
   cancel-in-progress: true
 
+# Least privilege (#568): this job only checks out, builds, publishes, and
+# smoke-tests locally — it never writes to the repo, comments, or uploads
+# artifacts, so it needs nothing beyond read access for actions/checkout.
+permissions:
+  contents: read
+
 env:
   DOTNET_SKIP_FIRST_TIME_EXPERIENCE: true
   DOTNET_NOLOGO: true

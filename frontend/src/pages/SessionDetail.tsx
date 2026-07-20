@@ -214,6 +214,14 @@ export function SessionDetail() {
     if (draft) {
       setInput(draft);
       setRecoveredDraft(true);
+    } else {
+      // Without this branch, a draft recovered for a PREVIOUS session (or
+      // whatever the user was mid-typing there) stayed in `input`/
+      // `recoveredDraft` when navigating to a session with no draft of its
+      // own (#564) — showing the wrong session's leftover text, and its
+      // stale "recovered draft" banner, and misdirecting it if sent.
+      setInput('');
+      setRecoveredDraft(false);
     }
   }, [sessionId]);
 
@@ -624,6 +632,10 @@ export function SessionDetail() {
     } catch {
       // server-side errors are best-effort; remove from local list regardless
     }
+    // Otherwise a deleted session's persisted failed-draft entry (#104)
+    // lingers in localStorage forever (#572) — nothing else ever visits a
+    // deleted session's id again to read/clear it via takeFailedDraft.
+    clearFailedDraft(session.sessionId);
     removeSession(session.sessionId);
     navigate('/sessions');
   };

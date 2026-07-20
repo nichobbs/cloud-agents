@@ -18,8 +18,18 @@ import type { Credential } from '../types';
 /// RequireAuth a route-specific exception — lets this page show a clear
 /// "not available on this deployment" state instead of a raw fetch error
 /// (#503).
+///
+/// Matched by exact message text against `src/handlers/auth.l`'s
+/// `authErrorMessage`'s `AuthNotConfigured` case, not a loose substring —
+/// there's no separate machine-readable error code in the API's error body
+/// (`{"error": "<message>"}` is the whole shape) to match on instead, so
+/// this stays inherently coupled to that exact string (#571). If that
+/// backend message ever changes, this needs to change with it — nothing
+/// else guards against the two silently drifting apart.
+const AUTH_NOT_CONFIGURED_MESSAGE = 'authentication is not configured; access is disabled';
+
 function isAuthNotConfiguredError(err: unknown): boolean {
-  return err instanceof Error && err.message.startsWith('401') && err.message.includes('authentication is not configured');
+  return err instanceof Error && err.message.startsWith('401') && err.message.includes(AUTH_NOT_CONFIGURED_MESSAGE);
 }
 
 export function Credentials() {
