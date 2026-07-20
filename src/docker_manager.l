@@ -411,6 +411,11 @@ pub func streamSessionMessage(
   var questionCursor = toString(startMs)
   var lastProgressSummary = ""
   var lastProgressPercent = ""
+  // Phase 6 §7 (docs/phase6-mcp-callbacks.md): same cursor pattern as
+  // permission/question above, for the v2 tools' secret_request and
+  // artifact_reported events.
+  var secretCursor = toString(startMs)
+  var artifactCursor = toString(startMs)
   // Poll on a ~1s cadence. taskWaitMs blocks up to that waiting for the run to
   // finish (true = the whole run completed), so the loop wakes on either a
   // timer tick or run completion. The interval is deliberately NOT tighter
@@ -514,6 +519,38 @@ pub func streamSessionMessage(
               case Ok(_) -> ()
               case Err(_) -> ()
             }
+          }
+        }
+        case Err(_) -> ()
+      }
+      // Phase 6 §7: v2 tools' secret_request / artifact_reported events,
+      // same best-effort forwarding as permission/question/progress above.
+      match CloudAgents.Repository.secretRequestsCreatedAfter(sessionId, secretCursor) {
+        case Ok(reqs) -> {
+          var si = 0
+          while si < reqs.length {
+            val sr = reqs[si]
+            match Web.writeChunk(w, CloudAgents.Streaming.sseSecretRequest(sr.id, sr.name, sr.reason)) {
+              case Ok(_) -> ()
+              case Err(_) -> ()
+            }
+            secretCursor = sr.createdAt
+            si = si + 1
+          }
+        }
+        case Err(_) -> ()
+      }
+      match CloudAgents.Repository.artifactsCreatedAfter(sessionId, artifactCursor) {
+        case Ok(arts) -> {
+          var ai = 0
+          while ai < arts.length {
+            val art = arts[ai]
+            match Web.writeChunk(w, CloudAgents.Streaming.sseArtifactReported(art.id, art.fileName, art.mimeType)) {
+              case Ok(_) -> ()
+              case Err(_) -> ()
+            }
+            artifactCursor = art.createdAt
+            ai = ai + 1
           }
         }
         case Err(_) -> ()

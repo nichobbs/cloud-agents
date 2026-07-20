@@ -205,6 +205,26 @@ func userQuestionAnswerResp(r: in Result[UserQuestionAnswer, Web.ApiError]): Web
   return match r { case Ok(v) -> Web.json(200, v.toJson()); case Err(e) -> Web.errorResponse(e) }
 }
 
+func createSecretRequestResp(r: in Result[CreateSecretRequestResponse, Web.ApiError]): Web.Response {
+  return match r { case Ok(v) -> Web.json(200, v.toJson()); case Err(e) -> Web.errorResponse(e) }
+}
+
+func secretDecisionResp(r: in Result[SecretDecision, Web.ApiError]): Web.Response {
+  return match r { case Ok(v) -> Web.json(200, v.toJson()); case Err(e) -> Web.errorResponse(e) }
+}
+
+func createFollowupTaskResp(r: in Result[CreateFollowupTaskResponse, Web.ApiError]): Web.Response {
+  return match r { case Ok(v) -> Web.json(200, v.toJson()); case Err(e) -> Web.errorResponse(e) }
+}
+
+func uploadArtifactResp(r: in Result[UploadArtifactResponse, Web.ApiError]): Web.Response {
+  return match r { case Ok(v) -> Web.json(200, v.toJson()); case Err(e) -> Web.errorResponse(e) }
+}
+
+func artifactListResp(r: in Result[ArtifactListResponse, Web.ApiError]): Web.Response {
+  return match r { case Ok(v) -> Web.json(200, v.toJson()); case Err(e) -> Web.errorResponse(e) }
+}
+
 // ─── CloudAgents.Handlers routes (sessions.l) ───────────────────────────────
 record RouteCreateSession {
 }
@@ -727,6 +747,85 @@ impl Web.Handler for RouteReportProgress {
   }
 }
 
+// ─── Phase 6 §7 v2 tools: request_secret / add_followup_task /
+// report_artifact routes (callbacks.l) ───────────────────────────────────────
+record RouteCreateSecretRequest {
+}
+
+impl Web.Handler for RouteCreateSecretRequest {
+  func handle(req: in Web.Request): Web.Response {
+    val id = pparam(req, "id")
+    val decoded = match CreateSecretRequestRequest.fromJson(req.body) { case Ok(d) -> d; case Err(_) -> return badBody() }
+    return createSecretRequestResp(CloudAgents.Callbacks.createSecretRequestHandler(id, callbackAuthHeader(req), decoded))
+  }
+}
+
+record RouteGetSecretRequest {
+}
+
+impl Web.Handler for RouteGetSecretRequest {
+  func handle(req: in Web.Request): Web.Response {
+    return secretDecisionResp(
+      CloudAgents.Callbacks.getSecretRequestHandler(pparam(req, "id"), pparam(req, "rid"), callbackAuthHeader(req))
+    )
+  }
+}
+
+record RouteAnswerSecretRequest {
+}
+
+impl Web.Handler for RouteAnswerSecretRequest {
+  func handle(req: in Web.Request): Web.Response {
+    val id = pparam(req, "id")
+    val rid = pparam(req, "rid")
+    val decoded = match AnswerSecretRequestRequest.fromJson(req.body) { case Ok(d) -> d; case Err(_) -> return badBody() }
+    return unitResp(CloudAgents.Callbacks.answerSecretRequestHandler(id, rid, decoded))
+  }
+}
+
+record RouteCreateFollowupTask {
+}
+
+impl Web.Handler for RouteCreateFollowupTask {
+  func handle(req: in Web.Request): Web.Response {
+    val id = pparam(req, "id")
+    val decoded = match CreateFollowupTaskRequest.fromJson(req.body) { case Ok(d) -> d; case Err(_) -> return badBody() }
+    return createFollowupTaskResp(CloudAgents.Callbacks.createFollowupTaskHandler(id, callbackAuthHeader(req), decoded))
+  }
+}
+
+record RouteUploadArtifact {
+}
+
+impl Web.Handler for RouteUploadArtifact {
+  func handle(req: in Web.Request): Web.Response {
+    val id = pparam(req, "id")
+    val decoded = match UploadArtifactRequest.fromJson(req.body) { case Ok(d) -> d; case Err(_) -> return badBody() }
+    return uploadArtifactResp(CloudAgents.Callbacks.uploadArtifactHandler(id, callbackAuthHeader(req), decoded))
+  }
+}
+
+record RouteListArtifacts {
+}
+
+impl Web.Handler for RouteListArtifacts {
+  func handle(req: in Web.Request): Web.Response {
+    return artifactListResp(CloudAgents.Callbacks.listArtifactsHandler(pparam(req, "id")))
+  }
+}
+
+record RouteDownloadArtifact {
+}
+
+impl Web.Handler for RouteDownloadArtifact {
+  func handle(req: in Web.Request): Web.Response {
+    return match CloudAgents.Callbacks.downloadArtifactHandler(pparam(req, "id"), pparam(req, "aid")) {
+      case Ok(resp) -> resp
+      case Err(e) -> Web.errorResponse(e)
+    }
+  }
+}
+
 // ─── CloudAgents.Proxy routes (proxy.l) ─────────────────────────────────────
 //
 // Server-side provider proxies (ADR-006): every handler returns a complete
@@ -959,6 +1058,16 @@ func main(): Unit {
   router = Web.addGet(router, "/api/sessions/{id}/callbacks/question/{rid}", RouteGetUserQuestion())
   router = Web.addPost(router, "/api/sessions/{id}/callbacks/question/{rid}/answer", RouteAnswerUserQuestion())
   router = Web.addPost(router, "/api/sessions/{id}/callbacks/progress", RouteReportProgress())
+
+  // Phase 6 §7 v2 tools: request_secret (create/poll/answer), add_followup_task
+  // (todo create), report_artifact (upload) + user-facing artifact list/download.
+  router = Web.addPost(router, "/api/sessions/{id}/callbacks/secret", RouteCreateSecretRequest())
+  router = Web.addGet(router, "/api/sessions/{id}/callbacks/secret/{rid}", RouteGetSecretRequest())
+  router = Web.addPost(router, "/api/sessions/{id}/callbacks/secret/{rid}/answer", RouteAnswerSecretRequest())
+  router = Web.addPost(router, "/api/sessions/{id}/callbacks/todo", RouteCreateFollowupTask())
+  router = Web.addPost(router, "/api/sessions/{id}/callbacks/artifact", RouteUploadArtifact())
+  router = Web.addGet(router, "/api/sessions/{id}/artifacts", RouteListArtifacts())
+  router = Web.addGet(router, "/api/sessions/{id}/artifacts/{aid}", RouteDownloadArtifact())
 
   // Server-side provider proxies (ADR-006): GitHub listings and model
   // discovery with vault credentials, so the browser needs no local keys.

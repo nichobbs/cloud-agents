@@ -752,6 +752,21 @@ pub func callbackTokenForSession(sessionId: in String): Result[Option[String], C
   return Ok(value = Some(value = colAt(CloudAgents.Sqlite.getRowArrayValue(rows, 0).cols, 0)))
 }
 
+/// A session's owning user id by id ONLY — deliberately unscoped by the
+/// current identity, mirroring callbackTokenForSession. Used by
+/// request_secret's create path (docs/phase6-mcp-callbacks.md §7.1): the
+/// container-originated caller is stamped as the operator, not the session
+/// owner, so resolving whose credential store to check needs this unscoped
+/// lookup rather than the owner-scoped getSession above.
+pub func sessionOwnerUserId(sessionId: in String): Result[Option[String], CloudAgents.Sqlite.DbError] {
+  val rows = CloudAgents.Sqlite.query(CloudAgents.Db.selectSessionOwnerIdSql(sessionId))?
+  val len = CloudAgents.Sqlite.getRowArrayLength(rows)
+  if len == 0 {
+    return Ok(value = None)
+  }
+  return Ok(value = Some(value = colAt(CloudAgents.Sqlite.getRowArrayValue(rows, 0).cols, 0)))
+}
+
 // ─── Legacy env-var store import ──────────────────────────────────────────────
 /// One-time migration: sessions created before the SQLite store lived as JSON
 /// in CLOUD_AGENTS_SESSIONS_JSON. Import any that aren't already in the
