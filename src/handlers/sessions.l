@@ -4,6 +4,7 @@ import Std.Core
 import Web
 import CloudAgents.Auth
 import CloudAgents.Docker
+import CloudAgents.Proxy
 import CloudAgents.Repository
 import CloudAgents.SessionStore
 import CloudAgents.Sqlite
@@ -178,6 +179,17 @@ pub func createSession(req: in CreateSessionRequest): Result[CreateSessionRespon
 
   val sessionId = generateSessionId()
   val harness = if req.harness.length == 0 { "claude" } else { req.harness }
+  // CLOUD_AGENTS_ENABLED_HARNESSES (#523) was UI-only — nothing server-side
+  // enforced it at session-creation time, so bypassing the frontend picker
+  // still reached createRunnerContainer with a harness this deployment never
+  // built a runner image for, only to fail later with an opaque Docker
+  // "image not found" instead of a clean 400 (#560). Checked on the
+  // RESOLVED harness (after the empty -> "claude" default above), not just
+  // an explicitly-requested one, so a deployment that disables the default
+  // harness itself is covered too.
+  if not CloudAgents.Proxy.isHarnessEnabled(harness) {
+    return Err(Web.badRequest("harness '" + harness + "' is not enabled on this deployment"))
+  }
   val model = if req.model.length == 0 { CloudAgents.SessionStore.defaultModelForHarness(harness) } else { req.model }
   val session = makeAgentSession(
     sessionId = sessionId,

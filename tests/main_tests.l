@@ -61,23 +61,40 @@ test "session Resp helpers map Ok to 200 and Err to the error's own status (#351
   assertEqualInt(sessionRepoListResp(Err(error = Web.notFound("missing"))).status, 404, "sessionRepoListResp Err -> 404")
 }
 
-test "interaction Resp helpers map Ok to 200 and Err to the error's own status (#351)" {
+// Split one-block-per-helper (#351 follow-up): the combined version failed
+// CI with a bare "Common Language Runtime detected an invalid program" — the
+// same class of cross-package JIT crash docs/lyric/gotchas.md catalogues
+// several instances of (Web.Request construction, a Nat argument crossing a
+// package boundary, several record types built off a cross-package pub val
+// in one function) — with the "not ok" report naming only the whole test
+// block, not which of the 5 helpers actually triggered it. Isolating each
+// helper into its own test pinpoints the exact culprit on the next run
+// instead of guessing at a fix blind.
+test "messageListResp maps Ok to 200 and Err to the error's own status (#351)" {
   val noMessages: slice[Message] = []
   assertEqualInt(messageListResp(Ok(value = MessageList(messages = noMessages))).status, 200, "messageListResp Ok -> 200")
   assertEqualInt(messageListResp(Err(error = Web.badRequest("bad"))).status, 400, "messageListResp Err -> 400")
+}
 
+test "commentResp maps Ok to 200 and Err to the error's own status (#351)" {
   val comment = Comment(id = "c1", messageId = "m1", sessionId = "s1", body = "nice", createdAt = "1")
   assertEqualInt(commentResp(Ok(value = comment)).status, 200, "commentResp Ok -> 200")
   assertEqualInt(commentResp(Err(error = Web.notFound("missing"))).status, 404, "commentResp Err -> 404")
+}
 
+test "commentListResp maps Ok to 200 and Err to the error's own status (#351)" {
   val noComments: slice[Comment] = []
   assertEqualInt(commentListResp(Ok(value = CommentList(comments = noComments))).status, 200, "commentListResp Ok -> 200")
   assertEqualInt(commentListResp(Err(error = Web.internalError("db down"))).status, 500, "commentListResp Err -> 500")
+}
 
+test "todoResp maps Ok to 200 and Err to the error's own status (#351)" {
   val todo = Todo(id = "t1", sessionId = "s1", messageId = "", note = "follow up", done = "0", createdAt = "1")
   assertEqualInt(todoResp(Ok(value = todo)).status, 200, "todoResp Ok -> 200")
   assertEqualInt(todoResp(Err(error = Web.badRequest("bad"))).status, 400, "todoResp Err -> 400")
+}
 
+test "todoListResp maps Ok to 200 and Err to the error's own status (#351)" {
   val noTodos: slice[Todo] = []
   assertEqualInt(todoListResp(Ok(value = TodoList(todos = noTodos))).status, 200, "todoListResp Ok -> 200")
   assertEqualInt(todoListResp(Err(error = Web.notFound("missing"))).status, 404, "todoListResp Err -> 404")

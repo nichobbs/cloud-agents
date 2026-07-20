@@ -35,11 +35,24 @@ func dbError(e: in CloudAgents.Sqlite.DbError): Web.ApiError {
 /// (#245); this lets the mutation's own failure be turned into the same clean
 /// 400 the pre-check produces in the non-racy case, instead of a raw
 /// UNIQUE-constraint 500. SQLite's own error text ("UNIQUE constraint
-/// failed: ...") is stable across the Microsoft.Data.Sqlite driver, and
-/// `profiles` has exactly one UNIQUE constraint, so no more specific match is
-/// needed.
+/// failed: ...") is stable across the Microsoft.Data.Sqlite driver.
+///
+/// A plain "UNIQUE constraint" substring check isn't specific enough
+/// (#558): addProfile/updateProfile run the profiles-row upsert and the
+/// caller's credential grants (`profile_credentials`, its own
+/// `UNIQUE(profile_id, credential_name)`) in the SAME transaction, so a
+/// duplicate credential NAME in the request would trip that other table's
+/// constraint and get misreported here as a profile-name collision instead
+/// of the real problem (a duplicate grant). CloudAgents.Sqlite.dbErrorMessage
+/// embeds the failing statement's own SQL text (`ExecFailed(sql, m)`), so
+/// checking for the profiles table's own INSERT/UPDATE keeps this scoped to
+/// the constraint it actually names. "profiles " (trailing space, matching
+/// insertProfileSql's "INTO profiles (") never matches
+/// insertProfileCredentialSql's "INTO profile_credentials (" — different
+/// table name, not a prefix of it.
 func isDuplicateNameError(e: in CloudAgents.Sqlite.DbError): Bool {
-  return CloudAgents.Sqlite.dbErrorMessage(e).contains("UNIQUE constraint")
+  val msg = CloudAgents.Sqlite.dbErrorMessage(e)
+  return msg.contains("UNIQUE constraint") and msg.contains("profiles ")
 }
 
 /// Network policy vocabulary — see CloudAgents.Db profiles DDL.
@@ -105,12 +118,26 @@ func validateSaveProfile(req: in SaveProfileRequest): Option[Web.ApiError] {
   if not isValidProfileHarness(req.harness) {
     return Some(value = Web.badRequest("harness must be empty or one of: claude, codex, opencode, gemini"))
   }
-  // In 'selected' mode, every granted name must be a valid env-var name.
+  // In 'selected' mode, every granted name must be a valid env-var name, and
+  // no name may repeat: profileCredentialStatements inserts one row per
+  // credential into profile_credentials, whose own UNIQUE(profile_id,
+  // credential_name) would otherwise catch a client-submitted duplicate at
+  // the DB layer — and isDuplicateNameError can't safely be broadened to
+  // treat that as a clean 400 without risking a real profile-name collision
+  // going unreported the same way (#558), so it's better rejected here,
+  // before the request ever reaches the database.
   if req.credentialMode == "selected" {
     var i = 0
     while i < req.credentials.length {
       if not isValidGrantName(req.credentials[i]) {
         return Some(value = Web.badRequest("credential grant names must be valid environment variable names"))
+      }
+      var j = 0
+      while j < i {
+        if req.credentials[j] == req.credentials[i] {
+          return Some(value = Web.badRequest("credential grant names must not repeat"))
+        }
+        j = j + 1
       }
       i = i + 1
     }

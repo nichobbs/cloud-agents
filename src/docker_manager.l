@@ -248,6 +248,13 @@ pub async func stopRunnerContainer(client: in DockerClient, containerId: in Stri
   }
 }
 
+// 30-minute hard cap on a run's total wall-clock time (matches the old
+// runSessionMessage). Shared by waitForContainer's retry deadline and
+// streamSessionMessage's run-timeout check (#561) — previously duplicated
+// as the same literal in both places, an easy value to update in one spot
+// and silently miss in the other.
+val runWallClockCapMs = 1800000.toLong()
+
 /// Wait for a container's process to exit before reading its output.
 ///
 /// Retries a `/wait` failure (bounded two independent ways — an attempt cap
@@ -259,7 +266,7 @@ pub async func stopRunnerContainer(client: in DockerClient, containerId: in Stri
 /// full rationale (#56) — this project cannot configure `DockerClient`'s
 /// HTTP timeout directly, so retrying is the only available mitigation.
 pub async func waitForContainer(client: in DockerClient, containerId: in String): Result[Unit, String] {
-  val deadlineMs = CloudAgents.Repository.nowMillisLong() + 1800000.toLong()
+  val deadlineMs = CloudAgents.Repository.nowMillisLong() + runWallClockCapMs
   val maxAttempts = 20
   var attempts = 0
   var settled = false
@@ -424,7 +431,7 @@ pub func streamSessionMessage(
     cell
   )
   val startMs = CloudAgents.Repository.nowMillisLong()
-  val runTimeoutMs = 1800000.toLong() // 30-minute hard cap (matches the old runSessionMessage)
+  val runTimeoutMs = runWallClockCapMs
   // Give up on the client only after several CONSECUTIVE failed writes, not the
   // first (#491): a single writeChunk Err can be a transient proxy/network blip,
   // and terminating on it would discard an in-progress run the old buffered
