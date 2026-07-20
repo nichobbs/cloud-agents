@@ -108,11 +108,7 @@ func main(): Unit {
       name = "request_secret",
       description = "Ask the human to reveal a stored credential by name. Returns a local file path containing the value on approval — the value itself never appears in the tool result.",
       inputSchema = CloudAgents.Shim.V2Tools.requestSecretSchema(),
-      handler = CloudAgents.Shim.V2Tools.RequestSecretTool(
-        transport = v2Transport,
-        pollIntervalMs = pollIntervalMs,
-        timeoutMs = timeoutMs
-      )
+      handler = RequestSecretTool(transport = v2Transport, pollIntervalMs = pollIntervalMs, timeoutMs = timeoutMs)
     )
   )
   addTool(
@@ -121,7 +117,7 @@ func main(): Unit {
       name = "add_followup_task",
       description = "Leave a note for the human to follow up on later, without blocking the current run.",
       inputSchema = CloudAgents.Shim.V2Tools.addFollowupTaskSchema(),
-      handler = CloudAgents.Shim.V2Tools.AddFollowupTaskTool(transport = v2Transport)
+      handler = AddFollowupTaskTool(transport = v2Transport)
     )
   )
   addTool(
@@ -130,7 +126,7 @@ func main(): Unit {
       name = "report_artifact",
       description = "Upload a file from inside the container as a downloadable artifact on the session (max 8 MiB).",
       inputSchema = CloudAgents.Shim.V2Tools.reportArtifactSchema(),
-      handler = CloudAgents.Shim.V2Tools.ReportArtifactTool(transport = v2Transport)
+      handler = ReportArtifactTool(transport = v2Transport)
     )
   )
 
