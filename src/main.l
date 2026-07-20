@@ -1292,7 +1292,6 @@ func copyStringArray(
 // crashed the process with an uncatchable AccessViolationException for a
 // boxed Byte (docs/lyric/gotchas.md), migrated here as defense-in-depth even
 // though String is a reference type and the specific boxing-mismatch
-// mechanism described there is scoped to value-type arguments. Same pattern
-// as src/github_api.l's typeFromName.
+// mechanism described there is scoped to value-type arguments.
 @externTarget("System.Type.GetType")
 func stringType(name: in String): Type = ()

@@ -40,13 +40,13 @@ extern type RowArray = "CloudAgents.Sqlite.Row[]"
 // crashed the process with an uncatchable AccessViolationException for a
 // boxed Byte (docs/lyric/gotchas.md), migrated here as defense-in-depth even
 // though String is a reference type and the specific boxing-mismatch
-// mechanism described there is scoped to value-type arguments. Same pattern
-// as src/github_api.l's typeFromName. getRowType below is left on the
-// instance-bound form: Row is a reference type too (same lower-risk category
-// as String), but migrating it needs the exact runtime-emitted type name for
-// a Lyric record, which isn't safely guessable without the compiler to
-// verify against — a wrong string here breaks Array.CreateInstance outright,
-// trading a currently-working (if same-shaped) call for a worse failure.
+// mechanism described there is scoped to value-type arguments. getRowType
+// below is left on the instance-bound form: Row is a reference type too
+// (same lower-risk category as String), but migrating it needs the exact
+// runtime-emitted type name for a Lyric record, which isn't safely
+// guessable without the compiler to verify against — a wrong string here
+// breaks Array.CreateInstance outright, trading a currently-working (if
+// same-shaped) call for a worse failure.
 @externTarget("System.Type.GetType")
 func stringType(name: in String): Type = ()
 
