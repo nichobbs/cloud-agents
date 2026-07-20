@@ -6,4 +6,3 @@ lyric.lock
 *-restore.csproj
 lyric.toml.bak
 .claude/
-docker/shim-dist/

@@ -1,9 +1,8 @@
 #!/bin/bash
 # Launcher for cloud-agents-shim (docs/phase6-mcp-callbacks.md), the
-# in-container MCP callback server built from shim/ and staged into this
-# image by scripts/build-docker.sh's stage_shim step (docker/shim-dist/,
-# COPYed to /opt/cloud-agents-shim by docker/Dockerfile). Registered as the
-# bare command "cloud-agents-shim" in docker/mcp-callbacks.json.template,
+# in-container MCP callback server built from shim/ by docker/Dockerfile's
+# own shim-builder stage and COPYed to /opt/cloud-agents-shim. Registered as
+# the bare command "cloud-agents-shim" in docker/mcp-callbacks.json.template,
 # which requires a real executable on PATH — `lyric build`'s "single"
 # output is a directory of managed DLLs (Lyric.Stdlib.*, JsonRpc.dll,
 # Mcp.dll, cloud-agents-shim.dll), not a standalone native binary, so this

@@ -111,8 +111,11 @@ services:
   claude-code-base:
     image: claude-code:base
     build:
-      context: ./docker
-      dockerfile: Dockerfile
+      # Repo root, not ./docker like the other three runners below — this
+      # Dockerfile builds cloud-agents-shim in its own stage from shim/, so
+      # it needs to see both docker/ and shim/ in one build context (#601).
+      context: .
+      dockerfile: docker/Dockerfile
     entrypoint: ["true"]
     restart: "no"
     exclude_from_hc: true

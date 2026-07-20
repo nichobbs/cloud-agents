@@ -68,7 +68,14 @@ with `build:` pointed at the matching `docker/Dockerfile*`, but an explicit
 the built image lands under the exact name `imageForHarness()`
 (`src/docker_manager.l`) looks for (`claude-code:base`, etc.) — and
 `entrypoint: ["true"]` + `restart: "no"` so the "service" does nothing at
-runtime beyond getting built.
+runtime beyond getting built. `claude-code-base` alone uses `context: .`
+(repo root) rather than `./docker` like the other three: its Dockerfile
+builds `cloud-agents-shim` in its own build stage from `shim/`, so it needs
+both `docker/` and `shim/` in one build context (#601 — this used to be
+staged externally by `scripts/build-docker.sh` before `docker build` ran,
+which worked for a local `make docker` but not for Coolify's `docker compose
+build`, since nothing there ever ran that staging step; it's now built
+inside the Dockerfile itself, so any orchestrator works standalone).
 
 **Only `claude-code-base` is active by default.** `codex-base`/
 `opencode-base`/`gemini-base` are gated behind Compose `profiles:` — this
