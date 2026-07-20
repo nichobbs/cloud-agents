@@ -133,12 +133,14 @@ assert "streaming send dispatches (auth)" POST "/api/sessions/does-not-exist/mes
 # handshake, then a tools/call request_permission whose HTTP POST hits the
 # live callback endpoint for a session that does not exist. The server
 # rejects it (404 — the session-existence check runs before the bearer
-# comparison, so the invalid token below is never what fires; #541), and
-# the shim's fail-closed path must surface a deny payload — this
-# exercises transport.l's actual HTTP boundary (URL handling, request
-# write, response read) end to end, which the in-memory FakeTransport
-# suites deliberately do not. The full allowed-path round trip (valid
-# token, human answer) needs a seeded session and stays manual for now.
+# comparison, so the invalid token below is never what fires), and the
+# shim's fail-closed path must surface a deny payload — this exercises
+# transport.l's actual HTTP boundary (URL handling, request write, response
+# read) end to end, which the in-memory FakeTransport suites deliberately do
+# not. The two seeded-session legs below (#541) reach the other half of
+# authorizeCallbackToken this 404 leg cannot: a session that DOES exist and
+# DOES have a token. The full allowed-path round trip (a human answering the
+# pending request) still needs a live UI interaction and stays manual.
 SHIM_OUT="$REPO_ROOT/shim/bin/cloud-agents-shim.dll"
 if [ ! -f "$SHIM_OUT" ]; then
   echo "e2e-http: $SHIM_OUT not found — run 'lyric build --manifest shim/lyric.toml' first" >&2
@@ -163,6 +165,98 @@ case "$shim_stdout" in
   *'deny'*) echo "ok   shim: live-server rejection (404 unknown session) fails closed (deny)" ;;
   *) echo "FAIL shim: tools/call did not fail closed — got: ${shim_stdout}" >&2; fails=$((fails + 1)) ;;
 esac
+
+# ── seeded-session legs (#541) ────────────────────────────────────────────────
+# Seed a REAL session + callback token directly into the throwaway sqlite DB
+# (the server owns the schema — migrations already ran by the time the health
+# check above went green, so the table shape here is exactly what
+# src/db/db_client.l's sessionsSchemaSql + migration 0010_mcp_callbacks
+# produced). callback_token is stored in plain TEXT (src/db/db_client.l:
+# selectSessionCallbackTokenSql's own doc: "the token itself, compared in
+# constant time against this stored value, IS the authentication" — no
+# hashing to reproduce here), so seeding it is a single literal INSERT.
+#
+# This drives the other half of authorizeCallbackToken the 404 leg above
+# can't reach:
+#   (a) wrong bearer against a session that DOES have a token -> 401 -> deny,
+#       and — the actual point — no permission_requests row is created,
+#       because `authorizeCallbackToken(id, authHeaderValue)?` short-circuits
+#       before createPermissionRequest ever runs.
+#   (b) the RIGHT bearer -> the request genuinely gets created (a real
+#       pending row), then nobody answers it, so it times out. This leg sets
+#       CLOUD_AGENTS_CALLBACK_TIMEOUT_MS=1000 for the shim's own client-side
+#       deadline; the #540 wall-clock fix in shim/src/callbacks_client.l is
+#       what makes this leg fast (~1s) instead of ~25s — the shim's poll
+#       cadence (main.l's defaultPollIntervalMs) is a hardcoded 25s, and the
+#       pre-#540 iteration-count timeout logic would sleep a full interval in
+#       REAL wall-clock time before ever re-checking a 1000ms budget.
+command -v sqlite3 >/dev/null || { echo "e2e-http: 'sqlite3' not on PATH (needed to seed the session for #541)" >&2; exit 1; }
+
+SEEDED_SESSION_ID="e2e-seeded-session"
+SEEDED_TOKEN="e2e-seeded-callback-token"
+sqlite3 "$DB" <<SQL
+INSERT INTO sessions (
+  id, user_id, repo_url, branch, container_id, harness, model,
+  native_session_id, status, created_at, last_message_at, callback_token
+) VALUES (
+  '${SEEDED_SESSION_ID}', 'e2e-seeded-user', 'https://example.com/repo.git', 'main', '',
+  'claude', 'claude-opus-4-8', '', 'running', '0', '0', '${SEEDED_TOKEN}'
+);
+SQL
+
+permission_request_count() {
+  sqlite3 "$DB" "SELECT COUNT(*) FROM permission_requests WHERE session_id = '${SEEDED_SESSION_ID}';"
+}
+
+# (a) Wrong bearer.
+wrong_bearer_stdout="$(timeout 60 env \
+    CLOUD_AGENTS_API_URL="$BASE" \
+    CLOUD_AGENTS_CALLBACK_TOKEN="wrong-token-entirely" \
+    CLOUD_AGENTS_SESSION_ID="$SEEDED_SESSION_ID" \
+    CLOUD_AGENTS_CALLBACK_TIMEOUT_MS=5000 \
+    dotnet "$SHIM_OUT" <<'MCP' || true
+{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"e2e-http","version":"0"}}}
+{"jsonrpc":"2.0","method":"notifications/initialized"}
+{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"request_permission","arguments":{"tool_name":"Bash","input":{"command":"ls"}}}}
+MCP
+)"
+case "$wrong_bearer_stdout" in
+  *'deny'*) echo "ok   shim: wrong bearer against a known session fails closed (401 -> deny)" ;;
+  *) echo "FAIL shim: wrong-bearer tools/call did not deny — got: ${wrong_bearer_stdout}" >&2; fails=$((fails + 1)) ;;
+esac
+
+wrong_bearer_count="$(permission_request_count)"
+if [ "$wrong_bearer_count" = "0" ]; then
+  echo "ok   shim: wrong bearer created no permission_requests row (count=0)"
+else
+  echo "FAIL shim: wrong bearer unexpectedly created a permission_requests row (count=${wrong_bearer_count})" >&2
+  fails=$((fails + 1))
+fi
+
+# (b) Right bearer, short client-side timeout.
+right_bearer_stdout="$(timeout 60 env \
+    CLOUD_AGENTS_API_URL="$BASE" \
+    CLOUD_AGENTS_CALLBACK_TOKEN="$SEEDED_TOKEN" \
+    CLOUD_AGENTS_SESSION_ID="$SEEDED_SESSION_ID" \
+    CLOUD_AGENTS_CALLBACK_TIMEOUT_MS=1000 \
+    dotnet "$SHIM_OUT" <<'MCP' || true
+{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"e2e-http","version":"0"}}}
+{"jsonrpc":"2.0","method":"notifications/initialized"}
+{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"request_permission","arguments":{"tool_name":"Bash","input":{"command":"ls"}}}}
+MCP
+)"
+case "$right_bearer_stdout" in
+  *'timed out'*) echo "ok   shim: right bearer creates the request, then times out (deny) once nothing answers it" ;;
+  *) echo "FAIL shim: right-bearer tools/call did not report a timeout deny — got: ${right_bearer_stdout}" >&2; fails=$((fails + 1)) ;;
+esac
+
+right_bearer_count="$(permission_request_count)"
+if [ "$right_bearer_count" = "1" ]; then
+  echo "ok   shim: right bearer created exactly one permission_requests row (count=1)"
+else
+  echo "FAIL shim: right bearer did not create exactly one permission_requests row (count=${right_bearer_count})" >&2
+  fails=$((fails + 1))
+fi
 
 if [ "$fails" -ne 0 ]; then
   echo "==> e2e-http: ${fails} assertion(s) failed" >&2
