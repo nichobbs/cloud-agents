@@ -943,6 +943,11 @@ val maxMemoryKeyLen = 256
 /// layout, deploy steps), not a file; report_artifact is the path for bytes.
 val maxMemoryValueLen = 65536
 
+/// Per-repo memory entry cap (#575): bounds a repo's store at
+/// 256 keys (≤ ~16 MiB at the value cap) so it can't grow without limit.
+/// Overwrites of an existing key are always allowed; only new keys count.
+val maxMemoryEntries = 256
+
 @generate(Json)
 pub record RememberRequest {
   pub key: String
@@ -1023,6 +1028,30 @@ pub func rememberHandler(
     return Err(Web.badRequest("value is too long (max " + toString(maxMemoryValueLen) + " characters)"))
   }
   val memScope = resolveMemoryScope(id)?
+  // Per-repo entry cap (#575): overwriting an existing key is always allowed
+  // (it doesn't grow the store), but a NEW key is rejected once the repo is
+  // at the cap, so a runaway agent can't fill the store unbounded.
+  val existing = match CloudAgents.Repository.getMemory(memScope.userId, memScope.repoKey, req.key) {
+    case Ok(o) -> o
+    case Err(e) -> return Err(dbError(e))
+  }
+  match existing {
+    case Some(_) -> ()
+    case None -> {
+      val count = match CloudAgents.Repository.countMemory(memScope.userId, memScope.repoKey) {
+        case Ok(n) -> n
+        case Err(e) -> return Err(dbError(e))
+      }
+      if count >= maxMemoryEntries {
+        return Err(
+          Web.badRequest(
+            "this repository is at the memory limit (max " + toString(maxMemoryEntries) +
+              " entries); update or remove an existing key instead"
+          )
+        )
+      }
+    }
+  }
   match CloudAgents.Repository.upsertMemory(memScope.userId, memScope.repoKey, req.key, req.value) {
     case Ok(_) -> return Ok(RememberResponse(key = req.key))
     case Err(e) -> return Err(dbError(e))

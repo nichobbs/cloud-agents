@@ -2682,6 +2682,18 @@ pub func getMemory(
   return Ok(value = Some(value = rowToMemory(CloudAgents.Sqlite.getRowArrayValue(rows, 0))))
 }
 
+/// Number of memory entries stored for (user, repo). Backs the per-repo
+/// entry cap (#575).
+pub func countMemory(userId: in String, repoKey: in String): Result[Int, CloudAgents.Sqlite.DbError] {
+  val rows = CloudAgents.Sqlite.query(CloudAgents.Db.countMemorySql(userId, repoKey))?
+  val len = CloudAgents.Sqlite.getRowArrayLength(rows)
+  if len == 0 {
+    return Ok(value = 0)
+  }
+  val r0 = CloudAgents.Sqlite.getRowArrayValue(rows, 0)
+  return Ok(value = parseNatString(colAt(r0.cols, 0)))
+}
+
 /// Artifacts reported for a session strictly after `afterCreatedAt`, oldest
 /// first — for the `artifact_reported` SSE event.
 pub func artifactsCreatedAfter(

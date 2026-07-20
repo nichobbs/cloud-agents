@@ -2369,3 +2369,9 @@ pub func selectMemoryEntrySql(userId: in String, repoKey: in String, memKey: in 
     " AND mem_key = " +
     sqlLiteral(memKey)
 }
+
+/// Count of memory entries for (user_id, repo_key) — backs the per-repo
+/// entry cap (#575) so memory can't grow unbounded.
+pub func countMemorySql(userId: in String, repoKey: in String): String {
+  return "SELECT COUNT(*) FROM memory WHERE user_id = " + sqlLiteral(userId) + " AND repo_key = " + sqlLiteral(repoKey)
+}

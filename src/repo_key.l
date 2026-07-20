@@ -44,6 +44,24 @@ func dropLast(s: in String, n: in Int): String {
   return s.substring(0, s.length - n)
 }
 
+/// Whether `s` is a non-empty run of ASCII digits — used to tell an explicit
+/// port (`host:22/owner/repo`) from the scp-style separator
+/// (`host:owner/repo`).
+func isAllDigits(s: in String): Bool {
+  if s.length == 0 {
+    return false
+  }
+  var i = 0
+  while i < s.length {
+    val c = s.substring(i, 1)
+    if c < "0" or c > "9" {
+      return false
+    }
+    i = i + 1
+  }
+  return true
+}
+
 /// Normalize a git remote URL to `host/owner/repo`, lowercased. Returns ""
 /// when the input has no usable path (empty, or host-only). See
 /// docs/phase7-autonomy.md §3 for the exact rules and examples.
@@ -64,14 +82,25 @@ pub func repoKeyOf(url: in String): String {
   if at >= 0 and (slash < 0 or at < slash) {
     s = s.substring(at + 1, s.length - at - 1)
   }
-  // scp-style `host:owner/repo` -> `host/owner/repo`: turn the first ':' that
-  // precedes the first '/' into '/'.
+  // Resolve a ':' that precedes the first '/'. Two distinct cases share this
+  // syntax (#574):
+  //   - an explicit port (`host:22/owner/repo`, or `ssh://…:2222/…`) — the
+  //     token between ':' and the next '/' is all digits; drop `:port`.
+  //   - the scp-style separator (`host:owner/repo`) — turn the ':' into '/'.
   val colon = firstIndexOf(s, ":")
   val slash2 = firstIndexOf(s, "/")
   if colon >= 0 and (slash2 < 0 or colon < slash2) {
+    val tokEnd = if slash2 < 0 { s.length } else { slash2 }
+    val token = s.substring(colon + 1, tokEnd - colon - 1)
     val before = s.substring(0, colon)
-    val after = s.substring(colon + 1, s.length - colon - 1)
-    s = before + "/" + after
+    if isAllDigits(token) {
+      // host:port[/path] -> host[/path] (drop the ":port").
+      val after = s.substring(tokEnd, s.length - tokEnd)
+      s = before + after
+    } else {
+      val after = s.substring(colon + 1, s.length - colon - 1)
+      s = before + "/" + after
+    }
   }
   // Strip a trailing '/', then a trailing '.git', then any resulting '/'.
   if s.endsWith("/") {

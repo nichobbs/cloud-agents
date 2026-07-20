@@ -22,6 +22,14 @@ test "repoKeyOf normalizes every common git URL form to host/owner/repo" {
   assertEqual(repoKeyOf("https://github.com/nichobbs/cloud-agents.git/"), want, "trailing .git/ slash")
 }
 
+test "repoKeyOf drops an explicit port but keeps the scp-style separator (#574)" {
+  val want = "github.com/nichobbs/cloud-agents"
+  assertEqual(repoKeyOf("ssh://git@github.com:2222/nichobbs/cloud-agents.git"), want, "ssh:// with a port")
+  assertEqual(repoKeyOf("https://github.com:443/nichobbs/cloud-agents"), want, "https with a port")
+  // The scp-style colon (followed by a path, not digits) still becomes '/'.
+  assertEqual(repoKeyOf("git@github.com:nichobbs/cloud-agents.git"), want, "scp-style colon is not a port")
+}
+
 test "repoKeyOf lowercases so case never forks a repo's identity" {
   assertEqual(
     repoKeyOf("https://github.com/NicHobbs/Cloud-Agents.git"),

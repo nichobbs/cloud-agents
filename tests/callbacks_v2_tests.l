@@ -551,3 +551,36 @@ test "recall requires a valid callback token; the owner can list via the user ro
     case Err(e) -> assertTrue(false, "listMemory failed: " + toString(e.status))
   }
 }
+
+test "remember caps the number of distinct keys per repo but always allows overwrites (#575)" {
+  val dbPath = useFreshTestDb("memory-cap")
+  defer {
+    cleanupTestDb(dbPath)
+  }
+  CloudAgents.Auth.setCurrentUserId("default")
+  val sid = "sess-memory-cap"
+  mkSession(sid)
+  val token = mintToken(sid, "default")
+
+  // Fill the repo to exactly the cap (256 distinct keys).
+  var i = 0
+  while i < 256 {
+    match rememberHandler(sid, bearer(token), RememberRequest(key = "k" + toString(i), value = "v")) {
+      case Ok(_) -> ()
+      case Err(e) -> assertTrue(false, "remember " + toString(i) + " failed: " + toString(e.status))
+    }
+    i = i + 1
+  }
+
+  // A 257th distinct key is rejected.
+  match rememberHandler(sid, bearer(token), RememberRequest(key = "one-too-many", value = "v")) {
+    case Ok(_) -> assertTrue(false, "a new key past the cap must be rejected")
+    case Err(e) -> assertEqualInt(e.status, 400, "over-cap new key -> 400")
+  }
+
+  // Overwriting an EXISTING key is still allowed even at the cap.
+  match rememberHandler(sid, bearer(token), RememberRequest(key = "k0", value = "updated")) {
+    case Ok(_) -> ()
+    case Err(e) -> assertTrue(false, "overwriting an existing key at the cap must still work: " + toString(e.status))
+  }
+}
