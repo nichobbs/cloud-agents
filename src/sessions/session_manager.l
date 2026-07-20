@@ -718,7 +718,8 @@ pub func reapSessionContainer(sessionId: in String): Result[Unit, CloudAgents.Sq
 // ─── Phase 6: MCP-callback bearer token ──────────────────────────────────────
 //
 // Minted at container creation (see CloudAgents.Docker.createRunnerContainer,
-// gated by the CLOUD_AGENTS_MCP_CALLBACKS feature flag) and injected into the
+// gated by the CLOUD_AGENTS_MCP_CALLBACKS feature flag, on by default as of
+// stage 4 — docs/phase6 §8) and injected into the
 // container as CLOUD_AGENTS_CALLBACK_TOKEN. The token authenticates the
 // container's own calls into CloudAgents.Callbacks — it is never the user's
 // OAuth/static token. Runs on Docker's worker thread (see the container-
@@ -744,6 +745,21 @@ pub func mintCallbackToken(sessionId: in String, userId: in String): Result[Stri
 /// disabled) reads back "".
 pub func callbackTokenForSession(sessionId: in String): Result[Option[String], CloudAgents.Sqlite.DbError] {
   val rows = CloudAgents.Sqlite.query(CloudAgents.Db.selectSessionCallbackTokenSql(sessionId))?
+  val len = CloudAgents.Sqlite.getRowArrayLength(rows)
+  if len == 0 {
+    return Ok(value = None)
+  }
+  return Ok(value = Some(value = colAt(CloudAgents.Sqlite.getRowArrayValue(rows, 0).cols, 0)))
+}
+
+/// A session's owning user id by id ONLY — deliberately unscoped by the
+/// current identity, mirroring callbackTokenForSession. Used by
+/// request_secret's create path (docs/phase6-mcp-callbacks.md §7.1): the
+/// container-originated caller is stamped as the operator, not the session
+/// owner, so resolving whose credential store to check needs this unscoped
+/// lookup rather than the owner-scoped getSession above.
+pub func sessionOwnerUserId(sessionId: in String): Result[Option[String], CloudAgents.Sqlite.DbError] {
+  val rows = CloudAgents.Sqlite.query(CloudAgents.Db.selectSessionOwnerIdSql(sessionId))?
   val len = CloudAgents.Sqlite.getRowArrayLength(rows)
   if len == 0 {
     return Ok(value = None)

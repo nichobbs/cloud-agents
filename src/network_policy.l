@@ -57,15 +57,34 @@ pub func proxyEnvForPolicy(policy: in String): slice[String] {
 
 // ─── Phase 6: MCP callbacks (docs/phase6-mcp-callbacks.md) ───────────────────
 //
-// Off by default until the in-container shim (`cloud-agents-shim`, stage 3)
-// actually ships in the runner images — see CloudAgents.Docker, which reads
-// this flag before minting a callback token or injecting the two callback env
-// vars, and docker/entrypoint.sh, which reads the SAME env var name before
-// registering the shim's MCP-server entry or adding
-// `--permission-prompt-tool`.
+// Stage 4 (docs/phase6 §8): on by default now that the in-container shim
+// (`cloud-agents-shim`, stage 3) ships in every runner image — see
+// CloudAgents.Docker, which reads this flag before minting a callback token
+// or injecting the two callback env vars, and docker/entrypoint.sh, which
+// reads the SAME env var name (mirroring this same on-unless-"0" default in
+// shell) before registering the shim's MCP-server entry or adding
+// `--permission-prompt-tool`. An operator opts OUT with
+// CLOUD_AGENTS_MCP_CALLBACKS=0. The entrypoint's existing guards (template
+// present, env vars minted) keep a run working even when the flag is on but
+// no token was minted (mint failure, pre-Phase-6 upgrade path) — see
+// docker_manager.l's best-effort mint comment and entrypoint.sh's template
+// existence checks.
 /// Whether the MCP-callback feature is enabled for this deployment.
 pub func callbacksFeatureEnabled(): Bool {
-  return Env.GetEnvironmentVariable("CLOUD_AGENTS_MCP_CALLBACKS") == "1"
+  return Env.GetEnvironmentVariable("CLOUD_AGENTS_MCP_CALLBACKS") != "0"
+}
+
+/// The operator-set CLOUD_AGENTS_CALLBACK_TIMEOUT_MS, or "" when unset.
+/// Forwarded verbatim into session containers by CloudAgents.Docker so the
+/// shim's client-side deadline and the host-side backstop share one knob
+/// (#528). Not validated here — both consumers fall back to their default
+/// on an unparseable value.
+pub func callbackTimeoutOverride(): String {
+  val raw = Env.GetEnvironmentVariable("CLOUD_AGENTS_CALLBACK_TIMEOUT_MS")
+  if DotNetString.IsNullOrEmpty(raw) {
+    return ""
+  }
+  return raw
 }
 
 /// Base URL of the host API as reachable from the container network — the

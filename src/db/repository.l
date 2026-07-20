@@ -12,6 +12,8 @@ import Std.Uuid
 import CloudAgents.Crypto
 import CloudAgents.Db
 import CloudAgents.Sqlite
+import extern System.Environment as Env
+import extern System.String as DotNetString
 
 @generate(Json)
 pub record Message {
@@ -253,6 +255,15 @@ pub func allMigrations(): slice[Migration] {
         CloudAgents.Db.permissionRulesSessionIndexSql(),
         CloudAgents.Db.userQuestionsSchemaSql(),
         CloudAgents.Db.userQuestionsSessionIndexSql()
+      ]
+    ),
+    Migration(
+      version = "0011_mcp_callbacks_v2",
+      statements = [
+        CloudAgents.Db.secretRequestsSchemaSql(),
+        CloudAgents.Db.secretRequestsSessionIndexSql(),
+        CloudAgents.Db.artifactsSchemaSql(),
+        CloudAgents.Db.artifactsSessionIndexSql()
       ]
     )
   ]
@@ -747,6 +758,16 @@ pub func listCredentialNames(userId: in String): Result[slice[CredentialName], C
 /// Delete a credential by name. Returns rows affected (0 = not found).
 pub func deleteCredential(userId: in String, name: in String): Result[Int, CloudAgents.Sqlite.DbError] {
   return CloudAgents.Sqlite.execute(CloudAgents.Db.deleteCredentialSql(userId, name))
+}
+
+/// Whether a user has a credential stored under exactly `name`. Used by
+/// request_secret's fail-fast validation (docs/phase6-mcp-callbacks.md
+/// §7.1): the create endpoint refuses a request for a name that isn't
+/// actually configured, instead of creating a pending row a human could
+/// only ever deny.
+pub func credentialNameExists(userId: in String, name: in String): Result[Bool, CloudAgents.Sqlite.DbError] {
+  val rows = CloudAgents.Sqlite.query(CloudAgents.Db.selectCredentialExistsSql(userId, name))?
+  return Ok(value = CloudAgents.Sqlite.getRowArrayLength(rows) > 0)
 }
 
 /// Decrypt a user's stored credentials for injection into a container
@@ -1788,4 +1809,224 @@ pub func sessionProgress(sessionId: in String): Result[SessionProgress, CloudAge
   }
   val r0 = CloudAgents.Sqlite.getRowArrayValue(rows, 0)
   return Ok(value = SessionProgress(summary = colAt(r0.cols, 0), percent = colAt(r0.cols, 1)))
+}
+
+// ─── Phase 6 §7: request_secret ──────────────────────────────────────────────
+//
+// docs/phase6-mcp-callbacks.md §7.1. `secret_requests` is the audit trail
+// itself (name, reason, decision-as-status, timestamps) — there is
+// deliberately no column anywhere in this table for the credential value.
+// The decrypted value is fetched fresh from CloudAgents.Repository's
+// existing encrypted credential store (decryptedCredentialValue) only at
+// the moment of first delivery, by CloudAgents.Callbacks, and is never
+// passed into or returned from any function in this section.
+@generate(Json)
+pub record SecretRequest {
+  pub id: String
+  pub sessionId: String
+  pub name: String
+  pub reason: String
+  pub status: String
+  pub createdAt: String
+  pub decidedAt: String
+}
+
+func rowToSecretRequest(r: in CloudAgents.Sqlite.Row): SecretRequest {
+  return SecretRequest(
+    id = colAt(r.cols, 0),
+    sessionId = colAt(r.cols, 1),
+    name = colAt(r.cols, 2),
+    reason = colAt(r.cols, 3),
+    status = colAt(r.cols, 4),
+    createdAt = colAt(r.cols, 5),
+    decidedAt = colAt(r.cols, 6)
+  )
+  // col 7 (delivered_at) is a mechanical write-once guard, not part of the
+  // audit-facing shape — see markSecretRequestDelivered below.
+}
+
+/// Create a secret request (request_secret MCP tool). Callers must have
+/// already verified the named credential exists for the session owner
+/// (CloudAgents.Callbacks does this before calling here) — this function
+/// itself does not re-check, matching createPermissionRequest/
+/// createUserQuestion's division of labor (validation lives one layer up).
+pub func createSecretRequest(
+  sessionId: in String, name: in String, reason: in String
+): Result[SecretRequest, CloudAgents.Sqlite.DbError] {
+  val id = newId()
+  val ts = nowMillis()
+  CloudAgents.Sqlite.execute(CloudAgents.Db.insertSecretRequestSql(id, sessionId, name, reason, ts))?
+  return Ok(
+    value = SecretRequest(
+      id = id,
+      sessionId = sessionId,
+      name = name,
+      reason = reason,
+      status = "pending",
+      createdAt = ts,
+      decidedAt = ""
+    )
+  )
+}
+
+/// A secret request by id, or None.
+pub func getSecretRequest(id: in String): Result[Option[SecretRequest], CloudAgents.Sqlite.DbError] {
+  val rows = CloudAgents.Sqlite.query(CloudAgents.Db.selectSecretRequestByIdSql(id))?
+  val len = CloudAgents.Sqlite.getRowArrayLength(rows)
+  if len == 0 {
+    return Ok(value = None)
+  }
+  return Ok(value = Some(value = rowToSecretRequest(CloudAgents.Sqlite.getRowArrayValue(rows, 0))))
+}
+
+/// Secret requests created for a session strictly after `afterCreatedAt`,
+/// oldest first — for the `secret_request` SSE event (name/reason only,
+/// never a value, so this is safe to stream unconditionally).
+pub func secretRequestsCreatedAfter(
+  sessionId: in String, afterCreatedAt: in String
+): Result[slice[SecretRequest], CloudAgents.Sqlite.DbError] {
+  val rows = CloudAgents.Sqlite.query(CloudAgents.Db.selectSecretRequestsCreatedAfterSql(sessionId, afterCreatedAt))?
+  var acc: slice[SecretRequest] = []
+  var i = 0
+  val len = CloudAgents.Sqlite.getRowArrayLength(rows)
+  while i < len {
+    acc = acc.append(rowToSecretRequest(CloudAgents.Sqlite.getRowArrayValue(rows, i)))
+    i = i + 1
+  }
+  return Ok(value = acc)
+}
+
+/// Answer a still-pending secret request. `status` is 'approved' or
+/// 'denied' — this IS the audit trail's decision column, written once.
+/// Returns rows affected (0 = not pending anymore, the handler maps that to
+/// 409, mirroring answerPermissionRequest).
+pub func answerSecretRequest(id: in String, status: in String): Result[Int, CloudAgents.Sqlite.DbError] {
+  return CloudAgents.Sqlite.execute(CloudAgents.Db.answerSecretRequestSql(id, status, nowMillis()))
+}
+
+/// Host-side fail-closed timeout backstop, mirroring
+/// timeoutPendingPermissionRequest.
+pub func timeoutPendingSecretRequest(id: in String, timeoutMillis: in Long): Result[Unit, CloudAgents.Sqlite.DbError] {
+  CloudAgents.Sqlite.execute(CloudAgents.Db.timeoutPendingSecretRequestSql(id, nowMillis(), toString(timeoutMillis)))?
+  return Ok(value = ())
+}
+
+/// Write-once delivery guard (docs/phase6 §7.1 step 3: the decrypted value
+/// is returned in the long-poll response AT MOST ONCE). Returns true when
+/// THIS call is the one that flips the guard — i.e. the caller may now
+/// decrypt and hand back the value; false means some earlier poll already
+/// delivered it.
+pub func markSecretRequestDelivered(id: in String): Result[Bool, CloudAgents.Sqlite.DbError] {
+  val affected = CloudAgents.Sqlite.execute(CloudAgents.Db.markSecretRequestDeliveredSql(id, nowMillis()))?
+  return Ok(value = affected > 0)
+}
+
+// ─── Phase 6 §7: report_artifact ─────────────────────────────────────────────
+//
+// docs/phase6-mcp-callbacks.md §7.3. Metadata only — bytes live on disk
+// under artifactsBaseDir()/<sessionId>/<storedName>; CloudAgents.Callbacks
+// owns the actual file I/O, this section only owns the DB row.
+@generate(Json)
+pub record Artifact {
+  pub id: String
+  pub sessionId: String
+  pub fileName: String
+  pub storedName: String
+  pub mimeType: String
+  pub description: String
+  pub sizeBytes: String
+  pub createdAt: String
+}
+
+func rowToArtifact(r: in CloudAgents.Sqlite.Row): Artifact {
+  return Artifact(
+    id = colAt(r.cols, 0),
+    sessionId = colAt(r.cols, 1),
+    fileName = colAt(r.cols, 2),
+    storedName = colAt(r.cols, 3),
+    mimeType = colAt(r.cols, 4),
+    description = colAt(r.cols, 5),
+    sizeBytes = colAt(r.cols, 6),
+    createdAt = colAt(r.cols, 7)
+  )
+}
+
+/// Base directory for artifact bytes, mirroring CloudAgents.Sqlite.dbPath's
+/// override convention: CLOUD_AGENTS_ARTIFACTS_DIR when set, else a relative
+/// default in the working directory. Actual files live at
+/// `<this>/<sessionId>/<storedName>`. Exported so CloudAgents.Callbacks
+/// (which owns the file I/O) and tests share one definition.
+pub func artifactsBaseDir(): String {
+  val p = Env.GetEnvironmentVariable("CLOUD_AGENTS_ARTIFACTS_DIR")
+  if DotNetString.IsNullOrEmpty(p) {
+    return "cloud-agents-artifacts"
+  }
+  return p
+}
+
+/// Record an uploaded artifact's metadata (the caller has already written
+/// the bytes to disk). `sizeBytes` is the decoded byte count as a decimal
+/// string, matching this schema's TEXT-for-numerics convention.
+pub func createArtifact(
+  sessionId: in String,
+  fileName: in String,
+  storedName: in String,
+  mimeType: in String,
+  description: in String,
+  sizeBytes: in String,
+): Result[Artifact, CloudAgents.Sqlite.DbError] {
+  val id = newId()
+  val ts = nowMillis()
+  CloudAgents.Sqlite.execute(CloudAgents.Db.insertArtifactSql(id, sessionId, fileName, storedName, mimeType, description, sizeBytes, ts))?
+  return Ok(
+    value = Artifact(
+      id = id,
+      sessionId = sessionId,
+      fileName = fileName,
+      storedName = storedName,
+      mimeType = mimeType,
+      description = description,
+      sizeBytes = sizeBytes,
+      createdAt = ts
+    )
+  )
+}
+
+/// An artifact by id, or None.
+pub func getArtifact(id: in String): Result[Option[Artifact], CloudAgents.Sqlite.DbError] {
+  val rows = CloudAgents.Sqlite.query(CloudAgents.Db.selectArtifactByIdSql(id))?
+  val len = CloudAgents.Sqlite.getRowArrayLength(rows)
+  if len == 0 {
+    return Ok(value = None)
+  }
+  return Ok(value = Some(value = rowToArtifact(CloudAgents.Sqlite.getRowArrayValue(rows, 0))))
+}
+
+/// A session's artifacts, oldest first.
+pub func listArtifacts(sessionId: in String): Result[slice[Artifact], CloudAgents.Sqlite.DbError] {
+  val rows = CloudAgents.Sqlite.query(CloudAgents.Db.selectArtifactsBySessionSql(sessionId))?
+  var acc: slice[Artifact] = []
+  var i = 0
+  val len = CloudAgents.Sqlite.getRowArrayLength(rows)
+  while i < len {
+    acc = acc.append(rowToArtifact(CloudAgents.Sqlite.getRowArrayValue(rows, i)))
+    i = i + 1
+  }
+  return Ok(value = acc)
+}
+
+/// Artifacts reported for a session strictly after `afterCreatedAt`, oldest
+/// first — for the `artifact_reported` SSE event.
+pub func artifactsCreatedAfter(
+  sessionId: in String, afterCreatedAt: in String
+): Result[slice[Artifact], CloudAgents.Sqlite.DbError] {
+  val rows = CloudAgents.Sqlite.query(CloudAgents.Db.selectArtifactsCreatedAfterSql(sessionId, afterCreatedAt))?
+  var acc: slice[Artifact] = []
+  var i = 0
+  val len = CloudAgents.Sqlite.getRowArrayLength(rows)
+  while i < len {
+    acc = acc.append(rowToArtifact(CloudAgents.Sqlite.getRowArrayValue(rows, i)))
+    i = i + 1
+  }
+  return Ok(value = acc)
 }

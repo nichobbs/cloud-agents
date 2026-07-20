@@ -92,3 +92,30 @@ test "sseProgressUpdate frames a progress_update SSE event" {
   )
   assertTrue(sseProgressUpdate("say \"hi\"", "").contains("\\\"hi\\\""), "summary is JSON-escaped")
 }
+
+// ── Phase 6 §7: v2 MCP-callback SSE event framing ──────────────────────────
+test "sseSecretRequest frames a secret_request SSE event and never carries a value" {
+  val frame = sseSecretRequest("sr-1", "GITHUB_TOKEN", "need it to push a branch")
+  assertEqual(
+    frame,
+    "event: secret_request\ndata: {\"id\":\"sr-1\",\"name\":\"GITHUB_TOKEN\",\"reason\":\"need it to push a branch\"}\n\n",
+    "secret_request frame is well formed"
+  )
+  assertTrue(frame.startsWith("event: secret_request\n"), "distinct event type, not a plain data chunk")
+  // The function signature has no value parameter at all — this assertion
+  // documents the property explicitly rather than relying on that alone:
+  // even a credential value that happened to equal the request id/name/reason
+  // could never appear, because the frame is built only from those three
+  // fields.
+  assertTrue(not frame.contains("value"), "no 'value' key ever appears in a secret_request frame")
+}
+
+test "sseArtifactReported frames an artifact_reported SSE event" {
+  val frame = sseArtifactReported("art-1", "report.txt", "text/plain")
+  assertEqual(
+    frame,
+    "event: artifact_reported\ndata: {\"id\":\"art-1\",\"fileName\":\"report.txt\",\"mimeType\":\"text/plain\"}\n\n",
+    "artifact_reported frame is well formed"
+  )
+  assertTrue(frame.startsWith("event: artifact_reported\n"), "distinct event type, not a plain data chunk")
+}

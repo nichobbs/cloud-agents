@@ -109,6 +109,14 @@ match maybeUser {
 
 ---
 
+**Storing a `Result[T,E]` in a record field breaks `match` on read-back (upstream, lyric-lang#6231).**
+Reading the field and matching panics `"match not exhaustive"` at runtime
+even though both cases are handled. Reconstruct `Ok`/`Err` fresh in an
+accessor instead of storing/returning a `Result`-typed field — see
+`shim/tests/fakes.l` for the worked pattern.
+
+---
+
 ## Operators
 
 **No bitwise operators.**
@@ -199,6 +207,23 @@ everything**; the `?` operator is confirmed working at runtime and is fine.
 The Std.String methods (`.length`, `.substring`, `.contains`, ...) and
 `slice` indexing/`.append()` are confirmed working.
 
+**`slice[Byte].toList()` does not resolve at runtime** —
+`unsupported method 'toList' on the receiver type (no matching user method,
+extern binding, or built-in intrinsic)` (confirmed on v0.4.19 by this
+repo's `CloudAgents.CallbacksV2Tests`, `report_artifact`'s upload path:
+`Std.File.writeBytes` takes `List[Byte]`, and base64-decoding a request
+body yields `slice[Byte]`). Same "compiles as a dot-call, dies at runtime"
+family as the `Result`/`Option` convenience methods below, despite
+`lyric-stdlib/std/file.l`'s own module doc describing `slice[T].toList()` /
+`List[T].toArray()` as the intended round-trip shuttle — only the
+`List[T].toArray()` direction is confirmed working (used throughout
+`lyric-stdlib`'s own test suites, e.g. `metadata_reader_tests.l`). Build
+the `List[Byte]` by hand instead: `val acc: List[Byte] = newList(); var i =
+0; while i < b.length { acc.add(b[i]); i = i + 1 }` — plain-`Int` slice
+indexing is confirmed working (see the `Int.toNat()` entry below), so this
+loop is cheap and reliable. See `CloudAgents.Callbacks.sliceBytesToList`
+for the worked pattern.
+
 **`Int.toNat()` does not resolve at runtime** — `unsupported method 'toNat'
 on the receiver type` (confirmed on v0.4.19 by CloudAgents.CryptoTests). The
 reverse, `Nat.toInt()`, works fine. And you can't dodge it with `var i: Nat =
@@ -279,6 +304,16 @@ package Foo
 //! This is correct module-level doc — goes before `package`
 package Foo
 ```
+
+---
+
+**A cross-package `pub val` used to construct several record types in one function crashes at JIT (upstream, lyric-lang#6232).**
+`System.InvalidProgramException` for the whole function, at runtime, no
+compile error. Related: a qualified constant read inside an `impl` method
+body crashes the same way (lyric-lang#6134), and reads through a
+*restored-DLL* dependency can silently produce `0`/null instead
+(lyric-lang#6133). Have the consuming package own such constants as its
+own literals — see `shim/src/main.l`'s header note.
 
 ---
 

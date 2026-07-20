@@ -30,12 +30,23 @@ RUN useradd --create-home --home-dir /home/claude-user --shell /bin/bash claude-
 WORKDIR /workspace
 RUN chown claude-user:claude-user /workspace
 
+# cloud-agents-shim (docs/phase6-mcp-callbacks.md §5, stage 3): the
+# in-container MCP callback server. docker/shim-dist/ is `shim/`'s `lyric
+# build` output, staged into this build context by
+# scripts/build-docker.sh's stage_shim step — run that script (or `make
+# docker`), not a bare `docker build`, so shim-dist/ exists. Shipped
+# unconditionally; docker/entrypoint.sh's CLOUD_AGENTS_MCP_CALLBACKS gate
+# (default off) controls whether it's ever actually registered/invoked.
+COPY shim-dist/ /opt/cloud-agents-shim/
+COPY cloud-agents-shim /usr/local/bin/cloud-agents-shim
+
 COPY entrypoint.sh /usr/local/bin/entrypoint.sh
 COPY reconcile-repos.sh /usr/local/bin/reconcile-repos.sh
 COPY mcp.json.template /etc/claude/mcp.json.template
 COPY mcp-callbacks.json.template /etc/claude/mcp-callbacks.json.template
 COPY settings.json.template /etc/claude/settings.json.template
-RUN chmod +x /usr/local/bin/entrypoint.sh /usr/local/bin/reconcile-repos.sh
+COPY settings-callbacks.json.template /etc/claude/settings-callbacks.json.template
+RUN chmod +x /usr/local/bin/entrypoint.sh /usr/local/bin/reconcile-repos.sh /usr/local/bin/cloud-agents-shim
 
 USER claude-user
 ENV HOME=/home/claude-user

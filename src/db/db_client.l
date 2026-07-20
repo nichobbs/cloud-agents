@@ -1649,3 +1649,191 @@ pub func timeoutPendingUserQuestionSql(id: in String, nowMillis: in String, time
     sqlLiteral(timeoutMillis) +
     " AS INTEGER)"
 }
+
+// ─── Phase 6 §7: v2 MCP callback tools ──────────────────────────────────────
+//
+// docs/phase6-mcp-callbacks.md §7. Two new tables: `secret_requests` (the
+// request_secret audit trail — name/reason/decision/timestamps only, NEVER
+// the credential value) and `artifacts` (report_artifact metadata; the bytes
+// themselves live on disk under CloudAgents.Repository.artifactsBaseDir(),
+// not in SQLite). Also: a session-owner lookup unscoped by the current
+// identity (mirrors selectSessionCallbackTokenSql — a container has no user
+// identity of its own) and a credential-existence probe used by
+// request_secret's fail-fast validation.
+/// Read a session's owning user id by session id ONLY — deliberately
+/// unscoped by the current identity, mirroring selectSessionCallbackTokenSql.
+/// Used by request_secret's create path (container-originated: the caller's
+/// stamped identity is the operator, not the session owner) to resolve whose
+/// credential store to check.
+pub func selectSessionOwnerIdSql(id: in String): String {
+  return "SELECT user_id FROM sessions WHERE id = " + sqlLiteral(id)
+}
+
+/// Whether a user has a credential stored under exactly `name`. Used by
+/// request_secret's fail-fast validation (docs/phase6 §7.1: "the credential
+/// must exist in the session owner's credential store") — cheaper than
+/// selectCredentialNamesSql's full alphabetical listing since it only needs
+/// existence.
+pub func selectCredentialExistsSql(userId: in String, name: in String): String {
+  return "SELECT 1 FROM credentials WHERE user_id = " + sqlLiteral(userId) + " AND name = " + sqlLiteral(name) +
+    " LIMIT 1"
+}
+
+// ─── Secret requests (request_secret) ────────────────────────────────────────
+//
+// One row per `request_secret` MCP-tool call. Status vocabulary is
+// pending/approved/denied/timed_out (docs/phase6 §7.1) — deliberately no
+// allow-always rule table (every request prompts). `delivered_at` is NOT
+// part of the audit vocabulary; it is a mechanical write-once guard so the
+// decrypted value is handed back in the long-poll response at most ONCE
+// (docs/phase6 §7.1 step 3) even if the container polls the same request id
+// again after a successful delivery.
+val secretRequestColumns = "id, session_id, name, reason, status, created_at, decided_at, delivered_at"
+
+pub func secretRequestsSchemaSql(): String {
+  return "CREATE TABLE IF NOT EXISTS secret_requests (" + "id TEXT PRIMARY KEY, " + "session_id TEXT NOT NULL, " +
+    "name TEXT NOT NULL, " +
+    "reason TEXT NOT NULL DEFAULT '', " +
+    "status TEXT NOT NULL, " +
+    "created_at TEXT NOT NULL, " +
+    "decided_at TEXT NOT NULL DEFAULT '', " +
+    "delivered_at TEXT NOT NULL DEFAULT '')"
+}
+
+pub func secretRequestsSessionIndexSql(): String {
+  return "CREATE INDEX IF NOT EXISTS idx_secret_requests_session_id ON secret_requests(session_id)"
+}
+
+pub func insertSecretRequestSql(
+  id: in String,
+  sessionId: in String,
+  name: in String,
+  reason: in String,
+  createdAt: in String,
+): String {
+  return "INSERT INTO secret_requests (" + secretRequestColumns + ") VALUES (" + sqlLiteral(id) + ", " +
+    sqlLiteral(sessionId) +
+    ", " +
+    sqlLiteral(name) +
+    ", " +
+    sqlLiteral(reason) +
+    ", 'pending', " +
+    sqlLiteral(createdAt) +
+    ", '', '')"
+}
+
+pub func selectSecretRequestByIdSql(id: in String): String {
+  return "SELECT " + secretRequestColumns + " FROM secret_requests WHERE id = " + sqlLiteral(id)
+}
+
+/// Secret requests created for a session strictly after `afterCreatedAt`,
+/// oldest first — mirrors selectPermissionRequestsCreatedAfterSql for SSE
+/// emission (the `secret_request` event never carries the value, so this is
+/// safe to stream unconditionally).
+pub func selectSecretRequestsCreatedAfterSql(sessionId: in String, afterCreatedAt: in String): String {
+  return "SELECT " + secretRequestColumns + " FROM secret_requests WHERE session_id = " + sqlLiteral(sessionId) +
+    " AND created_at > " +
+    sqlLiteral(afterCreatedAt) +
+    " ORDER BY created_at ASC"
+}
+
+/// Answer a still-pending request (write-once: only a 'pending' row is
+/// updated). `status` is 'approved' or 'denied' — never a value column.
+pub func answerSecretRequestSql(id: in String, status: in String, decidedAt: in String): String {
+  return "UPDATE secret_requests SET status = " + sqlLiteral(status) + ", decided_at = " + sqlLiteral(decidedAt) +
+    " WHERE id = " +
+    sqlLiteral(id) +
+    " AND status = 'pending'"
+}
+
+/// Host-side fail-closed timeout backstop, mirroring
+/// timeoutPendingPermissionRequestSql.
+pub func timeoutPendingSecretRequestSql(id: in String, nowMillis: in String, timeoutMillis: in String): String {
+  return "UPDATE secret_requests SET status = 'timed_out', decided_at = " + sqlLiteral(nowMillis) + " WHERE id = " +
+    sqlLiteral(id) +
+    " AND status = 'pending' AND (CAST(" +
+    sqlLiteral(nowMillis) +
+    " AS INTEGER) - CAST(created_at AS INTEGER)) >= CAST(" +
+    sqlLiteral(timeoutMillis) +
+    " AS INTEGER)"
+}
+
+/// Write-once delivery guard: flips `delivered_at` from '' to `deliveredAt`
+/// ONLY for a still-'approved', not-yet-delivered row. A caller that affects
+/// 1 row is the FIRST poll to observe the approval and may hand back the
+/// decrypted value; 0 rows affected means some earlier poll already
+/// delivered it (docs/phase6 §7.1 step 3: "returns the decrypted value
+/// ONCE").
+pub func markSecretRequestDeliveredSql(id: in String, deliveredAt: in String): String {
+  return "UPDATE secret_requests SET delivered_at = " + sqlLiteral(deliveredAt) + " WHERE id = " + sqlLiteral(id) +
+    " AND status = 'approved' AND delivered_at = ''"
+}
+
+// ─── Artifacts (report_artifact) ─────────────────────────────────────────────
+//
+// Metadata only — the bytes live on disk (CloudAgents.Repository
+// artifactsBaseDir()/<sessionId>/<storedName>). `stored_name` is the
+// collision-proof on-disk file name (artifact id + sanitized basename);
+// `file_name` is the human-facing sanitized basename used for
+// Content-Disposition and listings. `size_bytes` is the decoded byte count,
+// stored as TEXT like every other numeric column in this schema.
+val artifactColumns = "id, session_id, file_name, stored_name, mime_type, description, size_bytes, created_at"
+
+pub func artifactsSchemaSql(): String {
+  return "CREATE TABLE IF NOT EXISTS artifacts (" + "id TEXT PRIMARY KEY, " + "session_id TEXT NOT NULL, " +
+    "file_name TEXT NOT NULL, " +
+    "stored_name TEXT NOT NULL, " +
+    "mime_type TEXT NOT NULL, " +
+    "description TEXT NOT NULL DEFAULT '', " +
+    "size_bytes TEXT NOT NULL, " +
+    "created_at TEXT NOT NULL)"
+}
+
+pub func artifactsSessionIndexSql(): String {
+  return "CREATE INDEX IF NOT EXISTS idx_artifacts_session_id ON artifacts(session_id)"
+}
+
+pub func insertArtifactSql(
+  id: in String,
+  sessionId: in String,
+  fileName: in String,
+  storedName: in String,
+  mimeType: in String,
+  description: in String,
+  sizeBytes: in String,
+  createdAt: in String,
+): String {
+  return "INSERT INTO artifacts (" + artifactColumns + ") VALUES (" + sqlLiteral(id) + ", " + sqlLiteral(sessionId) +
+    ", " +
+    sqlLiteral(fileName) +
+    ", " +
+    sqlLiteral(storedName) +
+    ", " +
+    sqlLiteral(mimeType) +
+    ", " +
+    sqlLiteral(description) +
+    ", " +
+    sqlLiteral(sizeBytes) +
+    ", " +
+    sqlLiteral(createdAt) +
+    ")"
+}
+
+pub func selectArtifactByIdSql(id: in String): String {
+  return "SELECT " + artifactColumns + " FROM artifacts WHERE id = " + sqlLiteral(id)
+}
+
+/// A session's artifacts, oldest first.
+pub func selectArtifactsBySessionSql(sessionId: in String): String {
+  return "SELECT " + artifactColumns + " FROM artifacts WHERE session_id = " + sqlLiteral(sessionId) +
+    " ORDER BY created_at ASC"
+}
+
+/// Artifacts reported for a session strictly after `afterCreatedAt`, oldest
+/// first — mirrors selectPermissionRequestsCreatedAfterSql for SSE emission.
+pub func selectArtifactsCreatedAfterSql(sessionId: in String, afterCreatedAt: in String): String {
+  return "SELECT " + artifactColumns + " FROM artifacts WHERE session_id = " + sqlLiteral(sessionId) +
+    " AND created_at > " +
+    sqlLiteral(afterCreatedAt) +
+    " ORDER BY created_at ASC"
+}
