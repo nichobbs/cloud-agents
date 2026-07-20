@@ -194,15 +194,48 @@ sessions on the same repo:
 
 - Migration `0015`: add `repo_key TEXT NOT NULL DEFAULT ''` to
   `artifacts` + an index on `(repo_key)`. Existing rows keep `''`
-  (session-only), so this is backward-compatible.
-- `report_artifact` gains an optional `scope` argument (`session`
-  default, or `repo`). A `repo`-scoped artifact is written under
+  (session-only), so this is backward-compatible. `artifacts` has no
+  `user_id` column of its own — its only owner pointer is
+  `session_id` — so the (user_id, repo_key) scoping below is enforced
+  by joining against `sessions` rather than denormalizing `user_id`
+  onto every artifact row.
+- `report_artifact` gains an optional `scope` argument (`""`/`"session"`
+  default — today's exact behaviour, unchanged — or `"repo"`). A
+  `repo`-scoped artifact is written under
   `artifactsBaseDir()/repo/<repoKey>/<storedName>` and its row carries
-  the `repo_key`; `session`-scoped keeps today's exact behaviour.
-- `GET /api/sessions/{id}/artifacts` continues to list this session's
-  artifacts; a new user-auth `GET /api/repos/{repoKey}/artifacts` (or a
-  query flag) lists a repo's durable artifacts. Download is unchanged
-  except for the base-dir branch.
+  the normalized `repo_key`; the row's `session_id` is unchanged either
+  way, so a repo-scoped artifact still shows up in the reporting
+  session's own `GET /api/sessions/{id}/artifacts` listing exactly as
+  before — repo scope is additive metadata, not a replacement for
+  session ownership. `download` branches its on-disk path read on
+  whether the fetched artifact's `repo_key` is empty (session path,
+  unchanged) or non-empty (repo path); the download route itself is
+  unchanged (`GET /api/sessions/{id}/artifacts/{aid}`, still
+  session-owner-scoped).
+- **Corrected from an earlier sketch of this section:** repo-scoped
+  listing is `GET /api/repos/artifacts?repoKey=<key>` — a query
+  parameter, not `GET /api/repos/{repoKey}/artifacts` as originally
+  sketched here. `repoKey` normalizes to `host/owner/repo`
+  (`CloudAgents.RepoKey`) and always contains literal `/` characters;
+  Lyric.Web's `{name}` path-parameter segments match a single path
+  segment only (its `{*name}` catch-all form must be the *final*
+  segment, which doesn't fit `.../artifacts` following it), so a
+  `repoKey` path segment can't carry the value without a routing
+  workaround. A query parameter sidesteps the whole problem and is a
+  fallback this section's original sketch already named.
+- **Also corrected: explicit user scoping.** The listing is
+  authenticated (normal `AuthMiddleware` bearer check, not the
+  container-callback path) and scoped by **both** the caller's own
+  user id (`CloudAgents.Auth.currentUserId()`) **and** the given
+  `repoKey` — never by `repoKey` alone. `repoKey`s are derived from
+  public git remote URLs (`CloudAgents.RepoKey.repoKeyOf`), not secret,
+  so scoping by `repoKey` alone would let one user list another user's
+  repo-scoped artifacts just by knowing or guessing a repo's URL — the
+  exact same reasoning slice 1's memory store already applies via its
+  `(user_id, repo_key)` key. `CloudAgents.Repository.listRepoArtifacts
+  (userId, repoKey)` joins `artifacts` against `sessions` on
+  `session_id` to resolve each artifact's owner, then filters on both
+  `sessions.user_id = userId` and `artifacts.repo_key = repoKey`.
 
 Kept a separate slice because it touches the artifact download path and
 the on-disk layout; memory (slice 1) is the cleaner first landing.

@@ -108,6 +108,10 @@ func pparam(req: in Web.Request, name: in String): String {
   return match Web.pathParam(req, name) { case Some(s) -> s; case None -> "" }
 }
 
+func qparam(req: in Web.Request, name: in String): String {
+  return match Web.queryParam(req, name) { case Some(s) -> s; case None -> "" }
+}
+
 pub func badBody(): Web.Response {
   return Web.errorResponse(Web.badRequest("invalid JSON body"))
 }
@@ -1113,6 +1117,22 @@ impl Web.Handler for RouteListNotifications {
   }
 }
 
+// ─── Phase 7 §6: repo-scoped artifacts (callbacks.l) ────────────────────────
+//
+// repoKey (host/owner/repo) contains literal '/' characters, so it is a
+// query parameter rather than a path segment — Lyric.Web's `{name}` path
+// params match a single segment only (its `{*name}` catch-all must be the
+// FINAL segment, which doesn't fit "…/artifacts" following it). See
+// docs/phase7-autonomy.md §6.
+record RouteListRepoArtifacts {
+}
+
+impl Web.Handler for RouteListRepoArtifacts {
+  func handle(req: in Web.Request): Web.Response {
+    return artifactListResp(CloudAgents.Callbacks.listRepoArtifactsHandler(qparam(req, "repoKey")))
+  }
+}
+
 // ─── CloudAgents.Proxy routes (proxy.l) ─────────────────────────────────────
 //
 // Server-side provider proxies (ADR-006): every handler returns a complete
@@ -1395,6 +1415,7 @@ pub func main(): Unit {
   router = Web.addGet(router, "/api/sessions/{id}/memory", RouteListMemory())
   router = Web.addPost(router, "/api/sessions/{id}/callbacks/notify", RouteCreateNotification())
   router = Web.addGet(router, "/api/sessions/{id}/notifications", RouteListNotifications())
+  router = Web.addGet(router, "/api/repos/artifacts", RouteListRepoArtifacts())
 
   // Phase 7 §8 v2 tools: add_task (create) / list_tasks (list, optional
   // ?status= filter) / complete_task (mark done) + user-facing task list.

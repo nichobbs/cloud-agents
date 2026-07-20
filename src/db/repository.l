@@ -298,6 +298,10 @@ pub func allMigrations(): slice[Migration] {
     Migration(
       version = "0014_notifications",
       statements = [CloudAgents.Db.notificationsSchemaSql(), CloudAgents.Db.notificationsSessionIndexSql()]
+    ),
+    Migration(
+      version = "0015_repo_artifacts",
+      statements = [CloudAgents.Db.alterArtifactsAddRepoKeySql(), CloudAgents.Db.artifactsRepoKeyIndexSql()]
     )
   ]
 }
@@ -2560,6 +2564,7 @@ pub record Artifact {
   pub description: String
   pub sizeBytes: String
   pub createdAt: String
+  pub repoKey: String
 }
 
 func rowToArtifact(r: in CloudAgents.Sqlite.Row): Artifact {
@@ -2571,7 +2576,8 @@ func rowToArtifact(r: in CloudAgents.Sqlite.Row): Artifact {
     mimeType = colAt(r.cols, 4),
     description = colAt(r.cols, 5),
     sizeBytes = colAt(r.cols, 6),
-    createdAt = colAt(r.cols, 7)
+    createdAt = colAt(r.cols, 7),
+    repoKey = colAt(r.cols, 8)
   )
 }
 
@@ -2590,7 +2596,10 @@ pub func artifactsBaseDir(): String {
 
 /// Record an uploaded artifact's metadata (the caller has already written
 /// the bytes to disk). `sizeBytes` is the decoded byte count as a decimal
-/// string, matching this schema's TEXT-for-numerics convention.
+/// string, matching this schema's TEXT-for-numerics convention. `repoKey` is
+/// '' for a session-only artifact (today's exact behavior) or the normalized
+/// repo identity for a repo-scoped one (docs/phase7-autonomy.md §6);
+/// `sessionId` is always the reporting session either way.
 pub func createArtifact(
   sessionId: in String,
   fileName: in String,
@@ -2598,10 +2607,11 @@ pub func createArtifact(
   mimeType: in String,
   description: in String,
   sizeBytes: in String,
+  repoKey: in String,
 ): Result[Artifact, CloudAgents.Sqlite.DbError] {
   val id = newId()
   val ts = nowMillis()
-  CloudAgents.Sqlite.execute(CloudAgents.Db.insertArtifactSql(id, sessionId, fileName, storedName, mimeType, description, sizeBytes, ts))?
+  CloudAgents.Sqlite.execute(CloudAgents.Db.insertArtifactSql(id, sessionId, fileName, storedName, mimeType, description, sizeBytes, ts, repoKey))?
   return Ok(
     value = Artifact(
       id = id,
@@ -2611,7 +2621,8 @@ pub func createArtifact(
       mimeType = mimeType,
       description = description,
       sizeBytes = sizeBytes,
-      createdAt = ts
+      createdAt = ts,
+      repoKey = repoKey
     )
   )
 }
@@ -2629,6 +2640,22 @@ pub func getArtifact(id: in String): Result[Option[Artifact], CloudAgents.Sqlite
 /// A session's artifacts, oldest first.
 pub func listArtifacts(sessionId: in String): Result[slice[Artifact], CloudAgents.Sqlite.DbError] {
   val rows = CloudAgents.Sqlite.query(CloudAgents.Db.selectArtifactsBySessionSql(sessionId))?
+  var acc: slice[Artifact] = []
+  var i = 0
+  val len = CloudAgents.Sqlite.getRowArrayLength(rows)
+  while i < len {
+    acc = acc.append(rowToArtifact(CloudAgents.Sqlite.getRowArrayValue(rows, i)))
+    i = i + 1
+  }
+  return Ok(value = acc)
+}
+
+/// A repo's durable artifacts for ONE user, oldest first
+/// (docs/phase7-autonomy.md §6). Scoped by (user_id, repo_key) — never by
+/// repo_key alone, since repoKeys derive from public git URLs and are not
+/// secret.
+pub func listRepoArtifacts(userId: in String, repoKey: in String): Result[slice[Artifact], CloudAgents.Sqlite.DbError] {
+  val rows = CloudAgents.Sqlite.query(CloudAgents.Db.selectRepoArtifactsSql(userId, repoKey))?
   var acc: slice[Artifact] = []
   var i = 0
   val len = CloudAgents.Sqlite.getRowArrayLength(rows)

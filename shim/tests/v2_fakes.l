@@ -35,6 +35,7 @@ pub record FakeV2Transport {
   pub var lastUploadMimeType: String
   pub var lastUploadDescription: String
   pub var lastUploadContentBase64: String
+  pub var lastUploadArtifactScope: String
   pub var uploadArtifactCallCount: Int
 
   pub var rememberOk: Bool
@@ -99,6 +100,7 @@ pub func newFakeV2Transport(): FakeV2Transport {
     lastUploadMimeType = "",
     lastUploadDescription = "",
     lastUploadContentBase64 = "",
+    lastUploadArtifactScope = "",
     uploadArtifactCallCount = 0,
     rememberOk = false,
     rememberBody = "",
@@ -166,13 +168,18 @@ impl V2CallbackTransport for FakeV2Transport {
   }
 
   func uploadArtifact(
-    fileName: in String, mimeType: in String, description: in String, contentBase64: in String
+    fileName: in String,
+    mimeType: in String,
+    description: in String,
+    contentBase64: in String,
+    artifactScope: in String,
   ): Result[String, String] {
     self.uploadArtifactCallCount = self.uploadArtifactCallCount + 1
     self.lastUploadFileName = fileName
     self.lastUploadMimeType = mimeType
     self.lastUploadDescription = description
     self.lastUploadContentBase64 = contentBase64
+    self.lastUploadArtifactScope = artifactScope
     if self.uploadArtifactOk {
       Ok(value = self.uploadArtifactBody)
     } else {

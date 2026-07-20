@@ -2227,12 +2227,21 @@ pub func markSecretRequestDeliveredSql(id: in String, deliveredAt: in String): S
 // ─── Artifacts (report_artifact) ─────────────────────────────────────────────
 //
 // Metadata only — the bytes live on disk (CloudAgents.Repository
-// artifactsBaseDir()/<sessionId>/<storedName>). `stored_name` is the
-// collision-proof on-disk file name (artifact id + sanitized basename);
-// `file_name` is the human-facing sanitized basename used for
-// Content-Disposition and listings. `size_bytes` is the decoded byte count,
-// stored as TEXT like every other numeric column in this schema.
-val artifactColumns = "id, session_id, file_name, stored_name, mime_type, description, size_bytes, created_at"
+// artifactsBaseDir()/<sessionId>/<storedName>, or artifactsBaseDir()/repo/
+// <repoKey>/<storedName> for a repo-scoped artifact — docs/phase7-autonomy.md
+// §6). `stored_name` is the collision-proof on-disk file name (artifact id +
+// sanitized basename); `file_name` is the human-facing sanitized basename
+// used for Content-Disposition and listings. `size_bytes` is the decoded
+// byte count, stored as TEXT like every other numeric column in this schema.
+// `repo_key` is '' for a session-only artifact (the default, unchanged
+// behavior) or the normalized repo identity for a repo-scoped one; the row's
+// `session_id` is always populated either way — repo scope is additive
+// metadata, not a replacement for session ownership.
+val artifactColumns = "id, session_id, file_name, stored_name, mime_type, description, size_bytes, created_at, repo_key"
+
+/// Same columns as `artifactColumns`, qualified with the `a` alias used by
+/// `selectRepoArtifactsSql`'s join against `sessions`.
+val artifactColumnsQualified = "a.id, a.session_id, a.file_name, a.stored_name, a.mime_type, a.description, a.size_bytes, a.created_at, a.repo_key"
 
 pub func artifactsSchemaSql(): String {
   return "CREATE TABLE IF NOT EXISTS artifacts (" + "id TEXT PRIMARY KEY, " + "session_id TEXT NOT NULL, " +
@@ -2248,6 +2257,16 @@ pub func artifactsSessionIndexSql(): String {
   return "CREATE INDEX IF NOT EXISTS idx_artifacts_session_id ON artifacts(session_id)"
 }
 
+/// Migration 0015 (docs/phase7-autonomy.md §6): adds the repo scope column.
+/// Existing rows default to '' (session-only), so this is backward-compatible.
+pub func alterArtifactsAddRepoKeySql(): String {
+  return "ALTER TABLE artifacts ADD COLUMN repo_key TEXT NOT NULL DEFAULT ''"
+}
+
+pub func artifactsRepoKeyIndexSql(): String {
+  return "CREATE INDEX IF NOT EXISTS idx_artifacts_repo_key ON artifacts(repo_key)"
+}
+
 pub func insertArtifactSql(
   id: in String,
   sessionId: in String,
@@ -2257,6 +2276,7 @@ pub func insertArtifactSql(
   description: in String,
   sizeBytes: in String,
   createdAt: in String,
+  repoKey: in String,
 ): String {
   return "INSERT INTO artifacts (" + artifactColumns + ") VALUES (" + sqlLiteral(id) + ", " + sqlLiteral(sessionId) +
     ", " +
@@ -2271,6 +2291,8 @@ pub func insertArtifactSql(
     sqlLiteral(sizeBytes) +
     ", " +
     sqlLiteral(createdAt) +
+    ", " +
+    sqlLiteral(repoKey) +
     ")"
 }
 
@@ -2291,6 +2313,21 @@ pub func selectArtifactsCreatedAfterSql(sessionId: in String, afterCreatedAt: in
     " AND created_at > " +
     sqlLiteral(afterCreatedAt) +
     " ORDER BY created_at ASC"
+}
+
+/// A repo-scoped artifacts listing (docs/phase7-autonomy.md §6), joined
+/// against `sessions` to check ownership: `artifacts` has no `user_id` column
+/// of its own (the reporting session's `session_id` is its only owner
+/// pointer), so the (user_id, repo_key) scope is enforced by joining on the
+/// session that reported each artifact rather than denormalizing user_id
+/// onto every artifact row. Oldest first, matching selectArtifactsBySessionSql.
+pub func selectRepoArtifactsSql(userId: in String, repoKey: in String): String {
+  return "SELECT " + artifactColumnsQualified + " FROM artifacts a JOIN sessions s ON a.session_id = s.id " +
+    "WHERE s.user_id = " +
+    sqlLiteral(userId) +
+    " AND a.repo_key = " +
+    sqlLiteral(repoKey) +
+    " ORDER BY a.created_at ASC"
 }
 
 // ─── Phase 7: repo-scoped memory (remember / recall) ─────────────────────────

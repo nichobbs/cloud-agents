@@ -441,9 +441,16 @@ func basenameOfLocalPath(path: in String): String {
 
 /// Read `path`, base64-encode it, and upload it as an artifact, returning
 /// the host-assigned artifact id. Rejects a file over 8 MiB BEFORE reading
-/// it in full (fileSizeBytes above).
+/// it in full (fileSizeBytes above). `scope` is "" or "session" for today's
+/// exact behavior, or "repo" to additionally scope the artifact to this
+/// session's repo so it survives into later sessions on the same repo
+/// (docs/phase7-autonomy.md §6).
 pub func reportArtifact(
-  transport: in V2CallbackTransport, path: in String, mimeType: in String, description: in String
+  transport: in V2CallbackTransport,
+  path: in String,
+  mimeType: in String,
+  description: in String,
+  artifactScope: in String,
 ): Result[String, String] {
   val size = match fileSizeBytes(path) { case Ok(n) -> n; case Err(msg) -> return Err(error = msg) }
   if size > maxArtifactBytes {
@@ -455,7 +462,7 @@ pub func reportArtifact(
   }
   val contentBase64 = encodeBase64(bytes.toArray())
   val fileName = basenameOfLocalPath(path)
-  val created = match transport.uploadArtifact(fileName, mimeType, description, contentBase64) {
+  val created = match transport.uploadArtifact(fileName, mimeType, description, contentBase64, artifactScope) {
     case Ok(body) -> body
     case Err(e) -> return Err(error = "failed to reach the cloud-agents host: " + e)
   }

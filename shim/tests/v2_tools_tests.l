@@ -230,6 +230,41 @@ test "report_artifact tool rejects an oversize file without contacting the host"
   assertEqualInt(fake.uploadArtifactCallCount, 0, "the host is never contacted for an oversize file")
 }
 
+test "report_artifact tool forwards an optional 'scope' argument, defaulting to '' when omitted (docs/phase7 §6)" {
+  val fake = newFakeV2Transport()
+  fake.uploadArtifactOk = true
+  fake.uploadArtifactBody = "{\"id\":\"art-repo-1\"}"
+  val tool = ReportArtifactTool(transport = fake)
+  val path = writeTempFile("repo-scoped.txt", "durable across sessions")
+
+  val argsWithScope = Some(
+    value = JObject(
+      fields = [
+        JsonField(name = "path", value = JString(value = path)),
+        JsonField(name = "mimeType", value = JString(value = "text/plain")),
+        JsonField(name = "scope", value = JString(value = "repo"))
+      ]
+    )
+  )
+  val result = match tool.call(argsWithScope) { case Ok(r) -> r; case Err(e) -> panic("unexpected Err: " + e) }
+  assertTrue(not result.isError, "a successful repo-scoped upload is not a tool-execution error")
+  assertEqual(fake.lastUploadArtifactScope, "repo", "the 'scope' argument is forwarded to the transport")
+
+  val argsWithoutScope = Some(
+    value = JObject(
+      fields = [
+        JsonField(name = "path", value = JString(value = path)),
+        JsonField(name = "mimeType", value = JString(value = "text/plain"))
+      ]
+    )
+  )
+  match tool.call(argsWithoutScope) {
+    case Ok(r) -> assertTrue(not r.isError, "omitting 'scope' still succeeds")
+    case Err(e) -> panic("unexpected Err: " + e)
+  }
+  assertEqual(fake.lastUploadArtifactScope, "", "omitting 'scope' defaults to '' (today's exact behavior)")
+}
+
 test "report_artifact tool denies for missing required arguments without contacting the host" {
   val fake = newFakeV2Transport()
   val tool = ReportArtifactTool(transport = fake)
