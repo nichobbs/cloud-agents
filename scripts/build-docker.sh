@@ -18,28 +18,14 @@ TARGET="${1:-claude}"
 
 command -v docker >/dev/null || { echo "build-docker: 'docker' not on PATH" >&2; exit 1; }
 
-# Build cloud-agents-shim (docs/phase6-mcp-callbacks.md §5, stage 3) and
-# stage its output into the docker/ build context as docker/shim-dist/ —
-# `docker build`'s context here is docker/ itself (see build_claude below),
-# which cannot COPY anything from ../shim/, so the compiled bin/ directory
-# is copied in ahead of time. Always staged regardless of the
-# CLOUD_AGENTS_MCP_CALLBACKS runtime flag (on by default in
-# docker/entrypoint.sh as of stage 4, §8 — an operator opts out with =0) so
-# the image always has the binary the flag's default now expects to find.
-stage_shim() {
-    command -v lyric >/dev/null || { echo "build-docker: 'lyric' not on PATH (needed to build shim/)" >&2; exit 1; }
-    echo "==> Building cloud-agents-shim (shim/)"
-    ( cd "$REPO_ROOT/shim" && lyric restore && lyric build )
-    rm -rf "$DOCKER_DIR/shim-dist"
-    mkdir -p "$DOCKER_DIR/shim-dist"
-    cp -R "$REPO_ROOT/shim/bin/." "$DOCKER_DIR/shim-dist/"
-    echo "    cloud-agents-shim staged at docker/shim-dist/  ✓"
-}
-
+# claude-code:base builds cloud-agents-shim (docs/phase6-mcp-callbacks.md §5,
+# stage 3) INSIDE the Dockerfile's own shim-builder stage, so its context is
+# the repo root (it needs to see both docker/ and shim/) rather than docker/
+# alone — unlike the other three runner images below, which don't embed the
+# shim and keep the narrower docker/ context.
 build_claude() {
-    stage_shim
     echo "==> Building claude-code:base"
-    docker build -t claude-code:base -f "$DOCKER_DIR/Dockerfile" "$DOCKER_DIR"
+    docker build -t claude-code:base -f "$DOCKER_DIR/Dockerfile" "$REPO_ROOT"
     echo "    claude-code:base  ✓"
 }
 

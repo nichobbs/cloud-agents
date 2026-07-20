@@ -1,0 +1,18 @@
+# Keeps the build context lean for repo-root-context builds (deploy/api.Dockerfile's
+# `api` service and docker/Dockerfile's `claude-code:base`, both of which COPY from
+# the repo root as of #601). Docker tars up and sends the whole context to the daemon
+# before evaluating a single COPY, so an untrimmed context here means shipping
+# frontend's ~150MB node_modules and local .NET build output on every build for images
+# that need neither — frontend has its own separate build context (the `frontend`
+# service's `context: ./frontend`), unaffected by this file.
+#
+# Patterns are unanchored (match at any depth), same as .gitignore — bin/ and obj/
+# below also cover shim/bin/ and shim/obj/.
+.git/
+bin/
+obj/
+frontend/node_modules/
+frontend/dist/
+.lyric/
+.lyric-*/
+.claude/
