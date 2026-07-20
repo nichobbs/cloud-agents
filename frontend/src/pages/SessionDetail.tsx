@@ -451,6 +451,13 @@ export function SessionDetail() {
         // recovery effect above hands it back the next time that session is
         // opened.
         saveFailedDraft(forSessionAtSend, text);
+      } else {
+        // Mirrors the non-stale success path below: a fresh send for
+        // forSessionAtSend just succeeded, so any EARLIER failed draft still
+        // persisted for it is now moot — clear it here too, not just in the
+        // non-stale branch, otherwise a stale-but-successful send left a
+        // now-obsolete draft sitting in storage forever (#581).
+        clearFailedDraft(forSessionAtSend);
       }
       return;
     }

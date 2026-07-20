@@ -60,14 +60,14 @@ prune `session-*` workspace volumes for deleted sessions.
 ## Recovery
 
 - **Docker daemon restarted / VM rebooted:** runner containers are gone by
-  design. On the next message the API recreates a container from the session's
-  volumes. **The Phase 2 startup recovery routine that resets dangling
-  `RUNNING`/`WARM` sessions to `IDLE` is designed
-  (`recoverDanglingSessionsSql` in `src/db/db_client.l`) but not wired in
-  anywhere** — the live session record has no status field to reset in the
-  first place (see `docs/review-2026-07-03-followup.md` finding #4). In
-  practice a session simply starts a fresh container on its next message
-  regardless of what state it was in before the restart.
+  design. Startup (`src/main.l`) now terminates any stranded containers it
+  still finds a record of, then calls `CloudAgents.SessionStore.
+  recoverDanglingSessions()` (`recoverDanglingSessionsSql` in
+  `src/db/db_client.l`) to reset sessions left stuck `RUNNING`/`WARM` back to
+  `IDLE` — this used to be designed but not wired in anywhere (see
+  `docs/review-2026-07-03-followup.md` finding #4); it's genuinely called
+  from startup now and covered by `CloudAgents.SessionTests`. On the next
+  message the API recreates a fresh container from the session's volumes.
 - **API crash loop:** check `docker compose logs api`. `ENCRYPTION_KEY` is
   required by `docker-compose.yml`'s `${ENCRYPTION_KEY:?...}` guard, which
   fails at `docker compose` parse/start time if unset — but nothing in the

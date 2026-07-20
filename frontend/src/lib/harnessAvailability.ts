@@ -13,14 +13,20 @@
 /// whose install-docker.sh builds all four unconditionally).
 import { api } from './api';
 
-let cached: Promise<Set<string> | null> | null = null;
+let cached: Set<string> | null = null;
 
 /** Enabled harness ids for this deployment, or null when unknown (callers
- *  should then treat every harness as available). Cached for the page
- *  session — this rarely changes without a redeploy. */
-export function enabledHarnesses(): Promise<Set<string> | null> {
-  if (!cached) {
-    cached = api.getEnabledHarnesses().then(ids => (ids ? new Set(ids) : null));
-  }
+ *  should then treat every harness as available). A successful response is
+ *  cached for the page session — this rarely changes without a redeploy —
+ *  but a null (getEnabledHarnesses never rejects; it resolves null on any
+ *  network failure or non-ok response, per its own doc comment) is NOT
+ *  cached, so a transient blip doesn't permanently disable this feature for
+ *  the rest of the session (#584): the next call retries instead of
+ *  replaying the same stale null forever. */
+export async function enabledHarnesses(): Promise<Set<string> | null> {
+  if (cached) return cached;
+  const ids = await api.getEnabledHarnesses();
+  if (!ids) return null;
+  cached = new Set(ids);
   return cached;
 }

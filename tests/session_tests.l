@@ -615,6 +615,36 @@ test "Handler createSession rejects unsafe inputs" {
   }
 }
 
+test "createSession rejects a known-but-disabled harness (#560)" {
+  val dbPath = useFreshTestDb("session-create-harness-gate")
+  defer {
+    cleanupTestDb(dbPath)
+  }
+  // Distinct from the "unknown harness" case above (isKnownHarness rejects a
+  // name this deployment never recognizes at all); this exercises the
+  // isHarnessEnabled gate specifically — a name isKnownHarness accepts, but
+  // this deployment's CLOUD_AGENTS_ENABLED_HARNESSES doesn't include.
+  Env.SetEnvironmentVariable("CLOUD_AGENTS_ENABLED_HARNESSES", "codex")
+  val disabled = CreateSessionRequest(repoUrl = "https://github.com/nic/repo", branch = "main", harness = "claude", model = "")
+  match createSession(disabled) {
+    case Ok(_) -> assertTrue(false, "should reject a harness this deployment disabled")
+    case Err(err) -> assertEqualInt(err.status, 400, "disabled harness -> 400")
+  }
+  // The resolved-default path (empty harness -> "claude") must be checked
+  // too, not just an explicitly-requested one.
+  val disabledDefault = CreateSessionRequest(repoUrl = "https://github.com/nic/repo", branch = "main", harness = "", model = "")
+  match createSession(disabledDefault) {
+    case Ok(_) -> assertTrue(false, "should reject when the default harness itself is disabled")
+    case Err(err) -> assertEqualInt(err.status, 400, "disabled default harness -> 400")
+  }
+  Env.SetEnvironmentVariable("CLOUD_AGENTS_ENABLED_HARNESSES", "")
+  val reenabled = CreateSessionRequest(repoUrl = "https://github.com/nic/repo", branch = "main", harness = "claude", model = "")
+  match createSession(reenabled) {
+    case Ok(_) -> ()
+    case Err(err) -> assertTrue(false, "claude should be accepted once re-enabled (status " + toString(err.status) + ")")
+  }
+}
+
 // NOTE: getRunOutput has no unit test. Every attempt to invoke it from a test
 // fails at runtime with "The signature is incorrect" — the same class of
 // toolchain quirk documented in docs/lyric/gotchas.md for other v0.4.19
@@ -1080,6 +1110,11 @@ test "checkHealth reports healthy against a live DB and 500s when the DB is unre
   val dbPath = useFreshTestDb("health-ok")
   defer {
     cleanupTestDb(dbPath)
+    // Otherwise this test's own next line leaves CLOUD_AGENTS_DB_PATH
+    // pointed at a permanently-broken path for the rest of the process
+    // (#579) — restore it to the fresh path useFreshTestDb set, exactly
+    // what it was before this test's own DB-unreachable mutation below.
+    Env.SetEnvironmentVariable("CLOUD_AGENTS_DB_PATH", dbPath)
   }
   match checkHealth() {
     case Ok(msg) -> assertEqual(msg, "Healthy", "a live, migrated DB reports healthy")

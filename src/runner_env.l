@@ -61,8 +61,16 @@ pub func withExtraRepos(envs: in slice[String], extraRepos: in String): slice[St
 /// exactly how the caller builds them off CredentialValue) and must be the
 /// same length — the loop is bounded by `names.length`, matching the
 /// pre-extraction code this replaces (which indexed a single creds slice the
-/// same way).
-pub func withCredentialEnvs(envs: in slice[String], names: in slice[String], values: in slice[String]): slice[String] {
+/// same way). A length mismatch would only ever be a caller bug (this pair
+/// is always built together from the same CredentialValue list, never taken
+/// from two independent sources), not a condition a well-formed caller could
+/// hit from bad input — exactly what `requires:` is for rather than a
+/// `Result` (#578); `pub func`s' `requires:` are checked even in release
+/// builds (docs/lyric/reference.md's contracts table), so this is a real
+/// guard, not just a debug-mode nicety.
+pub func withCredentialEnvs(envs: in slice[String], names: in slice[String], values: in slice[String]): slice[String]
+  requires: names.length == values.length
+{
   var result = envs
   var i = 0
   while i < names.length {
