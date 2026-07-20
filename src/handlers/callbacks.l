@@ -1318,6 +1318,7 @@ pub func completeTaskHandler(
     case Err(e) -> return Err(dbError(e))
   }
 }
+
 // ─── Phase 7 §5: notify ───────────────────────────────────────────────────────
 //
 // docs/phase7-autonomy.md §5. Fire-and-forget push to the human that an
