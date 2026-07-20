@@ -165,6 +165,39 @@ test "Profile handlers validate enums, grants, and reject duplicates" {
   }
 }
 
+test "an absent/empty toolMode (a not-yet-updated frontend) defaults to 'all', not a 400 (#614)" {
+  val dbPath = useFreshTestDb("profile-toolmode-default")
+  defer {
+    cleanupTestDb(dbPath)
+  }
+  // Exactly the shape a pre-phase-7 frontend still sends: toolMode/tools
+  // never populated. Must succeed, not 400 — every existing profile
+  // create/update from the current UI would otherwise break the moment
+  // this ships.
+  val created = match addProfileHandler(SaveProfileRequest(name = "legacy-client", harness = "", networkPolicy = "none", credentialMode = "all", credentials = [], skillIds = [], subagentIds = [], mcpServerIds = [], toolMode = "", tools = [])) {
+    case Ok(p) -> p
+    case Err(err) -> panic("an absent toolMode must not be rejected: " + toString(err.status))
+  }
+  assertEqual(created.toolMode, "all", "empty toolMode is normalized and stored as 'all'")
+
+  val updated = match updateProfileHandler(created.id, SaveProfileRequest(name = "legacy-client", harness = "", networkPolicy = "full", credentialMode = "all", credentials = [], skillIds = [], subagentIds = [], mcpServerIds = [], toolMode = "", tools = [])) {
+    case Ok(p) -> p
+    case Err(err) -> panic("an absent toolMode on update must not be rejected: " + toString(err.status))
+  }
+  assertEqual(updated.toolMode, "all", "empty toolMode still normalizes to 'all' on update")
+}
+
+test "duplicate tool names in 'selected' mode are rejected (#615)" {
+  val dbPath = useFreshTestDb("profile-toolmode-dup")
+  defer {
+    cleanupTestDb(dbPath)
+  }
+  match addProfileHandler(SaveProfileRequest(name = "dup-tools", harness = "", networkPolicy = "none", credentialMode = "all", credentials = [], skillIds = [], subagentIds = [], mcpServerIds = [], toolMode = "selected", tools = ["remember", "recall", "remember"])) {
+    case Ok(_) -> assertTrue(false, "a repeated tool name must be rejected")
+    case Err(err) -> assertEqualInt(err.status, 400, "duplicate tool name -> 400")
+  }
+}
+
 test "Profile CRUD round-trips with its credential grants" {
   val dbPath = useFreshTestDb("profile-crud")
   defer {

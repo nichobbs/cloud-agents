@@ -93,9 +93,26 @@ pub func isValidCredentialMode(m: in String): Bool {
 }
 
 /// Tool-enablement mode: every shim tool registered, or only the named tools
-/// (docs/phase7-autonomy.md §7). Mirrors isValidCredentialMode exactly.
+/// (docs/phase7-autonomy.md §7). Mirrors isValidCredentialMode, plus accepts
+/// "" (see normalizedToolMode) — unlike credentialMode, toolMode is a NEW
+/// field on an existing request shape: a not-yet-updated frontend never
+/// sends it, so an absent/empty value must be accepted as the default
+/// rather than rejected with a 400, or every profile save breaks the moment
+/// this ships (#614). isValidProfileHarness already established this exact
+/// "" == default precedent for the same reason.
 pub func isValidToolMode(m: in String): Bool {
-  return m == "all" or m == "selected"
+  return m == "" or m == "all" or m == "selected"
+}
+
+/// Normalizes an absent/empty toolMode to "all" before it's persisted or
+/// used to decide which tools list to store — see isValidToolMode's doc
+/// comment (#614). Anything else (already validated to "all"/"selected" by
+/// this point) passes through unchanged.
+func normalizedToolMode(m: in String): String {
+  if m.length == 0 {
+    return "all"
+  }
+  return m
 }
 
 /// Whether `name` is one of the stable MCP tool names the shim can
@@ -191,12 +208,24 @@ func validateSaveProfile(req: in SaveProfileRequest): Option[Web.ApiError] {
     }
   }
   // In 'selected' mode, every enabled tool must be one of the shim's known
-  // tool names (docs/phase7-autonomy.md §7).
+  // tool names, and no name may repeat — mirrors the credential-grant
+  // duplicate check above exactly (#615): profile_tools' own
+  // UNIQUE(profile_id, tool_name) would otherwise just silently dedupe a
+  // client-submitted duplicate via ON CONFLICT DO NOTHING, which is a
+  // harmless but inconsistent outcome compared to how a duplicate
+  // credential grant is rejected before it ever reaches the database.
   if req.toolMode == "selected" {
     var ti = 0
     while ti < req.tools.length {
       if not isValidToolName(req.tools[ti]) {
         return Some(value = Web.badRequest("unknown tool name: " + req.tools[ti]))
+      }
+      var tj = 0
+      while tj < ti {
+        if req.tools[tj] == req.tools[ti] {
+          return Some(value = Web.badRequest("tool names must not repeat"))
+        }
+        tj = tj + 1
       }
       ti = ti + 1
     }
@@ -218,9 +247,12 @@ func grantsFor(req: in SaveProfileRequest): slice[String] {
 /// The tool grants to persist: only meaningful in 'selected' mode, so an
 /// 'all'-mode profile always stores an empty set (avoids a stale list
 /// lingering if the mode is later flipped without re-sending the names).
-/// Mirrors grantsFor exactly (docs/phase7-autonomy.md §7).
+/// Mirrors grantsFor exactly (docs/phase7-autonomy.md §7). Compares against
+/// the NORMALIZED toolMode (#614) so an absent/empty toolMode — which
+/// normalizes to "all" — correctly stores no tools, exactly like an
+/// explicit "all" does.
 func toolsFor(req: in SaveProfileRequest): slice[String] {
-  if req.toolMode == "selected" {
+  if normalizedToolMode(req.toolMode) == "selected" {
     return req.tools
   }
   val empty: slice[String] = []
@@ -249,7 +281,7 @@ pub func addProfileHandler(req: in SaveProfileRequest): Result[Profile, Web.ApiE
     case Ok(None) -> ()
     case Err(e) -> return Err(dbError(e))
   }
-  match addProfile(userId, name, req.harness, req.networkPolicy, req.credentialMode, grantsFor(req), req.skillIds, req.subagentIds, req.mcpServerIds, req.toolMode, toolsFor(req)) {
+  match addProfile(userId, name, req.harness, req.networkPolicy, req.credentialMode, grantsFor(req), req.skillIds, req.subagentIds, req.mcpServerIds, normalizedToolMode(req.toolMode), toolsFor(req)) {
     case Ok(p) -> return Ok(p)
     case Err(e) -> {
       // A concurrent create with the same name can slip past the pre-check
@@ -280,7 +312,7 @@ pub func updateProfileHandler(pid: in String, req: in SaveProfileRequest): Resul
     case Ok(None) -> ()
     case Err(e) -> return Err(dbError(e))
   }
-  val affected = match updateProfile(pid, userId, name, req.harness, req.networkPolicy, req.credentialMode, grantsFor(req), req.skillIds, req.subagentIds, req.mcpServerIds, req.toolMode, toolsFor(req)) {
+  val affected = match updateProfile(pid, userId, name, req.harness, req.networkPolicy, req.credentialMode, grantsFor(req), req.skillIds, req.subagentIds, req.mcpServerIds, normalizedToolMode(req.toolMode), toolsFor(req)) {
     case Ok(n) -> n
     case Err(e) -> {
       // A concurrent rename onto the same name can slip past the pre-check
