@@ -535,6 +535,9 @@ pub func streamSessionMessage(
   // artifact_reported events.
   var secretCursor = toString(startMs)
   var artifactCursor = toString(startMs)
+  // Phase 7 §5 (docs/phase7-autonomy.md): same cursor pattern, for the
+  // notify tool's `notification` event.
+  var notificationCursor = toString(startMs)
   // Poll on a ~1s cadence. taskWaitMs blocks up to that waiting for the run to
   // finish (true = the whole run completed), so the loop wakes on either a
   // timer tick or run completion. The interval is deliberately NOT tighter
@@ -670,6 +673,23 @@ pub func streamSessionMessage(
             }
             artifactCursor = art.createdAt
             ai = ai + 1
+          }
+        }
+        case Err(_) -> ()
+      }
+      // Phase 7 §5: notify tool's notification events, same best-effort
+      // forwarding as the others above.
+      match CloudAgents.Repository.notificationsCreatedAfter(sessionId, notificationCursor) {
+        case Ok(notes) -> {
+          var ni = 0
+          while ni < notes.length {
+            val note = notes[ni]
+            match Web.writeChunk(w, CloudAgents.Streaming.sseNotification(note.id, note.level, note.summary)) {
+              case Ok(_) -> ()
+              case Err(_) -> ()
+            }
+            notificationCursor = note.createdAt
+            ni = ni + 1
           }
         }
         case Err(_) -> ()

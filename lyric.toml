@@ -68,6 +68,7 @@ output_assembly = "CloudAgents.dll"
 "CloudAgents.GitHubApiTests" = "tests/github_api_tests.l"
 "CloudAgents.CallbacksV2Tests" = "tests/callbacks_v2_tests.l"
 "CloudAgents.RepoTasksTests" = "tests/repo_tasks_tests.l"
+"CloudAgents.NotifyTests"     = "tests/notify_tests.l"
 
 [nuget]
 "Lyric.Web"             = "0.4.34"

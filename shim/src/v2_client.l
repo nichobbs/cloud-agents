@@ -267,6 +267,20 @@ pub func addFollowupTask(transport: in V2CallbackTransport, description: in Stri
   }
 }
 
+// ── notify (phase 7 §5) ───────────────────────────────────────────────────────
+/// Fire-and-forget push to the human that an autonomous run reached a
+/// milestone. Single POST, no polling — same shape as addFollowupTask above.
+pub func notify(transport: in V2CallbackTransport, summary: in String, level: in String): Result[String, String] {
+  val created = match transport.notify(summary, level) {
+    case Ok(body) -> body
+    case Err(e) -> return Err(error = "failed to reach the cloud-agents host: " + e)
+  }
+  return match tryDecodeNotifyResponse(created) {
+    case Some(r) -> Ok(value = r.id)
+    case None -> Err(error = "malformed response from the cloud-agents host when sending the notification")
+  }
+}
+
 // ── remember / recall (phase 7 §4) ────────────────────────────────────────────
 /// Store a memory entry for this session's repo, returning a short
 /// confirmation. Overwrites any existing value under the same key.

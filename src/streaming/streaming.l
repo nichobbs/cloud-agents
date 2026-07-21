@@ -226,6 +226,20 @@ pub func sseArtifactReported(id: in String, fileName: in String, mimeType: in St
     "\"}\n\n"
 }
 
+// ─── Phase 7 §5: notify SSE event ─────────────────────────────────────────────
+//
+// docs/phase7-autonomy.md §5. A fire-and-forget push from the notify MCP
+// tool, forwarded the same way artifact_reported/secret_request are — by
+// CloudAgents.Docker's per-run poll loop.
+/// A newly created notification (notify MCP tool). `level` is one of
+/// info/done/blocked.
+pub func sseNotification(id: in String, level: in String, summary: in String): String {
+  return "event: notification\ndata: {\"id\":\"" + jsonEscape(id) + "\",\"level\":\"" + jsonEscape(level) +
+    "\",\"summary\":\"" +
+    jsonEscape(summary) +
+    "\"}\n\n"
+}
+
 // (The whole-log framing helpers logsToFrames/formatLogsAsSse/
 // formatLogsAsSseWithId were removed as dead code (#492): they buffered a
 // completed run's captured log into one SSE body, which the streaming handler

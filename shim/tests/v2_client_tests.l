@@ -265,6 +265,31 @@ test "forget surfaces a transport failure" {
   }
 }
 
+// ── notify (phase 7 §5) ───────────────────────────────────────────────────────
+test "notify returns the created id and sends summary+level to the host" {
+  val fake = newFakeV2Transport()
+  fake.notifyOk = true
+  fake.notifyBody = "{\"id\":\"note-1\"}"
+
+  match notify(fake, "migration finished", "done") {
+    case Ok(id) -> assertEqual(id, "note-1", "the created id round-trips")
+    case Err(message) -> assertTrue(false, "expected Ok, got Err: " + message)
+  }
+  assertEqual(fake.lastNotifySummary, "migration finished", "the summary was sent to the host")
+  assertEqual(fake.lastNotifyLevel, "done", "the level was sent to the host")
+}
+
+test "notify surfaces a transport failure" {
+  val fake = newFakeV2Transport()
+  fake.notifyOk = false
+  fake.notifyError = "connection refused"
+
+  match notify(fake, "x", "") {
+    case Ok(id) -> assertTrue(false, "expected Err, got Ok(" + id + ")")
+    case Err(message) -> assertTrue(message.contains("connection refused"), "error carries the transport failure: " + message)
+  }
+}
+
 // ── add_task / list_tasks / complete_task (phase 7 §8) ────────────────────────
 test "addTask returns the created id on success and sends the description" {
   val fake = newFakeV2Transport()
@@ -467,6 +492,10 @@ impl V2CallbackTransport for ClockJumpingV2Transport {
 
   func completeTask(taskId: in String): Result[String, String] {
     Ok(value = "{\"id\":\"cj-task\",\"status\":\"done\"}")
+  }
+
+  func notify(summary: in String, level: in String): Result[String, String] {
+    Ok(value = "{\"id\":\"cj-notify\"}")
   }
 }
 

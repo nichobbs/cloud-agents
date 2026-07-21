@@ -2483,3 +2483,56 @@ pub func completeTaskSql(id: in String, userId: in String, repoKey: in String, u
     sqlLiteral(repoKey) +
     " AND status = 'open'"
 }
+
+// ─── Phase 7 §5: notify ───────────────────────────────────────────────────────
+//
+// docs/phase7-autonomy.md §5. A fire-and-forget push a container sends the
+// human at a milestone (done/blocked/needs input). `read_at` is reserved for
+// a future mark-read endpoint (not built in v1, per the doc) and always
+// defaults to '', matching this schema's TEXT-for-everything convention.
+val notificationColumns = "id, session_id, level, summary, created_at, read_at"
+
+pub func notificationsSchemaSql(): String {
+  return "CREATE TABLE IF NOT EXISTS notifications (" + "id TEXT PRIMARY KEY, " + "session_id TEXT NOT NULL, " +
+    "level TEXT NOT NULL, " +
+    "summary TEXT NOT NULL, " +
+    "created_at TEXT NOT NULL, " +
+    "read_at TEXT NOT NULL DEFAULT '')"
+}
+
+pub func notificationsSessionIndexSql(): String {
+  return "CREATE INDEX IF NOT EXISTS idx_notifications_session_id ON notifications(session_id)"
+}
+
+pub func insertNotificationSql(
+  id: in String,
+  sessionId: in String,
+  level: in String,
+  summary: in String,
+  createdAt: in String,
+): String {
+  return "INSERT INTO notifications (" + notificationColumns + ") VALUES (" + sqlLiteral(id) + ", " +
+    sqlLiteral(sessionId) +
+    ", " +
+    sqlLiteral(level) +
+    ", " +
+    sqlLiteral(summary) +
+    ", " +
+    sqlLiteral(createdAt) +
+    ", '')"
+}
+
+/// A session's notifications, newest first — for the UI feed.
+pub func selectNotificationsBySessionSql(sessionId: in String): String {
+  return "SELECT " + notificationColumns + " FROM notifications WHERE session_id = " + sqlLiteral(sessionId) +
+    " ORDER BY created_at DESC"
+}
+
+/// Notifications for a session strictly after `afterCreatedAt`, oldest
+/// first — mirrors selectArtifactsCreatedAfterSql for SSE emission.
+pub func selectNotificationsCreatedAfterSql(sessionId: in String, afterCreatedAt: in String): String {
+  return "SELECT " + notificationColumns + " FROM notifications WHERE session_id = " + sqlLiteral(sessionId) +
+    " AND created_at > " +
+    sqlLiteral(afterCreatedAt) +
+    " ORDER BY created_at ASC"
+}

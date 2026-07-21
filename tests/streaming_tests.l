@@ -119,3 +119,15 @@ test "sseArtifactReported frames an artifact_reported SSE event" {
   )
   assertTrue(frame.startsWith("event: artifact_reported\n"), "distinct event type, not a plain data chunk")
 }
+
+// ── Phase 7 §5: notify SSE event framing ───────────────────────────────────────
+test "sseNotification frames a notification SSE event" {
+  val frame = sseNotification("note-1", "done", "migration finished")
+  assertEqual(
+    frame,
+    "event: notification\ndata: {\"id\":\"note-1\",\"level\":\"done\",\"summary\":\"migration finished\"}\n\n",
+    "notification frame is well formed"
+  )
+  assertTrue(frame.startsWith("event: notification\n"), "distinct event type, not a plain data chunk")
+  assertTrue(sseNotification("n", "info", "say \"hi\"").contains("\\\"hi\\\""), "summary is JSON-escaped")
+}

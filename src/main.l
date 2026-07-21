@@ -282,6 +282,14 @@ func completeTaskResp(r: in Result[CompleteTaskResponse, Web.ApiError]): Web.Res
   return match r { case Ok(v) -> Web.json(200, v.toJson()); case Err(e) -> Web.errorResponse(e) }
 }
 
+func notifyResp(r: in Result[NotifyResponse, Web.ApiError]): Web.Response {
+  return match r { case Ok(v) -> Web.json(200, v.toJson()); case Err(e) -> Web.errorResponse(e) }
+}
+
+func notificationListResp(r: in Result[NotificationListResponse, Web.ApiError]): Web.Response {
+  return match r { case Ok(v) -> Web.json(200, v.toJson()); case Err(e) -> Web.errorResponse(e) }
+}
+
 // ─── CloudAgents.Handlers routes (sessions.l) ───────────────────────────────
 record RouteCreateSession {
 }
@@ -1084,6 +1092,27 @@ impl Web.Handler for RouteListSessionTasks {
   }
 }
 
+// ─── Phase 7 §5: notify (callbacks.l) ───────────────────────────────────────
+record RouteCreateNotification {
+}
+
+impl Web.Handler for RouteCreateNotification {
+  func handle(req: in Web.Request): Web.Response {
+    val id = pparam(req, "id")
+    val decoded = match NotifyRequest.fromJson(req.body) { case Ok(d) -> d; case Err(_) -> return badBody() }
+    return notifyResp(CloudAgents.Callbacks.createNotificationHandler(id, callbackAuthHeader(req), decoded))
+  }
+}
+
+record RouteListNotifications {
+}
+
+impl Web.Handler for RouteListNotifications {
+  func handle(req: in Web.Request): Web.Response {
+    return notificationListResp(CloudAgents.Callbacks.listNotificationsHandler(pparam(req, "id")))
+  }
+}
+
 // ─── CloudAgents.Proxy routes (proxy.l) ─────────────────────────────────────
 //
 // Server-side provider proxies (ADR-006): every handler returns a complete
@@ -1364,6 +1393,8 @@ pub func main(): Unit {
   router = Web.addGet(router, "/api/sessions/{id}/callbacks/memory", RouteRecall())
   router = Web.addPost(router, "/api/sessions/{id}/callbacks/memory/forget", RouteForget())
   router = Web.addGet(router, "/api/sessions/{id}/memory", RouteListMemory())
+  router = Web.addPost(router, "/api/sessions/{id}/callbacks/notify", RouteCreateNotification())
+  router = Web.addGet(router, "/api/sessions/{id}/notifications", RouteListNotifications())
 
   // Phase 7 §8 v2 tools: add_task (create) / list_tasks (list, optional
   // ?status= filter) / complete_task (mark done) + user-facing task list.
