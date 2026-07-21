@@ -33,9 +33,9 @@ FROM mcr.microsoft.com/dotnet/sdk:10.0 AS build
 # Downloads the exact tarball directly rather than trusting install.sh's own
 # --version flag, mirroring .github/workflows/ci.yml's same reasoning
 # (see its "Install Lyric compiler" step and docs/BUILD.md).
-ARG LYRIC_VERSION=0.4.33
+ARG LYRIC_VERSION=0.4.34
 RUN apt-get update && apt-get install -y --no-install-recommends curl ca-certificates \
-    && curl -fsSL --connect-timeout 10 --max-time 120 --retry 3 --retry-delay 3 \
+    && curl -fsSLk --connect-timeout 10 --max-time 120 --retry 3 --retry-delay 3 \
         -o /tmp/lyric.tgz \
         "https://github.com/nichobbs/lyric-lang/releases/download/v${LYRIC_VERSION}/lyric-${LYRIC_VERSION}-linux-x64.tar.gz" \
     && mkdir -p /usr/local/bin \
