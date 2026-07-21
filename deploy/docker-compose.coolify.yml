@@ -47,19 +47,28 @@ services:
       # today if you don't set these.
       - CLOUD_AGENTS_GITHUB_CLIENT_ID=${CLOUD_AGENTS_GITHUB_CLIENT_ID:-}
       - CLOUD_AGENTS_GITHUB_CLIENT_SECRET=${CLOUD_AGENTS_GITHUB_CLIENT_SECRET:-}
+      # Idiomatic Lyric alternative to the two vars above (D046,
+      # docs/25-config-blocks.md) — set these in Coolify's Environment
+      # Variables tab instead; they take priority over the CLOUD_AGENTS_*
+      # names above when set, and are entirely optional (oauth.l's config
+      # Github{} block falls back to the plain names when unset, so setting
+      # only the plain names above still works exactly as before). CAUTION:
+      # if you set the client-id/client-secret config-block overrides, also
+      # set the whitelist one (or keep CLOUD_AGENTS_WHITELIST set) — an
+      # empty whitelist on either path means "open access to any
+      # authenticated GitHub user", not "no one".
+      - LYRIC_CONFIG_CLOUDAGENTS_OAUTH_GITHUB_CLIENTID=${LYRIC_CONFIG_CLOUDAGENTS_OAUTH_GITHUB_CLIENTID:-}
+      - LYRIC_CONFIG_CLOUDAGENTS_OAUTH_GITHUB_CLIENTSECRET=${LYRIC_CONFIG_CLOUDAGENTS_OAUTH_GITHUB_CLIENTSECRET:-}
+      - LYRIC_CONFIG_CLOUDAGENTS_OAUTH_GITHUB_WHITELIST=${LYRIC_CONFIG_CLOUDAGENTS_OAUTH_GITHUB_WHITELIST:-}
       # See docker-compose.yml for what these two control (runner container
       # network policy) — same meaning here.
       - CLOUD_AGENTS_RESTRICTED_NETWORK=${CLOUD_AGENTS_RESTRICTED_NETWORK:-}
       - CLOUD_AGENTS_EGRESS_PROXY=${CLOUD_AGENTS_EGRESS_PROXY:-}
-      # Mirrors COMPOSE_PROFILES (below) into a value the API can read at
-      # runtime, so GET /api/harnesses (#523) reports which harnesses
-      # actually have a runner image here, and the frontend picker can grey
-      # out the rest instead of only failing at container-creation time with
-      # a raw "no such image" error. "claude" is always included since
-      # claude-code-base has no `profiles:` key and always builds; anything
-      # else comes straight from COMPOSE_PROFILES, so the two can never drift
-      # — there is deliberately no separate var to keep in sync by hand.
-      - CLOUD_AGENTS_ENABLED_HARNESSES=claude,${COMPOSE_PROFILES:-}
+      # CLOUD_AGENTS_ENABLED_HARNESSES (GET /api/harnesses, #523) is
+      # deliberately left unset here: all four runner images below now build
+      # unconditionally (see the claude-code-base/codex-base/opencode-base/
+      # gemini-base services), so there's nothing to restrict — unset means
+      # "every harness enabled" (fail open).
       - LYRIC_CONFIG_WEB_SERVER_PORT=8080
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
@@ -93,21 +102,24 @@ services:
   # IMPORTANT: `docker compose build` (no service argument, which is how
   # Coolify invokes it) builds every ACTIVE service in this file in one
   # shot — a build failure in any of them fails the WHOLE command, which
-  # blocks api/frontend/caddy from deploying too, not just the broken
-  # harness (confirmed by a real failed deploy when Dockerfile.codex's
-  # `npm install -g @openai/codex` failed mid-build). codex-base/
-  # opencode-base/gemini-base are therefore gated behind Compose
-  # `profiles:` rather than being active by default — Compose skips a
-  # profiled service entirely (build included) unless one of its profiles
-  # is listed in the COMPOSE_PROFILES env var (comma-separated) or a
-  # --profile flag, neither of which Coolify's own deploy passes. Only
-  # claude-code-base (no profiles: key, so always active) is on by
-  # default — it's the one harness actually confirmed to build cleanly
-  # here. To opt a harness in, first confirm its Dockerfile actually
-  # builds standalone (e.g. `docker build -f docker/Dockerfile.codex
-  # docker`), THEN set COMPOSE_PROFILES (e.g. `codex` or `codex,gemini`)
-  # in Coolify's environment variables — don't let an untested runner
-  # image risk blocking every future deploy of the whole app.
+  # would block api/frontend/caddy from deploying too, not just the broken
+  # harness. This happened for real once (Dockerfile.codex's
+  # `npm install -g @openai/codex` failed mid-build against an unpinned
+  # `@latest`), which is why codex-base/opencode-base/gemini-base used to be
+  # gated behind Compose `profiles:` (opt-in only). All four now build
+  # unconditionally instead, because the two things that actually caused
+  # that failure are both fixed at the source: each of the three
+  # Dockerfile.<harness> files now pins its CLI to a specific version
+  # confirmed to install cleanly (rather than floating on `@latest`, which
+  # can introduce a breaking change with zero warning), and each install is
+  # wrapped in a 3-attempt retry with a delay, guarding against transient
+  # npm-registry failures. If a harness image ever fails to build again
+  # despite that: `docker build -f docker/Dockerfile.<harness> docker` to
+  # reproduce and fix it standalone first; if you need to unblock a deploy
+  # immediately, temporarily comment out that one service block below and
+  # redeploy (accepting that harness will 404 at container-creation time
+  # until you re-enable it), rather than reintroducing profile-gating for
+  # everyone.
   claude-code-base:
     image: claude-code:base
     build:
@@ -122,7 +134,6 @@ services:
 
   codex-base:
     image: codex:base
-    profiles: ["codex"]
     build:
       context: ./docker
       dockerfile: Dockerfile.codex
@@ -132,7 +143,6 @@ services:
 
   opencode-base:
     image: opencode:base
-    profiles: ["opencode"]
     build:
       context: ./docker
       dockerfile: Dockerfile.opencode
@@ -142,7 +152,6 @@ services:
 
   gemini-base:
     image: gemini:base
-    profiles: ["gemini"]
     build:
       context: ./docker
       dockerfile: Dockerfile.gemini

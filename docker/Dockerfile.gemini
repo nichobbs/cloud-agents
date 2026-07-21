@@ -11,10 +11,19 @@ FROM --platform=linux/amd64 node:20-slim
 
 ENV DEBIAN_FRONTEND=noninteractive
 
-# TODO: pin @google/gemini-cli to a specific tested version, e.g. @google/gemini-cli@0.x.x
+# Pinned to a version confirmed to install cleanly (bump deliberately, not
+# by dropping the pin back to @latest — an untested "latest" is what took
+# the whole Coolify deploy down the first time a sibling harness image ran
+# unpinned, see deploy/COOLIFY.md). The retry loop guards against transient
+# npm-registry failures, the other documented cause of a mid-build failure.
 RUN apt-get update && apt-get install -y --no-install-recommends \
         git bash curl ca-certificates jq \
-    && npm install -g @google/gemini-cli \
+    && ( n=0; until npm install -g @google/gemini-cli@0.51.0; do \
+           n=$((n + 1)); \
+           if [ "$n" -ge 3 ]; then echo "npm install -g @google/gemini-cli failed after 3 attempts" >&2; exit 1; fi; \
+           echo "npm install -g @google/gemini-cli failed (attempt $n/3), retrying in 5s..." >&2; \
+           sleep 5; \
+         done ) \
     && rm -rf /var/lib/apt/lists/*
 
 RUN useradd --create-home --home-dir /home/gemini-user --shell /bin/bash gemini-user

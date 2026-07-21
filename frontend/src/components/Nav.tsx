@@ -3,10 +3,24 @@ import { Link, useLocation } from 'react-router-dom';
 import { useAuthConfig } from '../context/AuthConfigContext';
 import { beginLogin, getLogin, isSignedIn, signOut } from '../lib/auth';
 
+const NAV_ITEMS: Array<{ to: string; label: string }> = [
+  { to: '/sessions', label: 'Sessions' },
+  { to: '/repos', label: 'Repos' },
+  { to: '/prompts', label: 'Prompts' },
+  { to: '/profiles', label: 'Profiles' },
+  { to: '/library', label: 'Library' },
+  { to: '/credentials', label: 'Credentials' },
+  { to: '/integrations', label: 'Integrations' },
+  { to: '/webhooks', label: 'Webhooks' },
+];
+
 export function Nav() {
   const { pathname } = useLocation();
   const isNew = pathname === '/sessions/new';
   const [signedIn, setSignedIn] = useState(isSignedIn);
+  // Below the .nav-toggle breakpoint (see styles.css), the link list is a
+  // collapsible panel instead of a row — this is its open/closed state.
+  const [menuOpen, setMenuOpen] = useState(false);
   // Whether the server offers GitHub sign-in — shared with RequireAuth so
   // both agree on the same answer instead of each polling the endpoint
   // separately (best-effort; older backends without the endpoint just
@@ -14,70 +28,41 @@ export function Nav() {
   const { configured, clientId } = useAuthConfig();
 
   // Login state can change on other pages (the OAuth callback, a sign-out);
-  // re-read it whenever the route changes.
+  // re-read it whenever the route changes. A route change also means a nav
+  // link was just followed, so close the mobile menu too.
   useEffect(() => {
     setSignedIn(isSignedIn());
+    setMenuOpen(false);
   }, [pathname]);
 
   const handleSignOut = () => {
     signOut();
     setSignedIn(false);
+    setMenuOpen(false);
   };
 
   return (
-    <nav style={navStyle}>
-      <Link to="/sessions" style={logoStyle}>
-        Cloud Agents
-      </Link>
-      <div style={{ display: 'flex', gap: '12px', alignItems: 'center' }}>
-        <Link
-          to="/sessions"
-          style={{ ...linkStyle, color: pathname === '/sessions' ? '#c9d1d9' : '#8b949e' }}
-        >
-          Sessions
+    <nav className="nav">
+      <div className="nav-bar">
+        <Link to="/sessions" style={logoStyle}>
+          Cloud Agents
         </Link>
-        <Link
-          to="/repos"
-          style={{ ...linkStyle, color: pathname === '/repos' ? '#c9d1d9' : '#8b949e' }}
+        <button
+          type="button"
+          className="nav-toggle"
+          aria-label="Toggle navigation menu"
+          aria-expanded={menuOpen}
+          onClick={() => setMenuOpen(open => !open)}
         >
-          Repos
-        </Link>
-        <Link
-          to="/prompts"
-          style={{ ...linkStyle, color: pathname === '/prompts' ? '#c9d1d9' : '#8b949e' }}
-        >
-          Prompts
-        </Link>
-        <Link
-          to="/profiles"
-          style={{ ...linkStyle, color: pathname === '/profiles' ? '#c9d1d9' : '#8b949e' }}
-        >
-          Profiles
-        </Link>
-        <Link
-          to="/library"
-          style={{ ...linkStyle, color: pathname === '/library' ? '#c9d1d9' : '#8b949e' }}
-        >
-          Library
-        </Link>
-        <Link
-          to="/credentials"
-          style={{ ...linkStyle, color: pathname === '/credentials' ? '#c9d1d9' : '#8b949e' }}
-        >
-          Credentials
-        </Link>
-        <Link
-          to="/integrations"
-          style={{ ...linkStyle, color: pathname === '/integrations' ? '#c9d1d9' : '#8b949e' }}
-        >
-          Integrations
-        </Link>
-        <Link
-          to="/webhooks"
-          style={{ ...linkStyle, color: pathname === '/webhooks' ? '#c9d1d9' : '#8b949e' }}
-        >
-          Webhooks
-        </Link>
+          <span className="nav-toggle-bars" aria-hidden="true" />
+        </button>
+      </div>
+      <div className={`nav-links${menuOpen ? ' nav-links--open' : ''}`}>
+        {NAV_ITEMS.map(item => (
+          <Link key={item.to} to={item.to} style={{ ...linkStyle, color: pathname === item.to ? '#c9d1d9' : '#8b949e' }}>
+            {item.label}
+          </Link>
+        ))}
         <Link
           to="/sessions/new"
           style={{
@@ -99,11 +84,7 @@ export function Nav() {
           </span>
         ) : (
           configured && (
-            <button
-              style={signInBtnStyle}
-              onClick={() => beginLogin(clientId)}
-              title="Sign in with GitHub (OAuth)"
-            >
+            <button style={signInBtnStyle} onClick={() => beginLogin(clientId)} title="Sign in with GitHub (OAuth)">
               Sign in with GitHub
             </button>
           )
@@ -112,18 +93,6 @@ export function Nav() {
     </nav>
   );
 }
-
-const navStyle: React.CSSProperties = {
-  display: 'flex',
-  justifyContent: 'space-between',
-  alignItems: 'center',
-  padding: '12px 24px',
-  borderBottom: '1px solid #21262d',
-  background: '#0d1117',
-  position: 'sticky',
-  top: 0,
-  zIndex: 10,
-};
 
 const logoStyle: React.CSSProperties = {
   fontWeight: 700,

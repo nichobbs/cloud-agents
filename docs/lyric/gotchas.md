@@ -246,6 +246,22 @@ indexing is confirmed working (see the `Int.toNat()` entry below), so this
 loop is cheap and reliable. See `CloudAgents.Callbacks.sliceBytesToList`
 for the worked pattern.
 
+**`String.toUpperCase()` and `String.replace()` do not resolve at runtime** —
+`unsupported method 'toUpperCase' on the receiver type (no matching user
+method, extern binding, or built-in intrinsic)` (confirmed on v0.4.35 with a
+standalone repro: `"clientId".toUpperCase()` compiles fine, crashes the
+instant `main()` runs it). Same "compiles as a dot-call, dies at runtime"
+family as the `Result`/`Option` convenience methods above, despite both
+being documented in `docs/lyric/stdlib.md` (`s.toUpperCase(): String`,
+`s.replace(from: String, to: String): String`). If you need case-folding or
+substring replacement at runtime, do it by hand character-by-character
+(the same `.substring(i, 1)` + comparison-chain pattern this repo already
+uses for `digitValue`/`isAsciiLetter` in `src/handlers/proxy.l`) rather than
+reaching for either method — or, if you only need to assert something
+*about* a literal string shape at test time (not actually transform a
+runtime value), prefer literal string constants + `.contains()` checks,
+which are confirmed working.
+
 **`Int.toNat()` does not resolve at runtime** — `unsupported method 'toNat'
 on the receiver type` (confirmed on v0.4.19 by CloudAgents.CryptoTests). The
 reverse, `Nat.toInt()`, works fine. And you can't dodge it with `var i: Nat =

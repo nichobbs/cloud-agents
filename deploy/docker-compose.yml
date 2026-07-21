@@ -19,6 +19,17 @@ services:
       # today if you don't set these.
       - CLOUD_AGENTS_GITHUB_CLIENT_ID=${CLOUD_AGENTS_GITHUB_CLIENT_ID:-}
       - CLOUD_AGENTS_GITHUB_CLIENT_SECRET=${CLOUD_AGENTS_GITHUB_CLIENT_SECRET:-}
+      # Idiomatic Lyric alternative to the two vars above (D046,
+      # docs/25-config-blocks.md) — they take priority over the
+      # CLOUD_AGENTS_* names above when set, and are entirely optional
+      # (oauth.l's config Github{} block falls back to the plain names when
+      # unset). CAUTION: if you set the client-id/client-secret config-block
+      # overrides, also set the whitelist one (or keep CLOUD_AGENTS_WHITELIST
+      # set) — an empty whitelist on either path means open access to any
+      # authenticated GitHub user, not "no one".
+      - LYRIC_CONFIG_CLOUDAGENTS_OAUTH_GITHUB_CLIENTID=${LYRIC_CONFIG_CLOUDAGENTS_OAUTH_GITHUB_CLIENTID:-}
+      - LYRIC_CONFIG_CLOUDAGENTS_OAUTH_GITHUB_CLIENTSECRET=${LYRIC_CONFIG_CLOUDAGENTS_OAUTH_GITHUB_CLIENTSECRET:-}
+      - LYRIC_CONFIG_CLOUDAGENTS_OAUTH_GITHUB_WHITELIST=${LYRIC_CONFIG_CLOUDAGENTS_OAUTH_GITHUB_WHITELIST:-}
       # Network policy for the 'restricted' profile: the Docker network runner
       # containers join, and an optional egress proxy. Unset -> 'restricted'
       # fails closed to no network (#306). The API reads these to set each
@@ -30,8 +41,9 @@ services:
       # deliberately left unset here: install-docker.sh builds all four
       # runner images unconditionally on this standalone-VM path, so there's
       # nothing to restrict — unset means "every harness enabled" (fail
-      # open). See docker-compose.coolify.yml, where it's NOT unset, for the
-      # deployment this actually matters on.
+      # open). docker-compose.coolify.yml now leaves it unset too, for the
+      # same reason (all four runner images there build unconditionally as
+      # well).
       - LYRIC_CONFIG_WEB_SERVER_PORT=8080
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
