@@ -2729,6 +2729,21 @@ pub func listMemory(userId: in String, repoKey: in String): Result[slice[MemoryR
   return Ok(value = acc)
 }
 
+/// Single memory entry lookup by exact (user, repo, key) (#590). Returns
+/// None when no such key exists in the repo's store. Backs a keyed
+/// `recall(key)` with a targeted row fetch instead of `listMemory` + a
+/// client-side filter.
+pub func getMemory(
+  userId: in String, repoKey: in String, memKey: in String
+): Result[Option[MemoryRecord], CloudAgents.Sqlite.DbError] {
+  val rows = CloudAgents.Sqlite.query(CloudAgents.Db.selectMemoryByKeySql(userId, repoKey, memKey))?
+  val len = CloudAgents.Sqlite.getRowArrayLength(rows)
+  if len == 0 {
+    return Ok(value = None)
+  }
+  return Ok(value = Some(value = rowToMemory(CloudAgents.Sqlite.getRowArrayValue(rows, 0))))
+}
+
 /// Delete a memory entry by key (#592). Returns true when a row was removed,
 /// false when no entry existed under that key.
 pub func deleteMemory(

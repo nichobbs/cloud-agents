@@ -2376,6 +2376,16 @@ pub func selectMemoryBySql(userId: in String, repoKey: in String): String {
     " ORDER BY mem_key ASC"
 }
 
+/// Single memory entry lookup by exact key (#590): backs `recall(key)` so a
+/// keyed recall does a targeted row lookup instead of fetching every entry
+/// for the repo (selectMemoryBySql, above) and filtering client-side.
+pub func selectMemoryByKeySql(userId: in String, repoKey: in String, memKey: in String): String {
+  return "SELECT " + memoryColumns + " FROM memories WHERE user_id = " + sqlLiteral(userId) + " AND repo_key = " +
+    sqlLiteral(repoKey) +
+    " AND mem_key = " +
+    sqlLiteral(memKey)
+}
+
 /// Delete one memory entry by key (#592, backs the `forget` tool so an entry
 /// can be pruned to free a slot under the cap). Affects 1 row when the key
 /// existed, 0 otherwise.

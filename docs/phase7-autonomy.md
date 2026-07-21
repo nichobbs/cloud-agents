@@ -120,8 +120,9 @@ that persists across sessions.
 - `CloudAgents.Repository`: `upsertMemoryCapped(userId, repoKey, key,
   value, maxEntries)` (a single atomic
   `INSERT … SELECT … WHERE … ON CONFLICT DO UPDATE` that enforces the cap
-  race-free), `listMemory(userId, repoKey)`, and `deleteMemory(userId,
-  repoKey, key)`.
+  race-free), `listMemory(userId, repoKey)`, `getMemory(userId, repoKey,
+  key)` (single-key lookup, #590), and `deleteMemory(userId, repoKey,
+  key)`.
 - `CloudAgents.Callbacks`:
   - `POST /api/sessions/{id}/callbacks/memory` `{key, value}` —
     container-originated (`authorizeCallbackToken`), resolves the
@@ -130,9 +131,12 @@ that persists across sessions.
     per-repo cap of 256 distinct
     keys (overwrites of an existing key are always allowed; only a new key
     past the cap is rejected) so the store can't grow unbounded.
-  - `GET /api/sessions/{id}/callbacks/memory` — container-originated,
-    returns all entries for the repo as JSON (`recall` with no key reads
-    this; `recall(key)` filters client-side in the shim).
+  - `GET /api/sessions/{id}/callbacks/memory` — container-originated. With
+    no `key` query param, returns all entries for the repo as JSON
+    (`recall` with no key reads this). With `?key=`, does a targeted
+    single-row lookup instead (#590) and returns just that one entry (or
+    none) — `recall(key)` uses this rather than fetching the whole store
+    and filtering client-side.
   - `POST /api/sessions/{id}/callbacks/memory/forget` `{key}` —
     container-originated, deletes one entry (`forget`, #592). Idempotent.
   - `GET /api/sessions/{id}/memory` — user-originated
@@ -149,12 +153,14 @@ Mirrors `add_followup_task` field-for-field:
 - `CloudAgents.Shim.V2Transport`: `RememberRequest{key,value}`,
   `MemoryEntry{key,value}`, `MemoryListResponse{entries}`,
   `ForgetRequest{key}` / `ForgetResponse{key,status}` wire records;
-  `remember`/`recallAll`/`forget` on the `V2CallbackTransport` interface +
-  the `HttpV2CallbackTransport` impl (`POST`/`GET …/callbacks/memory`,
-  `POST …/callbacks/memory/forget`).
+  `remember`/`recallAll`/`recallByKey`/`forget` on the
+  `V2CallbackTransport` interface + the `HttpV2CallbackTransport` impl
+  (`POST`/`GET …/callbacks/memory`, `GET …/callbacks/memory?key=` for a
+  single entry (#590), `POST …/callbacks/memory/forget`).
 - `CloudAgents.Shim.V2Client`: `remember(transport, key, value)` (single
-  POST), `recall(transport, keyOpt)` (single GET, filters by key when
-  present), and `forget(transport, key)` (single POST).
+  POST), `recall(transport, keyOpt)` (a single targeted GET via
+  `recallByKey` when a key is given, or `recallAll`'s whole-list GET when
+  it isn't), and `forget(transport, key)` (single POST).
 - `CloudAgents.Shim.V2Tools`: `RememberTool` / `RecallTool` / `ForgetTool`
   with their schemas; registered in `shim/src/main.l` via `addTool`.
 
