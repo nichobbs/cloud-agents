@@ -23,20 +23,23 @@
 # buildable standalone by any orchestrator, with no external pre-build step.
 FROM --platform=linux/amd64 mcr.microsoft.com/dotnet/sdk:10.0 AS shim-builder
 
-# Pinned explicitly rather than `curl .../install.sh | sh`'s old approach of
-# always fetching "latest": that RUN step has no cache-busting mechanism of
-# its own, so once Docker caches this layer it stays cached indefinitely
-# regardless of new commits or new upstream Lyric releases — this image
-# could silently keep compiling with whatever version happened to be
-# "latest" the very first time it was ever built on a given host, with no
-# visible signal that anything's stale (exactly the class of regression
-# AGENTS.md's seven tracked upstream compiler bugs warn about). Mirrors
-# deploy/api.Dockerfile's ARG LYRIC_VERSION pattern and downloads the exact
-# release tarball directly rather than trusting install.sh's own --version
-# handling — see that file's comments for the full reasoning. Never pin
-# below MIN_LYRIC_VERSION (repo root), the documented known-good floor.
-ARG LYRIC_VERSION=0.4.34
+# Resolves to the latest lyric-lang release by default (empty ARG) via the
+# same GitHub API + sed extraction install.sh itself uses internally when no
+# --version is given (no jq required) — auditable in the build log (the
+# resolved version is echoed below) without piping install.sh's script
+# straight into a shell. Pass --build-arg LYRIC_VERSION=X.Y.Z to pin to a
+# specific release instead (e.g. to work around a fresh regression, or for a
+# fully reproducible build) — never pin below MIN_LYRIC_VERSION (repo root),
+# the documented known-good floor. Still downloads the exact release tarball
+# directly either way, not trusting install.sh's own --version handling —
+# see deploy/api.Dockerfile's comments for the full reasoning on that part.
+ARG LYRIC_VERSION=""
 RUN apt-get update && apt-get install -y --no-install-recommends curl ca-certificates \
+    && if [ -z "$LYRIC_VERSION" ]; then \
+         LYRIC_VERSION="$(curl -fsSL --connect-timeout 10 --max-time 30 https://api.github.com/repos/nichobbs/lyric-lang/releases/latest | sed -n 's/.*"tag_name": *"v\([^"]*\)".*/\1/p')"; \
+       fi \
+    && if [ -z "$LYRIC_VERSION" ]; then echo "ERROR: could not resolve the latest Lyric version from the GitHub API" >&2; exit 1; fi \
+    && echo "Installing Lyric compiler v${LYRIC_VERSION}" \
     && curl -fsSL --connect-timeout 10 --max-time 120 --retry 3 --retry-delay 3 \
         -o /tmp/lyric.tgz \
         "https://github.com/nichobbs/lyric-lang/releases/download/v${LYRIC_VERSION}/lyric-${LYRIC_VERSION}-linux-x64.tar.gz" \
@@ -59,12 +62,19 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && npm install -g @anthropic-ai/claude-code \
     && rm -rf /var/lib/apt/lists/*
 
-# Install the Lyric compiler to a system location. Pinned to the same
-# explicit ARG LYRIC_VERSION as the shim-builder stage above (predates that
-# stage's addition, but is the same unpinned-"latest" anti-pattern — see
-# that stage's comment and deploy/api.Dockerfile for the full reasoning).
-ARG LYRIC_VERSION=0.4.34
-RUN curl -fsSL --connect-timeout 10 --max-time 120 --retry 3 --retry-delay 3 \
+# Install the Lyric compiler to a system location. Same auto-latest-with-
+# override behavior as the shim-builder stage above — see its comment for
+# the full reasoning. Resolved independently here (this stage starts from a
+# fresh FROM, no ARG/state carries over from stage 1), so pass the SAME
+# --build-arg LYRIC_VERSION=X.Y.Z to both stages if pinning for a
+# reproducible build across both.
+ARG LYRIC_VERSION=""
+RUN if [ -z "$LYRIC_VERSION" ]; then \
+      LYRIC_VERSION="$(curl -fsSL --connect-timeout 10 --max-time 30 https://api.github.com/repos/nichobbs/lyric-lang/releases/latest | sed -n 's/.*"tag_name": *"v\([^"]*\)".*/\1/p')"; \
+    fi \
+    && if [ -z "$LYRIC_VERSION" ]; then echo "ERROR: could not resolve the latest Lyric version from the GitHub API" >&2; exit 1; fi \
+    && echo "Installing Lyric compiler v${LYRIC_VERSION}" \
+    && curl -fsSL --connect-timeout 10 --max-time 120 --retry 3 --retry-delay 3 \
         -o /tmp/lyric.tgz \
         "https://github.com/nichobbs/lyric-lang/releases/download/v${LYRIC_VERSION}/lyric-${LYRIC_VERSION}-linux-x64.tar.gz" \
     && tar -xzf /tmp/lyric.tgz -C /usr/local/bin \
