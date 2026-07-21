@@ -37,7 +37,7 @@ FROM --platform=linux/amd64 mcr.microsoft.com/dotnet/sdk:10.0 AS shim-builder
 # below MIN_LYRIC_VERSION (repo root), the documented known-good floor.
 ARG LYRIC_VERSION=0.4.34
 RUN apt-get update && apt-get install -y --no-install-recommends curl ca-certificates \
-    && curl -fsSLk --connect-timeout 10 --max-time 120 --retry 3 --retry-delay 3 \
+    && curl -fsSL --connect-timeout 10 --max-time 120 --retry 3 --retry-delay 3 \
         -o /tmp/lyric.tgz \
         "https://github.com/nichobbs/lyric-lang/releases/download/v${LYRIC_VERSION}/lyric-${LYRIC_VERSION}-linux-x64.tar.gz" \
     && mkdir -p /usr/local/bin \
@@ -56,7 +56,6 @@ ENV DEBIAN_FRONTEND=noninteractive
 # Base tooling + Node and npm from standard APT repositories (plain HTTP, avoiding SSL intercept issues).
 RUN apt-get update && apt-get install -y --no-install-recommends \
         git bash make python3 python3-pip curl ca-certificates jq nodejs npm \
-    && npm config set strict-ssl false -g \
     && npm install -g @anthropic-ai/claude-code \
     && rm -rf /var/lib/apt/lists/*
 
@@ -65,7 +64,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # stage's addition, but is the same unpinned-"latest" anti-pattern — see
 # that stage's comment and deploy/api.Dockerfile for the full reasoning).
 ARG LYRIC_VERSION=0.4.34
-RUN curl -fsSLk --connect-timeout 10 --max-time 120 --retry 3 --retry-delay 3 \
+RUN curl -fsSL --connect-timeout 10 --max-time 120 --retry 3 --retry-delay 3 \
         -o /tmp/lyric.tgz \
         "https://github.com/nichobbs/lyric-lang/releases/download/v${LYRIC_VERSION}/lyric-${LYRIC_VERSION}-linux-x64.tar.gz" \
     && tar -xzf /tmp/lyric.tgz -C /usr/local/bin \

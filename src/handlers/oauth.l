@@ -64,33 +64,15 @@ func envOr(name: in String): String {
   return v
 }
 
-config Github {
-  clientId: String = ""
-  @sensitive clientSecret: String = ""
-  whitelist: String = ""
-}
-
 pub func oauthClientId(): String {
-  val v = Github.clientId
-  if v.length > 0 {
-    return v
-  }
   return envOr("CLOUD_AGENTS_GITHUB_CLIENT_ID")
 }
 
 func oauthClientSecret(): String {
-  val v = Github.clientSecret
-  if v.length > 0 {
-    return v
-  }
   return envOr("CLOUD_AGENTS_GITHUB_CLIENT_SECRET")
 }
 
 func whitelistCsv(): String {
-  val v = Github.whitelist
-  if v.length > 0 {
-    return v
-  }
   return envOr("CLOUD_AGENTS_WHITELIST")
 }
 

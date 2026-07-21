@@ -135,11 +135,53 @@ pub func charFromCode(code: in Int): String = ()
 // StreamReader to read the stream and decode it as real UTF-8.
 extern type StreamReader = "System.IO.StreamReader"
 
+@externInstance
+@externTarget("System.IO.StreamReader.Read")
+pub func readerRead(reader: in StreamReader): Int = -1
+
+val maxProxyResponseBytes = 1048576
+
 /// Read a response stream to a string, decoding it as UTF-8 (unlike readAll,
-/// which widens byte-per-char and mangles non-ASCII).
+/// which widens byte-per-char and mangles non-ASCII), capped at maxProxyResponseBytes.
 func readAllUtf8(s: in NetStream): String {
   val reader = StreamReader.new(s)
-  return reader.ReadToEnd()
+  var total = 0
+  var raw = ""
+  var chunk = ""
+  var c = readerRead(reader)
+  while c >= 0 and total < maxProxyResponseBytes {
+    if c >= 55296 and c <= 56319 {
+      // High surrogate: read the next character for low surrogate
+      val nextC = readerRead(reader)
+      if nextC >= 56320 and nextC <= 57343 {
+        val codePoint = (c - 55296) * 1024 + (nextC - 56320) + 65536
+        chunk = chunk + charFromCode(codePoint)
+        total = total + 2
+      } else {
+        // Orphan high surrogate: output replacement character (0xFFFD)
+        chunk = chunk + charFromCode(65533)
+        total = total + 1
+        // We also need to process nextC if it's non-negative
+        c = nextC
+        continue
+      }
+    } else if c >= 56320 and c <= 57343 {
+      // Orphan low surrogate: output replacement character (0xFFFD)
+      chunk = chunk + charFromCode(65533)
+      total = total + 1
+    } else {
+      chunk = chunk + charFromCode(c)
+      total = total + 1
+    }
+
+    if chunk.length >= 1024 {
+      raw = raw + chunk
+      chunk = ""
+    }
+    c = readerRead(reader)
+  }
+  raw = raw + chunk
+  return raw
 }
 
 // Keep latin1() and encGetStringBytes so tests/github_api_tests.l can compile

@@ -230,7 +230,7 @@ fi
 
 # Very first invocation? Seed the session so --resume has history to attach to.
 if [ ! -f /workspace/.claude/history.jsonl ]; then
-    claude -p "Initialise session" --model "${MODEL}" --resume || true
+    runuser -u claude-user -- claude -p "Initialise session" --model "${MODEL}" --resume || true
 fi
 
 # Recursively chown the workspace after creating templates/directories as root
