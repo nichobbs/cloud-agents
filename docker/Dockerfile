@@ -8,7 +8,17 @@
 # Context: the REPO ROOT, not docker/ — this Dockerfile COPYs from both
 #   docker/ and shim/, so the build context must be wide enough to see both.
 #   (Every COPY below is written repo-root-relative accordingly.)
-# Arch:   linux/amd64 (required — see docs/phase1-core-loop.md §Constraints)
+# Arch:   builds natively for whichever platform `docker build`/`docker
+#   compose build` runs on (amd64 or arm64) — see the shim-builder stage's
+#   RID-detection step below. This used to hard-force linux/amd64
+#   unconditionally (docs/phase1-core-loop.md §Constraints, written when
+#   that was believed to be the only architecture Lyric released for), which
+#   made this Dockerfile silently depend on QEMU user-mode emulation on any
+#   arm64 host — and broke outright on a real Coolify host that didn't have
+#   it registered (exec format error, surfacing only as BuildKit's opaque
+#   "exit code: 255" with no inner stderr). Lyric actually publishes
+#   linux-arm64 releases too (scripts/install.sh already handled this RID),
+#   so there's no reason to force emulation on arm64 hosts at all.
 
 # ─── Stage 1: build cloud-agents-shim (docs/phase6-mcp-callbacks.md §5) ──────
 #
@@ -21,7 +31,7 @@
 # existed and `COPY shim-dist/ ...` failed with "not found" (confirmed
 # 2026-07-20). Building the shim in its own stage here makes the image
 # buildable standalone by any orchestrator, with no external pre-build step.
-FROM --platform=linux/amd64 mcr.microsoft.com/dotnet/sdk:10.0 AS shim-builder
+FROM mcr.microsoft.com/dotnet/sdk:10.0 AS shim-builder
 
 # Resolves to the latest lyric-lang release by default (empty ARG). Pass
 # --build-arg LYRIC_VERSION=X.Y.Z to pin to a specific release instead
@@ -88,6 +98,21 @@ COPY MIN_LYRIC_VERSION /tmp/min-lyric-version.txt
 RUN apt-get update && apt-get install -y --no-install-recommends curl ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
+# Lyric release RID matching THIS build's actual architecture (native — no
+# --platform override above, so this is whatever the host/builder actually
+# is), same x86_64->linux-x64 / aarch64->linux-arm64 mapping scripts/
+# install.sh already uses. Resolved once here and shared into stage 2 via
+# /tmp/lyric-rid.txt, same pattern as /tmp/lyric-version.txt below (#657) —
+# both stages build on the same host in a single `docker build` invocation
+# anyway, but this avoids duplicating the case statement.
+RUN ARCH="$(uname -m)" \
+    && case "$ARCH" in \
+         x86_64) LYRIC_RID=linux-x64 ;; \
+         aarch64) LYRIC_RID=linux-arm64 ;; \
+         *) echo "ERROR: unsupported architecture for the Lyric compiler: $ARCH (supported: x86_64, aarch64)" >&2; exit 1 ;; \
+       esac \
+    && echo -n "$LYRIC_RID" > /tmp/lyric-rid.txt
+
 RUN if [ -z "$LYRIC_VERSION" ]; then \
          for attempt in 1 2 3; do \
            LYRIC_VERSION="$(curl -sI --connect-timeout 10 --max-time 30 https://github.com/nichobbs/lyric-lang/releases/latest | sed -n 's/.*tag\/v\([0-9.]*\).*/\1/p' | tr -d '\r')"; \
@@ -104,9 +129,10 @@ RUN if [ -z "$LYRIC_VERSION" ]; then \
     && echo -n "${LYRIC_VERSION}" > /tmp/lyric-version.txt
 
 RUN LYRIC_VERSION="$(cat /tmp/lyric-version.txt)" \
+    && LYRIC_RID="$(cat /tmp/lyric-rid.txt)" \
     && curl -fsSL --connect-timeout 10 --max-time 120 --retry 3 --retry-delay 3 \
         -o /tmp/lyric.tgz \
-        "https://github.com/nichobbs/lyric-lang/releases/download/v${LYRIC_VERSION}/lyric-${LYRIC_VERSION}-linux-x64.tar.gz" \
+        "https://github.com/nichobbs/lyric-lang/releases/download/v${LYRIC_VERSION}/lyric-${LYRIC_VERSION}-${LYRIC_RID}.tar.gz" \
     && mkdir -p /usr/local/bin \
     && tar -xzf /tmp/lyric.tgz -C /usr/local/bin \
     && rm -f /tmp/lyric.tgz
@@ -126,17 +152,22 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 # Install the Lyric compiler to a system location — the EXACT SAME version
-# the shim-builder stage above already resolved and floor-checked (#657),
-# via the shared /tmp/lyric-version.txt it wrote. No independent ARG/
-# resolution/floor-check here: a single source of truth for "which version"
-# instead of two stages each hitting the GitHub API and risking a mismatch.
+# AND architecture RID the shim-builder stage above already resolved and
+# floor-checked (#657), via the shared /tmp/lyric-version.txt and
+# /tmp/lyric-rid.txt it wrote. No independent ARG/resolution/floor-check/
+# arch-detection here: a single source of truth instead of two stages each
+# re-deriving it (and, before this stage also builds natively — no
+# --platform override on this FROM either — potentially disagreeing on
+# which architecture they're even installing for).
 COPY --from=shim-builder /tmp/lyric-version.txt /tmp/lyric-version.txt
+COPY --from=shim-builder /tmp/lyric-rid.txt /tmp/lyric-rid.txt
 RUN LYRIC_VERSION="$(cat /tmp/lyric-version.txt)" \
-    && echo "Installing Lyric compiler v${LYRIC_VERSION}" \
+    && LYRIC_RID="$(cat /tmp/lyric-rid.txt)" \
+    && echo "Installing Lyric compiler v${LYRIC_VERSION} (${LYRIC_RID})" \
     && curl -fsSL --connect-timeout 10 --max-time 120 --retry 3 --retry-delay 3 \
         -o /tmp/lyric.tgz \
-        "https://github.com/nichobbs/lyric-lang/releases/download/v${LYRIC_VERSION}/lyric-${LYRIC_VERSION}-linux-x64.tar.gz" \
-    && rm -f /tmp/lyric-version.txt \
+        "https://github.com/nichobbs/lyric-lang/releases/download/v${LYRIC_VERSION}/lyric-${LYRIC_VERSION}-${LYRIC_RID}.tar.gz" \
+    && rm -f /tmp/lyric-version.txt /tmp/lyric-rid.txt \
     && tar -xzf /tmp/lyric.tgz -C /usr/local/bin \
     && rm -f /tmp/lyric.tgz \
     && lyric --version

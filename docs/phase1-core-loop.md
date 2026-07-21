@@ -125,7 +125,13 @@ For Phase 1, mount a local ~/.claude folder manually as a bind mount. This is re
 
 5. Constraints & Risks
 
-· Architecture must be linux/amd64.
+· ~~Architecture must be linux/amd64~~ — no longer true: `docker/Dockerfile`
+  builds natively per-host architecture (amd64 or arm64) as of
+  nichobbs/cloud-agents#654's follow-up, since Lyric publishes linux-arm64
+  releases too. This constraint was written before that was known, and
+  forcing linux/amd64 unconditionally made the image silently depend on
+  QEMU emulation on arm64 hosts — which broke outright on a real Coolify
+  deploy that didn't have it registered.
 · ANSI output may contain progress spinners; as shipped this is preserved and rendered by the frontend rather than stripped (see "SSE streaming" above).
 · No concurrency control yet – two rapid messages on the same session may conflict. Added in Phase 2.
 
