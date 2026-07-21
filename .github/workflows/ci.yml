@@ -348,9 +348,17 @@ jobs:
           import re
           import sys
 
+          # re.DOTALL (#640): a future `lyric fmt --write` could rewrap one of
+          # these array literals or call sites onto multiple lines (the same
+          # wrapping this PR's own #622 fix applied elsewhere) - without
+          # DOTALL, '.' doesn't match a newline, so a wrapped literal would
+          # silently fail to match and produce a confusing "could not find"
+          # error instead of an actual drift report. \s* between tokens
+          # tolerates the whitespace/indentation reformatting adds too.
           def extract_array(path, var_name):
               text = open(path).read()
-              m = re.search(r'val ' + re.escape(var_name) + r': slice\[String\] = \[(.*?)\]', text)
+              pattern = r'val\s+' + re.escape(var_name) + r'\s*:\s*slice\[String\]\s*=\s*\[(.*?)\]'
+              m = re.search(pattern, text, re.DOTALL)
               if not m:
                   print(f"::error::could not find '{var_name}' in {path}", file=sys.stderr)
                   sys.exit(1)
@@ -358,7 +366,8 @@ jobs:
 
           def extract_main_tools(path):
               text = open(path).read()
-              names = sorted(set(re.findall(r'toolIsEnabled\(enabledToolsCsv,\s*"([^"]+)"\)', text)))
+              pattern = r'toolIsEnabled\s*\(\s*enabledToolsCsv\s*,\s*"([^"]+)"\s*\)'
+              names = sorted(set(re.findall(pattern, text, re.DOTALL)))
               if not names:
                   print(f"::error::found no toolIsEnabled(...) tool names in {path}", file=sys.stderr)
                   sys.exit(1)

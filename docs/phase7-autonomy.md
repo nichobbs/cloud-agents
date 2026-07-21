@@ -274,6 +274,17 @@ Today a `Profile` has `credentialMode` ∈ {all, selected} plus a
   the same profile policy, so a tampered container cannot re-enable a
   tool the operator disabled. v1 relies on the shim not registering it;
   the host-side gate is tracked as a follow-up.
+- **`selected` requires at least one tool (#616).** `CloudAgents.ToolPolicy.
+  enabledToolsEnvValue`'s own comma-join of an empty `tools` list produces
+  `""`, which — per the "empty/unset means all" wire contract above — would
+  otherwise silently collapse a `selected`-mode profile with zero tools
+  chosen to the exact same "no restriction" outcome as `all` mode: the
+  opposite of how `credentialMode`'s analogous zero-grants case behaves
+  (fail-closed, zero credentials injected). `CloudAgents.Profiles.
+  validateSaveProfile` rejects `toolMode: 'selected'` with an empty `tools`
+  array outright (400) at request-validation time, so a persisted profile
+  never actually reaches that ambiguous state — an operator deselecting
+  every tool must explicitly choose `all` instead.
 
 The tool names are the stable MCP names already in `shim/src/main.l`:
 `request_permission`, `ask_user`, `report_progress`, `request_secret`,
