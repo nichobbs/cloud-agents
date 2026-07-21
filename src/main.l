@@ -1133,6 +1133,21 @@ impl Web.Handler for RouteListRepoArtifacts {
   }
 }
 
+/// Session-independent download for a repo-scoped artifact (#619): `aid` is
+/// a single path segment (no '/' characters), so unlike the repoKey-scoped
+/// listing route above, a plain `{aid}` path param is fine here.
+record RouteDownloadRepoArtifact {
+}
+
+impl Web.Handler for RouteDownloadRepoArtifact {
+  func handle(req: in Web.Request): Web.Response {
+    return match CloudAgents.Callbacks.downloadRepoArtifactHandler(pparam(req, "aid")) {
+      case Ok(resp) -> resp
+      case Err(e) -> Web.errorResponse(e)
+    }
+  }
+}
+
 // ─── CloudAgents.Proxy routes (proxy.l) ─────────────────────────────────────
 //
 // Server-side provider proxies (ADR-006): every handler returns a complete
@@ -1416,6 +1431,7 @@ pub func main(): Unit {
   router = Web.addPost(router, "/api/sessions/{id}/callbacks/notify", RouteCreateNotification())
   router = Web.addGet(router, "/api/sessions/{id}/notifications", RouteListNotifications())
   router = Web.addGet(router, "/api/repos/artifacts", RouteListRepoArtifacts())
+  router = Web.addGet(router, "/api/repos/artifacts/{aid}", RouteDownloadRepoArtifact())
 
   // Phase 7 §8 v2 tools: add_task (create) / list_tasks (list, optional
   // ?status= filter) / complete_task (mark done) + user-facing task list.

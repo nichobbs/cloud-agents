@@ -355,3 +355,86 @@ test "a repo-scoped artifact discovered from a LATER session on the same repo is
     case Err(e) -> assertTrue(false, "download via the discovered sessionId failed: " + toString(e.status))
   }
 }
+
+test "a repo-scoped artifact stays listable and downloadable after its reporting session is deleted (#619)" {
+  val dbPath = useFreshTestDb("repo-artifact-survives-session-delete")
+  defer {
+    cleanupTestDb(dbPath)
+  }
+  CloudAgents.Auth.setCurrentUserId("default")
+
+  val sid = "sess-repo-artifact-deleted"
+  mkSession(sid)
+  val token = mintToken(sid, "default")
+  val uploaded = uploadOk(sid, token, "durable.txt", "repo")
+
+  // Delete the reporting session's row directly (mirrors the effect of
+  // DELETE /api/sessions/{id}: deleteSessionRecord is the exact call that
+  // handler makes once container teardown is done — skipped here since
+  // mkSession's containerId is always "").
+  match CloudAgents.SessionStore.deleteSessionRecord(sid) {
+    case Ok(_) -> ()
+    case Err(e) -> panic("deleteSessionRecord failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+  }
+
+  // The repo listing must still surface it — selectRepoArtifactsSql no
+  // longer joins against `sessions`, so a deleted reporting session can't
+  // silently drop the row out of the listing.
+  val discovered = match listRepoArtifactsHandler("github.com/nic/repo") {
+    case Ok(l) -> {
+      assertEqualInt(l.artifacts.length.toInt(), 1, "the artifact is still listed after its session is gone")
+      l.artifacts[0]
+    }
+    case Err(e) -> panic("repo list failed after session delete: " + toString(e.status))
+  }
+  assertEqual(discovered.id, uploaded.id, "the surviving row is the one that was uploaded")
+
+  // The session-keyed download route is now unreachable (the session no
+  // longer exists to own it) — but the session-independent repo route must
+  // still serve the bytes.
+  match downloadArtifactHandler(sid, discovered.id) {
+    case Ok(_) -> assertTrue(false, "the session-keyed route should 404 once the session is gone")
+    case Err(e) -> assertEqualInt(e.status, 404, "session-keyed download 404s once the session is deleted")
+  }
+  match downloadRepoArtifactHandler(discovered.id) {
+    case Ok(resp) -> assertEqualInt(resp.status, 200, "the repo-scoped route downloads it with no session involved")
+    case Err(e) -> assertTrue(false, "session-independent download failed: " + toString(e.status))
+  }
+}
+
+test "downloadRepoArtifactHandler never serves a session-scoped (non-repo) artifact" {
+  val dbPath = useFreshTestDb("repo-artifact-download-rejects-session-scoped")
+  defer {
+    cleanupTestDb(dbPath)
+  }
+  CloudAgents.Auth.setCurrentUserId("default")
+
+  val sid = "sess-repo-artifact-not-repo-scoped"
+  mkSession(sid)
+  val token = mintToken(sid, "default")
+  val uploaded = uploadOk(sid, token, "session-only.txt", "session")
+
+  match downloadRepoArtifactHandler(uploaded.id) {
+    case Ok(_) -> assertTrue(false, "a session-only artifact must never be reachable via the repo-scoped route")
+    case Err(e) -> assertEqualInt(e.status, 404, "session-only artifact -> 404 via the repo-scoped route")
+  }
+}
+
+test "downloadRepoArtifactHandler never serves another user's repo-scoped artifact" {
+  val dbPath = useFreshTestDb("repo-artifact-download-cross-user")
+  defer {
+    cleanupTestDb(dbPath)
+  }
+
+  CloudAgents.Auth.setCurrentUserId("alice")
+  val sidAlice = "sess-repo-artifact-alice"
+  mkSession(sidAlice)
+  val tokenAlice = mintToken(sidAlice, "alice")
+  val uploaded = uploadOk(sidAlice, tokenAlice, "alice-only.txt", "repo")
+
+  CloudAgents.Auth.setCurrentUserId("bob")
+  match downloadRepoArtifactHandler(uploaded.id) {
+    case Ok(_) -> assertTrue(false, "bob must never download alice's repo-scoped artifact")
+    case Err(e) -> assertEqualInt(e.status, 404, "cross-user download -> 404, not leaking existence")
+  }
+}

@@ -2236,12 +2236,13 @@ pub func markSecretRequestDeliveredSql(id: in String, deliveredAt: in String): S
 // `repo_key` is '' for a session-only artifact (the default, unchanged
 // behavior) or the normalized repo identity for a repo-scoped one; the row's
 // `session_id` is always populated either way — repo scope is additive
-// metadata, not a replacement for session ownership.
-val artifactColumns = "id, session_id, file_name, stored_name, mime_type, description, size_bytes, created_at, repo_key"
-
-/// Same columns as `artifactColumns`, qualified with the `a` alias used by
-/// `selectRepoArtifactsSql`'s join against `sessions`.
-val artifactColumnsQualified = "a.id, a.session_id, a.file_name, a.stored_name, a.mime_type, a.description, a.size_bytes, a.created_at, a.repo_key"
+// metadata, not a replacement for session ownership. `owner_user_id` is ''
+// for a session-only artifact (unused — session ownership already covers it)
+// or the reporting session's owner for a repo-scoped one, denormalized at
+// write time (#619) so a repo-scoped artifact's ownership and listing never
+// depend on the reporting session still existing — mirrors the (user_id,
+// repo_key) scoping repo memory/repo tasks already use for the same reason.
+val artifactColumns = "id, session_id, file_name, stored_name, mime_type, description, size_bytes, created_at, repo_key, owner_user_id"
 
 pub func artifactsSchemaSql(): String {
   return "CREATE TABLE IF NOT EXISTS artifacts (" + "id TEXT PRIMARY KEY, " + "session_id TEXT NOT NULL, " +
@@ -2267,6 +2268,20 @@ pub func artifactsRepoKeyIndexSql(): String {
   return "CREATE INDEX IF NOT EXISTS idx_artifacts_repo_key ON artifacts(repo_key)"
 }
 
+/// Migration 0018 (#619): denormalizes the reporting session's owner onto
+/// each artifact row, so a repo-scoped artifact's ownership check and
+/// listing survive the reporting session being deleted — see artifactColumns'
+/// doc comment. Existing rows default to '' (harmless: they're all
+/// session-scoped, where ownership is checked via the session itself, never
+/// this column).
+pub func alterArtifactsAddOwnerUserIdSql(): String {
+  return "ALTER TABLE artifacts ADD COLUMN owner_user_id TEXT NOT NULL DEFAULT ''"
+}
+
+pub func artifactsOwnerRepoIndexSql(): String {
+  return "CREATE INDEX IF NOT EXISTS idx_artifacts_owner_repo ON artifacts(owner_user_id, repo_key)"
+}
+
 pub func insertArtifactSql(
   id: in String,
   sessionId: in String,
@@ -2277,6 +2292,7 @@ pub func insertArtifactSql(
   sizeBytes: in String,
   createdAt: in String,
   repoKey: in String,
+  ownerUserId: in String,
 ): String {
   return "INSERT INTO artifacts (" + artifactColumns + ") VALUES (" + sqlLiteral(id) + ", " + sqlLiteral(sessionId) +
     ", " +
@@ -2293,6 +2309,8 @@ pub func insertArtifactSql(
     sqlLiteral(createdAt) +
     ", " +
     sqlLiteral(repoKey) +
+    ", " +
+    sqlLiteral(ownerUserId) +
     ")"
 }
 
@@ -2315,19 +2333,28 @@ pub func selectArtifactsCreatedAfterSql(sessionId: in String, afterCreatedAt: in
     " ORDER BY created_at ASC"
 }
 
-/// A repo-scoped artifacts listing (docs/phase7-autonomy.md §6), joined
-/// against `sessions` to check ownership: `artifacts` has no `user_id` column
-/// of its own (the reporting session's `session_id` is its only owner
-/// pointer), so the (user_id, repo_key) scope is enforced by joining on the
-/// session that reported each artifact rather than denormalizing user_id
-/// onto every artifact row. Oldest first, matching selectArtifactsBySessionSql.
+/// A repo-scoped artifacts listing (docs/phase7-autonomy.md §6), scoped
+/// directly by the denormalized `owner_user_id` column (#619) — NOT joined
+/// against `sessions`, so a repo-scoped artifact remains listable even after
+/// its reporting session is deleted. Oldest first, matching
+/// selectArtifactsBySessionSql.
 pub func selectRepoArtifactsSql(userId: in String, repoKey: in String): String {
-  return "SELECT " + artifactColumnsQualified + " FROM artifacts a JOIN sessions s ON a.session_id = s.id " +
-    "WHERE s.user_id = " +
-    sqlLiteral(userId) +
-    " AND a.repo_key = " +
+  return "SELECT " + artifactColumns + " FROM artifacts WHERE owner_user_id = " + sqlLiteral(userId) +
+    " AND repo_key = " +
     sqlLiteral(repoKey) +
-    " ORDER BY a.created_at ASC"
+    " ORDER BY created_at ASC"
+}
+
+/// A single repo-scoped artifact by id, owner-scoped by the same
+/// denormalized `owner_user_id` column selectRepoArtifactsSql uses (#619) —
+/// backs the session-independent repo-artifact download route. Returns no
+/// row for a session-scoped artifact (owner_user_id is '' for those; a bare
+/// '' userId argument can never legitimately match, since currentUserId()
+/// is never empty for an authenticated caller) or one owned by a different
+/// user, exactly like the listing query.
+pub func selectRepoArtifactByIdSql(id: in String, userId: in String): String {
+  return "SELECT " + artifactColumns + " FROM artifacts WHERE id = " + sqlLiteral(id) + " AND owner_user_id = " +
+    sqlLiteral(userId)
 }
 
 // ─── Phase 7: repo-scoped memory (remember / recall) ─────────────────────────

@@ -923,17 +923,17 @@ pub func uploadArtifactHandler(
     return Err(Web.badRequest("artifact exceeds the 8 MiB size limit"))
   }
   // A repo-scoped artifact is written under a repo-keyed directory and
-  // carries the normalized repo_key on its row; a session-scoped one (the
-  // default) keeps today's exact on-disk layout and empty repo_key. Either
-  // way `id` (the reporting session) stays the row's session_id — repo scope
-  // is additive, so the artifact still shows up in this session's own
-  // GET /api/sessions/{id}/artifacts listing (docs/phase7-autonomy.md §6).
-  val repoKey = if req.artifactScope == "repo" {
-    val artifactScope = resolveArtifactRepoScope(id)?
-    artifactScope.repoKey
-  } else {
-    ""
-  }
+  // carries the normalized repo_key on its row, plus the reporting session's
+  // owner denormalized onto owner_user_id (#619) so the artifact's ownership
+  // and listing survive that session being deleted later. A session-scoped
+  // one (the default) keeps today's exact on-disk layout, empty repo_key,
+  // and empty owner_user_id (ownership stays session-based, unaffected).
+  // Either way `id` (the reporting session) stays the row's session_id —
+  // repo scope is additive, so the artifact still shows up in this session's
+  // own GET /api/sessions/{id}/artifacts listing (docs/phase7-autonomy.md §6).
+  val repoScope = if req.artifactScope == "repo" { Some(value = resolveArtifactRepoScope(id)?) } else { None }
+  val repoKey = match repoScope { case Some(s) -> s.repoKey; case None -> "" }
+  val ownerUserId = match repoScope { case Some(s) -> s.userId; case None -> "" }
   val artifactId = Std.Uuid.uuidToString(Std.Uuid.newUuid())
   val storedName = artifactId + "_" + fileName
   val artifactDir = if repoKey.length > 0 {
@@ -949,7 +949,7 @@ pub func uploadArtifactHandler(
     case Ok(_) -> ()
     case Err(e) -> return Err(Web.internalError("failed to store artifact: " + IOError.message(e)))
   }
-  match CloudAgents.Repository.createArtifact(id, fileName, storedName, req.mimeType, req.description, toString(sizeBytes), repoKey) {
+  match CloudAgents.Repository.createArtifact(id, fileName, storedName, req.mimeType, req.description, toString(sizeBytes), repoKey, ownerUserId) {
     case Ok(a) -> return Ok(UploadArtifactResponse(id = a.id))
     case Err(e) -> return Err(dbError(e))
   }
@@ -1029,6 +1029,45 @@ pub func contentDispositionQuoted(name: in String): String {
 /// stored bytes with Content-Disposition set from the sanitized fileName.
 /// Returns the full Response directly (not a JSON body) since this is a
 /// binary download.
+/// Reads an artifact's bytes off disk and builds its download Response.
+/// Shared by downloadArtifactHandler (session-scoped route) and
+/// downloadRepoArtifactHandler (session-independent repo-scoped route,
+/// #619) — both have already resolved and ownership-checked `a` by the time
+/// this runs. `sessionDirId` is the reporting session's id, used only to
+/// build the legacy session-keyed on-disk path when `a.repoKey` is empty.
+func readArtifactBytesResponse(
+  a: in CloudAgents.Repository.Artifact, sessionDirId: in String
+): Result[Web.Response, Web.ApiError] {
+  // repo_key empty -> the original session path (unchanged); non-empty ->
+  // the repo-keyed path a repo-scoped upload was written under
+  // (docs/phase7-autonomy.md §6). Defense in depth: resolveArtifactRepoScope
+  // already rejects a `..`-bearing repoKey at write time (the only path that
+  // ever stores one), but re-checking here means a stored row can never
+  // walk this read path outside artifactsBaseDir() regardless of how it got
+  // written.
+  if containsPathTraversal(a.repoKey) {
+    return Err(Web.internalError("stored artifact has an invalid repo scope"))
+  }
+  val artifactDir = if a.repoKey.length > 0 {
+    CloudAgents.Repository.artifactsBaseDir() + "/repo/" + a.repoKey
+  } else {
+    CloudAgents.Repository.artifactsBaseDir() + "/" + sessionDirId
+  }
+  val path = artifactDir + "/" + a.storedName
+  val bytes = match Std.File.readBytes(path) {
+    case Ok(b) -> b
+    case Err(e) -> return Err(Web.internalError("failed to read artifact: " + IOError.message(e)))
+  }
+  val resp = Web.bytesResponse(200, a.mimeType, bytes.toArray())
+  return Ok(
+    Web.withResponseHeader(
+      resp,
+      "Content-Disposition",
+      "attachment; filename=\"" + contentDispositionQuoted(a.fileName) + "\""
+    )
+  )
+}
+
 pub func downloadArtifactHandler(id: in String, aid: in String): Result[Web.Response, Web.ApiError] {
   if id.length == 0 {
     return Err(Web.badRequest("id is required"))
@@ -1045,34 +1084,29 @@ pub func downloadArtifactHandler(id: in String, aid: in String): Result[Web.Resp
   if a.sessionId != id {
     return Err(Web.notFound("artifact not found"))
   }
-  // repo_key empty -> the original session path (unchanged); non-empty ->
-  // the repo-keyed path a repo-scoped upload was written under
-  // (docs/phase7-autonomy.md §6). Defense in depth: resolveArtifactRepoScope
-  // already rejects a `..`-bearing repoKey at write time (the only path that
-  // ever stores one), but re-checking here means a stored row can never
-  // walk this read path outside artifactsBaseDir() regardless of how it got
-  // written.
-  if containsPathTraversal(a.repoKey) {
-    return Err(Web.internalError("stored artifact has an invalid repo scope"))
+  return readArtifactBytesResponse(a, id)
+}
+
+/// GET /api/repos/artifacts/{aid} — user-originated, session-independent
+/// (#619). Unlike downloadArtifactHandler, ownership is checked via the
+/// artifact's own denormalized owner_user_id (CloudAgents.Repository.
+/// getRepoArtifactById), never via the reporting session — so a repo-scoped
+/// artifact discovered through listRepoArtifactsHandler stays downloadable
+/// even after that session is deleted. Only ever matches a repo-scoped
+/// artifact (owner_user_id is '' for a session-only one, and currentUserId()
+/// is never '' for an authenticated caller, so a session-only artifact can
+/// never match here); a session-scoped artifact still downloads exclusively
+/// via the session-keyed route above.
+pub func downloadRepoArtifactHandler(aid: in String): Result[Web.Response, Web.ApiError] {
+  if aid.length == 0 {
+    return Err(Web.badRequest("artifact id is required"))
   }
-  val artifactDir = if a.repoKey.length > 0 {
-    CloudAgents.Repository.artifactsBaseDir() + "/repo/" + a.repoKey
-  } else {
-    CloudAgents.Repository.artifactsBaseDir() + "/" + id
+  val a = match CloudAgents.Repository.getRepoArtifactById(aid, CloudAgents.Auth.currentUserId()) {
+    case Ok(Some(art)) -> art
+    case Ok(None) -> return Err(Web.notFound("artifact not found"))
+    case Err(e) -> return Err(dbError(e))
   }
-  val path = artifactDir + "/" + a.storedName
-  val bytes = match Std.File.readBytes(path) {
-    case Ok(b) -> b
-    case Err(e) -> return Err(Web.internalError("failed to read artifact: " + IOError.message(e)))
-  }
-  val resp = Web.bytesResponse(200, a.mimeType, bytes.toArray())
-  return Ok(
-    Web.withResponseHeader(
-      resp,
-      "Content-Disposition",
-      "attachment; filename=\"" + contentDispositionQuoted(a.fileName) + "\""
-    )
-  )
+  return readArtifactBytesResponse(a, a.sessionId)
 }
 
 // ─── Phase 7 §4: repo-scoped memory (remember / recall) ──────────────────────
