@@ -71,15 +71,27 @@ config Github {
 }
 
 pub func oauthClientId(): String {
-  return Github.clientId
+  val v = Github.clientId
+  if v.length > 0 {
+    return v
+  }
+  return envOr("CLOUD_AGENTS_GITHUB_CLIENT_ID")
 }
 
 func oauthClientSecret(): String {
-  return Github.clientSecret
+  val v = Github.clientSecret
+  if v.length > 0 {
+    return v
+  }
+  return envOr("CLOUD_AGENTS_GITHUB_CLIENT_SECRET")
 }
 
 func whitelistCsv(): String {
-  return Github.whitelist
+  val v = Github.whitelist
+  if v.length > 0 {
+    return v
+  }
+  return envOr("CLOUD_AGENTS_WHITELIST")
 }
 
 /// OAuth is usable only when both halves of the app registration are set.
