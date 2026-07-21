@@ -789,14 +789,7 @@ record ArtifactRepoScope {
 /// is sufficient: no legitimate host/owner/repo path segment is ever
 /// literally "..".
 func containsPathTraversal(s: in String): Bool {
-  var i = 0
-  while i + 1 < s.length {
-    if s.substring(i, 2) == ".." {
-      return true
-    }
-    i = i + 1
-  }
-  return false
+  return s.contains("..")
 }
 
 /// Resolve the owning user + normalized repo key for a repo-scoped artifact
@@ -1005,7 +998,6 @@ pub func listRepoArtifactsHandler(repoKey: in String): Result[ArtifactListRespon
   }
 }
 
-/// GET /api/sessions/{id}/artifacts/{aid} — user-originated. Streams the
 /// Escape a filename for an RFC 6266 `filename="..."` quoted-string: a `"`
 /// or `\` in the (already basename-sanitized) name would otherwise break
 /// out of the quotes, and a CR/LF would split the header — so backslash-
@@ -1026,9 +1018,6 @@ pub func contentDispositionQuoted(name: in String): String {
   return escaped
 }
 
-/// stored bytes with Content-Disposition set from the sanitized fileName.
-/// Returns the full Response directly (not a JSON body) since this is a
-/// binary download.
 /// Reads an artifact's bytes off disk and builds its download Response.
 /// Shared by downloadArtifactHandler (session-scoped route) and
 /// downloadRepoArtifactHandler (session-independent repo-scoped route,
@@ -1068,6 +1057,10 @@ func readArtifactBytesResponse(
   )
 }
 
+/// GET /api/sessions/{id}/artifacts/{aid} — user-originated. Streams the
+/// stored bytes with Content-Disposition set from the sanitized fileName.
+/// Returns the full Response directly (not a JSON body) since this is a
+/// binary download.
 pub func downloadArtifactHandler(id: in String, aid: in String): Result[Web.Response, Web.ApiError] {
   if id.length == 0 {
     return Err(Web.badRequest("id is required"))
