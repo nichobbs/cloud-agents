@@ -290,8 +290,8 @@ pub func exchangeCode(req: in ExchangeRequest): Result[TokenGrant, Web.ApiError]
       // same rule as the GITHUB_TOKEN vaulting above: never fail a successful
       // login over this.
       val refreshToken = CloudAgents.Auth.parseJsonString(body, "refresh_token")
-      val accessExpiresIn = CloudAgents.Auth.parseJsonString(body, "expires_in")
-      val refreshExpiresIn = CloudAgents.Auth.parseJsonString(body, "refresh_token_expires_in")
+      val accessExpiresIn = CloudAgents.Auth.parseJsonNumber(body, "expires_in")
+      val refreshExpiresIn = CloudAgents.Auth.parseJsonNumber(body, "refresh_token_expires_in")
       if refreshToken.length > 0 and accessExpiresIn.length > 0 and refreshExpiresIn.length > 0 {
         match CloudAgents.Repository.upsertGitHubOauthRefresh(userId, refreshToken, accessExpiresIn, refreshExpiresIn) {
           case Ok(_) -> ()
@@ -352,8 +352,8 @@ func doRefresh(userId: in String, refreshToken: in String): Result[String, Web.A
     case Err(e) -> println("NOTE: could not store the refreshed GITHUB_TOKEN in the credential vault: " + CloudAgents.Repository.credentialErrorMessage(e))
   }
   val newRefreshToken = CloudAgents.Auth.parseJsonString(body, "refresh_token")
-  val accessExpiresIn = CloudAgents.Auth.parseJsonString(body, "expires_in")
-  val refreshExpiresIn = CloudAgents.Auth.parseJsonString(body, "refresh_token_expires_in")
+  val accessExpiresIn = CloudAgents.Auth.parseJsonNumber(body, "expires_in")
+  val refreshExpiresIn = CloudAgents.Auth.parseJsonNumber(body, "refresh_token_expires_in")
   if newRefreshToken.length > 0 and accessExpiresIn.length > 0 and refreshExpiresIn.length > 0 {
     match CloudAgents.Repository.upsertGitHubOauthRefresh(userId, newRefreshToken, accessExpiresIn, refreshExpiresIn) {
       case Ok(_) -> ()

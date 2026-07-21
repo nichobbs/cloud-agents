@@ -79,6 +79,33 @@ test "access token and error parse from GitHub's exchange response" {
   assertEqual(exchangeErrorFromJson(bare), "bad_verification_code", "falls back to the error code")
 }
 
+test "expiring-token exchange fields parse as unquoted JSON numbers, not strings (#665)" {
+  // GitHub's real shape for an OAuth App enrolled in expiring user access
+  // tokens: expires_in and refresh_token_expires_in are bare JSON numbers,
+  // per GitHub's docs and RFC 6749 §5.1 — NOT quoted like access_token and
+  // refresh_token. parseJsonString scanning for a closing quote on these
+  // fields would walk past the number straight into the next field's key
+  // quote and return garbage; parseJsonNumber is the correct extractor (the
+  // same helper already used for GitHub's numeric user id).
+  val body = "{\"access_token\":\"ghu_16C7e42F292c6912E7710c838347Ae178B4a\",\"expires_in\":28800,\"refresh_token\":\"ghr_1B4a2e77838347a7E420ce178F2E7c6912E169246c34E1ccbF66C46812d16D5B1a9Dc86A1498f4D69c47670475C5\",\"refresh_token_expires_in\":15811200,\"scope\":\"\",\"token_type\":\"bearer\"}"
+  assertEqual(
+    accessTokenFromExchangeJson(body),
+    "ghu_16C7e42F292c6912E7710c838347Ae178B4a",
+    "access token still extracts"
+  )
+  assertEqual(
+    CloudAgents.Auth.parseJsonString(body, "refresh_token"),
+    "ghr_1B4a2e77838347a7E420ce178F2E7c6912E169246c34E1ccbF66C46812d16D5B1a9Dc86A1498f4D69c47670475C5",
+    "refresh token is quoted, parseJsonString is correct for it"
+  )
+  assertEqual(CloudAgents.Auth.parseJsonNumber(body, "expires_in"), "28800", "expires_in parses as a bare number")
+  assertEqual(
+    CloudAgents.Auth.parseJsonNumber(body, "refresh_token_expires_in"),
+    "15811200",
+    "refresh_token_expires_in parses as a bare number"
+  )
+}
+
 // ── Configuration ─────────────────────────────────────────────────────────────
 test "oauthConfigured requires both halves of the app registration" {
   clearOAuthEnv()
