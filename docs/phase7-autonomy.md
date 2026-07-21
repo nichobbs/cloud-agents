@@ -262,7 +262,7 @@ future sessions on this repo → `add_task`).
 Design mirrors the memory slice almost exactly (same callback channel, same
 `(user_id, repo_key)` scoping, same auth split):
 
-- Migration `0017_repo_tasks`: table `repo_tasks(id, user_id, repo_key,
+- Migration `0014_repo_tasks`: table `repo_tasks(id, user_id, repo_key,
   description, status, created_at, updated_at)` where `status ∈ {open,
   done}`, index on `(user_id, repo_key, status)`. A per-repo cap of 256
   entries, same value as memory's cap for consistency — but **counting
@@ -356,7 +356,7 @@ could turn yet.
    `CloudAgents.RepoKey`, repository + handlers + routes, shim
    transport/client/tools/registration, tests, docs. *Lands first —
    this PR.*
-2. **Slice 2 — notify**: migration `0014` (`notifications`), the
+2. **Slice 2 — notify**: migration `0015` (`notifications`), the
    `notification` SSE event, handlers + shim tool, tests.
 3. **Slice 3 — repo-scoped artifacts**: migration for `artifacts.repo_key`,
    `report_artifact` `scope` arg, repo-artifact list endpoint.
@@ -364,9 +364,16 @@ could turn yet.
    `profile_tools`, `docker_manager.l` `CLOUD_AGENTS_ENABLED_TOOLS`
    injection, shim conditional registration, profile UI/API surface.
 5. **Slice 5 — repo-scoped task list** (`add_task` / `list_tasks` /
-   `complete_task`): migration `0017` (`repo_tasks`), handlers + shim
+   `complete_task`): migration `0014` (`repo_tasks`), handlers + shim
    tools, tests. A near-copy of the memory slice with an open→done
    status; see the "Slice 5" section above.
+
+   (Slices 3 and 4 hadn't merged yet when slice 5 landed, so the actual
+   merge order claimed `0014`/`0015` out of the sequence sketched above —
+   `repo_tasks` ended up as `0014` and `notifications` as `0015`, both
+   renumbered post-merge to keep the migration array's version-prefix ==
+   array-position invariant `allMigrations()`'s own doc comment requires;
+   see issue #609.)
 
 Each slice is testable Docker-free the same way phase 6 is: handler
 tests hit the endpoints in-process; the shim's client is tested against

@@ -292,11 +292,11 @@ pub func allMigrations(): slice[Migration] {
       statements = [CloudAgents.Db.repoMemorySchemaSql(), CloudAgents.Db.repoMemoryIndexSql()]
     ),
     Migration(
-      version = "0017_repo_tasks",
+      version = "0014_repo_tasks",
       statements = [CloudAgents.Db.repoTasksSchemaSql(), CloudAgents.Db.repoTasksIndexSql()]
     ),
     Migration(
-      version = "0014_notifications",
+      version = "0015_notifications",
       statements = [CloudAgents.Db.notificationsSchemaSql(), CloudAgents.Db.notificationsSessionIndexSql()]
     )
   ]
