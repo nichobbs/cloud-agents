@@ -29,17 +29,51 @@ FROM --platform=linux/amd64 mcr.microsoft.com/dotnet/sdk:10.0 AS shim-builder
 # resolved version is echoed below) without piping install.sh's script
 # straight into a shell. Pass --build-arg LYRIC_VERSION=X.Y.Z to pin to a
 # specific release instead (e.g. to work around a fresh regression, or for a
-# fully reproducible build) — never pin below MIN_LYRIC_VERSION (repo root),
-# the documented known-good floor. Still downloads the exact release tarball
-# directly either way, not trusting install.sh's own --version handling —
-# see deploy/api.Dockerfile's comments for the full reasoning on that part.
+# fully reproducible build) — never below MIN_LYRIC_VERSION (repo root),
+# enforced below. Still downloads the exact release tarball directly either
+# way, not trusting install.sh's own --version handling — see
+# deploy/api.Dockerfile's comments for the full reasoning on that part.
+# Resolved ONCE here and shared into stage 2 via /tmp/lyric-version.txt
+# (#657) rather than each stage independently re-resolving 'latest' and
+# risking a mismatch if a new release lands between the two, or their
+# caches diverge — so --build-arg LYRIC_VERSION=X.Y.Z only needs passing to
+# THIS stage now, not duplicated to both.
+#
+# On build caching (#655): a RUN instruction's cache key depends only on
+# its own instruction TEXT, never on what it actually printed or fetched at
+# runtime — so once this layer is cached, the resolved "latest" stays
+# frozen at that value until something upstream (the base image digest,
+# an earlier instruction) invalidates the cache, exactly like any other
+# RUN. Docker's ADD-from-URL instruction is documented to auto-invalidate
+# on a remote Last-Modified/ETag change and was tried here specifically to
+# counter that — but it has no retry/fallback of its own, and a live test
+# against this exact URL reproduced a bare, non-retried 403 that failed
+# the ENTIRE build outright, before the retried curl fallback below ever
+# got a chance to run. That trades "may go stale under caching" for "a new
+# unretried hard-failure point" — a worse tradeoff, especially given the
+# Coolify failure that motivated this change may itself have been exactly
+# this kind of transient reachability blip. Rejected; not used. Freshness
+# here instead comes from: any cache-cold build (a new host, a pruned
+# cache, an upstream base-image digest bump) naturally re-resolving to
+# whatever's actually latest at that time, the resolved version always
+# being visible in the build log, and the override always being available
+# — a real improvement over the prior hardcoded pin (which needed a manual
+# commit to ever change at all) without adding a new failure mode. Forcing
+# a fresh resolution on an otherwise-warm cache is an operational concern
+# (docker build --no-cache, or Coolify's equivalent), not something baked
+# into the Dockerfile.
 ARG LYRIC_VERSION=""
+COPY MIN_LYRIC_VERSION /tmp/min-lyric-version.txt
 RUN apt-get update && apt-get install -y --no-install-recommends curl ca-certificates \
     && if [ -z "$LYRIC_VERSION" ]; then \
-         LYRIC_VERSION="$(curl -fsSL --connect-timeout 10 --max-time 30 https://api.github.com/repos/nichobbs/lyric-lang/releases/latest | sed -n 's/.*"tag_name": *"v\([^"]*\)".*/\1/p')"; \
+         LYRIC_VERSION="$(curl -fsSL --connect-timeout 10 --max-time 30 --retry 3 --retry-delay 3 https://api.github.com/repos/nichobbs/lyric-lang/releases/latest | sed -n 's/.*"tag_name": *"v\([^"]*\)".*/\1/p')"; \
        fi \
     && if [ -z "$LYRIC_VERSION" ]; then echo "ERROR: could not resolve the latest Lyric version from the GitHub API" >&2; exit 1; fi \
+    && MIN_VERSION="$(cat /tmp/min-lyric-version.txt)" \
+    && LOWEST="$(printf '%s\n%s\n' "$MIN_VERSION" "$LYRIC_VERSION" | sort -V | head -1)" \
+    && if [ "$LOWEST" != "$MIN_VERSION" ]; then echo "ERROR: Lyric version $LYRIC_VERSION is below the documented floor MIN_LYRIC_VERSION ($MIN_VERSION)" >&2; exit 1; fi \
     && echo "Installing Lyric compiler v${LYRIC_VERSION}" \
+    && echo -n "${LYRIC_VERSION}" > /tmp/lyric-version.txt \
     && curl -fsSL --connect-timeout 10 --max-time 120 --retry 3 --retry-delay 3 \
         -o /tmp/lyric.tgz \
         "https://github.com/nichobbs/lyric-lang/releases/download/v${LYRIC_VERSION}/lyric-${LYRIC_VERSION}-linux-x64.tar.gz" \
@@ -62,21 +96,18 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && npm install -g @anthropic-ai/claude-code \
     && rm -rf /var/lib/apt/lists/*
 
-# Install the Lyric compiler to a system location. Same auto-latest-with-
-# override behavior as the shim-builder stage above — see its comment for
-# the full reasoning. Resolved independently here (this stage starts from a
-# fresh FROM, no ARG/state carries over from stage 1), so pass the SAME
-# --build-arg LYRIC_VERSION=X.Y.Z to both stages if pinning for a
-# reproducible build across both.
-ARG LYRIC_VERSION=""
-RUN if [ -z "$LYRIC_VERSION" ]; then \
-      LYRIC_VERSION="$(curl -fsSL --connect-timeout 10 --max-time 30 https://api.github.com/repos/nichobbs/lyric-lang/releases/latest | sed -n 's/.*"tag_name": *"v\([^"]*\)".*/\1/p')"; \
-    fi \
-    && if [ -z "$LYRIC_VERSION" ]; then echo "ERROR: could not resolve the latest Lyric version from the GitHub API" >&2; exit 1; fi \
+# Install the Lyric compiler to a system location — the EXACT SAME version
+# the shim-builder stage above already resolved and floor-checked (#657),
+# via the shared /tmp/lyric-version.txt it wrote. No independent ARG/
+# resolution/floor-check here: a single source of truth for "which version"
+# instead of two stages each hitting the GitHub API and risking a mismatch.
+COPY --from=shim-builder /tmp/lyric-version.txt /tmp/lyric-version.txt
+RUN LYRIC_VERSION="$(cat /tmp/lyric-version.txt)" \
     && echo "Installing Lyric compiler v${LYRIC_VERSION}" \
     && curl -fsSL --connect-timeout 10 --max-time 120 --retry 3 --retry-delay 3 \
         -o /tmp/lyric.tgz \
         "https://github.com/nichobbs/lyric-lang/releases/download/v${LYRIC_VERSION}/lyric-${LYRIC_VERSION}-linux-x64.tar.gz" \
+    && rm -f /tmp/lyric-version.txt \
     && tar -xzf /tmp/lyric.tgz -C /usr/local/bin \
     && rm -f /tmp/lyric.tgz \
     && lyric --version
