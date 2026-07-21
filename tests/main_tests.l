@@ -42,23 +42,45 @@ test "badBody returns a 400 bad request (#351)" {
 // accessor exercised elsewhere in this codebase, so this suite doesn't reach
 // for one either.
 test "session Resp helpers map Ok to 200 and Err to the error's own status (#351)" {
-  assertEqualInt(createSessionResp(Ok(value = CreateSessionResponse(sessionId = "s1"))).status, 200, "createSessionResp Ok -> 200")
+  assertEqualInt(
+    createSessionResp(Ok(value = CreateSessionResponse(sessionId = "s1"))).status,
+    200,
+    "createSessionResp Ok -> 200"
+  )
   assertEqualInt(createSessionResp(Err(error = Web.badRequest("bad"))).status, 400, "createSessionResp Err -> 400")
 
-  assertEqualInt(sessionProfileResp(Ok(value = SessionProfileRef(profileId = "p1"))).status, 200, "sessionProfileResp Ok -> 200")
+  assertEqualInt(
+    sessionProfileResp(Ok(value = SessionProfileRef(profileId = "p1"))).status,
+    200,
+    "sessionProfileResp Ok -> 200"
+  )
   assertEqualInt(sessionProfileResp(Err(error = Web.notFound("missing"))).status, 404, "sessionProfileResp Err -> 404")
 
   val noRuns: slice[Run] = []
   assertEqualInt(runListResp(Ok(value = RunList(runs = noRuns))).status, 200, "runListResp Ok -> 200")
   assertEqualInt(runListResp(Err(error = Web.internalError("db down"))).status, 500, "runListResp Err -> 500")
 
-  val repo = SessionRepo(id = "r1", sessionId = "s1", repoUrl = "https://github.com/a/b", branch = "main", createdAt = "1")
+  val repo = SessionRepo(
+    id = "r1",
+    sessionId = "s1",
+    repoUrl = "https://github.com/a/b",
+    branch = "main",
+    createdAt = "1"
+  )
   assertEqualInt(sessionRepoResp(Ok(value = repo)).status, 200, "sessionRepoResp Ok -> 200")
   assertEqualInt(sessionRepoResp(Err(error = Web.badRequest("bad"))).status, 400, "sessionRepoResp Err -> 400")
 
   val noRepos: slice[SessionRepo] = []
-  assertEqualInt(sessionRepoListResp(Ok(value = SessionRepoList(repos = noRepos))).status, 200, "sessionRepoListResp Ok -> 200")
-  assertEqualInt(sessionRepoListResp(Err(error = Web.notFound("missing"))).status, 404, "sessionRepoListResp Err -> 404")
+  assertEqualInt(
+    sessionRepoListResp(Ok(value = SessionRepoList(repos = noRepos))).status,
+    200,
+    "sessionRepoListResp Ok -> 200"
+  )
+  assertEqualInt(
+    sessionRepoListResp(Err(error = Web.notFound("missing"))).status,
+    404,
+    "sessionRepoListResp Err -> 404"
+  )
 }
 
 // Split one-block-per-helper (#351 follow-up): the combined version failed
@@ -72,7 +94,11 @@ test "session Resp helpers map Ok to 200 and Err to the error's own status (#351
 // instead of guessing at a fix blind.
 test "messageListResp maps Ok to 200 and Err to the error's own status (#351)" {
   val noMessages: slice[Message] = []
-  assertEqualInt(messageListResp(Ok(value = MessageList(messages = noMessages))).status, 200, "messageListResp Ok -> 200")
+  assertEqualInt(
+    messageListResp(Ok(value = MessageList(messages = noMessages))).status,
+    200,
+    "messageListResp Ok -> 200"
+  )
   assertEqualInt(messageListResp(Err(error = Web.badRequest("bad"))).status, 400, "messageListResp Err -> 400")
 }
 
@@ -100,7 +126,11 @@ test "commentResp maps Err to the error's own status (#351)" {
 
 test "commentListResp maps Ok to 200 and Err to the error's own status (#351)" {
   val noComments: slice[Comment] = []
-  assertEqualInt(commentListResp(Ok(value = CommentList(comments = noComments))).status, 200, "commentListResp Ok -> 200")
+  assertEqualInt(
+    commentListResp(Ok(value = CommentList(comments = noComments))).status,
+    200,
+    "commentListResp Ok -> 200"
+  )
   assertEqualInt(commentListResp(Err(error = Web.internalError("db down"))).status, 500, "commentListResp Err -> 500")
 }
 
@@ -121,22 +151,47 @@ test "prompt Resp helpers map Ok to 200 and Err to the error's own status (#351)
   assertEqualInt(promptListResp(Ok(value = PromptList(prompts = noPrompts))).status, 200, "promptListResp Ok -> 200")
   assertEqualInt(promptListResp(Err(error = Web.internalError("db down"))).status, 500, "promptListResp Err -> 500")
 
-  assertEqualInt(renderedPromptResp(Ok(value = RenderedPrompt(rendered = "hi"))).status, 200, "renderedPromptResp Ok -> 200")
+  assertEqualInt(
+    renderedPromptResp(Ok(value = RenderedPrompt(rendered = "hi"))).status,
+    200,
+    "renderedPromptResp Ok -> 200"
+  )
   assertEqualInt(renderedPromptResp(Err(error = Web.badRequest("bad"))).status, 400, "renderedPromptResp Err -> 400")
 
   val noTags: slice[String] = []
-  val prompt = Prompt(id = "p1", userId = "u1", name = "n", body = "b", useCount = "0", createdAt = "1", updatedAt = "1", tags = noTags)
+  val prompt = Prompt(
+    id = "p1",
+    userId = "u1",
+    name = "n",
+    body = "b",
+    useCount = "0",
+    createdAt = "1",
+    updatedAt = "1",
+    tags = noTags
+  )
   assertEqualInt(promptResp(Ok(value = prompt)).status, 200, "promptResp Ok -> 200")
   assertEqualInt(promptResp(Err(error = Web.notFound("missing"))).status, 404, "promptResp Err -> 404")
 }
 
 test "credential/profile Resp helpers map Ok to 200 and Err to the error's own status (#351)" {
   val noCreds: slice[CredentialName] = []
-  assertEqualInt(credentialNameListResp(Ok(value = CredentialNameList(credentials = noCreds))).status, 200, "credentialNameListResp Ok -> 200")
-  assertEqualInt(credentialNameListResp(Err(error = Web.internalError("db down"))).status, 500, "credentialNameListResp Err -> 500")
+  assertEqualInt(
+    credentialNameListResp(Ok(value = CredentialNameList(credentials = noCreds))).status,
+    200,
+    "credentialNameListResp Ok -> 200"
+  )
+  assertEqualInt(
+    credentialNameListResp(Err(error = Web.internalError("db down"))).status,
+    500,
+    "credentialNameListResp Err -> 500"
+  )
 
   val noProfiles: slice[Profile] = []
-  assertEqualInt(profileListResp(Ok(value = ProfileList(profiles = noProfiles))).status, 200, "profileListResp Ok -> 200")
+  assertEqualInt(
+    profileListResp(Ok(value = ProfileList(profiles = noProfiles))).status,
+    200,
+    "profileListResp Ok -> 200"
+  )
   assertEqualInt(profileListResp(Err(error = Web.badRequest("bad"))).status, 400, "profileListResp Err -> 400")
 
   val noProfileCreds: slice[String] = []
@@ -152,6 +207,8 @@ test "credential/profile Resp helpers map Ok to 200 and Err to the error's own s
     skillIds = noProfileGrants,
     subagentIds = noProfileGrants,
     mcpServerIds = noProfileGrants,
+    toolMode = "all",
+    tools = noProfileGrants,
     createdAt = "1",
     updatedAt = "1"
   )
@@ -165,12 +222,24 @@ test "webhook Resp helpers map Ok to 200 and Err to the error's own status (#351
   assertEqualInt(webhookResp(Err(error = Web.badRequest("bad"))).status, 400, "webhookResp Err -> 400")
 
   val noWebhooks: slice[Webhook] = []
-  assertEqualInt(webhookListResp(Ok(value = WebhookList(webhooks = noWebhooks))).status, 200, "webhookListResp Ok -> 200")
+  assertEqualInt(
+    webhookListResp(Ok(value = WebhookList(webhooks = noWebhooks))).status,
+    200,
+    "webhookListResp Ok -> 200"
+  )
   assertEqualInt(webhookListResp(Err(error = Web.internalError("db down"))).status, 500, "webhookListResp Err -> 500")
 
   val noEvents: slice[WebhookEvent] = []
-  assertEqualInt(webhookEventListResp(Ok(value = WebhookEventList(events = noEvents))).status, 200, "webhookEventListResp Ok -> 200")
-  assertEqualInt(webhookEventListResp(Err(error = Web.notFound("missing"))).status, 404, "webhookEventListResp Err -> 404")
+  assertEqualInt(
+    webhookEventListResp(Ok(value = WebhookEventList(events = noEvents))).status,
+    200,
+    "webhookEventListResp Ok -> 200"
+  )
+  assertEqualInt(
+    webhookEventListResp(Err(error = Web.notFound("missing"))).status,
+    404,
+    "webhookEventListResp Err -> 404"
+  )
 }
 
 test "MCP-callback Resp helpers map Ok to 200 and Err to the error's own status (#351)" {
@@ -220,7 +289,11 @@ test "MCP-callback Resp helpers map Ok to 200 and Err to the error's own status 
 }
 
 test "HealthStatus.toJson() encodes the status field (#346/#360)" {
-  assertEqual(HealthStatus(status = "Healthy").toJson(), "{\"status\":\"Healthy\"}", "matches the old hand-rolled shape")
+  assertEqual(
+    HealthStatus(status = "Healthy").toJson(),
+    "{\"status\":\"Healthy\"}",
+    "matches the old hand-rolled shape"
+  )
 }
 
 // NOT covered here: HealthHandler.handle() / AuthMiddleware.wrap() end-to-end
@@ -239,7 +312,6 @@ test "HealthStatus.toJson() encodes the status field (#346/#360)" {
 // one, unlike this reverted test harness — so Handler/Middleware runtime
 // behavior is exercised only implicitly via the real server
 // (scripts/run-api.sh), not by an automated test, until this is resolved.
-
 test "isValidPort accepts valid TCP ports" {
   assertTrue(isValidPort("1"), "minimum port")
   assertTrue(isValidPort("8080"), "common port")

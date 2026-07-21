@@ -84,3 +84,42 @@ pub func timeoutFromRaw(raw: in String): Int {
   }
   return n
 }
+
+// ─── Phase 7 §7: per-profile tool enablement ───────────────────────────────
+//
+// Split from main.l for the same testability reason as the timeout policy
+// above (#527): this decides, given the raw CLOUD_AGENTS_ENABLED_TOOLS env
+// value, whether one named tool should be registered — no process
+// environment access needed to exercise it.
+/// Whether `toolName` should be registered given the raw
+/// CLOUD_AGENTS_ENABLED_TOOLS value (docs/phase7-autonomy.md §7): empty
+/// means "no restriction" — register every tool, byte-for-byte the
+/// pre-phase-7 behaviour (a pre-phase-7 container never sets this var at
+/// all, and CloudAgents.Docker never sets it for an 'all'-mode profile
+/// either). A non-empty value is a comma-separated allowlist; only a name
+/// appearing in it is enabled.
+///
+/// Hand-rolled index-of-based comma split rather than a stdlib split
+/// method: this codebase's established convention (see
+/// CloudAgents.RepoKey.firstIndexOf) is to avoid stdlib "convenience"
+/// string/collection methods that compile but panic at runtime
+/// (docs/lyric/gotchas.md) — a hand-rolled loop over a small,
+/// operator/host-controlled CSV is cheap and reliable.
+pub func toolIsEnabled(enabledCsv: in String, toolName: in String): Bool {
+  if enabledCsv.length == 0 {
+    return true
+  }
+  var start = 0
+  var i = 0
+  while i <= enabledCsv.length {
+    if i == enabledCsv.length or enabledCsv.substring(i, 1) == "," {
+      val token = enabledCsv.substring(start, i - start)
+      if token == toolName {
+        return true
+      }
+      start = i + 1
+    }
+    i = i + 1
+  }
+  return false
+}

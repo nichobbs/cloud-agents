@@ -292,6 +292,37 @@ pub record UserDto {
 // UserDto.toJson(self: UserDto): String
 ```
 
+`@generate(Json)`'s derived `fromJson` requires every field present in the
+body — there is no per-field "optional, defaults to X when absent" support
+(confirmed for `String`, `slice[T]`, and `Option[T]` fields alike: a
+missing field fails decode with `"missing field '<name>'"`). Adding a field
+to an existing wire request is a breaking change for any caller that
+doesn't send it yet.
+
+### Std.Json (low-level parser, for patching around the above)
+
+```lyric
+import Std.Json
+
+val doc = Std.Json.tryParseJson(body)   // Result[JsonDoc, String]
+val root = Std.Json.rootElement(doc)
+match Std.Json.tryGetProperty(root, "fieldName") {
+  case Some(_) -> ()   // present
+  case None -> ()      // absent
+}
+Std.Json.disposeJson(doc)               // release; defer { } this
+```
+
+A real `System.Text.Json`-backed parser for walking arbitrary JSON without
+a typed record — `tryParseJson`/`rootElement`/`tryGetProperty`/`getString`/
+`disposeJson` and friends. Used to detect whether a specific key is present
+in a raw body *before* handing it to a `@generate(Json)` record's
+`fromJson` — e.g. to splice in a JSON-default value for a field that's new
+on an existing request shape, so an old caller that omits it doesn't 400 at
+the decode boundary (see `CloudAgents.Profiles.patchMissingToolFields` in
+the cloud-agents app for a worked example). Always `disposeJson` (typically
+via `defer { }`) once done walking a `JsonDoc`.
+
 ---
 
 ## Application libraries (add to lyric.toml)

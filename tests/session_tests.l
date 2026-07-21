@@ -13,7 +13,6 @@ import extern System.Environment as Env
 import extern System.String as DotNetString
 
 // ── Live-DB plumbing (same pattern as tests/prompt_tests.l) ───────────────────
-
 @externTarget("System.IO.File.Delete")
 func fileDelete(path: in String): Unit = ()
 
@@ -52,17 +51,11 @@ func mustOptSession(r: in Result[Option[AgentSession], CloudAgents.Sqlite.DbErro
 }
 
 func mustClaim(r: in Result[Bool, CloudAgents.Sqlite.DbError]): Bool {
-  return match r {
-    case Ok(b) -> b
-    case Err(e) -> panic("run claim failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
-  }
+  return match r { case Ok(b) -> b; case Err(e) -> panic("run claim failed: " + CloudAgents.Sqlite.dbErrorMessage(e)) }
 }
 
 func mustInt(r: in Result[Int, CloudAgents.Sqlite.DbError]): Int {
-  return match r {
-    case Ok(n) -> n
-    case Err(e) -> panic("expected Ok(Int): " + CloudAgents.Sqlite.dbErrorMessage(e))
-  }
+  return match r { case Ok(n) -> n; case Err(e) -> panic("expected Ok(Int): " + CloudAgents.Sqlite.dbErrorMessage(e)) }
 }
 
 // Async wrapper so a run claim can be `spawn`ed inside a `scope` block (#206)
@@ -76,7 +69,6 @@ async func claimAsync(sessionId: in String): Bool {
 // ── Helpers ──────────────────────────────────────────────────────────────────
 // Lyric match arms are `case Pattern -> expression` (no block form), so
 // multi-assertion checks are extracted into named functions.
-
 func verifyNewSession(s: in AgentSession, sessionId: in String): Unit {
   assertEqual(s.sessionId, sessionId, "session ID matches")
   assertEqual(s.repoUrl, "https://github.com/nic/repos/cloud-agents", "repoUrl matches")
@@ -140,7 +132,6 @@ func verifyListSessionsBody(body: in String): Unit {
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
-
 test "Test Session Store CRUD Operations" {
   val dbPath = useFreshTestDb("session-crud")
   defer {
@@ -208,15 +199,19 @@ test "Run claim is exclusive per session" {
   defer {
     cleanupTestDb(dbPath)
   }
-  mustUnit(addSession(makeAgentSession(
-    sessionId = "claim-1",
-    repoUrl = "https://github.com/nic/repo",
-    branch = "main",
-    containerId = "",
-    harness = "claude",
-    model = "claude-opus-4-8",
-    nativeSessionId = "claim-1"
-  )))
+  mustUnit(
+    addSession(
+      makeAgentSession(
+        sessionId = "claim-1",
+        repoUrl = "https://github.com/nic/repo",
+        branch = "main",
+        containerId = "",
+        harness = "claude",
+        model = "claude-opus-4-8",
+        nativeSessionId = "claim-1"
+      )
+    )
+  )
 
   assertTrue(mustClaim(CloudAgents.SessionStore.tryBeginRun("claim-1")), "first claim wins")
   assertFalse(mustClaim(CloudAgents.SessionStore.tryBeginRun("claim-1")), "second claim refused while running")
@@ -239,15 +234,19 @@ test "Run claim is exclusive under real concurrent contention (#206)" {
   defer {
     cleanupTestDb(dbPath)
   }
-  mustUnit(addSession(makeAgentSession(
-    sessionId = "claim-race",
-    repoUrl = "https://github.com/nic/repo",
-    branch = "main",
-    containerId = "",
-    harness = "claude",
-    model = "claude-opus-4-8",
-    nativeSessionId = "claim-race"
-  )))
+  mustUnit(
+    addSession(
+      makeAgentSession(
+        sessionId = "claim-race",
+        repoUrl = "https://github.com/nic/repo",
+        branch = "main",
+        containerId = "",
+        harness = "claude",
+        model = "claude-opus-4-8",
+        nativeSessionId = "claim-race"
+      )
+    )
+  )
 
   scope {
     val t1 = spawn claimAsync("claim-race")
@@ -270,15 +269,19 @@ test "deleteSessionRecord removes the row and is a no-op when already gone (#310
     cleanupTestDb(dbPath)
   }
   val sessionId = "del-rec-1"
-  mustUnit(addSession(makeAgentSession(
-    sessionId = sessionId,
-    repoUrl = "https://github.com/nic/repo",
-    branch = "main",
-    containerId = "",
-    harness = "claude",
-    model = "claude-opus-4-8",
-    nativeSessionId = sessionId
-  )))
+  mustUnit(
+    addSession(
+      makeAgentSession(
+        sessionId = sessionId,
+        repoUrl = "https://github.com/nic/repo",
+        branch = "main",
+        containerId = "",
+        harness = "claude",
+        model = "claude-opus-4-8",
+        nativeSessionId = sessionId
+      )
+    )
+  )
   // Present before the delete.
   match mustOptSession(getSession(sessionId)) {
     case Some(_) -> ()
@@ -299,15 +302,19 @@ test "recoverDanglingSessions frees sessions stuck RUNNING on restart (#198)" {
   defer {
     cleanupTestDb(dbPath)
   }
-  mustUnit(addSession(makeAgentSession(
-    sessionId = "dangling-1",
-    repoUrl = "https://github.com/nic/repo",
-    branch = "main",
-    containerId = "",
-    harness = "claude",
-    model = "claude-opus-4-8",
-    nativeSessionId = "dangling-1"
-  )))
+  mustUnit(
+    addSession(
+      makeAgentSession(
+        sessionId = "dangling-1",
+        repoUrl = "https://github.com/nic/repo",
+        branch = "main",
+        containerId = "",
+        harness = "claude",
+        model = "claude-opus-4-8",
+        nativeSessionId = "dangling-1"
+      )
+    )
+  )
   // Claim it so it is RUNNING, then "crash" — the process dies without ever
   // calling endRun, leaving the row dangling. A second claim is refused.
   assertTrue(mustClaim(CloudAgents.SessionStore.tryBeginRun("dangling-1")), "claim wins")
@@ -352,15 +359,19 @@ test "importLegacyEnvSessions imports only sessions not already in the store (#3
     cleanupTestDb(dbPath)
   }
   // A session that already exists in the store.
-  mustUnit(addSession(makeAgentSession(
-    sessionId = "legacy-existing",
-    repoUrl = "https://github.com/nic/original",
-    branch = "main",
-    containerId = "",
-    harness = "claude",
-    model = "claude-opus-4-8",
-    nativeSessionId = "legacy-existing"
-  )))
+  mustUnit(
+    addSession(
+      makeAgentSession(
+        sessionId = "legacy-existing",
+        repoUrl = "https://github.com/nic/original",
+        branch = "main",
+        containerId = "",
+        harness = "claude",
+        model = "claude-opus-4-8",
+        nativeSessionId = "legacy-existing"
+      )
+    )
+  )
   // The env carries a *changed* copy of that existing session plus a brand-new
   // one. Import must insert only the new session and leave the existing row
   // untouched (skipped), not overwrite it with the env copy.
@@ -500,13 +511,23 @@ test "Test Handler createSession validation" {
   }
 
   // Test non-https repoUrl validation
-  val req1b = CreateSessionRequest(repoUrl = "git@github.com:nic/repo.git", branch = "main", harness = "claude", model = "claude-opus-4-8")
+  val req1b = CreateSessionRequest(
+    repoUrl = "git@github.com:nic/repo.git",
+    branch = "main",
+    harness = "claude",
+    model = "claude-opus-4-8"
+  )
   match createSession(req1b) {
     case Ok(_) -> assertTrue(false, "should reject non-https repoUrl")
     case Err(err) -> assertEqualInt(err.status, 400, "non-https returns 400")
   }
 
-  val req1c = CreateSessionRequest(repoUrl = "http://github.com/nic/repo", branch = "main", harness = "claude", model = "claude-opus-4-8")
+  val req1c = CreateSessionRequest(
+    repoUrl = "http://github.com/nic/repo",
+    branch = "main",
+    harness = "claude",
+    model = "claude-opus-4-8"
+  )
   match createSession(req1c) {
     case Ok(_) -> assertTrue(false, "should reject http repoUrl")
     case Err(err) -> assertEqualInt(err.status, 400, "http returns 400")
@@ -514,51 +535,91 @@ test "Test Handler createSession validation" {
 
   // SSRF: a repoUrl pointing at a loopback/link-local/private host must be
   // rejected before the runner clones it (#33).
-  val ssrfLoopback = CreateSessionRequest(repoUrl = "https://127.0.0.1/nic/repo", branch = "main", harness = "claude", model = "claude-opus-4-8")
+  val ssrfLoopback = CreateSessionRequest(
+    repoUrl = "https://127.0.0.1/nic/repo",
+    branch = "main",
+    harness = "claude",
+    model = "claude-opus-4-8"
+  )
   match createSession(ssrfLoopback) {
     case Ok(_) -> assertTrue(false, "should reject loopback repoUrl")
     case Err(err) -> assertEqualInt(err.status, 400, "loopback repoUrl returns 400")
   }
-  val ssrfMetadata = CreateSessionRequest(repoUrl = "https://169.254.169.254/latest/meta-data", branch = "main", harness = "claude", model = "claude-opus-4-8")
+  val ssrfMetadata = CreateSessionRequest(
+    repoUrl = "https://169.254.169.254/latest/meta-data",
+    branch = "main",
+    harness = "claude",
+    model = "claude-opus-4-8"
+  )
   match createSession(ssrfMetadata) {
     case Ok(_) -> assertTrue(false, "should reject link-local metadata repoUrl")
     case Err(err) -> assertEqualInt(err.status, 400, "link-local repoUrl returns 400")
   }
-  val ssrfLocalhost = CreateSessionRequest(repoUrl = "https://localhost/nic/repo", branch = "main", harness = "claude", model = "claude-opus-4-8")
+  val ssrfLocalhost = CreateSessionRequest(
+    repoUrl = "https://localhost/nic/repo",
+    branch = "main",
+    harness = "claude",
+    model = "claude-opus-4-8"
+  )
   match createSession(ssrfLocalhost) {
     case Ok(_) -> assertTrue(false, "should reject localhost repoUrl")
     case Err(err) -> assertEqualInt(err.status, 400, "localhost repoUrl returns 400")
   }
   // Userinfo must not smuggle a public host past the check (authority parsing).
-  val ssrfUserinfo = CreateSessionRequest(repoUrl = "https://github.com@127.0.0.1/repo", branch = "main", harness = "claude", model = "claude-opus-4-8")
+  val ssrfUserinfo = CreateSessionRequest(
+    repoUrl = "https://github.com@127.0.0.1/repo",
+    branch = "main",
+    harness = "claude",
+    model = "claude-opus-4-8"
+  )
   match createSession(ssrfUserinfo) {
     case Ok(_) -> assertTrue(false, "should reject userinfo-smuggled loopback repoUrl")
     case Err(err) -> assertEqualInt(err.status, 400, "userinfo loopback repoUrl returns 400")
   }
 
   // Test empty branch validation
-  val req2 = CreateSessionRequest(repoUrl = "https://github.com/nic/repos/cloud-agents", branch = "", harness = "claude", model = "claude-opus-4-8")
+  val req2 = CreateSessionRequest(
+    repoUrl = "https://github.com/nic/repos/cloud-agents",
+    branch = "",
+    harness = "claude",
+    model = "claude-opus-4-8"
+  )
   match createSession(req2) {
     case Ok(_) -> assertTrue(false, "should fail on empty branch")
     case Err(err) -> assertEqualInt(err.status, 400, "returns 400 bad request")
   }
 
   // Test successful session creation
-  val req3 = CreateSessionRequest(repoUrl = "https://github.com/nic/repos/cloud-agents", branch = "main", harness = "claude", model = "claude-opus-4-8")
+  val req3 = CreateSessionRequest(
+    repoUrl = "https://github.com/nic/repos/cloud-agents",
+    branch = "main",
+    harness = "claude",
+    model = "claude-opus-4-8"
+  )
   match createSession(req3) {
     case Ok(resp) -> verifyAndCleanCreateSession(resp)
     case Err(_) -> assertTrue(false, "should successfully create session")
   }
 
   // An empty model must be backfilled with the harness default, not stored empty.
-  val req4 = CreateSessionRequest(repoUrl = "https://github.com/nic/repos/cloud-agents", branch = "main", harness = "codex", model = "")
+  val req4 = CreateSessionRequest(
+    repoUrl = "https://github.com/nic/repos/cloud-agents",
+    branch = "main",
+    harness = "codex",
+    model = ""
+  )
   match createSession(req4) {
     case Ok(resp) -> verifyModelBackfill(resp)
     case Err(_) -> assertTrue(false, "should create session with empty model")
   }
 
   // The gemini harness is accepted and gets its own default model.
-  val req5 = CreateSessionRequest(repoUrl = "https://github.com/nic/repos/cloud-agents", branch = "main", harness = "gemini", model = "")
+  val req5 = CreateSessionRequest(
+    repoUrl = "https://github.com/nic/repos/cloud-agents",
+    branch = "main",
+    harness = "gemini",
+    model = ""
+  )
   match createSession(req5) {
     case Ok(resp) -> verifyGeminiBackfill(resp)
     case Err(_) -> assertTrue(false, "should accept the gemini harness")
@@ -569,19 +630,34 @@ test "Test Handler createSession validation" {
 
 test "Handler createSession rejects unsafe inputs" {
   // A branch starting with '-' could be misread as a git command-line option.
-  val r1 = CreateSessionRequest(repoUrl = "https://github.com/nic/repo", branch = "-evil", harness = "claude", model = "")
+  val r1 = CreateSessionRequest(
+    repoUrl = "https://github.com/nic/repo",
+    branch = "-evil",
+    harness = "claude",
+    model = ""
+  )
   match createSession(r1) {
     case Ok(_) -> assertTrue(false, "should reject leading-dash branch")
     case Err(err) -> assertEqualInt(err.status, 400, "leading-dash branch -> 400")
   }
 
-  val r2 = CreateSessionRequest(repoUrl = "https://github.com/nic/repo", branch = "a..b", harness = "claude", model = "")
+  val r2 = CreateSessionRequest(
+    repoUrl = "https://github.com/nic/repo",
+    branch = "a..b",
+    harness = "claude",
+    model = ""
+  )
   match createSession(r2) {
     case Ok(_) -> assertTrue(false, "should reject '..' in branch")
     case Err(err) -> assertEqualInt(err.status, 400, "'..' branch -> 400")
   }
 
-  val r3 = CreateSessionRequest(repoUrl = "https://github.com/nic/repo", branch = "main", harness = "garbage", model = "")
+  val r3 = CreateSessionRequest(
+    repoUrl = "https://github.com/nic/repo",
+    branch = "main",
+    harness = "garbage",
+    model = ""
+  )
   match createSession(r3) {
     case Ok(_) -> assertTrue(false, "should reject unknown harness")
     case Err(err) -> assertEqualInt(err.status, 400, "unknown harness -> 400")
@@ -589,13 +665,23 @@ test "Handler createSession rejects unsafe inputs" {
 
   // A quote in the repoUrl used to corrupt (or forge fields in) the session
   // store JSON; now rejected at the boundary as well as escaped in the store.
-  val r4 = CreateSessionRequest(repoUrl = "https://github.com/nic/re\"po", branch = "main", harness = "claude", model = "")
+  val r4 = CreateSessionRequest(
+    repoUrl = "https://github.com/nic/re\"po",
+    branch = "main",
+    harness = "claude",
+    model = ""
+  )
   match createSession(r4) {
     case Ok(_) -> assertTrue(false, "should reject quote in repoUrl")
     case Err(err) -> assertEqualInt(err.status, 400, "quoted repoUrl -> 400")
   }
 
-  val r5 = CreateSessionRequest(repoUrl = "https://github.com/nic/repo", branch = "main", harness = "claude", model = "bad model")
+  val r5 = CreateSessionRequest(
+    repoUrl = "https://github.com/nic/repo",
+    branch = "main",
+    harness = "claude",
+    model = "bad model"
+  )
   match createSession(r5) {
     case Ok(_) -> assertTrue(false, "should reject whitespace in model")
     case Err(err) -> assertEqualInt(err.status, 400, "whitespace model -> 400")
@@ -608,7 +694,12 @@ test "Handler createSession rejects unsafe inputs" {
     case Err(err) -> assertEqualInt(err.status, 400, "'@' branch -> 400")
   }
 
-  val r7 = CreateSessionRequest(repoUrl = "https://github.com/nic/repo", branch = "feat/.wip", harness = "claude", model = "")
+  val r7 = CreateSessionRequest(
+    repoUrl = "https://github.com/nic/repo",
+    branch = "feat/.wip",
+    harness = "claude",
+    model = ""
+  )
   match createSession(r7) {
     case Ok(_) -> assertTrue(false, "should reject dot-leading component")
     case Err(err) -> assertEqualInt(err.status, 400, "dot-leading component -> 400")
@@ -625,20 +716,35 @@ test "createSession rejects a known-but-disabled harness (#560)" {
   // isHarnessEnabled gate specifically — a name isKnownHarness accepts, but
   // this deployment's CLOUD_AGENTS_ENABLED_HARNESSES doesn't include.
   Env.SetEnvironmentVariable("CLOUD_AGENTS_ENABLED_HARNESSES", "codex")
-  val disabled = CreateSessionRequest(repoUrl = "https://github.com/nic/repo", branch = "main", harness = "claude", model = "")
+  val disabled = CreateSessionRequest(
+    repoUrl = "https://github.com/nic/repo",
+    branch = "main",
+    harness = "claude",
+    model = ""
+  )
   match createSession(disabled) {
     case Ok(_) -> assertTrue(false, "should reject a harness this deployment disabled")
     case Err(err) -> assertEqualInt(err.status, 400, "disabled harness -> 400")
   }
   // The resolved-default path (empty harness -> "claude") must be checked
   // too, not just an explicitly-requested one.
-  val disabledDefault = CreateSessionRequest(repoUrl = "https://github.com/nic/repo", branch = "main", harness = "", model = "")
+  val disabledDefault = CreateSessionRequest(
+    repoUrl = "https://github.com/nic/repo",
+    branch = "main",
+    harness = "",
+    model = ""
+  )
   match createSession(disabledDefault) {
     case Ok(_) -> assertTrue(false, "should reject when the default harness itself is disabled")
     case Err(err) -> assertEqualInt(err.status, 400, "disabled default harness -> 400")
   }
   Env.SetEnvironmentVariable("CLOUD_AGENTS_ENABLED_HARNESSES", "")
-  val reenabled = CreateSessionRequest(repoUrl = "https://github.com/nic/repo", branch = "main", harness = "claude", model = "")
+  val reenabled = CreateSessionRequest(
+    repoUrl = "https://github.com/nic/repo",
+    branch = "main",
+    harness = "claude",
+    model = ""
+  )
   match createSession(reenabled) {
     case Ok(_) -> ()
     case Err(err) -> assertTrue(false, "claude should be accepted once re-enabled (status " + toString(err.status) + ")")
@@ -668,7 +774,6 @@ test "createSession rejects a known-but-disabled harness (#560)" {
 // offset-past-total client-resync rule. The handler itself is a thin
 // composition of those two plus the same status/container lookups
 // getRunOutput makes.
-
 test "parseOutputOffset accepts 1..9 digits and rejects everything else (-> 400)" {
   assertEqualInt(parseOutputOffset("0"), 0, "zero parses")
   assertEqualInt(parseOutputOffset("42"), 42, "small offset parses")
@@ -732,24 +837,32 @@ test "Handler listSessions returns stored sessions" {
   defer {
     cleanupTestDb(dbPath)
   }
-  mustUnit(addSession(makeAgentSession(
-    sessionId = "ls-1",
-    repoUrl = "https://github.com/nic/repo",
-    branch = "main",
-    containerId = "",
-    harness = "claude",
-    model = "claude-opus-4-8",
-    nativeSessionId = "ls-1"
-  )))
-  mustUnit(addSession(makeAgentSession(
-    sessionId = "ls-2",
-    repoUrl = "https://github.com/nic/other",
-    branch = "main",
-    containerId = "",
-    harness = "codex",
-    model = "o4-mini",
-    nativeSessionId = "ls-2"
-  )))
+  mustUnit(
+    addSession(
+      makeAgentSession(
+        sessionId = "ls-1",
+        repoUrl = "https://github.com/nic/repo",
+        branch = "main",
+        containerId = "",
+        harness = "claude",
+        model = "claude-opus-4-8",
+        nativeSessionId = "ls-1"
+      )
+    )
+  )
+  mustUnit(
+    addSession(
+      makeAgentSession(
+        sessionId = "ls-2",
+        repoUrl = "https://github.com/nic/other",
+        branch = "main",
+        containerId = "",
+        harness = "codex",
+        model = "o4-mini",
+        nativeSessionId = "ls-2"
+      )
+    )
+  )
   match listSessions() {
     case Ok(body) -> verifyListSessionsBody(body)
     case Err(_) -> assertTrue(false, "listSessions should succeed")
@@ -765,15 +878,19 @@ test "getRuns 404s for an unknown session (#239)" {
     case Ok(_) -> assertTrue(false, "unknown session should 404")
     case Err(err) -> assertEqualInt(err.status, 404, "unknown session -> 404")
   }
-  mustUnit(addSession(makeAgentSession(
-    sessionId = "gr-1",
-    repoUrl = "https://github.com/nic/repo",
-    branch = "main",
-    containerId = "",
-    harness = "claude",
-    model = "claude-opus-4-8",
-    nativeSessionId = "gr-1"
-  )))
+  mustUnit(
+    addSession(
+      makeAgentSession(
+        sessionId = "gr-1",
+        repoUrl = "https://github.com/nic/repo",
+        branch = "main",
+        containerId = "",
+        harness = "claude",
+        model = "claude-opus-4-8",
+        nativeSessionId = "gr-1"
+      )
+    )
+  )
   match getRuns("gr-1") {
     case Ok(rl) -> assertEqualInt(rl.runs.length.toInt(), 0, "known session with no runs -> empty list")
     case Err(_) -> assertTrue(false, "known session should succeed")
@@ -785,15 +902,19 @@ test "reapableWarmContainers finds and frees aged WARM sessions (#241)" {
   defer {
     cleanupTestDb(dbPath)
   }
-  mustUnit(addSession(makeAgentSession(
-    sessionId = "warm-1",
-    repoUrl = "https://github.com/nic/repo",
-    branch = "main",
-    containerId = "",
-    harness = "claude",
-    model = "claude-opus-4-8",
-    nativeSessionId = "warm-1"
-  )))
+  mustUnit(
+    addSession(
+      makeAgentSession(
+        sessionId = "warm-1",
+        repoUrl = "https://github.com/nic/repo",
+        branch = "main",
+        containerId = "",
+        harness = "claude",
+        model = "claude-opus-4-8",
+        nativeSessionId = "warm-1"
+      )
+    )
+  )
   // Force it WARM with an ancient last_message_at (epoch 0) and a container id,
   // so it is unambiguously past the warm window.
   match CloudAgents.Sqlite.execute("UPDATE sessions SET status = 'WARM', container_id = 'c-warm', last_message_at = '0' WHERE id = 'warm-1'") {
@@ -842,15 +963,19 @@ test "Session ownership isolation hides other users' sessions (#207)" {
     case Err(e) -> assertTrue(false, "getSessions failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
   }
   // The current user's own session is visible.
-  mustUnit(addSession(makeAgentSession(
-    sessionId = "mine-1",
-    repoUrl = "https://github.com/nic/repo",
-    branch = "main",
-    containerId = "",
-    harness = "claude",
-    model = "claude-opus-4-8",
-    nativeSessionId = "mine-1"
-  )))
+  mustUnit(
+    addSession(
+      makeAgentSession(
+        sessionId = "mine-1",
+        repoUrl = "https://github.com/nic/repo",
+        branch = "main",
+        containerId = "",
+        harness = "claude",
+        model = "claude-opus-4-8",
+        nativeSessionId = "mine-1"
+      )
+    )
+  )
   match getSession("mine-1") {
     case Ok(Some(_)) -> ()
     case Ok(None) -> assertTrue(false, "own session should be visible")
@@ -864,7 +989,6 @@ test "Session ownership isolation hides other users' sessions (#207)" {
 }
 
 // ── Session lifecycle: run history, cancel, profile wiring ────────────────────
-
 func mustRunId(r: in Result[String, CloudAgents.Sqlite.DbError]): String {
   return match r {
     case Ok(rid) -> rid
@@ -873,10 +997,7 @@ func mustRunId(r: in Result[String, CloudAgents.Sqlite.DbError]): String {
 }
 
 func mustRuns(r: in Result[slice[Run], CloudAgents.Sqlite.DbError]): slice[Run] {
-  return match r {
-    case Ok(rs) -> rs
-    case Err(e) -> panic("listRuns failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
-  }
+  return match r { case Ok(rs) -> rs; case Err(e) -> panic("listRuns failed: " + CloudAgents.Sqlite.dbErrorMessage(e)) }
 }
 
 test "Run history records, lists, and finishes write-once" {
@@ -896,14 +1017,22 @@ test "Run history records, lists, and finishes write-once" {
     case Ok(_) -> ()
     case Err(e) -> assertTrue(false, "recordRunEnd failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
   }
-  assertEqual(mustRuns(CloudAgents.Repository.listRuns("rh-1", userId))[0].status, "succeeded", "run moved to succeeded")
+  assertEqual(
+    mustRuns(CloudAgents.Repository.listRuns("rh-1", userId))[0].status,
+    "succeeded",
+    "run moved to succeeded"
+  )
 
   // Write-once: a late 'failed' does not overwrite the terminal status.
   match CloudAgents.Repository.recordRunEnd(runId, userId, "failed") {
     case Ok(_) -> ()
     case Err(_) -> ()
   }
-  assertEqual(mustRuns(CloudAgents.Repository.listRuns("rh-1", userId))[0].status, "succeeded", "terminal status is write-once")
+  assertEqual(
+    mustRuns(CloudAgents.Repository.listRuns("rh-1", userId))[0].status,
+    "succeeded",
+    "terminal status is write-once"
+  )
 }
 
 // NOTE: cancelRun has no unit test. Like getRunOutput, it transitively
@@ -914,7 +1043,6 @@ test "Run history records, lists, and finishes write-once" {
 // setSessionProfileHandler below, invoke fine). Its validation (empty -> 400,
 // unknown -> 404, not-running -> 409) mirrors the covered handlers; it
 // activates end-to-end once Lyric.Web dispatches HTTP requests.
-
 test "setSessionProfileHandler validates session and profile (#235)" {
   val dbPath = useFreshTestDb("set-profile")
   defer {
@@ -924,15 +1052,19 @@ test "setSessionProfileHandler validates session and profile (#235)" {
     case Ok(_) -> assertTrue(false, "unknown session should 404")
     case Err(err) -> assertEqualInt(err.status, 404, "unknown session -> 404")
   }
-  mustUnit(addSession(makeAgentSession(
-    sessionId = "sp-1",
-    repoUrl = "https://github.com/nic/repo",
-    branch = "main",
-    containerId = "",
-    harness = "claude",
-    model = "claude-opus-4-8",
-    nativeSessionId = "sp-1"
-  )))
+  mustUnit(
+    addSession(
+      makeAgentSession(
+        sessionId = "sp-1",
+        repoUrl = "https://github.com/nic/repo",
+        branch = "main",
+        containerId = "",
+        harness = "claude",
+        model = "claude-opus-4-8",
+        nativeSessionId = "sp-1"
+      )
+    )
+  )
   // A session with no profile attached reports an empty profileId (#272).
   match getSessionProfileHandler("sp-1") {
     case Ok(ref) -> assertEqual(ref.profileId, "", "no-profile session reports empty profileId")
@@ -944,7 +1076,7 @@ test "setSessionProfileHandler validates session and profile (#235)" {
     case Err(err) -> assertEqualInt(err.status, 400, "unknown profile -> 400")
   }
   // Attach a real profile; it reads back on the session.
-  val prof = match CloudAgents.Repository.addProfile("default", "p", "", "none", "all", [], [], [], []) {
+  val prof = match CloudAgents.Repository.addProfile("default", "p", "", "none", "all", [], [], [], [], "all", []) {
     case Ok(p) -> p
     case Err(e) -> panic("addProfile failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
   }
@@ -970,11 +1102,22 @@ test "setSessionProfileHandler validates session and profile (#235)" {
 }
 
 // ── Multi-repo sessions ───────────────────────────────────────────────────────
-
 test "extraReposEnvValue formats url|branch entries space-separated" {
   val repos = [
-    SessionRepo(id = "r1", sessionId = "s1", repoUrl = "https://github.com/a/b", branch = "main", createdAt = "1"),
-    SessionRepo(id = "r2", sessionId = "s1", repoUrl = "https://github.com/c/d", branch = "", createdAt = "2")
+    SessionRepo(
+      id = "r1",
+      sessionId = "s1",
+      repoUrl = "https://github.com/a/b",
+      branch = "main",
+      createdAt = "1"
+    ),
+    SessionRepo(
+      id = "r2",
+      sessionId = "s1",
+      repoUrl = "https://github.com/c/d",
+      branch = "",
+      createdAt = "2"
+    )
   ]
   assertEqual(
     extraReposEnvValue(repos),
@@ -1000,15 +1143,19 @@ test "session-repo handlers validate, link, list and unlink (#multi-repo)" {
     case Err(err) -> assertEqualInt(err.status, 404, "add unknown -> 404")
   }
 
-  mustUnit(addSession(makeAgentSession(
-    sessionId = "sr-1",
-    repoUrl = "https://github.com/nic/repo",
-    branch = "main",
-    containerId = "",
-    harness = "claude",
-    model = "claude-opus-4-8",
-    nativeSessionId = "sr-1"
-  )))
+  mustUnit(
+    addSession(
+      makeAgentSession(
+        sessionId = "sr-1",
+        repoUrl = "https://github.com/nic/repo",
+        branch = "main",
+        containerId = "",
+        harness = "claude",
+        model = "claude-opus-4-8",
+        nativeSessionId = "sr-1"
+      )
+    )
+  )
 
   // Initially empty.
   match listSessionReposHandler("sr-1") {
@@ -1088,7 +1235,6 @@ test "session-repo handlers validate, link, list and unlink (#multi-repo)" {
 // split). checkHealth, by contrast, never references CloudAgents.Docker at
 // all — only CloudAgents.Repository.ping() — so it needs no such extraction
 // and is invoked directly below.
-
 // A string of exactly `totalLen` 'x' characters, built by doubling (like
 // tests/interactions_tests.l's overLongText) rather than looping totalLen
 // times.
@@ -1132,4 +1278,3 @@ test "checkHealth reports healthy against a live DB and 500s when the DB is unre
     case Err(err) -> assertEqualInt(err.status, 500, "DB failure maps to a 500 internal error")
   }
 }
-
