@@ -1026,7 +1026,8 @@ record RouteRecall {
 
 impl Web.Handler for RouteRecall {
   func handle(req: in Web.Request): Web.Response {
-    return memoryListResp(CloudAgents.Callbacks.recallHandler(pparam(req, "id"), callbackAuthHeader(req)))
+    val keyFilter = Web.queryParam(req, "key")
+    return memoryListResp(CloudAgents.Callbacks.recallHandler(pparam(req, "id"), callbackAuthHeader(req), keyFilter))
   }
 }
 

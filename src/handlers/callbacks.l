@@ -952,9 +952,11 @@ val maxMemoryKeyLen = 256
 /// the path for bytes.
 val maxMemoryValueLen = 65536
 
-/// Per-repo memory entry cap (#575): bounds a repo's store at
-/// 256 keys (≤ ~16 MiB at the value cap) so it can't grow without limit.
-/// Overwrites of an existing key are always allowed; only new keys count.
+/// Per-repo memory entry cap (#575): bounds a repo's store at 256 keys, each
+/// up to maxMemoryValueLen characters (not bytes, #596 — actual storage can
+/// be larger than the naive "256 x 65,536" character-count product for
+/// non-ASCII content), so it can't grow without limit. Overwrites of an
+/// existing key are always allowed; only new keys count.
 val maxMemoryEntries = 256
 
 @generate(Json)
@@ -1029,6 +1031,145 @@ func memoryListFor(id: in String): Result[MemoryListResponse, Web.ApiError] {
   }
 }
 
+// ─── #593: best-effort rejection of secret-shaped values ─────────────────────
+//
+// remember's tool description already tells the agent never to store a
+// secret/token/credential (memory is kept in plaintext —
+// docs/phase7-autonomy.md §4.1) but nothing server-side enforced that; only
+// length was validated. These are cheap, narrow shape checks for a handful
+// of common credential formats — not a general secret scanner, and
+// deliberately not exhaustive: catching a meaningful fraction of accidental
+// pastes via a well-known provider prefix (or an obviously
+// randomly-generated token) is the explicit goal, not perfect coverage.
+// False negatives (a real secret that doesn't match any shape below) are
+// expected and fine — this is defense in depth, not the only place a caller
+// is told not to do this.
+
+/// Minimum length for the generic "looks randomly generated" check
+/// (looksHighEntropy) below — comfortably above an ordinary short label/note
+/// while still catching typical API-key/token lengths (most are 32+ chars).
+val highEntropySecretMinLen = 32
+
+/// True when `value` starts with a well-known credential/token prefix:
+/// OpenAI-style secret keys (`sk-`), GitHub's token prefixes (`ghp_`
+/// personal access, `gho_` OAuth, `ghs_` server-to-server), or AWS access
+/// key ids (`AKIA`).
+func hasKnownSecretPrefix(value: in String): Bool {
+  return value.startsWith("sk-") or value.startsWith("ghp_") or value.startsWith("gho_") or
+    value.startsWith("ghs_") or value.startsWith("AKIA")
+}
+
+/// The base64url alphabet minus padding (`=`) — used by isJwtShaped to check
+/// a JWT segment's charset without pulling in a real base64 decoder just for
+/// a shape check.
+func isBase64UrlChar(c: in String): Bool {
+  val isUpper = c >= "A" and c <= "Z"
+  val isLower = c >= "a" and c <= "z"
+  val isDigit = c >= "0" and c <= "9"
+  return isUpper or isLower or isDigit or c == "-" or c == "_"
+}
+
+func isNonEmptyBase64UrlSegment(s: in String): Bool {
+  if s.length == 0 {
+    return false
+  }
+  var i = 0
+  while i < s.length {
+    if not isBase64UrlChar(s.substring(i, 1)) {
+      return false
+    }
+    i = i + 1
+  }
+  return true
+}
+
+/// True when `value` has a JSON Web Token's `header.payload.signature`
+/// shape: exactly two dots, three non-empty base64url segments, and a
+/// header segment starting with `eyJ` (base64url for the `{"` every JWT
+/// header starts with, since it's always a JSON object). Doesn't decode or
+/// verify anything — the shape alone is distinctive enough for a
+/// best-effort check.
+func isJwtShaped(value: in String): Bool {
+  val firstDot = CloudAgents.Text.indexOfFrom(value, ".", 0)
+  if firstDot <= 0 {
+    return false
+  }
+  val secondDot = CloudAgents.Text.indexOfFrom(value, ".", firstDot + 1)
+  if secondDot < 0 {
+    return false
+  }
+  // A JWT has exactly two dots — a third rules this out.
+  if CloudAgents.Text.indexOfFrom(value, ".", secondDot + 1) >= 0 {
+    return false
+  }
+  val header = value.substring(0, firstDot)
+  val payload = value.substring(firstDot + 1, secondDot - firstDot - 1)
+  val signature = value.substring(secondDot + 1, value.length - secondDot - 1)
+  return header.startsWith("eyJ") and isNonEmptyBase64UrlSegment(header) and isNonEmptyBase64UrlSegment(payload) and
+    isNonEmptyBase64UrlSegment(signature)
+}
+
+/// True when `value` "looks randomly generated": at or above
+/// highEntropySecretMinLen characters, no whitespace anywhere in it, made up
+/// entirely of typical token characters (alphanumeric plus `-_+/=`), and
+/// mixing at least two of {uppercase, lowercase, digit}. Deliberately loose
+/// rather than a true entropy calculation (no floating point/log needed): an
+/// ordinary short label or a sentence-shaped note almost always contains a
+/// space and fails immediately, while a pasted API key/token almost always
+/// passes. False positives (e.g. a lone long identifier with no spaces) are
+/// possible and accepted — see the module comment above.
+func looksHighEntropy(value: in String): Bool {
+  if value.length < highEntropySecretMinLen {
+    return false
+  }
+  if value.contains(" ") or value.contains("\t") or value.contains("\n") or value.contains("\r") {
+    return false
+  }
+  var hasUpper = false
+  var hasLower = false
+  var hasDigit = false
+  var i = 0
+  while i < value.length {
+    val c = value.substring(i, 1)
+    val isUpper = c >= "A" and c <= "Z"
+    val isLower = c >= "a" and c <= "z"
+    val isDigit = c >= "0" and c <= "9"
+    val isTokenPunct = c == "-" or c == "_" or c == "+" or c == "/" or c == "="
+    if not (isUpper or isLower or isDigit or isTokenPunct) {
+      return false
+    }
+    if isUpper {
+      hasUpper = true
+    }
+    if isLower {
+      hasLower = true
+    }
+    if isDigit {
+      hasDigit = true
+    }
+    i = i + 1
+  }
+  var classCount = 0
+  if hasUpper {
+    classCount = classCount + 1
+  }
+  if hasLower {
+    classCount = classCount + 1
+  }
+  if hasDigit {
+    classCount = classCount + 1
+  }
+  return classCount >= 2
+}
+
+/// Best-effort check for whether `value` looks like a secret/token/
+/// credential rather than ordinary remembered context (#593). Not
+/// exhaustive — see the module comment above and docs/phase7-autonomy.md
+/// §4.1.
+func looksLikeSecret(value: in String): Bool {
+  return hasKnownSecretPrefix(value) or isJwtShaped(value) or looksHighEntropy(value)
+}
+
 /// POST /api/sessions/{id}/callbacks/memory — container-originated
 /// (remember MCP tool). Upserts one entry for the session's repo.
 pub func rememberHandler(
@@ -1050,6 +1191,13 @@ pub func rememberHandler(
   if not CloudAgents.Text.withinMaxLength(req.value, maxMemoryValueLen) {
     return Err(Web.badRequest("value is too long (max " + toString(maxMemoryValueLen) + " characters)"))
   }
+  if looksLikeSecret(req.value) {
+    return Err(
+      Web.badRequest(
+        "value looks like a secret, token, or credential and was rejected — memory is stored in plaintext; use request_secret for credentials instead"
+      )
+    )
+  }
   val memScope = resolveMemoryScope(id)?
   // Per-repo entry cap (#575), enforced atomically (#586): overwriting an
   // existing key is always allowed (it doesn't grow the store); a NEW key is
@@ -1067,20 +1215,42 @@ pub func rememberHandler(
   }
 }
 
-/// GET /api/sessions/{id}/callbacks/memory — container-originated (recall MCP
-/// tool). Returns every entry for the session's repo; the shim filters to a
-/// single key client-side when `recall(key)` is called with one. Fetching the
-/// whole set even for a keyed recall (#590) is deliberate: the store is
-/// hard-capped (maxMemoryEntries, 256 entries) so the response is bounded and
-/// small, and one list endpoint keeps the host simple and avoids URL-encoding
-/// a free-form key into a query string. A dedicated single-key endpoint is a
-/// cheap future optimization if a real store ever grows large.
-pub func recallHandler(id: in String, authHeaderValue: in String): Result[MemoryListResponse, Web.ApiError] {
+/// GET /api/sessions/{id}/callbacks/memory[?key=] — container-originated
+/// (recall MCP tool). With a `key` query param, does a targeted single-key
+/// lookup (#590) instead of fetching every entry for the repo and filtering
+/// client-side in the shim — the common case for `recall(key)`, which used
+/// to always GET the whole store (up to maxMemoryEntries entries x
+/// maxMemoryValueLen characters each) just to read one. With no `key` (or an
+/// empty one), returns every entry, same as before — the "load everything at
+/// session start" flow.
+pub func recallHandler(
+  id: in String, authHeaderValue: in String, keyFilterRaw: in Option[String]
+): Result[MemoryListResponse, Web.ApiError] {
   if id.length == 0 {
     return Err(Web.badRequest("id is required"))
   }
   authorizeCallbackToken(id, authHeaderValue)?
-  return memoryListFor(id)
+  match keyFilterRaw {
+    case None -> return memoryListFor(id)
+    case Some(key) -> {
+      if key.length == 0 {
+        return memoryListFor(id)
+      }
+      if not CloudAgents.Text.withinMaxLength(key, maxMemoryKeyLen) {
+        return Err(Web.badRequest("key is too long (max " + toString(maxMemoryKeyLen) + " characters)"))
+      }
+      val memScope = resolveMemoryScope(id)?
+      match CloudAgents.Repository.getMemory(memScope.userId, memScope.repoKey, key) {
+        case Ok(Some(m)) -> {
+          var acc: slice[MemoryEntry] = []
+          acc = acc.append(MemoryEntry(key = m.memKey, value = m.value))
+          return Ok(MemoryListResponse(entries = acc))
+        }
+        case Ok(None) -> return Ok(MemoryListResponse(entries = []))
+        case Err(e) -> return Err(dbError(e))
+      }
+    }
+  }
 }
 
 /// GET /api/sessions/{id}/memory — user-originated. Lets the UI inspect a

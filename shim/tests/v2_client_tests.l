@@ -187,25 +187,39 @@ test "recall with no key returns every entry as key: value lines" {
   }
 }
 
-test "recall with a key returns just that entry's value" {
+test "recall with a key does a single-key lookup and returns just that entry's value (#590)" {
   val fake = newFakeV2Transport()
-  fake.recallOk = true
-  fake.recallBody = "{\"entries\":[{\"key\":\"build\",\"value\":\"make lyric\"},{\"key\":\"tests\",\"value\":\"lyric test\"}]}"
+  fake.recallByKeyOk = true
+  fake.recallByKeyBody = "{\"entries\":[{\"key\":\"tests\",\"value\":\"lyric test\"}]}"
 
   match recall(fake, "tests") {
     case Ok(text) -> assertEqual(text, "lyric test", "returns only the requested key's value")
     case Err(message) -> assertTrue(false, "expected Ok, got Err: " + message)
   }
+  assertEqual(fake.lastRecallKey, "tests", "the key was sent to the host")
+  assertEqualInt(fake.recallByKeyCallCount, 1, "a keyed recall hits the single-key transport method")
+  assertEqualInt(fake.recallCallCount, 0, "a keyed recall does not also fetch the whole store")
 }
 
 test "recall with an unknown key reports nothing stored under it" {
   val fake = newFakeV2Transport()
-  fake.recallOk = true
-  fake.recallBody = "{\"entries\":[{\"key\":\"build\",\"value\":\"make lyric\"}]}"
+  fake.recallByKeyOk = true
+  fake.recallByKeyBody = "{\"entries\":[]}"
 
   match recall(fake, "nope") {
     case Ok(text) -> assertTrue(text.contains("no memory"), "explains the key is unknown: " + text)
     case Err(message) -> assertTrue(false, "expected Ok, got Err: " + message)
+  }
+}
+
+test "recall with a key surfaces a transport failure from the single-key lookup" {
+  val fake = newFakeV2Transport()
+  fake.recallByKeyOk = false
+  fake.recallByKeyError = "connection refused"
+
+  match recall(fake, "tests") {
+    case Ok(text) -> assertTrue(false, "expected Err, got Ok(" + text + ")")
+    case Err(message) -> assertTrue(message.contains("connection refused"), "error carries the transport failure: " + message)
   }
 }
 
@@ -475,6 +489,10 @@ impl V2CallbackTransport for ClockJumpingV2Transport {
   }
 
   func recallAll(): Result[String, String] {
+    Ok(value = "{\"entries\":[]}")
+  }
+
+  func recallByKey(key: in String): Result[String, String] {
     Ok(value = "{\"entries\":[]}")
   }
 

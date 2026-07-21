@@ -275,6 +275,7 @@ pub interface V2CallbackTransport {
   func uploadArtifact(fileName: in String, mimeType: in String, description: in String, contentBase64: in String): Result[String, String]
   func remember(key: in String, value: in String): Result[String, String]
   func recallAll(): Result[String, String]
+  func recallByKey(key: in String): Result[String, String]
   func forget(key: in String): Result[String, String]
   func createTask(description: in String): Result[String, String]
   func listTasks(statusFilter: in String): Result[String, String]
@@ -283,17 +284,19 @@ pub interface V2CallbackTransport {
 }
 
 /// Percent-encodes a query-string VALUE (not a full URL) before it's
-/// concatenated into `listTasks`'s request. `status` is meant to be a small
-/// closed enum (`open`/`done`), but the shim builds the URL by raw string
+/// concatenated into `listTasks`'s or `recallByKey`'s request. `status` is
+/// meant to be a small closed enum (`open`/`done`), but a memory `key` is a
+/// free-form string, and either way the shim builds the URL by raw string
 /// concatenation, so a value containing a query-string metacharacter (`&`,
 /// `#`, `%`, `=`, `+`, `?`, whitespace, quotes, or a CR/LF) would otherwise
 /// corrupt the query string or inject an extra parameter. Escapes exactly
 /// that metacharacter set (each as its literal `%XX` percent-encoding) and
-/// passes every other character through unchanged — sufficient for this
-/// parameter's actual shape without needing a full RFC 3986 encoder or a
+/// passes every other character through unchanged — sufficient for these
+/// parameters' actual shape without needing a full RFC 3986 encoder or a
 /// char-code primitive this codebase doesn't otherwise rely on. The host's
-/// own `status` validation (`CloudAgents.Callbacks`) is the authoritative
-/// check regardless; this is defense in depth on the request-building side.
+/// own validation (`CloudAgents.Callbacks`'s `status`/key-length checks) is
+/// the authoritative check regardless; this is defense in depth on the
+/// request-building side.
 func percentEncodeQueryValue(s: in String): String {
   var acc = ""
   var i = 0
@@ -389,6 +392,15 @@ impl V2CallbackTransport for HttpV2CallbackTransport {
   func recallAll(): Result[String, String] {
     CloudAgents.Shim.Transport.getWithBearer(
       self.baseUrl + "/api/sessions/" + self.sessionId + "/callbacks/memory",
+      self.token
+    )
+  }
+
+  /// Single-key recall (#590): a targeted GET instead of `recallAll`'s whole-
+  /// store fetch, for the common "recall one known key" case.
+  func recallByKey(key: in String): Result[String, String] {
+    CloudAgents.Shim.Transport.getWithBearer(
+      self.baseUrl + "/api/sessions/" + self.sessionId + "/callbacks/memory?key=" + percentEncodeQueryValue(key),
       self.token
     )
   }

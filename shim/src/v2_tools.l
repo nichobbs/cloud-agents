@@ -226,7 +226,7 @@ pub func rememberSchema(): JsonValue {
             ),
             stringSchemaField(
               "value",
-              "The information to remember for future sessions on this repository. Never a secret, token, or credential — memory is stored in plaintext; use request_secret for those."
+              "The information to remember for future sessions on this repository. Never a secret, token, or credential — memory is stored in plaintext; use request_secret for those. The host will reject values that look like a common credential format (API keys, GitHub/AWS tokens, JWTs, or other obviously randomly-generated tokens)."
             )
           ]
         )
