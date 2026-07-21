@@ -92,7 +92,6 @@ pub func configJson(): String {
 }
 
 // ─── Exchange: one-time code → OAuth token ───────────────────────────────────
-
 pub func exchangeUrl(): String {
   return "https://github.com/login/oauth/access_token"
 }
@@ -106,6 +105,14 @@ pub func githubUserUrl(): String {
 /// isSafeOAuthCode rejects anything that could smuggle a delimiter.
 pub func exchangeFormBody(clientId: in String, clientSecret: in String, code: in String): String {
   return "client_id=" + clientId + "&client_secret=" + clientSecret + "&code=" + code
+}
+
+/// Form body for a refresh_token grant (RFC 6749 §6). Same URL-encoding
+/// reasoning as exchangeFormBody: client id/secret are URL-safe by
+/// construction, and GitHub's own refresh tokens are URL-safe too.
+pub func refreshFormBody(clientId: in String, clientSecret: in String, refreshToken: in String): String {
+  return "client_id=" + clientId + "&client_secret=" + clientSecret + "&grant_type=refresh_token&refresh_token=" +
+    refreshToken
 }
 
 /// A GitHub one-time authorization code: short, URL-safe charset. Rejecting
@@ -193,7 +200,11 @@ func fetchIdentity(token: in String): Result[GitHubIdentity, String] {
 /// the validation cache so the client's first real API call is fast.
 pub func exchangeCode(req: in ExchangeRequest): Result[TokenGrant, Web.ApiError] {
   if not oauthConfigured() {
-    return Err(Web.badRequest("GitHub OAuth is not configured on this server (set CLOUD_AGENTS_GITHUB_CLIENT_ID and CLOUD_AGENTS_GITHUB_CLIENT_SECRET)"))
+    return Err(
+      Web.badRequest(
+        "GitHub OAuth is not configured on this server (set CLOUD_AGENTS_GITHUB_CLIENT_ID and CLOUD_AGENTS_GITHUB_CLIENT_SECRET)"
+      )
+    )
   }
   if not isSafeOAuthCode(req.code) {
     return Err(Web.badRequest("code is missing or not a valid GitHub authorization code"))
@@ -211,10 +222,7 @@ pub func exchangeCode(req: in ExchangeRequest): Result[TokenGrant, Web.ApiError]
     case Ok(None) -> ()
     case Err(_) -> ()
   }
-  val recentRejections = match CloudAgents.Repository.activeRejectedOAuthCodes() {
-    case Ok(n) -> n
-    case Err(_) -> 0
-  }
+  val recentRejections = match CloudAgents.Repository.activeRejectedOAuthCodes() { case Ok(n) -> n; case Err(_) -> 0 }
   if recentRejections >= maxRecentValidationFailures {
     return Err(Web.badRequest("too many recent failed sign-in attempts on this server — try again in a minute"))
   }
@@ -222,11 +230,7 @@ pub func exchangeCode(req: in ExchangeRequest): Result[TokenGrant, Web.ApiError]
   // transport errors (which can carry internal host/proxy detail) are logged
   // server-side and callers get a generic message — same rule as
   // checkHealth's DB probe (#55, review #422).
-  val body = match CloudAgents.GitHubApi.httpPostForm(
-    exchangeUrl(),
-    exchangeFormBody(oauthClientId(), oauthClientSecret(), req.code),
-    userAgent()
-  ) {
+  val body = match CloudAgents.GitHubApi.httpPostForm(exchangeUrl(), exchangeFormBody(oauthClientId(), oauthClientSecret(), req.code), userAgent()) {
     case Ok(b) -> b
     case Err(e) -> {
       println("WARNING: GitHub token exchange failed: " + e)
@@ -278,6 +282,30 @@ pub func exchangeCode(req: in ExchangeRequest): Result[TokenGrant, Web.ApiError]
           case Err(e) -> println("NOTE: could not store GITHUB_TOKEN in the credential vault: " + CloudAgents.Repository.credentialErrorMessage(e))
         }
       }
+      // Some OAuth Apps (GitHub's "expiring user access tokens" feature,
+      // common on corporate/enterprise-governed apps) return a refresh_token
+      // + expires_in + refresh_token_expires_in alongside access_token. Most
+      // don't — the common case leaves no row here, and ensureFreshGitHubToken
+      // falls straight back to the vaulted (non-expiring) token. BEST-EFFORT,
+      // same rule as the GITHUB_TOKEN vaulting above: never fail a successful
+      // login over this.
+      val refreshToken = CloudAgents.Auth.parseJsonString(body, "refresh_token")
+      val accessExpiresIn = CloudAgents.Auth.parseJsonString(body, "expires_in")
+      val refreshExpiresIn = CloudAgents.Auth.parseJsonString(body, "refresh_token_expires_in")
+      if refreshToken.length > 0 and accessExpiresIn.length > 0 and refreshExpiresIn.length > 0 {
+        match CloudAgents.Repository.upsertGitHubOauthRefresh(userId, refreshToken, accessExpiresIn, refreshExpiresIn) {
+          case Ok(_) -> ()
+          case Err(e) -> println("NOTE: could not persist GitHub OAuth refresh metadata: " + CloudAgents.Repository.credentialErrorMessage(e))
+        }
+      } else {
+        // No expiring-token fields this time (e.g. the app registration was
+        // switched to non-expiring tokens) — drop any stale row so a past
+        // refresh-token expiry can't wrongly gate a now-non-expiring token.
+        match CloudAgents.Repository.deleteGitHubOauthRefresh(userId) {
+          case Ok(_) -> ()
+          case Err(_) -> ()
+        }
+      }
       return Ok(TokenGrant(token = token, login = identity.login, userId = userId))
     }
     // Web.unauthorized is the closest proven response helper (this codebase
@@ -286,8 +314,88 @@ pub func exchangeCode(req: in ExchangeRequest): Result[TokenGrant, Web.ApiError]
   }
 }
 
-// ─── Logout: server-side cache invalidation ──────────────────────────────────
+// ─── Access-token refresh ─────────────────────────────────────────────────────
+/// The message shown to a tenant whose refresh token has also expired — the
+/// only case ensureFreshGitHubToken cannot recover from automatically.
+pub func reconnectGitHubMessage(): String {
+  return "Your GitHub connection has expired — please sign in with GitHub again."
+}
 
+/// Exchange a still-valid refresh token for a new access token (RFC 6749
+/// §6), vault the new access token, and persist whatever refresh metadata
+/// GitHub returns this time (GitHub rotates the refresh token on every use,
+/// so the old one must never be reused). Same transport-error-hiding rule as
+/// exchangeCode (#422): upstream detail is logged, never surfaced raw.
+func doRefresh(userId: in String, refreshToken: in String): Result[String, Web.ApiError] {
+  val body = match CloudAgents.GitHubApi.httpPostForm(exchangeUrl(), refreshFormBody(oauthClientId(), oauthClientSecret(), refreshToken), userAgent()) {
+    case Ok(b) -> b
+    case Err(e) -> {
+      println("WARNING: GitHub token refresh failed: " + e)
+      return Err(Web.internalError("refreshing the GitHub token failed"))
+    }
+  }
+  val newToken = accessTokenFromExchangeJson(body)
+  if newToken.length == 0 {
+    // GitHub rejected the refresh token itself (revoked, already-rotated,
+    // genuinely expired) — no amount of retrying recovers from this. Drop
+    // the dead metadata so the next request fails the same clear way instead
+    // of retrying a doomed refresh every time.
+    println("WARNING: GitHub rejected a token refresh: " + exchangeErrorFromJson(body))
+    match CloudAgents.Repository.deleteGitHubOauthRefresh(userId) {
+      case Ok(_) -> ()
+      case Err(_) -> ()
+    }
+    return Err(Web.unauthorized(reconnectGitHubMessage()))
+  }
+  match CloudAgents.Repository.putCredential(userId, "GITHUB_TOKEN", newToken) {
+    case Ok(_) -> ()
+    case Err(e) -> println("NOTE: could not store the refreshed GITHUB_TOKEN in the credential vault: " + CloudAgents.Repository.credentialErrorMessage(e))
+  }
+  val newRefreshToken = CloudAgents.Auth.parseJsonString(body, "refresh_token")
+  val accessExpiresIn = CloudAgents.Auth.parseJsonString(body, "expires_in")
+  val refreshExpiresIn = CloudAgents.Auth.parseJsonString(body, "refresh_token_expires_in")
+  if newRefreshToken.length > 0 and accessExpiresIn.length > 0 and refreshExpiresIn.length > 0 {
+    match CloudAgents.Repository.upsertGitHubOauthRefresh(userId, newRefreshToken, accessExpiresIn, refreshExpiresIn) {
+      case Ok(_) -> ()
+      case Err(e) -> println("NOTE: could not persist refreshed GitHub OAuth metadata: " + CloudAgents.Repository.credentialErrorMessage(e))
+    }
+  }
+  return Ok(value = newToken)
+}
+
+/// The single entry point every GitHub-calling handler should use instead of
+/// reading GITHUB_TOKEN straight out of the vault: transparently refreshes an
+/// expired access token when this tenant has expiring-token metadata (most
+/// don't, and fall straight through to the vaulted token unchanged), and
+/// turns a dead refresh token into an actionable "sign in again" message
+/// instead of a generic upstream failure.
+pub func ensureFreshGitHubToken(userId: in String): Result[String, Web.ApiError] {
+  match CloudAgents.Repository.githubOauthRefreshStatus(userId) {
+    case Ok(Some(status)) -> {
+      if status.refreshTokenExpired {
+        return Err(Web.unauthorized(reconnectGitHubMessage()))
+      }
+      if status.accessTokenExpired {
+        return doRefresh(userId, status.refreshToken)
+      }
+    }
+    case Ok(None) -> ()
+    case Err(e) -> println("WARNING: reading GitHub OAuth refresh status failed: " + CloudAgents.Repository.credentialErrorMessage(e))
+  }
+  match CloudAgents.Repository.decryptedCredentialValue(userId, "GITHUB_TOKEN") {
+    case Ok(Some(t)) -> return Ok(value = t)
+    case Ok(None) -> return Err(Web.notFound("no GITHUB_TOKEN in the credential vault"))
+    case Err(e) -> {
+      println(
+        "WARNING: reading GITHUB_TOKEN from the credential vault failed: " +
+          CloudAgents.Repository.credentialErrorMessage(e)
+      )
+      return Err(Web.internalError("could not read the credential vault"))
+    }
+  }
+}
+
+// ─── Logout: server-side cache invalidation ──────────────────────────────────
 /// POST /api/auth/github/logout: delete the presented bearer's
 /// validation-cache row. Deleting the cache row forces the next presentation
 /// of this token through live validation; the token itself stays valid at
@@ -301,7 +409,9 @@ pub func logout(authHeaderValue: in String): Result[Unit, Web.ApiError] {
       match CloudAgents.Repository.invalidateGitHubToken(CloudAgents.Crypto.sha256Base64(token)) {
         case Ok(_) -> return Ok(())
         case Err(e) -> {
-          println("WARNING: logout could not invalidate the token-validation cache row: " + CloudAgents.Sqlite.dbErrorMessage(e))
+          println(
+            "WARNING: logout could not invalidate the token-validation cache row: " + CloudAgents.Sqlite.dbErrorMessage(e)
+          )
           return Err(Web.internalError("logout failed"))
         }
       }
@@ -310,7 +420,6 @@ pub func logout(authHeaderValue: in String): Result[Unit, Web.ApiError] {
 }
 
 // ─── Per-request bearer authentication ───────────────────────────────────────
-
 /// Authenticate a GitHub OAuth bearer: SQLite cache first (keyed by the
 /// token's SHA-256, never the token itself), then a live /user validation
 /// with whitelist enforcement, caching the outcome either way.
@@ -331,10 +440,7 @@ pub func authenticateGitHubBearer(token: in String): AuthOutcome {
       if entry.userId.length == 0 {
         return CloudAgents.Auth.deniedOutcome(CloudAgents.Auth.invalidTokenError())
       }
-      return match CloudAgents.Auth.authorizeGitHub(
-        CloudAgents.Auth.githubIdFromUserId(entry.userId),
-        whitelistCsv()
-      ) {
+      return match CloudAgents.Auth.authorizeGitHub(CloudAgents.Auth.githubIdFromUserId(entry.userId), whitelistCsv()) {
         case Allowed(userId) -> CloudAgents.Auth.allowedOutcome(userId)
         case Denied(e) -> CloudAgents.Auth.deniedOutcome(e)
       }
@@ -365,10 +471,7 @@ pub func authenticateGitHubBearer(token: in String): AuthOutcome {
   // are bearers that never went through this server's exchange (e.g. the
   // same token pasted onto a second device), and re-running the sign-in flow
   // there self-heals. See docs/credentials.md.
-  val recentFailures = match CloudAgents.Repository.activeNegativeGitHubTokens() {
-    case Ok(n) -> n
-    case Err(_) -> 0
-  }
+  val recentFailures = match CloudAgents.Repository.activeNegativeGitHubTokens() { case Ok(n) -> n; case Err(_) -> 0 }
   if recentFailures >= maxRecentValidationFailures {
     return CloudAgents.Auth.deniedOutcome(CloudAgents.Auth.invalidTokenError())
   }
@@ -399,11 +502,7 @@ pub func authenticateGitHubBearer(token: in String): AuthOutcome {
   // itself rejected, where there is no identity to re-check.) This also
   // means an unlisted-but-valid token stops costing outbound round trips,
   // exactly like a listed one.
-  match CloudAgents.Repository.cacheGitHubToken(
-    tokenHash,
-    CloudAgents.Auth.userIdForGitHubId(identity.githubId),
-    identity.login
-  ) {
+  match CloudAgents.Repository.cacheGitHubToken(tokenHash, CloudAgents.Auth.userIdForGitHubId(identity.githubId), identity.login) {
     case Ok(_) -> ()
     case Err(_) -> ()
   }

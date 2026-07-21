@@ -21,6 +21,7 @@ import Std.Core
 import Web
 import CloudAgents.Auth
 import CloudAgents.GitHubApi
+import CloudAgents.OAuth
 import CloudAgents.Repository
 import CloudAgents.SessionStore
 import extern System.Environment as Env
@@ -30,10 +31,10 @@ import extern System.String as DotNetString
 val proxyUserAgent = "cloud-agents"
 
 val maxOwnerRepoLen = 100
+
 val maxProxyBranchLen = 255
 
 // ─── Pure validators (unit-tested in tests/proxy_tests.l) ────────────────────
-
 func isAsciiLetter(c: in String): Bool {
   return (c >= "A" and c <= "Z") or (c >= "a" and c <= "z")
 }
@@ -151,19 +152,16 @@ pub func isKnownProxyHarness(harness: in String): Bool {
 }
 
 // ─── Vault lookups ────────────────────────────────────────────────────────────
-
 /// The caller's GITHUB_TOKEN from the vault, or the 404 the frontend treats
 /// as "use the direct path". A vault/crypto failure is a 500 with the detail
 /// logged server-side only (#422).
+/// Delegates to CloudAgents.OAuth.ensureFreshGitHubToken, which transparently
+/// refreshes an expired access token (for tenants whose GitHub OAuth App
+/// issues expiring tokens) before returning it — same absent-vault-is-404
+/// behaviour as a direct vault read for tenants with no expiring-token
+/// metadata (the common case).
 func vaultGitHubToken(): Result[String, Web.ApiError] {
-  match CloudAgents.Repository.decryptedCredentialValue(CloudAgents.Auth.currentUserId(), "GITHUB_TOKEN") {
-    case Ok(Some(t)) -> return Ok(value = t)
-    case Ok(None) -> return Err(Web.notFound("no GITHUB_TOKEN in the credential vault"))
-    case Err(e) -> {
-      println("WARNING: reading GITHUB_TOKEN from the credential vault failed: " + CloudAgents.Repository.credentialErrorMessage(e))
-      return Err(Web.internalError("could not read the credential vault"))
-    }
-  }
+  return CloudAgents.OAuth.ensureFreshGitHubToken(CloudAgents.Auth.currentUserId())
 }
 
 /// A named vault credential for the models proxy, where absence (and any
@@ -173,14 +171,16 @@ func vaultKeyOrNone(name: in String): Option[String] {
     case Ok(Some(v)) -> return Some(value = v)
     case Ok(None) -> return None
     case Err(e) -> {
-      println("WARNING: reading " + name + " from the credential vault failed: " + CloudAgents.Repository.credentialErrorMessage(e))
+      println(
+        "WARNING: reading " + name + " from the credential vault failed: " +
+          CloudAgents.Repository.credentialErrorMessage(e)
+      )
       return None
     }
   }
 }
 
 // ─── GitHub proxy endpoints ───────────────────────────────────────────────────
-
 /// GET `url` from GitHub with the vault bearer, passing the body through.
 /// Upstream detail is logged, never surfaced (#422).
 func githubGet(url: in String, token: in String): Result[String, Web.ApiError] {
@@ -190,6 +190,13 @@ func githubGet(url: in String, token: in String): Result[String, Web.ApiError] {
     case Ok(body) -> return Ok(value = body)
     case Err(e) -> {
       println("WARNING: GitHub proxy request failed: " + e)
+      // A confirmed 401/403 means GitHub itself rejected the vaulted token
+      // (revoked, or expired with no usable refresh token) — surface that
+      // plainly instead of the generic message, so it's obvious the fix is
+      // reconnecting GitHub rather than a server bug.
+      if CloudAgents.OAuth.isConfirmedAuthRejection(e) {
+        return Err(Web.unauthorized(CloudAgents.OAuth.reconnectGitHubMessage()))
+      }
       return Err(Web.internalError("GitHub request failed"))
     }
   }
@@ -202,10 +209,7 @@ pub func githubReposHandler(page: in String): Result[String, Web.ApiError] {
     return Err(Web.badRequest("page must be a whole number from 1 to 10"))
   }
   val token = vaultGitHubToken()?
-  return githubGet(
-    "https://api.github.com/user/repos?per_page=100&sort=pushed&direction=desc&page=" + page,
-    token
-  )
+  return githubGet("https://api.github.com/user/repos?per_page=100&sort=pushed&direction=desc&page=" + page, token)
 }
 
 /// GET /api/github/repos/{owner}/{repo}: a single repository, raw JSON.
@@ -229,8 +233,8 @@ pub func githubPullsHandler(owner: in String, repo: in String, branch: in String
   }
   val token = vaultGitHubToken()?
   return githubGet(
-    "https://api.github.com/repos/" + owner + "/" + repo +
-      "/pulls?state=open&per_page=20&head=" + owner + ":" + branch,
+    "https://api.github.com/repos/" + owner + "/" + repo + "/pulls?state=open&per_page=20&head=" + owner + ":" +
+      branch,
     token
   )
 }
@@ -255,7 +259,6 @@ pub func githubChecksHandler(owner: in String, repo: in String, branch: in Strin
 }
 
 // ─── Model-discovery proxy ────────────────────────────────────────────────────
-
 /// The providers whose model listings apply to a harness — must stay in sync
 /// with the frontend's lib/harnesses.ts provider mapping.
 func providersForHarness(harness: in String): slice[String] {
@@ -318,20 +321,24 @@ func providerModelsBody(provider: in String, key: in String): Result[String, Str
     val names: slice[String] = ["x-api-key", "anthropic-version"]
     val values: slice[String] = [key, "2023-06-01"]
     return CloudAgents.GitHubApi.httpGetWithHeaders(
-      "https://api.anthropic.com/v1/models?limit=100", names, values, proxyUserAgent
+      "https://api.anthropic.com/v1/models?limit=100",
+      names,
+      values,
+      proxyUserAgent
     )
   }
   if provider == "openai" {
     val names: slice[String] = ["Authorization"]
     val values: slice[String] = ["Bearer " + key]
-    return CloudAgents.GitHubApi.httpGetWithHeaders(
-      "https://api.openai.com/v1/models", names, values, proxyUserAgent
-    )
+    return CloudAgents.GitHubApi.httpGetWithHeaders("https://api.openai.com/v1/models", names, values, proxyUserAgent)
   }
   val names: slice[String] = ["x-goog-api-key"]
   val values: slice[String] = [key]
   return CloudAgents.GitHubApi.httpGetWithHeaders(
-    "https://generativelanguage.googleapis.com/v1beta/models?pageSize=200", names, values, proxyUserAgent
+    "https://generativelanguage.googleapis.com/v1beta/models?pageSize=200",
+    names,
+    values,
+    proxyUserAgent
   )
 }
 
@@ -367,9 +374,7 @@ pub func modelsHandler(harness: in String): Result[String, Web.ApiError] {
             if count > 0 {
               entries = entries + ","
             }
-            entries = entries + "{\"provider\":\"" + p + "\",\"body\":\"" +
-              CloudAgents.SessionStore.jsonEscapeField(body) +
-              "\"}"
+            entries = entries + "{\"provider\":\"" + p + "\",\"body\":\"" + CloudAgents.SessionStore.jsonEscapeField(body) + "\"}"
             count = count + 1
           }
           case Err(e) -> {
@@ -396,7 +401,6 @@ pub func modelsHandler(harness: in String): Result[String, Web.ApiError] {
 // guess, the api service mirrors its own COMPOSE_PROFILES into
 // CLOUD_AGENTS_ENABLED_HARNESSES (see docker-compose.coolify.yml) and this
 // endpoint reports it, so the picker can show only what will actually work.
-
 func envOr(name: in String): String {
   var v = Env.GetEnvironmentVariable(name)
   if DotNetString.IsNullOrEmpty(v) {

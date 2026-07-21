@@ -12,13 +12,15 @@ import CloudAgents.Sqlite
 import extern System.Environment as Env
 
 // ── Live-DB plumbing (same pattern as tests/session_tests.l) ─────────────────
-
 @externTarget("System.IO.File.Delete")
 func fileDelete(path: in String): Unit = ()
+
+val testKey = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="
 
 func useFreshTestDb(tag: in String): String {
   val path = "/tmp/cloud-agents-tests-" + tag + "-" + Std.Uuid.uuidToString(Std.Uuid.newUuid()) + ".db"
   Env.SetEnvironmentVariable("CLOUD_AGENTS_DB_PATH", path)
+  Env.SetEnvironmentVariable("ENCRYPTION_KEY", testKey)
   match CloudAgents.Repository.initSchema() {
     case Ok(_) -> ()
     case Err(e) -> assertTrue(false, "initSchema failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
@@ -42,10 +44,18 @@ func clearOAuthEnv(): Unit {
 }
 
 // ── Pure builders and parsers ─────────────────────────────────────────────────
-
 test "exchange form body carries all three OAuth params" {
   val body = exchangeFormBody("cid123", "secret456", "code789")
   assertEqual(body, "client_id=cid123&client_secret=secret456&code=code789", "form body shape")
+}
+
+test "refresh form body carries the grant_type and refresh token" {
+  val body = refreshFormBody("cid123", "secret456", "rtok789")
+  assertEqual(
+    body,
+    "client_id=cid123&client_secret=secret456&grant_type=refresh_token&refresh_token=rtok789",
+    "form body shape"
+  )
 }
 
 test "isSafeOAuthCode accepts GitHub-shaped codes and rejects smuggling" {
@@ -70,7 +80,6 @@ test "access token and error parse from GitHub's exchange response" {
 }
 
 // ── Configuration ─────────────────────────────────────────────────────────────
-
 test "oauthConfigured requires both halves of the app registration" {
   clearOAuthEnv()
   assertTrue(not oauthConfigured(), "unset -> unconfigured")
@@ -105,7 +114,6 @@ test "exchangeCode refuses when unconfigured and validates the code first" {
 }
 
 // ── Request authentication (no-network paths) ─────────────────────────────────
-
 test "authenticateRequest keeps static-token semantics" {
   clearOAuthEnv()
 
@@ -152,7 +160,6 @@ test "open-access decision never inherits a stale thread identity (#420)" {
 }
 
 // ── Token-validation cache (live DB, no network) ─────────────────────────────
-
 test "cached bearer authenticates without a network round trip" {
   val dbPath = useFreshTestDb("oauth-cache")
   defer {
@@ -351,17 +358,32 @@ test "the exchange endpoint has its own flood backstop, independent of bearers (
 }
 
 test "only confirmed auth rejections are classified for negative caching (#435)" {
-  assertTrue(isConfirmedAuthRejection("GET https://api.github.com/user failed: The remote server returned an error: (401) Unauthorized."), "401 is a confirmed rejection")
-  assertTrue(isConfirmedAuthRejection("GET https://api.github.com/user failed: The remote server returned an error: (403) Forbidden."), "403 is a confirmed rejection")
-  assertTrue(not isConfirmedAuthRejection("GET https://api.github.com/user failed: The remote name could not be resolved: 'api.github.com'"), "DNS failure is not a rejection")
-  assertTrue(not isConfirmedAuthRejection("GET https://api.github.com/user failed: The operation has timed out."), "timeout is not a rejection")
+  assertTrue(
+    isConfirmedAuthRejection(
+      "GET https://api.github.com/user failed: The remote server returned an error: (401) Unauthorized."
+    ),
+    "401 is a confirmed rejection"
+  )
+  assertTrue(
+    isConfirmedAuthRejection(
+      "GET https://api.github.com/user failed: The remote server returned an error: (403) Forbidden."
+    ),
+    "403 is a confirmed rejection"
+  )
+  assertTrue(
+    not isConfirmedAuthRejection("GET https://api.github.com/user failed: The remote name could not be resolved: 'api.github.com'"),
+    "DNS failure is not a rejection"
+  )
+  assertTrue(
+    not isConfirmedAuthRejection("GET https://api.github.com/user failed: The operation has timed out."),
+    "timeout is not a rejection"
+  )
 }
 
 // NB: exchangeCode's SUCCESS path (which, besides priming the cache, vaults
 // the token as the tenant's GITHUB_TOKEN credential) needs a live GitHub
 // round trip, so it cannot be exercised here — CI covers it via compilation
 // only.
-
 test "logout invalidates the token-validation cache row" {
   val dbPath = useFreshTestDb("oauth-logout")
   defer {
@@ -407,6 +429,154 @@ test "logout invalidates the token-validation cache row" {
   clearOAuthEnv()
 }
 
+// ── GitHub OAuth token refresh ────────────────────────────────────────────────
+test "github oauth refresh metadata round-trips through repository CRUD" {
+  val dbPath = useFreshTestDb("oauth-refresh-crud")
+  defer {
+    cleanupTestDb(dbPath)
+  }
+  val userId = "gh-500"
+
+  // No metadata yet -> None (the common non-expiring-token case).
+  match CloudAgents.Repository.githubOauthRefreshStatus(userId) {
+    case Ok(None) -> ()
+    case Ok(Some(_)) -> assertTrue(false, "no row expected before any upsert")
+    case Err(e) -> assertTrue(false, "status read failed: " + CloudAgents.Repository.credentialErrorMessage(e))
+  }
+
+  // Both tokens fresh.
+  match CloudAgents.Repository.upsertGitHubOauthRefresh(userId, "refresh-abc", "3600", "604800") {
+    case Ok(_) -> ()
+    case Err(e) -> assertTrue(false, "upsert failed: " + CloudAgents.Repository.credentialErrorMessage(e))
+  }
+  match CloudAgents.Repository.githubOauthRefreshStatus(userId) {
+    case Ok(Some(status)) -> {
+      assertEqual(status.refreshToken, "refresh-abc", "refresh token decrypts back unchanged")
+      assertTrue(not status.accessTokenExpired, "access token still fresh")
+      assertTrue(not status.refreshTokenExpired, "refresh token still fresh")
+    }
+    case Ok(None) -> assertTrue(false, "row must exist after upsert")
+    case Err(e) -> assertTrue(false, "status read failed: " + CloudAgents.Repository.credentialErrorMessage(e))
+  }
+
+  // Re-upsert (GitHub rotates the refresh token on every use): access token
+  // now expired, refresh token still good — and the old value is replaced,
+  // not duplicated.
+  match CloudAgents.Repository.upsertGitHubOauthRefresh(userId, "refresh-def", "-100", "604800") {
+    case Ok(_) -> ()
+    case Err(e) -> assertTrue(false, "re-upsert failed: " + CloudAgents.Repository.credentialErrorMessage(e))
+  }
+  match CloudAgents.Repository.githubOauthRefreshStatus(userId) {
+    case Ok(Some(status)) -> {
+      assertEqual(status.refreshToken, "refresh-def", "upsert replaces the prior row")
+      assertTrue(status.accessTokenExpired, "access token now expired")
+      assertTrue(not status.refreshTokenExpired, "refresh token still fresh")
+    }
+    case Ok(None) -> assertTrue(false, "row must still exist")
+    case Err(e) -> assertTrue(false, "status read failed: " + CloudAgents.Repository.credentialErrorMessage(e))
+  }
+
+  // Both expired — the unrecoverable case.
+  match CloudAgents.Repository.upsertGitHubOauthRefresh(userId, "refresh-ghi", "-100", "-100") {
+    case Ok(_) -> ()
+    case Err(e) -> assertTrue(false, "re-upsert failed: " + CloudAgents.Repository.credentialErrorMessage(e))
+  }
+  match CloudAgents.Repository.githubOauthRefreshStatus(userId) {
+    case Ok(Some(status)) -> {
+      assertTrue(status.accessTokenExpired, "access token expired")
+      assertTrue(status.refreshTokenExpired, "refresh token also expired")
+    }
+    case Ok(None) -> assertTrue(false, "row must still exist")
+    case Err(e) -> assertTrue(false, "status read failed: " + CloudAgents.Repository.credentialErrorMessage(e))
+  }
+
+  // Delete drops the row entirely.
+  match CloudAgents.Repository.deleteGitHubOauthRefresh(userId) {
+    case Ok(_) -> ()
+    case Err(e) -> assertTrue(false, "delete failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+  }
+  match CloudAgents.Repository.githubOauthRefreshStatus(userId) {
+    case Ok(None) -> ()
+    case Ok(Some(_)) -> assertTrue(false, "row must be gone after delete")
+    case Err(e) -> assertTrue(false, "status read failed: " + CloudAgents.Repository.credentialErrorMessage(e))
+  }
+}
+
+test "ensureFreshGitHubToken falls back to a direct vault read with no refresh metadata" {
+  val dbPath = useFreshTestDb("oauth-ensure-no-metadata")
+  defer {
+    cleanupTestDb(dbPath)
+  }
+  val userId = "gh-501"
+
+  // No vault entry and no metadata -> the same 404 a direct vault read gives.
+  match ensureFreshGitHubToken(userId) {
+    case Ok(_) -> assertTrue(false, "no token anywhere must fail")
+    case Err(e) -> assertEqualInt(e.status, 404, "absent -> 404")
+  }
+
+  // Vaulted directly, as a non-expiring-token OAuth App's sign-in would leave
+  // it (the common case) -> returned unchanged, no refresh attempted.
+  match CloudAgents.Repository.putCredential(userId, "GITHUB_TOKEN", "gho_plain") {
+    case Ok(_) -> ()
+    case Err(e) -> assertTrue(false, "putCredential failed: " + CloudAgents.Repository.credentialErrorMessage(e))
+  }
+  match ensureFreshGitHubToken(userId) {
+    case Ok(t) -> assertEqual(t, "gho_plain", "no metadata row -> vaulted token returned unchanged")
+    case Err(_) -> assertTrue(false, "vaulted token must be returned")
+  }
+}
+
+test "ensureFreshGitHubToken returns the vaulted token unchanged while still fresh" {
+  val dbPath = useFreshTestDb("oauth-ensure-fresh")
+  defer {
+    cleanupTestDb(dbPath)
+  }
+  val userId = "gh-502"
+  match CloudAgents.Repository.upsertGitHubOauthRefresh(userId, "refresh-xyz", "3600", "604800") {
+    case Ok(_) -> ()
+    case Err(e) -> assertTrue(false, "upsert failed: " + CloudAgents.Repository.credentialErrorMessage(e))
+  }
+  match CloudAgents.Repository.putCredential(userId, "GITHUB_TOKEN", "gho_stillfresh") {
+    case Ok(_) -> ()
+    case Err(e) -> assertTrue(false, "putCredential failed: " + CloudAgents.Repository.credentialErrorMessage(e))
+  }
+  // accessTokenExpired is false, so this must never attempt a network refresh.
+  match ensureFreshGitHubToken(userId) {
+    case Ok(t) -> assertEqual(t, "gho_stillfresh", "fresh access token returned without refreshing")
+    case Err(_) -> assertTrue(false, "a still-fresh token must be returned")
+  }
+}
+
+test "ensureFreshGitHubToken gives a clear reconnect message once the refresh token itself is dead" {
+  val dbPath = useFreshTestDb("oauth-ensure-dead-refresh")
+  defer {
+    cleanupTestDb(dbPath)
+  }
+  val userId = "gh-503"
+  match CloudAgents.Repository.upsertGitHubOauthRefresh(userId, "refresh-dead", "-100", "-100") {
+    case Ok(_) -> ()
+    case Err(e) -> assertTrue(false, "upsert failed: " + CloudAgents.Repository.credentialErrorMessage(e))
+  }
+  match CloudAgents.Repository.putCredential(userId, "GITHUB_TOKEN", "gho_stale") {
+    case Ok(_) -> ()
+    case Err(e) -> assertTrue(false, "putCredential failed: " + CloudAgents.Repository.credentialErrorMessage(e))
+  }
+  // Both expired -> refuse outright (no point attempting a doomed refresh),
+  // with a message that tells the tenant exactly what to do.
+  match ensureFreshGitHubToken(userId) {
+    case Ok(_) -> assertTrue(false, "a dead refresh token must fail")
+    case Err(e) -> {
+      assertEqualInt(e.status, 401, "dead refresh token -> 401")
+      assertEqual(e.message, reconnectGitHubMessage(), "actionable reconnect message, not a generic failure")
+    }
+  }
+}
+
+// NB: the branch where the access token IS expired but the refresh token is
+// still valid (ensureFreshGitHubToken -> doRefresh) needs a live GitHub round
+// trip, so — like exchangeCode's success path above — it cannot be exercised
+// here; CI covers it via compilation only.
 test "expired cache entries never match" {
   val dbPath = useFreshTestDb("oauth-cache-expiry")
   defer {

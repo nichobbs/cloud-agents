@@ -1828,6 +1828,79 @@ pub func countActiveRejectedOAuthCodesSql(nowMillis: in String): String {
     " AS INTEGER)"
 }
 
+// ─── GitHub OAuth token refresh metadata ────────────────────────────────────
+//
+// Only populated when the tenant's GitHub OAuth App has opted into GitHub's
+// expiring-user-token feature: the exchange/refresh response then also
+// carries refresh_token + expires_in + refresh_token_expires_in, which a
+// classic non-expiring OAuth App never returns — this table simply has no
+// row for that tenant (the common case), and CloudAgents.OAuth.
+// ensureFreshGitHubToken falls through to using the vaulted GITHUB_TOKEN
+// as-is, exactly like before this table existed. When a row IS present, it
+// lets a short-lived access token (common under a corporate OAuth App's
+// token-expiration policy) be silently renewed via grant_type=refresh_token
+// instead of forcing the user to sign in again every time it lapses.
+/// DDL for the refresh-metadata table.
+pub func githubOauthRefreshSchemaSql(): String {
+  return "CREATE TABLE IF NOT EXISTS github_oauth_refresh (" + "user_id TEXT PRIMARY KEY, " +
+    "refresh_token TEXT NOT NULL, " +
+    "access_expires_at TEXT NOT NULL, " +
+    "refresh_expires_at TEXT NOT NULL, " +
+    "updated_at TEXT NOT NULL)"
+}
+
+/// Upsert a tenant's refresh metadata. `accessExpiresInSeconds`/
+/// `refreshExpiresInSeconds` are GitHub's own `expires_in`/
+/// `refresh_token_expires_in` response fields verbatim (decimal-digit
+/// strings, SECONDS) — converted to an absolute epoch-millis expiry in SQL
+/// (the same CAST-based approach as upsertGitHubTokenSql) so no 64-bit
+/// arithmetic ever happens on the Lyric side.
+pub func upsertGitHubOauthRefreshSql(
+  userId: in String,
+  refreshTokenEncrypted: in String,
+  nowMillis: in String,
+  accessExpiresInSeconds: in String,
+  refreshExpiresInSeconds: in String,
+): String {
+  return "INSERT OR REPLACE INTO github_oauth_refresh (user_id, refresh_token, access_expires_at, refresh_expires_at, updated_at) VALUES (" +
+    sqlLiteral(userId) +
+    ", " +
+    sqlLiteral(refreshTokenEncrypted) +
+    ", CAST(CAST(" +
+    sqlLiteral(nowMillis) +
+    " AS INTEGER) + CAST(" +
+    sqlLiteral(accessExpiresInSeconds) +
+    " AS INTEGER) * 1000 AS TEXT), CAST(CAST(" +
+    sqlLiteral(nowMillis) +
+    " AS INTEGER) + CAST(" +
+    sqlLiteral(refreshExpiresInSeconds) +
+    " AS INTEGER) * 1000 AS TEXT), " +
+    sqlLiteral(nowMillis) +
+    ")"
+}
+
+/// The refresh token (still encrypted) plus two SQL-computed expiry flags
+/// ('1'/'0' text, never a raw millis value compared in Lyric) — whether the
+/// access token needs refreshing, and whether the refresh token itself is
+/// also dead (in which case refreshing can't help; the tenant must sign in
+/// again). Returns no row for a tenant with no expiring-token metadata.
+pub func selectGitHubOauthRefreshStatusSql(userId: in String, nowMillis: in String): String {
+  return "SELECT refresh_token, " + "CASE WHEN CAST(access_expires_at AS INTEGER) <= CAST(" + sqlLiteral(nowMillis) +
+    " AS INTEGER) THEN '1' ELSE '0' END, " +
+    "CASE WHEN CAST(refresh_expires_at AS INTEGER) <= CAST(" +
+    sqlLiteral(nowMillis) +
+    " AS INTEGER) THEN '1' ELSE '0' END " +
+    "FROM github_oauth_refresh WHERE user_id = " +
+    sqlLiteral(userId)
+}
+
+/// Drop a tenant's refresh metadata — e.g. the refresh token itself expired
+/// or GitHub rejected it, so there's no point retrying a dead refresh token
+/// on the next request.
+pub func deleteGitHubOauthRefreshSql(userId: in String): String {
+  return "DELETE FROM github_oauth_refresh WHERE user_id = " + sqlLiteral(userId)
+}
+
 // ─── Model-listing cache ────────────────────────────────────────────────────
 //
 // The models proxy (CloudAgents.Proxy.modelsHandler) calls each provider's
