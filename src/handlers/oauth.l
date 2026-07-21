@@ -80,8 +80,8 @@ pub func configOrEnv(configValue: in String, envVarName: in String): String {
 /// Idiomatic Lyric config-block override for the three OAuth app-registration
 /// values (D046, docs/25-config-blocks.md). Each field is auto-populated at
 /// startup from its derived env var — for this package/block that's
-/// `LYRIC_CONFIG_CLOUDAGENTS_OAUTH_GITHUB_CLIENT_ID`,
-/// `LYRIC_CONFIG_CLOUDAGENTS_OAUTH_GITHUB_CLIENT_SECRET`, and
+/// `LYRIC_CONFIG_CLOUDAGENTS_OAUTH_GITHUB_CLIENTID`,
+/// `LYRIC_CONFIG_CLOUDAGENTS_OAUTH_GITHUB_CLIENTSECRET`, and
 /// `LYRIC_CONFIG_CLOUDAGENTS_OAUTH_GITHUB_WHITELIST` — falling back to the
 /// plain `CLOUD_AGENTS_GITHUB_CLIENT_ID`/`_SECRET`/`CLOUD_AGENTS_WHITELIST`
 /// names below when unset, so an existing deployment that only sets the

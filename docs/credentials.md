@@ -79,8 +79,8 @@ OAuth setup" below).
    `CLOUD_AGENTS_GITHUB_CLIENT_SECRET` in the API server's environment, and
    optionally `CLOUD_AGENTS_WHITELIST` to a comma-separated list of GitHub
    numeric user ids allowed in (empty = any authenticated GitHub user). Or,
-   idiomatically, set `LYRIC_CONFIG_CLOUDAGENTS_OAUTH_GITHUB_CLIENT_ID` /
-   `LYRIC_CONFIG_CLOUDAGENTS_OAUTH_GITHUB_CLIENT_SECRET` /
+   idiomatically, set `LYRIC_CONFIG_CLOUDAGENTS_OAUTH_GITHUB_CLIENTID` /
+   `LYRIC_CONFIG_CLOUDAGENTS_OAUTH_GITHUB_CLIENTSECRET` /
    `LYRIC_CONFIG_CLOUDAGENTS_OAUTH_GITHUB_WHITELIST` instead — a Lyric
    `config` block (D046, `src/handlers/oauth.l`'s `config Github {}`) that
    takes priority over the `CLOUD_AGENTS_*` names above when set. If you use

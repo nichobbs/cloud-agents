@@ -22,8 +22,8 @@ compose file for what differs and why.
      (optional — from a GitHub OAuth App with its callback URL set to
      `https://<your-domain>/auth/callback`; leave both empty to run with no
      sign-in requirement). Or, idiomatically, set
-     `LYRIC_CONFIG_CLOUDAGENTS_OAUTH_GITHUB_CLIENT_ID` /
-     `LYRIC_CONFIG_CLOUDAGENTS_OAUTH_GITHUB_CLIENT_SECRET` /
+     `LYRIC_CONFIG_CLOUDAGENTS_OAUTH_GITHUB_CLIENTID` /
+     `LYRIC_CONFIG_CLOUDAGENTS_OAUTH_GITHUB_CLIENTSECRET` /
      `LYRIC_CONFIG_CLOUDAGENTS_OAUTH_GITHUB_WHITELIST` instead (a Lyric
      `config` block, D046) — these take priority over the `CLOUD_AGENTS_*`
      names above when set. If you use the `LYRIC_CONFIG_*` names for client

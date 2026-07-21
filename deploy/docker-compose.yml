@@ -21,14 +21,14 @@ services:
       - CLOUD_AGENTS_GITHUB_CLIENT_SECRET=${CLOUD_AGENTS_GITHUB_CLIENT_SECRET:-}
       # Idiomatic Lyric alternative to the two vars above (D046,
       # docs/25-config-blocks.md): set
-      # LYRIC_CONFIG_CLOUDAGENTS_OAUTH_GITHUB_CLIENT_ID /
-      # LYRIC_CONFIG_CLOUDAGENTS_OAUTH_GITHUB_CLIENT_SECRET /
+      # LYRIC_CONFIG_CLOUDAGENTS_OAUTH_GITHUB_CLIENTID /
+      # LYRIC_CONFIG_CLOUDAGENTS_OAUTH_GITHUB_CLIENTSECRET /
       # LYRIC_CONFIG_CLOUDAGENTS_OAUTH_GITHUB_WHITELIST directly in .env
       # instead — they take priority over the CLOUD_AGENTS_* names above
       # when set, and are entirely optional (oauth.l's config Github{} block
       # falls back to the plain names when unset). CAUTION: if you set the
-      # CLIENT_ID/CLIENT_SECRET config-block overrides, also set the
-      # WHITELIST one (or keep CLOUD_AGENTS_WHITELIST set) — an empty
+      # client-id/client-secret config-block overrides, also set the
+      # whitelist one (or keep CLOUD_AGENTS_WHITELIST set) — an empty
       # whitelist on either path means open access to any authenticated
       # GitHub user, not "no one".
       # Network policy for the 'restricted' profile: the Docker network runner

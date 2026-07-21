@@ -124,6 +124,32 @@ test "configOrEnv prefers a config-block value over the legacy env var, falling 
   clearOAuthEnv()
 }
 
+test "config-block env var names match Lyric's actual derivation rule, no underscore at camelCase boundaries (#677)" {
+  // Lyric's config-block env var derivation (lyric-compiler/msil/codegen.l's
+  // deriveConfigEnvVarName, D046) is LYRIC_CONFIG_<PKG>_<BLOCK>_<FIELD>,
+  // where each segment is a PLAIN uppercase of the source name — a single
+  // identifier's internal camelCase boundary is never split (clientId ->
+  // CLIENTID, not CLIENT_ID). An earlier revision of this feature (#677)
+  // advertised CLIENT_ID/CLIENT_SECRET everywhere (oauth.l's doc comment,
+  // .env.example, RUNBOOK.md, COOLIFY.md, both docker-compose*.yml files,
+  // docs/credentials.md): an operator who set exactly what the docs said
+  // got silent, unexplained no-op behavior, since Lyric was never going to
+  // read that name. This can't re-derive the names dynamically (both
+  // String.toUpperCase() and String.replace() crash at runtime on this
+  // toolchain — "unsupported method" despite compiling fine, a separate
+  // pre-existing compiler bug, confirmed via a standalone repro), so it
+  // locks in the literal, hand-verified-correct constants directly and
+  // guards against the exact wrong (underscored) shape regressing.
+  val clientIdVar = "LYRIC_CONFIG_CLOUDAGENTS_OAUTH_GITHUB_CLIENTID"
+  val clientSecretVar = "LYRIC_CONFIG_CLOUDAGENTS_OAUTH_GITHUB_CLIENTSECRET"
+  val whitelistVar = "LYRIC_CONFIG_CLOUDAGENTS_OAUTH_GITHUB_WHITELIST"
+  assertTrue(clientIdVar.contains("CLIENTID"), "clientId has no inserted underscore")
+  assertTrue(not clientIdVar.contains("CLIENT_ID"), "clientId is not wrongly underscored")
+  assertTrue(clientSecretVar.contains("CLIENTSECRET"), "clientSecret has no inserted underscore")
+  assertTrue(not clientSecretVar.contains("CLIENT_SECRET"), "clientSecret is not wrongly underscored")
+  assertTrue(whitelistVar.contains("WHITELIST"), "whitelist unaffected (no camelCase boundary)")
+}
+
 test "oauthConfigured requires both halves of the app registration" {
   clearOAuthEnv()
   assertTrue(not oauthConfigured(), "unset -> unconfigured")
