@@ -84,13 +84,11 @@ json_std="$(cd "$REPO_ROOT/deploy" && ENCRYPTION_KEY=ci-check docker compose con
 check_json_paths "docker-compose.yml" "$json_std"
 
 echo "== docker-compose.coolify.yml (--project-directory repo-root, per Coolify) =="
-# codex-base/opencode-base/gemini-base are gated behind Compose profiles
-# (opted into via COMPOSE_PROFILES, not active by default — see the compose
-# file's own comments) so a build failure in one of them can't take down
-# api/frontend/caddy too. `docker compose config` only renders a profiled
-# service when its profile is active, so activate all of them here purely
-# to validate their paths too — this check has nothing to do with whether
-# they're active on a real deploy.
+# codex-base/opencode-base/gemini-base build unconditionally now (no
+# `profiles:` gating — see the compose file's own comments for why that
+# gating existed and why it's no longer necessary), so `docker compose
+# config` always renders all four services and this check validates all of
+# their paths with no special activation needed.
 #
 # exclude_from_hc (nichobbs/cloud-agents#516) is a real, documented Coolify
 # service property (https://coolify.io/docs/knowledge-base/docker/compose)
@@ -103,7 +101,7 @@ echo "== docker-compose.coolify.yml (--project-directory repo-root, per Coolify)
 coolify_scratch="$(mktemp "$REPO_ROOT/deploy/.coolify-path-check.XXXXXX.yml")"
 trap 'rm -f "$coolify_scratch"' EXIT
 grep -v 'exclude_from_hc:' "$REPO_ROOT/deploy/docker-compose.coolify.yml" > "$coolify_scratch"
-json_coolify="$(cd "$REPO_ROOT" && ENCRYPTION_KEY=ci-check COMPOSE_PROFILES=codex,opencode,gemini docker compose --project-directory . -f "$coolify_scratch" config --format json)"
+json_coolify="$(cd "$REPO_ROOT" && ENCRYPTION_KEY=ci-check docker compose --project-directory . -f "$coolify_scratch" config --format json)"
 check_json_paths "docker-compose.coolify.yml" "$json_coolify"
 
 exit $FAIL
