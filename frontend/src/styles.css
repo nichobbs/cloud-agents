@@ -59,7 +59,11 @@ code {
   align-items: center;
   justify-content: space-between;
   padding: 12px 24px;
-  border-bottom: 1px solid var(--border-default);
+  /* Nav.tsx's original inline navStyle used #21262d specifically here (a
+   * shade darker than --border-default's #30363d, used everywhere else in
+   * this file) — kept literal rather than swapped to the variable so the
+   * desktop layout stays pixel-identical to before this file existed. */
+  border-bottom: 1px solid #21262d;
   background: var(--bg-canvas);
   position: sticky;
   top: 0;
