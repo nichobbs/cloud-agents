@@ -1624,7 +1624,10 @@ pub func getSkill(id: in String, userId: in String): Result[Option[Skill], Cloud
   return Ok(value = Some(value = rowToSkill(CloudAgents.Sqlite.getRowArrayValue(rows, 0))))
 }
 
-/// Returns rows affected on the skills row (0 = not found / not owned).
+/// Returns rows affected on the skills row (0 = not found / not owned) — the
+/// real count `execute` returns, not a hardcoded 1 (#598, same class of gap
+/// as updateProfile/#238): a concurrent delete between the pre-check below
+/// and this UPDATE would otherwise still report success.
 pub func updateSkill(
   id: in String, userId: in String, name: in String, description: in String, body: in String
 ): Result[Int, CloudAgents.Sqlite.DbError] {
@@ -1632,13 +1635,17 @@ pub func updateSkill(
     case None -> return Ok(value = 0)
     case Some(_) -> ()
   }
-  CloudAgents.Sqlite.execute(CloudAgents.Db.updateSkillSql(id, userId, name, description, body, nowMillis()))?
-  return Ok(value = 1)
+  return CloudAgents.Sqlite.execute(CloudAgents.Db.updateSkillSql(id, userId, name, description, body, nowMillis()))
 }
 
 /// Delete a skill and every profile grant referencing it (#230-style
 /// atomicity — a dangling grant would otherwise silently no-op at injection
 /// time, which is harmless, but cleaning it up keeps profile_skills honest).
+/// Returns rows affected on the skills row (0 = not found / not owned) —
+/// taken from the transaction's own DELETE on the skills row (deliberately
+/// the last statement), not from the pre-check below or a hardcoded 1
+/// (#598), so a skill removed by a concurrent request between the pre-check
+/// and this transaction correctly reports 0.
 pub func deleteSkill(id: in String, userId: in String): Result[Int, CloudAgents.Sqlite.DbError] {
   match getSkill(id, userId)? {
     case None -> return Ok(value = 0)
@@ -1650,8 +1657,8 @@ pub func deleteSkill(id: in String, userId: in String): Result[Int, CloudAgents.
       CloudAgents.Db.sqlLiteral(userId)
   )
   stmts = stmts.append(CloudAgents.Db.deleteSkillSql(id, userId))
-  CloudAgents.Sqlite.executeTransaction(stmts)?
-  return Ok(value = 1)
+  val affected = CloudAgents.Sqlite.executeTransaction(stmts)?
+  return Ok(value = affected)
 }
 
 func rowToSubagent(r: in CloudAgents.Sqlite.Row): Subagent {
@@ -1721,7 +1728,9 @@ pub func getSubagent(id: in String, userId: in String): Result[Option[Subagent],
   return Ok(value = Some(value = rowToSubagent(CloudAgents.Sqlite.getRowArrayValue(rows, 0))))
 }
 
-/// Returns rows affected on the subagents row (0 = not found / not owned).
+/// Returns rows affected on the subagents row (0 = not found / not owned) —
+/// the real count `execute` returns, not a hardcoded 1 (#598), matching
+/// updateSkill above.
 pub func updateSubagent(
   id: in String,
   userId: in String,
@@ -1734,10 +1743,14 @@ pub func updateSubagent(
     case None -> return Ok(value = 0)
     case Some(_) -> ()
   }
-  CloudAgents.Sqlite.execute(CloudAgents.Db.updateSubagentSql(id, userId, name, description, systemPrompt, model, nowMillis()))?
-  return Ok(value = 1)
+  return CloudAgents.Sqlite.execute(
+    CloudAgents.Db.updateSubagentSql(id, userId, name, description, systemPrompt, model, nowMillis())
+  )
 }
 
+/// Returns rows affected on the subagents row (0 = not found / not owned) —
+/// taken from the transaction's own DELETE on the subagents row (deliberately
+/// the last statement), not a hardcoded 1 (#598), matching deleteSkill above.
 pub func deleteSubagent(id: in String, userId: in String): Result[Int, CloudAgents.Sqlite.DbError] {
   match getSubagent(id, userId)? {
     case None -> return Ok(value = 0)
@@ -1749,8 +1762,8 @@ pub func deleteSubagent(id: in String, userId: in String): Result[Int, CloudAgen
       CloudAgents.Db.sqlLiteral(userId)
   )
   stmts = stmts.append(CloudAgents.Db.deleteSubagentSql(id, userId))
-  CloudAgents.Sqlite.executeTransaction(stmts)?
-  return Ok(value = 1)
+  val affected = CloudAgents.Sqlite.executeTransaction(stmts)?
+  return Ok(value = affected)
 }
 
 /// The first column of every row as a flat slice — used both for MCP server
@@ -1884,7 +1897,10 @@ pub func getMcpServer(id: in String, userId: in String): Result[Option[McpServer
   return Ok(value = Some(value = rowToMcpServer(r, args, env)))
 }
 
-/// Returns rows affected on the mcp_servers row (0 = not found / not owned).
+/// Returns rows affected on the mcp_servers row (0 = not found / not owned) —
+/// taken from the transaction's own UPDATE on the mcp_servers row
+/// (deliberately the LAST statement — see the reordering note below), not a
+/// hardcoded 1 (#598).
 pub func updateMcpServer(
   id: in String,
   userId: in String,
@@ -1899,15 +1915,24 @@ pub func updateMcpServer(
     case None -> return Ok(value = 0)
     case Some(_) -> ()
   }
+  // Child statements (args/env clear-then-reinsert) FIRST, then the
+  // mcp_servers UPDATE deliberately LAST (#598 — this previously had the
+  // UPDATE first and the child statements last, the opposite of the
+  // "mutation last" convention updateProfile/updatePromptWithTags establish)
+  // so executeTransaction's rows-affected return (which reports the LAST
+  // statement) actually reflects the mcp_servers row, not a child insert.
   var stmts: slice[String] = []
-  stmts = stmts.append(CloudAgents.Db.updateMcpServerSql(id, userId, name, transport, command, url, nowMillis()))
   for s in mcpServerChildStatements(id, userId, args, env) {
     stmts = stmts.append(s)
   }
-  CloudAgents.Sqlite.executeTransaction(stmts)?
-  return Ok(value = 1)
+  stmts = stmts.append(CloudAgents.Db.updateMcpServerSql(id, userId, name, transport, command, url, nowMillis()))
+  val affected = CloudAgents.Sqlite.executeTransaction(stmts)?
+  return Ok(value = affected)
 }
 
+/// Returns rows affected on the mcp_servers row (0 = not found / not owned) —
+/// taken from the transaction's own DELETE on the mcp_servers row
+/// (deliberately the last statement), not a hardcoded 1 (#598).
 pub func deleteMcpServer(id: in String, userId: in String): Result[Int, CloudAgents.Sqlite.DbError] {
   match getMcpServer(id, userId)? {
     case None -> return Ok(value = 0)
@@ -1921,8 +1946,8 @@ pub func deleteMcpServer(id: in String, userId: in String): Result[Int, CloudAge
   stmts = stmts.append(CloudAgents.Db.deleteMcpServerArgsSql(id, userId))
   stmts = stmts.append(CloudAgents.Db.deleteMcpServerEnvSql(id, userId))
   stmts = stmts.append(CloudAgents.Db.deleteMcpServerSql(id, userId))
-  CloudAgents.Sqlite.executeTransaction(stmts)?
-  return Ok(value = 1)
+  val affected = CloudAgents.Sqlite.executeTransaction(stmts)?
+  return Ok(value = affected)
 }
 
 // ─── Profile library grants ─────────────────────────────────────────────────

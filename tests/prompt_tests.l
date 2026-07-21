@@ -100,6 +100,21 @@ func mustRows(r: in Result[Int, CloudAgents.Sqlite.DbError]): Int {
   }
 }
 
+// Async wrapper so deletePrompt can be raced under real concurrent
+// contention (#577), mirroring tests/session_tests.l's claimAsync (#206 —
+// a @test_module declaring its own async func and driving it with
+// spawn/scope, confirmed safe by real CI in PR #553, see #559). Needed
+// because the existing "cannot delete another user's prompt" cross-user
+// test below only ever exercises deletePrompt's ownership PRE-CHECK
+// (getPrompt returning None), which early-exits to Ok(0) identically
+// whether the fix or the old hardcoded `return Ok(value = 1)` is in place —
+// it never reaches the line that actually differs. A genuine race, where
+// both calls pass the pre-check before either's DELETE commits, is the only
+// way to force the transaction's real rows-affected count to matter.
+async func deletePromptAsync(id: in String, userId: in String): Int {
+  return mustRows(CloudAgents.Repository.deletePrompt(id, userId))
+}
+
 test "Migrations are idempotent and back-fill the ledger" {
   val dbPath = useFreshTestDb("migrations")
   defer {
@@ -243,6 +258,83 @@ test "Prompt ownership scoping hides other users' prompts" {
   assertEqualInt(mustRows(markPromptUsed(theirs.id, "default")), 0, "cannot mark another user's prompt used")
   assertEqualInt(mustRows(updatePrompt(theirs.id, "default", "x", "y")), 0, "cannot update another user's prompt")
   assertEqualInt(mustRows(deletePrompt(theirs.id, "default")), 0, "cannot delete another user's prompt")
+}
+
+test "Concurrent deletePrompt calls on the same row: exactly one reports the real affected count (#577/#238)" {
+  // The cross-user test above proves deletePrompt returns 0 for a row it was
+  // never going to touch — but that path early-exits on the ownership
+  // pre-check before ever reaching executeTransaction's rows-affected
+  // return, so it can't tell today's real-count fix apart from the old,
+  // always-succeeds `return Ok(value = 1)`. Racing two deletes against the
+  // SAME existing, owned row forces the distinguishing case: both calls pass
+  // the pre-check before either's DELETE commits, so only the one whose
+  // DELETE actually removes the row can legitimately report 1 — the other's
+  // DELETE affects 0 rows because the row is already gone by the time its
+  // transaction runs. Under the old hardcoded return, both would report 1
+  // (sum 2) regardless of what the database actually did.
+  val dbPath = useFreshTestDb("prompt-delete-race")
+  defer {
+    cleanupTestDb(dbPath)
+  }
+  val userId = "default"
+  val p = mustPrompt(addPrompt(userId, "race-me", "body"))
+
+  scope {
+    val t1 = spawn deletePromptAsync(p.id, userId)
+    val t2 = spawn deletePromptAsync(p.id, userId)
+    val r1 = await t1
+    val r2 = await t2
+    assertEqualInt(r1 + r2, 1, "exactly one concurrent delete reports the real affected row; the other reports 0")
+  }
+
+  match getPrompt(p.id, userId) {
+    case Ok(Some(_)) -> assertTrue(false, "prompt should be gone after either concurrent delete wins")
+    case Ok(None) -> ()
+    case Err(e) -> assertTrue(false, "getPrompt failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+  }
+}
+
+test "updatePromptWithTags round-trips name/body/tags and 0-affects a foreign prompt (#577)" {
+  // updatePromptWithTags (unlike the simpler updatePrompt exercised in "Prompt
+  // CRUD round-trips through SQLite" above) had no direct test coverage at
+  // all prior to this — it's the transactional function #238's fix actually
+  // touched (its own doc comment cites #238 directly), so it should be
+  // covered the same way updateProfile/updatePrompt already are.
+  val dbPath = useFreshTestDb("prompt-update-with-tags")
+  defer {
+    cleanupTestDb(dbPath)
+  }
+  val userId = "default"
+  val p = mustPrompt(addPrompt(userId, "orig", "orig body"))
+  match setPromptTags(p.id, userId, ["red"]) {
+    case Ok(_) -> ()
+    case Err(e) -> assertTrue(false, "setPromptTags failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+  }
+
+  val updated = mustRows(updatePromptWithTags(p.id, userId, "renamed", "new body", ["blue", "green"]))
+  assertEqualInt(updated, 1, "update touches one row")
+  match getPrompt(p.id, userId) {
+    case Ok(Some(gp)) -> {
+      assertEqual(gp.name, "renamed", "name updated")
+      assertEqual(gp.body, "new body", "body updated")
+      assertEqualInt(gp.tags.length.toInt(), 2, "tag set replaced")
+      assertEqual(gp.tags[0], "blue", "tags alphabetical: blue first")
+      assertEqual(gp.tags[1], "green", "tags alphabetical: green second")
+    }
+    case Ok(None) -> assertTrue(false, "updated prompt should exist")
+    case Err(e) -> assertTrue(false, "getPrompt failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+  }
+
+  // Another user's prompt: the pre-check itself already 0s this (owner-scoped
+  // getPrompt), the same shape as the existing cross-user tests above — kept
+  // here so updatePromptWithTags has its own explicit 0-path assertion rather
+  // than relying on updatePrompt's coverage to stand in for it.
+  val theirs = mustPrompt(addPrompt("someone-else", "theirs", "their body"))
+  assertEqualInt(
+    mustRows(updatePromptWithTags(theirs.id, "default", "x", "y", [])),
+    0,
+    "cannot update another user's prompt via updatePromptWithTags"
+  )
 }
 
 // ── Handler-level coverage (review #177) ──────────────────────────────────────
