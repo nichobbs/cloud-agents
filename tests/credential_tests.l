@@ -171,3 +171,46 @@ test "Credentials are per-user isolated and deletable" {
   }
   assertEqualInt(mustNames("someone-else").length.toInt(), 1, "other user's credential untouched")
 }
+
+test "deleting GITHUB_TOKEN also drops GitHub OAuth refresh metadata, preventing silent resurrection (#668)" {
+  val dbPath = useFreshTestDb("cred-github-token-refresh-cleanup")
+  defer {
+    cleanupTestDb(dbPath)
+  }
+  mustPut("gh-777", "GITHUB_TOKEN", "gho_original")
+  match CloudAgents.Repository.upsertGitHubOAuthRefresh("gh-777", "refresh-still-valid", "3600", "604800") {
+    case Ok(_) -> ()
+    case Err(e) -> assertTrue(false, "upsert failed: " + CloudAgents.Repository.credentialErrorMessage(e))
+  }
+
+  match deleteCredential("gh-777", "GITHUB_TOKEN") {
+    case Ok(n) -> assertEqualInt(n, 1, "GITHUB_TOKEN deleted")
+    case Err(e) -> assertTrue(false, CloudAgents.Sqlite.dbErrorMessage(e))
+  }
+
+  // The refresh row must be gone too, or a still-valid refresh token would
+  // silently re-vault a fresh GITHUB_TOKEN on the next request despite the
+  // tenant having just deleted it.
+  match CloudAgents.Repository.githubOAuthRefreshStatus("gh-777") {
+    case Ok(None) -> ()
+    case Ok(Some(_)) -> assertTrue(false, "refresh metadata must be dropped alongside GITHUB_TOKEN")
+    case Err(e) -> assertTrue(false, "status read failed: " + CloudAgents.Repository.credentialErrorMessage(e))
+  }
+
+  // Deleting an unrelated credential must never touch refresh metadata.
+  mustPut("gh-888", "GITHUB_TOKEN", "gho_other")
+  mustPut("gh-888", "OTHER_SECRET", "unrelated")
+  match CloudAgents.Repository.upsertGitHubOAuthRefresh("gh-888", "refresh-888", "3600", "604800") {
+    case Ok(_) -> ()
+    case Err(e) -> assertTrue(false, "upsert failed: " + CloudAgents.Repository.credentialErrorMessage(e))
+  }
+  match deleteCredential("gh-888", "OTHER_SECRET") {
+    case Ok(n) -> assertEqualInt(n, 1, "unrelated credential deleted")
+    case Err(e) -> assertTrue(false, CloudAgents.Sqlite.dbErrorMessage(e))
+  }
+  match CloudAgents.Repository.githubOAuthRefreshStatus("gh-888") {
+    case Ok(Some(_)) -> ()
+    case Ok(None) -> assertTrue(false, "refresh metadata must survive deleting an unrelated credential")
+    case Err(e) -> assertTrue(false, "status read failed: " + CloudAgents.Repository.credentialErrorMessage(e))
+  }
+}
