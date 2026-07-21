@@ -55,20 +55,7 @@ test "timeoutFromRaw honors a valid override" {
 // complete_task added by the repo-scoped task list slice) so a passing
 // suite proves the real registration gate, not just the parsing helper in
 // isolation.
-val allShimToolNames: slice[String] = [
-  "request_permission",
-  "ask_user",
-  "report_progress",
-  "request_secret",
-  "add_followup_task",
-  "report_artifact",
-  "remember",
-  "recall",
-  "forget",
-  "add_task",
-  "list_tasks",
-  "complete_task"
-]
+val allShimToolNames: slice[String] = ["request_permission", "ask_user", "report_progress", "request_secret", "add_followup_task", "report_artifact", "remember", "recall", "forget", "add_task", "list_tasks", "complete_task"]
 
 func enabledSubsetOf(csv: in String): slice[String] {
   var acc: slice[String] = []
