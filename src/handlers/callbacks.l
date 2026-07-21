@@ -1085,9 +1085,9 @@ func isNonEmptyBase64UrlSegment(s: in String): Bool {
 
 /// True when `value` has a JSON Web Token's `header.payload.signature`
 /// shape: exactly two dots, three non-empty base64url segments, and a
-/// header segment starting with `eyJ` (base64url for the `{"` every JWT
-/// header starts with, since it's always a JSON object). Doesn't decode or
-/// verify anything — the shape alone is distinctive enough for a
+/// header segment starting with `eyJ` (the base64url encoding always begins
+/// with, since a JWT header is always a JSON object literal). Doesn't
+/// decode or verify anything — the shape alone is distinctive enough for a
 /// best-effort check.
 func isJwtShaped(value: in String): Bool {
   val firstDot = CloudAgents.Text.indexOfFrom(value, ".", 0)

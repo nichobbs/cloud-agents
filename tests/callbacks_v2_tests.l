@@ -624,7 +624,8 @@ test "remember rejects values shaped like common credential formats (#593)" {
     case Err(e) -> assertEqualInt(e.status, 400, "AKIA prefix -> 400")
   }
 
-  // JWT shape: header.payload.signature, header base64url-decodes to `{"..`.
+  // JWT shape: header.payload.signature, with the header segment starting
+  // "eyJ" (a JSON object literal's base64url encoding always starts this way).
   val jwt = "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.dGhpc2lzYXNpZ25hdHVyZQ"
   match rememberHandler(sid, bearer(token), RememberRequest(key = "k", value = jwt)) {
     case Ok(_) -> assertTrue(false, "a JWT-shaped value must be rejected")
