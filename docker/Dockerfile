@@ -70,8 +70,10 @@ FROM --platform=linux/amd64 mcr.microsoft.com/dotnet/sdk:10.0 AS shim-builder
 # — a real improvement over the prior hardcoded pin (which needed a manual
 # commit to ever change at all) without adding a new failure mode. Forcing
 # a fresh resolution on an otherwise-warm cache is an operational concern
-# (docker build --no-cache, or Coolify's equivalent), not something baked
-# into the Dockerfile.
+# (docker build --no-cache, or Coolify's "Force rebuild (without cache)" —
+# see deploy/COOLIFY.md "Picking up a newer Lyric release" for the concrete
+# steps and a known Coolify-side caveat, #661), not something baked into
+# the Dockerfile.
 ARG LYRIC_VERSION=""
 COPY MIN_LYRIC_VERSION /tmp/min-lyric-version.txt
 RUN apt-get update && apt-get install -y --no-install-recommends curl ca-certificates \

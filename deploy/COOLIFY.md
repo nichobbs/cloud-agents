@@ -102,6 +102,29 @@ passes neither, so these three stay off unless you opt in. To enable one:
    `codex,gemini`. `claude-code-base` has no `profiles:` key, so it's
    always active regardless of this setting.
 
+### Picking up a newer Lyric release
+
+`claude-code-base`'s Dockerfile (`docker/Dockerfile`) auto-resolves the
+latest `lyric-lang` release at build time by default rather than pinning a
+version (`--build-arg LYRIC_VERSION=X.Y.Z` still overrides this). Like any
+other `RUN` instruction, that resolution is cached — once a layer for it
+exists, an ordinary redeploy reuses it and keeps whatever version it first
+resolved to, rather than re-checking for a newer release. A normal push
+only invalidates that cache if something upstream changed (`shim/`,
+`MIN_LYRIC_VERSION`, or the base image digest) — otherwise you're on
+whatever "latest" resolved to the first time this image built on this host.
+
+To force a fresh resolution: Coolify's per-deployment **"Force rebuild
+(without cache)"** option (also settable persistently via the app's
+Build → Advanced → **"Disable Build Cache"** toggle) adds Docker's
+`--no-cache` flag, which re-runs every layer including this one. There have
+been open Coolify bugs where this toggle doesn't take effect on
+webhook-triggered auto-deploys specifically (see
+[coollabsio/coolify#6133](https://github.com/coollabsio/coolify/issues/6133)) —
+if a manual "Force rebuild" from Coolify's UI doesn't pick up a newer
+release either, that's a Coolify-side caching bug to chase, not something
+this Dockerfile can work around.
+
 Enabled services show as **"Exited (0)"** in Coolify's service list —
 that's the intended behavior, not a failure; only the built image matters.
 Each runner-image service also sets Coolify's documented `exclude_from_hc:
