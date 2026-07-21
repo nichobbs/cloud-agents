@@ -293,10 +293,6 @@ pub func allMigrations(): slice[Migration] {
       statements = [CloudAgents.Db.repoMemorySchemaSql(), CloudAgents.Db.repoMemoryIndexSql()]
     ),
     Migration(
-      version = "0017_repo_tasks",
-      statements = [CloudAgents.Db.repoTasksSchemaSql(), CloudAgents.Db.repoTasksIndexSql()]
-    ),
-    Migration(
       version = "0014_notifications",
       statements = [CloudAgents.Db.notificationsSchemaSql(), CloudAgents.Db.notificationsSessionIndexSql()]
     ),
@@ -305,18 +301,22 @@ pub func allMigrations(): slice[Migration] {
       statements = [CloudAgents.Db.alterArtifactsAddRepoKeySql(), CloudAgents.Db.artifactsRepoKeyIndexSql()]
     ),
     Migration(
-      version = "0018_repo_artifacts_owner",
-      statements = [
-        CloudAgents.Db.alterArtifactsAddOwnerUserIdSql(),
-        CloudAgents.Db.artifactsOwnerRepoIndexSql()
-      ]
-    ),
-    Migration(
       version = "0016_profile_tools",
       statements = [
         CloudAgents.Db.alterProfilesAddToolModeSql(),
         CloudAgents.Db.profileToolsSchemaSql(),
         CloudAgents.Db.profileToolsProfileIndexSql()
+      ]
+    ),
+    Migration(
+      version = "0017_repo_tasks",
+      statements = [CloudAgents.Db.repoTasksSchemaSql(), CloudAgents.Db.repoTasksIndexSql()]
+    ),
+    Migration(
+      version = "0018_repo_artifacts_owner",
+      statements = [
+        CloudAgents.Db.alterArtifactsAddOwnerUserIdSql(),
+        CloudAgents.Db.artifactsOwnerRepoIndexSql()
       ]
     )
   ]
