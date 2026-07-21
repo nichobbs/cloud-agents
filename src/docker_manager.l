@@ -129,6 +129,10 @@ pub async func createRunnerContainer(
   // same reason network-policy resolution lives in CloudAgents.NetworkPolicy
   // rather than here.
   var envs = CloudAgents.RunnerEnv.baseRunnerEnvs(prompt, repoUrl, branch, harness, model, nativeSessionId)
+  var binds: slice[String] = [
+    CloudAgents.Db.workspaceVolumeBindFor(userId, sessionId),
+    CloudAgents.Db.homeVolumeBindFor(userId, harness)
+  ]
 
   // Additional repositories linked to this session (multi-repo sessions): a
   // single space-separated "url|branch ..." value the entrypoint clones into
@@ -136,6 +140,19 @@ pub async func createRunnerContainer(
   // pass no EXTRA_REPOS at all. Values are validated at link time, so they are
   // safe to embed in the env value verbatim.
   envs = CloudAgents.RunnerEnv.withExtraRepos(envs, extraRepos)
+
+  match Std.Environment.getVar("NODE_TLS_REJECT_UNAUTHORIZED") {
+    case Ok(v) -> if v.length > 0 { envs = envs.append("NODE_TLS_REJECT_UNAUTHORIZED=" + v) }
+    case Err(_) -> ()
+  }
+  match Std.Environment.getVar("NODE_EXTRA_CA_CERTS") {
+    case Ok(v) -> if v.length > 0 {
+      envs = envs.append("NODE_TLS_REJECT_UNAUTHORIZED=0")
+      envs = envs.append("NODE_EXTRA_CA_CERTS=/etc/host-ca.pem")
+      binds = binds.append(v + ":/etc/host-ca.pem:ro")
+    }
+    case Err(_) -> ()
+  }
 
   // Phase 6 (docs/phase6-mcp-callbacks.md §2/§5/§6 stage 2, §8 stage 4): mint
   // a per-session callback bearer token and inject it plus the host API's
@@ -253,16 +270,7 @@ pub async func createRunnerContainer(
     CloudAgents.NetworkPolicy.callbacksFeatureEnabled()
   )
 
-  // Per-user, per-harness volumes so tenants never share workspace or home
-  // state: OAuth tenants (gh-<id>) get user-<id>-<harness>-home and
-  // session-<id>-<sessionId>-workspace, while the operator identity
-  // ("default") keeps the legacy shared names — per-harness home volumes
-  // (#409) and session-<sessionId>-workspace — so existing installs keep
-  // their authenticated ~/.claude and workspaces.
-  val binds = [
-    CloudAgents.Db.workspaceVolumeBindFor(userId, sessionId),
-    CloudAgents.Db.homeVolumeBindFor(userId, harness)
-  ]
+
 
   val image = imageForHarness(harness)
   val createRes = await createContainerWithNetwork(client, image, envs, binds, networkMode)

@@ -32,20 +32,19 @@ COPY shim/ ./
 RUN lyric restore && lyric build
 
 # ─── Stage 2: the runner image itself ────────────────────────────────────────
-FROM --platform=linux/amd64 mcr.microsoft.com/dotnet/sdk:10.0
+FROM mcr.microsoft.com/dotnet/sdk:10.0
 
 ENV DEBIAN_FRONTEND=noninteractive
 
-# Base tooling + Node 20 (for the Claude Code CLI and the GitHub MCP server).
+# Base tooling + Node and npm from standard APT repositories (plain HTTP, avoiding SSL intercept issues).
 RUN apt-get update && apt-get install -y --no-install-recommends \
-        git bash make python3 python3-pip curl ca-certificates jq \
-    && curl -fsSL https://deb.nodesource.com/setup_20.x | bash - \
-    && apt-get install -y --no-install-recommends nodejs \
+        git bash make python3 python3-pip curl ca-certificates jq nodejs npm \
+    && npm config set strict-ssl false -g \
     && npm install -g @anthropic-ai/claude-code \
     && rm -rf /var/lib/apt/lists/*
 
 # Install the Lyric compiler to a system location.
-RUN curl -fsSL https://raw.githubusercontent.com/nichobbs/lyric-lang/main/scripts/install.sh \
+RUN curl -fsSLk https://raw.githubusercontent.com/nichobbs/lyric-lang/main/scripts/install.sh \
         | sh -s -- --dir /usr/local/bin --no-path \
     && lyric --version
 
@@ -70,7 +69,6 @@ COPY docker/settings.json.template /etc/claude/settings.json.template
 COPY docker/settings-callbacks.json.template /etc/claude/settings-callbacks.json.template
 RUN chmod +x /usr/local/bin/entrypoint.sh /usr/local/bin/reconcile-repos.sh /usr/local/bin/inject-library.sh /usr/local/bin/cloud-agents-shim
 
-USER claude-user
 ENV HOME=/home/claude-user
 
 ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]

@@ -50,6 +50,35 @@ else
     CLOUD_AGENTS_MCP_CALLBACKS="1"
 fi
 
+: "${HOME:=/home/claude-user}"
+
+# If a host-provided CA certificate bundle is mounted at /etc/host-ca.pem,
+# register it in the container's system CA trust store so that curl, git, and Node
+# trust the host's SSL-intercepting proxy natively and globally.
+if [ -f "/etc/host-ca.pem" ]; then
+    echo "entrypoint: registering host CA certificate bundle in system store..." >&2
+    cp /etc/host-ca.pem /usr/local/share/ca-certificates/host-ca.crt
+    update-ca-certificates >/dev/null
+fi
+
+# Ensure /home/claude-user and everything inside it is owned by claude-user.
+# This heals any permissions/UID mismatches if the volume was populated on the host
+# with host-specific UIDs (e.g. 504 on Colima macOS).
+chown -R claude-user:claude-user /home/claude-user || true
+chmod 700 /home/claude-user || true
+chown -R claude-user:claude-user /workspace || true
+
+# If ~/.claude.json is missing, but backups exist, automatically restore the latest backup!
+if [ ! -f "$HOME/.claude.json" ]; then
+    LATEST_BACKUP=$(ls -t "$HOME"/.claude/backups/.claude.json.backup.* 2>/dev/null | head -n 1 || true)
+    if [ -n "$LATEST_BACKUP" ]; then
+        echo "entrypoint: restoring ~/.claude.json from latest backup: $LATEST_BACKUP" >&2
+        cp "$LATEST_BACKUP" "$HOME/.claude.json"
+        chown claude-user:claude-user "$HOME/.claude.json"
+        chmod 600 "$HOME/.claude.json"
+    fi
+fi
+
 if [ -z "${PROMPT:-}" ]; then
     echo "entrypoint: PROMPT is required" >&2
     exit 64
@@ -61,7 +90,6 @@ fi
 # scripts/upload-credentials.sh --claude-home). Unpack it only when the
 # persisted home volume has no credentials yet, so an existing — possibly
 # token-refreshed — login is never overwritten. The blob is never echoed.
-: "${HOME:=/home/claude-user}"
 if [ -n "${CLAUDE_HOME_TARBALL_B64:-}" ] && [ ! -f "$HOME/.claude/.credentials.json" ]; then
     echo "entrypoint: restoring ~/.claude auth from the vault bundle" >&2
     mkdir -p "$HOME/.claude"
@@ -188,22 +216,6 @@ if [ "${CALLBACKS_ACTIVE}" = "1" ]; then
     fi
 fi
 
-# Choose the static settings.json allowlist by whether callbacks are live, and
-# re-derive it EVERY message (not persist-once) so it always matches this run's
-# CALLBACKS_ACTIVE / --permission-prompt-tool state (#548 — settings.json
-# persists across the per-message containers, so a once-written broad allowlist
-# would otherwise stick even after callbacks became active on a later message):
-#   - callbacks active  -> the tight read-only set (settings-callbacks.json.template:
-#     Read/Glob/Grep); everything else routes through --permission-prompt-tool,
-#     which pauses for a human decision.
-#   - callbacks inactive -> the broader pre-Phase-6 set (settings.json.template:
-#     Read + Bash(git:*)). With no prompt tool wired this run, tightening the
-#     allowlist would fail those tool calls closed with no recourse — so the
-#     tightening MUST be gated on callbacks being active (#543).
-# The content is fully derived from our templates (no user data merged), so
-# re-deriving is safe. NOTE: both templates must stay strict, comment-free JSON
-# — CI validates them with `python3 -m json.tool` (.github/workflows/ci.yml
-# "Validate JSON templates"), which rejects JSON5/JSONC comments.
 if [ "${CALLBACKS_ACTIVE}" = "1" ] && [ -f /etc/claude/settings-callbacks.json.template ]; then
     cp /etc/claude/settings-callbacks.json.template /workspace/.claude/settings.json
 elif [ -f /etc/claude/settings.json.template ]; then
@@ -220,6 +232,10 @@ fi
 if [ ! -f /workspace/.claude/history.jsonl ]; then
     claude -p "Initialise session" --model "${MODEL}" --resume || true
 fi
+
+# Recursively chown the workspace after creating templates/directories as root
+# so that 'claude-user' has full write access to history and configs.
+chown -R claude-user:claude-user /workspace || true
 
 # Phase 6 (docs/phase6-mcp-callbacks.md §3, §8): route Claude Code's own
 # permission prompts through the cloud-agents MCP server instead of the
@@ -238,10 +254,21 @@ if [ "${CALLBACKS_ACTIVE}" = "1" ]; then
 fi
 
 # Run the actual prompt. stdout is captured by the API server and streamed to
-# the browser as SSE. Resume a specific session if NATIVE_SESSION_ID is set;
-# otherwise resume the most recent session in the workspace volume.
-if [ -n "$NATIVE_SESSION_ID" ]; then
-    exec claude -p "${PROMPT}" --model "${MODEL}" --resume "${NATIVE_SESSION_ID}" "${PERMISSION_PROMPT_ARGS[@]}"
+# the browser as SSE.
+#
+# If /workspace/.claude/history.jsonl does not exist, this is the very first invocation,
+# so we pass --session-id "${NATIVE_SESSION_ID}" to initialize the session.
+# On subsequent runs, we pass --resume to continue.
+if [ ! -f /workspace/.claude/history.jsonl ]; then
+    if [ -n "$NATIVE_SESSION_ID" ]; then
+        exec runuser -u claude-user -- claude -p "${PROMPT}" --model "${MODEL}" --session-id "${NATIVE_SESSION_ID}" "${PERMISSION_PROMPT_ARGS[@]}"
+    else
+        exec runuser -u claude-user -- claude -p "${PROMPT}" --model "${MODEL}" "${PERMISSION_PROMPT_ARGS[@]}"
+    fi
 else
-    exec claude -p "${PROMPT}" --model "${MODEL}" --resume "${PERMISSION_PROMPT_ARGS[@]}"
+    if [ -n "$NATIVE_SESSION_ID" ]; then
+        exec runuser -u claude-user -- claude -p "${PROMPT}" --model "${MODEL}" --resume "${NATIVE_SESSION_ID}" "${PERMISSION_PROMPT_ARGS[@]}"
+    else
+        exec runuser -u claude-user -- claude -p "${PROMPT}" --model "${MODEL}" --resume "${PERMISSION_PROMPT_ARGS[@]}"
+    fi
 fi

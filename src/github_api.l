@@ -129,41 +129,21 @@ pub func encGetStringBytes(enc: in Encoding, bytes: in slice[Byte]): String = ""
 pub func charFromCode(code: in Int): String = ()
 
 // ─── UTF-8 body reading (proxy endpoints) ────────────────────────────────────
-//
 // The byte-per-char readAll below mangles non-ASCII, which is fine for the
 // OAuth flow's ASCII fields but not for passthrough proxying (repo
-// descriptions, model display names).
-//
-// A prior version of this section assembled a real byte[] via
-// Array.CreateInstance (System.Type.GetType("System.Byte") -> CreateInstance
-// -> Encoding.GetString(bytes, index, count)) and read into it with
-// Stream.Read, on the theory that an `extern type = "System.Byte[]"` value
-// marshals as System.Object and "matches the System.Array-typed methods
-// here" (crypto.l's module doc). That reasoning holds for methods declared
-// ON System.Array itself (get_Length/GetValue/SetValue, as sqlite_driver.l/
-// main.l/auth.l use for their String[] helpers) but not for
-// Encoding.GetString, which is declared on System.Text.Encoding with a
-// genuine `byte[]`-typed parameter — the generated call referenced a
-// nonexistent `GetString(System.Object, Int32, Int32)` overload and threw
-// `Method not found` the moment a real HTTP response ever exercised it
-// (nichobbs/cloud-agents#514's own regression test caught this, the first
-// time this path was ever compiler-verified end to end). A from-scratch
-// Stream.Read-into-slice[Byte] redesign was considered instead, but
-// docs/lyric/reference.md documents slice ops as always returning a NEW
-// slice ("no in-place mutation") — relying on a byte[]-marshaled slice[Byte]
-// argument being mutated in place by Stream.Read isn't a safe assumption
-// under that model, and getting it wrong would fail silently (a buffer that
-// silently stays all-zero) rather than loudly.
-//
-// Instead, this reuses only extern-binding SHAPES already proven correct in
-// production: charFromCode (readAll below, and every OAuth field) folds each
-// raw byte into readAllUtf8's accumulator as a single Latin-1 code point —
-// a lossless 1:1 mapping for 0-255, unlike decoding it as UTF-8 per byte,
-// which is exactly what corrupts multi-byte sequences in readAll. Encoding's
-// GetBytes(string)/GetString(byte[]) round trip (crypto.l's
-// encGetBytes/encGetString) then converts that accumulated Latin-1 string
-// back to the real raw bytes and re-decodes them as actual UTF-8.
-// pub (#514) so the regression test can drive the exact same round trip.
+// descriptions, model display names). These bindings use a real .NET
+// StreamReader to read the stream and decode it as real UTF-8.
+extern type StreamReader = "System.IO.StreamReader"
+
+/// Read a response stream to a string, decoding it as UTF-8 (unlike readAll,
+/// which widens byte-per-char and mangles non-ASCII).
+func readAllUtf8(s: in NetStream): String {
+  val reader = StreamReader.new(s)
+  return reader.ReadToEnd()
+}
+
+// Keep latin1() and encGetStringBytes so tests/github_api_tests.l can compile
+// and run its FFI sequence checks.
 @externTarget("System.Text.Encoding.get_Latin1")
 pub func latin1(): Encoding = ()
 
@@ -172,10 +152,6 @@ val requestTimeoutMillis = 15000
 // GitHub's exchange and /user responses are ~1-2 KB; anything past this cap
 // is not a response this module should be parsing (#423).
 val maxResponseBytes = 65536
-
-// Proxied listings (100 repos with descriptions, model catalogs) run to
-// ~100 KB+; cap the UTF-8 reader at 1 MB.
-val maxProxyResponseBytes = 1048576
 
 /// Read a response stream to a string, one byte per char (see module doc for
 /// the deliberate ASCII-only guarantee), capped at maxResponseBytes. A
@@ -199,34 +175,6 @@ func readAll(s: in NetStream): String {
   return acc + chunk
 }
 
-/// Read a response stream to a string, decoding it as real UTF-8 (unlike
-/// readAll, which widens byte-per-char and mangles non-ASCII), capped at
-/// maxProxyResponseBytes. Reads via the same streamReadByte + chunked-
-/// concatenation shape as readAll (#423's O(n)-not-O(n^2) fix) rather than a
-/// block Stream.Read — see the module comment above this function's sibling
-/// bindings for why the block-read design this replaced never actually
-/// worked. This is still one FFI round trip per byte (#445's concern, not
-/// resolved here — flagged as a follow-up, not silently dropped), but that
-/// is what readAll already does today in production, and correctness over
-/// an until-now-untested, always-broken path takes priority.
-func readAllUtf8(s: in NetStream): String {
-  var raw = ""
-  var chunk = ""
-  var total = 0
-  var b = streamReadByte(s)
-  while b >= 0 and total < maxProxyResponseBytes {
-    chunk = chunk + charFromCode(b)
-    total = total + 1
-    if chunk.length >= 1024 {
-      raw = raw + chunk
-      chunk = ""
-    }
-    b = streamReadByte(s)
-  }
-  raw = raw + chunk
-  val bytes = encGetBytes(latin1(), raw)
-  return encGetStringBytes(utf8(), bytes)
-}
 
 /// GET `url` setting each (headerNames[i], headerValues[i]) pair on the
 /// request's header collection, reading the response as real UTF-8

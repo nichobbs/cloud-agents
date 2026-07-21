@@ -6,6 +6,7 @@ import { api } from '../lib/api';
 import { enabledHarnesses } from '../lib/harnessAvailability';
 import { isGitHubConnected, listRepos } from '../lib/github';
 import { discoverModels } from '../lib/models';
+import { Profile } from '../types';
 
 export function NewSession() {
   // The Repos page links here with ?repoUrl=…&branch=… pre-filled.
@@ -23,6 +24,9 @@ export function NewSession() {
   const { addSession } = useSessions();
   const navigate = useNavigate();
 
+  const [profiles, setProfiles] = useState<Profile[]>([]);
+  const [selectedProfileId, setSelectedProfileId] = useState('');
+
   // Which harnesses actually have a runner image on this deployment (#523).
   // null (unknown, e.g. an older backend) is treated as "every harness
   // available" — see lib/harnessAvailability.
@@ -31,6 +35,21 @@ export function NewSession() {
     enabledHarnesses().then(ids => {
       if (active) setEnabledHarnessIds(ids);
     });
+    return () => {
+      active = false;
+    };
+  }, []);
+
+  // Fetch available profiles for selection
+  useEffect(() => {
+    let active = true;
+    api.getProfiles()
+      .then(list => {
+        if (active) setProfiles(list);
+      })
+      .catch(() => {
+        /* best-effort, profiles are optional */
+      });
     return () => {
       active = false;
     };
@@ -85,6 +104,9 @@ export function NewSession() {
         harness,
         model,
       });
+      if (selectedProfileId) {
+        await api.setSessionProfile(sessionId, selectedProfileId);
+      }
       addSession({
         sessionId,
         repoUrl: repoUrl.trim(),
@@ -196,6 +218,26 @@ export function NewSession() {
             </select>
           </div>
         </div>
+
+        {profiles.length > 0 && (
+          <div style={fieldStyle}>
+            <label style={labelStyle} htmlFor="profile">Profile</label>
+            <select
+              id="profile"
+              style={selectStyle}
+              value={selectedProfileId}
+              onChange={e => setSelectedProfileId(e.target.value)}
+              disabled={loading}
+            >
+              <option value="">None (all credentials, full network)</option>
+              {profiles.map(p => (
+                <option key={p.id} value={p.id}>
+                  {p.name} ({p.networkPolicy} network)
+                </option>
+              ))}
+            </select>
+          </div>
+        )}
 
         {error && (
           <div style={errorStyle}>{error}</div>

@@ -64,16 +64,22 @@ func envOr(name: in String): String {
   return v
 }
 
+config Github {
+  clientId: String = ""
+  @sensitive clientSecret: String = ""
+  whitelist: String = ""
+}
+
 pub func oauthClientId(): String {
-  return envOr("CLOUD_AGENTS_GITHUB_CLIENT_ID")
+  return Github.clientId
 }
 
 func oauthClientSecret(): String {
-  return envOr("CLOUD_AGENTS_GITHUB_CLIENT_SECRET")
+  return Github.clientSecret
 }
 
 func whitelistCsv(): String {
-  return envOr("CLOUD_AGENTS_WHITELIST")
+  return Github.whitelist
 }
 
 /// OAuth is usable only when both halves of the app registration are set.
