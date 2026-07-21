@@ -35,6 +35,7 @@ output_assembly = "cloud-agents-shim.dll"
 "CloudAgents.Shim.ConfigTests"          = "tests/config_tests.l"
 "CloudAgents.Shim.V2ClientTests"        = "tests/v2_client_tests.l"
 "CloudAgents.Shim.V2ToolsTests"         = "tests/v2_tools_tests.l"
+"CloudAgents.Shim.TransportTests"       = "tests/transport_tests.l"
 
 [nuget]
 # Lyric.JsonRpc is a transitive dependency of Lyric.Mcp's own published
