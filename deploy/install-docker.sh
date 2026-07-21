@@ -33,17 +33,37 @@ systemctl enable --now docker
 # Build every harness's runner image so the first session (whichever harness
 # it picks) does not pay the cost. Tags must match imageForHarness()
 # (src/docker_manager.l) exactly.
+#
+# REPO_ROOT is derived from this script's own location, NOT hardcoded to
+# /opt/cloud-agents: per RUNBOOK.md's documented first-time-setup order,
+# this script runs from the checked-out repo BEFORE that repo is rsynced to
+# /opt/cloud-agents (the very next command). The previous hardcoded
+# /opt/cloud-agents/docker/... path never existed yet at this point in the
+# flow, so every `[ -f ... ]` guard below silently evaluated false and this
+# entire build loop was a silent no-op — every fresh VM setup hit exactly
+# the opaque "no such image" container-creation failure this loop exists to
+# prevent. Building from the checkout's own path (wherever it happens to be
+# on disk) fixes this regardless of when the rsync to /opt/cloud-agents runs.
+#
+# claude-code:base needs the REPO ROOT as build context (its Dockerfile COPYs
+# from both docker/ and shim/, #601) — the other three only need docker/,
+# matching docker-compose.coolify.yml's per-service build.context exactly.
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 for spec in \
-    "Dockerfile claude-code:base" \
-    "Dockerfile.codex codex:base" \
-    "Dockerfile.opencode opencode:base" \
-    "Dockerfile.gemini gemini:base"
+    "Dockerfile claude-code:base ${REPO_ROOT}" \
+    "Dockerfile.codex codex:base ${REPO_ROOT}/docker" \
+    "Dockerfile.opencode opencode:base ${REPO_ROOT}/docker" \
+    "Dockerfile.gemini gemini:base ${REPO_ROOT}/docker"
 do
-    dockerfile="${spec%% *}"
-    tag="${spec#* }"
-    if [ -f "/opt/cloud-agents/docker/${dockerfile}" ]; then
-        docker build -t "$tag" -f "/opt/cloud-agents/docker/${dockerfile}" /opt/cloud-agents/docker
+    dockerfile="$(echo "$spec" | cut -d' ' -f1)"
+    tag="$(echo "$spec" | cut -d' ' -f2)"
+    context="$(echo "$spec" | cut -d' ' -f3)"
+    if [ ! -f "${REPO_ROOT}/docker/${dockerfile}" ]; then
+        echo "install-docker.sh: ${REPO_ROOT}/docker/${dockerfile} not found — refusing to silently skip it" >&2
+        exit 1
     fi
+    docker build -t "$tag" -f "${REPO_ROOT}/docker/${dockerfile}" "$context"
 done
 
 echo "Docker $(docker --version) installed."
