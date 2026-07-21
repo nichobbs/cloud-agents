@@ -187,6 +187,43 @@ test "an absent/empty toolMode (a not-yet-updated frontend) defaults to 'all', n
   assertEqual(updated.toolMode, "all", "empty toolMode still normalizes to 'all' on update")
 }
 
+test "SaveProfileRequest.fromJson decodes a body that omits toolMode/tools entirely, exactly what the live unmodified frontend sends (#614)" {
+  // The scenario the #614 fix's other test never actually covered: it
+  // constructs SaveProfileRequest directly in Lyric, never via .fromJson —
+  // so it never exercised whether the real decode boundary in src/main.l
+  // (SaveProfileRequest.fromJson(patchMissingToolFields(req.body))) even
+  // succeeds when the JSON body omits both keys, as the deployed frontend
+  // does (this PR is backend-only). @generate(Json)'s derived fromJson has
+  // no per-field default: confirmed separately that it fails outright with
+  // "missing field '<name>'" on an absent field, for String, slice[T], AND
+  // Option[T] alike — so without patchMissingToolFields this request would
+  // 400 at decode time regardless of validateSaveProfile's own tolerance.
+  val rawBody = "{\"name\":\"legacy-client\",\"harness\":\"\",\"networkPolicy\":\"none\",\"credentialMode\":\"all\",\"credentials\":[],\"skillIds\":[],\"subagentIds\":[],\"mcpServerIds\":[]}"
+  val patched = patchMissingToolFields(rawBody)
+  val decoded = match SaveProfileRequest.fromJson(patched) {
+    case Ok(d) -> d
+    case Err(e) -> panic("a body omitting toolMode/tools must still decode: " + toString(e))
+  }
+  assertEqual(decoded.name, "legacy-client", "every field the body DID send round-trips")
+  assertEqual(decoded.toolMode, "", "the omitted toolMode decodes to its JSON zero-value")
+  assertEqualInt(decoded.tools.length.toInt(), 0, "the omitted tools decodes to an empty list")
+
+  // A body that already sends both fields must decode byte-identically to
+  // patching nothing (no double-injected keys, no corrupted trailing JSON).
+  val alreadyPresent = "{\"name\":\"x\",\"harness\":\"\",\"networkPolicy\":\"none\",\"credentialMode\":\"all\",\"credentials\":[],\"skillIds\":[],\"subagentIds\":[],\"mcpServerIds\":[],\"toolMode\":\"selected\",\"tools\":[\"remember\"]}"
+  assertEqual(
+    patchMissingToolFields(alreadyPresent),
+    alreadyPresent,
+    "a body that already has both fields is passed through unchanged"
+  )
+  val decodedAlreadyPresent = match SaveProfileRequest.fromJson(patchMissingToolFields(alreadyPresent)) {
+    case Ok(d) -> d
+    case Err(e) -> panic("an already-complete body must still decode: " + toString(e))
+  }
+  assertEqual(decodedAlreadyPresent.toolMode, "selected", "an explicitly-sent toolMode is preserved, not overwritten")
+  assertEqualInt(decodedAlreadyPresent.tools.length.toInt(), 1, "an explicitly-sent tools list is preserved")
+}
+
 test "duplicate tool names in 'selected' mode are rejected (#615)" {
   val dbPath = useFreshTestDb("profile-toolmode-dup")
   defer {

@@ -642,7 +642,10 @@ record RouteAddProfile {
 
 impl Web.Handler for RouteAddProfile {
   func handle(req: in Web.Request): Web.Response {
-    val decoded = match SaveProfileRequest.fromJson(req.body) { case Ok(d) -> d; case Err(_) -> return badBody() }
+    val decoded = match SaveProfileRequest.fromJson(CloudAgents.Profiles.patchMissingToolFields(req.body)) {
+      case Ok(d) -> d
+      case Err(_) -> return badBody()
+    }
     return profileResp(CloudAgents.Profiles.addProfileHandler(decoded))
   }
 }
@@ -653,7 +656,10 @@ record RouteUpdateProfile {
 impl Web.Handler for RouteUpdateProfile {
   func handle(req: in Web.Request): Web.Response {
     val pid = pparam(req, "pid")
-    val decoded = match SaveProfileRequest.fromJson(req.body) { case Ok(d) -> d; case Err(_) -> return badBody() }
+    val decoded = match SaveProfileRequest.fromJson(CloudAgents.Profiles.patchMissingToolFields(req.body)) {
+      case Ok(d) -> d
+      case Err(_) -> return badBody()
+    }
     return profileResp(CloudAgents.Profiles.updateProfileHandler(pid, decoded))
   }
 }

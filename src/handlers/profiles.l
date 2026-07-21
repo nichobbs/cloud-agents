@@ -7,6 +7,7 @@
 package CloudAgents.Profiles
 
 import Std.Core
+import Std.Json
 import Web
 import CloudAgents.Auth
 import CloudAgents.Repository
@@ -34,6 +35,73 @@ pub record SaveProfileRequest {
   pub mcpServerIds: slice[String]
   pub toolMode: String
   pub tools: slice[String]
+}
+
+/// The index of the last occurrence of a single-character `target` in `s`,
+/// or -1. Small local helper (CloudAgents.Text has no reverse search) —
+/// only ever called on a string already confirmed to parse as valid JSON,
+/// where the last '}' is always that document's own outermost closing
+/// brace (see patchMissingToolFields' doc comment).
+func lastIndexOfChar(s: in String, target: in String): Int {
+  var i = s.length - 1
+  while i >= 0 {
+    if s.substring(i, 1) == target {
+      return i
+    }
+    i = i - 1
+  }
+  return -1
+}
+
+/// `@generate(Json)`'s derived `fromJson` requires every field present in
+/// the body — there is no per-field "optional, defaults to X when absent"
+/// support (confirmed: a body missing `toolMode` or `tools` fails decode
+/// with "missing field '<name>'" before SaveProfileRequest.fromJson ever
+/// returns, so validateSaveProfile's own "" == default tolerance
+/// (isValidToolMode, normalizedToolMode) never even runs). Since `toolMode`/
+/// `tools` are NEW fields on an existing request shape (#614), a
+/// not-yet-updated frontend's save-profile request omits them entirely —
+/// every such request would 400 at the decode boundary the moment this
+/// ships, regardless of the validation layer's own tolerance.
+///
+/// Patches the two fields' JSON-default values ("" / []) into the raw body
+/// BEFORE decoding, but only for whichever of the two keys is actually
+/// absent (a body that already sends them is passed through byte-identical).
+/// Uses Std.Json's real parser to detect absence (not a blind string
+/// search, which could false-positive on a nested object/array that
+/// happens to contain the substring `"toolMode"` as a value) and splices
+/// the additions in right before the body's own closing '}' — safe because
+/// a string that already parsed successfully as one JSON object always has
+/// its own outermost closing brace as the last '}' character in the text
+/// (no valid JSON document has any unescaped '}' after the true end of its
+/// root object, whitespace aside).
+pub func patchMissingToolFields(body: in String): String {
+  val doc = match Std.Json.tryParseJson(body) { case Ok(d) -> d; case Err(_) -> return body }
+  defer {
+    Std.Json.disposeJson(doc)
+  }
+  val root = Std.Json.rootElement(doc)
+  var toAdd = ""
+  match Std.Json.tryGetProperty(root, "toolMode") {
+    case None -> {
+      toAdd = toAdd + ",\"toolMode\":\"\""
+    }
+    case Some(_) -> ()
+  }
+  match Std.Json.tryGetProperty(root, "tools") {
+    case None -> {
+      toAdd = toAdd + ",\"tools\":[]"
+    }
+    case Some(_) -> ()
+  }
+  if toAdd.length == 0 {
+    return body
+  }
+  val closeIdx = lastIndexOfChar(body, "}")
+  if closeIdx < 0 {
+    return body
+  }
+  return body.substring(0, closeIdx) + toAdd + body.substring(closeIdx, body.length - closeIdx)
 }
 
 func dbError(e: in CloudAgents.Sqlite.DbError): Web.ApiError {
