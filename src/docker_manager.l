@@ -162,11 +162,7 @@ pub async func createRunnerContainer(
     case Err(_) -> ()
   }
   match Std.Environment.getVar("NODE_EXTRA_CA_CERTS") {
-    case Ok(v) -> if v.length > 0 {
-      envs = envs.append("NODE_TLS_REJECT_UNAUTHORIZED=0")
-      envs = envs.append("NODE_EXTRA_CA_CERTS=/etc/host-ca.pem")
-      binds = binds.append(v + ":/etc/host-ca.pem:ro")
-    }
+    case Ok(v) -> if v.length > 0 { envs = envs.append("NODE_TLS_REJECT_UNAUTHORIZED=0"); envs = envs.append("NODE_EXTRA_CA_CERTS=/etc/host-ca.pem"); binds = binds.append(v + ":/etc/host-ca.pem:ro") }
     case Err(_) -> ()
   }
 
@@ -302,8 +298,6 @@ pub async func createRunnerContainer(
     policy,
     CloudAgents.NetworkPolicy.callbacksFeatureEnabled()
   )
-
-
 
   val image = imageForHarness(harness)
   val createRes = await createContainerWithNetwork(client, image, envs, binds, networkMode)

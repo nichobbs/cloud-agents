@@ -56,12 +56,7 @@ pub func hasExceededRunTimeout(nowMs: in Long, startMs: in Long, timeoutMs: in L
 ///   30-minute window; it gives up after a bounded number of attempts.
 /// - `nowMs` has not reached `deadlineMs` — the overall wall-clock budget,
 ///   matching the 30-minute cap the run's own hard timeout enforces.
-pub func shouldRetryContainerWait(
-  attempts: in Int,
-  maxAttempts: in Int,
-  nowMs: in Long,
-  deadlineMs: in Long,
-): Bool {
+pub func shouldRetryContainerWait(attempts: in Int, maxAttempts: in Int, nowMs: in Long, deadlineMs: in Long): Bool {
   if attempts >= maxAttempts {
     return false
   }

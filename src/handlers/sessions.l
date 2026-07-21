@@ -19,8 +19,11 @@ pub func generateSessionId(): String {
 }
 
 val maxPromptLen = 131072
+
 val maxRepoUrlLen = 2048
+
 val maxBranchLen = 255
+
 val maxModelLen = 128
 
 func isHttpsUrl(url: in String): Bool {
@@ -68,22 +71,14 @@ func isSafeBranchName(branch: in String): Bool {
   if branch == "@" {
     return false // reserved ref name
   }
-  if branch.startsWith("-") or branch.startsWith("/") or branch.endsWith("/") or branch.endsWith(".") or
-    branch.endsWith(".lock") {
+  if branch.startsWith("-") or branch.startsWith("/") or branch.endsWith("/") or branch.endsWith(".") or branch.endsWith(".lock") {
     return false
   }
   // No component may start with '.' (covers a leading '.' and 'x/.y').
   if branch.startsWith(".") or branch.contains("/.") {
     return false
   }
-  if branch.contains(" ") or branch.contains("\"") or branch.contains("\\") or branch.contains("~") or
-    branch.contains("^") or
-    branch.contains(":") or
-    branch.contains("?") or
-    branch.contains("*") or
-    branch.contains("[") or
-    branch.contains("..") or
-    branch.contains("@{") {
+  if branch.contains(" ") or branch.contains("\"") or branch.contains("\\") or branch.contains("~") or branch.contains("^") or branch.contains(":") or branch.contains("?") or branch.contains("*") or branch.contains("[") or branch.contains("..") or branch.contains("@{") {
     return false
   }
   return not CloudAgents.Text.containsControlChar(branch)
@@ -93,8 +88,7 @@ func isSafeModelName(model: in String): Bool {
   if not CloudAgents.Text.withinMaxLength(model, maxModelLen) {
     return false
   }
-  if model.contains(" ") or model.contains("\"") or model.contains("\\") or model.contains("{") or
-    model.contains("}") {
+  if model.contains(" ") or model.contains("\"") or model.contains("\\") or model.contains("{") or model.contains("}") {
     return false
   }
   return not CloudAgents.Text.containsControlChar(model)
@@ -146,7 +140,6 @@ pub record AddRepoRequest {
 /// Upper bound on repositories linked to one session, so the EXTRA_REPOS env
 /// value passed to a container stays bounded.
 val maxSessionRepos = 20
-
 
 /// Create a persistent session workspace.
 pub func createSession(req: in CreateSessionRequest): Result[CreateSessionResponse, Web.ApiError] {
@@ -270,7 +263,6 @@ pub func listSessions(): Result[String, Web.ApiError] {
 // an agent can work across several checkouts in one run. These handlers touch
 // only CloudAgents.Repository + CloudAgents.SessionStore (no CloudAgents.Docker),
 // so — unlike sendMessage — they can be invoked directly from the test harness.
-
 /// The extra repositories linked to a session (beyond its primary repo). 404
 /// for an unknown/foreign session, consistent with the other session
 /// sub-resource endpoints.
@@ -563,7 +555,9 @@ pub func streamSendMessage(id: in String, text: in String, w: in Web.ResponseWri
           // Persist the agent reply and close the stream with a done frame that
           // carries the message id (so the client can anchor comments/todos).
           match CloudAgents.Repository.addMessage(id, "agent", logs) {
-            case Ok(m) -> { val _ = Web.writeChunk(w, CloudAgents.Streaming.sseDoneWithMessage(m.id)) }
+            case Ok(m) -> {
+              val _ = Web.writeChunk(w, CloudAgents.Streaming.sseDoneWithMessage(m.id))
+            }
             case Err(e) -> {
               println("WARNING: failed to persist agent message for session " + id + ": " + CloudAgents.Sqlite.dbErrorMessage(e))
               val _ = Web.writeChunk(w, CloudAgents.Streaming.sseDone())
@@ -611,10 +605,7 @@ pub func cancelRun(id: in String): Result[Unit, Web.ApiError] {
         case Ok(s) -> s
         case Err(e) -> return Err(Web.internalError("status lookup failed: " + CloudAgents.Sqlite.dbErrorMessage(e)))
       }
-      val isRunning = match status {
-        case Some(s) -> s == "RUNNING"
-        case None -> false
-      }
+      val isRunning = match status { case Some(s) -> s == "RUNNING"; case None -> false }
       if not isRunning {
         return Err(Web.conflict("no run is in progress for this session"))
       }
@@ -753,7 +744,6 @@ pub func getRunOutput(id: in String): Result[String, Web.ApiError] {
 }
 
 // ── Incremental run output ────────────────────────────────────────────────────
-
 // Decimal digit value of a single-character string, -1 when not a digit.
 // Mirrors the parser helper in src/main.l's isValidPort — that digitValue is
 // package CloudAgents (non-pub) and not importable from here, so Handlers
@@ -835,8 +825,9 @@ pub func runOutputDeltaJson(running: in Bool, logs: in String, offset: in Int): 
   val effective = if offset > total { 0 } else { offset }
   val chunk = if effective >= total { "" } else { logs.substring(effective, total - effective) }
   val runningStr = if running { "true" } else { "false" }
-  return "{\"running\":\"" + runningStr + "\",\"length\":\"" + toString(total) +
-    "\",\"chunk\":\"" + CloudAgents.Streaming.jsonEscape(chunk) + "\"}"
+  return "{\"running\":\"" + runningStr + "\",\"length\":\"" + toString(total) + "\",\"chunk\":\"" +
+    CloudAgents.Streaming.jsonEscape(chunk) +
+    "\"}"
 }
 
 /// Incremental live output for an in-progress run — GET
@@ -954,10 +945,7 @@ pub func updateSessionModel(id: in String, req: in UpdateSessionRequest): Result
   }
   match maybeSession {
     case None -> return Err(Web.notFound("Session not found"))
-    case Some(_) -> match CloudAgents.SessionStore.updateSessionModel(id, req.model) {
-      case Ok(_) -> return Ok(())
-      case Err(e) -> return Err(Web.internalError("failed to update model: " + CloudAgents.Sqlite.dbErrorMessage(e)))
-    }
+    case Some(_) -> match CloudAgents.SessionStore.updateSessionModel(id, req.model) { case Ok(_) -> return Ok(()); case Err(e) -> return Err(Web.internalError("failed to update model: " + CloudAgents.Sqlite.dbErrorMessage(e))) }
   }
 }
 

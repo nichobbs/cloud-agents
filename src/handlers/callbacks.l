@@ -1211,7 +1211,6 @@ func memoryListFor(id: in String): Result[MemoryListResponse, Web.ApiError] {
 // False negatives (a real secret that doesn't match any shape below) are
 // expected and fine — this is defense in depth, not the only place a caller
 // is told not to do this.
-
 /// Minimum length for the generic "looks randomly generated" check
 /// (looksHighEntropy) below — comfortably above an ordinary short label/note
 /// while still catching typical API-key/token lengths (most are 32+ chars).
@@ -1222,8 +1221,8 @@ val highEntropySecretMinLen = 32
 /// personal access, `gho_` OAuth, `ghs_` server-to-server), or AWS access
 /// key ids (`AKIA`).
 func hasKnownSecretPrefix(value: in String): Bool {
-  return value.startsWith("sk-") or value.startsWith("ghp_") or value.startsWith("gho_") or
-    value.startsWith("ghs_") or value.startsWith("AKIA")
+  return value.startsWith("sk-") or value.startsWith("ghp_") or value.startsWith("gho_") or value.startsWith("ghs_") or
+    value.startsWith("AKIA")
 }
 
 /// The base64url alphabet minus padding (`=`) — used by isJwtShaped to check
