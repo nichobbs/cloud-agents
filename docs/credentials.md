@@ -78,7 +78,15 @@ OAuth setup" below).
 2. Set `CLOUD_AGENTS_GITHUB_CLIENT_ID` and
    `CLOUD_AGENTS_GITHUB_CLIENT_SECRET` in the API server's environment, and
    optionally `CLOUD_AGENTS_WHITELIST` to a comma-separated list of GitHub
-   numeric user ids allowed in (empty = any authenticated GitHub user).
+   numeric user ids allowed in (empty = any authenticated GitHub user). Or,
+   idiomatically, set `LYRIC_CONFIG_CLOUDAGENTS_OAUTH_GITHUB_CLIENT_ID` /
+   `LYRIC_CONFIG_CLOUDAGENTS_OAUTH_GITHUB_CLIENT_SECRET` /
+   `LYRIC_CONFIG_CLOUDAGENTS_OAUTH_GITHUB_WHITELIST` instead — a Lyric
+   `config` block (D046, `src/handlers/oauth.l`'s `config Github {}`) that
+   takes priority over the `CLOUD_AGENTS_*` names above when set. If you use
+   it for client id/secret, set the whitelist one too (or keep
+   `CLOUD_AGENTS_WHITELIST` set): an empty whitelist on either path means
+   open access to any authenticated GitHub user, not "no one".
 3. "Sign in with GitHub" appears in the nav. Signing in stores the OAuth
    token as the API bearer (all data becomes scoped to your `gh-<id>`
    tenant) and connects GitHub in the UI (repo browser, PR/CI panels) in

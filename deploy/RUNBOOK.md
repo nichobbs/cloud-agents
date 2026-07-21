@@ -33,7 +33,13 @@ Set your domain in `Caddyfile` (replace `agent.example.com`) before starting.
 > GitHub -> Settings -> Developer settings -> OAuth Apps, with "Authorization
 > callback URL" set to `https://<your-domain>/auth/callback`. Leave both
 > empty (the default) to run with no sign-in requirement, same as before
-> these existed.
+> these existed. Or, idiomatically, set `LYRIC_CONFIG_CLOUDAGENTS_OAUTH_GITHUB_CLIENT_ID`
+> / `LYRIC_CONFIG_CLOUDAGENTS_OAUTH_GITHUB_CLIENT_SECRET` /
+> `LYRIC_CONFIG_CLOUDAGENTS_OAUTH_GITHUB_WHITELIST` instead — a Lyric `config`
+> block (D046) that takes priority over the `CLOUD_AGENTS_*` names above when
+> set. If you use it for client id/secret, set the whitelist one too (or keep
+> `CLOUD_AGENTS_WHITELIST` set): an empty whitelist on either path means open
+> access to any authenticated GitHub user, not "no one".
 
 > **Optional — `restricted` network policy:** to use profiles with the
 > `restricted` network policy, first create the internal egress network named

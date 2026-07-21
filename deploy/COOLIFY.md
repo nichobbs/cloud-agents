@@ -21,7 +21,15 @@ compose file for what differs and why.
    - `CLOUD_AGENTS_GITHUB_CLIENT_ID`, `CLOUD_AGENTS_GITHUB_CLIENT_SECRET`
      (optional — from a GitHub OAuth App with its callback URL set to
      `https://<your-domain>/auth/callback`; leave both empty to run with no
-     sign-in requirement)
+     sign-in requirement). Or, idiomatically, set
+     `LYRIC_CONFIG_CLOUDAGENTS_OAUTH_GITHUB_CLIENT_ID` /
+     `LYRIC_CONFIG_CLOUDAGENTS_OAUTH_GITHUB_CLIENT_SECRET` /
+     `LYRIC_CONFIG_CLOUDAGENTS_OAUTH_GITHUB_WHITELIST` instead (a Lyric
+     `config` block, D046) — these take priority over the `CLOUD_AGENTS_*`
+     names above when set. If you use the `LYRIC_CONFIG_*` names for client
+     id/secret, also set the whitelist one (or keep `CLOUD_AGENTS_WHITELIST`
+     set): an empty whitelist on either path means open access to any
+     authenticated GitHub user, not "no one".
    - `CLOUD_AGENTS_RESTRICTED_NETWORK`, `CLOUD_AGENTS_EGRESS_PROXY` (optional,
      only needed for the `restricted` network policy)
    - `SERVICE_FQDN_CADDY_80` — Coolify manages this one itself once it

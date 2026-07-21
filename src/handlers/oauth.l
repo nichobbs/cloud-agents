@@ -64,16 +64,58 @@ func envOr(name: in String): String {
   return v
 }
 
+/// A config-block value wins when set; otherwise fall back to the legacy env
+/// var. Extracted as a pure function (rather than inlined at each call site)
+/// so the precedence itself is unit-testable: `config` blocks are populated
+/// once from the environment before `main` runs, so a `@test_module` can't
+/// exercise the "config value present" branch by setting the env var at
+/// runtime — but it CAN call this directly with a hand-supplied config value.
+pub func configOrEnv(configValue: in String, envVarName: in String): String {
+  if configValue.length > 0 {
+    return configValue
+  }
+  return envOr(envVarName)
+}
+
+/// Idiomatic Lyric config-block override for the three OAuth app-registration
+/// values (D046, docs/25-config-blocks.md). Each field is auto-populated at
+/// startup from its derived env var — for this package/block that's
+/// `LYRIC_CONFIG_CLOUDAGENTS_OAUTH_GITHUB_CLIENT_ID`,
+/// `LYRIC_CONFIG_CLOUDAGENTS_OAUTH_GITHUB_CLIENT_SECRET`, and
+/// `LYRIC_CONFIG_CLOUDAGENTS_OAUTH_GITHUB_WHITELIST` — falling back to the
+/// plain `CLOUD_AGENTS_GITHUB_CLIENT_ID`/`_SECRET`/`CLOUD_AGENTS_WHITELIST`
+/// names below when unset, so an existing deployment that only sets the
+/// plain names keeps working completely unchanged (#642: this is what
+/// broke the first time this was tried — the config-block names were the
+/// ONLY path, with no fallback, silently dropping every deployment still on
+/// the plain names). `@sensitive` on clientSecret is currently declarative
+/// only (no runtime redaction in v1) but documents intent for `lyric doc`
+/// and future tooling.
+///
+/// WHITELIST CAUTION: an empty whitelist means "open access to any
+/// authenticated GitHub user" (CloudAgents.Auth.isWhitelisted) — this is
+/// pre-existing, documented behaviour, not new. But if you migrate clientId
+/// and clientSecret to the `LYRIC_CONFIG_*` names, remember to migrate
+/// whitelist too (or keep `CLOUD_AGENTS_WHITELIST` set): setting only the
+/// first two and leaving whitelist on neither path opens access with no
+/// warning.
+config Github {
+  clientId: String = ""
+  @sensitive
+  clientSecret: String = ""
+  whitelist: String = ""
+}
+
 pub func oauthClientId(): String {
-  return envOr("CLOUD_AGENTS_GITHUB_CLIENT_ID")
+  return configOrEnv(Github.clientId, "CLOUD_AGENTS_GITHUB_CLIENT_ID")
 }
 
 func oauthClientSecret(): String {
-  return envOr("CLOUD_AGENTS_GITHUB_CLIENT_SECRET")
+  return configOrEnv(Github.clientSecret, "CLOUD_AGENTS_GITHUB_CLIENT_SECRET")
 }
 
 func whitelistCsv(): String {
-  return envOr("CLOUD_AGENTS_WHITELIST")
+  return configOrEnv(Github.whitelist, "CLOUD_AGENTS_WHITELIST")
 }
 
 /// OAuth is usable only when both halves of the app registration are set.

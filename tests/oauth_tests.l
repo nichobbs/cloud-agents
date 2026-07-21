@@ -107,6 +107,23 @@ test "expiring-token exchange fields parse as unquoted JSON numbers, not strings
 }
 
 // ── Configuration ─────────────────────────────────────────────────────────────
+test "configOrEnv prefers a config-block value over the legacy env var, falling back when empty" {
+  clearOAuthEnv()
+  Env.SetEnvironmentVariable("CLOUD_AGENTS_GITHUB_CLIENT_ID", "env-value")
+  assertEqual(
+    configOrEnv("config-value", "CLOUD_AGENTS_GITHUB_CLIENT_ID"),
+    "config-value",
+    "a set config-block value wins over the env var"
+  )
+  assertEqual(
+    configOrEnv("", "CLOUD_AGENTS_GITHUB_CLIENT_ID"),
+    "env-value",
+    "an unset (empty) config-block value falls back to the env var"
+  )
+  assertEqual(configOrEnv("", "CLOUD_AGENTS_GITHUB_CLIENT_ID_NONEXISTENT"), "", "both unset -> empty")
+  clearOAuthEnv()
+}
+
 test "oauthConfigured requires both halves of the app registration" {
   clearOAuthEnv()
   assertTrue(not oauthConfigured(), "unset -> unconfigured")
