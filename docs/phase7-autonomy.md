@@ -271,10 +271,13 @@ Today a `Profile` has `credentialMode` ∈ {all, selected} plus a
 
 The tool names are the stable MCP names already in `shim/src/main.l`:
 `request_permission`, `ask_user`, `report_progress`, `request_secret`,
-`add_followup_task`, `report_artifact`, and the phase-7 §4 repo-memory
-additions (`remember`, `recall`, `forget` — not `notify`, which was never
-actually added to the shim). Enablement is per-name; the validation set
-lives in `CloudAgents.Profiles.validShimToolNames` (hand-kept in sync with
+`add_followup_task`, `report_artifact`, the phase-7 §4 repo-memory
+additions (`remember`, `recall`, `forget`), the phase-7 §5 addition
+(`notify`), and the phase-7 §8 repo-scoped task list additions (`add_task`,
+`list_tasks`, `complete_task`) — 13 tools in total (#625: an earlier
+revision of this doc incorrectly claimed `notify` was never added to the
+shim). Enablement is per-name; the validation set lives in
+`CloudAgents.Profiles.validShimToolNames` (hand-kept in sync with
 `shim/src/main.l`, since the shim is a separate Lyric project with its own
 `lyric.toml` and no dependency edge back to this one).
 

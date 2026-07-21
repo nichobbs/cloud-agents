@@ -21,7 +21,7 @@ val maxProfileNameLen = 200
 // through code; it is kept in sync by hand). This is exactly the set
 // profile_tools.tool_name may be drawn from in 'selected' mode
 // (docs/phase7-autonomy.md §7).
-val validShimToolNames: slice[String] = ["request_permission", "ask_user", "report_progress", "request_secret", "add_followup_task", "report_artifact", "remember", "recall", "forget", "add_task", "list_tasks", "complete_task"]
+val validShimToolNames: slice[String] = ["request_permission", "ask_user", "report_progress", "request_secret", "add_followup_task", "report_artifact", "remember", "recall", "forget", "add_task", "list_tasks", "complete_task", "notify"]
 
 @generate(Json)
 pub record SaveProfileRequest {

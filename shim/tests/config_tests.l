@@ -51,11 +51,11 @@ test "timeoutFromRaw honors a valid override" {
 // CloudAgents.Docker injects CLOUD_AGENTS_ENABLED_TOOLS as a comma-separated
 // allowlist only for a 'selected'-mode profile; main.l wraps every addTool
 // call in `if toolIsEnabled(enabledToolsCsv, "<name>")`. These cases mirror
-// main.l's exact 12-tool set (the original 9, plus add_task/list_tasks/
-// complete_task added by the repo-scoped task list slice) so a passing
-// suite proves the real registration gate, not just the parsing helper in
-// isolation.
-val allShimToolNames: slice[String] = ["request_permission", "ask_user", "report_progress", "request_secret", "add_followup_task", "report_artifact", "remember", "recall", "forget", "add_task", "list_tasks", "complete_task"]
+// main.l's exact 13-tool set (the original 9, add_task/list_tasks/
+// complete_task from the repo-scoped task list slice, and notify — #625)
+// so a passing suite proves the real registration gate, not just the
+// parsing helper in isolation.
+val allShimToolNames: slice[String] = ["request_permission", "ask_user", "report_progress", "request_secret", "add_followup_task", "report_artifact", "remember", "recall", "forget", "add_task", "list_tasks", "complete_task", "notify"]
 
 func enabledSubsetOf(csv: in String): slice[String] {
   var acc: slice[String] = []
@@ -68,7 +68,7 @@ func enabledSubsetOf(csv: in String): slice[String] {
 }
 
 test "toolIsEnabled registers every tool when the env var is empty (unchanged behaviour)" {
-  assertEqualInt(enabledSubsetOf("").length.toInt(), 12, "empty CSV enables all 12 known tools")
+  assertEqualInt(enabledSubsetOf("").length.toInt(), 13, "empty CSV enables all 13 known tools")
 }
 
 test "toolIsEnabled restricts registration to a non-empty allowlist" {

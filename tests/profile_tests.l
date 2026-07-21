@@ -54,6 +54,11 @@ test "handler validation rejects bad enums" {
   assertTrue(not isValidToolMode("some"), "unknown tool mode rejected")
   assertTrue(isValidToolName("remember") and isValidToolName("request_permission"), "known tool names accepted")
   assertTrue(not isValidToolName("delete_everything"), "unknown tool name rejected")
+  // notify (phase 7 §5) is a real, always-registerable shim tool — an
+  // earlier revision of this list omitted it (#625), which meant a
+  // 'selected'-mode profile could never explicitly grant it even though
+  // the shim always ran it ungated regardless of any profile's tool_mode.
+  assertTrue(isValidToolName("notify"), "notify is a valid tool name (#625)")
 }
 
 // ── Live-database tests ───────────────────────────────────────────────────────

@@ -225,15 +225,17 @@ func main(): Unit {
   }
 
   // Phase 7 §5 notify (docs/phase7-autonomy.md).
-  addTool(
-    server,
-    McpToolDef(
-      name = "notify",
-      description = "Push a short status update to the human right now (e.g. 'done', 'blocked', or a plain info update) — reaches them even if they've closed the session tab.",
-      inputSchema = CloudAgents.Shim.V2Tools.notifySchema(),
-      handler = NotifyTool(transport = v2Transport)
+  if CloudAgents.Shim.Config.toolIsEnabled(enabledToolsCsv, "notify") {
+    addTool(
+      server,
+      McpToolDef(
+        name = "notify",
+        description = "Push a short status update to the human right now (e.g. 'done', 'blocked', or a plain info update) — reaches them even if they've closed the session tab.",
+        inputSchema = CloudAgents.Shim.V2Tools.notifySchema(),
+        handler = NotifyTool(transport = v2Transport)
+      )
     )
-  )
+  }
 
   match serveStdio(server) {
     case Ok(_) -> ()
