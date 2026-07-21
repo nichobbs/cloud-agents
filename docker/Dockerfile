@@ -76,8 +76,19 @@ FROM --platform=linux/amd64 mcr.microsoft.com/dotnet/sdk:10.0 AS shim-builder
 # the Dockerfile.
 ARG LYRIC_VERSION=""
 COPY MIN_LYRIC_VERSION /tmp/min-lyric-version.txt
+
+# Split into three separate RUN steps (was one combined chain) so a build
+# failure's Dockerfile line number actually narrows down which of
+# apt-get/curl-resolve/curl-download failed, instead of pointing at a single
+# ~20-line RUN covering all three — a real Coolify failure on this exact
+# block (nichobbs/cloud-agents#654 postmortem) only ever surfaced BuildKit's
+# generic "process ... did not complete successfully: exit code: 255"
+# wrapper with no inner stderr visible in Coolify's UI, and the combined
+# chain gave no way to tell which command inside it actually failed.
 RUN apt-get update && apt-get install -y --no-install-recommends curl ca-certificates \
-    && if [ -z "$LYRIC_VERSION" ]; then \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN if [ -z "$LYRIC_VERSION" ]; then \
          for attempt in 1 2 3; do \
            LYRIC_VERSION="$(curl -sI --connect-timeout 10 --max-time 30 https://github.com/nichobbs/lyric-lang/releases/latest | sed -n 's/.*tag\/v\([0-9.]*\).*/\1/p' | tr -d '\r')"; \
            [ -n "$LYRIC_VERSION" ] && break; \
@@ -90,14 +101,15 @@ RUN apt-get update && apt-get install -y --no-install-recommends curl ca-certifi
     && LOWEST="$(printf '%s\n%s\n' "$MIN_VERSION" "$LYRIC_VERSION" | sort -V | head -1)" \
     && if [ "$LOWEST" != "$MIN_VERSION" ]; then echo "ERROR: Lyric version $LYRIC_VERSION is below the documented floor MIN_LYRIC_VERSION ($MIN_VERSION)" >&2; exit 1; fi \
     && echo "Installing Lyric compiler v${LYRIC_VERSION}" \
-    && echo -n "${LYRIC_VERSION}" > /tmp/lyric-version.txt \
+    && echo -n "${LYRIC_VERSION}" > /tmp/lyric-version.txt
+
+RUN LYRIC_VERSION="$(cat /tmp/lyric-version.txt)" \
     && curl -fsSL --connect-timeout 10 --max-time 120 --retry 3 --retry-delay 3 \
         -o /tmp/lyric.tgz \
         "https://github.com/nichobbs/lyric-lang/releases/download/v${LYRIC_VERSION}/lyric-${LYRIC_VERSION}-linux-x64.tar.gz" \
     && mkdir -p /usr/local/bin \
     && tar -xzf /tmp/lyric.tgz -C /usr/local/bin \
-    && rm -f /tmp/lyric.tgz \
-    && rm -rf /var/lib/apt/lists/*
+    && rm -f /tmp/lyric.tgz
 WORKDIR /src/shim
 COPY shim/ ./
 RUN lyric restore && lyric build
