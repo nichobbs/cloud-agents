@@ -1283,6 +1283,31 @@ func isJwtShaped(value: in String): Bool {
     isNonEmptyBase64UrlSegment(signature)
 }
 
+/// True when every character in `value` is a lowercase hex digit or a
+/// hyphen — the shape of a git commit SHA (e.g. a 40-char SHA-1, all
+/// lowercase hex) or a UUID (hyphenated 8-4-4-4-12 hex groups). Both are
+/// common, entirely legitimate things to `remember` (e.g. "last verified
+/// commit: <sha>", "deployment id: <uuid>") and neither is a secret — but
+/// both are long strings mixing letters and digits that would otherwise trip
+/// looksHighEntropy's generic class-mix check (#636). Deliberately narrow:
+/// only excludes the specific charset {0-9, a-f, -}, so an actual secret
+/// that happens to look like this (rare — real tokens are near-universally
+/// mixed-case and/or use base64 punctuation) is still an accepted false
+/// negative, consistent with this heuristic's best-effort, non-exhaustive
+/// design (see the module comment above).
+func isHexIdentifierShaped(value: in String): Bool {
+  var i = 0
+  while i < value.length {
+    val c = value.substring(i, 1)
+    val isHexDigit = (c >= "0" and c <= "9") or (c >= "a" and c <= "f")
+    if not (isHexDigit or c == "-") {
+      return false
+    }
+    i = i + 1
+  }
+  return true
+}
+
 /// True when `value` "looks randomly generated": at or above
 /// highEntropySecretMinLen characters, no whitespace anywhere in it, made up
 /// entirely of typical token characters (alphanumeric plus `-_+/=`), and
@@ -1291,12 +1316,18 @@ func isJwtShaped(value: in String): Bool {
 /// ordinary short label or a sentence-shaped note almost always contains a
 /// space and fails immediately, while a pasted API key/token almost always
 /// passes. False positives (e.g. a lone long identifier with no spaces) are
-/// possible and accepted — see the module comment above.
+/// possible and accepted — see the module comment above. Excludes hex/UUID-
+/// shaped identifiers explicitly (isHexIdentifierShaped, #636) since those
+/// are common non-secret values that would otherwise always trip the
+/// class-mix check below (lowercase hex digits mix "lower" and "digit").
 func looksHighEntropy(value: in String): Bool {
   if value.length < highEntropySecretMinLen {
     return false
   }
   if value.contains(" ") or value.contains("\t") or value.contains("\n") or value.contains("\r") {
+    return false
+  }
+  if isHexIdentifierShaped(value) {
     return false
   }
   var hasUpper = false

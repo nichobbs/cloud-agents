@@ -655,6 +655,24 @@ test "remember rejects values shaped like common credential formats (#593)" {
     case Ok(r) -> assertEqual(r.key, "commit", "a short token-shaped value under the length floor is accepted")
     case Err(e) -> assertTrue(false, "a short value must not be rejected: " + toString(e.status))
   }
+
+  // #636: a full-length git SHA-1 (40 lowercase hex chars) and a UUID are
+  // both plausible, entirely non-secret things to remember (e.g. "last
+  // verified commit") — neither should trip the generic high-entropy check,
+  // even though both are >= the length floor and mix lowercase letters with
+  // digits, exactly the shape that check otherwise flags.
+  match rememberHandler(
+    sid, bearer(token), RememberRequest(key = "lastGoodCommit", value = "a1b2c3d4e5f6789012345678901234567890abcd")
+  ) {
+    case Ok(r) -> assertEqual(r.key, "lastGoodCommit", "a 40-char git SHA-1 is not treated as a secret")
+    case Err(e) -> assertTrue(false, "a git SHA must not be rejected: " + toString(e.status))
+  }
+  match rememberHandler(
+    sid, bearer(token), RememberRequest(key = "deploymentId", value = "123e4567-e89b-12d3-a456-426614174000")
+  ) {
+    case Ok(r) -> assertEqual(r.key, "deploymentId", "a UUID is not treated as a secret")
+    case Err(e) -> assertTrue(false, "a UUID must not be rejected: " + toString(e.status))
+  }
 }
 
 test "recall requires a valid callback token; the owner can list via the user route" {
