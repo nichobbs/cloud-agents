@@ -331,13 +331,14 @@ test "recall tool with no key returns all entries" {
 
 test "recall tool with a key returns only that value" {
   val fake = newFakeV2Transport()
-  fake.recallOk = true
-  fake.recallBody = "{\"entries\":[{\"key\":\"build\",\"value\":\"make lyric\"},{\"key\":\"tests\",\"value\":\"lyric test\"}]}"
+  fake.recallByKeyOk = true
+  fake.recallByKeyBody = "{\"entries\":[{\"key\":\"tests\",\"value\":\"lyric test\"}]}"
   val tool = RecallTool(transport = fake)
 
   val args = Some(value = JObject(fields = [JsonField(name = "key", value = JString(value = "tests"))]))
   val result = match tool.call(args) { case Ok(r) -> r; case Err(e) -> panic("unexpected Err: " + e) }
   assertEqual(onlyText(result), "lyric test", "returns only the requested key's value")
+  assertEqual(fake.lastRecallKey, "tests", "the key was sent to the host via the single-key lookup (#590)")
 }
 
 test "recall tool works with no arguments at all (key is optional)" {

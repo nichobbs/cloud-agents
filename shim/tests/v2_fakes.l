@@ -49,6 +49,12 @@ pub record FakeV2Transport {
   pub var recallError: String
   pub var recallCallCount: Int
 
+  pub var recallByKeyOk: Bool
+  pub var recallByKeyBody: String
+  pub var recallByKeyError: String
+  pub var lastRecallKey: String
+  pub var recallByKeyCallCount: Int
+
   pub var forgetOk: Bool
   pub var forgetBody: String
   pub var forgetError: String
@@ -111,6 +117,11 @@ pub func newFakeV2Transport(): FakeV2Transport {
     recallBody = "",
     recallError = "FakeV2Transport: recallAll not configured",
     recallCallCount = 0,
+    recallByKeyOk = false,
+    recallByKeyBody = "",
+    recallByKeyError = "FakeV2Transport: recallByKey not configured",
+    lastRecallKey = "",
+    recallByKeyCallCount = 0,
     forgetOk = false,
     forgetBody = "",
     forgetError = "FakeV2Transport: forget not configured",
@@ -203,6 +214,16 @@ impl V2CallbackTransport for FakeV2Transport {
       Ok(value = self.recallBody)
     } else {
       Err(error = self.recallError)
+    }
+  }
+
+  func recallByKey(key: in String): Result[String, String] {
+    self.lastRecallKey = key
+    self.recallByKeyCallCount = self.recallByKeyCallCount + 1
+    if self.recallByKeyOk {
+      Ok(value = self.recallByKeyBody)
+    } else {
+      Err(error = self.recallByKeyError)
     }
   }
 

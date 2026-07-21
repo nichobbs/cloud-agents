@@ -295,11 +295,28 @@ pub func remember(transport: in V2CallbackTransport, key: in String, value: in S
   }
 }
 
-/// Read memory for this session's repo. With a non-empty `key`, return just
-/// that entry's value (or a not-found message). With an empty `key`, return
-/// every entry as `key: value` lines — the "load everything at session start"
-/// flow so a later session picks up what an earlier one learned.
+/// Read memory for this session's repo. With a non-empty `key`, does a
+/// targeted single-key lookup (#590) and returns just that entry's value (or
+/// a not-found message) — the host now supports this directly
+/// (GET …/callbacks/memory?key=), instead of fetching the whole store and
+/// filtering client-side. With an empty `key`, returns every entry as
+/// `key: value` lines — the "load everything at session start" flow so a
+/// later session picks up what an earlier one learned.
 pub func recall(transport: in V2CallbackTransport, key: in String): Result[String, String] {
+  if key.length > 0 {
+    val body = match transport.recallByKey(key) {
+      case Ok(b) -> b
+      case Err(e) -> return Err(error = "failed to reach the cloud-agents host: " + e)
+    }
+    val list = match tryDecodeMemoryListResponse(body) {
+      case Some(r) -> r
+      case None -> return Err(error = "malformed response from the cloud-agents host when reading memory")
+    }
+    if list.entries.length == 0 {
+      return Ok(value = "no memory stored under '" + key + "' for this repository")
+    }
+    return Ok(value = list.entries[0].value)
+  }
   val body = match transport.recallAll() {
     case Ok(b) -> b
     case Err(e) -> return Err(error = "failed to reach the cloud-agents host: " + e)
@@ -307,17 +324,6 @@ pub func recall(transport: in V2CallbackTransport, key: in String): Result[Strin
   val list = match tryDecodeMemoryListResponse(body) {
     case Some(r) -> r
     case None -> return Err(error = "malformed response from the cloud-agents host when reading memory")
-  }
-  if key.length > 0 {
-    var j = 0
-    while j < list.entries.length {
-      val e = list.entries[j]
-      if e.key == key {
-        return Ok(value = e.value)
-      }
-      j = j + 1
-    }
-    return Ok(value = "no memory stored under '" + key + "' for this repository")
   }
   if list.entries.length == 0 {
     return Ok(value = "no memory stored yet for this repository")
