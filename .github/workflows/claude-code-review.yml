@@ -3,20 +3,34 @@ name: Claude Code Review
 on:
   pull_request:
     types: [opened, synchronize, ready_for_review]
+  # Manual trigger for PRs from forks: a plain `pull_request`-triggered run
+  # never receives OIDC tokens or elevated secrets when the PR's head branch
+  # is a fork, regardless of the `permissions:` block below — that's a hard
+  # GitHub Actions security boundary, not something fixable in this file for
+  # the automatic path. A maintainer who has reviewed the fork PR's diff can
+  # dispatch this manually instead: it runs with the base repo's own
+  # permissions/secrets (workflow_dispatch is never fork-triggered), so
+  # `claude-review` works even though the automatic run failed.
+  workflow_dispatch:
+    inputs:
+      pr_number:
+        description: 'Pull request number to review (for a PR from a fork whose automatic pull_request-triggered run failed on OIDC/permissions)'
+        required: true
+        type: string
 
 # The review prompt and tool allow-list are shared between the primary (Sonnet)
 # and fallback (Haiku) invocations.
 env:
   REVIEW_PROMPT: |
     REPO: ${{ github.repository }}
-    PR NUMBER: ${{ github.event.pull_request.number }}
+    PR NUMBER: ${{ (github.event.pull_request.number || github.event.inputs.pr_number) }}
 
     You are performing a structured code review. Follow these exact steps in order.
 
     ## Step 1: Understand the changes
     Run both commands:
-    - `gh pr diff ${{ github.event.pull_request.number }} --repo ${{ github.repository }}`
-    - `gh pr view ${{ github.event.pull_request.number }} --repo ${{ github.repository }}`
+    - `gh pr diff ${{ (github.event.pull_request.number || github.event.inputs.pr_number) }} --repo ${{ github.repository }}`
+    - `gh pr view ${{ (github.event.pull_request.number || github.event.inputs.pr_number) }} --repo ${{ github.repository }}`
 
     Also read `CLAUDE.md` at the root of the repository for project conventions.
     This is a Lyric application — read `docs/lyric/reference.md` and
@@ -34,34 +48,34 @@ env:
 
     ## Step 3: Create the per-PR label
     Run (ignore errors if it already exists):
-    gh label create "pr-${{ github.event.pull_request.number }}" --color "0075ca" --description "Review findings for PR #${{ github.event.pull_request.number }}" --repo ${{ github.repository }} 2>/dev/null || true
+    gh label create "pr-${{ (github.event.pull_request.number || github.event.inputs.pr_number) }}" --color "0075ca" --description "Review findings for PR #${{ (github.event.pull_request.number || github.event.inputs.pr_number) }}" --repo ${{ github.repository }} 2>/dev/null || true
 
     ## Step 4: For each REQUIRED or SUGGESTION finding, create a tracking issue (dedup first)
     Repeat for every finding:
 
     a) List all open issues already carrying this PR's label to detect duplicates:
-       gh issue list --repo ${{ github.repository }} --label "pr-${{ github.event.pull_request.number }}" --state open --json number,title --limit 100
+       gh issue list --repo ${{ github.repository }} --label "pr-${{ (github.event.pull_request.number || github.event.inputs.pr_number) }}" --state open --json number,title --limit 100
 
     b) If an issue with the same or substantially similar title already exists,
        do not create a duplicate — record the existing issue number instead.
 
     c) Otherwise create a new issue and record the returned number:
-       gh issue create --repo ${{ github.repository }} --title "[Review] <concise title>" --body "<body with PR number, severity, file location, description>" --label "review-finding" --label "pr-${{ github.event.pull_request.number }}"
+       gh issue create --repo ${{ github.repository }} --title "[Review] <concise title>" --body "<body with PR number, severity, file location, description>" --label "review-finding" --label "pr-${{ (github.event.pull_request.number || github.event.inputs.pr_number) }}"
 
-       The body must contain: "**PR:** #${{ github.event.pull_request.number }}", "**Severity:** REQUIRED" or "**Severity:** SUGGESTION", the file/line if applicable, and a clear description.
+       The body must contain: "**PR:** #${{ (github.event.pull_request.number || github.event.inputs.pr_number) }}", "**Severity:** REQUIRED" or "**Severity:** SUGGESTION", the file/line if applicable, and a clear description.
 
     ## Step 5: Auto-close issues whose findings are now resolved
-    For each open issue labeled pr-${{ github.event.pull_request.number }}, if its finding is no longer present in the current diff, close it:
-    gh issue close <number> --repo ${{ github.repository }} --comment "Finding resolved in the latest commit on PR #${{ github.event.pull_request.number }}."
+    For each open issue labeled pr-${{ (github.event.pull_request.number || github.event.inputs.pr_number) }}, if its finding is no longer present in the current diff, close it:
+    gh issue close <number> --repo ${{ github.repository }} --comment "Finding resolved in the latest commit on PR #${{ (github.event.pull_request.number || github.event.inputs.pr_number) }}."
 
     ## Step 6: Set or clear the blocking PR label
-    If ANY open issues labeled pr-${{ github.event.pull_request.number }} contain "**Severity:** REQUIRED" in their body:
-      gh pr edit ${{ github.event.pull_request.number }} --repo ${{ github.repository }} --add-label "review:changes-required"
+    If ANY open issues labeled pr-${{ (github.event.pull_request.number || github.event.inputs.pr_number) }} contain "**Severity:** REQUIRED" in their body:
+      gh pr edit ${{ (github.event.pull_request.number || github.event.inputs.pr_number) }} --repo ${{ github.repository }} --add-label "review:changes-required"
     Otherwise:
-      gh pr edit ${{ github.event.pull_request.number }} --repo ${{ github.repository }} --remove-label "review:changes-required" 2>/dev/null || true
+      gh pr edit ${{ (github.event.pull_request.number || github.event.inputs.pr_number) }} --repo ${{ github.repository }} --remove-label "review:changes-required" 2>/dev/null || true
 
     ## Step 7: Post a summary comment on the PR
-    Post one summary comment: gh pr comment ${{ github.event.pull_request.number }} --repo ${{ github.repository }} --body "<summary>"
+    Post one summary comment: gh pr comment ${{ (github.event.pull_request.number || github.event.inputs.pr_number) }} --repo ${{ github.repository }} --body "<summary>"
 
     The summary must include:
     - Verdict at the top: CHANGES REQUIRED or APPROVED
@@ -74,8 +88,11 @@ env:
 
 jobs:
   claude-review:
-    # Skip draft PRs — review only fires once the PR is ready for review.
-    if: github.actor != 'dependabot[bot]' && github.event.pull_request.draft == false
+    # Skip draft PRs on the automatic path — review only fires once the PR is
+    # ready for review. Doesn't apply to a manual workflow_dispatch run (no
+    # github.event.pull_request there at all, so this would otherwise
+    # evaluate false and skip every manually-dispatched run outright).
+    if: github.actor != 'dependabot[bot]' && (github.event_name == 'workflow_dispatch' || github.event.pull_request.draft == false)
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -87,6 +104,10 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v6
         with:
+          # pull_request already defaults to the right merge ref via
+          # github.ref; workflow_dispatch has no such default, so check out
+          # the given PR number's merge ref explicitly in that case.
+          ref: ${{ github.event_name == 'workflow_dispatch' && format('refs/pull/{0}/merge', github.event.inputs.pr_number) || github.ref }}
           fetch-depth: 1
 
       # Create well-known labels up front so Claude never races against missing labels.
@@ -149,5 +170,5 @@ jobs:
           echo "Code review passed — no required changes."
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          PR_NUMBER: ${{ github.event.pull_request.number }}
+          PR_NUMBER: ${{ (github.event.pull_request.number || github.event.inputs.pr_number) }}
           REPO: ${{ github.repository }}
