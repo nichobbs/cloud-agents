@@ -293,7 +293,7 @@ pub func exchangeCode(req: in ExchangeRequest): Result[TokenGrant, Web.ApiError]
       val accessExpiresIn = CloudAgents.Auth.parseJsonNumber(body, "expires_in")
       val refreshExpiresIn = CloudAgents.Auth.parseJsonNumber(body, "refresh_token_expires_in")
       if refreshToken.length > 0 and accessExpiresIn.length > 0 and refreshExpiresIn.length > 0 {
-        match CloudAgents.Repository.upsertGitHubOauthRefresh(userId, refreshToken, accessExpiresIn, refreshExpiresIn) {
+        match CloudAgents.Repository.upsertGitHubOAuthRefresh(userId, refreshToken, accessExpiresIn, refreshExpiresIn) {
           case Ok(_) -> ()
           case Err(e) -> println("NOTE: could not persist GitHub OAuth refresh metadata: " + CloudAgents.Repository.credentialErrorMessage(e))
         }
@@ -301,7 +301,7 @@ pub func exchangeCode(req: in ExchangeRequest): Result[TokenGrant, Web.ApiError]
         // No expiring-token fields this time (e.g. the app registration was
         // switched to non-expiring tokens) — drop any stale row so a past
         // refresh-token expiry can't wrongly gate a now-non-expiring token.
-        match CloudAgents.Repository.deleteGitHubOauthRefresh(userId) {
+        match CloudAgents.Repository.deleteGitHubOAuthRefresh(userId) {
           case Ok(_) -> ()
           case Err(_) -> ()
         }
@@ -341,7 +341,7 @@ func doRefresh(userId: in String, refreshToken: in String): Result[String, Web.A
     // the dead metadata so the next request fails the same clear way instead
     // of retrying a doomed refresh every time.
     println("WARNING: GitHub rejected a token refresh: " + exchangeErrorFromJson(body))
-    match CloudAgents.Repository.deleteGitHubOauthRefresh(userId) {
+    match CloudAgents.Repository.deleteGitHubOAuthRefresh(userId) {
       case Ok(_) -> ()
       case Err(_) -> ()
     }
@@ -355,7 +355,7 @@ func doRefresh(userId: in String, refreshToken: in String): Result[String, Web.A
   val accessExpiresIn = CloudAgents.Auth.parseJsonNumber(body, "expires_in")
   val refreshExpiresIn = CloudAgents.Auth.parseJsonNumber(body, "refresh_token_expires_in")
   if newRefreshToken.length > 0 and accessExpiresIn.length > 0 and refreshExpiresIn.length > 0 {
-    match CloudAgents.Repository.upsertGitHubOauthRefresh(userId, newRefreshToken, accessExpiresIn, refreshExpiresIn) {
+    match CloudAgents.Repository.upsertGitHubOAuthRefresh(userId, newRefreshToken, accessExpiresIn, refreshExpiresIn) {
       case Ok(_) -> ()
       case Err(e) -> println("NOTE: could not persist refreshed GitHub OAuth metadata: " + CloudAgents.Repository.credentialErrorMessage(e))
     }
@@ -370,7 +370,7 @@ func doRefresh(userId: in String, refreshToken: in String): Result[String, Web.A
 /// turns a dead refresh token into an actionable "sign in again" message
 /// instead of a generic upstream failure.
 pub func ensureFreshGitHubToken(userId: in String): Result[String, Web.ApiError] {
-  match CloudAgents.Repository.githubOauthRefreshStatus(userId) {
+  match CloudAgents.Repository.githubOAuthRefreshStatus(userId) {
     case Ok(Some(status)) -> {
       if status.refreshTokenExpired {
         return Err(Web.unauthorized(reconnectGitHubMessage()))

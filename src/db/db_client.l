@@ -1841,7 +1841,7 @@ pub func countActiveRejectedOAuthCodesSql(nowMillis: in String): String {
 // token-expiration policy) be silently renewed via grant_type=refresh_token
 // instead of forcing the user to sign in again every time it lapses.
 /// DDL for the refresh-metadata table.
-pub func githubOauthRefreshSchemaSql(): String {
+pub func githubOAuthRefreshSchemaSql(): String {
   return "CREATE TABLE IF NOT EXISTS github_oauth_refresh (" + "user_id TEXT PRIMARY KEY, " +
     "refresh_token TEXT NOT NULL, " +
     "access_expires_at TEXT NOT NULL, " +
@@ -1855,7 +1855,7 @@ pub func githubOauthRefreshSchemaSql(): String {
 /// strings, SECONDS) — converted to an absolute epoch-millis expiry in SQL
 /// (the same CAST-based approach as upsertGitHubTokenSql) so no 64-bit
 /// arithmetic ever happens on the Lyric side.
-pub func upsertGitHubOauthRefreshSql(
+pub func upsertGitHubOAuthRefreshSql(
   userId: in String,
   refreshTokenEncrypted: in String,
   nowMillis: in String,
@@ -1884,7 +1884,7 @@ pub func upsertGitHubOauthRefreshSql(
 /// access token needs refreshing, and whether the refresh token itself is
 /// also dead (in which case refreshing can't help; the tenant must sign in
 /// again). Returns no row for a tenant with no expiring-token metadata.
-pub func selectGitHubOauthRefreshStatusSql(userId: in String, nowMillis: in String): String {
+pub func selectGitHubOAuthRefreshStatusSql(userId: in String, nowMillis: in String): String {
   return "SELECT refresh_token, " + "CASE WHEN CAST(access_expires_at AS INTEGER) <= CAST(" + sqlLiteral(nowMillis) +
     " AS INTEGER) THEN '1' ELSE '0' END, " +
     "CASE WHEN CAST(refresh_expires_at AS INTEGER) <= CAST(" +
@@ -1897,7 +1897,7 @@ pub func selectGitHubOauthRefreshStatusSql(userId: in String, nowMillis: in Stri
 /// Drop a tenant's refresh metadata — e.g. the refresh token itself expired
 /// or GitHub rejected it, so there's no point retrying a dead refresh token
 /// on the next request.
-pub func deleteGitHubOauthRefreshSql(userId: in String): String {
+pub func deleteGitHubOAuthRefreshSql(userId: in String): String {
   return "DELETE FROM github_oauth_refresh WHERE user_id = " + sqlLiteral(userId)
 }
 

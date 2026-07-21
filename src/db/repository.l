@@ -319,7 +319,7 @@ pub func allMigrations(): slice[Migration] {
         CloudAgents.Db.artifactsOwnerRepoIndexSql()
       ]
     ),
-    Migration(version = "0019_github_oauth_refresh", statements = [CloudAgents.Db.githubOauthRefreshSchemaSql()])
+    Migration(version = "0019_github_oauth_refresh", statements = [CloudAgents.Db.githubOAuthRefreshSchemaSql()])
   ]
 }
 
@@ -810,8 +810,25 @@ pub func listCredentialNames(userId: in String): Result[slice[CredentialName], C
 }
 
 /// Delete a credential by name. Returns rows affected (0 = not found).
+/// Deleting GITHUB_TOKEN also drops any GitHub OAuth refresh-token metadata
+/// (#668): otherwise a still-valid refresh token would silently re-vault a
+/// fresh GITHUB_TOKEN on the tenant's next request, resurrecting a
+/// credential the tenant just deleted. Best-effort — a cleanup failure here
+/// must never block the credential deletion itself.
 pub func deleteCredential(userId: in String, name: in String): Result[Int, CloudAgents.Sqlite.DbError] {
-  return CloudAgents.Sqlite.execute(CloudAgents.Db.deleteCredentialSql(userId, name))
+  val result = CloudAgents.Sqlite.execute(CloudAgents.Db.deleteCredentialSql(userId, name))
+  match result {
+    case Ok(_) -> {
+      if name == "GITHUB_TOKEN" {
+        match deleteGitHubOAuthRefresh(userId) {
+          case Ok(_) -> ()
+          case Err(e) -> println("NOTE: could not drop GitHub OAuth refresh metadata after deleting GITHUB_TOKEN: " + credentialErrorMessage(e))
+        }
+      }
+    }
+    case Err(_) -> ()
+  }
+  return result
 }
 
 /// Whether a user has a credential stored under exactly `name`. Used by
@@ -890,7 +907,7 @@ pub func decryptedCredentialValue(userId: in String, name: in String): Result[Op
 // expires_in, and refresh_token_expires_in on exchange. A tenant with no row
 // here simply has a non-expiring token — the common case is unaffected.
 /// A tenant's decoded GitHub OAuth refresh-token status.
-pub record GitHubOauthRefreshStatus {
+pub record GitHubOAuthRefreshStatus {
   pub refreshToken: String
   pub accessTokenExpired: Bool
   pub refreshTokenExpired: Bool
@@ -900,7 +917,7 @@ pub record GitHubOauthRefreshStatus {
 /// GitHub OAuth exchange or refresh, encrypting the refresh token at rest.
 /// `accessExpiresInSeconds`/`refreshExpiresInSeconds` are GitHub's own
 /// `expires_in`/`refresh_token_expires_in` response fields, verbatim.
-pub func upsertGitHubOauthRefresh(
+pub func upsertGitHubOAuthRefresh(
   userId: in String,
   refreshToken: in String,
   accessExpiresInSeconds: in String,
@@ -910,7 +927,7 @@ pub func upsertGitHubOauthRefresh(
     case Ok(blob) -> blob
     case Err(e) -> return Err(Crypto(error = e))
   }
-  match CloudAgents.Sqlite.execute(CloudAgents.Db.upsertGitHubOauthRefreshSql(userId, encrypted, nowMillis(), accessExpiresInSeconds, refreshExpiresInSeconds)) {
+  match CloudAgents.Sqlite.execute(CloudAgents.Db.upsertGitHubOAuthRefreshSql(userId, encrypted, nowMillis(), accessExpiresInSeconds, refreshExpiresInSeconds)) {
     case Ok(_) -> return Ok(value = ())
     case Err(e) -> return Err(Db(error = e))
   }
@@ -919,8 +936,8 @@ pub func upsertGitHubOauthRefresh(
 /// Look up a tenant's refresh-token status: the decrypted refresh token plus
 /// whether the access token and/or refresh token have expired. Returns
 /// Ok(None) for a tenant with no expiring-token metadata (the common case).
-pub func githubOauthRefreshStatus(userId: in String): Result[Option[GitHubOauthRefreshStatus], CredentialError] {
-  val rows = match CloudAgents.Sqlite.query(CloudAgents.Db.selectGitHubOauthRefreshStatusSql(userId, nowMillis())) {
+pub func githubOAuthRefreshStatus(userId: in String): Result[Option[GitHubOAuthRefreshStatus], CredentialError] {
+  val rows = match CloudAgents.Sqlite.query(CloudAgents.Db.selectGitHubOAuthRefreshStatusSql(userId, nowMillis())) {
     case Ok(r) -> r
     case Err(e) -> return Err(Db(error = e))
   }
@@ -932,7 +949,7 @@ pub func githubOauthRefreshStatus(userId: in String): Result[Option[GitHubOauthR
     case Ok(token) -> {
       return Ok(
         value = Some(
-          value = GitHubOauthRefreshStatus(
+          value = GitHubOAuthRefreshStatus(
             refreshToken = token,
             accessTokenExpired = colAt(r0.cols, 1) == "1",
             refreshTokenExpired = colAt(r0.cols, 2) == "1"
@@ -947,10 +964,10 @@ pub func githubOauthRefreshStatus(userId: in String): Result[Option[GitHubOauthR
 /// Drop a tenant's refresh-token metadata — the refresh token itself expired
 /// or GitHub rejected it, so there's no point retrying a dead refresh token
 /// on the next request.
-pub func deleteGitHubOauthRefresh(userId: in String): Result[Unit, CloudAgents.Sqlite.DbError] {
-  match CloudAgents.Sqlite.execute(CloudAgents.Db.deleteGitHubOauthRefreshSql(userId)) {
+pub func deleteGitHubOAuthRefresh(userId: in String): Result[Unit, CredentialError] {
+  match CloudAgents.Sqlite.execute(CloudAgents.Db.deleteGitHubOAuthRefreshSql(userId)) {
     case Ok(_) -> return Ok(value = ())
-    case Err(e) -> return Err(e)
+    case Err(e) -> return Err(Db(error = e))
   }
 }
 

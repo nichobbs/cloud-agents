@@ -465,18 +465,18 @@ test "github oauth refresh metadata round-trips through repository CRUD" {
   val userId = "gh-500"
 
   // No metadata yet -> None (the common non-expiring-token case).
-  match CloudAgents.Repository.githubOauthRefreshStatus(userId) {
+  match CloudAgents.Repository.githubOAuthRefreshStatus(userId) {
     case Ok(None) -> ()
     case Ok(Some(_)) -> assertTrue(false, "no row expected before any upsert")
     case Err(e) -> assertTrue(false, "status read failed: " + CloudAgents.Repository.credentialErrorMessage(e))
   }
 
   // Both tokens fresh.
-  match CloudAgents.Repository.upsertGitHubOauthRefresh(userId, "refresh-abc", "3600", "604800") {
+  match CloudAgents.Repository.upsertGitHubOAuthRefresh(userId, "refresh-abc", "3600", "604800") {
     case Ok(_) -> ()
     case Err(e) -> assertTrue(false, "upsert failed: " + CloudAgents.Repository.credentialErrorMessage(e))
   }
-  match CloudAgents.Repository.githubOauthRefreshStatus(userId) {
+  match CloudAgents.Repository.githubOAuthRefreshStatus(userId) {
     case Ok(Some(status)) -> {
       assertEqual(status.refreshToken, "refresh-abc", "refresh token decrypts back unchanged")
       assertTrue(not status.accessTokenExpired, "access token still fresh")
@@ -489,11 +489,11 @@ test "github oauth refresh metadata round-trips through repository CRUD" {
   // Re-upsert (GitHub rotates the refresh token on every use): access token
   // now expired, refresh token still good — and the old value is replaced,
   // not duplicated.
-  match CloudAgents.Repository.upsertGitHubOauthRefresh(userId, "refresh-def", "-100", "604800") {
+  match CloudAgents.Repository.upsertGitHubOAuthRefresh(userId, "refresh-def", "-100", "604800") {
     case Ok(_) -> ()
     case Err(e) -> assertTrue(false, "re-upsert failed: " + CloudAgents.Repository.credentialErrorMessage(e))
   }
-  match CloudAgents.Repository.githubOauthRefreshStatus(userId) {
+  match CloudAgents.Repository.githubOAuthRefreshStatus(userId) {
     case Ok(Some(status)) -> {
       assertEqual(status.refreshToken, "refresh-def", "upsert replaces the prior row")
       assertTrue(status.accessTokenExpired, "access token now expired")
@@ -504,11 +504,11 @@ test "github oauth refresh metadata round-trips through repository CRUD" {
   }
 
   // Both expired — the unrecoverable case.
-  match CloudAgents.Repository.upsertGitHubOauthRefresh(userId, "refresh-ghi", "-100", "-100") {
+  match CloudAgents.Repository.upsertGitHubOAuthRefresh(userId, "refresh-ghi", "-100", "-100") {
     case Ok(_) -> ()
     case Err(e) -> assertTrue(false, "re-upsert failed: " + CloudAgents.Repository.credentialErrorMessage(e))
   }
-  match CloudAgents.Repository.githubOauthRefreshStatus(userId) {
+  match CloudAgents.Repository.githubOAuthRefreshStatus(userId) {
     case Ok(Some(status)) -> {
       assertTrue(status.accessTokenExpired, "access token expired")
       assertTrue(status.refreshTokenExpired, "refresh token also expired")
@@ -518,11 +518,11 @@ test "github oauth refresh metadata round-trips through repository CRUD" {
   }
 
   // Delete drops the row entirely.
-  match CloudAgents.Repository.deleteGitHubOauthRefresh(userId) {
+  match CloudAgents.Repository.deleteGitHubOAuthRefresh(userId) {
     case Ok(_) -> ()
     case Err(e) -> assertTrue(false, "delete failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
   }
-  match CloudAgents.Repository.githubOauthRefreshStatus(userId) {
+  match CloudAgents.Repository.githubOAuthRefreshStatus(userId) {
     case Ok(None) -> ()
     case Ok(Some(_)) -> assertTrue(false, "row must be gone after delete")
     case Err(e) -> assertTrue(false, "status read failed: " + CloudAgents.Repository.credentialErrorMessage(e))
@@ -560,7 +560,7 @@ test "ensureFreshGitHubToken returns the vaulted token unchanged while still fre
     cleanupTestDb(dbPath)
   }
   val userId = "gh-502"
-  match CloudAgents.Repository.upsertGitHubOauthRefresh(userId, "refresh-xyz", "3600", "604800") {
+  match CloudAgents.Repository.upsertGitHubOAuthRefresh(userId, "refresh-xyz", "3600", "604800") {
     case Ok(_) -> ()
     case Err(e) -> assertTrue(false, "upsert failed: " + CloudAgents.Repository.credentialErrorMessage(e))
   }
@@ -581,7 +581,7 @@ test "ensureFreshGitHubToken gives a clear reconnect message once the refresh to
     cleanupTestDb(dbPath)
   }
   val userId = "gh-503"
-  match CloudAgents.Repository.upsertGitHubOauthRefresh(userId, "refresh-dead", "-100", "-100") {
+  match CloudAgents.Repository.upsertGitHubOAuthRefresh(userId, "refresh-dead", "-100", "-100") {
     case Ok(_) -> ()
     case Err(e) -> assertTrue(false, "upsert failed: " + CloudAgents.Repository.credentialErrorMessage(e))
   }
