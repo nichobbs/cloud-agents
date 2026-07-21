@@ -149,6 +149,14 @@ test "Profile handlers validate enums, grants, and reject duplicates" {
     case Ok(_) -> assertTrue(false, "unknown tool name should be rejected")
     case Err(err) -> assertEqualInt(err.status, 400, "unknown tool name -> 400")
   }
+  // toolMode 'selected' with zero tools chosen -> 400, not a silent collapse
+  // to 'all' (#616): the opposite of credentialMode's fail-closed behavior
+  // for the analogous zero-grants case would otherwise surprise an operator
+  // deselecting every tool expecting a locked-down profile.
+  match addProfileHandler(SaveProfileRequest(name = "p5", harness = "", networkPolicy = "none", credentialMode = "all", credentials = [], skillIds = [], subagentIds = [], mcpServerIds = [], toolMode = "selected", tools = [])) {
+    case Ok(_) -> assertTrue(false, "'selected' toolMode with zero tools should be rejected")
+    case Err(err) -> assertEqualInt(err.status, 400, "selected + zero tools -> 400")
+  }
   // Happy path.
   match addProfileHandler(SaveProfileRequest(name = "prod", harness = "", networkPolicy = "none", credentialMode = "all", credentials = [], skillIds = [], subagentIds = [], mcpServerIds = [], toolMode = "all", tools = [])) {
     case Ok(p) -> assertEqual(p.name, "prod", "profile created")

@@ -20,11 +20,18 @@ import Std.Core
 /// behaviour. A "selected" mode with zero tools chosen also joins to "" and
 /// therefore behaves the same as unrestricted — this mirrors the shim's own
 /// contract (docs/phase7-autonomy.md §7: "an empty/unset value means
-/// 'all'"), so this is a deliberate, spec'd collapse, not an oversight: tool
-/// enablement is not a hard security boundary in v1 (host-side enforcement
-/// of a disabled tool's callback endpoint is an explicit follow-up), unlike
-/// the credential/network-policy grants CloudAgents.Repository fails closed
-/// on.
+/// 'all'"), so this is a deliberate, spec'd collapse at this pure-resolution
+/// layer, not an oversight: tool enablement is not a hard security boundary
+/// in v1 (host-side enforcement of a disabled tool's callback endpoint is an
+/// explicit follow-up), unlike the credential/network-policy grants
+/// CloudAgents.Repository fails closed on. In practice `CloudAgents.Profiles.
+/// validateSaveProfile` rejects a 'selected' mode with an empty tools list
+/// outright at request-validation time (#616) — the opposite-of-credential-
+/// semantics surprise that collapse could otherwise cause for an operator
+/// deselecting every tool — so a *persisted* profile never actually reaches
+/// this function with that combination; this function's own defense-in-
+/// depth fallback stays "no restriction" rather than, say, panicking, in
+/// case it's ever called with data that predates that validation.
 pub func enabledToolsEnvValue(toolMode: in String, tools: in slice[String]): String {
   if toolMode != "selected" {
     return ""

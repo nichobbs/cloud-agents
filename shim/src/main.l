@@ -85,6 +85,16 @@ func main(): Unit {
   val v2Transport = HttpV2CallbackTransport(baseUrl = apiUrl, sessionId = sessionId, token = token)
 
   val server = newServer(McpImplementation(name = "cloud-agents", version = "0.1.0"))
+  // 13 addTool calls below (request_permission, ask_user, report_progress,
+  // request_secret, add_followup_task, report_artifact, remember, recall,
+  // forget, add_task, list_tasks, complete_task, notify) — this exact count
+  // and name set must stay in sync with two other hand-kept copies with no
+  // automated cross-check (#621: this project has no dependency edge back
+  // to this separate lyric.toml/build, so nothing enforces the three
+  // matching automatically):
+  //   - cloud-agents' src/handlers/profiles.l's validShimToolNames
+  //   - this project's own tests/config_tests.l's allShimToolNames
+  // If this count changes, update both.
   if CloudAgents.Shim.Config.toolIsEnabled(enabledToolsCsv, "request_permission") {
     addTool(
       server,

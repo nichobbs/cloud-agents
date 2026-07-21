@@ -319,6 +319,26 @@ test "report_artifact rejects a repo-scoped upload whose repo URL normalizes to 
   }
 }
 
+// #634: containsPathTraversal checks each '/'-delimited segment for an
+// EXACT ".." match rather than whether two dots appear anywhere in the
+// string, so a repo name with two literal dots inside a longer segment
+// (not itself a traversal segment) is not over-rejected.
+test "report_artifact accepts a repo-scoped upload whose repoKey has two dots inside a segment, not as a whole traversal segment (#634)" {
+  val dbPath = useFreshTestDb("repo-artifact-dots-not-traversal")
+  defer {
+    cleanupTestDb(dbPath)
+  }
+  CloudAgents.Auth.setCurrentUserId("default")
+  val sid = "sess-repo-artifact-dots"
+  mkSessionRepo(sid, "https://github.com/nic/my..repo")
+  val token = mintToken(sid, "default")
+
+  match uploadArtifactHandler(sid, bearer(token), UploadArtifactRequest(fileName = "x.txt", mimeType = "text/plain", description = "", contentBase64 = base64Of("payload"), artifactScope = "repo")) {
+    case Ok(_) -> ()
+    case Err(e) -> assertTrue(false, "a repo name with two dots inside a segment is not a traversal segment: " + toString(e.status))
+  }
+}
+
 // ── downloadable from a different session (#611) ─────────────────────────────
 test "a repo-scoped artifact discovered from a LATER session on the same repo is actually downloadable" {
   val dbPath = useFreshTestDb("repo-artifact-cross-session-download")
