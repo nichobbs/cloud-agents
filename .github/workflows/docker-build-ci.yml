@@ -1,0 +1,73 @@
+name: Docker build smoke test
+
+# scripts/check-compose-paths.sh (run in ci.yml) only verifies that files
+# referenced by the deploy compose files exist on disk — it never actually
+# runs `docker build`, so it can't catch a COPY instruction whose source
+# doesn't exist inside the *build context* at build time. That's exactly the
+# class of bug that broke Coolify deploys before docker/Dockerfile's
+# shim-builder stage was added (COPY shim/ ./ + `lyric restore && lyric
+# build`, confirmed broken 2026-07-20 — see that Dockerfile's own comments).
+# This workflow closes the gap by actually running `docker build` against
+# docker/Dockerfile on every PR that touches it or the shim it builds. See
+# nichobbs/cloud-agents#607.
+#
+# Only builds --target shim-builder, not the full final stage: that's
+# enough to exercise the exact COPY shim/ ./ + lyric restore/build path
+# issue #606's predecessor PR was about, while skipping the final stage's
+# slowest part (Node/npm/Claude Code CLI install) — cheaper, same coverage
+# for the bug class this guards against. Mirrors dist-native-ci.yml's
+# shape (a separate, paths-triggered workflow rather than piling another
+# job onto ci.yml) since, like that workflow, this only needs to run when
+# the specific files it covers change.
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+    paths:
+      - 'docker/Dockerfile'
+      - 'shim/**'
+      - '.github/workflows/docker-build-ci.yml'
+
+concurrency:
+  group: docker-build-ci-${{ github.ref }}
+  cancel-in-progress: true
+
+# Least privilege (#568, matching dist-native-ci.yml): this job only checks
+# out and builds a Docker stage locally — it never pushes an image, writes
+# to the repo, comments, or uploads artifacts.
+permissions:
+  contents: read
+
+jobs:
+  docker-build-shim-builder:
+    name: Docker build (shim-builder stage)
+    if: github.event.pull_request.draft == false
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      # docker/Dockerfile's shim-builder stage: pins its own Lyric compiler
+      # (issue #606) and does a real `COPY shim/ ./` + `lyric restore &&
+      # lyric build` — the exact path that broke under Coolify's bare
+      # `docker build`/`docker compose build` invocation before that stage
+      # existed. Context is the repo root (not docker/), matching the
+      # Dockerfile's own header comment and how every other build of this
+      # image is invoked.
+      #
+      # cache-from/to type=gha: without a persisted layer cache each PR
+      # would re-download the dotnet/sdk base image and reinstall curl/
+      # ca-certificates plus the pinned Lyric release from scratch — the
+      # GitHub Actions cache backend keeps that cheap across runs, same
+      # goal as dist-native-ci.yml's npm/NuGet caching, just for Docker
+      # layers instead.
+      - name: Build shim-builder stage (smoke test)
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: docker/Dockerfile
+          target: shim-builder
+          push: false
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
