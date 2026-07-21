@@ -329,6 +329,62 @@ jobs:
       - name: Run cloud-agents-shim tests
         run: lyric test --manifest shim/lyric.toml
 
+      # #621/#638: the shim's 13-tool MCP registration set is hand-kept in
+      # THREE independent places with no dependency edge between the two
+      # separate Lyric projects to share it through code:
+      #   - shim/src/main.l's toolIsEnabled(enabledToolsCsv, "<name>") gates,
+      #     one per addTool call — the actual registration set
+      #   - shim/tests/config_tests.l's allShimToolNames — proves the shim's
+      #     own set internally
+      #   - src/handlers/profiles.l's validShimToolNames — the root
+      #     project's copy, used to validate a profile's tool grants
+      # A comment-only cross-reference isn't enforced by anything; this
+      # step is the automated safeguard #621 asked for and #638 requested,
+      # replacing "trust the comments" with an actual CI failure if any one
+      # of the three drifts from the other two.
+      - name: Verify the shim's 13-tool list is in sync across all three copies
+        run: |
+          python3 - <<'PYEOF'
+          import re
+          import sys
+
+          def extract_array(path, var_name):
+              text = open(path).read()
+              m = re.search(r'val ' + re.escape(var_name) + r': slice\[String\] = \[(.*?)\]', text)
+              if not m:
+                  print(f"::error::could not find '{var_name}' in {path}", file=sys.stderr)
+                  sys.exit(1)
+              return sorted(set(re.findall(r'"([^"]+)"', m.group(1))))
+
+          def extract_main_tools(path):
+              text = open(path).read()
+              names = sorted(set(re.findall(r'toolIsEnabled\(enabledToolsCsv,\s*"([^"]+)"\)', text)))
+              if not names:
+                  print(f"::error::found no toolIsEnabled(...) tool names in {path}", file=sys.stderr)
+                  sys.exit(1)
+              return names
+
+          profiles = extract_array('src/handlers/profiles.l', 'validShimToolNames')
+          config_tests = extract_array('shim/tests/config_tests.l', 'allShimToolNames')
+          main_tools = extract_main_tools('shim/src/main.l')
+
+          copies = {
+              'src/handlers/profiles.l validShimToolNames': set(profiles),
+              'shim/tests/config_tests.l allShimToolNames': set(config_tests),
+              'shim/src/main.l toolIsEnabled gates': set(main_tools),
+          }
+          union = set().union(*copies.values())
+          mismatched = False
+          for label, names in copies.items():
+              missing = union - names
+              if missing:
+                  mismatched = True
+                  print(f"::error::{label} is missing: {sorted(missing)}", file=sys.stderr)
+          if mismatched:
+              sys.exit(1)
+          print(f"All three tool-name copies match: {sorted(union)} ({len(union)} tools)")
+          PYEOF
+
       # Real end-to-end HTTP check against the built server (nichobbs/cloud-agents#442):
       # starts bin/CloudAgents.dll on a throwaway DB/port and curls a multi-param
       # route (/api/sessions/{id}/output/{offset}) plus the proxy routes — the
