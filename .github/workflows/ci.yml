@@ -166,6 +166,7 @@ jobs:
             scripts/e2e-http.sh \
             scripts/test-reconcile-repos.sh \
             scripts/test-opencode-entrypoint.sh \
+            scripts/test-lyric-version-resolution.sh \
             scripts/check-compose-paths.sh \
             scripts/repro-compiler-bug.sh \
             scripts/repro-web-bug.sh \
@@ -194,6 +195,12 @@ jobs:
       # not attempt to fix.
       - name: Test opencode entrypoint invocation
         run: ./scripts/test-opencode-entrypoint.sh
+
+      # Regression test for the sed/tr/sort -V one-liners shared by the
+      # "Resolve latest Lyric release" step above and docker/Dockerfile's
+      # shim-builder stage, plus this file's pinned-ARG parsing below (#660).
+      - name: Test Lyric version-resolution shell logic
+        run: ./scripts/test-lyric-version-resolution.sh
 
       # Guards against the class of bug in nichobbs/cloud-agents#464: the two
       # deploy compose files use different relative-path conventions (one
@@ -254,11 +261,20 @@ jobs:
       # see that file's comments for the full reasoning. --build-arg
       # LYRIC_VERSION=X.Y.Z still overrides this for a reproducible/pinned
       # build. Since there's no static version to floor/existence-check when
-      # the default is empty, these two steps skip with a note in that case
-      # — docker-build-ci.yml's real `docker build` smoke test is what
-      # actually exercises the resolve-latest path end to end. If a real
-      # pin IS present (an override left in the file, or a future revert),
-      # still check it the same way api.Dockerfile's pin is checked above.
+      # the default is empty, these two steps skip with a note in that case.
+      # docker-build-ci.yml's real `docker build` smoke test covers this
+      # file's syntax/COPY/build-graph correctness, but NOT continuous
+      # coverage of the live resolve-latest path specifically: that job
+      # persists its Docker layer cache across PRs (cache-from/to
+      # type=gha), so the RUN layer that resolves "latest" is usually
+      # served from cache rather than re-executed (#658) — it only
+      # actually re-resolves on a cache-cold build (MIN_LYRIC_VERSION
+      # changes, the shim changes, or the base image digest bumps).
+      # test-lyric-version-resolution.sh above is what continuously
+      # exercises the resolution/parsing logic itself, every run,
+      # regardless of Docker caching. If a real pin IS present (an
+      # override left in the file, or a future revert), still check it
+      # the same way api.Dockerfile's pin is checked above.
       - name: Verify docker/Dockerfile's pinned Lyric version meets the floor (if pinned)
         run: |
           MIN_VERSION="$(cat MIN_LYRIC_VERSION)"
