@@ -446,11 +446,27 @@ export function SessionDetail() {
       if (!succeeded) {
         // The usual restore (setInput(text) below) can't run here — it
         // would land in whatever session's composer is on screen NOW, not
-        // the one this send actually failed for. Persist it against
-        // forSessionAtSend instead, so it isn't silently lost (#104): the
-        // recovery effect above hands it back the next time that session is
-        // opened.
-        saveFailedDraft(forSessionAtSend, text);
+        // necessarily the one this send actually failed for.
+        if (currentSessionRef.current === forSessionAtSend) {
+          // ...except when it's the SAME session currently on screen — just a
+          // later generation (the user left session A and came back to A
+          // before this send settled). The mount-time recovery effect already
+          // ran for this visit and found nothing, since this draft didn't
+          // exist in storage yet; nothing else re-triggers it for the
+          // CURRENTLY-viewed session, so without this the draft would sit in
+          // storage unsurfaced until a separate, later revisit (#569). Reflect
+          // it directly instead of persisting it — persisting AND setting
+          // state here would leave a stale copy in storage that reappears on
+          // a future revisit even though it was already shown just now.
+          setInput(text);
+          setRecoveredDraft(true);
+        } else {
+          // Genuinely a different session on screen now — persist it against
+          // forSessionAtSend instead, so it isn't silently lost (#104): the
+          // recovery effect above hands it back the next time that session is
+          // opened.
+          saveFailedDraft(forSessionAtSend, text);
+        }
       } else {
         // Mirrors the non-stale success path below: a fresh send for
         // forSessionAtSend just succeeded, so any EARLIER failed draft still

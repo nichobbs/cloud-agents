@@ -114,6 +114,7 @@ function renderPage() {
 }
 
 beforeEach(() => {
+  localStorage.clear();
   vi.mocked(api.getPrompts).mockResolvedValue([]);
   vi.mocked(api.getProfiles).mockResolvedValue([]);
   vi.mocked(api.getSessionProfile).mockResolvedValue('');
@@ -295,6 +296,41 @@ describe('SessionDetail reattach-completion fold (#319)', () => {
     // the live panel away: reset() is called and the persisted row is shown.
     await screen.findByText('persisted agent reply');
     await waitFor(() => expect(reset).toHaveBeenCalled());
+  });
+});
+
+describe('SessionDetail failed-draft recovery for the currently-viewed session (#569)', () => {
+  it('surfaces a stale failed send immediately, without waiting for a later revisit', async () => {
+    // Simulates navigating away from session s1 and back to it before this
+    // send settles: same sessionId, but useStreamMessage's staleness check
+    // (a fresh generation) reports it as stale — and it failed.
+    stream.current = {
+      output: '',
+      isStreaming: false,
+      error: null,
+      send: async () => ({ succeeded: false, stale: true }),
+      reset: () => {},
+      reattachEnded: 0,
+    };
+    renderPage();
+    const user = userEvent.setup();
+
+    const composer = (await screen.findByPlaceholderText(/Send a message/)) as HTMLTextAreaElement;
+    await user.type(composer, 'hello world');
+    await user.click(screen.getByRole('button', { name: 'Send' }));
+
+    // handleSend clears the composer synchronously on submit, then the
+    // mocked stale+failed send resolves. Since this same session (s1) is
+    // still the one on screen, the failed draft should reappear right away
+    // instead of requiring a separate future visit to this session.
+    await waitFor(() => expect(composer).toHaveValue('hello world'));
+    expect(
+      screen.getByText(/message you sent to this session earlier failed to go through/i),
+    ).toBeInTheDocument();
+
+    // It was reflected directly rather than round-tripped through storage —
+    // nothing should be left there for a later mount to pick up again.
+    expect(localStorage.getItem('cloud_agents_failed_drafts')).toBeNull();
   });
 });
 
