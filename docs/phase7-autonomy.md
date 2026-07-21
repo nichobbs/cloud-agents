@@ -120,8 +120,9 @@ that persists across sessions.
 - `CloudAgents.Repository`: `upsertMemoryCapped(userId, repoKey, key,
   value, maxEntries)` (a single atomic
   `INSERT … SELECT … WHERE … ON CONFLICT DO UPDATE` that enforces the cap
-  race-free), `listMemory(userId, repoKey)`, and `deleteMemory(userId,
-  repoKey, key)`.
+  race-free), `listMemory(userId, repoKey)`, `getMemory(userId, repoKey,
+  key)` (single-key lookup, #590), and `deleteMemory(userId, repoKey,
+  key)`.
 - `CloudAgents.Callbacks`:
   - `POST /api/sessions/{id}/callbacks/memory` `{key, value}` —
     container-originated (`authorizeCallbackToken`), resolves the
@@ -130,9 +131,12 @@ that persists across sessions.
     per-repo cap of 256 distinct
     keys (overwrites of an existing key are always allowed; only a new key
     past the cap is rejected) so the store can't grow unbounded.
-  - `GET /api/sessions/{id}/callbacks/memory` — container-originated,
-    returns all entries for the repo as JSON (`recall` with no key reads
-    this; `recall(key)` filters client-side in the shim).
+  - `GET /api/sessions/{id}/callbacks/memory` — container-originated. With
+    no `key` query param, returns all entries for the repo as JSON
+    (`recall` with no key reads this). With `?key=`, does a targeted
+    single-row lookup instead (#590) and returns just that one entry (or
+    none) — `recall(key)` uses this rather than fetching the whole store
+    and filtering client-side.
   - `POST /api/sessions/{id}/callbacks/memory/forget` `{key}` —
     container-originated, deletes one entry (`forget`, #592). Idempotent.
   - `GET /api/sessions/{id}/memory` — user-originated
@@ -149,12 +153,14 @@ Mirrors `add_followup_task` field-for-field:
 - `CloudAgents.Shim.V2Transport`: `RememberRequest{key,value}`,
   `MemoryEntry{key,value}`, `MemoryListResponse{entries}`,
   `ForgetRequest{key}` / `ForgetResponse{key,status}` wire records;
-  `remember`/`recallAll`/`forget` on the `V2CallbackTransport` interface +
-  the `HttpV2CallbackTransport` impl (`POST`/`GET …/callbacks/memory`,
-  `POST …/callbacks/memory/forget`).
+  `remember`/`recallAll`/`recallByKey`/`forget` on the
+  `V2CallbackTransport` interface + the `HttpV2CallbackTransport` impl
+  (`POST`/`GET …/callbacks/memory`, `GET …/callbacks/memory?key=` for a
+  single entry (#590), `POST …/callbacks/memory/forget`).
 - `CloudAgents.Shim.V2Client`: `remember(transport, key, value)` (single
-  POST), `recall(transport, keyOpt)` (single GET, filters by key when
-  present), and `forget(transport, key)` (single POST).
+  POST), `recall(transport, keyOpt)` (a single targeted GET via
+  `recallByKey` when a key is given, or `recallAll`'s whole-list GET when
+  it isn't), and `forget(transport, key)` (single POST).
 - `CloudAgents.Shim.V2Tools`: `RememberTool` / `RecallTool` / `ForgetTool`
   with their schemas; registered in `shim/src/main.l` via `addTool`.
 
@@ -192,17 +198,50 @@ at `artifactsBaseDir()/<sessionId>/<storedName>`). Slice 3 adds an
 optional repo scope so a build output or report survives into later
 sessions on the same repo:
 
-- Migration `0015`: add `repo_key TEXT NOT NULL DEFAULT ''` to
-  `artifacts` + an index on `(repo_key)`. Existing rows keep `''`
-  (session-only), so this is backward-compatible.
-- `report_artifact` gains an optional `scope` argument (`session`
-  default, or `repo`). A `repo`-scoped artifact is written under
+- Migration `0015_repo_artifacts`: adds `repo_key TEXT NOT NULL DEFAULT ''`
+  to `artifacts` + an index on `(repo_key)`. Existing rows keep `''`
+  (session-only), so this is backward-compatible. `artifacts` has no
+  `user_id` column of its own — its only owner pointer is
+  `session_id` — so the (user_id, repo_key) scoping below is enforced
+  by joining against `sessions` rather than denormalizing `user_id`
+  onto every artifact row.
+- `report_artifact` gains an optional `scope` argument (`""`/`"session"`
+  default — today's exact behaviour, unchanged — or `"repo"`). A
+  `repo`-scoped artifact is written under
   `artifactsBaseDir()/repo/<repoKey>/<storedName>` and its row carries
-  the `repo_key`; `session`-scoped keeps today's exact behaviour.
-- `GET /api/sessions/{id}/artifacts` continues to list this session's
-  artifacts; a new user-auth `GET /api/repos/{repoKey}/artifacts` (or a
-  query flag) lists a repo's durable artifacts. Download is unchanged
-  except for the base-dir branch.
+  the normalized `repo_key`; the row's `session_id` is unchanged either
+  way, so a repo-scoped artifact still shows up in the reporting
+  session's own `GET /api/sessions/{id}/artifacts` listing exactly as
+  before — repo scope is additive metadata, not a replacement for
+  session ownership. `download` branches its on-disk path read on
+  whether the fetched artifact's `repo_key` is empty (session path,
+  unchanged) or non-empty (repo path); the download route itself is
+  unchanged (`GET /api/sessions/{id}/artifacts/{aid}`, still
+  session-owner-scoped).
+- **Corrected from an earlier sketch of this section:** repo-scoped
+  listing is `GET /api/repos/artifacts?repoKey=<key>` — a query
+  parameter, not `GET /api/repos/{repoKey}/artifacts` as originally
+  sketched here. `repoKey` normalizes to `host/owner/repo`
+  (`CloudAgents.RepoKey`) and always contains literal `/` characters;
+  Lyric.Web's `{name}` path-parameter segments match a single path
+  segment only (its `{*name}` catch-all form must be the *final*
+  segment, which doesn't fit `.../artifacts` following it), so a
+  `repoKey` path segment can't carry the value without a routing
+  workaround. A query parameter sidesteps the whole problem and is a
+  fallback this section's original sketch already named.
+- **Also corrected: explicit user scoping.** The listing is
+  authenticated (normal `AuthMiddleware` bearer check, not the
+  container-callback path) and scoped by **both** the caller's own
+  user id (`CloudAgents.Auth.currentUserId()`) **and** the given
+  `repoKey` — never by `repoKey` alone. `repoKey`s are derived from
+  public git remote URLs (`CloudAgents.RepoKey.repoKeyOf`), not secret,
+  so scoping by `repoKey` alone would let one user list another user's
+  repo-scoped artifacts just by knowing or guessing a repo's URL — the
+  exact same reasoning slice 1's memory store already applies via its
+  `(user_id, repo_key)` key. `CloudAgents.Repository.listRepoArtifacts
+  (userId, repoKey)` joins `artifacts` against `sessions` on
+  `session_id` to resolve each artifact's owner, then filters on both
+  `sessions.user_id = userId` and `artifacts.repo_key = repoKey`.
 
 Kept a separate slice because it touches the artifact download path and
 the on-disk layout; memory (slice 1) is the cleaner first landing.
@@ -238,8 +277,15 @@ Today a `Profile` has `credentialMode` ∈ {all, selected} plus a
 
 The tool names are the stable MCP names already in `shim/src/main.l`:
 `request_permission`, `ask_user`, `report_progress`, `request_secret`,
-`add_followup_task`, `report_artifact`, and the phase-7 additions
-(`remember`, `recall`, `notify`). Enablement is per-name.
+`add_followup_task`, `report_artifact`, the phase-7 §4 repo-memory
+additions (`remember`, `recall`, `forget`), the phase-7 §5 addition
+(`notify`), and the phase-7 §8 repo-scoped task list additions (`add_task`,
+`list_tasks`, `complete_task`) — 13 tools in total (#625: an earlier
+revision of this doc incorrectly claimed `notify` was never added to the
+shim). Enablement is per-name; the validation set lives in
+`CloudAgents.Profiles.validShimToolNames` (hand-kept in sync with
+`shim/src/main.l`, since the shim is a separate Lyric project with its own
+`lyric.toml` and no dependency edge back to this one).
 
 ## 8. Slice 5 — repo-scoped task list (`add_task` / `list_tasks` / `complete_task`)
 
@@ -358,15 +404,26 @@ could turn yet.
    this PR.*
 2. **Slice 2 — notify**: migration `0014` (`notifications`), the
    `notification` SSE event, handlers + shim tool, tests.
-3. **Slice 3 — repo-scoped artifacts**: migration for `artifacts.repo_key`,
-   `report_artifact` `scope` arg, repo-artifact list endpoint.
-4. **Slice 4 — per-profile tool enablement**: `profiles.tool_mode` +
-   `profile_tools`, `docker_manager.l` `CLOUD_AGENTS_ENABLED_TOOLS`
-   injection, shim conditional registration, profile UI/API surface.
+3. **Slice 3 — repo-scoped artifacts**: migration `0015` (`artifacts.repo_key`)
+   plus a follow-up migration `0018` (`artifacts.owner_user_id`, added to fix
+   #619 — a repo-scoped artifact becoming permanently unreachable once the
+   reporting session's own row is deleted), `report_artifact` `scope` arg,
+   repo-artifact list endpoint.
+4. **Slice 4 — per-profile tool enablement**: migration `0016`
+   (`profiles.tool_mode` + `profile_tools`), `docker_manager.l`
+   `CLOUD_AGENTS_ENABLED_TOOLS` injection, shim conditional registration,
+   profile UI/API surface.
 5. **Slice 5 — repo-scoped task list** (`add_task` / `list_tasks` /
    `complete_task`): migration `0017` (`repo_tasks`), handlers + shim
    tools, tests. A near-copy of the memory slice with an open→done
    status; see the "Slice 5" section above.
+
+   (Slice 5 actually merged before slices 3 and 4 finished, so its
+   migration was briefly appended ahead of them in the array — out of
+   numeric order (#609) until slices 3/4 landed and `repo_tasks`'s entry
+   moved down to its assigned `0017` slot, restoring the array's
+   version-prefix == array-position invariant `allMigrations()`'s own doc
+   comment requires.)
 
 Each slice is testable Docker-free the same way phase 6 is: handler
 tests hit the endpoints in-process; the shim's client is tested against

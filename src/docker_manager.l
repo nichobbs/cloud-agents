@@ -37,6 +37,22 @@ func encGetBytes(enc: in Encoding, s: in String): slice[Byte] = []
 @externTarget("System.Convert.ToBase64String")
 func toBase64(b: in slice[Byte]): String = ""
 
+// ─── BCL binding for a bounded pause between waitForContainer retry attempts
+// (#556) ───────────────────────────────────────────────────────────────────
+// Mirrors shim/src/transport.l's `sleepMillis` (CloudAgents.Shim.Transport) —
+// a proven, already-exercised `Thread.Sleep` extern binding that package uses
+// to pace its own long-poll retries against the host API. Bound locally here
+// rather than reused cross-package: docs/lyric/gotchas.md notes cross-package
+// `pub val`/extern reuse has its own sharp edges, and this package's own
+// base64Json binding above already follows the same locally-bound convention
+// for exactly that reason. Blocking (not `Task.Delay`) is fine here — this
+// binding is only ever called from `waitForContainer`, an `async func` that
+// already blocks step-by-step on `await waitContainer` each attempt, so
+// occupying the worker thread for a short pause changes nothing about its
+// concurrency model, only adds spacing between attempts.
+@externTarget("System.Threading.Thread.Sleep")
+func threadSleepMs(millis: in Int): Unit = ()
+
 /// Encode a JSON string as base64 for env-var transport into a runner
 /// container (docker/inject-library.sh decodes it with `base64 -d`) — avoids
 /// any shell-quoting hazard from arbitrary user-authored skill/subagent/MCP
@@ -212,6 +228,23 @@ pub async func createRunnerContainer(
     case Err(e) -> return Err(error = "Failed to load credentials: " + CloudAgents.Repository.credentialErrorMessage(e))
   }
 
+  // Phase 7 §7 per-profile tool enablement: inject CLOUD_AGENTS_ENABLED_TOOLS
+  // only when the profile actually restricts the tool set. Absence means
+  // "register every tool" (byte-for-byte the pre-phase-7 shim behaviour), so
+  // an 'all'-mode profile or a pre-phase-7 container is unchanged. Unlike the
+  // credential path above, a resolution failure here is best-effort (log and
+  // continue with no restriction) rather than aborting the run — tool
+  // enablement is not a hard security boundary in v1 (see
+  // CloudAgents.Repository.enabledToolsForProfile's doc comment).
+  match CloudAgents.Repository.enabledToolsForProfile(userId, profileId) {
+    case Ok(toolsEnv) -> {
+      if toolsEnv.length > 0 {
+        envs = envs.append("CLOUD_AGENTS_ENABLED_TOOLS=" + toolsEnv)
+      }
+    }
+    case Err(e) -> println("WARNING: failed to resolve enabled tools for session " + sessionId + ": " + CloudAgents.Sqlite.dbErrorMessage(e))
+  }
+
   // Inject the library items the profile grants (skills, subagents, MCP
   // servers): each resolved list is base64(JSON)-encoded and handed to
   // docker/inject-library.sh (invoked by every harness's entrypoint script),
@@ -321,6 +354,14 @@ pub async func stopRunnerContainer(client: in DockerClient, containerId: in Stri
 // and silently miss in the other.
 val runWallClockCapMs = 1800000.toLong()
 
+// Pause between waitForContainer's /wait retry attempts (#556): the retry
+// loop below previously fired attempts back-to-back with no delay — bounded
+// (20 attempts, 30-minute deadline) so not a correctness bug, but a
+// struggling Docker daemon got hammered with immediate retries instead of a
+// short breather. 1 second is negligible against both the attempt cap and
+// the wall-clock deadline, so it cannot meaningfully erode either bound.
+val containerWaitRetryDelayMs = 1000
+
 /// Wait for a container's process to exit before reading its output.
 ///
 /// Retries a `/wait` failure (bounded two independent ways — an attempt cap
@@ -356,6 +397,10 @@ pub async func waitForContainer(client: in DockerClient, containerId: in String)
         )
         if not retry {
           settled = true
+        } else {
+          // Brief pause before the next attempt (#556) — see
+          // containerWaitRetryDelayMs's doc comment above.
+          threadSleepMs(containerWaitRetryDelayMs)
         }
       }
     }
@@ -543,6 +588,9 @@ pub func streamSessionMessage(
   // artifact_reported events.
   var secretCursor = toString(startMs)
   var artifactCursor = toString(startMs)
+  // Phase 7 §5 (docs/phase7-autonomy.md): same cursor pattern, for the
+  // notify tool's `notification` event.
+  var notificationCursor = toString(startMs)
   // Poll on a ~1s cadence. taskWaitMs blocks up to that waiting for the run to
   // finish (true = the whole run completed), so the loop wakes on either a
   // timer tick or run completion. The interval is deliberately NOT tighter
@@ -678,6 +726,23 @@ pub func streamSessionMessage(
             }
             artifactCursor = art.createdAt
             ai = ai + 1
+          }
+        }
+        case Err(_) -> ()
+      }
+      // Phase 7 §5: notify tool's notification events, same best-effort
+      // forwarding as the others above.
+      match CloudAgents.Repository.notificationsCreatedAfter(sessionId, notificationCursor) {
+        case Ok(notes) -> {
+          var ni = 0
+          while ni < notes.length {
+            val note = notes[ni]
+            match Web.writeChunk(w, CloudAgents.Streaming.sseNotification(note.id, note.level, note.summary)) {
+              case Ok(_) -> ()
+              case Err(_) -> ()
+            }
+            notificationCursor = note.createdAt
+            ni = ni + 1
           }
         }
         case Err(_) -> ()

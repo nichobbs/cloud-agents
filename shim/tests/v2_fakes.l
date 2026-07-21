@@ -35,6 +35,7 @@ pub record FakeV2Transport {
   pub var lastUploadMimeType: String
   pub var lastUploadDescription: String
   pub var lastUploadContentBase64: String
+  pub var lastUploadArtifactScope: String
   pub var uploadArtifactCallCount: Int
 
   pub var rememberOk: Bool
@@ -47,6 +48,12 @@ pub record FakeV2Transport {
   pub var recallBody: String
   pub var recallError: String
   pub var recallCallCount: Int
+
+  pub var recallByKeyOk: Bool
+  pub var recallByKeyBody: String
+  pub var recallByKeyError: String
+  pub var lastRecallKey: String
+  pub var recallByKeyCallCount: Int
 
   pub var forgetOk: Bool
   pub var forgetBody: String
@@ -67,6 +74,13 @@ pub record FakeV2Transport {
   pub var completeTaskBody: String
   pub var completeTaskError: String
   pub var lastCompleteTaskId: String
+
+  pub var notifyOk: Bool
+  pub var notifyBody: String
+  pub var notifyError: String
+  pub var lastNotifySummary: String
+  pub var lastNotifyLevel: String
+  pub var notifyCallCount: Int
 }
 
 /// A ready-to-use fake with sensible not-configured-yet defaults: creating
@@ -92,6 +106,7 @@ pub func newFakeV2Transport(): FakeV2Transport {
     lastUploadMimeType = "",
     lastUploadDescription = "",
     lastUploadContentBase64 = "",
+    lastUploadArtifactScope = "",
     uploadArtifactCallCount = 0,
     rememberOk = false,
     rememberBody = "",
@@ -102,6 +117,11 @@ pub func newFakeV2Transport(): FakeV2Transport {
     recallBody = "",
     recallError = "FakeV2Transport: recallAll not configured",
     recallCallCount = 0,
+    recallByKeyOk = false,
+    recallByKeyBody = "",
+    recallByKeyError = "FakeV2Transport: recallByKey not configured",
+    lastRecallKey = "",
+    recallByKeyCallCount = 0,
     forgetOk = false,
     forgetBody = "",
     forgetError = "FakeV2Transport: forget not configured",
@@ -117,7 +137,13 @@ pub func newFakeV2Transport(): FakeV2Transport {
     completeTaskOk = false,
     completeTaskBody = "",
     completeTaskError = "FakeV2Transport: completeTask not configured",
-    lastCompleteTaskId = ""
+    lastCompleteTaskId = "",
+    notifyOk = false,
+    notifyBody = "",
+    notifyError = "FakeV2Transport: notify not configured",
+    lastNotifySummary = "",
+    lastNotifyLevel = "",
+    notifyCallCount = 0
   )
 }
 
@@ -153,13 +179,18 @@ impl V2CallbackTransport for FakeV2Transport {
   }
 
   func uploadArtifact(
-    fileName: in String, mimeType: in String, description: in String, contentBase64: in String
+    fileName: in String,
+    mimeType: in String,
+    description: in String,
+    contentBase64: in String,
+    artifactScope: in String,
   ): Result[String, String] {
     self.uploadArtifactCallCount = self.uploadArtifactCallCount + 1
     self.lastUploadFileName = fileName
     self.lastUploadMimeType = mimeType
     self.lastUploadDescription = description
     self.lastUploadContentBase64 = contentBase64
+    self.lastUploadArtifactScope = artifactScope
     if self.uploadArtifactOk {
       Ok(value = self.uploadArtifactBody)
     } else {
@@ -183,6 +214,16 @@ impl V2CallbackTransport for FakeV2Transport {
       Ok(value = self.recallBody)
     } else {
       Err(error = self.recallError)
+    }
+  }
+
+  func recallByKey(key: in String): Result[String, String] {
+    self.lastRecallKey = key
+    self.recallByKeyCallCount = self.recallByKeyCallCount + 1
+    if self.recallByKeyOk {
+      Ok(value = self.recallByKeyBody)
+    } else {
+      Err(error = self.recallByKeyError)
     }
   }
 
@@ -219,6 +260,17 @@ impl V2CallbackTransport for FakeV2Transport {
       Ok(value = self.completeTaskBody)
     } else {
       Err(error = self.completeTaskError)
+    }
+  }
+
+  func notify(summary: in String, level: in String): Result[String, String] {
+    self.notifyCallCount = self.notifyCallCount + 1
+    self.lastNotifySummary = summary
+    self.lastNotifyLevel = level
+    if self.notifyOk {
+      Ok(value = self.notifyBody)
+    } else {
+      Err(error = self.notifyError)
     }
   }
 }

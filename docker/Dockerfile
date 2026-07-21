@@ -22,11 +22,28 @@
 # 2026-07-20). Building the shim in its own stage here makes the image
 # buildable standalone by any orchestrator, with no external pre-build step.
 FROM --platform=linux/amd64 mcr.microsoft.com/dotnet/sdk:10.0 AS shim-builder
+
+# Pinned explicitly rather than `curl .../install.sh | sh`'s old approach of
+# always fetching "latest": that RUN step has no cache-busting mechanism of
+# its own, so once Docker caches this layer it stays cached indefinitely
+# regardless of new commits or new upstream Lyric releases — this image
+# could silently keep compiling with whatever version happened to be
+# "latest" the very first time it was ever built on a given host, with no
+# visible signal that anything's stale (exactly the class of regression
+# AGENTS.md's seven tracked upstream compiler bugs warn about). Mirrors
+# deploy/api.Dockerfile's ARG LYRIC_VERSION pattern and downloads the exact
+# release tarball directly rather than trusting install.sh's own --version
+# handling — see that file's comments for the full reasoning. Never pin
+# below MIN_LYRIC_VERSION (repo root), the documented known-good floor.
+ARG LYRIC_VERSION=0.4.33
 RUN apt-get update && apt-get install -y --no-install-recommends curl ca-certificates \
+    && curl -fsSLk --connect-timeout 10 --max-time 120 --retry 3 --retry-delay 3 \
+        -o /tmp/lyric.tgz \
+        "https://github.com/nichobbs/lyric-lang/releases/download/v${LYRIC_VERSION}/lyric-${LYRIC_VERSION}-linux-x64.tar.gz" \
+    && mkdir -p /usr/local/bin \
+    && tar -xzf /tmp/lyric.tgz -C /usr/local/bin \
+    && rm -f /tmp/lyric.tgz \
     && rm -rf /var/lib/apt/lists/*
-RUN curl -fsSL https://raw.githubusercontent.com/nichobbs/lyric-lang/main/scripts/install.sh \
-        | sh -s -- --dir /usr/local/bin --no-path \
-    && lyric --version
 WORKDIR /src/shim
 COPY shim/ ./
 RUN lyric restore && lyric build
@@ -43,9 +60,16 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && npm install -g @anthropic-ai/claude-code \
     && rm -rf /var/lib/apt/lists/*
 
-# Install the Lyric compiler to a system location.
-RUN curl -fsSLk https://raw.githubusercontent.com/nichobbs/lyric-lang/main/scripts/install.sh \
-        | sh -s -- --dir /usr/local/bin --no-path \
+# Install the Lyric compiler to a system location. Pinned to the same
+# explicit ARG LYRIC_VERSION as the shim-builder stage above (predates that
+# stage's addition, but is the same unpinned-"latest" anti-pattern — see
+# that stage's comment and deploy/api.Dockerfile for the full reasoning).
+ARG LYRIC_VERSION=0.4.33
+RUN curl -fsSLk --connect-timeout 10 --max-time 120 --retry 3 --retry-delay 3 \
+        -o /tmp/lyric.tgz \
+        "https://github.com/nichobbs/lyric-lang/releases/download/v${LYRIC_VERSION}/lyric-${LYRIC_VERSION}-linux-x64.tar.gz" \
+    && tar -xzf /tmp/lyric.tgz -C /usr/local/bin \
+    && rm -f /tmp/lyric.tgz \
     && lyric --version
 
 # Non-root user. The home directory is mounted from the per-user credential

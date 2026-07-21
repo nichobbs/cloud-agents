@@ -247,6 +247,44 @@ jobs:
           rm -f /tmp/pinned-lyric.tgz
           echo "Confirmed $URL resolves"
 
+      # docker/Dockerfile pins its own ARG LYRIC_VERSION twice (once per
+      # stage — shim-builder and the final image — since a build ARG doesn't
+      # cross a FROM boundary) rather than piping install.sh's "latest"
+      # (nichobbs/cloud-agents#606, same reasoning as api.Dockerfile's pin
+      # above and #515 before it). #632: that pin had no equivalent floor/
+      # existence check, unlike api.Dockerfile's two steps just above — added
+      # here, checking every ARG LYRIC_VERSION= occurrence in the file (both
+      # stages) rather than assuming they're identical.
+      - name: Verify docker/Dockerfile's pinned Lyric version meets the floor
+        run: |
+          MIN_VERSION="$(cat MIN_LYRIC_VERSION)"
+          PINS="$(sed -n 's/^ARG LYRIC_VERSION=\(.*\)$/\1/p' docker/Dockerfile | sort -u)"
+          if [ -z "$PINS" ]; then
+            echo "::error::could not find 'ARG LYRIC_VERSION=' in docker/Dockerfile" >&2
+            exit 1
+          fi
+          for PINNED in $PINS; do
+            lowest="$(printf '%s\n%s\n' "$MIN_VERSION" "$PINNED" | sort -V | head -1)"
+            if [ "$lowest" != "$MIN_VERSION" ]; then
+              echo "::error::docker/Dockerfile pins Lyric $PINNED, below MIN_LYRIC_VERSION ($MIN_VERSION) — bump ARG LYRIC_VERSION in docker/Dockerfile." >&2
+              exit 1
+            fi
+            echo "docker/Dockerfile pins Lyric $PINNED >= required minimum $MIN_VERSION"
+          done
+
+      - name: Verify docker/Dockerfile's pinned Lyric release(s) actually exist
+        run: |
+          PINS="$(sed -n 's/^ARG LYRIC_VERSION=\(.*\)$/\1/p' docker/Dockerfile | sort -u)"
+          for PINNED in $PINS; do
+            URL="https://github.com/nichobbs/lyric-lang/releases/download/v${PINNED}/lyric-${PINNED}-linux-x64.tar.gz"
+            if ! curl -fsSL --connect-timeout 10 --max-time 120 --retry 3 --retry-delay 3 -o /tmp/pinned-lyric-docker.tgz "$URL"; then
+              echo "::error::docker/Dockerfile pins Lyric $PINNED, but $URL failed to download (typo, or that release/asset doesn't exist)." >&2
+              exit 1
+            fi
+            rm -f /tmp/pinned-lyric-docker.tgz
+            echo "Confirmed $URL resolves"
+          done
+
       # Build the entire server. Lyric.Web/Lyric.Docker/Std.Logging/
       # Microsoft.Data.Sqlite all restore from NuGet — see docs/BUILD.md.
       # No sibling lyric-lang checkout.

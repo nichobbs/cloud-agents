@@ -702,6 +702,10 @@ val maxArtifactMimeTypeLen = 256
 
 val maxArtifactDescriptionLen = 2048
 
+/// Matches CloudAgents.Handlers.maxRepoUrlLen (sessions.l) — repoKey is a
+/// normalized, always-shorter derivative of a repo_url (#612).
+val maxRepoKeyQueryLen = 2048
+
 /// 8 MiB, the decoded-bytes cap (docs/phase6 §7.3).
 val maxArtifactBytes = 8388608
 
@@ -760,12 +764,67 @@ func basenameOf(name: in String): Option[String] {
   return Some(value = base)
 }
 
+/// The (owner, repo) an artifact upload is scoped to when `scope == "repo"`
+/// (docs/phase7-autonomy.md §6). A small duplicate of Phase 7 §4's
+/// SessionMemoryScope shape rather than a shared type: the error message
+/// below is artifact-specific, and this codebase prefers small local
+/// duplication over a premature shared abstraction across unrelated
+/// features.
+record ArtifactRepoScope {
+  userId: String
+  repoKey: String
+}
+
+/// Whether `s` contains a `..` path-traversal segment. `repoKey` is spliced
+/// directly into a filesystem path (artifactsBaseDir()/repo/<repoKey>/...)
+/// for repo-scoped artifacts — unlike repo memory, which only ever uses
+/// repoKey as a SQL-escaped column value, never a path component. repoKeyOf
+/// deliberately preserves every path segment (nested-group hosts like
+/// GitLab's owner/subgroup/repo need this — docs/lyric #597), so it does
+/// NOT itself reject `..`; a crafted repoUrl (e.g.
+/// "https://github.com/../../../etc") that survives isHttpsUrl/isSafeRepoUrl
+/// validation in sessions.l can normalize to a repoKey containing `..`
+/// segments, which the underlying file APIs then resolve — an arbitrary
+/// file write/read on the host via report_artifact. A plain substring check
+/// is sufficient: no legitimate host/owner/repo path segment is ever
+/// literally "..".
+func containsPathTraversal(s: in String): Bool {
+  return s.contains("..")
+}
+
+/// Resolve the owning user + normalized repo key for a repo-scoped artifact
+/// upload, mirroring resolveMemoryScope's lookup exactly (same session ->
+/// owner + repo_url -> repoKeyOf pipeline) but with an artifact-specific
+/// error message for the no-repo case. Rejects a repoKey containing a `..`
+/// path-traversal segment (see containsPathTraversal) since — unlike
+/// memory's SQL-only use — this repoKey is about to become a filesystem
+/// path component.
+func resolveArtifactRepoScope(id: in String): Result[ArtifactRepoScope, Web.ApiError] {
+  val ownerRepo = match CloudAgents.Repository.sessionOwnerAndRepo(id) {
+    case Ok(Some(sr)) -> sr
+    case Ok(None) -> return Err(Web.notFound("Session not found"))
+    case Err(e) -> return Err(dbError(e))
+  }
+  val repoKey = CloudAgents.RepoKey.repoKeyOf(ownerRepo.repoUrl)
+  if repoKey.length == 0 {
+    return Err(Web.badRequest("this session has no repository to scope this artifact to"))
+  }
+  if containsPathTraversal(repoKey) {
+    return Err(Web.badRequest("this session's repository cannot be used to scope an artifact"))
+  }
+  return Ok(ArtifactRepoScope(userId = ownerRepo.userId, repoKey = repoKey))
+}
+
 @generate(Json)
 pub record UploadArtifactRequest {
   pub fileName: String
   pub mimeType: String
   pub description: String
   pub contentBase64: String
+  /// "" or "session" (today's exact behavior, unchanged) or "repo"
+  /// (docs/phase7-autonomy.md §6 — also durable across later sessions on the
+  /// same repo). Validated in uploadArtifactHandler.
+  pub artifactScope: String
 }
 
 @generate(Json)
@@ -776,10 +835,17 @@ pub record UploadArtifactResponse {
 /// The API-facing shape of a stored artifact — deliberately omits
 /// CloudAgents.Repository.Artifact's internal `storedName` field (an
 /// on-disk implementation detail, not something a client needs or should
-/// see).
+/// see). Includes `sessionId` (the artifact's ORIGINATING session, not
+/// necessarily the caller's current one) because it's required to build the
+/// only download route, `GET /api/sessions/{sessionId}/artifacts/{id}` — the
+/// repo-scoped listing below (`listRepoArtifactsHandler`) can return an
+/// artifact from a session other than the one the caller is currently
+/// looking at, so without this field a repo-scoped artifact would be
+/// listable but never downloadable (#611).
 @generate(Json)
 pub record ArtifactSummary {
   pub id: String
+  pub sessionId: String
   pub fileName: String
   pub mimeType: String
   pub description: String
@@ -795,6 +861,7 @@ pub record ArtifactListResponse {
 func artifactSummaryOf(a: in CloudAgents.Repository.Artifact): ArtifactSummary {
   return ArtifactSummary(
     id = a.id,
+    sessionId = a.sessionId,
     fileName = a.fileName,
     mimeType = a.mimeType,
     description = a.description,
@@ -837,6 +904,9 @@ pub func uploadArtifactHandler(
   if not CloudAgents.Text.withinMaxLength(req.contentBase64, maxArtifactBase64Len) {
     return Err(Web.badRequest("artifact exceeds the 8 MiB size limit"))
   }
+  if req.artifactScope != "" and req.artifactScope != "session" and req.artifactScope != "repo" {
+    return Err(Web.badRequest("scope must be '', 'session', or 'repo'"))
+  }
   val bytes = match tryDecodeArtifactBytes(req.contentBase64) {
     case Ok(b) -> b
     case Err(msg) -> return Err(Web.badRequest(msg))
@@ -845,18 +915,34 @@ pub func uploadArtifactHandler(
   if sizeBytes > maxArtifactBytes {
     return Err(Web.badRequest("artifact exceeds the 8 MiB size limit"))
   }
+  // A repo-scoped artifact is written under a repo-keyed directory and
+  // carries the normalized repo_key on its row, plus the reporting session's
+  // owner denormalized onto owner_user_id (#619) so the artifact's ownership
+  // and listing survive that session being deleted later. A session-scoped
+  // one (the default) keeps today's exact on-disk layout, empty repo_key,
+  // and empty owner_user_id (ownership stays session-based, unaffected).
+  // Either way `id` (the reporting session) stays the row's session_id —
+  // repo scope is additive, so the artifact still shows up in this session's
+  // own GET /api/sessions/{id}/artifacts listing (docs/phase7-autonomy.md §6).
+  val repoScope = if req.artifactScope == "repo" { Some(value = resolveArtifactRepoScope(id)?) } else { None }
+  val repoKey = match repoScope { case Some(s) -> s.repoKey; case None -> "" }
+  val ownerUserId = match repoScope { case Some(s) -> s.userId; case None -> "" }
   val artifactId = Std.Uuid.uuidToString(Std.Uuid.newUuid())
   val storedName = artifactId + "_" + fileName
-  val sessionDir = CloudAgents.Repository.artifactsBaseDir() + "/" + id
-  match Std.File.createDir(sessionDir) {
+  val artifactDir = if repoKey.length > 0 {
+    CloudAgents.Repository.artifactsBaseDir() + "/repo/" + repoKey
+  } else {
+    CloudAgents.Repository.artifactsBaseDir() + "/" + id
+  }
+  match Std.File.createDir(artifactDir) {
     case Ok(_) -> ()
     case Err(e) -> return Err(Web.internalError("failed to create artifact storage: " + IOError.message(e)))
   }
-  match Std.File.writeBytes(sessionDir + "/" + storedName, sliceBytesToList(bytes)) {
+  match Std.File.writeBytes(artifactDir + "/" + storedName, sliceBytesToList(bytes)) {
     case Ok(_) -> ()
     case Err(e) -> return Err(Web.internalError("failed to store artifact: " + IOError.message(e)))
   }
-  match CloudAgents.Repository.createArtifact(id, fileName, storedName, req.mimeType, req.description, toString(sizeBytes)) {
+  match CloudAgents.Repository.createArtifact(id, fileName, storedName, req.mimeType, req.description, toString(sizeBytes), repoKey, ownerUserId) {
     case Ok(a) -> return Ok(UploadArtifactResponse(id = a.id))
     case Err(e) -> return Err(dbError(e))
   }
@@ -880,7 +966,38 @@ pub func listArtifactsHandler(id: in String): Result[ArtifactListResponse, Web.A
   }
 }
 
-/// GET /api/sessions/{id}/artifacts/{aid} — user-originated. Streams the
+/// GET /api/repos/artifacts?repoKey=... — user-originated
+/// (docs/phase7-autonomy.md §6, corrected design). Scoped by BOTH the
+/// caller's own user id (CloudAgents.Auth.currentUserId()) AND the given
+/// repoKey — never another user's rows, even for the same repoKey. repoKeys
+/// are derived from public git remote URLs (CloudAgents.RepoKey), not
+/// secret, so repoKey alone would let one user list another user's
+/// repo-scoped artifacts just by knowing/guessing a repo URL; the
+/// (user_id, repo_key) pair is the real scope, exactly like repo memory.
+pub func listRepoArtifactsHandler(repoKey: in String): Result[ArtifactListResponse, Web.ApiError] {
+  if repoKey.length == 0 {
+    return Err(Web.badRequest("repoKey is required"))
+  }
+  // repoKey is a normalized, always-shorter derivative of a repo_url — bound
+  // it the same as CloudAgents.Handlers.maxRepoUrlLen (#612) for consistency
+  // with every other user-supplied string in this file; it's already
+  // sqlLiteral-escaped before reaching SQL, so this is a sanity/consistency
+  // bound, not a security one.
+  if not CloudAgents.Text.withinMaxLength(repoKey, maxRepoKeyQueryLen) {
+    return Err(Web.badRequest("repoKey is too long (max " + toString(maxRepoKeyQueryLen) + " characters)"))
+  }
+  match CloudAgents.Repository.listRepoArtifacts(CloudAgents.Auth.currentUserId(), repoKey) {
+    case Ok(arts) -> {
+      var acc: slice[ArtifactSummary] = []
+      for a in arts {
+        acc = acc.append(artifactSummaryOf(a))
+      }
+      return Ok(ArtifactListResponse(artifacts = acc))
+    }
+    case Err(e) -> return Err(dbError(e))
+  }
+}
+
 /// Escape a filename for an RFC 6266 `filename="..."` quoted-string: a `"`
 /// or `\` in the (already basename-sanitized) name would otherwise break
 /// out of the quotes, and a CR/LF would split the header — so backslash-
@@ -901,6 +1018,46 @@ pub func contentDispositionQuoted(name: in String): String {
   return escaped
 }
 
+/// Reads an artifact's bytes off disk and builds its download Response.
+/// Shared by downloadArtifactHandler (session-scoped route) and
+/// downloadRepoArtifactHandler (session-independent repo-scoped route,
+/// #619) — both have already resolved and ownership-checked `a` by the time
+/// this runs. `sessionDirId` is the reporting session's id, used only to
+/// build the legacy session-keyed on-disk path when `a.repoKey` is empty.
+func readArtifactBytesResponse(
+  a: in CloudAgents.Repository.Artifact, sessionDirId: in String
+): Result[Web.Response, Web.ApiError] {
+  // repo_key empty -> the original session path (unchanged); non-empty ->
+  // the repo-keyed path a repo-scoped upload was written under
+  // (docs/phase7-autonomy.md §6). Defense in depth: resolveArtifactRepoScope
+  // already rejects a `..`-bearing repoKey at write time (the only path that
+  // ever stores one), but re-checking here means a stored row can never
+  // walk this read path outside artifactsBaseDir() regardless of how it got
+  // written.
+  if containsPathTraversal(a.repoKey) {
+    return Err(Web.internalError("stored artifact has an invalid repo scope"))
+  }
+  val artifactDir = if a.repoKey.length > 0 {
+    CloudAgents.Repository.artifactsBaseDir() + "/repo/" + a.repoKey
+  } else {
+    CloudAgents.Repository.artifactsBaseDir() + "/" + sessionDirId
+  }
+  val path = artifactDir + "/" + a.storedName
+  val bytes = match Std.File.readBytes(path) {
+    case Ok(b) -> b
+    case Err(e) -> return Err(Web.internalError("failed to read artifact: " + IOError.message(e)))
+  }
+  val resp = Web.bytesResponse(200, a.mimeType, bytes.toArray())
+  return Ok(
+    Web.withResponseHeader(
+      resp,
+      "Content-Disposition",
+      "attachment; filename=\"" + contentDispositionQuoted(a.fileName) + "\""
+    )
+  )
+}
+
+/// GET /api/sessions/{id}/artifacts/{aid} — user-originated. Streams the
 /// stored bytes with Content-Disposition set from the sanitized fileName.
 /// Returns the full Response directly (not a JSON body) since this is a
 /// binary download.
@@ -920,19 +1077,29 @@ pub func downloadArtifactHandler(id: in String, aid: in String): Result[Web.Resp
   if a.sessionId != id {
     return Err(Web.notFound("artifact not found"))
   }
-  val path = CloudAgents.Repository.artifactsBaseDir() + "/" + id + "/" + a.storedName
-  val bytes = match Std.File.readBytes(path) {
-    case Ok(b) -> b
-    case Err(e) -> return Err(Web.internalError("failed to read artifact: " + IOError.message(e)))
+  return readArtifactBytesResponse(a, id)
+}
+
+/// GET /api/repos/artifacts/{aid} — user-originated, session-independent
+/// (#619). Unlike downloadArtifactHandler, ownership is checked via the
+/// artifact's own denormalized owner_user_id (CloudAgents.Repository.
+/// getRepoArtifactById), never via the reporting session — so a repo-scoped
+/// artifact discovered through listRepoArtifactsHandler stays downloadable
+/// even after that session is deleted. Only ever matches a repo-scoped
+/// artifact (owner_user_id is '' for a session-only one, and currentUserId()
+/// is never '' for an authenticated caller, so a session-only artifact can
+/// never match here); a session-scoped artifact still downloads exclusively
+/// via the session-keyed route above.
+pub func downloadRepoArtifactHandler(aid: in String): Result[Web.Response, Web.ApiError] {
+  if aid.length == 0 {
+    return Err(Web.badRequest("artifact id is required"))
   }
-  val resp = Web.bytesResponse(200, a.mimeType, bytes.toArray())
-  return Ok(
-    Web.withResponseHeader(
-      resp,
-      "Content-Disposition",
-      "attachment; filename=\"" + contentDispositionQuoted(a.fileName) + "\""
-    )
-  )
+  val a = match CloudAgents.Repository.getRepoArtifactById(aid, CloudAgents.Auth.currentUserId()) {
+    case Ok(Some(art)) -> art
+    case Ok(None) -> return Err(Web.notFound("artifact not found"))
+    case Err(e) -> return Err(dbError(e))
+  }
+  return readArtifactBytesResponse(a, a.sessionId)
 }
 
 // ─── Phase 7 §4: repo-scoped memory (remember / recall) ──────────────────────
@@ -952,9 +1119,11 @@ val maxMemoryKeyLen = 256
 /// the path for bytes.
 val maxMemoryValueLen = 65536
 
-/// Per-repo memory entry cap (#575): bounds a repo's store at
-/// 256 keys (≤ ~16 MiB at the value cap) so it can't grow without limit.
-/// Overwrites of an existing key are always allowed; only new keys count.
+/// Per-repo memory entry cap (#575): bounds a repo's store at 256 keys, each
+/// up to maxMemoryValueLen characters (not bytes, #596 — actual storage can
+/// be larger than the naive "256 x 65,536" character-count product for
+/// non-ASCII content), so it can't grow without limit. Overwrites of an
+/// existing key are always allowed; only new keys count.
 val maxMemoryEntries = 256
 
 @generate(Json)
@@ -1029,6 +1198,176 @@ func memoryListFor(id: in String): Result[MemoryListResponse, Web.ApiError] {
   }
 }
 
+// ─── #593: best-effort rejection of secret-shaped values ─────────────────────
+//
+// remember's tool description already tells the agent never to store a
+// secret/token/credential (memory is kept in plaintext —
+// docs/phase7-autonomy.md §4.1) but nothing server-side enforced that; only
+// length was validated. These are cheap, narrow shape checks for a handful
+// of common credential formats — not a general secret scanner, and
+// deliberately not exhaustive: catching a meaningful fraction of accidental
+// pastes via a well-known provider prefix (or an obviously
+// randomly-generated token) is the explicit goal, not perfect coverage.
+// False negatives (a real secret that doesn't match any shape below) are
+// expected and fine — this is defense in depth, not the only place a caller
+// is told not to do this.
+
+/// Minimum length for the generic "looks randomly generated" check
+/// (looksHighEntropy) below — comfortably above an ordinary short label/note
+/// while still catching typical API-key/token lengths (most are 32+ chars).
+val highEntropySecretMinLen = 32
+
+/// True when `value` starts with a well-known credential/token prefix:
+/// OpenAI-style secret keys (`sk-`), GitHub's token prefixes (`ghp_`
+/// personal access, `gho_` OAuth, `ghs_` server-to-server), or AWS access
+/// key ids (`AKIA`).
+func hasKnownSecretPrefix(value: in String): Bool {
+  return value.startsWith("sk-") or value.startsWith("ghp_") or value.startsWith("gho_") or
+    value.startsWith("ghs_") or value.startsWith("AKIA")
+}
+
+/// The base64url alphabet minus padding (`=`) — used by isJwtShaped to check
+/// a JWT segment's charset without pulling in a real base64 decoder just for
+/// a shape check.
+func isBase64UrlChar(c: in String): Bool {
+  val isUpper = c >= "A" and c <= "Z"
+  val isLower = c >= "a" and c <= "z"
+  val isDigit = c >= "0" and c <= "9"
+  return isUpper or isLower or isDigit or c == "-" or c == "_"
+}
+
+func isNonEmptyBase64UrlSegment(s: in String): Bool {
+  if s.length == 0 {
+    return false
+  }
+  var i = 0
+  while i < s.length {
+    if not isBase64UrlChar(s.substring(i, 1)) {
+      return false
+    }
+    i = i + 1
+  }
+  return true
+}
+
+/// True when `value` has a JSON Web Token's `header.payload.signature`
+/// shape: exactly two dots, three non-empty base64url segments, and a
+/// header segment starting with `eyJ` (the base64url encoding always begins
+/// with, since a JWT header is always a JSON object literal). Doesn't
+/// decode or verify anything — the shape alone is distinctive enough for a
+/// best-effort check.
+func isJwtShaped(value: in String): Bool {
+  val firstDot = CloudAgents.Text.indexOfFrom(value, ".", 0)
+  if firstDot <= 0 {
+    return false
+  }
+  val secondDot = CloudAgents.Text.indexOfFrom(value, ".", firstDot + 1)
+  if secondDot < 0 {
+    return false
+  }
+  // A JWT has exactly two dots — a third rules this out.
+  if CloudAgents.Text.indexOfFrom(value, ".", secondDot + 1) >= 0 {
+    return false
+  }
+  val header = value.substring(0, firstDot)
+  val payload = value.substring(firstDot + 1, secondDot - firstDot - 1)
+  val signature = value.substring(secondDot + 1, value.length - secondDot - 1)
+  return header.startsWith("eyJ") and isNonEmptyBase64UrlSegment(header) and isNonEmptyBase64UrlSegment(payload) and
+    isNonEmptyBase64UrlSegment(signature)
+}
+
+/// True when every character in `value` is a lowercase hex digit or a
+/// hyphen — the shape of a git commit SHA (e.g. a 40-char SHA-1, all
+/// lowercase hex) or a UUID (hyphenated 8-4-4-4-12 hex groups). Both are
+/// common, entirely legitimate things to `remember` (e.g. "last verified
+/// commit: <sha>", "deployment id: <uuid>") and neither is a secret — but
+/// both are long strings mixing letters and digits that would otherwise trip
+/// looksHighEntropy's generic class-mix check (#636). Deliberately narrow:
+/// only excludes the specific charset {0-9, a-f, -}, so an actual secret
+/// that happens to look like this (rare — real tokens are near-universally
+/// mixed-case and/or use base64 punctuation) is still an accepted false
+/// negative, consistent with this heuristic's best-effort, non-exhaustive
+/// design (see the module comment above).
+func isHexIdentifierShaped(value: in String): Bool {
+  var i = 0
+  while i < value.length {
+    val c = value.substring(i, 1)
+    val isHexDigit = (c >= "0" and c <= "9") or (c >= "a" and c <= "f")
+    if not (isHexDigit or c == "-") {
+      return false
+    }
+    i = i + 1
+  }
+  return true
+}
+
+/// True when `value` "looks randomly generated": at or above
+/// highEntropySecretMinLen characters, no whitespace anywhere in it, made up
+/// entirely of typical token characters (alphanumeric plus `-_+/=`), and
+/// mixing at least two of {uppercase, lowercase, digit}. Deliberately loose
+/// rather than a true entropy calculation (no floating point/log needed): an
+/// ordinary short label or a sentence-shaped note almost always contains a
+/// space and fails immediately, while a pasted API key/token almost always
+/// passes. False positives (e.g. a lone long identifier with no spaces) are
+/// possible and accepted — see the module comment above. Excludes hex/UUID-
+/// shaped identifiers explicitly (isHexIdentifierShaped, #636) since those
+/// are common non-secret values that would otherwise always trip the
+/// class-mix check below (lowercase hex digits mix "lower" and "digit").
+func looksHighEntropy(value: in String): Bool {
+  if value.length < highEntropySecretMinLen {
+    return false
+  }
+  if value.contains(" ") or value.contains("\t") or value.contains("\n") or value.contains("\r") {
+    return false
+  }
+  if isHexIdentifierShaped(value) {
+    return false
+  }
+  var hasUpper = false
+  var hasLower = false
+  var hasDigit = false
+  var i = 0
+  while i < value.length {
+    val c = value.substring(i, 1)
+    val isUpper = c >= "A" and c <= "Z"
+    val isLower = c >= "a" and c <= "z"
+    val isDigit = c >= "0" and c <= "9"
+    val isTokenPunct = c == "-" or c == "_" or c == "+" or c == "/" or c == "="
+    if not (isUpper or isLower or isDigit or isTokenPunct) {
+      return false
+    }
+    if isUpper {
+      hasUpper = true
+    }
+    if isLower {
+      hasLower = true
+    }
+    if isDigit {
+      hasDigit = true
+    }
+    i = i + 1
+  }
+  var classCount = 0
+  if hasUpper {
+    classCount = classCount + 1
+  }
+  if hasLower {
+    classCount = classCount + 1
+  }
+  if hasDigit {
+    classCount = classCount + 1
+  }
+  return classCount >= 2
+}
+
+/// Best-effort check for whether `value` looks like a secret/token/
+/// credential rather than ordinary remembered context (#593). Not
+/// exhaustive — see the module comment above and docs/phase7-autonomy.md
+/// §4.1.
+func looksLikeSecret(value: in String): Bool {
+  return hasKnownSecretPrefix(value) or isJwtShaped(value) or looksHighEntropy(value)
+}
+
 /// POST /api/sessions/{id}/callbacks/memory — container-originated
 /// (remember MCP tool). Upserts one entry for the session's repo.
 pub func rememberHandler(
@@ -1050,6 +1389,13 @@ pub func rememberHandler(
   if not CloudAgents.Text.withinMaxLength(req.value, maxMemoryValueLen) {
     return Err(Web.badRequest("value is too long (max " + toString(maxMemoryValueLen) + " characters)"))
   }
+  if looksLikeSecret(req.value) {
+    return Err(
+      Web.badRequest(
+        "value looks like a secret, token, or credential and was rejected — memory is stored in plaintext; use request_secret for credentials instead"
+      )
+    )
+  }
   val memScope = resolveMemoryScope(id)?
   // Per-repo entry cap (#575), enforced atomically (#586): overwriting an
   // existing key is always allowed (it doesn't grow the store); a NEW key is
@@ -1067,20 +1413,42 @@ pub func rememberHandler(
   }
 }
 
-/// GET /api/sessions/{id}/callbacks/memory — container-originated (recall MCP
-/// tool). Returns every entry for the session's repo; the shim filters to a
-/// single key client-side when `recall(key)` is called with one. Fetching the
-/// whole set even for a keyed recall (#590) is deliberate: the store is
-/// hard-capped (maxMemoryEntries, 256 entries) so the response is bounded and
-/// small, and one list endpoint keeps the host simple and avoids URL-encoding
-/// a free-form key into a query string. A dedicated single-key endpoint is a
-/// cheap future optimization if a real store ever grows large.
-pub func recallHandler(id: in String, authHeaderValue: in String): Result[MemoryListResponse, Web.ApiError] {
+/// GET /api/sessions/{id}/callbacks/memory[?key=] — container-originated
+/// (recall MCP tool). With a `key` query param, does a targeted single-key
+/// lookup (#590) instead of fetching every entry for the repo and filtering
+/// client-side in the shim — the common case for `recall(key)`, which used
+/// to always GET the whole store (up to maxMemoryEntries entries x
+/// maxMemoryValueLen characters each) just to read one. With no `key` (or an
+/// empty one), returns every entry, same as before — the "load everything at
+/// session start" flow.
+pub func recallHandler(
+  id: in String, authHeaderValue: in String, keyFilterRaw: in Option[String]
+): Result[MemoryListResponse, Web.ApiError] {
   if id.length == 0 {
     return Err(Web.badRequest("id is required"))
   }
   authorizeCallbackToken(id, authHeaderValue)?
-  return memoryListFor(id)
+  match keyFilterRaw {
+    case None -> return memoryListFor(id)
+    case Some(key) -> {
+      if key.length == 0 {
+        return memoryListFor(id)
+      }
+      if not CloudAgents.Text.withinMaxLength(key, maxMemoryKeyLen) {
+        return Err(Web.badRequest("key is too long (max " + toString(maxMemoryKeyLen) + " characters)"))
+      }
+      val memScope = resolveMemoryScope(id)?
+      match CloudAgents.Repository.getMemory(memScope.userId, memScope.repoKey, key) {
+        case Ok(Some(m)) -> {
+          var acc: slice[MemoryEntry] = []
+          acc = acc.append(MemoryEntry(key = m.memKey, value = m.value))
+          return Ok(MemoryListResponse(entries = acc))
+        }
+        case Ok(None) -> return Ok(MemoryListResponse(entries = []))
+        case Err(e) -> return Err(dbError(e))
+      }
+    }
+  }
 }
 
 /// GET /api/sessions/{id}/memory — user-originated. Lets the UI inspect a
@@ -1315,6 +1683,103 @@ pub func completeTaskHandler(
     case Ok(TaskNotFound) -> return Err(Web.notFound("task not found"))
     case Ok(TaskAlreadyDone) -> return Ok(CompleteTaskResponse(id = tid, status = "done"))
     case Ok(TaskCompleted) -> return Ok(CompleteTaskResponse(id = tid, status = "done"))
+    case Err(e) -> return Err(dbError(e))
+  }
+}
+
+// ─── Phase 7 §5: notify ───────────────────────────────────────────────────────
+//
+// docs/phase7-autonomy.md §5. Fire-and-forget push to the human that an
+// autonomous run reached a milestone. Persists a `notifications` row and the
+// run's poll loop (CloudAgents.Docker, same place artifact_reported /
+// secret_request are forwarded) emits a `notification` SSE event on the
+// session's output stream. Session-scoped only — unlike memory, notify has
+// no repo-scoping story in v1.
+@generate(Json)
+pub record NotifyRequest {
+  pub summary: String
+  pub level: String
+}
+
+@generate(Json)
+pub record NotifyResponse {
+  pub id: String
+}
+
+/// The API-facing shape of a stored notification, for the UI feed.
+@generate(Json)
+pub record NotificationSummary {
+  pub id: String
+  pub level: String
+  pub summary: String
+  pub createdAt: String
+}
+
+@generate(Json)
+pub record NotificationListResponse {
+  pub notifications: slice[NotificationSummary]
+}
+
+/// `level` is "" (defaults to "info"), "info", "done", or "blocked" — anything
+/// else is a validation error (docs/phase7 §5).
+func isValidNotifyLevel(level: in String): Bool {
+  return level == "" or level == "info" or level == "done" or level == "blocked"
+}
+
+func normalizedNotifyLevel(level: in String): String {
+  if level.length == 0 {
+    return "info"
+  }
+  return level
+}
+
+func notificationSummaryOf(n: in CloudAgents.Repository.Notification): NotificationSummary {
+  return NotificationSummary(id = n.id, level = n.level, summary = n.summary, createdAt = n.createdAt)
+}
+
+/// POST /api/sessions/{id}/callbacks/notify — container-originated (notify
+/// MCP tool).
+pub func createNotificationHandler(
+  id: in String, authHeaderValue: in String, req: in NotifyRequest
+): Result[NotifyResponse, Web.ApiError] {
+  if id.length == 0 {
+    return Err(Web.badRequest("id is required"))
+  }
+  authorizeCallbackToken(id, authHeaderValue)?
+  if req.summary.length == 0 {
+    return Err(Web.badRequest("summary is required"))
+  }
+  // Reuses maxProgressSummaryLen (report_progress's summary cap) for
+  // consistency — both are short human-facing status strings. Checked by
+  // byte length, not char length, matching every other free-text field in
+  // this file (see the file header comment) — a char-count check alone lets
+  // a multi-byte UTF-8 payload land up to ~4x over the stated budget.
+  if not CloudAgents.Text.withinMaxByteLength(req.summary, maxProgressSummaryLen) {
+    return Err(Web.badRequest("summary is too long (max " + toString(maxProgressSummaryLen) + " bytes)"))
+  }
+  if not isValidNotifyLevel(req.level) {
+    return Err(Web.badRequest("level must be one of: info, done, blocked"))
+  }
+  match CloudAgents.Repository.createNotification(id, normalizedNotifyLevel(req.level), req.summary) {
+    case Ok(n) -> return Ok(NotifyResponse(id = n.id))
+    case Err(e) -> return Err(dbError(e))
+  }
+}
+
+/// GET /api/sessions/{id}/notifications — user-originated, for the UI feed.
+pub func listNotificationsHandler(id: in String): Result[NotificationListResponse, Web.ApiError] {
+  if id.length == 0 {
+    return Err(Web.badRequest("id is required"))
+  }
+  requireOwnedSession(id)?
+  match CloudAgents.Repository.listNotifications(id) {
+    case Ok(ns) -> {
+      var acc: slice[NotificationSummary] = []
+      for n in ns {
+        acc = acc.append(notificationSummaryOf(n))
+      }
+      return Ok(NotificationListResponse(notifications = acc))
+    }
     case Err(e) -> return Err(dbError(e))
   }
 }

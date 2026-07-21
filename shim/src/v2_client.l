@@ -267,6 +267,20 @@ pub func addFollowupTask(transport: in V2CallbackTransport, description: in Stri
   }
 }
 
+// ── notify (phase 7 §5) ───────────────────────────────────────────────────────
+/// Fire-and-forget push to the human that an autonomous run reached a
+/// milestone. Single POST, no polling — same shape as addFollowupTask above.
+pub func notify(transport: in V2CallbackTransport, summary: in String, level: in String): Result[String, String] {
+  val created = match transport.notify(summary, level) {
+    case Ok(body) -> body
+    case Err(e) -> return Err(error = "failed to reach the cloud-agents host: " + e)
+  }
+  return match tryDecodeNotifyResponse(created) {
+    case Some(r) -> Ok(value = r.id)
+    case None -> Err(error = "malformed response from the cloud-agents host when sending the notification")
+  }
+}
+
 // ── remember / recall (phase 7 §4) ────────────────────────────────────────────
 /// Store a memory entry for this session's repo, returning a short
 /// confirmation. Overwrites any existing value under the same key.
@@ -281,11 +295,28 @@ pub func remember(transport: in V2CallbackTransport, key: in String, value: in S
   }
 }
 
-/// Read memory for this session's repo. With a non-empty `key`, return just
-/// that entry's value (or a not-found message). With an empty `key`, return
-/// every entry as `key: value` lines — the "load everything at session start"
-/// flow so a later session picks up what an earlier one learned.
+/// Read memory for this session's repo. With a non-empty `key`, does a
+/// targeted single-key lookup (#590) and returns just that entry's value (or
+/// a not-found message) — the host now supports this directly
+/// (GET …/callbacks/memory?key=), instead of fetching the whole store and
+/// filtering client-side. With an empty `key`, returns every entry as
+/// `key: value` lines — the "load everything at session start" flow so a
+/// later session picks up what an earlier one learned.
 pub func recall(transport: in V2CallbackTransport, key: in String): Result[String, String] {
+  if key.length > 0 {
+    val body = match transport.recallByKey(key) {
+      case Ok(b) -> b
+      case Err(e) -> return Err(error = "failed to reach the cloud-agents host: " + e)
+    }
+    val list = match tryDecodeMemoryListResponse(body) {
+      case Some(r) -> r
+      case None -> return Err(error = "malformed response from the cloud-agents host when reading memory")
+    }
+    if list.entries.length == 0 {
+      return Ok(value = "no memory stored under '" + key + "' for this repository")
+    }
+    return Ok(value = list.entries[0].value)
+  }
   val body = match transport.recallAll() {
     case Ok(b) -> b
     case Err(e) -> return Err(error = "failed to reach the cloud-agents host: " + e)
@@ -293,17 +324,6 @@ pub func recall(transport: in V2CallbackTransport, key: in String): Result[Strin
   val list = match tryDecodeMemoryListResponse(body) {
     case Some(r) -> r
     case None -> return Err(error = "malformed response from the cloud-agents host when reading memory")
-  }
-  if key.length > 0 {
-    var j = 0
-    while j < list.entries.length {
-      val e = list.entries[j]
-      if e.key == key {
-        return Ok(value = e.value)
-      }
-      j = j + 1
-    }
-    return Ok(value = "no memory stored under '" + key + "' for this repository")
   }
   if list.entries.length == 0 {
     return Ok(value = "no memory stored yet for this repository")
@@ -427,9 +447,16 @@ func basenameOfLocalPath(path: in String): String {
 
 /// Read `path`, base64-encode it, and upload it as an artifact, returning
 /// the host-assigned artifact id. Rejects a file over 8 MiB BEFORE reading
-/// it in full (fileSizeBytes above).
+/// it in full (fileSizeBytes above). `scope` is "" or "session" for today's
+/// exact behavior, or "repo" to additionally scope the artifact to this
+/// session's repo so it survives into later sessions on the same repo
+/// (docs/phase7-autonomy.md §6).
 pub func reportArtifact(
-  transport: in V2CallbackTransport, path: in String, mimeType: in String, description: in String
+  transport: in V2CallbackTransport,
+  path: in String,
+  mimeType: in String,
+  description: in String,
+  artifactScope: in String,
 ): Result[String, String] {
   val size = match fileSizeBytes(path) { case Ok(n) -> n; case Err(msg) -> return Err(error = msg) }
   if size > maxArtifactBytes {
@@ -441,7 +468,7 @@ pub func reportArtifact(
   }
   val contentBase64 = encodeBase64(bytes.toArray())
   val fileName = basenameOfLocalPath(path)
-  val created = match transport.uploadArtifact(fileName, mimeType, description, contentBase64) {
+  val created = match transport.uploadArtifact(fileName, mimeType, description, contentBase64, artifactScope) {
     case Ok(body) -> body
     case Err(e) -> return Err(error = "failed to reach the cloud-agents host: " + e)
   }

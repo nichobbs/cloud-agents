@@ -165,7 +165,11 @@ pub func reportArtifactSchema(): JsonValue {
               "mimeType",
               "The artifact's MIME type, e.g. text/plain or application/pdf."
             ),
-            stringSchemaField("description", "Optional description of the artifact.")
+            stringSchemaField("description", "Optional description of the artifact."),
+            stringSchemaField(
+              "scope",
+              "Optional. 'session' (default) keeps the artifact attached to this session only. 'repo' additionally scopes it to this session's repository so it is still listable in later sessions on the same repo."
+            )
           ]
         )
       ),
@@ -195,7 +199,8 @@ func handleReportArtifact(tool: in ReportArtifactTool, args: in Option[JsonValue
     case None -> return toolErrorResult("missing required argument 'mimeType'")
   }
   val description = match getString(a, "description") { case Some(d) -> d; case None -> "" }
-  return match CloudAgents.Shim.V2Client.reportArtifact(tool.transport, path, mimeType, description) {
+  val artifactScope = match getString(a, "scope") { case Some(s) -> s; case None -> "" }
+  return match CloudAgents.Shim.V2Client.reportArtifact(tool.transport, path, mimeType, description, artifactScope) {
     case Ok(id) -> toolTextResult("uploaded artifact " + id)
     case Err(message) -> toolErrorResult(message)
   }
@@ -226,7 +231,7 @@ pub func rememberSchema(): JsonValue {
             ),
             stringSchemaField(
               "value",
-              "The information to remember for future sessions on this repository. Never a secret, token, or credential — memory is stored in plaintext; use request_secret for those."
+              "The information to remember for future sessions on this repository. Never a secret, token, or credential — memory is stored in plaintext; use request_secret for those. The host will reject values that look like a common credential format (API keys, GitHub/AWS tokens, JWTs, or other obviously randomly-generated tokens)."
             )
           ]
         )
@@ -355,6 +360,58 @@ impl McpToolHandler for ForgetTool {
   func call(args: in Option[JsonValue]): Result[McpToolResult, String] {
     try {
       Ok(value = handleForget(self, args))
+    } catch Bug as b {
+      Ok(value = toolErrorResult("internal error in cloud-agents-shim: " + b.message))
+    }
+  }
+}
+
+// ── notify (phase 7 §5) ───────────────────────────────────────────────────────
+pub func notifySchema(): JsonValue {
+  JObject(
+    fields = [
+      JsonField(name = "type", value = JString(value = "object")),
+      JsonField(
+        name = "properties",
+        value = JObject(
+          fields = [
+            stringSchemaField(
+              "summary",
+              "A short status update to push to the human right now (e.g. what finished, or what you're blocked on)."
+            ),
+            stringSchemaField(
+              "level",
+              "Optional. One of 'info', 'done', or 'blocked'. Defaults to 'info' when omitted."
+            )
+          ]
+        )
+      ),
+      JsonField(name = "required", value = JArray(items = [JString(value = "summary")]))
+    ]
+  )
+}
+
+pub record NotifyTool {
+  pub transport: V2CallbackTransport
+}
+
+func handleNotify(tool: in NotifyTool, args: in Option[JsonValue]): McpToolResult {
+  val a = match args { case Some(v) -> v; case None -> return toolErrorResult("missing required argument 'summary'") }
+  val summary = match getString(a, "summary") {
+    case Some(s) -> s
+    case None -> return toolErrorResult("missing required argument 'summary'")
+  }
+  val level = match getString(a, "level") { case Some(l) -> l; case None -> "" }
+  return match CloudAgents.Shim.V2Client.notify(tool.transport, summary, level) {
+    case Ok(id) -> toolTextResult("sent notification " + id)
+    case Err(message) -> toolErrorResult(message)
+  }
+}
+
+impl McpToolHandler for NotifyTool {
+  func call(args: in Option[JsonValue]): Result[McpToolResult, String] {
+    try {
+      Ok(value = handleNotify(self, args))
     } catch Bug as b {
       Ok(value = toolErrorResult("internal error in cloud-agents-shim: " + b.message))
     }

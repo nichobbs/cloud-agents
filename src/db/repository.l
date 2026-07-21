@@ -12,6 +12,7 @@ import Std.Uuid
 import CloudAgents.Crypto
 import CloudAgents.Db
 import CloudAgents.Sqlite
+import CloudAgents.ToolPolicy
 import extern System.Environment as Env
 import extern System.String as DotNetString
 
@@ -292,8 +293,31 @@ pub func allMigrations(): slice[Migration] {
       statements = [CloudAgents.Db.repoMemorySchemaSql(), CloudAgents.Db.repoMemoryIndexSql()]
     ),
     Migration(
+      version = "0014_notifications",
+      statements = [CloudAgents.Db.notificationsSchemaSql(), CloudAgents.Db.notificationsSessionIndexSql()]
+    ),
+    Migration(
+      version = "0015_repo_artifacts",
+      statements = [CloudAgents.Db.alterArtifactsAddRepoKeySql(), CloudAgents.Db.artifactsRepoKeyIndexSql()]
+    ),
+    Migration(
+      version = "0016_profile_tools",
+      statements = [
+        CloudAgents.Db.alterProfilesAddToolModeSql(),
+        CloudAgents.Db.profileToolsSchemaSql(),
+        CloudAgents.Db.profileToolsProfileIndexSql()
+      ]
+    ),
+    Migration(
       version = "0017_repo_tasks",
       statements = [CloudAgents.Db.repoTasksSchemaSql(), CloudAgents.Db.repoTasksIndexSql()]
+    ),
+    Migration(
+      version = "0018_repo_artifacts_owner",
+      statements = [
+        CloudAgents.Db.alterArtifactsAddOwnerUserIdSql(),
+        CloudAgents.Db.artifactsOwnerRepoIndexSql()
+      ]
     )
   ]
 }
@@ -876,6 +900,8 @@ pub record Profile {
   pub skillIds: slice[String]
   pub subagentIds: slice[String]
   pub mcpServerIds: slice[String]
+  pub toolMode: String
+  pub tools: slice[String]
   pub createdAt: String
   pub updatedAt: String
 }
@@ -1245,6 +1271,7 @@ func rowToProfile(
   skillIds: in slice[String],
   subagentIds: in slice[String],
   mcpServerIds: in slice[String],
+  tools: in slice[String],
 ): Profile {
   return Profile(
     id = colAt(r.cols, 0),
@@ -1257,6 +1284,9 @@ func rowToProfile(
     skillIds = skillIds,
     subagentIds = subagentIds,
     mcpServerIds = mcpServerIds,
+    // tool_mode is column 8 (appended last, per profileColumns' comment).
+    toolMode = colAt(r.cols, 8),
+    tools = tools,
     createdAt = colAt(r.cols, 6),
     updatedAt = colAt(r.cols, 7)
   )
@@ -1275,6 +1305,17 @@ func profileCredentialStatements(profileId: in String, userId: in String, names:
   return stmts
 }
 
+/// Statements that replace a profile's enabled-tool set. Mirrors
+/// profileCredentialStatements exactly (docs/phase7-autonomy.md §7).
+func profileToolStatements(profileId: in String, userId: in String, names: in slice[String]): slice[String] {
+  var stmts: slice[String] = []
+  stmts = stmts.append(CloudAgents.Db.deleteProfileToolsSql(profileId, userId))
+  for name in names {
+    stmts = stmts.append(CloudAgents.Db.insertProfileToolSql(newId(), profileId, userId, name))
+  }
+  return stmts
+}
+
 /// Save a new profile and its granted credential/skill/subagent/MCP-server
 /// sets, returning the stored record.
 pub func addProfile(
@@ -1287,12 +1328,16 @@ pub func addProfile(
   skillIds: in slice[String],
   subagentIds: in slice[String],
   mcpServerIds: in slice[String],
+  toolMode: in String,
+  tools: in slice[String],
 ): Result[Profile, CloudAgents.Sqlite.DbError] {
   val id = newId()
   val ts = nowMillis()
   // Profile row + every grant set commit together (#230).
   var stmts: slice[String] = []
-  stmts = stmts.append(CloudAgents.Db.insertProfileSql(id, userId, name, harness, networkPolicy, credentialMode, ts))
+  stmts = stmts.append(
+    CloudAgents.Db.insertProfileSql(id, userId, name, harness, networkPolicy, credentialMode, toolMode, ts)
+  )
   for s in profileCredentialStatements(id, userId, credentials) {
     stmts = stmts.append(s)
   }
@@ -1303,6 +1348,9 @@ pub func addProfile(
     stmts = stmts.append(s)
   }
   for s in profileMcpServerStatements(id, userId, mcpServerIds) {
+    stmts = stmts.append(s)
+  }
+  for s in profileToolStatements(id, userId, tools) {
     stmts = stmts.append(s)
   }
   CloudAgents.Sqlite.executeTransaction(stmts)?
@@ -1318,6 +1366,8 @@ pub func addProfile(
       skillIds = skillIds,
       subagentIds = subagentIds,
       mcpServerIds = mcpServerIds,
+      toolMode = toolMode,
+      tools = tools,
       createdAt = ts,
       updatedAt = ts
     )
@@ -1338,7 +1388,8 @@ pub func listProfiles(userId: in String): Result[slice[Profile], CloudAgents.Sql
     val skillIds = profileSkillIds(pid, userId)?
     val subagentIds = profileSubagentIds(pid, userId)?
     val mcpServerIds = profileMcpServerIds(pid, userId)?
-    acc = acc.append(rowToProfile(r, creds, skillIds, subagentIds, mcpServerIds))
+    val toolNames = profileToolNames(pid, userId)?
+    acc = acc.append(rowToProfile(r, creds, skillIds, subagentIds, mcpServerIds, toolNames))
     i = i + 1
   }
   return Ok(value = acc)
@@ -1369,7 +1420,8 @@ pub func getProfile(id: in String, userId: in String): Result[Option[Profile], C
   val skillIds = profileSkillIds(id, userId)?
   val subagentIds = profileSubagentIds(id, userId)?
   val mcpServerIds = profileMcpServerIds(id, userId)?
-  return Ok(value = Some(value = rowToProfile(r, creds, skillIds, subagentIds, mcpServerIds)))
+  val toolNames = profileToolNames(id, userId)?
+  return Ok(value = Some(value = rowToProfile(r, creds, skillIds, subagentIds, mcpServerIds, toolNames)))
 }
 
 /// Update a profile's settings and every grant set. Returns rows affected
@@ -1385,6 +1437,8 @@ pub func updateProfile(
   skillIds: in slice[String],
   subagentIds: in slice[String],
   mcpServerIds: in slice[String],
+  toolMode: in String,
+  tools: in slice[String],
 ): Result[Int, CloudAgents.Sqlite.DbError] {
   // Cheap early-exit so an unmistakably-missing profile skips the transaction
   // entirely — NOT the source of truth for the 0-vs-success return (#238): a
@@ -1413,7 +1467,12 @@ pub func updateProfile(
   for s in profileMcpServerStatements(id, userId, mcpServerIds) {
     stmts = stmts.append(s)
   }
-  stmts = stmts.append(CloudAgents.Db.updateProfileSql(id, userId, name, harness, networkPolicy, credentialMode, ts))
+  for s in profileToolStatements(id, userId, tools) {
+    stmts = stmts.append(s)
+  }
+  stmts = stmts.append(
+    CloudAgents.Db.updateProfileSql(id, userId, name, harness, networkPolicy, credentialMode, toolMode, ts)
+  )
   val affected = CloudAgents.Sqlite.executeTransaction(stmts)?
   return Ok(value = affected)
 }
@@ -1435,6 +1494,7 @@ pub func deleteProfile(id: in String, userId: in String): Result[Int, CloudAgent
   stmts = stmts.append(CloudAgents.Db.deleteProfileSkillsSql(id, userId))
   stmts = stmts.append(CloudAgents.Db.deleteProfileSubagentsSql(id, userId))
   stmts = stmts.append(CloudAgents.Db.deleteProfileMcpServersSql(id, userId))
+  stmts = stmts.append(CloudAgents.Db.deleteProfileToolsSql(id, userId))
   stmts = stmts.append(CloudAgents.Db.deleteProfileSql(id, userId))
   val affected = CloudAgents.Sqlite.executeTransaction(stmts)?
   return Ok(value = affected)
@@ -1495,6 +1555,29 @@ pub func decryptedCredentialsForProfile(
       }
       return Ok(value = acc)
     }
+  }
+}
+
+/// The CLOUD_AGENTS_ENABLED_TOOLS value to inject for a profile's session,
+/// via CloudAgents.ToolPolicy.enabledToolsEnvValue: "" means no restriction
+/// (register every tool — the shim's own default).
+///
+/// Deliberately fails OPEN rather than closed, unlike
+/// decryptedCredentialsForProfile above: an empty profileId, an 'all'-mode
+/// profile, AND a profile that no longer resolves (deleted after the
+/// session was created) all resolve to "" (docs/phase7-autonomy.md §7).
+/// Tool enablement is not a hard security boundary in v1 — host-side
+/// rejection of a disabled tool's callback endpoint is an explicit
+/// follow-up, not this slice — so a dangling profile reference should not
+/// silently disable every tool in the session; it should behave exactly
+/// like "no profile" instead.
+pub func enabledToolsForProfile(userId: in String, profileId: in String): Result[String, CloudAgents.Sqlite.DbError] {
+  if profileId.length == 0 {
+    return Ok(value = "")
+  }
+  match getProfile(profileId, userId)? {
+    case None -> return Ok(value = "")
+    case Some(p) -> return Ok(value = CloudAgents.ToolPolicy.enabledToolsEnvValue(p.toolMode, p.tools))
   }
 }
 
@@ -1620,7 +1703,10 @@ pub func getSkill(id: in String, userId: in String): Result[Option[Skill], Cloud
   return Ok(value = Some(value = rowToSkill(CloudAgents.Sqlite.getRowArrayValue(rows, 0))))
 }
 
-/// Returns rows affected on the skills row (0 = not found / not owned).
+/// Returns rows affected on the skills row (0 = not found / not owned) — the
+/// real count `execute` returns, not a hardcoded 1 (#598, same class of gap
+/// as updateProfile/#238): a concurrent delete between the pre-check below
+/// and this UPDATE would otherwise still report success.
 pub func updateSkill(
   id: in String, userId: in String, name: in String, description: in String, body: in String
 ): Result[Int, CloudAgents.Sqlite.DbError] {
@@ -1628,13 +1714,17 @@ pub func updateSkill(
     case None -> return Ok(value = 0)
     case Some(_) -> ()
   }
-  CloudAgents.Sqlite.execute(CloudAgents.Db.updateSkillSql(id, userId, name, description, body, nowMillis()))?
-  return Ok(value = 1)
+  return CloudAgents.Sqlite.execute(CloudAgents.Db.updateSkillSql(id, userId, name, description, body, nowMillis()))
 }
 
 /// Delete a skill and every profile grant referencing it (#230-style
 /// atomicity — a dangling grant would otherwise silently no-op at injection
 /// time, which is harmless, but cleaning it up keeps profile_skills honest).
+/// Returns rows affected on the skills row (0 = not found / not owned) —
+/// taken from the transaction's own DELETE on the skills row (deliberately
+/// the last statement), not from the pre-check below or a hardcoded 1
+/// (#598), so a skill removed by a concurrent request between the pre-check
+/// and this transaction correctly reports 0.
 pub func deleteSkill(id: in String, userId: in String): Result[Int, CloudAgents.Sqlite.DbError] {
   match getSkill(id, userId)? {
     case None -> return Ok(value = 0)
@@ -1646,8 +1736,8 @@ pub func deleteSkill(id: in String, userId: in String): Result[Int, CloudAgents.
       CloudAgents.Db.sqlLiteral(userId)
   )
   stmts = stmts.append(CloudAgents.Db.deleteSkillSql(id, userId))
-  CloudAgents.Sqlite.executeTransaction(stmts)?
-  return Ok(value = 1)
+  val affected = CloudAgents.Sqlite.executeTransaction(stmts)?
+  return Ok(value = affected)
 }
 
 func rowToSubagent(r: in CloudAgents.Sqlite.Row): Subagent {
@@ -1717,7 +1807,9 @@ pub func getSubagent(id: in String, userId: in String): Result[Option[Subagent],
   return Ok(value = Some(value = rowToSubagent(CloudAgents.Sqlite.getRowArrayValue(rows, 0))))
 }
 
-/// Returns rows affected on the subagents row (0 = not found / not owned).
+/// Returns rows affected on the subagents row (0 = not found / not owned) —
+/// the real count `execute` returns, not a hardcoded 1 (#598), matching
+/// updateSkill above.
 pub func updateSubagent(
   id: in String,
   userId: in String,
@@ -1730,10 +1822,14 @@ pub func updateSubagent(
     case None -> return Ok(value = 0)
     case Some(_) -> ()
   }
-  CloudAgents.Sqlite.execute(CloudAgents.Db.updateSubagentSql(id, userId, name, description, systemPrompt, model, nowMillis()))?
-  return Ok(value = 1)
+  return CloudAgents.Sqlite.execute(
+    CloudAgents.Db.updateSubagentSql(id, userId, name, description, systemPrompt, model, nowMillis())
+  )
 }
 
+/// Returns rows affected on the subagents row (0 = not found / not owned) —
+/// taken from the transaction's own DELETE on the subagents row (deliberately
+/// the last statement), not a hardcoded 1 (#598), matching deleteSkill above.
 pub func deleteSubagent(id: in String, userId: in String): Result[Int, CloudAgents.Sqlite.DbError] {
   match getSubagent(id, userId)? {
     case None -> return Ok(value = 0)
@@ -1745,8 +1841,8 @@ pub func deleteSubagent(id: in String, userId: in String): Result[Int, CloudAgen
       CloudAgents.Db.sqlLiteral(userId)
   )
   stmts = stmts.append(CloudAgents.Db.deleteSubagentSql(id, userId))
-  CloudAgents.Sqlite.executeTransaction(stmts)?
-  return Ok(value = 1)
+  val affected = CloudAgents.Sqlite.executeTransaction(stmts)?
+  return Ok(value = affected)
 }
 
 /// The first column of every row as a flat slice — used both for MCP server
@@ -1880,7 +1976,10 @@ pub func getMcpServer(id: in String, userId: in String): Result[Option[McpServer
   return Ok(value = Some(value = rowToMcpServer(r, args, env)))
 }
 
-/// Returns rows affected on the mcp_servers row (0 = not found / not owned).
+/// Returns rows affected on the mcp_servers row (0 = not found / not owned) —
+/// taken from the transaction's own UPDATE on the mcp_servers row
+/// (deliberately the LAST statement — see the reordering note below), not a
+/// hardcoded 1 (#598).
 pub func updateMcpServer(
   id: in String,
   userId: in String,
@@ -1895,15 +1994,24 @@ pub func updateMcpServer(
     case None -> return Ok(value = 0)
     case Some(_) -> ()
   }
+  // Child statements (args/env clear-then-reinsert) FIRST, then the
+  // mcp_servers UPDATE deliberately LAST (#598 — this previously had the
+  // UPDATE first and the child statements last, the opposite of the
+  // "mutation last" convention updateProfile/updatePromptWithTags establish)
+  // so executeTransaction's rows-affected return (which reports the LAST
+  // statement) actually reflects the mcp_servers row, not a child insert.
   var stmts: slice[String] = []
-  stmts = stmts.append(CloudAgents.Db.updateMcpServerSql(id, userId, name, transport, command, url, nowMillis()))
   for s in mcpServerChildStatements(id, userId, args, env) {
     stmts = stmts.append(s)
   }
-  CloudAgents.Sqlite.executeTransaction(stmts)?
-  return Ok(value = 1)
+  stmts = stmts.append(CloudAgents.Db.updateMcpServerSql(id, userId, name, transport, command, url, nowMillis()))
+  val affected = CloudAgents.Sqlite.executeTransaction(stmts)?
+  return Ok(value = affected)
 }
 
+/// Returns rows affected on the mcp_servers row (0 = not found / not owned) —
+/// taken from the transaction's own DELETE on the mcp_servers row
+/// (deliberately the last statement), not a hardcoded 1 (#598).
 pub func deleteMcpServer(id: in String, userId: in String): Result[Int, CloudAgents.Sqlite.DbError] {
   match getMcpServer(id, userId)? {
     case None -> return Ok(value = 0)
@@ -1917,8 +2025,8 @@ pub func deleteMcpServer(id: in String, userId: in String): Result[Int, CloudAge
   stmts = stmts.append(CloudAgents.Db.deleteMcpServerArgsSql(id, userId))
   stmts = stmts.append(CloudAgents.Db.deleteMcpServerEnvSql(id, userId))
   stmts = stmts.append(CloudAgents.Db.deleteMcpServerSql(id, userId))
-  CloudAgents.Sqlite.executeTransaction(stmts)?
-  return Ok(value = 1)
+  val affected = CloudAgents.Sqlite.executeTransaction(stmts)?
+  return Ok(value = affected)
 }
 
 // ─── Profile library grants ─────────────────────────────────────────────────
@@ -1967,6 +2075,13 @@ func profileMcpServerStatements(profileId: in String, userId: in String, ids: in
     stmts = stmts.append(CloudAgents.Db.insertProfileMcpServerSql(newId(), profileId, userId, mcpServerId))
   }
   return stmts
+}
+
+/// The enabled tool names for a profile (empty for 'all' mode). Mirrors
+/// profileCredentialNames above (docs/phase7-autonomy.md §7).
+func profileToolNames(profileId: in String, userId: in String): Result[slice[String], CloudAgents.Sqlite.DbError] {
+  val rows = CloudAgents.Sqlite.query(CloudAgents.Db.selectProfileToolsSql(profileId, userId))?
+  return Ok(value = singleColumnValues(rows))
 }
 
 /// The skills a profile grants, resolved to full records. Dangling ids
@@ -2556,6 +2671,8 @@ pub record Artifact {
   pub description: String
   pub sizeBytes: String
   pub createdAt: String
+  pub repoKey: String
+  pub ownerUserId: String
 }
 
 func rowToArtifact(r: in CloudAgents.Sqlite.Row): Artifact {
@@ -2567,7 +2684,9 @@ func rowToArtifact(r: in CloudAgents.Sqlite.Row): Artifact {
     mimeType = colAt(r.cols, 4),
     description = colAt(r.cols, 5),
     sizeBytes = colAt(r.cols, 6),
-    createdAt = colAt(r.cols, 7)
+    createdAt = colAt(r.cols, 7),
+    repoKey = colAt(r.cols, 8),
+    ownerUserId = colAt(r.cols, 9)
   )
 }
 
@@ -2586,7 +2705,14 @@ pub func artifactsBaseDir(): String {
 
 /// Record an uploaded artifact's metadata (the caller has already written
 /// the bytes to disk). `sizeBytes` is the decoded byte count as a decimal
-/// string, matching this schema's TEXT-for-numerics convention.
+/// string, matching this schema's TEXT-for-numerics convention. `repoKey` is
+/// '' for a session-only artifact (today's exact behavior) or the normalized
+/// repo identity for a repo-scoped one (docs/phase7-autonomy.md §6);
+/// `sessionId` is always the reporting session either way. `ownerUserId` is
+/// '' for a session-only artifact (unused — session ownership already
+/// covers it) or the reporting session's owner for a repo-scoped one,
+/// denormalized so the artifact's ownership survives the reporting session
+/// being deleted (#619).
 pub func createArtifact(
   sessionId: in String,
   fileName: in String,
@@ -2594,10 +2720,12 @@ pub func createArtifact(
   mimeType: in String,
   description: in String,
   sizeBytes: in String,
+  repoKey: in String,
+  ownerUserId: in String,
 ): Result[Artifact, CloudAgents.Sqlite.DbError] {
   val id = newId()
   val ts = nowMillis()
-  CloudAgents.Sqlite.execute(CloudAgents.Db.insertArtifactSql(id, sessionId, fileName, storedName, mimeType, description, sizeBytes, ts))?
+  CloudAgents.Sqlite.execute(CloudAgents.Db.insertArtifactSql(id, sessionId, fileName, storedName, mimeType, description, sizeBytes, ts, repoKey, ownerUserId))?
   return Ok(
     value = Artifact(
       id = id,
@@ -2607,7 +2735,9 @@ pub func createArtifact(
       mimeType = mimeType,
       description = description,
       sizeBytes = sizeBytes,
-      createdAt = ts
+      createdAt = ts,
+      repoKey = repoKey,
+      ownerUserId = ownerUserId
     )
   )
 }
@@ -2633,6 +2763,36 @@ pub func listArtifacts(sessionId: in String): Result[slice[Artifact], CloudAgent
     i = i + 1
   }
   return Ok(value = acc)
+}
+
+/// A repo's durable artifacts for ONE user, oldest first
+/// (docs/phase7-autonomy.md §6). Scoped by (user_id, repo_key) — never by
+/// repo_key alone, since repoKeys derive from public git URLs and are not
+/// secret.
+pub func listRepoArtifacts(userId: in String, repoKey: in String): Result[slice[Artifact], CloudAgents.Sqlite.DbError] {
+  val rows = CloudAgents.Sqlite.query(CloudAgents.Db.selectRepoArtifactsSql(userId, repoKey))?
+  var acc: slice[Artifact] = []
+  var i = 0
+  val len = CloudAgents.Sqlite.getRowArrayLength(rows)
+  while i < len {
+    acc = acc.append(rowToArtifact(CloudAgents.Sqlite.getRowArrayValue(rows, i)))
+    i = i + 1
+  }
+  return Ok(value = acc)
+}
+
+/// A single repo-scoped artifact by id, owner-scoped by `owner_user_id`
+/// (#619) — never by the reporting session, so this survives that session
+/// being deleted. Backs the session-independent repo-artifact download
+/// route; returns None for an unknown id, a session-scoped artifact, or one
+/// owned by a different user.
+pub func getRepoArtifactById(id: in String, userId: in String): Result[Option[Artifact], CloudAgents.Sqlite.DbError] {
+  val rows = CloudAgents.Sqlite.query(CloudAgents.Db.selectRepoArtifactByIdSql(id, userId))?
+  val len = CloudAgents.Sqlite.getRowArrayLength(rows)
+  if len == 0 {
+    return Ok(value = None)
+  }
+  return Ok(value = Some(value = rowToArtifact(CloudAgents.Sqlite.getRowArrayValue(rows, 0))))
 }
 
 // ─── Phase 7: repo-scoped memory (remember / recall) ─────────────────────────
@@ -2698,6 +2858,21 @@ pub func listMemory(userId: in String, repoKey: in String): Result[slice[MemoryR
     i = i + 1
   }
   return Ok(value = acc)
+}
+
+/// Single memory entry lookup by exact (user, repo, key) (#590). Returns
+/// None when no such key exists in the repo's store. Backs a keyed
+/// `recall(key)` with a targeted row fetch instead of `listMemory` + a
+/// client-side filter.
+pub func getMemory(
+  userId: in String, repoKey: in String, memKey: in String
+): Result[Option[MemoryRecord], CloudAgents.Sqlite.DbError] {
+  val rows = CloudAgents.Sqlite.query(CloudAgents.Db.selectMemoryByKeySql(userId, repoKey, memKey))?
+  val len = CloudAgents.Sqlite.getRowArrayLength(rows)
+  if len == 0 {
+    return Ok(value = None)
+  }
+  return Ok(value = Some(value = rowToMemory(CloudAgents.Sqlite.getRowArrayValue(rows, 0))))
 }
 
 /// Delete a memory entry by key (#592). Returns true when a row was removed,
@@ -2822,4 +2997,77 @@ pub func completeTask(
   val ts = nowMillis()
   CloudAgents.Sqlite.execute(CloudAgents.Db.completeTaskSql(taskId, userId, repoKey, ts))?
   return Ok(value = TaskCompleted)
+}
+
+// ─── Phase 7 §5: notify ─────────────────────────────────────────────────────────
+//
+// docs/phase7-autonomy.md §5. A fire-and-forget push a container sends the
+// human at a milestone (done/blocked/needs input). Session-scoped, unlike
+// memory — notify has no repo-scoping story in v1.
+pub record Notification {
+  pub id: String
+  pub sessionId: String
+  pub level: String
+  pub summary: String
+  pub createdAt: String
+  pub readAt: String
+}
+
+func rowToNotification(r: in CloudAgents.Sqlite.Row): Notification {
+  return Notification(
+    id = colAt(r.cols, 0),
+    sessionId = colAt(r.cols, 1),
+    level = colAt(r.cols, 2),
+    summary = colAt(r.cols, 3),
+    createdAt = colAt(r.cols, 4),
+    readAt = colAt(r.cols, 5)
+  )
+}
+
+/// Record a fire-and-forget notification for a session.
+pub func createNotification(
+  sessionId: in String, level: in String, summary: in String
+): Result[Notification, CloudAgents.Sqlite.DbError] {
+  val id = newId()
+  val ts = nowMillis()
+  CloudAgents.Sqlite.execute(CloudAgents.Db.insertNotificationSql(id, sessionId, level, summary, ts))?
+  return Ok(
+    value = Notification(
+      id = id,
+      sessionId = sessionId,
+      level = level,
+      summary = summary,
+      createdAt = ts,
+      readAt = ""
+    )
+  )
+}
+
+/// A session's notifications, newest first — for the UI feed.
+pub func listNotifications(sessionId: in String): Result[slice[Notification], CloudAgents.Sqlite.DbError] {
+  val rows = CloudAgents.Sqlite.query(CloudAgents.Db.selectNotificationsBySessionSql(sessionId))?
+  var acc: slice[Notification] = []
+  var i = 0
+  val len = CloudAgents.Sqlite.getRowArrayLength(rows)
+  while i < len {
+    acc = acc.append(rowToNotification(CloudAgents.Sqlite.getRowArrayValue(rows, i)))
+    i = i + 1
+  }
+  return Ok(value = acc)
+}
+
+/// Notifications for a session strictly after `afterCreatedAt`, oldest
+/// first — for the `notification` SSE event, mirroring artifactsCreatedAfter.
+pub func notificationsCreatedAfter(
+  sessionId: in String, afterCreatedAt: in String
+): Result[slice[Notification], CloudAgents.Sqlite.DbError] {
+  val rows = CloudAgents.Sqlite.query(CloudAgents.Db.selectNotificationsCreatedAfterSql(sessionId, afterCreatedAt))?
+  var acc: slice[Notification] = []
+  var i = 0
+  val len = CloudAgents.Sqlite.getRowArrayLength(rows)
+  while i < len {
+    acc = acc.append(rowToNotification(CloudAgents.Sqlite.getRowArrayValue(rows, i)))
+    i = i + 1
+  }
+  return Ok(value = acc)
 }

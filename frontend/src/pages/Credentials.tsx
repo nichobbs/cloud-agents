@@ -19,17 +19,32 @@ import type { Credential } from '../types';
 /// "not available on this deployment" state instead of a raw fetch error
 /// (#503).
 ///
-/// Matched by exact message text against `src/handlers/auth.l`'s
-/// `authErrorMessage`'s `AuthNotConfigured` case, not a loose substring —
-/// there's no separate machine-readable error code in the API's error body
-/// (`{"error": "<message>"}` is the whole shape) to match on instead, so
-/// this stays inherently coupled to that exact string (#571). If that
-/// backend message ever changes, this needs to change with it — nothing
-/// else guards against the two silently drifting apart.
+/// Matched against `src/handlers/auth.l`'s `authErrorMessage`'s
+/// `AuthNotConfigured` case — there's no separate machine-readable error code
+/// in the API's error body (`{"error": "<message>"}` is the whole shape) to
+/// match on instead, so this stays inherently coupled to that exact string
+/// (#571). If that backend message ever changes, this needs to change with
+/// it — nothing else guards against the two silently drifting apart.
+///
+/// api.ts wraps every non-ok response as `` `${status} ${await res.text()}` ``
+/// (see lib/api.ts), so the raw message here is `401 {"error":"..."}`. This
+/// parses that shape and compares the `error` field for EXACT equality,
+/// rather than testing whether the message merely CONTAINS this string
+/// (the previous approach) — a loose substring match would also fire for an
+/// unrelated 401 whose body happens to mention this phrase in passing (e.g.
+/// wrapped in a longer explanation), not just the literal AuthNotConfigured
+/// body this is meant to detect.
 const AUTH_NOT_CONFIGURED_MESSAGE = 'authentication is not configured; access is disabled';
 
 function isAuthNotConfiguredError(err: unknown): boolean {
-  return err instanceof Error && err.message.startsWith('401') && err.message.includes(AUTH_NOT_CONFIGURED_MESSAGE);
+  if (!(err instanceof Error) || !err.message.startsWith('401 ')) return false;
+  const body = err.message.slice('401 '.length);
+  try {
+    const parsed = JSON.parse(body) as { error?: unknown };
+    return parsed.error === AUTH_NOT_CONFIGURED_MESSAGE;
+  } catch {
+    return false;
+  }
 }
 
 export function Credentials() {

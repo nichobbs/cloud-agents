@@ -53,6 +53,9 @@ pub record UploadArtifactRequest {
   pub mimeType: String
   pub description: String
   pub contentBase64: String
+  /// "" / "session" (default, unchanged behavior) or "repo"
+  /// (docs/phase7-autonomy.md §6) — mirrors CloudAgents.Callbacks field-for-field.
+  pub artifactScope: String
 }
 
 @generate(Json)
@@ -125,6 +128,18 @@ pub record TaskListResponse {
 pub record CompleteTaskResponse {
   pub id: String
   pub status: String
+}
+
+// Phase 7 §5 notify — mirror CloudAgents.Callbacks field-for-field.
+@generate(Json)
+pub record NotifyRequest {
+  pub summary: String
+  pub level: String
+}
+
+@generate(Json)
+pub record NotifyResponse {
+  pub id: String
 }
 
 // ── Decoding helpers ─────────────────────────────────────────────────────────
@@ -241,6 +256,17 @@ pub func tryDecodeCompleteTaskResponse(body: in String): Option[CompleteTaskResp
   }
 }
 
+pub func tryDecodeNotifyResponse(body: in String): Option[NotifyResponse] {
+  try {
+    match NotifyResponse.fromJson(body) {
+      case Ok(r) -> Some(value = r)
+      case Err(_) -> None
+    }
+  } catch Bug as b {
+    None
+  }
+}
+
 // ── Transport seam ───────────────────────────────────────────────────────────
 /// The shim's outbound calls to the host for the v2 tools, as an interface
 /// so CloudAgents.Shim.V2Client's state machines can be tested against an
@@ -249,27 +275,31 @@ pub interface V2CallbackTransport {
   func createSecret(name: in String, reason: in String): Result[String, String]
   func pollSecret(requestId: in String): Result[String, String]
   func createTodo(description: in String): Result[String, String]
-  func uploadArtifact(fileName: in String, mimeType: in String, description: in String, contentBase64: in String): Result[String, String]
+  func uploadArtifact(fileName: in String, mimeType: in String, description: in String, contentBase64: in String, artifactScope: in String): Result[String, String]
   func remember(key: in String, value: in String): Result[String, String]
   func recallAll(): Result[String, String]
+  func recallByKey(key: in String): Result[String, String]
   func forget(key: in String): Result[String, String]
   func createTask(description: in String): Result[String, String]
   func listTasks(statusFilter: in String): Result[String, String]
   func completeTask(taskId: in String): Result[String, String]
+  func notify(summary: in String, level: in String): Result[String, String]
 }
 
 /// Percent-encodes a query-string VALUE (not a full URL) before it's
-/// concatenated into `listTasks`'s request. `status` is meant to be a small
-/// closed enum (`open`/`done`), but the shim builds the URL by raw string
+/// concatenated into `listTasks`'s or `recallByKey`'s request. `status` is
+/// meant to be a small closed enum (`open`/`done`), but a memory `key` is a
+/// free-form string, and either way the shim builds the URL by raw string
 /// concatenation, so a value containing a query-string metacharacter (`&`,
 /// `#`, `%`, `=`, `+`, `?`, whitespace, quotes, or a CR/LF) would otherwise
 /// corrupt the query string or inject an extra parameter. Escapes exactly
 /// that metacharacter set (each as its literal `%XX` percent-encoding) and
-/// passes every other character through unchanged — sufficient for this
-/// parameter's actual shape without needing a full RFC 3986 encoder or a
+/// passes every other character through unchanged — sufficient for these
+/// parameters' actual shape without needing a full RFC 3986 encoder or a
 /// char-code primitive this codebase doesn't otherwise rely on. The host's
-/// own `status` validation (`CloudAgents.Callbacks`) is the authoritative
-/// check regardless; this is defense in depth on the request-building side.
+/// own validation (`CloudAgents.Callbacks`'s `status`/key-length checks) is
+/// the authoritative check regardless; this is defense in depth on the
+/// request-building side.
 func percentEncodeQueryValue(s: in String): String {
   var acc = ""
   var i = 0
@@ -343,9 +373,13 @@ impl V2CallbackTransport for HttpV2CallbackTransport {
   }
 
   func uploadArtifact(
-    fileName: in String, mimeType: in String, description: in String, contentBase64: in String
+    fileName: in String,
+    mimeType: in String,
+    description: in String,
+    contentBase64: in String,
+    artifactScope: in String,
   ): Result[String, String] {
-    val body = UploadArtifactRequest(fileName = fileName, mimeType = mimeType, description = description, contentBase64 = contentBase64).toJson()
+    val body = UploadArtifactRequest(fileName = fileName, mimeType = mimeType, description = description, contentBase64 = contentBase64, artifactScope = artifactScope).toJson()
     CloudAgents.Shim.Transport.postJsonWithBearer(
       self.baseUrl + "/api/sessions/" + self.sessionId + "/callbacks/artifact",
       self.token,
@@ -365,6 +399,15 @@ impl V2CallbackTransport for HttpV2CallbackTransport {
   func recallAll(): Result[String, String] {
     CloudAgents.Shim.Transport.getWithBearer(
       self.baseUrl + "/api/sessions/" + self.sessionId + "/callbacks/memory",
+      self.token
+    )
+  }
+
+  /// Single-key recall (#590): a targeted GET instead of `recallAll`'s whole-
+  /// store fetch, for the common "recall one known key" case.
+  func recallByKey(key: in String): Result[String, String] {
+    CloudAgents.Shim.Transport.getWithBearer(
+      self.baseUrl + "/api/sessions/" + self.sessionId + "/callbacks/memory?key=" + percentEncodeQueryValue(key),
       self.token
     )
   }
@@ -401,6 +444,15 @@ impl V2CallbackTransport for HttpV2CallbackTransport {
       self.baseUrl + "/api/sessions/" + self.sessionId + "/callbacks/tasks/" + taskId + "/complete",
       self.token,
       ""
+    )
+  }
+
+  func notify(summary: in String, level: in String): Result[String, String] {
+    val body = NotifyRequest(summary = summary, level = level).toJson()
+    CloudAgents.Shim.Transport.postJsonWithBearer(
+      self.baseUrl + "/api/sessions/" + self.sessionId + "/callbacks/notify",
+      self.token,
+      body
     )
   }
 }

@@ -230,6 +230,41 @@ test "report_artifact tool rejects an oversize file without contacting the host"
   assertEqualInt(fake.uploadArtifactCallCount, 0, "the host is never contacted for an oversize file")
 }
 
+test "report_artifact tool forwards an optional 'scope' argument, defaulting to '' when omitted (docs/phase7 §6)" {
+  val fake = newFakeV2Transport()
+  fake.uploadArtifactOk = true
+  fake.uploadArtifactBody = "{\"id\":\"art-repo-1\"}"
+  val tool = ReportArtifactTool(transport = fake)
+  val path = writeTempFile("repo-scoped.txt", "durable across sessions")
+
+  val argsWithScope = Some(
+    value = JObject(
+      fields = [
+        JsonField(name = "path", value = JString(value = path)),
+        JsonField(name = "mimeType", value = JString(value = "text/plain")),
+        JsonField(name = "scope", value = JString(value = "repo"))
+      ]
+    )
+  )
+  val result = match tool.call(argsWithScope) { case Ok(r) -> r; case Err(e) -> panic("unexpected Err: " + e) }
+  assertTrue(not result.isError, "a successful repo-scoped upload is not a tool-execution error")
+  assertEqual(fake.lastUploadArtifactScope, "repo", "the 'scope' argument is forwarded to the transport")
+
+  val argsWithoutScope = Some(
+    value = JObject(
+      fields = [
+        JsonField(name = "path", value = JString(value = path)),
+        JsonField(name = "mimeType", value = JString(value = "text/plain"))
+      ]
+    )
+  )
+  match tool.call(argsWithoutScope) {
+    case Ok(r) -> assertTrue(not r.isError, "omitting 'scope' still succeeds")
+    case Err(e) -> panic("unexpected Err: " + e)
+  }
+  assertEqual(fake.lastUploadArtifactScope, "", "omitting 'scope' defaults to '' (today's exact behavior)")
+}
+
 test "report_artifact tool denies for missing required arguments without contacting the host" {
   val fake = newFakeV2Transport()
   val tool = ReportArtifactTool(transport = fake)
@@ -296,13 +331,14 @@ test "recall tool with no key returns all entries" {
 
 test "recall tool with a key returns only that value" {
   val fake = newFakeV2Transport()
-  fake.recallOk = true
-  fake.recallBody = "{\"entries\":[{\"key\":\"build\",\"value\":\"make lyric\"},{\"key\":\"tests\",\"value\":\"lyric test\"}]}"
+  fake.recallByKeyOk = true
+  fake.recallByKeyBody = "{\"entries\":[{\"key\":\"tests\",\"value\":\"lyric test\"}]}"
   val tool = RecallTool(transport = fake)
 
   val args = Some(value = JObject(fields = [JsonField(name = "key", value = JString(value = "tests"))]))
   val result = match tool.call(args) { case Ok(r) -> r; case Err(e) -> panic("unexpected Err: " + e) }
   assertEqual(onlyText(result), "lyric test", "returns only the requested key's value")
+  assertEqual(fake.lastRecallKey, "tests", "the key was sent to the host via the single-key lookup (#590)")
 }
 
 test "recall tool works with no arguments at all (key is optional)" {
@@ -450,4 +486,58 @@ test "complete_task tool surfaces a not-found error for an unknown/cross-scope i
   val result = match tool.call(args) { case Ok(r) -> r; case Err(e) -> panic("unexpected Err: " + e) }
   assertTrue(result.isError, "a not-found completion is a tool error")
   assertTrue(onlyText(result).contains("task not found"), "error surfaces the host's message: " + onlyText(result))
+}
+
+// ── notify (phase 7 §5) ───────────────────────────────────────────────────────
+test "notify tool forwards summary+level and returns a confirmation" {
+  val fake = newFakeV2Transport()
+  fake.notifyOk = true
+  fake.notifyBody = "{\"id\":\"note-1\"}"
+  val tool = NotifyTool(transport = fake)
+
+  val args = Some(
+    value = JObject(
+      fields = [
+        JsonField(name = "summary", value = JString(value = "migration finished")),
+        JsonField(name = "level", value = JString(value = "done"))
+      ]
+    )
+  )
+  val result = match tool.call(args) { case Ok(r) -> r; case Err(e) -> panic("unexpected Err: " + e) }
+  assertTrue(not result.isError, "a successful notify is not a tool error")
+  assertTrue(onlyText(result).contains("note-1"), "result names the created id: " + onlyText(result))
+  assertEqual(fake.lastNotifySummary, "migration finished", "the summary was forwarded")
+  assertEqual(fake.lastNotifyLevel, "done", "the level was forwarded")
+}
+
+test "notify tool defaults level to empty when omitted" {
+  val fake = newFakeV2Transport()
+  fake.notifyOk = true
+  fake.notifyBody = "{\"id\":\"note-2\"}"
+  val tool = NotifyTool(transport = fake)
+
+  val args = Some(value = JObject(fields = [JsonField(name = "summary", value = JString(value = "still working"))]))
+  val result = match tool.call(args) { case Ok(r) -> r; case Err(e) -> panic("unexpected Err: " + e) }
+  assertTrue(not result.isError, "a successful notify is not a tool error")
+  assertEqual(fake.lastNotifySummary, "still working", "the summary was forwarded")
+  assertEqual(fake.lastNotifyLevel, "", "an omitted level is forwarded as empty (the host defaults it to info)")
+}
+
+test "notify tool denies for a missing summary without contacting the host" {
+  val fake = newFakeV2Transport()
+  val tool = NotifyTool(transport = fake)
+
+  val args = Some(value = JObject(fields = newList()))
+  val result = match tool.call(args) { case Ok(r) -> r; case Err(e) -> panic("unexpected Err: " + e) }
+  assertTrue(result.isError, "a missing summary is a tool error")
+  assertTrue(onlyText(result).contains("summary"), "error names the missing field: " + onlyText(result))
+  assertEqualInt(fake.notifyCallCount, 0, "the host is never contacted for a malformed call")
+}
+
+test "notifySchema declares summary as required and level as optional" {
+  val schema = notifySchema()
+  val schemaJson = writeValue(schema)
+  assertTrue(schemaJson.contains("\"summary\""), "schema mentions 'summary'")
+  assertTrue(schemaJson.contains("\"level\""), "schema mentions 'level'")
+  assertTrue(schemaJson.contains("\"required\""), "schema declares required fields")
 }

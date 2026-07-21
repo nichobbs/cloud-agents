@@ -311,7 +311,7 @@ test "report_artifact upload -> list -> download round trip, and traversal is ne
   mkSession(sid)
   val token = mintToken(sid, "default")
 
-  val uploaded = match uploadArtifactHandler(sid, bearer(token), UploadArtifactRequest(fileName = "report.txt", mimeType = "text/plain", description = "a report", contentBase64 = base64Of("hello artifact"))) {
+  val uploaded = match uploadArtifactHandler(sid, bearer(token), UploadArtifactRequest(fileName = "report.txt", mimeType = "text/plain", description = "a report", contentBase64 = base64Of("hello artifact"), artifactScope = "")) {
     case Ok(r) -> r
     case Err(e) -> panic("upload failed: " + toString(e.status))
   }
@@ -334,7 +334,7 @@ test "report_artifact upload -> list -> download round trip, and traversal is ne
 
   // Path traversal in fileName is neutralized (basename only): the stored
   // artifact's fileName must never carry a directory component.
-  val traversal = match uploadArtifactHandler(sid, bearer(token), UploadArtifactRequest(fileName = "../../etc/passwd", mimeType = "text/plain", description = "", contentBase64 = base64Of("x"))) {
+  val traversal = match uploadArtifactHandler(sid, bearer(token), UploadArtifactRequest(fileName = "../../etc/passwd", mimeType = "text/plain", description = "", contentBase64 = base64Of("x"), artifactScope = "")) {
     case Ok(r) -> r
     case Err(e) -> panic("traversal-attempt upload should still succeed with a sanitized name: " + toString(e.status))
   }
@@ -367,7 +367,7 @@ test "report_artifact rejects an oversize upload before storing anything" {
   // A contentBase64 string longer than the pre-decode cap is rejected
   // without ever reaching the decoder.
   val huge = atLeast(11184813)
-  match uploadArtifactHandler(sid, bearer(token), UploadArtifactRequest(fileName = "big.bin", mimeType = "application/octet-stream", description = "", contentBase64 = huge)) {
+  match uploadArtifactHandler(sid, bearer(token), UploadArtifactRequest(fileName = "big.bin", mimeType = "application/octet-stream", description = "", contentBase64 = huge, artifactScope = "")) {
     case Ok(_) -> assertTrue(false, "an oversize artifact must be rejected")
     case Err(e) -> assertEqualInt(e.status, 400, "oversize -> 400")
   }
@@ -391,7 +391,7 @@ test "v2 callback endpoints reject an empty session id before touching the datab
     case Ok(_) -> assertTrue(false, "an empty session id must be rejected")
     case Err(e) -> assertEqualInt(e.status, 400, "empty id returns 400")
   }
-  match uploadArtifactHandler("", "", UploadArtifactRequest(fileName = "x", mimeType = "text/plain", description = "", contentBase64 = "")) {
+  match uploadArtifactHandler("", "", UploadArtifactRequest(fileName = "x", mimeType = "text/plain", description = "", contentBase64 = "", artifactScope = "")) {
     case Ok(_) -> assertTrue(false, "an empty session id must be rejected")
     case Err(e) -> assertEqualInt(e.status, 400, "empty id returns 400")
   }
@@ -439,7 +439,7 @@ test "remember then recall round-trips, overwrites by key, and stays repo-scoped
     case Err(e) -> assertTrue(false, "second remember failed: " + toString(e.status))
   }
 
-  match recallHandler(sid, bearer(token)) {
+  match recallHandler(sid, bearer(token), None) {
     case Ok(l) -> {
       assertEqualInt(l.entries.length.toInt(), 2, "both entries recalled")
       assertEqual(l.entries[0].key, "build", "entries are key-ordered")
@@ -454,12 +454,66 @@ test "remember then recall round-trips, overwrites by key, and stays repo-scoped
     case Ok(_) -> ()
     case Err(e) -> assertTrue(false, "overwrite remember failed: " + toString(e.status))
   }
-  match recallHandler(sid, bearer(token)) {
+  match recallHandler(sid, bearer(token), None) {
     case Ok(l) -> {
       assertEqualInt(l.entries.length.toInt(), 2, "overwrite does not add a row")
       assertEqual(l.entries[0].value, "make lyric && ./scripts/verify.sh", "the value was overwritten")
     }
     case Err(e) -> assertTrue(false, "recall after overwrite failed: " + toString(e.status))
+  }
+}
+
+test "recall with a key does a single-entry lookup instead of the whole list (#590)" {
+  val dbPath = useFreshTestDb("memory-recall-key")
+  defer {
+    cleanupTestDb(dbPath)
+  }
+  CloudAgents.Auth.setCurrentUserId("default")
+  val sid = "sess-memory-key"
+  mkSession(sid)
+  val token = mintToken(sid, "default")
+
+  match rememberHandler(sid, bearer(token), RememberRequest(key = "build", value = "make lyric")) {
+    case Ok(_) -> ()
+    case Err(e) -> assertTrue(false, "remember build failed: " + toString(e.status))
+  }
+  match rememberHandler(sid, bearer(token), RememberRequest(key = "tests", value = "lyric test")) {
+    case Ok(_) -> ()
+    case Err(e) -> assertTrue(false, "remember tests failed: " + toString(e.status))
+  }
+
+  // A known key returns exactly that one entry, not the whole store.
+  match recallHandler(sid, bearer(token), Some(value = "tests")) {
+    case Ok(l) -> {
+      assertEqualInt(l.entries.length.toInt(), 1, "a keyed recall returns exactly one entry")
+      assertEqual(l.entries[0].key, "tests", "the requested key is returned")
+      assertEqual(l.entries[0].value, "lyric test", "the requested key's value round-trips")
+    }
+    case Err(e) -> assertTrue(false, "keyed recall failed: " + toString(e.status))
+  }
+
+  // An unknown key returns an empty list, not an error.
+  match recallHandler(sid, bearer(token), Some(value = "nope")) {
+    case Ok(l) -> assertEqualInt(l.entries.length.toInt(), 0, "an unknown key returns no entries")
+    case Err(e) -> assertTrue(false, "keyed recall of an unknown key must not error: " + toString(e.status))
+  }
+
+  // An empty key string behaves the same as no key at all (returns everything).
+  match recallHandler(sid, bearer(token), Some(value = "")) {
+    case Ok(l) -> assertEqualInt(l.entries.length.toInt(), 2, "an empty key falls back to the full list")
+    case Err(e) -> assertTrue(false, "empty-key recall failed: " + toString(e.status))
+  }
+
+  // An over-length key is a 400, same validation as remember/forget (#594).
+  match recallHandler(sid, bearer(token), Some(value = atLeast(257))) {
+    case Ok(_) -> assertTrue(false, "an over-length key must be rejected")
+    case Err(e) -> assertEqualInt(e.status, 400, "over-length key -> 400")
+  }
+
+  // A wrong callback token is rejected before the key is even looked at.
+  match recallHandler(sid, bearer("wrong-token"), Some(value = "build")) {
+    case Ok(_) -> assertTrue(false, "a wrong callback token must be rejected")
+    case Err(e) -> assertEqualInt(e.status, 401, "bad token -> 401")
   }
 }
 
@@ -482,7 +536,7 @@ test "memory carries across sessions on the same repo, isolated from other repos
   val sidB = "sess-memory-B"
   mkSession(sidB)
   val tokenB = mintToken(sidB, "default")
-  match recallHandler(sidB, bearer(tokenB)) {
+  match recallHandler(sidB, bearer(tokenB), None) {
     case Ok(l) -> {
       assertEqualInt(l.entries.length.toInt(), 1, "a new session on the same repo inherits the memory")
       assertEqual(l.entries[0].value, "sqlite native lib needed", "the earlier session's note is readable")
@@ -494,7 +548,7 @@ test "memory carries across sessions on the same repo, isolated from other repos
   val sidC = "sess-memory-C"
   mkSessionRepo(sidC, "https://github.com/nic/other")
   val tokenC = mintToken(sidC, "default")
-  match recallHandler(sidC, bearer(tokenC)) {
+  match recallHandler(sidC, bearer(tokenC), None) {
     case Ok(l) -> assertEqualInt(l.entries.length.toInt(), 0, "a different repo shares no memory")
     case Err(e) -> assertTrue(false, "recall C failed: " + toString(e.status))
   }
@@ -538,6 +592,89 @@ test "remember validates key/value and rejects a session with no repo to scope t
   }
 }
 
+test "remember rejects values shaped like common credential formats (#593)" {
+  val dbPath = useFreshTestDb("memory-secret-heuristic")
+  defer {
+    cleanupTestDb(dbPath)
+  }
+  CloudAgents.Auth.setCurrentUserId("default")
+  val sid = "sess-memory-secret"
+  mkSession(sid)
+  val token = mintToken(sid, "default")
+
+  // Known provider prefixes (#593).
+  match rememberHandler(sid, bearer(token), RememberRequest(key = "k", value = "sk-abcdefghijklmnopqrstuvwxyz012345")) {
+    case Ok(_) -> assertTrue(false, "an OpenAI-style sk- value must be rejected")
+    case Err(e) -> assertEqualInt(e.status, 400, "sk- prefix -> 400")
+  }
+  match rememberHandler(sid, bearer(token), RememberRequest(key = "k", value = "ghp_abcdefghijklmnopqrstuvwxyz0123456789")) {
+    case Ok(_) -> assertTrue(false, "a GitHub ghp_ token must be rejected")
+    case Err(e) -> assertEqualInt(e.status, 400, "ghp_ prefix -> 400")
+  }
+  match rememberHandler(sid, bearer(token), RememberRequest(key = "k", value = "gho_abcdefghijklmnopqrstuvwxyz0123456789")) {
+    case Ok(_) -> assertTrue(false, "a GitHub gho_ token must be rejected")
+    case Err(e) -> assertEqualInt(e.status, 400, "gho_ prefix -> 400")
+  }
+  match rememberHandler(sid, bearer(token), RememberRequest(key = "k", value = "ghs_abcdefghijklmnopqrstuvwxyz0123456789")) {
+    case Ok(_) -> assertTrue(false, "a GitHub ghs_ token must be rejected")
+    case Err(e) -> assertEqualInt(e.status, 400, "ghs_ prefix -> 400")
+  }
+  match rememberHandler(sid, bearer(token), RememberRequest(key = "k", value = "AKIAABCDEFGHIJKLMNOP")) {
+    case Ok(_) -> assertTrue(false, "an AWS AKIA access key must be rejected")
+    case Err(e) -> assertEqualInt(e.status, 400, "AKIA prefix -> 400")
+  }
+
+  // JWT shape: header.payload.signature, with the header segment starting
+  // "eyJ" (a JSON object literal's base64url encoding always starts this way).
+  val jwt = "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.dGhpc2lzYXNpZ25hdHVyZQ"
+  match rememberHandler(sid, bearer(token), RememberRequest(key = "k", value = jwt)) {
+    case Ok(_) -> assertTrue(false, "a JWT-shaped value must be rejected")
+    case Err(e) -> assertEqualInt(e.status, 400, "JWT shape -> 400")
+  }
+
+  // Generic high-entropy single token: long, no whitespace, mixed
+  // upper/lower/digit, no recognizable provider prefix.
+  val highEntropy = "aB3dE6fG9hJ2kL5mN8pQ1rS4tU7vW0xY3zA6bC9dE2fG5"
+  match rememberHandler(sid, bearer(token), RememberRequest(key = "k", value = highEntropy)) {
+    case Ok(_) -> assertTrue(false, "a long high-entropy-looking token must be rejected")
+    case Err(e) -> assertEqualInt(e.status, 400, "high-entropy token -> 400")
+  }
+
+  // Normal, non-secret-looking values are unaffected.
+  match rememberHandler(sid, bearer(token), RememberRequest(key = "build", value = "make lyric && ./scripts/verify.sh")) {
+    case Ok(r) -> assertEqual(r.key, "build", "an ordinary sentence-shaped value is accepted")
+    case Err(e) -> assertTrue(false, "an ordinary value must not be rejected: " + toString(e.status))
+  }
+  match rememberHandler(sid, bearer(token), RememberRequest(key = "tests", value = "lyric test")) {
+    case Ok(r) -> assertEqual(r.key, "tests", "a short normal value is accepted")
+    case Err(e) -> assertTrue(false, "an ordinary value must not be rejected: " + toString(e.status))
+  }
+  // A short token-shaped value under the high-entropy length floor is fine
+  // (e.g. a short commit hash prefix or id).
+  match rememberHandler(sid, bearer(token), RememberRequest(key = "commit", value = "abc123")) {
+    case Ok(r) -> assertEqual(r.key, "commit", "a short token-shaped value under the length floor is accepted")
+    case Err(e) -> assertTrue(false, "a short value must not be rejected: " + toString(e.status))
+  }
+
+  // #636: a full-length git SHA-1 (40 lowercase hex chars) and a UUID are
+  // both plausible, entirely non-secret things to remember (e.g. "last
+  // verified commit") — neither should trip the generic high-entropy check,
+  // even though both are >= the length floor and mix lowercase letters with
+  // digits, exactly the shape that check otherwise flags.
+  match rememberHandler(
+    sid, bearer(token), RememberRequest(key = "lastGoodCommit", value = "a1b2c3d4e5f6789012345678901234567890abcd")
+  ) {
+    case Ok(r) -> assertEqual(r.key, "lastGoodCommit", "a 40-char git SHA-1 is not treated as a secret")
+    case Err(e) -> assertTrue(false, "a git SHA must not be rejected: " + toString(e.status))
+  }
+  match rememberHandler(
+    sid, bearer(token), RememberRequest(key = "deploymentId", value = "123e4567-e89b-12d3-a456-426614174000")
+  ) {
+    case Ok(r) -> assertEqual(r.key, "deploymentId", "a UUID is not treated as a secret")
+    case Err(e) -> assertTrue(false, "a UUID must not be rejected: " + toString(e.status))
+  }
+}
+
 test "recall requires a valid callback token; the owner can list via the user route" {
   val dbPath = useFreshTestDb("memory-auth")
   defer {
@@ -548,7 +685,7 @@ test "recall requires a valid callback token; the owner can list via the user ro
   mkSession(sid)
   val token = mintToken(sid, "default")
 
-  match recallHandler(sid, bearer("wrong-token")) {
+  match recallHandler(sid, bearer("wrong-token"), None) {
     case Ok(_) -> assertTrue(false, "a wrong callback token must be rejected")
     case Err(e) -> assertEqualInt(e.status, 401, "bad token -> 401")
   }
@@ -581,7 +718,7 @@ test "forget deletes an entry, frees a slot under the cap, and is idempotent (#5
     case Ok(r) -> assertEqual(r.status, "deleted", "an existing key reports deleted")
     case Err(e) -> assertTrue(false, "forget failed: " + toString(e.status))
   }
-  match recallHandler(sid, bearer(token)) {
+  match recallHandler(sid, bearer(token), None) {
     case Ok(l) -> assertEqualInt(l.entries.length.toInt(), 0, "the entry is gone after forget")
     case Err(e) -> assertTrue(false, "recall failed: " + toString(e.status))
   }
