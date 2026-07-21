@@ -891,6 +891,17 @@ pub func profileCredentialsProfileIndexSql(): String {
   return "CREATE INDEX IF NOT EXISTS idx_profile_credentials_profile_id ON profile_credentials(profile_id)"
 }
 
+/// ALTER adding tool-enablement mode to an existing profiles table
+/// (docs/phase7-autonomy.md §7). Mirrors alterSessionsAddProfileSql's
+/// "backfill via DEFAULT" pattern: DEFAULT 'all' means every existing
+/// profile keeps today's behaviour exactly — no tool restriction, so the
+/// shim registers every tool just as it did before this column existed.
+/// Non-idempotent (ADD COLUMN fails if the column already exists), so it
+/// lives in a versioned migration that runs exactly once.
+pub func alterProfilesAddToolModeSql(): String {
+  return "ALTER TABLE profiles ADD COLUMN tool_mode TEXT NOT NULL DEFAULT 'all'"
+}
+
 /// INSERT a new profile.
 pub func insertProfileSql(
   id: in String,
@@ -899,9 +910,10 @@ pub func insertProfileSql(
   harness: in String,
   networkPolicy: in String,
   credentialMode: in String,
+  toolMode: in String,
   createdAt: in String,
 ): String {
-  return "INSERT INTO profiles (id, user_id, name, harness, network_policy, credential_mode, created_at, updated_at) VALUES (" +
+  return "INSERT INTO profiles (id, user_id, name, harness, network_policy, credential_mode, tool_mode, created_at, updated_at) VALUES (" +
     sqlLiteral(id) +
     ", " +
     sqlLiteral(userId) +
@@ -914,13 +926,18 @@ pub func insertProfileSql(
     ", " +
     sqlLiteral(credentialMode) +
     ", " +
+    sqlLiteral(toolMode) +
+    ", " +
     sqlLiteral(createdAt) +
     ", " +
     sqlLiteral(createdAt) +
     ")"
 }
 
-val profileColumns = "id, user_id, name, harness, network_policy, credential_mode, created_at, updated_at"
+// tool_mode is appended as the LAST column (like sessions.profile_id) so the
+// fixed positional indices every other reader uses (colAt(r.cols, N) in
+// rowToProfile) stay stable across the ALTER.
+val profileColumns = "id, user_id, name, harness, network_policy, credential_mode, created_at, updated_at, tool_mode"
 
 /// SELECT one user's profiles, alphabetical by name.
 pub func selectProfilesSql(userId: in String): String {
@@ -947,12 +964,15 @@ pub func updateProfileSql(
   harness: in String,
   networkPolicy: in String,
   credentialMode: in String,
+  toolMode: in String,
   updatedAt: in String,
 ): String {
   return "UPDATE profiles SET name = " + sqlLiteral(name) + ", harness = " + sqlLiteral(harness) + ", network_policy = " +
     sqlLiteral(networkPolicy) +
     ", credential_mode = " +
     sqlLiteral(credentialMode) +
+    ", tool_mode = " +
+    sqlLiteral(toolMode) +
     ", updated_at = " +
     sqlLiteral(updatedAt) +
     " WHERE id = " +
@@ -991,6 +1011,46 @@ pub func selectProfileCredentialsSql(profileId: in String, userId: in String): S
 /// update, and to clean up when a profile is deleted).
 pub func deleteProfileCredentialsSql(profileId: in String, userId: in String): String {
   return "DELETE FROM profile_credentials WHERE profile_id = " + sqlLiteral(profileId) + " AND user_id = " +
+    sqlLiteral(userId)
+}
+
+/// DDL for the join table naming which tools a 'selected'-mode profile
+/// enables (docs/phase7-autonomy.md §7). Mirrors profile_credentials exactly
+/// — tool_name plays the same role credential_name does above.
+pub func profileToolsSchemaSql(): String {
+  return "CREATE TABLE IF NOT EXISTS profile_tools (" + "id TEXT PRIMARY KEY, " + "profile_id TEXT NOT NULL, " +
+    "user_id TEXT NOT NULL, " +
+    "tool_name TEXT NOT NULL, " +
+    "UNIQUE(profile_id, tool_name))"
+}
+
+/// Index for the profile_id lookups the tool-enablement resolution path uses.
+pub func profileToolsProfileIndexSql(): String {
+  return "CREATE INDEX IF NOT EXISTS idx_profile_tools_profile_id ON profile_tools(profile_id)"
+}
+
+/// INSERT one tool grant for a profile.
+pub func insertProfileToolSql(id: in String, profileId: in String, userId: in String, toolName: in String): String {
+  return "INSERT INTO profile_tools (id, profile_id, user_id, tool_name) VALUES (" + sqlLiteral(id) + ", " +
+    sqlLiteral(profileId) +
+    ", " +
+    sqlLiteral(userId) +
+    ", " +
+    sqlLiteral(toolName) +
+    ") ON CONFLICT(profile_id, tool_name) DO NOTHING"
+}
+
+/// SELECT the tool names a profile enables, alphabetical.
+pub func selectProfileToolsSql(profileId: in String, userId: in String): String {
+  return "SELECT tool_name FROM profile_tools WHERE profile_id = " + sqlLiteral(profileId) + " AND user_id = " +
+    sqlLiteral(userId) +
+    " ORDER BY tool_name ASC"
+}
+
+/// DELETE every tool grant for a profile (used to replace the set on update,
+/// and to clean up when a profile is deleted).
+pub func deleteProfileToolsSql(profileId: in String, userId: in String): String {
+  return "DELETE FROM profile_tools WHERE profile_id = " + sqlLiteral(profileId) + " AND user_id = " +
     sqlLiteral(userId)
 }
 
@@ -2227,12 +2287,22 @@ pub func markSecretRequestDeliveredSql(id: in String, deliveredAt: in String): S
 // ─── Artifacts (report_artifact) ─────────────────────────────────────────────
 //
 // Metadata only — the bytes live on disk (CloudAgents.Repository
-// artifactsBaseDir()/<sessionId>/<storedName>). `stored_name` is the
-// collision-proof on-disk file name (artifact id + sanitized basename);
-// `file_name` is the human-facing sanitized basename used for
-// Content-Disposition and listings. `size_bytes` is the decoded byte count,
-// stored as TEXT like every other numeric column in this schema.
-val artifactColumns = "id, session_id, file_name, stored_name, mime_type, description, size_bytes, created_at"
+// artifactsBaseDir()/<sessionId>/<storedName>, or artifactsBaseDir()/repo/
+// <repoKey>/<storedName> for a repo-scoped artifact — docs/phase7-autonomy.md
+// §6). `stored_name` is the collision-proof on-disk file name (artifact id +
+// sanitized basename); `file_name` is the human-facing sanitized basename
+// used for Content-Disposition and listings. `size_bytes` is the decoded
+// byte count, stored as TEXT like every other numeric column in this schema.
+// `repo_key` is '' for a session-only artifact (the default, unchanged
+// behavior) or the normalized repo identity for a repo-scoped one; the row's
+// `session_id` is always populated either way — repo scope is additive
+// metadata, not a replacement for session ownership. `owner_user_id` is ''
+// for a session-only artifact (unused — session ownership already covers it)
+// or the reporting session's owner for a repo-scoped one, denormalized at
+// write time (#619) so a repo-scoped artifact's ownership and listing never
+// depend on the reporting session still existing — mirrors the (user_id,
+// repo_key) scoping repo memory/repo tasks already use for the same reason.
+val artifactColumns = "id, session_id, file_name, stored_name, mime_type, description, size_bytes, created_at, repo_key, owner_user_id"
 
 pub func artifactsSchemaSql(): String {
   return "CREATE TABLE IF NOT EXISTS artifacts (" + "id TEXT PRIMARY KEY, " + "session_id TEXT NOT NULL, " +
@@ -2248,6 +2318,30 @@ pub func artifactsSessionIndexSql(): String {
   return "CREATE INDEX IF NOT EXISTS idx_artifacts_session_id ON artifacts(session_id)"
 }
 
+/// Migration 0015 (docs/phase7-autonomy.md §6): adds the repo scope column.
+/// Existing rows default to '' (session-only), so this is backward-compatible.
+pub func alterArtifactsAddRepoKeySql(): String {
+  return "ALTER TABLE artifacts ADD COLUMN repo_key TEXT NOT NULL DEFAULT ''"
+}
+
+pub func artifactsRepoKeyIndexSql(): String {
+  return "CREATE INDEX IF NOT EXISTS idx_artifacts_repo_key ON artifacts(repo_key)"
+}
+
+/// Migration 0018 (#619): denormalizes the reporting session's owner onto
+/// each artifact row, so a repo-scoped artifact's ownership check and
+/// listing survive the reporting session being deleted — see artifactColumns'
+/// doc comment. Existing rows default to '' (harmless: they're all
+/// session-scoped, where ownership is checked via the session itself, never
+/// this column).
+pub func alterArtifactsAddOwnerUserIdSql(): String {
+  return "ALTER TABLE artifacts ADD COLUMN owner_user_id TEXT NOT NULL DEFAULT ''"
+}
+
+pub func artifactsOwnerRepoIndexSql(): String {
+  return "CREATE INDEX IF NOT EXISTS idx_artifacts_owner_repo ON artifacts(owner_user_id, repo_key)"
+}
+
 pub func insertArtifactSql(
   id: in String,
   sessionId: in String,
@@ -2257,6 +2351,8 @@ pub func insertArtifactSql(
   description: in String,
   sizeBytes: in String,
   createdAt: in String,
+  repoKey: in String,
+  ownerUserId: in String,
 ): String {
   return "INSERT INTO artifacts (" + artifactColumns + ") VALUES (" + sqlLiteral(id) + ", " + sqlLiteral(sessionId) +
     ", " +
@@ -2271,6 +2367,10 @@ pub func insertArtifactSql(
     sqlLiteral(sizeBytes) +
     ", " +
     sqlLiteral(createdAt) +
+    ", " +
+    sqlLiteral(repoKey) +
+    ", " +
+    sqlLiteral(ownerUserId) +
     ")"
 }
 
@@ -2291,6 +2391,30 @@ pub func selectArtifactsCreatedAfterSql(sessionId: in String, afterCreatedAt: in
     " AND created_at > " +
     sqlLiteral(afterCreatedAt) +
     " ORDER BY created_at ASC"
+}
+
+/// A repo-scoped artifacts listing (docs/phase7-autonomy.md §6), scoped
+/// directly by the denormalized `owner_user_id` column (#619) — NOT joined
+/// against `sessions`, so a repo-scoped artifact remains listable even after
+/// its reporting session is deleted. Oldest first, matching
+/// selectArtifactsBySessionSql.
+pub func selectRepoArtifactsSql(userId: in String, repoKey: in String): String {
+  return "SELECT " + artifactColumns + " FROM artifacts WHERE owner_user_id = " + sqlLiteral(userId) +
+    " AND repo_key = " +
+    sqlLiteral(repoKey) +
+    " ORDER BY created_at ASC"
+}
+
+/// A single repo-scoped artifact by id, owner-scoped by the same
+/// denormalized `owner_user_id` column selectRepoArtifactsSql uses (#619) —
+/// backs the session-independent repo-artifact download route. Returns no
+/// row for a session-scoped artifact (owner_user_id is '' for those; a bare
+/// '' userId argument can never legitimately match, since currentUserId()
+/// is never empty for an authenticated caller) or one owned by a different
+/// user, exactly like the listing query.
+pub func selectRepoArtifactByIdSql(id: in String, userId: in String): String {
+  return "SELECT " + artifactColumns + " FROM artifacts WHERE id = " + sqlLiteral(id) + " AND owner_user_id = " +
+    sqlLiteral(userId)
 }
 
 // ─── Phase 7: repo-scoped memory (remember / recall) ─────────────────────────

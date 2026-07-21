@@ -311,7 +311,7 @@ test "report_artifact upload -> list -> download round trip, and traversal is ne
   mkSession(sid)
   val token = mintToken(sid, "default")
 
-  val uploaded = match uploadArtifactHandler(sid, bearer(token), UploadArtifactRequest(fileName = "report.txt", mimeType = "text/plain", description = "a report", contentBase64 = base64Of("hello artifact"))) {
+  val uploaded = match uploadArtifactHandler(sid, bearer(token), UploadArtifactRequest(fileName = "report.txt", mimeType = "text/plain", description = "a report", contentBase64 = base64Of("hello artifact"), artifactScope = "")) {
     case Ok(r) -> r
     case Err(e) -> panic("upload failed: " + toString(e.status))
   }
@@ -334,7 +334,7 @@ test "report_artifact upload -> list -> download round trip, and traversal is ne
 
   // Path traversal in fileName is neutralized (basename only): the stored
   // artifact's fileName must never carry a directory component.
-  val traversal = match uploadArtifactHandler(sid, bearer(token), UploadArtifactRequest(fileName = "../../etc/passwd", mimeType = "text/plain", description = "", contentBase64 = base64Of("x"))) {
+  val traversal = match uploadArtifactHandler(sid, bearer(token), UploadArtifactRequest(fileName = "../../etc/passwd", mimeType = "text/plain", description = "", contentBase64 = base64Of("x"), artifactScope = "")) {
     case Ok(r) -> r
     case Err(e) -> panic("traversal-attempt upload should still succeed with a sanitized name: " + toString(e.status))
   }
@@ -367,7 +367,7 @@ test "report_artifact rejects an oversize upload before storing anything" {
   // A contentBase64 string longer than the pre-decode cap is rejected
   // without ever reaching the decoder.
   val huge = atLeast(11184813)
-  match uploadArtifactHandler(sid, bearer(token), UploadArtifactRequest(fileName = "big.bin", mimeType = "application/octet-stream", description = "", contentBase64 = huge)) {
+  match uploadArtifactHandler(sid, bearer(token), UploadArtifactRequest(fileName = "big.bin", mimeType = "application/octet-stream", description = "", contentBase64 = huge, artifactScope = "")) {
     case Ok(_) -> assertTrue(false, "an oversize artifact must be rejected")
     case Err(e) -> assertEqualInt(e.status, 400, "oversize -> 400")
   }
@@ -391,7 +391,7 @@ test "v2 callback endpoints reject an empty session id before touching the datab
     case Ok(_) -> assertTrue(false, "an empty session id must be rejected")
     case Err(e) -> assertEqualInt(e.status, 400, "empty id returns 400")
   }
-  match uploadArtifactHandler("", "", UploadArtifactRequest(fileName = "x", mimeType = "text/plain", description = "", contentBase64 = "")) {
+  match uploadArtifactHandler("", "", UploadArtifactRequest(fileName = "x", mimeType = "text/plain", description = "", contentBase64 = "", artifactScope = "")) {
     case Ok(_) -> assertTrue(false, "an empty session id must be rejected")
     case Err(e) -> assertEqualInt(e.status, 400, "empty id returns 400")
   }

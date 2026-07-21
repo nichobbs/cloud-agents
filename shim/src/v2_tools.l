@@ -165,7 +165,11 @@ pub func reportArtifactSchema(): JsonValue {
               "mimeType",
               "The artifact's MIME type, e.g. text/plain or application/pdf."
             ),
-            stringSchemaField("description", "Optional description of the artifact.")
+            stringSchemaField("description", "Optional description of the artifact."),
+            stringSchemaField(
+              "scope",
+              "Optional. 'session' (default) keeps the artifact attached to this session only. 'repo' additionally scopes it to this session's repository so it is still listable in later sessions on the same repo."
+            )
           ]
         )
       ),
@@ -195,7 +199,8 @@ func handleReportArtifact(tool: in ReportArtifactTool, args: in Option[JsonValue
     case None -> return toolErrorResult("missing required argument 'mimeType'")
   }
   val description = match getString(a, "description") { case Some(d) -> d; case None -> "" }
-  return match CloudAgents.Shim.V2Client.reportArtifact(tool.transport, path, mimeType, description) {
+  val artifactScope = match getString(a, "scope") { case Some(s) -> s; case None -> "" }
+  return match CloudAgents.Shim.V2Client.reportArtifact(tool.transport, path, mimeType, description, artifactScope) {
     case Ok(id) -> toolTextResult("uploaded artifact " + id)
     case Err(message) -> toolErrorResult(message)
   }

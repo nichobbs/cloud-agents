@@ -211,6 +211,23 @@ pub async func createRunnerContainer(
     case Err(e) -> return Err(error = "Failed to load credentials: " + CloudAgents.Repository.credentialErrorMessage(e))
   }
 
+  // Phase 7 §7 per-profile tool enablement: inject CLOUD_AGENTS_ENABLED_TOOLS
+  // only when the profile actually restricts the tool set. Absence means
+  // "register every tool" (byte-for-byte the pre-phase-7 shim behaviour), so
+  // an 'all'-mode profile or a pre-phase-7 container is unchanged. Unlike the
+  // credential path above, a resolution failure here is best-effort (log and
+  // continue with no restriction) rather than aborting the run — tool
+  // enablement is not a hard security boundary in v1 (see
+  // CloudAgents.Repository.enabledToolsForProfile's doc comment).
+  match CloudAgents.Repository.enabledToolsForProfile(userId, profileId) {
+    case Ok(toolsEnv) -> {
+      if toolsEnv.length > 0 {
+        envs = envs.append("CLOUD_AGENTS_ENABLED_TOOLS=" + toolsEnv)
+      }
+    }
+    case Err(e) -> println("WARNING: failed to resolve enabled tools for session " + sessionId + ": " + CloudAgents.Sqlite.dbErrorMessage(e))
+  }
+
   // Inject the library items the profile grants (skills, subagents, MCP
   // servers): each resolved list is base64(JSON)-encoded and handed to
   // docker/inject-library.sh (invoked by every harness's entrypoint script),

@@ -53,6 +53,9 @@ pub record UploadArtifactRequest {
   pub mimeType: String
   pub description: String
   pub contentBase64: String
+  /// "" / "session" (default, unchanged behavior) or "repo"
+  /// (docs/phase7-autonomy.md §6) — mirrors CloudAgents.Callbacks field-for-field.
+  pub artifactScope: String
 }
 
 @generate(Json)
@@ -272,7 +275,7 @@ pub interface V2CallbackTransport {
   func createSecret(name: in String, reason: in String): Result[String, String]
   func pollSecret(requestId: in String): Result[String, String]
   func createTodo(description: in String): Result[String, String]
-  func uploadArtifact(fileName: in String, mimeType: in String, description: in String, contentBase64: in String): Result[String, String]
+  func uploadArtifact(fileName: in String, mimeType: in String, description: in String, contentBase64: in String, artifactScope: in String): Result[String, String]
   func remember(key: in String, value: in String): Result[String, String]
   func recallAll(): Result[String, String]
   func recallByKey(key: in String): Result[String, String]
@@ -370,9 +373,13 @@ impl V2CallbackTransport for HttpV2CallbackTransport {
   }
 
   func uploadArtifact(
-    fileName: in String, mimeType: in String, description: in String, contentBase64: in String
+    fileName: in String,
+    mimeType: in String,
+    description: in String,
+    contentBase64: in String,
+    artifactScope: in String,
   ): Result[String, String] {
-    val body = UploadArtifactRequest(fileName = fileName, mimeType = mimeType, description = description, contentBase64 = contentBase64).toJson()
+    val body = UploadArtifactRequest(fileName = fileName, mimeType = mimeType, description = description, contentBase64 = contentBase64, artifactScope = artifactScope).toJson()
     CloudAgents.Shim.Transport.postJsonWithBearer(
       self.baseUrl + "/api/sessions/" + self.sessionId + "/callbacks/artifact",
       self.token,

@@ -45,3 +45,43 @@ test "timeoutFromRaw falls back to the default on garbage input" {
 test "timeoutFromRaw honors a valid override" {
   assertEqualInt(timeoutFromRaw("120000"), 120000, "a parseable override wins over the default")
 }
+
+// ─── Phase 7 §7: per-profile tool enablement (docs/phase7-autonomy.md) ────────
+//
+// CloudAgents.Docker injects CLOUD_AGENTS_ENABLED_TOOLS as a comma-separated
+// allowlist only for a 'selected'-mode profile; main.l wraps every addTool
+// call in `if toolIsEnabled(enabledToolsCsv, "<name>")`. These cases mirror
+// main.l's exact 13-tool set (the original 9, add_task/list_tasks/
+// complete_task from the repo-scoped task list slice, and notify — #625)
+// so a passing suite proves the real registration gate, not just the
+// parsing helper in isolation.
+val allShimToolNames: slice[String] = ["request_permission", "ask_user", "report_progress", "request_secret", "add_followup_task", "report_artifact", "remember", "recall", "forget", "add_task", "list_tasks", "complete_task", "notify"]
+
+func enabledSubsetOf(csv: in String): slice[String] {
+  var acc: slice[String] = []
+  for name in allShimToolNames {
+    if toolIsEnabled(csv, name) {
+      acc = acc.append(name)
+    }
+  }
+  return acc
+}
+
+test "toolIsEnabled registers every tool when the env var is empty (unchanged behaviour)" {
+  assertEqualInt(enabledSubsetOf("").length.toInt(), 13, "empty CSV enables all 13 known tools")
+}
+
+test "toolIsEnabled restricts registration to a non-empty allowlist" {
+  val enabled = enabledSubsetOf("remember,recall")
+  assertEqualInt(enabled.length.toInt(), 2, "only the two listed tools are enabled")
+  assertTrue(toolIsEnabled("remember,recall", "remember"), "remember is enabled")
+  assertTrue(toolIsEnabled("remember,recall", "recall"), "recall is enabled")
+  assertTrue(not toolIsEnabled("remember,recall", "forget"), "forget is NOT enabled")
+  assertTrue(not toolIsEnabled("remember,recall", "request_permission"), "request_permission is NOT enabled")
+}
+
+test "toolIsEnabled matches a single-tool allowlist exactly" {
+  assertTrue(toolIsEnabled("ask_user", "ask_user"), "single-entry CSV matches")
+  assertTrue(not toolIsEnabled("ask_user", "ask_users"), "no partial/prefix match")
+  assertTrue(not toolIsEnabled("ask_user", "sk_user"), "no partial/suffix match")
+}

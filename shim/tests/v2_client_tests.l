@@ -416,7 +416,7 @@ test "reportArtifact reads, base64-encodes, uploads, and returns the artifact id
   fake.uploadArtifactBody = "{\"id\":\"art-1\"}"
   val path = writeTempFile("small.txt", "hello artifact")
 
-  match reportArtifact(fake, path, "text/plain", "a report") {
+  match reportArtifact(fake, path, "text/plain", "a report", "") {
     case Ok(id) -> assertEqual(id, "art-1", "the created id round-trips")
     case Err(message) -> assertTrue(false, "expected Ok, got Err: " + message)
   }
@@ -424,6 +424,20 @@ test "reportArtifact reads, base64-encodes, uploads, and returns the artifact id
   assertEqual(fake.lastUploadDescription, "a report", "description was sent")
   assertEqual(fake.lastUploadFileName, "cloud-agents-shim-test-small.txt", "fileName is the basename of the local path")
   assertTrue(fake.lastUploadContentBase64.length > 0, "content was base64-encoded and sent")
+  assertEqual(fake.lastUploadArtifactScope, "", "an empty scope (today's exact behavior) is sent as-is")
+}
+
+test "reportArtifact passes a 'repo' scope through to the transport unchanged (docs/phase7 §6)" {
+  val fake = newFakeV2Transport()
+  fake.uploadArtifactOk = true
+  fake.uploadArtifactBody = "{\"id\":\"art-repo-1\"}"
+  val path = writeTempFile("repo-scoped.txt", "durable across sessions")
+
+  match reportArtifact(fake, path, "text/plain", "", "repo") {
+    case Ok(id) -> assertEqual(id, "art-repo-1", "the created id round-trips")
+    case Err(message) -> assertTrue(false, "expected Ok, got Err: " + message)
+  }
+  assertEqual(fake.lastUploadArtifactScope, "repo", "the 'repo' scope is forwarded to the transport")
 }
 
 test "reportArtifact rejects a file over the 8 MiB cap without uploading anything" {
@@ -437,7 +451,7 @@ test "reportArtifact rejects a file over the 8 MiB cap without uploading anythin
   // ~100 KB call take unworkably long at this size.
   val path = writeTempFile("big.bin", atLeast(8388609))
 
-  match reportArtifact(fake, path, "application/octet-stream", "") {
+  match reportArtifact(fake, path, "application/octet-stream", "", "") {
     case Ok(id) -> assertTrue(false, "an oversize artifact must be rejected, got id " + id)
     case Err(message) -> assertTrue(message.contains("8 MiB"), "error explains the size cap: " + message)
   }
@@ -446,7 +460,7 @@ test "reportArtifact rejects a file over the 8 MiB cap without uploading anythin
 
 test "reportArtifact surfaces a missing file as a clear error" {
   val fake = newFakeV2Transport()
-  match reportArtifact(fake, "/tmp/cloud-agents-shim-test-does-not-exist.bin", "text/plain", "") {
+  match reportArtifact(fake, "/tmp/cloud-agents-shim-test-does-not-exist.bin", "text/plain", "", "") {
     case Ok(id) -> assertTrue(false, "a missing file must not succeed, got id " + id)
     case Err(message) -> assertTrue(message.length > 0, "a clear error is returned")
   }
@@ -479,7 +493,11 @@ impl V2CallbackTransport for ClockJumpingV2Transport {
   }
 
   func uploadArtifact(
-    fileName: in String, mimeType: in String, description: in String, contentBase64: in String
+    fileName: in String,
+    mimeType: in String,
+    description: in String,
+    contentBase64: in String,
+    artifactScope: in String,
   ): Result[String, String] {
     Ok(value = "{\"id\":\"cj-artifact\"}")
   }
