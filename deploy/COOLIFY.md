@@ -85,30 +85,38 @@ which worked for a local `make docker` but not for Coolify's `docker compose
 build`, since nothing there ever ran that staging step; it's now built
 inside the Dockerfile itself, so any orchestrator works standalone).
 
-**Only `claude-code-base` is active by default.** `codex-base`/
-`opencode-base`/`gemini-base` are gated behind Compose `profiles:` — this
-isn't just about build time: `docker compose build` (how Coolify invokes
-it, no service argument) builds every *active* service in one shot, and a
-failure in *any one* fails the whole command, which blocks
-`api`/`frontend`/`caddy` from deploying too, not just the broken harness.
-This happened for real: `Dockerfile.codex`'s `npm install -g @openai/codex`
-step failed mid-build and took the entire deploy down with it, even though
-nothing about `api`/`frontend` had changed.
+**All four runner images build unconditionally** — `claude-code-base`,
+`codex-base`, `opencode-base`, and `gemini-base` all deploy on every push,
+no `COMPOSE_PROFILES` setting required, so a fresh deployment offers every
+harness immediately instead of reporting the other three unavailable in
+`GET /api/harnesses` / the frontend picker.
 
-A profiled service (`profiles: ["codex"]`, etc.) is skipped entirely —
-build included — unless its profile is active, via the `COMPOSE_PROFILES`
-env var (comma-separated) or a `--profile` flag; Coolify's own deploy
-passes neither, so these three stay off unless you opt in. To enable one:
+This wasn't always safe: `docker compose build` (how Coolify invokes it, no
+service argument) builds every *active* service in one shot, and a failure
+in *any one* fails the whole command, blocking `api`/`frontend`/`caddy`
+from deploying too, not just the broken harness. This happened for real
+once — `Dockerfile.codex`'s `npm install -g @openai/codex` failed mid-build
+against an unpinned `@latest` and took the entire deploy down with it, even
+though nothing about `api`/`frontend` had changed — which is why
+`codex-base`/`opencode-base`/`gemini-base` used to be gated behind Compose
+`profiles:` (opt-in only, off by default). Both root causes of that
+failure are now fixed at the source instead of worked around: each
+`docker/Dockerfile.<harness>` pins its CLI to a specific version already
+confirmed to install cleanly (rather than floating on `@latest`, which can
+introduce a breaking change with zero warning), and each `npm install` is
+wrapped in a 3-attempt retry with a delay, guarding against transient
+npm-registry failures.
 
-1. **Confirm its Dockerfile actually builds standalone first** —
-   `docker build -f docker/Dockerfile.codex docker` (swap in the relevant
-   Dockerfile) — before wiring it into the shared deploy at all. Don't let
-   an untested runner image risk blocking every future deploy of the whole
-   app.
-2. Set `COMPOSE_PROFILES` in Coolify's Environment Variables tab to the
-   harness(es) you want built automatically, e.g. `codex` or
-   `codex,gemini`. `claude-code-base` has no `profiles:` key, so it's
-   always active regardless of this setting.
+If a harness image ever fails to build again despite that:
+
+1. Reproduce standalone — `docker build -f docker/Dockerfile.codex docker`
+   (swap in the relevant Dockerfile) — to isolate and fix the real problem.
+2. If you need to unblock a deploy immediately while you do that, comment
+   out that one service block in `docker-compose.coolify.yml` and redeploy
+   — that harness will 404 at container-creation time until you restore it,
+   but `api`/`frontend`/`caddy` and the other harnesses deploy unaffected.
+   Prefer this targeted, temporary fix over reintroducing blanket
+   `profiles:` gating for everyone.
 
 ### Picking up a newer Lyric release
 
@@ -142,8 +150,9 @@ deployment signal — see
 [Coolify's Docker Compose docs](https://coolify.io/docs/knowledge-base/docker/compose),
 which use the same one-shot-service shape (a `migrate` container) as their
 own example. The runner Dockerfiles force `--platform=linux/amd64`, so
-building on an arm64 Coolify host means QEMU emulation — noticeably
-slower, another reason to only enable the harnesses you actually use.
+building on an arm64 Coolify host means QEMU emulation for all four —
+noticeably slower than a native build, but a one-time cost per deploy
+(cached layers), not a reason to disable a harness you don't currently use.
 
 ## Backups
 

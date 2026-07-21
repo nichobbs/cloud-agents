@@ -42,8 +42,9 @@ services:
       # deliberately left unset here: install-docker.sh builds all four
       # runner images unconditionally on this standalone-VM path, so there's
       # nothing to restrict — unset means "every harness enabled" (fail
-      # open). See docker-compose.coolify.yml, where it's NOT unset, for the
-      # deployment this actually matters on.
+      # open). docker-compose.coolify.yml now leaves it unset too, for the
+      # same reason (all four runner images there build unconditionally as
+      # well).
       - LYRIC_CONFIG_WEB_SERVER_PORT=8080
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
