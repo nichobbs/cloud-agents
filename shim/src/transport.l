@@ -110,16 +110,22 @@ func streamDispose(s: in NetStream): Unit = ()
 @externTarget("System.IDisposable.Dispose")
 func responseDispose(r: in WebResponse): Unit = ()
 
+// pub (#545) so tests/transport_tests.l can decode/encode via the exact
+// same Encoding chain readAllUtf8/decodeUtf8Chunks use — same rationale as
+// github_api.l's identical `pub` on this binding for its own #514
+// regression test.
 @externTarget("System.Text.Encoding.get_UTF8")
-func utf8(): Encoding = ()
+pub func utf8(): Encoding = ()
 
+// pub (#545) — see utf8() above.
 @externInstance
 @externTarget("System.Text.Encoding.GetBytes")
-func encGetBytes(enc: in Encoding, s: in String): slice[Byte] = []
+pub func encGetBytes(enc: in Encoding, s: in String): slice[Byte] = []
 
+// pub (#545) — see utf8() above.
 @externInstance
 @externTarget("System.Text.Encoding.GetString")
-func encGetStringRange(enc: in Encoding, bytes: in slice[Byte], index: in Int, count: in Int): String = ()
+pub func encGetStringRange(enc: in Encoding, bytes: in slice[Byte], index: in Int, count: in Int): String = ()
 
 // ── stderr — never write to stdout ──────────────────────────────────────────
 // serveStdio (Mcp.Server, via JsonRpc.Stdio's NdjsonTransport) frames every
@@ -160,16 +166,20 @@ val requestTimeoutMillis = 15000
 // against a misbehaving peer, mirroring github_api.l's maxProxyResponseBytes.
 val maxResponseBytes = 1048576
 
-// Fixed-size read buffer, built once per call by appending Byte zeros —
-// `slice[Byte]` has no direct "allocate N zeroed elements" constructor, and
+// Fixed-size read buffer, built once by appending Byte zeros — `slice[Byte]`
+// has no direct "allocate N zeroed elements" constructor, and
 // `Stream.Read(byte[], offset, count)` needs a real, already-sized
 // destination array to write into (unlike `Stream.Write`, which just
 // consumes an existing `slice[Byte]` — see `streamWrite` above, which never
-// needed this). 8 KiB keeps the append loop trivially fast while still
-// reading a typical callback body in one or two calls.
+// needed this). 8 KiB keeps the append loop trivially fast (a one-time cost,
+// see `sharedChunkBuf` below) while still reading a typical callback body in
+// one or two calls.
 val chunkSize = 8192
 
-func zeroedChunk(): slice[Byte] {
+// pub (#545/#546) so tests/transport_tests.l can confirm this still
+// produces a valid, exactly-chunkSize all-zero buffer now that it's only
+// ever called once (as sharedChunkBuf's initializer) instead of per call.
+pub func zeroedChunk(): slice[Byte] {
   var buf: slice[Byte] = []
   var i = 0
   while i < chunkSize {
@@ -179,25 +189,80 @@ func zeroedChunk(): slice[Byte] {
   return buf
 }
 
+// Built ONCE at module load and reused as the read destination for every
+// `readAllUtf8` call (#546) — the previous design called `zeroedChunk()`
+// fresh inside `readAllUtf8` itself, so every single shim<->host HTTP round
+// trip (every createPermission/pollPermission/createSecret/pollSecret/
+// uploadArtifact/... call, including every ~25s long-poll iteration in
+// production) repaid the full O(chunkSize^2) `.append()`-loop cost above,
+// even though the loop's result never differs between calls. `Stream.Read`
+// only ever WRITES INTO this buffer; the read count `n` is tracked/returned
+// separately by `streamRead` (see `readAllUtf8` below), so a stale tail past
+// index `n` from a previous read is simply never looked at — safe to share
+// as long as no two `readAllUtf8` calls are ever in flight at once. This
+// package (and every caller of `getWithBearer`/`postJsonWithBearer` in
+// `src/callbacks_client.l`, `src/v2_transport.l`, `src/tools.l`) declares no
+// `async func`, thread, or parallel/scope primitive anywhere — the module
+// doc above notes this is deliberately fully synchronous, matching
+// `Mcp.Server`'s own synchronous `McpToolHandler.call` contract, so tool
+// calls (and the transport reads they make) never overlap.
+val sharedChunkBuf: slice[Byte] = zeroedChunk()
+
+/// Decode a sequence of raw byte chunks as ONE logical UTF-8 byte stream
+/// (#545) — concatenating every chunk into a single `slice[Byte]` first and
+/// decoding it exactly ONCE, rather than decoding each chunk independently
+/// (the previous design, which silently corrupts — not crashes — any
+/// multi-byte UTF-8 sequence that happens to straddle a chunk boundary:
+/// .NET's default UTF8 decode fallback substitutes a replacement character,
+/// U+FFFD, per orphaned half rather than throwing). Pulled out of
+/// `readAllUtf8`'s read loop into its own `pub` function purely so
+/// `tests/transport_tests.l` can drive this exact accumulate-then-decode-
+/// once step directly with synthetic chunks sized to straddle a boundary —
+/// `readAllUtf8` itself takes a `NetStream`, which (per
+/// `tests/github_api_tests.l`'s identical rationale for
+/// `CloudAgents.GitHubApi`'s sibling `readAllUtf8`) this module can only
+/// produce via a real HTTP round trip, so it is not invoked directly from
+/// tests either. This is the same one-shot-decode shape the pre-#542
+/// version of `readAllUtf8` used, just factored out and re-applied.
+pub func decodeUtf8Chunks(chunks: in slice[slice[Byte]]): String {
+  var acc: slice[Byte] = []
+  var i = 0
+  while i < chunks.length.toInt() {
+    acc = acc.concat(chunks[i])
+    i = i + 1
+  }
+  return encGetStringRange(utf8(), acc, 0, acc.length.toInt())
+}
+
 /// Read a response stream to a String, decoded as real UTF-8 (see module
-/// doc — callback bodies carry human-authored text), chunk by chunk so no
-/// single oversized buffer allocation is needed. Mirrors github_api.l's
-/// `readAllUtf8` in spirit (same UTF-8-safe block-read idea), but reads into
-/// a reused fixed-size `slice[Byte]` chunk and decodes+concatenates each
-/// chunk's valid prefix, rather than one `maxResponseBytes`-sized buffer.
+/// doc — callback bodies carry human-authored text). Reads into a reused
+/// fixed-size `slice[Byte]` chunk (`sharedChunkBuf`, #546) rather than
+/// allocating a fresh one per call, collecting only the actually-read `n`
+/// bytes of each chunk (`sharedChunkBuf.slice(0, take)` — never the reused
+/// buffer's stale tail, and a fresh, independent copy per docs/lyric/
+/// reference.md's "slice ops ... return a new slice" contract, so it's safe
+/// to keep around across the next `streamRead` overwriting `sharedChunkBuf`)
+/// capped at `maxResponseBytes` total exactly as before (a chunk that would
+/// overshoot the cap is trimmed to `take` bytes before being collected),
+/// then delegates the actual UTF-8 decoding to `decodeUtf8Chunks` (#545) —
+/// one accumulate-then-decode-once pass over every collected chunk, instead
+/// of decoding each chunk on its own as the read loop went.
 func readAllUtf8(s: in NetStream): String {
-  val buf = zeroedChunk()
-  var result = ""
+  var chunks: slice[slice[Byte]] = []
   var total = 0
   var n = 1
   while n > 0 and total < maxResponseBytes {
-    n = streamRead(s, buf, 0, chunkSize)
+    n = streamRead(s, sharedChunkBuf, 0, chunkSize)
     if n > 0 {
-      result = result + encGetStringRange(utf8(), buf, 0, n)
-      total = total + n
+      var take = n
+      if total + take > maxResponseBytes {
+        take = maxResponseBytes - total
+      }
+      chunks = chunks.append(sharedChunkBuf.slice(0, take))
+      total = total + take
     }
   }
-  return result
+  return decodeUtf8Chunks(chunks)
 }
 
 /// GET `url` with an Authorization bearer header, returning the raw
