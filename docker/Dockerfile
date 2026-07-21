@@ -23,21 +23,30 @@
 # buildable standalone by any orchestrator, with no external pre-build step.
 FROM --platform=linux/amd64 mcr.microsoft.com/dotnet/sdk:10.0 AS shim-builder
 
-# Resolves to the latest lyric-lang release by default (empty ARG) via the
-# same GitHub API + sed extraction install.sh itself uses internally when no
-# --version is given (no jq required) — auditable in the build log (the
-# resolved version is echoed below) without piping install.sh's script
-# straight into a shell. Pass --build-arg LYRIC_VERSION=X.Y.Z to pin to a
-# specific release instead (e.g. to work around a fresh regression, or for a
-# fully reproducible build) — never below MIN_LYRIC_VERSION (repo root),
-# enforced below. Still downloads the exact release tarball directly either
-# way, not trusting install.sh's own --version handling — see
-# deploy/api.Dockerfile's comments for the full reasoning on that part.
+# Resolves to the latest lyric-lang release by default (empty ARG). Pass
+# --build-arg LYRIC_VERSION=X.Y.Z to pin to a specific release instead
+# (e.g. to work around a fresh regression, or for a fully reproducible
+# build) — never below MIN_LYRIC_VERSION (repo root), enforced below.
 # Resolved ONCE here and shared into stage 2 via /tmp/lyric-version.txt
 # (#657) rather than each stage independently re-resolving 'latest' and
 # risking a mismatch if a new release lands between the two, or their
 # caches diverge — so --build-arg LYRIC_VERSION=X.Y.Z only needs passing to
 # THIS stage now, not duplicated to both.
+#
+# Resolution uses `curl -sI .../releases/latest` (a plain web redirect) and
+# extracts the version from the redirect's `Location: .../tag/vX.Y.Z`
+# header, exactly mirroring ci.yml's already-proven "Resolve latest Lyric
+# release" step — NOT api.github.com's REST API, which a real CI run of an
+# earlier revision of this file hit and got a bare `curl: (22) ... 403`
+# from: unauthenticated api.github.com calls share a 60-req/hour rate limit
+# across GitHub Actions' entire runner IP pool, easily exhausted by
+# unrelated traffic, and curl's own `--retry` does NOT retry 4xx responses
+# by default (only certain transient/5xx conditions) — so the retry this
+# step already had didn't help at all against that 403. The plain web
+# redirect this now uses instead isn't subject to that API rate limit.
+# Retries via an explicit bash loop (curl's --retry still wouldn't help on
+# a genuine, if rare, redirect-page hiccup) rather than trusting --retry's
+# narrower default retry conditions.
 #
 # On build caching (#655): a RUN instruction's cache key depends only on
 # its own instruction TEXT, never on what it actually printed or fetched at
@@ -47,11 +56,12 @@ FROM --platform=linux/amd64 mcr.microsoft.com/dotnet/sdk:10.0 AS shim-builder
 # RUN. Docker's ADD-from-URL instruction is documented to auto-invalidate
 # on a remote Last-Modified/ETag change and was tried here specifically to
 # counter that — but it has no retry/fallback of its own, and a live test
-# against this exact URL reproduced a bare, non-retried 403 that failed
-# the ENTIRE build outright, before the retried curl fallback below ever
-# got a chance to run. That trades "may go stale under caching" for "a new
-# unretried hard-failure point" — a worse tradeoff, especially given the
-# Coolify failure that motivated this change may itself have been exactly
+# against api.github.com (before the switch to the web-redirect approach
+# above) reproduced a bare, non-retried 403 that failed the ENTIRE build
+# outright, before the retried curl fallback below ever got a chance to
+# run. That trades "may go stale under caching" for "a new unretried
+# hard-failure point" — a worse tradeoff, especially given the Coolify
+# failure that motivated this whole change may itself have been exactly
 # this kind of transient reachability blip. Rejected; not used. Freshness
 # here instead comes from: any cache-cold build (a new host, a pruned
 # cache, an upstream base-image digest bump) naturally re-resolving to
@@ -66,9 +76,14 @@ ARG LYRIC_VERSION=""
 COPY MIN_LYRIC_VERSION /tmp/min-lyric-version.txt
 RUN apt-get update && apt-get install -y --no-install-recommends curl ca-certificates \
     && if [ -z "$LYRIC_VERSION" ]; then \
-         LYRIC_VERSION="$(curl -fsSL --connect-timeout 10 --max-time 30 --retry 3 --retry-delay 3 https://api.github.com/repos/nichobbs/lyric-lang/releases/latest | sed -n 's/.*"tag_name": *"v\([^"]*\)".*/\1/p')"; \
+         for attempt in 1 2 3; do \
+           LYRIC_VERSION="$(curl -sI --connect-timeout 10 --max-time 30 https://github.com/nichobbs/lyric-lang/releases/latest | sed -n 's/.*tag\/v\([0-9.]*\).*/\1/p' | tr -d '\r')"; \
+           [ -n "$LYRIC_VERSION" ] && break; \
+           echo "attempt $attempt: could not resolve latest Lyric release tag, retrying..." >&2; \
+           sleep 3; \
+         done; \
        fi \
-    && if [ -z "$LYRIC_VERSION" ]; then echo "ERROR: could not resolve the latest Lyric version from the GitHub API" >&2; exit 1; fi \
+    && if [ -z "$LYRIC_VERSION" ]; then echo "ERROR: could not resolve the latest Lyric version after 3 attempts" >&2; exit 1; fi \
     && MIN_VERSION="$(cat /tmp/min-lyric-version.txt)" \
     && LOWEST="$(printf '%s\n%s\n' "$MIN_VERSION" "$LYRIC_VERSION" | sort -V | head -1)" \
     && if [ "$LOWEST" != "$MIN_VERSION" ]; then echo "ERROR: Lyric version $LYRIC_VERSION is below the documented floor MIN_LYRIC_VERSION ($MIN_VERSION)" >&2; exit 1; fi \
