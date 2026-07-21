@@ -11,7 +11,10 @@ import { MemoryRouter } from 'react-router-dom';
 /// default (everything enabled) when availability is unknown.
 
 vi.mock('../lib/api', () => ({
-  api: { createSession: vi.fn() },
+  api: {
+    createSession: vi.fn(),
+    getProfiles: vi.fn().mockResolvedValue([]),
+  },
 }));
 
 vi.mock('../lib/harnessAvailability', () => ({

@@ -26,6 +26,32 @@
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+
+# Load .env configuration file if it exists. Already-exported environment variables
+# in the active shell override values defined in the .env file.
+if [ -f "$REPO_ROOT/.env" ]; then
+  echo "==> loading configuration from $REPO_ROOT/.env"
+  while IFS= read -r line || [ -n "$line" ]; do
+    # Skip comments and empty lines
+    [[ "$line" =~ ^[[:space:]]*# ]] && continue
+    [[ -z "${line// }" ]] && continue
+    
+    # Match name=value pair
+    if [[ "$line" =~ ^([^=]+)=(.*)$ ]]; then
+      name="${BASH_REMATCH[1]}"
+      value="${BASH_REMATCH[2]}"
+      # Trim whitespace and strip enclosing quotes
+      name=$(echo "$name" | xargs)
+      value=$(echo "$value" | xargs | sed -e 's/^"//' -e 's/"$//' -e "s/^'//" -e "s/'$//")
+      
+      # Export only if the variable is not already defined in the shell environment
+      if [ -z "${!name:-}" ]; then
+        export "$name"="$value"
+      fi
+    fi
+  done < "$REPO_ROOT/.env"
+fi
+
 PORT="${CLOUD_AGENTS_PORT:-8080}"
 BIND="${CLOUD_AGENTS_BIND:-127.0.0.1}"
 OUT="$REPO_ROOT/bin/CloudAgents.dll"
@@ -59,7 +85,53 @@ if [ -d "$NUGET_DIR/sqlitepclraw.lib.e_sqlite3" ]; then
 fi
 
 echo "==> starting server on ${BIND}:${PORT}"
-# Secrets (ENCRYPTION_KEY, CLOUD_AGENTS_WHITELIST) are read from the environment
+# Ensure ENCRYPTION_KEY is configured with a valid 32-byte base64-encoded key.
+# If not set in the environment, try to read from a local .encryption_key file to maintain
+# persistence across server restarts. If that file doesn't exist, generate a new random 32-byte key
+# using openssl and save it, or fall back to a valid 32-byte development key.
+if [ -z "${ENCRYPTION_KEY:-}" ]; then
+  KEY_FILE="$REPO_ROOT/.encryption_key"
+  if [ -f "$KEY_FILE" ]; then
+    ENCRYPTION_KEY="$(cat "$KEY_FILE")"
+    echo "==> loaded ENCRYPTION_KEY from $KEY_FILE"
+  elif command -v openssl >/dev/null; then
+    ENCRYPTION_KEY="$(openssl rand -base64 32)"
+    echo "$ENCRYPTION_KEY" > "$KEY_FILE"
+    chmod 600 "$KEY_FILE"
+    echo "==> generated new 32-byte ENCRYPTION_KEY and saved to $KEY_FILE"
+  else
+    # Fallback to a valid 32-byte key (base64 of 32 zero bytes) so it passes validation
+    ENCRYPTION_KEY="AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="
+    echo "==> ENCRYPTION_KEY not set and 'openssl' not found; using fallback development key"
+  fi
+  export ENCRYPTION_KEY
+fi
+
+# Ensure CLOUD_AGENTS_API_TOKEN is configured.
+# If not set in the environment, try to read from a local .api_token file to maintain
+# persistence across server restarts. If that file doesn't exist, generate a new random API token
+# using openssl and save it, or fall back to a default development token.
+if [ -z "${CLOUD_AGENTS_API_TOKEN:-}" ]; then
+  TOKEN_FILE="$REPO_ROOT/.api_token"
+  if [ -f "$TOKEN_FILE" ]; then
+    CLOUD_AGENTS_API_TOKEN="$(cat "$TOKEN_FILE")"
+    echo "==> loaded CLOUD_AGENTS_API_TOKEN from $TOKEN_FILE"
+  elif command -v openssl >/dev/null; then
+    CLOUD_AGENTS_API_TOKEN="$(openssl rand -base64 32)"
+    echo "$CLOUD_AGENTS_API_TOKEN" > "$TOKEN_FILE"
+    chmod 600 "$TOKEN_FILE"
+    echo "==> generated new CLOUD_AGENTS_API_TOKEN and saved to $TOKEN_FILE"
+  else
+    CLOUD_AGENTS_API_TOKEN="dev-token-123456"
+    echo "==> CLOUD_AGENTS_API_TOKEN not set and 'openssl' not found; using fallback development token"
+  fi
+  export CLOUD_AGENTS_API_TOKEN
+fi
+
+# Print the active API token so the user/clients can easily copy and use it to authenticate
+echo "==> active CLOUD_AGENTS_API_TOKEN: $CLOUD_AGENTS_API_TOKEN"
+
+# Secrets (ENCRYPTION_KEY, CLOUD_AGENTS_API_TOKEN, CLOUD_AGENTS_WHITELIST) are read from the environment
 # by the .NET configuration system — do not pass them as CLI args where they
 # would be visible in process listings.
 exec dotnet "$OUT" --urls "http://${BIND}:${PORT}"
