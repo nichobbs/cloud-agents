@@ -55,6 +55,11 @@ test "timeoutFromRaw honors a valid override" {
 // complete_task from the repo-scoped task list slice, and notify — #625)
 // so a passing suite proves the real registration gate, not just the
 // parsing helper in isolation.
+//
+// A third hand-kept copy of this same 13-tool set lives in cloud-agents'
+// src/handlers/profiles.l as validShimToolNames, with no automated
+// cross-check tying all three together (#621). If this count changes,
+// update main.l's addTool block comment and validShimToolNames too.
 val allShimToolNames: slice[String] = ["request_permission", "ask_user", "report_progress", "request_secret", "add_followup_task", "report_artifact", "remember", "recall", "forget", "add_task", "list_tasks", "complete_task", "notify"]
 
 func enabledSubsetOf(csv: in String): slice[String] {

@@ -21,6 +21,13 @@ val maxProfileNameLen = 200
 // through code; it is kept in sync by hand). This is exactly the set
 // profile_tools.tool_name may be drawn from in 'selected' mode
 // (docs/phase7-autonomy.md §7).
+//
+// 13 tools (#621: this count has no automated safeguard against drifting
+// from the shim's own registrations — a future change adding/renaming/
+// removing a shim tool without updating this list would silently accept a
+// dead name or reject a live one). If this count changes, also update
+// shim/src/main.l's addTool block comment and shim/tests/config_tests.l's
+// allShimToolNames.
 val validShimToolNames: slice[String] = ["request_permission", "ask_user", "report_progress", "request_secret", "add_followup_task", "report_artifact", "remember", "recall", "forget", "add_task", "list_tasks", "complete_task", "notify"]
 
 @generate(Json)
@@ -269,7 +276,24 @@ func validateSaveProfile(req: in SaveProfileRequest): Option[Web.ApiError] {
   // client-submitted duplicate via ON CONFLICT DO NOTHING, which is a
   // harmless but inconsistent outcome compared to how a duplicate
   // credential grant is rejected before it ever reaches the database.
+  //
+  // A 'selected' mode with an EMPTY tools list is rejected outright (#616):
+  // CloudAgents.ToolPolicy.enabledToolsEnvValue's empty-list comma-join
+  // produces "", and an empty/unset CLOUD_AGENTS_ENABLED_TOOLS means "no
+  // restriction" to the shim — so 'selected' + zero tools would otherwise
+  // silently collapse to the SAME outcome as 'all' mode, the opposite of
+  // how credentialMode behaves ('selected' + zero credentials correctly
+  // fails closed to zero credentials injected). Forcing an explicit "all"
+  // choice here removes the ambiguity instead of surprising an operator who
+  // deselected every tool expecting a locked-down profile.
   if req.toolMode == "selected" {
+    if req.tools.length == 0 {
+      return Some(
+        value = Web.badRequest(
+          "toolMode 'selected' requires at least one tool; use toolMode 'all' to enable every tool"
+        )
+      )
+    }
     var ti = 0
     while ti < req.tools.length {
       if not isValidToolName(req.tools[ti]) {
@@ -336,7 +360,19 @@ pub func addProfileHandler(req: in SaveProfileRequest): Result[Profile, Web.ApiE
     case Ok(None) -> ()
     case Err(e) -> return Err(dbError(e))
   }
-  match addProfile(userId, name, req.harness, req.networkPolicy, req.credentialMode, grantsFor(req), req.skillIds, req.subagentIds, req.mcpServerIds, normalizedToolMode(req.toolMode), toolsFor(req)) {
+  match addProfile(
+    userId,
+    name,
+    req.harness,
+    req.networkPolicy,
+    req.credentialMode,
+    grantsFor(req),
+    req.skillIds,
+    req.subagentIds,
+    req.mcpServerIds,
+    normalizedToolMode(req.toolMode),
+    toolsFor(req)
+  ) {
     case Ok(p) -> return Ok(p)
     case Err(e) -> {
       // A concurrent create with the same name can slip past the pre-check
@@ -367,7 +403,20 @@ pub func updateProfileHandler(pid: in String, req: in SaveProfileRequest): Resul
     case Ok(None) -> ()
     case Err(e) -> return Err(dbError(e))
   }
-  val affected = match updateProfile(pid, userId, name, req.harness, req.networkPolicy, req.credentialMode, grantsFor(req), req.skillIds, req.subagentIds, req.mcpServerIds, normalizedToolMode(req.toolMode), toolsFor(req)) {
+  val affected = match updateProfile(
+    pid,
+    userId,
+    name,
+    req.harness,
+    req.networkPolicy,
+    req.credentialMode,
+    grantsFor(req),
+    req.skillIds,
+    req.subagentIds,
+    req.mcpServerIds,
+    normalizedToolMode(req.toolMode),
+    toolsFor(req)
+  ) {
     case Ok(n) -> n
     case Err(e) -> {
       // A concurrent rename onto the same name can slip past the pre-check

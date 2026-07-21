@@ -785,11 +785,28 @@ record ArtifactRepoScope {
 /// "https://github.com/../../../etc") that survives isHttpsUrl/isSafeRepoUrl
 /// validation in sessions.l can normalize to a repoKey containing `..`
 /// segments, which the underlying file APIs then resolve — an arbitrary
-/// file write/read on the host via report_artifact. A plain substring check
-/// is sufficient: no legitimate host/owner/repo path segment is ever
-/// literally "..".
+/// file write/read on the host via report_artifact.
+///
+/// Checks each `/`-delimited segment for an EXACT `..` match, not just
+/// whether the two characters appear anywhere in the string (#634): a
+/// bare substring match would reject a legitimate repoKey with two literal
+/// dots inside a longer segment (e.g. a future host/owner naming scheme
+/// that permits it) even though that's not a traversal segment at all —
+/// over-rejection, not a security hole, but avoidable with a segment-exact
+/// check that matches what path traversal actually means.
 func containsPathTraversal(s: in String): Bool {
-  return s.contains("..")
+  var segStart = 0
+  var i = 0
+  while i < s.length {
+    if s.substring(i, 1) == "/" {
+      if i - segStart == 2 and s.substring(segStart, 2) == ".." {
+        return true
+      }
+      segStart = i + 1
+    }
+    i = i + 1
+  }
+  return s.length - segStart == 2 and s.substring(segStart, 2) == ".."
 }
 
 /// Resolve the owning user + normalized repo key for a repo-scoped artifact
