@@ -332,6 +332,45 @@ describe('SessionDetail failed-draft recovery for the currently-viewed session (
     // nothing should be left there for a later mount to pick up again.
     expect(localStorage.getItem('cloud_agents_failed_drafts')).toBeNull();
   });
+
+  it('does not clobber text the user has already typed while the stale send was settling (#631)', async () => {
+    // Same stale-and-failed scenario as above, but this time `send` doesn't
+    // resolve immediately — it stays pending until the test resolves it
+    // itself, giving a window to type a new message into the (already
+    // cleared) composer before the stale failure comes back.
+    let resolveSend: (result: { succeeded: boolean; stale: boolean }) => void = () => {};
+    const sendPromise = new Promise<{ succeeded: boolean; stale: boolean }>(resolve => {
+      resolveSend = resolve;
+    });
+    stream.current = {
+      output: '',
+      isStreaming: false,
+      error: null,
+      send: async () => sendPromise,
+      reset: () => {},
+      reattachEnded: 0,
+    };
+    renderPage();
+    const user = userEvent.setup();
+
+    const composer = (await screen.findByPlaceholderText(/Send a message/)) as HTMLTextAreaElement;
+    await user.type(composer, 'hello world');
+    await user.click(screen.getByRole('button', { name: 'Send' }));
+
+    // handleSend clears the composer synchronously on submit; the send is
+    // still pending. Type something new before it settles.
+    await waitFor(() => expect(composer).toHaveValue(''));
+    await user.type(composer, 'a brand new message');
+
+    // Now let the stale+failed result land.
+    resolveSend({ succeeded: false, stale: true });
+
+    // The new text must survive untouched — restoring 'hello world' here
+    // would silently overwrite what the user is actively typing.
+    await waitFor(() => expect(localStorage.getItem('cloud_agents_failed_drafts')).not.toBeNull());
+    expect(composer).toHaveValue('a brand new message');
+    expect(screen.queryByText(/message you sent to this session earlier failed to go through/i)).toBeNull();
+  });
 });
 
 describe('SessionDetail live output retention', () => {

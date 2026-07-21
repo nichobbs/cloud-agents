@@ -1,6 +1,3 @@
-@test_module
-package CloudAgents.Shim.TransportTests
-
 //! Regression tests for CloudAgents.Shim.Transport's readAllUtf8 fixes:
 //!
 //! #545 — readAllUtf8 used to decode each 8 KiB read chunk independently
@@ -26,6 +23,8 @@ package CloudAgents.Shim.TransportTests
 //! part of readAllUtf8 that #545 actually changed; the read-loop plumbing
 //! around it (chunking via streamRead, capping at maxResponseBytes, reusing
 //! sharedChunkBuf for #546) still can only be exercised via a real socket.
+@test_module
+package CloudAgents.Shim.TransportTests
 
 import Std.Core
 import Std.Testing

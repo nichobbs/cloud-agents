@@ -198,9 +198,14 @@ at `artifactsBaseDir()/<sessionId>/<storedName>`). Slice 3 adds an
 optional repo scope so a build output or report survives into later
 sessions on the same repo:
 
-- Migration `0015`: add `repo_key TEXT NOT NULL DEFAULT ''` to
+- A migration adding `repo_key TEXT NOT NULL DEFAULT ''` to
   `artifacts` + an index on `(repo_key)`. Existing rows keep `''`
-  (session-only), so this is backward-compatible.
+  (session-only), so this is backward-compatible. Exact version number
+  TBD at merge time, not `0015` as originally sketched here — slices 2
+  (`0015_notifications`) and 5 (`0014_repo_tasks`, out of the order
+  originally planned) both landed first and already claimed `0014`/`0015`
+  (see §10 and issue #609); whichever slice actually adds this column
+  next should claim the next free prefix, not reuse either.
 - `report_artifact` gains an optional `scope` argument (`session`
   default, or `repo`). A `repo`-scoped artifact is written under
   `artifactsBaseDir()/repo/<repoKey>/<storedName>` and its row carries

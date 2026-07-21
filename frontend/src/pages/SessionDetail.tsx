@@ -244,6 +244,15 @@ export function SessionDetail() {
     currentSessionRef.current = sessionId;
     generationRef.current += 1;
   }, [sessionId]);
+  // Mirrors `input`'s latest value so an awaited handleSend continuation can
+  // check what's in the composer *right now* without closing over the stale
+  // value captured when the send started (#631) — a plain read of `input`
+  // inside that closure would still see whatever was there before the user's
+  // own subsequent typing.
+  const inputRef = useRef(input);
+  useEffect(() => {
+    inputRef.current = input;
+  }, [input]);
 
   // Latest isStreaming, readable from an awaited continuation without a stale
   // closure — lets foldRunIntoTranscript tell whether a *new* run has started
@@ -447,7 +456,7 @@ export function SessionDetail() {
         // The usual restore (setInput(text) below) can't run here — it
         // would land in whatever session's composer is on screen NOW, not
         // necessarily the one this send actually failed for.
-        if (currentSessionRef.current === forSessionAtSend) {
+        if (currentSessionRef.current === forSessionAtSend && !inputRef.current.trim()) {
           // ...except when it's the SAME session currently on screen — just a
           // later generation (the user left session A and came back to A
           // before this send settled). The mount-time recovery effect already
@@ -458,13 +467,22 @@ export function SessionDetail() {
           // it directly instead of persisting it — persisting AND setting
           // state here would leave a stale copy in storage that reappears on
           // a future revisit even though it was already shown just now.
+          //
+          // Guarded on an empty composer (#631): if the user has already
+          // started typing something new in the time this stale send took to
+          // settle, restoring here would silently clobber it. Fall through to
+          // the persist-for-later branch instead, so the failed text isn't
+          // lost — it surfaces the next time this session is (re)visited
+          // rather than overwriting what's being typed right now.
           setInput(text);
           setRecoveredDraft(true);
         } else {
-          // Genuinely a different session on screen now — persist it against
-          // forSessionAtSend instead, so it isn't silently lost (#104): the
-          // recovery effect above hands it back the next time that session is
-          // opened.
+          // Either a genuinely different session is on screen now, or it's
+          // the same session but the user has already typed something new
+          // into the composer (#631) — either way, setInput here would land
+          // somewhere it doesn't belong. Persist it against forSessionAtSend
+          // instead, so it isn't silently lost (#104): the recovery effect
+          // above hands it back the next time that session is (re)opened.
           saveFailedDraft(forSessionAtSend, text);
         }
       } else {
