@@ -150,10 +150,36 @@ test "notify validates summary presence and length" {
     case Ok(_) -> assertTrue(false, "an empty summary must be rejected")
     case Err(e) -> assertEqualInt(e.status, 400, "empty summary -> 400")
   }
-  // maxProgressSummaryLen is 4096 characters.
+  // maxProgressSummaryLen is 4096 bytes.
   match createNotificationHandler(sid, bearer(token), NotifyRequest(summary = atLeast(4097), level = "")) {
     case Ok(_) -> assertTrue(false, "an over-length summary must be rejected")
     case Err(e) -> assertEqualInt(e.status, 400, "over-length summary -> 400")
+  }
+}
+
+test "notify rejects a summary whose UTF-8 byte size is over the cap even when its char count is not (#617)" {
+  val dbPath = useFreshTestDb("notify-validation-utf8")
+  defer {
+    cleanupTestDb(dbPath)
+  }
+  CloudAgents.Auth.setCurrentUserId("default")
+  val sid = "sess-notify-3b"
+  mkSession(sid)
+  val token = mintToken(sid, "default")
+
+  // U+3042 (HIRAGANA A) is one Lyric character but three UTF-8 bytes
+  // (docs/lyric/gotchas.md #64). 1400 copies is 1400 characters (well under
+  // the 4096-character mark) but 4200 bytes (over the 4096-byte cap) — a
+  // char-length check alone would wrongly accept this.
+  var wide = ""
+  var i = 0
+  while i < 1400 {
+    wide = wide + "あ"
+    i = i + 1
+  }
+  match createNotificationHandler(sid, bearer(token), NotifyRequest(summary = wide, level = "")) {
+    case Ok(_) -> assertTrue(false, "a summary over the byte cap must be rejected even though it's under the char cap")
+    case Err(e) -> assertEqualInt(e.status, 400, "over-byte-length summary -> 400")
   }
 }
 

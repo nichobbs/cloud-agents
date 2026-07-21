@@ -1382,9 +1382,12 @@ pub func createNotificationHandler(
     return Err(Web.badRequest("summary is required"))
   }
   // Reuses maxProgressSummaryLen (report_progress's summary cap) for
-  // consistency — both are short human-facing status strings.
-  if not CloudAgents.Text.withinMaxLength(req.summary, maxProgressSummaryLen) {
-    return Err(Web.badRequest("summary is too long (max " + toString(maxProgressSummaryLen) + " characters)"))
+  // consistency — both are short human-facing status strings. Checked by
+  // byte length, not char length, matching every other free-text field in
+  // this file (see the file header comment) — a char-count check alone lets
+  // a multi-byte UTF-8 payload land up to ~4x over the stated budget.
+  if not CloudAgents.Text.withinMaxByteLength(req.summary, maxProgressSummaryLen) {
+    return Err(Web.badRequest("summary is too long (max " + toString(maxProgressSummaryLen) + " bytes)"))
   }
   if not isValidNotifyLevel(req.level) {
     return Err(Web.badRequest("level must be one of: info, done, blocked"))
