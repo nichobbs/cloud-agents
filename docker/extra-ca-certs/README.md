@@ -1,9 +1,9 @@
 # Extra CA certificates for local builds
 
-Drop your corporate/proxy root CA certificate(s) here (`.crt` or `.pem`,
-PEM-encoded) before running `docker build`/`docker compose build` on a
-network that does TLS interception — e.g. Zscaler, Netskope, or a similar
-corporate proxy.
+Drop your corporate/proxy root CA certificate(s) here (`.crt`, `.pem`, or
+`.cer`, PEM-encoded) before running `docker build`/`docker compose build`
+on a network that does TLS interception — e.g. Zscaler, Netskope, or a
+similar corporate proxy.
 
 Each of the four Dockerfiles in this directory (`Dockerfile`,
 `Dockerfile.codex`, `Dockerfile.opencode`, `Dockerfile.gemini`) copies
@@ -33,4 +33,13 @@ committed. A build with no certs added here is unaffected (no-op).
 
 To export your proxy's root CA on macOS: Keychain Access → find the
 proxy's root certificate (e.g. "Zscaler Root CA") → File → Export Items…
-→ save as a `.cer`/`.pem` file into this directory.
+→ save as a `.cer`, `.pem`, or `.crt` file into this directory.
+
+Any cert dropped in here is baked into the built image's layers (not
+stripped out afterward) — deliberately, so the ephemeral runner
+containers themselves also trust the same proxy at runtime, not just the
+build. A CA certificate is a public key, not a secret, so this carries no
+confidentiality risk on its own; it does mean you should avoid pushing an
+image built this way to a registry outside your organization (npm-network
+proxy config generally shouldn't leak either way, but there's no reason
+to publish it).

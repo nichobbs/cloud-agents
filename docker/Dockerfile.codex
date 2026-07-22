@@ -34,7 +34,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # is safe with nothing dropped into extra-ca-certs/.
 COPY extra-ca-certs /tmp/extra-ca-certs
 RUN : > /usr/local/share/ca-certificates/extra-combined.pem \
-    && for f in /tmp/extra-ca-certs/*.crt /tmp/extra-ca-certs/*.pem; do \
+    && for f in /tmp/extra-ca-certs/*.crt /tmp/extra-ca-certs/*.pem /tmp/extra-ca-certs/*.cer; do \
       [ -f "$f" ] || continue; \
       base="$(basename "$f")"; \
       cp "$f" "/usr/local/share/ca-certificates/${base%.*}.crt"; \

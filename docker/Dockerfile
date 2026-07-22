@@ -101,13 +101,13 @@ RUN apt-get update && apt-get install -y --no-install-recommends curl ca-certifi
 # Optional corporate/proxy root CA trust (e.g. Zscaler TLS inspection) — see
 # docker/extra-ca-certs/README.md. A no-op when that directory holds only
 # its placeholder README (the common case); installs and trusts whatever
-# .crt/.pem files a local build dropped in there otherwise. Must run before
+# .crt/.pem/.cer files a local build dropped in there otherwise. Must run before
 # any of this stage's own outbound HTTPS calls (curl below, `lyric restore`
 # in the shim build) — each build stage is its own container with its own
 # CA trust store, so a host-trusted corporate root is invisible here
 # without this.
 COPY docker/extra-ca-certs /tmp/extra-ca-certs
-RUN for f in /tmp/extra-ca-certs/*.crt /tmp/extra-ca-certs/*.pem; do \
+RUN for f in /tmp/extra-ca-certs/*.crt /tmp/extra-ca-certs/*.pem /tmp/extra-ca-certs/*.cer; do \
       [ -f "$f" ] || continue; \
       base="$(basename "$f")"; \
       cp "$f" "/usr/local/share/ca-certificates/${base%.*}.crt"; \
@@ -183,7 +183,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # extra-ca-certs/.
 COPY docker/extra-ca-certs /tmp/extra-ca-certs
 RUN : > /usr/local/share/ca-certificates/extra-combined.pem \
-    && for f in /tmp/extra-ca-certs/*.crt /tmp/extra-ca-certs/*.pem; do \
+    && for f in /tmp/extra-ca-certs/*.crt /tmp/extra-ca-certs/*.pem /tmp/extra-ca-certs/*.cer; do \
       [ -f "$f" ] || continue; \
       base="$(basename "$f")"; \
       cp "$f" "/usr/local/share/ca-certificates/${base%.*}.crt"; \

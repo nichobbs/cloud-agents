@@ -48,17 +48,21 @@ systemctl enable --now docker
 # claude-code:base needs the REPO ROOT as build context (its Dockerfile COPYs
 # from both docker/ and shim/, #601) — the other three only need docker/,
 # matching docker-compose.coolify.yml's per-service build.context exactly.
+#
+# Parallel arrays, indexed together, rather than packing "dockerfile tag
+# context" into one space-delimited string and cut -d' '-ing it apart:
+# REPO_ROOT is derived from a real filesystem path (line below) and isn't
+# guaranteed space-free, and cut -d' ' silently mis-parses a context
+# containing one.
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
-for spec in \
-    "Dockerfile claude-code:base ${REPO_ROOT}" \
-    "Dockerfile.codex codex:base ${REPO_ROOT}/docker" \
-    "Dockerfile.opencode opencode:base ${REPO_ROOT}/docker" \
-    "Dockerfile.gemini gemini:base ${REPO_ROOT}/docker"
-do
-    dockerfile="$(echo "$spec" | cut -d' ' -f1)"
-    tag="$(echo "$spec" | cut -d' ' -f2)"
-    context="$(echo "$spec" | cut -d' ' -f3)"
+dockerfiles=(Dockerfile Dockerfile.codex Dockerfile.opencode Dockerfile.gemini)
+tags=(claude-code:base codex:base opencode:base gemini:base)
+contexts=("$REPO_ROOT" "$REPO_ROOT/docker" "$REPO_ROOT/docker" "$REPO_ROOT/docker")
+for i in "${!dockerfiles[@]}"; do
+    dockerfile="${dockerfiles[$i]}"
+    tag="${tags[$i]}"
+    context="${contexts[$i]}"
     if [ ! -f "${REPO_ROOT}/docker/${dockerfile}" ]; then
         echo "install-docker.sh: ${REPO_ROOT}/docker/${dockerfile} not found — refusing to silently skip it" >&2
         exit 1
