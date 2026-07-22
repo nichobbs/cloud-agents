@@ -1,0 +1,13 @@
+{
+  "version": 1,
+  "isRoot": true,
+  "tools": {
+    "lyric": {
+      "version": "0.4.9",
+      "commands": [
+        "lyric"
+      ],
+      "rollForward": false
+    }
+  }
+}

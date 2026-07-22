@@ -102,20 +102,6 @@ func dockerClient(): DockerClient {
 @externTarget("System.Threading.Tasks.Task.Wait")
 func taskWaitMs[T](t: in T, timeoutMs: in Int): Bool = false
 
-/// Milliseconds since system start, as an `Int` (`System.Environment.
-/// TickCount`, NOT the 64-bit `TickCount64`) — deliberately `Int`, not
-/// `Long`: a repeated `Long` (Int64) subtract-and-compare in this package
-/// crashes the process with an AccessViolationException (see
-/// `streamSessionMessage`'s and `waitForContainer`'s workaround comments,
-/// docs/BUILD.md, docs/lyric/gotchas.md). `TickCount` wraps to negative
-/// roughly every 24.9 days of host uptime; a comparison spanning that wrap
-/// reads as "not yet elapsed" when it actually has. Acceptable here: the
-/// windows this bounds are a few minutes at most, so hitting the exact
-/// wraparound instant is astronomically unlikely, and understating a
-/// timeout is far cheaper than the crash this works around.
-@externTarget("System.Environment.get_TickCount")
-func tickCountMs(): Int = 0
-
 /// Docker image name for the given harness.
 func imageForHarness(harness: in String): String {
   if harness == "codex" {
@@ -369,12 +355,11 @@ pub async func stopRunnerContainer(client: in DockerClient, containerId: in Stri
 }
 
 // 30-minute hard cap on a run's total wall-clock time (matches the old
-// runSessionMessage), as an `Int` millisecond count — see `tickCountMs`'s
-// doc comment above for why this is `Int`, not the `Long` this file used
-// to share between waitForContainer's retry deadline and
-// streamSessionMessage's run-timeout check before both were found to crash
-// the process (#561 predates that discovery).
-val runWallClockCapMs = 1800000
+// runSessionMessage). Shared by waitForContainer's retry deadline and
+// streamSessionMessage's run-timeout check (#561) — previously duplicated
+// as the same literal in both places, an easy value to update in one spot
+// and silently miss in the other.
+val runWallClockCapMs = 1800000.toLong()
 
 // Pause between waitForContainer's /wait retry attempts (#556): the retry
 // loop below previously fired attempts back-to-back with no delay — bounded
@@ -392,15 +377,10 @@ val containerWaitRetryDelayMs = 1000
 /// request timeout firing before the container actually finished rather
 /// than a real Docker-reported error. See
 /// `CloudAgents.DockerPolicy.shouldRetryContainerWait`'s doc comment for the
-/// rationale (#56) this retry logic still follows (attempt cap OR
-/// wall-clock deadline, whichever trips first) — this project cannot
-/// configure `DockerClient`'s HTTP timeout directly, so retrying is the
-/// only available mitigation. That function itself is NOT called here: its
-/// `Long`-typed parameters are exactly the AccessViolationException-crashing
-/// pattern documented on `tickCountMs` above, so the same boundary
-/// condition is duplicated inline against `tickCountMs()` instead.
+/// full rationale (#56) — this project cannot configure `DockerClient`'s
+/// HTTP timeout directly, so retrying is the only available mitigation.
 pub async func waitForContainer(client: in DockerClient, containerId: in String): Result[Unit, String] {
-  val deadlineTickMs = tickCountMs() + runWallClockCapMs
+  val deadlineMs = CloudAgents.Repository.nowMillisLong() + runWallClockCapMs
   val maxAttempts = 20
   var attempts = 0
   var settled = false
@@ -416,7 +396,12 @@ pub async func waitForContainer(client: in DockerClient, containerId: in String)
       }
       case Err(e) -> {
         lastMessage = e.message
-        val retry = attempts < maxAttempts and tickCountMs() < deadlineTickMs
+        val retry = CloudAgents.DockerPolicy.shouldRetryContainerWait(
+          attempts,
+          maxAttempts,
+          CloudAgents.Repository.nowMillisLong(),
+          deadlineMs
+        )
         if not retry {
           settled = true
         } else {
@@ -564,12 +549,7 @@ pub func streamSessionMessage(
     cell
   )
   val startMs = CloudAgents.Repository.nowMillisLong()
-  // Int-accumulator stand-in for the wall-clock cap below — see the
-  // AccessViolationException workaround comment at the loop's timeout
-  // check for why this isn't a `Long` epoch-millisecond comparison.
-  // Shares runWallClockCapMs (also `Int`, for the same reason) with
-  // waitForContainer's deadline above.
-  var elapsedPollMs = 0
+  val runTimeoutMs = runWallClockCapMs
   // Give up on the client only after several CONSECUTIVE failed writes, not the
   // first (#491): a single writeChunk Err can be a transient proxy/network blip,
   // and terminating on it would discard an in-progress run the old buffered
@@ -776,28 +756,13 @@ pub func streamSessionMessage(
       }
     }
     // Hard cap the whole run (#481): a hung container with a still-connected
-    // client would otherwise hold the session's RUNNING claim forever. The
-    // boundary condition itself is pinned by a direct test against the pure
-    // CloudAgents.DockerPolicy.hasExceededRunTimeout (#67) — this async
-    // package's functions can't be reached from a @test_module at all, pure
-    // or not (docs/lyric/gotchas.md) — but doing a `Long` (Int64) subtract-
-    // and-compare AT ALL in this specific loop crashes the whole process
-    // with an AccessViolationException (Unbox against a corrupted
-    // System.Int64, confirmed via dotnet-dump) on every single tick,
-    // independent of Docker, MCP callbacks, the request pipeline, or
-    // whether the comparison happens inline or via the cross-package
-    // hasExceededRunTimeout call — both crash identically. Not yet filed
-    // upstream — see scripts/repro-crosspkg-long-crash.sh and
-    // docs/BUILD.md for the standalone repro and full narrative. Workaround:
-    // approximate elapsed time with an Int accumulator of each tick's
-    // `pollMs` instead of a `Long` epoch-millisecond subtraction — avoids
-    // `Long` arithmetic in this loop entirely. Coarser than true wall-clock
-    // time (drifts by up to one poll interval, and does not account for
-    // time spent inside a slow `partialContainerLogs`/`writeChunk` call
-    // itself), but adequate for a 30-minute safety cap. Revert to the
-    // cross-package `Long` comparison once fixed upstream.
-    elapsedPollMs = elapsedPollMs + pollMs
-    if elapsedPollMs > runWallClockCapMs {
+    // client would otherwise hold the session's RUNNING claim forever, where
+    // the old runSessionMessage bounded it with a 30-minute taskWaitMs. The
+    // boundary check itself lives in the pure CloudAgents.DockerPolicy
+    // package so it has direct test coverage (#67) — this async package's
+    // functions can't be reached from a @test_module at all, pure or not
+    // (docs/lyric/gotchas.md).
+    if CloudAgents.DockerPolicy.hasExceededRunTimeout(CloudAgents.Repository.nowMillisLong(), startMs, runTimeoutMs) {
       timedOut = true
     }
   }

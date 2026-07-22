@@ -351,6 +351,67 @@ a local `val`, which survives reliably across multiple awaits). Revert
 that workaround once `./scripts/repro-compiler-bug.sh` check 8 reports the
 bug fixed upstream.
 
+**A ninth bug, the actual (sole) root cause of that `streamSessionMessage`
+`AccessViolationException`, was found in a later session with real access
+to the crashing hardware (arm64 macOS) and a real `dotnet-dump` crash
+dump** (as of v0.4.36): bug 8's fix (PR #690) did NOT stop the crash — it
+fixed a real, separate, silent-data-loss bug, but the process kept
+crashing on every message sent regardless. Reproduced deterministically on
+real hardware, independent of Docker Desktop vs. colima vs. the Docker
+daemon being completely unreachable (ruling out an earlier session's
+leading hypothesis about the Unix-socket transport), independent of
+`createRunnerContainer` actually succeeding, independent of the MCP
+callbacks feature flag, and independent of the surrounding request
+pipeline (JSON body decoding, the SQLite session lookup, auth) —
+`streamSessionMessage` crashes the same way even called directly with a
+made-up, nonexistent session id. `dotnet-dump analyze`'s `dumpmt -md`/
+`dumpobj` on the crash dump showed the `Unbox` call's `toTypeHnd` resolves
+to `System.Int64`, and its `obj` argument is not a valid object reference
+at all ("this object has an invalid CLASS field") — i.e. the JIT is trying
+to unbox garbage as an `Int64`. Bisection (rebuilding with pieces of
+`streamSessionMessage` removed/replaced) traced it to the run's 30-minute
+wall-clock timeout check: doing a `Long` (Int64) subtract-and-compare —
+`nowMs - startMs > timeoutMs` — ANYWHERE in that specific function, once
+per poll tick, crashes the process, whether the comparison happens inline
+or via the (pure, cross-package) `CloudAgents.DockerPolicy.
+hasExceededRunTimeout` call it originally used — both crash identically.
+**Five independent from-scratch standalone reconstructions never
+reproduced it** — matching `streamSessionMessage`'s local-variable count,
+a real cross-package `Long`-arg call, the real project's package count and
+declaration order (`CloudAgents.DockerPolicy` before `CloudAgents.Docker`,
+matching the mechanism behind the already-fixed
+[lyric-lang#5177](https://github.com/nichobbs/lyric-lang/issues/5177)),
+even the real `Lyric.Web`/`Lyric.Docker` NuGet dependencies loaded and a
+real streaming HTTP handler driving it — none crashed. **Only substituting
+the ACTUAL, unmodified `docker_manager.l`/`docker_policy.l` source into an
+otherwise-minimal 11-package project (stub implementations for every other
+package they import, no SQLite, no auth, no real session) reproduced it**,
+which is why `./scripts/repro-crosspkg-long-crash.sh` freezes a snapshot of
+those two files rather than generating equivalent code inline the way this
+project's other `repro-*.sh` scripts do — see
+`scripts/repro-fixtures/crosspkg-long-crash/NOTE.md`. **Not yet filed
+upstream** (a fully minimized, dependency-free repro was not achieved
+despite the attempts above — whatever makes this reproduce is tied to the
+real file's actual compiled shape, not just its logical content). Worked
+around in `src/docker_manager.l`'s `streamSessionMessage` by approximating
+elapsed time with an Int accumulator of each tick's `pollMs` instead of a
+`Long` epoch-millisecond subtraction (coarser than true wall-clock time,
+adequate for a 30-minute safety cap) — revert once
+`./scripts/repro-crosspkg-long-crash.sh` reports the bug fixed upstream.
+`waitForContainer`'s retry-deadline check used the identical
+cross-package-`Long`-args shape (`CloudAgents.DockerPolicy.
+shouldRetryContainerWait(attempts, maxAttempts, nowMs, deadlineMs)`) —
+never confirmed to crash (no deterministic way to force a real
+Docker-daemon wait-and-retry scenario in the time available), but
+preemptively fixed the same way rather than left as an untested landmine:
+`nowMillisLong()`'s `Long` epoch milliseconds replaced with `Int`
+`System.Environment.TickCount` (`tickCountMs()`, NOT the 64-bit
+`TickCount64`) throughout, so neither function does `Long` arithmetic at
+all anymore. `hasExceededRunTimeout` and `shouldRetryContainerWait`
+themselves are untouched in `src/docker_policy.l` — both remain pure,
+directly unit-tested (#67, #56), just no longer called from
+`CloudAgents.Docker`.
+
 **CI enforces a version floor matching this status**, read from the single
 checked-in [`MIN_LYRIC_VERSION`](../MIN_LYRIC_VERSION) file (currently
 `0.4.19`) rather than duplicated as a literal here and in

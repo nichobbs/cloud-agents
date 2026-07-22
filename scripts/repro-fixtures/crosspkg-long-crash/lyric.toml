@@ -1,0 +1,25 @@
+[package]
+name = "CrossPkgLongCrash"
+version = "0.1.0"
+
+[project]
+name = "CrossPkgLongCrash"
+output = "single"
+output_assembly = "CrossPkgLongCrash.dll"
+
+[project.packages]
+"CloudAgents" = "src/main.l"
+"CloudAgents.Db" = "src/stub_db.l"
+"CloudAgents.DockerPolicy" = "src/docker_policy.l"
+"CloudAgents.NetworkPolicy" = "src/stub_networkpolicy.l"
+"CloudAgents.Crypto" = "src/stub_crypto.l"
+"CloudAgents.Sqlite" = "src/stub_sqlite.l"
+"CloudAgents.Repository" = "src/stub_repository.l"
+"CloudAgents.RunnerEnv" = "src/stub_runnerenv.l"
+"CloudAgents.SessionStore" = "src/stub_sessionstore.l"
+"CloudAgents.Streaming" = "src/stub_streaming.l"
+"CloudAgents.Docker" = "src/docker_manager.l"
+
+[nuget]
+"Lyric.Web" = "0.4.36"
+"Lyric.Docker" = "0.4.36"
