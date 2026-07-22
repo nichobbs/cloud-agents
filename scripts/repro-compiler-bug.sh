@@ -3,7 +3,7 @@
 # compiler bugs referenced throughout docs/BUILD.md, docs/PROGRESS.md,
 # AGENTS.md, and this project's build scripts.
 #
-# "Minimal" applies to checks 1-4 and 6-7, each a tiny scratch project in a
+# "Minimal" applies to checks 1-4 and 6-8, each a tiny scratch project in a
 # mktemp'd workdir. Check 5 (lyric-lang#5177) is the one exception (#119):
 # it needs this project's own real, multi-package build to reproduce at all
 # (see that check's own comment), so it runs a full `lyric restore` + `lyric
@@ -17,7 +17,7 @@
 # `actions/cache` wiring shares it with those later steps) for catching a
 # bug that genuinely can't be reproduced any smaller.
 #
-# Checks seven independent, known compiler bugs, in order:
+# Checks eight independent, known compiler bugs, in order:
 #
 # 1. lyric-lang#4925/#4955 (fixed as of v0.4.11): a trivial, dependency-free
 #    "hello world" project crashed `lyric build` with an unhandled
@@ -106,11 +106,30 @@
 #    too, the full suite is 24/24 for the first time in this project's
 #    history.
 #
+# 8. lyric-lang#6249 (open as of v0.4.35): in an `async func`, a local `val`
+#    bound before one `await` and read again after a SECOND, different-
+#    callee `await` in the same function silently loses its value — reads
+#    back as the type's default ("" for String) instead of the value it was
+#    bound to. No exception, no diagnostic. Contradicts the decision log's
+#    own D088/D089 ("hoist all val bindings to SM fields"), which claims
+#    exactly this was fixed and tested years ago — either a later async-
+#    codegen refactor regressed it, or it's an edge case outside that
+#    original test matrix (two DIFFERENT awaited callees specifically, not
+#    the same callee awaited twice). This directly matches
+#    `src/docker_manager.l`'s `runSessionMessageAsync` shape (a `client`/
+#    `containerId` local needing to survive five sequential different-
+#    callee awaits) and is the leading suspect for the recurring
+#    `streamSessionMessage`/`AccessViolationException` production crash —
+#    see `docs/lyric/gotchas.md` and PR #690's description for the full
+#    analysis. Workaround: thread the value through a mutable record field
+#    instead of a local `val` (confirmed to survive reliably across
+#    multiple awaits, unlike a bare local).
+#
 # Checks 1 and 2 only require `lyric` on PATH — no `dotnet` needed, since
 # both bugs occur before the compiler would invoke the .NET toolchain.
-# Checks 3-7 all need `dotnet` on PATH (to run the built output); checks 3-5
+# Checks 3-8 all need `dotnet` on PATH (to run the built output); checks 3-5
 # additionally need a `[nuget]` restore (a real published Lyric.Web
-# package), so they also require network access to nuget.org. Checks 6-7
+# package), so they also require network access to nuget.org. Checks 6-8
 # need neither NuGet nor network — just `dotnet` to run a plain,
 # dependency-free build. All are skipped (not failed) if `dotnet` isn't on
 # PATH.
@@ -160,7 +179,7 @@ import Std.Core
 func main(): Unit { println("hello") }
 LYRIC
 
-echo "==> [1/7] lyric build against a trivial, dependency-free hello-world (lyric-lang#4925/#4955)"
+echo "==> [1/8] lyric build against a trivial, dependency-free hello-world (lyric-lang#4925/#4955)"
 crash_output="$(cd "$WORK/crash" && lyric build 2>&1)"
 crash_status=$?
 echo "$crash_output"
@@ -200,7 +219,7 @@ func find(x: in Int): Option[Int] {
 func main(): Unit { println("hello") }
 LYRIC
 
-echo "==> [2/7] lyric build against a trivial Option[Int]-returning function (lyric-lang#4980)"
+echo "==> [2/8] lyric build against a trivial Option[Int]-returning function (lyric-lang#4980)"
 stdcore_output="$(cd "$WORK/stdcore" && lyric build 2>&1)"
 stdcore_status=$?
 echo "$stdcore_output"
@@ -215,9 +234,9 @@ else
   echo "==> Did NOT fail: this compiler can resolve Std.Core's Option/Result — bug #4980 is fixed"
 fi
 
-# --- Checks 3-7 need dotnet (3-5 also need a real [nuget] restore) ---------
+# --- Checks 3-8 need dotnet (3-5 also need a real [nuget] restore) ---------
 if ! command -v dotnet >/dev/null; then
-  echo "==> [3-7/7] skipped (lyric-lang#5004/#5066/#5177/#5244/#5298): 'dotnet' not on PATH"
+  echo "==> [3-8/8] skipped (lyric-lang#5004/#5066/#5177/#5244/#5298/#6249): 'dotnet' not on PATH"
   exit "$worst"
 fi
 
@@ -246,12 +265,12 @@ func main(): Unit {
 }
 LYRIC
 
-echo "==> [3/7] lyric build calling a zero-arg NuGet-restored function, Web.create() (lyric-lang#5004)"
+echo "==> [3/8] lyric build calling a zero-arg NuGet-restored function, Web.create() (lyric-lang#5004)"
 restore_output="$(cd "$WORK/nugetzero" && lyric restore 2>&1)"
 restore_status=$?
 if [ "$restore_status" -ne 0 ]; then
   echo "$restore_output" >&2
-  echo "==> [3-4/7] skipped (lyric-lang#5004/#5066): 'lyric restore' failed (exit $restore_status)" \
+  echo "==> [3-4/8] skipped (lyric-lang#5004/#5066): 'lyric restore' failed (exit $restore_status)" \
        "— likely no network access to nuget.org, not a compiler bug" >&2
 else
   nugetzero_output="$(cd "$WORK/nugetzero" && lyric build 2>&1)"
@@ -264,11 +283,11 @@ else
   elif [ "$nugetzero_status" -ne 0 ]; then
     echo "==> Unexpected failure (exit $nugetzero_status) — not the known signature, investigate separately" >&2
     note_unexpected
-    echo "==> [4/7] skipped: check 3's build didn't succeed, nothing to run" >&2
+    echo "==> [4/8] skipped: check 3's build didn't succeed, nothing to run" >&2
   else
     echo "==> Did NOT fail: this compiler resolves NuGet-restored zero-arg functions — bug #5004 is fixed"
 
-    echo "==> [4/7] lyric run against the same project — does it find Web.dll at runtime? (lyric-lang#5066)"
+    echo "==> [4/8] lyric run against the same project — does it find Web.dll at runtime? (lyric-lang#5066)"
     run_output="$(cd "$WORK/nugetzero" && lyric run 2>&1)"
     run_status=$?
     echo "$run_output"
@@ -293,12 +312,12 @@ fi
 # outcome — its own restore/build is entirely independent of the synthetic
 # nugetzero project those checks use, so a failure there (or `dotnet` itself
 # being unavailable, already checked above) must not skip this one too.
-echo "==> [5/7] lyric test against this project's own real manifest (lyric-lang#5177)"
+echo "==> [5/8] lyric test against this project's own real manifest (lyric-lang#5177)"
 real_restore_output="$(cd "$REPO_ROOT" && lyric restore 2>&1)"
 real_restore_status=$?
 if [ "$real_restore_status" -ne 0 ]; then
   echo "$real_restore_output" >&2
-  echo "==> [5/7] skipped (lyric-lang#5177): 'lyric restore' failed (exit $real_restore_status)" \
+  echo "==> [5/8] skipped (lyric-lang#5177): 'lyric restore' failed (exit $real_restore_status)" \
        "— likely no network access to nuget.org, not a compiler bug" >&2
 else
   real_test_output="$(cd "$REPO_ROOT" && lyric test 2>&1)"
@@ -381,7 +400,7 @@ func main(): Unit {
 }
 LYRIC
 
-echo "==> [6/7] slice[Int].append() against a trivial single-file project (lyric-lang#5244)"
+echo "==> [6/8] slice[Int].append() against a trivial single-file project (lyric-lang#5244)"
 append_build_output="$(cd "$WORK/appendtest" && lyric build 2>&1)"
 append_build_status=$?
 echo "$append_build_output"
@@ -434,7 +453,7 @@ func main(): Unit {
 }
 LYRIC
 
-echo "==> [7/7] untyped top-level String val's .length against a trivial single-file project (lyric-lang#5298)"
+echo "==> [7/8] untyped top-level String val's .length against a trivial single-file project (lyric-lang#5298)"
 topval_build_output="$(cd "$WORK/topval" && lyric build 2>&1)"
 topval_build_status=$?
 echo "$topval_build_output"
@@ -458,8 +477,88 @@ else
   fi
 fi
 
+# --- Check 8: lyric-lang#6249 (val loses value across 2+ different-callee
+# awaits) ---------------------------------------------------------------
+# A local `val` bound before one `await` and read again after a SECOND,
+# different-callee `await` in the same async function silently loses its
+# value — reads back as "" instead of "hello". No match, no Result type, no
+# parameters involved: the plainest possible trigger. Reproduces in complete
+# isolation, just like checks 6-7.
+mkdir -p "$WORK/asyncval/src"
+cat > "$WORK/asyncval/lyric.toml" <<'TOML'
+[package]
+name = "AsyncValTest"
+version = "0.1.0"
+[project]
+name = "AsyncValTest"
+output = "single"
+output_assembly = "AsyncValTest.dll"
+[project.packages]
+"AsyncValTest" = "src/main.l"
+TOML
+cat > "$WORK/asyncval/src/main.l" <<'LYRIC'
+package AsyncValTest
+
+import Std.Core
+import Std.Task
+
+async func stepA(): Unit {
+  await Std.Task.delay(20)
+}
+
+async func stepB(): Unit {
+  await Std.Task.delay(20)
+}
+
+pub record Cell {
+  pub var output: String = ""
+}
+
+async func repro(cell: in Cell): Unit {
+  val id = "hello"
+  await stepA()
+  await stepB()
+  cell.output = id
+}
+
+@externInstance
+@externTarget("System.Threading.Tasks.Task.Wait")
+func taskWaitMs[T](t: in T, timeoutMs: in Int): Bool = false
+
+func main(): Unit {
+  val cell = Cell(output = "")
+  val t = repro(cell)
+  val _done = taskWaitMs(t, 5000)
+  println("actual=[" + cell.output + "]")
+}
+LYRIC
+
+echo "==> [8/8] a val surviving two different-callee awaits in one async func (lyric-lang#6249)"
+asyncval_build_output="$(cd "$WORK/asyncval" && lyric build 2>&1)"
+asyncval_build_status=$?
+echo "$asyncval_build_output"
+
+if [ "$asyncval_build_status" -ne 0 ]; then
+  echo "==> Unexpected failure (exit $asyncval_build_status) — expected this to build fine, investigate separately" >&2
+  note_unexpected
+else
+  asyncval_run_output="$(cd "$WORK/asyncval" && dotnet bin/AsyncValTest.dll 2>&1)"
+  asyncval_run_status=$?
+  echo "$asyncval_run_output"
+
+  if [ "$asyncval_run_status" -eq 0 ] && echo "$asyncval_run_output" | grep -q "actual=\[\]"; then
+    echo "==> Reproduced: this compiler still silently loses a val across a second different-callee await (lyric-lang#6249)"
+    note_reproduced
+  elif [ "$asyncval_run_status" -eq 0 ] && echo "$asyncval_run_output" | grep -q "actual=\[hello\]"; then
+    echo "==> Did NOT fail: this compiler correctly preserves the val across both awaits — bug #6249 is fixed"
+  else
+    echo "==> Unexpected output/exit ($asyncval_run_status) — not either known signature, investigate separately" >&2
+    note_unexpected
+  fi
+fi
+
 case "$worst" in
-  0) echo "==> Did NOT reproduce: all seven known bugs are fixed on this compiler — full build, run, and test all work" ;;
+  0) echo "==> Did NOT reproduce: all eight known bugs are fixed on this compiler — full build, run, and test all work" ;;
   1) echo "==> At least one known bug reproduced — see above for which" >&2 ;;
   2) echo "==> At least one check hit an unexpected failure — see above for which, investigate separately" >&2 ;;
 esac

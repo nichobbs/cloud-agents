@@ -113,6 +113,15 @@ a regression, not specific to this project, and distinct from
 [lyric-lang#5258](https://github.com/nichobbs/lyric-lang/issues/5258), a
 related but different MSIL bug about *cross*-package qualified `pub val`
 access) is **fixed in [v0.4.19](https://github.com/nichobbs/lyric-lang/releases/tag/v0.4.19)**.
+Bug 8 (a local `val` bound before one `await` silently losing its value if
+read again after a SECOND, different-callee `await` in the same async
+function — no exception, no diagnostic — found while root-causing a
+recurring production crash) is filed as
+[lyric-lang#6249](https://github.com/nichobbs/lyric-lang/issues/6249) and
+**still open as of v0.4.35**; unlike bugs 1–7, it doesn't block build/run/
+test, but it DOES need a source-level workaround — see
+`src/docker_manager.l`'s doc comments and `docs/lyric/gotchas.md`'s
+"Async" section.
 Run `./scripts/repro-compiler-bug.sh` to check which bugs your compiler
 still has before assuming a local failure needs a local fix. See
 `docs/BUILD.md` "Compiler notes" for full detail.
