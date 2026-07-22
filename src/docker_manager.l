@@ -18,6 +18,10 @@ pub record ResultCell {
   pub var isSuccess: Bool = false
   pub var output: String = ""
   pub var error: String = ""
+  // Carries a value that must survive from one async step to a LATER one in
+  // the same async function (see runSessionMessageAsync's doc comment for
+  // why this can't just be a local `val`).
+  pub var containerId: String = ""
 }
 
 // ─── BCL bindings for base64-encoding a JSON blob for env-var transport ───────
@@ -822,6 +826,25 @@ pub func streamSessionMessage(
 // fail at runtime with "unsupported method" in the current toolchain — see
 // docs/lyric/gotchas.md. This code had used them before any container run
 // path had ever actually executed.
+//
+// KNOWN COMPILER BUG (lyric-lang#6249): a local `val` bound before one
+// `await` and read again after a SECOND, later `await` in the same async
+// function can silently lose its value (confirmed via a minimal standalone
+// repro — even a bare string literal local reads back as "" after a second
+// await; contradicts the decision log's own D088/D089, which claims exactly
+// this was already fixed and tested). This function's `client`/`containerId`
+// locals used to survive exactly this way across every step below (five
+// different awaited callees in sequence) and are the leading suspect for the
+// recurring streamSessionMessage/AccessViolationException crash. Confirmed
+// workaround: a mutable record FIELD (cell.containerId here) survives
+// reliably across multiple awaits, unlike a bare local — so containerId is
+// threaded through cell.containerId instead. `client` is no longer held in a
+// local across steps either — a fresh dockerClient() is created per step
+// instead (already the established pattern elsewhere in this file, e.g.
+// partialContainerLogsAsync); dockerClient() only resolves a socket path/TCP
+// host, it doesn't hold an expensive connection, so this is not the
+// meaningful perf tradeoff the removed "one client per lifecycle" comment
+// (#372) suggested — correctness comes first here.
 async func runSessionMessageAsync(
   repoUrl: in String,
   branch: in String,
@@ -835,12 +858,11 @@ async func runSessionMessageAsync(
   extraRepos: in String,
   cell: in ResultCell,
 ): Unit {
-  // One client for the whole create-start-wait-logs-delete lifecycle below,
-  // instead of a fresh client per call (#372).
-  val client = dockerClient()
-  val createResult = await createRunnerContainer(client, repoUrl, branch, prompt, sessionId, harness, model, nativeSessionId, profileId, userId, extraRepos)
-  val containerId = match createResult {
-    case Ok(id) -> id
+  val createResult = await createRunnerContainer(dockerClient(), repoUrl, branch, prompt, sessionId, harness, model, nativeSessionId, profileId, userId, extraRepos)
+  match createResult {
+    case Ok(id) -> {
+      cell.containerId = id
+    }
     case Err(msg) -> {
       cell.isSuccess = false
       cell.error = msg
@@ -850,16 +872,16 @@ async func runSessionMessageAsync(
 
   // Persist container ID to the session store (best-effort: the run matters
   // more than the bookkeeping).
-  val _ = CloudAgents.SessionStore.updateSessionContainerFor(sessionId, userId, containerId)
+  val _ = CloudAgents.SessionStore.updateSessionContainerFor(sessionId, userId, cell.containerId)
 
-  val startResult = await startRunnerContainer(client, containerId)
+  val startResult = await startRunnerContainer(dockerClient(), cell.containerId)
   match startResult {
     case Ok(_) -> ()
     case Err(msg) -> {
       cell.isSuccess = false
       cell.error = msg
       // Best-effort cleanup: remove the container even if start failed.
-      await cleanupRunnerContainer(client, containerId, sessionId, userId)
+      await cleanupRunnerContainer(dockerClient(), cell.containerId, sessionId, userId)
       return ()
     }
   }
@@ -867,22 +889,22 @@ async func runSessionMessageAsync(
   // Block until the container process exits. If the wait call itself fails
   // (daemon unreachable, container vanished, etc.) we cannot safely fetch
   // complete logs, so we clean up and surface the error immediately.
-  val waitResult = await waitForContainer(client, containerId)
+  val waitResult = await waitForContainer(dockerClient(), cell.containerId)
   match waitResult {
     case Ok(_) -> ()
     case Err(msg) -> {
-      await cleanupRunnerContainer(client, containerId, sessionId, userId)
+      await cleanupRunnerContainer(dockerClient(), cell.containerId, sessionId, userId)
       cell.isSuccess = false
       cell.error = msg
       return ()
     }
   }
 
-  val logsResult = await getRunnerLogs(client, containerId)
+  val logsResult = await getRunnerLogs(dockerClient(), cell.containerId)
 
   // Always remove the ephemeral container after the run. Session state
   // (workspace and home volumes) persists independently of the container.
-  await cleanupRunnerContainer(client, containerId, sessionId, userId)
+  await cleanupRunnerContainer(dockerClient(), cell.containerId, sessionId, userId)
 
   match logsResult {
     case Ok(logs) -> {
@@ -890,7 +912,7 @@ async func runSessionMessageAsync(
       cell.output = logs
     }
     case Err(msg) -> {
-      println("WARNING: failed to retrieve final logs for container " + containerId + ": " + msg)
+      println("WARNING: failed to retrieve final logs for container " + cell.containerId + ": " + msg)
       cell.isSuccess = false
       cell.error = msg
     }
@@ -913,12 +935,15 @@ pub func terminateSessionContainer(containerId: in String): Result[Unit, String]
 }
 
 async func terminateSessionContainerAsync(containerId: in String, cell: in ResultCell): Unit {
-  // One client shared across the stop+delete pair below (#372).
-  val client = dockerClient()
+  // A fresh dockerClient() per call, not one `client` local shared across
+  // both awaits below (was #372's optimization) — see runSessionMessageAsync's
+  // doc comment (lyric-lang#6249): a local surviving two different-callee
+  // awaits in one async function can silently lose its value.
+  //
   // Stop is best-effort: the container may already have exited (Docker returns
   // 304/404 in that case). We always attempt remove regardless.
-  val _ = await stopRunnerContainer(client, containerId)
-  val deleteResult = await deleteRunnerContainer(client, containerId)
+  val _ = await stopRunnerContainer(dockerClient(), containerId)
+  val deleteResult = await deleteRunnerContainer(dockerClient(), containerId)
   match deleteResult {
     case Ok(_) -> {
       cell.isSuccess = true
