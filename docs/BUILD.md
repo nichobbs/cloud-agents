@@ -123,7 +123,13 @@ notes" for both. `slice[T].append()`
 fixed as of v0.4.18. An untyped top-level `String val`'s `.length` throwing
 an `IList` cast exception at runtime
 ([lyric-lang#5298](https://github.com/nichobbs/lyric-lang/issues/5298)) is
-fixed as of v0.4.19 — all seven known upstream compiler bugs are now fixed.
+fixed as of v0.4.19 — all seven of the bugs that blocked this project's
+build/run/test pipeline are now fixed. An eighth, different-in-kind bug
+([lyric-lang#6249](https://github.com/nichobbs/lyric-lang/issues/6249),
+open as of v0.4.35) doesn't block the pipeline — it's a silent runtime
+data-loss bug in a specific async pattern, found via manual investigation
+of a production crash, not a build/run/test blocker — see "Compiler notes"
+below.
 
 **Both previously-blocking `Lyric.Web` gaps are fixed as of the 0.4.26
 pin — the server now has the machinery to dispatch requests to this
@@ -329,6 +335,21 @@ first time. None of the seven is a characteristic of this project's
 manifest, dependencies, or source — each was found and root-caused using
 this project as the real-world test case that first got far enough to hit
 it.
+
+**An eighth bug, different in kind, is still open**
+([lyric-lang#6249](https://github.com/nichobbs/lyric-lang/issues/6249), as
+of v0.4.35): unlike bugs 1–7, this one doesn't block `lyric build`/`run`/
+`test` — it's a silent runtime data-loss bug (no exception, no diagnostic)
+in a specific `async func` pattern (a local `val` bound before one `await`
+loses its value if read again after a SECOND, different-callee `await` in
+the same function), found while root-causing a recurring production crash
+(`streamSessionMessage`'s `AccessViolationException`). **This one DOES
+need a source workaround** — see `src/docker_manager.l`'s
+`runSessionMessageAsync`/`terminateSessionContainerAsync` (fixed in PR
+#690: thread the affected value through a mutable record field instead of
+a local `val`, which survives reliably across multiple awaits). Revert
+that workaround once `./scripts/repro-compiler-bug.sh` check 8 reports the
+bug fixed upstream.
 
 **CI enforces a version floor matching this status**, read from the single
 checked-in [`MIN_LYRIC_VERSION`](../MIN_LYRIC_VERSION) file (currently
@@ -622,10 +643,13 @@ an untyped top-level `String val`'s `.length` now resolves correctly at
 runtime, and `CloudAgents.SessionTests` passes 4/4 — the full `lyric test`
 suite passes fully for the first time in this project's history. (The suite roster lives in lyric.toml's [project.tests]; per-suite counts aren't duplicated here.)
 
-**All seven known upstream compiler bugs are now fixed.** Nothing on this
-project's manifest, build config, or source needs to change for bug 7 —
-check `./scripts/repro-compiler-bug.sh` if a future `lyric` release
-regresses any of the seven.
+**All seven of the build/run/test-blocking upstream compiler bugs are now
+fixed.** Nothing on this project's manifest, build config, or source
+needs to change for bug 7 — check `./scripts/repro-compiler-bug.sh` if a
+future `lyric` release regresses any of the seven. **An eighth,
+different-in-kind bug (lyric-lang#6249) is still open** and, unlike bugs
+1–7, DOES require a source workaround — see the "Compiler notes" section
+above and `src/docker_manager.l`'s doc comments.
 
 ### A real bug this *did* surface in this project's own source
 

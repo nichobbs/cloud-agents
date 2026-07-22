@@ -900,13 +900,10 @@ async func runSessionMessageAsync(
     }
   }
 
-  val logsResult = await getRunnerLogs(dockerClient(), cell.containerId)
-
-  // Always remove the ephemeral container after the run. Session state
-  // (workspace and home volumes) persists independently of the container.
-  await cleanupRunnerContainer(dockerClient(), cell.containerId, sessionId, userId)
-
-  match logsResult {
+  // match immediately after this await, before any further await (lyric-lang#6249:
+  // logsResult must be read before a SECOND, different-callee await — the
+  // cleanup call right below — or it silently loses its value).
+  match await getRunnerLogs(dockerClient(), cell.containerId) {
     case Ok(logs) -> {
       cell.isSuccess = true
       cell.output = logs
@@ -917,6 +914,11 @@ async func runSessionMessageAsync(
       cell.error = msg
     }
   }
+
+  // Always remove the ephemeral container after the run. Session state
+  // (workspace and home volumes) persists independently of the container.
+  // Doesn't depend on the log-fetch outcome above, so it's safe to run after.
+  await cleanupRunnerContainer(dockerClient(), cell.containerId, sessionId, userId)
 }
 
 /// Terminate and delete a session container synchronously.
