@@ -10,3 +10,6 @@ cloud-agents.db*
 .env
 .api_token
 .encryption_key
+docker/extra-ca-certs/*.crt
+docker/extra-ca-certs/*.pem
+docker/extra-ca-certs/*.cer

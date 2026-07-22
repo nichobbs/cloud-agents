@@ -392,15 +392,20 @@ pub func modelsHandler(harness: in String): Result[String, Web.ApiError] {
 
 // ─── Harness availability (#523) ─────────────────────────────────────────────
 //
-// deploy/docker-compose.coolify.yml only builds the claude-code:base runner
-// image by default — codex-base/opencode-base/gemini-base are gated behind
-// Compose `profiles:` (COMPOSE_PROFILES) so a broken runner Dockerfile can't
-// block the whole app's deploy. Picking a harness whose image was never
-// built fails at container-creation time with a raw Docker "no such image"
-// error (docker_manager.l's imageForHarness). Rather than let the frontend
-// guess, the api service mirrors its own COMPOSE_PROFILES into
-// CLOUD_AGENTS_ENABLED_HARNESSES (see docker-compose.coolify.yml) and this
-// endpoint reports it, so the picker can show only what will actually work.
+// Every deployment path now builds all four runner images unconditionally
+// (deploy/docker-compose.yml's install-docker.sh always has, and
+// docker-compose.coolify.yml's codex-base/opencode-base/gemini-base are no
+// longer gated behind Compose `profiles:` either — see that file's own
+// comments for why they used to be and why that's no longer necessary).
+// CLOUD_AGENTS_ENABLED_HARNESSES stays unset by default on both, so
+// isHarnessEnabled's fail-open behavior below reports every harness
+// available with no per-deployment configuration needed. The env var still
+// exists as a real, deliberate narrowing knob: an operator who wants to
+// disable a harness on their own deployment can still set it. Picking a
+// harness whose image genuinely isn't built fails at container-creation
+// time with a raw Docker "no such image" error (docker_manager.l's
+// imageForHarness) — this endpoint exists so the frontend picker can show
+// only what will actually work instead of only failing on submit.
 func envOr(name: in String): String {
   var v = Env.GetEnvironmentVariable(name)
   if DotNetString.IsNullOrEmpty(v) {

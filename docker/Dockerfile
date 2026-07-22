@@ -98,6 +98,22 @@ COPY MIN_LYRIC_VERSION /tmp/min-lyric-version.txt
 RUN apt-get update && apt-get install -y --no-install-recommends curl ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
+# Optional corporate/proxy root CA trust (e.g. Zscaler TLS inspection) — see
+# docker/extra-ca-certs/README.md. A no-op when that directory holds only
+# its placeholder README (the common case); installs and trusts whatever
+# .crt/.pem/.cer files a local build dropped in there otherwise. Must run before
+# any of this stage's own outbound HTTPS calls (curl below, `lyric restore`
+# in the shim build) — each build stage is its own container with its own
+# CA trust store, so a host-trusted corporate root is invisible here
+# without this.
+COPY docker/extra-ca-certs /tmp/extra-ca-certs
+RUN for f in /tmp/extra-ca-certs/*.crt /tmp/extra-ca-certs/*.pem /tmp/extra-ca-certs/*.cer; do \
+      [ -f "$f" ] || continue; \
+      base="$(basename "$f")"; \
+      cp "$f" "/usr/local/share/ca-certificates/${base%.*}.crt"; \
+    done \
+    && update-ca-certificates
+
 # Lyric release RID matching THIS build's actual architecture (native — no
 # --platform override above, so this is whatever the host/builder actually
 # is), same x86_64->linux-x64 / aarch64->linux-arm64 mapping scripts/
@@ -148,8 +164,35 @@ ENV DEBIAN_FRONTEND=noninteractive
 # Base tooling + Node and npm from standard APT repositories (plain HTTP, avoiding SSL intercept issues).
 RUN apt-get update && apt-get install -y --no-install-recommends \
         git bash make python3 python3-pip curl ca-certificates jq nodejs npm \
-    && npm install -g @anthropic-ai/claude-code \
     && rm -rf /var/lib/apt/lists/*
+
+# Optional corporate/proxy root CA trust (e.g. Zscaler TLS inspection) — see
+# docker/extra-ca-certs/README.md. A no-op when that directory holds only
+# its placeholder README. Must run before npm install below, this stage's
+# own outbound HTTPS call — a separate container from the shim-builder
+# stage above, so its own CA trust needs the same treatment independently.
+# Trusts the cert(s) both at the OS level (update-ca-certificates, for
+# curl/git) AND via NODE_EXTRA_CA_CERTS — Node ships its own bundled CA
+# store and does NOT consult the OS trust store, so update-ca-certificates
+# alone is not enough to get npm past a corporate proxy's re-signed certs
+# (confirmed: npm still failed SELF_SIGNED_CERT_IN_CHAIN after
+# update-ca-certificates alone reported the cert added). The combined pem
+# is always created (even empty) so NODE_EXTRA_CA_CERTS can be set
+# unconditionally — Node treats a missing or empty file as a harmless
+# no-op (a warning at worst), so this is safe with nothing dropped into
+# extra-ca-certs/.
+COPY docker/extra-ca-certs /tmp/extra-ca-certs
+RUN : > /usr/local/share/ca-certificates/extra-combined.pem \
+    && for f in /tmp/extra-ca-certs/*.crt /tmp/extra-ca-certs/*.pem /tmp/extra-ca-certs/*.cer; do \
+      [ -f "$f" ] || continue; \
+      base="$(basename "$f")"; \
+      cp "$f" "/usr/local/share/ca-certificates/${base%.*}.crt"; \
+      cat "$f" >> /usr/local/share/ca-certificates/extra-combined.pem; \
+    done \
+    && update-ca-certificates
+ENV NODE_EXTRA_CA_CERTS=/usr/local/share/ca-certificates/extra-combined.pem
+
+RUN npm install -g @anthropic-ai/claude-code
 
 # Install the Lyric compiler to a system location — the EXACT SAME version
 # AND architecture RID the shim-builder stage above already resolved and

@@ -18,13 +18,37 @@ ENV DEBIAN_FRONTEND=noninteractive
 # npm-registry failures, the other documented cause of a mid-build failure.
 RUN apt-get update && apt-get install -y --no-install-recommends \
         git bash curl ca-certificates jq \
-    && ( n=0; until npm install -g opencode-ai@1.18.4; do \
-           n=$((n + 1)); \
-           if [ "$n" -ge 3 ]; then echo "npm install -g opencode-ai failed after 3 attempts" >&2; exit 1; fi; \
-           echo "npm install -g opencode-ai failed (attempt $n/3), retrying in 5s..." >&2; \
-           sleep 5; \
-         done ) \
     && rm -rf /var/lib/apt/lists/*
+
+# Optional corporate/proxy root CA trust (e.g. Zscaler TLS inspection) — see
+# extra-ca-certs/README.md. A no-op when that directory holds only its
+# placeholder README. Must run before the npm install below. Trusts the
+# cert(s) both at the OS level (update-ca-certificates, for curl/git) AND
+# via NODE_EXTRA_CA_CERTS — Node ships its own bundled CA store and does
+# NOT consult the OS trust store, so update-ca-certificates alone is not
+# enough to get npm past a corporate proxy's re-signed certs (confirmed:
+# npm still failed SELF_SIGNED_CERT_IN_CHAIN after update-ca-certificates
+# alone reported the cert added). The combined pem is always created (even
+# empty) so NODE_EXTRA_CA_CERTS can be set unconditionally — Node treats a
+# missing or empty file as a harmless no-op (a warning at worst), so this
+# is safe with nothing dropped into extra-ca-certs/.
+COPY extra-ca-certs /tmp/extra-ca-certs
+RUN : > /usr/local/share/ca-certificates/extra-combined.pem \
+    && for f in /tmp/extra-ca-certs/*.crt /tmp/extra-ca-certs/*.pem /tmp/extra-ca-certs/*.cer; do \
+      [ -f "$f" ] || continue; \
+      base="$(basename "$f")"; \
+      cp "$f" "/usr/local/share/ca-certificates/${base%.*}.crt"; \
+      cat "$f" >> /usr/local/share/ca-certificates/extra-combined.pem; \
+    done \
+    && update-ca-certificates
+ENV NODE_EXTRA_CA_CERTS=/usr/local/share/ca-certificates/extra-combined.pem
+
+RUN n=0; until npm install -g opencode-ai@1.18.4; do \
+      n=$((n + 1)); \
+      if [ "$n" -ge 3 ]; then echo "npm install -g opencode-ai failed after 3 attempts" >&2; exit 1; fi; \
+      echo "npm install -g opencode-ai failed (attempt $n/3), retrying in 5s..." >&2; \
+      sleep 5; \
+    done
 
 RUN useradd --create-home --home-dir /home/opencode-user --shell /bin/bash opencode-user
 WORKDIR /workspace

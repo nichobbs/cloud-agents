@@ -311,8 +311,17 @@ pub async func createRunnerContainer(
       // deploy/COOLIFY.md), so name which image was being created in both
       // the log line and the returned message rather than making an
       // operator guess or reproduce from the frontend to find out.
-      println("WARNING: container creation failed for session " + sessionId + " (image " + image + "): " + e.message)
-      return Err(error = "Docker API error creating container from image '" + image + "': " + e.message)
+      //
+      // e.message is a generic caller-supplied literal ("Create container
+      // failed") — lyric-docker's sendAndReadBody always fills e.details
+      // with the raw Docker daemon HTTP response body on failure, which is
+      // where the actually-useful text lives (e.g. `{"message":"No such
+      // image: opencode:base"}`). CloudAgents.DockerPolicy.formatDockerError
+      // appends it whenever non-empty instead of making the operator guess
+      // or reproduce from the frontend to find out.
+      val fullError = CloudAgents.DockerPolicy.formatDockerError(e.message, e.details)
+      println("WARNING: container creation failed for session " + sessionId + " (image " + image + "): " + fullError)
+      return Err(error = "Docker API error creating container from image '" + image + "': " + fullError)
     }
   }
 }
