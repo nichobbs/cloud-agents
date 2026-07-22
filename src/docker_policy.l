@@ -45,9 +45,8 @@ pub func hasExceededRunTimeout(nowMs: in Long, startMs: in Long, timeoutMs: in L
 /// resumes the long-poll), so one client-side timeout costs an extra round
 /// trip rather than failing the run outright. Deliberately does NOT try to
 /// distinguish "client-side timeout" from "real Docker error" by inspecting
-/// `DockerError`'s fields beyond `.message` (the only field this project has
-/// ever exercised, in the cleanup/logging paths elsewhere in this package) —
-/// retrying is bounded two independent ways instead, so a genuinely-doomed
+/// `DockerError`'s fields — retrying is bounded two independent ways
+/// instead, so a genuinely-doomed
 /// call (e.g. "no such container") still costs only a handful of extra
 /// round trips, not an unbounded spin:
 /// - `attempts` has not reached `maxAttempts` — a hard cap independent of
@@ -61,4 +60,20 @@ pub func shouldRetryContainerWait(attempts: in Int, maxAttempts: in Int, nowMs: 
     return false
   }
   return nowMs < deadlineMs
+}
+
+/// Appends a `DockerError`'s `details` (the raw Docker daemon HTTP response
+/// body — e.g. `{"message":"No such image: opencode:base"}`) to its generic
+/// `message` (a caller-supplied literal like "Create container failed"),
+/// whenever `details` is non-empty. Split out here — rather than left inline
+/// in `docker_manager.l`'s `createRunnerContainer` — for the same reason as
+/// every other function in this file: `CloudAgents.Docker` is an async
+/// package the `@test_module` harness cannot import from at all, so this
+/// pure formatting step needs to live in a plain package to get any direct
+/// test coverage.
+pub func formatDockerError(message: in String, details: in String): String {
+  if details.length > 0 {
+    return message + ": " + details
+  }
+  return message
 }

@@ -316,13 +316,12 @@ pub async func createRunnerContainer(
       // failed") — lyric-docker's sendAndReadBody always fills e.details
       // with the raw Docker daemon HTTP response body on failure, which is
       // where the actually-useful text lives (e.g. `{"message":"No such
-      // image: opencode:base"}`). Append it whenever non-empty instead of
-      // making the operator guess or reproduce from the frontend to find out.
-      val detail = if e.details.length > 0 { ": " + e.details } else { "" }
-      println(
-        "WARNING: container creation failed for session " + sessionId + " (image " + image + "): " + e.message + detail
-      )
-      return Err(error = "Docker API error creating container from image '" + image + "': " + e.message + detail)
+      // image: opencode:base"}`). CloudAgents.DockerPolicy.formatDockerError
+      // appends it whenever non-empty instead of making the operator guess
+      // or reproduce from the frontend to find out.
+      val fullError = CloudAgents.DockerPolicy.formatDockerError(e.message, e.details)
+      println("WARNING: container creation failed for session " + sessionId + " (image " + image + "): " + fullError)
+      return Err(error = "Docker API error creating container from image '" + image + "': " + fullError)
     }
   }
 }
