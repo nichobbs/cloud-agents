@@ -423,6 +423,8 @@ pub func sqrt(x: in Double): Double
 
 **Async functions cannot have `out`/`inout` params crossing `await` points.** Return a tuple or record instead.
 
+**A `val` bound before one `await` can silently lose its value after a SECOND, different-callee `await` in the same async function** (lyric-lang#6249, confirmed on v0.4.35 — `./scripts/repro-compiler-bug.sh` check 8). It reads back as the type's default (`""` for `String`) instead of the value it was bound to — no exception, no diagnostic. A `val` bound before exactly one `await` and read immediately after that same await is fine; a function *parameter* (not a `val`) or a `var`-mutated loop counter read across a loop that repeatedly awaits the *same* callee is also fine. The risk is specifically: bind a value, `await` something, `await` something ELSE, then read the value. Workaround: thread the value through a mutable record field (e.g. an existing `cell`-style carrier record already passed into the function) instead of a bare local — a field survives reliably across multiple awaits. See `src/docker_manager.l`'s `runSessionMessageAsync` for the pattern (fixed in PR #690 after this bug was root-caused as the leading suspect behind a recurring `streamSessionMessage` `AccessViolationException` crash).
+
 **`protected type` entries are mutually exclusive.** Only one `entry` runs at a time. `when:` blocks the caller (not spins) until condition is true. `invariant:` violation on entry exit = terminates the program.
 
 **`defer` runs on ALL exits** — normal return, early return, bug/exception. Multiple defers execute in reverse declaration order.
