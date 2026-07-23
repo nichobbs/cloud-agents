@@ -261,6 +261,39 @@ the run, tracked as
 [#387](https://github.com/nichobbs/cloud-agents/issues/387), still open —
 not explored past the point of filing.
 
+The marker-file fix above has one rollout gap, tracked as
+[#710](https://github.com/nichobbs/cloud-agents/issues/710) — **fixed**:
+a session that had already reached message 2+ *before* the marker-file
+scheme shipped has its native session ID already registered with the
+Claude CLI on the (shared, per-user+harness) home volume, but its own
+`/workspace` volume has no marker (the marker is new), so its first
+message after deploying the fix still looked like a genuine first
+invocation and replayed `--session-id` for an ID the CLI already had —
+reproducing the identical "already in use" failure, permanently, since
+every later message hit the same already-registered ID. `entrypoint.sh`
+now checks whether the CLI already has a transcript for that session ID
+anywhere under `~/.claude/projects` before deciding between
+`--session-id` and `--resume`, so an already-registered session recovers
+on its very next message with no manual intervention.
+
+Separately, `entrypoint.sh`'s host-CA-bundle registration
+(`/etc/host-ca.pem`, mounted from the operator's own
+`NODE_EXTRA_CA_CERTS`) copied the mounted file straight into
+`/usr/local/share/ca-certificates/host-ca.crt` before running
+`update-ca-certificates`. That file is commonly itself a multi-certificate
+bundle (a root + intermediate chain, or several CAs concatenated — the
+symptom that surfaced this: a corporate MDM agent's exported bundle), and
+`update-ca-certificates`' rehash step expects one certificate per file,
+warning `<file> does not contain exactly one certificate or CRL` and only
+reliably hashing the first certificate in the file. The certs still ended
+up trusted via the concatenated `/etc/ssl/certs/ca-certificates.crt` (the
+CAfile route curl/git/openssl use by default), so this was mostly cosmetic
+— but `docker/split-ca-bundle.sh` now splits any multi-certificate file
+into one file per certificate first, both here and in each of the four
+Dockerfiles' build-time `docker/extra-ca-certs/` handling, so every
+certificate gets its own hash symlink too and the warning goes away for
+the common case.
+
 **#387 does not share a root cause with the `getContainerLogs`
 raw/multiplex bug above** (checked per
 [#393](https://github.com/nichobbs/cloud-agents/issues/393), which raised
