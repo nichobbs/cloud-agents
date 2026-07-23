@@ -100,6 +100,15 @@ fi
 # project directory, so trusting it here is equivalent to a human accepting
 # the dialog once. Merged with jq rather than overwritten so any other keys
 # already in ~/.claude.json (e.g. a restored subscription login above) survive.
+#
+# This trust flag is broader than just our own /workspace/.claude/settings.json
+# (which we fully control and overwrite every run, below): it also governs
+# whether Claude Code auto-loads other trust-gated project config it finds in
+# the cloned repo itself, e.g. a repo-root .mcp.json — REPO_URL is
+# user-supplied and this entrypoint does not render/overwrite that path the
+# way it does /workspace/.claude/mcp.json. That's an intentional tradeoff
+# here, not an oversight: this container IS the sandbox, the same trust model
+# entrypoint-gemini.sh already states explicitly for --yolo.
 if command -v jq >/dev/null 2>&1; then
     base_json='{}'
     if [ -f "$HOME/.claude.json" ]; then
@@ -319,6 +328,13 @@ else
     if [ -n "$NATIVE_SESSION_ID" ]; then
         exec runuser -u claude-user -- claude -p "${PROMPT}" --model "${MODEL}" --resume "${NATIVE_SESSION_ID}" "${PERMISSION_PROMPT_ARGS[@]}"
     else
+        # Depends on NATIVE_SESSION_ID always being non-empty by the time the
+        # marker exists (src/handlers/sessions.l pre-assigns nativeSessionId =
+        # sessionId at session creation; the DB column is NOT NULL) — a bare
+        # --resume with no ID is invalid in --print mode and would reproduce
+        # the exact #386 failure this file was just fixed for. Unreachable
+        # today; kept only because nothing else in this branch needs it, not
+        # because it's expected to fire.
         exec runuser -u claude-user -- claude -p "${PROMPT}" --model "${MODEL}" --resume "${PERMISSION_PROMPT_ARGS[@]}"
     fi
 fi
