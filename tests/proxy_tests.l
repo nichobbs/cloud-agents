@@ -254,15 +254,15 @@ test "decryptedCredentialValue is Ok(None) on an empty vault without crypto" {
 
 test "providersForHarness returns correct provider mappings" {
   val claude = providersForHarness("claude")
-  assertEqualInt(claude.length(), 1, "claude length")
-  assertEqualString(claude[0], "anthropic", "claude content")
+  assertEqualInt(claude.length.toInt(), 1, "claude length")
+  assertEqual(claude[0], "anthropic", "claude content")
 
   val opencode = providersForHarness("opencode")
-  assertEqualInt(opencode.length(), 4, "opencode length")
-  assertEqualString(opencode[0], "anthropic", "opencode[0]")
-  assertEqualString(opencode[1], "openai", "opencode[1]")
-  assertEqualString(opencode[2], "google", "opencode[2]")
-  assertEqualString(opencode[3], "opencode", "opencode[3]")
+  assertEqualInt(opencode.length.toInt(), 4, "opencode length")
+  assertEqual(opencode[0], "anthropic", "opencode[0]")
+  assertEqual(opencode[1], "openai", "opencode[1]")
+  assertEqual(opencode[2], "google", "opencode[2]")
+  assertEqual(opencode[3], "opencode", "opencode[3]")
 }
 
 test "keyForProvider returns None for absent keys when vault is empty" {
