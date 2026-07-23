@@ -231,7 +231,7 @@ test "models proxy answers 404 when the vault has no provider keys" {
     case Ok(_) -> assertTrue(false, "empty vault must not reach any provider")
     case Err(e) -> assertEqualInt(e.status, 404, "no provider keys -> 404")
   }
-  // opencode maps to all three providers; still 404 with an empty vault.
+  // opencode maps to four providers; still 404 with an empty vault.
   match modelsHandler("opencode") {
     case Ok(_) -> assertTrue(false, "empty vault must not reach any provider")
     case Err(e) -> assertEqualInt(e.status, 404, "no provider keys -> 404")
@@ -249,5 +249,29 @@ test "decryptedCredentialValue is Ok(None) on an empty vault without crypto" {
     case Ok(None) -> ()
     case Ok(Some(_)) -> assertTrue(false, "empty vault must have no value")
     case Err(e) -> assertTrue(false, "lookup failed: " + CloudAgents.Repository.credentialErrorMessage(e))
+  }
+}
+
+test "providersForHarness returns correct provider mappings" {
+  val claude = providersForHarness("claude")
+  assertEqualInt(claude.length(), 1, "claude length")
+  assertEqualString(claude[0], "anthropic", "claude content")
+
+  val opencode = providersForHarness("opencode")
+  assertEqualInt(opencode.length(), 4, "opencode length")
+  assertEqualString(opencode[0], "anthropic", "opencode[0]")
+  assertEqualString(opencode[1], "openai", "opencode[1]")
+  assertEqualString(opencode[2], "google", "opencode[2]")
+  assertEqualString(opencode[3], "opencode", "opencode[3]")
+}
+
+test "keyForProvider returns None for absent keys when vault is empty" {
+  val dbPath = useFreshTestDb("proxy-key-lookup-empty")
+  defer {
+    cleanupTestDb(dbPath)
+  }
+  match keyForProvider("opencode") {
+    case Some(_) -> assertTrue(false, "empty vault must return None")
+    case None -> ()
   }
 }

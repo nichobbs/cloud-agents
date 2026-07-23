@@ -261,7 +261,7 @@ pub func githubChecksHandler(owner: in String, repo: in String, branch: in Strin
 // ─── Model-discovery proxy ────────────────────────────────────────────────────
 /// The providers whose model listings apply to a harness — must stay in sync
 /// with the frontend's lib/harnesses.ts provider mapping.
-func providersForHarness(harness: in String): slice[String] {
+pub func providersForHarness(harness: in String): slice[String] {
   if harness == "claude" {
     return ["anthropic"]
   }
@@ -279,7 +279,7 @@ func providersForHarness(harness: in String): slice[String] {
 
 /// The vault key for a provider (GOOGLE_API_KEY is accepted as a fallback
 /// alias for google's canonical GEMINI_API_KEY).
-func keyForProvider(provider: in String): Option[String] {
+pub func keyForProvider(provider: in String): Option[String] {
   if provider == "anthropic" {
     return vaultKeyOrNone("ANTHROPIC_API_KEY")
   }
