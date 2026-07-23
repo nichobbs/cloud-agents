@@ -2,13 +2,14 @@
 
 `docker_manager.l` and `docker_policy.l` in this directory are a **frozen
 snapshot** of `src/docker_manager.l` / `src/docker_policy.l` as they existed
-at commit `<PREFIX_COMMIT>`, before the `hasExceededRunTimeout`
-`AccessViolationException` workaround was applied in the commit right
-after `9aec3a6484f669afe434f214bdf511b99de99e09` (see
-`docs/BUILD.md`/`docs/lyric/gotchas.md`). `scripts/repro-crosspkg-long-crash.sh`
-uses this snapshot on purpose — the live `src/` no longer contains the
-crashing pattern, so copying the current source here would silently stop
-reproducing the bug.
+at commit
+[`9aec3a6484f669afe434f214bdf511b99de99e09`](https://github.com/nichobbs/cloud-agents/commit/9aec3a6484f669afe434f214bdf511b99de99e09),
+the last commit before the `hasExceededRunTimeout`
+`AccessViolationException` workaround (see
+`docs/BUILD.md`/`docs/lyric/gotchas.md` for the full narrative).
+`scripts/repro-crosspkg-long-crash.sh` uses this snapshot on purpose — the
+live `src/` no longer contains the crashing pattern, so copying the
+current source here would silently stop reproducing the bug.
 
 The other `stub_*.l` files are hand-written stand-ins for every package
 `docker_manager.l` imports (`CloudAgents.Db`, `NetworkPolicy`, `Repository`,

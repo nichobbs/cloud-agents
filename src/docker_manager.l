@@ -110,9 +110,9 @@ func taskWaitMs[T](t: in T, timeoutMs: in Int): Bool = false
 /// docs/BUILD.md, docs/lyric/gotchas.md). `TickCount` wraps to negative
 /// roughly every 24.9 days of host uptime; a comparison spanning that wrap
 /// reads as "not yet elapsed" when it actually has. Acceptable here: the
-/// windows this bounds are a few minutes at most, so hitting the exact
-/// wraparound instant is astronomically unlikely, and understating a
-/// timeout is far cheaper than the crash this works around.
+/// windows this bounds are 30 minutes at most (`runWallClockCapMs`), so
+/// hitting the exact wraparound instant is astronomically unlikely, and
+/// understating a timeout is far cheaper than the crash this works around.
 @externTarget("System.Environment.get_TickCount")
 func tickCountMs(): Int = 0
 
@@ -791,11 +791,17 @@ pub func streamSessionMessage(
     // docs/BUILD.md for the standalone repro and full narrative. Workaround:
     // approximate elapsed time with an Int accumulator of each tick's
     // `pollMs` instead of a `Long` epoch-millisecond subtraction — avoids
-    // `Long` arithmetic in this loop entirely. Coarser than true wall-clock
-    // time (drifts by up to one poll interval, and does not account for
-    // time spent inside a slow `partialContainerLogs`/`writeChunk` call
-    // itself), but adequate for a 30-minute safety cap. Revert to the
-    // cross-package `Long` comparison once fixed upstream.
+    // `Long` arithmetic in this loop entirely. This is an APPROXIMATION,
+    // not a measurement: it only counts each tick's intended `pollMs` wait,
+    // not the actual wall-clock time that tick took — a slow
+    // `partialContainerLogs`/`writeChunk` call (or general scheduling
+    // delay) adds real elapsed time that never gets added to
+    // `elapsedPollMs`, so in the worst case this UNDERcounts by an
+    // unbounded amount, not just one poll interval. Acceptable for a
+    // 30-minute safety backstop (understating a timeout is far cheaper
+    // than the crash this works around), but not a substitute for real
+    // wall-clock timing if this cap's precision ever matters more. Revert
+    // to the cross-package `Long` comparison once fixed upstream.
     elapsedPollMs = elapsedPollMs + pollMs
     if elapsedPollMs > runWallClockCapMs {
       timedOut = true
