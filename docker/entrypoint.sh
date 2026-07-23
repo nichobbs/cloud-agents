@@ -109,18 +109,39 @@ fi
 # way it does /workspace/.claude/mcp.json. That's an intentional tradeoff
 # here, not an oversight: this container IS the sandbox, the same trust model
 # entrypoint-gemini.sh already states explicitly for --yolo.
+#
+# ~/.claude.json lives on the home volume, which is shared across all of a
+# user's sessions (docker_manager.l's homeVolumeBindFor is keyed on
+# user+harness, not sessionId) — and unlike this file's other ~/.claude.json
+# writes above, which are gated on the file being absent (a true first-run
+# case), this block would otherwise run a read-modify-write on EVERY message
+# of EVERY session for that user. Two of that user's sessions genuinely can
+# run concurrently (their own containers, their own per-session locks; see
+# docs/phase2-session-management.md), so an unconditional write here would
+# race an unrelated concurrent write to the same file (e.g. an OAuth token
+# refresh) and could clobber it with our stale read. Skip the write entirely
+# once the flag is already set — after the first message, every later run is
+# a pure read, so the race window shrinks to first-use only. The temp file
+# name is PID-suffixed so two sessions racing that first write don't also
+# collide with each other's temp file.
 if command -v jq >/dev/null 2>&1; then
-    base_json='{}'
-    if [ -f "$HOME/.claude.json" ]; then
-        base_json=$(cat "$HOME/.claude.json")
+    already_trusted=0
+    if [ -f "$HOME/.claude.json" ] && jq -e '.projects["/workspace"].hasTrustDialogAccepted == true' "$HOME/.claude.json" >/dev/null 2>&1; then
+        already_trusted=1
     fi
-    if printf '%s' "${base_json}" | jq '.projects["/workspace"].hasTrustDialogAccepted = true' > "$HOME/.claude.json.tmp" 2>/dev/null; then
-        mv "$HOME/.claude.json.tmp" "$HOME/.claude.json"
-        chown claude-user:claude-user "$HOME/.claude.json"
-        chmod 600 "$HOME/.claude.json"
-    else
-        rm -f "$HOME/.claude.json.tmp"
-        echo "entrypoint: could not pre-accept the workspace trust dialog, continuing without it" >&2
+    if [ "$already_trusted" != "1" ]; then
+        base_json='{}'
+        if [ -f "$HOME/.claude.json" ]; then
+            base_json=$(cat "$HOME/.claude.json")
+        fi
+        if printf '%s' "${base_json}" | jq '.projects["/workspace"].hasTrustDialogAccepted = true' > "$HOME/.claude.json.tmp.$$" 2>/dev/null; then
+            mv "$HOME/.claude.json.tmp.$$" "$HOME/.claude.json"
+            chown claude-user:claude-user "$HOME/.claude.json"
+            chmod 600 "$HOME/.claude.json"
+        else
+            rm -f "$HOME/.claude.json.tmp.$$"
+            echo "entrypoint: could not pre-accept the workspace trust dialog, continuing without it" >&2
+        fi
     fi
 fi
 
