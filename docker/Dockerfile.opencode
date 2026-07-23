@@ -7,7 +7,7 @@
 # Build:  docker build -t opencode:base -f docker/Dockerfile.opencode docker
 # Arch:   linux/amd64
 
-FROM --platform=linux/amd64 node:20-slim
+FROM node:20-slim
 
 ENV DEBIAN_FRONTEND=noninteractive
 

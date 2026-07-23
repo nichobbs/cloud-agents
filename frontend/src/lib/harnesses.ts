@@ -44,7 +44,7 @@ export const HARNESSES: Record<string, HarnessConfig> = {
       { id: 'gemini-2.5-pro', label: 'Gemini 2.5 Pro' },
     ],
     defaultModel: 'claude-sonnet-4-6',
-    providers: ['anthropic', 'openai', 'google'],
+    providers: ['anthropic', 'openai', 'google', 'opencode'],
   },
   gemini: {
     label: 'Gemini CLI',

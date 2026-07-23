@@ -271,6 +271,9 @@ func providersForHarness(harness: in String): slice[String] {
   if harness == "gemini" {
     return ["google"]
   }
+  if harness == "opencode" {
+    return ["anthropic", "openai", "google", "opencode"]
+  }
   return ["anthropic", "openai", "google"]
 }
 
@@ -287,6 +290,12 @@ func keyForProvider(provider: in String): Option[String] {
     match vaultKeyOrNone("GEMINI_API_KEY") {
       case Some(v) -> return Some(value = v)
       case None -> return vaultKeyOrNone("GOOGLE_API_KEY")
+    }
+  }
+  if provider == "opencode" {
+    match vaultKeyOrNone("OPENCODE_ZEN_API_KEY") {
+      case Some(v) -> return Some(value = v)
+      case None -> return vaultKeyOrNone("OPENCODE_API_KEY")
     }
   }
   return None
@@ -331,6 +340,11 @@ func providerModelsBody(provider: in String, key: in String): Result[String, Str
     val names: slice[String] = ["Authorization"]
     val values: slice[String] = ["Bearer " + key]
     return CloudAgents.GitHubApi.httpGetWithHeaders("https://api.openai.com/v1/models", names, values, proxyUserAgent)
+  }
+  if provider == "opencode" {
+    val names: slice[String] = ["Authorization"]
+    val values: slice[String] = ["Bearer " + key]
+    return CloudAgents.GitHubApi.httpGetWithHeaders("https://opencode.ai/zen/v1/models", names, values, proxyUserAgent)
   }
   val names: slice[String] = ["x-goog-api-key"]
   val values: slice[String] = [key]
