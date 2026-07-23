@@ -167,6 +167,8 @@ jobs:
             scripts/test-reconcile-repos.sh \
             scripts/test-opencode-entrypoint.sh \
             scripts/test-lyric-version-resolution.sh \
+            scripts/test-split-ca-bundle.sh \
+            docker/split-ca-bundle.sh \
             scripts/check-compose-paths.sh \
             scripts/repro-compiler-bug.sh \
             scripts/repro-web-bug.sh \
@@ -201,6 +203,12 @@ jobs:
       # shim-builder stage, plus this file's pinned-ARG parsing below (#660).
       - name: Test Lyric version-resolution shell logic
         run: ./scripts/test-lyric-version-resolution.sh
+
+      # Regression test for docker/split-ca-bundle.sh (#716): single-cert
+      # passthrough, multi-cert bundle split, mixed cert+CRL bundle split
+      # (#714), and non-PEM passthrough.
+      - name: Test split-ca-bundle.sh
+        run: ./scripts/test-split-ca-bundle.sh
 
       # Guards against the class of bug in nichobbs/cloud-agents#464: the two
       # deploy compose files use different relative-path conventions (one
