@@ -157,3 +157,41 @@ proxy's single path segment). Browser-held provider keys are therefore now
   fallback; the direct browser path (and this ADR's remaining trade-off) can
   be removed entirely once slashed-branch routing lands and old backends age
   out.
+
+---
+
+## ADR-007: Pre-accept the Claude harness's workspace trust dialog
+
+**Context**: Claude Code asks interactively whether to trust a project
+directory before honoring `settings.json`'s `permissions.allow` entries or
+auto-loading other trust-gated project config (notably a repo-root
+`.mcp.json`). `docker/entrypoint.sh` runs `claude -p` non-interactively, so
+that prompt can never be answered — every run printed a warning and fell
+back to unconfigured defaults (fixed in #705 by pre-accepting `/workspace`
+in `~/.claude.json` before invoking `claude`).
+
+**Consequence worth recording** (raised in #705's review, #711):
+`/workspace` is populated by cloning `REPO_URL`, which is user-supplied.
+Pre-accepting its trust means that if a cloned repo ships its own root
+`.mcp.json`, Claude Code will now auto-load it and start whatever MCP
+servers it declares, with no human confirmation — previously impossible
+(the dialog blocked everything), now live.
+
+**Decision**: Accept this. It is not a novel exposure for this project:
+`docker/entrypoint-gemini.sh` already runs its harness with `--yolo`
+("the container itself is the sandbox, same trust model as the other
+harnesses") — an even broader auto-approval than a trust dialog would
+have gated. The Claude harness now matches that existing precedent rather
+than being the one harness still (uselessly) blocked by a prompt nothing
+can answer.
+
+**Consequences**:
+
+- A malicious or compromised `REPO_URL` can register and run MCP servers
+  inside the runner container with no human review step, same as it
+  already could invoke arbitrary tools once the harness starts working the
+  repo.
+- Containment still rests on the container being the trust boundary (fresh
+  per session, no host access beyond what's explicitly mounted/exposed) —
+  if that sandboxing assumption ever changes, this decision needs
+  revisiting alongside `entrypoint-gemini.sh`'s `--yolo`.

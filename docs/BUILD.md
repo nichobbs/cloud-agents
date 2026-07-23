@@ -231,18 +231,35 @@ fixed doing this (neither is a cloud-agents defect):
    0.4.31, or re-run `./scripts/repro-compiler-bug.sh`-style verification
    against a live daemon after bumping).
 
-Two separate, narrower gaps surfaced during this verification and remain
-open, both `src/` / `docker/entrypoint.sh` concerns, not `Lyric.Docker`/
-compiler issues: the container's own `entrypoint.sh`/CLI invocation
-errored on a first-run session (`--resume requires a valid session ID
-or session title`), tracked as
-[#386](https://github.com/nichobbs/cloud-agents/issues/386); and the
+Two separate, narrower gaps surfaced during this verification, both
+`src/` / `docker/entrypoint.sh` concerns, not `Lyric.Docker`/compiler
+issues: the container's own `entrypoint.sh`/CLI invocation errored on a
+first-run session (`--resume requires a valid session ID or session
+title`), tracked as
+[#386](https://github.com/nichobbs/cloud-agents/issues/386) — **fixed**:
+`docker/entrypoint.sh`'s "is this the first invocation" check tested for
+`/workspace/.claude/history.jsonl`, a file Claude Code never actually
+writes (its real conversation storage,
+`~/.claude/projects/<slug>/<session-id>.jsonl`, lives on the *home*
+volume, which is shared per user+harness rather than per session — see
+`docs/phase2-session-management.md` "Credential Management"). That stale
+check made every message look like the first one: it re-ran an
+unconditional `claude -p ... --resume` seed step with no session ID
+(always failing with the error above) and then replayed `--session-id`
+on message 2+, which the CLI also rejected once the session was already
+registered (`Session ID ... is already in use`). The entrypoint now
+tracks first-invocation state itself with a marker file on the
+(genuinely session-scoped) workspace volume, and the broken seed step is
+removed. Also fixed alongside it: a related, previously-unfiled issue
+where the workspace's trust dialog could never be accepted
+non-interactively, causing `settings.json`'s `permissions.allow` entries
+to be silently ignored on every run — `entrypoint.sh` now pre-accepts it
+via `~/.claude.json`; and the
 session's polled `GET /api/sessions/{id}/output` endpoint returned an
 empty `output` even though the SSE stream carried real chunks during
 the run, tracked as
-[#387](https://github.com/nichobbs/cloud-agents/issues/387). Neither is
-explored past the point of filing; tracked as follow-ups rather than
-blocking this verification pass.
+[#387](https://github.com/nichobbs/cloud-agents/issues/387), still open —
+not explored past the point of filing.
 
 **#387 does not share a root cause with the `getContainerLogs`
 raw/multiplex bug above** (checked per

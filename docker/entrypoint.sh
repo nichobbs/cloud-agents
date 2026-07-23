@@ -25,11 +25,17 @@
 #   CLOUD_AGENTS_CALLBACK_TOKEN - per-session callback bearer token (ditto)
 #
 # State persists across runs via two mounted volumes:
-#   /workspace            - the cloned repository + .claude session files
-#   /home/claude-user     - the user's authenticated ~/.claude credentials
+#   /workspace            - the cloned repository + our own mcp.json/settings.json
+#                            and a NATIVE_SESSION_MARKER file (see below); this
+#                            volume is per-session
+#   /home/claude-user     - the user's authenticated ~/.claude credentials AND
+#                            Claude Code's own conversation history
+#                            (~/.claude/projects/...); this volume is shared
+#                            across all of a user's sessions (per user+harness,
+#                            not per session — docker_manager.l)
 #
 # Each container handles exactly one prompt and then exits; --resume reads the
-# conversation history from the workspace so context survives.
+# conversation history from ~/.claude on the home volume so context survives.
 
 set -euo pipefail
 
@@ -82,6 +88,61 @@ fi
 if [ -z "${PROMPT:-}" ]; then
     echo "entrypoint: PROMPT is required" >&2
     exit 64
+fi
+
+# Pre-accept the workspace trust dialog. Claude Code normally asks
+# interactively whether to trust a project directory before honoring
+# settings.json's permissions.allow entries; this runner is always
+# non-interactive (-p), so that prompt can never be answered, and every
+# invocation would otherwise print "Ignoring N permissions.allow entries...
+# this workspace has not been trusted" and fall back to unconfigured
+# defaults. /workspace is always this container's (and every container's)
+# project directory, so trusting it here is equivalent to a human accepting
+# the dialog once. Merged with jq rather than overwritten so any other keys
+# already in ~/.claude.json (e.g. a restored subscription login above) survive.
+#
+# This trust flag is broader than just our own /workspace/.claude/settings.json
+# (which we fully control and overwrite every run, below): it also governs
+# whether Claude Code auto-loads other trust-gated project config it finds in
+# the cloned repo itself, e.g. a repo-root .mcp.json — REPO_URL is
+# user-supplied and this entrypoint does not render/overwrite that path the
+# way it does /workspace/.claude/mcp.json. That's an intentional tradeoff
+# here, not an oversight: this container IS the sandbox, the same trust model
+# entrypoint-gemini.sh already states explicitly for --yolo.
+#
+# ~/.claude.json lives on the home volume, which is shared across all of a
+# user's sessions (docker_manager.l's homeVolumeBindFor is keyed on
+# user+harness, not sessionId) — and unlike this file's other ~/.claude.json
+# writes above, which are gated on the file being absent (a true first-run
+# case), this block would otherwise run a read-modify-write on EVERY message
+# of EVERY session for that user. Two of that user's sessions genuinely can
+# run concurrently (their own containers, their own per-session locks; see
+# docs/phase2-session-management.md), so an unconditional write here would
+# race an unrelated concurrent write to the same file (e.g. an OAuth token
+# refresh) and could clobber it with our stale read. Skip the write entirely
+# once the flag is already set — after the first message, every later run is
+# a pure read, so the race window shrinks to first-use only. The temp file
+# name is PID-suffixed so two sessions racing that first write don't also
+# collide with each other's temp file.
+if command -v jq >/dev/null 2>&1; then
+    already_trusted=0
+    if [ -f "$HOME/.claude.json" ] && jq -e '.projects["/workspace"].hasTrustDialogAccepted == true' "$HOME/.claude.json" >/dev/null 2>&1; then
+        already_trusted=1
+    fi
+    if [ "$already_trusted" != "1" ]; then
+        base_json='{}'
+        if [ -f "$HOME/.claude.json" ]; then
+            base_json=$(cat "$HOME/.claude.json")
+        fi
+        if printf '%s' "${base_json}" | jq '.projects["/workspace"].hasTrustDialogAccepted = true' > "$HOME/.claude.json.tmp.$$" 2>/dev/null; then
+            mv "$HOME/.claude.json.tmp.$$" "$HOME/.claude.json"
+            chown claude-user:claude-user "$HOME/.claude.json"
+            chmod 600 "$HOME/.claude.json"
+        else
+            rm -f "$HOME/.claude.json.tmp.$$"
+            echo "entrypoint: could not pre-accept the workspace trust dialog, continuing without it" >&2
+        fi
+    fi
 fi
 
 # Restore a Claude subscription (OAuth) login from the vault on a fresh home
@@ -228,11 +289,6 @@ fi
 # never blocks the actual prompt run.
 /usr/local/bin/inject-library.sh "claude" || echo "entrypoint: library injection failed, continuing without it" >&2
 
-# Very first invocation? Seed the session so --resume has history to attach to.
-if [ ! -f /workspace/.claude/history.jsonl ]; then
-    runuser -u claude-user -- claude -p "Initialise session" --model "${MODEL}" --resume || true
-fi
-
 # Recursively chown the workspace after creating templates/directories as root
 # so that 'claude-user' has full write access to history and configs.
 chown -R claude-user:claude-user /workspace || true
@@ -256,10 +312,34 @@ fi
 # Run the actual prompt. stdout is captured by the API server and streamed to
 # the browser as SSE.
 #
-# If /workspace/.claude/history.jsonl does not exist, this is the very first invocation,
-# so we pass --session-id "${NATIVE_SESSION_ID}" to initialize the session.
-# On subsequent runs, we pass --resume to continue.
-if [ ! -f /workspace/.claude/history.jsonl ]; then
+# Whether this is the very first invocation for this native session is NOT
+# determined by /workspace/.claude/history.jsonl: Claude Code never actually
+# writes a file by that name. Its own conversation storage
+# (~/.claude/projects/<slug>/<session-id>.jsonl) lives on the *home* volume,
+# which docker_manager.l mounts per user+harness, not per session
+# (docs/phase2-session-management.md "Credential Management") — so it
+# persists across every session for that user, while a stale/absent check
+# here made every message look like the first one. That replayed
+# --session-id "${NATIVE_SESSION_ID}" on message 2+, and the CLI rejected it
+# with "Session ID ... is already in use" because message 1 had already
+# registered it. (Separately, the old first-invocation check also used to
+# gate a broken unconditional `claude -p ... --resume` seed step with no
+# session ID, which always failed with "--resume requires a valid session
+# ID..." in --print mode — that's #386, fixed here by removing the seed
+# step entirely, since the real invocation below already handles the
+# first-run case correctly.)
+#
+# Track "have we already initialized this native session" ourselves instead,
+# with a marker file on the workspace volume, which genuinely is
+# session-scoped. Written just before exec (not after, since exec replaces
+# this process and nothing after it would ever run): once --session-id has
+# been sent at all, the CLI may have registered it even if the run then
+# fails for an unrelated reason, so every later invocation must use --resume
+# regardless of how this one turns out.
+NATIVE_SESSION_MARKER=/workspace/.claude/.native-session-initialized
+if [ ! -f "$NATIVE_SESSION_MARKER" ]; then
+    touch "$NATIVE_SESSION_MARKER"
+    chown claude-user:claude-user "$NATIVE_SESSION_MARKER" || true
     if [ -n "$NATIVE_SESSION_ID" ]; then
         exec runuser -u claude-user -- claude -p "${PROMPT}" --model "${MODEL}" --session-id "${NATIVE_SESSION_ID}" "${PERMISSION_PROMPT_ARGS[@]}"
     else
@@ -269,6 +349,13 @@ else
     if [ -n "$NATIVE_SESSION_ID" ]; then
         exec runuser -u claude-user -- claude -p "${PROMPT}" --model "${MODEL}" --resume "${NATIVE_SESSION_ID}" "${PERMISSION_PROMPT_ARGS[@]}"
     else
+        # Depends on NATIVE_SESSION_ID always being non-empty by the time the
+        # marker exists (src/handlers/sessions.l pre-assigns nativeSessionId =
+        # sessionId at session creation; the DB column is NOT NULL) — a bare
+        # --resume with no ID is invalid in --print mode and would reproduce
+        # the exact #386 failure this file was just fixed for. Unreachable
+        # today; kept only because nothing else in this branch needs it, not
+        # because it's expected to fire.
         exec runuser -u claude-user -- claude -p "${PROMPT}" --model "${MODEL}" --resume "${PERMISSION_PROMPT_ARGS[@]}"
     fi
 fi
