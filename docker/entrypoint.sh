@@ -60,10 +60,16 @@ fi
 
 # If a host-provided CA certificate bundle is mounted at /etc/host-ca.pem,
 # register it in the container's system CA trust store so that curl, git, and Node
-# trust the host's SSL-intercepting proxy natively and globally.
+# trust the host's SSL-intercepting proxy natively and globally. The mounted
+# file is the operator's own NODE_EXTRA_CA_CERTS value, which is commonly
+# itself a multi-certificate bundle (a root + intermediate chain, or several
+# CAs concatenated) — split it into one file per certificate first so
+# update-ca-certificates' rehash step doesn't warn "does not contain exactly
+# one certificate or CRL" and skip hashing every certificate but the first
+# (see docker/split-ca-bundle.sh's header comment).
 if [ -f "/etc/host-ca.pem" ]; then
     echo "entrypoint: registering host CA certificate bundle in system store..." >&2
-    cp /etc/host-ca.pem /usr/local/share/ca-certificates/host-ca.crt
+    /usr/local/bin/split-ca-bundle.sh /etc/host-ca.pem /usr/local/share/ca-certificates host-ca
     update-ca-certificates >/dev/null
 fi
 
@@ -341,6 +347,24 @@ if [ ! -f "$NATIVE_SESSION_MARKER" ]; then
     touch "$NATIVE_SESSION_MARKER"
     chown claude-user:claude-user "$NATIVE_SESSION_MARKER" || true
     if [ -n "$NATIVE_SESSION_ID" ]; then
+        # Self-heal (#710): a session that already reached message 2+ BEFORE
+        # this marker-file scheme shipped has its NATIVE_SESSION_ID already
+        # registered with the Claude CLI under ~/.claude/projects on the home
+        # volume (shared across a user's sessions, not per-session — see the
+        # comment above) even though ITS OWN /workspace has no marker, since
+        # the marker is new. Without this check, this run would look like a
+        # genuine first invocation and replay --session-id for an ID the CLI
+        # already has, reproducing the exact "already in use" failure this
+        # file was fixed for — permanently, since every later run keeps
+        # hitting the same already-registered ID. Detected by checking
+        # whether the CLI already has a transcript for this ID anywhere on
+        # the home volume, rather than attempting --session-id and parsing
+        # stderr for the specific failure, which would also mean buffering
+        # the whole run instead of exec-ing straight into it and streaming
+        # output live to the API server as it happens.
+        if [ -n "$(find "$HOME/.claude/projects" -name "${NATIVE_SESSION_ID}.jsonl" 2>/dev/null | head -n 1)" ]; then
+            exec runuser -u claude-user -- claude -p "${PROMPT}" --model "${MODEL}" --resume "${NATIVE_SESSION_ID}" "${PERMISSION_PROMPT_ARGS[@]}"
+        fi
         exec runuser -u claude-user -- claude -p "${PROMPT}" --model "${MODEL}" --session-id "${NATIVE_SESSION_ID}" "${PERMISSION_PROMPT_ARGS[@]}"
     else
         exec runuser -u claude-user -- claude -p "${PROMPT}" --model "${MODEL}" "${PERMISSION_PROMPT_ARGS[@]}"

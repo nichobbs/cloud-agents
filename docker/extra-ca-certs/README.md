@@ -27,6 +27,20 @@ intercepting proxy (confirmed by testing against a real TLS-intercepting
 proxy: `npm install` kept failing `SELF_SIGNED_CERT_IN_CHAIN` even after
 `update-ca-certificates` reported the cert added to the OS store).
 
+A dropped file may contain a single certificate or a whole bundle (a root +
+intermediate chain, or several unrelated CAs concatenated) — each build
+splits it into one certificate (or CRL) per file (`docker/split-ca-bundle.sh`)
+before handing it to `update-ca-certificates`, so a bundle doesn't trigger
+its `does not contain exactly one certificate or CRL` warning or leave
+anything past the first entry un-hashed.
+
+Give files distinct basenames (`corp-root.crt`, `corp-intermediate.pem`,
+not `corp.crt` and `corp.pem`) — the destination filename is derived from
+the source basename with its extension stripped, so two files that only
+differ by extension collide on the same prefix and one silently
+overwrites (or, for a multi-cert bundle, partially interleaves with) the
+other's output.
+
 This directory is otherwise empty and gitignored except for this file —
 files you add here are for your own local builds only and are never
 committed. A build with no certs added here is unaffected (no-op).
