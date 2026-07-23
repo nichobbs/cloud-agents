@@ -100,6 +100,16 @@ fi
 claude -p "$PROMPT" --resume
 ```
 
+**This sketch's `.claude/history.jsonl` check turned out to be wrong** —
+Claude Code never actually writes a file by that name; it stores
+conversation history under `~/.claude/projects/...` instead. The sketch's
+bare `claude -p ... --resume` (no session ID) is also invalid in `--print`
+mode. Both were carried into the real `docker/entrypoint.sh` and caused
+real failures (#386 and a related session-ID collision on message 2+),
+fixed by tracking first-invocation state with the runner's own marker file
+instead — see `docker/entrypoint.sh`'s comments for the actual, current
+logic.
+
 3. Frontend Prototype
 
 ```javascript
