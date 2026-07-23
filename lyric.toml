@@ -74,9 +74,9 @@ output_assembly = "CloudAgents.dll"
 "CloudAgents.RepoArtifactsTests" = "tests/repo_artifacts_tests.l"
 
 [nuget]
-"Lyric.Web"             = "0.4.34"
-"Lyric.Docker"          = "0.4.34"
-"Std.Logging"           = "0.4.34"
+"Lyric.Web"             = "0.4.36"
+"Lyric.Docker"          = "0.4.36"
+"Std.Logging"           = "0.4.36"
 "Microsoft.Data.Sqlite" = "10.0.9"
 "SourceGear.sqlite3"    = "3.53.3"
 "SQLitePCLRaw.provider.dynamic_cdecl" = "3.0.3"

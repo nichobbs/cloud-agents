@@ -9,10 +9,10 @@
 # immediately on startup (lyric-lang#5177). See docs/BUILD.md "Compiler
 # notes" for full detail and current release status.
 #
-# Not yet investigated: this may not stay running indefinitely under
-# normal use in every environment — see the "Not yet investigated"
-# paragraph under docs/BUILD.md's "## Dependencies" heading for what's
-# been observed and what hasn't been ruled out yet.
+# Was crashing the whole process with an AccessViolationException on every
+# message sent (root-caused and worked around as of v0.4.36) — see
+# docs/BUILD.md "Compiler notes" (ninth entry) and
+# scripts/repro-crosspkg-long-crash.sh.
 #
 # Requirements: lyric 0.4.19+ (see docs/BUILD.md for the full bug history —
 # this script itself only needed 0.4.17+), dotnet 10.x, Docker (for runner
