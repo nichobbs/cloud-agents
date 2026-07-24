@@ -58,14 +58,12 @@ create-fallback-branch.sh "entrypoint-codex" "${HARNESS}" "${BRANCH}" "${SESSION
 
 # Codex can't use a rules file for branch policy (it would override the
 # user's AGENTS.md), so the instruction is prepended to the prompt instead.
-# Only send it when we're still on the starting branch — if the fallback
-# branch was created (or the agent already renamed), resending would risk
-# a mid-task rename that decouples local from pushed (#724).
-CODEX_BRANCH_INSTRUCTION=""
-CURRENT_BRANCH=$(git -C /workspace branch --show-current 2>/dev/null || echo "")
-if [ "$CURRENT_BRANCH" = "$BRANCH" ] || [ -z "$CURRENT_BRANCH" ]; then
-    CODEX_BRANCH_INSTRUCTION="BRANCH POLICY: Before making any changes, rename the current branch using: git branch -m codex/<short-description>. Push with: git push -u origin <branch-name>. Never work on the starting branch.
+# Always send it — Codex is stateless (no conversation continuity), so
+# there's no way to know if a previous message already handled the rename.
+# The instruction itself says "rename the current branch", which is safe to
+# repeat: if already on a descriptive branch, Codex will just rename it
+# again (harmless) or leave it (if it judges the name adequate).
+CODEX_BRANCH_INSTRUCTION="BRANCH POLICY: Before making any changes, rename the current branch using: git branch -m codex/<short-description>. Push with: git push -u origin <branch-name>. Never work on the starting branch.
 
 "
-fi
 exec codex --model "${MODEL}" --full-auto -- "${CODEX_BRANCH_INSTRUCTION}${PROMPT}"
