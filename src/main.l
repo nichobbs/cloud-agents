@@ -36,7 +36,7 @@ pub record HealthHandler {
 impl Web.Handler for HealthHandler {
   func handle(req: in Web.Request): Web.Response {
     match CloudAgents.Handlers.checkHealth() {
-      case Ok(msg) -> return Web.json(200, HealthStatus(status = msg).toJson())
+      case Ok(msg) -> return jsonResp(200, HealthStatus(status = msg).toJson())
       case Err(e) -> return Web.errorResponse(e)
     }
   }
@@ -120,178 +120,183 @@ pub func unitResp(r: in Result[Unit, Web.ApiError]): Web.Response {
   return match r { case Ok(_) -> Web.noContent(); case Err(e) -> Web.errorResponse(e) }
 }
 
+pub func jsonResp(status: Int, body: String): Web.Response {
+  val resp = Web.text(status, body)
+  return Web.withResponseHeader(resp, "Content-Type", "application/json")
+}
+
 // listSessions / reapContainers / getRunOutput already build a complete JSON
 // string themselves (see their bodies in sessions.l) — pass it through as-is.
 pub func jsonStringResp(r: in Result[String, Web.ApiError]): Web.Response {
-  return match r { case Ok(s) -> Web.json(200, s); case Err(e) -> Web.errorResponse(e) }
+  return match r { case Ok(s) -> jsonResp(200, s); case Err(e) -> Web.errorResponse(e) }
 }
 
 pub func createSessionResp(r: in Result[CreateSessionResponse, Web.ApiError]): Web.Response {
-  return match r { case Ok(v) -> Web.json(200, v.toJson()); case Err(e) -> Web.errorResponse(e) }
+  return match r { case Ok(v) -> jsonResp(200, v.toJson()); case Err(e) -> Web.errorResponse(e) }
 }
 
 pub func sessionProfileResp(r: in Result[SessionProfileRef, Web.ApiError]): Web.Response {
-  return match r { case Ok(v) -> Web.json(200, v.toJson()); case Err(e) -> Web.errorResponse(e) }
+  return match r { case Ok(v) -> jsonResp(200, v.toJson()); case Err(e) -> Web.errorResponse(e) }
 }
 
 pub func runListResp(r: in Result[RunList, Web.ApiError]): Web.Response {
-  return match r { case Ok(v) -> Web.json(200, v.toJson()); case Err(e) -> Web.errorResponse(e) }
+  return match r { case Ok(v) -> jsonResp(200, v.toJson()); case Err(e) -> Web.errorResponse(e) }
 }
 
 pub func sessionRepoResp(r: in Result[SessionRepo, Web.ApiError]): Web.Response {
-  return match r { case Ok(v) -> Web.json(200, v.toJson()); case Err(e) -> Web.errorResponse(e) }
+  return match r { case Ok(v) -> jsonResp(200, v.toJson()); case Err(e) -> Web.errorResponse(e) }
 }
 
 pub func sessionRepoListResp(r: in Result[SessionRepoList, Web.ApiError]): Web.Response {
-  return match r { case Ok(v) -> Web.json(200, v.toJson()); case Err(e) -> Web.errorResponse(e) }
+  return match r { case Ok(v) -> jsonResp(200, v.toJson()); case Err(e) -> Web.errorResponse(e) }
 }
 
 pub func messageListResp(r: in Result[MessageList, Web.ApiError]): Web.Response {
-  return match r { case Ok(v) -> Web.json(200, v.toJson()); case Err(e) -> Web.errorResponse(e) }
+  return match r { case Ok(v) -> jsonResp(200, v.toJson()); case Err(e) -> Web.errorResponse(e) }
 }
 
 pub func commentResp(r: in Result[Comment, Web.ApiError]): Web.Response {
-  return match r { case Ok(v) -> Web.json(200, v.toJson()); case Err(e) -> Web.errorResponse(e) }
+  return match r { case Ok(v) -> jsonResp(200, v.toJson()); case Err(e) -> Web.errorResponse(e) }
 }
 
 pub func commentListResp(r: in Result[CommentList, Web.ApiError]): Web.Response {
-  return match r { case Ok(v) -> Web.json(200, v.toJson()); case Err(e) -> Web.errorResponse(e) }
+  return match r { case Ok(v) -> jsonResp(200, v.toJson()); case Err(e) -> Web.errorResponse(e) }
 }
 
 pub func todoResp(r: in Result[Todo, Web.ApiError]): Web.Response {
-  return match r { case Ok(v) -> Web.json(200, v.toJson()); case Err(e) -> Web.errorResponse(e) }
+  return match r { case Ok(v) -> jsonResp(200, v.toJson()); case Err(e) -> Web.errorResponse(e) }
 }
 
 pub func todoListResp(r: in Result[TodoList, Web.ApiError]): Web.Response {
-  return match r { case Ok(v) -> Web.json(200, v.toJson()); case Err(e) -> Web.errorResponse(e) }
+  return match r { case Ok(v) -> jsonResp(200, v.toJson()); case Err(e) -> Web.errorResponse(e) }
 }
 
 pub func promptListResp(r: in Result[PromptList, Web.ApiError]): Web.Response {
-  return match r { case Ok(v) -> Web.json(200, v.toJson()); case Err(e) -> Web.errorResponse(e) }
+  return match r { case Ok(v) -> jsonResp(200, v.toJson()); case Err(e) -> Web.errorResponse(e) }
 }
 
 pub func renderedPromptResp(r: in Result[RenderedPrompt, Web.ApiError]): Web.Response {
-  return match r { case Ok(v) -> Web.json(200, v.toJson()); case Err(e) -> Web.errorResponse(e) }
+  return match r { case Ok(v) -> jsonResp(200, v.toJson()); case Err(e) -> Web.errorResponse(e) }
 }
 
 pub func promptResp(r: in Result[Prompt, Web.ApiError]): Web.Response {
-  return match r { case Ok(v) -> Web.json(200, v.toJson()); case Err(e) -> Web.errorResponse(e) }
+  return match r { case Ok(v) -> jsonResp(200, v.toJson()); case Err(e) -> Web.errorResponse(e) }
 }
 
 pub func credentialNameListResp(r: in Result[CredentialNameList, Web.ApiError]): Web.Response {
-  return match r { case Ok(v) -> Web.json(200, v.toJson()); case Err(e) -> Web.errorResponse(e) }
+  return match r { case Ok(v) -> jsonResp(200, v.toJson()); case Err(e) -> Web.errorResponse(e) }
 }
 
 pub func profileListResp(r: in Result[ProfileList, Web.ApiError]): Web.Response {
-  return match r { case Ok(v) -> Web.json(200, v.toJson()); case Err(e) -> Web.errorResponse(e) }
+  return match r { case Ok(v) -> jsonResp(200, v.toJson()); case Err(e) -> Web.errorResponse(e) }
 }
 
 pub func profileResp(r: in Result[Profile, Web.ApiError]): Web.Response {
-  return match r { case Ok(v) -> Web.json(200, v.toJson()); case Err(e) -> Web.errorResponse(e) }
+  return match r { case Ok(v) -> jsonResp(200, v.toJson()); case Err(e) -> Web.errorResponse(e) }
 }
 
 func skillListResp(r: in Result[SkillList, Web.ApiError]): Web.Response {
-  return match r { case Ok(v) -> Web.json(200, v.toJson()); case Err(e) -> Web.errorResponse(e) }
+  return match r { case Ok(v) -> jsonResp(200, v.toJson()); case Err(e) -> Web.errorResponse(e) }
 }
 
 func skillResp(r: in Result[Skill, Web.ApiError]): Web.Response {
-  return match r { case Ok(v) -> Web.json(200, v.toJson()); case Err(e) -> Web.errorResponse(e) }
+  return match r { case Ok(v) -> jsonResp(200, v.toJson()); case Err(e) -> Web.errorResponse(e) }
 }
 
 func subagentListResp(r: in Result[SubagentList, Web.ApiError]): Web.Response {
-  return match r { case Ok(v) -> Web.json(200, v.toJson()); case Err(e) -> Web.errorResponse(e) }
+  return match r { case Ok(v) -> jsonResp(200, v.toJson()); case Err(e) -> Web.errorResponse(e) }
 }
 
 func subagentResp(r: in Result[Subagent, Web.ApiError]): Web.Response {
-  return match r { case Ok(v) -> Web.json(200, v.toJson()); case Err(e) -> Web.errorResponse(e) }
+  return match r { case Ok(v) -> jsonResp(200, v.toJson()); case Err(e) -> Web.errorResponse(e) }
 }
 
 func mcpServerListResp(r: in Result[McpServerList, Web.ApiError]): Web.Response {
-  return match r { case Ok(v) -> Web.json(200, v.toJson()); case Err(e) -> Web.errorResponse(e) }
+  return match r { case Ok(v) -> jsonResp(200, v.toJson()); case Err(e) -> Web.errorResponse(e) }
 }
 
 func mcpServerResp(r: in Result[McpServer, Web.ApiError]): Web.Response {
-  return match r { case Ok(v) -> Web.json(200, v.toJson()); case Err(e) -> Web.errorResponse(e) }
+  return match r { case Ok(v) -> jsonResp(200, v.toJson()); case Err(e) -> Web.errorResponse(e) }
 }
 
 pub func webhookResp(r: in Result[Webhook, Web.ApiError]): Web.Response {
-  return match r { case Ok(v) -> Web.json(200, v.toJson()); case Err(e) -> Web.errorResponse(e) }
+  return match r { case Ok(v) -> jsonResp(200, v.toJson()); case Err(e) -> Web.errorResponse(e) }
 }
 
 pub func webhookListResp(r: in Result[WebhookList, Web.ApiError]): Web.Response {
-  return match r { case Ok(v) -> Web.json(200, v.toJson()); case Err(e) -> Web.errorResponse(e) }
+  return match r { case Ok(v) -> jsonResp(200, v.toJson()); case Err(e) -> Web.errorResponse(e) }
 }
 
 pub func webhookEventListResp(r: in Result[WebhookEventList, Web.ApiError]): Web.Response {
-  return match r { case Ok(v) -> Web.json(200, v.toJson()); case Err(e) -> Web.errorResponse(e) }
+  return match r { case Ok(v) -> jsonResp(200, v.toJson()); case Err(e) -> Web.errorResponse(e) }
 }
 
 pub func createPermissionRequestResp(r: in Result[CreatePermissionRequestResponse, Web.ApiError]): Web.Response {
-  return match r { case Ok(v) -> Web.json(200, v.toJson()); case Err(e) -> Web.errorResponse(e) }
+  return match r { case Ok(v) -> jsonResp(200, v.toJson()); case Err(e) -> Web.errorResponse(e) }
 }
 
 pub func permissionDecisionResp(r: in Result[PermissionDecision, Web.ApiError]): Web.Response {
-  return match r { case Ok(v) -> Web.json(200, v.toJson()); case Err(e) -> Web.errorResponse(e) }
+  return match r { case Ok(v) -> jsonResp(200, v.toJson()); case Err(e) -> Web.errorResponse(e) }
 }
 
 pub func createUserQuestionResp(r: in Result[CreateUserQuestionResponse, Web.ApiError]): Web.Response {
-  return match r { case Ok(v) -> Web.json(200, v.toJson()); case Err(e) -> Web.errorResponse(e) }
+  return match r { case Ok(v) -> jsonResp(200, v.toJson()); case Err(e) -> Web.errorResponse(e) }
 }
 
 pub func userQuestionAnswerResp(r: in Result[UserQuestionAnswer, Web.ApiError]): Web.Response {
-  return match r { case Ok(v) -> Web.json(200, v.toJson()); case Err(e) -> Web.errorResponse(e) }
+  return match r { case Ok(v) -> jsonResp(200, v.toJson()); case Err(e) -> Web.errorResponse(e) }
 }
 
 func createSecretRequestResp(r: in Result[CreateSecretRequestResponse, Web.ApiError]): Web.Response {
-  return match r { case Ok(v) -> Web.json(200, v.toJson()); case Err(e) -> Web.errorResponse(e) }
+  return match r { case Ok(v) -> jsonResp(200, v.toJson()); case Err(e) -> Web.errorResponse(e) }
 }
 
 func secretDecisionResp(r: in Result[SecretDecision, Web.ApiError]): Web.Response {
-  return match r { case Ok(v) -> Web.json(200, v.toJson()); case Err(e) -> Web.errorResponse(e) }
+  return match r { case Ok(v) -> jsonResp(200, v.toJson()); case Err(e) -> Web.errorResponse(e) }
 }
 
 func createFollowupTaskResp(r: in Result[CreateFollowupTaskResponse, Web.ApiError]): Web.Response {
-  return match r { case Ok(v) -> Web.json(200, v.toJson()); case Err(e) -> Web.errorResponse(e) }
+  return match r { case Ok(v) -> jsonResp(200, v.toJson()); case Err(e) -> Web.errorResponse(e) }
 }
 
 func uploadArtifactResp(r: in Result[UploadArtifactResponse, Web.ApiError]): Web.Response {
-  return match r { case Ok(v) -> Web.json(200, v.toJson()); case Err(e) -> Web.errorResponse(e) }
+  return match r { case Ok(v) -> jsonResp(200, v.toJson()); case Err(e) -> Web.errorResponse(e) }
 }
 
 func artifactListResp(r: in Result[ArtifactListResponse, Web.ApiError]): Web.Response {
-  return match r { case Ok(v) -> Web.json(200, v.toJson()); case Err(e) -> Web.errorResponse(e) }
+  return match r { case Ok(v) -> jsonResp(200, v.toJson()); case Err(e) -> Web.errorResponse(e) }
 }
 
 func rememberResp(r: in Result[RememberResponse, Web.ApiError]): Web.Response {
-  return match r { case Ok(v) -> Web.json(200, v.toJson()); case Err(e) -> Web.errorResponse(e) }
+  return match r { case Ok(v) -> jsonResp(200, v.toJson()); case Err(e) -> Web.errorResponse(e) }
 }
 
 func memoryListResp(r: in Result[MemoryListResponse, Web.ApiError]): Web.Response {
-  return match r { case Ok(v) -> Web.json(200, v.toJson()); case Err(e) -> Web.errorResponse(e) }
+  return match r { case Ok(v) -> jsonResp(200, v.toJson()); case Err(e) -> Web.errorResponse(e) }
 }
 
 func forgetResp(r: in Result[ForgetResponse, Web.ApiError]): Web.Response {
-  return match r { case Ok(v) -> Web.json(200, v.toJson()); case Err(e) -> Web.errorResponse(e) }
+  return match r { case Ok(v) -> jsonResp(200, v.toJson()); case Err(e) -> Web.errorResponse(e) }
 }
 
 func createTaskResp(r: in Result[CreateTaskResponse, Web.ApiError]): Web.Response {
-  return match r { case Ok(v) -> Web.json(200, v.toJson()); case Err(e) -> Web.errorResponse(e) }
+  return match r { case Ok(v) -> jsonResp(200, v.toJson()); case Err(e) -> Web.errorResponse(e) }
 }
 
 func taskListResp(r: in Result[TaskListResponse, Web.ApiError]): Web.Response {
-  return match r { case Ok(v) -> Web.json(200, v.toJson()); case Err(e) -> Web.errorResponse(e) }
+  return match r { case Ok(v) -> jsonResp(200, v.toJson()); case Err(e) -> Web.errorResponse(e) }
 }
 
 func completeTaskResp(r: in Result[CompleteTaskResponse, Web.ApiError]): Web.Response {
-  return match r { case Ok(v) -> Web.json(200, v.toJson()); case Err(e) -> Web.errorResponse(e) }
+  return match r { case Ok(v) -> jsonResp(200, v.toJson()); case Err(e) -> Web.errorResponse(e) }
 }
 
 func notifyResp(r: in Result[NotifyResponse, Web.ApiError]): Web.Response {
-  return match r { case Ok(v) -> Web.json(200, v.toJson()); case Err(e) -> Web.errorResponse(e) }
+  return match r { case Ok(v) -> jsonResp(200, v.toJson()); case Err(e) -> Web.errorResponse(e) }
 }
 
 func notificationListResp(r: in Result[NotificationListResponse, Web.ApiError]): Web.Response {
-  return match r { case Ok(v) -> Web.json(200, v.toJson()); case Err(e) -> Web.errorResponse(e) }
+  return match r { case Ok(v) -> jsonResp(200, v.toJson()); case Err(e) -> Web.errorResponse(e) }
 }
 
 // ─── CloudAgents.Handlers routes (sessions.l) ───────────────────────────────
@@ -1216,7 +1221,7 @@ record RouteHarnesses {
 
 impl Web.Handler for RouteHarnesses {
   func handle(req: in Web.Request): Web.Response {
-    return Web.json(200, CloudAgents.Proxy.harnessesHandler())
+    return jsonResp(200, CloudAgents.Proxy.harnessesHandler())
   }
 }
 
@@ -1226,7 +1231,7 @@ record RouteOAuthConfig {
 
 impl Web.Handler for RouteOAuthConfig {
   func handle(req: in Web.Request): Web.Response {
-    return Web.json(200, CloudAgents.OAuth.configJson())
+    return jsonResp(200, CloudAgents.OAuth.configJson())
   }
 }
 
@@ -1237,7 +1242,7 @@ impl Web.Handler for RouteOAuthExchange {
   func handle(req: in Web.Request): Web.Response {
     val decoded = match ExchangeRequest.fromJson(req.body) { case Ok(d) -> d; case Err(_) -> return badBody() }
     return match CloudAgents.OAuth.exchangeCode(decoded) {
-      case Ok(grant) -> Web.json(200, grant.toJson())
+      case Ok(grant) -> jsonResp(200, grant.toJson())
       case Err(e) -> Web.errorResponse(e)
     }
   }

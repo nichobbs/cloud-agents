@@ -21,6 +21,7 @@ import CloudAgents.Repository
 import CloudAgents.Sqlite
 
 val maxCredentialNameLen = 128
+
 val maxCredentialValueLen = 65536
 
 @generate(Json)
@@ -43,9 +44,16 @@ pub record PutCredentialRequest {
 /// the credential store, and the entrypoint renders it into mcp.json safely.
 func isReservedEnvName(name: in String): Bool {
   return name == "PROMPT" or name == "REPO_URL" or name == "BRANCH" or name == "HARNESS" or name == "MODEL" or
-    name == "NATIVE_SESSION_ID" or name == "EXTRA_REPOS" or
-    name == "PATH" or name == "HOME" or name == "USER" or name == "SHELL" or name == "PWD" or name == "IFS" or
-    name == "LD_PRELOAD" or name == "LD_LIBRARY_PATH"
+    name == "NATIVE_SESSION_ID" or
+    name == "EXTRA_REPOS" or
+    name == "PATH" or
+    name == "HOME" or
+    name == "USER" or
+    name == "SHELL" or
+    name == "PWD" or
+    name == "IFS" or
+    name == "LD_PRELOAD" or
+    name == "LD_LIBRARY_PATH"
 }
 
 /// Env-var name rules: a leading letter or underscore, then letters, digits
@@ -86,7 +94,11 @@ pub func listCredentialsHandler(): Result[CredentialNameList, Web.ApiError] {
 /// Store or replace a credential.
 pub func putCredentialHandler(req: in PutCredentialRequest): Result[Unit, Web.ApiError] {
   if not isValidCredentialName(req.name) {
-    return Err(Web.badRequest("name must be a valid environment variable name (letters, digits, underscore; no leading digit)"))
+    return Err(
+      Web.badRequest(
+        "name must be a valid environment variable name (letters, digits, underscore; no leading digit)"
+      )
+    )
   }
   if isReservedEnvName(req.name) {
     return Err(Web.badRequest("name is reserved by the runner and cannot be used as a credential"))

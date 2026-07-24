@@ -41,6 +41,11 @@ case "$MODEL" in
     ;;
 esac
 
+# OpenCode Zen expects OPENCODE_ZEN_API_KEY, but user credentials might define OPENCODE_API_KEY.
+# Map OPENCODE_API_KEY to OPENCODE_ZEN_API_KEY if the latter is not already set.
+export OPENCODE_ZEN_API_KEY="${OPENCODE_ZEN_API_KEY:-${OPENCODE_API_KEY:-}}"
+
+
 if [ ! -d /workspace/.git ]; then
     if [ -z "${REPO_URL:-}" ]; then
         echo "entrypoint-opencode: REPO_URL is required for the first run" >&2

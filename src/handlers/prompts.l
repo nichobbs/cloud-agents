@@ -11,9 +11,13 @@ import CloudAgents.Repository
 import CloudAgents.Sqlite
 
 val maxPromptNameLen = 200
+
 val maxPromptBodyLen = 131072
+
 val maxRenderVars = 100
+
 val maxRenderKeyLen = 128
+
 val maxRenderValueLen = 8192
 
 @generate(Json)
