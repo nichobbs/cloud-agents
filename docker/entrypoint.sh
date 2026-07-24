@@ -111,6 +111,21 @@ fi
 # across all four harness entrypoints (#468).
 /usr/local/bin/reconcile-repos.sh "entrypoint"
 cd /workspace
+
+# Safety net: ensure we're not on the starting branch. If the agent hasn't
+# renamed the branch yet (first run or agent ignored instructions), create
+# a fallback working branch named <harness>/<session-id> so the starting
+# branch stays clean. The agent's branch-policy rules instruct it to rename
+# this to <harness>/<description>.
+if [ -d /workspace/.git ]; then
+    CURRENT=$(git -C /workspace branch --show-current 2>/dev/null || echo "")
+    if [ "$CURRENT" = "$BRANCH" ] || [ -z "$CURRENT" ]; then
+        FALLBACK_BRANCH="${HARNESS}/${SESSION_ID:-$(date +%s)}"
+        echo "entrypoint: creating fallback working branch ${FALLBACK_BRANCH}" >&2
+        git -C /workspace checkout -b "${FALLBACK_BRANCH}" 2>/dev/null || true
+    fi
+fi
+
 mkdir -p /workspace/.claude
 
 # Phase 6 (docs/phase6-mcp-callbacks.md §8): whether request_permission is

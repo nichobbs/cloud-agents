@@ -42,10 +42,29 @@ fi
 /usr/local/bin/reconcile-repos.sh "entrypoint-codex"
 cd /workspace
 
+# Safety net: ensure we're not on the starting branch. If the agent hasn't
+# renamed the branch yet (first run or agent ignored instructions), create
+# a fallback working branch named <harness>/<session-id> so the starting
+# branch stays clean. The agent's branch-policy rules instruct it to rename
+# this to <harness>/<description>.
+if [ -d /workspace/.git ]; then
+    CURRENT=$(git -C /workspace branch --show-current 2>/dev/null || echo "")
+    if [ "$CURRENT" = "$BRANCH" ] || [ -z "$CURRENT" ]; then
+        FALLBACK_BRANCH="${HARNESS}/${SESSION_ID:-$(date +%s)}"
+        echo "entrypoint-codex: creating fallback working branch ${FALLBACK_BRANCH}" >&2
+        git -C /workspace checkout -b "${FALLBACK_BRANCH}" 2>/dev/null || true
+    fi
+fi
+
 # Render the session's profile-granted skills/subagents/MCP servers into
 # Codex's own native config (docker/inject-library.sh). Reconciled every
 # message; best-effort so a rendering hiccup never blocks the actual prompt
 # run.
 /usr/local/bin/inject-library.sh "codex" || echo "entrypoint-codex: library injection failed, continuing without it" >&2
 
-exec codex --model "${MODEL}" --full-auto -- "${PROMPT}"
+# Codex can't use a rules file for branch policy (it would override the
+# user's AGENTS.md), so the instruction is prepended to the prompt instead.
+CODEX_BRANCH_INSTRUCTION="BRANCH POLICY: Before making any changes, rename the current branch using: git branch -m codex/<short-description>. Push with: git push -u origin <branch-name>. Never work on the starting branch.
+
+"
+exec codex --model "${MODEL}" --full-auto -- "${CODEX_BRANCH_INSTRUCTION}${PROMPT}"

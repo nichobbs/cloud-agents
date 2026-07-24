@@ -148,7 +148,7 @@ pub async func createRunnerContainer(
   // this async package, even a pure leaf function (docs/lyric/gotchas.md), the
   // same reason network-policy resolution lives in CloudAgents.NetworkPolicy
   // rather than here.
-  var envs = CloudAgents.RunnerEnv.baseRunnerEnvs(prompt, repoUrl, branch, harness, model, nativeSessionId)
+  var envs = CloudAgents.RunnerEnv.baseRunnerEnvs(prompt, repoUrl, branch, harness, model, nativeSessionId, sessionId)
   var binds: slice[String] = [
     CloudAgents.Db.workspaceVolumeBindFor(userId, sessionId),
     CloudAgents.Db.homeVolumeBindFor(userId, harness)

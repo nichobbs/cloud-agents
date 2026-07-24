@@ -264,3 +264,43 @@ case "$HARNESS" in
         render_mcp_codex
         ;;
 esac
+
+# ── Branch policy rules ────────────────────────────────────────────────────
+# Platform-level instructions that tell the agent to create a descriptive
+# working branch before making changes. Each harness has a different
+# discovery mechanism; the content is the same, only the destination differs.
+# Codex is the exception: it can't use a rules file without overriding the
+# user's AGENTS.md (see entrypoint-codex.sh for the prompt-prefix fallback).
+BRANCH_POLICY_SRC="/etc/cloud-agents/branch-policy-rules.md"
+if [ -f "$BRANCH_POLICY_SRC" ]; then
+    case "$HARNESS" in
+        claude)
+            mkdir -p .claude/rules
+            cp "$BRANCH_POLICY_SRC" .claude/rules/branch-policy.md
+            ;;
+        opencode)
+            # Write the file and add it to opencode.json's instructions array
+            # so OpenCode loads it alongside AGENTS.md.
+            mkdir -p .cloud-agents
+            cp "$BRANCH_POLICY_SRC" .cloud-agents/branch-policy.md
+            if command -v jq >/dev/null 2>&1 && [ -f opencode.json ]; then
+                tmp=$(mktemp "opencode.json.XXXXXX")
+                jq '.instructions = ((.instructions // []) | . + [".cloud-agents/branch-policy.md"] | unique)' \
+                    opencode.json > "$tmp" && mv "$tmp" opencode.json
+            fi
+            ;;
+        gemini)
+            # Gemini auto-discovers GEMINI.md in the project root. Only write
+            # if the repo doesn't already have one (user-authored takes precedence).
+            if [ ! -f GEMINI.md ]; then
+                cp "$BRANCH_POLICY_SRC" GEMINI.md
+            fi
+            ;;
+        codex)
+            # Codex only reads AGENTS.md / AGENTS.override.md from the git root;
+            # adding a separate file would override the user's AGENTS.md. The
+            # branch instruction is injected via prompt prefix in
+            # entrypoint-codex.sh instead.
+            ;;
+    esac
+fi
