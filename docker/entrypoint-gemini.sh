@@ -6,6 +6,10 @@
 #   REPO_URL          - git remote to clone on first run (required)
 #   BRANCH            - branch to check out (default: main)
 #   MODEL             - Gemini model to use (default: gemini-2.5-pro)
+#   HARNESS           - harness identifier, e.g. "gemini" (required; used by
+#                       create-fallback-branch.sh and inject-library.sh)
+#   SESSION_ID        - cloud-agents session ID, distinct from NATIVE_SESSION_ID
+#                       (required; used for fallback branch naming)
 #   NATIVE_SESSION_ID - session ID for conversation continuity (reserved for Phase 2)
 #   GEMINI_API_KEY    - Gemini API key (required; GOOGLE_API_KEY accepted as an alias)
 #
@@ -50,19 +54,9 @@ fi
 /usr/local/bin/reconcile-repos.sh "entrypoint-gemini"
 cd /workspace
 
-# Safety net: ensure we're not on the starting branch. If the agent hasn't
-# renamed the branch yet (first run or agent ignored instructions), create
-# a fallback working branch named <harness>/<session-id> so the starting
-# branch stays clean. The agent's branch-policy rules instruct it to rename
-# this to <harness>/<description>.
-if [ -d /workspace/.git ]; then
-    CURRENT=$(git -C /workspace branch --show-current 2>/dev/null || echo "")
-    if [ "$CURRENT" = "$BRANCH" ] || [ -z "$CURRENT" ]; then
-        FALLBACK_BRANCH="${HARNESS}/${SESSION_ID:-$(date +%s)}"
-        echo "entrypoint-gemini: creating fallback working branch ${FALLBACK_BRANCH}" >&2
-        git -C /workspace checkout -b "${FALLBACK_BRANCH}" 2>/dev/null || true
-    fi
-fi
+# Safety net: ensure we're not on the starting branch. Shared across all four
+# harness entrypoints (#725) — see create-fallback-branch.sh.
+create-fallback-branch.sh "entrypoint-gemini" "${HARNESS}" "${BRANCH}" "${SESSION_ID:-}"
 
 # Render the session's profile-granted skills/subagents/MCP servers into
 # Gemini CLI's own native config (docker/inject-library.sh). Reconciled every

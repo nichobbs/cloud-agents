@@ -56,9 +56,10 @@ RUN chown codex-user:codex-user /workspace
 
 COPY entrypoint-codex.sh /usr/local/bin/entrypoint.sh
 COPY reconcile-repos.sh /usr/local/bin/reconcile-repos.sh
+COPY create-fallback-branch.sh /usr/local/bin/create-fallback-branch.sh
 COPY inject-library.sh /usr/local/bin/inject-library.sh
 COPY branch-policy-rules.md /etc/cloud-agents/branch-policy-rules.md
-RUN chmod +x /usr/local/bin/entrypoint.sh /usr/local/bin/reconcile-repos.sh /usr/local/bin/inject-library.sh
+RUN chmod +x /usr/local/bin/entrypoint.sh /usr/local/bin/reconcile-repos.sh /usr/local/bin/create-fallback-branch.sh /usr/local/bin/inject-library.sh
 
 USER codex-user
 ENV HOME=/home/codex-user

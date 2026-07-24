@@ -6,6 +6,10 @@
 #   REPO_URL          - git remote to clone on first run (required)
 #   BRANCH            - branch to check out (default: main)
 #   MODEL             - OpenAI model to use (default: o4-mini)
+#   HARNESS           - harness identifier, e.g. "codex" (required; used by
+#                       create-fallback-branch.sh and inject-library.sh)
+#   SESSION_ID        - cloud-agents session ID, distinct from NATIVE_SESSION_ID
+#                       (required; used for fallback branch naming)
 #   NATIVE_SESSION_ID - session ID for conversation continuity (reserved for Phase 2)
 #   OPENAI_API_KEY    - OpenAI API key (required)
 #
@@ -42,19 +46,9 @@ fi
 /usr/local/bin/reconcile-repos.sh "entrypoint-codex"
 cd /workspace
 
-# Safety net: ensure we're not on the starting branch. If the agent hasn't
-# renamed the branch yet (first run or agent ignored instructions), create
-# a fallback working branch named <harness>/<session-id> so the starting
-# branch stays clean. The agent's branch-policy rules instruct it to rename
-# this to <harness>/<description>.
-if [ -d /workspace/.git ]; then
-    CURRENT=$(git -C /workspace branch --show-current 2>/dev/null || echo "")
-    if [ "$CURRENT" = "$BRANCH" ] || [ -z "$CURRENT" ]; then
-        FALLBACK_BRANCH="${HARNESS}/${SESSION_ID:-$(date +%s)}"
-        echo "entrypoint-codex: creating fallback working branch ${FALLBACK_BRANCH}" >&2
-        git -C /workspace checkout -b "${FALLBACK_BRANCH}" 2>/dev/null || true
-    fi
-fi
+# Safety net: ensure we're not on the starting branch. Shared across all four
+# harness entrypoints (#725) — see create-fallback-branch.sh.
+create-fallback-branch.sh "entrypoint-codex" "${HARNESS}" "${BRANCH}" "${SESSION_ID:-}"
 
 # Render the session's profile-granted skills/subagents/MCP servers into
 # Codex's own native config (docker/inject-library.sh). Reconciled every
@@ -64,7 +58,14 @@ fi
 
 # Codex can't use a rules file for branch policy (it would override the
 # user's AGENTS.md), so the instruction is prepended to the prompt instead.
-CODEX_BRANCH_INSTRUCTION="BRANCH POLICY: Before making any changes, rename the current branch using: git branch -m codex/<short-description>. Push with: git push -u origin <branch-name>. Never work on the starting branch.
+# Only send it when we're still on the starting branch — if the fallback
+# branch was created (or the agent already renamed), resending would risk
+# a mid-task rename that decouples local from pushed (#724).
+CODEX_BRANCH_INSTRUCTION=""
+CURRENT_BRANCH=$(git -C /workspace branch --show-current 2>/dev/null || echo "")
+if [ "$CURRENT_BRANCH" = "$BRANCH" ] || [ -z "$CURRENT_BRANCH" ]; then
+    CODEX_BRANCH_INSTRUCTION="BRANCH POLICY: Before making any changes, rename the current branch using: git branch -m codex/<short-description>. Push with: git push -u origin <branch-name>. Never work on the starting branch.
 
 "
+fi
 exec codex --model "${MODEL}" --full-auto -- "${CODEX_BRANCH_INSTRUCTION}${PROMPT}"

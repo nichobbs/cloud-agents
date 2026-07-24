@@ -1,7 +1,8 @@
 # Branch Policy
 
-Before making any code changes in this session, you MUST create a working
-branch. Do this as your very first action, before reading or editing any files.
+Before making any code changes in this session, you MUST be on a working
+branch — not the starting branch (e.g. `main`). If you are still on the
+starting branch, rename it immediately before reading or editing any files.
 
 ## Creating a branch
 
@@ -37,4 +38,5 @@ it. Push the previous branch first if you haven't already.
 ## Never work on the starting branch
 
 The branch you were given (or that exists when the session starts) is the
-starting point only. Always rename it before making changes.
+starting point only. Always rename it before making changes. If you already
+renamed it (or a fallback branch was created for you), skip this step.
