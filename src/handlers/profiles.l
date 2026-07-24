@@ -360,19 +360,7 @@ pub func addProfileHandler(req: in SaveProfileRequest): Result[Profile, Web.ApiE
     case Ok(None) -> ()
     case Err(e) -> return Err(dbError(e))
   }
-  match addProfile(
-    userId,
-    name,
-    req.harness,
-    req.networkPolicy,
-    req.credentialMode,
-    grantsFor(req),
-    req.skillIds,
-    req.subagentIds,
-    req.mcpServerIds,
-    normalizedToolMode(req.toolMode),
-    toolsFor(req)
-  ) {
+  match addProfile(userId, name, req.harness, req.networkPolicy, req.credentialMode, grantsFor(req), req.skillIds, req.subagentIds, req.mcpServerIds, normalizedToolMode(req.toolMode), toolsFor(req)) {
     case Ok(p) -> return Ok(p)
     case Err(e) -> {
       // A concurrent create with the same name can slip past the pre-check
@@ -403,20 +391,7 @@ pub func updateProfileHandler(pid: in String, req: in SaveProfileRequest): Resul
     case Ok(None) -> ()
     case Err(e) -> return Err(dbError(e))
   }
-  val affected = match updateProfile(
-    pid,
-    userId,
-    name,
-    req.harness,
-    req.networkPolicy,
-    req.credentialMode,
-    grantsFor(req),
-    req.skillIds,
-    req.subagentIds,
-    req.mcpServerIds,
-    normalizedToolMode(req.toolMode),
-    toolsFor(req)
-  ) {
+  val affected = match updateProfile(pid, userId, name, req.harness, req.networkPolicy, req.credentialMode, grantsFor(req), req.skillIds, req.subagentIds, req.mcpServerIds, normalizedToolMode(req.toolMode), toolsFor(req)) {
     case Ok(n) -> n
     case Err(e) -> {
       // A concurrent rename onto the same name can slip past the pre-check

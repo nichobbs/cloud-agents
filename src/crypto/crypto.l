@@ -26,7 +26,9 @@ import extern System.Environment as Env
 import extern System.String as DotNetString
 
 extern type Encoding = "System.Text.Encoding"
+
 extern type Aes = "System.Security.Cryptography.Aes"
+
 extern type CryptoTransform = "System.Security.Cryptography.ICryptoTransform"
 
 pub union CryptoError {
@@ -110,6 +112,7 @@ func aesDispose(self: in Aes): Unit = ()
 func hmacHashData(key: in slice[Byte], source: in slice[Byte]): slice[Byte] = []
 
 val ivLen = 16
+
 val macLen = 32
 
 /// Base64 SHA-256 of a UTF-8 string. Used to key the GitHub-token validation
