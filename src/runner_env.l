@@ -34,6 +34,7 @@ pub func baseRunnerEnvs(
   harness: in String,
   model: in String,
   nativeSessionId: in String,
+  sessionId: in String,
 ): slice[String] {
   return [
     "PROMPT=" + prompt,
@@ -41,7 +42,8 @@ pub func baseRunnerEnvs(
     "BRANCH=" + branch,
     "HARNESS=" + harness,
     "MODEL=" + model,
-    "NATIVE_SESSION_ID=" + nativeSessionId
+    "NATIVE_SESSION_ID=" + nativeSessionId,
+    "SESSION_ID=" + sessionId
   ]
 }
 
