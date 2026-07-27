@@ -76,6 +76,15 @@ export function mapGoogleModels(body: GoogleModelsResponse): ModelOption[] {
   return filterGoogleModels(body.models ?? []);
 }
 
+export interface OpencodeModelsResponse {
+  data?: { id: string; name?: string }[];
+}
+
+/** OpenCode's models payload → picker options. */
+export function mapOpencodeModels(body: OpencodeModelsResponse): ModelOption[] {
+  return (body.data ?? []).map(m => ({ id: m.id, label: m.name ?? m.id }));
+}
+
 // ─── Per-provider fetchers (direct browser path) ──────────────────────────────
 
 async function fetchAnthropicModels(key: string): Promise<ModelOption[]> {
@@ -134,10 +143,19 @@ async function fetchGoogleModels(key: string): Promise<ModelOption[]> {
   return mapGoogleModels((await res.json()) as GoogleModelsResponse);
 }
 
+async function fetchOpencodeModels(key: string): Promise<ModelOption[]> {
+  const res = await fetch('https://opencode.ai/zen/v1/models', {
+    headers: { Authorization: `Bearer ${key}` },
+  });
+  if (!res.ok) throw new Error(`OpenCode Zen models API: ${res.status}`);
+  return mapOpencodeModels((await res.json()) as OpencodeModelsResponse);
+}
+
 const FETCHERS: Record<Exclude<ProviderId, 'github'>, (key: string) => Promise<ModelOption[]>> = {
   anthropic: fetchAnthropicModels,
   openai: fetchOpenAiModels,
   google: fetchGoogleModels,
+  opencode: fetchOpencodeModels,
 };
 
 /** Validate a model-provider key by listing models with it. Throws on a bad
@@ -177,6 +195,7 @@ const PROXY_MAPPERS: Record<Exclude<ProviderId, 'github'>, (body: unknown) => Mo
   anthropic: body => mapAnthropicModels(body as AnthropicModelsResponse),
   openai: body => mapOpenAiModels(body as OpenAiModelsResponse),
   google: body => mapGoogleModels(body as GoogleModelsResponse),
+  opencode: body => mapOpencodeModels(body as OpencodeModelsResponse),
 };
 
 type ProxyModelCache = Partial<Record<string, CacheEntry>>; // keyed by harness id

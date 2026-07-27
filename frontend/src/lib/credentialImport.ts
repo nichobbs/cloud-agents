@@ -31,6 +31,9 @@ function fromRawKey(key: string): ImportedCredential | null {
   if (k.startsWith('AIza')) {
     return { name: 'GEMINI_API_KEY', value: k, source: 'Google API key' };
   }
+  if (k.startsWith('zen_')) {
+    return { name: 'OPENCODE_ZEN_API_KEY', value: k, source: 'OpenCode Zen API key' };
+  }
   if (/^(ghp_|github_pat_|gho_|ghs_)/.test(k)) {
     return { name: 'GITHUB_TOKEN', value: k, source: 'GitHub token' };
   }
@@ -55,6 +58,7 @@ const OPENCODE_PROVIDER_ENV: Record<string, string> = {
   google: 'GEMINI_API_KEY',
   gemini: 'GEMINI_API_KEY',
   github: 'GITHUB_TOKEN',
+  opencode: 'OPENCODE_ZEN_API_KEY',
 };
 
 function fromJson(text: string): ImportedCredential[] {

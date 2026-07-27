@@ -107,10 +107,12 @@ RUN apt-get update && apt-get install -y --no-install-recommends curl ca-certifi
 # CA trust store, so a host-trusted corporate root is invisible here
 # without this.
 COPY docker/extra-ca-certs /tmp/extra-ca-certs
-RUN for f in /tmp/extra-ca-certs/*.crt /tmp/extra-ca-certs/*.pem /tmp/extra-ca-certs/*.cer; do \
+COPY docker/split-ca-bundle.sh /usr/local/bin/split-ca-bundle.sh
+RUN chmod +x /usr/local/bin/split-ca-bundle.sh \
+    && for f in /tmp/extra-ca-certs/*.crt /tmp/extra-ca-certs/*.pem /tmp/extra-ca-certs/*.cer; do \
       [ -f "$f" ] || continue; \
       base="$(basename "$f")"; \
-      cp "$f" "/usr/local/share/ca-certificates/${base%.*}.crt"; \
+      /usr/local/bin/split-ca-bundle.sh "$f" /usr/local/share/ca-certificates "${base%.*}"; \
     done \
     && update-ca-certificates
 
@@ -182,11 +184,13 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # no-op (a warning at worst), so this is safe with nothing dropped into
 # extra-ca-certs/.
 COPY docker/extra-ca-certs /tmp/extra-ca-certs
-RUN : > /usr/local/share/ca-certificates/extra-combined.pem \
+COPY docker/split-ca-bundle.sh /usr/local/bin/split-ca-bundle.sh
+RUN chmod +x /usr/local/bin/split-ca-bundle.sh \
+    && : > /usr/local/share/ca-certificates/extra-combined.pem \
     && for f in /tmp/extra-ca-certs/*.crt /tmp/extra-ca-certs/*.pem /tmp/extra-ca-certs/*.cer; do \
       [ -f "$f" ] || continue; \
       base="$(basename "$f")"; \
-      cp "$f" "/usr/local/share/ca-certificates/${base%.*}.crt"; \
+      /usr/local/bin/split-ca-bundle.sh "$f" /usr/local/share/ca-certificates "${base%.*}"; \
       cat "$f" >> /usr/local/share/ca-certificates/extra-combined.pem; \
     done \
     && update-ca-certificates

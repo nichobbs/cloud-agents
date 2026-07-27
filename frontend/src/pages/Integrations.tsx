@@ -175,6 +175,8 @@ function SmartImport() {
       OPENAI_API_KEY: 'openai',
       GEMINI_API_KEY: 'google',
       GITHUB_TOKEN: 'github',
+      OPENCODE_ZEN_API_KEY: 'opencode',
+      OPENCODE_API_KEY: 'opencode',
     };
     for (const cred of found) {
       try {

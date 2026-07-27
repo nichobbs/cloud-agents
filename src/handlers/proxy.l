@@ -261,7 +261,7 @@ pub func githubChecksHandler(owner: in String, repo: in String, branch: in Strin
 // ─── Model-discovery proxy ────────────────────────────────────────────────────
 /// The providers whose model listings apply to a harness — must stay in sync
 /// with the frontend's lib/harnesses.ts provider mapping.
-func providersForHarness(harness: in String): slice[String] {
+pub func providersForHarness(harness: in String): slice[String] {
   if harness == "claude" {
     return ["anthropic"]
   }
@@ -271,12 +271,15 @@ func providersForHarness(harness: in String): slice[String] {
   if harness == "gemini" {
     return ["google"]
   }
+  if harness == "opencode" {
+    return ["anthropic", "openai", "google", "opencode"]
+  }
   return ["anthropic", "openai", "google"]
 }
 
 /// The vault key for a provider (GOOGLE_API_KEY is accepted as a fallback
 /// alias for google's canonical GEMINI_API_KEY).
-func keyForProvider(provider: in String): Option[String] {
+pub func keyForProvider(provider: in String): Option[String] {
   if provider == "anthropic" {
     return vaultKeyOrNone("ANTHROPIC_API_KEY")
   }
@@ -287,6 +290,12 @@ func keyForProvider(provider: in String): Option[String] {
     match vaultKeyOrNone("GEMINI_API_KEY") {
       case Some(v) -> return Some(value = v)
       case None -> return vaultKeyOrNone("GOOGLE_API_KEY")
+    }
+  }
+  if provider == "opencode" {
+    match vaultKeyOrNone("OPENCODE_ZEN_API_KEY") {
+      case Some(v) -> return Some(value = v)
+      case None -> return vaultKeyOrNone("OPENCODE_API_KEY")
     }
   }
   return None
@@ -331,6 +340,11 @@ func providerModelsBody(provider: in String, key: in String): Result[String, Str
     val names: slice[String] = ["Authorization"]
     val values: slice[String] = ["Bearer " + key]
     return CloudAgents.GitHubApi.httpGetWithHeaders("https://api.openai.com/v1/models", names, values, proxyUserAgent)
+  }
+  if provider == "opencode" {
+    val names: slice[String] = ["Authorization"]
+    val values: slice[String] = ["Bearer " + key]
+    return CloudAgents.GitHubApi.httpGetWithHeaders("https://opencode.ai/zen/v1/models", names, values, proxyUserAgent)
   }
   val names: slice[String] = ["x-goog-api-key"]
   val values: slice[String] = [key]

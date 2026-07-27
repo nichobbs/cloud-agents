@@ -53,7 +53,10 @@ When a message arrives for an IDLE session:
 
 1. Lock session.
 2. Create a new container with the same volume mounts.
-3. Execute entrypoint; --resume reads .claude/history.jsonl automatically.
+3. Execute entrypoint; --resume reads conversation history from `~/.claude`
+   on the home volume automatically (not `.claude/history.jsonl` in the
+   workspace — that file doesn't exist; see `docker/entrypoint.sh`'s
+   comments for why that distinction matters).
 4. Stream response as usual.
 5. On exit, set state to WARM.
 

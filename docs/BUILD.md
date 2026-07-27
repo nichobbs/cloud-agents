@@ -231,18 +231,68 @@ fixed doing this (neither is a cloud-agents defect):
    0.4.31, or re-run `./scripts/repro-compiler-bug.sh`-style verification
    against a live daemon after bumping).
 
-Two separate, narrower gaps surfaced during this verification and remain
-open, both `src/` / `docker/entrypoint.sh` concerns, not `Lyric.Docker`/
-compiler issues: the container's own `entrypoint.sh`/CLI invocation
-errored on a first-run session (`--resume requires a valid session ID
-or session title`), tracked as
-[#386](https://github.com/nichobbs/cloud-agents/issues/386); and the
+Two separate, narrower gaps surfaced during this verification, both
+`src/` / `docker/entrypoint.sh` concerns, not `Lyric.Docker`/compiler
+issues: the container's own `entrypoint.sh`/CLI invocation errored on a
+first-run session (`--resume requires a valid session ID or session
+title`), tracked as
+[#386](https://github.com/nichobbs/cloud-agents/issues/386) — **fixed**:
+`docker/entrypoint.sh`'s "is this the first invocation" check tested for
+`/workspace/.claude/history.jsonl`, a file Claude Code never actually
+writes (its real conversation storage,
+`~/.claude/projects/<slug>/<session-id>.jsonl`, lives on the *home*
+volume, which is shared per user+harness rather than per session — see
+`docs/phase2-session-management.md` "Credential Management"). That stale
+check made every message look like the first one: it re-ran an
+unconditional `claude -p ... --resume` seed step with no session ID
+(always failing with the error above) and then replayed `--session-id`
+on message 2+, which the CLI also rejected once the session was already
+registered (`Session ID ... is already in use`). The entrypoint now
+tracks first-invocation state itself with a marker file on the
+(genuinely session-scoped) workspace volume, and the broken seed step is
+removed. Also fixed alongside it: a related, previously-unfiled issue
+where the workspace's trust dialog could never be accepted
+non-interactively, causing `settings.json`'s `permissions.allow` entries
+to be silently ignored on every run — `entrypoint.sh` now pre-accepts it
+via `~/.claude.json`; and the
 session's polled `GET /api/sessions/{id}/output` endpoint returned an
 empty `output` even though the SSE stream carried real chunks during
 the run, tracked as
-[#387](https://github.com/nichobbs/cloud-agents/issues/387). Neither is
-explored past the point of filing; tracked as follow-ups rather than
-blocking this verification pass.
+[#387](https://github.com/nichobbs/cloud-agents/issues/387), still open —
+not explored past the point of filing.
+
+The marker-file fix above has one rollout gap, tracked as
+[#710](https://github.com/nichobbs/cloud-agents/issues/710) — **fixed**:
+a session that had already reached message 2+ *before* the marker-file
+scheme shipped has its native session ID already registered with the
+Claude CLI on the (shared, per-user+harness) home volume, but its own
+`/workspace` volume has no marker (the marker is new), so its first
+message after deploying the fix still looked like a genuine first
+invocation and replayed `--session-id` for an ID the CLI already had —
+reproducing the identical "already in use" failure, permanently, since
+every later message hit the same already-registered ID. `entrypoint.sh`
+now checks whether the CLI already has a transcript for that session ID
+anywhere under `~/.claude/projects` before deciding between
+`--session-id` and `--resume`, so an already-registered session recovers
+on its very next message with no manual intervention.
+
+Separately, `entrypoint.sh`'s host-CA-bundle registration
+(`/etc/host-ca.pem`, mounted from the operator's own
+`NODE_EXTRA_CA_CERTS`) copied the mounted file straight into
+`/usr/local/share/ca-certificates/host-ca.crt` before running
+`update-ca-certificates`. That file is commonly itself a multi-certificate
+bundle (a root + intermediate chain, or several CAs concatenated — the
+symptom that surfaced this: a corporate MDM agent's exported bundle), and
+`update-ca-certificates`' rehash step expects one certificate per file,
+warning `<file> does not contain exactly one certificate or CRL` and only
+reliably hashing the first certificate in the file. The certs still ended
+up trusted via the concatenated `/etc/ssl/certs/ca-certificates.crt` (the
+CAfile route curl/git/openssl use by default), so this was mostly cosmetic
+— but `docker/split-ca-bundle.sh` now splits any multi-certificate file
+into one file per certificate first, both here and in each of the four
+Dockerfiles' build-time `docker/extra-ca-certs/` handling, so every
+certificate gets its own hash symlink too and the warning goes away for
+the common case.
 
 **#387 does not share a root cause with the `getContainerLogs`
 raw/multiplex bug above** (checked per
@@ -350,6 +400,67 @@ need a source workaround** — see `src/docker_manager.l`'s
 a local `val`, which survives reliably across multiple awaits). Revert
 that workaround once `./scripts/repro-compiler-bug.sh` check 8 reports the
 bug fixed upstream.
+
+**A ninth bug, the actual (sole) root cause of that `streamSessionMessage`
+`AccessViolationException`, was found in a later session with real access
+to the crashing hardware (arm64 macOS) and a real `dotnet-dump` crash
+dump** (as of v0.4.36): bug 8's fix (PR #690) did NOT stop the crash — it
+fixed a real, separate, silent-data-loss bug, but the process kept
+crashing on every message sent regardless. Reproduced deterministically on
+real hardware, independent of Docker Desktop vs. colima vs. the Docker
+daemon being completely unreachable (ruling out an earlier session's
+leading hypothesis about the Unix-socket transport), independent of
+`createRunnerContainer` actually succeeding, independent of the MCP
+callbacks feature flag, and independent of the surrounding request
+pipeline (JSON body decoding, the SQLite session lookup, auth) —
+`streamSessionMessage` crashes the same way even called directly with a
+made-up, nonexistent session id. `dotnet-dump analyze`'s `dumpmt -md`/
+`dumpobj` on the crash dump showed the `Unbox` call's `toTypeHnd` resolves
+to `System.Int64`, and its `obj` argument is not a valid object reference
+at all ("this object has an invalid CLASS field") — i.e. the JIT is trying
+to unbox garbage as an `Int64`. Bisection (rebuilding with pieces of
+`streamSessionMessage` removed/replaced) traced it to the run's 30-minute
+wall-clock timeout check: doing a `Long` (Int64) subtract-and-compare —
+`nowMs - startMs > timeoutMs` — ANYWHERE in that specific function, once
+per poll tick, crashes the process, whether the comparison happens inline
+or via the (pure, cross-package) `CloudAgents.DockerPolicy.
+hasExceededRunTimeout` call it originally used — both crash identically.
+**Five independent from-scratch standalone reconstructions never
+reproduced it** — matching `streamSessionMessage`'s local-variable count,
+a real cross-package `Long`-arg call, the real project's package count and
+declaration order (`CloudAgents.DockerPolicy` before `CloudAgents.Docker`,
+matching the mechanism behind the already-fixed
+[lyric-lang#5177](https://github.com/nichobbs/lyric-lang/issues/5177)),
+even the real `Lyric.Web`/`Lyric.Docker` NuGet dependencies loaded and a
+real streaming HTTP handler driving it — none crashed. **Only substituting
+the ACTUAL, unmodified `docker_manager.l`/`docker_policy.l` source into an
+otherwise-minimal 11-package project (stub implementations for every other
+package they import, no SQLite, no auth, no real session) reproduced it**,
+which is why `./scripts/repro-crosspkg-long-crash.sh` freezes a snapshot of
+those two files rather than generating equivalent code inline the way this
+project's other `repro-*.sh` scripts do — see
+`scripts/repro-fixtures/crosspkg-long-crash/NOTE.md`. **Not yet filed
+upstream** (a fully minimized, dependency-free repro was not achieved
+despite the attempts above — whatever makes this reproduce is tied to the
+real file's actual compiled shape, not just its logical content). Worked
+around in `src/docker_manager.l`'s `streamSessionMessage` by approximating
+elapsed time with an Int accumulator of each tick's `pollMs` instead of a
+`Long` epoch-millisecond subtraction (coarser than true wall-clock time,
+adequate for a 30-minute safety cap) — revert once
+`./scripts/repro-crosspkg-long-crash.sh` reports the bug fixed upstream.
+`waitForContainer`'s retry-deadline check used the identical
+cross-package-`Long`-args shape (`CloudAgents.DockerPolicy.
+shouldRetryContainerWait(attempts, maxAttempts, nowMs, deadlineMs)`) —
+never confirmed to crash (no deterministic way to force a real
+Docker-daemon wait-and-retry scenario in the time available), but
+preemptively fixed the same way rather than left as an untested landmine:
+`nowMillisLong()`'s `Long` epoch milliseconds replaced with `Int`
+`System.Environment.TickCount` (`tickCountMs()`, NOT the 64-bit
+`TickCount64`) throughout, so neither function does `Long` arithmetic at
+all anymore. `hasExceededRunTimeout` and `shouldRetryContainerWait`
+themselves are untouched in `src/docker_policy.l` — both remain pure,
+directly unit-tested (#67, #56), just no longer called from
+`CloudAgents.Docker`.
 
 **CI enforces a version floor matching this status**, read from the single
 checked-in [`MIN_LYRIC_VERSION`](../MIN_LYRIC_VERSION) file (currently

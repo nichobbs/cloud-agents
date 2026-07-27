@@ -14,6 +14,7 @@ import {
   mapAnthropicModels,
   mapGoogleModels,
   mapOpenAiModels,
+  mapOpencodeModels,
 } from './models';
 
 describe('filterOpenAiModelIds', () => {
@@ -207,5 +208,21 @@ describe('#444: proxy and direct listings merge for multi-provider harnesses', (
     expect(out.source).toBe('live');
     expect(out.models.some(m => m.id === 'claude-vaulted')).toBe(true);
     expect(out.models.some(m => m.id === 'gpt-local')).toBe(true);
+  });
+});
+
+describe('mapOpencodeModels', () => {
+  it('maps all models including custom or free ones like Big Pickle', () => {
+    const payload = {
+      data: [
+        { id: 'big-pickle', name: 'Big Pickle (Free)' },
+        { id: 'claude-sonnet-4-6' },
+      ],
+    };
+    const mapped = mapOpencodeModels(payload);
+    expect(mapped).toEqual([
+      { id: 'big-pickle', label: 'Big Pickle (Free)' },
+      { id: 'claude-sonnet-4-6', label: 'claude-sonnet-4-6' },
+    ]);
   });
 });

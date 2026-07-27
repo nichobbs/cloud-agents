@@ -24,9 +24,13 @@ package CloudAgents.GitHubApi
 import Std.Core
 
 extern type HttpWebRequest = "System.Net.HttpWebRequest"
+
 extern type WebResponse = "System.Net.WebResponse"
+
 extern type NetStream = "System.IO.Stream"
+
 extern type WebHeaderCollection = "System.Net.WebHeaderCollection"
+
 extern type Encoding = "System.Text.Encoding"
 
 // WebRequest.Create is the BCL's static factory for HttpWebRequest (there is
@@ -217,7 +221,6 @@ func readAll(s: in NetStream): String {
   return acc + chunk
 }
 
-
 /// GET `url` setting each (headerNames[i], headerValues[i]) pair on the
 /// request's header collection, reading the response as real UTF-8
 /// (readAllUtf8) — the variant the proxy endpoints use for passthrough
@@ -226,7 +229,10 @@ func readAll(s: in NetStream): String {
 /// headers and stay property-set, exactly like the functions above. Extra
 /// entries in the longer slice are ignored when the lengths differ.
 pub func httpGetWithHeaders(
-  url: in String, headerNames: in slice[String], headerValues: in slice[String], userAgent: in String
+  url: in String,
+  headerNames: in slice[String],
+  headerValues: in slice[String],
+  userAgent: in String,
 ): Result[String, String] {
   return try {
     val req = createRequest(url)

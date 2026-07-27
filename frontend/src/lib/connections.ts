@@ -7,7 +7,7 @@
 /// The Integrations page writes both stores at once: the vault copy is what
 /// runner containers receive; the local copy is what the UI itself uses.
 
-export type ProviderId = 'anthropic' | 'openai' | 'google' | 'github';
+export type ProviderId = 'anthropic' | 'openai' | 'google' | 'github' | 'opencode';
 
 export interface ProviderMeta {
   label: string;
@@ -42,6 +42,12 @@ export const PROVIDERS: Record<ProviderId, ProviderMeta> = {
     credentialName: 'GITHUB_TOKEN',
     placeholder: 'ghp_… or github_pat_…',
     unlocks: 'Repo browser, PR & CI status panels; agent GitHub MCP access.',
+  },
+  opencode: {
+    label: 'OpenCode Zen',
+    credentialName: 'OPENCODE_ZEN_API_KEY',
+    placeholder: 'zen_…',
+    unlocks: 'Live OpenCode Zen model discovery and agent runs.',
   },
 };
 
