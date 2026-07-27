@@ -116,6 +116,12 @@ test "Credential handler rejects invalid and reserved names" {
     case Ok(_) -> assertTrue(false, "reserved name NATIVE_SESSION_ID must be rejected")
     case Err(err) -> assertEqualInt(err.status, 400, "reserved name -> 400")
   }
+  // SESSION_ID is the cloud-agents session id used for fallback branch naming
+  // (#730): a same-named credential would shadow the runner's real value.
+  match putCredentialHandler(PutCredentialRequest(name = "SESSION_ID", value = "x")) {
+    case Ok(_) -> assertTrue(false, "reserved name SESSION_ID must be rejected")
+    case Err(err) -> assertEqualInt(err.status, 400, "reserved name -> 400")
+  }
   // EXTRA_REPOS is server-computed from a session's linked repos (#454): a
   // same-named credential would be appended after it and, since Docker keeps
   // the last value, hijack which repos the runner clones.

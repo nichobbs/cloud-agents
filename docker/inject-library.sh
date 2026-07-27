@@ -264,3 +264,14 @@ case "$HARNESS" in
         render_mcp_codex
         ;;
 esac
+
+# ── Branch policy rules ────────────────────────────────────────────────────
+# Platform-level instructions that tell the agent to create a descriptive
+# working branch before making changes. Each harness has a different
+# discovery mechanism; the content is the same, only the destination differs.
+# Codex is the exception: it can't use a rules file without overriding the
+# user's AGENTS.md (see entrypoint-codex.sh for the prompt-prefix fallback).
+# Shared logic lives in render-branch-policy.sh so tests can exercise it
+# directly (#732).
+source "$(dirname "${BASH_SOURCE[0]}")/render-branch-policy.sh"
+render_branch_policy "$HARNESS" .

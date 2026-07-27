@@ -6,6 +6,10 @@
 #   REPO_URL          - git remote to clone on first run (required)
 #   BRANCH            - branch to check out (default: main)
 #   MODEL             - Claude model to use (default: claude-opus-4-8)
+#   HARNESS           - harness identifier, e.g. "claude" (required; used by
+#                       create-fallback-branch.sh and inject-library.sh)
+#   SESSION_ID        - cloud-agents session ID, distinct from NATIVE_SESSION_ID
+#                       (required; used for fallback branch naming)
 #   NATIVE_SESSION_ID - session ID to resume; if non-empty passed to --resume
 #   GITHUB_TOKEN      - PAT injected into the GitHub MCP server (Phase 4, optional)
 #   CLOUD_AGENTS_MCP_CALLBACKS  - "0" to disable the Phase 6 MCP-callback shim
@@ -178,6 +182,11 @@ fi
 # across all four harness entrypoints (#468).
 /usr/local/bin/reconcile-repos.sh "entrypoint"
 cd /workspace
+
+# Safety net: ensure we're not on the starting branch. Shared across all four
+# harness entrypoints (#725) — see create-fallback-branch.sh.
+create-fallback-branch.sh "entrypoint" "${HARNESS}" "${BRANCH}" "${SESSION_ID:-}"
+
 mkdir -p /workspace/.claude
 
 # Phase 6 (docs/phase6-mcp-callbacks.md §8): whether request_permission is
