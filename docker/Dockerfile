@@ -33,26 +33,10 @@
 # buildable standalone by any orchestrator, with no external pre-build step.
 FROM mcr.microsoft.com/dotnet/sdk:10.0 AS shim-builder
 
-# Resolves to the latest lyric-lang release by default (empty ARG). Pass
-# --build-arg LYRIC_VERSION=X.Y.Z to pin to a specific release instead
-# (e.g. to work around a fresh regression, or for a fully reproducible
-# build) — never below MIN_LYRIC_VERSION (repo root), enforced below.
-# Resolved ONCE here and shared into stage 2 via /tmp/lyric-version.txt
-# (#657) rather than each stage independently re-resolving 'latest' and
-# risking a mismatch if a new release lands between the two, or their
-# caches diverge — so --build-arg LYRIC_VERSION=X.Y.Z only needs passing to
-# THIS stage now, not duplicated to both.
-#
 # Resolution uses `curl -sI .../releases/latest` (a plain web redirect) and
 # extracts the version from the redirect's `Location: .../tag/vX.Y.Z`
 # header, exactly mirroring ci.yml's already-proven "Resolve latest Lyric
 # release" step — NOT api.github.com's REST API, which a real CI run of an
-# earlier revision of this file hit and got a bare `curl: (22) ... 403`
-# from: unauthenticated api.github.com calls share a 60-req/hour rate limit
-# across GitHub Actions' entire runner IP pool, easily exhausted by
-# unrelated traffic, and curl's own `--retry` does NOT retry 4xx responses
-# by default (only certain transient/5xx conditions) — so the retry this
-# step already had didn't help at all against that 403. The plain web
 # redirect this now uses instead isn't subject to that API rate limit.
 # Retries via an explicit bash loop (curl's --retry still wouldn't help on
 # a genuine, if rare, redirect-page hiccup) rather than trusting --retry's
