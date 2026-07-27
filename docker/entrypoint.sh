@@ -91,6 +91,35 @@ if [ ! -f "$HOME/.claude.json" ]; then
     fi
 fi
 
+: "${HOME:=/home/claude-user}"
+
+# If a host-provided CA certificate bundle is mounted at /etc/host-ca.pem,
+# register it in the container's system CA trust store so that curl, git, and Node
+# trust the host's SSL-intercepting proxy natively and globally.
+if [ -f "/etc/host-ca.pem" ]; then
+    echo "entrypoint: registering host CA certificate bundle in system store..." >&2
+    cp /etc/host-ca.pem /usr/local/share/ca-certificates/host-ca.crt
+    update-ca-certificates >/dev/null
+fi
+
+# Ensure /home/claude-user and everything inside it is owned by claude-user.
+# This heals any permissions/UID mismatches if the volume was populated on the host
+# with host-specific UIDs (e.g. 504 on Colima macOS).
+chown -R claude-user:claude-user /home/claude-user || true
+chmod 700 /home/claude-user || true
+chown -R claude-user:claude-user /workspace || true
+
+# If ~/.claude.json is missing, but backups exist, automatically restore the latest backup!
+if [ ! -f "$HOME/.claude.json" ]; then
+    LATEST_BACKUP=$(ls -t "$HOME"/.claude/backups/.claude.json.backup.* 2>/dev/null | head -n 1 || true)
+    if [ -n "$LATEST_BACKUP" ]; then
+        echo "entrypoint: restoring ~/.claude.json from latest backup: $LATEST_BACKUP" >&2
+        cp "$LATEST_BACKUP" "$HOME/.claude.json"
+        chown claude-user:claude-user "$HOME/.claude.json"
+        chmod 600 "$HOME/.claude.json"
+    fi
+fi
+
 if [ -z "${PROMPT:-}" ]; then
     echo "entrypoint: PROMPT is required" >&2
     exit 64
