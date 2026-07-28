@@ -531,6 +531,8 @@ pub func streamSendMessage(id: in String, text: in String, w: in Web.ResponseWri
       Web.writeStatus(w, 200)
       Web.writeHeader(w, "Content-Type", "text/event-stream")
       Web.writeHeader(w, "Cache-Control", "no-cache")
+      Web.writeHeader(w, "Connection", "keep-alive")
+      Web.writeHeader(w, "X-Accel-Buffering", "no")
 
       val streamResult = CloudAgents.Docker.streamSessionMessage(
         repoUrl = session.repoUrl,
