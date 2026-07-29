@@ -930,6 +930,58 @@ pub func deleteSession(id: in String): Result[Unit, Web.ApiError] {
   }
 }
 
+/// Restart the session's container: terminate the running container if any, and
+/// reset the session status back to IDLE so a fresh one starts on the next message.
+pub func restartSessionContainer(id: in String): Result[Unit, Web.ApiError] {
+  if id.length == 0 {
+    return Err(Web.badRequest("id is required"))
+  }
+
+  val maybeSession = match getSession(id) {
+    case Ok(m) -> m
+    case Err(e) -> return Err(Web.internalError("session lookup failed: " + CloudAgents.Sqlite.dbErrorMessage(e)))
+  }
+  var hasSession = false
+  var containerId = ""
+  match maybeSession {
+    case Some(session) -> {
+      hasSession = true
+      containerId = session.containerId
+    }
+    case None -> ()
+  }
+  if not hasSession {
+    return Err(Web.notFound("Session not found"))
+  }
+
+  // Refuse to restart if a run is in progress
+  val maybeStatus = match CloudAgents.SessionStore.sessionStatus(id) {
+    case Ok(s) -> s
+    case Err(e) -> return Err(Web.internalError("status lookup failed: " + CloudAgents.Sqlite.dbErrorMessage(e)))
+  }
+  var isRunning = false
+  match maybeStatus {
+    case Some(s) -> if s == "RUNNING" { isRunning = true }
+    case None -> ()
+  }
+  if isRunning {
+    return Err(Web.conflict("a run is in progress; cancel or wait for it to finish before restarting the container"))
+  }
+
+  if containerId.length > 0 {
+    // Best-effort: terminate the container even if it's already gone
+    match CloudAgents.Docker.terminateSessionContainer(containerId) {
+      case Ok(_) -> ()
+      case Err(_) -> ()
+    }
+  }
+
+  match CloudAgents.SessionStore.reapSessionContainer(id) {
+    case Ok(_) -> return Ok(())
+    case Err(e) -> return Err(Web.internalError("failed to reset session status: " + CloudAgents.Sqlite.dbErrorMessage(e)))
+  }
+}
+
 /// Switch the active model for a session (stays on the same harness).
 /// The next message will use this model; existing transcript is unaffected.
 pub func updateSessionModel(id: in String, req: in UpdateSessionRequest): Result[Unit, Web.ApiError] {

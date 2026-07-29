@@ -182,6 +182,15 @@ export const api = {
     if (!res.ok) throw new Error(`${res.status} ${await res.text()}`);
   },
 
+  /** Restart the session's container (terminates any running container and resets status to IDLE). */
+  restartContainer: async (sessionId: string): Promise<void> => {
+    const res = await fetch(`${BASE}/api/sessions/${sessionId}/restart`, {
+      method: 'POST',
+      headers: authHeaders(),
+    });
+    if (!res.ok) throw new Error(`${res.status} ${await res.text()}`);
+  },
+
   /** A session's run history, newest first. */
   getRuns: async (sessionId: string): Promise<Run[]> => {
     const res = await fetch(`${BASE}/api/sessions/${sessionId}/runs`, { headers: authHeaders() });

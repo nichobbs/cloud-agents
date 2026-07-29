@@ -17,6 +17,7 @@ vi.mock('../lib/api', () => ({
     setSessionProfile: vi.fn(),
     getRuns: vi.fn(),
     cancelRun: vi.fn(),
+    restartContainer: vi.fn(),
     updateSessionModel: vi.fn(),
     addPrompt: vi.fn(),
     deleteSession: vi.fn(),

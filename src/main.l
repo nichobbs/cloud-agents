@@ -443,6 +443,15 @@ impl Web.Handler for RouteDeleteSession {
   }
 }
 
+record RouteRestartSessionContainer {
+}
+
+impl Web.Handler for RouteRestartSessionContainer {
+  func handle(req: in Web.Request): Web.Response {
+    return unitResp(CloudAgents.Handlers.restartSessionContainer(pparam(req, "id")))
+  }
+}
+
 record RouteUpdateSessionModel {
 }
 
@@ -1363,6 +1372,7 @@ pub func main(): Unit {
   router = Web.addPost(router, "/api/sessions", RouteCreateSession())
   router = Web.addDelete(router, "/api/sessions/{id}", RouteDeleteSession())
   router = Web.addPost(router, "/api/sessions/{id}/model", RouteUpdateSessionModel())
+  router = Web.addPost(router, "/api/sessions/{id}/restart", RouteRestartSessionContainer())
   router = Web.addPost(router, "/api/sessions/{id}/profile", RouteSetSessionProfile())
   router = Web.addGet(router, "/api/sessions/{id}/profile", RouteGetSessionProfile())
   router = Web.addPost(router, "/api/sessions/{id}/archive", RouteArchiveSession())

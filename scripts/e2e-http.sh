@@ -127,6 +127,10 @@ assert "models proxy (no vault keys)"  GET  "/api/models/claude"                
 assert "streaming send rejects no-auth" POST "/api/sessions/x/messages"              no  401 ""                 '{"text":"hi"}'
 assert "streaming send dispatches (auth)" POST "/api/sessions/does-not-exist/messages" yes 404 "Session" '{"text":"hi"}'
 
+# Session container restart endpoint
+assert "restart container rejects no-auth" POST "/api/sessions/x/restart"             no  401 ""
+assert "restart container dispatches (auth)" POST "/api/sessions/does-not-exist/restart" yes 404 "Session"
+
 # ── cloud-agents-shim integration leg (#531) ─────────────────────────────────
 # Drive the REAL shim binary (shim/bin, built by the CI step before this
 # script) over genuine MCP stdio against the REAL server above: initialize

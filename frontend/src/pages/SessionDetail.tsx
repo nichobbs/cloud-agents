@@ -64,6 +64,7 @@ export function SessionDetail() {
   const [runs, setRuns] = useState<Run[]>([]);
   const [showRuns, setShowRuns] = useState(false);
   const [cancelling, setCancelling] = useState(false);
+  const [restarting, setRestarting] = useState(false);
   // Multi-variable prompt templating: when a picked prompt has {{placeholders}},
   // collect every value in one modal instead of sequential window.prompt()
   // dialogs (#275).
@@ -581,6 +582,22 @@ export function SessionDetail() {
     }
   };
 
+  const handleRestartContainer = async () => {
+    if (restarting) return;
+    if (!confirm("Restart session's container? This will stop the active container (if any) and reset it so a fresh container starts on the next run. This is useful for updating tokens/keys.")) {
+      return;
+    }
+    setRestarting(true);
+    try {
+      await api.restartContainer(sessionId);
+      alert('Container restarted successfully.');
+    } catch (err) {
+      alert(err instanceof Error ? `Restart failed: ${err.message}` : 'Restart failed');
+    } finally {
+      setRestarting(false);
+    }
+  };
+
   const toggleRuns = async () => {
     const next = !showRuns;
     setShowRuns(next);
@@ -844,6 +861,14 @@ export function SessionDetail() {
           <Link to={`/sessions/${sessionId}/todos`} style={todosBtnStyle}>
             Todos
           </Link>
+          <button
+            style={archiveBtnStyle}
+            onClick={() => { void handleRestartContainer(); }}
+            disabled={restarting}
+            title="Stop the session's container (if any) and reset it so a fresh container starts on the next message. Useful for picking up updated tokens/keys."
+          >
+            {restarting ? 'Restarting…' : 'Restart container'}
+          </button>
           {session.isArchived === '1' ? (
             <button
               style={archiveBtnStyle}
