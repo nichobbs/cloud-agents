@@ -531,6 +531,8 @@ pub func streamSendMessage(id: in String, text: in String, w: in Web.ResponseWri
       Web.writeStatus(w, 200)
       Web.writeHeader(w, "Content-Type", "text/event-stream")
       Web.writeHeader(w, "Cache-Control", "no-cache")
+      Web.writeHeader(w, "Connection", "keep-alive")
+      Web.writeHeader(w, "X-Accel-Buffering", "no")
 
       val streamResult = CloudAgents.Docker.streamSessionMessage(
         repoUrl = session.repoUrl,
@@ -912,6 +914,7 @@ pub func deleteSession(id: in String): Result[Unit, Web.ApiError] {
           case Err(err) -> return Err(Web.internalError("Failed to terminate container (session retained, retry delete): " + err))
         }
       }
+      val _ = CloudAgents.Docker.deleteWorkspaceVolume(CloudAgents.Auth.currentUserId(), id)
       // Drop any linked repositories first (best-effort: leftover rows are
       // only reachable through this now-deleted session, so a failure here is
       // harmless bookkeeping, not a blocker for the delete).
@@ -924,6 +927,58 @@ pub func deleteSession(id: in String): Result[Unit, Web.ApiError] {
         case Err(e) -> return Err(Web.internalError("failed to remove session: " + CloudAgents.Sqlite.dbErrorMessage(e)))
       }
     }
+  }
+}
+
+/// Restart the session's container: terminate the running container if any, and
+/// reset the session status back to IDLE so a fresh one starts on the next message.
+pub func restartSessionContainer(id: in String): Result[Unit, Web.ApiError] {
+  if id.length == 0 {
+    return Err(Web.badRequest("id is required"))
+  }
+
+  val maybeSession = match getSession(id) {
+    case Ok(m) -> m
+    case Err(e) -> return Err(Web.internalError("session lookup failed: " + CloudAgents.Sqlite.dbErrorMessage(e)))
+  }
+  var hasSession = false
+  var containerId = ""
+  match maybeSession {
+    case Some(session) -> {
+      hasSession = true
+      containerId = session.containerId
+    }
+    case None -> ()
+  }
+  if not hasSession {
+    return Err(Web.notFound("Session not found"))
+  }
+
+  // Refuse to restart if a run is in progress
+  val maybeStatus = match CloudAgents.SessionStore.sessionStatus(id) {
+    case Ok(s) -> s
+    case Err(e) -> return Err(Web.internalError("status lookup failed: " + CloudAgents.Sqlite.dbErrorMessage(e)))
+  }
+  var isRunning = false
+  match maybeStatus {
+    case Some(s) -> if s == "RUNNING" { isRunning = true }
+    case None -> ()
+  }
+  if isRunning {
+    return Err(Web.conflict("a run is in progress; cancel or wait for it to finish before restarting the container"))
+  }
+
+  if containerId.length > 0 {
+    // Best-effort: terminate the container even if it's already gone
+    match CloudAgents.Docker.terminateSessionContainer(containerId) {
+      case Ok(_) -> ()
+      case Err(_) -> ()
+    }
+  }
+
+  match CloudAgents.SessionStore.reapSessionContainer(id) {
+    case Ok(_) -> return Ok(())
+    case Err(e) -> return Err(Web.internalError("failed to reset session status: " + CloudAgents.Sqlite.dbErrorMessage(e)))
   }
 }
 
@@ -946,6 +1001,34 @@ pub func updateSessionModel(id: in String, req: in UpdateSessionRequest): Result
   match maybeSession {
     case None -> return Err(Web.notFound("Session not found"))
     case Some(_) -> match CloudAgents.SessionStore.updateSessionModel(id, req.model) { case Ok(_) -> return Ok(()); case Err(e) -> return Err(Web.internalError("failed to update model: " + CloudAgents.Sqlite.dbErrorMessage(e))) }
+  }
+}
+
+pub func archiveSession(id: in String): Result[Unit, Web.ApiError] {
+  if id.length == 0 {
+    return Err(Web.badRequest("id is required"))
+  }
+  val maybeSession = match getSession(id) {
+    case Ok(m) -> m
+    case Err(e) -> return Err(Web.internalError("session lookup failed: " + CloudAgents.Sqlite.dbErrorMessage(e)))
+  }
+  match maybeSession {
+    case None -> return Err(Web.notFound("Session not found"))
+    case Some(_) -> match CloudAgents.SessionStore.updateSessionArchived(id, "1") { case Ok(_) -> return Ok(()); case Err(e) -> return Err(Web.internalError("failed to archive session: " + CloudAgents.Sqlite.dbErrorMessage(e))) }
+  }
+}
+
+pub func unarchiveSession(id: in String): Result[Unit, Web.ApiError] {
+  if id.length == 0 {
+    return Err(Web.badRequest("id is required"))
+  }
+  val maybeSession = match getSession(id) {
+    case Ok(m) -> m
+    case Err(e) -> return Err(Web.internalError("session lookup failed: " + CloudAgents.Sqlite.dbErrorMessage(e)))
+  }
+  match maybeSession {
+    case None -> return Err(Web.notFound("Session not found"))
+    case Some(_) -> match CloudAgents.SessionStore.updateSessionArchived(id, "0") { case Ok(_) -> return Ok(()); case Err(e) -> return Err(Web.internalError("failed to unarchive session: " + CloudAgents.Sqlite.dbErrorMessage(e))) }
   }
 }
 

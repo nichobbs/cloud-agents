@@ -319,7 +319,8 @@ pub func allMigrations(): slice[Migration] {
         CloudAgents.Db.artifactsOwnerRepoIndexSql()
       ]
     ),
-    Migration(version = "0019_github_oauth_refresh", statements = [CloudAgents.Db.githubOAuthRefreshSchemaSql()])
+    Migration(version = "0019_github_oauth_refresh", statements = [CloudAgents.Db.githubOAuthRefreshSchemaSql()]),
+    Migration(version = "0020_archive_sessions", statements = [CloudAgents.Db.alterSessionsAddIsArchivedSql()])
   ]
 }
 

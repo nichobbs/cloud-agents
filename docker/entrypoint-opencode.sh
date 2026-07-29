@@ -29,6 +29,13 @@ if [ -z "${PROMPT:-}" ]; then
     exit 64
 fi
 
+# Map legacy/unqualified free OpenCode models to the qualified 'opencode/' provider prefix.
+case "$MODEL" in
+  big-pickle|deepseek-v4-flash-free|hy3-free|mimo-v2.5-free|nemotron-3-ultra-free|north-mini-code-free)
+    MODEL="opencode/${MODEL}"
+    ;;
+esac
+
 # Validate that at least one API key is present for the selected model family.
 case "$MODEL" in
   claude-*)
@@ -40,6 +47,9 @@ case "$MODEL" in
   gemini-*)
     [ -n "${GOOGLE_API_KEY:-}" ] || { echo "entrypoint-opencode: GOOGLE_API_KEY is required for model $MODEL" >&2; exit 64; }
     ;;
+  opencode/*)
+    # Free models — no key required, but we will default it below if none is set
+    ;;
   *)
     echo "entrypoint-opencode: no API key validation for unknown model family '$MODEL' — ensure the correct key is set" >&2
     ;;
@@ -49,6 +59,25 @@ esac
 # Map OPENCODE_API_KEY to OPENCODE_ZEN_API_KEY if the latter is not already set.
 export OPENCODE_ZEN_API_KEY="${OPENCODE_ZEN_API_KEY:-${OPENCODE_API_KEY:-}}"
 
+# Default key for free models under the 'opencode/' provider if none configured so they work out of the box
+case "$MODEL" in
+  opencode/*)
+    export OPENCODE_ZEN_API_KEY="${OPENCODE_ZEN_API_KEY:-free-model-placeholder}"
+    ;;
+esac
+
+
+# Configure git credential helper and push defaults dynamically inside the container.
+if [ -n "${GITHUB_TOKEN:-}" ]; then
+    echo "entrypoint-opencode: configuring git credential helper for GitHub" >&2
+    if [ "$(id -u)" -eq 0 ]; then
+        git config --system credential.helper '!f() { cat >/dev/null; if [ "$1" = "get" ]; then echo "username=x-access-token"; echo "password=${GITHUB_TOKEN}"; fi; }; f'
+        git config --system push.autoSetupRemote true
+    else
+        git config --global credential.helper '!f() { cat >/dev/null; if [ "$1" = "get" ]; then echo "username=x-access-token"; echo "password=${GITHUB_TOKEN}"; fi; }; f'
+        git config --global push.autoSetupRemote true
+    fi
+fi
 
 if [ ! -d /workspace/.git ]; then
     if [ -z "${REPO_URL:-}" ]; then

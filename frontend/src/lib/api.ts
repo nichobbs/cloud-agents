@@ -1,6 +1,6 @@
 /// <reference types="vite/client" />
 
-import type { Comment, Credential, McpServer, Message, Profile, Prompt, Run, Skill, Subagent, Todo, Webhook } from '../types';
+import type { Comment, Credential, McpServer, Message, PendingCallbacksResponse, Profile, Prompt, Run, Skill, Subagent, Todo, Webhook } from '../types';
 
 const BASE = (import.meta.env['VITE_API_URL'] as string | undefined) ?? '';
 
@@ -22,6 +22,7 @@ export interface ServerSession {
   status?: string;
   createdAt?: string;
   lastMessageAt?: string;
+  isArchived?: string;
 }
 
 function authHeaders(): HeadersInit {
@@ -104,6 +105,22 @@ export const api = {
     if (!res.ok) throw new Error(`${res.status} ${await res.text()}`);
   },
 
+  archiveSession: async (sessionId: string): Promise<void> => {
+    const res = await fetch(`${BASE}/api/sessions/${sessionId}/archive`, {
+      method: 'POST',
+      headers: authHeaders(),
+    });
+    if (!res.ok) throw new Error(`${res.status} ${await res.text()}`);
+  },
+
+  unarchiveSession: async (sessionId: string): Promise<void> => {
+    const res = await fetch(`${BASE}/api/sessions/${sessionId}/unarchive`, {
+      method: 'POST',
+      headers: authHeaders(),
+    });
+    if (!res.ok) throw new Error(`${res.status} ${await res.text()}`);
+  },
+
   // ─── Linked repositories (multi-repo sessions) ───────────────────────────────
 
   /** Repositories linked to a session beyond its primary repo. Newer backends
@@ -159,6 +176,15 @@ export const api = {
   /** Cancel an in-flight run (terminates its container). 409 if nothing is running. */
   cancelRun: async (sessionId: string): Promise<void> => {
     const res = await fetch(`${BASE}/api/sessions/${sessionId}/cancel`, {
+      method: 'POST',
+      headers: authHeaders(),
+    });
+    if (!res.ok) throw new Error(`${res.status} ${await res.text()}`);
+  },
+
+  /** Restart the session's container (terminates any running container and resets status to IDLE). */
+  restartContainer: async (sessionId: string): Promise<void> => {
+    const res = await fetch(`${BASE}/api/sessions/${sessionId}/restart`, {
       method: 'POST',
       headers: authHeaders(),
     });
@@ -641,6 +667,64 @@ export const api = {
     const res = await fetch(`${BASE}/api/webhooks/${webhookId}`, {
       method: 'DELETE',
       headers: authHeaders(),
+    });
+    if (!res.ok) throw new Error(`${res.status} ${await res.text()}`);
+  },
+
+  // ─── Human-in-the-loop pending callbacks (Phase 6) ───────────────────────────
+
+  /** List of all pending callback requests (permissions, questions, secrets) */
+  getPendingCallbacks: async (sessionId: string): Promise<PendingCallbacksResponse> => {
+    const res = await fetch(`${BASE}/api/sessions/${sessionId}/callbacks/pending`, {
+      headers: authHeaders(),
+    });
+    if (!res.ok) throw new Error(`${res.status} ${await res.text()}`);
+    const body = (await res.json()) as PendingCallbacksResponse;
+    return {
+      permissionRequests: body.permissionRequests ?? [],
+      userQuestions: body.userQuestions ?? [],
+      secretRequests: body.secretRequests ?? [],
+    };
+  },
+
+  /** Approve, deny, or allow-always a tool permission request */
+  answerPermissionRequest: async (
+    sessionId: string,
+    requestId: string,
+    body: { decision: 'allow' | 'deny' | 'allow_always'; note: string; updatedInputJson: string },
+  ): Promise<void> => {
+    const res = await fetch(`${BASE}/api/sessions/${sessionId}/callbacks/permission/${requestId}/answer`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', ...authHeaders() },
+      body: JSON.stringify(body),
+    });
+    if (!res.ok) throw new Error(`${res.status} ${await res.text()}`);
+  },
+
+  /** Submit an answer to an agent's question */
+  answerUserQuestion: async (
+    sessionId: string,
+    requestId: string,
+    answer: string,
+  ): Promise<void> => {
+    const res = await fetch(`${BASE}/api/sessions/${sessionId}/callbacks/question/${requestId}/answer`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', ...authHeaders() },
+      body: JSON.stringify({ answer }),
+    });
+    if (!res.ok) throw new Error(`${res.status} ${await res.text()}`);
+  },
+
+  /** Approve or deny a secret request */
+  answerSecretRequest: async (
+    sessionId: string,
+    requestId: string,
+    decision: 'allow' | 'deny',
+  ): Promise<void> => {
+    const res = await fetch(`${BASE}/api/sessions/${sessionId}/callbacks/secret/${requestId}/answer`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', ...authHeaders() },
+      body: JSON.stringify({ decision }),
     });
     if (!res.ok) throw new Error(`${res.status} ${await res.text()}`);
   },

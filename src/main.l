@@ -17,6 +17,7 @@ import CloudAgents.Proxy
 import CloudAgents.Repository
 import CloudAgents.SessionStore
 import CloudAgents.Sqlite
+import CloudAgents.Streaming
 import CloudAgents.Webhooks
 import extern System.Environment as Env
 import extern System.String as DotNetString
@@ -152,8 +153,33 @@ pub func sessionRepoListResp(r: in Result[SessionRepoList, Web.ApiError]): Web.R
   return match r { case Ok(v) -> jsonResp(200, v.toJson()); case Err(e) -> Web.errorResponse(e) }
 }
 
+pub func messageListToJson(v: in CloudAgents.Repository.MessageList): String {
+  var json = "{\"messages\":["
+  var i = 0
+  while i < v.messages.length {
+    if i > 0 {
+      json = json + ","
+    }
+    val m = v.messages[i]
+    json = json + "{\"id\":\"" + CloudAgents.Streaming.jsonEscape(m.id) + "\",\"sessionId\":\"" +
+      CloudAgents.Streaming.jsonEscape(m.sessionId) +
+      "\",\"role\":\"" +
+      CloudAgents.Streaming.jsonEscape(m.role) +
+      "\",\"content\":\"" +
+      CloudAgents.Streaming.jsonEscape(m.content) +
+      "\",\"seq\":\"" +
+      CloudAgents.Streaming.jsonEscape(m.seq) +
+      "\",\"createdAt\":\"" +
+      CloudAgents.Streaming.jsonEscape(m.createdAt) +
+      "\"}"
+    i = i + 1
+  }
+  json = json + "]}"
+  return json
+}
+
 pub func messageListResp(r: in Result[MessageList, Web.ApiError]): Web.Response {
-  return match r { case Ok(v) -> jsonResp(200, v.toJson()); case Err(e) -> Web.errorResponse(e) }
+  return match r { case Ok(v) -> jsonResp(200, messageListToJson(v)); case Err(e) -> Web.errorResponse(e) }
 }
 
 pub func commentResp(r: in Result[Comment, Web.ApiError]): Web.Response {
@@ -300,6 +326,10 @@ func notificationListResp(r: in Result[NotificationListResponse, Web.ApiError]):
   return match r { case Ok(v) -> jsonResp(200, v.toJson()); case Err(e) -> Web.errorResponse(e) }
 }
 
+func pendingCallbacksResp(r: in Result[PendingCallbacksResponse, Web.ApiError]): Web.Response {
+  return match r { case Ok(v) -> jsonResp(200, v.toJson()); case Err(e) -> Web.errorResponse(e) }
+}
+
 // ─── CloudAgents.Handlers routes (sessions.l) ───────────────────────────────
 record RouteCreateSession {
 }
@@ -418,6 +448,15 @@ impl Web.Handler for RouteDeleteSession {
   }
 }
 
+record RouteRestartSessionContainer {
+}
+
+impl Web.Handler for RouteRestartSessionContainer {
+  func handle(req: in Web.Request): Web.Response {
+    return unitResp(CloudAgents.Handlers.restartSessionContainer(pparam(req, "id")))
+  }
+}
+
 record RouteUpdateSessionModel {
 }
 
@@ -426,6 +465,24 @@ impl Web.Handler for RouteUpdateSessionModel {
     val id = pparam(req, "id")
     val decoded = match UpdateSessionRequest.fromJson(req.body) { case Ok(d) -> d; case Err(_) -> return badBody() }
     return unitResp(CloudAgents.Handlers.updateSessionModel(id, decoded))
+  }
+}
+
+record RouteArchiveSession {
+}
+
+impl Web.Handler for RouteArchiveSession {
+  func handle(req: in Web.Request): Web.Response {
+    return unitResp(CloudAgents.Handlers.archiveSession(pparam(req, "id")))
+  }
+}
+
+record RouteUnarchiveSession {
+}
+
+impl Web.Handler for RouteUnarchiveSession {
+  func handle(req: in Web.Request): Web.Response {
+    return unitResp(CloudAgents.Handlers.unarchiveSession(pparam(req, "id")))
   }
 }
 
@@ -1130,6 +1187,15 @@ impl Web.Handler for RouteListNotifications {
   }
 }
 
+record RouteListPendingCallbacks {
+}
+
+impl Web.Handler for RouteListPendingCallbacks {
+  func handle(req: in Web.Request): Web.Response {
+    return pendingCallbacksResp(CloudAgents.Callbacks.listPendingCallbacksHandler(pparam(req, "id")))
+  }
+}
+
 // ─── Phase 7 §6: repo-scoped artifacts (callbacks.l) ────────────────────────
 //
 // repoKey (host/owner/repo) contains literal '/' characters, so it is a
@@ -1320,8 +1386,11 @@ pub func main(): Unit {
   router = Web.addPost(router, "/api/sessions", RouteCreateSession())
   router = Web.addDelete(router, "/api/sessions/{id}", RouteDeleteSession())
   router = Web.addPost(router, "/api/sessions/{id}/model", RouteUpdateSessionModel())
+  router = Web.addPost(router, "/api/sessions/{id}/restart", RouteRestartSessionContainer())
   router = Web.addPost(router, "/api/sessions/{id}/profile", RouteSetSessionProfile())
   router = Web.addGet(router, "/api/sessions/{id}/profile", RouteGetSessionProfile())
+  router = Web.addPost(router, "/api/sessions/{id}/archive", RouteArchiveSession())
+  router = Web.addPost(router, "/api/sessions/{id}/unarchive", RouteUnarchiveSession())
 
   router = Web.addGet(router, "/api/sessions/{id}/output", RouteGetRunOutput())
   router = Web.addGet(router, "/api/sessions/{id}/output/{offset}", RouteGetRunOutputFrom())
@@ -1407,6 +1476,7 @@ pub func main(): Unit {
   router = Web.addGet(router, "/api/sessions/{id}/callbacks/question/{rid}", RouteGetUserQuestion())
   router = Web.addPost(router, "/api/sessions/{id}/callbacks/question/{rid}/answer", RouteAnswerUserQuestion())
   router = Web.addPost(router, "/api/sessions/{id}/callbacks/progress", RouteReportProgress())
+  router = Web.addGet(router, "/api/sessions/{id}/callbacks/pending", RouteListPendingCallbacks())
 
   // Phase 6 §7 v2 tools: request_secret (create/poll/answer), add_followup_task
   // (todo create), report_artifact (upload) + user-facing artifact list/download.
