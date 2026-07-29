@@ -90,6 +90,27 @@ else
 fi
 rm -rf "$WS"
 
+# ── Claude (JSON): an env value containing a literal embedded newline must
+# not corrupt sibling entries — the env-pairs loop reads .env[] NUL-
+# delimited, not newline-delimited, specifically so this can't happen ──────
+WS="$(mktemp -d)"
+(
+  cd "$WS"
+  export CLOUD_AGENTS_MCP_SERVERS_B64=$(printf '%s' '{"mcpServers":[
+    {"name":"multiline","transport":"stdio","command":"foo","args":[],"url":"","env":["A=line1\nline2","B=second"]}
+  ]}' | b64)
+
+  render_mcp_json ".claude/mcp.json" '{"mcpServers":{}}' "mcpServers"
+  jq -c . .claude/mcp.json > result.json
+)
+check "embedded-newline env value preserved whole, not truncated" \
+  jq -e '.mcpServers["cloud-agents-lib-multiline"].env.A == "line1\nline2"' "$WS/result.json"
+check "sibling env entry after a newline-containing value is unaffected" \
+  jq -e '.mcpServers["cloud-agents-lib-multiline"].env.B == "second"' "$WS/result.json"
+check "no spurious extra env key from a split newline" \
+  jq -e '(.mcpServers["cloud-agents-lib-multiline"].env | keys | length) == 2' "$WS/result.json"
+rm -rf "$WS"
+
 # ── Codex (TOML): same expansion behavior, marker-delimited block ──────────
 WS="$(mktemp -d)"
 (

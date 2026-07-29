@@ -204,12 +204,18 @@ render_mcp_json() {
             key="cloud-agents-lib-$name"
             if [ "$transport" = "stdio" ]; then
                 local env_json='{}' raw k v
-                while IFS= read -r raw; do
+                # NUL-delimited, not newline-delimited: an env VALUE can
+                # legitimately contain a literal newline (isValidMcpEnvEntry
+                # only checks length and a non-empty key before "="), which
+                # `jq -r '.env[]'` read line-by-line would split into two
+                # bogus entries. A bash string can never itself contain a
+                # NUL byte, so it's a safe delimiter here.
+                while IFS= read -r -d '' raw; do
                     [ -n "$raw" ] || continue
                     k="${raw%%=*}"
                     v="$(expand_env_value "${raw#*=}")"
                     env_json=$(jq -c --arg k "$k" --arg v "$v" '. + {($k): $v}' <<<"$env_json")
-                done < <(jq -r '.env[]' <<<"$item")
+                done < <(jq -j '.env[] + "\u0000"' <<<"$item")
                 entry=$(jq -c --argjson env "$env_json" '{command: .command, args: .args, env: $env}' <<<"$item")
             else
                 entry=$(jq -c '{type: "http", url: .url}' <<<"$item")
@@ -260,13 +266,16 @@ render_mcp_codex() {
                 # Same per-entry expand_env_value pass as render_mcp_json — jq
                 # can't shell out to envsubst, so this loops in bash instead
                 # of building the TOML fragment in one jq expression.
+                # NUL-delimited, not newline-delimited — see the matching
+                # comment in render_mcp_json for why a newline-delimited read
+                # would corrupt a value containing a literal newline.
                 local env_pairs=() raw k v
-                while IFS= read -r raw; do
+                while IFS= read -r -d '' raw; do
                     [ -n "$raw" ] || continue
                     k="${raw%%=*}"
                     v="$(expand_env_value "${raw#*=}")"
                     env_pairs+=("$(jq -nr --arg k "$k" --arg v "$v" '($k|@json) + " = " + ($v|@json)')")
-                done < <(jq -r '.env[]' <<<"$item")
+                done < <(jq -j '.env[] + "\u0000"' <<<"$item")
                 if [ "${#env_pairs[@]}" -gt 0 ]; then
                     # "${arr[*]}" joins on IFS's first character only, so
                     # IFS=', ' would actually join with just ",", dropping the
