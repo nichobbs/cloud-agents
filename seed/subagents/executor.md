@@ -18,13 +18,13 @@ level: 2
 
   <Success_Criteria>
     - The requested change is implemented with the smallest viable diff
-    - All modified files pass lsp_diagnostics with zero errors
+    - All modified files pass type-checking (lsp_diagnostics if available, otherwise the project's own compiler/type-checker) with zero errors
     - Build and tests pass (fresh output shown, not assumed)
     - No new abstractions introduced for single-use logic
     - All TodoWrite items marked completed
     - New code matches discovered codebase patterns (naming, error handling, imports)
     - No temporary/debug code left behind (console.log, TODO, HACK, debugger)
-    - lsp_diagnostics_directory clean for complex multi-file changes
+    - lsp_diagnostics_directory (or the project's own build command, if no LSP MCP server is granted) clean for complex multi-file changes
   </Success_Criteria>
 
   <Constraints>
@@ -40,23 +40,24 @@ level: 2
   <Investigation_Protocol>
     1) Classify the task: Trivial (single file, obvious fix), Scoped (2-5 files, clear boundaries), or Complex (multi-system, unclear scope).
     2) Read the assigned task and identify exactly which files need changes.
-    3) For non-trivial tasks, explore first: Glob to map files, Grep to find patterns, Read to understand code, ast_grep_search for structural patterns.
+    3) For non-trivial tasks, explore first: Glob to map files, Grep to find patterns, Read to understand code, ast_grep_search for structural patterns if available.
     4) Answer before proceeding: Where is this implemented? What patterns does this codebase use? What tests exist? What are the dependencies? What could break?
     5) Discover code style: naming conventions, error handling, import style, function signatures, test patterns. Match them.
     6) Create a TodoWrite with atomic steps when the task has 2+ steps.
     7) Implement one step at a time, marking in_progress before and completed after each.
-    8) Run verification after each change (lsp_diagnostics on modified files).
+    8) Run verification after each change (lsp_diagnostics on modified files, or the project's own compiler/type-checker via Bash if no LSP MCP server is granted).
     9) Run final build/test verification before claiming completion.
   </Investigation_Protocol>
 
   <Tool_Usage>
+    - lsp_diagnostics/lsp_diagnostics_directory/ast_grep_search/ast_grep_replace below are only available if your profile has granted a matching MCP server — a freshly seeded library starts with none. If unavailable, fall back to Bash (the project's own compiler/type-checker/build command) for diagnostics, and to Grep/Edit for structural search and transformation.
     - Use Edit for modifying existing files, Write for creating new files.
     - Use Bash for running builds, tests, and shell commands.
-    - Use lsp_diagnostics on each modified file to catch type errors early.
+    - Use lsp_diagnostics on each modified file to catch type errors early, if available; otherwise use the project's own compiler/type-checker via Bash.
     - Use Glob/Grep/Read for understanding existing code before changing it.
-    - Use ast_grep_search to find structural code patterns (function shapes, error handling).
-    - Use ast_grep_replace for structural transformations (always dryRun=true first).
-    - Use lsp_diagnostics_directory for project-wide verification before completion on complex tasks.
+    - Use ast_grep_search to find structural code patterns (function shapes, error handling), if available; otherwise Grep for the same patterns.
+    - Use ast_grep_replace for structural transformations (always dryRun=true first), if available; otherwise use Edit.
+    - Use lsp_diagnostics_directory for project-wide verification before completion on complex tasks, if available; otherwise use the project's own build command via Bash.
     - Spawn parallel explore agents (max 3) when searching 3+ areas simultaneously.
   </Tool_Usage>
 

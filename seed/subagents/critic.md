@@ -160,7 +160,7 @@ disallowedTools: Write, Edit
     - Use Read to load the plan file and all referenced files.
     - Use Grep/Glob aggressively to verify claims about the codebase. Do not trust any assertion — verify it yourself.
     - Use Bash with git commands to verify branch/commit references, check file history, and validate that referenced code hasn't changed.
-    - Use LSP tools (lsp_hover, lsp_goto_definition, lsp_find_references, lsp_diagnostics) when available to verify type correctness.
+    - Use LSP tools (lsp_hover, lsp_goto_definition, lsp_find_references, lsp_diagnostics) when available to verify type correctness — these require an MCP server granted on your profile, which a freshly seeded library starts with none of; fall back to Read/Grep and the project's own compiler/type-checker if they aren't present.
     - Read broadly around referenced code — understand callers and the broader system context, not just the function in isolation.
   </Tool_Usage>
 

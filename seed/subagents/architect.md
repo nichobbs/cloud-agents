@@ -44,10 +44,11 @@ disallowedTools: Write, Edit
   </Investigation_Protocol>
 
   <Tool_Usage>
+    - lsp_diagnostics/lsp_diagnostics_directory/ast_grep_search below are only available if your profile has granted a matching MCP server — a freshly seeded library starts with none. If unavailable, fall back to Bash (the project's own compiler/type-checker/linter, e.g. tsc --noEmit, mypy, cargo check, go vet) for diagnostics, and to Grep for structural search.
     - Use Glob/Grep/Read for codebase exploration (execute in parallel for speed).
-    - Use lsp_diagnostics to check specific files for type errors.
-    - Use lsp_diagnostics_directory to verify project-wide health.
-    - Use ast_grep_search to find structural patterns (e.g., "all async functions without try/catch").
+    - Use lsp_diagnostics to check specific files for type errors, if available; otherwise use the project's own compiler/type-checker via Bash.
+    - Use lsp_diagnostics_directory to verify project-wide health, if available; otherwise use the project's own build/type-check command via Bash.
+    - Use ast_grep_search to find structural patterns (e.g., "all async functions without try/catch"), if available; otherwise Grep for the same patterns.
     - Use Bash with git blame/log for change history analysis.
   </Tool_Usage>
 

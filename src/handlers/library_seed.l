@@ -12,9 +12,13 @@
 //! methodology is tmux-based), each with its OMC/ralplan-specific mechanics
 //! (`.omc/plans/` paths, `oh-my-claudecode:*` cross-agent Task calls, the
 //! ralplan consensus-review mode) edited out — see the diff against
-//! .claude/agents/ for exactly what changed per file. seed/skills holds
-//! freshly authored content instead, since none of .claude/skills was
-//! portable to begin with. CloudAgents.OAuth calls
+//! .claude/agents/ for exactly what changed per file. Several also carried
+//! `lsp_diagnostics`/`ast_grep_*`-family tool references that assume MCP
+//! servers a fresh sign-in's empty profile hasn't granted yet; those are now
+//! prefaced with an explicit "if granted, else fall back to Bash" note
+//! instead of being assumed available. seed/skills holds freshly authored
+//! content instead, since none of .claude/skills was portable to begin
+//! with. CloudAgents.OAuth calls
 //! seedDefaultLibraryIfEmpty on every successful sign-in; each half is a
 //! no-op once the user already has any subagent/skill at all, seeded or
 //! user-authored.
@@ -102,6 +106,7 @@ pub func defaultSubagentNames(): slice[String] {
   acc = acc.append("planner")
   acc = acc.append("scientist")
   acc = acc.append("security-reviewer")
+  acc = acc.append("test-engineer")
   acc = acc.append("tracer")
   acc = acc.append("verifier")
   acc = acc.append("writer")
