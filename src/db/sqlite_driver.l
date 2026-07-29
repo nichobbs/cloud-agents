@@ -39,20 +39,12 @@ extern type RowArray = "CloudAgents.Sqlite.Row[]"
 // on a boxed argument (#513) — the same instance-bound GetType() shape that
 // crashed the process with an uncatchable AccessViolationException for a
 // boxed Byte (docs/lyric/gotchas.md), migrated here as defense-in-depth even
-// though String is a reference type and the specific boxing-mismatch
-// mechanism described there is scoped to value-type arguments. getRowType
-// below is left on the instance-bound form: Row is a reference type too
-// (same lower-risk category as String), but migrating it needs the exact
-// runtime-emitted type name for a Lyric record, which isn't safely
-// guessable without the compiler to verify against — a wrong string here
-// breaks Array.CreateInstance outright, trading a currently-working (if
-// same-shaped) call for a worse failure.
+// though String and Row are reference types.
 @externTarget("System.Type.GetType")
 func stringType(name: in String): Type = ()
 
-@externInstance
-@externTarget("System.Object.GetType")
-func getRowType(obj: in Row): Type = ()
+@externTarget("System.Type.GetType")
+func rowType(name: in String): Type = ()
 
 @externTarget("System.Array.CreateInstance")
 func createStringArray(elementType: in Type, length: in Int): StringArray = ()
@@ -120,8 +112,8 @@ pub func createEmptyStringArray(): StringArray {
 
 pub func appendRow(arr: in RowArray, item: in Row): RowArray {
   val oldLen = getRowArrayLength(arr)
-  val rowType = getRowType(item)
-  val newArr = createRowArray(rowType, oldLen + 1)
+  val rType = rowType("CloudAgents.Sqlite.Row, CloudAgents")
+  val newArr = createRowArray(rType, oldLen + 1)
   if oldLen > 0 {
     copyRowArray(arr, 0, newArr, 0, oldLen)
   }
@@ -130,9 +122,8 @@ pub func appendRow(arr: in RowArray, item: in Row): RowArray {
 }
 
 pub func createEmptyRowArray(): RowArray {
-  val dummy = Row(cols = createEmptyStringArray())
-  val rowType = getRowType(dummy)
-  return createRowArray(rowType, 0)
+  val rType = rowType("CloudAgents.Sqlite.Row, CloudAgents")
+  return createRowArray(rType, 0)
 }
 
 /// One result row: every column is read as text (the schema stores all columns

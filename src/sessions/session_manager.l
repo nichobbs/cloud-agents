@@ -63,9 +63,8 @@ extern type Type = "System.Type"
 
 extern type AgentSessionArray = "CloudAgents.SessionStore.AgentSession[]"
 
-@externInstance
-@externTarget("System.Object.GetType")
-func getAgentSessionType(obj: in AgentSession): Type = ()
+@externTarget("System.Type.GetType")
+func agentSessionType(name: in String): Type = ()
 
 @externTarget("System.Array.CreateInstance")
 func createSessionArray(elementType: in Type, length: in Int): AgentSessionArray = ()
@@ -93,7 +92,7 @@ pub func getSessionArrayValue(arr: in AgentSessionArray, index: in Int): AgentSe
 
 pub func appendSession(arr: in AgentSessionArray, item: in AgentSession): AgentSessionArray {
   val oldLen = getSessionArrayLength(arr)
-  val sessionType = getAgentSessionType(item)
+  val sessionType = agentSessionType("CloudAgents.SessionStore.AgentSession, CloudAgents")
   val newArr = createSessionArray(sessionType, oldLen + 1)
   if oldLen > 0 {
     copySessionArray(arr, 0, newArr, 0, oldLen)
@@ -103,8 +102,7 @@ pub func appendSession(arr: in AgentSessionArray, item: in AgentSession): AgentS
 }
 
 pub func createEmptySessionArray(): AgentSessionArray {
-  val dummy = makeAgentSession("", "", "", "", "", "", "")
-  val sessionType = getAgentSessionType(dummy)
+  val sessionType = agentSessionType("CloudAgents.SessionStore.AgentSession, CloudAgents")
   return createSessionArray(sessionType, 0)
 }
 
