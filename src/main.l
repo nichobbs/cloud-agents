@@ -17,6 +17,7 @@ import CloudAgents.Proxy
 import CloudAgents.Repository
 import CloudAgents.SessionStore
 import CloudAgents.Sqlite
+import CloudAgents.Streaming
 import CloudAgents.Webhooks
 import extern System.Environment as Env
 import extern System.String as DotNetString
@@ -151,8 +152,28 @@ pub func sessionRepoListResp(r: in Result[SessionRepoList, Web.ApiError]): Web.R
   return match r { case Ok(v) -> jsonResp(200, v.toJson()); case Err(e) -> Web.errorResponse(e) }
 }
 
+pub func messageListToJson(v: in CloudAgents.Repository.MessageList): String {
+  var json = "{\"messages\":["
+  var i = 0
+  while i < v.messages.length {
+    if i > 0 {
+      json = json + ","
+    }
+    val m = v.messages[i]
+    json = json + "{\"id\":\"" + CloudAgents.Streaming.jsonEscape(m.id) +
+      "\",\"sessionId\":\"" + CloudAgents.Streaming.jsonEscape(m.sessionId) +
+      "\",\"role\":\"" + CloudAgents.Streaming.jsonEscape(m.role) +
+      "\",\"content\":\"" + CloudAgents.Streaming.jsonEscape(m.content) +
+      "\",\"seq\":\"" + CloudAgents.Streaming.jsonEscape(m.seq) +
+      "\",\"createdAt\":\"" + CloudAgents.Streaming.jsonEscape(m.createdAt) + "\"}"
+    i = i + 1
+  }
+  json = json + "]}"
+  return json
+}
+
 pub func messageListResp(r: in Result[MessageList, Web.ApiError]): Web.Response {
-  return match r { case Ok(v) -> jsonResp(200, v.toJson()); case Err(e) -> Web.errorResponse(e) }
+  return match r { case Ok(v) -> jsonResp(200, messageListToJson(v)); case Err(e) -> Web.errorResponse(e) }
 }
 
 pub func commentResp(r: in Result[Comment, Web.ApiError]): Web.Response {
