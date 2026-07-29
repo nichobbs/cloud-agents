@@ -140,9 +140,9 @@ test "seedSubagentsDir defaults to seed/subagents and honors CLOUD_AGENTS_SEED_S
   Env.SetEnvironmentVariable("CLOUD_AGENTS_SEED_SUBAGENTS_DIR", "")
 }
 
-test "defaultSubagentNames is the fixed curated set, seventeen names, qa-tester excluded" {
+test "defaultSubagentNames is the fixed curated set, eighteen names, qa-tester excluded" {
   val names = defaultSubagentNames()
-  assertEqualInt(names.length.toInt(), 17, "seventeen curated subagents")
+  assertEqualInt(names.length.toInt(), 18, "eighteen curated subagents")
   assertEqual(names[0], "analyst", "first entry")
   var foundQaTester = false
   var i = 0

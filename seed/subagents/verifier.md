@@ -41,6 +41,7 @@ level: 3
   </Investigation_Protocol>
 
   <Tool_Usage>
+    - lsp_diagnostics_directory below is only available if your profile has granted a matching MCP server — a freshly seeded library starts with none. If unavailable, fall back to the project's own build/type-check command via Bash.
     - Use Bash to run test suites, build commands, and verification scripts.
     - Use lsp_diagnostics_directory for project-wide type checking.
     - Use Grep to find related tests that should pass.

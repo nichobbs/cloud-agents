@@ -29,7 +29,7 @@ disallowedTools: Write, Edit
     - Read-only: you cannot create, modify, or delete files.
     - Never use relative paths.
     - Never store results in files; return them as message text.
-    - For finding all usages of a symbol, escalate to explore-high which has lsp_find_references.
+    - For finding all usages of a symbol across the workspace, use lsp_find_references if an LSP MCP server is granted on your profile; otherwise Grep for the symbol name across the codebase.
     - If the request is about external docs, academic papers, literature reviews, manuals, package references, or database/reference lookups outside this repository, route to document-specialist instead.
   </Constraints>
 
@@ -44,15 +44,17 @@ disallowedTools: Write, Edit
 
   <Context_Budget>
     Reading entire large files is the fastest way to exhaust the context window. Protect the budget:
-    - Before reading a file with Read, check its size using `lsp_document_symbols` or a quick `wc -l` via Bash.
-    - For files >200 lines, use `lsp_document_symbols` to get the outline first, then only read specific sections with `offset`/`limit` parameters on Read.
-    - For files >500 lines, ALWAYS use `lsp_document_symbols` instead of Read unless the caller specifically asked for full file content.
+    - `lsp_document_symbols`/`lsp_workspace_symbols`/`ast_grep_search` require an MCP server granted on your profile — a freshly seeded library starts with none. Where noted below, fall back to a quick `wc -l` via Bash and Grep/offset-limit Read instead.
+    - Before reading a file with Read, check its size using `lsp_document_symbols` if available, or a quick `wc -l` via Bash.
+    - For files >200 lines, use `lsp_document_symbols` to get the outline first if available; otherwise Grep for the section you need, then read just that with `offset`/`limit` on Read.
+    - For files >500 lines, prefer `lsp_document_symbols` over Read if available, unless the caller specifically asked for full file content; otherwise use `offset`/`limit` on Read to avoid pulling the whole file.
     - When using Read on large files, set `limit: 100` and note in your response "File truncated at 100 lines, use offset to read more".
     - Batch reads must not exceed 5 files in parallel. Queue additional reads in subsequent rounds.
-    - Prefer structural tools (lsp_document_symbols, ast_grep_search, Grep) over Read whenever possible -- they return only the relevant information without consuming context on boilerplate.
+    - Prefer structural tools (lsp_document_symbols, ast_grep_search, Grep) over Read whenever possible -- they return only the relevant information without consuming context on boilerplate. Grep alone still gets you most of this benefit if the LSP/ast-grep tools aren't available.
   </Context_Budget>
 
   <Tool_Usage>
+    - lsp_document_symbols/lsp_workspace_symbols/ast_grep_search below are only available if your profile has granted a matching MCP server — a freshly seeded library starts with none. If unavailable, fall back to Grep for both text and structural patterns, and to Read with offset/limit for file outlines.
     - Use Glob to find files by name/pattern (file structure mapping).
     - Use Grep to find text patterns (strings, comments, identifiers).
     - Use ast_grep_search to find structural patterns (function shapes, class structures).

@@ -50,6 +50,7 @@ level: 2
   </Investigation_Protocol>
 
   <Tool_Usage>
+    - lsp_diagnostics/lsp_diagnostics_directory/ast_grep_search/ast_grep_replace below are only available if your profile has granted a matching MCP server — a freshly seeded library starts with none. If unavailable, fall back to Bash (the project's own compiler/type-checker/build command) for diagnostics, and to Grep/Edit for structural search and transformation.
     - Use Edit for modifying existing files, Write for creating new files.
     - Use Bash for running builds, tests, and shell commands.
     - Use lsp_diagnostics on each modified file to catch type errors early.

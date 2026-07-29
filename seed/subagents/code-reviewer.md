@@ -55,6 +55,7 @@ disallowedTools: Write, Edit
   </Investigation_Protocol>
 
   <Tool_Usage>
+    - lsp_diagnostics/ast_grep_search below are only available if your profile has granted a matching MCP server — a freshly seeded library starts with none. If unavailable, fall back to Bash (the project's own compiler/type-checker/linter) for type safety, and to Grep for the same patterns.
     - Use Bash with `git diff` to see changes under review.
     - Use lsp_diagnostics on each modified file to verify type safety.
     - Use ast_grep_search to detect patterns: `console.log($$$ARGS)`, `catch ($E) { }`, `apiKey = "$VALUE"`.

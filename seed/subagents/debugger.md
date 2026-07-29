@@ -59,6 +59,7 @@ level: 3
   </Investigation_Protocol>
 
   <Tool_Usage>
+    - lsp_diagnostics/lsp_diagnostics_directory below are only available if your profile has granted a matching MCP server — a freshly seeded library starts with none. If unavailable, fall back to the project's own build/type-check command via Bash.
     - Use Grep to search for error messages, function calls, and patterns.
     - Use Read to examine suspected files and stack trace locations.
     - Use Bash with `git blame` to find when the bug was introduced.

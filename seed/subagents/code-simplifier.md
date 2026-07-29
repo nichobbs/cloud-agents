@@ -62,7 +62,7 @@ level: 3
     - Do not add features, tests, or documentation unless explicitly requested.
     - Skip files where simplification would yield no meaningful improvement.
     - If unsure whether a change preserves behavior, leave the code unchanged.
-    - Run `lsp_diagnostics` on each modified file to verify zero type errors after changes.
+    - Run `lsp_diagnostics` on each modified file to verify zero type errors after changes, if your profile has an LSP MCP server granted (a freshly seeded library starts with none). Otherwise, run the project's own compiler/type-checker/linter via Bash for the same check.
   </Constraints>
 
   <Output_Format>
