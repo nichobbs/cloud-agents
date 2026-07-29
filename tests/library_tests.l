@@ -196,6 +196,37 @@ test "patchMissingMcpServerEnabled defaults a missing 'enabled' key to '1' and l
   assertEqual(patchMissingMcpServerEnabled(withField), withField, "a body that already sends enabled is passed through unchanged")
 }
 
+test "patchMissingMcpServerEnabledForUpdate defaults a missing 'enabled' key to the server's current stored value, not '1'" {
+  val dbPath = useFreshTestDb("mcp-enabled-update-patch")
+  defer {
+    cleanupTestDb(dbPath)
+  }
+  val noArgs: slice[String] = []
+  val disabled = match addMcpServerHandler(SaveMcpServerRequest(name = "gh", transport = "stdio", command = "npx", args = noArgs, url = "", env = noArgs, enabled = "0")) {
+    case Ok(m) -> m
+    case Err(_) -> {
+      assertTrue(false, "valid disabled server should create")
+      panic("unreachable")
+    }
+  }
+
+  val withoutField = "{\"name\":\"gh\",\"transport\":\"stdio\",\"command\":\"npx\",\"args\":[],\"url\":\"\",\"env\":[]}"
+  val patched = patchMissingMcpServerEnabledForUpdate(withoutField, disabled.id)
+  match SaveMcpServerRequest.fromJson(patched) {
+    case Ok(req) -> assertEqual(req.enabled, "0", "a stale update omitting enabled must preserve the server's current '0', not silently re-enable it")
+    case Err(_) -> assertTrue(false, "patched body should decode")
+  }
+
+  val withField = "{\"name\":\"gh\",\"transport\":\"stdio\",\"command\":\"npx\",\"args\":[],\"url\":\"\",\"env\":[],\"enabled\":\"1\"}"
+  assertEqual(patchMissingMcpServerEnabledForUpdate(withField, disabled.id), withField, "a body that already sends enabled is passed through unchanged")
+
+  val patchedUnknownId = patchMissingMcpServerEnabledForUpdate(withoutField, "no-such-id")
+  match SaveMcpServerRequest.fromJson(patchedUnknownId) {
+    case Ok(req) -> assertEqual(req.enabled, "1", "an unknown id falls back to '1' — updateMcpServerHandler itself reports the real not-found error")
+    case Err(_) -> assertTrue(false, "patched body should decode")
+  }
+}
+
 test "Skill CRUD round-trips" {
   val dbPath = useFreshTestDb("skill-crud")
   defer {

@@ -192,8 +192,12 @@ RUN npm install -g @anthropic-ai/claude-code
 # mcp-server-fetch` — deliberately the official reference implementation
 # (github.com/modelcontextprotocol/servers) rather than a smaller
 # single-maintainer npm alternative, since this ships to every user by
-# default.
-RUN curl -LsSf --connect-timeout 10 --max-time 120 --retry 3 --retry-delay 3 https://astral.sh/uv/install.sh | env UV_INSTALL_DIR=/usr/local/bin sh
+# default. Pinned to a version confirmed to install cleanly (bump
+# deliberately, not by dropping the pin — same rationale as the CLI installs
+# above: astral.sh/uv/install.sh with no version in the path always serves
+# whatever uv shipped most recently, an untested "latest" that could break a
+# build without warning).
+RUN curl -LsSf --connect-timeout 10 --max-time 120 --retry 3 --retry-delay 3 https://astral.sh/uv/0.12.0/install.sh | env UV_INSTALL_DIR=/usr/local/bin sh
 
 # Install the Lyric compiler to a system location — the EXACT SAME version
 # AND architecture RID the shim-builder stage above already resolved and
@@ -233,7 +237,6 @@ COPY docker/reconcile-repos.sh /usr/local/bin/reconcile-repos.sh
 COPY docker/create-fallback-branch.sh /usr/local/bin/create-fallback-branch.sh
 COPY docker/inject-library.sh /usr/local/bin/inject-library.sh
 COPY docker/render-branch-policy.sh /usr/local/bin/render-branch-policy.sh
-COPY docker/mcp.json.template /etc/claude/mcp.json.template
 COPY docker/mcp-callbacks.json.template /etc/claude/mcp-callbacks.json.template
 COPY docker/settings.json.template /etc/claude/settings.json.template
 COPY docker/settings-callbacks.json.template /etc/claude/settings-callbacks.json.template
