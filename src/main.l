@@ -8,6 +8,7 @@ import CloudAgents.Credentials
 import CloudAgents.Crypto
 import CloudAgents.Docker
 import CloudAgents.Handlers
+import CloudAgents.Highlights
 import CloudAgents.Interactions
 import CloudAgents.Library
 import CloudAgents.OAuth
@@ -305,6 +306,22 @@ func forgetResp(r: in Result[ForgetResponse, Web.ApiError]): Web.Response {
   return match r { case Ok(v) -> jsonResp(200, v.toJson()); case Err(e) -> Web.errorResponse(e) }
 }
 
+func createSessionTodoResp(r: in Result[CreateSessionTodoResponse, Web.ApiError]): Web.Response {
+  return match r { case Ok(v) -> jsonResp(200, v.toJson()); case Err(e) -> Web.errorResponse(e) }
+}
+
+func setSessionTodoStatusResp(r: in Result[SetSessionTodoStatusResponse, Web.ApiError]): Web.Response {
+  return match r { case Ok(v) -> jsonResp(200, v.toJson()); case Err(e) -> Web.errorResponse(e) }
+}
+
+func highlightListResp(r: in Result[HighlightList, Web.ApiError]): Web.Response {
+  return match r { case Ok(v) -> jsonResp(200, v.toJson()); case Err(e) -> Web.errorResponse(e) }
+}
+
+func refreshHighlightsResp(r: in Result[RefreshHighlightsResponse, Web.ApiError]): Web.Response {
+  return match r { case Ok(v) -> jsonResp(200, v.toJson()); case Err(e) -> Web.errorResponse(e) }
+}
+
 func createTaskResp(r: in Result[CreateTaskResponse, Web.ApiError]): Web.Response {
   return match r { case Ok(v) -> jsonResp(200, v.toJson()); case Err(e) -> Web.errorResponse(e) }
 }
@@ -570,6 +587,17 @@ record RouteToggleTodo {
 impl Web.Handler for RouteToggleTodo {
   func handle(req: in Web.Request): Web.Response {
     return unitResp(CloudAgents.Interactions.toggleTodoHandler(pparam(req, "tid")))
+  }
+}
+
+record RouteSetTodoStatus {
+}
+
+impl Web.Handler for RouteSetTodoStatus {
+  func handle(req: in Web.Request): Web.Response {
+    val tid = pparam(req, "tid")
+    val decoded = match SetTodoStatusRequest.fromJson(req.body) { case Ok(d) -> d; case Err(_) -> return badBody() }
+    return unitResp(CloudAgents.Interactions.setTodoStatusHandler(tid, decoded))
   }
 }
 
@@ -1049,6 +1077,44 @@ impl Web.Handler for RouteCreateFollowupTask {
   }
 }
 
+// ─── Session todo plan: container-originated (callbacks.l) + user status ────
+record RouteCreateSessionTodo {
+}
+
+impl Web.Handler for RouteCreateSessionTodo {
+  func handle(req: in Web.Request): Web.Response {
+    val id = pparam(req, "id")
+    val decoded = match CreateSessionTodoRequest.fromJson(req.body) { case Ok(d) -> d; case Err(_) -> return badBody() }
+    return createSessionTodoResp(CloudAgents.Callbacks.createSessionTodoHandler(id, callbackAuthHeader(req), decoded))
+  }
+}
+
+record RouteListSessionTodos {
+}
+
+impl Web.Handler for RouteListSessionTodos {
+  func handle(req: in Web.Request): Web.Response {
+    return todoListResp(CloudAgents.Callbacks.listSessionTodosHandler(pparam(req, "id"), callbackAuthHeader(req)))
+  }
+}
+
+record RouteSetSessionTodoStatus {
+}
+
+impl Web.Handler for RouteSetSessionTodoStatus {
+  func handle(req: in Web.Request): Web.Response {
+    val id = pparam(req, "id")
+    val tid = pparam(req, "tid")
+    val decoded = match SetSessionTodoStatusRequest.fromJson(req.body) {
+      case Ok(d) -> d
+      case Err(_) -> return badBody()
+    }
+    return setSessionTodoStatusResp(
+      CloudAgents.Callbacks.setSessionTodoStatusHandler(id, tid, callbackAuthHeader(req), decoded)
+    )
+  }
+}
+
 record RouteUploadArtifact {
 }
 
@@ -1183,6 +1249,25 @@ record RouteListNotifications {
 impl Web.Handler for RouteListNotifications {
   func handle(req: in Web.Request): Web.Response {
     return notificationListResp(CloudAgents.Callbacks.listNotificationsHandler(pparam(req, "id")))
+  }
+}
+
+// ─── Session highlights (highlights.l) ──────────────────────────────────────
+record RouteListHighlights {
+}
+
+impl Web.Handler for RouteListHighlights {
+  func handle(req: in Web.Request): Web.Response {
+    return highlightListResp(CloudAgents.Highlights.listHighlightsHandler(pparam(req, "id")))
+  }
+}
+
+record RouteRefreshHighlights {
+}
+
+impl Web.Handler for RouteRefreshHighlights {
+  func handle(req: in Web.Request): Web.Response {
+    return refreshHighlightsResp(CloudAgents.Highlights.refreshHighlightsHandler(pparam(req, "id")))
   }
 }
 
@@ -1433,6 +1518,7 @@ pub func main(): Unit {
   router = Web.addGet(router, "/api/sessions/{id}/todos", RouteGetTodos())
   router = Web.addPost(router, "/api/sessions/{id}/todos", RouteAddTodo())
   router = Web.addPost(router, "/api/todos/{tid}/toggle", RouteToggleTodo())
+  router = Web.addPost(router, "/api/todos/{tid}/status", RouteSetTodoStatus())
   router = Web.addDelete(router, "/api/todos/{tid}", RouteDeleteTodo())
 
   // Prompt library: saved, reusable prompts
@@ -1521,6 +1607,18 @@ pub func main(): Unit {
   router = Web.addGet(router, "/api/sessions/{id}/callbacks/tasks", RouteListTasks())
   router = Web.addPost(router, "/api/sessions/{id}/callbacks/tasks/{tid}/complete", RouteCompleteTask())
   router = Web.addGet(router, "/api/sessions/{id}/tasks", RouteListSessionTasks())
+
+  // Session todo plan: container-originated add_todo / list_todos /
+  // update_todo (three-state status), sharing the same `todos` storage the
+  // human-facing todo routes above use.
+  router = Web.addPost(router, "/api/sessions/{id}/callbacks/todos", RouteCreateSessionTodo())
+  router = Web.addGet(router, "/api/sessions/{id}/callbacks/todos", RouteListSessionTodos())
+  router = Web.addPost(router, "/api/sessions/{id}/callbacks/todos/{tid}/status", RouteSetSessionTodoStatus())
+
+  // Session highlights: the summarizer-extracted notable items feed
+  // (CloudAgents.Highlights) — list + user-triggered refresh.
+  router = Web.addGet(router, "/api/sessions/{id}/highlights", RouteListHighlights())
+  router = Web.addPost(router, "/api/sessions/{id}/highlights/refresh", RouteRefreshHighlights())
 
   // Server-side provider proxies (ADR-006): GitHub listings and model
   // discovery with vault credentials, so the browser needs no local keys.

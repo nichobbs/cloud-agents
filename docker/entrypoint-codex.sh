@@ -78,4 +78,11 @@ create-fallback-branch.sh "entrypoint-codex" "${HARNESS}" "${BRANCH}" "${SESSION
 CODEX_BRANCH_INSTRUCTION="BRANCH POLICY: Before making any changes, rename the current branch using: git branch -m codex/<short-description>. Push with: git push -u origin <branch-name>. Never work on the starting branch.
 
 "
-exec codex --model "${MODEL}" --full-auto -- "${CODEX_BRANCH_INSTRUCTION}${PROMPT}"
+# Session-visibility conventions (docker/session-tools-guide.md) — Codex
+# can't discover a rules file (see above), so a condensed version rides the
+# same prompt prefix: a parseable checkbox plan the UI's todo panel shows,
+# and a Session notes section the highlights summarizer mines.
+CODEX_SESSION_INSTRUCTION="SESSION VISIBILITY: For multi-step tasks, restate your plan at the END of each response as a markdown checkbox list (- [ ] pending, - [~] in progress, - [x] done; one item per line, at least two items) — the session UI parses and displays it. End your final response with a '## Session notes' section listing (as short, specific bullets) any unexpected discoveries, issues/tickets opened or closed (with number/URL), workarounds, reverts, and incomplete or skipped work; omit the section only if none apply.
+
+"
+exec codex --model "${MODEL}" --full-auto -- "${CODEX_BRANCH_INSTRUCTION}${CODEX_SESSION_INSTRUCTION}${PROMPT}"

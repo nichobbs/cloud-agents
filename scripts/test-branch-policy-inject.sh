@@ -19,6 +19,13 @@ if [ ! -f "$BRANCH_POLICY_SRC" ]; then
 fi
 export BRANCH_POLICY_SRC
 
+SESSION_GUIDE_SRC="${SESSION_GUIDE_SRC:-/etc/cloud-agents/session-tools-guide.md}"
+if [ ! -f "$SESSION_GUIDE_SRC" ]; then
+    SESSION_GUIDE_SRC="$REPO_ROOT/docker/session-tools-guide.md"
+    [ -f "$SESSION_GUIDE_SRC" ] || { echo "test-branch-policy-inject: session-tools-guide.md not found" >&2; exit 1; }
+fi
+export SESSION_GUIDE_SRC
+
 fails=0
 check() {
   local desc="$1"; shift
@@ -67,6 +74,48 @@ render_branch_policy "codex" "$WS"
 check "codex: no .claude/rules/branch-policy.md"  bash -c "[ ! -f '$WS/.claude/rules/branch-policy.md' ]"
 check "codex: no .cloud-agents/branch-policy.md"   bash -c "[ ! -f '$WS/.cloud-agents/branch-policy.md' ]"
 check "codex: no GEMINI.md"                        bash -c "[ ! -f '$WS/GEMINI.md' ]"
+rm -rf "$WS"
+
+# ── Session guide: claude gets a second rules file ───────────────────────────
+WS="$(mktemp -d)"
+render_session_guide "claude" "$WS"
+check "guide/claude: session-tools.md created"  test -f "$WS/.claude/rules/session-tools.md"
+check "guide/claude: content matches source"    diff -q "$SESSION_GUIDE_SRC" "$WS/.claude/rules/session-tools.md" >/dev/null 2>&1
+rm -rf "$WS"
+
+# ── Session guide: opencode gets a file + instructions entry ─────────────────
+WS="$(mktemp -d)"
+cat > "$WS/opencode.json" <<'EOF'
+{"instructions": ["AGENTS.md"]}
+EOF
+render_branch_policy "opencode" "$WS"
+render_session_guide "opencode" "$WS"
+check "guide/opencode: session-tools.md created"    test -f "$WS/.cloud-agents/session-tools.md"
+check "guide/opencode: opencode.json lists it"      grep -q "session-tools.md" "$WS/opencode.json"
+check "guide/opencode: branch policy entry intact"  grep -q "branch-policy.md" "$WS/opencode.json"
+rm -rf "$WS"
+
+# ── Session guide: gemini appends to OUR GEMINI.md, once, never a user's ─────
+WS="$(mktemp -d)"
+render_branch_policy "gemini" "$WS"
+render_session_guide "gemini" "$WS"
+check "guide/gemini: appended to our GEMINI.md"  grep -q "^# Session Visibility" "$WS/GEMINI.md"
+BEFORE=$(wc -c < "$WS/GEMINI.md")
+render_session_guide "gemini" "$WS"
+AFTER=$(wc -c < "$WS/GEMINI.md")
+check "guide/gemini: second render is a no-op"   bash -c "[ \"$BEFORE\" -eq \"$AFTER\" ]"
+rm -rf "$WS"
+
+WS="$(mktemp -d)"
+echo "# My custom GEMINI.md" > "$WS/GEMINI.md"
+render_session_guide "gemini" "$WS"
+check "guide/gemini: user GEMINI.md untouched"   bash -c "! grep -q 'Session Visibility' '$WS/GEMINI.md'"
+rm -rf "$WS"
+
+# ── Session guide: codex writes nothing (prompt prefix instead) ──────────────
+WS="$(mktemp -d)"
+render_session_guide "codex" "$WS"
+check "guide/codex: no files written"  bash -c "[ -z \"\$(ls -A '$WS')\" ]"
 rm -rf "$WS"
 
 if [ "$fails" -ne 0 ]; then

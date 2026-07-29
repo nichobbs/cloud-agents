@@ -2,10 +2,12 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { Link, useLocation, useNavigate, useParams } from 'react-router-dom';
 import { GitHubPanel } from '../components/GitHubPanel';
+import { HighlightsPanel } from '../components/HighlightsPanel';
 import { LinkedReposPanel } from '../components/LinkedReposPanel';
 import { MessageBlock } from '../components/MessageBlock';
 import { Terminal } from '../components/Terminal';
 import { PendingCallbacksPanel } from '../components/PendingCallbacksPanel';
+import { TodoPanel } from '../components/TodoPanel';
 import { useSessions } from '../context/SessionsContext';
 import { useStreamMessage } from '../hooks/useStreamMessage';
 import { clearFailedDraft, saveFailedDraft, takeFailedDraft } from '../lib/drafts';
@@ -511,6 +513,11 @@ export function SessionDetail() {
       return session.repoUrl;
     }
   })();
+
+  // Latest agent response content, for the todo panel's parsed-plan fallback
+  // (harnesses that can't run the MCP shim keep a markdown checkbox plan in
+  // their responses instead — see lib/agentPlan.ts).
+  const latestAgentContent = [...messages].reverse().find(m => m.role === 'agent')?.content ?? '';
 
   const handleRetry = async (text: string) => {
     if (!text || isStreaming) return;
@@ -1133,6 +1140,14 @@ export function SessionDetail() {
 
         {isDesktop ? (
           <div style={sidebarColumnStyle}>
+            <TodoPanel
+              sessionId={sessionId}
+              latestAgentContent={latestAgentContent}
+              isStreaming={isStreaming}
+            />
+
+            <HighlightsPanel sessionId={sessionId} isStreaming={isStreaming} />
+
             <GitHubPanel repoUrl={session.repoUrl} branch={session.branch} />
 
             <LinkedReposPanel
@@ -1160,6 +1175,14 @@ export function SessionDetail() {
           </div>
         ) : (
           <>
+            <TodoPanel
+              sessionId={sessionId}
+              latestAgentContent={latestAgentContent}
+              isStreaming={isStreaming}
+            />
+
+            <HighlightsPanel sessionId={sessionId} isStreaming={isStreaming} />
+
             <GitHubPanel repoUrl={session.repoUrl} branch={session.branch} />
 
             <LinkedReposPanel

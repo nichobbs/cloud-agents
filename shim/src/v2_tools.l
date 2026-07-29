@@ -32,6 +32,140 @@ func stringSchemaField(name: in String, description: in String): JsonField {
   )
 }
 
+// ── add_todo / update_todo / list_todos (session todo plan) ──────────────────
+pub func addSessionTodoSchema(): JsonValue {
+  JObject(
+    fields = [
+      JsonField(name = "type", value = JString(value = "object")),
+      JsonField(
+        name = "properties",
+        value = JObject(
+          fields = [
+            stringSchemaField(
+              "note",
+              "One step of your working plan for this session, e.g. 'Migrate the auth handler to the new API'."
+            )
+          ]
+        )
+      ),
+      JsonField(name = "required", value = JArray(items = [JString(value = "note")]))
+    ]
+  )
+}
+
+pub record AddSessionTodoTool {
+  pub transport: V2CallbackTransport
+}
+
+func handleAddSessionTodo(tool: in AddSessionTodoTool, args: in Option[JsonValue]): McpToolResult {
+  val a = match args {
+    case Some(v) -> v
+    case None -> return toolErrorResult("missing arguments: 'note' is required")
+  }
+  val note = match getString(a, "note") {
+    case Some(n) -> n
+    case None -> return toolErrorResult("missing required argument 'note'")
+  }
+  return match CloudAgents.Shim.V2Client.addSessionTodo(tool.transport, note) {
+    case Ok(id) -> toolTextResult("created todo " + id)
+    case Err(message) -> toolErrorResult(message)
+  }
+}
+
+impl McpToolHandler for AddSessionTodoTool {
+  func call(args: in Option[JsonValue]): Result[McpToolResult, String] {
+    try {
+      Ok(value = handleAddSessionTodo(self, args))
+    } catch Bug as b {
+      Ok(value = toolErrorResult("internal error in cloud-agents-shim: " + b.message))
+    }
+  }
+}
+
+pub func updateSessionTodoSchema(): JsonValue {
+  JObject(
+    fields = [
+      JsonField(name = "type", value = JString(value = "object")),
+      JsonField(
+        name = "properties",
+        value = JObject(
+          fields = [
+            stringSchemaField("id", "The todo's id (returned by add_todo/list_todos)."),
+            stringSchemaField("status", "The new status: 'pending', 'in_progress', or 'done'.")
+          ]
+        )
+      ),
+      JsonField(
+        name = "required",
+        value = JArray(items = [JString(value = "id"), JString(value = "status")])
+      )
+    ]
+  )
+}
+
+pub record UpdateSessionTodoTool {
+  pub transport: V2CallbackTransport
+}
+
+func handleUpdateSessionTodo(tool: in UpdateSessionTodoTool, args: in Option[JsonValue]): McpToolResult {
+  val a = match args {
+    case Some(v) -> v
+    case None -> return toolErrorResult("missing arguments: 'id' and 'status' are required")
+  }
+  val id = match getString(a, "id") {
+    case Some(v) -> v
+    case None -> return toolErrorResult("missing required argument 'id'")
+  }
+  val status = match getString(a, "status") {
+    case Some(v) -> v
+    case None -> return toolErrorResult("missing required argument 'status'")
+  }
+  return match CloudAgents.Shim.V2Client.setSessionTodoStatus(tool.transport, id, status) {
+    case Ok(msg) -> toolTextResult(msg)
+    case Err(message) -> toolErrorResult(message)
+  }
+}
+
+impl McpToolHandler for UpdateSessionTodoTool {
+  func call(args: in Option[JsonValue]): Result[McpToolResult, String] {
+    try {
+      Ok(value = handleUpdateSessionTodo(self, args))
+    } catch Bug as b {
+      Ok(value = toolErrorResult("internal error in cloud-agents-shim: " + b.message))
+    }
+  }
+}
+
+pub func listSessionTodosSchema(): JsonValue {
+  JObject(
+    fields = [
+      JsonField(name = "type", value = JString(value = "object")),
+      JsonField(name = "properties", value = JObject(fields = []))
+    ]
+  )
+}
+
+pub record ListSessionTodosTool {
+  pub transport: V2CallbackTransport
+}
+
+func handleListSessionTodos(tool: in ListSessionTodosTool, args: in Option[JsonValue]): McpToolResult {
+  return match CloudAgents.Shim.V2Client.listSessionTodos(tool.transport) {
+    case Ok(listing) -> toolTextResult(listing)
+    case Err(message) -> toolErrorResult(message)
+  }
+}
+
+impl McpToolHandler for ListSessionTodosTool {
+  func call(args: in Option[JsonValue]): Result[McpToolResult, String] {
+    try {
+      Ok(value = handleListSessionTodos(self, args))
+    } catch Bug as b {
+      Ok(value = toolErrorResult("internal error in cloud-agents-shim: " + b.message))
+    }
+  }
+}
+
 // ── request_secret ──────────────────────────────────────────────────────────
 pub func requestSecretSchema(): JsonValue {
   JObject(

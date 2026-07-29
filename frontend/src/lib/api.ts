@@ -1,6 +1,6 @@
 /// <reference types="vite/client" />
 
-import type { Comment, Credential, McpServer, Message, PendingCallbacksResponse, Profile, Prompt, Run, Skill, Subagent, Todo, Webhook } from '../types';
+import type { Comment, Credential, Highlight, McpServer, Message, PendingCallbacksResponse, Profile, Prompt, RefreshHighlightsResult, Run, Skill, Subagent, Todo, Webhook } from '../types';
 
 const BASE = (import.meta.env['VITE_API_URL'] as string | undefined) ?? '';
 
@@ -478,6 +478,35 @@ export const api = {
       headers: authHeaders(),
     });
     if (!res.ok) throw new Error(`${res.status} ${await res.text()}`);
+  },
+
+  setTodoStatus: async (todoId: string, status: 'pending' | 'in_progress' | 'done'): Promise<void> => {
+    const res = await fetch(`${BASE}/api/todos/${todoId}/status`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', ...authHeaders() },
+      body: JSON.stringify({ status }),
+    });
+    if (!res.ok) throw new Error(`${res.status} ${await res.text()}`);
+  },
+
+  // ─── Session highlights (summarizer-extracted notable items) ────────────────
+
+  getHighlights: async (sessionId: string): Promise<Highlight[]> => {
+    const res = await fetch(`${BASE}/api/sessions/${sessionId}/highlights`, {
+      headers: authHeaders(),
+    });
+    if (!res.ok) throw new Error(`${res.status} ${await res.text()}`);
+    const body = (await res.json()) as { highlights?: Highlight[] };
+    return body.highlights ?? [];
+  },
+
+  refreshHighlights: async (sessionId: string): Promise<RefreshHighlightsResult> => {
+    const res = await fetch(`${BASE}/api/sessions/${sessionId}/highlights/refresh`, {
+      method: 'POST',
+      headers: authHeaders(),
+    });
+    if (!res.ok) throw new Error(`${res.status} ${await res.text()}`);
+    return res.json() as Promise<RefreshHighlightsResult>;
   },
 
   // ─── Profiles (per-container policy: creds, harness, network) ──────────────────
