@@ -158,8 +158,7 @@ pub func sessionsSchemaSql(): String {
     "native_session_id TEXT NOT NULL, " +
     "status TEXT NOT NULL, " +
     "created_at TEXT NOT NULL, " +
-    "last_message_at TEXT NOT NULL, " +
-    "is_archived TEXT NOT NULL DEFAULT '0')"
+    "last_message_at TEXT NOT NULL)"
 }
 
 // (The Phase-3 draft helpers workspaceVolumeName/homeVolumeName were removed

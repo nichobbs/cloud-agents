@@ -10,16 +10,25 @@ interface MessageBlockProps {
   highlighted?: boolean;
   onTodoAdded?: () => void;
   onRetry?: (content: string) => void;
+  isUnread?: boolean;
 }
 
 /// One addressable transcript entry. Renders the message content and exposes
 /// the two affordances that hang off it: commenting and bookmarking to the todo
 /// list. The wrapper carries `id="message-<id>"` so todos can deep-link back.
-export function MessageBlock({ message, highlighted, onTodoAdded, onRetry }: MessageBlockProps) {
+export function MessageBlock({ message, highlighted, onTodoAdded, onRetry, isUnread }: MessageBlockProps) {
   const [showComments, setShowComments] = useState(false);
   const [commentCount, setCommentCount] = useState<number | null>(null);
   const [bookmarking, setBookmarking] = useState(false);
   const [copied, setCopied] = useState(false);
+
+  // Default collapse state: collapse system startup outputs and very long messages by default
+  const isSystemOrStartup = message.content.includes('entrypoint:') ||
+    message.content.includes('entrypoint-gemini:') ||
+    message.content.includes('entrypoint-opencode:') ||
+    message.content.includes('entrypoint-codex:');
+  const isVeryLong = message.content.length > 2000;
+  const [collapsed, setCollapsed] = useState(isSystemOrStartup || isVeryLong);
 
   const handleCopy = async () => {
     const cleanContent = message.content.replace(/\x1b\[[0-9;]*m/g, '');
@@ -56,8 +65,9 @@ export function MessageBlock({ message, highlighted, onTodoAdded, onRetry }: Mes
       id={`message-${message.id}`}
       style={{
         ...blockStyle,
-        borderColor: highlighted ? '#1f6feb' : '#30363d',
-        boxShadow: highlighted ? '0 0 0 1px #1f6feb' : 'none',
+        background: isUser ? '#1c212a' : '#161b22',
+        borderColor: highlighted ? '#1f6feb' : (isUser ? '#388bfd' : '#30363d'),
+        boxShadow: highlighted ? '0 0 0 1px #1f6feb' : (isUser ? 'inset 0 0 4px rgba(56, 139, 253, 0.1)' : 'none'),
       }}
     >
       <div style={headerRow}>
@@ -67,7 +77,32 @@ export function MessageBlock({ message, highlighted, onTodoAdded, onRetry }: Mes
         <span style={tsStyle} title={formatFullTimestamp(message.createdAt)}>
           {formatTimestamp(message.createdAt)}
         </span>
+        {isUnread && (
+          <span
+            style={{
+              fontSize: '10px',
+              fontWeight: 600,
+              background: 'rgba(56, 139, 253, 0.15)',
+              color: '#58a6ff',
+              padding: '1px 6px',
+              borderRadius: '999px',
+              border: '1px solid rgba(56, 139, 253, 0.3)',
+              marginLeft: '4px',
+              textTransform: 'uppercase',
+              letterSpacing: '0.04em',
+            }}
+          >
+            New
+          </span>
+        )}
         <div style={{ flex: 1 }} />
+        <button
+          style={actionBtn}
+          onClick={() => setCollapsed(v => !v)}
+          title={collapsed ? "Expand message" : "Collapse message"}
+        >
+          {collapsed ? '▶ Expand' : '▼ Collapse'}
+        </button>
         <button
           style={actionBtn}
           onClick={() => setShowComments(v => !v)}
@@ -101,10 +136,28 @@ export function MessageBlock({ message, highlighted, onTodoAdded, onRetry }: Mes
         )}
       </div>
 
-      {isUser ? (
-        <div style={userContent}>{message.content}</div>
+      {collapsed ? (
+        <div
+          onClick={() => setCollapsed(false)}
+          style={{
+            ...collapsedPreviewStyle,
+            cursor: 'pointer',
+          }}
+          title="Click to expand"
+        >
+          <span style={{ color: '#8b949e', fontSize: '13px', fontFamily: 'monospace', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+            {getCollapsedPreview(message.content)}
+          </span>
+          <span style={{ color: '#58a6ff', fontSize: '11px', marginLeft: '12px', flexShrink: 0 }}>
+            ({message.content.length} chars, click to expand)
+          </span>
+        </div>
       ) : (
-        <AnsiContent text={message.content} />
+        isUser ? (
+          <div style={userContent}>{message.content}</div>
+        ) : (
+          <AnsiContent text={message.content} />
+        )
       )}
 
       {showComments && (
@@ -123,12 +176,22 @@ function defaultNote(m: Message): string {
   return clean.slice(0, 80);
 }
 
+function getCollapsedPreview(text: string): string {
+  const clean = text.replace(/\x1b\[[0-9;]*m/g, '').trim();
+  const firstLine = clean.split('\n')[0] ?? '';
+  if (firstLine.length > 120) {
+    return firstLine.slice(0, 120) + '...';
+  }
+  return firstLine || '...';
+}
+
 const blockStyle: React.CSSProperties = {
   background: '#161b22',
   border: '1px solid #30363d',
   borderRadius: '8px',
   padding: '12px 14px',
   scrollMarginTop: '70px',
+  transition: 'border-color 0.2s, box-shadow 0.2s',
 };
 
 const headerRow: React.CSSProperties = {
@@ -170,6 +233,7 @@ const actionBtn: React.CSSProperties = {
   fontSize: '12px',
   padding: '3px 8px',
   cursor: 'pointer',
+  transition: 'background 0.2s, border-color 0.2s, color 0.2s',
 };
 
 const userContent: React.CSSProperties = {
@@ -177,4 +241,16 @@ const userContent: React.CSSProperties = {
   color: '#c9d1d9',
   whiteSpace: 'pre-wrap',
   wordBreak: 'break-word',
+};
+
+const collapsedPreviewStyle: React.CSSProperties = {
+  background: '#0d1117',
+  border: '1px solid #21262d',
+  borderRadius: '6px',
+  padding: '8px 12px',
+  marginTop: '8px',
+  display: 'flex',
+  justifyContent: 'space-between',
+  alignItems: 'center',
+  transition: 'background 0.2s, border-color 0.2s',
 };

@@ -82,6 +82,57 @@ export function SessionDetail() {
   // resolves after the change (#276). Reset per session in the fetch effect.
   const profileTouchedRef = useRef(false);
 
+  const [windowWidth, setWindowWidth] = useState(typeof window !== 'undefined' ? window.innerWidth : 1024);
+
+  useEffect(() => {
+    const handleResize = () => setWindowWidth(window.innerWidth);
+    window.addEventListener('resize', handleResize);
+    return () => window.removeEventListener('resize', handleResize);
+  }, []);
+
+  const isDesktop = windowWidth >= 1012;
+
+  const [lastSavedSeq, setLastSavedSeq] = useState<number>(() => {
+    const stored = localStorage.getItem(`read_seq_${sessionId}`);
+    return stored ? parseInt(stored, 10) : 0;
+  });
+
+  useEffect(() => {
+    const stored = localStorage.getItem(`read_seq_${sessionId}`);
+    setLastSavedSeq(stored ? parseInt(stored, 10) : 0);
+  }, [sessionId]);
+
+  const hasUnread = messages.some(m => (parseInt(m.seq, 10) || 0) > lastSavedSeq);
+
+  const handleMarkAllRead = () => {
+    if (messages.length > 0) {
+      const maxSeq = Math.max(...messages.map(m => parseInt(m.seq, 10) || 0));
+      localStorage.setItem(`read_seq_${sessionId}`, maxSeq.toString());
+      setLastSavedSeq(maxSeq);
+    }
+  };
+
+  const goToLastMessage = () => {
+    const lastUserMsg = [...messages].reverse().find(m => m.role === 'user');
+    if (lastUserMsg) {
+      const el = document.getElementById(`message-${lastUserMsg.id}`);
+      el?.scrollIntoView({ behavior: 'smooth' });
+    }
+  };
+
+  const goToFirstUnread = () => {
+    const firstUnread = messages.find(m => (parseInt(m.seq, 10) || 0) > lastSavedSeq);
+    if (firstUnread) {
+      const el = document.getElementById(`message-${firstUnread.id}`);
+      el?.scrollIntoView({ behavior: 'smooth' });
+    }
+  };
+
+  const dynamicPageStyle: React.CSSProperties = {
+    ...pageStyle,
+    maxWidth: isDesktop ? '1200px' : '900px',
+  };
+
   // Prompt library for the composer picker. Best-effort: an older backend
   // without the endpoint just leaves the picker hidden.
   useEffect(() => {
@@ -731,7 +782,7 @@ export function SessionDetail() {
   };
 
   return (
-    <div style={pageStyle}>
+    <div style={dynamicPageStyle}>
       {templatePrompt && createPortal(
         <div
           style={modalOverlayStyle}
@@ -896,151 +947,203 @@ export function SessionDetail() {
         </div>
       </div>
 
-      <GitHubPanel repoUrl={session.repoUrl} branch={session.branch} />
-
-      <LinkedReposPanel
-        sessionId={sessionId}
-        primaryRepoUrl={session.repoUrl}
-        primaryBranch={session.branch}
-      />
-
-      {showRuns && (
-        <div style={runsPanelStyle}>
-          <div style={runsHeaderStyle}>Run history</div>
-          {runs.length === 0 && <div style={runsEmptyStyle}>No runs recorded yet.</div>}
-          {runs.map(r => (
-            <div key={r.id} style={runRowStyle}>
-              <span style={runStatusStyle(r.status)}>{r.status}</span>
-              <span style={runPreviewStyle} title={r.promptPreview}>{r.promptPreview || '(no prompt)'}</span>
-              <span style={runMetaStyle} title={formatFullTimestamp(r.startedAt)}>
-                {formatTimestamp(r.startedAt)}
-                {runDuration(r) ? ` · ${runDuration(r)}` : ''}
-              </span>
-            </div>
-          ))}
-        </div>
-      )}
-
-      <div style={transcriptStyle}>
-        {messagesError && (
-          <div style={messagesErrorStyle}>
-            Failed to load transcript for this session.
-          </div>
-        )}
-        {messages.length === 0 && !isStreaming && !sendError && !messagesError && !keepOutput && (
-          <div style={emptyStyle}>
-            No messages yet — send a prompt below to start the session.
-          </div>
-        )}
-        {messages.map(m => (
-          <MessageBlock
-            key={m.id}
-            message={m}
-            highlighted={m.id === highlightedId}
-            onTodoAdded={() => { /* todos live on their own page */ }}
-            onRetry={handleRetry}
-          />
-        ))}
-        {(isStreaming || sendError || keepOutput) && (
-          <div style={liveWrapStyle}>
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-              <div style={sendError ? liveErrorLabelStyle : liveLabelStyle}>
-                {isStreaming ? 'running…' : sendError ? 'failed' : 'done — could not refresh transcript'}
-                {runStartedAt !== null && (
-                  <span style={liveTimingStyle} title={new Date(runStartedAt).toLocaleString()}>
-                    {' '}· started {formatTimestamp(String(runStartedAt))}
-                    {isStreaming && ` · ${formatElapsed(nowTick - runStartedAt)}`}
-                    {!isStreaming && runEndedAt !== null &&
-                      ` · finished ${formatTimestamp(String(runEndedAt))} (${formatElapsed(runEndedAt - runStartedAt)})`}
-                  </span>
-                )}
-              </div>
-              {isStreaming && (
-                <button
-                  style={cancelRunBtnStyle}
-                  onClick={() => { void handleCancel(); }}
-                  disabled={cancelling}
-                  title="Terminate the running container"
-                >
-                  {cancelling ? 'Cancelling…' : 'Cancel run'}
+      <div style={isDesktop ? desktopContainerStyle : mobileContainerStyle}>
+        <div style={isDesktop ? mainColumnStyle : undefined}>
+          <div style={helperBarStyle}>
+            <button style={helperLinkStyle} onClick={goToLastMessage}>
+              💬 Go to my last message
+            </button>
+            {hasUnread && (
+              <>
+                <button style={helperLinkStyle} onClick={goToFirstUnread}>
+                  🔵 Go to first unread
                 </button>
-              )}
-              {sendError && (() => {
-                const lastUserMsg = [...messages].reverse().find(m => m.role === 'user');
-                if (!lastUserMsg) return null;
-                return (
-                  <button
-                    style={cancelRunBtnStyle}
-                    onClick={() => { void handleRetry(lastUserMsg.content); }}
-                    title="Retry the failed message"
-                  >
-                    🔄 Retry run
-                  </button>
-                );
-              })()}
-            </div>
-            <Terminal output={output} isStreaming={isStreaming} />
+                <button style={helperLinkStyle} onClick={handleMarkAllRead}>
+                  ✓ Mark all read
+                </button>
+              </>
+            )}
           </div>
-        )}
-      </div>
 
-      <div style={composerToolsStyle}>
-        {prompts.length > 0 && (
-          <select
-            style={promptPickerStyle}
-            value=""
-            onChange={e => {
-              if (e.target.value) handleInsertPrompt(e.target.value);
-            }}
-            disabled={isStreaming}
-            aria-label="Insert a saved prompt"
-          >
-            <option value="">Insert prompt…</option>
-            {prompts.map(p => (
-              <option key={p.id} value={p.id}>
-                {p.name}
-              </option>
+          <div style={transcriptStyle}>
+            {messagesError && (
+              <div style={messagesErrorStyle}>
+                Failed to load transcript for this session.
+              </div>
+            )}
+            {messages.length === 0 && !isStreaming && !sendError && !messagesError && !keepOutput && (
+              <div style={emptyStyle}>
+                No messages yet — send a prompt below to start the session.
+              </div>
+            )}
+            {messages.map(m => (
+              <MessageBlock
+                key={m.id}
+                message={m}
+                highlighted={m.id === highlightedId}
+                onTodoAdded={() => { /* todos live on their own page */ }}
+                onRetry={handleRetry}
+                isUnread={(parseInt(m.seq, 10) || 0) > lastSavedSeq}
+              />
             ))}
-          </select>
-        )}
-        <button
-          style={{ ...savePromptBtnStyle, opacity: input.trim() && !savingPrompt ? 1 : 0.5 }}
-          onClick={() => { void handleSavePrompt(); }}
-          disabled={!input.trim() || savingPrompt}
-          title="Save the current draft to the prompt library"
-        >
-          {savingPrompt ? 'Saving…' : 'Save as prompt'}
-        </button>
-      </div>
+            {(isStreaming || sendError || keepOutput) && (
+              <div style={liveWrapStyle}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                  <div style={sendError ? liveErrorLabelStyle : liveLabelStyle}>
+                    {isStreaming ? 'running…' : sendError ? 'failed' : 'done — could not refresh transcript'}
+                    {runStartedAt !== null && (
+                      <span style={liveTimingStyle} title={new Date(runStartedAt).toLocaleString()}>
+                        {' '}· started {formatTimestamp(String(runStartedAt))}
+                        {isStreaming && ` · ${formatElapsed(nowTick - runStartedAt)}`}
+                        {!isStreaming && runEndedAt !== null &&
+                          ` · finished ${formatTimestamp(String(runEndedAt))} (${formatElapsed(runEndedAt - runStartedAt)})`}
+                      </span>
+                    )}
+                  </div>
+                  {isStreaming && (
+                    <button
+                      style={cancelRunBtnStyle}
+                      onClick={() => { void handleCancel(); }}
+                      disabled={cancelling}
+                      title="Terminate the running container"
+                    >
+                      {cancelling ? 'Cancelling…' : 'Cancel run'}
+                    </button>
+                  )}
+                  {sendError && (() => {
+                    const lastUserMsg = [...messages].reverse().find(m => m.role === 'user');
+                    if (!lastUserMsg) return null;
+                    return (
+                      <button
+                        style={cancelRunBtnStyle}
+                        onClick={() => { void handleRetry(lastUserMsg.content); }}
+                        title="Retry the failed message"
+                      >
+                        🔄 Retry run
+                      </button>
+                    );
+                  })()}
+                </div>
+                <Terminal output={output} isStreaming={isStreaming} />
+              </div>
+            )}
+          </div>
 
-      {recoveredDraft && (
-        <div style={recoveredDraftStyle}>
-          A message you sent to this session earlier failed to go through, and you'd navigated away
-          before it could be restored — we saved it below. Send it again, or clear it and start fresh.
+          <div style={composerToolsStyle}>
+            {prompts.length > 0 && (
+              <select
+                style={promptPickerStyle}
+                value=""
+                onChange={e => {
+                  if (e.target.value) handleInsertPrompt(e.target.value);
+                }}
+                disabled={isStreaming}
+                aria-label="Insert a saved prompt"
+              >
+                <option value="">Insert prompt…</option>
+                {prompts.map(p => (
+                  <option key={p.id} value={p.id}>
+                    {p.name}
+                  </option>
+                ))}
+              </select>
+            )}
+            <button
+              style={{ ...savePromptBtnStyle, opacity: input.trim() && !savingPrompt ? 1 : 0.5 }}
+              onClick={() => { void handleSavePrompt(); }}
+              disabled={!input.trim() || savingPrompt}
+              title="Save the current draft to the prompt library"
+            >
+              {savingPrompt ? 'Saving…' : 'Save as prompt'}
+            </button>
+          </div>
+
+          {recoveredDraft && (
+            <div style={recoveredDraftStyle}>
+              A message you sent to this session earlier failed to go through, and you'd navigated away
+              before it could be restored — we saved it below. Send it again, or clear it and start fresh.
+            </div>
+          )}
+          <div style={inputRowStyle}>
+            <textarea
+              ref={textareaRef}
+              style={textareaStyle}
+              rows={3}
+              placeholder="Send a message… (Enter to send, Shift+Enter for newline)"
+              value={input}
+              onChange={e => { setRecoveredDraft(false); setInput(e.target.value); }}
+              onKeyDown={handleKeyDown}
+              disabled={isStreaming}
+            />
+            <button
+              style={{
+                ...sendBtnStyle,
+                opacity: isStreaming || !input.trim() ? 0.5 : 1,
+                cursor: isStreaming || !input.trim() ? 'not-allowed' : 'pointer',
+              }}
+              onClick={() => { void handleSend(); }}
+              disabled={isStreaming || !input.trim()}
+            >
+              {isStreaming ? 'Running…' : 'Send'}
+            </button>
+          </div>
         </div>
-      )}
-      <div style={inputRowStyle}>
-        <textarea
-          ref={textareaRef}
-          style={textareaStyle}
-          rows={3}
-          placeholder="Send a message… (Enter to send, Shift+Enter for newline)"
-          value={input}
-          onChange={e => { setRecoveredDraft(false); setInput(e.target.value); }}
-          onKeyDown={handleKeyDown}
-          disabled={isStreaming}
-        />
-        <button
-          style={{
-            ...sendBtnStyle,
-            opacity: isStreaming || !input.trim() ? 0.5 : 1,
-            cursor: isStreaming || !input.trim() ? 'not-allowed' : 'pointer',
-          }}
-          onClick={() => { void handleSend(); }}
-          disabled={isStreaming || !input.trim()}
-        >
-          {isStreaming ? 'Running…' : 'Send'}
-        </button>
+
+        {isDesktop ? (
+          <div style={sidebarColumnStyle}>
+            <GitHubPanel repoUrl={session.repoUrl} branch={session.branch} />
+
+            <LinkedReposPanel
+              sessionId={sessionId}
+              primaryRepoUrl={session.repoUrl}
+              primaryBranch={session.branch}
+            />
+
+            {showRuns && (
+              <div style={runsPanelStyle}>
+                <div style={runsHeaderStyle}>Run history</div>
+                {runs.length === 0 && <div style={runsEmptyStyle}>No runs recorded yet.</div>}
+                {runs.map(r => (
+                  <div key={r.id} style={runRowStyle}>
+                    <span style={runStatusStyle(r.status)}>{r.status}</span>
+                    <span style={runPreviewStyle} title={r.promptPreview}>{r.promptPreview || '(no prompt)'}</span>
+                    <span style={runMetaStyle} title={formatFullTimestamp(r.startedAt)}>
+                      {formatTimestamp(r.startedAt)}
+                      {runDuration(r) ? ` · ${runDuration(r)}` : ''}
+                    </span>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        ) : (
+          <>
+            <GitHubPanel repoUrl={session.repoUrl} branch={session.branch} />
+
+            <LinkedReposPanel
+              sessionId={sessionId}
+              primaryRepoUrl={session.repoUrl}
+              primaryBranch={session.branch}
+            />
+
+            {showRuns && (
+              <div style={runsPanelStyle}>
+                <div style={runsHeaderStyle}>Run history</div>
+                {runs.length === 0 && <div style={runsEmptyStyle}>No runs recorded yet.</div>}
+                {runs.map(r => (
+                  <div key={r.id} style={runRowStyle}>
+                    <span style={runStatusStyle(r.status)}>{r.status}</span>
+                    <span style={runPreviewStyle} title={r.promptPreview}>{r.promptPreview || '(no prompt)'}</span>
+                    <span style={runMetaStyle} title={formatFullTimestamp(r.startedAt)}>
+                      {formatTimestamp(r.startedAt)}
+                      {runDuration(r) ? ` · ${runDuration(r)}` : ''}
+                    </span>
+                  </div>
+                ))}
+              </div>
+            )}
+          </>
+        )}
       </div>
     </div>
   );
@@ -1419,4 +1522,59 @@ const linkBtnStyle: React.CSSProperties = {
   fontSize: 'inherit',
   padding: 0,
   textDecoration: 'underline',
+};
+
+const helperBarStyle: React.CSSProperties = {
+  display: 'flex',
+  gap: '12px',
+  alignItems: 'center',
+  padding: '6px 12px',
+  background: '#161b22',
+  border: '1px solid #30363d',
+  borderRadius: '8px',
+  marginBottom: '8px',
+};
+
+const helperLinkStyle: React.CSSProperties = {
+  background: 'transparent',
+  border: 'none',
+  color: '#58a6ff',
+  fontSize: '12px',
+  cursor: 'pointer',
+  padding: '2px 6px',
+  borderRadius: '4px',
+  transition: 'background 0.2s',
+};
+
+const desktopContainerStyle: React.CSSProperties = {
+  display: 'flex',
+  flexDirection: 'row',
+  gap: '24px',
+  alignItems: 'flex-start',
+  width: '100%',
+};
+
+const mobileContainerStyle: React.CSSProperties = {
+  display: 'flex',
+  flexDirection: 'column',
+  gap: '16px',
+  width: '100%',
+};
+
+const mainColumnStyle: React.CSSProperties = {
+  flex: 1,
+  display: 'flex',
+  flexDirection: 'column',
+  gap: '16px',
+  minWidth: 0,
+};
+
+const sidebarColumnStyle: React.CSSProperties = {
+  width: '320px',
+  flexShrink: 0,
+  display: 'flex',
+  flexDirection: 'column',
+  gap: '16px',
+  position: 'sticky',
+  top: '24px',
 };
