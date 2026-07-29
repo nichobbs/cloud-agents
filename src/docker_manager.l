@@ -625,7 +625,7 @@ pub func streamSessionMessage(
   var notificationCursor = toString(startMs)
   // Same cursor pattern, for the session todo plan's `todo_update` event
   // (add_todo/update_todo MCP tools) — keyed on todos.updated_at (migration
-  // 0023) rather than created_at, since a status flip on an existing row is
+  // 0024) rather than created_at, since a status flip on an existing row is
   // exactly what the panel needs to hear about.
   var todoCursor = toString(startMs)
   // Poll on a ~1s cadence. taskWaitMs blocks up to that waiting for the run to

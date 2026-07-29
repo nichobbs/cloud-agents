@@ -114,7 +114,7 @@ The checkbox-plan fallback below remains for older images.
 
 ### todo_update SSE (push-style panel)
 
-Todos gained `updated_at` (migration 0023, bumped on insert/status/toggle);
+Todos gained `updated_at` (migration 0024, bumped on insert/status/toggle);
 the run poll loop forwards changes as `event: todo_update` frames (cursor
 on `updated_at`, mirroring `artifact_reported`). `api.sendMessage` now
 surfaces named event frames via an `onEvent` callback; `useStreamMessage`
@@ -132,7 +132,7 @@ a todo (anchored to the source message) from the highlight's title/detail.
 last contiguous ≥2-item checkbox list wins) + `ingestAgentPlan`, called
 after each agent message is persisted. **Off by default** — set
 `CLOUD_AGENTS_INGEST_AGENT_PLAN=1` to enable while its false-positive rate
-is established. Ingested rows carry `source='plan'` (migration 0024) and
+is established. Ingested rows carry `source='plan'` (migration 0025) and
 each re-ingest replaces only prior plan rows — human/tool todos are never
 touched.
 

@@ -46,9 +46,11 @@ be either too loose (yolo) or too tight (blocked run dies).
 
 A small MCP server, `cloud-agents-shim`, written in Lyric against
 `Lyric.Mcp`, ships inside every runner image and is registered in the
-agent CLI's MCP config alongside the existing GitHub server
-(`docker/mcp.json.template`). It speaks MCP over stdio to the agent CLI
-and plain HTTPS to the host API:
+agent CLI's MCP config (`.claude/mcp.json`, alongside any Library-granted
+MCP servers `docker/inject-library.sh` reconciles into the same file — see
+`docs/phase4-github-tools.md` for the retired, pre-Library way this used to
+work). It speaks MCP over stdio to the agent CLI and plain HTTPS to the
+host API:
 
 ```
 agent CLI ──stdio/MCP──▶ cloud-agents-shim ──HTTP──▶ host API ──SSE──▶ browser
@@ -129,8 +131,8 @@ v2 tools are specced in §7.
 - `docker_manager.l`: mint the callback token, pass the two env vars,
   extend the network policy exactly enough for the API callback
   origin.
-- `docker/mcp.json.template` + `entrypoint.sh`: register the shim;
-  `entrypoint.sh` adds `--permission-prompt-tool` for the claude
+- `docker/mcp-callbacks.json.template` + `entrypoint.sh`: register the
+  shim; `entrypoint.sh` adds `--permission-prompt-tool` for the claude
   runner.
 - `docker/Dockerfile*`: ship the shim binary + .NET runtime layer it
   needs.

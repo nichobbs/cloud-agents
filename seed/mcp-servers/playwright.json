@@ -1,0 +1,9 @@
+{
+  "name": "playwright",
+  "transport": "stdio",
+  "command": "npx",
+  "args": ["-y", "@playwright/mcp@latest"],
+  "url": "",
+  "env": [],
+  "enabled": "0"
+}

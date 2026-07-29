@@ -146,7 +146,7 @@ design of each phase and `docs/BUILD.md` for build/verification notes.
 
 | Deliverable | Status | Where |
 |-------------|--------|-------|
-| GitHub MCP config | 🟡 | `docker/mcp.json.template` + entrypoint rendering |
+| GitHub MCP config | ✅ | `seed/mcp-servers/github.json` (disabled by default), gated by the Library's per-server `enabled` flag — supersedes the old always-on `docker/mcp.json.template` Phase-4 rendering, retired in #764/#765 for bypassing that gate |
 | Auto-approval settings | 🟡 | `docker/settings.json.template` |
 | Tool pack images | 🟡 | `docker/Dockerfile.rust`, `docker/Dockerfile.data` |
 | Frontend GitHub panels | ✅ added | `frontend/src/components/GitHubPanel.tsx` (per-session repo/PR/CI status), `frontend/src/pages/Repos.tsx` (repo browser), `frontend/src/lib/github.ts` — browser-side calls to `api.github.com` with a locally-connected token (`frontend/src/pages/Integrations.tsx`), since the Lyric backend has no outbound HTTPS |

@@ -148,8 +148,11 @@ FROM mcr.microsoft.com/dotnet/sdk:10.0
 ENV DEBIAN_FRONTEND=noninteractive
 
 # Base tooling + Node and npm from standard APT repositories (plain HTTP, avoiding SSL intercept issues).
+# gettext-base provides envsubst, used by docker/inject-library.sh to expand
+# ${VAR} references in a seeded/user-authored MCP server's env values against
+# this container's own credential env vars (#mcp-server-seeding).
 RUN apt-get update && apt-get install -y --no-install-recommends \
-        git bash make python3 python3-pip curl ca-certificates jq nodejs npm \
+        git bash make python3 python3-pip curl ca-certificates jq nodejs npm gettext-base \
     && rm -rf /var/lib/apt/lists/*
 
 # Optional corporate/proxy root CA trust (e.g. Zscaler TLS inspection) — see
@@ -181,6 +184,20 @@ RUN chmod +x /usr/local/bin/split-ca-bundle.sh \
 ENV NODE_EXTRA_CA_CERTS=/usr/local/share/ca-certificates/extra-combined.pem
 
 RUN npm install -g @anthropic-ai/claude-code
+
+# uv/uvx: a standalone Rust binary (no Python runtime dependency of its own),
+# installed system-wide so it's on PATH regardless of which user runs a
+# session. Needed to launch the official `mcp-server-fetch` MCP server (the
+# seeded "fetch" default, seed/mcp-servers/fetch.json) via `uvx
+# mcp-server-fetch` — deliberately the official reference implementation
+# (github.com/modelcontextprotocol/servers) rather than a smaller
+# single-maintainer npm alternative, since this ships to every user by
+# default. Pinned to a version confirmed to install cleanly (bump
+# deliberately, not by dropping the pin — same rationale as the CLI installs
+# above: astral.sh/uv/install.sh with no version in the path always serves
+# whatever uv shipped most recently, an untested "latest" that could break a
+# build without warning).
+RUN curl -LsSf --connect-timeout 10 --max-time 120 --retry 3 --retry-delay 3 https://astral.sh/uv/0.12.0/install.sh | env UV_INSTALL_DIR=/usr/local/bin sh
 
 # Install the Lyric compiler to a system location — the EXACT SAME version
 # AND architecture RID the shim-builder stage above already resolved and
@@ -220,7 +237,6 @@ COPY docker/reconcile-repos.sh /usr/local/bin/reconcile-repos.sh
 COPY docker/create-fallback-branch.sh /usr/local/bin/create-fallback-branch.sh
 COPY docker/inject-library.sh /usr/local/bin/inject-library.sh
 COPY docker/render-branch-policy.sh /usr/local/bin/render-branch-policy.sh
-COPY docker/mcp.json.template /etc/claude/mcp.json.template
 COPY docker/mcp-callbacks.json.template /etc/claude/mcp-callbacks.json.template
 COPY docker/settings.json.template /etc/claude/settings.json.template
 COPY docker/settings-callbacks.json.template /etc/claude/settings-callbacks.json.template

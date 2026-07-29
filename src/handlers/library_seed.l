@@ -19,14 +19,17 @@
 //! instead of being assumed available. seed/skills holds freshly authored
 //! content instead, since none of .claude/skills was portable to begin
 //! with. CloudAgents.OAuth calls
-//! seedDefaultLibraryIfEmpty on every successful sign-in; each half is a
-//! no-op once the user already has any subagent/skill at all, seeded or
-//! user-authored.
+//! seedDefaultLibraryIfEmpty on every successful sign-in; each of the three
+//! kinds (subagents, skills, and — via CloudAgents.McpServerSeed — MCP
+//! servers, see that package for its own curated catalog) is independently
+//! a no-op once the user already has any item of that kind at all, seeded
+//! or user-authored.
 package CloudAgents.LibrarySeed
 
 import Std.Core
 import Std.File
 import CloudAgents.Library
+import CloudAgents.McpServerSeed
 import CloudAgents.Repository
 import CloudAgents.Text
 import extern System.Environment as Env
@@ -353,13 +356,15 @@ pub func seedDefaultSkillsIfEmpty(userId: in String): Unit {
   }
 }
 
-/// Best-effort: seed both the default subagent and skill sets for a
+/// Best-effort: seed the default subagent, skill, and MCP server sets for a
 /// brand-new sign-in. Each is independently gated on its own table being
 /// empty (see the individual functions), so a user who has, say, subagents
 /// but no skills yet — because they deleted every seeded skill — still gets
 /// nothing re-added for skills while subagents are left untouched, and vice
-/// versa.
+/// versa; MCP servers follow the same independent gating via
+/// CloudAgents.McpServerSeed.seedDefaultMcpServersIfEmpty.
 pub func seedDefaultLibraryIfEmpty(userId: in String): Unit {
   seedDefaultSubagentsIfEmpty(userId)
   seedDefaultSkillsIfEmpty(userId)
+  CloudAgents.McpServerSeed.seedDefaultMcpServersIfEmpty(userId)
 }

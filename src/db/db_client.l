@@ -381,6 +381,15 @@ pub func alterSessionsAddIsArchivedSql(): String {
   return "ALTER TABLE sessions ADD COLUMN is_archived TEXT NOT NULL DEFAULT '0'"
 }
 
+/// DEFAULT '1' means every pre-existing MCP server (created before this
+/// column existed) silently becomes enabled on migration, preserving today's
+/// behavior (mcpServersForProfile injected everything unconditionally) for
+/// every server a user already configured; only newly-seeded credential-
+/// requiring servers are inserted with '0' (see CloudAgents.McpServerSeed).
+pub func alterMcpServersAddEnabledSql(): String {
+  return "ALTER TABLE mcp_servers ADD COLUMN enabled TEXT NOT NULL DEFAULT '1'"
+}
+
 pub func updateSessionArchivedSql(id: in String, userId: in String, isArchived: in String): String {
   return "UPDATE sessions SET is_archived = " + sqlLiteral(isArchived) + " WHERE id = " + sqlLiteral(id) +
     " AND user_id = " + sqlLiteral(userId)
@@ -599,10 +608,10 @@ pub func selectCommentsSql(messageId: in String): String {
 
 /// INSERT a todo / bookmark. `status` is one of 'pending'/'in_progress'/
 /// 'done' (migration 0021); `done` stays in lockstep ('1' iff status is
-/// 'done') so pre-status readers keep working. `updated_at` (migration 0023)
+/// 'done') so pre-status readers keep working. `updated_at` (migration 0024)
 /// starts equal to `created_at` and is bumped by every status mutation, so
 /// the run poll loop can forward changes as `todo_update` SSE frames.
-/// `source` (migration 0024) is '' for human/tool-created todos, or 'plan'
+/// `source` (migration 0025) is '' for human/tool-created todos, or 'plan'
 /// for rows ingested from an agent's markdown checkbox plan — plan ingestion
 /// only ever replaces its OWN prior rows, never a human's.
 pub func insertTodoSql(
@@ -673,13 +682,13 @@ pub func setTodoStatusSql(id: in String, status: in String, updatedAt: in String
     sqlLiteral(id)
 }
 
-/// Migration 0023: change tracking for todos, so the run poll loop can
+/// Migration 0024: change tracking for todos, so the run poll loop can
 /// forward agent-driven todo changes as `todo_update` SSE frames.
 pub func alterTodosAddUpdatedAtSql(): String {
   return "ALTER TABLE todos ADD COLUMN updated_at TEXT NOT NULL DEFAULT ''"
 }
 
-/// Migration 0024: provenance for todos — '' (human/tool) or 'plan'
+/// Migration 0025: provenance for todos — '' (human/tool) or 'plan'
 /// (ingested from an agent's markdown checkbox plan), so plan ingestion can
 /// replace its own prior rows without ever touching a human's.
 pub func alterTodosAddSourceSql(): String {
@@ -692,7 +701,7 @@ pub func deletePlanTodosSql(sessionId: in String): String {
   return "DELETE FROM todos WHERE session_id = " + sqlLiteral(sessionId) + " AND source = 'plan'"
 }
 
-/// Migration 0023: backfill `updated_at` on pre-existing rows.
+/// Migration 0024: backfill `updated_at` on pre-existing rows.
 pub func backfillTodoUpdatedAtSql(): String {
   return "UPDATE todos SET updated_at = created_at WHERE updated_at = ''"
 }
@@ -1284,11 +1293,9 @@ pub func subagentsSchemaSql(): String {
     "UNIQUE(user_id, name))"
 }
 
-/// DDL for the MCP servers table. transport: 'stdio' (command + args + env)
-/// | 'url' (remote endpoint). `env` entries here are literal, non-secret
-/// config only ("DEBUG=1") — anything secret flows through the existing
-/// credential-grant mechanism by matching env var name, so this feature does
-/// not introduce a second secret store.
+/// DDL for the MCP servers table. transport: 'stdio' (command + args + env,
+/// held in the separate mcp_server_args/mcp_server_env tables below) | 'url'
+/// (remote endpoint).
 pub func mcpServersSchemaSql(): String {
   return "CREATE TABLE IF NOT EXISTS mcp_servers (" + "id TEXT PRIMARY KEY, " + "user_id TEXT NOT NULL, " +
     "name TEXT NOT NULL, " +
@@ -1309,7 +1316,9 @@ pub func mcpServerArgsSchemaSql(): String {
 }
 
 /// DDL for a stdio MCP server's literal (non-secret) env entries, each a
-/// full "KEY=VALUE" string.
+/// full "KEY=VALUE" string ("DEBUG=1"). Anything secret flows through the
+/// existing credential-grant mechanism by matching env var name instead, so
+/// this table does not introduce a second secret store.
 pub func mcpServerEnvSchemaSql(): String {
   return "CREATE TABLE IF NOT EXISTS mcp_server_env (" + "id TEXT PRIMARY KEY, " + "mcp_server_id TEXT NOT NULL, " +
     "user_id TEXT NOT NULL, " +
@@ -1513,8 +1522,9 @@ pub func insertMcpServerSql(
   command: in String,
   url: in String,
   createdAt: in String,
+  enabled: in String = "1",
 ): String {
-  return "INSERT INTO mcp_servers (id, user_id, name, transport, command, url, created_at, updated_at) VALUES (" +
+  return "INSERT INTO mcp_servers (id, user_id, name, transport, command, url, created_at, updated_at, enabled) VALUES (" +
     sqlLiteral(id) +
     ", " +
     sqlLiteral(userId) +
@@ -1530,10 +1540,12 @@ pub func insertMcpServerSql(
     sqlLiteral(createdAt) +
     ", " +
     sqlLiteral(createdAt) +
+    ", " +
+    sqlLiteral(enabled) +
     ")"
 }
 
-val mcpServerColumns = "id, user_id, name, transport, command, url, created_at, updated_at"
+val mcpServerColumns = "id, user_id, name, transport, command, url, created_at, updated_at, enabled"
 
 pub func selectMcpServersSql(userId: in String): String {
   return "SELECT " + mcpServerColumns + " FROM mcp_servers WHERE user_id = " + sqlLiteral(userId) + " ORDER BY name ASC"
@@ -1556,6 +1568,7 @@ pub func updateMcpServerSql(
   command: in String,
   url: in String,
   updatedAt: in String,
+  enabled: in String = "1",
 ): String {
   return "UPDATE mcp_servers SET name = " + sqlLiteral(name) + ", transport = " + sqlLiteral(transport) + ", command = " +
     sqlLiteral(command) +
@@ -1563,6 +1576,8 @@ pub func updateMcpServerSql(
     sqlLiteral(url) +
     ", updated_at = " +
     sqlLiteral(updatedAt) +
+    ", enabled = " +
+    sqlLiteral(enabled) +
     " WHERE id = " +
     sqlLiteral(id) +
     " AND user_id = " +
