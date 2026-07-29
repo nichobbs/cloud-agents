@@ -32,6 +32,7 @@ output_assembly = "CloudAgents.dll"
 "CloudAgents.Sqlite"   = "src/db/sqlite_driver.l"
 "CloudAgents.Repository" = "src/db/repository.l"
 "CloudAgents.Auth"     = "src/handlers/auth.l"
+"CloudAgents.AuthContext" = "src/auth/auth_context.l"
 "CloudAgents.GitHubApi" = "src/github_api.l"
 "CloudAgents.OAuth"    = "src/handlers/oauth.l"
 "CloudAgents.Prompts"  = "src/handlers/prompts.l"
@@ -80,5 +81,3 @@ output_assembly = "CloudAgents.dll"
 "Microsoft.Data.Sqlite" = "10.0.9"
 "SourceGear.sqlite3"    = "3.53.3"
 "SQLitePCLRaw.provider.dynamic_cdecl" = "3.0.3"
-
-

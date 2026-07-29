@@ -77,6 +77,7 @@ func verifyNewSession(s: in AgentSession, sessionId: in String): Unit {
   assertEqual(s.harness, "claude", "harness matches")
   assertEqual(s.model, "claude-opus-4-8", "model matches")
   assertEqual(s.nativeSessionId, sessionId, "nativeSessionId matches")
+  assertEqual(s.status, "IDLE", "status defaults to IDLE")
 }
 
 func verifyContainerUpdate(s: in AgentSession): Unit {
@@ -95,7 +96,7 @@ func verifyAndCleanCreateSession(resp: in CreateSessionResponse): Unit {
 }
 
 func verifyModelBackfill(resp: in CreateSessionResponse): Unit {
-  match mustOptSession(getSession(resp.sessionId)) {
+  match mustOptSession(CloudAgents.SessionStore.getSession(resp.sessionId)) {
     case Some(s) -> assertEqual(s.model, "o4-mini", "empty model backfilled with codex default")
     case None -> assertTrue(false, "created session should exist")
   }
@@ -103,7 +104,7 @@ func verifyModelBackfill(resp: in CreateSessionResponse): Unit {
 }
 
 func verifyGeminiBackfill(resp: in CreateSessionResponse): Unit {
-  match mustOptSession(getSession(resp.sessionId)) {
+  match mustOptSession(CloudAgents.SessionStore.getSession(resp.sessionId)) {
     case Some(s) -> assertEqual(s.model, "gemini-2.5-pro", "empty model backfilled with gemini default")
     case None -> assertTrue(false, "created session should exist")
   }
@@ -140,7 +141,7 @@ test "Test Session Store CRUD Operations" {
   println("Testing Session Store operations...")
 
   val sessionId = "test-session-123"
-  val session = makeAgentSession(
+  val session = CloudAgents.SessionStore.makeAgentSession(
     sessionId = sessionId,
     repoUrl = "https://github.com/nic/repos/cloud-agents",
     branch = "main",
@@ -151,10 +152,10 @@ test "Test Session Store CRUD Operations" {
   )
 
   // 1. Add session
-  mustUnit(addSession(session))
+  mustUnit(CloudAgents.SessionStore.addSession(session))
 
   // 2. Get and verify session
-  match mustOptSession(getSession(sessionId)) {
+  match mustOptSession(CloudAgents.SessionStore.getSession(sessionId)) {
     case Some(s) -> verifyNewSession(s, sessionId)
     case None -> assertTrue(false, "session should exist in store")
   }
@@ -162,8 +163,8 @@ test "Test Session Store CRUD Operations" {
   // 3. Update container ID ("default" = the operator identity addSession
   // stored the session under on this test thread; the explicit-owner form is
   // the only one — see #426)
-  mustUnit(updateSessionContainerFor(sessionId, "default", "container-abc"))
-  match mustOptSession(getSession(sessionId)) {
+  mustUnit(CloudAgents.SessionStore.updateSessionContainerFor(sessionId, "default", "container-abc"))
+  match mustOptSession(CloudAgents.SessionStore.getSession(sessionId)) {
     case Some(s) -> verifyContainerUpdate(s)
     case None -> assertTrue(false, "session should still exist in store")
   }
@@ -174,19 +175,19 @@ test "Test Session Store CRUD Operations" {
   // call here bound to the Handlers overload (wrong argument type, runtime
   // cast crash) when the imports were reordered.
   mustUnit(CloudAgents.SessionStore.updateSessionModel(sessionId, "claude-sonnet-4-6"))
-  match mustOptSession(getSession(sessionId)) {
+  match mustOptSession(CloudAgents.SessionStore.getSession(sessionId)) {
     case Some(s) -> verifyModelSwitch(s, sessionId)
     case None -> assertTrue(false, "session should still exist in store")
   }
 
   // 5. Remove session
-  match mustOptSession(removeSession(sessionId)) {
+  match mustOptSession(CloudAgents.SessionStore.removeSession(sessionId)) {
     case Some(s) -> assertEqual(s.sessionId, sessionId, "removed session ID matches")
     case None -> assertTrue(false, "should successfully remove session")
   }
 
   // 6. Verify removed
-  match mustOptSession(getSession(sessionId)) {
+  match mustOptSession(CloudAgents.SessionStore.getSession(sessionId)) {
     case Some(_) -> assertTrue(false, "session should no longer exist")
     case None -> ()
   }
@@ -283,13 +284,13 @@ test "deleteSessionRecord removes the row and is a no-op when already gone (#310
     )
   )
   // Present before the delete.
-  match mustOptSession(getSession(sessionId)) {
+  match mustOptSession(CloudAgents.SessionStore.getSession(sessionId)) {
     case Some(_) -> ()
     case None -> assertTrue(false, "session should exist before deleteSessionRecord")
   }
   // deleteSessionRecord drops the row without re-reading it first (#172).
   mustUnit(deleteSessionRecord(sessionId))
-  match mustOptSession(getSession(sessionId)) {
+  match mustOptSession(CloudAgents.SessionStore.getSession(sessionId)) {
     case Some(_) -> assertTrue(false, "session should be gone after deleteSessionRecord")
     case None -> ()
   }
@@ -342,7 +343,7 @@ test "importLegacyEnvSessions inserts env sessions into the store and clears the
   Env.SetEnvironmentVariable("CLOUD_AGENTS_SESSIONS_JSON", "{\"sessions\":[" + agentSessionToJson(s) + "]}")
   importLegacyEnvSessions()
   // The env session is now persisted in SQLite...
-  match mustOptSession(getSession("legacy-import-1")) {
+  match mustOptSession(CloudAgents.SessionStore.getSession("legacy-import-1")) {
     case Some(imported) -> assertEqual(imported.sessionId, "legacy-import-1", "imported session id matches")
     case None -> assertTrue(false, "legacy env session should have been imported into the store")
   }
@@ -400,12 +401,12 @@ test "importLegacyEnvSessions imports only sessions not already in the store (#3
   importLegacyEnvSessions()
 
   // The new session was inserted.
-  match mustOptSession(getSession("legacy-new")) {
+  match mustOptSession(CloudAgents.SessionStore.getSession("legacy-new")) {
     case Some(_) -> ()
     case None -> assertTrue(false, "the new legacy session should have been imported")
   }
   // The pre-existing session was skipped, not overwritten by the env copy.
-  match mustOptSession(getSession("legacy-existing")) {
+  match mustOptSession(CloudAgents.SessionStore.getSession("legacy-existing")) {
     case Some(s) -> assertEqual(s.repoUrl, "https://github.com/nic/original", "existing session left untouched (not overwritten by the env copy)")
     case None -> assertTrue(false, "existing session should still be present after import")
   }
@@ -952,7 +953,7 @@ test "Session ownership isolation hides other users' sessions (#207)" {
     case Err(e) -> assertTrue(false, "setup insert failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
   }
   // The current user ("default") cannot read another user's session by id...
-  match getSession("foreign-1") {
+  match CloudAgents.SessionStore.getSession("foreign-1") {
     case Ok(Some(_)) -> assertTrue(false, "must not read another user's session")
     case Ok(None) -> ()
     case Err(e) -> assertTrue(false, "getSession failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
@@ -976,7 +977,7 @@ test "Session ownership isolation hides other users' sessions (#207)" {
       )
     )
   )
-  match getSession("mine-1") {
+  match CloudAgents.SessionStore.getSession("mine-1") {
     case Ok(Some(_)) -> ()
     case Ok(None) -> assertTrue(false, "own session should be visible")
     case Err(e) -> assertTrue(false, "getSession failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
@@ -1298,7 +1299,7 @@ test "archive and unarchive sessions successfully persists changes in the DB" {
   }
 
   // Initially isArchived should be '0'
-  match mustOptSession(getSession(sessionId)) {
+  match mustOptSession(CloudAgents.SessionStore.getSession(sessionId)) {
     case Some(s) -> assertEqual(s.isArchived, "0", "session should initially be active (isArchived = '0')")
     case None -> assertTrue(false, "session should exist")
   }
@@ -1310,7 +1311,7 @@ test "archive and unarchive sessions successfully persists changes in the DB" {
   }
 
   // After archiving, isArchived should be '1'
-  match mustOptSession(getSession(sessionId)) {
+  match mustOptSession(CloudAgents.SessionStore.getSession(sessionId)) {
     case Some(s) -> assertEqual(s.isArchived, "1", "session should be archived (isArchived = '1')")
     case None -> assertTrue(false, "session should exist")
   }
@@ -1322,7 +1323,7 @@ test "archive and unarchive sessions successfully persists changes in the DB" {
   }
 
   // After unarchiving, isArchived should be '0' again
-  match mustOptSession(getSession(sessionId)) {
+  match mustOptSession(CloudAgents.SessionStore.getSession(sessionId)) {
     case Some(s) -> assertEqual(s.isArchived, "0", "session should be active again (isArchived = '0')")
     case None -> assertTrue(false, "session should exist")
   }

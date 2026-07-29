@@ -18,6 +18,7 @@ pub record AgentSession {
   pub harness: String
   pub model: String
   pub nativeSessionId: String
+  pub status: String
   pub isArchived: String = "0"
 }
 
@@ -44,6 +45,7 @@ pub func makeAgentSession(
   harness: in String,
   model: in String,
   nativeSessionId: in String,
+  status: in String = "IDLE"
 ): AgentSession {
   return AgentSession(
     sessionId = sessionId,
@@ -52,7 +54,8 @@ pub func makeAgentSession(
     containerId = containerId,
     harness = harness,
     model = model,
-    nativeSessionId = nativeSessionId
+    nativeSessionId = nativeSessionId,
+    status = status
   )
 }
 
@@ -291,6 +294,7 @@ pub func parseSessionsJson(json: in String): AgentSessionArray {
     val rawHarness = parseJsonField(objStr, "harness")
     val rawModel = parseJsonField(objStr, "model")
     val rawNativeId = parseJsonField(objStr, "nativeSessionId")
+    val rawStatus = parseJsonField(objStr, "status")
 
     // Default harness to "claude" for legacy sessions
     val harness = if rawHarness.length == 0 { "claude" } else { rawHarness }
@@ -299,6 +303,8 @@ pub func parseSessionsJson(json: in String): AgentSessionArray {
     val model = if rawModel.length == 0 { defaultModelForHarness(harness) } else { rawModel }
     // Default nativeSessionId to sessionId so legacy sessions can resume
     val nativeSessionId = if rawNativeId.length == 0 { sessionId } else { rawNativeId }
+    // Default status to IDLE for legacy sessions predating the status field
+    val status = if rawStatus.length == 0 { "IDLE" } else { rawStatus }
 
     val session = AgentSession(
       sessionId = sessionId,
@@ -307,7 +313,8 @@ pub func parseSessionsJson(json: in String): AgentSessionArray {
       containerId = containerId,
       harness = harness,
       model = model,
-      nativeSessionId = nativeSessionId
+      nativeSessionId = nativeSessionId,
+      status = status
     )
     list = appendSession(list, session)
 
@@ -345,6 +352,7 @@ func rowToSession(r: in CloudAgents.Sqlite.Row): AgentSession {
     harness = colAt(r.cols, 5),
     model = colAt(r.cols, 6),
     nativeSessionId = colAt(r.cols, 7),
+    status = colAt(r.cols, 8),
     isArchived = colAt(r.cols, 11)
   )
 }
@@ -546,7 +554,8 @@ pub func agentSessionToJson(s: in AgentSession): String {
     jsonEscapeField(s.model) +
     "\",\"nativeSessionId\":\"" +
     jsonEscapeField(s.nativeSessionId) +
-    "\"}"
+    "\",\"status\":\"" +
+    jsonEscapeField(s.status) + "\"}"
 }
 
 /// Persist a new session (status starts IDLE, owned by the current user).
@@ -812,4 +821,5 @@ pub func importLegacyEnvSessions(): Unit {
       println("Imported " + toString(inserted) + " legacy session(s) from CLOUD_AGENTS_SESSIONS_JSON into SQLite")
     }
   }
+
 }

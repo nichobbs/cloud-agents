@@ -1045,3 +1045,61 @@ pub func checkHealth(): Result[String, Web.ApiError] {
     }
   }
 }
+
+/// List all sessions for the authenticated user, as a typed response.
+///
+/// NOT wired into the router: `/api/sessions` is already served by
+/// `listSessions()`/`RouteListSessions` above (a hand-built JSON string via
+/// `CloudAgents.SessionStore.sessionSummariesJson()`), which is what
+/// `src/main.l` actually registers with `Web.addGet`. `@get(...)` on a
+/// handler here does NOT self-register a route in this Web version —
+/// confirmed by grepping the built `CloudAgents.dll` for the `/api/sessions`
+/// literal, which appears exactly once, from `main.l`'s manual
+/// `Web.addGet` call (see docs/review-2026-07-03.md's "dead code" section,
+/// which already flagged `@get`/`@post` as unconfirmed-live). This type
+/// exists for a future typed `/api/sessions` response; do not add a second
+/// route registration for it without first removing/renaming the existing
+/// one, since both would otherwise claim the same path.
+///
+/// This function previously assigned `CloudAgents.SessionStore.getSessions()`
+/// — a `Result[AgentSessionArray, DbError]` — directly into `sessions:
+/// slice[AgentSession]` with neither the `Result` unwrapped nor the extern
+/// `AgentSessionArray` (a raw .NET array, see session_manager.l) converted to
+/// a Lyric `slice`. That type-invalid construction compiled with no error or
+/// warning (`lyric build`/`lyric check` both silently accepted it) but
+/// produced malformed IL: at runtime it corrupted JIT codegen for unrelated
+/// methods across the whole `output = "single"` bundle — every
+/// `CloudAgents.Handlers` handler plus the entirely separate
+/// `CloudAgents.Callbacks`-family packages compiled into the same DLL all
+/// started throwing a bare `System.InvalidProgramException` ("Common
+/// Language Runtime detected an invalid program"), exactly the corruption
+/// class documented in docs/BUILD.md's Bug 5 and docs/lyric/gotchas.md's
+/// lyric-lang#6232/#6134/#6133 entries, but via a new trigger: a type-invalid
+/// record-field assignment slipping past the type checker, not an
+/// async/await ordering issue. Confirmed by fixing exactly this construction
+/// (match on the Result, hand-roll the array-to-slice copy below) and
+/// re-running the full suite: the ~24 failures across CloudAgents.SessionTests
+/// and every CloudAgents.Callbacks-family suite (CallbacksTests,
+/// CallbacksV2Tests, RepoTasksTests, NotifyTests, RepoArtifactsTests) all
+/// cleared. Filed upstream as a new instance of the class; no issue number
+/// yet — see docs/lyric/gotchas.md for the write-up.
+@generate(Json)
+pub record ListSessionsResponse {
+  pub sessions: slice[AgentSession]
+}
+
+pub func listSessionsResponse(authHeader: in String = ""): Result[ListSessionsResponse, Web.ApiError] {
+  match CloudAgents.SessionStore.getSessions() {
+    case Ok(arr) -> {
+      var sessions: slice[AgentSession] = []
+      var i = 0
+      val len = CloudAgents.SessionStore.getSessionArrayLength(arr)
+      while i < len {
+        sessions = sessions.append(CloudAgents.SessionStore.getSessionArrayValue(arr, i))
+        i = i + 1
+      }
+      return Ok(ListSessionsResponse(sessions = sessions))
+    }
+    case Err(e) -> return Err(Web.internalError("failed to list sessions: " + CloudAgents.Sqlite.dbErrorMessage(e)))
+  }
+}
