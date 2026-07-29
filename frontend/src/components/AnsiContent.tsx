@@ -44,6 +44,9 @@ export function AnsiContent({ text }: AnsiContentProps) {
     html = html.replace(hl.regex, hl.replace);
   }
 
+  // Convert web addresses/URLs into clickable hyperlinks safely
+  html = html.replace(/(https?:\/\/[^\s<"'\(\)]+?)(?=[.,;:?!]?(?:\s|$|<|"|'|\)))/g, '<a href="$1" target="_blank" rel="noopener noreferrer" style="color: #58a6ff; text-decoration: underline;">$1</a>');
+
   return (
     <div
       style={contentStyle}

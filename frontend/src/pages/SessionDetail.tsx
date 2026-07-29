@@ -976,16 +976,21 @@ export function SessionDetail() {
                 No messages yet — send a prompt below to start the session.
               </div>
             )}
-            {messages.map(m => (
-              <MessageBlock
-                key={m.id}
-                message={m}
-                highlighted={m.id === highlightedId}
-                onTodoAdded={() => { /* todos live on their own page */ }}
-                onRetry={handleRetry}
-                isUnread={(parseInt(m.seq, 10) || 0) > lastSavedSeq}
-              />
-            ))}
+            {(() => {
+              const latestAgentMessage = [...messages].reverse().find(m => m.role === 'agent');
+              const latestAgentMessageId = latestAgentMessage?.id;
+              return messages.map(m => (
+                <MessageBlock
+                  key={m.id}
+                  message={m}
+                  highlighted={m.id === highlightedId}
+                  onTodoAdded={() => { /* todos live on their own page */ }}
+                  onRetry={handleRetry}
+                  isUnread={(parseInt(m.seq, 10) || 0) > lastSavedSeq}
+                  isLatestAgentMessage={m.id === latestAgentMessageId}
+                />
+              ));
+            })()}
             {(isStreaming || sendError || keepOutput) && (
               <div style={liveWrapStyle}>
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>

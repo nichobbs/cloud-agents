@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { api } from '../lib/api';
 import { formatFullTimestamp, formatTimestamp } from '../lib/time';
 import type { Message } from '../types';
@@ -11,12 +11,13 @@ interface MessageBlockProps {
   onTodoAdded?: () => void;
   onRetry?: (content: string) => void;
   isUnread?: boolean;
+  isLatestAgentMessage?: boolean;
 }
 
 /// One addressable transcript entry. Renders the message content and exposes
 /// the two affordances that hang off it: commenting and bookmarking to the todo
 /// list. The wrapper carries `id="message-<id>"` so todos can deep-link back.
-export function MessageBlock({ message, highlighted, onTodoAdded, onRetry, isUnread }: MessageBlockProps) {
+export function MessageBlock({ message, highlighted, onTodoAdded, onRetry, isUnread, isLatestAgentMessage }: MessageBlockProps) {
   const [showComments, setShowComments] = useState(false);
   const [commentCount, setCommentCount] = useState<number | null>(null);
   const [bookmarking, setBookmarking] = useState(false);
@@ -28,7 +29,19 @@ export function MessageBlock({ message, highlighted, onTodoAdded, onRetry, isUnr
     message.content.includes('entrypoint-opencode:') ||
     message.content.includes('entrypoint-codex:');
   const isVeryLong = message.content.length > 2000;
-  const [collapsed, setCollapsed] = useState(isSystemOrStartup || isVeryLong);
+
+  const [collapsed, setCollapsed] = useState(() => {
+    if (isLatestAgentMessage) return false;
+    return isSystemOrStartup || isVeryLong;
+  });
+
+  useEffect(() => {
+    if (isLatestAgentMessage) {
+      setCollapsed(false);
+    } else {
+      setCollapsed(isSystemOrStartup || isVeryLong);
+    }
+  }, [isLatestAgentMessage, isSystemOrStartup, isVeryLong]);
 
   const handleCopy = async () => {
     const cleanContent = message.content.replace(/\x1b\[[0-9;]*m/g, '');
