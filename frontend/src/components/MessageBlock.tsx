@@ -5,6 +5,7 @@ import type { Message } from '../types';
 import { AnsiContent } from './AnsiContent';
 import { CommentThread } from './CommentThread';
 import { CollapsibleJsonBlock } from './CollapsibleJsonBlock';
+import { CollapsibleShellBlock } from './CollapsibleShellBlock';
 
 interface MessageBlockProps {
   message: Message;
@@ -249,25 +250,131 @@ function findJsonBlocks(text: string): { start: number; end: number; content: st
   return blocks;
 }
 
+function findShellBlocks(text: string): { start: number; end: number; command: string; output: string }[] {
+  const lines = text.split('\n');
+  const blocks: { startIndex: number; endIndex: number; command: string; output: string }[] = [];
+  const n = lines.length;
+  
+  let i = 0;
+  while (i < n) {
+    const line = lines[i] ?? '';
+    const cleanLine = line.replace(/\x1b\[[0-9;]*m/g, '').trim();
+    if (cleanLine.startsWith('$ ')) {
+      const command = cleanLine.substring(2).trim();
+      const outputLines: string[] = [];
+      const startIndex = i;
+      
+      let j = i + 1;
+      while (j < n) {
+        const nextLine = lines[j] ?? '';
+        const cleanNext = nextLine.replace(/\x1b\[[0-9;]*m/g, '').trim();
+        
+        if (cleanNext.startsWith('$ ')) {
+          break;
+        }
+        
+        if (
+          cleanNext.startsWith('#') ||
+          cleanNext.startsWith('- ') ||
+          cleanNext.startsWith('* ') ||
+          cleanNext.startsWith('>') ||
+          cleanNext.startsWith('```')
+        ) {
+          break;
+        }
+        
+        outputLines.push(nextLine);
+        j++;
+      }
+      
+      if (outputLines.length > 0) {
+        blocks.push({
+          startIndex,
+          endIndex: j,
+          command,
+          output: outputLines.join('\n'),
+        });
+        i = j - 1;
+      }
+    }
+    i++;
+  }
+  
+  const charBlocks: { start: number; end: number; command: string; output: string }[] = [];
+  let currentPos = 0;
+  const linePositions = lines.map(l => {
+    const start = currentPos;
+    currentPos += l.length + 1;
+    return { start, end: start + l.length };
+  });
+  
+  blocks.forEach(b => {
+    const startPos = linePositions[b.startIndex];
+    const endPos = linePositions[b.endIndex - 1];
+    if (startPos !== undefined && endPos !== undefined) {
+      charBlocks.push({
+        start: startPos.start,
+        end: endPos.end,
+        command: b.command,
+        output: b.output,
+      });
+    }
+  });
+  
+  return charBlocks;
+}
+
+interface ParsedTextBlock {
+  type: 'json' | 'shell';
+  start: number;
+  end: number;
+  command?: string;
+  content: string;
+}
+
 function renderAgentContent(text: string) {
-  const blocks = findJsonBlocks(text);
-  if (blocks.length === 0) {
+  const jsonBlocks = findJsonBlocks(text);
+  const shellBlocks = findShellBlocks(text);
+
+  const allBlocks: ParsedTextBlock[] = [
+    ...jsonBlocks.map(b => ({ type: 'json' as const, start: b.start, end: b.end, content: b.content })),
+    ...shellBlocks.map(b => ({ type: 'shell' as const, start: b.start, end: b.end, command: b.command, content: b.output }))
+  ];
+
+  allBlocks.sort((a, b) => a.start - b.start);
+
+  const nonOverlappingBlocks: ParsedTextBlock[] = [];
+  let lastEnd = 0;
+  for (const block of allBlocks) {
+    if (block.start >= lastEnd) {
+      nonOverlappingBlocks.push(block);
+      lastEnd = block.end;
+    }
+  }
+
+  if (nonOverlappingBlocks.length === 0) {
     return <AnsiContent text={text} />;
   }
 
   const elements: React.ReactNode[] = [];
   let lastIndex = 0;
 
-  blocks.forEach((block, index) => {
+  nonOverlappingBlocks.forEach((block, index) => {
     if (block.start > lastIndex) {
       const segment = text.substring(lastIndex, block.start);
       if (segment.trim() !== '') {
         elements.push(<AnsiContent key={`text-${index}`} text={segment} />);
       }
     }
-    elements.push(
-      <CollapsibleJsonBlock key={`json-${index}`} rawContent={block.content} />
-    );
+    if (block.type === 'json') {
+      elements.push(
+        <CollapsibleJsonBlock key={`json-${index}`} rawContent={block.content} />
+      );
+    } else if (block.type === 'shell') {
+      elements.push(
+        <CollapsibleShellBlock key={`shell-${index}`} command={block.command ?? ''} output={block.content} />
+      );
+    }
     lastIndex = block.end;
   });
 
