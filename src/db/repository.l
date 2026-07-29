@@ -116,6 +116,14 @@ pub func initSchema(): Result[Unit, CloudAgents.Sqlite.DbError] {
   CloudAgents.Sqlite.execute(CloudAgents.Db.messagesSchemaSql())?
   CloudAgents.Sqlite.execute(CloudAgents.Db.commentsSchemaSql())?
   CloudAgents.Sqlite.execute(CloudAgents.Db.todosSchemaSql())?
+  CloudAgents.Sqlite.execute(CloudAgents.Db.sessionsSchemaSql())?
+  return Ok(value = ())
+}
+
+/// Reset any sessions left in RUNNING/WARM after a crash or restart. Safe to
+/// call at every startup; no-op when there is nothing to recover.
+pub func recoverDanglingSessions(): Result[Unit, CloudAgents.Sqlite.DbError] {
+  CloudAgents.Sqlite.execute(CloudAgents.Db.recoverDanglingSessionsSql())?
   return Ok(value = ())
 }
 

@@ -3,7 +3,11 @@ package CloudAgents.Docker
 import Std.Core
 import Std.Task
 import Lyric.Docker
+import CloudAgents.Db
 import CloudAgents.SessionStore
+
+@externTarget("System.Environment.GetEnvironmentVariable")
+func getEnvVar(name: in String): String = ()
 
 pub record ResultCell {
   pub var isSuccess: Bool = false
@@ -33,18 +37,23 @@ pub async func createRunnerContainer(
   sessionId: in String,
   harness: in String,
   model: in String,
-  nativeSessionId: in String
+  nativeSessionId: in String,
+  githubUserId: in String = ""
 ): Result[String, String] {
   val workspaceVolume = "session-" + sessionId + "-workspace"
-  val homeVolume = "claude-home-default" // Phase 1 default, Phase 3 user-specific
+  val homeVolume = if githubUserId.length > 0
+    then CloudAgents.Db.homeVolumeName(githubUserId)
+    else "claude-home-default"
 
+  val githubToken = getEnvVar("GITHUB_TOKEN")
   val envs = [
     "PROMPT=" + prompt,
     "REPO_URL=" + repoUrl,
     "BRANCH=" + branch,
     "HARNESS=" + harness,
     "MODEL=" + model,
-    "NATIVE_SESSION_ID=" + nativeSessionId
+    "NATIVE_SESSION_ID=" + nativeSessionId,
+    "GITHUB_TOKEN=" + githubToken
   ]
   val binds = [
     workspaceVolume + ":/workspace",

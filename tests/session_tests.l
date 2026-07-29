@@ -18,6 +18,7 @@ func verifyNewSession(s: in AgentSession, sessionId: in String): Unit {
   assertEqual(s.harness, "claude", "harness matches")
   assertEqual(s.model, "claude-opus-4-8", "model matches")
   assertEqual(s.nativeSessionId, sessionId, "nativeSessionId matches")
+  assertEqual(s.status, "IDLE", "status defaults to IDLE")
 }
 
 func verifyContainerUpdate(s: in AgentSession): Unit {

@@ -11,6 +11,7 @@ pub record AgentSession {
   pub harness: String
   pub model: String
   pub nativeSessionId: String
+  pub status: String
 }
 
 /// Default model for each harness, used when a session is created without an
@@ -28,7 +29,8 @@ pub func makeAgentSession(
   containerId: in String,
   harness: in String,
   model: in String,
-  nativeSessionId: in String
+  nativeSessionId: in String,
+  status: in String = "IDLE"
 ): AgentSession {
   return AgentSession(
     sessionId = sessionId,
@@ -37,7 +39,8 @@ pub func makeAgentSession(
     containerId = containerId,
     harness = harness,
     model = model,
-    nativeSessionId = nativeSessionId
+    nativeSessionId = nativeSessionId,
+    status = status
   )
 }
 
@@ -224,6 +227,7 @@ pub func parseSessionsJson(json: in String): slice[AgentSession] {
     val rawHarness = parseJsonField(objStr, "harness")
     val rawModel = parseJsonField(objStr, "model")
     val rawNativeId = parseJsonField(objStr, "nativeSessionId")
+    val rawStatus = parseJsonField(objStr, "status")
 
     // Default harness to "claude" for legacy sessions
     val harness = if rawHarness.length == 0 { "claude" } else { rawHarness }
@@ -232,6 +236,8 @@ pub func parseSessionsJson(json: in String): slice[AgentSession] {
     val model = if rawModel.length == 0 { defaultModelForHarness(harness) } else { rawModel }
     // Default nativeSessionId to sessionId so legacy sessions can resume
     val nativeSessionId = if rawNativeId.length == 0 { sessionId } else { rawNativeId }
+    // Default status to IDLE for legacy sessions predating the status field
+    val status = if rawStatus.length == 0 { "IDLE" } else { rawStatus }
 
     val session = AgentSession(
       sessionId = sessionId,
@@ -240,7 +246,8 @@ pub func parseSessionsJson(json: in String): slice[AgentSession] {
       containerId = containerId,
       harness = harness,
       model = model,
-      nativeSessionId = nativeSessionId
+      nativeSessionId = nativeSessionId,
+      status = status
     )
     list = list.append(session)
 
@@ -265,7 +272,8 @@ pub func agentSessionToJson(s: in AgentSession): String {
     "\",\"containerId\":\"" + s.containerId +
     "\",\"harness\":\"" + s.harness +
     "\",\"model\":\"" + s.model +
-    "\",\"nativeSessionId\":\"" + s.nativeSessionId + "\"}"
+    "\",\"nativeSessionId\":\"" + s.nativeSessionId +
+    "\",\"status\":\"" + s.status + "\"}"
 }
 
 pub func saveSessions(sessions: in slice[AgentSession]): Unit {
@@ -316,7 +324,8 @@ pub func updateSessionContainer(sessionId: in String, containerId: in String): U
         containerId = containerId,
         harness = s.harness,
         model = s.model,
-        nativeSessionId = s.nativeSessionId
+        nativeSessionId = s.nativeSessionId,
+        status = s.status
       ))
     } else {
       updated = updated.append(s)
@@ -340,7 +349,8 @@ pub func updateSessionModel(sessionId: in String, model: in String): Unit {
         containerId = s.containerId,
         harness = s.harness,
         model = model,
-        nativeSessionId = s.nativeSessionId
+        nativeSessionId = s.nativeSessionId,
+        status = s.status
       ))
     } else {
       updated = updated.append(s)

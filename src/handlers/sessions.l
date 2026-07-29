@@ -2,6 +2,7 @@ package CloudAgents.Handlers
 
 import Std.Core
 import Web
+import CloudAgents.AuthContext
 import CloudAgents.Docker
 import CloudAgents.Repository
 import CloudAgents.SessionStore
@@ -51,8 +52,10 @@ pub record SendMessageRequest {
 /// Create a persistent session workspace.
 @post("/api/sessions")
 pub func createSession(
-  @body req: in CreateSessionRequest
+  @body req: in CreateSessionRequest,
+  authHeader: in String = ""
 ): Result[CreateSessionResponse, Web.ApiError] {
+  val authSession = CloudAgents.AuthContext.requireAuth(authHeader)?
   if req.repoUrl.length == 0 {
     return Err(Web.badRequest("repoUrl is required"))
   }
@@ -73,7 +76,8 @@ pub func createSession(
     containerId = "",
     harness = harness,
     model = model,
-    nativeSessionId = sessionId  // pre-assigned so every run gets a stable resume ID
+    nativeSessionId = sessionId,  // pre-assigned so every run gets a stable resume ID
+    status = "IDLE"
   )
 
   addSession(session)
@@ -85,8 +89,10 @@ pub func createSession(
 @post("/api/sessions/{id}/messages")
 pub func sendMessage(
   id: in String,
-  @body req: in SendMessageRequest
+  @body req: in SendMessageRequest,
+  authHeader: in String = ""
 ): Result[String, Web.ApiError] {
+  val authSession = CloudAgents.AuthContext.requireAuth(authHeader)?
   if id.length == 0 {
     return Err(Web.badRequest("id is required"))
   }
@@ -139,8 +145,10 @@ pub func sendMessage(
 /// Stop and tear down container and associated session synchronously.
 @delete("/api/sessions/{id}")
 pub func deleteSession(
-  id: in String
+  id: in String,
+  authHeader: in String = ""
 ): Result[Unit, Web.ApiError] {
+  val authSession = CloudAgents.AuthContext.requireAuth(authHeader)?
   if id.length == 0 {
     return Err(Web.badRequest("id is required"))
   }
@@ -168,8 +176,10 @@ pub func deleteSession(
 @post("/api/sessions/{id}/model")
 pub func updateSessionModel(
   id: in String,
-  @body req: in UpdateSessionRequest
+  @body req: in UpdateSessionRequest,
+  authHeader: in String = ""
 ): Result[Unit, Web.ApiError] {
+  val authSession = CloudAgents.AuthContext.requireAuth(authHeader)?
   if id.length == 0 {
     return Err(Web.badRequest("id is required"))
   }
@@ -186,9 +196,27 @@ pub func updateSessionModel(
 
 /// Retrieve service health, including a live SQLite probe.
 @get("/api/health")
-pub func checkHealth(): Result[String, Web.ApiError] {
+pub func checkHealth(
+  authHeader: in String = ""
+): Result[String, Web.ApiError] {
+  val authSession = CloudAgents.AuthContext.requireAuth(authHeader)?
   match CloudAgents.Repository.ping() {
     case Ok(_)  -> return Ok("Healthy")
     case Err(e) -> return Err(Web.internalError("database unavailable: " + CloudAgents.Sqlite.dbErrorMessage(e)))
   }
+}
+
+/// List all sessions for the authenticated user.
+@generate(Json)
+pub record ListSessionsResponse {
+  pub sessions: slice[AgentSession]
+}
+
+@get("/api/sessions")
+pub func listSessions(
+  authHeader: in String = ""
+): Result[ListSessionsResponse, Web.ApiError] {
+  val authSession = CloudAgents.AuthContext.requireAuth(authHeader)?
+  val allSessions = CloudAgents.SessionStore.getSessions()
+  return Ok(ListSessionsResponse(sessions = allSessions))
 }

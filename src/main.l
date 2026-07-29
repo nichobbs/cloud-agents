@@ -6,16 +6,23 @@ import CloudAgents.Repository
 import CloudAgents.Sqlite
 
 func main(): Unit {
-  // Ensure the SQLite transcript/comments/todos tables exist before serving.
+  // Ensure the SQLite tables exist before serving.
   match CloudAgents.Repository.initSchema() {
     case Ok(_)  -> ()
     case Err(e) -> println("WARNING: failed to initialise database schema: " + CloudAgents.Sqlite.dbErrorMessage(e))
+  }
+
+  // Reset any dangling sessions from a previous crash.
+  match CloudAgents.Repository.recoverDanglingSessions() {
+    case Ok(_)  -> ()
+    case Err(e) -> println("WARNING: failed to recover dangling sessions: " + CloudAgents.Sqlite.dbErrorMessage(e))
   }
 
   var router = Web.create()
 
   // Register session routes
   router = Web.addPost(router,   "/api/sessions",             "CloudAgents.Handlers.createSession")
+  router = Web.addGet(router,    "/api/sessions",             "CloudAgents.Handlers.listSessions")
   router = Web.addPost(router,   "/api/sessions/{id}/messages", "CloudAgents.Handlers.sendMessage")
   router = Web.addDelete(router, "/api/sessions/{id}",        "CloudAgents.Handlers.deleteSession")
   router = Web.addPost(router,   "/api/sessions/{id}/model",  "CloudAgents.Handlers.updateSessionModel")

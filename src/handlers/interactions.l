@@ -2,6 +2,7 @@ package CloudAgents.Interactions
 
 import Std.Core
 import Web
+import CloudAgents.AuthContext
 import CloudAgents.Repository
 import CloudAgents.Sqlite
 
@@ -25,7 +26,11 @@ func dbError(e: in CloudAgents.Sqlite.DbError): Web.ApiError {
 /// Return a session's full transcript (user prompts and agent replies), each
 /// with a stable id so the client can anchor comments and todos to it.
 @get("/api/sessions/{id}/messages")
-pub func getMessages(id: in String): Result[MessageList, Web.ApiError] {
+pub func getMessages(
+  id: in String,
+  authHeader: in String = ""
+): Result[MessageList, Web.ApiError] {
+  val authSession = CloudAgents.AuthContext.requireAuth(authHeader)?
   if id.length == 0 {
     return Err(Web.badRequest("id is required"))
   }
@@ -39,8 +44,10 @@ pub func getMessages(id: in String): Result[MessageList, Web.ApiError] {
 @post("/api/messages/{mid}/comments")
 pub func addCommentHandler(
   mid: in String,
-  @body req: in AddCommentRequest
+  @body req: in AddCommentRequest,
+  authHeader: in String = ""
 ): Result[Comment, Web.ApiError] {
+  val authSession = CloudAgents.AuthContext.requireAuth(authHeader)?
   if mid.length == 0 {
     return Err(Web.badRequest("message id is required"))
   }
@@ -64,7 +71,11 @@ pub func addCommentHandler(
 
 /// List comments on a message.
 @get("/api/messages/{mid}/comments")
-pub func getComments(mid: in String): Result[CommentList, Web.ApiError] {
+pub func getComments(
+  mid: in String,
+  authHeader: in String = ""
+): Result[CommentList, Web.ApiError] {
+  val authSession = CloudAgents.AuthContext.requireAuth(authHeader)?
   if mid.length == 0 {
     return Err(Web.badRequest("message id is required"))
   }
@@ -76,7 +87,11 @@ pub func getComments(mid: in String): Result[CommentList, Web.ApiError] {
 
 /// List a session's todos / bookmarks.
 @get("/api/sessions/{id}/todos")
-pub func getTodos(id: in String): Result[TodoList, Web.ApiError] {
+pub func getTodos(
+  id: in String,
+  authHeader: in String = ""
+): Result[TodoList, Web.ApiError] {
+  val authSession = CloudAgents.AuthContext.requireAuth(authHeader)?
   if id.length == 0 {
     return Err(Web.badRequest("id is required"))
   }
@@ -90,8 +105,10 @@ pub func getTodos(id: in String): Result[TodoList, Web.ApiError] {
 @post("/api/sessions/{id}/todos")
 pub func addTodoHandler(
   id: in String,
-  @body req: in AddTodoRequest
+  @body req: in AddTodoRequest,
+  authHeader: in String = ""
 ): Result[Todo, Web.ApiError] {
+  val authSession = CloudAgents.AuthContext.requireAuth(authHeader)?
   if id.length == 0 {
     return Err(Web.badRequest("id is required"))
   }
@@ -109,7 +126,11 @@ pub func addTodoHandler(
 
 /// Toggle a todo's done flag.
 @post("/api/todos/{tid}/toggle")
-pub func toggleTodoHandler(tid: in String): Result[Unit, Web.ApiError] {
+pub func toggleTodoHandler(
+  tid: in String,
+  authHeader: in String = ""
+): Result[Unit, Web.ApiError] {
+  val authSession = CloudAgents.AuthContext.requireAuth(authHeader)?
   if tid.length == 0 {
     return Err(Web.badRequest("todo id is required"))
   }
@@ -121,7 +142,11 @@ pub func toggleTodoHandler(tid: in String): Result[Unit, Web.ApiError] {
 
 /// Delete a todo.
 @delete("/api/todos/{tid}")
-pub func deleteTodoHandler(tid: in String): Result[Unit, Web.ApiError] {
+pub func deleteTodoHandler(
+  tid: in String,
+  authHeader: in String = ""
+): Result[Unit, Web.ApiError] {
+  val authSession = CloudAgents.AuthContext.requireAuth(authHeader)?
   if tid.length == 0 {
     return Err(Web.badRequest("todo id is required"))
   }
