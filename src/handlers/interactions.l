@@ -222,17 +222,21 @@ func trimPlanSpacesEnd(s: in String, start: in Int, stopIn: in Int): String {
   return ""
 }
 
-/// Parse one trimmed line as a checkbox plan item: an optional list bullet
+/// Parse one trimmed line as a checkbox plan item: a REQUIRED list bullet
 /// (`-`/`*`/`+`, or `1.`/`1)` numbering — trailing space optional, matching
 /// the frontend regex's `\s*`), then `[<marker>]`, at least one whitespace
 /// (also matching the frontend's `\s+`), and non-empty item text. None for
-/// anything else. Marker mapping mirrors the frontend parser: ' ' pending,
-/// '~' in progress, x/X/✓ done. Kept aligned with
-/// frontend/src/lib/agentPlan.ts (#784) — change both together.
+/// anything else — in particular a bare `[ ] item` with no bullet is
+/// rejected, exactly as the frontend's mandatory `(?:[-*+]|\d+[.)])` group
+/// rejects it (#790): a bullet-less checkbox is more likely quoted code
+/// than a plan, and the two parsers must agree on what gets ingested vs
+/// displayed. Marker mapping mirrors the frontend parser: ' ' pending, '~'
+/// in progress, x/X/✓ done. Kept aligned with frontend/src/lib/agentPlan.ts
+/// (#784) — change both together.
 func parsePlanLine(line: in String): Option[PlanItem] {
   var i = 0
   val n = line.length.toInt()
-  // Optional bullet: a single '-'/'*'/'+' or digits followed by "." or ")".
+  // REQUIRED bullet: a single '-'/'*'/'+' or digits followed by "." or ")".
   if n >= 1 and (line.substring(0, 1) == "-" or line.substring(0, 1) == "*" or line.substring(0, 1) == "+") {
     i = 1
   } else {
@@ -242,6 +246,8 @@ func parsePlanLine(line: in String): Option[PlanItem] {
     }
     if d > 0 and d < n and (line.substring(d, 1) == "." or line.substring(d, 1) == ")") {
       i = d + 1
+    } else {
+      return None
     }
   }
   // Optional spaces between bullet and the checkbox.
@@ -328,10 +334,12 @@ pub func planIngestEnabled(): Bool {
 }
 
 /// Materialize the checkbox plan in a just-persisted agent message into
-/// `todos` rows: parse (>= 2 items or nothing happens), replace the
-/// session's prior source='plan' rows, insert the new ones anchored to
-/// `messageId`. Returns how many items were ingested. The caller
-/// (CloudAgents.Handlers' post-run persist path) treats this as best-effort.
+/// `todos` rows: parse (>= 2 items or nothing happens), then replace the
+/// session's prior source='plan' rows with the new ones (anchored to
+/// `messageId`) in one transaction — a partial failure can never leave the
+/// plan half-replaced (#791). Returns how many items were ingested. The
+/// caller (CloudAgents.Handlers' post-run persist path) treats this as
+/// best-effort.
 pub func ingestAgentPlan(
   sessionId: in String, messageId: in String, content: in String
 ): Result[Int, CloudAgents.Sqlite.DbError] {
@@ -339,12 +347,14 @@ pub func ingestAgentPlan(
   if items.length < 2 {
     return Ok(value = 0)
   }
-  CloudAgents.Repository.deletePlanTodos(sessionId)?
+  var notes: slice[String] = []
+  var statuses: slice[String] = []
   var i = 0
   while i < items.length {
-    val it = items[i]
-    CloudAgents.Repository.addPlanTodo(sessionId, messageId, it.note, it.status)?
+    notes = notes.append(items[i].note)
+    statuses = statuses.append(items[i].status)
     i = i + 1
   }
+  CloudAgents.Repository.replacePlanTodos(sessionId, messageId, notes, statuses)?
   return Ok(value = items.length.toInt())
 }

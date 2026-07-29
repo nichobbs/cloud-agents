@@ -267,11 +267,14 @@ fi
 # reconciled below) — keep the file we created out of an agent's `git add .`
 # via .git/info/exclude (#788). Untracked paths only, so a repo that
 # deliberately commits a .claude/mcp.json of its own is unaffected;
-# idempotent across messages.
-if [ -d /workspace/.git ]; then
-    mkdir -p /workspace/.git/info
-    grep -qxF '/.claude/mcp.json' /workspace/.git/info/exclude 2>/dev/null \
-        || printf '/.claude/mcp.json\n' >> /workspace/.git/info/exclude
+# idempotent across messages. Reuses register-callbacks-mcp.sh's
+# exclude_from_git rather than duplicating it (#792) — this harness never
+# calls that script's register_callbacks_mcp itself (claude's registration
+# is the reconcile block below, coupled to --permission-prompt-tool).
+if [ -f /usr/local/bin/register-callbacks-mcp.sh ]; then
+    # shellcheck source=register-callbacks-mcp.sh
+    source /usr/local/bin/register-callbacks-mcp.sh
+    exclude_from_git /workspace ".claude/mcp.json"
 fi
 
 # Phase 6 (docs/phase6-mcp-callbacks.md §8): reconcile the cloud-agents MCP

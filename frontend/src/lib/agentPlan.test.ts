@@ -58,3 +58,9 @@ describe('parseAgentPlan server-parity edges (#784)', () => {
     expect(parseAgentPlan('- [ ] \n- [x] ')).toEqual([]);
   });
 });
+
+describe('parseAgentPlan bullet requirement (#790)', () => {
+  it('rejects bullet-less checkbox lines, same as the server parser', () => {
+    expect(parseAgentPlan('[ ] bare one\n[x] bare two')).toEqual([]);
+  });
+});

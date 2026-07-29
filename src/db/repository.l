@@ -507,20 +507,25 @@ pub func addTodo(sessionId: in String, messageId: in String, note: in String): R
   )
 }
 
-/// Create one plan-ingested todo (source = 'plan', any of the three
-/// statuses), anchored to the agent message the plan was parsed from — used
-/// only by CloudAgents.Interactions.ingestAgentPlan.
-pub func addPlanTodo(
-  sessionId: in String, messageId: in String, note: in String, status: in String
+/// Replace a session's plan-ingested todos (source = 'plan') with the
+/// agent's latest restated plan, in a SINGLE transaction (#791 — the same
+/// delete+insert-multiple shape addPromptWithTags runs transactionally, so
+/// a partial failure can never leave the plan half-replaced). `notes` and
+/// `statuses` are parallel slices (extra entries in the longer one are
+/// ignored); each row is anchored to `messageId`, the agent message the
+/// plan was parsed from. Never touches human/tool-created rows (source '').
+pub func replacePlanTodos(
+  sessionId: in String, messageId: in String, notes: in slice[String], statuses: in slice[String]
 ): Result[Unit, CloudAgents.Sqlite.DbError] {
-  CloudAgents.Sqlite.execute(CloudAgents.Db.insertTodoSql(newId(), sessionId, messageId, note, status, nowMillis(), "plan"))?
-  return Ok(value = ())
-}
-
-/// Delete a session's plan-ingested todos ahead of re-ingesting the agent's
-/// latest restated plan. Never touches human/tool-created rows (source '').
-pub func deletePlanTodos(sessionId: in String): Result[Unit, CloudAgents.Sqlite.DbError] {
-  CloudAgents.Sqlite.execute(CloudAgents.Db.deletePlanTodosSql(sessionId))?
+  val ts = nowMillis()
+  var stmts: slice[String] = []
+  stmts = stmts.append(CloudAgents.Db.deletePlanTodosSql(sessionId))
+  var i = 0
+  while i < notes.length and i < statuses.length {
+    stmts = stmts.append(CloudAgents.Db.insertTodoSql(newId(), sessionId, messageId, notes[i], statuses[i], ts, "plan"))
+    i = i + 1
+  }
+  CloudAgents.Sqlite.executeTransaction(stmts)?
   return Ok(value = ())
 }
 
