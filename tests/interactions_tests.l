@@ -361,7 +361,8 @@ test "parsePlanLine alignment with the frontend parser (#784): bullet-space and 
   // No whitespace after "]" is rejected (frontend `\s+` before the text).
   assertEqualInt(parseAgentPlan("- [x]crammed\n- [x]also").length.toInt(), 0, "no space after ] -> rejected")
   // A checkbox with nothing after it is rejected on both sides.
-  assertEqualInt(parseAgentPlan("- [ ] \n- [x] ").length.toInt(), 0, "empty text -> rejected")  // A bullet is REQUIRED (#790) — the frontend regex's bullet group is
+  assertEqualInt(parseAgentPlan("- [ ] \n- [x] ").length.toInt(), 0, "empty text -> rejected")
+  // A bullet is REQUIRED (#790) — the frontend regex's bullet group is
   // mandatory, so a bare bullet-less checkbox must not ingest server-side
   // either.
   assertEqualInt(parseAgentPlan("[ ] bare one\n[x] bare two").length.toInt(), 0, "bullet-less checkbox -> rejected")
