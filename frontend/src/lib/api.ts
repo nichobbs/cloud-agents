@@ -22,6 +22,7 @@ export interface ServerSession {
   status?: string;
   createdAt?: string;
   lastMessageAt?: string;
+  isArchived?: string;
 }
 
 function authHeaders(): HeadersInit {
@@ -99,6 +100,22 @@ export const api = {
   deleteSession: async (sessionId: string): Promise<void> => {
     const res = await fetch(`${BASE}/api/sessions/${sessionId}`, {
       method: 'DELETE',
+      headers: authHeaders(),
+    });
+    if (!res.ok) throw new Error(`${res.status} ${await res.text()}`);
+  },
+
+  archiveSession: async (sessionId: string): Promise<void> => {
+    const res = await fetch(`${BASE}/api/sessions/${sessionId}/archive`, {
+      method: 'POST',
+      headers: authHeaders(),
+    });
+    if (!res.ok) throw new Error(`${res.status} ${await res.text()}`);
+  },
+
+  unarchiveSession: async (sessionId: string): Promise<void> => {
+    const res = await fetch(`${BASE}/api/sessions/${sessionId}/unarchive`, {
+      method: 'POST',
       headers: authHeaders(),
     });
     if (!res.ok) throw new Error(`${res.status} ${await res.text()}`);

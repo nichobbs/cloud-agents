@@ -160,12 +160,17 @@ pub func messageListToJson(v: in CloudAgents.Repository.MessageList): String {
       json = json + ","
     }
     val m = v.messages[i]
-    json = json + "{\"id\":\"" + CloudAgents.Streaming.jsonEscape(m.id) +
-      "\",\"sessionId\":\"" + CloudAgents.Streaming.jsonEscape(m.sessionId) +
-      "\",\"role\":\"" + CloudAgents.Streaming.jsonEscape(m.role) +
-      "\",\"content\":\"" + CloudAgents.Streaming.jsonEscape(m.content) +
-      "\",\"seq\":\"" + CloudAgents.Streaming.jsonEscape(m.seq) +
-      "\",\"createdAt\":\"" + CloudAgents.Streaming.jsonEscape(m.createdAt) + "\"}"
+    json = json + "{\"id\":\"" + CloudAgents.Streaming.jsonEscape(m.id) + "\",\"sessionId\":\"" +
+      CloudAgents.Streaming.jsonEscape(m.sessionId) +
+      "\",\"role\":\"" +
+      CloudAgents.Streaming.jsonEscape(m.role) +
+      "\",\"content\":\"" +
+      CloudAgents.Streaming.jsonEscape(m.content) +
+      "\",\"seq\":\"" +
+      CloudAgents.Streaming.jsonEscape(m.seq) +
+      "\",\"createdAt\":\"" +
+      CloudAgents.Streaming.jsonEscape(m.createdAt) +
+      "\"}"
     i = i + 1
   }
   json = json + "]}"
@@ -446,6 +451,24 @@ impl Web.Handler for RouteUpdateSessionModel {
     val id = pparam(req, "id")
     val decoded = match UpdateSessionRequest.fromJson(req.body) { case Ok(d) -> d; case Err(_) -> return badBody() }
     return unitResp(CloudAgents.Handlers.updateSessionModel(id, decoded))
+  }
+}
+
+record RouteArchiveSession {
+}
+
+impl Web.Handler for RouteArchiveSession {
+  func handle(req: in Web.Request): Web.Response {
+    return unitResp(CloudAgents.Handlers.archiveSession(pparam(req, "id")))
+  }
+}
+
+record RouteUnarchiveSession {
+}
+
+impl Web.Handler for RouteUnarchiveSession {
+  func handle(req: in Web.Request): Web.Response {
+    return unitResp(CloudAgents.Handlers.unarchiveSession(pparam(req, "id")))
   }
 }
 
@@ -1342,6 +1365,8 @@ pub func main(): Unit {
   router = Web.addPost(router, "/api/sessions/{id}/model", RouteUpdateSessionModel())
   router = Web.addPost(router, "/api/sessions/{id}/profile", RouteSetSessionProfile())
   router = Web.addGet(router, "/api/sessions/{id}/profile", RouteGetSessionProfile())
+  router = Web.addPost(router, "/api/sessions/{id}/archive", RouteArchiveSession())
+  router = Web.addPost(router, "/api/sessions/{id}/unarchive", RouteUnarchiveSession())
 
   // Live output polling for an in-progress run. The offset-suffixed route
   // returns only the log bytes past {offset} (incremental polling — see

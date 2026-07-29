@@ -914,6 +914,7 @@ pub func deleteSession(id: in String): Result[Unit, Web.ApiError] {
           case Err(err) -> return Err(Web.internalError("Failed to terminate container (session retained, retry delete): " + err))
         }
       }
+      val _ = CloudAgents.Docker.deleteWorkspaceVolume(CloudAgents.Auth.currentUserId(), id)
       // Drop any linked repositories first (best-effort: leftover rows are
       // only reachable through this now-deleted session, so a failure here is
       // harmless bookkeeping, not a blocker for the delete).
@@ -948,6 +949,34 @@ pub func updateSessionModel(id: in String, req: in UpdateSessionRequest): Result
   match maybeSession {
     case None -> return Err(Web.notFound("Session not found"))
     case Some(_) -> match CloudAgents.SessionStore.updateSessionModel(id, req.model) { case Ok(_) -> return Ok(()); case Err(e) -> return Err(Web.internalError("failed to update model: " + CloudAgents.Sqlite.dbErrorMessage(e))) }
+  }
+}
+
+pub func archiveSession(id: in String): Result[Unit, Web.ApiError] {
+  if id.length == 0 {
+    return Err(Web.badRequest("id is required"))
+  }
+  val maybeSession = match getSession(id) {
+    case Ok(m) -> m
+    case Err(e) -> return Err(Web.internalError("session lookup failed: " + CloudAgents.Sqlite.dbErrorMessage(e)))
+  }
+  match maybeSession {
+    case None -> return Err(Web.notFound("Session not found"))
+    case Some(_) -> match CloudAgents.SessionStore.updateSessionArchived(id, "1") { case Ok(_) -> return Ok(()); case Err(e) -> return Err(Web.internalError("failed to archive session: " + CloudAgents.Sqlite.dbErrorMessage(e))) }
+  }
+}
+
+pub func unarchiveSession(id: in String): Result[Unit, Web.ApiError] {
+  if id.length == 0 {
+    return Err(Web.badRequest("id is required"))
+  }
+  val maybeSession = match getSession(id) {
+    case Ok(m) -> m
+    case Err(e) -> return Err(Web.internalError("session lookup failed: " + CloudAgents.Sqlite.dbErrorMessage(e)))
+  }
+  match maybeSession {
+    case None -> return Err(Web.notFound("Session not found"))
+    case Some(_) -> match CloudAgents.SessionStore.updateSessionArchived(id, "0") { case Ok(_) -> return Ok(()); case Err(e) -> return Err(Web.internalError("failed to unarchive session: " + CloudAgents.Sqlite.dbErrorMessage(e))) }
   }
 }
 

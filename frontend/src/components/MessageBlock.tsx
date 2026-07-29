@@ -9,15 +9,28 @@ interface MessageBlockProps {
   message: Message;
   highlighted?: boolean;
   onTodoAdded?: () => void;
+  onRetry?: (content: string) => void;
 }
 
 /// One addressable transcript entry. Renders the message content and exposes
 /// the two affordances that hang off it: commenting and bookmarking to the todo
 /// list. The wrapper carries `id="message-<id>"` so todos can deep-link back.
-export function MessageBlock({ message, highlighted, onTodoAdded }: MessageBlockProps) {
+export function MessageBlock({ message, highlighted, onTodoAdded, onRetry }: MessageBlockProps) {
   const [showComments, setShowComments] = useState(false);
   const [commentCount, setCommentCount] = useState<number | null>(null);
   const [bookmarking, setBookmarking] = useState(false);
+  const [copied, setCopied] = useState(false);
+
+  const handleCopy = async () => {
+    const cleanContent = message.content.replace(/\x1b\[[0-9;]*m/g, '');
+    try {
+      await navigator.clipboard.writeText(cleanContent);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    } catch {
+      alert('Failed to copy message content');
+    }
+  };
 
   const isUser = message.role === 'user';
 
@@ -70,6 +83,22 @@ export function MessageBlock({ message, highlighted, onTodoAdded }: MessageBlock
         >
           🔖 {bookmarking ? '…' : 'Bookmark'}
         </button>
+        <button
+          style={actionBtn}
+          onClick={() => { void handleCopy(); }}
+          title="Copy message content"
+        >
+          📋 {copied ? 'Copied' : 'Copy'}
+        </button>
+        {isUser && onRetry && (
+          <button
+            style={actionBtn}
+            onClick={() => onRetry(message.content)}
+            title="Retry this message"
+          >
+            🔄 Retry
+          </button>
+        )}
       </div>
 
       {isUser ? (

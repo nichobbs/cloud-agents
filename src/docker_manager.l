@@ -57,6 +57,11 @@ func toBase64(b: in slice[Byte]): String = ""
 @externTarget("System.Threading.Thread.Sleep")
 func threadSleepMs(millis: in Int): Unit = ()
 
+extern type Process = "System.Diagnostics.Process"
+
+@externTarget("System.Diagnostics.Process.Start")
+func processStart(fileName: in String, arguments: in String): Process = ()
+
 /// Encode a JSON string as base64 for env-var transport into a runner
 /// container (docker/inject-library.sh decodes it with `base64 -d`) — avoids
 /// any shell-quoting hazard from arbitrary user-authored skill/subagent/MCP
@@ -997,4 +1002,16 @@ async func terminateSessionContainerAsync(containerId: in String, cell: in Resul
       cell.error = "Delete failed: " + msg
     }
   }
+}
+
+/// Delete named workspace volume asynchronously.
+pub func deleteWorkspaceVolume(userId: in String, sessionId: in String): Result[Unit, String] {
+  var volName = ""
+  if userId.length == 0 or userId == "default" {
+    volName = "session-" + sessionId + "-workspace"
+  } else {
+    volName = "session-" + userId + "-" + sessionId + "-workspace"
+  }
+  val _ = processStart("docker", "volume rm " + volName)
+  return Ok(value = ())
 }

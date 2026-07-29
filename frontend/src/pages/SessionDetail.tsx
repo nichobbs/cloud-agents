@@ -33,7 +33,7 @@ export function extractVarNames(body: string): string[] {
 export function SessionDetail() {
   const { id } = useParams<{ id: string }>();
   const sessionId = id ?? '';
-  const { getSession, removeSession, updateSession } = useSessions();
+  const { getSession, removeSession, updateSession, archiveSession, unarchiveSession } = useSessions();
   const navigate = useNavigate();
   const location = useLocation();
   const session = getSession(sessionId);
@@ -429,8 +429,7 @@ export function SessionDetail() {
     }
   })();
 
-  const handleSend = async () => {
-    const text = input.trim();
+  const handleRetry = async (text: string) => {
     if (!text || isStreaming) return;
     // Fixed at call time to whichever session this send was actually for —
     // `sessionId` may point somewhere else by the time this async function
@@ -511,6 +510,12 @@ export function SessionDetail() {
       setInput(text);
     }
     textareaRef.current?.focus();
+  };
+
+  const handleSend = async () => {
+    const text = input.trim();
+    if (!text || isStreaming) return;
+    await handleRetry(text);
   };
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
@@ -681,6 +686,33 @@ export function SessionDetail() {
     navigate('/sessions');
   };
 
+  const [archiving, setArchiving] = useState(false);
+
+  const handleArchive = async () => {
+    if (!session) return;
+    setArchiving(true);
+    try {
+      await archiveSession(session.sessionId);
+      navigate('/sessions');
+    } catch (err) {
+      alert(err instanceof Error ? `Failed to archive: ${err.message}` : 'Failed to archive');
+    } finally {
+      setArchiving(false);
+    }
+  };
+
+  const handleUnarchive = async () => {
+    if (!session) return;
+    setArchiving(true);
+    try {
+      await unarchiveSession(session.sessionId);
+    } catch (err) {
+      alert(err instanceof Error ? `Failed to unarchive: ${err.message}` : 'Failed to unarchive');
+    } finally {
+      setArchiving(false);
+    }
+  };
+
   return (
     <div style={pageStyle}>
       {templatePrompt && createPortal(
@@ -812,6 +844,23 @@ export function SessionDetail() {
           <Link to={`/sessions/${sessionId}/todos`} style={todosBtnStyle}>
             Todos
           </Link>
+          {session.isArchived === '1' ? (
+            <button
+              style={archiveBtnStyle}
+              onClick={() => { void handleUnarchive(); }}
+              disabled={archiving}
+            >
+              {archiving ? 'Unarchiving…' : 'Unarchive'}
+            </button>
+          ) : (
+            <button
+              style={archiveBtnStyle}
+              onClick={() => { void handleArchive(); }}
+              disabled={archiving}
+            >
+              {archiving ? 'Archiving…' : 'Archive'}
+            </button>
+          )}
           <button
             style={deleteBtnStyle}
             onClick={() => { void handleDelete(); }}
@@ -864,6 +913,7 @@ export function SessionDetail() {
             message={m}
             highlighted={m.id === highlightedId}
             onTodoAdded={() => { /* todos live on their own page */ }}
+            onRetry={handleRetry}
           />
         ))}
         {(isStreaming || sendError || keepOutput) && (
@@ -890,6 +940,19 @@ export function SessionDetail() {
                   {cancelling ? 'Cancelling…' : 'Cancel run'}
                 </button>
               )}
+              {sendError && (() => {
+                const lastUserMsg = [...messages].reverse().find(m => m.role === 'user');
+                if (!lastUserMsg) return null;
+                return (
+                  <button
+                    style={cancelRunBtnStyle}
+                    onClick={() => { void handleRetry(lastUserMsg.content); }}
+                    title="Retry the failed message"
+                  >
+                    🔄 Retry run
+                  </button>
+                );
+              })()}
             </div>
             <Terminal output={output} isStreaming={isStreaming} />
           </div>
@@ -1248,6 +1311,16 @@ const deleteBtnStyle: React.CSSProperties = {
   background: 'transparent',
   color: '#f85149',
   border: '1px solid #f85149',
+  borderRadius: '6px',
+  fontSize: '13px',
+  cursor: 'pointer',
+};
+
+const archiveBtnStyle: React.CSSProperties = {
+  padding: '5px 12px',
+  background: 'transparent',
+  color: '#c9d1d9',
+  border: '1px solid #30363d',
   borderRadius: '6px',
   fontSize: '13px',
   cursor: 'pointer',

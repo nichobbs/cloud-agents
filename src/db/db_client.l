@@ -158,7 +158,8 @@ pub func sessionsSchemaSql(): String {
     "native_session_id TEXT NOT NULL, " +
     "status TEXT NOT NULL, " +
     "created_at TEXT NOT NULL, " +
-    "last_message_at TEXT NOT NULL)"
+    "last_message_at TEXT NOT NULL, " +
+    "is_archived TEXT NOT NULL DEFAULT '0')"
 }
 
 // (The Phase-3 draft helpers workspaceVolumeName/homeVolumeName were removed
@@ -249,7 +250,7 @@ pub func workspaceVolumeBindFor(userId: in String, sessionId: in String): String
 // parameter binding). Every read and mutation is scoped by `user_id` so a
 // user can only ever touch their own sessions (Phase 3 ownership
 // enforcement, docs/phase3 §4).
-val sessionColumns = "id, user_id, repo_url, branch, container_id, harness, model, native_session_id, status, created_at, last_message_at"
+val sessionColumns = "id, user_id, repo_url, branch, container_id, harness, model, native_session_id, status, created_at, last_message_at, is_archived"
 
 /// INSERT a new session row (status starts IDLE; last_message_at = created_at).
 pub func insertSessionSql(
@@ -279,7 +280,7 @@ pub func insertSessionSql(
     sqlLiteral(createdAt) +
     ", " +
     sqlLiteral(createdAt) +
-    ")"
+    ", '0')"
 }
 
 /// SELECT a single session owned by a user.
@@ -375,6 +376,15 @@ pub func updateSessionProfileSql(id: in String, userId: in String, profileId: in
 /// sessionColumns projection so that column order stays stable.
 pub func selectSessionProfileIdSql(id: in String, userId: in String): String {
   return "SELECT profile_id FROM sessions WHERE id = " + sqlLiteral(id) + " AND user_id = " + sqlLiteral(userId)
+}
+
+pub func alterSessionsAddIsArchivedSql(): String {
+  return "ALTER TABLE sessions ADD COLUMN is_archived TEXT NOT NULL DEFAULT '0'"
+}
+
+pub func updateSessionArchivedSql(id: in String, userId: in String, isArchived: in String): String {
+  return "UPDATE sessions SET is_archived = " + sqlLiteral(isArchived) + " WHERE id = " + sqlLiteral(id) +
+    " AND user_id = " + sqlLiteral(userId)
 }
 
 // ─── Session repositories (multi-repo sessions) ─────────────────────────────

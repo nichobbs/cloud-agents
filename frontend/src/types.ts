@@ -10,6 +10,7 @@ export interface Session {
   status?: string;
   /** Epoch-millis string of the last run activity. */
   lastMessageAt?: string;
+  isArchived?: string;
 }
 
 /// One addressable entry in a session's transcript.
