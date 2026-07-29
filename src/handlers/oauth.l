@@ -26,6 +26,7 @@ import Web
 import CloudAgents.Auth
 import CloudAgents.Crypto
 import CloudAgents.GitHubApi
+import CloudAgents.LibrarySeed
 import CloudAgents.Repository
 import CloudAgents.SessionStore
 import CloudAgents.Sqlite
@@ -324,6 +325,10 @@ pub func exchangeCode(req: in ExchangeRequest): Result[TokenGrant, Web.ApiError]
           case Err(e) -> println("NOTE: could not store GITHUB_TOKEN in the credential vault: " + CloudAgents.Repository.credentialErrorMessage(e))
         }
       }
+      // Give a brand-new sign-in the curated default subagent/skill sets
+      // (best-effort, no-op once the user already has any — see
+      // CloudAgents.LibrarySeed).
+      CloudAgents.LibrarySeed.seedDefaultLibraryIfEmpty(userId)
       // Some OAuth Apps (GitHub's "expiring user access tokens" feature,
       // common on corporate/enterprise-governed apps) return a refresh_token
       // + expires_in + refresh_token_expires_in alongside access_token. Most
