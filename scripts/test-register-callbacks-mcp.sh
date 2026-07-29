@@ -79,6 +79,30 @@ check "codex: block stripped when inactive"   bash -c "! grep -q 'mcp_servers.cl
 check "codex: user content survives strip"    grep -q 'model = "user-set"' "$WS/.codex/config.toml"
 rm -rf "$WS"
 
+# ── Codex TOML parse validity (#789) ─────────────────────────────────────────
+# The opencode/gemini branches are jq-validated above; parse the codex
+# branch's TOML output with a real TOML parser too, and confirm a token full
+# of quote/backslash metacharacters round-trips — @json escaping is shared
+# between JSON and TOML basic strings, but only an actual parse proves it.
+WS="$(mktemp -d)"
+mkdir -p "$WS/.codex"
+live_env
+register_callbacks_mcp "codex" "$WS"
+if python3 -c 'import tomllib' >/dev/null 2>&1; then
+  toml_ok=0
+  python3 -c '
+import sys, tomllib
+cfg = tomllib.load(open(sys.argv[1], "rb"))
+env = cfg["mcp_servers"]["cloud-agents"]["env"]
+expected = "tok-with-\"quote\"-and-\\backslash"
+sys.exit(0 if env["CLOUD_AGENTS_CALLBACK_TOKEN"] == expected else 1)
+' "$WS/.codex/config.toml" || toml_ok=1
+  check "codex: config.toml parses as TOML and the metachar token round-trips" test "$toml_ok" -eq 0
+else
+  echo "skip codex TOML parse check (python3 tomllib unavailable)"
+fi
+rm -rf "$WS"
+
 # ── .git/info/exclude protection (#788) ──────────────────────────────────────
 WS="$(mktemp -d)"
 mkdir -p "$WS/.git/info"
