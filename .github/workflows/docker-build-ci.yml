@@ -122,10 +122,13 @@ jobs:
   # only thing that catches a broken COPY/instruction-ordering bug (e.g.
   # installing uv before the CA-trust step runs, confirmed broken and fixed
   # in PR #764/#772) before it reaches a real deploy. All three now carry
-  # their own shim-builder stage (byte-identical to docker/Dockerfile's, so
-  # the GHA layer cache shares it) and therefore build with the REPO-ROOT
-  # context — they COPY both docker/ and shim/, the same #601 requirement
-  # the claude image has. Each harness's own header comment documents this.
+  # their own shim-builder stage (byte-identical to docker/Dockerfile's —
+  # which shares layer cache on a sequential single-host build like
+  # Coolify's or build-docker.sh's; in THIS job each matrix build runs in
+  # parallel with its own distinct GHA cache scope, so the shim builds
+  # once per harness here) and therefore build with the REPO-ROOT context —
+  # they COPY both docker/ and shim/, the same #601 requirement the claude
+  # image has. Each harness's own header comment documents this.
   docker-build-harness-images:
     name: Docker build (${{ matrix.harness }})
     if: github.event.pull_request.draft == false

@@ -28,6 +28,21 @@ callbacks_mcp_active() {
         && command -v cloud-agents-shim >/dev/null 2>&1
 }
 
+# Adds `path` (workspace-root-relative) to .git/info/exclude so the
+# token-bearing config this script writes can't ride along on an agent's
+# `git add .` and leak the callback token into a commit (#788). Git
+# excludes only apply to UNTRACKED paths, so a repo that deliberately
+# commits its own opencode.json/.codex/config.toml is unaffected — this
+# only stops the file WE created from being staged accidentally.
+# Idempotent; a workspace without .git is a no-op.
+exclude_from_git() {
+    local ws="$1" path="$2"
+    [ -d "$ws/.git" ] || return 0
+    mkdir -p "$ws/.git/info"
+    grep -qxF "/$path" "$ws/.git/info/exclude" 2>/dev/null \
+        || printf '/%s\n' "$path" >> "$ws/.git/info/exclude"
+}
+
 register_callbacks_mcp() {
     local harness="${1:?register_callbacks_mcp: harness required}"
     local ws="${2:-.}"
@@ -42,6 +57,7 @@ register_callbacks_mcp() {
             command -v jq >/dev/null 2>&1 || return 0
             local file="$ws/opencode.json"
             [ -f "$file" ] || printf '{}' > "$file"
+            exclude_from_git "$ws" "opencode.json"
             local tmp
             tmp=$(mktemp "${file}.XXXXXX")
             if [ "$active" = "1" ]; then
@@ -74,6 +90,7 @@ register_callbacks_mcp() {
             local file="$ws/.gemini/settings.json"
             mkdir -p "$ws/.gemini"
             [ -f "$file" ] || printf '{}' > "$file"
+            exclude_from_git "$ws" ".gemini/settings.json"
             local tmp
             tmp=$(mktemp "${file}.XXXXXX")
             if [ "$active" = "1" ]; then
@@ -106,6 +123,7 @@ register_callbacks_mcp() {
             local end="# END cloud-agents-callbacks-mcp"
             mkdir -p "$ws/.codex"
             [ -f "$file" ] || : > "$file"
+            exclude_from_git "$ws" ".codex/config.toml"
             local tmp
             tmp=$(mktemp "${file}.XXXXXX")
             awk -v b="$begin" -v e="$end" '

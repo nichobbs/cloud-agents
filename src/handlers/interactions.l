@@ -223,15 +223,18 @@ func trimPlanSpacesEnd(s: in String, start: in Int, stopIn: in Int): String {
 }
 
 /// Parse one trimmed line as a checkbox plan item: an optional list bullet
-/// (`- `, `* `, `+ `, or `1.`/`1)` numbering), then `[<marker>]`, a space,
-/// and the item text. None for anything else. Marker mapping mirrors the
-/// frontend parser: ' ' pending, '~' in progress, x/X/✓ done.
+/// (`-`/`*`/`+`, or `1.`/`1)` numbering — trailing space optional, matching
+/// the frontend regex's `\s*`), then `[<marker>]`, at least one whitespace
+/// (also matching the frontend's `\s+`), and non-empty item text. None for
+/// anything else. Marker mapping mirrors the frontend parser: ' ' pending,
+/// '~' in progress, x/X/✓ done. Kept aligned with
+/// frontend/src/lib/agentPlan.ts (#784) — change both together.
 func parsePlanLine(line: in String): Option[PlanItem] {
   var i = 0
   val n = line.length.toInt()
-  // Optional bullet: "- " / "* " / "+ " or digits followed by "." or ")".
-  if n >= 2 and (line.substring(0, 2) == "- " or line.substring(0, 2) == "* " or line.substring(0, 2) == "+ ") {
-    i = 2
+  // Optional bullet: a single '-'/'*'/'+' or digits followed by "." or ")".
+  if n >= 1 and (line.substring(0, 1) == "-" or line.substring(0, 1) == "*" or line.substring(0, 1) == "+") {
+    i = 1
   } else {
     var d = 0
     while d < n and isDigit(line.substring(d, 1)) {
@@ -259,6 +262,15 @@ func parsePlanLine(line: in String): Option[PlanItem] {
   } else if marker == "x" or marker == "X" or marker == "✓" {
     "done"
   } else {
+    return None
+  }
+  // At least one whitespace between "]" and the text (frontend's `\s+`):
+  // "[x]crammed" is more likely quoted code than a plan item.
+  if i + 3 >= n {
+    return None
+  }
+  val after = line.substring(i + 3, 1)
+  if after != " " and after != "\t" {
     return None
   }
   val text = trimPlanSpaces(line.substring(i + 3, n - i - 3))

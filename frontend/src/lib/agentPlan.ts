@@ -16,7 +16,11 @@ export interface PlanItem {
   state: PlanState;
 }
 
-const CHECKBOX_RE = /^\s*(?:[-*+]|\d+[.)])\s*\[([ xX~✓])\]\s+(.*)$/;
+// Kept aligned with the server-side parser in
+// src/handlers/interactions.l's parsePlanLine (#784) — change both
+// together. `(\S.*)` requires non-empty item text: a checkbox with nothing
+// after it is more likely quoted output than a plan step.
+const CHECKBOX_RE = /^\s*(?:[-*+]|\d+[.)])\s*\[([ xX~✓])\]\s+(\S.*)$/;
 
 function stateOf(marker: string): PlanState {
   if (marker === '~') return 'in_progress';

@@ -353,3 +353,13 @@ test "planIngestEnabled is off by default and on only for exactly '1'" {
   assertTrue(planIngestEnabled(), "'1' -> on")
   Env.SetEnvironmentVariable("CLOUD_AGENTS_INGEST_AGENT_PLAN", "")
 }
+
+test "parsePlanLine alignment with the frontend parser (#784): bullet-space and bracket-space edges" {
+  // Bullet without a trailing space parses (frontend `\s*` after the bullet).
+  val tight = parseAgentPlan("-[ ] first\n-[x] second")
+  assertEqualInt(tight.length.toInt(), 2, "bullet without trailing space parses")
+  // No whitespace after "]" is rejected (frontend `\s+` before the text).
+  assertEqualInt(parseAgentPlan("- [x]crammed\n- [x]also").length.toInt(), 0, "no space after ] -> rejected")
+  // A checkbox with nothing after it is rejected on both sides.
+  assertEqualInt(parseAgentPlan("- [ ] \n- [x] ").length.toInt(), 0, "empty text -> rejected")
+}

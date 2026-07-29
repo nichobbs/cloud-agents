@@ -1,3 +1,4 @@
+import { useMemo } from 'react';
 import { Link } from 'react-router-dom';
 import { extractSessionPRs } from '../lib/sessionPRs';
 import type { Message } from '../types';
@@ -13,7 +14,10 @@ interface SessionPRsPanelProps {
 /// PR and deep-links back to the message it first appeared in. Renders
 /// nothing when the transcript references no PRs.
 export function SessionPRsPanel({ sessionId, messages }: SessionPRsPanelProps) {
-  const prs = extractSessionPRs(messages);
+  // Memoized on the messages array identity: SessionDetail re-renders on
+  // every streamed output chunk, but `messages` only gets a new identity on
+  // a transcript reload — no need to re-scan the whole transcript per chunk.
+  const prs = useMemo(() => extractSessionPRs(messages), [messages]);
   if (prs.length === 0) return null;
 
   return (

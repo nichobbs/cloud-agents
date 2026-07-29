@@ -44,3 +44,17 @@ describe('parseAgentPlan', () => {
     expect(parseAgentPlan('just some prose\nwith lines')).toEqual([]);
   });
 });
+
+describe('parseAgentPlan server-parity edges (#784)', () => {
+  it('parses a bullet without a trailing space', () => {
+    expect(parseAgentPlan('-[ ] first\n-[x] second')).toHaveLength(2);
+  });
+
+  it('rejects a checkbox with no whitespace after the bracket', () => {
+    expect(parseAgentPlan('- [x]crammed\n- [x]also')).toEqual([]);
+  });
+
+  it('rejects checkbox items with empty text', () => {
+    expect(parseAgentPlan('- [ ] \n- [x] ')).toEqual([]);
+  });
+});

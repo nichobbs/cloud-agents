@@ -79,6 +79,27 @@ check "codex: block stripped when inactive"   bash -c "! grep -q 'mcp_servers.cl
 check "codex: user content survives strip"    grep -q 'model = "user-set"' "$WS/.codex/config.toml"
 rm -rf "$WS"
 
+# ── .git/info/exclude protection (#788) ──────────────────────────────────────
+WS="$(mktemp -d)"
+mkdir -p "$WS/.git/info"
+live_env
+register_callbacks_mcp "opencode" "$WS"
+register_callbacks_mcp "opencode" "$WS"
+check "exclude: opencode.json listed once (idempotent)" bash -c "[ \"\$(grep -cxF '/opencode.json' '$WS/.git/info/exclude')\" -eq 1 ]"
+register_callbacks_mcp "gemini" "$WS"
+check "exclude: gemini settings listed"       bash -c "grep -qxF '/.gemini/settings.json' '$WS/.git/info/exclude'"
+register_callbacks_mcp "codex" "$WS"
+check "exclude: codex config listed"          bash -c "grep -qxF '/.codex/config.toml' '$WS/.git/info/exclude'"
+rm -rf "$WS"
+
+# No .git directory — exclusion is a silent no-op, registration still works.
+WS="$(mktemp -d)"
+live_env
+register_callbacks_mcp "opencode" "$WS"
+check "exclude: no .git -> no-op, entry still written" bash -c "jq -e '.mcp[\"cloud-agents\"]' '$WS/opencode.json' >/dev/null"
+check "exclude: no .git dir was created"      bash -c "[ ! -d '$WS/.git' ]"
+rm -rf "$WS"
+
 # ── Flag off ("0") suppresses registration even with a token ─────────────────
 WS="$(mktemp -d)"
 live_env
