@@ -48,6 +48,25 @@ func utf8Encoding(): Encoding = ()
 @externTarget("System.Text.Encoding.GetString")
 func bytesToUtf8(enc: in Encoding, bytes: in slice[Byte]): String = ""
 
+// Mirrors src/handlers/library.l's maxDescriptionLen/maxBodyLen/maxModelLen
+// by value rather than importing them: an earlier version of this file made
+// those three `pub val`s in CloudAgents.Library and referenced them here,
+// which built cleanly but crashed every seeding test at runtime with a bare
+// NullReferenceException/InvalidProgramException the moment the per-item
+// bounds check actually ran (#750's fix, then its own regression) — no
+// `pub val` is used successfully cross-package anywhere else in this
+// codebase, so this is presumably one more "compiles fine, dies at runtime"
+// gotcha in the family docs/lyric/gotchas.md already catalogs. Duplicating
+// three small integers is far cheaper than chasing that down, and matches
+// this codebase's existing convention of a package owning small constants
+// it needs rather than importing another package's (see this file's own
+// bytesToUtf8 vs CloudAgents.Crypto's separate private equivalent).
+val maxDescriptionLen = 2000
+
+val maxBodyLen = 200000
+
+val maxModelLen = 200
+
 /// Directory the seed subagent .md files are read from, mirroring
 /// CloudAgents.Repository.artifactsBaseDir's env-override convention
 /// (CLOUD_AGENTS_SEED_SUBAGENTS_DIR when set, else a relative default in the
@@ -117,13 +136,18 @@ func frontmatterField(frontmatter: in String, key: in String): String {
   return ""
 }
 
-/// Parses a seed subagent file: `---\n`-delimited YAML-ish frontmatter (only
-/// `name`/`description`/`model` are read; any other key, e.g. `level` or
-/// `disallowedTools`, is ignored) followed by the system prompt body. Not a
+pub record FrontmatterSplit {
+  pub frontmatter: String
+  pub body: String
+}
+
+/// Shared by parseSubagentMarkdown/parseSkillMarkdown (#751): splits a
+/// `---\n`-delimited frontmatter block from the body that follows it. Not a
 /// general Markdown-frontmatter parser — deliberately narrow, matching only
-/// the exact hand-curated shape seed/subagents/*.md files are written in,
-/// with no claim to handle arbitrary frontmatter shapes correctly.
-pub func parseSubagentMarkdown(content: in String): Option[ParsedSubagent] {
+/// the exact hand-curated shape seed/subagents/*.md and seed/skills/*/SKILL.md
+/// files are written in, with no claim to handle arbitrary frontmatter shapes
+/// correctly.
+func splitFrontmatter(content: in String): Option[FrontmatterSplit] {
   val openMarker = "---\n"
   val closeMarker = "\n---\n"
   val openLen = openMarker.length.toInt()
@@ -138,13 +162,36 @@ pub func parseSubagentMarkdown(content: in String): Option[ParsedSubagent] {
   val frontmatter = content.substring(openLen, closeIdx - openLen)
   val bodyStart = closeIdx + closeMarker.length.toInt()
   val body = if bodyStart < contentLen { content.substring(bodyStart, contentLen - bodyStart) } else { "" }
-  val name = frontmatterField(frontmatter, "name")
-  val description = frontmatterField(frontmatter, "description")
-  val model = frontmatterField(frontmatter, "model")
-  if name.length.toInt() == 0 or description.length.toInt() == 0 or body.length.toInt() == 0 {
+  return Some(value = FrontmatterSplit(frontmatter = frontmatter, body = body))
+}
+
+/// Parses a seed subagent file's frontmatter (only `name`/`description`/
+/// `model` are read; any other key, e.g. `level` or `disallowedTools`, is
+/// ignored) and body into a ParsedSubagent, rejecting anything that doesn't
+/// split cleanly or is missing a required field.
+pub func parseSubagentMarkdown(content: in String): Option[ParsedSubagent] {
+  val split = match splitFrontmatter(content) {
+    case Some(s) -> s
+    case None -> return None
+  }
+  val name = frontmatterField(split.frontmatter, "name")
+  val description = frontmatterField(split.frontmatter, "description")
+  val model = frontmatterField(split.frontmatter, "model")
+  if name.length.toInt() == 0 or description.length.toInt() == 0 or split.body.length.toInt() == 0 {
     return None
   }
-  return Some(value = ParsedSubagent(name = name, description = description, model = model, systemPrompt = body))
+  return Some(value = ParsedSubagent(name = name, description = description, model = model, systemPrompt = split.body))
+}
+
+/// Mirrors the bounds src/handlers/library.l's validateSaveSubagent enforces
+/// on the user-facing API path (#750) — a seeded insert goes straight
+/// through CloudAgents.Repository, bypassing that handler-level validation,
+/// so this is checked by hand instead of relying on today's curated seed
+/// content happening to stay under the caps forever.
+func isWithinSubagentBounds(parsed: in ParsedSubagent): Bool {
+  return CloudAgents.Text.withinMaxLength(parsed.description, maxDescriptionLen) and
+    CloudAgents.Text.withinMaxLength(parsed.systemPrompt, maxBodyLen) and
+    CloudAgents.Text.withinMaxLength(parsed.model, maxModelLen)
 }
 
 func readSeedSubagent(name: in String): Option[ParsedSubagent] {
@@ -177,7 +224,7 @@ pub func seedDefaultSubagentsIfEmpty(userId: in String): Unit {
   while i < names.length.toInt() {
     match readSeedSubagent(names[i]) {
       case Some(parsed) -> {
-        if CloudAgents.Library.isValidLibraryName(parsed.name) {
+        if CloudAgents.Library.isValidLibraryName(parsed.name) and isWithinSubagentBounds(parsed) {
           match CloudAgents.Repository.subagentIdByName(userId, parsed.name) {
             case Ok(None) -> {
               match CloudAgents.Repository.addSubagent(userId, parsed.name, parsed.description, parsed.systemPrompt, parsed.model) {
@@ -235,30 +282,27 @@ pub record ParsedSkill {
   pub body: String
 }
 
-/// Same `---\n`-delimited frontmatter shape as parseSubagentMarkdown, but a
-/// skill has no `model` field — the whole file (frontmatter stripped) is
-/// stored verbatim as the skill body.
+/// Same `---\n`-delimited frontmatter shape as parseSubagentMarkdown (via the
+/// shared splitFrontmatter, #751), but a skill has no `model` field — the
+/// whole file (frontmatter stripped) is stored verbatim as the skill body.
 pub func parseSkillMarkdown(content: in String): Option[ParsedSkill] {
-  val openMarker = "---\n"
-  val closeMarker = "\n---\n"
-  val openLen = openMarker.length.toInt()
-  val contentLen = content.length.toInt()
-  if contentLen < openLen or content.substring(0, openLen) != openMarker {
+  val split = match splitFrontmatter(content) {
+    case Some(s) -> s
+    case None -> return None
+  }
+  val name = frontmatterField(split.frontmatter, "name")
+  val description = frontmatterField(split.frontmatter, "description")
+  if name.length.toInt() == 0 or description.length.toInt() == 0 or split.body.length.toInt() == 0 {
     return None
   }
-  val closeIdx = CloudAgents.Text.indexOfFrom(content, closeMarker, openLen)
-  if closeIdx < 0 {
-    return None
-  }
-  val frontmatter = content.substring(openLen, closeIdx - openLen)
-  val bodyStart = closeIdx + closeMarker.length.toInt()
-  val body = if bodyStart < contentLen { content.substring(bodyStart, contentLen - bodyStart) } else { "" }
-  val name = frontmatterField(frontmatter, "name")
-  val description = frontmatterField(frontmatter, "description")
-  if name.length.toInt() == 0 or description.length.toInt() == 0 or body.length.toInt() == 0 {
-    return None
-  }
-  return Some(value = ParsedSkill(name = name, description = description, body = body))
+  return Some(value = ParsedSkill(name = name, description = description, body = split.body))
+}
+
+/// Mirrors validateSaveSkill's bounds (#750) — see isWithinSubagentBounds's
+/// doc comment for why this is checked by hand at the seed-insert path.
+func isWithinSkillBounds(parsed: in ParsedSkill): Bool {
+  return CloudAgents.Text.withinMaxLength(parsed.description, maxDescriptionLen) and
+    CloudAgents.Text.withinMaxLength(parsed.body, maxBodyLen)
 }
 
 func readSeedSkill(name: in String): Option[ParsedSkill] {
@@ -285,7 +329,7 @@ pub func seedDefaultSkillsIfEmpty(userId: in String): Unit {
   while i < names.length.toInt() {
     match readSeedSkill(names[i]) {
       case Some(parsed) -> {
-        if CloudAgents.Library.isValidLibraryName(parsed.name) {
+        if CloudAgents.Library.isValidLibraryName(parsed.name) and isWithinSkillBounds(parsed) {
           match CloudAgents.Repository.skillIdByName(userId, parsed.name) {
             case Ok(None) -> {
               match CloudAgents.Repository.addSkill(userId, parsed.name, parsed.description, parsed.body) {

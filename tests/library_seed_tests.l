@@ -2,6 +2,8 @@
 package CloudAgents.LibrarySeedTests
 
 import Std.Core
+import Std.Collections
+import Std.File
 import Std.Testing
 import Std.Uuid
 import CloudAgents.LibrarySeed
@@ -9,9 +11,54 @@ import CloudAgents.Repository
 import CloudAgents.Sqlite
 import extern System.Environment as Env
 
+// Mirrors src/handlers/library.l's maxDescriptionLen/maxBodyLen by value, not
+// import — see library_seed.l's own maxDescriptionLen/maxBodyLen/maxModelLen
+// doc comment for why a cross-package `pub val` is avoided in this codebase.
+val maxDescriptionLen = 2000
+
+val maxBodyLen = 200000
+
+val maxModelLen = 200
+
 // ── Live-DB plumbing (same pattern as tests/oauth_tests.l) ────────────────────
 @externTarget("System.IO.File.Delete")
 func fileDelete(path: in String): Unit = ()
+
+// Own tiny FFI surface for building the oversized-fixture test below, same
+// convention CloudAgents.LibrarySeed itself follows (see its module comment
+// on bytesToUtf8) rather than sharing another package's private bindings.
+// This direction (String -> UTF-8 bytes via Encoding.GetBytes) is already
+// confirmed working in production, not just in a test — CloudAgents.Crypto's
+// own private encGetBytes(utf8(), s) is on the hashing/AES hot path.
+extern type Encoding = "System.Text.Encoding"
+
+@externTarget("System.Text.Encoding.get_UTF8")
+func utf8Encoding(): Encoding = ()
+
+@externInstance
+@externTarget("System.Text.Encoding.GetBytes")
+func utf8ToBytes(enc: in Encoding, s: in String): slice[Byte] = []
+
+// Std.File.writeBytes actually takes List[Byte], not the slice[Byte]
+// docs/lyric/stdlib.md documents — see CloudAgents.Callbacks.sliceBytesToList
+// (docs/lyric/gotchas.md's matching entry). Same conversion, duplicated here
+// rather than imported since it isn't pub on the Callbacks side either.
+func sliceBytesToList(b: in slice[Byte]): List[Byte] {
+  val acc: List[Byte] = newList()
+  var i = 0
+  while i < b.length {
+    acc.add(b[i])
+    i = i + 1
+  }
+  return acc
+}
+
+// Bytes -> string, for reading the real seed files back in this test file
+// (mirrors CloudAgents.LibrarySeed's own private bytesToUtf8 — not reused
+// directly since it isn't pub, same one-FFI-surface-per-package convention).
+@externInstance
+@externTarget("System.Text.Encoding.GetString")
+func utf8FromBytes(enc: in Encoding, bytes: in slice[Byte]): String = ""
 
 val testKey = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="
 
@@ -284,5 +331,93 @@ test "seedDefaultLibraryIfEmpty seeds both subagents and skills independently" {
   assertEqualInt(subagents.length.toInt(), defaultSubagentNames().length.toInt(), "subagents seeded")
   assertEqualInt(skills.length.toInt(), defaultSkillNames().length.toInt(), "skills seeded")
 
+  cleanupTestDb(dbPath)
+}
+
+// ── #750 regression: seeded content is bounds-checked, not trusted blindly ──
+func nCharString(n: in Int, ch: in String): String {
+  var acc = ""
+  var i = 0
+  while i < n {
+    acc = acc + ch
+    i = i + 1
+  }
+  return acc
+}
+
+test "every real seed/subagents and seed/skills file satisfies the library's own length caps (#750)" {
+  Env.SetEnvironmentVariable("CLOUD_AGENTS_SEED_SUBAGENTS_DIR", "")
+  Env.SetEnvironmentVariable("CLOUD_AGENTS_SEED_SKILLS_DIR", "")
+
+  val subagentNames = defaultSubagentNames()
+  var i = 0
+  while i < subagentNames.length.toInt() {
+    match Std.File.readBytes(seedSubagentsDir() + "/" + subagentNames[i] + ".md") {
+      case Ok(bytes) -> {
+        match parseSubagentMarkdown(utf8FromBytes(utf8Encoding(), bytes)) {
+          case Some(p) -> {
+            assertTrue(p.description.length.toInt() <= maxDescriptionLen, subagentNames[i] + ": description within cap")
+            assertTrue(p.systemPrompt.length.toInt() <= maxBodyLen, subagentNames[i] + ": body within cap")
+            assertTrue(p.model.length.toInt() <= maxModelLen, subagentNames[i] + ": model within cap")
+          }
+          case None -> assertTrue(false, subagentNames[i] + ": failed to parse")
+        }
+      }
+      case Err(_) -> assertTrue(false, subagentNames[i] + ": seed file missing")
+    }
+    i = i + 1
+  }
+
+  val skillNames = defaultSkillNames()
+  var j = 0
+  while j < skillNames.length.toInt() {
+    match Std.File.readBytes(seedSkillsDir() + "/" + skillNames[j] + "/SKILL.md") {
+      case Ok(bytes) -> {
+        match parseSkillMarkdown(utf8FromBytes(utf8Encoding(), bytes)) {
+          case Some(p) -> {
+            assertTrue(p.description.length.toInt() <= maxDescriptionLen, skillNames[j] + ": description within cap")
+            assertTrue(p.body.length.toInt() <= maxBodyLen, skillNames[j] + ": body within cap")
+          }
+          case None -> assertTrue(false, skillNames[j] + ": failed to parse")
+        }
+      }
+      case Err(_) -> assertTrue(false, skillNames[j] + ": seed file missing")
+    }
+    j = j + 1
+  }
+}
+
+test "seedDefaultSubagentsIfEmpty skips a seed file whose description exceeds the library's own cap, instead of inserting it anyway (#750)" {
+  val dbPath = useFreshTestDb("library-seed-oversized")
+  val tmpDir = "/tmp/cloud-agents-tests-oversized-" + Std.Uuid.uuidToString(Std.Uuid.newUuid())
+  match Std.File.createDir(tmpDir) {
+    case Ok(_) -> ()
+    case Err(_) -> assertTrue(false, "failed to create temp seed dir")
+  }
+  // Only "explore" exists in this fixture directory — every other curated
+  // name in defaultSubagentNames() simply won't be found (readBytes Err),
+  // which readSeedSubagent already treats as "skip this one", so the test
+  // only needs to plant the one oversized file it's actually checking.
+  val oversizedDescription = nCharString(maxDescriptionLen + 1, "x")
+  val content = "---\n" + "name: explore\n" + "description: " + oversizedDescription + "\n" + "model: haiku\n" +
+    "---\n" +
+    "\n" +
+    "Body text.\n"
+  match Std.File.writeBytes(tmpDir + "/explore.md", sliceBytesToList(utf8ToBytes(utf8Encoding(), content))) {
+    case Ok(_) -> ()
+    case Err(_) -> assertTrue(false, "failed to write the oversized fixture file")
+  }
+  Env.SetEnvironmentVariable("CLOUD_AGENTS_SEED_SUBAGENTS_DIR", tmpDir)
+  val userId = "gh-seed-test-user-oversized"
+
+  seedDefaultSubagentsIfEmpty(userId)
+
+  val subagents = match CloudAgents.Repository.listSubagents(userId) {
+    case Ok(s) -> s
+    case Err(_) -> []
+  }
+  assertEqualInt(subagents.length.toInt(), 0, "the oversized entry is skipped rather than inserted with a truncated/oversized field")
+
+  Env.SetEnvironmentVariable("CLOUD_AGENTS_SEED_SUBAGENTS_DIR", "")
   cleanupTestDb(dbPath)
 }
