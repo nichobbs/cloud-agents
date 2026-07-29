@@ -133,6 +133,25 @@ export function HighlightsPanel({ sessionId, isStreaming }: HighlightsPanelProps
 
 function HighlightRow({ h, sessionId }: { h: Highlight; sessionId: string }) {
   const meta = KIND_META[h.kind] ?? { label: h.kind, color: '#8b949e', icon: '•' };
+  // One-click "add to todos" for followup-kind items: the summarizer spotted
+  // suggested follow-up work — promote it onto the session's todo plan,
+  // anchored to the message it came from. 'added' is per-mount only; the
+  // todo list itself is the durable record.
+  const [added, setAdded] = useState(false);
+  const [adding, setAdding] = useState(false);
+  const addAsTodo = async () => {
+    if (adding || added) return;
+    setAdding(true);
+    try {
+      const note = h.detail ? `${h.title} — ${h.detail}` : h.title;
+      await api.addTodo(sessionId, h.messageId, note);
+      setAdded(true);
+    } catch {
+      /* best effort — leave the button usable */
+    } finally {
+      setAdding(false);
+    }
+  };
   return (
     <div style={rowStyle}>
       <span style={{ ...kindChipStyle, color: meta.color, borderColor: meta.color }} title={meta.label}>
@@ -141,11 +160,23 @@ function HighlightRow({ h, sessionId }: { h: Highlight; sessionId: string }) {
       <div style={{ flex: 1, minWidth: 0 }}>
         <div style={titleStyle} title={h.title}>{h.title}</div>
         {h.detail && <div style={detailStyle}>{h.detail}</div>}
-        {h.messageId && (
-          <Link to={`/sessions/${sessionId}#message-${h.messageId}`} style={sourceLinkStyle}>
-            ↩ source
-          </Link>
-        )}
+        <div style={rowActionsStyle}>
+          {h.messageId && (
+            <Link to={`/sessions/${sessionId}#message-${h.messageId}`} style={sourceLinkStyle}>
+              ↩ source
+            </Link>
+          )}
+          {h.kind === 'followup' && (
+            <button
+              style={{ ...addTodoBtnStyle, opacity: added ? 0.6 : 1 }}
+              onClick={() => { void addAsTodo(); }}
+              disabled={adding || added}
+              title="Add this follow-up to the session's todo list"
+            >
+              {added ? '✓ added to todos' : adding ? 'adding…' : '+ add to todos'}
+            </button>
+          )}
+        </div>
       </div>
     </div>
   );
@@ -243,5 +274,21 @@ const sourceLinkStyle: React.CSSProperties = {
   color: '#58a6ff',
   textDecoration: 'none',
   display: 'inline-block',
-  marginTop: '2px',
+};
+
+const rowActionsStyle: React.CSSProperties = {
+  display: 'flex',
+  alignItems: 'center',
+  gap: '10px',
+  marginTop: '3px',
+};
+
+const addTodoBtnStyle: React.CSSProperties = {
+  background: 'transparent',
+  border: '1px solid #30363d',
+  borderRadius: '999px',
+  color: '#8b949e',
+  fontSize: '10px',
+  padding: '1px 8px',
+  cursor: 'pointer',
 };

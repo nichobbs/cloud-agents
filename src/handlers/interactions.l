@@ -5,6 +5,8 @@ import Web
 import CloudAgents.Repository
 import CloudAgents.Sqlite
 import CloudAgents.Text
+import extern System.Environment as Env
+import extern System.String as DotNetString
 
 @generate(Json)
 pub record AddCommentRequest {
@@ -162,4 +164,175 @@ pub func deleteTodoHandler(tid: in String): Result[Unit, Web.ApiError] {
     case Ok(_) -> return Ok(())
     case Err(e) -> return Err(dbError(e))
   }
+}
+
+// ─── Agent checkbox-plan ingestion ─────────────────────────────────────────────
+//
+// Harness output often carries the agent's plan as a markdown checkbox list
+// (`- [ ]` pending / `- [~]` in progress / `- [x]` done) — the shape
+// docker/session-tools-guide.md prescribes for harnesses without the MCP
+// shim, and the shape OpenCode's own todo tool renders. The frontend already
+// parses it display-only (frontend/src/lib/agentPlan.ts); this is the
+// server-side counterpart that materializes the LAST such list in a
+// just-persisted agent message into real `todos` rows.
+//
+// Conservative by design:
+//   - OFF unless CLOUD_AGENTS_INGEST_AGENT_PLAN=1 (the false-positive rate
+//     of checkbox parsing on arbitrary agent output isn't established yet).
+//   - Only lists of >= 2 items count (a lone checkbox is more likely quoted
+//     output than a plan) — mirroring the frontend parser exactly.
+//   - Ingested rows carry source='plan' and each re-ingest REPLACES only the
+//     session's prior source='plan' rows; human- and tool-created todos
+//     (source '') are never touched.
+/// One parsed plan step, pre-storage.
+pub record PlanItem {
+  pub note: String
+  /// 'pending' | 'in_progress' | 'done'
+  pub status: String
+}
+
+func isDigit(c: in String): Bool {
+  return c >= "0" and c <= "9"
+}
+
+func trimPlanSpaces(s: in String): String {
+  var start = 0
+  var stop = s.length.toInt()
+  while start < stop {
+    val c = s.substring(start, 1)
+    if c == " " or c == "\t" or c == "\r" {
+      start = start + 1
+    } else {
+      return trimPlanSpacesEnd(s, start, stop)
+    }
+  }
+  return ""
+}
+
+func trimPlanSpacesEnd(s: in String, start: in Int, stopIn: in Int): String {
+  var stop = stopIn
+  while stop > start {
+    val c = s.substring(stop - 1, 1)
+    if c == " " or c == "\t" or c == "\r" {
+      stop = stop - 1
+    } else {
+      return s.substring(start, stop - start)
+    }
+  }
+  return ""
+}
+
+/// Parse one trimmed line as a checkbox plan item: an optional list bullet
+/// (`- `, `* `, `+ `, or `1.`/`1)` numbering), then `[<marker>]`, a space,
+/// and the item text. None for anything else. Marker mapping mirrors the
+/// frontend parser: ' ' pending, '~' in progress, x/X/✓ done.
+func parsePlanLine(line: in String): Option[PlanItem] {
+  var i = 0
+  val n = line.length.toInt()
+  // Optional bullet: "- " / "* " / "+ " or digits followed by "." or ")".
+  if n >= 2 and (line.substring(0, 2) == "- " or line.substring(0, 2) == "* " or line.substring(0, 2) == "+ ") {
+    i = 2
+  } else {
+    var d = 0
+    while d < n and isDigit(line.substring(d, 1)) {
+      d = d + 1
+    }
+    if d > 0 and d < n and (line.substring(d, 1) == "." or line.substring(d, 1) == ")") {
+      i = d + 1
+    }
+  }
+  // Optional spaces between bullet and the checkbox.
+  while i < n and line.substring(i, 1) == " " {
+    i = i + 1
+  }
+  if i + 2 >= n or line.substring(i, 1) != "[" {
+    return None
+  }
+  val marker = line.substring(i + 1, 1)
+  if line.substring(i + 2, 1) != "]" {
+    return None
+  }
+  val status = if marker == " " {
+    "pending"
+  } else if marker == "~" {
+    "in_progress"
+  } else if marker == "x" or marker == "X" or marker == "✓" {
+    "done"
+  } else {
+    return None
+  }
+  val text = trimPlanSpaces(line.substring(i + 3, n - i - 3))
+  if text.length == 0 {
+    return None
+  }
+  return Some(value = PlanItem(note = text, status = status))
+}
+
+/// The LAST contiguous checkbox list in `content`, or [] when none (or when
+/// the last list has fewer than 2 items). "Last" because agents restate
+/// their plan as they update it — the final statement is the current one.
+/// Blank lines inside a list are tolerated; any other line ends it. Pure and
+/// unit-tested; mirrors frontend/src/lib/agentPlan.ts.
+pub func parseAgentPlan(content: in String): slice[PlanItem] {
+  var last: slice[PlanItem] = []
+  var current: slice[PlanItem] = []
+  var lineStart = 0
+  val n = content.length.toInt()
+  var i = 0
+  while i <= n {
+    if i == n or content.substring(i, 1) == "\n" {
+      val line = trimPlanSpaces(content.substring(lineStart, i - lineStart))
+      lineStart = i + 1
+      match parsePlanLine(line) {
+        case Some(item) -> {
+          current = current.append(item)
+        }
+        case None -> {
+          if current.length > 0 and line.length > 0 {
+            if current.length >= 2 {
+              last = current
+            }
+            current = []
+          }
+        }
+      }
+    }
+    i = i + 1
+  }
+  if current.length >= 2 {
+    last = current
+  }
+  return last
+}
+
+/// Whether server-side plan ingestion is enabled (off by default — see the
+/// section comment above).
+pub func planIngestEnabled(): Bool {
+  val raw = Env.GetEnvironmentVariable("CLOUD_AGENTS_INGEST_AGENT_PLAN")
+  if DotNetString.IsNullOrEmpty(raw) {
+    return false
+  }
+  return raw == "1"
+}
+
+/// Materialize the checkbox plan in a just-persisted agent message into
+/// `todos` rows: parse (>= 2 items or nothing happens), replace the
+/// session's prior source='plan' rows, insert the new ones anchored to
+/// `messageId`. Returns how many items were ingested. The caller
+/// (CloudAgents.Handlers' post-run persist path) treats this as best-effort.
+pub func ingestAgentPlan(
+  sessionId: in String, messageId: in String, content: in String
+): Result[Int, CloudAgents.Sqlite.DbError] {
+  val items = parseAgentPlan(content)
+  if items.length < 2 {
+    return Ok(value = 0)
+  }
+  CloudAgents.Repository.deletePlanTodos(sessionId)?
+  var i = 0
+  while i < items.length {
+    val it = items[i]
+    CloudAgents.Repository.addPlanTodo(sessionId, messageId, it.note, it.status)?
+    i = i + 1
+  }
+  return Ok(value = items.length.toInt())
 }

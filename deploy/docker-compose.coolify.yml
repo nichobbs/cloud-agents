@@ -135,8 +135,11 @@ services:
   codex-base:
     image: codex:base
     build:
-      context: ./docker
-      dockerfile: Dockerfile.codex
+      # Repo root, matching claude-code-base above: all four runner images
+      # now build cloud-agents-shim from shim/ in their own stage, so each
+      # needs docker/ AND shim/ in one build context (#601).
+      context: .
+      dockerfile: docker/Dockerfile.codex
     entrypoint: ["true"]
     restart: "no"
     exclude_from_hc: true
@@ -144,8 +147,8 @@ services:
   opencode-base:
     image: opencode:base
     build:
-      context: ./docker
-      dockerfile: Dockerfile.opencode
+      context: .
+      dockerfile: docker/Dockerfile.opencode
     entrypoint: ["true"]
     restart: "no"
     exclude_from_hc: true
@@ -153,8 +156,8 @@ services:
   gemini-base:
     image: gemini:base
     build:
-      context: ./docker
-      dockerfile: Dockerfile.gemini
+      context: .
+      dockerfile: docker/Dockerfile.gemini
     entrypoint: ["true"]
     restart: "no"
     exclude_from_hc: true

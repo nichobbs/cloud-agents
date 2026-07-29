@@ -599,12 +599,24 @@ pub func selectCommentsSql(messageId: in String): String {
 
 /// INSERT a todo / bookmark. `status` is one of 'pending'/'in_progress'/
 /// 'done' (migration 0021); `done` stays in lockstep ('1' iff status is
-/// 'done') so pre-status readers keep working.
+/// 'done') so pre-status readers keep working. `updated_at` (migration 0023)
+/// starts equal to `created_at` and is bumped by every status mutation, so
+/// the run poll loop can forward changes as `todo_update` SSE frames.
+/// `source` (migration 0024) is '' for human/tool-created todos, or 'plan'
+/// for rows ingested from an agent's markdown checkbox plan — plan ingestion
+/// only ever replaces its OWN prior rows, never a human's.
 pub func insertTodoSql(
-  id: in String, sessionId: in String, messageId: in String, note: in String, status: in String, createdAt: in String
+  id: in String,
+  sessionId: in String,
+  messageId: in String,
+  note: in String,
+  status: in String,
+  createdAt: in String,
+  source: in String,
 ): String {
   val done = if status == "done" { "'1'" } else { "'0'" }
-  return "INSERT INTO todos (id, session_id, message_id, note, done, created_at, status) VALUES (" + sqlLiteral(id) +
+  return "INSERT INTO todos (id, session_id, message_id, note, done, created_at, status, updated_at, source) VALUES (" +
+    sqlLiteral(id) +
     ", " +
     sqlLiteral(sessionId) +
     ", " +
@@ -617,6 +629,10 @@ pub func insertTodoSql(
     sqlLiteral(createdAt) +
     ", " +
     sqlLiteral(status) +
+    ", " +
+    sqlLiteral(createdAt) +
+    ", " +
+    sqlLiteral(source) +
     ")"
 }
 
@@ -637,19 +653,59 @@ pub func selectTodoSessionIdSql(id: in String): String {
 
 /// Toggle a todo's done flag by id, keeping `status` in lockstep (both CASEs
 /// read the same pre-update `done` value — SQLite evaluates every SET
-/// expression against the old row).
-pub func toggleTodoSql(id: in String): String {
+/// expression against the old row) and bumping `updated_at`.
+pub func toggleTodoSql(id: in String, updatedAt: in String): String {
   return "UPDATE todos SET done = CASE done WHEN '1' THEN '0' ELSE '1' END, " +
-    "status = CASE done WHEN '1' THEN 'pending' ELSE 'done' END WHERE id = " +
+    "status = CASE done WHEN '1' THEN 'pending' ELSE 'done' END, updated_at = " +
+    sqlLiteral(updatedAt) +
+    " WHERE id = " +
     sqlLiteral(id)
 }
 
 /// Set a todo's status directly (pending/in_progress/done), keeping `done`
-/// in lockstep. Validation of `status` happens in the handlers; this only
-/// ever receives one of the three literals.
-pub func setTodoStatusSql(id: in String, status: in String): String {
+/// in lockstep and bumping `updated_at`. Validation of `status` happens in
+/// the handlers; this only ever receives one of the three literals.
+pub func setTodoStatusSql(id: in String, status: in String, updatedAt: in String): String {
   val done = if status == "done" { "'1'" } else { "'0'" }
-  return "UPDATE todos SET status = " + sqlLiteral(status) + ", done = " + done + " WHERE id = " + sqlLiteral(id)
+  return "UPDATE todos SET status = " + sqlLiteral(status) + ", done = " + done + ", updated_at = " +
+    sqlLiteral(updatedAt) +
+    " WHERE id = " +
+    sqlLiteral(id)
+}
+
+/// Migration 0023: change tracking for todos, so the run poll loop can
+/// forward agent-driven todo changes as `todo_update` SSE frames.
+pub func alterTodosAddUpdatedAtSql(): String {
+  return "ALTER TABLE todos ADD COLUMN updated_at TEXT NOT NULL DEFAULT ''"
+}
+
+/// Migration 0024: provenance for todos — '' (human/tool) or 'plan'
+/// (ingested from an agent's markdown checkbox plan), so plan ingestion can
+/// replace its own prior rows without ever touching a human's.
+pub func alterTodosAddSourceSql(): String {
+  return "ALTER TABLE todos ADD COLUMN source TEXT NOT NULL DEFAULT ''"
+}
+
+/// DELETE a session's plan-ingested todos (source = 'plan') ahead of
+/// re-ingesting the agent's latest restated plan.
+pub func deletePlanTodosSql(sessionId: in String): String {
+  return "DELETE FROM todos WHERE session_id = " + sqlLiteral(sessionId) + " AND source = 'plan'"
+}
+
+/// Migration 0023: backfill `updated_at` on pre-existing rows.
+pub func backfillTodoUpdatedAtSql(): String {
+  return "UPDATE todos SET updated_at = created_at WHERE updated_at = ''"
+}
+
+/// SELECT the poll-loop-relevant fields of todos changed strictly after
+/// `afterUpdatedAt`, oldest change first — mirrors
+/// selectArtifactsCreatedAfterSql's cursor idiom (13-digit epoch-millis TEXT
+/// compares correctly with plain `>`).
+pub func selectTodosUpdatedAfterSql(sessionId: in String, afterUpdatedAt: in String): String {
+  return "SELECT id, note, status, updated_at FROM todos WHERE session_id = " + sqlLiteral(sessionId) +
+    " AND updated_at > " +
+    sqlLiteral(afterUpdatedAt) +
+    " ORDER BY updated_at ASC"
 }
 
 /// DELETE a todo by id.

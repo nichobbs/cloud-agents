@@ -270,3 +270,86 @@ test "setTodoStatusHandler validates its inputs and persists a valid status" {
     case Err(e) -> assertTrue(false, "listTodos failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
   }
 }
+
+test "parseAgentPlan takes the LAST >=2-item checkbox list and maps all three markers" {
+  val plan = parseAgentPlan(
+    "- [ ] old one\n- [ ] old two\n\nprose in between\n\n1. [x] clone the repo\n2) [~] fix the bug\n* [ ] run tests\nDone."
+  )
+  assertEqualInt(plan.length.toInt(), 3, "the last list wins")
+  assertEqual(plan[0].status, "done", "x maps to done")
+  assertEqual(plan[0].note, "clone the repo", "note text extracted")
+  assertEqual(plan[1].status, "in_progress", "~ maps to in_progress")
+  assertEqual(plan[2].status, "pending", "space maps to pending")
+}
+
+test "parseAgentPlan ignores lone checkboxes and plain prose" {
+  assertEqualInt(parseAgentPlan("note:\n- [ ] lonely item\nmore prose").length.toInt(), 0, "single-item list dropped")
+  assertEqualInt(parseAgentPlan("just prose\nno boxes at all").length.toInt(), 0, "no checkboxes -> no plan")
+  assertEqualInt(parseAgentPlan("- [q] bogus marker\n- [w] another").length.toInt(), 0, "unknown markers dropped")
+}
+
+test "parseAgentPlan tolerates blank lines inside a list" {
+  val plan = parseAgentPlan("- [ ] a\n\n- [x] b")
+  assertEqualInt(plan.length.toInt(), 2, "blank line does not split the list")
+}
+
+test "ingestAgentPlan replaces prior plan rows and never touches human todos" {
+  val dbPath = useFreshTestDb("plan-ingest")
+  defer {
+    cleanupTestDb(dbPath)
+  }
+  val mid = addTestMessage("session-P")
+  // A human todo that must survive every re-ingest.
+  val human = match addTodoHandler("session-P", AddTodoRequest(messageId = "", note = "human note")) {
+    case Ok(t) -> t
+    case Err(err) -> panic("addTodoHandler failed: " + toString(err.status))
+  }
+
+  match ingestAgentPlan("session-P", mid, "- [x] step one\n- [~] step two\n- [ ] step three") {
+    case Ok(n) -> assertEqualInt(n, 3, "three items ingested")
+    case Err(e) -> assertTrue(false, "ingest failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+  }
+  match CloudAgents.Repository.listTodos("session-P") {
+    case Ok(todos) -> assertEqualInt(todos.length.toInt(), 4, "3 plan rows + 1 human row")
+    case Err(e) -> assertTrue(false, "listTodos failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+  }
+
+  // The agent restates its plan — the old plan rows are replaced, not stacked.
+  match ingestAgentPlan("session-P", mid, "- [x] step one\n- [x] step two\n- [~] step three") {
+    case Ok(n) -> assertEqualInt(n, 3, "restated plan re-ingested")
+    case Err(e) -> assertTrue(false, "re-ingest failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+  }
+  match CloudAgents.Repository.listTodos("session-P") {
+    case Ok(todos) -> {
+      assertEqualInt(todos.length.toInt(), 4, "still 3 plan rows + 1 human row")
+      var humanSeen = false
+      for t in todos {
+        if t.id == human.id {
+          humanSeen = true
+        }
+      }
+      assertTrue(humanSeen, "the human todo survived both ingests")
+    }
+    case Err(e) -> assertTrue(false, "listTodos failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+  }
+
+  // A reply with no plan (or a lone checkbox) leaves everything untouched.
+  match ingestAgentPlan("session-P", mid, "all done, no list here\n- [x] just one") {
+    case Ok(n) -> assertEqualInt(n, 0, "no >=2-item list -> nothing ingested")
+    case Err(e) -> assertTrue(false, "no-op ingest failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+  }
+  match CloudAgents.Repository.listTodos("session-P") {
+    case Ok(todos) -> assertEqualInt(todos.length.toInt(), 4, "no-op ingest left rows alone")
+    case Err(e) -> assertTrue(false, "listTodos failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+  }
+}
+
+test "planIngestEnabled is off by default and on only for exactly '1'" {
+  Env.SetEnvironmentVariable("CLOUD_AGENTS_INGEST_AGENT_PLAN", "")
+  assertTrue(not planIngestEnabled(), "unset/empty -> off")
+  Env.SetEnvironmentVariable("CLOUD_AGENTS_INGEST_AGENT_PLAN", "true")
+  assertTrue(not planIngestEnabled(), "'true' is not the documented switch")
+  Env.SetEnvironmentVariable("CLOUD_AGENTS_INGEST_AGENT_PLAN", "1")
+  assertTrue(planIngestEnabled(), "'1' -> on")
+  Env.SetEnvironmentVariable("CLOUD_AGENTS_INGEST_AGENT_PLAN", "")
+}

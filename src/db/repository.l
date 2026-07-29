@@ -335,7 +335,12 @@ pub func allMigrations(): slice[Migration] {
         CloudAgents.Db.sessionHighlightsSessionIndexSql(),
         CloudAgents.Db.highlightScansSchemaSql()
       ]
-    )
+    ),
+    Migration(
+      version = "0023_todo_updated_at",
+      statements = [CloudAgents.Db.alterTodosAddUpdatedAtSql(), CloudAgents.Db.backfillTodoUpdatedAtSql()]
+    ),
+    Migration(version = "0024_todo_source", statements = [CloudAgents.Db.alterTodosAddSourceSql()])
   ]
 }
 
@@ -492,7 +497,7 @@ func rowToTodo(r: in CloudAgents.Sqlite.Row): Todo {
 pub func addTodo(sessionId: in String, messageId: in String, note: in String): Result[Todo, CloudAgents.Sqlite.DbError] {
   val id = newId()
   val ts = nowMillis()
-  CloudAgents.Sqlite.execute(CloudAgents.Db.insertTodoSql(id, sessionId, messageId, note, "pending", ts))?
+  CloudAgents.Sqlite.execute(CloudAgents.Db.insertTodoSql(id, sessionId, messageId, note, "pending", ts, ""))?
   return Ok(
     value = Todo(
       id = id, sessionId = sessionId, messageId = messageId, note = note, done = "0", createdAt = ts,
@@ -501,12 +506,58 @@ pub func addTodo(sessionId: in String, messageId: in String, note: in String): R
   )
 }
 
+/// Create one plan-ingested todo (source = 'plan', any of the three
+/// statuses), anchored to the agent message the plan was parsed from — used
+/// only by CloudAgents.Interactions.ingestAgentPlan.
+pub func addPlanTodo(
+  sessionId: in String, messageId: in String, note: in String, status: in String
+): Result[Unit, CloudAgents.Sqlite.DbError] {
+  CloudAgents.Sqlite.execute(CloudAgents.Db.insertTodoSql(newId(), sessionId, messageId, note, status, nowMillis(), "plan"))?
+  return Ok(value = ())
+}
+
+/// Delete a session's plan-ingested todos ahead of re-ingesting the agent's
+/// latest restated plan. Never touches human/tool-created rows (source '').
+pub func deletePlanTodos(sessionId: in String): Result[Unit, CloudAgents.Sqlite.DbError] {
+  CloudAgents.Sqlite.execute(CloudAgents.Db.deletePlanTodosSql(sessionId))?
+  return Ok(value = ())
+}
+
 /// Set a todo's lifecycle status directly (pending/in_progress/done) — the
 /// three-state counterpart of toggleTodo. `done` is kept in lockstep by the
 /// SQL itself. Validation of the status literal happens in the handlers.
 pub func setTodoStatus(id: in String, status: in String): Result[Unit, CloudAgents.Sqlite.DbError] {
-  CloudAgents.Sqlite.execute(CloudAgents.Db.setTodoStatusSql(id, status))?
+  CloudAgents.Sqlite.execute(CloudAgents.Db.setTodoStatusSql(id, status, nowMillis()))?
   return Ok(value = ())
+}
+
+/// The poll-loop-relevant view of one changed todo, for `todo_update` SSE
+/// forwarding — deliberately NOT the full Todo record (and not JSON-generated),
+/// so the wire shape shim/frontend already decode stays untouched.
+pub record TodoUpdate {
+  pub id: String
+  pub note: String
+  pub status: String
+  pub updatedAt: String
+}
+
+/// Todos changed strictly after `afterUpdatedAt`, oldest change first —
+/// mirrors artifactsCreatedAfter for SSE emission.
+pub func todosUpdatedAfter(
+  sessionId: in String, afterUpdatedAt: in String
+): Result[slice[TodoUpdate], CloudAgents.Sqlite.DbError] {
+  val rows = CloudAgents.Sqlite.query(CloudAgents.Db.selectTodosUpdatedAfterSql(sessionId, afterUpdatedAt))?
+  var acc: slice[TodoUpdate] = []
+  var i = 0
+  val len = CloudAgents.Sqlite.getRowArrayLength(rows)
+  while i < len {
+    val r = CloudAgents.Sqlite.getRowArrayValue(rows, i)
+    acc = acc.append(
+      TodoUpdate(id = colAt(r.cols, 0), note = colAt(r.cols, 1), status = colAt(r.cols, 2), updatedAt = colAt(r.cols, 3))
+    )
+    i = i + 1
+  }
+  return Ok(value = acc)
 }
 
 /// Look up the session that owns a todo — the container-originated status
@@ -537,7 +588,7 @@ pub func listTodos(sessionId: in String): Result[slice[Todo], CloudAgents.Sqlite
 
 /// Flip a todo's done flag.
 pub func toggleTodo(id: in String): Result[Unit, CloudAgents.Sqlite.DbError] {
-  CloudAgents.Sqlite.execute(CloudAgents.Db.toggleTodoSql(id))?
+  CloudAgents.Sqlite.execute(CloudAgents.Db.toggleTodoSql(id, nowMillis()))?
   return Ok(value = ())
 }
 

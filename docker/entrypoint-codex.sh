@@ -68,6 +68,16 @@ create-fallback-branch.sh "entrypoint-codex" "${HARNESS}" "${BRANCH}" "${SESSION
 # run.
 /usr/local/bin/inject-library.sh "codex" || echo "entrypoint-codex: library injection failed, continuing without it" >&2
 
+# Register (or strip) the cloud-agents MCP callback shim in
+# .codex/config.toml, reconciled every message — gives Codex the add_todo/
+# update_todo/report_progress/... tools (docker/register-callbacks-mcp.sh).
+# Best-effort: a registration hiccup must never block the prompt run.
+if [ -f /usr/local/bin/register-callbacks-mcp.sh ]; then
+    # shellcheck source=register-callbacks-mcp.sh
+    source /usr/local/bin/register-callbacks-mcp.sh
+    register_callbacks_mcp "codex" /workspace || echo "entrypoint-codex: callback MCP registration failed, continuing without it" >&2
+fi
+
 # Codex can't use a rules file for branch policy (it would override the
 # user's AGENTS.md), so the instruction is prepended to the prompt instead.
 # Always send it — Codex is stateless (no conversation continuity), so

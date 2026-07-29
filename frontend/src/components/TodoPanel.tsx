@@ -10,6 +10,12 @@ interface TodoPanelProps {
   latestAgentContent: string;
   /** True while a run is streaming — the panel polls faster to show live status. */
   isStreaming: boolean;
+  /**
+   * Bumped by useStreamMessage on every `todo_update` SSE frame; a change
+   * triggers an immediate reload, so agent-driven todo changes appear
+   * push-style. Polling remains the fallback (reattached runs carry no SSE).
+   */
+  todoUpdates?: number;
 }
 
 /** Effective three-state status, tolerating rows from before the status column. */
@@ -29,7 +35,7 @@ const NEXT_STATUS: Record<string, 'pending' | 'in_progress' | 'done'> = {
 /// agent maintains via the add_todo/update_todo MCP tools (and the human via
 /// the panel/todo page), plus a read-only plan parsed from the latest agent
 /// message for harnesses that can't call our tools (see lib/agentPlan.ts).
-export function TodoPanel({ sessionId, latestAgentContent, isStreaming }: TodoPanelProps) {
+export function TodoPanel({ sessionId, latestAgentContent, isStreaming, todoUpdates }: TodoPanelProps) {
   const [todos, setTodos] = useState<Todo[]>([]);
   const [draft, setDraft] = useState('');
   const [adding, setAdding] = useState(false);
@@ -52,10 +58,17 @@ export function TodoPanel({ sessionId, latestAgentContent, isStreaming }: TodoPa
     setTodos([]);
     void reload();
     // Poll faster while a run is live so agent-driven status changes show up
-    // as they happen; slower when idle.
+    // as they happen; slower when idle. The todo_update SSE signal below
+    // makes changes on a locally-sent run appear instantly; this poll is the
+    // fallback for reattached runs and other tabs.
     const interval = setInterval(() => { void reload(); }, isStreaming ? 4000 : 15000);
     return () => clearInterval(interval);
   }, [reload, isStreaming]);
+
+  // Push-style refresh: a todo_update SSE frame arrived on the live stream.
+  useEffect(() => {
+    if (todoUpdates !== undefined && todoUpdates > 0) void reload();
+  }, [todoUpdates, reload]);
 
   const add = async () => {
     const note = draft.trim();

@@ -168,6 +168,11 @@ jobs:
             scripts/test-opencode-entrypoint.sh \
             scripts/test-lyric-version-resolution.sh \
             scripts/test-split-ca-bundle.sh \
+            scripts/test-branch-policy-inject.sh \
+            scripts/test-register-callbacks-mcp.sh \
+            docker/render-branch-policy.sh \
+            docker/register-callbacks-mcp.sh \
+            docker/inject-library.sh \
             docker/split-ca-bundle.sh \
             scripts/check-compose-paths.sh \
             scripts/repro-compiler-bug.sh \
@@ -197,6 +202,16 @@ jobs:
       # not attempt to fix.
       - name: Test opencode entrypoint invocation
         run: ./scripts/test-opencode-entrypoint.sh
+
+      # Regression tests for the per-harness instruction rendering
+      # (docker/render-branch-policy.sh, #732) and the cloud-agents MCP shim
+      # registration for the non-claude harnesses
+      # (docker/register-callbacks-mcp.sh). Both exercise the REAL sourced
+      # functions against temp workspaces — no Docker.
+      - name: Test instruction + callback-MCP rendering
+        run: |
+          ./scripts/test-branch-policy-inject.sh
+          ./scripts/test-register-callbacks-mcp.sh
 
       # Regression test for the sed/tr/sort -V one-liners shared by the
       # "Resolve latest Lyric release" step above and docker/Dockerfile's
