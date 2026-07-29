@@ -598,7 +598,7 @@ pub func selectCommentsSql(messageId: in String): String {
 }
 
 /// INSERT a todo / bookmark. `status` is one of 'pending'/'in_progress'/
-/// 'done' (migration 0019); `done` stays in lockstep ('1' iff status is
+/// 'done' (migration 0021); `done` stays in lockstep ('1' iff status is
 /// 'done') so pre-status readers keep working.
 pub func insertTodoSql(
   id: in String, sessionId: in String, messageId: in String, note: in String, status: in String, createdAt: in String

@@ -60,6 +60,13 @@ CLOUD_AGENTS_SUMMARIZER_MODEL  # default: big-pickle (OpenCode Zen free tier);
 CLOUD_AGENTS_SUMMARIZER_KEY    # bearer token; falls back to OPENCODE_ZEN_API_KEY
 ```
 
+> **Data sensitivity:** enabling this sends raw agent transcript content —
+> which can include repository code, file paths, commit messages, and error
+> output — to the configured third-party endpoint. Only point it at a
+> provider you trust with your sessions' repository content; free-tier
+> providers in particular may retain or train on inputs. Leave the URL
+> unset to keep the feature (and all outbound transcript traffic) off.
+
 Flow: the frontend POSTs `/api/sessions/{id}/highlights/refresh` when a
 run finishes (and on the panel's Scan button). The handler scans up to 3
 not-yet-scanned agent messages (16k-char tail each), asks the model for

@@ -24,6 +24,13 @@
 //! the summarizer call can take tens of seconds, and the run loop is exactly
 //! the code path with the known local-val-across-two-awaits hazard
 //! (lyric-lang#6249) — keeping this module fully synchronous sidesteps both.
+//!
+//! DATA SENSITIVITY (#759): enabling the summarizer sends raw agent
+//! transcript content — which can include repository code, file paths, and
+//! error output — to whatever third-party endpoint the URL points at. Only
+//! configure an endpoint you trust with your sessions' repository content,
+//! and remember free-tier model providers may retain or train on inputs.
+//! docs/session-visibility.md carries the same warning operator-side.
 package CloudAgents.Highlights
 
 import Std.Core
@@ -89,6 +96,12 @@ val maxContentChars = 16000
 /// At most this many not-yet-scanned agent messages are summarized per
 /// refresh call, so one POST can't run the summarizer unboundedly long.
 val maxMessagesPerRefresh = 3
+
+/// Wall-clock budget for one refresh call (#760): even under the message
+/// cap, three sequential slow summarizer calls could pin a request thread
+/// for minutes — stop starting new calls once this much time has elapsed
+/// and let the next refresh continue from the cursor.
+val maxRefreshMillis = 90000
 
 /// At most this many extracted items are stored per message — a runaway model
 /// that emits hundreds of lines can't flood the table.
@@ -335,7 +348,14 @@ pub func refreshHighlightsHandler(id: in String): Result[RefreshHighlightsRespon
   var scanned = 0
   var added = 0
   var i = 0
+  val startedAt = CloudAgents.Repository.nowMillisLong()
   while i < msgs.length and scanned < maxMessagesPerRefresh {
+    // Wall-clock budget (#760): don't START another summarizer call once the
+    // budget is spent — the cursor already reflects everything finished, so
+    // the next refresh resumes exactly here.
+    if CloudAgents.Repository.nowMillisLong() - startedAt > maxRefreshMillis.toLong() {
+      return Ok(RefreshHighlightsResponse(status = "ok", scanned = toString(scanned), added = toString(added), detail = "time budget reached; more messages remain — refresh again to continue"))
+    }
     val m = msgs[i]
     val body = buildChatRequestJson(summarizerModel(), contentTail(m.content))
     val respBody = match CloudAgents.GitHubApi.httpPostJsonWithBearer(url, body, summarizerKey(), "cloud-agents") {
@@ -347,6 +367,15 @@ pub func refreshHighlightsHandler(id: in String): Result[RefreshHighlightsRespon
       }
     }
     val content = jsonStringValueOf(respBody, "content")
+    // A response with NO string `content` field is a malformed/error
+    // envelope (#761) — stop WITHOUT advancing the cursor, exactly like a
+    // transport failure, so the message is retried rather than permanently
+    // skipped. A legitimate "nothing notable" answer is the non-empty
+    // literal "none" (per the prompt), which parses to zero items below and
+    // DOES advance the cursor.
+    if content.length == 0 {
+      return Ok(RefreshHighlightsResponse(status = "error", scanned = toString(scanned), added = toString(added), detail = "summarizer response carried no message content (malformed or error envelope)"))
+    }
     val items = parseHighlightLines(content)
     var j = 0
     while j < items.length {

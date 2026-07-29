@@ -3,7 +3,53 @@ package CloudAgents.HighlightsTests
 
 import Std.Core
 import Std.Testing
+import Std.Uuid
+import CloudAgents.Auth
 import CloudAgents.Highlights
+import CloudAgents.Repository
+import CloudAgents.SessionStore
+import CloudAgents.Sqlite
+import extern System.Environment as Env
+
+// ── Live-DB plumbing (same pattern as tests/callbacks_v2_tests.l) ────────────
+@externTarget("System.IO.File.Delete")
+func fileDelete(path: in String): Unit = ()
+
+func useFreshTestDb(tag: in String): String {
+  val path = "/tmp/cloud-agents-tests-" + tag + "-" + Std.Uuid.uuidToString(Std.Uuid.newUuid()) + ".db"
+  Env.SetEnvironmentVariable("CLOUD_AGENTS_DB_PATH", path)
+  match CloudAgents.Repository.initSchema() {
+    case Ok(_) -> ()
+    case Err(e) -> assertTrue(false, "initSchema failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+  }
+  return path
+}
+
+func cleanupTestDb(path: in String): Unit {
+  try {
+    fileDelete(path)
+  } catch Bug as b {
+    // locked or already gone — fine for a temp file
+  }
+  Env.SetEnvironmentVariable("CLOUD_AGENTS_SUMMARIZER_URL", "")
+  CloudAgents.Auth.setCurrentUserId("default")
+}
+
+func mkSession(id: in String): Unit {
+  val s = makeAgentSession(
+    sessionId = id,
+    repoUrl = "https://github.com/nic/repo",
+    branch = "main",
+    containerId = "",
+    harness = "claude",
+    model = "claude-opus-4-8",
+    nativeSessionId = id
+  )
+  match addSession(s) {
+    case Ok(_) -> ()
+    case Err(e) -> panic("addSession failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+  }
+}
 
 // ── buildChatRequestJson ─────────────────────────────────────────────────────
 test "buildChatRequestJson embeds the model and escapes the agent output" {
@@ -91,4 +137,52 @@ test "isValidHighlightKind accepts exactly the six kinds" {
   assertTrue(isValidHighlightKind("followup"), "followup")
   assertTrue(not isValidHighlightKind("progress"), "no extra kinds")
   assertTrue(not isValidHighlightKind(""), "empty is invalid")
+}
+
+// ── Handler-level ownership + config gating (#762) ───────────────────────────
+test "listHighlightsHandler is owner-scoped: owner lists, another user 404s" {
+  val dbPath = useFreshTestDb("highlights-ownership")
+  defer {
+    cleanupTestDb(dbPath)
+  }
+  CloudAgents.Auth.setCurrentUserId("default")
+  val sid = "sess-highlights-1"
+  mkSession(sid)
+
+  match listHighlightsHandler(sid) {
+    case Ok(l) -> assertEqualInt(l.highlights.length.toInt(), 0, "owner sees an (empty) list")
+    case Err(e) -> assertTrue(false, "owner list failed: " + toString(e.status))
+  }
+
+  CloudAgents.Auth.setCurrentUserId("intruder")
+  match listHighlightsHandler(sid) {
+    case Ok(_) -> assertTrue(false, "another user must not list this session's highlights")
+    case Err(e) -> assertEqualInt(e.status, 404, "another user's list -> 404, indistinguishable from absent")
+  }
+}
+
+test "refreshHighlightsHandler is owner-scoped and reports 'disabled' with no summarizer configured" {
+  val dbPath = useFreshTestDb("highlights-refresh-gating")
+  defer {
+    cleanupTestDb(dbPath)
+  }
+  Env.SetEnvironmentVariable("CLOUD_AGENTS_SUMMARIZER_URL", "")
+  CloudAgents.Auth.setCurrentUserId("default")
+  val sid = "sess-highlights-2"
+  mkSession(sid)
+
+  CloudAgents.Auth.setCurrentUserId("intruder")
+  match refreshHighlightsHandler(sid) {
+    case Ok(_) -> assertTrue(false, "another user must not trigger a refresh for this session")
+    case Err(e) -> assertEqualInt(e.status, 404, "another user's refresh -> 404")
+  }
+
+  CloudAgents.Auth.setCurrentUserId("default")
+  match refreshHighlightsHandler(sid) {
+    case Ok(r) -> {
+      assertEqual(r.status, "disabled", "no summarizer URL -> feature reports disabled")
+      assertEqual(r.scanned, "0", "nothing scanned when disabled")
+    }
+    case Err(e) -> assertTrue(false, "owner refresh failed: " + toString(e.status))
+  }
 }
