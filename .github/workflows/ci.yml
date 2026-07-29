@@ -171,6 +171,7 @@ jobs:
             scripts/test-mcp-server-injection.sh \
             scripts/test-branch-policy-inject.sh \
             scripts/test-register-callbacks-mcp.sh \
+            scripts/check-shim-stage-sync.sh \
             docker/render-branch-policy.sh \
             docker/register-callbacks-mcp.sh \
             docker/split-ca-bundle.sh \
@@ -213,6 +214,13 @@ jobs:
         run: |
           ./scripts/test-branch-policy-inject.sh
           ./scripts/test-register-callbacks-mcp.sh
+
+      # #795: the four runner Dockerfiles' shim-builder stages must stay
+      # byte-identical (docker/Dockerfile is canonical) so a sequential
+      # single-host build compiles the shim once and shares the layer cache;
+      # previously enforced only by a code comment.
+      - name: Verify shim-builder stages are in sync across the four Dockerfiles
+        run: ./scripts/check-shim-stage-sync.sh
 
       # Regression test for the sed/tr/sort -V one-liners shared by the
       # "Resolve latest Lyric release" step above and docker/Dockerfile's

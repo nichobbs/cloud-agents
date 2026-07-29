@@ -4,6 +4,7 @@ import Std.Core
 import Web
 import CloudAgents.Repository
 import CloudAgents.Sqlite
+import CloudAgents.Streaming
 import CloudAgents.Text
 import extern System.Environment as Env
 import extern System.String as DotNetString
@@ -286,12 +287,52 @@ func parsePlanLine(line: in String): Option[PlanItem] {
   return Some(value = PlanItem(note = text, status = status))
 }
 
+/// Strip ANSI SGR escape sequences (ESC '[' [0-9;]* 'm' — exactly the
+/// frontend's /\x1b\[[0-9;]*m/ pattern, #794) from `s`. Agent output is
+/// stored WITH its ANSI codes (CloudAgents.Streaming deliberately leaves
+/// them for the frontend to render), so a colorized checkbox line would
+/// otherwise fail to parse server-side while parsing fine client-side. A
+/// non-SGR escape (no terminating 'm') is kept literally, matching the
+/// regex. ESC can't appear in a Lyric string literal, so it comes from
+/// CloudAgents.Streaming.charFromCode — the same helper streaming's own
+/// control-character handling uses. Two-level accumulation keeps this
+/// linear-ish on full-run logs (the readAll idiom, #423).
+func stripAnsiSgr(s: in String): String {
+  val esc = CloudAgents.Streaming.charFromCode(27)
+  var acc = ""
+  var chunk = ""
+  var i = 0
+  val n = s.length.toInt()
+  while i < n {
+    val c = s.substring(i, 1)
+    if c == esc and i + 1 < n and s.substring(i + 1, 1) == "[" {
+      var j = i + 2
+      while j < n and (isDigit(s.substring(j, 1)) or s.substring(j, 1) == ";") {
+        j = j + 1
+      }
+      if j < n and s.substring(j, 1) == "m" {
+        i = j + 1
+        continue
+      }
+    }
+    chunk = chunk + c
+    if chunk.length >= 1024 {
+      acc = acc + chunk
+      chunk = ""
+    }
+    i = i + 1
+  }
+  return acc + chunk
+}
+
 /// The LAST contiguous checkbox list in `content`, or [] when none (or when
 /// the last list has fewer than 2 items). "Last" because agents restate
 /// their plan as they update it — the final statement is the current one.
-/// Blank lines inside a list are tolerated; any other line ends it. Pure and
+/// Blank lines inside a list are tolerated; any other line ends it. ANSI
+/// SGR codes are stripped first, exactly like the frontend (#794). Pure and
 /// unit-tested; mirrors frontend/src/lib/agentPlan.ts.
-pub func parseAgentPlan(content: in String): slice[PlanItem] {
+pub func parseAgentPlan(rawContent: in String): slice[PlanItem] {
+  val content = stripAnsiSgr(rawContent)
   var last: slice[PlanItem] = []
   var current: slice[PlanItem] = []
   var lineStart = 0

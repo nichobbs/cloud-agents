@@ -7,6 +7,7 @@ import Std.Uuid
 import CloudAgents.Interactions
 import CloudAgents.Repository
 import CloudAgents.Sqlite
+import CloudAgents.Streaming
 import extern System.Environment as Env
 
 // ── Live-DB plumbing (same pattern as tests/prompt_tests.l) ───────────────────
@@ -367,3 +368,22 @@ test "parsePlanLine alignment with the frontend parser (#784): bullet-space and 
   // either.
   assertEqualInt(parseAgentPlan("[ ] bare one\n[x] bare two").length.toInt(), 0, "bullet-less checkbox -> rejected")
 }
+
+test "parseAgentPlan strips ANSI SGR codes before parsing (#794)" {
+  // Real harness output is stored WITH its color codes — build a colorized
+  // plan the way streaming's own tests build control characters.
+  val esc = CloudAgents.Streaming.charFromCode(27)
+  val green = esc + "[32m"
+  val boldYellow = esc + "[1;33m"
+  val off = esc + "[0m"
+  val colored = green + "- [x] clone the repo" + off + "\n" + boldYellow + "- [~] fix the bug" + off
+  val plan = parseAgentPlan(colored)
+  assertEqualInt(plan.length.toInt(), 2, "colorized checkbox lines parse")
+  assertEqual(plan[0].note, "clone the repo", "SGR codes stripped from the note")
+  assertEqual(plan[1].status, "in_progress", "marker parsed through the coloring")
+  // A non-SGR escape sequence (no terminating 'm') is kept literally, exactly
+  // like the frontend regex — the line then fails the bullet check.
+  val weird = esc + "[Z- [x] one\n" + esc + "[Z- [x] two"
+  assertEqualInt(parseAgentPlan(weird).length.toInt(), 0, "non-SGR escapes are not stripped")
+}
+
