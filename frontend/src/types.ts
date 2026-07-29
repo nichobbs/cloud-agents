@@ -146,6 +146,27 @@ export interface Todo {
   note: string;
   done: string; // '0' | '1'
   createdAt: string;
+  /** 'pending' | 'in_progress' | 'done'; '' from a pre-migration backend. */
+  status: string;
+}
+
+/// A notable item the summarizer extracted from an agent response
+/// (discovery, issue, workaround, revert, incomplete work, followup).
+export interface Highlight {
+  id: string;
+  sessionId: string;
+  messageId: string;
+  kind: string;
+  title: string;
+  detail: string;
+  createdAt: string;
+}
+
+export interface RefreshHighlightsResult {
+  status: string; // 'disabled' | 'ok' | 'error'
+  scanned: string;
+  added: string;
+  detail: string;
 }
 
 export interface PermissionRequest {

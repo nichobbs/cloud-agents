@@ -85,9 +85,10 @@ func main(): Unit {
   val v2Transport = HttpV2CallbackTransport(baseUrl = apiUrl, sessionId = sessionId, token = token)
 
   val server = newServer(McpImplementation(name = "cloud-agents", version = "0.1.0"))
-  // 13 addTool calls below (request_permission, ask_user, report_progress,
+  // 16 addTool calls below (request_permission, ask_user, report_progress,
   // request_secret, add_followup_task, report_artifact, remember, recall,
-  // forget, add_task, list_tasks, complete_task, notify) — this exact count
+  // forget, add_task, list_tasks, complete_task, notify, add_todo,
+  // update_todo, list_todos) — this exact count
   // and name set must stay in sync with two other hand-kept copies with no
   // automated cross-check (#621: this project has no dependency edge back
   // to this separate lyric.toml/build, so nothing enforces the three
@@ -230,6 +231,44 @@ func main(): Unit {
         description = "Mark a task in this repository's shared backlog as done. Idempotent — completing an already-done task succeeds without error.",
         inputSchema = CloudAgents.Shim.V2Tools.completeTaskSchema(),
         handler = CompleteTaskTool(transport = v2Transport)
+      )
+    )
+  }
+
+  // Session todo plan: the agent's own working plan for THIS session, shown
+  // live in the session UI's todo panel with a three-state lifecycle.
+  // Distinct from add_followup_task (a one-way note for the human) and
+  // add_task (repo-scoped cross-session backlog).
+  if CloudAgents.Shim.Config.toolIsEnabled(enabledToolsCsv, "add_todo") {
+    addTool(
+      server,
+      McpToolDef(
+        name = "add_todo",
+        description = "Add one step of your working plan to this session's todo list, shown live to the human in the session UI. Create your plan with this at the start of a multi-step task, then keep it current with update_todo as you work. Distinct from add_followup_task (a note for the human) and add_task (repo-scoped backlog for future sessions).",
+        inputSchema = CloudAgents.Shim.V2Tools.addSessionTodoSchema(),
+        handler = AddSessionTodoTool(transport = v2Transport)
+      )
+    )
+  }
+  if CloudAgents.Shim.Config.toolIsEnabled(enabledToolsCsv, "update_todo") {
+    addTool(
+      server,
+      McpToolDef(
+        name = "update_todo",
+        description = "Update a session todo's status: 'in_progress' when you start working on it, 'done' when finished, 'pending' to put it back. Keep exactly one item in_progress at a time so the human can see where you are.",
+        inputSchema = CloudAgents.Shim.V2Tools.updateSessionTodoSchema(),
+        handler = UpdateSessionTodoTool(transport = v2Transport)
+      )
+    )
+  }
+  if CloudAgents.Shim.Config.toolIsEnabled(enabledToolsCsv, "list_todos") {
+    addTool(
+      server,
+      McpToolDef(
+        name = "list_todos",
+        description = "List this session's todo list (id, status, note) — including items the human added. Check it when resuming work on a session.",
+        inputSchema = CloudAgents.Shim.V2Tools.listSessionTodosSchema(),
+        handler = ListSessionTodosTool(transport = v2Transport)
       )
     )
   }

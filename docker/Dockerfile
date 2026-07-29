@@ -241,6 +241,7 @@ COPY docker/mcp-callbacks.json.template /etc/claude/mcp-callbacks.json.template
 COPY docker/settings.json.template /etc/claude/settings.json.template
 COPY docker/settings-callbacks.json.template /etc/claude/settings-callbacks.json.template
 COPY docker/branch-policy-rules.md /etc/cloud-agents/branch-policy-rules.md
+COPY docker/session-tools-guide.md /etc/cloud-agents/session-tools-guide.md
 RUN chmod +x /usr/local/bin/entrypoint.sh /usr/local/bin/reconcile-repos.sh /usr/local/bin/create-fallback-branch.sh /usr/local/bin/inject-library.sh /usr/local/bin/render-branch-policy.sh /usr/local/bin/cloud-agents-shim
 
 ENV HOME=/home/claude-user

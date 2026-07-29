@@ -329,3 +329,4 @@ esac
 # directly (#732).
 source "$(dirname "${BASH_SOURCE[0]}")/render-branch-policy.sh"
 render_branch_policy "$HARNESS" .
+render_session_guide "$HARNESS" .

@@ -606,36 +606,159 @@ pub func selectCommentsSql(messageId: in String): String {
     " ORDER BY created_at ASC"
 }
 
-/// INSERT a todo / bookmark.
+/// INSERT a todo / bookmark. `status` is one of 'pending'/'in_progress'/
+/// 'done' (migration 0021); `done` stays in lockstep ('1' iff status is
+/// 'done') so pre-status readers keep working.
 pub func insertTodoSql(
-  id: in String, sessionId: in String, messageId: in String, note: in String, createdAt: in String
+  id: in String, sessionId: in String, messageId: in String, note: in String, status: in String, createdAt: in String
 ): String {
-  return "INSERT INTO todos (id, session_id, message_id, note, done, created_at) VALUES (" + sqlLiteral(id) + ", " +
+  val done = if status == "done" { "'1'" } else { "'0'" }
+  return "INSERT INTO todos (id, session_id, message_id, note, done, created_at, status) VALUES (" + sqlLiteral(id) +
+    ", " +
     sqlLiteral(sessionId) +
     ", " +
     sqlLiteral(messageId) +
     ", " +
     sqlLiteral(note) +
-    ", '0', " +
+    ", " +
+    done +
+    ", " +
     sqlLiteral(createdAt) +
+    ", " +
+    sqlLiteral(status) +
     ")"
 }
 
-/// SELECT all todos for a session, newest first.
+/// SELECT all todos for a session, newest first. `status` is selected LAST so
+/// the pre-0019 column indices in CloudAgents.Repository.rowToTodo stay put.
 pub func selectTodosSql(sessionId: in String): String {
-  return "SELECT id, session_id, message_id, note, done, created_at FROM todos " + "WHERE session_id = " +
+  return "SELECT id, session_id, message_id, note, done, created_at, status FROM todos " + "WHERE session_id = " +
     sqlLiteral(sessionId) +
     " ORDER BY created_at DESC"
 }
 
-/// Toggle a todo's done flag by id.
+/// SELECT the session_id that owns a todo — used by the container-originated
+/// status endpoint to verify a todo belongs to the calling session before
+/// mutating it (mirrors selectMessageSessionIdSql's shape).
+pub func selectTodoSessionIdSql(id: in String): String {
+  return "SELECT session_id FROM todos WHERE id = " + sqlLiteral(id)
+}
+
+/// Toggle a todo's done flag by id, keeping `status` in lockstep (both CASEs
+/// read the same pre-update `done` value — SQLite evaluates every SET
+/// expression against the old row).
 pub func toggleTodoSql(id: in String): String {
-  return "UPDATE todos SET done = CASE done WHEN '1' THEN '0' ELSE '1' END WHERE id = " + sqlLiteral(id)
+  return "UPDATE todos SET done = CASE done WHEN '1' THEN '0' ELSE '1' END, " +
+    "status = CASE done WHEN '1' THEN 'pending' ELSE 'done' END WHERE id = " +
+    sqlLiteral(id)
+}
+
+/// Set a todo's status directly (pending/in_progress/done), keeping `done`
+/// in lockstep. Validation of `status` happens in the handlers; this only
+/// ever receives one of the three literals.
+pub func setTodoStatusSql(id: in String, status: in String): String {
+  val done = if status == "done" { "'1'" } else { "'0'" }
+  return "UPDATE todos SET status = " + sqlLiteral(status) + ", done = " + done + " WHERE id = " + sqlLiteral(id)
 }
 
 /// DELETE a todo by id.
 pub func deleteTodoSql(id: in String): String {
   return "DELETE FROM todos WHERE id = " + sqlLiteral(id)
+}
+
+/// Migration 0021: a three-state lifecycle for todos (pending/in_progress/
+/// done) so an agent can show which plan step it is currently working on.
+/// `done` stays as the derived two-state view for older readers.
+pub func alterTodosAddStatusSql(): String {
+  return "ALTER TABLE todos ADD COLUMN status TEXT NOT NULL DEFAULT ''"
+}
+
+/// Migration 0021: backfill `status` on pre-existing rows from `done`.
+pub func backfillTodoStatusSql(): String {
+  return "UPDATE todos SET status = CASE done WHEN '1' THEN 'done' ELSE 'pending' END WHERE status = ''"
+}
+
+// ─── Session highlights ─────────────────────────────────────────────────────────
+//
+// Migration 0022: notable items extracted from agent responses after a run
+// (discoveries, issues opened/closed, workarounds, reverts, incomplete work)
+// by an operator-configured summarizer model — see CloudAgents.Highlights.
+// `highlight_scans` records the highest transcript seq already scanned per
+// session so a refresh only ever summarizes new agent messages.
+pub func sessionHighlightsSchemaSql(): String {
+  return "CREATE TABLE IF NOT EXISTS session_highlights (" + "id TEXT PRIMARY KEY, " + "session_id TEXT NOT NULL, " +
+    "message_id TEXT NOT NULL, " +
+    "kind TEXT NOT NULL, " +
+    "title TEXT NOT NULL, " +
+    "detail TEXT NOT NULL, " +
+    "created_at TEXT NOT NULL)"
+}
+
+pub func sessionHighlightsSessionIndexSql(): String {
+  return "CREATE INDEX IF NOT EXISTS idx_session_highlights_session ON session_highlights(session_id)"
+}
+
+pub func highlightScansSchemaSql(): String {
+  return "CREATE TABLE IF NOT EXISTS highlight_scans (" + "session_id TEXT PRIMARY KEY, " + "last_seq TEXT NOT NULL)"
+}
+
+pub func insertHighlightSql(
+  id: in String,
+  sessionId: in String,
+  messageId: in String,
+  kind: in String,
+  title: in String,
+  detail: in String,
+  createdAt: in String,
+): String {
+  return "INSERT INTO session_highlights (id, session_id, message_id, kind, title, detail, created_at) VALUES (" +
+    sqlLiteral(id) +
+    ", " +
+    sqlLiteral(sessionId) +
+    ", " +
+    sqlLiteral(messageId) +
+    ", " +
+    sqlLiteral(kind) +
+    ", " +
+    sqlLiteral(title) +
+    ", " +
+    sqlLiteral(detail) +
+    ", " +
+    sqlLiteral(createdAt) +
+    ")"
+}
+
+/// SELECT a session's highlights, newest first.
+pub func selectHighlightsSql(sessionId: in String): String {
+  return "SELECT id, session_id, message_id, kind, title, detail, created_at FROM session_highlights " +
+    "WHERE session_id = " +
+    sqlLiteral(sessionId) +
+    " ORDER BY created_at DESC"
+}
+
+/// SELECT the highest transcript seq already scanned for highlights ("" when
+/// the session has never been scanned).
+pub func selectHighlightScanSeqSql(sessionId: in String): String {
+  return "SELECT last_seq FROM highlight_scans WHERE session_id = " + sqlLiteral(sessionId)
+}
+
+/// UPSERT the highest scanned transcript seq for a session.
+pub func upsertHighlightScanSeqSql(sessionId: in String, lastSeq: in String): String {
+  return "INSERT INTO highlight_scans (session_id, last_seq) VALUES (" + sqlLiteral(sessionId) + ", " +
+    sqlLiteral(lastSeq) +
+    ") ON CONFLICT(session_id) DO UPDATE SET last_seq = excluded.last_seq"
+}
+
+/// SELECT a session's AGENT messages with seq strictly greater than
+/// `afterSeq` (numeric compare via CAST — seq is stored as digit TEXT),
+/// oldest first. Column order matches selectMessagesSql so
+/// CloudAgents.Repository.rowToMessage can map both.
+pub func selectAgentMessagesAfterSeqSql(sessionId: in String, afterSeq: in String): String {
+  return "SELECT id, session_id, role, content, seq, created_at FROM messages " + "WHERE session_id = " +
+    sqlLiteral(sessionId) +
+    " AND role = 'agent' AND CAST(seq AS INTEGER) > CAST(" +
+    sqlLiteral(afterSeq) +
+    " AS INTEGER) ORDER BY CAST(seq AS INTEGER) ASC"
 }
 
 // ─── Prompt library ───────────────────────────────────────────────────────────
