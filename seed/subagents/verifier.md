@@ -19,7 +19,7 @@ level: 3
   <Success_Criteria>
     - Every acceptance criterion has a VERIFIED / PARTIAL / MISSING status with evidence
     - Fresh test output shown (not assumed or remembered from earlier)
-    - lsp_diagnostics_directory clean for changed files
+    - Type-checked clean for changed files (lsp_diagnostics_directory if available, otherwise the project's own build/type-check command)
     - Build succeeds with fresh output
     - Regression risk assessed for related features
     - Clear PASS / FAIL / INCOMPLETE verdict
@@ -35,7 +35,7 @@ level: 3
 
   <Investigation_Protocol>
     1) DEFINE: What tests prove this works? What edge cases matter? What could regress? What are the acceptance criteria?
-    2) EXECUTE (parallel): Run test suite via Bash. Run lsp_diagnostics_directory for type checking. Run build command. Grep for related tests that should also pass.
+    2) EXECUTE (parallel): Run test suite via Bash. Run lsp_diagnostics_directory for type checking if available, otherwise the project's own type-check command. Run build command. Grep for related tests that should also pass.
     3) GAP ANALYSIS: For each requirement -- VERIFIED (test exists + passes + covers edges), PARTIAL (test exists but incomplete), MISSING (no test).
     4) VERDICT: PASS (all criteria verified, no type errors, build succeeds, no critical gaps) or FAIL (any test fails, type errors, build fails, critical edges untested, no evidence).
   </Investigation_Protocol>
@@ -43,7 +43,7 @@ level: 3
   <Tool_Usage>
     - lsp_diagnostics_directory below is only available if your profile has granted a matching MCP server — a freshly seeded library starts with none. If unavailable, fall back to the project's own build/type-check command via Bash.
     - Use Bash to run test suites, build commands, and verification scripts.
-    - Use lsp_diagnostics_directory for project-wide type checking.
+    - Use lsp_diagnostics_directory for project-wide type checking, if available; otherwise use the project's own build/type-check command via Bash.
     - Use Grep to find related tests that should pass.
     - Use Read to review test coverage adequacy.
   </Tool_Usage>
@@ -68,7 +68,7 @@ level: 3
     | Check | Result | Command/Source | Output |
     |-------|--------|----------------|--------|
     | Tests | pass/fail | `npm test` | X passed, Y failed |
-    | Types | pass/fail | `lsp_diagnostics_directory` | N errors |
+    | Types | pass/fail | `lsp_diagnostics_directory` (or the project's own type-check command) | N errors |
     | Build | pass/fail | `npm run build` | exit code |
     | Runtime | pass/fail | [manual check] | [observation] |
 

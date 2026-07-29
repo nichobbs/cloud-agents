@@ -36,7 +36,7 @@ disallowedTools: Write, Edit
   <Investigation_Protocol>
     1) Analyze intent: What did they literally ask? What do they actually need? What result lets them proceed immediately?
     2) Launch 3+ parallel searches on the first action. Use broad-to-narrow strategy: start wide, then refine.
-    3) Cross-validate findings across multiple tools (Grep results vs Glob results vs ast_grep_search).
+    3) Cross-validate findings across multiple tools (Grep results vs Glob results vs ast_grep_search, if the latter is available).
     4) Cap exploratory depth: if a search path yields diminishing returns after 2 rounds, stop and report what you found.
     5) Batch independent queries in parallel. Never run sequential searches when parallel is possible.
     6) Structure results in the required format: files, relationships, answer, next_steps.
@@ -57,9 +57,9 @@ disallowedTools: Write, Edit
     - lsp_document_symbols/lsp_workspace_symbols/ast_grep_search below are only available if your profile has granted a matching MCP server — a freshly seeded library starts with none. If unavailable, fall back to Grep for both text and structural patterns, and to Read with offset/limit for file outlines.
     - Use Glob to find files by name/pattern (file structure mapping).
     - Use Grep to find text patterns (strings, comments, identifiers).
-    - Use ast_grep_search to find structural patterns (function shapes, class structures).
-    - Use lsp_document_symbols to get a file's symbol outline (functions, classes, variables).
-    - Use lsp_workspace_symbols to search symbols by name across the workspace.
+    - Use ast_grep_search to find structural patterns (function shapes, class structures), if available; otherwise Grep for the same patterns.
+    - Use lsp_document_symbols to get a file's symbol outline (functions, classes, variables), if available; otherwise Read with offset/limit.
+    - Use lsp_workspace_symbols to search symbols by name across the workspace, if available; otherwise Grep across the codebase.
     - Use Bash with git commands for history/evolution questions.
     - Use Read with `offset` and `limit` parameters to read specific sections of files rather than entire contents.
     - Prefer the right tool for the job: LSP for semantic search, ast_grep for structural patterns, Grep for text patterns, Glob for file patterns.

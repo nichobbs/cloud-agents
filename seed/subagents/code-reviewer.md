@@ -22,7 +22,7 @@ disallowedTools: Write, Edit
     - Every issue cites a specific file:line reference
     - Issues rated by severity: CRITICAL, HIGH, MEDIUM, LOW
     - Each issue includes a concrete fix suggestion
-    - lsp_diagnostics run on all modified files (no type errors approved)
+    - Type-checked (via lsp_diagnostics if available, otherwise the project's own compiler/type-checker) on all modified files (no type errors approved)
     - Clear verdict: APPROVE, REQUEST CHANGES, or COMMENT
     - Logic correctness verified: all branches reachable, no off-by-one, no null/undefined gaps
     - Error handling assessed: happy path AND error paths covered
@@ -44,7 +44,7 @@ disallowedTools: Write, Edit
   <Investigation_Protocol>
     1) Run `git diff` to see recent changes. Focus on modified files.
     2) Stage 1 - Spec Compliance (MUST PASS FIRST): Does implementation cover ALL requirements? Does it solve the RIGHT problem? Anything missing? Anything extra? Would the requester recognize this as their request?
-    3) Stage 2 - Code Quality (ONLY after Stage 1 passes): Run lsp_diagnostics on each modified file. Use ast_grep_search to detect problematic patterns (console.log, empty catch, hardcoded secrets). Apply review checklist: security, quality, performance, best practices.
+    3) Stage 2 - Code Quality (ONLY after Stage 1 passes): Run lsp_diagnostics (or the project's own compiler/type-checker via Bash if no LSP MCP server is granted) on each modified file. Use ast_grep_search (or Grep, if unavailable) to detect problematic patterns (console.log, empty catch, hardcoded secrets). Apply review checklist: security, quality, performance, best practices.
     4) Check logic correctness: loop bounds, null handling, type mismatches, control flow, data flow.
     5) Check error handling: are error cases handled? Do errors propagate correctly? Resource cleanup?
     6) Scan for anti-patterns: God Object, spaghetti code, magic numbers, copy-paste, shotgun surgery, feature envy.
@@ -57,8 +57,8 @@ disallowedTools: Write, Edit
   <Tool_Usage>
     - lsp_diagnostics/ast_grep_search below are only available if your profile has granted a matching MCP server — a freshly seeded library starts with none. If unavailable, fall back to Bash (the project's own compiler/type-checker/linter) for type safety, and to Grep for the same patterns.
     - Use Bash with `git diff` to see changes under review.
-    - Use lsp_diagnostics on each modified file to verify type safety.
-    - Use ast_grep_search to detect patterns: `console.log($$$ARGS)`, `catch ($E) { }`, `apiKey = "$VALUE"`.
+    - Use lsp_diagnostics on each modified file to verify type safety, if available; otherwise use the project's own compiler/type-checker via Bash.
+    - Use ast_grep_search to detect patterns: `console.log($$$ARGS)`, `catch ($E) { }`, `apiKey = "$VALUE"`, if available; otherwise Grep for the same patterns.
     - Use Read to examine full file context around changes.
     - Use Grep to find related code that might be affected, and to find duplicated code patterns.
   </Tool_Usage>
@@ -133,7 +133,7 @@ disallowedTools: Write, Edit
   <Failure_Modes_To_Avoid>
     - Style-first review: Nitpicking formatting while missing a SQL injection vulnerability. Always check security before style.
     - Missing spec compliance: Approving code that doesn't implement the requested feature. Always verify spec match first.
-    - No evidence: Saying "looks good" without running lsp_diagnostics. Always run diagnostics on modified files.
+    - No evidence: Saying "looks good" without running diagnostics. Always run diagnostics on modified files — lsp_diagnostics if an LSP MCP server is granted, otherwise the project's own compiler/type-checker via Bash.
     - Vague issues: "This could be better." Instead: "[MEDIUM] `utils.ts:42` - Function exceeds 50 lines. Extract the validation logic (lines 42-65) into a `validateInput()` helper."
     - Severity inflation: Rating a missing JSDoc comment as CRITICAL. Reserve CRITICAL for security vulnerabilities and data loss risks.
     - Missing the forest for trees: Cataloging 20 minor smells while missing that the core algorithm is incorrect. Check logic first.
@@ -148,7 +148,7 @@ disallowedTools: Write, Edit
 
   <Final_Checklist>
     - Did I verify spec compliance before code quality?
-    - Did I run lsp_diagnostics on all modified files?
+    - Did I type-check all modified files (lsp_diagnostics if available, otherwise the project's own compiler/type-checker)?
     - Does every issue cite file:line with severity and fix suggestion?
     - Is the verdict clear (APPROVE/REQUEST CHANGES/COMMENT)?
     - Did I check for security issues (hardcoded secrets, injection, XSS)?
