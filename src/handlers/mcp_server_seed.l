@@ -25,7 +25,7 @@
 //! expanded against the container's real environment by
 //! docker/inject-library.sh's envsubst pass at injection time, never stored
 //! as a literal secret here (mcp_server_env is deliberately non-secret
-//! config only, see CloudAgents.Db.mcpServersSchemaSql's doc comment); the
+//! config only, see CloudAgents.Db.mcpServerEnvSchemaSql's doc comment); the
 //! actual GITHUB_TOKEN value flows in separately through the existing
 //! per-user credential vault, exactly like every other credential-grant.
 package CloudAgents.McpServerSeed

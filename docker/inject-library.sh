@@ -268,7 +268,18 @@ render_mcp_codex() {
                     env_pairs+=("$(jq -nr --arg k "$k" --arg v "$v" '($k|@json) + " = " + ($v|@json)')")
                 done < <(jq -r '.env[]' <<<"$item")
                 if [ "${#env_pairs[@]}" -gt 0 ]; then
-                    printf 'env = {%s}\n' "$(IFS=', '; echo "${env_pairs[*]}")"
+                    # "${arr[*]}" joins on IFS's first character only, so
+                    # IFS=', ' would actually join with just ",", dropping the
+                    # separator space the old jq join(", ") produced.
+                    local joined="" pair
+                    for pair in "${env_pairs[@]}"; do
+                        if [ -z "$joined" ]; then
+                            joined="$pair"
+                        else
+                            joined="$joined, $pair"
+                        fi
+                    done
+                    printf 'env = {%s}\n' "$joined"
                 fi
             else
                 printf 'url = %s\n' "$(jq -r '.url | @json' <<<"$item")"

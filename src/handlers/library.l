@@ -272,9 +272,16 @@ pub record SaveMcpServerRequest {
 /// field present in the body (docs/lyric/stdlib.md) regardless of this
 /// record's own Lyric-level `= "1"` default, so a not-yet-updated frontend
 /// that doesn't send `enabled` yet would 400 at the decode boundary the
-/// moment this ships. Patches in the JSON-default "1" only when the key is
+/// moment this ships. Patches in `defaultEnabled` only when the key is
 /// actually absent; a body that already sends it passes through unchanged.
-pub func patchMissingMcpServerEnabled(body: in String): String {
+///
+/// The caller supplies `defaultEnabled` rather than this always assuming
+/// "1": on add there is no prior state, so "1" is correct, but on update a
+/// hardcoded "1" would silently re-enable a previously-disabled server the
+/// moment a stale frontend build (one that predates the `enabled` field)
+/// submits an unrelated edit — see patchMissingMcpServerEnabledForUpdate,
+/// which passes the server's current stored value instead.
+func patchMissingMcpServerEnabledWithDefault(body: in String, defaultEnabled: in String): String {
   val doc = match Std.Json.tryParseJson(body) { case Ok(d) -> d; case Err(_) -> return body }
   defer {
     Std.Json.disposeJson(doc)
@@ -288,7 +295,24 @@ pub func patchMissingMcpServerEnabled(body: in String): String {
   if closeIdx < 0 {
     return body
   }
-  return body.substring(0, closeIdx) + ",\"enabled\":\"1\"" + body.substring(closeIdx, body.length - closeIdx)
+  return body.substring(0, closeIdx) + ",\"enabled\":\"" + defaultEnabled + "\"" + body.substring(closeIdx, body.length - closeIdx)
+}
+
+/// Used on add, where there is no prior server to preserve state from.
+pub func patchMissingMcpServerEnabled(body: in String): String {
+  return patchMissingMcpServerEnabledWithDefault(body, "1")
+}
+
+/// Used on update: defaults a missing `enabled` field to the server's
+/// current stored value (falling back to "1" only if the server can't be
+/// found, e.g. a bad id — the update call itself will report that error).
+pub func patchMissingMcpServerEnabledForUpdate(body: in String, id: in String): String {
+  val userId = CloudAgents.Auth.currentUserId()
+  val defaultEnabled = match getMcpServer(id, userId) {
+    case Ok(Some(m)) -> m.enabled
+    case _ -> "1"
+  }
+  return patchMissingMcpServerEnabledWithDefault(body, defaultEnabled)
 }
 
 /// Last index of a single-character needle, hand-rolled the same way

@@ -1114,11 +1114,9 @@ pub func subagentsSchemaSql(): String {
     "UNIQUE(user_id, name))"
 }
 
-/// DDL for the MCP servers table. transport: 'stdio' (command + args + env)
-/// | 'url' (remote endpoint). `env` entries here are literal, non-secret
-/// config only ("DEBUG=1") — anything secret flows through the existing
-/// credential-grant mechanism by matching env var name, so this feature does
-/// not introduce a second secret store.
+/// DDL for the MCP servers table. transport: 'stdio' (command + args + env,
+/// held in the separate mcp_server_args/mcp_server_env tables below) | 'url'
+/// (remote endpoint).
 pub func mcpServersSchemaSql(): String {
   return "CREATE TABLE IF NOT EXISTS mcp_servers (" + "id TEXT PRIMARY KEY, " + "user_id TEXT NOT NULL, " +
     "name TEXT NOT NULL, " +
@@ -1139,7 +1137,9 @@ pub func mcpServerArgsSchemaSql(): String {
 }
 
 /// DDL for a stdio MCP server's literal (non-secret) env entries, each a
-/// full "KEY=VALUE" string.
+/// full "KEY=VALUE" string ("DEBUG=1"). Anything secret flows through the
+/// existing credential-grant mechanism by matching env var name instead, so
+/// this table does not introduce a second secret store.
 pub func mcpServerEnvSchemaSql(): String {
   return "CREATE TABLE IF NOT EXISTS mcp_server_env (" + "id TEXT PRIMARY KEY, " + "mcp_server_id TEXT NOT NULL, " +
     "user_id TEXT NOT NULL, " +
