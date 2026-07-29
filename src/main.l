@@ -22,7 +22,6 @@ import CloudAgents.Webhooks
 import extern System.Environment as Env
 import extern System.String as DotNetString
 
-
 @generate(Json)
 pub record HealthStatus {
   pub status: String
@@ -1392,13 +1391,33 @@ pub func main(): Unit {
   router = Web.addPost(router, "/api/sessions/{id}/archive", RouteArchiveSession())
   router = Web.addPost(router, "/api/sessions/{id}/unarchive", RouteUnarchiveSession())
 
+  // Live output polling for an in-progress run. The offset-suffixed route
+  // returns only the log bytes past {offset} (incremental polling — see
+  // getRunOutputFrom); the plain route returns the full log each tick and is
+  // kept untouched for older clients.
+  //
+  // NOTE (#442): the offset route is this codebase's first multi-path-param
+  // pattern (the proxy routes below add more). @test_module suites can't
+  // exercise it (Web.Request can't be constructed in a test, #354), so
+  // scripts/e2e-http.sh now starts the built server in CI and curls this exact
+  // route (expecting a 404 for an unknown session) to prove multi-param
+  // dispatch works. Clients also degrade gracefully if it ever regresses:
+  // useStreamMessage falls back to the plain full-log route on any delta
+  // error, and the proxy clients fall back to direct GitHub/provider calls.
   router = Web.addGet(router, "/api/sessions/{id}/output", RouteGetRunOutput())
   router = Web.addGet(router, "/api/sessions/{id}/output/{offset}", RouteGetRunOutputFrom())
 
+  // Linked repositories (multi-repo sessions): list, add, and remove extra
+  // repositories an agent works across in one run. The DELETE route is a
+  // two-path-param pattern ({id} and {rid}); multi-param dispatch is now
+  // covered in CI by scripts/e2e-http.sh via the /output/{offset} route
+  // (#442). The frontend also degrades gracefully (hides the panel) if the
+  // routes 404 on an older backend.
   router = Web.addGet(router, "/api/sessions/{id}/repos", RouteListSessionRepos())
   router = Web.addPost(router, "/api/sessions/{id}/repos", RouteAddSessionRepo())
   router = Web.addDelete(router, "/api/sessions/{id}/repos/{rid}", RouteDeleteSessionRepo())
 
+  // Session lifecycle: cancel an in-flight run, run history, container reaping.
   router = Web.addPost(router, "/api/sessions/{id}/cancel", RouteCancelRun())
   router = Web.addGet(router, "/api/sessions/{id}/runs", RouteGetRuns())
   router = Web.addPost(router, "/api/maintenance/reap", RouteReapContainers())

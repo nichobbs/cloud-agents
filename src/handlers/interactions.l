@@ -2,7 +2,6 @@ package CloudAgents.Interactions
 
 import Std.Core
 import Web
-import CloudAgents.AuthContext
 import CloudAgents.Repository
 import CloudAgents.Sqlite
 import CloudAgents.Text

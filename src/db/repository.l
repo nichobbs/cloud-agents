@@ -342,6 +342,11 @@ pub func runMigrations(): Result[Unit, CloudAgents.Sqlite.DbError] {
   for m in allMigrations() {
     val applied = migrationApplied(m.version)?
     if not applied {
+      // Run the migration's statements AND its ledger record in one
+      // transaction: either the whole migration applies and is recorded, or
+      // nothing is, so a mid-migration failure (e.g. a bad ALTER) leaves the
+      // database at the prior version and the next startup retries cleanly
+      // rather than getting stuck half-applied (review #229).
       var stmts = m.statements
       stmts = stmts.append(CloudAgents.Db.recordMigrationSql(m.version, nowMillis()))
       CloudAgents.Sqlite.executeTransaction(stmts)?
