@@ -157,7 +157,7 @@ render_subagents_codex() {
 # credential CloudAgents.Docker already injected as a container env var,
 # without that secret ever being stored in mcp_server_env (which is
 # deliberately literal, non-secret config only — see
-# CloudAgents.Db.mcpServersSchemaSql's doc comment). Uses `envsubst`, never
+# CloudAgents.Db.mcpServerEnvSchemaSql's doc comment). Uses `envsubst`, never
 # `eval`: envsubst only replaces $VAR/${VAR} tokens with that variable's
 # actual value (or empty, if unset) and never executes command
 # substitution/arbitrary shell, so a value can't do anything worse than

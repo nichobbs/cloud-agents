@@ -23,16 +23,6 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         git bash curl ca-certificates jq gettext-base \
     && rm -rf /var/lib/apt/lists/*
 
-# uv/uvx: a standalone Rust binary (no Python runtime dependency of its own),
-# installed system-wide so it's on PATH regardless of which user runs a
-# session. Needed to launch the official `mcp-server-fetch` MCP server (the
-# seeded "fetch" default, seed/mcp-servers/fetch.json) via `uvx
-# mcp-server-fetch` — deliberately the official reference implementation
-# (github.com/modelcontextprotocol/servers) rather than a smaller
-# single-maintainer npm alternative, since this ships to every user by
-# default.
-RUN curl -LsSf --connect-timeout 10 --max-time 120 --retry 3 --retry-delay 3 https://astral.sh/uv/install.sh | env UV_INSTALL_DIR=/usr/local/bin sh
-
 # Optional corporate/proxy root CA trust (e.g. Zscaler TLS inspection) — see
 # extra-ca-certs/README.md. A no-op when that directory holds only its
 # placeholder README. Must run before the npm install below. Trusts the
@@ -57,6 +47,17 @@ RUN chmod +x /usr/local/bin/split-ca-bundle.sh \
     done \
     && update-ca-certificates
 ENV NODE_EXTRA_CA_CERTS=/usr/local/share/ca-certificates/extra-combined.pem
+
+# uv/uvx: a standalone Rust binary (no Python runtime dependency of its own),
+# installed system-wide so it's on PATH regardless of which user runs a
+# session. Needed to launch the official `mcp-server-fetch` MCP server (the
+# seeded "fetch" default, seed/mcp-servers/fetch.json) via `uvx
+# mcp-server-fetch` — deliberately the official reference implementation
+# (github.com/modelcontextprotocol/servers) rather than a smaller
+# single-maintainer npm alternative, since this ships to every user by
+# default. Installed after the CA-trust step above so the download works
+# behind a TLS-intercepting proxy.
+RUN curl -LsSf --connect-timeout 10 --max-time 120 --retry 3 --retry-delay 3 https://astral.sh/uv/install.sh | env UV_INSTALL_DIR=/usr/local/bin sh
 
 RUN n=0; until npm install -g opencode-ai@1.18.4; do \
       n=$((n + 1)); \
