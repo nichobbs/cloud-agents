@@ -193,7 +193,7 @@ RUN npm install -g @anthropic-ai/claude-code
 # (github.com/modelcontextprotocol/servers) rather than a smaller
 # single-maintainer npm alternative, since this ships to every user by
 # default.
-RUN curl -LsSf https://astral.sh/uv/install.sh | env UV_INSTALL_DIR=/usr/local/bin sh
+RUN curl -LsSf --connect-timeout 10 --max-time 120 --retry 3 --retry-delay 3 https://astral.sh/uv/install.sh | env UV_INSTALL_DIR=/usr/local/bin sh
 
 # Install the Lyric compiler to a system location — the EXACT SAME version
 # AND architecture RID the shim-builder stage above already resolved and
