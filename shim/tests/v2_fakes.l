@@ -81,6 +81,21 @@ pub record FakeV2Transport {
   pub var lastNotifySummary: String
   pub var lastNotifyLevel: String
   pub var notifyCallCount: Int
+
+  pub var createSessionTodoOk: Bool
+  pub var createSessionTodoBody: String
+  pub var createSessionTodoError: String
+  pub var lastSessionTodoNote: String
+
+  pub var listSessionTodosOk: Bool
+  pub var listSessionTodosBody: String
+  pub var listSessionTodosError: String
+
+  pub var setSessionTodoStatusOk: Bool
+  pub var setSessionTodoStatusBody: String
+  pub var setSessionTodoStatusError: String
+  pub var lastSessionTodoId: String
+  pub var lastSessionTodoStatus: String
 }
 
 /// A ready-to-use fake with sensible not-configured-yet defaults: creating
@@ -143,7 +158,19 @@ pub func newFakeV2Transport(): FakeV2Transport {
     notifyError = "FakeV2Transport: notify not configured",
     lastNotifySummary = "",
     lastNotifyLevel = "",
-    notifyCallCount = 0
+    notifyCallCount = 0,
+    createSessionTodoOk = false,
+    createSessionTodoBody = "",
+    createSessionTodoError = "FakeV2Transport: createSessionTodo not configured",
+    lastSessionTodoNote = "",
+    listSessionTodosOk = false,
+    listSessionTodosBody = "",
+    listSessionTodosError = "FakeV2Transport: listSessionTodos not configured",
+    setSessionTodoStatusOk = false,
+    setSessionTodoStatusBody = "",
+    setSessionTodoStatusError = "FakeV2Transport: setSessionTodoStatus not configured",
+    lastSessionTodoId = "",
+    lastSessionTodoStatus = ""
   )
 }
 
@@ -271,6 +298,33 @@ impl V2CallbackTransport for FakeV2Transport {
       Ok(value = self.notifyBody)
     } else {
       Err(error = self.notifyError)
+    }
+  }
+
+  func createSessionTodo(note: in String): Result[String, String] {
+    self.lastSessionTodoNote = note
+    if self.createSessionTodoOk {
+      Ok(value = self.createSessionTodoBody)
+    } else {
+      Err(error = self.createSessionTodoError)
+    }
+  }
+
+  func listSessionTodos(): Result[String, String] {
+    if self.listSessionTodosOk {
+      Ok(value = self.listSessionTodosBody)
+    } else {
+      Err(error = self.listSessionTodosError)
+    }
+  }
+
+  func setSessionTodoStatus(todoId: in String, status: in String): Result[String, String] {
+    self.lastSessionTodoId = todoId
+    self.lastSessionTodoStatus = status
+    if self.setSessionTodoStatusOk {
+      Ok(value = self.setSessionTodoStatusBody)
+    } else {
+      Err(error = self.setSessionTodoStatusError)
     }
   }
 }

@@ -232,3 +232,41 @@ test "toggleTodoHandler flips done and deleteTodoHandler removes the row (#335)"
     case Err(err) -> assertEqualInt(err.status, 400, "delete empty id returns 400")
   }
 }
+
+test "setTodoStatusHandler validates its inputs and persists a valid status" {
+  val dbPath = useFreshTestDb("todo-status")
+  defer {
+    cleanupTestDb(dbPath)
+  }
+
+  assertTrue(isValidTodoStatus("pending"), "pending is valid")
+  assertTrue(isValidTodoStatus("in_progress"), "in_progress is valid")
+  assertTrue(isValidTodoStatus("done"), "done is valid")
+  assertTrue(not isValidTodoStatus("open"), "repo-task statuses are not todo statuses")
+
+  match setTodoStatusHandler("", SetTodoStatusRequest(status = "done")) {
+    case Ok(_) -> assertTrue(false, "empty id must be rejected")
+    case Err(err) -> assertEqualInt(err.status, 400, "empty id returns 400")
+  }
+  match setTodoStatusHandler("t1", SetTodoStatusRequest(status = "bogus")) {
+    case Ok(_) -> assertTrue(false, "bogus status must be rejected")
+    case Err(err) -> assertEqualInt(err.status, 400, "bogus status returns 400")
+  }
+
+  val created = match addTodoHandler("session-S", AddTodoRequest(messageId = "", note = "step")) {
+    case Ok(t) -> t
+    case Err(err) -> panic("addTodoHandler failed: " + toString(err.status))
+  }
+  assertEqual(created.status, "pending", "a new todo starts pending")
+  match setTodoStatusHandler(created.id, SetTodoStatusRequest(status = "in_progress")) {
+    case Ok(_) -> ()
+    case Err(err) -> assertTrue(false, "valid status update failed: " + toString(err.status))
+  }
+  match CloudAgents.Repository.listTodos("session-S") {
+    case Ok(todos) -> {
+      assertEqual(todos[0].status, "in_progress", "status persisted")
+      assertEqual(todos[0].done, "0", "done stays in lockstep")
+    }
+    case Err(e) -> assertTrue(false, "listTodos failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+  }
+}

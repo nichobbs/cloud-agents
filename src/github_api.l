@@ -332,3 +332,51 @@ pub func httpPostForm(url: in String, formBody: in String, userAgent: in String)
     Err(error = "POST " + url + " failed: " + b.message)
   }
 }
+
+/// LLM chat-completion calls can legitimately take far longer than the 15s
+/// the OAuth/proxy calls budget — used only by httpPostJsonWithBearer below.
+val llmRequestTimeoutMillis = 120000
+
+/// POST a JSON body to `url` with an optional Authorization bearer header
+/// (pass "" to send none), reading the response as real UTF-8 (readAllUtf8 —
+/// LLM output is routinely non-ASCII, so the byte-per-char readAll would
+/// mangle it). Used by CloudAgents.Highlights' summarizer call; the longer
+/// llmRequestTimeoutMillis applies to both the connect and the body read.
+pub func httpPostJsonWithBearer(
+  url: in String, jsonBody: in String, bearerToken: in String, userAgent: in String
+): Result[String, String] {
+  return try {
+    val req = createRequest(url)
+    setMethod(req, "POST")
+    setTimeout(req, llmRequestTimeoutMillis)
+    setReadWriteTimeout(req, llmRequestTimeoutMillis)
+    setUserAgent(req, userAgent)
+    setAccept(req, "application/json")
+    setContentType(req, "application/json")
+    if bearerToken.length > 0 {
+      headerSet(getHeaders(req), "Authorization", "Bearer " + bearerToken)
+    }
+    val bytes = encGetBytes(utf8(), jsonBody)
+    val reqStream = getRequestStream(req)
+    // Same close-before-GetResponse + exception-path defer as httpPostForm
+    // (#421); Stream.Dispose is idempotent so the success-path double
+    // dispose is harmless.
+    defer {
+      streamDispose(reqStream)
+    }
+    streamWrite(reqStream, bytes, 0, bytes.length.toInt())
+    streamDispose(reqStream)
+    val resp = getResponse(req)
+    defer {
+      responseDispose(resp)
+    }
+    val respStream = getResponseStream(resp)
+    defer {
+      streamDispose(respStream)
+    }
+    val body = readAllUtf8(respStream)
+    Ok(value = body)
+  } catch Bug as b {
+    Err(error = "POST " + url + " failed: " + b.message)
+  }
+}

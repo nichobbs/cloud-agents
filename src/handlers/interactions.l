@@ -115,6 +115,33 @@ pub func addTodoHandler(id: in String, req: in AddTodoRequest): Result[Todo, Web
   }
 }
 
+@generate(Json)
+pub record SetTodoStatusRequest {
+  pub status: String
+}
+
+/// Whether `s` is a valid three-state todo status literal. Shared by the
+/// user-originated handler below and CloudAgents.Callbacks' container-
+/// originated one.
+pub func isValidTodoStatus(s: in String): Bool {
+  return s == "pending" or s == "in_progress" or s == "done"
+}
+
+/// Set a todo's status directly (pending/in_progress/done) — the three-state
+/// counterpart of toggleTodoHandler, used by the session todo panel.
+pub func setTodoStatusHandler(tid: in String, req: in SetTodoStatusRequest): Result[Unit, Web.ApiError] {
+  if tid.length == 0 {
+    return Err(Web.badRequest("todo id is required"))
+  }
+  if not isValidTodoStatus(req.status) {
+    return Err(Web.badRequest("status must be one of: pending, in_progress, done"))
+  }
+  match setTodoStatus(tid, req.status) {
+    case Ok(_) -> return Ok(())
+    case Err(e) -> return Err(dbError(e))
+  }
+}
+
 /// Toggle a todo's done flag.
 pub func toggleTodoHandler(tid: in String): Result[Unit, Web.ApiError] {
   if tid.length == 0 {

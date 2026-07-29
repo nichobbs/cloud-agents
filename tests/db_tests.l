@@ -149,9 +149,16 @@ test "message SQL builders inline escaped values" {
 test "comment and todo SQL builders are scoped and escaped" {
   assertTrue(insertCommentSql("c1", "m1", "s1", "body", "1").startsWith("INSERT INTO comments"), "comment insert")
   assertTrue(selectCommentsSql("m1").contains("WHERE message_id = 'm1'"), "comments scoped to message")
-  assertTrue(insertTodoSql("t1", "s1", "m1", "note", "1").contains("'0'"), "new todo defaults to not done")
+  assertTrue(insertTodoSql("t1", "s1", "m1", "note", "pending", "1").contains("'0'"), "new pending todo is not done")
+  assertTrue(insertTodoSql("t1", "s1", "m1", "note", "done", "1").contains("'1'"), "a done-status insert sets done")
   assertTrue(selectTodosSql("s1").contains("ORDER BY created_at DESC"), "todos newest first")
+  assertTrue(selectTodosSql("s1").contains("status"), "todos select carries the status column")
   assertTrue(toggleTodoSql("t1").contains("CASE done"), "toggle flips done flag")
+  assertTrue(toggleTodoSql("t1").contains("status = CASE done WHEN '1' THEN 'pending' ELSE 'done' END"), "toggle keeps status in lockstep")
+  assertTrue(setTodoStatusSql("t1", "in_progress").contains("status = 'in_progress'"), "status update sets status")
+  assertTrue(setTodoStatusSql("t1", "in_progress").contains("done = '0'"), "non-done status clears done")
+  assertTrue(setTodoStatusSql("t1", "done").contains("done = '1'"), "done status sets done")
+  assertTrue(selectTodoSessionIdSql("t1").contains("WHERE id = 't1'"), "todo session lookup scoped by id")
   assertTrue(deleteTodoSql("t1").endsWith("'t1'"), "delete by id")
 }
 
