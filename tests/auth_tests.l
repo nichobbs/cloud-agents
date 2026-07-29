@@ -212,6 +212,10 @@ test "isContainerCallbackRoute exempts container create/poll routes but not the 
     isContainerCallbackRoute("/api/sessions/abc-123/callbacks/question/req-1/answer"),
     "the question answer route is NOT container-originated either"
   )
+  assertFalse(
+    isContainerCallbackRoute("/api/sessions/abc-123/callbacks/pending"),
+    "the human pending list route is NOT container-originated either — it needs normal user auth"
+  )
   assertFalse(isContainerCallbackRoute("/api/sessions/abc-123"), "an unrelated route is never exempt")
   assertFalse(isContainerCallbackRoute("/api/health"), "the health route is unaffected by this predicate")
 }
