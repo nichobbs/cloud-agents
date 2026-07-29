@@ -96,7 +96,7 @@ func bearer(token: in String): String {
 }
 
 func uploadOk(sid: in String, token: in String, fileName: in String, contentScope: in String): UploadArtifactResponse {
-  return match uploadArtifactHandler(sid, bearer(token), UploadArtifactRequest(fileName = fileName, mimeType = "text/plain", description = "d", contentBase64 = base64Of("payload for " + fileName), artifactScope = contentScope)) {
+  return match uploadArtifactHandler(sid, bearer(token), CloudAgents.Callbacks.UploadArtifactRequest(fileName = fileName, mimeType = "text/plain", description = "d", contentBase64 = base64Of("payload for " + fileName), artifactScope = contentScope)) {
     case Ok(r) -> r
     case Err(e) -> panic("upload failed: " + toString(e.status))
   }
@@ -244,7 +244,7 @@ test "report_artifact rejects an invalid scope value and rejects scope=repo when
   mkSession(sid)
   val token = mintToken(sid, "default")
 
-  match uploadArtifactHandler(sid, bearer(token), UploadArtifactRequest(fileName = "x.txt", mimeType = "text/plain", description = "", contentBase64 = base64Of("x"), artifactScope = "bogus")) {
+  match uploadArtifactHandler(sid, bearer(token), CloudAgents.Callbacks.UploadArtifactRequest(fileName = "x.txt", mimeType = "text/plain", description = "", contentBase64 = base64Of("x"), artifactScope = "bogus")) {
     case Ok(_) -> assertTrue(false, "an invalid scope value must be rejected")
     case Err(e) -> assertEqualInt(e.status, 400, "invalid scope -> 400")
   }
@@ -252,7 +252,7 @@ test "report_artifact rejects an invalid scope value and rejects scope=repo when
   val sidNoRepo = "sess-repo-artifact-norepo"
   mkSessionRepo(sidNoRepo, "")
   val tokenNoRepo = mintToken(sidNoRepo, "default")
-  match uploadArtifactHandler(sidNoRepo, bearer(tokenNoRepo), UploadArtifactRequest(fileName = "x.txt", mimeType = "text/plain", description = "", contentBase64 = base64Of("x"), artifactScope = "repo")) {
+  match uploadArtifactHandler(sidNoRepo, bearer(tokenNoRepo), CloudAgents.Callbacks.UploadArtifactRequest(fileName = "x.txt", mimeType = "text/plain", description = "", contentBase64 = base64Of("x"), artifactScope = "repo")) {
     case Ok(_) -> assertTrue(false, "scope=repo on a session with no repo must be rejected")
     case Err(e) -> assertEqualInt(e.status, 400, "no repo -> 400")
   }
@@ -313,7 +313,7 @@ test "report_artifact rejects a repo-scoped upload whose repo URL normalizes to 
   mkSessionRepo(sid, "https://github.com/../../../../tmp/pwn")
   val token = mintToken(sid, "default")
 
-  match uploadArtifactHandler(sid, bearer(token), UploadArtifactRequest(fileName = "x.txt", mimeType = "text/plain", description = "", contentBase64 = base64Of("payload"), artifactScope = "repo")) {
+  match uploadArtifactHandler(sid, bearer(token), CloudAgents.Callbacks.UploadArtifactRequest(fileName = "x.txt", mimeType = "text/plain", description = "", contentBase64 = base64Of("payload"), artifactScope = "repo")) {
     case Ok(_) -> assertTrue(false, "a repoKey containing '..' must never be used to build a filesystem path")
     case Err(e) -> assertEqualInt(e.status, 400, "path-traversal repoKey -> 400, not a write outside artifactsBaseDir()")
   }
@@ -333,7 +333,7 @@ test "report_artifact accepts a repo-scoped upload whose repoKey has two dots in
   mkSessionRepo(sid, "https://github.com/nic/my..repo")
   val token = mintToken(sid, "default")
 
-  match uploadArtifactHandler(sid, bearer(token), UploadArtifactRequest(fileName = "x.txt", mimeType = "text/plain", description = "", contentBase64 = base64Of("payload"), artifactScope = "repo")) {
+  match uploadArtifactHandler(sid, bearer(token), CloudAgents.Callbacks.UploadArtifactRequest(fileName = "x.txt", mimeType = "text/plain", description = "", contentBase64 = base64Of("payload"), artifactScope = "repo")) {
     case Ok(_) -> ()
     case Err(e) -> assertTrue(false, "a repo name with two dots inside a segment is not a traversal segment: " + toString(e.status))
   }
