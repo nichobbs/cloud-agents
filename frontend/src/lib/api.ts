@@ -615,7 +615,7 @@ export const api = {
   },
 
   addMcpServer: async (
-    s: { name: string; transport: string; command: string; args: string[]; url: string; env: string[] },
+    s: { name: string; transport: string; command: string; args: string[]; url: string; env: string[]; enabled?: string },
   ): Promise<McpServer> => {
     const res = await fetch(`${BASE}/api/library/mcp-servers`, {
       method: 'POST',
@@ -628,7 +628,7 @@ export const api = {
 
   updateMcpServer: async (
     id: string,
-    s: { name: string; transport: string; command: string; args: string[]; url: string; env: string[] },
+    s: { name: string; transport: string; command: string; args: string[]; url: string; env: string[]; enabled?: string },
   ): Promise<McpServer> => {
     const res = await fetch(`${BASE}/api/library/mcp-servers/${id}`, {
       method: 'POST',

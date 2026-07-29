@@ -381,6 +381,15 @@ pub func alterSessionsAddIsArchivedSql(): String {
   return "ALTER TABLE sessions ADD COLUMN is_archived TEXT NOT NULL DEFAULT '0'"
 }
 
+/// DEFAULT '1' means every pre-existing MCP server (created before this
+/// column existed) silently becomes enabled on migration, preserving today's
+/// behavior (mcpServersForProfile injected everything unconditionally) for
+/// every server a user already configured; only newly-seeded credential-
+/// requiring servers are inserted with '0' (see CloudAgents.McpServerSeed).
+pub func alterMcpServersAddEnabledSql(): String {
+  return "ALTER TABLE mcp_servers ADD COLUMN enabled TEXT NOT NULL DEFAULT '1'"
+}
+
 pub func updateSessionArchivedSql(id: in String, userId: in String, isArchived: in String): String {
   return "UPDATE sessions SET is_archived = " + sqlLiteral(isArchived) + " WHERE id = " + sqlLiteral(id) +
     " AND user_id = " + sqlLiteral(userId)
@@ -1334,8 +1343,9 @@ pub func insertMcpServerSql(
   command: in String,
   url: in String,
   createdAt: in String,
+  enabled: in String = "1",
 ): String {
-  return "INSERT INTO mcp_servers (id, user_id, name, transport, command, url, created_at, updated_at) VALUES (" +
+  return "INSERT INTO mcp_servers (id, user_id, name, transport, command, url, created_at, updated_at, enabled) VALUES (" +
     sqlLiteral(id) +
     ", " +
     sqlLiteral(userId) +
@@ -1351,10 +1361,12 @@ pub func insertMcpServerSql(
     sqlLiteral(createdAt) +
     ", " +
     sqlLiteral(createdAt) +
+    ", " +
+    sqlLiteral(enabled) +
     ")"
 }
 
-val mcpServerColumns = "id, user_id, name, transport, command, url, created_at, updated_at"
+val mcpServerColumns = "id, user_id, name, transport, command, url, created_at, updated_at, enabled"
 
 pub func selectMcpServersSql(userId: in String): String {
   return "SELECT " + mcpServerColumns + " FROM mcp_servers WHERE user_id = " + sqlLiteral(userId) + " ORDER BY name ASC"
@@ -1377,6 +1389,7 @@ pub func updateMcpServerSql(
   command: in String,
   url: in String,
   updatedAt: in String,
+  enabled: in String = "1",
 ): String {
   return "UPDATE mcp_servers SET name = " + sqlLiteral(name) + ", transport = " + sqlLiteral(transport) + ", command = " +
     sqlLiteral(command) +
@@ -1384,6 +1397,8 @@ pub func updateMcpServerSql(
     sqlLiteral(url) +
     ", updated_at = " +
     sqlLiteral(updatedAt) +
+    ", enabled = " +
+    sqlLiteral(enabled) +
     " WHERE id = " +
     sqlLiteral(id) +
     " AND user_id = " +

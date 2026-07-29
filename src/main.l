@@ -828,7 +828,10 @@ record RouteAddMcpServer {
 
 impl Web.Handler for RouteAddMcpServer {
   func handle(req: in Web.Request): Web.Response {
-    val decoded = match SaveMcpServerRequest.fromJson(req.body) { case Ok(d) -> d; case Err(_) -> return badBody() }
+    val decoded = match SaveMcpServerRequest.fromJson(CloudAgents.Library.patchMissingMcpServerEnabled(req.body)) {
+      case Ok(d) -> d
+      case Err(_) -> return badBody()
+    }
     return mcpServerResp(CloudAgents.Library.addMcpServerHandler(decoded))
   }
 }
@@ -839,7 +842,10 @@ record RouteUpdateMcpServer {
 impl Web.Handler for RouteUpdateMcpServer {
   func handle(req: in Web.Request): Web.Response {
     val mid = pparam(req, "mid")
-    val decoded = match SaveMcpServerRequest.fromJson(req.body) { case Ok(d) -> d; case Err(_) -> return badBody() }
+    val decoded = match SaveMcpServerRequest.fromJson(CloudAgents.Library.patchMissingMcpServerEnabled(req.body)) {
+      case Ok(d) -> d
+      case Err(_) -> return badBody()
+    }
     return mcpServerResp(CloudAgents.Library.updateMcpServerHandler(mid, decoded))
   }
 }

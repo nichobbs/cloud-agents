@@ -320,7 +320,8 @@ pub func allMigrations(): slice[Migration] {
       ]
     ),
     Migration(version = "0019_github_oauth_refresh", statements = [CloudAgents.Db.githubOAuthRefreshSchemaSql()]),
-    Migration(version = "0020_archive_sessions", statements = [CloudAgents.Db.alterSessionsAddIsArchivedSql()])
+    Migration(version = "0020_archive_sessions", statements = [CloudAgents.Db.alterSessionsAddIsArchivedSql()]),
+    Migration(version = "0021_mcp_server_enabled", statements = [CloudAgents.Db.alterMcpServersAddEnabledSql()])
   ]
 }
 
@@ -1714,6 +1715,10 @@ pub record SubagentList {
 }
 
 /// transport: 'stdio' (command + args + env) | 'url' (remote endpoint).
+/// enabled: '1' | '0' (TEXT flag, matching AgentSession.isArchived's
+/// convention) — '0' means saved but withheld from every profile's
+/// container injection (see mcpServersForProfile below), for a server whose
+/// required credential/config isn't in place yet.
 @generate(Json)
 pub record McpServer {
   pub id: String
@@ -1726,6 +1731,7 @@ pub record McpServer {
   pub env: slice[String]
   pub createdAt: String
   pub updatedAt: String
+  pub enabled: String = "1"
 }
 
 @generate(Json)
@@ -1971,7 +1977,8 @@ func rowToMcpServer(r: in CloudAgents.Sqlite.Row, args: in slice[String], env: i
     url = colAt(r.cols, 5),
     env = env,
     createdAt = colAt(r.cols, 6),
-    updatedAt = colAt(r.cols, 7)
+    updatedAt = colAt(r.cols, 7),
+    enabled = colAt(r.cols, 8)
   )
 }
 
@@ -2006,11 +2013,12 @@ pub func addMcpServer(
   args: in slice[String],
   url: in String,
   env: in slice[String],
+  enabled: in String = "1",
 ): Result[McpServer, CloudAgents.Sqlite.DbError] {
   val id = newId()
   val ts = nowMillis()
   var stmts: slice[String] = []
-  stmts = stmts.append(CloudAgents.Db.insertMcpServerSql(id, userId, name, transport, command, url, ts))
+  stmts = stmts.append(CloudAgents.Db.insertMcpServerSql(id, userId, name, transport, command, url, ts, enabled))
   for s in mcpServerChildStatements(id, userId, args, env) {
     stmts = stmts.append(s)
   }
@@ -2026,7 +2034,8 @@ pub func addMcpServer(
       url = url,
       env = env,
       createdAt = ts,
-      updatedAt = ts
+      updatedAt = ts,
+      enabled = enabled
     )
   )
 }
@@ -2080,6 +2089,7 @@ pub func updateMcpServer(
   args: in slice[String],
   url: in String,
   env: in slice[String],
+  enabled: in String = "1",
 ): Result[Int, CloudAgents.Sqlite.DbError] {
   match getMcpServer(id, userId)? {
     case None -> return Ok(value = 0)
@@ -2095,7 +2105,7 @@ pub func updateMcpServer(
   for s in mcpServerChildStatements(id, userId, args, env) {
     stmts = stmts.append(s)
   }
-  stmts = stmts.append(CloudAgents.Db.updateMcpServerSql(id, userId, name, transport, command, url, nowMillis()))
+  stmts = stmts.append(CloudAgents.Db.updateMcpServerSql(id, userId, name, transport, command, url, nowMillis(), enabled))
   val affected = CloudAgents.Sqlite.executeTransaction(stmts)?
   return Ok(value = affected)
 }
@@ -2221,8 +2231,17 @@ pub func subagentsForProfile(
   return Ok(value = acc)
 }
 
-/// The MCP servers a profile grants, resolved to full records. See
-/// skillsForProfile for the dangling-id and empty-profile semantics.
+/// The MCP servers a profile grants, resolved to full records — EXCLUDING
+/// any granted server whose `enabled` is '0'. This is the one call site
+/// that must filter: CloudAgents.Docker's container-injection path (the
+/// only consumer of this function) is the sole place a disabled server
+/// could actually reach a running container, so gating here is sufficient
+/// on its own (docker/inject-library.sh trusts whatever JSON it's handed
+/// completely, with no enabled/disabled concept of its own). getMcpServer/
+/// listMcpServers deliberately do NOT filter — the library CRUD UI needs to
+/// show a user their disabled servers so they can be edited/enabled, this
+/// function's callers is not those callers. See skillsForProfile for the
+/// dangling-id and empty-profile semantics, both unchanged here.
 pub func mcpServersForProfile(
   userId: in String, profileId: in String
 ): Result[slice[McpServer], CloudAgents.Sqlite.DbError] {
@@ -2235,7 +2254,9 @@ pub func mcpServersForProfile(
   for id in ids {
     match getMcpServer(id, userId)? {
       case Some(s) -> {
-        acc = acc.append(s)
+        if s.enabled == "1" {
+          acc = acc.append(s)
+        }
       }
       case None -> ()
     }

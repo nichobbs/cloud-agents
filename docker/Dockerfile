@@ -148,8 +148,11 @@ FROM mcr.microsoft.com/dotnet/sdk:10.0
 ENV DEBIAN_FRONTEND=noninteractive
 
 # Base tooling + Node and npm from standard APT repositories (plain HTTP, avoiding SSL intercept issues).
+# gettext-base provides envsubst, used by docker/inject-library.sh to expand
+# ${VAR} references in a seeded/user-authored MCP server's env values against
+# this container's own credential env vars (#mcp-server-seeding).
 RUN apt-get update && apt-get install -y --no-install-recommends \
-        git bash make python3 python3-pip curl ca-certificates jq nodejs npm \
+        git bash make python3 python3-pip curl ca-certificates jq nodejs npm gettext-base \
     && rm -rf /var/lib/apt/lists/*
 
 # Optional corporate/proxy root CA trust (e.g. Zscaler TLS inspection) — see
@@ -181,6 +184,16 @@ RUN chmod +x /usr/local/bin/split-ca-bundle.sh \
 ENV NODE_EXTRA_CA_CERTS=/usr/local/share/ca-certificates/extra-combined.pem
 
 RUN npm install -g @anthropic-ai/claude-code
+
+# uv/uvx: a standalone Rust binary (no Python runtime dependency of its own),
+# installed system-wide so it's on PATH regardless of which user runs a
+# session. Needed to launch the official `mcp-server-fetch` MCP server (the
+# seeded "fetch" default, seed/mcp-servers/fetch.json) via `uvx
+# mcp-server-fetch` — deliberately the official reference implementation
+# (github.com/modelcontextprotocol/servers) rather than a smaller
+# single-maintainer npm alternative, since this ships to every user by
+# default.
+RUN curl -LsSf https://astral.sh/uv/install.sh | env UV_INSTALL_DIR=/usr/local/bin sh
 
 # Install the Lyric compiler to a system location — the EXACT SAME version
 # AND architecture RID the shim-builder stage above already resolved and

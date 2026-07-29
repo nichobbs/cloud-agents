@@ -10,6 +10,7 @@
 package CloudAgents.Library
 
 import Std.Core
+import Std.Json
 import Web
 import CloudAgents.Auth
 import CloudAgents.Repository
@@ -262,11 +263,54 @@ pub record SaveMcpServerRequest {
   pub args: slice[String]
   pub url: String
   pub env: slice[String]
+  pub enabled: String = "1"
+}
+
+/// Same last-'}'-splice trick as CloudAgents.Profiles.patchMissingToolFields
+/// (see its doc comment) applied to `enabled`, the newest field on this
+/// request shape: `@generate(Json)`'s derived `fromJson` requires every
+/// field present in the body (docs/lyric/stdlib.md) regardless of this
+/// record's own Lyric-level `= "1"` default, so a not-yet-updated frontend
+/// that doesn't send `enabled` yet would 400 at the decode boundary the
+/// moment this ships. Patches in the JSON-default "1" only when the key is
+/// actually absent; a body that already sends it passes through unchanged.
+pub func patchMissingMcpServerEnabled(body: in String): String {
+  val doc = match Std.Json.tryParseJson(body) { case Ok(d) -> d; case Err(_) -> return body }
+  defer {
+    Std.Json.disposeJson(doc)
+  }
+  val root = Std.Json.rootElement(doc)
+  match Std.Json.tryGetProperty(root, "enabled") {
+    case Some(_) -> return body
+    case None -> ()
+  }
+  val closeIdx = lastIndexOfChar(body, "}")
+  if closeIdx < 0 {
+    return body
+  }
+  return body.substring(0, closeIdx) + ",\"enabled\":\"1\"" + body.substring(closeIdx, body.length - closeIdx)
+}
+
+/// Last index of a single-character needle, hand-rolled the same way
+/// CloudAgents.Profiles.lastIndexOfChar is (each package owns its own tiny
+/// copy rather than importing another package's private helper).
+func lastIndexOfChar(s: in String, target: in String): Int {
+  var i = s.length - 1
+  while i >= 0 {
+    if s.substring(i, 1) == target {
+      return i
+    }
+    i = i - 1
+  }
+  return -1
 }
 
 func validateSaveMcpServer(req: in SaveMcpServerRequest): Option[Web.ApiError] {
   if not isValidLibraryName(req.name) {
     return Some(value = Web.badRequest("name must be 1-128 chars of letters, digits, '-', or '_'"))
+  }
+  if req.enabled != "0" and req.enabled != "1" {
+    return Some(value = Web.badRequest("enabled must be '0' or '1'"))
   }
   if not isValidMcpTransport(req.transport) {
     return Some(value = Web.badRequest("transport must be one of: stdio, url"))
@@ -321,7 +365,7 @@ pub func addMcpServerHandler(req: in SaveMcpServerRequest): Result[McpServer, We
     case Ok(None) -> ()
     case Err(e) -> return Err(dbError(e))
   }
-  match addMcpServer(userId, req.name, req.transport, req.command, req.args, req.url, req.env) {
+  match addMcpServer(userId, req.name, req.transport, req.command, req.args, req.url, req.env, req.enabled) {
     case Ok(m) -> return Ok(m)
     case Err(e) -> return Err(dbError(e))
   }
@@ -341,7 +385,7 @@ pub func updateMcpServerHandler(id: in String, req: in SaveMcpServerRequest): Re
     case Ok(None) -> ()
     case Err(e) -> return Err(dbError(e))
   }
-  val affected = match updateMcpServer(id, userId, req.name, req.transport, req.command, req.args, req.url, req.env) {
+  val affected = match updateMcpServer(id, userId, req.name, req.transport, req.command, req.args, req.url, req.env, req.enabled) {
     case Ok(n) -> n
     case Err(e) -> return Err(dbError(e))
   }

@@ -1,0 +1,9 @@
+{
+  "name": "context7",
+  "transport": "stdio",
+  "command": "npx",
+  "args": ["-y", "@upstash/context7-mcp"],
+  "url": "",
+  "env": [],
+  "enabled": "1"
+}

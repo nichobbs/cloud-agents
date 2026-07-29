@@ -16,9 +16,22 @@ ENV DEBIAN_FRONTEND=noninteractive
 # the whole Coolify deploy down the first time this ran unpinned, see
 # deploy/COOLIFY.md). The retry loop guards against transient npm-registry
 # failures, the other documented cause of a mid-build failure here.
+# gettext-base provides envsubst, used by docker/inject-library.sh to expand
+# ${VAR} references in a seeded/user-authored MCP server's env values against
+# this container's own credential env vars (#mcp-server-seeding).
 RUN apt-get update && apt-get install -y --no-install-recommends \
-        git bash curl ca-certificates jq \
+        git bash curl ca-certificates jq gettext-base \
     && rm -rf /var/lib/apt/lists/*
+
+# uv/uvx: a standalone Rust binary (no Python runtime dependency of its own),
+# installed system-wide so it's on PATH regardless of which user runs a
+# session. Needed to launch the official `mcp-server-fetch` MCP server (the
+# seeded "fetch" default, seed/mcp-servers/fetch.json) via `uvx
+# mcp-server-fetch` — deliberately the official reference implementation
+# (github.com/modelcontextprotocol/servers) rather than a smaller
+# single-maintainer npm alternative, since this ships to every user by
+# default.
+RUN curl -LsSf https://astral.sh/uv/install.sh | env UV_INSTALL_DIR=/usr/local/bin sh
 
 # Optional corporate/proxy root CA trust (e.g. Zscaler TLS inspection) — see
 # extra-ca-certs/README.md. A no-op when that directory holds only its

@@ -150,6 +150,28 @@ render_subagents_codex() {
     done
 }
 
+# Expands ${VAR}/$VAR references in a single MCP-server env VALUE against
+# this container's own real environment — so a server (seeded or
+# user-authored) can write an env entry like
+# "GITHUB_PERSONAL_ACCESS_TOKEN=${GITHUB_TOKEN}" and receive the real
+# credential CloudAgents.Docker already injected as a container env var,
+# without that secret ever being stored in mcp_server_env (which is
+# deliberately literal, non-secret config only — see
+# CloudAgents.Db.mcpServersSchemaSql's doc comment). Uses `envsubst`, never
+# `eval`: envsubst only replaces $VAR/${VAR} tokens with that variable's
+# actual value (or empty, if unset) and never executes command
+# substitution/arbitrary shell, so a value can't do anything worse than
+# reference an env var by name. Falls back to the literal value, unexpanded,
+# if envsubst isn't installed — matching this script's existing
+# best-effort/never-crash tolerance for a missing `jq` at the top of the file.
+expand_env_value() {
+    if ! command -v envsubst >/dev/null 2>&1; then
+        printf '%s' "$1"
+        return 0
+    fi
+    printf '%s' "$1" | envsubst
+}
+
 # ── MCP servers: JSON-config harnesses (claude, gemini, opencode) ──────────
 # $1 = target JSON config file (created with $2 as its baseline if it does
 # not exist yet — an existing file, with any unrelated content, is always
@@ -157,6 +179,11 @@ render_subagents_codex() {
 # claude/gemini, "mcp" for opencode). Every key this script owns is prefixed
 # "cloud-agents-lib-", so the strip-then-merge only ever touches its own
 # prior entries.
+#
+# Builds up servers_json one server (and, for stdio servers, one env entry)
+# at a time in a bash loop rather than a single jq expression, specifically
+# so each env VALUE can be piped through expand_env_value — jq itself can't
+# shell out to envsubst.
 #
 # NB: the "url"-transport server shape below ({"type":"http","url":...}) is
 # this script's best-effort guess at each harness's remote-MCP JSON schema —
@@ -170,21 +197,25 @@ render_mcp_json() {
 
     local servers_json='{}'
     if [ -n "${CLOUD_AGENTS_MCP_SERVERS_B64:-}" ]; then
-        servers_json=$(printf '%s' "${CLOUD_AGENTS_MCP_SERVERS_B64}" | base64 -d | jq -c '
-            def splitfirst($s; $sep):
-                ($s | index($sep)) as $i
-                | if $i == null then [$s, ""] else [$s[0:$i], $s[($i + ($sep | length)):]] end;
-            [.mcpServers[] | {
-                key: ("cloud-agents-lib-" + .name),
-                value: (
-                    if .transport == "stdio" then
-                        {command: .command, args: .args, env: ([.env[] | splitfirst(.; "=") | {(.[0]): .[1]}] | add // {})}
-                    else
-                        {type: "http", url: .url}
-                    end
-                )
-            }] | from_entries
-        ')
+        while IFS= read -r item; do
+            local name transport key entry
+            name=$(jq -r '.name' <<<"$item")
+            transport=$(jq -r '.transport' <<<"$item")
+            key="cloud-agents-lib-$name"
+            if [ "$transport" = "stdio" ]; then
+                local env_json='{}' raw k v
+                while IFS= read -r raw; do
+                    [ -n "$raw" ] || continue
+                    k="${raw%%=*}"
+                    v="$(expand_env_value "${raw#*=}")"
+                    env_json=$(jq -c --arg k "$k" --arg v "$v" '. + {($k): $v}' <<<"$env_json")
+                done < <(jq -r '.env[]' <<<"$item")
+                entry=$(jq -c --argjson env "$env_json" '{command: .command, args: .args, env: $env}' <<<"$item")
+            else
+                entry=$(jq -c '{type: "http", url: .url}' <<<"$item")
+            fi
+            servers_json=$(jq -c --arg key "$key" --argjson value "$entry" '. + {($key): $value}' <<<"$servers_json")
+        done < <(printf '%s' "${CLOUD_AGENTS_MCP_SERVERS_B64}" | base64 -d | jq -c '.mcpServers[]')
     fi
 
     local tmp
@@ -226,15 +257,18 @@ render_mcp_codex() {
             if [ "$transport" = "stdio" ]; then
                 printf 'command = %s\n' "$(jq -r '.command | @json' <<<"$item")"
                 printf 'args = %s\n' "$(jq -r '[.args[] | @json] | "[" + join(", ") + "]"' <<<"$item")"
-                local env_toml
-                env_toml=$(jq -r '
-                    def splitfirst($s; $sep):
-                        ($s | index($sep)) as $i
-                        | if $i == null then [$s, ""] else [$s[0:$i], $s[($i + ($sep | length)):]] end;
-                    "{" + ([.env[] | splitfirst(.; "=") | (.[0] | @json) + " = " + (.[1] | @json)] | join(", ")) + "}"
-                ' <<<"$item")
-                if [ "$env_toml" != "{}" ]; then
-                    printf 'env = %s\n' "$env_toml"
+                # Same per-entry expand_env_value pass as render_mcp_json — jq
+                # can't shell out to envsubst, so this loops in bash instead
+                # of building the TOML fragment in one jq expression.
+                local env_pairs=() raw k v
+                while IFS= read -r raw; do
+                    [ -n "$raw" ] || continue
+                    k="${raw%%=*}"
+                    v="$(expand_env_value "${raw#*=}")"
+                    env_pairs+=("$(jq -nr --arg k "$k" --arg v "$v" '($k|@json) + " = " + ($v|@json)')")
+                done < <(jq -r '.env[]' <<<"$item")
+                if [ "${#env_pairs[@]}" -gt 0 ]; then
+                    printf 'env = {%s}\n' "$(IFS=', '; echo "${env_pairs[*]}")"
                 fi
             else
                 printf 'url = %s\n' "$(jq -r '.url | @json' <<<"$item")"

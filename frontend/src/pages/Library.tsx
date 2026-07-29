@@ -52,7 +52,10 @@ const subagentTemplates: SubagentTemplate[] = [
 ];
 
 const mcpServerTemplates: McpServerTemplate[] = [
-  { name: 'fetch', transport: 'stdio', command: 'npx', args: ['-y', '@modelcontextprotocol/server-fetch'] },
+  // The official reference fetch server (github.com/modelcontextprotocol/servers)
+  // is Python/uvx-only — there is no `@modelcontextprotocol/server-fetch` npm
+  // package (this template used to reference one that doesn't exist).
+  { name: 'fetch', transport: 'stdio', command: 'uvx', args: ['mcp-server-fetch'] },
   { name: 'sequential-thinking', transport: 'stdio', command: 'npx', args: ['-y', '@modelcontextprotocol/server-sequential-thinking'] },
 ];
 
@@ -356,6 +359,7 @@ function McpServersTab() {
   const [argsText, setArgsText] = useState('');
   const [url, setUrl] = useState('');
   const [envText, setEnvText] = useState('');
+  const [enabled, setEnabled] = useState(true);
 
   const reload = async () => {
     try {
@@ -380,6 +384,7 @@ function McpServersTab() {
     setArgsText('');
     setUrl('');
     setEnvText('');
+    setEnabled(true);
   };
 
   const useTemplate = (t: McpServerTemplate) => {
@@ -390,6 +395,7 @@ function McpServersTab() {
     setArgsText(t.args.join('\n'));
     setUrl('');
     setEnvText('');
+    setEnabled(true);
   };
 
   const linesOf = (text: string): string[] => text.split('\n').map(l => l.trim()).filter(l => l.length > 0);
@@ -407,6 +413,7 @@ function McpServersTab() {
       args: linesOf(argsText),
       url: url.trim(),
       env: linesOf(envText),
+      enabled: enabled ? '1' : '0',
     };
     try {
       if (editingId) {
@@ -498,6 +505,10 @@ function McpServersTab() {
             aria-label="MCP server url"
           />
         )}
+        <label style={{ ...fieldStyle, flexDirection: 'row', alignItems: 'center', gap: '6px' }}>
+          <input type="checkbox" checked={enabled} onChange={e => setEnabled(e.target.checked)} aria-label="MCP server enabled" />
+          <span style={labelStyle}>Enabled — inject into containers when granted to a profile</span>
+        </label>
         <FormActions saving={saving} valid={!!valid} editing={!!editingId} onSave={() => { void save(); }} onCancel={clearForm} label="MCP server" />
       </div>
       {error && <div style={errStyle}>{error}</div>}
@@ -515,11 +526,15 @@ function McpServersTab() {
               setArgsText(s.args.join('\n'));
               setUrl(s.url);
               setEnvText(s.env.join('\n'));
+              setEnabled(s.enabled !== '0');
             }}
             onDelete={() => { void remove(s); }}
           />
           <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px' }}>
             <span style={badgeStyle}>{s.transport}</span>
+            <span style={s.enabled === '0' ? disabledBadgeStyle : enabledBadgeStyle}>
+              {s.enabled === '0' ? 'disabled' : 'enabled'}
+            </span>
             {s.transport === 'stdio' ? (
               <code style={grantTagStyle}>{s.command} {s.args.join(' ')}</code>
             ) : (
@@ -680,6 +695,9 @@ const badgeStyle: React.CSSProperties = {
 };
 
 const grantTagStyle: React.CSSProperties = { fontSize: '11px', color: '#79c0ff' };
+
+const enabledBadgeStyle: React.CSSProperties = { ...badgeStyle, color: '#3fb950', borderColor: '#238636' };
+const disabledBadgeStyle: React.CSSProperties = { ...badgeStyle, color: '#f0883e', borderColor: '#9e6a03' };
 
 const smallBtnStyle: React.CSSProperties = {
   padding: '3px 10px',
