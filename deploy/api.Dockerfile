@@ -77,10 +77,12 @@ RUN apt-get update && apt-get install -y --no-install-recommends docker.io \
     && rm -rf /var/lib/apt/lists/*
 WORKDIR /app
 COPY --from=build /src/bin/ /app/
-# CloudAgents.LibrarySeed reads these at sign-in time (CLOUD_AGENTS_SEED_SUBAGENTS_DIR /
-# CLOUD_AGENTS_SEED_SKILLS_DIR, defaulting to "seed/subagents" / "seed/skills" resolved
-# relative to this WORKDIR) to seed a brand-new user's subagent/skill library — see
-# src/handlers/library_seed.l.
+# CloudAgents.LibrarySeed/CloudAgents.McpServerSeed read these at sign-in time
+# (CLOUD_AGENTS_SEED_SUBAGENTS_DIR / CLOUD_AGENTS_SEED_SKILLS_DIR /
+# CLOUD_AGENTS_SEED_MCP_SERVERS_DIR, defaulting to "seed/subagents" / "seed/skills" /
+# "seed/mcp-servers" resolved relative to this WORKDIR) to seed a brand-new user's
+# subagent/skill/MCP-server library — see src/handlers/library_seed.l and
+# src/handlers/mcp_server_seed.l.
 COPY --from=build /src/seed/ /app/seed/
 EXPOSE 8080
 ENTRYPOINT ["dotnet", "/app/CloudAgents.dll"]

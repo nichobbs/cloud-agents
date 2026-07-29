@@ -168,7 +168,9 @@ jobs:
             scripts/test-opencode-entrypoint.sh \
             scripts/test-lyric-version-resolution.sh \
             scripts/test-split-ca-bundle.sh \
+            scripts/test-mcp-server-injection.sh \
             docker/split-ca-bundle.sh \
+            docker/inject-library.sh \
             scripts/check-compose-paths.sh \
             scripts/repro-compiler-bug.sh \
             scripts/repro-web-bug.sh \
@@ -179,7 +181,7 @@ jobs:
 
       - name: Validate JSON templates
         run: |
-          for f in docker/mcp.json.template docker/settings.json.template docker/settings-callbacks.json.template docker/mcp-callbacks.json.template; do
+          for f in docker/settings.json.template docker/settings-callbacks.json.template docker/mcp-callbacks.json.template; do
             python3 -m json.tool "$f" > /dev/null && echo "ok: $f"
           done
 
@@ -209,6 +211,15 @@ jobs:
       # (#714), and non-PEM passthrough.
       - name: Test split-ca-bundle.sh
         run: ./scripts/test-split-ca-bundle.sh
+
+      # Regression test for docker/inject-library.sh's MCP-server rendering
+      # (#764): the enabled/disabled seed feature's env-value ${VAR}
+      # expansion (expand_env_value), and the JSON/TOML merge logic
+      # (render_mcp_json, render_mcp_codex) that must preserve a user's own
+      # hand-authored entries while only ever touching this script's own
+      # "cloud-agents-lib-" prefixed keys.
+      - name: Test mcp-server-injection.sh
+        run: ./scripts/test-mcp-server-injection.sh
 
       # Guards against the class of bug in nichobbs/cloud-agents#464: the two
       # deploy compose files use different relative-path conventions (one
