@@ -4,6 +4,7 @@ import { formatFullTimestamp, formatTimestamp } from '../lib/time';
 import type { Message } from '../types';
 import { AnsiContent } from './AnsiContent';
 import { CommentThread } from './CommentThread';
+import { CollapsibleJsonBlock } from './CollapsibleJsonBlock';
 
 interface MessageBlockProps {
   message: Message;
@@ -169,7 +170,7 @@ export function MessageBlock({ message, highlighted, onTodoAdded, onRetry, isUnr
         isUser ? (
           <div style={userContent}>{message.content}</div>
         ) : (
-          <AnsiContent text={message.content} />
+          renderAgentContent(message.content)
         )
       )}
 
@@ -181,6 +182,103 @@ export function MessageBlock({ message, highlighted, onTodoAdded, onRetry, isUnr
       )}
     </div>
   );
+}
+
+function findJsonBlocks(text: string): { start: number; end: number; content: string }[] {
+  const blocks: { start: number; end: number; content: string }[] = [];
+  const n = text.length;
+  let i = 0;
+  while (i < n) {
+    const char = text[i];
+    if (char === '{' || char === '[') {
+      let braceCount = 0;
+      let bracketCount = 0;
+      let inString = false;
+      let escape = false;
+      let j = i;
+      while (j < n) {
+        const c = text[j];
+        if (escape) {
+          escape = false;
+        } else if (c === '\\') {
+          escape = true;
+        } else if (c === '"') {
+          inString = !inString;
+        } else if (!inString) {
+          if (c === '{') braceCount++;
+          else if (c === '}') {
+            braceCount--;
+            if (braceCount === 0 && bracketCount === 0) {
+              const candidate = text.substring(i, j + 1);
+              const cleanCandidate = candidate.replace(/\x1b\[[0-9;]*m/g, '').trim();
+              if (cleanCandidate.length > 100 && (cleanCandidate.match(/\n/g) || []).length >= 4) {
+                try {
+                  JSON.parse(cleanCandidate);
+                  blocks.push({ start: i, end: j + 1, content: candidate });
+                  i = j;
+                  break;
+                } catch {
+                  // Keep going
+                }
+              }
+            }
+          } else if (c === '[') bracketCount++;
+          else if (c === ']') {
+            bracketCount--;
+            if (braceCount === 0 && bracketCount === 0) {
+              const candidate = text.substring(i, j + 1);
+              const cleanCandidate = candidate.replace(/\x1b\[[0-9;]*m/g, '').trim();
+              if (cleanCandidate.length > 100 && (cleanCandidate.match(/\n/g) || []).length >= 4) {
+                try {
+                  JSON.parse(cleanCandidate);
+                  blocks.push({ start: i, end: j + 1, content: candidate });
+                  i = j;
+                  break;
+                } catch {
+                  // Keep going
+                }
+              }
+            }
+          }
+        }
+        j++;
+      }
+    }
+    i++;
+  }
+  return blocks;
+}
+
+function renderAgentContent(text: string) {
+  const blocks = findJsonBlocks(text);
+  if (blocks.length === 0) {
+    return <AnsiContent text={text} />;
+  }
+
+  const elements: React.ReactNode[] = [];
+  let lastIndex = 0;
+
+  blocks.forEach((block, index) => {
+    if (block.start > lastIndex) {
+      const segment = text.substring(lastIndex, block.start);
+      if (segment.trim() !== '') {
+        elements.push(<AnsiContent key={`text-${index}`} text={segment} />);
+      }
+    }
+    elements.push(
+      <CollapsibleJsonBlock key={`json-${index}`} rawContent={block.content} />
+    );
+    lastIndex = block.end;
+  });
+
+  if (lastIndex < text.length) {
+    const segment = text.substring(lastIndex);
+    if (segment.trim() !== '') {
+      elements.push(<AnsiContent key="text-end" text={segment} />);
+    }
+  }
+
+  return <>{elements}</>;
 }
 
 function defaultNote(m: Message): string {
