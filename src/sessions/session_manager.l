@@ -18,6 +18,7 @@ pub record AgentSession {
   pub harness: String
   pub model: String
   pub nativeSessionId: String
+  pub isArchived: String = "0"
 }
 
 /// Default model for each harness, used when a session is created without an
@@ -334,7 +335,7 @@ func colAt(cols: in CloudAgents.Sqlite.StringArray, i: in Int): String {
 
 // Column order matches CloudAgents.Db's sessionColumns:
 // id, user_id, repo_url, branch, container_id, harness, model,
-// native_session_id, status, created_at, last_message_at.
+// native_session_id, status, created_at, last_message_at, is_archived.
 func rowToSession(r: in CloudAgents.Sqlite.Row): AgentSession {
   return AgentSession(
     sessionId = colAt(r.cols, 0),
@@ -343,7 +344,8 @@ func rowToSession(r: in CloudAgents.Sqlite.Row): AgentSession {
     containerId = colAt(r.cols, 4),
     harness = colAt(r.cols, 5),
     model = colAt(r.cols, 6),
-    nativeSessionId = colAt(r.cols, 7)
+    nativeSessionId = colAt(r.cols, 7),
+    isArchived = colAt(r.cols, 11)
   )
 }
 
@@ -379,6 +381,8 @@ pub func sessionSummariesJson(): Result[String, CloudAgents.Sqlite.DbError] {
       jsonEscapeField(colAt(r.cols, 9)) +
       "\",\"lastMessageAt\":\"" +
       jsonEscapeField(colAt(r.cols, 10)) +
+      "\",\"isArchived\":\"" +
+      jsonEscapeField(colAt(r.cols, 11)) +
       "\"}"
     i = i + 1
   }
@@ -620,6 +624,11 @@ pub func clearSessionContainerIfMatchesFor(
 
 pub func updateSessionModel(sessionId: in String, model: in String): Result[Unit, CloudAgents.Sqlite.DbError] {
   CloudAgents.Sqlite.execute(CloudAgents.Db.updateSessionModelSql(sessionId, CloudAgents.Auth.currentUserId(), model))?
+  return Ok(value = ())
+}
+
+pub func updateSessionArchived(sessionId: in String, isArchived: in String): Result[Unit, CloudAgents.Sqlite.DbError] {
+  CloudAgents.Sqlite.execute(CloudAgents.Db.updateSessionArchivedSql(sessionId, CloudAgents.Auth.currentUserId(), isArchived))?
   return Ok(value = ())
 }
 

@@ -1278,3 +1278,52 @@ test "checkHealth reports healthy against a live DB and 500s when the DB is unre
     case Err(err) -> assertEqualInt(err.status, 500, "DB failure maps to a 500 internal error")
   }
 }
+
+test "archive and unarchive sessions successfully persists changes in the DB" {
+  val dbPath = useFreshTestDb("archive-unarchive")
+  defer { cleanupTestDb(dbPath) }
+
+  val req = CreateSessionRequest(
+    repoUrl = "https://github.com/nic/repos/cloud-agents",
+    branch = "main",
+    harness = "claude",
+    model = "claude-opus-4-8"
+  )
+  val sessionId = match createSession(req) {
+    case Ok(resp) -> resp.sessionId
+    case Err(_) -> {
+      assertTrue(false, "createSession failed")
+      ""
+    }
+  }
+
+  // Initially isArchived should be '0'
+  match mustOptSession(getSession(sessionId)) {
+    case Some(s) -> assertEqual(s.isArchived, "0", "session should initially be active (isArchived = '0')")
+    case None -> assertTrue(false, "session should exist")
+  }
+
+  // Archive the session
+  match CloudAgents.Handlers.archiveSession(sessionId) {
+    case Ok(_) -> ()
+    case Err(_) -> assertTrue(false, "archiveSession failed")
+  }
+
+  // After archiving, isArchived should be '1'
+  match mustOptSession(getSession(sessionId)) {
+    case Some(s) -> assertEqual(s.isArchived, "1", "session should be archived (isArchived = '1')")
+    case None -> assertTrue(false, "session should exist")
+  }
+
+  // Unarchive the session
+  match CloudAgents.Handlers.unarchiveSession(sessionId) {
+    case Ok(_) -> ()
+    case Err(_) -> assertTrue(false, "unarchiveSession failed")
+  }
+
+  // After unarchiving, isArchived should be '0' again
+  match mustOptSession(getSession(sessionId)) {
+    case Some(s) -> assertEqual(s.isArchived, "0", "session should be active again (isArchived = '0')")
+    case None -> assertTrue(false, "session should exist")
+  }
+}

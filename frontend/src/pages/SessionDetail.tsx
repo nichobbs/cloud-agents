@@ -5,6 +5,7 @@ import { GitHubPanel } from '../components/GitHubPanel';
 import { LinkedReposPanel } from '../components/LinkedReposPanel';
 import { MessageBlock } from '../components/MessageBlock';
 import { Terminal } from '../components/Terminal';
+import { PendingCallbacksPanel } from '../components/PendingCallbacksPanel';
 import { useSessions } from '../context/SessionsContext';
 import { useStreamMessage } from '../hooks/useStreamMessage';
 import { clearFailedDraft, saveFailedDraft, takeFailedDraft } from '../lib/drafts';
@@ -12,7 +13,7 @@ import { getHarness, type ModelOption } from '../lib/harnesses';
 import { api } from '../lib/api';
 import { discoverModels } from '../lib/models';
 import { formatElapsed, formatFullTimestamp, formatTimestamp, parseTimestamp } from '../lib/time';
-import type { Message, Profile, Prompt, Run } from '../types';
+import type { Message, PendingCallbacksResponse, Profile, Prompt, Run } from '../types';
 
 /** Unique `{{name}}` placeholder names in a prompt body, in first-seen order. */
 export function extractVarNames(body: string): string[] {
@@ -33,7 +34,7 @@ export function extractVarNames(body: string): string[] {
 export function SessionDetail() {
   const { id } = useParams<{ id: string }>();
   const sessionId = id ?? '';
-  const { getSession, removeSession, updateSession } = useSessions();
+  const { getSession, removeSession, updateSession, archiveSession, unarchiveSession } = useSessions();
   const navigate = useNavigate();
   const location = useLocation();
   const session = getSession(sessionId);
@@ -62,8 +63,14 @@ export function SessionDetail() {
   const [profileId, setProfileId] = useState('');
   const [profileSaving, setProfileSaving] = useState(false);
   const [runs, setRuns] = useState<Run[]>([]);
+  const [pendingCallbacks, setPendingCallbacks] = useState<PendingCallbacksResponse>({
+    permissionRequests: [],
+    userQuestions: [],
+    secretRequests: [],
+  });
   const [showRuns, setShowRuns] = useState(false);
   const [cancelling, setCancelling] = useState(false);
+  const [restarting, setRestarting] = useState(false);
   // Multi-variable prompt templating: when a picked prompt has {{placeholders}},
   // collect every value in one modal instead of sequential window.prompt()
   // dialogs (#275).
@@ -80,6 +87,57 @@ export function SessionDetail() {
   // mount-time GET of the attached profile can't overwrite that choice when it
   // resolves after the change (#276). Reset per session in the fetch effect.
   const profileTouchedRef = useRef(false);
+
+  const [windowWidth, setWindowWidth] = useState(typeof window !== 'undefined' ? window.innerWidth : 1024);
+
+  useEffect(() => {
+    const handleResize = () => setWindowWidth(window.innerWidth);
+    window.addEventListener('resize', handleResize);
+    return () => window.removeEventListener('resize', handleResize);
+  }, []);
+
+  const isDesktop = windowWidth >= 1012;
+
+  const [lastSavedSeq, setLastSavedSeq] = useState<number>(() => {
+    const stored = localStorage.getItem(`read_seq_${sessionId}`);
+    return stored ? parseInt(stored, 10) : 0;
+  });
+
+  useEffect(() => {
+    const stored = localStorage.getItem(`read_seq_${sessionId}`);
+    setLastSavedSeq(stored ? parseInt(stored, 10) : 0);
+  }, [sessionId]);
+
+  const hasUnread = messages.some(m => (parseInt(m.seq, 10) || 0) > lastSavedSeq);
+
+  const handleMarkAllRead = () => {
+    if (messages.length > 0) {
+      const maxSeq = Math.max(...messages.map(m => parseInt(m.seq, 10) || 0));
+      localStorage.setItem(`read_seq_${sessionId}`, maxSeq.toString());
+      setLastSavedSeq(maxSeq);
+    }
+  };
+
+  const goToLastMessage = () => {
+    const lastUserMsg = [...messages].reverse().find(m => m.role === 'user');
+    if (lastUserMsg) {
+      const el = document.getElementById(`message-${lastUserMsg.id}`);
+      el?.scrollIntoView({ behavior: 'smooth' });
+    }
+  };
+
+  const goToFirstUnread = () => {
+    const firstUnread = messages.find(m => (parseInt(m.seq, 10) || 0) > lastSavedSeq);
+    if (firstUnread) {
+      const el = document.getElementById(`message-${firstUnread.id}`);
+      el?.scrollIntoView({ behavior: 'smooth' });
+    }
+  };
+
+  const dynamicPageStyle: React.CSSProperties = {
+    ...pageStyle,
+    maxWidth: isDesktop ? '1200px' : '900px',
+  };
 
   // Prompt library for the composer picker. Best-effort: an older backend
   // without the endpoint just leaves the picker hidden.
@@ -339,6 +397,31 @@ export function SessionDetail() {
     return false;
   }, [sessionId, fetchMessages]);
 
+  const fetchPendingCallbacks = useCallback(async () => {
+    if (!sessionId) return;
+    try {
+      const res = await api.getPendingCallbacks(sessionId);
+      if (currentSessionRef.current === sessionId) {
+        setPendingCallbacks(res);
+      }
+    } catch (err) {
+      // Best effort
+    }
+  }, [sessionId]);
+
+  useEffect(() => {
+    fetchPendingCallbacks();
+    const interval = setInterval(() => {
+      fetchPendingCallbacks();
+    }, 4000);
+    return () => clearInterval(interval);
+  }, [sessionId, fetchPendingCallbacks]);
+
+  const handleCallbackAnswered = useCallback(() => {
+    void fetchPendingCallbacks();
+    void reload();
+  }, [fetchPendingCallbacks, reload]);
+
   // Fold a just-finished run into the persisted transcript: reload it, then
   // clear the live panel only if the reload applied fresh messages — otherwise
   // keep the completed output visible instead of losing it (#214/#312). Gated
@@ -429,8 +512,7 @@ export function SessionDetail() {
     }
   })();
 
-  const handleSend = async () => {
-    const text = input.trim();
+  const handleRetry = async (text: string) => {
     if (!text || isStreaming) return;
     // Fixed at call time to whichever session this send was actually for —
     // `sessionId` may point somewhere else by the time this async function
@@ -513,6 +595,12 @@ export function SessionDetail() {
     textareaRef.current?.focus();
   };
 
+  const handleSend = async () => {
+    const text = input.trim();
+    if (!text || isStreaming) return;
+    await handleRetry(text);
+  };
+
   const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault();
@@ -573,6 +661,22 @@ export function SessionDetail() {
       alert(err instanceof Error ? `Cancel failed: ${err.message}` : 'Cancel failed');
     } finally {
       setCancelling(false);
+    }
+  };
+
+  const handleRestartContainer = async () => {
+    if (restarting) return;
+    if (!confirm("Restart session's container? This will stop the active container (if any) and reset it so a fresh container starts on the next run. This is useful for updating tokens/keys.")) {
+      return;
+    }
+    setRestarting(true);
+    try {
+      await api.restartContainer(sessionId);
+      alert('Container restarted successfully.');
+    } catch (err) {
+      alert(err instanceof Error ? `Restart failed: ${err.message}` : 'Restart failed');
+    } finally {
+      setRestarting(false);
     }
   };
 
@@ -681,8 +785,35 @@ export function SessionDetail() {
     navigate('/sessions');
   };
 
+  const [archiving, setArchiving] = useState(false);
+
+  const handleArchive = async () => {
+    if (!session) return;
+    setArchiving(true);
+    try {
+      await archiveSession(session.sessionId);
+      navigate('/sessions');
+    } catch (err) {
+      alert(err instanceof Error ? `Failed to archive: ${err.message}` : 'Failed to archive');
+    } finally {
+      setArchiving(false);
+    }
+  };
+
+  const handleUnarchive = async () => {
+    if (!session) return;
+    setArchiving(true);
+    try {
+      await unarchiveSession(session.sessionId);
+    } catch (err) {
+      alert(err instanceof Error ? `Failed to unarchive: ${err.message}` : 'Failed to unarchive');
+    } finally {
+      setArchiving(false);
+    }
+  };
+
   return (
-    <div style={pageStyle}>
+    <div style={dynamicPageStyle}>
       {templatePrompt && createPortal(
         <div
           style={modalOverlayStyle}
@@ -813,6 +944,31 @@ export function SessionDetail() {
             Todos
           </Link>
           <button
+            style={archiveBtnStyle}
+            onClick={() => { void handleRestartContainer(); }}
+            disabled={restarting}
+            title="Stop the session's container (if any) and reset it so a fresh container starts on the next message. Useful for picking up updated tokens/keys."
+          >
+            {restarting ? 'Restarting…' : 'Restart container'}
+          </button>
+          {session.isArchived === '1' ? (
+            <button
+              style={archiveBtnStyle}
+              onClick={() => { void handleUnarchive(); }}
+              disabled={archiving}
+            >
+              {archiving ? 'Unarchiving…' : 'Unarchive'}
+            </button>
+          ) : (
+            <button
+              style={archiveBtnStyle}
+              onClick={() => { void handleArchive(); }}
+              disabled={archiving}
+            >
+              {archiving ? 'Archiving…' : 'Archive'}
+            </button>
+          )}
+          <button
             style={deleteBtnStyle}
             onClick={() => { void handleDelete(); }}
             disabled={deleting}
@@ -822,137 +978,214 @@ export function SessionDetail() {
         </div>
       </div>
 
-      <GitHubPanel repoUrl={session.repoUrl} branch={session.branch} />
-
-      <LinkedReposPanel
-        sessionId={sessionId}
-        primaryRepoUrl={session.repoUrl}
-        primaryBranch={session.branch}
-      />
-
-      {showRuns && (
-        <div style={runsPanelStyle}>
-          <div style={runsHeaderStyle}>Run history</div>
-          {runs.length === 0 && <div style={runsEmptyStyle}>No runs recorded yet.</div>}
-          {runs.map(r => (
-            <div key={r.id} style={runRowStyle}>
-              <span style={runStatusStyle(r.status)}>{r.status}</span>
-              <span style={runPreviewStyle} title={r.promptPreview}>{r.promptPreview || '(no prompt)'}</span>
-              <span style={runMetaStyle} title={formatFullTimestamp(r.startedAt)}>
-                {formatTimestamp(r.startedAt)}
-                {runDuration(r) ? ` · ${runDuration(r)}` : ''}
-              </span>
-            </div>
-          ))}
-        </div>
-      )}
-
-      <div style={transcriptStyle}>
-        {messagesError && (
-          <div style={messagesErrorStyle}>
-            Failed to load transcript for this session.
-          </div>
-        )}
-        {messages.length === 0 && !isStreaming && !sendError && !messagesError && !keepOutput && (
-          <div style={emptyStyle}>
-            No messages yet — send a prompt below to start the session.
-          </div>
-        )}
-        {messages.map(m => (
-          <MessageBlock
-            key={m.id}
-            message={m}
-            highlighted={m.id === highlightedId}
-            onTodoAdded={() => { /* todos live on their own page */ }}
-          />
-        ))}
-        {(isStreaming || sendError || keepOutput) && (
-          <div style={liveWrapStyle}>
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-              <div style={sendError ? liveErrorLabelStyle : liveLabelStyle}>
-                {isStreaming ? 'running…' : sendError ? 'failed' : 'done — could not refresh transcript'}
-                {runStartedAt !== null && (
-                  <span style={liveTimingStyle} title={new Date(runStartedAt).toLocaleString()}>
-                    {' '}· started {formatTimestamp(String(runStartedAt))}
-                    {isStreaming && ` · ${formatElapsed(nowTick - runStartedAt)}`}
-                    {!isStreaming && runEndedAt !== null &&
-                      ` · finished ${formatTimestamp(String(runEndedAt))} (${formatElapsed(runEndedAt - runStartedAt)})`}
-                  </span>
-                )}
-              </div>
-              {isStreaming && (
-                <button
-                  style={cancelRunBtnStyle}
-                  onClick={() => { void handleCancel(); }}
-                  disabled={cancelling}
-                  title="Terminate the running container"
-                >
-                  {cancelling ? 'Cancelling…' : 'Cancel run'}
+      <div style={isDesktop ? desktopContainerStyle : mobileContainerStyle}>
+        <div style={isDesktop ? mainColumnStyle : undefined}>
+          <div style={helperBarStyle}>
+            <button style={helperLinkStyle} onClick={goToLastMessage}>
+              💬 Go to my last message
+            </button>
+            {hasUnread && (
+              <>
+                <button style={helperLinkStyle} onClick={goToFirstUnread}>
+                  🔵 Go to first unread
                 </button>
-              )}
-            </div>
-            <Terminal output={output} isStreaming={isStreaming} />
+                <button style={helperLinkStyle} onClick={handleMarkAllRead}>
+                  ✓ Mark all read
+                </button>
+              </>
+            )}
           </div>
-        )}
-      </div>
 
-      <div style={composerToolsStyle}>
-        {prompts.length > 0 && (
-          <select
-            style={promptPickerStyle}
-            value=""
-            onChange={e => {
-              if (e.target.value) handleInsertPrompt(e.target.value);
-            }}
-            disabled={isStreaming}
-            aria-label="Insert a saved prompt"
-          >
-            <option value="">Insert prompt…</option>
-            {prompts.map(p => (
-              <option key={p.id} value={p.id}>
-                {p.name}
-              </option>
-            ))}
-          </select>
-        )}
-        <button
-          style={{ ...savePromptBtnStyle, opacity: input.trim() && !savingPrompt ? 1 : 0.5 }}
-          onClick={() => { void handleSavePrompt(); }}
-          disabled={!input.trim() || savingPrompt}
-          title="Save the current draft to the prompt library"
-        >
-          {savingPrompt ? 'Saving…' : 'Save as prompt'}
-        </button>
-      </div>
+          <PendingCallbacksPanel
+            sessionId={sessionId}
+            callbacks={pendingCallbacks}
+            onAnswered={handleCallbackAnswered}
+          />
 
-      {recoveredDraft && (
-        <div style={recoveredDraftStyle}>
-          A message you sent to this session earlier failed to go through, and you'd navigated away
-          before it could be restored — we saved it below. Send it again, or clear it and start fresh.
+          <div style={transcriptStyle}>
+            {messagesError && (
+              <div style={messagesErrorStyle}>
+                Failed to load transcript for this session.
+              </div>
+            )}
+            {messages.length === 0 && !isStreaming && !sendError && !messagesError && !keepOutput && (
+              <div style={emptyStyle}>
+                No messages yet — send a prompt below to start the session.
+              </div>
+            )}
+            {(() => {
+              const latestAgentMessage = [...messages].reverse().find(m => m.role === 'agent');
+              const latestAgentMessageId = latestAgentMessage?.id;
+              return messages.map(m => (
+                <MessageBlock
+                  key={m.id}
+                  message={m}
+                  highlighted={m.id === highlightedId}
+                  onTodoAdded={() => { /* todos live on their own page */ }}
+                  onRetry={handleRetry}
+                  isUnread={(parseInt(m.seq, 10) || 0) > lastSavedSeq}
+                  isLatestAgentMessage={m.id === latestAgentMessageId}
+                />
+              ));
+            })()}
+            {(isStreaming || sendError || keepOutput) && (
+              <div style={liveWrapStyle}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                  <div style={sendError ? liveErrorLabelStyle : liveLabelStyle}>
+                    {isStreaming ? 'running…' : sendError ? 'failed' : 'done — could not refresh transcript'}
+                    {runStartedAt !== null && (
+                      <span style={liveTimingStyle} title={new Date(runStartedAt).toLocaleString()}>
+                        {' '}· started {formatTimestamp(String(runStartedAt))}
+                        {isStreaming && ` · ${formatElapsed(nowTick - runStartedAt)}`}
+                        {!isStreaming && runEndedAt !== null &&
+                          ` · finished ${formatTimestamp(String(runEndedAt))} (${formatElapsed(runEndedAt - runStartedAt)})`}
+                      </span>
+                    )}
+                  </div>
+                  {isStreaming && (
+                    <button
+                      style={cancelRunBtnStyle}
+                      onClick={() => { void handleCancel(); }}
+                      disabled={cancelling}
+                      title="Terminate the running container"
+                    >
+                      {cancelling ? 'Cancelling…' : 'Cancel run'}
+                    </button>
+                  )}
+                  {sendError && (() => {
+                    const lastUserMsg = [...messages].reverse().find(m => m.role === 'user');
+                    if (!lastUserMsg) return null;
+                    return (
+                      <button
+                        style={cancelRunBtnStyle}
+                        onClick={() => { void handleRetry(lastUserMsg.content); }}
+                        title="Retry the failed message"
+                      >
+                        🔄 Retry run
+                      </button>
+                    );
+                  })()}
+                </div>
+                <Terminal output={output} isStreaming={isStreaming} />
+              </div>
+            )}
+          </div>
+
+          <div style={composerToolsStyle}>
+            {prompts.length > 0 && (
+              <select
+                style={promptPickerStyle}
+                value=""
+                onChange={e => {
+                  if (e.target.value) handleInsertPrompt(e.target.value);
+                }}
+                disabled={isStreaming}
+                aria-label="Insert a saved prompt"
+              >
+                <option value="">Insert prompt…</option>
+                {prompts.map(p => (
+                  <option key={p.id} value={p.id}>
+                    {p.name}
+                  </option>
+                ))}
+              </select>
+            )}
+            <button
+              style={{ ...savePromptBtnStyle, opacity: input.trim() && !savingPrompt ? 1 : 0.5 }}
+              onClick={() => { void handleSavePrompt(); }}
+              disabled={!input.trim() || savingPrompt}
+              title="Save the current draft to the prompt library"
+            >
+              {savingPrompt ? 'Saving…' : 'Save as prompt'}
+            </button>
+          </div>
+
+          {recoveredDraft && (
+            <div style={recoveredDraftStyle}>
+              A message you sent to this session earlier failed to go through, and you'd navigated away
+              before it could be restored — we saved it below. Send it again, or clear it and start fresh.
+            </div>
+          )}
+          <div style={inputRowStyle}>
+            <textarea
+              ref={textareaRef}
+              style={textareaStyle}
+              rows={3}
+              placeholder="Send a message… (Enter to send, Shift+Enter for newline)"
+              value={input}
+              onChange={e => { setRecoveredDraft(false); setInput(e.target.value); }}
+              onKeyDown={handleKeyDown}
+              disabled={isStreaming}
+            />
+            <button
+              style={{
+                ...sendBtnStyle,
+                opacity: isStreaming || !input.trim() ? 0.5 : 1,
+                cursor: isStreaming || !input.trim() ? 'not-allowed' : 'pointer',
+              }}
+              onClick={() => { void handleSend(); }}
+              disabled={isStreaming || !input.trim()}
+            >
+              {isStreaming ? 'Running…' : 'Send'}
+            </button>
+          </div>
         </div>
-      )}
-      <div style={inputRowStyle}>
-        <textarea
-          ref={textareaRef}
-          style={textareaStyle}
-          rows={3}
-          placeholder="Send a message… (Enter to send, Shift+Enter for newline)"
-          value={input}
-          onChange={e => { setRecoveredDraft(false); setInput(e.target.value); }}
-          onKeyDown={handleKeyDown}
-          disabled={isStreaming}
-        />
-        <button
-          style={{
-            ...sendBtnStyle,
-            opacity: isStreaming || !input.trim() ? 0.5 : 1,
-            cursor: isStreaming || !input.trim() ? 'not-allowed' : 'pointer',
-          }}
-          onClick={() => { void handleSend(); }}
-          disabled={isStreaming || !input.trim()}
-        >
-          {isStreaming ? 'Running…' : 'Send'}
-        </button>
+
+        {isDesktop ? (
+          <div style={sidebarColumnStyle}>
+            <GitHubPanel repoUrl={session.repoUrl} branch={session.branch} />
+
+            <LinkedReposPanel
+              sessionId={sessionId}
+              primaryRepoUrl={session.repoUrl}
+              primaryBranch={session.branch}
+            />
+
+            {showRuns && (
+              <div style={runsPanelStyle}>
+                <div style={runsHeaderStyle}>Run history</div>
+                {runs.length === 0 && <div style={runsEmptyStyle}>No runs recorded yet.</div>}
+                {runs.map(r => (
+                  <div key={r.id} style={runRowStyle}>
+                    <span style={runStatusStyle(r.status)}>{r.status}</span>
+                    <span style={runPreviewStyle} title={r.promptPreview}>{r.promptPreview || '(no prompt)'}</span>
+                    <span style={runMetaStyle} title={formatFullTimestamp(r.startedAt)}>
+                      {formatTimestamp(r.startedAt)}
+                      {runDuration(r) ? ` · ${runDuration(r)}` : ''}
+                    </span>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        ) : (
+          <>
+            <GitHubPanel repoUrl={session.repoUrl} branch={session.branch} />
+
+            <LinkedReposPanel
+              sessionId={sessionId}
+              primaryRepoUrl={session.repoUrl}
+              primaryBranch={session.branch}
+            />
+
+            {showRuns && (
+              <div style={runsPanelStyle}>
+                <div style={runsHeaderStyle}>Run history</div>
+                {runs.length === 0 && <div style={runsEmptyStyle}>No runs recorded yet.</div>}
+                {runs.map(r => (
+                  <div key={r.id} style={runRowStyle}>
+                    <span style={runStatusStyle(r.status)}>{r.status}</span>
+                    <span style={runPreviewStyle} title={r.promptPreview}>{r.promptPreview || '(no prompt)'}</span>
+                    <span style={runMetaStyle} title={formatFullTimestamp(r.startedAt)}>
+                      {formatTimestamp(r.startedAt)}
+                      {runDuration(r) ? ` · ${runDuration(r)}` : ''}
+                    </span>
+                  </div>
+                ))}
+              </div>
+            )}
+          </>
+        )}
       </div>
     </div>
   );
@@ -1253,6 +1486,16 @@ const deleteBtnStyle: React.CSSProperties = {
   cursor: 'pointer',
 };
 
+const archiveBtnStyle: React.CSSProperties = {
+  padding: '5px 12px',
+  background: 'transparent',
+  color: '#c9d1d9',
+  border: '1px solid #30363d',
+  borderRadius: '6px',
+  fontSize: '13px',
+  cursor: 'pointer',
+};
+
 const composerToolsStyle: React.CSSProperties = {
   display: 'flex',
   gap: '8px',
@@ -1321,4 +1564,59 @@ const linkBtnStyle: React.CSSProperties = {
   fontSize: 'inherit',
   padding: 0,
   textDecoration: 'underline',
+};
+
+const helperBarStyle: React.CSSProperties = {
+  display: 'flex',
+  gap: '12px',
+  alignItems: 'center',
+  padding: '6px 12px',
+  background: '#161b22',
+  border: '1px solid #30363d',
+  borderRadius: '8px',
+  marginBottom: '8px',
+};
+
+const helperLinkStyle: React.CSSProperties = {
+  background: 'transparent',
+  border: 'none',
+  color: '#58a6ff',
+  fontSize: '12px',
+  cursor: 'pointer',
+  padding: '2px 6px',
+  borderRadius: '4px',
+  transition: 'background 0.2s',
+};
+
+const desktopContainerStyle: React.CSSProperties = {
+  display: 'flex',
+  flexDirection: 'row',
+  gap: '24px',
+  alignItems: 'flex-start',
+  width: '100%',
+};
+
+const mobileContainerStyle: React.CSSProperties = {
+  display: 'flex',
+  flexDirection: 'column',
+  gap: '16px',
+  width: '100%',
+};
+
+const mainColumnStyle: React.CSSProperties = {
+  flex: 1,
+  display: 'flex',
+  flexDirection: 'column',
+  gap: '16px',
+  minWidth: 0,
+};
+
+const sidebarColumnStyle: React.CSSProperties = {
+  width: '320px',
+  flexShrink: 0,
+  display: 'flex',
+  flexDirection: 'column',
+  gap: '16px',
+  position: 'sticky',
+  top: '24px',
 };

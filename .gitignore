@@ -13,3 +13,4 @@ cloud-agents.db*
 docker/extra-ca-certs/*.crt
 docker/extra-ca-certs/*.pem
 docker/extra-ca-certs/*.cer
+*.log

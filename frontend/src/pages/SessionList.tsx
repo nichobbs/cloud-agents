@@ -1,3 +1,4 @@
+import { useState } from 'react';
 import { Link } from 'react-router-dom';
 import { useSessions } from '../context/SessionsContext';
 import { SessionCard } from '../components/SessionCard';
@@ -5,6 +6,15 @@ import { getLogin, isSignedIn } from '../lib/auth';
 
 export function SessionList() {
   const { sessions } = useSessions();
+  const [tab, setTab] = useState<'active' | 'archived'>('active');
+
+  const filteredSessions = sessions.filter(s => {
+    if (tab === 'archived') {
+      return s.isArchived === '1';
+    } else {
+      return s.isArchived !== '1';
+    }
+  });
 
   return (
     <div style={pageStyle}>
@@ -22,18 +32,46 @@ export function SessionList() {
             </p>
           )}
         </div>
+        <Link to="/sessions/new" style={primaryBtnStyle}>New session</Link>
       </div>
 
-      {sessions.length === 0 ? (
+      <div style={tabContainerStyle}>
+        <button
+          onClick={() => setTab('active')}
+          style={{
+            ...tabButtonStyle,
+            borderBottomColor: tab === 'active' ? '#58a6ff' : 'transparent',
+            color: tab === 'active' ? '#f0f6fc' : '#8b949e',
+          }}
+        >
+          Active ({sessions.filter(s => s.isArchived !== '1').length})
+        </button>
+        <button
+          onClick={() => setTab('archived')}
+          style={{
+            ...tabButtonStyle,
+            borderBottomColor: tab === 'archived' ? '#58a6ff' : 'transparent',
+            color: tab === 'archived' ? '#f0f6fc' : '#8b949e',
+          }}
+        >
+          Archived ({sessions.filter(s => s.isArchived === '1').length})
+        </button>
+      </div>
+
+      {filteredSessions.length === 0 ? (
         <div style={emptyStyle}>
           <p style={{ margin: '0 0 16px', color: '#8b949e' }}>
-            Create a session to run Claude Code against a repository.
+            {tab === 'active'
+              ? 'No active sessions.'
+              : 'No archived sessions.'}
           </p>
-          <Link to="/sessions/new" style={primaryBtnStyle}>New session</Link>
+          {tab === 'active' && (
+            <Link to="/sessions/new" style={primaryBtnStyle}>New session</Link>
+          )}
         </div>
       ) : (
         <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
-          {sessions.map(s => (
+          {filteredSessions.map(s => (
             <SessionCard key={s.sessionId} session={s} />
           ))}
         </div>
@@ -41,6 +79,25 @@ export function SessionList() {
     </div>
   );
 }
+
+const tabContainerStyle: React.CSSProperties = {
+  display: 'flex',
+  gap: '16px',
+  borderBottom: '1px solid #30363d',
+  marginBottom: '20px',
+};
+
+const tabButtonStyle: React.CSSProperties = {
+  background: 'none',
+  border: 'none',
+  borderBottom: '2px solid transparent',
+  padding: '8px 4px 12px',
+  fontSize: '14px',
+  fontWeight: 500,
+  cursor: 'pointer',
+  outline: 'none',
+  transition: 'color 0.2s, border-color 0.2s',
+};
 
 const pageStyle: React.CSSProperties = {
   maxWidth: '720px',

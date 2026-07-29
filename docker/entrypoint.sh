@@ -196,6 +196,18 @@ if [ -n "${CLAUDE_HOME_TARBALL_B64:-}" ] && [ ! -f "$HOME/.claude/.credentials.j
     printf '%s' "${CLAUDE_HOME_TARBALL_B64}" | base64 -d | tar -xzf - -C "$HOME/.claude"
 fi
 
+# Configure git credential helper and push defaults dynamically inside the container.
+if [ -n "${GITHUB_TOKEN:-}" ]; then
+    echo "entrypoint: configuring git credential helper for GitHub" >&2
+    if [ "$(id -u)" -eq 0 ]; then
+        git config --system credential.helper '!f() { cat >/dev/null; if [ "$1" = "get" ]; then echo "username=x-access-token"; echo "password=${GITHUB_TOKEN}"; fi; }; f'
+        git config --system push.autoSetupRemote true
+    else
+        git config --global credential.helper '!f() { cat >/dev/null; if [ "$1" = "get" ]; then echo "username=x-access-token"; echo "password=${GITHUB_TOKEN}"; fi; }; f'
+        git config --global push.autoSetupRemote true
+    fi
+fi
+
 # Clone the repository on first run; reuse the volume afterwards.
 if [ ! -d /workspace/.git ]; then
     if [ -z "${REPO_URL:-}" ]; then

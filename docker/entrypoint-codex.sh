@@ -31,6 +31,18 @@ if [ -z "${OPENAI_API_KEY:-}" ]; then
     exit 64
 fi
 
+# Configure git credential helper and push defaults dynamically inside the container.
+if [ -n "${GITHUB_TOKEN:-}" ]; then
+    echo "entrypoint-codex: configuring git credential helper for GitHub" >&2
+    if [ "$(id -u)" -eq 0 ]; then
+        git config --system credential.helper '!f() { cat >/dev/null; if [ "$1" = "get" ]; then echo "username=x-access-token"; echo "password=${GITHUB_TOKEN}"; fi; }; f'
+        git config --system push.autoSetupRemote true
+    else
+        git config --global credential.helper '!f() { cat >/dev/null; if [ "$1" = "get" ]; then echo "username=x-access-token"; echo "password=${GITHUB_TOKEN}"; fi; }; f'
+        git config --global push.autoSetupRemote true
+    fi
+fi
+
 if [ ! -d /workspace/.git ]; then
     if [ -z "${REPO_URL:-}" ]; then
         echo "entrypoint-codex: REPO_URL is required for the first run" >&2

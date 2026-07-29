@@ -9,6 +9,8 @@ interface SessionsContextValue {
   removeSession: (sessionId: string) => void;
   getSession: (sessionId: string) => Session | undefined;
   updateSession: (sessionId: string, updates: Partial<Session>) => void;
+  archiveSession: (sessionId: string) => Promise<void>;
+  unarchiveSession: (sessionId: string) => Promise<void>;
 }
 
 const SessionsContext = createContext<SessionsContextValue | null>(null);
@@ -117,9 +119,19 @@ export function SessionsProvider({ children }: { children: ReactNode }) {
     });
   }, []);
 
+  const archiveSession = useCallback(async (sessionId: string) => {
+    await api.archiveSession(sessionId);
+    updateSession(sessionId, { isArchived: '1' });
+  }, [updateSession]);
+
+  const unarchiveSession = useCallback(async (sessionId: string) => {
+    await api.unarchiveSession(sessionId);
+    updateSession(sessionId, { isArchived: '0' });
+  }, [updateSession]);
+
   return (
     <SessionsContext.Provider
-      value={{ sessions, addSession, removeSession, getSession, updateSession }}
+      value={{ sessions, addSession, removeSession, getSession, updateSession, archiveSession, unarchiveSession }}
     >
       {children}
     </SessionsContext.Provider>

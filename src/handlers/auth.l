@@ -532,5 +532,5 @@ pub func authorizeCallback(authHeaderValue: in String, expectedToken: in String)
 /// through normal user auth plus an ownership check in the handler, exactly
 /// like every other session sub-resource route.
 pub func isContainerCallbackRoute(path: in String): Bool {
-  return path.contains("/callbacks/") and not path.endsWith("/answer")
+  return path.contains("/callbacks/") and not path.endsWith("/answer") and not path.endsWith("/pending")
 }

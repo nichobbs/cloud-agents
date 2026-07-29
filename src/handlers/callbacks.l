@@ -1799,3 +1799,63 @@ pub func listNotificationsHandler(id: in String): Result[NotificationListRespons
     case Err(e) -> return Err(dbError(e))
   }
 }
+
+// ─── Human-in-the-loop pending listings ──────────────────────────────────────────
+@generate(Json)
+pub record PendingCallbacksResponse {
+  pub permissionRequests: slice[CloudAgents.Repository.PermissionRequest]
+  pub userQuestions: slice[CloudAgents.Repository.UserQuestion]
+  pub secretRequests: slice[CloudAgents.Repository.SecretRequest]
+}
+
+/// GET /api/sessions/{id}/callbacks/pending — user-originated.
+/// Returns all currently active/pending callbacks for a session, so that the
+/// frontend UI can sync up instantly on page load or after a manual refresh.
+pub func listPendingCallbacksHandler(id: in String): Result[PendingCallbacksResponse, Web.ApiError] {
+  if id.length == 0 {
+    return Err(Web.badRequest("id is required"))
+  }
+  requireOwnedSession(id)?
+
+  val prs = match CloudAgents.Repository.permissionRequestsCreatedAfter(id, "0") {
+    case Ok(items) -> items
+    case Err(e) -> return Err(dbError(e))
+  }
+  val qs = match CloudAgents.Repository.userQuestionsCreatedAfter(id, "0") {
+    case Ok(items) -> items
+    case Err(e) -> return Err(dbError(e))
+  }
+  val srs = match CloudAgents.Repository.secretRequestsCreatedAfter(id, "0") {
+    case Ok(items) -> items
+    case Err(e) -> return Err(dbError(e))
+  }
+
+  var filteredPrs: slice[CloudAgents.Repository.PermissionRequest] = []
+  for pr in prs {
+    if pr.status == "pending" {
+      filteredPrs = filteredPrs.append(pr)
+    }
+  }
+
+  var filteredQs: slice[CloudAgents.Repository.UserQuestion] = []
+  for q in qs {
+    if q.status == "pending" {
+      filteredQs = filteredQs.append(q)
+    }
+  }
+
+  var filteredSrs: slice[CloudAgents.Repository.SecretRequest] = []
+  for sr in srs {
+    if sr.status == "pending" {
+      filteredSrs = filteredSrs.append(sr)
+    }
+  }
+
+  return Ok(
+    PendingCallbacksResponse(
+      permissionRequests = filteredPrs,
+      userQuestions = filteredQs,
+      secretRequests = filteredSrs
+    )
+  )
+}
