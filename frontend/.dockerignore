@@ -1,0 +1,16 @@
+# Docker's build-context filtering only respects .dockerignore, not
+# .gitignore (#501). Without this, `docker build`/`docker compose up
+# --build` run from a checkout that's had `npm install`/`npm run dev` done
+# locally (a normal dev workflow — see scripts/dev.sh) sends the host's
+# node_modules as part of the build context, and Dockerfile's `COPY . .`
+# after `npm ci` clobbers the container's freshly-installed node_modules with
+# it. Vite/Rollup ship platform-specific native binaries (e.g.
+# @rollup/rollup-*), so a host node_modules built outside this Dockerfile's
+# node:20-alpine (musl) stage can break `npm run build` with a missing
+# native binary, or produce a subtly wrong build.
+node_modules
+dist
+
+# Editor/VCS cruft that has no business in the build context either.
+.git
+.env.local

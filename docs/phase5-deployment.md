@@ -44,6 +44,22 @@ volumes:
   user_data:
 ```
 
+**Network-policy environment variables (optional).** A session profile's
+`network_policy` maps to the runner container's network access:
+
+- `full` (or no profile) — default Docker bridge, full egress.
+- `none` — fully isolated, no network.
+- `restricted` — joins the Docker network named by **`CLOUD_AGENTS_RESTRICTED_NETWORK`**
+  (create it `--internal`, with an allowlisting egress proxy as its only route
+  out). **If this variable is unset, `restricted` fails closed to full isolation
+  (`none`)** rather than silently granting full egress — so a `restricted`
+  session with no egress network configured will have no network at all (its
+  `git clone` will fail). Set `CLOUD_AGENTS_RESTRICTED_NETWORK` before relying on
+  the `restricted` policy. `CLOUD_AGENTS_EGRESS_PROXY`, if set, additionally
+  passes `HTTP(S)_PROXY` vars into `restricted` containers as a convenience for
+  proxy-aware clients (advisory only — the network mode above is the actual
+  enforcement).
+
 3. Reverse Proxy & TLS
 
 Caddyfile:

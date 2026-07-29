@@ -109,6 +109,14 @@ match maybeUser {
 
 ---
 
+**Storing a `Result[T,E]` in a record field breaks `match` on read-back (upstream, lyric-lang#6231).**
+Reading the field and matching panics `"match not exhaustive"` at runtime
+even though both cases are handled. Reconstruct `Ok`/`Err` fresh in an
+accessor instead of storing/returning a `Result`-typed field — see
+`shim/tests/fakes.l` for the worked pattern.
+
+---
+
 ## Operators
 
 **No bitwise operators.**
@@ -148,7 +156,164 @@ this isn't "every imported free function needs dot-call," just something
 specific to (at least some of) `Std.Core`'s generic helpers. If a bare call
 to an imported function fails with "unknown name," try the dot-call form
 before assuming the function doesn't exist — but don't assume the reverse
-either.
+either. **And compiling via dot-call does not mean it runs**: the
+`unwrapResult` family compiles as a dot-call and then fails at runtime with
+"unsupported method" — see the Result/Option convenience-methods entry
+below. Match on the union instead.
+
+**Ambiguous names across whole-module imports resolve silently by import
+order — no compile error, no argument type-check.** If two imported packages
+both export `updateSessionModel`, an unqualified call binds to one of them
+based on import order; if the chosen one has a different parameter type, the
+call still compiles and fails at runtime with an invalid-cast (confirmed on
+v0.4.19: reordering `import CloudAgents.Handlers`/`import
+CloudAgents.SessionStore` alphabetically flipped which `updateSessionModel` a
+test called). Fully qualify any name exported by more than one imported
+package.
+
+**Package-qualified record construction fails at runtime.**
+`CloudAgents.Prompts.SavePromptRequest(name = ..., body = ...)` compiles but
+dies with `unsupported method 'SavePromptRequest' on the receiver type`
+(confirmed on v0.4.19 by CloudAgents.PromptTests). Import the module and
+construct with the unqualified name — `SavePromptRequest(...)`. Qualified
+*function* calls (`CloudAgents.Sqlite.execute(...)`) work fine; it is only
+record constructors that must be unqualified.
+
+**A specific unqualified, imported record type can crash on construction
+with a bare `InvalidProgramException`, while structurally-identical
+siblings from the same package construct fine.** Confirmed on v0.4.34 by
+`CloudAgents.MainTests`: `Comment(id = ..., messageId = ..., sessionId =
+..., body = ..., createdAt = ...)` — a plain, unqualified construction of a
+`CloudAgents.Repository` record after `import CloudAgents.Repository`,
+same as the package-qualified-construction entry's documented workaround —
+crashed with "Common Language Runtime detected an invalid program", while
+`Todo`/`Message`/`MessageList`/`CommentList`/`TodoList` from the exact same
+package, constructed the same unqualified way in adjacent tests in the same
+file, all worked. No trigger condition identified (field count/types don't
+obviously differ enough to explain it — `Todo` has one more `String` field
+than `Comment` and is unaffected). If a record construction you'd expect to
+work throws this exact error, don't assume the whole type/pattern is
+broken — isolate to a single minimal test first; only the exact one
+construction may be affected. Confirm whether it also affects production:
+if the type in question is only ever constructed inside its own home
+package (check with a grep for `TypeName(` outside that package) and
+callers elsewhere only ever *receive* an already-built value, production
+is unaffected — this was the case here (`Comment` is only constructed in
+`repository.l`'s own `rowToComment`/`addComment`).
+
+**Constructing a `Lyric.Web` `Request` record crashes with a bare
+`InvalidProgramException`.** Unlike the package-qualified-construction entry
+above, this is already unqualified (`Request(...)` after `import Web`) and
+still crashes — with a different, lower-level CLR error ("Common Language
+Runtime detected an invalid program") — even when every field is a value of
+the documented type (`Map.empty[String, String]()` for `pathParams`/
+`queryParams`/`headers`, plain strings for `method`/`path`/`body`).
+Confirmed on Lyric.Web 0.4.26 by `CloudAgents.MainTests`, isolated to the
+construction itself: a handler that never reads a single field off `req`
+still crashed when the test harness built the `req` it was passed. Filed as
+[nichobbs/cloud-agents#354](https://github.com/nichobbs/cloud-agents/issues/354);
+run `./scripts/repro-web-request-crash.sh` to check whether your pinned
+Lyric.Web version still has it. Does not affect production code — this
+project's `src/main.l` Handler/Middleware adapters only ever *receive* a
+`Request` from the framework (reading it via `Web.header()`/
+`Web.pathParam()`), never construct one — so it only blocks
+constructing a `Request` yourself, e.g. in a test harness.
+
+**`Result`/`Option` convenience methods fail at runtime even as dot-calls.**
+`r.unwrapResult()` (and by the same mechanism `.unwrapResultOr()`,
+`.unwrapErrOr()`, and `Option.isSome()`/`.isNone()` below) compiles but dies
+at runtime with `unsupported method 'unwrapResult' on the receiver type`
+(confirmed on v0.4.19 by this repo's CloudAgents.PromptTests). `.isOk()` is
+in the same suspect family. **Match on `Ok`/`Err` / `Some`/`None` for
+everything**; the `?` operator is confirmed working at runtime and is fine.
+The Std.String methods (`.length`, `.substring`, `.contains`, ...) and
+`slice` indexing/`.append()` are confirmed working.
+
+**`slice[Byte].toList()` does not resolve at runtime** —
+`unsupported method 'toList' on the receiver type (no matching user method,
+extern binding, or built-in intrinsic)` (confirmed on v0.4.19 by this
+repo's `CloudAgents.CallbacksV2Tests`, `report_artifact`'s upload path:
+`Std.File.writeBytes` takes `List[Byte]`, and base64-decoding a request
+body yields `slice[Byte]`). Same "compiles as a dot-call, dies at runtime"
+family as the `Result`/`Option` convenience methods below, despite
+`lyric-stdlib/std/file.l`'s own module doc describing `slice[T].toList()` /
+`List[T].toArray()` as the intended round-trip shuttle — only the
+`List[T].toArray()` direction is confirmed working (used throughout
+`lyric-stdlib`'s own test suites, e.g. `metadata_reader_tests.l`). Build
+the `List[Byte]` by hand instead: `val acc: List[Byte] = newList(); var i =
+0; while i < b.length { acc.add(b[i]); i = i + 1 }` — plain-`Int` slice
+indexing is confirmed working (see the `Int.toNat()` entry below), so this
+loop is cheap and reliable. See `CloudAgents.Callbacks.sliceBytesToList`
+for the worked pattern.
+
+**`String.toUpperCase()` and `String.replace()` do not resolve at runtime** —
+`unsupported method 'toUpperCase' on the receiver type (no matching user
+method, extern binding, or built-in intrinsic)` (confirmed on v0.4.35 with a
+standalone repro: `"clientId".toUpperCase()` compiles fine, crashes the
+instant `main()` runs it). Same "compiles as a dot-call, dies at runtime"
+family as the `Result`/`Option` convenience methods above, despite both
+being documented in `docs/lyric/stdlib.md` (`s.toUpperCase(): String`,
+`s.replace(from: String, to: String): String`). If you need case-folding or
+substring replacement at runtime, do it by hand character-by-character
+(the same `.substring(i, 1)` + comparison-chain pattern this repo already
+uses for `digitValue`/`isAsciiLetter` in `src/handlers/proxy.l`) rather than
+reaching for either method — or, if you only need to assert something
+*about* a literal string shape at test time (not actually transform a
+runtime value), prefer literal string constants + `.contains()` checks,
+which are confirmed working.
+
+**`Int.toNat()` does not resolve at runtime** — `unsupported method 'toNat'
+on the receiver type` (confirmed on v0.4.19 by CloudAgents.CryptoTests). The
+reverse, `Nat.toInt()`, works fine. And you can't dodge it with `var i: Nat =
+0` either: integer literals are typed `Int` with no implicit Nat coercion, so
+that fails to compile (`T0061`/`T0033`, Nat-vs-Int). Practical consequence:
+iterating with a `Nat` counter to index a `slice[Byte]` is awkward — prefer
+working over `String`/base64 (whose `.length.toInt()` + `.substring` are
+known-good) when you need an index-driven loop.
+
+**`String.length` compared directly against an explicitly-`Nat`-typed value
+is a T0033 compile error ("comparison operands must be matching ordered
+types (got Int and Nat)")**, despite `String.length` being documented `Nat`.
+Confirmed on Lyric.Web 0.4.26 by an early draft of
+`CloudAgents.Text.withinMaxLength`: `s.length > max` (with `max: Nat` an
+explicit function parameter) failed to compile, even though `s.length >
+131072` (an untyped `Int` literal) compiles fine elsewhere in this
+codebase — so whichever side `.length` unifies to depends on the other
+operand, and an explicitly-typed `Nat` on the other side doesn't unify the
+way the docs would suggest.
+
+**A `Nat`-typed function argument crossing a package boundary can crash the
+*caller* at runtime with a bare `InvalidProgramException`, with no compile
+error at all.** Confirmed on Lyric.Web 0.4.26: `CloudAgents.Interactions`
+calling `CloudAgents.Text.withinMaxLength(s, max)` with `max: Nat` compiled
+cleanly but crashed every `CloudAgents.InteractionsTests` case that reached
+it — the exact same "Common Language Runtime detected an invalid program"
+signature `docs/lyric/gotchas.md`'s #354 entry (`Web.Request` construction)
+tracks, but with no `Web` involved anywhere on this call path; the shared
+trigger appears to be `Nat` specifically, not `Web`. Combined with the
+T0033 comparison gotcha above and the pre-existing `Int.toNat()`-doesn't-
+resolve and `Option.isSome()`-doesn't-resolve entries elsewhere in this
+file, `Nat` has more confirmed compile- and runtime-level defects in this
+toolchain than any other primitive — **prefer `Int` for cross-package
+function parameters and return types even where `Nat` would be the more
+"correct" documented type**, normalizing via `.toInt()` at the boundary
+(`s.length.toInt()`) the way `indexOfFrom` already does. Not yet isolated
+to a minimal repro (unlike #354) — if you hit this again, that's the next
+step.
+
+**`Std.Time.Instant.now()` is broken at runtime in the current toolchain** —
+it compiles, then fails with `Method not found: 'Void System.DateTime.now()'`
+(a lowercase `now` MemberRef the BCL has never had). Confirmed on v0.4.19 by
+this repo's live-DB tests, the first code that ever executed it. Work around
+with a direct BCL binding (`System.DateTimeOffset.get_UtcNow` +
+`ToUnixTimeMilliseconds`) — see `CloudAgents.Repository.nowMillis`.
+
+**`Option[T].isSome()`/`.isNone()` do not resolve at runtime in the current
+toolchain** — despite being documented in `docs/lyric/stdlib.md`. A call
+compiles but fails at runtime with `unsupported method 'isSome' on the
+receiver type` (confirmed on v0.4.19 by CI on this repo's
+`CloudAgents.SessionTests`). Use a full `match` on `Some`/`None` instead.
+`Result.isOk()` is fine — `docker_manager.l` uses it in production.
 
 **`out` parameters must be assigned on ALL control flow paths before return.**
 The compiler will reject a function that might return without assigning an `out` param.
@@ -177,6 +342,16 @@ package Foo
 //! This is correct module-level doc — goes before `package`
 package Foo
 ```
+
+---
+
+**A cross-package `pub val` used to construct several record types in one function crashes at JIT (upstream, lyric-lang#6232).**
+`System.InvalidProgramException` for the whole function, at runtime, no
+compile error. Related: a qualified constant read inside an `impl` method
+body crashes the same way (lyric-lang#6134), and reads through a
+*restored-DLL* dependency can silently produce `0`/null instead
+(lyric-lang#6133). Have the consuming package own such constants as its
+own literals — see `shim/src/main.l`'s header note.
 
 ---
 
@@ -248,6 +423,10 @@ pub func sqrt(x: in Double): Double
 
 **Async functions cannot have `out`/`inout` params crossing `await` points.** Return a tuple or record instead.
 
+**A `val` bound before one `await` can silently lose its value after a SECOND, different-callee `await` in the same async function** (lyric-lang#6249, confirmed on v0.4.35 — `./scripts/repro-compiler-bug.sh` check 8). It reads back as the type's default (`""` for `String`) instead of the value it was bound to — no exception, no diagnostic. A `val` bound before exactly one `await` and read immediately after that same await is fine; a function *parameter* (not a `val`) or a `var`-mutated loop counter read across a loop that repeatedly awaits the *same* callee is also fine. The risk is specifically: bind a value, `await` something, `await` something ELSE, then read the value. Workaround: thread the value through a mutable record field (e.g. an existing `cell`-style carrier record already passed into the function) instead of a bare local — a field survives reliably across multiple awaits. See `src/docker_manager.l`'s `runSessionMessageAsync` for the pattern (fixed in PR #690 after this bug was root-caused as the leading suspect behind a recurring `streamSessionMessage` `AccessViolationException` crash).
+
+**A `Long` (Int64) subtract-and-compare inside a large/complex function can crash the process with an `AccessViolationException`, confirmed via a real `dotnet-dump` crash dump** (`Unbox`'s `toTypeHnd` resolves to `System.Int64`; its `obj` is not a valid object reference — "this object has an invalid CLASS field"). This is what was actually still crashing `streamSessionMessage` after the lyric-lang#6249 fix above (PR #690) — a second, distinct bug. `nowMs - startMs > timeoutMs` (three `Long`s) done once per poll tick crashed every time, whether inline or via the pure, cross-package `CloudAgents.DockerPolicy.hasExceededRunTimeout` call `streamSessionMessage` originally used — both crashed identically, so this is NOT specifically about crossing a package boundary. Five independent from-scratch standalone repro attempts (matching local-variable count, a real cross-package `Long` call, the real project's package count/declaration order, real NuGet deps, a real streaming HTTP handler) never reproduced it; only substituting the actual, unmodified `docker_manager.l`/`docker_policy.l` source into an otherwise-minimal project did — see `scripts/repro-crosspkg-long-crash.sh` and `docs/BUILD.md`'s ninth compiler-note entry for the full narrative. Not yet root-caused to a specific compiler codegen defect or filed upstream. Workaround: avoid `Long` arithmetic entirely in this package — `src/docker_manager.l`'s `streamSessionMessage` now approximates elapsed time with an `Int` accumulator of each tick's `pollMs` instead of a `Long` epoch-millisecond subtraction, and `waitForContainer`'s analogous (never independently confirmed to crash, but fixed the same way as a precaution) retry-deadline check uses `Int` `System.Environment.TickCount` (`tickCountMs()`) instead of `Long` epoch milliseconds.
+
 **`protected type` entries are mutually exclusive.** Only one `entry` runs at a time. `when:` blocks the caller (not spins) until condition is true. `invariant:` violation on entry exit = terminates the program.
 
 **`defer` runs on ALL exits** — normal return, early return, bug/exception. Multiple defers execute in reverse declaration order.
@@ -312,6 +491,15 @@ pub func sqrt(x: in Double): Double
 
 **No reflection.** `Type.GetField`, `Activator.CreateInstance` etc. are not available. Use source generators (`@generate`) for code that would otherwise use reflection.
 
+**`@externInstance` + `@externTarget("System.Object.GetType")` on a boxed value-type argument (e.g. `Byte`) crashes the process with `AccessViolationException`, not a catchable exception.** Confirmed in production: `getByteType(b: in Byte): Type` (an instance-bound call to `b.GetType()`, used only to feed `Array.CreateInstance` when assembling a typed array) took down the entire server — the crash's own stack trace showed the compiled call site's parameter type as `Int32`, not `Byte`, meaning the boxed instance actually passed doesn't match what the generated call expects. If you need a `Type` value (e.g. for `Array.CreateInstance`), bind the plain static `System.Type.GetType(string)` instead — no instance/boxing involved, so this miscompilation path never triggers:
+```
+@externTarget("System.Type.GetType")
+func typeFromName(name: in String): Type = ()
+...
+val byteType = typeFromName("System.Byte")
+```
+More generally: treat any `@externInstance` call whose target is itself reflection (`GetType`, and by extension anything `Array.CreateInstance`-adjacent) as suspect for value-type arguments specifically — this is the same "no reflection" territory as the item above, just reachable through an instance-method extern binding rather than a direct `Type.GetField`/`Activator.CreateInstance` call.
+
 **`@externInstance` must be explicit for instance methods.** Default is static. Forgetting it on an instance method = wrong call instruction emitted.
 
 **Unresolvable `@externTarget` on .NET = compile-time error.** On JVM = `NoClassDefFoundError` at runtime.
@@ -365,3 +553,5 @@ pub func sqrt(x: in Double): Double
 **Interface signature change = compile error in stub config.** This is a feature. If your stub config stops compiling after a refactor, that's the test telling you it needs updating.
 
 **`await` works in test blocks with no extra setup.** The test runner initialises an async runtime automatically.
+
+**A `@test_module` cannot invoke *any* function it reaches by `import`-ing a package that contains `async func`s — even a pure, non-async one.** The call fails at runtime with `The signature is incorrect.` (not a compile error — the suite builds, then the test fails when it runs). This bit `CloudAgents.Handlers` handlers that reference `CloudAgents.Docker` (`cancelRun`, `getRunOutput`) and, confirmed in CI, a plain `pub func` like `networkModeForPolicy` when a test did `import CloudAgents.Docker` directly. Importing a package that *transitively* pulls in such a package is fine (e.g. `main_tests` imports `CloudAgents` and calls its pure funcs) — it's the direct import of the async-bearing package that breaks. To unit-test pure logic that currently lives in an async package, **extract it into its own package with no `async func`** and import that instead (see `CloudAgents.NetworkPolicy`, split out of `CloudAgents.Docker` for exactly this reason).

@@ -1,0 +1,42 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0</TargetFramework>
+    <AssemblyName>cloud-agents</AssemblyName>
+    <RootNamespace>CloudAgents.Native</RootNamespace>
+    <Nullable>enable</Nullable>
+    <InvariantGlobalization>true</InvariantGlobalization>
+    <!-- True Native AOT (PublishAot=true) is NOT usable yet: it publishes
+         cleanly with zero ILC warnings, but the resulting binary crashes at
+         startup with a silent miscompile — System.IndexOutOfRangeException
+         at Array.GetFlattenedIndex, reproduced down to a minimal slice[Record]
+         literal + for-in loop unrelated to anything CloudAgents-specific.
+         Tracked upstream at nichobbs/lyric-lang#5781; re-enable PublishAot
+         here once that's fixed. Until then this publishes self-contained
+         (the .NET runtime bundled into the output, so no separate `dotnet`
+         install is needed on the target machine) but framework-dependent
+         rather than ahead-of-time compiled — verified to match JIT behaviour
+         exactly, including the known getContainerLogs gap (docs/BUILD.md). -->
+    <PublishAot>false</PublishAot>
+    <SelfContained>true</SelfContained>
+    <NoWarn>$(NoWarn);NU1510</NoWarn>
+    <!-- Directory holding CloudAgents.dll and every dependency DLL `lyric
+         build` already copies alongside it (Lyric.Web/Docker, the full
+         Lyric.Stdlib.* closure, Microsoft.Data.Sqlite + SQLitePCLRaw).
+         Defaults to the repo's own bin/, overridable via -p:BinDir=/abs/path
+         so a caller can AOT-link a specific build output instead. -->
+    <BinDir Condition="'$(BinDir)' == ''">$(MSBuildThisFileDirectory)../../bin</BinDir>
+  </PropertyGroup>
+
+  <!-- Every DLL `lyric build` produces, including CloudAgents.dll itself.
+       This project supplies its own entry point (Program.cs) rather than
+       relying on CloudAgents.dll's; referencing it as an ordinary managed
+       DLL is enough for Program.cs to call into it directly. -->
+  <ItemGroup>
+    <Reference Include="$(BinDir)/*.dll">
+      <Private>true</Private>
+    </Reference>
+  </ItemGroup>
+
+</Project>

@@ -4,13 +4,23 @@
 
 **Duration**: 2-3 weeks
 
-> **As shipped, the "real time" part of this goal is not yet met.**
-> `src/docker_manager.l`'s `runSessionMessage` blocks on the container fully
-> exiting before fetching logs at all, and `sendMessage` in
-> `src/handlers/sessions.l` sends the entire captured transcript as one SSE
-> response after the run completes — not incrementally while it runs. The
-> SSE *framing* below is real and implemented; the *live* part isn't. See
-> `docs/review-2026-07-03-followup.md`'s headline finding for detail.
+> **The "real time" part of this goal is now met (#496).** `POST
+> /api/sessions/{id}/messages` streams the container's output as live SSE
+> `data:` frames while the run executes, using `Lyric.Web 0.4.33`'s
+> chunked-response streaming API (`StreamingHandler` / `startStreaming` — the
+> feature this project filed upstream, see
+> `docs/upstream/lyric-web-streaming.md`).
+> `CloudAgents.Handlers.streamSendMessage` (`src/handlers/sessions.l`) drives
+> the run and hands a `ResponseWriter` to
+> `CloudAgents.Docker.streamSessionMessage` (`src/docker_manager.l`), which
+> observes the container and writes each new output slice as it appears.
+>
+> _History: originally this was unmet — `runSessionMessage` blocked on the
+> container fully exiting and `sendMessage` sent the whole captured transcript
+> as one SSE body after the run completed (only the SSE *framing* was live).
+> The `/output` + `/output/{offset}` polling endpoints remain as a
+> pre-first-chunk bridge and older-client fallback. See
+> `docs/review-2026-07-03-followup.md` for the original finding._
 
 ## Implementation Details
 
@@ -90,6 +100,16 @@ fi
 claude -p "$PROMPT" --resume
 ```
 
+**This sketch's `.claude/history.jsonl` check turned out to be wrong** —
+Claude Code never actually writes a file by that name; it stores
+conversation history under `~/.claude/projects/...` instead. The sketch's
+bare `claude -p ... --resume` (no session ID) is also invalid in `--print`
+mode. Both were carried into the real `docker/entrypoint.sh` and caused
+real failures (#386 and a related session-ID collision on message 2+),
+fixed by tracking first-invocation state with the runner's own marker file
+instead — see `docker/entrypoint.sh`'s comments for the actual, current
+logic.
+
 3. Frontend Prototype
 
 ```javascript
@@ -115,7 +135,13 @@ For Phase 1, mount a local ~/.claude folder manually as a bind mount. This is re
 
 5. Constraints & Risks
 
-· Architecture must be linux/amd64.
+· ~~Architecture must be linux/amd64~~ — no longer true: `docker/Dockerfile`
+  builds natively per-host architecture (amd64 or arm64) as of
+  nichobbs/cloud-agents#654's follow-up, since Lyric publishes linux-arm64
+  releases too. This constraint was written before that was known, and
+  forcing linux/amd64 unconditionally made the image silently depend on
+  QEMU emulation on arm64 hosts — which broke outright on a real Coolify
+  deploy that didn't have it registered.
 · ANSI output may contain progress spinners; as shipped this is preserved and rendered by the frontend rather than stripped (see "SSE streaming" above).
 · No concurrency control yet – two rapid messages on the same session may conflict. Added in Phase 2.
 

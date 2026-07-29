@@ -14,8 +14,11 @@
 # small, self-contained `main()` doesn't happen to trigger bug 5's
 # (now-fixed) cross-package metadata-token corruption either, unlike the
 # real project's `lyric run` (scripts/run-api.sh) and `lyric test`. Bug 6
-# (`slice[T].append()` throwing at runtime, still open) doesn't affect it
-# either, since this harness never calls `.append()`.
+# (`slice[T].append()` throwing at runtime, fixed in v0.4.18) never
+# affected it either, since this harness never calls `.append()`. Bug 7
+# (an untyped top-level String val's `.length` throwing an IList cast,
+# fixed in v0.4.19, lyric-lang#5298) never affected it either, since this
+# harness has no such top-level val.
 #
 # This script compiles a small hand-rolled `main()` harness and runs it with
 # `lyric build` + `lyric run` rather than `lyric test`, on the theory that
@@ -41,6 +44,11 @@ mkdir -p "$WORK/src/streaming" "$WORK/src/db" "$WORK/src/handlers"
 cp "$REPO_ROOT/src/streaming/streaming.l"   "$WORK/src/streaming/"
 cp "$REPO_ROOT/src/db/db_client.l"          "$WORK/src/db/"
 cp "$REPO_ROOT/src/handlers/auth.l"         "$WORK/src/handlers/"
+# streaming.l and auth.l call into CloudAgents.Text (isControlChar /
+# indexOfFrom), so the shared package must be part of this scratch build too —
+# otherwise those cross-package calls link to nothing and the CLR rejects the
+# method at runtime (InvalidProgramException in jsonEscape).
+cp "$REPO_ROOT/src/text.l"                  "$WORK/src/"
 
 cat > "$WORK/lyric.toml" <<'TOML'
 [package]
@@ -51,6 +59,7 @@ name = "CloudAgentsVerify"
 output = "single"
 output_assembly = "CloudAgentsVerify.dll"
 [project.packages]
+"CloudAgents.Text"      = "src/text.l"
 "CloudAgents.Streaming" = "src/streaming/streaming.l"
 "CloudAgents.Db"        = "src/db/db_client.l"
 "CloudAgents.Auth"      = "src/handlers/auth.l"
@@ -83,10 +92,12 @@ pub func main(): Int {
   // Phase 1 — SSE framing
   eqs(toSseChunk("hello"), "data: {\"chunk\":\"hello\"}\n\n", "toSseChunk basic")
   eqs(jsonEscape("x\"y\\z"), "x\\\"y\\\\z", "jsonEscape quotes + backslash")
-  eqs(formatLogsAsSse("a\r\nb\n"),
-      "data: {\"chunk\":\"a\"}\n\n" + "data: {\"chunk\":\"b\"}\n\n" + "event: done\ndata: {}\n\n",
-      "formatLogsAsSse CRLF + trailing")
-  eqs(formatLogsAsSse(""), "event: done\ndata: {}\n\n", "formatLogsAsSse empty")
+  eqs(outputDelta("hello world", 6), "world", "outputDelta past offset")
+  eqs(outputDelta("abc", 3), "", "outputDelta caught up")
+  eqs(sseError("boom"), "event: error\ndata: {\"error\":\"boom\"}\n\n", "sseError frame")
+  eqs(toString(nextPollMs(1000, 5000)), "2000", "nextPollMs doubles below cap")
+  eqs(toString(nextPollMs(4000, 5000)), "5000", "nextPollMs caps the doubling")
+  eqs(sseKeepalive(), ": keepalive\n\n", "sseKeepalive comment frame")
 
   // Phase 2 — state machine
   eqs(tshow(nextStatus(Created, CloneStarted)), "CLONING", "Created+CloneStarted")
@@ -101,9 +112,12 @@ pub func main(): Int {
   eqs(rshow(recycleDecision(Idle, 3600000.toLong())), "EVICT", "Idle at 1h")
   eqs(rshow(recycleDecision(Running, 9999999.toLong())), "NONE", "Running not swept")
 
-  // Phase 2 — SQL (ownership-scoped)
-  eqb(deleteSessionSql() == "DELETE FROM sessions WHERE id = ? AND github_user_id = ?", true, "delete sql")
-  eqb(selectSessionByIdSql().endsWith("AND github_user_id = ?"), true, "select scoped by owner")
+  // Phase 2 — SQL (ownership-scoped, sqlLiteral-inlined like every other
+  // statement; the `?`-placeholder forms were dead code for a binding layer
+  // that never existed)
+  eqb(deleteSessionSql("s1", "u1") == "DELETE FROM sessions WHERE id = 's1' AND user_id = 'u1'", true, "delete sql")
+  eqb(selectSessionByIdSql("s1", "u1").endsWith("AND user_id = 'u1'"), true, "select scoped by owner")
+  eqb(tryBeginRunSql("s1", "u1", "1000").contains("AND status <> 'RUNNING'"), true, "run claim is status-guarded")
 
   // Phase 3 — token cache + ownership
   val entry = CachedToken(userId = "42", login = "octocat", expiresAtMillis = 1000.toLong())

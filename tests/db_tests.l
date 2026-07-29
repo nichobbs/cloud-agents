@@ -57,15 +57,72 @@ test "Idle recycling honours the warm and cold windows" {
 }
 
 test "SQL statements are scoped by owner" {
-  assertTrue(selectSessionByIdSql().endsWith("AND github_user_id = ?"), "select scoped by owner")
-  assertTrue(listSessionsByUserSql().contains("WHERE github_user_id = ?"), "list scoped by owner")
-  assertTrue(deleteSessionSql().contains("AND github_user_id = ?"), "delete scoped by owner")
-  assertTrue(updateSessionStatusSql().contains("AND github_user_id = ?"), "update scoped by owner")
+  assertTrue(selectSessionByIdSql("s1", "u1").endsWith("AND user_id = 'u1'"), "select scoped by owner")
+  assertTrue(listSessionsByUserSql("u1").contains("WHERE user_id = 'u1'"), "list scoped by owner")
+  assertTrue(deleteSessionSql("s1", "u1").endsWith("AND user_id = 'u1'"), "delete scoped by owner")
+  assertTrue(updateSessionContainerSql("s1", "u1", "c1").contains("AND user_id = 'u1'"), "container update scoped by owner")
+  assertTrue(updateSessionModelSql("s1", "u1", "m1").contains("AND user_id = 'u1'"), "model update scoped by owner")
+  assertTrue(insertSessionSql("s1", "u1", "r", "b", "", "claude", "m", "n", "1000").contains("'IDLE'"), "insert starts IDLE")
+  // Compare-and-clear: only clears the container id when it still matches, so a
+  // late orphaned run can't wipe a newer run's container id (#45).
+  val clearSql = clearSessionContainerIfMatchesSql("s1", "u1", "c1")
+  assertTrue(clearSql.contains("container_id = ''"), "compare-and-clear sets container_id empty")
+  assertTrue(clearSql.contains("AND container_id = 'c1'"), "compare-and-clear guards on the current container id")
+  assertTrue(clearSql.contains("AND user_id = 'u1'"), "compare-and-clear scoped by owner")
+}
+
+test "run-claim SQL is atomic and status-guarded" {
+  // 'end' (and defensively 'begin') are reserved keywords in Lyric (P0051),
+  // hence the Sql-suffixed binding names.
+  val claimSql = tryBeginRunSql("s1", "u1", "1000")
+  assertTrue(claimSql.contains("SET status = 'RUNNING'"), "claim sets RUNNING")
+  assertTrue(claimSql.contains("AND status <> 'RUNNING'"), "claim refuses an already-running session")
+  assertTrue(claimSql.contains("AND user_id = 'u1'"), "claim scoped by owner")
+  val releaseSql = endRunSql("s1", "u1", "2000")
+  assertTrue(releaseSql.contains("SET status = 'IDLE'"), "end returns to IDLE")
+  assertTrue(recoverDanglingSessionsSql().contains("WHERE status = 'RUNNING' OR status = 'WARM'"), "recovery targets stranded sessions")
 }
 
 test "Volume names key by user and session" {
-  assertEqual(workspaceVolumeName("42", "abc"), "session-42-abc", "workspace volume")
-  assertEqual(homeVolumeName("42"), "user-42-home", "home volume")
+  assertEqual(homeVolumeBindForHarness("claude"), "claude-home-default:/home/claude-user", "claude keeps its legacy home volume")
+  assertEqual(homeVolumeBindForHarness("codex"), "codex-home-default:/home/codex-user", "codex home volume bind")
+  assertEqual(homeVolumeBindForHarness("opencode"), "opencode-home-default:/home/opencode-user", "opencode home volume bind")
+  assertEqual(homeVolumeBindForHarness("gemini"), "gemini-home-default:/home/gemini-user", "gemini home volume bind")
+  assertEqual(homeVolumeBindForHarness(""), "claude-home-default:/home/claude-user", "empty harness falls back to claude")
+}
+
+test "Harness home mount paths cover every image" {
+  assertEqual(homeMountPathForHarness("claude"), "/home/claude-user", "claude mount path")
+  assertEqual(homeMountPathForHarness("codex"), "/home/codex-user", "codex mount path")
+  assertEqual(homeMountPathForHarness("opencode"), "/home/opencode-user", "opencode mount path")
+  assertEqual(homeMountPathForHarness("gemini"), "/home/gemini-user", "gemini mount path")
+  assertEqual(homeMountPathForHarness(""), "/home/claude-user", "empty harness falls back to claude's path")
+  assertEqual(homeMountPathForHarness("bogus"), "/home/claude-user", "unknown harness falls back to claude's path")
+}
+
+test "Per-user volume binds isolate tenants; operator keeps legacy names" {
+  // Operator identity ("default", and "" defensively) keeps the exact legacy
+  // shared shapes so existing installs keep their authenticated ~/.claude
+  // and workspaces.
+  assertEqual(workspaceVolumeBindFor("default", "abc"), "session-abc-workspace:/workspace", "operator workspace bind keeps legacy name")
+  assertEqual(workspaceVolumeBindFor("", "abc"), "session-abc-workspace:/workspace", "empty user treated as operator for workspace")
+  assertEqual(homeVolumeBindFor("default", "claude"), "claude-home-default:/home/claude-user", "operator claude home bind keeps legacy name")
+  assertEqual(homeVolumeBindFor("default", "codex"), "codex-home-default:/home/codex-user", "operator codex home bind keeps legacy name")
+  assertEqual(homeVolumeBindFor("default", "opencode"), "opencode-home-default:/home/opencode-user", "operator opencode home bind keeps legacy name")
+  assertEqual(homeVolumeBindFor("default", "gemini"), "gemini-home-default:/home/gemini-user", "operator gemini home bind keeps legacy name")
+  assertEqual(homeVolumeBindFor("default", ""), "claude-home-default:/home/claude-user", "operator empty harness keeps legacy claude bind")
+  assertEqual(homeVolumeBindFor("", "claude"), "claude-home-default:/home/claude-user", "empty user treated as operator for home")
+
+  // OAuth tenants (gh-<digits>) get per-user volumes for every harness.
+  assertEqual(workspaceVolumeBindFor("gh-42", "abc"), "session-gh-42-abc-workspace:/workspace", "tenant workspace bind keys by user")
+  assertEqual(homeVolumeBindFor("gh-42", "claude"), "user-gh-42-claude-home:/home/claude-user", "tenant claude home bind")
+  assertEqual(homeVolumeBindFor("gh-42", "codex"), "user-gh-42-codex-home:/home/codex-user", "tenant codex home bind")
+  assertEqual(homeVolumeBindFor("gh-42", "opencode"), "user-gh-42-opencode-home:/home/opencode-user", "tenant opencode home bind")
+  assertEqual(homeVolumeBindFor("gh-42", "gemini"), "user-gh-42-gemini-home:/home/gemini-user", "tenant gemini home bind")
+  // Any unrecognised harness — not just empty — normalises to "claude" in the
+  // volume name, agreeing with the mount path and image fallbacks (#437).
+  assertEqual(homeVolumeBindFor("gh-42", ""), "user-gh-42-claude-home:/home/claude-user", "tenant empty harness normalised to claude")
+  assertEqual(homeVolumeBindFor("gh-42", "bogus"), "user-gh-42-claude-home:/home/claude-user", "tenant unknown harness normalised to claude (#437)")
 }
 
 test "sqlLiteral wraps and escapes single quotes" {
@@ -102,4 +159,90 @@ test "schema DDL is idempotent" {
   assertTrue(messagesSchemaSql().contains("CREATE TABLE IF NOT EXISTS messages"), "messages ddl")
   assertTrue(commentsSchemaSql().contains("CREATE TABLE IF NOT EXISTS comments"), "comments ddl")
   assertTrue(todosSchemaSql().contains("CREATE TABLE IF NOT EXISTS todos"), "todos ddl")
+}
+
+test "run-history SQL builders are scoped and well-formed" {
+  assertTrue(runsSchemaSql().contains("CREATE TABLE IF NOT EXISTS runs"), "runs ddl")
+  val ins = insertRunSql("r1", "s1", "u1", "do the thing", "claude", "opus", "1000")
+  assertTrue(ins.startsWith("INSERT INTO runs"), "insert target")
+  assertTrue(ins.contains("'running'"), "run starts running")
+  val fin = finishRunSql("r1", "u1", "succeeded", "2000")
+  assertTrue(fin.contains("AND user_id = 'u1'"), "finish scoped by owner")
+  assertTrue(fin.endsWith("AND status = 'running'"), "finish is write-once from running")
+  assertTrue(selectRunsBySessionSql("s1", "u1").contains("ORDER BY started_at DESC"), "history newest first")
+  assertTrue(selectRunsBySessionSql("s1", "u1").contains("AND user_id = 'u1'"), "history scoped by owner")
+  assertTrue(finishSessionRunsSql("s1", "u1", "cancelled", "3000").endsWith("AND status = 'running'"), "cancel only affects running runs")
+}
+
+test "prompt-tag SQL builders are scoped and idempotent" {
+  assertTrue(promptTagsSchemaSql().contains("CREATE TABLE IF NOT EXISTS prompt_tags"), "tags ddl")
+  assertTrue(promptTagsSchemaSql().contains("UNIQUE(prompt_id, tag)"), "unique per prompt+tag")
+  assertTrue(insertPromptTagSql("t1", "p1", "u1", "ci").contains("ON CONFLICT(prompt_id, tag) DO NOTHING"), "tag insert idempotent")
+  assertTrue(selectPromptTagsSql("p1", "u1").contains("AND user_id = 'u1'"), "tag read scoped by owner")
+  assertTrue(selectPromptsByTagSql("u1", "ci").contains("AND pt.tag = 'ci'"), "filter by tag")
+  assertTrue(selectPromptsByTagSql("u1", "ci").contains("ORDER BY p.name ASC"), "tag results ordered by name")
+  assertTrue(selectPromptsByTagSql("u1", "ci").contains("p.body"), "selects full prompt columns for one-query listing")
+  assertTrue(selectPromptsByUsageSql("u1").contains("ORDER BY CAST(use_count AS INTEGER) DESC"), "usage ordering is numeric")
+}
+
+test "reap SQL filters by warm window in SQL" {
+  val sel = selectReapableWarmSql("1000000", "300000")
+  assertTrue(sel.contains("status = 'WARM'"), "reaps warm sessions")
+  assertTrue(sel.contains("container_id <> ''"), "only sessions with a container")
+  assertTrue(sel.contains("- CAST(last_message_at AS INTEGER)) >= CAST('300000' AS INTEGER)"), "age filter in SQL")
+  assertTrue(reapSessionContainerSql("s1").contains("SET status = 'IDLE', container_id = ''"), "reap frees the row")
+}
+
+test "migration ledger SQL is well-formed" {
+  assertTrue(migrationsSchemaSql().contains("CREATE TABLE IF NOT EXISTS schema_migrations"), "ledger ddl")
+  assertTrue(migrationsSchemaSql().contains("version TEXT PRIMARY KEY"), "version is the key")
+  assertTrue(countMigrationSql("0001_init").contains("CAST(COUNT(*) AS TEXT)"), "count cast to text for GetString")
+  assertTrue(countMigrationSql("0001_init").contains("WHERE version = '0001_init'"), "count scoped by version")
+  assertTrue(recordMigrationSql("0001_init", "1000").startsWith("INSERT INTO schema_migrations"), "record inserts")
+  assertTrue(recordMigrationSql("0001_init", "1000").contains("'0001_init'"), "record carries the version")
+}
+
+test "session-repo SQL builders are session-scoped and well-formed" {
+  assertTrue(sessionReposSchemaSql().contains("CREATE TABLE IF NOT EXISTS session_repos"), "session_repos ddl")
+  assertTrue(sessionReposSchemaSql().contains("repo_url TEXT NOT NULL"), "repo_url column")
+  // UNIQUE(session_id, repo_url) makes the duplicate-URL guard race-proof (#451).
+  assertTrue(sessionReposSchemaSql().contains("UNIQUE(session_id, repo_url)"), "unique per session+url")
+  assertTrue(sessionReposSessionIndexSql().contains("ON session_repos(session_id)"), "index on session_id")
+  val ins = insertSessionRepoSql("r1", "s1", "https://github.com/nic/repo", "main", "1000")
+  assertTrue(ins.startsWith("INSERT INTO session_repos"), "insert target")
+  assertTrue(ins.contains("'https://github.com/nic/repo'"), "repo url inlined")
+  assertTrue(selectSessionReposSql("s1").contains("WHERE session_id = 's1'"), "list scoped by session")
+  assertTrue(selectSessionReposSql("s1").contains("ORDER BY created_at ASC"), "linked repos oldest first")
+  assertTrue(countSessionReposSql("s1").contains("CAST(COUNT(*) AS TEXT)"), "count cast to text for GetString")
+  assertTrue(selectSessionRepoByUrlSql("s1", "u").contains("AND repo_url = 'u'"), "dup check by url")
+  // Delete is scoped by BOTH the repo id and the session, so a repo id can't be
+  // unlinked from another user's session.
+  val del = deleteSessionRepoSql("s1", "r1")
+  assertTrue(del.contains("id = 'r1'"), "delete by repo id")
+  assertTrue(del.contains("AND session_id = 's1'"), "delete scoped by session")
+  assertTrue(deleteSessionReposForSessionSql("s1").endsWith("session_id = 's1'"), "bulk delete scoped by session")
+}
+
+test "model-listing cache SQL is user+provider-scoped and TTL-aware" {
+  assertTrue(modelListingCacheSchemaSql().contains("CREATE TABLE IF NOT EXISTS model_listing_cache"), "cache ddl")
+  assertTrue(modelListingCacheSchemaSql().contains("PRIMARY KEY(user_id, provider)"), "keyed by user+provider")
+  val up = upsertModelListingSql("gh-42", "anthropic", "{\"data\":[]}", "1000")
+  assertTrue(up.contains("INSERT OR REPLACE INTO model_listing_cache"), "upsert replaces on conflict")
+  assertTrue(up.contains("'anthropic'"), "provider inlined")
+  val sel = selectModelListingSql("gh-42", "anthropic", "5000", "3600000")
+  assertTrue(sel.contains("user_id = 'gh-42'"), "select scoped by user")
+  assertTrue(sel.contains("provider = 'anthropic'"), "select scoped by provider")
+  assertTrue(sel.contains("(CAST('5000' AS INTEGER) - CAST(fetched_at AS INTEGER)) < CAST('3600000' AS INTEGER)"), "select excludes stale rows")
+  assertTrue(deleteExpiredModelListingsSql("5000", "3600000").contains(">= CAST('3600000' AS INTEGER)"), "sweep drops stale rows")
+}
+
+test "GitHub token-cache SQL is hash-keyed and expiry-aware" {
+  assertTrue(githubTokenCacheSchemaSql().contains("token_hash TEXT PRIMARY KEY"), "cache keyed by token hash")
+  val upsert = upsertGitHubTokenSql("h4sh", "gh-42", "octocat", "1000", "600000")
+  assertTrue(upsert.contains("INSERT OR REPLACE INTO github_token_cache"), "upsert replaces on conflict")
+  assertTrue(upsert.contains("CAST('1000' AS INTEGER) + CAST('600000' AS INTEGER)"), "expiry computed in SQL")
+  val select = selectGitHubTokenSql("h4sh", "2000")
+  assertTrue(select.contains("token_hash = 'h4sh'"), "select scoped by hash")
+  assertTrue(select.contains("CAST(expires_at AS INTEGER) > CAST('2000' AS INTEGER)"), "select excludes expired rows")
+  assertTrue(deleteExpiredGitHubTokensSql("2000").contains("<= CAST('2000' AS INTEGER)"), "sweep drops expired rows")
 }

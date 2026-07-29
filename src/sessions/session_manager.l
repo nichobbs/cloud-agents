@@ -1,6 +1,13 @@
 package CloudAgents.SessionStore
 
 import Std.Core
+import CloudAgents.Auth
+import CloudAgents.Db
+import CloudAgents.Repository
+import CloudAgents.Sqlite
+import CloudAgents.Text
+import extern System.Environment as Env
+import extern System.String as DotNetString
 
 @generate(Json)
 pub record AgentSession {
@@ -17,8 +24,15 @@ pub record AgentSession {
 /// Default model for each harness, used when a session is created without an
 /// explicit model or when deserialising a legacy session that predates this field.
 pub func defaultModelForHarness(harness: in String): String {
-  if harness == "codex" { return "o4-mini" }
-  if harness == "opencode" { return "claude-sonnet-4-6" }
+  if harness == "codex" {
+    return "o4-mini"
+  }
+  if harness == "opencode" {
+    return "claude-sonnet-4-6"
+  }
+  if harness == "gemini" {
+    return "gemini-2.5-pro"
+  }
   return "claude-opus-4-8"
 }
 
@@ -44,53 +58,59 @@ pub func makeAgentSession(
   )
 }
 
-// ─── Concrete FFI for System.Environment storing JSON String ──────────────────
-extern type Environment = "System.Environment"
+extern type Type = "System.Type"
 
-@externTarget("System.Environment.GetEnvironmentVariable")
-func getEnvVar(name: in String): String = ()
+extern type AgentSessionArray = "CloudAgents.SessionStore.AgentSession[]"
 
-@externTarget("System.Environment.SetEnvironmentVariable")
-func setEnvVar(name: in String, value: in String): Unit = ()
+@externInstance
+@externTarget("System.Object.GetType")
+func getAgentSessionType(obj: in AgentSession): Type = ()
 
-@externTarget("System.Object.ReferenceEquals")
-func referenceEqualsStrings(a: in String, b: in String): Bool = ()
+@externTarget("System.Array.CreateInstance")
+func createSessionArray(elementType: in Type, length: in Int): AgentSessionArray = ()
 
-@externTarget("System.String.IsNullOrEmpty")
-func isNullOrEmpty(s: in String): Bool = ()
+@externTarget("System.Array.Copy")
+func copySessionArray(
+  sourceArray: in AgentSessionArray,
+  sourceIndex: in Int,
+  destinationArray: in AgentSessionArray,
+  destinationIndex: in Int,
+  length: in Int,
+): Unit = ()
 
-/// First index of `needle` in `hay` at or after `from`, or -1 if not present.
-func indexOfFrom(hay: in String, needle: in String, from: in Int): Int {
-  val hayLen = hay.length.toInt()
-  val needleLen = needle.length.toInt()
-  if needleLen == 0 {
-    return from
+@externInstance
+@externTarget("System.Array.get_Length")
+pub func getSessionArrayLength(arr: in AgentSessionArray): Int = ()
+
+@externInstance
+@externTarget("System.Array.SetValue")
+func setSessionArrayValue(arr: in AgentSessionArray, value: in AgentSession, index: in Int): Unit = ()
+
+@externInstance
+@externTarget("System.Array.GetValue")
+pub func getSessionArrayValue(arr: in AgentSessionArray, index: in Int): AgentSession = ()
+
+pub func appendSession(arr: in AgentSessionArray, item: in AgentSession): AgentSessionArray {
+  val oldLen = getSessionArrayLength(arr)
+  val sessionType = getAgentSessionType(item)
+  val newArr = createSessionArray(sessionType, oldLen + 1)
+  if oldLen > 0 {
+    copySessionArray(arr, 0, newArr, 0, oldLen)
   }
-  var i = from
-  val last = hayLen - needleLen
-  while i <= last {
-    var j = 0
-    var matched = true
-    while j < needleLen {
-      if hay.substring(i + j, 1) != needle.substring(j, 1) {
-        matched = false
-        j = needleLen
-      } else {
-        j = j + 1
-      }
-    }
-    if matched {
-      return i
-    }
-    i = i + 1
-  }
-  return -1
+  setSessionArrayValue(newArr, item, oldLen)
+  return newArr
+}
+
+pub func createEmptySessionArray(): AgentSessionArray {
+  val dummy = makeAgentSession("", "", "", "", "", "", "")
+  val sessionType = getAgentSessionType(dummy)
+  return createSessionArray(sessionType, 0)
 }
 
 pub func parseJsonField(objStr: in String, fieldName: in String): String {
   val target = "\"" + fieldName + "\""
   val objLen = objStr.length.toInt()
-  val pos = indexOfFrom(objStr, target, 0)
+  val pos = CloudAgents.Text.indexOfFrom(objStr, target, 0)
   if pos < 0 {
     return ""
   }
@@ -130,38 +150,68 @@ pub func parseJsonField(objStr: in String, fieldName: in String): String {
     return ""
   }
 
-  // Find closing quote
-  var quoteEnd = 0
-  var foundQuoteEnd = false
+  // Scan forward to the closing quote, unescaping as we go. Forward scanning
+  // (consume the char after every backslash) is the only correct way to find
+  // the closing quote: a look-behind check misreads a value ending in an
+  // escaped backslash (`"a\\"`) as an escaped quote and overruns the value.
+  var acc = ""
   i = quoteStart + 1
   while i < objLen {
     val c = objStr.substring(i, 1)
-    if c == "\"" {
-      if objStr.substring(i - 1, 1) != "\\" {
-        quoteEnd = i
-        foundQuoteEnd = true
-        i = objLen // break
-      } else {
-        i = i + 1
+    if c == "\\" {
+      if i + 1 >= objLen {
+        return "" // dangling backslash: malformed
       }
+      val esc = objStr.substring(i + 1, 1)
+      if esc == "n" {
+        acc = acc + "\n"
+        i = i + 2
+      } else if esc == "r" {
+        acc = acc + "\r"
+        i = i + 2
+      } else if esc == "t" {
+        acc = acc + "\t"
+        i = i + 2
+      } else if esc == "u" {
+        // Unescape the \u00XX control escapes jsonEscapeField emits; any
+        // other or malformed \u sequence keeps the old literal-'u' behaviour.
+        var code = -1
+        if i + 5 < objLen {
+          val h1 = hexValue(objStr.substring(i + 2, 1))
+          val h2 = hexValue(objStr.substring(i + 3, 1))
+          val h3 = hexValue(objStr.substring(i + 4, 1))
+          val h4 = hexValue(objStr.substring(i + 5, 1))
+          if h1 >= 0 and h2 >= 0 and h3 >= 0 and h4 >= 0 {
+            code = h1 * 4096 + h2 * 256 + h3 * 16 + h4
+          }
+        }
+        if code >= 0 and code < 32 {
+          acc = acc + charFromCode(code)
+          i = i + 6
+        } else {
+          acc = acc + esc
+          i = i + 2
+        }
+      } else {
+        acc = acc + esc // \" -> ", \\ -> \; anything else kept literally
+        i = i + 2
+      }
+    } else if c == "\"" {
+      return acc
     } else {
+      acc = acc + c
       i = i + 1
     }
   }
-  if not foundQuoteEnd {
-    return ""
-  }
-
-  val valLen = quoteEnd - quoteStart - 1
-  return objStr.substring(quoteStart + 1, valLen)
+  return "" // no closing quote: malformed
 }
 
-pub func parseSessionsJson(json: in String): slice[AgentSession] {
-  var list: slice[AgentSession] = []
+pub func parseSessionsJson(json: in String): AgentSessionArray {
+  var list = createEmptySessionArray()
   val jsonLen = json.length.toInt()
 
   // Find where "[" begins
-  val arrayStart = indexOfFrom(json, "[", 0)
+  val arrayStart = CloudAgents.Text.indexOfFrom(json, "[", 0)
   if arrayStart < 0 {
     return list
   }
@@ -188,14 +238,30 @@ pub func parseSessionsJson(json: in String): slice[AgentSession] {
       return list // no more objects
     }
 
-    // Find matching '}'
+    // Find matching '}'. String literals are skipped wholesale so braces
+    // inside field values (a repoUrl containing '{', say) cannot desync the
+    // depth count.
     var objEnd = 0
     var foundObjEnd = false
     scan = objStart + 1
     var depth = 1
     while scan < jsonLen {
       val c = json.substring(scan, 1)
-      if c == "{" {
+      if c == "\"" {
+        scan = scan + 1
+        var closed = false
+        while scan < jsonLen and not closed {
+          val sc = json.substring(scan, 1)
+          if sc == "\\" {
+            scan = scan + 2
+          } else if sc == "\"" {
+            closed = true
+            scan = scan + 1
+          } else {
+            scan = scan + 1
+          }
+        }
+      } else if c == "{" {
         depth = depth + 1
         scan = scan + 1
       } else if c == "}" {
@@ -249,7 +315,7 @@ pub func parseSessionsJson(json: in String): slice[AgentSession] {
       nativeSessionId = nativeSessionId,
       status = status
     )
-    list = list.append(session)
+    list = appendSession(list, session)
 
     idx = objEnd + 1
   }
@@ -257,123 +323,493 @@ pub func parseSessionsJson(json: in String): slice[AgentSession] {
   return list
 }
 
-pub func getSessions(): slice[AgentSession] {
-  val json = getEnvVar("CLOUD_AGENTS_SESSIONS_JSON")
-  if isNullOrEmpty(json) {
-    return []
+// ─── SQLite-backed store ──────────────────────────────────────────────────────
+//
+// Sessions live in the same SQLite database as the transcript (schema created
+// by CloudAgents.Repository.initSchema), so they survive restarts and two
+// concurrent requests cannot lose each other's writes — both defects of the
+// previous CLOUD_AGENTS_SESSIONS_JSON env-var store. The env-var JSON
+// helpers below are retained for the one-time legacy import at startup (and
+// their tests).
+func colAt(cols: in CloudAgents.Sqlite.StringArray, i: in Int): String {
+  val len = CloudAgents.Sqlite.getStringArrayLength(cols)
+  if i < len {
+    return CloudAgents.Sqlite.getStringArrayValue(cols, i)
   }
-  return parseSessionsJson(json)
+  return ""
+}
+
+// Column order matches CloudAgents.Db's sessionColumns:
+// id, user_id, repo_url, branch, container_id, harness, model,
+// native_session_id, status, created_at, last_message_at.
+func rowToSession(r: in CloudAgents.Sqlite.Row): AgentSession {
+  return AgentSession(
+    sessionId = colAt(r.cols, 0),
+    repoUrl = colAt(r.cols, 2),
+    branch = colAt(r.cols, 3),
+    containerId = colAt(r.cols, 4),
+    harness = colAt(r.cols, 5),
+    model = colAt(r.cols, 6),
+    nativeSessionId = colAt(r.cols, 7)
+  )
+}
+
+/// The session-list projection as a complete `{"sessions":[...]}` JSON string,
+/// most recently active first. Unlike getSessions()/AgentSession this includes
+/// the bookkeeping columns the UI needs to show *when* things happened and
+/// what a session is doing right now — status, created_at, last_message_at —
+/// while still excluding infrastructure handles (container_id,
+/// native_session_id). Built here rather than in CloudAgents.Handlers because
+/// this package is where the raw rows (with those extra columns) are visible.
+pub func sessionSummariesJson(): Result[String, CloudAgents.Sqlite.DbError] {
+  val rows = CloudAgents.Sqlite.query(CloudAgents.Db.listSessionsByUserSql(CloudAgents.Auth.currentUserId()))?
+  var json = "{\"sessions\":["
+  var i = 0
+  val len = CloudAgents.Sqlite.getRowArrayLength(rows)
+  while i < len {
+    if i > 0 {
+      json = json + ","
+    }
+    val r = CloudAgents.Sqlite.getRowArrayValue(rows, i)
+    // Column order matches CloudAgents.Db's sessionColumns (see rowToSession).
+    json = json + "{\"sessionId\":\"" + jsonEscapeField(colAt(r.cols, 0)) + "\",\"repoUrl\":\"" +
+      jsonEscapeField(colAt(r.cols, 2)) +
+      "\",\"branch\":\"" +
+      jsonEscapeField(colAt(r.cols, 3)) +
+      "\",\"harness\":\"" +
+      jsonEscapeField(colAt(r.cols, 5)) +
+      "\",\"model\":\"" +
+      jsonEscapeField(colAt(r.cols, 6)) +
+      "\",\"status\":\"" +
+      jsonEscapeField(colAt(r.cols, 8)) +
+      "\",\"createdAt\":\"" +
+      jsonEscapeField(colAt(r.cols, 9)) +
+      "\",\"lastMessageAt\":\"" +
+      jsonEscapeField(colAt(r.cols, 10)) +
+      "\"}"
+    i = i + 1
+  }
+  return Ok(value = json + "]}")
+}
+
+/// All of the current user's sessions, most recently active first.
+pub func getSessions(): Result[AgentSessionArray, CloudAgents.Sqlite.DbError] {
+  val rows = CloudAgents.Sqlite.query(CloudAgents.Db.listSessionsByUserSql(CloudAgents.Auth.currentUserId()))?
+  var list = createEmptySessionArray()
+  var i = 0
+  val len = CloudAgents.Sqlite.getRowArrayLength(rows)
+  while i < len {
+    list = appendSession(list, rowToSession(CloudAgents.Sqlite.getRowArrayValue(rows, i)))
+    i = i + 1
+  }
+  return Ok(value = list)
+}
+
+// ── Control-character helpers ─────────────────────────────────────────────────
+// Same approach as CloudAgents.Streaming / Lyric.Docker: JSON forbids raw
+// control characters in string literals, and Lyric literals cannot express
+// them, so construction goes through the BCL. The single-char control-character
+// test lives in CloudAgents.Text (isControlChar); these char<->code-point
+// externs are session-store-specific.
+@externTarget("System.Char.ConvertFromUtf32")
+func charFromCode(code: in Int): String = ()
+
+/// Inverse of charFromCode: the code point of the char at `index` in `s`. Lets
+/// controlEscape resolve a control char in O(1) instead of scanning all 32
+/// control codes (#171).
+@externTarget("System.Char.ConvertToUtf32")
+func codeFromChar(s: in String, index: in Int): Int = ()
+
+func hexDigit(n: in Int): String {
+  if n == 10 {
+    return "a"
+  }
+  if n == 11 {
+    return "b"
+  }
+  if n == 12 {
+    return "c"
+  }
+  if n == 13 {
+    return "d"
+  }
+  if n == 14 {
+    return "e"
+  }
+  if n == 15 {
+    return "f"
+  }
+  return toString(n)
+}
+
+/// Value of one hex digit character, or -1.
+func hexValue(c: in String): Int {
+  if c == "0" {
+    return 0
+  }
+  if c == "1" {
+    return 1
+  }
+  if c == "2" {
+    return 2
+  }
+  if c == "3" {
+    return 3
+  }
+  if c == "4" {
+    return 4
+  }
+  if c == "5" {
+    return 5
+  }
+  if c == "6" {
+    return 6
+  }
+  if c == "7" {
+    return 7
+  }
+  if c == "8" {
+    return 8
+  }
+  if c == "9" {
+    return 9
+  }
+  if c == "a" or c == "A" {
+    return 10
+  }
+  if c == "b" or c == "B" {
+    return 11
+  }
+  if c == "c" or c == "C" {
+    return 12
+  }
+  if c == "d" or c == "D" {
+    return 13
+  }
+  if c == "e" or c == "E" {
+    return 14
+  }
+  if c == "f" or c == "F" {
+    return 15
+  }
+  return -1
+}
+
+/// The `\u00XX` escape for a control character (code point below 0x20).
+func controlEscape(c: in String): String {
+  // Read the code point directly (O(1)) instead of scanning charFromCode for
+  // all 32 control codes to find the one matching `c` (#171).
+  val code = codeFromChar(c, 0)
+  if code < 16 {
+    return "\\u000" + hexDigit(code)
+  }
+  return "\\u001" + hexDigit(code - 16)
+}
+
+/// Escape a field value for embedding in the session-store JSON. Without this,
+/// a quote or backslash in any user-supplied field (repoUrl, branch, model...)
+/// corrupts the whole store — or forges sibling fields on re-parse. Control
+/// characters are escaped as `\u00XX` like the streaming and Docker layers:
+/// the handler boundary rejects them today, but the store must not depend on
+/// every future writer remembering to validate.
+pub func jsonEscapeField(s: in String): String {
+  var acc = ""
+  var i = 0
+  while i < s.length {
+    val c = s.substring(i, 1)
+    if c == "\"" {
+      acc = acc + "\\\""
+    } else if c == "\\" {
+      acc = acc + "\\\\"
+    } else if c == "\n" {
+      acc = acc + "\\n"
+    } else if c == "\r" {
+      acc = acc + "\\r"
+    } else if c == "\t" {
+      acc = acc + "\\t"
+    } else if CloudAgents.Text.isControlChar(c) {
+      acc = acc + controlEscape(c)
+    } else {
+      acc = acc + c
+    }
+    i = i + 1
+  }
+  return acc
 }
 
 pub func agentSessionToJson(s: in AgentSession): String {
-  return "{\"sessionId\":\"" + s.sessionId +
-    "\",\"repoUrl\":\"" + s.repoUrl +
-    "\",\"branch\":\"" + s.branch +
-    "\",\"containerId\":\"" + s.containerId +
-    "\",\"harness\":\"" + s.harness +
-    "\",\"model\":\"" + s.model +
-    "\",\"nativeSessionId\":\"" + s.nativeSessionId +
-    "\",\"status\":\"" + s.status + "\"}"
+  return "{\"sessionId\":\"" + jsonEscapeField(s.sessionId) + "\",\"repoUrl\":\"" + jsonEscapeField(s.repoUrl) +
+    "\",\"branch\":\"" +
+    jsonEscapeField(s.branch) +
+    "\",\"containerId\":\"" +
+    jsonEscapeField(s.containerId) +
+    "\",\"harness\":\"" +
+    jsonEscapeField(s.harness) +
+    "\",\"model\":\"" +
+    jsonEscapeField(s.model) +
+    "\",\"nativeSessionId\":\"" +
+    jsonEscapeField(s.nativeSessionId) +
+    "\",\"status\":\"" +
+    jsonEscapeField(s.status) + "\"}"
 }
 
-pub func saveSessions(sessions: in slice[AgentSession]): Unit {
-  var json = "{\"sessions\":["
+/// Persist a new session (status starts IDLE, owned by the current user).
+pub func addSession(session: in AgentSession): Result[Unit, CloudAgents.Sqlite.DbError] {
+  CloudAgents.Sqlite.execute(CloudAgents.Db.insertSessionSql(session.sessionId, CloudAgents.Auth.currentUserId(), session.repoUrl, session.branch, session.containerId, session.harness, session.model, session.nativeSessionId, CloudAgents.Repository.nowMillis()))?
+  return Ok(value = ())
+}
+
+/// The status column of a session (the authoritative RUNNING signal, set
+/// synchronously by tryBeginRun before the container exists), or None. Shaped
+/// like getMessageSessionId — a plain Option[String], deliberately avoiding a
+/// custom record on this path.
+pub func sessionStatus(sessionId: in String): Result[Option[String], CloudAgents.Sqlite.DbError] {
+  val rows = CloudAgents.Sqlite.query(CloudAgents.Db.selectSessionByIdSql(sessionId, CloudAgents.Auth.currentUserId()))?
+  val len = CloudAgents.Sqlite.getRowArrayLength(rows)
+  if len == 0 {
+    return Ok(value = None)
+  }
+  // Column order (CloudAgents.Db.sessionColumns): status is index 8.
+  return Ok(value = Some(value = colAt(CloudAgents.Sqlite.getRowArrayValue(rows, 0).cols, 8)))
+}
+
+/// Associate a session with a profile (empty string clears it). Scoped to the
+/// current user. Kept off the AgentSession record — the profile drives
+/// container construction, not the client-facing session shape — and read back
+/// via sessionProfileId, mirroring sessionStatus.
+pub func setSessionProfile(sessionId: in String, profileId: in String): Result[Unit, CloudAgents.Sqlite.DbError] {
+  CloudAgents.Sqlite.execute(CloudAgents.Db.updateSessionProfileSql(sessionId, CloudAgents.Auth.currentUserId(), profileId))?
+  return Ok(value = ())
+}
+
+/// The profile id a session runs under ("" when none), or None if the session
+/// does not exist / is not owned by the current user.
+pub func sessionProfileId(sessionId: in String): Result[Option[String], CloudAgents.Sqlite.DbError] {
+  val rows = CloudAgents.Sqlite.query(CloudAgents.Db.selectSessionProfileIdSql(sessionId, CloudAgents.Auth.currentUserId()))?
+  val len = CloudAgents.Sqlite.getRowArrayLength(rows)
+  if len == 0 {
+    return Ok(value = None)
+  }
+  return Ok(value = Some(value = colAt(CloudAgents.Sqlite.getRowArrayValue(rows, 0).cols, 0)))
+}
+
+/// A single session owned by the current user, or None.
+pub func getSession(sessionId: in String): Result[Option[AgentSession], CloudAgents.Sqlite.DbError] {
+  val rows = CloudAgents.Sqlite.query(CloudAgents.Db.selectSessionByIdSql(sessionId, CloudAgents.Auth.currentUserId()))?
+  val len = CloudAgents.Sqlite.getRowArrayLength(rows)
+  if len == 0 {
+    return Ok(value = None)
+  }
+  return Ok(value = Some(value = rowToSession(CloudAgents.Sqlite.getRowArrayValue(rows, 0))))
+}
+
+// The two container-bookkeeping writes below run on Docker's async worker
+// threads (see CloudAgents.Docker), where the per-request thread-local
+// identity does NOT flow — so they take the owner explicitly, captured on the
+// request thread. Deliberately NO parameterless ambient-identity forms: they
+// were dead in production and an invitation to reintroduce the
+// wrong-tenant-on-a-worker-thread bug (#426).
+pub func updateSessionContainerFor(
+  sessionId: in String, userId: in String, containerId: in String
+): Result[Unit, CloudAgents.Sqlite.DbError] {
+  CloudAgents.Sqlite.execute(CloudAgents.Db.updateSessionContainerSql(sessionId, userId, containerId))?
+  return Ok(value = ())
+}
+
+/// Compare-and-clear the container id: only clears it if it still equals
+/// `containerId`, so a late-finishing orphaned run can't wipe the container id a
+/// newer run for the same session has since stored (#45).
+pub func clearSessionContainerIfMatchesFor(
+  sessionId: in String, userId: in String, containerId: in String
+): Result[Unit, CloudAgents.Sqlite.DbError] {
+  CloudAgents.Sqlite.execute(CloudAgents.Db.clearSessionContainerIfMatchesSql(sessionId, userId, containerId))?
+  return Ok(value = ())
+}
+
+pub func updateSessionModel(sessionId: in String, model: in String): Result[Unit, CloudAgents.Sqlite.DbError] {
+  CloudAgents.Sqlite.execute(CloudAgents.Db.updateSessionModelSql(sessionId, CloudAgents.Auth.currentUserId(), model))?
+  return Ok(value = ())
+}
+
+/// Remove a session, returning the record that was removed (None when it did
+/// not exist or is not owned by the current user).
+pub func removeSession(sessionId: in String): Result[Option[AgentSession], CloudAgents.Sqlite.DbError] {
+  val existing = getSession(sessionId)?
+  match existing {
+    case None -> return Ok(value = None)
+    case Some(_) -> ()
+  }
+  CloudAgents.Sqlite.execute(CloudAgents.Db.deleteSessionSql(sessionId, CloudAgents.Auth.currentUserId()))?
+  return Ok(value = existing)
+}
+
+/// Delete a session row without re-reading it first — for callers that have
+/// already fetched and existence-checked the session (e.g. deleteSession, which
+/// looks it up to terminate the container), avoiding a redundant second lookup
+/// (#172). The DELETE is owner-scoped and a no-op if the row is already gone.
+pub func deleteSessionRecord(sessionId: in String): Result[Unit, CloudAgents.Sqlite.DbError] {
+  CloudAgents.Sqlite.execute(CloudAgents.Db.deleteSessionSql(sessionId, CloudAgents.Auth.currentUserId()))?
+  return Ok(value = ())
+}
+
+// ─── Run status ───────────────────────────────────────────────────────────────
+/// Atomically claim a session for a run. Ok(false) means another run is
+/// already in progress (the caller should respond 409); the single UPDATE
+/// with a status guard makes two concurrent sends unable to both win.
+pub func tryBeginRun(sessionId: in String): Result[Bool, CloudAgents.Sqlite.DbError] {
+  val n = CloudAgents.Sqlite.execute(CloudAgents.Db.tryBeginRunSql(sessionId, CloudAgents.Auth.currentUserId(), CloudAgents.Repository.nowMillis()))?
+  return Ok(value = n > 0)
+}
+
+/// Return a session to IDLE after a run (success or failure) and record the
+/// activity time.
+pub func endRun(sessionId: in String): Result[Unit, CloudAgents.Sqlite.DbError] {
+  CloudAgents.Sqlite.execute(CloudAgents.Db.endRunSql(sessionId, CloudAgents.Auth.currentUserId(), CloudAgents.Repository.nowMillis()))?
+  return Ok(value = ())
+}
+
+/// Container ids of sessions stranded RUNNING/WARM by a crash/restart. The
+/// startup sweep terminates these before recoverDanglingSessions blanks the
+/// container_id column, so no container is orphaned. (SessionStore cannot
+/// terminate them itself — that would need CloudAgents.Docker, which already
+/// depends on SessionStore; main() owns the cleanup to avoid the cycle.)
+pub func strandedContainerIds(): Result[slice[String], CloudAgents.Sqlite.DbError] {
+  val rows = CloudAgents.Sqlite.query(CloudAgents.Db.selectStrandedContainerIdsSql())?
+  var acc: slice[String] = []
   var i = 0
-  while i < sessions.length {
-    val s = sessions[i]
-    val sJson = agentSessionToJson(s)
-    json = json + sJson
-    if i < sessions.length - 1 {
-      json = json + ","
+  val len = CloudAgents.Sqlite.getRowArrayLength(rows)
+  while i < len {
+    acc = acc.append(colAt(CloudAgents.Sqlite.getRowArrayValue(rows, i).cols, 0))
+    i = i + 1
+  }
+  return Ok(value = acc)
+}
+
+/// Reset sessions stranded RUNNING/WARM by a crash or restart back to IDLE.
+/// Called once at startup, after the schema is created and any stranded
+/// containers have been terminated (see strandedContainerIds).
+pub func recoverDanglingSessions(): Result[Int, CloudAgents.Sqlite.DbError] {
+  return CloudAgents.Sqlite.execute(CloudAgents.Db.recoverDanglingSessionsSql())
+}
+
+// ─── Idle container reaping ─────────────────────────────────────────────────────
+/// A WARM session whose container is past the warm window and should be stopped.
+pub record ReapTarget {
+  pub sessionId: String
+  pub containerId: String
+}
+
+/// Sessions whose WARM container has been idle past the warm window — ready for
+/// the reaper to stop. System-wide (reaping is maintenance, not per-request).
+/// The age filter runs in SQL; the caller (which can reach CloudAgents.Docker)
+/// terminates each container, then calls reapSessionContainer to blank the row.
+pub func reapableWarmContainers(): Result[slice[ReapTarget], CloudAgents.Sqlite.DbError] {
+  val rows = CloudAgents.Sqlite.query(CloudAgents.Db.selectReapableWarmSql(CloudAgents.Repository.nowMillis(), toString(CloudAgents.Db.warmWindowMillis())))?
+  var acc: slice[ReapTarget] = []
+  var i = 0
+  val len = CloudAgents.Sqlite.getRowArrayLength(rows)
+  while i < len {
+    val r = CloudAgents.Sqlite.getRowArrayValue(rows, i)
+    acc = acc.append(ReapTarget(sessionId = colAt(r.cols, 0), containerId = colAt(r.cols, 1)))
+    i = i + 1
+  }
+  return Ok(value = acc)
+}
+
+/// Return a reaped session to IDLE and blank its container id. System-wide (no
+/// per-user scoping — the reaper acts on the whole deployment).
+pub func reapSessionContainer(sessionId: in String): Result[Unit, CloudAgents.Sqlite.DbError] {
+  CloudAgents.Sqlite.execute(CloudAgents.Db.reapSessionContainerSql(sessionId))?
+  return Ok(value = ())
+}
+
+// ─── Phase 6: MCP-callback bearer token ──────────────────────────────────────
+//
+// Minted at container creation (see CloudAgents.Docker.createRunnerContainer,
+// gated by the CLOUD_AGENTS_MCP_CALLBACKS feature flag, on by default as of
+// stage 4 — docs/phase6 §8) and injected into the
+// container as CLOUD_AGENTS_CALLBACK_TOKEN. The token authenticates the
+// container's own calls into CloudAgents.Callbacks — it is never the user's
+// OAuth/static token. Runs on Docker's worker thread (see the container-
+// bookkeeping writes above), so `userId` is explicit, captured on the request
+// thread.
+/// Mint a fresh callback token for a session and persist it, returning the
+/// token. Two UUIDs concatenated gives the caller ~244 bits of randomness —
+/// generous for a bearer secret that expires with the session (docs/phase6
+/// §2) — without introducing a new CSPRNG binding beyond the one Std.Uuid
+/// already provides.
+pub func mintCallbackToken(sessionId: in String, userId: in String): Result[String, CloudAgents.Sqlite.DbError] {
+  val token = Std.Uuid.uuidToString(Std.Uuid.newUuid()) + Std.Uuid.uuidToString(Std.Uuid.newUuid())
+  CloudAgents.Sqlite.execute(CloudAgents.Db.updateSessionCallbackTokenSql(sessionId, userId, token))?
+  return Ok(value = token)
+}
+
+/// A session's stored callback token by id ONLY ("" / None handling lives in
+/// the caller) — deliberately unscoped by user_id, since the container
+/// presenting a candidate token has no user identity of its own; the token
+/// comparison itself (CloudAgents.Callbacks, constant-time) is the
+/// authentication. Returns None only when the session id does not exist at
+/// all; an existing session that never minted a token (or had callbacks
+/// disabled) reads back "".
+pub func callbackTokenForSession(sessionId: in String): Result[Option[String], CloudAgents.Sqlite.DbError] {
+  val rows = CloudAgents.Sqlite.query(CloudAgents.Db.selectSessionCallbackTokenSql(sessionId))?
+  val len = CloudAgents.Sqlite.getRowArrayLength(rows)
+  if len == 0 {
+    return Ok(value = None)
+  }
+  return Ok(value = Some(value = colAt(CloudAgents.Sqlite.getRowArrayValue(rows, 0).cols, 0)))
+}
+
+/// A session's owning user id by id ONLY — deliberately unscoped by the
+/// current identity, mirroring callbackTokenForSession. Used by
+/// request_secret's create path (docs/phase6-mcp-callbacks.md §7.1): the
+/// container-originated caller is stamped as the operator, not the session
+/// owner, so resolving whose credential store to check needs this unscoped
+/// lookup rather than the owner-scoped getSession above.
+pub func sessionOwnerUserId(sessionId: in String): Result[Option[String], CloudAgents.Sqlite.DbError] {
+  val rows = CloudAgents.Sqlite.query(CloudAgents.Db.selectSessionOwnerIdSql(sessionId))?
+  val len = CloudAgents.Sqlite.getRowArrayLength(rows)
+  if len == 0 {
+    return Ok(value = None)
+  }
+  return Ok(value = Some(value = colAt(CloudAgents.Sqlite.getRowArrayValue(rows, 0).cols, 0)))
+}
+
+// ─── Legacy env-var store import ──────────────────────────────────────────────
+/// One-time migration: sessions created before the SQLite store lived as JSON
+/// in CLOUD_AGENTS_SESSIONS_JSON. Import any that aren't already in the
+/// database, then clear the env var so this never re-runs. Best-effort — a
+/// failed import leaves the env var in place and warns rather than aborting
+/// startup.
+pub func importLegacyEnvSessions(): Unit {
+  val json = Env.GetEnvironmentVariable("CLOUD_AGENTS_SESSIONS_JSON")
+  if DotNetString.IsNullOrEmpty(json) {
+    return ()
+  }
+  val sessions = parseSessionsJson(json)
+  val len = getSessionArrayLength(sessions)
+  var i = 0
+  var failures = 0
+  var inserted = 0
+  while i < len {
+    val s = getSessionArrayValue(sessions, i)
+    match getSession(s.sessionId) {
+      case Ok(Some(_)) -> ()
+      case Ok(None) -> match addSession(s) { case Ok(_) -> { inserted = inserted + 1 }; case Err(e) -> { failures = failures + 1; println("WARNING: failed to import legacy session " + s.sessionId + ": " + CloudAgents.Sqlite.dbErrorMessage(e)) } }
+      case Err(e) -> {
+        failures = failures + 1
+        println("WARNING: failed to check legacy session " + s.sessionId + ": " + CloudAgents.Sqlite.dbErrorMessage(e))
+      }
     }
     i = i + 1
   }
-  json = json + "]}"
-  setEnvVar("CLOUD_AGENTS_SESSIONS_JSON", json)
-}
-
-pub func addSession(session: in AgentSession): Unit {
-  val sessions = getSessions()
-  saveSessions(sessions.append(session))
-}
-
-pub func getSession(sessionId: in String): Option[AgentSession] {
-  val sessions = getSessions()
-  var i = 0
-  while i < sessions.length {
-    val s = sessions[i]
-    if s.sessionId == sessionId {
-      return Some(value = s)
+  if failures == 0 {
+    Env.SetEnvironmentVariable("CLOUD_AGENTS_SESSIONS_JSON", "")
+    if inserted > 0 {
+      // Report rows actually inserted, not the total considered — sessions that
+      // already existed are skipped, so `len` would overstate the import (#209).
+      println("Imported " + toString(inserted) + " legacy session(s) from CLOUD_AGENTS_SESSIONS_JSON into SQLite")
     }
-    i = i + 1
   }
-  return None
-}
 
-pub func updateSessionContainer(sessionId: in String, containerId: in String): Unit {
-  val sessions = getSessions()
-  var updated: slice[AgentSession] = []
-  var i = 0
-  while i < sessions.length {
-    val s = sessions[i]
-    if s.sessionId == sessionId {
-      updated = updated.append(AgentSession(
-        sessionId = s.sessionId,
-        repoUrl = s.repoUrl,
-        branch = s.branch,
-        containerId = containerId,
-        harness = s.harness,
-        model = s.model,
-        nativeSessionId = s.nativeSessionId,
-        status = s.status
-      ))
-    } else {
-      updated = updated.append(s)
-    }
-    i = i + 1
-  }
-  saveSessions(updated)
-}
-
-pub func updateSessionModel(sessionId: in String, model: in String): Unit {
-  val sessions = getSessions()
-  var updated: slice[AgentSession] = []
-  var i = 0
-  while i < sessions.length {
-    val s = sessions[i]
-    if s.sessionId == sessionId {
-      updated = updated.append(AgentSession(
-        sessionId = s.sessionId,
-        repoUrl = s.repoUrl,
-        branch = s.branch,
-        containerId = s.containerId,
-        harness = s.harness,
-        model = model,
-        nativeSessionId = s.nativeSessionId,
-        status = s.status
-      ))
-    } else {
-      updated = updated.append(s)
-    }
-    i = i + 1
-  }
-  saveSessions(updated)
-}
-
-pub func removeSession(sessionId: in String): Option[AgentSession] {
-  val sessions = getSessions()
-  var updated: slice[AgentSession] = []
-  var removed: Option[AgentSession] = None
-  var i = 0
-  while i < sessions.length {
-    val s = sessions[i]
-    if s.sessionId == sessionId {
-      removed = Some(value = s)
-    } else {
-      updated = updated.append(s)
-    }
-    i = i + 1
-  }
-  saveSessions(updated)
-  return removed
 }

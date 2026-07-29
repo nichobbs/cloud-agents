@@ -1,0 +1,183 @@
+# Coolify variant of docker-compose.yml.
+#
+# Coolify runs its own edge proxy (Traefik) on the shared host's :80/:443 for
+# every app it manages, so — unlike docker-compose.yml — this variant:
+#   - does not publish host ports on `caddy` (a second process binding 80/443
+#     directly would conflict with Coolify's own proxy and its other apps);
+#   - does not have `caddy` obtain its own Let's Encrypt certificate — TLS is
+#     terminated at Coolify's proxy, which forwards plain HTTP to `caddy`
+#     over the internal Docker network. The SERVICE_FQDN_CADDY_80 magic env
+#     var below (Coolify docs: docker/compose, "Magic Environment
+#     Variables") tells Coolify which domain + port to route here; Caddy
+#     itself never reads its value — see Caddyfile.coolify for why. `caddy`
+#     still does the path-based split between `api` and `frontend`.
+#
+# Deploy: in Coolify, add a new "Docker Compose" resource pointed at this
+# file, set ENCRYPTION_KEY / CLOUD_AGENTS_WHITELIST / etc. in its Environment
+# Variables tab (see .env.example), and set SERVICE_FQDN_CADDY_80 to your
+# domain (or leave it for Coolify to assign a subdomain). See COOLIFY.md.
+#
+# Relative paths below (build context, bind mounts) are written relative to
+# the repo root, not to this file's own deploy/ directory. Coolify invokes
+# `docker compose` with `--project-directory` set to the repo root checkout
+# — unlike the standalone-VM flow in RUNBOOK.md, which `cd`s into deploy/
+# first — and an explicit --project-directory overrides Compose's normal
+# compose-file-relative path resolution. Using `..`/`./Caddyfile.coolify` as
+# in docker-compose.yml breaks under that invocation (confirmed by a real
+# failed deploy: build context resolved one directory above the checkout).
+#
+# The /var/run/docker.sock bind mount below is unchanged from
+# docker-compose.yml, but Coolify has had bugs where a file-path bind mount
+# gets created as a directory instead of passed through — after first
+# deploy, confirm it actually landed as a socket inside the `api` container
+# (e.g. `docker compose exec api test -S /var/run/docker.sock`) before
+# trusting it.
+
+services:
+  api:
+    build:
+      context: .
+      dockerfile: deploy/api.Dockerfile
+    environment:
+      - ENCRYPTION_KEY=${ENCRYPTION_KEY:?set ENCRYPTION_KEY in Coolify's environment variables}
+      - CLOUD_AGENTS_WHITELIST=${CLOUD_AGENTS_WHITELIST:-}
+      # GitHub OAuth app credentials (optional). Unset -> oauthConfigured()
+      # is false, the frontend never shows "Sign in with GitHub" or
+      # enforces the login guard, and the app is open access — same as
+      # today if you don't set these.
+      - CLOUD_AGENTS_GITHUB_CLIENT_ID=${CLOUD_AGENTS_GITHUB_CLIENT_ID:-}
+      - CLOUD_AGENTS_GITHUB_CLIENT_SECRET=${CLOUD_AGENTS_GITHUB_CLIENT_SECRET:-}
+      # Idiomatic Lyric alternative to the two vars above (D046,
+      # docs/25-config-blocks.md) — set these in Coolify's Environment
+      # Variables tab instead; they take priority over the CLOUD_AGENTS_*
+      # names above when set, and are entirely optional (oauth.l's config
+      # Github{} block falls back to the plain names when unset, so setting
+      # only the plain names above still works exactly as before). CAUTION:
+      # if you set the client-id/client-secret config-block overrides, also
+      # set the whitelist one (or keep CLOUD_AGENTS_WHITELIST set) — an
+      # empty whitelist on either path means "open access to any
+      # authenticated GitHub user", not "no one".
+      - LYRIC_CONFIG_CLOUDAGENTS_OAUTH_GITHUB_CLIENTID=${LYRIC_CONFIG_CLOUDAGENTS_OAUTH_GITHUB_CLIENTID:-}
+      - LYRIC_CONFIG_CLOUDAGENTS_OAUTH_GITHUB_CLIENTSECRET=${LYRIC_CONFIG_CLOUDAGENTS_OAUTH_GITHUB_CLIENTSECRET:-}
+      - LYRIC_CONFIG_CLOUDAGENTS_OAUTH_GITHUB_WHITELIST=${LYRIC_CONFIG_CLOUDAGENTS_OAUTH_GITHUB_WHITELIST:-}
+      # See docker-compose.yml for what these two control (runner container
+      # network policy) — same meaning here.
+      - CLOUD_AGENTS_RESTRICTED_NETWORK=${CLOUD_AGENTS_RESTRICTED_NETWORK:-}
+      - CLOUD_AGENTS_EGRESS_PROXY=${CLOUD_AGENTS_EGRESS_PROXY:-}
+      # CLOUD_AGENTS_ENABLED_HARNESSES (GET /api/harnesses, #523) is
+      # deliberately left unset here: all four runner images below now build
+      # unconditionally (see the claude-code-base/codex-base/opencode-base/
+      # gemini-base services), so there's nothing to restrict — unset means
+      # "every harness enabled" (fail open).
+      - LYRIC_CONFIG_WEB_SERVER_PORT=8080
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - user_data:/user-home
+    restart: unless-stopped
+
+  frontend:
+    build:
+      context: ./frontend
+    restart: unless-stopped
+
+  # Runner base images — the ephemeral, per-message containers `api` spawns
+  # via docker_manager.l's imageForHarness(). Coolify's own build only
+  # covers services in this compose file; it never runs
+  # deploy/install-docker.sh, so without one of these, container creation
+  # fails with "no such image" the first time anyone sends a message on
+  # that harness. Each service's sole job is to get its image *built* and
+  # tagged with the exact name imageForHarness() expects (image: overrides
+  # Compose's default <project>-<service> tag) — the container itself does
+  # nothing (`entrypoint: ["true"]`, exits 0 immediately, never restarts).
+  # Expect these to show as "Exited (0)" in Coolify's service list — that's
+  # normal, not a failure; only the built image is the point. Each also sets
+  # `exclude_from_hc: true` (#516) — Coolify's documented flag to skip a
+  # service in its own healthcheck evaluation
+  # (https://coolify.io/docs/knowledge-base/docker/compose), meant for
+  # exactly this one-shot/build-only shape (its own docs use a `migrate`
+  # service as the example). Without it, Coolify could plausibly treat a
+  # non-restarting exited container as a failed/unhealthy deployment signal;
+  # this heads that off rather than waiting to find out on a real redeploy.
+  #
+  # IMPORTANT: `docker compose build` (no service argument, which is how
+  # Coolify invokes it) builds every ACTIVE service in this file in one
+  # shot — a build failure in any of them fails the WHOLE command, which
+  # would block api/frontend/caddy from deploying too, not just the broken
+  # harness. This happened for real once (Dockerfile.codex's
+  # `npm install -g @openai/codex` failed mid-build against an unpinned
+  # `@latest`), which is why codex-base/opencode-base/gemini-base used to be
+  # gated behind Compose `profiles:` (opt-in only). All four now build
+  # unconditionally instead, because the two things that actually caused
+  # that failure are both fixed at the source: each of the three
+  # Dockerfile.<harness> files now pins its CLI to a specific version
+  # confirmed to install cleanly (rather than floating on `@latest`, which
+  # can introduce a breaking change with zero warning), and each install is
+  # wrapped in a 3-attempt retry with a delay, guarding against transient
+  # npm-registry failures. If a harness image ever fails to build again
+  # despite that: `docker build -f docker/Dockerfile.<harness> docker` to
+  # reproduce and fix it standalone first; if you need to unblock a deploy
+  # immediately, temporarily comment out that one service block below and
+  # redeploy (accepting that harness will 404 at container-creation time
+  # until you re-enable it), rather than reintroducing profile-gating for
+  # everyone.
+  claude-code-base:
+    image: claude-code:base
+    build:
+      # Repo root, not ./docker like the other three runners below — this
+      # Dockerfile builds cloud-agents-shim in its own stage from shim/, so
+      # it needs to see both docker/ and shim/ in one build context (#601).
+      context: .
+      dockerfile: docker/Dockerfile
+    entrypoint: ["true"]
+    restart: "no"
+    exclude_from_hc: true
+
+  codex-base:
+    image: codex:base
+    build:
+      context: ./docker
+      dockerfile: Dockerfile.codex
+    entrypoint: ["true"]
+    restart: "no"
+    exclude_from_hc: true
+
+  opencode-base:
+    image: opencode:base
+    build:
+      context: ./docker
+      dockerfile: Dockerfile.opencode
+    entrypoint: ["true"]
+    restart: "no"
+    exclude_from_hc: true
+
+  gemini-base:
+    image: gemini:base
+    build:
+      context: ./docker
+      dockerfile: Dockerfile.gemini
+    entrypoint: ["true"]
+    restart: "no"
+    exclude_from_hc: true
+
+  caddy:
+    image: caddy:2
+    environment:
+      # Bare reference (no value) — Coolify detects this and manages the
+      # domain assignment for it in the resource's Environment Variables UI.
+      # The _80 suffix pins the target to caddy:2's port 80 (the image also
+      # exposes 443 and 2019, which would otherwise be ambiguous).
+      - SERVICE_FQDN_CADDY_80
+    volumes:
+      - ./deploy/Caddyfile.coolify:/etc/caddy/Caddyfile:ro
+      # No caddy_data volume here (unlike docker-compose.yml) — this caddy
+      # serves plain HTTP only and never obtains its own ACME/TLS cert, so
+      # there's nothing under /data worth persisting across restarts.
+      - caddy_config:/config
+    depends_on:
+      - api
+      - frontend
+    restart: unless-stopped
+
+volumes:
+  user_data:
+  caddy_config:

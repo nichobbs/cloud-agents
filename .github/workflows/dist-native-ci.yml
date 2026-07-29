@@ -1,0 +1,150 @@
+name: Distribution smoke test
+
+# release.yml (the workflow that actually publishes dist/CloudAgents.Native)
+# only ever runs on a pushed `vX.Y.Z` tag or a manual dispatch — never on a
+# PR. That leaves the entire distribution path (the trampoline project, the
+# `dotnet publish` step, the RID-parameterized SQLite staging/wrapper logic,
+# the smoke test) with zero PR-time coverage: a regression here is only
+# discovered when someone actually cuts a release. This workflow closes that
+# gap by running the linux-x64 leg of release.yml's build job (publish +
+# stage + smoke test, minus the release-only packaging/upload steps) on every
+# PR touching the paths below. See nichobbs/cloud-agents#398.
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+    paths:
+      - 'dist/CloudAgents.Native/**'
+      - '.github/workflows/release.yml'
+      - '.github/workflows/dist-native-ci.yml'
+      - 'scripts/build-full.sh'
+      - 'src/**'
+
+concurrency:
+  group: dist-native-ci-${{ github.ref }}
+  cancel-in-progress: true
+
+# Least privilege (#568): this job only checks out, builds, publishes, and
+# smoke-tests locally — it never writes to the repo, comments, or uploads
+# artifacts, so it needs nothing beyond read access for actions/checkout.
+permissions:
+  contents: read
+
+env:
+  DOTNET_SKIP_FIRST_TIME_EXPERIENCE: true
+  DOTNET_NOLOGO: true
+
+jobs:
+  build-and-smoke-test:
+    name: Build & smoke-test dist/CloudAgents.Native (linux-x64)
+    if: github.event.pull_request.draft == false
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Set up .NET 10
+        uses: actions/setup-dotnet@v5
+        with:
+          dotnet-version: '10.0.x'
+
+      # Same resolve-then-verify-floor sequence as ci.yml / release.yml, so
+      # this job fails fast on the same regressed-compiler condition rather
+      # than building against whatever "latest" happens to resolve to.
+      - name: Resolve latest Lyric release
+        id: resolve_lyric
+        run: |
+          set -euo pipefail
+          ver=""
+          for attempt in 1 2 3; do
+            ver=$(curl -sI --connect-timeout 10 --max-time 30 https://github.com/nichobbs/lyric-lang/releases/latest \
+                    | sed -n 's/.*tag\/v\([0-9.]*\).*/\1/p' | tr -d '\r')
+            [ -n "$ver" ] && break
+            echo "attempt $attempt: could not resolve latest Lyric release tag, retrying..." >&2
+            sleep 3
+          done
+          [ -n "$ver" ] || { echo "could not resolve latest Lyric release tag after 3 attempts" >&2; exit 1; }
+          echo "Resolved latest Lyric release: v$ver"
+          echo "version=$ver" >> "$GITHUB_OUTPUT"
+
+      - name: Verify minimum Lyric version
+        env:
+          RESOLVED: ${{ steps.resolve_lyric.outputs.version }}
+        run: |
+          set -euo pipefail
+          MIN_VERSION="$(cat MIN_LYRIC_VERSION)"
+          lowest="$(printf '%s\n%s\n' "$MIN_VERSION" "$RESOLVED" | sort -V | head -1)"
+          if [ "$lowest" != "$MIN_VERSION" ]; then
+            echo "::error::Latest Lyric release ($RESOLVED) is older than $MIN_VERSION (see MIN_LYRIC_VERSION) — refusing to build against a regressed compiler." >&2
+            exit 1
+          fi
+          echo "Lyric $RESOLVED >= required minimum $MIN_VERSION"
+
+      # Reuses scripts/install.sh's own install logic, pinned to the exact
+      # version just verified above. dotnet is already provided by
+      # setup-dotnet, and the NuGet restore happens explicitly in "Build
+      # CloudAgents.dll" below, so both of install.sh's other side effects
+      # are skipped.
+      - name: Install Lyric compiler
+        env:
+          LYRIC_VERSION: ${{ steps.resolve_lyric.outputs.version }}
+        run: |
+          set -euo pipefail
+          SKIP_DOTNET=1 SKIP_RESTORE=1 ./scripts/install.sh
+          echo "$HOME/.lyric/bin" >> "$GITHUB_PATH"
+
+      # Uses build-full.sh rather than a bare `lyric restore && lyric build`:
+      # the latter does NOT populate bin/runtimes/, which the "Stage SQLite
+      # native runtime" step below depends on.
+      - name: Build CloudAgents.dll (including native SQLite runtimes)
+        run: ./scripts/build-full.sh
+
+      # Publishes dist/CloudAgents.Native — a thin C# trampoline into the
+      # already-built CloudAgents.dll — as a self-contained deployable for
+      # linux-x64, mirroring release.yml's publish step exactly.
+      - name: Publish self-contained executable (linux-x64)
+        run: |
+          dotnet publish dist/CloudAgents.Native/CloudAgents.Native.csproj \
+            --configuration Release \
+            --runtime linux-x64 \
+            --self-contained true \
+            --output publish/linux-x64
+
+      # Same staging logic as release.yml: `dotnet publish` has no
+      # runtime-asset metadata for the loose-file DLL glob this project
+      # references CloudAgents.dll's siblings through, so the SQLite native
+      # runtime has to be staged manually, plus a wrapper script pointing
+      # the native loader at it.
+      - name: Stage SQLite native runtime + launcher wrapper
+        run: |
+          set -euo pipefail
+          OUT="publish/linux-x64"
+          mkdir -p "$OUT/runtimes/linux-x64/native"
+          cp "bin/runtimes/linux-x64/native/"*.so "$OUT/runtimes/linux-x64/native/"
+          mv "$OUT/cloud-agents" "$OUT/cloud-agents.bin"
+          cat > "$OUT/cloud-agents" <<WRAPPER
+          #!/usr/bin/env bash
+          set -euo pipefail
+          DIR="\$(cd "\$(dirname "\${BASH_SOURCE[0]}")" && pwd)"
+          export LD_LIBRARY_PATH="\$DIR/runtimes/linux-x64/native:\${LD_LIBRARY_PATH:-}"
+          exec "\$DIR/cloud-agents.bin" "\$@"
+          WRAPPER
+          chmod +x "$OUT/cloud-agents" "$OUT/cloud-agents.bin"
+
+      # Runs the actual published artifact and hits a real endpoint over a
+      # real socket — the same smoke test release.yml runs before ever
+      # uploading a release asset, just moved to PR time.
+      - name: Smoke-test the published executable
+        run: |
+          set -euo pipefail
+          ./publish/linux-x64/cloud-agents --port 18123 &
+          PID=$!
+          trap 'kill "$PID" 2>/dev/null || true' EXIT
+          ok=""
+          for _ in $(seq 1 20); do
+            if curl -fsS http://127.0.0.1:18123/api/health 2>/dev/null | grep -q '"status":"Healthy"'; then
+              ok=1
+              break
+            fi
+            sleep 1
+          done
+          [ -n "$ok" ] || { echo "::error::published executable never became healthy" >&2; exit 1; }
+          echo "Smoke test passed: /api/health reported Healthy from the published linux-x64 executable."

@@ -28,33 +28,79 @@ mkdir -p ~/.lyric/bin && tar -xzf /tmp/lyric.tgz -C ~/.lyric/bin
 
 ## Dependencies
 
-`Lyric.Web`, `Std.Logging`, and `Microsoft.Data.Sqlite` are declared under
-`[nuget]` in `lyric.toml` and resolved as ordinary prebuilt binary packages —
-no sibling checkout, no source patching:
+`Lyric.Web`, `Lyric.Docker`, `Std.Logging`, and `Microsoft.Data.Sqlite` are
+declared under `[nuget]` in `lyric.toml` and resolved as ordinary prebuilt
+binary packages — no sibling checkout, no source patching:
 
 ```toml
 [nuget]
-"Lyric.Web"             = "0.4.11"
-"Std.Logging"           = "0.4.11"
+"Lyric.Web"             = "0.4.34"
+"Lyric.Docker"          = "0.4.34"
+"Std.Logging"           = "0.4.20"
 "Microsoft.Data.Sqlite" = "10.0.9"
 ```
 
-`Lyric.Docker` is **not** on that list. The published `Lyric.Docker` 0.4.10
-package (confirmed by extracting the `.nupkg` from nuget.org and inspecting
-`Docker.dll`'s embedded contract) requires an explicit `client: DockerClient`
-argument on every call and has no `waitContainer` function at all — a
-materially different, incompatible API from what `src/docker_manager.l`
-depends on. `vendor/lyric-docker` is a local fork with the container-lifecycle
-operations this project needs (`createContainer`, `start/stop/removeContainer`,
-`waitContainer`, `getContainerLogs`), pending upstreaming. It's compiled as an
-ordinary local package via `[project.packages]` in the root `lyric.toml` —
-not a separate dependency, no restore-path workaround, no patching:
+These track the latest published versions as of each package's own release
+cadence — `Lyric.Web`/`Lyric.Docker` and the compiler (`MIN_LYRIC_VERSION`)
+are independent version numbers on separate release schedules; they will not
+generally match, and `Lyric.Web` is intentionally ahead of the
+0.4.19 compiler floor (see "Root-caused" below for why). **`Lyric.Web` was
+bumped 0.4.26 → 0.4.33 for the chunked-response streaming API (lyric-lang
+PR #5983): `POST /api/sessions/{id}/messages` now streams container output
+live via `startStreaming`/`StreamingHandler` instead of buffering the whole
+run — see `docs/upstream/lyric-web-streaming.md`. Bumped again
+0.4.33 → 0.4.34 with the MCP-callback shim work: 0.4.34's stdlib retired
+the `HttpListener` server path (older Lyric.Web pins crash at startup with
+`MissingMethodException` under a 0.4.34+ toolchain) and renamed
+`StreamingHandler.handleStream` → `streamHandle` (lyric-lang#5993).** `Std.Logging`
+stays at 0.4.20 — nothing in `src/` imports it (the project logs via
+`println`), so there's no reason to chase its latest.
+`Microsoft.Data.Sqlite` stays at 10.0.9 — the newest *stable*; the 11.0.0
+line is preview-only. The two SQLite-native packages
+(`SourceGear.sqlite3` 3.53.3, `SQLitePCLRaw.provider.dynamic_cdecl` 3.0.3)
+are likewise already at their latest stable.
 
-```toml
-[project.packages]
-"Lyric.Docker"         = "vendor/lyric-docker/src/docker.l"
-"Lyric.Docker.Sockets" = "vendor/lyric-docker/src/sockets.l"
-```
+`Lyric.Docker` used to be vendored (`vendor/lyric-docker`) rather than
+consumed from NuGet. Three gaps blocked switching to the published package,
+all now closed upstream:
+
+1. The published 0.4.10 package required an explicit `client: DockerClient`
+   argument on every call and had no `waitContainer` function — a materially
+   different API from what the vendored fork exposed. `waitContainer` shipped
+   in a later release; the `client: DockerClient`-threaded call convention was
+   never changed (it's the correct design — the vendored fork's implicit
+   per-call socket resolution was a workaround, not an improvement) and is
+   what `src/docker_manager.l` now uses directly.
+2. `createContainer` had no way to pin a container's `NetworkMode`, which
+   this project's network-policy enforcement (`none`/`restricted`/full
+   egress, see `CloudAgents.NetworkPolicy`) depends on. Closed in
+   [lyric-docker#5697](https://github.com/nichobbs/lyric-lang/pull/5697) via
+   `createContainerWithNetwork(client, image, env, binds, networkMode)`.
+3. The published package was, separately, broken at runtime: `jsonEscapeValue`
+   (called by every `createContainer`/`createContainerWithNetwork`) called a
+   nonexistent `String.codePointAt` method that compiled cleanly but crashed
+   unconditionally on first use — undetected for ~4 releases because
+   `lyric-docker` was never wired into CI. Closed in
+   [lyric-lang#5705](https://github.com/nichobbs/lyric-lang/pull/5705).
+
+With all three fixed (published as `Lyric.Docker` 0.4.28; bumped to 0.4.29 to
+pick up `makeDockerClientTcp`, an opt-in TCP-transport constructor used by
+`dockerClient()` in `src/docker_manager.l`), `src/docker_manager.l`
+consumes the published package directly, calling its `Lyric.Docker.*`
+functions unqualified (`makeDockerClient()`, `createContainerWithNetwork(client, ...)`,
+etc. — the names are unqualified because `import Lyric.Docker` brings them
+into scope) and threading the resulting `DockerClient` through each call.
+The vendor directory has been removed.
+
+**Gotcha:** every `await` into `Lyric.Docker` in `src/docker_manager.l` must
+call the imported names unqualified, not as `Lyric.Docker.foo(...)`. A
+fully-qualified cross-package `await` hits a real, currently-open compiler
+bug ([lyric-lang#5222](https://github.com/nichobbs/lyric-lang/issues/5222):
+`emitPhaseBAwait: await index N exceeds pre-allocated resume labels` — a
+mismatch between the await pre-scan and the actual codegen for the
+qualified-path form) that crashes `lyric build` outright. Non-`await` calls
+(e.g. the pure `createContainerBodyWithNetwork`/`extractJsonField` helpers
+used in `tests/docker_client_tests.l`) are unaffected and can stay qualified.
 
 Build from the repo root:
 
@@ -72,27 +118,214 @@ this project's history: `lyric build` succeeds, `lyric run` finds its
 NuGet-restored dependencies at runtime (`lyric-lang#5066`, fixed in
 v0.4.15), and the real project's own cross-package field/method tokens now
 resolve correctly too (`lyric-lang#5177`, fixed in v0.4.17) — see "Compiler
-notes" for both. A separate, still-open bug
-([lyric-lang#5244](https://github.com/nichobbs/lyric-lang/issues/5244))
-means `slice[T].append()` throws at runtime, which affects some `lyric
-test` suites (see "Running tests") but not `scripts/run-api.sh`'s startup
-path.
+notes" for both. `slice[T].append()`
+([lyric-lang#5244](https://github.com/nichobbs/lyric-lang/issues/5244)) is
+fixed as of v0.4.18. An untyped top-level `String val`'s `.length` throwing
+an `IList` cast exception at runtime
+([lyric-lang#5298](https://github.com/nichobbs/lyric-lang/issues/5298)) is
+fixed as of v0.4.19 — all seven of the bugs that blocked this project's
+build/run/test pipeline are now fixed. An eighth, different-in-kind bug
+([lyric-lang#6249](https://github.com/nichobbs/lyric-lang/issues/6249),
+open as of v0.4.35) doesn't block the pipeline — it's a silent runtime
+data-loss bug in a specific async pattern, found via manual investigation
+of a production crash, not a build/run/test blocker — see "Compiler notes"
+below.
 
-**Not yet investigated:** on at least one sandboxed test environment,
-`scripts/run-api.sh` printed a caught, non-fatal SQLite native-library
-warning at startup (`The type initializer for
-'Microsoft.Data.Sqlite.SqliteConnection' threw an exception`) and the
-server process later exited on its own rather than continuing to serve
-indefinitely, after successfully answering at least one HTTP request. Both
-are unrelated to the six compiler bugs on this page — the warning looked
-like a missing/misconfigured native `e_sqlite3` binary specific to that
-environment, not a build or compiler issue. Investigate if
-`scripts/run-api.sh` doesn't stay up under normal use; candidates not yet
-ruled out are an environment issue, a `Lyric.Web`/`Web.start()` lifecycle
-question, or something in this project's own `main()` (`Web.start(router)`
-is expected to block). Not filed upstream or in this project's own issue
-tracker yet, since it hasn't been reproduced outside that one sandboxed
-run.
+**Both previously-blocking `Lyric.Web` gaps are fixed as of the 0.4.26
+pin — the server now has the machinery to dispatch requests to this
+project's handlers, and auth enforcement (#78/#211/#76) is wired in
+(`src/main.l`'s `AuthMiddleware`).** Kept here as history, since both were
+100% reproducible and cost real investigation time. See "Net effect"
+below for the important caveat on how much of this is actually confirmed
+by an automated test versus believed from the code compiling:
+
+1. **Crash on first request — fixed.** `Lyric.Web` (0.4.11 through 0.4.19)
+   built its HTTP response body via an `@externTarget`-wrapped call
+   equivalent to `Encoding.GetBytes(payload)`, which failed at runtime with
+   `unresolved extern instance method 'GetBytes' ...: no matching instance
+   method found in .NET metadata` — the compiler's extern-instance-method
+   binding mis-generated the call, treating the `Encoding` receiver as an
+   ordinary first argument instead of the implicit `this`. Tracked as part
+   of the still-open upstream defect class
+   [lyric-lang#3887](https://github.com/nichobbs/lyric-lang/issues/3887)
+   ("BCL `@externTarget` metadata resolution"), which explicitly lists
+   `Encoding.GetBytes` as one of the affected instance methods — still
+   reproduced against the 0.4.19 pin (see `repro-web-bug.sh`'s own header
+   comment for that history), but is genuinely fixed as of the 0.4.26 pin:
+   CI's `repro-web-bug.sh` diagnostic step, which reads whichever version is
+   *currently* pinned in `lyric.toml` rather than a hardcoded number,
+   reports "Lyric.Web 0.4.26 resolves `Encoding.GetBytes` at runtime —
+   lyric-lang#3887 is fixed for this call". `./scripts/repro-web-bug.sh`
+   remains checked in to mechanically re-check this against whatever
+   version is currently pinned, should a future bump ever regress it.
+2. **No real request dispatch — fixed as of `Lyric.Web` 0.4.26.** Earlier
+   `Lyric.Web` releases (through 0.4.19) returned an identical hardcoded
+   diagnostic JSON payload for every request regardless of method or path —
+   confirmed by reading `lyric-web/src/web.l`'s own doc comment at the time:
+   `Stability: @experimental — ... the end-to-end pipeline ... has not been
+   exercised against a live HTTP client in CI` and `Discovery via DLL
+   reflection is planned once Lyric's annotation reflection ships`. 0.4.26
+   replaced the old name-string route registration
+   (`addGet(router, pattern, "Package.handlerName")`) with a `Handler`-
+   interface model (`addGet(router, pattern, handler: Handler)`,
+   `dispatch(router, req): Response`) that genuinely dispatches to the
+   registered handler, and added request-header access
+   (`header(req, name): Option[String]`) and a `Middleware` interface. This
+   project's route registration in `src/main.l` was migrated accordingly —
+   see the "Handler-adapter plumbing" comment block there for the pattern:
+   one small stateless adapter record per route that decodes the request,
+   calls the (unchanged) existing handler function, and encodes the
+   response, plus an `AuthMiddleware` that finally calls
+   `CloudAgents.Auth.enforce` on every request.
+
+One `Lyric.Web` gap remains by design of its current API — a handler can
+only return a single complete `Web.Response`, so live run output has to be
+polled (`getRunOutput`, and the incremental `getRunOutputFrom`) instead of
+streamed — written up as a ready-to-file upstream feature request in
+`docs/upstream/lyric-web-streaming.md`.
+
+**Net effect, now genuinely confirmed end-to-end (2026-07-15), not just
+believed from compiling.** `scripts/run-api.sh` builds and starts, and a
+real running server was driven with real `curl` requests against
+`--urls http://127.0.0.1:<port>`: `GET /api/health`, `GET /api/sessions`,
+`GET /api/prompts` all returned correct `200` responses with real JSON
+bodies, dispatched through the actual `Handler`/`Middleware`/
+`AuthMiddleware` chain over a real socket — not a diagnostic script, an
+actual client hitting the actual listener. This resolves the "believed,
+not confirmed" gap #354 left open (the `Web.Request`-construction crash
+that blocked writing an *automated* end-to-end test is unrelated to
+whether the server itself works, and `repro-web-request-crash.sh` still
+tracks that specific construction bug on its own terms).
+
+**Container creation was also verified genuinely end-to-end against a
+real Docker daemon**, including the full production path: `POST
+/api/sessions` followed by `POST /api/sessions/{id}/messages` spawned a
+real `claude-code:base` container via `CloudAgents.Docker`, which cloned
+a real GitHub repo and streamed real output back through the session's
+SSE endpoint. Two real bugs in the `Lyric.Docker` library were found and
+fixed doing this (neither is a cloud-agents defect):
+
+1. `Lyric.Docker` 0.4.29 (the previously-pinned NuGet version) crashed
+   with `InvalidProgramException` on *any* live-daemon call
+   (`ping`/`createContainerWithNetwork`/etc.) — confirmed to be a stale
+   published artifact predating an unrelated async-codegen fix already on
+   `lyric-lang` `main`; rebuilding from source reproduced nothing. Fixed
+   here by bumping the pin to `0.4.31` (already published, contains the
+   fix) — see the `[nuget]` table above. `./scripts/repro-docker-crash.sh`
+   is checked in as a runnable reproduction (mirroring
+   `repro-web-bug.sh`'s convention): point it at a live daemon via
+   `CLOUD_AGENTS_DOCKER_TCP_HOST` and it mechanically re-checks whichever
+   `Lyric.Docker` version is currently pinned, should a future bump ever
+   regress it. Not wired into CI (no Docker daemon there); run manually.
+2. `getContainerLogs` misdetected raw-vs-multiplexed log streams (the
+   `/logs` response's own `Content-Type` header is not a reliable signal
+   for this — it reports `application/vnd.docker.raw-stream`
+   unconditionally regardless of the container's actual TTY setting),
+   causing every non-TTY container's log read to fail with `"Failed to
+   decode container logs as UTF-8"`. Fix submitted upstream in
+   [lyric-lang#5773](https://github.com/nichobbs/lyric-lang/pull/5773)
+   (open, not yet merged as of this writing); **not yet in any published
+   `Lyric.Docker` release either way** — bump the pin again once a
+   release containing that fix ships (check
+   https://www.nuget.org/packages/Lyric.Docker for a version newer than
+   0.4.31, or re-run `./scripts/repro-compiler-bug.sh`-style verification
+   against a live daemon after bumping).
+
+Two separate, narrower gaps surfaced during this verification, both
+`src/` / `docker/entrypoint.sh` concerns, not `Lyric.Docker`/compiler
+issues: the container's own `entrypoint.sh`/CLI invocation errored on a
+first-run session (`--resume requires a valid session ID or session
+title`), tracked as
+[#386](https://github.com/nichobbs/cloud-agents/issues/386) — **fixed**:
+`docker/entrypoint.sh`'s "is this the first invocation" check tested for
+`/workspace/.claude/history.jsonl`, a file Claude Code never actually
+writes (its real conversation storage,
+`~/.claude/projects/<slug>/<session-id>.jsonl`, lives on the *home*
+volume, which is shared per user+harness rather than per session — see
+`docs/phase2-session-management.md` "Credential Management"). That stale
+check made every message look like the first one: it re-ran an
+unconditional `claude -p ... --resume` seed step with no session ID
+(always failing with the error above) and then replayed `--session-id`
+on message 2+, which the CLI also rejected once the session was already
+registered (`Session ID ... is already in use`). The entrypoint now
+tracks first-invocation state itself with a marker file on the
+(genuinely session-scoped) workspace volume, and the broken seed step is
+removed. Also fixed alongside it: a related, previously-unfiled issue
+where the workspace's trust dialog could never be accepted
+non-interactively, causing `settings.json`'s `permissions.allow` entries
+to be silently ignored on every run — `entrypoint.sh` now pre-accepts it
+via `~/.claude.json`; and the
+session's polled `GET /api/sessions/{id}/output` endpoint returned an
+empty `output` even though the SSE stream carried real chunks during
+the run, tracked as
+[#387](https://github.com/nichobbs/cloud-agents/issues/387), still open —
+not explored past the point of filing.
+
+The marker-file fix above has one rollout gap, tracked as
+[#710](https://github.com/nichobbs/cloud-agents/issues/710) — **fixed**:
+a session that had already reached message 2+ *before* the marker-file
+scheme shipped has its native session ID already registered with the
+Claude CLI on the (shared, per-user+harness) home volume, but its own
+`/workspace` volume has no marker (the marker is new), so its first
+message after deploying the fix still looked like a genuine first
+invocation and replayed `--session-id` for an ID the CLI already had —
+reproducing the identical "already in use" failure, permanently, since
+every later message hit the same already-registered ID. `entrypoint.sh`
+now checks whether the CLI already has a transcript for that session ID
+anywhere under `~/.claude/projects` before deciding between
+`--session-id` and `--resume`, so an already-registered session recovers
+on its very next message with no manual intervention.
+
+Separately, `entrypoint.sh`'s host-CA-bundle registration
+(`/etc/host-ca.pem`, mounted from the operator's own
+`NODE_EXTRA_CA_CERTS`) copied the mounted file straight into
+`/usr/local/share/ca-certificates/host-ca.crt` before running
+`update-ca-certificates`. That file is commonly itself a multi-certificate
+bundle (a root + intermediate chain, or several CAs concatenated — the
+symptom that surfaced this: a corporate MDM agent's exported bundle), and
+`update-ca-certificates`' rehash step expects one certificate per file,
+warning `<file> does not contain exactly one certificate or CRL` and only
+reliably hashing the first certificate in the file. The certs still ended
+up trusted via the concatenated `/etc/ssl/certs/ca-certificates.crt` (the
+CAfile route curl/git/openssl use by default), so this was mostly cosmetic
+— but `docker/split-ca-bundle.sh` now splits any multi-certificate file
+into one file per certificate first, both here and in each of the four
+Dockerfiles' build-time `docker/extra-ca-certs/` handling, so every
+certificate gets its own hash symlink too and the warning goes away for
+the common case.
+
+**#387 does not share a root cause with the `getContainerLogs`
+raw/multiplex bug above** (checked per
+[#393](https://github.com/nichobbs/cloud-agents/issues/393), which raised
+this as a plausible connection worth ruling out before separate `src/`
+investigation). Two things pin this down from static reading of
+`src/handlers/sessions.l` and `src/docker_manager.l`, without needing a
+live repro:
+1. `getRunOutput` (`src/handlers/sessions.l`, the handler behind
+   `GET /api/sessions/{id}/output`) returns the hardcoded literal
+   `{"running":"false","output":""}` whenever the session's status is not
+   `RUNNING` — it never calls `partialContainerLogs`/`getContainerLogs` on
+   that path at all, so a bug in raw-vs-multiplexed log decoding cannot be
+   the proximate cause of the empty string returned there; the code
+   simply never asks Docker for logs once the run has ended. This is
+   by design — the doc comment on `getRunOutput` says the client is
+   expected to stop polling and "reload the persisted transcript"
+   through a different endpoint once `running` goes `false` — but #387's
+   repro polls `/output` itself, which will read back `""` regardless of
+   whether `getContainerLogs` is healthy.
+2. #387's own repro description says the SSE stream carried real log
+   chunks *during* the run. That live streaming path
+   (`streamSessionMessage` in `src/docker_manager.l`) polls logs through
+   the same `partialContainerLogs` → `getRunnerLogs` → `getContainerLogs`
+   chain the raw/multiplex bug affects — so if that bug were active for
+   this container, the live SSE output would have come back empty too,
+   not just the post-run poll. Real output during the run is evidence
+   `getContainerLogs` was decoding this container's logs correctly at the
+   time.
+
+Net: #387 is a separate `src/` output-persistence/routing concern (nothing
+reads back a persisted transcript on this endpoint once the run ends) and
+will not resolve for free once `lyric-lang#5773` ships.
 
 ### Bumping a NuGet dependency version
 
@@ -107,52 +340,146 @@ it's caught up without checking, the way this project's own history did once.
 `System.InvalidCastException` as of v0.4.11 (bug 1 below hit this entry
 point too), no longer fails every test outright on a missing
 `Lyric.Stdlib.dll` as of v0.4.15 (that was the same underlying bug as bug
-4 below), and no longer corrupts cross-package field/method tokens as of
-v0.4.17 (bug 5 below, `lyric-lang#5177`) — `CloudAgents.DbTests` (the
-suite that used to hit that corruption directly) now passes 11/11.
-**Two suites still fail**, mostly on a separate, still-open bug (bug 6,
-`lyric-lang#5244`): `CloudAgents.SessionTests` and one
-`CloudAgents.AuthTests` case both call `slice[T].append()`, which throws
-`"unsupported method 'append'"` at runtime unconditionally. One further
-`SessionTests` case (`Test Handler createSession validation`) fails a
-*different*, distinct, not-yet-diagnosed way — `Unable to cast object of
-type 'System.String' to type 'System.Collections.IList'.` — not
-attributable to any of the six bugs on this page and not yet filed
-upstream; `Web.badRequest`'s own contract (checked via reflection) matches
-its call site exactly, so the cause is somewhere else. `scripts/verify.sh`
-avoids `lyric test` entirely by compiling a hand-rolled `main()` harness and
-running it via `lyric build && lyric run` instead, and **that genuinely
-succeeds** — all 24 checks pass for real, since its harness doesn't happen
-to call `.append()` either. `scripts/verify.sh` is still the right entry
-point to use (`./scripts/verify.sh`); it exercises the Docker/Web-independent
-logic (SSE framing, the Phase 2 state machine + idle recycling + SQL
-builders, the Phase 3 auth helpers) — the same code
-the `@test_module` suites in `tests/*.l` describe. Those `tests/*.l` files
-remain the readable source of truth for intended behavior and should still
-be kept up to date; once bug 6 is fixed upstream, `lyric test` should
-become the right entry point again.
+4 below), no longer corrupts cross-package field/method tokens as of
+v0.4.17 (bug 5 below, `lyric-lang#5177`), no longer fails on
+`slice[T].append()` as of v0.4.18 (bug 6 below, `lyric-lang#5244`), and no
+longer crashes an untyped top-level `String val`'s `.length` as of v0.4.19
+(bug 7 below, `lyric-lang#5298`) — `CloudAgents.SessionTests`,
+`CloudAgents.StreamingTests`, `CloudAgents.DbTests`, and
+`CloudAgents.AuthTests` are now **all fully green**, for the first
+time in this project's history. `src/handlers/sessions.l`'s top-level `val
+httpsPrefix = "https://"` (no type annotation) — read via `.length` in
+`createSession` — was exactly bug 7's trigger; see bug 7 below for the
+compiler-side root cause. `scripts/verify.sh` remains a useful,
+`lyric test`-free harness (a hand-rolled `main()` run via
+`lyric build && lyric run`) and still genuinely passes all 24 checks, but
+`lyric test` is now the right entry point again — both agree.
+
+**Live-database suites need the native SQLite library on the loader path.**
+`tests/prompt_tests.l` (and later suites) open real `Microsoft.Data.Sqlite`
+connections against a temp file; `SqliteConnection`'s type initializer loads
+the native `libe_sqlite3.so`, which the test runner does not resolve from
+the NuGet cache by itself. Run `./scripts/build-full.sh` once (it copies the
+native runtimes to `bin/runtimes/`), then:
+
+```sh
+export LD_LIBRARY_PATH="$PWD/bin/runtimes/linux-x64/native:$LD_LIBRARY_PATH"
+lyric test
+```
+
+CI's "Run lyric test" step does exactly this. Without it the live-DB tests
+fail with `The type initializer for 'Microsoft.Data.Sqlite.SqliteConnection'
+threw an exception` while every non-DB suite still passes.
 
 ## Compiler notes
 
-**Six independent upstream compiler bugs have blocked this project's
+**Seven independent upstream compiler bugs blocked this project's
 build/run/test pipeline in sequence, each one only reachable once the
-previous one was fixed — five are now fixed (v0.4.11, v0.4.12, v0.4.14,
-v0.4.15, v0.4.17), one is still open.** `lyric build` **finally succeeds as
-of v0.4.14** — the full project, all 12 packages, for the first time in
-this project's history. `lyric run` **actually starts this real,
-multi-package server as of v0.4.17** — also for the first time. Only two
-`lyric test` suites still fail, on the remaining open bug (bug 6). None of
-the six is a characteristic of this project's manifest, dependencies, or
-source — each was found and root-caused using this project as the
-real-world test case that first got far enough to hit it.
+previous one was fixed — all seven are now fixed (v0.4.11, v0.4.12,
+v0.4.14, v0.4.15, v0.4.17, v0.4.18, v0.4.19).** `lyric build` **finally
+succeeds as of v0.4.14** — the full project, all 12 packages, for the
+first time in this project's history. `lyric run` **actually starts this
+real, multi-package server as of v0.4.17** — also for the first time.
+`lyric test` **passes every case as of v0.4.19** — also for the
+first time. None of the seven is a characteristic of this project's
+manifest, dependencies, or source — each was found and root-caused using
+this project as the real-world test case that first got far enough to hit
+it.
+
+**An eighth bug, different in kind, is still open**
+([lyric-lang#6249](https://github.com/nichobbs/lyric-lang/issues/6249), as
+of v0.4.35): unlike bugs 1–7, this one doesn't block `lyric build`/`run`/
+`test` — it's a silent runtime data-loss bug (no exception, no diagnostic)
+in a specific `async func` pattern (a local `val` bound before one `await`
+loses its value if read again after a SECOND, different-callee `await` in
+the same function), found while root-causing a recurring production crash
+(`streamSessionMessage`'s `AccessViolationException`). **This one DOES
+need a source workaround** — see `src/docker_manager.l`'s
+`runSessionMessageAsync`/`terminateSessionContainerAsync` (fixed in PR
+#690: thread the affected value through a mutable record field instead of
+a local `val`, which survives reliably across multiple awaits). Revert
+that workaround once `./scripts/repro-compiler-bug.sh` check 8 reports the
+bug fixed upstream.
+
+**A ninth bug, the actual (sole) root cause of that `streamSessionMessage`
+`AccessViolationException`, was found in a later session with real access
+to the crashing hardware (arm64 macOS) and a real `dotnet-dump` crash
+dump** (as of v0.4.36): bug 8's fix (PR #690) did NOT stop the crash — it
+fixed a real, separate, silent-data-loss bug, but the process kept
+crashing on every message sent regardless. Reproduced deterministically on
+real hardware, independent of Docker Desktop vs. colima vs. the Docker
+daemon being completely unreachable (ruling out an earlier session's
+leading hypothesis about the Unix-socket transport), independent of
+`createRunnerContainer` actually succeeding, independent of the MCP
+callbacks feature flag, and independent of the surrounding request
+pipeline (JSON body decoding, the SQLite session lookup, auth) —
+`streamSessionMessage` crashes the same way even called directly with a
+made-up, nonexistent session id. `dotnet-dump analyze`'s `dumpmt -md`/
+`dumpobj` on the crash dump showed the `Unbox` call's `toTypeHnd` resolves
+to `System.Int64`, and its `obj` argument is not a valid object reference
+at all ("this object has an invalid CLASS field") — i.e. the JIT is trying
+to unbox garbage as an `Int64`. Bisection (rebuilding with pieces of
+`streamSessionMessage` removed/replaced) traced it to the run's 30-minute
+wall-clock timeout check: doing a `Long` (Int64) subtract-and-compare —
+`nowMs - startMs > timeoutMs` — ANYWHERE in that specific function, once
+per poll tick, crashes the process, whether the comparison happens inline
+or via the (pure, cross-package) `CloudAgents.DockerPolicy.
+hasExceededRunTimeout` call it originally used — both crash identically.
+**Five independent from-scratch standalone reconstructions never
+reproduced it** — matching `streamSessionMessage`'s local-variable count,
+a real cross-package `Long`-arg call, the real project's package count and
+declaration order (`CloudAgents.DockerPolicy` before `CloudAgents.Docker`,
+matching the mechanism behind the already-fixed
+[lyric-lang#5177](https://github.com/nichobbs/lyric-lang/issues/5177)),
+even the real `Lyric.Web`/`Lyric.Docker` NuGet dependencies loaded and a
+real streaming HTTP handler driving it — none crashed. **Only substituting
+the ACTUAL, unmodified `docker_manager.l`/`docker_policy.l` source into an
+otherwise-minimal 11-package project (stub implementations for every other
+package they import, no SQLite, no auth, no real session) reproduced it**,
+which is why `./scripts/repro-crosspkg-long-crash.sh` freezes a snapshot of
+those two files rather than generating equivalent code inline the way this
+project's other `repro-*.sh` scripts do — see
+`scripts/repro-fixtures/crosspkg-long-crash/NOTE.md`. **Not yet filed
+upstream** (a fully minimized, dependency-free repro was not achieved
+despite the attempts above — whatever makes this reproduce is tied to the
+real file's actual compiled shape, not just its logical content). Worked
+around in `src/docker_manager.l`'s `streamSessionMessage` by approximating
+elapsed time with an Int accumulator of each tick's `pollMs` instead of a
+`Long` epoch-millisecond subtraction (coarser than true wall-clock time,
+adequate for a 30-minute safety cap) — revert once
+`./scripts/repro-crosspkg-long-crash.sh` reports the bug fixed upstream.
+`waitForContainer`'s retry-deadline check used the identical
+cross-package-`Long`-args shape (`CloudAgents.DockerPolicy.
+shouldRetryContainerWait(attempts, maxAttempts, nowMs, deadlineMs)`) —
+never confirmed to crash (no deterministic way to force a real
+Docker-daemon wait-and-retry scenario in the time available), but
+preemptively fixed the same way rather than left as an untested landmine:
+`nowMillisLong()`'s `Long` epoch milliseconds replaced with `Int`
+`System.Environment.TickCount` (`tickCountMs()`, NOT the 64-bit
+`TickCount64`) throughout, so neither function does `Long` arithmetic at
+all anymore. `hasExceededRunTimeout` and `shouldRetryContainerWait`
+themselves are untouched in `src/docker_policy.l` — both remain pure,
+directly unit-tested (#67, #56), just no longer called from
+`CloudAgents.Docker`.
+
+**CI enforces a version floor matching this status**, read from the single
+checked-in [`MIN_LYRIC_VERSION`](../MIN_LYRIC_VERSION) file (currently
+`0.4.19`) rather than duplicated as a literal here and in
+`.github/workflows/ci.yml` — the "Verify minimum Lyric version" step fails
+fast with a clear diagnostic if a future release ever resolves to
+something older than that file's contents, rather than the `lyric test`
+step below failing opaquely on an unrelated application PR (see
+nichobbs/cloud-agents#140). Bump `MIN_LYRIC_VERSION` if a new bug is ever
+found and fixed — this section's prose above will need updating too, but
+the CI floor itself only needs the one file changed.
 
 **This is checked into the repo as a runnable reproduction, not just
-prose**: `scripts/repro-compiler-bug.sh` checks all six bugs — checks 1-4
-and 6 against trivial scratch projects, check 5 (which needed this
+prose**: `scripts/repro-compiler-bug.sh` checks all seven bugs — checks 1-4
+and 6-7 against trivial scratch projects, check 5 (which needed this
 project's own real scale/shape to reproduce — see below) against the real
 manifest in place via `lyric test`. Checks 1–2 need only `lyric` on PATH
 (both bugs occur before the compiler would invoke the .NET toolchain);
-checks 3–6 need `dotnet` (3–5 additionally need a real `[nuget]` restore),
+checks 3–7 need `dotnet` (3–5 additionally need a real `[nuget]` restore),
 and are skipped (not failed) without it. Run it yourself; exit 0 means
 every bug that could be checked is fixed on your compiler and it's safe to
 remove this script and the workaround notes below.
@@ -338,45 +665,102 @@ fixed upstream in [lyric-lang#5220](https://github.com/nichobbs/lyric-lang/pull/
 `scripts/run-api.sh` starts the server for the first time in this
 project's history, and `CloudAgents.DbTests` passes 11/11.
 
-### Bug 6 — `slice[T].append()` throws "unsupported method 'append'" at runtime (lyric-lang#5244) — **open, currently blocking two `lyric test` suites**
+### Bug 6 — `slice[T].append()` threw "unsupported method 'append'" at runtime (lyric-lang#5244) — **fixed in v0.4.18**
 
 Re-verifying bug 5 against v0.4.17 surfaced this: `slice[T].append(x)` —
 the compiler's own documented idiom for building up a slice (see
 `docs/lyric/reference.md`'s own "Arrays and slices" section, which mirrors
-the compiler's own docs verbatim) — throws at runtime, unconditionally, for
+the compiler's own docs verbatim) — threw at runtime, unconditionally, for
 any element type:
 
 ```
-$ lyric build   # succeeds — this only fails at runtime
+$ lyric build   # succeeded — this only failed at runtime
 $ dotnet bin/Test.dll
 Unhandled exception. System.Exception: unsupported method 'append' on the receiver type at this call site (no matching user method, extern binding, or built-in intrinsic)
 ```
 
-Reproduces in complete isolation — a single package, a single function,
+Reproduced in complete isolation — a single package, a single function,
 `val dynamic: slice[Int] = [1, 2, 3]; val ys = dynamic.append(42)`, no
 `[project.packages]`, no NuGet, no async involved at all. Confirmed the
 same for `slice[String]` and a plain 2-field `record` element type.
-Read-only slice operations (`.length`, indexing) are unaffected — this is
+Read-only slice operations (`.length`, indexing) were unaffected — this was
 scoped specifically to the mutation-style methods. **Not a regression** —
-reproduces identically on v0.4.15 and v0.4.17 both, so it's been broken at
+reproduced identically on v0.4.15 and v0.4.17 both, so it had been broken at
 least that long; it was simply never runtime-exercised in this project
 until bugs 1–5 stopped masking it (every earlier blocker crashed before
 `lyric test` ever got far enough to execute a function that calls
 `.append()`). `src/handlers/auth.l`'s `parseWhitelist` and
 `src/sessions/session_manager.l`'s session-list helpers both call it, which
 is why `CloudAgents.SessionTests` and one `CloudAgents.AuthTests` case
-(`Whitelist access control`) still fail `lyric test` — `scripts/verify.sh`'s
-own harness doesn't happen to call `.append()`, so it's unaffected and
-still genuinely passes. (One further `SessionTests` case fails a third,
-distinct, not-yet-diagnosed way — see "Running tests" above — not this bug
-either.) Filed as
-[lyric-lang#5244](https://github.com/nichobbs/lyric-lang/issues/5244)
-(open).
+(`Whitelist access control`) used to fail `lyric test`. Filed as
+[lyric-lang#5244](https://github.com/nichobbs/lyric-lang/issues/5244) —
+**confirmed fixed in the
+[v0.4.18 release](https://github.com/nichobbs/lyric-lang/releases/tag/v0.4.18)**:
+`slice[T].append()` now resolves at runtime for `Int`/`String`/record
+element types, and `CloudAgents.AuthTests` passes 5/5.
 
-**There is nothing to fix on this project's manifest, build config, or
-source for either of the two bugs above** — check
-[lyric-lang#5244](https://github.com/nichobbs/lyric-lang/issues/5244) for
-status before assuming a local `lyric test` failure needs a local fix.
+### Bug 7 — untyped top-level `val` of inferred String type crashes `.length` with an IList cast (lyric-lang#5298) — **fixed in v0.4.19**
+
+Diagnosing the one `CloudAgents.SessionTests` case bug 6's fix didn't
+clear (`Test Handler createSession validation`) surfaced a seventh,
+distinct bug: a package-scope (top-level) `val` declared **without an
+explicit type annotation**, whose initializer is a string literal, crashes
+at runtime with `System.InvalidCastException: Unable to cast object of
+type 'System.String' to type 'System.Collections.IList'` when its
+`.length` is read — anywhere in the program, including same-package,
+unqualified, no cross-package reference involved:
+
+```
+$ lyric build   # succeeds — this only fails at runtime
+$ dotnet bin/Test.dll
+Unhandled exception. System.InvalidCastException: Unable to cast object of type 'System.String' to type 'System.Collections.IList'.
+   at Test.Program.main()
+```
+
+Reproduces in complete isolation — a single package, a single file:
+`val prefix = "https://"; func main(): Unit { println(prefix.length.toString()) }`
+— no `@post`/`@body`/`@generate(Json)`, no NuGet, no multi-package
+structure, no `lyric test` harness needed at all (a plain `main()` run via
+`dotnet` reproduces it directly). Confirmed the same holds for `pub val`
+and plain `val`; confirmed a top-level `val` with an *explicit* type
+annotation (e.g. `slice[String]`) and a top-level `Int` literal `val` are
+both unaffected — the bug is specific to an untyped declaration whose
+inferred type is `String`. Root-caused (with direct access to
+`nichobbs/lyric-lang`) to `lyric-compiler/msil/codegen.l`'s package-level
+`val`/`const` pre-scan: it only records a declaration's MSIL type when
+there's an explicit type annotation (`decl.ty = Some(...)`); when the type
+must be inferred from the initializer, it silently defaults to `MObject`.
+A later read site's `.length` dispatch has a fallback that assumes any
+`MObject`-typed receiver reaching `.length` is a `List`-backed slice
+(correct for slices, whose static type also often erases to `MObject`) and
+unconditionally casts to `IList` — wrong for a boxed `System.String`, hence
+the `InvalidCastException`. **Not a regression** — this is a longstanding
+gap in the pre-scan, independent of (though similarly-shaped to)
+[lyric-lang#5258](https://github.com/nichobbs/lyric-lang/issues/5258) (a
+related but different MSIL bug — *cross*-package qualified `pub val`
+access resolving to null — fixed the same day; its fix added qualified
+lookup keys but didn't touch this same-package, untyped-inference gap).
+`src/handlers/sessions.l`'s `createSession` reads exactly such a top-level
+`val` (`httpsPrefix = "https://"`, no annotation) via `.length`, which is
+why `CloudAgents.SessionTests`' "Test Handler createSession validation"
+case used to fail `lyric test` even with bug 6 fixed —
+`scripts/verify.sh`'s own harness doesn't happen to read that val's
+`.length`, so it was unaffected and still genuinely passed throughout.
+Filed as
+[lyric-lang#5298](https://github.com/nichobbs/lyric-lang/issues/5298) —
+**confirmed fixed in the
+[v0.4.19 release](https://github.com/nichobbs/lyric-lang/releases/tag/v0.4.19)**:
+an untyped top-level `String val`'s `.length` now resolves correctly at
+runtime, and `CloudAgents.SessionTests` passes 4/4 — the full `lyric test`
+suite passes fully for the first time in this project's history. (The suite roster lives in lyric.toml's [project.tests]; per-suite counts aren't duplicated here.)
+
+**All seven of the build/run/test-blocking upstream compiler bugs are now
+fixed.** Nothing on this project's manifest, build config, or source
+needs to change for bug 7 — check `./scripts/repro-compiler-bug.sh` if a
+future `lyric` release regresses any of the seven. **An eighth,
+different-in-kind bug (lyric-lang#6249) is still open** and, unlike bugs
+1–7, DOES require a source workaround — see the "Compiler notes" section
+above and `src/docker_manager.l`'s doc comments.
 
 ### A real bug this *did* surface in this project's own source
 
@@ -397,3 +781,84 @@ Other compiler-level characteristics, independent of the above:
   defensive measure; revisit if a later compiler release confirms the stdlib
   path is reliable.
 - **`out` is a reserved keyword** — it cannot be used as an identifier.
+
+## Distribution
+
+Two ways to get a runnable Cloud Agents build:
+
+- **Development**: `./scripts/install.sh` installs Lyric (if not already on
+  `PATH`) and the .NET 10 SDK (if not already on `PATH`, skippable with
+  `SKIP_DOTNET`), then runs `lyric restore`. See the script's own header
+  comment for env overrides (`LYRIC_VERSION`, `LYRIC_DIR`, `SKIP_RESTORE`).
+- **Release**: `.github/workflows/release.yml` (triggered by pushing a
+  `vX.Y.Z` tag, or manually via `workflow_dispatch`) builds a self-contained
+  native executable per target platform and attaches it to a GitHub Release,
+  the same way lyric-lang's own `publish.yml` does for the `lyric` binary.
+
+### Why self-contained, not true Native AOT
+
+`dist/CloudAgents.Native/` is a thin C# trampoline project (`Program.cs`
+calling straight into the Lyric-emitted `CloudAgents.Program.main()`) whose
+only job is to let `dotnet publish` turn the already-compiled
+`bin/CloudAgents.dll` (plus its full NuGet-restored dependency closure —
+`Lyric.Web`, `Lyric.Docker`, the `Lyric.Stdlib.*` closure,
+`Microsoft.Data.Sqlite` + `SQLitePCLRaw`) into one deployable artifact per
+platform, mirroring the pattern `bootstrap/src/Lyric.Cli.Aot/` already uses
+to publish the `lyric` compiler itself.
+
+The obvious next step — `PublishAot=true`, a genuine ahead-of-time-compiled
+native binary — publishes cleanly with **zero ILC warnings**, but the
+resulting executable **crashes on startup**:
+
+```
+Unhandled exception. System.IndexOutOfRangeException: Index was outside the bounds of the array.
+   at System.Array.GetFlattenedIndex(Int32) + 0x1f
+   at CloudAgents.Repository.Program.runMigrations() + ...
+```
+
+This was tracked down to a general, project-independent bug in the
+self-hosted Lyric compiler's Native-AOT compatibility, reproduced with a
+minimal `slice[Record]` array literal iterated by a `for...in` loop (no
+Docker, no async, no I/O — just that shape) — filed upstream as
+[lyric-lang#5781](https://github.com/nichobbs/lyric-lang/issues/5781). Until
+that's fixed, `dist/CloudAgents.Native/CloudAgents.Native.csproj` pins
+`PublishAot` to `false` and `SelfContained` to `true`: the .NET runtime is
+still bundled into the published output (no separate `dotnet` install
+needed on the target machine), but the assemblies stay managed IL (JIT'd at
+startup) rather than ahead-of-time compiled. Verified to behave identically
+to a normal `dotnet bin/CloudAgents.dll` run, including serving a real
+`/api/health` request correctly (the release workflow's smoke-test step
+checks this on every build). Re-enable `PublishAot` once lyric-lang#5781 is
+fixed — no other change to this project should be needed.
+
+### The SQLite native-library wrapper script
+
+The trampoline project references `bin/*.dll` via a loose-file glob rather
+than a real project/package reference, so `dotnet publish` has no runtime-
+asset metadata telling it to copy `Microsoft.Data.Sqlite`'s native
+`libe_sqlite3.so` alongside the executable — and a bare
+`runtimes/<rid>/native/` directory placed next to the published executable
+was verified NOT to be auto-discovered in this project's publish shape
+(confirmed by direct experiment: the server starts but every SQLite call
+fails with `SqliteConnection`'s type initializer throwing). The release
+workflow works around this by staging the native library into
+`runtimes/<rid>/native/` next to the executable and renaming the real
+executable to `cloud-agents.bin`, then generating a `cloud-agents` wrapper
+shell script that sets `LD_LIBRARY_PATH` to that directory before `exec`-ing
+the real binary — verified working end-to-end (a real HTTP request against
+a real SQLite-backed endpoint succeeds through the wrapper, fails without
+it). Released archives should always be run via the `cloud-agents` wrapper,
+not `cloud-agents.bin` directly.
+
+### Scope: Linux only
+
+The release workflow currently builds `linux-x64` and `linux-arm64` only.
+This project orchestrates Docker containers server-side — macOS/Windows
+are not realistic deployment targets for this workload — so the smaller,
+fully-verified Linux-only slice was chosen over a broader but untested
+multi-platform matrix. `linux-arm64` is cross-published from an x64 runner
+(self-contained non-AOT publish needs no cross-compilation toolchain, just
+the target RID's runtime pack) and is not executed by the workflow's smoke
+test (no arm64 execution environment available in CI); its correctness
+rests on the identical `linux-x64` leg passing through the same
+RID-parameterized steps.

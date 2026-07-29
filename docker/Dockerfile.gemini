@@ -1,0 +1,70 @@
+# gemini:base — Gemini CLI runner image.
+#
+# Provides Google's Gemini CLI inside an ephemeral container.
+# The API server sets HARNESS=gemini, MODEL, NATIVE_SESSION_ID, PROMPT,
+# REPO_URL, BRANCH, and GEMINI_API_KEY (or GOOGLE_API_KEY) at runtime.
+#
+# Build:  docker build -t gemini:base -f docker/Dockerfile.gemini docker
+# Arch:   multi-arch / portable
+
+FROM node:20-slim
+
+ENV DEBIAN_FRONTEND=noninteractive
+
+# Pinned to a version confirmed to install cleanly (bump deliberately, not
+# by dropping the pin back to @latest — an untested "latest" is what took
+# the whole Coolify deploy down the first time a sibling harness image ran
+# unpinned, see deploy/COOLIFY.md). The retry loop guards against transient
+# npm-registry failures, the other documented cause of a mid-build failure.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        git bash curl ca-certificates jq \
+    && rm -rf /var/lib/apt/lists/*
+
+# Optional corporate/proxy root CA trust (e.g. Zscaler TLS inspection) — see
+# extra-ca-certs/README.md. A no-op when that directory holds only its
+# placeholder README. Must run before the npm install below. Trusts the
+# cert(s) both at the OS level (update-ca-certificates, for curl/git) AND
+# via NODE_EXTRA_CA_CERTS — Node ships its own bundled CA store and does
+# NOT consult the OS trust store, so update-ca-certificates alone is not
+# enough to get npm past a corporate proxy's re-signed certs (confirmed:
+# npm still failed SELF_SIGNED_CERT_IN_CHAIN after update-ca-certificates
+# alone reported the cert added). The combined pem is always created (even
+# empty) so NODE_EXTRA_CA_CERTS can be set unconditionally — Node treats a
+# missing or empty file as a harmless no-op (a warning at worst), so this
+# is safe with nothing dropped into extra-ca-certs/.
+COPY extra-ca-certs /tmp/extra-ca-certs
+COPY split-ca-bundle.sh /usr/local/bin/split-ca-bundle.sh
+RUN chmod +x /usr/local/bin/split-ca-bundle.sh \
+    && : > /usr/local/share/ca-certificates/extra-combined.pem \
+    && for f in /tmp/extra-ca-certs/*.crt /tmp/extra-ca-certs/*.pem /tmp/extra-ca-certs/*.cer; do \
+      [ -f "$f" ] || continue; \
+      base="$(basename "$f")"; \
+      /usr/local/bin/split-ca-bundle.sh "$f" /usr/local/share/ca-certificates "${base%.*}"; \
+      cat "$f" >> /usr/local/share/ca-certificates/extra-combined.pem; \
+    done \
+    && update-ca-certificates
+ENV NODE_EXTRA_CA_CERTS=/usr/local/share/ca-certificates/extra-combined.pem
+
+RUN n=0; until npm install -g @google/gemini-cli@0.51.0; do \
+      n=$((n + 1)); \
+      if [ "$n" -ge 3 ]; then echo "npm install -g @google/gemini-cli failed after 3 attempts" >&2; exit 1; fi; \
+      echo "npm install -g @google/gemini-cli failed (attempt $n/3), retrying in 5s..." >&2; \
+      sleep 5; \
+    done
+
+RUN useradd --create-home --home-dir /home/gemini-user --shell /bin/bash gemini-user
+WORKDIR /workspace
+RUN chown gemini-user:gemini-user /workspace
+
+COPY entrypoint-gemini.sh /usr/local/bin/entrypoint.sh
+COPY reconcile-repos.sh /usr/local/bin/reconcile-repos.sh
+COPY create-fallback-branch.sh /usr/local/bin/create-fallback-branch.sh
+COPY inject-library.sh /usr/local/bin/inject-library.sh
+COPY render-branch-policy.sh /usr/local/bin/render-branch-policy.sh
+COPY branch-policy-rules.md /etc/cloud-agents/branch-policy-rules.md
+RUN chmod +x /usr/local/bin/entrypoint.sh /usr/local/bin/reconcile-repos.sh /usr/local/bin/create-fallback-branch.sh /usr/local/bin/inject-library.sh /usr/local/bin/render-branch-policy.sh
+
+USER gemini-user
+ENV HOME=/home/gemini-user
+
+ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]
