@@ -353,3 +353,60 @@ test "callback endpoints reject an empty session id before touching the database
     case Err(e) -> assertEqualInt(e.status, 400, "empty id returns 400")
   }
 }
+
+test "listPendingCallbacksHandler returns all currently active callbacks" {
+  val dbPath = useFreshTestDb("pending-callbacks")
+  defer {
+    cleanupTestDb(dbPath)
+  }
+  CloudAgents.Auth.setCurrentUserId("default")
+  val sid = "sess-pending-1"
+  mkSession(sid)
+  val token = mintToken(sid, "default")
+
+  // Starts empty
+  match CloudAgents.Callbacks.listPendingCallbacksHandler(sid) {
+    case Ok(res) -> {
+      assertEqualInt(res.permissionRequests.length, 0, "initially zero pending permissions")
+      assertEqualInt(res.userQuestions.length, 0, "initially zero pending questions")
+      assertEqualInt(res.secretRequests.length, 0, "initially zero pending secrets")
+    }
+    case Err(e) -> panic("init failed: " + toString(e.status))
+  }
+
+  // Create one permission request and one user question
+  val perm = match createPermissionRequestHandler(sid, bearer(token), CreatePermissionRequestRequest(toolName = "Bash", inputJson = "{}")) {
+    case Ok(r) -> r
+    case Err(e) -> panic("perm create failed")
+  }
+  val quest = match createUserQuestionHandler(sid, bearer(token), CreateUserQuestionRequest(question = "Proceed?", optionsJson = "")) {
+    case Ok(r) -> r
+    case Err(e) -> panic("question create failed")
+  }
+
+  // Verify they list in the pending endpoint
+  match CloudAgents.Callbacks.listPendingCallbacksHandler(sid) {
+    case Ok(res) -> {
+      assertEqualInt(res.permissionRequests.length, 1, "has one pending permission")
+      assertEqual(res.permissionRequests[0].id, perm.id, "has correct perm id")
+      assertEqualInt(res.userQuestions.length, 1, "has one pending question")
+      assertEqual(res.userQuestions[0].id, quest.id, "has correct question id")
+      assertEqualInt(res.secretRequests.length, 0, "has zero pending secrets")
+    }
+    case Err(e) -> panic("pending lookup failed")
+  }
+
+  // Answer the question, then verify it is removed from the pending list
+  match answerUserQuestionHandler(sid, quest.id, AnswerUserQuestionRequest(answer = "yes")) {
+    case Ok(_) -> ()
+    case Err(e) -> panic("answer question failed")
+  }
+
+  match CloudAgents.Callbacks.listPendingCallbacksHandler(sid) {
+    case Ok(res) -> {
+      assertEqualInt(res.permissionRequests.length, 1, "still has one pending permission")
+      assertEqualInt(res.userQuestions.length, 0, "question is now answered, so removed from pending")
+    }
+    case Err(e) -> panic("post-answer lookup failed")
+  }
+}

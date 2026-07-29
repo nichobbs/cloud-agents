@@ -5,6 +5,7 @@ import { GitHubPanel } from '../components/GitHubPanel';
 import { LinkedReposPanel } from '../components/LinkedReposPanel';
 import { MessageBlock } from '../components/MessageBlock';
 import { Terminal } from '../components/Terminal';
+import { PendingCallbacksPanel } from '../components/PendingCallbacksPanel';
 import { useSessions } from '../context/SessionsContext';
 import { useStreamMessage } from '../hooks/useStreamMessage';
 import { clearFailedDraft, saveFailedDraft, takeFailedDraft } from '../lib/drafts';
@@ -12,7 +13,7 @@ import { getHarness, type ModelOption } from '../lib/harnesses';
 import { api } from '../lib/api';
 import { discoverModels } from '../lib/models';
 import { formatElapsed, formatFullTimestamp, formatTimestamp, parseTimestamp } from '../lib/time';
-import type { Message, Profile, Prompt, Run } from '../types';
+import type { Message, PendingCallbacksResponse, Profile, Prompt, Run } from '../types';
 
 /** Unique `{{name}}` placeholder names in a prompt body, in first-seen order. */
 export function extractVarNames(body: string): string[] {
@@ -62,6 +63,11 @@ export function SessionDetail() {
   const [profileId, setProfileId] = useState('');
   const [profileSaving, setProfileSaving] = useState(false);
   const [runs, setRuns] = useState<Run[]>([]);
+  const [pendingCallbacks, setPendingCallbacks] = useState<PendingCallbacksResponse>({
+    permissionRequests: [],
+    userQuestions: [],
+    secretRequests: [],
+  });
   const [showRuns, setShowRuns] = useState(false);
   const [cancelling, setCancelling] = useState(false);
   const [restarting, setRestarting] = useState(false);
@@ -390,6 +396,31 @@ export function SessionDetail() {
     }
     return false;
   }, [sessionId, fetchMessages]);
+
+  const fetchPendingCallbacks = useCallback(async () => {
+    if (!sessionId) return;
+    try {
+      const res = await api.getPendingCallbacks(sessionId);
+      if (currentSessionRef.current === sessionId) {
+        setPendingCallbacks(res);
+      }
+    } catch (err) {
+      // Best effort
+    }
+  }, [sessionId]);
+
+  useEffect(() => {
+    fetchPendingCallbacks();
+    const interval = setInterval(() => {
+      fetchPendingCallbacks();
+    }, 4000);
+    return () => clearInterval(interval);
+  }, [sessionId, fetchPendingCallbacks]);
+
+  const handleCallbackAnswered = useCallback(() => {
+    void fetchPendingCallbacks();
+    void reload();
+  }, [fetchPendingCallbacks, reload]);
 
   // Fold a just-finished run into the persisted transcript: reload it, then
   // clear the live panel only if the reload applied fresh messages — otherwise
@@ -964,6 +995,12 @@ export function SessionDetail() {
               </>
             )}
           </div>
+
+          <PendingCallbacksPanel
+            sessionId={sessionId}
+            callbacks={pendingCallbacks}
+            onAnswered={handleCallbackAnswered}
+          />
 
           <div style={transcriptStyle}>
             {messagesError && (

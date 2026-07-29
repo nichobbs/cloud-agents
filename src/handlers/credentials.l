@@ -45,6 +45,7 @@ pub record PutCredentialRequest {
 func isReservedEnvName(name: in String): Bool {
   return name == "PROMPT" or name == "REPO_URL" or name == "BRANCH" or name == "HARNESS" or name == "MODEL" or
     name == "NATIVE_SESSION_ID" or
+    name == "SESSION_ID" or
     name == "EXTRA_REPOS" or
     name == "PATH" or
     name == "HOME" or

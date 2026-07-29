@@ -143,3 +143,42 @@ export interface Todo {
   done: string; // '0' | '1'
   createdAt: string;
 }
+
+export interface PermissionRequest {
+  id: string;
+  sessionId: string;
+  toolName: string;
+  inputJson: string;
+  status: string; // 'pending' | 'allowed' | 'denied'
+  updatedInputJson?: string;
+  note?: string;
+  createdAt: string;
+  decidedAt?: string;
+}
+
+export interface UserQuestion {
+  id: string;
+  sessionId: string;
+  question: string;
+  optionsJson: string; // JSON string of choices
+  status: string; // 'pending' | 'answered' | 'timeout'
+  answer?: string;
+  createdAt: string;
+  decidedAt?: string;
+}
+
+export interface SecretRequest {
+  id: string;
+  sessionId: string;
+  name: string;
+  reason: string;
+  status: string; // 'pending' | 'allowed' | 'denied'
+  createdAt: string;
+  decidedAt?: string;
+}
+
+export interface PendingCallbacksResponse {
+  permissionRequests: PermissionRequest[];
+  userQuestions: UserQuestion[];
+  secretRequests: SecretRequest[];
+}

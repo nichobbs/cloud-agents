@@ -34,16 +34,19 @@ export function MessageBlock({ message, highlighted, onTodoAdded, onRetry, isUnr
 
   const [collapsed, setCollapsed] = useState(() => {
     if (isLatestAgentMessage) return false;
+    if (message.role === 'agent') return true;
     return isSystemOrStartup || isVeryLong;
   });
 
   useEffect(() => {
     if (isLatestAgentMessage) {
       setCollapsed(false);
+    } else if (message.role === 'agent') {
+      setCollapsed(true);
     } else {
       setCollapsed(isSystemOrStartup || isVeryLong);
     }
-  }, [isLatestAgentMessage, isSystemOrStartup, isVeryLong]);
+  }, [isLatestAgentMessage, isSystemOrStartup, isVeryLong, message.role]);
 
   const handleCopy = async () => {
     const cleanContent = message.content.replace(/\x1b\[[0-9;]*m/g, '');
@@ -169,7 +172,7 @@ export function MessageBlock({ message, highlighted, onTodoAdded, onRetry, isUnr
         </div>
       ) : (
         isUser ? (
-          <div style={userContent}>{message.content}</div>
+          <div style={userContent}><AnsiContent text={message.content} /></div>
         ) : (
           renderAgentContent(message.content)
         )

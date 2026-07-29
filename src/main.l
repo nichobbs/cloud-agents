@@ -325,6 +325,10 @@ func notificationListResp(r: in Result[NotificationListResponse, Web.ApiError]):
   return match r { case Ok(v) -> jsonResp(200, v.toJson()); case Err(e) -> Web.errorResponse(e) }
 }
 
+func pendingCallbacksResp(r: in Result[PendingCallbacksResponse, Web.ApiError]): Web.Response {
+  return match r { case Ok(v) -> jsonResp(200, v.toJson()); case Err(e) -> Web.errorResponse(e) }
+}
+
 // ─── CloudAgents.Handlers routes (sessions.l) ───────────────────────────────
 record RouteCreateSession {
 }
@@ -1182,6 +1186,15 @@ impl Web.Handler for RouteListNotifications {
   }
 }
 
+record RouteListPendingCallbacks {
+}
+
+impl Web.Handler for RouteListPendingCallbacks {
+  func handle(req: in Web.Request): Web.Response {
+    return pendingCallbacksResp(CloudAgents.Callbacks.listPendingCallbacksHandler(pparam(req, "id")))
+  }
+}
+
 // ─── Phase 7 §6: repo-scoped artifacts (callbacks.l) ────────────────────────
 //
 // repoKey (host/owner/repo) contains literal '/' characters, so it is a
@@ -1482,6 +1495,7 @@ pub func main(): Unit {
   router = Web.addGet(router, "/api/sessions/{id}/callbacks/question/{rid}", RouteGetUserQuestion())
   router = Web.addPost(router, "/api/sessions/{id}/callbacks/question/{rid}/answer", RouteAnswerUserQuestion())
   router = Web.addPost(router, "/api/sessions/{id}/callbacks/progress", RouteReportProgress())
+  router = Web.addGet(router, "/api/sessions/{id}/callbacks/pending", RouteListPendingCallbacks())
 
   // Phase 6 §7 v2 tools: request_secret (create/poll/answer), add_followup_task
   // (todo create), report_artifact (upload) + user-facing artifact list/download.
