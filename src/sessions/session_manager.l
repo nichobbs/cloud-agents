@@ -352,6 +352,7 @@ func rowToSession(r: in CloudAgents.Sqlite.Row): AgentSession {
     harness = colAt(r.cols, 5),
     model = colAt(r.cols, 6),
     nativeSessionId = colAt(r.cols, 7),
+    status = colAt(r.cols, 8),
     isArchived = colAt(r.cols, 11)
   )
 }

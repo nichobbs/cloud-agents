@@ -355,6 +355,84 @@ own literals — see `shim/src/main.l`'s header note.
 
 ---
 
+**A type-invalid record-field assignment that the type checker silently
+accepts can corrupt JIT codegen for unrelated methods across the entire
+`output = "single"` bundle — a new trigger for the same
+InvalidProgramException class as lyric-lang#6232/#6134/#6133 above and
+docs/BUILD.md's Bug 5, but via bad IL from a construction that should never
+have compiled, not an async/await ordering issue.** Confirmed on v0.4.36 by
+PR #739 (branch `claude/pr-739-failures-b3qvwr`): `src/handlers/sessions.l`
+added
+
+```lyric
+@generate(Json)
+pub record ListSessionsResponse {
+  pub sessions: slice[AgentSession]
+}
+pub func listSessions(authHeader: in String = ""): Result[ListSessionsResponse, Web.ApiError] {
+  val allSessions = CloudAgents.SessionStore.getSessions()          // Result[AgentSessionArray, DbError]
+  return Ok(ListSessionsResponse(sessions = allSessions))           // field wants slice[AgentSession]
+}
+```
+
+— assigning a `Result[AgentSessionArray, DbError]` (neither the `Result`
+unwrapped nor the extern `AgentSessionArray`, a raw `.NET` array, converted
+to a Lyric `slice`) directly into a `slice[AgentSession]` field. `lyric
+build` and `lyric check` both accepted this with **no error, no warning** —
+27/27 packages "built" cleanly. At runtime it corrupted JIT codegen broadly
+enough to crash ~24 unrelated tests with a bare `InvalidProgramException`
+across both `CloudAgents.Handlers` (the same package as the bad
+construction — every other handler in `sessions.l` broke too, e.g.
+`createSession`, `getRuns`, `archive`/`unarchive`) and the entirely separate
+`CloudAgents.Callbacks`-family packages (`CallbacksTests`,
+`CallbacksV2Tests`, `RepoTasksTests`, `NotifyTests`, `RepoArtifactsTests`)
+compiled into the same `output = "single"` bundle — even `CloudAgents.
+SessionStore`, a package the broken function doesn't call into, saw
+collateral test failures. The test files themselves were untouched (byte-
+identical to `main`, which has 0 failures), proving the corruption source
+was elsewhere in the bundle, not the tests. Root-caused by bisecting the
+PR's non-test diff file by file against `main` and inspecting each for a
+construction with no prior precedent anywhere else in the codebase (`grep`
+for `AgentSessionArray`/`slice[AgentSession]` cross-use turned up nothing
+else assigning one to the other). Fixed by properly `match`-unwrapping the
+`Result` and hand-rolling the array-to-slice copy (no direct conversion
+exists — see `CloudAgents.SessionStore.getSessionArrayLength`/
+`getSessionArrayValue`, the same iterate-by-index pattern the
+`slice[Byte].toList()` entry above uses for a similar extern-container
+gap):
+
+```lyric
+match CloudAgents.SessionStore.getSessions() {
+  case Ok(arr) -> {
+    var sessions: slice[AgentSession] = []
+    var i = 0
+    val len = CloudAgents.SessionStore.getSessionArrayLength(arr)
+    while i < len {
+      sessions = sessions.append(CloudAgents.SessionStore.getSessionArrayValue(arr, i))
+      i = i + 1
+    }
+    return Ok(ListSessionsResponse(sessions = sessions))
+  }
+  case Err(e) -> return Err(Web.internalError("failed to list sessions: " + CloudAgents.Sqlite.dbErrorMessage(e)))
+}
+```
+
+Re-running the full suite after this one fix alone cleared all ~24
+failures (`== summary: 28 passed, 0 failed`, matching `main`). **Lesson:**
+when a from-scratch `InvalidProgramException` regression appears with no
+async/await anywhere in the diff (ruling out Bug 5's exact mechanism), do
+not assume it is unfixable/upstream-only — check every new record
+construction in the diff for a field type that doesn't structurally match
+its assigned expression (`Result[...]` into a bare field, an extern/`.NET`
+container type into a Lyric `slice`/`List`, etc.); the type checker may
+silently accept it, but the JIT will not survive it, and the blast radius
+is bundle-wide, not just the broken function itself. No upstream issue
+filed yet for this specific case (unlike lyric-lang#6232 above) since a
+source-level fix was found; if you hit this again in a form that resists a
+source-level fix, file one and link it here.
+
+---
+
 ## Enums
 
 **No integer-to-enum cast.**
