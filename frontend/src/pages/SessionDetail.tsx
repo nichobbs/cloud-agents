@@ -7,6 +7,7 @@ import { LinkedReposPanel } from '../components/LinkedReposPanel';
 import { MessageBlock } from '../components/MessageBlock';
 import { Terminal } from '../components/Terminal';
 import { PendingCallbacksPanel } from '../components/PendingCallbacksPanel';
+import { SessionPRsPanel } from '../components/SessionPRsPanel';
 import { TodoPanel } from '../components/TodoPanel';
 import { useSessions } from '../context/SessionsContext';
 import { useStreamMessage } from '../hooks/useStreamMessage';
@@ -40,7 +41,7 @@ export function SessionDetail() {
   const navigate = useNavigate();
   const location = useLocation();
   const session = getSession(sessionId);
-  const { output, isStreaming, error: sendError, send, reset, reattachEnded } = useStreamMessage(sessionId);
+  const { output, isStreaming, error: sendError, send, reset, reattachEnded, todoUpdates } = useStreamMessage(sessionId);
 
   const [messages, setMessages] = useState<Message[]>([]);
   const [messagesError, setMessagesError] = useState(false);
@@ -515,8 +516,8 @@ export function SessionDetail() {
   })();
 
   // Latest agent response content, for the todo panel's parsed-plan fallback
-  // (harnesses that can't run the MCP shim keep a markdown checkbox plan in
-  // their responses instead — see lib/agentPlan.ts).
+  // (a markdown checkbox plan in the response — used when the MCP todo tools
+  // weren't available or weren't called; see lib/agentPlan.ts).
   const latestAgentContent = [...messages].reverse().find(m => m.role === 'agent')?.content ?? '';
 
   const handleRetry = async (text: string) => {
@@ -1144,9 +1145,12 @@ export function SessionDetail() {
               sessionId={sessionId}
               latestAgentContent={latestAgentContent}
               isStreaming={isStreaming}
+              todoUpdates={todoUpdates}
             />
 
             <HighlightsPanel sessionId={sessionId} isStreaming={isStreaming} />
+
+            <SessionPRsPanel sessionId={sessionId} messages={messages} />
 
             <GitHubPanel repoUrl={session.repoUrl} branch={session.branch} />
 
@@ -1179,9 +1183,12 @@ export function SessionDetail() {
               sessionId={sessionId}
               latestAgentContent={latestAgentContent}
               isStreaming={isStreaming}
+              todoUpdates={todoUpdates}
             />
 
             <HighlightsPanel sessionId={sessionId} isStreaming={isStreaming} />
+
+            <SessionPRsPanel sessionId={sessionId} messages={messages} />
 
             <GitHubPanel repoUrl={session.repoUrl} branch={session.branch} />
 

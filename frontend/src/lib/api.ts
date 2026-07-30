@@ -204,6 +204,10 @@ export const api = {
     text: string,
     onChunk: (chunk: string) => void,
     onDone?: (messageId: string) => void,
+    /** Called for every named event frame other than done/error (e.g.
+     *  `todo_update`, `progress_update`), so panels can refresh push-style
+     *  instead of waiting for their next poll. */
+    onEvent?: (eventType: string) => void,
   ): Promise<void> => {
     const res = await fetch(`${BASE}/api/sessions/${sessionId}/messages`, {
       method: 'POST',
@@ -257,6 +261,12 @@ export const api = {
             }
           }
           return;
+        }
+        if (eventType !== 'message') {
+          // A supplementary named event (todo_update, permission_request,
+          // progress_update, …) — its data is not a chunk; just signal it.
+          onEvent?.(eventType);
+          continue;
         }
         if (!dataStr) continue;
         try {

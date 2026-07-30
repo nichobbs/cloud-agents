@@ -623,6 +623,11 @@ pub func streamSessionMessage(
   // Phase 7 §5 (docs/phase7-autonomy.md): same cursor pattern, for the
   // notify tool's `notification` event.
   var notificationCursor = toString(startMs)
+  // Same cursor pattern, for the session todo plan's `todo_update` event
+  // (add_todo/update_todo MCP tools) — keyed on todos.updated_at (migration
+  // 0024) rather than created_at, since a status flip on an existing row is
+  // exactly what the panel needs to hear about.
+  var todoCursor = toString(startMs)
   // Poll on a ~1s cadence. taskWaitMs blocks up to that waiting for the run to
   // finish (true = the whole run completed), so the loop wakes on either a
   // timer tick or run completion. The interval is deliberately NOT tighter
@@ -775,6 +780,29 @@ pub func streamSessionMessage(
             }
             notificationCursor = note.createdAt
             ni = ni + 1
+          }
+        }
+        case Err(_) -> ()
+      }
+      // Session todo plan: forward todos created/status-changed since the
+      // last tick (add_todo/update_todo MCP tools), same best-effort
+      // forwarding as the others above, cursored on updated_at. Like every
+      // strictly-greater cursor in this loop, an update landing in the SAME
+      // millisecond as the cursor after its read can be skipped (#803) —
+      // benign here by design: the frame only triggers a panel reload, and
+      // the panel's own polling (its reattach/other-tab fallback) picks up
+      // anything a dropped frame missed within one poll interval.
+      match CloudAgents.Repository.todosUpdatedAfter(sessionId, todoCursor) {
+        case Ok(tds) -> {
+          var ti = 0
+          while ti < tds.length {
+            val td = tds[ti]
+            match Web.writeChunk(w, CloudAgents.Streaming.sseTodoUpdate(td.id, td.status, td.note)) {
+              case Ok(_) -> ()
+              case Err(_) -> ()
+            }
+            todoCursor = td.updatedAt
+            ti = ti + 1
           }
         }
         case Err(_) -> ()

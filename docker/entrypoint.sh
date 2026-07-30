@@ -263,6 +263,24 @@ if [ ! -f /workspace/.claude/mcp.json ]; then
     printf '%s' '{"mcpServers": {}}' > /workspace/.claude/mcp.json
 fi
 
+# mcp.json can carry the per-session callback token (the cloud-agents entry
+# reconciled below) — keep the file we created out of an agent's `git add .`
+# via .git/info/exclude (#788). Untracked paths only, so a repo that
+# deliberately commits a .claude/mcp.json of its own is unaffected;
+# idempotent across messages. Reuses register-callbacks-mcp.sh's
+# exclude_from_git rather than duplicating it (#792) — this harness never
+# calls that script's register_callbacks_mcp itself (claude's registration
+# is the reconcile block below, coupled to --permission-prompt-tool).
+if [ -f /usr/local/bin/register-callbacks-mcp.sh ]; then
+    # shellcheck source=register-callbacks-mcp.sh
+    source /usr/local/bin/register-callbacks-mcp.sh
+    # Best-effort (#798): this runs under set -e, and a failure here (e.g. an
+    # unwritable .git/info) must never abort the whole run over an exclusion
+    # entry — same tolerance the other entrypoints give their registration.
+    exclude_from_git /workspace ".claude/mcp.json" \
+        || echo "entrypoint: could not git-exclude .claude/mcp.json, continuing" >&2
+fi
+
 # Phase 6 (docs/phase6-mcp-callbacks.md §8): reconcile the cloud-agents MCP
 # server entry in mcp.json EVERY message to match CALLBACKS_ACTIVE — add/refresh
 # it when callbacks are live, strip any stale entry when not (#548). This must

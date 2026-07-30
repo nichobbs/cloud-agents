@@ -18,11 +18,12 @@ TARGET="${1:-claude}"
 
 command -v docker >/dev/null || { echo "build-docker: 'docker' not on PATH" >&2; exit 1; }
 
-# claude-code:base builds cloud-agents-shim (docs/phase6-mcp-callbacks.md §5,
-# stage 3) INSIDE the Dockerfile's own shim-builder stage, so its context is
-# the repo root (it needs to see both docker/ and shim/) rather than docker/
-# alone — unlike the other three runner images below, which don't embed the
-# shim and keep the narrower docker/ context.
+# ALL four runner images build cloud-agents-shim (docs/phase6-mcp-callbacks.md
+# §5) INSIDE their own shim-builder stage, so every context is the repo root
+# (each needs to see both docker/ and shim/) — the #601 change the claude
+# image made first, extended to the other three when they gained the shim.
+# The stage's RUN instructions are byte-identical across the four
+# Dockerfiles, so Docker's layer cache builds the shim once and shares it.
 build_claude() {
     echo "==> Building claude-code:base"
     docker build -t claude-code:base -f "$DOCKER_DIR/Dockerfile" "$REPO_ROOT"
@@ -31,19 +32,19 @@ build_claude() {
 
 build_codex() {
     echo "==> Building codex:base"
-    docker build -t codex:base -f "$DOCKER_DIR/Dockerfile.codex" "$DOCKER_DIR"
+    docker build -t codex:base -f "$DOCKER_DIR/Dockerfile.codex" "$REPO_ROOT"
     echo "    codex:base  ✓"
 }
 
 build_opencode() {
     echo "==> Building opencode:base"
-    docker build -t opencode:base -f "$DOCKER_DIR/Dockerfile.opencode" "$DOCKER_DIR"
+    docker build -t opencode:base -f "$DOCKER_DIR/Dockerfile.opencode" "$REPO_ROOT"
     echo "    opencode:base  ✓"
 }
 
 build_gemini() {
     echo "==> Building gemini:base"
-    docker build -t gemini:base -f "$DOCKER_DIR/Dockerfile.gemini" "$DOCKER_DIR"
+    docker build -t gemini:base -f "$DOCKER_DIR/Dockerfile.gemini" "$REPO_ROOT"
     echo "    gemini:base  ✓"
 }
 

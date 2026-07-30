@@ -68,6 +68,24 @@ create-fallback-branch.sh "entrypoint-codex" "${HARNESS}" "${BRANCH}" "${SESSION
 # run.
 /usr/local/bin/inject-library.sh "codex" || echo "entrypoint-codex: library injection failed, continuing without it" >&2
 
+# Register (or strip) the cloud-agents MCP callback shim in
+# .codex/config.toml, reconciled every message — gives Codex the add_todo/
+# update_todo/report_progress/... tools (docker/register-callbacks-mcp.sh).
+# Best-effort: a registration hiccup must never block the prompt run.
+if [ -f /usr/local/bin/register-callbacks-mcp.sh ]; then
+    # shellcheck source=register-callbacks-mcp.sh
+    source /usr/local/bin/register-callbacks-mcp.sh
+    register_callbacks_mcp "codex" /workspace || echo "entrypoint-codex: callback MCP registration failed, continuing without it" >&2
+fi
+
+# Codex reads its config from $CODEX_HOME (default ~/.codex), NOT the
+# workspace — point it at the workspace .codex/ that this entrypoint and
+# inject-library.sh actually write (#808), so the MCP registration and the
+# library-granted subagents/servers rendered there are genuinely
+# discovered. Auth is env-based here (OPENAI_API_KEY) and each run is
+# stateless, so nothing in the default ~/.codex is lost by the override.
+export CODEX_HOME=/workspace/.codex
+
 # Codex can't use a rules file for branch policy (it would override the
 # user's AGENTS.md), so the instruction is prepended to the prompt instead.
 # Always send it — Codex is stateless (no conversation continuity), so
@@ -82,7 +100,7 @@ CODEX_BRANCH_INSTRUCTION="BRANCH POLICY: Before making any changes, rename the c
 # can't discover a rules file (see above), so a condensed version rides the
 # same prompt prefix: a parseable checkbox plan the UI's todo panel shows,
 # and a Session notes section the highlights summarizer mines.
-CODEX_SESSION_INSTRUCTION="SESSION VISIBILITY: For multi-step tasks, restate your plan at the END of each response as a markdown checkbox list (- [ ] pending, - [~] in progress, - [x] done; one item per line, at least two items) — the session UI parses and displays it. End your final response with a '## Session notes' section listing (as short, specific bullets) any unexpected discoveries, issues/tickets opened or closed (with number/URL), workarounds, reverts, and incomplete or skipped work; omit the section only if none apply.
+CODEX_SESSION_INSTRUCTION="SESSION VISIBILITY: For multi-step tasks, maintain a live plan the human can watch: if the cloud-agents MCP tools are available, use add_todo to create one item per step, update_todo to mark each in_progress when you start it and done when finished, and list_todos when resuming. If those tools are unavailable, instead restate your plan at the END of each response as a markdown checkbox list (- [ ] pending, - [~] in progress, - [x] done; one item per line, at least two items) — the session UI parses and displays it. Either way, end your final response with a '## Session notes' section listing (as short, specific bullets) any unexpected discoveries, issues/tickets opened or closed (with number/URL), workarounds, reverts, and incomplete or skipped work; omit the section only if none apply.
 
 "
 exec codex --model "${MODEL}" --full-auto -- "${CODEX_BRANCH_INSTRUCTION}${CODEX_SESSION_INSTRUCTION}${PROMPT}"

@@ -336,7 +336,13 @@ pub func allMigrations(): slice[Migration] {
         CloudAgents.Db.highlightScansSchemaSql()
       ]
     ),
-    Migration(version = "0023_mcp_server_enabled", statements = [CloudAgents.Db.alterMcpServersAddEnabledSql()])
+    Migration(version = "0023_mcp_server_enabled", statements = [CloudAgents.Db.alterMcpServersAddEnabledSql()]),
+    Migration(
+      version = "0024_todo_updated_at",
+      statements = [CloudAgents.Db.alterTodosAddUpdatedAtSql(), CloudAgents.Db.backfillTodoUpdatedAtSql()]
+    ),
+    Migration(version = "0025_todo_source", statements = [CloudAgents.Db.alterTodosAddSourceSql()]),
+    Migration(version = "0026_todo_updated_index", statements = [CloudAgents.Db.todosSessionUpdatedIndexSql()])
   ]
 }
 
@@ -493,21 +499,95 @@ func rowToTodo(r: in CloudAgents.Sqlite.Row): Todo {
 pub func addTodo(sessionId: in String, messageId: in String, note: in String): Result[Todo, CloudAgents.Sqlite.DbError] {
   val id = newId()
   val ts = nowMillis()
-  CloudAgents.Sqlite.execute(CloudAgents.Db.insertTodoSql(id, sessionId, messageId, note, "pending", ts))?
+  CloudAgents.Sqlite.execute(CloudAgents.Db.insertTodoSql(id, sessionId, messageId, note, "pending", ts, ""))?
   return Ok(
     value = Todo(
-      id = id, sessionId = sessionId, messageId = messageId, note = note, done = "0", createdAt = ts,
+      id = id,
+      sessionId = sessionId,
+      messageId = messageId,
+      note = note,
+      done = "0",
+      createdAt = ts,
       status = "pending"
     )
   )
+}
+
+/// Replace a session's plan-ingested todos (source = 'plan') with the
+/// agent's latest restated plan, in a SINGLE transaction (#791 — the same
+/// delete+insert-multiple shape addPromptWithTags runs transactionally, so
+/// a partial failure can never leave the plan half-replaced). `notes` and
+/// `statuses` are parallel slices (extra entries in the longer one are
+/// ignored); each row is anchored to `messageId`, the agent message the
+/// plan was parsed from. Never touches human/tool-created rows (source '').
+pub func replacePlanTodos(
+  sessionId: in String,
+  messageId: in String,
+  notes: in slice[String],
+  statuses: in slice[String],
+): Result[Unit, CloudAgents.Sqlite.DbError] {
+  // Each row gets a distinct timestamp (#801) so listTodos' created_at
+  // ordering is deterministic — and the offsets DESCEND with the index
+  // (#826): the listing is newest-first, so the plan's FIRST step needs the
+  // LARGEST timestamp for the panel to read step 1 → step N top-to-bottom
+  // instead of reversed.
+  val baseMs = nowMillisLong()
+  var count = notes.length.toInt()
+  if statuses.length.toInt() < count {
+    count = statuses.length.toInt()
+  }
+  var stmts: slice[String] = []
+  stmts = stmts.append(CloudAgents.Db.deletePlanTodosSql(sessionId))
+  var i = 0
+  while i < count {
+    val ts = toString(baseMs + (count - 1 - i).toLong())
+    stmts = stmts.append(CloudAgents.Db.insertTodoSql(newId(), sessionId, messageId, notes[i], statuses[i], ts, "plan"))
+    i = i + 1
+  }
+  CloudAgents.Sqlite.executeTransaction(stmts)?
+  return Ok(value = ())
 }
 
 /// Set a todo's lifecycle status directly (pending/in_progress/done) — the
 /// three-state counterpart of toggleTodo. `done` is kept in lockstep by the
 /// SQL itself. Validation of the status literal happens in the handlers.
 pub func setTodoStatus(id: in String, status: in String): Result[Unit, CloudAgents.Sqlite.DbError] {
-  CloudAgents.Sqlite.execute(CloudAgents.Db.setTodoStatusSql(id, status))?
+  CloudAgents.Sqlite.execute(CloudAgents.Db.setTodoStatusSql(id, status, nowMillis()))?
   return Ok(value = ())
+}
+
+/// The poll-loop-relevant view of one changed todo, for `todo_update` SSE
+/// forwarding — deliberately NOT the full Todo record (and not JSON-generated),
+/// so the wire shape shim/frontend already decode stays untouched.
+pub record TodoUpdate {
+  pub id: String
+  pub note: String
+  pub status: String
+  pub updatedAt: String
+}
+
+/// Todos changed strictly after `afterUpdatedAt`, oldest change first —
+/// mirrors artifactsCreatedAfter for SSE emission.
+pub func todosUpdatedAfter(
+  sessionId: in String, afterUpdatedAt: in String
+): Result[slice[TodoUpdate], CloudAgents.Sqlite.DbError] {
+  val rows = CloudAgents.Sqlite.query(CloudAgents.Db.selectTodosUpdatedAfterSql(sessionId, afterUpdatedAt))?
+  var acc: slice[TodoUpdate] = []
+  var i = 0
+  val len = CloudAgents.Sqlite.getRowArrayLength(rows)
+  while i < len {
+    val r = CloudAgents.Sqlite.getRowArrayValue(rows, i)
+    acc = acc.append(
+      TodoUpdate(
+        id = colAt(r.cols, 0),
+        note = colAt(r.cols, 1),
+        status = colAt(r.cols, 2),
+        updatedAt = colAt(r.cols, 3)
+      )
+    )
+    i = i + 1
+  }
+  return Ok(value = acc)
 }
 
 /// Look up the session that owns a todo — the container-originated status
@@ -538,7 +618,7 @@ pub func listTodos(sessionId: in String): Result[slice[Todo], CloudAgents.Sqlite
 
 /// Flip a todo's done flag.
 pub func toggleTodo(id: in String): Result[Unit, CloudAgents.Sqlite.DbError] {
-  CloudAgents.Sqlite.execute(CloudAgents.Db.toggleTodoSql(id))?
+  CloudAgents.Sqlite.execute(CloudAgents.Db.toggleTodoSql(id, nowMillis()))?
   return Ok(value = ())
 }
 
@@ -2145,7 +2225,9 @@ pub func updateMcpServer(
   for s in mcpServerChildStatements(id, userId, args, env) {
     stmts = stmts.append(s)
   }
-  stmts = stmts.append(CloudAgents.Db.updateMcpServerSql(id, userId, name, transport, command, url, nowMillis(), enabled))
+  stmts = stmts.append(
+    CloudAgents.Db.updateMcpServerSql(id, userId, name, transport, command, url, nowMillis(), enabled)
+  )
   val affected = CloudAgents.Sqlite.executeTransaction(stmts)?
   return Ok(value = affected)
 }
@@ -3269,7 +3351,12 @@ pub func addHighlight(
   CloudAgents.Sqlite.execute(CloudAgents.Db.insertHighlightSql(id, sessionId, messageId, kind, title, detail, ts))?
   return Ok(
     value = Highlight(
-      id = id, sessionId = sessionId, messageId = messageId, kind = kind, title = title, detail = detail,
+      id = id,
+      sessionId = sessionId,
+      messageId = messageId,
+      kind = kind,
+      title = title,
+      detail = detail,
       createdAt = ts
     )
   )

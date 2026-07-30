@@ -32,6 +32,14 @@ export interface StreamState {
    * already handles that) or for a cancelled/superseded reattach.
    */
   reattachEnded: number;
+  /**
+   * Incremented each time a `todo_update` SSE frame arrives on a locally-sent
+   * run's stream (the agent created a todo or changed one's status mid-run).
+   * The todo panel watches it to refresh immediately instead of waiting for
+   * its next poll. Reattached runs don't carry SSE events (they poll the log
+   * endpoint), so the panel's own polling remains the fallback there.
+   */
+  todoUpdates: number;
 }
 
 export function useStreamMessage(sessionId: string): StreamState {
@@ -41,6 +49,8 @@ export function useStreamMessage(sessionId: string): StreamState {
   // Bumped when a reattached run finishes so the owner can fold it into the
   // transcript (#316); see StreamState.reattachEnded.
   const [reattachEnded, setReattachEnded] = useState(0);
+  // Bumped on every todo_update SSE frame; see StreamState.todoUpdates.
+  const [todoUpdates, setTodoUpdates] = useState(0);
   // True while a local send() is running. The reattach resume() yields to it so
   // the two don't both drive output/isStreaming if a send starts in the narrow
   // window before resume()'s first getRunOutput resolves (#317).
@@ -295,6 +305,11 @@ export function useStreamMessage(sessionId: string): StreamState {
 
       let succeeded = true;
       let firstRealChunk = true;
+      const onEvent = (eventType: string) => {
+        if (eventType === 'todo_update' && stillCurrent()) {
+          setTodoUpdates(n => n + 1);
+        }
+      };
       try {
         await api.sendMessage(sessionId, text, chunk => {
           polling = false; // real streamed chunks win over polling
@@ -312,7 +327,7 @@ export function useStreamMessage(sessionId: string): StreamState {
               setOutput(prev => prev + chunk);
             }
           }
-        });
+        }, undefined, onEvent);
       } catch (err) {
         succeeded = false;
         const msg = err instanceof Error ? err.message : String(err);
@@ -341,5 +356,5 @@ export function useStreamMessage(sessionId: string): StreamState {
     setError(null);
   }, []);
 
-  return { output, isStreaming, error, send, reset, reattachEnded };
+  return { output, isStreaming, error, send, reset, reattachEnded, todoUpdates };
 }

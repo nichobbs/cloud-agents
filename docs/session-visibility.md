@@ -24,9 +24,12 @@ The SessionDetail right column now has a **Todo panel**: live-polling
 (4s while a run streams, 15s idle), click a status chip to cycle
 pending → in progress → done, inline add/delete, link to the full page.
 
-**Harnesses without the shim** (opencode/codex/gemini images have no
-dotnet, so they can't run `cloud-agents-shim`): the instructions in
-`docker/session-tools-guide.md` tell them to restate their plan as a
+**Checkbox-plan fallback** (originally for the opencode/codex/gemini
+images before they shipped the shim — see "Shim in every harness image"
+below — and still live for older images, repos whose harness config file
+is git-tracked so the token guard skips MCP registration, and agents that
+don't call the tools): the instructions in
+`docker/session-tools-guide.md` tell agents to restate their plan as a
 markdown checkbox list (`- [ ]` / `- [~]` / `- [x]`), and the panel
 renders it read-only, parsed from the latest agent response
 (`frontend/src/lib/agentPlan.ts`). This also picks up OpenCode's native
@@ -90,3 +93,54 @@ mechanism as the branch policy): Claude → `.claude/rules/`, OpenCode →
 (marker-guarded) to the GEMINI.md we own, Codex → condensed prompt
 prefix in `entrypoint-codex.sh`. Covered by
 `scripts/test-branch-policy-inject.sh`.
+
+## Follow-ups (second PR)
+
+The five follow-ups suggested in the first PR, implemented:
+
+### Shim in every harness image
+
+`Dockerfile.codex` / `Dockerfile.opencode` / `Dockerfile.gemini` now build
+`cloud-agents-shim` in their own condensed shim-builder stage (RUN
+instructions byte-identical to `docker/Dockerfile`'s canonical stage, so the
+layer cache builds it once) and ship it with the .NET runtime (copied from
+`mcr.microsoft.com/dotnet/runtime:10.0`, invariant globalization — no ICU).
+All four images therefore need the repo-root build context (compose,
+`build-docker.sh`, and the Build: header comments all updated — the same
+#601 change the claude image made first). Per-message registration into
+each harness's native MCP config (opencode.json `mcp`, gemini
+`.gemini/settings.json` `mcpServers`, codex `.codex/config.toml`
+marker-delimited block) lives in `docker/register-callbacks-mcp.sh`,
+reconciled add-or-strip against the same active-token gate the claude
+entrypoint uses, covered by `scripts/test-register-callbacks-mcp.sh`.
+The checkbox-plan fallback below remains for older images.
+
+### todo_update SSE (push-style panel)
+
+Todos gained `updated_at` (migration 0024, bumped on insert/status/toggle);
+the run poll loop forwards changes as `event: todo_update` frames (cursor
+on `updated_at`, mirroring `artifact_reported`). `api.sendMessage` now
+surfaces named event frames via an `onEvent` callback; `useStreamMessage`
+exposes a `todoUpdates` counter and the todo panel reloads on it — polling
+remains the fallback for reattached runs and other tabs.
+
+### Followup highlights → one-click todo
+
+`followup`-kind highlight rows have an "+ add to todos" button that creates
+a todo (anchored to the source message) from the highlight's title/detail.
+
+### Server-side checkbox-plan ingestion
+
+`CloudAgents.Interactions.parseAgentPlan` (mirrors the frontend parser:
+last contiguous ≥2-item checkbox list wins) + `ingestAgentPlan`, called
+after each agent message is persisted. **Off by default** — set
+`CLOUD_AGENTS_INGEST_AGENT_PLAN=1` to enable while its false-positive rate
+is established. Ingested rows carry `source='plan'` (migration 0025) and
+each re-ingest replaces only prior plan rows — human/tool todos are never
+touched.
+
+### PRs this session
+
+`SessionPRsPanel` lists every GitHub PR URL referenced in the transcript
+(deduped, first-seen order, ANSI-stripped), each linking to the PR and
+deep-linking back to its source message. Display-only — no API round trip.

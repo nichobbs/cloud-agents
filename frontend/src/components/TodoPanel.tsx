@@ -10,6 +10,12 @@ interface TodoPanelProps {
   latestAgentContent: string;
   /** True while a run is streaming — the panel polls faster to show live status. */
   isStreaming: boolean;
+  /**
+   * Bumped by useStreamMessage on every `todo_update` SSE frame; a change
+   * triggers an immediate reload, so agent-driven todo changes appear
+   * push-style. Polling remains the fallback (reattached runs carry no SSE).
+   */
+  todoUpdates?: number;
 }
 
 /** Effective three-state status, tolerating rows from before the status column. */
@@ -28,8 +34,9 @@ const NEXT_STATUS: Record<string, 'pending' | 'in_progress' | 'done'> = {
 /// The session's todo list in the right column: database-backed todos the
 /// agent maintains via the add_todo/update_todo MCP tools (and the human via
 /// the panel/todo page), plus a read-only plan parsed from the latest agent
-/// message for harnesses that can't call our tools (see lib/agentPlan.ts).
-export function TodoPanel({ sessionId, latestAgentContent, isStreaming }: TodoPanelProps) {
+/// message for runs where the tools weren't available or weren't called
+/// (see lib/agentPlan.ts).
+export function TodoPanel({ sessionId, latestAgentContent, isStreaming, todoUpdates }: TodoPanelProps) {
   const [todos, setTodos] = useState<Todo[]>([]);
   const [draft, setDraft] = useState('');
   const [adding, setAdding] = useState(false);
@@ -52,10 +59,17 @@ export function TodoPanel({ sessionId, latestAgentContent, isStreaming }: TodoPa
     setTodos([]);
     void reload();
     // Poll faster while a run is live so agent-driven status changes show up
-    // as they happen; slower when idle.
+    // as they happen; slower when idle. The todo_update SSE signal below
+    // makes changes on a locally-sent run appear instantly; this poll is the
+    // fallback for reattached runs and other tabs.
     const interval = setInterval(() => { void reload(); }, isStreaming ? 4000 : 15000);
     return () => clearInterval(interval);
   }, [reload, isStreaming]);
+
+  // Push-style refresh: a todo_update SSE frame arrived on the live stream.
+  useEffect(() => {
+    if (todoUpdates !== undefined && todoUpdates > 0) void reload();
+  }, [todoUpdates, reload]);
 
   const add = async () => {
     const note = draft.trim();
@@ -97,7 +111,14 @@ export function TodoPanel({ sessionId, latestAgentContent, isStreaming }: TodoPa
     }
   };
 
-  const plan: PlanItem[] = parseAgentPlan(latestAgentContent);
+  // Parsed-plan fallback, minus any item whose text already exists as a real
+  // todo (#800): with server-side plan ingestion enabled
+  // (CLOUD_AGENTS_INGEST_AGENT_PLAN=1) every parsed item becomes a DB row
+  // with the same note text, so an unfiltered section would render the whole
+  // plan twice. Also dedupes when an agent add_todo'd an item AND restated
+  // it as a checkbox.
+  const dbNotes = new Set(todos.map(t => t.note));
+  const plan: PlanItem[] = parseAgentPlan(latestAgentContent).filter(p => !dbNotes.has(p.text));
   const doneCount = todos.filter(t => effectiveStatus(t) === 'done').length;
 
   return (

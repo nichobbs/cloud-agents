@@ -44,3 +44,39 @@ describe('parseAgentPlan', () => {
     expect(parseAgentPlan('just some prose\nwith lines')).toEqual([]);
   });
 });
+
+describe('parseAgentPlan server-parity edges (#784)', () => {
+  it('parses a bullet without a trailing space', () => {
+    expect(parseAgentPlan('-[ ] first\n-[x] second')).toHaveLength(2);
+  });
+
+  it('rejects a checkbox with no whitespace after the bracket', () => {
+    expect(parseAgentPlan('- [x]crammed\n- [x]also')).toEqual([]);
+  });
+
+  it('rejects checkbox items with empty text', () => {
+    expect(parseAgentPlan('- [ ] \n- [x] ')).toEqual([]);
+  });
+});
+
+describe('parseAgentPlan bullet requirement (#790)', () => {
+  it('rejects bullet-less checkbox lines, same as the server parser', () => {
+    expect(parseAgentPlan('[ ] bare one\n[x] bare two')).toEqual([]);
+  });
+});
+
+describe('parseAgentPlan whitespace parity (#807)', () => {
+  it('parses a tab between the bullet and the checkbox on both sides', () => {
+    expect(parseAgentPlan('-\t[ ] tabbed one\n-\t[x] tabbed two')).toHaveLength(2);
+  });
+});
+
+describe('parseAgentPlan CRLF parity (#830)', () => {
+  it('parses CRLF line endings with clean note text, same as the server', () => {
+    const plan = parseAgentPlan('- [x] one\r\n- [ ] two\r\n');
+    expect(plan).toEqual([
+      { state: 'done', text: 'one' },
+      { state: 'pending', text: 'two' },
+    ]);
+  });
+});

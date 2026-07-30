@@ -131,3 +131,14 @@ test "sseNotification frames a notification SSE event" {
   assertTrue(frame.startsWith("event: notification\n"), "distinct event type, not a plain data chunk")
   assertTrue(sseNotification("n", "info", "say \"hi\"").contains("\\\"hi\\\""), "summary is JSON-escaped")
 }
+
+test "sseTodoUpdate frames a todo change SSE event" {
+  val frame = sseTodoUpdate("todo-1", "in_progress", "fix the bug")
+  assertEqual(
+    frame,
+    "event: todo_update\ndata: {\"id\":\"todo-1\",\"status\":\"in_progress\",\"note\":\"fix the bug\"}\n\n",
+    "todo_update frame is well formed"
+  )
+  assertTrue(frame.startsWith("event: todo_update\n"), "distinct event type, not a plain data chunk")
+  assertTrue(sseTodoUpdate("t", "done", "say \"hi\"").contains("\\\"hi\\\""), "note is JSON-escaped")
+}

@@ -4,6 +4,7 @@ import Std.Core
 import Web
 import CloudAgents.Auth
 import CloudAgents.Docker
+import CloudAgents.Interactions
 import CloudAgents.Proxy
 import CloudAgents.Repository
 import CloudAgents.SessionStore
@@ -558,6 +559,18 @@ pub func streamSendMessage(id: in String, text: in String, w: in Web.ResponseWri
           // carries the message id (so the client can anchor comments/todos).
           match CloudAgents.Repository.addMessage(id, "agent", logs) {
             case Ok(m) -> {
+              // Env-gated (off by default): materialize a markdown checkbox
+              // plan in the reply into todos rows (source='plan') — see
+              // CloudAgents.Interactions.ingestAgentPlan. Best-effort; a
+              // failure never affects the run's own completion. Synchronous
+              // and AFTER the run-loop await, so no cross-await local state
+              // is at stake (lyric-lang#6249).
+              if CloudAgents.Interactions.planIngestEnabled() {
+                match CloudAgents.Interactions.ingestAgentPlan(id, m.id, logs) {
+                  case Ok(_) -> ()
+                  case Err(e) -> println("WARNING: agent-plan ingestion failed for session " + id + ": " + CloudAgents.Sqlite.dbErrorMessage(e))
+                }
+              }
               val _ = Web.writeChunk(w, CloudAgents.Streaming.sseDoneWithMessage(m.id))
             }
             case Err(e) -> {

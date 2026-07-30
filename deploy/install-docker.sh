@@ -45,9 +45,11 @@ systemctl enable --now docker
 # prevent. Building from the checkout's own path (wherever it happens to be
 # on disk) fixes this regardless of when the rsync to /opt/cloud-agents runs.
 #
-# claude-code:base needs the REPO ROOT as build context (its Dockerfile COPYs
-# from both docker/ and shim/, #601) — the other three only need docker/,
-# matching docker-compose.coolify.yml's per-service build.context exactly.
+# ALL FOUR images need the REPO ROOT as build context (each Dockerfile now
+# builds cloud-agents-shim in its own stage, COPYing from both docker/ and
+# shim/ — the #601 requirement, extended from claude-code:base to the other
+# three when they gained the shim), matching docker-compose.coolify.yml's
+# per-service build.context exactly.
 #
 # Parallel arrays, indexed together, rather than packing "dockerfile tag
 # context" into one space-delimited string and cut -d' '-ing it apart:
@@ -58,7 +60,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 dockerfiles=(Dockerfile Dockerfile.codex Dockerfile.opencode Dockerfile.gemini)
 tags=(claude-code:base codex:base opencode:base gemini:base)
-contexts=("$REPO_ROOT" "$REPO_ROOT/docker" "$REPO_ROOT/docker" "$REPO_ROOT/docker")
+contexts=("$REPO_ROOT" "$REPO_ROOT" "$REPO_ROOT" "$REPO_ROOT")
 for i in "${!dockerfiles[@]}"; do
     dockerfile="${dockerfiles[$i]}"
     tag="${tags[$i]}"
