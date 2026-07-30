@@ -32,3 +32,14 @@ describe('extractSessionPRs', () => {
     expect(prs).toHaveLength(0);
   });
 });
+
+describe('extractSessionPRs case-insensitive dedupe (#804)', () => {
+  it('treats owner/repo case variants as the same PR, keeping first-seen casing', () => {
+    const prs = extractSessionPRs([
+      msg('m1', 'https://github.com/Acme/Widgets/pull/42'),
+      msg('m2', 'https://github.com/acme/widgets/pull/42'),
+    ]);
+    expect(prs).toHaveLength(1);
+    expect(prs[0]!.owner).toBe('Acme');
+  });
+});

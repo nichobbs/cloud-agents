@@ -110,7 +110,14 @@ export function TodoPanel({ sessionId, latestAgentContent, isStreaming, todoUpda
     }
   };
 
-  const plan: PlanItem[] = parseAgentPlan(latestAgentContent);
+  // Parsed-plan fallback, minus any item whose text already exists as a real
+  // todo (#800): with server-side plan ingestion enabled
+  // (CLOUD_AGENTS_INGEST_AGENT_PLAN=1) every parsed item becomes a DB row
+  // with the same note text, so an unfiltered section would render the whole
+  // plan twice. Also dedupes when an agent add_todo'd an item AND restated
+  // it as a checkbox.
+  const dbNotes = new Set(todos.map(t => t.note));
+  const plan: PlanItem[] = parseAgentPlan(latestAgentContent).filter(p => !dbNotes.has(p.text));
   const doneCount = todos.filter(t => effectiveStatus(t) === 'done').length;
 
   return (

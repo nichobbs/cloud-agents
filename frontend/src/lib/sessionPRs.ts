@@ -1,10 +1,11 @@
 import type { Message } from '../types';
 
 /// Extraction of pull-request references from a session's transcript, for
-/// the "PRs this session" panel: agents paste PR URLs when they open them
-/// (and "merged #123" style references when they act on them), but those
-/// links scroll away into collapsed messages. Display-only — no GitHub API
-/// call — so it works for any host the transcript mentions.
+/// the "PRs this session" panel: agents paste PR URLs when they open them,
+/// but those links scroll away into collapsed messages. Display-only — no
+/// GitHub API call. Covers github.com PR URLs only (#804) — other hosts
+/// (GitLab MRs, Gitea, GHES) have different URL shapes and would need their
+/// own patterns.
 
 export interface SessionPRRef {
   owner: string;
@@ -34,7 +35,9 @@ export function extractSessionPRs(messages: Message[]): SessionPRRef[] {
       const repo = match[2] ?? '';
       const number = parseInt(match[3] ?? '0', 10);
       if (!owner || !repo || !number) continue;
-      const key = `${owner}/${repo}#${number}`;
+      // GitHub owner/repo names are case-insensitive — dedupe accordingly
+      // (#804) while displaying the first-seen casing.
+      const key = `${owner.toLowerCase()}/${repo.toLowerCase()}#${number}`;
       if (seen.has(key)) continue;
       seen.add(key);
       out.push({

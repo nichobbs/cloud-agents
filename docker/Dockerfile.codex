@@ -157,10 +157,16 @@ COPY --from=shim-builder /src/shim/bin/. /opt/cloud-agents-shim/
 COPY --from=mcr.microsoft.com/dotnet/runtime:10.0 /usr/share/dotnet /usr/share/dotnet
 COPY docker/cloud-agents-shim /usr/local/bin/cloud-agents-shim
 COPY docker/register-callbacks-mcp.sh /usr/local/bin/register-callbacks-mcp.sh
+# No image-wide DOTNET_* ENV here (#806): the wrapper script exports
+# DOTNET_ROOT / DOTNET_SYSTEM_GLOBALIZATION_INVARIANT for the shim process
+# alone, so the agent's own session environment is untouched.
 RUN ln -s /usr/share/dotnet/dotnet /usr/local/bin/dotnet \
-    && chmod +x /usr/local/bin/cloud-agents-shim /usr/local/bin/register-callbacks-mcp.sh
-ENV DOTNET_ROOT=/usr/share/dotnet
-ENV DOTNET_SYSTEM_GLOBALIZATION_INVARIANT=1
+    && chmod +x /usr/local/bin/cloud-agents-shim /usr/local/bin/register-callbacks-mcp.sh \
+    && shim_out=$(cloud-agents-shim 2>&1 || true) \
+    && case "$shim_out" in \
+         *CLOUD_AGENTS_API_URL*) echo "shim smoke test ok" ;; \
+         *) echo "shim smoke test FAILED — expected the missing-env panic, got: $shim_out" >&2; exit 1 ;; \
+       esac
 
 USER codex-user
 ENV HOME=/home/codex-user

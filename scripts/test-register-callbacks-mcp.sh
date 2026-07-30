@@ -124,6 +124,40 @@ check "exclude: no .git -> no-op, entry still written" bash -c "jq -e '.mcp[\"cl
 check "exclude: no .git dir was created"      bash -c "[ ! -d '$WS/.git' ]"
 rm -rf "$WS"
 
+# ── Git-tracked target file: never write the token into it (#799) ────────────
+if command -v git >/dev/null 2>&1; then
+  WS="$(mktemp -d)"
+  git -C "$WS" init -q
+  printf '{"instructions":["AGENTS.md"]}' > "$WS/opencode.json"
+  git -C "$WS" add opencode.json
+  git -C "$WS" -c user.email=t@t -c user.name=t commit -qm "track opencode.json"
+  live_env
+  register_callbacks_mcp "opencode" "$WS"
+  check "tracked: no token written into a git-tracked opencode.json" \
+    bash -c "! grep -q 'CLOUD_AGENTS_CALLBACK_TOKEN' '$WS/opencode.json'"
+  check "tracked: no cloud-agents entry either" \
+    bash -c "! jq -e '.mcp[\"cloud-agents\"]' '$WS/opencode.json' >/dev/null 2>&1"
+  check "tracked: user content intact" \
+    bash -c "jq -e '.instructions[0] == \"AGENTS.md\"' '$WS/opencode.json' >/dev/null"
+  # An UNTRACKED gemini settings file in the same repo still registers.
+  register_callbacks_mcp "gemini" "$WS"
+  check "tracked: untracked sibling config still registers" \
+    bash -c "jq -e '.mcpServers[\"cloud-agents\"]' '$WS/.gemini/settings.json' >/dev/null"
+  rm -rf "$WS"
+else
+  echo "skip git-tracked checks (git unavailable)"
+fi
+
+# ── No temp-file litter after normal runs (#802) ─────────────────────────────
+WS="$(mktemp -d)"
+live_env
+register_callbacks_mcp "opencode" "$WS"
+dead_env
+register_callbacks_mcp "opencode" "$WS"
+check "no opencode.json.XXXXXX temp litter" \
+  bash -c "[ -z \"\$(ls '$WS' | grep 'opencode.json\\.')\" ]"
+rm -rf "$WS"
+
 # ── Flag off ("0") suppresses registration even with a token ─────────────────
 WS="$(mktemp -d)"
 live_env

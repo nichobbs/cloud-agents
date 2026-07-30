@@ -43,6 +43,18 @@ exclude_from_git() {
         || printf '/%s\n' "$path" >> "$ws/.git/info/exclude"
 }
 
+# Whether workspace-relative `path` is a git-TRACKED file (#799). The
+# exclusion above only protects untracked paths — writing the live callback
+# token into a repo-COMMITTED opencode.json/.codex/config.toml would put it
+# straight into the next agent commit's diff. A tracked target demotes the
+# registration to the strip path (tools unavailable for that harness in
+# that repo, with a stderr note) rather than ever writing the token.
+is_git_tracked() {
+    local ws="$1" path="$2"
+    [ -d "$ws/.git" ] || return 1
+    git -C "$ws" ls-files --error-unmatch -- "$path" >/dev/null 2>&1
+}
+
 register_callbacks_mcp() {
     local harness="${1:?register_callbacks_mcp: harness required}"
     local ws="${2:-.}"
@@ -58,9 +70,14 @@ register_callbacks_mcp() {
             local file="$ws/opencode.json"
             [ -f "$file" ] || printf '{}' > "$file"
             exclude_from_git "$ws" "opencode.json"
+            local write="$active"
+            if [ "$write" = "1" ] && is_git_tracked "$ws" "opencode.json"; then
+                echo "register-callbacks-mcp: opencode.json is git-tracked in this repo; refusing to write the callback token into it (cloud-agents tools unavailable for this harness here)" >&2
+                write=0
+            fi
             local tmp
             tmp=$(mktemp "${file}.XXXXXX")
-            if [ "$active" = "1" ]; then
+            if [ "$write" = "1" ]; then
                 # OpenCode's local-MCP shape (type/command-array/environment)
                 # per its current config schema — distinct from
                 # inject-library.sh's generic {command,args,env} guess for
@@ -79,10 +96,10 @@ register_callbacks_mcp() {
                         CLOUD_AGENTS_SESSION_ID: $sid,
                         CLOUD_AGENTS_CALLBACK_TIMEOUT_MS: $to
                       }
-                    }' "$file" > "$tmp" && mv "$tmp" "$file"
+                    }' "$file" > "$tmp" && mv "$tmp" "$file" || rm -f "$tmp"
             else
                 jq 'if (.mcp | type) == "object" then del(.mcp["cloud-agents"]) else . end' \
-                    "$file" > "$tmp" && mv "$tmp" "$file"
+                    "$file" > "$tmp" && mv "$tmp" "$file" || rm -f "$tmp"
             fi
             ;;
         gemini)
@@ -91,9 +108,14 @@ register_callbacks_mcp() {
             mkdir -p "$ws/.gemini"
             [ -f "$file" ] || printf '{}' > "$file"
             exclude_from_git "$ws" ".gemini/settings.json"
+            local write="$active"
+            if [ "$write" = "1" ] && is_git_tracked "$ws" ".gemini/settings.json"; then
+                echo "register-callbacks-mcp: .gemini/settings.json is git-tracked in this repo; refusing to write the callback token into it (cloud-agents tools unavailable for this harness here)" >&2
+                write=0
+            fi
             local tmp
             tmp=$(mktemp "${file}.XXXXXX")
-            if [ "$active" = "1" ]; then
+            if [ "$write" = "1" ]; then
                 jq --arg url "${CLOUD_AGENTS_API_URL:-}" \
                    --arg tok "${CLOUD_AGENTS_CALLBACK_TOKEN:-}" \
                    --arg sid "${SESSION_ID:-}" \
@@ -106,10 +128,10 @@ register_callbacks_mcp() {
                         CLOUD_AGENTS_SESSION_ID: $sid,
                         CLOUD_AGENTS_CALLBACK_TIMEOUT_MS: $to
                       }
-                    }' "$file" > "$tmp" && mv "$tmp" "$file"
+                    }' "$file" > "$tmp" && mv "$tmp" "$file" || rm -f "$tmp"
             else
                 jq 'if (.mcpServers | type) == "object" then del(.mcpServers["cloud-agents"]) else . end' \
-                    "$file" > "$tmp" && mv "$tmp" "$file"
+                    "$file" > "$tmp" && mv "$tmp" "$file" || rm -f "$tmp"
             fi
             ;;
         codex)
@@ -124,15 +146,19 @@ register_callbacks_mcp() {
             mkdir -p "$ws/.codex"
             [ -f "$file" ] || : > "$file"
             exclude_from_git "$ws" ".codex/config.toml"
+            local write="$active"
+            if [ "$write" = "1" ] && is_git_tracked "$ws" ".codex/config.toml"; then
+                echo "register-callbacks-mcp: .codex/config.toml is git-tracked in this repo; refusing to write the callback token into it (cloud-agents tools unavailable for this harness here)" >&2
+                write=0
+            fi
             local tmp
             tmp=$(mktemp "${file}.XXXXXX")
             awk -v b="$begin" -v e="$end" '
                 $0 == b {skip = 1; next}
                 $0 == e {skip = 0; next}
                 skip != 1 {print}
-            ' "$file" > "$tmp"
-            mv "$tmp" "$file"
-            if [ "$active" = "1" ]; then
+            ' "$file" > "$tmp" && mv "$tmp" "$file" || rm -f "$tmp"
+            if [ "$write" = "1" ]; then
                 {
                     printf '%s\n' "$begin"
                     printf '[mcp_servers.cloud-agents]\n'

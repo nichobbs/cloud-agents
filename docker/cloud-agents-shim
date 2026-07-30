@@ -7,4 +7,12 @@
 # output is a directory of managed DLLs (Lyric.Stdlib.*, JsonRpc.dll,
 # Mcp.dll, cloud-agents-shim.dll), not a standalone native binary, so this
 # thin wrapper is what actually goes on PATH.
+# Scoped here rather than as image-wide ENV in the harness Dockerfiles
+# (#806): DOTNET_ROOT and invariant globalization are needs of THIS process
+# only — leaking them into the agent's whole session environment would
+# silently change the behavior of any .NET tooling the agent itself runs
+# in-container. DOTNET_ROOT defaults rather than overrides so the claude
+# image's SDK layout keeps working unchanged.
+export DOTNET_ROOT="${DOTNET_ROOT:-/usr/share/dotnet}"
+export DOTNET_SYSTEM_GLOBALIZATION_INVARIANT=1
 exec dotnet /opt/cloud-agents-shim/cloud-agents-shim.dll "$@"

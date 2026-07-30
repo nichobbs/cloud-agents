@@ -274,7 +274,11 @@ fi
 if [ -f /usr/local/bin/register-callbacks-mcp.sh ]; then
     # shellcheck source=register-callbacks-mcp.sh
     source /usr/local/bin/register-callbacks-mcp.sh
-    exclude_from_git /workspace ".claude/mcp.json"
+    # Best-effort (#798): this runs under set -e, and a failure here (e.g. an
+    # unwritable .git/info) must never abort the whole run over an exclusion
+    # entry — same tolerance the other entrypoints give their registration.
+    exclude_from_git /workspace ".claude/mcp.json" \
+        || echo "entrypoint: could not git-exclude .claude/mcp.json, continuing" >&2
 fi
 
 # Phase 6 (docs/phase6-mcp-callbacks.md §8): reconcile the cloud-agents MCP

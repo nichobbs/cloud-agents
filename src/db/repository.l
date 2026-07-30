@@ -517,11 +517,16 @@ pub func addTodo(sessionId: in String, messageId: in String, note: in String): R
 pub func replacePlanTodos(
   sessionId: in String, messageId: in String, notes: in slice[String], statuses: in slice[String]
 ): Result[Unit, CloudAgents.Sqlite.DbError] {
-  val ts = nowMillis()
+  // Each row gets baseMs + index (#801): listTodos orders by created_at, so
+  // a shared timestamp would leave the plan's display order unspecified —
+  // the +i keeps the agent's own step order stable (DESC listing shows the
+  // last step first, like any newest-first todo).
+  val baseMs = nowMillisLong()
   var stmts: slice[String] = []
   stmts = stmts.append(CloudAgents.Db.deletePlanTodosSql(sessionId))
   var i = 0
   while i < notes.length and i < statuses.length {
+    val ts = toString(baseMs + i.toLong())
     stmts = stmts.append(CloudAgents.Db.insertTodoSql(newId(), sessionId, messageId, notes[i], statuses[i], ts, "plan"))
     i = i + 1
   }

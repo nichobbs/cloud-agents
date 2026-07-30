@@ -367,6 +367,8 @@ test "parsePlanLine alignment with the frontend parser (#784): bullet-space and 
   // mandatory, so a bare bullet-less checkbox must not ingest server-side
   // either.
   assertEqualInt(parseAgentPlan("[ ] bare one\n[x] bare two").length.toInt(), 0, "bullet-less checkbox -> rejected")
+  // Tab between bullet and checkbox parses, matching the frontend's \s* (#807).
+  assertEqualInt(parseAgentPlan("-\t[ ] tabbed one\n-\t[x] tabbed two").length.toInt(), 2, "tab after bullet parses")
 }
 
 test "parseAgentPlan strips ANSI SGR codes before parsing (#794)" {

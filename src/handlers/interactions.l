@@ -251,8 +251,9 @@ func parsePlanLine(line: in String): Option[PlanItem] {
       return None
     }
   }
-  // Optional spaces between bullet and the checkbox.
-  while i < n and line.substring(i, 1) == " " {
+  // Optional whitespace between bullet and the checkbox — spaces AND tabs,
+  // matching the frontend's `\s*` (#807).
+  while i < n and (line.substring(i, 1) == " " or line.substring(i, 1) == "\t") {
     i = i + 1
   }
   if i + 2 >= n or line.substring(i, 1) != "[" {

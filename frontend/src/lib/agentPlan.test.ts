@@ -64,3 +64,9 @@ describe('parseAgentPlan bullet requirement (#790)', () => {
     expect(parseAgentPlan('[ ] bare one\n[x] bare two')).toEqual([]);
   });
 });
+
+describe('parseAgentPlan whitespace parity (#807)', () => {
+  it('parses a tab between the bullet and the checkbox on both sides', () => {
+    expect(parseAgentPlan('-\t[ ] tabbed one\n-\t[x] tabbed two')).toHaveLength(2);
+  });
+});

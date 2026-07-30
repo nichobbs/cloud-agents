@@ -786,7 +786,12 @@ pub func streamSessionMessage(
       }
       // Session todo plan: forward todos created/status-changed since the
       // last tick (add_todo/update_todo MCP tools), same best-effort
-      // forwarding as the others above, cursored on updated_at.
+      // forwarding as the others above, cursored on updated_at. Like every
+      // strictly-greater cursor in this loop, an update landing in the SAME
+      // millisecond as the cursor after its read can be skipped (#803) —
+      // benign here by design: the frame only triggers a panel reload, and
+      // the panel's own polling (its reattach/other-tab fallback) picks up
+      // anything a dropped frame missed within one poll interval.
       match CloudAgents.Repository.todosUpdatedAfter(sessionId, todoCursor) {
         case Ok(tds) -> {
           var ti = 0
