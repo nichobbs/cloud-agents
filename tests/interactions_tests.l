@@ -441,7 +441,16 @@ test "todosUpdatedAfter is session-scoped and cursor-correct; plan ingest is iso
     case Ok(us) -> assertEqualInt(us.length.toInt(), 0, "caught up -> empty")
     case Err(e) -> assertTrue(false, "cursor query failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
   }
-  // ...and a later status change surfaces past that same cursor.
+  // ...and a later status change surfaces past that same cursor. The bump
+  // lands at nowMillis(); in the SAME millisecond as lastCursor the
+  // strictly-greater cursor query rightly skips it — that's #803's benign
+  // same-ms window, not a bug. Spin past the boundary so the test asserts
+  // cursor semantics rather than scheduler luck (flaked on CI). Both sides
+  // are 13-digit epoch-ms strings, so string order == numeric order.
+  var spin = 0
+  while CloudAgents.Repository.nowMillis() <= lastCursor {
+    spin = spin + 1
+  }
   match CloudAgents.Repository.listTodos("session-CU-A") {
     case Ok(todos) -> {
       match CloudAgents.Interactions.setTodoStatusHandler(todos[0].id, SetTodoStatusRequest(status = "in_progress")) {
