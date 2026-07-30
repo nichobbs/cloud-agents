@@ -516,8 +516,8 @@ export function SessionDetail() {
   })();
 
   // Latest agent response content, for the todo panel's parsed-plan fallback
-  // (harnesses that can't run the MCP shim keep a markdown checkbox plan in
-  // their responses instead — see lib/agentPlan.ts).
+  // (a markdown checkbox plan in the response — used when the MCP todo tools
+  // weren't available or weren't called; see lib/agentPlan.ts).
   const latestAgentContent = [...messages].reverse().find(m => m.role === 'agent')?.content ?? '';
 
   const handleRetry = async (text: string) => {

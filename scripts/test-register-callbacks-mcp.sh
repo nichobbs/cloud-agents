@@ -105,7 +105,7 @@ rm -rf "$WS"
 
 # ── .git/info/exclude protection (#788) ──────────────────────────────────────
 WS="$(mktemp -d)"
-mkdir -p "$WS/.git/info"
+git -C "$WS" init -q
 live_env
 register_callbacks_mcp "opencode" "$WS"
 register_callbacks_mcp "opencode" "$WS"
@@ -114,7 +114,31 @@ register_callbacks_mcp "gemini" "$WS"
 check "exclude: gemini settings listed"       bash -c "grep -qxF '/.gemini/settings.json' '$WS/.git/info/exclude'"
 register_callbacks_mcp "codex" "$WS"
 check "exclude: codex config listed"          bash -c "grep -qxF '/.codex/config.toml' '$WS/.git/info/exclude'"
-rm -rf "$WS"
+# Inactive registration never adds exclusions (#813).
+WS2="$(mktemp -d)"
+git -C "$WS2" init -q
+dead_env
+register_callbacks_mcp "opencode" "$WS2"
+check "exclude: inactive run adds no exclusion" bash -c "! grep -qxF '/opencode.json' '$WS2/.git/info/exclude' 2>/dev/null"
+rm -rf "$WS" "$WS2"
+
+# ── gitfile checkout (worktree-style .git FILE) still guards the token (#823) ─
+WS="$(mktemp -d)"
+git -C "$WS" init -q
+git -C "$WS" -c user.email=t@t -c user.name=t commit -q --allow-empty -m init
+git -C "$WS" worktree add "$WS-wt" -b wt-branch >/dev/null 2>&1 || true
+if [ -f "$WS-wt/.git" ]; then
+  printf '{"instructions":["AGENTS.md"]}' > "$WS-wt/opencode.json"
+  git -C "$WS-wt" add opencode.json
+  git -C "$WS-wt" -c user.email=t@t -c user.name=t commit -qm "track it"
+  live_env
+  register_callbacks_mcp "opencode" "$WS-wt"
+  check "gitfile: tracked file still refuses the token" \
+    bash -c "! grep -q 'CLOUD_AGENTS_CALLBACK_TOKEN' '$WS-wt/opencode.json'"
+else
+  echo "skip gitfile checks (worktree unavailable)"
+fi
+rm -rf "$WS" "$WS-wt"
 
 # No .git directory — exclusion is a silent no-op, registration still works.
 WS="$(mktemp -d)"

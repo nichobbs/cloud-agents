@@ -139,15 +139,19 @@ function HighlightRow({ h, sessionId }: { h: Highlight; sessionId: string }) {
   // todo list itself is the durable record.
   const [added, setAdded] = useState(false);
   const [adding, setAdding] = useState(false);
+  const [addFailed, setAddFailed] = useState(false);
   const addAsTodo = async () => {
     if (adding || added) return;
     setAdding(true);
+    setAddFailed(false);
     try {
       const note = h.detail ? `${h.title} — ${h.detail}` : h.title;
       await api.addTodo(sessionId, h.messageId, note);
       setAdded(true);
     } catch {
-      /* best effort — leave the button usable */
+      // Surface the failure instead of pretending nothing happened (#818) —
+      // the button flips to "retry" so the click isn't silently lost.
+      setAddFailed(true);
     } finally {
       setAdding(false);
     }
@@ -168,12 +172,17 @@ function HighlightRow({ h, sessionId }: { h: Highlight; sessionId: string }) {
           )}
           {h.kind === 'followup' && (
             <button
-              style={{ ...addTodoBtnStyle, opacity: added ? 0.6 : 1 }}
+              style={{
+                ...addTodoBtnStyle,
+                opacity: added ? 0.6 : 1,
+                color: addFailed ? '#f85149' : addTodoBtnStyle.color,
+                borderColor: addFailed ? '#f85149' : '#30363d',
+              }}
               onClick={() => { void addAsTodo(); }}
               disabled={adding || added}
-              title="Add this follow-up to the session's todo list"
+              title={addFailed ? 'Adding failed — click to retry' : "Add this follow-up to the session's todo list"}
             >
-              {added ? '✓ added to todos' : adding ? 'adding…' : '+ add to todos'}
+              {added ? '✓ added to todos' : adding ? 'adding…' : addFailed ? '⚠ retry add' : '+ add to todos'}
             </button>
           )}
         </div>

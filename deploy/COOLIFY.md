@@ -109,7 +109,7 @@ npm-registry failures.
 
 If a harness image ever fails to build again despite that:
 
-1. Reproduce standalone — `docker build -f docker/Dockerfile.codex docker`
+1. Reproduce standalone — `docker build -f docker/Dockerfile.codex .` (repo-root context — all four runner images build the shim from shim/, #601)
    (swap in the relevant Dockerfile) — to isolate and fix the real problem.
 2. If you need to unblock a deploy immediately while you do that, comment
    out that one service block in `docker-compose.coolify.yml` and redeploy

@@ -149,5 +149,12 @@ jobs:
           context: .
           file: docker/Dockerfile.${{ matrix.harness }}
           push: false
-          cache-from: type=gha,scope=${{ matrix.harness }}
+          # Reads the default-scope cache too (#816): the shim-builder job
+          # above writes there, and the four Dockerfiles' shim-builder
+          # stages are byte-identical (check-shim-stage-sync.sh), so each
+          # harness build can reuse those layers instead of compiling the
+          # shim once per matrix job.
+          cache-from: |
+            type=gha,scope=${{ matrix.harness }}
+            type=gha
           cache-to: type=gha,mode=max,scope=${{ matrix.harness }}

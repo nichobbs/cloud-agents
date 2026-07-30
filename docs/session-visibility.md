@@ -24,9 +24,12 @@ The SessionDetail right column now has a **Todo panel**: live-polling
 (4s while a run streams, 15s idle), click a status chip to cycle
 pending → in progress → done, inline add/delete, link to the full page.
 
-**Harnesses without the shim** (opencode/codex/gemini images have no
-dotnet, so they can't run `cloud-agents-shim`): the instructions in
-`docker/session-tools-guide.md` tell them to restate their plan as a
+**Checkbox-plan fallback** (originally for the opencode/codex/gemini
+images before they shipped the shim — see "Shim in every harness image"
+below — and still live for older images, repos whose harness config file
+is git-tracked so the token guard skips MCP registration, and agents that
+don't call the tools): the instructions in
+`docker/session-tools-guide.md` tell agents to restate their plan as a
 markdown checkbox list (`- [ ]` / `- [~]` / `- [x]`), and the panel
 renders it read-only, parsed from the latest agent response
 (`frontend/src/lib/agentPlan.ts`). This also picks up OpenCode's native

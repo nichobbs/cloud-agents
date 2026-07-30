@@ -52,6 +52,19 @@ for f in Dockerfile.codex Dockerfile.gemini Dockerfile.opencode; do
   fi
 done
 
+# The final stages must also actually CONSUME the stage (#815): a drifted or
+# deleted COPY --from=shim-builder line would ship an image whose stage built
+# fine but whose shim is missing at runtime.
+SHIM_COPY='COPY --from=shim-builder /src/shim/bin/. /opt/cloud-agents-shim/'
+for f in Dockerfile Dockerfile.codex Dockerfile.gemini Dockerfile.opencode; do
+  if grep -qF "$SHIM_COPY" "$REPO_ROOT/docker/$f"; then
+    echo "ok   docker/$f: final stage copies the built shim"
+  else
+    echo "FAIL docker/$f: missing '$SHIM_COPY'" >&2
+    fails=$((fails + 1))
+  fi
+done
+
 if [ "$fails" -ne 0 ]; then
   echo "==> check-shim-stage-sync: ${fails} Dockerfile(s) drifted — keep the four stages' instructions byte-identical (docker/Dockerfile is canonical) so the layer cache builds the shim once" >&2
   exit 1

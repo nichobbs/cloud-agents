@@ -171,8 +171,10 @@ pub func deleteTodoHandler(tid: in String): Result[Unit, Web.ApiError] {
 //
 // Harness output often carries the agent's plan as a markdown checkbox list
 // (`- [ ]` pending / `- [~]` in progress / `- [x]` done) — the shape
-// docker/session-tools-guide.md prescribes for harnesses without the MCP
-// shim, and the shape OpenCode's own todo tool renders. The frontend already
+// docker/session-tools-guide.md prescribes as the fallback when the MCP
+// todo tools aren't available or weren't called (older images, git-tracked
+// config repos where the token guard skips registration), and the shape
+// OpenCode's own todo tool renders. The frontend already
 // parses it display-only (frontend/src/lib/agentPlan.ts); this is the
 // server-side counterpart that materializes the LAST such list in a
 // just-persisted agent message into real `todos` rows.
@@ -326,14 +328,30 @@ func stripAnsiSgr(s: in String): String {
   return acc + chunk
 }
 
+/// Only the LAST maxPlanScanChars of a message are scanned (#809): the
+/// session-tools guide tells agents to restate their plan at the END of
+/// each response, a full run log can be megabytes, and the frontend parser
+/// applies the same cap so the two stay in lockstep on what counts as "the
+/// plan". Keep in sync with agentPlan.ts's PLAN_SCAN_TAIL_CHARS.
+val maxPlanScanChars = 32768
+
+func planScanTail(content: in String): String {
+  val n = content.length.toInt()
+  if n <= maxPlanScanChars {
+    return content
+  }
+  return content.substring(n - maxPlanScanChars, maxPlanScanChars)
+}
+
 /// The LAST contiguous checkbox list in `content`, or [] when none (or when
 /// the last list has fewer than 2 items). "Last" because agents restate
 /// their plan as they update it — the final statement is the current one.
-/// Blank lines inside a list are tolerated; any other line ends it. ANSI
-/// SGR codes are stripped first, exactly like the frontend (#794). Pure and
-/// unit-tested; mirrors frontend/src/lib/agentPlan.ts.
+/// Blank lines inside a list are tolerated; any other line ends it. Only
+/// the message tail is scanned (#809) and ANSI SGR codes are stripped
+/// first, exactly like the frontend (#794). Pure and unit-tested; mirrors
+/// frontend/src/lib/agentPlan.ts.
 pub func parseAgentPlan(rawContent: in String): slice[PlanItem] {
-  val content = stripAnsiSgr(rawContent)
+  val content = stripAnsiSgr(planScanTail(rawContent))
   var last: slice[PlanItem] = []
   var current: slice[PlanItem] = []
   var lineStart = 0

@@ -34,7 +34,8 @@ const NEXT_STATUS: Record<string, 'pending' | 'in_progress' | 'done'> = {
 /// The session's todo list in the right column: database-backed todos the
 /// agent maintains via the add_todo/update_todo MCP tools (and the human via
 /// the panel/todo page), plus a read-only plan parsed from the latest agent
-/// message for harnesses that can't call our tools (see lib/agentPlan.ts).
+/// message for runs where the tools weren't available or weren't called
+/// (see lib/agentPlan.ts).
 export function TodoPanel({ sessionId, latestAgentContent, isStreaming, todoUpdates }: TodoPanelProps) {
   const [todos, setTodos] = useState<Todo[]>([]);
   const [draft, setDraft] = useState('');
