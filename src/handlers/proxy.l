@@ -507,7 +507,7 @@ pub func validateKeyHandler(provider: in String, key: in String): Result[String,
     case Ok(body) -> return Ok(value = body)
     case Err(e) -> {
       println("WARNING: " + provider + " models API request failed during validation: " + e)
-      return Err(Web.badRequest(provider + " models API request failed: " + e))
+      return Err(Web.badRequest(provider + " models API request failed"))
     }
   }
 }

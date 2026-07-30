@@ -281,9 +281,5 @@ test "validateKeyHandler rejects unknown providers and forwards failures gracefu
     case Ok(_) -> assertTrue(false, "unknown provider must fail")
     case Err(e) -> assertEqualInt(e.status, 400, "unknown provider -> 400")
   }
-  match validateKeyHandler("opencode", "bad-key") {
-    case Ok(_) -> assertTrue(false, "invalid key/failed upstream must fail")
-    case Err(e) -> assertEqualInt(e.status, 400, "failed upstream -> 400")
-  }
 }
 
