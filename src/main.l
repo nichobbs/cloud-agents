@@ -1329,6 +1329,19 @@ impl Web.Handler for RouteOAuthLogout {
   }
 }
 
+record RouteOAuthRefresh {
+}
+
+impl Web.Handler for RouteOAuthRefresh {
+  func handle(req: in Web.Request): Web.Response {
+    val authHeader = match Web.header(req, "Authorization") { case Some(h) -> h; case None -> "" }
+    return match CloudAgents.OAuth.refreshOAuthToken(authHeader) {
+      case Ok(grant) -> jsonResp(200, grant.toJson())
+      case Err(e) -> Web.errorResponse(e)
+    }
+  }
+}
+
 // pub: dist/CloudAgents.Native/Program.cs (a separate assembly) calls into
 // this entry point directly (global::CloudAgents.Program.main()). Without
 // pub this is package-private per Lyric's documented visibility rules
@@ -1522,6 +1535,7 @@ pub func main(): Unit {
   router = Web.addGet(router, "/api/auth/github/config", RouteOAuthConfig())
   router = Web.addPost(router, "/api/auth/github/exchange", RouteOAuthExchange())
   router = Web.addPost(router, "/api/auth/github/logout", RouteOAuthLogout())
+  router = Web.addPost(router, "/api/auth/github/refresh", RouteOAuthRefresh())
 
   // Register health route
   router = Web.addGet(router, "/api/health", HealthHandler())

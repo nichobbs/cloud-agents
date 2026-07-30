@@ -1894,7 +1894,7 @@ pub func upsertGitHubOAuthRefreshSql(
 /// also dead (in which case refreshing can't help; the tenant must sign in
 /// again). Returns no row for a tenant with no expiring-token metadata.
 pub func selectGitHubOAuthRefreshStatusSql(userId: in String, nowMillis: in String): String {
-  return "SELECT refresh_token, " + "CASE WHEN CAST(access_expires_at AS INTEGER) <= CAST(" + sqlLiteral(nowMillis) +
+  return "SELECT refresh_token, " + "CASE WHEN CAST(access_expires_at AS INTEGER) - 300000 <= CAST(" + sqlLiteral(nowMillis) +
     " AS INTEGER) THEN '1' ELSE '0' END, " +
     "CASE WHEN CAST(refresh_expires_at AS INTEGER) <= CAST(" +
     sqlLiteral(nowMillis) +

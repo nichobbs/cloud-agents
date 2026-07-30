@@ -1,6 +1,7 @@
 /// <reference types="vite/client" />
 
 import type { Comment, Credential, McpServer, Message, PendingCallbacksResponse, Profile, Prompt, Run, Skill, Subagent, Todo, Webhook } from '../types';
+import { completeLogin, isSignedIn, setReturnPath, signOut } from './auth';
 
 const BASE = (import.meta.env['VITE_API_URL'] as string | undefined) ?? '';
 
@@ -30,6 +31,55 @@ function authHeaders(): HeadersInit {
   return token ? { Authorization: `Bearer ${token}` } : {};
 }
 
+let isRefreshing = false;
+
+/** Central fetch wrapper for API endpoints: intercepts HTTP 401 status when
+ *  signed in, attempts transparent token refresh, and redirects to /login on failure. */
+export async function apiFetch(input: RequestInfo | URL, init?: RequestInit): Promise<Response> {
+  const res = await fetch(input, init);
+
+  if (res.status === 401 && isSignedIn()) {
+    const urlStr = typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url;
+    if (
+      urlStr.includes('/api/auth/github/config') ||
+      urlStr.includes('/api/auth/github/exchange') ||
+      urlStr.includes('/api/auth/github/logout') ||
+      urlStr.includes('/api/auth/github/refresh')
+    ) {
+      return res;
+    }
+
+    if (!isRefreshing) {
+      isRefreshing = true;
+      try {
+        const grant = await api.refreshToken();
+        if (grant && grant.token) {
+          completeLogin(grant.token, grant.login || localStorage.getItem('cloud_agents_login') || '');
+          isRefreshing = false;
+
+          const newInit: RequestInit = { ...init };
+          const headers = new Headers(init?.headers);
+          headers.set('Authorization', `Bearer ${grant.token}`);
+          newInit.headers = headers;
+
+          return await fetch(input, newInit);
+        }
+      } catch {
+        /* refresh failed */
+      } finally {
+        isRefreshing = false;
+      }
+
+      if (typeof window !== 'undefined' && window.location) {
+        setReturnPath(window.location.pathname + window.location.search);
+      }
+      signOut();
+    }
+  }
+
+  return res;
+}
+
 /** Ensure `tags` is always an array (older responses may omit it). */
 function normalisePrompt(p: Prompt): Prompt {
   return { ...p, tags: p.tags ?? [] };
@@ -57,6 +107,16 @@ export const api = {
     return res.json() as Promise<{ token: string; login: string; userId: string }>;
   },
 
+  /** Proactively or reactively refresh the user's GitHub OAuth token. */
+  refreshToken: async (): Promise<{ token: string; login: string; userId: string }> => {
+    const res = await fetch(`${BASE}/api/auth/github/refresh`, {
+      method: 'POST',
+      headers: authHeaders(),
+    });
+    if (!res.ok) throw new Error(`${res.status} ${await res.text()}`);
+    return res.json() as Promise<{ token: string; login: string; userId: string }>;
+  },
+
   /** Server-side sign-out: invalidate the presented bearer's validation-cache
    *  row so its next presentation must revalidate live. Throws on failure —
    *  the caller (lib/auth signOut) treats it as best-effort. */
@@ -72,14 +132,14 @@ export const api = {
    *  status/createdAt/lastMessageAt (epoch-millis strings); older ones omit
    *  them, so all are optional here. */
   listSessions: async (): Promise<ServerSession[]> => {
-    const res = await fetch(`${BASE}/api/sessions`, { headers: authHeaders() });
+    const res = await apiFetch(`${BASE}/api/sessions`, { headers: authHeaders() });
     if (!res.ok) throw new Error(`${res.status} ${await res.text()}`);
     const body = (await res.json()) as { sessions?: ServerSession[] };
     return body.sessions ?? [];
   },
 
   createSession: async (body: { repoUrl: string; branch: string; harness: string; model: string }): Promise<{ sessionId: string }> => {
-    const res = await fetch(`${BASE}/api/sessions`, {
+    const res = await apiFetch(`${BASE}/api/sessions`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', ...authHeaders() },
       body: JSON.stringify(body),
@@ -89,7 +149,7 @@ export const api = {
   },
 
   updateSessionModel: async (sessionId: string, model: string): Promise<void> => {
-    const res = await fetch(`${BASE}/api/sessions/${sessionId}/model`, {
+    const res = await apiFetch(`${BASE}/api/sessions/${sessionId}/model`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', ...authHeaders() },
       body: JSON.stringify({ model }),
@@ -98,7 +158,7 @@ export const api = {
   },
 
   deleteSession: async (sessionId: string): Promise<void> => {
-    const res = await fetch(`${BASE}/api/sessions/${sessionId}`, {
+    const res = await apiFetch(`${BASE}/api/sessions/${sessionId}`, {
       method: 'DELETE',
       headers: authHeaders(),
     });
@@ -106,7 +166,7 @@ export const api = {
   },
 
   archiveSession: async (sessionId: string): Promise<void> => {
-    const res = await fetch(`${BASE}/api/sessions/${sessionId}/archive`, {
+    const res = await apiFetch(`${BASE}/api/sessions/${sessionId}/archive`, {
       method: 'POST',
       headers: authHeaders(),
     });
@@ -114,7 +174,7 @@ export const api = {
   },
 
   unarchiveSession: async (sessionId: string): Promise<void> => {
-    const res = await fetch(`${BASE}/api/sessions/${sessionId}/unarchive`, {
+    const res = await apiFetch(`${BASE}/api/sessions/${sessionId}/unarchive`, {
       method: 'POST',
       headers: authHeaders(),
     });
@@ -127,7 +187,7 @@ export const api = {
    *  only — an older one 404s these routes; callers treat a failure as "feature
    *  unavailable" and hide the panel. */
   listSessionRepos: async (sessionId: string): Promise<SessionRepo[]> => {
-    const res = await fetch(`${BASE}/api/sessions/${sessionId}/repos`, { headers: authHeaders() });
+    const res = await apiFetch(`${BASE}/api/sessions/${sessionId}/repos`, { headers: authHeaders() });
     if (!res.ok) throw new Error(`${res.status} ${await res.text()}`);
     const body = (await res.json()) as { repos?: SessionRepo[] };
     return body.repos ?? [];
@@ -137,7 +197,7 @@ export const api = {
    *  default branch). Throws with the backend's message on invalid input,
    *  duplicate, or over the per-session cap. */
   addSessionRepo: async (sessionId: string, repoUrl: string, branch: string): Promise<SessionRepo> => {
-    const res = await fetch(`${BASE}/api/sessions/${sessionId}/repos`, {
+    const res = await apiFetch(`${BASE}/api/sessions/${sessionId}/repos`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', ...authHeaders() },
       body: JSON.stringify({ repoUrl, branch }),
@@ -148,7 +208,7 @@ export const api = {
 
   /** Unlink a repository from a session. */
   removeSessionRepo: async (sessionId: string, repoId: string): Promise<void> => {
-    const res = await fetch(`${BASE}/api/sessions/${sessionId}/repos/${repoId}`, {
+    const res = await apiFetch(`${BASE}/api/sessions/${sessionId}/repos/${repoId}`, {
       method: 'DELETE',
       headers: authHeaders(),
     });
@@ -157,7 +217,7 @@ export const api = {
 
   /** The profile currently attached to a session ('' when none). */
   getSessionProfile: async (sessionId: string): Promise<string> => {
-    const res = await fetch(`${BASE}/api/sessions/${sessionId}/profile`, { headers: authHeaders() });
+    const res = await apiFetch(`${BASE}/api/sessions/${sessionId}/profile`, { headers: authHeaders() });
     if (!res.ok) throw new Error(`${res.status} ${await res.text()}`);
     const body = (await res.json()) as { profileId?: string };
     return body.profileId ?? '';
@@ -165,7 +225,7 @@ export const api = {
 
   /** Attach a profile to a session (empty string clears it). */
   setSessionProfile: async (sessionId: string, profileId: string): Promise<void> => {
-    const res = await fetch(`${BASE}/api/sessions/${sessionId}/profile`, {
+    const res = await apiFetch(`${BASE}/api/sessions/${sessionId}/profile`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', ...authHeaders() },
       body: JSON.stringify({ profileId }),
@@ -175,7 +235,7 @@ export const api = {
 
   /** Cancel an in-flight run (terminates its container). 409 if nothing is running. */
   cancelRun: async (sessionId: string): Promise<void> => {
-    const res = await fetch(`${BASE}/api/sessions/${sessionId}/cancel`, {
+    const res = await apiFetch(`${BASE}/api/sessions/${sessionId}/cancel`, {
       method: 'POST',
       headers: authHeaders(),
     });
@@ -184,7 +244,7 @@ export const api = {
 
   /** Restart the session's container (terminates any running container and resets status to IDLE). */
   restartContainer: async (sessionId: string): Promise<void> => {
-    const res = await fetch(`${BASE}/api/sessions/${sessionId}/restart`, {
+    const res = await apiFetch(`${BASE}/api/sessions/${sessionId}/restart`, {
       method: 'POST',
       headers: authHeaders(),
     });
@@ -193,7 +253,7 @@ export const api = {
 
   /** A session's run history, newest first. */
   getRuns: async (sessionId: string): Promise<Run[]> => {
-    const res = await fetch(`${BASE}/api/sessions/${sessionId}/runs`, { headers: authHeaders() });
+    const res = await apiFetch(`${BASE}/api/sessions/${sessionId}/runs`, { headers: authHeaders() });
     if (!res.ok) throw new Error(`${res.status} ${await res.text()}`);
     const body = (await res.json()) as { runs?: Run[] };
     return body.runs ?? [];
@@ -205,7 +265,7 @@ export const api = {
     onChunk: (chunk: string) => void,
     onDone?: (messageId: string) => void,
   ): Promise<void> => {
-    const res = await fetch(`${BASE}/api/sessions/${sessionId}/messages`, {
+    const res = await apiFetch(`${BASE}/api/sessions/${sessionId}/messages`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', ...authHeaders() },
       body: JSON.stringify({ text }),
@@ -273,7 +333,7 @@ export const api = {
    *  backend sends `running` as the string "true"/"false" (TEXT-only JSON
    *  records); normalise it to a boolean here. */
   getRunOutput: async (sessionId: string): Promise<{ running: boolean; output: string }> => {
-    const res = await fetch(`${BASE}/api/sessions/${sessionId}/output`, { headers: authHeaders() });
+    const res = await apiFetch(`${BASE}/api/sessions/${sessionId}/output`, { headers: authHeaders() });
     if (!res.ok) throw new Error(`${res.status} ${await res.text()}`);
     const body = (await res.json()) as { running?: string; output?: string };
     return { running: body.running === 'true', output: body.output ?? '' };
@@ -293,7 +353,7 @@ export const api = {
     sessionId: string,
     offset: number,
   ): Promise<{ running: boolean; length: number; chunk: string }> => {
-    const res = await fetch(`${BASE}/api/sessions/${sessionId}/output/${offset}`, {
+    const res = await apiFetch(`${BASE}/api/sessions/${sessionId}/output/${offset}`, {
       headers: authHeaders(),
     });
     if (!res.ok) throw new Error(`${res.status} ${await res.text()}`);
@@ -309,7 +369,7 @@ export const api = {
   // ─── Transcript ──────────────────────────────────────────────────────────────
 
   getMessages: async (sessionId: string): Promise<Message[]> => {
-    const res = await fetch(`${BASE}/api/sessions/${sessionId}/messages`, {
+    const res = await apiFetch(`${BASE}/api/sessions/${sessionId}/messages`, {
       headers: authHeaders(),
     });
     if (!res.ok) throw new Error(`${res.status} ${await res.text()}`);
@@ -320,7 +380,7 @@ export const api = {
   // ─── Comments ────────────────────────────────────────────────────────────────
 
   getComments: async (messageId: string): Promise<Comment[]> => {
-    const res = await fetch(`${BASE}/api/messages/${messageId}/comments`, {
+    const res = await apiFetch(`${BASE}/api/messages/${messageId}/comments`, {
       headers: authHeaders(),
     });
     if (!res.ok) throw new Error(`${res.status} ${await res.text()}`);
@@ -331,7 +391,7 @@ export const api = {
   addComment: async (messageId: string, body: string): Promise<Comment> => {
     // No sessionId in the payload: the backend's AddCommentRequest doesn't
     // declare one — it derives the owning session from the stored message.
-    const res = await fetch(`${BASE}/api/messages/${messageId}/comments`, {
+    const res = await apiFetch(`${BASE}/api/messages/${messageId}/comments`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', ...authHeaders() },
       body: JSON.stringify({ body }),
@@ -343,7 +403,7 @@ export const api = {
   // ─── Prompt library ──────────────────────────────────────────────────────────
 
   getPrompts: async (): Promise<Prompt[]> => {
-    const res = await fetch(`${BASE}/api/prompts`, { headers: authHeaders() });
+    const res = await apiFetch(`${BASE}/api/prompts`, { headers: authHeaders() });
     if (!res.ok) throw new Error(`${res.status} ${await res.text()}`);
     const body = (await res.json()) as { prompts?: Prompt[] };
     return (body.prompts ?? []).map(normalisePrompt);
@@ -351,7 +411,7 @@ export const api = {
 
   /** Prompts ordered most-used first (`GET /api/prompts/popular`). */
   getPopularPrompts: async (): Promise<Prompt[]> => {
-    const res = await fetch(`${BASE}/api/prompts/popular`, { headers: authHeaders() });
+    const res = await apiFetch(`${BASE}/api/prompts/popular`, { headers: authHeaders() });
     if (!res.ok) throw new Error(`${res.status} ${await res.text()}`);
     const body = (await res.json()) as { prompts?: Prompt[] };
     return (body.prompts ?? []).map(normalisePrompt);
@@ -359,14 +419,14 @@ export const api = {
 
   /** Prompts carrying a given tag (`GET /api/prompts/tag/{tag}`). */
   getPromptsByTag: async (tag: string): Promise<Prompt[]> => {
-    const res = await fetch(`${BASE}/api/prompts/tag/${encodeURIComponent(tag)}`, { headers: authHeaders() });
+    const res = await apiFetch(`${BASE}/api/prompts/tag/${encodeURIComponent(tag)}`, { headers: authHeaders() });
     if (!res.ok) throw new Error(`${res.status} ${await res.text()}`);
     const body = (await res.json()) as { prompts?: Prompt[] };
     return (body.prompts ?? []).map(normalisePrompt);
   },
 
   addPrompt: async (name: string, body: string, tags: string[] = []): Promise<Prompt> => {
-    const res = await fetch(`${BASE}/api/prompts`, {
+    const res = await apiFetch(`${BASE}/api/prompts`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', ...authHeaders() },
       body: JSON.stringify({ name, body, tags }),
@@ -376,7 +436,7 @@ export const api = {
   },
 
   updatePrompt: async (promptId: string, name: string, body: string, tags: string[] = []): Promise<Prompt> => {
-    const res = await fetch(`${BASE}/api/prompts/${promptId}`, {
+    const res = await apiFetch(`${BASE}/api/prompts/${promptId}`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', ...authHeaders() },
       body: JSON.stringify({ name, body, tags }),
@@ -390,7 +450,7 @@ export const api = {
   renderPrompt: async (promptId: string, vars: Record<string, string>): Promise<string> => {
     const keys = Object.keys(vars);
     const values = keys.map(k => vars[k] ?? '');
-    const res = await fetch(`${BASE}/api/prompts/${promptId}/render`, {
+    const res = await apiFetch(`${BASE}/api/prompts/${promptId}/render`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', ...authHeaders() },
       body: JSON.stringify({ keys, values }),
@@ -402,7 +462,7 @@ export const api = {
 
   /** Best-effort usage bookkeeping; callers may fire-and-forget. */
   usePrompt: async (promptId: string): Promise<void> => {
-    const res = await fetch(`${BASE}/api/prompts/${promptId}/use`, {
+    const res = await apiFetch(`${BASE}/api/prompts/${promptId}/use`, {
       method: 'POST',
       headers: authHeaders(),
     });
@@ -410,7 +470,7 @@ export const api = {
   },
 
   deletePrompt: async (promptId: string): Promise<void> => {
-    const res = await fetch(`${BASE}/api/prompts/${promptId}`, {
+    const res = await apiFetch(`${BASE}/api/prompts/${promptId}`, {
       method: 'DELETE',
       headers: authHeaders(),
     });
@@ -420,14 +480,14 @@ export const api = {
   // ─── Credentials (write-only: values are never read back) ─────────────────────
 
   getCredentialNames: async (): Promise<Credential[]> => {
-    const res = await fetch(`${BASE}/api/credentials`, { headers: authHeaders() });
+    const res = await apiFetch(`${BASE}/api/credentials`, { headers: authHeaders() });
     if (!res.ok) throw new Error(`${res.status} ${await res.text()}`);
     const body = (await res.json()) as { credentials?: Credential[] };
     return body.credentials ?? [];
   },
 
   putCredential: async (name: string, value: string): Promise<void> => {
-    const res = await fetch(`${BASE}/api/credentials`, {
+    const res = await apiFetch(`${BASE}/api/credentials`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', ...authHeaders() },
       body: JSON.stringify({ name, value }),
@@ -436,7 +496,7 @@ export const api = {
   },
 
   deleteCredential: async (name: string): Promise<void> => {
-    const res = await fetch(`${BASE}/api/credentials/${encodeURIComponent(name)}`, {
+    const res = await apiFetch(`${BASE}/api/credentials/${encodeURIComponent(name)}`, {
       method: 'DELETE',
       headers: authHeaders(),
     });
@@ -446,7 +506,7 @@ export const api = {
   // ─── Todos / bookmarks ───────────────────────────────────────────────────────
 
   getTodos: async (sessionId: string): Promise<Todo[]> => {
-    const res = await fetch(`${BASE}/api/sessions/${sessionId}/todos`, {
+    const res = await apiFetch(`${BASE}/api/sessions/${sessionId}/todos`, {
       headers: authHeaders(),
     });
     if (!res.ok) throw new Error(`${res.status} ${await res.text()}`);
@@ -455,7 +515,7 @@ export const api = {
   },
 
   addTodo: async (sessionId: string, messageId: string, note: string): Promise<Todo> => {
-    const res = await fetch(`${BASE}/api/sessions/${sessionId}/todos`, {
+    const res = await apiFetch(`${BASE}/api/sessions/${sessionId}/todos`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', ...authHeaders() },
       body: JSON.stringify({ messageId, note }),
@@ -465,7 +525,7 @@ export const api = {
   },
 
   toggleTodo: async (todoId: string): Promise<void> => {
-    const res = await fetch(`${BASE}/api/todos/${todoId}/toggle`, {
+    const res = await apiFetch(`${BASE}/api/todos/${todoId}/toggle`, {
       method: 'POST',
       headers: authHeaders(),
     });
@@ -473,7 +533,7 @@ export const api = {
   },
 
   deleteTodo: async (todoId: string): Promise<void> => {
-    const res = await fetch(`${BASE}/api/todos/${todoId}`, {
+    const res = await apiFetch(`${BASE}/api/todos/${todoId}`, {
       method: 'DELETE',
       headers: authHeaders(),
     });
@@ -483,7 +543,7 @@ export const api = {
   // ─── Profiles (per-container policy: creds, harness, network) ──────────────────
 
   getProfiles: async (): Promise<Profile[]> => {
-    const res = await fetch(`${BASE}/api/profiles`, { headers: authHeaders() });
+    const res = await apiFetch(`${BASE}/api/profiles`, { headers: authHeaders() });
     if (!res.ok) throw new Error(`${res.status} ${await res.text()}`);
     const body = (await res.json()) as { profiles?: Profile[] };
     return (body.profiles ?? []).map(normaliseProfile);
@@ -499,7 +559,7 @@ export const api = {
     subagentIds: string[];
     mcpServerIds: string[];
   }): Promise<Profile> => {
-    const res = await fetch(`${BASE}/api/profiles`, {
+    const res = await apiFetch(`${BASE}/api/profiles`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', ...authHeaders() },
       body: JSON.stringify(p),
@@ -521,7 +581,7 @@ export const api = {
       mcpServerIds: string[];
     },
   ): Promise<Profile> => {
-    const res = await fetch(`${BASE}/api/profiles/${profileId}`, {
+    const res = await apiFetch(`${BASE}/api/profiles/${profileId}`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', ...authHeaders() },
       body: JSON.stringify(p),
@@ -531,7 +591,7 @@ export const api = {
   },
 
   deleteProfile: async (profileId: string): Promise<void> => {
-    const res = await fetch(`${BASE}/api/profiles/${profileId}`, {
+    const res = await apiFetch(`${BASE}/api/profiles/${profileId}`, {
       method: 'DELETE',
       headers: authHeaders(),
     });
@@ -541,14 +601,14 @@ export const api = {
   // ─── Library (skills, subagents, MCP servers a profile can grant) ─────────────
 
   getSkills: async (): Promise<Skill[]> => {
-    const res = await fetch(`${BASE}/api/library/skills`, { headers: authHeaders() });
+    const res = await apiFetch(`${BASE}/api/library/skills`, { headers: authHeaders() });
     if (!res.ok) throw new Error(`${res.status} ${await res.text()}`);
     const body = (await res.json()) as { skills?: Skill[] };
     return body.skills ?? [];
   },
 
   addSkill: async (s: { name: string; description: string; body: string }): Promise<Skill> => {
-    const res = await fetch(`${BASE}/api/library/skills`, {
+    const res = await apiFetch(`${BASE}/api/library/skills`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', ...authHeaders() },
       body: JSON.stringify(s),
@@ -558,7 +618,7 @@ export const api = {
   },
 
   updateSkill: async (id: string, s: { name: string; description: string; body: string }): Promise<Skill> => {
-    const res = await fetch(`${BASE}/api/library/skills/${id}`, {
+    const res = await apiFetch(`${BASE}/api/library/skills/${id}`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', ...authHeaders() },
       body: JSON.stringify(s),
@@ -568,19 +628,19 @@ export const api = {
   },
 
   deleteSkill: async (id: string): Promise<void> => {
-    const res = await fetch(`${BASE}/api/library/skills/${id}`, { method: 'DELETE', headers: authHeaders() });
+    const res = await apiFetch(`${BASE}/api/library/skills/${id}`, { method: 'DELETE', headers: authHeaders() });
     if (!res.ok) throw new Error(`${res.status} ${await res.text()}`);
   },
 
   getSubagents: async (): Promise<Subagent[]> => {
-    const res = await fetch(`${BASE}/api/library/subagents`, { headers: authHeaders() });
+    const res = await apiFetch(`${BASE}/api/library/subagents`, { headers: authHeaders() });
     if (!res.ok) throw new Error(`${res.status} ${await res.text()}`);
     const body = (await res.json()) as { subagents?: Subagent[] };
     return body.subagents ?? [];
   },
 
   addSubagent: async (s: { name: string; description: string; systemPrompt: string; model: string }): Promise<Subagent> => {
-    const res = await fetch(`${BASE}/api/library/subagents`, {
+    const res = await apiFetch(`${BASE}/api/library/subagents`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', ...authHeaders() },
       body: JSON.stringify(s),
@@ -593,7 +653,7 @@ export const api = {
     id: string,
     s: { name: string; description: string; systemPrompt: string; model: string },
   ): Promise<Subagent> => {
-    const res = await fetch(`${BASE}/api/library/subagents/${id}`, {
+    const res = await apiFetch(`${BASE}/api/library/subagents/${id}`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', ...authHeaders() },
       body: JSON.stringify(s),
@@ -603,12 +663,12 @@ export const api = {
   },
 
   deleteSubagent: async (id: string): Promise<void> => {
-    const res = await fetch(`${BASE}/api/library/subagents/${id}`, { method: 'DELETE', headers: authHeaders() });
+    const res = await apiFetch(`${BASE}/api/library/subagents/${id}`, { method: 'DELETE', headers: authHeaders() });
     if (!res.ok) throw new Error(`${res.status} ${await res.text()}`);
   },
 
   getMcpServers: async (): Promise<McpServer[]> => {
-    const res = await fetch(`${BASE}/api/library/mcp-servers`, { headers: authHeaders() });
+    const res = await apiFetch(`${BASE}/api/library/mcp-servers`, { headers: authHeaders() });
     if (!res.ok) throw new Error(`${res.status} ${await res.text()}`);
     const body = (await res.json()) as { mcpServers?: McpServer[] };
     return body.mcpServers ?? [];
@@ -617,7 +677,7 @@ export const api = {
   addMcpServer: async (
     s: { name: string; transport: string; command: string; args: string[]; url: string; env: string[] },
   ): Promise<McpServer> => {
-    const res = await fetch(`${BASE}/api/library/mcp-servers`, {
+    const res = await apiFetch(`${BASE}/api/library/mcp-servers`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', ...authHeaders() },
       body: JSON.stringify(s),
@@ -630,7 +690,7 @@ export const api = {
     id: string,
     s: { name: string; transport: string; command: string; args: string[]; url: string; env: string[] },
   ): Promise<McpServer> => {
-    const res = await fetch(`${BASE}/api/library/mcp-servers/${id}`, {
+    const res = await apiFetch(`${BASE}/api/library/mcp-servers/${id}`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', ...authHeaders() },
       body: JSON.stringify(s),
@@ -640,21 +700,21 @@ export const api = {
   },
 
   deleteMcpServer: async (id: string): Promise<void> => {
-    const res = await fetch(`${BASE}/api/library/mcp-servers/${id}`, { method: 'DELETE', headers: authHeaders() });
+    const res = await apiFetch(`${BASE}/api/library/mcp-servers/${id}`, { method: 'DELETE', headers: authHeaders() });
     if (!res.ok) throw new Error(`${res.status} ${await res.text()}`);
   },
 
   // ─── Webhooks (run-completion notifications) ──────────────────────────────────
 
   getWebhooks: async (): Promise<Webhook[]> => {
-    const res = await fetch(`${BASE}/api/webhooks`, { headers: authHeaders() });
+    const res = await apiFetch(`${BASE}/api/webhooks`, { headers: authHeaders() });
     if (!res.ok) throw new Error(`${res.status} ${await res.text()}`);
     const body = (await res.json()) as { webhooks?: Webhook[] };
     return body.webhooks ?? [];
   },
 
   registerWebhook: async (url: string): Promise<Webhook> => {
-    const res = await fetch(`${BASE}/api/webhooks`, {
+    const res = await apiFetch(`${BASE}/api/webhooks`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', ...authHeaders() },
       body: JSON.stringify({ url }),
@@ -664,7 +724,7 @@ export const api = {
   },
 
   deleteWebhook: async (webhookId: string): Promise<void> => {
-    const res = await fetch(`${BASE}/api/webhooks/${webhookId}`, {
+    const res = await apiFetch(`${BASE}/api/webhooks/${webhookId}`, {
       method: 'DELETE',
       headers: authHeaders(),
     });
@@ -675,7 +735,7 @@ export const api = {
 
   /** List of all pending callback requests (permissions, questions, secrets) */
   getPendingCallbacks: async (sessionId: string): Promise<PendingCallbacksResponse> => {
-    const res = await fetch(`${BASE}/api/sessions/${sessionId}/callbacks/pending`, {
+    const res = await apiFetch(`${BASE}/api/sessions/${sessionId}/callbacks/pending`, {
       headers: authHeaders(),
     });
     if (!res.ok) throw new Error(`${res.status} ${await res.text()}`);
@@ -693,7 +753,7 @@ export const api = {
     requestId: string,
     body: { decision: 'allow' | 'deny' | 'allow_always'; note: string; updatedInputJson: string },
   ): Promise<void> => {
-    const res = await fetch(`${BASE}/api/sessions/${sessionId}/callbacks/permission/${requestId}/answer`, {
+    const res = await apiFetch(`${BASE}/api/sessions/${sessionId}/callbacks/permission/${requestId}/answer`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', ...authHeaders() },
       body: JSON.stringify(body),
@@ -707,7 +767,7 @@ export const api = {
     requestId: string,
     answer: string,
   ): Promise<void> => {
-    const res = await fetch(`${BASE}/api/sessions/${sessionId}/callbacks/question/${requestId}/answer`, {
+    const res = await apiFetch(`${BASE}/api/sessions/${sessionId}/callbacks/question/${requestId}/answer`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', ...authHeaders() },
       body: JSON.stringify({ answer }),
@@ -721,7 +781,7 @@ export const api = {
     requestId: string,
     decision: 'allow' | 'deny',
   ): Promise<void> => {
-    const res = await fetch(`${BASE}/api/sessions/${sessionId}/callbacks/secret/${requestId}/answer`, {
+    const res = await apiFetch(`${BASE}/api/sessions/${sessionId}/callbacks/secret/${requestId}/answer`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', ...authHeaders() },
       body: JSON.stringify({ decision }),
@@ -736,7 +796,7 @@ export const api = {
    *  caller should treat null as "unknown" and fail open (show everything). */
   getEnabledHarnesses: async (): Promise<string[] | null> => {
     try {
-      const res = await fetch(`${BASE}/api/harnesses`, { headers: authHeaders() });
+      const res = await apiFetch(`${BASE}/api/harnesses`, { headers: authHeaders() });
       if (!res.ok) return null;
       const body = (await res.json()) as { enabled?: string[] };
       return body.enabled ?? null;
@@ -765,7 +825,7 @@ function normaliseProfile(p: Profile): Profile {
 // without these routes) — callers fall back to the direct browser-side path.
 
 async function proxyGet<T>(path: string): Promise<T> {
-  const res = await fetch(`${BASE}${path}`, { headers: authHeaders() });
+  const res = await apiFetch(`${BASE}${path}`, { headers: authHeaders() });
   if (!res.ok) throw new Error(`${res.status} ${await res.text()}`);
   return res.json() as Promise<T>;
 }

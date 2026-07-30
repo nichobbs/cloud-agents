@@ -393,6 +393,10 @@ func doRefresh(userId: in String, refreshToken: in String): Result[String, Web.A
     case Ok(_) -> ()
     case Err(e) -> println("NOTE: could not store the refreshed GITHUB_TOKEN in the credential vault: " + CloudAgents.Repository.credentialErrorMessage(e))
   }
+  match CloudAgents.Repository.cacheGitHubToken(CloudAgents.Crypto.sha256Base64(newToken), userId, "") {
+    case Ok(_) -> ()
+    case Err(_) -> ()
+  }
   val newRefreshToken = CloudAgents.Auth.parseJsonString(body, "refresh_token")
   val accessExpiresIn = CloudAgents.Auth.parseJsonNumber(body, "expires_in")
   val refreshExpiresIn = CloudAgents.Auth.parseJsonNumber(body, "refresh_token_expires_in")
@@ -435,6 +439,54 @@ pub func ensureFreshGitHubToken(userId: in String): Result[String, Web.ApiError]
       return Err(Web.internalError("could not read the credential vault"))
     }
   }
+}
+
+/// POST /api/auth/github/refresh: proactively refresh or return the active GitHub
+/// OAuth token for the authenticated user.
+pub func refreshOAuthToken(authHeaderValue: in String): Result[TokenGrant, Web.ApiError] {
+  if not oauthConfigured() {
+    return Err(
+      Web.badRequest(
+        "GitHub OAuth is not configured on this server"
+      )
+    )
+  }
+  var userId = ""
+  var cachedLogin = ""
+  match CloudAgents.Auth.extractBearerToken(authHeaderValue) {
+    case Some(token) -> {
+      val tokenHash = CloudAgents.Crypto.sha256Base64(token)
+      match CloudAgents.Repository.cachedGitHubToken(tokenHash) {
+        case Ok(Some(entry)) -> {
+          if entry.userId.length > 0 {
+            userId = entry.userId
+            cachedLogin = entry.login
+          }
+        }
+        case Ok(None) -> ()
+        case Err(_) -> ()
+      }
+    }
+    case None -> ()
+  }
+  if userId.length == 0 {
+    val current = CloudAgents.Auth.currentUserId()
+    if current.length > 0 and current != CloudAgents.Auth.operatorUserId() {
+      userId = current
+    }
+  }
+  if userId.length == 0 {
+    return Err(Web.unauthorized("Authentication required to refresh token"))
+  }
+  val freshToken = match ensureFreshGitHubToken(userId) {
+    case Ok(t) -> t
+    case Err(e) -> return Err(e)
+  }
+  match CloudAgents.Repository.cacheGitHubToken(CloudAgents.Crypto.sha256Base64(freshToken), userId, cachedLogin) {
+    case Ok(_) -> ()
+    case Err(_) -> ()
+  }
+  return Ok(value = TokenGrant(token = freshToken, login = cachedLogin, userId = userId))
 }
 
 // ─── Logout: server-side cache invalidation ──────────────────────────────────

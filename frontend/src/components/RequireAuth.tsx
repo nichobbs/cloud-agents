@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react';
 import type { ReactNode } from 'react';
 import { Navigate, useLocation } from 'react-router-dom';
 import { useAuthConfig } from '../context/AuthConfigContext';
-import { AUTH_CHANGED_EVENT, isSignedIn } from '../lib/auth';
+import { AUTH_CHANGED_EVENT, isSignedIn, refreshSessionToken } from '../lib/auth';
 
 /// Wraps a route element: redirects to /login when GitHub sign-in is
 /// configured on this deployment and the device isn't signed in.
@@ -25,6 +25,15 @@ export function RequireAuth({ children }: { children: ReactNode }) {
     window.addEventListener(AUTH_CHANGED_EVENT, refresh);
     return () => window.removeEventListener(AUTH_CHANGED_EVENT, refresh);
   }, []);
+
+  // Proactively refresh the token periodically while actively using the app.
+  useEffect(() => {
+    if (!signedIn) return;
+    const interval = setInterval(() => {
+      void refreshSessionToken();
+    }, 10 * 60 * 1000);
+    return () => clearInterval(interval);
+  }, [signedIn]);
 
   // Already signed in (a synchronous localStorage read, unlike `configured`)
   // — nothing to gate regardless of OAuth config, so skip the loading wait

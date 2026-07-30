@@ -522,8 +522,21 @@ test "github oauth refresh metadata round-trips through repository CRUD" {
   match CloudAgents.Repository.githubOAuthRefreshStatus(userId) {
     case Ok(Some(status)) -> {
       assertEqual(status.refreshToken, "refresh-abc", "refresh token decrypts back unchanged")
-      assertTrue(not status.accessTokenExpired, "access token still fresh")
+      assertTrue(not status.accessTokenExpired, "access token still fresh (> 5m remaining)")
       assertTrue(not status.refreshTokenExpired, "refresh token still fresh")
+    }
+    case Ok(None) -> assertTrue(false, "row must exist after upsert")
+    case Err(e) -> assertTrue(false, "status read failed: " + CloudAgents.Repository.credentialErrorMessage(e))
+  }
+
+  // Token expiring in 2 minutes (120s) -> within 5-minute proactive buffer -> accessTokenExpired is true.
+  match CloudAgents.Repository.upsertGitHubOAuthRefresh(userId, "refresh-abc", "120", "604800") {
+    case Ok(_) -> ()
+    case Err(e) -> assertTrue(false, "upsert failed: " + CloudAgents.Repository.credentialErrorMessage(e))
+  }
+  match CloudAgents.Repository.githubOAuthRefreshStatus(userId) {
+    case Ok(Some(status)) -> {
+      assertTrue(status.accessTokenExpired, "access token expiring in 2 minutes marked for proactive refresh")
     }
     case Ok(None) -> assertTrue(false, "row must exist after upsert")
     case Err(e) -> assertTrue(false, "status read failed: " + CloudAgents.Repository.credentialErrorMessage(e))
