@@ -275,3 +275,11 @@ test "keyForProvider returns None for absent keys when vault is empty" {
     case None -> ()
   }
 }
+
+test "validateKeyHandler rejects unknown providers and forwards failures gracefully" {
+  match validateKeyHandler("vim", "key") {
+    case Ok(_) -> assertTrue(false, "unknown provider must fail")
+    case Err(e) -> assertEqualInt(e.status, 400, "unknown provider -> 400")
+  }
+}
+

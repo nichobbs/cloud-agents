@@ -783,6 +783,12 @@ export const api = {
       return null;
     }
   },
+
+  /** Send a key to the backend models validator proxy to verify it and retrieve
+   *  the live models listing without CORS issues. */
+  validateModelKey: async (provider: string, key: string): Promise<{ provider: string; body: string }> => {
+    return proxyPost<{ provider: string; body: string }>('/api/models/validate', { provider, key });
+  },
 };
 
 /** Ensure a profile's optional array fields are always arrays. */
@@ -805,6 +811,16 @@ function normaliseProfile(p: Profile): Profile {
 
 async function proxyGet<T>(path: string): Promise<T> {
   const res = await fetch(`${BASE}${path}`, { headers: authHeaders() });
+  if (!res.ok) throw new Error(`${res.status} ${await res.text()}`);
+  return res.json() as Promise<T>;
+}
+
+async function proxyPost<T>(path: string, body: unknown): Promise<T> {
+  const res = await fetch(`${BASE}${path}`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...authHeaders() },
+    body: JSON.stringify(body),
+  });
   if (!res.ok) throw new Error(`${res.status} ${await res.text()}`);
   return res.json() as Promise<T>;
 }

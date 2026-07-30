@@ -1370,6 +1370,26 @@ impl Web.Handler for RouteProxyModels {
   }
 }
 
+record RouteProxyValidateKey {
+}
+
+impl Web.Handler for RouteProxyValidateKey {
+  func handle(req: in Web.Request): Web.Response {
+    val decoded = match CloudAgents.Proxy.ValidateKeyRequest.fromJson(req.body) {
+      case Ok(d) -> d
+      case Err(_) -> return badBody()
+    }
+    match CloudAgents.Proxy.validateKeyHandler(decoded.provider, decoded.key) {
+      case Ok(body) -> {
+        val escaped = CloudAgents.SessionStore.jsonEscapeField(body)
+        return jsonResp(200, "{\"provider\":\"" + decoded.provider + "\",\"body\":\"" + escaped + "\"}")
+      }
+      case Err(e) -> return Web.errorResponse(e)
+    }
+  }
+}
+
+
 // GET /api/harnesses (#523): which harnesses have a runner image on this
 // deployment. Always succeeds — no Result to unwrap, unlike the other Proxy
 // routes above.
@@ -1636,6 +1656,7 @@ pub func main(): Unit {
   router = Web.addGet(router, "/api/github/pulls/{owner}/{repo}/{branch}", RouteProxyGithubPulls())
   router = Web.addGet(router, "/api/github/checks/{owner}/{repo}/{branch}", RouteProxyGithubChecks())
   router = Web.addGet(router, "/api/models/{harness}", RouteProxyModels())
+  router = Web.addPost(router, "/api/models/validate", RouteProxyValidateKey())
   router = Web.addGet(router, "/api/harnesses", RouteHarnesses())
 
   // GitHub OAuth: public login configuration, the code-for-token exchange,

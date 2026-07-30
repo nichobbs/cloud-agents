@@ -10,7 +10,7 @@
 /// proxy, per provider for the direct path); every failure falls back to the
 /// static catalog in lib/harnesses.ts so the picker always works offline.
 
-import { proxyModels } from './api';
+import { api, proxyModels } from './api';
 import { getConnection, type ProviderId } from './connections';
 import { getHarness, type ModelOption } from './harnesses';
 
@@ -144,11 +144,12 @@ async function fetchGoogleModels(key: string): Promise<ModelOption[]> {
 }
 
 async function fetchOpencodeModels(key: string): Promise<ModelOption[]> {
-  const res = await fetch('https://opencode.ai/zen/v1/models', {
-    headers: { Authorization: `Bearer ${key}` },
-  });
-  if (!res.ok) throw new Error(`OpenCode Zen models API: ${res.status}`);
-  return mapOpencodeModels((await res.json()) as OpencodeModelsResponse);
+  try {
+    const res = await api.validateModelKey('opencode', key);
+    return mapOpencodeModels(JSON.parse(res.body) as OpencodeModelsResponse);
+  } catch (err) {
+    throw new Error(`OpenCode Zen models API: ${err instanceof Error ? err.message : 'unknown error'}`);
+  }
 }
 
 const FETCHERS: Record<Exclude<ProviderId, 'github'>, (key: string) => Promise<ModelOption[]>> = {
