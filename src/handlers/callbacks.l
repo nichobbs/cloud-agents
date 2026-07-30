@@ -772,7 +772,10 @@ pub func listSessionTodosHandler(
 /// to THIS session; a todo id under a different session 404s without leaking
 /// that it exists (the same non-leaking shape every scoped lookup here has).
 pub func setSessionTodoStatusHandler(
-  id: in String, tid: in String, authHeaderValue: in String, req: in SetSessionTodoStatusRequest
+  id: in String,
+  tid: in String,
+  authHeaderValue: in String,
+  req: in SetSessionTodoStatusRequest,
 ): Result[SetSessionTodoStatusResponse, Web.ApiError] {
   if id.length == 0 {
     return Err(Web.badRequest("id is required"))

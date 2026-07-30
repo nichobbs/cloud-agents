@@ -43,7 +43,7 @@ live_env
 register_callbacks_mcp "opencode" "$WS"
 check "opencode: entry added"                 bash -c "jq -e '.mcp[\"cloud-agents\"].type == \"local\"' '$WS/opencode.json' >/dev/null"
 check "opencode: command is the shim"         bash -c "jq -e '.mcp[\"cloud-agents\"].command == [\"cloud-agents-shim\"]' '$WS/opencode.json' >/dev/null"
-check "opencode: token survives JSON metachars" bash -c "jq -e '.mcp[\"cloud-agents\"].environment.CLOUD_AGENTS_CALLBACK_TOKEN | contains(\"quote\")' '$WS/opencode.json' >/dev/null"
+check "opencode: metachar token round-trips exactly" bash -c "jq -e --arg t 'tok-with-\"quote\"-and-\\backslash' '.mcp[\"cloud-agents\"].environment.CLOUD_AGENTS_CALLBACK_TOKEN == \$t' '$WS/opencode.json' >/dev/null"
 check "opencode: unrelated entries intact"    bash -c "jq -e '.mcp[\"cloud-agents-lib-x\"]' '$WS/opencode.json' >/dev/null"
 check "opencode: valid JSON after add"        bash -c "jq -e . '$WS/opencode.json' >/dev/null"
 dead_env
@@ -135,6 +135,11 @@ if [ -f "$WS-wt/.git" ]; then
   register_callbacks_mcp "opencode" "$WS-wt"
   check "gitfile: tracked file still refuses the token" \
     bash -c "! grep -q 'CLOUD_AGENTS_CALLBACK_TOKEN' '$WS-wt/opencode.json'"
+  # An UNTRACKED config in the worktree registers, and its exclusion lands
+  # in the COMMON dir's info/exclude — the only one git reads (#828).
+  register_callbacks_mcp "gemini" "$WS-wt"
+  check "gitfile: exclusion written to the common dir" \
+    bash -c "grep -qxF '/.gemini/settings.json' '$WS/.git/info/exclude'"
 else
   echo "skip gitfile checks (worktree unavailable)"
 fi

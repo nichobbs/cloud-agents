@@ -341,7 +341,8 @@ pub func allMigrations(): slice[Migration] {
       version = "0024_todo_updated_at",
       statements = [CloudAgents.Db.alterTodosAddUpdatedAtSql(), CloudAgents.Db.backfillTodoUpdatedAtSql()]
     ),
-    Migration(version = "0025_todo_source", statements = [CloudAgents.Db.alterTodosAddSourceSql()])
+    Migration(version = "0025_todo_source", statements = [CloudAgents.Db.alterTodosAddSourceSql()]),
+    Migration(version = "0026_todo_updated_index", statements = [CloudAgents.Db.todosSessionUpdatedIndexSql()])
   ]
 }
 
@@ -501,7 +502,12 @@ pub func addTodo(sessionId: in String, messageId: in String, note: in String): R
   CloudAgents.Sqlite.execute(CloudAgents.Db.insertTodoSql(id, sessionId, messageId, note, "pending", ts, ""))?
   return Ok(
     value = Todo(
-      id = id, sessionId = sessionId, messageId = messageId, note = note, done = "0", createdAt = ts,
+      id = id,
+      sessionId = sessionId,
+      messageId = messageId,
+      note = note,
+      done = "0",
+      createdAt = ts,
       status = "pending"
     )
   )
@@ -515,18 +521,26 @@ pub func addTodo(sessionId: in String, messageId: in String, note: in String): R
 /// ignored); each row is anchored to `messageId`, the agent message the
 /// plan was parsed from. Never touches human/tool-created rows (source '').
 pub func replacePlanTodos(
-  sessionId: in String, messageId: in String, notes: in slice[String], statuses: in slice[String]
+  sessionId: in String,
+  messageId: in String,
+  notes: in slice[String],
+  statuses: in slice[String],
 ): Result[Unit, CloudAgents.Sqlite.DbError] {
-  // Each row gets baseMs + index (#801): listTodos orders by created_at, so
-  // a shared timestamp would leave the plan's display order unspecified —
-  // the +i keeps the agent's own step order stable (DESC listing shows the
-  // last step first, like any newest-first todo).
+  // Each row gets a distinct timestamp (#801) so listTodos' created_at
+  // ordering is deterministic — and the offsets DESCEND with the index
+  // (#826): the listing is newest-first, so the plan's FIRST step needs the
+  // LARGEST timestamp for the panel to read step 1 → step N top-to-bottom
+  // instead of reversed.
   val baseMs = nowMillisLong()
+  var count = notes.length.toInt()
+  if statuses.length.toInt() < count {
+    count = statuses.length.toInt()
+  }
   var stmts: slice[String] = []
   stmts = stmts.append(CloudAgents.Db.deletePlanTodosSql(sessionId))
   var i = 0
-  while i < notes.length and i < statuses.length {
-    val ts = toString(baseMs + i.toLong())
+  while i < count {
+    val ts = toString(baseMs + (count - 1 - i).toLong())
     stmts = stmts.append(CloudAgents.Db.insertTodoSql(newId(), sessionId, messageId, notes[i], statuses[i], ts, "plan"))
     i = i + 1
   }
@@ -564,7 +578,12 @@ pub func todosUpdatedAfter(
   while i < len {
     val r = CloudAgents.Sqlite.getRowArrayValue(rows, i)
     acc = acc.append(
-      TodoUpdate(id = colAt(r.cols, 0), note = colAt(r.cols, 1), status = colAt(r.cols, 2), updatedAt = colAt(r.cols, 3))
+      TodoUpdate(
+        id = colAt(r.cols, 0),
+        note = colAt(r.cols, 1),
+        status = colAt(r.cols, 2),
+        updatedAt = colAt(r.cols, 3)
+      )
     )
     i = i + 1
   }
@@ -2206,7 +2225,9 @@ pub func updateMcpServer(
   for s in mcpServerChildStatements(id, userId, args, env) {
     stmts = stmts.append(s)
   }
-  stmts = stmts.append(CloudAgents.Db.updateMcpServerSql(id, userId, name, transport, command, url, nowMillis(), enabled))
+  stmts = stmts.append(
+    CloudAgents.Db.updateMcpServerSql(id, userId, name, transport, command, url, nowMillis(), enabled)
+  )
   val affected = CloudAgents.Sqlite.executeTransaction(stmts)?
   return Ok(value = affected)
 }
@@ -3330,7 +3351,12 @@ pub func addHighlight(
   CloudAgents.Sqlite.execute(CloudAgents.Db.insertHighlightSql(id, sessionId, messageId, kind, title, detail, ts))?
   return Ok(
     value = Highlight(
-      id = id, sessionId = sessionId, messageId = messageId, kind = kind, title = title, detail = detail,
+      id = id,
+      sessionId = sessionId,
+      messageId = messageId,
+      kind = kind,
+      title = title,
+      detail = detail,
       createdAt = ts
     )
   )

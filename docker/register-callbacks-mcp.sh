@@ -37,12 +37,15 @@ callbacks_mcp_active() {
 # repo where callbacks are off (or the file is user-owned) never collects
 # exclusions that could surprise someone later wanting to commit the file.
 # Resolves the real git dir via rev-parse (#823) — `.git` can be a FILE
-# (worktree/submodule gitfile), so a plain `.git/info` path isn't reliable.
+# (worktree/submodule gitfile), so a plain `.git/info` path isn't reliable —
+# and specifically the COMMON dir (#828): git consults
+# $GIT_COMMON_DIR/info/exclude, not a worktree's private gitdir, so writing
+# to `--git-dir` in a worktree checkout would be silently ignored.
 # Idempotent; a non-repo workspace is a no-op.
 exclude_from_git() {
     local ws="$1" path="$2"
     local gitdir
-    gitdir=$(git -C "$ws" rev-parse --git-dir 2>/dev/null) || return 0
+    gitdir=$(git -C "$ws" rev-parse --git-common-dir 2>/dev/null) || return 0
     case "$gitdir" in
         /*) ;;
         *) gitdir="$ws/$gitdir" ;;
@@ -176,13 +179,16 @@ register_callbacks_mcp() {
                 write=0
             fi
             # Strip any existing block — but only touch the file when the
-            # marker is actually present (#812) or we're about to append.
+            # marker is actually present (#812) or we're about to append. A
+            # FAILED strip bails before the append (#829): appending on top
+            # of a still-present old block would leave two
+            # [mcp_servers.cloud-agents] tables, which is invalid TOML.
             if grep -qF "$begin" "$file"; then
                 apply_to_file "$file" awk -v b="$begin" -v e="$end" '
                     $0 == b {skip = 1; next}
                     $0 == e {skip = 0; next}
                     skip != 1 {print}
-                ' "$file"
+                ' "$file" || return 1
             fi
             if [ "$write" = "1" ]; then
                 exclude_from_git "$ws" ".codex/config.toml"

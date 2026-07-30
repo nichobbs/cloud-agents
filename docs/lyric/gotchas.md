@@ -76,6 +76,20 @@ Provide a constructor function. Callers outside use the function; callers inside
 
 ---
 
+**`slice[SomeRecord].append(...)` inside a long-running loop crashes at runtime** ([lyric-lang#6322](https://github.com/nichobbs/lyric-lang/issues/6322), open as of v0.4.35). The emitted IL is only valid under .NET's tier-0 quick JIT; once the containing method's loop runs long enough for OSR promotion (~tens of thousands of iterations — e.g. a char-by-char scan of a 30k-char string), the optimizing JIT miscompiles the append and the process throws `OverflowException`, `IndexOutOfRangeException`, or a **fatal, uncatchable** `AccessViolationException` in `StelemRef` — nondeterministically. `DOTNET_TieredCompilation=0` makes even a single straight-line record append fail ("COM is not supported"). Appending **strings** is unaffected. Small tests never promote, so this passes tests and dies on real data.
+
+Workaround: keep record appends out of any method containing a hot loop. Accumulate parallel `slice[String]`s in the loop, then zip them into records in a separate small function (see `planItemsOf` in `src/handlers/interactions.l`):
+```lyric
+// BAD: inside a method whose loop can run ~10k+ iterations
+items = items.append(MyRecord(a = x, b = y))
+// GOOD: accumulate strings in the hot method...
+notesAcc = notesAcc.append(x)
+statusAcc = statusAcc.append(y)
+// ...and build the records in a separate, never-hot function afterwards.
+```
+
+---
+
 ## Pattern matching
 
 **Non-exhaustive match is a compile error (E0301), not a warning.**

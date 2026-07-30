@@ -226,9 +226,12 @@ pub func sseArtifactReported(id: in String, fileName: in String, mimeType: in St
     "\"}\n\n"
 }
 
-/// A todo created or status-changed mid-run (the agent's add_todo/
-/// update_todo MCP tools, or the human's own panel actions) — the session
-/// UI's todo panel refreshes on this instead of waiting for its next poll.
+/// A todo created or status-changed mid-run — in practice the agent's
+/// add_todo/update_todo MCP tools, since that's what happens while a run's
+/// stream is open (#833; a human edit made mid-run is picked up by the same
+/// updated_at cursor, but the panel that made it already knows). The
+/// session UI's todo panel refreshes on this instead of waiting for its
+/// next poll.
 pub func sseTodoUpdate(id: in String, status: in String, note: in String): String {
   return "event: todo_update\ndata: {\"id\":\"" + jsonEscape(id) + "\",\"status\":\"" + jsonEscape(status) +
     "\",\"note\":\"" +

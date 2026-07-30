@@ -343,6 +343,26 @@ func planScanTail(content: in String): String {
   return content.substring(n - maxPlanScanChars, maxPlanScanChars)
 }
 
+/// Zip parallel note/status slices back into PlanItem records. Split out of
+/// parseAgentPlan as a compiler-bug workaround, not style: `slice[record]
+/// .append` inside a method whose loop runs long enough for .NET OSR
+/// promotion miscompiles and crashes (OverflowException / IndexOutOfRange /
+/// fatal AccessViolation in StelemRef —
+/// https://github.com/nichobbs/lyric-lang/issues/6322). The char-scan loop
+/// in parseAgentPlan iterates up to maxPlanScanChars times, comfortably
+/// past the OSR threshold, so it must only append STRINGS (unaffected);
+/// the record appends live here, where the loop is bounded by the plan's
+/// item count and never gets promoted.
+func planItemsOf(notes: in slice[String], statuses: in slice[String]): slice[PlanItem] {
+  var items: slice[PlanItem] = []
+  var i = 0
+  while i < notes.length and i < statuses.length {
+    items = items.append(PlanItem(note = notes[i], status = statuses[i]))
+    i = i + 1
+  }
+  return items
+}
+
 /// The LAST contiguous checkbox list in `content`, or [] when none (or when
 /// the last list has fewer than 2 items). "Last" because agents restate
 /// their plan as they update it — the final statement is the current one.
@@ -350,10 +370,15 @@ func planScanTail(content: in String): String {
 /// the message tail is scanned (#809) and ANSI SGR codes are stripped
 /// first, exactly like the frontend (#794). Pure and unit-tested; mirrors
 /// frontend/src/lib/agentPlan.ts.
+/// Accumulates parallel STRING slices in the scan loop and zips them into
+/// records only afterwards (planItemsOf) — see lyric-lang#6322 for why a
+/// record append inside this hot loop would crash at runtime.
 pub func parseAgentPlan(rawContent: in String): slice[PlanItem] {
   val content = stripAnsiSgr(planScanTail(rawContent))
-  var last: slice[PlanItem] = []
-  var current: slice[PlanItem] = []
+  var lastNotes: slice[String] = []
+  var lastStatuses: slice[String] = []
+  var currentNotes: slice[String] = []
+  var currentStatuses: slice[String] = []
   var lineStart = 0
   val n = content.length.toInt()
   var i = 0
@@ -363,24 +388,28 @@ pub func parseAgentPlan(rawContent: in String): slice[PlanItem] {
       lineStart = i + 1
       match parsePlanLine(line) {
         case Some(item) -> {
-          current = current.append(item)
+          currentNotes = currentNotes.append(item.note)
+          currentStatuses = currentStatuses.append(item.status)
         }
         case None -> {
-          if current.length > 0 and line.length > 0 {
-            if current.length >= 2 {
-              last = current
+          if currentNotes.length > 0 and line.length > 0 {
+            if currentNotes.length >= 2 {
+              lastNotes = currentNotes
+              lastStatuses = currentStatuses
             }
-            current = []
+            currentNotes = []
+            currentStatuses = []
           }
         }
       }
     }
     i = i + 1
   }
-  if current.length >= 2 {
-    last = current
+  if currentNotes.length >= 2 {
+    lastNotes = currentNotes
+    lastStatuses = currentStatuses
   }
-  return last
+  return planItemsOf(lastNotes, lastStatuses)
 }
 
 /// Whether server-side plan ingestion is enabled (off by default — see the
@@ -400,6 +429,12 @@ pub func planIngestEnabled(): Bool {
 /// plan half-replaced (#791). Returns how many items were ingested. The
 /// caller (CloudAgents.Handlers' post-run persist path) treats this as
 /// best-effort.
+/// Ingestion-side storage caps (#825): the display parser stays uncapped
+/// (parity with the frontend), but rows headed for the todos table respect
+/// the same note byte limit the todo handlers enforce, and a "plan" longer
+/// than this many steps is treated as parser noise, not a plan.
+val maxPlanIngestItems = 50
+
 pub func ingestAgentPlan(
   sessionId: in String, messageId: in String, content: in String
 ): Result[Int, CloudAgents.Sqlite.DbError] {
@@ -407,14 +442,23 @@ pub func ingestAgentPlan(
   if items.length < 2 {
     return Ok(value = 0)
   }
+  // Storage-bound filtering (#825): drop over-long notes (same maxBodyLen
+  // the addTodo handlers enforce, byte-measured) and cap the item count.
   var notes: slice[String] = []
   var statuses: slice[String] = []
   var i = 0
-  while i < items.length {
-    notes = notes.append(items[i].note)
-    statuses = statuses.append(items[i].status)
+  var kept = 0
+  while i < items.length and kept < maxPlanIngestItems {
+    if CloudAgents.Text.withinMaxByteLength(items[i].note, maxBodyLen) {
+      notes = notes.append(items[i].note)
+      statuses = statuses.append(items[i].status)
+      kept = kept + 1
+    }
     i = i + 1
   }
+  if kept < 2 {
+    return Ok(value = 0)
+  }
   CloudAgents.Repository.replacePlanTodos(sessionId, messageId, notes, statuses)?
-  return Ok(value = items.length.toInt())
+  return Ok(value = kept)
 }

@@ -115,7 +115,9 @@ val extractionInstruction = "You review the output of an AI coding agent's work 
 pub func buildChatRequestJson(model: in String, agentOutput: in String): String {
   return "{\"model\":\"" + CloudAgents.Streaming.jsonEscape(model) +
     "\",\"messages\":[{\"role\":\"user\",\"content\":\"" +
-    CloudAgents.Streaming.jsonEscape(extractionInstruction + "\n\nAgent session output follows:\n\n" + agentOutput) +
+    CloudAgents.Streaming.jsonEscape(
+      extractionInstruction + "\n\nAgent session output follows:\n\n" + agentOutput
+    ) +
     "\"}]}"
 }
 
@@ -222,8 +224,7 @@ pub record ParsedHighlight {
 }
 
 pub func isValidHighlightKind(k: in String): Bool {
-  return k == "discovery" or k == "issue" or k == "workaround" or k == "revert" or k == "incomplete" or
-    k == "followup"
+  return k == "discovery" or k == "issue" or k == "workaround" or k == "revert" or k == "incomplete" or k == "followup"
 }
 
 func isTrimmable(c: in String): Bool {
@@ -354,7 +355,14 @@ pub func refreshHighlightsHandler(id: in String): Result[RefreshHighlightsRespon
     // budget is spent — the cursor already reflects everything finished, so
     // the next refresh resumes exactly here.
     if CloudAgents.Repository.nowMillisLong() - startedAt > maxRefreshMillis.toLong() {
-      return Ok(RefreshHighlightsResponse(status = "ok", scanned = toString(scanned), added = toString(added), detail = "time budget reached; more messages remain — refresh again to continue"))
+      return Ok(
+        RefreshHighlightsResponse(
+          status = "ok",
+          scanned = toString(scanned),
+          added = toString(added),
+          detail = "time budget reached; more messages remain — refresh again to continue"
+        )
+      )
     }
     val m = msgs[i]
     val body = buildChatRequestJson(summarizerModel(), contentTail(m.content))
@@ -363,7 +371,14 @@ pub func refreshHighlightsHandler(id: in String): Result[RefreshHighlightsRespon
       // Transport/HTTP failure: stop WITHOUT advancing the cursor past this
       // message, so the next refresh retries it. Report what already worked.
       case Err(msg) -> {
-        return Ok(RefreshHighlightsResponse(status = "error", scanned = toString(scanned), added = toString(added), detail = msg))
+        return Ok(
+          RefreshHighlightsResponse(
+            status = "error",
+            scanned = toString(scanned),
+            added = toString(added),
+            detail = msg
+          )
+        )
       }
     }
     val content = jsonStringValueOf(respBody, "content")
@@ -374,7 +389,14 @@ pub func refreshHighlightsHandler(id: in String): Result[RefreshHighlightsRespon
     // literal "none" (per the prompt), which parses to zero items below and
     // DOES advance the cursor.
     if content.length == 0 {
-      return Ok(RefreshHighlightsResponse(status = "error", scanned = toString(scanned), added = toString(added), detail = "summarizer response carried no message content (malformed or error envelope)"))
+      return Ok(
+        RefreshHighlightsResponse(
+          status = "error",
+          scanned = toString(scanned),
+          added = toString(added),
+          detail = "summarizer response carried no message content (malformed or error envelope)"
+        )
+      )
     }
     val items = parseHighlightLines(content)
     var j = 0

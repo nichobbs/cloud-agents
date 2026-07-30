@@ -46,7 +46,10 @@ const PLAN_SCAN_TAIL_CHARS = 32768;
  */
 export function parseAgentPlan(text: string): PlanItem[] {
   const clean = text.slice(-PLAN_SCAN_TAIL_CHARS).replace(/\x1b\[[0-9;]*m/g, '');
-  const lines = clean.split('\n');
+  // Split on \r?\n (#830): `.` and `$` treat \r as a line terminator in JS,
+  // so a CRLF transcript would otherwise match no checkbox lines at all —
+  // while the server parser trims \r and parses it fine.
+  const lines = clean.split(/\r?\n/);
   let last: PlanItem[] = [];
   let current: PlanItem[] = [];
   for (const line of lines) {

@@ -70,3 +70,13 @@ describe('parseAgentPlan whitespace parity (#807)', () => {
     expect(parseAgentPlan('-\t[ ] tabbed one\n-\t[x] tabbed two')).toHaveLength(2);
   });
 });
+
+describe('parseAgentPlan CRLF parity (#830)', () => {
+  it('parses CRLF line endings with clean note text, same as the server', () => {
+    const plan = parseAgentPlan('- [x] one\r\n- [ ] two\r\n');
+    expect(plan).toEqual([
+      { state: 'done', text: 'one' },
+      { state: 'pending', text: 'two' },
+    ]);
+  });
+});

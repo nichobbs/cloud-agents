@@ -392,7 +392,8 @@ pub func alterMcpServersAddEnabledSql(): String {
 
 pub func updateSessionArchivedSql(id: in String, userId: in String, isArchived: in String): String {
   return "UPDATE sessions SET is_archived = " + sqlLiteral(isArchived) + " WHERE id = " + sqlLiteral(id) +
-    " AND user_id = " + sqlLiteral(userId)
+    " AND user_id = " +
+    sqlLiteral(userId)
 }
 
 // ─── Session repositories (multi-repo sessions) ─────────────────────────────
@@ -693,6 +694,14 @@ pub func alterTodosAddUpdatedAtSql(): String {
 /// replace its own prior rows without ever touching a human's.
 pub func alterTodosAddSourceSql(): String {
   return "ALTER TABLE todos ADD COLUMN source TEXT NOT NULL DEFAULT ''"
+}
+
+/// Migration 0026 (#824): the run poll loop's todo_update cursor query
+/// filters by (session_id, updated_at) roughly once a second during a run —
+/// the composite index covers it, and its session_id prefix serves the
+/// plain per-session listing too.
+pub func todosSessionUpdatedIndexSql(): String {
+  return "CREATE INDEX IF NOT EXISTS idx_todos_session_updated_at ON todos(session_id, updated_at)"
 }
 
 /// DELETE a session's plan-ingested todos (source = 'plan') ahead of

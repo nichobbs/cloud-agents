@@ -52,6 +52,19 @@ func overLongText(): String {
   return s
 }
 
+// A string UNDER the 32768-char scan/body caps but OVER 32768 UTF-8 BYTES:
+// 2^14 = 16384 '✓' (U+2713, 3 bytes each) = 49152 bytes. Exercises the
+// byte-measured note limit without the message being tail-capped away.
+func overWideText(): String {
+  var s = "✓"
+  var k = 0
+  while k < 14 {
+    s = s + s
+    k = k + 1
+  }
+  return s
+}
+
 test "addTodoHandler enforces message ownership (#173)" {
   val dbPath = useFreshTestDb("interactions-todo-ownership")
   defer {
@@ -369,6 +382,10 @@ test "parsePlanLine alignment with the frontend parser (#784): bullet-space and 
   assertEqualInt(parseAgentPlan("[ ] bare one\n[x] bare two").length.toInt(), 0, "bullet-less checkbox -> rejected")
   // Tab between bullet and checkbox parses, matching the frontend's \s* (#807).
   assertEqualInt(parseAgentPlan("-\t[ ] tabbed one\n-\t[x] tabbed two").length.toInt(), 2, "tab after bullet parses")
+  // CRLF line endings parse identically to LF, with clean note text (#830).
+  val crlf = parseAgentPlan("- [x] one\r\n- [ ] two\r\n")
+  assertEqualInt(crlf.length.toInt(), 2, "CRLF plan parses")
+  assertEqual(crlf[0].note, "one", "no stray \r in the note")
 }
 
 test "parseAgentPlan strips ANSI SGR codes before parsing (#794)" {
@@ -389,3 +406,122 @@ test "parseAgentPlan strips ANSI SGR codes before parsing (#794)" {
   assertEqualInt(parseAgentPlan(weird).length.toInt(), 0, "non-SGR escapes are not stripped")
 }
 
+
+test "todosUpdatedAfter is session-scoped and cursor-correct; plan ingest is isolated (#831)" {
+  val dbPath = useFreshTestDb("todo-cursor-isolation")
+  defer {
+    cleanupTestDb(dbPath)
+  }
+  val midA = addTestMessage("session-CU-A")
+  val midB = addTestMessage("session-CU-B")
+
+  // Ingest a plan in A and a different one in B.
+  match ingestAgentPlan("session-CU-A", midA, "- [ ] a-one\n- [x] a-two") {
+    case Ok(n) -> assertEqualInt(n, 2, "A's plan ingested")
+    case Err(e) -> assertTrue(false, "A ingest failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+  }
+  match ingestAgentPlan("session-CU-B", midB, "- [ ] b-one\n- [ ] b-two") {
+    case Ok(n) -> assertEqualInt(n, 2, "B's plan ingested")
+    case Err(e) -> assertTrue(false, "B ingest failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+  }
+
+  // Cross-session isolation: A's cursor query never sees B's rows.
+  val updatesA = match CloudAgents.Repository.todosUpdatedAfter("session-CU-A", "0") {
+    case Ok(us) -> us
+    case Err(e) -> panic("todosUpdatedAfter failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+  }
+  assertEqualInt(updatesA.length.toInt(), 2, "only A's two rows")
+  for u in updatesA {
+    assertTrue(u.note == "a-one" or u.note == "a-two", "no cross-session leak: " + u.note)
+  }
+
+  // Cursor semantics: advancing past the last updated_at yields nothing...
+  val lastCursor = updatesA[updatesA.length - 1].updatedAt
+  match CloudAgents.Repository.todosUpdatedAfter("session-CU-A", lastCursor) {
+    case Ok(us) -> assertEqualInt(us.length.toInt(), 0, "caught up -> empty")
+    case Err(e) -> assertTrue(false, "cursor query failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+  }
+  // ...and a later status change surfaces past that same cursor.
+  match CloudAgents.Repository.listTodos("session-CU-A") {
+    case Ok(todos) -> {
+      match CloudAgents.Interactions.setTodoStatusHandler(todos[0].id, SetTodoStatusRequest(status = "in_progress")) {
+        case Ok(_) -> ()
+        case Err(err) -> assertTrue(false, "status update failed: " + toString(err.status))
+      }
+    }
+    case Err(e) -> assertTrue(false, "listTodos failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+  }
+  match CloudAgents.Repository.todosUpdatedAfter("session-CU-A", lastCursor) {
+    case Ok(us) -> {
+      assertEqualInt(us.length.toInt(), 1, "the status change surfaces past the cursor")
+      assertEqual(us[0].status, "in_progress", "with its new status")
+    }
+    case Err(e) -> assertTrue(false, "cursor query failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+  }
+}
+
+test "ingested plan lists first step first (#826) and enforces storage caps (#825)" {
+  val dbPath = useFreshTestDb("plan-order-caps")
+  defer {
+    cleanupTestDb(dbPath)
+  }
+  val mid = addTestMessage("session-PO")
+  match ingestAgentPlan("session-PO", mid, "- [x] first step\n- [~] second step\n- [ ] third step") {
+    case Ok(n) -> assertEqualInt(n, 3, "three steps ingested")
+    case Err(e) -> assertTrue(false, "ingest failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+  }
+  match CloudAgents.Repository.listTodos("session-PO") {
+    case Ok(todos) -> {
+      assertEqual(todos[0].note, "first step", "plan reads top-to-bottom, not reversed")
+      assertEqual(todos[1].note, "second step", "middle step in place")
+      assertEqual(todos[2].note, "third step", "last step last")
+    }
+    case Err(e) -> assertTrue(false, "listTodos failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+  }
+
+  // An over-long NOTE is dropped at the ingestion boundary (the display
+  // parser is uncapped by design); the remaining valid items still ingest.
+  // The note limit is 32768 BYTES while the scan cap is 32768 CHARS, so the
+  // only way a parsed note can exceed the byte limit is multi-byte text:
+  // 16384 '✓' chars = 49152 UTF-8 bytes, and the whole message stays inside
+  // the scan tail so all three lines reach the parser.
+  match ingestAgentPlan("session-PO", mid, "- [ ] ok one\n- [ ] " + overWideText() + "\n- [ ] ok two") {
+    case Ok(n) -> assertEqualInt(n, 2, "over-long note dropped, two kept")
+    case Err(e) -> assertTrue(false, "capped ingest failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+  }
+  match CloudAgents.Repository.listTodos("session-PO") {
+    case Ok(todos) -> {
+      assertEqualInt(todos.length.toInt(), 2, "only the two kept rows stored")
+      assertEqual(todos[0].note, "ok one", "first kept item first")
+      assertEqual(todos[1].note, "ok two", "second kept item second")
+    }
+    case Err(e) -> assertTrue(false, "listTodos failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+  }
+
+  // A "plan" longer than maxPlanIngestItems is truncated to the cap.
+  var big = ""
+  var s = 0
+  while s < 60 {
+    big = big + "- [ ] step " + toString(s) + "\n"
+    s = s + 1
+  }
+  match ingestAgentPlan("session-PO", mid, big) {
+    case Ok(n) -> assertEqualInt(n, 50, "60-step plan capped at 50")
+    case Err(e) -> assertTrue(false, "count-capped ingest failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+  }
+
+  // An over-long ITEM near the end of a huge message pushes earlier lines
+  // out of the scan tail: only "ok two" survives, which is < 2 items, so
+  // nothing is ingested and the prior plan rows stay. This is also the
+  // regression guard for lyric-lang#6322 — the ~32k-char scan loop runs
+  // past the .NET OSR promotion threshold, which used to crash the process
+  // when parseAgentPlan appended records inside that loop.
+  match ingestAgentPlan("session-PO", mid, "- [ ] ok one\n- [ ] " + overLongText() + "\n- [ ] ok two") {
+    case Ok(n) -> assertEqualInt(n, 0, "tail-capped scan leaves <2 items -> no-op")
+    case Err(e) -> assertTrue(false, "tail-capped ingest failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+  }
+  match CloudAgents.Repository.listTodos("session-PO") {
+    case Ok(todos) -> assertEqualInt(todos.length.toInt(), 50, "no-op ingest left the capped plan alone")
+    case Err(e) -> assertTrue(false, "listTodos failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+  }
+}

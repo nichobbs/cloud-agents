@@ -146,6 +146,14 @@ function HighlightRow({ h, sessionId }: { h: Highlight; sessionId: string }) {
     setAddFailed(false);
     try {
       const note = h.detail ? `${h.title} — ${h.detail}` : h.title;
+      // Dedupe against SERVER state, not just this mount's `added` flag
+      // (#818): after a remount (navigation, reload) the flag resets, and a
+      // second click would otherwise create an identical todo.
+      const existing = await api.getTodos(sessionId);
+      if (existing.some(t => t.note === note)) {
+        setAdded(true);
+        return;
+      }
       await api.addTodo(sessionId, h.messageId, note);
       setAdded(true);
     } catch {

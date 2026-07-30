@@ -65,6 +65,30 @@ for f in Dockerfile Dockerfile.codex Dockerfile.gemini Dockerfile.opencode; do
   fi
 done
 
+# The three harness images' whole final-stage shim block (COPYs, dotnet
+# symlink, smoke test) is also triplicated — guard it the same way (#815).
+# Delimited by the section header and the smoke test's closing `esac`;
+# Dockerfile.codex is the reference. The claude image's block legitimately
+# differs (SDK base image, its own chmod chain) and is not compared.
+extract_shim_block() {
+  sed -n '/^# ─── cloud-agents-shim/,/^       esac$/p' "$1"
+}
+BLOCK_REF="$(extract_shim_block "$REPO_ROOT/docker/Dockerfile.codex")"
+if [ -z "$BLOCK_REF" ]; then
+  echo "FAIL docker/Dockerfile.codex: could not extract the final-stage shim block (markers changed?)" >&2
+  fails=$((fails + 1))
+fi
+for f in Dockerfile.gemini Dockerfile.opencode; do
+  BLOCK="$(extract_shim_block "$REPO_ROOT/docker/$f")"
+  if [ -n "$BLOCK_REF" ] && [ "$BLOCK" = "$BLOCK_REF" ]; then
+    echo "ok   docker/$f: final-stage shim block matches Dockerfile.codex"
+  else
+    echo "FAIL docker/$f: final-stage shim block drifted from Dockerfile.codex:" >&2
+    diff <(printf '%s\n' "$BLOCK_REF") <(printf '%s\n' "$BLOCK") >&2 || true
+    fails=$((fails + 1))
+  fi
+done
+
 if [ "$fails" -ne 0 ]; then
   echo "==> check-shim-stage-sync: ${fails} Dockerfile(s) drifted — keep the four stages' instructions byte-identical (docker/Dockerfile is canonical) so the layer cache builds the shim once" >&2
   exit 1
