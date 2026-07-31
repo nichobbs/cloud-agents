@@ -12,7 +12,7 @@
 
 import { proxyGithubChecks, proxyGithubPulls, proxyGithubRepo, proxyGithubRepos } from './api';
 import { getConnection } from './connections';
-import { isSignedIn, refreshSessionToken } from './auth';
+import { getApiToken, isSignedIn, refreshSessionToken } from './auth';
 
 const API = 'https://api.github.com';
 
@@ -73,7 +73,7 @@ function headers(): HeadersInit {
 
 async function get<T>(path: string): Promise<T> {
   let res = await fetch(`${API}${path}`, { headers: headers() });
-  if (res.status === 401 && isSignedIn()) {
+  if (res.status === 401 && isSignedIn() && getConnection('github') === getApiToken()) {
     const refreshed = await refreshSessionToken();
     if (refreshed) {
       res = await fetch(`${API}${path}`, { headers: headers() });

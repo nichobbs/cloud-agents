@@ -524,19 +524,19 @@ pub func refreshOAuthToken(authHeaderValue: in String): Result[TokenGrant, Web.A
           case Err(_) -> ()
         }
       }
-      // 3. Live re-validation fallback for uncached token
+      // 3. Live re-validation fallback for uncached token (using rate-limited authenticateGitHubBearer)
       if userId.length == 0 {
-        match fetchIdentity(token) {
-          case Ok(identity) -> {
-            match CloudAgents.Auth.authorizeGitHub(identity.githubId, whitelistCsv()) {
-              case Allowed(uid) -> {
-                userId = uid
-                cachedLogin = identity.login
+        match authenticateGitHubBearer(token) {
+          case Allowed(uid) -> {
+            userId = uid
+            match CloudAgents.Repository.lookupGitHubLoginForUser(uid) {
+              case Ok(l) -> {
+                cachedLogin = l
               }
-              case Denied(_) -> ()
+              case Err(_) -> ()
             }
           }
-          case Err(_) -> ()
+          case Denied(_) -> ()
         }
       }
     }
