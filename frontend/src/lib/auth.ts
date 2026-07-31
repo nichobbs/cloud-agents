@@ -110,3 +110,18 @@ export function signOut(): void {
   clearRepoCache();
   notifyAuthChanged();
 }
+
+/** Attempt to proactively refresh the token with the server. Returns true if refreshed. */
+export async function refreshSessionToken(): Promise<boolean> {
+  if (!isSignedIn()) return false;
+  try {
+    const grant = await api.refreshToken();
+    if (grant && grant.token) {
+      completeLogin(grant.token, grant.login || getLogin());
+      return true;
+    }
+  } catch {
+    /* ignore background refresh failure */
+  }
+  return false;
+}

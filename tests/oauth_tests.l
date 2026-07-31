@@ -522,8 +522,21 @@ test "github oauth refresh metadata round-trips through repository CRUD" {
   match CloudAgents.Repository.githubOAuthRefreshStatus(userId) {
     case Ok(Some(status)) -> {
       assertEqual(status.refreshToken, "refresh-abc", "refresh token decrypts back unchanged")
-      assertTrue(not status.accessTokenExpired, "access token still fresh")
+      assertTrue(not status.accessTokenExpired, "access token still fresh (> 5m remaining)")
       assertTrue(not status.refreshTokenExpired, "refresh token still fresh")
+    }
+    case Ok(None) -> assertTrue(false, "row must exist after upsert")
+    case Err(e) -> assertTrue(false, "status read failed: " + CloudAgents.Repository.credentialErrorMessage(e))
+  }
+
+  // Token expiring in 2 minutes (120s) -> within 5-minute proactive buffer -> accessTokenExpired is true.
+  match CloudAgents.Repository.upsertGitHubOAuthRefresh(userId, "refresh-abc", "120", "604800") {
+    case Ok(_) -> ()
+    case Err(e) -> assertTrue(false, "upsert failed: " + CloudAgents.Repository.credentialErrorMessage(e))
+  }
+  match CloudAgents.Repository.githubOAuthRefreshStatus(userId) {
+    case Ok(Some(status)) -> {
+      assertTrue(status.accessTokenExpired, "access token expiring in 2 minutes marked for proactive refresh")
     }
     case Ok(None) -> assertTrue(false, "row must exist after upsert")
     case Err(e) -> assertTrue(false, "status read failed: " + CloudAgents.Repository.credentialErrorMessage(e))
@@ -657,8 +670,8 @@ test "expired cache entries never match" {
     case Ok(_) -> ()
     case Err(e) -> assertTrue(false, "cache write failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
   }
-  // Force the entry into the past.
-  match CloudAgents.Sqlite.execute("UPDATE github_token_cache SET expires_at = '0' WHERE token_hash = '" + hash + "'") {
+  // Force the entry into the recent past (5 minutes ago -> expired for cachedGitHubToken, within 2h window for lookupHistoricalGitHubToken).
+  match CloudAgents.Sqlite.execute("UPDATE github_token_cache SET expires_at = CAST((CAST(strftime('%s', 'now') AS INTEGER) * 1000 - 300000) AS TEXT) WHERE token_hash = '" + hash + "'") {
     case Ok(_) -> ()
     case Err(e) -> assertTrue(false, "setup update failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
   }
@@ -666,5 +679,82 @@ test "expired cache entries never match" {
     case Ok(Some(_)) -> assertTrue(false, "expired entry must not match")
     case Ok(None) -> ()
     case Err(e) -> assertTrue(false, "cache read failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+  }
+  // Historical lookup finds the user ID even when the cache entry is expired.
+  match CloudAgents.Repository.lookupHistoricalGitHubToken(hash) {
+    case Ok(Some(entry)) -> {
+      assertEqual(entry.userId, "gh-7", "historical lookup recovers user ID from expired cache row")
+      assertEqual(entry.login, "old", "historical lookup recovers login")
+    }
+    case Ok(None) -> assertTrue(false, "historical lookup must find expired row")
+    case Err(e) -> assertTrue(false, "historical lookup failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+  }
+}
+
+test "refreshOAuthToken returns refreshed token for authenticated user" {
+  val dbPath = useFreshTestDb("oauth-refresh-configured")
+  defer {
+    clearOAuthEnv()
+    cleanupTestDb(dbPath)
+  }
+
+  // Without OAuth configured -> 400 Bad Request
+  match refreshOAuthToken("Bearer gho_test") {
+    case Ok(_) -> assertTrue(false, "unconfigured OAuth must fail")
+    case Err(e) -> assertEqualInt(e.status, 400, "unconfigured -> 400")
+  }
+
+  // Configure OAuth app
+  Env.SetEnvironmentVariable("CLOUD_AGENTS_GITHUB_CLIENT_ID", "cid_test")
+  Env.SetEnvironmentVariable("CLOUD_AGENTS_GITHUB_CLIENT_SECRET", "secret_test")
+
+  val userId = "gh-101"
+  val token = "gho_valid_bearer"
+  val tokenHash = CloudAgents.Crypto.sha256Base64(token)
+
+  // Seed vault credential
+  match CloudAgents.Repository.putCredential(userId, "GITHUB_TOKEN", token) {
+    case Ok(_) -> ()
+    case Err(e) -> assertTrue(false, "putCredential failed: " + CloudAgents.Repository.credentialErrorMessage(e))
+  }
+  // Seed active token cache
+  match CloudAgents.Repository.cacheGitHubToken(tokenHash, userId, "octocat") {
+    case Ok(_) -> ()
+    case Err(e) -> assertTrue(false, "cache write failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+  }
+
+  // 1. Success path with active token in cache
+  match refreshOAuthToken("Bearer " + token) {
+    case Ok(grant) -> {
+      assertEqual(grant.token, token, "vault token returned")
+      assertEqual(grant.userId, userId, "userId matches")
+      assertEqual(grant.login, "octocat", "login matches")
+    }
+    case Err(e) -> assertTrue(false, "refreshOAuthToken failed: " + e.message)
+  }
+
+  // 2. Success path with expired token in cache (uses historical lookup)
+  match CloudAgents.Sqlite.execute("UPDATE github_token_cache SET expires_at = CAST((CAST(strftime('%s', 'now') AS INTEGER) * 1000 - 300000) AS TEXT) WHERE token_hash = '" + tokenHash + "'") {
+    case Ok(_) -> ()
+    case Err(e) -> assertTrue(false, "setup update failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+  }
+  match refreshOAuthToken("Bearer " + token) {
+    case Ok(grant) -> {
+      assertEqual(grant.token, token, "historical cache lookup recovers user ID and refreshes")
+      assertEqual(grant.userId, userId, "userId matches")
+    }
+    case Err(e) -> assertTrue(false, "historical refresh failed: " + e.message)
+  }
+
+  // 3. Unauthenticated (unknown bearer token) -> 401 Unauthorized
+  match refreshOAuthToken("Bearer gho_unknown") {
+    case Ok(_) -> assertTrue(false, "unknown bearer token must fail")
+    case Err(e) -> assertEqualInt(e.status, 401, "unknown bearer token -> 401")
+  }
+
+  // 4. Missing/invalid Authorization header -> 401 Unauthorized
+  match refreshOAuthToken("") {
+    case Ok(_) -> assertTrue(false, "missing auth header must fail")
+    case Err(e) -> assertEqualInt(e.status, 401, "missing auth header -> 401")
   }
 }

@@ -2008,6 +2008,19 @@ pub func selectGitHubTokenSql(tokenHash: in String, nowMillis: in String): Strin
     " AS INTEGER)"
 }
 
+/// SELECT a token cache entry even if expired, provided it expired within the last 2 hours (7200000 ms, used for token refresh lookup).
+pub func selectHistoricalGitHubTokenSql(tokenHash: in String, nowMillis: in String): String {
+  return "SELECT user_id, login FROM github_token_cache WHERE token_hash = " + sqlLiteral(tokenHash) +
+    " AND user_id <> '' AND CAST(expires_at AS INTEGER) >= (CAST(" +
+    sqlLiteral(nowMillis) +
+    " AS INTEGER) - 7200000)"
+}
+
+/// SELECT the GitHub login handle stored for a given userId.
+pub func selectGitHubLoginForUserSql(userId: in String): String {
+  return "SELECT login FROM github_token_cache WHERE user_id = " + sqlLiteral(userId) + " AND login <> '' LIMIT 1"
+}
+
 /// DELETE one token's cache row (server-side logout): the next presentation
 /// of that token must go through live validation again.
 pub func deleteGitHubTokenSql(tokenHash: in String): String {
@@ -2097,7 +2110,7 @@ pub func upsertGitHubOAuthRefreshSql(
 /// also dead (in which case refreshing can't help; the tenant must sign in
 /// again). Returns no row for a tenant with no expiring-token metadata.
 pub func selectGitHubOAuthRefreshStatusSql(userId: in String, nowMillis: in String): String {
-  return "SELECT refresh_token, " + "CASE WHEN CAST(access_expires_at AS INTEGER) <= CAST(" + sqlLiteral(nowMillis) +
+  return "SELECT refresh_token, " + "CASE WHEN CAST(access_expires_at AS INTEGER) - 300000 <= CAST(" + sqlLiteral(nowMillis) +
     " AS INTEGER) THEN '1' ELSE '0' END, " +
     "CASE WHEN CAST(refresh_expires_at AS INTEGER) <= CAST(" +
     sqlLiteral(nowMillis) +

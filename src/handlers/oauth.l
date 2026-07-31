@@ -368,12 +368,35 @@ pub func reconnectGitHubMessage(): String {
   return "Your GitHub connection has expired — please sign in with GitHub again."
 }
 
+func isTokenRefreshedByConcurrentRequest(userId: in String, sentRefreshToken: in String): Option[String] {
+  match CloudAgents.Repository.githubOAuthRefreshStatus(userId) {
+    case Ok(Some(s)) -> {
+      if not s.accessTokenExpired or s.refreshToken != sentRefreshToken {
+        match CloudAgents.Repository.decryptedCredentialValue(userId, "GITHUB_TOKEN") {
+          case Ok(Some(t)) -> return Some(value = t)
+          case Ok(None) -> return None
+          case Err(_) -> return None
+        }
+      }
+    }
+    case Ok(None) -> return None
+    case Err(_) -> return None
+  }
+  return None
+}
+
 /// Exchange a still-valid refresh token for a new access token (RFC 6749
 /// §6), vault the new access token, and persist whatever refresh metadata
 /// GitHub returns this time (GitHub rotates the refresh token on every use,
 /// so the old one must never be reused). Same transport-error-hiding rule as
 /// exchangeCode (#422): upstream detail is logged, never surfaced raw.
 func doRefresh(userId: in String, refreshToken: in String): Result[String, Web.ApiError] {
+  // Pre-flight concurrency check: if another request already refreshed the token, return it directly.
+  match isTokenRefreshedByConcurrentRequest(userId, refreshToken) {
+    case Some(t) -> return Ok(value = t)
+    case None -> ()
+  }
+
   val body = match CloudAgents.GitHubApi.httpPostForm(exchangeUrl(), refreshFormBody(oauthClientId(), oauthClientSecret(), refreshToken), userAgent()) {
     case Ok(b) -> b
     case Err(e) -> {
@@ -383,6 +406,15 @@ func doRefresh(userId: in String, refreshToken: in String): Result[String, Web.A
   }
   val newToken = accessTokenFromExchangeJson(body)
   if newToken.length == 0 {
+    // Re-check status before treating this as a genuine refresh token failure.
+    // If a concurrent request refreshed the token while our request was in-flight,
+    // GitHub's token rotation will reject our stale refresh token, but the vault
+    // already holds the fresh access token.
+    match isTokenRefreshedByConcurrentRequest(userId, refreshToken) {
+      case Some(t) -> return Ok(value = t)
+      case None -> ()
+    }
+
     // GitHub rejected the refresh token itself (revoked, already-rotated,
     // genuinely expired) — no amount of retrying recovers from this. Drop
     // the dead metadata so the next request fails the same clear way instead
@@ -397,6 +429,17 @@ func doRefresh(userId: in String, refreshToken: in String): Result[String, Web.A
   match CloudAgents.Repository.putCredential(userId, "GITHUB_TOKEN", newToken) {
     case Ok(_) -> ()
     case Err(e) -> println("NOTE: could not store the refreshed GITHUB_TOKEN in the credential vault: " + CloudAgents.Repository.credentialErrorMessage(e))
+  }
+  var login = ""
+  match CloudAgents.Repository.lookupGitHubLoginForUser(userId) {
+    case Ok(l) -> {
+      login = l
+    }
+    case Err(_) -> ()
+  }
+  match CloudAgents.Repository.cacheGitHubToken(CloudAgents.Crypto.sha256Base64(newToken), userId, login) {
+    case Ok(_) -> ()
+    case Err(_) -> ()
   }
   val newRefreshToken = CloudAgents.Auth.parseJsonString(body, "refresh_token")
   val accessExpiresIn = CloudAgents.Auth.parseJsonNumber(body, "expires_in")
@@ -440,6 +483,82 @@ pub func ensureFreshGitHubToken(userId: in String): Result[String, Web.ApiError]
       return Err(Web.internalError("could not read the credential vault"))
     }
   }
+}
+
+/// POST /api/auth/github/refresh: proactively refresh or return the active GitHub
+/// OAuth token for the authenticated user.
+pub func refreshOAuthToken(authHeaderValue: in String): Result[TokenGrant, Web.ApiError] {
+  if not oauthConfigured() {
+    return Err(
+      Web.badRequest(
+        "GitHub OAuth is not configured on this server"
+      )
+    )
+  }
+  var userId = ""
+  var cachedLogin = ""
+  match CloudAgents.Auth.extractBearerToken(authHeaderValue) {
+    case Some(token) -> {
+      val tokenHash = CloudAgents.Crypto.sha256Base64(token)
+      // 1. Fresh cache hit
+      match CloudAgents.Repository.cachedGitHubToken(tokenHash) {
+        case Ok(Some(entry)) -> {
+          if entry.userId.length > 0 {
+            userId = entry.userId
+            cachedLogin = entry.login
+          }
+        }
+        case Ok(None) -> ()
+        case Err(_) -> ()
+      }
+      // 2. Historical (expired) cache hit for expired tokens
+      if userId.length == 0 {
+        match CloudAgents.Repository.lookupHistoricalGitHubToken(tokenHash) {
+          case Ok(Some(entry)) -> {
+            if entry.userId.length > 0 {
+              userId = entry.userId
+              cachedLogin = entry.login
+            }
+          }
+          case Ok(None) -> ()
+          case Err(_) -> ()
+        }
+      }
+      // 3. Live re-validation fallback for uncached token (using rate-limited authenticateGitHubBearer)
+      if userId.length == 0 {
+        match authenticateGitHubBearer(token) {
+          case Allowed(uid) -> {
+            userId = uid
+            match CloudAgents.Repository.lookupGitHubLoginForUser(uid) {
+              case Ok(l) -> {
+                cachedLogin = l
+              }
+              case Err(_) -> ()
+            }
+          }
+          case Denied(_) -> ()
+        }
+      }
+    }
+    case None -> ()
+  }
+  if userId.length == 0 {
+    return Err(Web.unauthorized("Authentication required to refresh token"))
+  }
+  // Enforce whitelist check on every refresh request
+  match CloudAgents.Auth.authorizeGitHub(CloudAgents.Auth.githubIdFromUserId(userId), whitelistCsv()) {
+    case Allowed(_) -> ()
+    case Denied(e) -> return Err(Web.unauthorized(CloudAgents.Auth.authErrorMessage(e)))
+  }
+  val freshToken = match ensureFreshGitHubToken(userId) {
+    case Ok(t) -> t
+    case Err(e) -> return Err(e)
+  }
+  match CloudAgents.Repository.cacheGitHubToken(CloudAgents.Crypto.sha256Base64(freshToken), userId, cachedLogin) {
+    case Ok(_) -> ()
+    case Err(_) -> ()
+  }
+  return Ok(value = TokenGrant(token = freshToken, login = cachedLogin, userId = userId))
 }
 
 // ─── Logout: server-side cache invalidation ──────────────────────────────────

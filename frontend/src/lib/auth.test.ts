@@ -3,7 +3,10 @@ import { describe, it, expect, beforeEach, vi } from 'vitest';
 // signOut fires a best-effort server-side logout through lib/api; mock it so
 // these tests never touch the network.
 vi.mock('./api', () => ({
-  api: { logout: vi.fn().mockResolvedValue(undefined) },
+  api: {
+    logout: vi.fn().mockResolvedValue(undefined),
+    refreshToken: vi.fn().mockResolvedValue({ token: 'gho_new', login: 'octocat', userId: 'gh-1' }),
+  },
 }));
 
 import { api } from './api';
@@ -15,6 +18,7 @@ import {
   getLogin,
   isSignedIn,
   newOAuthState,
+  refreshSessionToken,
   setReturnPath,
   signOut,
   takeReturnPath,
@@ -27,6 +31,8 @@ beforeEach(() => {
   sessionStorage.clear();
   vi.mocked(api.logout).mockClear();
   vi.mocked(api.logout).mockResolvedValue(undefined);
+  vi.mocked(api.refreshToken).mockClear();
+  vi.mocked(api.refreshToken).mockResolvedValue({ token: 'gho_new', login: 'octocat', userId: 'gh-1' });
 });
 
 describe('newOAuthState', () => {
@@ -124,5 +130,28 @@ describe('completeLogin / signOut', () => {
   it('is not signed in with only one half present', () => {
     localStorage.setItem('cloud_agents_token', 'static-api-token-only');
     expect(isSignedIn()).toBe(false);
+  });
+});
+
+describe('refreshSessionToken', () => {
+  it('calls api.refreshToken and updates stored token when signed in', async () => {
+    completeLogin('gho_old', 'octocat');
+    const ok = await refreshSessionToken();
+    expect(ok).toBe(true);
+    expect(api.refreshToken).toHaveBeenCalledTimes(1);
+    expect(getApiToken()).toBe('gho_new');
+  });
+
+  it('returns false when not signed in without calling api.refreshToken', async () => {
+    const ok = await refreshSessionToken();
+    expect(ok).toBe(false);
+    expect(api.refreshToken).not.toHaveBeenCalled();
+  });
+
+  it('returns false when api.refreshToken throws', async () => {
+    completeLogin('gho_old', 'octocat');
+    vi.mocked(api.refreshToken).mockRejectedValueOnce(new Error('401 unauthorized'));
+    const ok = await refreshSessionToken();
+    expect(ok).toBe(false);
   });
 });
