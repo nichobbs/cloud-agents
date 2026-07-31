@@ -2016,6 +2016,11 @@ pub func selectHistoricalGitHubTokenSql(tokenHash: in String, nowMillis: in Stri
     " AS INTEGER) - 7200000)"
 }
 
+/// SELECT the GitHub login handle stored for a given userId.
+pub func selectGitHubLoginForUserSql(userId: in String): String {
+  return "SELECT login FROM github_token_cache WHERE user_id = " + sqlLiteral(userId) + " AND login <> '' LIMIT 1"
+}
+
 /// DELETE one token's cache row (server-side logout): the next presentation
 /// of that token must go through live validation again.
 pub func deleteGitHubTokenSql(tokenHash: in String): String {

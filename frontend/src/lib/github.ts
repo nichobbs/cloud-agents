@@ -12,7 +12,7 @@
 
 import { proxyGithubChecks, proxyGithubPulls, proxyGithubRepo, proxyGithubRepos } from './api';
 import { getConnection } from './connections';
-import { isSignedIn, refreshSessionToken, setReturnPath, signOut } from './auth';
+import { isSignedIn, refreshSessionToken } from './auth';
 
 const API = 'https://api.github.com';
 
@@ -77,11 +77,6 @@ async function get<T>(path: string): Promise<T> {
     const refreshed = await refreshSessionToken();
     if (refreshed) {
       res = await fetch(`${API}${path}`, { headers: headers() });
-    } else {
-      if (typeof window !== 'undefined' && window.location) {
-        setReturnPath(window.location.pathname + window.location.search);
-      }
-      signOut();
     }
   }
   if (!res.ok) throw new Error(`GitHub API ${res.status}: ${await res.text()}`);

@@ -13,6 +13,15 @@ vi.mock('../context/AuthConfigContext', () => ({
   useAuthConfig: () => mockUseAuthConfig(),
 }));
 
+const mockRefreshSessionToken = vi.fn().mockResolvedValue(true);
+vi.mock('../lib/auth', async () => {
+  const actual = await vi.importActual<typeof import('../lib/auth')>('../lib/auth');
+  return {
+    ...actual,
+    refreshSessionToken: () => mockRefreshSessionToken(),
+  };
+});
+
 import { completeLogin, signOut } from '../lib/auth';
 import { RequireAuth } from './RequireAuth';
 
@@ -38,6 +47,7 @@ beforeEach(() => {
   localStorage.clear();
   sessionStorage.clear();
   mockUseAuthConfig.mockReset();
+  mockRefreshSessionToken.mockClear();
 });
 
 describe('RequireAuth', () => {
@@ -88,5 +98,19 @@ describe('RequireAuth', () => {
     signOut();
 
     await waitFor(() => expect(screen.getByTestId('login-page')).toBeInTheDocument());
+  });
+
+  it('periodically triggers refreshSessionToken while signed in', () => {
+    vi.useFakeTimers();
+    completeLogin('gho_tok', 'octocat');
+    mockUseAuthConfig.mockReturnValue({ configured: true, clientId: 'cid' });
+    renderGuarded();
+
+    expect(mockRefreshSessionToken).not.toHaveBeenCalled();
+
+    vi.advanceTimersByTime(10 * 60 * 1000);
+    expect(mockRefreshSessionToken).toHaveBeenCalledTimes(1);
+
+    vi.useRealTimers();
   });
 });

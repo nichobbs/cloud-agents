@@ -2502,6 +2502,17 @@ pub func lookupHistoricalGitHubToken(tokenHash: in String): Result[Option[GitHub
   return Ok(value = Some(value = GitHubTokenCacheEntry(userId = colAt(r0.cols, 0), login = colAt(r0.cols, 1))))
 }
 
+/// Look up the GitHub login handle for a given userId from the token cache.
+pub func lookupGitHubLoginForUser(userId: in String): Result[String, CloudAgents.Sqlite.DbError] {
+  val rows = CloudAgents.Sqlite.query(CloudAgents.Db.selectGitHubLoginForUserSql(userId))?
+  val len = CloudAgents.Sqlite.getRowArrayLength(rows)
+  if len == 0 {
+    return Ok(value = "")
+  }
+  val r0 = CloudAgents.Sqlite.getRowArrayValue(rows, 0)
+  return Ok(value = colAt(r0.cols, 0))
+}
+
 /// Server-side logout: delete a token's cache row so the next presentation of
 /// that token must revalidate live. Deleting a row that does not exist is
 /// still Ok — logout is idempotent.
