@@ -30,11 +30,14 @@ real published package — an earlier draft of this doc named a package,
 
 The GitHub PAT is injected from the user’s stored credentials. Placed in /workspace/.claude/mcp.json for session-specific use.
 
-**Not yet implemented:** nothing in `src/docker_manager.l` actually sets a
-`GITHUB_TOKEN` environment variable on the runner container, so the
-substitution above always resolves to an empty token today — the GitHub MCP
-server in every container can never authenticate. See
-`docs/review-2026-07-03-followup.md` finding #1.
+**Retired (#764/#765):** `src/docker_manager.l` does now inject `GITHUB_TOKEN`
+whenever it's granted to the profile — but the always-on rendering above
+(entrypoint.sh's old "Phase 4" block, gated only on the token being present)
+bypassed the enabled/disabled gate the Library's seeded MCP server catalog
+introduced (`CloudAgents.McpServerSeed`), silently granting live GitHub tool
+access with no opt-in. That block, and this file's `docker/mcp.json.template`,
+have been removed; `seed/mcp-servers/github.json` (disabled by default,
+enabled per-user via the Library) is now the only path to this server.
 
 2. Frontend GitHub Panels
 

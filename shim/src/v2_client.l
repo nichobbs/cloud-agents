@@ -409,6 +409,61 @@ pub func completeTask(transport: in V2CallbackTransport, taskId: in String): Res
   }
 }
 
+// ── add_todo / update_todo / list_todos (session todo plan) ──────────────────
+/// Create a 'pending' item on this session's todo list, returning its
+/// host-assigned id.
+pub func addSessionTodo(transport: in V2CallbackTransport, note: in String): Result[String, String] {
+  val created = match transport.createSessionTodo(note) {
+    case Ok(body) -> body
+    case Err(e) -> return Err(error = "failed to reach the cloud-agents host: " + e)
+  }
+  return match tryDecodeCreateSessionTodoResponse(created) {
+    case Some(r) -> Ok(value = r.id)
+    case None -> Err(error = "malformed response from the cloud-agents host when creating the todo")
+  }
+}
+
+/// List this session's todos. Renders as `id [status]: note` lines, newest
+/// first (the host's own ordering), mirroring listTasks' rendering.
+pub func listSessionTodos(transport: in V2CallbackTransport): Result[String, String] {
+  val body = match transport.listSessionTodos() {
+    case Ok(b) -> b
+    case Err(e) -> return Err(error = "failed to reach the cloud-agents host: " + e)
+  }
+  val list = match tryDecodeSessionTodoListResponse(body) {
+    case Some(r) -> r
+    case None -> return Err(error = "malformed response from the cloud-agents host when listing todos")
+  }
+  if list.todos.length == 0 {
+    return Ok(value = "no todos on this session yet")
+  }
+  var acc = ""
+  var i = 0
+  while i < list.todos.length {
+    val t = list.todos[i]
+    if i > 0 {
+      acc = acc + "\n"
+    }
+    acc = acc + t.id + " [" + t.status + "]: " + t.note
+    i = i + 1
+  }
+  return Ok(value = acc)
+}
+
+/// Set a session todo's status (pending/in_progress/done).
+pub func setSessionTodoStatus(
+  transport: in V2CallbackTransport, todoId: in String, status: in String
+): Result[String, String] {
+  val body = match transport.setSessionTodoStatus(todoId, status) {
+    case Ok(b) -> b
+    case Err(e) -> return Err(error = "failed to reach the cloud-agents host: " + e)
+  }
+  return match tryDecodeSetSessionTodoStatusResponse(body) {
+    case Some(r) -> Ok(value = "todo '" + r.id + "' is now " + r.status)
+    case None -> Err(error = "malformed response from the cloud-agents host when updating the todo")
+  }
+}
+
 // ── report_artifact ───────────────────────────────────────────────────────────
 @externTarget("System.Convert.ToBase64String")
 func encodeBase64(b: in slice[Byte]): String = ""

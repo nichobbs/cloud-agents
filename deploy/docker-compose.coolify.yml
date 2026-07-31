@@ -64,6 +64,13 @@ services:
       # network policy) — same meaning here.
       - CLOUD_AGENTS_RESTRICTED_NETWORK=${CLOUD_AGENTS_RESTRICTED_NETWORK:-}
       - CLOUD_AGENTS_EGRESS_PROXY=${CLOUD_AGENTS_EGRESS_PROXY:-}
+      # Session-visibility extras (docs/session-visibility.md, #810): the
+      # env-gated highlights summarizer and the opt-in agent-plan ingestion.
+      # All optional; unset keeps both features off.
+      - CLOUD_AGENTS_SUMMARIZER_URL=${CLOUD_AGENTS_SUMMARIZER_URL:-}
+      - CLOUD_AGENTS_SUMMARIZER_MODEL=${CLOUD_AGENTS_SUMMARIZER_MODEL:-}
+      - CLOUD_AGENTS_SUMMARIZER_KEY=${CLOUD_AGENTS_SUMMARIZER_KEY:-}
+      - CLOUD_AGENTS_INGEST_AGENT_PLAN=${CLOUD_AGENTS_INGEST_AGENT_PLAN:-}
       # CLOUD_AGENTS_ENABLED_HARNESSES (GET /api/harnesses, #523) is
       # deliberately left unset here: all four runner images below now build
       # unconditionally (see the claude-code-base/codex-base/opencode-base/
@@ -114,7 +121,7 @@ services:
   # can introduce a breaking change with zero warning), and each install is
   # wrapped in a 3-attempt retry with a delay, guarding against transient
   # npm-registry failures. If a harness image ever fails to build again
-  # despite that: `docker build -f docker/Dockerfile.<harness> docker` to
+  # despite that: `docker build -f docker/Dockerfile.<harness> .` (repo-root context) to
   # reproduce and fix it standalone first; if you need to unblock a deploy
   # immediately, temporarily comment out that one service block below and
   # redeploy (accepting that harness will 404 at container-creation time
@@ -123,9 +130,9 @@ services:
   claude-code-base:
     image: claude-code:base
     build:
-      # Repo root, not ./docker like the other three runners below — this
-      # Dockerfile builds cloud-agents-shim in its own stage from shim/, so
-      # it needs to see both docker/ and shim/ in one build context (#601).
+      # Repo root, like all four runners: each Dockerfile builds
+      # cloud-agents-shim in its own stage from shim/, so each needs to see
+      # both docker/ and shim/ in one build context (#601).
       context: .
       dockerfile: docker/Dockerfile
     entrypoint: ["true"]
@@ -135,8 +142,11 @@ services:
   codex-base:
     image: codex:base
     build:
-      context: ./docker
-      dockerfile: Dockerfile.codex
+      # Repo root, matching claude-code-base above: all four runner images
+      # now build cloud-agents-shim from shim/ in their own stage, so each
+      # needs docker/ AND shim/ in one build context (#601).
+      context: .
+      dockerfile: docker/Dockerfile.codex
     entrypoint: ["true"]
     restart: "no"
     exclude_from_hc: true
@@ -144,8 +154,8 @@ services:
   opencode-base:
     image: opencode:base
     build:
-      context: ./docker
-      dockerfile: Dockerfile.opencode
+      context: .
+      dockerfile: docker/Dockerfile.opencode
     entrypoint: ["true"]
     restart: "no"
     exclude_from_hc: true
@@ -153,8 +163,8 @@ services:
   gemini-base:
     image: gemini:base
     build:
-      context: ./docker
-      dockerfile: Dockerfile.gemini
+      context: .
+      dockerfile: docker/Dockerfile.gemini
     entrypoint: ["true"]
     restart: "no"
     exclude_from_hc: true

@@ -2,10 +2,12 @@ import { useState, useEffect } from 'react';
 import { api } from '../lib/api';
 import { formatFullTimestamp, formatTimestamp } from '../lib/time';
 import type { Message } from '../types';
+import { groupConsecutiveBlocks, type ParsedBlock } from '../lib/blockGroups';
 import { AnsiContent } from './AnsiContent';
 import { CommentThread } from './CommentThread';
 import { CollapsibleJsonBlock } from './CollapsibleJsonBlock';
 import { CollapsibleShellBlock } from './CollapsibleShellBlock';
+import { ToolRunGroup } from './ToolRunGroup';
 
 interface MessageBlockProps {
   message: Message;
@@ -327,26 +329,18 @@ function findShellBlocks(text: string): { start: number; end: number; command: s
   return charBlocks;
 }
 
-interface ParsedTextBlock {
-  type: 'json' | 'shell';
-  start: number;
-  end: number;
-  command?: string;
-  content: string;
-}
-
 function renderAgentContent(text: string) {
   const jsonBlocks = findJsonBlocks(text);
   const shellBlocks = findShellBlocks(text);
 
-  const allBlocks: ParsedTextBlock[] = [
+  const allBlocks: ParsedBlock[] = [
     ...jsonBlocks.map(b => ({ type: 'json' as const, start: b.start, end: b.end, content: b.content })),
     ...shellBlocks.map(b => ({ type: 'shell' as const, start: b.start, end: b.end, command: b.command, content: b.output }))
   ];
 
   allBlocks.sort((a, b) => a.start - b.start);
 
-  const nonOverlappingBlocks: ParsedTextBlock[] = [];
+  const nonOverlappingBlocks: ParsedBlock[] = [];
   let lastEnd = 0;
   for (const block of allBlocks) {
     if (block.start >= lastEnd) {
@@ -359,26 +353,34 @@ function renderAgentContent(text: string) {
     return <AnsiContent text={text} />;
   }
 
+  // Runs of ≥2 consecutive blocks (whitespace-only gaps) collapse into one
+  // "Ran N commands · used M tool calls" row — see lib/blockGroups.ts.
+  const segments = groupConsecutiveBlocks(nonOverlappingBlocks, text);
+
   const elements: React.ReactNode[] = [];
   let lastIndex = 0;
 
-  nonOverlappingBlocks.forEach((block, index) => {
-    if (block.start > lastIndex) {
-      const segment = text.substring(lastIndex, block.start);
-      if (segment.trim() !== '') {
-        elements.push(<AnsiContent key={`text-${index}`} text={segment} />);
+  segments.forEach((seg, index) => {
+    const segStart = seg.kind === 'single' ? seg.block.start : seg.blocks[0]!.start;
+    const segEnd = seg.kind === 'single' ? seg.block.end : seg.blocks[seg.blocks.length - 1]!.end;
+    if (segStart > lastIndex) {
+      const textSegment = text.substring(lastIndex, segStart);
+      if (textSegment.trim() !== '') {
+        elements.push(<AnsiContent key={`text-${index}`} text={textSegment} />);
       }
     }
-    if (block.type === 'json') {
+    if (seg.kind === 'group') {
+      elements.push(<ToolRunGroup key={`group-${index}`} blocks={seg.blocks} />);
+    } else if (seg.block.type === 'json') {
       elements.push(
-        <CollapsibleJsonBlock key={`json-${index}`} rawContent={block.content} />
+        <CollapsibleJsonBlock key={`json-${index}`} rawContent={seg.block.content} />
       );
-    } else if (block.type === 'shell') {
+    } else {
       elements.push(
-        <CollapsibleShellBlock key={`shell-${index}`} command={block.command ?? ''} output={block.content} />
+        <CollapsibleShellBlock key={`shell-${index}`} command={seg.block.command ?? ''} output={seg.block.content} />
       );
     }
-    lastIndex = block.end;
+    lastIndex = segEnd;
   });
 
   if (lastIndex < text.length) {

@@ -5,7 +5,6 @@ obj/
 lyric.lock
 *-restore.csproj
 lyric.toml.bak
-.claude/
 cloud-agents.db*
 .env
 .api_token

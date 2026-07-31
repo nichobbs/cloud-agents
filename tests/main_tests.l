@@ -135,7 +135,7 @@ test "commentListResp maps Ok to 200 and Err to the error's own status (#351)" {
 }
 
 test "todoResp maps Ok to 200 and Err to the error's own status (#351)" {
-  val todo = Todo(id = "t1", sessionId = "s1", messageId = "", note = "follow up", done = "0", createdAt = "1")
+  val todo = Todo(id = "t1", sessionId = "s1", messageId = "", note = "follow up", done = "0", createdAt = "1", status = "pending")
   assertEqualInt(todoResp(Ok(value = todo)).status, 200, "todoResp Ok -> 200")
   assertEqualInt(todoResp(Err(error = Web.badRequest("bad"))).status, 400, "todoResp Err -> 400")
 }

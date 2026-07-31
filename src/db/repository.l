@@ -43,6 +43,9 @@ pub record Todo {
   pub note: String
   pub done: String
   pub createdAt: String
+  /// 'pending' | 'in_progress' | 'done' (migration 0021). `done` is the
+  /// derived two-state view and stays in lockstep.
+  pub status: String
 }
 
 @generate(Json)
@@ -320,7 +323,26 @@ pub func allMigrations(): slice[Migration] {
       ]
     ),
     Migration(version = "0019_github_oauth_refresh", statements = [CloudAgents.Db.githubOAuthRefreshSchemaSql()]),
-    Migration(version = "0020_archive_sessions", statements = [CloudAgents.Db.alterSessionsAddIsArchivedSql()])
+    Migration(version = "0020_archive_sessions", statements = [CloudAgents.Db.alterSessionsAddIsArchivedSql()]),
+    Migration(
+      version = "0021_todo_status",
+      statements = [CloudAgents.Db.alterTodosAddStatusSql(), CloudAgents.Db.backfillTodoStatusSql()]
+    ),
+    Migration(
+      version = "0022_session_highlights",
+      statements = [
+        CloudAgents.Db.sessionHighlightsSchemaSql(),
+        CloudAgents.Db.sessionHighlightsSessionIndexSql(),
+        CloudAgents.Db.highlightScansSchemaSql()
+      ]
+    ),
+    Migration(version = "0023_mcp_server_enabled", statements = [CloudAgents.Db.alterMcpServersAddEnabledSql()]),
+    Migration(
+      version = "0024_todo_updated_at",
+      statements = [CloudAgents.Db.alterTodosAddUpdatedAtSql(), CloudAgents.Db.backfillTodoUpdatedAtSql()]
+    ),
+    Migration(version = "0025_todo_source", statements = [CloudAgents.Db.alterTodosAddSourceSql()]),
+    Migration(version = "0026_todo_updated_index", statements = [CloudAgents.Db.todosSessionUpdatedIndexSql()])
   ]
 }
 
@@ -342,6 +364,11 @@ pub func runMigrations(): Result[Unit, CloudAgents.Sqlite.DbError] {
   for m in allMigrations() {
     val applied = migrationApplied(m.version)?
     if not applied {
+      // Run the migration's statements AND its ledger record in one
+      // transaction: either the whole migration applies and is recorded, or
+      // nothing is, so a mid-migration failure (e.g. a bad ALTER) leaves the
+      // database at the prior version and the next startup retries cleanly
+      // rather than getting stuck half-applied (review #229).
       var stmts = m.statements
       stmts = stmts.append(CloudAgents.Db.recordMigrationSql(m.version, nowMillis()))
       CloudAgents.Sqlite.executeTransaction(stmts)?
@@ -462,19 +489,118 @@ func rowToTodo(r: in CloudAgents.Sqlite.Row): Todo {
     messageId = colAt(r.cols, 2),
     note = colAt(r.cols, 3),
     done = colAt(r.cols, 4),
-    createdAt = colAt(r.cols, 5)
+    createdAt = colAt(r.cols, 5),
+    status = colAt(r.cols, 6)
   )
 }
 
 /// Create a todo / bookmark, optionally anchored to a message (pass "" for a
-/// free-standing todo).
+/// free-standing todo). New todos start 'pending'.
 pub func addTodo(sessionId: in String, messageId: in String, note: in String): Result[Todo, CloudAgents.Sqlite.DbError] {
   val id = newId()
   val ts = nowMillis()
-  CloudAgents.Sqlite.execute(CloudAgents.Db.insertTodoSql(id, sessionId, messageId, note, ts))?
+  CloudAgents.Sqlite.execute(CloudAgents.Db.insertTodoSql(id, sessionId, messageId, note, "pending", ts, ""))?
   return Ok(
-    value = Todo(id = id, sessionId = sessionId, messageId = messageId, note = note, done = "0", createdAt = ts)
+    value = Todo(
+      id = id,
+      sessionId = sessionId,
+      messageId = messageId,
+      note = note,
+      done = "0",
+      createdAt = ts,
+      status = "pending"
+    )
   )
+}
+
+/// Replace a session's plan-ingested todos (source = 'plan') with the
+/// agent's latest restated plan, in a SINGLE transaction (#791 — the same
+/// delete+insert-multiple shape addPromptWithTags runs transactionally, so
+/// a partial failure can never leave the plan half-replaced). `notes` and
+/// `statuses` are parallel slices (extra entries in the longer one are
+/// ignored); each row is anchored to `messageId`, the agent message the
+/// plan was parsed from. Never touches human/tool-created rows (source '').
+pub func replacePlanTodos(
+  sessionId: in String,
+  messageId: in String,
+  notes: in slice[String],
+  statuses: in slice[String],
+): Result[Unit, CloudAgents.Sqlite.DbError] {
+  // Each row gets a distinct timestamp (#801) so listTodos' created_at
+  // ordering is deterministic — and the offsets DESCEND with the index
+  // (#826): the listing is newest-first, so the plan's FIRST step needs the
+  // LARGEST timestamp for the panel to read step 1 → step N top-to-bottom
+  // instead of reversed.
+  val baseMs = nowMillisLong()
+  var count = notes.length.toInt()
+  if statuses.length.toInt() < count {
+    count = statuses.length.toInt()
+  }
+  var stmts: slice[String] = []
+  stmts = stmts.append(CloudAgents.Db.deletePlanTodosSql(sessionId))
+  var i = 0
+  while i < count {
+    val ts = toString(baseMs + (count - 1 - i).toLong())
+    stmts = stmts.append(CloudAgents.Db.insertTodoSql(newId(), sessionId, messageId, notes[i], statuses[i], ts, "plan"))
+    i = i + 1
+  }
+  CloudAgents.Sqlite.executeTransaction(stmts)?
+  return Ok(value = ())
+}
+
+/// Set a todo's lifecycle status directly (pending/in_progress/done) — the
+/// three-state counterpart of toggleTodo. `done` is kept in lockstep by the
+/// SQL itself. Validation of the status literal happens in the handlers.
+pub func setTodoStatus(id: in String, status: in String): Result[Unit, CloudAgents.Sqlite.DbError] {
+  CloudAgents.Sqlite.execute(CloudAgents.Db.setTodoStatusSql(id, status, nowMillis()))?
+  return Ok(value = ())
+}
+
+/// The poll-loop-relevant view of one changed todo, for `todo_update` SSE
+/// forwarding — deliberately NOT the full Todo record (and not JSON-generated),
+/// so the wire shape shim/frontend already decode stays untouched.
+pub record TodoUpdate {
+  pub id: String
+  pub note: String
+  pub status: String
+  pub updatedAt: String
+}
+
+/// Todos changed strictly after `afterUpdatedAt`, oldest change first —
+/// mirrors artifactsCreatedAfter for SSE emission.
+pub func todosUpdatedAfter(
+  sessionId: in String, afterUpdatedAt: in String
+): Result[slice[TodoUpdate], CloudAgents.Sqlite.DbError] {
+  val rows = CloudAgents.Sqlite.query(CloudAgents.Db.selectTodosUpdatedAfterSql(sessionId, afterUpdatedAt))?
+  var acc: slice[TodoUpdate] = []
+  var i = 0
+  val len = CloudAgents.Sqlite.getRowArrayLength(rows)
+  while i < len {
+    val r = CloudAgents.Sqlite.getRowArrayValue(rows, i)
+    acc = acc.append(
+      TodoUpdate(
+        id = colAt(r.cols, 0),
+        note = colAt(r.cols, 1),
+        status = colAt(r.cols, 2),
+        updatedAt = colAt(r.cols, 3)
+      )
+    )
+    i = i + 1
+  }
+  return Ok(value = acc)
+}
+
+/// Look up the session that owns a todo — the container-originated status
+/// endpoint verifies the todo belongs to the calling session before mutating
+/// it (mirrors getMessageSessionId).
+pub func getTodoSessionId(id: in String): Result[Option[String], CloudAgents.Sqlite.DbError] {
+  val rows = CloudAgents.Sqlite.query(CloudAgents.Db.selectTodoSessionIdSql(id))?
+  val len = CloudAgents.Sqlite.getRowArrayLength(rows)
+  if len == 0 {
+    return Ok(value = None)
+  }
+  val r0 = CloudAgents.Sqlite.getRowArrayValue(rows, 0)
+  return Ok(value = Some(value = colAt(r0.cols, 0)))
 }
 
 /// All todos for a session, newest first.
@@ -492,7 +618,7 @@ pub func listTodos(sessionId: in String): Result[slice[Todo], CloudAgents.Sqlite
 
 /// Flip a todo's done flag.
 pub func toggleTodo(id: in String): Result[Unit, CloudAgents.Sqlite.DbError] {
-  CloudAgents.Sqlite.execute(CloudAgents.Db.toggleTodoSql(id))?
+  CloudAgents.Sqlite.execute(CloudAgents.Db.toggleTodoSql(id, nowMillis()))?
   return Ok(value = ())
 }
 
@@ -1709,6 +1835,10 @@ pub record SubagentList {
 }
 
 /// transport: 'stdio' (command + args + env) | 'url' (remote endpoint).
+/// enabled: '1' | '0' (TEXT flag, matching AgentSession.isArchived's
+/// convention) — '0' means saved but withheld from every profile's
+/// container injection (see mcpServersForProfile below), for a server whose
+/// required credential/config isn't in place yet.
 @generate(Json)
 pub record McpServer {
   pub id: String
@@ -1721,6 +1851,7 @@ pub record McpServer {
   pub env: slice[String]
   pub createdAt: String
   pub updatedAt: String
+  pub enabled: String = "1"
 }
 
 @generate(Json)
@@ -1966,7 +2097,8 @@ func rowToMcpServer(r: in CloudAgents.Sqlite.Row, args: in slice[String], env: i
     url = colAt(r.cols, 5),
     env = env,
     createdAt = colAt(r.cols, 6),
-    updatedAt = colAt(r.cols, 7)
+    updatedAt = colAt(r.cols, 7),
+    enabled = colAt(r.cols, 8)
   )
 }
 
@@ -2001,11 +2133,12 @@ pub func addMcpServer(
   args: in slice[String],
   url: in String,
   env: in slice[String],
+  enabled: in String = "1",
 ): Result[McpServer, CloudAgents.Sqlite.DbError] {
   val id = newId()
   val ts = nowMillis()
   var stmts: slice[String] = []
-  stmts = stmts.append(CloudAgents.Db.insertMcpServerSql(id, userId, name, transport, command, url, ts))
+  stmts = stmts.append(CloudAgents.Db.insertMcpServerSql(id, userId, name, transport, command, url, ts, enabled))
   for s in mcpServerChildStatements(id, userId, args, env) {
     stmts = stmts.append(s)
   }
@@ -2021,7 +2154,8 @@ pub func addMcpServer(
       url = url,
       env = env,
       createdAt = ts,
-      updatedAt = ts
+      updatedAt = ts,
+      enabled = enabled
     )
   )
 }
@@ -2075,6 +2209,7 @@ pub func updateMcpServer(
   args: in slice[String],
   url: in String,
   env: in slice[String],
+  enabled: in String = "1",
 ): Result[Int, CloudAgents.Sqlite.DbError] {
   match getMcpServer(id, userId)? {
     case None -> return Ok(value = 0)
@@ -2090,7 +2225,9 @@ pub func updateMcpServer(
   for s in mcpServerChildStatements(id, userId, args, env) {
     stmts = stmts.append(s)
   }
-  stmts = stmts.append(CloudAgents.Db.updateMcpServerSql(id, userId, name, transport, command, url, nowMillis()))
+  stmts = stmts.append(
+    CloudAgents.Db.updateMcpServerSql(id, userId, name, transport, command, url, nowMillis(), enabled)
+  )
   val affected = CloudAgents.Sqlite.executeTransaction(stmts)?
   return Ok(value = affected)
 }
@@ -2216,8 +2353,17 @@ pub func subagentsForProfile(
   return Ok(value = acc)
 }
 
-/// The MCP servers a profile grants, resolved to full records. See
-/// skillsForProfile for the dangling-id and empty-profile semantics.
+/// The MCP servers a profile grants, resolved to full records — EXCLUDING
+/// any granted server whose `enabled` is '0'. This is the one call site
+/// that must filter: CloudAgents.Docker's container-injection path (the
+/// only consumer of this function) is the sole place a disabled server
+/// could actually reach a running container, so gating here is sufficient
+/// on its own (docker/inject-library.sh trusts whatever JSON it's handed
+/// completely, with no enabled/disabled concept of its own). getMcpServer/
+/// listMcpServers deliberately do NOT filter — the library CRUD UI needs to
+/// show a user their disabled servers so they can be edited/enabled, this
+/// function's callers is not those callers. See skillsForProfile for the
+/// dangling-id and empty-profile semantics, both unchanged here.
 pub func mcpServersForProfile(
   userId: in String, profileId: in String
 ): Result[slice[McpServer], CloudAgents.Sqlite.DbError] {
@@ -2230,7 +2376,9 @@ pub func mcpServersForProfile(
   for id in ids {
     match getMcpServer(id, userId)? {
       case Some(s) -> {
-        acc = acc.append(s)
+        if s.enabled == "1" {
+          acc = acc.append(s)
+        }
       }
       case None -> ()
     }
@@ -3153,6 +3301,111 @@ pub func notificationsCreatedAfter(
   val len = CloudAgents.Sqlite.getRowArrayLength(rows)
   while i < len {
     acc = acc.append(rowToNotification(CloudAgents.Sqlite.getRowArrayValue(rows, i)))
+    i = i + 1
+  }
+  return Ok(value = acc)
+}
+
+// ─── Session highlights ─────────────────────────────────────────────────────────
+//
+// Migration 0022: notable items an operator-configured summarizer model
+// extracted from agent responses (discoveries, issues, workarounds, reverts,
+// incomplete work) — see CloudAgents.Highlights. `highlight_scans` tracks the
+// highest transcript seq already scanned per session so a refresh only ever
+// summarizes new agent messages.
+/// One stored highlight row.
+@generate(Json)
+pub record Highlight {
+  pub id: String
+  pub sessionId: String
+  pub messageId: String
+  pub kind: String
+  pub title: String
+  pub detail: String
+  pub createdAt: String
+}
+
+@generate(Json)
+pub record HighlightList {
+  pub highlights: slice[Highlight]
+}
+
+func rowToHighlight(r: in CloudAgents.Sqlite.Row): Highlight {
+  return Highlight(
+    id = colAt(r.cols, 0),
+    sessionId = colAt(r.cols, 1),
+    messageId = colAt(r.cols, 2),
+    kind = colAt(r.cols, 3),
+    title = colAt(r.cols, 4),
+    detail = colAt(r.cols, 5),
+    createdAt = colAt(r.cols, 6)
+  )
+}
+
+/// Store one extracted highlight, anchored to the agent message it came from.
+pub func addHighlight(
+  sessionId: in String, messageId: in String, kind: in String, title: in String, detail: in String
+): Result[Highlight, CloudAgents.Sqlite.DbError] {
+  val id = newId()
+  val ts = nowMillis()
+  CloudAgents.Sqlite.execute(CloudAgents.Db.insertHighlightSql(id, sessionId, messageId, kind, title, detail, ts))?
+  return Ok(
+    value = Highlight(
+      id = id,
+      sessionId = sessionId,
+      messageId = messageId,
+      kind = kind,
+      title = title,
+      detail = detail,
+      createdAt = ts
+    )
+  )
+}
+
+/// A session's highlights, newest first.
+pub func listHighlights(sessionId: in String): Result[slice[Highlight], CloudAgents.Sqlite.DbError] {
+  val rows = CloudAgents.Sqlite.query(CloudAgents.Db.selectHighlightsSql(sessionId))?
+  var acc: slice[Highlight] = []
+  var i = 0
+  val len = CloudAgents.Sqlite.getRowArrayLength(rows)
+  while i < len {
+    acc = acc.append(rowToHighlight(CloudAgents.Sqlite.getRowArrayValue(rows, i)))
+    i = i + 1
+  }
+  return Ok(value = acc)
+}
+
+/// The highest transcript seq already scanned for highlights, or "" when the
+/// session has never been scanned.
+pub func highlightScanSeq(sessionId: in String): Result[String, CloudAgents.Sqlite.DbError] {
+  val rows = CloudAgents.Sqlite.query(CloudAgents.Db.selectHighlightScanSeqSql(sessionId))?
+  val len = CloudAgents.Sqlite.getRowArrayLength(rows)
+  if len == 0 {
+    return Ok(value = "")
+  }
+  val r0 = CloudAgents.Sqlite.getRowArrayValue(rows, 0)
+  return Ok(value = colAt(r0.cols, 0))
+}
+
+/// Record the highest transcript seq scanned for highlights.
+pub func setHighlightScanSeq(sessionId: in String, lastSeq: in String): Result[Unit, CloudAgents.Sqlite.DbError] {
+  CloudAgents.Sqlite.execute(CloudAgents.Db.upsertHighlightScanSeqSql(sessionId, lastSeq))?
+  return Ok(value = ())
+}
+
+/// A session's AGENT messages with seq strictly greater than `afterSeq`
+/// (pass "" or "0" for "from the beginning"), oldest first — the summarizer's
+/// work queue.
+pub func agentMessagesAfterSeq(
+  sessionId: in String, afterSeq: in String
+): Result[slice[Message], CloudAgents.Sqlite.DbError] {
+  val normalized = if afterSeq.length == 0 { "0" } else { afterSeq }
+  val rows = CloudAgents.Sqlite.query(CloudAgents.Db.selectAgentMessagesAfterSeqSql(sessionId, normalized))?
+  var acc: slice[Message] = []
+  var i = 0
+  val len = CloudAgents.Sqlite.getRowArrayLength(rows)
+  while i < len {
+    acc = acc.append(rowToMessage(CloudAgents.Sqlite.getRowArrayValue(rows, i)))
     i = i + 1
   }
   return Ok(value = acc)

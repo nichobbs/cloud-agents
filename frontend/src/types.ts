@@ -92,7 +92,10 @@ export interface Subagent {
 /// A reusable MCP server definition: a stdio command or a remote URL,
 /// rendered into each harness's own native MCP config. `env` entries are
 /// literal, non-secret config ("DEBUG=1") — grant a matching credential name
-/// on the profile for anything secret.
+/// on the profile for anything secret; an env value can reference that
+/// credential by name (e.g. "GITHUB_PERSONAL_ACCESS_TOKEN=${GITHUB_TOKEN}")
+/// and docker/inject-library.sh expands it against the container's real
+/// environment at injection time.
 export interface McpServer {
   id: string;
   userId: string;
@@ -104,6 +107,7 @@ export interface McpServer {
   env: string[]; // "KEY=VALUE" entries, stdio only
   createdAt: string;
   updatedAt: string;
+  enabled: string; // '1' | '0' — '0' is saved but withheld from every container injection
 }
 
 /// One agent run in a session's history.
@@ -142,6 +146,27 @@ export interface Todo {
   note: string;
   done: string; // '0' | '1'
   createdAt: string;
+  /** 'pending' | 'in_progress' | 'done'; '' from a pre-migration backend. */
+  status: string;
+}
+
+/// A notable item the summarizer extracted from an agent response
+/// (discovery, issue, workaround, revert, incomplete work, followup).
+export interface Highlight {
+  id: string;
+  sessionId: string;
+  messageId: string;
+  kind: string;
+  title: string;
+  detail: string;
+  createdAt: string;
+}
+
+export interface RefreshHighlightsResult {
+  status: string; // 'disabled' | 'ok' | 'error'
+  scanned: string;
+  added: string;
+  detail: string;
 }
 
 export interface PermissionRequest {

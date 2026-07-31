@@ -1,0 +1,9 @@
+{
+  "name": "github",
+  "transport": "stdio",
+  "command": "npx",
+  "args": ["-y", "@modelcontextprotocol/server-github"],
+  "url": "",
+  "env": ["GITHUB_PERSONAL_ACCESS_TOKEN=${GITHUB_TOKEN}"],
+  "enabled": "0"
+}

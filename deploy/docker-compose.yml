@@ -37,6 +37,13 @@ services:
       # 'restricted' join-network branch is unreachable.
       - CLOUD_AGENTS_RESTRICTED_NETWORK=${CLOUD_AGENTS_RESTRICTED_NETWORK:-}
       - CLOUD_AGENTS_EGRESS_PROXY=${CLOUD_AGENTS_EGRESS_PROXY:-}
+      # Session-visibility extras (docs/session-visibility.md, #810): the
+      # env-gated highlights summarizer and the opt-in agent-plan ingestion.
+      # All optional; unset keeps both features off.
+      - CLOUD_AGENTS_SUMMARIZER_URL=${CLOUD_AGENTS_SUMMARIZER_URL:-}
+      - CLOUD_AGENTS_SUMMARIZER_MODEL=${CLOUD_AGENTS_SUMMARIZER_MODEL:-}
+      - CLOUD_AGENTS_SUMMARIZER_KEY=${CLOUD_AGENTS_SUMMARIZER_KEY:-}
+      - CLOUD_AGENTS_INGEST_AGENT_PLAN=${CLOUD_AGENTS_INGEST_AGENT_PLAN:-}
       # CLOUD_AGENTS_ENABLED_HARNESSES (GET /api/harnesses, #523) is
       # deliberately left unset here: install-docker.sh builds all four
       # runner images unconditionally on this standalone-VM path, so there's

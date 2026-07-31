@@ -489,3 +489,26 @@ pub func harnessesHandler(): String {
   }
   return "{\"enabled\":[" + entries + "]}"
 }
+
+@generate(Json)
+pub record ValidateKeyRequest {
+  pub provider: String
+  pub key: String
+}
+
+/// POST /api/models/validate: call the live models API of a given provider
+/// with an explicit key, returning the raw response body. Since this executes
+/// server-side, it is exempt from the client browser's CORS restrictions.
+pub func validateKeyHandler(provider: in String, key: in String): Result[String, Web.ApiError] {
+  if provider != "anthropic" and provider != "openai" and provider != "google" and provider != "opencode" {
+    return Err(Web.badRequest("Unknown provider: " + provider))
+  }
+  match providerModelsBody(provider, key) {
+    case Ok(body) -> return Ok(value = body)
+    case Err(e) -> {
+      println("WARNING: " + provider + " models API request failed during validation: " + e)
+      return Err(Web.badRequest(provider + " models API request failed"))
+    }
+  }
+}
+

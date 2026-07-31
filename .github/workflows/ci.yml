@@ -168,7 +168,14 @@ jobs:
             scripts/test-opencode-entrypoint.sh \
             scripts/test-lyric-version-resolution.sh \
             scripts/test-split-ca-bundle.sh \
+            scripts/test-mcp-server-injection.sh \
+            scripts/test-branch-policy-inject.sh \
+            scripts/test-register-callbacks-mcp.sh \
+            scripts/check-shim-stage-sync.sh \
+            docker/render-branch-policy.sh \
+            docker/register-callbacks-mcp.sh \
             docker/split-ca-bundle.sh \
+            docker/inject-library.sh \
             scripts/check-compose-paths.sh \
             scripts/repro-compiler-bug.sh \
             scripts/repro-web-bug.sh \
@@ -179,7 +186,7 @@ jobs:
 
       - name: Validate JSON templates
         run: |
-          for f in docker/mcp.json.template docker/settings.json.template docker/settings-callbacks.json.template docker/mcp-callbacks.json.template; do
+          for f in docker/settings.json.template docker/settings-callbacks.json.template docker/mcp-callbacks.json.template; do
             python3 -m json.tool "$f" > /dev/null && echo "ok: $f"
           done
 
@@ -198,6 +205,23 @@ jobs:
       - name: Test opencode entrypoint invocation
         run: ./scripts/test-opencode-entrypoint.sh
 
+      # Regression tests for the per-harness instruction rendering
+      # (docker/render-branch-policy.sh, #732) and the cloud-agents MCP shim
+      # registration for the non-claude harnesses
+      # (docker/register-callbacks-mcp.sh). Both exercise the REAL sourced
+      # functions against temp workspaces — no Docker.
+      - name: Test instruction + callback-MCP rendering
+        run: |
+          ./scripts/test-branch-policy-inject.sh
+          ./scripts/test-register-callbacks-mcp.sh
+
+      # #795: the four runner Dockerfiles' shim-builder stages must stay
+      # byte-identical (docker/Dockerfile is canonical) so a sequential
+      # single-host build compiles the shim once and shares the layer cache;
+      # previously enforced only by a code comment.
+      - name: Verify shim-builder stages are in sync across the four Dockerfiles
+        run: ./scripts/check-shim-stage-sync.sh
+
       # Regression test for the sed/tr/sort -V one-liners shared by the
       # "Resolve latest Lyric release" step above and docker/Dockerfile's
       # shim-builder stage, plus this file's pinned-ARG parsing below (#660).
@@ -209,6 +233,15 @@ jobs:
       # (#714), and non-PEM passthrough.
       - name: Test split-ca-bundle.sh
         run: ./scripts/test-split-ca-bundle.sh
+
+      # Regression test for docker/inject-library.sh's MCP-server rendering
+      # (#764): the enabled/disabled seed feature's env-value ${VAR}
+      # expansion (expand_env_value), and the JSON/TOML merge logic
+      # (render_mcp_json, render_mcp_codex) that must preserve a user's own
+      # hand-authored entries while only ever touching this script's own
+      # "cloud-agents-lib-" prefixed keys.
+      - name: Test mcp-server-injection.sh
+        run: ./scripts/test-mcp-server-injection.sh
 
       # Guards against the class of bug in nichobbs/cloud-agents#464: the two
       # deploy compose files use different relative-path conventions (one

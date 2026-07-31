@@ -4,9 +4,71 @@
 # The API server sets HARNESS=codex, MODEL, NATIVE_SESSION_ID, PROMPT,
 # REPO_URL, BRANCH, and OPENAI_API_KEY at runtime.
 #
-# Build:  docker build -t codex:base -f docker/Dockerfile.codex docker
+# Build:  docker build -t codex:base -f docker/Dockerfile.codex .   (repo-root context — needs docker/ AND shim/, #601)
 # Arch:   multi-arch / portable
 
+# ─── Stage 1: build cloud-agents-shim (docs/phase6-mcp-callbacks.md §5) ──────
+#
+# Duplicated (condensed) from docker/Dockerfile's shim-builder stage — that
+# file is canonical and fully commented; keep the RUN instructions here
+# byte-identical to it so Docker's layer cache builds the shim once and
+# shares it across all four runner images. Requires the repo-root build
+# context (it COPYs both docker/ and shim/), the same #601 change the
+# claude image already made.
+FROM mcr.microsoft.com/dotnet/sdk:10.0 AS shim-builder
+
+ARG LYRIC_VERSION=""
+COPY MIN_LYRIC_VERSION /tmp/min-lyric-version.txt
+
+RUN apt-get update && apt-get install -y --no-install-recommends curl ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY docker/extra-ca-certs /tmp/extra-ca-certs
+COPY docker/split-ca-bundle.sh /usr/local/bin/split-ca-bundle.sh
+RUN chmod +x /usr/local/bin/split-ca-bundle.sh \
+    && for f in /tmp/extra-ca-certs/*.crt /tmp/extra-ca-certs/*.pem /tmp/extra-ca-certs/*.cer; do \
+      [ -f "$f" ] || continue; \
+      base="$(basename "$f")"; \
+      /usr/local/bin/split-ca-bundle.sh "$f" /usr/local/share/ca-certificates "${base%.*}"; \
+    done \
+    && update-ca-certificates
+
+RUN ARCH="$(uname -m)" \
+    && case "$ARCH" in \
+         x86_64) LYRIC_RID=linux-x64 ;; \
+         aarch64) LYRIC_RID=linux-arm64 ;; \
+         *) echo "ERROR: unsupported architecture for the Lyric compiler: $ARCH (supported: x86_64, aarch64)" >&2; exit 1 ;; \
+       esac \
+    && echo -n "$LYRIC_RID" > /tmp/lyric-rid.txt
+
+RUN if [ -z "$LYRIC_VERSION" ]; then \
+         for attempt in 1 2 3; do \
+           LYRIC_VERSION="$(curl -sI --connect-timeout 10 --max-time 30 https://github.com/nichobbs/lyric-lang/releases/latest | sed -n 's/.*tag\/v\([0-9.]*\).*/\1/p' | tr -d '\r')"; \
+           [ -n "$LYRIC_VERSION" ] && break; \
+           echo "attempt $attempt: could not resolve latest Lyric release tag, retrying..." >&2; \
+           sleep 3; \
+         done; \
+       fi \
+    && if [ -z "$LYRIC_VERSION" ]; then echo "ERROR: could not resolve the latest Lyric version after 3 attempts" >&2; exit 1; fi \
+    && MIN_VERSION="$(cat /tmp/min-lyric-version.txt)" \
+    && LOWEST="$(printf '%s\n%s\n' "$MIN_VERSION" "$LYRIC_VERSION" | sort -V | head -1)" \
+    && if [ "$LOWEST" != "$MIN_VERSION" ]; then echo "ERROR: Lyric version $LYRIC_VERSION is below the documented floor MIN_LYRIC_VERSION ($MIN_VERSION)" >&2; exit 1; fi \
+    && echo "Installing Lyric compiler v${LYRIC_VERSION}" \
+    && echo -n "${LYRIC_VERSION}" > /tmp/lyric-version.txt
+
+RUN LYRIC_VERSION="$(cat /tmp/lyric-version.txt)" \
+    && LYRIC_RID="$(cat /tmp/lyric-rid.txt)" \
+    && curl -fsSL --connect-timeout 10 --max-time 120 --retry 3 --retry-delay 3 \
+        -o /tmp/lyric.tgz \
+        "https://github.com/nichobbs/lyric-lang/releases/download/v${LYRIC_VERSION}/lyric-${LYRIC_VERSION}-${LYRIC_RID}.tar.gz" \
+    && mkdir -p /usr/local/bin \
+    && tar -xzf /tmp/lyric.tgz -C /usr/local/bin \
+    && rm -f /tmp/lyric.tgz
+WORKDIR /src/shim
+COPY shim/ ./
+RUN lyric restore && lyric build
+
+# ─── Stage 2: the runner image itself ────────────────────────────────────────
 FROM node:20-slim
 
 ENV DEBIAN_FRONTEND=noninteractive
@@ -16,8 +78,11 @@ ENV DEBIAN_FRONTEND=noninteractive
 # the whole Coolify deploy down the first time this ran unpinned, see
 # deploy/COOLIFY.md). The retry loop guards against transient npm-registry
 # failures, the other documented cause of a mid-build failure here.
+# gettext-base provides envsubst, used by docker/inject-library.sh to expand
+# ${VAR} references in a seeded/user-authored MCP server's env values against
+# this container's own credential env vars (#mcp-server-seeding).
 RUN apt-get update && apt-get install -y --no-install-recommends \
-        git bash curl ca-certificates jq \
+        git bash curl ca-certificates jq gettext-base \
     && rm -rf /var/lib/apt/lists/*
 
 # Optional corporate/proxy root CA trust (e.g. Zscaler TLS inspection) — see
@@ -32,8 +97,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # empty) so NODE_EXTRA_CA_CERTS can be set unconditionally — Node treats a
 # missing or empty file as a harmless no-op (a warning at worst), so this
 # is safe with nothing dropped into extra-ca-certs/.
-COPY extra-ca-certs /tmp/extra-ca-certs
-COPY split-ca-bundle.sh /usr/local/bin/split-ca-bundle.sh
+COPY docker/extra-ca-certs /tmp/extra-ca-certs
+COPY docker/split-ca-bundle.sh /usr/local/bin/split-ca-bundle.sh
 RUN chmod +x /usr/local/bin/split-ca-bundle.sh \
     && : > /usr/local/share/ca-certificates/extra-combined.pem \
     && for f in /tmp/extra-ca-certs/*.crt /tmp/extra-ca-certs/*.pem /tmp/extra-ca-certs/*.cer; do \
@@ -44,6 +109,20 @@ RUN chmod +x /usr/local/bin/split-ca-bundle.sh \
     done \
     && update-ca-certificates
 ENV NODE_EXTRA_CA_CERTS=/usr/local/share/ca-certificates/extra-combined.pem
+
+# uv/uvx: a standalone Rust binary (no Python runtime dependency of its own),
+# installed system-wide so it's on PATH regardless of which user runs a
+# session. Needed to launch the official `mcp-server-fetch` MCP server (the
+# seeded "fetch" default, seed/mcp-servers/fetch.json) via `uvx
+# mcp-server-fetch` — deliberately the official reference implementation
+# (github.com/modelcontextprotocol/servers) rather than a smaller
+# single-maintainer npm alternative, since this ships to every user by
+# default. Installed after the CA-trust step above so the download works
+# behind a TLS-intercepting proxy. Pinned to a version confirmed to install
+# cleanly (bump deliberately, not by dropping the pin — astral.sh/uv/install.sh
+# with no version in the path always serves whatever uv shipped most
+# recently, an untested "latest" that could break a build without warning).
+RUN curl -LsSf --connect-timeout 10 --max-time 120 --retry 3 --retry-delay 3 https://astral.sh/uv/0.12.0/install.sh | env UV_INSTALL_DIR=/usr/local/bin sh
 
 RUN n=0; until npm install -g @openai/codex@0.145.0; do \
       n=$((n + 1)); \
@@ -56,13 +135,38 @@ RUN useradd --create-home --home-dir /home/codex-user --shell /bin/bash codex-us
 WORKDIR /workspace
 RUN chown codex-user:codex-user /workspace
 
-COPY entrypoint-codex.sh /usr/local/bin/entrypoint.sh
-COPY reconcile-repos.sh /usr/local/bin/reconcile-repos.sh
-COPY create-fallback-branch.sh /usr/local/bin/create-fallback-branch.sh
-COPY inject-library.sh /usr/local/bin/inject-library.sh
-COPY render-branch-policy.sh /usr/local/bin/render-branch-policy.sh
-COPY branch-policy-rules.md /etc/cloud-agents/branch-policy-rules.md
+COPY docker/entrypoint-codex.sh /usr/local/bin/entrypoint.sh
+COPY docker/reconcile-repos.sh /usr/local/bin/reconcile-repos.sh
+COPY docker/create-fallback-branch.sh /usr/local/bin/create-fallback-branch.sh
+COPY docker/inject-library.sh /usr/local/bin/inject-library.sh
+COPY docker/render-branch-policy.sh /usr/local/bin/render-branch-policy.sh
+COPY docker/branch-policy-rules.md /etc/cloud-agents/branch-policy-rules.md
+COPY docker/session-tools-guide.md /etc/cloud-agents/session-tools-guide.md
 RUN chmod +x /usr/local/bin/entrypoint.sh /usr/local/bin/reconcile-repos.sh /usr/local/bin/create-fallback-branch.sh /usr/local/bin/inject-library.sh /usr/local/bin/render-branch-policy.sh
+
+# ─── cloud-agents-shim (docs/phase6-mcp-callbacks.md) ───────────────────────
+# The in-container MCP callback server, giving this harness the same
+# add_todo/update_todo/report_progress/... tools the claude image has had
+# since Phase 6. Managed DLLs come from the shim-builder stage; the .NET
+# runtime to execute them is copied from the official runtime image
+# (bookworm has no dotnet apt packages). Invariant globalization avoids an
+# ICU dependency node:20-slim doesn't ship — the shim only does ordinal
+# string work. Registration into this harness's native MCP config happens
+# per message in the entrypoint via register-callbacks-mcp.sh.
+COPY --from=shim-builder /src/shim/bin/. /opt/cloud-agents-shim/
+COPY --from=mcr.microsoft.com/dotnet/runtime:10.0 /usr/share/dotnet /usr/share/dotnet
+COPY docker/cloud-agents-shim /usr/local/bin/cloud-agents-shim
+COPY docker/register-callbacks-mcp.sh /usr/local/bin/register-callbacks-mcp.sh
+# No image-wide DOTNET_* ENV here (#806): the wrapper script exports
+# DOTNET_ROOT / DOTNET_SYSTEM_GLOBALIZATION_INVARIANT for the shim process
+# alone, so the agent's own session environment is untouched.
+RUN ln -s /usr/share/dotnet/dotnet /usr/local/bin/dotnet \
+    && chmod +x /usr/local/bin/cloud-agents-shim /usr/local/bin/register-callbacks-mcp.sh \
+    && shim_out=$(cloud-agents-shim 2>&1 || true) \
+    && case "$shim_out" in \
+         *CLOUD_AGENTS_API_URL*) echo "shim smoke test ok" ;; \
+         *) echo "shim smoke test FAILED — expected the missing-env panic, got: $shim_out" >&2; exit 1 ;; \
+       esac
 
 USER codex-user
 ENV HOME=/home/codex-user

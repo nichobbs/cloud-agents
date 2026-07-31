@@ -2,10 +2,13 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { Link, useLocation, useNavigate, useParams } from 'react-router-dom';
 import { GitHubPanel } from '../components/GitHubPanel';
+import { HighlightsPanel } from '../components/HighlightsPanel';
 import { LinkedReposPanel } from '../components/LinkedReposPanel';
 import { MessageBlock } from '../components/MessageBlock';
 import { Terminal } from '../components/Terminal';
 import { PendingCallbacksPanel } from '../components/PendingCallbacksPanel';
+import { SessionPRsPanel } from '../components/SessionPRsPanel';
+import { TodoPanel } from '../components/TodoPanel';
 import { useSessions } from '../context/SessionsContext';
 import { useStreamMessage } from '../hooks/useStreamMessage';
 import { clearFailedDraft, saveFailedDraft, takeFailedDraft } from '../lib/drafts';
@@ -38,7 +41,7 @@ export function SessionDetail() {
   const navigate = useNavigate();
   const location = useLocation();
   const session = getSession(sessionId);
-  const { output, isStreaming, error: sendError, send, reset, reattachEnded } = useStreamMessage(sessionId);
+  const { output, isStreaming, error: sendError, send, reset, reattachEnded, todoUpdates } = useStreamMessage(sessionId);
 
   const [messages, setMessages] = useState<Message[]>([]);
   const [messagesError, setMessagesError] = useState(false);
@@ -511,6 +514,11 @@ export function SessionDetail() {
       return session.repoUrl;
     }
   })();
+
+  // Latest agent response content, for the todo panel's parsed-plan fallback
+  // (a markdown checkbox plan in the response — used when the MCP todo tools
+  // weren't available or weren't called; see lib/agentPlan.ts).
+  const latestAgentContent = [...messages].reverse().find(m => m.role === 'agent')?.content ?? '';
 
   const handleRetry = async (text: string) => {
     if (!text || isStreaming) return;
@@ -1133,6 +1141,17 @@ export function SessionDetail() {
 
         {isDesktop ? (
           <div style={sidebarColumnStyle}>
+            <TodoPanel
+              sessionId={sessionId}
+              latestAgentContent={latestAgentContent}
+              isStreaming={isStreaming}
+              todoUpdates={todoUpdates}
+            />
+
+            <HighlightsPanel sessionId={sessionId} isStreaming={isStreaming} />
+
+            <SessionPRsPanel sessionId={sessionId} messages={messages} />
+
             <GitHubPanel repoUrl={session.repoUrl} branch={session.branch} />
 
             <LinkedReposPanel
@@ -1160,6 +1179,17 @@ export function SessionDetail() {
           </div>
         ) : (
           <>
+            <TodoPanel
+              sessionId={sessionId}
+              latestAgentContent={latestAgentContent}
+              isStreaming={isStreaming}
+              todoUpdates={todoUpdates}
+            />
+
+            <HighlightsPanel sessionId={sessionId} isStreaming={isStreaming} />
+
+            <SessionPRsPanel sessionId={sessionId} messages={messages} />
+
             <GitHubPanel repoUrl={session.repoUrl} branch={session.branch} />
 
             <LinkedReposPanel

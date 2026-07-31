@@ -11,19 +11,38 @@ name: Docker build smoke test
 # docker/Dockerfile on every PR that touches it or the shim it builds. See
 # nichobbs/cloud-agents#607.
 #
-# Only builds --target shim-builder, not the full final stage: that's
-# enough to exercise the exact COPY shim/ ./ + lyric restore/build path
-# issue #606's predecessor PR was about, while skipping the final stage's
-# slowest part (Node/npm/Claude Code CLI install) — cheaper, same coverage
-# for the bug class this guards against. Mirrors dist-native-ci.yml's
-# shape (a separate, paths-triggered workflow rather than piling another
-# job onto ci.yml) since, like that workflow, this only needs to run when
-# the specific files it covers change.
+# The docker-build-shim-builder job only builds --target shim-builder, not
+# the full final stage: that's enough to exercise the exact COPY shim/ ./ +
+# lyric restore/build path issue #606's predecessor PR was about, while
+# skipping the final stage's slowest part (Node/npm/Claude Code CLI
+# install) — cheaper, same coverage for the bug class that job guards
+# against. Mirrors dist-native-ci.yml's shape (a separate, paths-triggered
+# workflow rather than piling another job onto ci.yml) since, like that
+# workflow, this only needs to run when the specific files it covers change.
+#
+# But the final stage itself had NO build coverage at all until the
+# docker-build-final-stage job below: PR #764 added a new uv/uvx +
+# gettext-base install there (for the seeded "fetch" MCP server, enabled by
+# default for every new user), and the shim-builder-only build never reaches
+# those lines. #780 is the same bug class as #772 (an instruction-ordering
+# bug that only breaks behind a TLS-intercepting proxy) — the difference is
+# #772 was in a Dockerfile with no CI coverage at all, while this one was
+# hiding in a stage of a Dockerfile that already had *partial* coverage,
+# which is easy to mistake for full coverage.
+#
+# Also builds the three other harness images (Dockerfile.codex/.gemini/
+# .opencode, docker-build-harness-images job below) — previously untested by
+# any CI check, so an instruction-ordering bug in one of them (e.g. installing
+# uv before the CA-trust step ran, breaking the build behind a TLS-
+# intercepting proxy, #772) could land undetected. See #764/#780.
 on:
   pull_request:
     types: [opened, synchronize, reopened, ready_for_review]
     paths:
       - 'docker/Dockerfile'
+      - 'docker/Dockerfile.codex'
+      - 'docker/Dockerfile.gemini'
+      - 'docker/Dockerfile.opencode'
       - 'shim/**'
       - '.github/workflows/docker-build-ci.yml'
 
@@ -71,3 +90,71 @@ jobs:
           push: false
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+  # The full final stage (no --target: the default is the last FROM in the
+  # file), where the Node/npm/Claude Code CLI install and — as of #764 — the
+  # uv/uvx + gettext-base install actually live. Slower than the
+  # shim-builder-only build above (that's the whole reason this was
+  # historically skipped), but #780 confirmed that gap now matters: an
+  # instruction-ordering bug in this stage has no other way to be caught
+  # before it reaches a real deploy.
+  docker-build-final-stage:
+    name: Docker build (final stage)
+    if: github.event.pull_request.draft == false
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build final stage (smoke test)
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: docker/Dockerfile
+          push: false
+          cache-from: type=gha,scope=final-stage
+          cache-to: type=gha,mode=max,scope=final-stage
+
+  # docker/Dockerfile.codex/.gemini/.opencode — a full `docker build` of
+  # each is the smoke test, same principle as the job above: this is the
+  # only thing that catches a broken COPY/instruction-ordering bug (e.g.
+  # installing uv before the CA-trust step runs, confirmed broken and fixed
+  # in PR #764/#772) before it reaches a real deploy. All three now carry
+  # their own shim-builder stage (byte-identical to docker/Dockerfile's —
+  # which shares layer cache on a sequential single-host build like
+  # Coolify's or build-docker.sh's; in THIS job each matrix build runs in
+  # parallel with its own distinct GHA cache scope, so the shim builds
+  # once per harness here) and therefore build with the REPO-ROOT context —
+  # they COPY both docker/ and shim/, the same #601 requirement the claude
+  # image has. Each harness's own header comment documents this.
+  docker-build-harness-images:
+    name: Docker build (${{ matrix.harness }})
+    if: github.event.pull_request.draft == false
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        harness: [codex, gemini, opencode]
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build docker/Dockerfile.${{ matrix.harness }} (smoke test)
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: docker/Dockerfile.${{ matrix.harness }}
+          push: false
+          # Reads the default-scope cache too (#816): the shim-builder job
+          # above writes there, and the four Dockerfiles' shim-builder
+          # stages are byte-identical (check-shim-stage-sync.sh), so each
+          # harness build can reuse those layers instead of compiling the
+          # shim once per matrix job.
+          cache-from: |
+            type=gha,scope=${{ matrix.harness }}
+            type=gha
+          cache-to: type=gha,mode=max,scope=${{ matrix.harness }}

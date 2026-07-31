@@ -8,6 +8,7 @@ import CloudAgents.Credentials
 import CloudAgents.Crypto
 import CloudAgents.Docker
 import CloudAgents.Handlers
+import CloudAgents.Highlights
 import CloudAgents.Interactions
 import CloudAgents.Library
 import CloudAgents.OAuth
@@ -21,7 +22,6 @@ import CloudAgents.Streaming
 import CloudAgents.Webhooks
 import extern System.Environment as Env
 import extern System.String as DotNetString
-
 
 @generate(Json)
 pub record HealthStatus {
@@ -306,6 +306,22 @@ func forgetResp(r: in Result[ForgetResponse, Web.ApiError]): Web.Response {
   return match r { case Ok(v) -> jsonResp(200, v.toJson()); case Err(e) -> Web.errorResponse(e) }
 }
 
+func createSessionTodoResp(r: in Result[CreateSessionTodoResponse, Web.ApiError]): Web.Response {
+  return match r { case Ok(v) -> jsonResp(200, v.toJson()); case Err(e) -> Web.errorResponse(e) }
+}
+
+func setSessionTodoStatusResp(r: in Result[SetSessionTodoStatusResponse, Web.ApiError]): Web.Response {
+  return match r { case Ok(v) -> jsonResp(200, v.toJson()); case Err(e) -> Web.errorResponse(e) }
+}
+
+func highlightListResp(r: in Result[HighlightList, Web.ApiError]): Web.Response {
+  return match r { case Ok(v) -> jsonResp(200, v.toJson()); case Err(e) -> Web.errorResponse(e) }
+}
+
+func refreshHighlightsResp(r: in Result[RefreshHighlightsResponse, Web.ApiError]): Web.Response {
+  return match r { case Ok(v) -> jsonResp(200, v.toJson()); case Err(e) -> Web.errorResponse(e) }
+}
+
 func createTaskResp(r: in Result[CreateTaskResponse, Web.ApiError]): Web.Response {
   return match r { case Ok(v) -> jsonResp(200, v.toJson()); case Err(e) -> Web.errorResponse(e) }
 }
@@ -574,6 +590,17 @@ impl Web.Handler for RouteToggleTodo {
   }
 }
 
+record RouteSetTodoStatus {
+}
+
+impl Web.Handler for RouteSetTodoStatus {
+  func handle(req: in Web.Request): Web.Response {
+    val tid = pparam(req, "tid")
+    val decoded = match SetTodoStatusRequest.fromJson(req.body) { case Ok(d) -> d; case Err(_) -> return badBody() }
+    return unitResp(CloudAgents.Interactions.setTodoStatusHandler(tid, decoded))
+  }
+}
+
 record RouteDeleteTodo {
 }
 
@@ -829,7 +856,10 @@ record RouteAddMcpServer {
 
 impl Web.Handler for RouteAddMcpServer {
   func handle(req: in Web.Request): Web.Response {
-    val decoded = match SaveMcpServerRequest.fromJson(req.body) { case Ok(d) -> d; case Err(_) -> return badBody() }
+    val decoded = match SaveMcpServerRequest.fromJson(CloudAgents.Library.patchMissingMcpServerEnabled(req.body)) {
+      case Ok(d) -> d
+      case Err(_) -> return badBody()
+    }
     return mcpServerResp(CloudAgents.Library.addMcpServerHandler(decoded))
   }
 }
@@ -840,7 +870,10 @@ record RouteUpdateMcpServer {
 impl Web.Handler for RouteUpdateMcpServer {
   func handle(req: in Web.Request): Web.Response {
     val mid = pparam(req, "mid")
-    val decoded = match SaveMcpServerRequest.fromJson(req.body) { case Ok(d) -> d; case Err(_) -> return badBody() }
+    val decoded = match SaveMcpServerRequest.fromJson(CloudAgents.Library.patchMissingMcpServerEnabledForUpdate(req.body, mid)) {
+      case Ok(d) -> d
+      case Err(_) -> return badBody()
+    }
     return mcpServerResp(CloudAgents.Library.updateMcpServerHandler(mid, decoded))
   }
 }
@@ -1050,6 +1083,44 @@ impl Web.Handler for RouteCreateFollowupTask {
   }
 }
 
+// ─── Session todo plan: container-originated (callbacks.l) + user status ────
+record RouteCreateSessionTodo {
+}
+
+impl Web.Handler for RouteCreateSessionTodo {
+  func handle(req: in Web.Request): Web.Response {
+    val id = pparam(req, "id")
+    val decoded = match CreateSessionTodoRequest.fromJson(req.body) { case Ok(d) -> d; case Err(_) -> return badBody() }
+    return createSessionTodoResp(CloudAgents.Callbacks.createSessionTodoHandler(id, callbackAuthHeader(req), decoded))
+  }
+}
+
+record RouteListSessionTodos {
+}
+
+impl Web.Handler for RouteListSessionTodos {
+  func handle(req: in Web.Request): Web.Response {
+    return todoListResp(CloudAgents.Callbacks.listSessionTodosHandler(pparam(req, "id"), callbackAuthHeader(req)))
+  }
+}
+
+record RouteSetSessionTodoStatus {
+}
+
+impl Web.Handler for RouteSetSessionTodoStatus {
+  func handle(req: in Web.Request): Web.Response {
+    val id = pparam(req, "id")
+    val tid = pparam(req, "tid")
+    val decoded = match SetSessionTodoStatusRequest.fromJson(req.body) {
+      case Ok(d) -> d
+      case Err(_) -> return badBody()
+    }
+    return setSessionTodoStatusResp(
+      CloudAgents.Callbacks.setSessionTodoStatusHandler(id, tid, callbackAuthHeader(req), decoded)
+    )
+  }
+}
+
 record RouteUploadArtifact {
 }
 
@@ -1187,6 +1258,25 @@ impl Web.Handler for RouteListNotifications {
   }
 }
 
+// ─── Session highlights (highlights.l) ──────────────────────────────────────
+record RouteListHighlights {
+}
+
+impl Web.Handler for RouteListHighlights {
+  func handle(req: in Web.Request): Web.Response {
+    return highlightListResp(CloudAgents.Highlights.listHighlightsHandler(pparam(req, "id")))
+  }
+}
+
+record RouteRefreshHighlights {
+}
+
+impl Web.Handler for RouteRefreshHighlights {
+  func handle(req: in Web.Request): Web.Response {
+    return refreshHighlightsResp(CloudAgents.Highlights.refreshHighlightsHandler(pparam(req, "id")))
+  }
+}
+
 record RouteListPendingCallbacks {
 }
 
@@ -1279,6 +1369,26 @@ impl Web.Handler for RouteProxyModels {
     return jsonStringResp(CloudAgents.Proxy.modelsHandler(pparam(req, "harness")))
   }
 }
+
+record RouteProxyValidateKey {
+}
+
+impl Web.Handler for RouteProxyValidateKey {
+  func handle(req: in Web.Request): Web.Response {
+    val decoded = match CloudAgents.Proxy.ValidateKeyRequest.fromJson(req.body) {
+      case Ok(d) -> d
+      case Err(_) -> return badBody()
+    }
+    match CloudAgents.Proxy.validateKeyHandler(decoded.provider, decoded.key) {
+      case Ok(body) -> {
+        val escaped = CloudAgents.SessionStore.jsonEscapeField(body)
+        return jsonResp(200, "{\"provider\":\"" + decoded.provider + "\",\"body\":\"" + escaped + "\"}")
+      }
+      case Err(e) -> return Web.errorResponse(e)
+    }
+  }
+}
+
 
 // GET /api/harnesses (#523): which harnesses have a runner image on this
 // deployment. Always succeeds — no Result to unwrap, unlike the other Proxy
@@ -1405,13 +1515,33 @@ pub func main(): Unit {
   router = Web.addPost(router, "/api/sessions/{id}/archive", RouteArchiveSession())
   router = Web.addPost(router, "/api/sessions/{id}/unarchive", RouteUnarchiveSession())
 
+  // Live output polling for an in-progress run. The offset-suffixed route
+  // returns only the log bytes past {offset} (incremental polling — see
+  // getRunOutputFrom); the plain route returns the full log each tick and is
+  // kept untouched for older clients.
+  //
+  // NOTE (#442): the offset route is this codebase's first multi-path-param
+  // pattern (the proxy routes below add more). @test_module suites can't
+  // exercise it (Web.Request can't be constructed in a test, #354), so
+  // scripts/e2e-http.sh now starts the built server in CI and curls this exact
+  // route (expecting a 404 for an unknown session) to prove multi-param
+  // dispatch works. Clients also degrade gracefully if it ever regresses:
+  // useStreamMessage falls back to the plain full-log route on any delta
+  // error, and the proxy clients fall back to direct GitHub/provider calls.
   router = Web.addGet(router, "/api/sessions/{id}/output", RouteGetRunOutput())
   router = Web.addGet(router, "/api/sessions/{id}/output/{offset}", RouteGetRunOutputFrom())
 
+  // Linked repositories (multi-repo sessions): list, add, and remove extra
+  // repositories an agent works across in one run. The DELETE route is a
+  // two-path-param pattern ({id} and {rid}); multi-param dispatch is now
+  // covered in CI by scripts/e2e-http.sh via the /output/{offset} route
+  // (#442). The frontend also degrades gracefully (hides the panel) if the
+  // routes 404 on an older backend.
   router = Web.addGet(router, "/api/sessions/{id}/repos", RouteListSessionRepos())
   router = Web.addPost(router, "/api/sessions/{id}/repos", RouteAddSessionRepo())
   router = Web.addDelete(router, "/api/sessions/{id}/repos/{rid}", RouteDeleteSessionRepo())
 
+  // Session lifecycle: cancel an in-flight run, run history, container reaping.
   router = Web.addPost(router, "/api/sessions/{id}/cancel", RouteCancelRun())
   router = Web.addGet(router, "/api/sessions/{id}/runs", RouteGetRuns())
   router = Web.addPost(router, "/api/maintenance/reap", RouteReapContainers())
@@ -1427,6 +1557,7 @@ pub func main(): Unit {
   router = Web.addGet(router, "/api/sessions/{id}/todos", RouteGetTodos())
   router = Web.addPost(router, "/api/sessions/{id}/todos", RouteAddTodo())
   router = Web.addPost(router, "/api/todos/{tid}/toggle", RouteToggleTodo())
+  router = Web.addPost(router, "/api/todos/{tid}/status", RouteSetTodoStatus())
   router = Web.addDelete(router, "/api/todos/{tid}", RouteDeleteTodo())
 
   // Prompt library: saved, reusable prompts
@@ -1516,6 +1647,18 @@ pub func main(): Unit {
   router = Web.addPost(router, "/api/sessions/{id}/callbacks/tasks/{tid}/complete", RouteCompleteTask())
   router = Web.addGet(router, "/api/sessions/{id}/tasks", RouteListSessionTasks())
 
+  // Session todo plan: container-originated add_todo / list_todos /
+  // update_todo (three-state status), sharing the same `todos` storage the
+  // human-facing todo routes above use.
+  router = Web.addPost(router, "/api/sessions/{id}/callbacks/todos", RouteCreateSessionTodo())
+  router = Web.addGet(router, "/api/sessions/{id}/callbacks/todos", RouteListSessionTodos())
+  router = Web.addPost(router, "/api/sessions/{id}/callbacks/todos/{tid}/status", RouteSetSessionTodoStatus())
+
+  // Session highlights: the summarizer-extracted notable items feed
+  // (CloudAgents.Highlights) — list + user-triggered refresh.
+  router = Web.addGet(router, "/api/sessions/{id}/highlights", RouteListHighlights())
+  router = Web.addPost(router, "/api/sessions/{id}/highlights/refresh", RouteRefreshHighlights())
+
   // Server-side provider proxies (ADR-006): GitHub listings and model
   // discovery with vault credentials, so the browser needs no local keys.
   // NOTE: a branch name containing '/' cannot match the single {branch}
@@ -1526,6 +1669,7 @@ pub func main(): Unit {
   router = Web.addGet(router, "/api/github/pulls/{owner}/{repo}/{branch}", RouteProxyGithubPulls())
   router = Web.addGet(router, "/api/github/checks/{owner}/{repo}/{branch}", RouteProxyGithubChecks())
   router = Web.addGet(router, "/api/models/{harness}", RouteProxyModels())
+  router = Web.addPost(router, "/api/models/validate", RouteProxyValidateKey())
   router = Web.addGet(router, "/api/harnesses", RouteHarnesses())
 
   // GitHub OAuth: public login configuration, the code-for-token exchange,

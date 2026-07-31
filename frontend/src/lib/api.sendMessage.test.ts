@@ -56,4 +56,26 @@ describe('api.sendMessage SSE parsing', () => {
     await api.sendMessage('s1', 'hi', c => chunks.push(c));
     expect(chunks).toEqual(['out']);
   });
+
+  it('signals named event frames via onEvent without emitting chunks (#817)', async () => {
+    const body =
+      'event: todo_update\ndata: {"id":"t1","status":"done","note":"x"}\n\n' +
+      'data: {"chunk":"out"}\n\n' +
+      'event: progress_update\ndata: {"summary":"s","percentComplete":""}\n\n' +
+      'event: done\ndata: {}\n\n';
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(sseResponse(body)));
+    const chunks: string[] = [];
+    const events: string[] = [];
+    await api.sendMessage('s1', 'hi', c => chunks.push(c), undefined, e => events.push(e));
+    expect(chunks).toEqual(['out']);
+    expect(events).toEqual(['todo_update', 'progress_update']);
+  });
+
+  it('named event frames are harmless when no onEvent is provided', async () => {
+    const body = 'event: todo_update\ndata: {"id":"t1"}\n\ndata: {"chunk":"out"}\n\nevent: done\ndata: {}\n\n';
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(sseResponse(body)));
+    const chunks: string[] = [];
+    await api.sendMessage('s1', 'hi', c => chunks.push(c));
+    expect(chunks).toEqual(['out']);
+  });
 });

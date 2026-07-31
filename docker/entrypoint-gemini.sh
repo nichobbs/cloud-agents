@@ -76,6 +76,17 @@ create-fallback-branch.sh "entrypoint-gemini" "${HARNESS}" "${BRANCH}" "${SESSIO
 # run.
 /usr/local/bin/inject-library.sh "gemini" || echo "entrypoint-gemini: library injection failed, continuing without it" >&2
 
+# Register (or strip) the cloud-agents MCP callback shim in
+# .gemini/settings.json, reconciled every message — gives Gemini CLI the
+# add_todo/update_todo/report_progress/... tools
+# (docker/register-callbacks-mcp.sh). Best-effort: a registration hiccup
+# must never block the prompt run.
+if [ -f /usr/local/bin/register-callbacks-mcp.sh ]; then
+    # shellcheck source=register-callbacks-mcp.sh
+    source /usr/local/bin/register-callbacks-mcp.sh
+    register_callbacks_mcp "gemini" /workspace || echo "entrypoint-gemini: callback MCP registration failed, continuing without it" >&2
+fi
+
 # Non-interactive single invocation; --yolo auto-approves tool calls (the
 # container itself is the sandbox, same trust model as the other harnesses).
 exec gemini --model "${MODEL}" --yolo --prompt "${PROMPT}"

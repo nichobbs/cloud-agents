@@ -141,8 +141,89 @@ test "MCP server handlers validate transport-specific fields" {
       assertEqual(m.command, "npx", "command stored")
       assertEqualInt(m.args.length.toInt(), 2, "args stored in order")
       assertEqual(m.args[0], "-y", "first arg order preserved")
+      assertEqual(m.enabled, "1", "enabled defaults to '1' when the request omits it")
     }
     case Err(_) -> assertTrue(false, "valid stdio server should create")
+  }
+}
+
+test "MCP server 'enabled' flag: rejected if not '0'/'1', persisted through add/update, gates container injection" {
+  val dbPath = useFreshTestDb("mcp-enabled")
+  defer {
+    cleanupTestDb(dbPath)
+  }
+  val noArgs: slice[String] = []
+  match addMcpServerHandler(SaveMcpServerRequest(name = "gh", transport = "stdio", command = "npx", args = noArgs, url = "", env = noArgs, enabled = "yes")) {
+    case Ok(_) -> assertTrue(false, "non-'0'/'1' enabled should be rejected")
+    case Err(err) -> assertEqualInt(err.status, 400, "invalid enabled -> 400")
+  }
+
+  val created = match addMcpServerHandler(SaveMcpServerRequest(name = "gh", transport = "stdio", command = "npx", args = noArgs, url = "", env = noArgs, enabled = "0")) {
+    case Ok(m) -> m
+    case Err(_) -> {
+      assertTrue(false, "valid disabled server should create")
+      panic("unreachable")
+    }
+  }
+  assertEqual(created.enabled, "0", "enabled='0' persisted on create")
+
+  val userId = "default"
+  val profile = mustProfile(addProfile(userId, "p", "claude", "none", "all", noArgs, noArgs, noArgs, [created.id], "all", noArgs))
+  match mcpServersForProfile(userId, profile.id) {
+    case Ok(granted) -> assertEqualInt(granted.length.toInt(), 0, "a disabled server is withheld from container injection even when granted")
+    case Err(e) -> assertTrue(false, "mcpServersForProfile failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+  }
+
+  match updateMcpServerHandler(created.id, SaveMcpServerRequest(name = "gh", transport = "stdio", command = "npx", args = noArgs, url = "", env = noArgs, enabled = "1")) {
+    case Ok(m) -> assertEqual(m.enabled, "1", "enabled='1' persisted on update")
+    case Err(_) -> assertTrue(false, "update to enabled='1' should succeed")
+  }
+  match mcpServersForProfile(userId, profile.id) {
+    case Ok(granted) -> assertEqualInt(granted.length.toInt(), 1, "now-enabled server is injected once flipped on")
+    case Err(e) -> assertTrue(false, "mcpServersForProfile failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+  }
+}
+
+test "patchMissingMcpServerEnabled defaults a missing 'enabled' key to '1' and leaves a present one untouched" {
+  val withoutField = "{\"name\":\"gh\",\"transport\":\"stdio\",\"command\":\"npx\",\"args\":[],\"url\":\"\",\"env\":[]}"
+  val patched = patchMissingMcpServerEnabled(withoutField)
+  match SaveMcpServerRequest.fromJson(patched) {
+    case Ok(req) -> assertEqual(req.enabled, "1", "missing enabled defaults to '1' so an old caller doesn't 400")
+    case Err(_) -> assertTrue(false, "patched body should decode")
+  }
+
+  val withField = "{\"name\":\"gh\",\"transport\":\"stdio\",\"command\":\"npx\",\"args\":[],\"url\":\"\",\"env\":[],\"enabled\":\"0\"}"
+  assertEqual(patchMissingMcpServerEnabled(withField), withField, "a body that already sends enabled is passed through unchanged")
+}
+
+test "patchMissingMcpServerEnabledForUpdate defaults a missing 'enabled' key to the server's current stored value, not '1'" {
+  val dbPath = useFreshTestDb("mcp-enabled-update-patch")
+  defer {
+    cleanupTestDb(dbPath)
+  }
+  val noArgs: slice[String] = []
+  val disabled = match addMcpServerHandler(SaveMcpServerRequest(name = "gh", transport = "stdio", command = "npx", args = noArgs, url = "", env = noArgs, enabled = "0")) {
+    case Ok(m) -> m
+    case Err(_) -> {
+      assertTrue(false, "valid disabled server should create")
+      panic("unreachable")
+    }
+  }
+
+  val withoutField = "{\"name\":\"gh\",\"transport\":\"stdio\",\"command\":\"npx\",\"args\":[],\"url\":\"\",\"env\":[]}"
+  val patched = patchMissingMcpServerEnabledForUpdate(withoutField, disabled.id)
+  match SaveMcpServerRequest.fromJson(patched) {
+    case Ok(req) -> assertEqual(req.enabled, "0", "a stale update omitting enabled must preserve the server's current '0', not silently re-enable it")
+    case Err(_) -> assertTrue(false, "patched body should decode")
+  }
+
+  val withField = "{\"name\":\"gh\",\"transport\":\"stdio\",\"command\":\"npx\",\"args\":[],\"url\":\"\",\"env\":[],\"enabled\":\"1\"}"
+  assertEqual(patchMissingMcpServerEnabledForUpdate(withField, disabled.id), withField, "a body that already sends enabled is passed through unchanged")
+
+  val patchedUnknownId = patchMissingMcpServerEnabledForUpdate(withoutField, "no-such-id")
+  match SaveMcpServerRequest.fromJson(patchedUnknownId) {
+    case Ok(req) -> assertEqual(req.enabled, "1", "an unknown id falls back to '1' — updateMcpServerHandler itself reports the real not-found error")
+    case Err(_) -> assertTrue(false, "patched body should decode")
   }
 }
 

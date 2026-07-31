@@ -14,9 +14,6 @@ import CloudAgents.SessionStore
 import CloudAgents.Sqlite
 import CloudAgents.Streaming
 
-@externTarget("System.Environment.GetEnvironmentVariable")
-func getEnvVar(name: in String): String = ()
-
 pub record ResultCell {
   pub var isSuccess: Bool = false
   pub var output: String = ""
@@ -165,12 +162,22 @@ pub async func createRunnerContainer(
   userId: in String,
   extraRepos: in String,
 ): Result[String, String] {
+  // Base env list + EXTRA_REPOS live in the pure CloudAgents.RunnerEnv package
+  // so they can be unit-tested — a @test_module can't invoke anything from
+  // this async package, even a pure leaf function (docs/lyric/gotchas.md), the
+  // same reason network-policy resolution lives in CloudAgents.NetworkPolicy
+  // rather than here.
   var envs = CloudAgents.RunnerEnv.baseRunnerEnvs(prompt, repoUrl, branch, harness, model, nativeSessionId, sessionId)
   var binds: slice[String] = [
     CloudAgents.Db.workspaceVolumeBindFor(userId, sessionId),
     CloudAgents.Db.homeVolumeBindFor(userId, harness)
   ]
 
+  // Additional repositories linked to this session (multi-repo sessions): a
+  // single space-separated "url|branch ..." value the entrypoint clones into
+  // /workspace/repos/<name>. Only set when non-empty so single-repo sessions
+  // pass no EXTRA_REPOS at all. Values are validated at link time, so they are
+  // safe to embed in the env value verbatim.
   envs = CloudAgents.RunnerEnv.withExtraRepos(envs, extraRepos)
 
   match Std.Environment.getVar("NODE_TLS_REJECT_UNAUTHORIZED") {
@@ -182,6 +189,19 @@ pub async func createRunnerContainer(
     case Err(_) -> ()
   }
 
+  // Phase 6 (docs/phase6-mcp-callbacks.md §2/§5/§6 stage 2, §8 stage 4): mint
+  // a per-session callback bearer token and inject it plus the host API's
+  // callback origin, so the in-container MCP shim (cloud-agents-shim,
+  // shipped in every runner image since stage 3) can request permission
+  // decisions, ask the human a question, and report progress mid-run.
+  // Gated behind CLOUD_AGENTS_MCP_CALLBACKS — on by default as of stage 4;
+  // an operator opts out with =0 (docker/entrypoint.sh/mcp.json.template are
+  // gated by the same flag with the same on-unless-"0" default in shell).
+  // Best-effort: a mint failure must not abort the run — callbacks simply
+  // won't work for this one run (the entrypoint's own guards mean a run with
+  // no minted token behaves exactly as it did before Phase 6 existed), same
+  // tolerance as the credential/network resolution failures logged elsewhere
+  // in this function.
   if CloudAgents.NetworkPolicy.callbacksFeatureEnabled() {
     match CloudAgents.SessionStore.mintCallbackToken(sessionId, userId) {
       case Ok(token) -> {
@@ -196,6 +216,22 @@ pub async func createRunnerContainer(
     }
   }
 
+  // Inject the credentials the profile grants (least privilege): 'selected'
+  // profiles inject only their named grants, 'all'/no-profile inject every
+  // credential. Decrypted here and never logged. Best-effort per credential —
+  // an individual undecryptable secret (rotated ENCRYPTION_KEY, tampered value)
+  // is skipped with a warning so one bad row can't block every run, while a
+  // database-read failure (can't reach the store at all) still aborts the run.
+  // GITHUB_TOKEN in particular flows on to the container's mcp.json via the
+  // entrypoint template, finally wiring up the GitHub MCP server.
+  //
+  // The DB/crypto fetch itself can't be unit-tested from CloudAgents.Docker
+  // (same async-package harness limitation as above) but IS covered directly
+  // against CloudAgents.Repository.decryptedCredentialsForProfile in
+  // tests/profile_tests.l ("Selected-mode profile injects only its granted
+  // credentials"). What's tested here, via CloudAgents.RunnerEnv, is the
+  // NAME=VALUE formatting/ordering this function applies to whatever that
+  // call returns (#221).
   match CloudAgents.Repository.decryptedCredentialsForProfile(userId, profileId) {
     case Ok(creds) -> {
       var credNames: slice[String] = []
@@ -211,6 +247,14 @@ pub async func createRunnerContainer(
     case Err(e) -> return Err(error = "Failed to load credentials: " + CloudAgents.Repository.credentialErrorMessage(e))
   }
 
+  // Phase 7 §7 per-profile tool enablement: inject CLOUD_AGENTS_ENABLED_TOOLS
+  // only when the profile actually restricts the tool set. Absence means
+  // "register every tool" (byte-for-byte the pre-phase-7 shim behaviour), so
+  // an 'all'-mode profile or a pre-phase-7 container is unchanged. Unlike the
+  // credential path above, a resolution failure here is best-effort (log and
+  // continue with no restriction) rather than aborting the run — tool
+  // enablement is not a hard security boundary in v1 (see
+  // CloudAgents.Repository.enabledToolsForProfile's doc comment).
   match CloudAgents.Repository.enabledToolsForProfile(userId, profileId) {
     case Ok(toolsEnv) -> {
       if toolsEnv.length > 0 {
@@ -220,6 +264,14 @@ pub async func createRunnerContainer(
     case Err(e) -> println("WARNING: failed to resolve enabled tools for session " + sessionId + ": " + CloudAgents.Sqlite.dbErrorMessage(e))
   }
 
+  // Inject the library items the profile grants (skills, subagents, MCP
+  // servers): each resolved list is base64(JSON)-encoded and handed to
+  // docker/inject-library.sh (invoked by every harness's entrypoint script),
+  // which renders it into that harness's own native skills/agents/MCP config
+  // location. Unlike credentials/network policy above, these are optional
+  // capability grants rather than an access-control boundary, so a read
+  // failure is best-effort (log and continue with no grants for that kind)
+  // rather than aborting the run.
   match CloudAgents.Repository.skillsForProfile(userId, profileId) {
     case Ok(skills) -> {
       if skills.length > 0 {
@@ -245,6 +297,12 @@ pub async func createRunnerContainer(
     case Err(e) -> println("WARNING: failed to load granted MCP servers for session " + sessionId + ": " + CloudAgents.Sqlite.dbErrorMessage(e))
   }
 
+  // Resolve the profile's network policy: sets the container NetworkMode and,
+  // for 'restricted', any proxy env vars. A DB error must FAIL the run, not
+  // fall open to full network: a transient read failure on a locked-down
+  // session must never silently re-open its network (#233), mirroring the
+  // credential path above (which propagates its DB error). Both privilege
+  // boundaries fail closed together.
   val policy = match CloudAgents.Repository.profileNetworkPolicy(userId, profileId) {
     case Ok(p) -> p
     case Err(e) -> return Err(error = "Failed to resolve network policy: " + CloudAgents.Sqlite.dbErrorMessage(e))
@@ -255,6 +313,10 @@ pub async func createRunnerContainer(
     envs = envs.append(proxyEnv[pi])
     pi = pi + 1
   }
+  // Extends "none" to also admit the callback origin when callbacks are
+  // enabled AND an operator has provisioned a dedicated callback-only network
+  // (CLOUD_AGENTS_CALLBACK_NETWORK) — a no-op, identical to
+  // networkModeForPolicy, in every other configuration (docs/phase6 §5).
   val networkMode = CloudAgents.NetworkPolicy.networkModeForPolicyWithCallbacks(
     policy,
     CloudAgents.NetworkPolicy.callbacksFeatureEnabled()
@@ -561,6 +623,11 @@ pub func streamSessionMessage(
   // Phase 7 §5 (docs/phase7-autonomy.md): same cursor pattern, for the
   // notify tool's `notification` event.
   var notificationCursor = toString(startMs)
+  // Same cursor pattern, for the session todo plan's `todo_update` event
+  // (add_todo/update_todo MCP tools) — keyed on todos.updated_at (migration
+  // 0024) rather than created_at, since a status flip on an existing row is
+  // exactly what the panel needs to hear about.
+  var todoCursor = toString(startMs)
   // Poll on a ~1s cadence. taskWaitMs blocks up to that waiting for the run to
   // finish (true = the whole run completed), so the loop wakes on either a
   // timer tick or run completion. The interval is deliberately NOT tighter
@@ -713,6 +780,29 @@ pub func streamSessionMessage(
             }
             notificationCursor = note.createdAt
             ni = ni + 1
+          }
+        }
+        case Err(_) -> ()
+      }
+      // Session todo plan: forward todos created/status-changed since the
+      // last tick (add_todo/update_todo MCP tools), same best-effort
+      // forwarding as the others above, cursored on updated_at. Like every
+      // strictly-greater cursor in this loop, an update landing in the SAME
+      // millisecond as the cursor after its read can be skipped (#803) —
+      // benign here by design: the frame only triggers a panel reload, and
+      // the panel's own polling (its reattach/other-tab fallback) picks up
+      // anything a dropped frame missed within one poll interval.
+      match CloudAgents.Repository.todosUpdatedAfter(sessionId, todoCursor) {
+        case Ok(tds) -> {
+          var ti = 0
+          while ti < tds.length {
+            val td = tds[ti]
+            match Web.writeChunk(w, CloudAgents.Streaming.sseTodoUpdate(td.id, td.status, td.note)) {
+              case Ok(_) -> ()
+              case Err(_) -> ()
+            }
+            todoCursor = td.updatedAt
+            ti = ti + 1
           }
         }
         case Err(_) -> ()

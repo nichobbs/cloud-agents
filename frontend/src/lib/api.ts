@@ -1,6 +1,6 @@
 /// <reference types="vite/client" />
 
-import type { Comment, Credential, McpServer, Message, PendingCallbacksResponse, Profile, Prompt, Run, Skill, Subagent, Todo, Webhook } from '../types';
+import type { Comment, Credential, Highlight, McpServer, Message, PendingCallbacksResponse, Profile, Prompt, RefreshHighlightsResult, Run, Skill, Subagent, Todo, Webhook } from '../types';
 import { completeLogin, isSignedIn, setReturnPath, signOut } from './auth';
 
 const BASE = (import.meta.env['VITE_API_URL'] as string | undefined) ?? '';
@@ -264,6 +264,10 @@ export const api = {
     text: string,
     onChunk: (chunk: string) => void,
     onDone?: (messageId: string) => void,
+    /** Called for every named event frame other than done/error (e.g.
+     *  `todo_update`, `progress_update`), so panels can refresh push-style
+     *  instead of waiting for their next poll. */
+    onEvent?: (eventType: string) => void,
   ): Promise<void> => {
     const res = await apiFetch(`${BASE}/api/sessions/${sessionId}/messages`, {
       method: 'POST',
@@ -317,6 +321,12 @@ export const api = {
             }
           }
           return;
+        }
+        if (eventType !== 'message') {
+          // A supplementary named event (todo_update, permission_request,
+          // progress_update, …) — its data is not a chunk; just signal it.
+          onEvent?.(eventType);
+          continue;
         }
         if (!dataStr) continue;
         try {
@@ -540,6 +550,35 @@ export const api = {
     if (!res.ok) throw new Error(`${res.status} ${await res.text()}`);
   },
 
+  setTodoStatus: async (todoId: string, status: 'pending' | 'in_progress' | 'done'): Promise<void> => {
+    const res = await fetch(`${BASE}/api/todos/${todoId}/status`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', ...authHeaders() },
+      body: JSON.stringify({ status }),
+    });
+    if (!res.ok) throw new Error(`${res.status} ${await res.text()}`);
+  },
+
+  // ─── Session highlights (summarizer-extracted notable items) ────────────────
+
+  getHighlights: async (sessionId: string): Promise<Highlight[]> => {
+    const res = await fetch(`${BASE}/api/sessions/${sessionId}/highlights`, {
+      headers: authHeaders(),
+    });
+    if (!res.ok) throw new Error(`${res.status} ${await res.text()}`);
+    const body = (await res.json()) as { highlights?: Highlight[] };
+    return body.highlights ?? [];
+  },
+
+  refreshHighlights: async (sessionId: string): Promise<RefreshHighlightsResult> => {
+    const res = await fetch(`${BASE}/api/sessions/${sessionId}/highlights/refresh`, {
+      method: 'POST',
+      headers: authHeaders(),
+    });
+    if (!res.ok) throw new Error(`${res.status} ${await res.text()}`);
+    return res.json() as Promise<RefreshHighlightsResult>;
+  },
+
   // ─── Profiles (per-container policy: creds, harness, network) ──────────────────
 
   getProfiles: async (): Promise<Profile[]> => {
@@ -675,7 +714,7 @@ export const api = {
   },
 
   addMcpServer: async (
-    s: { name: string; transport: string; command: string; args: string[]; url: string; env: string[] },
+    s: { name: string; transport: string; command: string; args: string[]; url: string; env: string[]; enabled?: string },
   ): Promise<McpServer> => {
     const res = await apiFetch(`${BASE}/api/library/mcp-servers`, {
       method: 'POST',
@@ -688,7 +727,7 @@ export const api = {
 
   updateMcpServer: async (
     id: string,
-    s: { name: string; transport: string; command: string; args: string[]; url: string; env: string[] },
+    s: { name: string; transport: string; command: string; args: string[]; url: string; env: string[]; enabled?: string },
   ): Promise<McpServer> => {
     const res = await apiFetch(`${BASE}/api/library/mcp-servers/${id}`, {
       method: 'POST',
@@ -804,6 +843,12 @@ export const api = {
       return null;
     }
   },
+
+  /** Send a key to the backend models validator proxy to verify it and retrieve
+   *  the live models listing without CORS issues. */
+  validateModelKey: async (provider: string, key: string): Promise<{ provider: string; body: string }> => {
+    return proxyPost<{ provider: string; body: string }>('/api/models/validate', { provider, key });
+  },
 };
 
 /** Ensure a profile's optional array fields are always arrays. */
@@ -826,6 +871,16 @@ function normaliseProfile(p: Profile): Profile {
 
 async function proxyGet<T>(path: string): Promise<T> {
   const res = await apiFetch(`${BASE}${path}`, { headers: authHeaders() });
+  if (!res.ok) throw new Error(`${res.status} ${await res.text()}`);
+  return res.json() as Promise<T>;
+}
+
+async function proxyPost<T>(path: string, body: unknown): Promise<T> {
+  const res = await fetch(`${BASE}${path}`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...authHeaders() },
+    body: JSON.stringify(body),
+  });
   if (!res.ok) throw new Error(`${res.status} ${await res.text()}`);
   return res.json() as Promise<T>;
 }

@@ -400,6 +400,79 @@ test "completeTask surfaces a transport failure (e.g. an unknown/cross-scope tas
   }
 }
 
+// ── add_todo / update_todo / list_todos (session todo plan) ─────────────────
+test "addSessionTodo returns the created id and sends the note" {
+  val fake = newFakeV2Transport()
+  fake.createSessionTodoOk = true
+  fake.createSessionTodoBody = "{\"id\":\"todo-1\",\"status\":\"pending\"}"
+
+  match addSessionTodo(fake, "wire up the panel") {
+    case Ok(id) -> assertEqual(id, "todo-1", "the created id round-trips")
+    case Err(message) -> assertTrue(false, "expected Ok, got Err: " + message)
+  }
+  assertEqual(fake.lastSessionTodoNote, "wire up the panel", "the note was sent to the host")
+}
+
+test "addSessionTodo surfaces a transport failure" {
+  val fake = newFakeV2Transport()
+  fake.createSessionTodoOk = false
+  fake.createSessionTodoError = "connection refused"
+
+  match addSessionTodo(fake, "x") {
+    case Ok(id) -> assertTrue(false, "expected Err, got Ok(" + id + ")")
+    case Err(message) -> assertTrue(message.contains("connection refused"), "error carries the transport failure: " + message)
+  }
+}
+
+test "listSessionTodos renders every todo as id [status]: note lines" {
+  val fake = newFakeV2Transport()
+  fake.listSessionTodosOk = true
+  fake.listSessionTodosBody = "{\"todos\":[{\"id\":\"td1\",\"sessionId\":\"s\",\"messageId\":\"\",\"note\":\"step one\",\"done\":\"0\",\"createdAt\":\"1\",\"status\":\"in_progress\"},{\"id\":\"td2\",\"sessionId\":\"s\",\"messageId\":\"\",\"note\":\"step two\",\"done\":\"1\",\"createdAt\":\"2\",\"status\":\"done\"}]}"
+
+  match listSessionTodos(fake) {
+    case Ok(text) -> {
+      assertTrue(text.contains("td1 [in_progress]: step one"), "first todo rendered: " + text)
+      assertTrue(text.contains("td2 [done]: step two"), "second todo rendered: " + text)
+    }
+    case Err(message) -> assertTrue(false, "expected Ok, got Err: " + message)
+  }
+}
+
+test "listSessionTodos with an empty list says so" {
+  val fake = newFakeV2Transport()
+  fake.listSessionTodosOk = true
+  fake.listSessionTodosBody = "{\"todos\":[]}"
+
+  match listSessionTodos(fake) {
+    case Ok(text) -> assertTrue(text.contains("no todos"), "explains the list is empty: " + text)
+    case Err(message) -> assertTrue(false, "expected Ok, got Err: " + message)
+  }
+}
+
+test "setSessionTodoStatus confirms the new status and sends id + status" {
+  val fake = newFakeV2Transport()
+  fake.setSessionTodoStatusOk = true
+  fake.setSessionTodoStatusBody = "{\"id\":\"td1\",\"status\":\"in_progress\"}"
+
+  match setSessionTodoStatus(fake, "td1", "in_progress") {
+    case Ok(msg) -> assertTrue(msg.contains("in_progress"), "confirmation names the status: " + msg)
+    case Err(message) -> assertTrue(false, "expected Ok, got Err: " + message)
+  }
+  assertEqual(fake.lastSessionTodoId, "td1", "the todo id was sent to the host")
+  assertEqual(fake.lastSessionTodoStatus, "in_progress", "the status was sent to the host")
+}
+
+test "setSessionTodoStatus surfaces a host validation error" {
+  val fake = newFakeV2Transport()
+  fake.setSessionTodoStatusOk = false
+  fake.setSessionTodoStatusError = "POST .../callbacks/todos/td1/status failed: (400) status must be one of: pending, in_progress, done"
+
+  match setSessionTodoStatus(fake, "td1", "bogus") {
+    case Ok(msg) -> assertTrue(false, "expected Err, got Ok(" + msg + ")")
+    case Err(message) -> assertTrue(message.contains("status must be one of"), "error surfaces the host's error: " + message)
+  }
+}
+
 // ── report_artifact ─────────────────────────────────────────────────────────
 func writeTempFile(name: in String, content: in String): String {
   val path = "/tmp/cloud-agents-shim-test-" + name
@@ -532,6 +605,18 @@ impl V2CallbackTransport for ClockJumpingV2Transport {
 
   func notify(summary: in String, level: in String): Result[String, String] {
     Ok(value = "{\"id\":\"cj-notify\"}")
+  }
+
+  func createSessionTodo(note: in String): Result[String, String] {
+    Ok(value = "{\"id\":\"cj-todo\",\"status\":\"pending\"}")
+  }
+
+  func listSessionTodos(): Result[String, String] {
+    Ok(value = "{\"todos\":[]}")
+  }
+
+  func setSessionTodoStatus(todoId: in String, status: in String): Result[String, String] {
+    Ok(value = "{\"id\":\"cj-todo\",\"status\":\"done\"}")
   }
 }
 

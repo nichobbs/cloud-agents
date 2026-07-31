@@ -11,7 +11,9 @@
 #   SESSION_ID        - cloud-agents session ID, distinct from NATIVE_SESSION_ID
 #                       (required; used for fallback branch naming)
 #   NATIVE_SESSION_ID - session ID to resume; if non-empty passed to --resume
-#   GITHUB_TOKEN      - PAT injected into the GitHub MCP server (Phase 4, optional)
+#   GITHUB_TOKEN      - PAT used for git push/clone auth, and (if the user has
+#                       enabled the seeded "github" MCP server via the
+#                       Library) for that server's credential
 #   CLOUD_AGENTS_MCP_CALLBACKS  - "0" to disable the Phase 6 MCP-callback shim
 #                                 (docs/phase6-mcp-callbacks.md); on by
 #                                 default as of stage 4 (§8). Mirrors
@@ -245,26 +247,38 @@ if [ "${CLOUD_AGENTS_MCP_CALLBACKS}" = "1" ] && [ -n "${CLOUD_AGENTS_CALLBACK_TO
     CALLBACKS_ACTIVE=1
 fi
 
-# Phase 4: render the GitHub MCP server config and safe auto-approvals from the
-# templates baked into the image, substituting the injected token. The token
-# lands inside a JSON string in mcp.json, and — now that arbitrary secrets flow
-# through the credential store, and GITHUB_TOKEN is not a reserved credential
-# name — its value can contain any byte. Escape in two stages so neither the
-# JSON nor the sed substitution is corrupted:
-#   0. strip C0 control bytes (0x00-0x1F) — a JSON string may not contain a raw
-#      newline/tab/etc., so a token carrying one would otherwise produce invalid
-#      JSON (#222). A real GITHUB_TOKEN never contains control bytes, so this is
-#      a no-op for valid input and fails safe (a cleaned, then-invalid token
-#      simply fails auth) for malformed input.
-#   1. JSON-escape the value ('\' then '"') so it is a valid JSON string body.
-#   2. sed-escape the result ('&', '|', '\') so sed writes it literally.
-# Order matters: JSON-escaping adds backslashes that stage 2 must then protect.
-if [ -f /etc/claude/mcp.json.template ] && [ ! -f /workspace/.claude/mcp.json ]; then
-    gh_token_clean=$(printf '%s' "${GITHUB_TOKEN:-}" | tr -d '\000-\037')
-    gh_token_json=$(printf '%s' "${gh_token_clean}" | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g')
-    gh_token_escaped=$(printf '%s' "${gh_token_json}" | sed -e 's/[&|\\]/\\&/g')
-    sed "s|\${GITHUB_TOKEN}|${gh_token_escaped}|g" \
-        /etc/claude/mcp.json.template > /workspace/.claude/mcp.json
+# Phase 4: seed /workspace/.claude/mcp.json with an empty baseline on the
+# workspace's first-ever message, so the Phase 6 reconciliation below and
+# inject-library.sh (called near the end of this script) always have a file
+# to work with. Previously this rendered a template that unconditionally
+# wired up a live "github" MCP server whenever GITHUB_TOKEN was present —
+# bypassing the enabled/disabled gate the Library's seeded MCP server catalog
+# now provides (CloudAgents.McpServerSeed) and duplicating the entry once a
+# user enabled the seeded one too. That mechanism is retired in favor of the
+# Library's own "github" entry (seed/mcp-servers/github.json, disabled by
+# default, gated by CloudAgents.Repository.mcpServersForProfile) — the
+# supported way to grant this now, whether seeded or hand-authored.
+if [ ! -f /workspace/.claude/mcp.json ]; then
+    mkdir -p /workspace/.claude
+    printf '%s' '{"mcpServers": {}}' > /workspace/.claude/mcp.json
+fi
+
+# mcp.json can carry the per-session callback token (the cloud-agents entry
+# reconciled below) — keep the file we created out of an agent's `git add .`
+# via .git/info/exclude (#788). Untracked paths only, so a repo that
+# deliberately commits a .claude/mcp.json of its own is unaffected;
+# idempotent across messages. Reuses register-callbacks-mcp.sh's
+# exclude_from_git rather than duplicating it (#792) — this harness never
+# calls that script's register_callbacks_mcp itself (claude's registration
+# is the reconcile block below, coupled to --permission-prompt-tool).
+if [ -f /usr/local/bin/register-callbacks-mcp.sh ]; then
+    # shellcheck source=register-callbacks-mcp.sh
+    source /usr/local/bin/register-callbacks-mcp.sh
+    # Best-effort (#798): this runs under set -e, and a failure here (e.g. an
+    # unwritable .git/info) must never abort the whole run over an exclusion
+    # entry — same tolerance the other entrypoints give their registration.
+    exclude_from_git /workspace ".claude/mcp.json" \
+        || echo "entrypoint: could not git-exclude .claude/mcp.json, continuing" >&2
 fi
 
 # Phase 6 (docs/phase6-mcp-callbacks.md §8): reconcile the cloud-agents MCP

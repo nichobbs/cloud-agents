@@ -311,7 +311,7 @@ test "report_artifact upload -> list -> download round trip, and traversal is ne
   mkSession(sid)
   val token = mintToken(sid, "default")
 
-  val uploaded = match uploadArtifactHandler(sid, bearer(token), CloudAgents.Callbacks.UploadArtifactRequest(fileName = "report.txt", mimeType = "text/plain", description = "a report", contentBase64 = base64Of("hello artifact"), artifactScope = "")) {
+  val uploaded = match uploadArtifactHandler(sid, bearer(token), UploadArtifactRequest(fileName = "report.txt", mimeType = "text/plain", description = "a report", contentBase64 = base64Of("hello artifact"), artifactScope = "")) {
     case Ok(r) -> r
     case Err(e) -> panic("upload failed: " + toString(e.status))
   }
@@ -334,7 +334,7 @@ test "report_artifact upload -> list -> download round trip, and traversal is ne
 
   // Path traversal in fileName is neutralized (basename only): the stored
   // artifact's fileName must never carry a directory component.
-  val traversal = match uploadArtifactHandler(sid, bearer(token), CloudAgents.Callbacks.UploadArtifactRequest(fileName = "../../etc/passwd", mimeType = "text/plain", description = "", contentBase64 = base64Of("x"), artifactScope = "")) {
+  val traversal = match uploadArtifactHandler(sid, bearer(token), UploadArtifactRequest(fileName = "../../etc/passwd", mimeType = "text/plain", description = "", contentBase64 = base64Of("x"), artifactScope = "")) {
     case Ok(r) -> r
     case Err(e) -> panic("traversal-attempt upload should still succeed with a sanitized name: " + toString(e.status))
   }
@@ -367,7 +367,7 @@ test "report_artifact rejects an oversize upload before storing anything" {
   // A contentBase64 string longer than the pre-decode cap is rejected
   // without ever reaching the decoder.
   val huge = atLeast(11184813)
-  match uploadArtifactHandler(sid, bearer(token), CloudAgents.Callbacks.UploadArtifactRequest(fileName = "big.bin", mimeType = "application/octet-stream", description = "", contentBase64 = huge, artifactScope = "")) {
+  match uploadArtifactHandler(sid, bearer(token), UploadArtifactRequest(fileName = "big.bin", mimeType = "application/octet-stream", description = "", contentBase64 = huge, artifactScope = "")) {
     case Ok(_) -> assertTrue(false, "an oversize artifact must be rejected")
     case Err(e) -> assertEqualInt(e.status, 400, "oversize -> 400")
   }
@@ -391,7 +391,7 @@ test "v2 callback endpoints reject an empty session id before touching the datab
     case Ok(_) -> assertTrue(false, "an empty session id must be rejected")
     case Err(e) -> assertEqualInt(e.status, 400, "empty id returns 400")
   }
-  match uploadArtifactHandler("", "", CloudAgents.Callbacks.UploadArtifactRequest(fileName = "x", mimeType = "text/plain", description = "", contentBase64 = "", artifactScope = "")) {
+  match uploadArtifactHandler("", "", UploadArtifactRequest(fileName = "x", mimeType = "text/plain", description = "", contentBase64 = "", artifactScope = "")) {
     case Ok(_) -> assertTrue(false, "an empty session id must be rejected")
     case Err(e) -> assertEqualInt(e.status, 400, "empty id returns 400")
   }
@@ -773,5 +773,95 @@ test "remember caps the number of distinct keys per repo but always allows overw
   match rememberHandler(sid, bearer(token), RememberRequest(key = "k0", value = "updated")) {
     case Ok(_) -> ()
     case Err(e) -> assertTrue(false, "overwriting an existing key at the cap must still work: " + toString(e.status))
+  }
+}
+
+// ── session todo plan (add_todo / update_todo / list_todos) ─────────────────
+test "session todo round trip: create pending -> in_progress -> done, visible via list" {
+  val dbPath = useFreshTestDb("session-todos")
+  defer {
+    cleanupTestDb(dbPath)
+  }
+  CloudAgents.Auth.setCurrentUserId("default")
+  val sid = "sess-todos-1"
+  mkSession(sid)
+  val token = mintToken(sid, "default")
+
+  val created = match createSessionTodoHandler(sid, bearer(token), CreateSessionTodoRequest(note = "step one")) {
+    case Ok(r) -> r
+    case Err(e) -> panic("createSessionTodoHandler failed: " + toString(e.status))
+  }
+  assertEqual(created.status, "pending", "a new todo starts pending")
+
+  match setSessionTodoStatusHandler(sid, created.id, bearer(token), SetSessionTodoStatusRequest(status = "in_progress")) {
+    case Ok(r) -> assertEqual(r.status, "in_progress", "status moves to in_progress")
+    case Err(e) -> assertTrue(false, "in_progress update failed: " + toString(e.status))
+  }
+
+  val listed = match listSessionTodosHandler(sid, bearer(token)) {
+    case Ok(l) -> l
+    case Err(e) -> panic("listSessionTodosHandler failed: " + toString(e.status))
+  }
+  assertEqualInt(listed.todos.length.toInt(), 1, "one todo listed")
+  assertEqual(listed.todos[0].status, "in_progress", "list reflects the live status")
+  assertEqual(listed.todos[0].done, "0", "in_progress is not done")
+
+  match setSessionTodoStatusHandler(sid, created.id, bearer(token), SetSessionTodoStatusRequest(status = "done")) {
+    case Ok(r) -> assertEqual(r.status, "done", "status moves to done")
+    case Err(e) -> assertTrue(false, "done update failed: " + toString(e.status))
+  }
+  match CloudAgents.Repository.listTodos(sid) {
+    case Ok(todos) -> {
+      assertEqual(todos[0].status, "done", "status persisted")
+      assertEqual(todos[0].done, "1", "done flag stays in lockstep")
+    }
+    case Err(e) -> assertTrue(false, "listTodos failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+  }
+}
+
+test "session todo endpoints validate status, auth, and cross-session ids" {
+  val dbPath = useFreshTestDb("session-todos-validation")
+  defer {
+    cleanupTestDb(dbPath)
+  }
+  CloudAgents.Auth.setCurrentUserId("default")
+  val sidA = "sess-todos-A"
+  val sidB = "sess-todos-B"
+  mkSession(sidA)
+  mkSession(sidB)
+  val tokenA = mintToken(sidA, "default")
+  val tokenB = mintToken(sidB, "default")
+
+  // Wrong bearer is rejected.
+  match createSessionTodoHandler(sidA, bearer("not-the-token"), CreateSessionTodoRequest(note = "x")) {
+    case Ok(_) -> assertTrue(false, "wrong token must be rejected")
+    case Err(e) -> assertEqualInt(e.status, 401, "wrong token -> 401")
+  }
+
+  // Empty note is rejected.
+  match createSessionTodoHandler(sidA, bearer(tokenA), CreateSessionTodoRequest(note = "")) {
+    case Ok(_) -> assertTrue(false, "empty note must be rejected")
+    case Err(e) -> assertEqualInt(e.status, 400, "empty note -> 400")
+  }
+
+  val created = match createSessionTodoHandler(sidA, bearer(tokenA), CreateSessionTodoRequest(note = "mine")) {
+    case Ok(r) -> r
+    case Err(e) -> panic("createSessionTodoHandler failed: " + toString(e.status))
+  }
+
+  // A bogus status literal is rejected.
+  match setSessionTodoStatusHandler(sidA, created.id, bearer(tokenA), SetSessionTodoStatusRequest(status = "bogus")) {
+    case Ok(_) -> assertTrue(false, "bogus status must be rejected")
+    case Err(e) -> assertEqualInt(e.status, 400, "bogus status -> 400")
+  }
+
+  // Session B cannot mutate session A's todo — 404, not a cross-session write.
+  match setSessionTodoStatusHandler(sidB, created.id, bearer(tokenB), SetSessionTodoStatusRequest(status = "done")) {
+    case Ok(_) -> assertTrue(false, "cross-session todo mutation must be rejected")
+    case Err(e) -> assertEqualInt(e.status, 404, "cross-session todo id -> 404")
+  }
+  match CloudAgents.Repository.listTodos(sidA) {
+    case Ok(todos) -> assertEqual(todos[0].status, "pending", "the todo is untouched")
+    case Err(e) -> assertTrue(false, "listTodos failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
   }
 }

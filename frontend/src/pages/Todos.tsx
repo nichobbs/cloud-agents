@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
+import { effectiveStatus } from '../components/TodoPanel';
 import { useSessions } from '../context/SessionsContext';
 import { api } from '../lib/api';
 import type { Todo } from '../types';
@@ -44,11 +45,16 @@ export function Todos() {
     }
   };
 
-  const toggle = async (todo: Todo) => {
+  // pending -> in_progress -> done -> pending
+  const cycle = async (todo: Todo) => {
+    const next =
+      effectiveStatus(todo) === 'pending' ? 'in_progress' : effectiveStatus(todo) === 'in_progress' ? 'done' : 'pending';
     // optimistic
-    setTodos(prev => prev.map(t => (t.id === todo.id ? { ...t, done: t.done === '1' ? '0' : '1' } : t)));
+    setTodos(prev =>
+      prev.map(t => (t.id === todo.id ? { ...t, status: next, done: next === 'done' ? '1' : '0' } : t)),
+    );
     try {
-      await api.toggleTodo(todo.id);
+      await api.setTodoStatus(todo.id, next);
     } catch {
       void reload();
     }
@@ -114,18 +120,28 @@ export function Todos() {
         <div style={listStyle}>
           {todos.map(todo => (
             <div key={todo.id} style={itemStyle}>
-              <input
-                type="checkbox"
-                checked={todo.done === '1'}
-                onChange={() => { void toggle(todo); }}
-                style={{ marginTop: '3px', cursor: 'pointer' }}
-              />
+              <button
+                onClick={() => { void cycle(todo); }}
+                style={{
+                  ...statusBtnStyle,
+                  color: statusColors[effectiveStatus(todo)],
+                  borderColor: statusColors[effectiveStatus(todo)],
+                }}
+                title={`Status: ${effectiveStatus(todo).replace('_', ' ')} — click to change`}
+              >
+                {effectiveStatus(todo) === 'done' ? '●' : effectiveStatus(todo) === 'in_progress' ? '◐' : '○'}
+              </button>
               <div style={{ flex: 1 }}>
                 <div
                   style={{
                     ...noteStyle,
-                    textDecoration: todo.done === '1' ? 'line-through' : 'none',
-                    color: todo.done === '1' ? '#6e7681' : '#c9d1d9',
+                    textDecoration: effectiveStatus(todo) === 'done' ? 'line-through' : 'none',
+                    color:
+                      effectiveStatus(todo) === 'done'
+                        ? '#6e7681'
+                        : effectiveStatus(todo) === 'in_progress'
+                          ? '#e3b341'
+                          : '#c9d1d9',
                   }}
                 >
                   {todo.note}
@@ -255,4 +271,24 @@ const linkBtnStyle: React.CSSProperties = {
   cursor: 'pointer',
   fontSize: 'inherit',
   padding: 0,
+};
+
+const statusColors: Record<string, string> = {
+  pending: '#8b949e',
+  in_progress: '#e3b341',
+  done: '#3fb950',
+};
+
+const statusBtnStyle: React.CSSProperties = {
+  background: 'transparent',
+  border: '1px solid #30363d',
+  borderRadius: '999px',
+  fontSize: '12px',
+  lineHeight: '18px',
+  width: '22px',
+  height: '22px',
+  padding: 0,
+  cursor: 'pointer',
+  flexShrink: 0,
+  marginTop: '1px',
 };

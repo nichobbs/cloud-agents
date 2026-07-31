@@ -688,6 +688,119 @@ pub func createFollowupTaskHandler(
   }
 }
 
+// ─── Session todo plan (add_todo / update_todo / list_todos) ─────────────────
+//
+// The agent's own working plan for THIS session, kept in the same `todos`
+// storage the human-facing todo page uses so both sides see one list — the
+// session UI's todo panel polls GET /api/sessions/{id}/todos and shows each
+// item's three-state status (pending/in_progress/done, migration 0021).
+// Distinct from add_followup_task (a one-way note for the human, no
+// lifecycle) and from add_task (repo-scoped cross-session backlog): this is
+// session-scoped AND agent-updatable mid-run, so the human can watch where a
+// long run has got to.
+/// Small local copy of CloudAgents.Interactions.isValidTodoStatus — three
+/// literals, duplicated rather than importing a handler package just for
+/// this (the same small-duplication-over-new-dependency-edge call
+/// stringSchemaField makes in the shim).
+func isValidSessionTodoStatus(s: in String): Bool {
+  return s == "pending" or s == "in_progress" or s == "done"
+}
+
+@generate(Json)
+pub record CreateSessionTodoRequest {
+  pub note: String
+}
+
+@generate(Json)
+pub record CreateSessionTodoResponse {
+  pub id: String
+  pub status: String
+}
+
+@generate(Json)
+pub record SetSessionTodoStatusRequest {
+  pub status: String
+}
+
+@generate(Json)
+pub record SetSessionTodoStatusResponse {
+  pub id: String
+  pub status: String
+}
+
+/// POST /api/sessions/{id}/callbacks/todos — container-originated (add_todo
+/// MCP tool). Creates a 'pending' item on this session's todo list.
+pub func createSessionTodoHandler(
+  id: in String, authHeaderValue: in String, req: in CreateSessionTodoRequest
+): Result[CreateSessionTodoResponse, Web.ApiError] {
+  if id.length == 0 {
+    return Err(Web.badRequest("id is required"))
+  }
+  authorizeCallbackToken(id, authHeaderValue)?
+  if req.note.length == 0 {
+    return Err(Web.badRequest("note is required"))
+  }
+  if not CloudAgents.Text.withinMaxByteLength(req.note, maxFollowupDescriptionLen) {
+    return Err(Web.badRequest("note is too long (max " + toString(maxFollowupDescriptionLen) + " bytes)"))
+  }
+  match CloudAgents.Repository.addTodo(id, "", req.note) {
+    case Ok(t) -> return Ok(CreateSessionTodoResponse(id = t.id, status = t.status))
+    case Err(e) -> return Err(dbError(e))
+  }
+}
+
+/// GET /api/sessions/{id}/callbacks/todos — container-originated (list_todos
+/// MCP tool). Returns the session's full todo list (the same shape the UI's
+/// GET /api/sessions/{id}/todos serves).
+pub func listSessionTodosHandler(
+  id: in String, authHeaderValue: in String
+): Result[CloudAgents.Repository.TodoList, Web.ApiError] {
+  if id.length == 0 {
+    return Err(Web.badRequest("id is required"))
+  }
+  authorizeCallbackToken(id, authHeaderValue)?
+  match CloudAgents.Repository.listTodos(id) {
+    // Constructed unqualified — package-qualified record construction
+    // compiles but dies at runtime (docs/lyric/gotchas.md).
+    case Ok(ts) -> return Ok(TodoList(todos = ts))
+    case Err(e) -> return Err(dbError(e))
+  }
+}
+
+/// POST /api/sessions/{id}/callbacks/todos/{tid}/status — container-
+/// originated (update_todo MCP tool). Only ever mutates a todo that belongs
+/// to THIS session; a todo id under a different session 404s without leaking
+/// that it exists (the same non-leaking shape every scoped lookup here has).
+pub func setSessionTodoStatusHandler(
+  id: in String,
+  tid: in String,
+  authHeaderValue: in String,
+  req: in SetSessionTodoStatusRequest,
+): Result[SetSessionTodoStatusResponse, Web.ApiError] {
+  if id.length == 0 {
+    return Err(Web.badRequest("id is required"))
+  }
+  if tid.length == 0 {
+    return Err(Web.badRequest("todo id is required"))
+  }
+  authorizeCallbackToken(id, authHeaderValue)?
+  if not isValidSessionTodoStatus(req.status) {
+    return Err(Web.badRequest("status must be one of: pending, in_progress, done"))
+  }
+  val ownerSid = match CloudAgents.Repository.getTodoSessionId(tid) {
+    case Ok(Some(sid)) -> sid
+    case Ok(None) -> return Err(Web.notFound("todo not found"))
+    case Err(e) -> return Err(dbError(e))
+  }
+  if ownerSid != id {
+    return Err(Web.notFound("todo not found"))
+  }
+  match CloudAgents.Repository.setTodoStatus(tid, req.status) {
+    case Ok(_) -> return Ok(SetSessionTodoStatusResponse(id = tid, status = req.status))
+    case Err(e) -> return Err(dbError(e))
+  }
+}
+
 // ─── Phase 6 §7: report_artifact ─────────────────────────────────────────────
 //
 // docs/phase6-mcp-callbacks.md §7.3. Metadata lives in CloudAgents.Repository's
