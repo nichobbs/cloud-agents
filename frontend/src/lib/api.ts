@@ -557,7 +557,7 @@ export const api = {
   },
 
   setTodoStatus: async (todoId: string, status: 'pending' | 'in_progress' | 'done'): Promise<void> => {
-    const res = await fetch(`${BASE}/api/todos/${todoId}/status`, {
+    const res = await apiFetch(`${BASE}/api/todos/${todoId}/status`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', ...authHeaders() },
       body: JSON.stringify({ status }),
@@ -568,7 +568,7 @@ export const api = {
   // ─── Session highlights (summarizer-extracted notable items) ────────────────
 
   getHighlights: async (sessionId: string): Promise<Highlight[]> => {
-    const res = await fetch(`${BASE}/api/sessions/${sessionId}/highlights`, {
+    const res = await apiFetch(`${BASE}/api/sessions/${sessionId}/highlights`, {
       headers: authHeaders(),
     });
     if (!res.ok) throw new Error(`${res.status} ${await res.text()}`);
@@ -577,7 +577,7 @@ export const api = {
   },
 
   refreshHighlights: async (sessionId: string): Promise<RefreshHighlightsResult> => {
-    const res = await fetch(`${BASE}/api/sessions/${sessionId}/highlights/refresh`, {
+    const res = await apiFetch(`${BASE}/api/sessions/${sessionId}/highlights/refresh`, {
       method: 'POST',
       headers: authHeaders(),
     });
@@ -882,7 +882,7 @@ async function proxyGet<T>(path: string): Promise<T> {
 }
 
 async function proxyPost<T>(path: string, body: unknown): Promise<T> {
-  const res = await fetch(`${BASE}${path}`, {
+  const res = await apiFetch(`${BASE}${path}`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', ...authHeaders() },
     body: JSON.stringify(body),

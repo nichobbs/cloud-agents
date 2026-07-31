@@ -374,6 +374,21 @@ pub func reconnectGitHubMessage(): String {
 /// so the old one must never be reused). Same transport-error-hiding rule as
 /// exchangeCode (#422): upstream detail is logged, never surfaced raw.
 func doRefresh(userId: in String, refreshToken: in String): Result[String, Web.ApiError] {
+  // Pre-flight concurrency check: if another request already refreshed the token, return it directly.
+  match CloudAgents.Repository.githubOAuthRefreshStatus(userId) {
+    case Ok(Some(s)) -> {
+      if not s.accessTokenExpired or s.refreshToken != refreshToken {
+        match CloudAgents.Repository.decryptedCredentialValue(userId, "GITHUB_TOKEN") {
+          case Ok(Some(t)) -> return Ok(value = t)
+          case Ok(None) -> ()
+          case Err(_) -> ()
+        }
+      }
+    }
+    case Ok(None) -> ()
+    case Err(_) -> ()
+  }
+
   val body = match CloudAgents.GitHubApi.httpPostForm(exchangeUrl(), refreshFormBody(oauthClientId(), oauthClientSecret(), refreshToken), userAgent()) {
     case Ok(b) -> b
     case Err(e) -> {
@@ -383,6 +398,24 @@ func doRefresh(userId: in String, refreshToken: in String): Result[String, Web.A
   }
   val newToken = accessTokenFromExchangeJson(body)
   if newToken.length == 0 {
+    // Re-check status before treating this as a genuine refresh token failure.
+    // If a concurrent request refreshed the token while our request was in-flight,
+    // GitHub's token rotation will reject our stale refresh token, but the vault
+    // already holds the fresh access token.
+    match CloudAgents.Repository.githubOAuthRefreshStatus(userId) {
+      case Ok(Some(s)) -> {
+        if not s.accessTokenExpired or s.refreshToken != refreshToken {
+          match CloudAgents.Repository.decryptedCredentialValue(userId, "GITHUB_TOKEN") {
+            case Ok(Some(t)) -> return Ok(value = t)
+            case Ok(None) -> ()
+            case Err(_) -> ()
+          }
+        }
+      }
+      case Ok(None) -> ()
+      case Err(_) -> ()
+    }
+
     // GitHub rejected the refresh token itself (revoked, already-rotated,
     // genuinely expired) — no amount of retrying recovers from this. Drop
     // the dead metadata so the next request fails the same clear way instead
@@ -497,12 +530,6 @@ pub func refreshOAuthToken(authHeaderValue: in String): Result[TokenGrant, Web.A
       }
     }
     case None -> ()
-  }
-  if userId.length == 0 {
-    val current = CloudAgents.Auth.currentUserId()
-    if current.length > 0 and current != CloudAgents.Auth.operatorUserId() {
-      userId = current
-    }
   }
   if userId.length == 0 {
     return Err(Web.unauthorized("Authentication required to refresh token"))

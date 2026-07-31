@@ -2008,9 +2008,12 @@ pub func selectGitHubTokenSql(tokenHash: in String, nowMillis: in String): Strin
     " AS INTEGER)"
 }
 
-/// SELECT a token cache entry even if expired (used for token refresh lookup when the cache row is stale).
-pub func selectHistoricalGitHubTokenSql(tokenHash: in String): String {
-  return "SELECT user_id, login FROM github_token_cache WHERE token_hash = " + sqlLiteral(tokenHash) + " AND user_id <> ''"
+/// SELECT a token cache entry even if expired, provided it expired within the last 2 hours (7200000 ms, used for token refresh lookup).
+pub func selectHistoricalGitHubTokenSql(tokenHash: in String, nowMillis: in String): String {
+  return "SELECT user_id, login FROM github_token_cache WHERE token_hash = " + sqlLiteral(tokenHash) +
+    " AND user_id <> '' AND CAST(expires_at AS INTEGER) >= (CAST(" +
+    sqlLiteral(nowMillis) +
+    " AS INTEGER) - 7200000)"
 }
 
 /// DELETE one token's cache row (server-side logout): the next presentation

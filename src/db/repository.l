@@ -2493,7 +2493,7 @@ pub func cachedGitHubToken(tokenHash: in String): Result[Option[GitHubTokenCache
 
 /// Look up a token's cache entry even if expired (for identifying the tenant during token refresh).
 pub func lookupHistoricalGitHubToken(tokenHash: in String): Result[Option[GitHubTokenCacheEntry], CloudAgents.Sqlite.DbError] {
-  val rows = CloudAgents.Sqlite.query(CloudAgents.Db.selectHistoricalGitHubTokenSql(tokenHash))?
+  val rows = CloudAgents.Sqlite.query(CloudAgents.Db.selectHistoricalGitHubTokenSql(tokenHash, nowMillis()))?
   val len = CloudAgents.Sqlite.getRowArrayLength(rows)
   if len == 0 {
     return Ok(value = None)

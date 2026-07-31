@@ -691,9 +691,10 @@ test "expired cache entries never match" {
   }
 }
 
-test "refreshOAuthToken requires configured OAuth app and valid user" {
-  val dbPath = useFreshTestDb("oauth-refresh-validation")
+test "refreshOAuthToken returns refreshed token for authenticated user" {
+  val dbPath = useFreshTestDb("oauth-refresh-configured")
   defer {
+    clearOAuthEnv()
     cleanupTestDb(dbPath)
   }
 
@@ -703,9 +704,57 @@ test "refreshOAuthToken requires configured OAuth app and valid user" {
     case Err(e) -> assertEqualInt(e.status, 400, "unconfigured -> 400")
   }
 
-  // Without bearer token -> 401 Unauthorized
+  // Configure OAuth app
+  Env.SetEnvironmentVariable("CLOUD_AGENTS_GITHUB_CLIENT_ID", "cid_test")
+  Env.SetEnvironmentVariable("CLOUD_AGENTS_GITHUB_CLIENT_SECRET", "secret_test")
+
+  val userId = "gh-101"
+  val token = "gho_valid_bearer"
+  val tokenHash = CloudAgents.Crypto.sha256Base64(token)
+
+  // Seed vault credential
+  match CloudAgents.Repository.putCredential(userId, "GITHUB_TOKEN", token) {
+    case Ok(_) -> ()
+    case Err(e) -> assertTrue(false, "putCredential failed: " + CloudAgents.Repository.credentialErrorMessage(e))
+  }
+  // Seed active token cache
+  match CloudAgents.Repository.cacheGitHubToken(tokenHash, userId, "octocat") {
+    case Ok(_) -> ()
+    case Err(e) -> assertTrue(false, "cache write failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+  }
+
+  // 1. Success path with active token in cache
+  match refreshOAuthToken("Bearer " + token) {
+    case Ok(grant) -> {
+      assertEqual(grant.token, token, "vault token returned")
+      assertEqual(grant.userId, userId, "userId matches")
+      assertEqual(grant.login, "octocat", "login matches")
+    }
+    case Err(e) -> assertTrue(false, "refreshOAuthToken failed: " + e.message)
+  }
+
+  // 2. Success path with expired token in cache (uses historical lookup)
+  match CloudAgents.Sqlite.execute("UPDATE github_token_cache SET expires_at = '0' WHERE token_hash = '" + tokenHash + "'") {
+    case Ok(_) -> ()
+    case Err(e) -> assertTrue(false, "setup update failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+  }
+  match refreshOAuthToken("Bearer " + token) {
+    case Ok(grant) -> {
+      assertEqual(grant.token, token, "historical cache lookup recovers user ID and refreshes")
+      assertEqual(grant.userId, userId, "userId matches")
+    }
+    case Err(e) -> assertTrue(false, "historical refresh failed: " + e.message)
+  }
+
+  // 3. Unauthenticated (unknown bearer token) -> 401 Unauthorized
+  match refreshOAuthToken("Bearer gho_unknown") {
+    case Ok(_) -> assertTrue(false, "unknown bearer token must fail")
+    case Err(e) -> assertEqualInt(e.status, 401, "unknown bearer token -> 401")
+  }
+
+  // 4. Missing/invalid Authorization header -> 401 Unauthorized
   match refreshOAuthToken("") {
-    case Ok(_) -> assertTrue(false, "empty auth header must fail")
-    case Err(e) -> assertEqualInt(e.status, 400, "unconfigured check runs before bearer check")
+    case Ok(_) -> assertTrue(false, "missing auth header must fail")
+    case Err(e) -> assertEqualInt(e.status, 401, "missing auth header -> 401")
   }
 }
