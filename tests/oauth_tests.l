@@ -670,8 +670,8 @@ test "expired cache entries never match" {
     case Ok(_) -> ()
     case Err(e) -> assertTrue(false, "cache write failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
   }
-  // Force the entry into the past.
-  match CloudAgents.Sqlite.execute("UPDATE github_token_cache SET expires_at = '0' WHERE token_hash = '" + hash + "'") {
+  // Force the entry into the recent past (5 minutes ago -> expired for cachedGitHubToken, within 2h window for lookupHistoricalGitHubToken).
+  match CloudAgents.Sqlite.execute("UPDATE github_token_cache SET expires_at = CAST((CAST(strftime('%s', 'now') AS INTEGER) * 1000 - 300000) AS TEXT) WHERE token_hash = '" + hash + "'") {
     case Ok(_) -> ()
     case Err(e) -> assertTrue(false, "setup update failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
   }
@@ -734,7 +734,7 @@ test "refreshOAuthToken returns refreshed token for authenticated user" {
   }
 
   // 2. Success path with expired token in cache (uses historical lookup)
-  match CloudAgents.Sqlite.execute("UPDATE github_token_cache SET expires_at = '0' WHERE token_hash = '" + tokenHash + "'") {
+  match CloudAgents.Sqlite.execute("UPDATE github_token_cache SET expires_at = CAST((CAST(strftime('%s', 'now') AS INTEGER) * 1000 - 300000) AS TEXT) WHERE token_hash = '" + tokenHash + "'") {
     case Ok(_) -> ()
     case Err(e) -> assertTrue(false, "setup update failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
   }
