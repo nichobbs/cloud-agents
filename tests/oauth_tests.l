@@ -680,4 +680,32 @@ test "expired cache entries never match" {
     case Ok(None) -> ()
     case Err(e) -> assertTrue(false, "cache read failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
   }
+  // Historical lookup finds the user ID even when the cache entry is expired.
+  match CloudAgents.Repository.lookupHistoricalGitHubToken(hash) {
+    case Ok(Some(entry)) -> {
+      assertEqual(entry.userId, "gh-7", "historical lookup recovers user ID from expired cache row")
+      assertEqual(entry.login, "old", "historical lookup recovers login")
+    }
+    case Ok(None) -> assertTrue(false, "historical lookup must find expired row")
+    case Err(e) -> assertTrue(false, "historical lookup failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+  }
+}
+
+test "refreshOAuthToken requires configured OAuth app and valid user" {
+  val dbPath = useFreshTestDb("oauth-refresh-validation")
+  defer {
+    cleanupTestDb(dbPath)
+  }
+
+  // Without OAuth configured -> 400 Bad Request
+  match refreshOAuthToken("Bearer gho_test") {
+    case Ok(_) -> assertTrue(false, "unconfigured OAuth must fail")
+    case Err(e) -> assertEqualInt(e.status, 400, "unconfigured -> 400")
+  }
+
+  // Without bearer token -> 401 Unauthorized
+  match refreshOAuthToken("") {
+    case Ok(_) -> assertTrue(false, "empty auth header must fail")
+    case Err(e) -> assertEqualInt(e.status, 400, "unconfigured check runs before bearer check")
+  }
 }

@@ -2008,6 +2008,11 @@ pub func selectGitHubTokenSql(tokenHash: in String, nowMillis: in String): Strin
     " AS INTEGER)"
 }
 
+/// SELECT a token cache entry even if expired (used for token refresh lookup when the cache row is stale).
+pub func selectHistoricalGitHubTokenSql(tokenHash: in String): String {
+  return "SELECT user_id, login FROM github_token_cache WHERE token_hash = " + sqlLiteral(tokenHash) + " AND user_id <> ''"
+}
+
 /// DELETE one token's cache row (server-side logout): the next presentation
 /// of that token must go through live validation again.
 pub func deleteGitHubTokenSql(tokenHash: in String): String {

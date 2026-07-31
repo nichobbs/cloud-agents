@@ -461,6 +461,7 @@ pub func refreshOAuthToken(authHeaderValue: in String): Result[TokenGrant, Web.A
   match CloudAgents.Auth.extractBearerToken(authHeaderValue) {
     case Some(token) -> {
       val tokenHash = CloudAgents.Crypto.sha256Base64(token)
+      // 1. Fresh cache hit
       match CloudAgents.Repository.cachedGitHubToken(tokenHash) {
         case Ok(Some(entry)) -> {
           if entry.userId.length > 0 {
@@ -470,6 +471,29 @@ pub func refreshOAuthToken(authHeaderValue: in String): Result[TokenGrant, Web.A
         }
         case Ok(None) -> ()
         case Err(_) -> ()
+      }
+      // 2. Historical (expired) cache hit for expired tokens
+      if userId.length == 0 {
+        match CloudAgents.Repository.lookupHistoricalGitHubToken(tokenHash) {
+          case Ok(Some(entry)) -> {
+            if entry.userId.length > 0 {
+              userId = entry.userId
+              cachedLogin = entry.login
+            }
+          }
+          case Ok(None) -> ()
+          case Err(_) -> ()
+        }
+      }
+      // 3. Live re-validation fallback for uncached token
+      if userId.length == 0 {
+        match authenticateGitHubBearer(token) {
+          case Allowed(uid) -> {
+            userId = uid
+            cachedLogin = CloudAgents.Auth.githubIdFromUserId(uid)
+          }
+          case Denied(_) -> ()
+        }
       }
     }
     case None -> ()
@@ -482,6 +506,11 @@ pub func refreshOAuthToken(authHeaderValue: in String): Result[TokenGrant, Web.A
   }
   if userId.length == 0 {
     return Err(Web.unauthorized("Authentication required to refresh token"))
+  }
+  // Enforce whitelist check on every refresh request
+  match CloudAgents.Auth.authorizeGitHub(CloudAgents.Auth.githubIdFromUserId(userId), whitelistCsv()) {
+    case Allowed(_) -> ()
+    case Denied(e) -> return Err(Web.unauthorized(CloudAgents.Auth.authErrorMessage(e)))
   }
   val freshToken = match ensureFreshGitHubToken(userId) {
     case Ok(t) -> t

@@ -31,10 +31,11 @@ function authHeaders(): HeadersInit {
   return token ? { Authorization: `Bearer ${token}` } : {};
 }
 
-let isRefreshing = false;
+let refreshPromise: Promise<string | null> | null = null;
 
 /** Central fetch wrapper for API endpoints: intercepts HTTP 401 status when
- *  signed in, attempts transparent token refresh, and redirects to /login on failure. */
+ *  signed in, attempts transparent token refresh (queuing concurrent 401s behind
+ *  one in-flight refresh), and redirects to /login on failure. */
 export async function apiFetch(input: RequestInfo | URL, init?: RequestInit): Promise<Response> {
   const res = await fetch(input, init);
 
@@ -49,32 +50,37 @@ export async function apiFetch(input: RequestInfo | URL, init?: RequestInit): Pr
       return res;
     }
 
-    if (!isRefreshing) {
-      isRefreshing = true;
-      try {
-        const grant = await api.refreshToken();
-        if (grant && grant.token) {
-          completeLogin(grant.token, grant.login || localStorage.getItem('cloud_agents_login') || '');
-          isRefreshing = false;
-
-          const newInit: RequestInit = { ...init };
-          const headers = new Headers(init?.headers);
-          headers.set('Authorization', `Bearer ${grant.token}`);
-          newInit.headers = headers;
-
-          return await fetch(input, newInit);
+    if (!refreshPromise) {
+      refreshPromise = (async () => {
+        try {
+          const grant = await api.refreshToken();
+          if (grant && grant.token) {
+            completeLogin(grant.token, grant.login || localStorage.getItem('cloud_agents_login') || '');
+            return grant.token;
+          }
+        } catch {
+          /* refresh failed */
         }
-      } catch {
-        /* refresh failed */
-      } finally {
-        isRefreshing = false;
-      }
-
-      if (typeof window !== 'undefined' && window.location) {
-        setReturnPath(window.location.pathname + window.location.search);
-      }
-      signOut();
+        return null;
+      })();
     }
+
+    const freshToken = await refreshPromise;
+    refreshPromise = null;
+
+    if (freshToken) {
+      const newInit: RequestInit = { ...init };
+      const headers = new Headers(init?.headers);
+      headers.set('Authorization', `Bearer ${freshToken}`);
+      newInit.headers = headers;
+
+      return await fetch(input, newInit);
+    }
+
+    if (typeof window !== 'undefined' && window.location) {
+      setReturnPath(window.location.pathname + window.location.search);
+    }
+    signOut();
   }
 
   return res;

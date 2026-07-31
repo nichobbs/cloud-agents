@@ -46,4 +46,42 @@ describe('apiFetch 401 handling', () => {
     expect(isSignedIn()).toBe(false);
     expect(takeReturnPath()).toBe(window.location.pathname + window.location.search);
   });
+
+  it('queues concurrent 401 requests behind a single refresh and retries all with fresh token', async () => {
+    completeLogin('gho_old', 'octocat');
+
+    let refreshCalls = 0;
+    let sessionsAttempt = 0;
+    let promptsAttempt = 0;
+
+    const fetchMock = vi.fn().mockImplementation((input: string) => {
+      if (input.includes('/api/auth/github/refresh')) {
+        refreshCalls++;
+        return Promise.resolve(new Response(JSON.stringify({ token: 'gho_new', login: 'octocat', userId: 'gh-1' }), { status: 200 }));
+      }
+      if (input.includes('/api/sessions')) {
+        sessionsAttempt++;
+        if (sessionsAttempt === 1) return Promise.resolve(new Response('401 unauthorized', { status: 401 }));
+        return Promise.resolve(new Response(JSON.stringify({ sessions: [] }), { status: 200 }));
+      }
+      if (input.includes('/api/prompts')) {
+        promptsAttempt++;
+        if (promptsAttempt === 1) return Promise.resolve(new Response('401 unauthorized', { status: 401 }));
+        return Promise.resolve(new Response(JSON.stringify({ prompts: [] }), { status: 200 }));
+      }
+      return Promise.resolve(new Response('404 not found', { status: 404 }));
+    });
+
+    vi.stubGlobal('fetch', fetchMock);
+
+    const [res1, res2] = await Promise.all([
+      apiFetch('/api/sessions', { headers: { Authorization: 'Bearer gho_old' } }),
+      apiFetch('/api/prompts', { headers: { Authorization: 'Bearer gho_old' } }),
+    ]);
+
+    expect(res1.status).toBe(200);
+    expect(res2.status).toBe(200);
+    expect(refreshCalls).toBe(1);
+    expect(getApiToken()).toBe('gho_new');
+  });
 });
