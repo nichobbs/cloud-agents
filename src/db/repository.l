@@ -3608,11 +3608,16 @@ pub func attachScheduledJobSession(id: in String, sessionId: in String): Result[
   return Ok(value = ())
 }
 
-/// Bookkeeping after a recurring job's run.
+/// Bookkeeping after a recurring job's run. `previousNextRunAt` is the job's
+/// own next_run_at as it was when this run fired (i.e. the value the caller
+/// read from dueScheduledJobs), not the current time — see
+/// markScheduledJobRanRecurringSql for why (#874, cadence drift).
 pub func markScheduledJobRanRecurring(
-  id: in String, firedAt: in String, intervalSeconds: in String
+  id: in String, firedAt: in String, previousNextRunAt: in String, intervalSeconds: in String
 ): Result[Unit, CloudAgents.Sqlite.DbError] {
-  CloudAgents.Sqlite.execute(CloudAgents.Db.markScheduledJobRanRecurringSql(id, firedAt, intervalSeconds))?
+  CloudAgents.Sqlite.execute(
+    CloudAgents.Db.markScheduledJobRanRecurringSql(id, firedAt, previousNextRunAt, intervalSeconds)
+  )?
   return Ok(value = ())
 }
 

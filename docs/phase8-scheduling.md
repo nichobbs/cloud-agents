@@ -107,7 +107,12 @@ the ask.
 ## 5. Running a due job
 
 `CloudAgents.Jobs.triggerDueJobsHandler` (the maintenance endpoint) scans
-`dueScheduledJobs()` and, for each:
+`dueScheduledJobs()`, takes at most `maxJobsPerTrigger` (5) of the
+earliest-due jobs — capping one call's wall-clock time, since each due job
+below runs a full container synchronously rather than reap's fast
+terminate-and-blank (#872); anything past the cap is picked up on the very
+next poll, which the endpoint's own "safe to call repeatedly" contract
+already assumes — and, for each:
 
 1. Atomically claims the *row* (`claimDueScheduledJob` — a compare-and-clear
    on `next_run_at`, mirroring `clearSessionContainerIfMatchesSql`'s idiom)
@@ -148,11 +153,18 @@ the ask.
 6. Persists the reply, records the run's outcome, and enqueues a webhook
    event — again mirroring `streamSendMessage`.
 7. Advances the schedule: a recurring job's `next_run_at` moves to
-   `firedAt + intervalSeconds`; a one-shot job's `status` becomes
-   `completed`. This happens for both a **succeeded** and a **failed** run
-   (only a *skipped* run's schedule is instead restored to its pre-claim
-   value, per step 3/1) — a persistently broken job must not retry-storm
-   every poll tick forever.
+   `previousNextRunAt + intervalSeconds` — advanced from the slot the job
+   was actually *due* at (the `next_run_at` the due-scan read, i.e. step 1's
+   claimed value), not from `firedAt` (when the run happened to finish), so
+   a job's cadence doesn't drift later run over run by however long each run
+   itself takes (#874: "every hour" stays every hour even if a run takes 5
+   minutes). Clamped to never compute a value before `firedAt`: a run that
+   overran its own interval is due again immediately next poll instead of
+   being scheduled into the past. A one-shot job's `status` becomes
+   `completed` instead. This happens for both a **succeeded** and a
+   **failed** run (only a *skipped* run's schedule is instead restored to
+   its pre-claim value, per step 3/1) — a persistently broken job must not
+   retry-storm every poll tick forever.
 
 The endpoint returns `{"triggered":N,"failed":M,"skipped":K}`.
 
@@ -191,7 +203,11 @@ container-originated route) to scope the job operations — the same
   triggers again, continue this session." `repoUrl`/`branch`/`harness`/
   `model`/`profileId` are left empty on the row since they are only ever
   consulted by `ensureJobSession` for a job with no session yet, which never
-  applies here.
+  applies here. If the attach step fails after the job row's already been
+  inserted (a genuine DB error — its own guard always matches immediately
+  post-insert), the row is deleted before the error is returned rather than
+  left as an orphan the caller has no id to find and could otherwise
+  duplicate by retrying (#875).
 - `list_jobs()` — lists every job owned by this session's user (not just jobs
   tied to this session), so an agent can review and manage the whole backlog
   it — or a human via the UI — has scheduled.
@@ -263,3 +279,15 @@ already-runtime-verified code paths as closely as possible to minimize risk:
   the same class of trade-off `clearSessionContainerIfMatchesSql` already
   accepts elsewhere in this codebase. Not fixed here; flagged for a
   follow-up if it proves to matter in practice.
+- **Deliberately not fixed here (#873): `/api/maintenance/trigger-jobs` (and
+  the pre-existing `/api/maintenance/reap` it mirrors) run under ordinary
+  `AuthMiddleware` bearer auth with no separate "operator/admin" role, so
+  any bearer that authenticates at all can fire the sweep across every
+  user's due jobs.** This is the same access-control posture the sibling
+  `reap` maintenance endpoint has always had in this codebase (§2 explicitly
+  builds `trigger-jobs` to mirror it), not a new gap this phase introduces —
+  and it's consistent with `currentUserId()`'s own doc comment
+  (`src/handlers/auth.l`) that a real multi-tenant identity model waits on
+  OAuth being wired in. Narrowing maintenance-route auth ahead of that is a
+  cross-cutting decision affecting `reap` too, not something to make
+  unilaterally inside this phase's diff.

@@ -54,6 +54,18 @@ val maxIntervalSeconds = 2592000
 /// itself would need revisiting.
 val maxEpochDigits = 15
 
+/// The most due jobs a single triggerDueJobsHandler call will fire.
+/// Unlike reapContainers' per-item cost (a fast Docker terminate call), each
+/// due job here runs a full container synchronously — the endpoint's own
+/// docs already warn a single call can otherwise block up to ~30 minutes if
+/// many jobs are due at once (e.g. the external poller missed several
+/// cycles). Capping keeps one call's wall-clock time bounded; earliest-due
+/// jobs are prioritized (selectDueScheduledJobsSql's ORDER BY), and anything
+/// left over is picked up on the very next poll — the endpoint's "safe to
+/// call repeatedly" contract already assumes exactly this kind of partial
+/// progress per call (#872).
+val maxJobsPerTrigger = 5
+
 func dbError(e: in CloudAgents.Sqlite.DbError): Web.ApiError {
   return Web.internalError(CloudAgents.Sqlite.dbErrorMessage(e))
 }
@@ -580,8 +592,10 @@ func runOneJob(job: in CloudAgents.Repository.ScheduledJob): JobRunOutcome {
 /// external scheduler to poll (Lyric.Web has no in-process timer), mirroring
 /// CloudAgents.Handlers.reapContainers exactly. Safe to call repeatedly: a
 /// job not yet due is untouched, and a skipped (busy-session) job is retried
-/// on the next call with no double-firing. Returns
-/// `{"triggered":N,"failed":M,"skipped":K}`.
+/// on the next call with no double-firing. Processes at most
+/// `maxJobsPerTrigger` jobs (earliest-due first) so one call's wall-clock
+/// time stays bounded; anything left over is picked up on the next poll.
+/// Returns `{"triggered":N,"failed":M,"skipped":K}`.
 pub func triggerDueJobsHandler(): Result[String, Web.ApiError] {
   val due = match CloudAgents.Repository.dueScheduledJobs() {
     case Ok(js) -> js
@@ -590,8 +604,13 @@ pub func triggerDueJobsHandler(): Result[String, Web.ApiError] {
   var triggered = 0
   var failed = 0
   var skipped = 0
+  // Bounds how many jobs this call actually attempts (claims), mirroring
+  // CloudAgents.Highlights' maxMessagesPerRefresh cap idiom — a lost claim
+  // doesn't count against the budget, since no session/container work was
+  // done for it.
+  var attempted = 0
   var i = 0
-  while i < due.length {
+  while i < due.length and attempted < maxJobsPerTrigger {
     val job = due[i]
     val claimed = match CloudAgents.Repository.claimDueScheduledJob(job.id, job.nextRunAt) {
       case Ok(b) -> b
@@ -604,11 +623,12 @@ pub func triggerDueJobsHandler(): Result[String, Web.ApiError] {
       i = i + 1
       continue
     }
+    attempted = attempted + 1
     match runOneJob(job) {
       case JobSucceeded -> {
         triggered = triggered + 1
         if job.intervalSeconds.length > 0 {
-          val _ = CloudAgents.Repository.markScheduledJobRanRecurring(job.id, CloudAgents.Repository.nowMillis(), job.intervalSeconds)
+          val _ = CloudAgents.Repository.markScheduledJobRanRecurring(job.id, CloudAgents.Repository.nowMillis(), job.nextRunAt, job.intervalSeconds)
         } else {
           val _ = CloudAgents.Repository.markScheduledJobCompleted(job.id, CloudAgents.Repository.nowMillis())
         }
@@ -617,7 +637,7 @@ pub func triggerDueJobsHandler(): Result[String, Web.ApiError] {
         failed = failed + 1
         println("WARNING: scheduled job " + job.id + " failed: " + msg)
         if job.intervalSeconds.length > 0 {
-          val _ = CloudAgents.Repository.markScheduledJobRanRecurring(job.id, CloudAgents.Repository.nowMillis(), job.intervalSeconds)
+          val _ = CloudAgents.Repository.markScheduledJobRanRecurring(job.id, CloudAgents.Repository.nowMillis(), job.nextRunAt, job.intervalSeconds)
         } else {
           val _ = CloudAgents.Repository.markScheduledJobCompleted(job.id, CloudAgents.Repository.nowMillis())
         }
@@ -731,7 +751,16 @@ pub func scheduleJobCallbackHandler(
   }
   match CloudAgents.Repository.attachScheduledJobSession(job.id, sessionId) {
     case Ok(_) -> ()
-    case Err(e) -> return Err(dbError(e))
+    case Err(e) -> {
+      // The insert already committed; an attach failure here (a real DB
+      // error — the guard on the UPDATE always matches immediately after
+      // insert) must not leave an orphaned, never-attached job row behind
+      // that the caller has no id to clean up (it only sees this error) and
+      // could otherwise duplicate on retry (#875). Best-effort: the caller
+      // already gets the original attach error either way.
+      val _ = CloudAgents.Repository.deleteScheduledJob(job.id, ownerUserId)
+      return Err(dbError(e))
+    }
   }
   return Ok(ScheduleJobCallbackResponse(id = job.id))
 }

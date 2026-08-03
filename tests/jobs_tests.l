@@ -442,7 +442,7 @@ test "dueScheduledJobs returns only active jobs whose next_run_at has arrived" {
 
   // Marking it recurring-ran pushes next_run_at into the future; it should
   // drop out of the due set.
-  match CloudAgents.Repository.markScheduledJobRanRecurring(dueJob.id, CloudAgents.Repository.nowMillis(), "3600") {
+  match CloudAgents.Repository.markScheduledJobRanRecurring(dueJob.id, CloudAgents.Repository.nowMillis(), dueJob.nextRunAt, "3600") {
     case Ok(_) -> ()
     case Err(e) -> assertTrue(false, "markScheduledJobRanRecurring failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
   }
@@ -506,5 +506,53 @@ test "claimDueScheduledJob lets only one of two racing callers win the same due 
   match CloudAgents.Repository.dueScheduledJobs() {
     case Ok(js) -> assertEqualInt(js.length.toInt(), 1, "a released claim is due again")
     case Err(e) -> assertTrue(false, "dueScheduledJobs failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+  }
+}
+
+// ── markScheduledJobRanRecurring: cadence drift (#874) ────────────────────────
+test "markScheduledJobRanRecurring advances from the scheduled slot, not the run's completion time" {
+  val dbPath = useFreshTestDb("job-recurring-drift")
+  defer {
+    cleanupTestDb(dbPath)
+  }
+  CloudAgents.Auth.setCurrentUserId("default")
+  val job = match CloudAgents.Jobs.createJobHandler("default", baseCreateReq("nightly", "", "3600")) {
+    case Ok(j) -> j
+    case Err(e) -> panic("create failed: " + toString(e.status))
+  }
+
+  // A run that finishes quickly (100s after its due slot, well inside the
+  // 3600s interval): next_run_at should be exactly previousNextRunAt +
+  // 3600s, not firedAt + 3600s — the interval's own base point is the
+  // scheduled slot, so the cadence doesn't drift later run over run.
+  match CloudAgents.Repository.markScheduledJobRanRecurring(job.id, "1000000100000", "1000000000000", "3600") {
+    case Ok(_) -> ()
+    case Err(e) -> assertTrue(false, "markScheduledJobRanRecurring failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+  }
+  match CloudAgents.Jobs.getJobHandler("default", job.id) {
+    case Ok(j) ->
+      assertEqual(
+        j.nextRunAtEpochMillis,
+        "1000003600000",
+        "next_run_at is previousNextRunAt + intervalSeconds*1000, unaffected by how long the run itself took"
+      )
+    case Err(e) -> assertTrue(false, "getJobHandler failed: " + toString(e.status))
+  }
+
+  // A run that takes LONGER than the interval (finishes 100s after where the
+  // *next* scheduled slot would already be): next_run_at is clamped to
+  // firedAt, not computed into the past.
+  match CloudAgents.Repository.markScheduledJobRanRecurring(job.id, "1000003700000", "1000003600000", "60") {
+    case Ok(_) -> ()
+    case Err(e) -> assertTrue(false, "markScheduledJobRanRecurring failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+  }
+  match CloudAgents.Jobs.getJobHandler("default", job.id) {
+    case Ok(j) ->
+      assertEqual(
+        j.nextRunAtEpochMillis,
+        "1000003700000",
+        "an overrun run clamps next_run_at to firedAt instead of scheduling it in the past"
+      )
+    case Err(e) -> assertTrue(false, "getJobHandler failed: " + toString(e.status))
   }
 }

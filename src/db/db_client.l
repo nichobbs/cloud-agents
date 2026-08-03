@@ -3117,15 +3117,26 @@ pub func attachScheduledJobSessionSql(id: in String, sessionId: in String): Stri
     " AND session_id = ''"
 }
 
-/// Bookkeeping after a recurring job's run: last_run_at = firedAt, next_run_at
-/// = firedAt + intervalSeconds*1000 — computed in SQL (see the module comment
-/// above for why).
-pub func markScheduledJobRanRecurringSql(id: in String, firedAt: in String, intervalSeconds: in String): String {
-  return "UPDATE scheduled_jobs SET last_run_at = " + sqlLiteral(firedAt) + ", next_run_at = CAST(CAST(" +
-    sqlLiteral(firedAt) +
+/// Bookkeeping after a recurring job's run: last_run_at = firedAt (when the
+/// run actually completed); next_run_at advances from `previousNextRunAt`
+/// (the slot the job was actually due at, i.e. the row's next_run_at
+/// *before* this run) rather than from firedAt, so a job's cadence doesn't
+/// drift later by however long each run itself takes (#874) — "every hour"
+/// stays every hour even if each run takes 5 minutes. Clamped to never fall
+/// before firedAt (MAX in SQL): if a run took longer than the interval
+/// itself, the job is due again immediately on the next poll rather than
+/// computing a next_run_at already in the past. Computed in SQL (see the
+/// module comment above for why).
+pub func markScheduledJobRanRecurringSql(
+  id: in String, firedAt: in String, previousNextRunAt: in String, intervalSeconds: in String
+): String {
+  return "UPDATE scheduled_jobs SET last_run_at = " + sqlLiteral(firedAt) + ", next_run_at = CAST(MAX(CAST(" +
+    sqlLiteral(previousNextRunAt) +
     " AS INTEGER) + CAST(" +
     sqlLiteral(intervalSeconds) +
-    " AS INTEGER) * 1000 AS TEXT) WHERE id = " +
+    " AS INTEGER) * 1000, CAST(" +
+    sqlLiteral(firedAt) +
+    " AS INTEGER)) AS TEXT) WHERE id = " +
     sqlLiteral(id)
 }
 
