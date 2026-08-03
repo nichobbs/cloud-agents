@@ -3584,6 +3584,22 @@ pub func dueScheduledJobs(): Result[slice[ScheduledJob], CloudAgents.Sqlite.DbEr
   return Ok(value = acc)
 }
 
+/// Atomically claim a due job before firing it. Returns true if this caller
+/// won the claim (see claimDueScheduledJobSql) — false means a concurrent
+/// maintenance-endpoint call already claimed (or otherwise changed) the
+/// same row, and the caller should skip it rather than double-fire.
+pub func claimDueScheduledJob(id: in String, expectedNextRunAt: in String): Result[Bool, CloudAgents.Sqlite.DbError] {
+  val n = CloudAgents.Sqlite.execute(CloudAgents.Db.claimDueScheduledJobSql(id, expectedNextRunAt))?
+  return Ok(value = n > 0)
+}
+
+/// Restore a claimed-but-skipped job's next_run_at (see
+/// restoreScheduledJobNextRunAtSql).
+pub func restoreScheduledJobNextRunAt(id: in String, nextRunAt: in String): Result[Unit, CloudAgents.Sqlite.DbError] {
+  CloudAgents.Sqlite.execute(CloudAgents.Db.restoreScheduledJobNextRunAtSql(id, nextRunAt))?
+  return Ok(value = ())
+}
+
 /// Attach a session to a job on its first run (or immediately, for a job an
 /// in-container schedule_job call created for its own calling session) — a
 /// no-op if the job already has one (attachScheduledJobSessionSql's guard).

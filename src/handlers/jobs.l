@@ -584,6 +584,17 @@ pub func triggerDueJobsHandler(): Result[String, Web.ApiError] {
   var i = 0
   while i < due.length {
     val job = due[i]
+    val claimed = match CloudAgents.Repository.claimDueScheduledJob(job.id, job.nextRunAt) {
+      case Ok(b) -> b
+      case Err(_) -> false
+    }
+    if not claimed {
+      // Lost the race to a concurrent trigger-jobs call (or the row changed
+      // underneath us) — the other caller (or a later poll) owns this job now.
+      skipped = skipped + 1
+      i = i + 1
+      continue
+    }
     match runOneJob(job) {
       case JobSucceeded -> {
         triggered = triggered + 1
@@ -604,6 +615,7 @@ pub func triggerDueJobsHandler(): Result[String, Web.ApiError] {
       }
       case JobSkipped(_) -> {
         skipped = skipped + 1
+        val _ = CloudAgents.Repository.restoreScheduledJobNextRunAt(job.id, job.nextRunAt)
       }
     }
     i = i + 1

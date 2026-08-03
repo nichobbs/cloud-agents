@@ -457,3 +457,54 @@ test "dueScheduledJobs returns only active jobs whose next_run_at has arrived" {
     case Err(e) -> assertTrue(false, "getJobHandler failed: " + toString(e.status))
   }
 }
+
+// ── claimDueScheduledJob: the first-trigger duplicate-run race (#870) ────────
+test "claimDueScheduledJob lets only one of two racing callers win the same due job" {
+  val dbPath = useFreshTestDb("job-claim-race")
+  defer {
+    cleanupTestDb(dbPath)
+  }
+  CloudAgents.Auth.setCurrentUserId("default")
+  val job = match CloudAgents.Jobs.createJobHandler("default", baseCreateReq("due now", "", "3600")) {
+    case Ok(j) -> j
+    case Err(e) -> panic("create failed: " + toString(e.status))
+  }
+  val due = match CloudAgents.Repository.dueScheduledJobs() {
+    case Ok(js) -> js
+    case Err(e) -> panic("dueScheduledJobs failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+  }
+  assertEqualInt(due.length.toInt(), 1, "the job is due")
+
+  // Two overlapping maintenance-endpoint polls both read the same due row
+  // (same next_run_at) before either claims it — mirrors triggerDueJobsHandler
+  // racing with itself.
+  val firstClaim = match CloudAgents.Repository.claimDueScheduledJob(due[0].id, due[0].nextRunAt) {
+    case Ok(won) -> won
+    case Err(e) -> panic("claimDueScheduledJob failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+  }
+  val secondClaim = match CloudAgents.Repository.claimDueScheduledJob(due[0].id, due[0].nextRunAt) {
+    case Ok(won) -> won
+    case Err(e) -> panic("claimDueScheduledJob failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+  }
+  assertTrue(firstClaim, "the first caller wins the claim")
+  assertTrue(not secondClaim, "a second caller racing on the same due row loses the claim")
+
+  // A claimed-but-not-yet-resolved job drops out of the due set (no third
+  // caller can pile on either), same as a job whose run is genuinely in flight.
+  match CloudAgents.Repository.dueScheduledJobs() {
+    case Ok(js) -> assertEqualInt(js.length.toInt(), 0, "a claimed job is not due again until resolved")
+    case Err(e) -> assertTrue(false, "dueScheduledJobs failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+  }
+
+  // If the run that won the claim is skipped (its session was busy for an
+  // unrelated reason), the claim is released so the job is retried, not
+  // stuck un-due forever.
+  match CloudAgents.Repository.restoreScheduledJobNextRunAt(due[0].id, due[0].nextRunAt) {
+    case Ok(_) -> ()
+    case Err(e) -> assertTrue(false, "restoreScheduledJobNextRunAt failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+  }
+  match CloudAgents.Repository.dueScheduledJobs() {
+    case Ok(js) -> assertEqualInt(js.length.toInt(), 1, "a released claim is due again")
+    case Err(e) -> assertTrue(false, "dueScheduledJobs failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+  }
+}

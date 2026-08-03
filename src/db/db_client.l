@@ -3082,6 +3082,30 @@ pub func selectDueScheduledJobsSql(nowMillis: in String): String {
     " AS INTEGER) ORDER BY CAST(next_run_at AS INTEGER) ASC"
 }
 
+/// Atomically claim a due job for firing: clears next_run_at (excluding it
+/// from selectDueScheduledJobsSql's `next_run_at <> ''` filter) only if it
+/// still equals the exact value the maintenance scan just read — a
+/// compare-and-clear mirroring clearSessionContainerIfMatchesSql's idiom.
+/// Rows affected = 1 means this caller won the claim; two overlapping
+/// `POST /api/maintenance/trigger-jobs` calls racing on the same due row
+/// cannot both proceed to ensureJobSession/runOneJob for the same job.
+pub func claimDueScheduledJobSql(id: in String, expectedNextRunAt: in String): String {
+  return "UPDATE scheduled_jobs SET next_run_at = '' WHERE id = " + sqlLiteral(id) + " AND next_run_at = " +
+    sqlLiteral(expectedNextRunAt) +
+    " AND status = 'active'"
+}
+
+/// Restore a claimed job's next_run_at after a skipped run (its session was
+/// already mid-run for an unrelated reason) so it's retried on the next
+/// poll instead of sitting silently un-due forever. Guarded on next_run_at
+/// still being the claim's empty sentinel, so it can't clobber a value a
+/// concurrent markScheduledJobRanRecurring/markScheduledJobCompleted/
+/// updateScheduledJob already wrote.
+pub func restoreScheduledJobNextRunAtSql(id: in String, nextRunAt: in String): String {
+  return "UPDATE scheduled_jobs SET next_run_at = " + sqlLiteral(nextRunAt) + " WHERE id = " + sqlLiteral(id) +
+    " AND next_run_at = ''"
+}
+
 /// First-run session attachment: only ever meant to apply once, guarded on
 /// the row's session_id still being empty so a racing second trigger tick
 /// can't clobber a session a concurrent call already attached. Also used

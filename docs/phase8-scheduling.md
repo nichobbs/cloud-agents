@@ -109,17 +109,30 @@ the ask.
 `CloudAgents.Jobs.triggerDueJobsHandler` (the maintenance endpoint) scans
 `dueScheduledJobs()` and, for each:
 
-1. Resolves or creates the job's session (`ensureJobSession`).
-2. Claims the session for a run (`tryBeginRun` — the same one-run-per-session
-   guard `streamSendMessage` uses). If another run is already in progress
-   (a human is actively chatting with this session, or two trigger polls
-   overlapped), the job is **skipped** this tick: `next_run_at` is left
-   untouched so it retries on the *next* poll, rather than being marked
-   run-and-failed.
-3. Persists the prompt as a `user` message, resolves the profile-pinned
+1. Atomically claims the *row* (`claimDueScheduledJob` — a compare-and-clear
+   on `next_run_at`, mirroring `clearSessionContainerIfMatchesSql`'s idiom)
+   before doing anything else. This closes a race (#870) where two
+   overlapping `POST /api/maintenance/trigger-jobs` calls — realistic, since
+   the endpoint is documented "safe to call repeatedly" while a single call
+   can block up to 30 minutes across all due jobs — could otherwise both
+   read the same never-yet-sessioned due job and each independently create a
+   session and run a full container for what should be one first trigger.
+   Losing the claim counts as **skipped** this tick with no session/container
+   work attempted at all.
+2. Resolves or creates the job's session (`ensureJobSession`) — now only
+   ever reached by the single caller that won the row claim.
+3. Claims the session for a run (`tryBeginRun` — the same one-run-per-session
+   guard `streamSendMessage` uses). This is a second, independent guard for a
+   *different* case: an already-sessioned job whose session a human is
+   actively chatting with. If it loses, the job is **skipped** this tick and
+   the row claim from step 1 is released (`restoreScheduledJobNextRunAt`) so
+   `next_run_at` reverts to its original value and the job retries on the
+   *next* poll, rather than being marked run-and-failed or left permanently
+   un-due.
+4. Persists the prompt as a `user` message, resolves the profile-pinned
    harness if any, and records a `run` row — the same bookkeeping
    `streamSendMessage` does.
-4. Runs the container via `CloudAgents.Docker.runSessionMessageBlocking` — a
+5. Runs the container via `CloudAgents.Docker.runSessionMessageBlocking` — a
    new, non-SSE sibling of `streamSessionMessage` that drives the exact same
    `runSessionMessageAsync` task and `taskWaitMs` poll loop (including the
    same `Int`-accumulator wall-clock cap workaround — see
@@ -132,13 +145,14 @@ the ask.
    `GET /api/sessions/{id}/callbacks/pending`, exactly as for any other run.
    Only the *live* push is unavailable, an acceptable degradation since
    nothing was watching it anyway.
-5. Persists the reply, records the run's outcome, and enqueues a webhook
+6. Persists the reply, records the run's outcome, and enqueues a webhook
    event — again mirroring `streamSendMessage`.
-6. Advances the schedule: a recurring job's `next_run_at` moves to
+7. Advances the schedule: a recurring job's `next_run_at` moves to
    `firedAt + intervalSeconds`; a one-shot job's `status` becomes
    `completed`. This happens for both a **succeeded** and a **failed** run
-   (only a *skipped* run leaves the schedule untouched) — a persistently
-   broken job must not retry-storm every poll tick forever.
+   (only a *skipped* run's schedule is instead restored to its pre-claim
+   value, per step 3/1) — a persistently broken job must not retry-storm
+   every poll tick forever.
 
 The endpoint returns `{"triggered":N,"failed":M,"skipped":K}`.
 
@@ -234,4 +248,18 @@ already-runtime-verified code paths as closely as possible to minimize risk:
   `runOneJob`/`triggerDueJobsHandler` themselves cannot be unit-tested from a
   `@test_module` (they call into `CloudAgents.Docker`), and are Docker-free
   testable in principle once `scripts/e2e-http.sh` grows a seeded-jobs leg —
-  tracked as a follow-up, not done in this change.
+  tracked as a follow-up, not done in this change. The row-level claim
+  primitive those two functions are built on (`claimDueScheduledJob`/
+  `restoreScheduledJobNextRunAt`, §5 steps 1/3) *is* directly unit-tested
+  (`"claimDueScheduledJob lets only one of two racing callers win the same
+  due job"`), since it's plain SQL with no `CloudAgents.Docker` dependency.
+- **Known remaining edge case, not the one #870 was about:** if
+  `POST /api/jobs/{jid}` (an unchanged-schedule update) lands in the narrow
+  window between a job's row claim and its resolution, `updateJobHandler`
+  reads the row's current (temporarily `''`) `next_run_at` as "existing,
+  unchanged" and writes it back, leaving the job un-due until it's next
+  edited with an explicit schedule change. Unlike #870 this doesn't
+  duplicate a container run — worst case is a stalled recurring job — and is
+  the same class of trade-off `clearSessionContainerIfMatchesSql` already
+  accepts elsewhere in this codebase. Not fixed here; flagged for a
+  follow-up if it proves to matter in practice.
