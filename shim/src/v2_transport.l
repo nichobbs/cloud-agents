@@ -182,6 +182,58 @@ pub record NotifyResponse {
   pub id: String
 }
 
+// Phase 8 scheduled jobs (schedule_job / list_jobs / update_job / cancel_job)
+// — mirror CloudAgents.Jobs field-for-field
+// (docs/phase8-scheduling.md).
+@generate(Json)
+pub record ScheduleJobRequest {
+  pub name: String
+  pub prompt: String
+  pub runAtEpochMillis: String
+  pub intervalSeconds: String
+}
+
+@generate(Json)
+pub record ScheduleJobResponse {
+  pub id: String
+}
+
+@generate(Json)
+pub record JobSummary {
+  pub id: String
+  pub name: String
+  pub prompt: String
+  pub profileId: String
+  pub repoUrl: String
+  pub branch: String
+  pub harness: String
+  pub model: String
+  pub runAtEpochMillis: String
+  pub intervalSeconds: String
+  pub nextRunAtEpochMillis: String
+  pub lastRunAtEpochMillis: String
+  pub sessionId: String
+  pub status: String
+  pub createdAt: String
+}
+
+@generate(Json)
+pub record JobListResponse {
+  pub jobs: slice[JobSummary]
+}
+
+/// Every field is "" ("leave unchanged") except a non-empty `status`, which
+/// must be one of active/paused/cancelled — mirrors
+/// CloudAgents.Jobs.UpdateJobRequest exactly.
+@generate(Json)
+pub record UpdateJobRequest {
+  pub prompt: String
+  pub profileId: String
+  pub runAtEpochMillis: String
+  pub intervalSeconds: String
+  pub status: String
+}
+
 // ── Decoding helpers ─────────────────────────────────────────────────────────
 // Same defensive shape as CloudAgents.Shim.Transport's tryDecode* helpers: a
 // syntactically invalid JSON body throws a raw JsonException instead of
@@ -340,6 +392,39 @@ pub func tryDecodeNotifyResponse(body: in String): Option[NotifyResponse] {
   }
 }
 
+pub func tryDecodeScheduleJobResponse(body: in String): Option[ScheduleJobResponse] {
+  try {
+    match ScheduleJobResponse.fromJson(body) {
+      case Ok(r) -> Some(value = r)
+      case Err(_) -> None
+    }
+  } catch Bug as b {
+    None
+  }
+}
+
+pub func tryDecodeJobListResponse(body: in String): Option[JobListResponse] {
+  try {
+    match JobListResponse.fromJson(body) {
+      case Ok(r) -> Some(value = r)
+      case Err(_) -> None
+    }
+  } catch Bug as b {
+    None
+  }
+}
+
+pub func tryDecodeJobSummary(body: in String): Option[JobSummary] {
+  try {
+    match JobSummary.fromJson(body) {
+      case Ok(r) -> Some(value = r)
+      case Err(_) -> None
+    }
+  } catch Bug as b {
+    None
+  }
+}
+
 // ── Transport seam ───────────────────────────────────────────────────────────
 /// The shim's outbound calls to the host for the v2 tools, as an interface
 /// so CloudAgents.Shim.V2Client's state machines can be tested against an
@@ -360,6 +445,10 @@ pub interface V2CallbackTransport {
   func createSessionTodo(note: in String): Result[String, String]
   func listSessionTodos(): Result[String, String]
   func setSessionTodoStatus(todoId: in String, status: in String): Result[String, String]
+  func scheduleJob(name: in String, prompt: in String, runAtEpochMillis: in String, intervalSeconds: in String): Result[String, String]
+  func listJobs(): Result[String, String]
+  func updateJob(jobId: in String, prompt: in String, profileId: in String, runAtEpochMillis: in String, intervalSeconds: in String, status: in String): Result[String, String]
+  func cancelJob(jobId: in String): Result[String, String]
 }
 
 /// Percent-encodes a query-string VALUE (not a full URL) before it's
@@ -554,6 +643,48 @@ impl V2CallbackTransport for HttpV2CallbackTransport {
       self.baseUrl + "/api/sessions/" + self.sessionId + "/callbacks/todos/" + todoId + "/status",
       self.token,
       body
+    )
+  }
+
+  func scheduleJob(
+    name: in String, prompt: in String, runAtEpochMillis: in String, intervalSeconds: in String
+  ): Result[String, String] {
+    val body = ScheduleJobRequest(name = name, prompt = prompt, runAtEpochMillis = runAtEpochMillis, intervalSeconds = intervalSeconds).toJson()
+    CloudAgents.Shim.Transport.postJsonWithBearer(
+      self.baseUrl + "/api/sessions/" + self.sessionId + "/callbacks/jobs",
+      self.token,
+      body
+    )
+  }
+
+  func listJobs(): Result[String, String] {
+    CloudAgents.Shim.Transport.getWithBearer(
+      self.baseUrl + "/api/sessions/" + self.sessionId + "/callbacks/jobs",
+      self.token
+    )
+  }
+
+  func updateJob(
+    jobId: in String,
+    prompt: in String,
+    profileId: in String,
+    runAtEpochMillis: in String,
+    intervalSeconds: in String,
+    status: in String,
+  ): Result[String, String] {
+    val body = UpdateJobRequest(prompt = prompt, profileId = profileId, runAtEpochMillis = runAtEpochMillis, intervalSeconds = intervalSeconds, status = status).toJson()
+    CloudAgents.Shim.Transport.postJsonWithBearer(
+      self.baseUrl + "/api/sessions/" + self.sessionId + "/callbacks/jobs/" + jobId + "/update",
+      self.token,
+      body
+    )
+  }
+
+  func cancelJob(jobId: in String): Result[String, String] {
+    CloudAgents.Shim.Transport.postJsonWithBearer(
+      self.baseUrl + "/api/sessions/" + self.sessionId + "/callbacks/jobs/" + jobId + "/cancel",
+      self.token,
+      ""
     )
   }
 }

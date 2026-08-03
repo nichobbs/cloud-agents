@@ -22,13 +22,14 @@ val maxProfileNameLen = 200
 // profile_tools.tool_name may be drawn from in 'selected' mode
 // (docs/phase7-autonomy.md §7).
 //
-// 16 tools (#621: this count has no automated safeguard against drifting
+// 20 tools (#621: this count has no automated safeguard against drifting
 // from the shim's own registrations — a future change adding/renaming/
 // removing a shim tool without updating this list would silently accept a
 // dead name or reject a live one). If this count changes, also update
 // shim/src/main.l's addTool block comment and shim/tests/config_tests.l's
-// allShimToolNames.
-val validShimToolNames: slice[String] = ["request_permission", "ask_user", "report_progress", "request_secret", "add_followup_task", "report_artifact", "remember", "recall", "forget", "add_task", "list_tasks", "complete_task", "notify", "add_todo", "update_todo", "list_todos"]
+// allShimToolNames. schedule_job/list_jobs/update_job/cancel_job are the
+// phase-8 scheduled-jobs tools (docs/phase8-scheduling.md).
+val validShimToolNames: slice[String] = ["request_permission", "ask_user", "report_progress", "request_secret", "add_followup_task", "report_artifact", "remember", "recall", "forget", "add_task", "list_tasks", "complete_task", "notify", "add_todo", "update_todo", "list_todos", "schedule_job", "list_jobs", "update_job", "cancel_job"]
 
 @generate(Json)
 pub record SaveProfileRequest {

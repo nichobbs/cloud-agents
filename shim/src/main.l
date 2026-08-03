@@ -85,10 +85,11 @@ func main(): Unit {
   val v2Transport = HttpV2CallbackTransport(baseUrl = apiUrl, sessionId = sessionId, token = token)
 
   val server = newServer(McpImplementation(name = "cloud-agents", version = "0.1.0"))
-  // 16 addTool calls below (request_permission, ask_user, report_progress,
+  // 20 addTool calls below (request_permission, ask_user, report_progress,
   // request_secret, add_followup_task, report_artifact, remember, recall,
   // forget, add_task, list_tasks, complete_task, notify, add_todo,
-  // update_todo, list_todos) — this exact count
+  // update_todo, list_todos, schedule_job, list_jobs, update_job,
+  // cancel_job) — this exact count
   // and name set must stay in sync with two other hand-kept copies with no
   // automated cross-check (#621: this project has no dependency edge back
   // to this separate lyric.toml/build, so nothing enforces the three
@@ -282,6 +283,53 @@ func main(): Unit {
         description = "Push a short status update to the human right now (e.g. 'done', 'blocked', or a plain info update) — reaches them even if they've closed the session tab.",
         inputSchema = CloudAgents.Shim.V2Tools.notifySchema(),
         handler = NotifyTool(transport = v2Transport)
+      )
+    )
+  }
+
+  // Phase 8 scheduled jobs (docs/phase8-scheduling.md): schedule_job always
+  // attaches THIS session, so future firings continue it.
+  if CloudAgents.Shim.Config.toolIsEnabled(enabledToolsCsv, "schedule_job") {
+    addTool(
+      server,
+      McpToolDef(
+        name = "schedule_job",
+        description = "Schedule a job that sends a prompt back to THIS session later, once (runAtEpochMillis) and/or on a recurring interval (intervalSeconds). Requires an external scheduler to be polling the host's maintenance endpoint.",
+        inputSchema = CloudAgents.Shim.V2Tools.scheduleJobSchema(),
+        handler = ScheduleJobTool(transport = v2Transport)
+      )
+    )
+  }
+  if CloudAgents.Shim.Config.toolIsEnabled(enabledToolsCsv, "list_jobs") {
+    addTool(
+      server,
+      McpToolDef(
+        name = "list_jobs",
+        description = "List every scheduled job owned by this session's user, with its status and next run time.",
+        inputSchema = CloudAgents.Shim.V2Tools.listJobsSchema(),
+        handler = ListJobsTool(transport = v2Transport)
+      )
+    )
+  }
+  if CloudAgents.Shim.Config.toolIsEnabled(enabledToolsCsv, "update_job") {
+    addTool(
+      server,
+      McpToolDef(
+        name = "update_job",
+        description = "Update a scheduled job's prompt, schedule, or status (active/paused/cancelled).",
+        inputSchema = CloudAgents.Shim.V2Tools.updateJobSchema(),
+        handler = UpdateJobTool(transport = v2Transport)
+      )
+    )
+  }
+  if CloudAgents.Shim.Config.toolIsEnabled(enabledToolsCsv, "cancel_job") {
+    addTool(
+      server,
+      McpToolDef(
+        name = "cancel_job",
+        description = "Cancel a scheduled job so it will not fire again.",
+        inputSchema = CloudAgents.Shim.V2Tools.cancelJobSchema(),
+        handler = CancelJobTool(transport = v2Transport)
       )
     )
   }

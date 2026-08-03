@@ -995,6 +995,67 @@ async func runSessionMessageAsync(
   await cleanupRunnerContainer(dockerClient(), cell.containerId, sessionId, userId)
 }
 
+/// Run a session message to completion with NO live SSE observer — for
+/// host-triggered background work (docs/phase8-scheduling.md's scheduled
+/// jobs) where no browser tab is watching. Mirrors streamSessionMessage's
+/// create -> poll -> resolve control flow exactly, including the Int-
+/// accumulator wall-clock cap (see streamSessionMessage's doc comment for why
+/// elapsedPollMs is an Int accumulator rather than a Long epoch-millisecond
+/// comparison — the same AccessViolationException workaround applies here),
+/// but skips every SSE write and the mid-run permission/question/progress/
+/// secret/artifact/notification/todo event forwarding: there is no
+/// ResponseWriter to forward them to. Those events still land in their own
+/// tables via the container's own callback calls — a human reviewing the
+/// session later sees them via GET .../callbacks/pending exactly as they
+/// would for any other run; only the LIVE push is unavailable for an
+/// unattended run, an acceptable degradation since nothing was watching it
+/// anyway.
+pub func runSessionMessageBlocking(
+  repoUrl: in String,
+  branch: in String,
+  prompt: in String,
+  sessionId: in String,
+  harness: in String,
+  model: in String,
+  nativeSessionId: in String,
+  profileId: in String,
+  userId: in String,
+  extraRepos: in String,
+): Result[String, String] {
+  val cell = ResultCell(isSuccess = false, output = "", error = "")
+  val t = runSessionMessageAsync(
+    repoUrl,
+    branch,
+    prompt,
+    sessionId,
+    harness,
+    model,
+    nativeSessionId,
+    profileId,
+    userId,
+    extraRepos,
+    cell
+  )
+  val pollMs = 1000
+  var elapsedPollMs = 0
+  var finished = false
+  while not finished and elapsedPollMs <= runWallClockCapMs {
+    finished = taskWaitMs(t, pollMs)
+    elapsedPollMs = elapsedPollMs + pollMs
+  }
+  if not finished {
+    val containerId = sessionContainerId(sessionId)
+    if containerId.length > 0 {
+      val _ = terminateSessionContainer(containerId)
+    }
+    return Err(error = "Container run timed out after 30 minutes")
+  }
+  if cell.isSuccess {
+    return Ok(value = cell.output)
+  }
+  return Err(error = cell.error)
+}
+
 /// Terminate and delete a session container synchronously.
 pub func terminateSessionContainer(containerId: in String): Result[Unit, String] {
   val cell = ResultCell(isSuccess = false, output = "", error = "")

@@ -27,13 +27,18 @@ val maxBranchLen = 255
 
 val maxModelLen = 128
 
-func isHttpsUrl(url: in String): Bool {
+// isHttpsUrl/isSafeRepoUrl/isBlockedRepoHost/isSafeBranchName/isKnownHarness/
+// isSafeModelName are `pub` so CloudAgents.Jobs (docs/phase8-scheduling.md)
+// can reuse the exact same repo/branch/harness/model validation
+// createSession uses, including the SSRF blocklist, rather than duplicating
+// this security-sensitive logic in a second package.
+pub func isHttpsUrl(url: in String): Bool {
   // startsWith already handles a URL shorter than the prefix; no need to
   // hand-roll the length check + substring compare (#44).
   return url.startsWith("https://")
 }
 
-func isSafeRepoUrl(url: in String): Bool {
+pub func isSafeRepoUrl(url: in String): Bool {
   if not CloudAgents.Text.withinMaxLength(url, maxRepoUrlLen) {
     return false
   }
@@ -59,13 +64,13 @@ func isSafeRepoUrl(url: in String): Bool {
 /// bridge network — see `createRunnerContainer` in docker_manager.l) unless its
 /// profile explicitly sets `'restricted'`/`'none'`, so this hostname check is
 /// the only control against metadata-endpoint SSRF via `git clone` today.
-func isBlockedRepoHost(url: in String): Bool {
+pub func isBlockedRepoHost(url: in String): Bool {
   return CloudAgents.Webhooks.isBlockedWebhookHost(CloudAgents.Webhooks.webhookHost(url))
 }
 
 /// Git ref-name safety: rejects names git itself refuses, plus anything that
 /// could be misread as a command-line option (leading '-').
-func isSafeBranchName(branch: in String): Bool {
+pub func isSafeBranchName(branch: in String): Bool {
   if branch.length == 0 or not CloudAgents.Text.withinMaxLength(branch, maxBranchLen) {
     return false
   }
@@ -85,7 +90,7 @@ func isSafeBranchName(branch: in String): Bool {
   return not CloudAgents.Text.containsControlChar(branch)
 }
 
-func isSafeModelName(model: in String): Bool {
+pub func isSafeModelName(model: in String): Bool {
   if not CloudAgents.Text.withinMaxLength(model, maxModelLen) {
     return false
   }
@@ -95,7 +100,7 @@ func isSafeModelName(model: in String): Bool {
   return not CloudAgents.Text.containsControlChar(model)
 }
 
-func isKnownHarness(harness: in String): Bool {
+pub func isKnownHarness(harness: in String): Bool {
   return harness == "claude" or harness == "codex" or harness == "opencode" or harness == "gemini"
 }
 

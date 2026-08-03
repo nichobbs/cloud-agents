@@ -10,6 +10,7 @@ import CloudAgents.Docker
 import CloudAgents.Handlers
 import CloudAgents.Highlights
 import CloudAgents.Interactions
+import CloudAgents.Jobs
 import CloudAgents.Library
 import CloudAgents.OAuth
 import CloudAgents.Profiles
@@ -315,6 +316,19 @@ func setSessionTodoStatusResp(r: in Result[SetSessionTodoStatusResponse, Web.Api
 }
 
 func highlightListResp(r: in Result[HighlightList, Web.ApiError]): Web.Response {
+  return match r { case Ok(v) -> jsonResp(200, v.toJson()); case Err(e) -> Web.errorResponse(e) }
+}
+
+// ─── Phase 8: scheduled jobs (jobs.l) ───────────────────────────────────────
+func jobSummaryResp(r: in Result[JobSummary, Web.ApiError]): Web.Response {
+  return match r { case Ok(v) -> jsonResp(200, v.toJson()); case Err(e) -> Web.errorResponse(e) }
+}
+
+func jobListResp(r: in Result[JobListResponse, Web.ApiError]): Web.Response {
+  return match r { case Ok(v) -> jsonResp(200, v.toJson()); case Err(e) -> Web.errorResponse(e) }
+}
+
+func scheduleJobCallbackResp(r: in Result[ScheduleJobCallbackResponse, Web.ApiError]): Web.Response {
   return match r { case Ok(v) -> jsonResp(200, v.toJson()); case Err(e) -> Web.errorResponse(e) }
 }
 
@@ -1258,6 +1272,114 @@ impl Web.Handler for RouteListNotifications {
   }
 }
 
+// ─── Phase 8: scheduled jobs (jobs.l) ───────────────────────────────────────
+//
+// docs/phase8-scheduling.md. User-originated CRUD + the maintenance trigger
+// endpoint (auth-enforced like every other route in this file, mirroring
+// reapContainers/webhooks); the /callbacks/jobs routes are container-
+// originated (the schedule_job/list_jobs/update_job/cancel_job MCP tools),
+// callback-bearer-token authenticated exactly like every other
+// /callbacks/ route (CloudAgents.Auth.isContainerCallbackRoute).
+record RouteCreateJob {
+}
+
+impl Web.Handler for RouteCreateJob {
+  func handle(req: in Web.Request): Web.Response {
+    val decoded = match CreateJobRequest.fromJson(req.body) { case Ok(d) -> d; case Err(_) -> return badBody() }
+    return jobSummaryResp(CloudAgents.Jobs.createJobHandler(CloudAgents.Auth.currentUserId(), decoded))
+  }
+}
+
+record RouteListJobs {
+}
+
+impl Web.Handler for RouteListJobs {
+  func handle(req: in Web.Request): Web.Response {
+    return jobListResp(CloudAgents.Jobs.listJobsHandler(CloudAgents.Auth.currentUserId()))
+  }
+}
+
+record RouteGetJob {
+}
+
+impl Web.Handler for RouteGetJob {
+  func handle(req: in Web.Request): Web.Response {
+    return jobSummaryResp(CloudAgents.Jobs.getJobHandler(CloudAgents.Auth.currentUserId(), pparam(req, "jid")))
+  }
+}
+
+record RouteUpdateJob {
+}
+
+impl Web.Handler for RouteUpdateJob {
+  func handle(req: in Web.Request): Web.Response {
+    val jid = pparam(req, "jid")
+    val decoded = match UpdateJobRequest.fromJson(req.body) { case Ok(d) -> d; case Err(_) -> return badBody() }
+    return jobSummaryResp(CloudAgents.Jobs.updateJobHandler(CloudAgents.Auth.currentUserId(), jid, decoded))
+  }
+}
+
+record RouteDeleteJob {
+}
+
+impl Web.Handler for RouteDeleteJob {
+  func handle(req: in Web.Request): Web.Response {
+    return unitResp(CloudAgents.Jobs.deleteJobHandler(CloudAgents.Auth.currentUserId(), pparam(req, "jid")))
+  }
+}
+
+record RouteTriggerDueJobs {
+}
+
+impl Web.Handler for RouteTriggerDueJobs {
+  func handle(req: in Web.Request): Web.Response {
+    return jsonStringResp(CloudAgents.Jobs.triggerDueJobsHandler())
+  }
+}
+
+record RouteScheduleJobCallback {
+}
+
+impl Web.Handler for RouteScheduleJobCallback {
+  func handle(req: in Web.Request): Web.Response {
+    val id = pparam(req, "id")
+    val decoded = match ScheduleJobCallbackRequest.fromJson(req.body) { case Ok(d) -> d; case Err(_) -> return badBody() }
+    return scheduleJobCallbackResp(CloudAgents.Jobs.scheduleJobCallbackHandler(id, callbackAuthHeader(req), decoded))
+  }
+}
+
+record RouteListJobsCallback {
+}
+
+impl Web.Handler for RouteListJobsCallback {
+  func handle(req: in Web.Request): Web.Response {
+    return jobListResp(CloudAgents.Jobs.listJobsCallbackHandler(pparam(req, "id"), callbackAuthHeader(req)))
+  }
+}
+
+record RouteUpdateJobCallback {
+}
+
+impl Web.Handler for RouteUpdateJobCallback {
+  func handle(req: in Web.Request): Web.Response {
+    val id = pparam(req, "id")
+    val jid = pparam(req, "jid")
+    val decoded = match UpdateJobRequest.fromJson(req.body) { case Ok(d) -> d; case Err(_) -> return badBody() }
+    return jobSummaryResp(CloudAgents.Jobs.updateJobCallbackHandler(id, jid, callbackAuthHeader(req), decoded))
+  }
+}
+
+record RouteCancelJobCallback {
+}
+
+impl Web.Handler for RouteCancelJobCallback {
+  func handle(req: in Web.Request): Web.Response {
+    return jobSummaryResp(
+      CloudAgents.Jobs.cancelJobCallbackHandler(pparam(req, "id"), pparam(req, "jid"), callbackAuthHeader(req))
+    )
+  }
+}
+
 // ─── Session highlights (highlights.l) ──────────────────────────────────────
 record RouteListHighlights {
 }
@@ -1637,6 +1759,22 @@ pub func main(): Unit {
   router = Web.addGet(router, "/api/sessions/{id}/memory", RouteListMemory())
   router = Web.addPost(router, "/api/sessions/{id}/callbacks/notify", RouteCreateNotification())
   router = Web.addGet(router, "/api/sessions/{id}/notifications", RouteListNotifications())
+
+  // Phase 8 (docs/phase8-scheduling.md): scheduled jobs. User-facing CRUD +
+  // the maintenance trigger endpoint an external scheduler polls (Lyric.Web
+  // has no in-process timer — same idiom as /api/maintenance/reap above and
+  // the webhook outbox below); the /callbacks/jobs routes are the
+  // schedule_job/list_jobs/update_job/cancel_job MCP tools.
+  router = Web.addPost(router, "/api/jobs", RouteCreateJob())
+  router = Web.addGet(router, "/api/jobs", RouteListJobs())
+  router = Web.addGet(router, "/api/jobs/{jid}", RouteGetJob())
+  router = Web.addPost(router, "/api/jobs/{jid}", RouteUpdateJob())
+  router = Web.addDelete(router, "/api/jobs/{jid}", RouteDeleteJob())
+  router = Web.addPost(router, "/api/maintenance/trigger-jobs", RouteTriggerDueJobs())
+  router = Web.addPost(router, "/api/sessions/{id}/callbacks/jobs", RouteScheduleJobCallback())
+  router = Web.addGet(router, "/api/sessions/{id}/callbacks/jobs", RouteListJobsCallback())
+  router = Web.addPost(router, "/api/sessions/{id}/callbacks/jobs/{jid}/update", RouteUpdateJobCallback())
+  router = Web.addPost(router, "/api/sessions/{id}/callbacks/jobs/{jid}/cancel", RouteCancelJobCallback())
   router = Web.addGet(router, "/api/repos/artifacts", RouteListRepoArtifacts())
   router = Web.addGet(router, "/api/repos/artifacts/{aid}", RouteDownloadRepoArtifact())
 

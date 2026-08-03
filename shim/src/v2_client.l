@@ -464,6 +464,101 @@ pub func setSessionTodoStatus(
   }
 }
 
+// ─── schedule_job / list_jobs / update_job / cancel_job (phase 8) ───────────
+// docs/phase8-scheduling.md. schedule_job always attaches the CALLING
+// session, so every future firing of the created job continues this exact
+// session ("if it triggers again, continue this session").
+/// Schedule a job that will run this exact session again later, returning the
+/// host-assigned job id.
+pub func scheduleJob(
+  transport: in V2CallbackTransport,
+  name: in String,
+  prompt: in String,
+  runAtEpochMillis: in String,
+  intervalSeconds: in String,
+): Result[String, String] {
+  val created = match transport.scheduleJob(name, prompt, runAtEpochMillis, intervalSeconds) {
+    case Ok(body) -> body
+    case Err(e) -> return Err(error = "failed to reach the cloud-agents host: " + e)
+  }
+  return match tryDecodeScheduleJobResponse(created) {
+    case Some(r) -> Ok(value = r.id)
+    case None -> Err(error = "malformed response from the cloud-agents host when scheduling the job")
+  }
+}
+
+func jobSummaryLine(j: in JobSummary): String {
+  var line = j.id + " [" + j.status + "]"
+  if j.intervalSeconds.length > 0 {
+    line = line + " every " + j.intervalSeconds + "s"
+  }
+  if j.nextRunAtEpochMillis.length > 0 {
+    line = line + " next=" + j.nextRunAtEpochMillis
+  }
+  return line + ": " + j.prompt
+}
+
+/// List every scheduled job owned by this session's owner (not just jobs tied
+/// to this session), rendered as `id [status] every Ns next=<epoch ms>:
+/// prompt` lines, newest first (the host's own ordering).
+pub func listJobs(transport: in V2CallbackTransport): Result[String, String] {
+  val body = match transport.listJobs() {
+    case Ok(b) -> b
+    case Err(e) -> return Err(error = "failed to reach the cloud-agents host: " + e)
+  }
+  val list = match tryDecodeJobListResponse(body) {
+    case Some(r) -> r
+    case None -> return Err(error = "malformed response from the cloud-agents host when listing jobs")
+  }
+  if list.jobs.length == 0 {
+    return Ok(value = "no scheduled jobs")
+  }
+  var acc = ""
+  var i = 0
+  while i < list.jobs.length {
+    if i > 0 {
+      acc = acc + "\n"
+    }
+    acc = acc + jobSummaryLine(list.jobs[i])
+    i = i + 1
+  }
+  return Ok(value = acc)
+}
+
+/// Update a job's prompt/profile/schedule/status. Every argument is "" to
+/// leave that field unchanged; providing EITHER runAtEpochMillis or
+/// intervalSeconds replaces the whole schedule (docs/phase8-scheduling.md).
+pub func updateJob(
+  transport: in V2CallbackTransport,
+  jobId: in String,
+  prompt: in String,
+  profileId: in String,
+  runAtEpochMillis: in String,
+  intervalSeconds: in String,
+  status: in String,
+): Result[String, String] {
+  val body = match transport.updateJob(jobId, prompt, profileId, runAtEpochMillis, intervalSeconds, status) {
+    case Ok(b) -> b
+    case Err(e) -> return Err(error = "failed to reach the cloud-agents host: " + e)
+  }
+  return match tryDecodeJobSummary(body) {
+    case Some(r) -> Ok(value = jobSummaryLine(r))
+    case None -> Err(error = "malformed response from the cloud-agents host when updating the job")
+  }
+}
+
+/// Cancel a scheduled job — it will not fire again.
+pub func cancelJob(transport: in V2CallbackTransport, jobId: in String): Result[String, String] {
+  val body = match transport.cancelJob(jobId) {
+    case Ok(b) -> b
+    case Err(e) -> return Err(error = "failed to reach the cloud-agents host: " + e)
+  }
+  return match tryDecodeJobSummary(body) {
+    case Some(r) -> Ok(value = "cancelled job '" + r.id + "'")
+    case None -> Err(error = "malformed response from the cloud-agents host when cancelling the job")
+  }
+}
+
 // ── report_artifact ───────────────────────────────────────────────────────────
 @externTarget("System.Convert.ToBase64String")
 func encodeBase64(b: in slice[Byte]): String = ""

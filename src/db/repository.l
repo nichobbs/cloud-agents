@@ -342,7 +342,15 @@ pub func allMigrations(): slice[Migration] {
       statements = [CloudAgents.Db.alterTodosAddUpdatedAtSql(), CloudAgents.Db.backfillTodoUpdatedAtSql()]
     ),
     Migration(version = "0025_todo_source", statements = [CloudAgents.Db.alterTodosAddSourceSql()]),
-    Migration(version = "0026_todo_updated_index", statements = [CloudAgents.Db.todosSessionUpdatedIndexSql()])
+    Migration(version = "0026_todo_updated_index", statements = [CloudAgents.Db.todosSessionUpdatedIndexSql()]),
+    Migration(
+      version = "0027_scheduled_jobs",
+      statements = [
+        CloudAgents.Db.scheduledJobsSchemaSql(),
+        CloudAgents.Db.scheduledJobsUserIndexSql(),
+        CloudAgents.Db.scheduledJobsDueIndexSql()
+      ]
+    )
   ]
 }
 
@@ -3431,4 +3439,192 @@ pub func agentMessagesAfterSeq(
     i = i + 1
   }
   return Ok(value = acc)
+}
+
+// ─── Phase 8: scheduled jobs (docs/phase8-scheduling.md) ────────────────────
+//
+// A job pairs a prompt + optional profile with either a one-shot run time, a
+// recurring interval, or both. `sessionId` starts empty; the first trigger
+// creates a session (or, for a job an in-container schedule_job call
+// created, attaches the calling session immediately) and every later trigger
+// continues that same session, so the agent's work accumulates across runs.
+pub record ScheduledJob {
+  pub id: String
+  pub userId: String
+  pub name: String
+  pub prompt: String
+  pub profileId: String
+  pub repoUrl: String
+  pub branch: String
+  pub harness: String
+  pub model: String
+  pub runAt: String
+  pub intervalSeconds: String
+  pub nextRunAt: String
+  pub lastRunAt: String
+  pub sessionId: String
+  pub status: String
+  pub createdAt: String
+}
+
+func rowToScheduledJob(r: in CloudAgents.Sqlite.Row): ScheduledJob {
+  return ScheduledJob(
+    id = colAt(r.cols, 0),
+    userId = colAt(r.cols, 1),
+    name = colAt(r.cols, 2),
+    prompt = colAt(r.cols, 3),
+    profileId = colAt(r.cols, 4),
+    repoUrl = colAt(r.cols, 5),
+    branch = colAt(r.cols, 6),
+    harness = colAt(r.cols, 7),
+    model = colAt(r.cols, 8),
+    runAt = colAt(r.cols, 9),
+    intervalSeconds = colAt(r.cols, 10),
+    nextRunAt = colAt(r.cols, 11),
+    lastRunAt = colAt(r.cols, 12),
+    sessionId = colAt(r.cols, 13),
+    status = colAt(r.cols, 14),
+    createdAt = colAt(r.cols, 15)
+  )
+}
+
+/// Create a new job. `nextRunAt` is `runAt` when a one-shot/start time was
+/// given, else "now" (a pure-interval job fires on the very next poll tick,
+/// then recurs from there) — a plain choice between two already-computed TEXT
+/// values, no arithmetic needed.
+pub func createScheduledJob(
+  userId: in String,
+  name: in String,
+  prompt: in String,
+  profileId: in String,
+  repoUrl: in String,
+  branch: in String,
+  harness: in String,
+  model: in String,
+  runAt: in String,
+  intervalSeconds: in String,
+): Result[ScheduledJob, CloudAgents.Sqlite.DbError] {
+  val id = newId()
+  val ts = nowMillis()
+  val nextRunAt = if runAt.length > 0 { runAt } else { ts }
+  CloudAgents.Sqlite.execute(
+    CloudAgents.Db.insertScheduledJobSql(
+      id,
+      userId,
+      name,
+      prompt,
+      profileId,
+      repoUrl,
+      branch,
+      harness,
+      model,
+      runAt,
+      intervalSeconds,
+      nextRunAt,
+      ts
+    )
+  )?
+  return Ok(
+    value = ScheduledJob(
+      id = id,
+      userId = userId,
+      name = name,
+      prompt = prompt,
+      profileId = profileId,
+      repoUrl = repoUrl,
+      branch = branch,
+      harness = harness,
+      model = model,
+      runAt = runAt,
+      intervalSeconds = intervalSeconds,
+      nextRunAt = nextRunAt,
+      lastRunAt = "",
+      sessionId = "",
+      status = "active",
+      createdAt = ts
+    )
+  )
+}
+
+/// A single job scoped to (id, user_id), or None (unknown id or foreign
+/// owner — both look identical to the caller, mirroring getProfile).
+pub func getScheduledJob(id: in String, userId: in String): Result[Option[ScheduledJob], CloudAgents.Sqlite.DbError] {
+  val rows = CloudAgents.Sqlite.query(CloudAgents.Db.selectScheduledJobByIdSql(id, userId))?
+  val len = CloudAgents.Sqlite.getRowArrayLength(rows)
+  if len == 0 {
+    return Ok(value = None)
+  }
+  return Ok(value = Some(value = rowToScheduledJob(CloudAgents.Sqlite.getRowArrayValue(rows, 0))))
+}
+
+/// All of a user's jobs, newest first.
+pub func listScheduledJobs(userId: in String): Result[slice[ScheduledJob], CloudAgents.Sqlite.DbError] {
+  val rows = CloudAgents.Sqlite.query(CloudAgents.Db.selectScheduledJobsByUserSql(userId))?
+  var acc: slice[ScheduledJob] = []
+  var i = 0
+  val len = CloudAgents.Sqlite.getRowArrayLength(rows)
+  while i < len {
+    acc = acc.append(rowToScheduledJob(CloudAgents.Sqlite.getRowArrayValue(rows, i)))
+    i = i + 1
+  }
+  return Ok(value = acc)
+}
+
+/// Every active job due to fire right now, system-wide — mirrors
+/// reapableWarmContainers' unscoped maintenance-scan shape.
+pub func dueScheduledJobs(): Result[slice[ScheduledJob], CloudAgents.Sqlite.DbError] {
+  val rows = CloudAgents.Sqlite.query(CloudAgents.Db.selectDueScheduledJobsSql(nowMillis()))?
+  var acc: slice[ScheduledJob] = []
+  var i = 0
+  val len = CloudAgents.Sqlite.getRowArrayLength(rows)
+  while i < len {
+    acc = acc.append(rowToScheduledJob(CloudAgents.Sqlite.getRowArrayValue(rows, i)))
+    i = i + 1
+  }
+  return Ok(value = acc)
+}
+
+/// Attach a session to a job on its first run (or immediately, for a job an
+/// in-container schedule_job call created for its own calling session) — a
+/// no-op if the job already has one (attachScheduledJobSessionSql's guard).
+pub func attachScheduledJobSession(id: in String, sessionId: in String): Result[Unit, CloudAgents.Sqlite.DbError] {
+  CloudAgents.Sqlite.execute(CloudAgents.Db.attachScheduledJobSessionSql(id, sessionId))?
+  return Ok(value = ())
+}
+
+/// Bookkeeping after a recurring job's run.
+pub func markScheduledJobRanRecurring(
+  id: in String, firedAt: in String, intervalSeconds: in String
+): Result[Unit, CloudAgents.Sqlite.DbError] {
+  CloudAgents.Sqlite.execute(CloudAgents.Db.markScheduledJobRanRecurringSql(id, firedAt, intervalSeconds))?
+  return Ok(value = ())
+}
+
+/// Bookkeeping after a one-shot job's (only) run.
+pub func markScheduledJobCompleted(id: in String, firedAt: in String): Result[Unit, CloudAgents.Sqlite.DbError] {
+  CloudAgents.Sqlite.execute(CloudAgents.Db.markScheduledJobCompletedSql(id, firedAt))?
+  return Ok(value = ())
+}
+
+/// Update a job's mutable fields. Returns the affected row count (0 means no
+/// such job under this owner).
+pub func updateScheduledJob(
+  id: in String,
+  userId: in String,
+  name: in String,
+  prompt: in String,
+  profileId: in String,
+  runAt: in String,
+  intervalSeconds: in String,
+  nextRunAt: in String,
+  status: in String,
+): Result[Int, CloudAgents.Sqlite.DbError] {
+  return CloudAgents.Sqlite.execute(
+    CloudAgents.Db.updateScheduledJobSql(id, userId, name, prompt, profileId, runAt, intervalSeconds, nextRunAt, status)
+  )
+}
+
+/// Delete a job scoped by owner. Returns the affected row count.
+pub func deleteScheduledJob(id: in String, userId: in String): Result[Int, CloudAgents.Sqlite.DbError] {
+  return CloudAgents.Sqlite.execute(CloudAgents.Db.deleteScheduledJobSql(id, userId))
 }
