@@ -96,6 +96,33 @@ pub record FakeV2Transport {
   pub var setSessionTodoStatusError: String
   pub var lastSessionTodoId: String
   pub var lastSessionTodoStatus: String
+
+  pub var scheduleJobOk: Bool
+  pub var scheduleJobBody: String
+  pub var scheduleJobError: String
+  pub var lastScheduleJobName: String
+  pub var lastScheduleJobPrompt: String
+  pub var lastScheduleJobRunAtEpochMillis: String
+  pub var lastScheduleJobIntervalSeconds: String
+
+  pub var listJobsOk: Bool
+  pub var listJobsBody: String
+  pub var listJobsError: String
+
+  pub var updateJobOk: Bool
+  pub var updateJobBody: String
+  pub var updateJobError: String
+  pub var lastUpdateJobId: String
+  pub var lastUpdateJobPrompt: String
+  pub var lastUpdateJobProfileId: String
+  pub var lastUpdateJobRunAtEpochMillis: String
+  pub var lastUpdateJobIntervalSeconds: String
+  pub var lastUpdateJobStatus: String
+
+  pub var cancelJobOk: Bool
+  pub var cancelJobBody: String
+  pub var cancelJobError: String
+  pub var lastCancelJobId: String
 }
 
 /// A ready-to-use fake with sensible not-configured-yet defaults: creating
@@ -170,7 +197,30 @@ pub func newFakeV2Transport(): FakeV2Transport {
     setSessionTodoStatusBody = "",
     setSessionTodoStatusError = "FakeV2Transport: setSessionTodoStatus not configured",
     lastSessionTodoId = "",
-    lastSessionTodoStatus = ""
+    lastSessionTodoStatus = "",
+    scheduleJobOk = false,
+    scheduleJobBody = "",
+    scheduleJobError = "FakeV2Transport: scheduleJob not configured",
+    lastScheduleJobName = "",
+    lastScheduleJobPrompt = "",
+    lastScheduleJobRunAtEpochMillis = "",
+    lastScheduleJobIntervalSeconds = "",
+    listJobsOk = false,
+    listJobsBody = "",
+    listJobsError = "FakeV2Transport: listJobs not configured",
+    updateJobOk = false,
+    updateJobBody = "",
+    updateJobError = "FakeV2Transport: updateJob not configured",
+    lastUpdateJobId = "",
+    lastUpdateJobPrompt = "",
+    lastUpdateJobProfileId = "",
+    lastUpdateJobRunAtEpochMillis = "",
+    lastUpdateJobIntervalSeconds = "",
+    lastUpdateJobStatus = "",
+    cancelJobOk = false,
+    cancelJobBody = "",
+    cancelJobError = "FakeV2Transport: cancelJob not configured",
+    lastCancelJobId = ""
   )
 }
 
@@ -325,6 +375,58 @@ impl V2CallbackTransport for FakeV2Transport {
       Ok(value = self.setSessionTodoStatusBody)
     } else {
       Err(error = self.setSessionTodoStatusError)
+    }
+  }
+
+  func scheduleJob(
+    name: in String, prompt: in String, runAtEpochMillis: in String, intervalSeconds: in String
+  ): Result[String, String] {
+    self.lastScheduleJobName = name
+    self.lastScheduleJobPrompt = prompt
+    self.lastScheduleJobRunAtEpochMillis = runAtEpochMillis
+    self.lastScheduleJobIntervalSeconds = intervalSeconds
+    if self.scheduleJobOk {
+      Ok(value = self.scheduleJobBody)
+    } else {
+      Err(error = self.scheduleJobError)
+    }
+  }
+
+  func listJobs(): Result[String, String] {
+    if self.listJobsOk {
+      Ok(value = self.listJobsBody)
+    } else {
+      Err(error = self.listJobsError)
+    }
+  }
+
+  func updateJob(
+    jobId: in String,
+    prompt: in String,
+    profileId: in String,
+    runAtEpochMillis: in String,
+    intervalSeconds: in String,
+    status: in String,
+  ): Result[String, String] {
+    self.lastUpdateJobId = jobId
+    self.lastUpdateJobPrompt = prompt
+    self.lastUpdateJobProfileId = profileId
+    self.lastUpdateJobRunAtEpochMillis = runAtEpochMillis
+    self.lastUpdateJobIntervalSeconds = intervalSeconds
+    self.lastUpdateJobStatus = status
+    if self.updateJobOk {
+      Ok(value = self.updateJobBody)
+    } else {
+      Err(error = self.updateJobError)
+    }
+  }
+
+  func cancelJob(jobId: in String): Result[String, String] {
+    self.lastCancelJobId = jobId
+    if self.cancelJobOk {
+      Ok(value = self.cancelJobBody)
+    } else {
+      Err(error = self.cancelJobError)
     }
   }
 }

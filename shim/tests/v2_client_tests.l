@@ -618,6 +618,31 @@ impl V2CallbackTransport for ClockJumpingV2Transport {
   func setSessionTodoStatus(todoId: in String, status: in String): Result[String, String] {
     Ok(value = "{\"id\":\"cj-todo\",\"status\":\"done\"}")
   }
+
+  func scheduleJob(
+    name: in String, prompt: in String, runAtEpochMillis: in String, intervalSeconds: in String
+  ): Result[String, String] {
+    Ok(value = "{\"id\":\"cj-job\"}")
+  }
+
+  func listJobs(): Result[String, String] {
+    Ok(value = "{\"jobs\":[]}")
+  }
+
+  func updateJob(
+    jobId: in String,
+    prompt: in String,
+    profileId: in String,
+    runAtEpochMillis: in String,
+    intervalSeconds: in String,
+    status: in String,
+  ): Result[String, String] {
+    Ok(value = "{\"id\":\"cj-job\",\"status\":\"active\"}")
+  }
+
+  func cancelJob(jobId: in String): Result[String, String] {
+    Ok(value = "{\"id\":\"cj-job\",\"status\":\"cancelled\"}")
+  }
 }
 
 test "requestSecretWithClock refuses via a wall-clock deadline, not an iteration count" {
