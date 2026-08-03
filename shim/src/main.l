@@ -1,7 +1,7 @@
 //! src/main.l — CloudAgents.Shim: cloud-agents-shim, the in-container MCP
-//! callback server (docs/phase6-mcp-callbacks.md). Registers three tools
-//! (request_permission, ask_user, report_progress) against Mcp.Server and
-//! serves them over stdio.
+//! callback server (docs/phase6-mcp-callbacks.md). Registers the sixteen
+//! callback tools (see the addTool block comment below for the full list)
+//! against Mcp.Server and serves them over stdio.
 //!
 //! Environment contract (docs/phase6-mcp-callbacks.md §2, rendered into
 //! mcp.json by docker/entrypoint.sh from docker/mcp-callbacks.json.template

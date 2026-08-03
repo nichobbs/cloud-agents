@@ -97,29 +97,42 @@ export function NewSession() {
     if (!repoUrl.trim()) return;
     setLoading(true);
     setError('');
+    let created: { sessionId: string } | null = null;
     try {
-      const { sessionId } = await api.createSession({
+      created = await api.createSession({
         repoUrl: repoUrl.trim(),
         branch: branch.trim() || 'main',
         harness,
         model,
       });
-      if (selectedProfileId) {
-        await api.setSessionProfile(sessionId, selectedProfileId);
-      }
-      addSession({
-        sessionId,
-        repoUrl: repoUrl.trim(),
-        branch: branch.trim() || 'main',
-        createdAt: new Date().toISOString(),
-        harness,
-        model,
-      });
-      navigate(`/sessions/${sessionId}`);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
       setLoading(false);
+      return;
     }
+    const { sessionId } = created;
+    // The session already exists server-side. If attaching the profile fails
+    // (e.g. it was deleted in another tab, or a network blip), still land the
+    // user on the new session instead of orphaning it — retrying from this
+    // form would silently create a second session. Surface the attach failure
+    // on the detail page so the user can pick the profile there.
+    let profileAttachError = '';
+    if (selectedProfileId) {
+      try {
+        await api.setSessionProfile(sessionId, selectedProfileId);
+      } catch (err) {
+        profileAttachError = err instanceof Error ? err.message : String(err);
+      }
+    }
+    addSession({
+      sessionId,
+      repoUrl: repoUrl.trim(),
+      branch: branch.trim() || 'main',
+      createdAt: new Date().toISOString(),
+      harness,
+      model,
+    });
+    navigate(`/sessions/${sessionId}`, profileAttachError ? { state: { profileAttachError } } : undefined);
   };
 
   return (

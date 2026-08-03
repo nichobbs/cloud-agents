@@ -51,12 +51,12 @@ test "timeoutFromRaw honors a valid override" {
 // CloudAgents.Docker injects CLOUD_AGENTS_ENABLED_TOOLS as a comma-separated
 // allowlist only for a 'selected'-mode profile; main.l wraps every addTool
 // call in `if toolIsEnabled(enabledToolsCsv, "<name>")`. These cases mirror
-// main.l's exact 13-tool set (the original 9, add_task/list_tasks/
-// complete_task from the repo-scoped task list slice, and notify — #625)
-// so a passing suite proves the real registration gate, not just the
-// parsing helper in isolation.
+// main.l's exact 16-tool set (the original 9, add_task/list_tasks/
+// complete_task from the repo-scoped task list slice, notify, and the
+// add_todo/update_todo/list_todos trio) so a passing suite proves the
+// real registration gate, not just the parsing helper in isolation.
 //
-// A third hand-kept copy of this same 13-tool set lives in cloud-agents'
+// A third hand-kept copy of this same 16-tool set lives in cloud-agents'
 // src/handlers/profiles.l as validShimToolNames, with no automated
 // cross-check tying all three together (#621). If this count changes,
 // update main.l's addTool block comment and validShimToolNames too.

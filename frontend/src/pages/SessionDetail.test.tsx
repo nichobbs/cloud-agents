@@ -85,6 +85,8 @@ function makeProfile(over: Partial<Profile>): Profile {
     skillIds: [],
     subagentIds: [],
     mcpServerIds: [],
+    toolMode: 'all',
+    tools: [],
     createdAt: '0',
     updatedAt: '0',
     ...over,

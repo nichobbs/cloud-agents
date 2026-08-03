@@ -65,6 +65,10 @@ export function SessionDetail() {
   const [profiles, setProfiles] = useState<Profile[]>([]);
   const [profileId, setProfileId] = useState('');
   const [profileSaving, setProfileSaving] = useState(false);
+  // Set by NewSession when a freshly-created session's profile attach failed:
+  // the session exists, but the chosen profile isn't attached, and the user
+  // should be told why the selector doesn't show it.
+  const [profileAttachError, setProfileAttachError] = useState<string | null>(null);
   const [runs, setRuns] = useState<Run[]>([]);
   const [pendingCallbacks, setPendingCallbacks] = useState<PendingCallbacksResponse>({
     permissionRequests: [],
@@ -184,6 +188,10 @@ export function SessionDetail() {
     let active = true;
     profileTouchedRef.current = false;
     setProfileId('');
+    // Carry a NewSession-handoff banner (profile attach failed at creation)
+    // across navigations between sessions, clearing it when a fresh session
+    // mounts.
+    setProfileAttachError((location.state as { profileAttachError?: string } | null)?.profileAttachError ?? null);
     api
       .getSessionProfile(sessionId)
       .then(pid => {
@@ -926,6 +934,12 @@ export function SessionDetail() {
                   {profiles.map(p => (
                     <option key={p.id} value={p.id}>{p.name}</option>
                   ))}
+                  {profileId &&
+                    !profiles.some(p => p.id === profileId) && (
+                      <option value={profileId}>
+                        {profileId.slice(0, 8)}… (profile deleted)
+                      </option>
+                    )}
                 </select>
               </>
             )}
@@ -943,6 +957,12 @@ export function SessionDetail() {
             )}
           </div>
           {modelError && <div style={modelErrorStyle}>Model switch failed: {modelError}</div>}
+          {profileAttachError && (
+            <div style={modelErrorStyle}>
+              Profile not attached: {profileAttachError}. Pick one above and it will apply to this
+              session's runs.
+            </div>
+          )}
         </div>
         <div style={{ display: 'flex', gap: '8px', flexShrink: 0 }}>
           <button style={todosBtnStyle} onClick={() => { void toggleRuns(); }}>

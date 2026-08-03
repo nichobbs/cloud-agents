@@ -45,7 +45,8 @@ export interface Prompt {
 }
 
 /// A per-container policy: which harness runs, what network access the
-/// container gets, and which credentials are injected (least privilege).
+/// container gets, which credentials are injected (least privilege), and
+/// which of the shim's MCP callback tools are enabled.
 export interface Profile {
   id: string;
   userId: string;
@@ -57,6 +58,8 @@ export interface Profile {
   skillIds: string[]; // granted Skill ids (library.ts)
   subagentIds: string[]; // granted Subagent ids
   mcpServerIds: string[]; // granted McpServer ids
+  toolMode: 'all' | 'selected';
+  tools: string[]; // enabled shim tool names (selected mode)
   createdAt: string;
   updatedAt: string;
 }
