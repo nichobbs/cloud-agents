@@ -576,7 +576,7 @@ test "github oauth refresh metadata round-trips through repository CRUD" {
   // Delete drops the row entirely.
   match CloudAgents.Repository.deleteGitHubOAuthRefresh(userId) {
     case Ok(_) -> ()
-    case Err(e) -> assertTrue(false, "delete failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+    case Err(e) -> assertTrue(false, "delete failed: " + CloudAgents.Repository.credentialErrorMessage(e))
   }
   match CloudAgents.Repository.githubOAuthRefreshStatus(userId) {
     case Ok(None) -> ()
