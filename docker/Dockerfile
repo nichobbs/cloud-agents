@@ -185,6 +185,28 @@ ENV NODE_EXTRA_CA_CERTS=/usr/local/share/ca-certificates/extra-combined.pem
 
 RUN npm install -g @anthropic-ai/claude-code
 
+# GitHub CLI (gh): lets an agent session interact with GitHub (PRs, issues,
+# checks) via `gh`/`gh api` without needing a GitHub MCP server or hand-
+# rolled curl+jq calls. Installed from the official apt repository
+# (cli.github.com/packages) rather than a pinned github.com release
+# tarball, matching this Dockerfile's own use of plain APT for other
+# mature, stable CLIs (git, jq, nodejs) above — and unlike a github.com
+# release download, this repo is reachable even when a build environment's
+# proxy restricts direct github.com access (the exact constraint that
+# forces the Lyric compiler's redirect-based version resolution above).
+# Installed after the CA-trust step so the keyring/package fetch works
+# behind a TLS-intercepting proxy too.
+RUN mkdir -p -m 755 /etc/apt/keyrings \
+    && curl -fsSL --connect-timeout 10 --max-time 30 --retry 3 --retry-delay 3 \
+        https://cli.github.com/packages/githubcli-archive-keyring.gpg \
+        -o /etc/apt/keyrings/githubcli-archive-keyring.gpg \
+    && chmod go+r /etc/apt/keyrings/githubcli-archive-keyring.gpg \
+    && echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" \
+        > /etc/apt/sources.list.d/github-cli.list \
+    && apt-get update \
+    && apt-get install -y --no-install-recommends gh \
+    && rm -rf /var/lib/apt/lists/*
+
 # uv/uvx: a standalone Rust binary (no Python runtime dependency of its own),
 # installed system-wide so it's on PATH regardless of which user runs a
 # session. Needed to launch the official `mcp-server-fetch` MCP server (the
