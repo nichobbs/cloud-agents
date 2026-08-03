@@ -349,12 +349,19 @@ pub func refreshHighlightsHandler(id: in String): Result[RefreshHighlightsRespon
   var scanned = 0
   var added = 0
   var i = 0
-  val startedAt = CloudAgents.Repository.nowMillisLong()
+  // Int `System.Environment.TickCount`, NOT a `Long` epoch-millisecond
+  // value: a repeated `Long` (Int64) subtract-and-compare crashes the
+  // process with a native AccessViolationException (docs/BUILD.md's ninth
+  // compiler bug, docs/lyric/gotchas.md's "Long" entry) — this loop was
+  // doing exactly that pattern (`nowMillisLong() - startedAt > ...`) once
+  // per iteration. `TickCount` wraps to negative roughly every 24.9 days of
+  // host uptime; irrelevant here since maxRefreshMillis is 90 seconds.
+  val startedAt = Env.get_TickCount()
   while i < msgs.length and scanned < maxMessagesPerRefresh {
     // Wall-clock budget (#760): don't START another summarizer call once the
     // budget is spent — the cursor already reflects everything finished, so
     // the next refresh resumes exactly here.
-    if CloudAgents.Repository.nowMillisLong() - startedAt > maxRefreshMillis.toLong() {
+    if Env.get_TickCount() - startedAt > maxRefreshMillis {
       return Ok(
         RefreshHighlightsResponse(
           status = "ok",
