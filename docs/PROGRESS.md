@@ -162,6 +162,23 @@ design of each phase and `docs/BUILD.md` for build/verification notes.
 | Runbook | 🟡 | `deploy/RUNBOOK.md` |
 | Automated e2e HTTP smoke test | ✅ added | `scripts/e2e-http.sh` (wired into `ci.yml`) starts the built server on a throwaway DB/port and curls a multi-param route (`/api/sessions/{id}/output/{offset}`) plus the proxy routes — the automated proof of multi-param dispatch that `@test_module` can't give (Web.Request isn't constructible in a test, #354), closing #442 |
 
+## Phase 8 — Scheduled jobs 🟡 started
+
+| Deliverable | Status | Where |
+|-------------|--------|-------|
+| `scheduled_jobs` table + CRUD | ✅ added | migration `0027_scheduled_jobs` (`db_client.l`/`repository.l`), `CloudAgents.Jobs` (`src/handlers/jobs.l`) |
+| Maintenance trigger endpoint | ✅ added | `POST /api/maintenance/trigger-jobs` (`CloudAgents.Jobs.triggerDueJobsHandler`) — same "external scheduler polls a maintenance endpoint" idiom as container reaping/webhook delivery, since Lyric.Web has no in-process timer |
+| Blocking (non-SSE) job run | ✅ added | `CloudAgents.Docker.runSessionMessageBlocking` — a no-live-viewer sibling of `streamSessionMessage` |
+| `schedule_job`/`list_jobs`/`update_job`/`cancel_job` MCP tools | ✅ added | `shim/src/v2_transport.l`/`v2_client.l`/`v2_tools.l`/`main.l`; `schedule_job` always attaches the calling session, so "if it triggers again, continue this session" holds by construction |
+| Tests | ✅ added | `tests/jobs_tests.l` (validation, owner scoping, schedule transitions, due-job scan) |
+| Frontend panel | ⬜ not started | host + shim only in this phase, matching phases 6/7's own sequencing |
+
+See `docs/phase8-scheduling.md` for the full design, including why a
+cron-expression DSL was deliberately not built and the "compile-time only"
+verification caveat (no `lyric` toolchain in the authoring environment —
+same caveat class as several entries above before their own first real
+compile).
+
 ## Recent hardening (2026-07)
 
 - **Live output streaming.** `POST /api/sessions/{id}/messages` now streams the
