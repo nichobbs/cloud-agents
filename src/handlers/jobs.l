@@ -485,6 +485,15 @@ func ensureJobSession(job: in CloudAgents.Repository.ScheduledJob): Result[Strin
 /// lifecycle but via CloudAgents.Docker.runSessionMessageBlocking (no
 /// ResponseWriter — there is no live viewer for a scheduler-triggered run).
 func runOneJob(job: in CloudAgents.Repository.ScheduledJob): JobRunOutcome {
+  // Restore the maintenance request's own identity before returning, rather
+  // than leaving the last-processed job's owner stamped on this pooled
+  // thread — the same defense-in-depth AuthMiddleware's own re-stamp-every-
+  // request guard (#420) exists for, even though nothing reads
+  // currentUserId() later in this same request today.
+  val callerUserId = CloudAgents.Auth.currentUserId()
+  defer {
+    CloudAgents.Auth.setCurrentUserId(callerUserId)
+  }
   CloudAgents.Auth.setCurrentUserId(job.userId)
   val sessionId = match ensureJobSession(job) {
     case Ok(sid) -> sid
