@@ -511,6 +511,33 @@ func runOneJob(job: in CloudAgents.Repository.ScheduledJob): JobRunOutcome {
     case Ok(sid) -> sid
     case Err(msg) -> return JobFailed(message = msg)
   }
+  // Resolve the actual run configuration from the SESSION, never from the
+  // job row, exactly like streamSendMessage does for any other follow-up
+  // message (#880). The job row's repoUrl/branch/harness/model/profileId
+  // only ever matter for CREATING the session in the first place
+  // (ensureJobSession, for a REST-created job's first trigger) — a job
+  // created via the schedule_job MCP tool leaves them blank on the row by
+  // design, since it already has a session. Using the row's blank fields
+  // directly here (the previous behavior) silently ran every MCP-scheduled
+  // re-trigger with NO profile at all: profileNetworkPolicy("") resolves to
+  // "full" network access and decryptedCredentialsForProfile("") injects
+  // every credential the user has stored, regardless of whatever
+  // network/credential restriction the calling session itself was under —
+  // a real privilege-escalation path for a job an agent schedules for
+  // itself. It also passed sessionId as nativeSessionId, breaking the
+  // harness's own session continuity (--resume) on every re-trigger.
+  val session = match CloudAgents.SessionStore.getSession(sessionId) {
+    case Ok(Some(s)) -> s
+    case Ok(None) -> return JobFailed(message = "job's session no longer exists")
+    case Err(e) -> return JobFailed(message = "failed to resolve job session: " + CloudAgents.Sqlite.dbErrorMessage(e))
+  }
+  val profileId = match CloudAgents.SessionStore.sessionProfileId(sessionId) {
+    case Ok(Some(pid)) -> pid
+    case Ok(None) -> ""
+    // Fails closed (#232's same reasoning): a DB error resolving the
+    // session's profile must not silently fall open to "no profile".
+    case Err(e) -> return JobFailed(message = "failed to resolve session profile: " + CloudAgents.Sqlite.dbErrorMessage(e))
+  }
   val began = match CloudAgents.SessionStore.tryBeginRun(sessionId) {
     case Ok(b) -> b
     case Err(e) -> return JobFailed(message = "failed to claim session: " + CloudAgents.Sqlite.dbErrorMessage(e))
@@ -535,9 +562,9 @@ func runOneJob(job: in CloudAgents.Repository.ScheduledJob): JobRunOutcome {
     case Ok(rs) -> CloudAgents.Handlers.extraReposEnvValue(rs)
     case Err(_) -> ""
   }
-  var harness = job.harness
-  if job.profileId.length > 0 {
-    match CloudAgents.Repository.getProfile(job.profileId, job.userId) {
+  var harness = session.harness
+  if profileId.length > 0 {
+    match CloudAgents.Repository.getProfile(profileId, job.userId) {
       case Ok(Some(p)) -> {
         if p.harness.length > 0 {
           harness = p.harness
@@ -547,19 +574,19 @@ func runOneJob(job: in CloudAgents.Repository.ScheduledJob): JobRunOutcome {
       case Err(_) -> ()
     }
   }
-  val runId = match CloudAgents.Repository.recordRunStart(sessionId, job.userId, job.prompt, harness, job.model) {
+  val runId = match CloudAgents.Repository.recordRunStart(sessionId, job.userId, job.prompt, harness, session.model) {
     case Ok(rid) -> rid
     case Err(_) -> ""
   }
   val runResult = CloudAgents.Docker.runSessionMessageBlocking(
-    repoUrl = job.repoUrl,
-    branch = job.branch,
+    repoUrl = session.repoUrl,
+    branch = session.branch,
     prompt = job.prompt,
     sessionId = sessionId,
     harness = harness,
-    model = job.model,
-    nativeSessionId = sessionId,
-    profileId = job.profileId,
+    model = session.model,
+    nativeSessionId = session.nativeSessionId,
+    profileId = profileId,
     userId = job.userId,
     extraRepos = extraRepos
   )
@@ -762,7 +789,15 @@ pub func listJobsCallbackHandler(sessionId: in String, authHeaderValue: in Strin
 }
 
 /// POST /api/sessions/{id}/callbacks/jobs/{jid}/update — container-originated
-/// (update_job MCP tool).
+/// (update_job MCP tool). Scoped to jobs ATTACHED TO THE CALLING SESSION,
+/// not merely owned by the same user (#881) — unlike list_jobs (deliberately
+/// whole-backlog, read-only), a *mutating* callback letting any one session's
+/// token reach into and reschedule/reprompt/cancel a completely unrelated job
+/// (possibly one a human set up for an unrelated purpose) is a materially
+/// bigger blast radius than "review the backlog", so the same 404-for-
+/// foreign-resource style used for owner mismatches elsewhere in this
+/// codebase applies here too (a probing caller can't distinguish "exists but
+/// isn't yours" from "doesn't exist").
 pub func updateJobCallbackHandler(
   sessionId: in String, jobId: in String, authHeaderValue: in String, req: in UpdateJobRequest
 ): Result[JobSummary, Web.ApiError] {
@@ -774,7 +809,32 @@ pub func updateJobCallbackHandler(
   }
   authorizeJobCallbackToken(sessionId, authHeaderValue)?
   val ownerUserId = ownerOfSession(sessionId)?
-  return updateJobHandler(ownerUserId, jobId, req)
+  val existing = match CloudAgents.Repository.getScheduledJob(jobId, ownerUserId) {
+    case Ok(Some(j)) -> j
+    case Ok(None) -> return Err(Web.notFound("job not found"))
+    case Err(e) -> return Err(dbError(e))
+  }
+  if existing.sessionId != sessionId {
+    return Err(Web.notFound("job not found"))
+  }
+  // profileId is REST-only by design (docs/phase8-scheduling.md) — a
+  // profile governs network access and which credentials get injected, so
+  // letting the container-originated route change it would let a session's
+  // own callback token reprivilege its job via update_job, not just edit its
+  // prompt/schedule/status. The shim's update_job tool schema already never
+  // exposes a profileId parameter to the model, but that's a client-side
+  // convenience, not enforcement — this route accepts arbitrary JSON, so the
+  // restriction has to be server-side. Force it to the "" ("leave
+  // unchanged") sentinel here regardless of what the request body actually
+  // contains.
+  val restricted = UpdateJobRequest(
+    prompt = req.prompt,
+    profileId = "",
+    runAtEpochMillis = req.runAtEpochMillis,
+    intervalSeconds = req.intervalSeconds,
+    status = req.status
+  )
+  return updateJobHandler(ownerUserId, jobId, restricted)
 }
 
 /// POST /api/sessions/{id}/callbacks/jobs/{jid}/cancel — container-originated

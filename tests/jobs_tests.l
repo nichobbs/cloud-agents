@@ -414,6 +414,98 @@ test "schedule_job attaches the calling session immediately, and list/update/can
   }
 }
 
+// ── update_job/cancel_job callback scope (#881) ───────────────────────────────
+test "update_job/cancel_job callbacks cannot reach a job attached to a DIFFERENT session, even same owner" {
+  val dbPath = useFreshTestDb("job-callback-cross-session")
+  defer {
+    cleanupTestDb(dbPath)
+  }
+  CloudAgents.Auth.setCurrentUserId("default")
+  val ownerSession = "sess-jobs-owner"
+  val otherSession = "sess-jobs-other"
+  mkSession(ownerSession)
+  mkSession(otherSession)
+  val ownerToken = mintToken(ownerSession, "default")
+  val otherToken = mintToken(otherSession, "default")
+
+  val created = match CloudAgents.Jobs.scheduleJobCallbackHandler(
+    ownerSession,
+    bearer(ownerToken),
+    ScheduleJobCallbackRequest(name = "mine", prompt = "check on this", runAtEpochMillis = "", intervalSeconds = "3600")
+  ) {
+    case Ok(r) -> r
+    case Err(e) -> panic("schedule_job failed: " + toString(e.status))
+  }
+
+  // A DIFFERENT session belonging to the SAME user cannot update or cancel
+  // it via the callback route, even though listJobsCallbackHandler (a
+  // read-only, deliberately whole-backlog view) would show it.
+  match CloudAgents.Jobs.updateJobCallbackHandler(
+    otherSession, created.id, bearer(otherToken),
+    UpdateJobRequest(prompt = "hijacked", profileId = "", runAtEpochMillis = "", intervalSeconds = "", status = "")
+  ) {
+    case Ok(_) -> assertTrue(false, "expected a foreign-session update to be rejected, got Ok")
+    case Err(e) -> assertEqualInt(e.status, 404, "a job attached to a different session 404s, like a foreign owner would")
+  }
+  match CloudAgents.Jobs.cancelJobCallbackHandler(otherSession, created.id, bearer(otherToken)) {
+    case Ok(_) -> assertTrue(false, "expected a foreign-session cancel to be rejected, got Ok")
+    case Err(e) -> assertEqualInt(e.status, 404, "a job attached to a different session 404s, like a foreign owner would")
+  }
+
+  // The job is untouched by either attempt.
+  match CloudAgents.Repository.getScheduledJob(created.id, "default") {
+    case Ok(Some(j)) -> {
+      assertEqual(j.prompt, "check on this", "the prompt was not hijacked by the other session")
+      assertEqual(j.status, "active", "the job was not cancelled by the other session")
+    }
+    case Ok(None) -> assertTrue(false, "the job must still exist")
+    case Err(e) -> assertTrue(false, "getScheduledJob failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+  }
+
+  // The OWNING session can still update/cancel its own job normally.
+  match CloudAgents.Jobs.updateJobCallbackHandler(
+    ownerSession, created.id, bearer(ownerToken),
+    UpdateJobRequest(prompt = "revised by owner", profileId = "", runAtEpochMillis = "", intervalSeconds = "", status = "")
+  ) {
+    case Ok(j) -> assertEqual(j.prompt, "revised by owner", "the owning session's edit succeeds")
+    case Err(e) -> assertTrue(false, "expected the owning session's update to succeed: " + toString(e.status))
+  }
+}
+
+test "update_job callback cannot set profileId, even from the owning session" {
+  val dbPath = useFreshTestDb("job-callback-profile-restricted")
+  defer {
+    cleanupTestDb(dbPath)
+  }
+  CloudAgents.Auth.setCurrentUserId("default")
+  val sid = "sess-jobs-profile"
+  mkSession(sid)
+  val token = mintToken(sid, "default")
+  val profileId = match CloudAgents.Repository.addProfile("default", "escalated", "", "full", "all", [], [], [], [], "all", []) {
+    case Ok(p) -> p.id
+    case Err(e) -> panic("addProfile failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+  }
+
+  val created = match CloudAgents.Jobs.scheduleJobCallbackHandler(
+    sid, bearer(token),
+    ScheduleJobCallbackRequest(name = "mine", prompt = "p", runAtEpochMillis = "", intervalSeconds = "3600")
+  ) {
+    case Ok(r) -> r
+    case Err(e) -> panic("schedule_job failed: " + toString(e.status))
+  }
+
+  // Even the OWNING session's update_job callback cannot attach a profile —
+  // that stays REST-only, since a profile governs network access and
+  // credential injection (#881).
+  match CloudAgents.Jobs.updateJobCallbackHandler(
+    sid, created.id, bearer(token),
+    UpdateJobRequest(prompt = "", profileId = profileId, runAtEpochMillis = "", intervalSeconds = "", status = "")
+  ) {
+    case Ok(j) -> assertEqual(j.profileId, "", "the callback-supplied profileId was silently ignored, not applied")
+    case Err(e) -> assertTrue(false, "expected Ok (profileId just ignored): " + toString(e.status))
+  }
+}
+
 // ── dueScheduledJobs scan ─────────────────────────────────────────────────────
 test "dueScheduledJobs returns only active jobs whose next_run_at has arrived" {
   val dbPath = useFreshTestDb("job-due-scan")
@@ -442,7 +534,7 @@ test "dueScheduledJobs returns only active jobs whose next_run_at has arrived" {
 
   // Marking it recurring-ran pushes next_run_at into the future; it should
   // drop out of the due set.
-  match CloudAgents.Repository.markScheduledJobRanRecurring(dueJob.id, CloudAgents.Repository.nowMillis(), dueJob.nextRunAt, "3600") {
+  match CloudAgents.Repository.markScheduledJobRanRecurring(dueJob.id, CloudAgents.Repository.nowMillis(), dueJob.nextRunAtEpochMillis, "3600") {
     case Ok(_) -> ()
     case Err(e) -> assertTrue(false, "markScheduledJobRanRecurring failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
   }
@@ -592,7 +684,7 @@ test "a status change that lands while a job is in flight is not clobbered by po
   // The run's own post-completion bookkeeping arrives after the status
   // change landed. Both writes should now no-op rather than stomping the
   // human's status choice back toward active/completed.
-  match CloudAgents.Repository.markScheduledJobRanRecurring(recurring.id, "2000000000000", recurring.nextRunAt, "3600") {
+  match CloudAgents.Repository.markScheduledJobRanRecurring(recurring.id, "2000000000000", recurring.nextRunAtEpochMillis, "3600") {
     case Ok(_) -> ()
     case Err(e) -> assertTrue(false, "markScheduledJobRanRecurring failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
   }

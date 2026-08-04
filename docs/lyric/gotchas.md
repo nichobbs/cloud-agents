@@ -469,6 +469,29 @@ filed yet for this specific case (unlike lyric-lang#6232 above) since a
 source-level fix was found; if you hit this again in a form that resists a
 source-level fix, file one and link it here.
 
+**The same silently-accepted-then-InvalidProgramException failure mode also
+happens for field ACCESS on the wrong record type, not just field
+ASSIGNMENT into one.** Hit in this codebase's phase-8 scheduling work
+(`tests/jobs_tests.l`): a variable typed `JobSummary` (fields include
+`nextRunAtEpochMillis`, no `nextRunAt`) was accessed as `dueJob.nextRunAt` —
+a field name that exists on the *similarly-shaped* `CloudAgents.Repository.
+ScheduledJob` record, but not on `JobSummary`. This compiled with no error
+(`lyric build`/`lyric check` both silent) and only crashed at test runtime,
+`not ok ... Common Language Runtime detected an invalid program.` — the
+exact same signature as the field-assignment case above, isolated to just
+the two tests that actually exercised the bad access (unlike that case's
+bundle-wide blast radius, so this variant's damage stayed localized here,
+though that may not hold in general). Fix is the same as always: use the
+field that actually exists (`dueJob.nextRunAtEpochMillis`). **Lesson:** when
+two records in the same file have near-identical field sets under different
+names (a REST-facing `JobSummary` vs. an internal `ScheduledJob`, a common
+shape whenever a package has both a wire/API type and a storage type for
+the "same" entity), a typo'd field access silently type-checks as if it
+compiled against the *other* record instead of failing — don't trust the
+compiler to catch this; check the actual field list of the actual declared
+type of the actual variable at every `.field` access added in a diff that
+touches more than one such record.
+
 ---
 
 ## Enums

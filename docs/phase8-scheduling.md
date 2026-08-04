@@ -126,6 +126,23 @@ already assumes — and, for each:
    work attempted at all.
 2. Resolves or creates the job's session (`ensureJobSession`) — now only
    ever reached by the single caller that won the row claim.
+2b. Resolves the actual run configuration — `repoUrl`/`branch`/`harness`/
+   `model`/`profileId`/`nativeSessionId` — from the **session**, exactly like
+   `streamSendMessage` does for any other follow-up message, never from the
+   job row's own fields (#880). The job row's fields only ever matter for
+   step 2 itself (creating the session in the first place, for a
+   REST-created job's first trigger); a job created via the `schedule_job`
+   MCP tool leaves them blank on the row by design, since it already has a
+   session (§7). Reading the row's fields directly here — the original,
+   now-fixed behavior — silently ran every MCP-scheduled re-trigger with NO
+   profile at all: `profileNetworkPolicy(userId, "")` resolves to `"full"`
+   network access and `decryptedCredentialsForProfile(userId, "")` injects
+   *every* credential the user has stored, regardless of whatever
+   network/credential restriction the calling session itself was under — a
+   real privilege-escalation path for a job an agent schedules for itself.
+   It also passed the CloudAgents session id as `nativeSessionId` instead of
+   the harness's own native session id, breaking `--resume` continuity on
+   every re-trigger.
 3. Claims the session for a run (`tryBeginRun` — the same one-run-per-session
    guard `streamSendMessage` uses). This is a second, independent guard for a
    *different* case: an already-sessioned job whose session a human is
@@ -224,11 +241,24 @@ container-originated route) to scope the job operations — the same
   tied to this session), so an agent can review and manage the whole backlog
   it — or a human via the UI — has scheduled.
 - `update_job(id, prompt?, runAtEpochMillis?, intervalSeconds?, status?)` —
-  thin pass-through to the same `updateJobHandler` the REST route uses
-  (profile changes are REST-only in v1, see §9).
+  thin pass-through to `updateJobHandler`, but scoped and restricted beyond
+  what the REST route allows (#881): (1) the target job must be **attached
+  to the calling session**, not merely owned by the same user — unlike
+  `list_jobs` (deliberately read-only, whole-backlog), a *mutating* callback
+  reaching into and reprompting/rescheduling/cancelling a completely
+  unrelated job (possibly one a human set up for something else entirely) is
+  a materially bigger blast radius than reviewing the backlog, so a job
+  attached to a different session 404s exactly like a foreign-owner job
+  would; (2) `profileId` is force-set to the "leave unchanged" sentinel
+  server-side regardless of what the request body contains — profile
+  changes are REST-only (a profile governs network access and credential
+  injection), and the shim's tool schema not exposing a `profileId`
+  parameter to the model is a client-side convenience only, not enforcement,
+  since this HTTP route itself accepts arbitrary JSON.
 - `cancel_job(id)` — a thin `update_job(..., status = "cancelled")` wrapper,
   kept as its own tool since "stop this job" is a far more common agent
-  intent than a general field edit.
+  intent than a general field edit. Inherits both `update_job` restrictions
+  above.
 
 `validShimToolNames` (`src/handlers/profiles.l`), `shim/src/main.l`'s
 `addTool` block, and `shim/tests/config_tests.l`'s `allShimToolNames` all
