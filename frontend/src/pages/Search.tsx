@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { Link } from 'react-router-dom';
 import { api } from '../lib/api';
+import { formatFullTimestamp, formatTimestamp } from '../lib/time';
 import type { Message } from '../types';
 
 /// Full-text search across every message in the caller's own session
@@ -67,7 +68,7 @@ export function Search() {
           <div style={resultCardStyle}>
             <div style={resultMetaStyle}>
               <span style={roleStyle}>{m.role}</span>
-              <span>{new Date(Number(m.createdAt)).toLocaleString()}</span>
+              <span title={formatFullTimestamp(m.createdAt)}>{formatTimestamp(m.createdAt)}</span>
             </div>
             <div style={resultContentStyle}>{m.content}</div>
           </div>
