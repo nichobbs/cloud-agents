@@ -603,6 +603,8 @@ export const api = {
     skillIds: string[];
     subagentIds: string[];
     mcpServerIds: string[];
+    toolMode: string;
+    tools: string[];
   }): Promise<Profile> => {
     const res = await apiFetch(`${BASE}/api/profiles`, {
       method: 'POST',
@@ -624,6 +626,8 @@ export const api = {
       skillIds: string[];
       subagentIds: string[];
       mcpServerIds: string[];
+      toolMode: string;
+      tools: string[];
     },
   ): Promise<Profile> => {
     const res = await apiFetch(`${BASE}/api/profiles/${profileId}`, {
@@ -857,7 +861,9 @@ export const api = {
   },
 };
 
-/** Ensure a profile's optional array fields are always arrays. */
+/** Ensure a profile's optional array fields are always arrays.
+ *  Defaults for toolMode/tools cover a pre-#614 backend whose Profile
+ *  response predates per-profile tool enablement. */
 function normaliseProfile(p: Profile): Profile {
   return {
     ...p,
@@ -865,6 +871,8 @@ function normaliseProfile(p: Profile): Profile {
     skillIds: p.skillIds ?? [],
     subagentIds: p.subagentIds ?? [],
     mcpServerIds: p.mcpServerIds ?? [],
+    toolMode: p.toolMode ?? 'all',
+    tools: p.tools ?? [],
   };
 }
 
