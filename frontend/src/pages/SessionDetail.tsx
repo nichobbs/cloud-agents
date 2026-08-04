@@ -1205,7 +1205,7 @@ export function SessionDetail() {
 
             <SessionPRsPanel sessionId={sessionId} messages={messages} />
 
-            <GitHubPanel repoUrl={session.repoUrl} branch={session.branch} />
+            <GitHubPanel sessionId={sessionId} repoUrl={session.repoUrl} branch={session.branch} />
 
             <LinkedReposPanel
               sessionId={sessionId}
@@ -1243,7 +1243,7 @@ export function SessionDetail() {
 
             <SessionPRsPanel sessionId={sessionId} messages={messages} />
 
-            <GitHubPanel repoUrl={session.repoUrl} branch={session.branch} />
+            <GitHubPanel sessionId={sessionId} repoUrl={session.repoUrl} branch={session.branch} />
 
             <LinkedReposPanel
               sessionId={sessionId}

@@ -179,7 +179,7 @@ verification caveat (no `lyric` toolchain in the authoring environment —
 same caveat class as several entries above before their own first real
 compile).
 
-## Phase 9 — Full-text message search 🟡 started
+## Phase 9 — Full-text message search ✅ complete
 
 | Deliverable | Status | Where |
 |-------------|--------|-------|
@@ -191,8 +191,31 @@ compile).
 
 See `docs/phase9-message-search.md` for the full design, including the
 external `ctypes`-based verification of FTS5 availability and the escaping
-scheme, and the "compile-time only" verification caveat (no `lyric`
-toolchain in the authoring environment — same caveat class as phase 8).
+scheme. Merged as PR #905, genuinely run through CI's real `lyric build`/
+`lyric test` gate (unlike several earlier phases, which shipped
+compile-time-only from an authoring environment with no local `lyric`
+toolchain) — CI caught one real bug (a wrong hand-computed expected value in
+`tests/search_tests.l`'s multi-word tokenizer test), fixed in the same PR,
+confirmed green before merge.
+
+## Phase 10 — Open PR (opt-in) 🟡 started
+
+| Deliverable | Status | Where |
+|-------------|--------|-------|
+| `POST /api/sessions/{id}/open-pr` | ✅ added | `CloudAgents.OpenPr.openPrHandler` (`src/handlers/open_pr.l`) — compare-then-dedup-then-create against GitHub's own API, no local checkout inspection needed |
+| Pure compare/dedup/create decision | ✅ added | `CloudAgents.OpenPr.decidePrAction` — a `PrDecision` union (`Reject`/`Reuse`/`Create`), unit-tested independent of any network call |
+| Frontend "Open PR" button | ✅ added | `frontend/src/components/GitHubPanel.tsx`, `api.openPr()` — server-side only, no direct-browser fallback |
+| Tests | ✅ added | `tests/open_pr_tests.l` (URL parsing, the pure decision logic, and every pre-network-call validation path) |
+| Automatic PR-on-run-finish | ⬜ not started | deliberately deferred — see `docs/phase10-auto-open-pr.md` §2 |
+
+See `docs/phase10-auto-open-pr.md` for the full design, including why this
+first version is an opt-in button rather than automatic (no `docker exec`
+capability to verify a run actually pushed anything, plus the noisy-PR risk
+of firing on every run), and the "compile-time only" verification caveat —
+an attempt to install the `lyric` toolchain locally this session hit a known
+session-level MCP connection issue (`add_repo` requiring approval with no
+prompt surfaced), so this, like several earlier phases, relies on CI's real
+`Build & verify` job for its first actual compile.
 
 ## Recent hardening (2026-07)
 
