@@ -46,6 +46,7 @@ output_assembly = "CloudAgents.dll"
 "CloudAgents.Streaming" = "src/streaming/streaming.l"
 "CloudAgents.Proxy"    = "src/handlers/proxy.l"
 "CloudAgents.Highlights" = "src/handlers/highlights.l"
+"CloudAgents.Jobs"     = "src/handlers/jobs.l"
 
 [project.tests]
 "CloudAgents.SessionTests"   = "tests/session_tests.l"
@@ -79,6 +80,7 @@ output_assembly = "CloudAgents.dll"
 "CloudAgents.NotifyTests"     = "tests/notify_tests.l"
 "CloudAgents.RepoArtifactsTests" = "tests/repo_artifacts_tests.l"
 "CloudAgents.HighlightsTests" = "tests/highlights_tests.l"
+"CloudAgents.JobsTests" = "tests/jobs_tests.l"
 
 [nuget]
 "Lyric.Web"             = "0.4.36"

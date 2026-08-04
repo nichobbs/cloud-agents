@@ -56,11 +56,13 @@ test "timeoutFromRaw honors a valid override" {
 // so a passing suite proves the real registration gate, not just the
 // parsing helper in isolation.
 //
-// A third hand-kept copy of this same 13-tool set lives in cloud-agents'
+// A third hand-kept copy of this same tool set lives in cloud-agents'
 // src/handlers/profiles.l as validShimToolNames, with no automated
 // cross-check tying all three together (#621). If this count changes,
 // update main.l's addTool block comment and validShimToolNames too.
-val allShimToolNames: slice[String] = ["request_permission", "ask_user", "report_progress", "request_secret", "add_followup_task", "report_artifact", "remember", "recall", "forget", "add_task", "list_tasks", "complete_task", "notify", "add_todo", "update_todo", "list_todos"]
+// schedule_job/list_jobs/update_job/cancel_job are the phase-8 scheduled-jobs
+// tools (docs/phase8-scheduling.md), bringing the total to 20.
+val allShimToolNames: slice[String] = ["request_permission", "ask_user", "report_progress", "request_secret", "add_followup_task", "report_artifact", "remember", "recall", "forget", "add_task", "list_tasks", "complete_task", "notify", "add_todo", "update_todo", "list_todos", "schedule_job", "list_jobs", "update_job", "cancel_job"]
 
 func enabledSubsetOf(csv: in String): slice[String] {
   var acc: slice[String] = []
@@ -73,7 +75,7 @@ func enabledSubsetOf(csv: in String): slice[String] {
 }
 
 test "toolIsEnabled registers every tool when the env var is empty (unchanged behaviour)" {
-  assertEqualInt(enabledSubsetOf("").length.toInt(), 16, "empty CSV enables all 16 known tools")
+  assertEqualInt(enabledSubsetOf("").length.toInt(), 20, "empty CSV enables all 20 known tools")
 }
 
 test "toolIsEnabled restricts registration to a non-empty allowlist" {

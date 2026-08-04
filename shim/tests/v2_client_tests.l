@@ -473,6 +473,106 @@ test "setSessionTodoStatus surfaces a host validation error" {
   }
 }
 
+// ── schedule_job / list_jobs / update_job / cancel_job (phase 8, #878) ───────
+test "scheduleJob returns the created id and sends name/prompt/schedule" {
+  val fake = newFakeV2Transport()
+  fake.scheduleJobOk = true
+  fake.scheduleJobBody = "{\"id\":\"job-1\"}"
+
+  match scheduleJob(fake, "nightly digest", "summarize open PRs", "", "3600") {
+    case Ok(id) -> assertEqual(id, "job-1", "the created id round-trips")
+    case Err(message) -> assertTrue(false, "expected Ok, got Err: " + message)
+  }
+  assertEqual(fake.lastScheduleJobName, "nightly digest", "the name was sent to the host")
+  assertEqual(fake.lastScheduleJobPrompt, "summarize open PRs", "the prompt was sent to the host")
+  assertEqual(fake.lastScheduleJobIntervalSeconds, "3600", "the interval was sent to the host")
+}
+
+test "scheduleJob surfaces a transport failure" {
+  val fake = newFakeV2Transport()
+  fake.scheduleJobOk = false
+  fake.scheduleJobError = "connection refused"
+
+  match scheduleJob(fake, "x", "y", "", "3600") {
+    case Ok(id) -> assertTrue(false, "expected Err, got Ok(" + id + ")")
+    case Err(message) -> assertTrue(message.contains("connection refused"), "error carries the transport failure: " + message)
+  }
+}
+
+test "listJobs renders every job as id [status] every Ns next=<epoch>: prompt lines" {
+  val fake = newFakeV2Transport()
+  fake.listJobsOk = true
+  fake.listJobsBody = "{\"jobs\":[{\"id\":\"job-1\",\"name\":\"n\",\"prompt\":\"digest\",\"profileId\":\"\",\"repoUrl\":\"\",\"branch\":\"\",\"harness\":\"\",\"model\":\"\",\"runAtEpochMillis\":\"\",\"intervalSeconds\":\"3600\",\"nextRunAtEpochMillis\":\"1700000000000\",\"lastRunAtEpochMillis\":\"\",\"sessionId\":\"s\",\"status\":\"active\",\"createdAt\":\"1\"}]}"
+
+  match listJobs(fake) {
+    case Ok(text) ->
+      assertTrue(
+        text.contains("job-1 [active] every 3600s next=1700000000000: digest"),
+        "the job is rendered: " + text
+      )
+    case Err(message) -> assertTrue(false, "expected Ok, got Err: " + message)
+  }
+}
+
+test "listJobs with an empty list says so" {
+  val fake = newFakeV2Transport()
+  fake.listJobsOk = true
+  fake.listJobsBody = "{\"jobs\":[]}"
+
+  match listJobs(fake) {
+    case Ok(text) -> assertTrue(text.contains("no scheduled jobs"), "explains the list is empty: " + text)
+    case Err(message) -> assertTrue(false, "expected Ok, got Err: " + message)
+  }
+}
+
+test "updateJob confirms the change and sends every field" {
+  val fake = newFakeV2Transport()
+  fake.updateJobOk = true
+  fake.updateJobBody = "{\"id\":\"job-1\",\"name\":\"n\",\"prompt\":\"revised\",\"profileId\":\"\",\"repoUrl\":\"\",\"branch\":\"\",\"harness\":\"\",\"model\":\"\",\"runAtEpochMillis\":\"\",\"intervalSeconds\":\"7200\",\"nextRunAtEpochMillis\":\"1700000000000\",\"lastRunAtEpochMillis\":\"\",\"sessionId\":\"s\",\"status\":\"active\",\"createdAt\":\"1\"}"
+
+  match updateJob(fake, "job-1", "revised", "", "", "7200", "") {
+    case Ok(msg) -> assertTrue(msg.contains("revised"), "confirmation names the new prompt: " + msg)
+    case Err(message) -> assertTrue(false, "expected Ok, got Err: " + message)
+  }
+  assertEqual(fake.lastUpdateJobId, "job-1", "the job id was sent to the host")
+  assertEqual(fake.lastUpdateJobPrompt, "revised", "the prompt was sent to the host")
+  assertEqual(fake.lastUpdateJobIntervalSeconds, "7200", "the interval was sent to the host")
+}
+
+test "updateJob surfaces a host validation error" {
+  val fake = newFakeV2Transport()
+  fake.updateJobOk = false
+  fake.updateJobError = "POST .../callbacks/jobs/job-1/update failed: (400) status must be one of: active, paused, cancelled"
+
+  match updateJob(fake, "job-1", "", "", "", "", "bogus") {
+    case Ok(msg) -> assertTrue(false, "expected Err, got Ok(" + msg + ")")
+    case Err(message) -> assertTrue(message.contains("status must be one of"), "error surfaces the host's error: " + message)
+  }
+}
+
+test "cancelJob confirms cancellation and sends the job id" {
+  val fake = newFakeV2Transport()
+  fake.cancelJobOk = true
+  fake.cancelJobBody = "{\"id\":\"job-1\",\"name\":\"n\",\"prompt\":\"p\",\"profileId\":\"\",\"repoUrl\":\"\",\"branch\":\"\",\"harness\":\"\",\"model\":\"\",\"runAtEpochMillis\":\"\",\"intervalSeconds\":\"3600\",\"nextRunAtEpochMillis\":\"\",\"lastRunAtEpochMillis\":\"\",\"sessionId\":\"s\",\"status\":\"cancelled\",\"createdAt\":\"1\"}"
+
+  match cancelJob(fake, "job-1") {
+    case Ok(msg) -> assertTrue(msg.contains("job-1"), "confirmation names the cancelled job: " + msg)
+    case Err(message) -> assertTrue(false, "expected Ok, got Err: " + message)
+  }
+  assertEqual(fake.lastCancelJobId, "job-1", "the job id was sent to the host")
+}
+
+test "cancelJob surfaces a transport failure" {
+  val fake = newFakeV2Transport()
+  fake.cancelJobOk = false
+  fake.cancelJobError = "connection refused"
+
+  match cancelJob(fake, "job-1") {
+    case Ok(msg) -> assertTrue(false, "expected Err, got Ok(" + msg + ")")
+    case Err(message) -> assertTrue(message.contains("connection refused"), "error carries the transport failure: " + message)
+  }
+}
+
 // ── report_artifact ─────────────────────────────────────────────────────────
 func writeTempFile(name: in String, content: in String): String {
   val path = "/tmp/cloud-agents-shim-test-" + name
@@ -617,6 +717,31 @@ impl V2CallbackTransport for ClockJumpingV2Transport {
 
   func setSessionTodoStatus(todoId: in String, status: in String): Result[String, String] {
     Ok(value = "{\"id\":\"cj-todo\",\"status\":\"done\"}")
+  }
+
+  func scheduleJob(
+    name: in String, prompt: in String, runAtEpochMillis: in String, intervalSeconds: in String
+  ): Result[String, String] {
+    Ok(value = "{\"id\":\"cj-job\"}")
+  }
+
+  func listJobs(): Result[String, String] {
+    Ok(value = "{\"jobs\":[]}")
+  }
+
+  func updateJob(
+    jobId: in String,
+    prompt: in String,
+    profileId: in String,
+    runAtEpochMillis: in String,
+    intervalSeconds: in String,
+    status: in String,
+  ): Result[String, String] {
+    Ok(value = "{\"id\":\"cj-job\",\"status\":\"active\"}")
+  }
+
+  func cancelJob(jobId: in String): Result[String, String] {
+    Ok(value = "{\"id\":\"cj-job\",\"status\":\"cancelled\"}")
   }
 }
 

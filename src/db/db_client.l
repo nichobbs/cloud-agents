@@ -2968,3 +2968,230 @@ pub func selectNotificationsCreatedAfterSql(sessionId: in String, afterCreatedAt
     sqlLiteral(afterCreatedAt) +
     " ORDER BY created_at ASC"
 }
+
+// ─── Phase 8: scheduled jobs (docs/phase8-scheduling.md) ────────────────────
+//
+// A host-driven job scheduler: a job pairs a prompt + profile + repo target
+// with a one-shot run time, a recurring interval, or both (an optional start
+// time ahead of a recurring cadence). There is no in-process timer
+// (docs/phase2-session-management.md — Lyric.Web has none), so due jobs are
+// found the same way idle-container reaping and webhook delivery already
+// are: an external scheduler polls a maintenance endpoint
+// (POST /api/maintenance/trigger-jobs) which scans for
+// `status = 'active' AND next_run_at <= now`. Every timestamp comparison and
+// the recurring-job next-run computation run in SQL (CAST ... AS INTEGER),
+// the same reasoning selectReapableWarmSql documents above: SQLite's integer
+// arithmetic is 64-bit, so Lyric application code never has to parse
+// epoch-millis into a Long.
+val scheduledJobColumns = "id, user_id, name, prompt, profile_id, repo_url, branch, harness, model, run_at, interval_seconds, next_run_at, last_run_at, session_id, status, created_at"
+
+pub func scheduledJobsSchemaSql(): String {
+  return "CREATE TABLE IF NOT EXISTS scheduled_jobs (" + "id TEXT PRIMARY KEY, " + "user_id TEXT NOT NULL, " +
+    "name TEXT NOT NULL, " +
+    "prompt TEXT NOT NULL, " +
+    "profile_id TEXT NOT NULL, " +
+    "repo_url TEXT NOT NULL, " +
+    "branch TEXT NOT NULL, " +
+    "harness TEXT NOT NULL, " +
+    "model TEXT NOT NULL, " +
+    "run_at TEXT NOT NULL, " +
+    "interval_seconds TEXT NOT NULL, " +
+    "next_run_at TEXT NOT NULL, " +
+    "last_run_at TEXT NOT NULL, " +
+    "session_id TEXT NOT NULL, " +
+    "status TEXT NOT NULL, " +
+    "created_at TEXT NOT NULL)"
+}
+
+pub func scheduledJobsUserIndexSql(): String {
+  return "CREATE INDEX IF NOT EXISTS idx_scheduled_jobs_user_id ON scheduled_jobs(user_id)"
+}
+
+/// Due-job scan index: every poll filters on (status, next_run_at) together.
+pub func scheduledJobsDueIndexSql(): String {
+  return "CREATE INDEX IF NOT EXISTS idx_scheduled_jobs_status_next_run ON scheduled_jobs(status, next_run_at)"
+}
+
+/// INSERT a new job. `nextRunAt` is computed by the caller (runAt if
+/// provided, else "now" — CloudAgents.Repository.createScheduledJob), since
+/// choosing between two already-computed TEXT values needs no arithmetic.
+/// last_run_at/session_id start empty; status starts 'active'.
+pub func insertScheduledJobSql(
+  id: in String,
+  userId: in String,
+  name: in String,
+  prompt: in String,
+  profileId: in String,
+  repoUrl: in String,
+  branch: in String,
+  harness: in String,
+  model: in String,
+  runAt: in String,
+  intervalSeconds: in String,
+  nextRunAt: in String,
+  createdAt: in String,
+): String {
+  return "INSERT INTO scheduled_jobs (" + scheduledJobColumns + ") VALUES (" + sqlLiteral(id) + ", " +
+    sqlLiteral(userId) +
+    ", " +
+    sqlLiteral(name) +
+    ", " +
+    sqlLiteral(prompt) +
+    ", " +
+    sqlLiteral(profileId) +
+    ", " +
+    sqlLiteral(repoUrl) +
+    ", " +
+    sqlLiteral(branch) +
+    ", " +
+    sqlLiteral(harness) +
+    ", " +
+    sqlLiteral(model) +
+    ", " +
+    sqlLiteral(runAt) +
+    ", " +
+    sqlLiteral(intervalSeconds) +
+    ", " +
+    sqlLiteral(nextRunAt) +
+    ", '', '', 'active', " +
+    sqlLiteral(createdAt) +
+    ")"
+}
+
+/// A single job scoped to (id, user_id) — every user-originated and
+/// container-originated lookup goes through this, mirroring
+/// selectTaskByIdScopedSql's non-leaking 404 shape.
+pub func selectScheduledJobByIdSql(id: in String, userId: in String): String {
+  return "SELECT " + scheduledJobColumns + " FROM scheduled_jobs WHERE id = " + sqlLiteral(id) + " AND user_id = " +
+    sqlLiteral(userId)
+}
+
+/// All of a user's jobs, newest first.
+pub func selectScheduledJobsByUserSql(userId: in String): String {
+  return "SELECT " + scheduledJobColumns + " FROM scheduled_jobs WHERE user_id = " + sqlLiteral(userId) +
+    " ORDER BY created_at DESC"
+}
+
+/// Every ACTIVE job whose next_run_at has arrived, earliest-due first.
+/// System-wide (unscoped by user) — the maintenance endpoint spans every
+/// tenant, mirroring selectReapableWarmSql's unscoped maintenance shape.
+pub func selectDueScheduledJobsSql(nowMillis: in String): String {
+  return "SELECT " + scheduledJobColumns +
+    " FROM scheduled_jobs WHERE status = 'active' AND next_run_at <> '' AND CAST(next_run_at AS INTEGER) <= CAST(" +
+    sqlLiteral(nowMillis) +
+    " AS INTEGER) ORDER BY CAST(next_run_at AS INTEGER) ASC"
+}
+
+/// Atomically claim a due job for firing: clears next_run_at (excluding it
+/// from selectDueScheduledJobsSql's `next_run_at <> ''` filter) only if it
+/// still equals the exact value the maintenance scan just read — a
+/// compare-and-clear mirroring clearSessionContainerIfMatchesSql's idiom.
+/// Rows affected = 1 means this caller won the claim; two overlapping
+/// `POST /api/maintenance/trigger-jobs` calls racing on the same due row
+/// cannot both proceed to ensureJobSession/runOneJob for the same job.
+pub func claimDueScheduledJobSql(id: in String, expectedNextRunAt: in String): String {
+  return "UPDATE scheduled_jobs SET next_run_at = '' WHERE id = " + sqlLiteral(id) + " AND next_run_at = " +
+    sqlLiteral(expectedNextRunAt) +
+    " AND status = 'active'"
+}
+
+/// Restore a claimed job's next_run_at after a skipped run (its session was
+/// already mid-run for an unrelated reason) so it's retried on the next
+/// poll instead of sitting silently un-due forever. Guarded on next_run_at
+/// still being the claim's empty sentinel, so it can't clobber a value a
+/// concurrent markScheduledJobRanRecurring/markScheduledJobCompleted/
+/// updateScheduledJob already wrote.
+pub func restoreScheduledJobNextRunAtSql(id: in String, nextRunAt: in String): String {
+  return "UPDATE scheduled_jobs SET next_run_at = " + sqlLiteral(nextRunAt) + " WHERE id = " + sqlLiteral(id) +
+    " AND next_run_at = ''"
+}
+
+/// First-run session attachment: only ever meant to apply once, guarded on
+/// the row's session_id still being empty so a racing second trigger tick
+/// can't clobber a session a concurrent call already attached. Also used
+/// directly (unconditionally correct since session_id starts empty either
+/// way) when an in-container schedule_job call attaches the CALLING session
+/// immediately at creation time (docs/phase8-scheduling.md).
+pub func attachScheduledJobSessionSql(id: in String, sessionId: in String): String {
+  return "UPDATE scheduled_jobs SET session_id = " + sqlLiteral(sessionId) + " WHERE id = " + sqlLiteral(id) +
+    " AND session_id = ''"
+}
+
+/// Bookkeeping after a recurring job's run: last_run_at = firedAt (when the
+/// run actually completed); next_run_at advances from `previousNextRunAt`
+/// (the slot the job was actually due at, i.e. the row's next_run_at
+/// *before* this run) rather than from firedAt, so a job's cadence doesn't
+/// drift later by however long each run itself takes (#874) — "every hour"
+/// stays every hour even if each run takes 5 minutes. Clamped to never fall
+/// before firedAt (MAX in SQL): if a run took longer than the interval
+/// itself, the job is due again immediately on the next poll rather than
+/// computing a next_run_at already in the past. Computed in SQL (see the
+/// module comment above for why). Guarded on `status = 'active'` (#876): a
+/// one-shot/recurring run can take long enough for a human to concurrently
+/// `POST /api/jobs/{jid}` a pause/cancel while it's in flight — without this
+/// guard, this bookkeeping write would silently win and stomp that status
+/// change back toward active/completed once the run finishes. A status
+/// change that lands wins; this write then correctly no-ops (0 rows).
+pub func markScheduledJobRanRecurringSql(
+  id: in String, firedAt: in String, previousNextRunAt: in String, intervalSeconds: in String
+): String {
+  return "UPDATE scheduled_jobs SET last_run_at = " + sqlLiteral(firedAt) + ", next_run_at = CAST(MAX(CAST(" +
+    sqlLiteral(previousNextRunAt) +
+    " AS INTEGER) + CAST(" +
+    sqlLiteral(intervalSeconds) +
+    " AS INTEGER) * 1000, CAST(" +
+    sqlLiteral(firedAt) +
+    " AS INTEGER)) AS TEXT) WHERE id = " +
+    sqlLiteral(id) +
+    " AND status = 'active'"
+}
+
+/// Bookkeeping after a one-shot job's (only) run: it never fires again.
+/// Guarded on `status = 'active'` for the same reason as
+/// markScheduledJobRanRecurringSql above (#876) — a concurrent pause/cancel
+/// while the run was in flight must not be silently overwritten back to
+/// 'completed' once it finishes.
+pub func markScheduledJobCompletedSql(id: in String, firedAt: in String): String {
+  return "UPDATE scheduled_jobs SET last_run_at = " + sqlLiteral(firedAt) +
+    ", status = 'completed', next_run_at = '' WHERE id = " +
+    sqlLiteral(id) +
+    " AND status = 'active'"
+}
+
+/// Update a job's mutable fields (prompt/profile/schedule/status). Each
+/// String parameter is written as-is — the caller
+/// (CloudAgents.Repository.updateScheduledJob) resolves "keep the existing
+/// value" before this is built, mirroring updateSessionModelSql's plain
+/// single-field-set shape.
+pub func updateScheduledJobSql(
+  id: in String,
+  userId: in String,
+  name: in String,
+  prompt: in String,
+  profileId: in String,
+  runAt: in String,
+  intervalSeconds: in String,
+  nextRunAt: in String,
+  status: in String,
+): String {
+  return "UPDATE scheduled_jobs SET name = " + sqlLiteral(name) + ", prompt = " + sqlLiteral(prompt) +
+    ", profile_id = " +
+    sqlLiteral(profileId) +
+    ", run_at = " +
+    sqlLiteral(runAt) +
+    ", interval_seconds = " +
+    sqlLiteral(intervalSeconds) +
+    ", next_run_at = " +
+    sqlLiteral(nextRunAt) +
+    ", status = " +
+    sqlLiteral(status) +
+    " WHERE id = " +
+    sqlLiteral(id) +
+    " AND user_id = " +
+    sqlLiteral(userId)
+}
+
+/// DELETE a job scoped by owner.
+pub func deleteScheduledJobSql(id: in String, userId: in String): String {
+  return "DELETE FROM scheduled_jobs WHERE id = " + sqlLiteral(id) + " AND user_id = " + sqlLiteral(userId)
+}

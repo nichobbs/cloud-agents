@@ -693,3 +693,200 @@ impl McpToolHandler for CompleteTaskTool {
     }
   }
 }
+
+// ── schedule_job / list_jobs / update_job / cancel_job (phase 8) ────────────
+// docs/phase8-scheduling.md. schedule_job always attaches THIS session, so
+// every future firing continues it.
+pub func scheduleJobSchema(): JsonValue {
+  JObject(
+    fields = [
+      JsonField(name = "type", value = JString(value = "object")),
+      JsonField(
+        name = "properties",
+        value = JObject(
+          fields = [
+            stringSchemaField("name", "Optional short label for this job."),
+            stringSchemaField(
+              "prompt",
+              "The message to send to THIS session each time the job fires."
+            ),
+            stringSchemaField(
+              "runAtEpochMillis",
+              "Optional. A one-shot run time as epoch milliseconds (a decimal number, as a string). Omit for a purely recurring job that starts now."
+            ),
+            stringSchemaField(
+              "intervalSeconds",
+              "Optional. Recur every this many seconds (60 to 2592000 / 30 days). Omit for a one-shot job that fires once at runAtEpochMillis and never again."
+            )
+          ]
+        )
+      ),
+      JsonField(name = "required", value = JArray(items = [JString(value = "prompt")]))
+    ]
+  )
+}
+
+pub record ScheduleJobTool {
+  pub transport: V2CallbackTransport
+}
+
+func handleScheduleJob(tool: in ScheduleJobTool, args: in Option[JsonValue]): McpToolResult {
+  val a = match args {
+    case Some(v) -> v
+    case None -> return toolErrorResult("missing required argument 'prompt'")
+  }
+  val prompt = match getString(a, "prompt") {
+    case Some(p) -> p
+    case None -> return toolErrorResult("missing required argument 'prompt'")
+  }
+  val name = match getString(a, "name") { case Some(n) -> n; case None -> "" }
+  val runAtEpochMillis = match getString(a, "runAtEpochMillis") { case Some(r) -> r; case None -> "" }
+  val intervalSeconds = match getString(a, "intervalSeconds") { case Some(i) -> i; case None -> "" }
+  return match CloudAgents.Shim.V2Client.scheduleJob(tool.transport, name, prompt, runAtEpochMillis, intervalSeconds) {
+    case Ok(id) -> toolTextResult("scheduled job " + id)
+    case Err(message) -> toolErrorResult(message)
+  }
+}
+
+impl McpToolHandler for ScheduleJobTool {
+  func call(args: in Option[JsonValue]): Result[McpToolResult, String] {
+    try {
+      Ok(value = handleScheduleJob(self, args))
+    } catch Bug as b {
+      Ok(value = toolErrorResult("internal error in cloud-agents-shim: " + b.message))
+    }
+  }
+}
+
+pub func listJobsSchema(): JsonValue {
+  JObject(
+    fields = [
+      JsonField(name = "type", value = JString(value = "object")),
+      JsonField(name = "properties", value = JObject(fields = []))
+    ]
+  )
+}
+
+pub record ListJobsTool {
+  pub transport: V2CallbackTransport
+}
+
+func handleListJobs(tool: in ListJobsTool, args: in Option[JsonValue]): McpToolResult {
+  return match CloudAgents.Shim.V2Client.listJobs(tool.transport) {
+    case Ok(listing) -> toolTextResult(listing)
+    case Err(message) -> toolErrorResult(message)
+  }
+}
+
+impl McpToolHandler for ListJobsTool {
+  func call(args: in Option[JsonValue]): Result[McpToolResult, String] {
+    try {
+      Ok(value = handleListJobs(self, args))
+    } catch Bug as b {
+      Ok(value = toolErrorResult("internal error in cloud-agents-shim: " + b.message))
+    }
+  }
+}
+
+pub func updateJobSchema(): JsonValue {
+  JObject(
+    fields = [
+      JsonField(name = "type", value = JString(value = "object")),
+      JsonField(
+        name = "properties",
+        value = JObject(
+          fields = [
+            stringSchemaField("id", "The job's id (returned by schedule_job/list_jobs)."),
+            stringSchemaField("prompt", "Optional. Replace the prompt sent on each firing."),
+            stringSchemaField(
+              "runAtEpochMillis",
+              "Optional. Replace the schedule with a one-shot run at this epoch-millisecond time. Providing either this or intervalSeconds replaces the whole schedule."
+            ),
+            stringSchemaField(
+              "intervalSeconds",
+              "Optional. Replace the schedule with this recurring cadence in seconds (60 to 2592000)."
+            ),
+            stringSchemaField(
+              "status",
+              "Optional. One of 'active', 'paused', or 'cancelled'."
+            )
+          ]
+        )
+      ),
+      JsonField(name = "required", value = JArray(items = [JString(value = "id")]))
+    ]
+  )
+}
+
+pub record UpdateJobTool {
+  pub transport: V2CallbackTransport
+}
+
+func handleUpdateJob(tool: in UpdateJobTool, args: in Option[JsonValue]): McpToolResult {
+  val a = match args { case Some(v) -> v; case None -> return toolErrorResult("missing required argument 'id'") }
+  val id = match getString(a, "id") {
+    case Some(i) -> i
+    case None -> return toolErrorResult("missing required argument 'id'")
+  }
+  val prompt = match getString(a, "prompt") { case Some(p) -> p; case None -> "" }
+  val runAtEpochMillis = match getString(a, "runAtEpochMillis") { case Some(r) -> r; case None -> "" }
+  val intervalSeconds = match getString(a, "intervalSeconds") { case Some(i) -> i; case None -> "" }
+  val status = match getString(a, "status") { case Some(s) -> s; case None -> "" }
+  return match CloudAgents.Shim.V2Client.updateJob(tool.transport, id, prompt, "", runAtEpochMillis, intervalSeconds, status) {
+    case Ok(msg) -> toolTextResult(msg)
+    case Err(message) -> toolErrorResult(message)
+  }
+}
+
+impl McpToolHandler for UpdateJobTool {
+  func call(args: in Option[JsonValue]): Result[McpToolResult, String] {
+    try {
+      Ok(value = handleUpdateJob(self, args))
+    } catch Bug as b {
+      Ok(value = toolErrorResult("internal error in cloud-agents-shim: " + b.message))
+    }
+  }
+}
+
+pub func cancelJobSchema(): JsonValue {
+  JObject(
+    fields = [
+      JsonField(name = "type", value = JString(value = "object")),
+      JsonField(
+        name = "properties",
+        value = JObject(
+          fields = [
+            stringSchemaField("id", "The id of the job to cancel (returned by schedule_job/list_jobs). It will not fire again.")
+          ]
+        )
+      ),
+      JsonField(name = "required", value = JArray(items = [JString(value = "id")]))
+    ]
+  )
+}
+
+pub record CancelJobTool {
+  pub transport: V2CallbackTransport
+}
+
+func handleCancelJob(tool: in CancelJobTool, args: in Option[JsonValue]): McpToolResult {
+  val a = match args { case Some(v) -> v; case None -> return toolErrorResult("missing required argument 'id'") }
+  val id = match getString(a, "id") {
+    case Some(i) -> i
+    case None -> return toolErrorResult("missing required argument 'id'")
+  }
+  return match CloudAgents.Shim.V2Client.cancelJob(tool.transport, id) {
+    case Ok(msg) -> toolTextResult(msg)
+    case Err(message) -> toolErrorResult(message)
+  }
+}
+
+impl McpToolHandler for CancelJobTool {
+  func call(args: in Option[JsonValue]): Result[McpToolResult, String] {
+    try {
+      Ok(value = handleCancelJob(self, args))
+    } catch Bug as b {
+      Ok(value = toolErrorResult("internal error in cloud-agents-shim: " + b.message))
+    }
+  }
+}
