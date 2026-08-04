@@ -27,6 +27,13 @@ export function Search() {
       setSubmittedQuery(term);
       setSearched(true);
     } catch (err) {
+      // Clear any results/banner left over from a previous successful
+      // search — otherwise a failed follow-up query would show its own
+      // error banner stacked on top of a stale "no matches"/results view
+      // that belonged to a different, earlier query (#920).
+      setSearched(false);
+      setMessages([]);
+      setTruncated(false);
       setError(err instanceof Error ? err.message : 'Failed to search messages');
     } finally {
       setLoading(false);

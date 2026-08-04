@@ -63,6 +63,28 @@ describe('Search', () => {
     expect(await screen.findByText('500 boom')).toBeInTheDocument();
   });
 
+  // #920: a failed follow-up search must not leave the previous successful
+  // search's banner/results on screen underneath the new error — they
+  // belong to a different, earlier query.
+  it('clears a previous no-matches banner when a follow-up search fails', async () => {
+    const user = userEvent.setup();
+    vi.mocked(api.searchMessages).mockResolvedValueOnce({ messages: [], truncated: false });
+    renderSearch();
+
+    const box = screen.getByPlaceholderText('Search your message transcripts…');
+    await user.type(box, 'zzzznomatch');
+    await user.click(screen.getByRole('button', { name: 'Search' }));
+    expect(await screen.findByText('No messages matched "zzzznomatch".')).toBeInTheDocument();
+
+    vi.mocked(api.searchMessages).mockRejectedValueOnce(new Error('500 boom'));
+    await user.clear(box);
+    await user.type(box, 'foo');
+    await user.click(screen.getByRole('button', { name: 'Search' }));
+
+    expect(await screen.findByText('500 boom')).toBeInTheDocument();
+    expect(screen.queryByText('No messages matched "zzzznomatch".')).not.toBeInTheDocument();
+  });
+
   // #915: the "no matches" banner must reflect the query that was actually
   // submitted, not whatever the input currently holds — editing the box
   // after a search returns zero results must not silently change the banner
