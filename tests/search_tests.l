@@ -169,6 +169,15 @@ test "searchMessagesHandler finds a real match and returns it newest first" {
   val sid = "sess-search-2"
   mkSession(sid)
   mkMessage(sid, "first: let's schedule the migration")
+  // "first" and "third" (asserted for relative order below) could otherwise
+  // land in the same nowMillis() millisecond and tie on created_at — spin
+  // past that same-ms window so the assertion tests ordering, not scheduler
+  // luck (mirrors tests/interactions_tests.l's #803 same-ms spin idiom).
+  val afterFirst = CloudAgents.Repository.nowMillis()
+  var spin = 0
+  while CloudAgents.Repository.nowMillis() <= afterFirst {
+    spin = spin + 1
+  }
   mkMessage(sid, "second: totally unrelated content")
   mkMessage(sid, "third: don't forget to schedule the follow-up")
 

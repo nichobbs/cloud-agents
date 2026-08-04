@@ -30,7 +30,7 @@ beforeEach(() => {
 describe('Nav', () => {
   it('renders every nav link and the toggle button', () => {
     renderNav();
-    for (const label of ['Sessions', 'Repos', 'Prompts', 'Profiles', 'Library', 'Credentials', 'Integrations', 'Webhooks']) {
+    for (const label of ['Sessions', 'Repos', 'Prompts', 'Search', 'Profiles', 'Library', 'Credentials', 'Integrations', 'Webhooks']) {
       expect(screen.getByRole('link', { name: label })).toBeInTheDocument();
     }
     expect(screen.getByRole('button', { name: 'Toggle navigation menu' })).toBeInTheDocument();

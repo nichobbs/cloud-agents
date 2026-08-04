@@ -155,6 +155,23 @@ pub func sessionRepoListResp(r: in Result[SessionRepoList, Web.ApiError]): Web.R
   return match r { case Ok(v) -> jsonResp(200, v.toJson()); case Err(e) -> Web.errorResponse(e) }
 }
 
+/// Shared per-message JSON shape — used by both messageListToJson (a
+/// session's own transcript) and searchMessagesToJson (search results
+/// across transcripts), since both render the exact same Message fields.
+func messageToJson(m: in CloudAgents.Repository.Message): String {
+  return "{\"id\":\"" + CloudAgents.Streaming.jsonEscape(m.id) + "\",\"sessionId\":\"" +
+    CloudAgents.Streaming.jsonEscape(m.sessionId) +
+    "\",\"role\":\"" +
+    CloudAgents.Streaming.jsonEscape(m.role) +
+    "\",\"content\":\"" +
+    CloudAgents.Streaming.jsonEscape(m.content) +
+    "\",\"seq\":\"" +
+    CloudAgents.Streaming.jsonEscape(m.seq) +
+    "\",\"createdAt\":\"" +
+    CloudAgents.Streaming.jsonEscape(m.createdAt) +
+    "\"}"
+}
+
 pub func messageListToJson(v: in CloudAgents.Repository.MessageList): String {
   var json = "{\"messages\":["
   var i = 0
@@ -162,18 +179,7 @@ pub func messageListToJson(v: in CloudAgents.Repository.MessageList): String {
     if i > 0 {
       json = json + ","
     }
-    val m = v.messages[i]
-    json = json + "{\"id\":\"" + CloudAgents.Streaming.jsonEscape(m.id) + "\",\"sessionId\":\"" +
-      CloudAgents.Streaming.jsonEscape(m.sessionId) +
-      "\",\"role\":\"" +
-      CloudAgents.Streaming.jsonEscape(m.role) +
-      "\",\"content\":\"" +
-      CloudAgents.Streaming.jsonEscape(m.content) +
-      "\",\"seq\":\"" +
-      CloudAgents.Streaming.jsonEscape(m.seq) +
-      "\",\"createdAt\":\"" +
-      CloudAgents.Streaming.jsonEscape(m.createdAt) +
-      "\"}"
+    json = json + messageToJson(v.messages[i])
     i = i + 1
   }
   json = json + "]}"
@@ -194,18 +200,7 @@ pub func searchMessagesToJson(v: in CloudAgents.Search.SearchMessagesResult): St
     if i > 0 {
       json = json + ","
     }
-    val m = v.messages[i]
-    json = json + "{\"id\":\"" + CloudAgents.Streaming.jsonEscape(m.id) + "\",\"sessionId\":\"" +
-      CloudAgents.Streaming.jsonEscape(m.sessionId) +
-      "\",\"role\":\"" +
-      CloudAgents.Streaming.jsonEscape(m.role) +
-      "\",\"content\":\"" +
-      CloudAgents.Streaming.jsonEscape(m.content) +
-      "\",\"seq\":\"" +
-      CloudAgents.Streaming.jsonEscape(m.seq) +
-      "\",\"createdAt\":\"" +
-      CloudAgents.Streaming.jsonEscape(m.createdAt) +
-      "\"}"
+    json = json + messageToJson(v.messages[i])
     i = i + 1
   }
   val truncatedStr = if v.truncated { "true" } else { "false" }

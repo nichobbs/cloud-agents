@@ -8,6 +8,7 @@ import type { Message } from '../types';
 /// transcripts (GET /api/search/messages?q=...).
 export function Search() {
   const [query, setQuery] = useState('');
+  const [submittedQuery, setSubmittedQuery] = useState('');
   const [messages, setMessages] = useState<Message[]>([]);
   const [truncated, setTruncated] = useState(false);
   const [loading, setLoading] = useState(false);
@@ -23,6 +24,7 @@ export function Search() {
       const result = await api.searchMessages(term);
       setMessages(result.messages);
       setTruncated(result.truncated);
+      setSubmittedQuery(term);
       setSearched(true);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to search messages');
@@ -62,7 +64,7 @@ export function Search() {
       {error && <div style={errStyle}>{error}</div>}
       {loading && <div style={mutedStyle}>Searching…</div>}
       {!loading && searched && messages.length === 0 && (
-        <div style={mutedStyle}>No messages matched "{query.trim()}".</div>
+        <div style={mutedStyle}>No messages matched "{submittedQuery}".</div>
       )}
       {!loading && truncated && (
         <div style={truncatedNoticeStyle}>
