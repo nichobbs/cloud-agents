@@ -479,3 +479,41 @@ describe('SessionDetail profile-attach-error handoff (#898)', () => {
   });
 });
 
+describe('SessionDetail stale attached profile (#900/#901)', () => {
+  const liveProfile: Profile = {
+    id: 'p-live',
+    userId: 'u1',
+    name: 'Live Profile',
+    harness: '',
+    networkPolicy: 'full',
+    credentialMode: 'all',
+    credentials: [],
+    skillIds: [],
+    subagentIds: [],
+    mcpServerIds: [],
+    toolMode: 'all',
+    tools: [],
+    createdAt: '0',
+    updatedAt: '0',
+  };
+
+  it("shows a distinct 'profile deleted' option for a stale attached profile id, alongside other profiles", async () => {
+    vi.mocked(api.getProfiles).mockResolvedValue([liveProfile]);
+    vi.mocked(api.getSessionProfile).mockResolvedValue('p-deleted-12345678');
+    renderPage();
+
+    const select = await screen.findByTitle(/Attach a profile/);
+    await waitFor(() => expect(within(select).getByText(/p-delete… \(profile deleted\)/)).toBeInTheDocument());
+    expect(within(select).getByRole('option', { name: 'Live Profile' })).toBeInTheDocument();
+  });
+
+  it('still surfaces the selector for a stale attached profile id even when the account has zero profiles (#901)', async () => {
+    vi.mocked(api.getProfiles).mockResolvedValue([]);
+    vi.mocked(api.getSessionProfile).mockResolvedValue('p-deleted-12345678');
+    renderPage();
+
+    const select = await screen.findByTitle(/Attach a profile/);
+    expect(within(select).getByText(/p-delete… \(profile deleted\)/)).toBeInTheDocument();
+  });
+});
+

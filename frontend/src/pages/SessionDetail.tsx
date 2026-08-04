@@ -936,7 +936,7 @@ export function SessionDetail() {
                 <option key={m.id} value={m.id}>{m.label}</option>
               ))}
             </select>
-            {profiles.length > 0 && (
+            {(profiles.length > 0 || profileId) && (
               <>
                 <span style={{ margin: '0 8px', color: '#30363d' }}>·</span>
                 profile:{' '}
