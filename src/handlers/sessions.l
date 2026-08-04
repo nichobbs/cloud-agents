@@ -771,10 +771,14 @@ pub func getRunOutput(id: in String): Result[String, Web.ApiError] {
       // client to stop polling for the whole run.
       if status != "RUNNING" {
         // Best-effort: a transcript lookup failure must not turn a completed
-        // run's status poll into a 500 — fall back to "" the same as before.
-        val lastOutput = match CloudAgents.Repository.listMessages(id) {
-          case Ok(msgs) -> lastAgentMessageContent(msgs)
-          case Err(_) -> ""
+        // run's status poll into a 500 — fall back to "" the same as before,
+        // but (#904) log it so a real DB problem on this path isn't silently
+        // invisible, matching this file's other best-effort error paths
+        // (endRun's defer, ingestAgentPlan, addMessage in streamSendMessage).
+        var lastOutput = ""
+        match CloudAgents.Repository.listMessages(id) {
+          case Ok(msgs) -> { lastOutput = lastAgentMessageContent(msgs) }
+          case Err(e) -> println("WARNING: failed to load transcript for output fallback, session " + id + ": " + CloudAgents.Sqlite.dbErrorMessage(e))
         }
         return Ok(value = "{\"running\":\"false\",\"output\":\"" + CloudAgents.Streaming.jsonEscape(lastOutput) + "\"}")
       }
