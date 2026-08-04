@@ -179,6 +179,21 @@ verification caveat (no `lyric` toolchain in the authoring environment —
 same caveat class as several entries above before their own first real
 compile).
 
+## Phase 9 — Full-text message search 🟡 started
+
+| Deliverable | Status | Where |
+|-------------|--------|-------|
+| `messages_fts` FTS5 index + sync trigger + backfill | ✅ added | migration `0028_message_search` (`db_client.l`/`repository.l`) |
+| Safe MATCH-expression builder | ✅ added | `CloudAgents.Search.buildFts5MatchExpr` (`src/handlers/search.l`) — quoted-prefix tokens neutralize FTS5 query syntax, verified against the real vaulted SQLite build |
+| `GET /api/search/messages?q=...` | ✅ added | `CloudAgents.Search.searchMessagesHandler`, owner-scoped via a join through `sessions` |
+| Frontend search page | ✅ added | `frontend/src/pages/Search.tsx`, `api.searchMessages()`, nav entry |
+| Tests | ✅ added | `tests/search_tests.l` (tokenizer/escaping, validation, matching, prefix search, cross-user isolation) |
+
+See `docs/phase9-message-search.md` for the full design, including the
+external `ctypes`-based verification of FTS5 availability and the escaping
+scheme, and the "compile-time only" verification caveat (no `lyric`
+toolchain in the authoring environment — same caveat class as phase 8).
+
 ## Recent hardening (2026-07)
 
 - **Live output streaming.** `POST /api/sessions/{id}/messages` now streams the

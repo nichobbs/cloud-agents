@@ -350,6 +350,19 @@ pub func allMigrations(): slice[Migration] {
         CloudAgents.Db.scheduledJobsUserIndexSql(),
         CloudAgents.Db.scheduledJobsDueIndexSql()
       ]
+    ),
+    // Statement order matters: the FTS5 table must exist before the backfill
+    // can populate it, and the trigger must be created last so its own
+    // firing doesn't double-insert rows the backfill's SELECT already
+    // picked up. All three run in one transaction (runMigrations), so there
+    // is no window between them for a concurrent insert to fall through.
+    Migration(
+      version = "0028_message_search",
+      statements = [
+        CloudAgents.Db.messageSearchSchemaSql(),
+        CloudAgents.Db.messageSearchBackfillSql(),
+        CloudAgents.Db.messageSearchTriggerSql()
+      ]
     )
   ]
 }
@@ -433,6 +446,25 @@ pub func addMessage(
 /// All messages in a session, oldest first.
 pub func listMessages(sessionId: in String): Result[slice[Message], CloudAgents.Sqlite.DbError] {
   val rows = CloudAgents.Sqlite.query(CloudAgents.Db.selectMessagesSql(sessionId))?
+  var acc: slice[Message] = []
+  var i = 0
+  val len = CloudAgents.Sqlite.getRowArrayLength(rows)
+  while i < len {
+    acc = acc.append(rowToMessage(CloudAgents.Sqlite.getRowArrayValue(rows, i)))
+    i = i + 1
+  }
+  return Ok(value = acc)
+}
+
+/// Full-text search across every message in `userId`'s own sessions,
+/// newest first. `matchExpr` must already be a safe, fully-built FTS5 MATCH
+/// expression (CloudAgents.Search.buildFts5MatchExpr) — this function's only
+/// job is running it, same division of labor as every other repository
+/// function and its SQL builder.
+pub func searchMessages(
+  userId: in String, matchExpr: in String, limit: in Int
+): Result[slice[Message], CloudAgents.Sqlite.DbError] {
+  val rows = CloudAgents.Sqlite.query(CloudAgents.Db.searchMessagesSql(userId, matchExpr, limit))?
   var acc: slice[Message] = []
   var i = 0
   val len = CloudAgents.Sqlite.getRowArrayLength(rows)

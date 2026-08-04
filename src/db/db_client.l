@@ -581,6 +581,69 @@ pub func countMessagesSql(sessionId: in String): String {
   return "SELECT CAST(COUNT(*) AS TEXT) FROM messages WHERE session_id = " + sqlLiteral(sessionId)
 }
 
+// ─── Full-text message search (docs/phase9-message-search.md) ────────────────
+//
+// `messages_fts` is a standalone FTS5 index — NOT SQLite's "external content"
+// mode (`content='messages', content_rowid='rowid'`). External-content mode
+// would avoid duplicating `content` on disk, but ties correctness to
+// `messages`'s implicit rowid staying stable and requires INSERT/UPDATE/
+// DELETE triggers all kept in perfect sync. `messages` is INSERT-only in this
+// codebase (confirmed: no UPDATE or DELETE statement touches it anywhere),
+// so only an INSERT trigger is actually needed, and storing `content` +
+// `id` directly in the FTS5 table sidesteps the rowid-linkage question
+// entirely — simpler and more robust for a feature with no local toolchain
+// to catch a subtly wrong trigger set before it ships. `id` is UNINDEXED
+// (carried through purely to join back to `messages` for the authoritative
+// row — role/seq/created_at are read from there, not duplicated here).
+//
+// FTS5 availability was confirmed by extracting the actual vaulted
+// SourceGear.sqlite3 3.53.3 linux-x64 native library and both (a) finding
+// `ENABLE_FTS5`/`sqlite3Fts5Init` compiled in and (b) executing a real
+// `CREATE VIRTUAL TABLE ... USING fts5`, insert, and `MATCH` query against
+// it directly via the C API — not just checking documentation.
+/// DDL for the message search index. `IF NOT EXISTS` per this file's own
+/// convention (safe to re-run; the migration ledger already guards against
+/// re-applying it anyway).
+pub func messageSearchSchemaSql(): String {
+  return "CREATE VIRTUAL TABLE IF NOT EXISTS messages_fts USING fts5(content, id UNINDEXED)"
+}
+
+/// One-time backfill of any `messages` rows that existed before this
+/// migration ran. The trigger below (`messageSearchTriggerSql`) only fires
+/// for rows inserted AFTER it's created.
+pub func messageSearchBackfillSql(): String {
+  return "INSERT INTO messages_fts(content, id) SELECT content, id FROM messages"
+}
+
+/// Keep `messages_fts` in sync with every future insert. `messages` has no
+/// UPDATE/DELETE path anywhere in this codebase (see the module comment
+/// above), so an AFTER INSERT trigger is the only sync trigger this needs.
+pub func messageSearchTriggerSql(): String {
+  return "CREATE TRIGGER IF NOT EXISTS messages_fts_ai AFTER INSERT ON messages BEGIN " +
+    "INSERT INTO messages_fts(content, id) VALUES (new.content, new.id); " +
+    "END"
+}
+
+/// Full-text search across every message in the caller's own sessions.
+/// `matchExpr` is an already-built FTS5 MATCH expression (see
+/// CloudAgents.Search.buildFts5MatchExpr — this function only handles safe
+/// SQL-string embedding via `sqlLiteral`, not FTS5 query-syntax safety,
+/// exactly like every other builder in this file takes an already-validated
+/// value). Ownership is enforced by joining through to `sessions` — messages
+/// carry no `user_id` of their own. `limit` is an internal, app-controlled
+/// cap (never client-supplied), so it's inlined as a bare integer literal
+/// rather than through `sqlLiteral` (which would quote it as TEXT).
+pub func searchMessagesSql(userId: in String, matchExpr: in String, limit: in Int): String {
+  return "SELECT m.id, m.session_id, m.role, m.content, m.seq, m.created_at " +
+    "FROM messages_fts f JOIN messages m ON m.id = f.id JOIN sessions s ON s.id = m.session_id " +
+    "WHERE f.content MATCH " +
+    sqlLiteral(matchExpr) +
+    " AND s.user_id = " +
+    sqlLiteral(userId) +
+    " ORDER BY m.created_at DESC LIMIT " +
+    toString(limit)
+}
+
 /// INSERT a comment on a message.
 pub func insertCommentSql(
   id: in String,

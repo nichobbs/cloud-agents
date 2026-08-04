@@ -17,6 +17,7 @@ import CloudAgents.Profiles
 import CloudAgents.Prompts
 import CloudAgents.Proxy
 import CloudAgents.Repository
+import CloudAgents.Search
 import CloudAgents.SessionStore
 import CloudAgents.Sqlite
 import CloudAgents.Streaming
@@ -154,6 +155,23 @@ pub func sessionRepoListResp(r: in Result[SessionRepoList, Web.ApiError]): Web.R
   return match r { case Ok(v) -> jsonResp(200, v.toJson()); case Err(e) -> Web.errorResponse(e) }
 }
 
+/// Shared per-message JSON shape — used by both messageListToJson (a
+/// session's own transcript) and searchMessagesToJson (search results
+/// across transcripts), since both render the exact same Message fields.
+func messageToJson(m: in CloudAgents.Repository.Message): String {
+  return "{\"id\":\"" + CloudAgents.Streaming.jsonEscape(m.id) + "\",\"sessionId\":\"" +
+    CloudAgents.Streaming.jsonEscape(m.sessionId) +
+    "\",\"role\":\"" +
+    CloudAgents.Streaming.jsonEscape(m.role) +
+    "\",\"content\":\"" +
+    CloudAgents.Streaming.jsonEscape(m.content) +
+    "\",\"seq\":\"" +
+    CloudAgents.Streaming.jsonEscape(m.seq) +
+    "\",\"createdAt\":\"" +
+    CloudAgents.Streaming.jsonEscape(m.createdAt) +
+    "\"}"
+}
+
 pub func messageListToJson(v: in CloudAgents.Repository.MessageList): String {
   var json = "{\"messages\":["
   var i = 0
@@ -161,18 +179,7 @@ pub func messageListToJson(v: in CloudAgents.Repository.MessageList): String {
     if i > 0 {
       json = json + ","
     }
-    val m = v.messages[i]
-    json = json + "{\"id\":\"" + CloudAgents.Streaming.jsonEscape(m.id) + "\",\"sessionId\":\"" +
-      CloudAgents.Streaming.jsonEscape(m.sessionId) +
-      "\",\"role\":\"" +
-      CloudAgents.Streaming.jsonEscape(m.role) +
-      "\",\"content\":\"" +
-      CloudAgents.Streaming.jsonEscape(m.content) +
-      "\",\"seq\":\"" +
-      CloudAgents.Streaming.jsonEscape(m.seq) +
-      "\",\"createdAt\":\"" +
-      CloudAgents.Streaming.jsonEscape(m.createdAt) +
-      "\"}"
+    json = json + messageToJson(v.messages[i])
     i = i + 1
   }
   json = json + "]}"
@@ -181,6 +188,28 @@ pub func messageListToJson(v: in CloudAgents.Repository.MessageList): String {
 
 pub func messageListResp(r: in Result[MessageList, Web.ApiError]): Web.Response {
   return match r { case Ok(v) -> jsonResp(200, messageListToJson(v)); case Err(e) -> Web.errorResponse(e) }
+}
+
+/// Same message-array shape as messageListToJson, plus a `truncated` flag
+/// (#908) so the frontend can distinguish "these are all the matches" from
+/// "there were more than maxSearchResults — refine your search."
+pub func searchMessagesToJson(v: in CloudAgents.Search.SearchMessagesResult): String {
+  var json = "{\"messages\":["
+  var i = 0
+  while i < v.messages.length {
+    if i > 0 {
+      json = json + ","
+    }
+    json = json + messageToJson(v.messages[i])
+    i = i + 1
+  }
+  val truncatedStr = if v.truncated { "true" } else { "false" }
+  json = json + "],\"truncated\":" + truncatedStr + "}"
+  return json
+}
+
+pub func searchMessagesResp(r: in Result[CloudAgents.Search.SearchMessagesResult, Web.ApiError]): Web.Response {
+  return match r { case Ok(v) -> jsonResp(200, searchMessagesToJson(v)); case Err(e) -> Web.errorResponse(e) }
 }
 
 pub func commentResp(r: in Result[Comment, Web.ApiError]): Web.Response {
@@ -552,6 +581,16 @@ record RouteGetMessages {
 impl Web.Handler for RouteGetMessages {
   func handle(req: in Web.Request): Web.Response {
     return messageListResp(CloudAgents.Interactions.getMessages(pparam(req, "id")))
+  }
+}
+
+// ─── CloudAgents.Search routes (search.l) ───────────────────────────────────
+record RouteSearchMessages {
+}
+
+impl Web.Handler for RouteSearchMessages {
+  func handle(req: in Web.Request): Web.Response {
+    return searchMessagesResp(CloudAgents.Search.searchMessagesHandler(qparam(req, "q")))
   }
 }
 
@@ -1670,6 +1709,10 @@ pub func main(): Unit {
 
   // Transcript: addressable agent/user messages for a session
   router = Web.addGet(router, "/api/sessions/{id}/messages", RouteGetMessages())
+
+  // Full-text search across every message in the caller's own sessions
+  // (docs/phase9-message-search.md), backed by the messages_fts FTS5 index.
+  router = Web.addGet(router, "/api/search/messages", RouteSearchMessages())
 
   // Comments anchored to a specific message
   router = Web.addPost(router, "/api/messages/{mid}/comments", RouteAddComment())
