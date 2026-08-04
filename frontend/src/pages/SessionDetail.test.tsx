@@ -117,7 +117,7 @@ function deferred<T>(): { promise: Promise<T>; resolve: (v: T) => void } {
   return { promise, resolve };
 }
 
-function renderPage(initialEntries: Array<string | { pathname: string; state?: unknown }> = ['/sessions/s1']) {
+function renderPage(initialEntries: Array<string | { pathname: string; state?: unknown; hash?: string }> = ['/sessions/s1']) {
   const root = document.createElement('div');
   root.id = 'root';
   document.body.appendChild(root);
@@ -430,6 +430,20 @@ describe('SessionDetail profile-attach-error handoff (#898)', () => {
     // is replaced right away, so a later browser back/forward into this
     // exact URL can't resurrect an already-resolved banner.
     await waitFor(() => expect(mockNavigate).toHaveBeenCalledWith('/sessions/s1', { replace: true }));
+  });
+
+  it('preserves an existing #message-… deep-link hash when replacing history (#899)', async () => {
+    renderPage([{
+      pathname: '/sessions/s1',
+      hash: '#message-m1',
+      state: { profileAttachError: 'profile deleted' },
+    }]);
+
+    await screen.findByText(/Profile not attached: profile deleted/);
+
+    await waitFor(() =>
+      expect(mockNavigate).toHaveBeenCalledWith('/sessions/s1#message-m1', { replace: true }),
+    );
   });
 
   it('clears the banner on a successful manual profile change, and does not replace history again', async () => {

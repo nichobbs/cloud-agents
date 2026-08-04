@@ -200,7 +200,7 @@ export function SessionDetail() {
       // carrying the stale profileAttachError in its state), resurrecting an
       // already-resolved banner (#898) — resolving it via handleProfileChange
       // below only ever updates React state, never the history entry itself.
-      navigate(location.pathname + location.search, { replace: true });
+      navigate(location.pathname + location.search + location.hash, { replace: true });
     }
     api
       .getSessionProfile(sessionId)
