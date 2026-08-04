@@ -211,11 +211,15 @@ confirmed green before merge.
 See `docs/phase10-auto-open-pr.md` for the full design, including why this
 first version is an opt-in button rather than automatic (no `docker exec`
 capability to verify a run actually pushed anything, plus the noisy-PR risk
-of firing on every run), and the "compile-time only" verification caveat —
-an attempt to install the `lyric` toolchain locally this session hit a known
-session-level MCP connection issue (`add_repo` requiring approval with no
-prompt surfaced), so this, like several earlier phases, relies on CI's real
-`Build & verify` job for its first actual compile.
+of firing on every run). An attempt to install the `lyric` toolchain locally
+this session hit a known session-level MCP connection issue (`add_repo`
+requiring approval with no prompt surfaced), so this relies on CI's `Build &
+verify` job for its actual compile — and that job's first pass on this PR
+genuinely failed with a real error (a `val` name colliding with an
+already-imported function of the same name from `CloudAgents.OAuth`), fixed
+in a follow-up commit alongside two real review findings (an unvalidated
+branch name reaching raw GitHub API URLs, and two wasted API calls on the
+already-on-default-branch path) — see §6 of the phase doc for detail.
 
 ## Recent hardening (2026-07)
 

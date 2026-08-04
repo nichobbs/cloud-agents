@@ -26,7 +26,7 @@ import CloudAgents.Sqlite
 import CloudAgents.Streaming
 import CloudAgents.Text
 
-val userAgent = "cloud-agents"
+val openPrUserAgent = "cloud-agents"
 
 func sessionDbError(e: in CloudAgents.Sqlite.DbError): Web.ApiError {
   return Web.internalError(CloudAgents.Sqlite.dbErrorMessage(e))
@@ -87,7 +87,7 @@ pub func githubOwnerRepoFromUrl(url: in String): Option[OwnerRepo] {
 /// "main"/"master".
 func repoDefaultBranch(ownerRepo: in OwnerRepo, token: in String): Result[String, Web.ApiError] {
   match CloudAgents.GitHubApi.httpGetWithBearer(
-    "https://api.github.com/repos/" + ownerRepo.owner + "/" + ownerRepo.repo, token, userAgent
+    "https://api.github.com/repos/" + ownerRepo.owner + "/" + ownerRepo.repo, token, openPrUserAgent
   ) {
     case Ok(body) -> {
       val branch = CloudAgents.Highlights.jsonStringValueOf(body, "default_branch")
@@ -109,7 +109,7 @@ func repoDefaultBranch(ownerRepo: in OwnerRepo, token: in String): Result[String
 func compareBranchStatus(ownerRepo: in OwnerRepo, base: in String, head: in String, token: in String): Result[String, Web.ApiError] {
   val url = "https://api.github.com/repos/" + ownerRepo.owner + "/" + ownerRepo.repo + "/compare/" + base + "..." +
     head
-  match CloudAgents.GitHubApi.httpGetWithBearer(url, token, userAgent) {
+  match CloudAgents.GitHubApi.httpGetWithBearer(url, token, openPrUserAgent) {
     case Ok(body) -> return Ok(value = CloudAgents.Highlights.jsonStringValueOf(body, "status"))
     case Err(e) -> {
       if e.contains("(404)") {
@@ -125,7 +125,7 @@ func compareBranchStatus(ownerRepo: in OwnerRepo, base: in String, head: in Stri
 func existingOpenPrUrl(ownerRepo: in OwnerRepo, head: in String, token: in String): Result[String, Web.ApiError] {
   val url = "https://api.github.com/repos/" + ownerRepo.owner + "/" + ownerRepo.repo +
     "/pulls?state=open&per_page=1&head=" + ownerRepo.owner + ":" + head
-  match CloudAgents.GitHubApi.httpGetWithBearer(url, token, userAgent) {
+  match CloudAgents.GitHubApi.httpGetWithBearer(url, token, openPrUserAgent) {
     case Ok(body) -> return Ok(value = CloudAgents.Highlights.jsonStringValueOf(body, "html_url"))
     case Err(e) -> return Err(githubApiError(e))
   }
@@ -143,7 +143,7 @@ func createPr(ownerRepo: in OwnerRepo, base: in String, head: in String, token: 
     CloudAgents.Streaming.jsonEscape(body) +
     "\"}"
   match CloudAgents.GitHubApi.httpPostJsonWithBearer(
-    "https://api.github.com/repos/" + ownerRepo.owner + "/" + ownerRepo.repo + "/pulls", bodyJson, token, userAgent
+    "https://api.github.com/repos/" + ownerRepo.owner + "/" + ownerRepo.repo + "/pulls", bodyJson, token, openPrUserAgent
   ) {
     case Ok(respBody) -> {
       val url = CloudAgents.Highlights.jsonStringValueOf(respBody, "html_url")
@@ -209,8 +209,26 @@ pub func openPrHandler(sessionId: in String): Result[OpenPrResult, Web.ApiError]
     case Some(v) -> v
     case None -> return Err(Web.badRequest("this session's repository is not a github.com HTTPS repo"))
   }
+  // session.branch is embedded directly into raw GitHub API URLs below (a
+  // path segment in the compare call, a query value in the pulls lookup) —
+  // isSafeBranchName at session-creation time allows characters like '#'/'&'
+  // that are valid in a git branch name but would corrupt or inject into
+  // those URLs, so it's re-validated here through the same charset
+  // CloudAgents.Proxy's own GitHub-URL-embedding endpoints already require.
+  if not CloudAgents.Proxy.isValidProxyBranch(session.branch) {
+    return Err(Web.badRequest("this session's branch name is not safe to embed in a GitHub API URL"))
+  }
   val token = CloudAgents.OAuth.ensureFreshGitHubToken(CloudAgents.Auth.currentUserId())?
   val defaultBranch = repoDefaultBranch(ownerRepo, token)?
+  // Short-circuit before the compare/existing-PR calls in the common case of
+  // a session still sitting on the repo's default branch — decidePrAction
+  // below would reject this too, but there's no reason to spend two more
+  // GitHub round trips to reach the same answer.
+  if session.branch == defaultBranch {
+    return Err(
+      Web.badRequest("this session's branch is the repository's default branch; nothing to open a PR against")
+    )
+  }
   val compareStatus = compareBranchStatus(ownerRepo, defaultBranch, session.branch, token)?
   val existingPrUrl = existingOpenPrUrl(ownerRepo, session.branch, token)?
   match decidePrAction(defaultBranch, session.branch, compareStatus, existingPrUrl) {

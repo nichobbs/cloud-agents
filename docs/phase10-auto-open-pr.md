@@ -120,17 +120,30 @@ self-explanatory for an opt-in action a human just clicked.
 
 ## 6. Verification status
 
-Compile-time only, in the same sense several other phases' entries in
-`docs/PROGRESS.md` are qualified: this authoring environment has no `lyric`
-toolchain installed by default (an attempt to install it this session hit a
-known session-level MCP connection issue with the `add_repo` tool per
-`AGENTS.md`, not a real permission denial), so this change has not been run
-through `lyric build`/`lyric test` locally. CI's `Build & verify` job (the
-real compile+test gate) will do that before merge — the same job that,
-during Phase 9's development, actually caught a real bug in a hand-computed
-test expectation the first time this repo's CI genuinely ran a feature
-through the compiler (`docs/PROGRESS.md`'s Phase 9 entry / `docs/
-phase9-message-search.md`), so it is a substantive check, not a formality.
+This authoring environment has no `lyric` toolchain installed by default (an
+attempt to install it this session hit a known session-level MCP connection
+issue with the `add_repo` tool per `AGENTS.md`, not a real permission
+denial), so this change relies on CI's `Build & verify` job for its actual
+compile+test gate — and unlike some earlier phases, that gate has already
+run against this code and mattered: CI's first pass on this PR failed with a
+real compile error, `argument type () -> String does not match parameter
+type String`, at all four of `open_pr.l`'s GitHub API calls. The cause: a
+top-level `val userAgent = "cloud-agents"` collided with an unrelated,
+already-imported `pub func userAgent(): String` in `CloudAgents.OAuth`
+(`src/handlers/oauth.l`) — Lyric resolved the unqualified name to the
+imported function instead of the local `val`. Fixed by renaming to
+`openPrUserAgent`, mirroring the naming convention `CloudAgents.Proxy`
+already uses for exactly this reason (`proxyUserAgent`, not `userAgent`).
+The same CI pass's automated review also caught a real security gap (the
+session's branch name — which can legally contain characters like `#` that
+are unsafe in a raw URL — was embedded unvalidated into the compare/pulls
+GitHub API URLs) and a real efficiency gap (the compare and existing-PR
+calls ran even when the session was still on the repo's default branch,
+where the answer is always "nothing to do"); both are fixed in the same
+follow-up commit, re-validating the branch through
+`CloudAgents.Proxy.isValidProxyBranch` (the same charset its own
+GitHub-URL-embedding endpoints require) and short-circuiting before the
+now-unnecessary calls.
 
 `tests/open_pr_tests.l` covers what's testable without a live GitHub API
 call, matching the precedent `tests/proxy_tests.l` already established for
@@ -142,11 +155,12 @@ this codebase's other GitHub-calling handlers (its own module comment:
 - `decidePrAction`: every branch of the pure reject/reuse/create decision,
   directly, with no network involved at all.
 - `openPrHandler`'s pre-network-call validation: empty session id, unknown/
-  foreign session id (404, not a leak), a non-github.com repo, and the
-  no-vaulted-GITHUB_TOKEN 404 path — this last one is directly analogous to
-  `tests/proxy_tests.l`'s "GitHub proxy answers 404 when the vault has no
-  GITHUB_TOKEN" test, and for the same reason: `ensureFreshGitHubToken`
-  short-circuits on an empty vault before any outbound request.
+  foreign session id (404, not a leak), a non-github.com repo, an unsafe
+  branch name, and the no-vaulted-GITHUB_TOKEN 404 path — this last one is
+  directly analogous to `tests/proxy_tests.l`'s "GitHub proxy answers 404
+  when the vault has no GITHUB_TOKEN" test, and for the same reason:
+  `ensureFreshGitHubToken` short-circuits on an empty vault before any
+  outbound request.
 
 Not covered by an automated test, for the same structural reason
 `tests/proxy_tests.l` doesn't cover its own live GitHub calls either: the

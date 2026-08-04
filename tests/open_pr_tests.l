@@ -198,6 +198,23 @@ test "openPrHandler rejects a session whose repo is not a github.com repo" {
   }
 }
 
+test "openPrHandler rejects a branch name that isn't safe to embed in a GitHub API URL" {
+  val dbPath = useFreshTestDb("open-pr-unsafe-branch")
+  defer {
+    cleanupTestDb(dbPath)
+  }
+  CloudAgents.Auth.setCurrentUserId("default")
+  // '#' is valid in a real git branch name (isSafeBranchName at
+  // session-creation time allows it) but would truncate the compare API's
+  // URL path if embedded unvalidated (#923).
+  mkSession("sess-unsafe-branch", "https://github.com/nic/repo", "feature#123")
+
+  match CloudAgents.OpenPr.openPrHandler("sess-unsafe-branch") {
+    case Ok(_) -> assertTrue(false, "an unsafe branch name must be rejected before reaching GitHub")
+    case Err(e) -> assertEqualInt(e.status, 400, "unsafe branch name -> 400")
+  }
+}
+
 test "openPrHandler answers 404 when the vault has no GITHUB_TOKEN, without reaching GitHub" {
   val dbPath = useFreshTestDb("open-pr-no-token")
   defer {
