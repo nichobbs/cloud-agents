@@ -277,6 +277,16 @@ pub func openPrHandler(sessionId: in String): Result[OpenPrResult, Web.ApiError]
   }
   val token = CloudAgents.OAuth.ensureFreshGitHubToken(CloudAgents.Auth.currentUserId())?
   val defaultBranch = repoDefaultBranch(ownerRepo, token)?
+  // defaultBranch comes from GitHub's own repo metadata, not user input —
+  // but it's embedded into the exact same GitHub API URLs session.branch is
+  // (compareBranchStatus's path, existingOpenPrUrl's query string), so it
+  // needs the identical re-validation session.branch already gets above
+  // (#933): git branch names may legally contain '#'/'&'/'=', which could
+  // corrupt or inject into those URLs — made with the caller's own vaulted
+  // token — regardless of where the branch name originated.
+  if not CloudAgents.Proxy.isValidProxyBranch(defaultBranch) {
+    return Err(Web.internalError("the repository's default branch name is not safe to embed in a GitHub API URL"))
+  }
   // Short-circuit before the compare/existing-PR calls in the common case of
   // a session still sitting on the repo's default branch — decidePrAction
   // below would reject this too, but there's no reason to spend two more

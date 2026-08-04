@@ -145,6 +145,20 @@ follow-up commit, re-validating the branch through
 GitHub-URL-embedding endpoints require) and short-circuiting before the
 now-unnecessary calls.
 
+A second review round on the follow-up commit caught four more real
+issues, all fixed: the compare API's `/compare/{base}...{head}` path
+segment wasn't percent-encoding `/` in branch names (a valid, common
+character that's ambiguous with that endpoint's own path routing), the
+existing-PR lookup filtered only by `head` and could reuse a PR targeting
+the wrong `base`, a stale in-flight `openPr()` response could still land
+after the frontend switched to a different session (a gap in the
+session-switch reset fix itself), and — in a third round —
+`defaultBranch`, fetched from GitHub's own repo metadata, was embedded in
+the same URLs `session.branch` is without the same re-validation, even
+though it's just as embeddable-unsafe regardless of where a branch name
+originated. See the closed `pr-922`-labeled issues (#930-#933) for the
+full detail on each.
+
 `tests/open_pr_tests.l` covers what's testable without a live GitHub API
 call, matching the precedent `tests/proxy_tests.l` already established for
 this codebase's other GitHub-calling handlers (its own module comment:
