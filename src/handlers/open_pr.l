@@ -28,6 +28,14 @@ import CloudAgents.Text
 
 val openPrUserAgent = "cloud-agents"
 
+/// A normal GitHub REST API call's timeout — the same 15s budget
+/// CloudAgents.Proxy's own GitHub calls use internally (github_api.l's
+/// httpGetWithBearer/httpGetWithHeaders). httpPostJsonWithBearer's default
+/// (llmRequestTimeoutMillis, 120s) is tuned for LLM chat completions, not a
+/// fast REST call (#927) — createPr uses httpPostJsonWithBearerTimeout with
+/// this instead.
+val openPrRequestTimeoutMillis = 15000
+
 func sessionDbError(e: in CloudAgents.Sqlite.DbError): Web.ApiError {
   return Web.internalError(CloudAgents.Sqlite.dbErrorMessage(e))
 }
@@ -122,6 +130,11 @@ func compareBranchStatus(ownerRepo: in OwnerRepo, base: in String, head: in Stri
 
 /// The html_url of an already-open PR for `head` (owner:branch), or "" if
 /// none. per_page=1 since only presence/absence and one URL are needed.
+/// jsonStringValueOf returns the FIRST "html_url" match in document order —
+/// GitHub always serializes a PR object's own top-level html_url before its
+/// nested head/base.repo.html_url, so with per_page=1 this correctly picks
+/// up the PR's own URL (#926, same reasoning as createPr's identical use
+/// below).
 func existingOpenPrUrl(ownerRepo: in OwnerRepo, head: in String, token: in String): Result[String, Web.ApiError] {
   val url = "https://api.github.com/repos/" + ownerRepo.owner + "/" + ownerRepo.repo +
     "/pulls?state=open&per_page=1&head=" + ownerRepo.owner + ":" + head
@@ -142,10 +155,18 @@ func createPr(ownerRepo: in OwnerRepo, base: in String, head: in String, token: 
     "\",\"body\":\"" +
     CloudAgents.Streaming.jsonEscape(body) +
     "\"}"
-  match CloudAgents.GitHubApi.httpPostJsonWithBearer(
-    "https://api.github.com/repos/" + ownerRepo.owner + "/" + ownerRepo.repo + "/pulls", bodyJson, token, openPrUserAgent
+  match CloudAgents.GitHubApi.httpPostJsonWithBearerTimeout(
+    "https://api.github.com/repos/" + ownerRepo.owner + "/" + ownerRepo.repo + "/pulls",
+    bodyJson,
+    token,
+    openPrUserAgent,
+    openPrRequestTimeoutMillis
   ) {
     case Ok(respBody) -> {
+      // Same first-match-in-document-order reasoning as existingOpenPrUrl
+      // above (#926): the response here is a single PR object with the same
+      // shape, so its own top-level html_url is still found before the
+      // nested head/base.repo.html_url.
       val url = CloudAgents.Highlights.jsonStringValueOf(respBody, "html_url")
       if url.length == 0 {
         println("WARNING: PR create call succeeded but no html_url was found in the response")
@@ -230,6 +251,17 @@ pub func openPrHandler(sessionId: in String): Result[OpenPrResult, Web.ApiError]
     )
   }
   val compareStatus = compareBranchStatus(ownerRepo, defaultBranch, session.branch, token)?
+  // Short-circuit before the existing-PR lookup too (#925) — decidePrAction
+  // would reject a not-ahead/diverged branch regardless of what that lookup
+  // finds, so there's no reason to spend a third GitHub round trip on an
+  // answer that's already decided.
+  if not (compareStatus == "ahead" or compareStatus == "diverged") {
+    return Err(
+      Web.badRequest(
+        "no commits found on '" + session.branch + "' ahead of '" + defaultBranch + "' — push your changes first"
+      )
+    )
+  }
   val existingPrUrl = existingOpenPrUrl(ownerRepo, session.branch, token)?
   match decidePrAction(defaultBranch, session.branch, compareStatus, existingPrUrl) {
     case Reject(reason) -> return Err(Web.badRequest(reason))
