@@ -161,10 +161,21 @@ export function useStreamMessage(sessionId: string): StreamState {
               const full = await api.getRunOutput(forSession);
               running = full.running;
               // Same sentinel rule for the legacy endpoint: an empty full log
-              // never overwrites accumulated output (#440).
+              // never overwrites accumulated output (#440). Note: since #387's
+              // fix, `full.output` on a not-running response is no longer
+              // guaranteed empty — the backend now returns the transcript's
+              // last agent message instead of "". If THIS run failed (so
+              // nothing was persisted for it) on a session with an earlier
+              // successful reply, that earlier reply can flash here briefly.
+              // Intentionally tolerated: foldRunIntoTranscript reloads the
+              // authoritative transcript the moment this run ends and
+              // overwrites it (#903) — don't rely on "" staying guaranteed
+              // here in future changes.
               next = full.output ? full.output : last;
             }
           } else {
+            // Permanent fallback once deltaSupported has latched false above
+            // — same non-empty-on-not-running caveat applies (#903).
             const full = await api.getRunOutput(forSession);
             running = full.running;
             next = full.output ? full.output : last;
@@ -278,13 +289,17 @@ export function useStreamMessage(sessionId: string): StreamState {
                 deltaSupported = false;
                 const full = await api.getRunOutput(sessionId);
                 running = full.running;
+                // full.output on a not-running response is no longer
+                // guaranteed empty since #387 — see the matching comment in
+                // resume()'s identical fallback above (#903).
                 next = full.output ? full.output : liveTail;
               }
             } else {
               const full = await api.getRunOutput(sessionId);
               running = full.running;
               // An empty full log (the endpoint's not-running response) never
-              // overwrites the accumulated tail (#440).
+              // overwrites the accumulated tail (#440) — but is no longer the
+              // only possible not-running response since #387 (#903).
               next = full.output ? full.output : liveTail;
             }
             if (!polling || !stillCurrent()) break;
