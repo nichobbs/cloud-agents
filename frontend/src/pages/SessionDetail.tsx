@@ -57,6 +57,15 @@ export function SessionDetail() {
   // can explain why there's text already sitting there. Cleared as soon as
   // the user edits it or sends/discards it.
   const [recoveredDraft, setRecoveredDraft] = useState(false);
+  // The exact text of the send that just failed (not stale — see handleRetry),
+  // for the "Retry run" button below. `messages` (the persisted transcript)
+  // is never reloaded on a failed send — only on success — so it can't be
+  // used to find "the message that failed": it still ends at whatever the
+  // last SUCCESSFUL user message was, one message behind the one that just
+  // errored. Dedicated state instead of reusing `input` because the user may
+  // have already started typing something else into the composer by the time
+  // they click retry.
+  const [failedPrompt, setFailedPrompt] = useState<string | null>(null);
   const [deleting, setDeleting] = useState(false);
   const [modelSwitching, setModelSwitching] = useState(false);
   const [modelError, setModelError] = useState('');
@@ -289,6 +298,12 @@ export function SessionDetail() {
   // user had since navigated to. One-shot: takeFailedDraft clears it, so
   // returning to this session again later won't keep re-surfacing it.
   useEffect(() => {
+    // A failedPrompt from the PREVIOUS session belongs to that session's
+    // (now off-screen) retry button, not this one's — useStreamMessage's own
+    // sendError resets on this same sessionId change, so leaving a stale
+    // failedPrompt around would just be inert, but reset it anyway rather
+    // than rely on that ordering.
+    setFailedPrompt(null);
     const draft = takeFailedDraft(sessionId);
     if (draft) {
       setInput(draft);
@@ -608,6 +623,7 @@ export function SessionDetail() {
       // This session's outstanding failed draft, if any, is now moot — a
       // fresh send for it just succeeded.
       clearFailedDraft(forSessionAtSend);
+      setFailedPrompt(null);
       // Fold the completed run into the transcript (reload + keep-or-clear the
       // live panel), shared with the reattach path. See foldRunIntoTranscript.
       await foldRunIntoTranscript();
@@ -615,8 +631,12 @@ export function SessionDetail() {
       // Restore the prompt so a failed send (network error, container
       // crash, backend 500) doesn't silently discard what the user typed —
       // and leave `output`/`error` populated so the failure is visible
-      // instead of being wiped immediately.
+      // instead of being wiped immediately. Also remember it as the exact
+      // failed prompt so the "Retry run" button resends THIS text (see
+      // failedPrompt's own comment) rather than scanning the (not-reloaded,
+      // one-behind) transcript for the last user message.
       setInput(text);
+      setFailedPrompt(text);
     }
     textareaRef.current?.focus();
   };
@@ -1097,19 +1117,15 @@ export function SessionDetail() {
                       {cancelling ? 'Cancelling…' : 'Cancel run'}
                     </button>
                   )}
-                  {sendError && (() => {
-                    const lastUserMsg = [...messages].reverse().find(m => m.role === 'user');
-                    if (!lastUserMsg) return null;
-                    return (
-                      <button
-                        style={cancelRunBtnStyle}
-                        onClick={() => { void handleRetry(lastUserMsg.content); }}
-                        title="Retry the failed message"
-                      >
-                        🔄 Retry run
-                      </button>
-                    );
-                  })()}
+                  {sendError && failedPrompt && (
+                    <button
+                      style={cancelRunBtnStyle}
+                      onClick={() => { void handleRetry(failedPrompt); }}
+                      title="Retry the failed message"
+                    >
+                      🔄 Retry run
+                    </button>
+                  )}
                 </div>
                 <Terminal output={output} isStreaming={isStreaming} />
               </div>

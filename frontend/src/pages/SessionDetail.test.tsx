@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { render, screen, within, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { MemoryRouter, Route, Routes } from 'react-router-dom';
-import type { Profile, Prompt } from '../types';
+import type { Message, Profile, Prompt } from '../types';
 
 // Spies on the real useNavigate (rather than replacing it) so the #898
 // regression test below can assert on the replace-history call while every
@@ -104,6 +104,18 @@ function makeProfile(over: Partial<Profile>): Profile {
     tools: [],
     createdAt: '0',
     updatedAt: '0',
+    ...over,
+  };
+}
+
+function makeMessage(over: Partial<Message>): Message {
+  return {
+    id: 'm1',
+    sessionId: 's1',
+    role: 'user',
+    content: '',
+    seq: '0',
+    createdAt: '0',
     ...over,
   };
 }
@@ -388,6 +400,45 @@ describe('SessionDetail failed-draft recovery for the currently-viewed session (
     await waitFor(() => expect(localStorage.getItem('cloud_agents_failed_drafts')).not.toBeNull());
     expect(composer).toHaveValue('a brand new message');
     expect(screen.queryByText(/message you sent to this session earlier failed to go through/i)).toBeNull();
+  });
+});
+
+describe('SessionDetail retry-run button', () => {
+  it('retries the message that actually failed, not the last successful one', async () => {
+    // A prior, already-succeeded exchange sits in the transcript. `messages`
+    // is only reloaded on a SUCCESSFUL send (foldRunIntoTranscript), so it
+    // never grows to include the send this test is about to fail — the bug
+    // was reading "the last user message in `messages`" as a stand-in for
+    // "the message that just failed", which resolved to this earlier one
+    // instead.
+    vi.mocked(api.getMessages).mockResolvedValue([
+      makeMessage({ id: 'm1', role: 'user', content: 'first message', seq: '0' }),
+      makeMessage({ id: 'm2', role: 'agent', content: 'first reply', seq: '1' }),
+    ]);
+    const sendSpy = vi.fn(async (_text: string) => {
+      stream.current = { ...stream.current, error: 'container crashed' };
+      return { succeeded: false, stale: false };
+    });
+    stream.current = {
+      output: '',
+      isStreaming: false,
+      error: null,
+      send: sendSpy,
+      reset: () => {},
+      reattachEnded: 0,
+    };
+    renderPage();
+    const user = userEvent.setup();
+
+    const composer = (await screen.findByPlaceholderText(/Send a message/)) as HTMLTextAreaElement;
+    await user.type(composer, 'second message, this one fails');
+    await user.click(screen.getByRole('button', { name: 'Send' }));
+
+    const retryBtn = await screen.findByRole('button', { name: /Retry run/ });
+    sendSpy.mockClear();
+    await user.click(retryBtn);
+
+    expect(sendSpy).toHaveBeenCalledWith('second message, this one fails');
   });
 });
 
