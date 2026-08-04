@@ -164,7 +164,13 @@ already assumes — and, for each:
    `completed` instead. This happens for both a **succeeded** and a
    **failed** run (only a *skipped* run's schedule is instead restored to
    its pre-claim value, per step 3/1) — a persistently broken job must not
-   retry-storm every poll tick forever.
+   retry-storm every poll tick forever. Both writes are guarded on
+   `status = 'active'` (#876): a run can stay in flight long enough for a
+   human to concurrently pause/cancel the job via `POST /api/jobs/{jid}`;
+   without the guard, this step landing afterward would silently overwrite
+   that status change back toward `active`/`completed`. Whichever write
+   lands first wins — a concurrent status change makes this step a no-op
+   (0 rows affected) instead of clobbering it.
 
 The endpoint returns `{"triggered":N,"failed":M,"skipped":K}`.
 
@@ -203,11 +209,17 @@ container-originated route) to scope the job operations — the same
   triggers again, continue this session." `repoUrl`/`branch`/`harness`/
   `model`/`profileId` are left empty on the row since they are only ever
   consulted by `ensureJobSession` for a job with no session yet, which never
-  applies here. If the attach step fails after the job row's already been
-  inserted (a genuine DB error — its own guard always matches immediately
-  post-insert), the row is deleted before the error is returned rather than
-  left as an orphan the caller has no id to find and could otherwise
-  duplicate by retrying (#875).
+  applies here. The insert and the attach happen in a single transaction
+  (`CloudAgents.Repository.createScheduledJobWithSession`, mirroring
+  `addPromptWithTags`), not two separate calls — closing two related bugs:
+  an orphaned, never-attached row on a failed attach (#875, any failure now
+  rolls back the whole transaction instead of leaving the insert committed),
+  and a race (#877) where a pure-interval job's `next_run_at` defaults to
+  "now" (immediately due) — a concurrent maintenance-trigger poll could
+  otherwise observe the job mid-way between two separate insert/attach calls
+  and have its own `ensureJobSession` attach a *different*, freshly created
+  session first, silently breaking "if it triggers again, continue this
+  session" for that job with no error surfaced anywhere.
 - `list_jobs()` — lists every job owned by this session's user (not just jobs
   tied to this session), so an agent can review and manage the whole backlog
   it — or a human via the UI — has scheduled.
@@ -269,6 +281,14 @@ already-runtime-verified code paths as closely as possible to minimize risk:
   `restoreScheduledJobNextRunAt`, §5 steps 1/3) *is* directly unit-tested
   (`"claimDueScheduledJob lets only one of two racing callers win the same
   due job"`), since it's plain SQL with no `CloudAgents.Docker` dependency.
+- `shim/tests/v2_client_tests.l` directly covers `scheduleJob`/`listJobs`/
+  `updateJob`/`cancelJob` (#878) — success, empty-list, and transport/
+  host-error paths for each, matching the existing coverage pattern for
+  every other `CloudAgents.Shim.V2Client` wrapper function in that file
+  (e.g. `addSessionTodo`/`setSessionTodoStatus`). These are plain
+  synchronous functions over `V2CallbackTransport` (no `CloudAgents.Docker`
+  involved at all), so unlike `runOneJob`/`triggerDueJobsHandler` above,
+  there was no structural reason for them to be untested.
 - **Known remaining edge case, not the one #870 was about:** if
   `POST /api/jobs/{jid}` (an unchanged-schedule update) lands in the narrow
   window between a job's row claim and its resolution, `updateJobHandler`
