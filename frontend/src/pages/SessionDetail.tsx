@@ -191,7 +191,17 @@ export function SessionDetail() {
     // Carry a NewSession-handoff banner (profile attach failed at creation)
     // across navigations between sessions, clearing it when a fresh session
     // mounts.
-    setProfileAttachError((location.state as { profileAttachError?: string } | null)?.profileAttachError ?? null);
+    const handoffAttachError = (location.state as { profileAttachError?: string } | null)?.profileAttachError ?? null;
+    setProfileAttachError(handoffAttachError);
+    if (handoffAttachError) {
+      // Consume-once: strip it from this history entry immediately, not just
+      // from React state. Otherwise a later browser back/forward navigation
+      // back to this exact URL restores the ORIGINAL history entry (still
+      // carrying the stale profileAttachError in its state), resurrecting an
+      // already-resolved banner (#898) — resolving it via handleProfileChange
+      // below only ever updates React state, never the history entry itself.
+      navigate(location.pathname + location.search, { replace: true });
+    }
     api
       .getSessionProfile(sessionId)
       .then(pid => {
