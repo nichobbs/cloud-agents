@@ -3126,7 +3126,12 @@ pub func attachScheduledJobSessionSql(id: in String, sessionId: in String): Stri
 /// before firedAt (MAX in SQL): if a run took longer than the interval
 /// itself, the job is due again immediately on the next poll rather than
 /// computing a next_run_at already in the past. Computed in SQL (see the
-/// module comment above for why).
+/// module comment above for why). Guarded on `status = 'active'` (#876): a
+/// one-shot/recurring run can take long enough for a human to concurrently
+/// `POST /api/jobs/{jid}` a pause/cancel while it's in flight — without this
+/// guard, this bookkeeping write would silently win and stomp that status
+/// change back toward active/completed once the run finishes. A status
+/// change that lands wins; this write then correctly no-ops (0 rows).
 pub func markScheduledJobRanRecurringSql(
   id: in String, firedAt: in String, previousNextRunAt: in String, intervalSeconds: in String
 ): String {
@@ -3137,14 +3142,20 @@ pub func markScheduledJobRanRecurringSql(
     " AS INTEGER) * 1000, CAST(" +
     sqlLiteral(firedAt) +
     " AS INTEGER)) AS TEXT) WHERE id = " +
-    sqlLiteral(id)
+    sqlLiteral(id) +
+    " AND status = 'active'"
 }
 
 /// Bookkeeping after a one-shot job's (only) run: it never fires again.
+/// Guarded on `status = 'active'` for the same reason as
+/// markScheduledJobRanRecurringSql above (#876) — a concurrent pause/cancel
+/// while the run was in flight must not be silently overwritten back to
+/// 'completed' once it finishes.
 pub func markScheduledJobCompletedSql(id: in String, firedAt: in String): String {
   return "UPDATE scheduled_jobs SET last_run_at = " + sqlLiteral(firedAt) +
     ", status = 'completed', next_run_at = '' WHERE id = " +
-    sqlLiteral(id)
+    sqlLiteral(id) +
+    " AND status = 'active'"
 }
 
 /// Update a job's mutable fields (prompt/profile/schedule/status). Each

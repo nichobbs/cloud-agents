@@ -556,3 +556,57 @@ test "markScheduledJobRanRecurring advances from the scheduled slot, not the run
     case Err(e) -> assertTrue(false, "getJobHandler failed: " + toString(e.status))
   }
 }
+
+// ── Post-run bookkeeping vs a concurrent status edit (#876) ──────────────────
+test "a status change that lands while a job is in flight is not clobbered by post-run bookkeeping" {
+  val dbPath = useFreshTestDb("job-status-race")
+  defer {
+    cleanupTestDb(dbPath)
+  }
+  CloudAgents.Auth.setCurrentUserId("default")
+  val recurring = match CloudAgents.Jobs.createJobHandler("default", baseCreateReq("nightly", "", "3600")) {
+    case Ok(j) -> j
+    case Err(e) -> panic("create failed: " + toString(e.status))
+  }
+  val oneShot = match CloudAgents.Jobs.createJobHandler("default", baseCreateReq("once", "1000000000000", "")) {
+    case Ok(j) -> j
+    case Err(e) -> panic("create failed: " + toString(e.status))
+  }
+
+  // A human pauses/cancels each job while its run is (hypothetically) still
+  // in flight — simulated directly, since runOneJob itself can't run here
+  // (no CloudAgents.Docker in a @test_module).
+  match CloudAgents.Jobs.updateJobHandler(
+    "default", recurring.id, UpdateJobRequest(prompt = "", profileId = "", runAtEpochMillis = "", intervalSeconds = "", status = "paused")
+  ) {
+    case Ok(_) -> ()
+    case Err(e) -> panic("pause failed: " + toString(e.status))
+  }
+  match CloudAgents.Jobs.updateJobHandler(
+    "default", oneShot.id, UpdateJobRequest(prompt = "", profileId = "", runAtEpochMillis = "", intervalSeconds = "", status = "cancelled")
+  ) {
+    case Ok(_) -> ()
+    case Err(e) -> panic("cancel failed: " + toString(e.status))
+  }
+
+  // The run's own post-completion bookkeeping arrives after the status
+  // change landed. Both writes should now no-op rather than stomping the
+  // human's status choice back toward active/completed.
+  match CloudAgents.Repository.markScheduledJobRanRecurring(recurring.id, "2000000000000", recurring.nextRunAt, "3600") {
+    case Ok(_) -> ()
+    case Err(e) -> assertTrue(false, "markScheduledJobRanRecurring failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+  }
+  match CloudAgents.Repository.markScheduledJobCompleted(oneShot.id, "2000000000000") {
+    case Ok(_) -> ()
+    case Err(e) -> assertTrue(false, "markScheduledJobCompleted failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+  }
+
+  match CloudAgents.Jobs.getJobHandler("default", recurring.id) {
+    case Ok(j) -> assertEqual(j.status, "paused", "a concurrent pause survives the recurring job's own post-run bookkeeping")
+    case Err(e) -> assertTrue(false, "getJobHandler failed: " + toString(e.status))
+  }
+  match CloudAgents.Jobs.getJobHandler("default", oneShot.id) {
+    case Ok(j) -> assertEqual(j.status, "cancelled", "a concurrent cancel survives the one-shot job's own post-run bookkeeping")
+    case Err(e) -> assertTrue(false, "getJobHandler failed: " + toString(e.status))
+  }
+}

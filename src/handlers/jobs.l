@@ -734,33 +734,16 @@ pub func scheduleJobCallbackHandler(
     return Err(Web.badRequest("at least one of runAtEpochMillis or intervalSeconds is required"))
   }
   val ownerUserId = ownerOfSession(sessionId)?
-  val job = match CloudAgents.Repository.createScheduledJob(
-    ownerUserId,
-    req.name,
-    req.prompt,
-    "",
-    "",
-    "",
-    "",
-    "",
-    req.runAtEpochMillis,
-    req.intervalSeconds
+  // Insert + attach as one transaction (#875/#877): no orphaned row is ever
+  // possible on a failed attach (the whole transaction rolls back), and no
+  // concurrent maintenance-trigger poll can ever observe this job — via
+  // dueScheduledJobs()'s due-scan — with its session still unattached, since
+  // both writes commit together.
+  val job = match CloudAgents.Repository.createScheduledJobWithSession(
+    ownerUserId, req.name, req.prompt, req.runAtEpochMillis, req.intervalSeconds, sessionId
   ) {
     case Ok(j) -> j
     case Err(e) -> return Err(dbError(e))
-  }
-  match CloudAgents.Repository.attachScheduledJobSession(job.id, sessionId) {
-    case Ok(_) -> ()
-    case Err(e) -> {
-      // The insert already committed; an attach failure here (a real DB
-      // error — the guard on the UPDATE always matches immediately after
-      // insert) must not leave an orphaned, never-attached job row behind
-      // that the caller has no id to clean up (it only sees this error) and
-      // could otherwise duplicate on retry (#875). Best-effort: the caller
-      // already gets the original attach error either way.
-      val _ = CloudAgents.Repository.deleteScheduledJob(job.id, ownerUserId)
-      return Err(dbError(e))
-    }
   }
   return Ok(ScheduleJobCallbackResponse(id = job.id))
 }

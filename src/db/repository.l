@@ -3546,6 +3546,57 @@ pub func createScheduledJob(
   )
 }
 
+/// Create a new job with `sessionId` already attached, atomically — used
+/// only by the schedule_job MCP callback, which always attaches the calling
+/// session immediately (unlike createScheduledJob's REST-CRUD path, where
+/// session_id legitimately starts empty and is filled in later, at first
+/// trigger). Doing the insert and the attach in one transaction (mirrors
+/// addPromptWithTags) closes a race (#877): a pure-interval job's
+/// next_run_at defaults to "now" (immediately due), so a two-call
+/// insert-then-attach could let a concurrent maintenance-trigger poll's
+/// due-scan claim the job and have its own ensureJobSession attach a
+/// *different*, freshly created session in the gap between the two calls —
+/// silently breaking "if it triggers again, continue this session" for
+/// that job, with no error surfaced to the caller (attachScheduledJobSession
+/// doesn't check affected-row count, so a lost attach still returns Ok).
+pub func createScheduledJobWithSession(
+  userId: in String,
+  name: in String,
+  prompt: in String,
+  runAt: in String,
+  intervalSeconds: in String,
+  sessionId: in String,
+): Result[ScheduledJob, CloudAgents.Sqlite.DbError] {
+  val id = newId()
+  val ts = nowMillis()
+  val nextRunAt = if runAt.length > 0 { runAt } else { ts }
+  val insertSql = CloudAgents.Db.insertScheduledJobSql(
+    id, userId, name, prompt, "", "", "", "", "", runAt, intervalSeconds, nextRunAt, ts
+  )
+  val attachSql = CloudAgents.Db.attachScheduledJobSessionSql(id, sessionId)
+  CloudAgents.Sqlite.executeTransaction([insertSql, attachSql])?
+  return Ok(
+    value = ScheduledJob(
+      id = id,
+      userId = userId,
+      name = name,
+      prompt = prompt,
+      profileId = "",
+      repoUrl = "",
+      branch = "",
+      harness = "",
+      model = "",
+      runAt = runAt,
+      intervalSeconds = intervalSeconds,
+      nextRunAt = nextRunAt,
+      lastRunAt = "",
+      sessionId = sessionId,
+      status = "active",
+      createdAt = ts
+    )
+  )
+}
+
 /// A single job scoped to (id, user_id), or None (unknown id or foreign
 /// owner — both look identical to the caller, mirroring getProfile).
 pub func getScheduledJob(id: in String, userId: in String): Result[Option[ScheduledJob], CloudAgents.Sqlite.DbError] {
