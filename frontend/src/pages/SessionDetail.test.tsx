@@ -4,6 +4,21 @@ import userEvent from '@testing-library/user-event';
 import { MemoryRouter, Route, Routes } from 'react-router-dom';
 import type { Profile, Prompt } from '../types';
 
+// Spies on the real useNavigate (rather than replacing it) so the #898
+// regression test below can assert on the replace-history call while every
+// other test in this file keeps exercising real react-router navigation
+// unmodified.
+const mockNavigate = vi.hoisted(() => vi.fn());
+vi.mock('react-router-dom', async importOriginal => {
+  const actual = await importOriginal<typeof import('react-router-dom')>();
+  return {
+    ...actual,
+    useNavigate: () => ((...args: Parameters<ReturnType<typeof actual.useNavigate>>) => {
+      mockNavigate(...args);
+    }) as ReturnType<typeof actual.useNavigate>,
+  };
+});
+
 // The API client is the only side-effecting dependency; mock it wholesale so
 // each test drives the component purely through UI + resolved values.
 vi.mock('../lib/api', () => ({
@@ -85,6 +100,8 @@ function makeProfile(over: Partial<Profile>): Profile {
     skillIds: [],
     subagentIds: [],
     mcpServerIds: [],
+    toolMode: 'all',
+    tools: [],
     createdAt: '0',
     updatedAt: '0',
     ...over,
@@ -100,12 +117,12 @@ function deferred<T>(): { promise: Promise<T>; resolve: (v: T) => void } {
   return { promise, resolve };
 }
 
-function renderPage() {
+function renderPage(initialEntries: Array<string | { pathname: string; state?: unknown; hash?: string }> = ['/sessions/s1']) {
   const root = document.createElement('div');
   root.id = 'root';
   document.body.appendChild(root);
   return render(
-    <MemoryRouter initialEntries={['/sessions/s1']}>
+    <MemoryRouter initialEntries={initialEntries}>
       <Routes>
         <Route path="/sessions/:id" element={<SessionDetail />} />
       </Routes>
@@ -400,6 +417,103 @@ describe('SessionDetail live output retention', () => {
     await screen.findByText(/could not refresh transcript/);
     // …and it wasn't reset, so the run's output is retained.
     expect(reset).not.toHaveBeenCalled();
+  });
+});
+
+describe('SessionDetail profile-attach-error handoff (#898)', () => {
+  it('shows the NewSession handoff banner and immediately strips it from history', async () => {
+    renderPage([{ pathname: '/sessions/s1', state: { profileAttachError: 'profile deleted' } }]);
+
+    await screen.findByText(/Profile not attached: profile deleted/);
+
+    // The stale-history fix (#898): the entry that carried the handoff state
+    // is replaced right away, so a later browser back/forward into this
+    // exact URL can't resurrect an already-resolved banner.
+    await waitFor(() => expect(mockNavigate).toHaveBeenCalledWith('/sessions/s1', { replace: true }));
+  });
+
+  it('preserves an existing #message-… deep-link hash when replacing history (#899)', async () => {
+    renderPage([{
+      pathname: '/sessions/s1',
+      hash: '#message-m1',
+      state: { profileAttachError: 'profile deleted' },
+    }]);
+
+    await screen.findByText(/Profile not attached: profile deleted/);
+
+    await waitFor(() =>
+      expect(mockNavigate).toHaveBeenCalledWith('/sessions/s1#message-m1', { replace: true }),
+    );
+  });
+
+  it('clears the banner on a successful manual profile change, and does not replace history again', async () => {
+    const profile: Profile = {
+      id: 'p1',
+      userId: 'u1',
+      name: 'sandbox',
+      harness: '',
+      networkPolicy: 'none',
+      credentialMode: 'all',
+      credentials: [],
+      skillIds: [],
+      subagentIds: [],
+      mcpServerIds: [],
+      toolMode: 'all',
+      tools: [],
+      createdAt: '0',
+      updatedAt: '0',
+    };
+    vi.mocked(api.getProfiles).mockResolvedValue([profile]);
+    renderPage([{ pathname: '/sessions/s1', state: { profileAttachError: 'profile deleted' } }]);
+    const user = userEvent.setup();
+
+    await screen.findByText(/Profile not attached: profile deleted/);
+    await waitFor(() => expect(mockNavigate).toHaveBeenCalledTimes(1));
+
+    await user.selectOptions(await screen.findByTitle(/Attach a profile/), 'p1');
+
+    await waitFor(() => expect(screen.queryByText(/Profile not attached/)).toBeNull());
+    // Resolving it via the selector is a plain React-state clear — it must
+    // not trigger a second history replace.
+    expect(mockNavigate).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('SessionDetail stale attached profile (#900/#901)', () => {
+  const liveProfile: Profile = {
+    id: 'p-live',
+    userId: 'u1',
+    name: 'Live Profile',
+    harness: '',
+    networkPolicy: 'full',
+    credentialMode: 'all',
+    credentials: [],
+    skillIds: [],
+    subagentIds: [],
+    mcpServerIds: [],
+    toolMode: 'all',
+    tools: [],
+    createdAt: '0',
+    updatedAt: '0',
+  };
+
+  it("shows a distinct 'profile deleted' option for a stale attached profile id, alongside other profiles", async () => {
+    vi.mocked(api.getProfiles).mockResolvedValue([liveProfile]);
+    vi.mocked(api.getSessionProfile).mockResolvedValue('p-deleted-12345678');
+    renderPage();
+
+    const select = await screen.findByTitle(/Attach a profile/);
+    await waitFor(() => expect(within(select).getByText(/p-delete… \(profile deleted\)/)).toBeInTheDocument());
+    expect(within(select).getByRole('option', { name: 'Live Profile' })).toBeInTheDocument();
+  });
+
+  it('still surfaces the selector for a stale attached profile id even when the account has zero profiles (#901)', async () => {
+    vi.mocked(api.getProfiles).mockResolvedValue([]);
+    vi.mocked(api.getSessionProfile).mockResolvedValue('p-deleted-12345678');
+    renderPage();
+
+    const select = await screen.findByTitle(/Attach a profile/);
+    expect(within(select).getByText(/p-delete… \(profile deleted\)/)).toBeInTheDocument();
   });
 });
 

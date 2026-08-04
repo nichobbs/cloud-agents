@@ -4,11 +4,40 @@ import { enabledHarnesses } from '../lib/harnessAvailability';
 import type { McpServer, Profile, Skill, Subagent } from '../types';
 
 /// Harness ids offered by this form. Kept in sync by hand with the `<option>`
-/// list below (this form predates lib/harnesses.ts's HARNESSES catalog and
-/// doesn't currently offer "gemini" — out of scope for #523's availability
-/// fix, which only concerns which of these already-offered harnesses is
-/// enabled on this deployment).
-const PROFILE_HARNESS_IDS = ['claude', 'codex', 'opencode'];
+/// list below. Must cover every harness the backend accepts for a profile
+/// pin (''/claude/codex/opencode/gemini — CloudAgents.Profiles
+/// isValidProfileHarness), or a profile pinned to an id not offered here
+/// can't be re-selected after editing.
+const PROFILE_HARNESS_IDS = ['claude', 'codex', 'opencode', 'gemini'];
+
+/// The shim's MCP callback tools a 'selected'-mode profile can enable
+/// (CloudAgents.ToolPolicy / docs/phase7-autonomy.md §7, docs/phase8-
+/// scheduling.md §7). The backend keeps its own authoritative copy
+/// (src/handlers/profiles.l validShimToolNames) with no automated
+/// cross-check (#621), so this list must be updated by hand when that one
+/// changes. Sorted by tool name for a stable checkbox order.
+const SHIM_TOOL_NAMES = [
+  'add_followup_task',
+  'add_task',
+  'add_todo',
+  'ask_user',
+  'cancel_job',
+  'complete_task',
+  'forget',
+  'list_jobs',
+  'list_tasks',
+  'list_todos',
+  'notify',
+  'recall',
+  'remember',
+  'report_artifact',
+  'report_progress',
+  'request_permission',
+  'request_secret',
+  'schedule_job',
+  'update_job',
+  'update_todo',
+];
 
 /// Container profiles: a per-container policy bundling which harness runs, what
 /// network access the container gets, which credentials are injected (least
@@ -33,6 +62,8 @@ export function Profiles() {
   const [skillGrants, setSkillGrants] = useState<string[]>([]);
   const [subagentGrants, setSubagentGrants] = useState<string[]>([]);
   const [mcpServerGrants, setMcpServerGrants] = useState<string[]>([]);
+  const [toolMode, setToolMode] = useState('all');
+  const [tools, setTools] = useState<string[]>([]);
   const [enabledHarnessIds, setEnabledHarnessIds] = useState<Set<string> | null>(null);
 
   // Which harnesses actually have a runner image on this deployment (#523).
@@ -84,6 +115,8 @@ export function Profiles() {
     setSkillGrants([]);
     setSubagentGrants([]);
     setMcpServerGrants([]);
+    setToolMode('all');
+    setTools([]);
   };
 
   const startEdit = (p: Profile) => {
@@ -96,6 +129,8 @@ export function Profiles() {
     setSkillGrants(p.skillIds);
     setSubagentGrants(p.subagentIds);
     setMcpServerGrants(p.mcpServerIds);
+    setToolMode(p.toolMode ?? 'all');
+    setTools(p.tools ?? []);
   };
 
   const toggleGrant = (grantName: string) => {
@@ -108,9 +143,17 @@ export function Profiles() {
   const toggleSkill = toggleIn(setSkillGrants);
   const toggleSubagent = toggleIn(setSubagentGrants);
   const toggleMcpServer = toggleIn(setMcpServerGrants);
+  const toggleTool = toggleIn(setTools);
 
   const save = async () => {
     if (!name.trim() || saving) return;
+    // Mirror the backend's rule for toolMode 'selected' (#616): an empty
+    // allowlist collapses to "no restriction" in the shim, which is the
+    // opposite of what someone deselecting every tool expects.
+    if (toolMode === 'selected' && tools.length === 0) {
+      setError("Selected-tool mode requires at least one tool — or switch to 'All tools'.");
+      return;
+    }
     setSaving(true);
     setError('');
     const payload = {
@@ -122,6 +165,8 @@ export function Profiles() {
       skillIds: skillGrants,
       subagentIds: subagentGrants,
       mcpServerIds: mcpServerGrants,
+      toolMode,
+      tools: toolMode === 'selected' ? tools : [],
     };
     try {
       if (editingId) {
@@ -154,9 +199,10 @@ export function Profiles() {
     <div style={pageStyle}>
       <h2 style={titleStyle}>Profiles</h2>
       <p style={subtitleStyle}>
-        A profile is a per-container policy: the harness it runs, the network access it gets, and the
-        credentials it can see (least privilege). Attach a profile to a session on its detail page — a
-        session with no profile injects all credentials and gets full network (the legacy default).
+        A profile is a per-container policy: the harness it runs, the network access it gets, the
+        credentials it can see (least privilege), and which callback tools the container may use.
+        Attach a profile to a session on its detail page — a session with no profile injects all
+        credentials and gets full network (the legacy default).
       </p>
 
       <div style={formStyle}>
@@ -292,6 +338,43 @@ export function Profiles() {
           </div>
         </div>
 
+        <div style={grantsBoxStyle}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '10px', flexWrap: 'wrap' }}>
+            <span style={labelStyle}>Callback tools:</span>
+            <select
+              style={selectStyle}
+              value={toolMode}
+              onChange={e => setToolMode(e.target.value)}
+              aria-label="Callback tools mode"
+            >
+              <option value="all">All tools</option>
+              <option value="selected">Only selected</option>
+            </select>
+          </div>
+          {toolMode === 'selected' && (
+            <>
+              <div style={{ display: 'flex', flexWrap: 'wrap', gap: '8px' }}>
+                {SHIM_TOOL_NAMES.map(t => (
+                  <label key={t} style={grantChipStyle(tools.includes(t))}>
+                    <input
+                      type="checkbox"
+                      checked={tools.includes(t)}
+                      onChange={() => toggleTool(t)}
+                      style={{ marginRight: '6px' }}
+                    />
+                    <code>{t}</code>
+                  </label>
+                ))}
+              </div>
+              <div style={hintStyle}>
+                Only these tools stay registered in the container's MCP callback server
+                (<code>CLOUD_AGENTS_ENABLED_TOOLS</code>). Tools not listed are withdrawn — any other
+                tool is ignored. 'All tools' registers every one.
+              </div>
+            </>
+          )}
+        </div>
+
         <div style={{ display: 'flex', gap: '8px' }}>
           <button
             style={{ ...saveBtnStyle, opacity: name.trim() && !saving ? 1 : 0.5 }}
@@ -338,6 +421,9 @@ export function Profiles() {
             {p.skillIds.length > 0 && <span style={badgeStyle}>skills: {p.skillIds.length}</span>}
             {p.subagentIds.length > 0 && <span style={badgeStyle}>subagents: {p.subagentIds.length}</span>}
             {p.mcpServerIds.length > 0 && <span style={badgeStyle}>mcp: {p.mcpServerIds.length}</span>}
+            <span style={badgeStyle}>
+              tools: {p.toolMode === 'selected' ? `${p.tools.length} selected` : 'all'}
+            </span>
           </div>
           {p.credentialMode === 'selected' && p.credentials.length > 0 && (
             <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px' }}>

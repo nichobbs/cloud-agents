@@ -65,6 +65,10 @@ export function SessionDetail() {
   const [profiles, setProfiles] = useState<Profile[]>([]);
   const [profileId, setProfileId] = useState('');
   const [profileSaving, setProfileSaving] = useState(false);
+  // Set by NewSession when a freshly-created session's profile attach failed:
+  // the session exists, but the chosen profile isn't attached, and the user
+  // should be told why the selector doesn't show it.
+  const [profileAttachError, setProfileAttachError] = useState<string | null>(null);
   const [runs, setRuns] = useState<Run[]>([]);
   const [pendingCallbacks, setPendingCallbacks] = useState<PendingCallbacksResponse>({
     permissionRequests: [],
@@ -184,6 +188,20 @@ export function SessionDetail() {
     let active = true;
     profileTouchedRef.current = false;
     setProfileId('');
+    // Carry a NewSession-handoff banner (profile attach failed at creation)
+    // across navigations between sessions, clearing it when a fresh session
+    // mounts.
+    const handoffAttachError = (location.state as { profileAttachError?: string } | null)?.profileAttachError ?? null;
+    setProfileAttachError(handoffAttachError);
+    if (handoffAttachError) {
+      // Consume-once: strip it from this history entry immediately, not just
+      // from React state. Otherwise a later browser back/forward navigation
+      // back to this exact URL restores the ORIGINAL history entry (still
+      // carrying the stale profileAttachError in its state), resurrecting an
+      // already-resolved banner (#898) — resolving it via handleProfileChange
+      // below only ever updates React state, never the history entry itself.
+      navigate(location.pathname + location.search + location.hash, { replace: true });
+    }
     api
       .getSessionProfile(sessionId)
       .then(pid => {
@@ -642,7 +660,14 @@ export function SessionDetail() {
       // Only reflect the change if still on the session it was made for (#283)
       // — a navigation during the await would otherwise show this profile
       // under a different session's selector.
-      if (currentSessionRef.current === forSession) setProfileId(pid);
+      if (currentSessionRef.current === forSession) {
+        setProfileId(pid);
+        // A successful manual change resolves any stale NewSession-handoff
+        // attach-failure banner — otherwise it keeps showing "Profile not
+        // attached" even after the user follows its own instructions and
+        // fixes it via this selector (#895).
+        setProfileAttachError(null);
+      }
     } catch (err) {
       // The change didn't take effect, so stop suppressing the mount-time
       // fetch — otherwise a failed change would leave the selector stuck at
@@ -911,7 +936,7 @@ export function SessionDetail() {
                 <option key={m.id} value={m.id}>{m.label}</option>
               ))}
             </select>
-            {profiles.length > 0 && (
+            {(profiles.length > 0 || profileId) && (
               <>
                 <span style={{ margin: '0 8px', color: '#30363d' }}>·</span>
                 profile:{' '}
@@ -926,6 +951,12 @@ export function SessionDetail() {
                   {profiles.map(p => (
                     <option key={p.id} value={p.id}>{p.name}</option>
                   ))}
+                  {profileId &&
+                    !profiles.some(p => p.id === profileId) && (
+                      <option value={profileId}>
+                        {profileId.slice(0, 8)}… (profile deleted)
+                      </option>
+                    )}
                 </select>
               </>
             )}
@@ -943,6 +974,12 @@ export function SessionDetail() {
             )}
           </div>
           {modelError && <div style={modelErrorStyle}>Model switch failed: {modelError}</div>}
+          {profileAttachError && (
+            <div style={modelErrorStyle}>
+              Profile not attached: {profileAttachError}. Pick one above and it will apply to this
+              session's runs.
+            </div>
+          )}
         </div>
         <div style={{ display: 'flex', gap: '8px', flexShrink: 0 }}>
           <button style={todosBtnStyle} onClick={() => { void toggleRuns(); }}>
