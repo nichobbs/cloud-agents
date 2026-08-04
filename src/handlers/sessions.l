@@ -716,6 +716,23 @@ pub func reapContainers(): Result[String, Web.ApiError] {
   return Ok(value = "{\"reaped\":" + toString(reaped) + "}")
 }
 
+/// The most recent AGENT-role message's content in `msgs` (oldest-first, as
+/// returned by CloudAgents.Repository.listMessages), or "" if there is none.
+/// Pure — pulled out of getRunOutput so it stays directly testable: the
+/// function it serves reaches CloudAgents.Docker in its RUNNING branch and so
+/// cannot itself be invoked from a @test_module (docs/lyric/gotchas.md — see
+/// the parseOutputOffset doc comment above for the same reasoning).
+pub func lastAgentMessageContent(msgs: in slice[CloudAgents.Repository.Message]): String {
+  var i = msgs.length - 1
+  while i >= 0 {
+    if msgs[i].role == "agent" {
+      return msgs[i].content
+    }
+    i = i - 1
+  }
+  return ""
+}
+
 /// Live output for an in-progress run. The frontend polls this while a send is
 /// outstanding to show incremental container output, since the send itself
 /// blocks until the run finishes and Lyric.Web cannot stream a response.
@@ -723,10 +740,15 @@ pub func reapContainers(): Result[String, Web.ApiError] {
 /// A run is in progress exactly when the session's status is `RUNNING` (set
 /// synchronously at send time, before the container exists, and cleared when
 /// the run ends). While running, we return the container's logs-so-far once it
-/// exists; otherwise `running` is false and the client stops polling and
-/// reloads the persisted transcript. Status — not container id — drives this,
-/// so the first poll (which races container creation) doesn't see an empty id
-/// and wrongly report "not running"; see the inline comment below.
+/// exists; once the run ends we return the transcript's persisted output
+/// instead of an empty string (#387 — this endpoint used to hand back a
+/// hardcoded `""` on this path, on the theory that the client would always
+/// switch to GET /api/sessions/{id}/messages once `running` goes false; a
+/// client that only ever polls this endpoint, e.g. a plain API consumer,
+/// silently lost the run's output). Status — not container id — drives the
+/// RUNNING check, so the first poll (which races container creation) doesn't
+/// see an empty id and wrongly report "not running"; see the inline comment
+/// below.
 /// Returns `{"running":"true|false","output":"..."}` as a hand-built JSON
 /// string, mirroring listSessions — no @generate(Json) response record on this
 /// path (a fresh record here tripped the JSON source generator at runtime with
@@ -748,7 +770,13 @@ pub func getRunOutput(id: in String): Result[String, Web.ApiError] {
       // creation — see an empty id and report "not running", causing the
       // client to stop polling for the whole run.
       if status != "RUNNING" {
-        return Ok(value = "{\"running\":\"false\",\"output\":\"\"}")
+        // Best-effort: a transcript lookup failure must not turn a completed
+        // run's status poll into a 500 — fall back to "" the same as before.
+        val lastOutput = match CloudAgents.Repository.listMessages(id) {
+          case Ok(msgs) -> lastAgentMessageContent(msgs)
+          case Err(_) -> ""
+        }
+        return Ok(value = "{\"running\":\"false\",\"output\":\"" + CloudAgents.Streaming.jsonEscape(lastOutput) + "\"}")
       }
       // Logs only once the container exists; until then the run is up but has
       // produced nothing to fetch yet.

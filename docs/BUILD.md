@@ -258,8 +258,8 @@ via `~/.claude.json`; and the
 session's polled `GET /api/sessions/{id}/output` endpoint returned an
 empty `output` even though the SSE stream carried real chunks during
 the run, tracked as
-[#387](https://github.com/nichobbs/cloud-agents/issues/387), still open —
-not explored past the point of filing.
+[#387](https://github.com/nichobbs/cloud-agents/issues/387) — **fixed**,
+see below.
 
 The marker-file fix above has one rollout gap, tracked as
 [#710](https://github.com/nichobbs/cloud-agents/issues/710) — **fixed**:
@@ -323,9 +323,22 @@ live repro:
    `getContainerLogs` was decoding this container's logs correctly at the
    time.
 
-Net: #387 is a separate `src/` output-persistence/routing concern (nothing
-reads back a persisted transcript on this endpoint once the run ends) and
-will not resolve for free once `lyric-lang#5773` ships.
+Net: #387 was a separate `src/` output-persistence/routing concern (nothing
+read back a persisted transcript on this endpoint once the run ends) and
+would not have resolved for free once `lyric-lang#5773` ships.
+
+**Fixed**: `getRunOutput`'s non-`RUNNING` branch now looks up the session's
+transcript (`CloudAgents.Repository.listMessages`) and returns the most
+recent AGENT-role message's content instead of a hardcoded `""` — the scan
+itself is `lastAgentMessageContent`, a pure helper pulled out of the handler
+(same async-bearing-package split as `parseOutputOffset`/
+`runOutputDeltaJson`, so it's directly covered by `tests/session_tests.l`
+even though `getRunOutput` itself still isn't). The frontend already
+tolerated the old empty-string response (its poll loops treat a
+`{running:false, output:""}` response as a "keep whatever's on screen"
+sentinel, not as real log data — #440), so this only changes behavior for
+clients that poll `/output` directly without also reading `/messages`, e.g.
+an external API consumer or the `#387` repro's own plain `curl` loop.
 
 ### Bumping a NuGet dependency version
 

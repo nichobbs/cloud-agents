@@ -775,6 +775,37 @@ test "createSession rejects a known-but-disabled harness (#560)" {
 // offset-past-total client-resync rule. The handler itself is a thin
 // composition of those two plus the same status/container lookups
 // getRunOutput makes.
+// lastAgentMessageContent backs getRunOutput's non-RUNNING path (#387: that
+// endpoint used to hand back a hardcoded "" once a run ended even though the
+// output was sitting in the transcript the whole time) — same
+// pure-extraction pattern as parseOutputOffset/runOutputDeltaJson below, for
+// the same reason (getRunOutput itself references CloudAgents.Docker in its
+// RUNNING branch and can't be invoked from here).
+func testMessage(role: in String, content: in String): CloudAgents.Repository.Message {
+  return CloudAgents.Repository.Message(
+    id = "m", sessionId = "s", role = role, content = content, seq = "0", createdAt = "0"
+  )
+}
+
+test "lastAgentMessageContent returns the most recent agent message" {
+  assertEqual(
+    lastAgentMessageContent([testMessage("user", "hi"), testMessage("agent", "first"), testMessage("agent", "second")]),
+    "second",
+    "scans from the end and returns the last agent-role message"
+  )
+  assertEqual(
+    lastAgentMessageContent([testMessage("agent", "only reply"), testMessage("user", "follow-up, no reply yet")]),
+    "only reply",
+    "an agent message earlier in the transcript is still found"
+  )
+  assertEqual(
+    lastAgentMessageContent([testMessage("user", "hi")]),
+    "",
+    "no agent message yet -> empty string"
+  )
+  assertEqual(lastAgentMessageContent([]), "", "empty transcript -> empty string")
+}
+
 test "parseOutputOffset accepts 1..9 digits and rejects everything else (-> 400)" {
   assertEqualInt(parseOutputOffset("0"), 0, "zero parses")
   assertEqualInt(parseOutputOffset("42"), 42, "small offset parses")
