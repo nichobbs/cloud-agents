@@ -88,10 +88,16 @@ test "buildFts5MatchExpr doubles embedded double-quotes per word" {
 
 test "buildFts5MatchExpr neutralizes FTS5 operator syntax as inert literal text" {
   assertEqual(CloudAgents.Search.buildFts5MatchExpr("AND"), "\"AND\"*", "a bare FTS5 keyword is just a literal word")
+  // The tokenizer splits on whitespace BEFORE escaping (like every other
+  // multi-word input), so this quote-injection attempt becomes five
+  // separately-quoted-and-prefixed tokens, not one joined literal — CI's
+  // real lyric test caught this test's expected value assuming the latter.
+  // Still safe either way: each word (including "OR"/"MATCH") is its own
+  // inert quoted-prefix token, never reinterpreted as FTS5 query syntax.
   assertEqual(
     CloudAgents.Search.buildFts5MatchExpr("a\" OR content MATCH \"x"),
-    "\"a\"\" OR content MATCH \"\"x\"*",
-    "a quote-injection attempt stays a single literal token, never reopens FTS5 query syntax"
+    "\"a\"\"\"* \"OR\"* \"content\"* \"MATCH\"* \"\"\"x\"*",
+    "a quote-injection attempt is split into per-word quoted-prefix tokens, each one inert literal text, never reopening FTS5 query syntax"
   )
   assertEqual(
     CloudAgents.Search.buildFts5MatchExpr("content:foo"),
