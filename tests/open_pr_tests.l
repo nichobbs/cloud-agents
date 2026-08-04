@@ -105,6 +105,18 @@ test "githubOwnerRepoFromUrl returns None for empty or garbage input" {
   }
 }
 
+// ── percentEncodeSlashes: pure, for the compare API's path segment (#930) ────
+test "percentEncodeSlashes escapes every '/' as %2F" {
+  assertEqual(CloudAgents.OpenPr.percentEncodeSlashes("main"), "main", "no slashes -> unchanged")
+  assertEqual(CloudAgents.OpenPr.percentEncodeSlashes("feature/foo"), "feature%2Ffoo", "one slash escaped")
+  assertEqual(
+    CloudAgents.OpenPr.percentEncodeSlashes("release/2026/07"),
+    "release%2F2026%2F07",
+    "every slash escaped, not just the first"
+  )
+  assertEqual(CloudAgents.OpenPr.percentEncodeSlashes(""), "", "empty input stays empty")
+}
+
 // ── decidePrAction: pure compare/dedup/create decision ────────────────────────
 test "decidePrAction rejects when the session branch IS the default branch" {
   match CloudAgents.OpenPr.decidePrAction("main", "main", "ahead", "") {

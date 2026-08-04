@@ -108,6 +108,30 @@ func repoDefaultBranch(ownerRepo: in OwnerRepo, token: in String): Result[String
   }
 }
 
+/// Percent-encode '/' as %2F — GitHub's compare endpoint
+/// (`/compare/{base}...{head}`) is itself path-segment-based, so an
+/// unencoded '/' inside `base`/`head` (a valid, common branch-name
+/// character, e.g. "feature/foo") is ambiguous with the path's own segment
+/// boundaries and breaks the comparison (#930). Hand-rolled character scan
+/// rather than `String.replace()` — that method compiles but throws
+/// "unsupported method" at runtime (docs/lyric/gotchas.md), same reason
+/// every other string transform in this codebase avoids it. pub for direct
+/// unit-test coverage (tests/open_pr_tests.l).
+pub func percentEncodeSlashes(s: in String): String {
+  var result = ""
+  var i = 0
+  while i < s.length {
+    val c = s.substring(i, 1)
+    if c == "/" {
+      result = result + "%2F"
+    } else {
+      result = result + c
+    }
+    i = i + 1
+  }
+  return result
+}
+
 /// GitHub's compare status for base...head ("identical" | "ahead" |
 /// "behind" | "diverged"), or "" if either ref doesn't exist on the remote
 /// yet (a 404 from GitHub — most commonly, the session's branch was never
@@ -115,8 +139,10 @@ func repoDefaultBranch(ownerRepo: in OwnerRepo, token: in String): Result[String
 /// status values are always non-empty, and decidePrAction treats anything
 /// other than "ahead"/"diverged" as "nothing to open a PR for".
 func compareBranchStatus(ownerRepo: in OwnerRepo, base: in String, head: in String, token: in String): Result[String, Web.ApiError] {
-  val url = "https://api.github.com/repos/" + ownerRepo.owner + "/" + ownerRepo.repo + "/compare/" + base + "..." +
-    head
+  val url = "https://api.github.com/repos/" + ownerRepo.owner + "/" + ownerRepo.repo + "/compare/" +
+    percentEncodeSlashes(base) +
+    "..." +
+    percentEncodeSlashes(head)
   match CloudAgents.GitHubApi.httpGetWithBearer(url, token, openPrUserAgent) {
     case Ok(body) -> return Ok(value = CloudAgents.Highlights.jsonStringValueOf(body, "status"))
     case Err(e) -> {
@@ -128,16 +154,18 @@ func compareBranchStatus(ownerRepo: in OwnerRepo, base: in String, head: in Stri
   }
 }
 
-/// The html_url of an already-open PR for `head` (owner:branch), or "" if
-/// none. per_page=1 since only presence/absence and one URL are needed.
-/// jsonStringValueOf returns the FIRST "html_url" match in document order —
-/// GitHub always serializes a PR object's own top-level html_url before its
-/// nested head/base.repo.html_url, so with per_page=1 this correctly picks
-/// up the PR's own URL (#926, same reasoning as createPr's identical use
-/// below).
-func existingOpenPrUrl(ownerRepo: in OwnerRepo, head: in String, token: in String): Result[String, Web.ApiError] {
+/// The html_url of an already-open PR for `head` (owner:branch) targeting
+/// `base`, or "" if none. Filtered by BOTH head and base (#931) — head alone
+/// would reuse/link an open PR from this branch that targets some other
+/// base (a different branch, or even a different fork), which is not the
+/// same PR decidePrAction's compare-against-`base` check reasoned about.
+/// per_page=1 since only presence/absence and one URL are needed. Query
+/// values (unlike compareBranchStatus's path segment above) aren't
+/// path-ambiguous, so head/base don't need percent-encoding here — this
+/// mirrors CloudAgents.Proxy.githubPullsHandler's identical query shape.
+func existingOpenPrUrl(ownerRepo: in OwnerRepo, base: in String, head: in String, token: in String): Result[String, Web.ApiError] {
   val url = "https://api.github.com/repos/" + ownerRepo.owner + "/" + ownerRepo.repo +
-    "/pulls?state=open&per_page=1&head=" + ownerRepo.owner + ":" + head
+    "/pulls?state=open&per_page=1&base=" + base + "&head=" + ownerRepo.owner + ":" + head
   match CloudAgents.GitHubApi.httpGetWithBearer(url, token, openPrUserAgent) {
     case Ok(body) -> return Ok(value = CloudAgents.Highlights.jsonStringValueOf(body, "html_url"))
     case Err(e) -> return Err(githubApiError(e))
@@ -264,7 +292,7 @@ pub func openPrHandler(sessionId: in String): Result[OpenPrResult, Web.ApiError]
   if not (compareStatus == "ahead" or compareStatus == "diverged") {
     return Err(Web.badRequest(notAheadReason(session.branch, defaultBranch)))
   }
-  val existingPrUrl = existingOpenPrUrl(ownerRepo, session.branch, token)?
+  val existingPrUrl = existingOpenPrUrl(ownerRepo, defaultBranch, session.branch, token)?
   match decidePrAction(defaultBranch, session.branch, compareStatus, existingPrUrl) {
     case Reject(reason) -> return Err(Web.badRequest(reason))
     case Reuse(url) -> return Ok(value = OpenPrResult(url = url, created = false))

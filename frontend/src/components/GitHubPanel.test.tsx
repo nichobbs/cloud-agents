@@ -196,5 +196,38 @@ describe('GitHubPanel', () => {
 
       expect(screen.queryByText(/PR opened:/)).not.toBeInTheDocument();
     });
+
+    // #932: a gap in #928's fix — a click for session A that's still in
+    // flight when the session switches to B must not have A's late-arriving
+    // response overwrite B's freshly-reset state.
+    it('ignores a stale in-flight response for a session that has since changed', async () => {
+      const user = userEvent.setup();
+      let resolveOpenPr: (v: { url: string; created: boolean }) => void = () => {};
+      vi.mocked(api.openPr).mockReturnValue(
+        new Promise(resolve => {
+          resolveOpenPr = resolve;
+        }),
+      );
+      const { rerender } = renderPanel('https://github.com/owner/repo', 'feature', 'sess-a');
+      await waitFor(() => expect(screen.getByText('passing')).toBeInTheDocument());
+
+      await user.click(screen.getByRole('button', { name: 'Open PR' }));
+      expect(api.openPr).toHaveBeenCalledWith('sess-a');
+
+      // Switch to session B while session A's call is still pending.
+      rerender(
+        <MemoryRouter>
+          <GitHubPanel sessionId="sess-b" repoUrl="https://github.com/owner/repo" branch="feature" />
+        </MemoryRouter>,
+      );
+
+      // Session A's response now arrives late.
+      resolveOpenPr({ url: 'https://github.com/owner/repo/pull/99', created: true });
+
+      // Give the resolved promise's .then a tick to run, then assert it never
+      // rendered — session B's view must stay clean.
+      await new Promise(r => setTimeout(r, 0));
+      expect(screen.queryByText(/PR opened:/)).not.toBeInTheDocument();
+    });
   });
 });

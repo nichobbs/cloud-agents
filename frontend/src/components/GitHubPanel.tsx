@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { api } from '../lib/api';
 import {
@@ -65,20 +65,32 @@ export function GitHubPanel({ sessionId, repoUrl, branch }: GitHubPanelProps) {
     }
   }, [target?.owner, target?.repo, branch]); // eslint-disable-line react-hooks/exhaustive-deps
 
+  // #932: tracks the CURRENT sessionId so an in-flight openPr() call started
+  // for a since-changed session can tell its own response is stale, even
+  // though #928's reset effect already cleared the visible state by the
+  // time that response arrives.
+  const sessionIdRef = useRef(sessionId);
+  useEffect(() => {
+    sessionIdRef.current = sessionId;
+  }, [sessionId]);
+
   const openPr = async () => {
     if (opening) return;
+    const requestedSessionId = sessionId;
     setOpening(true);
     setOpenPrError('');
     setOpenPrResult(null);
     try {
-      const result = await api.openPr(sessionId);
+      const result = await api.openPr(requestedSessionId);
+      if (sessionIdRef.current !== requestedSessionId) return; // stale — session changed while this was in flight
       setOpenPrResult(result);
       // Pick up the (now-)open PR in the normal list too.
       void refresh();
     } catch (err) {
+      if (sessionIdRef.current !== requestedSessionId) return;
       setOpenPrError(err instanceof Error ? err.message : 'Failed to open a PR');
     } finally {
-      setOpening(false);
+      if (sessionIdRef.current === requestedSessionId) setOpening(false);
     }
   };
 
