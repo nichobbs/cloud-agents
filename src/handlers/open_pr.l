@@ -190,15 +190,23 @@ pub union PrDecision {
   case Create
 }
 
+/// Shared with openPrHandler's own pre-network-call short-circuits (#929) —
+/// a single source of truth for both reject reasons, since decidePrAction
+/// and those short-circuits reach the exact same two conclusions.
+pub func onDefaultBranchReason(): String {
+  return "this session's branch is the repository's default branch; nothing to open a PR against"
+}
+
+pub func notAheadReason(sessionBranch: in String, defaultBranch: in String): String {
+  return "no commits found on '" + sessionBranch + "' ahead of '" + defaultBranch + "' — push your changes first"
+}
+
 pub func decidePrAction(defaultBranch: in String, sessionBranch: in String, compareStatus: in String, existingPrUrl: in String): PrDecision {
   if sessionBranch == defaultBranch {
-    return Reject(reason = "this session's branch is the repository's default branch; nothing to open a PR against")
+    return Reject(reason = onDefaultBranchReason())
   }
   if not (compareStatus == "ahead" or compareStatus == "diverged") {
-    return Reject(
-      reason = "no commits found on '" + sessionBranch + "' ahead of '" + defaultBranch +
-        "' — push your changes first"
-    )
+    return Reject(reason = notAheadReason(sessionBranch, defaultBranch))
   }
   if existingPrUrl.length > 0 {
     return Reuse(url = existingPrUrl)
@@ -246,9 +254,7 @@ pub func openPrHandler(sessionId: in String): Result[OpenPrResult, Web.ApiError]
   // below would reject this too, but there's no reason to spend two more
   // GitHub round trips to reach the same answer.
   if session.branch == defaultBranch {
-    return Err(
-      Web.badRequest("this session's branch is the repository's default branch; nothing to open a PR against")
-    )
+    return Err(Web.badRequest(onDefaultBranchReason()))
   }
   val compareStatus = compareBranchStatus(ownerRepo, defaultBranch, session.branch, token)?
   // Short-circuit before the existing-PR lookup too (#925) — decidePrAction
@@ -256,11 +262,7 @@ pub func openPrHandler(sessionId: in String): Result[OpenPrResult, Web.ApiError]
   // finds, so there's no reason to spend a third GitHub round trip on an
   // answer that's already decided.
   if not (compareStatus == "ahead" or compareStatus == "diverged") {
-    return Err(
-      Web.badRequest(
-        "no commits found on '" + session.branch + "' ahead of '" + defaultBranch + "' — push your changes first"
-      )
-    )
+    return Err(Web.badRequest(notAheadReason(session.branch, defaultBranch)))
   }
   val existingPrUrl = existingOpenPrUrl(ownerRepo, session.branch, token)?
   match decidePrAction(defaultBranch, session.branch, compareStatus, existingPrUrl) {

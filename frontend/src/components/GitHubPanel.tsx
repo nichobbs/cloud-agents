@@ -89,6 +89,16 @@ export function GitHubPanel({ sessionId, repoUrl, branch }: GitHubPanelProps) {
     if (key !== loadedFor) void refresh();
   }, [target?.owner, target?.repo, branch, loadedFor, refresh]); // eslint-disable-line react-hooks/exhaustive-deps
 
+  // #928: an Open-PR result/error belongs to the session that produced it —
+  // switching to a different session (a new sessionId, e.g. via in-place
+  // client-side navigation rather than a full remount) must not leave a
+  // stale "PR opened" banner or error visible for the newly-shown session.
+  useEffect(() => {
+    setOpening(false);
+    setOpenPrError('');
+    setOpenPrResult(null);
+  }, [sessionId]);
+
   if (!target) return null;
 
   // Total failure with no local token: neither the backend proxy nor a direct

@@ -176,5 +176,25 @@ describe('GitHubPanel', () => {
 
       expect(await screen.findByText('400 no commits found on this branch')).toBeInTheDocument();
     });
+
+    // #928: a result/error banner belongs to the session that produced it —
+    // switching sessionId (in-place, without a full remount) must clear it.
+    it('clears a stale Open-PR result when the session id changes', async () => {
+      const user = userEvent.setup();
+      vi.mocked(api.openPr).mockResolvedValue({ url: 'https://github.com/owner/repo/pull/99', created: true });
+      const { rerender } = renderPanel('https://github.com/owner/repo', 'feature', 'sess-a');
+      await waitFor(() => expect(screen.getByText('passing')).toBeInTheDocument());
+
+      await user.click(screen.getByRole('button', { name: 'Open PR' }));
+      expect(await screen.findByText(/PR opened:/)).toBeInTheDocument();
+
+      rerender(
+        <MemoryRouter>
+          <GitHubPanel sessionId="sess-b" repoUrl="https://github.com/owner/repo" branch="feature" />
+        </MemoryRouter>,
+      );
+
+      expect(screen.queryByText(/PR opened:/)).not.toBeInTheDocument();
+    });
   });
 });
