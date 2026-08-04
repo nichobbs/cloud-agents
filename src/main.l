@@ -17,6 +17,7 @@ import CloudAgents.Profiles
 import CloudAgents.Prompts
 import CloudAgents.Proxy
 import CloudAgents.Repository
+import CloudAgents.Search
 import CloudAgents.SessionStore
 import CloudAgents.Sqlite
 import CloudAgents.Streaming
@@ -552,6 +553,16 @@ record RouteGetMessages {
 impl Web.Handler for RouteGetMessages {
   func handle(req: in Web.Request): Web.Response {
     return messageListResp(CloudAgents.Interactions.getMessages(pparam(req, "id")))
+  }
+}
+
+// ─── CloudAgents.Search routes (search.l) ───────────────────────────────────
+record RouteSearchMessages {
+}
+
+impl Web.Handler for RouteSearchMessages {
+  func handle(req: in Web.Request): Web.Response {
+    return messageListResp(CloudAgents.Search.searchMessagesHandler(qparam(req, "q")))
   }
 }
 
@@ -1670,6 +1681,10 @@ pub func main(): Unit {
 
   // Transcript: addressable agent/user messages for a session
   router = Web.addGet(router, "/api/sessions/{id}/messages", RouteGetMessages())
+
+  // Full-text search across every message in the caller's own sessions
+  // (docs/phase9-message-search.md), backed by the messages_fts FTS5 index.
+  router = Web.addGet(router, "/api/search/messages", RouteSearchMessages())
 
   // Comments anchored to a specific message
   router = Web.addPost(router, "/api/messages/{mid}/comments", RouteAddComment())

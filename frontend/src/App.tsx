@@ -12,6 +12,7 @@ import { NewSession } from './pages/NewSession';
 import { Profiles } from './pages/Profiles';
 import { Prompts } from './pages/Prompts';
 import { Repos } from './pages/Repos';
+import { Search } from './pages/Search';
 import { SessionDetail } from './pages/SessionDetail';
 import { SessionList } from './pages/SessionList';
 import { Todos } from './pages/Todos';
@@ -45,6 +46,7 @@ export function App() {
             />
             <Route path="/repos" element={<RequireAuth><Repos /></RequireAuth>} />
             <Route path="/prompts" element={<RequireAuth><Prompts /></RequireAuth>} />
+            <Route path="/search" element={<RequireAuth><Search /></RequireAuth>} />
             <Route path="/profiles" element={<RequireAuth><Profiles /></RequireAuth>} />
             <Route path="/library" element={<RequireAuth><Library /></RequireAuth>} />
             <Route

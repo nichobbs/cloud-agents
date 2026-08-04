@@ -7,6 +7,7 @@ const NAV_ITEMS: Array<{ to: string; label: string }> = [
   { to: '/sessions', label: 'Sessions' },
   { to: '/repos', label: 'Repos' },
   { to: '/prompts', label: 'Prompts' },
+  { to: '/search', label: 'Search' },
   { to: '/profiles', label: 'Profiles' },
   { to: '/library', label: 'Library' },
   { to: '/credentials', label: 'Credentials' },

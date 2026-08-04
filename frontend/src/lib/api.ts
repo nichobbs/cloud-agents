@@ -393,6 +393,17 @@ export const api = {
     return body.messages ?? [];
   },
 
+  /** Full-text search across every message in the caller's own sessions
+   *  (`GET /api/search/messages?q=...`), newest first. */
+  searchMessages: async (term: string): Promise<Message[]> => {
+    const res = await apiFetch(`${BASE}/api/search/messages?q=${encodeURIComponent(term)}`, {
+      headers: authHeaders(),
+    });
+    if (!res.ok) throw new Error(`${res.status} ${await res.text()}`);
+    const body = (await res.json()) as { messages?: Message[] };
+    return body.messages ?? [];
+  },
+
   // ─── Comments ────────────────────────────────────────────────────────────────
 
   getComments: async (messageId: string): Promise<Comment[]> => {
