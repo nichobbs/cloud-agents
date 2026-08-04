@@ -9,6 +9,7 @@ import type { Message } from '../types';
 export function Search() {
   const [query, setQuery] = useState('');
   const [messages, setMessages] = useState<Message[]>([]);
+  const [truncated, setTruncated] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   const [searched, setSearched] = useState(false);
@@ -19,8 +20,9 @@ export function Search() {
     setLoading(true);
     setError('');
     try {
-      const results = await api.searchMessages(term);
-      setMessages(results);
+      const result = await api.searchMessages(term);
+      setMessages(result.messages);
+      setTruncated(result.truncated);
       setSearched(true);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to search messages');
@@ -61,6 +63,11 @@ export function Search() {
       {loading && <div style={mutedStyle}>Searching…</div>}
       {!loading && searched && messages.length === 0 && (
         <div style={mutedStyle}>No messages matched "{query.trim()}".</div>
+      )}
+      {!loading && truncated && (
+        <div style={truncatedNoticeStyle}>
+          Showing the newest {messages.length} matches — there are more. Refine your search to narrow it down.
+        </div>
       )}
 
       {!loading && messages.map(m => (
@@ -129,6 +136,15 @@ const mutedStyle: React.CSSProperties = {
   color: '#6e7681',
   textAlign: 'center',
   padding: '16px',
+};
+
+const truncatedNoticeStyle: React.CSSProperties = {
+  fontSize: '12px',
+  color: '#d29922',
+  background: '#d2992222',
+  border: '1px solid #d29922',
+  borderRadius: '6px',
+  padding: '8px 12px',
 };
 
 const resultLinkStyle: React.CSSProperties = {

@@ -1,6 +1,6 @@
 /// <reference types="vite/client" />
 
-import type { Comment, Credential, Highlight, McpServer, Message, PendingCallbacksResponse, Profile, Prompt, RefreshHighlightsResult, Run, Skill, Subagent, Todo, Webhook } from '../types';
+import type { Comment, Credential, Highlight, McpServer, Message, PendingCallbacksResponse, Profile, Prompt, RefreshHighlightsResult, Run, SearchMessagesResult, Skill, Subagent, Todo, Webhook } from '../types';
 import { completeLogin, isSignedIn, setReturnPath, signOut } from './auth';
 
 const BASE = (import.meta.env['VITE_API_URL'] as string | undefined) ?? '';
@@ -394,14 +394,15 @@ export const api = {
   },
 
   /** Full-text search across every message in the caller's own sessions
-   *  (`GET /api/search/messages?q=...`), newest first. */
-  searchMessages: async (term: string): Promise<Message[]> => {
+   *  (`GET /api/search/messages?q=...`), newest first, capped at 50 —
+   *  `truncated` signals when the true match count exceeded that cap. */
+  searchMessages: async (term: string): Promise<SearchMessagesResult> => {
     const res = await apiFetch(`${BASE}/api/search/messages?q=${encodeURIComponent(term)}`, {
       headers: authHeaders(),
     });
     if (!res.ok) throw new Error(`${res.status} ${await res.text()}`);
-    const body = (await res.json()) as { messages?: Message[] };
-    return body.messages ?? [];
+    const body = (await res.json()) as Partial<SearchMessagesResult>;
+    return { messages: body.messages ?? [], truncated: body.truncated ?? false };
   },
 
   // ─── Comments ────────────────────────────────────────────────────────────────

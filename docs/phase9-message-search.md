@@ -109,9 +109,17 @@ through `sqlLiteral()` (which would quote it as TEXT).
 `GET /api/search/messages?q=...` (`CloudAgents.Search.searchMessagesHandler`,
 registered before the `AuthMiddleware` wrap in `main.l`, like every other
 route) validates `q` (required, ≤200 chars), builds the MATCH expression,
-and returns the results as a `CloudAgents.Repository.MessageList` — the
-exact same response shape `GET /api/sessions/{id}/messages` already uses,
-so no new response record or JSON serialization code was needed.
+and returns `CloudAgents.Search.SearchMessagesResult { messages, truncated }`
+— the same `messages` array shape `GET /api/sessions/{id}/messages` already
+uses, plus a `truncated` flag. `truncated` closes a UX gap a review caught
+(#908): the handler asks the repository for `maxSearchResults + 1` rows: if
+the 51st comes back, its mere presence (never its content) means the true
+match count exceeded the cap, so the response reports `truncated: true` and
+still only ever returns the first 50 — otherwise a user searching a common
+term across a long history could wrongly conclude an older message doesn't
+exist, when it's just outside the newest-50 window. `Search.tsx` surfaces
+this as a "there are more — refine your search" banner instead of silently
+rendering a partial list as if it were complete.
 
 ## 5. Lyric implementation notes
 

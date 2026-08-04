@@ -184,6 +184,39 @@ pub func messageListResp(r: in Result[MessageList, Web.ApiError]): Web.Response 
   return match r { case Ok(v) -> jsonResp(200, messageListToJson(v)); case Err(e) -> Web.errorResponse(e) }
 }
 
+/// Same message-array shape as messageListToJson, plus a `truncated` flag
+/// (#908) so the frontend can distinguish "these are all the matches" from
+/// "there were more than maxSearchResults — refine your search."
+pub func searchMessagesToJson(v: in CloudAgents.Search.SearchMessagesResult): String {
+  var json = "{\"messages\":["
+  var i = 0
+  while i < v.messages.length {
+    if i > 0 {
+      json = json + ","
+    }
+    val m = v.messages[i]
+    json = json + "{\"id\":\"" + CloudAgents.Streaming.jsonEscape(m.id) + "\",\"sessionId\":\"" +
+      CloudAgents.Streaming.jsonEscape(m.sessionId) +
+      "\",\"role\":\"" +
+      CloudAgents.Streaming.jsonEscape(m.role) +
+      "\",\"content\":\"" +
+      CloudAgents.Streaming.jsonEscape(m.content) +
+      "\",\"seq\":\"" +
+      CloudAgents.Streaming.jsonEscape(m.seq) +
+      "\",\"createdAt\":\"" +
+      CloudAgents.Streaming.jsonEscape(m.createdAt) +
+      "\"}"
+    i = i + 1
+  }
+  val truncatedStr = if v.truncated { "true" } else { "false" }
+  json = json + "],\"truncated\":" + truncatedStr + "}"
+  return json
+}
+
+pub func searchMessagesResp(r: in Result[CloudAgents.Search.SearchMessagesResult, Web.ApiError]): Web.Response {
+  return match r { case Ok(v) -> jsonResp(200, searchMessagesToJson(v)); case Err(e) -> Web.errorResponse(e) }
+}
+
 pub func commentResp(r: in Result[Comment, Web.ApiError]): Web.Response {
   return match r { case Ok(v) -> jsonResp(200, v.toJson()); case Err(e) -> Web.errorResponse(e) }
 }
@@ -562,7 +595,7 @@ record RouteSearchMessages {
 
 impl Web.Handler for RouteSearchMessages {
   func handle(req: in Web.Request): Web.Response {
-    return messageListResp(CloudAgents.Search.searchMessagesHandler(qparam(req, "q")))
+    return searchMessagesResp(CloudAgents.Search.searchMessagesHandler(qparam(req, "q")))
   }
 }
 

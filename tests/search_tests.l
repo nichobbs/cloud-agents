@@ -141,7 +141,7 @@ test "searchMessagesHandler rejects a q longer than the max length" {
 }
 
 // ── searchMessagesHandler: DB-backed matching behavior ────────────────────────
-test "searchMessagesHandler returns an empty MessageList (not an error) when nothing matches" {
+test "searchMessagesHandler returns an empty, non-truncated result (not an error) when nothing matches" {
   val dbPath = useFreshTestDb("search-no-match")
   defer {
     cleanupTestDb(dbPath)
@@ -152,7 +152,10 @@ test "searchMessagesHandler returns an empty MessageList (not an error) when not
   mkMessage(sid, "let's talk about pancakes")
 
   match CloudAgents.Search.searchMessagesHandler("zzzznomatch") {
-    case Ok(list) -> assertEqualInt(list.messages.length.toInt(), 0, "no matching messages -> empty list, not an error")
+    case Ok(result) -> {
+      assertEqualInt(result.messages.length.toInt(), 0, "no matching messages -> empty list, not an error")
+      assertTrue(not result.truncated, "an empty result is never truncated")
+    }
     case Err(e) -> assertTrue(false, "expected Ok with an empty list: " + toString(e.status))
   }
 }
@@ -170,10 +173,58 @@ test "searchMessagesHandler finds a real match and returns it newest first" {
   mkMessage(sid, "third: don't forget to schedule the follow-up")
 
   match CloudAgents.Search.searchMessagesHandler("schedule") {
-    case Ok(list) -> {
-      assertEqualInt(list.messages.length.toInt(), 2, "both messages containing 'schedule' are returned")
-      assertEqual(list.messages[0].content, "third: don't forget to schedule the follow-up", "newest match comes first")
-      assertEqual(list.messages[1].content, "first: let's schedule the migration", "older match comes second")
+    case Ok(result) -> {
+      assertEqualInt(result.messages.length.toInt(), 2, "both messages containing 'schedule' are returned")
+      assertEqual(result.messages[0].content, "third: don't forget to schedule the follow-up", "newest match comes first")
+      assertEqual(result.messages[1].content, "first: let's schedule the migration", "older match comes second")
+      assertTrue(not result.truncated, "well under the cap -> not truncated")
+    }
+    case Err(e) -> assertTrue(false, "expected a successful search: " + toString(e.status))
+  }
+}
+
+// ── searchMessagesHandler: truncation signal (#908) ───────────────────────────
+test "searchMessagesHandler caps results at 50 and reports truncated when there are more" {
+  val dbPath = useFreshTestDb("search-truncated")
+  defer {
+    cleanupTestDb(dbPath)
+  }
+  CloudAgents.Auth.setCurrentUserId("default")
+  val sid = "sess-search-truncated"
+  mkSession(sid)
+  var i = 0
+  while i < 51 {
+    mkMessage(sid, "truncationprobe message number " + toString(i))
+    i = i + 1
+  }
+
+  match CloudAgents.Search.searchMessagesHandler("truncationprobe") {
+    case Ok(result) -> {
+      assertEqualInt(result.messages.length.toInt(), 50, "results are capped at maxSearchResults even though 51 messages match")
+      assertTrue(result.truncated, "the true match count (51) exceeds the cap, so truncated must be reported")
+    }
+    case Err(e) -> assertTrue(false, "expected a successful search: " + toString(e.status))
+  }
+}
+
+test "searchMessagesHandler does not report truncated when the match count exactly equals the cap" {
+  val dbPath = useFreshTestDb("search-exact-cap")
+  defer {
+    cleanupTestDb(dbPath)
+  }
+  CloudAgents.Auth.setCurrentUserId("default")
+  val sid = "sess-search-exact-cap"
+  mkSession(sid)
+  var i = 0
+  while i < 50 {
+    mkMessage(sid, "exactcapprobe message number " + toString(i))
+    i = i + 1
+  }
+
+  match CloudAgents.Search.searchMessagesHandler("exactcapprobe") {
+    case Ok(result) -> {
+      assertEqualInt(result.messages.length.toInt(), 50, "all 50 matches are returned")
+      assertTrue(not result.truncated, "exactly hitting the cap is not truncation")
     }
     case Err(e) -> assertTrue(false, "expected a successful search: " + toString(e.status))
   }
@@ -190,7 +241,7 @@ test "searchMessagesHandler supports prefix matching" {
   mkMessage(sid, "the job is scheduled to run nightly")
 
   match CloudAgents.Search.searchMessagesHandler("sched") {
-    case Ok(list) -> assertEqualInt(list.messages.length.toInt(), 1, "a word prefix matches via FTS5's quoted-prefix token")
+    case Ok(result) -> assertEqualInt(result.messages.length.toInt(), 1, "a word prefix matches via FTS5's quoted-prefix token")
     case Err(e) -> assertTrue(false, "expected a successful prefix search: " + toString(e.status))
   }
 }
@@ -212,18 +263,18 @@ test "searchMessagesHandler only ever returns the calling user's own messages" {
 
   CloudAgents.Auth.setCurrentUserId("alice")
   match CloudAgents.Search.searchMessagesHandler("roadmap") {
-    case Ok(list) -> {
-      assertEqualInt(list.messages.length.toInt(), 1, "alice sees only her own matching message")
-      assertEqual(list.messages[0].content, "alice's secret roadmap notes", "it's alice's own content")
+    case Ok(result) -> {
+      assertEqualInt(result.messages.length.toInt(), 1, "alice sees only her own matching message")
+      assertEqual(result.messages[0].content, "alice's secret roadmap notes", "it's alice's own content")
     }
     case Err(e) -> assertTrue(false, "expected a successful search: " + toString(e.status))
   }
 
   CloudAgents.Auth.setCurrentUserId("bob")
   match CloudAgents.Search.searchMessagesHandler("roadmap") {
-    case Ok(list) -> {
-      assertEqualInt(list.messages.length.toInt(), 1, "bob sees only his own matching message")
-      assertEqual(list.messages[0].content, "bob's secret roadmap notes", "it's bob's own content")
+    case Ok(result) -> {
+      assertEqualInt(result.messages.length.toInt(), 1, "bob sees only his own matching message")
+      assertEqual(result.messages[0].content, "bob's secret roadmap notes", "it's bob's own content")
     }
     case Err(e) -> assertTrue(false, "expected a successful search: " + toString(e.status))
   }

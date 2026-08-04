@@ -95,9 +95,18 @@ pub func buildFts5MatchExpr(term: in String): String {
   return result
 }
 
+/// GET /api/search/messages?q=... response: the (possibly capped) matches,
+/// newest first, plus whether the true match count exceeded maxSearchResults
+/// — #908, so the frontend can tell the user results were cut off instead of
+/// silently rendering a partial list as if it were complete.
+pub record SearchMessagesResult {
+  pub messages: slice[CloudAgents.Repository.Message]
+  pub truncated: Bool
+}
+
 /// GET /api/search/messages?q=... — full-text search across every message
 /// in the caller's own sessions, newest first, capped at maxSearchResults.
-pub func searchMessagesHandler(term: in String): Result[CloudAgents.Repository.MessageList, Web.ApiError] {
+pub func searchMessagesHandler(term: in String): Result[SearchMessagesResult, Web.ApiError] {
   val trimmed = term.trim()
   if trimmed.length == 0 {
     return Err(Web.badRequest("q is required"))
@@ -106,8 +115,20 @@ pub func searchMessagesHandler(term: in String): Result[CloudAgents.Repository.M
     return Err(Web.badRequest("q is too long (max " + toString(maxSearchTermLen) + " characters)"))
   }
   val matchExpr = buildFts5MatchExpr(trimmed)
-  match CloudAgents.Repository.searchMessages(CloudAgents.Auth.currentUserId(), matchExpr, maxSearchResults) {
-    case Ok(messages) -> return Ok(value = CloudAgents.Repository.MessageList(messages = messages))
+  // Fetch one extra row beyond the cap: its mere presence (not its content)
+  // is the truncation signal, so it's dropped below rather than ever
+  // reaching the response.
+  match CloudAgents.Repository.searchMessages(CloudAgents.Auth.currentUserId(), matchExpr, maxSearchResults + 1) {
+    case Ok(rows) -> {
+      val truncated = rows.length.toInt() > maxSearchResults
+      var messages: slice[CloudAgents.Repository.Message] = []
+      var i = 0
+      while i < rows.length.toInt() and i < maxSearchResults {
+        messages = messages.append(rows[i])
+        i = i + 1
+      }
+      return Ok(value = SearchMessagesResult(messages = messages, truncated = truncated))
+    }
     case Err(e) -> return Err(dbError(e))
   }
 }

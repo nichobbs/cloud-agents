@@ -23,6 +23,14 @@ export interface Message {
   createdAt: string;
 }
 
+/// GET /api/search/messages?q=... response. `truncated` is true when the
+/// true match count exceeded the server's cap (50) — the returned messages
+/// are just the newest 50, not the complete result set.
+export interface SearchMessagesResult {
+  messages: Message[];
+  truncated: boolean;
+}
+
 /// A comment anchored to a specific message.
 export interface Comment {
   id: string;
