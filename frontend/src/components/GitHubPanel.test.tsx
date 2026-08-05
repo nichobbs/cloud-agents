@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { render, screen, waitFor } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
 import { MemoryRouter } from 'react-router-dom';
 import type { BranchChecks, GitHubPull, GitHubRepo } from '../lib/github';
 
@@ -13,6 +14,13 @@ vi.mock('../lib/github', async importOriginal => ({
   getBranchChecks: vi.fn(),
 }));
 
+vi.mock('../lib/api', () => ({
+  api: {
+    openPr: vi.fn(),
+  },
+}));
+
+import { api } from '../lib/api';
 import { getBranchChecks, getRepo, isGitHubConnected, listPulls } from '../lib/github';
 import { GitHubPanel } from './GitHubPanel';
 
@@ -50,10 +58,10 @@ const passingChecks: BranchChecks = {
   ],
 };
 
-function renderPanel(repoUrl = 'https://github.com/owner/repo', branch = 'feature') {
+function renderPanel(repoUrl = 'https://github.com/owner/repo', branch = 'feature', sessionId = 'sess-1') {
   return render(
     <MemoryRouter>
-      <GitHubPanel repoUrl={repoUrl} branch={branch} />
+      <GitHubPanel sessionId={sessionId} repoUrl={repoUrl} branch={branch} />
     </MemoryRouter>,
   );
 }
@@ -63,6 +71,7 @@ beforeEach(() => {
   vi.mocked(getRepo).mockReset().mockResolvedValue(repo);
   vi.mocked(listPulls).mockReset().mockResolvedValue([pull]);
   vi.mocked(getBranchChecks).mockReset().mockResolvedValue(passingChecks);
+  vi.mocked(api.openPr).mockReset();
 });
 
 describe('GitHubPanel', () => {
@@ -127,5 +136,98 @@ describe('GitHubPanel', () => {
     await waitFor(() =>
       expect(screen.getByText(/GitHub API 401: bad token/)).toBeInTheDocument(),
     );
+  });
+
+  describe('Open PR (docs/phase10-auto-open-pr.md)', () => {
+    it('calls api.openPr with the session id and shows the resulting PR link', async () => {
+      const user = userEvent.setup();
+      vi.mocked(api.openPr).mockResolvedValue({ url: 'https://github.com/owner/repo/pull/99', created: true });
+      renderPanel('https://github.com/owner/repo', 'feature', 'sess-open-pr');
+      await waitFor(() => expect(screen.getByText('passing')).toBeInTheDocument());
+
+      await user.click(screen.getByRole('button', { name: 'Open PR' }));
+
+      expect(api.openPr).toHaveBeenCalledWith('sess-open-pr');
+      expect(await screen.findByText(/PR opened:/)).toBeInTheDocument();
+      expect(screen.getByRole('link', { name: /PR opened:/ })).toHaveAttribute(
+        'href',
+        'https://github.com/owner/repo/pull/99',
+      );
+    });
+
+    it('labels a reused PR distinctly from a newly created one', async () => {
+      const user = userEvent.setup();
+      vi.mocked(api.openPr).mockResolvedValue({ url: 'https://github.com/owner/repo/pull/42', created: false });
+      renderPanel();
+      await waitFor(() => expect(screen.getByText('passing')).toBeInTheDocument());
+
+      await user.click(screen.getByRole('button', { name: 'Open PR' }));
+
+      expect(await screen.findByText(/Already open:/)).toBeInTheDocument();
+    });
+
+    it('shows the backend error message when opening a PR fails', async () => {
+      const user = userEvent.setup();
+      vi.mocked(api.openPr).mockRejectedValue(new Error('400 no commits found on this branch'));
+      renderPanel();
+      await waitFor(() => expect(screen.getByText('passing')).toBeInTheDocument());
+
+      await user.click(screen.getByRole('button', { name: 'Open PR' }));
+
+      expect(await screen.findByText('400 no commits found on this branch')).toBeInTheDocument();
+    });
+
+    // #928: a result/error banner belongs to the session that produced it —
+    // switching sessionId (in-place, without a full remount) must clear it.
+    it('clears a stale Open-PR result when the session id changes', async () => {
+      const user = userEvent.setup();
+      vi.mocked(api.openPr).mockResolvedValue({ url: 'https://github.com/owner/repo/pull/99', created: true });
+      const { rerender } = renderPanel('https://github.com/owner/repo', 'feature', 'sess-a');
+      await waitFor(() => expect(screen.getByText('passing')).toBeInTheDocument());
+
+      await user.click(screen.getByRole('button', { name: 'Open PR' }));
+      expect(await screen.findByText(/PR opened:/)).toBeInTheDocument();
+
+      rerender(
+        <MemoryRouter>
+          <GitHubPanel sessionId="sess-b" repoUrl="https://github.com/owner/repo" branch="feature" />
+        </MemoryRouter>,
+      );
+
+      expect(screen.queryByText(/PR opened:/)).not.toBeInTheDocument();
+    });
+
+    // #932: a gap in #928's fix — a click for session A that's still in
+    // flight when the session switches to B must not have A's late-arriving
+    // response overwrite B's freshly-reset state.
+    it('ignores a stale in-flight response for a session that has since changed', async () => {
+      const user = userEvent.setup();
+      let resolveOpenPr: (v: { url: string; created: boolean }) => void = () => {};
+      vi.mocked(api.openPr).mockReturnValue(
+        new Promise(resolve => {
+          resolveOpenPr = resolve;
+        }),
+      );
+      const { rerender } = renderPanel('https://github.com/owner/repo', 'feature', 'sess-a');
+      await waitFor(() => expect(screen.getByText('passing')).toBeInTheDocument());
+
+      await user.click(screen.getByRole('button', { name: 'Open PR' }));
+      expect(api.openPr).toHaveBeenCalledWith('sess-a');
+
+      // Switch to session B while session A's call is still pending.
+      rerender(
+        <MemoryRouter>
+          <GitHubPanel sessionId="sess-b" repoUrl="https://github.com/owner/repo" branch="feature" />
+        </MemoryRouter>,
+      );
+
+      // Session A's response now arrives late.
+      resolveOpenPr({ url: 'https://github.com/owner/repo/pull/99', created: true });
+
+      // Give the resolved promise's .then a tick to run, then assert it never
+      // rendered — session B's view must stay clean.
+      await new Promise(r => setTimeout(r, 0));
+      expect(screen.queryByText(/PR opened:/)).not.toBeInTheDocument();
+    });
   });
 });

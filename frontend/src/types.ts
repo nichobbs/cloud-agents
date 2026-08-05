@@ -31,6 +31,14 @@ export interface SearchMessagesResult {
   truncated: boolean;
 }
 
+/// POST /api/sessions/{id}/open-pr response. `created` is false when an
+/// already-open PR for the session's branch was found and reused instead of
+/// opening a duplicate.
+export interface OpenPrResult {
+  url: string;
+  created: boolean;
+}
+
 /// A comment anchored to a specific message.
 export interface Comment {
   id: string;

@@ -1,6 +1,6 @@
 /// <reference types="vite/client" />
 
-import type { Comment, Credential, Highlight, McpServer, Message, PendingCallbacksResponse, Profile, Prompt, RefreshHighlightsResult, Run, SearchMessagesResult, Skill, Subagent, Todo, Webhook } from '../types';
+import type { Comment, Credential, Highlight, McpServer, Message, OpenPrResult, PendingCallbacksResponse, Profile, Prompt, RefreshHighlightsResult, Run, SearchMessagesResult, Skill, Subagent, Todo, Webhook } from '../types';
 import { completeLogin, isSignedIn, setReturnPath, signOut } from './auth';
 
 const BASE = (import.meta.env['VITE_API_URL'] as string | undefined) ?? '';
@@ -595,6 +595,20 @@ export const api = {
     });
     if (!res.ok) throw new Error(`${res.status} ${await res.text()}`);
     return res.json() as Promise<RefreshHighlightsResult>;
+  },
+
+  /** Opt-in "Open PR" action (`POST /api/sessions/{id}/open-pr`) — never
+   *  called automatically. Server-side only: resolves the repo's default
+   *  branch, checks for commits ahead via GitHub's compare API, reuses an
+   *  already-open PR if one exists, otherwise opens one with the vaulted
+   *  GITHUB_TOKEN (never exposed to the browser). */
+  openPr: async (sessionId: string): Promise<OpenPrResult> => {
+    const res = await apiFetch(`${BASE}/api/sessions/${sessionId}/open-pr`, {
+      method: 'POST',
+      headers: authHeaders(),
+    });
+    if (!res.ok) throw new Error(`${res.status} ${await res.text()}`);
+    return res.json() as Promise<OpenPrResult>;
   },
 
   // ─── Profiles (per-container policy: creds, harness, network) ──────────────────

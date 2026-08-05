@@ -334,22 +334,25 @@ pub func httpPostForm(url: in String, formBody: in String, userAgent: in String)
 }
 
 /// LLM chat-completion calls can legitimately take far longer than the 15s
-/// the OAuth/proxy calls budget — used only by httpPostJsonWithBearer below.
+/// the OAuth/proxy calls budget — used only by httpPostJsonWithBearer below,
+/// the convenience wrapper for that specific case.
 val llmRequestTimeoutMillis = 120000
 
 /// POST a JSON body to `url` with an optional Authorization bearer header
-/// (pass "" to send none), reading the response as real UTF-8 (readAllUtf8 —
-/// LLM output is routinely non-ASCII, so the byte-per-char readAll would
-/// mangle it). Used by CloudAgents.Highlights' summarizer call; the longer
-/// llmRequestTimeoutMillis applies to both the connect and the body read.
-pub func httpPostJsonWithBearer(
-  url: in String, jsonBody: in String, bearerToken: in String, userAgent: in String
+/// (pass "" to send none) and an explicit `timeoutMillis` (applies to both
+/// the connect and the body read), reading the response as real UTF-8
+/// (readAllUtf8 — response bodies here are routinely non-ASCII, so the
+/// byte-per-char readAll would mangle them). Callers with normal API-call
+/// latency expectations (e.g. CloudAgents.OpenPr's GitHub calls) should pass
+/// their own short timeout rather than reusing an LLM-tuned one (#927).
+pub func httpPostJsonWithBearerTimeout(
+  url: in String, jsonBody: in String, bearerToken: in String, userAgent: in String, timeoutMillis: in Int
 ): Result[String, String] {
   return try {
     val req = createRequest(url)
     setMethod(req, "POST")
-    setTimeout(req, llmRequestTimeoutMillis)
-    setReadWriteTimeout(req, llmRequestTimeoutMillis)
+    setTimeout(req, timeoutMillis)
+    setReadWriteTimeout(req, timeoutMillis)
     setUserAgent(req, userAgent)
     setAccept(req, "application/json")
     setContentType(req, "application/json")
@@ -379,4 +382,12 @@ pub func httpPostJsonWithBearer(
   } catch Bug as b {
     Err(error = "POST " + url + " failed: " + b.message)
   }
+}
+
+/// httpPostJsonWithBearerTimeout with the longer LLM-tuned timeout. Used by
+/// CloudAgents.Highlights' summarizer call.
+pub func httpPostJsonWithBearer(
+  url: in String, jsonBody: in String, bearerToken: in String, userAgent: in String
+): Result[String, String] {
+  return httpPostJsonWithBearerTimeout(url, jsonBody, bearerToken, userAgent, llmRequestTimeoutMillis)
 }

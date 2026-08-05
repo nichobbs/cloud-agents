@@ -1,5 +1,6 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { Link } from 'react-router-dom';
+import { api } from '../lib/api';
 import {
   getBranchChecks,
   getRepo,
@@ -12,8 +13,10 @@ import {
   type GitHubRepo,
 } from '../lib/github';
 import { timeAgo } from '../lib/time';
+import type { OpenPrResult } from '../types';
 
 interface GitHubPanelProps {
+  sessionId: string;
   repoUrl: string;
   branch: string;
 }
@@ -23,7 +26,12 @@ interface GitHubPanelProps {
 /// fallback (see lib/github.ts). The fetch is always attempted; the connect
 /// hint only shows when it fails AND no local token is connected (i.e. both
 /// paths are unavailable). Hidden entirely for non-GitHub remotes.
-export function GitHubPanel({ repoUrl, branch }: GitHubPanelProps) {
+///
+/// Also hosts the opt-in "Open PR" action (docs/phase10-auto-open-pr.md):
+/// server-side only (the vaulted GITHUB_TOKEN never reaches the browser), so
+/// it has no direct-browser fallback the way the read-only fetches above do
+/// — a failure here just surfaces the backend's error message.
+export function GitHubPanel({ sessionId, repoUrl, branch }: GitHubPanelProps) {
   const target = parseGitHubUrl(repoUrl);
   const connected = isGitHubConnected();
   const [repo, setRepo] = useState<GitHubRepo | null>(null);
@@ -32,6 +40,9 @@ export function GitHubPanel({ repoUrl, branch }: GitHubPanelProps) {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   const [loadedFor, setLoadedFor] = useState('');
+  const [opening, setOpening] = useState(false);
+  const [openPrError, setOpenPrError] = useState('');
+  const [openPrResult, setOpenPrResult] = useState<OpenPrResult | null>(null);
 
   const refresh = useCallback(async () => {
     if (!target) return;
@@ -54,12 +65,51 @@ export function GitHubPanel({ repoUrl, branch }: GitHubPanelProps) {
     }
   }, [target?.owner, target?.repo, branch]); // eslint-disable-line react-hooks/exhaustive-deps
 
+  // #932: tracks the CURRENT sessionId so an in-flight openPr() call started
+  // for a since-changed session can tell its own response is stale, even
+  // though #928's reset effect already cleared the visible state by the
+  // time that response arrives.
+  const sessionIdRef = useRef(sessionId);
+  useEffect(() => {
+    sessionIdRef.current = sessionId;
+  }, [sessionId]);
+
+  const openPr = async () => {
+    if (opening) return;
+    const requestedSessionId = sessionId;
+    setOpening(true);
+    setOpenPrError('');
+    setOpenPrResult(null);
+    try {
+      const result = await api.openPr(requestedSessionId);
+      if (sessionIdRef.current !== requestedSessionId) return; // stale — session changed while this was in flight
+      setOpenPrResult(result);
+      // Pick up the (now-)open PR in the normal list too.
+      void refresh();
+    } catch (err) {
+      if (sessionIdRef.current !== requestedSessionId) return;
+      setOpenPrError(err instanceof Error ? err.message : 'Failed to open a PR');
+    } finally {
+      if (sessionIdRef.current === requestedSessionId) setOpening(false);
+    }
+  };
+
   useEffect(() => {
     if (!target) return;
     // Refetch when the session's repo/branch changes.
     const key = `${target.owner}/${target.repo}#${branch}`;
     if (key !== loadedFor) void refresh();
   }, [target?.owner, target?.repo, branch, loadedFor, refresh]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // #928: an Open-PR result/error belongs to the session that produced it —
+  // switching to a different session (a new sessionId, e.g. via in-place
+  // client-side navigation rather than a full remount) must not leave a
+  // stale "PR opened" banner or error visible for the newly-shown session.
+  useEffect(() => {
+    setOpening(false);
+    setOpenPrError('');
+    setOpenPrResult(null);
+  }, [sessionId]);
 
   if (!target) return null;
 
@@ -120,7 +170,17 @@ export function GitHubPanel({ repoUrl, branch }: GitHubPanelProps) {
       <div style={rowStyle}>
         <span style={labelStyle}>Pull requests:</span>
         {pulls.length === 0 && <span style={mutedStyle}>none open for this branch</span>}
+        <div style={{ flex: 1 }} />
+        <button style={openPrBtnStyle} onClick={() => { void openPr(); }} disabled={opening}>
+          {opening ? 'Opening…' : 'Open PR'}
+        </button>
       </div>
+      {openPrError && <div style={errStyle}>{openPrError}</div>}
+      {openPrResult && (
+        <a href={openPrResult.url} target="_blank" rel="noreferrer" style={openPrResultStyle}>
+          {openPrResult.created ? 'PR opened:' : 'Already open:'} {openPrResult.url}
+        </a>
+      )}
       {pulls.map(pr => (
         <a key={pr.number} href={pr.htmlUrl} target="_blank" rel="noreferrer" style={prRowStyle}>
           <span style={prBadgeStyle(pr.draft)}>{pr.draft ? 'draft' : 'open'}</span>
@@ -171,6 +231,23 @@ const headerStyle: React.CSSProperties = {
 };
 
 const repoMetaStyle: React.CSSProperties = { fontSize: '12px', color: '#8b949e' };
+
+const openPrBtnStyle: React.CSSProperties = {
+  padding: '3px 10px',
+  background: 'transparent',
+  color: '#58a6ff',
+  border: '1px solid #1f6feb',
+  borderRadius: '6px',
+  fontSize: '12px',
+  cursor: 'pointer',
+};
+
+const openPrResultStyle: React.CSSProperties = {
+  fontSize: '12px',
+  color: '#3fb950',
+  textDecoration: 'none',
+  wordBreak: 'break-all',
+};
 
 const refreshBtnStyle: React.CSSProperties = {
   padding: '3px 10px',

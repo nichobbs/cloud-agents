@@ -13,6 +13,7 @@ import CloudAgents.Interactions
 import CloudAgents.Jobs
 import CloudAgents.Library
 import CloudAgents.OAuth
+import CloudAgents.OpenPr
 import CloudAgents.Profiles
 import CloudAgents.Prompts
 import CloudAgents.Proxy
@@ -210,6 +211,15 @@ pub func searchMessagesToJson(v: in CloudAgents.Search.SearchMessagesResult): St
 
 pub func searchMessagesResp(r: in Result[CloudAgents.Search.SearchMessagesResult, Web.ApiError]): Web.Response {
   return match r { case Ok(v) -> jsonResp(200, searchMessagesToJson(v)); case Err(e) -> Web.errorResponse(e) }
+}
+
+pub func openPrResultToJson(v: in CloudAgents.OpenPr.OpenPrResult): String {
+  val createdStr = if v.created { "true" } else { "false" }
+  return "{\"url\":\"" + CloudAgents.Streaming.jsonEscape(v.url) + "\",\"created\":" + createdStr + "}"
+}
+
+pub func openPrResp(r: in Result[CloudAgents.OpenPr.OpenPrResult, Web.ApiError]): Web.Response {
+  return match r { case Ok(v) -> jsonResp(200, openPrResultToJson(v)); case Err(e) -> Web.errorResponse(e) }
 }
 
 pub func commentResp(r: in Result[Comment, Web.ApiError]): Web.Response {
@@ -591,6 +601,16 @@ record RouteSearchMessages {
 impl Web.Handler for RouteSearchMessages {
   func handle(req: in Web.Request): Web.Response {
     return searchMessagesResp(CloudAgents.Search.searchMessagesHandler(qparam(req, "q")))
+  }
+}
+
+// ─── CloudAgents.OpenPr routes (open_pr.l) ───────────────────────────────────
+record RouteOpenPr {
+}
+
+impl Web.Handler for RouteOpenPr {
+  func handle(req: in Web.Request): Web.Response {
+    return openPrResp(CloudAgents.OpenPr.openPrHandler(pparam(req, "id")))
   }
 }
 
@@ -1839,6 +1859,10 @@ pub func main(): Unit {
   // (CloudAgents.Highlights) — list + user-triggered refresh.
   router = Web.addGet(router, "/api/sessions/{id}/highlights", RouteListHighlights())
   router = Web.addPost(router, "/api/sessions/{id}/highlights/refresh", RouteRefreshHighlights())
+
+  // Opt-in, user-triggered "Open PR" action (docs/phase10-auto-open-pr.md) —
+  // never fires automatically on run completion.
+  router = Web.addPost(router, "/api/sessions/{id}/open-pr", RouteOpenPr())
 
   // Server-side provider proxies (ADR-006): GitHub listings and model
   // discovery with vault credentials, so the browser needs no local keys.
