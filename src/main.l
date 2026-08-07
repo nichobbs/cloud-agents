@@ -7,6 +7,7 @@ import CloudAgents.Callbacks
 import CloudAgents.Credentials
 import CloudAgents.Crypto
 import CloudAgents.Docker
+import CloudAgents.Groups
 import CloudAgents.Handlers
 import CloudAgents.Highlights
 import CloudAgents.Interactions
@@ -581,6 +582,81 @@ record RouteDeleteSessionRepo {
 impl Web.Handler for RouteDeleteSessionRepo {
   func handle(req: in Web.Request): Web.Response {
     return unitResp(CloudAgents.Handlers.deleteSessionRepoHandler(pparam(req, "id"), pparam(req, "rid")))
+  }
+}
+
+// ─── CloudAgents.Groups routes (groups.l): session groups (tree), viewed ────
+//
+// Adapters and response mappers for the session-group CRUD, the
+// session-to-group assignment, and the viewed stamp — kept together in one
+// section (mappers + route records here, registrations grouped the same way
+// in main()).
+pub func sessionGroupResp(r: in Result[SessionGroup, Web.ApiError]): Web.Response {
+  return match r { case Ok(v) -> jsonResp(200, v.toJson()); case Err(e) -> Web.errorResponse(e) }
+}
+
+pub func sessionGroupListResp(r: in Result[SessionGroupList, Web.ApiError]): Web.Response {
+  return match r { case Ok(v) -> jsonResp(200, v.toJson()); case Err(e) -> Web.errorResponse(e) }
+}
+
+record RouteListGroups {
+}
+
+impl Web.Handler for RouteListGroups {
+  func handle(req: in Web.Request): Web.Response {
+    return sessionGroupListResp(CloudAgents.Groups.listGroupsHandler())
+  }
+}
+
+record RouteCreateGroup {
+}
+
+impl Web.Handler for RouteCreateGroup {
+  func handle(req: in Web.Request): Web.Response {
+    val decoded = match SaveGroupRequest.fromJson(req.body) { case Ok(d) -> d; case Err(_) -> return badBody() }
+    return sessionGroupResp(CloudAgents.Groups.createGroupHandler(decoded))
+  }
+}
+
+record RouteUpdateGroup {
+}
+
+impl Web.Handler for RouteUpdateGroup {
+  func handle(req: in Web.Request): Web.Response {
+    val gid = pparam(req, "gid")
+    val decoded = match SaveGroupRequest.fromJson(req.body) { case Ok(d) -> d; case Err(_) -> return badBody() }
+    return sessionGroupResp(CloudAgents.Groups.updateGroupHandler(gid, decoded))
+  }
+}
+
+record RouteDeleteGroup {
+}
+
+impl Web.Handler for RouteDeleteGroup {
+  func handle(req: in Web.Request): Web.Response {
+    return unitResp(CloudAgents.Groups.deleteGroupHandler(pparam(req, "gid")))
+  }
+}
+
+record RouteSetSessionGroup {
+}
+
+impl Web.Handler for RouteSetSessionGroup {
+  func handle(req: in Web.Request): Web.Response {
+    val id = pparam(req, "id")
+    val decoded = match SetSessionGroupRequest.fromJson(req.body) { case Ok(d) -> d; case Err(_) -> return badBody() }
+    return unitResp(CloudAgents.Groups.setSessionGroupHandler(id, decoded))
+  }
+}
+
+// POST /api/sessions/{id}/viewed has NO body by design — never JSON-decode it
+// (an empty body would fail decode and turn every viewed stamp into a 400).
+record RouteMarkSessionViewed {
+}
+
+impl Web.Handler for RouteMarkSessionViewed {
+  func handle(req: in Web.Request): Web.Response {
+    return unitResp(CloudAgents.Groups.markSessionViewedHandler(pparam(req, "id")))
   }
 }
 
@@ -1721,6 +1797,18 @@ pub func main(): Unit {
   router = Web.addGet(router, "/api/sessions/{id}/repos", RouteListSessionRepos())
   router = Web.addPost(router, "/api/sessions/{id}/repos", RouteAddSessionRepo())
   router = Web.addDelete(router, "/api/sessions/{id}/repos/{rid}", RouteDeleteSessionRepo())
+
+  // ─── Session groups (tree) + viewed tracking (groups.l) ────────────────────
+  // Group CRUD, session-to-group assignment, and the "viewed" stamp the
+  // session list's attention states derive from. POST /viewed carries no
+  // body (see RouteMarkSessionViewed). The frontend hides the grouping UI
+  // entirely when these routes 404 on an older backend.
+  router = Web.addGet(router, "/api/groups", RouteListGroups())
+  router = Web.addPost(router, "/api/groups", RouteCreateGroup())
+  router = Web.addPost(router, "/api/groups/{gid}", RouteUpdateGroup())
+  router = Web.addDelete(router, "/api/groups/{gid}", RouteDeleteGroup())
+  router = Web.addPost(router, "/api/sessions/{id}/group", RouteSetSessionGroup())
+  router = Web.addPost(router, "/api/sessions/{id}/viewed", RouteMarkSessionViewed())
 
   // Session lifecycle: cancel an in-flight run, run history, container reaping.
   router = Web.addPost(router, "/api/sessions/{id}/cancel", RouteCancelRun())
