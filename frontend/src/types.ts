@@ -11,6 +11,57 @@ export interface Session {
   /** Epoch-millis string of the last run activity. */
   lastMessageAt?: string;
   isArchived?: string;
+  /** Group (folder) this session belongs to; '' or absent when ungrouped. */
+  groupId?: string;
+  /** Epoch-millis string of when the user last opened the session; '0' if never. */
+  lastViewedAt?: string;
+  /** Count (as string) of pending callbacks awaiting a human. */
+  pendingCount?: string;
+  /** Server-derived attention state: working | pending | viewed | idle.
+   *  Absent on older backends — use lib/attention.ts sessionAttention(). */
+  attention?: string;
+}
+
+/// A folder in the session tree. Groups nest via parentId ('' = root) and
+/// are owned by the requesting user.
+export interface SessionGroup {
+  id: string;
+  name: string;
+  parentId: string;
+  createdAt: string;
+}
+
+/// One changed file in GET /api/sessions/{id}/workspace/diff.
+/// status: M modified, A added, D deleted, R renamed, U untracked, X other.
+/// additions/deletions are line counts as strings, '' when unknown (binary).
+export interface WorkspaceDiffFile {
+  path: string;
+  status: string;
+  additions: string;
+  deletions: string;
+}
+
+/// GET /api/sessions/{id}/workspace/diff response. `patch` is the full
+/// unified diff; `clean` is 'true' when the workspace has no changes.
+export interface WorkspaceDiff {
+  files: WorkspaceDiffFile[];
+  patch: string;
+  clean: string;
+}
+
+/// One entry of GET /api/sessions/{id}/workspace/files.
+export interface WorkspaceFileEntry {
+  path: string;
+}
+
+/// GET /api/sessions/{id}/workspace/file?path=… response. Content is
+/// base64 of the first 1 MiB; `size` is the full byte size; `truncated`
+/// is 'true' when the file exceeded the cap.
+export interface WorkspaceFileContent {
+  path: string;
+  contentBase64: string;
+  size: string;
+  truncated: string;
 }
 
 /// One addressable entry in a session's transcript.
