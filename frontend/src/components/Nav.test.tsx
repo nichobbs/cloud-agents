@@ -12,6 +12,12 @@ vi.mock('../lib/auth', async importOriginal => ({
   beginLogin: vi.fn(),
 }));
 
+// Nav mounts AttentionStatus, which reads the polled session list; stub the
+// context so these tests don't need a SessionsProvider (or a network).
+vi.mock('../context/SessionsContext', () => ({
+  useSessions: () => ({ sessions: [] }),
+}));
+
 import { Nav } from './Nav';
 
 function renderNav(path = '/sessions') {

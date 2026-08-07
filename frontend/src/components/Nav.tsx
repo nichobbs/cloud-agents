@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { Link, useLocation } from 'react-router-dom';
 import { useAuthConfig } from '../context/AuthConfigContext';
 import { beginLogin, getLogin, isSignedIn, signOut } from '../lib/auth';
+import { AttentionStatus } from './AttentionStatus';
 
 const NAV_ITEMS: Array<{ to: string; label: string }> = [
   { to: '/sessions', label: 'Sessions' },
@@ -48,6 +49,9 @@ export function Nav() {
         <Link to="/sessions" style={logoStyle}>
           Cloud Agents
         </Link>
+        {/* In .nav-bar (not the collapsible .nav-links) so the counters stay
+            visible on mobile, where the link panel hides behind the toggle. */}
+        <AttentionStatus />
         <button
           type="button"
           className="nav-toggle"
