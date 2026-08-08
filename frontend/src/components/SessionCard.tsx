@@ -1,10 +1,13 @@
 import { Link } from 'react-router-dom';
+import { ATTENTION_META, sessionAttention } from '../lib/attention';
 import { getHarness } from '../lib/harnesses';
 import { formatFullTimestamp, timeAgo } from '../lib/time';
 import type { Session } from '../types';
 
 interface SessionCardProps {
   session: Session;
+  /** Slimmer row for use inside the group tree (tighter padding, no id line). */
+  compact?: boolean;
 }
 
 function repoLabel(repoUrl: string): string {
@@ -16,28 +19,23 @@ function repoLabel(repoUrl: string): string {
   }
 }
 
-const statusColor: Record<string, string> = {
-  RUNNING: '#d29922',
-  WARM: '#58a6ff',
-  IDLE: '#484f58',
-};
-
-export function SessionCard({ session }: SessionCardProps) {
+export function SessionCard({ session, compact }: SessionCardProps) {
   const created = timeAgo(session.createdAt);
   const lastActive = timeAgo(session.lastMessageAt);
   const status = session.status ?? '';
+  const attention = sessionAttention(session);
+  const attentionMeta = ATTENTION_META[attention];
 
   return (
     <Link to={`/sessions/${session.sessionId}`} style={{ textDecoration: 'none' }}>
-      <div style={cardStyle}>
+      <div style={compact ? compactCardStyle : cardStyle}>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: '8px' }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: '8px', minWidth: 0 }}>
-            {status && (
-              <span
-                style={{ ...statusDotStyle, background: statusColor[status] ?? '#484f58' }}
-                title={`Session status: ${status}`}
-              />
-            )}
+            <span
+              className={attention === 'working' ? 'attention-dot attention-dot--working' : 'attention-dot'}
+              style={{ ...statusDotStyle, background: attentionMeta.color }}
+              title={`Attention: ${attentionMeta.label}`}
+            />
             <span style={{ fontWeight: 600, color: '#58a6ff', fontSize: '14px' }}>
               {repoLabel(session.repoUrl)}
             </span>
@@ -62,9 +60,11 @@ export function SessionCard({ session }: SessionCardProps) {
             </span>
           )}
         </div>
-        <div style={{ marginTop: '4px', fontSize: '11px', color: '#484f58', fontFamily: 'monospace' }}>
-          {session.sessionId}
-        </div>
+        {!compact && (
+          <div style={{ marginTop: '4px', fontSize: '11px', color: '#484f58', fontFamily: 'monospace' }}>
+            {session.sessionId}
+          </div>
+        )}
       </div>
     </Link>
   );
@@ -77,6 +77,11 @@ const cardStyle: React.CSSProperties = {
   background: '#161b22',
   cursor: 'pointer',
   transition: 'border-color 0.15s',
+};
+
+const compactCardStyle: React.CSSProperties = {
+  ...cardStyle,
+  padding: '10px 12px',
 };
 
 const statusDotStyle: React.CSSProperties = {
