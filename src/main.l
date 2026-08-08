@@ -24,6 +24,7 @@ import CloudAgents.SessionStore
 import CloudAgents.Sqlite
 import CloudAgents.Streaming
 import CloudAgents.Webhooks
+import CloudAgents.WorkspaceHandlers
 import extern System.Environment as Env
 import extern System.String as DotNetString
 
@@ -1534,6 +1535,38 @@ impl Web.Handler for RouteRefreshHighlights {
   }
 }
 
+// ─── Workspace inspector routes (handlers/workspace.l) ──────────────────────
+//
+// All three handlers hand-build their JSON (CloudAgents.Workspace's
+// jsonEscape-based assemblers) and return Result[String, Web.ApiError], so
+// they all share the existing jsonStringResp passthrough.
+record RouteWorkspaceDiff {
+}
+
+impl Web.Handler for RouteWorkspaceDiff {
+  func handle(req: in Web.Request): Web.Response {
+    return jsonStringResp(CloudAgents.WorkspaceHandlers.getWorkspaceDiffHandler(pparam(req, "id")))
+  }
+}
+
+record RouteWorkspaceFiles {
+}
+
+impl Web.Handler for RouteWorkspaceFiles {
+  func handle(req: in Web.Request): Web.Response {
+    return jsonStringResp(CloudAgents.WorkspaceHandlers.listWorkspaceFilesHandler(pparam(req, "id")))
+  }
+}
+
+record RouteWorkspaceFile {
+}
+
+impl Web.Handler for RouteWorkspaceFile {
+  func handle(req: in Web.Request): Web.Response {
+    return jsonStringResp(CloudAgents.WorkspaceHandlers.getWorkspaceFileHandler(pparam(req, "id"), qparam(req, "path")))
+  }
+}
+
 record RouteListPendingCallbacks {
 }
 
@@ -1947,6 +1980,15 @@ pub func main(): Unit {
   // (CloudAgents.Highlights) — list + user-triggered refresh.
   router = Web.addGet(router, "/api/sessions/{id}/highlights", RouteListHighlights())
   router = Web.addPost(router, "/api/sessions/{id}/highlights/refresh", RouteRefreshHighlights())
+
+  // Workspace inspector (handlers/workspace.l): read-only diff / file-tree /
+  // file-content views of the session's workspace volume via short-lived,
+  // credential-free, network-isolated inspect containers. The file route
+  // reads its repo-relative path from the `path` query param (URL-encoded by
+  // the frontend), validated server-side before any container is spawned.
+  router = Web.addGet(router, "/api/sessions/{id}/workspace/diff", RouteWorkspaceDiff())
+  router = Web.addGet(router, "/api/sessions/{id}/workspace/files", RouteWorkspaceFiles())
+  router = Web.addGet(router, "/api/sessions/{id}/workspace/file", RouteWorkspaceFile())
 
   // Opt-in, user-triggered "Open PR" action (docs/phase10-auto-open-pr.md) —
   // never fires automatically on run completion.

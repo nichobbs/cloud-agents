@@ -1104,3 +1104,148 @@ pub func deleteWorkspaceVolume(userId: in String, sessionId: in String): Result[
   val _ = processStart("docker", "volume rm " + volName)
   return Ok(value = ())
 }
+
+// ─── Workspace inspector (short-lived inspect containers) ────────────────────
+
+// Wall-clock cap for one inspect container run — an inspect is a few git
+// commands over an existing checkout, so two minutes is generous (covers a
+// cold image + a large repo's first `git status`) while still bounding a
+// wedged daemon. An `Int` millisecond count for the same
+// AccessViolationException reason as runWallClockCapMs (see tickCountMs's
+// doc comment above).
+val inspectWallClockCapMs = 120000
+
+/// Run a short-lived "inspect" container against a session's workspace
+/// volume and return its captured logs verbatim. The logs carry the
+/// CLOUD_AGENTS_INSPECT_OK / ===CLOUD_AGENTS_SECTION=== /
+/// CLOUD_AGENTS_INSPECT_ERR marker protocol printed by the inspect-mode
+/// block at the top of every docker/entrypoint*.sh — parsing lives in the
+/// pure CloudAgents.Workspace package (a @test_module can't reach anything
+/// in this async package, docs/lyric/gotchas.md), not here.
+///
+/// Least privilege by construction, deliberately narrower than a normal run:
+///   - image: the session's own harness image (imageForHarness — the image
+///     whose entrypoint carries the inspect block, and the only one
+///     guaranteed pulled for this session);
+///   - binds: ONLY the workspace volume (workspaceVolumeBindFor). No home
+///     volume, so no ~/.claude / CLI credentials are ever mounted;
+///   - envs: ONLY the two CLOUD_AGENTS_INSPECT_* vars
+///     (CloudAgents.RunnerEnv.inspectEnvs — pure, unit-tested). No
+///     credentials, no callback token;
+///   - NetworkMode "none": full isolation, the same literal
+///     CloudAgents.NetworkPolicy.networkModeForPolicy returns for the
+///     "none" policy — an inspect never needs egress.
+///
+/// Mirrors runSessionMessageBlocking's sync-wrapper shape (handlers are
+/// sync): spawn the async lifecycle, poll taskWaitMs with an Int
+/// poll-accumulator cap, terminate the container if the cap trips.
+/// `userId` must be the request's authenticated identity captured on the
+/// request thread — this spawns a worker-thread async body where the
+/// thread-local identity does not flow (same rationale as
+/// createRunnerContainer).
+pub func runInspectContainer(
+  sessionId: in String,
+  harness: in String,
+  userId: in String,
+  mode: in String,
+  path: in String,
+): Result[String, String] {
+  val cell = ResultCell(isSuccess = false, output = "", error = "")
+  val t = runInspectContainerAsync(sessionId, harness, userId, mode, path, cell)
+  val pollMs = 500
+  var elapsedPollMs = 0
+  var finished = false
+  while not finished and elapsedPollMs <= inspectWallClockCapMs {
+    finished = taskWaitMs(t, pollMs)
+    elapsedPollMs = elapsedPollMs + pollMs
+  }
+  if not finished {
+    if cell.containerId.length > 0 {
+      val _ = terminateSessionContainer(cell.containerId)
+    }
+    return Err(error = "Inspect container timed out after " + toString(inspectWallClockCapMs / 1000) + " seconds")
+  }
+  if cell.isSuccess {
+    return Ok(value = cell.output)
+  }
+  return Err(error = cell.error)
+}
+
+/// The async lifecycle behind runInspectContainer: create → start → wait →
+/// logs → remove, the same chain as runSessionMessageAsync — and the same
+/// lyric-lang#6249 discipline: the container id is threaded through
+/// cell.containerId (a mutable record FIELD survives multiple awaits; a bare
+/// local `val` does not), a fresh dockerClient() is created per step, no
+/// local bound before one await is read after a second different-callee
+/// await (parameters are safe), and each awaited Result is consumed
+/// immediately after its own await. Unlike runSessionMessageAsync, the
+/// container id is deliberately NEVER persisted to the session row: an
+/// inspect must not be cancellable/confusable as the session's active run
+/// (cleanupRunnerContainer's compare-and-clear is then a no-op, which is
+/// exactly right).
+async func runInspectContainerAsync(
+  sessionId: in String,
+  harness: in String,
+  userId: in String,
+  mode: in String,
+  path: in String,
+  cell: in ResultCell,
+): Unit {
+  // Pure env/bind assembly, all before the first await; every value below is
+  // either consumed at that first await or a parameter (safe across awaits).
+  val envs = CloudAgents.RunnerEnv.inspectEnvs(mode, path)
+  val binds: slice[String] = [CloudAgents.Db.workspaceVolumeBindFor(userId, sessionId)]
+  val image = imageForHarness(harness)
+  match await createContainerWithNetwork(dockerClient(), image, envs, binds, "none") {
+    case Ok(id) -> {
+      cell.containerId = id
+    }
+    case Err(e) -> {
+      cell.isSuccess = false
+      cell.error = "Docker API error creating inspect container from image '" + image + "': " +
+        CloudAgents.DockerPolicy.formatDockerError(e.message, e.details)
+      return ()
+    }
+  }
+
+  match await startRunnerContainer(dockerClient(), cell.containerId) {
+    case Ok(_) -> ()
+    case Err(msg) -> {
+      // cell.error is written BEFORE the cleanup await: `msg` is bound after
+      // one await, and reading it after the cleanup's second await is
+      // exactly the lyric-lang#6249 hazard.
+      cell.isSuccess = false
+      cell.error = msg
+      await cleanupRunnerContainer(dockerClient(), cell.containerId, sessionId, userId)
+      return ()
+    }
+  }
+
+  match await waitForContainer(dockerClient(), cell.containerId) {
+    case Ok(_) -> ()
+    case Err(msg) -> {
+      // Same #6249 ordering as the start-failure arm above.
+      cell.isSuccess = false
+      cell.error = msg
+      await cleanupRunnerContainer(dockerClient(), cell.containerId, sessionId, userId)
+      return ()
+    }
+  }
+
+  // match immediately after this await, before the cleanup await below
+  // (lyric-lang#6249 — same rule as runSessionMessageAsync's log fetch).
+  match await getRunnerLogs(dockerClient(), cell.containerId) {
+    case Ok(logs) -> {
+      cell.isSuccess = true
+      cell.output = logs
+    }
+    case Err(msg) -> {
+      cell.isSuccess = false
+      cell.error = msg
+    }
+  }
+
+  // Always remove the ephemeral inspect container; the workspace volume
+  // persists independently.
+  await cleanupRunnerContainer(dockerClient(), cell.containerId, sessionId, userId)
+}
