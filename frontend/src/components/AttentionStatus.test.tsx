@@ -61,10 +61,25 @@ describe('AttentionStatus', () => {
       session({ sessionId: 'd', attention: 'viewed' }),
     ];
     renderStatus();
-    expect(screen.getByTitle('2 working')).toHaveTextContent('2');
-    const pendingLink = screen.getByRole('link', { name: '1' });
+    const workingCounter = screen.getByTitle('2 working');
+    expect(workingCounter).toHaveTextContent('2');
+    expect(workingCounter).toHaveAttribute('aria-label', '2 sessions working');
+    const pendingLink = screen.getByRole('link', { name: '1 session pending — needs you' });
     expect(pendingLink).toHaveAttribute('href', '/sessions?filter=pending');
     expect(pendingLink).toHaveAttribute('title', '1 pending — needs you');
+  });
+
+  it('uses singular aria-labels when exactly one session is in a state (#939)', () => {
+    mockSessions = [
+      session({ sessionId: 'a', attention: 'working' }),
+      session({ sessionId: 'b', attention: 'pending' }),
+      session({ sessionId: 'c', attention: 'pending' }),
+    ];
+    renderStatus();
+    expect(screen.getByTitle('1 working')).toHaveAttribute('aria-label', '1 session working');
+    expect(
+      screen.getByRole('link', { name: '2 sessions pending — needs you' }),
+    ).toBeInTheDocument();
   });
 
   it('hides both counters when the counts are zero', () => {
