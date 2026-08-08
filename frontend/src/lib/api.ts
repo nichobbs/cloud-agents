@@ -1,6 +1,6 @@
 /// <reference types="vite/client" />
 
-import type { Comment, Credential, Highlight, McpServer, Message, OpenPrResult, PendingCallbacksResponse, Profile, Prompt, RefreshHighlightsResult, Run, SearchMessagesResult, Skill, Subagent, Todo, Webhook } from '../types';
+import type { Comment, Credential, Highlight, McpServer, Message, OpenPrResult, PendingCallbacksResponse, Profile, Prompt, RefreshHighlightsResult, Run, SearchMessagesResult, SessionGroup, Skill, Subagent, Todo, Webhook, WorkspaceDiff, WorkspaceFileContent, WorkspaceFileEntry } from '../types';
 import { completeLogin, isSignedIn, setReturnPath, signOut } from './auth';
 
 const BASE = (import.meta.env['VITE_API_URL'] as string | undefined) ?? '';
@@ -24,6 +24,10 @@ export interface ServerSession {
   createdAt?: string;
   lastMessageAt?: string;
   isArchived?: string;
+  groupId?: string;
+  lastViewedAt?: string;
+  pendingCount?: string;
+  attention?: string;
 }
 
 function authHeaders(): HeadersInit {
@@ -884,6 +888,103 @@ export const api = {
    *  the live models listing without CORS issues. */
   validateModelKey: async (provider: string, key: string): Promise<{ provider: string; body: string }> => {
     return proxyPost<{ provider: string; body: string }>('/api/models/validate', { provider, key });
+  },
+
+  // ─── Session groups (session tree) ──────────────────────────────────────────
+
+  /** The user's session groups (folders). 404 = older backend without groups. */
+  listGroups: async (): Promise<SessionGroup[]> => {
+    const res = await apiFetch(`${BASE}/api/groups`, { headers: authHeaders() });
+    if (!res.ok) throw new Error(`${res.status} ${await res.text()}`);
+    const body = (await res.json()) as { groups?: SessionGroup[] };
+    return body.groups ?? [];
+  },
+
+  /** Create a group. `parentId` '' makes it a root group. */
+  createGroup: async (name: string, parentId: string): Promise<SessionGroup> => {
+    const res = await apiFetch(`${BASE}/api/groups`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', ...authHeaders() },
+      body: JSON.stringify({ name, parentId }),
+    });
+    if (!res.ok) throw new Error(`${res.status} ${await res.text()}`);
+    return res.json() as Promise<SessionGroup>;
+  },
+
+  /** Full update (rename / reparent) of a group — both fields required. */
+  updateGroup: async (id: string, name: string, parentId: string): Promise<SessionGroup> => {
+    const res = await apiFetch(`${BASE}/api/groups/${encodeURIComponent(id)}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', ...authHeaders() },
+      body: JSON.stringify({ name, parentId }),
+    });
+    if (!res.ok) throw new Error(`${res.status} ${await res.text()}`);
+    return res.json() as Promise<SessionGroup>;
+  },
+
+  /** Delete a group; its children and sessions are reparented server-side. */
+  deleteGroup: async (id: string): Promise<void> => {
+    const res = await apiFetch(`${BASE}/api/groups/${encodeURIComponent(id)}`, {
+      method: 'DELETE',
+      headers: authHeaders(),
+    });
+    if (!res.ok) throw new Error(`${res.status} ${await res.text()}`);
+  },
+
+  /** Move a session into a group ('' clears the assignment). */
+  setSessionGroup: async (sessionId: string, groupId: string): Promise<void> => {
+    const res = await apiFetch(`${BASE}/api/sessions/${sessionId}/group`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', ...authHeaders() },
+      body: JSON.stringify({ groupId }),
+    });
+    if (!res.ok) throw new Error(`${res.status} ${await res.text()}`);
+  },
+
+  /** Record that the user has looked at this session (attention → viewed). */
+  markSessionViewed: async (sessionId: string): Promise<void> => {
+    const res = await apiFetch(`${BASE}/api/sessions/${sessionId}/viewed`, {
+      method: 'POST',
+      headers: authHeaders(),
+    });
+    if (!res.ok) throw new Error(`${res.status} ${await res.text()}`);
+  },
+
+  // ─── Workspace inspector (diff + files) ─────────────────────────────────────
+  //
+  // Each call spawns a short-lived read-only inspect container against the
+  // session's workspace volume, so callers fetch on demand (panel expand /
+  // explicit refresh), never on a poll. Error prefixes callers branch on:
+  // '404 ' older backend / unknown session, '409 ' workspace not initialized.
+
+  /** Uncommitted changes in the session workspace (status + diffstat + patch). */
+  getWorkspaceDiff: async (sessionId: string): Promise<WorkspaceDiff> => {
+    const res = await apiFetch(`${BASE}/api/sessions/${sessionId}/workspace/diff`, {
+      headers: authHeaders(),
+    });
+    if (!res.ok) throw new Error(`${res.status} ${await res.text()}`);
+    const body = (await res.json()) as Partial<WorkspaceDiff>;
+    return { files: body.files ?? [], patch: body.patch ?? '', clean: body.clean ?? '' };
+  },
+
+  /** Tracked + untracked-not-ignored files in the session workspace. */
+  listWorkspaceFiles: async (sessionId: string): Promise<{ files: WorkspaceFileEntry[]; truncated: string }> => {
+    const res = await apiFetch(`${BASE}/api/sessions/${sessionId}/workspace/files`, {
+      headers: authHeaders(),
+    });
+    if (!res.ok) throw new Error(`${res.status} ${await res.text()}`);
+    const body = (await res.json()) as { files?: WorkspaceFileEntry[]; truncated?: string };
+    return { files: body.files ?? [], truncated: body.truncated ?? 'false' };
+  },
+
+  /** One workspace file's content (base64, capped at 1 MiB). */
+  getWorkspaceFile: async (sessionId: string, path: string): Promise<WorkspaceFileContent> => {
+    const res = await apiFetch(
+      `${BASE}/api/sessions/${sessionId}/workspace/file?path=${encodeURIComponent(path)}`,
+      { headers: authHeaders() },
+    );
+    if (!res.ok) throw new Error(`${res.status} ${await res.text()}`);
+    return res.json() as Promise<WorkspaceFileContent>;
   },
 };
 
