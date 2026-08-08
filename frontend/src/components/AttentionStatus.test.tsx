@@ -62,7 +62,7 @@ describe('AttentionStatus', () => {
     ];
     renderStatus();
     expect(screen.getByTitle('2 working')).toHaveTextContent('2');
-    const pendingLink = screen.getByRole('link', { name: '1' });
+    const pendingLink = screen.getByRole('link', { name: '1 session pending — needs you' });
     expect(pendingLink).toHaveAttribute('href', '/sessions?filter=pending');
     expect(pendingLink).toHaveAttribute('title', '1 pending — needs you');
   });

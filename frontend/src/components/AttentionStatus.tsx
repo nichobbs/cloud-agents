@@ -48,7 +48,11 @@ export function AttentionStatus() {
   return (
     <span style={rootStyle}>
       {working > 0 && (
-        <span style={counterStyle} title={`${working} working`}>
+        <span
+          style={counterStyle}
+          title={`${working} working`}
+          aria-label={`${working} ${working === 1 ? 'session' : 'sessions'} working`}
+        >
           <span style={{ ...dotStyle, background: '#3fb950' }} aria-hidden="true" />
           <span style={{ ...countStyle, color: '#3fb950' }}>{working}</span>
         </span>
@@ -58,6 +62,7 @@ export function AttentionStatus() {
           to="/sessions?filter=pending"
           style={{ ...counterStyle, textDecoration: 'none' }}
           title={`${pending} pending — needs you`}
+          aria-label={`${pending} ${pending === 1 ? 'session' : 'sessions'} pending — needs you`}
         >
           <span style={{ ...dotStyle, background: '#d29922' }} aria-hidden="true" />
           <span style={{ ...countStyle, color: '#d29922' }}>{pending}</span>
