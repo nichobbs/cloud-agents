@@ -249,7 +249,11 @@ pub func workspaceVolumeBindFor(userId: in String, sessionId: in String): String
 // parameter binding). Every read and mutation is scoped by `user_id` so a
 // user can only ever touch their own sessions (Phase 3 ownership
 // enforcement, docs/phase3 §4).
-val sessionColumns = "id, user_id, repo_url, branch, container_id, harness, model, native_session_id, status, created_at, last_message_at, is_archived"
+// group_id / last_viewed_at (migration 0029) are APPENDED so the fixed
+// positional indices of every earlier column stay valid (rowToSession,
+// sessionStatus). insertSessionSql below supplies their defaults explicitly
+// since it lists this exact column set.
+val sessionColumns = "id, user_id, repo_url, branch, container_id, harness, model, native_session_id, status, created_at, last_message_at, is_archived, group_id, last_viewed_at"
 
 /// INSERT a new session row (status starts IDLE; last_message_at = created_at).
 pub func insertSessionSql(
@@ -279,7 +283,7 @@ pub func insertSessionSql(
     sqlLiteral(createdAt) +
     ", " +
     sqlLiteral(createdAt) +
-    ", '0')"
+    ", '0', '', '0')"
 }
 
 /// SELECT a single session owned by a user.
@@ -470,6 +474,215 @@ pub func deleteSessionRepoSql(sessionId: in String, repoId: in String): String {
 /// deleted).
 pub func deleteSessionReposForSessionSql(sessionId: in String): String {
   return "DELETE FROM session_repos WHERE session_id = " + sqlLiteral(sessionId)
+}
+
+// ─── Session groups (tree) + attention states + viewed tracking ──────────────
+//
+// Migration 0029. A group is a named, user-owned node in a tree (parent_id ''
+// = root); sessions carry a group_id ('' = ungrouped) and a last_viewed_at
+// epoch-millis TEXT ('0' = never viewed). Handler-level validation caps the
+// parent chain at 10 levels (which also prevents cycles), so every walk over
+// this table terminates. All TEXT affinity, sqlLiteral-escaped, owner-scoped
+// by user_id like every other user resource in this schema.
+/// DDL for the session-groups table.
+pub func sessionGroupsSchemaSql(): String {
+  return "CREATE TABLE IF NOT EXISTS session_groups (" + "id TEXT PRIMARY KEY, " + "user_id TEXT NOT NULL, " +
+    "name TEXT NOT NULL, " +
+    "parent_id TEXT NOT NULL DEFAULT '', " +
+    "created_at TEXT NOT NULL)"
+}
+
+/// Index for the owner column every group query filters on.
+pub func sessionGroupsUserIndexSql(): String {
+  return "CREATE INDEX IF NOT EXISTS idx_session_groups_user_id ON session_groups(user_id)"
+}
+
+/// ALTER adding the group association to an existing sessions table. DEFAULT
+/// '' backfills every existing row to "ungrouped". Appended as the last
+/// column (with last_viewed_at below), so the fixed sessionColumns indices
+/// above are unaffected — same pattern as alterSessionsAddProfileSql.
+pub func alterSessionsAddGroupIdSql(): String {
+  return "ALTER TABLE sessions ADD COLUMN group_id TEXT NOT NULL DEFAULT ''"
+}
+
+/// ALTER adding the last-viewed timestamp (epoch-millis TEXT, '0' = never).
+pub func alterSessionsAddLastViewedAtSql(): String {
+  return "ALTER TABLE sessions ADD COLUMN last_viewed_at TEXT NOT NULL DEFAULT '0'"
+}
+
+/// INSERT a new group.
+pub func insertSessionGroupSql(
+  id: in String,
+  userId: in String,
+  name: in String,
+  parentId: in String,
+  createdAt: in String,
+): String {
+  return "INSERT INTO session_groups (id, user_id, name, parent_id, created_at) VALUES (" + sqlLiteral(id) + ", " +
+    sqlLiteral(userId) +
+    ", " +
+    sqlLiteral(name) +
+    ", " +
+    sqlLiteral(parentId) +
+    ", " +
+    sqlLiteral(createdAt) +
+    ")"
+}
+
+/// SELECT one user's groups, alphabetical by name. user_id is deliberately
+/// not projected (the wire shape is id/name/parentId/createdAt only);
+/// ownership is already enforced by the WHERE clause.
+pub func selectSessionGroupsSql(userId: in String): String {
+  return "SELECT id, name, parent_id, created_at FROM session_groups WHERE user_id = " + sqlLiteral(userId) +
+    " ORDER BY name ASC"
+}
+
+/// SELECT a single group owned by a user. Column order matches
+/// selectSessionGroupsSql so one row mapper reads both.
+pub func selectSessionGroupByIdSql(id: in String, userId: in String): String {
+  return "SELECT id, name, parent_id, created_at FROM session_groups WHERE id = " + sqlLiteral(id) +
+    " AND user_id = " +
+    sqlLiteral(userId)
+}
+
+/// UPDATE a group's name and parent (a full update — the handler validates
+/// the parent chain first). Scoped by owner.
+pub func updateSessionGroupSql(id: in String, userId: in String, name: in String, parentId: in String): String {
+  return "UPDATE session_groups SET name = " + sqlLiteral(name) + ", parent_id = " + sqlLiteral(parentId) +
+    " WHERE id = " +
+    sqlLiteral(id) +
+    " AND user_id = " +
+    sqlLiteral(userId)
+}
+
+/// DELETE a group owned by a user.
+pub func deleteSessionGroupSql(id: in String, userId: in String): String {
+  return "DELETE FROM session_groups WHERE id = " + sqlLiteral(id) + " AND user_id = " + sqlLiteral(userId)
+}
+
+/// Reparent every child of a deleted group to the deleted group's own parent
+/// (runs inside the delete transaction). Scoped by owner.
+pub func reparentSessionGroupsSql(userId: in String, oldParentId: in String, newParentId: in String): String {
+  return "UPDATE session_groups SET parent_id = " + sqlLiteral(newParentId) + " WHERE parent_id = " +
+    sqlLiteral(oldParentId) +
+    " AND user_id = " +
+    sqlLiteral(userId)
+}
+
+/// Reassign every session in a deleted group to the deleted group's own
+/// parent ('' when the group was a root). Scoped by owner.
+pub func reassignSessionsGroupSql(userId: in String, oldGroupId: in String, newGroupId: in String): String {
+  return "UPDATE sessions SET group_id = " + sqlLiteral(newGroupId) + " WHERE group_id = " + sqlLiteral(oldGroupId) +
+    " AND user_id = " +
+    sqlLiteral(userId)
+}
+
+/// Set (or clear, with '') a session's group. Scoped by owner.
+pub func updateSessionGroupIdSql(id: in String, userId: in String, groupId: in String): String {
+  return "UPDATE sessions SET group_id = " + sqlLiteral(groupId) + " WHERE id = " + sqlLiteral(id) +
+    " AND user_id = " +
+    sqlLiteral(userId)
+}
+
+/// Record when the user last looked at a session. Scoped by owner.
+pub func updateSessionLastViewedSql(id: in String, userId: in String, ts: in String): String {
+  return "UPDATE sessions SET last_viewed_at = " + sqlLiteral(ts) + " WHERE id = " + sqlLiteral(id) +
+    " AND user_id = " +
+    sqlLiteral(userId)
+}
+
+/// The session-list projection for sessionSummariesJson: every sessionColumns
+/// column plus, as one extra trailing column, the per-session count of
+/// still-'pending' callback rows (permission requests + user questions +
+/// secret requests), CAST to TEXT for the GetString-only driver. One scalar
+/// subquery per callback table, all served by their idx_*_session_id
+/// indexes — kept separate from listSessionsByUserSql so getSessions() (and
+/// every other reader of the plain projection) doesn't pay for the subqueries.
+pub func listSessionSummariesByUserSql(userId: in String): String {
+  return "SELECT " + sessionColumns +
+    ", CAST((SELECT COUNT(*) FROM permission_requests WHERE session_id = sessions.id AND status = 'pending')" +
+    " + (SELECT COUNT(*) FROM user_questions WHERE session_id = sessions.id AND status = 'pending')" +
+    " + (SELECT COUNT(*) FROM secret_requests WHERE session_id = sessions.id AND status = 'pending') AS TEXT)" +
+    " FROM sessions WHERE user_id = " +
+    sqlLiteral(userId) +
+    " ORDER BY last_message_at DESC"
+}
+
+func attentionDigitValue(c: in String): Int {
+  if c == "0" {
+    return 0
+  }
+  if c == "1" {
+    return 1
+  }
+  if c == "2" {
+    return 2
+  }
+  if c == "3" {
+    return 3
+  }
+  if c == "4" {
+    return 4
+  }
+  if c == "5" {
+    return 5
+  }
+  if c == "6" {
+    return 6
+  }
+  if c == "7" {
+    return 7
+  }
+  if c == "8" {
+    return 8
+  }
+  if c == "9" {
+    return 9
+  }
+  return -1
+}
+
+/// Parse a run of decimal digits from a TEXT column into a Long, ignoring
+/// non-digit characters ("" parses to 0). The Long counterpart of
+/// CloudAgents.Repository.parseNatString — epoch-millisecond values overflow
+/// Int32, so the session-summaries path parses last_message_at /
+/// last_viewed_at (and the pending count) through this before feeding
+/// attentionFor.
+pub func parseEpochMillisText(s: in String): Long {
+  var n = 0.toLong()
+  var i = 0
+  while i < s.length {
+    val d = attentionDigitValue(s.substring(i, 1))
+    if d >= 0 {
+      n = n * 10.toLong() + d.toLong()
+    }
+    i = i + 1
+  }
+  return n
+}
+
+/// The attention state of a session, derived per the shared frontend/backend
+/// attention model: 'pending' (needs the user) when any callback is still
+/// pending OR when a non-RUNNING session has activity newer than the user's
+/// last view; else 'working' while RUNNING; else 'viewed' when there is
+/// history the user has seen; else 'idle' (fresh session, no activity).
+/// Pure — the session-summaries builder feeds it parsed TEXT columns, and
+/// tests pin every state and the pending-beats-working priority.
+pub func attentionFor(status: in String, lastMessageAtMs: in Long, lastViewedAtMs: in Long, pendingCount: in Long): String {
+  val zero = 0.toLong()
+  if pendingCount > zero {
+    return "pending"
+  }
+  if status != "RUNNING" and lastMessageAtMs > lastViewedAtMs and lastMessageAtMs > zero {
+    return "pending"
+  }
+  if status == "RUNNING" {
+    return "working"
+  }
+  if lastMessageAtMs > zero {
+    return "viewed"
+  }
+  return "idle"
 }
 
 // ─── Conversation transcript, comments and todos ───────────────────────────────

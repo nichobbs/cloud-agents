@@ -363,6 +363,15 @@ pub func allMigrations(): slice[Migration] {
         CloudAgents.Db.messageSearchBackfillSql(),
         CloudAgents.Db.messageSearchTriggerSql()
       ]
+    ),
+    Migration(
+      version = "0029_session_groups",
+      statements = [
+        CloudAgents.Db.sessionGroupsSchemaSql(),
+        CloudAgents.Db.sessionGroupsUserIndexSql(),
+        CloudAgents.Db.alterSessionsAddGroupIdSql(),
+        CloudAgents.Db.alterSessionsAddLastViewedAtSql()
+      ]
     )
   ]
 }
@@ -1361,6 +1370,92 @@ pub func deleteSessionRepo(sessionId: in String, repoId: in String): Result[Int,
 /// Remove every repository linked to a session (session-deletion cleanup).
 pub func deleteSessionReposForSession(sessionId: in String): Result[Unit, CloudAgents.Sqlite.DbError] {
   CloudAgents.Sqlite.execute(CloudAgents.Db.deleteSessionReposForSessionSql(sessionId))?
+  return Ok(value = ())
+}
+
+// ─── Session groups (tree) ───────────────────────────────────────────────────
+//
+// User-owned, tree-shaped groups sessions can be filed under (migration
+// 0029). userId is passed explicitly (the handlers capture
+// CloudAgents.Auth.currentUserId()) and scopes every statement; the record
+// carries only the wire-shape fields (no userId), matching
+// selectSessionGroupsSql's projection.
+@generate(Json)
+pub record SessionGroup {
+  pub id: String
+  pub name: String
+  pub parentId: String
+  pub createdAt: String
+}
+
+@generate(Json)
+pub record SessionGroupList {
+  pub groups: slice[SessionGroup]
+}
+
+func rowToSessionGroup(r: in CloudAgents.Sqlite.Row): SessionGroup {
+  return SessionGroup(
+    id = colAt(r.cols, 0),
+    name = colAt(r.cols, 1),
+    parentId = colAt(r.cols, 2),
+    createdAt = colAt(r.cols, 3)
+  )
+}
+
+/// One user's groups, alphabetical by name.
+pub func listSessionGroups(userId: in String): Result[slice[SessionGroup], CloudAgents.Sqlite.DbError] {
+  val rows = CloudAgents.Sqlite.query(CloudAgents.Db.selectSessionGroupsSql(userId))?
+  var acc: slice[SessionGroup] = []
+  var i = 0
+  val len = CloudAgents.Sqlite.getRowArrayLength(rows)
+  while i < len {
+    acc = acc.append(rowToSessionGroup(CloudAgents.Sqlite.getRowArrayValue(rows, i)))
+    i = i + 1
+  }
+  return Ok(value = acc)
+}
+
+/// A single group owned by a user, or None (unknown and foreign look the same).
+pub func getSessionGroup(id: in String, userId: in String): Result[Option[SessionGroup], CloudAgents.Sqlite.DbError] {
+  val rows = CloudAgents.Sqlite.query(CloudAgents.Db.selectSessionGroupByIdSql(id, userId))?
+  val len = CloudAgents.Sqlite.getRowArrayLength(rows)
+  if len == 0 {
+    return Ok(value = None)
+  }
+  return Ok(value = Some(value = rowToSessionGroup(CloudAgents.Sqlite.getRowArrayValue(rows, 0))))
+}
+
+/// Create a group and return the stored record.
+pub func addSessionGroup(
+  userId: in String, name: in String, parentId: in String
+): Result[SessionGroup, CloudAgents.Sqlite.DbError] {
+  val id = newId()
+  val ts = nowMillis()
+  CloudAgents.Sqlite.execute(CloudAgents.Db.insertSessionGroupSql(id, userId, name, parentId, ts))?
+  return Ok(value = SessionGroup(id = id, name = name, parentId = parentId, createdAt = ts))
+}
+
+/// Full update of a group's name and parent. Returns rows affected (0 = not
+/// found / not owned). Parent-chain validation happens in the handler.
+pub func updateSessionGroup(
+  id: in String, userId: in String, name: in String, parentId: in String
+): Result[Int, CloudAgents.Sqlite.DbError] {
+  return CloudAgents.Sqlite.execute(CloudAgents.Db.updateSessionGroupSql(id, userId, name, parentId))
+}
+
+/// Delete a group, reparenting its child groups AND reassigning its sessions
+/// to the deleted group's own parent (`newParentId`, '' when it was a root) —
+/// all three statements in ONE transaction so a mid-delete failure can never
+/// leave orphaned children pointing at a gone group.
+pub func deleteSessionGroupReparenting(
+  id: in String, userId: in String, newParentId: in String
+): Result[Unit, CloudAgents.Sqlite.DbError] {
+  val stmts: slice[String] = [
+    CloudAgents.Db.reparentSessionGroupsSql(userId, id, newParentId),
+    CloudAgents.Db.reassignSessionsGroupSql(userId, id, newParentId),
+    CloudAgents.Db.deleteSessionGroupSql(id, userId)
+  ]
+  CloudAgents.Sqlite.executeTransaction(stmts)?
   return Ok(value = ())
 }
 

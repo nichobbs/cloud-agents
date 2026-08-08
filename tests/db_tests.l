@@ -260,3 +260,74 @@ test "GitHub token-cache SQL is hash-keyed and expiry-aware" {
   assertTrue(select.contains("CAST(expires_at AS INTEGER) > CAST('2000' AS INTEGER)"), "select excludes expired rows")
   assertTrue(deleteExpiredGitHubTokensSql("2000").contains("<= CAST('2000' AS INTEGER)"), "sweep drops expired rows")
 }
+
+// ── Session groups + attention states (migration 0029) ───────────────────────
+
+test "session-group SQL is owner-scoped and orders by name" {
+  assertTrue(sessionGroupsSchemaSql().contains("CREATE TABLE IF NOT EXISTS session_groups"), "groups ddl")
+  assertTrue(sessionGroupsSchemaSql().contains("parent_id TEXT NOT NULL DEFAULT ''"), "parent defaults to root")
+  assertTrue(sessionGroupsUserIndexSql().contains("ON session_groups(user_id)"), "index on owner")
+  assertTrue(alterSessionsAddGroupIdSql().contains("ADD COLUMN group_id TEXT NOT NULL DEFAULT ''"), "group_id default ''")
+  assertTrue(alterSessionsAddLastViewedAtSql().contains("ADD COLUMN last_viewed_at TEXT NOT NULL DEFAULT '0'"), "last_viewed_at default '0'")
+  val ins = insertSessionGroupSql("g1", "u1", "Alpha", "", "1000")
+  assertTrue(ins.startsWith("INSERT INTO session_groups"), "insert target")
+  assertTrue(ins.contains("'Alpha'"), "name inlined")
+  assertTrue(selectSessionGroupsSql("u1").contains("WHERE user_id = 'u1'"), "list scoped by owner")
+  assertTrue(selectSessionGroupsSql("u1").endsWith("ORDER BY name ASC"), "list alphabetical")
+  assertTrue(selectSessionGroupByIdSql("g1", "u1").contains("AND user_id = 'u1'"), "get scoped by owner")
+  val upd = updateSessionGroupSql("g1", "u1", "Beta", "g0")
+  assertTrue(upd.contains("SET name = 'Beta', parent_id = 'g0'"), "full update of name+parent")
+  assertTrue(upd.contains("AND user_id = 'u1'"), "update scoped by owner")
+  assertTrue(deleteSessionGroupSql("g1", "u1").contains("AND user_id = 'u1'"), "delete scoped by owner")
+  val rep = reparentSessionGroupsSql("u1", "g1", "g0")
+  assertTrue(rep.contains("SET parent_id = 'g0' WHERE parent_id = 'g1'"), "children move to grandparent")
+  assertTrue(rep.contains("AND user_id = 'u1'"), "reparent scoped by owner")
+  val rea = reassignSessionsGroupSql("u1", "g1", "g0")
+  assertTrue(rea.contains("UPDATE sessions SET group_id = 'g0' WHERE group_id = 'g1'"), "sessions move to grandparent")
+  assertTrue(rea.contains("AND user_id = 'u1'"), "reassign scoped by owner")
+  assertTrue(updateSessionGroupIdSql("s1", "u1", "g1").contains("SET group_id = 'g1'"), "assign session group")
+  assertTrue(updateSessionLastViewedSql("s1", "u1", "1234").contains("SET last_viewed_at = '1234'"), "viewed stamp")
+  assertTrue(updateSessionLastViewedSql("s1", "u1", "1234").contains("AND user_id = 'u1'"), "viewed scoped by owner")
+}
+
+test "session summaries SQL counts pending callbacks across all three tables" {
+  val sql = listSessionSummariesByUserSql("u1")
+  assertTrue(sql.contains("group_id, last_viewed_at"), "projection carries the new columns")
+  assertTrue(sql.contains("FROM permission_requests WHERE session_id = sessions.id AND status = 'pending'"), "permission subcount")
+  assertTrue(sql.contains("FROM user_questions WHERE session_id = sessions.id AND status = 'pending'"), "question subcount")
+  assertTrue(sql.contains("FROM secret_requests WHERE session_id = sessions.id AND status = 'pending'"), "secret subcount")
+  assertTrue(sql.contains("AS TEXT)"), "count cast to text for GetString")
+  assertTrue(sql.contains("WHERE user_id = 'u1'"), "scoped by owner")
+  assertTrue(sql.endsWith("ORDER BY last_message_at DESC"), "most recently active first")
+}
+
+test "parseEpochMillisText parses epoch-scale values into a Long" {
+  assertEqual(toString(parseEpochMillisText("0")), "0", "zero")
+  assertEqual(toString(parseEpochMillisText("")), "0", "empty is zero")
+  assertEqual(toString(parseEpochMillisText("1721470000123")), "1721470000123", "13-digit epoch millis exceed Int32")
+  assertEqual(toString(parseEpochMillisText("42")), "42", "small count")
+}
+
+test "attentionFor derives all four states with the right priority" {
+  val zero = 0.toLong()
+  val t1 = 1000.toLong()
+  val t2 = 2000.toLong()
+  // pending: a callback is waiting.
+  assertEqual(attentionFor("IDLE", t1, t2, 1.toLong()), "pending", "pending callback -> pending")
+  // pending: finished run the user hasn't looked at since.
+  assertEqual(attentionFor("IDLE", t2, t1, zero), "pending", "unseen activity -> pending")
+  assertEqual(attentionFor("WARM", t2, t1, zero), "pending", "unseen activity on WARM -> pending")
+  // working: RUNNING with nothing pending.
+  assertEqual(attentionFor("RUNNING", t1, t2, zero), "working", "running, all seen -> working")
+  // The unseen-activity branch only fires when NOT running — a live run's own
+  // activity is 'working', not 'pending'...
+  assertEqual(attentionFor("RUNNING", t2, t1, zero), "working", "running, unseen -> still working")
+  // ...but a pending callback DURING a run beats working.
+  assertEqual(attentionFor("RUNNING", t1, t2, 2.toLong()), "pending", "pending callback during RUNNING -> pending")
+  // viewed: history exists and the user has seen everything.
+  assertEqual(attentionFor("IDLE", t1, t1, zero), "viewed", "all seen -> viewed")
+  assertEqual(attentionFor("IDLE", t1, t2, zero), "viewed", "viewed after activity -> viewed")
+  // idle: no activity at all.
+  assertEqual(attentionFor("IDLE", zero, zero, zero), "idle", "fresh -> idle")
+  assertEqual(attentionFor("CREATED", zero, zero, zero), "idle", "fresh CREATED -> idle")
+}
