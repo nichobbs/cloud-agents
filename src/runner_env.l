@@ -81,3 +81,19 @@ pub func withCredentialEnvs(envs: in slice[String], names: in slice[String], val
   }
   return result
 }
+
+/// The COMPLETE env list for a workspace-inspect container
+/// (CloudAgents.Docker.runInspectContainer): only CLOUD_AGENTS_INSPECT_MODE
+/// plus, for file mode, CLOUD_AGENTS_INSPECT_PATH — never the base runner
+/// vars, never credentials, never callback tokens. The inspect-mode block at
+/// the top of every docker/entrypoint*.sh keys off MODE being non-empty and
+/// exits before any credential/clone/harness logic, so anything extra here
+/// would be dead weight at best and a leak at worst. An empty `path` (diff /
+/// tree modes) emits no PATH entry at all, matching the entrypoint's
+/// `${CLOUD_AGENTS_INSPECT_PATH:-}` unset-tolerant read.
+pub func inspectEnvs(mode: in String, path: in String): slice[String] {
+  if path.length > 0 {
+    return ["CLOUD_AGENTS_INSPECT_MODE=" + mode, "CLOUD_AGENTS_INSPECT_PATH=" + path]
+  }
+  return ["CLOUD_AGENTS_INSPECT_MODE=" + mode]
+}

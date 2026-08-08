@@ -45,6 +45,62 @@
 
 set -euo pipefail
 
+# Workspace-inspect mode (workspace inspector, src/handlers/workspace.l):
+# when CLOUD_AGENTS_INSPECT_MODE is set this container is a short-lived,
+# read-only look at /workspace — the API server started it with NO
+# credentials, NO home volume, and NetworkMode "none"
+# (docker_manager.l's runInspectContainer), so nothing below this block
+# (credential helpers, clone, harness launch) may run. Prints the
+# CLOUD_AGENTS_INSPECT_OK / ===CLOUD_AGENTS_SECTION=== /
+# CLOUD_AGENTS_INSPECT_ERR marker protocol that the pure
+# CloudAgents.Workspace package parses out of the container logs — keep the
+# two in byte-for-byte sync — and ALWAYS exits 0 so waitForContainer treats
+# the run as complete. Every command is guarded so `set -e`/pipefail can
+# never kill the script before a marker is printed (e.g. `head -5000`
+# SIGPIPE-ing `git ls-files` under pipefail).
+if [ -n "${CLOUD_AGENTS_INSPECT_MODE:-}" ]; then
+    if [ ! -d /workspace/.git ]; then
+        # The workspace volume auto-creates on bind, so it always mounts —
+        # but no run has ever cloned a repo into it yet.
+        echo "CLOUD_AGENTS_INSPECT_ERR no workspace"
+        exit 0
+    fi
+    cd /workspace || { echo "CLOUD_AGENTS_INSPECT_ERR no workspace"; exit 0; }
+    # The checkout is typically owned by the harness user while inspect runs
+    # as root; without this, modern git refuses with "dubious ownership".
+    # The normal-run path sidesteps that by chown-ing — inspect stays
+    # read-only instead.
+    git config --global --add safe.directory /workspace >/dev/null 2>&1 || true
+    case "${CLOUD_AGENTS_INSPECT_MODE}" in
+        diff)
+            echo "CLOUD_AGENTS_INSPECT_OK"
+            git status --porcelain || true
+            echo "===CLOUD_AGENTS_SECTION==="
+            { git diff HEAD --numstat 2>/dev/null || git diff --numstat; } || true
+            echo "===CLOUD_AGENTS_SECTION==="
+            { git diff HEAD 2>/dev/null || git diff; } || true
+            ;;
+        tree)
+            echo "CLOUD_AGENTS_INSPECT_OK"
+            { git ls-files --cached --others --exclude-standard | head -5000; } || true
+            ;;
+        file)
+            if [ -f "${CLOUD_AGENTS_INSPECT_PATH:-}" ]; then
+                echo "CLOUD_AGENTS_INSPECT_OK"
+                wc -c < "${CLOUD_AGENTS_INSPECT_PATH}" || true
+                echo "===CLOUD_AGENTS_SECTION==="
+                { head -c 1048576 "${CLOUD_AGENTS_INSPECT_PATH}" | base64; } || true
+            else
+                echo "CLOUD_AGENTS_INSPECT_ERR not found"
+            fi
+            ;;
+        *)
+            echo "CLOUD_AGENTS_INSPECT_ERR bad mode"
+            ;;
+    esac
+    exit 0
+fi
+
 BRANCH="${BRANCH:-main}"
 MODEL="${MODEL:-claude-opus-4-8}"
 NATIVE_SESSION_ID="${NATIVE_SESSION_ID:-}"

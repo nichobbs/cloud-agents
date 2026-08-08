@@ -20,6 +20,10 @@ pub record AgentSession {
   pub nativeSessionId: String
   pub status: String
   pub isArchived: String = "0"
+  /// Session-group association (migration 0029); "" = ungrouped.
+  pub groupId: String = ""
+  /// Epoch-millis TEXT of the user's last view (migration 0029); "0" = never.
+  pub lastViewedAt: String = "0"
 }
 
 /// Default model for each harness, used when a session is created without an
@@ -342,7 +346,8 @@ func colAt(cols: in CloudAgents.Sqlite.StringArray, i: in Int): String {
 
 // Column order matches CloudAgents.Db's sessionColumns:
 // id, user_id, repo_url, branch, container_id, harness, model,
-// native_session_id, status, created_at, last_message_at, is_archived.
+// native_session_id, status, created_at, last_message_at, is_archived,
+// group_id, last_viewed_at.
 func rowToSession(r: in CloudAgents.Sqlite.Row): AgentSession {
   return AgentSession(
     sessionId = colAt(r.cols, 0),
@@ -353,7 +358,9 @@ func rowToSession(r: in CloudAgents.Sqlite.Row): AgentSession {
     model = colAt(r.cols, 6),
     nativeSessionId = colAt(r.cols, 7),
     status = colAt(r.cols, 8),
-    isArchived = colAt(r.cols, 11)
+    isArchived = colAt(r.cols, 11),
+    groupId = colAt(r.cols, 12),
+    lastViewedAt = colAt(r.cols, 13)
   )
 }
 
@@ -365,7 +372,7 @@ func rowToSession(r: in CloudAgents.Sqlite.Row): AgentSession {
 /// native_session_id). Built here rather than in CloudAgents.Handlers because
 /// this package is where the raw rows (with those extra columns) are visible.
 pub func sessionSummariesJson(): Result[String, CloudAgents.Sqlite.DbError] {
-  val rows = CloudAgents.Sqlite.query(CloudAgents.Db.listSessionsByUserSql(CloudAgents.Auth.currentUserId()))?
+  val rows = CloudAgents.Sqlite.query(CloudAgents.Db.listSessionSummariesByUserSql(CloudAgents.Auth.currentUserId()))?
   var json = "{\"sessions\":["
   var i = 0
   val len = CloudAgents.Sqlite.getRowArrayLength(rows)
@@ -374,7 +381,20 @@ pub func sessionSummariesJson(): Result[String, CloudAgents.Sqlite.DbError] {
       json = json + ","
     }
     val r = CloudAgents.Sqlite.getRowArrayValue(rows, i)
-    // Column order matches CloudAgents.Db's sessionColumns (see rowToSession).
+    // Column order matches CloudAgents.Db's sessionColumns (see rowToSession),
+    // plus one trailing computed column: the pending-callback count
+    // (listSessionSummariesByUserSql). `attention` is derived, not stored —
+    // the pure CloudAgents.Db.attentionFor over status / lastMessageAt /
+    // lastViewedAt / pendingCount. New fields are APPENDED to each object so
+    // existing consumers of the earlier fields are untouched; every value is
+    // a string, matching this projection's TEXT-only convention. attention's
+    // four values are fixed lowercase literals, safe to embed unescaped.
+    val attention = CloudAgents.Db.attentionFor(
+      colAt(r.cols, 8),
+      CloudAgents.Db.parseEpochMillisText(colAt(r.cols, 10)),
+      CloudAgents.Db.parseEpochMillisText(colAt(r.cols, 13)),
+      CloudAgents.Db.parseEpochMillisText(colAt(r.cols, 14))
+    )
     json = json + "{\"sessionId\":\"" + jsonEscapeField(colAt(r.cols, 0)) + "\",\"repoUrl\":\"" +
       jsonEscapeField(colAt(r.cols, 2)) +
       "\",\"branch\":\"" +
@@ -391,6 +411,14 @@ pub func sessionSummariesJson(): Result[String, CloudAgents.Sqlite.DbError] {
       jsonEscapeField(colAt(r.cols, 10)) +
       "\",\"isArchived\":\"" +
       jsonEscapeField(colAt(r.cols, 11)) +
+      "\",\"groupId\":\"" +
+      jsonEscapeField(colAt(r.cols, 12)) +
+      "\",\"lastViewedAt\":\"" +
+      jsonEscapeField(colAt(r.cols, 13)) +
+      "\",\"pendingCount\":\"" +
+      jsonEscapeField(colAt(r.cols, 14)) +
+      "\",\"attention\":\"" +
+      attention +
       "\"}"
     i = i + 1
   }
@@ -638,6 +666,21 @@ pub func updateSessionModel(sessionId: in String, model: in String): Result[Unit
 
 pub func updateSessionArchived(sessionId: in String, isArchived: in String): Result[Unit, CloudAgents.Sqlite.DbError] {
   CloudAgents.Sqlite.execute(CloudAgents.Db.updateSessionArchivedSql(sessionId, CloudAgents.Auth.currentUserId(), isArchived))?
+  return Ok(value = ())
+}
+
+/// Associate a session with a group (empty string clears it). Scoped to the
+/// current user; group existence/ownership is validated in the handler
+/// (CloudAgents.Groups), mirroring setSessionProfile.
+pub func setSessionGroup(sessionId: in String, groupId: in String): Result[Unit, CloudAgents.Sqlite.DbError] {
+  CloudAgents.Sqlite.execute(CloudAgents.Db.updateSessionGroupIdSql(sessionId, CloudAgents.Auth.currentUserId(), groupId))?
+  return Ok(value = ())
+}
+
+/// Stamp "the user looked at this session just now" (last_viewed_at =
+/// nowMillis). Scoped to the current user.
+pub func markSessionViewed(sessionId: in String): Result[Unit, CloudAgents.Sqlite.DbError] {
+  CloudAgents.Sqlite.execute(CloudAgents.Db.updateSessionLastViewedSql(sessionId, CloudAgents.Auth.currentUserId(), CloudAgents.Repository.nowMillis()))?
   return Ok(value = ())
 }
 

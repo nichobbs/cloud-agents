@@ -36,6 +36,7 @@ vi.mock('../lib/api', () => ({
     updateSessionModel: vi.fn(),
     addPrompt: vi.fn(),
     deleteSession: vi.fn(),
+    markSessionViewed: vi.fn(),
   },
 }));
 
@@ -151,6 +152,7 @@ beforeEach(() => {
   vi.mocked(api.getMessages).mockResolvedValue([]);
   vi.mocked(api.usePrompt).mockResolvedValue(undefined);
   vi.mocked(api.setSessionProfile).mockResolvedValue(undefined);
+  vi.mocked(api.markSessionViewed).mockResolvedValue(undefined);
   stream.current = {
     output: '',
     isStreaming: false,
@@ -527,6 +529,22 @@ describe('SessionDetail profile-attach-error handoff (#898)', () => {
     // Resolving it via the selector is a plain React-state clear — it must
     // not trigger a second history replace.
     expect(mockNavigate).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('SessionDetail mark-viewed (attention tracking)', () => {
+  it('marks the session viewed once on mount, fire-and-forget', async () => {
+    renderPage();
+    await screen.findByPlaceholderText(/Send a message/);
+    await waitFor(() => expect(api.markSessionViewed).toHaveBeenCalledWith('s1'));
+    expect(api.markSessionViewed).toHaveBeenCalledTimes(1);
+  });
+
+  it('keeps rendering normally when the viewed endpoint is missing (older backend)', async () => {
+    vi.mocked(api.markSessionViewed).mockRejectedValue(new Error('404 not found'));
+    renderPage();
+    // The rejection is swallowed; the page still mounts fine.
+    await screen.findByPlaceholderText(/Send a message/);
   });
 });
 

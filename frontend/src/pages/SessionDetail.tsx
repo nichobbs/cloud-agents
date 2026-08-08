@@ -9,6 +9,7 @@ import { Terminal } from '../components/Terminal';
 import { PendingCallbacksPanel } from '../components/PendingCallbacksPanel';
 import { SessionPRsPanel } from '../components/SessionPRsPanel';
 import { TodoPanel } from '../components/TodoPanel';
+import { WorkspacePanel } from '../components/WorkspacePanel';
 import { useSessions } from '../context/SessionsContext';
 import { useStreamMessage } from '../hooks/useStreamMessage';
 import { clearFailedDraft, saveFailedDraft, takeFailedDraft } from '../lib/drafts';
@@ -383,6 +384,24 @@ export function SessionDetail() {
     setRunStartedAt(null);
     setRunEndedAt(null);
   }, [sessionId]);
+
+  // Mark-viewed bookkeeping for the session tree's attention states:
+  // opening the session counts as looking at it, and so does watching a run
+  // finish while on the page (falling edge of isStreaming) — without the
+  // second stamp the just-finished run's lastMessageAt would outrun
+  // lastViewedAt and flag the session "pending" even though the user watched
+  // the whole thing. Fire-and-forget: an older backend without the route
+  // (404) or a transient failure must not disturb the page.
+  useEffect(() => {
+    if (sessionId) api.markSessionViewed(sessionId).catch(() => {});
+  }, [sessionId]);
+  const prevStreamingForViewedRef = useRef(isStreaming);
+  useEffect(() => {
+    if (prevStreamingForViewedRef.current && !isStreaming && sessionId) {
+      api.markSessionViewed(sessionId).catch(() => {});
+    }
+    prevStreamingForViewedRef.current = isStreaming;
+  }, [isStreaming, sessionId]);
 
   // Live model discovery for this session's harness (static catalog fallback;
   // see lib/models.ts). The session's *current* model is always selectable
@@ -1207,6 +1226,8 @@ export function SessionDetail() {
 
             <GitHubPanel sessionId={sessionId} repoUrl={session.repoUrl} branch={session.branch} />
 
+            <WorkspacePanel sessionId={sessionId} isStreaming={isStreaming} />
+
             <LinkedReposPanel
               sessionId={sessionId}
               primaryRepoUrl={session.repoUrl}
@@ -1244,6 +1265,8 @@ export function SessionDetail() {
             <SessionPRsPanel sessionId={sessionId} messages={messages} />
 
             <GitHubPanel sessionId={sessionId} repoUrl={session.repoUrl} branch={session.branch} />
+
+            <WorkspacePanel sessionId={sessionId} isStreaming={isStreaming} />
 
             <LinkedReposPanel
               sessionId={sessionId}
