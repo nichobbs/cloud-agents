@@ -1,7 +1,10 @@
 # Capability Audit — cloud-agents vs. Containment Plane role (§5.2) and Managed-Sessions Capture Adapter role (§4.1)
 
 Date: 2026-08-14. Audited against the platform architecture document
-("Agentic Development Security Platform: Architecture & Plan"), which assigns
+("Agentic Development Security Platform: Architecture & Plan", 2026-08 revision
+— an external document not committed to this repo; its canonical copy is
+destined for `docs/ARCHITECTURE.md` in the Testamur platform monorepo per its
+§9.2, and section references below are to that document), which assigns
 cloud-agents two roles:
 
 - **§5.2 Containment Plane control surface**: session runner and human control
@@ -388,7 +391,7 @@ Gaps relative to a credential-broker future:
 | Workspace profiles (zero ambient creds, egress allowlists, DNS logging) | **Partial**: profiles gate credential injection, network policy (none/restricted/full), tool enablement, skills/subagents/MCP servers (`src/handlers/profiles.l`, `src/network_policy.l`, `src/tool_policy.l`) | **M** | Default is full egress + all credentials-less-but-trusting; no DNS logging; egress allowlist requires operator-provisioned proxy network; tool enablement explicitly not a security boundary (`src/tool_policy.l` doc comment). |
 | Credential-grant approval UX | **Partial**: per-request approve/deny with reason, SSE push to the open session view, pending panel, one-time delivery, audit rows (`src/handlers/callbacks.l:499-644`, `frontend/src/components/PendingCallbacksPanel.tsx`) | **M** | Approves release of *static long-lived* secrets, not issuance of scoped short-lived tokens (§5.2's broker model). No push notification when the app is closed, so approvals stall. No org/policy layer — every request prompts one human. |
 | Kill switch | **Partial**: per-session cancel (`sessions.l:612`), per-session container restart/delete, idle reap | **M** | No global "stop everything / freeze tenant / refuse new runs" control, no panic disable of credential delivery, and cancel has a documented dead window before the container exists (`sessions.l:632-639`). 30-min run cap exists but is an *approximation* (compiler-bug workaround, `docker_manager.l:811-841`). |
-| Event-history capture → checkpoint format (§4.1) | **Absent.** No Managed Agents API client (`sessions.events.list` appears nowhere; ADR-001 rejected that API). Harness output captured as one raw ANSI text blob per run (`sessions.l:565`); no structured tool-use events (`agent.mcp_tool_use` equivalent exists only for permission-gated calls via the shim); no step DAG, no hashes, no checkpoint format, no Entire compatibility | **L** | This is the load-bearing §4.1 assumption and it is simply not there. The `runs` + `messages` + `permission_requests` tables are useful *inputs* to a future adapter, nothing more. |
+| Event-history capture → checkpoint format (§4.1) | **Absent.** No Managed Agents API client (`sessions.events.list` appears nowhere; ADR-001 rejected that API). Harness output captured as one raw ANSI text blob per run (`sessions.l:565`); no structured tool-use events (`agent.mcp_tool_use` equivalent exists only for permission-gated calls via the shim); no step DAG, no hashes, no checkpoint format, no support for the Entire capture format (`entire/checkpoints/v1` — Entire is the third-party session-recording tool the architecture doc treats as a first-class capture source, §4.1) | **L** | This is the load-bearing §4.1 assumption and it is simply not there. The `runs` + `messages` + `permission_requests` tables are useful *inputs* to a future adapter, nothing more. |
 | Posture signals (broker-conditional issuance, §5.2) | **Absent.** No device certs, no posture assertions, no OIDC federation. Nearest artifacts: whitelist auth, profile network policy, permission/secret audit rows | **L** | Everything here would be new build, not extension. |
 
 ---
