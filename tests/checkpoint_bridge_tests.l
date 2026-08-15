@@ -19,6 +19,7 @@ import Std.Testing
 import CloudAgents.Capture
 import CloudAgents.CheckpointBridge
 import Testamur.CheckpointFormat.Adapt
+import Testamur.CheckpointFormat.Model
 
 // ── Fixed captured transcript (a small, realistic claude -p stream-json run) ──
 // One assistant text turn, one tool_use + its tool_result (they merge into a
@@ -180,4 +181,23 @@ test "a malformed captured line becomes a note step, never dropped" {
   assertEqualInt(m.mappedEvents, 1, "only the assistant text maps")
   assertEqualInt(m.noteEvents, 2, "the non-JSON line and the system event are notes")
   assertEqualInt(m.mappedEvents + m.noteEvents, m.totalEvents, "no line silently dropped")
+}
+
+// ── Test 7: permissionOf maps every mode; unknown falls back to auto (#958) ──
+test "permissionOf maps granted/denied/auto and falls back to auto" {
+  assertEqual(permissionName(permissionOf("granted")), "granted", "\"granted\" → Granted")
+  assertEqual(permissionName(permissionOf("denied")), "denied", "\"denied\" → Denied")
+  assertEqual(permissionName(permissionOf("auto")), "auto", "\"auto\" → Auto")
+  assertEqual(permissionName(permissionOf("")), "auto", "empty falls back to Auto")
+  assertEqual(permissionName(permissionOf("nonsense")), "auto", "unknown mode falls back to Auto (least-claiming)")
+}
+
+// ── Test 8: bridgeErrorMessage renders both error cases (#959) ──
+test "bridgeErrorMessage renders ChainInvalid and MapFailed" {
+  val chain = bridgeErrorMessage(ChainInvalid(detail = "discontinuity at seq 3"))
+  assertTrue(chain.contains("capture chain invalid:"), "ChainInvalid names the failure class")
+  assertTrue(chain.contains("discontinuity at seq 3"), "ChainInvalid carries the detail")
+  val mapf = bridgeErrorMessage(MapFailed(detail = "ill-formed UTF-16"))
+  assertTrue(mapf.contains("checkpoint mapping failed:"), "MapFailed names the failure class")
+  assertTrue(mapf.contains("ill-formed UTF-16"), "MapFailed carries the detail")
 }
