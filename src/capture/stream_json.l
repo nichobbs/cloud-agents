@@ -53,9 +53,22 @@ pub func malformedType(): String {
 }
 
 // ─── Hashing (spec §4) ───────────────────────────────────────────────────────
-// hash = sha256_hex(prevHash + "\n" + payload). Lowercase hex, UTF-8 bytes.
-func hashHex(prev: in String, payload: in String): String {
-  return toHexLower(sha256(Std.Encoding.encodeUtf8(prev + "\n" + payload)))
+// hash = sha256_hex(prevHash + "\n" + seq + "\n" + eventType + "\n" + payload).
+// Every stored field is covered, so a tamper that mutates only `seq` or
+// `eventType` (not just `payload`) also breaks the chain. Lowercase hex, UTF-8.
+func hashHex(prev: in String, seq: in Long, eventType: in String, payload: in String): String {
+  val material = prev + "\n" + toString(seq) + "\n" + eventType + "\n" + payload
+  return toHexLower(sha256(Std.Encoding.encodeUtf8(material)))
+}
+
+// Strip a single trailing carriage return so CRLF-framed NDJSON parses the same
+// as LF-framed (a bare "\r" blank line collapses to "" and is skipped; a real
+// line's trailing "\r" is dropped before it becomes the payload).
+func stripCr(line: in String): String {
+  if line.endsWith("\r") {
+    return line.substring(0, line.length.toInt() - 1)
+  }
+  return line
 }
 
 // The line's "type" field as a string, or malformedType() when absent, not a
@@ -90,10 +103,10 @@ pub func parseStreamJson(ndjson: in String, startSeq: in Long, prevHash: in Stri
   val lines = ndjson.split("\n")
   var i = 0
   while i < lines.length.toInt() {
-    val line = lines[i]
+    val line = stripCr(lines[i])
     if line.length.toInt() > 0 {
       val etype = eventTypeOf(line)
-      val h = hashHex(prev, line)
+      val h = hashHex(prev, seq, etype, line)
       events.add(CaptureEvent(seq = seq, eventType = etype, payload = line, prevHash = prev, hash = h))
       seq = seq + 1
       prev = h
@@ -111,12 +124,12 @@ pub func parseStreamJson(ndjson: in String, startSeq: in Long, prevHash: in Stri
 pub func verifyChain(events: in List[CaptureEvent], genesisPrevHash: in String): Bool {
   var prev = genesisPrevHash
   var i = 0
-  while i < events.count {
+  while i < events.length.toInt() {
     val e = events[i]
     if e.prevHash != prev {
       return false
     }
-    val h = hashHex(prev, e.payload)
+    val h = hashHex(prev, e.seq, e.eventType, e.payload)
     if e.hash != h {
       return false
     }

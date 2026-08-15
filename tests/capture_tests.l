@@ -35,7 +35,7 @@ func turnNdjson(): String {
 // ── Test 1: a representative turn ──
 test "a stream-json turn parses to typed, seq-ordered, verbatim events" {
   val b = parseStreamJson(turnNdjson(), 0.toLong(), "")
-  assertEqualInt(b.events.count, 4, "four lines -> four events")
+  assertEqualInt(b.events.length.toInt(), 4, "four lines -> four events")
   assertEqualInt(b.events[0].seq.toInt(), 0, "seq starts at 0")
   assertEqualInt(b.events[3].seq.toInt(), 3, "seq is monotonic")
   assertEqual(b.events[0].eventType, "system", "type 0")
@@ -67,7 +67,7 @@ test "the hash chain links events and is deterministic" {
 test "a non-JSON line and a type-less JSON line are captured as malformed" {
   val nd = "this is not json" + "\n" + "{\"foo\":\"bar\"}" + "\n" + lResult() + "\n"
   val b = parseStreamJson(nd, 0.toLong(), "")
-  assertEqualInt(b.events.count, 3, "all three lines captured (none dropped)")
+  assertEqualInt(b.events.length.toInt(), 3, "all three lines captured (none dropped)")
   assertEqual(b.events[0].eventType, "malformed", "non-JSON -> malformed")
   assertEqual(b.events[0].payload, "this is not json", "raw payload kept")
   assertEqual(b.events[1].eventType, "malformed", "JSON without a string type -> malformed")
@@ -79,7 +79,7 @@ test "a non-JSON line and a type-less JSON line are captured as malformed" {
 test "leading, interior, and trailing blank lines are skipped" {
   val nd = "\n" + lSystem() + "\n\n" + lAssistant() + "\n"
   val b = parseStreamJson(nd, 0.toLong(), "")
-  assertEqualInt(b.events.count, 2, "only the two non-blank lines become events")
+  assertEqualInt(b.events.length.toInt(), 2, "only the two non-blank lines become events")
   assertEqual(b.events[0].eventType, "system", "first non-blank")
   assertEqual(b.events[1].eventType, "assistant", "second non-blank")
 }
@@ -95,18 +95,18 @@ test "parsing in line-aligned chunks equals parsing the whole stream" {
   // Reassemble the chunked events in order and compare to the whole parse.
   val combined: List[CaptureEvent] = newList()
   var i = 0
-  while i < ba.events.count {
+  while i < ba.events.length.toInt() {
     combined.add(ba.events[i])
     i = i + 1
   }
   var j = 0
-  while j < bb.events.count {
+  while j < bb.events.length.toInt() {
     combined.add(bb.events[j])
     j = j + 1
   }
-  assertEqualInt(combined.count, whole.events.count, "same event count")
+  assertEqualInt(combined.length.toInt(), whole.events.length.toInt(), "same event count")
   var k = 0
-  while k < whole.events.count {
+  while k < whole.events.length.toInt() {
     assertEqualInt(combined[k].seq.toInt(), whole.events[k].seq.toInt(), "same seq at " + toString(k))
     assertEqual(combined[k].eventType, whole.events[k].eventType, "same type at " + toString(k))
     assertEqual(combined[k].payload, whole.events[k].payload, "same payload at " + toString(k))
@@ -120,22 +120,12 @@ test "parsing in line-aligned chunks equals parsing the whole stream" {
 // ── Test 6: empty input ──
 test "empty input yields no events and carries seq/hash through" {
   val b = parseStreamJson("", 5.toLong(), "carried-hash")
-  assertEqualInt(b.events.count, 0, "no events")
+  assertEqualInt(b.events.length.toInt(), 0, "no events")
   assertEqualInt(b.nextSeq.toInt(), 5, "nextSeq unchanged")
   assertEqual(b.lastHash, "carried-hash", "lastHash carried through")
 }
 
 // ── Test 7: verifyChain detects tamper ──
-func cloneEvents(src: in List[CaptureEvent]): List[CaptureEvent] {
-  val xs: List[CaptureEvent] = newList()
-  var i = 0
-  while i < src.count {
-    xs.add(src[i])
-    i = i + 1
-  }
-  return xs
-}
-
 test "verifyChain rejects payload mutation, reordering, and drops" {
   val b = parseStreamJson(turnNdjson(), 0.toLong(), "")
   assertTrue(verifyChain(b.events, ""), "baseline intact chain verifies")
@@ -144,7 +134,9 @@ test "verifyChain rejects payload mutation, reordering, and drops" {
   val mutated: List[CaptureEvent] = newList()
   mutated.add(b.events[0])
   val e1 = b.events[1]
-  mutated.add(CaptureEvent(seq = e1.seq, eventType = e1.eventType, payload = "TAMPERED", prevHash = e1.prevHash, hash = e1.hash))
+  mutated.add(
+    CaptureEvent(seq = e1.seq, eventType = e1.eventType, payload = "TAMPERED", prevHash = e1.prevHash, hash = e1.hash)
+  )
   mutated.add(b.events[2])
   mutated.add(b.events[3])
   assertFalse(verifyChain(mutated, ""), "a mutated payload breaks the chain")
@@ -166,4 +158,32 @@ test "verifyChain rejects payload mutation, reordering, and drops" {
 
   // A wrong genesis prevHash also fails.
   assertFalse(verifyChain(b.events, "wrong-genesis"), "wrong genesis prevHash fails")
+}
+
+// ── Test 8: the hash covers the whole record, not just the payload ──
+test "verifyChain detects a mutated eventType (hash covers seq + type)" {
+  val b = parseStreamJson(turnNdjson(), 0.toLong(), "")
+  // Event 1 is "assistant"; rewrite only its stored eventType, keep payload/hash.
+  val tampered: List[CaptureEvent] = newList()
+  tampered.add(b.events[0])
+  val e1 = b.events[1]
+  tampered.add(
+    CaptureEvent(seq = e1.seq, eventType = "system", payload = e1.payload, prevHash = e1.prevHash, hash = e1.hash)
+  )
+  tampered.add(b.events[2])
+  tampered.add(b.events[3])
+  assertFalse(verifyChain(tampered, ""), "mutating only the stored eventType breaks the chain")
+}
+
+// ── Test 9: CRLF-framed NDJSON parses the same as LF ──
+test "CRLF line endings parse identically to LF (carriage return stripped)" {
+  val crlf = lSystem() + "\r\n" + lAssistant() + "\r\n"
+  val b = parseStreamJson(crlf, 0.toLong(), "")
+  assertEqualInt(b.events.length.toInt(), 2, "two events despite CRLF framing")
+  assertEqual(b.events[0].eventType, "system", "type parsed with CR stripped")
+  assertEqual(b.events[0].payload, lSystem(), "payload has no trailing carriage return")
+  assertEqual(b.events[1].eventType, "assistant", "second type parsed")
+  // Identical payloads + seq + type ⇒ identical hashes to the LF parse.
+  val lf = parseStreamJson(lSystem() + "\n" + lAssistant() + "\n", 0.toLong(), "")
+  assertEqual(b.events[1].hash, lf.events[1].hash, "CRLF and LF yield identical hashes")
 }
