@@ -307,7 +307,13 @@ import Std.Json
 val doc = Std.Json.tryParseJson(body)   // Result[JsonDoc, String]
 val root = Std.Json.rootElement(doc)
 match Std.Json.tryGetProperty(root, "fieldName") {
-  case Some(_) -> ()   // present
+  case Some(el) -> {
+    // Guard before reading a typed value: getString THROWS on a non-string
+    // element, so check the kind first. valueKind(el): Int is the
+    // System.Text.Json.JsonValueKind ordinal — Object=1, Array=2, String=3,
+    // Number=4, True=5, False=6, Null=7.
+    if Std.Json.valueKind(el) == 3 { val s = Std.Json.getString(el) }
+  }
   case None -> ()      // absent
 }
 Std.Json.disposeJson(doc)               // release; defer { } this
@@ -315,7 +321,7 @@ Std.Json.disposeJson(doc)               // release; defer { } this
 
 A real `System.Text.Json`-backed parser for walking arbitrary JSON without
 a typed record — `tryParseJson`/`rootElement`/`tryGetProperty`/`getString`/
-`disposeJson` and friends. Used to detect whether a specific key is present
+`valueKind`/`disposeJson` and friends. Used to detect whether a specific key is present
 in a raw body *before* handing it to a `@generate(Json)` record's
 `fromJson` — e.g. to splice in a JSON-default value for a field that's new
 on an existing request shape, so an old caller that omits it doesn't 400 at
