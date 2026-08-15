@@ -75,10 +75,13 @@ parseStreamJson(ndjson: String, startSeq: Long, prevHash: String) -> CaptureBatc
 CaptureBatch { events: slice[CaptureEvent], nextSeq: Long, lastHash: String }
 ```
 
-- Split `ndjson` on `\n`; **strip a single trailing `\r`** so CRLF framing
-  parses identically to LF; **skip blank lines** (NDJSON framing), keep every
-  other line as one event. (`events` is a `slice[CaptureEvent]`, the repo's
-  collection idiom — built internally with `newList()`/`.add`, then `.toArray()`.)
+- Split `ndjson` on `\n` using the proven character-scan idiom
+  (`CloudAgents.Text.indexOfFrom` + `substring`), **not** `String.split()` —
+  which this repo treats as an unproven runtime landmine (`handlers/search.l`).
+  **Strip a single trailing `\r`** so CRLF framing parses identically to LF;
+  **skip blank lines** (NDJSON framing), keep every other line as one event.
+  (`events` is a `slice[CaptureEvent]`, the repo's collection idiom — built
+  internally with `newList()`/`.add`, then `.toArray()`.)
 - `eventType` = the line's `"type"` string, read via the `Std.Json` DOM
   (`tryParseJson` → `rootElement` → `tryGetProperty("type")`, guarded on
   `valueKind` before `getString` so a non-string `type` can't throw). A line
@@ -87,9 +90,12 @@ CaptureBatch { events: slice[CaptureEvent], nextSeq: Long, lastHash: String }
   dropped** (integrity over interpretation; a provenance/security capture must
   not silently lose bytes).
 - **Hash chain** (tamper evidence, mirroring the platform's checkpoint chain):
-  `hash = base64(sha256(prevHash + "\n" + seq + "\n" + eventType + "\n" +
-  payload))` — the whole record is covered, so a tamper that mutates only `seq`
-  or `eventType` (not just `payload`) also breaks the chain. Hashing reuses the
+  each field is **length-prefixed** (`<len>:<value>`) before joining —
+  `hash = base64(sha256("<len>:prevHash;seq;<len>:eventType;<len>:payload"))` —
+  so the preimage is unambiguous: no crafted `eventType`/`payload` (even one
+  with a delimiter or decoded newline) can collide with a different field tuple.
+  The whole record is covered, so a tamper that mutates only `seq` or
+  `eventType` (not just `payload`) also breaks the chain. Hashing reuses the
   proven `CloudAgents.Crypto.sha256Base64`. Each event's `prevHash` is the prior
   event's `hash`; the genesis event's `prevHash` is `""`. Any
   edit/insert/reorder/drop of a captured line breaks every subsequent `hash`.
@@ -127,22 +133,28 @@ package **after** `CloudAgents.Crypto` in `lyric.toml` `[project.packages]`
 ## 6. Test strategy (offline only)
 
 `@test_module` suites under `lyric test`, no Docker/DB/network, no wall-clock
-reads — fixtures are literal NDJSON strings.
+reads — fixtures are literal NDJSON strings. The shipped suite
+(`tests/capture_tests.l`) has **10 tests**:
 
 1. **A representative turn** — `system`/`assistant`/`user`/`result` lines parse
    to four events with `seq` 0..3, the right `eventType`s, verbatim payloads.
 2. **Hash chain** — `prevHash` links, `hash` is deterministic (same input →
-   same hashes), the genesis `prevHash` is `""`.
+   same hashes), 44-char base64, the genesis `prevHash` is `""`.
 3. **Malformed line** — a non-JSON line and a JSON line with no `"type"` are
    captured as `"malformed"` with the raw payload; the chain continues.
-4. **Blank lines** — leading/trailing/interior blank lines are skipped, not
-   captured.
+4. **Blank lines** — leading/trailing/interior blank lines are skipped.
 5. **Incremental** — parsing `chunkA` then `chunkB` (feeding `nextSeq`/
    `lastHash` forward) yields the same events + hashes as parsing `chunkA+chunkB`
-   at once (on line-aligned splits).
+   at once (compared positionally on the slices).
 6. **Empty input** — no events, `nextSeq == startSeq`, `lastHash == prevHash`.
-7. **verifyChain** — accepts an intact chain; rejects a chain with a mutated
-   payload, a reordered pair, and a dropped middle event.
+7. **verifyChain** — rejects a mutated payload, a reordered pair, a dropped
+   event, and a wrong genesis `prevHash`.
+8. **Whole-record hash** — a mutation of only the stored `eventType` (payload
+   and hash left intact) is still detected.
+9. **CRLF** — CRLF-framed input parses identically to LF (same events, same
+   hashes).
+10. **Non-string `type`** — `{"type":123}` / `{"type":true}` are captured as
+    `"malformed"` (the `valueKind`-before-`getString` guard).
 
 ## 7. Acceptance criteria
 

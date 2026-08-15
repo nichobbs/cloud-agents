@@ -24,6 +24,7 @@ import Std.Core
 import Std.Collections
 import Std.Json
 import CloudAgents.Crypto
+import CloudAgents.Text
 
 // ─── Model (spec §3) ─────────────────────────────────────────────────────────
 /// One captured stream-json event. `payload` is the raw NDJSON line verbatim;
@@ -53,12 +54,18 @@ pub func malformedType(): String {
 }
 
 // ─── Hashing (spec §4) ───────────────────────────────────────────────────────
-// hash = base64(sha256(prevHash + "\n" + seq + "\n" + eventType + "\n" + payload)).
-// Every stored field is covered, so a tamper that mutates only `seq` or
-// `eventType` (not just `payload`) also breaks the chain. Reuses the proven
-// `CloudAgents.Crypto.sha256Base64` (base64 SHA-256 of a UTF-8 string).
+// Length-prefix each variable field (`<len>:<value>`) before joining, so the
+// hash preimage is UNAMBIGUOUS: no crafted `eventType`/`payload` (even one
+// containing a delimiter or a decoded newline) can produce the same material as
+// a different field tuple. Every stored field is covered, so a tamper that
+// mutates only `seq` or `eventType` (not just `payload`) also breaks the chain.
+// Reuses the proven `CloudAgents.Crypto.sha256Base64` (base64 SHA-256 of UTF-8).
+func lenPrefixed(s: in String): String {
+  return toString(s.length.toInt()) + ":" + s
+}
+
 func chainHash(prev: in String, seq: in Long, eventType: in String, payload: in String): String {
-  val material = prev + "\n" + toString(seq) + "\n" + eventType + "\n" + payload
+  val material = lenPrefixed(prev) + ";" + toString(seq) + ";" + lenPrefixed(eventType) + ";" + lenPrefixed(payload)
   return CloudAgents.Crypto.sha256Base64(material)
 }
 
@@ -113,18 +120,33 @@ pub func parseStreamJson(ndjson: in String, startSeq: in Long, prevHash: in Stri
   val events: List[CaptureEvent] = newList()
   var seq = startSeq
   var prev = prevHash
-  val lines = ndjson.split("\n")
-  var i = 0
-  while i < lines.length.toInt() {
-    val line = stripCr(lines[i])
-    if line.length.toInt() > 0 {
-      val etype = eventTypeOf(line)
-      val h = chainHash(prev, seq, etype, line)
-      events.add(CaptureEvent(seq = seq, eventType = etype, payload = line, prevHash = prev, hash = h))
-      seq = seq + 1
-      prev = h
+  // Split on "\n" with the proven character-scan idiom
+  // (CloudAgents.Text.indexOfFrom) rather than String.split(), which this repo
+  // treats as an unproven runtime landmine (see handlers/search.l).
+  val n = ndjson.length.toInt()
+  var start = 0
+  while start <= n {
+    val nl = CloudAgents.Text.indexOfFrom(ndjson, "\n", start)
+    var stop = n
+    if nl >= 0 {
+      stop = nl
     }
-    i = i + 1
+    val rawLen = stop - start
+    if rawLen > 0 {
+      val line = stripCr(ndjson.substring(start, rawLen))
+      if line.length.toInt() > 0 {
+        val etype = eventTypeOf(line)
+        val h = chainHash(prev, seq, etype, line)
+        events.add(CaptureEvent(seq = seq, eventType = etype, payload = line, prevHash = prev, hash = h))
+        seq = seq + 1
+        prev = h
+      }
+    }
+    if nl < 0 {
+      start = n + 1
+    } else {
+      start = nl + 1
+    }
   }
   return CaptureBatch(events = events.toArray(), nextSeq = seq, lastHash = prev)
 }
