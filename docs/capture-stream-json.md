@@ -72,21 +72,27 @@ faithful record and the emitter/analysts see exactly what the harness produced.
 
 ```
 parseStreamJson(ndjson: String, startSeq: Long, prevHash: String) -> CaptureBatch
-CaptureBatch { events: List[CaptureEvent], nextSeq: Long, lastHash: String }
+CaptureBatch { events: slice[CaptureEvent], nextSeq: Long, lastHash: String }
 ```
 
-- Split `ndjson` on `\n`; **skip blank lines** (NDJSON framing), keep every
-  other line as one event.
-- `eventType` = the line's `"type"` string, read with `Std.Json`
-  (`lyricJsonGetString`). A line that is **not valid JSON**, or a JSON value
-  with no string `"type"`, is captured with `eventType = "malformed"` and the
-  raw payload — **never dropped** (integrity over interpretation; a
-  provenance/security capture must not silently lose bytes).
+- Split `ndjson` on `\n`; **strip a single trailing `\r`** so CRLF framing
+  parses identically to LF; **skip blank lines** (NDJSON framing), keep every
+  other line as one event. (`events` is a `slice[CaptureEvent]`, the repo's
+  collection idiom — built internally with `newList()`/`.add`, then `.toArray()`.)
+- `eventType` = the line's `"type"` string, read via the `Std.Json` DOM
+  (`tryParseJson` → `rootElement` → `tryGetProperty("type")`, guarded on
+  `valueKind` before `getString` so a non-string `type` can't throw). A line
+  that is **not valid JSON**, or a JSON value with no string `"type"`, is
+  captured with `eventType = "malformed"` and the raw payload — **never
+  dropped** (integrity over interpretation; a provenance/security capture must
+  not silently lose bytes).
 - **Hash chain** (tamper evidence, mirroring the platform's checkpoint chain):
-  `hash = sha256hex(prevHash + "\n" + payload)` (SHA-256, lowercase hex, via
-  `@externTarget`). Each event's `prevHash` is the prior event's `hash`; the
-  genesis event's `prevHash` is `""`. Any edit/insert/reorder/drop of a
-  captured line breaks every subsequent `hash`.
+  `hash = base64(sha256(prevHash + "\n" + seq + "\n" + eventType + "\n" +
+  payload))` — the whole record is covered, so a tamper that mutates only `seq`
+  or `eventType` (not just `payload`) also breaks the chain. Hashing reuses the
+  proven `CloudAgents.Crypto.sha256Base64`. Each event's `prevHash` is the prior
+  event's `hash`; the genesis event's `prevHash` is `""`. Any
+  edit/insert/reorder/drop of a captured line breaks every subsequent `hash`.
 - **Resumable**: `startSeq` / `prevHash` let the runner feed the stream in
   chunks (as `docker logs` deltas arrive) and continue one chain across calls.
   `nextSeq` / `lastHash` in the result are the inputs for the next chunk.
@@ -98,7 +104,7 @@ CaptureBatch { events: List[CaptureEvent], nextSeq: Long, lastHash: String }
   line is data (`"malformed"`), not a failure.
 
 ```
-verifyChain(events: List[CaptureEvent], genesisPrevHash: String) -> Bool
+verifyChain(events: slice[CaptureEvent], genesisPrevHash: String) -> Bool
 ```
 
 Recomputes the chain from `genesisPrevHash` and returns `false` on the first
@@ -112,10 +118,11 @@ CloudAgents.Capture   (src/capture/stream_json.l)   CaptureEvent / CaptureBatch,
                                                      parseStreamJson, verifyChain
 ```
 
-No new dependencies: `Std.Core` / `Std.Collections` / `Std.Json` /
-`Std.Encoding` + a SHA-256 `@externTarget` (the same BCL binding
-`src/docker_manager.l` already uses for other `System.*` calls). Add the package
-to `lyric.toml` `[project.packages]` and a suite to `[project.tests]`.
+Dependencies are all in-repo/stdlib: `Std.Core` / `Std.Collections` /
+`Std.Json` (DOM) + `CloudAgents.Crypto` (for `sha256Base64` — reusing the
+proven SHA-256 binding rather than introducing new externs). Declare the
+package **after** `CloudAgents.Crypto` in `lyric.toml` `[project.packages]`
+(dependency order), and add a suite to `[project.tests]`.
 
 ## 6. Test strategy (offline only)
 

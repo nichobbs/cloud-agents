@@ -55,7 +55,7 @@ test "the hash chain links events and is deterministic" {
   assertEqual(b1.events[1].prevHash, b1.events[0].hash, "each prevHash is the prior hash")
   assertEqual(b1.events[2].prevHash, b1.events[1].hash, "chain continues (2)")
   assertEqual(b1.events[3].prevHash, b1.events[2].hash, "chain continues (3)")
-  assertTrue(b1.events[0].hash.length.toInt() == 64, "sha-256 hex is 64 chars")
+  assertTrue(b1.events[0].hash.length.toInt() == 44, "base64 sha-256 is 44 chars")
   // Same input -> identical hashes.
   val b2 = parseStreamJson(turnNdjson(), 0.toLong(), "")
   assertEqual(b2.events[0].hash, b1.events[0].hash, "deterministic hash (0)")
@@ -139,7 +139,7 @@ test "verifyChain rejects payload mutation, reordering, and drops" {
   )
   mutated.add(b.events[2])
   mutated.add(b.events[3])
-  assertFalse(verifyChain(mutated, ""), "a mutated payload breaks the chain")
+  assertFalse(verifyChain(mutated.toArray(), ""), "a mutated payload breaks the chain")
 
   // Reorder: swap events 1 and 2.
   val reordered: List[CaptureEvent] = newList()
@@ -147,14 +147,14 @@ test "verifyChain rejects payload mutation, reordering, and drops" {
   reordered.add(b.events[2])
   reordered.add(b.events[1])
   reordered.add(b.events[3])
-  assertFalse(verifyChain(reordered, ""), "a reordered pair breaks the chain")
+  assertFalse(verifyChain(reordered.toArray(), ""), "a reordered pair breaks the chain")
 
   // Drop the middle event 1.
   val dropped: List[CaptureEvent] = newList()
   dropped.add(b.events[0])
   dropped.add(b.events[2])
   dropped.add(b.events[3])
-  assertFalse(verifyChain(dropped, ""), "a dropped event breaks the chain")
+  assertFalse(verifyChain(dropped.toArray(), ""), "a dropped event breaks the chain")
 
   // A wrong genesis prevHash also fails.
   assertFalse(verifyChain(b.events, "wrong-genesis"), "wrong genesis prevHash fails")
@@ -172,7 +172,7 @@ test "verifyChain detects a mutated eventType (hash covers seq + type)" {
   )
   tampered.add(b.events[2])
   tampered.add(b.events[3])
-  assertFalse(verifyChain(tampered, ""), "mutating only the stored eventType breaks the chain")
+  assertFalse(verifyChain(tampered.toArray(), ""), "mutating only the stored eventType breaks the chain")
 }
 
 // ── Test 9: CRLF-framed NDJSON parses the same as LF ──

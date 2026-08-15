@@ -11,19 +11,19 @@
 //! into a SHA-256 hash chain so any edit/insert/reorder/drop is detectable
 //! (`verifyChain`) — the same tamper-evidence posture as the platform's
 //! checkpoint chain.
+//!
+//! In-repo idioms: hashing reuses `CloudAgents.Crypto.sha256Base64` (the same
+//! proven SHA-256 binding used for the token cache); JSON is read through the
+//! `Std.Json` DOM (`tryParseJson`/`rootElement`/`tryGetProperty`, as in
+//! `handlers/profiles.l` and `handlers/library.l`); event lists are exposed as
+//! `slice[CaptureEvent]` (built with `newList()`/`.add`, then `.toArray()`).
 @runtime_checked
 package CloudAgents.Capture
 
 import Std.Core
 import Std.Collections
 import Std.Json
-import Std.Encoding
-
-@externTarget("System.Security.Cryptography.SHA256.HashData")
-func sha256(data: in slice[Byte]): slice[Byte] = []
-
-@externTarget("System.Convert.ToHexStringLower")
-func toHexLower(b: in slice[Byte]): String = ""
+import CloudAgents.Crypto
 
 // ─── Model (spec §3) ─────────────────────────────────────────────────────────
 /// One captured stream-json event. `payload` is the raw NDJSON line verbatim;
@@ -41,7 +41,7 @@ pub record CaptureEvent {
 /// `nextSeq`/`lastHash` to feed into the next chunk so one chain spans the whole
 /// session capture.
 pub record CaptureBatch {
-  pub events: List[CaptureEvent]
+  pub events: slice[CaptureEvent]
   pub nextSeq: Long
   pub lastHash: String
 }
@@ -53,12 +53,13 @@ pub func malformedType(): String {
 }
 
 // ─── Hashing (spec §4) ───────────────────────────────────────────────────────
-// hash = sha256_hex(prevHash + "\n" + seq + "\n" + eventType + "\n" + payload).
+// hash = base64(sha256(prevHash + "\n" + seq + "\n" + eventType + "\n" + payload)).
 // Every stored field is covered, so a tamper that mutates only `seq` or
-// `eventType` (not just `payload`) also breaks the chain. Lowercase hex, UTF-8.
-func hashHex(prev: in String, seq: in Long, eventType: in String, payload: in String): String {
+// `eventType` (not just `payload`) also breaks the chain. Reuses the proven
+// `CloudAgents.Crypto.sha256Base64` (base64 SHA-256 of a UTF-8 string).
+func chainHash(prev: in String, seq: in Long, eventType: in String, payload: in String): String {
   val material = prev + "\n" + toString(seq) + "\n" + eventType + "\n" + payload
-  return toHexLower(sha256(Std.Encoding.encodeUtf8(material)))
+  return CloudAgents.Crypto.sha256Base64(material)
 }
 
 // Strip a single trailing carriage return so CRLF-framed NDJSON parses the same
@@ -71,22 +72,34 @@ func stripCr(line: in String): String {
   return line
 }
 
-// The line's "type" field as a string, or malformedType() when absent, not a
-// string, or the line is not valid JSON. Total — never throws on bad input.
+// System.Text.Json.JsonValueKind.String — guard `getString` (which throws on a
+// non-string element) so `eventTypeOf` stays total.
+val jsonKindString = 3
+
+// A present "type" element's string value, or malformedType() if it is not a
+// JSON string. Guards getString on valueKind so a `{"type":123}` cannot throw.
+func stringOrMalformed(el: in JsonElement): String {
+  if Std.Json.valueKind(el) == jsonKindString {
+    return Std.Json.getString(el)
+  }
+  return malformedType()
+}
+
+// The line's "type" as a string, via the Std.Json DOM — or malformedType() when
+// the line is not valid JSON, has no "type", or "type" is not a string. Total:
+// never throws on bad input.
 func eventTypeOf(line: in String): String {
-  return match Std.Json.tryParseJson(line) {
-    case Err(_) -> malformedType()
-    case Ok(doc) -> {
-      defer {
-        Std.Json.disposeJson(doc)
-      }
-      var t: String = ""
-      if Std.Json.lyricJsonGetString(line, "type", t) {
-        t
-      } else {
-        malformedType()
-      }
-    }
+  return match Std.Json.tryParseJson(line) { case Err(_) -> malformedType(); case Ok(doc) -> typeFromDoc(doc) }
+}
+
+func typeFromDoc(doc: in JsonDoc): String {
+  defer {
+    Std.Json.disposeJson(doc)
+  }
+  val root = Std.Json.rootElement(doc)
+  return match Std.Json.tryGetProperty(root, "type") {
+    case None -> malformedType()
+    case Some(el) -> stringOrMalformed(el)
   }
 }
 
@@ -106,22 +119,22 @@ pub func parseStreamJson(ndjson: in String, startSeq: in Long, prevHash: in Stri
     val line = stripCr(lines[i])
     if line.length.toInt() > 0 {
       val etype = eventTypeOf(line)
-      val h = hashHex(prev, seq, etype, line)
+      val h = chainHash(prev, seq, etype, line)
       events.add(CaptureEvent(seq = seq, eventType = etype, payload = line, prevHash = prev, hash = h))
       seq = seq + 1
       prev = h
     }
     i = i + 1
   }
-  return CaptureBatch(events = events, nextSeq = seq, lastHash = prev)
+  return CaptureBatch(events = events.toArray(), nextSeq = seq, lastHash = prev)
 }
 
 // ─── verifyChain (spec §4) ───────────────────────────────────────────────────
 /// Recompute the chain from `genesisPrevHash` and return `false` on the first
 /// `prevHash` discontinuity or `hash` mismatch — the tamper check a consumer
-/// runs before trusting a captured stream. Detects payload mutation, reordering,
-/// and dropped events.
-pub func verifyChain(events: in List[CaptureEvent], genesisPrevHash: in String): Bool {
+/// runs before trusting a captured stream. Detects payload/seq/eventType
+/// mutation, reordering, and dropped events.
+pub func verifyChain(events: in slice[CaptureEvent], genesisPrevHash: in String): Bool {
   var prev = genesisPrevHash
   var i = 0
   while i < events.length.toInt() {
@@ -129,7 +142,7 @@ pub func verifyChain(events: in List[CaptureEvent], genesisPrevHash: in String):
     if e.prevHash != prev {
       return false
     }
-    val h = hashHex(prev, e.seq, e.eventType, e.payload)
+    val h = chainHash(prev, e.seq, e.eventType, e.payload)
     if e.hash != h {
       return false
     }
