@@ -170,3 +170,28 @@ tests/        # @test_module files
 docs/lyric/   # agent reference docs
 lyric.toml    # project manifest
 ```
+
+## Provenance capture (Testamur §4.1 / ADR-0004; audit WP4)
+
+`CloudAgents.Capture` (`src/capture/stream_json.l`,
+`docs/capture-stream-json.md`) is the offline, verifiable **core** of the
+runner capture adapter: it parses `claude -p --output-format stream-json`
+NDJSON into typed, seq-numbered, **hash-chained** `CaptureEvent`s (verbatim
+payloads, malformed lines captured not dropped, resumable across chunks) with a
+`verifyChain` tamper check. It does no Docker/DB/HTTP work — it is pure Lyric,
+fully unit-tested (`tests/capture_tests.l`).
+
+Sequenced follow-ups (NOT yet built — each needs an environment or decision this
+core does not):
+- **Runner wiring**: flip `docker/entrypoint.sh:486` to
+  `--output-format stream-json`, parse per-event in the poll loop
+  (`src/docker_manager.l:644`) instead of byte-diffing, and reconstruct the PWA
+  text stream from events. Needs a Docker host + the real `claude` harness to
+  verify without regressing the UI.
+- **Persistence**: a `session_events` table (+ migration + `Repository`
+  accessor) and `GET /api/sessions/{id}/events?after=seq` (audit WP4 acceptance).
+- **Checkpoint emitter (WP6)**: map `session_events` (+ the existing
+  `permission_requests`/`secret_requests` audit rows) into the Testamur
+  checkpoint format. **Gated on an open decision** — cloud-agents has no testamur
+  dependency and Lyric consumes NuGet only, so reaching the checkpoint-format
+  contract needs a published NuGet package or a native re-implementation.
