@@ -18,6 +18,7 @@ output_assembly = "CloudAgents.dll"
 [project.packages]
 "CloudAgents"          = "src/main.l"
 "CloudAgents.Text"     = "src/text.l"
+"CloudAgents.Capture"  = "src/capture/stream_json.l"
 "CloudAgents.SessionStore" = "src/sessions/session_manager.l"
 "CloudAgents.Handlers" = "src/handlers/sessions.l"
 "CloudAgents.Interactions" = "src/handlers/interactions.l"
@@ -53,6 +54,7 @@ output_assembly = "CloudAgents.dll"
 "CloudAgents.WorkspaceHandlers" = "src/handlers/workspace.l"
 
 [project.tests]
+"CloudAgents.CaptureTests"   = "tests/capture_tests.l"
 "CloudAgents.SessionTests"   = "tests/session_tests.l"
 "CloudAgents.StreamingTests" = "tests/streaming_tests.l"
 "CloudAgents.DbTests"        = "tests/db_tests.l"
