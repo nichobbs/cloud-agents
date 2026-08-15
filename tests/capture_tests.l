@@ -92,27 +92,31 @@ test "parsing in line-aligned chunks equals parsing the whole stream" {
   val bb = parseStreamJson(chunkB, ba.nextSeq, ba.lastHash)
   val whole = parseStreamJson(chunkA + chunkB, 0.toLong(), "")
 
-  // Reassemble the chunked events in order and compare to the whole parse.
-  val combined: List[CaptureEvent] = newList()
+  // chunkA's events, then chunkB's, positionally equal the whole-stream parse
+  // (compared directly on the slices — no intermediate collection).
+  assertEqualInt(
+    ba.events.length.toInt() + bb.events.length.toInt(),
+    whole.events.length.toInt(),
+    "same total event count"
+  )
   var i = 0
   while i < ba.events.length.toInt() {
-    combined.add(ba.events[i])
+    assertEqualInt(ba.events[i].seq.toInt(), whole.events[i].seq.toInt(), "chunkA seq at " + toString(i))
+    assertEqual(ba.events[i].eventType, whole.events[i].eventType, "chunkA type at " + toString(i))
+    assertEqual(ba.events[i].payload, whole.events[i].payload, "chunkA payload at " + toString(i))
+    assertEqual(ba.events[i].prevHash, whole.events[i].prevHash, "chunkA prevHash at " + toString(i))
+    assertEqual(ba.events[i].hash, whole.events[i].hash, "chunkA hash at " + toString(i))
     i = i + 1
   }
   var j = 0
   while j < bb.events.length.toInt() {
-    combined.add(bb.events[j])
+    val w = ba.events.length.toInt() + j
+    assertEqualInt(bb.events[j].seq.toInt(), whole.events[w].seq.toInt(), "chunkB seq at " + toString(j))
+    assertEqual(bb.events[j].eventType, whole.events[w].eventType, "chunkB type at " + toString(j))
+    assertEqual(bb.events[j].payload, whole.events[w].payload, "chunkB payload at " + toString(j))
+    assertEqual(bb.events[j].prevHash, whole.events[w].prevHash, "chunkB prevHash at " + toString(j))
+    assertEqual(bb.events[j].hash, whole.events[w].hash, "chunkB hash at " + toString(j))
     j = j + 1
-  }
-  assertEqualInt(combined.length.toInt(), whole.events.length.toInt(), "same event count")
-  var k = 0
-  while k < whole.events.length.toInt() {
-    assertEqualInt(combined[k].seq.toInt(), whole.events[k].seq.toInt(), "same seq at " + toString(k))
-    assertEqual(combined[k].eventType, whole.events[k].eventType, "same type at " + toString(k))
-    assertEqual(combined[k].payload, whole.events[k].payload, "same payload at " + toString(k))
-    assertEqual(combined[k].prevHash, whole.events[k].prevHash, "same prevHash at " + toString(k))
-    assertEqual(combined[k].hash, whole.events[k].hash, "same hash at " + toString(k))
-    k = k + 1
   }
   assertEqual(bb.lastHash, whole.lastHash, "chunked lastHash matches whole")
 }
@@ -186,4 +190,16 @@ test "CRLF line endings parse identically to LF (carriage return stripped)" {
   // Identical payloads + seq + type ⇒ identical hashes to the LF parse.
   val lf = parseStreamJson(lSystem() + "\n" + lAssistant() + "\n", 0.toLong(), "")
   assertEqual(b.events[1].hash, lf.events[1].hash, "CRLF and LF yield identical hashes")
+}
+
+// ── Test 10: a non-string "type" is captured as malformed (stringOrMalformed) ──
+test "a JSON line with a non-string type is captured as malformed" {
+  val nd = "{\"type\":123}" + "\n" + "{\"type\":true}" + "\n" + lResult() + "\n"
+  val b = parseStreamJson(nd, 0.toLong(), "")
+  assertEqualInt(b.events.length.toInt(), 3, "all three lines captured (none dropped)")
+  assertEqual(b.events[0].eventType, "malformed", "a numeric type is not a string -> malformed")
+  assertEqual(b.events[0].payload, "{\"type\":123}", "raw payload kept")
+  assertEqual(b.events[1].eventType, "malformed", "a boolean type is not a string -> malformed")
+  assertEqual(b.events[2].eventType, "result", "a string type still parses")
+  assertTrue(verifyChain(b.events, ""), "the chain still verifies across these events")
 }
