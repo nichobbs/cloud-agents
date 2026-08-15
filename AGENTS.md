@@ -181,6 +181,20 @@ payloads, malformed lines captured not dropped, resumable across chunks) with a
 `verifyChain` tamper check. It does no Docker/DB/HTTP work — it is pure Lyric,
 fully unit-tested (`tests/capture_tests.l`).
 
+**Checkpoint emitter (WP6) — built.** `CloudAgents.CheckpointBridge`
+(`src/capture/checkpoint_bridge.l`, `docs/capture-checkpoint.md`) turns a
+captured session's `CaptureEvent`s into the Testamur checkpoint format (a
+`Session` + `Step`s + terminal `Checkpoint`, content-addressed exactly as the
+platform computes them): it verifies the capture chain, reconstructs the
+transcript from the event payloads, and delegates the mapping to the reviewed
+platform adapter. The "open decision" that gated it is resolved — *copy the
+contract now, migrate to a NuGet package later*: `Testamur.CheckpointFormat` is
+**vendored verbatim** under `vendor/testamur-checkpoint-format/` (see its
+`VENDORED.md`), package names kept identical to upstream so content addresses
+match and the NuGet swap is a manifest-only change. A cross-repo drift-guard test
+pins that a fixed transcript maps to the exact ids testamur computes. Pure and
+offline (`tests/checkpoint_bridge_tests.l`).
+
 Sequenced follow-ups (NOT yet built — each needs an environment or decision this
 core does not):
 - **Runner wiring**: flip `docker/entrypoint.sh:486` to
@@ -190,8 +204,10 @@ core does not):
   verify without regressing the UI.
 - **Persistence**: a `session_events` table (+ migration + `Repository`
   accessor) and `GET /api/sessions/{id}/events?after=seq` (audit WP4 acceptance).
-- **Checkpoint emitter (WP6)**: map `session_events` (+ the existing
-  `permission_requests`/`secret_requests` audit rows) into the Testamur
-  checkpoint format. **Gated on an open decision** — cloud-agents has no testamur
-  dependency and Lyric consumes NuGet only, so reaching the checkpoint-format
-  contract needs a published NuGet package or a native re-implementation.
+- **Graph handoff**: pass the emitted objects to the platform's `GraphIngest`
+  (cross-repo; today the emitted objects are the deliverable).
+- **Audit-row enrichment**: fold the existing `permission_requests`/
+  `secret_requests` rows into per-tool `permission` rather than the single
+  context-level mode.
+- **NuGet migration**: replace the vendored copy with a published
+  `Testamur.CheckpointFormat` NuGet package.

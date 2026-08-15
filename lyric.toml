@@ -37,6 +37,16 @@ output_assembly = "CloudAgents.dll"
 "CloudAgents.Prompts"  = "src/handlers/prompts.l"
 "CloudAgents.Crypto"   = "src/crypto/crypto.l"
 "CloudAgents.Capture"  = "src/capture/stream_json.l"
+"CloudAgents.CheckpointBridge" = "src/capture/checkpoint_bridge.l"
+# Vendored verbatim from nichobbs/testamur (see vendor/testamur-checkpoint-format/
+# VENDORED.md). Package names kept identical to upstream so content addresses match
+# and the eventual NuGet swap is a manifest-only change.
+"Testamur.CheckpointFormat"       = "vendor/testamur-checkpoint-format/checkpoint_format.l"
+"Testamur.CheckpointFormat.Canon" = "vendor/testamur-checkpoint-format/checkpoint_format/canon.l"
+"Testamur.CheckpointFormat.Sign"  = "vendor/testamur-checkpoint-format/checkpoint_format/sign.l"
+"Testamur.CheckpointFormat.Model" = "vendor/testamur-checkpoint-format/checkpoint_format/model.l"
+"Testamur.CheckpointFormat.Chain" = "vendor/testamur-checkpoint-format/checkpoint_format/chain.l"
+"Testamur.CheckpointFormat.Adapt" = "vendor/testamur-checkpoint-format/checkpoint_format/adapt.l"
 "CloudAgents.Credentials" = "src/handlers/credentials.l"
 "CloudAgents.Profiles" = "src/handlers/profiles.l"
 "CloudAgents.Library"  = "src/handlers/library.l"
@@ -55,6 +65,7 @@ output_assembly = "CloudAgents.dll"
 
 [project.tests]
 "CloudAgents.CaptureTests"   = "tests/capture_tests.l"
+"CloudAgents.CheckpointBridgeTests" = "tests/checkpoint_bridge_tests.l"
 "CloudAgents.SessionTests"   = "tests/session_tests.l"
 "CloudAgents.StreamingTests" = "tests/streaming_tests.l"
 "CloudAgents.DbTests"        = "tests/db_tests.l"
