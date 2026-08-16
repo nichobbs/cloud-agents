@@ -14,6 +14,7 @@ import CloudAgents.Db
 import CloudAgents.Sqlite
 import CloudAgents.ToolPolicy
 import CloudAgents.Capture
+import Std.Collections
 import extern System.Environment as Env
 import extern System.String as DotNetString
 
@@ -3580,11 +3581,13 @@ pub func appendSessionEvents(
   sessionId: in String, events: in slice[CloudAgents.Capture.CaptureEvent]
 ): Result[Int, CloudAgents.Sqlite.DbError] {
   val createdAt = nowMillis()
-  var stmts: slice[String] = []
+  // Build via List.add + toArray rather than slice.append() in a per-event loop
+  // (same OSR-promotion concern as sessionEventsAfterSeq, #963 / lyric-lang#6322).
+  val stmts: List[String] = newList()
   var i = 0
   while i < events.length.toInt() {
     val e = events[i]
-    stmts = stmts.append(
+    stmts.add(
       CloudAgents.Db.insertSessionEventSql(
         sessionId,
         toString(e.seq),
@@ -3597,7 +3600,7 @@ pub func appendSessionEvents(
     )
     i = i + 1
   }
-  CloudAgents.Sqlite.executeTransaction(stmts)?
+  CloudAgents.Sqlite.executeTransaction(stmts.toArray())?
   return Ok(value = events.length.toInt())
 }
 
@@ -3612,14 +3615,19 @@ pub func sessionEventsAfterSeq(
 ): Result[slice[CloudAgents.Capture.CaptureEvent], CloudAgents.Sqlite.DbError] {
   val normalized = if afterSeq.length == 0 { "-1" } else { afterSeq }
   val rows = CloudAgents.Sqlite.query(CloudAgents.Db.selectSessionEventsAfterSeqSql(sessionId, normalized))?
-  var acc: slice[CloudAgents.Capture.CaptureEvent] = []
+  // Build via List.add + toArray rather than slice[Record].append() in a loop:
+  // session_events is the highest-cardinality table (one row per fine-grained
+  // stream-json event), so this read path is the one most likely to reach the
+  // OSR-promotion threshold of lyric-lang#6322 (slice[Record].append()
+  // miscompiling in long loops) — #963. Matches the CloudAgents.Capture idiom.
+  val acc: List[CloudAgents.Capture.CaptureEvent] = newList()
   var i = 0
   val len = CloudAgents.Sqlite.getRowArrayLength(rows)
   while i < len {
-    acc = acc.append(rowToCaptureEvent(CloudAgents.Sqlite.getRowArrayValue(rows, i)))
+    acc.add(rowToCaptureEvent(CloudAgents.Sqlite.getRowArrayValue(rows, i)))
     i = i + 1
   }
-  return Ok(value = acc)
+  return Ok(value = acc.toArray())
 }
 
 /// A session's AGENT messages with seq strictly greater than `afterSeq`

@@ -1104,8 +1104,9 @@ pub func selectAgentMessagesAfterSeqSql(sessionId: in String, afterSeq: in Strin
 // ─── Session events (provenance capture, WP4) ───────────────────────────────────
 //
 // The durable form of a captured `claude -p --output-format stream-json` run:
-// one row per CloudAgents.Capture CaptureEvent. `seq` is digit TEXT ordered via
-// CAST AS INTEGER (same convention as messages); `payload` is the raw NDJSON line
+// one row per CloudAgents.Capture CaptureEvent. `seq` is digit TEXT compared via
+// CAST AS INTEGER for numeric ordering — no zero-padding (every read casts), so
+// unlike the `messages` table it does not go through `padSeq`; `payload` is the raw NDJSON line
 // verbatim; `prev_hash`/`hash` are the capture chain links. `created_at` is a
 // store-time audit stamp and is deliberately NOT part of the chain preimage, so
 // persisting never invalidates a captured chain. The composite PK

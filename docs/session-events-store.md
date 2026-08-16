@@ -40,9 +40,10 @@ CREATE TABLE IF NOT EXISTS session_events (
 )
 ```
 
-`seq` is stored as TEXT and compared with `CAST(seq AS INTEGER)` — the same
-convention as the `messages` table — so lexical storage still orders
-numerically. The composite primary key `(session_id, seq)` both enforces
+`seq` is stored as digit TEXT and compared with `CAST(seq AS INTEGER)` so it
+orders numerically. It is **not** zero-padded — every query casts, so no
+`padSeq` is needed (this differs from the `messages` table, which zero-pads).
+The composite primary key `(session_id, seq)` both enforces
 one row per event and serves the session-scoped, seq-ordered read (SQLite
 builds the covering index), so no separate index is added. `created_at` is a
 store-time value and is deliberately **not** part of the hash preimage (the
