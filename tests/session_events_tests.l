@@ -62,7 +62,7 @@ test "append then read back is verbatim, seq-ordered, and verifies the chain" {
   val path = useFreshTestDb("sessevents-rt")
   val batch = parseStreamJson(fixtureNdjson(), 0.toLong(), "")
   assertEqualInt(batch.events.length.toInt(), 3, "fixture parses to three events")
-  val _ = mustAppend("sess-A", batch.events)
+  assertEqualInt(mustAppend("sess-A", batch.events), 3, "append reports three events submitted")
 
   val back = mustRead("sess-A", "")
   assertEqualInt(back.length.toInt(), 3, "all three events read back from the beginning")

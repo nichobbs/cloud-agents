@@ -3572,7 +3572,10 @@ func rowToCaptureEvent(r: in CloudAgents.Sqlite.Row): CloudAgents.Capture.Captur
 /// Append a session's captured events in one transaction (all-or-nothing, so a
 /// stored chain never has a hole). Inserts are `INSERT OR IGNORE` on
 /// `(session_id, seq)`, so re-appending an already-stored prefix (a resumed or
-/// retried capture) is an idempotent no-op. Returns the statement count.
+/// retried capture) is an idempotent no-op. Returns the number of events
+/// *submitted* (`events.length`) — because `INSERT OR IGNORE` silently skips a
+/// row already present, this is the submitted count, not necessarily the count
+/// newly inserted (query back with `sessionEventsAfterSeq` for the stored set).
 pub func appendSessionEvents(
   sessionId: in String, events: in slice[CloudAgents.Capture.CaptureEvent]
 ): Result[Int, CloudAgents.Sqlite.DbError] {
@@ -3594,7 +3597,8 @@ pub func appendSessionEvents(
     )
     i = i + 1
   }
-  return CloudAgents.Sqlite.executeTransaction(stmts)
+  CloudAgents.Sqlite.executeTransaction(stmts)?
+  return Ok(value = events.length.toInt())
 }
 
 /// A session's captured events with seq strictly greater than `afterSeq`,

@@ -56,7 +56,9 @@ invalidates a captured chain.
   whole batch lands or none of it does, preserving chain contiguity. Inserts are
   `INSERT OR IGNORE` on `(session_id, seq)`, so re-appending an already-stored
   prefix (a resumed/retried capture) is an idempotent no-op rather than a
-  primary-key error. Returns the number of statements executed.
+  primary-key error. Returns the number of events *submitted* (`events.length`);
+  because `INSERT OR IGNORE` skips a row already present, that is the submitted
+  count, not necessarily the count newly inserted.
 - `sessionEventsAfterSeq(sessionId, afterSeq: String) -> Result[slice[CaptureEvent], DbError]`
   returns the session's events with `seq` strictly greater than `afterSeq`,
   oldest first — decoded back into `CaptureEvent`s so a reader can `verifyChain`
