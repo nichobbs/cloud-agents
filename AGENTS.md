@@ -202,8 +202,14 @@ core does not):
   (`src/docker_manager.l:644`) instead of byte-diffing, and reconstruct the PWA
   text stream from events. Needs a Docker host + the real `claude` harness to
   verify without regressing the UI.
-- **Persistence**: a `session_events` table (+ migration + `Repository`
-  accessor) and `GET /api/sessions/{id}/events?after=seq` (audit WP4 acceptance).
+- **Persistence — store built, endpoint deferred.** The `session_events` table
+  (migration `0030`) + `Repository` accessors (`appendSessionEvents` /
+  `sessionEventsAfterSeq`, over `CaptureEvent`, idempotent batch append and an
+  exclusive after-seq cursor) are done and live-SQLite tested
+  (`docs/session-events-store.md`, `tests/session_events_tests.l`). The
+  `GET /api/sessions/{id}/events?after=seq` endpoint (the other half of the WP4
+  acceptance) is the remaining piece — it needs the running `Lyric.Web` server to
+  verify, so it lands as a follow-up on top of this store.
 - **Graph handoff**: pass the emitted objects to the platform's `GraphIngest`
   (cross-repo; today the emitted objects are the deliverable).
 - **Audit-row enrichment**: fold the existing `permission_requests`/

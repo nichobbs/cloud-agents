@@ -540,8 +540,7 @@ pub func selectSessionGroupsSql(userId: in String): String {
 /// SELECT a single group owned by a user. Column order matches
 /// selectSessionGroupsSql so one row mapper reads both.
 pub func selectSessionGroupByIdSql(id: in String, userId: in String): String {
-  return "SELECT id, name, parent_id, created_at FROM session_groups WHERE id = " + sqlLiteral(id) +
-    " AND user_id = " +
+  return "SELECT id, name, parent_id, created_at FROM session_groups WHERE id = " + sqlLiteral(id) + " AND user_id = " +
     sqlLiteral(userId)
 }
 
@@ -579,15 +578,13 @@ pub func reassignSessionsGroupSql(userId: in String, oldGroupId: in String, newG
 
 /// Set (or clear, with '') a session's group. Scoped by owner.
 pub func updateSessionGroupIdSql(id: in String, userId: in String, groupId: in String): String {
-  return "UPDATE sessions SET group_id = " + sqlLiteral(groupId) + " WHERE id = " + sqlLiteral(id) +
-    " AND user_id = " +
+  return "UPDATE sessions SET group_id = " + sqlLiteral(groupId) + " WHERE id = " + sqlLiteral(id) + " AND user_id = " +
     sqlLiteral(userId)
 }
 
 /// Record when the user last looked at a session. Scoped by owner.
 pub func updateSessionLastViewedSql(id: in String, userId: in String, ts: in String): String {
-  return "UPDATE sessions SET last_viewed_at = " + sqlLiteral(ts) + " WHERE id = " + sqlLiteral(id) +
-    " AND user_id = " +
+  return "UPDATE sessions SET last_viewed_at = " + sqlLiteral(ts) + " WHERE id = " + sqlLiteral(id) + " AND user_id = " +
     sqlLiteral(userId)
 }
 
@@ -668,7 +665,9 @@ pub func parseEpochMillisText(s: in String): Long {
 /// history the user has seen; else 'idle' (fresh session, no activity).
 /// Pure — the session-summaries builder feeds it parsed TEXT columns, and
 /// tests pin every state and the pending-beats-working priority.
-pub func attentionFor(status: in String, lastMessageAtMs: in Long, lastViewedAtMs: in Long, pendingCount: in Long): String {
+pub func attentionFor(
+  status: in String, lastMessageAtMs: in Long, lastViewedAtMs: in Long, pendingCount: in Long
+): String {
   val zero = 0.toLong()
   if pendingCount > zero {
     return "pending"
@@ -1098,6 +1097,67 @@ pub func selectAgentMessagesAfterSeqSql(sessionId: in String, afterSeq: in Strin
   return "SELECT id, session_id, role, content, seq, created_at FROM messages " + "WHERE session_id = " +
     sqlLiteral(sessionId) +
     " AND role = 'agent' AND CAST(seq AS INTEGER) > CAST(" +
+    sqlLiteral(afterSeq) +
+    " AS INTEGER) ORDER BY CAST(seq AS INTEGER) ASC"
+}
+
+// ─── Session events (provenance capture, WP4) ───────────────────────────────────
+//
+// The durable form of a captured `claude -p --output-format stream-json` run:
+// one row per CloudAgents.Capture CaptureEvent. `seq` is digit TEXT compared via
+// CAST AS INTEGER for numeric ordering — no zero-padding (every read casts), so
+// unlike the `messages` table it does not go through `padSeq`; `payload` is the raw NDJSON line
+// verbatim; `prev_hash`/`hash` are the capture chain links. `created_at` is a
+// store-time audit stamp and is deliberately NOT part of the chain preimage, so
+// persisting never invalidates a captured chain. The composite PK
+// (session_id, seq) enforces one row per event and serves the session-scoped,
+// seq-ordered read (SQLite builds the covering index), so no separate index.
+pub func sessionEventsSchemaSql(): String {
+  return "CREATE TABLE IF NOT EXISTS session_events (" + "session_id TEXT NOT NULL, " + "seq TEXT NOT NULL, " +
+    "event_type TEXT NOT NULL, " +
+    "payload TEXT NOT NULL, " +
+    "prev_hash TEXT NOT NULL, " +
+    "hash TEXT NOT NULL, " +
+    "created_at TEXT NOT NULL, " +
+    "PRIMARY KEY (session_id, seq))"
+}
+
+/// INSERT one captured event. `INSERT OR IGNORE` on (session_id, seq) makes a
+/// re-appended prefix (a resumed/retried capture) an idempotent no-op rather
+/// than a primary-key error.
+pub func insertSessionEventSql(
+  sessionId: in String,
+  seq: in String,
+  eventType: in String,
+  payload: in String,
+  prevHash: in String,
+  hash: in String,
+  createdAt: in String,
+): String {
+  return "INSERT OR IGNORE INTO session_events (session_id, seq, event_type, payload, prev_hash, hash, created_at) VALUES (" +
+    sqlLiteral(sessionId) +
+    ", " +
+    sqlLiteral(seq) +
+    ", " +
+    sqlLiteral(eventType) +
+    ", " +
+    sqlLiteral(payload) +
+    ", " +
+    sqlLiteral(prevHash) +
+    ", " +
+    sqlLiteral(hash) +
+    ", " +
+    sqlLiteral(createdAt) +
+    ")"
+}
+
+/// SELECT a session's events with seq strictly greater than `afterSeq` (numeric
+/// compare via CAST — seq is digit TEXT), oldest first. Column order matches
+/// CloudAgents.Repository.rowToCaptureEvent.
+pub func selectSessionEventsAfterSeqSql(sessionId: in String, afterSeq: in String): String {
+  return "SELECT session_id, seq, event_type, payload, prev_hash, hash FROM session_events " + "WHERE session_id = " +
+    sqlLiteral(sessionId) +
+    " AND CAST(seq AS INTEGER) > CAST(" +
     sqlLiteral(afterSeq) +
     " AS INTEGER) ORDER BY CAST(seq AS INTEGER) ASC"
 }
@@ -2386,7 +2446,8 @@ pub func upsertGitHubOAuthRefreshSql(
 /// also dead (in which case refreshing can't help; the tenant must sign in
 /// again). Returns no row for a tenant with no expiring-token metadata.
 pub func selectGitHubOAuthRefreshStatusSql(userId: in String, nowMillis: in String): String {
-  return "SELECT refresh_token, " + "CASE WHEN CAST(access_expires_at AS INTEGER) - 300000 <= CAST(" + sqlLiteral(nowMillis) +
+  return "SELECT refresh_token, " + "CASE WHEN CAST(access_expires_at AS INTEGER) - 300000 <= CAST(" +
+    sqlLiteral(nowMillis) +
     " AS INTEGER) THEN '1' ELSE '0' END, " +
     "CASE WHEN CAST(refresh_expires_at AS INTEGER) <= CAST(" +
     sqlLiteral(nowMillis) +
@@ -3409,7 +3470,10 @@ pub func attachScheduledJobSessionSql(id: in String, sessionId: in String): Stri
 /// change back toward active/completed once the run finishes. A status
 /// change that lands wins; this write then correctly no-ops (0 rows).
 pub func markScheduledJobRanRecurringSql(
-  id: in String, firedAt: in String, previousNextRunAt: in String, intervalSeconds: in String
+  id: in String,
+  firedAt: in String,
+  previousNextRunAt: in String,
+  intervalSeconds: in String,
 ): String {
   return "UPDATE scheduled_jobs SET last_run_at = " + sqlLiteral(firedAt) + ", next_run_at = CAST(MAX(CAST(" +
     sqlLiteral(previousNextRunAt) +
@@ -3450,8 +3514,7 @@ pub func updateScheduledJobSql(
   nextRunAt: in String,
   status: in String,
 ): String {
-  return "UPDATE scheduled_jobs SET name = " + sqlLiteral(name) + ", prompt = " + sqlLiteral(prompt) +
-    ", profile_id = " +
+  return "UPDATE scheduled_jobs SET name = " + sqlLiteral(name) + ", prompt = " + sqlLiteral(prompt) + ", profile_id = " +
     sqlLiteral(profileId) +
     ", run_at = " +
     sqlLiteral(runAt) +

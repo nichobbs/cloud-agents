@@ -13,6 +13,8 @@ import CloudAgents.Crypto
 import CloudAgents.Db
 import CloudAgents.Sqlite
 import CloudAgents.ToolPolicy
+import CloudAgents.Capture
+import Std.Collections
 import extern System.Environment as Env
 import extern System.String as DotNetString
 
@@ -372,7 +374,8 @@ pub func allMigrations(): slice[Migration] {
         CloudAgents.Db.alterSessionsAddGroupIdSql(),
         CloudAgents.Db.alterSessionsAddLastViewedAtSql()
       ]
-    )
+    ),
+    Migration(version = "0030_session_events", statements = [CloudAgents.Db.sessionEventsSchemaSql()])
   ]
 }
 
@@ -2627,7 +2630,9 @@ pub func cachedGitHubToken(tokenHash: in String): Result[Option[GitHubTokenCache
 }
 
 /// Look up a token's cache entry even if expired (for identifying the tenant during token refresh).
-pub func lookupHistoricalGitHubToken(tokenHash: in String): Result[Option[GitHubTokenCacheEntry], CloudAgents.Sqlite.DbError] {
+pub func lookupHistoricalGitHubToken(
+  tokenHash: in String
+): Result[Option[GitHubTokenCacheEntry], CloudAgents.Sqlite.DbError] {
   val rows = CloudAgents.Sqlite.query(CloudAgents.Db.selectHistoricalGitHubTokenSql(tokenHash, nowMillis()))?
   val len = CloudAgents.Sqlite.getRowArrayLength(rows)
   if len == 0 {
@@ -3550,6 +3555,94 @@ pub func setHighlightScanSeq(sessionId: in String, lastSeq: in String): Result[U
   return Ok(value = ())
 }
 
+// ─── Session events (provenance capture, WP4) ────────────────────────────────
+// The durable form of a captured stream-json run: CloudAgents.Capture
+// CaptureEvents, one row each, appended in seq order and read back verbatim so a
+// consumer can re-verify the hash chain (docs/session-events-store.md).
+func rowToCaptureEvent(r: in CloudAgents.Sqlite.Row): CloudAgents.Capture.CaptureEvent {
+  // seq is stored as digit TEXT; parse back to the Long CaptureEvent carries.
+  // Construct UNQUALIFIED (CaptureEvent, not CloudAgents.Capture.CaptureEvent):
+  // package-qualified record construction is a documented runtime trap
+  // (docs/lyric/gotchas.md), and every other record in this repo — including the
+  // CheckpointBridge — is built unqualified via its import (#964).
+  return CaptureEvent(
+    seq = parseNatString(colAt(r.cols, 1)).toLong(),
+    eventType = colAt(r.cols, 2),
+    payload = colAt(r.cols, 3),
+    prevHash = colAt(r.cols, 4),
+    hash = colAt(r.cols, 5)
+  )
+}
+
+/// Append a session's captured events in one transaction (all-or-nothing, so a
+/// stored chain never has a hole). Inserts are `INSERT OR IGNORE` on
+/// `(session_id, seq)`, so re-appending an already-stored prefix (a resumed or
+/// retried capture) is an idempotent no-op. Returns the number of events
+/// *submitted* (`events.length`) — because `INSERT OR IGNORE` silently skips a
+/// row already present, this is the submitted count, not necessarily the count
+/// newly inserted (query back with `sessionEventsAfterSeq` for the stored set).
+///
+/// Tamper-evidence boundary (#965): `INSERT OR IGNORE` keying on
+/// `(session_id, seq)` means a re-append that carries DIFFERENT content for an
+/// already-stored seq is discarded, not adjudicated here. That is intentional —
+/// this accessor is a durable append sink, not the integrity check. The chain is
+/// verified by `CloudAgents.Capture.verifyChain` on read (a differing prev_hash/
+/// hash makes the stored chain fail verification), so a caller re-appending a
+/// diverged prefix should `verifyChain` first rather than rely on the store to
+/// reject it.
+pub func appendSessionEvents(
+  sessionId: in String, events: in slice[CloudAgents.Capture.CaptureEvent]
+): Result[Int, CloudAgents.Sqlite.DbError] {
+  val createdAt = nowMillis()
+  // Build via List.add + toArray rather than slice.append() in a per-event loop
+  // (same OSR-promotion concern as sessionEventsAfterSeq, #963 / lyric-lang#6322).
+  val stmts: List[String] = newList()
+  var i = 0
+  while i < events.length.toInt() {
+    val e = events[i]
+    stmts.add(
+      CloudAgents.Db.insertSessionEventSql(
+        sessionId,
+        toString(e.seq),
+        e.eventType,
+        e.payload,
+        e.prevHash,
+        e.hash,
+        createdAt
+      )
+    )
+    i = i + 1
+  }
+  CloudAgents.Sqlite.executeTransaction(stmts.toArray())?
+  return Ok(value = events.length.toInt())
+}
+
+/// A session's captured events with seq strictly greater than `afterSeq`,
+/// oldest first — decoded back into CaptureEvents so a reader can
+/// `CloudAgents.Capture.verifyChain` them. Pass "" for "from the beginning":
+/// CaptureEvent seq starts at 0, so the empty cursor maps to the sentinel "-1"
+/// (`seq > -1` includes seq 0), NOT "0" (which, as a real `after=0` cursor,
+/// excludes the first event).
+pub func sessionEventsAfterSeq(
+  sessionId: in String, afterSeq: in String
+): Result[slice[CloudAgents.Capture.CaptureEvent], CloudAgents.Sqlite.DbError] {
+  val normalized = if afterSeq.length == 0 { "-1" } else { afterSeq }
+  val rows = CloudAgents.Sqlite.query(CloudAgents.Db.selectSessionEventsAfterSeqSql(sessionId, normalized))?
+  // Build via List.add + toArray rather than slice[Record].append() in a loop:
+  // session_events is the highest-cardinality table (one row per fine-grained
+  // stream-json event), so this read path is the one most likely to reach the
+  // OSR-promotion threshold of lyric-lang#6322 (slice[Record].append()
+  // miscompiling in long loops) — #963. Matches the CloudAgents.Capture idiom.
+  val acc: List[CloudAgents.Capture.CaptureEvent] = newList()
+  var i = 0
+  val len = CloudAgents.Sqlite.getRowArrayLength(rows)
+  while i < len {
+    acc.add(rowToCaptureEvent(CloudAgents.Sqlite.getRowArrayValue(rows, i)))
+    i = i + 1
+  }
+  return Ok(value = acc.toArray())
+}
+
 /// A session's AGENT messages with seq strictly greater than `afterSeq`
 /// (pass "" or "0" for "from the beginning"), oldest first — the summarizer's
 /// work queue.
@@ -3634,23 +3727,7 @@ pub func createScheduledJob(
   val id = newId()
   val ts = nowMillis()
   val nextRunAt = if runAt.length > 0 { runAt } else { ts }
-  CloudAgents.Sqlite.execute(
-    CloudAgents.Db.insertScheduledJobSql(
-      id,
-      userId,
-      name,
-      prompt,
-      profileId,
-      repoUrl,
-      branch,
-      harness,
-      model,
-      runAt,
-      intervalSeconds,
-      nextRunAt,
-      ts
-    )
-  )?
+  CloudAgents.Sqlite.execute(CloudAgents.Db.insertScheduledJobSql(id, userId, name, prompt, profileId, repoUrl, branch, harness, model, runAt, intervalSeconds, nextRunAt, ts))?
   return Ok(
     value = ScheduledJob(
       id = id,
@@ -3698,7 +3775,19 @@ pub func createScheduledJobWithSession(
   val ts = nowMillis()
   val nextRunAt = if runAt.length > 0 { runAt } else { ts }
   val insertSql = CloudAgents.Db.insertScheduledJobSql(
-    id, userId, name, prompt, "", "", "", "", "", runAt, intervalSeconds, nextRunAt, ts
+    id,
+    userId,
+    name,
+    prompt,
+    "",
+    "",
+    "",
+    "",
+    "",
+    runAt,
+    intervalSeconds,
+    nextRunAt,
+    ts
   )
   val attachSql = CloudAgents.Db.attachScheduledJobSessionSql(id, sessionId)
   CloudAgents.Sqlite.executeTransaction([insertSql, attachSql])?
@@ -3791,11 +3880,12 @@ pub func attachScheduledJobSession(id: in String, sessionId: in String): Result[
 /// read from dueScheduledJobs), not the current time — see
 /// markScheduledJobRanRecurringSql for why (#874, cadence drift).
 pub func markScheduledJobRanRecurring(
-  id: in String, firedAt: in String, previousNextRunAt: in String, intervalSeconds: in String
+  id: in String,
+  firedAt: in String,
+  previousNextRunAt: in String,
+  intervalSeconds: in String,
 ): Result[Unit, CloudAgents.Sqlite.DbError] {
-  CloudAgents.Sqlite.execute(
-    CloudAgents.Db.markScheduledJobRanRecurringSql(id, firedAt, previousNextRunAt, intervalSeconds)
-  )?
+  CloudAgents.Sqlite.execute(CloudAgents.Db.markScheduledJobRanRecurringSql(id, firedAt, previousNextRunAt, intervalSeconds))?
   return Ok(value = ())
 }
 
@@ -3819,7 +3909,17 @@ pub func updateScheduledJob(
   status: in String,
 ): Result[Int, CloudAgents.Sqlite.DbError] {
   return CloudAgents.Sqlite.execute(
-    CloudAgents.Db.updateScheduledJobSql(id, userId, name, prompt, profileId, runAt, intervalSeconds, nextRunAt, status)
+    CloudAgents.Db.updateScheduledJobSql(
+      id,
+      userId,
+      name,
+      prompt,
+      profileId,
+      runAt,
+      intervalSeconds,
+      nextRunAt,
+      status
+    )
   )
 }
 

@@ -6,18 +6,11 @@ import Std.Testing
 import CloudAgents.Db
 
 func transitionLabel(t: in Transition): String {
-  return match t {
-    case To(s) -> statusToString(s)
-    case Invalid -> "INVALID"
-  }
+  return match t { case To(s) -> statusToString(s); case Invalid -> "INVALID" }
 }
 
 func recycleLabel(r: in RecycleAction): String {
-  return match r {
-    case StopAndIdle -> "STOP"
-    case EvictCold -> "EVICT"
-    case NoAction -> "NONE"
-  }
+  return match r { case StopAndIdle -> "STOP"; case EvictCold -> "EVICT"; case NoAction -> "NONE" }
 }
 
 test "Status string round-trips" {
@@ -60,9 +53,15 @@ test "SQL statements are scoped by owner" {
   assertTrue(selectSessionByIdSql("s1", "u1").endsWith("AND user_id = 'u1'"), "select scoped by owner")
   assertTrue(listSessionsByUserSql("u1").contains("WHERE user_id = 'u1'"), "list scoped by owner")
   assertTrue(deleteSessionSql("s1", "u1").endsWith("AND user_id = 'u1'"), "delete scoped by owner")
-  assertTrue(updateSessionContainerSql("s1", "u1", "c1").contains("AND user_id = 'u1'"), "container update scoped by owner")
+  assertTrue(
+    updateSessionContainerSql("s1", "u1", "c1").contains("AND user_id = 'u1'"),
+    "container update scoped by owner"
+  )
   assertTrue(updateSessionModelSql("s1", "u1", "m1").contains("AND user_id = 'u1'"), "model update scoped by owner")
-  assertTrue(insertSessionSql("s1", "u1", "r", "b", "", "claude", "m", "n", "1000").contains("'IDLE'"), "insert starts IDLE")
+  assertTrue(
+    insertSessionSql("s1", "u1", "r", "b", "", "claude", "m", "n", "1000").contains("'IDLE'"),
+    "insert starts IDLE"
+  )
   // Compare-and-clear: only clears the container id when it still matches, so a
   // late orphaned run can't wipe a newer run's container id (#45).
   val clearSql = clearSessionContainerIfMatchesSql("s1", "u1", "c1")
@@ -80,15 +79,30 @@ test "run-claim SQL is atomic and status-guarded" {
   assertTrue(claimSql.contains("AND user_id = 'u1'"), "claim scoped by owner")
   val releaseSql = endRunSql("s1", "u1", "2000")
   assertTrue(releaseSql.contains("SET status = 'IDLE'"), "end returns to IDLE")
-  assertTrue(recoverDanglingSessionsSql().contains("WHERE status = 'RUNNING' OR status = 'WARM'"), "recovery targets stranded sessions")
+  assertTrue(
+    recoverDanglingSessionsSql().contains("WHERE status = 'RUNNING' OR status = 'WARM'"),
+    "recovery targets stranded sessions"
+  )
 }
 
 test "Volume names key by user and session" {
-  assertEqual(homeVolumeBindForHarness("claude"), "claude-home-default:/home/claude-user", "claude keeps its legacy home volume")
+  assertEqual(
+    homeVolumeBindForHarness("claude"),
+    "claude-home-default:/home/claude-user",
+    "claude keeps its legacy home volume"
+  )
   assertEqual(homeVolumeBindForHarness("codex"), "codex-home-default:/home/codex-user", "codex home volume bind")
-  assertEqual(homeVolumeBindForHarness("opencode"), "opencode-home-default:/home/opencode-user", "opencode home volume bind")
+  assertEqual(
+    homeVolumeBindForHarness("opencode"),
+    "opencode-home-default:/home/opencode-user",
+    "opencode home volume bind"
+  )
   assertEqual(homeVolumeBindForHarness("gemini"), "gemini-home-default:/home/gemini-user", "gemini home volume bind")
-  assertEqual(homeVolumeBindForHarness(""), "claude-home-default:/home/claude-user", "empty harness falls back to claude")
+  assertEqual(
+    homeVolumeBindForHarness(""),
+    "claude-home-default:/home/claude-user",
+    "empty harness falls back to claude"
+  )
 }
 
 test "Harness home mount paths cover every image" {
@@ -104,25 +118,81 @@ test "Per-user volume binds isolate tenants; operator keeps legacy names" {
   // Operator identity ("default", and "" defensively) keeps the exact legacy
   // shared shapes so existing installs keep their authenticated ~/.claude
   // and workspaces.
-  assertEqual(workspaceVolumeBindFor("default", "abc"), "session-abc-workspace:/workspace", "operator workspace bind keeps legacy name")
-  assertEqual(workspaceVolumeBindFor("", "abc"), "session-abc-workspace:/workspace", "empty user treated as operator for workspace")
-  assertEqual(homeVolumeBindFor("default", "claude"), "claude-home-default:/home/claude-user", "operator claude home bind keeps legacy name")
-  assertEqual(homeVolumeBindFor("default", "codex"), "codex-home-default:/home/codex-user", "operator codex home bind keeps legacy name")
-  assertEqual(homeVolumeBindFor("default", "opencode"), "opencode-home-default:/home/opencode-user", "operator opencode home bind keeps legacy name")
-  assertEqual(homeVolumeBindFor("default", "gemini"), "gemini-home-default:/home/gemini-user", "operator gemini home bind keeps legacy name")
-  assertEqual(homeVolumeBindFor("default", ""), "claude-home-default:/home/claude-user", "operator empty harness keeps legacy claude bind")
-  assertEqual(homeVolumeBindFor("", "claude"), "claude-home-default:/home/claude-user", "empty user treated as operator for home")
+  assertEqual(
+    workspaceVolumeBindFor("default", "abc"),
+    "session-abc-workspace:/workspace",
+    "operator workspace bind keeps legacy name"
+  )
+  assertEqual(
+    workspaceVolumeBindFor("", "abc"),
+    "session-abc-workspace:/workspace",
+    "empty user treated as operator for workspace"
+  )
+  assertEqual(
+    homeVolumeBindFor("default", "claude"),
+    "claude-home-default:/home/claude-user",
+    "operator claude home bind keeps legacy name"
+  )
+  assertEqual(
+    homeVolumeBindFor("default", "codex"),
+    "codex-home-default:/home/codex-user",
+    "operator codex home bind keeps legacy name"
+  )
+  assertEqual(
+    homeVolumeBindFor("default", "opencode"),
+    "opencode-home-default:/home/opencode-user",
+    "operator opencode home bind keeps legacy name"
+  )
+  assertEqual(
+    homeVolumeBindFor("default", "gemini"),
+    "gemini-home-default:/home/gemini-user",
+    "operator gemini home bind keeps legacy name"
+  )
+  assertEqual(
+    homeVolumeBindFor("default", ""),
+    "claude-home-default:/home/claude-user",
+    "operator empty harness keeps legacy claude bind"
+  )
+  assertEqual(
+    homeVolumeBindFor("", "claude"),
+    "claude-home-default:/home/claude-user",
+    "empty user treated as operator for home"
+  )
 
   // OAuth tenants (gh-<digits>) get per-user volumes for every harness.
-  assertEqual(workspaceVolumeBindFor("gh-42", "abc"), "session-gh-42-abc-workspace:/workspace", "tenant workspace bind keys by user")
-  assertEqual(homeVolumeBindFor("gh-42", "claude"), "user-gh-42-claude-home:/home/claude-user", "tenant claude home bind")
+  assertEqual(
+    workspaceVolumeBindFor("gh-42", "abc"),
+    "session-gh-42-abc-workspace:/workspace",
+    "tenant workspace bind keys by user"
+  )
+  assertEqual(
+    homeVolumeBindFor("gh-42", "claude"),
+    "user-gh-42-claude-home:/home/claude-user",
+    "tenant claude home bind"
+  )
   assertEqual(homeVolumeBindFor("gh-42", "codex"), "user-gh-42-codex-home:/home/codex-user", "tenant codex home bind")
-  assertEqual(homeVolumeBindFor("gh-42", "opencode"), "user-gh-42-opencode-home:/home/opencode-user", "tenant opencode home bind")
-  assertEqual(homeVolumeBindFor("gh-42", "gemini"), "user-gh-42-gemini-home:/home/gemini-user", "tenant gemini home bind")
+  assertEqual(
+    homeVolumeBindFor("gh-42", "opencode"),
+    "user-gh-42-opencode-home:/home/opencode-user",
+    "tenant opencode home bind"
+  )
+  assertEqual(
+    homeVolumeBindFor("gh-42", "gemini"),
+    "user-gh-42-gemini-home:/home/gemini-user",
+    "tenant gemini home bind"
+  )
   // Any unrecognised harness — not just empty — normalises to "claude" in the
   // volume name, agreeing with the mount path and image fallbacks (#437).
-  assertEqual(homeVolumeBindFor("gh-42", ""), "user-gh-42-claude-home:/home/claude-user", "tenant empty harness normalised to claude")
-  assertEqual(homeVolumeBindFor("gh-42", "bogus"), "user-gh-42-claude-home:/home/claude-user", "tenant unknown harness normalised to claude (#437)")
+  assertEqual(
+    homeVolumeBindFor("gh-42", ""),
+    "user-gh-42-claude-home:/home/claude-user",
+    "tenant empty harness normalised to claude"
+  )
+  assertEqual(
+    homeVolumeBindFor("gh-42", "bogus"),
+    "user-gh-42-claude-home:/home/claude-user",
+    "tenant unknown harness normalised to claude (#437)"
+  )
 }
 
 test "sqlLiteral wraps and escapes single quotes" {
@@ -149,22 +219,37 @@ test "message SQL builders inline escaped values" {
 test "comment and todo SQL builders are scoped and escaped" {
   assertTrue(insertCommentSql("c1", "m1", "s1", "body", "1").startsWith("INSERT INTO comments"), "comment insert")
   assertTrue(selectCommentsSql("m1").contains("WHERE message_id = 'm1'"), "comments scoped to message")
-  assertTrue(insertTodoSql("t1", "s1", "m1", "note", "pending", "1", "").contains("'0'"), "new pending todo is not done")
+  assertTrue(
+    insertTodoSql("t1", "s1", "m1", "note", "pending", "1", "").contains("'0'"),
+    "new pending todo is not done"
+  )
   assertTrue(insertTodoSql("t1", "s1", "m1", "note", "done", "1", "").contains("'1'"), "a done-status insert sets done")
-  assertTrue(insertTodoSql("t1", "s1", "m1", "note", "pending", "1", "plan").endsWith("'plan')"), "plan source recorded")
+  assertTrue(
+    insertTodoSql("t1", "s1", "m1", "note", "pending", "1", "plan").endsWith("'plan')"),
+    "plan source recorded"
+  )
   assertTrue(deletePlanTodosSql("s1").contains("source = 'plan'"), "plan delete never touches human rows")
   assertTrue(selectTodosSql("s1").contains("ORDER BY created_at DESC"), "todos newest first")
   assertTrue(selectTodosSql("s1").contains("status"), "todos select carries the status column")
   assertTrue(toggleTodoSql("t1", "9").contains("CASE done"), "toggle flips done flag")
-  assertTrue(toggleTodoSql("t1", "9").contains("status = CASE done WHEN '1' THEN 'pending' ELSE 'done' END"), "toggle keeps status in lockstep")
+  assertTrue(
+    toggleTodoSql("t1", "9").contains("status = CASE done WHEN '1' THEN 'pending' ELSE 'done' END"),
+    "toggle keeps status in lockstep"
+  )
   assertTrue(toggleTodoSql("t1", "9").contains("updated_at = '9'"), "toggle bumps updated_at")
   assertTrue(setTodoStatusSql("t1", "in_progress", "9").contains("status = 'in_progress'"), "status update sets status")
   assertTrue(setTodoStatusSql("t1", "in_progress", "9").contains("done = '0'"), "non-done status clears done")
   assertTrue(setTodoStatusSql("t1", "done", "9").contains("done = '1'"), "done status sets done")
   assertTrue(setTodoStatusSql("t1", "done", "9").contains("updated_at = '9'"), "status update bumps updated_at")
-  assertTrue(insertTodoSql("t1", "s1", "m1", "note", "pending", "7", "").contains("'7', 'pending', '7'"), "insert seeds updated_at from created_at")
+  assertTrue(
+    insertTodoSql("t1", "s1", "m1", "note", "pending", "7", "").contains("'7', 'pending', '7'"),
+    "insert seeds updated_at from created_at"
+  )
   assertTrue(selectTodosUpdatedAfterSql("s1", "5").contains("updated_at > '5'"), "updatedAfter cursors on updated_at")
-  assertTrue(selectTodosUpdatedAfterSql("s1", "5").contains("ORDER BY updated_at ASC"), "updatedAfter oldest change first")
+  assertTrue(
+    selectTodosUpdatedAfterSql("s1", "5").contains("ORDER BY updated_at ASC"),
+    "updatedAfter oldest change first"
+  )
   assertTrue(selectTodoSessionIdSql("t1").contains("WHERE id = 't1'"), "todo session lookup scoped by id")
   assertTrue(deleteTodoSql("t1").endsWith("'t1'"), "delete by id")
 }
@@ -185,18 +270,27 @@ test "run-history SQL builders are scoped and well-formed" {
   assertTrue(fin.endsWith("AND status = 'running'"), "finish is write-once from running")
   assertTrue(selectRunsBySessionSql("s1", "u1").contains("ORDER BY started_at DESC"), "history newest first")
   assertTrue(selectRunsBySessionSql("s1", "u1").contains("AND user_id = 'u1'"), "history scoped by owner")
-  assertTrue(finishSessionRunsSql("s1", "u1", "cancelled", "3000").endsWith("AND status = 'running'"), "cancel only affects running runs")
+  assertTrue(
+    finishSessionRunsSql("s1", "u1", "cancelled", "3000").endsWith("AND status = 'running'"),
+    "cancel only affects running runs"
+  )
 }
 
 test "prompt-tag SQL builders are scoped and idempotent" {
   assertTrue(promptTagsSchemaSql().contains("CREATE TABLE IF NOT EXISTS prompt_tags"), "tags ddl")
   assertTrue(promptTagsSchemaSql().contains("UNIQUE(prompt_id, tag)"), "unique per prompt+tag")
-  assertTrue(insertPromptTagSql("t1", "p1", "u1", "ci").contains("ON CONFLICT(prompt_id, tag) DO NOTHING"), "tag insert idempotent")
+  assertTrue(
+    insertPromptTagSql("t1", "p1", "u1", "ci").contains("ON CONFLICT(prompt_id, tag) DO NOTHING"),
+    "tag insert idempotent"
+  )
   assertTrue(selectPromptTagsSql("p1", "u1").contains("AND user_id = 'u1'"), "tag read scoped by owner")
   assertTrue(selectPromptsByTagSql("u1", "ci").contains("AND pt.tag = 'ci'"), "filter by tag")
   assertTrue(selectPromptsByTagSql("u1", "ci").contains("ORDER BY p.name ASC"), "tag results ordered by name")
   assertTrue(selectPromptsByTagSql("u1", "ci").contains("p.body"), "selects full prompt columns for one-query listing")
-  assertTrue(selectPromptsByUsageSql("u1").contains("ORDER BY CAST(use_count AS INTEGER) DESC"), "usage ordering is numeric")
+  assertTrue(
+    selectPromptsByUsageSql("u1").contains("ORDER BY CAST(use_count AS INTEGER) DESC"),
+    "usage ordering is numeric"
+  )
 }
 
 test "reap SQL filters by warm window in SQL" {
@@ -246,8 +340,14 @@ test "model-listing cache SQL is user+provider-scoped and TTL-aware" {
   val sel = selectModelListingSql("gh-42", "anthropic", "5000", "3600000")
   assertTrue(sel.contains("user_id = 'gh-42'"), "select scoped by user")
   assertTrue(sel.contains("provider = 'anthropic'"), "select scoped by provider")
-  assertTrue(sel.contains("(CAST('5000' AS INTEGER) - CAST(fetched_at AS INTEGER)) < CAST('3600000' AS INTEGER)"), "select excludes stale rows")
-  assertTrue(deleteExpiredModelListingsSql("5000", "3600000").contains(">= CAST('3600000' AS INTEGER)"), "sweep drops stale rows")
+  assertTrue(
+    sel.contains("(CAST('5000' AS INTEGER) - CAST(fetched_at AS INTEGER)) < CAST('3600000' AS INTEGER)"),
+    "select excludes stale rows"
+  )
+  assertTrue(
+    deleteExpiredModelListingsSql("5000", "3600000").contains(">= CAST('3600000' AS INTEGER)"),
+    "sweep drops stale rows"
+  )
 }
 
 test "GitHub token-cache SQL is hash-keyed and expiry-aware" {
@@ -262,13 +362,18 @@ test "GitHub token-cache SQL is hash-keyed and expiry-aware" {
 }
 
 // ── Session groups + attention states (migration 0029) ───────────────────────
-
 test "session-group SQL is owner-scoped and orders by name" {
   assertTrue(sessionGroupsSchemaSql().contains("CREATE TABLE IF NOT EXISTS session_groups"), "groups ddl")
   assertTrue(sessionGroupsSchemaSql().contains("parent_id TEXT NOT NULL DEFAULT ''"), "parent defaults to root")
   assertTrue(sessionGroupsUserIndexSql().contains("ON session_groups(user_id)"), "index on owner")
-  assertTrue(alterSessionsAddGroupIdSql().contains("ADD COLUMN group_id TEXT NOT NULL DEFAULT ''"), "group_id default ''")
-  assertTrue(alterSessionsAddLastViewedAtSql().contains("ADD COLUMN last_viewed_at TEXT NOT NULL DEFAULT '0'"), "last_viewed_at default '0'")
+  assertTrue(
+    alterSessionsAddGroupIdSql().contains("ADD COLUMN group_id TEXT NOT NULL DEFAULT ''"),
+    "group_id default ''"
+  )
+  assertTrue(
+    alterSessionsAddLastViewedAtSql().contains("ADD COLUMN last_viewed_at TEXT NOT NULL DEFAULT '0'"),
+    "last_viewed_at default '0'"
+  )
   val ins = insertSessionGroupSql("g1", "u1", "Alpha", "", "1000")
   assertTrue(ins.startsWith("INSERT INTO session_groups"), "insert target")
   assertTrue(ins.contains("'Alpha'"), "name inlined")
@@ -293,9 +398,18 @@ test "session-group SQL is owner-scoped and orders by name" {
 test "session summaries SQL counts pending callbacks across all three tables" {
   val sql = listSessionSummariesByUserSql("u1")
   assertTrue(sql.contains("group_id, last_viewed_at"), "projection carries the new columns")
-  assertTrue(sql.contains("FROM permission_requests WHERE session_id = sessions.id AND status = 'pending'"), "permission subcount")
-  assertTrue(sql.contains("FROM user_questions WHERE session_id = sessions.id AND status = 'pending'"), "question subcount")
-  assertTrue(sql.contains("FROM secret_requests WHERE session_id = sessions.id AND status = 'pending'"), "secret subcount")
+  assertTrue(
+    sql.contains("FROM permission_requests WHERE session_id = sessions.id AND status = 'pending'"),
+    "permission subcount"
+  )
+  assertTrue(
+    sql.contains("FROM user_questions WHERE session_id = sessions.id AND status = 'pending'"),
+    "question subcount"
+  )
+  assertTrue(
+    sql.contains("FROM secret_requests WHERE session_id = sessions.id AND status = 'pending'"),
+    "secret subcount"
+  )
   assertTrue(sql.contains("AS TEXT)"), "count cast to text for GetString")
   assertTrue(sql.contains("WHERE user_id = 'u1'"), "scoped by owner")
   assertTrue(sql.endsWith("ORDER BY last_message_at DESC"), "most recently active first")
@@ -330,4 +444,32 @@ test "attentionFor derives all four states with the right priority" {
   // idle: no activity at all.
   assertEqual(attentionFor("IDLE", zero, zero, zero), "idle", "fresh -> idle")
   assertEqual(attentionFor("CREATED", zero, zero, zero), "idle", "fresh CREATED -> idle")
+}
+
+// ── Session events store: offline SQL-shape (docs/session-events-store.md §4) ──
+test "session_events schema names every column and the composite PK" {
+  val ddl = sessionEventsSchemaSql()
+  assertTrue(ddl.contains("CREATE TABLE IF NOT EXISTS session_events"), "creates session_events")
+  assertTrue(ddl.contains("session_id TEXT NOT NULL"), "session_id column")
+  assertTrue(ddl.contains("seq TEXT NOT NULL"), "seq column")
+  assertTrue(ddl.contains("event_type TEXT NOT NULL"), "event_type column")
+  assertTrue(ddl.contains("payload TEXT NOT NULL"), "payload column")
+  assertTrue(ddl.contains("prev_hash TEXT NOT NULL"), "prev_hash column")
+  assertTrue(ddl.contains("hash TEXT NOT NULL"), "hash column")
+  assertTrue(ddl.contains("PRIMARY KEY (session_id, seq)"), "composite primary key")
+}
+
+test "insert session event SQL is INSERT OR IGNORE and escapes a quoted payload" {
+  val sql = insertSessionEventSql("sess-A", "3", "assistant", "{\"t\":\"it's fine\"}", "p", "h", "100")
+  assertTrue(sql.contains("INSERT OR IGNORE INTO session_events"), "idempotent insert")
+  // The single quote inside the payload must be doubled by sqlLiteral.
+  assertTrue(sql.contains("it''s fine"), "payload single-quote is escaped, not raw")
+}
+
+test "select session events after seq filters by session and orders numerically" {
+  val sql = selectSessionEventsAfterSeqSql("sess-A", "5")
+  assertTrue(sql.contains("FROM session_events"), "reads session_events")
+  assertTrue(sql.contains("session_id = 'sess-A'"), "filters by session")
+  assertTrue(sql.contains("CAST(seq AS INTEGER) > CAST('5' AS INTEGER)"), "numeric cursor compare")
+  assertTrue(sql.contains("ORDER BY CAST(seq AS INTEGER) ASC"), "oldest first")
 }
