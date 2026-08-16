@@ -3561,7 +3561,11 @@ pub func setHighlightScanSeq(sessionId: in String, lastSeq: in String): Result[U
 // consumer can re-verify the hash chain (docs/session-events-store.md).
 func rowToCaptureEvent(r: in CloudAgents.Sqlite.Row): CloudAgents.Capture.CaptureEvent {
   // seq is stored as digit TEXT; parse back to the Long CaptureEvent carries.
-  return CloudAgents.Capture.CaptureEvent(
+  // Construct UNQUALIFIED (CaptureEvent, not CloudAgents.Capture.CaptureEvent):
+  // package-qualified record construction is a documented runtime trap
+  // (docs/lyric/gotchas.md), and every other record in this repo — including the
+  // CheckpointBridge — is built unqualified via its import (#964).
+  return CaptureEvent(
     seq = parseNatString(colAt(r.cols, 1)).toLong(),
     eventType = colAt(r.cols, 2),
     payload = colAt(r.cols, 3),
@@ -3577,6 +3581,15 @@ func rowToCaptureEvent(r: in CloudAgents.Sqlite.Row): CloudAgents.Capture.Captur
 /// *submitted* (`events.length`) — because `INSERT OR IGNORE` silently skips a
 /// row already present, this is the submitted count, not necessarily the count
 /// newly inserted (query back with `sessionEventsAfterSeq` for the stored set).
+///
+/// Tamper-evidence boundary (#965): `INSERT OR IGNORE` keying on
+/// `(session_id, seq)` means a re-append that carries DIFFERENT content for an
+/// already-stored seq is discarded, not adjudicated here. That is intentional —
+/// this accessor is a durable append sink, not the integrity check. The chain is
+/// verified by `CloudAgents.Capture.verifyChain` on read (a differing prev_hash/
+/// hash makes the stored chain fail verification), so a caller re-appending a
+/// diverged prefix should `verifyChain` first rather than rely on the store to
+/// reject it.
 pub func appendSessionEvents(
   sessionId: in String, events: in slice[CloudAgents.Capture.CaptureEvent]
 ): Result[Int, CloudAgents.Sqlite.DbError] {
