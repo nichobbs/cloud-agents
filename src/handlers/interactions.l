@@ -6,6 +6,7 @@ import CloudAgents.Repository
 import CloudAgents.Sqlite
 import CloudAgents.Streaming
 import CloudAgents.Text
+import CloudAgents.Capture
 import extern System.Environment as Env
 import extern System.String as DotNetString
 
@@ -34,6 +35,73 @@ pub func getMessages(id: in String): Result[MessageList, Web.ApiError] {
   }
   match listMessages(id) {
     case Ok(msgs) -> return Ok(MessageList(messages = msgs))
+    case Err(e) -> return Err(dbError(e))
+  }
+}
+
+func allDigits(s: in String): Bool {
+  if s.length == 0 {
+    return false
+  }
+  var i = 0
+  val stop = s.length.toInt()
+  while i < stop {
+    if not isDigit(s.substring(i, 1)) {
+      return false
+    }
+    i = i + 1
+  }
+  return true
+}
+
+/// Encode one captured event. `payload` is emitted as a JSON *string*
+/// (escaped), not a raw nested value, so the envelope stays valid JSON even for
+/// a `malformed` event whose payload is not valid JSON, and the raw NDJSON line
+/// round-trips byte-for-byte for the reader to reconstruct + `verifyChain`.
+/// `seq` is a digit string (matching the store's TEXT seq and the messages
+/// endpoint), avoiding any JSON-number precision concern.
+func captureEventToJson(e: in CloudAgents.Capture.CaptureEvent): String {
+  return "{\"seq\":\"" + CloudAgents.Streaming.jsonEscape(toString(e.seq)) + "\",\"type\":\"" +
+    CloudAgents.Streaming.jsonEscape(e.eventType) +
+    "\",\"payload\":\"" +
+    CloudAgents.Streaming.jsonEscape(e.payload) +
+    "\",\"prevHash\":\"" +
+    CloudAgents.Streaming.jsonEscape(e.prevHash) +
+    "\",\"hash\":\"" +
+    CloudAgents.Streaming.jsonEscape(e.hash) +
+    "\"}"
+}
+
+/// Render a session's captured events as the `{"events":[…]}` audit envelope,
+/// ascending seq. Pure; reused by the endpoint handler and its offline test.
+pub func sessionEventsToJson(events: in slice[CloudAgents.Capture.CaptureEvent]): String {
+  var json = "{\"events\":["
+  var i = 0
+  while i < events.length {
+    if i > 0 {
+      json = json + ","
+    }
+    json = json + captureEventToJson(events[i])
+    i = i + 1
+  }
+  json = json + "]}"
+  return json
+}
+
+/// GET /api/sessions/{id}/events?after=seq — a session's durable capture chain,
+/// events with seq strictly greater than `afterSeq` (empty = from the start),
+/// oldest first. Feeds the platform fetch-client → GraphIngest handoff. A
+/// non-numeric `afterSeq` is rejected rather than silently treated as 0 by
+/// SQLite's CAST. See docs/session-events-endpoint.md.
+pub func getSessionEvents(id: in String, afterSeq: in String): Result[String, Web.ApiError] {
+  if id.length == 0 {
+    return Err(Web.badRequest("id is required"))
+  }
+  if afterSeq.length > 0 and not allDigits(afterSeq) {
+    return Err(Web.badRequest("after must be a non-negative integer"))
+  }
+  match sessionEventsAfterSeq(id, afterSeq) {
+    case Ok(events) -> return Ok(sessionEventsToJson(events))
     case Err(e) -> return Err(dbError(e))
   }
 }

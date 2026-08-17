@@ -8,10 +8,10 @@ import CloudAgents.Interactions
 import CloudAgents.Repository
 import CloudAgents.Sqlite
 import CloudAgents.Streaming
+import CloudAgents.Capture
 import extern System.Environment as Env
 
 // ── Live-DB plumbing (same pattern as tests/prompt_tests.l) ───────────────────
-
 @externTarget("System.IO.File.Delete")
 func fileDelete(path: in String): Unit = ()
 
@@ -406,7 +406,6 @@ test "parseAgentPlan strips ANSI SGR codes before parsing (#794)" {
   assertEqualInt(parseAgentPlan(weird).length.toInt(), 0, "non-SGR escapes are not stripped")
 }
 
-
 test "todosUpdatedAfter is session-scoped and cursor-correct; plan ingest is isolated (#831)" {
   val dbPath = useFreshTestDb("todo-cursor-isolation")
   defer {
@@ -533,4 +532,91 @@ test "ingested plan lists first step first (#826) and enforces storage caps (#82
     case Ok(todos) -> assertEqualInt(todos.length.toInt(), 50, "no-op ingest left the capped plan alone")
     case Err(e) -> assertTrue(false, "listTodos failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
   }
+}
+
+// ── GET /api/sessions/{id}/events (docs/session-events-endpoint.md) ───────────
+// Three non-blank stream-json lines -> seq 0,1,2, one payload carrying an
+// apostrophe so escaping/round-tripping is exercised.
+func fixtureEventsNdjson(): String {
+  val l0 = "{\"type\":\"assistant\",\"message\":{\"content\":[{\"type\":\"text\",\"text\":\"hi\"}]}}"
+  val l1 = "{\"type\":\"user\",\"message\":{\"content\":\"it's a test\"}}"
+  val l2 = "{\"type\":\"result\",\"subtype\":\"success\"}"
+  return l0 + "\n" + l1 + "\n" + l2 + "\n"
+}
+
+// Pure encoder — no DB. Envelope shape, string seq, escaped payloads, empty case.
+test "sessionEventsToJson encodes the audit envelope with escaped payloads" {
+  val acc: List[CaptureEvent] = newList()
+  // A normal event whose payload contains a double quote (must be escaped), and
+  // a malformed event whose payload is not valid JSON (carried as a string).
+  acc.add(CaptureEvent(seq = 0.toLong(), eventType = "system", payload = "x\"y", prevHash = "", hash = "h0"))
+  acc.add(
+    CaptureEvent(seq = 1.toLong(), eventType = "malformed", payload = "not json <<", prevHash = "h0", hash = "h1")
+  )
+  val json = CloudAgents.Interactions.sessionEventsToJson(acc.toArray())
+
+  assertTrue(json.startsWith("{\"events\":["), "envelope opens with the events array")
+  assertTrue(json.endsWith("]}"), "envelope closes the array and object")
+  assertTrue(json.contains("\"seq\":\"0\""), "seq is rendered as a string")
+  assertTrue(json.contains("\"type\":\"malformed\""), "malformed event type is preserved")
+  // The embedded double quote is escaped, so the envelope stays valid JSON:
+  // payload value x"y -> ...x\"y... inside the JSON string.
+  assertTrue(json.contains("x\\\"y"), "payload double quote is escaped")
+  assertTrue(json.contains("not json <<"), "malformed payload carried verbatim in the string")
+
+  val empty: List[CaptureEvent] = newList()
+  assertEqual(
+    CloudAgents.Interactions.sessionEventsToJson(empty.toArray()),
+    "{\"events\":[]}",
+    "empty session -> empty array"
+  )
+}
+
+// Pure validation — both error paths return before any DB access.
+test "getSessionEvents rejects an empty id and a non-numeric cursor" {
+  match CloudAgents.Interactions.getSessionEvents("", "") {
+    case Ok(_) -> assertTrue(false, "empty id must be rejected")
+    case Err(err) -> assertEqualInt(err.status, 400, "empty id -> 400")
+  }
+  match CloudAgents.Interactions.getSessionEvents("s1", "abc") {
+    case Ok(_) -> assertTrue(false, "non-numeric after must be rejected")
+    case Err(err) -> assertEqualInt(err.status, 400, "non-numeric after -> 400")
+  }
+}
+
+// Live round-trip through the handler over the real store (the HTTP dispatch
+// layer itself still needs the running Lyric.Web server, per the spec §5).
+test "getSessionEvents returns the stored chain as the audit envelope" {
+  val path = useFreshTestDb("sessevents-endpoint")
+  val batch = parseStreamJson(fixtureEventsNdjson(), 0.toLong(), "")
+  match CloudAgents.Repository.appendSessionEvents("sess-E", batch.events) {
+    case Ok(n) -> assertEqualInt(n, 3, "three events appended")
+    case Err(e) -> assertTrue(false, "append failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+  }
+
+  val json = match CloudAgents.Interactions.getSessionEvents("sess-E", "") {
+    case Ok(s) -> s
+    case Err(e) -> panic("getSessionEvents from start returned an unexpected error")
+  }
+  assertTrue(json.startsWith("{\"events\":["), "envelope shape")
+  assertTrue(json.contains("\"seq\":\"0\""), "from-start includes event 0")
+  assertTrue(json.contains("\"seq\":\"2\""), "from-start includes the last event")
+  assertTrue(json.contains("it's a test"), "apostrophe payload round-trips verbatim")
+
+  // Cursor: after=0 excludes event 0, includes the tail.
+  val tail = match CloudAgents.Interactions.getSessionEvents("sess-E", "0") {
+    case Ok(s) -> s
+    case Err(e) -> panic("cursor fetch returned an unexpected error")
+  }
+  assertTrue(not tail.contains("\"seq\":\"0\""), "after=0 excludes event 0")
+  assertTrue(tail.contains("\"seq\":\"1\""), "after=0 includes event 1")
+
+  // Unknown session -> empty envelope, not an error (parity with messages).
+  val none = match CloudAgents.Interactions.getSessionEvents("sess-does-not-exist", "") {
+    case Ok(s) -> s
+    case Err(e) -> panic("unknown session should be empty, not an error")
+  }
+  assertEqual(none, "{\"events\":[]}", "unknown session -> empty envelope")
+
+  cleanupTestDb(path)
 }
