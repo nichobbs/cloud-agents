@@ -671,6 +671,18 @@ impl Web.Handler for RouteGetMessages {
   }
 }
 
+// GET /api/sessions/{id}/events?after=seq — durable capture chain for the audit
+// fetch-client (docs/session-events-endpoint.md). Handler builds the JSON
+// envelope itself, so it passes through jsonStringResp unchanged.
+record RouteGetSessionEvents {
+}
+
+impl Web.Handler for RouteGetSessionEvents {
+  func handle(req: in Web.Request): Web.Response {
+    return jsonStringResp(CloudAgents.Interactions.getSessionEvents(pparam(req, "id"), qparam(req, "after")))
+  }
+}
+
 // ─── CloudAgents.Search routes (search.l) ───────────────────────────────────
 record RouteSearchMessages {
 }
@@ -1679,7 +1691,6 @@ impl Web.Handler for RouteProxyValidateKey {
   }
 }
 
-
 // GET /api/harnesses (#523): which harnesses have a runner image on this
 // deployment. Always succeeds — no Result to unwrap, unlike the other Proxy
 // routes above.
@@ -1850,6 +1861,10 @@ pub func main(): Unit {
 
   // Transcript: addressable agent/user messages for a session
   router = Web.addGet(router, "/api/sessions/{id}/messages", RouteGetMessages())
+
+  // Durable per-event capture chain for the provenance audit fetch-client
+  // (docs/session-events-endpoint.md), over the session_events store.
+  router = Web.addGet(router, "/api/sessions/{id}/events", RouteGetSessionEvents())
 
   // Full-text search across every message in the caller's own sessions
   // (docs/phase9-message-search.md), backed by the messages_fts FTS5 index.
