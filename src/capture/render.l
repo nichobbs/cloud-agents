@@ -31,7 +31,9 @@ import CloudAgents.Capture
 // System.Text.Json.JsonValueKind ordinals (Std.Json.valueKind): Object=1,
 // Array=2, String=3.
 val jsonKindObject = 1
+
 val jsonKindArray = 2
+
 val jsonKindString = 3
 
 // A string element's value, or "" when it is not a JSON string OR materialising
@@ -60,31 +62,29 @@ func textOfContent(content: in JsonElement): String {
   while Std.Json.arrayMoveNext(cur) {
     val block = Std.Json.arrayCurrent(cur)
     if Std.Json.valueKind(block) == jsonKindObject {
-      val blockType = match Std.Json.tryGetProperty(block, "type") {
-        case None -> ""
-        case Some(t) -> safeString(t)
-      }
+      val blockType = match Std.Json.tryGetProperty(block, "type") { case None -> ""; case Some(t) -> safeString(t) }
       if blockType == "text" {
-        acc = acc + match Std.Json.tryGetProperty(block, "text") {
-          case None -> ""
-          case Some(txt) -> safeString(txt)
-        }
+        acc = acc + match Std.Json.tryGetProperty(block, "text") { case None -> ""; case Some(txt) -> safeString(txt) }
       }
     }
   }
   return acc
 }
 
-// The visible-text contribution of one event's parsed root. Non-assistant roots
-// and assistant roots with no text blocks contribute "".
+// The visible-text contribution of one event's parsed root. Non-object roots
+// (a payload whose top level is a JSON array/string/number — only reachable via
+// a synthetically-mislabeled event, not real captured data) and assistant roots
+// with no text blocks contribute "". Guarding on valueKind keeps this total:
+// tryGetProperty on a non-object element throws.
 func displayTextOfRoot(root: in JsonElement): String {
-  return match Std.Json.tryGetProperty(root, "message") {
-    case None -> ""
-    case Some(msg) -> match Std.Json.tryGetProperty(msg, "content") {
-      case None -> ""
-      case Some(content) -> textOfContent(content)
-    }
+  if Std.Json.valueKind(root) != jsonKindObject {
+    return ""
   }
+  val msg = match Std.Json.tryGetProperty(root, "message") { case None -> return ""; case Some(m) -> m }
+  if Std.Json.valueKind(msg) != jsonKindObject {
+    return ""
+  }
+  return match Std.Json.tryGetProperty(msg, "content") { case None -> ""; case Some(content) -> textOfContent(content) }
 }
 
 /// The transcript text a single captured event contributes to the PWA — the
@@ -127,8 +127,14 @@ pub func renderDisplayText(events: in slice[CaptureEvent]): String {
   return acc
 }
 
-// The `result` string of a `result`-typed event's parsed root, or None.
+// The `result` string of a `result`-typed event's parsed root, or None. A
+// non-object root (only reachable via a synthetically-mislabeled event) yields
+// None — the valueKind guard keeps this total, since tryGetProperty on a
+// non-object throws.
 func resultTextOfRoot(root: in JsonElement): Option[String] {
+  if Std.Json.valueKind(root) != jsonKindObject {
+    return None
+  }
   return match Std.Json.tryGetProperty(root, "result") {
     case None -> None
     case Some(r) -> if Std.Json.valueKind(r) == jsonKindString { Some(safeString(r)) } else { None }
@@ -148,9 +154,12 @@ pub func finalResultText(events: in slice[CaptureEvent]): Option[String] {
       match Std.Json.tryParseJson(e.payload) {
         case Err(_) -> ()
         case Ok(doc) -> {
-          val r = resultTextOfRoot(Std.Json.rootElement(doc))
-          Std.Json.disposeJson(doc)
-          match r {
+          // defer the dispose (matching displayTextOf's Ok branch) so the doc is
+          // released even if the read throws, not only on the normal path.
+          defer {
+            Std.Json.disposeJson(doc)
+          }
+          match resultTextOfRoot(Std.Json.rootElement(doc)) {
             case Some(s) -> {
               found = Some(s)
             }

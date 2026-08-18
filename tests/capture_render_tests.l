@@ -133,6 +133,18 @@ test "malformed and non-string payloads render empty, never throw" {
   assertEqual(displayTextOf(nonStringText), "", "non-string text -> empty (guarded getString)")
   val contentNotArray = rawEvent(2.toLong(), "assistant", "{\"type\":\"assistant\",\"message\":{\"content\":\"oops\"}}")
   assertEqual(displayTextOf(contentNotArray), "", "non-array content -> empty")
+  // A valid-JSON but non-object root (only reachable via a mislabeled event):
+  // tryGetProperty would throw on it, so the valueKind guard must catch it.
+  val arrayRoot = rawEvent(3.toLong(), "assistant", "[1,2,3]")
+  assertEqual(displayTextOf(arrayRoot), "", "JSON-array root -> empty, no throw")
+  val stringRoot = rawEvent(4.toLong(), "assistant", "\"just a string\"")
+  assertEqual(displayTextOf(stringRoot), "", "JSON-string root -> empty, no throw")
+  val messageNotObject = rawEvent(5.toLong(), "assistant", "{\"type\":\"assistant\",\"message\":[1,2]}")
+  assertEqual(displayTextOf(messageNotObject), "", "non-object message -> empty, no throw")
+  // finalResultText is equally total on a non-object result root.
+  val resultArrayRoot: List[CaptureEvent] = newList()
+  resultArrayRoot.add(rawEvent(0.toLong(), "result", "[1,2,3]"))
+  assertEqual(resultText(finalResultText(resultArrayRoot.toArray())), "<none>", "non-object result root -> None, no throw")
 }
 
 // ── Test 8: finalResultText None when no result event ──
