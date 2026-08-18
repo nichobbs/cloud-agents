@@ -202,18 +202,32 @@ core does not):
   (`src/docker_manager.l:644`) instead of byte-diffing, and reconstruct the PWA
   text stream from events. Needs a Docker host + the real `claude` harness to
   verify without regressing the UI.
-- **Persistence — store built, endpoint deferred.** The `session_events` table
+- **Persistence — store AND endpoint built.** The `session_events` table
   (migration `0030`) + `Repository` accessors (`appendSessionEvents` /
   `sessionEventsAfterSeq`, over `CaptureEvent`, idempotent batch append and an
   exclusive after-seq cursor) are done and live-SQLite tested
   (`docs/session-events-store.md`, `tests/session_events_tests.l`). The
   `GET /api/sessions/{id}/events?after=seq` endpoint (the other half of the WP4
-  acceptance) is the remaining piece — it needs the running `Lyric.Web` server to
-  verify, so it lands as a follow-up on top of this store.
+  acceptance) **shipped** — `getSessionEvents` in `src/handlers/interactions.l`,
+  routed in `src/main.l`, spec `docs/session-events-endpoint.md` (merged as
+  nichobbs/cloud-agents#966). The remaining piece is now cross-repo: the
+  **platform-side fetch client** (Testamur's `CaptureFetch` GETs this endpoint,
+  maps, and `ingestObjects` into the graph — the deferred transport seam).
 - **Graph handoff**: pass the emitted objects to the platform's `GraphIngest`
   (cross-repo; today the emitted objects are the deliverable).
-- **Audit-row enrichment**: fold the existing `permission_requests`/
-  `secret_requests` rows into per-tool `permission` rather than the single
-  context-level mode.
+- **Audit-row enrichment — derivation built, checkpoint attachment deferred.**
+  `CloudAgents.PermissionEnrichment` (`src/capture/permission_enrichment.l`,
+  `docs/capture-permission-enrichment.md`) folds the existing
+  `permission_requests`/`secret_requests` rows into a per-tool `permission` map
+  (`derivePermissions` + `permissionForTool` + `permissionsForSession`,
+  conservative `Denied > Granted > Auto` fold), replacing the single
+  context-level mode. It ships the derivation + accessor + tests
+  (`tests/permission_enrichment_tests.l`, offline + live-SQLite). Attaching the
+  map to the emitted checkpoint steps is the remaining piece: the step-permission
+  assignment lives in the **vendored** `Adapt.mapStreamJson`
+  (`vendor/testamur-checkpoint-format/`, the drift-guard / content-address
+  contract), which supports only one session-level permission — teaching it a
+  per-tool map is a change to the shared checkpoint-format contract and belongs
+  upstream in testamur, not as a local fork (see the spec §"Attachment point").
 - **NuGet migration**: replace the vendored copy with a published
   `Testamur.CheckpointFormat` NuGet package.
