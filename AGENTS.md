@@ -181,6 +181,21 @@ payloads, malformed lines captured not dropped, resumable across chunks) with a
 `verifyChain` tamper check. It does no Docker/DB/HTTP work — it is pure Lyric,
 fully unit-tested (`tests/capture_tests.l`).
 
+**Display-render core — built.** `CloudAgents.Capture.Render`
+(`src/capture/render.l`, `docs/capture-display-render.md`) is the pure interpret
+layer on top of that fidelity core: `displayTextOf`/`renderDisplayText`
+reconstruct the visible assistant transcript (assistant `text` blocks only —
+`thinking`/`tool_use`/`tool_result` excluded, matching what plain `--print`
+showed) from parsed `CaptureEvent`s, and `finalResultText` extracts the terminal
+`result` string. It is the piece that makes the runner flip to
+`--output-format stream-json` safe — without it, byte-diffing the NDJSON log to
+the PWA would show raw JSON. Grounded on **real** captured harness output
+(`tests/fixtures/stream-json/`, two live `claude -p --output-format stream-json`
+turns, sanitized only for session-identifying ids/paths), fully offline-tested
+(`tests/capture_render_tests.l`). The remaining runner-wiring piece (flip the
+entrypoint flag, parse per-event in the poll loop, persist + render, convert the
+read-back paths) is the deferred follow-up in the spec §6.
+
 **Checkpoint emitter (WP6) — built.** `CloudAgents.CheckpointBridge`
 (`src/capture/checkpoint_bridge.l`, `docs/capture-checkpoint.md`) turns a
 captured session's `CaptureEvent`s into the Testamur checkpoint format (a
