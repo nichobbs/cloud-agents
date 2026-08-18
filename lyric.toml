@@ -37,6 +37,7 @@ output_assembly = "CloudAgents.dll"
 "CloudAgents.Prompts"  = "src/handlers/prompts.l"
 "CloudAgents.Crypto"   = "src/crypto/crypto.l"
 "CloudAgents.Capture"  = "src/capture/stream_json.l"
+"CloudAgents.Capture.Render" = "src/capture/render.l"
 "CloudAgents.CheckpointBridge" = "src/capture/checkpoint_bridge.l"
 "CloudAgents.PermissionEnrichment" = "src/capture/permission_enrichment.l"
 # Vendored verbatim from nichobbs/testamur (see vendor/testamur-checkpoint-format/
@@ -66,6 +67,7 @@ output_assembly = "CloudAgents.dll"
 
 [project.tests]
 "CloudAgents.CaptureTests"   = "tests/capture_tests.l"
+"CloudAgents.CaptureRenderTests" = "tests/capture_render_tests.l"
 "CloudAgents.SessionEventsTests" = "tests/session_events_tests.l"
 "CloudAgents.CheckpointBridgeTests" = "tests/checkpoint_bridge_tests.l"
 "CloudAgents.PermissionEnrichmentTests" = "tests/permission_enrichment_tests.l"
