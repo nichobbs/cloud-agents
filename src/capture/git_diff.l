@@ -47,15 +47,6 @@ func digitValue(c: in String): Int {
   return -1
 }
 
-// True iff `s` starts with `prefix`.
-func startsWith(s: in String, prefix: in String): Bool {
-  val pn = prefix.length.toInt()
-  if s.length.toInt() < pn {
-    return false
-  }
-  return s.substring(0, pn) == prefix
-}
-
 // Split `s` on "\n" into lines (a trailing newline does NOT produce a final empty
 // line). Uses the proven forward `indexOfFrom` char-scan idiom.
 func splitLines(s: in String): List[String] {
@@ -78,7 +69,7 @@ func splitLines(s: in String): List[String] {
 
 // Strip a leading "a/" or "b/" (git's default diff prefixes) from a diff path.
 func stripAbPrefix(p: in String): String {
-  if startsWith(p, "a/") or startsWith(p, "b/") {
+  if p.startsWith("a/") or p.startsWith("b/") {
     return p.substring(2, p.length.toInt() - 2)
   }
   return p
@@ -91,7 +82,7 @@ func stripAbPrefix(p: in String): String {
 /// (lines that exist in the post-change file); a pure deletion (`+c,0`) yields a
 /// zero-length hunk at `c`.
 pub func parseHunkNewRange(line: in String): Option[HunkRange] {
-  if not startsWith(line, "@@ ") {
+  if not line.startsWith("@@ ") {
     return None
   }
   // The new range begins at the first '+' (the old range begins at '-').
@@ -168,26 +159,26 @@ pub func parseUnifiedDiff(diff: in String): List[FileDelta] {
   var i = 0
   while i < lines.count {
     val line = lines[i]
-    if startsWith(line, "diff --git ") {
+    if line.startsWith("diff --git ") {
       if haveFile {
         files.add(FileDelta(path = curPath, beforeSha256 = None, afterSha256 = None, hunks = curHunks))
       }
       curPath = pathFromDiffGit(line)
       curHunks = newList()
       haveFile = true
-    } else if haveFile and startsWith(line, "--- ") {
+    } else if haveFile and line.startsWith("--- ") {
       val p = line.substring(4, line.length.toInt() - 4)
       if p != "/dev/null" {
         curPath = stripAbPrefix(p)
       }
-    } else if haveFile and startsWith(line, "+++ ") {
+    } else if haveFile and line.startsWith("+++ ") {
       // Processed after "---", so a present new path (add/modify/rename) wins;
       // for a deletion ("+++ /dev/null") the "--- a/path" already set curPath.
       val p = line.substring(4, line.length.toInt() - 4)
       if p != "/dev/null" {
         curPath = stripAbPrefix(p)
       }
-    } else if haveFile and startsWith(line, "@@ ") {
+    } else if haveFile and line.startsWith("@@ ") {
       match parseHunkNewRange(line) {
         case Some(h) -> curHunks.add(h)
         case None -> ()

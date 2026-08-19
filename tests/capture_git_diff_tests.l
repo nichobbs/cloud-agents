@@ -144,6 +144,17 @@ test "parseUnifiedDiff handles a rename-only change (no hunks)" {
   assertEqualInt(files[0].hunks.count, 0, "a pure rename has no hunks")
 }
 
+test "parseUnifiedDiff handles a binary file (no hunks)" {
+  // A binary change has a "Binary files … differ" line and no @@ hunks.
+  val bin = "diff --git a/logo.png b/logo.png\n" +
+    "index 1a2b3c4..5d6e7f8 100644\n" +
+    "Binary files a/logo.png and b/logo.png differ\n"
+  val files = parseUnifiedDiff(bin)
+  assertEqualInt(files.count, 1, "one binary file")
+  assertEqual(files[0].path, "logo.png", "binary file path (from the diff --git header)")
+  assertEqualInt(files[0].hunks.count, 0, "a binary file has no line hunks")
+}
+
 test "parseUnifiedDiff on an empty or non-diff input yields no files" {
   assertEqualInt(parseUnifiedDiff("").count, 0, "empty diff -> no files")
   assertEqualInt(parseUnifiedDiff("not a diff at all\njust text\n").count, 0, "non-diff text -> no files")
