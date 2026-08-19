@@ -296,3 +296,22 @@ test "emitFromCaptureWithDiff on an empty diff is byte-identical to emitFromCapt
     case None -> assertTrue(false, "expected a checkpoint")
   }
 }
+
+test "emitFromCaptureWithDiff on a malformed / non-diff input fails safe (no file_change, drift-free)" {
+  // Non-diff text has no `diff --git` line, so the parser (total by contract)
+  // yields no deltas — the mapping stays byte-identical to emitFromCapture and no
+  // spurious file_change step is emitted (#983).
+  val m = match emitFromCaptureWithDiff(eventsOf(), "", ctx(), "not a diff at all\n@@ garbage\nrandom text\n") {
+    case Ok(mm) -> mm
+    case Err(e) -> panic("emitFromCaptureWithDiff failed: " + bridgeErrorMessage(e))
+  }
+  assertEqual(m.sessionId, expectedSessionId(), "malformed diff: session id unchanged")
+  match m.checkpointId {
+    case Some(c) -> assertEqual(c, expectedCheckpointId(), "malformed diff: checkpoint id unchanged")
+    case None -> assertTrue(false, "expected a checkpoint")
+  }
+  match fileChangeStepOf(m) {
+    case Some(_) -> assertTrue(false, "a malformed diff must not emit a file_change step")
+    case None -> assertTrue(true, "malformed diff -> no file_change step")
+  }
+}
