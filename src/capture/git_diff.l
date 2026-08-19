@@ -178,6 +178,12 @@ pub func parseUnifiedDiff(diff: in String): List[FileDelta] {
       if p != "/dev/null" {
         curPath = stripAbPrefix(p)
       }
+    } else if haveFile and line.startsWith("rename to ") {
+      // A rename-only change has no +++/--- lines; git emits the target path
+      // UNAMBIGUOUSLY here (verbatim, no `a/`/`b/` prefix), so prefer it over the
+      // `diff --git a/X b/Y` header split, which is ambiguous for paths that
+      // themselves contain " b/" (security review #980).
+      curPath = line.substring(10, line.length.toInt() - 10)
     } else if haveFile and line.startsWith("@@ ") {
       match parseHunkNewRange(line) {
         case Some(h) -> curHunks.add(h)

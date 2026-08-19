@@ -34,8 +34,10 @@ pub func parseHunkNewRange(line: String): Option[HunkRange]
 - `parseHunkNewRange` — the single-hunk-header helper, exposed for direct testing.
 
 **Path**: taken from `+++ b/<path>` (the post-change path), or from `--- a/<path>`
-for a deletion (`+++ /dev/null`), or from the `diff --git a/… b/<path>` header for
-a rename-only change with no `+++`/`---`. The `a/`/`b/` prefix is stripped.
+for a deletion (`+++ /dev/null`), or from the unambiguous `rename to <path>` line
+for a rename-only change with no `+++`/`---`. The `diff --git a/… b/…` header is
+only a last-resort fallback (its `a/…b/…` split is ambiguous for paths containing
+` b/`, so the `rename to` line is preferred). The `a/`/`b/` prefix is stripped.
 
 **File kinds**: modify, add (`--- /dev/null`), delete (`+++ /dev/null`, new-side
 range `+c,0` → a zero-length hunk at `c`), rename (path from the header, no hunks),

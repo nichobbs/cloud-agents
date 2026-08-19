@@ -140,8 +140,22 @@ test "parseUnifiedDiff handles a rename-only change (no hunks)" {
     "rename to new.txt\n"
   val files = parseUnifiedDiff(rename)
   assertEqualInt(files.count, 1, "one renamed file")
-  assertEqual(files[0].path, "new.txt", "rename target path (from the diff --git b/ token)")
+  assertEqual(files[0].path, "new.txt", "rename target path (from the unambiguous rename-to line)")
   assertEqualInt(files[0].hunks.count, 0, "a pure rename has no hunks")
+}
+
+test "parseUnifiedDiff uses the unambiguous rename-to line for a path containing ' b/' (#980)" {
+  // A path containing " b/" makes the `diff --git a/… b/…` header split
+  // ambiguous (the first " b/" is inside the path, not the a/→b/ boundary);
+  // the `rename to` line carries the target verbatim, so it wins.
+  val rename = "diff --git a/x b/y.txt b/x b/y.txt\n" +
+    "similarity index 95%\n" +
+    "rename from old.txt\n" +
+    "rename to x b/y.txt\n"
+  val files = parseUnifiedDiff(rename)
+  assertEqualInt(files.count, 1, "one renamed file")
+  assertEqual(files[0].path, "x b/y.txt", "target from the unambiguous rename-to line, not the ambiguous header split")
+  assertEqualInt(files[0].hunks.count, 0, "no hunks")
 }
 
 test "parseUnifiedDiff handles a binary file (no hunks)" {
