@@ -63,16 +63,22 @@ binary (no hunks).
 
 ## The rest of the Q4 arc (sequenced follow-ups)
 
-1. **Contract change (testamur)** — teach `CheckpointFormat.Adapt.mapStreamJson`
-   (or a companion) to accept captured file deltas and emit a `file_change` step
-   into the checkpoint frontier (agent origin), so the checkpoint content address
-   covers it. Re-vendor into cloud-agents. This is a shared-contract change (its
-   own spec + ADR).
-2. **Runner capture + bridge wiring (cloud-agents)** — run `git diff` over the
-   workspace at session end, parse it here, thread the deltas through
-   `CheckpointBridge`, and **live-verify** with a real git repo in a container that
-   Q4 attributes a hunk to the session's step.
+1. **Contract change (testamur) — LANDED** (#127, ADR-0016).
+   `CheckpointFormat.Adapt.mapStreamJsonWithFileChanges` accepts captured file
+   deltas and emits an agent-origin `file_change` step as the checkpoint frontier
+   tip; Q4 answers on a captured session, proven on live PG. Re-vendored into
+   cloud-agents (`vendor/testamur-checkpoint-format/`).
+2. **Bridge wiring (cloud-agents) — LANDED** (#982).
+   `CheckpointBridge.emitFromCaptureWithDiff` parses a captured workspace `git
+   diff` here and threads the deltas through the vendored mapper, so a captured
+   session + a real diff emits a `file_change`-bearing checkpoint. The runner's
+   inspect-diff path already produces the `git diff HEAD` this consumes; empty
+   deltas keep the drift-guard ids exact.
+3. **Runner live flow (cloud-agents) — remaining.** Wire the runner's runtime
+   path (capture events → `emitFromCaptureWithDiff` → the graph handoff) and
+   live-verify end-to-end in a container. This is the same cross-repo
+   `CaptureFetch` graph handoff the whole capture arc defers; the emitted objects
+   are the deliverable until then.
 
-Until (1)+(2) land, this parser produces `FileDelta`s that nothing yet consumes —
-the same offline-core-first pattern the capture and display-render cores followed
-before the runner flip.
+The parser itself remains a pure offline core — the same offline-core-first
+pattern the capture and display-render cores followed before the runner flip.

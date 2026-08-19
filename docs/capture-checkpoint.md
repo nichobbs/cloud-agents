@@ -78,6 +78,10 @@ emitFromCapture(events: slice[CaptureEvent], genesisPrevHash: String,
                 context: InvocationContext) -> Result[StreamJsonMapping, BridgeError]
 emitFromTranscript(ndjson: String, context: InvocationContext)
                 -> Result[StreamJsonMapping, BridgeError]   // parse + emit, one call
+emitFromCaptureWithFileChanges(events, genesisPrevHash, context,
+                fileChanges: List[FileDelta]) -> Result[StreamJsonMapping, BridgeError]
+emitFromCaptureWithDiff(events, genesisPrevHash, context,
+                gitDiff: String) -> Result[StreamJsonMapping, BridgeError]
 runnerContext(principalId, principalDisplay, workspace, startedAt, promptText,
               model, permission, treeHash: Option[String]) -> InvocationContext
 permissionOf(mode: String) -> Permission                    // "granted"|"denied"|else→auto
@@ -87,6 +91,18 @@ permissionOf(mode: String) -> Permission                    // "granted"|"denied
   returned `StreamJsonMapping` carries the objects (dependency order), the
   per-event kind labels, the `mapped`/`note` accounting, the session id, and the
   checkpoint id (present iff `context.tree` is set).
+- `emitFromCaptureWithFileChanges` also threads captured workspace `FileDelta`s
+  through the vendored `Adapt.mapStreamJsonWithFileChanges` (testamur ADR-0016):
+  a non-empty list adds one agent-origin `file_change` step as the checkpoint
+  frontier tip, so **Q4 attributes a PR hunk to this session**; an empty list is
+  byte-identical to `emitFromCapture` (content addresses unchanged — the
+  cross-repo drift-guard still pins the exact ids). `emitFromCapture` now
+  delegates to it with an empty list.
+- `emitFromCaptureWithDiff` is the runner seam: it parses the raw workspace
+  `git diff` (the runner's inspect-diff `git diff HEAD` output) into `FileDelta`s
+  via `CloudAgents.Capture.GitDiff.parseUnifiedDiff`, then calls the above. A
+  malformed/empty diff parses to no deltas ⇒ byte-identical to `emitFromCapture`
+  (fails safe).
 - `emitFromTranscript` composes `parseStreamJson` (from seq 0, genesis `""`) with
   `emitFromCapture` for callers that don't need to keep the `CaptureEvent`s.
 - `runnerContext` builds the `InvocationContext` from primitives so callers need
