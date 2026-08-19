@@ -201,3 +201,98 @@ test "bridgeErrorMessage renders ChainInvalid and MapFailed" {
   assertTrue(mapf.contains("checkpoint mapping failed:"), "MapFailed names the failure class")
   assertTrue(mapf.contains("ill-formed UTF-16"), "MapFailed carries the detail")
 }
+
+// ── file_change capture through the bridge (ADR-0016; re-vendor of testamur #127) ──
+func eventsOf(): slice[CaptureEvent] {
+  return parseStreamJson(transcript(), 0.toLong(), "").events
+}
+
+// A real `git diff` over notes.txt (one replace + one append) — verbatim git
+// unified output, the shape the runner's inspect-diff path emits.
+func realDiff(): String {
+  return "diff --git a/notes.txt b/notes.txt\n" +
+    "index 83db48f..e0c9b5e 100644\n" +
+    "--- a/notes.txt\n" +
+    "+++ b/notes.txt\n" +
+    "@@ -1,3 +1,4 @@\n" +
+    " line1\n" +
+    "-line2\n" +
+    "+CHANGED\n" +
+    " line3\n" +
+    "+line4\n"
+}
+
+func fileChangeStepOf(m: in StreamJsonMapping): Option[Step] {
+  var found: Option[Step] = None
+  var i = 0
+  while i < m.objects.count {
+    match m.objects[i] {
+      case StepObject(step) -> {
+        if stepKindName(step.body) == "file_change" {
+          found = Some(value = step)
+        }
+      }
+      case SessionObject(_) -> ()
+      case CheckpointObject(_) -> ()
+    }
+    i = i + 1
+  }
+  return found
+}
+
+test "emitFromCaptureWithFileChanges with EMPTY deltas keeps the exact drift-guard ids" {
+  val noDelta: List[FileDelta] = newList()
+  val base = match emitFromCaptureWithFileChanges(eventsOf(), "", ctx(), noDelta) {
+    case Ok(m) -> m
+    case Err(e) -> panic("emitFromCaptureWithFileChanges failed: " + bridgeErrorMessage(e))
+  }
+  assertEqual(base.sessionId, expectedSessionId(), "empty deltas: session id unchanged (no drift)")
+  match base.checkpointId {
+    case Some(c) -> assertEqual(c, expectedCheckpointId(), "empty deltas: checkpoint id unchanged (no drift)")
+    case None -> assertTrue(false, "expected a checkpoint")
+  }
+  match fileChangeStepOf(base) {
+    case Some(_) -> assertTrue(false, "no file_change step with empty deltas")
+    case None -> assertTrue(true, "no file_change step emitted")
+  }
+}
+
+test "emitFromCaptureWithDiff parses a real git diff into a file_change step and re-anchors the checkpoint" {
+  val m = match emitFromCaptureWithDiff(eventsOf(), "", ctx(), realDiff()) {
+    case Ok(mm) -> mm
+    case Err(e) -> panic("emitFromCaptureWithDiff failed: " + bridgeErrorMessage(e))
+  }
+  match fileChangeStepOf(m) {
+    case Some(step) -> {
+      match step.body {
+        case FileChangeBody(files) -> {
+          assertEqualInt(files.count, 1, "one changed file")
+          assertEqual(files[0].path, "notes.txt", "path parsed from the diff")
+          assertEqualInt(files[0].hunks.count, 1, "one hunk")
+          assertEqualInt(files[0].hunks[0].start.toInt(), 1, "new-side hunk start")
+          assertEqualInt(files[0].hunks[0].lines.toInt(), 4, "new-side hunk lines")
+        }
+        case _ -> assertTrue(false, "the file_change step must carry a FileChangeBody")
+      }
+    }
+    case None -> assertTrue(false, "a file_change step must be emitted from a non-empty diff")
+  }
+  // The checkpoint now covers the file_change step, so its id differs from the
+  // no-diff drift-guard id.
+  match m.checkpointId {
+    case Some(c) -> assertTrue(c != expectedCheckpointId(), "checkpoint re-anchored over the file_change step")
+    case None -> assertTrue(false, "expected a checkpoint")
+  }
+}
+
+test "emitFromCaptureWithDiff on an empty diff is byte-identical to emitFromCapture" {
+  val m = match emitFromCaptureWithDiff(eventsOf(), "", ctx(), "") {
+    case Ok(mm) -> mm
+    case Err(e) -> panic("emitFromCaptureWithDiff failed: " + bridgeErrorMessage(e))
+  }
+  assertEqual(m.sessionId, expectedSessionId(), "empty diff: session id unchanged")
+  match m.checkpointId {
+    case Some(c) -> assertEqual(c, expectedCheckpointId(), "empty diff: checkpoint id unchanged")
+    case None -> assertTrue(false, "expected a checkpoint")
+  }
+}

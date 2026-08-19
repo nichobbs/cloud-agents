@@ -43,6 +43,7 @@ package CloudAgents.CheckpointBridge
 import Std.Core
 import Std.Collections
 import CloudAgents.Capture
+import CloudAgents.Capture.GitDiff
 import Testamur.CheckpointFormat.Model
 import Testamur.CheckpointFormat.Adapt
 
@@ -136,6 +137,22 @@ pub func permissionOf(mode: in String): Permission {
 pub func emitFromCapture(
   events: in slice[CaptureEvent], genesisPrevHash: in String, context: in InvocationContext
 ): Result[StreamJsonMapping, BridgeError] {
+  val noDeltas: List[FileDelta] = newList()
+  return emitFromCaptureWithFileChanges(events, genesisPrevHash, context, noDeltas)
+}
+
+/// As `emitFromCapture`, but ALSO threads captured workspace file diffs into the
+/// mapping so Q4 attributes a PR hunk to this session (ADR-0016). The vendored
+/// `Adapt.mapStreamJsonWithFileChanges` emits an agent-origin `file_change` step
+/// (the checkpoint frontier tip) when `fileChanges` is non-empty; empty deltas
+/// keep the mapping byte-identical to `mapStreamJson` (no content-address drift).
+/// The chain is still verified before any mapping.
+pub func emitFromCaptureWithFileChanges(
+  events: in slice[CaptureEvent],
+  genesisPrevHash: in String,
+  context: in InvocationContext,
+  fileChanges: in List[FileDelta],
+): Result[StreamJsonMapping, BridgeError] {
   if not verifyChain(events, genesisPrevHash) {
     return Err(
       error = ChainInvalid(
@@ -149,10 +166,25 @@ pub func emitFromCapture(
     lines.add(events[i].payload)
     i = i + 1
   }
-  return match mapStreamJson(lines, context) {
+  return match mapStreamJsonWithFileChanges(lines, context, fileChanges) {
     case Ok(mapping) -> Ok(value = mapping)
     case Err(e) -> Err(error = MapFailed(detail = adaptErrorMessage(e)))
   }
+}
+
+/// As `emitFromCaptureWithFileChanges`, but takes the RAW `git diff` unified text
+/// captured from the workspace and parses it into `FileDelta`s first
+/// (`CloudAgents.Capture.GitDiff.parseUnifiedDiff`). This is the runner's seam:
+/// capture the workspace diff at session end, hand it here. An empty/malformed
+/// diff parses to no deltas ⇒ byte-identical to `emitFromCapture`.
+pub func emitFromCaptureWithDiff(
+  events: in slice[CaptureEvent],
+  genesisPrevHash: in String,
+  context: in InvocationContext,
+  gitDiff: in String,
+): Result[StreamJsonMapping, BridgeError] {
+  val deltas = CloudAgents.Capture.GitDiff.parseUnifiedDiff(gitDiff)
+  return emitFromCaptureWithFileChanges(events, genesisPrevHash, context, deltas)
 }
 
 /// Convenience: parse a whole captured `claude -p --output-format stream-json`
