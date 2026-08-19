@@ -27,6 +27,7 @@ import Std.Core
 import Std.Collections
 import Std.Json
 import CloudAgents.Capture
+import CloudAgents.Text
 
 // System.Text.Json.JsonValueKind ordinals (Std.Json.valueKind): Object=1,
 // Array=2, String=3.
@@ -171,4 +172,80 @@ pub func finalResultText(events: in slice[CaptureEvent]): Option[String] {
     i = i + 1
   }
   return found
+}
+
+// ─── Incremental log→(display + capture) delta ──────────────────────────────
+/// The result of rendering a container-log delta for one poll tick: the visible
+/// text to stream to the PWA, the `CaptureEvent`s to persist, how many characters
+/// of the delta were CONSUMED (advance the log offset by this — only complete
+/// NDJSON lines are consumed; a partial trailing line is left for the next tick),
+/// and the carried-forward chain state (`nextSeq`/`lastHash`) so one hash chain
+/// spans the whole run.
+pub record RenderedDelta {
+  pub displayText: String
+  pub events: slice[CaptureEvent]
+  pub consumed: Int
+  pub nextSeq: Long
+  pub lastHash: String
+}
+
+func emptyEvents(): slice[CaptureEvent] {
+  val e: List[CaptureEvent] = newList()
+  return e.toArray()
+}
+
+// The index of the LAST "\n" in `s`, or -1 if there is none. Uses the proven
+// forward `indexOfFrom` char-scan (as `parseStreamJson` does) rather than
+// backward `substring` indexing.
+func lastNewlineIndex(s: in String): Int {
+  var last = -1
+  var from = 0
+  val n = s.length.toInt()
+  while from < n {
+    val idx = CloudAgents.Text.indexOfFrom(s, "\n", from)
+    if idx < 0 {
+      return last
+    }
+    last = idx
+    from = idx + 1
+  }
+  return last
+}
+
+/// Render the portion of an NDJSON container log past `offset` for one poll tick.
+/// Only the COMPLETE lines in the delta are parsed (up to and including the last
+/// "\n"); any partial trailing line is NOT consumed, so `offset + consumed` lands
+/// on a line boundary and the partial line is re-read next tick — the same
+/// buffering `parseStreamJson`'s doc describes. When the delta has no complete
+/// line yet, nothing is consumed and the chain state is unchanged. Parses from
+/// `startSeq`/`prevHash` so the hash chain continues across ticks. Pure and total.
+pub func renderLogDelta(fullLog: in String, offset: in Int, startSeq: in Long, prevHash: in String): RenderedDelta {
+  val total = fullLog.length.toInt()
+  val safeOffset = if offset > total { total } else { offset }
+  if safeOffset >= total {
+    return RenderedDelta(displayText = "", events = emptyEvents(), consumed = 0, nextSeq = startSeq, lastHash = prevHash)
+  }
+  val delta = fullLog.substring(safeOffset, total - safeOffset)
+  val lastNl = lastNewlineIndex(delta)
+  if lastNl < 0 {
+    return RenderedDelta(displayText = "", events = emptyEvents(), consumed = 0, nextSeq = startSeq, lastHash = prevHash)
+  }
+  val completeLen = lastNl + 1
+  val complete = delta.substring(0, completeLen)
+  val batch = parseStreamJson(complete, startSeq, prevHash)
+  val text = renderDisplayText(batch.events)
+  return RenderedDelta(
+    displayText = text,
+    events = batch.events,
+    consumed = completeLen,
+    nextSeq = batch.nextSeq,
+    lastHash = batch.lastHash
+  )
+}
+
+/// Render an ENTIRE NDJSON container log to its visible transcript — the read-back
+/// path (`getRunOutput`) that returns the whole log at once. Complete lines only;
+/// a trailing partial line (an in-flight run) is ignored until it completes.
+pub func renderFullLog(fullLog: in String): String {
+  return renderLogDelta(fullLog, 0, 0.toLong(), "").displayText
 }

@@ -864,6 +864,52 @@ test "runOutputDeltaJson JSON-escapes the chunk" {
   )
 }
 
+// ── runOutputRenderedDeltaJson: the stream-json (NDJSON) read-back path ────────
+// The runner now emits `--output-format stream-json`, so the incremental
+// read-back renders the VISIBLE assistant text of the log delta rather than
+// echoing raw JSON. `length` is the advanced line-boundary offset (a partial
+// trailing line is left for the next poll); `chunk` is display text.
+test "runOutputRenderedDeltaJson renders one complete NDJSON line as visible text" {
+  val line = "{\"type\":\"assistant\",\"message\":{\"content\":[{\"type\":\"text\",\"text\":\"hi\"}]}}\n"
+  assertEqual(
+    runOutputRenderedDeltaJson(true, line, 0),
+    "{\"running\":\"true\",\"length\":\"" + toString(line.length.toInt()) + "\",\"chunk\":\"hi\"}",
+    "chunk is the rendered assistant text; length is the consumed line-boundary offset"
+  )
+}
+
+test "runOutputRenderedDeltaJson leaves a partial trailing line unconsumed" {
+  // No complete line yet (no newline): nothing is rendered and length stays at
+  // the offset, so the client re-polls the same partial line next tick.
+  assertEqual(
+    runOutputRenderedDeltaJson(true, "{\"type\":\"assis", 0),
+    "{\"running\":\"true\",\"length\":\"0\",\"chunk\":\"\"}",
+    "a partial trailing line consumes nothing (length unchanged)"
+  )
+}
+
+test "runOutputRenderedDeltaJson renders only visible text, skipping control events" {
+  // A control (non-assistant) event contributes no display text but IS a
+  // complete line, so it is consumed (advances length) with an empty chunk.
+  val ctrl = "{\"type\":\"system\",\"subtype\":\"init\"}\n"
+  assertEqual(
+    runOutputRenderedDeltaJson(true, ctrl, 0),
+    "{\"running\":\"true\",\"length\":\"" + toString(ctrl.length.toInt()) + "\",\"chunk\":\"\"}",
+    "a control-only line advances length with an empty chunk"
+  )
+}
+
+test "runOutputRenderedDeltaJson resyncs on an offset past the total" {
+  // The client's offset outlived the log (a new run replaced it): re-render
+  // from 0 so the client replaces its accumulated output instead of appending.
+  val line = "{\"type\":\"assistant\",\"message\":{\"content\":[{\"type\":\"text\",\"text\":\"yo\"}]}}\n"
+  assertEqual(
+    runOutputRenderedDeltaJson(true, line, 5000),
+    "{\"running\":\"true\",\"length\":\"" + toString(line.length.toInt()) + "\",\"chunk\":\"yo\"}",
+    "offset > total re-renders the full log (resync)"
+  )
+}
+
 test "Handler listSessions returns stored sessions" {
   val dbPath = useFreshTestDb("session-list")
   defer {

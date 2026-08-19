@@ -15,6 +15,7 @@ import Std.File
 import Std.Testing
 import CloudAgents.Capture
 import CloudAgents.Capture.Render
+import CloudAgents.Text
 import extern System.Text.Encoding as Encoding
 
 @externTarget("System.Text.Encoding.get_UTF8")
@@ -157,4 +158,65 @@ test "finalResultText is None when the turn has no result event" {
   controls.add(rawEvent(0.toLong(), "system", "{\"type\":\"system\"}"))
   controls.add(rawEvent(1.toLong(), "rate_limit_event", "{\"type\":\"rate_limit_event\"}"))
   assertEqual(renderDisplayText(controls.toArray()), "", "all-control batch renders empty")
+}
+
+// ── renderLogDelta: incremental NDJSON log → (display + capture) ──
+test "renderLogDelta renders a whole newline-terminated log in one pass" {
+  val log = simpleFixture()   // ends with a trailing newline
+  val rd = renderLogDelta(log, 0, 0.toLong(), "")
+  assertEqualInt(rd.events.length.toInt(), 8, "all 8 events consumed")
+  assertEqual(rd.displayText, "pong", "the reply is rendered")
+  assertEqualInt(rd.consumed, log.length.toInt(), "the whole log is consumed (ends on a line boundary)")
+  assertTrue(verifyChain(rd.events, ""), "the rendered events chain-verify")
+}
+
+test "renderLogDelta leaves a partial trailing line unconsumed" {
+  val log = simpleFixture()
+  // Append a partial (newline-less) trailing line — mid-write container output.
+  val partial = log + "{\"type\":\"assistant\",\"message\":{\"content\":[{\"type\":\"text\",\"text\":\"half"
+  val rd = renderLogDelta(partial, 0, 0.toLong(), "")
+  assertEqualInt(rd.events.length.toInt(), 8, "only the 8 complete lines are consumed")
+  assertEqualInt(rd.consumed, log.length.toInt(), "consumed stops at the last newline, before the partial line")
+  assertEqual(rd.displayText, "pong", "the partial line contributes no text yet")
+}
+
+test "renderLogDelta is incremental: two calls equal one, chain continues" {
+  val log = simpleFixture()
+  // Find a mid-log line boundary to split on.
+  val firstNl = CloudAgents.Text.indexOfFrom(log, "\n", 0)
+  val splitAt = CloudAgents.Text.indexOfFrom(log, "\n", firstNl + 1) + 1   // after the 2nd line
+  val head = log.substring(0, splitAt)
+  // Tick 1: render the head (2 complete lines).
+  val rd1 = renderLogDelta(log, 0, 0.toLong(), "")   // full log available, but we only advance by consumed
+  // Simulate two ticks over the SAME growing log by parsing head then the rest.
+  val a = renderLogDelta(head, 0, 0.toLong(), "")
+  val b = renderLogDelta(log, a.consumed, a.nextSeq, a.lastHash)
+  assertEqualInt(a.events.length.toInt() + b.events.length.toInt(), 8, "two ticks consume all 8 events")
+  assertEqual(a.lastHash, rd1.events[a.events.length.toInt() - 1].hash, "tick-1 chain matches the one-pass chain")
+  // The concatenation of both ticks' events chain-verifies as one run.
+  val all: List[CaptureEvent] = newList()
+  var i = 0
+  while i < a.events.length.toInt() {
+    all.add(a.events[i])
+    i = i + 1
+  }
+  var j = 0
+  while j < b.events.length.toInt() {
+    all.add(b.events[j])
+    j = j + 1
+  }
+  assertTrue(verifyChain(all.toArray(), ""), "the two-tick chain verifies end to end")
+}
+
+test "renderLogDelta consumes nothing when there is no complete line yet" {
+  val rd = renderLogDelta("{\"type\":\"assistant\",\"message\":{}", 0, 5.toLong(), "seedhash")
+  assertEqualInt(rd.consumed, 0, "a lone partial line consumes nothing")
+  assertEqualInt(rd.events.length.toInt(), 0, "no events")
+  assertEqualInt(rd.nextSeq.toInt(), 5, "chain state is carried through unchanged")
+  assertEqual(rd.lastHash, "seedhash", "prevHash carried through")
+}
+
+test "renderFullLog renders a whole log to its transcript" {
+  assertEqual(renderFullLog(simpleFixture()), "pong", "simple turn")
+  assertEqual(renderFullLog(toolUseFixture()), "3", "tool-use turn, only the visible text")
 }
