@@ -13,6 +13,7 @@ import CloudAgents.RunnerEnv
 import CloudAgents.SessionStore
 import CloudAgents.Sqlite
 import CloudAgents.Streaming
+import CloudAgents.Capture.Render
 
 pub record ResultCell {
   pub var isSuccess: Bool = false
@@ -592,6 +593,14 @@ pub func streamSessionMessage(
   val maxPollMs = 5000
   var pollMs = minPollMs
   var offset = 0
+  // The runner now emits `--output-format stream-json` NDJSON, so each tick's
+  // log delta is parsed into CaptureEvents (persisted for provenance) and the
+  // visible assistant text is reconstructed for the PWA — see
+  // CloudAgents.Capture.Render.renderLogDelta. `nextSeq`/`lastHash` carry the
+  // capture hash chain across ticks; `offset` advances only past COMPLETE NDJSON
+  // lines (a partial trailing line is re-read next tick).
+  var nextSeq = 0.toLong()
+  var lastHash = ""
   var finished = false
   var clientGone = false
   var timedOut = false
@@ -641,15 +650,36 @@ pub func streamSessionMessage(
       containerId = sessionContainerId(sessionId)
     }
     if containerId.length > 0 {
-      val delta = CloudAgents.Streaming.outputDelta(partialContainerLogs(containerId), offset)
-      if delta.length > 0 {
-        // Fresh output — stay responsive.
+      // Parse the NDJSON log delta into CaptureEvents + the visible text to
+      // stream. Only complete lines are consumed; a partial trailing line is
+      // re-read next tick (renderLogDelta).
+      val rd = CloudAgents.Capture.Render.renderLogDelta(partialContainerLogs(containerId), offset, nextSeq, lastHash, false)
+      // Persist newly-captured events (idempotent batch append — safe to re-run
+      // on a write-failure retry). Best-effort: a persistence failure must never
+      // break the live stream, the same posture as the callback events below.
+      if rd.events.length.toInt() > 0 {
+        match CloudAgents.Repository.appendSessionEvents(sessionId, rd.events) {
+          case Ok(_) -> ()
+          // Best-effort: a persistence failure must never break the live stream.
+          // But log it (#976) — a silent failure here is an unretried GAP in the
+          // audit hash chain, not just a dropped log line, so a real DB problem
+          // on this path must not be invisible (matches this file's other
+          // best-effort WARNING paths).
+          case Err(e) -> println("WARNING: failed to persist " + toString(rd.events.length.toInt()) + " capture event(s) for session " + sessionId + ": " + CloudAgents.Sqlite.dbErrorMessage(e))
+        }
+      }
+      if rd.displayText.length > 0 {
+        // Fresh visible output — stay responsive.
         pollMs = minPollMs
-        match Web.writeChunk(w, CloudAgents.Streaming.toSseChunk(delta)) {
+        match Web.writeChunk(w, CloudAgents.Streaming.toSseChunk(rd.displayText)) {
           case Ok(_) -> {
-            // Only advance PAST bytes actually delivered, so a failed write
-            // re-sends the same delta next tick rather than losing it (#491).
-            offset = offset + delta.length.toInt()
+            // Only advance PAST complete lines actually delivered, so a failed
+            // write re-parses+re-sends the same delta next tick rather than
+            // losing it (#491); the re-parse is deterministic and the persist is
+            // idempotent, so the retry is safe.
+            offset = offset + rd.consumed
+            nextSeq = rd.nextSeq
+            lastHash = rd.lastHash
             writeFailures = 0
           }
           case Err(_) -> {
@@ -660,14 +690,22 @@ pub func streamSessionMessage(
           }
         }
       } else {
-        // Quiet tick — no new output. Send a keepalive comment frame (#499): the
-        // only way to learn the client has vanished is to attempt a write, and
-        // writes otherwise happen solely when there IS new output, so a client
-        // that disconnects during a long silence would go undetected until the
-        // next chunk or the 30-minute cap. The keepalive carries no data (the
-        // frontend parser skips it), so it costs nothing in the transcript but
-        // exercises the connection — a gone client fails it and is concluded gone
-        // via the same consecutive-failure counter as a real chunk.
+        // No visible text this tick. If we DID consume events with no display
+        // text (control/tool-only events), advance past them (they're persisted)
+        // so they are not re-parsed; then fall through to the keepalive probe.
+        if rd.consumed > 0 {
+          offset = offset + rd.consumed
+          nextSeq = rd.nextSeq
+          lastHash = rd.lastHash
+        }
+        // Quiet tick — no visible output. Send a keepalive comment frame (#499):
+        // the only way to learn the client has vanished is to attempt a write,
+        // and visible writes happen solely when there IS text, so a client that
+        // disconnects during a long silence (or a run of control-only events)
+        // would go undetected until the next text chunk or the 30-minute cap. The
+        // keepalive carries no data (the frontend parser skips it) but exercises
+        // the connection — a gone client fails it and is concluded gone via the
+        // same consecutive-failure counter as a real chunk.
         match Web.writeChunk(w, CloudAgents.Streaming.sseKeepalive()) {
           case Ok(_) -> {
             writeFailures = 0
@@ -874,16 +912,32 @@ pub func streamSessionMessage(
   // disconnect (a gone client just won't receive the final frames).
   if cell.isSuccess {
     // Flush any output produced since the last poll (best-effort — the write
-    // fails harmlessly if the client is gone). cell.output is authoritative.
+    // fails harmlessly if the client is gone). cell.output is the authoritative
+    // full NDJSON log. Render its tail delta for the stream, persist any tail
+    // events, and RETURN the fully-rendered transcript (not the raw NDJSON):
+    // the caller persists this return value as the agent message and parses it
+    // for a plan, so it must be the visible text, never the stream-json log.
     val finalLogs = cell.output
-    val delta = CloudAgents.Streaming.outputDelta(finalLogs, offset)
-    if delta.length > 0 {
-      match Web.writeChunk(w, CloudAgents.Streaming.toSseChunk(delta)) {
+    // atEnd = true: the run has finished, so cell.output is the complete,
+    // authoritative log. Consume the trailing line even without a "\n" so the
+    // terminal `result` event (often newline-less) is captured and rendered,
+    // not dropped — there is no later tick to re-read it (#973).
+    val rd = CloudAgents.Capture.Render.renderLogDelta(finalLogs, offset, nextSeq, lastHash, true)
+    if rd.events.length.toInt() > 0 {
+      match CloudAgents.Repository.appendSessionEvents(sessionId, rd.events) {
+        case Ok(_) -> ()
+        // Best-effort, but logged (#976): a silent failure to persist the tail
+        // events is an unretried gap in the audit hash chain.
+        case Err(e) -> println("WARNING: failed to persist " + toString(rd.events.length.toInt()) + " final capture event(s) for session " + sessionId + ": " + CloudAgents.Sqlite.dbErrorMessage(e))
+      }
+    }
+    if rd.displayText.length > 0 {
+      match Web.writeChunk(w, CloudAgents.Streaming.toSseChunk(rd.displayText)) {
         case Ok(_) -> ()
         case Err(_) -> ()
       }
     }
-    return Ok(value = finalLogs)
+    return Ok(value = CloudAgents.Capture.Render.renderFullLog(finalLogs))
   }
   // Failure path: no final flush is attempted here (#497). runSessionMessageAsync
   // only ever writes cell.output on SUCCESS — on failure cell.output stays "" and

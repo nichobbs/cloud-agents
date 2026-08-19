@@ -102,6 +102,25 @@ describe('useStreamMessage incremental (delta) polling', () => {
     expect(result.current.isStreaming).toBe(false);
   });
 
+  it('#975: reattach seeds the delta offset from the raw-log length, not the rendered output length', async () => {
+    // Newer stream-json backend: `output` is RENDERED transcript text (short),
+    // but `length` is the RAW NDJSON log length (larger) — the cursor the delta
+    // endpoint offsets into. Seeding from output.length (2) would re-fetch and
+    // re-render already-shown output; the seed must be the raw `length` (250).
+    vi.mocked(api.getRunOutput).mockResolvedValue({ running: true, output: 'hi', length: 250 });
+    vi.mocked(api.getRunOutputDelta).mockResolvedValue({ running: false, length: 250, chunk: '' });
+
+    const { result } = renderHook(() => useStreamMessage('s1'));
+
+    await waitFor(() => expect(result.current.output).toBe('hi'));
+    // The first delta poll uses the raw-log length (250), NOT output.length (2).
+    // The poll fires after the ~1.5s initial delay, so allow for it.
+    await waitFor(() => expect(api.getRunOutputDelta).toHaveBeenCalledWith('s1', 250), {
+      timeout: 3000,
+    });
+    expect(api.getRunOutputDelta).not.toHaveBeenCalledWith('s1', 2);
+  });
+
   it('falls back to full-log polling when the delta endpoint throws (older backend)', async () => {
     vi.mocked(api.sendMessage).mockImplementation(() => new Promise(() => {}));
     vi.mocked(api.getRunOutput)

@@ -89,23 +89,45 @@ terminal event is `{"type":"result","subtype":"success","result":"…"}`.
    throw, `""`/`None`.
 4. Offline suite passes with no Docker/DB/network and no wall-clock reads.
 
-## 6. Deferred follow-up (the flip this unblocks)
+## 6. The flip this unblocks — LANDED
 
-A single follow-up PR, gated on a Docker host + real harness to verify the UI
-does not regress:
+Landed as the runner entrypoint flip (this file's original §6 deferred
+follow-up). The reconstruction contract above stays pure/offline; the wiring
+below is the runtime-executed side that consumes it. The `renderLogDelta` /
+`renderFullLog` helpers added to `src/capture/render.l` are the seam: each takes
+a full NDJSON log + a byte offset + carried chain state (`nextSeq`/`lastHash`),
+parses only the COMPLETE lines past the offset (a partial trailing line is left
+for the next tick), and returns `{displayText, events, consumed, nextSeq,
+lastHash}`. They are unit-tested (`tests/capture_render_tests.l`).
 
-1. `docker/entrypoint.sh` — add `--output-format stream-json --verbose` to every
-   `claude -p` invocation site (5 spots: first-run, `--session-id`, `--resume`).
-2. `docker_manager.l` poll loop — replace the `outputDelta` byte-diff with:
-   parse the new complete NDJSON lines (`Capture.parseStreamJson`, carrying
-   `nextSeq`/`lastHash` forward), persist the events
-   (`Repository.appendSessionEvents`), and stream `renderDisplayText` of the new
-   events to the PWA via the existing `toSseChunk` framing.
+1. `docker/entrypoint.sh` — `--output-format stream-json --verbose` is added to
+   every `claude -p` invocation site via a shared `STREAM_JSON_ARGS` array (5
+   spots: first-run, `--session-id`, `--resume`). `--verbose` is required
+   alongside `stream-json` in `-p` mode.
+2. `docker_manager.l` poll loop (`streamSessionMessage`) — replaced the
+   `outputDelta` byte-diff with `renderLogDelta`: parse the new complete NDJSON
+   lines (carrying `nextSeq`/`lastHash` forward), persist the events
+   (`Repository.appendSessionEvents`, idempotent, best-effort), and stream
+   `rd.displayText` to the PWA via the existing `toSseChunk` framing. The
+   offset advances by `rd.consumed` (complete lines only) on a successful write.
+   The final flush persists the tail events and RETURNS `renderFullLog(finalLogs)`
+   — the rendered transcript, never the raw NDJSON — because the caller persists
+   the return as the agent message and parses it for a plan.
 3. `getRunOutput` / `getRunOutputFrom` (`handlers/sessions.l`) — the reconnect/
-   replay read-back paths return the container log too; route them through this
-   renderer so a reconnecting client sees text, not NDJSON. Note the offset
-   contract becomes a byte offset into the NDJSON log, rendered forward.
-4. `file_change` step capture for Q4 — the stream-json mapper does not emit
-   `file_change` steps (testamur ADR-0008), so Q4 stays `None` on a
-   stream-json-only session until the entrypoint also captures git diffs. Its own
-   WP; it needs a checkpoint-format contract change and is not part of the flip.
+   replay read-back paths route the container log through the renderer:
+   `getRunOutput` returns `renderFullLog(logs)`; `getRunOutputFrom` uses the new
+   `runOutputRenderedDeltaJson`, which renders the delta past the client offset
+   and reports the advanced line-boundary offset as `length`. Resync (offset past
+   total) is preserved. `runOutputDeltaJson` (plain byte-delta) is kept unchanged
+   for the older text `/output` route and its existing unit tests.
+
+**Still deferred — not part of this flip:** `file_change` step capture for Q4.
+The stream-json mapper does not emit `file_change` steps (testamur ADR-0008), so
+Q4 stays `None` on a stream-json-only session until the entrypoint also captures
+git diffs. Its own WP; it needs a checkpoint-format contract change.
+
+**Verification boundary:** the offline core (renderer + delta helpers) is
+unit-tested on real captured harness output. The live UI-non-regression check
+(a real container emitting stream-json, the PWA rendering identical visible text
+to the old `--print` path) requires a Docker host + the real `claude` harness
+and is the manual end-to-end step, not something the offline suite can assert.

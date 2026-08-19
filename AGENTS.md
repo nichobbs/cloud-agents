@@ -192,9 +192,18 @@ showed) from parsed `CaptureEvent`s, and `finalResultText` extracts the terminal
 the PWA would show raw JSON. Grounded on **real** captured harness output
 (`tests/fixtures/stream-json/`, two live `claude -p --output-format stream-json`
 turns, sanitized only for session-identifying ids/paths), fully offline-tested
-(`tests/capture_render_tests.l`). The remaining runner-wiring piece (flip the
-entrypoint flag, parse per-event in the poll loop, persist + render, convert the
-read-back paths) is the deferred follow-up in the spec §6.
+(`tests/capture_render_tests.l`). **Runner wiring — landed.** The entrypoint flag is flipped
+(`docker/entrypoint.sh` adds `--output-format stream-json --verbose` to every
+`claude -p` site via a shared `STREAM_JSON_ARGS` array), the poll loop
+(`src/docker_manager.l` `streamSessionMessage`) parses each NDJSON delta into
+hash-chained `CaptureEvent`s (`renderLogDelta`), persists them
+(`appendSessionEvents`, idempotent/best-effort), and streams the reconstructed
+visible text to the PWA; the read-back paths (`getRunOutput` /
+`getRunOutputFrom` in `handlers/sessions.l`) route the container log through the
+same renderer so a reconnecting client sees text, not raw NDJSON. The offline
+core (renderer + `renderLogDelta`/`renderFullLog`) is unit-tested; the live
+UI-non-regression check (a real container + the `claude` harness) is the manual
+end-to-end step. See the spec §6 "LANDED".
 
 **Checkpoint emitter (WP6) — built.** `CloudAgents.CheckpointBridge`
 (`src/capture/checkpoint_bridge.l`, `docs/capture-checkpoint.md`) turns a
@@ -210,13 +219,17 @@ match and the NuGet swap is a manifest-only change. A cross-repo drift-guard tes
 pins that a fixed transcript maps to the exact ids testamur computes. Pure and
 offline (`tests/checkpoint_bridge_tests.l`).
 
-Sequenced follow-ups (NOT yet built — each needs an environment or decision this
-core does not):
-- **Runner wiring**: flip `docker/entrypoint.sh:486` to
-  `--output-format stream-json`, parse per-event in the poll loop
-  (`src/docker_manager.l:644`) instead of byte-diffing, and reconstruct the PWA
-  text stream from events. Needs a Docker host + the real `claude` harness to
-  verify without regressing the UI.
+Sequenced follow-ups:
+- **Runner wiring — landed** (offline core; live UI check pending a Docker host).
+  `docker/entrypoint.sh` emits `--output-format stream-json --verbose`, the poll
+  loop (`src/docker_manager.l` `streamSessionMessage`) parses each NDJSON delta
+  into hash-chained events (`renderLogDelta`), persists them
+  (`appendSessionEvents`), and streams the reconstructed visible text; the
+  read-back paths (`getRunOutput`/`getRunOutputFrom`) render the log through the
+  same seam. The renderer + delta helpers are unit-tested; the live
+  UI-non-regression check (a real container + the `claude` harness rendering
+  identical visible text to the old `--print` path) is the remaining manual
+  end-to-end step, which needs a Docker host.
 - **Persistence — store AND endpoint built.** The `session_events` table
   (migration `0030`) + `Repository` accessors (`appendSessionEvents` /
   `sessionEventsAfterSeq`, over `CaptureEvent`, idempotent batch append and an

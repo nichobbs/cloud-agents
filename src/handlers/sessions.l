@@ -10,6 +10,7 @@ import CloudAgents.Repository
 import CloudAgents.SessionStore
 import CloudAgents.Sqlite
 import CloudAgents.Streaming
+import CloudAgents.Capture.Render
 import CloudAgents.Text
 import CloudAgents.Webhooks
 import Std.Uuid
@@ -790,7 +791,17 @@ pub func getRunOutput(id: in String): Result[String, Web.ApiError] {
         case Err(e) -> return Err(Web.internalError("session lookup failed: " + CloudAgents.Sqlite.dbErrorMessage(e)))
       }
       val logs = if containerId.length > 0 { CloudAgents.Docker.partialContainerLogs(containerId) } else { "" }
-      return Ok(value = "{\"running\":\"true\",\"output\":\"" + CloudAgents.Streaming.jsonEscape(logs) + "\"}")
+      // The container log is now NDJSON (`--output-format stream-json`); render
+      // it back to the visible assistant transcript the PWA expects, so the
+      // whole-log read-back path does not surface raw JSON (matches the
+      // per-tick renderLogDelta path in getRunOutputFrom).
+      val rendered = CloudAgents.Capture.Render.renderFullLog(logs)
+      // `length` is the RAW NDJSON log byte length — the cursor the incremental
+      // /output/{offset} endpoint (runOutputRenderedDeltaJson) advances against.
+      // `output` is RENDERED text and is now SHORTER than the raw log, so a
+      // reconnecting client must seed its delta offset from this raw `length`,
+      // NOT from output.length, or it re-renders already-shown output (#975).
+      return Ok(value = "{\"running\":\"true\",\"length\":\"" + toString(logs.length.toInt()) + "\",\"output\":\"" + CloudAgents.Streaming.jsonEscape(rendered) + "\"}")
     }
   }
 }
@@ -882,6 +893,30 @@ pub func runOutputDeltaJson(running: in Bool, logs: in String, offset: in Int): 
     "\"}"
 }
 
+/// The stream-json-aware counterpart of `runOutputDeltaJson`: the runner now
+/// emits NDJSON, so the incremental read-back (reconnect/replay) renders the
+/// VISIBLE assistant text of the log delta rather than returning raw JSON. Only
+/// complete NDJSON lines past `offset` are rendered; `length` is the advanced
+/// line-boundary offset the client polls from next (a partial trailing line is
+/// re-read). Resync is preserved: an `offset` past the current total (the
+/// container restarted with a shorter log) re-renders from 0, so the client
+/// replaces rather than appends — the same rule `runOutputDeltaJson` documents.
+/// `chunk` is display text and `length` is a raw-log cursor: the client already
+/// treats the two independently (append `chunk`, poll from `length`).
+pub func runOutputRenderedDeltaJson(running: in Bool, logs: in String, offset: in Int): String {
+  val total = logs.length.toInt()
+  val effective = if offset > total { 0 } else { offset }
+  // atEnd = false: this path only runs while the session is RUNNING, so the log
+  // may end mid-line; leave a partial trailing line for the next poll. The
+  // finished-run render happens on the whole-log path (renderFullLog, atEnd=true).
+  val rd = CloudAgents.Capture.Render.renderLogDelta(logs, effective, 0.toLong(), "", false)
+  val newLength = effective + rd.consumed
+  val runningStr = if running { "true" } else { "false" }
+  return "{\"running\":\"" + runningStr + "\",\"length\":\"" + toString(newLength) + "\",\"chunk\":\"" +
+    CloudAgents.Streaming.jsonEscape(rd.displayText) +
+    "\"}"
+}
+
 /// Incremental live output for an in-progress run — GET
 /// /api/sessions/{id}/output/{offset}. Same status/container lookups as
 /// getRunOutput above, but instead of returning the ENTIRE container log on
@@ -923,7 +958,7 @@ pub func getRunOutputFrom(id: in String, offsetStr: in String): Result[String, W
         case Err(e) -> return Err(Web.internalError("session lookup failed: " + CloudAgents.Sqlite.dbErrorMessage(e)))
       }
       val logs = if containerId.length > 0 { CloudAgents.Docker.partialContainerLogs(containerId) } else { "" }
-      return Ok(value = runOutputDeltaJson(true, logs, offset))
+      return Ok(value = runOutputRenderedDeltaJson(true, logs, offset))
     }
   }
 }

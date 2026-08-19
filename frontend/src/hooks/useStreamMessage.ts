@@ -104,7 +104,7 @@ export function useStreamMessage(sessionId: string): StreamState {
       generationRef.current === forGeneration;
 
     const resume = async () => {
-      let first: { running: boolean; output: string };
+      let first: { running: boolean; output: string; length?: number };
       try {
         first = await api.getRunOutput(forSession);
       } catch {
@@ -119,7 +119,14 @@ export function useStreamMessage(sessionId: string): StreamState {
       // probe returned the full log, so subsequent polls only need the bytes
       // past it. The server echoes back its current total as `length`, which
       // becomes the next offset.
-      let offset = first.output.length;
+      //
+      // Seed from the probe's RAW-log `length` (newer backend), NOT output.length:
+      // `output` is now RENDERED transcript text, shorter than the raw NDJSON log
+      // the delta endpoint offsets into, so seeding from output.length would
+      // re-fetch-and-re-render already-shown output on reattach (#975). Older
+      // backends omit `length` but returned the raw log as `output`, so
+      // output.length is the right raw cursor there — hence the fallback.
+      let offset = first.length ?? first.output.length;
       // Prefer the incremental endpoint; on the first throw (older backend
       // without the /output/{offset} route) fall back to full-log polling for
       // the rest of this run.

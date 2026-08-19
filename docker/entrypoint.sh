@@ -435,6 +435,19 @@ if [ "${CALLBACKS_ACTIVE}" = "1" ]; then
     PERMISSION_PROMPT_ARGS=(--permission-prompt-tool "mcp__cloud-agents__request_permission")
 fi
 
+# Emit the harness transcript as stream-json NDJSON rather than plain --print
+# text (Testamur §4.1 / ADR-0004; CloudAgents.Capture). The API server's poll
+# loop (src/docker_manager.l streamSessionMessage) parses each NDJSON line into
+# a hash-chained CaptureEvent, persists it (appendSessionEvents), and
+# reconstructs the SAME visible assistant transcript for the PWA via
+# CloudAgents.Capture.Render — so this flip does not regress the UI while
+# giving the provenance capture core real per-event data to work from.
+# --verbose is REQUIRED alongside `--output-format stream-json` in
+# --print/-p mode (the CLI errors out without it); it does not add extra
+# stdout noise in this mode, it enables the per-event stream. Applied to every
+# invocation path below via "${STREAM_JSON_ARGS[@]}".
+STREAM_JSON_ARGS=(--output-format stream-json --verbose)
+
 # Run the actual prompt. stdout is captured by the API server and streamed to
 # the browser as SSE.
 #
@@ -483,15 +496,15 @@ if [ ! -f "$NATIVE_SESSION_MARKER" ]; then
         # the whole run instead of exec-ing straight into it and streaming
         # output live to the API server as it happens.
         if [ -n "$(find "$HOME/.claude/projects" -name "${NATIVE_SESSION_ID}.jsonl" 2>/dev/null | head -n 1)" ]; then
-            exec runuser -u claude-user -- claude -p "${PROMPT}" --model "${MODEL}" --resume "${NATIVE_SESSION_ID}" "${PERMISSION_PROMPT_ARGS[@]}"
+            exec runuser -u claude-user -- claude -p "${PROMPT}" --model "${MODEL}" --resume "${NATIVE_SESSION_ID}" "${STREAM_JSON_ARGS[@]}" "${PERMISSION_PROMPT_ARGS[@]}"
         fi
-        exec runuser -u claude-user -- claude -p "${PROMPT}" --model "${MODEL}" --session-id "${NATIVE_SESSION_ID}" "${PERMISSION_PROMPT_ARGS[@]}"
+        exec runuser -u claude-user -- claude -p "${PROMPT}" --model "${MODEL}" --session-id "${NATIVE_SESSION_ID}" "${STREAM_JSON_ARGS[@]}" "${PERMISSION_PROMPT_ARGS[@]}"
     else
-        exec runuser -u claude-user -- claude -p "${PROMPT}" --model "${MODEL}" "${PERMISSION_PROMPT_ARGS[@]}"
+        exec runuser -u claude-user -- claude -p "${PROMPT}" --model "${MODEL}" "${STREAM_JSON_ARGS[@]}" "${PERMISSION_PROMPT_ARGS[@]}"
     fi
 else
     if [ -n "$NATIVE_SESSION_ID" ]; then
-        exec runuser -u claude-user -- claude -p "${PROMPT}" --model "${MODEL}" --resume "${NATIVE_SESSION_ID}" "${PERMISSION_PROMPT_ARGS[@]}"
+        exec runuser -u claude-user -- claude -p "${PROMPT}" --model "${MODEL}" --resume "${NATIVE_SESSION_ID}" "${STREAM_JSON_ARGS[@]}" "${PERMISSION_PROMPT_ARGS[@]}"
     else
         # Depends on NATIVE_SESSION_ID always being non-empty by the time the
         # marker exists (src/handlers/sessions.l pre-assigns nativeSessionId =
@@ -500,6 +513,6 @@ else
         # the exact #386 failure this file was just fixed for. Unreachable
         # today; kept only because nothing else in this branch needs it, not
         # because it's expected to fire.
-        exec runuser -u claude-user -- claude -p "${PROMPT}" --model "${MODEL}" --resume "${PERMISSION_PROMPT_ARGS[@]}"
+        exec runuser -u claude-user -- claude -p "${PROMPT}" --model "${MODEL}" --resume "${STREAM_JSON_ARGS[@]}" "${PERMISSION_PROMPT_ARGS[@]}"
     fi
 fi
