@@ -243,6 +243,20 @@ Sequenced follow-ups:
   maps, and `ingestObjects` into the graph — the deferred transport seam).
 - **Graph handoff**: pass the emitted objects to the platform's `GraphIngest`
   (cross-repo; today the emitted objects are the deliverable).
+- **Q4 file-change capture — parser built (offline first piece).**
+  `CloudAgents.Capture.GitDiff` (`src/capture/git_diff.l`,
+  `docs/capture-git-diff.md`) parses `git diff` unified output into
+  checkpoint-format `FileDelta`s (new-side hunk ranges + path; add/modify/delete/
+  rename/binary), the input a `file_change` step carries. Q4 attribution needs
+  `file_change` steps, which the stream-json transcript has none of (ADR-0008
+  §capture-completeness), so this is the pure, unit-tested
+  (`tests/capture_git_diff_tests.l`, real `git diff` fixtures) first piece of the
+  Q4 arc. Sequenced follow-ups: (a) a testamur contract change so
+  `Adapt.mapStreamJson` emits a `file_change` step into the checkpoint frontier
+  (re-vendor); (b) capture the workspace diff in the runner, thread the deltas
+  through `CheckpointBridge`, and live-verify (real git repo in a container) that
+  Q4 attributes a hunk to the session's step. `beforeSha256`/`afterSha256` stay
+  `None` (git blob ids are SHA-1, not SHA-256; attribution needs only ranges).
 - **Audit-row enrichment — derivation built, checkpoint attachment deferred.**
   `CloudAgents.PermissionEnrichment` (`src/capture/permission_enrichment.l`,
   `docs/capture-permission-enrichment.md`) folds the existing
