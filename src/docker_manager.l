@@ -653,7 +653,7 @@ pub func streamSessionMessage(
       // Parse the NDJSON log delta into CaptureEvents + the visible text to
       // stream. Only complete lines are consumed; a partial trailing line is
       // re-read next tick (renderLogDelta).
-      val rd = CloudAgents.Capture.Render.renderLogDelta(partialContainerLogs(containerId), offset, nextSeq, lastHash)
+      val rd = CloudAgents.Capture.Render.renderLogDelta(partialContainerLogs(containerId), offset, nextSeq, lastHash, false)
       // Persist newly-captured events (idempotent batch append — safe to re-run
       // on a write-failure retry). Best-effort: a persistence failure must never
       // break the live stream, the same posture as the callback events below.
@@ -913,7 +913,11 @@ pub func streamSessionMessage(
     // the caller persists this return value as the agent message and parses it
     // for a plan, so it must be the visible text, never the stream-json log.
     val finalLogs = cell.output
-    val rd = CloudAgents.Capture.Render.renderLogDelta(finalLogs, offset, nextSeq, lastHash)
+    // atEnd = true: the run has finished, so cell.output is the complete,
+    // authoritative log. Consume the trailing line even without a "\n" so the
+    // terminal `result` event (often newline-less) is captured and rendered,
+    // not dropped — there is no later tick to re-read it (#973).
+    val rd = CloudAgents.Capture.Render.renderLogDelta(finalLogs, offset, nextSeq, lastHash, true)
     if rd.events.length.toInt() > 0 {
       match CloudAgents.Repository.appendSessionEvents(sessionId, rd.events) {
         case Ok(_) -> ()

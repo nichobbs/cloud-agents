@@ -901,7 +901,10 @@ pub func runOutputDeltaJson(running: in Bool, logs: in String, offset: in Int): 
 pub func runOutputRenderedDeltaJson(running: in Bool, logs: in String, offset: in Int): String {
   val total = logs.length.toInt()
   val effective = if offset > total { 0 } else { offset }
-  val rd = CloudAgents.Capture.Render.renderLogDelta(logs, effective, 0.toLong(), "")
+  // atEnd = false: this path only runs while the session is RUNNING, so the log
+  // may end mid-line; leave a partial trailing line for the next poll. The
+  // finished-run render happens on the whole-log path (renderFullLog, atEnd=true).
+  val rd = CloudAgents.Capture.Render.renderLogDelta(logs, effective, 0.toLong(), "", false)
   val newLength = effective + rd.consumed
   val runningStr = if running { "true" } else { "false" }
   return "{\"running\":\"" + runningStr + "\",\"length\":\"" + toString(newLength) + "\",\"chunk\":\"" +

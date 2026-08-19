@@ -212,25 +212,39 @@ func lastNewlineIndex(s: in String): Int {
   return last
 }
 
-/// Render the portion of an NDJSON container log past `offset` for one poll tick.
-/// Only the COMPLETE lines in the delta are parsed (up to and including the last
-/// "\n"); any partial trailing line is NOT consumed, so `offset + consumed` lands
-/// on a line boundary and the partial line is re-read next tick — the same
-/// buffering `parseStreamJson`'s doc describes. When the delta has no complete
-/// line yet, nothing is consumed and the chain state is unchanged. Parses from
+/// Render the portion of an NDJSON container log past `offset`. Parses from
 /// `startSeq`/`prevHash` so the hash chain continues across ticks. Pure and total.
-pub func renderLogDelta(fullLog: in String, offset: in Int, startSeq: in Long, prevHash: in String): RenderedDelta {
+///
+/// `atEnd` decides what counts as a COMPLETE line at the tail:
+/// - `false` (a live poll tick, the run is still producing output): only whole
+///   "\n"-terminated lines are consumed; a partial trailing line is NOT consumed,
+///   so `offset + consumed` lands on a line boundary and the partial line is
+///   re-read next tick — the buffering `parseStreamJson`'s doc describes. When the
+///   delta has no complete line yet, nothing is consumed and the chain is unchanged.
+/// - `true` (the final flush / whole-log render, the log is finished and
+///   authoritative): the ENTIRE remaining delta is consumed, INCLUDING a trailing
+///   line with no "\n". The terminal `result` event is frequently emitted without a
+///   trailing newline, so truncating at the last "\n" here would silently drop it —
+///   and that final line is exactly what becomes the persisted agent message
+///   (#973). At end-of-stream there is no "next tick" to re-read it, so it must be
+///   rendered now.
+pub func renderLogDelta(fullLog: in String, offset: in Int, startSeq: in Long, prevHash: in String, atEnd: in Bool): RenderedDelta {
   val total = fullLog.length.toInt()
   val safeOffset = if offset > total { total } else { offset }
   if safeOffset >= total {
     return RenderedDelta(displayText = "", events = emptyEvents(), consumed = 0, nextSeq = startSeq, lastHash = prevHash)
   }
   val delta = fullLog.substring(safeOffset, total - safeOffset)
-  val lastNl = lastNewlineIndex(delta)
-  if lastNl < 0 {
+  // How much of the delta is safe to consume (see `atEnd` above).
+  val completeLen = if atEnd {
+    delta.length.toInt()
+  } else {
+    val lastNl = lastNewlineIndex(delta)
+    if lastNl < 0 { -1 } else { lastNl + 1 }
+  }
+  if completeLen <= 0 {
     return RenderedDelta(displayText = "", events = emptyEvents(), consumed = 0, nextSeq = startSeq, lastHash = prevHash)
   }
-  val completeLen = lastNl + 1
   val complete = delta.substring(0, completeLen)
   val batch = parseStreamJson(complete, startSeq, prevHash)
   val text = renderDisplayText(batch.events)
@@ -244,8 +258,9 @@ pub func renderLogDelta(fullLog: in String, offset: in Int, startSeq: in Long, p
 }
 
 /// Render an ENTIRE NDJSON container log to its visible transcript — the read-back
-/// path (`getRunOutput`) that returns the whole log at once. Complete lines only;
-/// a trailing partial line (an in-flight run) is ignored until it completes.
+/// path (`getRunOutput`) that returns the whole log at once. The log is complete,
+/// so the final line is rendered even without a trailing newline (`atEnd = true`),
+/// so the terminal `result` text is never dropped (#973).
 pub func renderFullLog(fullLog: in String): String {
-  return renderLogDelta(fullLog, 0, 0.toLong(), "").displayText
+  return renderLogDelta(fullLog, 0, 0.toLong(), "", true).displayText
 }

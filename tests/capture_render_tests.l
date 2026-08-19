@@ -163,7 +163,7 @@ test "finalResultText is None when the turn has no result event" {
 // ── renderLogDelta: incremental NDJSON log → (display + capture) ──
 test "renderLogDelta renders a whole newline-terminated log in one pass" {
   val log = simpleFixture()   // ends with a trailing newline
-  val rd = renderLogDelta(log, 0, 0.toLong(), "")
+  val rd = renderLogDelta(log, 0, 0.toLong(), "", false)
   assertEqualInt(rd.events.length.toInt(), 8, "all 8 events consumed")
   assertEqual(rd.displayText, "pong", "the reply is rendered")
   assertEqualInt(rd.consumed, log.length.toInt(), "the whole log is consumed (ends on a line boundary)")
@@ -174,10 +174,32 @@ test "renderLogDelta leaves a partial trailing line unconsumed" {
   val log = simpleFixture()
   // Append a partial (newline-less) trailing line — mid-write container output.
   val partial = log + "{\"type\":\"assistant\",\"message\":{\"content\":[{\"type\":\"text\",\"text\":\"half"
-  val rd = renderLogDelta(partial, 0, 0.toLong(), "")
+  val rd = renderLogDelta(partial, 0, 0.toLong(), "", false)
   assertEqualInt(rd.events.length.toInt(), 8, "only the 8 complete lines are consumed")
   assertEqualInt(rd.consumed, log.length.toInt(), "consumed stops at the last newline, before the partial line")
   assertEqual(rd.displayText, "pong", "the partial line contributes no text yet")
+}
+
+test "renderLogDelta atEnd consumes a newline-less final line (regression #973)" {
+  val log = simpleFixture()
+  // A trailing `result` event with NO trailing newline — the shape the harness
+  // emits at end-of-stream. On a live tick it stays buffered; at end-of-stream
+  // (atEnd = true) it MUST be consumed, else the terminal result is dropped.
+  val tail = "{\"type\":\"result\",\"subtype\":\"success\",\"result\":\"final answer\"}"
+  val withTail = log + tail
+  // Live tick: the newline-less tail is held back.
+  val live = renderLogDelta(withTail, 0, 0.toLong(), "", false)
+  assertEqualInt(live.consumed, log.length.toInt(), "live tick stops before the newline-less tail")
+  // End-of-stream: the whole delta is consumed, tail included.
+  val fin = renderLogDelta(withTail, 0, 0.toLong(), "", true)
+  assertEqualInt(fin.consumed, withTail.length.toInt(), "atEnd consumes the whole log, tail included")
+  assertEqualInt(fin.events.length.toInt(), 9, "the 8 complete lines PLUS the newline-less result event")
+  // The terminal result text is now recoverable — it would have been dropped
+  // by the pre-fix truncate-at-last-newline behavior.
+  match finalResultText(fin.events) {
+    case Some(s) -> assertEqual(s, "final answer", "the terminal result survives to the final flush")
+    case None -> assertTrue(false, "the terminal result event must be present after atEnd render")
+  }
 }
 
 test "renderLogDelta is incremental: two calls equal one, chain continues" {
@@ -187,10 +209,10 @@ test "renderLogDelta is incremental: two calls equal one, chain continues" {
   val splitAt = CloudAgents.Text.indexOfFrom(log, "\n", firstNl + 1) + 1   // after the 2nd line
   val head = log.substring(0, splitAt)
   // Tick 1: render the head (2 complete lines).
-  val rd1 = renderLogDelta(log, 0, 0.toLong(), "")   // full log available, but we only advance by consumed
+  val rd1 = renderLogDelta(log, 0, 0.toLong(), "", false)   // full log available, but we only advance by consumed
   // Simulate two ticks over the SAME growing log by parsing head then the rest.
-  val a = renderLogDelta(head, 0, 0.toLong(), "")
-  val b = renderLogDelta(log, a.consumed, a.nextSeq, a.lastHash)
+  val a = renderLogDelta(head, 0, 0.toLong(), "", false)
+  val b = renderLogDelta(log, a.consumed, a.nextSeq, a.lastHash, false)
   assertEqualInt(a.events.length.toInt() + b.events.length.toInt(), 8, "two ticks consume all 8 events")
   assertEqual(a.lastHash, rd1.events[a.events.length.toInt() - 1].hash, "tick-1 chain matches the one-pass chain")
   // The concatenation of both ticks' events chain-verifies as one run.
@@ -209,7 +231,7 @@ test "renderLogDelta is incremental: two calls equal one, chain continues" {
 }
 
 test "renderLogDelta consumes nothing when there is no complete line yet" {
-  val rd = renderLogDelta("{\"type\":\"assistant\",\"message\":{}", 0, 5.toLong(), "seedhash")
+  val rd = renderLogDelta("{\"type\":\"assistant\",\"message\":{}", 0, 5.toLong(), "seedhash", false)
   assertEqualInt(rd.consumed, 0, "a lone partial line consumes nothing")
   assertEqualInt(rd.events.length.toInt(), 0, "no events")
   assertEqualInt(rd.nextSeq.toInt(), 5, "chain state is carried through unchanged")
@@ -219,4 +241,13 @@ test "renderLogDelta consumes nothing when there is no complete line yet" {
 test "renderFullLog renders a whole log to its transcript" {
   assertEqual(renderFullLog(simpleFixture()), "pong", "simple turn")
   assertEqual(renderFullLog(toolUseFixture()), "3", "tool-use turn, only the visible text")
+}
+
+test "renderFullLog renders a newline-less final assistant line (regression #973)" {
+  // A complete log whose last line — the visible reply — has no trailing
+  // newline. renderFullLog treats the finished log as authoritative and renders
+  // it; the pre-fix truncate-at-last-newline behavior dropped it entirely.
+  val log = "{\"type\":\"system\",\"subtype\":\"init\"}\n" +
+    "{\"type\":\"assistant\",\"message\":{\"content\":[{\"type\":\"text\",\"text\":\"done\"}]}}"
+  assertEqual(renderFullLog(log), "done", "the newline-less final reply is rendered, not dropped")
 }
