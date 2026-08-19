@@ -1442,6 +1442,23 @@ pub record StreamJsonMapping {
 /// the `Result` is reserved for structural failures of future strict
 /// modes, so current input always maps.
 pub func mapStreamJson(lines: in List[String], context: in InvocationContext): Result[StreamJsonMapping, AdaptError] {
+  return mapStreamJsonWithFileChanges(lines, context, newList())
+}
+
+/// As `mapStreamJson`, but ALSO emits a single agent-origin `file_change` step
+/// (carrying the supplied captured `fileChanges`) as the checkpoint frontier tip
+/// (file-change-capture spec; ADR-0016). This closes the ADR-0008
+/// §capture-completeness gap: Q4 attribution needs `file_change` steps, which the
+/// stream-json transcript has none of, so a caller that separately captured the
+/// workspace `git diff` (cloud-agents `Capture.GitDiff`) passes the deltas here.
+///
+/// With an EMPTY `fileChanges` this is byte-identical to `mapStreamJson` — the
+/// same objects in the same order, so every session/step/checkpoint content
+/// address is unchanged and existing drift-guard vectors hold. The `file_change`
+/// step and the changed frontier tip appear only when diffs are supplied.
+pub func mapStreamJsonWithFileChanges(
+  lines: in List[String], context: in InvocationContext, fileChanges: in List[FileDelta]
+): Result[StreamJsonMapping, AdaptError] {
   // Reject ill-formed UTF-16 up front (spec §3): a lone surrogate anywhere in
   // the transcript would otherwise crash at `getString` during mapping, or
   // hash to divergent bytes across runtimes.
@@ -1481,12 +1498,28 @@ pub func mapStreamJson(lines: in List[String], context: in InvocationContext): R
   val cursor1 = mapEvents(events, settings, cursor0, pending, resolved, "", objects, eventKinds)
   val cursor = flushPending(pending, resolved, settings, cursor1, "", objects)
 
+  // Captured workspace diffs → one agent-origin `file_change` step, chained after
+  // the transcript steps and made the frontier tip so the checkpoint covers it
+  // (ADR-0016). Emitted ONLY when diffs are supplied — empty ⇒ frontierTip stays
+  // the transcript tip and the whole mapping is byte-identical to before.
+  var frontierTip = cursor.lastStepId
+  if fileChanges.count > 0 {
+    frontierTip = chainStep(
+      objects,
+      sessionId,
+      cursor.lastStepId,
+      agentOrigin(context.model, context.principal.id),
+      cursor.lastTs,
+      FileChangeBody(files = fileChanges)
+    )
+  }
+
   var checkpointId: Option[String] = None
   match context.tree {
     case Some(tree) -> {
       val frontier: List[String] = newList()
-      if cursor.lastStepId != "" {
-        frontier.add(cursor.lastStepId)
+      if frontierTip != "" {
+        frontier.add(frontierTip)
       }
       val checkpoint = Checkpoint(session = sessionId, steps = frontier, tree = tree, parent = None, at = cursor.lastTs)
       val ckptId = checkpointIdOf(checkpoint)

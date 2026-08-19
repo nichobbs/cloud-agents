@@ -30,9 +30,9 @@ the same input.
 ### Provenance
 
 - **Source repo**: `github.com/nichobbs/testamur`
-- **Source commit**: `0aac550340a13ec81ca41dd191dd67abea8215d4` (`main`)
+- **Source commit**: `6383d52` (`main`, testamur #127 — `Adapt.mapStreamJsonWithFileChanges`, ADR-0016)
 - **Source paths**: `src/checkpoint_format.l`, `src/checkpoint_format/{canon,sign,model,chain,adapt}.l`
-- **Copied**: 2026-08-15
+- **Copied**: 2026-08-19 (re-vendor: only `adapt.l` changed — it gained `mapStreamJsonWithFileChanges` so the runner can emit a `file_change` step; empty deltas keep byte-identical content addresses, so the drift-guard vectors are unchanged)
 
 ### File hashes (SHA-256 of the copied bytes)
 
@@ -43,7 +43,7 @@ computes for it, so a behavioral drift fails CI even if a hash update is missed.
 
 ```
 63aa423db5741b3c32ef0f1dd7571bcff4bf570f81dd716f470a788ef06256ba  checkpoint_format.l
-7ef0b8944b072b2e2ff4a8d5c37cf5be18da19a79896bc4191af06ede4980145  checkpoint_format/adapt.l
+9de1223fb4166298fbf5c12c595607b5049f1cce63c048c2cff3b2b252ce28fe  checkpoint_format/adapt.l
 09aa627295f86d1477257a7fdd68ad380141222e9322784ed9c92620366b3d56  checkpoint_format/canon.l
 672e5794700c1956b713e21b778ab405fa09d3e9eb85edadf4365efbc8a6495b  checkpoint_format/chain.l
 d174f949203a46fced7130bb7b95784c488735ab85559e12d552fe9cc8f32df0  checkpoint_format/model.l

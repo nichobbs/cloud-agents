@@ -78,6 +78,10 @@ emitFromCapture(events: slice[CaptureEvent], genesisPrevHash: String,
                 context: InvocationContext) -> Result[StreamJsonMapping, BridgeError]
 emitFromTranscript(ndjson: String, context: InvocationContext)
                 -> Result[StreamJsonMapping, BridgeError]   // parse + emit, one call
+emitFromCaptureWithFileChanges(events, genesisPrevHash, context,
+                fileChanges: List[FileDelta]) -> Result[StreamJsonMapping, BridgeError]
+emitFromCaptureWithDiff(events, genesisPrevHash, context,
+                gitDiff: String) -> Result[StreamJsonMapping, BridgeError]
 runnerContext(principalId, principalDisplay, workspace, startedAt, promptText,
               model, permission, treeHash: Option[String]) -> InvocationContext
 permissionOf(mode: String) -> Permission                    // "granted"|"denied"|else→auto
@@ -87,6 +91,18 @@ permissionOf(mode: String) -> Permission                    // "granted"|"denied
   returned `StreamJsonMapping` carries the objects (dependency order), the
   per-event kind labels, the `mapped`/`note` accounting, the session id, and the
   checkpoint id (present iff `context.tree` is set).
+- `emitFromCaptureWithFileChanges` also threads captured workspace `FileDelta`s
+  through the vendored `Adapt.mapStreamJsonWithFileChanges` (testamur ADR-0016):
+  a non-empty list adds one agent-origin `file_change` step as the checkpoint
+  frontier tip, so **Q4 attributes a PR hunk to this session**; an empty list is
+  byte-identical to `emitFromCapture` (content addresses unchanged — the
+  cross-repo drift-guard still pins the exact ids). `emitFromCapture` now
+  delegates to it with an empty list.
+- `emitFromCaptureWithDiff` is the runner seam: it parses the raw workspace
+  `git diff` (the runner's inspect-diff `git diff HEAD` output) into `FileDelta`s
+  via `CloudAgents.Capture.GitDiff.parseUnifiedDiff`, then calls the above. A
+  malformed/empty diff parses to no deltas ⇒ byte-identical to `emitFromCapture`
+  (fails safe).
 - `emitFromTranscript` composes `parseStreamJson` (from seq 0, genesis `""`) with
   `emitFromCapture` for callers that don't need to keep the `CaptureEvent`s.
 - `runnerContext` builds the `InvocationContext` from primitives so callers need
@@ -123,15 +139,25 @@ NDJSON, fixed literal timestamps (`tests/checkpoint_bridge_tests.l`).
 3. Every captured line is accounted for (mapped or noted), never silently
    dropped; `mapped + notes == total`.
 4. Offline suite passes with no DB/Docker/network; no wall-clock reads.
+5. `file_change` capture (ADR-0016): `emitFromCaptureWithDiff` on a real workspace
+   `git diff` emits one agent-origin `file_change` step as the checkpoint frontier
+   tip (so **Q4 attributes a PR hunk to the session**), while an empty/malformed
+   diff is byte-identical to `emitFromCapture` (criterion 1's drift-guard ids
+   unchanged).
 
 ## 8. Deferred (sequenced follow-ups)
 
 - **Persistence**: a `session_events` table (+ migration + `Repository` accessor)
   and `GET /api/sessions/{id}/events?after=seq` (audit WP4 acceptance), so the
   emitted chain is stored and served.
-- **Runner wiring**: flip `docker/entrypoint.sh` to `--output-format stream-json`
-  and parse per-event in the poll loop (`src/docker_manager.l`) — needs a Docker
-  host + the real `claude` harness to verify without regressing the PWA stream.
+- **Runner wiring — landed** (#972): `docker/entrypoint.sh` emits
+  `--output-format stream-json` and the poll loop parses per-event.
+- **`file_change` capture — bridge wired** (#127 + #982, ADR-0016):
+  `emitFromCaptureWithDiff` turns a captured workspace `git diff` into an
+  agent-origin `file_change` step so **Q4 answers on a captured session** (proven
+  on live PG in testamur #127). Remaining here is the runner's LIVE flow — call
+  `emitFromCaptureWithDiff` with the session's `git diff HEAD` at end-of-run and
+  hand the objects to the graph (the deferred handoff below).
 - **Graph handoff**: pass the emitted objects to the platform's `GraphIngest`
   (cross-repo; today the objects are the deliverable).
 - **Audit-row enrichment**: fold `permission_requests`/`secret_requests` into
