@@ -352,11 +352,24 @@ export const api = {
   /** Poll live output for an in-progress run (see useStreamMessage). The
    *  backend sends `running` as the string "true"/"false" (TEXT-only JSON
    *  records); normalise it to a boolean here. */
-  getRunOutput: async (sessionId: string): Promise<{ running: boolean; output: string }> => {
+  getRunOutput: async (
+    sessionId: string,
+  ): Promise<{ running: boolean; output: string; length?: number }> => {
     const res = await apiFetch(`${BASE}/api/sessions/${sessionId}/output`, { headers: authHeaders() });
     if (!res.ok) throw new Error(`${res.status} ${await res.text()}`);
-    const body = (await res.json()) as { running?: string; output?: string };
-    return { running: body.running === 'true', output: body.output ?? '' };
+    const body = (await res.json()) as { running?: string; output?: string; length?: string };
+    // `output` is now RENDERED transcript text; `length` (newer backend, running
+    // response only) is the RAW NDJSON log length — the cursor the incremental
+    // /output/{offset} endpoint advances against. A reattaching client seeds its
+    // delta offset from `length`, not output.length, since the two differ once
+    // the log is stream-json (#975). Absent (older backend, which returned the
+    // raw log as `output`) → undefined, and callers fall back to output.length.
+    const len = body.length !== undefined ? Number(body.length) : undefined;
+    return {
+      running: body.running === 'true',
+      output: body.output ?? '',
+      length: len !== undefined && Number.isFinite(len) ? len : undefined,
+    };
   },
 
   /** Incremental live output: only the log bytes past `offset` travel, so a

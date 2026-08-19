@@ -660,7 +660,12 @@ pub func streamSessionMessage(
       if rd.events.length.toInt() > 0 {
         match CloudAgents.Repository.appendSessionEvents(sessionId, rd.events) {
           case Ok(_) -> ()
-          case Err(_) -> ()
+          // Best-effort: a persistence failure must never break the live stream.
+          // But log it (#976) — a silent failure here is an unretried GAP in the
+          // audit hash chain, not just a dropped log line, so a real DB problem
+          // on this path must not be invisible (matches this file's other
+          // best-effort WARNING paths).
+          case Err(e) -> println("WARNING: failed to persist " + toString(rd.events.length.toInt()) + " capture event(s) for session " + sessionId + ": " + CloudAgents.Sqlite.dbErrorMessage(e))
         }
       }
       if rd.displayText.length > 0 {
@@ -921,7 +926,9 @@ pub func streamSessionMessage(
     if rd.events.length.toInt() > 0 {
       match CloudAgents.Repository.appendSessionEvents(sessionId, rd.events) {
         case Ok(_) -> ()
-        case Err(_) -> ()
+        // Best-effort, but logged (#976): a silent failure to persist the tail
+        // events is an unretried gap in the audit hash chain.
+        case Err(e) -> println("WARNING: failed to persist " + toString(rd.events.length.toInt()) + " final capture event(s) for session " + sessionId + ": " + CloudAgents.Sqlite.dbErrorMessage(e))
       }
     }
     if rd.displayText.length > 0 {

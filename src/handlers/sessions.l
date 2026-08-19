@@ -796,7 +796,12 @@ pub func getRunOutput(id: in String): Result[String, Web.ApiError] {
       // whole-log read-back path does not surface raw JSON (matches the
       // per-tick renderLogDelta path in getRunOutputFrom).
       val rendered = CloudAgents.Capture.Render.renderFullLog(logs)
-      return Ok(value = "{\"running\":\"true\",\"output\":\"" + CloudAgents.Streaming.jsonEscape(rendered) + "\"}")
+      // `length` is the RAW NDJSON log byte length — the cursor the incremental
+      // /output/{offset} endpoint (runOutputRenderedDeltaJson) advances against.
+      // `output` is RENDERED text and is now SHORTER than the raw log, so a
+      // reconnecting client must seed its delta offset from this raw `length`,
+      // NOT from output.length, or it re-renders already-shown output (#975).
+      return Ok(value = "{\"running\":\"true\",\"length\":\"" + toString(logs.length.toInt()) + "\",\"output\":\"" + CloudAgents.Streaming.jsonEscape(rendered) + "\"}")
     }
   }
 }
