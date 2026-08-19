@@ -158,6 +158,19 @@ test "parseUnifiedDiff uses the unambiguous rename-to line for a path containing
   assertEqualInt(files[0].hunks.count, 0, "no hunks")
 }
 
+test "parseUnifiedDiff uses the unambiguous copy-to line for a copy-detected change (#981)" {
+  // `git diff -C` copy detection: same shape as a rename, an unambiguous
+  // `copy to <path>` line.
+  val copy = "diff --git a/orig.txt b/copy.txt\n" +
+    "similarity index 100%\n" +
+    "copy from orig.txt\n" +
+    "copy to copy.txt\n"
+  val files = parseUnifiedDiff(copy)
+  assertEqualInt(files.count, 1, "one copied file")
+  assertEqual(files[0].path, "copy.txt", "copy target from the unambiguous copy-to line")
+  assertEqualInt(files[0].hunks.count, 0, "a pure copy has no hunks")
+}
+
 test "parseUnifiedDiff handles a binary file (no hunks)" {
   // A binary change has a "Binary files … differ" line and no @@ hunks.
   val bin = "diff --git a/logo.png b/logo.png\n" +

@@ -184,6 +184,11 @@ pub func parseUnifiedDiff(diff: in String): List[FileDelta] {
       // `diff --git a/X b/Y` header split, which is ambiguous for paths that
       // themselves contain " b/" (security review #980).
       curPath = line.substring(10, line.length.toInt() - 10)
+    } else if haveFile and line.startsWith("copy to ") {
+      // Copy detection (`git diff -C`) is the same shape as a rename: no +++/---,
+      // an unambiguous `copy to <path>` target line. Prefer it over the header
+      // split for the same reason (#981).
+      curPath = line.substring(8, line.length.toInt() - 8)
     } else if haveFile and line.startsWith("@@ ") {
       match parseHunkNewRange(line) {
         case Some(h) -> curHunks.add(h)

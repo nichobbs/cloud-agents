@@ -34,10 +34,15 @@ pub func parseHunkNewRange(line: String): Option[HunkRange]
 - `parseHunkNewRange` — the single-hunk-header helper, exposed for direct testing.
 
 **Path**: taken from `+++ b/<path>` (the post-change path), or from `--- a/<path>`
-for a deletion (`+++ /dev/null`), or from the unambiguous `rename to <path>` line
-for a rename-only change with no `+++`/`---`. The `diff --git a/… b/…` header is
-only a last-resort fallback (its `a/…b/…` split is ambiguous for paths containing
-` b/`, so the `rename to` line is preferred). The `a/`/`b/` prefix is stripped.
+for a deletion (`+++ /dev/null`), or from the unambiguous `rename to <path>` /
+`copy to <path>` line for a rename-/copy-only change with no `+++`/`---`. The
+`diff --git a/… b/…` header is only a last-resort fallback (its `a/…b/…` split is
+ambiguous for paths containing ` b/`, so the target-line forms are preferred). The
+`a/`/`b/` prefix is stripped. **Residual (documented, low-impact):** a **binary**
+change carries no target line and no `+++`/`---`, so its path comes only from the
+header split — ambiguous for a binary path containing ` b/`. Binary files carry no
+hunks, so they contribute nothing to Q4 line attribution regardless; the runner
+can also capture with `-c core.quotePath=false` and unabbreviated paths.
 
 **File kinds**: modify, add (`--- /dev/null`), delete (`+++ /dev/null`, new-side
 range `+c,0` → a zero-length hunk at `c`), rename (path from the header, no hunks),
