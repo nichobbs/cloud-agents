@@ -161,13 +161,13 @@ func lowerAsciiChar(c: in String): String {
 /// mime types this feeds into are always ASCII, so that's the only
 /// case-folding this needs.
 func asciiLowerAttachmentMimeType(mimeType: in String): String {
-  var out = ""
+  var lowered = ""
   var i = 0
   while i < mimeType.length {
-    out = out + lowerAsciiChar(mimeType.substring(i, 1))
+    lowered = lowered + lowerAsciiChar(mimeType.substring(i, 1))
     i = i + 1
   }
-  return out
+  return lowered
 }
 
 /// Mime types capable of executing as active content when a browser
