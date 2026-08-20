@@ -17,7 +17,47 @@ import { getHarness, type ModelOption } from '../lib/harnesses';
 import { api } from '../lib/api';
 import { discoverModels } from '../lib/models';
 import { formatElapsed, formatFullTimestamp, formatTimestamp, parseTimestamp } from '../lib/time';
-import type { Message, PendingCallbacksResponse, Profile, Prompt, Run } from '../types';
+import { formatFileSize } from '../lib/fileSize';
+import type { Attachment, AttachmentInput, Message, PendingCallbacksResponse, Profile, Prompt, Run } from '../types';
+
+/** A file staged in the composer, read to base64 but not yet sent. Carries a
+ *  client-local `id` (chip key + removal target) and `sizeBytes`/`previewUrl`
+ *  for the staged-chip UI — stripped back down to `AttachmentInput` at send
+ *  time. */
+interface PendingAttachment extends AttachmentInput {
+  id: string;
+  sizeBytes: number;
+  /** Object URL for an image thumbnail; revoked when the chip is removed or
+   *  the staged list is cleared. Undefined for non-image files. */
+  previewUrl?: string;
+}
+
+// Mirrors src/handlers/sessions.l's maxAttachmentsPerMessage/maxAttachmentBytes/
+// maxTotalAttachmentBytes — client-side enforcement is a UX nicety (fail fast,
+// no wasted upload) alongside the server's own authoritative checks, not a
+// substitute for them.
+const MAX_ATTACHMENTS_PER_MESSAGE = 10;
+const MAX_ATTACHMENT_BYTES = 20 * 1024 * 1024;
+const MAX_TOTAL_ATTACHMENT_BYTES = 50 * 1024 * 1024;
+
+/** Reads a File into an AttachmentInput (base64, no `data:...;base64,`
+ *  prefix — the backend expects raw standard base64). */
+function readFileAsAttachmentInput(file: File): Promise<AttachmentInput> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onerror = () => reject(new Error(`Failed to read "${file.name}"`));
+    reader.onload = () => {
+      const result = typeof reader.result === 'string' ? reader.result : '';
+      const comma = result.indexOf(',');
+      resolve({
+        fileName: file.name,
+        mimeType: file.type || 'application/octet-stream',
+        contentBase64: comma >= 0 ? result.slice(comma + 1) : result,
+      });
+    };
+    reader.readAsDataURL(file);
+  });
+}
 
 /** Unique `{{name}}` placeholder names in a prompt body, in first-seen order. */
 export function extractVarNames(body: string): string[] {
@@ -46,6 +86,17 @@ export function SessionDetail() {
 
   const [messages, setMessages] = useState<Message[]>([]);
   const [messagesError, setMessagesError] = useState(false);
+  // A session's uploaded attachments, grouped by the messageId they were sent
+  // with, so MessageBlock can render each user message's own files. Refreshed
+  // alongside the transcript itself (same two call sites messages come from)
+  // — a fresh upload only shows up once its message exists to link it to.
+  const [attachmentsByMessage, setAttachmentsByMessage] = useState<Record<string, Attachment[]>>({});
+  // Files staged in the composer, read to base64 but not yet sent.
+  const [pendingAttachments, setPendingAttachments] = useState<PendingAttachment[]>([]);
+  // Transient client-side validation feedback (oversized file, too many
+  // files, per-message cap) — cleared on the next successful pick.
+  const [attachmentNotice, setAttachmentNotice] = useState<string | null>(null);
+  const attachmentInputRef = useRef<HTMLInputElement>(null);
   // Keep the completed run's live-output panel on screen when a successful
   // send's transcript refresh failed — otherwise the panel (gated on
   // isStreaming, already false by the time reload() runs) is gone and the
@@ -436,6 +487,24 @@ export function SessionDetail() {
     }
   }, []);
 
+  // Same shape as fetchMessages above: absorbs its own errors (attachments
+  // are a nice-to-have alongside the transcript, not load-bearing — a
+  // failure here must never blank the transcript itself), null on failure so
+  // callers can leave the existing grouping in place instead of clearing it.
+  const fetchAttachments = useCallback(async (forSessionId: string): Promise<Record<string, Attachment[]> | null> => {
+    try {
+      const list = await api.listAttachments(forSessionId);
+      const grouped: Record<string, Attachment[]> = {};
+      for (const a of list) {
+        if (!a.messageId) continue; // not yet linked to its message — skip for now
+        (grouped[a.messageId] ??= []).push(a);
+      }
+      return grouped;
+    } catch {
+      return null;
+    }
+  }, []);
+
   // Used for explicit, one-off refreshes (e.g. right after a successful
   // send). No concurrent fetch to race against, but the user can still
   // navigate to a different session while this fetch is in flight — guard
@@ -447,10 +516,14 @@ export function SessionDetail() {
     if (fetched && currentSessionRef.current === forSessionId) {
       setMessages(fetched);
       setMessagesError(false);
+      const grouped = await fetchAttachments(forSessionId);
+      if (grouped && currentSessionRef.current === forSessionId) {
+        setAttachmentsByMessage(grouped);
+      }
       return true;
     }
     return false;
-  }, [sessionId, fetchMessages]);
+  }, [sessionId, fetchMessages, fetchAttachments]);
 
   const fetchPendingCallbacks = useCallback(async () => {
     if (!sessionId) return;
@@ -523,10 +596,21 @@ export function SessionDetail() {
     let active = true;
     setMessagesError(false);
     setKeepOutput(false); // a retained prior-session response must not linger here
+    setAttachmentsByMessage({}); // ditto — don't show a stale session's attachments
+    // Files staged for a session left mid-compose don't belong in a
+    // different session's composer either — revoke their preview URLs so
+    // they don't leak, then clear the staged list.
+    setPendingAttachments(prev => {
+      prev.forEach(a => { if (a.previewUrl) URL.revokeObjectURL(a.previewUrl); });
+      return [];
+    });
     fetchMessages(sessionId).then(fetched => {
       if (!active) return;
       if (fetched) {
         setMessages(fetched);
+        fetchAttachments(sessionId).then(grouped => {
+          if (active && grouped) setAttachmentsByMessage(grouped);
+        });
       } else {
         // A failed fetch right after switching sessions must not leave the
         // previous session's transcript on screen under this session's
@@ -539,7 +623,7 @@ export function SessionDetail() {
     return () => {
       active = false;
     };
-  }, [sessionId, fetchMessages]);
+  }, [sessionId, fetchMessages, fetchAttachments]);
 
   // Deep-link: scroll to the message referenced by the URL hash once loaded.
   useEffect(() => {
@@ -572,8 +656,11 @@ export function SessionDetail() {
   // weren't available or weren't called; see lib/agentPlan.ts).
   const latestAgentContent = [...messages].reverse().find(m => m.role === 'agent')?.content ?? '';
 
-  const handleRetry = async (text: string) => {
-    if (!text || isStreaming) return;
+  // `attachments` defaults to none so the MessageBlock "Retry" button (which
+  // only ever passes a single `content: string` arg) keeps working unchanged
+  // — a retry resends the text only, never the original send's files.
+  const handleRetry = async (text: string, attachments: PendingAttachment[] = []) => {
+    if ((!text && attachments.length === 0) || isStreaming) return;
     // Fixed at call time to whichever session this send was actually for —
     // `sessionId` may point somewhere else by the time this async function
     // resumes below (#104).
@@ -581,7 +668,33 @@ export function SessionDetail() {
     setInput('');
     setRecoveredDraft(false);
     setKeepOutput(false); // a fresh run supersedes any retained prior output
-    const { succeeded, stale } = await send(text);
+    // Strip the local-only id/sizeBytes/previewUrl fields down to what the
+    // wire format expects. The staged list itself is left alone until we
+    // know the send succeeded (see clearSentAttachments below) — clearing it
+    // up front would lose the user's file picks on a transient failure
+    // (network blip, a stale-session race, a 5xx), with no restore path,
+    // unlike the text-draft recovery a failed send already gets (#990).
+    const attachmentInputs: AttachmentInput[] = attachments.map(({ fileName, mimeType, contentBase64 }) => ({
+      fileName,
+      mimeType,
+      contentBase64,
+    }));
+    setAttachmentNotice(null);
+    // Only revoke/clear the attachments that were actually part of THIS
+    // send, and only once send() reports success — called from both success
+    // paths below (the stale-but-succeeded case and the normal case).
+    // Guarded on still being the session this send was for, so a stale
+    // result can't clear a different session's now-staged files out from
+    // under the user.
+    const clearSentAttachments = () => {
+      if (currentSessionRef.current !== forSessionAtSend) return;
+      attachments.forEach(a => { if (a.previewUrl) URL.revokeObjectURL(a.previewUrl); });
+      setPendingAttachments(prev => prev.filter(p => !attachments.some(a => a.id === p.id)));
+    };
+    // Omit the second arg entirely for a plain text retry (matches the
+    // pre-attachments call shape exactly) rather than always passing a
+    // possibly-empty array.
+    const { succeeded, stale } = attachmentInputs.length > 0 ? await send(text, attachmentInputs) : await send(text);
 
     if (stale) {
       // Either the user navigated to a different session while this send
@@ -634,6 +747,7 @@ export function SessionDetail() {
         // non-stale branch, otherwise a stale-but-successful send left a
         // now-obsolete draft sitting in storage forever (#581).
         clearFailedDraft(forSessionAtSend);
+        clearSentAttachments();
       }
       return;
     }
@@ -642,6 +756,7 @@ export function SessionDetail() {
       // This session's outstanding failed draft, if any, is now moot — a
       // fresh send for it just succeeded.
       clearFailedDraft(forSessionAtSend);
+      clearSentAttachments();
       setFailedPrompt(null);
       // Fold the completed run into the transcript (reload + keep-or-clear the
       // live panel), shared with the reattach path. See foldRunIntoTranscript.
@@ -662,8 +777,55 @@ export function SessionDetail() {
 
   const handleSend = async () => {
     const text = input.trim();
-    if (!text || isStreaming) return;
-    await handleRetry(text);
+    if ((!text && pendingAttachments.length === 0) || isStreaming) return;
+    await handleRetry(text, pendingAttachments);
+  };
+
+  const removePendingAttachment = (id: string) => {
+    setPendingAttachments(prev => {
+      const found = prev.find(a => a.id === id);
+      if (found?.previewUrl) URL.revokeObjectURL(found.previewUrl);
+      return prev.filter(a => a.id !== id);
+    });
+  };
+
+  const handleFilesSelected = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const files = Array.from(e.target.files ?? []);
+    e.target.value = ''; // allow re-picking the same file later
+    if (files.length === 0) return;
+    let notice: string | null = null;
+    let totalBytes = pendingAttachments.reduce((sum, a) => sum + a.sizeBytes, 0);
+    let slotsLeft = MAX_ATTACHMENTS_PER_MESSAGE - pendingAttachments.length;
+    const accepted: PendingAttachment[] = [];
+    for (const file of files) {
+      if (slotsLeft <= 0) {
+        notice = `Only up to ${MAX_ATTACHMENTS_PER_MESSAGE} files per message — some were skipped.`;
+        break;
+      }
+      if (file.size > MAX_ATTACHMENT_BYTES) {
+        notice = `"${file.name}" is over the ${formatFileSize(MAX_ATTACHMENT_BYTES)} per-file limit — skipped.`;
+        continue;
+      }
+      if (totalBytes + file.size > MAX_TOTAL_ATTACHMENT_BYTES) {
+        notice = `Attachments would exceed the ${formatFileSize(MAX_TOTAL_ATTACHMENT_BYTES)} per-message limit — some were skipped.`;
+        break;
+      }
+      try {
+        const input = await readFileAsAttachmentInput(file);
+        totalBytes += file.size;
+        slotsLeft -= 1;
+        accepted.push({
+          ...input,
+          id: `${file.name}-${file.size}-${file.lastModified}-${Math.random().toString(36).slice(2)}`,
+          sizeBytes: file.size,
+          previewUrl: file.type.startsWith('image/') ? URL.createObjectURL(file) : undefined,
+        });
+      } catch {
+        notice = `Failed to read "${file.name}" — skipped.`;
+      }
+    }
+    if (accepted.length > 0) setPendingAttachments(prev => [...prev, ...accepted]);
+    setAttachmentNotice(notice);
   };
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
@@ -1104,6 +1266,7 @@ export function SessionDetail() {
                 <MessageBlock
                   key={m.id}
                   message={m}
+                  attachments={attachmentsByMessage[m.id]}
                   highlighted={m.id === highlightedId}
                   onTodoAdded={() => { /* todos live on their own page */ }}
                   onRetry={handleRetry}
@@ -1178,12 +1341,54 @@ export function SessionDetail() {
             >
               {savingPrompt ? 'Saving…' : 'Save as prompt'}
             </button>
+            <input
+              ref={attachmentInputRef}
+              type="file"
+              multiple
+              aria-label="Attach files"
+              style={{ display: 'none' }}
+              onChange={e => { void handleFilesSelected(e); }}
+            />
+            <button
+              style={savePromptBtnStyle}
+              onClick={() => attachmentInputRef.current?.click()}
+              disabled={isStreaming || pendingAttachments.length >= MAX_ATTACHMENTS_PER_MESSAGE}
+              title="Attach images or documents"
+            >
+              📎 Attach
+            </button>
           </div>
 
           {recoveredDraft && (
             <div style={recoveredDraftStyle}>
               A message you sent to this session earlier failed to go through, and you'd navigated away
               before it could be restored — we saved it below. Send it again, or clear it and start fresh.
+            </div>
+          )}
+          {attachmentNotice && (
+            <div style={recoveredDraftStyle}>{attachmentNotice}</div>
+          )}
+          {pendingAttachments.length > 0 && (
+            <div style={pendingAttachmentsRowStyle}>
+              {pendingAttachments.map(a => (
+                <div key={a.id} style={pendingAttachmentChipStyle}>
+                  {a.previewUrl ? (
+                    <img src={a.previewUrl} alt={a.fileName} style={pendingAttachmentThumbStyle} />
+                  ) : (
+                    <span style={{ fontSize: '16px' }}>📄</span>
+                  )}
+                  <span style={pendingAttachmentNameStyle} title={a.fileName}>{a.fileName}</span>
+                  <span style={{ color: '#6e7681', fontSize: '11px' }}>{formatFileSize(a.sizeBytes)}</span>
+                  <button
+                    style={pendingAttachmentRemoveStyle}
+                    onClick={() => removePendingAttachment(a.id)}
+                    disabled={isStreaming}
+                    title="Remove"
+                  >
+                    ×
+                  </button>
+                </div>
+              ))}
             </div>
           )}
           <div style={inputRowStyle}>
@@ -1200,11 +1405,11 @@ export function SessionDetail() {
             <button
               style={{
                 ...sendBtnStyle,
-                opacity: isStreaming || !input.trim() ? 0.5 : 1,
-                cursor: isStreaming || !input.trim() ? 'not-allowed' : 'pointer',
+                opacity: isStreaming || (!input.trim() && pendingAttachments.length === 0) ? 0.5 : 1,
+                cursor: isStreaming || (!input.trim() && pendingAttachments.length === 0) ? 'not-allowed' : 'pointer',
               }}
               onClick={() => { void handleSend(); }}
-              disabled={isStreaming || !input.trim()}
+              disabled={isStreaming || (!input.trim() && pendingAttachments.length === 0)}
             >
               {isStreaming ? 'Running…' : 'Send'}
             </button>
@@ -1539,6 +1744,50 @@ const recoveredDraftStyle: React.CSSProperties = {
   background: '#2d2a12',
   border: '1px solid #4a3f0f',
   borderRadius: '6px',
+};
+
+const pendingAttachmentsRowStyle: React.CSSProperties = {
+  display: 'flex',
+  flexWrap: 'wrap',
+  gap: '6px',
+  marginBottom: '6px',
+};
+
+const pendingAttachmentChipStyle: React.CSSProperties = {
+  display: 'flex',
+  alignItems: 'center',
+  gap: '6px',
+  background: '#161b22',
+  border: '1px solid #30363d',
+  borderRadius: '6px',
+  padding: '4px 6px',
+  maxWidth: '220px',
+};
+
+const pendingAttachmentThumbStyle: React.CSSProperties = {
+  width: '20px',
+  height: '20px',
+  objectFit: 'cover',
+  borderRadius: '3px',
+  flexShrink: 0,
+};
+
+const pendingAttachmentNameStyle: React.CSSProperties = {
+  fontSize: '12px',
+  color: '#c9d1d9',
+  overflow: 'hidden',
+  textOverflow: 'ellipsis',
+  whiteSpace: 'nowrap',
+};
+
+const pendingAttachmentRemoveStyle: React.CSSProperties = {
+  background: 'transparent',
+  border: 'none',
+  color: '#8b949e',
+  fontSize: '14px',
+  cursor: 'pointer',
+  padding: '0 2px',
+  lineHeight: 1,
 };
 
 const emptyStyle: React.CSSProperties = {

@@ -109,6 +109,7 @@ output_assembly = "CloudAgents.dll"
 "CloudAgents.OpenPrTests" = "tests/open_pr_tests.l"
 "CloudAgents.GroupsTests" = "tests/groups_tests.l"
 "CloudAgents.WorkspaceTests" = "tests/workspace_tests.l"
+"CloudAgents.AttachmentTests" = "tests/attachment_tests.l"
 
 [nuget]
 "Lyric.Web"             = "0.4.36"

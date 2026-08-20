@@ -375,7 +375,15 @@ pub func allMigrations(): slice[Migration] {
         CloudAgents.Db.alterSessionsAddLastViewedAtSql()
       ]
     ),
-    Migration(version = "0030_session_events", statements = [CloudAgents.Db.sessionEventsSchemaSql()])
+    Migration(version = "0030_session_events", statements = [CloudAgents.Db.sessionEventsSchemaSql()]),
+    Migration(
+      version = "0031_session_attachments",
+      statements = [
+        CloudAgents.Db.sessionAttachmentsSchemaSql(),
+        CloudAgents.Db.sessionAttachmentsSessionIndexSql(),
+        CloudAgents.Db.sessionAttachmentsMessageIndexSql()
+      ]
+    )
   ]
 }
 
@@ -3189,6 +3197,122 @@ pub func getRepoArtifactById(id: in String, userId: in String): Result[Option[Ar
     return Ok(value = None)
   }
   return Ok(value = Some(value = rowToArtifact(CloudAgents.Sqlite.getRowArrayValue(rows, 0))))
+}
+
+// ─── Session attachments (chat uploads) ──────────────────────────────────────
+//
+// Metadata only — bytes live on disk under
+// attachmentsBaseDir()/<sessionId>/<storedName>; CloudAgents.Handlers owns
+// the actual file I/O (mirrors the Phase 6 §7 artifacts section above, the
+// same split but for container-reported output rather than user input).
+// `messageId` is '' until linkAttachmentToMessage sets it, right after the
+// user message row is created — an upload is validated and written to disk
+// BEFORE the message exists, so the message id can't be known at insert time.
+@generate(Json)
+pub record Attachment {
+  pub id: String
+  pub sessionId: String
+  pub messageId: String
+  pub fileName: String
+  pub storedName: String
+  pub mimeType: String
+  /// 'image' or 'document', derived from mimeType at upload time.
+  pub kind: String
+  pub sizeBytes: String
+  pub createdAt: String
+}
+
+func rowToAttachment(r: in CloudAgents.Sqlite.Row): Attachment {
+  return Attachment(
+    id = colAt(r.cols, 0),
+    sessionId = colAt(r.cols, 1),
+    messageId = colAt(r.cols, 2),
+    fileName = colAt(r.cols, 3),
+    storedName = colAt(r.cols, 4),
+    mimeType = colAt(r.cols, 5),
+    kind = colAt(r.cols, 6),
+    sizeBytes = colAt(r.cols, 7),
+    createdAt = colAt(r.cols, 8)
+  )
+}
+
+/// Base directory for uploaded attachment bytes, mirroring artifactsBaseDir's
+/// override convention: CLOUD_AGENTS_ATTACHMENTS_DIR when set, else a
+/// relative default in the working directory. Actual files live at
+/// `<this>/<sessionId>/<storedName>`. Exported so CloudAgents.Handlers (which
+/// owns the file I/O) and CloudAgents.Docker (which bind-mounts a session's
+/// directory into the runner container) share one definition.
+pub func attachmentsBaseDir(): String {
+  val p = Env.GetEnvironmentVariable("CLOUD_AGENTS_ATTACHMENTS_DIR")
+  if DotNetString.IsNullOrEmpty(p) {
+    return "cloud-agents-attachments"
+  }
+  return p
+}
+
+/// Record an uploaded attachment's metadata (the caller has already written
+/// the bytes to disk). `sizeBytes` is the decoded byte count as a decimal
+/// string, matching this schema's TEXT-for-numerics convention. `messageId`
+/// starts '' — linkAttachmentToMessage sets it once the user message this
+/// attachment was sent with has been persisted.
+pub func createAttachment(
+  sessionId: in String,
+  fileName: in String,
+  storedName: in String,
+  mimeType: in String,
+  kind: in String,
+  sizeBytes: in String,
+): Result[Attachment, CloudAgents.Sqlite.DbError] {
+  val id = newId()
+  val ts = nowMillis()
+  CloudAgents.Sqlite.execute(CloudAgents.Db.insertSessionAttachmentSql(id, sessionId, fileName, storedName, mimeType, kind, sizeBytes, ts))?
+  return Ok(
+    value = Attachment(
+      id = id,
+      sessionId = sessionId,
+      messageId = "",
+      fileName = fileName,
+      storedName = storedName,
+      mimeType = mimeType,
+      kind = kind,
+      sizeBytes = sizeBytes,
+      createdAt = ts
+    )
+  )
+}
+
+/// Link a stored attachment to the user message it was sent with.
+/// Best-effort from the caller's perspective (streamSendMessage tolerates a
+/// failure here the same way it tolerates addMessage failing) — a missed
+/// link only means the attachment won't show up grouped under its message in
+/// the transcript; it still lists under the session and its bytes are
+/// already safely on disk.
+pub func linkAttachmentToMessage(id: in String, messageId: in String): Result[Unit, CloudAgents.Sqlite.DbError] {
+  CloudAgents.Sqlite.execute(CloudAgents.Db.setSessionAttachmentMessageIdSql(id, messageId))?
+  return Ok(value = ())
+}
+
+/// An attachment by id, or None.
+pub func getAttachment(id: in String): Result[Option[Attachment], CloudAgents.Sqlite.DbError] {
+  val rows = CloudAgents.Sqlite.query(CloudAgents.Db.selectSessionAttachmentByIdSql(id))?
+  val len = CloudAgents.Sqlite.getRowArrayLength(rows)
+  if len == 0 {
+    return Ok(value = None)
+  }
+  return Ok(value = Some(value = rowToAttachment(CloudAgents.Sqlite.getRowArrayValue(rows, 0))))
+}
+
+/// A session's attachments, oldest first.
+pub func listAttachments(sessionId: in String): Result[slice[Attachment], CloudAgents.Sqlite.DbError] {
+  val rows = CloudAgents.Sqlite.query(CloudAgents.Db.selectSessionAttachmentsBySessionSql(sessionId))?
+  var acc: slice[Attachment] = []
+  var i = 0
+  val len = CloudAgents.Sqlite.getRowArrayLength(rows)
+  while i < len {
+    acc = acc.append(rowToAttachment(CloudAgents.Sqlite.getRowArrayValue(rows, i)))
+    i = i + 1
+  }
+  return Ok(value = acc)
 }
 
 // ─── Phase 7: repo-scoped memory (remember / recall) ─────────────────────────

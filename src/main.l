@@ -336,6 +336,10 @@ func artifactListResp(r: in Result[ArtifactListResponse, Web.ApiError]): Web.Res
   return match r { case Ok(v) -> jsonResp(200, v.toJson()); case Err(e) -> Web.errorResponse(e) }
 }
 
+func attachmentListResp(r: in Result[AttachmentListResponse, Web.ApiError]): Web.Response {
+  return match r { case Ok(v) -> jsonResp(200, v.toJson()); case Err(e) -> Web.errorResponse(e) }
+}
+
 func rememberResp(r: in Result[RememberResponse, Web.ApiError]): Web.Response {
   return match r { case Ok(v) -> jsonResp(200, v.toJson()); case Err(e) -> Web.errorResponse(e) }
 }
@@ -451,7 +455,7 @@ record SendMessageStreamHandler {
 impl Web.StreamingHandler for SendMessageStreamHandler {
   func streamHandle(req: in Web.Request, w: in Web.ResponseWriter): Unit {
     val id = pparam(req, "id")
-    val decoded = match SendMessageRequest.fromJson(req.body) {
+    val decoded = match SendMessageRequest.fromJson(CloudAgents.Handlers.patchMissingAttachmentsField(req.body)) {
       case Ok(d) -> d
       case Err(_) -> {
         // No chunk written yet, so a real 400 is still possible — reuse the
@@ -460,7 +464,7 @@ impl Web.StreamingHandler for SendMessageStreamHandler {
         return ()
       }
     }
-    CloudAgents.Handlers.streamSendMessage(id, decoded.text, w)
+    CloudAgents.Handlers.streamSendMessage(id, decoded.text, decoded.attachments, w)
     return ()
   }
 }
@@ -1315,6 +1319,28 @@ impl Web.Handler for RouteDownloadArtifact {
   }
 }
 
+// ─── Chat attachments (uploads) ─────────────────────────────────────────────
+record RouteListAttachments {
+}
+
+impl Web.Handler for RouteListAttachments {
+  func handle(req: in Web.Request): Web.Response {
+    return attachmentListResp(CloudAgents.Handlers.listAttachmentsHandler(pparam(req, "id")))
+  }
+}
+
+record RouteDownloadAttachment {
+}
+
+impl Web.Handler for RouteDownloadAttachment {
+  func handle(req: in Web.Request): Web.Response {
+    return match CloudAgents.Handlers.downloadAttachmentHandler(pparam(req, "id"), pparam(req, "aid")) {
+      case Ok(resp) -> resp
+      case Err(e) -> Web.errorResponse(e)
+    }
+  }
+}
+
 // ─── Phase 7 §4: repo-scoped memory (callbacks.l) ───────────────────────────
 record RouteRemember {
 }
@@ -1952,6 +1978,8 @@ pub func main(): Unit {
   router = Web.addPost(router, "/api/sessions/{id}/callbacks/artifact", RouteUploadArtifact())
   router = Web.addGet(router, "/api/sessions/{id}/artifacts", RouteListArtifacts())
   router = Web.addGet(router, "/api/sessions/{id}/artifacts/{aid}", RouteDownloadArtifact())
+  router = Web.addGet(router, "/api/sessions/{id}/attachments", RouteListAttachments())
+  router = Web.addGet(router, "/api/sessions/{id}/attachments/{aid}", RouteDownloadAttachment())
   router = Web.addPost(router, "/api/sessions/{id}/callbacks/memory", RouteRemember())
   router = Web.addGet(router, "/api/sessions/{id}/callbacks/memory", RouteRecall())
   router = Web.addPost(router, "/api/sessions/{id}/callbacks/memory/forget", RouteForget())

@@ -1,6 +1,9 @@
 package CloudAgents.Handlers
 
 import Std.Core
+import Std.Errors
+import Std.File
+import Std.Json
 import Web
 import CloudAgents.Auth
 import CloudAgents.Docker
@@ -27,6 +30,233 @@ val maxRepoUrlLen = 2048
 val maxBranchLen = 255
 
 val maxModelLen = 128
+
+// ─── Chat attachments (uploads) ───────────────────────────────────────────────
+//
+// Bytes live on disk under CloudAgents.Repository.attachmentsBaseDir()/
+// <sessionId>/<storedName> — never in SQLite, mirroring CloudAgents.Callbacks'
+// report_artifact storage split. The per-file/per-message caps are enforced
+// twice: a cheap pre-decode length check on the base64 text, then the
+// authoritative check on the actual decoded byte count (non-standard base64
+// padding can't be used to sneak past the first check) — same two-step
+// CloudAgents.Callbacks.uploadArtifactHandler uses.
+val maxAttachmentFileNameLen = 255
+
+val maxAttachmentMimeTypeLen = 256
+
+val maxAttachmentsPerMessage = 10
+
+/// 20 MiB per file (chosen as a reasonable cap for images/scans/short PDFs
+/// given uploads travel as base64 JSON in the request body).
+val maxAttachmentBytes = 20971520
+
+/// ceil(maxAttachmentBytes / 3) * 4 — the largest base64 text that could
+/// possibly decode to <= maxAttachmentBytes, used as a cheap pre-decode
+/// reject so an oversized upload never reaches the (comparatively expensive)
+/// base64 decode at all. Mirrors CloudAgents.Callbacks.maxArtifactBase64Len's
+/// reasoning.
+val maxAttachmentBase64Len = 27962028
+
+/// 50 MiB total across every attachment on one message.
+val maxTotalAttachmentBytes = 52428800
+
+// Bound to this package (not shared with CloudAgents.Callbacks' identical
+// extern/helpers) per docs/lyric/gotchas.md: cross-package `pub val`/extern
+// reuse has its own sharp edges, and this codebase's convention is small
+// local duplication over a premature shared abstraction across unrelated
+// packages (CloudAgents.Callbacks.basenameOf's own doc comment states this
+// explicitly).
+@externTarget("System.Convert.FromBase64String")
+func decodeAttachmentBase64(s: in String): slice[Byte] = []
+
+func tryDecodeAttachmentBytes(base64: in String): Result[slice[Byte], String] {
+  return try {
+    Ok(value = decodeAttachmentBase64(base64))
+  } catch Bug as b {
+    Err(error = "contentBase64 is not valid base64")
+  }
+}
+
+/// `slice[Byte]` -> `List[Byte]`, for Std.File.writeBytes (which takes
+/// `List[Byte]`, not `slice[Byte]`) — see CloudAgents.Callbacks.
+/// sliceBytesToList's doc comment for why this can't just be `.toList()`.
+func sliceBytesToList(b: in slice[Byte]): List[Byte] {
+  val acc: List[Byte] = newList()
+  var i = 0
+  while i < b.length {
+    acc.add(b[i])
+    i = i + 1
+  }
+  return acc
+}
+
+/// The final path segment of `name`, defending against `../` traversal in a
+/// client-supplied fileName. None for a result that is empty, '.', or '..' —
+/// a name with no separator that would still resolve to a directory entry.
+pub func basenameOfAttachment(name: in String): Option[String] {
+  var lastSep = -1
+  var i = 0
+  while i < name.length {
+    val c = name.substring(i, 1)
+    if c == "/" or c == "\\" {
+      lastSep = i
+    }
+    i = i + 1
+  }
+  val base = if lastSep < 0 { name } else { name.substring(lastSep + 1, name.length - lastSep - 1) }
+  if base.length == 0 or base == "." or base == ".." {
+    return None
+  }
+  return Some(value = base)
+}
+
+/// 'image' for an image/* mime type, else 'document' — the only two kinds
+/// the composer distinguishes (images render as thumbnails, everything else
+/// is a downloadable file chip; the agent's own Read tool handles both kinds
+/// identically once the file is on disk).
+pub func attachmentKindOf(mimeType: in String): String {
+  // Case-insensitive, matching isDangerousAttachmentMimeType below (#1000)
+  // — nothing about mimeType is guaranteed lowercase since it's entirely
+  // client-supplied, so an "IMAGE/PNG" would otherwise misclassify as a
+  // document.
+  if asciiLowerAttachmentMimeType(mimeType).startsWith("image/") {
+    return "image"
+  }
+  return "document"
+}
+
+/// The index of the last occurrence of a single-character `target` in `s`,
+/// or -1 — mirrors CloudAgents.Profiles.lastIndexOfChar (duplicated per
+/// docs/lyric/gotchas.md's cross-package reuse caveat). Only ever called on
+/// a string already confirmed to parse as valid JSON, where the last '}' is
+/// always that document's own outermost closing brace (see
+/// patchMissingAttachmentsField's doc comment).
+func lastIndexOfChar(s: in String, target: in String): Int {
+  var i = s.length - 1
+  while i >= 0 {
+    if s.substring(i, 1) == target {
+      return i
+    }
+    i = i - 1
+  }
+  return -1
+}
+
+/// `@generate(Json)`'s derived `fromJson` requires every field present in
+/// the body — no per-field "optional, defaults to X when absent" support
+/// (confirmed precedent: CloudAgents.Profiles.patchMissingToolFields, added
+/// for the identical reason when `toolMode`/`tools` were appended to
+/// SaveProfileRequest — its own doc comment records this failing outright
+/// with "missing field '<name>'" for String, slice[T], and Option[T] alike).
+/// `attachments` is a NEW field on the existing
+/// `POST /api/sessions/{id}/messages` request shape — a browser tab still
+/// running the pre-upgrade JS bundle (mid-deploy, or simply not yet
+/// reloaded) sends the old `{"text":"..."}` body with no `"attachments"` key
+/// at all, which would otherwise fail SendMessageRequest.fromJson and 400
+/// every send from that tab until it reloads.
+///
+/// Patches `"attachments":[]` into the raw body BEFORE decoding, but only
+/// when that key is actually absent (a body that already sends it — every
+/// current-build client — is passed through byte-identical). Uses Std.Json's
+/// real parser to detect absence (not a blind string search, which could
+/// false-positive on a nested value that happens to contain the substring
+/// `"attachments"`), then splices the addition in right before the body's
+/// own closing '}' — safe because a string that already parsed successfully
+/// as one JSON object always has its own outermost closing brace as the last
+/// '}' character in the text (no valid JSON document has any unescaped '}'
+/// after the true end of its root object, whitespace aside). Same technique
+/// as patchMissingToolFields, simplified to one field.
+pub func patchMissingAttachmentsField(body: in String): String {
+  val doc = match Std.Json.tryParseJson(body) { case Ok(d) -> d; case Err(_) -> return body }
+  defer {
+    Std.Json.disposeJson(doc)
+  }
+  val root = Std.Json.rootElement(doc)
+  match Std.Json.tryGetProperty(root, "attachments") {
+    case Some(_) -> return body
+    case None -> ()
+  }
+  val closeIdx = lastIndexOfChar(body, "}")
+  if closeIdx < 0 {
+    return body
+  }
+  return body.substring(0, closeIdx) + ",\"attachments\":[]" + body.substring(closeIdx, body.length - closeIdx)
+}
+
+/// One ASCII letter, uppercase -> lowercase; anything else unchanged. An
+/// explicit enumeration — matching this codebase's own `digitValue`
+/// (`src/handlers/proxy.l`) precedent for character-level work — rather than
+/// codepoint arithmetic: `String.toLowerCase()`/`.toUpperCase()` don't
+/// resolve at runtime in the current Lyric toolchain (docs/lyric/gotchas.md),
+/// and there's no confirmed-working codepoint-shift primitive in this
+/// codebase to build a shorter version safely.
+func lowerAsciiChar(c: in String): String {
+  if c == "A" { return "a" }
+  if c == "B" { return "b" }
+  if c == "C" { return "c" }
+  if c == "D" { return "d" }
+  if c == "E" { return "e" }
+  if c == "F" { return "f" }
+  if c == "G" { return "g" }
+  if c == "H" { return "h" }
+  if c == "I" { return "i" }
+  if c == "J" { return "j" }
+  if c == "K" { return "k" }
+  if c == "L" { return "l" }
+  if c == "M" { return "m" }
+  if c == "N" { return "n" }
+  if c == "O" { return "o" }
+  if c == "P" { return "p" }
+  if c == "Q" { return "q" }
+  if c == "R" { return "r" }
+  if c == "S" { return "s" }
+  if c == "T" { return "t" }
+  if c == "U" { return "u" }
+  if c == "V" { return "v" }
+  if c == "W" { return "w" }
+  if c == "X" { return "x" }
+  if c == "Y" { return "y" }
+  if c == "Z" { return "z" }
+  return c
+}
+
+/// ASCII-lowercase, one character at a time via lowerAsciiChar above — the
+/// mime types this feeds into are always ASCII, so that's the only
+/// case-folding this needs.
+func asciiLowerAttachmentMimeType(mimeType: in String): String {
+  var lowered = ""
+  var i = 0
+  while i < mimeType.length {
+    lowered = lowered + lowerAsciiChar(mimeType.substring(i, 1))
+    i = i + 1
+  }
+  return lowered
+}
+
+/// Mime types capable of executing as active content when a browser
+/// navigates directly to them (SVG scripts, HTML), rather than merely being
+/// decoded as passive image/document bytes. `mimeType` is entirely
+/// client-supplied and echoed straight back as the download response's
+/// Content-Type; storing/serving one of these would let an uploaded file
+/// execute script at this app's own origin the moment anyone opens it (a
+/// stored-XSS vector) — reject it at upload time so it's never on disk or in
+/// the database at all, the strongest of the defenses here (the download
+/// route's `Content-Disposition: attachment` and the frontend's `download`
+/// attribute on the image "view full size" link are the other two).
+/// Case-insensitive: a mime type is conventionally lowercase, but nothing
+/// stops a client sending `IMAGE/SVG+XML` to slip past a case-sensitive
+/// check.
+pub func isDangerousAttachmentMimeType(mimeType: in String): Bool {
+  // Strip a MIME parameter suffix (e.g. "image/svg+xml; charset=utf-8")
+  // before comparing — an exact match against the bare type alone lets a
+  // trivially-appended parameter slip a blocked type past the check (#999),
+  // since attachmentKindOf's own "image/" prefix test that decides how a
+  // file gets rendered doesn't care about any suffix either.
+  val semiIdx = CloudAgents.Text.indexOfFrom(mimeType, ";", 0)
+  val bare = if semiIdx < 0 { mimeType } else { mimeType.substring(0, semiIdx) }
+  val lower = asciiLowerAttachmentMimeType(bare.trim())
+  return lower == "image/svg+xml" or lower == "text/html" or lower == "application/xhtml+xml"
+}
 
 // isHttpsUrl/isSafeRepoUrl/isBlockedRepoHost/isSafeBranchName/isKnownHarness/
 // isSafeModelName are `pub` so CloudAgents.Jobs (docs/phase8-scheduling.md)
@@ -134,8 +364,79 @@ pub record CreateSessionResponse {
 }
 
 @generate(Json)
+pub record AttachmentInput {
+  pub fileName: String
+  pub mimeType: String
+  /// Standard base64 (not URL-safe), matching CloudAgents.Callbacks.
+  /// UploadArtifactRequest.contentBase64's convention.
+  pub contentBase64: String
+}
+
+@generate(Json)
 pub record SendMessageRequest {
   pub text: String
+  pub attachments: slice[AttachmentInput]
+}
+
+@generate(Json)
+pub record AttachmentSummary {
+  pub id: String
+  pub sessionId: String
+  pub messageId: String
+  pub fileName: String
+  pub mimeType: String
+  pub kind: String
+  pub sizeBytes: String
+  pub createdAt: String
+}
+
+@generate(Json)
+pub record AttachmentListResponse {
+  pub attachments: slice[AttachmentSummary]
+}
+
+func attachmentSummaryOf(a: in CloudAgents.Repository.Attachment): AttachmentSummary {
+  return AttachmentSummary(
+    id = a.id,
+    sessionId = a.sessionId,
+    messageId = a.messageId,
+    fileName = a.fileName,
+    mimeType = a.mimeType,
+    kind = a.kind,
+    sizeBytes = a.sizeBytes,
+    createdAt = a.createdAt
+  )
+}
+
+/// A message's attachments, already validated and written to disk, plus the
+/// host directory CloudAgents.Docker should bind-mount into the runner
+/// container for this run (empty when there were no attachments — the
+/// common case, so a plain text-only send never touches the filesystem or
+/// gains an extra bind).
+pub record StoredAttachments {
+  pub attachments: slice[CloudAgents.Repository.Attachment]
+  pub hostDir: String
+}
+
+/// One fully-validated, base64-decoded attachment awaiting the actual disk
+/// write — storeAttachments' pass-1 output, never returned to callers (pure
+/// internal bookkeeping, so no `pub`).
+record ValidatedAttachmentInput {
+  fileName: String
+  mimeType: String
+  bytes: slice[Byte]
+  sizeBytes: Int
+}
+
+/// storeAttachments' error shape — deliberately NOT Web.ApiError: this
+/// streaming handler's pre-chunk failures are already all written directly
+/// via writeStreamError(w, code, message) (see every other error path in
+/// streamSendMessage below), so a small local (code, message) pair is all
+/// the caller needs, with no assumption about Web.ApiError's own field
+/// layout.
+pub record StoreAttachmentsError {
+  pub code: Int
+  pub message: String
 }
 
 @generate(Json)
@@ -424,6 +725,246 @@ pub func promptExceedsMaxLength(text: in String): Bool {
   return not CloudAgents.Text.withinMaxByteLength(text, maxPromptLen)
 }
 
+/// Validate and persist a message's attachments to disk under
+/// attachmentsBaseDir()/<sessionId>/, and record their metadata (each row
+/// starts with an empty messageId — streamSendMessage links them to the
+/// user message once addMessage mints its id). Empty `inputs` is a no-op
+/// success. The directory is per-SESSION (not per-message), flat, and
+/// collision-free via the attachment id prefix on storedName — so a session
+/// with attachments on more than one message simply accumulates files there,
+/// and CloudAgents.Docker re-binds the whole directory (not just this
+/// message's new files) on every later message that also carries an
+/// attachment, giving the agent access to everything uploaded so far in the
+/// session, not just the latest batch.
+pub func storeAttachments(sessionId: in String, inputs: in slice[AttachmentInput]): Result[StoredAttachments, StoreAttachmentsError] {
+  if inputs.length == 0 {
+    return Ok(value = StoredAttachments(attachments = [], hostDir = ""))
+  }
+  if inputs.length > maxAttachmentsPerMessage {
+    return Err(value = StoreAttachmentsError(code = 400, message = "too many attachments (max " + toString(maxAttachmentsPerMessage) + " per message)"))
+  }
+  // Pass 1: validate + decode EVERY input, accumulating the running total
+  // decoded size, WITHOUT writing anything to disk or the database yet. The
+  // per-file cap can be checked file-by-file safely, but the cumulative
+  // per-message cap cannot: checking it interleaved with writes (as an
+  // earlier version of this function did) let a later file's overage reject
+  // the whole request only after EARLIER files were already written and
+  // inserted — orphaned rows with messageId forever '', invisible to any UI
+  // flow, with no cleanup path. Collecting every input's validated bytes
+  // here first (bounded by maxAttachmentsPerMessage <= 10 entries, so the
+  // slice-append-in-a-loop gotcha docs/lyric/gotchas.md warns about for
+  // genuinely hot loops does not apply) means the whole request is accepted
+  // or rejected atomically, matching the per-file/per-count checks' own
+  // pre-write ordering.
+  var validated: slice[ValidatedAttachmentInput] = []
+  var totalBytes = 0
+  var i = 0
+  while i < inputs.length {
+    val input = inputs[i]
+    if input.fileName.length == 0 {
+      return Err(value = StoreAttachmentsError(code = 400, message = "attachment fileName is required"))
+    }
+    if not CloudAgents.Text.withinMaxByteLength(input.fileName, maxAttachmentFileNameLen) {
+      return Err(value = StoreAttachmentsError(code = 400, message = "attachment fileName is too long (max " + toString(maxAttachmentFileNameLen) + " bytes)"))
+    }
+    val fileName = match basenameOfAttachment(input.fileName) {
+      case Some(b) -> b
+      case None -> return Err(value = StoreAttachmentsError(code = 400, message = "attachment fileName is invalid"))
+    }
+    if input.mimeType.length == 0 {
+      return Err(value = StoreAttachmentsError(code = 400, message = "attachment mimeType is required"))
+    }
+    if not CloudAgents.Text.withinMaxLength(input.mimeType, maxAttachmentMimeTypeLen) {
+      return Err(value = StoreAttachmentsError(code = 400, message = "attachment mimeType is too long (max " + toString(maxAttachmentMimeTypeLen) + " characters)"))
+    }
+    // Reject mime types capable of executing as active content — see
+    // isDangerousAttachmentMimeType's doc comment. Checked before anything
+    // is written to disk or the database.
+    if isDangerousAttachmentMimeType(input.mimeType) {
+      return Err(value = StoreAttachmentsError(code = 400, message = "attachment '" + input.fileName + "' has an unsupported mimeType (" + input.mimeType + ")"))
+    }
+    // No "contentBase64 is required" rejection here (#1004): an empty string
+    // is itself valid base64 for a genuine 0-byte file (decodeAttachmentBase64
+    // decodes it to an empty slice, no error), so treating it as a missing
+    // field would reject a legitimate empty attachment with a misleading
+    // error. contentBase64 is a non-optional String field on AttachmentInput
+    // — it can't actually be absent once the JSON has decoded — so there is
+    // no "field missing" case left to distinguish from "empty file" here.
+    if not CloudAgents.Text.withinMaxLength(input.contentBase64, maxAttachmentBase64Len) {
+      return Err(value = StoreAttachmentsError(code = 400, message = "attachment '" + fileName + "' exceeds the 20 MiB per-file limit"))
+    }
+    val bytes = match tryDecodeAttachmentBytes(input.contentBase64) {
+      case Ok(b) -> b
+      case Err(msg) -> return Err(value = StoreAttachmentsError(code = 400, message = "attachment '" + fileName + "': " + msg))
+    }
+    val sizeBytes = bytes.length.toInt()
+    if sizeBytes > maxAttachmentBytes {
+      return Err(value = StoreAttachmentsError(code = 400, message = "attachment '" + fileName + "' exceeds the 20 MiB per-file limit"))
+    }
+    totalBytes = totalBytes + sizeBytes
+    if totalBytes > maxTotalAttachmentBytes {
+      return Err(value = StoreAttachmentsError(code = 400, message = "attachments exceed the 50 MiB per-message limit"))
+    }
+    validated = validated.append(
+      ValidatedAttachmentInput(fileName = fileName, mimeType = input.mimeType, bytes = bytes, sizeBytes = sizeBytes)
+    )
+    i = i + 1
+  }
+  // Pass 2: every input validated — now actually persist. This loop is
+  // itself NOT atomic (#1003): if Std.File.writeBytes or createAttachment
+  // fails partway through a multi-file request (disk full, a transient
+  // SQLite error), files already written/inserted earlier in THIS loop stay
+  // orphaned — messageId permanently '', same failure shape pass 1 exists to
+  // rule out for the far more common validation-rejection case. Accepted as
+  // a known, rare-failure-mode limitation rather than adding rollback: it
+  // requires a genuine I/O or DB failure mid-batch (not a predictable
+  // validation outcome), and matches this codebase's existing tolerance for
+  // non-transactional multi-step writes elsewhere (e.g. this exact
+  // single-file version of the problem already exists, unaddressed, in
+  // CloudAgents.Callbacks' report_artifact upload path).
+  val hostDir = CloudAgents.Repository.attachmentsBaseDir() + "/" + sessionId
+  match Std.File.createDir(hostDir) {
+    case Ok(_) -> ()
+    case Err(e) -> return Err(value = StoreAttachmentsError(code = 500, message = "failed to create attachment storage: " + IOError.message(e)))
+  }
+  var stored: slice[CloudAgents.Repository.Attachment] = []
+  var j = 0
+  while j < validated.length {
+    val v = validated[j]
+    val kind = attachmentKindOf(v.mimeType)
+    val attachmentId = Std.Uuid.uuidToString(Std.Uuid.newUuid())
+    val storedName = attachmentId + "_" + v.fileName
+    match Std.File.writeBytes(hostDir + "/" + storedName, sliceBytesToList(v.bytes)) {
+      case Ok(_) -> ()
+      case Err(e) -> return Err(value = StoreAttachmentsError(code = 500, message = "failed to store attachment: " + IOError.message(e)))
+    }
+    match CloudAgents.Repository.createAttachment(sessionId, v.fileName, storedName, v.mimeType, kind, toString(v.sizeBytes)) {
+      case Ok(a) -> { stored = stored.append(a) }
+      case Err(e) -> return Err(value = StoreAttachmentsError(code = 500, message = "failed to record attachment: " + CloudAgents.Sqlite.dbErrorMessage(e)))
+    }
+    j = j + 1
+  }
+  return Ok(value = StoredAttachments(attachments = stored, hostDir = hostDir))
+}
+
+/// Appends a file manifest to the prompt the CONTAINER receives, naming each
+/// attachment's in-container path (CloudAgents.Docker bind-mounts
+/// attachmentsBaseDir()/<sessionId>/ at /workspace/.attachments for this run)
+/// so the agent's own Read tool — already multimodal, so this covers images
+/// and text/document files alike with no separate vision-payload plumbing —
+/// picks them up. Returns `text` untouched when there are no attachments.
+/// The ORIGINAL `text` (not this augmented version) is what streamSendMessage
+/// persists to the transcript — only the container-bound prompt carries the
+/// manifest, so the UI shows what the user actually typed.
+pub func promptWithAttachments(text: in String, attachments: in slice[CloudAgents.Repository.Attachment]): String {
+  if attachments.length == 0 {
+    return text
+  }
+  var manifest = "\n\n[The user attached " + toString(attachments.length) +
+    " file(s) to this message. Read each one with the Read tool before responding:\n"
+  var i = 0
+  while i < attachments.length {
+    val a = attachments[i]
+    manifest = manifest + "- /workspace/.attachments/" + a.storedName + " (" + a.mimeType + ")\n"
+    i = i + 1
+  }
+  manifest = manifest + "]"
+  val base = if text.length == 0 { "Please review the attached file(s)." } else { text }
+  return base + manifest
+}
+
+/// Escape a filename for an RFC 6266 `filename="..."` quoted-string —
+/// mirrors CloudAgents.Callbacks.contentDispositionQuoted (duplicated per
+/// docs/lyric/gotchas.md's cross-package reuse caveat, same as the base64/
+/// basename helpers above).
+pub func contentDispositionQuoted(name: in String): String {
+  var escaped = ""
+  var i = 0
+  while i < name.length {
+    val c = name.substring(i, 1)
+    if c == "\"" or c == "\\" {
+      escaped = escaped + "\\" + c
+    } else if c >= " " {
+      escaped = escaped + c
+    }
+    i = i + 1
+  }
+  return escaped
+}
+
+/// GET /api/sessions/{id}/attachments — user-originated. Lists every
+/// attachment uploaded to a session, oldest first, so the client can
+/// re-render past uploads (thumbnails, download chips) after a reload,
+/// grouping by messageId.
+pub func listAttachmentsHandler(id: in String): Result[AttachmentListResponse, Web.ApiError] {
+  if id.length == 0 {
+    return Err(Web.badRequest("id is required"))
+  }
+  match getSession(id) {
+    case Ok(Some(_)) -> ()
+    case Ok(None) -> return Err(Web.notFound("Session not found"))
+    case Err(e) -> return Err(Web.internalError("session lookup failed: " + CloudAgents.Sqlite.dbErrorMessage(e)))
+  }
+  match CloudAgents.Repository.listAttachments(id) {
+    case Ok(atts) -> {
+      var acc: slice[AttachmentSummary] = []
+      var i = 0
+      while i < atts.length {
+        acc = acc.append(attachmentSummaryOf(atts[i]))
+        i = i + 1
+      }
+      return Ok(value = AttachmentListResponse(attachments = acc))
+    }
+    case Err(e) -> return Err(Web.internalError("failed to list attachments: " + CloudAgents.Sqlite.dbErrorMessage(e)))
+  }
+}
+
+/// GET /api/sessions/{id}/attachments/{aid} — user-originated. Streams the
+/// stored bytes with Content-Disposition set from the sanitized fileName,
+/// mirroring CloudAgents.Callbacks.downloadArtifactHandler. `id` must match
+/// the attachment's own sessionId (not just any session the caller owns) so
+/// one session can never fetch another's uploads by guessing an id.
+pub func downloadAttachmentHandler(id: in String, aid: in String): Result[Web.Response, Web.ApiError] {
+  if id.length == 0 {
+    return Err(Web.badRequest("id is required"))
+  }
+  if aid.length == 0 {
+    return Err(Web.badRequest("attachment id is required"))
+  }
+  match getSession(id) {
+    case Ok(Some(_)) -> ()
+    case Ok(None) -> return Err(Web.notFound("Session not found"))
+    case Err(e) -> return Err(Web.internalError("session lookup failed: " + CloudAgents.Sqlite.dbErrorMessage(e)))
+  }
+  val a = match CloudAgents.Repository.getAttachment(aid) {
+    case Ok(Some(att)) -> att
+    case Ok(None) -> return Err(Web.notFound("Attachment not found"))
+    case Err(e) -> return Err(Web.internalError("attachment lookup failed: " + CloudAgents.Sqlite.dbErrorMessage(e)))
+  }
+  if a.sessionId != id {
+    return Err(Web.notFound("Attachment not found"))
+  }
+  val path = CloudAgents.Repository.attachmentsBaseDir() + "/" + a.sessionId + "/" + a.storedName
+  val bytes = match Std.File.readBytes(path) {
+    case Ok(b) -> b
+    case Err(e) -> return Err(Web.internalError("failed to read attachment: " + IOError.message(e)))
+  }
+  val resp = Web.bytesResponse(200, a.mimeType, bytes.toArray())
+  // `attachment` (not `inline`), matching CloudAgents.Callbacks.
+  // readArtifactBytesResponse's identical convention: mimeType is entirely
+  // client-supplied, so a browser that ever navigates here directly must
+  // save the file rather than render it as a document — the frontend's own
+  // thumbnails/previews already go through fetch()+Blob, which never reads
+  // Content-Disposition, so this doesn't affect them.
+  return Ok(
+    value = Web.withResponseHeader(
+      resp,
+      "Content-Disposition",
+      "attachment; filename=\"" + contentDispositionQuoted(a.fileName) + "\""
+    )
+  )
+}
+
 /// Accept a user prompt and STREAM the container's output back as it is
 /// produced, using Lyric.Web 0.4.33's streaming-handler API: each new slice of
 /// container output is written as a `data: {"chunk":"..."}` SSE frame the
@@ -437,13 +978,13 @@ pub func promptExceedsMaxLength(text: in String): Bool {
 /// the transport changed. An error BEFORE the first chunk becomes a real
 /// 4xx/5xx via writeStreamError; a failure once streaming has begun is surfaced
 /// as an error line in the stream, since status/headers are already committed.
-pub func streamSendMessage(id: in String, text: in String, w: in Web.ResponseWriter): Unit {
+pub func streamSendMessage(id: in String, text: in String, attachments: in slice[AttachmentInput], w: in Web.ResponseWriter): Unit {
   if id.length == 0 {
     writeStreamError(w, 400, "id is required")
     return ()
   }
-  if text.length == 0 {
-    writeStreamError(w, 400, "text is required")
+  if text.length == 0 and attachments.length == 0 {
+    writeStreamError(w, 400, "text or an attachment is required")
     return ()
   }
   if promptExceedsMaxLength(text) {
@@ -473,7 +1014,15 @@ pub func streamSendMessage(id: in String, text: in String, w: in Web.ResponseWri
     }
     case Some(session) -> {
       // One run per session: atomically claim RUNNING (a guarded UPDATE) so two
-      // concurrent sends cannot both win and race the workspace volume.
+      // concurrent sends cannot both win and race the workspace volume. Claimed
+      // BEFORE storeAttachments (below) so a lock-race loser never reaches
+      // storeAttachments at all — validating/persisting attachments only after
+      // the lock is safely held means a bad upload's own 400 (and every other
+      // exit from this point on) is covered by the defer below, with no window
+      // where an upload could be written/recorded and then orphaned by a lost
+      // race (#994; the two-pass validation inside storeAttachments already
+      // rules out the equivalent orphan risk *within* one call — see #992 —
+      // this closes the same class of risk one level up).
       val began = match CloudAgents.SessionStore.tryBeginRun(id) {
         case Ok(b) -> b
         case Err(e) -> {
@@ -487,7 +1036,9 @@ pub func streamSendMessage(id: in String, text: in String, w: in Web.ResponseWri
       }
 
       // Release the claim on every exit (normal, error, or a Bug/panic) so a
-      // failure can never strand the session in RUNNING (#208).
+      // failure can never strand the session in RUNNING (#208). Registered
+      // before storeAttachments runs, so a validation failure there is covered
+      // too.
       defer {
         match CloudAgents.SessionStore.endRun(id) {
           case Ok(_) -> ()
@@ -495,10 +1046,30 @@ pub func streamSendMessage(id: in String, text: in String, w: in Web.ResponseWri
         }
       }
 
+      val stored = match storeAttachments(id, attachments) {
+        case Ok(s) -> s
+        case Err(e) -> {
+          writeStreamError(w, e.code, e.message)
+          return ()
+        }
+      }
+
       // Persist the user's prompt (best-effort — a storage hiccup must not stop
-      // the run).
+      // the run). The ORIGINAL text is stored (not the attachment-manifest-
+      // augmented prompt built below) so the transcript shows what the user
+      // actually typed. Once a message id exists, link this send's stored
+      // attachments to it (also best-effort: a missed link only means the
+      // attachment won't show up grouped under its message in the UI — its
+      // bytes are already safely on disk and it still lists under the
+      // session).
       match CloudAgents.Repository.addMessage(id, "user", text) {
-        case Ok(_) -> ()
+        case Ok(m) -> {
+          var ai = 0
+          while ai < stored.attachments.length {
+            val _ = CloudAgents.Repository.linkAttachmentToMessage(stored.attachments[ai].id, m.id)
+            ai = ai + 1
+          }
+        }
         case Err(_) -> ()
       }
 
@@ -544,7 +1115,7 @@ pub func streamSendMessage(id: in String, text: in String, w: in Web.ResponseWri
       val streamResult = CloudAgents.Docker.streamSessionMessage(
         repoUrl = session.repoUrl,
         branch = session.branch,
-        prompt = text,
+        prompt = promptWithAttachments(text, stored.attachments),
         sessionId = id,
         harness = harness,
         model = session.model,
@@ -552,6 +1123,7 @@ pub func streamSendMessage(id: in String, text: in String, w: in Web.ResponseWri
         profileId = profileId,
         userId = userId,
         extraRepos = extraRepos,
+        attachmentsHostDir = stored.hostDir,
         w = w
       )
 

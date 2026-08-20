@@ -162,6 +162,7 @@ pub async func createRunnerContainer(
   profileId: in String,
   userId: in String,
   extraRepos: in String,
+  attachmentsHostDir: in String,
 ): Result[String, String] {
   // Base env list + EXTRA_REPOS live in the pure CloudAgents.RunnerEnv package
   // so they can be unit-tested — a @test_module can't invoke anything from
@@ -173,6 +174,27 @@ pub async func createRunnerContainer(
     CloudAgents.Db.workspaceVolumeBindFor(userId, sessionId),
     CloudAgents.Db.homeVolumeBindFor(userId, harness)
   ]
+
+  // Chat attachments (docs/chat-attachments.md): the host directory a user's
+  // uploaded files for THIS message were written to
+  // (CloudAgents.Repository.attachmentsBaseDir()/<sessionId>/ —
+  // CloudAgents.Handlers.storeAttachments), bind-mounted READ-ONLY at
+  // /workspace/.attachments — the agent's own (already multimodal) Read tool
+  // only ever needs to read these files, never write them, matching the
+  // read-only NODE_EXTRA_CA_CERTS bind a few lines below (`:ro`). The
+  // directory is per-SESSION, not per-message, and accumulates every
+  // attachment ever uploaded to it, and downloadAttachmentHandler reads
+  // directly from the same host path — a writable mount would let a
+  // compromised/prompt-injected run delete or overwrite an earlier upload,
+  // silently breaking that file's future downloads. Files land with the
+  // default (world-readable) permissions Std.File.writeBytes/createDir
+  // produce, so claude-user can read them without needing the chown the rest
+  // of /workspace gets (a read-only mount couldn't be chowned anyway).
+  // Empty when this message carried no attachments, the common case, so a
+  // plain text-only send gets no extra bind.
+  if attachmentsHostDir.length > 0 {
+    binds = binds.append(attachmentsHostDir + ":/workspace/.attachments:ro")
+  }
 
   // Additional repositories linked to this session (multi-repo sessions): a
   // single space-separated "url|branch ..." value the entrypoint clones into
@@ -553,6 +575,7 @@ pub func streamSessionMessage(
   profileId: in String,
   userId: in String,
   extraRepos: in String,
+  attachmentsHostDir: in String,
   w: in Web.ResponseWriter,
 ): Result[String, String] {
   val cell = ResultCell(isSuccess = false, output = "", error = "")
@@ -567,6 +590,7 @@ pub func streamSessionMessage(
     profileId,
     userId,
     extraRepos,
+    attachmentsHostDir,
     cell
   )
   val startMs = CloudAgents.Repository.nowMillisLong()
@@ -984,9 +1008,10 @@ async func runSessionMessageAsync(
   profileId: in String,
   userId: in String,
   extraRepos: in String,
+  attachmentsHostDir: in String,
   cell: in ResultCell,
 ): Unit {
-  val createResult = await createRunnerContainer(dockerClient(), repoUrl, branch, prompt, sessionId, harness, model, nativeSessionId, profileId, userId, extraRepos)
+  val createResult = await createRunnerContainer(dockerClient(), repoUrl, branch, prompt, sessionId, harness, model, nativeSessionId, profileId, userId, extraRepos, attachmentsHostDir)
   match createResult {
     case Ok(id) -> {
       cell.containerId = id
@@ -1077,6 +1102,9 @@ pub func runSessionMessageBlocking(
   extraRepos: in String,
 ): Result[String, String] {
   val cell = ResultCell(isSuccess = false, output = "", error = "")
+  // No live browser tab means no attachment upload for this run either
+  // (docs/phase8-scheduling.md scheduled jobs have no composer UI) — always
+  // "" here, unlike streamSessionMessage's caller-supplied value.
   val t = runSessionMessageAsync(
     repoUrl,
     branch,
@@ -1088,6 +1116,7 @@ pub func runSessionMessageBlocking(
     profileId,
     userId,
     extraRepos,
+    "",
     cell
   )
   val pollMs = 1000
