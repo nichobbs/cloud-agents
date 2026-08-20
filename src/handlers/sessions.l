@@ -928,19 +928,16 @@ pub func streamSendMessage(id: in String, text: in String, attachments: in slice
       return ()
     }
     case Some(session) -> {
-      // Validate + persist attachments BEFORE claiming the run: a bad upload
-      // (oversized, invalid base64, too many files) should 400 without ever
-      // locking the session into RUNNING.
-      val stored = match storeAttachments(id, attachments) {
-        case Ok(s) -> s
-        case Err(e) -> {
-          writeStreamError(w, e.code, e.message)
-          return ()
-        }
-      }
-
       // One run per session: atomically claim RUNNING (a guarded UPDATE) so two
-      // concurrent sends cannot both win and race the workspace volume.
+      // concurrent sends cannot both win and race the workspace volume. Claimed
+      // BEFORE storeAttachments (below) so a lock-race loser never reaches
+      // storeAttachments at all — validating/persisting attachments only after
+      // the lock is safely held means a bad upload's own 400 (and every other
+      // exit from this point on) is covered by the defer below, with no window
+      // where an upload could be written/recorded and then orphaned by a lost
+      // race (#994; the two-pass validation inside storeAttachments already
+      // rules out the equivalent orphan risk *within* one call — see #992 —
+      // this closes the same class of risk one level up).
       val began = match CloudAgents.SessionStore.tryBeginRun(id) {
         case Ok(b) -> b
         case Err(e) -> {
@@ -954,11 +951,21 @@ pub func streamSendMessage(id: in String, text: in String, attachments: in slice
       }
 
       // Release the claim on every exit (normal, error, or a Bug/panic) so a
-      // failure can never strand the session in RUNNING (#208).
+      // failure can never strand the session in RUNNING (#208). Registered
+      // before storeAttachments runs, so a validation failure there is covered
+      // too.
       defer {
         match CloudAgents.SessionStore.endRun(id) {
           case Ok(_) -> ()
           case Err(e) -> println("WARNING: failed to release run claim for session " + id + " (stays RUNNING until recovery): " + CloudAgents.Sqlite.dbErrorMessage(e))
+        }
+      }
+
+      val stored = match storeAttachments(id, attachments) {
+        case Ok(s) -> s
+        case Err(e) -> {
+          writeStreamError(w, e.code, e.message)
+          return ()
         }
       }
 

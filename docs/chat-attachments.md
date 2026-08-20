@@ -68,12 +68,17 @@ collision-free within a session the same way `report_artifact`'s
 `storedName` is.
 
 `CloudAgents.Handlers.storeAttachments` (`src/handlers/sessions.l`) does the
-validate-then-persist work: per-file and per-message size/count checks, a
-basename-only sanitized `fileName` (path traversal neutralized, same
-guarantee as artifact uploads), then a DB row per file with `messageId`
-starting `''`. `streamSendMessage` calls it BEFORE claiming the session's run
-lock (so a bad upload 400s without ever locking the session), then — once
-`CloudAgents.Repository.addMessage` mints the user message's id —
+validate-then-persist work in two passes: validate + base64-decode every
+input first, without writing anything, so a later file's overage against the
+cumulative per-message budget can never leave an earlier file's bytes/row
+orphaned; then write each file's bytes and insert its `session_attachments`
+row (`messageId` starting `''`). `streamSendMessage` calls it AFTER
+successfully claiming the session's run lock — not before — so a validation
+failure (or any other early return) is covered by the same `defer`-based
+lock release the rest of the run already relies on, closing the same
+orphaned-row risk one level up: claiming the lock first means no concurrent
+send can lose a lock race *after* attachments were already written for it.
+Once `CloudAgents.Repository.addMessage` mints the user message's id,
 `CloudAgents.Repository.linkAttachmentToMessage` back-fills `messageId` on
 each stored row. The message's persisted transcript `content` is the
 ORIGINAL text the user typed, not the container-bound prompt built in §4 — so
@@ -122,7 +127,6 @@ rejects mime types capable of executing as active content when rendered
 `mimeType` is entirely client-supplied, and an SVG/HTML file served inline at
 this app's own origin is a stored-XSS vector if a viewer ever navigates to it
 directly rather than fetching it as an opaque blob.
-other workspace path.
 
 ## 5. Frontend
 

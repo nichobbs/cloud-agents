@@ -98,6 +98,34 @@ func atLeast(minLen: in Int): String {
 }
 
 // ── basenameOfAttachment ───────────────────────────────────────────────────
+// ── SendMessageRequest JSON decode ──────────────────────────────────────────
+test "SendMessageRequest.fromJson tolerates a stale client omitting the new attachments field (#996)" {
+  // The attachments field is new; a browser tab still running the JS bundle
+  // from before this feature shipped would POST the old, text-only body
+  // shape (no "attachments" key at all) against an already-upgraded
+  // backend during/just after a deploy. The generated Json decoder must
+  // default a missing slice-typed field to empty rather than fail the whole
+  // decode — otherwise every send from a stale tab would 400 with "invalid
+  // JSON body" for the length of the deploy window instead of degrading
+  // gracefully to a text-only send.
+  match SendMessageRequest.fromJson("{\"text\":\"hello\"}") {
+    case Ok(req) -> {
+      assertEqual(req.text, "hello", "text still decodes")
+      assertEqualInt(req.attachments.length.toInt(), 0, "a missing attachments key defaults to empty, not a decode failure")
+    }
+    case Err(_) -> assertTrue(false, "a missing attachments key must not fail the whole decode (stale-client compatibility, #996)")
+  }
+
+  // The current (post-upgrade) client's actual shape still round-trips.
+  match SendMessageRequest.fromJson("{\"text\":\"hi\",\"attachments\":[{\"fileName\":\"a.png\",\"mimeType\":\"image/png\",\"contentBase64\":\"AAAA\"}]}") {
+    case Ok(req) -> {
+      assertEqualInt(req.attachments.length.toInt(), 1, "a present attachments array decodes")
+      assertEqual(req.attachments[0].fileName, "a.png", "fileName round-trips")
+    }
+    case Err(_) -> assertTrue(false, "a well-formed attachments array must decode")
+  }
+}
+
 test "basenameOfAttachment strips directory components and rejects degenerate names" {
   match basenameOfAttachment("photo.png") {
     case Some(b) -> assertEqual(b, "photo.png", "a plain name passes through")
