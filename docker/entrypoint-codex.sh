@@ -110,11 +110,11 @@ fi
 
 # Reconcile linked repositories (multi-repo sessions): clone the repos
 # currently linked to the session, prune any that were unlinked. Shared
-# across all four harness entrypoints (#468).
+# across all five harness entrypoints (#468).
 /usr/local/bin/reconcile-repos.sh "entrypoint-codex"
 cd /workspace
 
-# Safety net: ensure we're not on the starting branch. Shared across all four
+# Safety net: ensure we're not on the starting branch. Shared across all five
 # harness entrypoints (#725) — see create-fallback-branch.sh.
 create-fallback-branch.sh "entrypoint-codex" "${HARNESS}" "${BRANCH}" "${SESSION_ID:-}"
 

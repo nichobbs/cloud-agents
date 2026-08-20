@@ -148,7 +148,7 @@ pub func isValidProxyBranch(branch: in String): Bool {
 
 /// The harnesses the models proxy knows provider mappings for.
 pub func isKnownProxyHarness(harness: in String): Bool {
-  return harness == "claude" or harness == "codex" or harness == "opencode" or harness == "gemini"
+  return harness == "claude" or harness == "codex" or harness == "opencode" or harness == "gemini" or harness == "antigravity"
 }
 
 // ─── Vault lookups ────────────────────────────────────────────────────────────
@@ -268,7 +268,7 @@ pub func providersForHarness(harness: in String): slice[String] {
   if harness == "codex" {
     return ["openai"]
   }
-  if harness == "gemini" {
+  if harness == "gemini" or harness == "antigravity" {
     return ["google"]
   }
   if harness == "opencode" {
@@ -277,8 +277,8 @@ pub func providersForHarness(harness: in String): slice[String] {
   return ["anthropic", "openai", "google"]
 }
 
-/// The vault key for a provider (GOOGLE_API_KEY is accepted as a fallback
-/// alias for google's canonical GEMINI_API_KEY).
+/// The vault key for a provider (GOOGLE_API_KEY and ANTIGRAVITY_API_KEY are
+/// accepted as fallback aliases for google's canonical GEMINI_API_KEY).
 pub func keyForProvider(provider: in String): Option[String] {
   if provider == "anthropic" {
     return vaultKeyOrNone("ANTHROPIC_API_KEY")
@@ -289,7 +289,12 @@ pub func keyForProvider(provider: in String): Option[String] {
   if provider == "google" {
     match vaultKeyOrNone("GEMINI_API_KEY") {
       case Some(v) -> return Some(value = v)
-      case None -> return vaultKeyOrNone("GOOGLE_API_KEY")
+      case None -> {
+        match vaultKeyOrNone("GOOGLE_API_KEY") {
+          case Some(v) -> return Some(value = v)
+          case None -> return vaultKeyOrNone("ANTIGRAVITY_API_KEY")
+        }
+      }
     }
   }
   if provider == "opencode" {
@@ -364,7 +369,7 @@ func providerModelsBody(provider: in String, key: in String): Result[String, Str
 /// zero usable providers is the 404 the frontend falls back on.
 pub func modelsHandler(harness: in String): Result[String, Web.ApiError] {
   if not isKnownProxyHarness(harness) {
-    return Err(Web.badRequest("harness must be one of: claude, codex, opencode, gemini"))
+    return Err(Web.badRequest("harness must be one of: claude, codex, opencode, gemini, antigravity"))
   }
   // Providers are queried SEQUENTIALLY by design (#446): making this
   // concurrent would require async funcs, and an async func anywhere in this
@@ -406,10 +411,10 @@ pub func modelsHandler(harness: in String): Result[String, Web.ApiError] {
 
 // ─── Harness availability (#523) ─────────────────────────────────────────────
 //
-// Every deployment path now builds all four runner images unconditionally
+// Every deployment path now builds all five runner images unconditionally
 // (deploy/docker-compose.yml's install-docker.sh always has, and
-// docker-compose.coolify.yml's codex-base/opencode-base/gemini-base are no
-// longer gated behind Compose `profiles:` either — see that file's own
+// docker-compose.coolify.yml's codex-base/opencode-base/gemini-base/antigravity-base
+// are no longer gated behind Compose `profiles:` either — see that file's own
 // comments for why they used to be and why that's no longer necessary).
 // CLOUD_AGENTS_ENABLED_HARNESSES stays unset by default on both, so
 // isHarnessEnabled's fail-open behavior below reports every harness
@@ -475,7 +480,7 @@ pub func isHarnessEnabled(harness: in String): Bool {
 /// CLOUD_AGENTS_ENABLED_HARNESSES. Always succeeds (no vault/network access),
 /// unlike the other proxy handlers above.
 pub func harnessesHandler(): String {
-  val all: slice[String] = ["claude", "codex", "opencode", "gemini"]
+  val all: slice[String] = ["claude", "codex", "opencode", "gemini", "antigravity"]
   var entries = ""
   var count = 0
   for h in all {

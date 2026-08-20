@@ -63,6 +63,17 @@ register_callbacks_mcp "gemini" "$WS"
 check "gemini: entry stripped when inactive"  bash -c "! jq -e '.mcpServers[\"cloud-agents\"]' '$WS/.gemini/settings.json' >/dev/null"
 rm -rf "$WS"
 
+# ── Antigravity: adds .mcpServers["cloud-agents"] in .gemini/settings.json ────
+WS="$(mktemp -d)"
+live_env
+register_callbacks_mcp "antigravity" "$WS"
+check "antigravity: settings.json created"         test -f "$WS/.gemini/settings.json"
+check "antigravity: entry added"                   bash -c "jq -e '.mcpServers[\"cloud-agents\"].command == \"cloud-agents-shim\"' '$WS/.gemini/settings.json' >/dev/null"
+dead_env
+register_callbacks_mcp "antigravity" "$WS"
+check "antigravity: entry stripped when inactive"  bash -c "! jq -e '.mcpServers[\"cloud-agents\"]' '$WS/.gemini/settings.json' >/dev/null"
+rm -rf "$WS"
+
 # ── Codex: marker-delimited TOML block, idempotent, strip on inactive ────────
 WS="$(mktemp -d)"
 mkdir -p "$WS/.codex"

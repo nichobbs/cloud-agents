@@ -1,12 +1,12 @@
 #!/bin/bash
 # docker/register-callbacks-mcp.sh — registers the cloud-agents MCP callback
 # shim (cloud-agents-shim, docs/phase6-mcp-callbacks.md) in a NON-CLAUDE
-# harness's native MCP config, so opencode/codex/gemini get the same
+# harness's native MCP config, so opencode/codex/gemini/antigravity get the same
 # add_todo/update_todo/report_progress/... tools the claude harness has had
 # since Phase 6. The claude harness keeps its own, more involved
 # reconciliation in entrypoint.sh (its registration is coupled to the
 # --permission-prompt-tool contract); this script deliberately covers only
-# the other three (entrypoint.sh does source it for exclude_from_git, #792).
+# the other four (entrypoint.sh does source it for exclude_from_git, #792).
 #
 # Reconciled EVERY message, mirroring entrypoint.sh's #548 semantics: the
 # entry is added/refreshed when callbacks are live for this run (flag on,
@@ -18,7 +18,7 @@
 # token/URL containing JSON metacharacters can't corrupt the config.
 #
 # Usage: source this file, then call register_callbacks_mcp <harness> [workspace-root]
-#        harness: opencode | codex | gemini
+#        harness: opencode | codex | gemini | antigravity
 set -euo pipefail
 
 # Whether callbacks are live for THIS run: default-on flag (off only on the
@@ -130,7 +130,7 @@ register_callbacks_mcp() {
                 apply_to_file "$file" jq 'del(.mcp["cloud-agents"])' "$file"
             fi
             ;;
-        gemini)
+        gemini|antigravity)
             command -v jq >/dev/null 2>&1 || return 0
             local file="$ws/.gemini/settings.json"
             mkdir -p "$ws/.gemini"

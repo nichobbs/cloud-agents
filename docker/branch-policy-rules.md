@@ -10,7 +10,7 @@ Rename the current branch to a descriptive name:
 
     git branch -m <harness>/<short-description>
 
-Where `<harness>` is the tool you are (claude, opencode, codex, or gemini)
+Where `<harness>` is the tool you are (claude, opencode, codex, gemini, or antigravity)
 and `<short-description>` summarizes the task from the initial prompt.
 
 Examples:
@@ -18,6 +18,7 @@ Examples:
 - `opencode/add-auth-feature`
 - `codex/fix-sqlite-migration`
 - `gemini/refactor-docker-entrypoint`
+- `antigravity/add-mcp-server`
 
 Use lowercase, hyphens only, 3-5 words max.
 

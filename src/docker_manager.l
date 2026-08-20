@@ -133,6 +133,9 @@ func imageForHarness(harness: in String): String {
   if harness == "gemini" {
     return "gemini:base"
   }
+  if harness == "antigravity" {
+    return "antigravity:base"
+  }
   return "claude-code:base"
 }
 

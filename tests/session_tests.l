@@ -111,6 +111,14 @@ func verifyGeminiBackfill(resp: in CreateSessionResponse): Unit {
   val _ = mustOptSession(removeSession(resp.sessionId))
 }
 
+func verifyAntigravityBackfill(resp: in CreateSessionResponse): Unit {
+  match mustOptSession(CloudAgents.SessionStore.getSession(resp.sessionId)) {
+    case Some(s) -> assertEqual(s.model, "gemini-2.5-pro", "empty model backfilled with antigravity default")
+    case None -> assertTrue(false, "created session should exist")
+  }
+  val _ = mustOptSession(removeSession(resp.sessionId))
+}
+
 func verifyEscapedRoundTrip(p: in AgentSession): Unit {
   assertEqual(p.repoUrl, "https://github.com/nic/re\"po", "quote round-trips")
   assertEqual(p.branch, "feat\\wip", "backslash round-trips")
@@ -624,6 +632,18 @@ test "Test Handler createSession validation" {
   match createSession(req5) {
     case Ok(resp) -> verifyGeminiBackfill(resp)
     case Err(_) -> assertTrue(false, "should accept the gemini harness")
+  }
+
+  // The antigravity harness is accepted and gets its own default model.
+  val req6 = CreateSessionRequest(
+    repoUrl = "https://github.com/nic/repos/cloud-agents",
+    branch = "main",
+    harness = "antigravity",
+    model = ""
+  )
+  match createSession(req6) {
+    case Ok(resp) -> verifyAntigravityBackfill(resp)
+    case Err(_) -> assertTrue(false, "should accept the antigravity harness")
   }
 
   println("✓ Handler validation tests passed!")

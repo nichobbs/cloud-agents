@@ -1,13 +1,13 @@
 /// Which harnesses actually have a runner image on this deployment (#523).
 ///
 /// Every deployment path (the standalone-VM RUNBOOK flow and Coolify alike)
-/// now builds all four runner images unconditionally, so this normally just
+/// now builds all five runner images unconditionally, so this normally just
 /// confirms "everything's available" — but a deployment CAN still narrow
 /// this via CLOUD_AGENTS_ENABLED_HARNESSES if an operator wants to disable
 /// one deliberately. Before harness images built unconditionally, a fresh
 /// Coolify deploy only built claude-code:base by default and the other
-/// three needed an operator to opt in via Compose profiles; the picker used
-/// to offer all four regardless, and a session created with a not-yet-built
+/// four needed an operator to opt in via Compose profiles; the picker used
+/// to offer all five regardless, and a session created with a not-yet-built
 /// harness only failed at container-creation time with an opaque Docker "no
 /// such image" error — this module exists to surface that ahead of time.
 /// GET /api/harnesses reports which of the known harnesses the backend

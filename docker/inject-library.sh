@@ -15,7 +15,7 @@
 # a repo-committed skill/agent file or a hand-authored MCP server entry, even
 # though this script may share a directory or config file with those.
 #
-# Usage: inject-library.sh <harness>   # claude | codex | opencode | gemini
+# Usage: inject-library.sh <harness>   # claude | codex | opencode | gemini | antigravity
 #
 # Best-effort by design: a caller should invoke this with `|| true`-style
 # tolerance (see entrypoint*.sh) so a rendering hiccup here never blocks the
@@ -33,10 +33,10 @@ fi
 cd /workspace
 
 case "$HARNESS" in
-    claude)   SKILLS_DIR=".claude/skills";    AGENTS_DIR=".claude/agents"   ;;
-    codex)    SKILLS_DIR=".agents/skills";    AGENTS_DIR=".codex/agents"    ;;
-    gemini)   SKILLS_DIR=".gemini/skills";    AGENTS_DIR=".gemini/agents"   ;;
-    opencode) SKILLS_DIR=".opencode/skills";  AGENTS_DIR=".opencode/agents" ;;
+    claude)             SKILLS_DIR=".claude/skills";   AGENTS_DIR=".claude/agents"   ;;
+    codex)              SKILLS_DIR=".agents/skills";   AGENTS_DIR=".codex/agents"    ;;
+    gemini|antigravity) SKILLS_DIR=".gemini/skills";   AGENTS_DIR=".gemini/agents"   ;;
+    opencode)           SKILLS_DIR=".opencode/skills"; AGENTS_DIR=".opencode/agents" ;;
     *)
         echo "inject-library.sh: unknown harness '$HARNESS', skipping" >&2
         exit 0
@@ -45,8 +45,9 @@ esac
 
 # ── Skills ──────────────────────────────────────────────────────────────────
 # SKILL.md (YAML frontmatter + markdown body) is the same format across
-# Claude Code, Codex CLI, Gemini CLI, and OpenCode as of 2026 — only the
-# discovery directory differs, so one render function covers all four.
+# Claude Code, Codex CLI, Gemini CLI, Antigravity CLI, and OpenCode as of
+# 2026 — only the discovery directory differs, so one render function covers
+# all five.
 # Frontmatter scalars are emitted as jq's `@json` (a double-quoted JSON
 # string is also a valid YAML flow scalar), so an arbitrary user-authored
 # name/description can never break the YAML even if it contains a colon,
@@ -305,7 +306,7 @@ case "$HARNESS" in
         render_subagents_yaml_frontmatter "$AGENTS_DIR"
         render_mcp_json ".claude/mcp.json" '{"mcpServers":{}}' "mcpServers"
         ;;
-    gemini)
+    gemini|antigravity)
         render_subagents_yaml_frontmatter "$AGENTS_DIR"
         render_mcp_json ".gemini/settings.json" '{}' "mcpServers"
         ;;

@@ -18,11 +18,11 @@ TARGET="${1:-claude}"
 
 command -v docker >/dev/null || { echo "build-docker: 'docker' not on PATH" >&2; exit 1; }
 
-# ALL four runner images build cloud-agents-shim (docs/phase6-mcp-callbacks.md
+# ALL five runner images build cloud-agents-shim (docs/phase6-mcp-callbacks.md
 # §5) INSIDE their own shim-builder stage, so every context is the repo root
 # (each needs to see both docker/ and shim/) — the #601 change the claude
-# image made first, extended to the other three when they gained the shim.
-# The stage's RUN instructions are byte-identical across the four
+# image made first, extended to the other four when they gained the shim.
+# The stage's RUN instructions are byte-identical across the five
 # Dockerfiles, so Docker's layer cache builds the shim once and shares it.
 build_claude() {
     echo "==> Building claude-code:base"
@@ -48,15 +48,22 @@ build_gemini() {
     echo "    gemini:base  ✓"
 }
 
+build_antigravity() {
+    echo "==> Building antigravity:base"
+    docker build -t antigravity:base -f "$DOCKER_DIR/Dockerfile.antigravity" "$REPO_ROOT"
+    echo "    antigravity:base  ✓"
+}
+
 case "$TARGET" in
-    claude)   build_claude ;;
-    codex)    build_codex ;;
-    opencode) build_opencode ;;
-    gemini)   build_gemini ;;
-    all)      build_claude; build_codex; build_opencode; build_gemini ;;
+    claude)      build_claude ;;
+    codex)       build_codex ;;
+    opencode)    build_opencode ;;
+    gemini)      build_gemini ;;
+    antigravity) build_antigravity ;;
+    all)         build_claude; build_codex; build_opencode; build_gemini; build_antigravity ;;
     *)
         echo "build-docker: unknown target '$TARGET'" >&2
-        echo "  usage: $0 [claude|codex|opencode|gemini|all]" >&2
+        echo "  usage: $0 [claude|codex|opencode|gemini|antigravity|all]" >&2
         exit 1
         ;;
 esac

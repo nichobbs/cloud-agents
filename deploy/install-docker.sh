@@ -58,9 +58,9 @@ systemctl enable --now docker
 # containing one.
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
-dockerfiles=(Dockerfile Dockerfile.codex Dockerfile.opencode Dockerfile.gemini)
-tags=(claude-code:base codex:base opencode:base gemini:base)
-contexts=("$REPO_ROOT" "$REPO_ROOT" "$REPO_ROOT" "$REPO_ROOT")
+dockerfiles=(Dockerfile Dockerfile.codex Dockerfile.opencode Dockerfile.gemini Dockerfile.antigravity)
+tags=(claude-code:base codex:base opencode:base gemini:base antigravity:base)
+contexts=("$REPO_ROOT" "$REPO_ROOT" "$REPO_ROOT" "$REPO_ROOT" "$REPO_ROOT")
 for i in "${!dockerfiles[@]}"; do
     dockerfile="${dockerfiles[$i]}"
     tag="${tags[$i]}"
