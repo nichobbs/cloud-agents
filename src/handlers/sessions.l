@@ -115,7 +115,11 @@ pub func basenameOfAttachment(name: in String): Option[String] {
 /// is a downloadable file chip; the agent's own Read tool handles both kinds
 /// identically once the file is on disk).
 pub func attachmentKindOf(mimeType: in String): String {
-  if mimeType.startsWith("image/") {
+  // Case-insensitive, matching isDangerousAttachmentMimeType below (#1000)
+  // — nothing about mimeType is guaranteed lowercase since it's entirely
+  // client-supplied, so an "IMAGE/PNG" would otherwise misclassify as a
+  // document.
+  if asciiLowerAttachmentMimeType(mimeType).startsWith("image/") {
     return "image"
   }
   return "document"

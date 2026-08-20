@@ -177,6 +177,7 @@ test "attachmentKindOf classifies image/* as image and everything else as docume
   assertEqual(attachmentKindOf("application/pdf"), "document", "a PDF is a document")
   assertEqual(attachmentKindOf("text/plain"), "document", "plain text is a document")
   assertEqual(attachmentKindOf(""), "document", "an empty mime type defaults to document")
+  assertEqual(attachmentKindOf("IMAGE/PNG"), "image", "classification is case-insensitive, matching isDangerousAttachmentMimeType (#1000)")
 }
 
 // ── contentDispositionQuoted ────────────────────────────────────────────────
