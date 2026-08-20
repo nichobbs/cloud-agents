@@ -783,9 +783,13 @@ pub func storeAttachments(sessionId: in String, inputs: in slice[AttachmentInput
     if isDangerousAttachmentMimeType(input.mimeType) {
       return Err(value = StoreAttachmentsError(code = 400, message = "attachment '" + input.fileName + "' has an unsupported mimeType (" + input.mimeType + ")"))
     }
-    if input.contentBase64.length == 0 {
-      return Err(value = StoreAttachmentsError(code = 400, message = "attachment contentBase64 is required"))
-    }
+    // No "contentBase64 is required" rejection here (#1004): an empty string
+    // is itself valid base64 for a genuine 0-byte file (decodeAttachmentBase64
+    // decodes it to an empty slice, no error), so treating it as a missing
+    // field would reject a legitimate empty attachment with a misleading
+    // error. contentBase64 is a non-optional String field on AttachmentInput
+    // — it can't actually be absent once the JSON has decoded — so there is
+    // no "field missing" case left to distinguish from "empty file" here.
     if not CloudAgents.Text.withinMaxLength(input.contentBase64, maxAttachmentBase64Len) {
       return Err(value = StoreAttachmentsError(code = 400, message = "attachment '" + fileName + "' exceeds the 20 MiB per-file limit"))
     }
@@ -806,7 +810,18 @@ pub func storeAttachments(sessionId: in String, inputs: in slice[AttachmentInput
     )
     i = i + 1
   }
-  // Pass 2: every input validated — now actually persist.
+  // Pass 2: every input validated — now actually persist. This loop is
+  // itself NOT atomic (#1003): if Std.File.writeBytes or createAttachment
+  // fails partway through a multi-file request (disk full, a transient
+  // SQLite error), files already written/inserted earlier in THIS loop stay
+  // orphaned — messageId permanently '', same failure shape pass 1 exists to
+  // rule out for the far more common validation-rejection case. Accepted as
+  // a known, rare-failure-mode limitation rather than adding rollback: it
+  // requires a genuine I/O or DB failure mid-batch (not a predictable
+  // validation outcome), and matches this codebase's existing tolerance for
+  // non-transactional multi-step writes elsewhere (e.g. this exact
+  // single-file version of the problem already exists, unaddressed, in
+  // CloudAgents.Callbacks' report_artifact upload path).
   val hostDir = CloudAgents.Repository.attachmentsBaseDir() + "/" + sessionId
   match Std.File.createDir(hostDir) {
     case Ok(_) -> ()

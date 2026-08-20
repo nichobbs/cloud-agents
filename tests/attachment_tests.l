@@ -319,6 +319,30 @@ test "storeAttachments validates, writes to disk, and records metadata" {
   }
 }
 
+test "storeAttachments accepts a genuine 0-byte file instead of rejecting it as 'required' (#1004)" {
+  val dbPath = useFreshTestDb("attach-empty-file")
+  defer {
+    cleanupTestDb(dbPath)
+  }
+  CloudAgents.Auth.setCurrentUserId("default")
+  val sid = "sess-attach-7"
+  mkSession(sid)
+
+  // base64Of("") is itself "" — the empty string is valid base64 for a
+  // genuine 0-byte file, and must not be rejected as though the field were
+  // missing (contentBase64 is a non-optional String, so it can never
+  // actually be absent once the JSON has decoded).
+  val inputs: slice[AttachmentInput] = [
+    AttachmentInput(fileName = "empty.txt", mimeType = "text/plain", contentBase64 = "")
+  ]
+  val stored = match storeAttachments(sid, inputs) {
+    case Ok(s) -> s
+    case Err(e) -> panic("a 0-byte attachment must be accepted, not rejected: " + e.message)
+  }
+  assertEqualInt(stored.attachments.length.toInt(), 1, "the empty file is stored")
+  assertEqual(stored.attachments[0].sizeBytes, "0", "sizeBytes is genuinely 0")
+}
+
 test "storeAttachments rejects an oversize file before storing anything" {
   val dbPath = useFreshTestDb("attach-oversize")
   defer {
