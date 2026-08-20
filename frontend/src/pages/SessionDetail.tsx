@@ -17,6 +17,7 @@ import { getHarness, type ModelOption } from '../lib/harnesses';
 import { api } from '../lib/api';
 import { discoverModels } from '../lib/models';
 import { formatElapsed, formatFullTimestamp, formatTimestamp, parseTimestamp } from '../lib/time';
+import { formatFileSize } from '../lib/fileSize';
 import type { Attachment, AttachmentInput, Message, PendingCallbacksResponse, Profile, Prompt, Run } from '../types';
 
 /** A file staged in the composer, read to base64 but not yet sent. Carries a
@@ -38,12 +39,6 @@ interface PendingAttachment extends AttachmentInput {
 const MAX_ATTACHMENTS_PER_MESSAGE = 10;
 const MAX_ATTACHMENT_BYTES = 20 * 1024 * 1024;
 const MAX_TOTAL_ATTACHMENT_BYTES = 50 * 1024 * 1024;
-
-function formatFileSize(bytes: number): string {
-  if (bytes < 1024) return `${bytes} B`;
-  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
-  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
-}
 
 /** Reads a File into an AttachmentInput (base64, no `data:...;base64,`
  *  prefix — the backend expects raw standard base64). */

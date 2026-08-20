@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react';
 import { api } from '../lib/api';
 import { formatFullTimestamp, formatTimestamp } from '../lib/time';
+import { formatFileSize } from '../lib/fileSize';
 import type { Attachment, Message } from '../types';
 import { groupConsecutiveBlocks, type ParsedBlock } from '../lib/blockGroups';
 import { AnsiContent } from './AnsiContent';
@@ -19,14 +20,6 @@ interface MessageBlockProps {
   onRetry?: (content: string) => void;
   isUnread?: boolean;
   isLatestAgentMessage?: boolean;
-}
-
-function formatAttachmentSize(sizeBytes: string): string {
-  const n = Number(sizeBytes);
-  if (!Number.isFinite(n) || n < 0) return '';
-  if (n < 1024) return `${n} B`;
-  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
-  return `${(n / (1024 * 1024)).toFixed(1)} MB`;
 }
 
 /** One uploaded file under a message: an image renders as a lazily-fetched
@@ -103,7 +96,7 @@ function AttachmentChip({ sessionId, attachment }: { sessionId: string; attachme
 
   return (
     <button style={attachmentDocChipStyle} onClick={() => { void handleDownload(); }} title={`Download ${attachment.fileName}`}>
-      📄 {attachment.fileName} <span style={{ color: '#6e7681' }}>({formatAttachmentSize(attachment.sizeBytes)})</span>
+      📄 {attachment.fileName} <span style={{ color: '#6e7681' }}>({formatFileSize(Number(attachment.sizeBytes))})</span>
     </button>
   );
 }
