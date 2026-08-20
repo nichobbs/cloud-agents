@@ -647,7 +647,7 @@ pub func storeAttachments(sessionId: in String, inputs: in slice[AttachmentInput
       case Err(e) -> return Err(value = StoreAttachmentsError(code = 500, message = "failed to store attachment: " + IOError.message(e)))
     }
     match CloudAgents.Repository.createAttachment(sessionId, fileName, storedName, input.mimeType, kind, toString(sizeBytes)) {
-      case Ok(a) -> stored = stored.append(a)
+      case Ok(a) -> { stored = stored.append(a) }
       case Err(e) -> return Err(value = StoreAttachmentsError(code = 500, message = "failed to record attachment: " + CloudAgents.Sqlite.dbErrorMessage(e)))
     }
     i = i + 1
