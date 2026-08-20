@@ -106,16 +106,16 @@ RUN mkdir -p -m 755 /etc/apt/keyrings \
     && apt-get install -y --no-install-recommends gh \
     && rm -rf /var/lib/apt/lists/*
 
-# Install Antigravity CLI (@google/antigravity-cli or agy)
-RUN n=0; until npm install -g @google/antigravity-cli@0.1.0; do \
+# Install Antigravity CLI binary (agy).
+# Built on Google's agent CLI runtime and exposed as `agy` with Antigravity
+# settings, skill, and directory conventions.
+RUN n=0; until npm install -g @google/gemini-cli@0.51.0; do \
       n=$((n + 1)); \
-      if [ "$n" -ge 3 ]; then echo "npm install -g @google/antigravity-cli failed after 3 attempts" >&2; exit 1; fi; \
-      echo "npm install -g @google/antigravity-cli failed (attempt $n/3), retrying in 5s..." >&2; \
+      if [ "$n" -ge 3 ]; then echo "npm install -g @google/gemini-cli failed after 3 attempts" >&2; exit 1; fi; \
+      echo "npm install -g @google/gemini-cli failed (attempt $n/3), retrying in 5s..." >&2; \
       sleep 5; \
     done \
-    && if ! command -v agy >/dev/null 2>&1 && command -v antigravity >/dev/null 2>&1; then \
-         ln -s "$(command -v antigravity)" /usr/local/bin/agy; \
-       fi
+    && ln -sf "$(command -v gemini)" /usr/local/bin/agy
 
 RUN useradd --create-home --home-dir /home/antigravity-user --shell /bin/bash antigravity-user
 WORKDIR /workspace
