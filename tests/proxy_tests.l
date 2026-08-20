@@ -113,11 +113,12 @@ test "isValidProxyBranch allows slashes but stays URL-safe" {
   assertTrue(isValidProxyBranch(oversized.substring(0, 255)), "255 chars ok")
 }
 
-test "isKnownProxyHarness knows exactly the four harnesses" {
+test "isKnownProxyHarness knows exactly the five harnesses" {
   assertTrue(isKnownProxyHarness("claude"), "claude ok")
   assertTrue(isKnownProxyHarness("codex"), "codex ok")
   assertTrue(isKnownProxyHarness("opencode"), "opencode ok")
   assertTrue(isKnownProxyHarness("gemini"), "gemini ok")
+  assertTrue(isKnownProxyHarness("antigravity"), "antigravity ok")
   assertTrue(not isKnownProxyHarness(""), "empty rejected")
   assertTrue(not isKnownProxyHarness("vim"), "unknown rejected")
   assertTrue(not isKnownProxyHarness("Claude"), "case-sensitive")
@@ -136,6 +137,7 @@ test "isHarnessEnabled reports every harness enabled when unset (fail open)" {
   assertTrue(isHarnessEnabled("codex"), "codex enabled by default")
   assertTrue(isHarnessEnabled("opencode"), "opencode enabled by default")
   assertTrue(isHarnessEnabled("gemini"), "gemini enabled by default")
+  assertTrue(isHarnessEnabled("antigravity"), "antigravity enabled by default")
 }
 
 test "isHarnessEnabled restricts to the configured comma-separated list" {
@@ -144,6 +146,7 @@ test "isHarnessEnabled restricts to the configured comma-separated list" {
   assertTrue(isHarnessEnabled("codex"), "codex listed (surrounding whitespace trimmed)")
   assertTrue(not isHarnessEnabled("opencode"), "opencode not listed")
   assertTrue(not isHarnessEnabled("gemini"), "gemini not listed")
+  assertTrue(not isHarnessEnabled("antigravity"), "antigravity not listed")
   Env.SetEnvironmentVariable("CLOUD_AGENTS_ENABLED_HARNESSES", "")
 }
 
@@ -154,6 +157,7 @@ test "harnessesHandler reports the JSON enabled list, restricted or not" {
   assertTrue(allEnabled.contains("\"codex\""), "codex present when unset")
   assertTrue(allEnabled.contains("\"opencode\""), "opencode present when unset")
   assertTrue(allEnabled.contains("\"gemini\""), "gemini present when unset")
+  assertTrue(allEnabled.contains("\"antigravity\""), "antigravity present when unset")
 
   Env.SetEnvironmentVariable("CLOUD_AGENTS_ENABLED_HARNESSES", "claude,gemini")
   val restricted = harnessesHandler()
@@ -161,6 +165,7 @@ test "harnessesHandler reports the JSON enabled list, restricted or not" {
   assertTrue(restricted.contains("\"gemini\""), "gemini present")
   assertTrue(not restricted.contains("\"codex\""), "codex absent")
   assertTrue(not restricted.contains("\"opencode\""), "opencode absent")
+  assertTrue(not restricted.contains("\"antigravity\""), "antigravity absent")
   Env.SetEnvironmentVariable("CLOUD_AGENTS_ENABLED_HARNESSES", "")
 }
 
@@ -256,6 +261,14 @@ test "providersForHarness returns correct provider mappings" {
   val claude = providersForHarness("claude")
   assertEqualInt(claude.length.toInt(), 1, "claude length")
   assertEqual(claude[0], "anthropic", "claude content")
+
+  val gemini = providersForHarness("gemini")
+  assertEqualInt(gemini.length.toInt(), 1, "gemini length")
+  assertEqual(gemini[0], "google", "gemini content")
+
+  val antigravity = providersForHarness("antigravity")
+  assertEqualInt(antigravity.length.toInt(), 1, "antigravity length")
+  assertEqual(antigravity[0], "google", "antigravity content")
 
   val opencode = providersForHarness("opencode")
   assertEqualInt(opencode.length.toInt(), 4, "opencode length")

@@ -1,4 +1,4 @@
-.PHONY: help dev test verify build run docker docker-codex docker-opencode docker-gemini docker-all lint-sh shim-test
+.PHONY: help dev test verify build run docker docker-codex docker-opencode docker-gemini docker-antigravity docker-all lint-sh shim-test
 
 help:
 	@echo "Usage: make <target>"
@@ -12,7 +12,8 @@ help:
 	@echo "  docker-codex  Build codex:base runner image"
 	@echo "  docker-opencode  Build opencode:base runner image"
 	@echo "  docker-gemini Build gemini:base runner image"
-	@echo "  docker-all    Build all four harness runner images"
+	@echo "  docker-antigravity Build antigravity:base runner image"
+	@echo "  docker-all    Build all harness runner images"
 	@echo "  lint-sh       Syntax-check all shell scripts (bash -n)"
 
 dev:
@@ -44,6 +45,9 @@ docker-opencode:
 docker-gemini:
 	./scripts/build-docker.sh gemini
 
+docker-antigravity:
+	./scripts/build-docker.sh antigravity
+
 docker-all:
 	./scripts/build-docker.sh all
 
@@ -53,6 +57,7 @@ lint-sh:
 	    docker/entrypoint-codex.sh \
 	    docker/entrypoint-opencode.sh \
 	    docker/entrypoint-gemini.sh \
+	    docker/entrypoint-antigravity.sh \
 	    docker/cloud-agents-shim \
 	    deploy/install-docker.sh \
 	    deploy/backup.sh \

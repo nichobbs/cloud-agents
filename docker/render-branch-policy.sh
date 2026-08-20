@@ -32,7 +32,7 @@ render_branch_policy() {
                     "$ws/opencode.json" > "$tmp" && mv "$tmp" "$ws/opencode.json"
             fi
             ;;
-        gemini)
+        gemini|antigravity)
             # Only write if the repo doesn't already have one (user-authored takes precedence).
             if [ ! -f "$ws/GEMINI.md" ]; then
                 cp "$src" "$ws/GEMINI.md"
@@ -72,7 +72,7 @@ render_session_guide() {
                     "$ws/opencode.json" > "$tmp" && mv "$tmp" "$ws/opencode.json"
             fi
             ;;
-        gemini)
+        gemini|antigravity)
             # render_branch_policy owns GEMINI.md creation (only when the repo
             # has none of its own). Append the guide once, marker-guarded so
             # reconciling every message can't duplicate it — and only to a

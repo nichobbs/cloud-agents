@@ -332,7 +332,7 @@ pub func isSafeModelName(model: in String): Bool {
 }
 
 pub func isKnownHarness(harness: in String): Bool {
-  return harness == "claude" or harness == "codex" or harness == "opencode" or harness == "gemini"
+  return harness == "claude" or harness == "codex" or harness == "opencode" or harness == "gemini" or harness == "antigravity"
 }
 
 @generate(Json)
@@ -472,7 +472,7 @@ pub func createSession(req: in CreateSessionRequest): Result[CreateSessionRespon
     return Err(Web.badRequest("branch is not a valid git branch name"))
   }
   if req.harness.length > 0 and not isKnownHarness(req.harness) {
-    return Err(Web.badRequest("harness must be one of: claude, codex, opencode, gemini"))
+    return Err(Web.badRequest("harness must be one of: claude, codex, opencode, gemini, antigravity"))
   }
   if not isSafeModelName(req.model) {
     return Err(Web.badRequest("model contains invalid characters or is too long"))

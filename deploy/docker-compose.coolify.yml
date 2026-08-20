@@ -169,6 +169,15 @@ services:
     restart: "no"
     exclude_from_hc: true
 
+  antigravity-base:
+    image: antigravity:base
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.antigravity
+    entrypoint: ["true"]
+    restart: "no"
+    exclude_from_hc: true
+
   caddy:
     image: caddy:2
     environment:

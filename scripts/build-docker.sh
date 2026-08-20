@@ -48,15 +48,22 @@ build_gemini() {
     echo "    gemini:base  ✓"
 }
 
+build_antigravity() {
+    echo "==> Building antigravity:base"
+    docker build -t antigravity:base -f "$DOCKER_DIR/Dockerfile.antigravity" "$REPO_ROOT"
+    echo "    antigravity:base  ✓"
+}
+
 case "$TARGET" in
-    claude)   build_claude ;;
-    codex)    build_codex ;;
-    opencode) build_opencode ;;
-    gemini)   build_gemini ;;
-    all)      build_claude; build_codex; build_opencode; build_gemini ;;
+    claude)      build_claude ;;
+    codex)       build_codex ;;
+    opencode)    build_opencode ;;
+    gemini)      build_gemini ;;
+    antigravity) build_antigravity ;;
+    all)         build_claude; build_codex; build_opencode; build_gemini; build_antigravity ;;
     *)
         echo "build-docker: unknown target '$TARGET'" >&2
-        echo "  usage: $0 [claude|codex|opencode|gemini|all]" >&2
+        echo "  usage: $0 [claude|codex|opencode|gemini|antigravity|all]" >&2
         exit 1
         ;;
 esac

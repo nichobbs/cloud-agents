@@ -18,7 +18,7 @@
 # token/URL containing JSON metacharacters can't corrupt the config.
 #
 # Usage: source this file, then call register_callbacks_mcp <harness> [workspace-root]
-#        harness: opencode | codex | gemini
+#        harness: opencode | codex | gemini | antigravity
 set -euo pipefail
 
 # Whether callbacks are live for THIS run: default-on flag (off only on the
@@ -142,6 +142,36 @@ register_callbacks_mcp() {
             fi
             if [ "$write" = "1" ]; then
                 exclude_from_git "$ws" ".gemini/settings.json"
+                apply_to_file "$file" jq \
+                   --arg url "${CLOUD_AGENTS_API_URL:-}" \
+                   --arg tok "${CLOUD_AGENTS_CALLBACK_TOKEN:-}" \
+                   --arg sid "${SESSION_ID:-}" \
+                   --arg to "${CLOUD_AGENTS_CALLBACK_TIMEOUT_MS:-}" \
+                   '.mcpServers["cloud-agents"] = {
+                      command: "cloud-agents-shim",
+                      env: {
+                        CLOUD_AGENTS_API_URL: $url,
+                        CLOUD_AGENTS_CALLBACK_TOKEN: $tok,
+                        CLOUD_AGENTS_SESSION_ID: $sid,
+                        CLOUD_AGENTS_CALLBACK_TIMEOUT_MS: $to
+                      }
+                    }' "$file"
+            elif jq -e '.mcpServers["cloud-agents"]' "$file" >/dev/null 2>&1; then
+                apply_to_file "$file" jq 'del(.mcpServers["cloud-agents"])' "$file"
+            fi
+            ;;
+        antigravity)
+            command -v jq >/dev/null 2>&1 || return 0
+            local file="$ws/.gemini/antigravity-cli/settings.json"
+            mkdir -p "$ws/.gemini/antigravity-cli"
+            [ -f "$file" ] || printf '{}' > "$file"
+            local write="$active"
+            if [ "$write" = "1" ] && is_git_tracked "$ws" ".gemini/antigravity-cli/settings.json"; then
+                echo "register-callbacks-mcp: .gemini/antigravity-cli/settings.json is git-tracked in this repo; refusing to write the callback token into it (cloud-agents tools unavailable for this harness here)" >&2
+                write=0
+            fi
+            if [ "$write" = "1" ]; then
+                exclude_from_git "$ws" ".gemini/antigravity-cli/settings.json"
                 apply_to_file "$file" jq \
                    --arg url "${CLOUD_AGENTS_API_URL:-}" \
                    --arg tok "${CLOUD_AGENTS_CALLBACK_TOKEN:-}" \

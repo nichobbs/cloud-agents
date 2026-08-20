@@ -99,6 +99,11 @@ test "Volume names key by user and session" {
   )
   assertEqual(homeVolumeBindForHarness("gemini"), "gemini-home-default:/home/gemini-user", "gemini home volume bind")
   assertEqual(
+    homeVolumeBindForHarness("antigravity"),
+    "antigravity-home-default:/home/antigravity-user",
+    "antigravity home volume bind"
+  )
+  assertEqual(
     homeVolumeBindForHarness(""),
     "claude-home-default:/home/claude-user",
     "empty harness falls back to claude"
@@ -110,6 +115,7 @@ test "Harness home mount paths cover every image" {
   assertEqual(homeMountPathForHarness("codex"), "/home/codex-user", "codex mount path")
   assertEqual(homeMountPathForHarness("opencode"), "/home/opencode-user", "opencode mount path")
   assertEqual(homeMountPathForHarness("gemini"), "/home/gemini-user", "gemini mount path")
+  assertEqual(homeMountPathForHarness("antigravity"), "/home/antigravity-user", "antigravity mount path")
   assertEqual(homeMountPathForHarness(""), "/home/claude-user", "empty harness falls back to claude's path")
   assertEqual(homeMountPathForHarness("bogus"), "/home/claude-user", "unknown harness falls back to claude's path")
 }
@@ -149,6 +155,11 @@ test "Per-user volume binds isolate tenants; operator keeps legacy names" {
     "operator gemini home bind keeps legacy name"
   )
   assertEqual(
+    homeVolumeBindFor("default", "antigravity"),
+    "antigravity-home-default:/home/antigravity-user",
+    "operator antigravity home bind keeps legacy name"
+  )
+  assertEqual(
     homeVolumeBindFor("default", ""),
     "claude-home-default:/home/claude-user",
     "operator empty harness keeps legacy claude bind"
@@ -180,6 +191,11 @@ test "Per-user volume binds isolate tenants; operator keeps legacy names" {
     homeVolumeBindFor("gh-42", "gemini"),
     "user-gh-42-gemini-home:/home/gemini-user",
     "tenant gemini home bind"
+  )
+  assertEqual(
+    homeVolumeBindFor("gh-42", "antigravity"),
+    "user-gh-42-antigravity-home:/home/antigravity-user",
+    "tenant antigravity home bind"
   )
   // Any unrecognised harness — not just empty — normalises to "claude" in the
   // volume name, agreeing with the mount path and image fallbacks (#437).

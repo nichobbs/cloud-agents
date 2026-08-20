@@ -152,6 +152,7 @@ jobs:
             docker/entrypoint-codex.sh \
             docker/entrypoint-opencode.sh \
             docker/entrypoint-gemini.sh \
+            docker/entrypoint-antigravity.sh \
             docker/reconcile-repos.sh \
             docker/cloud-agents-shim \
             deploy/install-docker.sh \

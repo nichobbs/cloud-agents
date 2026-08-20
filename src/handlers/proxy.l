@@ -148,7 +148,7 @@ pub func isValidProxyBranch(branch: in String): Bool {
 
 /// The harnesses the models proxy knows provider mappings for.
 pub func isKnownProxyHarness(harness: in String): Bool {
-  return harness == "claude" or harness == "codex" or harness == "opencode" or harness == "gemini"
+  return harness == "claude" or harness == "codex" or harness == "opencode" or harness == "gemini" or harness == "antigravity"
 }
 
 // ─── Vault lookups ────────────────────────────────────────────────────────────
@@ -268,7 +268,7 @@ pub func providersForHarness(harness: in String): slice[String] {
   if harness == "codex" {
     return ["openai"]
   }
-  if harness == "gemini" {
+  if harness == "gemini" or harness == "antigravity" {
     return ["google"]
   }
   if harness == "opencode" {
@@ -364,7 +364,7 @@ func providerModelsBody(provider: in String, key: in String): Result[String, Str
 /// zero usable providers is the 404 the frontend falls back on.
 pub func modelsHandler(harness: in String): Result[String, Web.ApiError] {
   if not isKnownProxyHarness(harness) {
-    return Err(Web.badRequest("harness must be one of: claude, codex, opencode, gemini"))
+    return Err(Web.badRequest("harness must be one of: claude, codex, opencode, gemini, antigravity"))
   }
   // Providers are queried SEQUENTIALLY by design (#446): making this
   // concurrent would require async funcs, and an async func anywhere in this
@@ -475,7 +475,7 @@ pub func isHarnessEnabled(harness: in String): Bool {
 /// CLOUD_AGENTS_ENABLED_HARNESSES. Always succeeds (no vault/network access),
 /// unlike the other proxy handlers above.
 pub func harnessesHandler(): String {
-  val all: slice[String] = ["claude", "codex", "opencode", "gemini"]
+  val all: slice[String] = ["claude", "codex", "opencode", "gemini", "antigravity"]
   var entries = ""
   var count = 0
   for h in all {

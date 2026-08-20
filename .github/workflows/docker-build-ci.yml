@@ -43,6 +43,7 @@ on:
       - 'docker/Dockerfile.codex'
       - 'docker/Dockerfile.gemini'
       - 'docker/Dockerfile.opencode'
+      - 'docker/Dockerfile.antigravity'
       - 'shim/**'
       - '.github/workflows/docker-build-ci.yml'
 
@@ -136,7 +137,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        harness: [codex, gemini, opencode]
+        harness: [codex, gemini, opencode, antigravity]
     steps:
       - uses: actions/checkout@v6
 
