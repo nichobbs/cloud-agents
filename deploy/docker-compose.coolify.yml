@@ -72,9 +72,9 @@ services:
       - CLOUD_AGENTS_SUMMARIZER_KEY=${CLOUD_AGENTS_SUMMARIZER_KEY:-}
       - CLOUD_AGENTS_INGEST_AGENT_PLAN=${CLOUD_AGENTS_INGEST_AGENT_PLAN:-}
       # CLOUD_AGENTS_ENABLED_HARNESSES (GET /api/harnesses, #523) is
-      # deliberately left unset here: all four runner images below now build
+      # deliberately left unset here: all five runner images below now build
       # unconditionally (see the claude-code-base/codex-base/opencode-base/
-      # gemini-base services), so there's nothing to restrict — unset means
+      # gemini-base/antigravity-base services), so there's nothing to restrict — unset means
       # "every harness enabled" (fail open).
       - LYRIC_CONFIG_WEB_SERVER_PORT=8080
     volumes:
@@ -113,9 +113,9 @@ services:
   # harness. This happened for real once (Dockerfile.codex's
   # `npm install -g @openai/codex` failed mid-build against an unpinned
   # `@latest`), which is why codex-base/opencode-base/gemini-base used to be
-  # gated behind Compose `profiles:` (opt-in only). All four now build
+  # gated behind Compose `profiles:` (opt-in only). All five now build
   # unconditionally instead, because the two things that actually caused
-  # that failure are both fixed at the source: each of the three
+  # that failure are both fixed at the source: each of the four
   # Dockerfile.<harness> files now pins its CLI to a specific version
   # confirmed to install cleanly (rather than floating on `@latest`, which
   # can introduce a breaking change with zero warning), and each install is
@@ -130,7 +130,7 @@ services:
   claude-code-base:
     image: claude-code:base
     build:
-      # Repo root, like all four runners: each Dockerfile builds
+      # Repo root, like all five runners: each Dockerfile builds
       # cloud-agents-shim in its own stage from shim/, so each needs to see
       # both docker/ and shim/ in one build context (#601).
       context: .
@@ -142,7 +142,7 @@ services:
   codex-base:
     image: codex:base
     build:
-      # Repo root, matching claude-code-base above: all four runner images
+      # Repo root, matching claude-code-base above: all five runner images
       # now build cloud-agents-shim from shim/ in their own stage, so each
       # needs docker/ AND shim/ in one build context (#601).
       context: .

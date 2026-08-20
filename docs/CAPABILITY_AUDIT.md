@@ -69,7 +69,7 @@ checkout on 2026-08-14 with lyric 0.4.36 + .NET SDK 10 installed in-session
 | Scheduled jobs (recurring prompts) | working, same pull-based trigger caveat (`POST /api/maintenance/trigger-jobs`) | `src/handlers/jobs.l`, migration 0027 |
 | End-to-end verification | manual only (2026-07-15 live run confirmed: server answered curl, container cloned repo, streamed output) plus a CI HTTP smoke test without Docker | `docs/BUILD.md` "Net effect", `scripts/e2e-http.sh`, `.github/workflows/ci.yml:159-166`; the automated container e2e asked for in nichobbs/cloud-agents#354 still does not exist |
 
-The four harnesses (claude/codex/opencode/gemini) each get their own runner
+The five harnesses (claude/codex/opencode/gemini/antigravity) each get their own runner
 image and entrypoint (`docker/Dockerfile*`, `docker/entrypoint*.sh`).
 
 ### 1.2 Event-stream handling — **working as a UI transport; absent as a capture pipeline**

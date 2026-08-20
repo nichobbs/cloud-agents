@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# Guards the byte-identical shim-builder stages across all four runner
+# Guards the byte-identical shim-builder stages across all five runner
 # Dockerfiles (#795): docker/Dockerfile is canonical; Dockerfile.codex/
-# .gemini/.opencode each carry a condensed copy whose NON-COMMENT
+# .gemini/.opencode/.antigravity each carry a condensed copy whose NON-COMMENT
 # instructions must match the canonical stage exactly — that identity is
 # what lets Docker's layer cache build the shim once and share it across a
 # sequential single-host build (Coolify, build-docker.sh). Before this
@@ -36,7 +36,7 @@ if ! printf '%s\n' "$CANONICAL" | grep -q '^RUN lyric restore && lyric build$'; 
 fi
 
 fails=0
-for f in Dockerfile.codex Dockerfile.gemini Dockerfile.opencode; do
+for f in Dockerfile.codex Dockerfile.gemini Dockerfile.opencode Dockerfile.antigravity; do
   STAGE="$(extract_stage "$REPO_ROOT/docker/$f")"
   if [ -z "$STAGE" ]; then
     echo "FAIL docker/$f: no shim-builder stage found" >&2
@@ -56,7 +56,7 @@ done
 # deleted COPY --from=shim-builder line would ship an image whose stage built
 # fine but whose shim is missing at runtime.
 SHIM_COPY='COPY --from=shim-builder /src/shim/bin/. /opt/cloud-agents-shim/'
-for f in Dockerfile Dockerfile.codex Dockerfile.gemini Dockerfile.opencode; do
+for f in Dockerfile Dockerfile.codex Dockerfile.gemini Dockerfile.opencode Dockerfile.antigravity; do
   if grep -qF "$SHIM_COPY" "$REPO_ROOT/docker/$f"; then
     echo "ok   docker/$f: final stage copies the built shim"
   else
@@ -65,8 +65,8 @@ for f in Dockerfile Dockerfile.codex Dockerfile.gemini Dockerfile.opencode; do
   fi
 done
 
-# The three harness images' whole final-stage shim block (COPYs, dotnet
-# symlink, smoke test) is also triplicated — guard it the same way (#815).
+# The four harness images' whole final-stage shim block (COPYs, dotnet
+# symlink, smoke test) is also replicated — guard it the same way (#815).
 # Delimited by the section header and the smoke test's closing `esac`;
 # Dockerfile.codex is the reference. The claude image's block legitimately
 # differs (SDK base image, its own chmod chain) and is not compared.
@@ -78,7 +78,7 @@ if [ -z "$BLOCK_REF" ]; then
   echo "FAIL docker/Dockerfile.codex: could not extract the final-stage shim block (markers changed?)" >&2
   fails=$((fails + 1))
 fi
-for f in Dockerfile.gemini Dockerfile.opencode; do
+for f in Dockerfile.gemini Dockerfile.opencode Dockerfile.antigravity; do
   BLOCK="$(extract_shim_block "$REPO_ROOT/docker/$f")"
   if [ -n "$BLOCK_REF" ] && [ "$BLOCK" = "$BLOCK_REF" ]; then
     echo "ok   docker/$f: final-stage shim block matches Dockerfile.codex"
@@ -90,7 +90,7 @@ for f in Dockerfile.gemini Dockerfile.opencode; do
 done
 
 if [ "$fails" -ne 0 ]; then
-  echo "==> check-shim-stage-sync: ${fails} Dockerfile(s) drifted — keep the four stages' instructions byte-identical (docker/Dockerfile is canonical) so the layer cache builds the shim once" >&2
+  echo "==> check-shim-stage-sync: ${fails} Dockerfile(s) drifted — keep the five stages' instructions byte-identical (docker/Dockerfile is canonical) so the layer cache builds the shim once" >&2
   exit 1
 fi
-echo "==> check-shim-stage-sync: all four shim-builder stages are in sync"
+echo "==> check-shim-stage-sync: all five shim-builder stages are in sync"

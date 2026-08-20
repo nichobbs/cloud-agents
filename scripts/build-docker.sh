@@ -18,11 +18,11 @@ TARGET="${1:-claude}"
 
 command -v docker >/dev/null || { echo "build-docker: 'docker' not on PATH" >&2; exit 1; }
 
-# ALL four runner images build cloud-agents-shim (docs/phase6-mcp-callbacks.md
+# ALL five runner images build cloud-agents-shim (docs/phase6-mcp-callbacks.md
 # §5) INSIDE their own shim-builder stage, so every context is the repo root
 # (each needs to see both docker/ and shim/) — the #601 change the claude
-# image made first, extended to the other three when they gained the shim.
-# The stage's RUN instructions are byte-identical across the four
+# image made first, extended to the other four when they gained the shim.
+# The stage's RUN instructions are byte-identical across the five
 # Dockerfiles, so Docker's layer cache builds the shim once and shares it.
 build_claude() {
     echo "==> Building claude-code:base"

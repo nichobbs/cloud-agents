@@ -12,7 +12,7 @@
 # Duplicated (condensed) from docker/Dockerfile's shim-builder stage — that
 # file is canonical and fully commented; keep the RUN instructions here
 # byte-identical to it so Docker's layer cache builds the shim once and
-# shares it across all runner images. Requires the repo-root build
+# shares it across all five runner images. Requires the repo-root build
 # context (it COPYs both docker/ and shim/), the same #601 change the
 # claude image already made.
 FROM mcr.microsoft.com/dotnet/sdk:10.0 AS shim-builder
@@ -107,14 +107,14 @@ RUN mkdir -p -m 755 /etc/apt/keyrings \
     && rm -rf /var/lib/apt/lists/*
 
 # Install Antigravity CLI (@google/antigravity-cli or agy)
-RUN n=0; until npm install -g @google/antigravity-cli@0.1.0 || npm install -g @google/gemini-cli@0.51.0; do \
+RUN n=0; until npm install -g @google/antigravity-cli@0.1.0; do \
       n=$((n + 1)); \
-      if [ "$n" -ge 3 ]; then echo "Antigravity CLI install failed after 3 attempts" >&2; exit 1; fi; \
-      echo "Antigravity CLI install failed (attempt $n/3), retrying in 5s..." >&2; \
+      if [ "$n" -ge 3 ]; then echo "npm install -g @google/antigravity-cli failed after 3 attempts" >&2; exit 1; fi; \
+      echo "npm install -g @google/antigravity-cli failed (attempt $n/3), retrying in 5s..." >&2; \
       sleep 5; \
     done \
-    && if ! command -v agy >/dev/null 2>&1 && command -v gemini >/dev/null 2>&1; then \
-         ln -s "$(command -v gemini)" /usr/local/bin/agy; \
+    && if ! command -v agy >/dev/null 2>&1 && command -v antigravity >/dev/null 2>&1; then \
+         ln -s "$(command -v antigravity)" /usr/local/bin/agy; \
        fi
 
 RUN useradd --create-home --home-dir /home/antigravity-user --shell /bin/bash antigravity-user
@@ -131,10 +131,21 @@ COPY docker/session-tools-guide.md /etc/cloud-agents/session-tools-guide.md
 RUN chmod +x /usr/local/bin/entrypoint.sh /usr/local/bin/reconcile-repos.sh /usr/local/bin/create-fallback-branch.sh /usr/local/bin/inject-library.sh /usr/local/bin/render-branch-policy.sh
 
 # ─── cloud-agents-shim (docs/phase6-mcp-callbacks.md) ───────────────────────
+# The in-container MCP callback server, giving this harness the same
+# add_todo/update_todo/report_progress/... tools the claude image has had
+# since Phase 6. Managed DLLs come from the shim-builder stage; the .NET
+# runtime to execute them is copied from the official runtime image
+# (bookworm has no dotnet apt packages). Invariant globalization avoids an
+# ICU dependency node:20-slim doesn't ship — the shim only does ordinal
+# string work. Registration into this harness's native MCP config happens
+# per message in the entrypoint via register-callbacks-mcp.sh.
 COPY --from=shim-builder /src/shim/bin/. /opt/cloud-agents-shim/
 COPY --from=mcr.microsoft.com/dotnet/runtime:10.0 /usr/share/dotnet /usr/share/dotnet
 COPY docker/cloud-agents-shim /usr/local/bin/cloud-agents-shim
 COPY docker/register-callbacks-mcp.sh /usr/local/bin/register-callbacks-mcp.sh
+# No image-wide DOTNET_* ENV here (#806): the wrapper script exports
+# DOTNET_ROOT / DOTNET_SYSTEM_GLOBALIZATION_INVARIANT for the shim process
+# alone, so the agent's own session environment is untouched.
 RUN ln -s /usr/share/dotnet/dotnet /usr/local/bin/dotnet \
     && chmod +x /usr/local/bin/cloud-agents-shim /usr/local/bin/register-callbacks-mcp.sh \
     && shim_out=$(cloud-agents-shim 2>&1 || true) \

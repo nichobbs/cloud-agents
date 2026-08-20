@@ -1,6 +1,6 @@
 /// Parses a markdown checkbox plan out of an agent's response text.
 ///
-/// All four harness images now ship the cloud-agents MCP shim, but this
+/// All five harness images now ship the cloud-agents MCP shim, but this
 /// fallback still matters (#820): older images built before the shim
 /// rollout, repos where the harness's config file is git-tracked (the
 /// token guard skips registration there — register-callbacks-mcp.sh),

@@ -406,10 +406,10 @@ pub func modelsHandler(harness: in String): Result[String, Web.ApiError] {
 
 // ─── Harness availability (#523) ─────────────────────────────────────────────
 //
-// Every deployment path now builds all four runner images unconditionally
+// Every deployment path now builds all five runner images unconditionally
 // (deploy/docker-compose.yml's install-docker.sh always has, and
-// docker-compose.coolify.yml's codex-base/opencode-base/gemini-base are no
-// longer gated behind Compose `profiles:` either — see that file's own
+// docker-compose.coolify.yml's codex-base/opencode-base/gemini-base/antigravity-base
+// are no longer gated behind Compose `profiles:` either — see that file's own
 // comments for why they used to be and why that's no longer necessary).
 // CLOUD_AGENTS_ENABLED_HARNESSES stays unset by default on both, so
 // isHarnessEnabled's fail-open behavior below reports every harness
