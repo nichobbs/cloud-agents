@@ -270,7 +270,7 @@ COPY docker/branch-policy-rules.md /etc/cloud-agents/branch-policy-rules.md
 COPY docker/session-tools-guide.md /etc/cloud-agents/session-tools-guide.md
 RUN chmod +x /usr/local/bin/entrypoint.sh /usr/local/bin/reconcile-repos.sh /usr/local/bin/create-fallback-branch.sh /usr/local/bin/inject-library.sh /usr/local/bin/render-branch-policy.sh /usr/local/bin/register-callbacks-mcp.sh /usr/local/bin/cloud-agents-shim
 
-# Build-time shim smoke test (#805/#814, same as the other three runner
+# Build-time shim smoke test (#805/#814, same as the other four runner
 # images): run the shim with no env and expect its own missing-required-env
 # panic — proving the wrapper, dotnet, and the copied DLLs genuinely execute.
 RUN shim_out=$(cloud-agents-shim 2>&1 || true) \

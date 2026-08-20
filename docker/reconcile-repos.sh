@@ -1,6 +1,6 @@
 #!/bin/bash
 # Shared multi-repo reconcile for every harness runner entrypoint (#468 — this
-# was previously duplicated near-verbatim in all four entrypoint*.sh scripts).
+# was previously duplicated near-verbatim in all five entrypoint*.sh scripts).
 #
 # Clones the repositories currently linked to the session and prunes any
 # checkout that is no longer linked, under /workspace/repos — so "Add repository"

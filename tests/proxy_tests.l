@@ -287,6 +287,10 @@ test "keyForProvider returns None for absent keys when vault is empty" {
     case Some(_) -> assertTrue(false, "empty vault must return None")
     case None -> ()
   }
+  match keyForProvider("google") {
+    case Some(_) -> assertTrue(false, "empty vault must return None for google")
+    case None -> ()
+  }
 }
 
 test "validateKeyHandler rejects unknown providers and forwards failures gracefully" {

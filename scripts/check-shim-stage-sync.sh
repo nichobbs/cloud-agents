@@ -65,7 +65,7 @@ for f in Dockerfile Dockerfile.codex Dockerfile.gemini Dockerfile.opencode Docke
   fi
 done
 
-# The four harness images' whole final-stage shim block (COPYs, dotnet
+# The four non-claude harness images' whole final-stage shim block (COPYs, dotnet
 # symlink, smoke test) is also replicated — guard it the same way (#815).
 # Delimited by the section header and the smoke test's closing `esac`;
 # Dockerfile.codex is the reference. The claude image's block legitimately

@@ -277,8 +277,8 @@ pub func providersForHarness(harness: in String): slice[String] {
   return ["anthropic", "openai", "google"]
 }
 
-/// The vault key for a provider (GOOGLE_API_KEY is accepted as a fallback
-/// alias for google's canonical GEMINI_API_KEY).
+/// The vault key for a provider (GOOGLE_API_KEY and ANTIGRAVITY_API_KEY are
+/// accepted as fallback aliases for google's canonical GEMINI_API_KEY).
 pub func keyForProvider(provider: in String): Option[String] {
   if provider == "anthropic" {
     return vaultKeyOrNone("ANTHROPIC_API_KEY")
@@ -289,7 +289,12 @@ pub func keyForProvider(provider: in String): Option[String] {
   if provider == "google" {
     match vaultKeyOrNone("GEMINI_API_KEY") {
       case Some(v) -> return Some(value = v)
-      case None -> return vaultKeyOrNone("GOOGLE_API_KEY")
+      case None -> {
+        match vaultKeyOrNone("GOOGLE_API_KEY") {
+          case Some(v) -> return Some(value = v)
+          case None -> return vaultKeyOrNone("ANTIGRAVITY_API_KEY")
+        }
+      }
     }
   }
   if provider == "opencode" {

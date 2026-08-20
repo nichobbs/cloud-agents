@@ -1,12 +1,12 @@
 #!/bin/bash
 # docker/register-callbacks-mcp.sh — registers the cloud-agents MCP callback
 # shim (cloud-agents-shim, docs/phase6-mcp-callbacks.md) in a NON-CLAUDE
-# harness's native MCP config, so opencode/codex/gemini get the same
+# harness's native MCP config, so opencode/codex/gemini/antigravity get the same
 # add_todo/update_todo/report_progress/... tools the claude harness has had
 # since Phase 6. The claude harness keeps its own, more involved
 # reconciliation in entrypoint.sh (its registration is coupled to the
 # --permission-prompt-tool contract); this script deliberately covers only
-# the other three (entrypoint.sh does source it for exclude_from_git, #792).
+# the other four (entrypoint.sh does source it for exclude_from_git, #792).
 #
 # Reconciled EVERY message, mirroring entrypoint.sh's #548 semantics: the
 # entry is added/refreshed when callbacks are live for this run (flag on,
@@ -130,7 +130,7 @@ register_callbacks_mcp() {
                 apply_to_file "$file" jq 'del(.mcp["cloud-agents"])' "$file"
             fi
             ;;
-        gemini)
+        gemini|antigravity)
             command -v jq >/dev/null 2>&1 || return 0
             local file="$ws/.gemini/settings.json"
             mkdir -p "$ws/.gemini"
@@ -142,36 +142,6 @@ register_callbacks_mcp() {
             fi
             if [ "$write" = "1" ]; then
                 exclude_from_git "$ws" ".gemini/settings.json"
-                apply_to_file "$file" jq \
-                   --arg url "${CLOUD_AGENTS_API_URL:-}" \
-                   --arg tok "${CLOUD_AGENTS_CALLBACK_TOKEN:-}" \
-                   --arg sid "${SESSION_ID:-}" \
-                   --arg to "${CLOUD_AGENTS_CALLBACK_TIMEOUT_MS:-}" \
-                   '.mcpServers["cloud-agents"] = {
-                      command: "cloud-agents-shim",
-                      env: {
-                        CLOUD_AGENTS_API_URL: $url,
-                        CLOUD_AGENTS_CALLBACK_TOKEN: $tok,
-                        CLOUD_AGENTS_SESSION_ID: $sid,
-                        CLOUD_AGENTS_CALLBACK_TIMEOUT_MS: $to
-                      }
-                    }' "$file"
-            elif jq -e '.mcpServers["cloud-agents"]' "$file" >/dev/null 2>&1; then
-                apply_to_file "$file" jq 'del(.mcpServers["cloud-agents"])' "$file"
-            fi
-            ;;
-        antigravity)
-            command -v jq >/dev/null 2>&1 || return 0
-            local file="$ws/.gemini/antigravity-cli/settings.json"
-            mkdir -p "$ws/.gemini/antigravity-cli"
-            [ -f "$file" ] || printf '{}' > "$file"
-            local write="$active"
-            if [ "$write" = "1" ] && is_git_tracked "$ws" ".gemini/antigravity-cli/settings.json"; then
-                echo "register-callbacks-mcp: .gemini/antigravity-cli/settings.json is git-tracked in this repo; refusing to write the callback token into it (cloud-agents tools unavailable for this harness here)" >&2
-                write=0
-            fi
-            if [ "$write" = "1" ]; then
-                exclude_from_git "$ws" ".gemini/antigravity-cli/settings.json"
                 apply_to_file "$file" jq \
                    --arg url "${CLOUD_AGENTS_API_URL:-}" \
                    --arg tok "${CLOUD_AGENTS_CALLBACK_TOKEN:-}" \
