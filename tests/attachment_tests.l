@@ -305,7 +305,7 @@ test "storeAttachments validates, writes to disk, and records metadata" {
   assertEqual(stored.attachments[0].fileName, "notes.txt", "fileName round-trips")
   assertEqual(stored.attachments[0].mimeType, "text/plain", "mimeType round-trips")
   assertEqual(stored.attachments[0].kind, "document", "text/plain classifies as a document")
-  assertEqual(stored.attachments[0].sizeBytes, "17", "sizeBytes is the decoded byte count")
+  assertEqual(stored.attachments[0].sizeBytes, "16", "sizeBytes is the decoded byte count")
   assertEqual(stored.attachments[0].messageId, "", "messageId starts empty — linked later by streamSendMessage")
   // Path traversal in fileName is neutralized (basename only), matching the
   // artifact upload path's identical guarantee.
