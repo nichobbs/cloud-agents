@@ -241,6 +241,15 @@ test "isDangerousAttachmentMimeType rejects SVG/HTML case-insensitively, allows 
   assertFalse(isDangerousAttachmentMimeType("text/plain"), "plain text is fine")
 }
 
+test "isDangerousAttachmentMimeType strips a MIME parameter suffix before comparing (#999)" {
+  // An appended parameter (e.g. ";charset=utf-8") must not let a blocked
+  // type slip through an exact-string check.
+  assertTrue(isDangerousAttachmentMimeType("image/svg+xml;charset=utf-8"), "a parameter suffix does not bypass the SVG block")
+  assertTrue(isDangerousAttachmentMimeType("image/svg+xml; charset=utf-8"), "a space after the ';' is tolerated too")
+  assertTrue(isDangerousAttachmentMimeType("TEXT/HTML;charset=UTF-8"), "case-insensitivity and the parameter strip compose")
+  assertFalse(isDangerousAttachmentMimeType("image/png;charset=binary"), "a parameter suffix on a SAFE type is still safe")
+}
+
 // ── storeAttachments ────────────────────────────────────────────────────────
 test "storeAttachments rejects a dangerous mimeType before storing anything (#989)" {
   val dbPath = useFreshTestDb("attach-dangerous-mime")

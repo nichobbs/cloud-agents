@@ -243,7 +243,14 @@ func asciiLowerAttachmentMimeType(mimeType: in String): String {
 /// stops a client sending `IMAGE/SVG+XML` to slip past a case-sensitive
 /// check.
 pub func isDangerousAttachmentMimeType(mimeType: in String): Bool {
-  val lower = asciiLowerAttachmentMimeType(mimeType)
+  // Strip a MIME parameter suffix (e.g. "image/svg+xml; charset=utf-8")
+  // before comparing — an exact match against the bare type alone lets a
+  // trivially-appended parameter slip a blocked type past the check (#999),
+  // since attachmentKindOf's own "image/" prefix test that decides how a
+  // file gets rendered doesn't care about any suffix either.
+  val semiIdx = CloudAgents.Text.indexOfFrom(mimeType, ";", 0)
+  val bare = if semiIdx < 0 { mimeType } else { mimeType.substring(0, semiIdx) }
+  val lower = asciiLowerAttachmentMimeType(bare.trim())
   return lower == "image/svg+xml" or lower == "text/html" or lower == "application/xhtml+xml"
 }
 
