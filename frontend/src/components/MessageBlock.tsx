@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react';
 import { api } from '../lib/api';
 import { formatFullTimestamp, formatTimestamp } from '../lib/time';
-import type { Message } from '../types';
+import type { Attachment, Message } from '../types';
 import { groupConsecutiveBlocks, type ParsedBlock } from '../lib/blockGroups';
 import { AnsiContent } from './AnsiContent';
 import { CommentThread } from './CommentThread';
@@ -11,6 +11,9 @@ import { ToolRunGroup } from './ToolRunGroup';
 
 interface MessageBlockProps {
   message: Message;
+  /** Files uploaded alongside this message, if any (grouped by messageId in
+   *  SessionDetail — undefined/empty for a message with none). */
+  attachments?: Attachment[];
   highlighted?: boolean;
   onTodoAdded?: () => void;
   onRetry?: (content: string) => void;
@@ -18,10 +21,90 @@ interface MessageBlockProps {
   isLatestAgentMessage?: boolean;
 }
 
+function formatAttachmentSize(sizeBytes: string): string {
+  const n = Number(sizeBytes);
+  if (!Number.isFinite(n) || n < 0) return '';
+  if (n < 1024) return `${n} B`;
+  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
+  return `${(n / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+/** One uploaded file under a message: an image renders as a lazily-fetched
+ *  thumbnail (click to open full-size in a new tab); anything else is a
+ *  click-to-download chip. The download route is bearer-authenticated, so
+ *  both fetch the bytes via api.getAttachmentBlob and build an object URL
+ *  rather than a plain `<img src>`/`<a href>`. */
+function AttachmentChip({ sessionId, attachment }: { sessionId: string; attachment: Attachment }) {
+  const [objectUrl, setObjectUrl] = useState<string | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [failed, setFailed] = useState(false);
+
+  useEffect(() => {
+    if (attachment.kind !== 'image') return;
+    let active = true;
+    setLoading(true);
+    api.getAttachmentBlob(sessionId, attachment.id)
+      .then(blob => {
+        if (!active) return;
+        setObjectUrl(URL.createObjectURL(blob));
+      })
+      .catch(() => { if (active) setFailed(true); })
+      .finally(() => { if (active) setLoading(false); });
+    return () => {
+      active = false;
+    };
+  }, [sessionId, attachment.id, attachment.kind]);
+
+  useEffect(() => {
+    return () => {
+      if (objectUrl) URL.revokeObjectURL(objectUrl);
+    };
+  }, [objectUrl]);
+
+  const handleDownload = async () => {
+    try {
+      const blob = await api.getAttachmentBlob(sessionId, attachment.id);
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = attachment.fileName;
+      a.click();
+      URL.revokeObjectURL(url);
+    } catch {
+      alert(`Failed to download "${attachment.fileName}"`);
+    }
+  };
+
+  if (attachment.kind === 'image') {
+    return (
+      <a
+        href={objectUrl ?? undefined}
+        target="_blank"
+        rel="noreferrer"
+        style={attachmentImageLinkStyle}
+        title={attachment.fileName}
+        onClick={e => { if (!objectUrl) e.preventDefault(); }}
+      >
+        {objectUrl ? (
+          <img src={objectUrl} alt={attachment.fileName} style={attachmentImageStyle} />
+        ) : (
+          <span style={attachmentPlaceholderStyle}>{failed ? '⚠️' : loading ? '…' : '🖼️'}</span>
+        )}
+      </a>
+    );
+  }
+
+  return (
+    <button style={attachmentDocChipStyle} onClick={() => { void handleDownload(); }} title={`Download ${attachment.fileName}`}>
+      📄 {attachment.fileName} <span style={{ color: '#6e7681' }}>({formatAttachmentSize(attachment.sizeBytes)})</span>
+    </button>
+  );
+}
+
 /// One addressable transcript entry. Renders the message content and exposes
 /// the two affordances that hang off it: commenting and bookmarking to the todo
 /// list. The wrapper carries `id="message-<id>"` so todos can deep-link back.
-export function MessageBlock({ message, highlighted, onTodoAdded, onRetry, isUnread, isLatestAgentMessage }: MessageBlockProps) {
+export function MessageBlock({ message, attachments, highlighted, onTodoAdded, onRetry, isUnread, isLatestAgentMessage }: MessageBlockProps) {
   const [showComments, setShowComments] = useState(false);
   const [commentCount, setCommentCount] = useState<number | null>(null);
   const [bookmarking, setBookmarking] = useState(false);
@@ -155,6 +238,14 @@ export function MessageBlock({ message, highlighted, onTodoAdded, onRetry, isUnr
           </button>
         )}
       </div>
+
+      {attachments && attachments.length > 0 && (
+        <div style={attachmentsRowStyle}>
+          {attachments.map(a => (
+            <AttachmentChip key={a.id} sessionId={message.sessionId} attachment={a} />
+          ))}
+        </div>
+      )}
 
       {collapsed ? (
         <div
@@ -464,6 +555,52 @@ const userContent: React.CSSProperties = {
   color: '#c9d1d9',
   whiteSpace: 'pre-wrap',
   wordBreak: 'break-word',
+};
+
+const attachmentsRowStyle: React.CSSProperties = {
+  display: 'flex',
+  flexWrap: 'wrap',
+  gap: '6px',
+  marginBottom: '8px',
+};
+
+const attachmentImageLinkStyle: React.CSSProperties = {
+  display: 'block',
+  width: '64px',
+  height: '64px',
+  borderRadius: '6px',
+  overflow: 'hidden',
+  border: '1px solid #30363d',
+  background: '#0d1117',
+};
+
+const attachmentImageStyle: React.CSSProperties = {
+  width: '100%',
+  height: '100%',
+  objectFit: 'cover',
+  display: 'block',
+};
+
+const attachmentPlaceholderStyle: React.CSSProperties = {
+  display: 'flex',
+  alignItems: 'center',
+  justifyContent: 'center',
+  width: '100%',
+  height: '100%',
+  fontSize: '18px',
+};
+
+const attachmentDocChipStyle: React.CSSProperties = {
+  display: 'inline-flex',
+  alignItems: 'center',
+  gap: '4px',
+  background: '#161b22',
+  border: '1px solid #30363d',
+  borderRadius: '6px',
+  padding: '4px 8px',
+  color: '#c9d1d9',
+  fontSize: '12px',
+  cursor: 'pointer',
 };
 
 const collapsedPreviewStyle: React.CSSProperties = {

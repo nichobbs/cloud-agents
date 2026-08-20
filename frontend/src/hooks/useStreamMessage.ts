@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { api } from '../lib/api';
+import type { AttachmentInput } from '../types';
 
 export interface SendResult {
   /** `false` if the send failed (see `error`), `true` on success. */
@@ -21,7 +22,7 @@ export interface StreamState {
   output: string;
   isStreaming: boolean;
   error: string | null;
-  send: (text: string) => Promise<SendResult>;
+  send: (text: string, attachments?: AttachmentInput[]) => Promise<SendResult>;
   reset: () => void;
   /**
    * Incremented each time a run this hook *reattached to* (via the mount-time
@@ -217,7 +218,7 @@ export function useStreamMessage(sessionId: string): StreamState {
   }, [sessionId]);
 
   const send = useCallback(
-    async (text: string): Promise<SendResult> => {
+    async (text: string, attachments?: AttachmentInput[]): Promise<SendResult> => {
       const forSession = sessionId;
       const forGeneration = generationRef.current;
       const stillCurrent = () =>
@@ -349,7 +350,7 @@ export function useStreamMessage(sessionId: string): StreamState {
               setOutput(prev => prev + chunk);
             }
           }
-        }, undefined, onEvent);
+        }, undefined, onEvent, attachments);
       } catch (err) {
         succeeded = false;
         const msg = err instanceof Error ? err.message : String(err);

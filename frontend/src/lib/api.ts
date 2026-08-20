@@ -1,6 +1,6 @@
 /// <reference types="vite/client" />
 
-import type { Comment, Credential, Highlight, McpServer, Message, OpenPrResult, PendingCallbacksResponse, Profile, Prompt, RefreshHighlightsResult, Run, SearchMessagesResult, SessionGroup, Skill, Subagent, Todo, Webhook, WorkspaceDiff, WorkspaceFileContent, WorkspaceFileEntry } from '../types';
+import type { Attachment, AttachmentInput, Comment, Credential, Highlight, McpServer, Message, OpenPrResult, PendingCallbacksResponse, Profile, Prompt, RefreshHighlightsResult, Run, SearchMessagesResult, SessionGroup, Skill, Subagent, Todo, Webhook, WorkspaceDiff, WorkspaceFileContent, WorkspaceFileEntry } from '../types';
 import { completeLogin, isSignedIn, setReturnPath, signOut } from './auth';
 
 const BASE = (import.meta.env['VITE_API_URL'] as string | undefined) ?? '';
@@ -269,6 +269,24 @@ export const api = {
     return body.runs ?? [];
   },
 
+  /** Every attachment ever uploaded to a session, oldest first — group by
+   *  `messageId` to render past uploads under their transcript message. */
+  listAttachments: async (sessionId: string): Promise<Attachment[]> => {
+    const res = await apiFetch(`${BASE}/api/sessions/${sessionId}/attachments`, { headers: authHeaders() });
+    if (!res.ok) throw new Error(`${res.status} ${await res.text()}`);
+    const body = (await res.json()) as { attachments?: Attachment[] };
+    return body.attachments ?? [];
+  },
+
+  /** Fetch one attachment's bytes as a Blob (the download route is
+   *  bearer-authenticated, so a plain `<img src>`/`<a href>` can't reach it —
+   *  callers build an object URL from the result instead). */
+  getAttachmentBlob: async (sessionId: string, attachmentId: string): Promise<Blob> => {
+    const res = await apiFetch(`${BASE}/api/sessions/${sessionId}/attachments/${attachmentId}`, { headers: authHeaders() });
+    if (!res.ok) throw new Error(`${res.status} ${await res.text()}`);
+    return res.blob();
+  },
+
   sendMessage: async (
     sessionId: string,
     text: string,
@@ -278,11 +296,14 @@ export const api = {
      *  `todo_update`, `progress_update`), so panels can refresh push-style
      *  instead of waiting for their next poll. */
     onEvent?: (eventType: string) => void,
+    /** Files staged in the composer for this send, if any (defaults to none
+     *  so every existing text-only caller/test is unaffected). */
+    attachments?: AttachmentInput[],
   ): Promise<void> => {
     const res = await apiFetch(`${BASE}/api/sessions/${sessionId}/messages`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', ...authHeaders() },
-      body: JSON.stringify({ text }),
+      body: JSON.stringify({ text, attachments: attachments ?? [] }),
     });
     if (!res.ok) throw new Error(`${res.status} ${await res.text()}`);
     if (!res.body) return;

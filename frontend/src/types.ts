@@ -74,6 +74,30 @@ export interface Message {
   createdAt: string;
 }
 
+/// One file staged for POST /api/sessions/{id}/messages `attachments`, or
+/// echoed straight through from the composer's own upload state.
+export interface AttachmentInput {
+  fileName: string;
+  mimeType: string;
+  /** Standard (non-URL-safe) base64, no `data:...;base64,` prefix. */
+  contentBase64: string;
+}
+
+/// One uploaded chat attachment's metadata (GET
+/// /api/sessions/{id}/attachments). `kind` is derived server-side from
+/// mimeType: 'image' renders as a thumbnail, 'document' as a download chip.
+export interface Attachment {
+  id: string;
+  sessionId: string;
+  /** '' until linked — see CloudAgents.Repository.linkAttachmentToMessage. */
+  messageId: string;
+  fileName: string;
+  mimeType: string;
+  kind: 'image' | 'document';
+  sizeBytes: string;
+  createdAt: string;
+}
+
 /// GET /api/search/messages?q=... response. `truncated` is true when the
 /// true match count exceeded the server's cap (50) — the returned messages
 /// are just the newest 50, not the complete result set.

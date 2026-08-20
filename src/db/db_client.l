@@ -3052,6 +3052,85 @@ pub func selectRepoArtifactByIdSql(id: in String, userId: in String): String {
     sqlLiteral(userId)
 }
 
+// ─── Session attachments (chat uploads) ──────────────────────────────────────
+//
+// Metadata only — the bytes live on disk
+// (CloudAgents.Repository.attachmentsBaseDir()/<sessionId>/<storedName>),
+// mirroring the artifacts table above but for user-supplied input rather
+// than container-reported output. `message_id` links an attachment to the
+// user message it was sent with; it starts '' because an upload is
+// validated and written to disk BEFORE the message row exists (the message
+// content needs the attachments' final paths to build its container
+// prompt), and CloudAgents.Repository.linkAttachmentToMessage fills it in
+// right after addMessage mints the message id. `kind` is 'image' or
+// 'document', derived from mime_type at upload time so listing/rendering
+// never has to re-derive it.
+val attachmentColumns = "id, session_id, message_id, file_name, stored_name, mime_type, kind, size_bytes, created_at"
+
+pub func sessionAttachmentsSchemaSql(): String {
+  return "CREATE TABLE IF NOT EXISTS session_attachments (" + "id TEXT PRIMARY KEY, " + "session_id TEXT NOT NULL, " +
+    "message_id TEXT NOT NULL DEFAULT '', " +
+    "file_name TEXT NOT NULL, " +
+    "stored_name TEXT NOT NULL, " +
+    "mime_type TEXT NOT NULL, " +
+    "kind TEXT NOT NULL, " +
+    "size_bytes TEXT NOT NULL, " +
+    "created_at TEXT NOT NULL)"
+}
+
+pub func sessionAttachmentsSessionIndexSql(): String {
+  return "CREATE INDEX IF NOT EXISTS idx_session_attachments_session_id ON session_attachments(session_id)"
+}
+
+pub func sessionAttachmentsMessageIndexSql(): String {
+  return "CREATE INDEX IF NOT EXISTS idx_session_attachments_message_id ON session_attachments(message_id)"
+}
+
+pub func insertSessionAttachmentSql(
+  id: in String,
+  sessionId: in String,
+  fileName: in String,
+  storedName: in String,
+  mimeType: in String,
+  kind: in String,
+  sizeBytes: in String,
+  createdAt: in String,
+): String {
+  return "INSERT INTO session_attachments (" + attachmentColumns + ") VALUES (" + sqlLiteral(id) + ", " +
+    sqlLiteral(sessionId) +
+    ", ''" +
+    ", " +
+    sqlLiteral(fileName) +
+    ", " +
+    sqlLiteral(storedName) +
+    ", " +
+    sqlLiteral(mimeType) +
+    ", " +
+    sqlLiteral(kind) +
+    ", " +
+    sqlLiteral(sizeBytes) +
+    ", " +
+    sqlLiteral(createdAt) +
+    ")"
+}
+
+/// Link a just-stored attachment to the user message it was sent with —
+/// called once addMessage() has minted the message id, since attachments are
+/// validated/written to disk before the message row exists.
+pub func setSessionAttachmentMessageIdSql(id: in String, messageId: in String): String {
+  return "UPDATE session_attachments SET message_id = " + sqlLiteral(messageId) + " WHERE id = " + sqlLiteral(id)
+}
+
+pub func selectSessionAttachmentByIdSql(id: in String): String {
+  return "SELECT " + attachmentColumns + " FROM session_attachments WHERE id = " + sqlLiteral(id)
+}
+
+/// A session's attachments, oldest first.
+pub func selectSessionAttachmentsBySessionSql(sessionId: in String): String {
+  return "SELECT " + attachmentColumns + " FROM session_attachments WHERE session_id = " + sqlLiteral(sessionId) +
+    " ORDER BY created_at ASC"
+}
+
 // ─── Phase 7: repo-scoped memory (remember / recall) ─────────────────────────
 //
 // docs/phase7-autonomy.md §4. A key/value store scoped to
