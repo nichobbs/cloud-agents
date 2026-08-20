@@ -3,6 +3,7 @@ package CloudAgents.Handlers
 import Std.Core
 import Std.Errors
 import Std.File
+import Std.Json
 import Web
 import CloudAgents.Auth
 import CloudAgents.Docker
@@ -118,6 +119,64 @@ pub func attachmentKindOf(mimeType: in String): String {
     return "image"
   }
   return "document"
+}
+
+/// The index of the last occurrence of a single-character `target` in `s`,
+/// or -1 — mirrors CloudAgents.Profiles.lastIndexOfChar (duplicated per
+/// docs/lyric/gotchas.md's cross-package reuse caveat). Only ever called on
+/// a string already confirmed to parse as valid JSON, where the last '}' is
+/// always that document's own outermost closing brace (see
+/// patchMissingAttachmentsField's doc comment).
+func lastIndexOfChar(s: in String, target: in String): Int {
+  var i = s.length - 1
+  while i >= 0 {
+    if s.substring(i, 1) == target {
+      return i
+    }
+    i = i - 1
+  }
+  return -1
+}
+
+/// `@generate(Json)`'s derived `fromJson` requires every field present in
+/// the body — no per-field "optional, defaults to X when absent" support
+/// (confirmed precedent: CloudAgents.Profiles.patchMissingToolFields, added
+/// for the identical reason when `toolMode`/`tools` were appended to
+/// SaveProfileRequest — its own doc comment records this failing outright
+/// with "missing field '<name>'" for String, slice[T], and Option[T] alike).
+/// `attachments` is a NEW field on the existing
+/// `POST /api/sessions/{id}/messages` request shape — a browser tab still
+/// running the pre-upgrade JS bundle (mid-deploy, or simply not yet
+/// reloaded) sends the old `{"text":"..."}` body with no `"attachments"` key
+/// at all, which would otherwise fail SendMessageRequest.fromJson and 400
+/// every send from that tab until it reloads.
+///
+/// Patches `"attachments":[]` into the raw body BEFORE decoding, but only
+/// when that key is actually absent (a body that already sends it — every
+/// current-build client — is passed through byte-identical). Uses Std.Json's
+/// real parser to detect absence (not a blind string search, which could
+/// false-positive on a nested value that happens to contain the substring
+/// `"attachments"`), then splices the addition in right before the body's
+/// own closing '}' — safe because a string that already parsed successfully
+/// as one JSON object always has its own outermost closing brace as the last
+/// '}' character in the text (no valid JSON document has any unescaped '}'
+/// after the true end of its root object, whitespace aside). Same technique
+/// as patchMissingToolFields, simplified to one field.
+pub func patchMissingAttachmentsField(body: in String): String {
+  val doc = match Std.Json.tryParseJson(body) { case Ok(d) -> d; case Err(_) -> return body }
+  defer {
+    Std.Json.disposeJson(doc)
+  }
+  val root = Std.Json.rootElement(doc)
+  match Std.Json.tryGetProperty(root, "attachments") {
+    case Some(_) -> return body
+    case None -> ()
+  }
+  val closeIdx = lastIndexOfChar(body, "}")
+  if closeIdx < 0 {
+    return body
+  }
+  return body.substring(0, closeIdx) + ",\"attachments\":[]" + body.substring(closeIdx, body.length - closeIdx)
 }
 
 /// One ASCII letter, uppercase -> lowercase; anything else unchanged. An

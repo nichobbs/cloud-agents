@@ -455,7 +455,7 @@ record SendMessageStreamHandler {
 impl Web.StreamingHandler for SendMessageStreamHandler {
   func streamHandle(req: in Web.Request, w: in Web.ResponseWriter): Unit {
     val id = pparam(req, "id")
-    val decoded = match SendMessageRequest.fromJson(req.body) {
+    val decoded = match SendMessageRequest.fromJson(CloudAgents.Handlers.patchMissingAttachmentsField(req.body)) {
       case Ok(d) -> d
       case Err(_) -> {
         // No chunk written yet, so a real 400 is still possible — reuse the

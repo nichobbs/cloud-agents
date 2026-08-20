@@ -99,31 +99,42 @@ func atLeast(minLen: in Int): String {
 
 // ── basenameOfAttachment ───────────────────────────────────────────────────
 // ── SendMessageRequest JSON decode ──────────────────────────────────────────
-test "SendMessageRequest.fromJson tolerates a stale client omitting the new attachments field (#996)" {
-  // The attachments field is new; a browser tab still running the JS bundle
-  // from before this feature shipped would POST the old, text-only body
-  // shape (no "attachments" key at all) against an already-upgraded
-  // backend during/just after a deploy. The generated Json decoder must
-  // default a missing slice-typed field to empty rather than fail the whole
-  // decode — otherwise every send from a stale tab would 400 with "invalid
-  // JSON body" for the length of the deploy window instead of degrading
-  // gracefully to a text-only send.
-  match SendMessageRequest.fromJson("{\"text\":\"hello\"}") {
-    case Ok(req) -> {
-      assertEqual(req.text, "hello", "text still decodes")
-      assertEqualInt(req.attachments.length.toInt(), 0, "a missing attachments key defaults to empty, not a decode failure")
-    }
-    case Err(_) -> assertTrue(false, "a missing attachments key must not fail the whole decode (stale-client compatibility, #996)")
+test "SendMessageRequest.fromJson decodes a body that omits attachments entirely, exactly what a stale client sends (#996/#998)" {
+  // @generate(Json)'s derived fromJson has no per-field "optional, defaults
+  // when absent" support — confirmed by the identical, already-fixed gotcha
+  // for SaveProfileRequest's toolMode/tools (CloudAgents.Profiles.
+  // patchMissingToolFields' doc comment: fails outright with "missing field
+  // '<name>'" for String, slice[T], and Option[T] alike). `attachments` is a
+  // NEW field on the existing POST /api/sessions/{id}/messages shape — a
+  // browser tab still running the pre-upgrade JS bundle (mid-deploy, or
+  // simply not yet reloaded) sends the old `{"text":"..."}` body with no
+  // "attachments" key at all, so the real decode boundary in src/main.l
+  // (SendMessageRequest.fromJson(patchMissingAttachmentsField(req.body)))
+  // must patch it in before decoding, exactly like patchMissingToolFields
+  // does for SaveProfileRequest.
+  val rawBody = "{\"text\":\"hello\"}"
+  val patched = patchMissingAttachmentsField(rawBody)
+  val decoded = match SendMessageRequest.fromJson(patched) {
+    case Ok(d) -> d
+    case Err(e) -> panic("a body omitting attachments must still decode: " + toString(e))
   }
+  assertEqual(decoded.text, "hello", "text round-trips")
+  assertEqualInt(decoded.attachments.length.toInt(), 0, "the omitted attachments decodes to an empty list")
 
-  // The current (post-upgrade) client's actual shape still round-trips.
-  match SendMessageRequest.fromJson("{\"text\":\"hi\",\"attachments\":[{\"fileName\":\"a.png\",\"mimeType\":\"image/png\",\"contentBase64\":\"AAAA\"}]}") {
-    case Ok(req) -> {
-      assertEqualInt(req.attachments.length.toInt(), 1, "a present attachments array decodes")
-      assertEqual(req.attachments[0].fileName, "a.png", "fileName round-trips")
-    }
-    case Err(_) -> assertTrue(false, "a well-formed attachments array must decode")
+  // A body that already sends attachments must decode byte-identically to
+  // patching nothing (no double-injected key, no corrupted trailing JSON).
+  val alreadyPresent = "{\"text\":\"hi\",\"attachments\":[{\"fileName\":\"a.png\",\"mimeType\":\"image/png\",\"contentBase64\":\"AAAA\"}]}"
+  assertEqual(
+    patchMissingAttachmentsField(alreadyPresent),
+    alreadyPresent,
+    "a body that already has attachments is passed through unchanged"
+  )
+  val decodedAlreadyPresent = match SendMessageRequest.fromJson(patchMissingAttachmentsField(alreadyPresent)) {
+    case Ok(d) -> d
+    case Err(e) -> panic("an already-complete body must still decode: " + toString(e))
   }
+  assertEqualInt(decodedAlreadyPresent.attachments.length.toInt(), 1, "an explicitly-sent attachments array is preserved")
+  assertEqual(decodedAlreadyPresent.attachments[0].fileName, "a.png", "fileName round-trips")
 }
 
 test "basenameOfAttachment strips directory components and rejects degenerate names" {
