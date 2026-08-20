@@ -79,7 +79,14 @@ function AttachmentChip({ sessionId, attachment }: { sessionId: string; attachme
     return (
       <a
         href={objectUrl ?? undefined}
-        target="_blank"
+        // Forces a save instead of a navigation/render — mimeType is
+        // entirely client-supplied at upload time, so without this a
+        // malicious image/svg+xml attachment could execute script at this
+        // app's own origin the moment its blob: URL is opened directly
+        // (browsers render SVG documents, not just <img> resources, on
+        // direct navigation). Mirrors the document chip's handleDownload,
+        // which already forces a save the same way.
+        download={attachment.fileName}
         rel="noreferrer"
         style={attachmentImageLinkStyle}
         title={attachment.fileName}

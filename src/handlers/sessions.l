@@ -120,6 +120,74 @@ pub func attachmentKindOf(mimeType: in String): String {
   return "document"
 }
 
+/// One ASCII letter, uppercase -> lowercase; anything else unchanged. An
+/// explicit enumeration — matching this codebase's own `digitValue`
+/// (`src/handlers/proxy.l`) precedent for character-level work — rather than
+/// codepoint arithmetic: `String.toLowerCase()`/`.toUpperCase()` don't
+/// resolve at runtime in the current Lyric toolchain (docs/lyric/gotchas.md),
+/// and there's no confirmed-working codepoint-shift primitive in this
+/// codebase to build a shorter version safely.
+func lowerAsciiChar(c: in String): String {
+  if c == "A" { return "a" }
+  if c == "B" { return "b" }
+  if c == "C" { return "c" }
+  if c == "D" { return "d" }
+  if c == "E" { return "e" }
+  if c == "F" { return "f" }
+  if c == "G" { return "g" }
+  if c == "H" { return "h" }
+  if c == "I" { return "i" }
+  if c == "J" { return "j" }
+  if c == "K" { return "k" }
+  if c == "L" { return "l" }
+  if c == "M" { return "m" }
+  if c == "N" { return "n" }
+  if c == "O" { return "o" }
+  if c == "P" { return "p" }
+  if c == "Q" { return "q" }
+  if c == "R" { return "r" }
+  if c == "S" { return "s" }
+  if c == "T" { return "t" }
+  if c == "U" { return "u" }
+  if c == "V" { return "v" }
+  if c == "W" { return "w" }
+  if c == "X" { return "x" }
+  if c == "Y" { return "y" }
+  if c == "Z" { return "z" }
+  return c
+}
+
+/// ASCII-lowercase, one character at a time via lowerAsciiChar above — the
+/// mime types this feeds into are always ASCII, so that's the only
+/// case-folding this needs.
+func asciiLowerAttachmentMimeType(mimeType: in String): String {
+  var out = ""
+  var i = 0
+  while i < mimeType.length {
+    out = out + lowerAsciiChar(mimeType.substring(i, 1))
+    i = i + 1
+  }
+  return out
+}
+
+/// Mime types capable of executing as active content when a browser
+/// navigates directly to them (SVG scripts, HTML), rather than merely being
+/// decoded as passive image/document bytes. `mimeType` is entirely
+/// client-supplied and echoed straight back as the download response's
+/// Content-Type; storing/serving one of these would let an uploaded file
+/// execute script at this app's own origin the moment anyone opens it (a
+/// stored-XSS vector) — reject it at upload time so it's never on disk or in
+/// the database at all, the strongest of the defenses here (the download
+/// route's `Content-Disposition: attachment` and the frontend's `download`
+/// attribute on the image "view full size" link are the other two).
+/// Case-insensitive: a mime type is conventionally lowercase, but nothing
+/// stops a client sending `IMAGE/SVG+XML` to slip past a case-sensitive
+/// check.
+pub func isDangerousAttachmentMimeType(mimeType: in String): Bool {
+  val lower = asciiLowerAttachmentMimeType(mimeType)
+  return lower == "image/svg+xml" or lower == "text/html" or lower == "application/xhtml+xml"
+}
+
 // isHttpsUrl/isSafeRepoUrl/isBlockedRepoHost/isSafeBranchName/isKnownHarness/
 // isSafeModelName are `pub` so CloudAgents.Jobs (docs/phase8-scheduling.md)
 // can reuse the exact same repo/branch/harness/model validation
@@ -278,6 +346,16 @@ func attachmentSummaryOf(a: in CloudAgents.Repository.Attachment): AttachmentSum
 pub record StoredAttachments {
   pub attachments: slice[CloudAgents.Repository.Attachment]
   pub hostDir: String
+}
+
+/// One fully-validated, base64-decoded attachment awaiting the actual disk
+/// write — storeAttachments' pass-1 output, never returned to callers (pure
+/// internal bookkeeping, so no `pub`).
+record ValidatedAttachmentInput {
+  fileName: String
+  mimeType: String
+  bytes: slice[Byte]
+  sizeBytes: Int
 }
 
 /// storeAttachments' error shape — deliberately NOT Web.ApiError: this
@@ -595,12 +673,20 @@ pub func storeAttachments(sessionId: in String, inputs: in slice[AttachmentInput
   if inputs.length > maxAttachmentsPerMessage {
     return Err(value = StoreAttachmentsError(code = 400, message = "too many attachments (max " + toString(maxAttachmentsPerMessage) + " per message)"))
   }
-  val hostDir = CloudAgents.Repository.attachmentsBaseDir() + "/" + sessionId
-  match Std.File.createDir(hostDir) {
-    case Ok(_) -> ()
-    case Err(e) -> return Err(value = StoreAttachmentsError(code = 500, message = "failed to create attachment storage: " + IOError.message(e)))
-  }
-  var stored: slice[CloudAgents.Repository.Attachment] = []
+  // Pass 1: validate + decode EVERY input, accumulating the running total
+  // decoded size, WITHOUT writing anything to disk or the database yet. The
+  // per-file cap can be checked file-by-file safely, but the cumulative
+  // per-message cap cannot: checking it interleaved with writes (as an
+  // earlier version of this function did) let a later file's overage reject
+  // the whole request only after EARLIER files were already written and
+  // inserted — orphaned rows with messageId forever '', invisible to any UI
+  // flow, with no cleanup path. Collecting every input's validated bytes
+  // here first (bounded by maxAttachmentsPerMessage <= 10 entries, so the
+  // slice-append-in-a-loop gotcha docs/lyric/gotchas.md warns about for
+  // genuinely hot loops does not apply) means the whole request is accepted
+  // or rejected atomically, matching the per-file/per-count checks' own
+  // pre-write ordering.
+  var validated: slice[ValidatedAttachmentInput] = []
   var totalBytes = 0
   var i = 0
   while i < inputs.length {
@@ -621,6 +707,12 @@ pub func storeAttachments(sessionId: in String, inputs: in slice[AttachmentInput
     if not CloudAgents.Text.withinMaxLength(input.mimeType, maxAttachmentMimeTypeLen) {
       return Err(value = StoreAttachmentsError(code = 400, message = "attachment mimeType is too long (max " + toString(maxAttachmentMimeTypeLen) + " characters)"))
     }
+    // Reject mime types capable of executing as active content — see
+    // isDangerousAttachmentMimeType's doc comment. Checked before anything
+    // is written to disk or the database.
+    if isDangerousAttachmentMimeType(input.mimeType) {
+      return Err(value = StoreAttachmentsError(code = 400, message = "attachment '" + input.fileName + "' has an unsupported mimeType (" + input.mimeType + ")"))
+    }
     if input.contentBase64.length == 0 {
       return Err(value = StoreAttachmentsError(code = 400, message = "attachment contentBase64 is required"))
     }
@@ -639,18 +731,33 @@ pub func storeAttachments(sessionId: in String, inputs: in slice[AttachmentInput
     if totalBytes > maxTotalAttachmentBytes {
       return Err(value = StoreAttachmentsError(code = 400, message = "attachments exceed the 50 MiB per-message limit"))
     }
-    val kind = attachmentKindOf(input.mimeType)
+    validated = validated.append(
+      ValidatedAttachmentInput(fileName = fileName, mimeType = input.mimeType, bytes = bytes, sizeBytes = sizeBytes)
+    )
+    i = i + 1
+  }
+  // Pass 2: every input validated — now actually persist.
+  val hostDir = CloudAgents.Repository.attachmentsBaseDir() + "/" + sessionId
+  match Std.File.createDir(hostDir) {
+    case Ok(_) -> ()
+    case Err(e) -> return Err(value = StoreAttachmentsError(code = 500, message = "failed to create attachment storage: " + IOError.message(e)))
+  }
+  var stored: slice[CloudAgents.Repository.Attachment] = []
+  var j = 0
+  while j < validated.length {
+    val v = validated[j]
+    val kind = attachmentKindOf(v.mimeType)
     val attachmentId = Std.Uuid.uuidToString(Std.Uuid.newUuid())
-    val storedName = attachmentId + "_" + fileName
-    match Std.File.writeBytes(hostDir + "/" + storedName, sliceBytesToList(bytes)) {
+    val storedName = attachmentId + "_" + v.fileName
+    match Std.File.writeBytes(hostDir + "/" + storedName, sliceBytesToList(v.bytes)) {
       case Ok(_) -> ()
       case Err(e) -> return Err(value = StoreAttachmentsError(code = 500, message = "failed to store attachment: " + IOError.message(e)))
     }
-    match CloudAgents.Repository.createAttachment(sessionId, fileName, storedName, input.mimeType, kind, toString(sizeBytes)) {
+    match CloudAgents.Repository.createAttachment(sessionId, v.fileName, storedName, v.mimeType, kind, toString(v.sizeBytes)) {
       case Ok(a) -> { stored = stored.append(a) }
       case Err(e) -> return Err(value = StoreAttachmentsError(code = 500, message = "failed to record attachment: " + CloudAgents.Sqlite.dbErrorMessage(e)))
     }
-    i = i + 1
+    j = j + 1
   }
   return Ok(value = StoredAttachments(attachments = stored, hostDir = hostDir))
 }
@@ -758,11 +865,17 @@ pub func downloadAttachmentHandler(id: in String, aid: in String): Result[Web.Re
     case Err(e) -> return Err(Web.internalError("failed to read attachment: " + IOError.message(e)))
   }
   val resp = Web.bytesResponse(200, a.mimeType, bytes.toArray())
+  // `attachment` (not `inline`), matching CloudAgents.Callbacks.
+  // readArtifactBytesResponse's identical convention: mimeType is entirely
+  // client-supplied, so a browser that ever navigates here directly must
+  // save the file rather than render it as a document — the frontend's own
+  // thumbnails/previews already go through fetch()+Blob, which never reads
+  // Content-Disposition, so this doesn't affect them.
   return Ok(
     value = Web.withResponseHeader(
       resp,
       "Content-Disposition",
-      "inline; filename=\"" + contentDispositionQuoted(a.fileName) + "\""
+      "attachment; filename=\"" + contentDispositionQuoted(a.fileName) + "\""
     )
   )
 }

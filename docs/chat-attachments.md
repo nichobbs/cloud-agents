@@ -85,8 +85,8 @@ the UI shows what the user actually typed, not an internal file manifest.
 there is no separate image/document channel into the harness CLI. Rather than
 teach the invocation a second input format, `CloudAgents.Docker`
 bind-mounts the session's attachments directory
-(`attachmentsBaseDir()/<sessionId>/`) read-write at `/workspace/.attachments`
-whenever a message carries at least one attachment
+(`attachmentsBaseDir()/<sessionId>/`) READ-ONLY (`:ro`) at
+`/workspace/.attachments` whenever a message carries at least one attachment
 (`createRunnerContainer`'s `attachmentsHostDir` param, threaded through
 `streamSessionMessage`/`runSessionMessageAsync` — `runSessionMessageBlocking`,
 used only by scheduled jobs with no composer, always passes `""`), and
@@ -104,9 +104,24 @@ This works for both images and documents with no separate vision-payload
 code: Claude Code's own `Read` tool is already multimodal (it reads text
 files as text and image files as image content blocks), so once a file is on
 disk and the agent is told where to look, the harness's existing tool-call
-loop does the rest. `docker/entrypoint.sh` needed NO changes — its existing
-unconditional `chown -R claude-user:claude-user /workspace || true` already
-recurses into a bind mount nested under `/workspace`, the same as every
+loop does the rest. `docker/entrypoint.sh` needed NO changes. The mount is
+read-only — the agent only ever needs to read these files, matching the
+read-only `NODE_EXTRA_CA_CERTS` bind in the same function; a writable mount
+would let a compromised/prompt-injected run delete or overwrite an earlier
+upload in the same session's (accumulating) attachments directory, silently
+breaking that file's future downloads. Files land with the default
+world-readable permissions `Std.File.writeBytes`/`createDir` produce, so
+`claude-user` can read them without needing the `chown -R
+claude-user:claude-user /workspace || true` the rest of the workspace gets
+(a read-only mount couldn't be chowned in the first place).
+
+The download route (`GET /api/sessions/{id}/attachments/{aid}`) serves
+`Content-Disposition: attachment` (not `inline`), and upload-time validation
+rejects mime types capable of executing as active content when rendered
+(`image/svg+xml`, `text/html`, `application/xhtml+xml`) — an attachment's
+`mimeType` is entirely client-supplied, and an SVG/HTML file served inline at
+this app's own origin is a stored-XSS vector if a viewer ever navigates to it
+directly rather than fetching it as an opaque blob.
 other workspace path.
 
 ## 5. Frontend

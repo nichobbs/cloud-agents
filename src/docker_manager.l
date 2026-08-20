@@ -178,16 +178,22 @@ pub async func createRunnerContainer(
   // Chat attachments (docs/chat-attachments.md): the host directory a user's
   // uploaded files for THIS message were written to
   // (CloudAgents.Repository.attachmentsBaseDir()/<sessionId>/ —
-  // CloudAgents.Handlers.storeAttachments), bind-mounted read-write at
-  // /workspace/.attachments so the entrypoint's existing unconditional
-  // `chown -R claude-user:claude-user /workspace` picks it up like every
-  // other workspace path, and the agent's own (already multimodal) Read
-  // tool can open the files directly — no separate vision-payload plumbing.
+  // CloudAgents.Handlers.storeAttachments), bind-mounted READ-ONLY at
+  // /workspace/.attachments — the agent's own (already multimodal) Read tool
+  // only ever needs to read these files, never write them, matching the
+  // read-only NODE_EXTRA_CA_CERTS bind a few lines below (`:ro`). The
+  // directory is per-SESSION, not per-message, and accumulates every
+  // attachment ever uploaded to it, and downloadAttachmentHandler reads
+  // directly from the same host path — a writable mount would let a
+  // compromised/prompt-injected run delete or overwrite an earlier upload,
+  // silently breaking that file's future downloads. Files land with the
+  // default (world-readable) permissions Std.File.writeBytes/createDir
+  // produce, so claude-user can read them without needing the chown the rest
+  // of /workspace gets (a read-only mount couldn't be chowned anyway).
   // Empty when this message carried no attachments, the common case, so a
-  // plain text-only send gets no extra bind. Same host-path-bind pattern as
-  // NODE_EXTRA_CA_CERTS below.
+  // plain text-only send gets no extra bind.
   if attachmentsHostDir.length > 0 {
-    binds = binds.append(attachmentsHostDir + ":/workspace/.attachments")
+    binds = binds.append(attachmentsHostDir + ":/workspace/.attachments:ro")
   }
 
   // Additional repositories linked to this session (multi-repo sessions): a

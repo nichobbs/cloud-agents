@@ -674,18 +674,28 @@ export function SessionDetail() {
     setRecoveredDraft(false);
     setKeepOutput(false); // a fresh run supersedes any retained prior output
     // Strip the local-only id/sizeBytes/previewUrl fields down to what the
-    // wire format expects, then clear the staged list (revoking preview
-    // URLs) — a failed send does NOT restore them (#104's text-only draft
-    // recovery below has no attachment equivalent yet; re-attaching is the
-    // fallback).
+    // wire format expects. The staged list itself is left alone until we
+    // know the send succeeded (see clearSentAttachments below) — clearing it
+    // up front would lose the user's file picks on a transient failure
+    // (network blip, a stale-session race, a 5xx), with no restore path,
+    // unlike the text-draft recovery a failed send already gets (#990).
     const attachmentInputs: AttachmentInput[] = attachments.map(({ fileName, mimeType, contentBase64 }) => ({
       fileName,
       mimeType,
       contentBase64,
     }));
-    attachments.forEach(a => { if (a.previewUrl) URL.revokeObjectURL(a.previewUrl); });
-    setPendingAttachments(prev => prev.filter(p => !attachments.some(a => a.id === p.id)));
     setAttachmentNotice(null);
+    // Only revoke/clear the attachments that were actually part of THIS
+    // send, and only once send() reports success — called from both success
+    // paths below (the stale-but-succeeded case and the normal case).
+    // Guarded on still being the session this send was for, so a stale
+    // result can't clear a different session's now-staged files out from
+    // under the user.
+    const clearSentAttachments = () => {
+      if (currentSessionRef.current !== forSessionAtSend) return;
+      attachments.forEach(a => { if (a.previewUrl) URL.revokeObjectURL(a.previewUrl); });
+      setPendingAttachments(prev => prev.filter(p => !attachments.some(a => a.id === p.id)));
+    };
     // Omit the second arg entirely for a plain text retry (matches the
     // pre-attachments call shape exactly) rather than always passing a
     // possibly-empty array.
@@ -742,6 +752,7 @@ export function SessionDetail() {
         // non-stale branch, otherwise a stale-but-successful send left a
         // now-obsolete draft sitting in storage forever (#581).
         clearFailedDraft(forSessionAtSend);
+        clearSentAttachments();
       }
       return;
     }
@@ -750,6 +761,7 @@ export function SessionDetail() {
       // This session's outstanding failed draft, if any, is now moot — a
       // fresh send for it just succeeded.
       clearFailedDraft(forSessionAtSend);
+      clearSentAttachments();
       setFailedPrompt(null);
       // Fold the completed run into the transcript (reload + keep-or-clear the
       // live panel), shared with the reattach path. See foldRunIntoTranscript.
@@ -1338,6 +1350,7 @@ export function SessionDetail() {
               ref={attachmentInputRef}
               type="file"
               multiple
+              aria-label="Attach files"
               style={{ display: 'none' }}
               onChange={e => { void handleFilesSelected(e); }}
             />

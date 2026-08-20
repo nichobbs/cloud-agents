@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { render, screen, within, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { MemoryRouter, Route, Routes } from 'react-router-dom';
-import type { Message, Profile, Prompt } from '../types';
+import type { AttachmentInput, Message, Profile, Prompt } from '../types';
 
 // Spies on the real useNavigate (rather than replacing it) so the #898
 // regression test below can assert on the replace-history call while every
@@ -37,6 +37,7 @@ vi.mock('../lib/api', () => ({
     addPrompt: vi.fn(),
     deleteSession: vi.fn(),
     markSessionViewed: vi.fn(),
+    listAttachments: vi.fn(),
   },
 }));
 
@@ -153,6 +154,7 @@ beforeEach(() => {
   vi.mocked(api.usePrompt).mockResolvedValue(undefined);
   vi.mocked(api.setSessionProfile).mockResolvedValue(undefined);
   vi.mocked(api.markSessionViewed).mockResolvedValue(undefined);
+  vi.mocked(api.listAttachments).mockResolvedValue([]);
   stream.current = {
     output: '',
     isStreaming: false,
@@ -583,6 +585,78 @@ describe('SessionDetail stale attached profile (#900/#901)', () => {
 
     const select = await screen.findByTitle(/Attach a profile/);
     expect(within(select).getByText(/p-delete… \(profile deleted\)/)).toBeInTheDocument();
+  });
+});
+
+describe('SessionDetail attachment picker', () => {
+  function oversizedFile(name: string, bytes: number): File {
+    const file = new File(['x'], name, { type: 'application/octet-stream' });
+    // Real 20MB+ payloads would make this test slow for no benefit — the
+    // component only reads `file.size`, so override just that.
+    Object.defineProperty(file, 'size', { value: bytes });
+    return file;
+  }
+
+  it('rejects a file over the 20 MB per-file cap with a notice, and never stages it', async () => {
+    renderPage();
+    const user = userEvent.setup();
+    const input = screen.getByLabelText('Attach files') as HTMLInputElement;
+
+    const tooBig = oversizedFile('huge.bin', 21 * 1024 * 1024);
+    await user.upload(input, tooBig);
+
+    await waitFor(() => expect(screen.getByText(/over the 20\.0 MB per-file limit/)).toBeInTheDocument());
+    expect(screen.queryByText('huge.bin')).not.toBeInTheDocument();
+    // Nothing staged and no text typed — Send stays disabled.
+    expect(screen.getByRole('button', { name: 'Send' })).toBeDisabled();
+  });
+
+  it('stages an accepted file as a chip and enables Send with no text typed', async () => {
+    renderPage();
+    const user = userEvent.setup();
+    const input = screen.getByLabelText('Attach files') as HTMLInputElement;
+
+    const small = new File(['hello world'], 'notes.txt', { type: 'text/plain' });
+    await user.upload(input, small);
+
+    await waitFor(() => expect(screen.getByText('notes.txt')).toBeInTheDocument());
+    expect(screen.getByRole('button', { name: 'Send' })).toBeEnabled();
+  });
+
+  it('sends a file-only message (empty text) with the staged attachment in the payload', async () => {
+    const sendSpy = vi.fn(async (_text: string, _attachments?: AttachmentInput[]) => ({ succeeded: true, stale: false }));
+    stream.current = { ...stream.current, send: sendSpy };
+    renderPage();
+    const user = userEvent.setup();
+    const input = screen.getByLabelText('Attach files') as HTMLInputElement;
+
+    const small = new File(['hello world'], 'notes.txt', { type: 'text/plain' });
+    await user.upload(input, small);
+    await waitFor(() => expect(screen.getByText('notes.txt')).toBeInTheDocument());
+
+    await user.click(screen.getByRole('button', { name: 'Send' }));
+
+    await waitFor(() => expect(sendSpy).toHaveBeenCalled());
+    const [text, attachments] = sendSpy.mock.calls[0]!;
+    expect(text).toBe('');
+    expect(attachments).toHaveLength(1);
+    expect(attachments![0]!.fileName).toBe('notes.txt');
+    expect(attachments![0]!.mimeType).toBe('text/plain');
+  });
+
+  it('removing a staged attachment via its × button disables Send again', async () => {
+    renderPage();
+    const user = userEvent.setup();
+    const input = screen.getByLabelText('Attach files') as HTMLInputElement;
+
+    const small = new File(['hello world'], 'notes.txt', { type: 'text/plain' });
+    await user.upload(input, small);
+    await waitFor(() => expect(screen.getByText('notes.txt')).toBeInTheDocument());
+
+    await user.click(screen.getByRole('button', { name: '×' }));
+
+    expect(screen.queryByText('notes.txt')).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Send' })).toBeDisabled();
   });
 });
 

@@ -78,4 +78,25 @@ describe('api.sendMessage SSE parsing', () => {
     await api.sendMessage('s1', 'hi', c => chunks.push(c));
     expect(chunks).toEqual(['out']);
   });
+
+  it('includes staged attachments in the request body when provided', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(sseResponse('event: done\ndata: {}\n\n'));
+    vi.stubGlobal('fetch', fetchMock);
+    await api.sendMessage('s1', 'hi', () => {}, undefined, undefined, [
+      { fileName: 'a.png', mimeType: 'image/png', contentBase64: 'AAAA' },
+    ]);
+    const init = fetchMock.mock.calls[0]?.[1] as RequestInit;
+    const body = JSON.parse(init.body as string) as { text: string; attachments: unknown[] };
+    expect(body.text).toBe('hi');
+    expect(body.attachments).toEqual([{ fileName: 'a.png', mimeType: 'image/png', contentBase64: 'AAAA' }]);
+  });
+
+  it('sends an empty attachments array when none are provided (backward-compatible body shape)', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(sseResponse('event: done\ndata: {}\n\n'));
+    vi.stubGlobal('fetch', fetchMock);
+    await api.sendMessage('s1', 'hi', () => {});
+    const init = fetchMock.mock.calls[0]?.[1] as RequestInit;
+    const body = JSON.parse(init.body as string) as { attachments: unknown[] };
+    expect(body.attachments).toEqual([]);
+  });
 });
