@@ -1357,22 +1357,20 @@ pub func getRunOutput(id: in String): Result[String, Web.ApiError] {
       }
       // Logs only once the container exists; until then the run is up but has
       // produced nothing to fetch yet.
-      val containerId = match getSession(id) {
-        case Ok(Some(s)) -> s.containerId
-        case Ok(None) -> ""
+      var containerId = ""
+      match getSession(id) {
+        case Ok(Some(s)) -> {
+          containerId = s.containerId
+        }
+        case Ok(None) -> ()
         case Err(e) -> return Err(Web.internalError("session lookup failed: " + CloudAgents.Sqlite.dbErrorMessage(e)))
       }
       val logs = if containerId.length > 0 { CloudAgents.Docker.partialContainerLogs(containerId) } else { "" }
-      // The container log is now NDJSON (`--output-format stream-json`); render
-      // it back to the visible assistant transcript the PWA expects, so the
-      // whole-log read-back path does not surface raw JSON (matches the
-      // per-tick renderLogDelta path in getRunOutputFrom).
+      // Render the NDJSON log to the visible assistant transcript the PWA expects,
+      // so the whole-log read-back path does not surface raw JSON.
       val rendered = CloudAgents.Capture.Render.renderFullLog(logs)
-      // `length` is the RAW NDJSON log byte length — the cursor the incremental
-      // /output/{offset} endpoint (runOutputRenderedDeltaJson) advances against.
-      // `output` is RENDERED text and is now SHORTER than the raw log, so a
-      // reconnecting client must seed its delta offset from this raw `length`,
-      // NOT from output.length, or it re-renders already-shown output (#975).
+      // `length` is the raw log byte length — the cursor the incremental
+      // /output/{offset} endpoint advances against.
       return Ok(value = "{\"running\":\"true\",\"length\":\"" + toString(logs.length.toInt()) + "\",\"output\":\"" + CloudAgents.Streaming.jsonEscape(rendered) + "\"}")
     }
   }
@@ -1524,9 +1522,12 @@ pub func getRunOutputFrom(id: in String, offsetStr: in String): Result[String, W
       if status != "RUNNING" {
         return Ok(value = runOutputDeltaJson(false, "", 0))
       }
-      val containerId = match getSession(id) {
-        case Ok(Some(s)) -> s.containerId
-        case Ok(None) -> ""
+      var containerId = ""
+      match getSession(id) {
+        case Ok(Some(s)) -> {
+          containerId = s.containerId
+        }
+        case Ok(None) -> ()
         case Err(e) -> return Err(Web.internalError("session lookup failed: " + CloudAgents.Sqlite.dbErrorMessage(e)))
       }
       val logs = if containerId.length > 0 { CloudAgents.Docker.partialContainerLogs(containerId) } else { "" }

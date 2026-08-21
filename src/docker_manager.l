@@ -679,7 +679,8 @@ pub func streamSessionMessage(
     if containerId.length > 0 {
       // Parse the NDJSON log delta into CaptureEvents + the visible text to
       // stream. Only complete lines are consumed; a partial trailing line is
-      // re-read next tick (renderLogDelta).
+      // re-read next tick (renderLogDelta). Works uniformly across Claude,
+      // Gemini, Codex, and OpenCode NDJSON streams.
       val rd = CloudAgents.Capture.Render.renderLogDelta(partialContainerLogs(containerId), offset, nextSeq, lastHash, false)
       // Persist newly-captured events (idempotent batch append — safe to re-run
       // on a write-failure retry). Best-effort: a persistence failure must never
@@ -938,13 +939,13 @@ pub func streamSessionMessage(
   // The run finished. Honour its real outcome regardless of a last-tick
   // disconnect (a gone client just won't receive the final frames).
   if cell.isSuccess {
+    val finalLogs = cell.output
     // Flush any output produced since the last poll (best-effort — the write
     // fails harmlessly if the client is gone). cell.output is the authoritative
     // full NDJSON log. Render its tail delta for the stream, persist any tail
     // events, and RETURN the fully-rendered transcript (not the raw NDJSON):
     // the caller persists this return value as the agent message and parses it
-    // for a plan, so it must be the visible text, never the stream-json log.
-    val finalLogs = cell.output
+    // for a plan, so it must be the visible text, never the raw stream-json log.
     // atEnd = true: the run has finished, so cell.output is the complete,
     // authoritative log. Consume the trailing line even without a "\n" so the
     // terminal `result` event (often newline-less) is captured and rendered,
@@ -1137,7 +1138,7 @@ pub func runSessionMessageBlocking(
     return Err(error = "Container run timed out after 30 minutes")
   }
   if cell.isSuccess {
-    return Ok(value = cell.output)
+    return Ok(value = CloudAgents.Capture.Render.renderFullLog(cell.output))
   }
   return Err(error = cell.error)
 }

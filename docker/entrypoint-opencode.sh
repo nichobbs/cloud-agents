@@ -170,4 +170,4 @@ if [ -f /usr/local/bin/register-callbacks-mcp.sh ]; then
     register_callbacks_mcp "opencode" /workspace || echo "entrypoint-opencode: callback MCP registration failed, continuing without it" >&2
 fi
 
-exec opencode run --model "${MODEL}" -- "${PROMPT}"
+exec opencode run --model "${MODEL}" --format json -q -- "${PROMPT}"

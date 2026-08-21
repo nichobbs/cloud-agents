@@ -251,3 +251,32 @@ test "renderFullLog renders a newline-less final assistant line (regression #973
     "{\"type\":\"assistant\",\"message\":{\"content\":[{\"type\":\"text\",\"text\":\"done\"}]}}"
   assertEqual(renderFullLog(log), "done", "the newline-less final reply is rendered, not dropped")
 }
+
+test "renderLogDelta and displayTextOf support Gemini stream-json events" {
+  val geminiLog = "{\"type\":\"init\",\"model\":\"gemini-2.5-pro\"}\n" +
+    "{\"type\":\"message\",\"role\":\"assistant\",\"content\":\"Hello from Gemini!\"}\n" +
+    "{\"type\":\"result\",\"response\":\"Hello from Gemini!\"}\n"
+  val rd = renderLogDelta(geminiLog, 0, 0.toLong(), "", true)
+  assertEqualInt(rd.events.length.toInt(), 3, "three gemini events parsed")
+  assertEqual(rd.displayText, "Hello from Gemini!", "visible assistant text extracted from gemini message")
+  assertEqual(resultText(finalResultText(rd.events)), "Hello from Gemini!", "final result text extracted from gemini response")
+}
+
+test "renderLogDelta and displayTextOf support Codex stream-json events" {
+  val codexLog = "{\"type\":\"thread.started\",\"thread_id\":\"t1\"}\n" +
+    "{\"type\":\"turn.started\",\"turn_id\":\"turn1\"}\n" +
+    "{\"type\":\"item.completed\",\"item\":{\"type\":\"message\",\"text\":\"Hello from Codex!\"}}\n" +
+    "{\"type\":\"turn.completed\",\"result\":\"Hello from Codex!\"}\n"
+  val rd = renderLogDelta(codexLog, 0, 0.toLong(), "", true)
+  assertEqualInt(rd.events.length.toInt(), 4, "four codex events parsed")
+  assertEqual(rd.displayText, "Hello from Codex!", "visible assistant text extracted from codex item")
+  assertEqual(resultText(finalResultText(rd.events)), "Hello from Codex!", "final result text extracted from codex turn.completed")
+}
+
+test "renderLogDelta and displayTextOf support OpenCode json stream" {
+  val opencodeLog = "{\"type\":\"result\",\"result\":\"OpenCode execution succeeded.\"}\n"
+  val rd = renderLogDelta(opencodeLog, 0, 0.toLong(), "", true)
+  assertEqualInt(rd.events.length.toInt(), 1, "opencode result parsed")
+  assertEqual(resultText(finalResultText(rd.events)), "OpenCode execution succeeded.", "opencode final result extracted")
+}
+
