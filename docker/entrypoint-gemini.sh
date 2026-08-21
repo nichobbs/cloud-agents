@@ -145,4 +145,5 @@ fi
 
 # Non-interactive single invocation; --yolo auto-approves tool calls (the
 # container itself is the sandbox, same trust model as the other harnesses).
-exec gemini --model "${MODEL}" --yolo --prompt "${PROMPT}"
+# Emits NDJSON stream events for real-time capture and streaming.
+exec gemini --model "${MODEL}" --yolo --output-format stream-json --prompt "${PROMPT}"

@@ -159,4 +159,4 @@ CODEX_BRANCH_INSTRUCTION="BRANCH POLICY: Before making any changes, rename the c
 CODEX_SESSION_INSTRUCTION="SESSION VISIBILITY: For multi-step tasks, maintain a live plan the human can watch: if the cloud-agents MCP tools are available, use add_todo to create one item per step, update_todo to mark each in_progress when you start it and done when finished, and list_todos when resuming. If those tools are unavailable, instead restate your plan at the END of each response as a markdown checkbox list (- [ ] pending, - [~] in progress, - [x] done; one item per line, at least two items) — the session UI parses and displays it. Either way, end your final response with a '## Session notes' section listing (as short, specific bullets) any unexpected discoveries, issues/tickets opened or closed (with number/URL), workarounds, reverts, and incomplete or skipped work; omit the section only if none apply.
 
 "
-exec codex --model "${MODEL}" --full-auto -- "${CODEX_BRANCH_INSTRUCTION}${CODEX_SESSION_INSTRUCTION}${PROMPT}"
+exec codex --model "${MODEL}" --full-auto --json -- "${CODEX_BRANCH_INSTRUCTION}${CODEX_SESSION_INSTRUCTION}${PROMPT}"
