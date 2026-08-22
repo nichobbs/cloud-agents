@@ -260,9 +260,17 @@ Sequenced follow-ups:
   `tests/capture_git_diff_tests.l` (real `git diff` fixtures) +
   `tests/checkpoint_bridge_tests.l` (real diff → file_change step + re-anchored
   checkpoint). `beforeSha256`/`afterSha256` stay `None` (git blob ids are SHA-1,
-  not SHA-256; attribution needs only ranges). Remaining: wire the runner's live
-  flow (capture events → `emitFromCaptureWithDiff` → the graph handoff, the same
-  cross-repo `CaptureFetch` handoff the whole capture arc defers).
+  not SHA-256; attribution needs only ranges). **The capture→checkpoint pipeline
+  is now LIVE-verified on a genuinely fresh real session**
+  (`tests/live_capture_e2e_tests.l`): a live `claude -p --output-format
+  stream-json` run really edited `app.py` (Edit tool), and its verbatim NDJSON +
+  real `git diff HEAD` (`tests/fixtures/stream-json/live-edit-turn.ndjson` /
+  `live-edit.diff`) run through the exact runner calls (`parseStreamJson` →
+  `verifyChain` → `emitFromCaptureWithDiff`) to emit a checkpoint whose
+  `file_change` hunk matches the diff (+1,6). Remaining is the RUNTIME wiring only:
+  call `emitFromCaptureWithDiff` from inside `docker_manager.l` at end-of-run and
+  hand the objects to the graph (the same cross-repo `CaptureFetch` handoff the
+  whole capture arc defers) — the logic that path runs is now proven on real data.
 - **Audit-row enrichment — derivation built, checkpoint attachment deferred.**
   `CloudAgents.PermissionEnrichment` (`src/capture/permission_enrichment.l`,
   `docs/capture-permission-enrichment.md`) folds the existing
