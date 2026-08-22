@@ -155,9 +155,23 @@ NDJSON, fixed literal timestamps (`tests/checkpoint_bridge_tests.l`).
 - **`file_change` capture — bridge wired** (#127 + #982, ADR-0016):
   `emitFromCaptureWithDiff` turns a captured workspace `git diff` into an
   agent-origin `file_change` step so **Q4 answers on a captured session** (proven
-  on live PG in testamur #127). Remaining here is the runner's LIVE flow — call
-  `emitFromCaptureWithDiff` with the session's `git diff HEAD` at end-of-run and
-  hand the objects to the graph (the deferred handoff below).
+  on live PG in testamur #127).
+- **`file_change` capture — LIVE-verified on a real editing session.** The
+  capture→checkpoint pipeline is now exercised end-to-end on a GENUINELY FRESH
+  session: a live `claude -p --output-format stream-json --verbose` run was
+  pointed at a real git workspace and told to add a function; it used the Edit
+  tool and actually changed the file. The verbatim NDJSON transcript
+  (`tests/fixtures/stream-json/live-edit-turn.ndjson`) and the real `git diff HEAD`
+  (`tests/fixtures/stream-json/live-edit.diff`) run through the exact runner calls
+  — `parseStreamJson` → `verifyChain` → `emitFromCaptureWithDiff` — and produce a
+  content-addressed checkpoint whose `file_change` hunk matches the real diff
+  (`app.py`, +1,6; blob sha256s `None`), with the chain verifying and no event
+  dropped (`tests/live_capture_e2e_tests.l`). This is the manual end-to-end step
+  the notes above flagged as pending — done on real data, not fixtures-by-hand.
+  Remaining is only the RUNTIME wiring: call `emitFromCaptureWithDiff` from inside
+  `docker_manager.l` at end-of-run (with the session's `git diff HEAD`) and hand
+  the objects to the graph (the deferred handoff below). The logic that runtime
+  path would run is exactly what this test now proves works.
 - **Graph handoff**: pass the emitted objects to the platform's `GraphIngest`
   (cross-repo; today the objects are the deliverable).
 - **Audit-row enrichment**: fold `permission_requests`/`secret_requests` into
