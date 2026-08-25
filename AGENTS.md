@@ -267,10 +267,21 @@ Sequenced follow-ups:
   real `git diff HEAD` (`tests/fixtures/stream-json/live-edit-turn.ndjson` /
   `live-edit.diff`) run through the exact runner calls (`parseStreamJson` →
   `verifyChain` → `emitFromCaptureWithDiff`) to emit a checkpoint whose
-  `file_change` hunk matches the diff (+1,6). Remaining is the RUNTIME wiring only:
-  call `emitFromCaptureWithDiff` from inside `docker_manager.l` at end-of-run and
-  hand the objects to the graph (the same cross-repo `CaptureFetch` handoff the
-  whole capture arc defers) — the logic that path runs is now proven on real data.
+  `file_change` hunk matches the diff (+1,6). **The RUNTIME wiring has now landed
+  too**: `src/docker_manager.l`'s `emitRunnerCheckpoint` is called from both
+  successful-run seams (`streamSessionMessage` + `runSessionMessageBlocking`, both
+  sync — no `await`, so #6249-safe); it captures the workspace `git diff HEAD` via
+  the existing inspect container (`runInspectContainer(…, "diff", …)` → section 2),
+  builds the `InvocationContext` (`Repository.nowRfc3339Utc()` for `startedAt`), and
+  calls the pure `CheckpointBridge.emitFromRunnerCapture(rawNdjson, diff, ctx)` on
+  the run's raw NDJSON. Best-effort (a diff/mapping failure is logged, never fails
+  the run); logs a structured summary. Deferred follow-ups: `treeHash` is `None`
+  (steps-only, no terminal checkpoint until the inspect `diff` mode also prints
+  `git rev-parse HEAD^{tree}`), and the objects are logged rather than handed to the
+  graph (the same cross-repo `CaptureFetch` handoff the whole capture arc defers).
+  The pure `emitFromRunnerCapture` is unit-tested on the real fixtures; the
+  docker_manager glue needs a live Docker host to observe (@test_module can't reach
+  `CloudAgents.Docker`).
 - **Audit-row enrichment — derivation built, checkpoint attachment deferred.**
   `CloudAgents.PermissionEnrichment` (`src/capture/permission_enrichment.l`,
   `docs/capture-permission-enrichment.md`) folds the existing

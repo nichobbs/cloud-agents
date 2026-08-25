@@ -114,6 +114,21 @@ pub func nowMillisLong(): Long {
   return dtoToUnixMillis(dtoUtcNow())
 }
 
+@externInstance
+@externTarget("System.DateTimeOffset.ToString")
+func dtoToStringFmt(t: in DateTimeOffset, format: in String): String = ()
+
+/// Wall-clock instant as a strict RFC 3339 UTC second-precision timestamp
+/// (`YYYY-MM-DDTHH:MM:SSZ`) — the format the Testamur checkpoint format requires
+/// for `Session.startedAt`/`Step.at` (`Model.isRfc3339UtcSeconds`). `dtoUtcNow()`
+/// is a UTC `DateTimeOffset`, so the literal `Z` is correct. Shared so the runner
+/// (`docker_manager.l`) can stamp a checkpoint's `startedAt` without re-binding
+/// the clock. `'T'`/`'Z'` are quoted as literals (both are custom-format letters
+/// in .NET and would otherwise be interpreted or throw).
+pub func nowRfc3339Utc(): String {
+  return dtoToStringFmt(dtoUtcNow(), "yyyy-MM-dd'T'HH:mm:ss'Z'")
+}
+
 func digitValue(c: in String): Int {
   if c == "0" {
     return 0

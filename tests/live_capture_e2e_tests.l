@@ -153,3 +153,24 @@ test "LIVE: the same capture with no diff emits no file_change step" {
   }
   assertEqualInt(probeFileChange(m).count, 0, "an empty diff adds no file_change step")
 }
+
+// ── The runner's actual end-of-run call: emitFromRunnerCapture(rawNdjson, diff) ──
+// This is exactly what docker_manager.l's emitRunnerCheckpoint delegates to — the
+// raw NDJSON string (cell.output) + the workspace diff, in one call. It must match
+// the explicit parse+emit path above.
+test "LIVE: emitFromRunnerCapture (the runner's end-of-run seam) matches parse + diff-threaded emit" {
+  val m = match emitFromRunnerCapture(liveNdjson(), liveDiff(), ctx()) {
+    case Ok(mm) -> mm
+    case Err(e) -> panic("emitFromRunnerCapture failed on the live capture: " + bridgeErrorMessage(e))
+  }
+  val probe = probeFileChange(m)
+  assertEqualInt(probe.count, 1, "one agent-origin file_change step from the workspace diff")
+  assertEqual(probe.path, "app.py", "the changed file is app.py")
+  assertEqual(toString(probe.start), "1", "new-side hunk start (+1)")
+  assertEqual(toString(probe.lines), "6", "new-side hunk lines (,6)")
+  match m.checkpointId {
+    case Some(c) -> assertTrue(c.length.toInt() > 5, "terminal checkpoint emitted (ctx carries a tree): " + c)
+    case None -> assertTrue(false, "expected a terminal checkpoint")
+  }
+  assertEqualInt(m.mappedEvents + m.noteEvents, m.totalEvents, "no captured event dropped")
+}

@@ -168,10 +168,29 @@ NDJSON, fixed literal timestamps (`tests/checkpoint_bridge_tests.l`).
   (`app.py`, +1,6; blob sha256s `None`), with the chain verifying and no event
   dropped (`tests/live_capture_e2e_tests.l`). This is the manual end-to-end step
   the notes above flagged as pending — done on real data, not fixtures-by-hand.
-  Remaining is only the RUNTIME wiring: call `emitFromCaptureWithDiff` from inside
-  `docker_manager.l` at end-of-run (with the session's `git diff HEAD`) and hand
-  the objects to the graph (the deferred handoff below). The logic that runtime
-  path would run is exactly what this test now proves works.
+- **`file_change` capture — RUNTIME wiring landed.** The runner now emits a
+  checkpoint at end-of-run. `src/docker_manager.l`'s `emitRunnerCheckpoint` is
+  called from BOTH successful-run seams (`streamSessionMessage` and
+  `runSessionMessageBlocking`, both sync — no new `await`, so not exposed to
+  lyric-lang#6249): it captures the workspace `git diff HEAD` via the existing
+  inspect container (`runInspectContainer(…, "diff", …)` → `parseInspectLog` →
+  section 2), builds the runner's `InvocationContext` (`nowRfc3339Utc()` for
+  `startedAt`), and calls the pure `CheckpointBridge.emitFromRunnerCapture(rawNdjson,
+  diff, context)` (= `parseStreamJson` + `emitFromCaptureWithDiff`) on the run's
+  raw NDJSON (`cell.output`). It is **best-effort** — any inspect/diff/mapping
+  failure is logged and swallowed, never failing the run — and logs a structured
+  summary (session id, object count, mapped/note counts, checkpoint id). The pure
+  `emitFromRunnerCapture` is unit-tested on the real fixtures
+  (`tests/live_capture_e2e_tests.l`); the docker_manager glue itself needs a live
+  Docker host to observe (the `@test_module` async-import limitation), which is the
+  one remaining manual check. Two deferred follow-ups keep this a first honest cut:
+  `treeHash` is `None` (the workspace git tree id isn't captured yet, so the mapping
+  is steps + the `file_change` step with **no terminal checkpoint** at runtime — a
+  real tree hash means extending the inspect `diff` mode to also print
+  `git rev-parse HEAD^{tree}`), and the emitted objects are logged rather than
+  handed to the graph (the cross-repo handoff below). Caveat: `git diff HEAD`
+  shows only uncommitted working-tree changes — a run whose harness committed its
+  edits produces an empty diff and a steps-only mapping.
 - **Graph handoff**: pass the emitted objects to the platform's `GraphIngest`
   (cross-repo; today the objects are the deliverable).
 - **Audit-row enrichment**: fold `permission_requests`/`secret_requests` into
