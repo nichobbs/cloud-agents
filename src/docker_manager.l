@@ -576,15 +576,26 @@ func sessionContainerId(sessionId: in String): String {
 // the objects' real destination is the platform graph — that cross-repo handoff
 // stays deferred, so for now they are logged, never persisted.
 //
+// OPT-IN (#1020): gated behind the `CLOUDAGENTS_CAPTURE_CHECKPOINTS` env flag,
+// OFF by default. Until the graph handoff makes the emitted objects useful (today
+// `treeHash` is `None`, so no terminal checkpoint is produced and the objects are
+// only logged), the emission would add a synchronous second inspect-container
+// round trip (`runInspectContainer`, up to `inspectWallClockCapMs`) to the hot
+// path of EVERY successful run — a real latency cost for a currently-inert result.
+// So with the flag unset this returns immediately (zero added cost); operators
+// running provenance capture set the flag to opt in. `enabled` values: "1"/"true".
+//
 // NEVER fails the run: an inspect/diff-capture or mapping failure is logged and
-// swallowed. `treeHash` is `None` (the workspace git tree id isn't captured yet),
-// so the mapping stops at steps + the agent-origin `file_change` step with no
-// terminal checkpoint — a real tree hash (and the graph handoff) is a follow-up.
-// This helper is a plain sync func (no new `await`), so it is not exposed to the
-// lyric-lang#6249 await-value-loss trap; keep it out of `runSessionMessageAsync`.
-// Not directly unit-testable (its `CloudAgents.Docker`/`CloudAgents.Workspace`
-// reach makes it unreachable from a @test_module); the pure logic it delegates to
-// (`emitFromRunnerCapture`) IS unit-tested on real fixtures.
+// swallowed. This helper is a plain sync func (no new `await`), so it is not
+// exposed to the lyric-lang#6249 await-value-loss trap; keep it out of
+// `runSessionMessageAsync`. Not directly unit-testable (its `CloudAgents.Docker`/
+// `CloudAgents.Workspace` reach makes it unreachable from a @test_module); the pure
+// logic it delegates to (`emitFromRunnerCapture`) IS unit-tested on real fixtures.
+func captureCheckpointsEnabled(): Bool {
+  val v = Std.Environment.getVarOrDefault("CLOUDAGENTS_CAPTURE_CHECKPOINTS", "")
+  return v == "1" or v == "true"
+}
+
 func emitRunnerCheckpoint(
   sessionId: in String,
   harness: in String,
@@ -593,6 +604,10 @@ func emitRunnerCheckpoint(
   prompt: in String,
   rawNdjson: in String,
 ): Unit {
+  // Opt-in only (#1020): no cost on the hot path unless provenance capture is on.
+  if not captureCheckpointsEnabled() {
+    return ()
+  }
   var diffText = ""
   match runInspectContainer(sessionId, harness, userId, "diff", "") {
     case Ok(logs) -> {
@@ -604,7 +619,9 @@ func emitRunnerCheckpoint(
     }
     case Err(_) -> ()
   }
-  val ctx = runnerContext(harness, model, "/workspace", CloudAgents.Repository.nowRfc3339Utc(), prompt, model, "auto", None)
+  // Principal is the AGENT (#1019): id carries the `agent:` convention the mapper
+  // relies on, display is the harness name; the model is its own separate arg.
+  val ctx = runnerContext("agent:" + harness, harness, "/workspace", CloudAgents.Repository.nowRfc3339Utc(), prompt, model, "auto", None)
   match emitFromRunnerCapture(rawNdjson, diffText, ctx) {
     case Ok(mapping) -> {
       var cpid = "(steps-only)"

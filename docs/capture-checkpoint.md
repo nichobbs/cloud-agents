@@ -168,18 +168,25 @@ NDJSON, fixed literal timestamps (`tests/checkpoint_bridge_tests.l`).
   (`app.py`, +1,6; blob sha256s `None`), with the chain verifying and no event
   dropped (`tests/live_capture_e2e_tests.l`). This is the manual end-to-end step
   the notes above flagged as pending — done on real data, not fixtures-by-hand.
-- **`file_change` capture — RUNTIME wiring landed.** The runner now emits a
+- **`file_change` capture — RUNTIME wiring landed (opt-in).** The runner emits a
   checkpoint at end-of-run. `src/docker_manager.l`'s `emitRunnerCheckpoint` is
   called from BOTH successful-run seams (`streamSessionMessage` and
   `runSessionMessageBlocking`, both sync — no new `await`, so not exposed to
-  lyric-lang#6249): it captures the workspace `git diff HEAD` via the existing
-  inspect container (`runInspectContainer(…, "diff", …)` → `parseInspectLog` →
-  section 2), builds the runner's `InvocationContext` (`nowRfc3339Utc()` for
-  `startedAt`), and calls the pure `CheckpointBridge.emitFromRunnerCapture(rawNdjson,
-  diff, context)` (= `parseStreamJson` + `emitFromCaptureWithDiff`) on the run's
-  raw NDJSON (`cell.output`). It is **best-effort** — any inspect/diff/mapping
-  failure is logged and swallowed, never failing the run — and logs a structured
-  summary (session id, object count, mapped/note counts, checkpoint id). The pure
+  lyric-lang#6249). It is **gated behind the `CLOUDAGENTS_CAPTURE_CHECKPOINTS` env
+  flag, OFF by default** (#1020): the emission adds a synchronous second
+  inspect-container round trip to the hot path of every successful run, so until
+  the graph handoff makes the objects useful (today they are only logged), it must
+  not tax every run — operators running provenance capture opt in with the flag.
+  When enabled it captures the workspace `git diff HEAD` via the existing inspect
+  container (`runInspectContainer(…, "diff", …)` → `parseInspectLog` → section 2),
+  builds the runner's `InvocationContext` (agent-convention principal
+  `"agent:" + harness` with the harness as display, #1019; `nowRfc3339Utc()`
+  invariant-culture timestamp for `startedAt`), and calls the pure
+  `CheckpointBridge.emitFromRunnerCapture(rawNdjson, diff, context)` (=
+  `parseStreamJson` + `emitFromCaptureWithDiff`) on the run's raw NDJSON
+  (`cell.output`). It is **best-effort** — any inspect/diff/mapping failure is
+  logged and swallowed, never failing the run — and logs a structured summary
+  (session id, object count, mapped/note counts, checkpoint id). The pure
   `emitFromRunnerCapture` is unit-tested on the real fixtures
   (`tests/live_capture_e2e_tests.l`); the docker_manager glue itself needs a live
   Docker host to observe (the `@test_module` async-import limitation), which is the
