@@ -279,13 +279,33 @@ Sequenced follow-ups:
   `Repository.nowRfc3339Utc()` invariant-culture `startedAt`), and calls the pure
   `CheckpointBridge.emitFromRunnerCapture(rawNdjson, diff, ctx)` on the run's raw
   NDJSON. Best-effort (a diff/mapping failure is logged, never fails the run); logs
-  a structured summary. Deferred follow-ups: `treeHash` is `None`
-  (steps-only, no terminal checkpoint until the inspect `diff` mode also prints
-  `git rev-parse HEAD^{tree}`), and the objects are logged rather than handed to the
-  graph (the same cross-repo `CaptureFetch` handoff the whole capture arc defers).
+  a structured summary.
   The pure `emitFromRunnerCapture` is unit-tested on the real fixtures; the
   docker_manager glue needs a live Docker host to observe (@test_module can't reach
   `CloudAgents.Docker`).
+- **Runtime graph handoff + terminal checkpoint (M1.2) — landed**
+  (`docs/capture-runtime-handoff.md`). Both of the prior bullet's deferrals are
+  now closed. (1) The inspect `diff` mode's entrypoint emits a 4th section,
+  `git rev-parse HEAD^{tree}`, which `emitRunnerCheckpoint` threads as
+  `runnerContext(…, Some(tree))` — so a run with commits now emits a **terminal
+  checkpoint** (`mapping.checkpointId = Some(…)`); a commit-less workspace falls
+  back to steps-only (`None`) without error. (2) After a successful emit the
+  runner **POSTs the emitted `ProvenanceObject`s** to the platform graph
+  service's `POST /api/ingest` (objects form, `{"objects":[…]}` via the new pure
+  `CheckpointBridge.objectsToIngestJson`), gated behind the existing
+  `CLOUDAGENTS_CAPTURE_CHECKPOINTS` flag plus `CLOUDAGENTS_GRAPH_INGEST_URL`
+  (empty ⇒ log-only, today's behavior exactly) and `CLOUDAGENTS_GRAPH_INGEST_TOKEN`
+  (empty ⇒ skip, never POST unauthenticated). The POST reuses
+  `GitHubApi.httpPostJsonWithBearerTimeout` (bearer, bounded 15s timeout,
+  2xx-only, now no-redirect via `setAllowAutoRedirect(false)` — bearer-leak
+  defense); best-effort throughout (every hop logged and swallowed, never fails
+  the run) and synchronous (no new `await`, #6249-safe). `objectsToIngestJson` is
+  unit-tested offline on the real live-edit fixtures (byte-identical to the
+  platform's `Model.encodeObject` + `Canon.encodeCanonical`); the docker glue +
+  the live POST need a live Docker host + a running graph service to observe (the
+  documented manual step). Still deferred: a durable outbox/retry (today's POST is
+  at-most-once fire-and-forget), credential issuance for the bearer, and the NuGet
+  migration of the vendored contract.
 - **Audit-row enrichment — derivation built, checkpoint attachment deferred.**
   `CloudAgents.PermissionEnrichment` (`src/capture/permission_enrichment.l`,
   `docs/capture-permission-enrichment.md`) folds the existing

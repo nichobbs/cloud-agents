@@ -46,6 +46,7 @@ import Std.Collections
 import CloudAgents.Capture
 import CloudAgents.Capture.GitDiff
 import Testamur.CheckpointFormat.Model
+import Testamur.CheckpointFormat.Canon
 import Testamur.CheckpointFormat.Adapt
 
 // ─── Errors ──────────────────────────────────────────────────────────────────
@@ -218,4 +219,39 @@ pub func emitFromRunnerCapture(
 ): Result[StreamJsonMapping, BridgeError] {
   val batch = parseStreamJson(rawNdjson, 0.toLong(), "")
   return emitFromCaptureWithDiff(batch.events, "", context, gitDiff)
+}
+
+// ─── Ingest serialization (runtime graph handoff, M1.2) ──────────────────────
+/// Serialize emitted provenance objects as the canonical JSON body the platform's
+/// `POST /api/ingest` **objects form** consumes: `{"objects":[<object JSON>, …]}`,
+/// ingested via `GraphIngest.ingestObjects`. Each object is encoded with the
+/// reviewed `Model.encodeObject` (the SAME encoder the platform hashes with, so
+/// bytes/ids agree — the cross-repo content-address contract), collected into a
+/// `JArray` under the `objects` key, and `encodeCanonical`'d. A `ModelError` on
+/// any object (e.g. an unsignable checkpoint envelope) fails the WHOLE batch as a
+/// typed `Err` — never a partial body. The mapper's dependency order (session →
+/// steps → terminal checkpoint) is preserved verbatim; do not sort or dedupe
+/// (§6 idempotency rides the content ids).
+///
+/// The objects form (not the `session_events` envelope form) is what the runner
+/// POSTs: its objects already carry the `file_change` step and — when a workspace
+/// tree was captured — the terminal checkpoint, the exact things that make Q4
+/// answer; the envelope form would re-map via `mapStreamJson` and drop both.
+///
+/// Pure and offline (no Docker/DB/HTTP) so it is unit-testable from a
+/// `@test_module` — the runner (`docker_manager.l` `emitRunnerCheckpoint`) calls
+/// it synchronously after a successful emit, then POSTs the returned body.
+pub func objectsToIngestJson(objects: in List[ProvenanceObject]): Result[String, BridgeError] {
+  val items: List[JsonValue] = newList()
+  var i = 0
+  while i < objects.count {
+    match encodeObject(objects[i]) {
+      case Ok(jv) -> items.add(jv)
+      case Err(e) -> return Err(error = MapFailed(detail = "encode object " + toString(i) + ": " + modelErrorMessage(e)))
+    }
+    i = i + 1
+  }
+  val entries: List[JsonEntry] = newList()
+  entries.add(JsonEntry(key = "objects", value = JArray(items = items)))
+  return Ok(value = encodeCanonical(JObject(entries = entries)))
 }

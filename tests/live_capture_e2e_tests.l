@@ -26,6 +26,7 @@ import Std.Testing
 import CloudAgents.Capture
 import CloudAgents.CheckpointBridge
 import Testamur.CheckpointFormat.Model
+import Testamur.CheckpointFormat.Canon
 import extern System.Text.Encoding as Encoding
 
 @externTarget("System.Text.Encoding.get_UTF8")
@@ -210,4 +211,55 @@ test "LIVE: emitFromRunnerCapture with treeHash=None (the production call shape)
   assertEqual(probe.path, "app.py", "changed file is app.py")
   assertEqual(toString(probe.start), "1", "new-side hunk start (+1)")
   assertEqual(toString(probe.lines), "6", "new-side hunk lines (,6)")
+}
+
+// ── Runtime graph handoff: the real emitted objects serialize to the ingest body ──
+// M1.2 (docs/capture-runtime-handoff.md §5/§7): the exact bytes the runner POSTs
+// to POST /api/ingest for THIS real session must round-trip element-by-element to
+// the platform's own Model.encodeObject + encodeCanonical (the content-address
+// contract), and the terminal checkpoint (ctx carries a tree) must be present.
+// Rebuild the canonical ingest body from the platform's OWN encoders, so the
+// test compares objectsToIngestJson's output to the exact bytes the platform
+// re-hashes. Built here (not by re-parsing the produced body) to stay off
+// JsonValue-typed locals, which don't resolve as a type name inside a
+// @test_module in this toolchain even with Canon imported (they compile in src).
+func expectedIngestBody(m: in StreamJsonMapping): String {
+  var joined = ""
+  var i = 0
+  while i < m.objects.count {
+    val enc = match Model.encodeObject(m.objects[i]) {
+      case Ok(jv) -> Canon.encodeCanonical(jv)
+      case Err(e) -> panic("encodeObject failed: " + Model.modelErrorMessage(e))
+    }
+    if i > 0 {
+      joined = joined + ","
+    }
+    joined = joined + enc
+    i = i + 1
+  }
+  return "{\"objects\":[" + joined + "]}"
+}
+
+test "LIVE: objectsToIngestJson over the real session's emitted objects is byte-identical to the platform's canonical bytes" {
+  val m = match emitFromRunnerCapture(liveNdjson(), liveDiff(), ctx()) {
+    case Ok(mm) -> mm
+    case Err(e) -> panic("emitFromRunnerCapture failed: " + bridgeErrorMessage(e))
+  }
+  val body = match objectsToIngestJson(m.objects) {
+    case Ok(b) -> b
+    case Err(e) -> panic("objectsToIngestJson failed: " + bridgeErrorMessage(e))
+  }
+  assertTrue(body.startsWith("{\"objects\":["), "body is the canonical {\"objects\":[...]} envelope")
+  assertEqual(body, expectedIngestBody(m), "the real session's POST body is byte-identical to the platform's canonical encoding")
+  // The tree in ctx() means a terminal checkpoint is among the serialized objects.
+  var checkpoints = 0
+  var j = 0
+  while j < m.objects.count {
+    match m.objects[j] {
+      case CheckpointObject(_) -> { checkpoints = checkpoints + 1 }
+      case _ -> ()
+    }
+    j = j + 1
+  }
+  assertEqualInt(checkpoints, 1, "the tree-bearing session serializes exactly one terminal checkpoint into the body")
 }
