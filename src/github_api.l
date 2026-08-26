@@ -72,6 +72,16 @@ func setTimeout(req: in HttpWebRequest, millis: in Int): Unit = ()
 @externTarget("System.Net.HttpWebRequest.set_ReadWriteTimeout")
 func setReadWriteTimeout(req: in HttpWebRequest, millis: in Int): Unit = ()
 
+/// Whether GetResponse silently follows 3xx redirects (BCL default: true). We
+/// disable it on the bearer-authed POST (httpPostJsonWithBearerTimeout) so a
+/// misconfigured/hijacked redirect can't replay the Authorization bearer token to
+/// another host — a 3xx then surfaces as a non-2xx `Err` (fail-closed), mirroring
+/// testamur Transport's "2xx-only + no redirect-follow" bearer-leak defense
+/// (docs/capture-runtime-handoff.md §5.2).
+@externInstance
+@externTarget("System.Net.HttpWebRequest.set_AllowAutoRedirect")
+func setAllowAutoRedirect(req: in HttpWebRequest, allow: in Bool): Unit = ()
+
 @externInstance
 @externTarget("System.Net.HttpWebRequest.get_Headers")
 func getHeaders(req: in HttpWebRequest): WebHeaderCollection = ()
@@ -353,6 +363,10 @@ pub func httpPostJsonWithBearerTimeout(
     setMethod(req, "POST")
     setTimeout(req, timeoutMillis)
     setReadWriteTimeout(req, timeoutMillis)
+    // No redirect-follow: a 3xx must not replay the bearer token to another host
+    // (docs/capture-runtime-handoff.md §5.2). Safe for the existing callers too —
+    // Highlights + OpenPr POST to fixed trusted hosts and don't rely on redirects.
+    setAllowAutoRedirect(req, false)
     setUserAgent(req, userAgent)
     setAccept(req, "application/json")
     setContentType(req, "application/json")

@@ -15,6 +15,7 @@ import CloudAgents.Sqlite
 import CloudAgents.Streaming
 import CloudAgents.Capture.Render
 import CloudAgents.CheckpointBridge
+import CloudAgents.GitHubApi
 import CloudAgents.Workspace
 
 pub record ResultCell {
@@ -609,6 +610,7 @@ func emitRunnerCheckpoint(
     return ()
   }
   var diffText = ""
+  var treeHash = ""
   match runInspectContainer(sessionId, harness, userId, "diff", "") {
     case Ok(logs) -> {
       val outcome = CloudAgents.Workspace.parseInspectLog(logs)
@@ -616,12 +618,24 @@ func emitRunnerCheckpoint(
       if outcome.ok and outcome.sections.length.toInt() >= 3 {
         diffText = outcome.sections[2]
       }
+      // Section 3 (M1.2, docs/capture-runtime-handoff.md §4) is the committed
+      // workspace tree hash (`git rev-parse HEAD^{tree}`), added to the inspect
+      // `diff` mode. Empty when the workspace has no commits — then the mapping
+      // stops at steps (no terminal checkpoint), exactly the prior behavior.
+      if outcome.ok and outcome.sections.length.toInt() >= 4 {
+        treeHash = outcome.sections[3].trim()
+      }
     }
     case Err(_) -> ()
   }
+  var tree: Option[String] = None
+  if treeHash != "" {
+    tree = Some(value = treeHash)
+  }
   // Principal is the AGENT (#1019): id carries the `agent:` convention the mapper
   // relies on, display is the harness name; the model is its own separate arg.
-  val ctx = runnerContext("agent:" + harness, harness, "/workspace", CloudAgents.Repository.nowRfc3339Utc(), prompt, model, "auto", None)
+  // Passing Some(tree) (M1.2) makes the vendored mapper emit a terminal checkpoint.
+  val ctx = runnerContext("agent:" + harness, harness, "/workspace", CloudAgents.Repository.nowRfc3339Utc(), prompt, model, "auto", tree)
   match emitFromRunnerCapture(rawNdjson, diffText, ctx) {
     case Ok(mapping) -> {
       var cpid = "(steps-only)"
@@ -630,6 +644,35 @@ func emitRunnerCheckpoint(
         case None -> ()
       }
       println("checkpoint: session=" + sessionId + " objects=" + toString(mapping.objects.count) + " mapped=" + toString(mapping.mappedEvents) + " notes=" + toString(mapping.noteEvents) + " checkpoint=" + cpid)
+      // Runtime graph handoff (M1.2, docs/capture-runtime-handoff.md §5): POST the
+      // emitted objects to the platform's `POST /api/ingest` (objects form),
+      // best-effort. Empty URL ⇒ log-only (today's behavior exactly); empty token ⇒
+      // skip (never POST unauthenticated); non-http(s) URL ⇒ skip and warn (§3
+      // fail-closed). All failures are logged and swallowed — never fails the run.
+      // Synchronous (no new `await`, so #6249-safe). Serialize + POST are inlined
+      // here (not a typed helper) so docker_manager needn't name the vendored
+      // `StreamJsonMapping`/`ProvenanceObject` types — `mapping` is accessed
+      // structurally, and `objectsToIngestJson` (CloudAgents.CheckpointBridge)
+      // takes/returns already-in-scope shapes.
+      val ingestUrl = Std.Environment.getVarOrDefault("CLOUDAGENTS_GRAPH_INGEST_URL", "")
+      if ingestUrl != "" {
+        val ingestToken = Std.Environment.getVarOrDefault("CLOUDAGENTS_GRAPH_INGEST_TOKEN", "")
+        if not (ingestUrl.startsWith("http://") or ingestUrl.startsWith("https://")) {
+          println("WARNING: graph ingest URL is not http(s), skipping POST for session " + sessionId + ": " + ingestUrl)
+        } else if ingestToken == "" {
+          println("WARNING: graph ingest URL set but token empty; skipping POST for session " + sessionId)
+        } else {
+          match objectsToIngestJson(mapping.objects) {
+            case Err(se) -> println("WARNING: checkpoint serialize failed for session " + sessionId + ": " + bridgeErrorMessage(se))
+            case Ok(body) -> {
+              match CloudAgents.GitHubApi.httpPostJsonWithBearerTimeout(ingestUrl, body, ingestToken, "CloudAgents-runner/checkpoint-ingest", 15000) {
+                case Ok(_) -> println("checkpoint: POST ok session=" + sessionId + " objects=" + toString(mapping.objects.count) + " url=" + ingestUrl)
+                case Err(m2) -> println("WARNING: checkpoint POST failed for session " + sessionId + ": " + m2)
+              }
+            }
+          }
+        }
+      }
     }
     case Err(e) -> println("WARNING: checkpoint emission failed for session " + sessionId + ": " + bridgeErrorMessage(e))
   }
