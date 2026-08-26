@@ -203,3 +203,19 @@ pub func emitFromTranscript(ndjson: in String, context: in InvocationContext): R
   val batch = parseStreamJson(ndjson, 0.toLong(), "")
   return emitFromCapture(batch.events, "", context)
 }
+
+/// The runner's end-of-run seam: parse a whole captured `claude -p
+/// --output-format stream-json` run (the raw NDJSON the container produced) AND
+/// its workspace `git diff HEAD`, and emit the checkpoint-format objects in one
+/// call — `parseStreamJson` (from seq 0, genesis prev "") composed with
+/// `emitFromCaptureWithDiff`. This is what `docker_manager.l` calls after a
+/// successful run: the raw NDJSON is `cell.output`, the diff comes from the
+/// inspect container. A malformed/empty diff parses to no deltas ⇒ byte-identical
+/// to `emitFromTranscript` (no `file_change` step, fails safe). Pure — the caller
+/// supplies the two strings + context; no Docker/DB/IO here.
+pub func emitFromRunnerCapture(
+  rawNdjson: in String, gitDiff: in String, context: in InvocationContext
+): Result[StreamJsonMapping, BridgeError] {
+  val batch = parseStreamJson(rawNdjson, 0.toLong(), "")
+  return emitFromCaptureWithDiff(batch.events, "", context, gitDiff)
+}

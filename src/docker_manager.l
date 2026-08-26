@@ -14,6 +14,8 @@ import CloudAgents.SessionStore
 import CloudAgents.Sqlite
 import CloudAgents.Streaming
 import CloudAgents.Capture.Render
+import CloudAgents.CheckpointBridge
+import CloudAgents.Workspace
 
 pub record ResultCell {
   pub var isSuccess: Bool = false
@@ -566,6 +568,73 @@ func sessionContainerId(sessionId: in String): String {
 /// AND the completion signal. A bug in this loop can't corrupt the run or the
 /// persisted transcript — worst case the live view is imperfect and the client
 /// reloads the transcript. On a client disconnect (writeChunk `Err`) the
+// Best-effort end-of-run provenance emission (Testamur ADR-0016;
+// docs/capture-checkpoint.md §8). After a SUCCESSFUL run, capture the workspace
+// `git diff HEAD` via the existing inspect container, build the runner's
+// invocation context, and emit the Testamur checkpoint-format objects from the
+// raw NDJSON (`cell.output`) threaded with the diff. Logs a structured summary;
+// the objects' real destination is the platform graph — that cross-repo handoff
+// stays deferred, so for now they are logged, never persisted.
+//
+// OPT-IN (#1020): gated behind the `CLOUDAGENTS_CAPTURE_CHECKPOINTS` env flag,
+// OFF by default. Until the graph handoff makes the emitted objects useful (today
+// `treeHash` is `None`, so no terminal checkpoint is produced and the objects are
+// only logged), the emission would add a synchronous second inspect-container
+// round trip (`runInspectContainer`, up to `inspectWallClockCapMs`) to the hot
+// path of EVERY successful run — a real latency cost for a currently-inert result.
+// So with the flag unset this returns immediately (zero added cost); operators
+// running provenance capture set the flag to opt in. `enabled` values: "1"/"true".
+//
+// NEVER fails the run: an inspect/diff-capture or mapping failure is logged and
+// swallowed. This helper is a plain sync func (no new `await`), so it is not
+// exposed to the lyric-lang#6249 await-value-loss trap; keep it out of
+// `runSessionMessageAsync`. Not directly unit-testable (its `CloudAgents.Docker`/
+// `CloudAgents.Workspace` reach makes it unreachable from a @test_module); the pure
+// logic it delegates to (`emitFromRunnerCapture`) IS unit-tested on real fixtures.
+func captureCheckpointsEnabled(): Bool {
+  val v = Std.Environment.getVarOrDefault("CLOUDAGENTS_CAPTURE_CHECKPOINTS", "")
+  return v == "1" or v == "true"
+}
+
+func emitRunnerCheckpoint(
+  sessionId: in String,
+  harness: in String,
+  userId: in String,
+  model: in String,
+  prompt: in String,
+  rawNdjson: in String,
+): Unit {
+  // Opt-in only (#1020): no cost on the hot path unless provenance capture is on.
+  if not captureCheckpointsEnabled() {
+    return ()
+  }
+  var diffText = ""
+  match runInspectContainer(sessionId, harness, userId, "diff", "") {
+    case Ok(logs) -> {
+      val outcome = CloudAgents.Workspace.parseInspectLog(logs)
+      // Section 2 is the raw unified `git diff HEAD` (same as getWorkspaceDiffHandler).
+      if outcome.ok and outcome.sections.length.toInt() >= 3 {
+        diffText = outcome.sections[2]
+      }
+    }
+    case Err(_) -> ()
+  }
+  // Principal is the AGENT (#1019): id carries the `agent:` convention the mapper
+  // relies on, display is the harness name; the model is its own separate arg.
+  val ctx = runnerContext("agent:" + harness, harness, "/workspace", CloudAgents.Repository.nowRfc3339Utc(), prompt, model, "auto", None)
+  match emitFromRunnerCapture(rawNdjson, diffText, ctx) {
+    case Ok(mapping) -> {
+      var cpid = "(steps-only)"
+      match mapping.checkpointId {
+        case Some(c) -> { cpid = c }
+        case None -> ()
+      }
+      println("checkpoint: session=" + sessionId + " objects=" + toString(mapping.objects.count) + " mapped=" + toString(mapping.mappedEvents) + " notes=" + toString(mapping.noteEvents) + " checkpoint=" + cpid)
+    }
+    case Err(e) -> println("WARNING: checkpoint emission failed for session " + sessionId + ": " + bridgeErrorMessage(e))
+  }
+}
+
 /// container is terminated so the run doesn't continue into the void.
 pub func streamSessionMessage(
   repoUrl: in String,
@@ -965,6 +1034,8 @@ pub func streamSessionMessage(
         case Err(_) -> ()
       }
     }
+    // End-of-run provenance emission (best-effort; never fails the run).
+    emitRunnerCheckpoint(sessionId, harness, userId, model, prompt, finalLogs)
     return Ok(value = CloudAgents.Capture.Render.renderFullLog(finalLogs))
   }
   // Failure path: no final flush is attempted here (#497). runSessionMessageAsync
@@ -1138,7 +1209,10 @@ pub func runSessionMessageBlocking(
     return Err(error = "Container run timed out after 30 minutes")
   }
   if cell.isSuccess {
-    return Ok(value = CloudAgents.Capture.Render.renderFullLog(cell.output))
+    val finalLogs = cell.output
+    // End-of-run provenance emission (best-effort; never fails the run).
+    emitRunnerCheckpoint(sessionId, harness, userId, model, prompt, finalLogs)
+    return Ok(value = CloudAgents.Capture.Render.renderFullLog(finalLogs))
   }
   return Err(error = cell.error)
 }

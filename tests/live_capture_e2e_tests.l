@@ -67,6 +67,22 @@ func ctx(): InvocationContext {
   )
 }
 
+// The PRODUCTION call shape (#1021): the runner's emitRunnerCheckpoint passes
+// treeHash = None (the workspace git tree id isn't captured yet), and the
+// agent-convention principal id "agent:<harness>". Mirrors that exactly.
+func ctxNoTree(): InvocationContext {
+  return runnerContext(
+    "agent:claude",
+    "claude",
+    "/workspace",
+    "2026-08-22T11:35:00Z",
+    "Add a new function farewell(name) to app.py that returns \"bye \" + name.",
+    "claude-sonnet-5",
+    "auto",
+    None
+  )
+}
+
 func parseLive(): slice[CaptureEvent] {
   return parseStreamJson(liveNdjson(), 0.toLong(), "").events
 }
@@ -152,4 +168,46 @@ test "LIVE: the same capture with no diff emits no file_change step" {
     case Err(e) -> panic("emitFromCaptureWithDiff failed: " + bridgeErrorMessage(e))
   }
   assertEqualInt(probeFileChange(m).count, 0, "an empty diff adds no file_change step")
+}
+
+// ── The runner's actual end-of-run call: emitFromRunnerCapture(rawNdjson, diff) ──
+// This is exactly what docker_manager.l's emitRunnerCheckpoint delegates to — the
+// raw NDJSON string (cell.output) + the workspace diff, in one call. It must match
+// the explicit parse+emit path above.
+test "LIVE: emitFromRunnerCapture (the runner's end-of-run seam) matches parse + diff-threaded emit" {
+  val m = match emitFromRunnerCapture(liveNdjson(), liveDiff(), ctx()) {
+    case Ok(mm) -> mm
+    case Err(e) -> panic("emitFromRunnerCapture failed on the live capture: " + bridgeErrorMessage(e))
+  }
+  val probe = probeFileChange(m)
+  assertEqualInt(probe.count, 1, "one agent-origin file_change step from the workspace diff")
+  assertEqual(probe.path, "app.py", "the changed file is app.py")
+  assertEqual(toString(probe.start), "1", "new-side hunk start (+1)")
+  assertEqual(toString(probe.lines), "6", "new-side hunk lines (,6)")
+  match m.checkpointId {
+    case Some(c) -> assertTrue(c.length.toInt() > 5, "terminal checkpoint emitted (ctx carries a tree): " + c)
+    case None -> assertTrue(false, "expected a terminal checkpoint")
+  }
+  assertEqualInt(m.mappedEvents + m.noteEvents, m.totalEvents, "no captured event dropped")
+}
+
+// ── The exact production shape: treeHash=None (steps-only, no terminal checkpoint) ──
+test "LIVE: emitFromRunnerCapture with treeHash=None (the production call shape) yields the file_change step but no terminal checkpoint" {
+  val m = match emitFromRunnerCapture(liveNdjson(), liveDiff(), ctxNoTree()) {
+    case Ok(mm) -> mm
+    case Err(e) -> panic("emitFromRunnerCapture failed: " + bridgeErrorMessage(e))
+  }
+  // The runner passes treeHash=None today, so the mapping stops at steps — no
+  // terminal checkpoint is produced (matches emitRunnerCheckpoint's runtime call).
+  match m.checkpointId {
+    case Some(c) -> assertTrue(false, "no terminal checkpoint expected with treeHash=None, got: " + c)
+    case None -> assertTrue(true, "steps-only mapping, as in production")
+  }
+  // The agent-origin file_change step is still emitted from the diff (this is what
+  // Q4 will attribute once the objects reach the graph).
+  val probe = probeFileChange(m)
+  assertEqualInt(probe.count, 1, "the file_change step is present even without a tree")
+  assertEqual(probe.path, "app.py", "changed file is app.py")
+  assertEqual(toString(probe.start), "1", "new-side hunk start (+1)")
+  assertEqual(toString(probe.lines), "6", "new-side hunk lines (,6)")
 }
