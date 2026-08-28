@@ -1490,7 +1490,7 @@ func testBranchSessionFromMessage(): Unit {
       slice[]
     }
   }
-  assertEqual(childMsgs.length, 2, "child should contain exactly 2 messages")
+  assertEqualInt(childMsgs.length.toInt(), 2, "child should contain exactly 2 messages")
   assertEqual(childMsgs[0].content, "Hello 1", "msg 1 content match")
   assertEqual(childMsgs[1].content, "Answer 1", "msg 2 content match")
 
@@ -1503,7 +1503,7 @@ func testBranchSessionFromMessage(): Unit {
       slice[]
     }
   }
-  assertEqual(childComments.length, 1, "comment should be cloned on child turn 2")
+  assertEqualInt(childComments.length.toInt(), 1, "comment should be cloned on child turn 2")
   assertEqual(childComments[0].body, "Important note on turn 2", "comment body match")
 
   // Verify todos cloned on child
@@ -1514,7 +1514,7 @@ func testBranchSessionFromMessage(): Unit {
       slice[]
     }
   }
-  assertEqual(childTodos.length, 1, "todo should be cloned on child")
+  assertEqualInt(childTodos.length.toInt(), 1, "todo should be cloned on child")
   assertEqual(childTodos[0].note, "Review turn 2", "todo note match")
   assertEqual(childTodos[0].messageId, childMsg2Id, "todo should point to new cloned message ID")
 }
