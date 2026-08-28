@@ -149,8 +149,12 @@ install_dotnet() {
 install_lyric
 install_dotnet
 
-export PATH="$LYRIC_DIR:$DOTNET_DIR:$PATH"
-export DOTNET_ROOT="$DOTNET_DIR"
+if [ -d "$DOTNET_DIR" ]; then
+  export PATH="$LYRIC_DIR:$DOTNET_DIR:$PATH"
+  export DOTNET_ROOT="$DOTNET_DIR"
+else
+  export PATH="$LYRIC_DIR:$PATH"
+fi
 
 command -v lyric >/dev/null 2>&1 || err "lyric is still not on PATH after install — check $LYRIC_DIR"
 command -v dotnet >/dev/null 2>&1 || err "dotnet is still not on PATH after install — check $DOTNET_DIR (or re-run with SKIP_DOTNET unset)"
