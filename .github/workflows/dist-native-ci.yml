@@ -78,17 +78,17 @@ jobs:
           fi
           echo "Lyric $RESOLVED >= required minimum $MIN_VERSION"
 
-      # Reuses scripts/install.sh's own install logic, pinned to the exact
-      # version just verified above. dotnet is already provided by
-      # setup-dotnet, and the NuGet restore happens explicitly in "Build
-      # CloudAgents.dll" below, so both of install.sh's other side effects
-      # are skipped.
+      # Install Lyric compiler matching ci.yml's direct release asset download.
       - name: Install Lyric compiler
         env:
           LYRIC_VERSION: ${{ steps.resolve_lyric.outputs.version }}
         run: |
           set -euo pipefail
-          SKIP_DOTNET=1 SKIP_RESTORE=1 ./scripts/install.sh
+          curl -fsSL --connect-timeout 10 --max-time 120 --retry 3 --retry-delay 3 \
+            -o /tmp/lyric.tgz \
+            "https://github.com/nichobbs/lyric-lang/releases/download/v${LYRIC_VERSION}/lyric-${LYRIC_VERSION}-linux-x64.tar.gz"
+          mkdir -p "$HOME/.lyric/bin"
+          tar -xzf /tmp/lyric.tgz -C "$HOME/.lyric/bin"
           echo "$HOME/.lyric/bin" >> "$GITHUB_PATH"
 
       # Uses build-full.sh rather than a bare `lyric restore && lyric build`:
