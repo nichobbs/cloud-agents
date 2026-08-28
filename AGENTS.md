@@ -260,9 +260,52 @@ Sequenced follow-ups:
   `tests/capture_git_diff_tests.l` (real `git diff` fixtures) +
   `tests/checkpoint_bridge_tests.l` (real diff → file_change step + re-anchored
   checkpoint). `beforeSha256`/`afterSha256` stay `None` (git blob ids are SHA-1,
-  not SHA-256; attribution needs only ranges). Remaining: wire the runner's live
-  flow (capture events → `emitFromCaptureWithDiff` → the graph handoff, the same
-  cross-repo `CaptureFetch` handoff the whole capture arc defers).
+  not SHA-256; attribution needs only ranges). **The capture→checkpoint pipeline
+  is now LIVE-verified on a genuinely fresh real session**
+  (`tests/live_capture_e2e_tests.l`): a live `claude -p --output-format
+  stream-json` run really edited `app.py` (Edit tool), and its verbatim NDJSON +
+  real `git diff HEAD` (`tests/fixtures/stream-json/live-edit-turn.ndjson` /
+  `live-edit.diff`) run through the exact runner calls (`parseStreamJson` →
+  `verifyChain` → `emitFromCaptureWithDiff`) to emit a checkpoint whose
+  `file_change` hunk matches the diff (+1,6). **The RUNTIME wiring has now landed
+  too** (opt-in): `src/docker_manager.l`'s `emitRunnerCheckpoint` is called from both
+  successful-run seams (`streamSessionMessage` + `runSessionMessageBlocking`, both
+  sync — no `await`, so #6249-safe), **gated behind the
+  `CLOUDAGENTS_CAPTURE_CHECKPOINTS` env flag (OFF by default, #1020)** since the
+  inspect-container round trip taxes every run's hot path for a currently-logged-only
+  result. When enabled it captures the workspace `git diff HEAD` via the existing
+  inspect container (`runInspectContainer(…, "diff", …)` → section 2), builds the
+  `InvocationContext` (agent-convention principal `"agent:" + harness`, #1019;
+  `Repository.nowRfc3339Utc()` invariant-culture `startedAt`), and calls the pure
+  `CheckpointBridge.emitFromRunnerCapture(rawNdjson, diff, ctx)` on the run's raw
+  NDJSON. Best-effort (a diff/mapping failure is logged, never fails the run); logs
+  a structured summary.
+  The pure `emitFromRunnerCapture` is unit-tested on the real fixtures; the
+  docker_manager glue needs a live Docker host to observe (@test_module can't reach
+  `CloudAgents.Docker`).
+- **Runtime graph handoff + terminal checkpoint (M1.2) — landed**
+  (`docs/capture-runtime-handoff.md`). Both of the prior bullet's deferrals are
+  now closed. (1) The inspect `diff` mode's entrypoint emits a 4th section,
+  `git rev-parse HEAD^{tree}`, which `emitRunnerCheckpoint` threads as
+  `runnerContext(…, Some(tree))` — so a run with commits now emits a **terminal
+  checkpoint** (`mapping.checkpointId = Some(…)`); a commit-less workspace falls
+  back to steps-only (`None`) without error. (2) After a successful emit the
+  runner **POSTs the emitted `ProvenanceObject`s** to the platform graph
+  service's `POST /api/ingest` (objects form, `{"objects":[…]}` via the new pure
+  `CheckpointBridge.objectsToIngestJson`), gated behind the existing
+  `CLOUDAGENTS_CAPTURE_CHECKPOINTS` flag plus `CLOUDAGENTS_GRAPH_INGEST_URL`
+  (empty ⇒ log-only, today's behavior exactly) and `CLOUDAGENTS_GRAPH_INGEST_TOKEN`
+  (empty ⇒ skip, never POST unauthenticated). The POST reuses
+  `GitHubApi.httpPostJsonWithBearerTimeout` (bearer, bounded 15s timeout,
+  2xx-only, now no-redirect via `setAllowAutoRedirect(false)` — bearer-leak
+  defense); best-effort throughout (every hop logged and swallowed, never fails
+  the run) and synchronous (no new `await`, #6249-safe). `objectsToIngestJson` is
+  unit-tested offline on the real live-edit fixtures (byte-identical to the
+  platform's `Model.encodeObject` + `Canon.encodeCanonical`); the docker glue +
+  the live POST need a live Docker host + a running graph service to observe (the
+  documented manual step). Still deferred: a durable outbox/retry (today's POST is
+  at-most-once fire-and-forget), credential issuance for the bearer, and the NuGet
+  migration of the vendored contract.
 - **Audit-row enrichment — derivation built, checkpoint attachment deferred.**
   `CloudAgents.PermissionEnrichment` (`src/capture/permission_enrichment.l`,
   `docs/capture-permission-enrichment.md`) folds the existing

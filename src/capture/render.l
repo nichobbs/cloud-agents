@@ -72,20 +72,133 @@ func textOfContent(content: in JsonElement): String {
   return acc
 }
 
-// The visible-text contribution of one event's parsed root. Non-object roots
-// (a payload whose top level is a JSON array/string/number — only reachable via
-// a synthetically-mislabeled event, not real captured data) and assistant roots
-// with no text blocks contribute "". Guarding on valueKind keeps this total:
+// The visible-text contribution of one event's parsed root. Supports Claude,
+// Gemini, Codex, and OpenCode NDJSON schemas. Non-object roots and events with
+// no text blocks contribute "". Guarding on valueKind keeps this total:
 // tryGetProperty on a non-object element throws.
 func displayTextOfRoot(root: in JsonElement): String {
   if Std.Json.valueKind(root) != jsonKindObject {
     return ""
   }
-  val msg = match Std.Json.tryGetProperty(root, "message") { case None -> return ""; case Some(m) -> m }
-  if Std.Json.valueKind(msg) != jsonKindObject {
-    return ""
+  // User/system role explicit exclusion
+  match Std.Json.tryGetProperty(root, "role") {
+    case Some(r) -> {
+      val roleStr = safeString(r)
+      if roleStr.length.toInt() > 0 and roleStr != "assistant" {
+        return ""
+      }
+    }
+    case None -> ()
   }
-  return match Std.Json.tryGetProperty(msg, "content") { case None -> ""; case Some(content) -> textOfContent(content) }
+
+  // 1. Anthropic/Claude nested message format: root.message
+  match Std.Json.tryGetProperty(root, "message") {
+    case Some(msg) -> {
+      if Std.Json.valueKind(msg) == jsonKindObject {
+        match Std.Json.tryGetProperty(msg, "role") {
+          case Some(r) -> {
+            val roleStr = safeString(r)
+            if roleStr.length.toInt() > 0 and roleStr != "assistant" {
+              return ""
+            }
+          }
+          case None -> ()
+        }
+        match Std.Json.tryGetProperty(msg, "content") {
+          case Some(content) -> {
+            if Std.Json.valueKind(content) == jsonKindArray {
+              val txt = textOfContent(content)
+              if txt.length.toInt() > 0 {
+                return txt
+              }
+            }
+          }
+          case None -> ()
+        }
+      }
+    }
+    case None -> ()
+  }
+
+  // 2. Codex item format: root.item
+  match Std.Json.tryGetProperty(root, "item") {
+    case Some(item) -> {
+      if Std.Json.valueKind(item) == jsonKindObject {
+        match Std.Json.tryGetProperty(item, "text") {
+          case Some(t) -> {
+            if Std.Json.valueKind(t) == jsonKindString {
+              val txt = safeString(t)
+              if txt.length.toInt() > 0 {
+                return txt
+              }
+            }
+          }
+          case None -> ()
+        }
+        match Std.Json.tryGetProperty(item, "content") {
+          case Some(c) -> {
+            if Std.Json.valueKind(c) == jsonKindString {
+              val txt = safeString(c)
+              if txt.length.toInt() > 0 {
+                return txt
+              }
+            } else if Std.Json.valueKind(c) == jsonKindArray {
+              val txt = textOfContent(c)
+              if txt.length.toInt() > 0 {
+                return txt
+              }
+            }
+          }
+          case None -> ()
+        }
+      }
+    }
+    case None -> ()
+  }
+
+  // 3. Gemini / OpenCode format: root.content, root.text, or root.response
+  match Std.Json.tryGetProperty(root, "content") {
+    case Some(content) -> {
+      if Std.Json.valueKind(content) == jsonKindArray {
+        val txt = textOfContent(content)
+        if txt.length.toInt() > 0 {
+          return txt
+        }
+      } else if Std.Json.valueKind(content) == jsonKindString {
+        val txt = safeString(content)
+        if txt.length.toInt() > 0 {
+          return txt
+        }
+      }
+    }
+    case None -> ()
+  }
+
+  match Std.Json.tryGetProperty(root, "text") {
+    case Some(txtEl) -> {
+      if Std.Json.valueKind(txtEl) == jsonKindString {
+        val txt = safeString(txtEl)
+        if txt.length.toInt() > 0 {
+          return txt
+        }
+      }
+    }
+    case None -> ()
+  }
+
+  match Std.Json.tryGetProperty(root, "response") {
+    case Some(resp) -> {
+      if Std.Json.valueKind(resp) == jsonKindString {
+        val txt = safeString(resp)
+        if txt.length.toInt() > 0 {
+          return txt
+        }
+      }
+    }
+    case None -> ()
+  }
+
+  return ""
 }
 
 /// The transcript text a single captured event contributes to the PWA — the
@@ -96,7 +209,7 @@ pub func displayTextOf(event: in CaptureEvent): String {
   if event.eventType == "malformed" {
     return event.payload
   }
-  if event.eventType != "assistant" {
+  if event.eventType == "system" or event.eventType == "user" or event.eventType == "tool_use" or event.eventType == "tool_result" or event.eventType == "active_goal" or event.eventType == "thread.started" or event.eventType == "turn.started" or event.eventType == "init" or event.eventType == "error" or event.eventType == "result" or event.eventType == "turn.completed" {
     return ""
   }
   return match Std.Json.tryParseJson(event.payload) {
@@ -139,10 +252,23 @@ func resultTextOfRoot(root: in JsonElement): Option[String] {
   if Std.Json.valueKind(root) != jsonKindObject {
     return None
   }
-  return match Std.Json.tryGetProperty(root, "result") {
-    case None -> None
-    case Some(r) -> if Std.Json.valueKind(r) == jsonKindString { Some(safeString(r)) } else { None }
+  match Std.Json.tryGetProperty(root, "result") {
+    case Some(r) -> {
+      if Std.Json.valueKind(r) == jsonKindString {
+        return Some(safeString(r))
+      }
+    }
+    case None -> ()
   }
+  match Std.Json.tryGetProperty(root, "response") {
+    case Some(r) -> {
+      if Std.Json.valueKind(r) == jsonKindString {
+        return Some(safeString(r))
+      }
+    }
+    case None -> ()
+  }
+  return None
 }
 
 /// The terminal result text of a captured turn — the `result` field of the LAST
@@ -154,7 +280,7 @@ pub func finalResultText(events: in slice[CaptureEvent]): Option[String] {
   var i = 0
   while i < events.length.toInt() {
     val e = events[i]
-    if e.eventType == "result" {
+    if e.eventType == "result" or e.eventType == "turn.completed" {
       match Std.Json.tryParseJson(e.payload) {
         case Err(_) -> ()
         case Ok(doc) -> {

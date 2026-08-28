@@ -100,12 +100,12 @@ The five follow-ups suggested in the first PR, implemented:
 
 ### Shim in every harness image
 
-`Dockerfile.codex` / `Dockerfile.opencode` / `Dockerfile.gemini` now build
+`Dockerfile.codex` / `Dockerfile.opencode` / `Dockerfile.gemini` / `Dockerfile.antigravity` now build
 `cloud-agents-shim` in their own condensed shim-builder stage (RUN
 instructions byte-identical to `docker/Dockerfile`'s canonical stage, so the
 layer cache builds it once) and ship it with the .NET runtime (copied from
 `mcr.microsoft.com/dotnet/runtime:10.0`, invariant globalization — no ICU).
-All four images therefore need the repo-root build context (compose,
+All five images therefore need the repo-root build context (compose,
 `build-docker.sh`, and the Build: header comments all updated — the same
 #601 change the claude image made first). Per-message registration into
 each harness's native MCP config (opencode.json `mcp`, gemini

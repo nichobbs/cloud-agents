@@ -152,6 +152,7 @@ jobs:
             docker/entrypoint-codex.sh \
             docker/entrypoint-opencode.sh \
             docker/entrypoint-gemini.sh \
+            docker/entrypoint-antigravity.sh \
             docker/reconcile-repos.sh \
             docker/cloud-agents-shim \
             deploy/install-docker.sh \
@@ -215,11 +216,11 @@ jobs:
           ./scripts/test-branch-policy-inject.sh
           ./scripts/test-register-callbacks-mcp.sh
 
-      # #795: the four runner Dockerfiles' shim-builder stages must stay
+      # #795: the five runner Dockerfiles' shim-builder stages must stay
       # byte-identical (docker/Dockerfile is canonical) so a sequential
       # single-host build compiles the shim once and shares the layer cache;
       # previously enforced only by a code comment.
-      - name: Verify shim-builder stages are in sync across the four Dockerfiles
+      - name: Verify shim-builder stages are in sync across the five Dockerfiles
         run: ./scripts/check-shim-stage-sync.sh
 
       # Regression test for the sed/tr/sort -V one-liners shared by the

@@ -146,11 +146,11 @@ fi
 
 # Reconcile linked repositories (multi-repo sessions): clone the repos
 # currently linked to the session, prune any that were unlinked. Shared
-# across all four harness entrypoints (#468).
+# across all five harness entrypoints (#468).
 /usr/local/bin/reconcile-repos.sh "entrypoint-opencode"
 cd /workspace
 
-# Safety net: ensure we're not on the starting branch. Shared across all four
+# Safety net: ensure we're not on the starting branch. Shared across all five
 # harness entrypoints (#725) — see create-fallback-branch.sh.
 create-fallback-branch.sh "entrypoint-opencode" "${HARNESS}" "${BRANCH}" "${SESSION_ID:-}"
 
@@ -170,4 +170,4 @@ if [ -f /usr/local/bin/register-callbacks-mcp.sh ]; then
     register_callbacks_mcp "opencode" /workspace || echo "entrypoint-opencode: callback MCP registration failed, continuing without it" >&2
 fi
 
-exec opencode run --model "${MODEL}" -- "${PROMPT}"
+exec opencode run --model "${MODEL}" --format json -q -- "${PROMPT}"

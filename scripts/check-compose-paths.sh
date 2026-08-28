@@ -84,10 +84,10 @@ json_std="$(cd "$REPO_ROOT/deploy" && ENCRYPTION_KEY=ci-check docker compose con
 check_json_paths "docker-compose.yml" "$json_std"
 
 echo "== docker-compose.coolify.yml (--project-directory repo-root, per Coolify) =="
-# codex-base/opencode-base/gemini-base build unconditionally now (no
-# `profiles:` gating — see the compose file's own comments for why that
-# gating existed and why it's no longer necessary), so `docker compose
-# config` always renders all four services and this check validates all of
+# codex-base/opencode-base/gemini-base/antigravity-base build unconditionally
+# now (no `profiles:` gating — see the compose file's own comments for why
+# that gating existed and why it's no longer necessary), so `docker compose
+# config` always renders all five services and this check validates all of
 # their paths with no special activation needed.
 #
 # exclude_from_hc (nichobbs/cloud-agents#516) is a real, documented Coolify

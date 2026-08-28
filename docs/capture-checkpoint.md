@@ -155,9 +155,49 @@ NDJSON, fixed literal timestamps (`tests/checkpoint_bridge_tests.l`).
 - **`file_change` capture — bridge wired** (#127 + #982, ADR-0016):
   `emitFromCaptureWithDiff` turns a captured workspace `git diff` into an
   agent-origin `file_change` step so **Q4 answers on a captured session** (proven
-  on live PG in testamur #127). Remaining here is the runner's LIVE flow — call
-  `emitFromCaptureWithDiff` with the session's `git diff HEAD` at end-of-run and
-  hand the objects to the graph (the deferred handoff below).
+  on live PG in testamur #127).
+- **`file_change` capture — LIVE-verified on a real editing session.** The
+  capture→checkpoint pipeline is now exercised end-to-end on a GENUINELY FRESH
+  session: a live `claude -p --output-format stream-json --verbose` run was
+  pointed at a real git workspace and told to add a function; it used the Edit
+  tool and actually changed the file. The verbatim NDJSON transcript
+  (`tests/fixtures/stream-json/live-edit-turn.ndjson`) and the real `git diff HEAD`
+  (`tests/fixtures/stream-json/live-edit.diff`) run through the exact runner calls
+  — `parseStreamJson` → `verifyChain` → `emitFromCaptureWithDiff` — and produce a
+  content-addressed checkpoint whose `file_change` hunk matches the real diff
+  (`app.py`, +1,6; blob sha256s `None`), with the chain verifying and no event
+  dropped (`tests/live_capture_e2e_tests.l`). This is the manual end-to-end step
+  the notes above flagged as pending — done on real data, not fixtures-by-hand.
+- **`file_change` capture — RUNTIME wiring landed (opt-in).** The runner emits a
+  checkpoint at end-of-run. `src/docker_manager.l`'s `emitRunnerCheckpoint` is
+  called from BOTH successful-run seams (`streamSessionMessage` and
+  `runSessionMessageBlocking`, both sync — no new `await`, so not exposed to
+  lyric-lang#6249). It is **gated behind the `CLOUDAGENTS_CAPTURE_CHECKPOINTS` env
+  flag, OFF by default** (#1020): the emission adds a synchronous second
+  inspect-container round trip to the hot path of every successful run, so until
+  the graph handoff makes the objects useful (today they are only logged), it must
+  not tax every run — operators running provenance capture opt in with the flag.
+  When enabled it captures the workspace `git diff HEAD` via the existing inspect
+  container (`runInspectContainer(…, "diff", …)` → `parseInspectLog` → section 2),
+  builds the runner's `InvocationContext` (agent-convention principal
+  `"agent:" + harness` with the harness as display, #1019; `nowRfc3339Utc()`
+  invariant-culture timestamp for `startedAt`), and calls the pure
+  `CheckpointBridge.emitFromRunnerCapture(rawNdjson, diff, context)` (=
+  `parseStreamJson` + `emitFromCaptureWithDiff`) on the run's raw NDJSON
+  (`cell.output`). It is **best-effort** — any inspect/diff/mapping failure is
+  logged and swallowed, never failing the run — and logs a structured summary
+  (session id, object count, mapped/note counts, checkpoint id). The pure
+  `emitFromRunnerCapture` is unit-tested on the real fixtures
+  (`tests/live_capture_e2e_tests.l`); the docker_manager glue itself needs a live
+  Docker host to observe (the `@test_module` async-import limitation), which is the
+  one remaining manual check. Two deferred follow-ups keep this a first honest cut:
+  `treeHash` is `None` (the workspace git tree id isn't captured yet, so the mapping
+  is steps + the `file_change` step with **no terminal checkpoint** at runtime — a
+  real tree hash means extending the inspect `diff` mode to also print
+  `git rev-parse HEAD^{tree}`), and the emitted objects are logged rather than
+  handed to the graph (the cross-repo handoff below). Caveat: `git diff HEAD`
+  shows only uncommitted working-tree changes — a run whose harness committed its
+  edits produces an empty diff and a steps-only mapping.
 - **Graph handoff**: pass the emitted objects to the platform's `GraphIngest`
   (cross-repo; today the objects are the deliverable).
 - **Audit-row enrichment**: fold `permission_requests`/`secret_requests` into

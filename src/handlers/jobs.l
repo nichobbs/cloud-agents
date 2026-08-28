@@ -268,7 +268,7 @@ pub func createJobHandler(userId: in String, req: in CreateJobRequest): Result[J
     return Err(Web.badRequest("branch is not a valid git branch name"))
   }
   if req.harness.length > 0 and not CloudAgents.Handlers.isKnownHarness(req.harness) {
-    return Err(Web.badRequest("harness must be one of: claude, codex, opencode, gemini"))
+    return Err(Web.badRequest("harness must be one of: claude, codex, opencode, gemini, antigravity"))
   }
   val harness = if req.harness.length == 0 { "claude" } else { req.harness }
   if not CloudAgents.Proxy.isHarnessEnabled(harness) {

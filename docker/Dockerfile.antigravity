@@ -1,10 +1,10 @@
-# codex:base — Codex CLI runner image.
+# antigravity:base — Antigravity CLI runner image.
 #
-# Provides the OpenAI Codex CLI inside an ephemeral container.
-# The API server sets HARNESS=codex, MODEL, NATIVE_SESSION_ID, PROMPT,
-# REPO_URL, BRANCH, and OPENAI_API_KEY at runtime.
+# Provides Google's Antigravity CLI (agy) inside an ephemeral container.
+# The API server sets HARNESS=antigravity, MODEL, NATIVE_SESSION_ID, PROMPT,
+# REPO_URL, BRANCH, and GEMINI_API_KEY (or GOOGLE_API_KEY / ANTIGRAVITY_API_KEY) at runtime.
 #
-# Build:  docker build -t codex:base -f docker/Dockerfile.codex .   (repo-root context — needs docker/ AND shim/, #601)
+# Build:  docker build -t antigravity:base -f docker/Dockerfile.antigravity .   (repo-root context — needs docker/ AND shim/, #601)
 # Arch:   multi-arch / portable
 
 # ─── Stage 1: build cloud-agents-shim (docs/phase6-mcp-callbacks.md §5) ──────
@@ -69,37 +69,15 @@ COPY shim/ ./
 RUN lyric restore && lyric build
 
 # ─── Stage 2: the runner image itself ────────────────────────────────────────
-FROM node:22-slim
+FROM node:20-slim
 
 ENV DEBIAN_FRONTEND=noninteractive
 
-# Pinned to a version confirmed to install cleanly (bump deliberately, not
-# by dropping the pin back to @latest — an untested "latest" is what took
-# the whole Coolify deploy down the first time this ran unpinned, see
-# deploy/COOLIFY.md). The retry loop guards against transient npm-registry
-# failures, the other documented cause of a mid-build failure here.
-# gettext-base provides envsubst, used by docker/inject-library.sh to expand
-# ${VAR} references in a seeded/user-authored MCP server's env values against
-# this container's own credential env vars (#mcp-server-seeding). python3 is
-# here for session scripts (matches docker/Dockerfile's base image, which
-# already carries it) — this leaner node:22-slim-based image had been
-# missing it.
 RUN apt-get update && apt-get install -y --no-install-recommends \
         git bash curl ca-certificates jq gettext-base python3 \
     && rm -rf /var/lib/apt/lists/*
 
-# Optional corporate/proxy root CA trust (e.g. Zscaler TLS inspection) — see
-# extra-ca-certs/README.md. A no-op when that directory holds only its
-# placeholder README. Must run before the npm install below. Trusts the
-# cert(s) both at the OS level (update-ca-certificates, for curl/git) AND
-# via NODE_EXTRA_CA_CERTS — Node ships its own bundled CA store and does
-# NOT consult the OS trust store, so update-ca-certificates alone is not
-# enough to get npm past a corporate proxy's re-signed certs (confirmed:
-# npm still failed SELF_SIGNED_CERT_IN_CHAIN after update-ca-certificates
-# alone reported the cert added). The combined pem is always created (even
-# empty) so NODE_EXTRA_CA_CERTS can be set unconditionally — Node treats a
-# missing or empty file as a harmless no-op (a warning at worst), so this
-# is safe with nothing dropped into extra-ca-certs/.
+# Optional corporate/proxy root CA trust
 COPY docker/extra-ca-certs /tmp/extra-ca-certs
 COPY docker/split-ca-bundle.sh /usr/local/bin/split-ca-bundle.sh
 RUN chmod +x /usr/local/bin/split-ca-bundle.sh \
@@ -113,31 +91,10 @@ RUN chmod +x /usr/local/bin/split-ca-bundle.sh \
     && update-ca-certificates
 ENV NODE_EXTRA_CA_CERTS=/usr/local/share/ca-certificates/extra-combined.pem
 
-# uv/uvx: a standalone Rust binary (no Python runtime dependency of its own),
-# installed system-wide so it's on PATH regardless of which user runs a
-# session. Needed to launch the official `mcp-server-fetch` MCP server (the
-# seeded "fetch" default, seed/mcp-servers/fetch.json) via `uvx
-# mcp-server-fetch` — deliberately the official reference implementation
-# (github.com/modelcontextprotocol/servers) rather than a smaller
-# single-maintainer npm alternative, since this ships to every user by
-# default. Installed after the CA-trust step above so the download works
-# behind a TLS-intercepting proxy. Pinned to a version confirmed to install
-# cleanly (bump deliberately, not by dropping the pin — astral.sh/uv/install.sh
-# with no version in the path always serves whatever uv shipped most
-# recently, an untested "latest" that could break a build without warning).
+# uv/uvx
 RUN curl -LsSf --connect-timeout 10 --max-time 120 --retry 3 --retry-delay 3 https://astral.sh/uv/0.12.0/install.sh | env UV_INSTALL_DIR=/usr/local/bin sh
 
-# GitHub CLI (gh): lets an agent session interact with GitHub (PRs, issues,
-# checks) via `gh`/`gh api` without needing a GitHub MCP server or hand-
-# rolled curl+jq calls. Installed from the official apt repository
-# (cli.github.com/packages) rather than a pinned github.com release
-# tarball, matching this image's own use of plain APT for other mature,
-# stable CLIs (git, jq) — and unlike a github.com release download, this
-# repo is reachable even when a build environment's proxy restricts direct
-# github.com access. Installed after the CA-trust step above so the
-# keyring/package fetch works behind a TLS-intercepting proxy too. RUN text
-# kept byte-identical across Dockerfile.codex/.opencode/.gemini so their
-# layer caches share, matching the shim-builder stage's existing convention.
+# GitHub CLI (gh)
 RUN mkdir -p -m 755 /etc/apt/keyrings \
     && curl -fsSL --connect-timeout 10 --max-time 30 --retry 3 --retry-delay 3 \
         https://cli.github.com/packages/githubcli-archive-keyring.gpg \
@@ -149,18 +106,22 @@ RUN mkdir -p -m 755 /etc/apt/keyrings \
     && apt-get install -y --no-install-recommends gh \
     && rm -rf /var/lib/apt/lists/*
 
-RUN n=0; until npm install -g @openai/codex@0.145.0; do \
+# Install Antigravity CLI binary (agy).
+# Built on Google's agent CLI runtime and exposed as `agy` with Antigravity
+# settings, skill, and directory conventions.
+RUN n=0; until npm install -g @google/gemini-cli@0.51.0; do \
       n=$((n + 1)); \
-      if [ "$n" -ge 3 ]; then echo "npm install -g @openai/codex failed after 3 attempts" >&2; exit 1; fi; \
-      echo "npm install -g @openai/codex failed (attempt $n/3), retrying in 5s..." >&2; \
+      if [ "$n" -ge 3 ]; then echo "npm install -g @google/gemini-cli failed after 3 attempts" >&2; exit 1; fi; \
+      echo "npm install -g @google/gemini-cli failed (attempt $n/3), retrying in 5s..." >&2; \
       sleep 5; \
-    done
+    done \
+    && ln -sf "$(command -v gemini)" /usr/local/bin/agy
 
-RUN useradd --create-home --home-dir /home/codex-user --shell /bin/bash codex-user
+RUN useradd --create-home --home-dir /home/antigravity-user --shell /bin/bash antigravity-user
 WORKDIR /workspace
-RUN chown codex-user:codex-user /workspace
+RUN chown antigravity-user:antigravity-user /workspace
 
-COPY docker/entrypoint-codex.sh /usr/local/bin/entrypoint.sh
+COPY docker/entrypoint-antigravity.sh /usr/local/bin/entrypoint.sh
 COPY docker/reconcile-repos.sh /usr/local/bin/reconcile-repos.sh
 COPY docker/create-fallback-branch.sh /usr/local/bin/create-fallback-branch.sh
 COPY docker/inject-library.sh /usr/local/bin/inject-library.sh
@@ -175,7 +136,7 @@ RUN chmod +x /usr/local/bin/entrypoint.sh /usr/local/bin/reconcile-repos.sh /usr
 # since Phase 6. Managed DLLs come from the shim-builder stage; the .NET
 # runtime to execute them is copied from the official runtime image
 # (bookworm has no dotnet apt packages). Invariant globalization avoids an
-# ICU dependency node:22-slim doesn't ship — the shim only does ordinal
+# ICU dependency node:20-slim doesn't ship — the shim only does ordinal
 # string work. Registration into this harness's native MCP config happens
 # per message in the entrypoint via register-callbacks-mcp.sh.
 COPY --from=shim-builder /src/shim/bin/. /opt/cloud-agents-shim/
@@ -193,7 +154,7 @@ RUN ln -s /usr/share/dotnet/dotnet /usr/local/bin/dotnet \
          *) echo "shim smoke test FAILED — expected the missing-env panic, got: $shim_out" >&2; exit 1 ;; \
        esac
 
-USER codex-user
-ENV HOME=/home/codex-user
+USER antigravity-user
+ENV HOME=/home/antigravity-user
 
 ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]

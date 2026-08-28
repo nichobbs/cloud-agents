@@ -12,7 +12,7 @@
 # Duplicated (condensed) from docker/Dockerfile's shim-builder stage — that
 # file is canonical and fully commented; keep the RUN instructions here
 # byte-identical to it so Docker's layer cache builds the shim once and
-# shares it across all four runner images. Requires the repo-root build
+# shares it across all five runner images. Requires the repo-root build
 # context (it COPYs both docker/ and shim/), the same #601 change the
 # claude image already made.
 FROM mcr.microsoft.com/dotnet/sdk:10.0 AS shim-builder

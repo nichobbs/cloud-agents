@@ -49,6 +49,7 @@ test "handler validation rejects bad enums" {
   assertTrue(not isValidCredentialMode("some"), "unknown mode rejected")
   assertTrue(isValidProfileHarness("") and isValidProfileHarness("claude"), "empty and claude harness ok")
   assertTrue(isValidProfileHarness("gemini"), "gemini harness ok")
+  assertTrue(isValidProfileHarness("antigravity"), "antigravity harness ok")
   assertTrue(not isValidProfileHarness("bogus"), "unknown harness rejected")
   assertTrue(isValidToolMode("all") and isValidToolMode("selected"), "tool modes")
   assertTrue(not isValidToolMode("some"), "unknown tool mode rejected")

@@ -179,6 +179,9 @@ pub func homeMountPathForHarness(harness: in String): String {
   if harness == "gemini" {
     return "/home/gemini-user"
   }
+  if harness == "antigravity" {
+    return "/home/antigravity-user"
+  }
   return "/home/claude-user"
 }
 
@@ -203,6 +206,9 @@ pub func homeVolumeBindForHarness(harness: in String): String {
   if harness == "gemini" {
     return "gemini-home-default:" + homeMountPathForHarness(harness)
   }
+  if harness == "antigravity" {
+    return "antigravity-home-default:" + homeMountPathForHarness(harness)
+  }
   return "claude-home-default:" + homeMountPathForHarness(harness)
 }
 
@@ -224,7 +230,7 @@ pub func homeVolumeBindFor(userId: in String, harness: in String): String {
   // (homeMountPathForHarness / imageForHarness). Unreachable today
   // (isKnownHarness rejects unknown harnesses upstream), but a divergent
   // name here would silently split a tenant's claude state in two (#437).
-  val harnessName = if harness == "codex" or harness == "opencode" or harness == "gemini" then harness else "claude"
+  val harnessName = if harness == "codex" or harness == "opencode" or harness == "gemini" or harness == "antigravity" then harness else "claude"
   return "user-" + userId + "-" + harnessName + "-home:" + homeMountPathForHarness(harness)
 }
 

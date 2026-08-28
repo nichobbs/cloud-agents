@@ -39,7 +39,7 @@ pub func defaultModelForHarness(harness: in String): String {
   if harness == "opencode" {
     return "claude-sonnet-4-6"
   }
-  if harness == "gemini" {
+  if harness == "gemini" or harness == "antigravity" {
     return "gemini-2.5-pro"
   }
   return "claude-opus-4-8"

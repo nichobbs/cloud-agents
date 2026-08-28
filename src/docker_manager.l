@@ -14,6 +14,9 @@ import CloudAgents.SessionStore
 import CloudAgents.Sqlite
 import CloudAgents.Streaming
 import CloudAgents.Capture.Render
+import CloudAgents.CheckpointBridge
+import CloudAgents.GitHubApi
+import CloudAgents.Workspace
 
 pub record ResultCell {
   pub var isSuccess: Bool = false
@@ -132,6 +135,9 @@ func imageForHarness(harness: in String): String {
   }
   if harness == "gemini" {
     return "gemini:base"
+  }
+  if harness == "antigravity" {
+    return "antigravity:base"
   }
   return "claude-code:base"
 }
@@ -563,6 +569,115 @@ func sessionContainerId(sessionId: in String): String {
 /// AND the completion signal. A bug in this loop can't corrupt the run or the
 /// persisted transcript — worst case the live view is imperfect and the client
 /// reloads the transcript. On a client disconnect (writeChunk `Err`) the
+// Best-effort end-of-run provenance emission (Testamur ADR-0016;
+// docs/capture-checkpoint.md §8). After a SUCCESSFUL run, capture the workspace
+// `git diff HEAD` via the existing inspect container, build the runner's
+// invocation context, and emit the Testamur checkpoint-format objects from the
+// raw NDJSON (`cell.output`) threaded with the diff. Logs a structured summary;
+// the objects' real destination is the platform graph — that cross-repo handoff
+// stays deferred, so for now they are logged, never persisted.
+//
+// OPT-IN (#1020): gated behind the `CLOUDAGENTS_CAPTURE_CHECKPOINTS` env flag,
+// OFF by default. Until the graph handoff makes the emitted objects useful (today
+// `treeHash` is `None`, so no terminal checkpoint is produced and the objects are
+// only logged), the emission would add a synchronous second inspect-container
+// round trip (`runInspectContainer`, up to `inspectWallClockCapMs`) to the hot
+// path of EVERY successful run — a real latency cost for a currently-inert result.
+// So with the flag unset this returns immediately (zero added cost); operators
+// running provenance capture set the flag to opt in. `enabled` values: "1"/"true".
+//
+// NEVER fails the run: an inspect/diff-capture or mapping failure is logged and
+// swallowed. This helper is a plain sync func (no new `await`), so it is not
+// exposed to the lyric-lang#6249 await-value-loss trap; keep it out of
+// `runSessionMessageAsync`. Not directly unit-testable (its `CloudAgents.Docker`/
+// `CloudAgents.Workspace` reach makes it unreachable from a @test_module); the pure
+// logic it delegates to (`emitFromRunnerCapture`) IS unit-tested on real fixtures.
+func captureCheckpointsEnabled(): Bool {
+  val v = Std.Environment.getVarOrDefault("CLOUDAGENTS_CAPTURE_CHECKPOINTS", "")
+  return v == "1" or v == "true"
+}
+
+func emitRunnerCheckpoint(
+  sessionId: in String,
+  harness: in String,
+  userId: in String,
+  model: in String,
+  prompt: in String,
+  rawNdjson: in String,
+): Unit {
+  // Opt-in only (#1020): no cost on the hot path unless provenance capture is on.
+  if not captureCheckpointsEnabled() {
+    return ()
+  }
+  var diffText = ""
+  var treeHash = ""
+  match runInspectContainer(sessionId, harness, userId, "diff", "") {
+    case Ok(logs) -> {
+      val outcome = CloudAgents.Workspace.parseInspectLog(logs)
+      // Section 2 is the raw unified `git diff HEAD` (same as getWorkspaceDiffHandler).
+      if outcome.ok and outcome.sections.length.toInt() >= 3 {
+        diffText = outcome.sections[2]
+      }
+      // Section 3 (M1.2, docs/capture-runtime-handoff.md §4) is the committed
+      // workspace tree hash (`git rev-parse HEAD^{tree}`), added to the inspect
+      // `diff` mode. Empty when the workspace has no commits — then the mapping
+      // stops at steps (no terminal checkpoint), exactly the prior behavior.
+      if outcome.ok and outcome.sections.length.toInt() >= 4 {
+        treeHash = outcome.sections[3].trim()
+      }
+    }
+    case Err(_) -> ()
+  }
+  var tree: Option[String] = None
+  if treeHash != "" {
+    tree = Some(value = treeHash)
+  }
+  // Principal is the AGENT (#1019): id carries the `agent:` convention the mapper
+  // relies on, display is the harness name; the model is its own separate arg.
+  // Passing Some(tree) (M1.2) makes the vendored mapper emit a terminal checkpoint.
+  val ctx = runnerContext("agent:" + harness, harness, "/workspace", CloudAgents.Repository.nowRfc3339Utc(), prompt, model, "auto", tree)
+  match emitFromRunnerCapture(rawNdjson, diffText, ctx) {
+    case Ok(mapping) -> {
+      var cpid = "(steps-only)"
+      match mapping.checkpointId {
+        case Some(c) -> { cpid = c }
+        case None -> ()
+      }
+      println("checkpoint: session=" + sessionId + " objects=" + toString(mapping.objects.count) + " mapped=" + toString(mapping.mappedEvents) + " notes=" + toString(mapping.noteEvents) + " checkpoint=" + cpid)
+      // Runtime graph handoff (M1.2, docs/capture-runtime-handoff.md §5): POST the
+      // emitted objects to the platform's `POST /api/ingest` (objects form),
+      // best-effort. Empty URL ⇒ log-only (today's behavior exactly); empty token ⇒
+      // skip (never POST unauthenticated); non-http(s) URL ⇒ skip and warn (§3
+      // fail-closed). All failures are logged and swallowed — never fails the run.
+      // Synchronous (no new `await`, so #6249-safe). Serialize + POST are inlined
+      // here (not a typed helper) so docker_manager needn't name the vendored
+      // `StreamJsonMapping`/`ProvenanceObject` types — `mapping` is accessed
+      // structurally, and `objectsToIngestJson` (CloudAgents.CheckpointBridge)
+      // takes/returns already-in-scope shapes.
+      val ingestUrl = Std.Environment.getVarOrDefault("CLOUDAGENTS_GRAPH_INGEST_URL", "")
+      if ingestUrl != "" {
+        val ingestToken = Std.Environment.getVarOrDefault("CLOUDAGENTS_GRAPH_INGEST_TOKEN", "")
+        if not (ingestUrl.startsWith("http://") or ingestUrl.startsWith("https://")) {
+          println("WARNING: graph ingest URL is not http(s), skipping POST for session " + sessionId + ": " + ingestUrl)
+        } else if ingestToken == "" {
+          println("WARNING: graph ingest URL set but token empty; skipping POST for session " + sessionId)
+        } else {
+          match objectsToIngestJson(mapping.objects) {
+            case Err(se) -> println("WARNING: checkpoint serialize failed for session " + sessionId + ": " + bridgeErrorMessage(se))
+            case Ok(body) -> {
+              match CloudAgents.GitHubApi.httpPostJsonWithBearerTimeout(ingestUrl, body, ingestToken, "CloudAgents-runner/checkpoint-ingest", 15000) {
+                case Ok(_) -> println("checkpoint: POST ok session=" + sessionId + " objects=" + toString(mapping.objects.count) + " url=" + ingestUrl)
+                case Err(m2) -> println("WARNING: checkpoint POST failed for session " + sessionId + ": " + m2)
+              }
+            }
+          }
+        }
+      }
+    }
+    case Err(e) -> println("WARNING: checkpoint emission failed for session " + sessionId + ": " + bridgeErrorMessage(e))
+  }
+}
+
 /// container is terminated so the run doesn't continue into the void.
 pub func streamSessionMessage(
   repoUrl: in String,
@@ -676,7 +791,8 @@ pub func streamSessionMessage(
     if containerId.length > 0 {
       // Parse the NDJSON log delta into CaptureEvents + the visible text to
       // stream. Only complete lines are consumed; a partial trailing line is
-      // re-read next tick (renderLogDelta).
+      // re-read next tick (renderLogDelta). Works uniformly across Claude,
+      // Gemini, Codex, and OpenCode NDJSON streams.
       val rd = CloudAgents.Capture.Render.renderLogDelta(partialContainerLogs(containerId), offset, nextSeq, lastHash, false)
       // Persist newly-captured events (idempotent batch append — safe to re-run
       // on a write-failure retry). Best-effort: a persistence failure must never
@@ -935,13 +1051,13 @@ pub func streamSessionMessage(
   // The run finished. Honour its real outcome regardless of a last-tick
   // disconnect (a gone client just won't receive the final frames).
   if cell.isSuccess {
+    val finalLogs = cell.output
     // Flush any output produced since the last poll (best-effort — the write
     // fails harmlessly if the client is gone). cell.output is the authoritative
     // full NDJSON log. Render its tail delta for the stream, persist any tail
     // events, and RETURN the fully-rendered transcript (not the raw NDJSON):
     // the caller persists this return value as the agent message and parses it
-    // for a plan, so it must be the visible text, never the stream-json log.
-    val finalLogs = cell.output
+    // for a plan, so it must be the visible text, never the raw stream-json log.
     // atEnd = true: the run has finished, so cell.output is the complete,
     // authoritative log. Consume the trailing line even without a "\n" so the
     // terminal `result` event (often newline-less) is captured and rendered,
@@ -961,6 +1077,8 @@ pub func streamSessionMessage(
         case Err(_) -> ()
       }
     }
+    // End-of-run provenance emission (best-effort; never fails the run).
+    emitRunnerCheckpoint(sessionId, harness, userId, model, prompt, finalLogs)
     return Ok(value = CloudAgents.Capture.Render.renderFullLog(finalLogs))
   }
   // Failure path: no final flush is attempted here (#497). runSessionMessageAsync
@@ -1134,7 +1252,10 @@ pub func runSessionMessageBlocking(
     return Err(error = "Container run timed out after 30 minutes")
   }
   if cell.isSuccess {
-    return Ok(value = cell.output)
+    val finalLogs = cell.output
+    // End-of-run provenance emission (best-effort; never fails the run).
+    emitRunnerCheckpoint(sessionId, harness, userId, model, prompt, finalLogs)
+    return Ok(value = CloudAgents.Capture.Render.renderFullLog(finalLogs))
   }
   return Err(error = cell.error)
 }

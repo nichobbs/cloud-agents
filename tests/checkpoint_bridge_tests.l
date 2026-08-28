@@ -20,6 +20,8 @@ import CloudAgents.Capture
 import CloudAgents.CheckpointBridge
 import Testamur.CheckpointFormat.Adapt
 import Testamur.CheckpointFormat.Model
+import Testamur.CheckpointFormat.Canon
+import Testamur.CheckpointFormat.Sign
 
 // ── Fixed captured transcript (a small, realistic claude -p stream-json run) ──
 // One assistant text turn, one tool_use + its tool_result (they merge into a
@@ -313,5 +315,121 @@ test "emitFromCaptureWithDiff on a malformed / non-diff input fails safe (no fil
   match fileChangeStepOf(m) {
     case Some(_) -> assertTrue(false, "a malformed diff must not emit a file_change step")
     case None -> assertTrue(true, "malformed diff -> no file_change step")
+  }
+}
+
+// ── Runtime graph handoff: objectsToIngestJson (M1.2, docs/capture-runtime-handoff.md §5) ──
+
+// Rebuild the canonical ingest body from the platform's OWN encoders
+// (Model.encodeObject → Canon.encodeCanonical, joined into the {"objects":[…]}
+// envelope). objectsToIngestJson must produce exactly these bytes — the
+// cross-repo content-address property the platform re-hashes. Building the
+// expectation here (rather than re-parsing the produced body) keeps the test off
+// JsonValue-typed locals, which do not resolve as a type name inside a
+// @test_module in this toolchain even with Canon imported (they compile fine in
+// src; a resolution quirk — see docs/lyric/gotchas.md territory).
+func expectedIngestBody(m: in StreamJsonMapping): String {
+  var joined = ""
+  var i = 0
+  while i < m.objects.count {
+    val enc = match Model.encodeObject(m.objects[i]) {
+      case Ok(jv) -> Canon.encodeCanonical(jv)
+      case Err(e) -> panic("encodeObject failed: " + Model.modelErrorMessage(e))
+    }
+    if i > 0 {
+      joined = joined + ","
+    }
+    joined = joined + enc
+    i = i + 1
+  }
+  return "{\"objects\":[" + joined + "]}"
+}
+
+func countCheckpointObjects(m: in StreamJsonMapping): Int {
+  var n = 0
+  var i = 0
+  while i < m.objects.count {
+    match m.objects[i] {
+      case CheckpointObject(_) -> { n = n + 1 }
+      case SessionObject(_) -> ()
+      case StepObject(_) -> ()
+    }
+    i = i + 1
+  }
+  return n
+}
+
+// The steps-only (no tree) counterpart of mustEmit(): the production call shape
+// where the runner captured no workspace tree, so no terminal checkpoint lands.
+func mustEmitNoTree(): StreamJsonMapping {
+  val noTree = runnerContext(
+    "agent:cloud-agents-runner",
+    "cloud-agents runner",
+    "https://github.com/nichobbs/cloud-agents#dev",
+    "2026-08-14T10:50:45Z",
+    "Summarize notes.txt.",
+    "claude-sonnet-5",
+    "auto",
+    None
+  )
+  return match emitFromTranscript(transcript(), noTree) {
+    case Ok(m) -> m
+    case Err(e) -> panic("emit failed: " + bridgeErrorMessage(e))
+  }
+}
+
+test "objectsToIngestJson wraps the objects as the canonical objects-form body, byte-identical to Model.encodeObject" {
+  val m = mustEmit()
+  val body = match objectsToIngestJson(m.objects) {
+    case Ok(b) -> b
+    case Err(e) -> panic("objectsToIngestJson failed: " + bridgeErrorMessage(e))
+  }
+  // The POST body is the platform's objects-form envelope, canonical (compact).
+  assertTrue(body.startsWith("{\"objects\":["), "body is the canonical {\"objects\":[...]} envelope")
+  // Full-body byte identity: exact wrapping, the mapper's dependency order
+  // preserved, and each element the platform's own encodeObject+encodeCanonical —
+  // the cross-repo content-address property the platform re-hashes.
+  assertEqual(body, expectedIngestBody(m), "body byte-identical to the platform's canonical encoding of the same objects")
+}
+
+test "objectsToIngestJson body carries the terminal checkpoint iff a workspace tree was present" {
+  val withTree = mustEmit()          // ctx() carries a tree ⇒ terminal checkpoint
+  val noTree = mustEmitNoTree()      // None ⇒ steps-only, no checkpoint
+  assertEqualInt(countCheckpointObjects(withTree), 1, "tree present ⇒ exactly one checkpoint object")
+  assertEqualInt(countCheckpointObjects(noTree), 0, "no tree ⇒ no checkpoint object (steps-only)")
+  val bodyWith = match objectsToIngestJson(withTree.objects) { case Ok(b) -> b; case Err(e) -> panic(bridgeErrorMessage(e)) }
+  val bodyNo = match objectsToIngestJson(noTree.objects) { case Ok(b) -> b; case Err(e) -> panic(bridgeErrorMessage(e)) }
+  // Both bodies are byte-identical to the platform's canonical encoding; the
+  // tree-bearing one carries the extra terminal checkpoint element.
+  assertEqual(bodyWith, expectedIngestBody(withTree), "tree body byte-identical")
+  assertEqual(bodyNo, expectedIngestBody(noTree), "steps-only body byte-identical")
+  assertTrue(bodyWith.length.toInt() > bodyNo.length.toInt(), "the terminal checkpoint makes the tree body larger")
+}
+
+test "objectsToIngestJson fails the whole batch (typed MapFailed) on an unencodable object — no partial body" {
+  // A checkpoint envelope carrying the internal-only TestHmacSha256 signature has
+  // NO wire form, so Model.encodeObject rejects it — objectsToIngestJson must
+  // surface that as a typed Err, never a partially-built body.
+  val bad: List[ProvenanceObject] = newList()
+  bad.add(
+    CheckpointObject(
+      envelope = CheckpointEnvelope(
+        checkpoint = Checkpoint(
+          session = "sess-x",
+          steps = newList(),
+          tree = "0f79b1731289bfc1c66399b9db0dd42e838cba25",
+          parent = None,
+          at = "2026-08-14T10:50:45Z"
+        ),
+        signature = Some(value = Signature(keyid = "k1", scheme = TestHmacSha256, sig = "AAAA"))
+      )
+    )
+  )
+  match objectsToIngestJson(bad) {
+    case Ok(_) -> assertTrue(false, "an unencodable checkpoint envelope must not produce a body")
+    case Err(e) -> match e {
+      case MapFailed(_) -> assertTrue(true, "surfaced as a typed MapFailed")
+      case ChainInvalid(_) -> assertTrue(false, "expected MapFailed, not ChainInvalid")
+    }
   }
 }

@@ -5,8 +5,8 @@ Drop your corporate/proxy root CA certificate(s) here (`.crt`, `.pem`, or
 on a network that does TLS interception — e.g. Zscaler, Netskope, or a
 similar corporate proxy.
 
-Each of the four Dockerfiles in this directory (`Dockerfile`,
-`Dockerfile.codex`, `Dockerfile.opencode`, `Dockerfile.gemini`) copies
+Each of the five Dockerfiles in this directory (`Dockerfile`,
+`Dockerfile.codex`, `Dockerfile.opencode`, `Dockerfile.gemini`, `Dockerfile.antigravity`) copies
 whatever is in this directory into its build stages' trust store before
 making any outbound HTTPS call (`lyric restore`'s NuGet restore, `curl`
 downloads of Lyric releases, `npm install -g`). Each build stage is its

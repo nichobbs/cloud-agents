@@ -55,6 +55,15 @@ export const HARNESSES: Record<string, HarnessConfig> = {
     defaultModel: 'gemini-2.5-pro',
     providers: ['google'],
   },
+  antigravity: {
+    label: 'Antigravity CLI',
+    models: [
+      { id: 'gemini-2.5-pro', label: 'Gemini 2.5 Pro' },
+      { id: 'gemini-2.5-flash', label: 'Gemini 2.5 Flash' },
+    ],
+    defaultModel: 'gemini-2.5-pro',
+    providers: ['google'],
+  },
 };
 
 export const DEFAULT_HARNESS = 'claude';

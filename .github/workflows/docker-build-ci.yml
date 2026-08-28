@@ -43,6 +43,7 @@ on:
       - 'docker/Dockerfile.codex'
       - 'docker/Dockerfile.gemini'
       - 'docker/Dockerfile.opencode'
+      - 'docker/Dockerfile.antigravity'
       - 'shim/**'
       - '.github/workflows/docker-build-ci.yml'
 
@@ -136,7 +137,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        harness: [codex, gemini, opencode]
+        harness: [codex, gemini, opencode, antigravity]
     steps:
       - uses: actions/checkout@v6
 
@@ -150,7 +151,7 @@ jobs:
           file: docker/Dockerfile.${{ matrix.harness }}
           push: false
           # Reads the default-scope cache too (#816): the shim-builder job
-          # above writes there, and the four Dockerfiles' shim-builder
+          # above writes there, and the five Dockerfiles' shim-builder
           # stages are byte-identical (check-shim-stage-sync.sh), so each
           # harness build can reuse those layers instead of compiling the
           # shim once per matrix job.

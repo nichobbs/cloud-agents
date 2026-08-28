@@ -79,6 +79,18 @@ if [ -n "${CLOUD_AGENTS_INSPECT_MODE:-}" ]; then
             { git diff HEAD --numstat 2>/dev/null || git diff --numstat; } || true
             echo "===CLOUD_AGENTS_SECTION==="
             { git diff HEAD 2>/dev/null || git diff; } || true
+            echo "===CLOUD_AGENTS_SECTION==="
+            # Section 3 (M1.2, docs/capture-runtime-handoff.md §4): the committed
+            # workspace tree hash, so the runner's emitRunnerCheckpoint can thread
+            # it as the terminal checkpoint's base anchor. Prints nothing when the
+            # workspace has no commits (fresh clone before first commit / no HEAD);
+            # the guard swallows that error and the runner falls back to steps-only
+            # (treeHash None), exactly today's behavior. This is HEAD's committed
+            # tree, not a working-tree write-tree — the agent's uncommitted edits
+            # live in the section-2 `git diff HEAD` (the file_change hunks), so the
+            # committed tree is the correct *base* anchor; do not "fix" this to a
+            # git write-tree.
+            { git rev-parse HEAD^{tree} 2>/dev/null; } || true
             ;;
         tree)
             echo "CLOUD_AGENTS_INSPECT_OK"
@@ -308,11 +320,11 @@ fi
 
 # Reconcile linked repositories (multi-repo sessions): clone the repos
 # currently linked to the session, prune any that were unlinked. Shared
-# across all four harness entrypoints (#468).
+# across all five harness entrypoints (#468).
 /usr/local/bin/reconcile-repos.sh "entrypoint"
 cd /workspace
 
-# Safety net: ensure we're not on the starting branch. Shared across all four
+# Safety net: ensure we're not on the starting branch. Shared across all five
 # harness entrypoints (#725) — see create-fallback-branch.sh.
 create-fallback-branch.sh "entrypoint" "${HARNESS}" "${BRANCH}" "${SESSION_ID:-}"
 

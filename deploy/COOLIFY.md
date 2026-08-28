@@ -85,10 +85,10 @@ which worked for a local `make docker` but not for Coolify's `docker compose
 build`, since nothing there ever ran that staging step; it's now built
 inside the Dockerfile itself, so any orchestrator works standalone).
 
-**All four runner images build unconditionally** — `claude-code-base`,
-`codex-base`, `opencode-base`, and `gemini-base` all deploy on every push,
+**All five runner images build unconditionally** — `claude-code-base`,
+`codex-base`, `opencode-base`, `gemini-base`, and `antigravity-base` all deploy on every push,
 no `COMPOSE_PROFILES` setting required, so a fresh deployment offers every
-harness immediately instead of reporting the other three unavailable in
+harness immediately instead of reporting the other four unavailable in
 `GET /api/harnesses` / the frontend picker.
 
 This wasn't always safe: `docker compose build` (how Coolify invokes it, no
@@ -109,7 +109,7 @@ npm-registry failures.
 
 If a harness image ever fails to build again despite that:
 
-1. Reproduce standalone — `docker build -f docker/Dockerfile.codex .` (repo-root context — all four runner images build the shim from shim/, #601)
+1. Reproduce standalone — `docker build -f docker/Dockerfile.codex .` (repo-root context — all five runner images build the shim from shim/, #601)
    (swap in the relevant Dockerfile) — to isolate and fix the real problem.
 2. If you need to unblock a deploy immediately while you do that, comment
    out that one service block in `docker-compose.coolify.yml` and redeploy

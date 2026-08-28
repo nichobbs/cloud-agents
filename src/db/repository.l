@@ -115,6 +115,32 @@ pub func nowMillisLong(): Long {
   return dtoToUnixMillis(dtoUtcNow())
 }
 
+extern type CultureInfo = "System.Globalization.CultureInfo"
+
+@externTarget("System.Globalization.CultureInfo.get_InvariantCulture")
+func invariantCulture(): CultureInfo = ()
+
+// The (format, provider) overload, so the format is rendered against the
+// invariant culture — NOT the process's current culture (#1022). Some cultures
+// shape digits (e.g. Arabic-Indic) or otherwise alter numeric output; the
+// checkpoint format requires ASCII `YYYY-MM-DDTHH:MM:SSZ`, and this timestamp
+// feeds content-addressed ids, so a culture-dependent rendering would be wrong.
+@externInstance
+@externTarget("System.DateTimeOffset.ToString")
+func dtoToStringFmt(t: in DateTimeOffset, format: in String, provider: in CultureInfo): String = ()
+
+/// Wall-clock instant as a strict RFC 3339 UTC second-precision timestamp
+/// (`YYYY-MM-DDTHH:MM:SSZ`) — the format the Testamur checkpoint format requires
+/// for `Session.startedAt`/`Step.at` (`Model.isRfc3339UtcSeconds`). `dtoUtcNow()`
+/// is a UTC `DateTimeOffset`, so the literal `Z` is correct. Rendered against the
+/// INVARIANT culture (#1022) so no locale can shape the digits/separators. Shared
+/// so the runner (`docker_manager.l`) can stamp a checkpoint's `startedAt` without
+/// re-binding the clock. `'T'`/`'Z'` are quoted as literals (both are custom-format
+/// letters in .NET and would otherwise be interpreted or throw).
+pub func nowRfc3339Utc(): String {
+  return dtoToStringFmt(dtoUtcNow(), "yyyy-MM-dd'T'HH:mm:ss'Z'", invariantCulture())
+}
+
 func digitValue(c: in String): Int {
   if c == "0" {
     return 0
