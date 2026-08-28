@@ -27,6 +27,8 @@ export interface ServerSession {
   groupId?: string;
   lastViewedAt?: string;
   pendingCount?: string;
+  parentSessionId?: string;
+  forkedFromMessageId?: string;
   attention?: string;
 }
 
@@ -150,6 +152,19 @@ export const api = {
 
   createSession: async (body: { repoUrl: string; branch: string; harness: string; model: string }): Promise<{ sessionId: string }> => {
     const res = await apiFetch(`${BASE}/api/sessions`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', ...authHeaders() },
+      body: JSON.stringify(body),
+    });
+    if (!res.ok) throw new Error(`${res.status} ${await res.text()}`);
+    return res.json() as Promise<{ sessionId: string }>;
+  },
+
+  branchSession: async (
+    sessionId: string,
+    body: { messageId?: string; branch?: string } = {}
+  ): Promise<{ sessionId: string }> => {
+    const res = await apiFetch(`${BASE}/api/sessions/${sessionId}/branch`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', ...authHeaders() },
       body: JSON.stringify(body),

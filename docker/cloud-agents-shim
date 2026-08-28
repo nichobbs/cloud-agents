@@ -15,7 +15,7 @@
 # image's SDK layout keeps working unchanged.
 export DOTNET_ROOT="${DOTNET_ROOT:-/usr/share/dotnet}"
 # Invariant globalization only where ICU is actually absent (#834 — the
-# node:20-slim harness images): the claude image ships ICU with its SDK, and
+# node:22-slim harness images): the claude image ships ICU with its SDK, and
 # forcing invariant there would change this shim's runtime behavior from
 # what it has always been. Respect an explicit caller override either way.
 if [ -z "${DOTNET_SYSTEM_GLOBALIZATION_INVARIANT:-}" ] \

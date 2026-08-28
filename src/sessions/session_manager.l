@@ -24,6 +24,10 @@ pub record AgentSession {
   pub groupId: String = ""
   /// Epoch-millis TEXT of the user's last view (migration 0029); "0" = never.
   pub lastViewedAt: String = "0"
+  /// Parent session ID if branched from another session; "" = root session.
+  pub parentSessionId: String = ""
+  /// Message ID from which this session branched; "" = root session.
+  pub forkedFromMessageId: String = ""
 }
 
 /// Default model for each harness, used when a session is created without an
@@ -347,7 +351,7 @@ func colAt(cols: in CloudAgents.Sqlite.StringArray, i: in Int): String {
 // Column order matches CloudAgents.Db's sessionColumns:
 // id, user_id, repo_url, branch, container_id, harness, model,
 // native_session_id, status, created_at, last_message_at, is_archived,
-// group_id, last_viewed_at.
+// group_id, last_viewed_at, parent_session_id, forked_from_message_id.
 func rowToSession(r: in CloudAgents.Sqlite.Row): AgentSession {
   return AgentSession(
     sessionId = colAt(r.cols, 0),
@@ -360,7 +364,9 @@ func rowToSession(r: in CloudAgents.Sqlite.Row): AgentSession {
     status = colAt(r.cols, 8),
     isArchived = colAt(r.cols, 11),
     groupId = colAt(r.cols, 12),
-    lastViewedAt = colAt(r.cols, 13)
+    lastViewedAt = colAt(r.cols, 13),
+    parentSessionId = colAt(r.cols, 14),
+    forkedFromMessageId = colAt(r.cols, 15)
   )
 }
 
@@ -393,7 +399,7 @@ pub func sessionSummariesJson(): Result[String, CloudAgents.Sqlite.DbError] {
       colAt(r.cols, 8),
       CloudAgents.Db.parseEpochMillisText(colAt(r.cols, 10)),
       CloudAgents.Db.parseEpochMillisText(colAt(r.cols, 13)),
-      CloudAgents.Db.parseEpochMillisText(colAt(r.cols, 14))
+      CloudAgents.Db.parseEpochMillisText(colAt(r.cols, 16))
     )
     json = json + "{\"sessionId\":\"" + jsonEscapeField(colAt(r.cols, 0)) + "\",\"repoUrl\":\"" +
       jsonEscapeField(colAt(r.cols, 2)) +
@@ -415,8 +421,12 @@ pub func sessionSummariesJson(): Result[String, CloudAgents.Sqlite.DbError] {
       jsonEscapeField(colAt(r.cols, 12)) +
       "\",\"lastViewedAt\":\"" +
       jsonEscapeField(colAt(r.cols, 13)) +
-      "\",\"pendingCount\":\"" +
+      "\",\"parentSessionId\":\"" +
       jsonEscapeField(colAt(r.cols, 14)) +
+      "\",\"forkedFromMessageId\":\"" +
+      jsonEscapeField(colAt(r.cols, 15)) +
+      "\",\"pendingCount\":\"" +
+      jsonEscapeField(colAt(r.cols, 16)) +
       "\",\"attention\":\"" +
       attention +
       "\"}"

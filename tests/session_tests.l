@@ -58,6 +58,27 @@ func mustInt(r: in Result[Int, CloudAgents.Sqlite.DbError]): Int {
   return match r { case Ok(n) -> n; case Err(e) -> panic("expected Ok(Int): " + CloudAgents.Sqlite.dbErrorMessage(e)) }
 }
 
+func mustMessage(r: in Result[CloudAgents.Repository.Message, CloudAgents.Sqlite.DbError]): CloudAgents.Repository.Message {
+  return match r {
+    case Ok(m) -> m
+    case Err(e) -> panic("message op failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+  }
+}
+
+func mustComment(r: in Result[CloudAgents.Repository.Comment, CloudAgents.Sqlite.DbError]): CloudAgents.Repository.Comment {
+  return match r {
+    case Ok(c) -> c
+    case Err(e) -> panic("comment op failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+  }
+}
+
+func mustTodo(r: in Result[CloudAgents.Repository.Todo, CloudAgents.Sqlite.DbError]): CloudAgents.Repository.Todo {
+  return match r {
+    case Ok(t) -> t
+    case Err(e) -> panic("todo op failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+  }
+}
+
 // Async wrapper so a run claim can be `spawn`ed inside a `scope` block (#206)
 // — `tryBeginRun` itself is a plain synchronous func, so a genuinely
 // concurrent test needs an async entry point to race it under `spawn`/`await`
@@ -1425,3 +1446,95 @@ test "archive and unarchive sessions successfully persists changes in the DB" {
     case None -> assertTrue(false, "session should exist")
   }
 }
+
+test "branch session from message creates copy with parent reference and slices history" {
+  val dbPath = useFreshTestDb("branch-msg")
+  defer { cleanupTestDb(dbPath) }
+
+  val req = CloudAgents.Handlers.CreateSessionRequest(
+    repoUrl = "https://github.com/example/branch-test",
+    branch = "main",
+    harness = "claude",
+    model = "claude-sonnet-4-6"
+  )
+  val parentId = match CloudAgents.Handlers.createSession(req) {
+    case Ok(resp) -> resp.sessionId
+    case Err(_) -> {
+      assertTrue(false, "createSession failed")
+      ""
+    }
+  }
+
+  // Insert 3 messages into parent
+  val m1 = mustMessage(CloudAgents.Repository.addMessage(parentId, "user", "Hello 1"))
+  val m2 = mustMessage(CloudAgents.Repository.addMessage(parentId, "assistant", "Answer 1"))
+  val m3 = mustMessage(CloudAgents.Repository.addMessage(parentId, "user", "Hello 2"))
+  val msg1Id = m1.id
+  val msg2Id = m2.id
+  val msg3Id = m3.id
+
+  // Add a comment to msg2 and a todo on msg2
+  mustComment(CloudAgents.Repository.addComment(msg2Id, parentId, "Important note on turn 2"))
+  mustTodo(CloudAgents.Repository.addTodo(parentId, msg2Id, "Review turn 2"))
+
+  // Branch from msg2 (seq 2)
+  val branchReq = CloudAgents.Handlers.BranchSessionRequest(
+    messageId = msg2Id,
+    branch = "feature-thread-1"
+  )
+  val childId = match CloudAgents.Handlers.branchSession(parentId, branchReq) {
+    case Ok(resp) -> resp.sessionId
+    case Err(_) -> {
+      assertTrue(false, "branchSession failed")
+      ""
+    }
+  }
+
+  // Verify child session properties
+  match mustOptSession(CloudAgents.SessionStore.getSession(childId)) {
+    case Some(s) -> {
+      assertEqual(s.parentSessionId, parentId, "child should reference parentSessionId")
+      assertEqual(s.forkedFromMessageId, msg2Id, "child should reference forkedFromMessageId")
+      assertEqual(s.branch, "feature-thread-1", "child should have custom branch")
+      assertEqual(s.repoUrl, "https://github.com/example/branch-test", "repoUrl should match")
+    }
+    case None -> assertTrue(false, "child session should exist")
+  }
+
+  // Verify child messages (should only have 2 messages, seq 1 and 2, not seq 3)
+  val childMsgs = match CloudAgents.Repository.listMessages(childId) {
+    case Ok(list) -> list
+    case Err(_) -> {
+      assertTrue(false, "listMessages on child failed")
+      []
+    }
+  }
+  assertEqualInt(childMsgs.length.toInt(), 2, "child should contain exactly 2 messages")
+  assertEqual(childMsgs[0].content, "Hello 1", "msg 1 content match")
+  assertEqual(childMsgs[1].content, "Answer 1", "msg 2 content match")
+
+  // Verify comments cloned on child message
+  val childMsg2Id = childMsgs[1].id
+  val childComments = match CloudAgents.Repository.listComments(childMsg2Id) {
+    case Ok(list) -> list
+    case Err(_) -> {
+      assertTrue(false, "listComments on child failed")
+      []
+    }
+  }
+  assertEqualInt(childComments.length.toInt(), 1, "comment should be cloned on child turn 2")
+  assertEqual(childComments[0].body, "Important note on turn 2", "comment body match")
+
+  // Verify todos cloned on child
+  val childTodos = match CloudAgents.Repository.listTodos(childId) {
+    case Ok(list) -> list
+    case Err(_) -> {
+      assertTrue(false, "listTodos on child failed")
+      []
+    }
+  }
+  assertEqualInt(childTodos.length.toInt(), 1, "todo should be cloned on child")
+  assertEqual(childTodos[0].note, "Review turn 2", "todo note match")
+  assertEqual(childTodos[0].messageId, childMsg2Id, "todo should point to new cloned message ID")
+}
+

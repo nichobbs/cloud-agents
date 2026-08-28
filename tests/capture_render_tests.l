@@ -252,6 +252,11 @@ test "renderFullLog renders a newline-less final assistant line (regression #973
   assertEqual(renderFullLog(log), "done", "the newline-less final reply is rendered, not dropped")
 }
 
+test "renderFullLog renders plain-text / non-JSON logs from other harnesses" {
+  val plain = "Starting task...\nRunning build step\nBuild completed successfully"
+  assertEqual(renderFullLog(plain), "Starting task...\nRunning build step\nBuild completed successfully", "plain-text logs are preserved as display text")
+}
+
 test "renderLogDelta and displayTextOf support Gemini stream-json events" {
   val geminiLog = "{\"type\":\"init\",\"model\":\"gemini-2.5-pro\"}\n" +
     "{\"type\":\"message\",\"role\":\"assistant\",\"content\":\"Hello from Gemini!\"}\n" +
@@ -279,4 +284,5 @@ test "renderLogDelta and displayTextOf support OpenCode json stream" {
   assertEqualInt(rd.events.length.toInt(), 1, "opencode result parsed")
   assertEqual(resultText(finalResultText(rd.events)), "OpenCode execution succeeded.", "opencode final result extracted")
 }
+
 

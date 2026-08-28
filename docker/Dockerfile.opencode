@@ -69,7 +69,7 @@ COPY shim/ ./
 RUN lyric restore && lyric build
 
 # ─── Stage 2: the runner image itself ────────────────────────────────────────
-FROM node:20-slim
+FROM node:22-slim
 
 ENV DEBIAN_FRONTEND=noninteractive
 
@@ -82,7 +82,7 @@ ENV DEBIAN_FRONTEND=noninteractive
 # ${VAR} references in a seeded/user-authored MCP server's env values against
 # this container's own credential env vars (#mcp-server-seeding). python3 is
 # here for session scripts (matches docker/Dockerfile's base image, which
-# already carries it) — this leaner node:20-slim-based image had been
+# already carries it) — this leaner node:22-slim-based image had been
 # missing it.
 RUN apt-get update && apt-get install -y --no-install-recommends \
         git bash curl ca-certificates jq gettext-base python3 \
@@ -175,7 +175,7 @@ RUN chmod +x /usr/local/bin/entrypoint.sh /usr/local/bin/reconcile-repos.sh /usr
 # since Phase 6. Managed DLLs come from the shim-builder stage; the .NET
 # runtime to execute them is copied from the official runtime image
 # (bookworm has no dotnet apt packages). Invariant globalization avoids an
-# ICU dependency node:20-slim doesn't ship — the shim only does ordinal
+# ICU dependency node:22-slim doesn't ship — the shim only does ordinal
 # string work. Registration into this harness's native MCP config happens
 # per message in the entrypoint via register-callbacks-mcp.sh.
 COPY --from=shim-builder /src/shim/bin/. /opt/cloud-agents-shim/

@@ -22,6 +22,8 @@ if [ ! -d "$ws/.git" ]; then
     exit 0
 fi
 
+git config --global --add safe.directory "$ws" >/dev/null 2>&1 || true
+
 current=$(git -C "$ws" branch --show-current 2>/dev/null || echo "")
 
 # Already off the starting branch — nothing to do.

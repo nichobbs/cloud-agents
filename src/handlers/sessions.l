@@ -445,6 +445,12 @@ pub record AddRepoRequest {
   pub branch: String
 }
 
+@generate(Json)
+pub record BranchSessionRequest {
+  pub messageId: String = ""
+  pub branch: String = ""
+}
+
 /// Upper bound on repositories linked to one session, so the EXTRA_REPOS env
 /// value passed to a container stays bounded.
 val maxSessionRepos = 20
@@ -505,6 +511,32 @@ pub func createSession(req: in CreateSessionRequest): Result[CreateSessionRespon
   match addSession(session) {
     case Ok(_) -> return Ok(CreateSessionResponse(sessionId = sessionId))
     case Err(e) -> return Err(Web.internalError("failed to persist session: " + CloudAgents.Sqlite.dbErrorMessage(e)))
+  }
+}
+
+/// Branch an existing session from a specified message turn into a new child session (thread).
+pub func branchSession(parentSessionId: in String, req: in BranchSessionRequest): Result[CreateSessionResponse, Web.ApiError] {
+  if parentSessionId.length == 0 {
+    return Err(Web.badRequest("id is required"))
+  }
+  if req.branch.length > 0 and not isSafeBranchName(req.branch) {
+    return Err(Web.badRequest("branch is not a valid git branch name"))
+  }
+  val userId = CloudAgents.Auth.currentUserId()
+  val newSessionId = generateSessionId()
+
+  match CloudAgents.Repository.branchSession(parentSessionId, req.messageId, newSessionId, userId, req.branch) {
+    case Ok(_) -> return Ok(CreateSessionResponse(sessionId = newSessionId))
+    case Err(e) -> {
+      val msg = CloudAgents.Sqlite.dbErrorMessage(e)
+      if msg == "parent session not found or not owned by user" {
+        return Err(Web.notFound("Session not found"))
+      }
+      if msg == "forked message not found" or msg == "forked message does not belong to parent session" {
+        return Err(Web.badRequest(msg))
+      }
+      return Err(Web.internalError("failed to branch session: " + msg))
+    }
   }
 }
 

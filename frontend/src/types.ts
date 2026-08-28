@@ -17,6 +17,10 @@ export interface Session {
   lastViewedAt?: string;
   /** Count (as string) of pending callbacks awaiting a human. */
   pendingCount?: string;
+  /** Parent session ID if branched from another session; '' or absent when root. */
+  parentSessionId?: string;
+  /** Message ID from which this session branched; '' or absent when root. */
+  forkedFromMessageId?: string;
   /** Server-derived attention state: working | pending | viewed | idle.
    *  Absent on older backends — use lib/attention.ts sessionAttention(). */
   attention?: string;

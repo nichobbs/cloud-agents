@@ -9,6 +9,7 @@ package CloudAgents.Repository
 
 import Std.Core
 import Std.Uuid
+import Std.File
 import CloudAgents.Crypto
 import CloudAgents.Db
 import CloudAgents.Sqlite
@@ -408,6 +409,14 @@ pub func allMigrations(): slice[Migration] {
         CloudAgents.Db.sessionAttachmentsSchemaSql(),
         CloudAgents.Db.sessionAttachmentsSessionIndexSql(),
         CloudAgents.Db.sessionAttachmentsMessageIndexSql()
+      ]
+    ),
+    Migration(
+      version = "0032_chat_branching",
+      statements = [
+        CloudAgents.Db.alterSessionsAddParentSessionIdSql(),
+        CloudAgents.Db.alterSessionsAddForkedFromMessageIdSql(),
+        CloudAgents.Db.sessionsParentIndexSql()
       ]
     )
   ]
@@ -4076,4 +4085,240 @@ pub func updateScheduledJob(
 /// Delete a job scoped by owner. Returns the affected row count.
 pub func deleteScheduledJob(id: in String, userId: in String): Result[Int, CloudAgents.Sqlite.DbError] {
   return CloudAgents.Sqlite.execute(CloudAgents.Db.deleteScheduledJobSql(id, userId))
+}
+
+// ─── Chat Thread Branching ────────────────────────────────────────────────────
+
+record IdMapEntry {
+  pub oldId: String
+  pub newId: String
+}
+
+func findMappedId(entries: in slice[IdMapEntry], oldId: in String): String {
+  var i = 0
+  while i < entries.length {
+    if entries[i].oldId == oldId {
+      return entries[i].newId
+    }
+    i = i + 1
+  }
+  return ""
+}
+
+func copyFileIfExists(sourcePath: in String, targetDir: in String, targetPath: in String): Unit {
+  match Std.File.readBytes(sourcePath) {
+    case Ok(b) -> {
+      match Std.File.createDir(targetDir) {
+        case Ok(_) -> ()
+        case Err(_) -> ()
+      }
+      val acc: List[Byte] = newList()
+      var i = 0
+      while i < b.length {
+        acc.add(b[i])
+        i = i + 1
+      }
+      match Std.File.writeBytes(targetPath, acc) {
+        case Ok(_) -> ()
+        case Err(_) -> ()
+      }
+    }
+    case Err(_) -> ()
+  }
+}
+
+/// Branch an existing session from a specified message turn into a new child session.
+/// Copies transcript messages up to the chosen message (or all if forkedMessageId is empty),
+/// creates new message IDs while preserving sequence numbers, and clones anchored comments,
+/// attachments (with disk files), todos, highlights, linked repos, and profile settings.
+pub func branchSession(
+  parentSessionId: in String,
+  forkedMessageId: in String,
+  newSessionId: in String,
+  userId: in String,
+  newBranch: in String,
+): Result[Unit, CloudAgents.Sqlite.DbError] {
+  val sRows = CloudAgents.Sqlite.query(CloudAgents.Db.selectSessionByIdSql(parentSessionId, userId))?
+  val sLen = CloudAgents.Sqlite.getRowArrayLength(sRows)
+  if sLen == 0 {
+    return Err(value = CloudAgents.Sqlite.DbError(message = "parent session not found or not owned by user"))
+  }
+  val parentRow = CloudAgents.Sqlite.getRowArrayValue(sRows, 0)
+  val repoUrl = colAt(parentRow.cols, 2)
+  val parentBranch = colAt(parentRow.cols, 3)
+  val harness = colAt(parentRow.cols, 5)
+  val model = colAt(parentRow.cols, 6)
+  val groupId = colAt(parentRow.cols, 12)
+
+  var targetSeq = 999999999
+  if forkedMessageId.length > 0 {
+    val mRows = CloudAgents.Sqlite.query(CloudAgents.Db.selectMessageByIdSql(forkedMessageId))?
+    val mLen = CloudAgents.Sqlite.getRowArrayLength(mRows)
+    if mLen == 0 {
+      return Err(value = CloudAgents.Sqlite.DbError(message = "forked message not found"))
+    }
+    val mRow = CloudAgents.Sqlite.getRowArrayValue(mRows, 0)
+    val msgSessionId = colAt(mRow.cols, 1)
+    if msgSessionId != parentSessionId {
+      return Err(value = CloudAgents.Sqlite.DbError(message = "forked message does not belong to parent session"))
+    }
+    targetSeq = parseNatString(colAt(mRow.cols, 4))
+  }
+
+  val actualBranch = if newBranch.length > 0 { newBranch } else { parentBranch }
+  val ts = nowMillis()
+
+  CloudAgents.Sqlite.execute(
+    CloudAgents.Db.insertBranchedSessionSql(
+      newSessionId,
+      userId,
+      repoUrl,
+      actualBranch,
+      "",
+      harness,
+      model,
+      newSessionId,
+      ts,
+      groupId,
+      parentSessionId,
+      forkedMessageId
+    )
+  )?
+
+  // Profile clone
+  val profRows = CloudAgents.Sqlite.query(CloudAgents.Db.selectSessionProfileIdSql(parentSessionId, userId))?
+  if CloudAgents.Sqlite.getRowArrayLength(profRows) > 0 {
+    val profId = colAt(CloudAgents.Sqlite.getRowArrayValue(profRows, 0).cols, 0)
+    if profId.length > 0 {
+      CloudAgents.Sqlite.execute(CloudAgents.Db.updateSessionProfileSql(newSessionId, userId, profId))?
+    }
+  }
+
+  // Linked repos clone
+  val repoRows = CloudAgents.Sqlite.query(CloudAgents.Db.selectSessionReposSql(parentSessionId))?
+  val repoLen = CloudAgents.Sqlite.getRowArrayLength(repoRows)
+  var rIdx = 0
+  while rIdx < repoLen {
+    val rRow = CloudAgents.Sqlite.getRowArrayValue(repoRows, rIdx)
+    CloudAgents.Sqlite.execute(
+      CloudAgents.Db.insertSessionRepoSql(
+        newId(),
+        newSessionId,
+        colAt(rRow.cols, 2),
+        colAt(rRow.cols, 3),
+        ts
+      )
+    )?
+    rIdx = rIdx + 1
+  }
+
+  // Messages clone & ID mapping
+  val msgRows = CloudAgents.Sqlite.query(CloudAgents.Db.selectMessagesUpToSeqSql(parentSessionId, targetSeq))?
+  val msgLen = CloudAgents.Sqlite.getRowArrayLength(msgRows)
+  var idMap: slice[IdMapEntry] = []
+  var mIdx = 0
+  while mIdx < msgLen {
+    val mRow = CloudAgents.Sqlite.getRowArrayValue(msgRows, mIdx)
+    val oldMsgId = colAt(mRow.cols, 0)
+    val role = colAt(mRow.cols, 2)
+    val content = colAt(mRow.cols, 3)
+    val seq = colAt(mRow.cols, 4)
+    val msgCreatedAt = colAt(mRow.cols, 5)
+    val newMsgId = newId()
+    idMap = idMap.append(IdMapEntry(oldId = oldMsgId, newId = newMsgId))
+    CloudAgents.Sqlite.execute(CloudAgents.Db.insertMessageSql(newMsgId, newSessionId, role, content, seq, msgCreatedAt))?
+    mIdx = mIdx + 1
+  }
+
+  // Comments clone
+  var mapIdx = 0
+  while mapIdx < idMap.length {
+    val entry = idMap[mapIdx]
+    val cRows = CloudAgents.Sqlite.query(CloudAgents.Db.selectCommentsSql(entry.oldId))?
+    val cLen = CloudAgents.Sqlite.getRowArrayLength(cRows)
+    var cIdx = 0
+    while cIdx < cLen {
+      val cRow = CloudAgents.Sqlite.getRowArrayValue(cRows, cIdx)
+      val body = colAt(cRow.cols, 3)
+      val commentCreatedAt = colAt(cRow.cols, 4)
+      CloudAgents.Sqlite.execute(CloudAgents.Db.insertCommentSql(newId(), entry.newId, newSessionId, body, commentCreatedAt))?
+      cIdx = cIdx + 1
+    }
+    mapIdx = mapIdx + 1
+  }
+
+  // Attachments clone (DB + disk files)
+  val attRows = CloudAgents.Sqlite.query(CloudAgents.Db.selectSessionAttachmentsBySessionSql(parentSessionId))?
+  val attLen = CloudAgents.Sqlite.getRowArrayLength(attRows)
+  var aIdx = 0
+  while aIdx < attLen {
+    val aRow = CloudAgents.Sqlite.getRowArrayValue(attRows, aIdx)
+    val oldAttMsgId = colAt(aRow.cols, 2)
+    val newMappedMsgId = findMappedId(idMap, oldAttMsgId)
+    // Only copy attachments that are free-standing or linked to a message in the branched prefix
+    if oldAttMsgId.length == 0 or newMappedMsgId.length > 0 {
+      val fileName = colAt(aRow.cols, 3)
+      val storedName = colAt(aRow.cols, 4)
+      val mimeType = colAt(aRow.cols, 5)
+      val kind = colAt(aRow.cols, 6)
+      val sizeBytes = colAt(aRow.cols, 7)
+      val attCreatedAt = colAt(aRow.cols, 8)
+      val newAttId = newId()
+      CloudAgents.Sqlite.execute(
+        CloudAgents.Db.insertSessionAttachmentSql(newAttId, newSessionId, fileName, storedName, mimeType, kind, sizeBytes, attCreatedAt)
+      )?
+      if newMappedMsgId.length > 0 {
+        CloudAgents.Sqlite.execute(CloudAgents.Db.setSessionAttachmentMessageIdSql(newAttId, newMappedMsgId))?
+      }
+      val sourceDir = attachmentsBaseDir() + "/" + parentSessionId
+      val targetDir = attachmentsBaseDir() + "/" + newSessionId
+      copyFileIfExists(sourceDir + "/" + storedName, targetDir, targetDir + "/" + storedName)
+    }
+    aIdx = aIdx + 1
+  }
+
+  // Todos clone
+  val todoRows = CloudAgents.Sqlite.query(CloudAgents.Db.selectTodosSql(parentSessionId))?
+  val todoLen = CloudAgents.Sqlite.getRowArrayLength(todoRows)
+  var tIdx = 0
+  while tIdx < todoLen {
+    val tRow = CloudAgents.Sqlite.getRowArrayValue(todoRows, tIdx)
+    val oldTodoMsgId = colAt(tRow.cols, 2)
+    val note = colAt(tRow.cols, 3)
+    val todoCreatedAt = colAt(tRow.cols, 5)
+    val status = colAt(tRow.cols, 6)
+    if oldTodoMsgId.length > 0 {
+      val newMappedMsgId = findMappedId(idMap, oldTodoMsgId)
+      if newMappedMsgId.length > 0 {
+        CloudAgents.Sqlite.execute(CloudAgents.Db.insertTodoSql(newId(), newSessionId, newMappedMsgId, note, status, todoCreatedAt, ""))?
+      }
+    } else {
+      CloudAgents.Sqlite.execute(CloudAgents.Db.insertTodoSql(newId(), newSessionId, "", note, status, todoCreatedAt, ""))?
+    }
+    tIdx = tIdx + 1
+  }
+
+  // Highlights clone
+  val hlRows = CloudAgents.Sqlite.query(CloudAgents.Db.selectHighlightsSql(parentSessionId))?
+  val hlLen = CloudAgents.Sqlite.getRowArrayLength(hlRows)
+  var hIdx = 0
+  while hIdx < hlLen {
+    val hRow = CloudAgents.Sqlite.getRowArrayValue(hlRows, hIdx)
+    val oldHlMsgId = colAt(hRow.cols, 2)
+    val kind = colAt(hRow.cols, 3)
+    val title = colAt(hRow.cols, 4)
+    val detail = colAt(hRow.cols, 5)
+    val hlCreatedAt = colAt(hRow.cols, 6)
+    if oldHlMsgId.length > 0 {
+      val newMappedMsgId = findMappedId(idMap, oldHlMsgId)
+      if newMappedMsgId.length > 0 {
+        CloudAgents.Sqlite.execute(CloudAgents.Db.insertHighlightSql(newId(), newSessionId, newMappedMsgId, kind, title, detail, hlCreatedAt))?
+      }
+    } else {
+      CloudAgents.Sqlite.execute(CloudAgents.Db.insertHighlightSql(newId(), newSessionId, "", kind, title, detail, hlCreatedAt))?
+    }
+    hIdx = hIdx + 1
+  }
+
+  return Ok(value = ())
 }

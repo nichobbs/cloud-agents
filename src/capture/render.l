@@ -206,7 +206,10 @@ func displayTextOfRoot(root: in JsonElement): String {
 /// (control events, `tool_use`/`tool_result`/`thinking`-only assistant turns,
 /// or a malformed payload). Total: never throws.
 pub func displayTextOf(event: in CaptureEvent): String {
-  if event.eventType == "system" or event.eventType == "user" or event.eventType == "tool_use" or event.eventType == "tool_result" or event.eventType == "active_goal" or event.eventType == "thread.started" or event.eventType == "turn.started" or event.eventType == "init" or event.eventType == "error" or event.eventType == "malformed" or event.eventType == "result" or event.eventType == "turn.completed" {
+  if event.eventType == "malformed" {
+    return event.payload
+  }
+  if event.eventType == "system" or event.eventType == "user" or event.eventType == "tool_use" or event.eventType == "tool_result" or event.eventType == "active_goal" or event.eventType == "thread.started" or event.eventType == "turn.started" or event.eventType == "init" or event.eventType == "error" or event.eventType == "result" or event.eventType == "turn.completed" {
     return ""
   }
   return match Std.Json.tryParseJson(event.payload) {
