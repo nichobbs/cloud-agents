@@ -58,6 +58,27 @@ func mustInt(r: in Result[Int, CloudAgents.Sqlite.DbError]): Int {
   return match r { case Ok(n) -> n; case Err(e) -> panic("expected Ok(Int): " + CloudAgents.Sqlite.dbErrorMessage(e)) }
 }
 
+func mustMessage(r: in Result[CloudAgents.Repository.Message, CloudAgents.Sqlite.DbError]): CloudAgents.Repository.Message {
+  return match r {
+    case Ok(m) -> m
+    case Err(e) -> panic("message op failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+  }
+}
+
+func mustComment(r: in Result[CloudAgents.Repository.Comment, CloudAgents.Sqlite.DbError]): CloudAgents.Repository.Comment {
+  return match r {
+    case Ok(c) -> c
+    case Err(e) -> panic("comment op failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+  }
+}
+
+func mustTodo(r: in Result[CloudAgents.Repository.Todo, CloudAgents.Sqlite.DbError]): CloudAgents.Repository.Todo {
+  return match r {
+    case Ok(t) -> t
+    case Err(e) -> panic("todo op failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+  }
+}
+
 // Async wrapper so a run claim can be `spawn`ed inside a `scope` block (#206)
 // — `tryBeginRun` itself is a plain synchronous func, so a genuinely
 // concurrent test needs an async entry point to race it under `spawn`/`await`
@@ -1445,17 +1466,16 @@ test "branch session from message creates copy with parent reference and slices 
   }
 
   // Insert 3 messages into parent
-  val msg1Id = Std.Uuid.uuidToString(Std.Uuid.newUuid())
-  val msg2Id = Std.Uuid.uuidToString(Std.Uuid.newUuid())
-  val msg3Id = Std.Uuid.uuidToString(Std.Uuid.newUuid())
-  mustUnit(CloudAgents.Repository.addMessage(msg1Id, parentId, "user", "Hello 1", "1"))
-  mustUnit(CloudAgents.Repository.addMessage(msg2Id, parentId, "assistant", "Answer 1", "2"))
-  mustUnit(CloudAgents.Repository.addMessage(msg3Id, parentId, "user", "Hello 2", "3"))
+  val m1 = mustMessage(CloudAgents.Repository.addMessage(parentId, "user", "Hello 1"))
+  val m2 = mustMessage(CloudAgents.Repository.addMessage(parentId, "assistant", "Answer 1"))
+  val m3 = mustMessage(CloudAgents.Repository.addMessage(parentId, "user", "Hello 2"))
+  val msg1Id = m1.id
+  val msg2Id = m2.id
+  val msg3Id = m3.id
 
   // Add a comment to msg2 and a todo on msg2
-  mustUnit(CloudAgents.Repository.addComment(parentId, msg2Id, "Important note on turn 2"))
-  val todoId = Std.Uuid.uuidToString(Std.Uuid.newUuid())
-  mustUnit(CloudAgents.Repository.addTodo(todoId, parentId, msg2Id, "Review turn 2"))
+  mustComment(CloudAgents.Repository.addComment(msg2Id, parentId, "Important note on turn 2"))
+  mustTodo(CloudAgents.Repository.addTodo(parentId, msg2Id, "Review turn 2"))
 
   // Branch from msg2 (seq 2)
   val branchReq = CloudAgents.Handlers.BranchSessionRequest(
@@ -1482,10 +1502,10 @@ test "branch session from message creates copy with parent reference and slices 
   }
 
   // Verify child messages (should only have 2 messages, seq 1 and 2, not seq 3)
-  val childMsgs = match CloudAgents.Repository.getMessages(childId) {
+  val childMsgs = match CloudAgents.Repository.listMessages(childId) {
     case Ok(list) -> list
     case Err(_) -> {
-      assertTrue(false, "getMessages on child failed")
+      assertTrue(false, "listMessages on child failed")
       []
     }
   }
@@ -1495,10 +1515,10 @@ test "branch session from message creates copy with parent reference and slices 
 
   // Verify comments cloned on child message
   val childMsg2Id = childMsgs[1].id
-  val childComments = match CloudAgents.Repository.getComments(childMsg2Id) {
+  val childComments = match CloudAgents.Repository.listComments(childMsg2Id) {
     case Ok(list) -> list
     case Err(_) -> {
-      assertTrue(false, "getComments on child failed")
+      assertTrue(false, "listComments on child failed")
       []
     }
   }
@@ -1506,10 +1526,10 @@ test "branch session from message creates copy with parent reference and slices 
   assertEqual(childComments[0].body, "Important note on turn 2", "comment body match")
 
   // Verify todos cloned on child
-  val childTodos = match CloudAgents.Repository.getTodos(childId) {
+  val childTodos = match CloudAgents.Repository.listTodos(childId) {
     case Ok(list) -> list
     case Err(_) -> {
-      assertTrue(false, "getTodos on child failed")
+      assertTrue(false, "listTodos on child failed")
       []
     }
   }
