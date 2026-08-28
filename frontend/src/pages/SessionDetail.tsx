@@ -78,7 +78,7 @@ export function extractVarNames(body: string): string[] {
 export function SessionDetail() {
   const { id } = useParams<{ id: string }>();
   const sessionId = id ?? '';
-  const { getSession, removeSession, updateSession, archiveSession, unarchiveSession } = useSessions();
+  const { sessions, getSession, removeSession, updateSession, refreshSessions, archiveSession, unarchiveSession } = useSessions();
   const navigate = useNavigate();
   const location = useLocation();
   const session = getSession(sessionId);
@@ -1046,6 +1046,24 @@ export function SessionDetail() {
     }
   };
 
+  const [branching, setBranching] = useState(false);
+
+  const handleCreateThread = async (msg?: Message) => {
+    if (!session || branching) return;
+    setBranching(true);
+    try {
+      const res = await api.branchSession(session.sessionId, { messageId: msg?.id });
+      await refreshSessions();
+      navigate(`/sessions/${res.sessionId}`);
+    } catch (err) {
+      alert(err instanceof Error ? `Failed to create thread: ${err.message}` : 'Failed to create thread');
+    } finally {
+      setBranching(false);
+    }
+  };
+
+  const childThreads = (sessions ?? []).filter(s => s.parentSessionId === sessionId);
+
   return (
     <div style={dynamicPageStyle}>
       {templatePrompt && createPortal(
@@ -1183,6 +1201,14 @@ export function SessionDetail() {
           )}
         </div>
         <div style={{ display: 'flex', gap: '8px', flexShrink: 0 }}>
+          <button
+            style={todosBtnStyle}
+            onClick={() => { void handleCreateThread(); }}
+            disabled={branching}
+            title="Create a new thread branching from this session"
+          >
+            🧵 {branching ? 'Branching…' : 'Thread'}
+          </button>
           <button style={todosBtnStyle} onClick={() => { void toggleRuns(); }}>
             {showRuns ? 'Hide runs' : 'Runs'}
           </button>
@@ -1249,6 +1275,73 @@ export function SessionDetail() {
           />
 
           <div style={transcriptStyle}>
+            {session?.parentSessionId && (
+              <div
+                style={{
+                  background: '#161b22',
+                  border: '1px solid #30363d',
+                  borderRadius: '6px',
+                  padding: '8px 12px',
+                  marginBottom: '12px',
+                  fontSize: '13px',
+                  color: '#8b949e',
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: '8px',
+                }}
+              >
+                <span>🧵</span>
+                <span>
+                  Thread branched from{' '}
+                  <Link
+                    to={`/sessions/${session.parentSessionId}`}
+                    style={{ color: '#58a6ff', textDecoration: 'none', fontWeight: 500 }}
+                  >
+                    parent session ({session.parentSessionId.slice(0, 8)})
+                  </Link>
+                  {session.forkedFromMessageId && (
+                    <span style={{ color: '#6e7681', marginLeft: '6px' }}>
+                      at message #{session.forkedFromMessageId.slice(0, 8)}
+                    </span>
+                  )}
+                </span>
+              </div>
+            )}
+            {childThreads.length > 0 && (
+              <div
+                style={{
+                  background: '#0d1117',
+                  border: '1px solid #21262d',
+                  borderRadius: '6px',
+                  padding: '8px 12px',
+                  marginBottom: '12px',
+                  fontSize: '12px',
+                  color: '#8b949e',
+                  display: 'flex',
+                  alignItems: 'center',
+                  flexWrap: 'wrap',
+                  gap: '8px',
+                }}
+              >
+                <span>🧵 Threads ({childThreads.length}):</span>
+                {childThreads.map(t => (
+                  <Link
+                    key={t.sessionId}
+                    to={`/sessions/${t.sessionId}`}
+                    style={{
+                      color: '#58a6ff',
+                      textDecoration: 'none',
+                      background: '#161b22',
+                      border: '1px solid #30363d',
+                      borderRadius: '4px',
+                      padding: '2px 8px',
+                    }}
+                  >
+                    {t.branch ? `${t.branch} (${t.sessionId.slice(0, 6)})` : t.sessionId.slice(0, 8)}
+                  </Link>
+                ))}
+              </div>
+            )}
             {messagesError && (
               <div style={messagesErrorStyle}>
                 Failed to load transcript for this session.
@@ -1270,6 +1363,7 @@ export function SessionDetail() {
                   highlighted={m.id === highlightedId}
                   onTodoAdded={() => { /* todos live on their own page */ }}
                   onRetry={handleRetry}
+                  onCreateThread={handleCreateThread}
                   isUnread={(parseInt(m.seq, 10) || 0) > lastSavedSeq}
                   isLatestAgentMessage={m.id === latestAgentMessageId}
                 />

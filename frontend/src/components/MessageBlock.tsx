@@ -18,6 +18,7 @@ interface MessageBlockProps {
   highlighted?: boolean;
   onTodoAdded?: () => void;
   onRetry?: (content: string) => void;
+  onCreateThread?: (message: Message) => void;
   isUnread?: boolean;
   isLatestAgentMessage?: boolean;
 }
@@ -104,7 +105,7 @@ function AttachmentChip({ sessionId, attachment }: { sessionId: string; attachme
 /// One addressable transcript entry. Renders the message content and exposes
 /// the two affordances that hang off it: commenting and bookmarking to the todo
 /// list. The wrapper carries `id="message-<id>"` so todos can deep-link back.
-export function MessageBlock({ message, attachments, highlighted, onTodoAdded, onRetry, isUnread, isLatestAgentMessage }: MessageBlockProps) {
+export function MessageBlock({ message, attachments, highlighted, onTodoAdded, onRetry, onCreateThread, isUnread, isLatestAgentMessage }: MessageBlockProps) {
   const [showComments, setShowComments] = useState(false);
   const [commentCount, setCommentCount] = useState<number | null>(null);
   const [bookmarking, setBookmarking] = useState(false);
@@ -228,6 +229,15 @@ export function MessageBlock({ message, attachments, highlighted, onTodoAdded, o
         >
           📋 {copied ? 'Copied' : 'Copy'}
         </button>
+        {onCreateThread && (
+          <button
+            style={actionBtn}
+            onClick={() => onCreateThread(message)}
+            title="Create thread from this message"
+          >
+            🧵 Thread
+          </button>
+        )}
         {isUser && onRetry && (
           <button
             style={actionBtn}

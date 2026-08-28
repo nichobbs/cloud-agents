@@ -109,4 +109,14 @@ describe('MessageBlock attachments', () => {
     expect(screen.getByRole('button', { name: /report\.pdf/ })).toBeInTheDocument();
     await waitFor(() => expect(screen.getByAltText('photo.png')).toBeInTheDocument());
   });
+
+  it('renders a thread button with tooltip when onCreateThread is provided and invokes callback on click', () => {
+    const onCreateThread = vi.fn();
+    render(<MessageBlock message={message} onCreateThread={onCreateThread} />);
+    const threadBtn = screen.getByRole('button', { name: /Thread/i });
+    expect(threadBtn).toBeInTheDocument();
+    expect(threadBtn).toHaveAttribute('title', 'Create thread from this message');
+    threadBtn.click();
+    expect(onCreateThread).toHaveBeenCalledWith(message);
+  });
 });

@@ -251,3 +251,9 @@ test "renderFullLog renders a newline-less final assistant line (regression #973
     "{\"type\":\"assistant\",\"message\":{\"content\":[{\"type\":\"text\",\"text\":\"done\"}]}}"
   assertEqual(renderFullLog(log), "done", "the newline-less final reply is rendered, not dropped")
 }
+
+test "renderFullLog renders plain-text / non-JSON logs from other harnesses" {
+  val plain = "Starting task...\nRunning build step\nBuild completed successfully"
+  assertEqual(renderFullLog(plain), "Starting task...\nRunning build step\nBuild completed successfully", "plain-text logs are preserved as display text")
+}
+

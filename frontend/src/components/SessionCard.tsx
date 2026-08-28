@@ -39,6 +39,21 @@ export function SessionCard({ session, compact }: SessionCardProps) {
             <span style={{ fontWeight: 600, color: '#58a6ff', fontSize: '14px' }}>
               {repoLabel(session.repoUrl)}
             </span>
+            {session.parentSessionId && (
+              <span
+                style={{
+                  fontSize: '11px',
+                  color: '#e3b341',
+                  background: 'rgba(227, 179, 65, 0.1)',
+                  border: '1px solid rgba(227, 179, 65, 0.3)',
+                  borderRadius: '10px',
+                  padding: '1px 6px',
+                }}
+                title={`Thread branched from session ${session.parentSessionId}`}
+              >
+                🧵 thread
+              </span>
+            )}
             {status === 'RUNNING' && <span style={runningBadgeStyle}>running</span>}
           </div>
           <span

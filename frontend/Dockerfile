@@ -8,9 +8,9 @@
 # nothing ever ran `npm run build`. This Dockerfile is that missing build
 # step; both compose files now build from it instead.
 #
-# Node version matches ci.yml's pinned "Set up Node" step (20), not whatever
+# Node version matches ci.yml's pinned "Set up Node" step (22), not whatever
 # the base image's default happens to be.
-FROM node:20-alpine AS build
+FROM node:22-alpine AS build
 WORKDIR /app
 COPY package.json package-lock.json ./
 RUN npm ci --no-audit --no-fund

@@ -33,7 +33,7 @@ jobs:
       - name: Set up Node
         uses: actions/setup-node@v4
         with:
-          node-version: '20'
+          node-version: '22'
           # Cache the frontend's npm downloads keyed on its lockfile so
           # `npm ci` doesn't re-fetch every dependency each run (#329).
           cache: 'npm'

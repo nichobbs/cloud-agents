@@ -93,6 +93,9 @@ func displayTextOfRoot(root: in JsonElement): String {
 /// (control events, `tool_use`/`tool_result`/`thinking`-only assistant turns,
 /// or a malformed payload). Total: never throws.
 pub func displayTextOf(event: in CaptureEvent): String {
+  if event.eventType == "malformed" {
+    return event.payload
+  }
   if event.eventType != "assistant" {
     return ""
   }

@@ -6,7 +6,7 @@
 # after `npm ci` clobbers the container's freshly-installed node_modules with
 # it. Vite/Rollup ship platform-specific native binaries (e.g.
 # @rollup/rollup-*), so a host node_modules built outside this Dockerfile's
-# node:20-alpine (musl) stage can break `npm run build` with a missing
+# node:22-alpine (musl) stage can break `npm run build` with a missing
 # native binary, or produce a subtly wrong build.
 node_modules
 dist

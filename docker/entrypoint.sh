@@ -170,6 +170,7 @@ fi
 chown -R claude-user:claude-user /home/claude-user || true
 chmod 700 /home/claude-user || true
 chown -R claude-user:claude-user /workspace || true
+git config --system --add safe.directory /workspace >/dev/null 2>&1 || git config --global --add safe.directory /workspace >/dev/null 2>&1 || true
 
 # If ~/.claude.json is missing, but backups exist, automatically restore the latest backup!
 if [ ! -f "$HOME/.claude.json" ]; then
@@ -252,6 +253,35 @@ if [ -n "${CLAUDE_HOME_TARBALL_B64:-}" ] && [ ! -f "$HOME/.claude/.credentials.j
     echo "entrypoint: restoring ~/.claude auth from the vault bundle" >&2
     mkdir -p "$HOME/.claude"
     printf '%s' "${CLAUDE_HOME_TARBALL_B64}" | base64 -d | tar -xzf - -C "$HOME/.claude"
+    chown -R claude-user:claude-user "$HOME/.claude" || true
+fi
+
+# If CLAUDE_CODE_OAUTH_TOKEN is injected from the credential vault, populate
+# ~/.claude/.credentials.json so the Claude Code CLI discovers it.
+if [ -n "${CLAUDE_CODE_OAUTH_TOKEN:-}" ]; then
+    has_oauth=0
+    if [ -f "$HOME/.claude/.credentials.json" ] && command -v jq >/dev/null 2>&1; then
+        if jq -e '.claudeAiOauth.accessToken' "$HOME/.claude/.credentials.json" >/dev/null 2>&1; then
+            has_oauth=1
+        fi
+    fi
+    if [ "$has_oauth" != "1" ]; then
+        echo "entrypoint: configuring ~/.claude/.credentials.json from CLAUDE_CODE_OAUTH_TOKEN" >&2
+        mkdir -p "$HOME/.claude"
+        if printf '%s' "${CLAUDE_CODE_OAUTH_TOKEN}" | grep -q '^{'; then
+            printf '%s\n' "${CLAUDE_CODE_OAUTH_TOKEN}" > "$HOME/.claude/.credentials.json"
+        else
+            cat > "$HOME/.claude/.credentials.json" <<EOF
+{
+  "claudeAiOauth": {
+    "accessToken": "${CLAUDE_CODE_OAUTH_TOKEN}"
+  }
+}
+EOF
+        fi
+        chown -R claude-user:claude-user "$HOME/.claude" || true
+        chmod 600 "$HOME/.claude/.credentials.json" || true
+    fi
 fi
 
 # Configure git credential helper and push defaults dynamically inside the container.
@@ -496,15 +526,15 @@ if [ ! -f "$NATIVE_SESSION_MARKER" ]; then
         # the whole run instead of exec-ing straight into it and streaming
         # output live to the API server as it happens.
         if [ -n "$(find "$HOME/.claude/projects" -name "${NATIVE_SESSION_ID}.jsonl" 2>/dev/null | head -n 1)" ]; then
-            exec runuser -u claude-user -- claude -p "${PROMPT}" --model "${MODEL}" --resume "${NATIVE_SESSION_ID}" "${STREAM_JSON_ARGS[@]}" "${PERMISSION_PROMPT_ARGS[@]}"
+            exec runuser -u claude-user -m -- claude -p "${PROMPT}" --model "${MODEL}" --resume "${NATIVE_SESSION_ID}" "${STREAM_JSON_ARGS[@]}" "${PERMISSION_PROMPT_ARGS[@]}"
         fi
-        exec runuser -u claude-user -- claude -p "${PROMPT}" --model "${MODEL}" --session-id "${NATIVE_SESSION_ID}" "${STREAM_JSON_ARGS[@]}" "${PERMISSION_PROMPT_ARGS[@]}"
+        exec runuser -u claude-user -m -- claude -p "${PROMPT}" --model "${MODEL}" --session-id "${NATIVE_SESSION_ID}" "${STREAM_JSON_ARGS[@]}" "${PERMISSION_PROMPT_ARGS[@]}"
     else
-        exec runuser -u claude-user -- claude -p "${PROMPT}" --model "${MODEL}" "${STREAM_JSON_ARGS[@]}" "${PERMISSION_PROMPT_ARGS[@]}"
+        exec runuser -u claude-user -m -- claude -p "${PROMPT}" --model "${MODEL}" "${STREAM_JSON_ARGS[@]}" "${PERMISSION_PROMPT_ARGS[@]}"
     fi
 else
     if [ -n "$NATIVE_SESSION_ID" ]; then
-        exec runuser -u claude-user -- claude -p "${PROMPT}" --model "${MODEL}" --resume "${NATIVE_SESSION_ID}" "${STREAM_JSON_ARGS[@]}" "${PERMISSION_PROMPT_ARGS[@]}"
+        exec runuser -u claude-user -m -- claude -p "${PROMPT}" --model "${MODEL}" --resume "${NATIVE_SESSION_ID}" "${STREAM_JSON_ARGS[@]}" "${PERMISSION_PROMPT_ARGS[@]}"
     else
         # Depends on NATIVE_SESSION_ID always being non-empty by the time the
         # marker exists (src/handlers/sessions.l pre-assigns nativeSessionId =
@@ -513,6 +543,6 @@ else
         # the exact #386 failure this file was just fixed for. Unreachable
         # today; kept only because nothing else in this branch needs it, not
         # because it's expected to fire.
-        exec runuser -u claude-user -- claude -p "${PROMPT}" --model "${MODEL}" --resume "${STREAM_JSON_ARGS[@]}" "${PERMISSION_PROMPT_ARGS[@]}"
+        exec runuser -u claude-user -m -- claude -p "${PROMPT}" --model "${MODEL}" --resume "${STREAM_JSON_ARGS[@]}" "${PERMISSION_PROMPT_ARGS[@]}"
     fi
 fi

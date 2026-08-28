@@ -9,6 +9,7 @@ interface SessionsContextValue {
   removeSession: (sessionId: string) => void;
   getSession: (sessionId: string) => Session | undefined;
   updateSession: (sessionId: string, updates: Partial<Session>) => void;
+  refreshSessions: () => Promise<void>;
   archiveSession: (sessionId: string) => Promise<void>;
   unarchiveSession: (sessionId: string) => Promise<void>;
 }
@@ -131,7 +132,7 @@ export function SessionsProvider({ children }: { children: ReactNode }) {
 
   return (
     <SessionsContext.Provider
-      value={{ sessions, addSession, removeSession, getSession, updateSession, archiveSession, unarchiveSession }}
+      value={{ sessions, addSession, removeSession, getSession, updateSession, refreshSessions, archiveSession, unarchiveSession }}
     >
       {children}
     </SessionsContext.Provider>

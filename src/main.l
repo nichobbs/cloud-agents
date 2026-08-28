@@ -416,6 +416,18 @@ impl Web.Handler for RouteCreateSession {
   }
 }
 
+record RouteBranchSession {
+}
+
+impl Web.Handler for RouteBranchSession {
+  func handle(req: in Web.Request): Web.Response {
+    val id = pparam(req, "id")
+    val body = if req.body.length == 0 { "{}" } else { req.body }
+    val decoded = match BranchSessionRequest.fromJson(body) { case Ok(d) -> d; case Err(_) -> return badBody() }
+    return createSessionResp(CloudAgents.Handlers.branchSession(id, decoded))
+  }
+}
+
 record RouteSetSessionProfile {
 }
 
@@ -1834,6 +1846,7 @@ pub func main(): Unit {
   // — it's a streaming route registered in the StreamingRoutes table below.
   router = Web.addGet(router, "/api/sessions", RouteListSessions())
   router = Web.addPost(router, "/api/sessions", RouteCreateSession())
+  router = Web.addPost(router, "/api/sessions/{id}/branch", RouteBranchSession())
   router = Web.addDelete(router, "/api/sessions/{id}", RouteDeleteSession())
   router = Web.addPost(router, "/api/sessions/{id}/model", RouteUpdateSessionModel())
   router = Web.addPost(router, "/api/sessions/{id}/restart", RouteRestartSessionContainer())

@@ -253,7 +253,7 @@ pub func workspaceVolumeBindFor(userId: in String, sessionId: in String): String
 // positional indices of every earlier column stay valid (rowToSession,
 // sessionStatus). insertSessionSql below supplies their defaults explicitly
 // since it lists this exact column set.
-val sessionColumns = "id, user_id, repo_url, branch, container_id, harness, model, native_session_id, status, created_at, last_message_at, is_archived, group_id, last_viewed_at"
+val sessionColumns = "id, user_id, repo_url, branch, container_id, harness, model, native_session_id, status, created_at, last_message_at, is_archived, group_id, last_viewed_at, parent_session_id, forked_from_message_id"
 
 /// INSERT a new session row (status starts IDLE; last_message_at = created_at).
 pub func insertSessionSql(
@@ -283,7 +283,47 @@ pub func insertSessionSql(
     sqlLiteral(createdAt) +
     ", " +
     sqlLiteral(createdAt) +
-    ", '0', '', '0')"
+    ", '0', '', '0', '', '')"
+}
+
+/// INSERT a new branched session row linked to a parent session.
+pub func insertBranchedSessionSql(
+  id: in String,
+  userId: in String,
+  repoUrl: in String,
+  branch: in String,
+  containerId: in String,
+  harness: in String,
+  model: in String,
+  nativeSessionId: in String,
+  createdAt: in String,
+  groupId: in String,
+  parentSessionId: in String,
+  forkedFromMessageId: in String,
+): String {
+  return "INSERT INTO sessions (" + sessionColumns + ") VALUES (" + sqlLiteral(id) + ", " + sqlLiteral(userId) + ", " +
+    sqlLiteral(repoUrl) +
+    ", " +
+    sqlLiteral(branch) +
+    ", " +
+    sqlLiteral(containerId) +
+    ", " +
+    sqlLiteral(harness) +
+    ", " +
+    sqlLiteral(model) +
+    ", " +
+    sqlLiteral(nativeSessionId) +
+    ", 'IDLE', " +
+    sqlLiteral(createdAt) +
+    ", " +
+    sqlLiteral(createdAt) +
+    ", '0', " +
+    sqlLiteral(groupId) +
+    ", '0', " +
+    sqlLiteral(parentSessionId) +
+    ", " +
+    sqlLiteral(forkedFromMessageId) +
+    ")"
 }
 
 /// SELECT a single session owned by a user.
@@ -508,6 +548,21 @@ pub func alterSessionsAddGroupIdSql(): String {
 /// ALTER adding the last-viewed timestamp (epoch-millis TEXT, '0' = never).
 pub func alterSessionsAddLastViewedAtSql(): String {
   return "ALTER TABLE sessions ADD COLUMN last_viewed_at TEXT NOT NULL DEFAULT '0'"
+}
+
+/// ALTER adding the parent_session_id column for branched chat threads.
+pub func alterSessionsAddParentSessionIdSql(): String {
+  return "ALTER TABLE sessions ADD COLUMN parent_session_id TEXT NOT NULL DEFAULT ''"
+}
+
+/// ALTER adding the forked_from_message_id column for branched chat threads.
+pub func alterSessionsAddForkedFromMessageIdSql(): String {
+  return "ALTER TABLE sessions ADD COLUMN forked_from_message_id TEXT NOT NULL DEFAULT ''"
+}
+
+/// Index on parent_session_id to accelerate branch/child session queries.
+pub func sessionsParentIndexSql(): String {
+  return "CREATE INDEX IF NOT EXISTS idx_sessions_parent ON sessions(parent_session_id)"
 }
 
 /// INSERT a new group.
@@ -779,12 +834,32 @@ pub func selectMessageSessionIdSql(messageId: in String): String {
   return "SELECT session_id FROM messages WHERE id = " + sqlLiteral(messageId)
 }
 
+/// SELECT a single message by ID.
+pub func selectMessageByIdSql(messageId: in String): String {
+  return "SELECT id, session_id, role, content, seq, created_at FROM messages WHERE id = " + sqlLiteral(messageId)
+}
+
 /// SELECT a session's transcript, oldest first. Column order matches the
 /// mapping in CloudAgents.Repository.
 pub func selectMessagesSql(sessionId: in String): String {
   return "SELECT id, session_id, role, content, seq, created_at FROM messages " + "WHERE session_id = " +
     sqlLiteral(sessionId) +
     " ORDER BY seq ASC"
+}
+
+/// SELECT a session's messages up to a given seq (inclusive), oldest first.
+pub func selectMessagesUpToSeqSql(sessionId: in String, maxSeq: in Int): String {
+  return "SELECT id, session_id, role, content, seq, created_at FROM messages WHERE session_id = " +
+    sqlLiteral(sessionId) +
+    " AND CAST(seq AS INTEGER) <= " +
+    toString(maxSeq) +
+    " ORDER BY seq ASC"
+}
+
+/// SELECT child sessions branched from a given parent session.
+pub func selectChildSessionsSql(parentSessionId: in String): String {
+  return "SELECT " + sessionColumns + " FROM sessions WHERE parent_session_id = " + sqlLiteral(parentSessionId) +
+    " ORDER BY created_at ASC"
 }
 
 /// COUNT messages in a session, cast to TEXT so the driver can read it with
