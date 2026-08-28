@@ -4248,7 +4248,7 @@ pub func branchSession(
   }
 
   // Attachments clone (DB + disk files)
-  val attRows = CloudAgents.Sqlite.query(CloudAgents.Db.selectSessionAttachmentsSql(parentSessionId))?
+  val attRows = CloudAgents.Sqlite.query(CloudAgents.Db.selectSessionAttachmentsBySessionSql(parentSessionId))?
   val attLen = CloudAgents.Sqlite.getRowArrayLength(attRows)
   var aIdx = 0
   while aIdx < attLen {
@@ -4268,7 +4268,7 @@ pub func branchSession(
         CloudAgents.Db.insertSessionAttachmentSql(newAttId, newSessionId, fileName, storedName, mimeType, kind, sizeBytes, attCreatedAt)
       )?
       if newMappedMsgId.length > 0 {
-        CloudAgents.Sqlite.execute(CloudAgents.Db.linkAttachmentToMessageSql(newAttId, newMappedMsgId))?
+        CloudAgents.Sqlite.execute(CloudAgents.Db.setSessionAttachmentMessageIdSql(newAttId, newMappedMsgId))?
       }
       val sourceDir = attachmentsBaseDir() + "/" + parentSessionId
       val targetDir = attachmentsBaseDir() + "/" + newSessionId
