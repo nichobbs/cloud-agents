@@ -1426,18 +1426,17 @@ test "archive and unarchive sessions successfully persists changes in the DB" {
   }
 }
 
-@test
-func testBranchSessionFromMessage(): Unit {
+test "branch session from message creates copy with parent reference and slices history" {
   val dbPath = useFreshTestDb("branch-msg")
-  defer cleanupTestDb(dbPath)
+  defer { cleanupTestDb(dbPath) }
 
-  val req = CreateSessionRequest(
+  val req = CloudAgents.Handlers.CreateSessionRequest(
     repoUrl = "https://github.com/example/branch-test",
     branch = "main",
     harness = "claude",
     model = "claude-sonnet-4-6"
   )
-  val parentId = match createSession(req) {
+  val parentId = match CloudAgents.Handlers.createSession(req) {
     case Ok(resp) -> resp.sessionId
     case Err(_) -> {
       assertTrue(false, "createSession failed")
@@ -1459,7 +1458,7 @@ func testBranchSessionFromMessage(): Unit {
   mustUnit(CloudAgents.Repository.addTodo(todoId, parentId, msg2Id, "Review turn 2"))
 
   // Branch from msg2 (seq 2)
-  val branchReq = BranchSessionRequest(
+  val branchReq = CloudAgents.Handlers.BranchSessionRequest(
     messageId = msg2Id,
     branch = "feature-thread-1"
   )
@@ -1487,7 +1486,7 @@ func testBranchSessionFromMessage(): Unit {
     case Ok(list) -> list
     case Err(_) -> {
       assertTrue(false, "getMessages on child failed")
-      slice[]
+      []
     }
   }
   assertEqualInt(childMsgs.length.toInt(), 2, "child should contain exactly 2 messages")
@@ -1500,7 +1499,7 @@ func testBranchSessionFromMessage(): Unit {
     case Ok(list) -> list
     case Err(_) -> {
       assertTrue(false, "getComments on child failed")
-      slice[]
+      []
     }
   }
   assertEqualInt(childComments.length.toInt(), 1, "comment should be cloned on child turn 2")
@@ -1511,7 +1510,7 @@ func testBranchSessionFromMessage(): Unit {
     case Ok(list) -> list
     case Err(_) -> {
       assertTrue(false, "getTodos on child failed")
-      slice[]
+      []
     }
   }
   assertEqualInt(childTodos.length.toInt(), 1, "todo should be cloned on child")
