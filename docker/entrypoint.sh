@@ -80,17 +80,33 @@ if [ -n "${CLOUD_AGENTS_INSPECT_MODE:-}" ]; then
             echo "===CLOUD_AGENTS_SECTION==="
             { git diff HEAD 2>/dev/null || git diff; } || true
             echo "===CLOUD_AGENTS_SECTION==="
-            # Section 3 (M1.2, docs/capture-runtime-handoff.md §4): the committed
-            # workspace tree hash, so the runner's emitRunnerCheckpoint can thread
-            # it as the terminal checkpoint's base anchor. Prints nothing when the
-            # workspace has no commits (fresh clone before first commit / no HEAD);
-            # the guard swallows that error and the runner falls back to steps-only
-            # (treeHash None), exactly today's behavior. This is HEAD's committed
-            # tree, not a working-tree write-tree — the agent's uncommitted edits
-            # live in the section-2 `git diff HEAD` (the file_change hunks), so the
-            # committed tree is the correct *base* anchor; do not "fix" this to a
-            # git write-tree.
-            { git rev-parse HEAD^{tree} 2>/dev/null; } || true
+            # Section 3 (M1.2, docs/capture-runtime-handoff.md §4): the workspace
+            # tree hash, so the runner's emitRunnerCheckpoint can thread it as the
+            # terminal checkpoint's base anchor. PREFER the committed tree
+            # (HEAD^{tree}) — that is the correct *base* anchor, the agent's
+            # uncommitted edits live in the section-2 `git diff HEAD` (the
+            # file_change hunks); do NOT replace this with a working-tree write-tree
+            # when a HEAD exists. FALL BACK to a working-tree tree ONLY when there is
+            # no HEAD yet (a fresh repo before its first commit): compute it in a
+            # THROWAWAY index (GIT_INDEX_FILE to an unused temp path, so the real
+            # index and checkout are never touched) so a terminal checkpoint still
+            # lands instead of steps-only (dogfood F3). Prints nothing only if even
+            # the fallback fails, and the runner then falls back to steps-only
+            # (treeHash None).
+            #
+            # NOTE `--verify`: a bare `git rev-parse HEAD^{tree}` on a no-HEAD repo
+            # prints the LITERAL string "HEAD^{tree}" to stdout (and exits non-zero),
+            # so without `--verify` section 3 would be that bogus literal, not empty
+            # — the runner would then thread `treeHash = "HEAD^{tree}"`. `--verify`
+            # prints nothing on failure, so the `||` fallback fires cleanly.
+            {
+                git rev-parse --verify HEAD^{tree} 2>/dev/null || {
+                    _ca_tree_index="$(mktemp -u)"
+                    GIT_INDEX_FILE="${_ca_tree_index}" git add -A 2>/dev/null \
+                        && GIT_INDEX_FILE="${_ca_tree_index}" git write-tree 2>/dev/null
+                    rm -f "${_ca_tree_index}"
+                }
+            } || true
             ;;
         tree)
             echo "CLOUD_AGENTS_INSPECT_OK"
