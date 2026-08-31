@@ -143,13 +143,18 @@ diff)
     # when there is no HEAD yet (dogfood F3). --verify so a no-HEAD repo yields
     # EMPTY, not the literal "HEAD^{tree}". The fallback uses a throwaway index AND
     # object dir, so it never writes to the real .git/objects (inspect stays
-    # read-only, #1028); mktemp -d, not -u (#1029).
+    # read-only, #1028); mktemp -d, not -u (#1029); and guard the mktemp result so
+    # a failed mktemp (empty) skips the fallback rather than collapsing the paths
+    # to a root-relative /objects,/index (#1031).
     {
         git rev-parse --verify HEAD^{tree} 2>/dev/null || {
-            t="$(mktemp -d)"; mkdir -p "$t/objects"
-            GIT_INDEX_FILE="$t/index" GIT_OBJECT_DIRECTORY="$t/objects" git add -A 2>/dev/null \
-                && GIT_INDEX_FILE="$t/index" GIT_OBJECT_DIRECTORY="$t/objects" git write-tree 2>/dev/null
-            rm -rf "$t"
+            t="$(mktemp -d 2>/dev/null)"
+            if [ -n "$t" ] && [ -d "$t" ]; then
+                mkdir -p "$t/objects"
+                GIT_INDEX_FILE="$t/index" GIT_OBJECT_DIRECTORY="$t/objects" git add -A 2>/dev/null \
+                    && GIT_INDEX_FILE="$t/index" GIT_OBJECT_DIRECTORY="$t/objects" git write-tree 2>/dev/null
+                rm -rf "$t"
+            fi
         }
     } || true
     ;;
