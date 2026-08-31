@@ -26,13 +26,15 @@ trap cleanup EXIT
 # grep-pin below guards removal of the fallback).
 emit_tree() {
     git rev-parse --verify HEAD^{tree} 2>/dev/null || {
-        _ca_tree_tmp="$(mktemp -d)"
-        mkdir -p "${_ca_tree_tmp}/objects"
-        GIT_INDEX_FILE="${_ca_tree_tmp}/index" GIT_OBJECT_DIRECTORY="${_ca_tree_tmp}/objects" \
-            git add -A 2>/dev/null \
-            && GIT_INDEX_FILE="${_ca_tree_tmp}/index" GIT_OBJECT_DIRECTORY="${_ca_tree_tmp}/objects" \
-                git write-tree 2>/dev/null
-        rm -rf "${_ca_tree_tmp}"
+        _ca_tree_tmp="$(mktemp -d 2>/dev/null)"
+        if [ -n "${_ca_tree_tmp}" ] && [ -d "${_ca_tree_tmp}" ]; then
+            mkdir -p "${_ca_tree_tmp}/objects"
+            GIT_INDEX_FILE="${_ca_tree_tmp}/index" GIT_OBJECT_DIRECTORY="${_ca_tree_tmp}/objects" \
+                git add -A 2>/dev/null \
+                && GIT_INDEX_FILE="${_ca_tree_tmp}/index" GIT_OBJECT_DIRECTORY="${_ca_tree_tmp}/objects" \
+                    git write-tree 2>/dev/null
+            rm -rf "${_ca_tree_tmp}"
+        fi
     }
 }
 objcount() { find "$1/.git/objects" -type f 2>/dev/null | wc -l | tr -d ' '; }

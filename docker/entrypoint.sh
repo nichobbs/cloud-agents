@@ -110,13 +110,19 @@ if [ -n "${CLOUD_AGENTS_INSPECT_MODE:-}" ]; then
             # (#1029). The temp dir is always removed.
             {
                 git rev-parse --verify HEAD^{tree} 2>/dev/null || {
-                    _ca_tree_tmp="$(mktemp -d)"
-                    mkdir -p "${_ca_tree_tmp}/objects"
-                    GIT_INDEX_FILE="${_ca_tree_tmp}/index" GIT_OBJECT_DIRECTORY="${_ca_tree_tmp}/objects" \
-                        git add -A 2>/dev/null \
-                        && GIT_INDEX_FILE="${_ca_tree_tmp}/index" GIT_OBJECT_DIRECTORY="${_ca_tree_tmp}/objects" \
-                            git write-tree 2>/dev/null
-                    rm -rf "${_ca_tree_tmp}"
+                    # Guard mktemp -d: if it fails (returns empty), skip entirely
+                    # rather than collapsing the paths to a root-relative
+                    # /objects,/index (#1031). Empty section 3 ⇒ steps-only, the safe
+                    # fallback.
+                    _ca_tree_tmp="$(mktemp -d 2>/dev/null)"
+                    if [ -n "${_ca_tree_tmp}" ] && [ -d "${_ca_tree_tmp}" ]; then
+                        mkdir -p "${_ca_tree_tmp}/objects"
+                        GIT_INDEX_FILE="${_ca_tree_tmp}/index" GIT_OBJECT_DIRECTORY="${_ca_tree_tmp}/objects" \
+                            git add -A 2>/dev/null \
+                            && GIT_INDEX_FILE="${_ca_tree_tmp}/index" GIT_OBJECT_DIRECTORY="${_ca_tree_tmp}/objects" \
+                                git write-tree 2>/dev/null
+                        rm -rf "${_ca_tree_tmp}"
+                    fi
                 }
             } || true
             ;;
