@@ -26,19 +26,22 @@ trap cleanup EXIT
 # grep-pin below guards removal of the fallback).
 emit_tree() {
     git rev-parse --verify HEAD^{tree} 2>/dev/null || {
-        _ca_tree_index="$(mktemp -u)"
-        GIT_INDEX_FILE="${_ca_tree_index}" git add -A 2>/dev/null \
-            && GIT_INDEX_FILE="${_ca_tree_index}" git write-tree 2>/dev/null
-        rm -f "${_ca_tree_index}"
+        _ca_tree_tmp="$(mktemp -d)"
+        mkdir -p "${_ca_tree_tmp}/objects"
+        GIT_INDEX_FILE="${_ca_tree_tmp}/index" GIT_OBJECT_DIRECTORY="${_ca_tree_tmp}/objects" \
+            git add -A 2>/dev/null \
+            && GIT_INDEX_FILE="${_ca_tree_tmp}/index" GIT_OBJECT_DIRECTORY="${_ca_tree_tmp}/objects" \
+                git write-tree 2>/dev/null
+        rm -rf "${_ca_tree_tmp}"
     }
 }
+objcount() { find "$1/.git/objects" -type f 2>/dev/null | wc -l | tr -d ' '; }
 
 fails=0
 check() {
     local desc="$1"; shift
     if "$@"; then echo "ok   $desc"; else echo "FAIL $desc" >&2; fails=$((fails + 1)); fi
 }
-is_tree() { git -C "$1" cat-file -t "$2" 2>/dev/null | grep -qx tree; }
 
 export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@t GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@t
 
@@ -56,21 +59,47 @@ check "committed repo: emits exactly HEAD^{tree}"     test "$committed_tree" = "
 N="$WORK/nohead"
 git init -q "$N"
 printf 'hello\n' > "$N/app.py"
+nohead_objs_before="$( objcount "$N" )"
 nohead_tree="$( cd "$N" && emit_tree )"
 check "no-HEAD repo: emits a non-empty tree (F3 fallback)"   test -n "$nohead_tree"
-check "no-HEAD repo: the emitted value is a real tree object" is_tree "$N" "$nohead_tree"
+# The tree object lives in the THROWAWAY object dir, not the real repo, so read it
+# back with git's --literally hash check rather than cat-file against the real store.
+check "no-HEAD repo: the emitted value is a valid 40-hex object id" \
+    bash -c "printf '%s' '$nohead_tree' | grep -Eqx '[0-9a-f]{40}'"
 check "no-HEAD repo: still has no HEAD (never committed)"    bash -c "! git -C '$N' rev-parse HEAD >/dev/null 2>&1"
 
-# ── 3. The fallback used a THROWAWAY index — the real index is untouched ──
-# app.py was never `git add`ed to the real index, so it stays untracked.
+# ── 3. The fallback touches NOTHING in the real repo (read-only invariant, #1028) ──
+# app.py was never `git add`ed to the real index, so it stays untracked …
 check "no-HEAD repo: real index untouched (app.py still untracked)" \
     bash -c "git -C '$N' status --porcelain -- app.py | grep -q '^?? app.py$'"
+# … and the throwaway object dir means the real .git/objects gained no objects.
+check "no-HEAD repo: real .git/objects untouched (#1028 read-only)" \
+    test "$( objcount "$N" )" = "$nohead_objs_before"
+
+# ── 4. HEAD-having repo WITH uncommitted changes → committed tree, NOT the fallback (#1030) ──
+# The common runner case: a cloned repo the agent edited. Section 3 must return the
+# committed base tree (edits ride in the diff hunks), never a working-tree write-tree.
+D="$WORK/dirty"
+git init -q "$D"
+printf 'base\n' > "$D/f.txt"
+( cd "$D" && git add -A && git commit -qm base )
+printf 'edited\n' >> "$D/f.txt"          # uncommitted change
+printf 'new\n' > "$D/untracked.txt"      # uncommitted new file
+dirty_objs_before="$( objcount "$D" )"
+dirty_tree="$( cd "$D" && emit_tree )"
+dirty_head_tree="$( git -C "$D" rev-parse HEAD^{tree} )"
+check "dirty-HEAD repo: emits the COMMITTED tree, not a working-tree write-tree (#1030)" \
+    test "$dirty_tree" = "$dirty_head_tree"
+check "dirty-HEAD repo: fallback not taken ⇒ real .git/objects untouched" \
+    test "$( objcount "$D" )" = "$dirty_objs_before"
 
 # ── grep-pin: the entrypoint must still carry the F3 fallback ──
 check "entrypoint.sh section 3 carries the git write-tree fallback" \
     grep -q "git write-tree" "$ENTRYPOINT"
 check "entrypoint.sh section 3 uses a throwaway GIT_INDEX_FILE" \
     grep -q "GIT_INDEX_FILE" "$ENTRYPOINT"
+check "entrypoint.sh section 3 uses a throwaway GIT_OBJECT_DIRECTORY (#1028 read-only)" \
+    grep -q "GIT_OBJECT_DIRECTORY" "$ENTRYPOINT"
 
 if [ "$fails" -ne 0 ]; then
     echo "test-inspect-tree-fallback: $fails check(s) failed" >&2

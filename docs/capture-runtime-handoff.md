@@ -139,15 +139,17 @@ diff)
     echo "===CLOUD_AGENTS_SECTION==="
     { git diff HEAD 2>/dev/null || git diff; } || true
     echo "===CLOUD_AGENTS_SECTION==="
-    # section 3, tree hash: committed tree, else a throwaway-index working-tree
-    # fallback when there is no HEAD yet (dogfood F3). --verify so a no-HEAD repo
-    # yields EMPTY, not the literal "HEAD^{tree}".
+    # section 3, tree hash: committed tree, else a throwaway working-tree fallback
+    # when there is no HEAD yet (dogfood F3). --verify so a no-HEAD repo yields
+    # EMPTY, not the literal "HEAD^{tree}". The fallback uses a throwaway index AND
+    # object dir, so it never writes to the real .git/objects (inspect stays
+    # read-only, #1028); mktemp -d, not -u (#1029).
     {
         git rev-parse --verify HEAD^{tree} 2>/dev/null || {
-            _ca_tree_index="$(mktemp -u)"
-            GIT_INDEX_FILE="${_ca_tree_index}" git add -A 2>/dev/null \
-                && GIT_INDEX_FILE="${_ca_tree_index}" git write-tree 2>/dev/null
-            rm -f "${_ca_tree_index}"
+            t="$(mktemp -d)"; mkdir -p "$t/objects"
+            GIT_INDEX_FILE="$t/index" GIT_OBJECT_DIRECTORY="$t/objects" git add -A 2>/dev/null \
+                && GIT_INDEX_FILE="$t/index" GIT_OBJECT_DIRECTORY="$t/objects" git write-tree 2>/dev/null
+            rm -rf "$t"
         }
     } || true
     ;;
@@ -163,9 +165,11 @@ diff)
   **literal** string `HEAD^{tree}` to stdout (exit non-zero), so without it
   section 3 would be that bogus value, not empty — the runner would thread
   `treeHash = "HEAD^{tree}"`. With `--verify`, a no-HEAD repo yields empty and the
-  `||` fires a **throwaway-index** working-tree `git write-tree` fallback (a
-  fresh repo before its first commit still anchors a terminal checkpoint rather
-  than degrading to steps-only; the real index/checkout are untouched). Section 3
+  `||` fires a working-tree `git write-tree` fallback in a **throwaway index AND
+  object dir** (a fresh repo before its first commit still anchors a terminal
+  checkpoint rather than degrading to steps-only; the real index, checkout, and
+  `.git/objects` are all untouched, so inspect mode stays read-only — #1028).
+  Section 3
   is empty ⇒ `None` ⇒ steps-only only if even that fallback fails. When a HEAD
   exists the tree is `HEAD`'s **committed** tree; if the agent's edits are
   uncommitted (the common runner case — the diff IS `git diff HEAD`), that is the

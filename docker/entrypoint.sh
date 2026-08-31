@@ -99,12 +99,24 @@ if [ -n "${CLOUD_AGENTS_INSPECT_MODE:-}" ]; then
             # so without `--verify` section 3 would be that bogus literal, not empty
             # — the runner would then thread `treeHash = "HEAD^{tree}"`. `--verify`
             # prints nothing on failure, so the `||` fallback fires cleanly.
+            #
+            # The fallback computes a working-tree tree WITHOUT touching the real
+            # repo — a throwaway index AND a throwaway object dir, so the new blobs
+            # and tree write into a temp dir, never the workspace's persistent
+            # `.git/objects`. That keeps inspect mode READ-ONLY (#1028: this path is
+            # also reachable from `GET /api/sessions/{id}/workspace/diff`), and the
+            # tree hash is still correct (content addressing is independent of where
+            # the object is stored). `mktemp -d` (not `-u`) avoids the TOCTOU race
+            # (#1029). The temp dir is always removed.
             {
                 git rev-parse --verify HEAD^{tree} 2>/dev/null || {
-                    _ca_tree_index="$(mktemp -u)"
-                    GIT_INDEX_FILE="${_ca_tree_index}" git add -A 2>/dev/null \
-                        && GIT_INDEX_FILE="${_ca_tree_index}" git write-tree 2>/dev/null
-                    rm -f "${_ca_tree_index}"
+                    _ca_tree_tmp="$(mktemp -d)"
+                    mkdir -p "${_ca_tree_tmp}/objects"
+                    GIT_INDEX_FILE="${_ca_tree_tmp}/index" GIT_OBJECT_DIRECTORY="${_ca_tree_tmp}/objects" \
+                        git add -A 2>/dev/null \
+                        && GIT_INDEX_FILE="${_ca_tree_tmp}/index" GIT_OBJECT_DIRECTORY="${_ca_tree_tmp}/objects" \
+                            git write-tree 2>/dev/null
+                    rm -rf "${_ca_tree_tmp}"
                 }
             } || true
             ;;
