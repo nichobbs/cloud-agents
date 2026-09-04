@@ -41,8 +41,24 @@ IMAGE="cloud-agents-entrypoint-privsep-test:$$"
 BUILD_CTX="$(mktemp -d)"
 WORK="$(mktemp -d)"
 
+# in_image runs a one-off command inside the test image as root, over a
+# bind-mount of the temp work dir. Every host-side step that needs to touch
+# or inspect files owned by claude-user's uid goes through it (the chown of
+# the bare repo, the ownership assertions, and the final cleanup), so the
+# test behaves identically whether the HOST user is root (a local sandbox)
+# or an unprivileged CI runner — a plain host `chown`/`find`/`rm` on files
+# owned by another uid fails with "Operation not permitted" in the latter.
+in_image() {
+    docker run --rm --network none --entrypoint "$1" -v "$WORK:/work" "$IMAGE" "${@:2}"
+}
+
 cleanup() {
-    docker rmi -f "$IMAGE" >/dev/null 2>&1 || true
+    # The containers leave /work owned by claude-user's uid; delete it from
+    # inside the image (root there) before removing the image itself.
+    if docker image inspect "$IMAGE" >/dev/null 2>&1; then
+        in_image rm -rf /work/workspace /work/home /work/repo.git /work/seed >/dev/null 2>&1 || true
+        docker rmi -f "$IMAGE" >/dev/null 2>&1 || true
+    fi
     rm -rf "$BUILD_CTX" "$WORK"
 }
 trap cleanup EXIT
@@ -173,7 +189,9 @@ CLAUDE_USER_UID="$(docker run --rm --entrypoint id "$IMAGE" -u claude-user)"
 # including a file:// source, so it must be owned by whatever uid
 # claude-user has inside the image (a real REPO_URL is a remote host and
 # never hits this; it's purely an artifact of testing file:// locally).
-chown -R "$CLAUDE_USER_UID" "$WORK/repo.git"
+# Done inside the image (root) rather than on the host, which may itself be
+# an unprivileged CI runner that cannot chown to a foreign uid.
+in_image chown -R "$CLAUDE_USER_UID" /work/repo.git
 
 run_container() {
     local prompt="$1"
@@ -191,10 +209,14 @@ run_container() {
         "$IMAGE"
 }
 
+# $1 is a path RELATIVE to the temp work dir (e.g. "workspace"), checked from
+# inside the image: the home volume ends up mode 700 and owned by
+# claude-user's uid, which an unprivileged host user cannot even descend
+# into, so a host-side `find` would pass vacuously there.
 is_owned_by() {
-    local path="$1" uid="$2"
-    [ -e "$path" ] || return 1
-    [ -z "$(find "$path" -not -user "$uid" 2>/dev/null)" ]
+    local rel="$1" uid="$2"
+    [ -e "$WORK/$rel" ] || return 1
+    [ -z "$(in_image find "/work/$rel" -not -user "$uid" 2>/dev/null)" ]
 }
 
 # ── Message 1: fresh workspace -> clone ──────────────────────────────────────
@@ -206,8 +228,8 @@ check "message 1: fake claude ran as claude-user's uid" contains "\"uid\":\"$CLA
 check "message 1: fake claude saw HOME=/home/claude-user" contains '"home":"/home/claude-user"' "$RUN1_OUT"
 check "message 1: fake claude ran in /workspace" contains '"pwd":"/workspace"' "$RUN1_OUT"
 check "message 1: first invocation used --session-id" contains '"--session-id","native-session-1"' "$RUN1_OUT"
-check "message 1: /workspace is entirely owned by claude-user's uid" is_owned_by "$WORK/workspace" "$CLAUDE_USER_UID"
-check "message 1: home volume is entirely owned by claude-user's uid" is_owned_by "$WORK/home" "$CLAUDE_USER_UID"
+check "message 1: /workspace is entirely owned by claude-user's uid" is_owned_by workspace "$CLAUDE_USER_UID"
+check "message 1: home volume is entirely owned by claude-user's uid" is_owned_by home "$CLAUDE_USER_UID"
 check "message 1: mcp.json was rendered" test -f "$WORK/workspace/.claude/mcp.json"
 check "message 1: settings.json was rendered" test -f "$WORK/workspace/.claude/settings.json"
 check "message 1: the native-session marker file exists" test -f "$WORK/workspace/.claude/.native-session-initialized"
@@ -220,7 +242,7 @@ RUN2_OUT="$(run_container "second message")" || run2_status=$?
 check "message 2: container exits 0" test "$run2_status" -eq 0
 check "message 2: fake claude ran as claude-user's uid" contains "\"uid\":\"$CLAUDE_USER_UID\"" "$RUN2_OUT"
 check "message 2: second invocation used --resume, not --session-id" contains '"--resume","native-session-1"' "$RUN2_OUT"
-check "message 2: /workspace is still entirely owned by claude-user's uid" is_owned_by "$WORK/workspace" "$CLAUDE_USER_UID"
+check "message 2: /workspace is still entirely owned by claude-user's uid" is_owned_by workspace "$CLAUDE_USER_UID"
 
 # ── Inspect mode: unrelated to the privilege drop above, must keep behaving
 # exactly as before (root, no home volume, network none) ────────────────────
