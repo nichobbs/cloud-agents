@@ -359,6 +359,7 @@ function McpServersTab() {
   const [argsText, setArgsText] = useState('');
   const [url, setUrl] = useState('');
   const [envText, setEnvText] = useState('');
+  const [headersText, setHeadersText] = useState('');
   const [enabled, setEnabled] = useState(true);
 
   const reload = async () => {
@@ -384,6 +385,7 @@ function McpServersTab() {
     setArgsText('');
     setUrl('');
     setEnvText('');
+    setHeadersText('');
     setEnabled(true);
   };
 
@@ -395,6 +397,7 @@ function McpServersTab() {
     setArgsText(t.args.join('\n'));
     setUrl('');
     setEnvText('');
+    setHeadersText('');
     setEnabled(true);
   };
 
@@ -413,6 +416,7 @@ function McpServersTab() {
       args: linesOf(argsText),
       url: url.trim(),
       env: linesOf(envText),
+      headers: linesOf(headersText),
       enabled: enabled ? '1' : '0',
     };
     try {
@@ -496,14 +500,24 @@ function McpServersTab() {
             />
           </>
         ) : (
-          <input
-            style={inputStyle}
-            placeholder="URL (e.g. https://example.com/mcp)"
-            value={url}
-            onChange={e => setUrl(e.target.value)}
-            maxLength={4096}
-            aria-label="MCP server url"
-          />
+          <>
+            <input
+              style={inputStyle}
+              placeholder="URL (e.g. https://example.com/mcp)"
+              value={url}
+              onChange={e => setUrl(e.target.value)}
+              maxLength={4096}
+              aria-label="MCP server url"
+            />
+            <textarea
+              style={textareaStyle}
+              placeholder={'HTTP headers, one Name=Value per line (e.g.\nAuthorization=Bearer ${GITHUB_TOKEN})'}
+              value={headersText}
+              onChange={e => setHeadersText(e.target.value)}
+              rows={2}
+              aria-label="MCP server headers"
+            />
+          </>
         )}
         <label style={{ ...fieldStyle, flexDirection: 'row', alignItems: 'center', gap: '6px' }}>
           <input type="checkbox" checked={enabled} onChange={e => setEnabled(e.target.checked)} aria-label="MCP server enabled" />
@@ -526,6 +540,7 @@ function McpServersTab() {
               setArgsText(s.args.join('\n'));
               setUrl(s.url);
               setEnvText(s.env.join('\n'));
+              setHeadersText((s.headers ?? []).join('\n'));
               setEnabled(s.enabled !== '0');
             }}
             onDelete={() => { void remove(s); }}

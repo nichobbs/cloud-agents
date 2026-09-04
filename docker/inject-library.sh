@@ -194,26 +194,47 @@ expand_env_value() {
     printf '%s' "$1" | envsubst "$allow"
 }
 
+# Reads a url-transport server's `.headers[]` entries (same NUL-delimited
+# read as the stdio env-entries loop below, and for the same reason — a
+# header VALUE can legitimately contain a literal newline) and expands each
+# through expand_env_value, returning a jq object `{"Name": "expanded
+# value", ...}`. Absent/older payloads may have no "headers" key at all (a
+# payload built before #768), hence the `// []` default.
+mcp_headers_json() {
+    local item="$1"
+    local headers_json='{}' raw k v
+    while IFS= read -r -d '' raw; do
+        [ -n "$raw" ] || continue
+        k="${raw%%=*}"
+        v="$(expand_env_value "${raw#*=}")"
+        headers_json=$(jq -c --arg k "$k" --arg v "$v" '. + {($k): $v}' <<<"$headers_json")
+    done < <(jq -j '(.headers // [])[] + "\u0000"' <<<"$item")
+    printf '%s' "$headers_json"
+}
+
 # ── MCP servers: JSON-config harnesses (claude, gemini, opencode) ──────────
 # $1 = target JSON config file (created with $2 as its baseline if it does
 # not exist yet — an existing file, with any unrelated content, is always
 # left in place). $3 = the field holding the server map ("mcpServers" for
-# claude/gemini, "mcp" for opencode). Every key this script owns is prefixed
-# "cloud-agents-lib-", so the strip-then-merge only ever touches its own
-# prior entries.
+# claude/gemini, "mcp" for opencode). $4 = url_style, this harness's shape
+# for a url-transport (remote) server entry — see below. Every key this
+# script owns is prefixed "cloud-agents-lib-", so the strip-then-merge only
+# ever touches its own prior entries.
 #
-# Builds up servers_json one server (and, for stdio servers, one env entry)
-# at a time in a bash loop rather than a single jq expression, specifically
-# so each env VALUE can be piped through expand_env_value — jq itself can't
-# shell out to envsubst.
+# Builds up servers_json one server (and, for stdio servers, one env entry;
+# for url servers, one header entry) at a time in a bash loop rather than a
+# single jq expression, specifically so each env/header VALUE can be piped
+# through expand_env_value — jq itself can't shell out to envsubst.
 #
-# NB: the "url"-transport server shape below ({"type":"http","url":...}) is
-# this script's best-effort guess at each harness's remote-MCP JSON schema —
-# the stdio shape (command/args/env) is the well-confirmed common case across
-# all three; verify the url shape against each CLI's current docs if a
-# url-transport server doesn't connect.
+# url_style picks each harness's own confirmed remote-MCP JSON shape (#768):
+#   claude   -> {"type": "http", "url": ..., "headers": {...}}
+#   gemini   -> {"httpUrl": ..., "headers": {...}} (no "type" — Gemini CLI
+#               selects transport by which of command/url/httpUrl is present)
+#   opencode -> {"type": "remote", "url": ..., "headers": {...}}
+# `headers` is always present (possibly `{}`), matching how stdio's `env` is
+# always emitted even when empty.
 render_mcp_json() {
-    local file="$1" baseline="$2" field="$3"
+    local file="$1" baseline="$2" field="$3" url_style="$4"
     mkdir -p "$(dirname "$file")"
     [ -f "$file" ] || printf '%s' "$baseline" > "$file"
 
@@ -240,7 +261,19 @@ render_mcp_json() {
                 done < <(jq -j '.env[] + "\u0000"' <<<"$item")
                 entry=$(jq -c --argjson env "$env_json" '{command: .command, args: .args, env: $env}' <<<"$item")
             else
-                entry=$(jq -c '{type: "http", url: .url}' <<<"$item")
+                local headers_json
+                headers_json="$(mcp_headers_json "$item")"
+                case "$url_style" in
+                    gemini)
+                        entry=$(jq -c --argjson headers "$headers_json" '{httpUrl: .url, headers: $headers}' <<<"$item")
+                        ;;
+                    opencode)
+                        entry=$(jq -c --argjson headers "$headers_json" '{type: "remote", url: .url, headers: $headers}' <<<"$item")
+                        ;;
+                    *)
+                        entry=$(jq -c --argjson headers "$headers_json" '{type: "http", url: .url, headers: $headers}' <<<"$item")
+                        ;;
+                esac
             fi
             servers_json=$(jq -c --arg key "$key" --argjson value "$entry" '. + {($key): $value}' <<<"$servers_json")
         done < <(printf '%s' "${CLOUD_AGENTS_MCP_SERVERS_B64}" | base64 -d | jq -c '.mcpServers[]')
@@ -314,6 +347,33 @@ render_mcp_codex() {
                 fi
             else
                 printf 'url = %s\n' "$(jq -r '.url | @json' <<<"$item")"
+                # Codex's config.toml has a confirmed `http_headers` key for
+                # a remote server's static request headers (#768) — a map of
+                # header name to value, distinct from its `bearer_token_env_var`
+                # (which names an env var for Codex to read itself, rather
+                # than taking a literal value) and `env_http_headers` (header
+                # value pulled from an env var by name). Since a header value
+                # here has already been expand_env_value-expanded to its
+                # literal value (same as env above), http_headers — the
+                # static-value form — is the right one to emit.
+                local header_pairs=() raw k v
+                while IFS= read -r -d '' raw; do
+                    [ -n "$raw" ] || continue
+                    k="${raw%%=*}"
+                    v="$(expand_env_value "${raw#*=}")"
+                    header_pairs+=("$(jq -nr --arg k "$k" --arg v "$v" '($k|@json) + " = " + ($v|@json)')")
+                done < <(jq -j '(.headers // [])[] + "\u0000"' <<<"$item")
+                if [ "${#header_pairs[@]}" -gt 0 ]; then
+                    local hjoined="" hpair
+                    for hpair in "${header_pairs[@]}"; do
+                        if [ -z "$hjoined" ]; then
+                            hjoined="$hpair"
+                        else
+                            hjoined="$hjoined, $hpair"
+                        fi
+                    done
+                    printf 'http_headers = {%s}\n' "$hjoined"
+                fi
             fi
         done
         printf '%s\n' "$end"
@@ -325,15 +385,15 @@ render_skills "$SKILLS_DIR"
 case "$HARNESS" in
     claude)
         render_subagents_yaml_frontmatter "$AGENTS_DIR"
-        render_mcp_json ".claude/mcp.json" '{"mcpServers":{}}' "mcpServers"
+        render_mcp_json ".claude/mcp.json" '{"mcpServers":{}}' "mcpServers" "claude"
         ;;
     gemini|antigravity)
         render_subagents_yaml_frontmatter "$AGENTS_DIR"
-        render_mcp_json ".gemini/settings.json" '{}' "mcpServers"
+        render_mcp_json ".gemini/settings.json" '{}' "mcpServers" "gemini"
         ;;
     opencode)
         render_subagents_opencode "$AGENTS_DIR"
-        render_mcp_json "opencode.json" '{}' "mcp"
+        render_mcp_json "opencode.json" '{}' "mcp" "opencode"
         ;;
     codex)
         render_subagents_codex "$AGENTS_DIR"

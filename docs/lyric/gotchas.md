@@ -560,6 +560,8 @@ pub func sqrt(x: in Double): Double
 
 **Adding a case to a `pub` union is a breaking change.** Every downstream `match` breaks. Use an interface instead if you expect extension.
 
+**A literal `${...}` inside a plain double-quoted string is interpolation, not text.** `"Authorization=Bearer ${GITHUB_TOKEN}"` tries to resolve `GITHUB_TOKEN` as a name in scope and fails to compile (`T0115: cannot resolve name ... to a value here`) if nothing by that name exists — it does NOT produce the literal four characters `$`, `{`, `...`, `}`. This bites test fixtures for a value that is itself a `${VAR}`-style placeholder meant for something else to expand later (e.g. an MCP server env/header entry docker/inject-library.sh's `envsubst` pass expands at container-injection time, not at Lyric compile time) — use a raw string instead: `r"Authorization=Bearer ${GITHUB_TOKEN}"`. Not an issue for the same text sitting in a data file (JSON, `seed/mcp-servers/*.json`) or in a `//`/`///`/`//!` comment — only inside a live, compiled string literal.
+
 ---
 
 ## Async

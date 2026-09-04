@@ -45,11 +45,12 @@ FUNCS_FILE="$(mktemp)"
 trap 'rm -f "$FUNCS_FILE"' EXIT
 {
   extract_func "expand_env_value"
+  extract_func "mcp_headers_json"
   extract_func "render_mcp_json"
   extract_func "render_mcp_codex"
 } > "$FUNCS_FILE"
 
-for fn in expand_env_value render_mcp_json render_mcp_codex; do
+for fn in expand_env_value mcp_headers_json render_mcp_json render_mcp_codex; do
   grep -q "^${fn}()" "$FUNCS_FILE" || { echo "test-mcp-server-injection: failed to extract $fn from $HELPER" >&2; exit 1; }
 done
 
@@ -82,10 +83,10 @@ EOF
   export CLOUD_AGENTS_MCP_SERVERS_B64=$(printf '%s' '{"mcpServers":[
     {"name":"github","transport":"stdio","command":"npx","args":["-y","server-github"],"url":"","env":["GITHUB_PERSONAL_ACCESS_TOKEN=${GITHUB_TOKEN}"]},
     {"name":"fetch","transport":"stdio","command":"uvx","args":["mcp-server-fetch"],"url":"","env":[]},
-    {"name":"remote","transport":"url","command":"","args":[],"url":"https://example.com/mcp","env":[]}
+    {"name":"remote","transport":"url","command":"","args":[],"url":"https://example.com/mcp","env":[],"headers":["Authorization=Bearer ${GITHUB_TOKEN}"]}
   ]}' | b64)
 
-  render_mcp_json ".claude/mcp.json" '{"mcpServers":{}}' "mcpServers"
+  render_mcp_json ".claude/mcp.json" '{"mcpServers":{}}' "mcpServers" "claude"
   jq -c . .claude/mcp.json > result.json
 )
 
@@ -94,13 +95,19 @@ check "stale cloud-agents-lib- entry gone"  bash -c "! jq -e '.mcpServers | has(
 check "github entry rendered"               jq -e '.mcpServers["cloud-agents-lib-github"] != null' "$WS/result.json"
 check "fetch entry has empty env object"    jq -e '.mcpServers["cloud-agents-lib-fetch"].env == {}' "$WS/result.json"
 check "url-transport entry rendered"        jq -e '.mcpServers["cloud-agents-lib-remote"].url == "https://example.com/mcp"' "$WS/result.json"
+check "claude url-transport entry uses type=http (#768)" \
+  jq -e '.mcpServers["cloud-agents-lib-remote"].type == "http"' "$WS/result.json"
 
 if [ "$HAVE_ENVSUBST" -eq 1 ]; then
   check "credential reference expanded to the real value" \
     jq -e '.mcpServers["cloud-agents-lib-github"].env.GITHUB_PERSONAL_ACCESS_TOKEN == "test-token-value"' "$WS/result.json"
+  check "claude url-transport header expanded to the real value (#768)" \
+    jq -e '.mcpServers["cloud-agents-lib-remote"].headers.Authorization == "Bearer test-token-value"' "$WS/result.json"
 else
   check "no envsubst installed: value left literal, not silently dropped" \
     jq -e '.mcpServers["cloud-agents-lib-github"].env.GITHUB_PERSONAL_ACCESS_TOKEN == "${GITHUB_TOKEN}"' "$WS/result.json"
+  check "no envsubst installed: header value left literal (#768)" \
+    jq -e '.mcpServers["cloud-agents-lib-remote"].headers.Authorization == "Bearer ${GITHUB_TOKEN}"' "$WS/result.json"
 fi
 rm -rf "$WS"
 
@@ -118,7 +125,7 @@ if [ "$HAVE_ENVSUBST" -eq 1 ]; then
     export CLOUD_AGENTS_MCP_SERVERS_B64=$(printf '%s' '{"mcpServers":[
       {"name":"literal-dollar","transport":"stdio","command":"npx","args":[],"url":"","env":["A=cost-is-$HOME-dollars","B=${PROMPT}","C=${GITHUB_TOKEN}"]}
     ]}' | b64)
-    render_mcp_json ".claude/mcp.json" '{"mcpServers":{}}' "mcpServers"
+    render_mcp_json ".claude/mcp.json" '{"mcpServers":{}}' "mcpServers" "claude"
     jq -c . .claude/mcp.json > result.json
   )
   check "deny-listed \$HOME left literal, not substituted" \
@@ -140,7 +147,7 @@ WS="$(mktemp -d)"
     {"name":"multiline","transport":"stdio","command":"foo","args":[],"url":"","env":["A=line1\nline2","B=second"]}
   ]}' | b64)
 
-  render_mcp_json ".claude/mcp.json" '{"mcpServers":{}}' "mcpServers"
+  render_mcp_json ".claude/mcp.json" '{"mcpServers":{}}' "mcpServers" "claude"
   jq -c . .claude/mcp.json > result.json
 )
 check "embedded-newline env value preserved whole, not truncated" \
@@ -149,6 +156,74 @@ check "sibling env entry after a newline-containing value is unaffected" \
   jq -e '.mcpServers["cloud-agents-lib-multiline"].env.B == "second"' "$WS/result.json"
 check "no spurious extra env key from a split newline" \
   jq -e '(.mcpServers["cloud-agents-lib-multiline"].env | keys | length) == 2' "$WS/result.json"
+rm -rf "$WS"
+
+# ── Claude (JSON): a header value containing a literal embedded newline
+# must not corrupt sibling headers either — the header-pairs loop reads
+# .headers[] NUL-delimited too (#768, same reasoning as env above) ────────
+WS="$(mktemp -d)"
+(
+  cd "$WS"
+  export CLOUD_AGENTS_MCP_SERVERS_B64=$(printf '%s' '{"mcpServers":[
+    {"name":"multiline","transport":"url","command":"","args":[],"url":"https://example.com/mcp","env":[],"headers":["A=line1\nline2","B=second"]}
+  ]}' | b64)
+
+  render_mcp_json ".claude/mcp.json" '{"mcpServers":{}}' "mcpServers" "claude"
+  jq -c . .claude/mcp.json > result.json
+)
+check "embedded-newline header value preserved whole, not truncated (#768)" \
+  jq -e '.mcpServers["cloud-agents-lib-multiline"].headers.A == "line1\nline2"' "$WS/result.json"
+check "sibling header entry after a newline-containing value is unaffected (#768)" \
+  jq -e '.mcpServers["cloud-agents-lib-multiline"].headers.B == "second"' "$WS/result.json"
+check "no spurious extra header key from a split newline (#768)" \
+  jq -e '(.mcpServers["cloud-agents-lib-multiline"].headers | keys | length) == 2' "$WS/result.json"
+rm -rf "$WS"
+
+# ── Gemini (JSON): a url-transport server renders as httpUrl + headers, not
+# type/url (#768 — Gemini CLI selects transport by which of command/url/
+# httpUrl is present; it has no "type" key) ────────────────────────────────
+WS="$(mktemp -d)"
+(
+  cd "$WS"
+  export GITHUB_TOKEN="test-token-value"
+  export CLOUD_AGENTS_MCP_SERVERS_B64=$(printf '%s' '{"mcpServers":[
+    {"name":"github","transport":"url","command":"","args":[],"url":"https://api.githubcopilot.com/mcp/","env":[],"headers":["Authorization=Bearer ${GITHUB_TOKEN}"]}
+  ]}' | b64)
+  render_mcp_json ".gemini/settings.json" '{}' "mcpServers" "gemini"
+  jq -c . .gemini/settings.json > result.json
+)
+check "gemini uses httpUrl, not url (#768)" \
+  jq -e '.mcpServers["cloud-agents-lib-github"].httpUrl == "https://api.githubcopilot.com/mcp/"' "$WS/result.json"
+check "gemini entry has no 'url' key (#768)" \
+  jq -e '(.mcpServers["cloud-agents-lib-github"] | has("url")) | not' "$WS/result.json"
+check "gemini entry has no 'type' key (#768)" \
+  jq -e '(.mcpServers["cloud-agents-lib-github"] | has("type")) | not' "$WS/result.json"
+if [ "$HAVE_ENVSUBST" -eq 1 ]; then
+  check "gemini header expanded to the real value (#768)" \
+    jq -e '.mcpServers["cloud-agents-lib-github"].headers.Authorization == "Bearer test-token-value"' "$WS/result.json"
+fi
+rm -rf "$WS"
+
+# ── OpenCode (JSON): a url-transport server renders as type=remote + url +
+# headers (#768) ────────────────────────────────────────────────────────────
+WS="$(mktemp -d)"
+(
+  cd "$WS"
+  export GITHUB_TOKEN="test-token-value"
+  export CLOUD_AGENTS_MCP_SERVERS_B64=$(printf '%s' '{"mcpServers":[
+    {"name":"github","transport":"url","command":"","args":[],"url":"https://api.githubcopilot.com/mcp/","env":[],"headers":["Authorization=Bearer ${GITHUB_TOKEN}"]}
+  ]}' | b64)
+  render_mcp_json "opencode.json" '{}' "mcp" "opencode"
+  jq -c . opencode.json > result.json
+)
+check "opencode uses type=remote (#768)" \
+  jq -e '.mcp["cloud-agents-lib-github"].type == "remote"' "$WS/result.json"
+check "opencode url-transport entry rendered" \
+  jq -e '.mcp["cloud-agents-lib-github"].url == "https://api.githubcopilot.com/mcp/"' "$WS/result.json"
+if [ "$HAVE_ENVSUBST" -eq 1 ]; then
+  check "opencode header expanded to the real value (#768)" \
+    jq -e '.mcp["cloud-agents-lib-github"].headers.Authorization == "Bearer test-token-value"' "$WS/result.json"
+fi
 rm -rf "$WS"
 
 # ── Codex (TOML): same expansion behavior, marker-delimited block ──────────
@@ -165,6 +240,29 @@ if [ "$HAVE_ENVSUBST" -eq 1 ]; then
   check "codex env value expanded"  grep -q 'test-token-value' "$WS/.codex/config.toml"
 else
   check "codex env value left literal without envsubst"  grep -qF '${GITHUB_TOKEN}' "$WS/.codex/config.toml"
+fi
+rm -rf "$WS"
+
+# ── Codex (TOML): a url-transport server's headers render as http_headers
+# (#768 — Codex's confirmed static-header config key; distinct from its
+# bearer_token_env_var/env_http_headers, which name an env var rather than
+# taking a literal value) ──────────────────────────────────────────────────
+WS="$(mktemp -d)"
+(
+  cd "$WS"
+  export GITHUB_TOKEN="test-token-value"
+  export CLOUD_AGENTS_MCP_SERVERS_B64=$(printf '%s' '{"mcpServers":[
+    {"name":"github","transport":"url","command":"","args":[],"url":"https://api.githubcopilot.com/mcp/","env":[],"headers":["Authorization=Bearer ${GITHUB_TOKEN}"]}
+  ]}' | b64)
+  render_mcp_codex
+)
+check "codex url-transport section present"  grep -q '\[mcp_servers.cloud-agents-lib-github\]' "$WS/.codex/config.toml"
+check "codex url rendered"                   grep -q 'url = "https://api.githubcopilot.com/mcp/"' "$WS/.codex/config.toml"
+check "codex http_headers key present"       grep -q 'http_headers = {' "$WS/.codex/config.toml"
+if [ "$HAVE_ENVSUBST" -eq 1 ]; then
+  check "codex header value expanded"  grep -q 'test-token-value' "$WS/.codex/config.toml"
+else
+  check "codex header value left literal without envsubst"  grep -qF '${GITHUB_TOKEN}' "$WS/.codex/config.toml"
 fi
 rm -rf "$WS"
 

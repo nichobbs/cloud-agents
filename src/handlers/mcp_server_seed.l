@@ -20,14 +20,25 @@
 //! it spawns a real browser process and downloads Chromium on first use —
 //! a deliberate opt-in rather than a silent default for every session.
 //!
-//! A credential-requiring server's env references the credential by name
-//! (e.g. "GITHUB_PERSONAL_ACCESS_TOKEN=${GITHUB_TOKEN}") — the `${VAR}` is
-//! expanded against the container's real environment by
-//! docker/inject-library.sh's envsubst pass at injection time, never stored
-//! as a literal secret here (mcp_server_env is deliberately non-secret
-//! config only, see CloudAgents.Db.mcpServerEnvSchemaSql's doc comment); the
-//! actual GITHUB_TOKEN value flows in separately through the existing
-//! per-user credential vault, exactly like every other credential-grant.
+//! A credential-requiring server's env (or, for a url-transport server, its
+//! headers — see below) references the credential by name (e.g.
+//! "GITHUB_PERSONAL_ACCESS_TOKEN=${GITHUB_TOKEN}" / "Authorization=Bearer
+//! ${GITHUB_TOKEN}") — the `${VAR}` is expanded against the container's real
+//! environment by docker/inject-library.sh's envsubst pass at injection
+//! time, never stored as a literal secret here (mcp_server_env/
+//! mcp_server_headers are deliberately non-secret config only, see
+//! CloudAgents.Db.mcpServerEnvSchemaSql's/mcpServerHeadersSchemaSql's doc
+//! comments); the actual GITHUB_TOKEN value flows in separately through the
+//! existing per-user credential vault, exactly like every other
+//! credential-grant.
+//!
+//! `github.json` (#768) is a url-transport server rather than the old
+//! `npx @modelcontextprotocol/server-github` stdio command — that npm
+//! package is deprecated upstream. It points at GitHub's own hosted MCP
+//! endpoint (`https://api.githubcopilot.com/mcp/`) with an `Authorization:
+//! Bearer ${GITHUB_TOKEN}` header instead, which is what the `headers` field
+//! (CloudAgents.Db.mcpServerHeadersSchemaSql, docker/inject-library.sh's
+//! url-transport rendering) exists to carry.
 package CloudAgents.McpServerSeed
 
 import Std.Core
@@ -60,6 +71,8 @@ val maxMcpFieldLen = 4096
 val maxMcpArgCount = 64
 
 val maxMcpEnvCount = 64
+
+val maxMcpHeaderCount = 64
 
 /// Directory the seed MCP server .json files are read from, mirroring
 /// CloudAgents.LibrarySeed's env-override convention (deploy/api.Dockerfile
@@ -94,6 +107,11 @@ pub record ParsedMcpServer {
   pub url: String
   pub env: slice[String]
   pub enabled: String
+  // "Name=Value" HTTP header entries — only meaningful for transport "url"
+  // (#768). Every seed/mcp-servers/*.json file must include this key: as
+  // with every other field on this record, `@generate(Json)`'s derived
+  // fromJson requires it present regardless of any Lyric-level default.
+  pub headers: slice[String]
 }
 
 func readSeedMcpServer(name: in String): Option[ParsedMcpServer] {
@@ -135,6 +153,9 @@ func isWithinMcpServerBounds(parsed: in ParsedMcpServer): Bool {
   if parsed.env.length.toInt() > maxMcpEnvCount {
     return false
   }
+  if parsed.headers.length.toInt() > maxMcpHeaderCount {
+    return false
+  }
   var i = 0
   while i < parsed.args.length.toInt() {
     if parsed.args[i].length.toInt() > maxMcpFieldLen {
@@ -151,6 +172,15 @@ func isWithinMcpServerBounds(parsed: in ParsedMcpServer): Bool {
       return false
     }
     ei = ei + 1
+  }
+  var hi = 0
+  while hi < parsed.headers.length.toInt() {
+    val entry = parsed.headers[hi]
+    // Same bounds/shape/control-char check as env above, reused for headers.
+    if entry.length.toInt() == 0 or entry.length.toInt() > maxMcpFieldLen or not entry.contains("=") or entry.substring(0, 1) == "=" or CloudAgents.Text.containsControlChar(entry) {
+      return false
+    }
+    hi = hi + 1
   }
   return true
 }
@@ -179,7 +209,7 @@ pub func seedDefaultMcpServersIfEmpty(userId: in String): Unit {
             case Ok(None) -> {
               match CloudAgents.Repository.addMcpServer(
                 userId, parsed.name, parsed.transport, parsed.command, parsed.args, parsed.url, parsed.env,
-                parsed.enabled
+                parsed.enabled, parsed.headers
               ) {
                 case Ok(_) -> ()
                 case Err(_) -> ()

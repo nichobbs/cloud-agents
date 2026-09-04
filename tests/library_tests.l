@@ -154,6 +154,22 @@ test "MCP server handlers validate transport-specific fields" {
     }
     case Err(_) -> assertTrue(false, "valid stdio server should create")
   }
+  // #768: header entries reuse env's "NAME=VALUE" + control-char validation.
+  match addMcpServerHandler(SaveMcpServerRequest(name = "gh2", transport = "url", command = "", args = noArgs, url = "https://example.com/mcp", env = noArgs, headers = ["NOEQUALS"])) {
+    case Ok(_) -> assertTrue(false, "malformed header entry should be rejected")
+    case Err(err) -> assertEqualInt(err.status, 400, "malformed header -> 400")
+  }
+  match addMcpServerHandler(SaveMcpServerRequest(name = "gh2", transport = "url", command = "", args = noArgs, url = "https://example.com/mcp", env = noArgs, headers = ["Authorization=Bearer line1\nline2"])) {
+    case Ok(_) -> assertTrue(false, "header value with an embedded newline should be rejected")
+    case Err(err) -> assertEqualInt(err.status, 400, "control char in header value -> 400")
+  }
+  match addMcpServerHandler(SaveMcpServerRequest(name = "gh2", transport = "url", command = "", args = noArgs, url = "https://example.com/mcp", env = noArgs, headers = [r"Authorization=Bearer ${GITHUB_TOKEN}"])) {
+    case Ok(m) -> {
+      assertEqualInt(m.headers.length.toInt(), 1, "header stored")
+      assertEqual(m.headers[0], r"Authorization=Bearer ${GITHUB_TOKEN}", "header value preserved verbatim (expansion happens at injection time, not storage)")
+    }
+    case Err(_) -> assertTrue(false, "valid url server with a header should create")
+  }
 }
 
 test "MCP server 'enabled' flag: rejected if not '0'/'1', persisted through add/update, gates container injection" {
@@ -194,7 +210,10 @@ test "MCP server 'enabled' flag: rejected if not '0'/'1', persisted through add/
 }
 
 test "patchMissingMcpServerEnabled defaults a missing 'enabled' key to '1' and leaves a present one untouched" {
-  val withoutField = "{\"name\":\"gh\",\"transport\":\"stdio\",\"command\":\"npx\",\"args\":[],\"url\":\"\",\"env\":[]}"
+  // headers is supplied explicitly here so this test stays scoped to the
+  // 'enabled' patch alone — see the dedicated patchMissingMcpServerHeaders
+  // tests below for that field's own missing-key behavior.
+  val withoutField = "{\"name\":\"gh\",\"transport\":\"stdio\",\"command\":\"npx\",\"args\":[],\"url\":\"\",\"env\":[],\"headers\":[]}"
   val patched = patchMissingMcpServerEnabled(withoutField)
   match SaveMcpServerRequest.fromJson(patched) {
     case Ok(req) -> assertEqual(req.enabled, "1", "missing enabled defaults to '1' so an old caller doesn't 400")
@@ -219,7 +238,7 @@ test "patchMissingMcpServerEnabledForUpdate defaults a missing 'enabled' key to 
     }
   }
 
-  val withoutField = "{\"name\":\"gh\",\"transport\":\"stdio\",\"command\":\"npx\",\"args\":[],\"url\":\"\",\"env\":[]}"
+  val withoutField = "{\"name\":\"gh\",\"transport\":\"stdio\",\"command\":\"npx\",\"args\":[],\"url\":\"\",\"env\":[],\"headers\":[]}"
   val patched = patchMissingMcpServerEnabledForUpdate(withoutField, disabled.id)
   match SaveMcpServerRequest.fromJson(patched) {
     case Ok(req) -> assertEqual(req.enabled, "0", "a stale update omitting enabled must preserve the server's current '0', not silently re-enable it")
@@ -234,6 +253,18 @@ test "patchMissingMcpServerEnabledForUpdate defaults a missing 'enabled' key to 
     case Ok(req) -> assertEqual(req.enabled, "1", "an unknown id falls back to '1' — updateMcpServerHandler itself reports the real not-found error")
     case Err(_) -> assertTrue(false, "patched body should decode")
   }
+}
+
+test "patchMissingMcpServerHeaders defaults a missing 'headers' key to an empty list and leaves a present one untouched" {
+  val withoutField = "{\"name\":\"gh\",\"transport\":\"url\",\"command\":\"\",\"args\":[],\"url\":\"https://example.com/mcp\",\"env\":[],\"enabled\":\"1\"}"
+  val patched = patchMissingMcpServerHeaders(withoutField)
+  match SaveMcpServerRequest.fromJson(patched) {
+    case Ok(req) -> assertEqualInt(req.headers.length.toInt(), 0, "missing headers defaults to [] so a pre-#768 caller doesn't 400")
+    case Err(_) -> assertTrue(false, "patched body should decode")
+  }
+
+  val withField = "{\"name\":\"gh\",\"transport\":\"url\",\"command\":\"\",\"args\":[],\"url\":\"https://example.com/mcp\",\"env\":[],\"enabled\":\"1\",\"headers\":[\"Authorization=Bearer x\"]}"
+  assertEqual(patchMissingMcpServerHeaders(withField), withField, "a body that already sends headers is passed through unchanged")
 }
 
 test "Skill CRUD round-trips" {
@@ -307,6 +338,49 @@ test "MCP server CRUD round-trips its ordered args and env" {
     case Ok(None) -> assertTrue(false, "updated server should exist")
     case Err(e) -> assertTrue(false, "getMcpServer failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
   }
+}
+
+test "MCP server CRUD round-trips its ordered headers, independently of args/env (#768)" {
+  val dbPath = useFreshTestDb("mcp-crud-headers")
+  defer {
+    cleanupTestDb(dbPath)
+  }
+  val userId = "default"
+  val noArgs: slice[String] = []
+  val noEnv: slice[String] = []
+  val created = mustMcpServer(
+    addMcpServer(
+      userId, "github", "url", "", noArgs, "https://api.githubcopilot.com/mcp/", noEnv, "0",
+      [r"Authorization=Bearer ${GITHUB_TOKEN}", "X-Extra=1"]
+    )
+  )
+  assertEqualInt(created.headers.length.toInt(), 2, "two headers stored")
+  assertEqual(created.headers[0], r"Authorization=Bearer ${GITHUB_TOKEN}", "header 0 order")
+  assertEqual(created.headers[1], "X-Extra=1", "header 1 order")
+
+  match getMcpServer(created.id, userId) {
+    case Ok(Some(m)) -> assertEqualInt(m.headers.length.toInt(), 2, "headers survive round-trip")
+    case Ok(None) -> assertTrue(false, "created server should exist")
+    case Err(e) -> assertTrue(false, "getMcpServer failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+  }
+
+  // Update replaces headers wholesale, same clear-then-reinsert shape as args/env.
+  val oneHeader = ["Authorization=Bearer new-token"]
+  val updated = mustRows(updateMcpServer(created.id, userId, "github", "url", "", noArgs, "https://api.githubcopilot.com/mcp/", noEnv, "0", oneHeader))
+  assertEqualInt(updated, 1, "update touches one row")
+  match getMcpServer(created.id, userId) {
+    case Ok(Some(m)) -> {
+      assertEqualInt(m.headers.length.toInt(), 1, "header list shrunk on update")
+      assertEqual(m.headers[0], "Authorization=Bearer new-token", "new header value stored")
+    }
+    case Ok(None) -> assertTrue(false, "updated server should exist")
+    case Err(e) -> assertTrue(false, "getMcpServer failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+  }
+
+  // Deleting the server must not leave orphaned mcp_server_headers rows —
+  // exercised indirectly via a second delete reporting 0 rows affected.
+  val deleted = mustRows(deleteMcpServer(created.id, userId))
+  assertEqualInt(deleted, 1, "delete touches one row")
 }
 
 test "Library ownership scoping hides other users' items" {

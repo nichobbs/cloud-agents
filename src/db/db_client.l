@@ -1809,6 +1809,22 @@ pub func mcpServerEnvSchemaSql(): String {
     "value TEXT NOT NULL)"
 }
 
+/// DDL for a url-transport MCP server's literal HTTP header entries, each a
+/// full "Name=Value" string (e.g. "Authorization=Bearer ${GITHUB_TOKEN}"),
+/// same shape/validation as mcp_server_env (isValidMcpEnvEntry covers both —
+/// see src/handlers/library.l). Only meaningful for transport 'url'; a
+/// stdio-transport server simply has no rows here. Added for #768 (hosted
+/// remote MCP servers, e.g. GitHub's `https://api.githubcopilot.com/mcp/`,
+/// need an `Authorization` header docker/inject-library.sh's url-transport
+/// rendering previously had no way to emit).
+pub func mcpServerHeadersSchemaSql(): String {
+  return "CREATE TABLE IF NOT EXISTS mcp_server_headers (" + "id TEXT PRIMARY KEY, " +
+    "mcp_server_id TEXT NOT NULL, " +
+    "user_id TEXT NOT NULL, " +
+    "position TEXT NOT NULL, " +
+    "value TEXT NOT NULL)"
+}
+
 /// DDL for the join table naming which skills a profile grants.
 pub func profileSkillsSchemaSql(): String {
   return "CREATE TABLE IF NOT EXISTS profile_skills (" + "id TEXT PRIMARY KEY, " + "profile_id TEXT NOT NULL, " +
@@ -1851,6 +1867,10 @@ pub func mcpServerArgsServerIndexSql(): String {
 
 pub func mcpServerEnvServerIndexSql(): String {
   return "CREATE INDEX IF NOT EXISTS idx_mcp_server_env_server_id ON mcp_server_env(mcp_server_id)"
+}
+
+pub func mcpServerHeadersServerIndexSql(): String {
+  return "CREATE INDEX IF NOT EXISTS idx_mcp_server_headers_server_id ON mcp_server_headers(mcp_server_id)"
 }
 
 pub func profileSkillsProfileIndexSql(): String {
@@ -2126,6 +2146,36 @@ pub func selectMcpServerEnvSql(mcpServerId: in String, userId: in String): Strin
 
 pub func deleteMcpServerEnvSql(mcpServerId: in String, userId: in String): String {
   return "DELETE FROM mcp_server_env WHERE mcp_server_id = " + sqlLiteral(mcpServerId) + " AND user_id = " +
+    sqlLiteral(userId)
+}
+
+pub func insertMcpServerHeaderSql(
+  id: in String,
+  mcpServerId: in String,
+  userId: in String,
+  position: in String,
+  value: in String,
+): String {
+  return "INSERT INTO mcp_server_headers (id, mcp_server_id, user_id, position, value) VALUES (" + sqlLiteral(id) +
+    ", " +
+    sqlLiteral(mcpServerId) +
+    ", " +
+    sqlLiteral(userId) +
+    ", " +
+    sqlLiteral(position) +
+    ", " +
+    sqlLiteral(value) +
+    ")"
+}
+
+pub func selectMcpServerHeadersSql(mcpServerId: in String, userId: in String): String {
+  return "SELECT value FROM mcp_server_headers WHERE mcp_server_id = " + sqlLiteral(mcpServerId) + " AND user_id = " +
+    sqlLiteral(userId) +
+    " ORDER BY CAST(position AS INTEGER) ASC"
+}
+
+pub func deleteMcpServerHeadersSql(mcpServerId: in String, userId: in String): String {
+  return "DELETE FROM mcp_server_headers WHERE mcp_server_id = " + sqlLiteral(mcpServerId) + " AND user_id = " +
     sqlLiteral(userId)
 }
 
