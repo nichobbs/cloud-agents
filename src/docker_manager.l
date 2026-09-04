@@ -45,22 +45,6 @@ func encGetBytes(enc: in Encoding, s: in String): slice[Byte] = []
 @externTarget("System.Convert.ToBase64String")
 func toBase64(b: in slice[Byte]): String = ""
 
-// ─── BCL binding for a bounded pause between waitForContainer retry attempts
-// (#556) ───────────────────────────────────────────────────────────────────
-// Mirrors shim/src/transport.l's `sleepMillis` (CloudAgents.Shim.Transport) —
-// a proven, already-exercised `Thread.Sleep` extern binding that package uses
-// to pace its own long-poll retries against the host API. Bound locally here
-// rather than reused cross-package: docs/lyric/gotchas.md notes cross-package
-// `pub val`/extern reuse has its own sharp edges, and this package's own
-// base64Json binding above already follows the same locally-bound convention
-// for exactly that reason. Blocking (not `Task.Delay`) is fine here — this
-// binding is only ever called from `waitForContainer`, an `async func` that
-// already blocks step-by-step on `await waitContainer` each attempt, so
-// occupying the worker thread for a short pause changes nothing about its
-// concurrency model, only adds spacing between attempts.
-@externTarget("System.Threading.Thread.Sleep")
-func threadSleepMs(millis: in Int): Unit = ()
-
 extern type Process = "System.Diagnostics.Process"
 
 @externTarget("System.Diagnostics.Process.Start")
@@ -406,13 +390,15 @@ pub async func stopRunnerContainer(client: in DockerClient, containerId: in Stri
 // the process (#561 predates that discovery).
 val runWallClockCapMs = 1800000
 
-// Pause between waitForContainer's /wait retry attempts (#556): the retry
-// loop below previously fired attempts back-to-back with no delay — bounded
-// (20 attempts, 30-minute deadline) so not a correctness bug, but a
-// struggling Docker daemon got hammered with immediate retries instead of a
-// short breather. 1 second is negligible against both the attempt cap and
-// the wall-clock deadline, so it cannot meaningfully erode either bound.
+// Pause between waitForContainer's /wait retry attempts (#556): retries
+// previously fired back-to-back with no delay — bounded (20 attempts,
+// 30-minute deadline) so not a correctness bug, but a struggling Docker
+// daemon got hammered with immediate retries instead of a short breather. 1
+// second is negligible against both the attempt cap and the wall-clock
+// deadline, so it cannot meaningfully erode either bound.
 val containerWaitRetryDelayMs = 1000
+
+val maxContainerWaitAttempts = 20
 
 /// Wait for a container's process to exit before reading its output.
 ///
@@ -430,39 +416,62 @@ val containerWaitRetryDelayMs = 1000
 /// pattern documented on `CloudAgents.Repository.tickCountMs` above, so the
 /// same boundary condition is duplicated inline against
 /// `CloudAgents.Repository.tickCountMs()` instead.
+///
+/// The actual retry loop is `waitForContainerAttempt` below, recursive
+/// rather than a `while` loop (#635). This just computes the wall-clock
+/// deadline once and kicks off attempt 1.
 pub async func waitForContainer(client: in DockerClient, containerId: in String): Result[Unit, String] {
   val deadlineTickMs = CloudAgents.Repository.tickCountMs() + runWallClockCapMs
-  val maxAttempts = 20
-  var attempts = 0
-  var settled = false
-  var succeeded = false
-  var lastMessage = ""
-  while not settled {
-    attempts = attempts + 1
-    val waitRes = await waitContainer(client, containerId)
-    match waitRes {
-      case Ok(_) -> {
-        succeeded = true
-        settled = true
+  return await waitForContainerAttempt(client, containerId, 1, deadlineTickMs)
+}
+
+/// One `/wait` attempt for `waitForContainer`, retrying itself by recursing
+/// rather than looping (#635 — replaces a prior blocking `Thread.Sleep`
+/// between attempts with a real `await Std.Task.delay`).
+///
+/// #6249-SAFE SHAPE: each retry attempt is a fresh recursive call, and
+/// `attempt`/`deadlineTickMs` are carried as function PARAMETERS, never as a
+/// `val`/`var` local read after the delay await. This matters because this
+/// function body now has TWO different-callee awaits per attempt
+/// (`waitContainer`, then `Std.Task.delay`) — exactly the shape
+/// lyric-lang#6249 (docs/lyric/gotchas.md "Async") warns can silently lose a
+/// local's value, but which the doc also confirms is safe for a function
+/// *parameter*. `e.message` (the one local bound by the `match`) is only
+/// ever read BEFORE the delay await (to log/return on the non-retry path),
+/// never after it, so it never crosses the hazard. Proven both ways in a
+/// throwaway scratch project before this rewrite: `Std.Task.delay` really
+/// pauses (measured elapsed time close to the requested delay) and this
+/// exact recursive shape correctly threads attempt state through 3 retries
+/// to a delayed success, and separately through 3 exhausted retries to the
+/// final error, on the toolchain this project builds with (0.6.2); the
+/// older, `val`-loses-value shape of lyric-lang#6249 was also independently
+/// reconfirmed to still reproduce on lyric 0.4.36 in that same scratch
+/// session, which is why this function avoids it structurally rather than
+/// relying on the bug being fixed everywhere this project might build.
+async func waitForContainerAttempt(
+  client: in DockerClient,
+  containerId: in String,
+  attempt: in Int,
+  deadlineTickMs: in Int,
+): Result[Unit, String] {
+  match await waitContainer(client, containerId) {
+    case Ok(_) -> {
+      return Ok(value = ())
+    }
+    case Err(e) -> {
+      val retry = attempt < maxContainerWaitAttempts and CloudAgents.Repository.tickCountMs() < deadlineTickMs
+      if not retry {
+        println("WARNING: failed to wait for container " + containerId + ": " + e.message)
+        return Err(error = "Failed to wait for container: " + e.message)
       }
-      case Err(e) -> {
-        lastMessage = e.message
-        val retry = attempts < maxAttempts and CloudAgents.Repository.tickCountMs() < deadlineTickMs
-        if not retry {
-          settled = true
-        } else {
-          // Brief pause before the next attempt (#556) — see
-          // containerWaitRetryDelayMs's doc comment above.
-          threadSleepMs(containerWaitRetryDelayMs)
-        }
-      }
+      // Brief, non-blocking pause before the next attempt (#556, #635) —
+      // see containerWaitRetryDelayMs's doc comment above. Nothing bound in
+      // this frame is read after this await; the recursive call below reads
+      // only its own fresh parameters.
+      await Std.Task.delay(containerWaitRetryDelayMs)
+      return await waitForContainerAttempt(client, containerId, attempt + 1, deadlineTickMs)
     }
   }
-  if succeeded {
-    return Ok(value = ())
-  }
-  println("WARNING: failed to wait for container " + containerId + ": " + lastMessage)
-  return Err(error = "Failed to wait for container: " + lastMessage)
 }
 
 /// Delete the container.
