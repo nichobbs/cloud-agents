@@ -377,10 +377,16 @@ test "MCP server CRUD round-trips its ordered headers, independently of args/env
     case Err(e) -> assertTrue(false, "getMcpServer failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
   }
 
-  // Deleting the server must not leave orphaned mcp_server_headers rows —
-  // exercised indirectly via a second delete reporting 0 rows affected.
+  // Deleting the server must not leave orphaned mcp_server_headers rows (#1039):
+  // check the headers table directly, and confirm a second delete finds nothing.
   val deleted = mustRows(deleteMcpServer(created.id, userId))
   assertEqualInt(deleted, 1, "delete touches one row")
+  match CloudAgents.Sqlite.query(CloudAgents.Db.selectMcpServerHeadersSql(created.id, userId)) {
+    case Ok(rows) -> assertEqualInt(CloudAgents.Sqlite.getRowArrayLength(rows), 0, "no orphaned mcp_server_headers rows after delete")
+    case Err(e) -> assertTrue(false, "header query failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+  }
+  val deletedAgain = mustRows(deleteMcpServer(created.id, userId))
+  assertEqualInt(deletedAgain, 0, "second delete finds nothing")
 }
 
 test "Library ownership scoping hides other users' items" {
