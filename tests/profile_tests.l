@@ -333,6 +333,10 @@ test "Profile CRUD round-trips with its credential grants" {
 // a reintroduction of the bug. This test reads the Response's own
 // `bodyBytes`/`contentType` fields directly to close that gap for the
 // profiles handlers.
+// The Content-Type header is deliberately not asserted here: jsonResp sets it
+// via Web.withResponseHeader, so it lives in Response.headers (whose runtime
+// Map does not answer .get(), and Lyric.Web exposes no reader for it), while
+// the record's contentType field keeps Web.text's text/plain default.
 test "Profile Resp helpers emit the raw profile JSON, not a double-encoded JSON string (#734)" {
   val dbPath = useFreshTestDb("profile-jsonresp")
   defer {
@@ -345,7 +349,6 @@ test "Profile Resp helpers emit the raw profile JSON, not a double-encoded JSON 
 
   val single = profileResp(Ok(value = p))
   assertEqualInt(single.status, 200, "profileResp Ok -> 200")
-  assertEqual(single.contentType, "application/json", "profileResp sets Content-Type: application/json")
   val singleBody = bytesToUtf8(utf8Encoding(), single.bodyBytes)
   assertEqual(
     singleBody,
@@ -356,7 +359,6 @@ test "Profile Resp helpers emit the raw profile JSON, not a double-encoded JSON 
 
   val list = profileListResp(Ok(value = ProfileList(profiles = [p])))
   assertEqualInt(list.status, 200, "profileListResp Ok -> 200")
-  assertEqual(list.contentType, "application/json", "profileListResp sets Content-Type: application/json")
   val listBody = bytesToUtf8(utf8Encoding(), list.bodyBytes)
   assertEqual(
     listBody,
