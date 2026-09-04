@@ -1498,22 +1498,70 @@ pub func advanceRunOutputCache(prev: in RunOutputCacheEntry, logs: in String): R
 // entry IT just computed rather than trusting a racing read back from the
 // map. Evicted on the non-RUNNING branch below so it stays bounded by the
 // number of sessions currently RUNNING, not every session ever polled.
+// Keyed by parallel slices rather than a Map: Std.Collections.Map's
+// `Map.empty` does not resolve on Lyric >= 0.6.x (it lowers to a .NET
+// Dictionary with no `empty` member), and the cache is bounded by the number
+// of RUNNING sessions, so a linear scan is cheaper than the abstraction.
 protected type RunOutputCache {
-  var entries: Map[String, RunOutputCacheEntry] = Map.empty[String, RunOutputCacheEntry]()
+  var ids: slice[String] = []
+  var entries: slice[RunOutputCacheEntry] = []
+
+  entry slotOf(id: in String): Int {
+    var i = 0
+    while i < ids.length {
+      if ids[i] == id {
+        return i
+      }
+      i = i + 1
+    }
+    return -1
+  }
 
   entry get(id: in String): RunOutputCacheEntry {
-    match entries.get(id) {
-      case Some(e) -> e
-      case None -> RunOutputCacheEntry(offset = 0, nextSeq = 0.toLong(), lastHash = "", rendered = "")
+    val idx = slotOf(id)
+    if idx >= 0 {
+      return entries[idx]
     }
+    return RunOutputCacheEntry(offset = 0, nextSeq = 0.toLong(), lastHash = "", rendered = "")
   }
 
   entry put(id: in String, e: in RunOutputCacheEntry): Unit {
-    entries = entries.put(id, e)
+    val idx = slotOf(id)
+    if idx < 0 {
+      ids = ids.append(id)
+      entries = entries.append(e)
+      return
+    }
+    var nextEntries: slice[RunOutputCacheEntry] = []
+    var i = 0
+    while i < entries.length {
+      if i == idx {
+        nextEntries = nextEntries.append(e)
+      } else {
+        nextEntries = nextEntries.append(entries[i])
+      }
+      i = i + 1
+    }
+    entries = nextEntries
   }
 
   entry evict(id: in String): Unit {
-    entries = entries.remove(id)
+    val idx = slotOf(id)
+    if idx < 0 {
+      return
+    }
+    var nextIds: slice[String] = []
+    var nextEntries: slice[RunOutputCacheEntry] = []
+    var i = 0
+    while i < ids.length {
+      if i != idx {
+        nextIds = nextIds.append(ids[i])
+        nextEntries = nextEntries.append(entries[i])
+      }
+      i = i + 1
+    }
+    ids = nextIds
+    entries = nextEntries
   }
 }
 
