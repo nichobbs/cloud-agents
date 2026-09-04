@@ -4014,10 +4014,11 @@ pub func listScheduledJobs(userId: in String): Result[slice[ScheduledJob], Cloud
   return Ok(value = acc)
 }
 
-/// Every active job due to fire right now, system-wide — mirrors
-/// reapableWarmContainers' unscoped maintenance-scan shape.
-pub func dueScheduledJobs(): Result[slice[ScheduledJob], CloudAgents.Sqlite.DbError] {
-  val rows = CloudAgents.Sqlite.query(CloudAgents.Db.selectDueScheduledJobsSql(nowMillis()))?
+/// Every active job due to fire right now, system-wide, capped at `limit`
+/// rows (#893) — mirrors reapableWarmContainers' unscoped maintenance-scan
+/// shape.
+pub func dueScheduledJobs(limit: in Int): Result[slice[ScheduledJob], CloudAgents.Sqlite.DbError] {
+  val rows = CloudAgents.Sqlite.query(CloudAgents.Db.selectDueScheduledJobsSql(nowMillis(), limit))?
   var acc: slice[ScheduledJob] = []
   var i = 0
   val len = CloudAgents.Sqlite.getRowArrayLength(rows)
@@ -4042,6 +4043,14 @@ pub func claimDueScheduledJob(id: in String, expectedNextRunAt: in String): Resu
 pub func restoreScheduledJobNextRunAt(id: in String, nextRunAt: in String): Result[Unit, CloudAgents.Sqlite.DbError] {
   CloudAgents.Sqlite.execute(CloudAgents.Db.restoreScheduledJobNextRunAtSql(id, nextRunAt))?
   return Ok(value = ())
+}
+
+/// Startup recovery sweep (#882) for jobs left claimed-but-never-resolved by
+/// a host crash/restart mid-run (see recoverStrandedScheduledJobsSql).
+/// Returns the number of rows recovered. Called once at startup, mirroring
+/// CloudAgents.SessionStore.recoverDanglingSessions.
+pub func recoverStrandedScheduledJobs(): Result[Int, CloudAgents.Sqlite.DbError] {
+  return CloudAgents.Sqlite.execute(CloudAgents.Db.recoverStrandedScheduledJobsSql(nowMillis()))
 }
 
 /// Attach a session to a job on its first run (or immediately, for a job an
@@ -4073,7 +4082,13 @@ pub func markScheduledJobCompleted(id: in String, firedAt: in String): Result[Un
 }
 
 /// Update a job's mutable fields. Returns the affected row count (0 means no
-/// such job under this owner).
+/// such job under this owner). `writeNextRunAt` (#891) controls whether
+/// `next_run_at` is written at all: the caller (CloudAgents.Jobs.updateJobHandler)
+/// passes `false` for an ordinary edit that doesn't touch the schedule, so a
+/// next_run_at value this same UPDATE would otherwise echo straight back
+/// (including a concurrent triggerDueJobsHandler claim's transient empty
+/// sentinel) is left alone instead of being permanently pinned to whatever
+/// this request happened to read.
 pub func updateScheduledJob(
   id: in String,
   userId: in String,
@@ -4084,6 +4099,7 @@ pub func updateScheduledJob(
   intervalSeconds: in String,
   nextRunAt: in String,
   status: in String,
+  writeNextRunAt: in Bool,
 ): Result[Int, CloudAgents.Sqlite.DbError] {
   return CloudAgents.Sqlite.execute(
     CloudAgents.Db.updateScheduledJobSql(
@@ -4095,7 +4111,8 @@ pub func updateScheduledJob(
       runAt,
       intervalSeconds,
       nextRunAt,
-      status
+      status,
+      writeNextRunAt
     )
   )
 }

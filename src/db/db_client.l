@@ -3582,14 +3582,20 @@ pub func selectScheduledJobsByUserSql(userId: in String): String {
     " ORDER BY created_at DESC"
 }
 
-/// Every ACTIVE job whose next_run_at has arrived, earliest-due first.
-/// System-wide (unscoped by user) — the maintenance endpoint spans every
-/// tenant, mirroring selectReapableWarmSql's unscoped maintenance shape.
-pub func selectDueScheduledJobsSql(nowMillis: in String): String {
+/// Every ACTIVE job whose next_run_at has arrived, earliest-due first,
+/// capped at `limit` rows (#893) — the caller (triggerDueJobsHandler) never
+/// attempts more than maxJobsPerTrigger of these in one call anyway, so an
+/// unbounded backlog (e.g. the external poller missed several cycles) no
+/// longer means loading and materializing every due job system-wide into a
+/// slice on every single poll tick just to use the first few. System-wide
+/// (unscoped by user) — the maintenance endpoint spans every tenant,
+/// mirroring selectReapableWarmSql's unscoped maintenance shape.
+pub func selectDueScheduledJobsSql(nowMillis: in String, limit: in Int): String {
   return "SELECT " + scheduledJobColumns +
     " FROM scheduled_jobs WHERE status = 'active' AND next_run_at <> '' AND CAST(next_run_at AS INTEGER) <= CAST(" +
     sqlLiteral(nowMillis) +
-    " AS INTEGER) ORDER BY CAST(next_run_at AS INTEGER) ASC"
+    " AS INTEGER) ORDER BY CAST(next_run_at AS INTEGER) ASC LIMIT " +
+    toString(limit)
 }
 
 /// Atomically claim a due job for firing: clears next_run_at (excluding it
@@ -3614,6 +3620,52 @@ pub func claimDueScheduledJobSql(id: in String, expectedNextRunAt: in String): S
 pub func restoreScheduledJobNextRunAtSql(id: in String, nextRunAt: in String): String {
   return "UPDATE scheduled_jobs SET next_run_at = " + sqlLiteral(nextRunAt) + " WHERE id = " + sqlLiteral(id) +
     " AND next_run_at = ''"
+}
+
+/// Startup recovery sweep (#882) for a job stranded mid-run by a host
+/// crash/restart: claimDueScheduledJobSql clears next_run_at to '' BEFORE
+/// runOneJob does any session/container work, and the only writers that ever
+/// restore it (restoreScheduledJobNextRunAtSql on a lost tryBeginRun race,
+/// markScheduledJobRanRecurringSql/markScheduledJobCompletedSql after the run
+/// returns) all require the same in-process triggerDueJobsHandler call to
+/// keep running to completion — a call that can legitimately block up to
+/// runWallClockCapMs (30 min) per job. A crash in that window leaves the row
+/// `status = 'active', next_run_at = ''` forever: selectDueScheduledJobsSql's
+/// `next_run_at <> ''` filter excludes it from every future poll, and
+/// `GET /api/jobs` still reports it `active` with no indication anything is
+/// wrong.
+///
+/// Mirrors recoverDanglingSessionsSql's role (reset a status startup-crash
+/// left inconsistent) but for the *schedule*, not the *session*: the job's
+/// own session, if the in-flight run left it RUNNING, is separately recovered
+/// by that exact call (recoverDanglingSessions), already invoked at startup —
+/// this sweep only ever needs to touch scheduled_jobs.next_run_at.
+///
+/// Only ever needs to run once, at startup, so there is no concurrent-claim
+/// race to guard against here the way restoreScheduledJobNextRunAtSql must:
+/// nothing else can be claiming (next_run_at = '' -> a real value) while the
+/// process that would run triggerDueJobsHandler is still starting up.
+///
+/// Recomputes a fresh next_run_at rather than trying to recover the exact
+/// value that was cleared (which is gone by the time this runs — the
+/// original due slot was only ever held in triggerDueJobsHandler's now-lost
+/// in-memory `due` snapshot):
+/// - A recurring job that has fired at least once: `last_run_at +
+///   interval_seconds` — the same arithmetic markScheduledJobRanRecurringSql
+///   uses, treating the stranded run as if it simply hadn't happened yet.
+/// - Anything else (a one-shot, or a recurring job stranded on its very
+///   first-ever run before last_run_at was ever set): `run_at`.
+/// Either way, clamped to never fall before `nowMillis` (the same MAX
+/// idiom markScheduledJobRanRecurringSql uses for an overrun run) so a
+/// long-crashed job is simply due again immediately on the next poll instead
+/// of computing a next_run_at already in the past.
+pub func recoverStrandedScheduledJobsSql(nowMillis: in String): String {
+  return "UPDATE scheduled_jobs SET next_run_at = CAST(MAX(" +
+    "CASE WHEN interval_seconds <> '' AND last_run_at <> '' " +
+    "THEN CAST(last_run_at AS INTEGER) + CAST(interval_seconds AS INTEGER) * 1000 " +
+    "ELSE CAST(run_at AS INTEGER) END, CAST(" +
+    sqlLiteral(nowMillis) +
+    " AS INTEGER)) AS TEXT) WHERE status = 'active' AND next_run_at = ''"
 }
 
 /// First-run session attachment: only ever meant to apply once, guarded on
@@ -3675,7 +3727,11 @@ pub func markScheduledJobCompletedSql(id: in String, firedAt: in String): String
 /// String parameter is written as-is — the caller
 /// (CloudAgents.Repository.updateScheduledJob) resolves "keep the existing
 /// value" before this is built, mirroring updateSessionModelSql's plain
-/// single-field-set shape.
+/// single-field-set shape. `writeNextRunAt` (#891) omits the `next_run_at`
+/// assignment entirely when false, so an ordinary edit that doesn't touch
+/// the schedule can't clobber a concurrent triggerDueJobsHandler claim's
+/// transient empty sentinel (or any other value) sitting in that column —
+/// only a caller that actually means to set a new next_run_at writes it.
 pub func updateScheduledJobSql(
   id: in String,
   userId: in String,
@@ -3686,15 +3742,16 @@ pub func updateScheduledJobSql(
   intervalSeconds: in String,
   nextRunAt: in String,
   status: in String,
+  writeNextRunAt: in Bool,
 ): String {
+  val nextRunAtAssignment = if writeNextRunAt { ", next_run_at = " + sqlLiteral(nextRunAt) } else { "" }
   return "UPDATE scheduled_jobs SET name = " + sqlLiteral(name) + ", prompt = " + sqlLiteral(prompt) + ", profile_id = " +
     sqlLiteral(profileId) +
     ", run_at = " +
     sqlLiteral(runAt) +
     ", interval_seconds = " +
     sqlLiteral(intervalSeconds) +
-    ", next_run_at = " +
-    sqlLiteral(nextRunAt) +
+    nextRunAtAssignment +
     ", status = " +
     sqlLiteral(status) +
     " WHERE id = " +

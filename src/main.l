@@ -1825,6 +1825,16 @@ pub func main(): Unit {
     case Err(e) -> println("WARNING: failed to recover dangling sessions: " + CloudAgents.Sqlite.dbErrorMessage(e))
   }
 
+  // Scheduled jobs stranded mid-run by the same crash/restart (#882): a
+  // claimed job's next_run_at is cleared to '' before any session/container
+  // work starts, and nothing but the same in-process trigger-jobs call ever
+  // restores it. Recompute a fresh due time for anything left in that state
+  // so it isn't permanently excluded from every future due-scan.
+  match CloudAgents.Repository.recoverStrandedScheduledJobs() {
+    case Ok(_) -> ()
+    case Err(e) -> println("WARNING: failed to recover stranded scheduled jobs: " + CloudAgents.Sqlite.dbErrorMessage(e))
+  }
+
   // Fail loudly at startup — not at first credential use — if ENCRYPTION_KEY
   // is set but unusable (wrong length, bad base64). A configured-but-broken
   // key would otherwise only surface when a user first stores a credential.
