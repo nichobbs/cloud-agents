@@ -31,7 +31,7 @@ pub record PutCredentialRequest {
 }
 
 /// Env-var names a credential must never claim, because injecting them into the
-/// runner container would either break it or hijack it. Two groups:
+/// runner container would either break it or hijack it. Three groups:
 ///   1. Vars the runner itself sets (see src/docker_manager.l) — a duplicate key
 ///      is appended after the runner's value and, since Docker keeps the last
 ///      value, would silently override something the container depends on.
@@ -40,6 +40,17 @@ pub record PutCredentialRequest {
 ///      LD_PRELOAD / LD_LIBRARY_PATH are worse — they let an injected value load
 ///      arbitrary shared objects into the runner, so they are blocked as a
 ///      hardening measure, not just for correctness.
+///   3. The whole CLOUD_AGENTS_ prefix (#1041): every var this project's own
+///      scripts read under that name is either a runner-computed input or a
+///      privileged control knob, never something a user should be able to
+///      supply — e.g. CLOUD_AGENTS_ENTRYPOINT_STAGE, which docker/entrypoint.sh
+///      used to (incorrectly) trust to decide whether it had already dropped
+///      root privilege; that decision is now gated on process identity
+///      (`id -u`) instead, so a same-named credential can no longer bypass the
+///      privilege drop, but the prefix is denylisted here too as defense in
+///      depth. Mirrors docker/inject-library.sh's expand_env_value deny-list,
+///      which already blocks the whole `CLOUD_AGENTS_[A-Z0-9_]*` prefix from
+///      envsubst substitution for the same reason.
 /// GITHUB_TOKEN is deliberately NOT reserved: uploading it is the whole point of
 /// the credential store, and the entrypoint renders it into mcp.json safely.
 func isReservedEnvName(name: in String): Bool {
@@ -54,7 +65,8 @@ func isReservedEnvName(name: in String): Bool {
     name == "PWD" or
     name == "IFS" or
     name == "LD_PRELOAD" or
-    name == "LD_LIBRARY_PATH"
+    name == "LD_LIBRARY_PATH" or
+    name.startsWith("CLOUD_AGENTS_")
 }
 
 /// Env-var name rules: a leading letter or underscore, then letters, digits

@@ -56,7 +56,9 @@ cleanup() {
     # The containers leave /work owned by claude-user's uid; delete it from
     # inside the image (root there) before removing the image itself.
     if docker image inspect "$IMAGE" >/dev/null 2>&1; then
-        in_image rm -rf /work/workspace /work/home /work/repo.git /work/seed >/dev/null 2>&1 || true
+        in_image rm -rf /work/workspace /work/home /work/repo.git /work/seed \
+            /work/stage-workspace /work/stage-home /work/nested-workspace /work/nested-home \
+            >/dev/null 2>&1 || true
         docker rmi -f "$IMAGE" >/dev/null 2>&1 || true
     fi
     rm -rf "$BUILD_CTX" "$WORK"
@@ -210,6 +212,29 @@ run_container() {
         "$IMAGE"
 }
 
+# Like run_container, but against caller-chosen workspace/home dirs and with
+# room for extra `-e`/other docker-run args (e.g. a spoofed
+# CLOUD_AGENTS_ENTRYPOINT_STAGE, or a different SESSION_ID) — used by the
+# #1041/#1042 regression cases below, which each need their own fresh
+# volumes rather than reusing message 1/2's already-initialized ones.
+run_container_ex() {
+    local prompt="$1" wsDir="$2" homeDir="$3"; shift 3
+    docker run --rm --network none \
+        -v "$wsDir:/workspace" \
+        -v "$homeDir:/home/claude-user" \
+        -v "$WORK/repo.git:/repo.git:ro" \
+        -e PROMPT="$prompt" \
+        -e REPO_URL="file:///repo.git" \
+        -e BRANCH="main" \
+        -e MODEL="test-model" \
+        -e HARNESS="claude" \
+        -e SESSION_ID="test-session-ex" \
+        -e NATIVE_SESSION_ID="native-session-ex" \
+        -e GITHUB_TOKEN="test-token-not-real" \
+        "$@" \
+        "$IMAGE"
+}
+
 # $1 is a path RELATIVE to the temp work dir (e.g. "workspace"), checked from
 # inside the image: the home volume ends up mode 700 and owned by
 # claude-user's uid, which an unprivileged host user cannot even descend
@@ -250,6 +275,64 @@ check "message 2: fake claude ran as claude-user's uid" contains "\"uid\":\"$CLA
 check "message 2: second invocation used --resume, not --session-id" contains '"--resume","native-session-1"' "$RUN2_OUT"
 check "message 2: /workspace is still entirely owned by claude-user's uid" is_owned_by workspace "$CLAUDE_USER_UID"
 
+# ── Negative case (#1041): a credential-injected CLOUD_AGENTS_ENTRYPOINT_STAGE
+# must not be able to fake "already dropped privilege" and skip the root
+# prelude (including its `exec runuser` re-exec) on a genuine first boot,
+# which always starts as root. The privilege drop is gated on `id -u`, which
+# nothing running inside the container can spoof, so the fake claude must
+# still report claude-user's uid regardless of this env var. ──────────────
+echo "test-entrypoint-privsep: negative test — spoofed CLOUD_AGENTS_ENTRYPOINT_STAGE=user on first boot (#1041)..." >&2
+STAGE_WS="$WORK/stage-workspace"
+STAGE_HOME="$WORK/stage-home"
+mkdir -p "$STAGE_WS" "$STAGE_HOME"
+stage_status=0
+STAGE_OUT="$(run_container_ex "hello" "$STAGE_WS" "$STAGE_HOME" -e CLOUD_AGENTS_ENTRYPOINT_STAGE=user)" || stage_status=$?
+check "negative: container exits 0 even with a spoofed CLOUD_AGENTS_ENTRYPOINT_STAGE=user" test "$stage_status" -eq 0
+check "negative: fake claude still ran as claude-user's uid, not root" \
+    contains "\"uid\":\"$CLAUDE_USER_UID\"" "$STAGE_OUT"
+check "negative: root prelude still ran (host CA/vault/heal steps not skipped) -- /workspace is claude-user-owned" \
+    is_owned_by stage-workspace "$CLAUDE_USER_UID"
+check "negative: root prelude still ran -- home volume is claude-user-owned" \
+    is_owned_by stage-home "$CLAUDE_USER_UID"
+
+# ── Content-aware /workspace heal (#1042): a workspace whose TOP LEVEL is
+# already claude-user-owned (as a fresh named volume is seeded from the
+# image) but which has a NESTED root-owned file/dir left over from a session
+# killed mid-run before an older entrypoint's recursive chown ever completed
+# must still be healed, not skipped by a top-level-only ownership check. ────
+echo "test-entrypoint-privsep: pre-seeded nested root-owned file heals on boot (#1042)..." >&2
+NESTED_WS="$WORK/nested-workspace"
+NESTED_HOME="$WORK/nested-home"
+mkdir -p "$NESTED_WS" "$NESTED_HOME"
+# Clone as root (in_image's default), then chown the whole checkout to
+# claude-user's uid so the TOP LEVEL (and everything else) reads
+# claude-user — matching how a fresh named volume is seeded from the image —
+# before planting one NESTED root-owned file/dir back on top, simulating a
+# session whose container was killed mid-run before an older entrypoint's
+# recursive chown ever got to it.
+# git's safe.directory only ever comes from --global/--system scope, never
+# from -c (deliberately, since -c is itself attacker-influenceable) — so the
+# exception has to be a real (throwaway; this container is --rm) --global
+# write in the SAME invocation as the clone.
+in_image sh -c 'git config --global --add safe.directory /work/repo.git && git clone -q /work/repo.git /work/nested-workspace'
+in_image chown -R "$CLAUDE_USER_UID:$CLAUDE_USER_UID" /work/nested-workspace /work/nested-home
+in_image mkdir -p /work/nested-workspace/some-root-owned-dir
+in_image sh -c 'echo root-owned > /work/nested-workspace/some-root-owned-dir/stray-file'
+# (a plain `bash -c` here would not see the `in_image` shell function or
+# $WORK/$CLAUDE_USER_UID from a fresh subshell, so this uses a real function.)
+nested_dir_is_root_owned() {
+    [ -n "$(in_image find /work/nested-workspace/some-root-owned-dir -not -user "$CLAUDE_USER_UID" 2>/dev/null)" ]
+}
+check "pre-seed sanity: the nested file starts root-owned, not claude-user" nested_dir_is_root_owned
+nested_status=0
+run_container_ex "resume after mid-run kill" "$NESTED_WS" "$NESTED_HOME" \
+    -e SESSION_ID="test-session-nested" -e NATIVE_SESSION_ID="native-session-nested" >/dev/null || nested_status=$?
+check "nested heal: container exits 0" test "$nested_status" -eq 0
+check "nested heal: the pre-seeded nested file is now claude-user-owned (#1042)" \
+    is_owned_by nested-workspace/some-root-owned-dir "$CLAUDE_USER_UID"
+check "nested heal: the whole workspace is claude-user-owned" \
+    is_owned_by nested-workspace "$CLAUDE_USER_UID"
+
 # ── Inspect mode: unrelated to the privilege drop above, must keep behaving
 # exactly as before (root, no home volume, network none) ────────────────────
 echo "test-entrypoint-privsep: inspect mode..." >&2
@@ -261,12 +344,27 @@ check "inspect mode: still prints its OK marker" contains "CLOUD_AGENTS_INSPECT_
 check "inspect mode: still prints its section marker" contains "===CLOUD_AGENTS_SECTION===" "$INSPECT_OUT"
 
 # ── grep-pins: the real entrypoint must still carry the privilege-drop shape ──
-check "entrypoint.sh still gates the root prelude on CLOUD_AGENTS_ENTRYPOINT_STAGE" \
-    grep -q 'CLOUD_AGENTS_ENTRYPOINT_STAGE' "$ENTRYPOINT"
+# The gate itself must be process identity (`id -u`), NOT the
+# CLOUD_AGENTS_ENTRYPOINT_STAGE env var (#1041: that var is attacker-
+# controllable via a same-named stored credential). The var is still exported
+# below as a purely informational marker, but must never be the condition.
+check "entrypoint.sh gates the root prelude on process identity (id -u), not an env var (#1041)" \
+    grep -qF 'if [ "$(id -u)" -eq 0 ]; then' "$ENTRYPOINT"
+check "entrypoint.sh no longer gates the root prelude on CLOUD_AGENTS_ENTRYPOINT_STAGE (#1041)" \
+    bash -c "! grep -qF 'if [ \"\${CLOUD_AGENTS_ENTRYPOINT_STAGE:-}\" != \"user\" ]; then' '$ENTRYPOINT'"
+check "entrypoint.sh still exports CLOUD_AGENTS_ENTRYPOINT_STAGE as an informational marker" \
+    grep -qF 'export CLOUD_AGENTS_ENTRYPOINT_STAGE=user' "$ENTRYPOINT"
 check "entrypoint.sh still re-execs itself as claude-user" \
     grep -q -- 'exec runuser -u claude-user -m -- "\$0"' "$ENTRYPOINT"
 check "entrypoint.sh no longer wraps the final claude invocation in runuser" \
     bash -c "! grep -q -- 'runuser -u claude-user -m -- claude ' '$ENTRYPOINT'"
+# The /workspace heal must be content-aware (#1042), not top-level-only.
+check "entrypoint.sh's /workspace heal is content-aware (find ! -user), not top-level-only (#1042)" \
+    grep -qF 'find /workspace ! -user claude-user -print -quit' "$ENTRYPOINT"
+# The root-only git safe.directory write must not fall back to --global
+# (#1044: that fallback could poison the shared home volume's .gitconfig).
+check "entrypoint.sh's root-only git safe.directory has no --global fallback (#1044)" \
+    bash -c "! grep -qF 'git config --system --add safe.directory /workspace >/dev/null 2>&1 || git config --global' '$ENTRYPOINT'"
 
 if [ "$fails" -ne 0 ]; then
     echo "test-entrypoint-privsep: $fails check(s) failed" >&2

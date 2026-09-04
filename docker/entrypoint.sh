@@ -182,10 +182,23 @@ fi
 # create-fallback-branch.sh, mcp.json/settings.json rendering,
 # inject-library.sh, the marker file, and the final harness invocation — now
 # runs as claude-user instead, via the chown-then-re-exec at the end of this
-# block. CLOUD_AGENTS_ENTRYPOINT_STAGE=user marks that second pass (the
-# re-exec below sets it) so it skips straight past this whole block instead
-# of repeating it.
-if [ "${CLOUD_AGENTS_ENTRYPOINT_STAGE:-}" != "user" ]; then
+# block.
+#
+# Gated on actual process identity (`id -u`), NOT an env var (#1041): an env
+# var here would be attacker-controllable — a user can store a credential
+# named CLOUD_AGENTS_ENTRYPOINT_STAGE with value "user", which
+# src/runner_env.l's withCredentialEnvs injects verbatim as a container env
+# var, and on first boot (which always starts as root; docker/Dockerfile has
+# no `USER claude-user`) that would make this check false and skip the ENTIRE
+# prelude — including the `exec runuser` re-exec below — leaving the clone,
+# config rendering, inject-library.sh and the final `claude` invocation all
+# running as root. `id -u` cannot be spoofed from inside the container and is
+# self-terminating: it reads 0 only until the re-exec below actually drops
+# privilege. CLOUD_AGENTS_ENTRYPOINT_STAGE is still exported below as a
+# purely informational marker (logs/tooling may reference it) but MUST NOT
+# gate this branch; it is also denylisted from user-stored credentials
+# (src/handlers/credentials.l isReservedEnvName) as defense in depth.
+if [ "$(id -u)" -eq 0 ]; then
 
     # If a host-provided CA certificate bundle is mounted at /etc/host-ca.pem,
     # register it in the container's system CA trust store so that curl, git, and Node
@@ -223,7 +236,20 @@ if [ "${CLOUD_AGENTS_ENTRYPOINT_STAGE:-}" != "user" ]; then
     # claude-user, once this script hands off to it below — regardless of
     # whatever UID currently owns the volume (e.g. host-populated content
     # with a foreign UID, or a pre-existing checkout from before this fix).
-    git config --system --add safe.directory /workspace >/dev/null 2>&1 || git config --global --add safe.directory /workspace >/dev/null 2>&1 || true
+    #
+    # No `--global` fallback here (#1044): this still runs as root, and
+    # HOME=/home/claude-user is a volume SHARED across every session for this
+    # user+harness. If `--system` ever failed, a `--global` fallback would
+    # create a root-owned $HOME/.gitconfig on that shared volume — and stage 2
+    # below (claude-user) always writes `git config --global
+    # credential.helper` unconditionally, which would then fail EACCES under
+    # `set -euo pipefail` and abort every future run for that user+harness,
+    # since /home/claude-user's ownership heal above is itself top-level-only
+    # and would never single out that one file once the top level already
+    # reads claude-user. `--system` writes to root-owned /etc/gitconfig, which
+    # this root prelude can always write to, so there is nothing for a
+    # fallback to usefully cover.
+    git config --system --add safe.directory /workspace >/dev/null 2>&1 || true
 
     # Restore a Claude subscription (OAuth) login from the vault on a fresh home
     # volume. A subscription login is a ~/.claude directory, not an API key, so it
@@ -267,17 +293,26 @@ EOF
     fi
 
     # Hand off to claude-user for everything else (#652). chown /workspace
-    # ONCE, guarded the same way as /home/claude-user above — after this
-    # first heal nothing writes into /workspace as root ever again, since
-    # every step from here down (clone, reconcile-repos.sh,
-    # create-fallback-branch.sh, the mcp.json/settings.json rendering,
-    # inject-library.sh, the marker file, the final `claude` exec) runs as
-    # claude-user, so there is no more root-owned churn to chown away
-    # afterward the way the old unconditional end-of-script chown had to.
-    # This also self-heals a workspace left root-owned by a container built
-    # before this fix (or by this container's own inspect-mode path, which
-    # intentionally stays root — see the top of this file).
-    if [ "$(stat -c '%U' /workspace 2>/dev/null || echo '?')" != "claude-user" ]; then
+    # ONCE, guarded — after this first heal nothing writes into /workspace as
+    # root ever again, since every step from here down (clone,
+    # reconcile-repos.sh, create-fallback-branch.sh, the mcp.json/
+    # settings.json rendering, inject-library.sh, the marker file, the final
+    # `claude` exec) runs as claude-user, so there is no more root-owned churn
+    # to chown away afterward the way the old unconditional end-of-script
+    # chown had to.
+    #
+    # Content-aware, not top-level-only (#1042): /workspace is a per-session
+    # named volume whose top level is seeded claude-user-owned from the image
+    # the moment the volume is first created (docker/Dockerfile), so a
+    # top-level-only check reads "claude-user" even when files NESTED inside
+    # it are still root-owned — e.g. a session whose container was killed
+    # mid-run (timeout, stopRunnerContainer, host restart, OOM) before this
+    # fix's predecessor's old unconditional end-of-script `chown -R` ran, or a
+    # workspace left root-owned by a container built before this fix. `find
+    # ... -print -quit` stops at the first offender, so this stays cheap on
+    # the common case (nothing to heal) while still catching nested-only
+    # staleness that a bare top-level `stat` would miss and permanently brick.
+    if [ -n "$(find /workspace ! -user claude-user -print -quit 2>/dev/null)" ]; then
         chown -R claude-user:claude-user /workspace || true
     fi
 

@@ -125,12 +125,29 @@ register_callbacks_mcp "gemini" "$WS"
 check "exclude: gemini settings listed"       bash -c "grep -qxF '/.gemini/settings.json' '$WS/.git/info/exclude'"
 register_callbacks_mcp "codex" "$WS"
 check "exclude: codex config listed"          bash -c "grep -qxF '/.codex/config.toml' '$WS/.git/info/exclude'"
-# Inactive registration never adds exclusions (#813).
+# The exclusion is now added UNCONDITIONALLY, even on an inactive/callbacks-off
+# run (#1045): this same file carries the live callback token once callbacks
+# DO become active for a later message, so a session that starts with
+# callbacks off (and might `git add -A && git push` before they ever turn on)
+# must not be left able to catch a token a later message writes here. This
+# supersedes the old #813 behavior, which deliberately withheld the exclusion
+# on an inactive run — that left exactly the gap #1045 is about.
 WS2="$(mktemp -d)"
 git -C "$WS2" init -q
 dead_env
 register_callbacks_mcp "opencode" "$WS2"
-check "exclude: inactive run adds no exclusion" bash -c "! grep -qxF '/opencode.json' '$WS2/.git/info/exclude' 2>/dev/null"
+check "exclude: inactive run still excludes opencode.json (#1045)" \
+  bash -c "grep -qxF '/opencode.json' '$WS2/.git/info/exclude'"
+register_callbacks_mcp "gemini" "$WS2"
+check "exclude: inactive run still excludes gemini settings (#1045)" \
+  bash -c "grep -qxF '/.gemini/settings.json' '$WS2/.git/info/exclude'"
+register_callbacks_mcp "codex" "$WS2"
+check "exclude: inactive run still excludes codex config (#1045)" \
+  bash -c "grep -qxF '/.codex/config.toml' '$WS2/.git/info/exclude'"
+# And no token/entry is actually written while inactive (unchanged: only the
+# exclusion moved, not the write-gating).
+check "exclude: inactive run still writes no cloud-agents entry" \
+  bash -c "! jq -e '.mcp[\"cloud-agents\"]' '$WS2/opencode.json' >/dev/null 2>&1"
 rm -rf "$WS" "$WS2"
 
 # ── gitfile checkout (worktree-style .git FILE) still guards the token (#823) ─
@@ -200,10 +217,17 @@ rm -rf "$WS"
 
 # ── Flag off ("0") suppresses registration even with a token ─────────────────
 WS="$(mktemp -d)"
+git -C "$WS" init -q
 live_env
 export CLOUD_AGENTS_MCP_CALLBACKS=0
 register_callbacks_mcp "opencode" "$WS"
 check "flag=0: no entry written"              bash -c "! jq -e '.mcp[\"cloud-agents\"]' '$WS/opencode.json' >/dev/null 2>&1"
+# The explicit callbacks-off case ("0", not just a missing token) must ALSO
+# get the unconditional exclusion (#1045) — the flag can flip back on for a
+# later message on the same workspace, at which point the token starts
+# landing in this same file.
+check "flag=0: opencode.json is still git-excluded (#1045)" \
+  bash -c "grep -qxF '/opencode.json' '$WS/.git/info/exclude'"
 rm -rf "$WS"
 
 rm -rf "$BINDIR"

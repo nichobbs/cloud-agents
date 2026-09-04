@@ -264,6 +264,34 @@ if [ "$HAVE_ENVSUBST" -eq 1 ]; then
 else
   check "codex header value left literal without envsubst"  grep -qF '${GITHUB_TOKEN}' "$WS/.codex/config.toml"
 fi
+# ── Real TOML-parse assertion (#1046) ────────────────────────────────────────
+# The `http_headers = {...}` inline table above is hand-joined from
+# jq-@json-escaped key/value pairs (render_mcp_codex), not built with a TOML
+# serializer — the only prior coverage was the two `grep`s above, which
+# confirm the substring appears but not that the result actually parses as
+# TOML. Guarded on python3's tomllib the same way HAVE_ENVSUBST guards on
+# envsubst: skip rather than fail when it's unavailable.
+if command -v python3 >/dev/null 2>&1 && python3 -c 'import tomllib' >/dev/null 2>&1; then
+  expected_header="Bearer test-token-value"
+  if [ "$HAVE_ENVSUBST" -ne 1 ]; then
+    expected_header='Bearer ${GITHUB_TOKEN}'
+  fi
+  toml_ok=0
+  python3 - "$WS/.codex/config.toml" "$expected_header" <<'PYEOF' || toml_ok=1
+import sys
+import tomllib
+
+path, expected = sys.argv[1], sys.argv[2]
+with open(path, "rb") as f:
+    cfg = tomllib.load(f)
+headers = cfg["mcp_servers"]["cloud-agents-lib-github"]["http_headers"]
+sys.exit(0 if headers.get("Authorization") == expected else 1)
+PYEOF
+  check "codex http_headers is real, parseable TOML with the expected Authorization value (#1046)" \
+    test "$toml_ok" -eq 0
+else
+  echo "skip codex http_headers TOML-parse check (python3 tomllib unavailable)"
+fi
 rm -rf "$WS"
 
 if [ "$fails" -gt 0 ]; then
