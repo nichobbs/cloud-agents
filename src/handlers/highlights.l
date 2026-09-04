@@ -356,12 +356,15 @@ pub func refreshHighlightsHandler(id: in String): Result[RefreshHighlightsRespon
   // doing exactly that pattern (`nowMillisLong() - startedAt > ...`) once
   // per iteration. `TickCount` wraps to negative roughly every 24.9 days of
   // host uptime; irrelevant here since maxRefreshMillis is 90 seconds.
-  val startedAt = Env.get_TickCount()
+  // Shared with CloudAgents.Docker via CloudAgents.Repository.tickCountMs
+  // (#863) rather than this package binding its own copy of
+  // System.Environment.get_TickCount.
+  val startedAt = CloudAgents.Repository.tickCountMs()
   while i < msgs.length and scanned < maxMessagesPerRefresh {
     // Wall-clock budget (#760): don't START another summarizer call once the
     // budget is spent — the cursor already reflects everything finished, so
     // the next refresh resumes exactly here.
-    if Env.get_TickCount() - startedAt > maxRefreshMillis {
+    if CloudAgents.Repository.tickCountMs() - startedAt > maxRefreshMillis {
       return Ok(
         RefreshHighlightsResponse(
           status = "ok",

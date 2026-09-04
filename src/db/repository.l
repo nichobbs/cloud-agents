@@ -115,6 +115,24 @@ pub func nowMillisLong(): Long {
   return dtoToUnixMillis(dtoUtcNow())
 }
 
+/// Milliseconds since system start, as an `Int` (`System.Environment.
+/// TickCount`, NOT the 64-bit `TickCount64`) — deliberately `Int`, not
+/// `Long`: a repeated `Long` (Int64) subtract-and-compare in a large/complex
+/// function can crash the process with an AccessViolationException (see
+/// docs/BUILD.md, docs/lyric/gotchas.md). `TickCount` wraps to negative
+/// roughly every 24.9 days of host uptime; acceptable for the short
+/// (seconds-to-minutes) wall-clock budgets this is used for — understating a
+/// timeout on the rare wraparound is far cheaper than the crash this works
+/// around.
+///
+/// Shared (#863) so every wall-clock-budget caller — `CloudAgents.Docker`'s
+/// `waitForContainer`/`streamSessionMessage` and `CloudAgents.Highlights`'s
+/// `refreshHighlightsHandler` — binds `System.Environment.get_TickCount`
+/// exactly once instead of each package re-declaring its own copy of the
+/// same extern binding and safety-margin reasoning.
+@externTarget("System.Environment.get_TickCount")
+pub func tickCountMs(): Int = 0
+
 extern type CultureInfo = "System.Globalization.CultureInfo"
 
 @externTarget("System.Globalization.CultureInfo.get_InvariantCulture")

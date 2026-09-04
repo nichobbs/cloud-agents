@@ -951,6 +951,58 @@ test "runOutputRenderedDeltaJson resyncs on an offset past the total" {
   )
 }
 
+// ── advanceRunOutputCache: getRunOutput's reconnect cache (#974) ───────────────
+// getRunOutput's RUNNING branch used to re-render the ENTIRE accumulated
+// container log from byte 0 on every call; advanceRunOutputCache carries the
+// render forward incrementally instead. Pure, so it's covered directly
+// without Docker (same reasoning as parseOutputOffset/runOutputDeltaJson above).
+func emptyRunOutputCacheEntry(): RunOutputCacheEntry {
+  return RunOutputCacheEntry(offset = 0, nextSeq = 0.toLong(), lastHash = "", rendered = "")
+}
+
+test "advanceRunOutputCache renders a fresh log from an empty cache entry" {
+  val line = "{\"type\":\"assistant\",\"message\":{\"content\":[{\"type\":\"text\",\"text\":\"hi\"}]}}\n"
+  val updated = advanceRunOutputCache(emptyRunOutputCacheEntry(), line)
+  assertEqual(updated.rendered, "hi", "first call renders the complete line's visible text")
+  assertEqualInt(updated.offset, line.length.toInt(), "offset advances past the complete line")
+}
+
+test "advanceRunOutputCache only re-parses bytes appended since the cached offset" {
+  val first = "{\"type\":\"assistant\",\"message\":{\"content\":[{\"type\":\"text\",\"text\":\"one\"}]}}\n"
+  val afterFirst = advanceRunOutputCache(emptyRunOutputCacheEntry(), first)
+  val second = "{\"type\":\"assistant\",\"message\":{\"content\":[{\"type\":\"text\",\"text\":\"two\"}]}}\n"
+  val full = first + second
+  val afterSecond = advanceRunOutputCache(afterFirst, full)
+  assertEqual(afterSecond.rendered, "onetwo", "accumulated rendered text carries the first call's text forward")
+  assertEqualInt(afterSecond.offset, full.length.toInt(), "offset advances to the new total")
+}
+
+test "advanceRunOutputCache leaves a partial trailing line unconsumed" {
+  val complete = "{\"type\":\"assistant\",\"message\":{\"content\":[{\"type\":\"text\",\"text\":\"done\"}]}}\n"
+  val afterComplete = advanceRunOutputCache(emptyRunOutputCacheEntry(), complete)
+  val withPartialTail = complete + "{\"type\":\"assis"
+  val afterPartial = advanceRunOutputCache(afterComplete, withPartialTail)
+  assertEqual(afterPartial.rendered, "done", "the partial trailing line contributes no text yet")
+  assertEqualInt(afterPartial.offset, complete.length.toInt(), "offset stays at the last complete line boundary")
+}
+
+test "advanceRunOutputCache is a no-op when the log has not grown" {
+  val line = "{\"type\":\"assistant\",\"message\":{\"content\":[{\"type\":\"text\",\"text\":\"hi\"}]}}\n"
+  val afterFirst = advanceRunOutputCache(emptyRunOutputCacheEntry(), line)
+  val again = advanceRunOutputCache(afterFirst, line)
+  assertEqual(again.rendered, afterFirst.rendered, "unchanged log leaves the cached render unchanged")
+  assertEqualInt(again.offset, afterFirst.offset, "unchanged log leaves the cached offset unchanged")
+}
+
+test "advanceRunOutputCache re-renders from scratch when the log is shorter than cached (container restarted)" {
+  val line = "{\"type\":\"assistant\",\"message\":{\"content\":[{\"type\":\"text\",\"text\":\"before restart\"}]}}\n"
+  val beforeRestart = advanceRunOutputCache(emptyRunOutputCacheEntry(), line)
+  val restarted = "{\"type\":\"assistant\",\"message\":{\"content\":[{\"type\":\"text\",\"text\":\"new run\"}]}}\n"
+  val afterRestart = advanceRunOutputCache(beforeRestart, restarted)
+  assertEqual(afterRestart.rendered, "new run", "a shorter log resets the cache and re-renders from byte 0")
+  assertEqualInt(afterRestart.offset, restarted.length.toInt(), "offset tracks the new, shorter log")
+}
+
 test "Handler listSessions returns stored sessions" {
   val dbPath = useFreshTestDb("session-list")
   defer {

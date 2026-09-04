@@ -1,6 +1,7 @@
 package CloudAgents.Handlers
 
 import Std.Core
+import Std.Collections
 import Std.Errors
 import Std.File
 import Std.Json
@@ -1321,6 +1322,93 @@ pub func reapContainers(): Result[String, Web.ApiError] {
   return Ok(value = "{\"reaped\":" + toString(reaped) + "}")
 }
 
+// ─── getRunOutput reconnect cache (#974) ───────────────────────────────────
+// getRunOutput's RUNNING branch used to call renderFullLog on the ENTIRE
+// accumulated container log on every call — O(total log size so far) of
+// NDJSON parsing work per reconnect/poll, repeated on every reconnect during
+// a single run. RunOutputCacheEntry + advanceRunOutputCache below carry the
+// render forward incrementally instead, mirroring the same
+// offset/nextSeq/lastHash hash-chain cursor streamSessionMessage's poll loop
+// and getRunOutputFrom already use — a call only re-parses the log bytes
+// APPENDED since the last call for this session, not the whole log again.
+
+/// Cached render state for one session's getRunOutput reconnect path:
+/// `offset` is the raw container-log byte offset already rendered,
+/// `nextSeq`/`lastHash` are the NDJSON hash-chain cursor at that offset (as
+/// `CloudAgents.Capture.Render.renderLogDelta` threads them), and `rendered`
+/// is the accumulated visible transcript so far — what getRunOutput's
+/// response contract requires (the whole transcript, not just a delta).
+pub record RunOutputCacheEntry {
+  pub offset: Int = 0
+  pub nextSeq: Long = 0.toLong()
+  pub lastHash: String = ""
+  pub rendered: String = ""
+}
+
+/// Pure: advance `prev` against the CURRENT raw container log, returning the
+/// updated cache entry. `atEnd = false` throughout — like
+/// `runOutputRenderedDeltaJson`'s incremental path, this only ever runs while
+/// the session is RUNNING (the log may end mid-line), so a partial trailing
+/// NDJSON line is left unconsumed for the next call rather than parsed as if
+/// the run had finished (parsing a truncated line as final would also
+/// desync the offset — the completing bytes on a LATER call would then be
+/// fed to the parser as a new, unrelated line).
+///
+/// `logs` shorter than `prev.offset` means the container's log is no longer
+/// an extension of what was cached (e.g. a new run reused the session id) —
+/// re-rendered from scratch rather than treated as a delta. `logs` at
+/// exactly `prev.offset`, or a delta with no complete line yet, is a no-op:
+/// `prev` is returned unchanged (still correct, just not yet advanced).
+pub func advanceRunOutputCache(prev: in RunOutputCacheEntry, logs: in String): RunOutputCacheEntry {
+  val total = logs.length.toInt()
+  if total < prev.offset {
+    val rd = CloudAgents.Capture.Render.renderLogDelta(logs, 0, 0.toLong(), "", false)
+    return RunOutputCacheEntry(offset = rd.consumed, nextSeq = rd.nextSeq, lastHash = rd.lastHash, rendered = rd.displayText)
+  }
+  if total == prev.offset {
+    return prev
+  }
+  val rd = CloudAgents.Capture.Render.renderLogDelta(logs, prev.offset, prev.nextSeq, prev.lastHash, false)
+  if rd.consumed == 0 {
+    return prev
+  }
+  return RunOutputCacheEntry(
+    offset = prev.offset + rd.consumed,
+    nextSeq = rd.nextSeq,
+    lastHash = rd.lastHash,
+    rendered = prev.rendered + rd.displayText
+  )
+}
+
+// The live cache itself: one entry per currently-polled RUNNING session,
+// keyed by session id. Not thread-synchronized — a race between two
+// concurrent getRunOutput calls for the SAME session can only lose an
+// update (fall back to re-rendering more of the log next time), never
+// return wrong output to either caller, since each call always returns the
+// entry IT just computed rather than trusting a racing read back from the
+// map. Evicted on the non-RUNNING branch below so it stays bounded by the
+// number of sessions currently RUNNING, not every session ever polled.
+protected type RunOutputCache {
+  var entries: Map[String, RunOutputCacheEntry] = Map.empty[String, RunOutputCacheEntry]()
+
+  entry get(id: in String): RunOutputCacheEntry {
+    match entries.get(id) {
+      case Some(e) -> e
+      case None -> RunOutputCacheEntry(offset = 0, nextSeq = 0.toLong(), lastHash = "", rendered = "")
+    }
+  }
+
+  entry put(id: in String, e: in RunOutputCacheEntry): Unit {
+    entries = entries.put(id, e)
+  }
+
+  entry evict(id: in String): Unit {
+    entries = entries.remove(id)
+  }
+}
+
+val runOutputCache = RunOutputCache()
+
 /// The most recent AGENT-role message's content in `msgs` (oldest-first, as
 /// returned by CloudAgents.Repository.listMessages), or "" if there is none.
 /// Pure — pulled out of getRunOutput so it stays directly testable: the
@@ -1375,6 +1463,11 @@ pub func getRunOutput(id: in String): Result[String, Web.ApiError] {
       // creation — see an empty id and report "not running", causing the
       // client to stop polling for the whole run.
       if status != "RUNNING" {
+        // The run just ended (or was never running) — this session no longer
+        // needs its reconnect-cache entry (#974); drop it so the cache stays
+        // bounded by sessions currently RUNNING rather than growing over
+        // every session ever polled. A session with no entry is a no-op.
+        runOutputCache.evict(id)
         // Best-effort: a transcript lookup failure must not turn a completed
         // run's status poll into a 500 — fall back to "" the same as before,
         // but (#904) log it so a real DB problem on this path isn't silently
@@ -1399,11 +1492,16 @@ pub func getRunOutput(id: in String): Result[String, Web.ApiError] {
       }
       val logs = if containerId.length > 0 { CloudAgents.Docker.partialContainerLogs(containerId) } else { "" }
       // Render the NDJSON log to the visible assistant transcript the PWA expects,
-      // so the whole-log read-back path does not surface raw JSON.
-      val rendered = CloudAgents.Capture.Render.renderFullLog(logs)
+      // so the whole-log read-back path does not surface raw JSON. Incremental
+      // (#974): only the log bytes appended since the LAST getRunOutput call for
+      // this session are re-parsed, via the cached offset/hash-chain cursor,
+      // instead of re-parsing the whole accumulated log from byte 0 on every
+      // reconnect/poll.
+      val updated = advanceRunOutputCache(runOutputCache.get(id), logs)
+      runOutputCache.put(id, updated)
       // `length` is the raw log byte length — the cursor the incremental
       // /output/{offset} endpoint advances against.
-      return Ok(value = "{\"running\":\"true\",\"length\":\"" + toString(logs.length.toInt()) + "\",\"output\":\"" + CloudAgents.Streaming.jsonEscape(rendered) + "\"}")
+      return Ok(value = "{\"running\":\"true\",\"length\":\"" + toString(logs.length.toInt()) + "\",\"output\":\"" + CloudAgents.Streaming.jsonEscape(updated.rendered) + "\"}")
     }
   }
 }

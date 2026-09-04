@@ -60,7 +60,17 @@ test "SQL statements are scoped by owner" {
   assertTrue(updateSessionModelSql("s1", "u1", "m1").contains("AND user_id = 'u1'"), "model update scoped by owner")
   assertTrue(
     insertSessionSql("s1", "u1", "r", "b", "", "claude", "m", "n", "1000").contains("'IDLE'"),
-    "insert starts IDLE"
+    "insert defaults to IDLE when no status is given"
+  )
+  // #753: a caller-supplied status must actually be persisted, not silently
+  // discarded in favour of a hardcoded 'IDLE'.
+  assertTrue(
+    insertSessionSql("s1", "u1", "r", "b", "", "claude", "m", "n", "1000", "RUNNING").contains("'RUNNING'"),
+    "insert persists a caller-supplied status"
+  )
+  assertTrue(
+    not insertSessionSql("s1", "u1", "r", "b", "", "claude", "m", "n", "1000", "RUNNING").contains("'IDLE'"),
+    "insert does not fall back to IDLE when a status was supplied"
   )
   // Compare-and-clear: only clears the container id when it still matches, so a
   // late orphaned run can't wipe a newer run's container id (#45).

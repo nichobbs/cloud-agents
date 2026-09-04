@@ -261,7 +261,11 @@ pub func workspaceVolumeBindFor(userId: in String, sessionId: in String): String
 // since it lists this exact column set.
 val sessionColumns = "id, user_id, repo_url, branch, container_id, harness, model, native_session_id, status, created_at, last_message_at, is_archived, group_id, last_viewed_at, parent_session_id, forked_from_message_id"
 
-/// INSERT a new session row (status starts IDLE; last_message_at = created_at).
+/// INSERT a new session row (status defaults to IDLE; last_message_at =
+/// created_at). `status` (#753) lets a caller that already knows the
+/// session's real starting status (e.g. `makeAgentSession`'s own `status`
+/// parameter) persist it instead of the row always coming back IDLE
+/// regardless of what was requested.
 pub func insertSessionSql(
   id: in String,
   userId: in String,
@@ -272,6 +276,7 @@ pub func insertSessionSql(
   model: in String,
   nativeSessionId: in String,
   createdAt: in String,
+  status: in String = "IDLE",
 ): String {
   return "INSERT INTO sessions (" + sessionColumns + ") VALUES (" + sqlLiteral(id) + ", " + sqlLiteral(userId) + ", " +
     sqlLiteral(repoUrl) +
@@ -285,7 +290,9 @@ pub func insertSessionSql(
     sqlLiteral(model) +
     ", " +
     sqlLiteral(nativeSessionId) +
-    ", 'IDLE', " +
+    ", " +
+    sqlLiteral(status) +
+    ", " +
     sqlLiteral(createdAt) +
     ", " +
     sqlLiteral(createdAt) +

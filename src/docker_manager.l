@@ -111,19 +111,14 @@ func dockerClient(): DockerClient {
 @externTarget("System.Threading.Tasks.Task.Wait")
 func taskWaitMs[T](t: in T, timeoutMs: in Int): Bool = false
 
-/// Milliseconds since system start, as an `Int` (`System.Environment.
-/// TickCount`, NOT the 64-bit `TickCount64`) — deliberately `Int`, not
-/// `Long`: a repeated `Long` (Int64) subtract-and-compare in this package
-/// crashes the process with an AccessViolationException (see
-/// `streamSessionMessage`'s and `waitForContainer`'s workaround comments,
-/// docs/BUILD.md, docs/lyric/gotchas.md). `TickCount` wraps to negative
-/// roughly every 24.9 days of host uptime; a comparison spanning that wrap
-/// reads as "not yet elapsed" when it actually has. Acceptable here: the
-/// windows this bounds are 30 minutes at most (`runWallClockCapMs`), so
-/// hitting the exact wraparound instant is astronomically unlikely, and
-/// understating a timeout is far cheaper than the crash this works around.
-@externTarget("System.Environment.get_TickCount")
-func tickCountMs(): Int = 0
+// `CloudAgents.Repository.tickCountMs()` — an `Int` (not `Long`)
+// `System.Environment.TickCount` reading — is this package's wall-clock
+// budget primitive (`streamSessionMessage`'s and `waitForContainer`'s
+// workaround comments below, docs/BUILD.md, docs/lyric/gotchas.md explain
+// why `Int` not `Long`). Shared (#863) rather than bound locally here, so
+// this package and `CloudAgents.Highlights` call one extern binding instead
+// of each declaring its own copy of the same binding and safety-margin
+// reasoning.
 
 /// Docker image name for the given harness.
 func imageForHarness(harness: in String): String {
@@ -403,9 +398,10 @@ pub async func stopRunnerContainer(client: in DockerClient, containerId: in Stri
 }
 
 // 30-minute hard cap on a run's total wall-clock time (matches the old
-// runSessionMessage), as an `Int` millisecond count — see `tickCountMs`'s
-// doc comment above for why this is `Int`, not the `Long` this file used
-// to share between waitForContainer's retry deadline and
+// runSessionMessage), as an `Int` millisecond count — see
+// `CloudAgents.Repository.tickCountMs`'s doc comment for why this is `Int`,
+// not the `Long` this file used to share between waitForContainer's retry
+// deadline and
 // streamSessionMessage's run-timeout check before both were found to crash
 // the process (#561 predates that discovery).
 val runWallClockCapMs = 1800000
@@ -431,10 +427,11 @@ val containerWaitRetryDelayMs = 1000
 /// configure `DockerClient`'s HTTP timeout directly, so retrying is the
 /// only available mitigation. That function itself is NOT called here: its
 /// `Long`-typed parameters are exactly the AccessViolationException-crashing
-/// pattern documented on `tickCountMs` above, so the same boundary
-/// condition is duplicated inline against `tickCountMs()` instead.
+/// pattern documented on `CloudAgents.Repository.tickCountMs` above, so the
+/// same boundary condition is duplicated inline against
+/// `CloudAgents.Repository.tickCountMs()` instead.
 pub async func waitForContainer(client: in DockerClient, containerId: in String): Result[Unit, String] {
-  val deadlineTickMs = tickCountMs() + runWallClockCapMs
+  val deadlineTickMs = CloudAgents.Repository.tickCountMs() + runWallClockCapMs
   val maxAttempts = 20
   var attempts = 0
   var settled = false
@@ -450,7 +447,7 @@ pub async func waitForContainer(client: in DockerClient, containerId: in String)
       }
       case Err(e) -> {
         lastMessage = e.message
-        val retry = attempts < maxAttempts and tickCountMs() < deadlineTickMs
+        val retry = attempts < maxAttempts and CloudAgents.Repository.tickCountMs() < deadlineTickMs
         if not retry {
           settled = true
         } else {
@@ -786,6 +783,12 @@ pub func streamSessionMessage(
   // fetch), so a shorter interval just multiplies full-log refetches for a
   // long, chatty run without meaningfully improving perceived latency.
   while not finished and not clientGone and not timedOut {
+    // Capture the interval this tick actually waited on BEFORE pollMs is
+    // mutated below (reset to minPollMs on fresh output, or backed off via
+    // nextPollMs on a quiet tick) — the elapsedPollMs accumulator at the
+    // bottom of the loop must count the tick just waited, not the tick
+    // that's about to happen next (#704).
+    val ticked = pollMs
     finished = taskWaitMs(t, pollMs)
     if containerId.length == 0 {
       containerId = sessionContainerId(sessionId)
@@ -1014,8 +1017,12 @@ pub func streamSessionMessage(
     // 30-minute safety backstop (understating a timeout is far cheaper
     // than the crash this works around), but not a substitute for real
     // wall-clock timing if this cap's precision ever matters more. Revert
-    // to the cross-package `Long` comparison once fixed upstream.
-    elapsedPollMs = elapsedPollMs + pollMs
+    // to the cross-package `Long` comparison once fixed upstream. Accumulate
+    // `ticked` (captured at the top of this iteration, before pollMs was
+    // possibly reset/backed off above) rather than the now-possibly-mutated
+    // `pollMs`, so this counts the interval that was actually just waited on
+    // instead of the one planned for the NEXT tick (#704).
+    elapsedPollMs = elapsedPollMs + ticked
     if elapsedPollMs > runWallClockCapMs {
       timedOut = true
     }
@@ -1317,8 +1324,8 @@ pub func deleteWorkspaceVolume(userId: in String, sessionId: in String): Result[
 // commands over an existing checkout, so two minutes is generous (covers a
 // cold image + a large repo's first `git status`) while still bounding a
 // wedged daemon. An `Int` millisecond count for the same
-// AccessViolationException reason as runWallClockCapMs (see tickCountMs's
-// doc comment above).
+// AccessViolationException reason as runWallClockCapMs (see
+// CloudAgents.Repository.tickCountMs's doc comment above).
 val inspectWallClockCapMs = 120000
 
 /// Run a short-lived "inspect" container against a session's workspace
