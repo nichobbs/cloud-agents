@@ -170,6 +170,7 @@ jobs:
             scripts/test-opencode-entrypoint.sh \
             scripts/test-inspect-tree-fallback.sh \
             scripts/test-entrypoint-session-resume.sh \
+            scripts/test-entrypoint-privsep.sh \
             scripts/test-lyric-version-resolution.sh \
             scripts/test-split-ca-bundle.sh \
             scripts/test-mcp-server-injection.sh \

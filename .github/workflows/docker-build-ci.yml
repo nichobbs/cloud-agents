@@ -46,6 +46,19 @@ on:
       - 'docker/Dockerfile.antigravity'
       - 'shim/**'
       - 'deploy/api.Dockerfile'
+      - 'docker/entrypoint.sh'
+      - 'docker/reconcile-repos.sh'
+      - 'docker/create-fallback-branch.sh'
+      - 'docker/inject-library.sh'
+      - 'docker/render-branch-policy.sh'
+      - 'docker/register-callbacks-mcp.sh'
+      - 'docker/split-ca-bundle.sh'
+      - 'docker/mcp-callbacks.json.template'
+      - 'docker/settings.json.template'
+      - 'docker/settings-callbacks.json.template'
+      - 'docker/branch-policy-rules.md'
+      - 'docker/session-tools-guide.md'
+      - 'scripts/test-entrypoint-privsep.sh'
       - '.github/workflows/docker-build-ci.yml'
 
 concurrency:
@@ -118,6 +131,24 @@ jobs:
           push: false
           cache-from: type=gha,scope=final-stage
           cache-to: type=gha,mode=max,scope=final-stage
+
+  # docker/entrypoint.sh's privilege drop (#652): only a real container can
+  # show which UID actually runs which step, so this runs
+  # scripts/test-entrypoint-privsep.sh — which builds its own small
+  # purpose-built test image (NOT docker/Dockerfile's full runner image) and
+  # exercises the real entrypoint.sh + helper scripts against it directly.
+  # This ubuntu-latest runner ships a working `dockerd` already (unlike
+  # ci.yml's shell-test job, which explicitly does not assume Docker), so
+  # this is the only workflow that can run it.
+  docker-build-entrypoint-privsep:
+    name: Entrypoint privilege-drop test (real container)
+    if: github.event.pull_request.draft == false
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Test entrypoint.sh privilege drop
+        run: ./scripts/test-entrypoint-privsep.sh
 
   # docker/Dockerfile.codex/.gemini/.opencode — a full `docker build` of
   # each is the smoke test, same principle as the job above: this is the

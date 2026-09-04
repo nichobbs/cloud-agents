@@ -166,48 +166,131 @@ fi
 
 : "${HOME:=/home/claude-user}"
 
-# If a host-provided CA certificate bundle is mounted at /etc/host-ca.pem,
-# register it in the container's system CA trust store so that curl, git, and Node
-# trust the host's SSL-intercepting proxy natively and globally. The mounted
-# file is the operator's own NODE_EXTRA_CA_CERTS value, which is commonly
-# itself a multi-certificate bundle (a root + intermediate chain, or several
-# CAs concatenated) — split it into one file per certificate first so
-# update-ca-certificates' rehash step doesn't warn "does not contain exactly
-# one certificate or CRL" and skip hashing every certificate but the first
-# (see docker/split-ca-bundle.sh's header comment).
-if [ -f "/etc/host-ca.pem" ]; then
-    echo "entrypoint: registering host CA certificate bundle in system store..." >&2
-    /usr/local/bin/split-ca-bundle.sh /etc/host-ca.pem /usr/local/share/ca-certificates host-ca
-    update-ca-certificates >/dev/null
+if [ -z "${PROMPT:-}" ]; then
+    echo "entrypoint: PROMPT is required" >&2
+    exit 64
 fi
 
-# Ensure /home/claude-user and everything inside it is owned by claude-user.
-# This heals any permissions/UID mismatches if the volume was populated on the host
-# with host-specific UIDs (e.g. 504 on Colima macOS). Guarded on the top-level
-# directory's current owner (#653): /home/claude-user is a volume shared
-# across every session for a user+harness, so after the first message ever
-# fixes it up, every later message's container would otherwise pay for a
-# full recursive walk of the user's entire Claude history/config for no
-# ownership change at all. A top-level-only check is sufficient here — unlike
-# /workspace below, nothing between messages writes new root-owned files
-# into this volume (only claude-user itself, via the runuser-wrapped `claude`
-# invocation, ever writes here after this point).
-if [ "$(stat -c '%U' /home/claude-user 2>/dev/null || echo '?')" != "claude-user" ]; then
-    chown -R claude-user:claude-user /home/claude-user || true
-    chmod 700 /home/claude-user || true
+# ─── Root-only prelude (#652) ────────────────────────────────────────────────
+# docker/Dockerfile no longer sets `USER claude-user`, so this container
+# always STARTS as root — but only the handful of steps in this block
+# genuinely need that privilege: trusting a host CA into the SYSTEM store,
+# healing the shared home volume's ownership, restoring vault credentials
+# into it, and writing the git --system config a non-root user can't write.
+# Everything that used to run as root after this point purely because
+# nothing ever dropped privilege — the clone, reconcile-repos.sh/
+# create-fallback-branch.sh, mcp.json/settings.json rendering,
+# inject-library.sh, the marker file, and the final harness invocation — now
+# runs as claude-user instead, via the chown-then-re-exec at the end of this
+# block. CLOUD_AGENTS_ENTRYPOINT_STAGE=user marks that second pass (the
+# re-exec below sets it) so it skips straight past this whole block instead
+# of repeating it.
+if [ "${CLOUD_AGENTS_ENTRYPOINT_STAGE:-}" != "user" ]; then
+
+    # If a host-provided CA certificate bundle is mounted at /etc/host-ca.pem,
+    # register it in the container's system CA trust store so that curl, git, and Node
+    # trust the host's SSL-intercepting proxy natively and globally. The mounted
+    # file is the operator's own NODE_EXTRA_CA_CERTS value, which is commonly
+    # itself a multi-certificate bundle (a root + intermediate chain, or several
+    # CAs concatenated) — split it into one file per certificate first so
+    # update-ca-certificates' rehash step doesn't warn "does not contain exactly
+    # one certificate or CRL" and skip hashing every certificate but the first
+    # (see docker/split-ca-bundle.sh's header comment).
+    if [ -f "/etc/host-ca.pem" ]; then
+        echo "entrypoint: registering host CA certificate bundle in system store..." >&2
+        /usr/local/bin/split-ca-bundle.sh /etc/host-ca.pem /usr/local/share/ca-certificates host-ca
+        update-ca-certificates >/dev/null
+    fi
+
+    # Ensure /home/claude-user and everything inside it is owned by claude-user.
+    # This heals any permissions/UID mismatches if the volume was populated on the host
+    # with host-specific UIDs (e.g. 504 on Colima macOS). Guarded on the top-level
+    # directory's current owner (#653): /home/claude-user is a volume shared
+    # across every session for a user+harness, so after the first message ever
+    # fixes it up, every later message's container would otherwise pay for a
+    # full recursive walk of the user's entire Claude history/config for no
+    # ownership change at all. A top-level-only check is sufficient here — unlike
+    # /workspace below, nothing between messages writes new root-owned files
+    # into this volume (only claude-user itself, via the claude-user process
+    # this script hands off to below, ever writes here after this point).
+    if [ "$(stat -c '%U' /home/claude-user 2>/dev/null || echo '?')" != "claude-user" ]; then
+        chown -R claude-user:claude-user /home/claude-user || true
+        chmod 700 /home/claude-user || true
+    fi
+
+    # Must be written to the SYSTEM config (/etc/gitconfig, root-owned) so it
+    # applies to every user that later touches /workspace — including
+    # claude-user, once this script hands off to it below — regardless of
+    # whatever UID currently owns the volume (e.g. host-populated content
+    # with a foreign UID, or a pre-existing checkout from before this fix).
+    git config --system --add safe.directory /workspace >/dev/null 2>&1 || git config --global --add safe.directory /workspace >/dev/null 2>&1 || true
+
+    # Restore a Claude subscription (OAuth) login from the vault on a fresh home
+    # volume. A subscription login is a ~/.claude directory, not an API key, so it
+    # ships as a base64 tar.gz in the CLAUDE_HOME_TARBALL_B64 credential (see
+    # scripts/upload-credentials.sh --claude-home). Unpack it only when the
+    # persisted home volume has no credentials yet, so an existing — possibly
+    # token-refreshed — login is never overwritten. The blob is never echoed.
+    if [ -n "${CLAUDE_HOME_TARBALL_B64:-}" ] && [ ! -f "$HOME/.claude/.credentials.json" ]; then
+        echo "entrypoint: restoring ~/.claude auth from the vault bundle" >&2
+        mkdir -p "$HOME/.claude"
+        printf '%s' "${CLAUDE_HOME_TARBALL_B64}" | base64 -d | tar -xzf - -C "$HOME/.claude"
+        chown -R claude-user:claude-user "$HOME/.claude" || true
+    fi
+
+    # If CLAUDE_CODE_OAUTH_TOKEN is injected from the credential vault, populate
+    # ~/.claude/.credentials.json so the Claude Code CLI discovers it.
+    if [ -n "${CLAUDE_CODE_OAUTH_TOKEN:-}" ]; then
+        has_oauth=0
+        if [ -f "$HOME/.claude/.credentials.json" ] && command -v jq >/dev/null 2>&1; then
+            if jq -e '.claudeAiOauth.accessToken' "$HOME/.claude/.credentials.json" >/dev/null 2>&1; then
+                has_oauth=1
+            fi
+        fi
+        if [ "$has_oauth" != "1" ]; then
+            echo "entrypoint: configuring ~/.claude/.credentials.json from CLAUDE_CODE_OAUTH_TOKEN" >&2
+            mkdir -p "$HOME/.claude"
+            if printf '%s' "${CLAUDE_CODE_OAUTH_TOKEN}" | grep -q '^{'; then
+                printf '%s\n' "${CLAUDE_CODE_OAUTH_TOKEN}" > "$HOME/.claude/.credentials.json"
+            else
+                cat > "$HOME/.claude/.credentials.json" <<EOF
+{
+  "claudeAiOauth": {
+    "accessToken": "${CLAUDE_CODE_OAUTH_TOKEN}"
+  }
+}
+EOF
+            fi
+            chown -R claude-user:claude-user "$HOME/.claude" || true
+            chmod 600 "$HOME/.claude/.credentials.json" || true
+        fi
+    fi
+
+    # Hand off to claude-user for everything else (#652). chown /workspace
+    # ONCE, guarded the same way as /home/claude-user above — after this
+    # first heal nothing writes into /workspace as root ever again, since
+    # every step from here down (clone, reconcile-repos.sh,
+    # create-fallback-branch.sh, the mcp.json/settings.json rendering,
+    # inject-library.sh, the marker file, the final `claude` exec) runs as
+    # claude-user, so there is no more root-owned churn to chown away
+    # afterward the way the old unconditional end-of-script chown had to.
+    # This also self-heals a workspace left root-owned by a container built
+    # before this fix (or by this container's own inspect-mode path, which
+    # intentionally stays root — see the top of this file).
+    if [ "$(stat -c '%U' /workspace 2>/dev/null || echo '?')" != "claude-user" ]; then
+        chown -R claude-user:claude-user /workspace || true
+    fi
+
+    # Re-exec this SAME script under claude-user. `-m` (preserve environment)
+    # carries every input var (PROMPT, REPO_URL, GITHUB_TOKEN, the
+    # CLOUD_AGENTS_* vars, HOME, ...) through unchanged — exactly as it
+    # already did for the final `claude` invocation before this change, which
+    # is why nothing below needs its own `runuser` wrapper any more.
+    export CLOUD_AGENTS_ENTRYPOINT_STAGE=user
+    exec runuser -u claude-user -m -- "$0" "$@"
 fi
 
-# /workspace's own recursive chown is intentionally NOT done here (#653): this
-# point is before git clone/reconcile-repos.sh/inject-library.sh/the
-# mcp.json+settings.json rendering below, all of which run as root and can
-# add or modify files every single message — so a chown here would just be
-# redone, unconditionally, by the single `chown -R .../workspace` right
-# before the final `runuser` exec at the bottom of this script, once all of
-# that root-owned setup work has actually happened. Doing it twice (once here
-# on the pre-setup tree, once more on the post-setup tree) was pure wasted
-# work, not an extra safety margin — nothing between here and that final
-# chown runs as claude-user.
-git config --system --add safe.directory /workspace >/dev/null 2>&1 || git config --global --add safe.directory /workspace >/dev/null 2>&1 || true
+# ─── Everything below here runs as claude-user (#652) ───────────────────────
 
 # If ~/.claude.json is missing, but backups exist, automatically restore the latest backup!
 if [ ! -f "$HOME/.claude.json" ]; then
@@ -215,14 +298,8 @@ if [ ! -f "$HOME/.claude.json" ]; then
     if [ -n "$LATEST_BACKUP" ]; then
         echo "entrypoint: restoring ~/.claude.json from latest backup: $LATEST_BACKUP" >&2
         cp "$LATEST_BACKUP" "$HOME/.claude.json"
-        chown claude-user:claude-user "$HOME/.claude.json"
         chmod 600 "$HOME/.claude.json"
     fi
-fi
-
-if [ -z "${PROMPT:-}" ]; then
-    echo "entrypoint: PROMPT is required" >&2
-    exit 64
 fi
 
 # Pre-accept the workspace trust dialog. Claude Code normally asks
@@ -271,53 +348,11 @@ if command -v jq >/dev/null 2>&1; then
         fi
         if printf '%s' "${base_json}" | jq '.projects["/workspace"].hasTrustDialogAccepted = true' > "$HOME/.claude.json.tmp.$$" 2>/dev/null; then
             mv "$HOME/.claude.json.tmp.$$" "$HOME/.claude.json"
-            chown claude-user:claude-user "$HOME/.claude.json"
             chmod 600 "$HOME/.claude.json"
         else
             rm -f "$HOME/.claude.json.tmp.$$"
             echo "entrypoint: could not pre-accept the workspace trust dialog, continuing without it" >&2
         fi
-    fi
-fi
-
-# Restore a Claude subscription (OAuth) login from the vault on a fresh home
-# volume. A subscription login is a ~/.claude directory, not an API key, so it
-# ships as a base64 tar.gz in the CLAUDE_HOME_TARBALL_B64 credential (see
-# scripts/upload-credentials.sh --claude-home). Unpack it only when the
-# persisted home volume has no credentials yet, so an existing — possibly
-# token-refreshed — login is never overwritten. The blob is never echoed.
-if [ -n "${CLAUDE_HOME_TARBALL_B64:-}" ] && [ ! -f "$HOME/.claude/.credentials.json" ]; then
-    echo "entrypoint: restoring ~/.claude auth from the vault bundle" >&2
-    mkdir -p "$HOME/.claude"
-    printf '%s' "${CLAUDE_HOME_TARBALL_B64}" | base64 -d | tar -xzf - -C "$HOME/.claude"
-    chown -R claude-user:claude-user "$HOME/.claude" || true
-fi
-
-# If CLAUDE_CODE_OAUTH_TOKEN is injected from the credential vault, populate
-# ~/.claude/.credentials.json so the Claude Code CLI discovers it.
-if [ -n "${CLAUDE_CODE_OAUTH_TOKEN:-}" ]; then
-    has_oauth=0
-    if [ -f "$HOME/.claude/.credentials.json" ] && command -v jq >/dev/null 2>&1; then
-        if jq -e '.claudeAiOauth.accessToken' "$HOME/.claude/.credentials.json" >/dev/null 2>&1; then
-            has_oauth=1
-        fi
-    fi
-    if [ "$has_oauth" != "1" ]; then
-        echo "entrypoint: configuring ~/.claude/.credentials.json from CLAUDE_CODE_OAUTH_TOKEN" >&2
-        mkdir -p "$HOME/.claude"
-        if printf '%s' "${CLAUDE_CODE_OAUTH_TOKEN}" | grep -q '^{'; then
-            printf '%s\n' "${CLAUDE_CODE_OAUTH_TOKEN}" > "$HOME/.claude/.credentials.json"
-        else
-            cat > "$HOME/.claude/.credentials.json" <<EOF
-{
-  "claudeAiOauth": {
-    "accessToken": "${CLAUDE_CODE_OAUTH_TOKEN}"
-  }
-}
-EOF
-        fi
-        chown -R claude-user:claude-user "$HOME/.claude" || true
-        chmod 600 "$HOME/.claude/.credentials.json" || true
     fi
 fi
 
@@ -482,16 +517,11 @@ fi
 # never blocks the actual prompt run.
 /usr/local/bin/inject-library.sh "claude" || echo "entrypoint: library injection failed, continuing without it" >&2
 
-# Recursively chown the workspace after creating templates/directories as root
-# so that 'claude-user' has full write access to history and configs. This is
-# the ONE recursive /workspace chown in this script (#653 — an earlier
-# duplicated pre-setup chown near the top was removed as dead weight, see the
-# comment there): it has to run unconditionally every message because
-# everything above (clone/reconcile-repos.sh/inject-library.sh/the mcp.json
-# and settings.json rendering) runs as root and can touch files every time,
-# so there's no cheap "already correct" check to skip it with the way there
-# is for /home/claude-user above.
-chown -R claude-user:claude-user /workspace || true
+# No recursive /workspace chown here any more (#652): everything above
+# (clone/reconcile-repos.sh/inject-library.sh/the mcp.json and settings.json
+# rendering) now runs as claude-user, the same user that owns /workspace
+# after the root prelude's one-time chown above — so there's nothing
+# root-owned left behind to chown away.
 
 # Phase 6 (docs/phase6-mcp-callbacks.md §3, §8): route Claude Code's own
 # permission prompts through the cloud-agents MCP server instead of the
@@ -552,7 +582,6 @@ STREAM_JSON_ARGS=(--output-format stream-json --verbose)
 NATIVE_SESSION_MARKER=/workspace/.claude/.native-session-initialized
 if [ ! -f "$NATIVE_SESSION_MARKER" ]; then
     touch "$NATIVE_SESSION_MARKER"
-    chown claude-user:claude-user "$NATIVE_SESSION_MARKER" || true
     if [ -n "$NATIVE_SESSION_ID" ]; then
         # Self-heal (#710): a session that already reached message 2+ BEFORE
         # this marker-file scheme shipped has its NATIVE_SESSION_ID already
@@ -570,15 +599,15 @@ if [ ! -f "$NATIVE_SESSION_MARKER" ]; then
         # the whole run instead of exec-ing straight into it and streaming
         # output live to the API server as it happens.
         if [ -n "$(find "$HOME/.claude/projects" -name "${NATIVE_SESSION_ID}.jsonl" 2>/dev/null | head -n 1)" ]; then
-            exec runuser -u claude-user -m -- claude -p "${PROMPT}" --model "${MODEL}" --resume "${NATIVE_SESSION_ID}" "${STREAM_JSON_ARGS[@]}" "${PERMISSION_PROMPT_ARGS[@]}"
+            exec claude -p "${PROMPT}" --model "${MODEL}" --resume "${NATIVE_SESSION_ID}" "${STREAM_JSON_ARGS[@]}" "${PERMISSION_PROMPT_ARGS[@]}"
         fi
-        exec runuser -u claude-user -m -- claude -p "${PROMPT}" --model "${MODEL}" --session-id "${NATIVE_SESSION_ID}" "${STREAM_JSON_ARGS[@]}" "${PERMISSION_PROMPT_ARGS[@]}"
+        exec claude -p "${PROMPT}" --model "${MODEL}" --session-id "${NATIVE_SESSION_ID}" "${STREAM_JSON_ARGS[@]}" "${PERMISSION_PROMPT_ARGS[@]}"
     else
-        exec runuser -u claude-user -m -- claude -p "${PROMPT}" --model "${MODEL}" "${STREAM_JSON_ARGS[@]}" "${PERMISSION_PROMPT_ARGS[@]}"
+        exec claude -p "${PROMPT}" --model "${MODEL}" "${STREAM_JSON_ARGS[@]}" "${PERMISSION_PROMPT_ARGS[@]}"
     fi
 else
     if [ -n "$NATIVE_SESSION_ID" ]; then
-        exec runuser -u claude-user -m -- claude -p "${PROMPT}" --model "${MODEL}" --resume "${NATIVE_SESSION_ID}" "${STREAM_JSON_ARGS[@]}" "${PERMISSION_PROMPT_ARGS[@]}"
+        exec claude -p "${PROMPT}" --model "${MODEL}" --resume "${NATIVE_SESSION_ID}" "${STREAM_JSON_ARGS[@]}" "${PERMISSION_PROMPT_ARGS[@]}"
     else
         # Depends on NATIVE_SESSION_ID always being non-empty by the time the
         # marker exists (src/handlers/sessions.l pre-assigns nativeSessionId =
@@ -587,6 +616,6 @@ else
         # the exact #386 failure this file was just fixed for. Unreachable
         # today; kept only because nothing else in this branch needs it, not
         # because it's expected to fire.
-        exec runuser -u claude-user -m -- claude -p "${PROMPT}" --model "${MODEL}" --resume "${STREAM_JSON_ARGS[@]}" "${PERMISSION_PROMPT_ARGS[@]}"
+        exec claude -p "${PROMPT}" --model "${MODEL}" --resume "${STREAM_JSON_ARGS[@]}" "${PERMISSION_PROMPT_ARGS[@]}"
     fi
 fi
