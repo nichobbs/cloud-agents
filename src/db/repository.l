@@ -436,6 +436,16 @@ pub func allMigrations(): slice[Migration] {
         CloudAgents.Db.alterSessionsAddForkedFromMessageIdSql(),
         CloudAgents.Db.sessionsParentIndexSql()
       ]
+    ),
+    // Makes `messages_fts` self-maintaining against any future UPDATE/DELETE
+    // on `messages` (#918): the original migration 0028 only added an AFTER
+    // INSERT trigger, safe at the time because `messages` was INSERT-only by
+    // convention, not by anything the schema enforced. These two triggers
+    // close that gap so the index can never silently desync, regardless of
+    // whether/when a message-editing or message-deletion code path is added.
+    Migration(
+      version = "0033_message_search_sync",
+      statements = [CloudAgents.Db.messageSearchUpdateTriggerSql(), CloudAgents.Db.messageSearchDeleteTriggerSql()]
     )
   ]
 }

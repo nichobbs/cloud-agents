@@ -286,6 +286,44 @@ test "schema DDL is idempotent" {
   assertTrue(todosSchemaSql().contains("CREATE TABLE IF NOT EXISTS todos"), "todos ddl")
 }
 
+// messages_fts sync triggers (#918): messages_fts must stay in sync with
+// messages under every write path, not just INSERT, so pin the trigger
+// names and shapes the same way every other SQL builder here is pinned.
+test "messages_fts sync triggers cover insert, update, and delete" {
+  assertTrue(
+    messageSearchTriggerSql().contains("CREATE TRIGGER IF NOT EXISTS messages_fts_ai AFTER INSERT ON messages"),
+    "insert trigger name and shape"
+  )
+  assertTrue(
+    messageSearchTriggerSql().contains("INSERT INTO messages_fts(content, id) VALUES (new.content, new.id)"),
+    "insert trigger inserts the new row into the fts index"
+  )
+
+  assertTrue(
+    messageSearchUpdateTriggerSql().contains(
+      "CREATE TRIGGER IF NOT EXISTS messages_fts_au AFTER UPDATE OF content ON messages"
+    ),
+    "update trigger name, shape, and scoped to content changes"
+  )
+  assertTrue(
+    messageSearchUpdateTriggerSql().contains("DELETE FROM messages_fts WHERE id = old.id"),
+    "update trigger deletes the stale fts row by id"
+  )
+  assertTrue(
+    messageSearchUpdateTriggerSql().contains("INSERT INTO messages_fts(content, id) VALUES (new.content, new.id)"),
+    "update trigger re-inserts the fresh content"
+  )
+
+  assertTrue(
+    messageSearchDeleteTriggerSql().contains("CREATE TRIGGER IF NOT EXISTS messages_fts_ad AFTER DELETE ON messages"),
+    "delete trigger name and shape"
+  )
+  assertTrue(
+    messageSearchDeleteTriggerSql().contains("DELETE FROM messages_fts WHERE id = old.id"),
+    "delete trigger removes the fts row by id"
+  )
+}
+
 test "run-history SQL builders are scoped and well-formed" {
   assertTrue(runsSchemaSql().contains("CREATE TABLE IF NOT EXISTS runs"), "runs ddl")
   val ins = insertRunSql("r1", "s1", "u1", "do the thing", "claude", "opus", "1000")

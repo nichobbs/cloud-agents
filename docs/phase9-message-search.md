@@ -38,19 +38,47 @@ This is a **standalone** FTS5 table — not FTS5's "external content" mode
 (`content='messages', content_rowid='rowid'`). External-content mode avoids
 duplicating `content` on disk, but ties correctness to `messages`'s implicit
 rowid staying stable and needs INSERT/UPDATE/DELETE triggers all kept in
-perfect sync. A full-codebase grep confirms `messages` is INSERT-only — no
-UPDATE or DELETE statement touches it anywhere — so only an `AFTER INSERT`
-trigger is actually needed, and storing `content` + `id` directly in the
-FTS5 table sidesteps the rowid-linkage question entirely. Simpler and more
-robust for a feature with no local toolchain available to catch a subtly
-wrong trigger set before it ships. `id` is `UNINDEXED` — carried through
-purely to join back to `messages` for the authoritative row (role/seq/
-created_at are read from there, not duplicated into the index).
+perfect sync. Storing `content` + `id` directly in the FTS5 table sidesteps
+the rowid-linkage question entirely — simpler and more robust for a feature
+with no local toolchain available to catch a subtly wrong trigger set before
+it ships. `id` is `UNINDEXED` — carried through purely to join back to
+`messages` for the authoritative row (role/seq/created_at are read from
+there, not duplicated into the index).
 
 All three statements run inside `runMigrations()`'s single
 `executeTransaction` call, atomically with the rest of the migration ledger
 — there is no window where a message could be inserted between the table
 being created and the backfill running.
+
+At the time migration 0028 shipped, a full-codebase grep confirmed
+`messages` was INSERT-only — no UPDATE or DELETE statement touched it
+anywhere — so the single `AFTER INSERT` trigger above was sufficient. That
+was only a convention, not something the schema enforced, so a later PR
+adding message editing or deletion without also touching this file would
+have silently desynced the index (tracked as #918). Migration
+`0033_message_search_sync` closes that gap by making the index
+self-maintaining under every write path `messages` might ever get, not just
+INSERT:
+
+```sql
+CREATE TRIGGER IF NOT EXISTS messages_fts_au AFTER UPDATE OF content ON messages BEGIN
+  DELETE FROM messages_fts WHERE id = old.id;
+  INSERT INTO messages_fts(content, id) VALUES (new.content, new.id);
+END
+
+CREATE TRIGGER IF NOT EXISTS messages_fts_ad AFTER DELETE ON messages BEGIN
+  DELETE FROM messages_fts WHERE id = old.id;
+END
+```
+
+`messages_fts_au` is scoped to `UPDATE OF content` so it only fires on an
+actual content edit, and does a delete-then-reinsert (FTS5 doesn't support
+updating a virtual table's indexed columns in place). `messages_fts_ad`
+removes the FTS row so a deleted message can never keep surfacing in search
+results. As of this migration, `messages` remains INSERT-only in
+application code today, but that is no longer load-bearing for search
+correctness — no CI/test guard against the INSERT-only assumption is
+needed.
 
 ## 3. Query safety: no bound-parameter layer
 

@@ -887,14 +887,23 @@ pub func countMessagesSql(sessionId: in String): String {
 // mode (`content='messages', content_rowid='rowid'`). External-content mode
 // would avoid duplicating `content` on disk, but ties correctness to
 // `messages`'s implicit rowid staying stable and requires INSERT/UPDATE/
-// DELETE triggers all kept in perfect sync. `messages` is INSERT-only in this
-// codebase (confirmed: no UPDATE or DELETE statement touches it anywhere),
-// so only an INSERT trigger is actually needed, and storing `content` +
-// `id` directly in the FTS5 table sidesteps the rowid-linkage question
-// entirely — simpler and more robust for a feature with no local toolchain
-// to catch a subtly wrong trigger set before it ships. `id` is UNINDEXED
-// (carried through purely to join back to `messages` for the authoritative
-// row — role/seq/created_at are read from there, not duplicated here).
+// DELETE triggers all kept in perfect sync. Storing `content` + `id`
+// directly in the FTS5 table sidesteps the rowid-linkage question entirely
+// — simpler and more robust for a feature with no local toolchain to catch
+// a subtly wrong trigger set before it ships. `id` is UNINDEXED (carried
+// through purely to join back to `messages` for the authoritative row —
+// role/seq/created_at are read from there, not duplicated here).
+//
+// `messages` is still INSERT-only in this codebase today, but that was
+// previously enforced only by convention/comment, not by the schema —
+// a future UPDATE/DELETE path (message editing, session deletion, etc.)
+// added without also touching this file would have silently desynced the
+// index (#918). So the index is now self-maintaining regardless: three
+// triggers keep `messages_fts` in sync with whatever `messages` does —
+// AFTER INSERT (`messageSearchTriggerSql`), AFTER UPDATE OF content
+// (`messageSearchUpdateTriggerSql`, replaces the stale FTS row), and AFTER
+// DELETE (`messageSearchDeleteTriggerSql`, removes it) — so no CI/test
+// guard against an INSERT-only assumption is needed any more.
 //
 // FTS5 availability was confirmed by extracting the actual vaulted
 // SourceGear.sqlite3 3.53.3 linux-x64 native library and both (a) finding
@@ -915,12 +924,36 @@ pub func messageSearchBackfillSql(): String {
   return "INSERT INTO messages_fts(content, id) SELECT content, id FROM messages"
 }
 
-/// Keep `messages_fts` in sync with every future insert. `messages` has no
-/// UPDATE/DELETE path anywhere in this codebase (see the module comment
-/// above), so an AFTER INSERT trigger is the only sync trigger this needs.
+/// Keep `messages_fts` in sync with every future insert. Paired with
+/// `messageSearchUpdateTriggerSql` and `messageSearchDeleteTriggerSql` (see
+/// the module comment above) so the index tracks `messages` under every
+/// write path, not just INSERT.
 pub func messageSearchTriggerSql(): String {
   return "CREATE TRIGGER IF NOT EXISTS messages_fts_ai AFTER INSERT ON messages BEGIN " +
     "INSERT INTO messages_fts(content, id) VALUES (new.content, new.id); " +
+    "END"
+}
+
+/// Keep `messages_fts` in sync when a message's `content` is edited: the
+/// stale FTS row is deleted by `id` and a fresh one inserted with the new
+/// content (FTS5 doesn't support UPDATE against a virtual table's indexed
+/// columns directly, so this is the standard delete-then-reinsert pattern).
+/// `OF content` scopes the trigger to actual content edits — an UPDATE that
+/// touches only other `messages` columns (if any are ever added) does not
+/// fire it.
+pub func messageSearchUpdateTriggerSql(): String {
+  return "CREATE TRIGGER IF NOT EXISTS messages_fts_au AFTER UPDATE OF content ON messages BEGIN " +
+    "DELETE FROM messages_fts WHERE id = old.id; " +
+    "INSERT INTO messages_fts(content, id) VALUES (new.content, new.id); " +
+    "END"
+}
+
+/// Keep `messages_fts` in sync when a message row is deleted: removes its
+/// FTS row by `id` so a deleted message can never keep surfacing in search
+/// results.
+pub func messageSearchDeleteTriggerSql(): String {
+  return "CREATE TRIGGER IF NOT EXISTS messages_fts_ad AFTER DELETE ON messages BEGIN " +
+    "DELETE FROM messages_fts WHERE id = old.id; " +
     "END"
 }
 
