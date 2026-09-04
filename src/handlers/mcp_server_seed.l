@@ -34,6 +34,7 @@ import Std.Core
 import Std.File
 import CloudAgents.Library
 import CloudAgents.Repository
+import CloudAgents.Text
 import extern System.Environment as Env
 import extern System.String as DotNetString
 
@@ -144,7 +145,9 @@ func isWithinMcpServerBounds(parsed: in ParsedMcpServer): Bool {
   var ei = 0
   while ei < parsed.env.length.toInt() {
     val entry = parsed.env[ei]
-    if entry.length.toInt() == 0 or entry.length.toInt() > maxMcpFieldLen or not entry.contains("=") or entry.substring(0, 1) == "=" {
+    // Control-char check mirrors isValidMcpEnvEntry's #782 fix — kept in
+    // sync per this function's own doc comment.
+    if entry.length.toInt() == 0 or entry.length.toInt() > maxMcpFieldLen or not entry.contains("=") or entry.substring(0, 1) == "=" or CloudAgents.Text.containsControlChar(entry) {
       return false
     }
     ei = ei + 1

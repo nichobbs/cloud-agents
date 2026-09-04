@@ -107,20 +107,27 @@ the ask.
 ## 5. Running a due job
 
 `CloudAgents.Jobs.triggerDueJobsHandler` (the maintenance endpoint) scans
-`dueScheduledJobs()`, takes at most `maxJobsPerTrigger` (5) of the
-earliest-due jobs — capping one call's wall-clock time, since each due job
-below runs a full container synchronously rather than reap's fast
-terminate-and-blank (#872); anything past the cap is picked up on the very
-next poll, which the endpoint's own "safe to call repeatedly" contract
-already assumes — and, for each:
+`dueScheduledJobs()`, which is itself `LIMIT`-ed to `maxJobsPerTrigger` rows
+in SQL (#893 — the query no longer materializes every system-wide due job
+into memory on every poll tick just to use the first few), and attempts at
+most `maxJobsPerTrigger` (5) of the earliest-due jobs — capping one call's
+job COUNT, since each due job below runs a full container synchronously,
+one after another, rather than reap's fast terminate-and-blank (#872). This
+bounds *how many* jobs one call attempts, not its wall-clock time: the real
+worst case is `maxJobsPerTrigger * runWallClockCapMs`, i.e. up to ~150
+minutes (5 × 30 min) if every claimed job independently hits the per-run
+cap — see `maxJobsPerTrigger`'s own doc comment (#893 also corrected an
+earlier, understated "~30 minutes" claim here). Anything past the cap is
+picked up on the very next poll, which the endpoint's own "safe to call
+repeatedly" contract already assumes — and, for each:
 
 1. Atomically claims the *row* (`claimDueScheduledJob` — a compare-and-clear
    on `next_run_at`, mirroring `clearSessionContainerIfMatchesSql`'s idiom)
    before doing anything else. This closes a race (#870) where two
    overlapping `POST /api/maintenance/trigger-jobs` calls — realistic, since
    the endpoint is documented "safe to call repeatedly" while a single call
-   can block up to 30 minutes across all due jobs — could otherwise both
-   read the same never-yet-sessioned due job and each independently create a
+   can block up to ~150 minutes across all due jobs it attempts (see above) —
+   could otherwise both read the same never-yet-sessioned due job and each independently create a
    session and run a full container for what should be one first trigger.
    Losing the claim counts as **skipped** this tick with no session/container
    work attempted at all.
@@ -166,22 +173,37 @@ already assumes — and, for each:
    reviewing the session later sees them via the existing
    `GET /api/sessions/{id}/callbacks/pending`, exactly as for any other run.
    Only the *live* push is unavailable, an acceptable degradation since
-   nothing was watching it anyway.
+   nothing was watching it anyway. On **failure**, the transcript still gets
+   a reply: `addMessage(sessionId, "agent", "Scheduled run failed: " + msg)`
+   (#892/#894) — mirroring the success branch below, since a scheduled job
+   has no live viewer to show an SSE error frame to the way
+   `streamSendMessage` does; without this, a failed run left the job's
+   prompt sitting with no reply at all, indistinguishable from "still
+   running" to a human or to the agent itself on its next trigger.
 6. Persists the reply, records the run's outcome, and enqueues a webhook
    event — again mirroring `streamSendMessage`.
-7. Advances the schedule: a recurring job's `next_run_at` moves to
-   `previousNextRunAt + intervalSeconds` — advanced from the slot the job
-   was actually *due* at (the `next_run_at` the due-scan read, i.e. step 1's
-   claimed value), not from `firedAt` (when the run happened to finish), so
-   a job's cadence doesn't drift later run over run by however long each run
-   itself takes (#874: "every hour" stays every hour even if a run takes 5
-   minutes). Clamped to never compute a value before `firedAt`: a run that
-   overran its own interval is due again immediately next poll instead of
-   being scheduled into the past. A one-shot job's `status` becomes
-   `completed` instead. This happens for both a **succeeded** and a
-   **failed** run (only a *skipped* run's schedule is instead restored to
-   its pre-claim value, per step 3/1) — a persistently broken job must not
-   retry-storm every poll tick forever. Both writes are guarded on
+7. Advances the schedule via `applyPostRunBookkeeping`, which **re-reads the
+   job row fresh** rather than trusting the snapshot `triggerDueJobsHandler`
+   read at the top of the request, before the run spent up to
+   `runWallClockCapMs` (30 min) blocked in step 5 (#876): a recurring job's
+   `next_run_at` moves to `previousNextRunAt + intervalSeconds` — advanced
+   from the slot the job was actually *due* at (the `next_run_at` the
+   due-scan read, i.e. step 1's claimed value — this part of the snapshot IS
+   still trusted, since the fresh row's own `next_run_at` is just the empty
+   claim sentinel by now), not from `firedAt` (when the run happened to
+   finish), so a job's cadence doesn't drift later run over run by however
+   long each run itself takes (#874: "every hour" stays every hour even if a
+   run takes 5 minutes). Clamped to never compute a value before `firedAt`: a
+   run that overran its own interval is due again immediately next poll
+   instead of being scheduled into the past. A one-shot job's `status`
+   becomes `completed` instead — decided from the **freshly read**
+   `intervalSeconds`, not the pre-run snapshot's, so a schedule edit
+   (recurring ↔ one-shot) that landed via `POST /api/jobs/{jid}` while the
+   run was in flight is honored rather than silently overwritten by stale
+   pre-run data. This happens for both a **succeeded** and a **failed** run
+   (only a *skipped* run's schedule is instead restored to its pre-claim
+   value, per step 3/1) — a persistently broken job must not retry-storm
+   every poll tick forever. Both writes are additionally guarded on
    `status = 'active'` (#876): a run can stay in flight long enough for a
    human to concurrently pause/cancel the job via `POST /api/jobs/{jid}`;
    without the guard, this step landing afterward would silently overwrite
@@ -303,14 +325,20 @@ already-runtime-verified code paths as closely as possible to minimize risk:
   4xx paths), and the due-job scan directly — everything in
   `CloudAgents.Jobs` that does *not* reach `CloudAgents.Docker`. Like
   `getRunOutput`/`cancelRun` before it (`tests/session_tests.l`'s NOTEs),
-  `runOneJob`/`triggerDueJobsHandler` themselves cannot be unit-tested from a
-  `@test_module` (they call into `CloudAgents.Docker`), and are Docker-free
-  testable in principle once `scripts/e2e-http.sh` grows a seeded-jobs leg —
-  tracked as a follow-up, not done in this change. The row-level claim
-  primitive those two functions are built on (`claimDueScheduledJob`/
-  `restoreScheduledJobNextRunAt`, §5 steps 1/3) *is* directly unit-tested
-  (`"claimDueScheduledJob lets only one of two racing callers win the same
-  due job"`), since it's plain SQL with no `CloudAgents.Docker` dependency.
+  `runOneJob`/`triggerDueJobsHandler` themselves still cannot be
+  unit-tested end-to-end from a `@test_module` (they call into
+  `CloudAgents.Docker`), and are Docker-free testable in principle once
+  `scripts/e2e-http.sh` grows a seeded-jobs leg — tracked as a follow-up,
+  not done in this change. Two pieces of what those two functions do ARE
+  directly unit-tested on their own, though, since neither touches
+  `CloudAgents.Docker`: the row-level claim primitive
+  (`claimDueScheduledJob`/`restoreScheduledJobNextRunAt`, §5 steps 1/3;
+  `"claimDueScheduledJob lets only one of two racing callers win the same
+  due job"`), and, as of #876/#873, the post-run bookkeeping decision
+  (`applyPostRunBookkeeping`, extracted specifically so this re-read logic
+  is test-invocable) and `triggerDueJobsHandler`'s operator-only auth gate
+  (exercised directly since the check runs before `dueScheduledJobs()` is
+  ever called, so a denied or empty-due-list call never reaches Docker).
 - `shim/tests/v2_client_tests.l` directly covers `scheduleJob`/`listJobs`/
   `updateJob`/`cancelJob` (#878) — success, empty-list, and transport/
   host-error paths for each, matching the existing coverage pattern for
@@ -319,25 +347,91 @@ already-runtime-verified code paths as closely as possible to minimize risk:
   synchronous functions over `V2CallbackTransport` (no `CloudAgents.Docker`
   involved at all), so unlike `runOneJob`/`triggerDueJobsHandler` above,
   there was no structural reason for them to be untested.
-- **Known remaining edge case, not the one #870 was about:** if
-  `POST /api/jobs/{jid}` (an unchanged-schedule update) lands in the narrow
-  window between a job's row claim and its resolution, `updateJobHandler`
-  reads the row's current (temporarily `''`) `next_run_at` as "existing,
-  unchanged" and writes it back, leaving the job un-due until it's next
-  edited with an explicit schedule change. Unlike #870 this doesn't
-  duplicate a container run — worst case is a stalled recurring job — and is
-  the same class of trade-off `clearSessionContainerIfMatchesSql` already
-  accepts elsewhere in this codebase. Not fixed here; flagged for a
-  follow-up if it proves to matter in practice.
-- **Deliberately not fixed here (#873): `/api/maintenance/trigger-jobs` (and
-  the pre-existing `/api/maintenance/reap` it mirrors) run under ordinary
-  `AuthMiddleware` bearer auth with no separate "operator/admin" role, so
-  any bearer that authenticates at all can fire the sweep across every
-  user's due jobs.** This is the same access-control posture the sibling
-  `reap` maintenance endpoint has always had in this codebase (§2 explicitly
-  builds `trigger-jobs` to mirror it), not a new gap this phase introduces —
-  and it's consistent with `currentUserId()`'s own doc comment
-  (`src/handlers/auth.l`) that a real multi-tenant identity model waits on
-  OAuth being wired in. Narrowing maintenance-route auth ahead of that is a
-  cross-cutting decision affecting `reap` too, not something to make
-  unilaterally inside this phase's diff.
+- **Fixed (#891, was "known remaining edge case, not the one #870 was
+  about"):** `updateScheduledJobSql`/`CloudAgents.Repository.updateScheduledJob`
+  now take a `writeNextRunAt` flag; `updateJobHandler` passes `false` for an
+  ordinary edit that doesn't touch the schedule, so `next_run_at` is left OUT
+  of that `UPDATE` entirely instead of echoing back whatever this request
+  happened to read — including a concurrent `triggerDueJobsHandler` claim's
+  temporarily empty sentinel. `applyPostRunBookkeeping`'s own re-read (#876,
+  below) stays the sole writer of `next_run_at` after a claim, so no matter
+  when an unrelated concurrent edit lands relative to a run's own
+  bookkeeping, it can never stomp the value that bookkeeping sets. Test:
+  `"an unrelated updateJobHandler edit never touches next_run_at"`.
+- **Fixed (#883):** reactivating a `completed` one-shot job via
+  `POST /api/jobs/{jid}` with `{"status":"active"}` alone (no schedule
+  fields) used to silently carry the permanently-cleared `next_run_at`
+  (`''`) forward as "unchanged" — a `200` that looked like success but left
+  the job excluded from every future due-scan. `updateJobHandler` now
+  recomputes `next_run_at` to "now" whenever the update moves a job OUT of
+  `completed` without an explicit new schedule. Test:
+  `"updateJobHandler recomputes next_run_at when reactivating a completed
+  job via status alone"`.
+- **Fixed (#876):** post-run bookkeeping (`triggerDueJobsHandler`'s
+  `JobSucceeded`/`JobFailed` branches) no longer decides
+  `markScheduledJobRanRecurring` vs. `markScheduledJobCompleted` from the
+  job snapshot read before the run started (which can be stale by up to
+  `runWallClockCapMs`, 30 min) — `applyPostRunBookkeeping` re-reads the row
+  fresh first, so a schedule-type flip (one-shot ↔ recurring) that landed
+  via a concurrent `POST /api/jobs/{jid}` while the run was in flight is
+  honored rather than silently overwritten. The pre-existing `status =
+  'active'` SQL guard (protecting a concurrent pause/cancel) is unaffected
+  and still applies. Tests: `"applyPostRunBookkeeping honors a
+  schedule-type flip that landed while the run was in flight"` (both
+  directions).
+- **Fixed (#873):** `POST /api/maintenance/trigger-jobs` now requires the
+  resolved identity to be `CloudAgents.Auth.operatorUserId()` — the
+  system-wide, unscoped-by-user sweep this endpoint runs can no longer be
+  fired by an arbitrary authenticated tenant in a multi-tenant OAuth
+  deployment to force another user's job to run early. A static-token (or
+  unauthenticated-open) deployment is unaffected, since such requests
+  already always resolve to the operator identity. `/api/maintenance/reap`
+  is unchanged — its blast radius (idle-container termination, no
+  side-effecting work) is materially lower, and narrowing it is a
+  cross-cutting decision affecting a route this phase doesn't own; the
+  original finding's "at minimum, document this" fallback also no longer
+  applies since the endpoint is now actually restricted rather than merely
+  documented as open. Tests: `"triggerDueJobsHandler refuses a non-operator
+  identity"`, `"triggerDueJobsHandler runs for the operator identity when
+  nothing is due"`.
+- **Fixed (#884):** `ensureJobSession`'s `attachScheduledJobSession` call now
+  logs a `WARNING:` on `Err` (matching the sibling `endRun`/`addMessage`
+  failure paths already logged elsewhere in this file) instead of silently
+  swallowing the failure — a swallowed attach failure previously left
+  `session_id` empty forever, so every later trigger re-created (and
+  orphaned) a brand-new session.
+- **Fixed (#893):** `selectDueScheduledJobsSql` now takes a `LIMIT`
+  (`maxJobsPerTrigger`), so the due-job query itself is bounded rather than
+  only the application-level attempt loop. `maxJobsPerTrigger`'s doc comment
+  (and this doc's §5 intro) were also corrected: the cap bounds job *count*,
+  not wall-clock time — the real worst case for one
+  `POST /api/maintenance/trigger-jobs` call is `maxJobsPerTrigger *
+  runWallClockCapMs`, up to ~150 minutes, not the "~30 minutes" the comment
+  previously understated it as.
+- **Fixed (#882):** a startup recovery sweep,
+  `CloudAgents.Repository.recoverStrandedScheduledJobs` (called from `main()`
+  right after the existing `recoverDanglingSessions`, mirroring that
+  function's role), resets any job left `status = 'active', next_run_at =
+  ''` by a crash/restart mid-run — a state `claimDueScheduledJobSql` creates
+  before any session/container work starts, that nothing but the same
+  in-process `triggerDueJobsHandler` call ever resolves. Since the original
+  claimed due-slot is gone by the time this runs, it recomputes a fresh
+  `next_run_at` (a recurring job that has fired before: `last_run_at +
+  interval_seconds`; anything else: `run_at`), clamped to never fall before
+  "now" — the stranded run is treated as if it simply hadn't happened yet,
+  the same trade-off `recoverDanglingSessions` already makes for sessions.
+  Test: `"recoverStrandedScheduledJobs restores next_run_at for a job
+  claimed but never resolved"`.
+- **Fixed (#885):** added the three test gaps the finding named —
+  `"callback handlers scope jobs to the SESSION'S OWNER, not the ambient
+  caller identity"` (the ambient identity is stamped to a THIRD user,
+  distinct from both the session's real owner and any prior test's implicit
+  "caller == owner" setup, and every assertion is scoped through
+  `ownerOfSession`, not the ambient value); the cross-session-callback-token
+  gap was already covered by the pre-existing `"update_job/cancel_job
+  callbacks cannot reach a job attached to a DIFFERENT session, even same
+  owner"` test, so only the owner-vs-caller and SSRF gaps needed new
+  coverage; and `"createJobHandler's SSRF check catches userinfo smuggling
+  and non-dotted IP literals, not just plain loopback"` (reusing the exact
+  bypass strings `tests/session_tests.l`/`tests/webhook_tests.l` already pin
+  for the shared validators this handler reuses).

@@ -136,6 +136,15 @@ test "MCP server handlers validate transport-specific fields" {
     case Ok(_) -> assertTrue(false, "malformed env entry should be rejected")
     case Err(err) -> assertEqualInt(err.status, 400, "malformed env -> 400")
   }
+  // #782: a control char (e.g. an embedded newline, or a JSON-escaped NUL)
+  // in an env value must be rejected up front — docker/inject-library.sh's
+  // NUL-delimited env-pairs read can't tell such a byte apart from its own
+  // delimiter, so the value can never reach the container in the first
+  // place.
+  match addMcpServerHandler(SaveMcpServerRequest(name = "gh", transport = "stdio", command = "npx", args = noArgs, url = "", env = ["KEY=line1\nline2"])) {
+    case Ok(_) -> assertTrue(false, "env value with an embedded newline should be rejected")
+    case Err(err) -> assertEqualInt(err.status, 400, "control char in env value -> 400")
+  }
   match addMcpServerHandler(SaveMcpServerRequest(name = "gh", transport = "stdio", command = "npx", args = ["-y", "gh-mcp"], url = "", env = ["DEBUG=1"])) {
     case Ok(m) -> {
       assertEqual(m.command, "npx", "command stored")

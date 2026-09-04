@@ -106,3 +106,77 @@ test "re-appending an already-stored prefix is an idempotent no-op" {
 
   cleanupTestDb(path)
 }
+
+// #965: a re-append of an already-stored seq that carries DIFFERENT content
+// (a diverged re-parse, or tamper/corruption) must be rejected as a typed
+// DbError, not silently discarded by INSERT OR IGNORE.
+test "re-appending an existing seq with a different payload/hash surfaces a DbError and does not overwrite (#965)" {
+  val path = useFreshTestDb("sessevents-conflict")
+  val batch = parseStreamJson(fixtureNdjson(), 0.toLong(), "")
+  val _ = mustAppend("sess-D", batch.events)
+
+  // A divergent event at the SAME seq as batch.events[1] but different payload
+  // and hash — as if a bug elsewhere re-parsed the same chunk into different
+  // bytes, or the stored chain was tampered with.
+  val diverged = CaptureEvent(
+    seq = batch.events[1].seq,
+    eventType = batch.events[1].eventType,
+    payload = "{\"type\":\"user\",\"message\":{\"content\":\"TAMPERED\"}}",
+    prevHash = batch.events[1].prevHash,
+    hash = "not-the-real-hash"
+  )
+  match CloudAgents.Repository.appendSessionEvents("sess-D", [diverged]) {
+    case Ok(_) -> assertTrue(false, "a content mismatch at an existing seq must not succeed silently")
+    case Err(e) -> {
+      // ValidationFailed's message rendering (CloudAgents.Sqlite.dbErrorMessage)
+      // is the message itself, with no prefix (unlike OpenFailed/ExecFailed) —
+      // confirming that also confirms the DbError case, without a qualified
+      // union-case match pattern (docs/lyric/gotchas.md territory).
+      // .contains(), not .indexOf(...).isSome() — Option[T].isSome()/.isNone()
+      // do not resolve at runtime in this toolchain (docs/lyric/gotchas.md).
+      val msg = CloudAgents.Sqlite.dbErrorMessage(e)
+      assertTrue(msg.contains("conflict"), "error message names the conflict: " + msg)
+    }
+  }
+
+  // The original, non-tampered row must remain exactly as stored.
+  val back = mustRead("sess-D", "")
+  assertEqualInt(back.length.toInt(), 3, "still exactly three rows — the conflicting append inserted nothing")
+  assertEqual(back[1].payload, batch.events[1].payload, "the stored row was NOT overwritten by the conflicting append")
+  assertEqual(back[1].hash, batch.events[1].hash, "the stored hash was NOT overwritten by the conflicting append")
+
+  cleanupTestDb(path)
+}
+
+// A batch that mixes a genuinely-new event with one that conflicts an existing
+// seq must reject the WHOLE batch (no partial insert) — appendSessionEvents
+// validates before it builds/executes the insert transaction.
+test "a conflicting event anywhere in the batch rejects the whole batch, not just the conflicting row (#965)" {
+  val path = useFreshTestDb("sessevents-conflict-batch")
+  val batch = parseStreamJson(fixtureNdjson(), 0.toLong(), "")
+  val _ = mustAppend("sess-E", batch.events)
+
+  val diverged = CaptureEvent(
+    seq = batch.events[1].seq,
+    eventType = batch.events[1].eventType,
+    payload = "{\"type\":\"user\",\"message\":{\"content\":\"TAMPERED\"}}",
+    prevHash = batch.events[1].prevHash,
+    hash = "not-the-real-hash"
+  )
+  val newEvent = CaptureEvent(
+    seq = 3.toLong(),
+    eventType = "result",
+    payload = "{\"type\":\"result\",\"subtype\":\"success\"}",
+    prevHash = batch.events[2].hash,
+    hash = "some-new-hash-3"
+  )
+  match CloudAgents.Repository.appendSessionEvents("sess-E", [diverged, newEvent]) {
+    case Ok(_) -> assertTrue(false, "a batch containing a conflict must not succeed")
+    case Err(_) -> assertTrue(true, "whole batch rejected")
+  }
+
+  val back = mustRead("sess-E", "")
+  assertEqualInt(back.length.toInt(), 3, "the new event (seq 3) was NOT inserted alongside the conflict")
+
+  cleanupTestDb(path)
+}

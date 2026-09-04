@@ -24,21 +24,13 @@ RUN apt-get update && apt-get install -y --no-install-recommends curl ca-certifi
     && rm -rf /var/lib/apt/lists/*
 
 COPY docker/extra-ca-certs /tmp/extra-ca-certs
-COPY docker/split-ca-bundle.sh /usr/local/bin/split-ca-bundle.sh
-RUN chmod +x /usr/local/bin/split-ca-bundle.sh \
-    && for f in /tmp/extra-ca-certs/*.crt /tmp/extra-ca-certs/*.pem /tmp/extra-ca-certs/*.cer; do \
-      [ -f "$f" ] || continue; \
-      base="$(basename "$f")"; \
-      /usr/local/bin/split-ca-bundle.sh "$f" /usr/local/share/ca-certificates "${base%.*}"; \
-    done \
-    && update-ca-certificates
+COPY docker/split-ca-bundle.sh docker/trust-extra-cas.sh /usr/local/bin/
+RUN chmod +x /usr/local/bin/split-ca-bundle.sh /usr/local/bin/trust-extra-cas.sh \
+    && /usr/local/bin/trust-extra-cas.sh
 
-RUN ARCH="$(uname -m)" \
-    && case "$ARCH" in \
-         x86_64) LYRIC_RID=linux-x64 ;; \
-         aarch64) LYRIC_RID=linux-arm64 ;; \
-         *) echo "ERROR: unsupported architecture for the Lyric compiler: $ARCH (supported: x86_64, aarch64)" >&2; exit 1 ;; \
-       esac \
+COPY scripts/lyric-rid.sh scripts/verify-lyric-checksum.sh /usr/local/bin/
+RUN chmod +x /usr/local/bin/lyric-rid.sh /usr/local/bin/verify-lyric-checksum.sh \
+    && LYRIC_RID="$(/usr/local/bin/lyric-rid.sh)" \
     && echo -n "$LYRIC_RID" > /tmp/lyric-rid.txt
 
 RUN if [ -z "$LYRIC_VERSION" ]; then \
@@ -58,9 +50,11 @@ RUN if [ -z "$LYRIC_VERSION" ]; then \
 
 RUN LYRIC_VERSION="$(cat /tmp/lyric-version.txt)" \
     && LYRIC_RID="$(cat /tmp/lyric-rid.txt)" \
+    && LYRIC_ARCHIVE="lyric-${LYRIC_VERSION}-${LYRIC_RID}.tar.gz" \
     && curl -fsSL --connect-timeout 10 --max-time 120 --retry 3 --retry-delay 3 \
         -o /tmp/lyric.tgz \
-        "https://github.com/nichobbs/lyric-lang/releases/download/v${LYRIC_VERSION}/lyric-${LYRIC_VERSION}-${LYRIC_RID}.tar.gz" \
+        "https://github.com/nichobbs/lyric-lang/releases/download/v${LYRIC_VERSION}/${LYRIC_ARCHIVE}" \
+    && /usr/local/bin/verify-lyric-checksum.sh "$LYRIC_VERSION" /tmp/lyric.tgz "$LYRIC_ARCHIVE" \
     && mkdir -p /usr/local/bin \
     && tar -xzf /tmp/lyric.tgz -C /usr/local/bin \
     && rm -f /tmp/lyric.tgz
@@ -80,12 +74,12 @@ ENV DEBIAN_FRONTEND=noninteractive
 # failures, the other documented cause of a mid-build failure here.
 # gettext-base provides envsubst, used by docker/inject-library.sh to expand
 # ${VAR} references in a seeded/user-authored MCP server's env values against
-# this container's own credential env vars (#mcp-server-seeding). python3 is
-# here for session scripts (matches docker/Dockerfile's base image, which
-# already carries it) — this leaner node:22-slim-based image had been
-# missing it.
+# this container's own credential env vars (#mcp-server-seeding). python3
+# and python3-pip are here for session scripts (matches docker/Dockerfile's
+# base image, which already carries both) — this leaner node:22-slim-based
+# image had been missing them.
 RUN apt-get update && apt-get install -y --no-install-recommends \
-        git bash curl ca-certificates jq gettext-base python3 \
+        git bash curl ca-certificates jq gettext-base python3 python3-pip \
     && rm -rf /var/lib/apt/lists/*
 
 # Optional corporate/proxy root CA trust (e.g. Zscaler TLS inspection) — see
@@ -99,18 +93,13 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # alone reported the cert added). The combined pem is always created (even
 # empty) so NODE_EXTRA_CA_CERTS can be set unconditionally — Node treats a
 # missing or empty file as a harmless no-op (a warning at worst), so this
-# is safe with nothing dropped into extra-ca-certs/.
+# is safe with nothing dropped into extra-ca-certs/. trust-extra-cas.sh
+# (#686) is the shared script behind this — see docker/Dockerfile's own
+# copy of this comment for the full rationale.
 COPY docker/extra-ca-certs /tmp/extra-ca-certs
-COPY docker/split-ca-bundle.sh /usr/local/bin/split-ca-bundle.sh
-RUN chmod +x /usr/local/bin/split-ca-bundle.sh \
-    && : > /usr/local/share/ca-certificates/extra-combined.pem \
-    && for f in /tmp/extra-ca-certs/*.crt /tmp/extra-ca-certs/*.pem /tmp/extra-ca-certs/*.cer; do \
-      [ -f "$f" ] || continue; \
-      base="$(basename "$f")"; \
-      /usr/local/bin/split-ca-bundle.sh "$f" /usr/local/share/ca-certificates "${base%.*}"; \
-      cat "$f" >> /usr/local/share/ca-certificates/extra-combined.pem; \
-    done \
-    && update-ca-certificates
+COPY docker/split-ca-bundle.sh docker/trust-extra-cas.sh /usr/local/bin/
+RUN chmod +x /usr/local/bin/split-ca-bundle.sh /usr/local/bin/trust-extra-cas.sh \
+    && /usr/local/bin/trust-extra-cas.sh
 ENV NODE_EXTRA_CA_CERTS=/usr/local/share/ca-certificates/extra-combined.pem
 
 # uv/uvx: a standalone Rust binary (no Python runtime dependency of its own),
@@ -135,9 +124,12 @@ RUN curl -LsSf --connect-timeout 10 --max-time 120 --retry 3 --retry-delay 3 htt
 # stable CLIs (git, jq) — and unlike a github.com release download, this
 # repo is reachable even when a build environment's proxy restricts direct
 # github.com access. Installed after the CA-trust step above so the
-# keyring/package fetch works behind a TLS-intercepting proxy too. RUN text
-# kept byte-identical across Dockerfile.codex/.opencode/.gemini so their
-# layer caches share, matching the shim-builder stage's existing convention.
+# keyring/package fetch works behind a TLS-intercepting proxy too. Version
+# pinned like every other agent-facing CLI in this file (bump deliberately,
+# not by dropping the pin). RUN text kept byte-identical across
+# Dockerfile.codex/.opencode/.gemini so their layer caches share, matching
+# the shim-builder stage's existing convention.
+ARG GH_CLI_VERSION="2.100.0"
 RUN mkdir -p -m 755 /etc/apt/keyrings \
     && curl -fsSL --connect-timeout 10 --max-time 30 --retry 3 --retry-delay 3 \
         https://cli.github.com/packages/githubcli-archive-keyring.gpg \
@@ -146,7 +138,7 @@ RUN mkdir -p -m 755 /etc/apt/keyrings \
     && echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" \
         > /etc/apt/sources.list.d/github-cli.list \
     && apt-get update \
-    && apt-get install -y --no-install-recommends gh \
+    && apt-get install -y --no-install-recommends "gh=${GH_CLI_VERSION}" \
     && rm -rf /var/lib/apt/lists/*
 
 RUN n=0; until npm install -g @openai/codex@0.145.0; do \

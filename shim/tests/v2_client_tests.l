@@ -499,7 +499,7 @@ test "scheduleJob surfaces a transport failure" {
   }
 }
 
-test "listJobs renders every job as id [status] every Ns next=<epoch>: prompt lines" {
+test "listJobs renders every job as id 'name' [status] every Ns next=<epoch>: prompt lines (#888)" {
   val fake = newFakeV2Transport()
   fake.listJobsOk = true
   fake.listJobsBody = "{\"jobs\":[{\"id\":\"job-1\",\"name\":\"n\",\"prompt\":\"digest\",\"profileId\":\"\",\"repoUrl\":\"\",\"branch\":\"\",\"harness\":\"\",\"model\":\"\",\"runAtEpochMillis\":\"\",\"intervalSeconds\":\"3600\",\"nextRunAtEpochMillis\":\"1700000000000\",\"lastRunAtEpochMillis\":\"\",\"sessionId\":\"s\",\"status\":\"active\",\"createdAt\":\"1\"}]}"
@@ -507,9 +507,55 @@ test "listJobs renders every job as id [status] every Ns next=<epoch>: prompt li
   match listJobs(fake) {
     case Ok(text) ->
       assertTrue(
-        text.contains("job-1 [active] every 3600s next=1700000000000: digest"),
-        "the job is rendered: " + text
+        text.contains("job-1 'n' [active] every 3600s next=1700000000000: digest"),
+        "the job is rendered with its name: " + text
       )
+    case Err(message) -> assertTrue(false, "expected Ok, got Err: " + message)
+  }
+}
+
+test "listJobs omits the name annotation when the job has no name" {
+  val fake = newFakeV2Transport()
+  fake.listJobsOk = true
+  fake.listJobsBody = "{\"jobs\":[{\"id\":\"job-1\",\"name\":\"\",\"prompt\":\"digest\",\"profileId\":\"\",\"repoUrl\":\"\",\"branch\":\"\",\"harness\":\"\",\"model\":\"\",\"runAtEpochMillis\":\"\",\"intervalSeconds\":\"3600\",\"nextRunAtEpochMillis\":\"\",\"lastRunAtEpochMillis\":\"\",\"sessionId\":\"s\",\"status\":\"active\",\"createdAt\":\"1\"}]}"
+
+  match listJobs(fake) {
+    case Ok(text) -> assertTrue(text.contains("job-1 [active] every 3600s: digest"), "no stray quotes when unnamed: " + text)
+    case Err(message) -> assertTrue(false, "expected Ok, got Err: " + message)
+  }
+}
+
+test "listJobs suppresses the misleading next= for a non-active job (#888)" {
+  val fake = newFakeV2Transport()
+  fake.listJobsOk = true
+  // A stale nextRunAtEpochMillis surviving from before the job was paused —
+  // only status='active' rows are ever picked up by the host's due scan, so
+  // rendering next= here would read as though it will still fire.
+  fake.listJobsBody = "{\"jobs\":[{\"id\":\"job-1\",\"name\":\"\",\"prompt\":\"digest\",\"profileId\":\"\",\"repoUrl\":\"\",\"branch\":\"\",\"harness\":\"\",\"model\":\"\",\"runAtEpochMillis\":\"\",\"intervalSeconds\":\"3600\",\"nextRunAtEpochMillis\":\"1700000000000\",\"lastRunAtEpochMillis\":\"\",\"sessionId\":\"s\",\"status\":\"paused\",\"createdAt\":\"1\"}]}"
+
+  match listJobs(fake) {
+    case Ok(text) -> {
+      assertTrue(text.contains("job-1 [paused] every 3600s: digest"), "the interval is still shown: " + text)
+      assertTrue(not text.contains("next="), "next= is suppressed for a non-active job: " + text)
+    }
+    case Err(message) -> assertTrue(false, "expected Ok, got Err: " + message)
+  }
+}
+
+test "listJobs truncates an overlong prompt instead of dumping it in full (#888)" {
+  val fake = newFakeV2Transport()
+  fake.listJobsOk = true
+  var longPrompt = "A"
+  while longPrompt.length < 500 {
+    longPrompt = longPrompt + longPrompt
+  }
+  fake.listJobsBody = "{\"jobs\":[{\"id\":\"job-1\",\"name\":\"\",\"prompt\":\"" + longPrompt + "\",\"profileId\":\"\",\"repoUrl\":\"\",\"branch\":\"\",\"harness\":\"\",\"model\":\"\",\"runAtEpochMillis\":\"\",\"intervalSeconds\":\"\",\"nextRunAtEpochMillis\":\"\",\"lastRunAtEpochMillis\":\"\",\"sessionId\":\"s\",\"status\":\"active\",\"createdAt\":\"1\"}]}"
+
+  match listJobs(fake) {
+    case Ok(text) -> {
+      assertTrue(text.contains("truncated"), "an overlong prompt is marked truncated: " + text)
+      assertTrue(text.length < longPrompt.length, "the rendered listing is shorter than the raw prompt")
+    }
     case Err(message) -> assertTrue(false, "expected Ok, got Err: " + message)
   }
 }

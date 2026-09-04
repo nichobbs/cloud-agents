@@ -13,3 +13,12 @@ docker/extra-ca-certs/*.crt
 docker/extra-ca-certs/*.pem
 docker/extra-ca-certs/*.cer
 *.log
+
+# docker/render-branch-policy.sh renders these into the workspace root for
+# the opencode harness at container start (from docker/branch-policy-rules.md);
+# they are session-rendered artifacts, not source, and committing them lets
+# them silently drift from that template (#752). A committed opencode.json
+# also defeats docker/register-callbacks-mcp.sh, which refuses to write the
+# live MCP callback token into a git-tracked opencode.json.
+/.cloud-agents/
+/opencode.json

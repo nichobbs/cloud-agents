@@ -168,6 +168,7 @@ jobs:
             scripts/test-reconcile-repos.sh \
             scripts/test-opencode-entrypoint.sh \
             scripts/test-inspect-tree-fallback.sh \
+            scripts/test-entrypoint-session-resume.sh \
             scripts/test-lyric-version-resolution.sh \
             scripts/test-split-ca-bundle.sh \
             scripts/test-mcp-server-injection.sh \
@@ -182,7 +183,8 @@ jobs:
             scripts/repro-compiler-bug.sh \
             scripts/repro-web-bug.sh \
             scripts/repro-web-request-crash.sh \
-            scripts/repro-docker-crash.sh; do
+            scripts/repro-docker-crash.sh \
+            scripts/repro-crosspkg-long-crash.sh; do
             bash -n "$f" && echo "ok: $f"
           done
 
@@ -213,6 +215,15 @@ jobs:
       # cases against real temp git repos — no Docker, no network.
       - name: Test inspect-mode workspace-tree fallback
         run: ./scripts/test-inspect-tree-fallback.sh
+
+      # Regression test for docker/entrypoint.sh's NATIVE_SESSION_MARKER
+      # state machine (#710's self-heal fix; #709/#717). Mirrors the exact
+      # marker-present/absent x NATIVE_SESSION_ID branching (including the
+      # #710 self-heal transcript lookup) against real temp dirs and
+      # grep-pins the real file so the mirror can't silently drift — no
+      # Docker, no real `claude`/`runuser` needed.
+      - name: Test entrypoint.sh session-resume logic
+        run: ./scripts/test-entrypoint-session-resume.sh
 
       # Regression tests for the per-harness instruction rendering
       # (docker/render-branch-policy.sh, #732) and the cloud-agents MCP shim

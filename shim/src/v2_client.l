@@ -487,20 +487,44 @@ pub func scheduleJob(
   }
 }
 
+/// Cap on the prompt text rendered per job in a list_jobs/update_job
+/// summary line (#888) — the stored prompt can be up to 131072 bytes
+/// (src/handlers/jobs.l's maxJobPromptLen), and dumping it in full for
+/// every job in a listing can flood the agent's context after only a
+/// handful of long-prompt jobs.
+func renderedPrompt(prompt: in String): String {
+  if prompt.length > 200 {
+    return prompt.substring(0, 200) + "... [truncated, " + toString(prompt.length.toInt()) + " chars total]"
+  }
+  return prompt
+}
+
 func jobSummaryLine(j: in JobSummary): String {
-  var line = j.id + " [" + j.status + "]"
+  var line = j.id
+  if j.name.length > 0 {
+    line = line + " '" + j.name + "'"
+  }
+  line = line + " [" + j.status + "]"
   if j.intervalSeconds.length > 0 {
     line = line + " every " + j.intervalSeconds + "s"
   }
-  if j.nextRunAtEpochMillis.length > 0 {
+  // next= comes from the host's due-scan bookkeeping, which only ever
+  // touches status='active' rows — for a paused/cancelled job it can hold
+  // a stale value from before it stopped being scanned, so it would read
+  // as "still going to fire" when it isn't (#888). The interval above is
+  // just the job's own configured cadence, not a scan result, so it stays
+  // accurate (and useful, e.g. to see what a paused job would resume to)
+  // regardless of status.
+  if j.status == "active" and j.nextRunAtEpochMillis.length > 0 {
     line = line + " next=" + j.nextRunAtEpochMillis
   }
-  return line + ": " + j.prompt
+  return line + ": " + renderedPrompt(j.prompt)
 }
 
 /// List every scheduled job owned by this session's owner (not just jobs tied
-/// to this session), rendered as `id [status] every Ns next=<epoch ms>:
-/// prompt` lines, newest first (the host's own ordering).
+/// to this session), rendered as `id 'name' [status] every Ns [next=<epoch
+/// ms> when active]: prompt` lines (prompt truncated past 200 chars),
+/// newest first (the host's own ordering).
 pub func listJobs(transport: in V2CallbackTransport): Result[String, String] {
   val body = match transport.listJobs() {
     case Ok(b) -> b

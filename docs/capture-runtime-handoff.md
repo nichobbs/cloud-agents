@@ -389,6 +389,11 @@ as today).
   post-edit working tree as the checkpoint anchor, the inspect step would
   `git add -A && git write-tree` in a throwaway index; deferred until a consumer
   needs it (the base-commit tree + `file_change` hunks are sufficient for Q4).
+  The throwaway-index `write-tree` mechanism itself already exists as of this
+  spec (§4.1's no-HEAD fallback) — what's deferred here is specifically
+  extending it to the **committed-HEAD-with-uncommitted-edits** case (using it
+  as the checkpoint anchor *instead of* `HEAD^{tree}` whenever the workspace is
+  dirty), not the technique in general.
 
 ## Open questions
 

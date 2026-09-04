@@ -34,9 +34,9 @@ binary packages — no sibling checkout, no source patching:
 
 ```toml
 [nuget]
-"Lyric.Web"             = "0.4.34"
-"Lyric.Docker"          = "0.4.34"
-"Std.Logging"           = "0.4.20"
+"Lyric.Web"             = "0.4.36"
+"Lyric.Docker"          = "0.4.36"
+"Std.Logging"           = "0.4.36"
 "Microsoft.Data.Sqlite" = "10.0.9"
 ```
 
@@ -44,17 +44,20 @@ These track the latest published versions as of each package's own release
 cadence — `Lyric.Web`/`Lyric.Docker` and the compiler (`MIN_LYRIC_VERSION`)
 are independent version numbers on separate release schedules; they will not
 generally match, and `Lyric.Web` is intentionally ahead of the
-0.4.19 compiler floor (see "Root-caused" below for why). **`Lyric.Web` was
-bumped 0.4.26 → 0.4.33 for the chunked-response streaming API (lyric-lang
-PR #5983): `POST /api/sessions/{id}/messages` now streams container output
-live via `startStreaming`/`StreamingHandler` instead of buffering the whole
-run — see `docs/upstream/lyric-web-streaming.md`. Bumped again
-0.4.33 → 0.4.34 with the MCP-callback shim work: 0.4.34's stdlib retired
-the `HttpListener` server path (older Lyric.Web pins crash at startup with
-`MissingMethodException` under a 0.4.34+ toolchain) and renamed
-`StreamingHandler.handleStream` → `streamHandle` (lyric-lang#5993).** `Std.Logging`
-stays at 0.4.20 — nothing in `src/` imports it (the project logs via
-`println`), so there's no reason to chase its latest.
+`MIN_LYRIC_VERSION` compiler floor (see "Root-caused" below for why).
+**`Lyric.Web` was bumped 0.4.26 → 0.4.33 for the chunked-response streaming
+API (lyric-lang PR #5983): `POST /api/sessions/{id}/messages` now streams
+container output live via `startStreaming`/`StreamingHandler` instead of
+buffering the whole run — see `docs/upstream/lyric-web-streaming.md`. Bumped
+again 0.4.33 → 0.4.34 with the MCP-callback shim work: 0.4.34's stdlib
+retired the `HttpListener` server path (older Lyric.Web pins crash at
+startup with `MissingMethodException` under a 0.4.34+ toolchain) and renamed
+`StreamingHandler.handleStream` → `streamHandle` (lyric-lang#5993). All three
+of `Lyric.Web`, `Lyric.Docker`, and `Std.Logging` were then bumped together,
+0.4.34 → 0.4.36, alongside the cross-package `Long`-arithmetic crash fix
+below (see "Root-caused") — that fix needed a toolchain able to build/run
+this project at all in the session where it was diagnosed, and `Std.Logging`
+rides along on the same pin rather than being tracked independently.**
 `Microsoft.Data.Sqlite` stays at 10.0.9 — the newest *stable*; the 11.0.0
 line is preview-only. The two SQLite-native packages
 (`SourceGear.sqlite3` 3.53.3, `SQLitePCLRaw.provider.dynamic_cdecl` 3.0.3)
@@ -477,7 +480,8 @@ directly unit-tested (#67, #56), just no longer called from
 
 **CI enforces a version floor matching this status**, read from the single
 checked-in [`MIN_LYRIC_VERSION`](../MIN_LYRIC_VERSION) file (currently
-`0.4.19`) rather than duplicated as a literal here and in
+`0.4.34`, bumped from `0.4.19` alongside the `Lyric.Web`/`Lyric.Docker`/
+`Std.Logging` NuGet bumps above) rather than duplicated as a literal here and in
 `.github/workflows/ci.yml` — the "Verify minimum Lyric version" step fails
 fast with a clear diagnostic if a future release ever resolves to
 something older than that file's contents, rather than the `lyric test`

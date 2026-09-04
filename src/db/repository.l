@@ -115,6 +115,24 @@ pub func nowMillisLong(): Long {
   return dtoToUnixMillis(dtoUtcNow())
 }
 
+/// Milliseconds since system start, as an `Int` (`System.Environment.
+/// TickCount`, NOT the 64-bit `TickCount64`) — deliberately `Int`, not
+/// `Long`: a repeated `Long` (Int64) subtract-and-compare in a large/complex
+/// function can crash the process with an AccessViolationException (see
+/// docs/BUILD.md, docs/lyric/gotchas.md). `TickCount` wraps to negative
+/// roughly every 24.9 days of host uptime; acceptable for the short
+/// (seconds-to-minutes) wall-clock budgets this is used for — understating a
+/// timeout on the rare wraparound is far cheaper than the crash this works
+/// around.
+///
+/// Shared (#863) so every wall-clock-budget caller — `CloudAgents.Docker`'s
+/// `waitForContainer`/`streamSessionMessage` and `CloudAgents.Highlights`'s
+/// `refreshHighlightsHandler` — binds `System.Environment.get_TickCount`
+/// exactly once instead of each package re-declaring its own copy of the
+/// same extern binding and safety-margin reasoning.
+@externTarget("System.Environment.get_TickCount")
+pub func tickCountMs(): Int = 0
+
 extern type CultureInfo = "System.Globalization.CultureInfo"
 
 @externTarget("System.Globalization.CultureInfo.get_InvariantCulture")
@@ -3337,6 +3355,15 @@ pub func getAttachment(id: in String): Result[Option[Attachment], CloudAgents.Sq
   return Ok(value = Some(value = rowToAttachment(CloudAgents.Sqlite.getRowArrayValue(rows, 0))))
 }
 
+/// Remove one attachment row by id. Best-effort rollback helper for
+/// storeAttachments' pass-2 partial-failure cleanup (#1003) — not used on any
+/// normal (non-error) path, so callers ignore the Result (`val _ = ...`)
+/// exactly as this codebase's other best-effort cleanup calls do.
+pub func deleteAttachment(id: in String): Result[Unit, CloudAgents.Sqlite.DbError] {
+  CloudAgents.Sqlite.execute(CloudAgents.Db.deleteSessionAttachmentSql(id))?
+  return Ok(value = ())
+}
+
 /// A session's attachments, oldest first.
 pub func listAttachments(sessionId: in String): Result[slice[Attachment], CloudAgents.Sqlite.DbError] {
   val rows = CloudAgents.Sqlite.query(CloudAgents.Db.selectSessionAttachmentsBySessionSql(sessionId))?
@@ -3735,28 +3762,77 @@ func rowToCaptureEvent(r: in CloudAgents.Sqlite.Row): CloudAgents.Capture.Captur
 
 /// Append a session's captured events in one transaction (all-or-nothing, so a
 /// stored chain never has a hole). Inserts are `INSERT OR IGNORE` on
-/// `(session_id, seq)`, so re-appending an already-stored prefix (a resumed or
-/// retried capture) is an idempotent no-op. Returns the number of events
-/// *submitted* (`events.length`) — because `INSERT OR IGNORE` silently skips a
-/// row already present, this is the submitted count, not necessarily the count
-/// newly inserted (query back with `sessionEventsAfterSeq` for the stored set).
+/// `(session_id, seq)`, so re-appending an already-stored prefix that is
+/// byte-identical (a resumed or retried capture) is an idempotent no-op.
+/// Returns the number of events *submitted* (`events.length`) — because
+/// `INSERT OR IGNORE` silently skips a row already present, this is the
+/// submitted count, not necessarily the count newly inserted (query back with
+/// `sessionEventsAfterSeq` for the stored set).
 ///
-/// Tamper-evidence boundary (#965): `INSERT OR IGNORE` keying on
-/// `(session_id, seq)` means a re-append that carries DIFFERENT content for an
-/// already-stored seq is discarded, not adjudicated here. That is intentional —
-/// this accessor is a durable append sink, not the integrity check. The chain is
-/// verified by `CloudAgents.Capture.verifyChain` on read (a differing prev_hash/
-/// hash makes the stored chain fail verification), so a caller re-appending a
-/// diverged prefix should `verifyChain` first rather than rely on the store to
-/// reject it.
+/// Tamper-evidence boundary (#965): before inserting anything, the incoming
+/// batch's seq range is compared against what is already stored for those
+/// seqs. If any already-stored `(session_id, seq)` carries a DIFFERENT
+/// `payload`/`hash` than the incoming event for that same seq, the whole batch
+/// is rejected as `ValidationFailed` — no partial insert — rather than
+/// silently discarding the divergent content via `INSERT OR IGNORE`. This
+/// keeps the store from masking a genuine tamper/corruption signal (or a bug
+/// elsewhere producing a divergent re-parse) behind the "idempotent no-op"
+/// path, which is meant for byte-identical retries only. A caller that
+/// legitimately needs to replace stored events (not just append/retry) must go
+/// through some other, explicit path — this accessor never overwrites.
 pub func appendSessionEvents(
   sessionId: in String, events: in slice[CloudAgents.Capture.CaptureEvent]
 ): Result[Int, CloudAgents.Sqlite.DbError] {
+  if events.length.toInt() == 0 {
+    return Ok(value = 0)
+  }
+  // One indexed range query covers the whole incoming batch's seq span, rather
+  // than one query per event.
+  var minSeq = events[0].seq
+  var maxSeq = events[0].seq
+  var i = 0
+  while i < events.length.toInt() {
+    if events[i].seq < minSeq {
+      minSeq = events[i].seq
+    }
+    if events[i].seq > maxSeq {
+      maxSeq = events[i].seq
+    }
+    i = i + 1
+  }
+  val existingRows = CloudAgents.Sqlite.query(
+    CloudAgents.Db.selectSessionEventsBySeqRangeSql(sessionId, toString(minSeq), toString(maxSeq))
+  )?
+  val existingLen = CloudAgents.Sqlite.getRowArrayLength(existingRows)
+  i = 0
+  while i < events.length.toInt() {
+    val e = events[i]
+    val eSeqStr = toString(e.seq)
+    var j = 0
+    while j < existingLen {
+      val row = CloudAgents.Sqlite.getRowArrayValue(existingRows, j)
+      if colAt(row.cols, 0) == eSeqStr {
+        val storedPayload = colAt(row.cols, 1)
+        val storedHash = colAt(row.cols, 2)
+        if storedPayload != e.payload or storedHash != e.hash {
+          return Err(
+            value = ValidationFailed(
+              message = "session_events conflict for session " + sessionId + " seq " + eSeqStr +
+                ": already-stored content differs from the re-appended content"
+            )
+          )
+        }
+      }
+      j = j + 1
+    }
+    i = i + 1
+  }
+
   val createdAt = nowMillis()
   // Build via List.add + toArray rather than slice.append() in a per-event loop
   // (same OSR-promotion concern as sessionEventsAfterSeq, #963 / lyric-lang#6322).
   val stmts: List[String] = newList()
-  var i = 0
+  i = 0
   while i < events.length.toInt() {
     val e = events[i]
     stmts.add(
@@ -3996,10 +4072,11 @@ pub func listScheduledJobs(userId: in String): Result[slice[ScheduledJob], Cloud
   return Ok(value = acc)
 }
 
-/// Every active job due to fire right now, system-wide — mirrors
-/// reapableWarmContainers' unscoped maintenance-scan shape.
-pub func dueScheduledJobs(): Result[slice[ScheduledJob], CloudAgents.Sqlite.DbError] {
-  val rows = CloudAgents.Sqlite.query(CloudAgents.Db.selectDueScheduledJobsSql(nowMillis()))?
+/// Every active job due to fire right now, system-wide, capped at `limit`
+/// rows (#893) — mirrors reapableWarmContainers' unscoped maintenance-scan
+/// shape.
+pub func dueScheduledJobs(limit: in Int): Result[slice[ScheduledJob], CloudAgents.Sqlite.DbError] {
+  val rows = CloudAgents.Sqlite.query(CloudAgents.Db.selectDueScheduledJobsSql(nowMillis(), limit))?
   var acc: slice[ScheduledJob] = []
   var i = 0
   val len = CloudAgents.Sqlite.getRowArrayLength(rows)
@@ -4024,6 +4101,14 @@ pub func claimDueScheduledJob(id: in String, expectedNextRunAt: in String): Resu
 pub func restoreScheduledJobNextRunAt(id: in String, nextRunAt: in String): Result[Unit, CloudAgents.Sqlite.DbError] {
   CloudAgents.Sqlite.execute(CloudAgents.Db.restoreScheduledJobNextRunAtSql(id, nextRunAt))?
   return Ok(value = ())
+}
+
+/// Startup recovery sweep (#882) for jobs left claimed-but-never-resolved by
+/// a host crash/restart mid-run (see recoverStrandedScheduledJobsSql).
+/// Returns the number of rows recovered. Called once at startup, mirroring
+/// CloudAgents.SessionStore.recoverDanglingSessions.
+pub func recoverStrandedScheduledJobs(): Result[Int, CloudAgents.Sqlite.DbError] {
+  return CloudAgents.Sqlite.execute(CloudAgents.Db.recoverStrandedScheduledJobsSql(nowMillis()))
 }
 
 /// Attach a session to a job on its first run (or immediately, for a job an
@@ -4055,7 +4140,13 @@ pub func markScheduledJobCompleted(id: in String, firedAt: in String): Result[Un
 }
 
 /// Update a job's mutable fields. Returns the affected row count (0 means no
-/// such job under this owner).
+/// such job under this owner). `writeNextRunAt` (#891) controls whether
+/// `next_run_at` is written at all: the caller (CloudAgents.Jobs.updateJobHandler)
+/// passes `false` for an ordinary edit that doesn't touch the schedule, so a
+/// next_run_at value this same UPDATE would otherwise echo straight back
+/// (including a concurrent triggerDueJobsHandler claim's transient empty
+/// sentinel) is left alone instead of being permanently pinned to whatever
+/// this request happened to read.
 pub func updateScheduledJob(
   id: in String,
   userId: in String,
@@ -4066,6 +4157,7 @@ pub func updateScheduledJob(
   intervalSeconds: in String,
   nextRunAt: in String,
   status: in String,
+  writeNextRunAt: in Bool,
 ): Result[Int, CloudAgents.Sqlite.DbError] {
   return CloudAgents.Sqlite.execute(
     CloudAgents.Db.updateScheduledJobSql(
@@ -4077,7 +4169,8 @@ pub func updateScheduledJob(
       runAt,
       intervalSeconds,
       nextRunAt,
-      status
+      status,
+      writeNextRunAt
     )
   )
 }
@@ -4141,7 +4234,7 @@ pub func branchSession(
   val sRows = CloudAgents.Sqlite.query(CloudAgents.Db.selectSessionByIdSql(parentSessionId, userId))?
   val sLen = CloudAgents.Sqlite.getRowArrayLength(sRows)
   if sLen == 0 {
-    return Err(value = CloudAgents.Sqlite.ValidationFailed(message = "parent session not found or not owned by user"))
+    return Err(value = ValidationFailed(message = "parent session not found or not owned by user"))
   }
   val parentRow = CloudAgents.Sqlite.getRowArrayValue(sRows, 0)
   val repoUrl = colAt(parentRow.cols, 2)
@@ -4155,12 +4248,12 @@ pub func branchSession(
     val mRows = CloudAgents.Sqlite.query(CloudAgents.Db.selectMessageByIdSql(forkedMessageId))?
     val mLen = CloudAgents.Sqlite.getRowArrayLength(mRows)
     if mLen == 0 {
-      return Err(value = CloudAgents.Sqlite.ValidationFailed(message = "forked message not found"))
+      return Err(value = ValidationFailed(message = "forked message not found"))
     }
     val mRow = CloudAgents.Sqlite.getRowArrayValue(mRows, 0)
     val msgSessionId = colAt(mRow.cols, 1)
     if msgSessionId != parentSessionId {
-      return Err(value = CloudAgents.Sqlite.ValidationFailed(message = "forked message does not belong to parent session"))
+      return Err(value = ValidationFailed(message = "forked message does not belong to parent session"))
     }
     targetSeq = parseNatString(colAt(mRow.cols, 4))
   }

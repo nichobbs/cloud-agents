@@ -13,6 +13,7 @@ describe('parseCredentialInput', () => {
     expect(parseCredentialInput('AIzaSyExample')[0]?.name).toBe('GEMINI_API_KEY');
     expect(parseCredentialInput('ghp_abc123')[0]?.name).toBe('GITHUB_TOKEN');
     expect(parseCredentialInput('github_pat_abc')[0]?.name).toBe('GITHUB_TOKEN');
+    expect(parseCredentialInput('zen_abc123')[0]?.name).toBe('OPENCODE_ZEN_API_KEY');
   });
 
   it('recognises a Claude Code OAuth token ahead of the generic anthropic prefix', () => {
@@ -42,10 +43,16 @@ describe('parseCredentialInput', () => {
       anthropic: { type: 'api', key: 'sk-ant-a' },
       openai: { type: 'api', key: 'sk-o' },
       google: { type: 'api', key: 'AIza-g' },
+      opencode: { type: 'api', key: 'zen_x' },
       wellknown: { type: 'wellknown', key: 'ignored' },
     });
     const names = parseCredentialInput(file).map(c => c.name).sort();
-    expect(names).toEqual(['ANTHROPIC_API_KEY', 'GEMINI_API_KEY', 'OPENAI_API_KEY']);
+    expect(names).toEqual([
+      'ANTHROPIC_API_KEY',
+      'GEMINI_API_KEY',
+      'OPENAI_API_KEY',
+      'OPENCODE_ZEN_API_KEY',
+    ]);
   });
 
   it('ignores non-api OpenCode entries and malformed JSON', () => {

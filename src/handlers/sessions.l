@@ -1,6 +1,7 @@
 package CloudAgents.Handlers
 
 import Std.Core
+import Std.Collections
 import Std.Errors
 import Std.File
 import Std.Json
@@ -8,6 +9,7 @@ import Web
 import CloudAgents.Auth
 import CloudAgents.Docker
 import CloudAgents.Interactions
+import CloudAgents.NetworkPolicy
 import CloudAgents.Proxy
 import CloudAgents.Repository
 import CloudAgents.SessionStore
@@ -88,6 +90,31 @@ func sliceBytesToList(b: in slice[Byte]): List[Byte] {
     i = i + 1
   }
   return acc
+}
+
+/// `Std.File.delete` is documented in docs/lyric/stdlib.md but does not
+/// resolve at runtime on this toolchain — `unsupported method 'delete' on
+/// the receiver type (no matching user method, extern binding, or built-in
+/// intrinsic)`, confirmed by cleanupPartialAttachmentBatch's own test before
+/// this workaround. Same "compiles as a dot-call, dies at runtime" family
+/// docs/lyric/gotchas.md catalogues for several other stdlib convenience
+/// methods (see sliceBytesToList's doc comment above for the identical
+/// `slice[Byte].toList()` case). Bind directly to the BCL method instead.
+@externTarget("System.IO.File.Delete")
+func externDeleteFile(path: in String): Unit = ()
+
+/// Best-effort wrapper around externDeleteFile for
+/// cleanupPartialAttachmentBatch (#1003): a failed delete (locked file,
+/// permission error, already gone) must never propagate as an exception —
+/// cleanup here is already best-effort by design, not a second point of
+/// failure for the pass-2 error it's cleaning up after.
+func bestEffortDeleteAttachmentFile(path: in String): Unit {
+  try {
+    externDeleteFile(path)
+  } catch Bug as b {
+    ()
+  }
+  return ()
 }
 
 /// The final path segment of `name`, defending against `../` traversal in a
@@ -286,17 +313,26 @@ pub func isSafeRepoUrl(url: in String): Bool {
 /// #266) — rather than duplicating (and risking drift from) that logic. Assumes
 /// the `https://` prefix is already verified (webhookHost parses from offset 8).
 ///
-/// Only inspects the literal hostname string, not a resolved IP — a public DNS
-/// name an attacker controls (e.g. resolving to 169.254.169.254) passes this
-/// check and the actual SSRF happens later, at `git clone` time, when the clone
-/// runs inside the session's Docker container (#300). Unlike the webhook path
-/// this reuses the blocklist from, there is no secondary backstop here for the
-/// common case: a session's default `network_policy` is `'full'` (unrestricted
-/// bridge network — see `createRunnerContainer` in docker_manager.l) unless its
-/// profile explicitly sets `'restricted'`/`'none'`, so this hostname check is
-/// the only control against metadata-endpoint SSRF via `git clone` today.
+/// Also resolves the hostname and rejects it if any answer is loopback/
+/// private/link-local/ULA/metadata (#300): the literal-string check above
+/// only catches a repoUrl that IS an IP literal — a public DNS name an
+/// attacker controls (e.g. resolving to 169.254.169.254) sailed straight
+/// through it, and the actual SSRF happened later, at `git clone` time,
+/// inside the session's Docker container. Unlike the webhook path the
+/// literal blocklist is reused from, there is no secondary backstop here for
+/// the common case: a session's default `network_policy` is `'full'`
+/// (unrestricted bridge network — see `createRunnerContainer` in
+/// docker_manager.l) unless its profile explicitly sets
+/// `'restricted'`/`'none'`, so this is the only control against
+/// metadata-endpoint SSRF via `git clone` today.
+/// `CloudAgents.NetworkPolicy.isBlockedResolvedHost`'s own doc comment
+/// covers the residual TOCTOU/DNS-rebinding risk this still can't close.
 pub func isBlockedRepoHost(url: in String): Bool {
-  return CloudAgents.Webhooks.isBlockedWebhookHost(CloudAgents.Webhooks.webhookHost(url))
+  val host = CloudAgents.Webhooks.webhookHost(url)
+  if CloudAgents.Webhooks.isBlockedWebhookHost(host) {
+    return true
+  }
+  return CloudAgents.NetworkPolicy.isBlockedResolvedHost(host)
 }
 
 /// Git ref-name safety: rejects names git itself refuses, plus anything that
@@ -757,20 +793,51 @@ pub func promptExceedsMaxLength(text: in String): Bool {
   return not CloudAgents.Text.withinMaxByteLength(text, maxPromptLen)
 }
 
+/// storeAttachments' behavior when the CURRENT message carries no new
+/// attachments (#1005): a text-only follow-up still needs
+/// /workspace/.attachments mounted for the run whenever the SESSION already
+/// has attachments from an EARLIER message, so the agent can revisit a file
+/// it was told about in a prior turn (e.g. "what did you see in that
+/// screenshot?" -> "now fix that bug") instead of losing access to it the
+/// moment one message in the thread happens to carry no new upload.
+/// `attachments` on the result is always empty here — there is nothing NEW
+/// in this message to link to the message row streamSendMessage is about to
+/// create — only `hostDir` differs from the old always-"" behavior.
+/// Fails open (hostDir = "", same as the pre-#1005 behavior) on a
+/// listAttachments error rather than failing the whole send: unlike the
+/// profile lookup below (a security boundary that must fail closed), losing
+/// visibility into prior attachments on a transient read hiccup is a
+/// degraded-but-safe outcome, not a security concern, and matches this
+/// function's own error-tolerant precedent (addMessage/linkAttachmentToMessage
+/// failures are swallowed the same way just below).
+func existingAttachmentsHostDir(sessionId: in String): Result[StoredAttachments, StoreAttachmentsError] {
+  match CloudAgents.Repository.listAttachments(sessionId) {
+    case Ok(existing) -> {
+      if existing.length == 0 {
+        return Ok(value = StoredAttachments(attachments = [], hostDir = ""))
+      }
+      return Ok(value = StoredAttachments(attachments = [], hostDir = CloudAgents.Repository.attachmentsBaseDir() + "/" + sessionId))
+    }
+    case Err(_) -> return Ok(value = StoredAttachments(attachments = [], hostDir = ""))
+  }
+}
+
 /// Validate and persist a message's attachments to disk under
 /// attachmentsBaseDir()/<sessionId>/, and record their metadata (each row
 /// starts with an empty messageId — streamSendMessage links them to the
-/// user message once addMessage mints its id). Empty `inputs` is a no-op
-/// success. The directory is per-SESSION (not per-message), flat, and
-/// collision-free via the attachment id prefix on storedName — so a session
-/// with attachments on more than one message simply accumulates files there,
-/// and CloudAgents.Docker re-binds the whole directory (not just this
-/// message's new files) on every later message that also carries an
-/// attachment, giving the agent access to everything uploaded so far in the
-/// session, not just the latest batch.
+/// user message once addMessage mints its id). Empty `inputs` writes nothing
+/// new but still resolves `hostDir` to the session's existing attachment
+/// directory when one exists — see existingAttachmentsHostDir below (#1005).
+/// The directory is per-SESSION (not per-message), flat, and collision-free
+/// via the attachment id prefix on storedName — so a session with
+/// attachments on more than one message simply accumulates files there, and
+/// CloudAgents.Docker re-binds the whole directory (not just this message's
+/// new files, and not only when this message itself carries a new
+/// attachment) on every later message, giving the agent access to
+/// everything uploaded so far in the session, not just the latest batch.
 pub func storeAttachments(sessionId: in String, inputs: in slice[AttachmentInput]): Result[StoredAttachments, StoreAttachmentsError] {
   if inputs.length == 0 {
-    return Ok(value = StoredAttachments(attachments = [], hostDir = ""))
+    return existingAttachmentsHostDir(sessionId)
   }
   if inputs.length > maxAttachmentsPerMessage {
     return Err(value = StoreAttachmentsError(code = 400, message = "too many attachments (max " + toString(maxAttachmentsPerMessage) + " per message)"))
@@ -843,40 +910,84 @@ pub func storeAttachments(sessionId: in String, inputs: in slice[AttachmentInput
     i = i + 1
   }
   // Pass 2: every input validated — now actually persist. This loop is
-  // itself NOT atomic (#1003): if Std.File.writeBytes or createAttachment
-  // fails partway through a multi-file request (disk full, a transient
-  // SQLite error), files already written/inserted earlier in THIS loop stay
-  // orphaned — messageId permanently '', same failure shape pass 1 exists to
-  // rule out for the far more common validation-rejection case. Accepted as
-  // a known, rare-failure-mode limitation rather than adding rollback: it
-  // requires a genuine I/O or DB failure mid-batch (not a predictable
-  // validation outcome), and matches this codebase's existing tolerance for
-  // non-transactional multi-step writes elsewhere (e.g. this exact
-  // single-file version of the problem already exists, unaddressed, in
-  // CloudAgents.Callbacks' report_artifact upload path).
+  // itself not wrapped in a DB transaction (SQLite access here goes through
+  // one statement at a time, same as everywhere else in this codebase), so a
+  // failure partway through a multi-file request (disk full, a transient
+  // SQLite error) COULD leave files already written/inserted earlier in
+  // THIS loop orphaned — messageId permanently '', same failure shape pass 1
+  // exists to rule out for the far more common validation-rejection case.
+  // Fixed for #1003: on any pass-2 failure, cleanupPartialAttachmentBatch
+  // below best-effort deletes every row/file this call already committed
+  // earlier in the same batch before returning Err, so a disk-full/DB hiccup
+  // on file N doesn't strand files 1..N-1. "Best-effort" because the cleanup
+  // itself can fail too (the same disk-full condition that caused the
+  // original error can just as well block the delete) — at that point the
+  // orphan this comment used to accept as a known limitation can still
+  // occur, but only on a second independent failure, not on the common case
+  // this fix actually closes.
   val hostDir = CloudAgents.Repository.attachmentsBaseDir() + "/" + sessionId
   match Std.File.createDir(hostDir) {
     case Ok(_) -> ()
     case Err(e) -> return Err(value = StoreAttachmentsError(code = 500, message = "failed to create attachment storage: " + IOError.message(e)))
   }
   var stored: slice[CloudAgents.Repository.Attachment] = []
+  var writtenPaths: slice[String] = []
   var j = 0
   while j < validated.length {
     val v = validated[j]
     val kind = attachmentKindOf(v.mimeType)
     val attachmentId = Std.Uuid.uuidToString(Std.Uuid.newUuid())
     val storedName = attachmentId + "_" + v.fileName
-    match Std.File.writeBytes(hostDir + "/" + storedName, sliceBytesToList(v.bytes)) {
+    val path = hostDir + "/" + storedName
+    match Std.File.writeBytes(path, sliceBytesToList(v.bytes)) {
       case Ok(_) -> ()
-      case Err(e) -> return Err(value = StoreAttachmentsError(code = 500, message = "failed to store attachment: " + IOError.message(e)))
+      case Err(e) -> {
+        cleanupPartialAttachmentBatch(stored, writtenPaths)
+        return Err(value = StoreAttachmentsError(code = 500, message = "failed to store attachment: " + IOError.message(e)))
+      }
     }
+    writtenPaths = writtenPaths.append(path)
     match CloudAgents.Repository.createAttachment(sessionId, v.fileName, storedName, v.mimeType, kind, toString(v.sizeBytes)) {
       case Ok(a) -> { stored = stored.append(a) }
-      case Err(e) -> return Err(value = StoreAttachmentsError(code = 500, message = "failed to record attachment: " + CloudAgents.Sqlite.dbErrorMessage(e)))
+      case Err(e) -> {
+        cleanupPartialAttachmentBatch(stored, writtenPaths)
+        return Err(value = StoreAttachmentsError(code = 500, message = "failed to record attachment: " + CloudAgents.Sqlite.dbErrorMessage(e)))
+      }
     }
     j = j + 1
   }
   return Ok(value = StoredAttachments(attachments = stored, hostDir = hostDir))
+}
+
+/// Best-effort rollback for storeAttachments' pass-2 loop (#1003): undoes
+/// what THIS call already committed earlier in the same batch when a later
+/// file's write or DB insert fails, so the failure doesn't leave orphaned
+/// bytes/rows (messageId permanently '') behind for files 1..N-1. `stored`
+/// carries every attachment that got BOTH its file written and its DB row
+/// inserted; `writtenPaths` carries every file written so far regardless —
+/// deliberately a superset, since it also covers the one path (if any) whose
+/// write succeeded but whose createAttachment call is what just failed, which
+/// has no corresponding `stored` entry to delete a row for. Each delete is
+/// independently best-effort: this function is already on the way to
+/// returning the original error either way, so a cleanup failure (e.g. the
+/// same disk-full condition that caused the original error) is swallowed
+/// rather than replacing or masking that error. `pub` (rather than private to
+/// this package) purely so tests/attachment_tests.l can exercise the cleanup
+/// mechanism directly — storeAttachments' own pass-2 loop has no test hook to
+/// force a genuine mid-batch I/O/DB failure the way validation failures can
+/// be forced, the same reason promptExceedsMaxLength above is pub+pure.
+pub func cleanupPartialAttachmentBatch(stored: in slice[CloudAgents.Repository.Attachment], writtenPaths: in slice[String]): Unit {
+  var i = 0
+  while i < stored.length {
+    val _ = CloudAgents.Repository.deleteAttachment(stored[i].id)
+    i = i + 1
+  }
+  var k = 0
+  while k < writtenPaths.length {
+    bestEffortDeleteAttachmentFile(writtenPaths[k])
+    k = k + 1
+  }
+  return ()
 }
 
 /// Appends a file manifest to the prompt the CONTAINER receives, naming each
@@ -1321,6 +1432,141 @@ pub func reapContainers(): Result[String, Web.ApiError] {
   return Ok(value = "{\"reaped\":" + toString(reaped) + "}")
 }
 
+// ─── getRunOutput reconnect cache (#974) ───────────────────────────────────
+// getRunOutput's RUNNING branch used to call renderFullLog on the ENTIRE
+// accumulated container log on every call — O(total log size so far) of
+// NDJSON parsing work per reconnect/poll, repeated on every reconnect during
+// a single run. RunOutputCacheEntry + advanceRunOutputCache below carry the
+// render forward incrementally instead, mirroring the same
+// offset/nextSeq/lastHash hash-chain cursor streamSessionMessage's poll loop
+// and getRunOutputFrom already use — a call only re-parses the log bytes
+// APPENDED since the last call for this session, not the whole log again.
+
+/// Cached render state for one session's getRunOutput reconnect path:
+/// `offset` is the raw container-log byte offset already rendered,
+/// `nextSeq`/`lastHash` are the NDJSON hash-chain cursor at that offset (as
+/// `CloudAgents.Capture.Render.renderLogDelta` threads them), and `rendered`
+/// is the accumulated visible transcript so far — what getRunOutput's
+/// response contract requires (the whole transcript, not just a delta).
+pub record RunOutputCacheEntry {
+  pub offset: Int = 0
+  pub nextSeq: Long = 0.toLong()
+  pub lastHash: String = ""
+  pub rendered: String = ""
+}
+
+/// Pure: advance `prev` against the CURRENT raw container log, returning the
+/// updated cache entry. `atEnd = false` throughout — like
+/// `runOutputRenderedDeltaJson`'s incremental path, this only ever runs while
+/// the session is RUNNING (the log may end mid-line), so a partial trailing
+/// NDJSON line is left unconsumed for the next call rather than parsed as if
+/// the run had finished (parsing a truncated line as final would also
+/// desync the offset — the completing bytes on a LATER call would then be
+/// fed to the parser as a new, unrelated line).
+///
+/// `logs` shorter than `prev.offset` means the container's log is no longer
+/// an extension of what was cached (e.g. a new run reused the session id) —
+/// re-rendered from scratch rather than treated as a delta. `logs` at
+/// exactly `prev.offset`, or a delta with no complete line yet, is a no-op:
+/// `prev` is returned unchanged (still correct, just not yet advanced).
+pub func advanceRunOutputCache(prev: in RunOutputCacheEntry, logs: in String): RunOutputCacheEntry {
+  val total = logs.length.toInt()
+  if total < prev.offset {
+    val rd = CloudAgents.Capture.Render.renderLogDelta(logs, 0, 0.toLong(), "", false)
+    return RunOutputCacheEntry(offset = rd.consumed, nextSeq = rd.nextSeq, lastHash = rd.lastHash, rendered = rd.displayText)
+  }
+  if total == prev.offset {
+    return prev
+  }
+  val rd = CloudAgents.Capture.Render.renderLogDelta(logs, prev.offset, prev.nextSeq, prev.lastHash, false)
+  if rd.consumed == 0 {
+    return prev
+  }
+  return RunOutputCacheEntry(
+    offset = prev.offset + rd.consumed,
+    nextSeq = rd.nextSeq,
+    lastHash = rd.lastHash,
+    rendered = prev.rendered + rd.displayText
+  )
+}
+
+// The live cache itself: one entry per currently-polled RUNNING session,
+// keyed by session id. Not thread-synchronized — a race between two
+// concurrent getRunOutput calls for the SAME session can only lose an
+// update (fall back to re-rendering more of the log next time), never
+// return wrong output to either caller, since each call always returns the
+// entry IT just computed rather than trusting a racing read back from the
+// map. Evicted on the non-RUNNING branch below so it stays bounded by the
+// number of sessions currently RUNNING, not every session ever polled.
+// Keyed by parallel slices rather than a Map: Std.Collections.Map's
+// `Map.empty` does not resolve on Lyric >= 0.6.x (it lowers to a .NET
+// Dictionary with no `empty` member), and the cache is bounded by the number
+// of RUNNING sessions, so a linear scan is cheaper than the abstraction.
+protected type RunOutputCache {
+  var ids: slice[String] = []
+  var entries: slice[RunOutputCacheEntry] = []
+
+  entry slotOf(id: in String): Int {
+    var i = 0
+    while i < ids.length {
+      if ids[i] == id {
+        return i
+      }
+      i = i + 1
+    }
+    return -1
+  }
+
+  entry get(id: in String): RunOutputCacheEntry {
+    val idx = slotOf(id)
+    if idx >= 0 {
+      return entries[idx]
+    }
+    return RunOutputCacheEntry(offset = 0, nextSeq = 0.toLong(), lastHash = "", rendered = "")
+  }
+
+  entry put(id: in String, e: in RunOutputCacheEntry): Unit {
+    val idx = slotOf(id)
+    if idx < 0 {
+      ids = ids.append(id)
+      entries = entries.append(e)
+      return
+    }
+    var nextEntries: slice[RunOutputCacheEntry] = []
+    var i = 0
+    while i < entries.length {
+      if i == idx {
+        nextEntries = nextEntries.append(e)
+      } else {
+        nextEntries = nextEntries.append(entries[i])
+      }
+      i = i + 1
+    }
+    entries = nextEntries
+  }
+
+  entry evict(id: in String): Unit {
+    val idx = slotOf(id)
+    if idx < 0 {
+      return
+    }
+    var nextIds: slice[String] = []
+    var nextEntries: slice[RunOutputCacheEntry] = []
+    var i = 0
+    while i < ids.length {
+      if i != idx {
+        nextIds = nextIds.append(ids[i])
+        nextEntries = nextEntries.append(entries[i])
+      }
+      i = i + 1
+    }
+    ids = nextIds
+    entries = nextEntries
+  }
+}
+
+val runOutputCache = RunOutputCache()
+
 /// The most recent AGENT-role message's content in `msgs` (oldest-first, as
 /// returned by CloudAgents.Repository.listMessages), or "" if there is none.
 /// Pure — pulled out of getRunOutput so it stays directly testable: the
@@ -1375,6 +1621,11 @@ pub func getRunOutput(id: in String): Result[String, Web.ApiError] {
       // creation — see an empty id and report "not running", causing the
       // client to stop polling for the whole run.
       if status != "RUNNING" {
+        // The run just ended (or was never running) — this session no longer
+        // needs its reconnect-cache entry (#974); drop it so the cache stays
+        // bounded by sessions currently RUNNING rather than growing over
+        // every session ever polled. A session with no entry is a no-op.
+        runOutputCache.evict(id)
         // Best-effort: a transcript lookup failure must not turn a completed
         // run's status poll into a 500 — fall back to "" the same as before,
         // but (#904) log it so a real DB problem on this path isn't silently
@@ -1399,11 +1650,16 @@ pub func getRunOutput(id: in String): Result[String, Web.ApiError] {
       }
       val logs = if containerId.length > 0 { CloudAgents.Docker.partialContainerLogs(containerId) } else { "" }
       // Render the NDJSON log to the visible assistant transcript the PWA expects,
-      // so the whole-log read-back path does not surface raw JSON.
-      val rendered = CloudAgents.Capture.Render.renderFullLog(logs)
+      // so the whole-log read-back path does not surface raw JSON. Incremental
+      // (#974): only the log bytes appended since the LAST getRunOutput call for
+      // this session are re-parsed, via the cached offset/hash-chain cursor,
+      // instead of re-parsing the whole accumulated log from byte 0 on every
+      // reconnect/poll.
+      val updated = advanceRunOutputCache(runOutputCache.get(id), logs)
+      runOutputCache.put(id, updated)
       // `length` is the raw log byte length — the cursor the incremental
       // /output/{offset} endpoint advances against.
-      return Ok(value = "{\"running\":\"true\",\"length\":\"" + toString(logs.length.toInt()) + "\",\"output\":\"" + CloudAgents.Streaming.jsonEscape(rendered) + "\"}")
+      return Ok(value = "{\"running\":\"true\",\"length\":\"" + toString(logs.length.toInt()) + "\",\"output\":\"" + CloudAgents.Streaming.jsonEscape(updated.rendered) + "\"}")
     }
   }
 }

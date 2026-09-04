@@ -137,10 +137,26 @@ pub func encGetBytes(enc: in Encoding, s: in String): slice[Byte] = []
 @externTarget("System.Text.Encoding.GetString")
 pub func encGetStringBytes(enc: in Encoding, bytes: in slice[Byte]): String = ""
 
-// pub (#514) so tests/github_api_tests.l can cover it directly — see that
-// file's NOTE on why readAllUtf8/readAll themselves stay untested.
+// pub (#514) so tests/github_api_tests.l can cover it directly.
 @externTarget("System.Char.ConvertFromUtf32")
 pub func charFromCode(code: in Int): String = ()
+
+// A real System.IO.Stream backed by an in-memory byte buffer rather than a
+// socket. #649: previously the only way this module could produce a NetStream
+// at all was getResponseStream(getResponse(...)) — a real HTTP round trip —
+// so readAllUtf8/readAll (the actual production code paths) had zero direct
+// test coverage; tests/github_api_tests.l could only exercise the FFI chain
+// they're built from. MemoryStream.new(bytes), narrowed to the NetStream
+// return type (the same declared-return-type-narrows-the-constructed-type
+// idiom createRequest above uses for WebRequest.Create), gives tests a real
+// Stream with no network at all.
+extern type MemoryStream = "System.IO.MemoryStream"
+
+/// pub (#649) so tests/github_api_tests.l can drive readAllUtf8/readAll
+/// directly against real, in-memory stream content.
+pub func memoryStreamOf(bytes: in slice[Byte]): NetStream {
+  return MemoryStream.new(bytes)
+}
 
 // ─── UTF-8 body reading (proxy endpoints) ────────────────────────────────────
 // The byte-per-char readAll below mangles non-ASCII, which is fine for the
@@ -156,8 +172,11 @@ pub func readerRead(reader: in StreamReader): Int = -1
 val maxProxyResponseBytes = 1048576
 
 /// Read a response stream to a string, decoding it as UTF-8 (unlike readAll,
-/// which widens byte-per-char and mangles non-ASCII), capped at maxProxyResponseBytes.
-func readAllUtf8(s: in NetStream): String {
+/// which widens byte-per-char and mangles non-ASCII), capped at
+/// maxProxyResponseBytes. pub (#649) so tests/github_api_tests.l can call it
+/// directly against a real in-memory stream (memoryStreamOf) rather than only
+/// exercising the FFI chain it's built from.
+pub func readAllUtf8(s: in NetStream): String {
   val reader = StreamReader.new(s)
   var total = 0
   var raw = ""
@@ -348,6 +367,42 @@ pub func httpPostForm(url: in String, formBody: in String, userAgent: in String)
 /// the convenience wrapper for that specific case.
 val llmRequestTimeoutMillis = 120000
 
+/// Getter for the property setAllowAutoRedirect above sets — pub (#1025) so a
+/// test can confirm the exact request buildBearerPostRequest below constructs
+/// really does carry the redirect-follow-disabled bearer-leak defense, with no
+/// network I/O at all (constructing an HttpWebRequest and reading a property
+/// back off it never opens a connection; only GetRequestStream/GetResponse do).
+@externInstance
+@externTarget("System.Net.HttpWebRequest.get_AllowAutoRedirect")
+pub func getAllowAutoRedirect(req: in HttpWebRequest): Bool = true
+
+/// Build (but do not send — no GetRequestStream/GetResponse call, so no
+/// network I/O) the POST request httpPostJsonWithBearerTimeout below issues:
+/// method, timeouts, the no-redirect-follow bearer-leak defense
+/// (docs/capture-runtime-handoff.md §5.2), and the Authorization header.
+/// Factored out (#1025) so the exact request-construction seam production
+/// uses is itself the thing a test inspects, rather than a parallel copy that
+/// could silently drift from it.
+pub func buildBearerPostRequest(
+  url: in String, bearerToken: in String, userAgent: in String, timeoutMillis: in Int
+): HttpWebRequest {
+  val req = createRequest(url)
+  setMethod(req, "POST")
+  setTimeout(req, timeoutMillis)
+  setReadWriteTimeout(req, timeoutMillis)
+  // No redirect-follow: a 3xx must not replay the bearer token to another host
+  // (docs/capture-runtime-handoff.md §5.2). Safe for the existing callers too —
+  // Highlights + OpenPr POST to fixed trusted hosts and don't rely on redirects.
+  setAllowAutoRedirect(req, false)
+  setUserAgent(req, userAgent)
+  setAccept(req, "application/json")
+  setContentType(req, "application/json")
+  if bearerToken.length > 0 {
+    headerSet(getHeaders(req), "Authorization", "Bearer " + bearerToken)
+  }
+  return req
+}
+
 /// POST a JSON body to `url` with an optional Authorization bearer header
 /// (pass "" to send none) and an explicit `timeoutMillis` (applies to both
 /// the connect and the body read), reading the response as real UTF-8
@@ -359,20 +414,7 @@ pub func httpPostJsonWithBearerTimeout(
   url: in String, jsonBody: in String, bearerToken: in String, userAgent: in String, timeoutMillis: in Int
 ): Result[String, String] {
   return try {
-    val req = createRequest(url)
-    setMethod(req, "POST")
-    setTimeout(req, timeoutMillis)
-    setReadWriteTimeout(req, timeoutMillis)
-    // No redirect-follow: a 3xx must not replay the bearer token to another host
-    // (docs/capture-runtime-handoff.md §5.2). Safe for the existing callers too —
-    // Highlights + OpenPr POST to fixed trusted hosts and don't rely on redirects.
-    setAllowAutoRedirect(req, false)
-    setUserAgent(req, userAgent)
-    setAccept(req, "application/json")
-    setContentType(req, "application/json")
-    if bearerToken.length > 0 {
-      headerSet(getHeaders(req), "Authorization", "Bearer " + bearerToken)
-    }
+    val req = buildBearerPostRequest(url, bearerToken, userAgent, timeoutMillis)
     val bytes = encGetBytes(utf8(), jsonBody)
     val reqStream = getRequestStream(req)
     // Same close-before-GetResponse + exception-path defer as httpPostForm

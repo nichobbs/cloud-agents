@@ -89,30 +89,26 @@ RUN apt-get update && apt-get install -y --no-install-recommends curl ca-certifi
 # any of this stage's own outbound HTTPS calls (curl below, `lyric restore`
 # in the shim build) — each build stage is its own container with its own
 # CA trust store, so a host-trusted corporate root is invisible here
-# without this.
+# without this. The actual split/trust logic lives in trust-extra-cas.sh
+# (#686) — shared byte-for-byte across every runner Dockerfile's build
+# stages instead of copy-pasted per file.
 COPY docker/extra-ca-certs /tmp/extra-ca-certs
-COPY docker/split-ca-bundle.sh /usr/local/bin/split-ca-bundle.sh
-RUN chmod +x /usr/local/bin/split-ca-bundle.sh \
-    && for f in /tmp/extra-ca-certs/*.crt /tmp/extra-ca-certs/*.pem /tmp/extra-ca-certs/*.cer; do \
-      [ -f "$f" ] || continue; \
-      base="$(basename "$f")"; \
-      /usr/local/bin/split-ca-bundle.sh "$f" /usr/local/share/ca-certificates "${base%.*}"; \
-    done \
-    && update-ca-certificates
+COPY docker/split-ca-bundle.sh docker/trust-extra-cas.sh /usr/local/bin/
+RUN chmod +x /usr/local/bin/split-ca-bundle.sh /usr/local/bin/trust-extra-cas.sh \
+    && /usr/local/bin/trust-extra-cas.sh
 
 # Lyric release RID matching THIS build's actual architecture (native — no
 # --platform override above, so this is whatever the host/builder actually
-# is), same x86_64->linux-x64 / aarch64->linux-arm64 mapping scripts/
-# install.sh already uses. Resolved once here and shared into stage 2 via
-# /tmp/lyric-rid.txt, same pattern as /tmp/lyric-version.txt below (#657) —
-# both stages build on the same host in a single `docker build` invocation
-# anyway, but this avoids duplicating the case statement.
-RUN ARCH="$(uname -m)" \
-    && case "$ARCH" in \
-         x86_64) LYRIC_RID=linux-x64 ;; \
-         aarch64) LYRIC_RID=linux-arm64 ;; \
-         *) echo "ERROR: unsupported architecture for the Lyric compiler: $ARCH (supported: x86_64, aarch64)" >&2; exit 1 ;; \
-       esac \
+# is), via the shared scripts/lyric-rid.sh (#675) — the same x86_64->
+# linux-x64 / aarch64->linux-arm64 mapping scripts/install.sh and
+# deploy/api.Dockerfile also use, from one source instead of three
+# hand-copied case statements. Resolved once here and shared into stage 2
+# via /tmp/lyric-rid.txt, same pattern as /tmp/lyric-version.txt below
+# (#657) — both stages build on the same host in a single `docker build`
+# invocation anyway, but this avoids re-running the resolution twice.
+COPY scripts/lyric-rid.sh scripts/verify-lyric-checksum.sh /usr/local/bin/
+RUN chmod +x /usr/local/bin/lyric-rid.sh /usr/local/bin/verify-lyric-checksum.sh \
+    && LYRIC_RID="$(/usr/local/bin/lyric-rid.sh)" \
     && echo -n "$LYRIC_RID" > /tmp/lyric-rid.txt
 
 RUN if [ -z "$LYRIC_VERSION" ]; then \
@@ -132,9 +128,11 @@ RUN if [ -z "$LYRIC_VERSION" ]; then \
 
 RUN LYRIC_VERSION="$(cat /tmp/lyric-version.txt)" \
     && LYRIC_RID="$(cat /tmp/lyric-rid.txt)" \
+    && LYRIC_ARCHIVE="lyric-${LYRIC_VERSION}-${LYRIC_RID}.tar.gz" \
     && curl -fsSL --connect-timeout 10 --max-time 120 --retry 3 --retry-delay 3 \
         -o /tmp/lyric.tgz \
-        "https://github.com/nichobbs/lyric-lang/releases/download/v${LYRIC_VERSION}/lyric-${LYRIC_VERSION}-${LYRIC_RID}.tar.gz" \
+        "https://github.com/nichobbs/lyric-lang/releases/download/v${LYRIC_VERSION}/${LYRIC_ARCHIVE}" \
+    && /usr/local/bin/verify-lyric-checksum.sh "$LYRIC_VERSION" /tmp/lyric.tgz "$LYRIC_ARCHIVE" \
     && mkdir -p /usr/local/bin \
     && tar -xzf /tmp/lyric.tgz -C /usr/local/bin \
     && rm -f /tmp/lyric.tgz
@@ -165,22 +163,14 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # store and does NOT consult the OS trust store, so update-ca-certificates
 # alone is not enough to get npm past a corporate proxy's re-signed certs
 # (confirmed: npm still failed SELF_SIGNED_CERT_IN_CHAIN after
-# update-ca-certificates alone reported the cert added). The combined pem
-# is always created (even empty) so NODE_EXTRA_CA_CERTS can be set
-# unconditionally — Node treats a missing or empty file as a harmless
-# no-op (a warning at worst), so this is safe with nothing dropped into
-# extra-ca-certs/.
+# update-ca-certificates alone reported the cert added). trust-extra-cas.sh
+# (#686) always (re)writes the combined pem, even empty, so
+# NODE_EXTRA_CA_CERTS can be set unconditionally below — Node treats a
+# missing or empty file as a harmless no-op (a warning at worst).
 COPY docker/extra-ca-certs /tmp/extra-ca-certs
-COPY docker/split-ca-bundle.sh /usr/local/bin/split-ca-bundle.sh
-RUN chmod +x /usr/local/bin/split-ca-bundle.sh \
-    && : > /usr/local/share/ca-certificates/extra-combined.pem \
-    && for f in /tmp/extra-ca-certs/*.crt /tmp/extra-ca-certs/*.pem /tmp/extra-ca-certs/*.cer; do \
-      [ -f "$f" ] || continue; \
-      base="$(basename "$f")"; \
-      /usr/local/bin/split-ca-bundle.sh "$f" /usr/local/share/ca-certificates "${base%.*}"; \
-      cat "$f" >> /usr/local/share/ca-certificates/extra-combined.pem; \
-    done \
-    && update-ca-certificates
+COPY docker/split-ca-bundle.sh docker/trust-extra-cas.sh /usr/local/bin/
+RUN chmod +x /usr/local/bin/split-ca-bundle.sh /usr/local/bin/trust-extra-cas.sh \
+    && /usr/local/bin/trust-extra-cas.sh
 ENV NODE_EXTRA_CA_CERTS=/usr/local/share/ca-certificates/extra-combined.pem
 
 RUN npm install -g @anthropic-ai/claude-code
@@ -195,7 +185,11 @@ RUN npm install -g @anthropic-ai/claude-code
 # proxy restricts direct github.com access (the exact constraint that
 # forces the Lyric compiler's redirect-based version resolution above).
 # Installed after the CA-trust step so the keyring/package fetch works
-# behind a TLS-intercepting proxy too.
+# behind a TLS-intercepting proxy too. Version pinned like every other
+# agent-facing CLI in this file (bump deliberately, not by dropping the
+# pin — an unpinned `apt-get install gh` would pick up whatever the apt
+# repo currently calls "stable" on every build).
+ARG GH_CLI_VERSION="2.100.0"
 RUN mkdir -p -m 755 /etc/apt/keyrings \
     && curl -fsSL --connect-timeout 10 --max-time 30 --retry 3 --retry-delay 3 \
         https://cli.github.com/packages/githubcli-archive-keyring.gpg \
@@ -204,7 +198,7 @@ RUN mkdir -p -m 755 /etc/apt/keyrings \
     && echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" \
         > /etc/apt/sources.list.d/github-cli.list \
     && apt-get update \
-    && apt-get install -y --no-install-recommends gh \
+    && apt-get install -y --no-install-recommends "gh=${GH_CLI_VERSION}" \
     && rm -rf /var/lib/apt/lists/*
 
 # uv/uvx: a standalone Rust binary (no Python runtime dependency of its own),
@@ -231,12 +225,16 @@ RUN curl -LsSf --connect-timeout 10 --max-time 120 --retry 3 --retry-delay 3 htt
 # which architecture they're even installing for).
 COPY --from=shim-builder /tmp/lyric-version.txt /tmp/lyric-version.txt
 COPY --from=shim-builder /tmp/lyric-rid.txt /tmp/lyric-rid.txt
-RUN LYRIC_VERSION="$(cat /tmp/lyric-version.txt)" \
+COPY scripts/verify-lyric-checksum.sh /usr/local/bin/verify-lyric-checksum.sh
+RUN chmod +x /usr/local/bin/verify-lyric-checksum.sh \
+    && LYRIC_VERSION="$(cat /tmp/lyric-version.txt)" \
     && LYRIC_RID="$(cat /tmp/lyric-rid.txt)" \
+    && LYRIC_ARCHIVE="lyric-${LYRIC_VERSION}-${LYRIC_RID}.tar.gz" \
     && echo "Installing Lyric compiler v${LYRIC_VERSION} (${LYRIC_RID})" \
     && curl -fsSL --connect-timeout 10 --max-time 120 --retry 3 --retry-delay 3 \
         -o /tmp/lyric.tgz \
-        "https://github.com/nichobbs/lyric-lang/releases/download/v${LYRIC_VERSION}/lyric-${LYRIC_VERSION}-${LYRIC_RID}.tar.gz" \
+        "https://github.com/nichobbs/lyric-lang/releases/download/v${LYRIC_VERSION}/${LYRIC_ARCHIVE}" \
+    && /usr/local/bin/verify-lyric-checksum.sh "$LYRIC_VERSION" /tmp/lyric.tgz "$LYRIC_ARCHIVE" \
     && rm -f /tmp/lyric-version.txt /tmp/lyric-rid.txt \
     && tar -xzf /tmp/lyric.tgz -C /usr/local/bin \
     && rm -f /tmp/lyric.tgz \

@@ -56,10 +56,17 @@ invalidates a captured chain.
   inserts a batch in **one transaction** (`executeTransaction`) — either the
   whole batch lands or none of it does, preserving chain contiguity. Inserts are
   `INSERT OR IGNORE` on `(session_id, seq)`, so re-appending an already-stored
-  prefix (a resumed/retried capture) is an idempotent no-op rather than a
-  primary-key error. Returns the number of events *submitted* (`events.length`);
-  because `INSERT OR IGNORE` skips a row already present, that is the submitted
-  count, not necessarily the count newly inserted.
+  prefix that is byte-identical (a resumed/retried capture) is an idempotent
+  no-op rather than a primary-key error. Returns the number of events
+  *submitted* (`events.length`); because `INSERT OR IGNORE` skips a row already
+  present, that is the submitted count, not necessarily the count newly
+  inserted. **Conflict detection (#965):** before inserting, a single indexed
+  range query fetches whatever is already stored across the incoming batch's
+  seq span; if any already-stored `(session_id, seq)` carries a different
+  `payload`/`hash` than the incoming event for that seq, the call returns
+  `Err(ValidationFailed(...))` and inserts nothing — a content mismatch at an
+  existing seq is a signal (a re-parse bug, or tamper/corruption), not a
+  silent no-op.
 - `sessionEventsAfterSeq(sessionId, afterSeq: String) -> Result[slice[CaptureEvent], DbError]`
   returns the session's events with `seq` strictly greater than `afterSeq`,
   oldest first — decoded back into `CaptureEvent`s so a reader can `verifyChain`
@@ -82,7 +89,9 @@ full of JSON quotes/apostrophes stores and round-trips verbatim.
   `CloudAgents.Capture`, `appendSessionEvents`, then `sessionEventsAfterSeq("")`
   returns the same events (verbatim payloads, seq order) and they `verifyChain`;
   `sessionEventsAfterSeq` with a mid cursor returns only the tail; a second
-  append of the same batch is an idempotent no-op (row count unchanged).
+  append of the same batch is an idempotent no-op (row count unchanged); a
+  re-append of an existing seq with a different payload/hash returns
+  `Err(ValidationFailed(...))` and leaves the stored row untouched (#965).
 
 ## 5. Acceptance criteria
 
@@ -90,8 +99,11 @@ full of JSON quotes/apostrophes stores and round-trips verbatim.
 2. A captured batch appends and reads back verbatim, in seq order, and the
    read-back events `verifyChain` (live).
 3. `sessionEventsAfterSeq` honors the cursor (strictly greater, oldest first).
-4. Re-appending an already-stored prefix is an idempotent no-op (live).
+4. Re-appending an already-stored, byte-identical prefix is an idempotent
+   no-op (live).
 5. Offline SQL-shape suite passes with no DB; payloads with quotes are safe.
+6. Re-appending an existing seq with different content surfaces a typed
+   `ValidationFailed` and does not overwrite the stored row (live, #965).
 
 ## 6. Deferred (sequenced follow-ups)
 

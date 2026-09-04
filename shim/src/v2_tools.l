@@ -1,7 +1,12 @@
-//! src/v2_tools.l — CloudAgents.Shim.V2Tools: the three phase-6 §7 MCP tool
-//! handlers (request_secret, add_followup_task, report_artifact), wrapping
-//! CloudAgents.Shim.V2Client's state machines in the wire shapes MCP
-//! `tools/call` expects.
+//! src/v2_tools.l — CloudAgents.Shim.V2Tools: MCP tool handlers for the v2
+//! (HTTP-callback) tool family, wrapping CloudAgents.Shim.V2Client's state
+//! machines in the wire shapes MCP `tools/call` expects. Started with
+//! phase 6 §7's request_secret/add_followup_task/report_artifact and has
+//! grown every phase since (phase 7's remember/recall/forget,
+//! add_task/list_tasks/complete_task, notify, add_todo/update_todo/
+//! list_todos; phase 8's schedule_job/list_jobs/update_job/cancel_job) —
+//! described here by family, not a fixed roster, so this header doesn't go
+//! stale again on the next addition (#890).
 //!
 //! Every `call` implementation is wrapped in `try { } catch Bug as b { }`
 //! (docs/lyric/gotchas.md "FFI" — the extern-boundary exception-conversion
@@ -30,6 +35,23 @@ func stringSchemaField(name: in String, description: in String): JsonField {
       ]
     )
   )
+}
+
+// A numeric-shaped tool argument (runAtEpochMillis/intervalSeconds) as a
+// String, accepting either a JSON number OR a numeric string (#886): an
+// LLM tool-caller doesn't reliably match the JSON type a schema declares
+// string vs. number, exactly the gap report_progress's percentComplete hit
+// (shim/src/tools.l, #537) — same getInt -> getFloat -> getString fallback
+// chain. getInt/getFloat return Option[Long]/Option[Double] (not Int/Float
+// despite the names), so a millisecond epoch value fits without overflow.
+func getNumericString(a: in JsonValue, key: in String): String {
+  return match getInt(a, key) {
+    case Some(n) -> toString(n)
+    case None -> match getFloat(a, key) {
+      case Some(f) -> toString(f.toLong())
+      case None -> match getString(a, key) { case Some(s) -> s; case None -> "" }
+    }
+  }
 }
 
 // ── add_todo / update_todo / list_todos (session todo plan) ──────────────────
@@ -712,11 +734,11 @@ pub func scheduleJobSchema(): JsonValue {
             ),
             stringSchemaField(
               "runAtEpochMillis",
-              "Optional. A one-shot run time as epoch milliseconds (a decimal number, as a string). Omit for a purely recurring job that starts now."
+              "A one-shot run time as epoch milliseconds. Omit for a purely recurring job that starts now — but at least one of runAtEpochMillis or intervalSeconds is required."
             ),
             stringSchemaField(
               "intervalSeconds",
-              "Optional. Recur every this many seconds (60 to 2592000 / 30 days). Omit for a one-shot job that fires once at runAtEpochMillis and never again."
+              "Recur every this many seconds (60 to 2592000 / 30 days). Omit for a one-shot job that fires once at runAtEpochMillis and never again — but at least one of runAtEpochMillis or intervalSeconds is required."
             )
           ]
         )
@@ -740,8 +762,17 @@ func handleScheduleJob(tool: in ScheduleJobTool, args: in Option[JsonValue]): Mc
     case None -> return toolErrorResult("missing required argument 'prompt'")
   }
   val name = match getString(a, "name") { case Some(n) -> n; case None -> "" }
-  val runAtEpochMillis = match getString(a, "runAtEpochMillis") { case Some(r) -> r; case None -> "" }
-  val intervalSeconds = match getString(a, "intervalSeconds") { case Some(i) -> i; case None -> "" }
+  val runAtEpochMillis = getNumericString(a, "runAtEpochMillis")
+  val intervalSeconds = getNumericString(a, "intervalSeconds")
+  // Local guard mirroring the host's own rule (src/handlers/jobs.l: "at
+  // least one of runAtEpochMillis or intervalSeconds is required", #889) —
+  // fails locally like every other required-argument check in this file,
+  // rather than round-tripping to the host for a 400 the schema can't
+  // express (JSON Schema has no cross-field "at least one of" for a flat
+  // `required` list).
+  if runAtEpochMillis.length == 0 and intervalSeconds.length == 0 {
+    return toolErrorResult("at least one of 'runAtEpochMillis' or 'intervalSeconds' is required")
+  }
   return match CloudAgents.Shim.V2Client.scheduleJob(tool.transport, name, prompt, runAtEpochMillis, intervalSeconds) {
     case Ok(id) -> toolTextResult("scheduled job " + id)
     case Err(message) -> toolErrorResult(message)
@@ -829,8 +860,8 @@ func handleUpdateJob(tool: in UpdateJobTool, args: in Option[JsonValue]): McpToo
     case None -> return toolErrorResult("missing required argument 'id'")
   }
   val prompt = match getString(a, "prompt") { case Some(p) -> p; case None -> "" }
-  val runAtEpochMillis = match getString(a, "runAtEpochMillis") { case Some(r) -> r; case None -> "" }
-  val intervalSeconds = match getString(a, "intervalSeconds") { case Some(i) -> i; case None -> "" }
+  val runAtEpochMillis = getNumericString(a, "runAtEpochMillis")
+  val intervalSeconds = getNumericString(a, "intervalSeconds")
   val status = match getString(a, "status") { case Some(s) -> s; case None -> "" }
   return match CloudAgents.Shim.V2Client.updateJob(tool.transport, id, prompt, "", runAtEpochMillis, intervalSeconds, status) {
     case Ok(msg) -> toolTextResult(msg)

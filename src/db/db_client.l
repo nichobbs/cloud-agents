@@ -261,7 +261,11 @@ pub func workspaceVolumeBindFor(userId: in String, sessionId: in String): String
 // since it lists this exact column set.
 val sessionColumns = "id, user_id, repo_url, branch, container_id, harness, model, native_session_id, status, created_at, last_message_at, is_archived, group_id, last_viewed_at, parent_session_id, forked_from_message_id"
 
-/// INSERT a new session row (status starts IDLE; last_message_at = created_at).
+/// INSERT a new session row (status defaults to IDLE; last_message_at =
+/// created_at). `status` (#753) lets a caller that already knows the
+/// session's real starting status (e.g. `makeAgentSession`'s own `status`
+/// parameter) persist it instead of the row always coming back IDLE
+/// regardless of what was requested.
 pub func insertSessionSql(
   id: in String,
   userId: in String,
@@ -272,6 +276,7 @@ pub func insertSessionSql(
   model: in String,
   nativeSessionId: in String,
   createdAt: in String,
+  status: in String = "IDLE",
 ): String {
   return "INSERT INTO sessions (" + sessionColumns + ") VALUES (" + sqlLiteral(id) + ", " + sqlLiteral(userId) + ", " +
     sqlLiteral(repoUrl) +
@@ -285,7 +290,9 @@ pub func insertSessionSql(
     sqlLiteral(model) +
     ", " +
     sqlLiteral(nativeSessionId) +
-    ", 'IDLE', " +
+    ", " +
+    sqlLiteral(status) +
+    ", " +
     sqlLiteral(createdAt) +
     ", " +
     sqlLiteral(createdAt) +
@@ -1241,6 +1248,23 @@ pub func selectSessionEventsAfterSeqSql(sessionId: in String, afterSeq: in Strin
     " AND CAST(seq AS INTEGER) > CAST(" +
     sqlLiteral(afterSeq) +
     " AS INTEGER) ORDER BY CAST(seq AS INTEGER) ASC"
+}
+
+/// SELECT the (seq, payload, hash) of a session's already-stored events whose
+/// seq falls within [minSeq, maxSeq] (inclusive, numeric compare via CAST — seq
+/// is digit TEXT). Used by `CloudAgents.Repository.appendSessionEvents` (#965) to
+/// detect a re-append that carries DIFFERENT content for an already-stored seq,
+/// in one indexed range query covering the whole incoming batch rather than one
+/// query per event.
+pub func selectSessionEventsBySeqRangeSql(sessionId: in String, minSeq: in String, maxSeq: in String): String {
+  return "SELECT seq, payload, hash FROM session_events " + "WHERE session_id = " +
+    sqlLiteral(sessionId) +
+    " AND CAST(seq AS INTEGER) >= CAST(" +
+    sqlLiteral(minSeq) +
+    " AS INTEGER)" +
+    " AND CAST(seq AS INTEGER) <= CAST(" +
+    sqlLiteral(maxSeq) +
+    " AS INTEGER)"
 }
 
 // ─── Prompt library ───────────────────────────────────────────────────────────
@@ -2444,10 +2468,16 @@ pub func deleteGitHubTokenSql(tokenHash: in String): String {
   return "DELETE FROM github_token_cache WHERE token_hash = " + sqlLiteral(tokenHash)
 }
 
-/// Housekeeping: drop expired entries (run opportunistically on cache writes).
+/// Housekeeping: drop expired entries (run opportunistically on cache
+/// writes). Scoped to the SAME 2-hour (7200000 ms) grace window as
+/// selectHistoricalGitHubTokenSql, not a bare `expires_at <= now` — an
+/// unconditional sweep would delete a row the moment it expires, since this
+/// runs on essentially every cache write from any tenant, undermining the
+/// 2-hour historical-lookup window `refreshOAuthToken`'s tier-2 lookup
+/// relies on (#856).
 pub func deleteExpiredGitHubTokensSql(nowMillis: in String): String {
-  return "DELETE FROM github_token_cache WHERE CAST(expires_at AS INTEGER) <= CAST(" + sqlLiteral(nowMillis) +
-    " AS INTEGER)"
+  return "DELETE FROM github_token_cache WHERE CAST(expires_at AS INTEGER) <= (CAST(" + sqlLiteral(nowMillis) +
+    " AS INTEGER) - 7200000)"
 }
 
 /// Count (as TEXT for the GetString-only driver) the still-active negative
@@ -3212,6 +3242,15 @@ pub func selectSessionAttachmentsBySessionSql(sessionId: in String): String {
     " ORDER BY created_at ASC"
 }
 
+/// DELETE one attachment row by id. Used for best-effort rollback of a
+/// storeAttachments pass-2 partial failure (#1003): a row inserted earlier in
+/// the same batch is removed again if a LATER file in that batch fails to
+/// write/insert, so the batch doesn't leave orphaned rows with messageId
+/// permanently ''.
+pub func deleteSessionAttachmentSql(id: in String): String {
+  return "DELETE FROM session_attachments WHERE id = " + sqlLiteral(id)
+}
+
 // ─── Phase 7: repo-scoped memory (remember / recall) ─────────────────────────
 //
 // docs/phase7-autonomy.md §4. A key/value store scoped to
@@ -3569,14 +3608,20 @@ pub func selectScheduledJobsByUserSql(userId: in String): String {
     " ORDER BY created_at DESC"
 }
 
-/// Every ACTIVE job whose next_run_at has arrived, earliest-due first.
-/// System-wide (unscoped by user) — the maintenance endpoint spans every
-/// tenant, mirroring selectReapableWarmSql's unscoped maintenance shape.
-pub func selectDueScheduledJobsSql(nowMillis: in String): String {
+/// Every ACTIVE job whose next_run_at has arrived, earliest-due first,
+/// capped at `limit` rows (#893) — the caller (triggerDueJobsHandler) never
+/// attempts more than maxJobsPerTrigger of these in one call anyway, so an
+/// unbounded backlog (e.g. the external poller missed several cycles) no
+/// longer means loading and materializing every due job system-wide into a
+/// slice on every single poll tick just to use the first few. System-wide
+/// (unscoped by user) — the maintenance endpoint spans every tenant,
+/// mirroring selectReapableWarmSql's unscoped maintenance shape.
+pub func selectDueScheduledJobsSql(nowMillis: in String, limit: in Int): String {
   return "SELECT " + scheduledJobColumns +
     " FROM scheduled_jobs WHERE status = 'active' AND next_run_at <> '' AND CAST(next_run_at AS INTEGER) <= CAST(" +
     sqlLiteral(nowMillis) +
-    " AS INTEGER) ORDER BY CAST(next_run_at AS INTEGER) ASC"
+    " AS INTEGER) ORDER BY CAST(next_run_at AS INTEGER) ASC LIMIT " +
+    toString(limit)
 }
 
 /// Atomically claim a due job for firing: clears next_run_at (excluding it
@@ -3601,6 +3646,52 @@ pub func claimDueScheduledJobSql(id: in String, expectedNextRunAt: in String): S
 pub func restoreScheduledJobNextRunAtSql(id: in String, nextRunAt: in String): String {
   return "UPDATE scheduled_jobs SET next_run_at = " + sqlLiteral(nextRunAt) + " WHERE id = " + sqlLiteral(id) +
     " AND next_run_at = ''"
+}
+
+/// Startup recovery sweep (#882) for a job stranded mid-run by a host
+/// crash/restart: claimDueScheduledJobSql clears next_run_at to '' BEFORE
+/// runOneJob does any session/container work, and the only writers that ever
+/// restore it (restoreScheduledJobNextRunAtSql on a lost tryBeginRun race,
+/// markScheduledJobRanRecurringSql/markScheduledJobCompletedSql after the run
+/// returns) all require the same in-process triggerDueJobsHandler call to
+/// keep running to completion — a call that can legitimately block up to
+/// runWallClockCapMs (30 min) per job. A crash in that window leaves the row
+/// `status = 'active', next_run_at = ''` forever: selectDueScheduledJobsSql's
+/// `next_run_at <> ''` filter excludes it from every future poll, and
+/// `GET /api/jobs` still reports it `active` with no indication anything is
+/// wrong.
+///
+/// Mirrors recoverDanglingSessionsSql's role (reset a status startup-crash
+/// left inconsistent) but for the *schedule*, not the *session*: the job's
+/// own session, if the in-flight run left it RUNNING, is separately recovered
+/// by that exact call (recoverDanglingSessions), already invoked at startup —
+/// this sweep only ever needs to touch scheduled_jobs.next_run_at.
+///
+/// Only ever needs to run once, at startup, so there is no concurrent-claim
+/// race to guard against here the way restoreScheduledJobNextRunAtSql must:
+/// nothing else can be claiming (next_run_at = '' -> a real value) while the
+/// process that would run triggerDueJobsHandler is still starting up.
+///
+/// Recomputes a fresh next_run_at rather than trying to recover the exact
+/// value that was cleared (which is gone by the time this runs — the
+/// original due slot was only ever held in triggerDueJobsHandler's now-lost
+/// in-memory `due` snapshot):
+/// - A recurring job that has fired at least once: `last_run_at +
+///   interval_seconds` — the same arithmetic markScheduledJobRanRecurringSql
+///   uses, treating the stranded run as if it simply hadn't happened yet.
+/// - Anything else (a one-shot, or a recurring job stranded on its very
+///   first-ever run before last_run_at was ever set): `run_at`.
+/// Either way, clamped to never fall before `nowMillis` (the same MAX
+/// idiom markScheduledJobRanRecurringSql uses for an overrun run) so a
+/// long-crashed job is simply due again immediately on the next poll instead
+/// of computing a next_run_at already in the past.
+pub func recoverStrandedScheduledJobsSql(nowMillis: in String): String {
+  return "UPDATE scheduled_jobs SET next_run_at = CAST(MAX(" +
+    "CASE WHEN interval_seconds <> '' AND last_run_at <> '' " +
+    "THEN CAST(last_run_at AS INTEGER) + CAST(interval_seconds AS INTEGER) * 1000 " +
+    "ELSE CAST(run_at AS INTEGER) END, CAST(" +
+    sqlLiteral(nowMillis) +
+    " AS INTEGER)) AS TEXT) WHERE status = 'active' AND next_run_at = ''"
 }
 
 /// First-run session attachment: only ever meant to apply once, guarded on
@@ -3662,7 +3753,11 @@ pub func markScheduledJobCompletedSql(id: in String, firedAt: in String): String
 /// String parameter is written as-is — the caller
 /// (CloudAgents.Repository.updateScheduledJob) resolves "keep the existing
 /// value" before this is built, mirroring updateSessionModelSql's plain
-/// single-field-set shape.
+/// single-field-set shape. `writeNextRunAt` (#891) omits the `next_run_at`
+/// assignment entirely when false, so an ordinary edit that doesn't touch
+/// the schedule can't clobber a concurrent triggerDueJobsHandler claim's
+/// transient empty sentinel (or any other value) sitting in that column —
+/// only a caller that actually means to set a new next_run_at writes it.
 pub func updateScheduledJobSql(
   id: in String,
   userId: in String,
@@ -3673,15 +3768,16 @@ pub func updateScheduledJobSql(
   intervalSeconds: in String,
   nextRunAt: in String,
   status: in String,
+  writeNextRunAt: in Bool,
 ): String {
+  val nextRunAtAssignment = if writeNextRunAt { ", next_run_at = " + sqlLiteral(nextRunAt) } else { "" }
   return "UPDATE scheduled_jobs SET name = " + sqlLiteral(name) + ", prompt = " + sqlLiteral(prompt) + ", profile_id = " +
     sqlLiteral(profileId) +
     ", run_at = " +
     sqlLiteral(runAt) +
     ", interval_seconds = " +
     sqlLiteral(intervalSeconds) +
-    ", next_run_at = " +
-    sqlLiteral(nextRunAt) +
+    nextRunAtAssignment +
     ", status = " +
     sqlLiteral(status) +
     " WHERE id = " +

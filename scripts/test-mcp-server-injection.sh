@@ -19,11 +19,25 @@ REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 HELPER="$REPO_ROOT/docker/inject-library.sh"
 [ -f "$HELPER" ] || { echo "test-mcp-server-injection: $HELPER not found" >&2; exit 1; }
 
+# Tracks brace depth rather than stopping at the first bare "}" line (#774):
+# a bare "}" only ends the function when it closes back out to depth 0, so a
+# future multi-line jq/awk block or heredoc inside one of these functions
+# that happens to put a standalone "}" on its own line (a nested block, not
+# the function's own close) won't truncate the extraction early. Depth is
+# counted with gsub's match-count return rather than modifying $0, so the
+# printed body is untouched; this assumes brace characters inside any
+# embedded string/jq literal are themselves balanced within the function
+# (true today — see docker/inject-library.sh's jq object-literal snippets).
 extract_func() {
   local name="$1"
   awk -v name="$name" '
-    $0 ~ "^" name "\\(\\)" {found=1}
-    found {print; if ($0 == "}") exit}
+    $0 ~ "^" name "\\(\\)" {found=1; depth=0}
+    found {
+      print
+      depth += gsub(/\{/, "{")
+      depth -= gsub(/\}/, "}")
+      if (depth == 0) exit
+    }
   ' "$HELPER"
 }
 
@@ -89,6 +103,32 @@ else
     jq -e '.mcpServers["cloud-agents-lib-github"].env.GITHUB_PERSONAL_ACCESS_TOKEN == "${GITHUB_TOKEN}"' "$WS/result.json"
 fi
 rm -rf "$WS"
+
+# ── expand_env_value's deny-list (#773): a literal "$HOME"/"$PROMPT"-shaped
+# token in a value must NOT be silently rewritten, even though HOME and
+# PROMPT are real vars in this process's environment — only an actual
+# credential-style name (not in the deny-list) is a substitution target ──
+if [ "$HAVE_ENVSUBST" -eq 1 ]; then
+  WS2="$(mktemp -d)"
+  (
+    cd "$WS2"
+    export HOME="/should/not/leak"
+    export PROMPT="the entire user prompt, not meant to be substitutable"
+    export GITHUB_TOKEN="real-cred-value"
+    export CLOUD_AGENTS_MCP_SERVERS_B64=$(printf '%s' '{"mcpServers":[
+      {"name":"literal-dollar","transport":"stdio","command":"npx","args":[],"url":"","env":["A=cost-is-$HOME-dollars","B=${PROMPT}","C=${GITHUB_TOKEN}"]}
+    ]}' | b64)
+    render_mcp_json ".claude/mcp.json" '{"mcpServers":{}}' "mcpServers"
+    jq -c . .claude/mcp.json > result.json
+  )
+  check "deny-listed \$HOME left literal, not substituted" \
+    jq -e '.mcpServers["cloud-agents-lib-literal-dollar"].env.A == "cost-is-$HOME-dollars"' "$WS2/result.json"
+  check "deny-listed \${PROMPT} left literal, not substituted" \
+    jq -e '.mcpServers["cloud-agents-lib-literal-dollar"].env.B == "${PROMPT}"' "$WS2/result.json"
+  check "non-deny-listed credential ref still expands" \
+    jq -e '.mcpServers["cloud-agents-lib-literal-dollar"].env.C == "real-cred-value"' "$WS2/result.json"
+  rm -rf "$WS2"
+fi
 
 # ── Claude (JSON): an env value containing a literal embedded newline must
 # not corrupt sibling entries — the env-pairs loop reads .env[] NUL-

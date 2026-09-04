@@ -2,6 +2,7 @@
 package CloudAgents.AttachmentTests
 
 import Std.Core
+import Std.File
 import Std.Testing
 import Std.Uuid
 import CloudAgents.Auth
@@ -27,6 +28,20 @@ func useFreshTestDb(tag: in String): String {
 
 @externTarget("System.IO.File.Delete")
 func fileDelete(path: in String): Unit = ()
+
+/// `Std.File.exists` is documented in docs/lyric/stdlib.md but does not
+/// resolve at runtime on this toolchain ("unsupported method 'exists' on the
+/// receiver type", confirmed by this exact test before this workaround) —
+/// the same "compiles as a dot-call, dies at runtime" family
+/// docs/lyric/gotchas.md catalogues for several other stdlib convenience
+/// methods. `Std.File.readBytes` is already confirmed working elsewhere in
+/// this suite, so use its Ok/Err outcome as an existence check instead.
+func fileExistsForTest(path: in String): Bool {
+  return match Std.File.readBytes(path) {
+    case Ok(_) -> true
+    case Err(_) -> false
+  }
+}
 
 func cleanupTestDb(path: in String): Unit {
   try {
@@ -421,6 +436,105 @@ test "storeAttachments rejects the whole request atomically when only a LATER fi
   // individually within the per-file cap — was written or recorded.
   match CloudAgents.Repository.listAttachments(sid) {
     case Ok(l) -> assertEqualInt(l.length.toInt(), 0, "no rows were persisted for the rejected request")
+    case Err(e) -> assertTrue(false, "list failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+  }
+}
+
+test "cleanupPartialAttachmentBatch best-effort deletes the rows and files it is given (#1003)" {
+  // storeAttachments' own pass-2 loop has no hook to force a genuine mid-batch
+  // I/O/DB failure (that requires an actual disk-full/transient-SQLite-error
+  // condition, not a predictable validation outcome), so this exercises the
+  // cleanup mechanism it calls on such a failure directly: given the rows/
+  // files a hypothetical earlier part of the same batch already committed,
+  // cleanupPartialAttachmentBatch must remove both.
+  val dbPath = useFreshTestDb("attach-cleanup")
+  defer {
+    cleanupTestDb(dbPath)
+  }
+  CloudAgents.Auth.setCurrentUserId("default")
+  val sid = "sess-attach-cleanup"
+  mkSession(sid)
+
+  val inputs: slice[AttachmentInput] = [
+    AttachmentInput(fileName = "one.txt", mimeType = "text/plain", contentBase64 = base64Of("one")),
+    AttachmentInput(fileName = "two.txt", mimeType = "text/plain", contentBase64 = base64Of("two"))
+  ]
+  val stored = match storeAttachments(sid, inputs) {
+    case Ok(s) -> s
+    case Err(e) -> panic("store failed: " + e.message)
+  }
+  assertEqualInt(stored.attachments.length.toInt(), 2, "both files land first, as if written earlier in one batch")
+
+  var paths: slice[String] = []
+  var i = 0
+  while i < stored.attachments.length {
+    val p = stored.hostDir + "/" + stored.attachments[i].storedName
+    assertTrue(fileExistsForTest(p), "the file is genuinely on disk before cleanup")
+    paths = paths.append(p)
+    i = i + 1
+  }
+
+  cleanupPartialAttachmentBatch(stored.attachments, paths)
+
+  match CloudAgents.Repository.listAttachments(sid) {
+    case Ok(l) -> assertEqualInt(l.length.toInt(), 0, "both rows are rolled back")
+    case Err(e) -> assertTrue(false, "list failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+  }
+  var j = 0
+  while j < paths.length {
+    assertTrue(not fileExistsForTest(paths[j]), "the file is deleted too, not just the row")
+    j = j + 1
+  }
+}
+
+test "storeAttachments mounts the session's existing attachment dir for a follow-up message with no new attachment (#1005)" {
+  val dbPath = useFreshTestDb("attach-followup-mount")
+  defer {
+    cleanupTestDb(dbPath)
+  }
+  CloudAgents.Auth.setCurrentUserId("default")
+  val sid = "sess-attach-followup"
+  mkSession(sid)
+
+  // Before any attachment has ever been uploaded, a text-only message still
+  // gets no mount — there is nothing to give the agent access to.
+  val noInputsYet: slice[AttachmentInput] = []
+  match storeAttachments(sid, noInputsYet) {
+    case Ok(s) -> assertEqual(s.hostDir, "", "no prior attachments means no host dir to bind-mount")
+    case Err(e) -> assertTrue(false, "empty input must succeed as a no-op: " + e.message)
+  }
+
+  // Message 1: upload a screenshot.
+  val firstMessageInputs: slice[AttachmentInput] = [
+    AttachmentInput(fileName = "screenshot.png", mimeType = "image/png", contentBase64 = base64Of("fake png bytes"))
+  ]
+  val firstStored = match storeAttachments(sid, firstMessageInputs) {
+    case Ok(s) -> s
+    case Err(e) -> panic("first store failed: " + e.message)
+  }
+  assertTrue(firstStored.hostDir.length > 0, "the message carrying the upload gets the mount")
+
+  // Message 2: a plain text follow-up with NO new attachment ("what did you
+  // see in that screenshot?"). The session already has an attachment from
+  // message 1, so the mount must still be present — the bug #1005 reported
+  // was that this second call fell back to hostDir = "", losing the agent's
+  // access to a file it was already told about.
+  val followUpInputs: slice[AttachmentInput] = []
+  val followUpStored = match storeAttachments(sid, followUpInputs) {
+    case Ok(s) -> s
+    case Err(e) -> panic("follow-up store failed: " + e.message)
+  }
+  assertEqual(
+    followUpStored.hostDir,
+    firstStored.hostDir,
+    "a follow-up with no new attachment still resolves the session's existing attachment directory"
+  )
+  assertEqualInt(followUpStored.attachments.length.toInt(), 0, "nothing NEW is stored/linked for this message")
+
+  // The screenshot itself is unaffected — still exactly one attachment on
+  // the session, still under the same directory.
+  match CloudAgents.Repository.listAttachments(sid) {
+    case Ok(l) -> assertEqualInt(l.length.toInt(), 1, "the follow-up did not touch the stored attachment")
     case Err(e) -> assertTrue(false, "list failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
   }
 }

@@ -1,8 +1,11 @@
 //! src/v2_transport.l — CloudAgents.Shim.V2Transport: the wire records and
-//! HTTP transport seam for the three phase-6 §7 v2 tools (request_secret,
-//! add_followup_task, report_artifact), mirroring CloudAgents.Callbacks'
-//! new handlers (cloud-agents' src/handlers/callbacks.l) field-for-field —
-//! keep these two in sync by hand.
+//! HTTP transport seam for the v2 (HTTP-callback) tool family — phase 6
+//! §7's request_secret/add_followup_task/report_artifact through phase 8's
+//! scheduled-jobs tools (see v2_tools.l's module doc for the full,
+//! still-growing roster — described there by family rather than a fixed
+//! count so it doesn't go stale on the next addition, #890), mirroring
+//! CloudAgents.Callbacks' handlers (cloud-agents' src/handlers/
+//! callbacks.l) field-for-field — keep these two in sync by hand.
 //!
 //! Deliberately its own file rather than an extension of
 //! CloudAgents.Shim.Transport: that package is shared with the §8 work

@@ -45,6 +45,7 @@ on:
       - 'docker/Dockerfile.opencode'
       - 'docker/Dockerfile.antigravity'
       - 'shim/**'
+      - 'deploy/api.Dockerfile'
       - '.github/workflows/docker-build-ci.yml'
 
 concurrency:
@@ -159,3 +160,37 @@ jobs:
             type=gha,scope=${{ matrix.harness }}
             type=gha
           cache-to: type=gha,mode=max,scope=${{ matrix.harness }}
+
+  # deploy/api.Dockerfile's `build` stage: this exact stage is where #673
+  # fixed a real Coolify deploy failure (arm64-only "exec format error", exit
+  # 126, from an unconditional linux-x64 Lyric download) that only surfaced
+  # via a live production deploy — ci.yml's "Verify api.Dockerfile's pinned
+  # Lyric release actually exists" step only checks that the pinned
+  # linux-x64 tarball downloads, it never runs `docker build` against this
+  # Dockerfile at all (#674). --target build stops before the final aspnet
+  # runtime stage, mirroring the shim-builder-only job above: cheap, and
+  # sufficient to catch a broken COPY/RUN/RID-resolution instruction in the
+  # stage that actually does the compiling. Runs on the runner's native
+  # amd64 only — no QEMU/buildx arm64 matrix — to keep this job cheap; an
+  # arm64-specific regression here (like #673's) would still need a real
+  # arm64 host or emulation to catch pre-merge, which is a deliberate,
+  # documented gap rather than an oversight.
+  docker-build-api:
+    name: Docker build (deploy/api.Dockerfile build stage)
+    if: github.event.pull_request.draft == false
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build api.Dockerfile build stage (smoke test)
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: deploy/api.Dockerfile
+          target: build
+          push: false
+          cache-from: type=gha,scope=api-build
+          cache-to: type=gha,mode=max,scope=api-build
