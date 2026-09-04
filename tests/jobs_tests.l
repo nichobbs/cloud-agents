@@ -408,7 +408,7 @@ test "schedule_job attaches the calling session immediately, and list/update/can
   assertEqual(cancelled.status, "cancelled", "cancel_job sets status to cancelled")
 
   // A cancelled job is not due, even backdated.
-  match CloudAgents.Repository.dueScheduledJobs() {
+  match CloudAgents.Repository.dueScheduledJobs(100) {
     case Ok(due) -> assertEqualInt(due.length.toInt(), 0, "a cancelled job is never due")
     case Err(e) -> assertTrue(false, "dueScheduledJobs failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
   }
@@ -524,7 +524,7 @@ test "dueScheduledJobs returns only active jobs whose next_run_at has arrived" {
     case Err(e) -> panic("create failed: " + toString(e.status))
   }
 
-  match CloudAgents.Repository.dueScheduledJobs() {
+  match CloudAgents.Repository.dueScheduledJobs(100) {
     case Ok(due) -> {
       assertEqualInt(due.length.toInt(), 1, "only the already-due job is returned")
       assertEqual(due[0].id, dueJob.id, "it's the due job, not the future one")
@@ -538,7 +538,7 @@ test "dueScheduledJobs returns only active jobs whose next_run_at has arrived" {
     case Ok(_) -> ()
     case Err(e) -> assertTrue(false, "markScheduledJobRanRecurring failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
   }
-  match CloudAgents.Repository.dueScheduledJobs() {
+  match CloudAgents.Repository.dueScheduledJobs(100) {
     case Ok(due) -> assertEqualInt(due.length.toInt(), 0, "no job is due immediately after firing a recurring job")
     case Err(e) -> assertTrue(false, "dueScheduledJobs failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
   }
@@ -561,7 +561,7 @@ test "claimDueScheduledJob lets only one of two racing callers win the same due 
     case Ok(j) -> j
     case Err(e) -> panic("create failed: " + toString(e.status))
   }
-  val due = match CloudAgents.Repository.dueScheduledJobs() {
+  val due = match CloudAgents.Repository.dueScheduledJobs(100) {
     case Ok(js) -> js
     case Err(e) -> panic("dueScheduledJobs failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
   }
@@ -583,7 +583,7 @@ test "claimDueScheduledJob lets only one of two racing callers win the same due 
 
   // A claimed-but-not-yet-resolved job drops out of the due set (no third
   // caller can pile on either), same as a job whose run is genuinely in flight.
-  match CloudAgents.Repository.dueScheduledJobs() {
+  match CloudAgents.Repository.dueScheduledJobs(100) {
     case Ok(js) -> assertEqualInt(js.length.toInt(), 0, "a claimed job is not due again until resolved")
     case Err(e) -> assertTrue(false, "dueScheduledJobs failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
   }
@@ -595,7 +595,7 @@ test "claimDueScheduledJob lets only one of two racing callers win the same due 
     case Ok(_) -> ()
     case Err(e) -> assertTrue(false, "restoreScheduledJobNextRunAt failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
   }
-  match CloudAgents.Repository.dueScheduledJobs() {
+  match CloudAgents.Repository.dueScheduledJobs(100) {
     case Ok(js) -> assertEqualInt(js.length.toInt(), 1, "a released claim is due again")
     case Err(e) -> assertTrue(false, "dueScheduledJobs failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
   }
@@ -700,5 +700,339 @@ test "a status change that lands while a job is in flight is not clobbered by po
   match CloudAgents.Jobs.getJobHandler("default", oneShot.id) {
     case Ok(j) -> assertEqual(j.status, "cancelled", "a concurrent cancel survives the one-shot job's own post-run bookkeeping")
     case Err(e) -> assertTrue(false, "getJobHandler failed: " + toString(e.status))
+  }
+}
+
+// ── applyPostRunBookkeeping re-reads FRESH schedule fields (#876) ────────────
+// runOneJob/triggerDueJobsHandler can't run here (no CloudAgents.Docker in a
+// @test_module), but the fix lives entirely in applyPostRunBookkeeping, which
+// touches only CloudAgents.Repository — directly test-invocable, mirroring
+// how claimDueScheduledJob/restoreScheduledJobNextRunAt are pinned above
+// without needing runOneJob itself.
+test "applyPostRunBookkeeping honors a schedule-type flip that landed while the run was in flight" {
+  val dbPath = useFreshTestDb("job-bookkeeping-schedule-race")
+  defer {
+    cleanupTestDb(dbPath)
+  }
+  CloudAgents.Auth.setCurrentUserId("default")
+
+  // Recurring -> one-shot: the pre-run snapshot triggerDueJobsHandler would
+  // have captured still says intervalSeconds="3600".
+  val recurring = match CloudAgents.Jobs.createJobHandler("default", baseCreateReq("nightly", "", "3600")) {
+    case Ok(j) -> j
+    case Err(e) -> panic("create failed: " + toString(e.status))
+  }
+  val staleRecurringSnapshot = match CloudAgents.Repository.getScheduledJob(recurring.id, "default") {
+    case Ok(Some(j)) -> j
+    case Ok(None) -> panic("job must exist")
+    case Err(e) -> panic("getScheduledJob failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+  }
+  // A human flips it to one-shot while the (hypothetical) run is in flight.
+  match CloudAgents.Jobs.updateJobHandler(
+    "default", recurring.id,
+    UpdateJobRequest(prompt = "", profileId = "", runAtEpochMillis = "1999999999000", intervalSeconds = "", status = "")
+  ) {
+    case Ok(_) -> ()
+    case Err(e) -> panic("schedule flip failed: " + toString(e.status))
+  }
+  // Using the STALE snapshot's intervalSeconds ("3600") would wrongly call
+  // markScheduledJobRanRecurring and undo the user's flip to one-shot.
+  CloudAgents.Jobs.applyPostRunBookkeeping(staleRecurringSnapshot, "2000000000000")
+  match CloudAgents.Jobs.getJobHandler("default", recurring.id) {
+    case Ok(j) -> {
+      assertEqual(j.status, "completed", "honored as one-shot (now completed), not kept recurring by the stale snapshot")
+      assertEqual(j.nextRunAtEpochMillis, "", "a completed one-shot job has no next_run_at")
+    }
+    case Err(e) -> assertTrue(false, "getJobHandler failed: " + toString(e.status))
+  }
+
+  // Mirror case: one-shot -> recurring.
+  val oneShot = match CloudAgents.Jobs.createJobHandler("default", baseCreateReq("once", "1000000000000", "")) {
+    case Ok(j) -> j
+    case Err(e) -> panic("create failed: " + toString(e.status))
+  }
+  val staleOneShotSnapshot = match CloudAgents.Repository.getScheduledJob(oneShot.id, "default") {
+    case Ok(Some(j)) -> j
+    case Ok(None) -> panic("job must exist")
+    case Err(e) -> panic("getScheduledJob failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+  }
+  match CloudAgents.Jobs.updateJobHandler(
+    "default", oneShot.id,
+    UpdateJobRequest(prompt = "", profileId = "", runAtEpochMillis = "", intervalSeconds = "1200", status = "")
+  ) {
+    case Ok(_) -> ()
+    case Err(e) -> panic("schedule flip failed: " + toString(e.status))
+  }
+  // Using the STALE snapshot's intervalSeconds ("") would wrongly call
+  // markScheduledJobCompleted and permanently end a job the user just made
+  // recurring.
+  CloudAgents.Jobs.applyPostRunBookkeeping(staleOneShotSnapshot, "2000000000000")
+  match CloudAgents.Jobs.getJobHandler("default", oneShot.id) {
+    case Ok(j) -> {
+      assertEqual(j.status, "active", "honored as recurring, not ended by the stale snapshot")
+      assertTrue(j.nextRunAtEpochMillis.length > 0, "a recurring job's next_run_at was recomputed, not cleared")
+    }
+    case Err(e) -> assertTrue(false, "getJobHandler failed: " + toString(e.status))
+  }
+}
+
+// ── Reactivating a completed one-shot job (#883) ──────────────────────────────
+test "updateJobHandler recomputes next_run_at when reactivating a completed job via status alone" {
+  val dbPath = useFreshTestDb("job-reactivate-completed")
+  defer {
+    cleanupTestDb(dbPath)
+  }
+  CloudAgents.Auth.setCurrentUserId("default")
+  val job = match CloudAgents.Jobs.createJobHandler("default", baseCreateReq("once", "1000000000000", "")) {
+    case Ok(j) -> j
+    case Err(e) -> panic("create failed: " + toString(e.status))
+  }
+  // Simulate the job having already fired and completed.
+  match CloudAgents.Repository.markScheduledJobCompleted(job.id, "1000000100000") {
+    case Ok(_) -> ()
+    case Err(e) -> panic("markScheduledJobCompleted failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+  }
+  match CloudAgents.Jobs.getJobHandler("default", job.id) {
+    case Ok(j) -> assertEqual(j.nextRunAtEpochMillis, "", "sanity check: a completed job has no next_run_at")
+    case Err(e) -> assertTrue(false, "getJobHandler failed: " + toString(e.status))
+  }
+
+  // Reactivate with status=active alone, no schedule fields -- the natural
+  // "turn it back on" request from a human's perspective.
+  val reactivated = match CloudAgents.Jobs.updateJobHandler(
+    "default", job.id, UpdateJobRequest(prompt = "", profileId = "", runAtEpochMillis = "", intervalSeconds = "", status = "active")
+  ) {
+    case Ok(j) -> j
+    case Err(e) -> panic("reactivate failed: " + toString(e.status))
+  }
+  assertEqual(reactivated.status, "active", "the job is active again")
+  assertTrue(reactivated.nextRunAtEpochMillis.length > 0, "next_run_at was recomputed, not left at the empty sentinel")
+
+  match CloudAgents.Repository.dueScheduledJobs(100) {
+    case Ok(due) -> assertEqualInt(due.length.toInt(), 1, "the reactivated job is due again, not silently stuck forever")
+    case Err(e) -> assertTrue(false, "dueScheduledJobs failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+  }
+}
+
+// ── updateJobHandler must not clobber a concurrent claim sentinel (#891) ─────
+test "an unrelated updateJobHandler edit never touches next_run_at" {
+  val dbPath = useFreshTestDb("job-update-preserves-next-run-at")
+  defer {
+    cleanupTestDb(dbPath)
+  }
+  CloudAgents.Auth.setCurrentUserId("default")
+  val job = match CloudAgents.Jobs.createJobHandler("default", baseCreateReq("nightly", "", "3600")) {
+    case Ok(j) -> j
+    case Err(e) -> panic("create failed: " + toString(e.status))
+  }
+  // Simulate a triggerDueJobsHandler run's own post-run bookkeeping landing
+  // FIRST, setting a real future next_run_at...
+  match CloudAgents.Repository.markScheduledJobRanRecurring(job.id, "2000000000000", job.nextRunAtEpochMillis, "3600") {
+    case Ok(_) -> ()
+    case Err(e) -> panic("markScheduledJobRanRecurring failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+  }
+  val expectedNextRunAt = match CloudAgents.Jobs.getJobHandler("default", job.id) {
+    case Ok(j) -> j.nextRunAtEpochMillis
+    case Err(e) -> panic("getJobHandler failed: " + toString(e.status))
+  }
+  assertTrue(expectedNextRunAt.length > 0, "sanity check: the run's bookkeeping set a real next_run_at")
+
+  // ...then an unrelated edit (prompt only, no schedule fields) lands
+  // AFTERWARD. Before #891's fix, updateScheduledJobSql always wrote
+  // next_run_at = existing.nextRunAt (whatever this request happened to
+  // read) unconditionally, so this write could win a race against the run's
+  // own bookkeeping — or against a concurrent claim's empty sentinel — no
+  // matter which side is "stale". The fix leaves next_run_at out of this
+  // UPDATE entirely whenever the request itself doesn't touch the schedule.
+  match CloudAgents.Jobs.updateJobHandler(
+    "default", job.id, UpdateJobRequest(prompt = "revised prompt", profileId = "", runAtEpochMillis = "", intervalSeconds = "", status = "")
+  ) {
+    case Ok(j) -> {
+      assertEqual(j.prompt, "revised prompt", "the unrelated field did change")
+      assertEqual(j.nextRunAtEpochMillis, expectedNextRunAt, "next_run_at is untouched by an edit that doesn't mention the schedule")
+    }
+    case Err(e) -> assertTrue(false, "update failed: " + toString(e.status))
+  }
+}
+
+// ── Startup recovery sweep for stranded runs (#882) ───────────────────────────
+test "recoverStrandedScheduledJobs restores next_run_at for a job claimed but never resolved" {
+  val dbPath = useFreshTestDb("job-recover-stranded")
+  defer {
+    cleanupTestDb(dbPath)
+  }
+  CloudAgents.Auth.setCurrentUserId("default")
+
+  // A recurring job that has already fired once (has a last_run_at), then
+  // claimed for its second run -- the "crash" happens right there, before
+  // the run's own bookkeeping ever gets a chance to resolve the claim.
+  val recurring = match CloudAgents.Jobs.createJobHandler("default", baseCreateReq("nightly", "", "3600")) {
+    case Ok(j) -> j
+    case Err(e) -> panic("create failed: " + toString(e.status))
+  }
+  match CloudAgents.Repository.markScheduledJobRanRecurring(recurring.id, "1000000000000", recurring.nextRunAtEpochMillis, "3600") {
+    case Ok(_) -> ()
+    case Err(e) -> panic("markScheduledJobRanRecurring failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+  }
+  val beforeClaim = match CloudAgents.Repository.getScheduledJob(recurring.id, "default") {
+    case Ok(Some(j)) -> j
+    case Ok(None) -> panic("job must exist")
+    case Err(e) -> panic("getScheduledJob failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+  }
+  match CloudAgents.Repository.claimDueScheduledJob(recurring.id, beforeClaim.nextRunAt) {
+    case Ok(won) -> assertTrue(won, "the claim wins (nothing else touched the row)")
+    case Err(e) -> panic("claimDueScheduledJob failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+  }
+  match CloudAgents.Jobs.getJobHandler("default", recurring.id) {
+    case Ok(j) -> assertEqual(j.nextRunAtEpochMillis, "", "the claim sentinel is in place, simulating a crash mid-run")
+    case Err(e) -> assertTrue(false, "getJobHandler failed: " + toString(e.status))
+  }
+
+  // A one-shot job stranded on its very FIRST-ever run (no last_run_at yet).
+  val oneShot = match CloudAgents.Jobs.createJobHandler("default", baseCreateReq("once", "1500000000000", "")) {
+    case Ok(j) -> j
+    case Err(e) -> panic("create failed: " + toString(e.status))
+  }
+  match CloudAgents.Repository.claimDueScheduledJob(oneShot.id, oneShot.nextRunAtEpochMillis) {
+    case Ok(won) -> assertTrue(won, "the claim wins")
+    case Err(e) -> panic("claimDueScheduledJob failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+  }
+
+  match CloudAgents.Repository.recoverStrandedScheduledJobs() {
+    case Ok(n) -> assertEqualInt(n, 2, "both stranded rows are recovered")
+    case Err(e) -> assertTrue(false, "recoverStrandedScheduledJobs failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+  }
+
+  match CloudAgents.Jobs.getJobHandler("default", recurring.id) {
+    case Ok(j) -> assertTrue(j.nextRunAtEpochMillis.length > 0, "the recurring job's next_run_at was restored, not left at the empty sentinel forever")
+    case Err(e) -> assertTrue(false, "getJobHandler failed: " + toString(e.status))
+  }
+  match CloudAgents.Jobs.getJobHandler("default", oneShot.id) {
+    case Ok(j) -> assertTrue(j.nextRunAtEpochMillis.length > 0, "the one-shot job's next_run_at was restored from run_at")
+    case Err(e) -> assertTrue(false, "getJobHandler failed: " + toString(e.status))
+  }
+  match CloudAgents.Repository.dueScheduledJobs(100) {
+    case Ok(due) -> assertEqualInt(due.length.toInt(), 2, "both recovered jobs are due again, not stuck")
+    case Err(e) -> assertTrue(false, "dueScheduledJobs failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+  }
+}
+
+// ── The maintenance sweep is operator-only (#873) ─────────────────────────────
+test "triggerDueJobsHandler refuses a non-operator identity" {
+  val dbPath = useFreshTestDb("job-trigger-auth-denied")
+  defer {
+    cleanupTestDb(dbPath)
+  }
+  CloudAgents.Auth.setCurrentUserId("alice")
+  match CloudAgents.Jobs.triggerDueJobsHandler() {
+    case Ok(_) -> assertTrue(false, "a non-operator identity must not be able to trigger the maintenance sweep")
+    case Err(e) -> assertEqualInt(e.status, 401, "non-operator caller -> 401, not the system-wide sweep")
+  }
+}
+
+test "triggerDueJobsHandler runs for the operator identity when nothing is due" {
+  val dbPath = useFreshTestDb("job-trigger-auth-allowed")
+  defer {
+    cleanupTestDb(dbPath)
+  }
+  // No due jobs at all in this fresh DB, so the loop body (which would reach
+  // CloudAgents.Docker via runOneJob) never executes -- this exercises the
+  // #873 auth gate and the empty-summary response path without needing a
+  // Docker host.
+  CloudAgents.Auth.setCurrentUserId(CloudAgents.Auth.operatorUserId())
+  match CloudAgents.Jobs.triggerDueJobsHandler() {
+    case Ok(body) -> assertEqual(body, "{\"triggered\":0,\"failed\":0,\"skipped\":0}", "no due jobs -> a clean empty summary")
+    case Err(e) -> assertTrue(false, "the operator identity must be allowed to trigger the sweep: " + toString(e.status))
+  }
+}
+
+// ── Test coverage gaps (#885) ────────────────────────────────────────────────
+test "callback handlers scope jobs to the SESSION'S OWNER, not the ambient caller identity" {
+  val dbPath = useFreshTestDb("job-callback-owner-vs-caller")
+  defer {
+    cleanupTestDb(dbPath)
+  }
+  // The session (and its callback token) belong to alice.
+  CloudAgents.Auth.setCurrentUserId("alice")
+  val sid = "sess-jobs-owner-vs-caller"
+  mkSession(sid)
+  val token = mintToken(sid, "alice")
+
+  // A DIFFERENT ambient identity is stamped for this "request" -- exactly
+  // what a container-originated callback route sees in production (the host
+  // stamps the operator identity for these routes, never a per-tenant one;
+  // docs/phase8-scheduling.md §7). The callback handlers must resolve the
+  // session's OWNER via ownerOfSession, never trust this ambient value.
+  CloudAgents.Auth.setCurrentUserId("mallory")
+
+  val created = match CloudAgents.Jobs.scheduleJobCallbackHandler(
+    sid, bearer(token), ScheduleJobCallbackRequest(name = "", prompt = "p", runAtEpochMillis = "", intervalSeconds = "3600")
+  ) {
+    case Ok(r) -> r
+    case Err(e) -> panic("schedule_job failed: " + toString(e.status))
+  }
+
+  // The job is owned by alice (the session's real owner), never mallory (the
+  // ambient identity at call time).
+  match CloudAgents.Repository.getScheduledJob(created.id, "alice") {
+    case Ok(Some(j)) -> assertEqual(j.userId, "alice", "the job is scoped to the session's owner")
+    case Ok(None) -> assertTrue(false, "alice must be able to see the job she owns")
+    case Err(e) -> assertTrue(false, "getScheduledJob failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+  }
+  match CloudAgents.Repository.getScheduledJob(created.id, "mallory") {
+    case Ok(None) -> ()
+    case Ok(Some(_)) -> assertTrue(false, "the ambient caller identity must not own the job")
+    case Err(e) -> assertTrue(false, "getScheduledJob failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+  }
+
+  // list_jobs, still invoked with the ambient identity stamped as mallory,
+  // resolves ALICE's backlog (the session owner's), not mallory's (empty).
+  match CloudAgents.Jobs.listJobsCallbackHandler(sid, bearer(token)) {
+    case Ok(list) -> assertEqualInt(list.jobs.length.toInt(), 1, "list_jobs resolves the session owner's backlog, not the ambient caller's")
+    case Err(e) -> assertTrue(false, "list_jobs failed: " + toString(e.status))
+  }
+}
+
+test "createJobHandler's SSRF check catches userinfo smuggling and non-dotted IP literals, not just plain loopback" {
+  val dbPath = useFreshTestDb("job-create-ssrf-bypass")
+  defer {
+    cleanupTestDb(dbPath)
+  }
+  CloudAgents.Auth.setCurrentUserId("default")
+
+  // Same bypass session_tests.l pins against createSession (#257): userinfo
+  // smuggled ahead of the real (loopback) host.
+  val userinfoReq = CreateJobRequest(
+    name = "",
+    prompt = "digest",
+    profileId = "",
+    repoUrl = "https://github.com@127.0.0.1/repo",
+    branch = "main",
+    harness = "",
+    model = "",
+    runAtEpochMillis = "",
+    intervalSeconds = "3600"
+  )
+  match CloudAgents.Jobs.createJobHandler("default", userinfoReq) {
+    case Ok(_) -> assertTrue(false, "a userinfo-smuggled loopback repoUrl must be rejected")
+    case Err(e) -> assertEqualInt(e.status, 400, "userinfo bypass -> 400")
+  }
+
+  // Same bypass webhook_tests.l pins (#260): a decimal IP literal for
+  // 127.0.0.1, never containing a literal dot.
+  val decimalIpReq = CreateJobRequest(
+    name = "",
+    prompt = "digest",
+    profileId = "",
+    repoUrl = "https://2130706433/repo",
+    branch = "main",
+    harness = "",
+    model = "",
+    runAtEpochMillis = "",
+    intervalSeconds = "3600"
+  )
+  match CloudAgents.Jobs.createJobHandler("default", decimalIpReq) {
+    case Ok(_) -> assertTrue(false, "a decimal IP-literal loopback repoUrl must be rejected")
+    case Err(e) -> assertEqualInt(e.status, 400, "decimal IP literal bypass -> 400")
   }
 }

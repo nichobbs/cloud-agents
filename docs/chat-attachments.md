@@ -72,7 +72,17 @@ validate-then-persist work in two passes: validate + base64-decode every
 input first, without writing anything, so a later file's overage against the
 cumulative per-message budget can never leave an earlier file's bytes/row
 orphaned; then write each file's bytes and insert its `session_attachments`
-row (`messageId` starting `''`). `streamSendMessage` calls it AFTER
+row (`messageId` starting `''`). Pass 2 itself is not wrapped in a DB
+transaction, so a genuine I/O or DB failure partway through a multi-file
+batch (disk full, a transient SQLite error on file N of M) is handled with
+best-effort rollback: `cleanupPartialAttachmentBatch` deletes the rows/files
+that same call already committed earlier in the batch before returning the
+error, so files `1..N-1` aren't left stranded with `messageId` permanently
+`''`. That cleanup is itself best-effort (its own failure — e.g. the same
+disk-full condition — is swallowed rather than masking the original error),
+so a genuinely persistent storage failure can still leave an orphan behind;
+this closes the common case (a transient hiccup on one file) without adding
+a full transactional rewrite. `streamSendMessage` calls it AFTER
 successfully claiming the session's run lock — not before — so a validation
 failure (or any other early return) is covered by the same `defer`-based
 lock release the rest of the run already relies on, closing the same
@@ -91,8 +101,21 @@ there is no separate image/document channel into the harness CLI. Rather than
 teach the invocation a second input format, `CloudAgents.Docker`
 bind-mounts the session's attachments directory
 (`attachmentsBaseDir()/<sessionId>/`) READ-ONLY (`:ro`) at
-`/workspace/.attachments` whenever a message carries at least one attachment
-(`createRunnerContainer`'s `attachmentsHostDir` param, threaded through
+`/workspace/.attachments` whenever the SESSION already has at least one
+attachment — not only when the CURRENT message happens to carry a new one.
+`CloudAgents.Handlers.storeAttachments` resolves this: a non-empty
+`inputs` validates and writes the new files as described in §3; an EMPTY
+`inputs` (a plain text follow-up) still resolves `hostDir` to the session's
+existing attachment directory via `CloudAgents.Repository.listAttachments`
+whenever that session has any (falling back to `""`, i.e. no mount, only
+when the session truly has none, or on a listAttachments read failure —
+fail open rather than blocking the send). This is what lets a user attach
+`screenshot.png` in one message and, in the NEXT message, ask "what did you
+see in that screenshot?" with no new attachment — without this, that
+follow-up's container would get no `/workspace/.attachments` mount at all,
+even though the file is still on disk and listed by
+`GET /api/sessions/{id}/attachments` (`createRunnerContainer`'s
+`attachmentsHostDir` param, threaded through
 `streamSessionMessage`/`runSessionMessageAsync` — `runSessionMessageBlocking`,
 used only by scheduled jobs with no composer, always passes `""`), and
 `CloudAgents.Handlers.promptWithAttachments` appends a short manifest to the
@@ -123,17 +146,34 @@ claude-user:claude-user /workspace || true` the rest of the workspace gets
 The download route (`GET /api/sessions/{id}/attachments/{aid}`) serves
 `Content-Disposition: attachment` (not `inline`), and upload-time validation
 rejects mime types capable of executing as active content when rendered
-(`image/svg+xml`, `text/html`, `application/xhtml+xml`) — an attachment's
+(`image/svg+xml`, `text/html`, `application/xhtml+xml`,
+`CloudAgents.Handlers.isDangerousAttachmentMimeType`) — an attachment's
 `mimeType` is entirely client-supplied, and an SVG/HTML file served inline at
 this app's own origin is a stored-XSS vector if a viewer ever navigates to it
-directly rather than fetching it as an opaque blob.
+directly rather than fetching it as an opaque blob. `frontend/src/pages/
+SessionDetail.tsx`'s composer pre-checks the same blocklist client-side
+(`isDangerousAttachmentMimeType` there, a small duplicate — see §5) so a
+dangerous file is rejected at pick-time with the same instant notice the
+size/count checks already give, rather than only after a wasted upload
+round-trip. `CloudAgents.Callbacks`'s pre-existing `report_artifact` upload
+path (`src/handlers/callbacks.l`) carries the identical check under its own
+name, `isDangerousArtifactMimeType` — a small intentional duplicate across
+packages (this codebase's convention, see e.g. `basenameOf`'s own doc
+comment there) rather than a shared import, closing the same risk class in
+the artifact route that this feature's design doc originally cited as its
+own precedent without actually matching it.
 
 ## 5. Frontend
 
 `frontend/src/pages/SessionDetail.tsx`: a paperclip button opens a hidden
-multi-file `<input>`; each picked file is read to base64 via `FileReader`,
-staged (with a thumbnail preview for images), and validated against the same
-limits as §2. `frontend/src/components/MessageBlock.tsx` renders a message's
+multi-file `<input>`; each picked file is checked against the same
+size/count limits as §2 AND the same dangerous-mimetype blocklist as §4
+(`isDangerousAttachmentMimeType`, a small client-side duplicate of the
+server check keyed off the browser's own `File.type`) BEFORE it is read to
+base64 via `FileReader` and staged (with a thumbnail preview for images) —
+so a rejected file never pays the cost of being encoded, and the user sees
+the same kind of instant notice for a bad mime type as for an oversize or
+over-the-cap file. `frontend/src/components/MessageBlock.tsx` renders a message's
 attachments (fetched via `api.listAttachments`, grouped by `messageId`) as
 image thumbnails (lazily fetched as a `Blob` and shown via an object URL,
 since the download route is bearer-authenticated) or click-to-download
@@ -148,10 +188,21 @@ document chips.
   `promptWithAttachments` — pure, offline.
 - `storeAttachments` — round trip (validate, write to disk, persist rows,
   path-traversal neutralized), oversize-file rejection before anything is
-  stored, over-the-cap file count rejection.
+  stored, over-the-cap file count rejection, a text-only follow-up still
+  resolving the session's existing attachment directory when one exists
+  (#1005).
+- `cleanupPartialAttachmentBatch` — the pass-2 best-effort-rollback helper
+  (#1003), exercised directly since forcing a genuine mid-batch I/O/DB
+  failure isn't something a test can trigger through the public API.
 - `listAttachmentsHandler`/`downloadAttachmentHandler` — messageId starts
   empty and round-trips after linking; cross-session and unknown-id fetches
   both 404.
+- `tests/callbacks_v2_tests.l` pins `isDangerousArtifactMimeType` on
+  `report_artifact`'s upload path (#1007), the same blocklist as this
+  feature's own `isDangerousAttachmentMimeType`.
+- `frontend/src/pages/SessionDetail.test.tsx` covers the composer's
+  client-side mimetype pre-check (#1006): an SVG/HTML pick is rejected with a
+  notice before it is ever staged or base64-encoded.
 
 Not covered (needs a Docker host, same gap every runner-container feature
 in this repo has): the live end-to-end path — a real container actually

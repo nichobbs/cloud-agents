@@ -15,6 +15,7 @@ import Web
 import CloudAgents.Auth
 import CloudAgents.Repository
 import CloudAgents.Sqlite
+import CloudAgents.Text
 
 val maxNameLen = 128
 
@@ -66,11 +67,26 @@ pub func isValidMcpTransport(t: in String): Bool {
 /// half non-empty) — checked with `.contains`/`.substring` rather than
 /// splitting on "=" (String.split is undocumented-as-working in this
 /// toolchain; docs/lyric/gotchas.md), since storage keeps the entry whole.
+/// Also rejects any raw control character (below U+0020, including NUL and
+/// a literal newline) in the entry, mirroring the C0-range stripping
+/// docker/entrypoint.sh already does for GITHUB_TOKEN et al
+/// (`tr -d '\000-\037'`) for exactly this class of problem: whatever
+/// delimiter docker/inject-library.sh's render_mcp_json/render_mcp_codex use
+/// to split a stored env value out of jq's output (previously newline, now
+/// a NUL byte via `read -r -d ''`), a control character embedded in the
+/// value can collide with it and mis-split the entry — a JSON-encoded NUL
+/// (valid JSON, decoded to a real NUL by `jq -j`) is indistinguishable from
+/// the NUL delimiter itself (#782, the same bug class as #775's
+/// embedded-newline case). Banning the whole C0 range closes this for good
+/// instead of chasing the next delimiter choice.
 func isValidMcpEnvEntry(entry: in String): Bool {
   if entry.length == 0 or entry.length > maxMcpFieldLen {
     return false
   }
   if not entry.contains("=") {
+    return false
+  }
+  if CloudAgents.Text.containsControlChar(entry) {
     return false
   }
   return entry.substring(0, 1) != "="

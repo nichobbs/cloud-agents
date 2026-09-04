@@ -183,39 +183,30 @@ fi
 
 # Ensure /home/claude-user and everything inside it is owned by claude-user.
 # This heals any permissions/UID mismatches if the volume was populated on the host
-# with host-specific UIDs (e.g. 504 on Colima macOS).
-chown -R claude-user:claude-user /home/claude-user || true
-chmod 700 /home/claude-user || true
-chown -R claude-user:claude-user /workspace || true
-
-# If ~/.claude.json is missing, but backups exist, automatically restore the latest backup!
-if [ ! -f "$HOME/.claude.json" ]; then
-    LATEST_BACKUP=$(ls -t "$HOME"/.claude/backups/.claude.json.backup.* 2>/dev/null | head -n 1 || true)
-    if [ -n "$LATEST_BACKUP" ]; then
-        echo "entrypoint: restoring ~/.claude.json from latest backup: $LATEST_BACKUP" >&2
-        cp "$LATEST_BACKUP" "$HOME/.claude.json"
-        chown claude-user:claude-user "$HOME/.claude.json"
-        chmod 600 "$HOME/.claude.json"
-    fi
+# with host-specific UIDs (e.g. 504 on Colima macOS). Guarded on the top-level
+# directory's current owner (#653): /home/claude-user is a volume shared
+# across every session for a user+harness, so after the first message ever
+# fixes it up, every later message's container would otherwise pay for a
+# full recursive walk of the user's entire Claude history/config for no
+# ownership change at all. A top-level-only check is sufficient here — unlike
+# /workspace below, nothing between messages writes new root-owned files
+# into this volume (only claude-user itself, via the runuser-wrapped `claude`
+# invocation, ever writes here after this point).
+if [ "$(stat -c '%U' /home/claude-user 2>/dev/null || echo '?')" != "claude-user" ]; then
+    chown -R claude-user:claude-user /home/claude-user || true
+    chmod 700 /home/claude-user || true
 fi
 
-: "${HOME:=/home/claude-user}"
-
-# If a host-provided CA certificate bundle is mounted at /etc/host-ca.pem,
-# register it in the container's system CA trust store so that curl, git, and Node
-# trust the host's SSL-intercepting proxy natively and globally.
-if [ -f "/etc/host-ca.pem" ]; then
-    echo "entrypoint: registering host CA certificate bundle in system store..." >&2
-    cp /etc/host-ca.pem /usr/local/share/ca-certificates/host-ca.crt
-    update-ca-certificates >/dev/null
-fi
-
-# Ensure /home/claude-user and everything inside it is owned by claude-user.
-# This heals any permissions/UID mismatches if the volume was populated on the host
-# with host-specific UIDs (e.g. 504 on Colima macOS).
-chown -R claude-user:claude-user /home/claude-user || true
-chmod 700 /home/claude-user || true
-chown -R claude-user:claude-user /workspace || true
+# /workspace's own recursive chown is intentionally NOT done here (#653): this
+# point is before git clone/reconcile-repos.sh/inject-library.sh/the
+# mcp.json+settings.json rendering below, all of which run as root and can
+# add or modify files every single message — so a chown here would just be
+# redone, unconditionally, by the single `chown -R .../workspace` right
+# before the final `runuser` exec at the bottom of this script, once all of
+# that root-owned setup work has actually happened. Doing it twice (once here
+# on the pre-setup tree, once more on the post-setup tree) was pure wasted
+# work, not an extra safety margin — nothing between here and that final
+# chown runs as claude-user.
 git config --system --add safe.directory /workspace >/dev/null 2>&1 || git config --global --add safe.directory /workspace >/dev/null 2>&1 || true
 
 # If ~/.claude.json is missing, but backups exist, automatically restore the latest backup!
@@ -492,7 +483,14 @@ fi
 /usr/local/bin/inject-library.sh "claude" || echo "entrypoint: library injection failed, continuing without it" >&2
 
 # Recursively chown the workspace after creating templates/directories as root
-# so that 'claude-user' has full write access to history and configs.
+# so that 'claude-user' has full write access to history and configs. This is
+# the ONE recursive /workspace chown in this script (#653 — an earlier
+# duplicated pre-setup chown near the top was removed as dead weight, see the
+# comment there): it has to run unconditionally every message because
+# everything above (clone/reconcile-repos.sh/inject-library.sh/the mcp.json
+# and settings.json rendering) runs as root and can touch files every time,
+# so there's no cheap "already correct" check to skip it with the way there
+# is for /home/claude-user above.
 chown -R claude-user:claude-user /workspace || true
 
 # Phase 6 (docs/phase6-mcp-callbacks.md §3, §8): route Claude Code's own

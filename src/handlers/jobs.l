@@ -54,16 +54,23 @@ val maxIntervalSeconds = 2592000
 /// itself would need revisiting.
 val maxEpochDigits = 15
 
-/// The most due jobs a single triggerDueJobsHandler call will fire.
-/// Unlike reapContainers' per-item cost (a fast Docker terminate call), each
-/// due job here runs a full container synchronously — the endpoint's own
-/// docs already warn a single call can otherwise block up to ~30 minutes if
-/// many jobs are due at once (e.g. the external poller missed several
-/// cycles). Capping keeps one call's wall-clock time bounded; earliest-due
-/// jobs are prioritized (selectDueScheduledJobsSql's ORDER BY), and anything
-/// left over is picked up on the very next poll — the endpoint's "safe to
-/// call repeatedly" contract already assumes exactly this kind of partial
-/// progress per call (#872).
+/// The most due jobs a single triggerDueJobsHandler call will fire. Unlike
+/// reapContainers' per-item cost (a fast Docker terminate call), each due job
+/// here runs a full container synchronously via the blocking
+/// runSessionMessageBlocking, one after another — so this caps the call's
+/// job COUNT, not its wall-clock time: the real worst case is
+/// maxJobsPerTrigger * runWallClockCapMs, i.e. up to ~150 minutes (5 * 30
+/// min) for a single POST /api/maintenance/trigger-jobs call if every
+/// claimed job independently hits the per-run cap (#893 — a prior version of
+/// this comment understated the bound as "~30 minutes", the per-JOB cap, not
+/// the per-CALL one). Operators pointing an external scheduler/HTTP client at
+/// this endpoint (docs/phase8-scheduling.md §2's "every minute" example) must
+/// size its request timeout accordingly, or lower this constant to fit their
+/// own budget. Earliest-due jobs are prioritized
+/// (selectDueScheduledJobsSql's ORDER BY), and anything left over is picked
+/// up on the very next poll — the endpoint's "safe to call repeatedly"
+/// contract already assumes exactly this kind of partial progress per call
+/// (#872).
 val maxJobsPerTrigger = 5
 
 func dbError(e: in CloudAgents.Sqlite.DbError): Web.ApiError {
@@ -418,12 +425,37 @@ pub func updateJobHandler(userId: in String, id: in String, req: in UpdateJobReq
   if runAt.length == 0 and intervalSeconds.length == 0 {
     return Err(Web.badRequest("at least one of runAtEpochMillis or intervalSeconds is required"))
   }
+  val status = if req.status.length > 0 { req.status } else { existing.status }
+  // A completed one-shot job's next_run_at is permanently cleared to '' by
+  // markScheduledJobCompletedSql — it never fires again on its own. Simply
+  // carrying that '' forward as "existing, unchanged" (the plain `else`
+  // branch below) when a caller reactivates the job via `status` alone, with
+  // no new schedule, would look like a 200 success but leave the job
+  // permanently excluded from the due scan (#883):
+  // selectDueScheduledJobsSql filters on `next_run_at <> ''`. Recompute a
+  // fresh nextRunAt ("now", so it fires on the very next poll tick) whenever
+  // this update is moving the job OUT of 'completed' without an explicit new
+  // schedule.
+  val reactivatingCompletedJob = existing.status == "completed" and status != "completed" and not scheduleChanged
+  // Whether this update should touch next_run_at at all. When neither is
+  // true (an ordinary edit to prompt/profile/status that leaves the
+  // schedule alone), next_run_at is left OUT of the UPDATE entirely — not
+  // written back to `existing.nextRunAt` — so a concurrent
+  // triggerDueJobsHandler claim in flight on this same row (next_run_at
+  // temporarily cleared to the claimDueScheduledJobSql sentinel) can't have
+  // that transient '' echoed straight back by this unrelated edit and
+  // permanently stuck there (#891): the run's own post-completion
+  // bookkeeping (applyPostRunBookkeeping) is left as the sole writer of
+  // next_run_at in that case, exactly as it already is when this update
+  // never runs at all.
+  val writeNextRunAt = scheduleChanged or reactivatingCompletedJob
   val nextRunAt = if scheduleChanged {
     if runAt.length > 0 { runAt } else { CloudAgents.Repository.nowMillis() }
+  } else if reactivatingCompletedJob {
+    CloudAgents.Repository.nowMillis()
   } else {
     existing.nextRunAt
   }
-  val status = if req.status.length > 0 { req.status } else { existing.status }
   match CloudAgents.Repository.updateScheduledJob(
     id,
     userId,
@@ -433,7 +465,8 @@ pub func updateJobHandler(userId: in String, id: in String, req: in UpdateJobReq
     runAt,
     intervalSeconds,
     nextRunAt,
-    status
+    status,
+    writeNextRunAt
   ) {
     case Ok(n) -> {
       if n > 0 {
@@ -487,7 +520,17 @@ func ensureJobSession(job: in CloudAgents.Repository.ScheduledJob): Result[Strin
   }
   match CloudAgents.Repository.attachScheduledJobSession(job.id, sessionId) {
     case Ok(_) -> ()
-    case Err(_) -> ()
+    // Not fatal (the run still proceeds against the freshly created
+    // session), but MUST be surfaced (#884): a silently-swallowed attach
+    // failure leaves scheduled_jobs.session_id empty, so the NEXT trigger
+    // sees job.sessionId.length == 0 again and creates yet another brand-new
+    // session, repeating on every failed attach and orphaning one session
+    // per attempt. Logged the same way the sibling endRun/addMessage
+    // failure paths in this file already are.
+    case Err(e) -> println(
+      "WARNING: failed to attach session " + sessionId + " to scheduled job " + job.id + ": " +
+        CloudAgents.Sqlite.dbErrorMessage(e)
+    )
   }
   return Ok(value = sessionId)
 }
@@ -610,21 +653,81 @@ func runOneJob(job: in CloudAgents.Repository.ScheduledJob): JobRunOutcome {
         val _ = CloudAgents.Repository.recordRunEnd(runId, job.userId, "failed")
         val _ = CloudAgents.Repository.enqueueWebhookEvent(job.userId, sessionId, runId, "failed")
       }
+      // Mirror the success branch (#892/#894): a scheduled job has no live
+      // viewer by construction (no ResponseWriter here, unlike
+      // streamSendMessage's SSE error frame), so if the transcript itself
+      // doesn't carry the failure, nobody ever sees it — GET
+      // /api/sessions/{id}/runs, the webhook outbox, and server logs are the
+      // only other signals, and none of them is the primary UI surface a
+      // human reopening the session sees.
+      match CloudAgents.Repository.addMessage(sessionId, "agent", "Scheduled run failed: " + msg) {
+        case Ok(_) -> ()
+        case Err(e) -> println(
+          "WARNING: failed to persist failure message for scheduled job session " + sessionId + ": " +
+            CloudAgents.Sqlite.dbErrorMessage(e)
+        )
+      }
       JobFailed(message = msg)
     }
   }
 }
 
+/// Decide and apply the correct post-run bookkeeping for a job that was just
+/// claimed and run, re-reading the job row FRESH rather than trusting
+/// `claimedJob` — the snapshot `triggerDueJobsHandler` read at the top of the
+/// request, before `runOneJob` spent up to `runWallClockCapMs` (30 min)
+/// blocked inside the container run (#876). Only `claimedJob.id`/`userId`/
+/// `nextRunAt` are ever used from that snapshot: `nextRunAt` because
+/// `markScheduledJobRanRecurringSql` needs the slot the job was actually due
+/// at (the row's own `next_run_at` is the empty claim sentinel by now) to
+/// avoid cadence drift (#874) — never `claimedJob.intervalSeconds` or
+/// `.status`, which a concurrent `POST /api/jobs/{jid}` may have changed
+/// while the run was in flight (e.g. flipping the job between one-shot and
+/// recurring). `markScheduledJobRanRecurringSql`/`markScheduledJobCompletedSql`
+/// are additionally guarded on `status = 'active'`, so a concurrent
+/// pause/cancel still can't be clobbered even if this re-read raced with
+/// that same update. `pub` (mirrors `isValidRunAt`'s reasoning) so
+/// tests/jobs_tests.l can pin this directly: `runOneJob`/`triggerDueJobsHandler`
+/// reach `CloudAgents.Docker` and cannot run in a `@test_module`, but this
+/// re-read-before-deciding logic itself touches only `CloudAgents.Repository`
+/// and is fully test-invocable on its own.
+pub func applyPostRunBookkeeping(claimedJob: in CloudAgents.Repository.ScheduledJob, firedAt: in String): Unit {
+  val fresh = match CloudAgents.Repository.getScheduledJob(claimedJob.id, claimedJob.userId) {
+    case Ok(Some(j)) -> j
+    case Ok(None) -> claimedJob
+    case Err(_) -> claimedJob
+  }
+  if fresh.intervalSeconds.length > 0 {
+    val _ = CloudAgents.Repository.markScheduledJobRanRecurring(claimedJob.id, firedAt, claimedJob.nextRunAt, fresh.intervalSeconds)
+  } else {
+    val _ = CloudAgents.Repository.markScheduledJobCompleted(claimedJob.id, firedAt)
+  }
+}
+
 /// POST /api/maintenance/trigger-jobs — a maintenance endpoint for an
 /// external scheduler to poll (Lyric.Web has no in-process timer), mirroring
-/// CloudAgents.Handlers.reapContainers exactly. Safe to call repeatedly: a
-/// job not yet due is untouched, and a skipped (busy-session) job is retried
-/// on the next call with no double-firing. Processes at most
-/// `maxJobsPerTrigger` jobs (earliest-due first) so one call's wall-clock
-/// time stays bounded; anything left over is picked up on the next poll.
-/// Returns `{"triggered":N,"failed":M,"skipped":K}`.
+/// CloudAgents.Handlers.reapContainers exactly, restricted the same way
+/// CloudAgents.Handlers.reapContainers' own blast radius is scoped by being
+/// an unauthenticated-tenant-agnostic sweep: this is a system-wide,
+/// unscoped-by-user maintenance action (dueScheduledJobs() intentionally has
+/// no user_id filter), so it is restricted to the operator identity rather
+/// than any authenticated caller (#873) — in a multi-tenant OAuth
+/// deployment, an ordinary authenticated user must not be able to force
+/// another tenant's due-or-not-yet-due job to run early just by holding a
+/// valid bearer token. A static-token (or unauthenticated-open) deployment
+/// is unaffected: AuthMiddleware/CloudAgents.Auth.authorize always resolves
+/// such requests to operatorUserId() already.
+///
+/// Safe to call repeatedly: a job not yet due is untouched, and a skipped
+/// (busy-session) job is retried on the next call with no double-firing.
+/// Processes at most `maxJobsPerTrigger` jobs (earliest-due first) so one
+/// call's wall-clock time stays bounded; anything left over is picked up on
+/// the next poll. Returns `{"triggered":N,"failed":M,"skipped":K}`.
 pub func triggerDueJobsHandler(): Result[String, Web.ApiError] {
-  val due = match CloudAgents.Repository.dueScheduledJobs() {
+  if CloudAgents.Auth.currentUserId() != CloudAgents.Auth.operatorUserId() {
+    return Err(Web.unauthorized("the scheduled-jobs maintenance sweep may only be triggered by the operator identity"))
+  }
+  val due = match CloudAgents.Repository.dueScheduledJobs(maxJobsPerTrigger) {
     case Ok(js) -> js
     case Err(e) -> return Err(dbError(e))
   }
@@ -654,20 +757,12 @@ pub func triggerDueJobsHandler(): Result[String, Web.ApiError] {
     match runOneJob(job) {
       case JobSucceeded -> {
         triggered = triggered + 1
-        if job.intervalSeconds.length > 0 {
-          val _ = CloudAgents.Repository.markScheduledJobRanRecurring(job.id, CloudAgents.Repository.nowMillis(), job.nextRunAt, job.intervalSeconds)
-        } else {
-          val _ = CloudAgents.Repository.markScheduledJobCompleted(job.id, CloudAgents.Repository.nowMillis())
-        }
+        applyPostRunBookkeeping(job, CloudAgents.Repository.nowMillis())
       }
       case JobFailed(msg) -> {
         failed = failed + 1
         println("WARNING: scheduled job " + job.id + " failed: " + msg)
-        if job.intervalSeconds.length > 0 {
-          val _ = CloudAgents.Repository.markScheduledJobRanRecurring(job.id, CloudAgents.Repository.nowMillis(), job.nextRunAt, job.intervalSeconds)
-        } else {
-          val _ = CloudAgents.Repository.markScheduledJobCompleted(job.id, CloudAgents.Repository.nowMillis())
-        }
+        applyPostRunBookkeeping(job, CloudAgents.Repository.nowMillis())
       }
       case JobSkipped(_) -> {
         skipped = skipped + 1

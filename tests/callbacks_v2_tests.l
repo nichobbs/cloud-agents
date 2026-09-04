@@ -377,6 +377,45 @@ test "report_artifact rejects an oversize upload before storing anything" {
   }
 }
 
+test "report_artifact rejects a dangerous mimeType before storing anything (#1007)" {
+  // Chat attachments (CloudAgents.Handlers.isDangerousAttachmentMimeType,
+  // #999/#1000) reject SVG/HTML/XHTML uploads as a stored-XSS defense since
+  // mimeType is client-supplied and echoed back verbatim as the download
+  // response's Content-Type. report_artifact serves artifacts back the same
+  // way (downloadArtifactHandler) but had no equivalent check — this pins
+  // the duplicated CloudAgents.Callbacks.isDangerousArtifactMimeType closing
+  // that gap.
+  val dbPath = useFreshTestDb("artifact-dangerous-mime")
+  defer {
+    cleanupTestDb(dbPath)
+  }
+  CloudAgents.Auth.setCurrentUserId("default")
+  val sid = "sess-artifact-dangerous"
+  mkSession(sid)
+  val token = mintToken(sid, "default")
+
+  match uploadArtifactHandler(sid, bearer(token), UploadArtifactRequest(fileName = "evil.svg", mimeType = "image/svg+xml", description = "", contentBase64 = base64Of("<svg onload=alert(1)>"), artifactScope = "")) {
+    case Ok(_) -> assertTrue(false, "an SVG upload must be rejected")
+    case Err(e) -> assertEqualInt(e.status, 400, "dangerous mimeType -> 400")
+  }
+  // Case and a MIME parameter suffix must not bypass the check either,
+  // matching isDangerousAttachmentMimeType's own guarantees (#999/#1000).
+  match uploadArtifactHandler(sid, bearer(token), UploadArtifactRequest(fileName = "evil.html", mimeType = "TEXT/HTML; charset=utf-8", description = "", contentBase64 = base64Of("<script>alert(1)</script>"), artifactScope = "")) {
+    case Ok(_) -> assertTrue(false, "an HTML upload must be rejected regardless of case or a parameter suffix")
+    case Err(e) -> assertEqualInt(e.status, 400, "dangerous mimeType -> 400")
+  }
+  match listArtifactsHandler(sid) {
+    case Ok(l) -> assertEqualInt(l.artifacts.length.toInt(), 0, "nothing was stored for either rejected upload")
+    case Err(e) -> assertTrue(false, "list failed: " + toString(e.status))
+  }
+
+  // An ordinary mime type is unaffected by the new check.
+  match uploadArtifactHandler(sid, bearer(token), UploadArtifactRequest(fileName = "fine.txt", mimeType = "text/plain", description = "", contentBase64 = base64Of("hello"), artifactScope = "")) {
+    case Ok(_) -> ()
+    case Err(e) -> assertTrue(false, "an ordinary mimeType must still be accepted: " + toString(e.status))
+  }
+}
+
 // ── Validation ───────────────────────────────────────────────────────────────
 test "v2 callback endpoints reject an empty session id before touching the database" {
   val dbPath = useFreshTestDb("v2-empty-id")

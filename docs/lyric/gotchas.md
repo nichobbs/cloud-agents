@@ -284,6 +284,18 @@ extern binding's parameter to `List[Byte]`, which would be new, unverified
 FFI marshalling for an `@externInstance` call (`Encoding.GetString`'s real
 BCL shape is `byte[]`, i.e. `slice[Byte]`).
 
+**`Std.File.exists()` and `Std.File.delete()` do not resolve at runtime** —
+`unsupported method 'exists' on the receiver type (no matching user method,
+extern binding, or built-in intrinsic)` (confirmed on v0.4.36 while building
+the chat-attachment rollback in `CloudAgents.Handlers.cleanupPartialAttachmentBatch`,
+nichobbs/cloud-agents#1003). Both are documented in `docs/lyric/stdlib.md`
+and both compile, so this is the same "compiles as a dot-call, dies at
+runtime" family as the entries above. For deletion bind
+`System.IO.File.Delete` directly (an `@externStatic` binding, wrapped in
+`try`/`catch` since it throws on a missing path) — see
+`cleanupPartialAttachmentBatch` for the worked pattern; for an existence
+check at test time, use `Std.File.readBytes`'s `Ok`/`Err` outcome instead.
+
 **`String.toUpperCase()` and `String.replace()` do not resolve at runtime** —
 `unsupported method 'toUpperCase' on the receiver type (no matching user
 method, extern binding, or built-in intrinsic)` (confirmed on v0.4.35 with a

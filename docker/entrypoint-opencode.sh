@@ -14,6 +14,12 @@
 #   ANTHROPIC_API_KEY   - required when MODEL is a claude-* model
 #   OPENAI_API_KEY      - required when MODEL is a gpt-* or o* model
 #   GOOGLE_API_KEY      - required when MODEL is a gemini-* model
+#   OPENCODE_API_KEY    - optional; a user credential OpenCode Zen models can
+#                         also authenticate with (mapped to OPENCODE_ZEN_API_KEY
+#                         below if that isn't already set directly)
+#   OPENCODE_ZEN_API_KEY - optional; OpenCode Zen's own expected key name
+#                         (default: falls back to OPENCODE_API_KEY, then a
+#                         placeholder for the free 'opencode/*' models)
 #
 # State persists across runs via two mounted volumes:
 #   /workspace            - the cloned repository
@@ -121,7 +127,6 @@ case "$MODEL" in
     export OPENCODE_ZEN_API_KEY="${OPENCODE_ZEN_API_KEY:-free-model-placeholder}"
     ;;
 esac
-
 
 # Configure git credential helper and push defaults dynamically inside the container.
 if [ -n "${GITHUB_TOKEN:-}" ]; then

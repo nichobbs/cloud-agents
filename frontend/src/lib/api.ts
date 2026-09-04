@@ -80,7 +80,14 @@ export async function apiFetch(input: RequestInfo | URL, init?: RequestInit): Pr
       headers.set('Authorization', `Bearer ${freshToken}`);
       newInit.headers = headers;
 
-      return await fetch(input, newInit);
+      const retryRes = await fetch(input, newInit);
+      // A still-401 after a successful refresh means the fresh token was
+      // itself rejected (e.g. a whitelist revocation racing the refresh) —
+      // treat it the same as "refresh failed" rather than handing the
+      // caller a raw 401 to throw on.
+      if (retryRes.status !== 401) {
+        return retryRes;
+      }
     }
 
     if (typeof window !== 'undefined' && window.location) {

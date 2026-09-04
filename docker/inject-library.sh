@@ -151,8 +151,8 @@ render_subagents_codex() {
     done
 }
 
-# Expands ${VAR}/$VAR references in a single MCP-server env VALUE against
-# this container's own real environment — so a server (seeded or
+# Expands ${VAR}/$VAR references in a single MCP-server env VALUE against a
+# filtered view of this container's environment — so a server (seeded or
 # user-authored) can write an env entry like
 # "GITHUB_PERSONAL_ACCESS_TOKEN=${GITHUB_TOKEN}" and receive the real
 # credential CloudAgents.Docker already injected as a container env var,
@@ -162,15 +162,36 @@ render_subagents_codex() {
 # `eval`: envsubst only replaces $VAR/${VAR} tokens with that variable's
 # actual value (or empty, if unset) and never executes command
 # substitution/arbitrary shell, so a value can't do anything worse than
-# reference an env var by name. Falls back to the literal value, unexpanded,
-# if envsubst isn't installed — matching this script's existing
-# best-effort/never-crash tolerance for a missing `jq` at the top of the file.
+# reference an env var by name. Passing envsubst an explicit space-joined
+# "$NAME1 $NAME2 ..." list (built fresh per call from `compgen -e`, so it
+# always reflects this container's actual credential set, never a stale
+# snapshot) restricts it to exactly the vars in scope minus `deny_re` below
+# — this script's own base runner vars (docker/entrypoint*.sh's documented
+# inputs), every CLOUD_AGENTS_*-prefixed var this same script/entrypoint sets
+# for its own machinery (which can be large — e.g. the skills/subagents/
+# MCP-servers base64 blobs — or sensitive — the callback token), and core
+# shell/loader vars — rather than every var in the process. Without this, a
+# literal "$HOME"/"$PATH"/etc (or, worse, a value that happens to collide
+# with one of the *_B64 vars) typed into an MCP-server env value would be
+# silently rewritten by plain `envsubst`'s "expand everything in scope"
+# behavior (#773). This is still not a true allow-list of "known credential
+# names" (this script has no such list; credentials are just arbitrary-named
+# env vars), so a same-shaped, non-reserved incidental container var could
+# still be substituted, but the highest-blast-radius cases (this container's
+# own prompt text, internal *_B64 payloads, system/loader paths) can no
+# longer leak through a coincidental "$NAME"-shaped literal. Falls back to
+# the literal value, unexpanded, if envsubst isn't installed — matching this
+# script's existing best-effort/never-crash tolerance for a missing `jq` at
+# the top of the file.
 expand_env_value() {
     if ! command -v envsubst >/dev/null 2>&1; then
         printf '%s' "$1"
         return 0
     fi
-    printf '%s' "$1" | envsubst
+    local deny_re='^(PROMPT|REPO_URL|BRANCH|HARNESS|MODEL|NATIVE_SESSION_ID|SESSION_ID|EXTRA_REPOS|CLOUD_AGENTS_[A-Z0-9_]*|PATH|HOME|USER|SHELL|PWD|IFS|OLDPWD|SHLVL|HOSTNAME|TERM|LANG|LC_ALL|LD_PRELOAD|LD_LIBRARY_PATH|_)$'
+    local allow
+    allow="$(compgen -e | grep -vE "$deny_re" | sed 's/^/$/' | tr '\n' ' ')"
+    printf '%s' "$1" | envsubst "$allow"
 }
 
 # ── MCP servers: JSON-config harnesses (claude, gemini, opencode) ──────────

@@ -658,5 +658,33 @@ describe('SessionDetail attachment picker', () => {
     expect(screen.queryByText('notes.txt')).not.toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Send' })).toBeDisabled();
   });
+
+  it('rejects an SVG file at pick-time with a notice, mirroring the server mimeType blocklist (#1006)', async () => {
+    renderPage();
+    const user = userEvent.setup();
+    const input = screen.getByLabelText('Attach files') as HTMLInputElement;
+
+    const evilSvg = new File(['<svg onload="alert(1)"></svg>'], 'evil.svg', { type: 'image/svg+xml' });
+    await user.upload(input, evilSvg);
+
+    await waitFor(() => expect(screen.getByText(/unsupported file type/)).toBeInTheDocument());
+    expect(screen.queryByText('evil.svg')).not.toBeInTheDocument();
+    // Nothing staged and no text typed — Send stays disabled, same as the
+    // existing oversize-file rejection above: the file never even reaches
+    // readFileAsAttachmentInput (no base64 encoding wasted on it).
+    expect(screen.getByRole('button', { name: 'Send' })).toBeDisabled();
+  });
+
+  it('rejects HTML case-insensitively and with a MIME parameter suffix, matching the server check (#1006)', async () => {
+    renderPage();
+    const user = userEvent.setup();
+    const input = screen.getByLabelText('Attach files') as HTMLInputElement;
+
+    const evilHtml = new File(['<script>alert(1)</script>'], 'evil.html', { type: 'TEXT/HTML; charset=utf-8' });
+    await user.upload(input, evilHtml);
+
+    await waitFor(() => expect(screen.getByText(/unsupported file type/)).toBeInTheDocument());
+    expect(screen.queryByText('evil.html')).not.toBeInTheDocument();
+  });
 });
 

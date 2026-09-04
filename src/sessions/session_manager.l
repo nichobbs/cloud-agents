@@ -596,9 +596,13 @@ pub func agentSessionToJson(s: in AgentSession): String {
     jsonEscapeField(s.status) + "\"}"
 }
 
-/// Persist a new session (status starts IDLE, owned by the current user).
+/// Persist a new session (status defaults to IDLE unless `session.status`
+/// says otherwise, owned by the current user).
 pub func addSession(session: in AgentSession): Result[Unit, CloudAgents.Sqlite.DbError] {
-  CloudAgents.Sqlite.execute(CloudAgents.Db.insertSessionSql(session.sessionId, CloudAgents.Auth.currentUserId(), session.repoUrl, session.branch, session.containerId, session.harness, session.model, session.nativeSessionId, CloudAgents.Repository.nowMillis()))?
+  // Pass session.status through (#753) — insertSessionSql used to hardcode
+  // 'IDLE' regardless of what makeAgentSession's status parameter carried,
+  // silently discarding a non-default value.
+  CloudAgents.Sqlite.execute(CloudAgents.Db.insertSessionSql(session.sessionId, CloudAgents.Auth.currentUserId(), session.repoUrl, session.branch, session.containerId, session.harness, session.model, session.nativeSessionId, CloudAgents.Repository.nowMillis(), session.status))?
   return Ok(value = ())
 }
 

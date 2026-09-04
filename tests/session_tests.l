@@ -823,7 +823,7 @@ test "createSession rejects a known-but-disabled harness (#560)" {
 // the same reason (getRunOutput itself references CloudAgents.Docker in its
 // RUNNING branch and can't be invoked from here).
 func testMessage(role: in String, content: in String): CloudAgents.Repository.Message {
-  return CloudAgents.Repository.Message(
+  return Message(
     id = "m", sessionId = "s", role = role, content = content, seq = "0", createdAt = "0"
   )
 }
@@ -951,6 +951,58 @@ test "runOutputRenderedDeltaJson resyncs on an offset past the total" {
   )
 }
 
+// ── advanceRunOutputCache: getRunOutput's reconnect cache (#974) ───────────────
+// getRunOutput's RUNNING branch used to re-render the ENTIRE accumulated
+// container log from byte 0 on every call; advanceRunOutputCache carries the
+// render forward incrementally instead. Pure, so it's covered directly
+// without Docker (same reasoning as parseOutputOffset/runOutputDeltaJson above).
+func emptyRunOutputCacheEntry(): RunOutputCacheEntry {
+  return RunOutputCacheEntry(offset = 0, nextSeq = 0.toLong(), lastHash = "", rendered = "")
+}
+
+test "advanceRunOutputCache renders a fresh log from an empty cache entry" {
+  val line = "{\"type\":\"assistant\",\"message\":{\"content\":[{\"type\":\"text\",\"text\":\"hi\"}]}}\n"
+  val updated = advanceRunOutputCache(emptyRunOutputCacheEntry(), line)
+  assertEqual(updated.rendered, "hi", "first call renders the complete line's visible text")
+  assertEqualInt(updated.offset, line.length.toInt(), "offset advances past the complete line")
+}
+
+test "advanceRunOutputCache only re-parses bytes appended since the cached offset" {
+  val first = "{\"type\":\"assistant\",\"message\":{\"content\":[{\"type\":\"text\",\"text\":\"one\"}]}}\n"
+  val afterFirst = advanceRunOutputCache(emptyRunOutputCacheEntry(), first)
+  val second = "{\"type\":\"assistant\",\"message\":{\"content\":[{\"type\":\"text\",\"text\":\"two\"}]}}\n"
+  val full = first + second
+  val afterSecond = advanceRunOutputCache(afterFirst, full)
+  assertEqual(afterSecond.rendered, "onetwo", "accumulated rendered text carries the first call's text forward")
+  assertEqualInt(afterSecond.offset, full.length.toInt(), "offset advances to the new total")
+}
+
+test "advanceRunOutputCache leaves a partial trailing line unconsumed" {
+  val complete = "{\"type\":\"assistant\",\"message\":{\"content\":[{\"type\":\"text\",\"text\":\"done\"}]}}\n"
+  val afterComplete = advanceRunOutputCache(emptyRunOutputCacheEntry(), complete)
+  val withPartialTail = complete + "{\"type\":\"assis"
+  val afterPartial = advanceRunOutputCache(afterComplete, withPartialTail)
+  assertEqual(afterPartial.rendered, "done", "the partial trailing line contributes no text yet")
+  assertEqualInt(afterPartial.offset, complete.length.toInt(), "offset stays at the last complete line boundary")
+}
+
+test "advanceRunOutputCache is a no-op when the log has not grown" {
+  val line = "{\"type\":\"assistant\",\"message\":{\"content\":[{\"type\":\"text\",\"text\":\"hi\"}]}}\n"
+  val afterFirst = advanceRunOutputCache(emptyRunOutputCacheEntry(), line)
+  val again = advanceRunOutputCache(afterFirst, line)
+  assertEqual(again.rendered, afterFirst.rendered, "unchanged log leaves the cached render unchanged")
+  assertEqualInt(again.offset, afterFirst.offset, "unchanged log leaves the cached offset unchanged")
+}
+
+test "advanceRunOutputCache re-renders from scratch when the log is shorter than cached (container restarted)" {
+  val line = "{\"type\":\"assistant\",\"message\":{\"content\":[{\"type\":\"text\",\"text\":\"before restart\"}]}}\n"
+  val beforeRestart = advanceRunOutputCache(emptyRunOutputCacheEntry(), line)
+  val restarted = "{\"type\":\"assistant\",\"message\":{\"content\":[{\"type\":\"text\",\"text\":\"new run\"}]}}\n"
+  val afterRestart = advanceRunOutputCache(beforeRestart, restarted)
+  assertEqual(afterRestart.rendered, "new run", "a shorter log resets the cache and re-renders from byte 0")
+  assertEqualInt(afterRestart.offset, restarted.length.toInt(), "offset tracks the new, shorter log")
+}
+
 test "Handler listSessions returns stored sessions" {
   val dbPath = useFreshTestDb("session-list")
   defer {
@@ -985,6 +1037,64 @@ test "Handler listSessions returns stored sessions" {
   match listSessions() {
     case Ok(body) -> verifyListSessionsBody(body)
     case Err(_) -> assertTrue(false, "listSessions should succeed")
+  }
+}
+
+// CloudAgents.Handlers.listSessionsResponse is the typed sibling of
+// listSessions()/verifyListSessionsBody above: it builds the same DB-array
+// -> response-record path (Std.Core.Result[AgentSessionArray, DbError]
+// unwrapped and copied into a Lyric slice) but had no test coverage of its
+// own (#748) prior to this.
+test "Handler listSessionsResponse converts the stored session array to a typed response (#748)" {
+  val dbPath = useFreshTestDb("session-list-typed")
+  defer {
+    cleanupTestDb(dbPath)
+  }
+  match listSessionsResponse() {
+    case Ok(resp) -> assertEqualInt(resp.sessions.length.toInt(), 0, "empty store -> empty typed list")
+    case Err(_) -> assertTrue(false, "listSessionsResponse should succeed on an empty store")
+  }
+  mustUnit(
+    addSession(
+      makeAgentSession(
+        sessionId = "lst-1",
+        repoUrl = "https://github.com/nic/repo",
+        branch = "main",
+        containerId = "c-1",
+        harness = "claude",
+        model = "claude-opus-4-8",
+        nativeSessionId = "lst-1"
+      )
+    )
+  )
+  mustUnit(
+    addSession(
+      makeAgentSession(
+        sessionId = "lst-2",
+        repoUrl = "https://github.com/nic/other",
+        branch = "main",
+        containerId = "c-2",
+        harness = "codex",
+        model = "o4-mini",
+        nativeSessionId = "lst-2"
+      )
+    )
+  )
+  match listSessionsResponse() {
+    case Ok(resp) -> {
+      // Row order isn't part of the contract (getSessions() carries no
+      // ORDER BY), so match each stored session by id rather than position.
+      assertEqualInt(resp.sessions.length.toInt(), 2, "both stored sessions are converted")
+      val first = resp.sessions[0]
+      val second = resp.sessions[1]
+      val lst1 = if first.sessionId == "lst-1" { first } else { second }
+      val lst2 = if first.sessionId == "lst-1" { second } else { first }
+      assertEqual(lst1.sessionId, "lst-1", "first session id round-trips")
+      assertEqual(lst1.repoUrl, "https://github.com/nic/repo", "first session repoUrl round-trips")
+      assertEqual(lst2.sessionId, "lst-2", "second session id round-trips")
+      assertEqual(lst2.harness, "codex", "second session harness round-trips")
+    }
+    case Err(_) -> assertTrue(false, "listSessionsResponse should succeed with stored sessions")
   }
 }
 
@@ -1451,7 +1561,7 @@ test "branch session from message creates copy with parent reference and slices 
   val dbPath = useFreshTestDb("branch-msg")
   defer { cleanupTestDb(dbPath) }
 
-  val req = CloudAgents.Handlers.CreateSessionRequest(
+  val req = CreateSessionRequest(
     repoUrl = "https://github.com/example/branch-test",
     branch = "main",
     harness = "claude",
@@ -1478,7 +1588,7 @@ test "branch session from message creates copy with parent reference and slices 
   mustTodo(CloudAgents.Repository.addTodo(parentId, msg2Id, "Review turn 2"))
 
   // Branch from msg2 (seq 2)
-  val branchReq = CloudAgents.Handlers.BranchSessionRequest(
+  val branchReq = BranchSessionRequest(
     messageId = msg2Id,
     branch = "feature-thread-1"
   )
@@ -1536,5 +1646,89 @@ test "branch session from message creates copy with parent reference and slices 
   assertEqualInt(childTodos.length.toInt(), 1, "todo should be cloned on child")
   assertEqual(childTodos[0].note, "Review turn 2", "todo note match")
   assertEqual(childTodos[0].messageId, childMsg2Id, "todo should point to new cloned message ID")
+}
+
+// #1033: coverage for branchSession's three ValidationFailed error paths
+// (src/db/repository.l `branchSession`), routed to HTTP status codes by
+// src/handlers/sessions.l's `branchSession` handler via the DbError message
+// string. These also guard the message-string routing itself: if repository.l's
+// wording ever drifts from what the handler string-matches on, these tests fail
+// (falling through to the generic 500 branch) instead of silently misrouting.
+
+test "branchSession returns 404 when the parent session does not exist or is not owned by the user (#1033)" {
+  val dbPath = useFreshTestDb("branch-no-parent")
+  defer { cleanupTestDb(dbPath) }
+
+  val branchReq = BranchSessionRequest(messageId = "", branch = "")
+  match CloudAgents.Handlers.branchSession("session-does-not-exist", branchReq) {
+    case Ok(_) -> assertTrue(false, "branching from a nonexistent parent session must fail")
+    case Err(err) -> assertEqualInt(err.status, 404, "nonexistent/not-owned parent session -> 404")
+  }
+}
+
+test "branchSession returns 400 when the forked message does not exist (#1033)" {
+  val dbPath = useFreshTestDb("branch-no-msg")
+  defer { cleanupTestDb(dbPath) }
+
+  val req = CreateSessionRequest(
+    repoUrl = "https://github.com/example/branch-nomsg",
+    branch = "main",
+    harness = "claude",
+    model = "claude-sonnet-4-6"
+  )
+  val parentId = match CloudAgents.Handlers.createSession(req) {
+    case Ok(resp) -> resp.sessionId
+    case Err(_) -> {
+      assertTrue(false, "createSession failed")
+      ""
+    }
+  }
+
+  val branchReq = BranchSessionRequest(messageId = "message-does-not-exist", branch = "")
+  match CloudAgents.Handlers.branchSession(parentId, branchReq) {
+    case Ok(_) -> assertTrue(false, "branching from a nonexistent forked message must fail")
+    case Err(err) -> assertEqualInt(err.status, 400, "nonexistent forked message -> 400")
+  }
+}
+
+test "branchSession returns 400 when the forked message belongs to a different session (#1033)" {
+  val dbPath = useFreshTestDb("branch-wrong-session")
+  defer { cleanupTestDb(dbPath) }
+
+  val reqA = CreateSessionRequest(
+    repoUrl = "https://github.com/example/branch-a",
+    branch = "main",
+    harness = "claude",
+    model = "claude-sonnet-4-6"
+  )
+  val sessionAId = match CloudAgents.Handlers.createSession(reqA) {
+    case Ok(resp) -> resp.sessionId
+    case Err(_) -> {
+      assertTrue(false, "createSession A failed")
+      ""
+    }
+  }
+  val reqB = CreateSessionRequest(
+    repoUrl = "https://github.com/example/branch-b",
+    branch = "main",
+    harness = "claude",
+    model = "claude-sonnet-4-6"
+  )
+  val sessionBId = match CloudAgents.Handlers.createSession(reqB) {
+    case Ok(resp) -> resp.sessionId
+    case Err(_) -> {
+      assertTrue(false, "createSession B failed")
+      ""
+    }
+  }
+
+  // A message belonging to session B; branching session A from it must fail —
+  // it is not session A's own history.
+  val msgB = mustMessage(CloudAgents.Repository.addMessage(sessionBId, "user", "hello from B"))
+  val branchReq = BranchSessionRequest(messageId = msgB.id, branch = "")
+  match CloudAgents.Handlers.branchSession(sessionAId, branchReq) {
+    case Ok(_) -> assertTrue(false, "branching session A from a message owned by session B must fail")
+    case Err(err) -> assertEqualInt(err.status, 400, "forked message belonging to a different session -> 400")
+  }
 }
 
