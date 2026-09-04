@@ -206,6 +206,7 @@ run_container() {
         -e HARNESS="claude" \
         -e SESSION_ID="test-session-1" \
         -e NATIVE_SESSION_ID="native-session-1" \
+        -e GITHUB_TOKEN="test-token-not-real" \
         "$IMAGE"
 }
 
@@ -234,6 +235,11 @@ check "message 1: mcp.json was rendered" test -f "$WORK/workspace/.claude/mcp.js
 check "message 1: settings.json was rendered" test -f "$WORK/workspace/.claude/settings.json"
 check "message 1: the native-session marker file exists" test -f "$WORK/workspace/.claude/.native-session-initialized"
 check "message 1: the repo was actually cloned" test -f "$WORK/workspace/README.md"
+# The git credential helper is written to claude-user's --global config now
+# that this block runs unprivileged (#1038): it must land in the home volume,
+# not in a root-only /etc/gitconfig the dropped process could not write.
+check "message 1: git credential helper landed in claude-user's global gitconfig" \
+    in_image grep -q credential /work/home/.gitconfig
 
 # ── Message 2: same session -> resume, not another clone ────────────────────
 echo "test-entrypoint-privsep: run 2 (resume)..." >&2

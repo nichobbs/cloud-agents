@@ -356,16 +356,14 @@ if command -v jq >/dev/null 2>&1; then
     fi
 fi
 
-# Configure git credential helper and push defaults dynamically inside the container.
+# Configure git credential helper and push defaults dynamically inside the
+# container. This runs as claude-user (see the hand-off above, #652), so the
+# per-user --global config is the right (and only writable) scope; the old
+# root-only `git config --system` branch is gone with the privilege drop.
 if [ -n "${GITHUB_TOKEN:-}" ]; then
     echo "entrypoint: configuring git credential helper for GitHub" >&2
-    if [ "$(id -u)" -eq 0 ]; then
-        git config --system credential.helper '!f() { cat >/dev/null; if [ "$1" = "get" ]; then echo "username=x-access-token"; echo "password=${GITHUB_TOKEN}"; fi; }; f'
-        git config --system push.autoSetupRemote true
-    else
-        git config --global credential.helper '!f() { cat >/dev/null; if [ "$1" = "get" ]; then echo "username=x-access-token"; echo "password=${GITHUB_TOKEN}"; fi; }; f'
-        git config --global push.autoSetupRemote true
-    fi
+    git config --global credential.helper '!f() { cat >/dev/null; if [ "$1" = "get" ]; then echo "username=x-access-token"; echo "password=${GITHUB_TOKEN}"; fi; }; f'
+    git config --global push.autoSetupRemote true
 fi
 
 # Clone the repository on first run; reuse the volume afterwards.
