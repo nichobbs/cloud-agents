@@ -385,15 +385,18 @@ as today).
   token).
 - **NuGet migration** of the vendored `Testamur.CheckpointFormat` (the serializer
   imports `Model`/`Canon` from the vendored copy; a manifest-only swap later).
-- **`treeHash` fidelity for uncommitted work** — if the platform later wants the
-  post-edit working tree as the checkpoint anchor, the inspect step would
-  `git add -A && git write-tree` in a throwaway index; deferred until a consumer
-  needs it (the base-commit tree + `file_change` hunks are sufficient for Q4).
-  The throwaway-index `write-tree` mechanism itself already exists as of this
-  spec (§4.1's no-HEAD fallback) — what's deferred here is specifically
-  extending it to the **committed-HEAD-with-uncommitted-edits** case (using it
-  as the checkpoint anchor *instead of* `HEAD^{tree}` whenever the workspace is
-  dirty), not the technique in general.
+- **`treeHash` fidelity for uncommitted work** — the no-HEAD write-tree fallback
+  has **shipped** (F3): section 3 of the inspect `diff` mode emits
+  `git rev-parse --verify HEAD^{tree}`, falling back to a throwaway-index
+  `git write-tree` when there is no `HEAD` yet, so a fresh repo before its first
+  commit still anchors a terminal checkpoint instead of degrading to steps-only
+  (see §4.1 and `scripts/test-inspect-tree-fallback.sh`). What remains deferred is
+  narrower: when a `HEAD` *does* exist, the anchor is deliberately the committed
+  `HEAD^{tree}` (base), with the agent's uncommitted edits carried in the
+  section-2 `git diff HEAD` `file_change` hunks — the base-commit tree + hunks are
+  sufficient for Q4. If a consumer later wants the post-edit working tree itself as
+  the anchor even when a `HEAD` exists, the inspect step would `git add -A &&
+  git write-tree` in a throwaway index for that case too; deferred until needed.
 
 ## Open questions
 
