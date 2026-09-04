@@ -85,24 +85,45 @@ if [ -d "$NUGET_DIR/sqlitepclraw.lib.e_sqlite3" ]; then
 fi
 
 echo "==> starting server on ${BIND}:${PORT}"
+
+# Generates a random 32-byte value, base64-encoded, without depending on any
+# one specific tool (#647: the previous 'openssl or a well-known hardcoded
+# secret' fallback meant a box without openssl silently ran with a checked-
+# into-git key/token any reader of this script could reproduce). Tries
+# openssl, then python3, then /dev/urandom directly; if none of those are
+# available there is no safe way to generate a secret, so the caller must
+# fail rather than fall back to something predictable.
+random_base64_32() {
+  if command -v openssl >/dev/null 2>&1; then
+    openssl rand -base64 32
+  elif command -v python3 >/dev/null 2>&1; then
+    python3 -c 'import base64, os; print(base64.b64encode(os.urandom(32)).decode())'
+  elif [ -r /dev/urandom ]; then
+    head -c 32 /dev/urandom | base64
+  else
+    return 1
+  fi
+}
+
 # Ensure ENCRYPTION_KEY is configured with a valid 32-byte base64-encoded key.
 # If not set in the environment, try to read from a local .encryption_key file to maintain
 # persistence across server restarts. If that file doesn't exist, generate a new random 32-byte key
-# using openssl and save it, or fall back to a valid 32-byte development key.
+# and save it. There is no hardcoded fallback: a well-known key checked into
+# this script would be a real credential exposure the moment this script ran
+# anywhere but pure local dev (#647).
 if [ -z "${ENCRYPTION_KEY:-}" ]; then
   KEY_FILE="$REPO_ROOT/.encryption_key"
   if [ -f "$KEY_FILE" ]; then
     ENCRYPTION_KEY="$(cat "$KEY_FILE")"
     echo "==> loaded ENCRYPTION_KEY from $KEY_FILE"
-  elif command -v openssl >/dev/null; then
-    ENCRYPTION_KEY="$(openssl rand -base64 32)"
+  else
+    ENCRYPTION_KEY="$(random_base64_32)" || {
+      echo "run-api: ENCRYPTION_KEY not set, no $KEY_FILE, and no way to generate a random key (need openssl, python3, or /dev/urandom); refusing to start with a predictable key" >&2
+      exit 1
+    }
     echo "$ENCRYPTION_KEY" > "$KEY_FILE"
     chmod 600 "$KEY_FILE"
     echo "==> generated new 32-byte ENCRYPTION_KEY and saved to $KEY_FILE"
-  else
-    # Fallback to a valid 32-byte key (base64 of 32 zero bytes) so it passes validation
-    ENCRYPTION_KEY="AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="
-    echo "==> ENCRYPTION_KEY not set and 'openssl' not found; using fallback development key"
   fi
   export ENCRYPTION_KEY
 fi
@@ -110,26 +131,34 @@ fi
 # Ensure CLOUD_AGENTS_API_TOKEN is configured.
 # If not set in the environment, try to read from a local .api_token file to maintain
 # persistence across server restarts. If that file doesn't exist, generate a new random API token
-# using openssl and save it, or fall back to a default development token.
+# and save it. Same no-hardcoded-fallback reasoning as ENCRYPTION_KEY above.
 if [ -z "${CLOUD_AGENTS_API_TOKEN:-}" ]; then
   TOKEN_FILE="$REPO_ROOT/.api_token"
   if [ -f "$TOKEN_FILE" ]; then
     CLOUD_AGENTS_API_TOKEN="$(cat "$TOKEN_FILE")"
     echo "==> loaded CLOUD_AGENTS_API_TOKEN from $TOKEN_FILE"
-  elif command -v openssl >/dev/null; then
-    CLOUD_AGENTS_API_TOKEN="$(openssl rand -base64 32)"
+  else
+    CLOUD_AGENTS_API_TOKEN="$(random_base64_32)" || {
+      echo "run-api: CLOUD_AGENTS_API_TOKEN not set, no $TOKEN_FILE, and no way to generate a random token (need openssl, python3, or /dev/urandom); refusing to start with a predictable token" >&2
+      exit 1
+    }
     echo "$CLOUD_AGENTS_API_TOKEN" > "$TOKEN_FILE"
     chmod 600 "$TOKEN_FILE"
     echo "==> generated new CLOUD_AGENTS_API_TOKEN and saved to $TOKEN_FILE"
-  else
-    CLOUD_AGENTS_API_TOKEN="dev-token-123456"
-    echo "==> CLOUD_AGENTS_API_TOKEN not set and 'openssl' not found; using fallback development token"
   fi
   export CLOUD_AGENTS_API_TOKEN
 fi
 
-# Print the active API token so the user/clients can easily copy and use it to authenticate
-echo "==> active CLOUD_AGENTS_API_TOKEN: $CLOUD_AGENTS_API_TOKEN"
+# Never print the live token: it's a real credential (bearer auth for every
+# API route), and stdout here routinely ends up in shell history, a
+# redirected log file, CI output, or a shared terminal screenshot (#647).
+# Point at wherever it's actually configured instead — the env var, when the
+# caller set one, or the token file this script itself manages otherwise.
+if [ -f "$REPO_ROOT/.api_token" ]; then
+  echo "==> CLOUD_AGENTS_API_TOKEN is configured (see $REPO_ROOT/.api_token, mode 600)"
+else
+  echo "==> CLOUD_AGENTS_API_TOKEN is configured (from the environment)"
+fi
 
 # Secrets (ENCRYPTION_KEY, CLOUD_AGENTS_API_TOKEN, CLOUD_AGENTS_WHITELIST) are read from the environment
 # by the .NET configuration system — do not pass them as CLI args where they

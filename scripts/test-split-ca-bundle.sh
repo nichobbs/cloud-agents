@@ -69,6 +69,22 @@ check "mixed: CRL split into its own file" \
 check "mixed: CRL not merged into the preceding cert's file" \
   bash -c "! grep -q 'X509 CRL' '$DEST/mixed-2.crt'"
 
+# ── Inter-block comment: dropped, not appended to the preceding cert's file (#718) ──
+cat > "$WORK/labeled.pem" <<'EOF'
+-----BEGIN CERTIFICATE-----
+ROOTDATA
+-----END CERTIFICATE-----
+# Intermediate CA
+-----BEGIN CERTIFICATE-----
+INTDATA
+-----END CERTIFICATE-----
+EOF
+"$SCRIPT" "$WORK/labeled.pem" "$DEST" labeled
+check "labeled: root cert has no trailing inter-block comment" \
+  file_eq "$DEST/labeled-1.crt" $'-----BEGIN CERTIFICATE-----\nROOTDATA\n-----END CERTIFICATE-----'
+check "labeled: intermediate cert unaffected by the dropped comment" \
+  file_eq "$DEST/labeled-2.crt" $'-----BEGIN CERTIFICATE-----\nINTDATA\n-----END CERTIFICATE-----'
+
 # ── Non-PEM input: copied through unchanged, matching the old plain-cp behavior ──
 echo "not a cert" > "$WORK/junk.pem"
 "$SCRIPT" "$WORK/junk.pem" "$DEST" junk

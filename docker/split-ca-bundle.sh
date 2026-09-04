@@ -36,8 +36,16 @@ if [ -z "$entry_count" ] || [ "$entry_count" -le 1 ]; then
     exit 0
 fi
 
+# `active` tracks whether we're inside a BEGIN..END block: text between two
+# blocks (e.g. a "# Intermediate CA" label some annotated bundles put above
+# each cert) is dropped rather than appended to the just-closed file, which
+# is what a bare `n { print > out }` (n staying truthy for the rest of the
+# file once set) used to do (#718) — it doesn't belong to either the
+# preceding or following file, so dropping it is the safe choice.
 awk -v dest="$dest_dir" -v prefix="$prefix" '
-    /-----BEGIN CERTIFICATE-----/ { n++; out = dest "/" prefix "-" n ".crt" }
-    /-----BEGIN X509 CRL-----/ { n++; out = dest "/" prefix "-" n ".crt" }
-    n { print > out }
+    /-----BEGIN CERTIFICATE-----/ { n++; out = dest "/" prefix "-" n ".crt"; active = 1 }
+    /-----BEGIN X509 CRL-----/ { n++; out = dest "/" prefix "-" n ".crt"; active = 1 }
+    active { print > out }
+    /-----END CERTIFICATE-----/ { active = 0 }
+    /-----END X509 CRL-----/ { active = 0 }
 ' "$src"

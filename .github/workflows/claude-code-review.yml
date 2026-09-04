@@ -65,7 +65,7 @@ env:
        The body must contain: "**PR:** #${{ (github.event.pull_request.number || github.event.inputs.pr_number) }}", "**Severity:** REQUIRED" or "**Severity:** SUGGESTION", the file/line if applicable, and a clear description.
 
     ## Step 5: Auto-close issues whose findings are now resolved
-    For each open issue labeled pr-${{ (github.event.pull_request.number || github.event.inputs.pr_number) }}, if its finding is no longer present in the current diff, close it:
+    For each open issue labeled pr-${{ (github.event.pull_request.number || github.event.inputs.pr_number) }}, if its finding is no longer present in the current diff, close it, ONE issue per command:
     gh issue close <number> --repo ${{ github.repository }} --comment "Finding resolved in the latest commit on PR #${{ (github.event.pull_request.number || github.event.inputs.pr_number) }}."
 
     ## Step 6: Set or clear the blocking PR label
@@ -83,6 +83,21 @@ env:
     - SUGGESTION findings with issue links, e.g.: "- SUGGESTION: <title> — #<n>"
     - PRAISE items (no issue links needed)
     - Any previously open issues that were closed this run
+
+    ## IMPORTANT: how to run every `gh` command above (#796)
+    Your Bash tool is restricted to an exact allow-list of command shapes
+    (see the tool list you were given). Run every `gh issue ...`/`gh pr ...`/
+    `gh label ...` command from steps 3, 4, 5, 6, and 7 exactly as shown,
+    ONE command per Bash call:
+    - Never wrap them in a shell loop, conditional, subshell, or compound
+      command (e.g. `for n in ...; do gh issue close "$n" ...; done`,
+      `cmd1 && cmd2`, a `cd` prefix) — issue each one on its own, even when
+      you are closing several issues in a row.
+    - Always spell the repository flag exactly `--repo ${{ github.repository }}`,
+      never the `-R` short form or a positional argument.
+    Any other shape will be silently permission-denied rather than run, which
+    is confusing to debug from the resulting output — it will look like the
+    command was skipped, not blocked.
 
   REVIEW_TOOLS: 'Bash(gh issue view:*),Bash(gh issue list:*),Bash(gh issue create:*),Bash(gh issue close:*),Bash(gh label create:*),Bash(gh search:*),Bash(gh pr comment:*),Bash(gh pr diff:*),Bash(gh pr view:*),Bash(gh pr list:*),Bash(gh pr edit:*),Bash(cat:*)'
 
@@ -154,20 +169,63 @@ jobs:
           echo "::error::Both primary (Sonnet) and fallback (Haiku) review attempts errored. Inspect both step logs above."
           exit 1
 
-      # Make "Claude Code Review / claude-review" a blockable required check by
-      # failing the job when the review:changes-required label is set.
+      # Make "Claude Code Review / claude-review" a blockable required check.
+      #
+      # #796: the review agent's own gh pr edit --add-label/--remove-label
+      # call (REVIEW_PROMPT step 6) runs through Claude's OWN restricted Bash
+      # tool allow-list (REVIEW_TOOLS above), which can permission-deny it for
+      # reasons that have nothing to do with this job's real GitHub
+      # permissions (a compound/loop-wrapped command not matching one of the
+      # allowed shapes was the observed pattern) — leaving a stale
+      # review:changes-required label with no way to recover, since the
+      # documented recovery path ("push a new commit, the review re-runs")
+      # just re-hits the same denial every time.
+      #
+      # This step runs as plain shell with the JOB's own GITHUB_TOKEN (see
+      # `permissions:` above), which is NOT subject to Claude's tool
+      # allow-list at all — so instead of trusting whatever label the agent's
+      # own (possibly-denied) gh pr edit call left behind, it recomputes the
+      # label here, directly from which pr-<n> issues are actually still open
+      # with "**Severity:** REQUIRED" in their body. A stale label alone can
+      # therefore never wedge this check again: if every REQUIRED finding's
+      # tracking issue really is closed, the gate passes and clears the label
+      # even if the agent's own label-clearing call was denied.
+      #
+      # This does NOT paper over a denial of the gh issue close calls
+      # themselves (step 5) — an issue that failed to close stays open and
+      # correctly still blocks merge, exactly as it should for a finding
+      # whose resolution was never actually recorded; that half of the fix is
+      # the REVIEW_PROMPT instruction above, which tells the agent how to
+      # avoid tripping the same allow-list mismatch in the first place.
       - name: Fail if changes are required
         run: |
-          LABELS=$(gh pr view "$PR_NUMBER" \
-            --repo "$REPO" \
-            --json labels \
-            --jq '[.labels[].name] | join(",")' 2>/dev/null || echo "")
-          echo "PR labels: $LABELS"
-          if echo "$LABELS" | grep -q "review:changes-required"; then
-            echo "::error::Code review requires changes before merge. Resolve the linked issues, push a new commit, and the review re-runs automatically."
+          REQUIRED_COUNT=$(gh issue list --repo "$REPO" --label "pr-$PR_NUMBER" --state open --json body \
+            --jq '[.[] | select(.body | test("\\*\\*Severity:\\*\\* REQUIRED"))] | length' 2>/dev/null || echo "")
+
+          if [ -z "$REQUIRED_COUNT" ]; then
+            # Couldn't query the tracker (transient API error, gh/jq hiccup)
+            # — fall back to whatever label is currently on the PR rather
+            # than silently passing on missing data.
+            echo "::warning::could not list open pr-$PR_NUMBER findings; falling back to the review:changes-required label"
+            LABELS=$(gh pr view "$PR_NUMBER" --repo "$REPO" --json labels --jq '[.labels[].name] | join(",")' 2>/dev/null || echo "")
+            echo "PR labels: $LABELS"
+            if echo "$LABELS" | grep -q "review:changes-required"; then
+              echo "::error::Code review requires changes before merge (fallback: could not verify against open findings). Resolve the linked issues, push a new commit, and the review re-runs automatically."
+              exit 1
+            fi
+            echo "Code review passed — no required changes (fallback path)."
+            exit 0
+          fi
+
+          echo "$REQUIRED_COUNT open REQUIRED finding(s) for pr-$PR_NUMBER"
+          if [ "$REQUIRED_COUNT" -gt 0 ]; then
+            gh pr edit "$PR_NUMBER" --repo "$REPO" --add-label "review:changes-required" 2>/dev/null || true
+            echo "::error::Code review requires changes before merge ($REQUIRED_COUNT open REQUIRED finding(s)). Resolve the linked issues, push a new commit, and the review re-runs automatically."
             exit 1
           fi
-          echo "Code review passed — no required changes."
+
+          gh pr edit "$PR_NUMBER" --repo "$REPO" --remove-label "review:changes-required" 2>/dev/null || true
+          echo "Code review passed — no open REQUIRED findings."
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           PR_NUMBER: ${{ (github.event.pull_request.number || github.event.inputs.pr_number) }}
