@@ -504,6 +504,12 @@ pub record ValidateKeyRequest {
 /// POST /api/models/validate: call the live models API of a given provider
 /// with an explicit key, returning the raw response body. Since this executes
 /// server-side, it is exempt from the client browser's CORS restrictions.
+///
+/// Deliberately deviates from this file's header convention of surfacing
+/// upstream failures as a generic 500: `key` here is user-supplied per-request
+/// (the user is actively validating it), not a server-vaulted credential, so
+/// an upstream failure is more often "your key is bad" than "our server/vault
+/// is broken" — hence the 400 on `providerModelsBody`'s `Err` branch below.
 pub func validateKeyHandler(provider: in String, key: in String): Result[String, Web.ApiError] {
   if provider != "anthropic" and provider != "openai" and provider != "google" and provider != "opencode" {
     return Err(Web.badRequest("Unknown provider: " + provider))
