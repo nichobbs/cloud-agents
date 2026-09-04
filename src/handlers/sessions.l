@@ -9,6 +9,7 @@ import Web
 import CloudAgents.Auth
 import CloudAgents.Docker
 import CloudAgents.Interactions
+import CloudAgents.NetworkPolicy
 import CloudAgents.Proxy
 import CloudAgents.Repository
 import CloudAgents.SessionStore
@@ -312,17 +313,26 @@ pub func isSafeRepoUrl(url: in String): Bool {
 /// #266) — rather than duplicating (and risking drift from) that logic. Assumes
 /// the `https://` prefix is already verified (webhookHost parses from offset 8).
 ///
-/// Only inspects the literal hostname string, not a resolved IP — a public DNS
-/// name an attacker controls (e.g. resolving to 169.254.169.254) passes this
-/// check and the actual SSRF happens later, at `git clone` time, when the clone
-/// runs inside the session's Docker container (#300). Unlike the webhook path
-/// this reuses the blocklist from, there is no secondary backstop here for the
-/// common case: a session's default `network_policy` is `'full'` (unrestricted
-/// bridge network — see `createRunnerContainer` in docker_manager.l) unless its
-/// profile explicitly sets `'restricted'`/`'none'`, so this hostname check is
-/// the only control against metadata-endpoint SSRF via `git clone` today.
+/// Also resolves the hostname and rejects it if any answer is loopback/
+/// private/link-local/ULA/metadata (#300): the literal-string check above
+/// only catches a repoUrl that IS an IP literal — a public DNS name an
+/// attacker controls (e.g. resolving to 169.254.169.254) sailed straight
+/// through it, and the actual SSRF happened later, at `git clone` time,
+/// inside the session's Docker container. Unlike the webhook path the
+/// literal blocklist is reused from, there is no secondary backstop here for
+/// the common case: a session's default `network_policy` is `'full'`
+/// (unrestricted bridge network — see `createRunnerContainer` in
+/// docker_manager.l) unless its profile explicitly sets
+/// `'restricted'`/`'none'`, so this is the only control against
+/// metadata-endpoint SSRF via `git clone` today.
+/// `CloudAgents.NetworkPolicy.isBlockedResolvedHost`'s own doc comment
+/// covers the residual TOCTOU/DNS-rebinding risk this still can't close.
 pub func isBlockedRepoHost(url: in String): Bool {
-  return CloudAgents.Webhooks.isBlockedWebhookHost(CloudAgents.Webhooks.webhookHost(url))
+  val host = CloudAgents.Webhooks.webhookHost(url)
+  if CloudAgents.Webhooks.isBlockedWebhookHost(host) {
+    return true
+  }
+  return CloudAgents.NetworkPolicy.isBlockedResolvedHost(host)
 }
 
 /// Git ref-name safety: rejects names git itself refuses, plus anything that
