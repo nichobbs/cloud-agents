@@ -877,6 +877,78 @@ func basenameOf(name: in String): Option[String] {
   return Some(value = base)
 }
 
+/// One ASCII letter, uppercase -> lowercase; anything else unchanged. Bound
+/// to this package (not shared with CloudAgents.Handlers.lowerAsciiChar) per
+/// docs/lyric/gotchas.md's cross-package reuse caveat and this codebase's own
+/// small-local-duplication convention (see ArtifactRepoScope's doc comment
+/// above) — also matches `String.toLowerCase()` not resolving at runtime
+/// (docs/lyric/gotchas.md), so this has to be hand-rolled per package anyway.
+func lowerAsciiChar(c: in String): String {
+  if c == "A" { return "a" }
+  if c == "B" { return "b" }
+  if c == "C" { return "c" }
+  if c == "D" { return "d" }
+  if c == "E" { return "e" }
+  if c == "F" { return "f" }
+  if c == "G" { return "g" }
+  if c == "H" { return "h" }
+  if c == "I" { return "i" }
+  if c == "J" { return "j" }
+  if c == "K" { return "k" }
+  if c == "L" { return "l" }
+  if c == "M" { return "m" }
+  if c == "N" { return "n" }
+  if c == "O" { return "o" }
+  if c == "P" { return "p" }
+  if c == "Q" { return "q" }
+  if c == "R" { return "r" }
+  if c == "S" { return "s" }
+  if c == "T" { return "t" }
+  if c == "U" { return "u" }
+  if c == "V" { return "v" }
+  if c == "W" { return "w" }
+  if c == "X" { return "x" }
+  if c == "Y" { return "y" }
+  if c == "Z" { return "z" }
+  return c
+}
+
+/// ASCII-lowercase, one character at a time via lowerAsciiChar above — the
+/// mime types this feeds into are always ASCII, so that's the only
+/// case-folding this needs.
+func asciiLowerMimeType(mimeType: in String): String {
+  var lowered = ""
+  var i = 0
+  while i < mimeType.length {
+    lowered = lowered + lowerAsciiChar(mimeType.substring(i, 1))
+    i = i + 1
+  }
+  return lowered
+}
+
+/// Mime types capable of executing as active content when a browser
+/// navigates directly to them (SVG scripts, HTML), rather than merely being
+/// decoded as passive image/document bytes. `mimeType` is entirely
+/// client-supplied (the container-side report_artifact MCP tool passes it
+/// through verbatim) and echoed straight back as the download response's
+/// Content-Type (downloadArtifactHandler below); storing/serving one of
+/// these would let an uploaded file execute script at this app's own origin
+/// the moment anyone opens it (a stored-XSS vector) — reject it at upload
+/// time so it's never on disk or in the database at all. This is a
+/// deliberate duplicate of CloudAgents.Handlers.isDangerousAttachmentMimeType
+/// (sessions.l, added for chat attachments) rather than a shared import,
+/// closing the same risk class in this package's own upload path (#1007) —
+/// per this codebase's cross-package reuse convention (see lowerAsciiChar's
+/// doc comment above), and identical in behavior: strip a MIME parameter
+/// suffix (e.g. "image/svg+xml; charset=utf-8") before comparing, and
+/// case-insensitive since mimeType is never guaranteed lowercase.
+func isDangerousArtifactMimeType(mimeType: in String): Bool {
+  val semiIdx = CloudAgents.Text.indexOfFrom(mimeType, ";", 0)
+  val bare = if semiIdx < 0 { mimeType } else { mimeType.substring(0, semiIdx) }
+  val lower = asciiLowerMimeType(bare.trim())
+  return lower == "image/svg+xml" or lower == "text/html" or lower == "application/xhtml+xml"
+}
+
 /// The (owner, repo) an artifact upload is scoped to when `scope == "repo"`
 /// (docs/phase7-autonomy.md §6). A small duplicate of Phase 7 §4's
 /// SessionMemoryScope shape rather than a shared type: the error message
@@ -1024,6 +1096,14 @@ pub func uploadArtifactHandler(
   }
   if not CloudAgents.Text.withinMaxLength(req.mimeType, maxArtifactMimeTypeLen) {
     return Err(Web.badRequest("mimeType is too long (max " + toString(maxArtifactMimeTypeLen) + " characters)"))
+  }
+  // Reject mime types capable of executing as active content — see
+  // isDangerousArtifactMimeType's doc comment (#1007). Checked before
+  // anything is written to disk or the database, mirroring
+  // CloudAgents.Handlers.storeAttachments' identical check for chat
+  // attachments.
+  if isDangerousArtifactMimeType(req.mimeType) {
+    return Err(Web.badRequest("artifact '" + fileName + "' has an unsupported mimeType (" + req.mimeType + ")"))
   }
   if not CloudAgents.Text.withinMaxByteLength(req.description, maxArtifactDescriptionLen) {
     return Err(Web.badRequest("description is too long (max " + toString(maxArtifactDescriptionLen) + " bytes)"))

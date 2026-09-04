@@ -40,6 +40,25 @@ const MAX_ATTACHMENTS_PER_MESSAGE = 10;
 const MAX_ATTACHMENT_BYTES = 20 * 1024 * 1024;
 const MAX_TOTAL_ATTACHMENT_BYTES = 50 * 1024 * 1024;
 
+// Mirrors src/handlers/sessions.l's isDangerousAttachmentMimeType: types
+// capable of executing as active content when a browser navigates directly
+// to them (SVG scripts, HTML), rather than merely being decoded as passive
+// image/document bytes. This client-side check is a UX nicety — instant
+// rejection at pick-time, before the file is even base64-encoded, instead of
+// only after a wasted upload round-trip — not a substitute for the server's
+// own authoritative check (#1006), which still runs regardless of what the
+// browser's File.type reports.
+const DANGEROUS_ATTACHMENT_MIME_TYPES = new Set(['image/svg+xml', 'text/html', 'application/xhtml+xml']);
+
+/** Same shape as the server's check: strip a MIME parameter suffix (e.g.
+ *  "text/html; charset=utf-8") before comparing, case-insensitively — a
+ *  browser-reported File.type is not guaranteed to omit one, and isn't
+ *  guaranteed lowercase either. */
+function isDangerousAttachmentMimeType(mimeType: string): boolean {
+  const bare = (mimeType.split(';', 1)[0] ?? mimeType).trim().toLowerCase();
+  return DANGEROUS_ATTACHMENT_MIME_TYPES.has(bare);
+}
+
 /** Reads a File into an AttachmentInput (base64, no `data:...;base64,`
  *  prefix — the backend expects raw standard base64). */
 function readFileAsAttachmentInput(file: File): Promise<AttachmentInput> {
@@ -804,6 +823,10 @@ export function SessionDetail() {
       }
       if (file.size > MAX_ATTACHMENT_BYTES) {
         notice = `"${file.name}" is over the ${formatFileSize(MAX_ATTACHMENT_BYTES)} per-file limit — skipped.`;
+        continue;
+      }
+      if (isDangerousAttachmentMimeType(file.type)) {
+        notice = `"${file.name}" has an unsupported file type (${file.type}) — skipped.`;
         continue;
       }
       if (totalBytes + file.size > MAX_TOTAL_ATTACHMENT_BYTES) {

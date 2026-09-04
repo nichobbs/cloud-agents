@@ -3225,6 +3225,15 @@ pub func selectSessionAttachmentsBySessionSql(sessionId: in String): String {
     " ORDER BY created_at ASC"
 }
 
+/// DELETE one attachment row by id. Used for best-effort rollback of a
+/// storeAttachments pass-2 partial failure (#1003): a row inserted earlier in
+/// the same batch is removed again if a LATER file in that batch fails to
+/// write/insert, so the batch doesn't leave orphaned rows with messageId
+/// permanently ''.
+pub func deleteSessionAttachmentSql(id: in String): String {
+  return "DELETE FROM session_attachments WHERE id = " + sqlLiteral(id)
+}
+
 // ─── Phase 7: repo-scoped memory (remember / recall) ─────────────────────────
 //
 // docs/phase7-autonomy.md §4. A key/value store scoped to

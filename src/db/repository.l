@@ -3355,6 +3355,15 @@ pub func getAttachment(id: in String): Result[Option[Attachment], CloudAgents.Sq
   return Ok(value = Some(value = rowToAttachment(CloudAgents.Sqlite.getRowArrayValue(rows, 0))))
 }
 
+/// Remove one attachment row by id. Best-effort rollback helper for
+/// storeAttachments' pass-2 partial-failure cleanup (#1003) — not used on any
+/// normal (non-error) path, so callers ignore the Result (`val _ = ...`)
+/// exactly as this codebase's other best-effort cleanup calls do.
+pub func deleteAttachment(id: in String): Result[Unit, CloudAgents.Sqlite.DbError] {
+  CloudAgents.Sqlite.execute(CloudAgents.Db.deleteSessionAttachmentSql(id))?
+  return Ok(value = ())
+}
+
 /// A session's attachments, oldest first.
 pub func listAttachments(sessionId: in String): Result[slice[Attachment], CloudAgents.Sqlite.DbError] {
   val rows = CloudAgents.Sqlite.query(CloudAgents.Db.selectSessionAttachmentsBySessionSql(sessionId))?
