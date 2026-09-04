@@ -167,6 +167,7 @@ jobs:
             scripts/e2e-http.sh \
             scripts/test-reconcile-repos.sh \
             scripts/test-opencode-entrypoint.sh \
+            scripts/test-inspect-tree-fallback.sh \
             scripts/test-lyric-version-resolution.sh \
             scripts/test-split-ca-bundle.sh \
             scripts/test-mcp-server-injection.sh \
@@ -205,6 +206,13 @@ jobs:
       # not attempt to fix.
       - name: Test opencode entrypoint invocation
         run: ./scripts/test-opencode-entrypoint.sh
+
+      # Regression test for docker/entrypoint.sh inspect `diff` mode section 3 —
+      # the workspace tree hash that anchors the runner's terminal checkpoint
+      # (M1.2; dogfood F3). Exercises the committed / no-HEAD / throwaway-index
+      # cases against real temp git repos — no Docker, no network.
+      - name: Test inspect-mode workspace-tree fallback
+        run: ./scripts/test-inspect-tree-fallback.sh
 
       # Regression tests for the per-harness instruction rendering
       # (docker/render-branch-policy.sh, #732) and the cloud-agents MCP shim

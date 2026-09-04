@@ -618,10 +618,12 @@ func emitRunnerCheckpoint(
       if outcome.ok and outcome.sections.length.toInt() >= 3 {
         diffText = outcome.sections[2]
       }
-      // Section 3 (M1.2, docs/capture-runtime-handoff.md §4) is the committed
-      // workspace tree hash (`git rev-parse HEAD^{tree}`), added to the inspect
-      // `diff` mode. Empty when the workspace has no commits — then the mapping
-      // stops at steps (no terminal checkpoint), exactly the prior behavior.
+      // Section 3 (M1.2, docs/capture-runtime-handoff.md §4) is the workspace tree
+      // hash from the inspect `diff` mode: the committed tree (`git rev-parse
+      // HEAD^{tree}`), or — when the workspace has no HEAD yet (a fresh repo before
+      // its first commit) — a throwaway-index working-tree `git write-tree` fallback
+      // so a terminal checkpoint still lands (dogfood F3). Empty only if even that
+      // fallback fails; then the mapping stops at steps (no terminal checkpoint).
       if outcome.ok and outcome.sections.length.toInt() >= 4 {
         treeHash = outcome.sections[3].trim()
       }

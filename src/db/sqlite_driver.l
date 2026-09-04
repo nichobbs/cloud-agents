@@ -145,12 +145,18 @@ pub record Row {
 pub union DbError {
   case OpenFailed(message: String)
   case ExecFailed(sql: String, message: String)
+  // A precondition / row-level validation failure at the DB boundary that is
+  // not itself an open or exec failure (e.g. a requested row is missing or
+  // fails an ownership/parentage check). Carries a complete, human-readable
+  // message; unlike ExecFailed it has no associated SQL text.
+  case ValidationFailed(message: String)
 }
 
 pub func dbErrorMessage(e: in DbError): String {
   return match e {
     case OpenFailed(m) -> "failed to open database: " + m
     case ExecFailed(sql, m) -> "query failed (" + sql + "): " + m
+    case ValidationFailed(m) -> m
   }
 }
 

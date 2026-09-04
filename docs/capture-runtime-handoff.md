@@ -139,7 +139,24 @@ diff)
     echo "===CLOUD_AGENTS_SECTION==="
     { git diff HEAD 2>/dev/null || git diff; } || true
     echo "===CLOUD_AGENTS_SECTION==="
-    { git rev-parse HEAD^{tree} 2>/dev/null; } || true   # NEW: section 3, tree hash (empty if no commits)
+    # section 3, tree hash: committed tree, else a throwaway working-tree fallback
+    # when there is no HEAD yet (dogfood F3). --verify so a no-HEAD repo yields
+    # EMPTY, not the literal "HEAD^{tree}". The fallback uses a throwaway index AND
+    # object dir, so it never writes to the real .git/objects (inspect stays
+    # read-only, #1028); mktemp -d, not -u (#1029); and guard the mktemp result so
+    # a failed mktemp (empty) skips the fallback rather than collapsing the paths
+    # to a root-relative /objects,/index (#1031).
+    {
+        git rev-parse --verify HEAD^{tree} 2>/dev/null || {
+            t="$(mktemp -d 2>/dev/null)"
+            if [ -n "$t" ] && [ -d "$t" ]; then
+                mkdir -p "$t/objects"
+                GIT_INDEX_FILE="$t/index" GIT_OBJECT_DIRECTORY="$t/objects" git add -A 2>/dev/null \
+                    && GIT_INDEX_FILE="$t/index" GIT_OBJECT_DIRECTORY="$t/objects" git write-tree 2>/dev/null
+                rm -rf "$t"
+            fi
+        }
+    } || true
     ;;
 ```
 
@@ -147,15 +164,23 @@ diff)
   (`getWorkspaceDiffHandler` in `src/handlers/workspace.l` checks `>= 3`;
   `emitRunnerCheckpoint` reads `sections[2]`). `splitSections` already returns a
   variable-length slice, so adding section 3 breaks nothing.
-- **Empty-tree / committed-diff caveat.** `git rev-parse HEAD^{tree}` prints
-  nothing (and the guard swallows the error) when the workspace has **no
-  commits** (fresh clone before first commit, detached with no HEAD). In that
-  case section 3 is empty ⇒ the runner passes `None` ⇒ steps-only, no terminal
-  checkpoint (fail-safe, exactly today's behavior). The tree hash reflects
-  `HEAD`'s committed tree; if the agent's edits are uncommitted (the common
-  runner case — the diff IS `git diff HEAD`), the tree is the **pre-edit**
-  commit tree. That is the correct anchor for the checkpoint's *base*; the
-  agent's changes live in the `file_change` step's hunks, not the tree. Document
+- **No-HEAD fallback + committed-diff caveat (dogfood F3).** The committed tree
+  (`git rev-parse --verify HEAD^{tree}`) is the preferred anchor. `--verify` is
+  load-bearing: a *bare* `git rev-parse HEAD^{tree}` on a no-HEAD repo prints the
+  **literal** string `HEAD^{tree}` to stdout (exit non-zero), so without it
+  section 3 would be that bogus value, not empty — the runner would thread
+  `treeHash = "HEAD^{tree}"`. With `--verify`, a no-HEAD repo yields empty and the
+  `||` fires a working-tree `git write-tree` fallback in a **throwaway index AND
+  object dir** (a fresh repo before its first commit still anchors a terminal
+  checkpoint rather than degrading to steps-only; the real index, checkout, and
+  `.git/objects` are all untouched, so inspect mode stays read-only — #1028).
+  Section 3
+  is empty ⇒ `None` ⇒ steps-only only if even that fallback fails. When a HEAD
+  exists the tree is `HEAD`'s **committed** tree; if the agent's edits are
+  uncommitted (the common runner case — the diff IS `git diff HEAD`), that is the
+  correct anchor for the checkpoint's *base*, with the agent's changes in the
+  `file_change` step's hunks, not the tree (do NOT replace the committed-tree case
+  with a working-tree write-tree). Document
   this in the doc comment so no one "fixes" it to a working-tree write-tree.
 
 ### 4.2 Inspect parsing + context threading (`src/docker_manager.l`, `emitRunnerCheckpoint`, lines 611–624)

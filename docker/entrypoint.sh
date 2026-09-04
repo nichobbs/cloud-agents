@@ -80,17 +80,51 @@ if [ -n "${CLOUD_AGENTS_INSPECT_MODE:-}" ]; then
             echo "===CLOUD_AGENTS_SECTION==="
             { git diff HEAD 2>/dev/null || git diff; } || true
             echo "===CLOUD_AGENTS_SECTION==="
-            # Section 3 (M1.2, docs/capture-runtime-handoff.md §4): the committed
-            # workspace tree hash, so the runner's emitRunnerCheckpoint can thread
-            # it as the terminal checkpoint's base anchor. Prints nothing when the
-            # workspace has no commits (fresh clone before first commit / no HEAD);
-            # the guard swallows that error and the runner falls back to steps-only
-            # (treeHash None), exactly today's behavior. This is HEAD's committed
-            # tree, not a working-tree write-tree — the agent's uncommitted edits
-            # live in the section-2 `git diff HEAD` (the file_change hunks), so the
-            # committed tree is the correct *base* anchor; do not "fix" this to a
-            # git write-tree.
-            { git rev-parse HEAD^{tree} 2>/dev/null; } || true
+            # Section 3 (M1.2, docs/capture-runtime-handoff.md §4): the workspace
+            # tree hash, so the runner's emitRunnerCheckpoint can thread it as the
+            # terminal checkpoint's base anchor. PREFER the committed tree
+            # (HEAD^{tree}) — that is the correct *base* anchor, the agent's
+            # uncommitted edits live in the section-2 `git diff HEAD` (the
+            # file_change hunks); do NOT replace this with a working-tree write-tree
+            # when a HEAD exists. FALL BACK to a working-tree tree ONLY when there is
+            # no HEAD yet (a fresh repo before its first commit): compute it in a
+            # THROWAWAY index (GIT_INDEX_FILE to an unused temp path, so the real
+            # index and checkout are never touched) so a terminal checkpoint still
+            # lands instead of steps-only (dogfood F3). Prints nothing only if even
+            # the fallback fails, and the runner then falls back to steps-only
+            # (treeHash None).
+            #
+            # NOTE `--verify`: a bare `git rev-parse HEAD^{tree}` on a no-HEAD repo
+            # prints the LITERAL string "HEAD^{tree}" to stdout (and exits non-zero),
+            # so without `--verify` section 3 would be that bogus literal, not empty
+            # — the runner would then thread `treeHash = "HEAD^{tree}"`. `--verify`
+            # prints nothing on failure, so the `||` fallback fires cleanly.
+            #
+            # The fallback computes a working-tree tree WITHOUT touching the real
+            # repo — a throwaway index AND a throwaway object dir, so the new blobs
+            # and tree write into a temp dir, never the workspace's persistent
+            # `.git/objects`. That keeps inspect mode READ-ONLY (#1028: this path is
+            # also reachable from `GET /api/sessions/{id}/workspace/diff`), and the
+            # tree hash is still correct (content addressing is independent of where
+            # the object is stored). `mktemp -d` (not `-u`) avoids the TOCTOU race
+            # (#1029). The temp dir is always removed.
+            {
+                git rev-parse --verify HEAD^{tree} 2>/dev/null || {
+                    # Guard mktemp -d: if it fails (returns empty), skip entirely
+                    # rather than collapsing the paths to a root-relative
+                    # /objects,/index (#1031). Empty section 3 ⇒ steps-only, the safe
+                    # fallback.
+                    _ca_tree_tmp="$(mktemp -d 2>/dev/null)"
+                    if [ -n "${_ca_tree_tmp}" ] && [ -d "${_ca_tree_tmp}" ]; then
+                        mkdir -p "${_ca_tree_tmp}/objects"
+                        GIT_INDEX_FILE="${_ca_tree_tmp}/index" GIT_OBJECT_DIRECTORY="${_ca_tree_tmp}/objects" \
+                            git add -A 2>/dev/null \
+                            && GIT_INDEX_FILE="${_ca_tree_tmp}/index" GIT_OBJECT_DIRECTORY="${_ca_tree_tmp}/objects" \
+                                git write-tree 2>/dev/null
+                        rm -rf "${_ca_tree_tmp}"
+                    fi
+                }
+            } || true
             ;;
         tree)
             echo "CLOUD_AGENTS_INSPECT_OK"

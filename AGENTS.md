@@ -285,11 +285,15 @@ Sequenced follow-ups:
   `CloudAgents.Docker`).
 - **Runtime graph handoff + terminal checkpoint (M1.2) — landed**
   (`docs/capture-runtime-handoff.md`). Both of the prior bullet's deferrals are
-  now closed. (1) The inspect `diff` mode's entrypoint emits a 4th section,
-  `git rev-parse HEAD^{tree}`, which `emitRunnerCheckpoint` threads as
-  `runnerContext(…, Some(tree))` — so a run with commits now emits a **terminal
-  checkpoint** (`mapping.checkpointId = Some(…)`); a commit-less workspace falls
-  back to steps-only (`None`) without error. (2) After a successful emit the
+  now closed. (1) The inspect `diff` mode's entrypoint emits a 4th section, the
+  workspace tree hash (`git rev-parse --verify HEAD^{tree}`, or — when there is no
+  `HEAD` yet — a throwaway-index `git write-tree` fallback so a fresh repo before
+  its first commit still anchors a checkpoint, dogfood F3; `--verify` is
+  load-bearing, a bare `rev-parse HEAD^{tree}` prints the literal `HEAD^{tree}` on
+  a no-HEAD repo), which `emitRunnerCheckpoint` threads as
+  `runnerContext(…, Some(tree))` — so a run now emits a **terminal checkpoint**
+  (`mapping.checkpointId = Some(…)`); only a workspace where even the fallback
+  fails degrades to steps-only (`None`) without error. (2) After a successful emit the
   runner **POSTs the emitted `ProvenanceObject`s** to the platform graph
   service's `POST /api/ingest` (objects form, `{"objects":[…]}` via the new pure
   `CheckpointBridge.objectsToIngestJson`), gated behind the existing
