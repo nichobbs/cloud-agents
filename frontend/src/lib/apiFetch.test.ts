@@ -47,6 +47,26 @@ describe('apiFetch 401 handling', () => {
     expect(takeReturnPath()).toBe(window.location.pathname + window.location.search);
   });
 
+  it('signs out and saves return path when the post-refresh retry still comes back 401 (#857)', async () => {
+    completeLogin('gho_old', 'octocat');
+
+    const fetchMock = vi.fn()
+      // First call (listSessions): 401
+      .mockResolvedValueOnce(new Response('401 unauthorized', { status: 401 }))
+      // Second call (refreshToken): succeeds with a fresh token...
+      .mockResolvedValueOnce(new Response(JSON.stringify({ token: 'gho_new', login: 'octocat', userId: 'gh-1' }), { status: 200 }))
+      // ...but the retried request with that fresh token is STILL 401 (e.g.
+      // the user was removed from the whitelist between refresh and retry).
+      .mockResolvedValueOnce(new Response('401 unauthorized', { status: 401 }));
+
+    vi.stubGlobal('fetch', fetchMock);
+
+    const res = await apiFetch('/api/sessions', { headers: { Authorization: 'Bearer gho_old' } });
+    expect(res.status).toBe(401);
+    expect(isSignedIn()).toBe(false);
+    expect(takeReturnPath()).toBe(window.location.pathname + window.location.search);
+  });
+
   it('queues concurrent 401 requests behind a single refresh and retries all with fresh token', async () => {
     completeLogin('gho_old', 'octocat');
 

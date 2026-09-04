@@ -1040,6 +1040,64 @@ test "Handler listSessions returns stored sessions" {
   }
 }
 
+// CloudAgents.Handlers.listSessionsResponse is the typed sibling of
+// listSessions()/verifyListSessionsBody above: it builds the same DB-array
+// -> response-record path (Std.Core.Result[AgentSessionArray, DbError]
+// unwrapped and copied into a Lyric slice) but had no test coverage of its
+// own (#748) prior to this.
+test "Handler listSessionsResponse converts the stored session array to a typed response (#748)" {
+  val dbPath = useFreshTestDb("session-list-typed")
+  defer {
+    cleanupTestDb(dbPath)
+  }
+  match listSessionsResponse() {
+    case Ok(resp) -> assertEqualInt(resp.sessions.length.toInt(), 0, "empty store -> empty typed list")
+    case Err(_) -> assertTrue(false, "listSessionsResponse should succeed on an empty store")
+  }
+  mustUnit(
+    addSession(
+      makeAgentSession(
+        sessionId = "lst-1",
+        repoUrl = "https://github.com/nic/repo",
+        branch = "main",
+        containerId = "c-1",
+        harness = "claude",
+        model = "claude-opus-4-8",
+        nativeSessionId = "lst-1"
+      )
+    )
+  )
+  mustUnit(
+    addSession(
+      makeAgentSession(
+        sessionId = "lst-2",
+        repoUrl = "https://github.com/nic/other",
+        branch = "main",
+        containerId = "c-2",
+        harness = "codex",
+        model = "o4-mini",
+        nativeSessionId = "lst-2"
+      )
+    )
+  )
+  match listSessionsResponse() {
+    case Ok(resp) -> {
+      // Row order isn't part of the contract (getSessions() carries no
+      // ORDER BY), so match each stored session by id rather than position.
+      assertEqualInt(resp.sessions.length.toInt(), 2, "both stored sessions are converted")
+      val first = resp.sessions[0]
+      val second = resp.sessions[1]
+      val lst1 = if first.sessionId == "lst-1" { first } else { second }
+      val lst2 = if first.sessionId == "lst-1" { second } else { first }
+      assertEqual(lst1.sessionId, "lst-1", "first session id round-trips")
+      assertEqual(lst1.repoUrl, "https://github.com/nic/repo", "first session repoUrl round-trips")
+      assertEqual(lst2.sessionId, "lst-2", "second session id round-trips")
+      assertEqual(lst2.harness, "codex", "second session harness round-trips")
+    }
+    case Err(_) -> assertTrue(false, "listSessionsResponse should succeed with stored sessions")
+  }
+}
+
 test "getRuns 404s for an unknown session (#239)" {
   val dbPath = useFreshTestDb("get-runs")
   defer {

@@ -2451,10 +2451,16 @@ pub func deleteGitHubTokenSql(tokenHash: in String): String {
   return "DELETE FROM github_token_cache WHERE token_hash = " + sqlLiteral(tokenHash)
 }
 
-/// Housekeeping: drop expired entries (run opportunistically on cache writes).
+/// Housekeeping: drop expired entries (run opportunistically on cache
+/// writes). Scoped to the SAME 2-hour (7200000 ms) grace window as
+/// selectHistoricalGitHubTokenSql, not a bare `expires_at <= now` — an
+/// unconditional sweep would delete a row the moment it expires, since this
+/// runs on essentially every cache write from any tenant, undermining the
+/// 2-hour historical-lookup window `refreshOAuthToken`'s tier-2 lookup
+/// relies on (#856).
 pub func deleteExpiredGitHubTokensSql(nowMillis: in String): String {
-  return "DELETE FROM github_token_cache WHERE CAST(expires_at AS INTEGER) <= CAST(" + sqlLiteral(nowMillis) +
-    " AS INTEGER)"
+  return "DELETE FROM github_token_cache WHERE CAST(expires_at AS INTEGER) <= (CAST(" + sqlLiteral(nowMillis) +
+    " AS INTEGER) - 7200000)"
 }
 
 /// Count (as TEXT for the GetString-only driver) the still-active negative

@@ -384,7 +384,54 @@ test "GitHub token-cache SQL is hash-keyed and expiry-aware" {
   val select = selectGitHubTokenSql("h4sh", "2000")
   assertTrue(select.contains("token_hash = 'h4sh'"), "select scoped by hash")
   assertTrue(select.contains("CAST(expires_at AS INTEGER) > CAST('2000' AS INTEGER)"), "select excludes expired rows")
-  assertTrue(deleteExpiredGitHubTokensSql("2000").contains("<= CAST('2000' AS INTEGER)"), "sweep drops expired rows")
+  // The opportunistic sweep is scoped to the SAME 2-hour grace window as the
+  // historical lookup below, so an unrelated cache write can't sweep away a
+  // row the historical lookup still expects to find (#856).
+  assertTrue(
+    deleteExpiredGitHubTokensSql("2000").contains("<= (CAST('2000' AS INTEGER) - 7200000)"),
+    "sweep only drops rows outside the 2-hour historical-lookup grace window"
+  )
+  val historical = selectHistoricalGitHubTokenSql("h4sh", "9999999")
+  assertTrue(historical.contains("token_hash = 'h4sh'"), "historical select scoped by hash")
+  assertTrue(historical.contains("user_id <> ''"), "historical select excludes negative/rejected-code rows")
+  assertTrue(
+    historical.contains(">= (CAST('9999999' AS INTEGER) - 7200000)"),
+    "historical select allows a row expired up to 2 hours ago"
+  )
+  assertTrue(
+    selectGitHubLoginForUserSql("gh-42").contains("WHERE user_id = 'gh-42' AND login <> '' LIMIT 1"),
+    "login lookup scoped by user, excludes blank logins"
+  )
+}
+
+test "GitHub OAuth refresh-metadata SQL is user-keyed with a 5-minute proactive-refresh buffer (#858)" {
+  assertTrue(githubOAuthRefreshSchemaSql().contains("user_id TEXT PRIMARY KEY"), "refresh metadata keyed by user")
+  val up = upsertGitHubOAuthRefreshSql("gh-42", "enc-refresh", "1000", "3600", "31536000")
+  assertTrue(up.contains("INSERT OR REPLACE INTO github_oauth_refresh"), "upsert replaces on conflict")
+  assertTrue(up.contains("'gh-42'"), "user id inlined")
+  assertTrue(up.contains("'enc-refresh'"), "refresh token inlined (still encrypted)")
+  assertTrue(
+    up.contains("CAST('1000' AS INTEGER) + CAST('3600' AS INTEGER) * 1000"),
+    "access expiry computed from seconds-since-now"
+  )
+  assertTrue(
+    up.contains("CAST('1000' AS INTEGER) + CAST('31536000' AS INTEGER) * 1000"),
+    "refresh expiry computed from seconds-since-now"
+  )
+  val status = selectGitHubOAuthRefreshStatusSql("gh-42", "5000")
+  assertTrue(status.contains("FROM github_oauth_refresh WHERE user_id = 'gh-42'"), "status scoped by user")
+  assertTrue(
+    status.contains("CAST(access_expires_at AS INTEGER) - 300000 <= CAST('5000' AS INTEGER)"),
+    "access token is treated as expired 5 minutes (300000ms) BEFORE it actually lapses (proactive refresh buffer)"
+  )
+  assertTrue(
+    status.contains("CAST(refresh_expires_at AS INTEGER) <= CAST('5000' AS INTEGER)"),
+    "refresh token expiry has no buffer — it's checked exactly"
+  )
+  assertTrue(
+    deleteGitHubOAuthRefreshSql("gh-42").contains("DELETE FROM github_oauth_refresh WHERE user_id = 'gh-42'"),
+    "delete scoped by user"
+  )
 }
 
 // ── Session groups + attention states (migration 0029) ───────────────────────
