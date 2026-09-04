@@ -90,11 +90,22 @@ install_lyric_fallback() {
   arch="$(uname -m)"
   case "$os" in
     Linux)
-      case "$arch" in
-        x86_64) rid=linux-x64 ;;
-        aarch64) rid=linux-arm64 ;;
-        *) err "unsupported Linux architecture: $arch" ;;
-      esac
+      # Delegates to the shared scripts/lyric-rid.sh (#675) — the same
+      # x86_64->linux-x64 / aarch64->linux-arm64 mapping docker/Dockerfile
+      # and deploy/api.Dockerfile use — when this script is running from a
+      # checked-out clone (REPO_ROOT resolves to a real directory). When
+      # piped via `curl | bash` there is no local file to source, so this
+      # falls back to the same case statement inline; keep the two in sync
+      # if the RID table ever changes.
+      if [ -x "$REPO_ROOT/scripts/lyric-rid.sh" ]; then
+        rid="$("$REPO_ROOT/scripts/lyric-rid.sh")" || err "unsupported Linux architecture: $arch"
+      else
+        case "$arch" in
+          x86_64) rid=linux-x64 ;;
+          aarch64) rid=linux-arm64 ;;
+          *) err "unsupported Linux architecture: $arch" ;;
+        esac
+      fi
       ;;
     Darwin)
       case "$arch" in
@@ -108,14 +119,45 @@ install_lyric_fallback() {
       ;;
   esac
 
-  local tmp
+  local tmp archive
   tmp="$(mktemp -d)"
   trap 'rm -rf "$tmp"' RETURN
+  archive="lyric-${ver}-${rid}.tar.gz"
 
-  say "Downloading lyric-${ver}-${rid}.tar.gz"
+  say "Downloading ${archive}"
   curl -fsSL --connect-timeout 10 --max-time 120 --retry 3 --retry-delay 3 \
     -o "$tmp/lyric.tgz" \
-    "https://github.com/nichobbs/lyric-lang/releases/download/v${ver}/lyric-${ver}-${rid}.tar.gz"
+    "https://github.com/nichobbs/lyric-lang/releases/download/v${ver}/${archive}"
+
+  say "Verifying checksum..."
+  # Delegates to the shared scripts/verify-lyric-checksum.sh (#157) — the
+  # same SHASUMS256.txt check docker/Dockerfile and deploy/api.Dockerfile
+  # use — when this script is running from a checked-out clone (REPO_ROOT
+  # resolves to a real directory). Piped via `curl | bash` there is no
+  # local file to call, so this falls back to the same check inlined; keep
+  # the two in sync if the verification logic ever changes.
+  if [ -x "$REPO_ROOT/scripts/verify-lyric-checksum.sh" ]; then
+    "$REPO_ROOT/scripts/verify-lyric-checksum.sh" "$ver" "$tmp/lyric.tgz" "$archive" \
+      || err "checksum verification failed for $archive"
+  else
+    local shasums_url shasums_file expected actual
+    shasums_url="https://github.com/nichobbs/lyric-lang/releases/download/v${ver}/SHASUMS256.txt"
+    shasums_file="$tmp/SHASUMS256.txt"
+    curl -fsSL --connect-timeout 10 --max-time 30 --retry 3 --retry-delay 3 \
+      -o "$shasums_file" "$shasums_url" \
+      || err "failed to download SHASUMS256.txt from $shasums_url — cannot verify $archive"
+    expected="$(awk -v name="$archive" '$2 == name { print tolower($1) }' "$shasums_file" | head -1)"
+    [ -n "$expected" ] || err "no SHASUMS256.txt entry for $archive; refusing to install an unverified archive"
+    if command -v sha256sum >/dev/null 2>&1; then
+      actual="$(sha256sum "$tmp/lyric.tgz" | awk '{print tolower($1)}')"
+    elif command -v shasum >/dev/null 2>&1; then
+      actual="$(shasum -a 256 "$tmp/lyric.tgz" | awk '{print tolower($1)}')"
+    else
+      err "neither sha256sum nor shasum found; cannot verify $archive"
+    fi
+    [ "$actual" = "$expected" ] || err "checksum mismatch for $archive: expected $expected, got $actual"
+  fi
+  say "Checksum OK."
 
   mkdir -p "$LYRIC_DIR"
   tar -xzf "$tmp/lyric.tgz" -C "$LYRIC_DIR"

@@ -64,6 +64,18 @@ services:
       # network policy) — same meaning here.
       - CLOUD_AGENTS_RESTRICTED_NETWORK=${CLOUD_AGENTS_RESTRICTED_NETWORK:-}
       - CLOUD_AGENTS_EGRESS_PROXY=${CLOUD_AGENTS_EGRESS_PROXY:-}
+      # Corporate-proxy TLS interception (#648): docker_manager.l's
+      # createRunnerContainer reads these from the api PROCESS's own
+      # environment, so they must be listed here or they never reach it —
+      # Compose does not forward arbitrary host env vars into a container.
+      # NODE_EXTRA_CA_CERTS's value is bind-mounted straight into each
+      # runner container as its source path, and that bind mount is
+      # resolved by the DOCKER HOST's dockerd (this is docker-outside-of-
+      # docker: api talks to the host daemon over the mounted socket above)
+      # — so set it to a path on the Coolify HOST's filesystem, not a path
+      # inside the api container. See COOLIFY.md.
+      - NODE_EXTRA_CA_CERTS=${NODE_EXTRA_CA_CERTS:-}
+      - NODE_TLS_REJECT_UNAUTHORIZED=${NODE_TLS_REJECT_UNAUTHORIZED:-}
       # Session-visibility extras (docs/session-visibility.md, #810): the
       # env-gated highlights summarizer and the opt-in agent-plan ingestion.
       # All optional; unset keeps both features off.

@@ -48,6 +48,20 @@ Set your domain in `Caddyfile` (replace `agent.example.com`) before starting.
 > `restricted` profile fails closed to full isolation (no network) rather than
 > silently opening the network. See `docs/phase5-deployment.md` for details.
 
+> **Optional — corporate-proxy CA propagation into runner containers (#648):**
+> set `NODE_EXTRA_CA_CERTS` and/or `NODE_TLS_REJECT_UNAUTHORIZED` in `.env` to
+> have every ephemeral runner container trust a corporate/proxy root CA (e.g.
+> Zscaler TLS inspection) at session start — `docker_manager.l`'s
+> `createRunnerContainer` reads both from the `api` service's own process
+> environment and forwards them into each runner it spawns. `api` talks to
+> Docker over the host socket mount (`/var/run/docker.sock`), a
+> docker-outside-of-docker topology — so `NODE_EXTRA_CA_CERTS` must be set to
+> a path that exists **on this VM's own filesystem** (the Docker host), not a
+> path inside the `api` container; that value is bind-mounted straight into
+> each runner as `/etc/host-ca.pem:ro`, and the bind-mount source is resolved
+> by the host's `dockerd`, which never sees `api`'s container filesystem.
+> Leave both unset (the default) for no change from today's behavior.
+
 ## Routine operations
 
 | Task | Command |

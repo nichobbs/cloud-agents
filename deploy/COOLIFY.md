@@ -32,6 +32,18 @@ compose file for what differs and why.
      authenticated GitHub user, not "no one".
    - `CLOUD_AGENTS_RESTRICTED_NETWORK`, `CLOUD_AGENTS_EGRESS_PROXY` (optional,
      only needed for the `restricted` network policy)
+   - `NODE_EXTRA_CA_CERTS`, `NODE_TLS_REJECT_UNAUTHORIZED` (optional,
+     corporate-proxy TLS interception, #648) — `docker_manager.l`'s
+     `createRunnerContainer` reads both from the `api` service's own process
+     environment and forwards them into every runner container it spawns, so
+     they must be set here (Compose doesn't forward arbitrary host env vars
+     on its own). Since `api` reaches Docker over the host socket mount
+     below (docker-outside-of-docker), `NODE_EXTRA_CA_CERTS` must name a path
+     on the **Coolify host's own filesystem**, not a path inside the `api`
+     container — it's bind-mounted straight into each runner as
+     `/etc/host-ca.pem:ro`, and that bind-mount source is resolved by the
+     host's `dockerd`, which has no visibility into `api`'s container
+     filesystem. Leave both unset (the default) for no change from today.
    - `SERVICE_FQDN_CADDY_80` — Coolify manages this one itself once it
      detects the bare reference in the compose file; set your domain there,
      or leave it for Coolify to assign a subdomain.
@@ -149,10 +161,17 @@ than treating the non-restarting exited container as an unhealthy/failed
 deployment signal — see
 [Coolify's Docker Compose docs](https://coolify.io/docs/knowledge-base/docker/compose),
 which use the same one-shot-service shape (a `migrate` container) as their
-own example. The runner Dockerfiles force `--platform=linux/amd64`, so
-building on an arm64 Coolify host means QEMU emulation for all four —
-noticeably slower than a native build, but a one-time cost per deploy
-(cached layers), not a reason to disable a harness you don't currently use.
+own example. All five runner Dockerfiles (`docker/Dockerfile`,
+`docker/Dockerfile.codex`, `docker/Dockerfile.opencode`,
+`docker/Dockerfile.gemini`, `docker/Dockerfile.antigravity`) build natively
+for whichever platform `docker build`/`docker compose build` runs on — none
+of them force `--platform=linux/amd64` any more. This used to force
+`linux/amd64` unconditionally (which meant QEMU user-mode emulation on an
+arm64 Coolify host — see `docker/Dockerfile`'s header comment for the
+production failure that motivated dropping it); Lyric publishes
+`linux-arm64` releases and the Node-based harness CLIs install cross-arch,
+so there's no reason to force emulation on any of the five images on an
+arm64 host today.
 
 ## Backups
 

@@ -35,26 +35,30 @@ FROM mcr.microsoft.com/dotnet/sdk:10.0 AS build
 # (see its "Install Lyric compiler" step and docs/BUILD.md).
 ARG LYRIC_VERSION=0.4.36
 # RID matches THIS build's actual architecture (this FROM has no --platform
-# override, so it's whatever amd64/arm64 host actually runs the build) — same
-# x86_64->linux-x64 / aarch64->linux-arm64 mapping scripts/install.sh already
-# uses. Previously hardcoded to linux-x64 unconditionally: harmless on an
-# amd64 host, but on an arm64 host the base image already resolves natively
-# to arm64 while this step kept installing an amd64-only `lyric` binary —
-# `lyric restore`/`lyric build` below (via build-full.sh) would then fail to
-# even exec it (exec format error, surfacing as exit code 126), a real
-# Coolify deploy failure once the arm64-host / amd64-forcing mismatch found
-# in docker/Dockerfile (nichobbs/cloud-agents#670) was fixed there but not
-# here too.
+# override, so it's whatever amd64/arm64 host actually runs the build) — the
+# x86_64->linux-x64 / aarch64->linux-arm64 mapping now lives in one place,
+# scripts/lyric-rid.sh (#675), COPY'd in below rather than duplicated as its
+# own inline case statement. Previously hardcoded to linux-x64
+# unconditionally: harmless on an amd64 host, but on an arm64 host the base
+# image already resolves natively to arm64 while this step kept installing
+# an amd64-only `lyric` binary — `lyric restore`/`lyric build` below (via
+# build-full.sh) would then fail to even exec it (exec format error,
+# surfacing as exit code 126), a real Coolify deploy failure once the
+# arm64-host / amd64-forcing mismatch found in docker/Dockerfile
+# (nichobbs/cloud-agents#670) was fixed there but not here too.
+# Verified against the release's own SHASUMS256.txt manifest before
+# extraction (#157) via the shared scripts/verify-lyric-checksum.sh — same
+# script docker/Dockerfile's two stages and its four sibling runner
+# Dockerfiles use.
+COPY scripts/lyric-rid.sh scripts/verify-lyric-checksum.sh /usr/local/bin/
 RUN apt-get update && apt-get install -y --no-install-recommends curl ca-certificates \
-    && ARCH="$(uname -m)" \
-    && case "$ARCH" in \
-         x86_64) LYRIC_RID=linux-x64 ;; \
-         aarch64) LYRIC_RID=linux-arm64 ;; \
-         *) echo "ERROR: unsupported architecture for the Lyric compiler: $ARCH (supported: x86_64, aarch64)" >&2; exit 1 ;; \
-       esac \
+    && chmod +x /usr/local/bin/lyric-rid.sh /usr/local/bin/verify-lyric-checksum.sh \
+    && LYRIC_RID="$(/usr/local/bin/lyric-rid.sh)" \
+    && LYRIC_ARCHIVE="lyric-${LYRIC_VERSION}-${LYRIC_RID}.tar.gz" \
     && curl -fsSL --connect-timeout 10 --max-time 120 --retry 3 --retry-delay 3 \
         -o /tmp/lyric.tgz \
-        "https://github.com/nichobbs/lyric-lang/releases/download/v${LYRIC_VERSION}/lyric-${LYRIC_VERSION}-${LYRIC_RID}.tar.gz" \
+        "https://github.com/nichobbs/lyric-lang/releases/download/v${LYRIC_VERSION}/${LYRIC_ARCHIVE}" \
+    && /usr/local/bin/verify-lyric-checksum.sh "$LYRIC_VERSION" /tmp/lyric.tgz "$LYRIC_ARCHIVE" \
     && mkdir -p /usr/local/bin \
     && tar -xzf /tmp/lyric.tgz -C /usr/local/bin \
     && rm -f /tmp/lyric.tgz \
