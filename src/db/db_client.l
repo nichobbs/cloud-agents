@@ -1250,6 +1250,23 @@ pub func selectSessionEventsAfterSeqSql(sessionId: in String, afterSeq: in Strin
     " AS INTEGER) ORDER BY CAST(seq AS INTEGER) ASC"
 }
 
+/// SELECT the (seq, payload, hash) of a session's already-stored events whose
+/// seq falls within [minSeq, maxSeq] (inclusive, numeric compare via CAST — seq
+/// is digit TEXT). Used by `CloudAgents.Repository.appendSessionEvents` (#965) to
+/// detect a re-append that carries DIFFERENT content for an already-stored seq,
+/// in one indexed range query covering the whole incoming batch rather than one
+/// query per event.
+pub func selectSessionEventsBySeqRangeSql(sessionId: in String, minSeq: in String, maxSeq: in String): String {
+  return "SELECT seq, payload, hash FROM session_events " + "WHERE session_id = " +
+    sqlLiteral(sessionId) +
+    " AND CAST(seq AS INTEGER) >= CAST(" +
+    sqlLiteral(minSeq) +
+    " AS INTEGER)" +
+    " AND CAST(seq AS INTEGER) <= CAST(" +
+    sqlLiteral(maxSeq) +
+    " AS INTEGER)"
+}
+
 // ─── Prompt library ───────────────────────────────────────────────────────────
 //
 // Saved, reusable prompts. Scoped by `user_id` from day one (Phase 3

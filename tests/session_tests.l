@@ -823,7 +823,7 @@ test "createSession rejects a known-but-disabled harness (#560)" {
 // the same reason (getRunOutput itself references CloudAgents.Docker in its
 // RUNNING branch and can't be invoked from here).
 func testMessage(role: in String, content: in String): CloudAgents.Repository.Message {
-  return CloudAgents.Repository.Message(
+  return Message(
     id = "m", sessionId = "s", role = role, content = content, seq = "0", createdAt = "0"
   )
 }
@@ -1561,7 +1561,7 @@ test "branch session from message creates copy with parent reference and slices 
   val dbPath = useFreshTestDb("branch-msg")
   defer { cleanupTestDb(dbPath) }
 
-  val req = CloudAgents.Handlers.CreateSessionRequest(
+  val req = CreateSessionRequest(
     repoUrl = "https://github.com/example/branch-test",
     branch = "main",
     harness = "claude",
@@ -1588,7 +1588,7 @@ test "branch session from message creates copy with parent reference and slices 
   mustTodo(CloudAgents.Repository.addTodo(parentId, msg2Id, "Review turn 2"))
 
   // Branch from msg2 (seq 2)
-  val branchReq = CloudAgents.Handlers.BranchSessionRequest(
+  val branchReq = BranchSessionRequest(
     messageId = msg2Id,
     branch = "feature-thread-1"
   )
@@ -1646,5 +1646,89 @@ test "branch session from message creates copy with parent reference and slices 
   assertEqualInt(childTodos.length.toInt(), 1, "todo should be cloned on child")
   assertEqual(childTodos[0].note, "Review turn 2", "todo note match")
   assertEqual(childTodos[0].messageId, childMsg2Id, "todo should point to new cloned message ID")
+}
+
+// #1033: coverage for branchSession's three ValidationFailed error paths
+// (src/db/repository.l `branchSession`), routed to HTTP status codes by
+// src/handlers/sessions.l's `branchSession` handler via the DbError message
+// string. These also guard the message-string routing itself: if repository.l's
+// wording ever drifts from what the handler string-matches on, these tests fail
+// (falling through to the generic 500 branch) instead of silently misrouting.
+
+test "branchSession returns 404 when the parent session does not exist or is not owned by the user (#1033)" {
+  val dbPath = useFreshTestDb("branch-no-parent")
+  defer { cleanupTestDb(dbPath) }
+
+  val branchReq = BranchSessionRequest(messageId = "", branch = "")
+  match CloudAgents.Handlers.branchSession("session-does-not-exist", branchReq) {
+    case Ok(_) -> assertTrue(false, "branching from a nonexistent parent session must fail")
+    case Err(err) -> assertEqualInt(err.status, 404, "nonexistent/not-owned parent session -> 404")
+  }
+}
+
+test "branchSession returns 400 when the forked message does not exist (#1033)" {
+  val dbPath = useFreshTestDb("branch-no-msg")
+  defer { cleanupTestDb(dbPath) }
+
+  val req = CreateSessionRequest(
+    repoUrl = "https://github.com/example/branch-nomsg",
+    branch = "main",
+    harness = "claude",
+    model = "claude-sonnet-4-6"
+  )
+  val parentId = match CloudAgents.Handlers.createSession(req) {
+    case Ok(resp) -> resp.sessionId
+    case Err(_) -> {
+      assertTrue(false, "createSession failed")
+      ""
+    }
+  }
+
+  val branchReq = BranchSessionRequest(messageId = "message-does-not-exist", branch = "")
+  match CloudAgents.Handlers.branchSession(parentId, branchReq) {
+    case Ok(_) -> assertTrue(false, "branching from a nonexistent forked message must fail")
+    case Err(err) -> assertEqualInt(err.status, 400, "nonexistent forked message -> 400")
+  }
+}
+
+test "branchSession returns 400 when the forked message belongs to a different session (#1033)" {
+  val dbPath = useFreshTestDb("branch-wrong-session")
+  defer { cleanupTestDb(dbPath) }
+
+  val reqA = CreateSessionRequest(
+    repoUrl = "https://github.com/example/branch-a",
+    branch = "main",
+    harness = "claude",
+    model = "claude-sonnet-4-6"
+  )
+  val sessionAId = match CloudAgents.Handlers.createSession(reqA) {
+    case Ok(resp) -> resp.sessionId
+    case Err(_) -> {
+      assertTrue(false, "createSession A failed")
+      ""
+    }
+  }
+  val reqB = CreateSessionRequest(
+    repoUrl = "https://github.com/example/branch-b",
+    branch = "main",
+    harness = "claude",
+    model = "claude-sonnet-4-6"
+  )
+  val sessionBId = match CloudAgents.Handlers.createSession(reqB) {
+    case Ok(resp) -> resp.sessionId
+    case Err(_) -> {
+      assertTrue(false, "createSession B failed")
+      ""
+    }
+  }
+
+  // A message belonging to session B; branching session A from it must fail —
+  // it is not session A's own history.
+  val msgB = mustMessage(CloudAgents.Repository.addMessage(sessionBId, "user", "hello from B"))
+  val branchReq = BranchSessionRequest(messageId = msgB.id, branch = "")
+  match CloudAgents.Handlers.branchSession(sessionAId, branchReq) {
+    case Ok(_) -> assertTrue(false, "branching session A from a message owned by session B must fail")
+    case Err(err) -> assertEqualInt(err.status, 400, "forked message belonging to a different session -> 400")
+  }
 }
 

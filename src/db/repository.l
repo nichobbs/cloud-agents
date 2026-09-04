@@ -3762,28 +3762,77 @@ func rowToCaptureEvent(r: in CloudAgents.Sqlite.Row): CloudAgents.Capture.Captur
 
 /// Append a session's captured events in one transaction (all-or-nothing, so a
 /// stored chain never has a hole). Inserts are `INSERT OR IGNORE` on
-/// `(session_id, seq)`, so re-appending an already-stored prefix (a resumed or
-/// retried capture) is an idempotent no-op. Returns the number of events
-/// *submitted* (`events.length`) — because `INSERT OR IGNORE` silently skips a
-/// row already present, this is the submitted count, not necessarily the count
-/// newly inserted (query back with `sessionEventsAfterSeq` for the stored set).
+/// `(session_id, seq)`, so re-appending an already-stored prefix that is
+/// byte-identical (a resumed or retried capture) is an idempotent no-op.
+/// Returns the number of events *submitted* (`events.length`) — because
+/// `INSERT OR IGNORE` silently skips a row already present, this is the
+/// submitted count, not necessarily the count newly inserted (query back with
+/// `sessionEventsAfterSeq` for the stored set).
 ///
-/// Tamper-evidence boundary (#965): `INSERT OR IGNORE` keying on
-/// `(session_id, seq)` means a re-append that carries DIFFERENT content for an
-/// already-stored seq is discarded, not adjudicated here. That is intentional —
-/// this accessor is a durable append sink, not the integrity check. The chain is
-/// verified by `CloudAgents.Capture.verifyChain` on read (a differing prev_hash/
-/// hash makes the stored chain fail verification), so a caller re-appending a
-/// diverged prefix should `verifyChain` first rather than rely on the store to
-/// reject it.
+/// Tamper-evidence boundary (#965): before inserting anything, the incoming
+/// batch's seq range is compared against what is already stored for those
+/// seqs. If any already-stored `(session_id, seq)` carries a DIFFERENT
+/// `payload`/`hash` than the incoming event for that same seq, the whole batch
+/// is rejected as `ValidationFailed` — no partial insert — rather than
+/// silently discarding the divergent content via `INSERT OR IGNORE`. This
+/// keeps the store from masking a genuine tamper/corruption signal (or a bug
+/// elsewhere producing a divergent re-parse) behind the "idempotent no-op"
+/// path, which is meant for byte-identical retries only. A caller that
+/// legitimately needs to replace stored events (not just append/retry) must go
+/// through some other, explicit path — this accessor never overwrites.
 pub func appendSessionEvents(
   sessionId: in String, events: in slice[CloudAgents.Capture.CaptureEvent]
 ): Result[Int, CloudAgents.Sqlite.DbError] {
+  if events.length.toInt() == 0 {
+    return Ok(value = 0)
+  }
+  // One indexed range query covers the whole incoming batch's seq span, rather
+  // than one query per event.
+  var minSeq = events[0].seq
+  var maxSeq = events[0].seq
+  var i = 0
+  while i < events.length.toInt() {
+    if events[i].seq < minSeq {
+      minSeq = events[i].seq
+    }
+    if events[i].seq > maxSeq {
+      maxSeq = events[i].seq
+    }
+    i = i + 1
+  }
+  val existingRows = CloudAgents.Sqlite.query(
+    CloudAgents.Db.selectSessionEventsBySeqRangeSql(sessionId, toString(minSeq), toString(maxSeq))
+  )?
+  val existingLen = CloudAgents.Sqlite.getRowArrayLength(existingRows)
+  i = 0
+  while i < events.length.toInt() {
+    val e = events[i]
+    val eSeqStr = toString(e.seq)
+    var j = 0
+    while j < existingLen {
+      val row = CloudAgents.Sqlite.getRowArrayValue(existingRows, j)
+      if colAt(row.cols, 0) == eSeqStr {
+        val storedPayload = colAt(row.cols, 1)
+        val storedHash = colAt(row.cols, 2)
+        if storedPayload != e.payload or storedHash != e.hash {
+          return Err(
+            value = ValidationFailed(
+              message = "session_events conflict for session " + sessionId + " seq " + eSeqStr +
+                ": already-stored content differs from the re-appended content"
+            )
+          )
+        }
+      }
+      j = j + 1
+    }
+    i = i + 1
+  }
+
   val createdAt = nowMillis()
   // Build via List.add + toArray rather than slice.append() in a per-event loop
   // (same OSR-promotion concern as sessionEventsAfterSeq, #963 / lyric-lang#6322).
   val stmts: List[String] = newList()
-  var i = 0
+  i = 0
   while i < events.length.toInt() {
     val e = events[i]
     stmts.add(
@@ -4185,7 +4234,7 @@ pub func branchSession(
   val sRows = CloudAgents.Sqlite.query(CloudAgents.Db.selectSessionByIdSql(parentSessionId, userId))?
   val sLen = CloudAgents.Sqlite.getRowArrayLength(sRows)
   if sLen == 0 {
-    return Err(value = CloudAgents.Sqlite.ValidationFailed(message = "parent session not found or not owned by user"))
+    return Err(value = ValidationFailed(message = "parent session not found or not owned by user"))
   }
   val parentRow = CloudAgents.Sqlite.getRowArrayValue(sRows, 0)
   val repoUrl = colAt(parentRow.cols, 2)
@@ -4199,12 +4248,12 @@ pub func branchSession(
     val mRows = CloudAgents.Sqlite.query(CloudAgents.Db.selectMessageByIdSql(forkedMessageId))?
     val mLen = CloudAgents.Sqlite.getRowArrayLength(mRows)
     if mLen == 0 {
-      return Err(value = CloudAgents.Sqlite.ValidationFailed(message = "forked message not found"))
+      return Err(value = ValidationFailed(message = "forked message not found"))
     }
     val mRow = CloudAgents.Sqlite.getRowArrayValue(mRows, 0)
     val msgSessionId = colAt(mRow.cols, 1)
     if msgSessionId != parentSessionId {
-      return Err(value = CloudAgents.Sqlite.ValidationFailed(message = "forked message does not belong to parent session"))
+      return Err(value = ValidationFailed(message = "forked message does not belong to parent session"))
     }
     targetSeq = parseNatString(colAt(mRow.cols, 4))
   }

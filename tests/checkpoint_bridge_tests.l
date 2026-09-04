@@ -259,6 +259,65 @@ test "emitFromCaptureWithFileChanges with EMPTY deltas keeps the exact drift-gua
   }
 }
 
+// #986: the tests above only ever drive emitFromCaptureWithFileChanges THROUGH
+// emitFromCaptureWithDiff (which first runs parseUnifiedDiff) or with an empty
+// List[FileDelta] — never with a hand-built, non-empty List[FileDelta] calling
+// emitFromCaptureWithFileChanges directly. That leaves the diff-text parser and
+// the bridge's delta-to-file_change-step wiring tested only together; a bug in
+// the wiring itself, masked by a quirk of parseUnifiedDiff's output shape,
+// would slip through. This isolates the bridge boundary: two hand-constructed
+// FileDeltas, no diff parsing involved at all.
+test "emitFromCaptureWithFileChanges maps a hand-built, non-empty List[FileDelta] directly (no diff parsing) (#986)" {
+  val hunks1: List[HunkRange] = newList()
+  hunks1.add(HunkRange(start = 1.toLong(), lines = 4.toLong()))
+  val hunks2: List[HunkRange] = newList()
+  hunks2.add(HunkRange(start = 1.toLong(), lines = 10.toLong()))
+  val deltas: List[FileDelta] = newList()
+  deltas.add(
+    FileDelta(
+      path = "notes.txt",
+      beforeSha256 = None,
+      afterSha256 = None,
+      hunks = hunks1
+    )
+  )
+  deltas.add(
+    FileDelta(
+      path = "src/new_file.txt",
+      beforeSha256 = None,
+      afterSha256 = None,
+      hunks = hunks2
+    )
+  )
+  val m = match emitFromCaptureWithFileChanges(eventsOf(), "", ctx(), deltas) {
+    case Ok(mm) -> mm
+    case Err(e) -> panic("emitFromCaptureWithFileChanges failed: " + bridgeErrorMessage(e))
+  }
+  match fileChangeStepOf(m) {
+    case Some(step) -> {
+      match step.body {
+        case FileChangeBody(files) -> {
+          assertEqualInt(files.count, 2, "both hand-built deltas appear in the file_change step")
+          assertEqual(files[0].path, "notes.txt", "first delta path matches the hand-built input")
+          assertEqualInt(files[0].hunks[0].start.toInt(), 1, "first delta hunk start matches the hand-built input")
+          assertEqualInt(files[0].hunks[0].lines.toInt(), 4, "first delta hunk lines matches the hand-built input")
+          assertEqual(files[1].path, "src/new_file.txt", "second delta path matches the hand-built input")
+          assertEqualInt(files[1].hunks[0].lines.toInt(), 10, "second delta hunk lines matches the hand-built input")
+        }
+        case _ -> assertTrue(false, "the file_change step must carry a FileChangeBody")
+      }
+    }
+    case None -> assertTrue(false, "a file_change step must be emitted from a non-empty List[FileDelta]")
+  }
+  // A file_change step present at all means the checkpoint frontier moved past
+  // the no-deltas drift-guard id — same property the diff-based test checks,
+  // now confirmed for the direct (non-diff-parsed) construction path too.
+  match m.checkpointId {
+    case Some(c) -> assertTrue(c != expectedCheckpointId(), "checkpoint re-anchored over the hand-built file_change step")
+    case None -> assertTrue(false, "expected a checkpoint")
+  }
+}
+
 test "emitFromCaptureWithDiff parses a real git diff into a file_change step and re-anchors the checkpoint" {
   val m = match emitFromCaptureWithDiff(eventsOf(), "", ctx(), realDiff()) {
     case Ok(mm) -> mm
@@ -431,5 +490,42 @@ test "objectsToIngestJson fails the whole batch (typed MapFailed) on an unencoda
       case MapFailed(_) -> assertTrue(true, "surfaced as a typed MapFailed")
       case ChainInvalid(_) -> assertTrue(false, "expected MapFailed, not ChainInvalid")
     }
+  }
+}
+
+func noteStepWithText(text: in String): ProvenanceObject {
+  return StepObject(
+    step = Step(
+      session = "sess-cap-test",
+      parents = newList(),
+      origin = Origin(kind = AgentOrigin, model = None, skill = None, sessionPrincipal = "agent:cloud-agents-runner"),
+      at = "2026-08-14T10:50:45Z",
+      body = NoteBody(text = text),
+      redactions = 0.toLong()
+    )
+  )
+}
+
+// The cap boundary itself is tested directly against the pure predicate with
+// plain integers (#1024) rather than by constructing and JSON-encoding an
+// actual multi-megabyte payload: encoding/escaping a real several-MB string
+// through the full objectsToIngestJson path is far too slow to run as a unit
+// test (the JSON canonicalizer's string handling is not built for that scale
+// and the run can take minutes) — the predicate is what objectsToIngestJson
+// itself calls, so this exercises the real cap logic, just not a real body.
+test "ingestBodyExceedsCap trips exactly at the 8 MiB boundary (#1024)" {
+  assertFalse(ingestBodyExceedsCap(0), "an empty body is nowhere near the cap")
+  assertFalse(ingestBodyExceedsCap(1000), "a small body is under the cap")
+  assertFalse(ingestBodyExceedsCap(8388608), "exactly at the cap does not exceed it")
+  assertTrue(ingestBodyExceedsCap(8388609), "one byte over the cap exceeds it")
+  assertTrue(ingestBodyExceedsCap(20000000), "a much larger body exceeds the cap")
+}
+
+test "objectsToIngestJson still succeeds for a normal-sized body under the cap" {
+  val small: List[ProvenanceObject] = newList()
+  small.add(noteStepWithText("a normal note, nowhere near the cap"))
+  match objectsToIngestJson(small) {
+    case Ok(body) -> assertTrue(body.length.toInt() < 1000, "small body encodes far under the cap")
+    case Err(e) -> assertTrue(false, "small body must not hit the cap: " + bridgeErrorMessage(e))
   }
 }

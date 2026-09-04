@@ -241,6 +241,24 @@ pub func emitFromRunnerCapture(
 /// Pure and offline (no Docker/DB/HTTP) so it is unit-testable from a
 /// `@test_module` — the runner (`docker_manager.l` `emitRunnerCheckpoint`) calls
 /// it synchronously after a successful emit, then POSTs the returned body.
+///
+/// Fail-closed cap (#1024) on the serialized body, mirroring testamur
+/// `Transport`'s byte cap (docs/capture-runtime-handoff.md §7 "Open questions"
+/// #4): a very long session (many steps) could otherwise build an unbounded
+/// in-memory string and POST body with no safety valve. `maxIngestBodyBytes`
+/// (8 MiB) comfortably covers a normal session's objects while still bounding
+/// the worst case; enforced here (the pure bridge layer, not
+/// `docker_manager.l`'s POST call) so it stays unit-testable offline and
+/// applies to every caller of this function.
+val maxIngestBodyBytes = 8388608
+
+/// Pure predicate behind the fail-closed cap below — factored out (#1024) so a
+/// test can exercise the boundary with plain integers instead of constructing
+/// (and JSON-encoding) an actual multi-megabyte payload just to cross it.
+pub func ingestBodyExceedsCap(bodyLength: in Int): Bool {
+  return bodyLength > maxIngestBodyBytes
+}
+
 pub func objectsToIngestJson(objects: in List[ProvenanceObject]): Result[String, BridgeError] {
   val items: List[JsonValue] = newList()
   var i = 0
@@ -253,5 +271,9 @@ pub func objectsToIngestJson(objects: in List[ProvenanceObject]): Result[String,
   }
   val entries: List[JsonEntry] = newList()
   entries.add(JsonEntry(key = "objects", value = JArray(items = items)))
-  return Ok(value = encodeCanonical(JObject(entries = entries)))
+  val body = encodeCanonical(JObject(entries = entries))
+  if ingestBodyExceedsCap(body.length.toInt()) {
+    return Err(error = MapFailed(detail = "ingest body of " + toString(body.length.toInt()) + " bytes exceeds the " + toString(maxIngestBodyBytes) + "-byte cap (#1024)"))
+  }
+  return Ok(value = body)
 }
