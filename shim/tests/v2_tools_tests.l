@@ -541,3 +541,256 @@ test "notifySchema declares summary as required and level as optional" {
   assertTrue(schemaJson.contains("\"level\""), "schema mentions 'level'")
   assertTrue(schemaJson.contains("\"required\""), "schema declares required fields")
 }
+
+// ── schedule_job / list_jobs / update_job / cancel_job (phase 8, #887) ───────
+test "schedule_job tool forwards name/prompt/schedule and returns the created id" {
+  val fake = newFakeV2Transport()
+  fake.scheduleJobOk = true
+  fake.scheduleJobBody = "{\"id\":\"job-1\"}"
+  val tool = ScheduleJobTool(transport = fake)
+
+  val args = Some(
+    value = JObject(
+      fields = [
+        JsonField(name = "name", value = JString(value = "nightly digest")),
+        JsonField(name = "prompt", value = JString(value = "summarize open PRs")),
+        JsonField(name = "intervalSeconds", value = JString(value = "3600"))
+      ]
+    )
+  )
+  val result = match tool.call(args) { case Ok(r) -> r; case Err(e) -> panic("unexpected Err: " + e) }
+  assertTrue(not result.isError, "a successful schedule is not a tool error")
+  assertTrue(onlyText(result).contains("job-1"), "result names the created id: " + onlyText(result))
+  assertEqual(fake.lastScheduleJobName, "nightly digest", "the name was forwarded")
+  assertEqual(fake.lastScheduleJobPrompt, "summarize open PRs", "the prompt was forwarded")
+  assertEqual(fake.lastScheduleJobIntervalSeconds, "3600", "the interval was forwarded")
+}
+
+test "schedule_job tool accepts runAtEpochMillis/intervalSeconds as JSON numbers, not just strings (#886)" {
+  val fake = newFakeV2Transport()
+  fake.scheduleJobOk = true
+  fake.scheduleJobBody = "{\"id\":\"job-2\"}"
+  val tool = ScheduleJobTool(transport = fake)
+
+  val args = Some(
+    value = JObject(
+      fields = [
+        JsonField(name = "prompt", value = JString(value = "check CI nightly")),
+        JsonField(name = "runAtEpochMillis", value = JInt(value = 1700000000000)),
+        JsonField(name = "intervalSeconds", value = JFloat(value = 3600.0))
+      ]
+    )
+  )
+  val result = match tool.call(args) { case Ok(r) -> r; case Err(e) -> panic("unexpected Err: " + e) }
+  assertTrue(not result.isError, "a JSON-number schedule is accepted: " + onlyText(result))
+  assertEqual(fake.lastScheduleJobRunAtEpochMillis, "1700000000000", "a JSON int is forwarded as its decimal string")
+  assertEqual(fake.lastScheduleJobIntervalSeconds, "3600", "a JSON float is forwarded as a whole-number string")
+}
+
+test "schedule_job tool denies for a missing prompt without contacting the host" {
+  val fake = newFakeV2Transport()
+  val tool = ScheduleJobTool(transport = fake)
+
+  val args = Some(value = JObject(fields = [JsonField(name = "intervalSeconds", value = JString(value = "3600"))]))
+  val result = match tool.call(args) { case Ok(r) -> r; case Err(e) -> panic("unexpected Err: " + e) }
+  assertTrue(result.isError, "a missing prompt is a tool error")
+  assertTrue(onlyText(result).contains("prompt"), "error names the missing field: " + onlyText(result))
+  assertEqual(fake.lastScheduleJobPrompt, "", "the host is never contacted for a malformed call")
+}
+
+test "schedule_job tool denies locally when neither runAtEpochMillis nor intervalSeconds is given (#889)" {
+  val fake = newFakeV2Transport()
+  fake.scheduleJobOk = true
+  fake.scheduleJobBody = "{\"id\":\"should-not-be-used\"}"
+  val tool = ScheduleJobTool(transport = fake)
+
+  val args = Some(value = JObject(fields = [JsonField(name = "prompt", value = JString(value = "check CI nightly"))]))
+  val result = match tool.call(args) { case Ok(r) -> r; case Err(e) -> panic("unexpected Err: " + e) }
+  assertTrue(result.isError, "omitting both schedule fields is a tool error")
+  assertTrue(
+    onlyText(result).contains("runAtEpochMillis") and onlyText(result).contains("intervalSeconds"),
+    "error names both schedule fields: " + onlyText(result)
+  )
+  assertEqual(fake.lastScheduleJobPrompt, "", "the host is never contacted when the schedule is missing")
+}
+
+test "schedule_job tool surfaces a transport failure" {
+  val fake = newFakeV2Transport()
+  fake.scheduleJobOk = false
+  fake.scheduleJobError = "connection refused"
+  val tool = ScheduleJobTool(transport = fake)
+
+  val args = Some(
+    value = JObject(
+      fields = [
+        JsonField(name = "prompt", value = JString(value = "x")),
+        JsonField(name = "intervalSeconds", value = JString(value = "3600"))
+      ]
+    )
+  )
+  val result = match tool.call(args) { case Ok(r) -> r; case Err(e) -> panic("unexpected Err: " + e) }
+  assertTrue(result.isError, "a transport failure is a tool error")
+  assertTrue(onlyText(result).contains("connection refused"), "error carries the transport failure: " + onlyText(result))
+}
+
+test "scheduleJobSchema declares only prompt as required" {
+  val schema = scheduleJobSchema()
+  val schemaJson = writeValue(schema)
+  assertTrue(schemaJson.contains("\"prompt\""), "schema mentions 'prompt'")
+  assertTrue(schemaJson.contains("\"runAtEpochMillis\""), "schema mentions 'runAtEpochMillis'")
+  assertTrue(schemaJson.contains("\"intervalSeconds\""), "schema mentions 'intervalSeconds'")
+  assertTrue(schemaJson.contains("\"required\":[\"prompt\"]"), "only 'prompt' is JSON-Schema required: " + schemaJson)
+}
+
+test "list_jobs tool returns the rendered listing" {
+  val fake = newFakeV2Transport()
+  fake.listJobsOk = true
+  fake.listJobsBody = "{\"jobs\":[{\"id\":\"job-1\",\"name\":\"n\",\"prompt\":\"digest\",\"profileId\":\"\",\"repoUrl\":\"\",\"branch\":\"\",\"harness\":\"\",\"model\":\"\",\"runAtEpochMillis\":\"\",\"intervalSeconds\":\"3600\",\"nextRunAtEpochMillis\":\"1700000000000\",\"lastRunAtEpochMillis\":\"\",\"sessionId\":\"s\",\"status\":\"active\",\"createdAt\":\"1\"}]}"
+  val tool = ListJobsTool(transport = fake)
+
+  val noArgs: Option[JsonValue] = None
+  val result = match tool.call(noArgs) { case Ok(r) -> r; case Err(e) -> panic("unexpected Err: " + e) }
+  assertTrue(not result.isError, "a successful list is not a tool error")
+  assertTrue(onlyText(result).contains("job-1"), "renders the job: " + onlyText(result))
+}
+
+test "list_jobs tool surfaces a transport failure" {
+  val fake = newFakeV2Transport()
+  fake.listJobsOk = false
+  fake.listJobsError = "connection refused"
+  val tool = ListJobsTool(transport = fake)
+
+  val noArgs: Option[JsonValue] = None
+  val result = match tool.call(noArgs) { case Ok(r) -> r; case Err(e) -> panic("unexpected Err: " + e) }
+  assertTrue(result.isError, "a transport failure is a tool error")
+  assertTrue(onlyText(result).contains("connection refused"), "error carries the transport failure: " + onlyText(result))
+}
+
+test "update_job tool forwards id/prompt/schedule/status and returns the confirmation" {
+  val fake = newFakeV2Transport()
+  fake.updateJobOk = true
+  fake.updateJobBody = "{\"id\":\"job-1\",\"name\":\"n\",\"prompt\":\"revised\",\"profileId\":\"\",\"repoUrl\":\"\",\"branch\":\"\",\"harness\":\"\",\"model\":\"\",\"runAtEpochMillis\":\"\",\"intervalSeconds\":\"7200\",\"nextRunAtEpochMillis\":\"1700000000000\",\"lastRunAtEpochMillis\":\"\",\"sessionId\":\"s\",\"status\":\"active\",\"createdAt\":\"1\"}"
+  val tool = UpdateJobTool(transport = fake)
+
+  val args = Some(
+    value = JObject(
+      fields = [
+        JsonField(name = "id", value = JString(value = "job-1")),
+        JsonField(name = "prompt", value = JString(value = "revised")),
+        JsonField(name = "intervalSeconds", value = JString(value = "7200"))
+      ]
+    )
+  )
+  val result = match tool.call(args) { case Ok(r) -> r; case Err(e) -> panic("unexpected Err: " + e) }
+  assertTrue(not result.isError, "a successful update is not a tool error")
+  assertTrue(onlyText(result).contains("revised"), "result names the new prompt: " + onlyText(result))
+  assertEqual(fake.lastUpdateJobId, "job-1", "the job id was forwarded")
+  assertEqual(fake.lastUpdateJobPrompt, "revised", "the prompt was forwarded")
+  assertEqual(fake.lastUpdateJobIntervalSeconds, "7200", "the interval was forwarded")
+}
+
+test "update_job tool accepts intervalSeconds as a JSON number (#886)" {
+  val fake = newFakeV2Transport()
+  fake.updateJobOk = true
+  fake.updateJobBody = "{\"id\":\"job-1\",\"name\":\"\",\"prompt\":\"p\",\"profileId\":\"\",\"repoUrl\":\"\",\"branch\":\"\",\"harness\":\"\",\"model\":\"\",\"runAtEpochMillis\":\"\",\"intervalSeconds\":\"3600\",\"nextRunAtEpochMillis\":\"\",\"lastRunAtEpochMillis\":\"\",\"sessionId\":\"s\",\"status\":\"active\",\"createdAt\":\"1\"}"
+  val tool = UpdateJobTool(transport = fake)
+
+  val args = Some(
+    value = JObject(
+      fields = [
+        JsonField(name = "id", value = JString(value = "job-1")),
+        JsonField(name = "intervalSeconds", value = JInt(value = 3600))
+      ]
+    )
+  )
+  val result = match tool.call(args) { case Ok(r) -> r; case Err(e) -> panic("unexpected Err: " + e) }
+  assertTrue(not result.isError, "a JSON-number interval is accepted: " + onlyText(result))
+  assertEqual(fake.lastUpdateJobIntervalSeconds, "3600", "a JSON int is forwarded as its decimal string, not dropped to ''")
+}
+
+test "update_job tool never forwards a profileId — profile changes are REST-only (docs/phase8-scheduling.md §8, #887)" {
+  val fake = newFakeV2Transport()
+  fake.updateJobOk = true
+  fake.updateJobBody = "{\"id\":\"job-1\",\"name\":\"\",\"prompt\":\"p\",\"profileId\":\"\",\"repoUrl\":\"\",\"branch\":\"\",\"harness\":\"\",\"model\":\"\",\"runAtEpochMillis\":\"\",\"intervalSeconds\":\"3600\",\"nextRunAtEpochMillis\":\"\",\"lastRunAtEpochMillis\":\"\",\"sessionId\":\"s\",\"status\":\"active\",\"createdAt\":\"1\"}"
+  val tool = UpdateJobTool(transport = fake)
+
+  // update_job's schema has no 'profileId' property at all — this asserts
+  // the guarantee holds even if a future change starts reading one.
+  val args = Some(value = JObject(fields = [JsonField(name = "id", value = JString(value = "job-1"))]))
+  val result = match tool.call(args) { case Ok(r) -> r; case Err(e) -> panic("unexpected Err: " + e) }
+  assertTrue(not result.isError, "an id-only update is valid (every other field left unchanged)")
+  assertEqual(fake.lastUpdateJobProfileId, "", "profileId is always sent empty ('leave unchanged') from the MCP tool")
+}
+
+test "update_job tool denies for a missing id without contacting the host" {
+  val fake = newFakeV2Transport()
+  val tool = UpdateJobTool(transport = fake)
+
+  val args = Some(value = JObject(fields = [JsonField(name = "prompt", value = JString(value = "revised"))]))
+  val result = match tool.call(args) { case Ok(r) -> r; case Err(e) -> panic("unexpected Err: " + e) }
+  assertTrue(result.isError, "a missing id is a tool error")
+  assertTrue(onlyText(result).contains("id"), "error names the missing field: " + onlyText(result))
+  assertEqual(fake.lastUpdateJobPrompt, "", "the host is never contacted for a malformed call")
+}
+
+test "update_job tool surfaces a host validation error" {
+  val fake = newFakeV2Transport()
+  fake.updateJobOk = false
+  fake.updateJobError = "POST .../callbacks/jobs/job-1/update failed: (400) status must be one of: active, paused, cancelled"
+  val tool = UpdateJobTool(transport = fake)
+
+  val args = Some(
+    value = JObject(
+      fields = [
+        JsonField(name = "id", value = JString(value = "job-1")),
+        JsonField(name = "status", value = JString(value = "bogus"))
+      ]
+    )
+  )
+  val result = match tool.call(args) { case Ok(r) -> r; case Err(e) -> panic("unexpected Err: " + e) }
+  assertTrue(result.isError, "a host validation error is a tool error")
+  assertTrue(onlyText(result).contains("status must be one of"), "error surfaces the host's message: " + onlyText(result))
+}
+
+test "updateJobSchema declares only id as required" {
+  val schema = updateJobSchema()
+  val schemaJson = writeValue(schema)
+  assertTrue(schemaJson.contains("\"id\""), "schema mentions 'id'")
+  assertTrue(schemaJson.contains("\"required\":[\"id\"]"), "only 'id' is JSON-Schema required: " + schemaJson)
+}
+
+test "cancel_job tool cancels and reports the cancellation" {
+  val fake = newFakeV2Transport()
+  fake.cancelJobOk = true
+  fake.cancelJobBody = "{\"id\":\"job-1\",\"name\":\"\",\"prompt\":\"p\",\"profileId\":\"\",\"repoUrl\":\"\",\"branch\":\"\",\"harness\":\"\",\"model\":\"\",\"runAtEpochMillis\":\"\",\"intervalSeconds\":\"3600\",\"nextRunAtEpochMillis\":\"\",\"lastRunAtEpochMillis\":\"\",\"sessionId\":\"s\",\"status\":\"cancelled\",\"createdAt\":\"1\"}"
+  val tool = CancelJobTool(transport = fake)
+
+  val args = Some(value = JObject(fields = [JsonField(name = "id", value = JString(value = "job-1"))]))
+  val result = match tool.call(args) { case Ok(r) -> r; case Err(e) -> panic("unexpected Err: " + e) }
+  assertTrue(not result.isError, "a successful cancel is not a tool error")
+  assertTrue(onlyText(result).contains("job-1"), "result names the cancelled job: " + onlyText(result))
+  assertEqual(fake.lastCancelJobId, "job-1", "the job id was forwarded")
+}
+
+test "cancel_job tool denies for a missing id without contacting the host" {
+  val fake = newFakeV2Transport()
+  val tool = CancelJobTool(transport = fake)
+
+  val args = Some(value = JObject(fields = newList()))
+  val result = match tool.call(args) { case Ok(r) -> r; case Err(e) -> panic("unexpected Err: " + e) }
+  assertTrue(result.isError, "a missing id is a tool error")
+  assertTrue(onlyText(result).contains("id"), "error names the missing field: " + onlyText(result))
+  assertEqual(fake.lastCancelJobId, "", "the host is never contacted for a malformed call")
+}
+
+test "cancel_job tool surfaces a transport failure" {
+  val fake = newFakeV2Transport()
+  fake.cancelJobOk = false
+  fake.cancelJobError = "connection refused"
+  val tool = CancelJobTool(transport = fake)
+
+  val args = Some(value = JObject(fields = [JsonField(name = "id", value = JString(value = "job-1"))]))
+  val result = match tool.call(args) { case Ok(r) -> r; case Err(e) -> panic("unexpected Err: " + e) }
+  assertTrue(result.isError, "a transport failure is a tool error")
+  assertTrue(onlyText(result).contains("connection refused"), "error carries the transport failure: " + onlyText(result))
+}
