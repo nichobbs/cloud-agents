@@ -4141,7 +4141,7 @@ pub func branchSession(
   val sRows = CloudAgents.Sqlite.query(CloudAgents.Db.selectSessionByIdSql(parentSessionId, userId))?
   val sLen = CloudAgents.Sqlite.getRowArrayLength(sRows)
   if sLen == 0 {
-    return Err(value = CloudAgents.Sqlite.DbError(message = "parent session not found or not owned by user"))
+    return Err(value = CloudAgents.Sqlite.ValidationFailed(message = "parent session not found or not owned by user"))
   }
   val parentRow = CloudAgents.Sqlite.getRowArrayValue(sRows, 0)
   val repoUrl = colAt(parentRow.cols, 2)
@@ -4155,12 +4155,12 @@ pub func branchSession(
     val mRows = CloudAgents.Sqlite.query(CloudAgents.Db.selectMessageByIdSql(forkedMessageId))?
     val mLen = CloudAgents.Sqlite.getRowArrayLength(mRows)
     if mLen == 0 {
-      return Err(value = CloudAgents.Sqlite.DbError(message = "forked message not found"))
+      return Err(value = CloudAgents.Sqlite.ValidationFailed(message = "forked message not found"))
     }
     val mRow = CloudAgents.Sqlite.getRowArrayValue(mRows, 0)
     val msgSessionId = colAt(mRow.cols, 1)
     if msgSessionId != parentSessionId {
-      return Err(value = CloudAgents.Sqlite.DbError(message = "forked message does not belong to parent session"))
+      return Err(value = CloudAgents.Sqlite.ValidationFailed(message = "forked message does not belong to parent session"))
     }
     targetSeq = parseNatString(colAt(mRow.cols, 4))
   }
