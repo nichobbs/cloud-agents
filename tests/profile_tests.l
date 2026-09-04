@@ -4,6 +4,7 @@ package CloudAgents.ProfileTests
 import Std.Core
 import Std.Testing
 import Std.Uuid
+import CloudAgents
 import CloudAgents.Db
 import CloudAgents.Profiles
 import CloudAgents.Repository
@@ -11,6 +12,20 @@ import CloudAgents.Sqlite
 import extern System.Environment as Env
 
 val testKey = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="
+
+// Own tiny UTF-8-decode FFI surface, mirroring CloudAgents.LibrarySeed's/
+// CloudAgents.McpServerSeed's bytesToUtf8 (see their doc comments) rather
+// than importing another package's — needed below to read the raw bytes a
+// Web.Response actually carries, since @generate(Json)'s .toJson() only
+// gives us a String to compare against, not a way to inspect the Response.
+extern type Encoding = "System.Text.Encoding"
+
+@externTarget("System.Text.Encoding.get_UTF8")
+func utf8Encoding(): Encoding = ()
+
+@externInstance
+@externTarget("System.Text.Encoding.GetString")
+func bytesToUtf8(enc: in Encoding, bytes: in slice[Byte]): String = ""
 
 // ── SQL builder tests (no database needed) ────────────────────────────────────
 test "profile SQL builders are owner-scoped and escaped" {
@@ -302,6 +317,53 @@ test "Profile CRUD round-trips with its credential grants" {
   val deleted = mustRows(deleteProfile(created.id, userId))
   assertEqualInt(deleted, 1, "delete touches one row")
   assertEqualInt(mustProfiles(listProfiles(userId)).length.toInt(), 0, "empty after delete")
+}
+
+// Regression coverage for #734: PR #729 fixed profileResp/profileListResp
+// (and ~35 other *Resp helpers in src/main.l) double-serializing their JSON
+// bodies by switching from `Web.json(200, v.toJson())` (which JSON-encodes
+// its second argument AGAIN, wrapping an already-serialized object in an
+// extra pair of quotes with every inner `"` backslash-escaped) to
+// `jsonResp(200, v.toJson())` (`Web.text` + an explicit `Content-Type:
+// application/json` header, which sends the string byte-for-byte). Neither
+// tests/main_tests.l's own Resp-helper suite (asserts only `.status` — see
+// its doc comment on Web.Response exposing no documented body accessor) nor
+// scripts/e2e-http.sh's substring `assert` (a double-encoded
+// `"{\"status\":\"ok\"}"` still contains the substring `status`) would catch
+// a reintroduction of the bug. This test reads the Response's own
+// `bodyBytes`/`contentType` fields directly to close that gap for the
+// profiles handlers.
+test "Profile Resp helpers emit the raw profile JSON, not a double-encoded JSON string (#734)" {
+  val dbPath = useFreshTestDb("profile-jsonresp")
+  defer {
+    cleanupTestDb(dbPath)
+  }
+  val p = match addProfileHandler(SaveProfileRequest(name = "json-check", harness = "", networkPolicy = "none", credentialMode = "all", credentials = [], skillIds = [], subagentIds = [], mcpServerIds = [], toolMode = "all", tools = [])) {
+    case Ok(v) -> v
+    case Err(_) -> panic("setup: profile create failed")
+  }
+
+  val single = profileResp(Ok(value = p))
+  assertEqualInt(single.status, 200, "profileResp Ok -> 200")
+  assertEqual(single.contentType, "application/json", "profileResp sets Content-Type: application/json")
+  val singleBody = bytesToUtf8(utf8Encoding(), single.bodyBytes)
+  assertEqual(
+    singleBody,
+    p.toJson(),
+    "profileResp's body is byte-identical to Profile.toJson() — a double-serialized body would instead be that string JSON-encoded again (wrapped in quotes, inner quotes backslash-escaped)"
+  )
+  assertTrue(not singleBody.startsWith("\""), "a JSON object body must start with '{', not an escaping quote")
+
+  val list = profileListResp(Ok(value = ProfileList(profiles = [p])))
+  assertEqualInt(list.status, 200, "profileListResp Ok -> 200")
+  assertEqual(list.contentType, "application/json", "profileListResp sets Content-Type: application/json")
+  val listBody = bytesToUtf8(utf8Encoding(), list.bodyBytes)
+  assertEqual(
+    listBody,
+    ProfileList(profiles = [p]).toJson(),
+    "profileListResp's body is byte-identical to ProfileList.toJson(), not double-encoded"
+  )
+  assertTrue(not listBody.startsWith("\""), "a JSON object body must start with '{', not an escaping quote")
 }
 
 test "Profile ownership scoping hides other users' profiles" {

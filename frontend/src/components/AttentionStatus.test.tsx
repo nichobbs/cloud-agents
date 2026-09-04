@@ -50,6 +50,11 @@ beforeEach(() => {
 
 afterEach(() => {
   vi.unstubAllGlobals();
+  window.history.pushState({}, '', '/');
+  Object.defineProperty(document, 'visibilityState', {
+    value: 'visible',
+    configurable: true,
+  });
 });
 
 describe('AttentionStatus', () => {
@@ -129,6 +134,30 @@ describe('AttentionStatus', () => {
         body: 'widget · main — needs your attention',
       }),
     );
+  });
+
+  it('does not fire when the transitioning session is the one currently open and visible (#936)', () => {
+    const { constructed } = stubNotification('granted');
+    localStorage.setItem('cloud_agents_notify', '1');
+    window.history.pushState({}, '', '/sessions/s1');
+    Object.defineProperty(document, 'visibilityState', {
+      value: 'visible',
+      configurable: true,
+    });
+    mockSessions = [session({ sessionId: 's1', attention: 'working' })];
+    const { rerender } = renderStatus();
+    // First sight only seeds the baseline — nothing fires yet.
+    expect(constructed).not.toHaveBeenCalled();
+
+    mockSessions = [session({ sessionId: 's1', attention: 'pending' })];
+    rerender(
+      <MemoryRouter>
+        <AttentionStatus />
+      </MemoryRouter>,
+    );
+    // The user is looking right at this session, so no Notification should
+    // interrupt them — that's the isOpenAndVisible suppression.
+    expect(constructed).not.toHaveBeenCalled();
   });
 
   it('does not fire when notifications are disabled, and does not backfire after enabling', () => {
