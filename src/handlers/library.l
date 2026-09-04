@@ -15,6 +15,7 @@ import Web
 import CloudAgents.Auth
 import CloudAgents.Repository
 import CloudAgents.Sqlite
+import CloudAgents.Streaming
 import CloudAgents.Text
 
 val maxNameLen = 128
@@ -345,14 +346,20 @@ pub func patchMissingMcpServerEnabledForUpdate(body: in String, id: in String): 
 /// not-yet-updated frontend build that predates header support wouldn't send
 /// this key at all, and `@generate(Json)`'s derived `fromJson` requires
 /// every field present regardless of this record's own Lyric-level `= []`
-/// default — so patch in an empty list when the key is absent rather than
-/// 400 at the decode boundary. Unlike `enabled`, there is no "current
-/// stored value" to preserve on update (an absent `headers` on an edit from
-/// an old client just means "this client doesn't know about headers yet",
-/// not "clear the headers"), but plain add/update forms already resend the
-/// full field set the UI knows about, and a genuinely empty list here is a
-/// harmless default either way.
-pub func patchMissingMcpServerHeaders(body: in String): String {
+/// default — so patch in `defaultHeadersJson` (already-encoded JSON array
+/// text) when the key is absent rather than 400 at the decode boundary. A
+/// body that already sends `headers` passes through unchanged.
+///
+/// The caller supplies the default rather than this always assuming `[]`,
+/// mirroring patchMissingMcpServerEnabledWithDefault exactly: on add there
+/// is no prior server, so `[]` is correct, but on update a hardcoded `[]`
+/// would silently wipe every previously-stored header the moment a stale
+/// frontend build (one that predates the `headers` field) submits an
+/// unrelated edit — mcpServerChildStatements is clear-then-reinsert for
+/// headers, so "absent" must mean "preserve", not "clear" (#1043). See
+/// patchMissingMcpServerHeadersForUpdate, which passes the server's current
+/// stored headers instead.
+func patchMissingMcpServerHeadersWithDefault(body: in String, defaultHeadersJson: in String): String {
   val doc = match Std.Json.tryParseJson(body) { case Ok(d) -> d; case Err(_) -> return body }
   defer {
     Std.Json.disposeJson(doc)
@@ -366,7 +373,41 @@ pub func patchMissingMcpServerHeaders(body: in String): String {
   if closeIdx < 0 {
     return body
   }
-  return body.substring(0, closeIdx) + ",\"headers\":[]" + body.substring(closeIdx, body.length - closeIdx)
+  return body.substring(0, closeIdx) + ",\"headers\":" + defaultHeadersJson + body.substring(closeIdx, body.length - closeIdx)
+}
+
+/// JSON-encodes a slice[String] as a JSON array of string literals, escaping
+/// each entry the same way any other hand-assembled JSON in this codebase
+/// does (CloudAgents.Streaming.jsonEscape) — used to splice a server's
+/// currently-stored headers back into a request body as valid JSON text.
+func headersToJsonArray(headers: in slice[String]): String {
+  var acc = "["
+  var i = 0
+  while i < headers.length {
+    if i > 0 {
+      acc = acc + ","
+    }
+    acc = acc + "\"" + CloudAgents.Streaming.jsonEscape(headers[i]) + "\""
+    i = i + 1
+  }
+  return acc + "]"
+}
+
+/// Used on add, where there is no prior server to preserve state from.
+pub func patchMissingMcpServerHeaders(body: in String): String {
+  return patchMissingMcpServerHeadersWithDefault(body, "[]")
+}
+
+/// Used on update: defaults a missing `headers` field to the server's
+/// current stored headers (falling back to `[]` only if the server can't be
+/// found, e.g. a bad id — the update call itself will report that error).
+pub func patchMissingMcpServerHeadersForUpdate(body: in String, id: in String): String {
+  val userId = CloudAgents.Auth.currentUserId()
+  val defaultHeadersJson = match getMcpServer(id, userId) {
+    case Ok(Some(m)) -> headersToJsonArray(m.headers)
+    case _ -> "[]"
+  }
+  return patchMissingMcpServerHeadersWithDefault(body, defaultHeadersJson)
 }
 
 /// Last index of a single-character needle, hand-rolled the same way

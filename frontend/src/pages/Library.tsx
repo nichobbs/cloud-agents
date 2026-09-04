@@ -416,7 +416,10 @@ function McpServersTab() {
       args: linesOf(argsText),
       url: url.trim(),
       env: linesOf(envText),
-      headers: linesOf(headersText),
+      // Headers only apply to url-transport servers; the textarea is hidden
+      // once transport !== 'url' but its stale text stays in state, so never
+      // submit it for a stdio server (#1047).
+      headers: transport === 'url' ? linesOf(headersText) : [],
       enabled: enabled ? '1' : '0',
     };
     try {

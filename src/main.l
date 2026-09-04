@@ -1049,8 +1049,9 @@ record RouteUpdateMcpServer {
 impl Web.Handler for RouteUpdateMcpServer {
   func handle(req: in Web.Request): Web.Response {
     val mid = pparam(req, "mid")
-    val patched = CloudAgents.Library.patchMissingMcpServerHeaders(
-      CloudAgents.Library.patchMissingMcpServerEnabledForUpdate(req.body, mid)
+    val patched = CloudAgents.Library.patchMissingMcpServerHeadersForUpdate(
+      CloudAgents.Library.patchMissingMcpServerEnabledForUpdate(req.body, mid),
+      mid
     )
     val decoded = match SaveMcpServerRequest.fromJson(patched) {
       case Ok(d) -> d

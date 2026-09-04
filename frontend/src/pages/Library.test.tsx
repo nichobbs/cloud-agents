@@ -96,6 +96,32 @@ describe('Library MCP server headers (#768)', () => {
     );
   });
 
+  it('does not submit stale headers text after switching transport away from "url" (#1047)', async () => {
+    await openMcpTab();
+
+    await userEvent.type(screen.getByLabelText('MCP server name'), 'my-server');
+    await userEvent.selectOptions(screen.getByLabelText('Transport'), 'url');
+    await userEvent.type(screen.getByLabelText('MCP server url'), 'https://example.com/mcp');
+    fireEvent.change(screen.getByLabelText('MCP server headers'), {
+      target: { value: 'Authorization=Bearer stale-value' },
+    });
+
+    // Switch to stdio before submitting — the headers textarea unmounts,
+    // but its typed text stays in component state.
+    await userEvent.selectOptions(screen.getByLabelText('Transport'), 'stdio');
+    await userEvent.type(screen.getByLabelText('MCP server command'), 'npx');
+    await userEvent.click(screen.getByRole('button', { name: 'Create MCP server' }));
+
+    expect(api.addMcpServer).toHaveBeenCalledWith(
+      expect.objectContaining({
+        name: 'my-server',
+        transport: 'stdio',
+        command: 'npx',
+        headers: [],
+      }),
+    );
+  });
+
   it('loads an existing url-transport server\'s headers back into the form for editing', async () => {
     vi.mocked(api.getMcpServers).mockResolvedValue([githubServer]);
     await openMcpTab();

@@ -256,6 +256,10 @@ test "patchMissingMcpServerEnabledForUpdate defaults a missing 'enabled' key to 
 }
 
 test "patchMissingMcpServerHeaders defaults a missing 'headers' key to an empty list and leaves a present one untouched" {
+  // add path only — there is no prior server to preserve headers from, so
+  // [] is the correct default here. See patchMissingMcpServerHeadersForUpdate
+  // below for the update path, which must preserve stored headers instead
+  // of wiping them (#1043).
   val withoutField = "{\"name\":\"gh\",\"transport\":\"url\",\"command\":\"\",\"args\":[],\"url\":\"https://example.com/mcp\",\"env\":[],\"enabled\":\"1\"}"
   val patched = patchMissingMcpServerHeaders(withoutField)
   match SaveMcpServerRequest.fromJson(patched) {
@@ -265,6 +269,85 @@ test "patchMissingMcpServerHeaders defaults a missing 'headers' key to an empty 
 
   val withField = "{\"name\":\"gh\",\"transport\":\"url\",\"command\":\"\",\"args\":[],\"url\":\"https://example.com/mcp\",\"env\":[],\"enabled\":\"1\",\"headers\":[\"Authorization=Bearer x\"]}"
   assertEqual(patchMissingMcpServerHeaders(withField), withField, "a body that already sends headers is passed through unchanged")
+}
+
+test "addMcpServerHandler with headers omitted from the decoded request stores no headers" {
+  val dbPath = useFreshTestDb("mcp-add-headers-omitted")
+  defer {
+    cleanupTestDb(dbPath)
+  }
+  // Mirrors what RouteAddMcpServer does: patch the raw body (as if a
+  // pre-#768 caller sent one without 'headers') before decoding, then hand
+  // the decoded request to the handler exactly as the route does.
+  val rawBody = "{\"name\":\"gh\",\"transport\":\"url\",\"command\":\"\",\"args\":[],\"url\":\"https://example.com/mcp\",\"env\":[],\"enabled\":\"1\"}"
+  val decoded = match SaveMcpServerRequest.fromJson(patchMissingMcpServerHeaders(rawBody)) {
+    case Ok(req) -> req
+    case Err(_) -> {
+      assertTrue(false, "patched add body should decode")
+      panic("unreachable")
+    }
+  }
+  match addMcpServerHandler(decoded) {
+    case Ok(m) -> assertEqualInt(m.headers.length.toInt(), 0, "a pre-#768 add request stores no headers, not an error")
+    case Err(_) -> assertTrue(false, "add without headers should succeed")
+  }
+}
+
+test "patchMissingMcpServerHeadersForUpdate defaults a missing 'headers' key to the server's current stored headers, not []" {
+  val dbPath = useFreshTestDb("mcp-headers-update-patch")
+  defer {
+    cleanupTestDb(dbPath)
+  }
+  val noArgs: slice[String] = []
+  val withHeader = match addMcpServerHandler(SaveMcpServerRequest(name = "gh", transport = "url", command = "", args = noArgs, url = "https://example.com/mcp", env = noArgs, headers = [r"Authorization=Bearer ${GITHUB_TOKEN}"])) {
+    case Ok(m) -> m
+    case Err(_) -> {
+      assertTrue(false, "valid server with a header should create")
+      panic("unreachable")
+    }
+  }
+  assertEqualInt(withHeader.headers.length.toInt(), 1, "header stored on create")
+
+  // A stale client that predates #768 sends an update body with no
+  // 'headers' key at all — must preserve the stored header, not wipe it.
+  val withoutField = "{\"name\":\"gh\",\"transport\":\"url\",\"command\":\"\",\"args\":[],\"url\":\"https://example.com/mcp\",\"env\":[],\"enabled\":\"1\"}"
+  val patched = patchMissingMcpServerHeadersForUpdate(withoutField, withHeader.id)
+  val decoded = match SaveMcpServerRequest.fromJson(patched) {
+    case Ok(req) -> req
+    case Err(_) -> {
+      assertTrue(false, "patched body should decode")
+      panic("unreachable")
+    }
+  }
+  assertEqualInt(decoded.headers.length.toInt(), 1, "a stale update omitting headers must preserve the server's currently-stored header, not silently wipe it (#1043)")
+  assertEqual(decoded.headers[0], r"Authorization=Bearer ${GITHUB_TOKEN}", "preserved header value matches what was stored")
+  match updateMcpServerHandler(withHeader.id, decoded) {
+    case Ok(m) -> assertEqualInt(m.headers.length.toInt(), 1, "header survives a real update that omitted 'headers' from the body")
+    case Err(_) -> assertTrue(false, "update should succeed")
+  }
+
+  // A caller that explicitly sends headers:[] means it, and must clear them.
+  val withEmptyField = "{\"name\":\"gh\",\"transport\":\"url\",\"command\":\"\",\"args\":[],\"url\":\"https://example.com/mcp\",\"env\":[],\"enabled\":\"1\",\"headers\":[]}"
+  assertEqual(patchMissingMcpServerHeadersForUpdate(withEmptyField, withHeader.id), withEmptyField, "a body that explicitly sends headers:[] is passed through unchanged, clearing them")
+  match SaveMcpServerRequest.fromJson(withEmptyField) {
+    case Ok(req) -> {
+      match updateMcpServerHandler(withHeader.id, req) {
+        case Ok(m) -> assertEqualInt(m.headers.length.toInt(), 0, "an explicit headers:[] on update clears the stored header")
+        case Err(_) -> assertTrue(false, "update should succeed")
+      }
+    }
+    case Err(_) -> assertTrue(false, "body should decode")
+  }
+
+  // A body that already sends a non-empty 'headers' passes through unchanged.
+  val withField = "{\"name\":\"gh\",\"transport\":\"url\",\"command\":\"\",\"args\":[],\"url\":\"https://example.com/mcp\",\"env\":[],\"enabled\":\"1\",\"headers\":[\"X-Other=1\"]}"
+  assertEqual(patchMissingMcpServerHeadersForUpdate(withField, withHeader.id), withField, "a body that already sends headers is passed through unchanged")
+
+  val patchedUnknownId = patchMissingMcpServerHeadersForUpdate(withoutField, "no-such-id")
+  match SaveMcpServerRequest.fromJson(patchedUnknownId) {
+    case Ok(req) -> assertEqualInt(req.headers.length.toInt(), 0, "an unknown id falls back to [] — updateMcpServerHandler itself reports the real not-found error")
+    case Err(_) -> assertTrue(false, "patched body should decode")
+  }
 }
 
 test "Skill CRUD round-trips" {
