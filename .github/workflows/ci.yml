@@ -165,10 +165,12 @@ jobs:
             scripts/install.sh \
             scripts/run-api.sh \
             scripts/e2e-http.sh \
+            scripts/test-lyric-config-env.sh \
             scripts/test-reconcile-repos.sh \
             scripts/test-opencode-entrypoint.sh \
             scripts/test-inspect-tree-fallback.sh \
             scripts/test-entrypoint-session-resume.sh \
+            scripts/test-entrypoint-privsep.sh \
             scripts/test-lyric-version-resolution.sh \
             scripts/test-split-ca-bundle.sh \
             scripts/test-mcp-server-injection.sh \
@@ -496,4 +498,16 @@ jobs:
       # against the running server (#531), so shim/bin must exist.
       - name: E2E HTTP smoke test
         run: ./scripts/e2e-http.sh
+
+      # LYRIC_CONFIG_* env-var-to-config-block wiring, end to end
+      # (nichobbs/cloud-agents#678): boots bin/CloudAgents.dll twice — once
+      # unconfigured, once with ONLY the derived
+      # LYRIC_CONFIG_CLOUDAGENTS_OAUTH_GITHUB_CLIENTID/_CLIENTSECRET names set
+      # (never the legacy CLOUD_AGENTS_GITHUB_CLIENT_ID/_SECRET fallback) —
+      # and asserts GET /api/auth/github/config reflects it. `config` blocks
+      # only populate once at process startup, so no @test_module test can
+      # exercise this path; a wrong derived env var name (the #677 regression)
+      # would otherwise compile and unit-test clean with no CI signal.
+      - name: LYRIC_CONFIG_* env wiring smoke test
+        run: ./scripts/test-lyric-config-env.sh
 

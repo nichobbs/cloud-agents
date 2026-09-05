@@ -436,6 +436,20 @@ pub func allMigrations(): slice[Migration] {
         CloudAgents.Db.alterSessionsAddForkedFromMessageIdSql(),
         CloudAgents.Db.sessionsParentIndexSql()
       ]
+    ),
+    // Makes `messages_fts` self-maintaining against any future UPDATE/DELETE
+    // on `messages` (#918): the original migration 0028 only added an AFTER
+    // INSERT trigger, safe at the time because `messages` was INSERT-only by
+    // convention, not by anything the schema enforced. These two triggers
+    // close that gap so the index can never silently desync, regardless of
+    // whether/when a message-editing or message-deletion code path is added.
+    Migration(
+      version = "0033_message_search_sync",
+      statements = [CloudAgents.Db.messageSearchUpdateTriggerSql(), CloudAgents.Db.messageSearchDeleteTriggerSql()]
+    ),
+    Migration(
+      version = "0034_mcp_server_headers",
+      statements = [CloudAgents.Db.mcpServerHeadersSchemaSql(), CloudAgents.Db.mcpServerHeadersServerIndexSql()]
     )
   ]
 }
@@ -2051,6 +2065,12 @@ pub record McpServer {
   pub createdAt: String
   pub updatedAt: String
   pub enabled: String = "1"
+  // Literal "Name=Value" HTTP header entries — only meaningful for
+  // transport 'url' (see CloudAgents.Db.mcpServerHeadersSchemaSql). No
+  // default (like `args`/`env` above): every construction site is updated
+  // explicitly rather than relying on slice-typed record-field defaults,
+  // which have no precedent elsewhere in this codebase.
+  pub headers: slice[String]
 }
 
 @generate(Json)
@@ -2285,7 +2305,14 @@ func mcpServerEnv(mcpServerId: in String, userId: in String): Result[slice[Strin
   return Ok(value = singleColumnValues(rows))
 }
 
-func rowToMcpServer(r: in CloudAgents.Sqlite.Row, args: in slice[String], env: in slice[String]): McpServer {
+func mcpServerHeaders(mcpServerId: in String, userId: in String): Result[slice[String], CloudAgents.Sqlite.DbError] {
+  val rows = CloudAgents.Sqlite.query(CloudAgents.Db.selectMcpServerHeadersSql(mcpServerId, userId))?
+  return Ok(value = singleColumnValues(rows))
+}
+
+func rowToMcpServer(
+  r: in CloudAgents.Sqlite.Row, args: in slice[String], env: in slice[String], headers: in slice[String]
+): McpServer {
   return McpServer(
     id = colAt(r.cols, 0),
     userId = colAt(r.cols, 1),
@@ -2297,19 +2324,21 @@ func rowToMcpServer(r: in CloudAgents.Sqlite.Row, args: in slice[String], env: i
     env = env,
     createdAt = colAt(r.cols, 6),
     updatedAt = colAt(r.cols, 7),
-    enabled = colAt(r.cols, 8)
+    enabled = colAt(r.cols, 8),
+    headers = headers
   )
 }
 
-/// Statements that replace an MCP server's args/env child rows: clear both,
-/// then one insert per entry, positioned by slice index — mirrors
-/// profileCredentialStatements' clear-then-reinsert shape.
+/// Statements that replace an MCP server's args/env/headers child rows:
+/// clear all three, then one insert per entry, positioned by slice index —
+/// mirrors profileCredentialStatements' clear-then-reinsert shape.
 func mcpServerChildStatements(
-  mcpServerId: in String, userId: in String, args: in slice[String], env: in slice[String]
+  mcpServerId: in String, userId: in String, args: in slice[String], env: in slice[String], headers: in slice[String]
 ): slice[String] {
   var stmts: slice[String] = []
   stmts = stmts.append(CloudAgents.Db.deleteMcpServerArgsSql(mcpServerId, userId))
   stmts = stmts.append(CloudAgents.Db.deleteMcpServerEnvSql(mcpServerId, userId))
+  stmts = stmts.append(CloudAgents.Db.deleteMcpServerHeadersSql(mcpServerId, userId))
   var ai = 0
   while ai < args.length {
     stmts = stmts.append(CloudAgents.Db.insertMcpServerArgSql(newId(), mcpServerId, userId, ai.toString(), args[ai]))
@@ -2320,10 +2349,17 @@ func mcpServerChildStatements(
     stmts = stmts.append(CloudAgents.Db.insertMcpServerEnvSql(newId(), mcpServerId, userId, ei.toString(), env[ei]))
     ei = ei + 1
   }
+  var hi = 0
+  while hi < headers.length {
+    stmts = stmts.append(
+      CloudAgents.Db.insertMcpServerHeaderSql(newId(), mcpServerId, userId, hi.toString(), headers[hi])
+    )
+    hi = hi + 1
+  }
   return stmts
 }
 
-/// Save a new MCP server and its ordered args/env.
+/// Save a new MCP server and its ordered args/env/headers.
 pub func addMcpServer(
   userId: in String,
   name: in String,
@@ -2333,12 +2369,13 @@ pub func addMcpServer(
   url: in String,
   env: in slice[String],
   enabled: in String = "1",
+  headers: in slice[String] = [],
 ): Result[McpServer, CloudAgents.Sqlite.DbError] {
   val id = newId()
   val ts = nowMillis()
   var stmts: slice[String] = []
   stmts = stmts.append(CloudAgents.Db.insertMcpServerSql(id, userId, name, transport, command, url, ts, enabled))
-  for s in mcpServerChildStatements(id, userId, args, env) {
+  for s in mcpServerChildStatements(id, userId, args, env, headers) {
     stmts = stmts.append(s)
   }
   CloudAgents.Sqlite.executeTransaction(stmts)?
@@ -2354,12 +2391,13 @@ pub func addMcpServer(
       env = env,
       createdAt = ts,
       updatedAt = ts,
-      enabled = enabled
+      enabled = enabled,
+      headers = headers
     )
   )
 }
 
-/// All of a user's MCP servers (each with its args/env), by name.
+/// All of a user's MCP servers (each with its args/env/headers), by name.
 pub func listMcpServers(userId: in String): Result[slice[McpServer], CloudAgents.Sqlite.DbError] {
   val rows = CloudAgents.Sqlite.query(CloudAgents.Db.selectMcpServersSql(userId))?
   var acc: slice[McpServer] = []
@@ -2370,7 +2408,8 @@ pub func listMcpServers(userId: in String): Result[slice[McpServer], CloudAgents
     val id = colAt(r.cols, 0)
     val args = mcpServerArgs(id, userId)?
     val env = mcpServerEnv(id, userId)?
-    acc = acc.append(rowToMcpServer(r, args, env))
+    val headers = mcpServerHeaders(id, userId)?
+    acc = acc.append(rowToMcpServer(r, args, env, headers))
     i = i + 1
   }
   return Ok(value = acc)
@@ -2392,7 +2431,8 @@ pub func getMcpServer(id: in String, userId: in String): Result[Option[McpServer
   val r = CloudAgents.Sqlite.getRowArrayValue(rows, 0)
   val args = mcpServerArgs(id, userId)?
   val env = mcpServerEnv(id, userId)?
-  return Ok(value = Some(value = rowToMcpServer(r, args, env)))
+  val headers = mcpServerHeaders(id, userId)?
+  return Ok(value = Some(value = rowToMcpServer(r, args, env, headers)))
 }
 
 /// Returns rows affected on the mcp_servers row (0 = not found / not owned) —
@@ -2409,19 +2449,20 @@ pub func updateMcpServer(
   url: in String,
   env: in slice[String],
   enabled: in String = "1",
+  headers: in slice[String] = [],
 ): Result[Int, CloudAgents.Sqlite.DbError] {
   match getMcpServer(id, userId)? {
     case None -> return Ok(value = 0)
     case Some(_) -> ()
   }
-  // Child statements (args/env clear-then-reinsert) FIRST, then the
+  // Child statements (args/env/headers clear-then-reinsert) FIRST, then the
   // mcp_servers UPDATE deliberately LAST (#598 — this previously had the
   // UPDATE first and the child statements last, the opposite of the
   // "mutation last" convention updateProfile/updatePromptWithTags establish)
   // so executeTransaction's rows-affected return (which reports the LAST
   // statement) actually reflects the mcp_servers row, not a child insert.
   var stmts: slice[String] = []
-  for s in mcpServerChildStatements(id, userId, args, env) {
+  for s in mcpServerChildStatements(id, userId, args, env, headers) {
     stmts = stmts.append(s)
   }
   stmts = stmts.append(
@@ -2446,6 +2487,7 @@ pub func deleteMcpServer(id: in String, userId: in String): Result[Int, CloudAge
   )
   stmts = stmts.append(CloudAgents.Db.deleteMcpServerArgsSql(id, userId))
   stmts = stmts.append(CloudAgents.Db.deleteMcpServerEnvSql(id, userId))
+  stmts = stmts.append(CloudAgents.Db.deleteMcpServerHeadersSql(id, userId))
   stmts = stmts.append(CloudAgents.Db.deleteMcpServerSql(id, userId))
   val affected = CloudAgents.Sqlite.executeTransaction(stmts)?
   return Ok(value = affected)

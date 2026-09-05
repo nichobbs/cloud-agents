@@ -147,7 +147,8 @@ test "the curated catalog's enabled/disabled defaults match the design: credenti
     val s = servers[i]
     if s.name == "github" {
       assertEqual(s.enabled, "0", "github ships disabled until GITHUB_TOKEN is granted")
-      assertTrue(s.env.length.toInt() > 0, "github references a credential env var")
+      assertEqual(s.transport, "url", "github is a url-transport (hosted) server, not the deprecated npm package (#768)")
+      assertTrue(s.headers.length.toInt() > 0, "github references a credential via an Authorization header")
     }
     if s.name == "playwright" {
       assertEqual(s.enabled, "0", "playwright ships disabled (heavier footprint, opt-in)")
@@ -160,6 +161,35 @@ test "the curated catalog's enabled/disabled defaults match the design: credenti
     }
     i = i + 1
   }
+
+  cleanupTestDb(dbPath)
+}
+
+test "the seeded github server points at the hosted GitHub MCP endpoint with a bearer-token Authorization header (#768)" {
+  Env.SetEnvironmentVariable("CLOUD_AGENTS_SEED_MCP_SERVERS_DIR", "")
+  val dbPath = useFreshTestDb("mcp-server-seed-github-url")
+  val userId = "gh-mcp-seed-test-user-github-url"
+
+  seedDefaultMcpServersIfEmpty(userId)
+
+  val servers = match CloudAgents.Repository.listMcpServers(userId) {
+    case Ok(s) -> s
+    case Err(_) -> []
+  }
+  var found = false
+  var i = 0
+  while i < servers.length.toInt() {
+    val s = servers[i]
+    if s.name == "github" {
+      found = true
+      assertEqual(s.url, "https://api.githubcopilot.com/mcp/", "github points at the hosted GitHub MCP endpoint, not the deprecated npm package")
+      assertEqualInt(s.headers.length.toInt(), 1, "exactly one header entry")
+      assertEqual(s.headers[0], r"Authorization=Bearer ${GITHUB_TOKEN}", "header carries a bearer token referencing the GITHUB_TOKEN credential")
+      assertEqualInt(s.env.length.toInt(), 0, "no env entries — the credential now flows through the header, not env")
+    }
+    i = i + 1
+  }
+  assertTrue(found, "github is present in the seeded catalog")
 
   cleanupTestDb(dbPath)
 }

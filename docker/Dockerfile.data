@@ -7,8 +7,15 @@
 
 FROM claude-code:base
 
+# Root for the install below; the base image already ends as root, see the
+# note at the bottom of this file for why this must not be reverted at the end.
 USER root
 RUN pip3 install --no-cache-dir --break-system-packages \
         pandas numpy jupyter
 
-USER claude-user
+# Deliberately NO trailing `USER claude-user` (#1048): docker/Dockerfile ends
+# as root so docker/entrypoint.sh can run its root-only prelude (host CA
+# trust, home-volume ownership heal, vault credential restore, git
+# safe.directory) before dropping to claude-user itself (#652). A tool pack
+# that ended as claude-user would start non-root and silently skip that
+# prelude, so it must inherit the base image's root start.

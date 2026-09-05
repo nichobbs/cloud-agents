@@ -15,6 +15,7 @@ import Web
 import CloudAgents.Auth
 import CloudAgents.Repository
 import CloudAgents.Sqlite
+import CloudAgents.Streaming
 import CloudAgents.Text
 
 val maxNameLen = 128
@@ -30,6 +31,8 @@ val maxMcpFieldLen = 4096
 val maxMcpArgCount = 64
 
 val maxMcpEnvCount = 64
+
+val maxMcpHeaderCount = 64
 
 func dbError(e: in CloudAgents.Sqlite.DbError): Web.ApiError {
   return Web.internalError(CloudAgents.Sqlite.dbErrorMessage(e))
@@ -67,6 +70,9 @@ pub func isValidMcpTransport(t: in String): Bool {
 /// half non-empty) — checked with `.contains`/`.substring` rather than
 /// splitting on "=" (String.split is undocumented-as-working in this
 /// toolchain; docs/lyric/gotchas.md), since storage keeps the entry whole.
+/// Reused as-is for a url-transport server's `headers` entries (#768,
+/// "Name=Value" HTTP headers) — same "NAME=VALUE" shape, same delimiter
+/// hazard at injection time (docker/inject-library.sh), same fix.
 /// Also rejects any raw control character (below U+0020, including NUL and
 /// a literal newline) in the entry, mirroring the C0-range stripping
 /// docker/entrypoint.sh already does for GITHUB_TOKEN et al
@@ -280,6 +286,10 @@ pub record SaveMcpServerRequest {
   pub url: String
   pub env: slice[String]
   pub enabled: String = "1"
+  // "Name=Value" HTTP header entries, only meaningful for transport "url"
+  // (#768 — lets a url-transport server carry e.g. an Authorization header
+  // for a hosted remote MCP endpoint). Same shape/validation as `env`.
+  pub headers: slice[String] = []
 }
 
 /// Same last-'}'-splice trick as CloudAgents.Profiles.patchMissingToolFields
@@ -329,6 +339,75 @@ pub func patchMissingMcpServerEnabledForUpdate(body: in String, id: in String): 
     case _ -> "1"
   }
   return patchMissingMcpServerEnabledWithDefault(body, defaultEnabled)
+}
+
+/// Same last-'}'-splice trick as patchMissingMcpServerEnabledWithDefault,
+/// applied to `headers` (#768, the newest field on this request shape): a
+/// not-yet-updated frontend build that predates header support wouldn't send
+/// this key at all, and `@generate(Json)`'s derived `fromJson` requires
+/// every field present regardless of this record's own Lyric-level `= []`
+/// default — so patch in `defaultHeadersJson` (already-encoded JSON array
+/// text) when the key is absent rather than 400 at the decode boundary. A
+/// body that already sends `headers` passes through unchanged.
+///
+/// The caller supplies the default rather than this always assuming `[]`,
+/// mirroring patchMissingMcpServerEnabledWithDefault exactly: on add there
+/// is no prior server, so `[]` is correct, but on update a hardcoded `[]`
+/// would silently wipe every previously-stored header the moment a stale
+/// frontend build (one that predates the `headers` field) submits an
+/// unrelated edit — mcpServerChildStatements is clear-then-reinsert for
+/// headers, so "absent" must mean "preserve", not "clear" (#1043). See
+/// patchMissingMcpServerHeadersForUpdate, which passes the server's current
+/// stored headers instead.
+func patchMissingMcpServerHeadersWithDefault(body: in String, defaultHeadersJson: in String): String {
+  val doc = match Std.Json.tryParseJson(body) { case Ok(d) -> d; case Err(_) -> return body }
+  defer {
+    Std.Json.disposeJson(doc)
+  }
+  val root = Std.Json.rootElement(doc)
+  match Std.Json.tryGetProperty(root, "headers") {
+    case Some(_) -> return body
+    case None -> ()
+  }
+  val closeIdx = lastIndexOfChar(body, "}")
+  if closeIdx < 0 {
+    return body
+  }
+  return body.substring(0, closeIdx) + ",\"headers\":" + defaultHeadersJson + body.substring(closeIdx, body.length - closeIdx)
+}
+
+/// JSON-encodes a slice[String] as a JSON array of string literals, escaping
+/// each entry the same way any other hand-assembled JSON in this codebase
+/// does (CloudAgents.Streaming.jsonEscape) — used to splice a server's
+/// currently-stored headers back into a request body as valid JSON text.
+func headersToJsonArray(headers: in slice[String]): String {
+  var acc = "["
+  var i = 0
+  while i < headers.length {
+    if i > 0 {
+      acc = acc + ","
+    }
+    acc = acc + "\"" + CloudAgents.Streaming.jsonEscape(headers[i]) + "\""
+    i = i + 1
+  }
+  return acc + "]"
+}
+
+/// Used on add, where there is no prior server to preserve state from.
+pub func patchMissingMcpServerHeaders(body: in String): String {
+  return patchMissingMcpServerHeadersWithDefault(body, "[]")
+}
+
+/// Used on update: defaults a missing `headers` field to the server's
+/// current stored headers (falling back to `[]` only if the server can't be
+/// found, e.g. a bad id — the update call itself will report that error).
+pub func patchMissingMcpServerHeadersForUpdate(body: in String, id: in String): String {
+  val userId = CloudAgents.Auth.currentUserId()
+  val defaultHeadersJson = match getMcpServer(id, userId) {
+    case Ok(Some(m)) -> headersToJsonArray(m.headers)
+    case _ -> "[]"
+  }
+  return patchMissingMcpServerHeadersWithDefault(body, defaultHeadersJson)
 }
 
 /// Last index of a single-character needle, hand-rolled the same way
@@ -384,6 +463,16 @@ func validateSaveMcpServer(req: in SaveMcpServerRequest): Option[Web.ApiError] {
     }
     ei = ei + 1
   }
+  if req.headers.length > maxMcpHeaderCount {
+    return Some(value = Web.badRequest("too many header entries (max 64)"))
+  }
+  var hi = 0
+  while hi < req.headers.length {
+    if not isValidMcpEnvEntry(req.headers[hi]) {
+      return Some(value = Web.badRequest("header entries must be non-empty 'Name=Value' pairs"))
+    }
+    hi = hi + 1
+  }
   return None
 }
 
@@ -405,7 +494,7 @@ pub func addMcpServerHandler(req: in SaveMcpServerRequest): Result[McpServer, We
     case Ok(None) -> ()
     case Err(e) -> return Err(dbError(e))
   }
-  match addMcpServer(userId, req.name, req.transport, req.command, req.args, req.url, req.env, req.enabled) {
+  match addMcpServer(userId, req.name, req.transport, req.command, req.args, req.url, req.env, req.enabled, req.headers) {
     case Ok(m) -> return Ok(m)
     case Err(e) -> return Err(dbError(e))
   }
@@ -425,7 +514,7 @@ pub func updateMcpServerHandler(id: in String, req: in SaveMcpServerRequest): Re
     case Ok(None) -> ()
     case Err(e) -> return Err(dbError(e))
   }
-  val affected = match updateMcpServer(id, userId, req.name, req.transport, req.command, req.args, req.url, req.env, req.enabled) {
+  val affected = match updateMcpServer(id, userId, req.name, req.transport, req.command, req.args, req.url, req.env, req.enabled, req.headers) {
     case Ok(n) -> n
     case Err(e) -> return Err(dbError(e))
   }

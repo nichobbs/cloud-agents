@@ -99,13 +99,19 @@ register_callbacks_mcp() {
             command -v jq >/dev/null 2>&1 || return 0
             local file="$ws/opencode.json"
             [ -f "$file" ] || printf '{}' > "$file"
+            # Excluded from git unconditionally (#1045), whether or not
+            # callbacks are active this run: this is the same file that
+            # carries the live callback token when they ARE active, so an
+            # agent's `git add -A && git push` with callbacks off must not
+            # be able to catch a token a LATER message writes here. Matches
+            # entrypoint.sh's unconditional treatment of .claude/mcp.json.
+            exclude_from_git "$ws" "opencode.json"
             local write="$active"
             if [ "$write" = "1" ] && is_git_tracked "$ws" "opencode.json"; then
                 echo "register-callbacks-mcp: opencode.json is git-tracked in this repo; refusing to write the callback token into it (cloud-agents tools unavailable for this harness here)" >&2
                 write=0
             fi
             if [ "$write" = "1" ]; then
-                exclude_from_git "$ws" "opencode.json"
                 # OpenCode's local-MCP shape (type/command-array/environment)
                 # per its current config schema — distinct from
                 # inject-library.sh's generic {command,args,env} guess for
@@ -135,13 +141,15 @@ register_callbacks_mcp() {
             local file="$ws/.gemini/settings.json"
             mkdir -p "$ws/.gemini"
             [ -f "$file" ] || printf '{}' > "$file"
+            # Excluded from git unconditionally (#1045) — see the opencode
+            # case above for why this can't wait for callbacks to be active.
+            exclude_from_git "$ws" ".gemini/settings.json"
             local write="$active"
             if [ "$write" = "1" ] && is_git_tracked "$ws" ".gemini/settings.json"; then
                 echo "register-callbacks-mcp: .gemini/settings.json is git-tracked in this repo; refusing to write the callback token into it (cloud-agents tools unavailable for this harness here)" >&2
                 write=0
             fi
             if [ "$write" = "1" ]; then
-                exclude_from_git "$ws" ".gemini/settings.json"
                 apply_to_file "$file" jq \
                    --arg url "${CLOUD_AGENTS_API_URL:-}" \
                    --arg tok "${CLOUD_AGENTS_CALLBACK_TOKEN:-}" \
@@ -173,6 +181,9 @@ register_callbacks_mcp() {
             local end="# END cloud-agents-callbacks-mcp"
             mkdir -p "$ws/.codex"
             [ -f "$file" ] || : > "$file"
+            # Excluded from git unconditionally (#1045) — see the opencode
+            # case above for why this can't wait for callbacks to be active.
+            exclude_from_git "$ws" ".codex/config.toml"
             local write="$active"
             if [ "$write" = "1" ] && is_git_tracked "$ws" ".codex/config.toml"; then
                 echo "register-callbacks-mcp: .codex/config.toml is git-tracked in this repo; refusing to write the callback token into it (cloud-agents tools unavailable for this harness here)" >&2
@@ -191,7 +202,6 @@ register_callbacks_mcp() {
                 ' "$file" || return 1
             fi
             if [ "$write" = "1" ]; then
-                exclude_from_git "$ws" ".codex/config.toml"
                 {
                     printf '%s\n' "$begin"
                     printf '[mcp_servers.cloud-agents]\n'

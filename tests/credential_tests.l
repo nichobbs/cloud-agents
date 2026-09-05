@@ -139,6 +139,23 @@ test "Credential handler rejects invalid and reserved names" {
     case Ok(_) -> assertTrue(false, "reserved name LD_PRELOAD must be rejected")
     case Err(err) -> assertEqualInt(err.status, 400, "reserved name -> 400")
   }
+  // The whole CLOUD_AGENTS_ prefix is reserved (#1041): a credential named
+  // CLOUD_AGENTS_ENTRYPOINT_STAGE=user would, if storable, be injected
+  // verbatim as a container env var and could otherwise be used to try to
+  // trick docker/entrypoint.sh's root-only prelude into thinking it had
+  // already dropped privilege (that decision is now gated on `id -u`, not
+  // this var, but the name is denylisted here too as defense in depth).
+  match putCredentialHandler(PutCredentialRequest(name = "CLOUD_AGENTS_ENTRYPOINT_STAGE", value = "user")) {
+    case Ok(_) -> assertTrue(false, "reserved name CLOUD_AGENTS_ENTRYPOINT_STAGE must be rejected")
+    case Err(err) -> assertEqualInt(err.status, 400, "reserved name -> 400")
+  }
+  // Any other CLOUD_AGENTS_-prefixed name is reserved too, not just the one
+  // above — the whole prefix is denylisted (mirrors inject-library.sh's
+  // expand_env_value deny-list).
+  match putCredentialHandler(PutCredentialRequest(name = "CLOUD_AGENTS_SOMETHING_ELSE", value = "x")) {
+    case Ok(_) -> assertTrue(false, "reserved prefix CLOUD_AGENTS_ must be rejected")
+    case Err(err) -> assertEqualInt(err.status, 400, "reserved prefix -> 400")
+  }
   // Malformed env-var names rejected too.
   match putCredentialHandler(PutCredentialRequest(name = "1BAD", value = "x")) {
     case Ok(_) -> assertTrue(false, "leading digit must be rejected")

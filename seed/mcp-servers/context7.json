@@ -5,5 +5,6 @@
   "args": ["-y", "@upstash/context7-mcp"],
   "url": "",
   "env": [],
-  "enabled": "1"
+  "enabled": "1",
+  "headers": []
 }

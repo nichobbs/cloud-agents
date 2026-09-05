@@ -60,6 +60,17 @@ func mkMessage(sessionId: in String, content: in String): Unit {
   }
 }
 
+// Same as mkMessage, but returns the freshly minted id so a test can target
+// that exact row with a raw UPDATE/DELETE (used by the #918 sync-trigger
+// tests below).
+func mkMessageReturningId(sessionId: in String, content: in String): String {
+  val m = match CloudAgents.Repository.addMessage(sessionId, "user", content) {
+    case Ok(msg) -> msg
+    case Err(e) -> panic("addMessage failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+  }
+  return m.id
+}
+
 // ── buildFts5MatchExpr: pure tokenizer/escaper ────────────────────────────────
 test "buildFts5MatchExpr wraps a single word as a quoted prefix token" {
   assertEqual(CloudAgents.Search.buildFts5MatchExpr("scheduled"), "\"scheduled\"*", "one word -> one quoted-prefix token")
@@ -291,6 +302,70 @@ test "searchMessagesHandler only ever returns the calling user's own messages" {
       assertEqualInt(result.messages.length.toInt(), 1, "bob sees only his own matching message")
       assertEqual(result.messages[0].content, "bob's secret roadmap notes", "it's bob's own content")
     }
+    case Err(e) -> assertTrue(false, "expected a successful search: " + toString(e.status))
+  }
+}
+
+// ── messages_fts sync triggers (#918) ─────────────────────────────────────────
+// `messages` is still INSERT-only in application code, but the index itself
+// must not silently desync if that ever changes. These drive raw UPDATE/
+// DELETE statements straight at `messages` (bypassing the app's own
+// INSERT-only repository API on purpose) to prove the AFTER UPDATE OF
+// content / AFTER DELETE triggers added in migration 0033 keep
+// `messages_fts` correct regardless of how the row changed.
+test "messages_fts stays in sync when a message's content is updated" {
+  val dbPath = useFreshTestDb("search-sync-update")
+  defer {
+    cleanupTestDb(dbPath)
+  }
+  CloudAgents.Auth.setCurrentUserId("default")
+  val sid = "sess-search-sync-update"
+  mkSession(sid)
+  val id = mkMessageReturningId(sid, "the original stew recipe")
+
+  match CloudAgents.Sqlite.execute(
+    "UPDATE messages SET content = " + CloudAgents.Db.sqlLiteral("a brand new casserole recipe") + " WHERE id = " +
+      CloudAgents.Db.sqlLiteral(id)
+  ) {
+    case Ok(_) -> ()
+    case Err(e) -> assertTrue(false, "UPDATE messages failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+  }
+
+  match CloudAgents.Search.searchMessagesHandler("stew") {
+    case Ok(result) -> assertEqualInt(result.messages.length.toInt(), 0, "the old content must no longer match")
+    case Err(e) -> assertTrue(false, "expected a successful search: " + toString(e.status))
+  }
+  match CloudAgents.Search.searchMessagesHandler("casserole") {
+    case Ok(result) -> {
+      assertEqualInt(result.messages.length.toInt(), 1, "the new content must match")
+      assertEqual(result.messages[0].content, "a brand new casserole recipe", "the updated content is what's returned")
+    }
+    case Err(e) -> assertTrue(false, "expected a successful search: " + toString(e.status))
+  }
+}
+
+test "messages_fts stays in sync when a message is deleted" {
+  val dbPath = useFreshTestDb("search-sync-delete")
+  defer {
+    cleanupTestDb(dbPath)
+  }
+  CloudAgents.Auth.setCurrentUserId("default")
+  val sid = "sess-search-sync-delete"
+  mkSession(sid)
+  val id = mkMessageReturningId(sid, "a message about deletionprobe topics")
+
+  match CloudAgents.Search.searchMessagesHandler("deletionprobe") {
+    case Ok(result) -> assertEqualInt(result.messages.length.toInt(), 1, "the message is findable before deletion")
+    case Err(e) -> assertTrue(false, "expected a successful search: " + toString(e.status))
+  }
+
+  match CloudAgents.Sqlite.execute("DELETE FROM messages WHERE id = " + CloudAgents.Db.sqlLiteral(id)) {
+    case Ok(_) -> ()
+    case Err(e) -> assertTrue(false, "DELETE FROM messages failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+  }
+
+  match CloudAgents.Search.searchMessagesHandler("deletionprobe") {
+    case Ok(result) -> assertEqualInt(result.messages.length.toInt(), 0, "a deleted message must never surface in search")
     case Err(e) -> assertTrue(false, "expected a successful search: " + toString(e.status))
   }
 }

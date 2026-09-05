@@ -193,7 +193,10 @@ export interface Subagent {
 /// on the profile for anything secret; an env value can reference that
 /// credential by name (e.g. "GITHUB_PERSONAL_ACCESS_TOKEN=${GITHUB_TOKEN}")
 /// and docker/inject-library.sh expands it against the container's real
-/// environment at injection time.
+/// environment at injection time. `headers` entries are the same
+/// "Name=Value" shape, but only meaningful for transport 'url' (#768) — a
+/// hosted remote MCP server that needs e.g. an Authorization header, since
+/// there's no stdio env to carry a credential reference through instead.
 export interface McpServer {
   id: string;
   userId: string;
@@ -203,6 +206,7 @@ export interface McpServer {
   args: string[]; // stdio only, ordered
   url: string; // url only
   env: string[]; // "KEY=VALUE" entries, stdio only
+  headers: string[]; // "Name=Value" entries, url only
   createdAt: string;
   updatedAt: string;
   enabled: string; // '1' | '0' — '0' is saved but withheld from every container injection
