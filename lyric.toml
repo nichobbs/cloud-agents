@@ -41,6 +41,8 @@ output_assembly = "CloudAgents.dll"
 "CloudAgents.Capture.GitDiff" = "src/capture/git_diff.l"
 "CloudAgents.CheckpointBridge" = "src/capture/checkpoint_bridge.l"
 "CloudAgents.PermissionEnrichment" = "src/capture/permission_enrichment.l"
+"CloudAgents.GraphIngestOutbox" = "src/capture/graph_ingest_outbox.l"
+"CloudAgents.GraphIngestDrain" = "src/handlers/graph_ingest_drain.l"
 # Vendored verbatim from nichobbs/testamur (see vendor/testamur-checkpoint-format/
 # VENDORED.md). Package names kept identical to upstream so content addresses match
 # and the eventual NuGet swap is a manifest-only change.
@@ -111,6 +113,7 @@ output_assembly = "CloudAgents.dll"
 "CloudAgents.GroupsTests" = "tests/groups_tests.l"
 "CloudAgents.WorkspaceTests" = "tests/workspace_tests.l"
 "CloudAgents.AttachmentTests" = "tests/attachment_tests.l"
+"CloudAgents.GraphIngestOutboxTests" = "tests/graph_ingest_outbox_tests.l"
 
 [nuget]
 "Lyric.Web"             = "0.4.36"

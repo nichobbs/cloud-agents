@@ -99,11 +99,46 @@ pub union Transition {
 /// Compute the next state for a (current state, event) pair.
 pub func nextStatus(current: in SessionStatus, event: in SessionEvent): Transition {
   return match current {
-    case Created -> match event { case CloneStarted -> To(status = Cloning); case Deleted -> To(status = Destroyed); case CloneFinished -> Invalid; case MessageReceived -> Invalid; case ProcessExited -> Invalid; case IdleTimeout -> Invalid }
-    case Cloning -> match event { case CloneFinished -> To(status = Idle); case Deleted -> To(status = Destroyed); case CloneStarted -> Invalid; case MessageReceived -> Invalid; case ProcessExited -> Invalid; case IdleTimeout -> Invalid }
-    case Idle -> match event { case MessageReceived -> To(status = Running); case Deleted -> To(status = Destroyed); case CloneStarted -> Invalid; case CloneFinished -> Invalid; case ProcessExited -> Invalid; case IdleTimeout -> Invalid }
-    case Running -> match event { case ProcessExited -> To(status = Warm); case Deleted -> To(status = Destroyed); case CloneStarted -> Invalid; case CloneFinished -> Invalid; case MessageReceived -> Invalid; case IdleTimeout -> Invalid }
-    case Warm -> match event { case MessageReceived -> To(status = Running); case IdleTimeout -> To(status = Idle); case Deleted -> To(status = Destroyed); case CloneStarted -> Invalid; case CloneFinished -> Invalid; case ProcessExited -> Invalid }
+    case Created -> match event {
+      case CloneStarted -> To(status = Cloning)
+      case Deleted -> To(status = Destroyed)
+      case CloneFinished -> Invalid
+      case MessageReceived -> Invalid
+      case ProcessExited -> Invalid
+      case IdleTimeout -> Invalid
+    }
+    case Cloning -> match event {
+      case CloneFinished -> To(status = Idle)
+      case Deleted -> To(status = Destroyed)
+      case CloneStarted -> Invalid
+      case MessageReceived -> Invalid
+      case ProcessExited -> Invalid
+      case IdleTimeout -> Invalid
+    }
+    case Idle -> match event {
+      case MessageReceived -> To(status = Running)
+      case Deleted -> To(status = Destroyed)
+      case CloneStarted -> Invalid
+      case CloneFinished -> Invalid
+      case ProcessExited -> Invalid
+      case IdleTimeout -> Invalid
+    }
+    case Running -> match event {
+      case ProcessExited -> To(status = Warm)
+      case Deleted -> To(status = Destroyed)
+      case CloneStarted -> Invalid
+      case CloneFinished -> Invalid
+      case MessageReceived -> Invalid
+      case IdleTimeout -> Invalid
+    }
+    case Warm -> match event {
+      case MessageReceived -> To(status = Running)
+      case IdleTimeout -> To(status = Idle)
+      case Deleted -> To(status = Destroyed)
+      case CloneStarted -> Invalid
+      case CloneFinished -> Invalid
+      case ProcessExited -> Invalid
+    }
     case Destroyed -> Invalid
   }
 }
@@ -1290,8 +1325,7 @@ pub func selectSessionEventsAfterSeqSql(sessionId: in String, afterSeq: in Strin
 /// in one indexed range query covering the whole incoming batch rather than one
 /// query per event.
 pub func selectSessionEventsBySeqRangeSql(sessionId: in String, minSeq: in String, maxSeq: in String): String {
-  return "SELECT seq, payload, hash FROM session_events " + "WHERE session_id = " +
-    sqlLiteral(sessionId) +
+  return "SELECT seq, payload, hash FROM session_events " + "WHERE session_id = " + sqlLiteral(sessionId) +
     " AND CAST(seq AS INTEGER) >= CAST(" +
     sqlLiteral(minSeq) +
     " AS INTEGER)" +
@@ -1818,8 +1852,7 @@ pub func mcpServerEnvSchemaSql(): String {
 /// need an `Authorization` header docker/inject-library.sh's url-transport
 /// rendering previously had no way to emit).
 pub func mcpServerHeadersSchemaSql(): String {
-  return "CREATE TABLE IF NOT EXISTS mcp_server_headers (" + "id TEXT PRIMARY KEY, " +
-    "mcp_server_id TEXT NOT NULL, " +
+  return "CREATE TABLE IF NOT EXISTS mcp_server_headers (" + "id TEXT PRIMARY KEY, " + "mcp_server_id TEXT NOT NULL, " +
     "user_id TEXT NOT NULL, " +
     "position TEXT NOT NULL, " +
     "value TEXT NOT NULL)"
@@ -2156,8 +2189,7 @@ pub func insertMcpServerHeaderSql(
   position: in String,
   value: in String,
 ): String {
-  return "INSERT INTO mcp_server_headers (id, mcp_server_id, user_id, position, value) VALUES (" + sqlLiteral(id) +
-    ", " +
+  return "INSERT INTO mcp_server_headers (id, mcp_server_id, user_id, position, value) VALUES (" + sqlLiteral(id) + ", " +
     sqlLiteral(mcpServerId) +
     ", " +
     sqlLiteral(userId) +
@@ -3769,8 +3801,7 @@ pub func restoreScheduledJobNextRunAtSql(id: in String, nextRunAt: in String): S
 /// long-crashed job is simply due again immediately on the next poll instead
 /// of computing a next_run_at already in the past.
 pub func recoverStrandedScheduledJobsSql(nowMillis: in String): String {
-  return "UPDATE scheduled_jobs SET next_run_at = CAST(MAX(" +
-    "CASE WHEN interval_seconds <> '' AND last_run_at <> '' " +
+  return "UPDATE scheduled_jobs SET next_run_at = CAST(MAX(" + "CASE WHEN interval_seconds <> '' AND last_run_at <> '' " +
     "THEN CAST(last_run_at AS INTEGER) + CAST(interval_seconds AS INTEGER) * 1000 " +
     "ELSE CAST(run_at AS INTEGER) END, CAST(" +
     sqlLiteral(nowMillis) +
@@ -3872,4 +3903,186 @@ pub func updateScheduledJobSql(
 /// DELETE a job scoped by owner.
 pub func deleteScheduledJobSql(id: in String, userId: in String): String {
   return "DELETE FROM scheduled_jobs WHERE id = " + sqlLiteral(id) + " AND user_id = " + sqlLiteral(userId)
+}
+
+// ─── Graph ingest outbox (durable runner → platform handoff, docs/capture-ingest-outbox.md) ──
+//
+// Durable, at-least-once replacement for the runner's fire-and-forget POST of
+// a session's emitted Testamur provenance objects to the platform's
+// `POST /api/ingest` (docs/capture-runtime-handoff.md §5/§9). `body` is the
+// EXACT canonical JSON `CloudAgents.CheckpointBridge.objectsToIngestJson`
+// produced — the outbox never re-serializes, so a retried delivery sends
+// byte-identical bytes to the first attempt. `url` is snapshotted at enqueue
+// time (not re-read from env at drain time), so a later change to
+// CLOUDAGENTS_GRAPH_INGEST_URL never redirects an already-queued row. The
+// bearer token is DELIBERATELY not a column — CloudAgents.GraphIngestDrain
+// reads CLOUDAGENTS_GRAPH_INGEST_TOKEN fresh from the environment at send
+// time, so a stored row never carries a secret.
+//
+// `attempts`/`next_attempt_at`/`last_error`/`delivered_at` are all TEXT,
+// matching this schema's convention; `next_attempt_at` and `delivered_at` are
+// epoch-millis digit strings compared via `CAST ... AS INTEGER` exactly like
+// `scheduled_jobs.next_run_at`. `delivered_at = ''` is the "not yet
+// delivered" sentinel (the same empty-string-as-null idiom `session_id`/
+// `last_run_at` use elsewhere in this file) — a delivered row is excluded
+// from the due scan by that check alone, so `next_attempt_at` need not be
+// cleared on success. A row that has exhausted its retry budget
+// (CloudAgents.GraphIngestOutbox.isTerminal) is likewise excluded forever by
+// setting `next_attempt_at` to `terminalSentinelMillis` (a far-future epoch
+// value) rather than adding a fourth boolean state column — `last_error`'s
+// `"TERMINAL (max attempts reached): "` prefix (see
+// CloudAgents.GraphIngestOutbox.terminalErrorMessage) is what an operator
+// actually reads to tell a terminal row apart from one merely awaiting its
+// next retry.
+//
+// `UNIQUE(session_id, body_hash)` + `INSERT ... ON CONFLICT DO NOTHING`
+// (mirroring `insertWebhookSql`'s idempotent-register idiom) makes
+// re-enqueuing the exact same (session, body) pair — e.g. a caller that
+// retries `emitRunnerCheckpoint` after a partial failure and reproduces
+// byte-identical mapped objects — a no-op rather than a duplicate row.
+// `body_hash` (not `body` itself) carries the uniqueness constraint so
+// SQLite's index is over a fixed-size column, not a potentially-large TEXT
+// value; it is written at insert time and never read back (the SELECT list
+// below omits it).
+val graphIngestOutboxColumns = "id, session_id, body, url, created_at, attempts, next_attempt_at, last_error, delivered_at"
+
+/// DDL for the durable graph-ingest outbox.
+pub func graphIngestOutboxSchemaSql(): String {
+  return "CREATE TABLE IF NOT EXISTS graph_ingest_outbox (" + "id TEXT PRIMARY KEY, " + "session_id TEXT NOT NULL, " +
+    "body TEXT NOT NULL, " +
+    "body_hash TEXT NOT NULL, " +
+    "url TEXT NOT NULL, " +
+    "created_at TEXT NOT NULL, " +
+    "attempts TEXT NOT NULL, " +
+    "next_attempt_at TEXT NOT NULL, " +
+    "last_error TEXT NOT NULL, " +
+    "delivered_at TEXT NOT NULL, " +
+    "UNIQUE(session_id, body_hash))"
+}
+
+/// Due-scan index: every drain call filters on (delivered_at, next_attempt_at)
+/// together, mirroring scheduledJobsDueIndexSql's (status, next_run_at) shape.
+pub func graphIngestOutboxDueIndexSql(): String {
+  return "CREATE INDEX IF NOT EXISTS idx_graph_ingest_outbox_due ON graph_ingest_outbox(delivered_at, next_attempt_at)"
+}
+
+/// INSERT a new outbox row: attempts starts '0', next_attempt_at starts at
+/// createdAt (immediately due — the caller attempts delivery synchronously
+/// right after enqueuing anyway; only a failure ever needs the row to wait),
+/// last_error/delivered_at start empty. Idempotent per (session_id,
+/// body_hash) via ON CONFLICT DO NOTHING.
+pub func insertGraphIngestOutboxSql(
+  id: in String,
+  sessionId: in String,
+  body: in String,
+  bodyHash: in String,
+  url: in String,
+  createdAt: in String,
+): String {
+  return "INSERT INTO graph_ingest_outbox (id, session_id, body, body_hash, url, created_at, attempts, next_attempt_at, last_error, delivered_at) VALUES (" +
+    sqlLiteral(id) +
+    ", " +
+    sqlLiteral(sessionId) +
+    ", " +
+    sqlLiteral(body) +
+    ", " +
+    sqlLiteral(bodyHash) +
+    ", " +
+    sqlLiteral(url) +
+    ", " +
+    sqlLiteral(createdAt) +
+    ", '0', " +
+    sqlLiteral(createdAt) +
+    ", '', '') ON CONFLICT(session_id, body_hash) DO NOTHING"
+}
+
+/// Read a row back by its natural (session_id, body_hash) key — used right
+/// after the idempotent insert above to return the actually-persisted row
+/// (mirroring selectWebhookByUrlSql: an ON CONFLICT DO NOTHING insert for an
+/// already-queued/already-delivered pair must return that existing row's
+/// real state, not freshly-minted '0'/''-attempt values).
+pub func selectGraphIngestOutboxBySessionAndHashSql(sessionId: in String, bodyHash: in String): String {
+  return "SELECT " + graphIngestOutboxColumns + " FROM graph_ingest_outbox WHERE session_id = " + sqlLiteral(sessionId) +
+    " AND body_hash = " +
+    sqlLiteral(bodyHash)
+}
+
+/// Every undelivered row whose next_attempt_at has arrived, earliest-due
+/// first, capped at `limit` rows — the same shape as
+/// selectDueScheduledJobsSql, unscoped by user (the outbox spans every
+/// tenant's runner-emitted sessions).
+pub func selectDueGraphIngestOutboxSql(nowMillis: in String, limit: in Int): String {
+  return "SELECT " + graphIngestOutboxColumns +
+    " FROM graph_ingest_outbox WHERE delivered_at = '' AND CAST(next_attempt_at AS INTEGER) <= CAST(" +
+    sqlLiteral(nowMillis) +
+    " AS INTEGER) ORDER BY CAST(next_attempt_at AS INTEGER) ASC LIMIT " +
+    toString(limit)
+}
+
+/// Record a retryable delivery failure: bump attempts, store the (bounded)
+/// error, and schedule the next attempt at `now + delayMillis` — computed
+/// entirely in SQL (`CAST(... AS INTEGER) + delayMillis`) so Lyric application
+/// code never adds an Int delay to a Long epoch-millis value (see
+/// CloudAgents.GraphIngestOutbox's module doc). `delayMillis` is always a
+/// small, code-computed non-negative Int (CloudAgents.GraphIngestOutbox.
+/// backoffDelayMillis, capped at maxDelayMillis), never user input, so it is
+/// embedded as a plain integer literal rather than through sqlLiteral.
+/// Guarded on `delivered_at = ''` so a race against a concurrent successful
+/// delivery of the same row can't un-deliver it.
+pub func updateGraphIngestOutboxAttemptSql(
+  id: in String,
+  attempts: in String,
+  error: in String,
+  nowMillis: in String,
+  delayMillis: in Int,
+): String {
+  return "UPDATE graph_ingest_outbox SET attempts = " + sqlLiteral(attempts) + ", last_error = " + sqlLiteral(error) +
+    ", next_attempt_at = CAST(CAST(" +
+    sqlLiteral(nowMillis) +
+    " AS INTEGER) + " +
+    toString(delayMillis) +
+    " AS TEXT) WHERE id = " +
+    sqlLiteral(id) +
+    " AND delivered_at = ''"
+}
+
+/// Record that a row has exhausted its retry budget
+/// (CloudAgents.GraphIngestOutbox.isTerminal): bump attempts, store the
+/// terminal-labelled error, and push next_attempt_at out to
+/// terminalSentinelMillis so it is permanently excluded from the due scan.
+/// Guarded on `delivered_at = ''` for the same race-safety reason as
+/// updateGraphIngestOutboxAttemptSql.
+pub func updateGraphIngestOutboxTerminalSql(id: in String, attempts: in String, error: in String): String {
+  return "UPDATE graph_ingest_outbox SET attempts = " + sqlLiteral(attempts) + ", last_error = " + sqlLiteral(error) +
+    ", next_attempt_at = '99999999999999' WHERE id = " +
+    sqlLiteral(id) +
+    " AND delivered_at = ''"
+}
+
+/// Mark a row delivered (and clear any stale last_error from prior failed
+/// attempts — a successfully-delivered row's error history is no longer
+/// interesting). Guarded on `delivered_at = ''` so a concurrent double-drain
+/// racing on the same row is a harmless second no-op UPDATE (0 rows
+/// affected), not a corrupted double-delivered-timestamp overwrite.
+pub func updateGraphIngestOutboxDeliveredSql(id: in String, deliveredAt: in String): String {
+  return "UPDATE graph_ingest_outbox SET delivered_at = " + sqlLiteral(deliveredAt) + ", last_error = '' WHERE id = " +
+    sqlLiteral(id) +
+    " AND delivered_at = ''"
+}
+
+/// Permanently DELETE delivered rows older than `retentionDays` — run by the
+/// drain handler on every call so the table doesn't grow unbounded on a
+/// long-lived deployment (the outbox is a transit buffer, not an audit log;
+/// the platform is the durable record of what was ingested). The retention
+/// cutoff (`retentionDays * 86400000`) is computed in SQL, the same "let
+/// SQLite's 64-bit integer arithmetic do it" reasoning as
+/// recoverStrandedScheduledJobsSql above — `retentionDays` is a small Int
+/// (e.g. 30), but `retentionDays * 86400000` (30 days in millis) already
+/// exceeds Int32's range, so this must never be computed in Lyric.
+pub func pruneDeliveredGraphIngestOutboxSql(nowMillis: in String, retentionDays: in Int): String {
+  return "DELETE FROM graph_ingest_outbox WHERE delivered_at <> '' AND CAST(delivered_at AS INTEGER) < (CAST(" +
+    sqlLiteral(nowMillis) +
+    " AS INTEGER) - " +
+    toString(retentionDays) +
+    " * 86400000)"
 }

@@ -445,11 +445,18 @@ pub func allMigrations(): slice[Migration] {
     // whether/when a message-editing or message-deletion code path is added.
     Migration(
       version = "0033_message_search_sync",
-      statements = [CloudAgents.Db.messageSearchUpdateTriggerSql(), CloudAgents.Db.messageSearchDeleteTriggerSql()]
+      statements = [
+        CloudAgents.Db.messageSearchUpdateTriggerSql(),
+        CloudAgents.Db.messageSearchDeleteTriggerSql()
+      ]
     ),
     Migration(
       version = "0034_mcp_server_headers",
       statements = [CloudAgents.Db.mcpServerHeadersSchemaSql(), CloudAgents.Db.mcpServerHeadersServerIndexSql()]
+    ),
+    Migration(
+      version = "0035_graph_ingest_outbox",
+      statements = [CloudAgents.Db.graphIngestOutboxSchemaSql(), CloudAgents.Db.graphIngestOutboxDueIndexSql()]
     )
   ]
 }
@@ -1071,7 +1078,10 @@ pub func deleteCredential(userId: in String, name: in String): Result[Int, Cloud
       if name == "GITHUB_TOKEN" {
         match deleteGitHubOAuthRefresh(userId) {
           case Ok(_) -> ()
-          case Err(e) -> println("NOTE: could not drop GitHub OAuth refresh metadata after deleting GITHUB_TOKEN: " + credentialErrorMessage(e))
+          case Err(e) -> println(
+            "NOTE: could not drop GitHub OAuth refresh metadata after deleting GITHUB_TOKEN: " +
+              credentialErrorMessage(e)
+          )
         }
       }
     }
@@ -2311,7 +2321,10 @@ func mcpServerHeaders(mcpServerId: in String, userId: in String): Result[slice[S
 }
 
 func rowToMcpServer(
-  r: in CloudAgents.Sqlite.Row, args: in slice[String], env: in slice[String], headers: in slice[String]
+  r: in CloudAgents.Sqlite.Row,
+  args: in slice[String],
+  env: in slice[String],
+  headers: in slice[String],
 ): McpServer {
   return McpServer(
     id = colAt(r.cols, 0),
@@ -2333,7 +2346,11 @@ func rowToMcpServer(
 /// clear all three, then one insert per entry, positioned by slice index —
 /// mirrors profileCredentialStatements' clear-then-reinsert shape.
 func mcpServerChildStatements(
-  mcpServerId: in String, userId: in String, args: in slice[String], env: in slice[String], headers: in slice[String]
+  mcpServerId: in String,
+  userId: in String,
+  args: in slice[String],
+  env: in slice[String],
+  headers: in slice[String],
 ): slice[String] {
   var stmts: slice[String] = []
   stmts = stmts.append(CloudAgents.Db.deleteMcpServerArgsSql(mcpServerId, userId))
@@ -3842,9 +3859,7 @@ pub func appendSessionEvents(
     }
     i = i + 1
   }
-  val existingRows = CloudAgents.Sqlite.query(
-    CloudAgents.Db.selectSessionEventsBySeqRangeSql(sessionId, toString(minSeq), toString(maxSeq))
-  )?
+  val existingRows = CloudAgents.Sqlite.query(CloudAgents.Db.selectSessionEventsBySeqRangeSql(sessionId, toString(minSeq), toString(maxSeq)))?
   val existingLen = CloudAgents.Sqlite.getRowArrayLength(existingRows)
   i = 0
   while i < events.length.toInt() {
@@ -4223,7 +4238,6 @@ pub func deleteScheduledJob(id: in String, userId: in String): Result[Int, Cloud
 }
 
 // ─── Chat Thread Branching ────────────────────────────────────────────────────
-
 record IdMapEntry {
   pub oldId: String
   pub newId: String
@@ -4303,22 +4317,7 @@ pub func branchSession(
   val actualBranch = if newBranch.length > 0 { newBranch } else { parentBranch }
   val ts = nowMillis()
 
-  CloudAgents.Sqlite.execute(
-    CloudAgents.Db.insertBranchedSessionSql(
-      newSessionId,
-      userId,
-      repoUrl,
-      actualBranch,
-      "",
-      harness,
-      model,
-      newSessionId,
-      ts,
-      groupId,
-      parentSessionId,
-      forkedMessageId
-    )
-  )?
+  CloudAgents.Sqlite.execute(CloudAgents.Db.insertBranchedSessionSql(newSessionId, userId, repoUrl, actualBranch, "", harness, model, newSessionId, ts, groupId, parentSessionId, forkedMessageId))?
 
   // Profile clone
   val profRows = CloudAgents.Sqlite.query(CloudAgents.Db.selectSessionProfileIdSql(parentSessionId, userId))?
@@ -4335,15 +4334,7 @@ pub func branchSession(
   var rIdx = 0
   while rIdx < repoLen {
     val rRow = CloudAgents.Sqlite.getRowArrayValue(repoRows, rIdx)
-    CloudAgents.Sqlite.execute(
-      CloudAgents.Db.insertSessionRepoSql(
-        newId(),
-        newSessionId,
-        colAt(rRow.cols, 2),
-        colAt(rRow.cols, 3),
-        ts
-      )
-    )?
+    CloudAgents.Sqlite.execute(CloudAgents.Db.insertSessionRepoSql(newId(), newSessionId, colAt(rRow.cols, 2), colAt(rRow.cols, 3), ts))?
     rIdx = rIdx + 1
   }
 
@@ -4399,9 +4390,7 @@ pub func branchSession(
       val sizeBytes = colAt(aRow.cols, 7)
       val attCreatedAt = colAt(aRow.cols, 8)
       val newAttId = newId()
-      CloudAgents.Sqlite.execute(
-        CloudAgents.Db.insertSessionAttachmentSql(newAttId, newSessionId, fileName, storedName, mimeType, kind, sizeBytes, attCreatedAt)
-      )?
+      CloudAgents.Sqlite.execute(CloudAgents.Db.insertSessionAttachmentSql(newAttId, newSessionId, fileName, storedName, mimeType, kind, sizeBytes, attCreatedAt))?
       if newMappedMsgId.length > 0 {
         CloudAgents.Sqlite.execute(CloudAgents.Db.setSessionAttachmentMessageIdSql(newAttId, newMappedMsgId))?
       }
@@ -4456,4 +4445,137 @@ pub func branchSession(
   }
 
   return Ok(value = ())
+}
+
+// ─── Graph ingest outbox (docs/capture-ingest-outbox.md) ────────────────────
+//
+// Durable, at-least-once storage for the runner's provenance-object POST to
+// the platform's graph service, replacing the old fire-and-forget send.
+// `CloudAgents.GraphIngestDrain` (src/handlers/graph_ingest_drain.l) is the
+// only caller of the write accessors below — this layer is pure storage,
+// same division as the webhook outbox above.
+/// One durable outbox row: a session's emitted graph-ingest body, its
+/// delivery destination, and its retry state.
+@generate(Json)
+pub record GraphIngestOutboxRow {
+  pub id: String
+  pub sessionId: String
+  pub body: String
+  pub url: String
+  pub createdAt: String
+  pub attempts: String
+  pub nextAttemptAt: String
+  pub lastError: String
+  pub deliveredAt: String
+}
+
+func rowToGraphIngestOutbox(r: in CloudAgents.Sqlite.Row): GraphIngestOutboxRow {
+  return GraphIngestOutboxRow(
+    id = colAt(r.cols, 0),
+    sessionId = colAt(r.cols, 1),
+    body = colAt(r.cols, 2),
+    url = colAt(r.cols, 3),
+    createdAt = colAt(r.cols, 4),
+    attempts = colAt(r.cols, 5),
+    nextAttemptAt = colAt(r.cols, 6),
+    lastError = colAt(r.cols, 7),
+    deliveredAt = colAt(r.cols, 8)
+  )
+}
+
+/// Enqueue a session's emitted ingest body for durable delivery. Idempotent
+/// per (sessionId, body) — a byte-identical re-enqueue (e.g. a retried
+/// `emitRunnerCheckpoint` reproducing the same mapped objects) returns the
+/// EXISTING row (whatever its current attempts/delivered state actually is)
+/// rather than minting a duplicate, mirroring `addWebhook`'s
+/// insert-then-read-back-by-natural-key idiom for an `ON CONFLICT DO NOTHING`
+/// insert. The caller (`CloudAgents.GraphIngestDrain.enqueueAndAttemptDelivery`)
+/// only attempts an immediate delivery when the returned row's `deliveredAt`
+/// is still empty, so re-enqueuing an already-delivered body never re-POSTs.
+pub func enqueueGraphIngest(
+  sessionId: in String, body: in String, url: in String
+): Result[GraphIngestOutboxRow, CloudAgents.Sqlite.DbError] {
+  val bodyHash = CloudAgents.Crypto.sha256Base64(body)
+  val id = newId()
+  val ts = nowMillis()
+  CloudAgents.Sqlite.execute(CloudAgents.Db.insertGraphIngestOutboxSql(id, sessionId, body, bodyHash, url, ts))?
+  val rows = CloudAgents.Sqlite.query(CloudAgents.Db.selectGraphIngestOutboxBySessionAndHashSql(sessionId, bodyHash))?
+  val len = CloudAgents.Sqlite.getRowArrayLength(rows)
+  if len == 0 {
+    // Defensive: we just inserted (or an identical row already existed), so a
+    // row should be present; fall back to the freshly-minted values rather
+    // than error out of what should always succeed.
+    return Ok(
+      value = GraphIngestOutboxRow(
+        id = id,
+        sessionId = sessionId,
+        body = body,
+        url = url,
+        createdAt = ts,
+        attempts = "0",
+        nextAttemptAt = ts,
+        lastError = "",
+        deliveredAt = ""
+      )
+    )
+  }
+  return Ok(value = rowToGraphIngestOutbox(CloudAgents.Sqlite.getRowArrayValue(rows, 0)))
+}
+
+/// Every undelivered row whose `next_attempt_at` has arrived (or a row just
+/// enqueued, whose `next_attempt_at` starts at its `created_at` — see
+/// `insertGraphIngestOutboxSql`), earliest-due first, capped at `limit`.
+/// System-wide (unscoped by user), matching `dueScheduledJobs`' maintenance-
+/// sweep shape.
+pub func dueGraphIngest(
+  nowMillisStr: in String, limit: in Int
+): Result[slice[GraphIngestOutboxRow], CloudAgents.Sqlite.DbError] {
+  val rows = CloudAgents.Sqlite.query(CloudAgents.Db.selectDueGraphIngestOutboxSql(nowMillisStr, limit))?
+  val acc: List[GraphIngestOutboxRow] = newList()
+  var i = 0
+  val len = CloudAgents.Sqlite.getRowArrayLength(rows)
+  while i < len {
+    acc.add(rowToGraphIngestOutbox(CloudAgents.Sqlite.getRowArrayValue(rows, i)))
+    i = i + 1
+  }
+  return Ok(value = acc.toArray())
+}
+
+/// Record a retryable delivery failure: bump `attempts` to the caller-computed
+/// new count, store the (already-bounded) error, and schedule the next
+/// attempt at `nowMillisStr + delayMillis` (computed in SQL — see
+/// `updateGraphIngestOutboxAttemptSql`'s doc comment). Returns rows affected
+/// (0 if the row was concurrently delivered or no longer exists).
+pub func markGraphIngestAttempt(
+  id: in String,
+  newAttempts: in String,
+  error: in String,
+  nowMillisStr: in String,
+  delayMillis: in Int,
+): Result[Int, CloudAgents.Sqlite.DbError] {
+  return CloudAgents.Sqlite.execute(
+    CloudAgents.Db.updateGraphIngestOutboxAttemptSql(id, newAttempts, error, nowMillisStr, delayMillis)
+  )
+}
+
+/// Record that a row has exhausted its retry budget: bump `attempts`, store
+/// the terminal-labelled error, and push `next_attempt_at` out to the
+/// permanent-exclusion sentinel. Returns rows affected.
+pub func markGraphIngestTerminal(
+  id: in String, newAttempts: in String, error: in String
+): Result[Int, CloudAgents.Sqlite.DbError] {
+  return CloudAgents.Sqlite.execute(CloudAgents.Db.updateGraphIngestOutboxTerminalSql(id, newAttempts, error))
+}
+
+/// Mark a row delivered. Returns rows affected (0 = already delivered by a
+/// concurrent drain, or the row no longer exists).
+pub func markGraphIngestDelivered(id: in String, deliveredAt: in String): Result[Int, CloudAgents.Sqlite.DbError] {
+  return CloudAgents.Sqlite.execute(CloudAgents.Db.updateGraphIngestOutboxDeliveredSql(id, deliveredAt))
+}
+
+/// Delete delivered rows older than `retentionDays`. Returns rows deleted.
+/// Best-effort housekeeping — a caller (`CloudAgents.GraphIngestDrain`) runs
+/// this on every drain call and doesn't fail the drain if it errors.
+pub func pruneDeliveredGraphIngest(retentionDays: in Int): Result[Int, CloudAgents.Sqlite.DbError] {
+  return CloudAgents.Sqlite.execute(CloudAgents.Db.pruneDeliveredGraphIngestOutboxSql(nowMillis(), retentionDays))
 }

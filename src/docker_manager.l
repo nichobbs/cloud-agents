@@ -15,7 +15,7 @@ import CloudAgents.Sqlite
 import CloudAgents.Streaming
 import CloudAgents.Capture.Render
 import CloudAgents.CheckpointBridge
-import CloudAgents.GitHubApi
+import CloudAgents.GraphIngestDrain
 import CloudAgents.Workspace
 
 pub record ResultCell {
@@ -103,7 +103,6 @@ func taskWaitMs[T](t: in T, timeoutMs: in Int): Bool = false
 // this package and `CloudAgents.Highlights` call one extern binding instead
 // of each declaring its own copy of the same binding and safety-margin
 // reasoning.
-
 /// Docker image name for the given harness.
 func imageForHarness(harness: in String): String {
   if harness == "codex" {
@@ -193,7 +192,10 @@ pub async func createRunnerContainer(
     case Err(_) -> ()
   }
   match Std.Environment.getVar("NODE_EXTRA_CA_CERTS") {
-    case Ok(v) -> if v.length > 0 { envs = envs.append("NODE_EXTRA_CA_CERTS=/etc/host-ca.pem"); binds = binds.append(v + ":/etc/host-ca.pem:ro") }
+    case Ok(v) -> if v.length > 0 {
+      envs = envs.append("NODE_EXTRA_CA_CERTS=/etc/host-ca.pem")
+      binds = binds.append(v + ":/etc/host-ca.pem:ro")
+    }
     case Err(_) -> ()
   }
 
@@ -220,7 +222,10 @@ pub async func createRunnerContainer(
           envs = envs.append("CLOUD_AGENTS_CALLBACK_TIMEOUT_MS=" + timeoutOverride)
         }
       }
-      case Err(e) -> println("WARNING: failed to mint MCP-callback token for session " + sessionId + ": " + CloudAgents.Sqlite.dbErrorMessage(e))
+      case Err(e) -> println(
+        "WARNING: failed to mint MCP-callback token for session " + sessionId + ": " +
+          CloudAgents.Sqlite.dbErrorMessage(e)
+      )
     }
   }
 
@@ -269,7 +274,10 @@ pub async func createRunnerContainer(
         envs = envs.append("CLOUD_AGENTS_ENABLED_TOOLS=" + toolsEnv)
       }
     }
-    case Err(e) -> println("WARNING: failed to resolve enabled tools for session " + sessionId + ": " + CloudAgents.Sqlite.dbErrorMessage(e))
+    case Err(e) -> println(
+      "WARNING: failed to resolve enabled tools for session " + sessionId + ": " +
+        CloudAgents.Sqlite.dbErrorMessage(e)
+    )
   }
 
   // Inject the library items the profile grants (skills, subagents, MCP
@@ -286,7 +294,10 @@ pub async func createRunnerContainer(
         envs = envs.append("CLOUD_AGENTS_SKILLS_B64=" + base64Json(SkillList(skills = skills).toJson()))
       }
     }
-    case Err(e) -> println("WARNING: failed to load granted skills for session " + sessionId + ": " + CloudAgents.Sqlite.dbErrorMessage(e))
+    case Err(e) -> println(
+      "WARNING: failed to load granted skills for session " + sessionId + ": " +
+        CloudAgents.Sqlite.dbErrorMessage(e)
+    )
   }
   match CloudAgents.Repository.subagentsForProfile(userId, profileId) {
     case Ok(subagents) -> {
@@ -294,7 +305,10 @@ pub async func createRunnerContainer(
         envs = envs.append("CLOUD_AGENTS_SUBAGENTS_B64=" + base64Json(SubagentList(subagents = subagents).toJson()))
       }
     }
-    case Err(e) -> println("WARNING: failed to load granted subagents for session " + sessionId + ": " + CloudAgents.Sqlite.dbErrorMessage(e))
+    case Err(e) -> println(
+      "WARNING: failed to load granted subagents for session " + sessionId + ": " +
+        CloudAgents.Sqlite.dbErrorMessage(e)
+    )
   }
   match CloudAgents.Repository.mcpServersForProfile(userId, profileId) {
     case Ok(mcpServers) -> {
@@ -302,7 +316,10 @@ pub async func createRunnerContainer(
         envs = envs.append("CLOUD_AGENTS_MCP_SERVERS_B64=" + base64Json(McpServerList(mcpServers = mcpServers).toJson()))
       }
     }
-    case Err(e) -> println("WARNING: failed to load granted MCP servers for session " + sessionId + ": " + CloudAgents.Sqlite.dbErrorMessage(e))
+    case Err(e) -> println(
+      "WARNING: failed to load granted MCP servers for session " + sessionId + ": " +
+        CloudAgents.Sqlite.dbErrorMessage(e)
+    )
   }
 
   // Resolve the profile's network policy: sets the container NetworkMode and,
@@ -575,30 +592,30 @@ func sessionContainerId(sessionId: in String): String {
 /// AND the completion signal. A bug in this loop can't corrupt the run or the
 /// persisted transcript — worst case the live view is imperfect and the client
 /// reloads the transcript. On a client disconnect (writeChunk `Err`) the
-// Best-effort end-of-run provenance emission (Testamur ADR-0016;
-// docs/capture-checkpoint.md §8). After a SUCCESSFUL run, capture the workspace
-// `git diff HEAD` via the existing inspect container, build the runner's
-// invocation context, and emit the Testamur checkpoint-format objects from the
-// raw NDJSON (`cell.output`) threaded with the diff. Logs a structured summary;
-// the objects' real destination is the platform graph — that cross-repo handoff
-// stays deferred, so for now they are logged, never persisted.
-//
-// OPT-IN (#1020): gated behind the `CLOUDAGENTS_CAPTURE_CHECKPOINTS` env flag,
-// OFF by default. Until the graph handoff makes the emitted objects useful (today
-// `treeHash` is `None`, so no terminal checkpoint is produced and the objects are
-// only logged), the emission would add a synchronous second inspect-container
-// round trip (`runInspectContainer`, up to `inspectWallClockCapMs`) to the hot
-// path of EVERY successful run — a real latency cost for a currently-inert result.
-// So with the flag unset this returns immediately (zero added cost); operators
-// running provenance capture set the flag to opt in. `enabled` values: "1"/"true".
-//
-// NEVER fails the run: an inspect/diff-capture or mapping failure is logged and
-// swallowed. This helper is a plain sync func (no new `await`), so it is not
-// exposed to the lyric-lang#6249 await-value-loss trap; keep it out of
-// `runSessionMessageAsync`. Not directly unit-testable (its `CloudAgents.Docker`/
-// `CloudAgents.Workspace` reach makes it unreachable from a @test_module); the pure
-// logic it delegates to (`emitFromRunnerCapture`) IS unit-tested on real fixtures.
 func captureCheckpointsEnabled(): Bool {
+  // Best-effort end-of-run provenance emission (Testamur ADR-0016;
+  // docs/capture-checkpoint.md §8). After a SUCCESSFUL run, capture the workspace
+  // `git diff HEAD` via the existing inspect container, build the runner's
+  // invocation context, and emit the Testamur checkpoint-format objects from the
+  // raw NDJSON (`cell.output`) threaded with the diff. Logs a structured summary;
+  // the objects' real destination is the platform graph — that cross-repo handoff
+  // stays deferred, so for now they are logged, never persisted.
+  //
+  // OPT-IN (#1020): gated behind the `CLOUDAGENTS_CAPTURE_CHECKPOINTS` env flag,
+  // OFF by default. Until the graph handoff makes the emitted objects useful (today
+  // `treeHash` is `None`, so no terminal checkpoint is produced and the objects are
+  // only logged), the emission would add a synchronous second inspect-container
+  // round trip (`runInspectContainer`, up to `inspectWallClockCapMs`) to the hot
+  // path of EVERY successful run — a real latency cost for a currently-inert result.
+  // So with the flag unset this returns immediately (zero added cost); operators
+  // running provenance capture set the flag to opt in. `enabled` values: "1"/"true".
+  //
+  // NEVER fails the run: an inspect/diff-capture or mapping failure is logged and
+  // swallowed. This helper is a plain sync func (no new `await`), so it is not
+  // exposed to the lyric-lang#6249 await-value-loss trap; keep it out of
+  // `runSessionMessageAsync`. Not directly unit-testable (its `CloudAgents.Docker`/
+  // `CloudAgents.Workspace` reach makes it unreachable from a @test_module); the pure
+  // logic it delegates to (`emitFromRunnerCapture`) IS unit-tested on real fixtures.
   val v = Std.Environment.getVarOrDefault("CLOUDAGENTS_CAPTURE_CHECKPOINTS", "")
   return v == "1" or v == "true"
 }
@@ -643,46 +660,59 @@ func emitRunnerCheckpoint(
   // Principal is the AGENT (#1019): id carries the `agent:` convention the mapper
   // relies on, display is the harness name; the model is its own separate arg.
   // Passing Some(tree) (M1.2) makes the vendored mapper emit a terminal checkpoint.
-  val ctx = runnerContext("agent:" + harness, harness, "/workspace", CloudAgents.Repository.nowRfc3339Utc(), prompt, model, "auto", tree)
+  val ctx = runnerContext(
+    "agent:" + harness,
+    harness,
+    "/workspace",
+    CloudAgents.Repository.nowRfc3339Utc(),
+    prompt,
+    model,
+    "auto",
+    tree
+  )
   match emitFromRunnerCapture(rawNdjson, diffText, ctx) {
     case Ok(mapping) -> {
       var cpid = "(steps-only)"
       match mapping.checkpointId {
-        case Some(c) -> { cpid = c }
+        case Some(c) -> {
+          cpid = c
+        }
         case None -> ()
       }
-      println("checkpoint: session=" + sessionId + " objects=" + toString(mapping.objects.count) + " mapped=" + toString(mapping.mappedEvents) + " notes=" + toString(mapping.noteEvents) + " checkpoint=" + cpid)
-      // Runtime graph handoff (M1.2, docs/capture-runtime-handoff.md §5): POST the
-      // emitted objects to the platform's `POST /api/ingest` (objects form),
-      // best-effort. Empty URL ⇒ log-only (today's behavior exactly); empty token ⇒
-      // skip (never POST unauthenticated); non-http(s) URL ⇒ skip and warn (§3
-      // fail-closed). All failures are logged and swallowed — never fails the run.
-      // Synchronous (no new `await`, so #6249-safe). Serialize + POST are inlined
-      // here (not a typed helper) so docker_manager needn't name the vendored
-      // `StreamJsonMapping`/`ProvenanceObject` types — `mapping` is accessed
-      // structurally, and `objectsToIngestJson` (CloudAgents.CheckpointBridge)
-      // takes/returns already-in-scope shapes.
-      val ingestUrl = Std.Environment.getVarOrDefault("CLOUDAGENTS_GRAPH_INGEST_URL", "")
-      if ingestUrl != "" {
-        val ingestToken = Std.Environment.getVarOrDefault("CLOUDAGENTS_GRAPH_INGEST_TOKEN", "")
-        if not (ingestUrl.startsWith("http://") or ingestUrl.startsWith("https://")) {
-          println("WARNING: graph ingest URL is not http(s), skipping POST for session " + sessionId + ": " + ingestUrl)
-        } else if ingestToken == "" {
-          println("WARNING: graph ingest URL set but token empty; skipping POST for session " + sessionId)
-        } else {
-          match objectsToIngestJson(mapping.objects) {
-            case Err(se) -> println("WARNING: checkpoint serialize failed for session " + sessionId + ": " + bridgeErrorMessage(se))
-            case Ok(body) -> {
-              match CloudAgents.GitHubApi.httpPostJsonWithBearerTimeout(ingestUrl, body, ingestToken, "CloudAgents-runner/checkpoint-ingest", 15000) {
-                case Ok(_) -> println("checkpoint: POST ok session=" + sessionId + " objects=" + toString(mapping.objects.count) + " url=" + ingestUrl)
-                case Err(m2) -> println("WARNING: checkpoint POST failed for session " + sessionId + ": " + m2)
-              }
-            }
-          }
-        }
+      println(
+        "checkpoint: session=" + sessionId + " objects=" + toString(mapping.objects.count) + " mapped=" +
+          toString(mapping.mappedEvents) +
+          " notes=" +
+          toString(mapping.noteEvents) +
+          " checkpoint=" +
+          cpid
+      )
+      // Durable runtime graph handoff (docs/capture-ingest-outbox.md, superseding
+      // the at-most-once fire-and-forget POST docs/capture-runtime-handoff.md §5
+      // originally shipped): serialize the emitted objects, then hand the body to
+      // the durable outbox (CloudAgents.GraphIngestDrain), which enqueues it
+      // BEFORE attempting one immediate delivery — so a delivery failure leaves a
+      // row for POST /api/maintenance/drain-graph-ingest to retry with backoff,
+      // instead of silently dropping the session's provenance. Still best-effort
+      // (every failure logged and swallowed, never fails the run) and synchronous
+      // (no new `await`, so #6249-safe). Serialize is inlined here (not a typed
+      // helper) so docker_manager needn't name the vendored `StreamJsonMapping`/
+      // `ProvenanceObject` types — `mapping` is accessed structurally, and
+      // `objectsToIngestJson` (CloudAgents.CheckpointBridge) takes/returns
+      // already-in-scope shapes. Env var reads (URL/token) and the "no
+      // destination configured" no-op live inside
+      // CloudAgents.GraphIngestDrain.enqueueAndAttemptDelivery — see its doc
+      // comment — so this call site no longer duplicates that logic.
+      match objectsToIngestJson(mapping.objects) {
+        case Err(se) -> println(
+          "WARNING: checkpoint serialize failed for session " + sessionId + ": " + bridgeErrorMessage(se)
+        )
+        case Ok(body) -> CloudAgents.GraphIngestDrain.enqueueAndAttemptDelivery(sessionId, body)
       }
     }
-    case Err(e) -> println("WARNING: checkpoint emission failed for session " + sessionId + ": " + bridgeErrorMessage(e))
+    case Err(e) -> println(
+      "WARNING: checkpoint emission failed for session " + sessionId + ": " + bridgeErrorMessage(e)
+    )
   }
 }
 
@@ -807,7 +837,13 @@ pub func streamSessionMessage(
       // stream. Only complete lines are consumed; a partial trailing line is
       // re-read next tick (renderLogDelta). Works uniformly across Claude,
       // Gemini, Codex, and OpenCode NDJSON streams.
-      val rd = CloudAgents.Capture.Render.renderLogDelta(partialContainerLogs(containerId), offset, nextSeq, lastHash, false)
+      val rd = CloudAgents.Capture.Render.renderLogDelta(
+        partialContainerLogs(containerId),
+        offset,
+        nextSeq,
+        lastHash,
+        false
+      )
       // Persist newly-captured events (idempotent batch append — safe to re-run
       // on a write-failure retry). Best-effort: a persistence failure must never
       // break the live stream, the same posture as the callback events below.
@@ -819,7 +855,13 @@ pub func streamSessionMessage(
           // audit hash chain, not just a dropped log line, so a real DB problem
           // on this path must not be invisible (matches this file's other
           // best-effort WARNING paths).
-          case Err(e) -> println("WARNING: failed to persist " + toString(rd.events.length.toInt()) + " capture event(s) for session " + sessionId + ": " + CloudAgents.Sqlite.dbErrorMessage(e))
+          case Err(e) -> println(
+            "WARNING: failed to persist " + toString(rd.events.length.toInt()) +
+              " capture event(s) for session " +
+              sessionId +
+              ": " +
+              CloudAgents.Sqlite.dbErrorMessage(e)
+          )
         }
       }
       if rd.displayText.length > 0 {
@@ -1086,7 +1128,13 @@ pub func streamSessionMessage(
         case Ok(_) -> ()
         // Best-effort, but logged (#976): a silent failure to persist the tail
         // events is an unretried gap in the audit hash chain.
-        case Err(e) -> println("WARNING: failed to persist " + toString(rd.events.length.toInt()) + " final capture event(s) for session " + sessionId + ": " + CloudAgents.Sqlite.dbErrorMessage(e))
+        case Err(e) -> println(
+          "WARNING: failed to persist " + toString(rd.events.length.toInt()) +
+            " final capture event(s) for session " +
+            sessionId +
+            ": " +
+            CloudAgents.Sqlite.dbErrorMessage(e)
+        )
       }
     }
     if rd.displayText.length > 0 {
@@ -1328,7 +1376,6 @@ pub func deleteWorkspaceVolume(userId: in String, sessionId: in String): Result[
 }
 
 // ─── Workspace inspector (short-lived inspect containers) ────────────────────
-
 // Wall-clock cap for one inspect container run — an inspect is a few git
 // commands over an existing checkout, so two minutes is generous (covers a
 // cold image + a large repo's first `git status`) while still bounding a
