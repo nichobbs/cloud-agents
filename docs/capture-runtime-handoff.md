@@ -312,11 +312,15 @@ serialize + POST (new). All synchronous, all best-effort.
   order") — session before its steps before the terminal checkpoint — which is
   the order `ingestObjects` expects. Do not sort or dedupe on the runner side;
   ship the mapping's order verbatim.
-- Best-effort means **at-most-once from the runner** (one fire-and-forget POST,
-  no retry/queue). A dropped POST loses that session's graph handoff until the
-  deferred pull-based path (`CaptureFetch` over `GET /api/sessions/{id}/events`)
-  or a manual re-emit fills it. Acceptable for the opt-in phase; a durable
-  outbox is an explicit deferred item (§8).
+- **Superseded by `docs/capture-ingest-outbox.md`.** This section originally
+  documented at-most-once, fire-and-forget delivery (one POST, no retry/queue,
+  a dropped POST losing that session's graph handoff). That gap is now closed:
+  `emitRunnerCheckpoint` enqueues the serialized body into a durable outbox
+  BEFORE attempting delivery, and a background drain sweep
+  (`POST /api/maintenance/drain-graph-ingest`) retries a failed delivery with
+  backoff until it succeeds or a bounded attempt cap is reached — see
+  `docs/capture-ingest-outbox.md` for the full design. The happy path (POST
+  succeeds immediately) is unchanged; only the failure path gained durability.
 
 ## 7. Test strategy
 
@@ -374,9 +378,16 @@ as today).
 
 ## 9. Deferred (sequenced)
 
-- **Durable outbox / retry.** Today's POST is at-most-once fire-and-forget.
-  A persisted outbox (reuse the `session_events` store) with retry closes the
-  drop window; out of scope for the opt-in phase.
+- **Durable outbox / retry — landed, see `docs/capture-ingest-outbox.md`.**
+  The at-most-once POST this section originally deferred fixing is now
+  at-least-once: `emitRunnerCheckpoint` enqueues into a durable
+  `graph_ingest_outbox` table (migration `0035`) before attempting delivery,
+  and `POST /api/maintenance/drain-graph-ingest` retries a failed delivery
+  with exponential backoff + jitter until it succeeds or a configurable
+  attempt cap is reached (default 50 attempts, ~2 days of retrying). See that
+  spec for the schema, retry policy, and why the drain is a maintenance
+  endpoint rather than an in-process timer (`Lyric.Web` has none — the same
+  constraint `docs/phase8-scheduling.md` already worked around).
 - **Envelope path as an alternative body** (§7 open question) if the platform
   prefers chain-re-verify + single-mapper ingest — needs the runner to ship the
   diff/tree alongside the raw events.

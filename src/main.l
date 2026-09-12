@@ -7,6 +7,7 @@ import CloudAgents.Callbacks
 import CloudAgents.Credentials
 import CloudAgents.Crypto
 import CloudAgents.Docker
+import CloudAgents.GraphIngestDrain
 import CloudAgents.Groups
 import CloudAgents.Handlers
 import CloudAgents.Highlights
@@ -1034,11 +1035,10 @@ record RouteAddMcpServer {
 
 impl Web.Handler for RouteAddMcpServer {
   func handle(req: in Web.Request): Web.Response {
-    val patched = CloudAgents.Library.patchMissingMcpServerHeaders(CloudAgents.Library.patchMissingMcpServerEnabled(req.body))
-    val decoded = match SaveMcpServerRequest.fromJson(patched) {
-      case Ok(d) -> d
-      case Err(_) -> return badBody()
-    }
+    val patched = CloudAgents.Library.patchMissingMcpServerHeaders(
+      CloudAgents.Library.patchMissingMcpServerEnabled(req.body)
+    )
+    val decoded = match SaveMcpServerRequest.fromJson(patched) { case Ok(d) -> d; case Err(_) -> return badBody() }
     return mcpServerResp(CloudAgents.Library.addMcpServerHandler(decoded))
   }
 }
@@ -1053,10 +1053,7 @@ impl Web.Handler for RouteUpdateMcpServer {
       CloudAgents.Library.patchMissingMcpServerEnabledForUpdate(req.body, mid),
       mid
     )
-    val decoded = match SaveMcpServerRequest.fromJson(patched) {
-      case Ok(d) -> d
-      case Err(_) -> return badBody()
-    }
+    val decoded = match SaveMcpServerRequest.fromJson(patched) { case Ok(d) -> d; case Err(_) -> return badBody() }
     return mcpServerResp(CloudAgents.Library.updateMcpServerHandler(mid, decoded))
   }
 }
@@ -1528,6 +1525,15 @@ impl Web.Handler for RouteTriggerDueJobs {
   }
 }
 
+record RouteDrainGraphIngestOutbox {
+}
+
+impl Web.Handler for RouteDrainGraphIngestOutbox {
+  func handle(req: in Web.Request): Web.Response {
+    return jsonStringResp(CloudAgents.GraphIngestDrain.drainGraphIngestHandler())
+  }
+}
+
 record RouteScheduleJobCallback {
 }
 
@@ -1837,7 +1843,9 @@ pub func main(): Unit {
   // so it isn't permanently excluded from every future due-scan.
   match CloudAgents.Repository.recoverStrandedScheduledJobs() {
     case Ok(_) -> ()
-    case Err(e) -> println("WARNING: failed to recover stranded scheduled jobs: " + CloudAgents.Sqlite.dbErrorMessage(e))
+    case Err(e) -> println(
+      "WARNING: failed to recover stranded scheduled jobs: " + CloudAgents.Sqlite.dbErrorMessage(e)
+    )
   }
 
   // Fail loudly at startup — not at first credential use — if ENCRYPTION_KEY
@@ -1846,7 +1854,10 @@ pub func main(): Unit {
   if CloudAgents.Crypto.isConfigured() {
     match CloudAgents.Crypto.encrypt("startup-self-check") {
       case Ok(_) -> ()
-      case Err(e) -> println("WARNING: ENCRYPTION_KEY is set but invalid — credential storage will fail: " + CloudAgents.Crypto.cryptoErrorMessage(e))
+      case Err(e) -> println(
+        "WARNING: ENCRYPTION_KEY is set but invalid — credential storage will fail: " +
+          CloudAgents.Crypto.cryptoErrorMessage(e)
+      )
     }
   } else {
     println("NOTE: ENCRYPTION_KEY is not set — the credential store is disabled")
@@ -2026,6 +2037,7 @@ pub func main(): Unit {
   router = Web.addPost(router, "/api/jobs/{jid}", RouteUpdateJob())
   router = Web.addDelete(router, "/api/jobs/{jid}", RouteDeleteJob())
   router = Web.addPost(router, "/api/maintenance/trigger-jobs", RouteTriggerDueJobs())
+  router = Web.addPost(router, "/api/maintenance/drain-graph-ingest", RouteDrainGraphIngestOutbox())
   router = Web.addPost(router, "/api/sessions/{id}/callbacks/jobs", RouteScheduleJobCallback())
   router = Web.addGet(router, "/api/sessions/{id}/callbacks/jobs", RouteListJobsCallback())
   router = Web.addPost(router, "/api/sessions/{id}/callbacks/jobs/{jid}/update", RouteUpdateJobCallback())

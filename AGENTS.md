@@ -307,9 +307,25 @@ Sequenced follow-ups:
   unit-tested offline on the real live-edit fixtures (byte-identical to the
   platform's `Model.encodeObject` + `Canon.encodeCanonical`); the docker glue +
   the live POST need a live Docker host + a running graph service to observe (the
-  documented manual step). Still deferred: a durable outbox/retry (today's POST is
-  at-most-once fire-and-forget), credential issuance for the bearer, and the NuGet
-  migration of the vendored contract.
+  documented manual step). **Durable outbox / retry — landed**
+  (`docs/capture-ingest-outbox.md`): the POST is no longer at-most-once
+  fire-and-forget. `emitRunnerCheckpoint` now enqueues the serialized body into
+  a durable `graph_ingest_outbox` table (migration `0035`,
+  `CloudAgents.Repository`) BEFORE attempting delivery, so the happy path is
+  still one POST with no added latency, but a failed delivery leaves a row for
+  `POST /api/maintenance/drain-graph-ingest` (`CloudAgents.GraphIngestDrain`) —
+  an operator-polled maintenance endpoint, following the exact same
+  no-in-process-timer idiom `docs/phase8-scheduling.md`'s `trigger-jobs`
+  endpoint already established — to retry with exponential backoff + jitter
+  (`CloudAgents.GraphIngestOutbox`) until it succeeds or a configurable
+  attempt cap gives up (default 50 attempts, ~2 days). The bearer token is
+  never persisted (read fresh from env at every attempt); re-enqueuing an
+  identical `(session, body)` pair is idempotent. Pure backoff/terminal logic
+  and the live-SQLite enqueue→due→attempt→delivered/terminal state machine are
+  unit-tested (`tests/graph_ingest_outbox_tests.l`); the actual bearer-authed
+  POST to a real platform stays the same documented manual/live step as
+  everything else in this arc. Still deferred: credential issuance/rotation
+  for the bearer, and the NuGet migration of the vendored contract.
 - **Audit-row enrichment — derivation built, checkpoint attachment deferred.**
   `CloudAgents.PermissionEnrichment` (`src/capture/permission_enrichment.l`,
   `docs/capture-permission-enrichment.md`) folds the existing
