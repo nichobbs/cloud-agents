@@ -233,6 +233,15 @@ pub func attemptDeliverRow(row: in CloudAgents.Repository.GraphIngestOutboxRow):
 /// outbox (`userHasWebhooks`). A non-empty but non-http(s) URL is a
 /// misconfiguration, logged and skipped the same way (fail-closed, matching
 /// docs/capture-runtime-handoff.md §3's URL-validation rule).
+///
+/// The immediate attempt only fires for a row that is BOTH undelivered AND
+/// actually due (`CloudAgents.GraphIngestOutbox.isDueNow`) — #1051: a fresh
+/// row's `next_attempt_at` starts at `created_at` (immediately due), so the
+/// ordinary first-enqueue happy path is unaffected, but `enqueueGraphIngest`
+/// is idempotent on `(sessionId, bodyHash)`, so a re-enqueue of a
+/// byte-identical body for a row that is currently mid-backoff (scheduled
+/// minutes-to-hours out after prior failures) must NOT jump that schedule —
+/// see `docs/capture-ingest-outbox.md` §6.
 pub func enqueueAndAttemptDelivery(sessionId: in String, body: in String): Unit {
   val ingestUrl = ingestUrlConfigured()
   if ingestUrl == "" {
@@ -248,11 +257,23 @@ pub func enqueueAndAttemptDelivery(sessionId: in String, body: in String): Unit 
         CloudAgents.Sqlite.dbErrorMessage(e)
     )
     case Ok(row) -> {
-      if row.deliveredAt == "" {
-        val _ = attemptDeliverRow(row)
-      } else {
+      if row.deliveredAt != "" {
         println(
           "graph-ingest-outbox: session " + sessionId + " re-enqueue is already delivered (idempotent no-op), id=" + row.id
+        )
+      } else if CloudAgents.GraphIngestOutbox.isDueNow(row.nextAttemptAt, CloudAgents.Repository.nowMillis()) {
+        val _ = attemptDeliverRow(row)
+      } else {
+        // #1051: a re-enqueue of an already-queued, currently-mid-backoff
+        // row (identical session + body, e.g. a caller that reproduces the
+        // same mapped objects) must not jump the Equal-Jitter schedule
+        // recordFailure computed for it — leave it for the drain sweep
+        // instead of firing a second attempt ahead of schedule.
+        println(
+          "graph-ingest-outbox: session " + sessionId + " re-enqueue is mid-backoff (next attempt at " + row.nextAttemptAt +
+            "), leaving id=" +
+            row.id +
+            " for the drain sweep"
         )
       }
     }

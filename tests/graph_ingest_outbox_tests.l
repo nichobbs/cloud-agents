@@ -7,22 +7,32 @@
 //! (CloudAgents.Repository — same fresh-temp-DB harness as
 //! tests/session_events_tests.l).
 //!
-//! Deliberately does NOT import CloudAgents.GraphIngestDrain or
-//! CloudAgents.GitHubApi: the actual bearer-authed HTTP POST to the platform
-//! is exercised only by the documented manual/live step
-//! (docs/capture-ingest-outbox.md §6) — a @test_module cannot reach
-//! CloudAgents.Docker/a live network endpoint, and there is no local stub
-//! server here. Every transition this suite proves (enqueue -> due -> a
-//! recorded attempt failure -> delivered / terminal) is driven directly
+//! Does NOT import CloudAgents.GitHubApi and exercises CloudAgents.
+//! GraphIngestDrain only through the two paths that never reach it: the
+//! actual bearer-authed HTTP POST inside attemptDeliverRow is exercised only
+//! by the documented manual/live step (docs/capture-ingest-outbox.md §6) —
+//! there is no local stub server here, and a @test_module has no way to
+//! intercept a real outbound request. (CloudAgents.GraphIngestDrain itself
+//! does not import CloudAgents.Docker at all, and has no async funcs, so
+//! importing it directly is not the docs/lyric/gotchas.md async-import
+//! restriction — the untestable part is specifically the live network call,
+//! not package reachability.) Every state-machine transition (enqueue -> due
+//! -> a recorded attempt failure -> delivered / terminal) is driven directly
 //! through the Repository accessors the drain layer itself calls, with a
-//! synthetic error string standing in for a real failed POST — so the state
-//! machine is fully proven without any network I/O.
+//! synthetic error string standing in for a real failed POST; the two
+//! `drainGraphIngestHandler` tests below cover its operator-auth gate and its
+//! empty-summary "nothing due" path, mirroring
+//! tests/jobs_tests.l's `triggerDueJobsHandler` coverage (#873) — both reach
+//! only code that runs before/without any due row, so neither needs Docker
+//! or network access either.
 @test_module
 package CloudAgents.GraphIngestOutboxTests
 
 import Std.Core
 import Std.Testing
 import Std.Uuid
+import CloudAgents.Auth
+import CloudAgents.GraphIngestDrain
 import CloudAgents.GraphIngestOutbox
 import CloudAgents.Repository
 import CloudAgents.Sqlite
@@ -122,6 +132,24 @@ test "parseAttemptsCount round-trips plain digit strings" {
   assertEqualInt(CloudAgents.GraphIngestOutbox.parseAttemptsCount(""), 0, "empty parses as zero")
 }
 
+test "isDueNow compares epoch-millis digit strings correctly (#1051)" {
+  assertTrue(CloudAgents.GraphIngestOutbox.isDueNow("100", "100"), "equal timestamps are due")
+  assertTrue(CloudAgents.GraphIngestOutbox.isDueNow("100", "200"), "a past next_attempt_at is due")
+  assertTrue(not CloudAgents.GraphIngestOutbox.isDueNow("200", "100"), "a future next_attempt_at is not due")
+  // Different digit-lengths (a fresh 13-digit epoch-millis value vs the
+  // 14-digit terminalSentinelMillis) must compare by magnitude, not
+  // lexicographically as if same-length ("9..." would otherwise look
+  // "less than" a longer "1...").
+  assertTrue(
+    not CloudAgents.GraphIngestOutbox.isDueNow(CloudAgents.GraphIngestOutbox.terminalSentinelMillis, "1999999999999"),
+    "the terminal sentinel is never due"
+  )
+  assertTrue(
+    CloudAgents.GraphIngestOutbox.isDueNow("999999999999", "1000000000000"),
+    "a shorter (smaller) value is due against a longer (larger) now"
+  )
+}
+
 // ─── Live-SQLite: enqueue -> due -> attempt -> delivered / terminal ─────────
 func mustEnqueue(sessionId: in String, body: in String, url: in String): CloudAgents.Repository.GraphIngestOutboxRow {
   return match CloudAgents.Repository.enqueueGraphIngest(sessionId, body, url) {
@@ -131,7 +159,11 @@ func mustEnqueue(sessionId: in String, body: in String, url: in String): CloudAg
 }
 
 func mustDue(limit: in Int): slice[CloudAgents.Repository.GraphIngestOutboxRow] {
-  return match CloudAgents.Repository.dueGraphIngest(CloudAgents.Repository.nowMillis(), limit) {
+  return mustDueAsOf(CloudAgents.Repository.nowMillis(), limit)
+}
+
+func mustDueAsOf(nowMillisStr: in String, limit: in Int): slice[CloudAgents.Repository.GraphIngestOutboxRow] {
+  return match CloudAgents.Repository.dueGraphIngest(nowMillisStr, limit) {
     case Ok(rows) -> rows
     case Err(e) -> panic("dueGraphIngest failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
   }
@@ -147,6 +179,24 @@ func containsId(rows: in slice[CloudAgents.Repository.GraphIngestOutboxRow], id:
   }
   return false
 }
+
+func findById(
+  rows: in slice[CloudAgents.Repository.GraphIngestOutboxRow], id: in String
+): Option[CloudAgents.Repository.GraphIngestOutboxRow] {
+  var i = 0
+  while i < rows.length {
+    if rows[i].id == id {
+      return Some(value = rows[i])
+    }
+    i = i + 1
+  }
+  return None
+}
+
+// A due-scan cursor far enough in the future to include every undelivered
+// row regardless of its actual next_attempt_at — an introspection query for
+// tests only (dueGraphIngest's real callers always pass "now").
+val farFutureCursor = "99999999999999"
 
 test "a freshly enqueued row is immediately due" {
   val path = useFreshTestDb("outbox-enqueue-due")
@@ -258,6 +308,81 @@ test "pruneDeliveredGraphIngest removes only delivered rows, never pending ones"
   // The still-pending row is never touched by pruning regardless of
   // retention window (only delivered_at <> '' rows are eligible).
   assertTrue(containsId(mustDue(50), pending.id), "a pending row survives pruning")
+
+  cleanupTestDb(path)
+}
+
+// ─── drainGraphIngestHandler: operator-auth gate + empty-summary (#1050) ────
+// Mirrors tests/jobs_tests.l's "triggerDueJobsHandler refuses a non-operator
+// identity" / "... runs for the operator identity when nothing is due"
+// (#873): both cases here run entirely before/without any due row, so they
+// exercise the auth gate and the clean-summary response path without ever
+// reaching attemptDeliverRow's live HTTP POST.
+test "drainGraphIngestHandler refuses a non-operator identity" {
+  val path = useFreshTestDb("outbox-drain-auth-denied")
+  CloudAgents.Auth.setCurrentUserId("alice")
+  match CloudAgents.GraphIngestDrain.drainGraphIngestHandler() {
+    case Ok(_) -> assertTrue(false, "a non-operator identity must not be able to trigger the drain sweep")
+    case Err(e) -> assertEqualInt(e.status, 401, "non-operator caller -> 401, not the system-wide sweep")
+  }
+
+  cleanupTestDb(path)
+}
+
+// #1051: enqueueAndAttemptDelivery must not bypass the backoff schedule when
+// idempotently re-enqueuing a row that is currently mid-backoff. Env vars
+// are restored in `defer` so this test's config doesn't leak into others.
+test "enqueueAndAttemptDelivery does not bypass backoff for a re-enqueued in-backoff row" {
+  val path = useFreshTestDb("outbox-nobypass")
+  val originalUrl = Env.GetEnvironmentVariable("CLOUDAGENTS_GRAPH_INGEST_URL")
+  defer {
+    Env.SetEnvironmentVariable("CLOUDAGENTS_GRAPH_INGEST_URL", originalUrl)
+    cleanupTestDb(path)
+  }
+  Env.SetEnvironmentVariable("CLOUDAGENTS_GRAPH_INGEST_URL", "https://platform.example/api/ingest")
+
+  val body = "{\"objects\":[]}"
+  val row = mustEnqueue("sess-H", body, "https://platform.example/api/ingest")
+  // Force the row into backoff, simulating a prior failed delivery attempt.
+  val delay = CloudAgents.GraphIngestOutbox.backoffDelayMillis(1, row.id)
+  match CloudAgents.Repository.markGraphIngestAttempt(row.id, "1", "simulated failure", CloudAgents.Repository.nowMillis(), delay) {
+    case Ok(_) -> ()
+    case Err(e) -> assertTrue(false, "markGraphIngestAttempt failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+  }
+
+  // Re-enqueue the IDENTICAL (session, body) pair while the row is still
+  // mid-backoff (the minimum attempt-1 delay is >=15s, so it cannot have
+  // become due again by the time this line runs). With the #1051 bug, this
+  // would call attemptDeliverRow — with no CLOUDAGENTS_GRAPH_INGEST_TOKEN
+  // configured, that fails and bumps attempts to "2". The fix must leave the
+  // row's attempts/last_error completely untouched, and never even reach
+  // attemptDeliverRow (no HTTP call, configured token or not).
+  CloudAgents.GraphIngestDrain.enqueueAndAttemptDelivery("sess-H", body)
+
+  match findById(mustDueAsOf(farFutureCursor, 50), row.id) {
+    case Some(r) -> assertEqual(
+      r.attempts,
+      "1",
+      "a mid-backoff re-enqueue must not bump attempts — no immediate delivery attempt fired"
+    )
+    case None -> assertTrue(false, "the row must still exist")
+  }
+}
+
+test "drainGraphIngestHandler runs for the operator identity when nothing is due" {
+  val path = useFreshTestDb("outbox-drain-auth-allowed")
+  CloudAgents.Auth.setCurrentUserId(CloudAgents.Auth.operatorUserId())
+  match CloudAgents.GraphIngestDrain.drainGraphIngestHandler() {
+    case Ok(body) -> assertEqual(
+      body,
+      "{\"delivered\":0,\"failed\":0,\"terminal\":0,\"pruned\":0}",
+      "no due rows -> a clean empty summary, no attemptDeliverRow calls, no HTTP"
+    )
+    case Err(e) -> assertTrue(
+      false,
+      "the operator identity must be allowed to run the drain sweep: " + toString(e.status)
+    )
+  }
 
   cleanupTestDb(path)
 }

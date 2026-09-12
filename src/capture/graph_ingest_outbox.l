@@ -232,3 +232,40 @@ pub func truncateError(raw: in String, maxLen: in Int): String {
 pub func terminalErrorMessage(raw: in String): String {
   return "TERMINAL (max attempts reached): " + truncateError(raw, maxErrorLen)
 }
+
+// True when `a > b`, treating both as non-negative decimal-digit strings
+// with no leading zeros (always true of an epoch-millis value or
+// `terminalSentinelMillis`): a longer string is always the larger number,
+// and equal-length strings compare position-by-position. Deliberately hand-
+// rolled rather than a `<`/`<=` operator on `String` — this codebase has no
+// precedent anywhere of comparing two `String`s with a relational operator
+// (only `==`/`!=`, plus the explicit `System.String.CompareOrdinal` binding
+// `CloudAgents.Text` uses for ordinal character comparison), so this avoids
+// relying on unverified String-ordering support in the toolchain.
+func isGreaterDigitString(a: in String, b: in String): Bool {
+  if a.length != b.length {
+    return a.length > b.length
+  }
+  var i = 0
+  while i < a.length {
+    val ca = a.substring(i, 1)
+    val cb = b.substring(i, 1)
+    if ca != cb {
+      return digitValue(ca) > digitValue(cb)
+    }
+    i = i + 1
+  }
+  return false
+}
+
+/// Whether a row whose `next_attempt_at` is `nextAttemptAt` is actually due
+/// at `nowMillis` — i.e. genuinely due for a delivery attempt, not merely
+/// "not yet delivered" (#1051: `enqueueAndAttemptDelivery` re-enqueuing an
+/// already-queued, currently-mid-backoff row must NOT jump the Equal-Jitter
+/// schedule this package computes). Both arguments are epoch-millis digit
+/// strings (`CloudAgents.Repository.nowMillis()` / a stored `next_attempt_at`
+/// column, or `terminalSentinelMillis`), so this needs no `Long` arithmetic —
+/// see the module doc's `Long`-avoidance rationale.
+pub func isDueNow(nextAttemptAt: in String, nowMillis: in String): Bool {
+  return not isGreaterDigitString(nextAttemptAt, nowMillis)
+}

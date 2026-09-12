@@ -251,10 +251,19 @@ Called synchronously (no new `await`, so `emitRunnerCheckpoint` stays
 3. **Enqueue durably FIRST** (`CloudAgents.Repository.enqueueGraphIngest`). A
    DB failure here is logged and the call returns — nothing to deliver.
 4. If the returned row is not already delivered (the idempotent-re-enqueue
-   case, §4), attempt **one immediate delivery**
-   (`CloudAgents.GraphIngestDrain.attemptDeliverRow`). Success marks the row
-   delivered; failure records the first backoff attempt via the shared
-   `recordFailure` path (§6) — leaving a durable row for the drain sweep.
+   case, §4) **AND is actually due right now**
+   (`CloudAgents.GraphIngestOutbox.isDueNow(row.nextAttemptAt, now)`), attempt
+   **one immediate delivery** (`CloudAgents.GraphIngestDrain.attemptDeliverRow`).
+   Success marks the row delivered; failure records the first backoff attempt
+   via the shared `recordFailure` path (§6) — leaving a durable row for the
+   drain sweep. The due-check matters only for the idempotent-re-enqueue case:
+   a brand-new row's `next_attempt_at` starts at `created_at` (always due), so
+   the ordinary first-enqueue happy path never skips this step — but without
+   it, re-enqueuing a byte-identical body for a row that is currently
+   mid-backoff (scheduled minutes-to-hours out after prior failures) would
+   fire a second delivery attempt ahead of the Equal-Jitter schedule §6
+   computed for it, silently jumping the queue (#1051). A not-yet-due row is
+   simply logged and left for the drain sweep, same as any other pending row.
 
 The happy path (destination configured, platform reachable) is therefore
 still exactly one enqueue + one POST, with the enqueue adding a single local
