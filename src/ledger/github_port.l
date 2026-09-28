@@ -145,6 +145,8 @@ val kindString = 3
 
 val kindTrue = 5
 
+val kindFalse = 6
+
 /// An issue body's state and label names.
 pub func parseIssue(body: in String): Result[IssueFacts, String] {
   val doc = match Std.Json.tryParseJson(body) {
@@ -163,7 +165,23 @@ pub func parseIssue(body: in String): Result[IssueFacts, String] {
         case Some(s) -> if Std.Json.valueKind(s) == kindString { Std.Json.getString(s) } else { "" }
         case _ -> ""
       }
-      Ok(value = IssueFacts(state = state, labels = labelNames(root)))
+      // Anything but a real issue (an error or redirect body, say) must not
+      // read as an issue with no labels: that looks like a person removing
+      // the ledger's label.
+      if state != "open" and state != "closed" {
+        Err(error = "unexpected GitHub issue response")
+      } else {
+        match Std.Json.tryGetProperty(root, "labels") {
+          case Some(arr) -> {
+            if Std.Json.valueKind(arr) == kindArray {
+              Ok(value = IssueFacts(state = state, labels = labelNames(root)))
+            } else {
+              Err(error = "unexpected GitHub issue response")
+            }
+          }
+          case _ -> Err(error = "unexpected GitHub issue response")
+        }
+      }
     }
   } catch Bug as b {
     Err(error = "unreadable GitHub issue response")
@@ -204,8 +222,15 @@ pub func parsePullMerged(body: in String): Result[Bool, String] {
   return try {
     val root = Std.Json.rootElement(doc)
     match Std.Json.tryGetProperty(root, "merged") {
-      case Some(m) -> Ok(value = Std.Json.valueKind(m) == kindTrue)
-      case _ -> Ok(value = false)
+      case Some(m) -> {
+        val kind = Std.Json.valueKind(m)
+        if kind == kindTrue or kind == kindFalse {
+          Ok(value = kind == kindTrue)
+        } else {
+          Err(error = "unexpected GitHub pull request response")
+        }
+      }
+      case _ -> Err(error = "unexpected GitHub pull request response")
     }
   } catch Bug as b {
     Err(error = "unreadable GitHub pull request response")

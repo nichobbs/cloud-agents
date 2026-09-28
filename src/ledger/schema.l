@@ -118,7 +118,9 @@ pub func ledgerFeedbackIndexSql(): String {
 /// GitHub reconciliation state per item (docs/session-ledger.md §9,
 /// Phase 3): the managed label last applied to the item's issue, the id and
 /// content hash of the ledger's blocker comment, and the last sync error.
-/// `synced_at` is compared with the item's `updated_at` to find work.
+/// `synced_at` (last clean sync) is compared with the item's `updated_at`
+/// to find work; `attempted_at` (last try, clean or not) orders it, so an
+/// item that keeps failing goes to the back instead of eating each pass.
 pub func ledgerGithubSyncSchemaSql(): String {
   return "CREATE TABLE IF NOT EXISTS ledger_github_sync (" + "session_id TEXT NOT NULL, " + "item_id TEXT NOT NULL, " +
     "synced_label TEXT NOT NULL, " +
@@ -126,17 +128,21 @@ pub func ledgerGithubSyncSchemaSql(): String {
     "comment_hash TEXT NOT NULL, " +
     "last_error TEXT NOT NULL, " +
     "synced_at TEXT NOT NULL, " +
+    "attempted_at TEXT NOT NULL, " +
     "PRIMARY KEY (session_id, item_id))"
 }
 
 /// When each session was last put through a sync pass, and why it failed
 /// if it did before reaching any item (no usable GitHub token). The
 /// maintenance run takes the least recently attempted sessions first, so a
-/// session that keeps failing can't starve the others.
+/// session that keeps failing can't starve the others. `lease_until` is
+/// held while a pass runs, so the maintenance run and the owner's sync
+/// button never work the same session at once.
 pub func ledgerGithubSyncRunsSchemaSql(): String {
   return "CREATE TABLE IF NOT EXISTS ledger_github_sync_runs (" + "session_id TEXT PRIMARY KEY, " +
     "attempted_at TEXT NOT NULL, " +
-    "last_error TEXT NOT NULL)"
+    "last_error TEXT NOT NULL, " +
+    "lease_until TEXT NOT NULL)"
 }
 
 /// The ledger tools the in-container shim registers (shim/src/main.l —

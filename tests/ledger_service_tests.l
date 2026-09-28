@@ -455,6 +455,14 @@ test "a session's batch is capped" {
     "{\"items\":[{\"id\":\"local:item-3\",\"title\":\"renamed\",\"url\":\"\"}]}"
   )
   assertEqual(again.ok, "true", "re-registering an existing item still works at the cap")
+  // Every other tool registers an unknown item on first mention: same cap.
+  val viaNote = agent("s1", "note", "{\"summary\":\"x\",\"item\":\"local:via-note\"}")
+  assertEqual(viaNote.ok, "false", "a note can't register item 1001")
+  assertTrue(viaNote.error.contains("at most 1000"), viaNote.error)
+  val viaStatus = agent("s1", "item-status", status("local:via-status", "in_progress", "", ""))
+  assertEqual(viaStatus.ok, "false", "a status change can't register item 1001")
+  val known = agent("s1", "note", "{\"summary\":\"x\",\"item\":\"local:item-7\"}")
+  assertEqual(known.ok, "true", "a note on an existing item still works at the cap")
 }
 
 test "no next-run nudge when MCP callbacks are off" {

@@ -27,6 +27,8 @@ extern type HttpWebRequest = "System.Net.HttpWebRequest"
 
 extern type WebResponse = "System.Net.WebResponse"
 
+extern type HttpWebResponse = "System.Net.HttpWebResponse"
+
 extern type NetStream = "System.IO.Stream"
 
 extern type WebHeaderCollection = "System.Net.WebHeaderCollection"
@@ -101,6 +103,26 @@ func getResponse(req: in HttpWebRequest): WebResponse = ()
 @externInstance
 @externTarget("System.Net.WebResponse.GetResponseStream")
 func getResponseStream(resp: in WebResponse): NetStream = ()
+
+// GetResponse narrowed to HttpWebResponse so the status is readable. It
+// throws on 4xx/5xx but returns a 3xx normally when redirects are disabled,
+// so a caller that disables them must check the status itself.
+@externInstance
+@externTarget("System.Net.HttpWebRequest.GetResponse")
+func getHttpResponse(req: in HttpWebRequest): HttpWebResponse = ()
+
+// The numeric HTTP status (HttpStatusCode marshals as its underlying Int).
+@externInstance
+@externTarget("System.Net.HttpWebResponse.get_StatusCode")
+func getStatusCode(resp: in HttpWebResponse): Int = 0
+
+@externInstance
+@externTarget("System.Net.WebResponse.GetResponseStream")
+func getHttpResponseStream(resp: in HttpWebResponse): NetStream = ()
+
+@externInstance
+@externTarget("System.IDisposable.Dispose")
+func httpResponseDispose(resp: in HttpWebResponse): Unit = ()
 
 @externInstance
 @externTarget("System.IO.Stream.Write")
@@ -479,16 +501,22 @@ pub func httpJsonWithBearer(
       streamWrite(reqStream, bytes, 0, bytes.length.toInt())
       streamDispose(reqStream)
     }
-    val resp = getResponse(req)
+    val resp = getHttpResponse(req)
     defer {
-      responseDispose(resp)
+      httpResponseDispose(resp)
     }
-    val respStream = getResponseStream(resp)
-    defer {
-      streamDispose(respStream)
+    // With redirects off a 3xx arrives here rather than as an exception;
+    // its body is not the resource asked for.
+    val status = getStatusCode(resp)
+    if status < 200 or status > 299 {
+      Err(error = method + " " + url + " failed: (" + toString(status) + ") unexpected status")
+    } else {
+      val respStream = getHttpResponseStream(resp)
+      defer {
+        streamDispose(respStream)
+      }
+      Ok(value = readAllUtf8(respStream))
     }
-    val body = readAllUtf8(respStream)
-    Ok(value = body)
   } catch Bug as b {
     Err(error = method + " " + url + " failed: " + b.message)
   }

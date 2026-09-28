@@ -232,6 +232,16 @@ func ensureItem(ctx: in SessionContext, itemId: in String, title: in String): Re
     case Ok(None) -> ()
     case Err(e) -> return Err(error = dbFail(e))
   }
+  // The same cap registerBatch applies: every tool that names an unknown
+  // item registers it here, so without it the cap is only advisory.
+  match countItems(ctx.sessionId) {
+    case Ok(n) -> {
+      if n >= itemRowCap {
+        return Err(error = invalid("a session holds at most " + toString(itemRowCap) + " work items; reuse an existing item"))
+      }
+    }
+    case Err(e) -> return Err(error = dbFail(e))
+  }
   val ids: slice[String] = [itemId]
   val titles: slice[String] = [title]
   val urls: slice[String] = [urlForItemRef(itemId)]
@@ -968,13 +978,14 @@ func fullSnapshot(
   val items = match listItems(ctx.sessionId) { case Ok(xs) -> xs; case Err(e) -> return Err(error = dbFail(e)) }
   val entries = match listEntries(ctx.sessionId) { case Ok(es) -> es; case Err(e) -> return Err(error = dbFail(e)) }
   val feedback = match listFeedback(ctx.sessionId) { case Ok(fs) -> fs; case Err(e) -> return Err(error = dbFail(e)) }
+  val itemTotal = match countItems(ctx.sessionId) { case Ok(n) -> n; case Err(e) -> return Err(error = dbFail(e)) }
   val entryTotal = match countEntries(ctx.sessionId) { case Ok(n) -> n; case Err(e) -> return Err(error = dbFail(e)) }
   val feedbackTotal = match countFeedback(ctx.sessionId) {
     case Ok(n) -> n
     case Err(e) -> return Err(error = dbFail(e))
   }
   var truncated = "false"
-  if entryTotal > entries.length.toInt() or feedbackTotal > feedback.length.toInt() {
+  if itemTotal > items.length.toInt() or entryTotal > entries.length.toInt() or feedbackTotal > feedback.length.toInt() {
     truncated = "true"
   }
   return Ok(

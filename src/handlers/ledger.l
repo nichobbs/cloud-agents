@@ -407,12 +407,42 @@ pub func ledgerSessionSyncHandler(id: in String): Result[String, Web.ApiError] {
   val ctx = ownedContext(id)?
   match syncOne(ctx.sessionId, syncSessionBudget) {
     case Ok(o) -> return Ok(value = syncReportJson(1, o.items, o.transitions, o.calls, o.errors))
-    case Err(msg) -> return Err(Web.badRequest(msg))
+    case Err(msg) -> {
+      if msg == syncBusyMessage {
+        return Err(Web.conflict(msg))
+      }
+      return Err(Web.badRequest(msg))
+    }
   }
 }
 
+/// How long a pass may hold a session's sync lease: comfortably above a full
+/// budget of calls at the 15s timeout. A crashed pass's lease just expires.
+val syncLeaseMillis: Long = 1800000.toLong()
+
+/// Why a pass didn't run because another holds the session.
+pub val syncBusyMessage: String = "a GitHub sync of this session is already running; try again shortly"
+
 func syncOne(sessionId: in String, budget: in Int): Result[SyncOutcome, String] {
   val ctx = match sessionContext(sessionId) { case Ok(c) -> c; case Err(f) -> return Err(error = f.message) }
+  // One pass per session at a time: two at once could each post the blocker
+  // comment before either records its id.
+  val lease = match acquireSyncLease(sessionId, syncLeaseMillis) {
+    case Ok(t) -> t
+    case Err(e) -> return Err(error = CloudAgents.Sqlite.dbErrorMessage(e))
+  }
+  if lease.length.toInt() == 0 {
+    return Err(error = syncBusyMessage)
+  }
+  defer {
+    match releaseSyncLease(sessionId, lease) {
+      case Ok(_) -> ()
+      case Err(e) -> println(
+        "WARNING: ledger sync lease for " + sessionId + " not released: " +
+          CloudAgents.Sqlite.dbErrorMessage(e)
+      )
+    }
+  }
   val token = match CloudAgents.OAuth.ensureFreshGitHubToken(ctx.ownerUserId) {
     case Ok(t) -> t
     case Err(_) -> {

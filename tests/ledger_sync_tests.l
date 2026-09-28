@@ -123,6 +123,8 @@ record FakeGitHub {
   pub var ensuredLabels: slice[String]
   pub var calls: Int
   pub var failIssues: String
+  // When set, only this issue key fails.
+  pub var failKey: String
 }
 
 func fakeGitHub(): FakeGitHub {
@@ -137,7 +139,8 @@ func fakeGitHub(): FakeGitHub {
     commentBodies = none,
     ensuredLabels = none,
     calls = 0,
-    failIssues = ""
+    failIssues = "",
+    failKey = ""
   )
 }
 
@@ -231,7 +234,7 @@ impl GitHubPort for FakeGitHub {
   func getIssue(ownerRepo: in String, number: in String): Result[IssueFacts, String] {
     self.calls = self.calls + 1
     val key = keyOf(ownerRepo, number)
-    if self.failIssues.length.toInt() > 0 {
+    if self.failIssues.length.toInt() > 0 and (self.failKey.length.toInt() == 0 or self.failKey == key) {
       return Err(error = self.failIssues)
     }
     val at = openIssue(self, key)
@@ -407,6 +410,19 @@ test "GitHub response bodies are read as recorded" {
   match parsePullMerged("{\"number\":7,\"merged\":false}") {
     case Ok(m) -> assertTrue(not m, "not merged")
     case Err(e) -> assertTrue(false, e)
+  }
+  // A redirect or error body is not an issue with no labels, nor an unmerged PR.
+  match parseIssue("{\"message\":\"Moved Permanently\",\"url\":\"https://api.github.com/repositories/1/issues/3\"}") {
+    case Ok(_) -> assertTrue(false, "a redirect body must not parse as an issue")
+    case Err(_) -> ()
+  }
+  match parseIssue("{\"state\":\"open\"}") {
+    case Ok(_) -> assertTrue(false, "an issue body without labels is not trusted")
+    case Err(_) -> ()
+  }
+  match parsePullMerged("{\"message\":\"Moved Permanently\"}") {
+    case Ok(_) -> assertTrue(false, "a redirect body must not parse as a PR")
+    case Err(_) -> ()
   }
   val page = commentWithMarker(
     "[{\"id\":11,\"body\":\"lgtm\"},{\"id\":12345678901,\"body\":\"<!-- agent-ledger:session=s1;item=x -->\\n**Blocked:** y\"}]",
@@ -653,6 +669,108 @@ test "the maintenance run takes the least recently attempted sessions first" {
     case Ok(ids) -> assertEqualInt(ids.length.toInt(), 2, "both still due")
     case Err(e) -> assertTrue(false, CloudAgents.Sqlite.dbErrorMessage(e))
   }
+}
+
+test "an item that keeps failing doesn't eat every pass" {
+  val path = useFreshTestDb("sync-fail-order")
+  defer {
+    cleanupTestDb(path)
+  }
+  seedSession("s1")
+  val gh = fakeGitHub()
+  register("s1", "{\"id\":\"#1\",\"title\":\"\",\"url\":\"\"},{\"id\":\"#2\",\"title\":\"\",\"url\":\"\"}")
+  // #1 can never be read; each pass affords only one issue read.
+  gh.failIssues = "GET failed: (403) Forbidden"
+  gh.failKey = "acme/shop#1"
+  val first = syncSession(ctxOf("s1"), gh, 1)
+  assertEqualInt(first.errors.length.toInt(), 1, "#1 failed first")
+  val second = syncSession(ctxOf("s1"), gh, 3)
+  assertEqual(joinSorted(labelsOf(gh, "acme/shop#2")), "agent:queued", "#2 went ahead of the failing #1")
+  assertEqualInt(second.errors.length.toInt(), 0, "the pass spent its budget on #2 first")
+}
+
+test "one session at a time manages an issue" {
+  val path = useFreshTestDb("sync-owner")
+  defer {
+    cleanupTestDb(path)
+  }
+  seedSession("s1")
+  seedSession("s2")
+  val gh = fakeGitHub()
+  register("s1", "{\"id\":\"#1\",\"title\":\"\",\"url\":\"\"}")
+  expectNoErrors(sync(gh, "s1"))
+  setStatus("s1", "#1", "needs_human", "pick a vendor", "", "")
+  expectNoErrors(sync(gh, "s1"))
+  assertEqual(joinSorted(labelsOf(gh, "acme/shop#1")), "agent:needs-human", "s1 labelled it")
+  // s2 picks the same issue up later: it owns it now.
+  exec("UPDATE ledger_items SET created_at = '1' WHERE session_id = 's1'")
+  register("s2", "{\"id\":\"#1\",\"title\":\"\",\"url\":\"\"}")
+  setStatus("s2", "#1", "in_progress", "", "", "")
+  expectNoErrors(sync(gh, "s2"))
+  assertEqual(joinSorted(labelsOf(gh, "acme/shop#1")), "agent:in-progress", "s2 relabelled it")
+  val before = gh.calls
+  val stale = sync(gh, "s1")
+  assertEqualInt(gh.calls, before, "the superseded session doesn't touch the issue")
+  assertEqualInt(stale.transitions, 0, "nor reads s2's label change as a human's")
+  assertEqual(stateOf("s1", "gh:acme/shop#1"), "needs_human", "s1's item is left as it was")
+  match sessionsToSync(10) {
+    case Ok(ids) -> assertTrue(not containsString(ids, "s1"), "s1 isn't due for an issue it doesn't own")
+    case Err(e) -> assertTrue(false, CloudAgents.Sqlite.dbErrorMessage(e))
+  }
+  // Archiving s2 hands the issue back.
+  exec("UPDATE sessions SET is_archived = '1' WHERE id = 's2'")
+  match ownedIssueItems("s1") {
+    case Ok(ids) -> assertEqualInt(ids.length.toInt(), 1, "s1 owns it again")
+    case Err(e) -> assertTrue(false, CloudAgents.Sqlite.dbErrorMessage(e))
+  }
+  match ownedIssueItems("s2") {
+    case Ok(ids) -> assertEqualInt(ids.length.toInt(), 0, "an archived session owns nothing")
+    case Err(e) -> assertTrue(false, CloudAgents.Sqlite.dbErrorMessage(e))
+  }
+}
+
+test "only one sync pass holds a session at a time" {
+  val path = useFreshTestDb("sync-lease")
+  defer {
+    cleanupTestDb(path)
+  }
+  seedSession("s1")
+  val lease = 60000.toLong()
+  val first = match acquireSyncLease("s1", lease) {
+    case Ok(t) -> t
+    case Err(e) -> panic(CloudAgents.Sqlite.dbErrorMessage(e))
+  }
+  assertTrue(first.length.toInt() > 0, "the first pass gets the lease")
+  val second = match acquireSyncLease("s1", lease) {
+    case Ok(t) -> t
+    case Err(e) -> panic(CloudAgents.Sqlite.dbErrorMessage(e))
+  }
+  assertEqual(second, "", "a concurrent pass is refused")
+  match releaseSyncLease("s1", "not-the-token") {
+    case Ok(_) -> ()
+    case Err(e) -> assertTrue(false, CloudAgents.Sqlite.dbErrorMessage(e))
+  }
+  val stillHeld = match acquireSyncLease("s1", lease) {
+    case Ok(t) -> t
+    case Err(e) -> panic(CloudAgents.Sqlite.dbErrorMessage(e))
+  }
+  assertEqual(stillHeld, "", "only the holder's token releases it")
+  match releaseSyncLease("s1", first) {
+    case Ok(_) -> ()
+    case Err(e) -> assertTrue(false, CloudAgents.Sqlite.dbErrorMessage(e))
+  }
+  val third = match acquireSyncLease("s1", lease) {
+    case Ok(t) -> t
+    case Err(e) -> panic(CloudAgents.Sqlite.dbErrorMessage(e))
+  }
+  assertTrue(third.length.toInt() > 0, "free again once released")
+  // An expired lease (a crashed pass) is taken over.
+  exec("UPDATE ledger_github_sync_runs SET lease_until = '1' WHERE session_id = 's1'")
+  val fourth = match acquireSyncLease("s1", lease) {
+    case Ok(t) -> t
+    case Err(e) -> panic(CloudAgents.Sqlite.dbErrorMessage(e))
+  }
+  assertTrue(fourth.length.toInt() > 0, "an expired lease is taken over")
 }
 
 func joinSorted(xs: in slice[String]): String {

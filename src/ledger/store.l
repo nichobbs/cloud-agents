@@ -886,15 +886,24 @@ pub record SyncRow {
   pub commentHash: String
   pub lastError: String
   pub syncedAt: String
+  pub attemptedAt: String
 }
 
 pub func emptySyncRow(itemId: in String): SyncRow {
-  return SyncRow(itemId = itemId, syncedLabel = "", commentId = "", commentHash = "", lastError = "", syncedAt = "")
+  return SyncRow(
+    itemId = itemId,
+    syncedLabel = "",
+    commentId = "",
+    commentHash = "",
+    lastError = "",
+    syncedAt = "",
+    attemptedAt = ""
+  )
 }
 
 /// Every item's sync row for a session (items never synced have none).
 pub func syncRows(sessionId: in String): Result[slice[SyncRow], CloudAgents.Sqlite.DbError] {
-  val rows = CloudAgents.Sqlite.query("SELECT item_id, synced_label, comment_id, comment_hash, last_error, synced_at FROM ledger_github_sync WHERE session_id = " + lit(sessionId))?
+  val rows = CloudAgents.Sqlite.query("SELECT item_id, synced_label, comment_id, comment_hash, last_error, synced_at, attempted_at FROM ledger_github_sync WHERE session_id = " + lit(sessionId))?
   var acc: slice[SyncRow] = []
   var i = 0
   while i < CloudAgents.Sqlite.getRowArrayLength(rows) {
@@ -906,7 +915,8 @@ pub func syncRows(sessionId: in String): Result[slice[SyncRow], CloudAgents.Sqli
         commentId = col(r, 2),
         commentHash = col(r, 3),
         lastError = col(r, 4),
-        syncedAt = col(r, 5)
+        syncedAt = col(r, 5),
+        attemptedAt = col(r, 6)
       )
     )
     i = i + 1
@@ -915,20 +925,46 @@ pub func syncRows(sessionId: in String): Result[slice[SyncRow], CloudAgents.Sqli
 }
 
 pub func saveSyncRow(sessionId: in String, row: in SyncRow): Result[Unit, CloudAgents.Sqlite.DbError] {
-  CloudAgents.Sqlite.execute("INSERT INTO ledger_github_sync (session_id, item_id, synced_label, comment_id, comment_hash, last_error, synced_at) VALUES (" + lit(sessionId) + ", " + lit(row.itemId) + ", " + lit(row.syncedLabel) + ", " + lit(row.commentId) + ", " + lit(row.commentHash) + ", " + lit(row.lastError) + ", " + lit(row.syncedAt) + ") ON CONFLICT(session_id, item_id) DO UPDATE SET synced_label = excluded.synced_label, comment_id = excluded.comment_id, comment_hash = excluded.comment_hash, last_error = excluded.last_error, synced_at = excluded.synced_at")?
+  CloudAgents.Sqlite.execute("INSERT INTO ledger_github_sync (session_id, item_id, synced_label, comment_id, comment_hash, last_error, synced_at, attempted_at) VALUES (" + lit(sessionId) + ", " + lit(row.itemId) + ", " + lit(row.syncedLabel) + ", " + lit(row.commentId) + ", " + lit(row.commentHash) + ", " + lit(row.lastError) + ", " + lit(row.syncedAt) + ", " + lit(row.attemptedAt) + ") ON CONFLICT(session_id, item_id) DO UPDATE SET synced_label = excluded.synced_label, comment_id = excluded.comment_id, comment_hash = excluded.comment_hash, last_error = excluded.last_error, synced_at = excluded.synced_at, attempted_at = excluded.attempted_at")?
   return Ok(())
 }
 
-/// Sessions with GitHub-backed items that need a sync pass: an item changed
-/// since it was last synced (or never was), or it is waiting on GitHub
-/// (blocked, needs_human, pr_open). Least recently attempted first, so a
-/// session that keeps failing takes its turn and no more.
+// SQL: item `i` (of ledger_items) is the one that owns its GitHub issue. A
+// label and a comment live on the issue, so exactly one session may manage
+// them: the most recent non-archived session to register the issue (ties by
+// session id). An archived session owns nothing.
+func ownsIssueSql(): String {
+  return "i.item_id LIKE 'gh:%' AND s.is_archived = '0' AND NOT EXISTS (SELECT 1 FROM ledger_items o JOIN sessions os ON os.id = o.session_id " +
+    "WHERE o.item_id = i.item_id AND o.session_id != i.session_id AND os.is_archived = '0' AND (CAST(o.created_at AS INTEGER) > CAST(i.created_at AS INTEGER) " +
+    "OR (CAST(o.created_at AS INTEGER) = CAST(i.created_at AS INTEGER) AND o.session_id > i.session_id)))"
+}
+
+/// The session's GitHub-backed items it owns for syncing (see ownsIssueSql):
+/// empty for an archived session, and without any issue a later session has
+/// since taken over.
+pub func ownedIssueItems(sessionId: in String): Result[slice[String], CloudAgents.Sqlite.DbError] {
+  val rows = CloudAgents.Sqlite.query("SELECT i.item_id FROM ledger_items i JOIN sessions s ON s.id = i.session_id WHERE i.session_id = " + lit(sessionId) + " AND " + ownsIssueSql())?
+  var acc: slice[String] = []
+  var i = 0
+  while i < CloudAgents.Sqlite.getRowArrayLength(rows) {
+    acc = acc.append(col(CloudAgents.Sqlite.getRowArrayValue(rows, i), 0))
+    i = i + 1
+  }
+  return Ok(value = acc)
+}
+
+/// Sessions with owned GitHub-backed items that need a sync pass: an item
+/// changed since it was last synced (or never was), or it is waiting on
+/// GitHub (blocked, needs_human, pr_open). Least recently attempted first,
+/// so a session that keeps failing takes its turn and no more.
 pub func sessionsToSync(limit: in Int): Result[slice[String], CloudAgents.Sqlite.DbError] {
   val sql = "SELECT i.session_id, MAX(COALESCE(CAST(r.attempted_at AS INTEGER), 0)) AS attempted FROM ledger_items i " +
     "JOIN sessions s ON s.id = i.session_id " +
     "LEFT JOIN ledger_github_sync g ON g.session_id = i.session_id AND g.item_id = i.item_id " +
     "LEFT JOIN ledger_github_sync_runs r ON r.session_id = i.session_id " +
-    "WHERE i.item_id LIKE 'gh:%' AND (g.item_id IS NULL OR CAST(g.synced_at AS INTEGER) < CAST(i.updated_at AS INTEGER) OR i.state IN ('blocked', 'needs_human', 'pr_open')) " +
+    "WHERE " +
+    ownsIssueSql() +
+    " AND (g.item_id IS NULL OR CAST(g.synced_at AS INTEGER) < CAST(i.updated_at AS INTEGER) OR i.state IN ('blocked', 'needs_human', 'pr_open')) " +
     "GROUP BY i.session_id ORDER BY attempted, i.session_id LIMIT " +
     toString(limit)
   val rows = CloudAgents.Sqlite.query(sql)?
@@ -941,10 +977,37 @@ pub func sessionsToSync(limit: in Int): Result[slice[String], CloudAgents.Sqlite
   return Ok(value = acc)
 }
 
+func ensureSyncRunRow(sessionId: in String): Result[Unit, CloudAgents.Sqlite.DbError] {
+  CloudAgents.Sqlite.execute("INSERT INTO ledger_github_sync_runs (session_id, attempted_at, last_error, lease_until) VALUES (" + lit(sessionId) + ", '0', '', '0') ON CONFLICT(session_id) DO NOTHING")?
+  return Ok(())
+}
+
 /// Record that a sync pass was attempted for the session (`error` "" when
 /// it got as far as the items).
 pub func markSyncAttempt(sessionId: in String, error: in String): Result[Unit, CloudAgents.Sqlite.DbError] {
-  CloudAgents.Sqlite.execute("INSERT INTO ledger_github_sync_runs (session_id, attempted_at, last_error) VALUES (" + lit(sessionId) + ", " + lit(CloudAgents.Repository.nowMillis()) + ", " + lit(error) + ") ON CONFLICT(session_id) DO UPDATE SET attempted_at = excluded.attempted_at, last_error = excluded.last_error")?
+  ensureSyncRunRow(sessionId)?
+  CloudAgents.Sqlite.execute("UPDATE ledger_github_sync_runs SET attempted_at = " + lit(CloudAgents.Repository.nowMillis()) + ", last_error = " + lit(error) + " WHERE session_id = " + lit(sessionId))?
+  return Ok(())
+}
+
+/// Take the session's sync lease until `now + leaseMillis`. Returns the lease
+/// token to release with, or "" when another pass holds an unexpired lease.
+/// One conditional UPDATE, so two callers can't both win (SQLite serializes
+/// writers). A crashed pass's lease simply expires.
+pub func acquireSyncLease(sessionId: in String, leaseMillis: in Long): Result[String, CloudAgents.Sqlite.DbError] {
+  ensureSyncRunRow(sessionId)?
+  val now = CloudAgents.Repository.nowMillisLong()
+  val until = toString(now + leaseMillis)
+  val changed = CloudAgents.Sqlite.execute("UPDATE ledger_github_sync_runs SET lease_until = " + lit(until) + " WHERE session_id = " + lit(sessionId) + " AND CAST(lease_until AS INTEGER) <= " + toString(now))?
+  if changed == 1 {
+    return Ok(value = until)
+  }
+  return Ok(value = "")
+}
+
+/// Give the lease back, if it is still the one `token` names.
+pub func releaseSyncLease(sessionId: in String, token: in String): Result[Unit, CloudAgents.Sqlite.DbError] {
+  CloudAgents.Sqlite.execute("UPDATE ledger_github_sync_runs SET lease_until = '0' WHERE session_id = " + lit(sessionId) + " AND lease_until = " + lit(token))?
   return Ok(())
 }
 

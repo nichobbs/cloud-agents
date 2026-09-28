@@ -208,10 +208,14 @@ pub func syncSession(ctx: in SessionContext, port: in GitHubPort, budget: in Int
     case Ok(rs) -> rs
     case Err(e) -> return failed(pass, "reading sync state: " + CloudAgents.Sqlite.dbErrorMessage(e))
   }
-  val due = dueInOrder(items, rows)
+  val owned = match ownedIssueItems(ctx.sessionId) {
+    case Ok(xs) -> xs
+    case Err(e) -> return failed(pass, "reading issue ownership: " + CloudAgents.Sqlite.dbErrorMessage(e))
+  }
+  val due = dueInOrder(items, rows, owned)
 
-  // Item by item, least recently synced first, so a pass that runs out of
-  // budget leaves the most recently synced items for next time. Each item is
+  // Item by item, least recently attempted first, so a pass that runs out
+  // of budget, or items that keep failing, leave the rest their turn. Each item is
   // re-read before each half: an inbound move (and its auto-unblock) changes
   // what the rest of the pass sees.
   var synced = 0
@@ -236,18 +240,18 @@ pub func syncSession(ctx: in SessionContext, port: in GitHubPort, budget: in Int
   return SyncOutcome(items = synced, transitions = pass.transitions, calls = pass.calls, errors = pass.errors)
 }
 
-// The due GitHub-backed item ids, never-synced first, then by last sync
-// (ties in batch order). Selects stamp by stamp rather than sorting in
+// The due items this session owns on GitHub, never-attempted first, then by
+// last attempt (ties in batch order). Selects stamp by stamp rather than sorting in
 // place: n appends and O(n^2) comparisons for a batch of at most 1000.
-func dueInOrder(items: in slice[WorkItem], rows: in slice[SyncRow]): slice[String] {
+func dueInOrder(items: in slice[WorkItem], rows: in slice[SyncRow], owned: in slice[String]): slice[String] {
   var ids: slice[String] = []
   var stamps: slice[String] = []
   var i = 0
   while i < items.length.toInt() {
     val row = rowFor(rows, items[i].id)
-    if items[i].id.startsWith("gh:") and needsSync(items[i], row) {
+    if containsString(owned, items[i].id) and needsSync(items[i], row) {
       ids = ids.append(items[i].id)
-      stamps = stamps.append(match row { case Some(r) -> r.syncedAt; case _ -> "" })
+      stamps = stamps.append(match row { case Some(r) -> r.attemptedAt; case _ -> "" })
     }
     i = i + 1
   }
@@ -483,7 +487,8 @@ func withLabel(r: in SyncRow, label: in String): SyncRow {
     commentId = r.commentId,
     commentHash = r.commentHash,
     lastError = r.lastError,
-    syncedAt = r.syncedAt
+    syncedAt = r.syncedAt,
+    attemptedAt = r.attemptedAt
   )
 }
 
@@ -494,7 +499,8 @@ func withComment(r: in SyncRow, id: in String, hash: in String): SyncRow {
     commentId = id,
     commentHash = hash,
     lastError = r.lastError,
-    syncedAt = r.syncedAt
+    syncedAt = r.syncedAt,
+    attemptedAt = r.attemptedAt
   )
 }
 
@@ -504,12 +510,14 @@ func fail(ctx: in SessionContext, pass: in Pass, saved: in SyncRow, itemId: in S
   return false
 }
 
-// Persist the row. A clean pass stamps synced_at; a failed one keeps the old
-// stamp so the item is retried next pass.
+// Persist the row. Every attempt stamps attempted_at (so a failing item goes
+// to the back of the next pass); only a clean one stamps synced_at, so a
+// failed item stays due and is retried.
 func persist(ctx: in SessionContext, row: in SyncRow, error: in String): Unit {
+  val now = CloudAgents.Repository.nowMillis()
   var at = row.syncedAt
   if error.length.toInt() == 0 {
-    at = CloudAgents.Repository.nowMillis()
+    at = now
   }
   val toSave = SyncRow(
     itemId = row.itemId,
@@ -517,7 +525,8 @@ func persist(ctx: in SessionContext, row: in SyncRow, error: in String): Unit {
     commentId = row.commentId,
     commentHash = row.commentHash,
     lastError = error,
-    syncedAt = at
+    syncedAt = at,
+    attemptedAt = now
   )
   match saveSyncRow(ctx.sessionId, toSave) {
     case Ok(_) -> ()

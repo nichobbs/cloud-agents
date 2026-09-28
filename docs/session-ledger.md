@@ -305,8 +305,22 @@ takes at most 20 sessions, 60 GitHub calls per session and 300 per run;
 whatever is left waits for the next run. Sessions go least recently
 attempted first (`ledger_github_sync_runs`, which also records a session
 that failed before reaching GitHub), and within a session items go least
-recently synced first, so neither a failing session nor always-due stuck
-items starve the rest. Unchanged labels and comment bodies
+recently attempted first (success or not), so neither a failing session, a
+failing item nor always-due stuck items starve the rest. A pass holds a
+per-session lease (`lease_until`, 30 minutes, released at the end), so the
+maintenance run and the sync button never work one session at once; the
+button answers 409 while a pass runs.
+
+**Ownership.** A label and a comment live on the issue, so exactly one
+session manages an issue: the most recent non-archived session to register
+it. An older session's item stays as it was and is not synced, so two
+sessions never fight over labels or read each other's changes as a
+person's. Archiving a session hands its issues back to the previous one.
+
+**Responses.** Calls are 2xx-only with redirects off, so a transferred or
+renamed repo's 3xx is an error, not a body. An issue body without a
+`state` of open/closed and a `labels` array is rejected rather than read as
+an issue with no labels. Unchanged labels and comment bodies
 make no writes, so repeated passes are idempotent.
 
 **Credentials.** Calls run as the session owner, with the GitHub App user
