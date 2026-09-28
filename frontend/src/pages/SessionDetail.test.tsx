@@ -58,16 +58,19 @@ vi.mock('../hooks/useStreamMessage', () => ({
   useStreamMessage: () => stream.current,
 }));
 
+// Whether the session is in local state. Toggled by the hook-order test to
+// model a session that only arrives after `refreshSessions()` loads it.
+const sessionPresent = vi.hoisted(() => ({ current: true }));
 vi.mock('../context/SessionsContext', () => ({
   useSessions: () => ({
-    getSession: (id: string) => ({
+    getSession: (id: string) => sessionPresent.current ? {
       sessionId: id,
       repoUrl: 'https://github.com/owner/repo',
       branch: 'main',
       createdAt: '0',
       harness: 'claude',
       model: 'claude-opus-4-8',
-    }),
+    } : undefined,
     removeSession: vi.fn(),
     updateSession: vi.fn(),
   }),
@@ -131,22 +134,26 @@ function deferred<T>(): { promise: Promise<T>; resolve: (v: T) => void } {
   return { promise, resolve };
 }
 
-function renderPage(initialEntries: Array<string | { pathname: string; state?: unknown; hash?: string }> = ['/sessions/s1']) {
-  const root = document.createElement('div');
-  root.id = 'root';
-  document.body.appendChild(root);
-  return render(
+function pageTree(initialEntries: Array<string | { pathname: string; state?: unknown; hash?: string }>) {
+  return (
     <MemoryRouter initialEntries={initialEntries}>
       <Routes>
         <Route path="/sessions/:id" element={<SessionDetail />} />
       </Routes>
-    </MemoryRouter>,
-    { container: root },
+    </MemoryRouter>
   );
+}
+
+function renderPage(initialEntries: Array<string | { pathname: string; state?: unknown; hash?: string }> = ['/sessions/s1']) {
+  const root = document.createElement('div');
+  root.id = 'root';
+  document.body.appendChild(root);
+  return render(pageTree(initialEntries), { container: root });
 }
 
 beforeEach(() => {
   localStorage.clear();
+  sessionPresent.current = true;
   vi.mocked(api.getPrompts).mockResolvedValue([]);
   vi.mocked(api.getProfiles).mockResolvedValue([]);
   vi.mocked(api.getSessionProfile).mockResolvedValue('');
@@ -547,6 +554,29 @@ describe('SessionDetail mark-viewed (attention tracking)', () => {
     renderPage();
     // The rejection is swallowed; the page still mounts fine.
     await screen.findByPlaceholderText(/Send a message/);
+  });
+});
+
+describe('SessionDetail session arriving after first render', () => {
+  it('keeps hook order stable when the session is absent, then present', async () => {
+    // A fresh device or shared link: the session is not in local state until
+    // refreshSessions() loads it, so the first render takes the "not found"
+    // early return and a later render takes the full path.
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      sessionPresent.current = false;
+      const { rerender } = renderPage();
+      expect(screen.getByText(/Session not found\./)).toBeTruthy();
+
+      sessionPresent.current = true;
+      rerender(pageTree(['/sessions/s1']));
+
+      await screen.findByPlaceholderText(/Send a message/);
+      expect(screen.queryByText(/Session not found\./)).toBeNull();
+      expect(consoleError).not.toHaveBeenCalled();
+    } finally {
+      consoleError.mockRestore();
+    }
   });
 });
 
