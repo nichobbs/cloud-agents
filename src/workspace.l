@@ -77,8 +77,12 @@ pub func validInspectPath(path: in String): Bool {
 // ─── Marker-protocol parsing ─────────────────────────────────────────────────
 
 /// The parsed shape of one inspect container's captured logs. Plain fields,
-/// not a Result — storing a Result in a record field breaks match on
-/// read-back (docs/lyric/gotchas.md, lyric-lang#6231). `ok` false with a
+/// not a Result — storing a Result in a record field used to break match on
+/// read-back (lyric-lang#6231, confirmed fixed as of lyric 0.7.3, this
+/// project's current pin; docs/lyric/gotchas.md no longer documents it for
+/// that reason). Kept as plain fields anyway rather than reverting: no
+/// benefit to a Result-typed field here, and it costs nothing to stay clear
+/// of the bug's shape regardless of which toolchain builds this. `ok` false with a
 /// non-empty `err` is an entrypoint-reported failure (the text after
 /// CLOUD_AGENTS_INSPECT_ERR); `ok` false with an empty `err` means neither
 /// marker was found (the container never reached the inspect block — treat

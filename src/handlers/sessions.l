@@ -2005,16 +2005,21 @@ pub func checkHealth(): Result[String, Web.ApiError] {
 /// `CloudAgents.Callbacks`-family packages compiled into the same DLL all
 /// started throwing a bare `System.InvalidProgramException` ("Common
 /// Language Runtime detected an invalid program"), exactly the corruption
-/// class documented in docs/BUILD.md's Bug 5 and docs/lyric/gotchas.md's
-/// lyric-lang#6232/#6134/#6133 entries, but via a new trigger: a type-invalid
-/// record-field assignment slipping past the type checker, not an
-/// async/await ordering issue. Confirmed by fixing exactly this construction
-/// (match on the Result, hand-roll the array-to-slice copy below) and
-/// re-running the full suite: the ~24 failures across CloudAgents.SessionTests
-/// and every CloudAgents.Callbacks-family suite (CallbacksTests,
-/// CallbacksV2Tests, RepoTasksTests, NotifyTests, RepoArtifactsTests) all
-/// cleared. Filed upstream as a new instance of the class; no issue number
-/// yet — see docs/lyric/gotchas.md for the write-up.
+/// class documented in docs/BUILD.md's Bug 5 and lyric-lang#6232/#6134/#6133
+/// (all three confirmed fixed as of lyric 0.7.3, this project's current pin
+/// — docs/lyric/gotchas.md no longer documents that family for that reason),
+/// but via a new trigger: a type-invalid record-field assignment slipping
+/// past the type checker, not an async/await ordering issue. That specific
+/// gap is also closed on 0.7.3 — the same assignment now fails at compile
+/// time (error[T0104]) instead of reaching the JIT at all. Confirmed by
+/// fixing exactly this construction (match on the Result, hand-roll the
+/// array-to-slice copy below) and re-running the full suite: the ~24
+/// failures across CloudAgents.SessionTests and every CloudAgents.Callbacks-
+/// family suite (CallbacksTests, CallbacksV2Tests, RepoTasksTests,
+/// NotifyTests, RepoArtifactsTests) all cleared. No upstream issue was filed
+/// for this specific trigger since a source-level fix was found; the
+/// `match`-based fix below stays regardless of toolchain, since it's a real
+/// logic fix, not a workaround for a compiler defect.
 @generate(Json)
 pub record ListSessionsResponse {
   pub sessions: slice[AgentSession]

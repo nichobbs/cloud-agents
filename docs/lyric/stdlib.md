@@ -43,16 +43,30 @@ r.mapErr { e -> transform(e) }: Result[T, F]
 r.andThen { v -> other(v) }: Result[U, E]  // flatMap
 ```
 
-Also available (free functions in `Std.Core`, callable via dot-syntax like the
-methods above — `docker_manager.l` uses these in production code, not just
-tests; don't confuse with the similarly-named `Std.Testing` assertion helper
-in the Testing section below, which is a distinct, test-only wrapper):
+**The dot-call form of `isOk`/`isErr`/`unwrap`/`unwrapOr` above compiles but
+crashes at runtime** (`unsupported method '...' on the receiver type`) on
+this project's current toolchain — see `docs/lyric/gotchas.md`'s Functions
+and parameters section for the confirmed repro. Use the **bare
+free-function form** instead: `isOk(r)`, `isErr(r)`. There is no working
+bare-call replacement literally named `unwrap`/`unwrapOr` for `Result` —
+use `unwrapResult(r)`/`unwrapResultOr(r, default)` below instead, or
+`match` on `Ok`/`Err`. `.map`/`.mapErr`/`.andThen` are not part of this
+family and are not confirmed broken.
+
+Also available (free functions in `Std.Core` — call these as bare
+functions, not via dot-syntax; `docker_manager.l` uses these in production
+code, not just tests; don't confuse with the similarly-named `Std.Testing`
+assertion helper in the Testing section below, which is a distinct,
+test-only wrapper):
 ```lyric
-r.unwrapResult(): T                    // same as .unwrap() — panics on Err
-r.unwrapResultOr(default: T): T        // same as .unwrapOr()
-r.unwrapErrOr(default: E): E           // .unwrap() for the Err side
-r.unwrapResultStr(): T                 // like .unwrapResult(), panic message includes the Err payload (E = String)
+unwrapResult(r): T                     // same as .unwrap() — panics on Err
+unwrapResultOr(r, default: T): T       // same as .unwrapOr()
+unwrapErrOr(r, default: E): E          // .unwrap() for the Err side
+unwrapResultStr(r): T                  // like unwrapResult(r), panic message includes the Err payload (E = String)
 ```
+These four resolve correctly as bare calls; their dot-call form
+(`r.unwrapResult()`, etc.) compiles but crashes at runtime the same way as
+`isOk`/`isErr` above — see `docs/lyric/gotchas.md`.
 
 ### Option[T]
 
@@ -74,6 +88,15 @@ o.filter { v -> predicate(v) }: Option[T]
 o.orElse { -> other() }: Option[T]
 o.toResult(err: E): Result[T, E]
 ```
+
+**`isSome`/`isNone`/`unwrap` above have the same dot-call-crashes-at-runtime
+problem as `Result`'s** — use the bare forms instead: `isSome(o)`, `isNone(o)`,
+and `unwrapOption(o)` in place of `.unwrap()` (there is no bare form
+literally named `unwrap` for `Option` either). `unwrapOr(o, default)` bare
+should follow the same pattern (untested directly, but it's the one
+`Std.Core` free function actually named `unwrapOr`). `.map`/`.filter`/
+`.orElse`/`.toResult` are not part of this family and are not confirmed
+broken. See `docs/lyric/gotchas.md` for the confirmed repro.
 
 ### Builtins
 

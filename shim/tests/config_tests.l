@@ -32,8 +32,11 @@ test "tryParseMillis rejects more than nine digits" {
 }
 
 // 600000 is asserted as a literal rather than reading the cross-package
-// `defaultTimeoutMs` pub val: cross-package pub val reads are the
-// lyric-lang#6232/#6133 bug family this repo's gotchas doc catalogues.
+// `defaultTimeoutMs` pub val: cross-package pub val reads used to be the
+// lyric-lang#6232/#6133 bug family (confirmed fixed as of lyric 0.7.3, this
+// project's current pin; docs/lyric/gotchas.md no longer catalogues it for
+// that reason). Kept as a literal anyway — it's what the test is actually
+// asserting about, and switching to a live read wouldn't strengthen it.
 test "timeoutFromRaw falls back to the default on empty input" {
   assertEqualInt(timeoutFromRaw(""), 600000, "unset env var means the 10-minute default")
 }

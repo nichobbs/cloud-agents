@@ -109,9 +109,12 @@ impl Web.Middleware for AuthMiddleware {
 // can cover the Result -> Response mapping directly: they take/return only
 // application records and Web.Response/Web.ApiError, none of which need a
 // constructed Web.Request, unlike the RouteX.handle()/AuthMiddleware.wrap()
-// adapters themselves (blocked by nichobbs/cloud-agents#354, see the NOTE in
-// main_tests.l). pparam() is NOT exposed the same way — it takes a
-// Web.Request, so it stays behind the same #354 wall as the route adapters.
+// adapters themselves — those need a hand-constructed Web.Request, which used
+// to crash (nichobbs/cloud-agents#354, see the NOTE in main_tests.l); that
+// construction crash is confirmed fixed as of Lyric.Web 0.7.0, this project's
+// current pin, so the remaining gap is just that the end-to-end test itself
+// hasn't been written yet, not that it's still blocked. pparam() is NOT
+// exposed the same way — it takes a Web.Request, so it has the same gap.
 func pparam(req: in Web.Request, name: in String): String {
   return match Web.pathParam(req, name) { case Some(s) -> s; case None -> "" }
 }
