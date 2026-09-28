@@ -10,6 +10,7 @@ import CloudAgents.Ledger.Model
 import CloudAgents.Ledger.StateMachine
 import CloudAgents.Ledger.Policy
 import CloudAgents.Ledger.Summary
+import CloudAgents.Ledger.RepoPolicy
 
 func item(id: in String, state: in String, blockedBy: in slice[String]): WorkItem {
   return itemWithReason(id, state, blockedBy, "")
@@ -310,6 +311,69 @@ test "auto-unblock: all in-batch blockers done" {
   assertEqual(ids[0], "gh:a/b#1", "#1 unblocks")
 }
 
+test "auto-unblock never touches a needs_human item or waits on a skipped blocker" {
+  val items: slice[WorkItem] = [
+    item("gh:a/b#1", "needs_human", ["gh:a/b#2"]),
+    item("gh:a/b#2", "done", noRefs()),
+    item("gh:a/b#3", "blocked", ["gh:a/b#4"]),
+    item("gh:a/b#4", "skipped", noRefs())
+  ]
+  assertEqualInt(unblockCandidates(items).length.toInt(), 0, "needs_human is the human's; skipped is not done")
+}
+
+test "a same-state update on a blocked item rejects a blank reason" {
+  val blocked = itemWithReason("gh:a/b#1", "blocked", ["gh:a/b#2"], "waiting")
+  match planStatusChange(blocked, change("blocked", "   ", noRefs(), ""), "agent") {
+    case Ok(_) -> assertTrue(false, "whitespace is not a reason")
+    case Err(msg) -> assertTrue(msg.contains("reason is required"), msg)
+  }
+  match planStatusChange(blocked, change("blocked", "", noRefs(), ""), "agent") {
+    case Ok(p) -> {
+      assertTrue(not p.stateChanged, "a field update, not a transition")
+      assertEqual(p.item.blockedReason, "waiting", "an empty reason keeps the current one")
+    }
+    case Err(msg) -> assertTrue(false, msg)
+  }
+}
+
+// ── GitHub contents decoding ──────────────────────────────────────────────────
+test "a policy file decodes from GitHub's line-wrapped base64" {
+  match decodeContentsBody("{\"type\":\"file\",\"encoding\":\"base64\",\"content\":\"eyJydWxl\\ncyI6W119\\n\"}") {
+    case Ok(text) -> assertEqual(text, "{\"rules\":[]}", "wrapped base64 decodes")
+    case Err(msg) -> assertTrue(false, msg)
+  }
+}
+
+test "an oversized, non-file or undecodable response is refused" {
+  var big = ""
+  var chunk = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+  var i = 0
+  while i < 930 {
+    big = big + chunk
+    i = i + 1
+  }
+  match decodeContentsBody("{\"encoding\":\"base64\",\"content\":\"" + big + "\"}") {
+    case Ok(_) -> assertTrue(false, "over 64 KiB accepted")
+    case Err(msg) -> assertTrue(msg.contains("too large"), msg)
+  }
+  match decodeContentsBody("[{\"name\":\".agent-ledger.json\"}]") {
+    case Ok(_) -> assertTrue(false, "a directory listing accepted")
+    case Err(msg) -> assertTrue(msg.contains("not a file"), msg)
+  }
+  match decodeContentsBody("{\"encoding\":\"none\",\"content\":\"\"}") {
+    case Ok(_) -> assertTrue(false, "unknown encoding accepted")
+    case Err(msg) -> assertTrue(msg.contains("could not be read"), msg)
+  }
+  match decodeContentsBody("{\"encoding\":\"base64\",\"content\":\"%%%not base64%%%\"}") {
+    case Ok(_) -> assertTrue(false, "garbage accepted")
+    case Err(_) -> ()
+  }
+  match decodeContentsBody("<html>rate limited</html>") {
+    case Ok(_) -> assertTrue(false, "non-JSON accepted")
+    case Err(msg) -> assertTrue(msg.contains("unexpected"), msg)
+  }
+}
+
 // ── Refs ──────────────────────────────────────────────────────────────────────
 func expectRef(raw: in String, expected: in String): Unit {
   match normalizeItemRef(raw, "acme/shop") {
@@ -591,6 +655,121 @@ test "a repo policy with a typo or bad value is rejected with a pointer" {
   match parseRepoPolicy("not json") {
     case Ok(_) -> assertTrue(false, "garbage rejected")
     case Err(msg) -> assertTrue(msg.contains("JSON"), msg)
+  }
+}
+
+func expectPolicyError(json: in String, fragment: in String): Unit {
+  match parseRepoPolicy(json) {
+    case Ok(_) -> assertTrue(false, "accepted: " + json)
+    case Err(msg) -> assertTrue(msg.contains(fragment), "want '" + fragment + "' in: " + msg)
+  }
+}
+
+func globsJson(n: in Int, len: in Int): String {
+  var pattern = ""
+  var k = 0
+  while k < len {
+    pattern = pattern + "a"
+    k = k + 1
+  }
+  var acc = ""
+  var i = 0
+  while i < n {
+    if i > 0 {
+      acc = acc + ","
+    }
+    acc = acc + "\"" + pattern + toString(i) + "\""
+    i = i + 1
+  }
+  return "[" + acc + "]"
+}
+
+test "globs respect directory boundaries" {
+  assertTrue(not globMatch("**/test.py", "src/latest.py"), "**/ is not a substring match")
+  assertTrue(globMatch("**/test.py", "src/test.py"), "**/ at a boundary")
+  assertTrue(globMatch("**/test.py", "test.py"), "**/ at the root")
+  assertTrue(not globMatch("**/migrations/**", "db_migrations/x.sql"), "segment name must match whole")
+  assertTrue(globMatch("**/migrations/**", "db/migrations/x.sql"), "nested segment")
+  assertTrue(not globMatch("a/**/b", "a/xb"), "a/**/b needs a separator")
+  assertTrue(globMatch("a/**/b", "a/b"), "zero dirs between")
+  assertTrue(not globMatch("*.lock", "a.lock/b"), "* stops at /")
+}
+
+test "repo policy tags and globs are validated with specific errors" {
+  expectPolicyError(
+    "{\"rules\":[{\"match\":{\"tagsAny\":[\"Deps\"]},\"minSeverity\":\"review\"}]}",
+    "invalid tag \"Deps\""
+  )
+  expectPolicyError(
+    "{\"rules\":[{\"match\":{\"tagsAny\":[]},\"minSeverity\":\"review\"}]}",
+    "tagsAny must not be empty"
+  )
+  expectPolicyError(
+    "{\"rules\":[{\"match\":{\"tagsAny\":\"deps\"},\"minSeverity\":\"review\"}]}",
+    "tagsAny must be an array"
+  )
+  expectPolicyError(
+    "{\"rules\":[{\"match\":{\"tagsAny\":[\"\"]},\"minSeverity\":\"review\"}]}",
+    "tagsAny[0] must not be empty"
+  )
+  expectPolicyError(
+    "{\"rules\":[{\"match\":{\"filesGlob\":[1]},\"minSeverity\":\"review\"}]}",
+    "filesGlob[0] must be a string"
+  )
+  expectPolicyError(
+    "{\"rules\":[{\"match\":{\"filesGlob\":" + globsJson(1, 300) + "},\"minSeverity\":\"review\"}]}",
+    "too long (max 256"
+  )
+  expectPolicyError(
+    "{\"rules\":[{\"match\":{\"filesGlob\":" + globsJson(21, 3) + "},\"minSeverity\":\"review\"}]}",
+    "too many entries (max 20)"
+  )
+  var rules = ""
+  var i = 0
+  while i < 3 {
+    if i > 0 {
+      rules = rules + ","
+    }
+    rules = rules + "{\"match\":{\"filesGlob\":" + globsJson(20, 3) + "},\"minSeverity\":\"review\"}"
+    i = i + 1
+  }
+  expectPolicyError("{\"rules\":[" + rules + "]}", "across all rules (max 50)")
+  match parseRepoPolicy("{\"rules\":[{\"match\":{\"tagsAny\":[\"api-change\"],\"filesGlob\":[\"src/**\"]},\"minSeverity\":\"blocking\"}]}") {
+    case Ok(rs) -> assertEqualInt(rs.length.toInt(), 1, "a valid rule parses")
+    case Err(msg) -> assertTrue(false, msg)
+  }
+}
+
+test "glob work over budget raises rather than scanning" {
+  var longPath = ""
+  var k = 0
+  while k < 490 {
+    longPath = longPath + "x"
+    k = k + 1
+  }
+  var files: slice[String] = []
+  var i = 0
+  while i < 100 {
+    files = files.append(longPath + toString(i))
+    i = i + 1
+  }
+  val parsed = parseRepoPolicy(
+    "{\"rules\":[{\"match\":{\"filesGlob\":" + globsJson(20, 200) + "},\"minSeverity\":\"blocking\"}]}"
+  )
+  match parsed {
+    case Ok(extra) -> {
+      var rules = defaultRules()
+      rules = rules.append(extra[0])
+      assertTrue(globWork(rules, files) > globWorkBudget, "this entry is over budget")
+      assertEqual(
+        effectiveSeverity("", facts("note", "", noRefs(), files), rules),
+        "blocking",
+        "over budget: globs count as matching"
+      )
+      val small: slice[String] = ["docs/readme.md"]
+      assertEqual(effectiveSeverity("", facts("note", "", noRefs(), small), rules), "info", "within budget: real match")
+    }
+    case Err(msg) -> assertTrue(false, msg)
   }
 }
 

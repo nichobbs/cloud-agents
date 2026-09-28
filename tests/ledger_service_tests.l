@@ -240,6 +240,62 @@ test "the human API is owner-scoped" {
     case Ok(_) -> assertTrue(false, "another user cannot direct the agent")
     case Err(e) -> assertEqualInt(e.status, 404, "404")
   }
+  // The owner records something real, so the remaining routes have a real
+  // entry and item to be refused.
+  CloudAgents.Auth.setCurrentUserId("alice")
+  val add = RegisterItemsRequest(items = [RegisterItemInput(id = "#5", title = "Owned", url = "")])
+  match addLedgerItemsHandler("s1", add) {
+    case Ok(_) -> ()
+    case Err(e) -> assertTrue(false, e.message)
+  }
+  val recorded = agentOk(
+    "s1",
+    "deviation",
+    "{\"kind\":\"shortcut\",\"summary\":\"Skipped a test\",\"detail\":\"\",\"item\":\"\",\"tags\":[],\"files\":[],\"severity\":\"\",\"recommendation\":\"\",\"reversible\":\"\"}"
+  )
+  val entryId = jsonField(recorded, "id")
+  assertTrue(entryId.length.toInt() > 0, recorded)
+  CloudAgents.Auth.setCurrentUserId("mallory")
+  match getLedgerEntryHandler("s1", entryId) {
+    case Ok(_) -> assertTrue(false, "entry detail is owner-scoped")
+    case Err(e) -> assertEqualInt(e.status, 404, "entry detail 404")
+  }
+  match reviewLedgerEntryHandler("s1", entryId, ReviewEntryRequest(kind = "approve", body = "")) {
+    case Ok(_) -> assertTrue(false, "review is owner-scoped")
+    case Err(e) -> assertEqualInt(e.status, 404, "review 404")
+  }
+  match addLedgerItemsHandler("s1", add) {
+    case Ok(_) -> assertTrue(false, "adding items is owner-scoped")
+    case Err(e) -> assertEqualInt(e.status, 404, "add items 404")
+  }
+  match ledgerItemStateHandler("s1", LedgerItemStateRequest(item = "gh:acme/shop#5", to = "skipped", reason = "")) {
+    case Ok(_) -> assertTrue(false, "item state is owner-scoped")
+    case Err(e) -> assertEqualInt(e.status, 404, "item state 404")
+  }
+  CloudAgents.Auth.setCurrentUserId("alice")
+  match getLedgerEntryHandler("s1", entryId) {
+    case Ok(d) -> assertEqual(d.ledgerEntry.reviewState, "pending", "the refused review changed nothing")
+    case Err(e) -> assertTrue(false, e.message)
+  }
+}
+
+// A string field's value from a flat JSON object ("" when absent).
+func jsonField(json: in String, name: in String): String {
+  val key = "\"" + name + "\":\""
+  var i = 0
+  val n = json.length.toInt()
+  val k = key.length.toInt()
+  while i + k <= n {
+    if json.substring(i, k) == key {
+      var j = i + k
+      while j < n and json.substring(j, 1) != "\"" {
+        j = j + 1
+      }
+      return json.substring(i + k, j - i - k)
+    }
+    i = i + 1
+  }
+  return ""
 }
 
 test "human item actions follow the state machine" {
@@ -339,4 +395,153 @@ test "tool arguments are decoded tolerantly, as LLM callers fill them" {
   agentOk("s1", "check-feedback", "null")
   // Unknown fields are ignored rather than rejected.
   val _ = agentOk("s1", "note", "{\"summary\":\"fine\",\"extra\":42}")
+}
+
+test "a full snapshot says when older rows were left out" {
+  val path = useFreshTestDb("ledger-svc-truncated")
+  defer {
+    cleanupTestDb(path)
+  }
+  seedSession("s1", "alice", "tok-s1")
+  CloudAgents.Auth.setCurrentUserId("alice")
+  agentOk(
+    "s1",
+    "note",
+    "{\"summary\":\"first\",\"detail\":\"\",\"item\":\"\",\"tags\":[],\"files\":[],\"severity\":\"\"}"
+  )
+  match getLedgerHandler("s1", "0") {
+    case Ok(snap) -> assertEqual(snap.truncated, "false", "small session: complete")
+    case Err(e) -> assertTrue(false, e.message)
+  }
+  exec(
+    "WITH RECURSIVE k(x) AS (SELECT 1 UNION ALL SELECT x + 1 FROM k WHERE x < 5001) INSERT INTO ledger_entries (id, session_id, item_id, kind, severity, declared_severity, summary, detail, options_json, chosen, rationale, recommendation, proceeding_with, reversible, files_json, tags_json, source, undeclared, matched_entry_id, origin, supersedes, transcript_seq, review_state, review_by, review_at, review_comment, created_at, created_seq, updated_seq) SELECT 'bulk' || x, 's1', '', 'note', 'review', '', 'bulk ' || x, '', '[]', '', '', '', '', '', '[]', '[]', 'declared', 'false', '', '', '', '', 'pending', '', '', '', CAST(x AS TEXT), CAST(x AS TEXT), CAST(x AS TEXT) FROM k"
+  )
+  match getLedgerHandler("s1", "0") {
+    case Ok(snap) -> {
+      assertEqual(snap.truncated, "true", "older rows left out")
+      assertEqualInt(snap.entries.length.toInt(), 5000, "capped list")
+      assertEqual(snap.summary.pendingReview, "5001", "the summary still counts every row")
+    }
+    case Err(e) -> assertTrue(false, e.message)
+  }
+}
+
+test "a session's batch is capped" {
+  val path = useFreshTestDb("ledger-svc-itemcap")
+  defer {
+    cleanupTestDb(path)
+  }
+  seedSession("s1", "alice", "tok-s1")
+  var batch = 0
+  while batch < 5 {
+    var items = ""
+    var i = 0
+    while i < 200 {
+      if i > 0 {
+        items = items + ","
+      }
+      items = items + "{\"id\":\"local:item-" + toString(batch * 200 + i) + "\",\"title\":\"\",\"url\":\"\"}"
+      i = i + 1
+    }
+    agentOk("s1", "register-items", "{\"items\":[" + items + "]}")
+    batch = batch + 1
+  }
+  val over = agent("s1", "register-items", "{\"items\":[{\"id\":\"local:one-more\",\"title\":\"\",\"url\":\"\"}]}")
+  assertEqual(over.ok, "false", "item 1001 is refused")
+  assertTrue(over.error.contains("at most 1000"), over.error)
+  val again = agent(
+    "s1",
+    "register-items",
+    "{\"items\":[{\"id\":\"local:item-3\",\"title\":\"renamed\",\"url\":\"\"}]}"
+  )
+  assertEqual(again.ok, "true", "re-registering an existing item still works at the cap")
+  // Every other tool registers an unknown item on first mention: same cap.
+  val viaNote = agent("s1", "note", "{\"summary\":\"x\",\"item\":\"local:via-note\"}")
+  assertEqual(viaNote.ok, "false", "a note can't register item 1001")
+  assertTrue(viaNote.error.contains("at most 1000"), viaNote.error)
+  val viaStatus = agent("s1", "item-status", status("local:via-status", "in_progress", "", ""))
+  assertEqual(viaStatus.ok, "false", "a status change can't register item 1001")
+  val known = agent("s1", "note", "{\"summary\":\"x\",\"item\":\"local:item-7\"}")
+  assertEqual(known.ok, "true", "a note on an existing item still works at the cap")
+}
+
+test "no next-run nudge when MCP callbacks are off" {
+  val path = useFreshTestDb("ledger-svc-nocallbacks")
+  defer {
+    cleanupTestDb(path)
+    Env.SetEnvironmentVariable("CLOUD_AGENTS_MCP_CALLBACKS", "")
+  }
+  seedSession("s1", "alice", "tok-s1")
+  CloudAgents.Auth.setCurrentUserId("alice")
+  match ledgerFeedbackHandler("s1", LedgerFeedbackRequest(item = "", kind = "directive", body = "Also update the changelog.")) {
+    case Ok(_) -> ()
+    case Err(e) -> assertTrue(false, e.message)
+  }
+  assertTrue(nextRunPromptPrefix("s1", "alice", "").length.toInt() > 0, "nudged with callbacks on")
+  Env.SetEnvironmentVariable("CLOUD_AGENTS_MCP_CALLBACKS", "0")
+  assertEqual(nextRunPromptPrefix("s1", "alice", ""), "", "no tool to call, so no nudge")
+}
+
+// A test-only trigger that, while armed, moves the item's version inside
+// the same transaction as the seq bump every write starts with, so the
+// version-guarded item update misses exactly as it would if another writer
+// had got there first.
+func armConflicts(itemId: in String, times: in Int): Unit {
+  exec("CREATE TABLE IF NOT EXISTS test_conflicts (n INTEGER NOT NULL)")
+  exec("DELETE FROM test_conflicts")
+  exec("INSERT INTO test_conflicts (n) VALUES (" + toString(times) + ")")
+  exec(
+    "CREATE TRIGGER IF NOT EXISTS test_force_conflict AFTER UPDATE OF seq ON ledger_sessions WHEN (SELECT n FROM test_conflicts) > 0 BEGIN UPDATE ledger_items SET updated_seq = '999999' || updated_seq WHERE item_id = '" +
+      itemId +
+      "'; UPDATE test_conflicts SET n = n - 1; END"
+  )
+}
+
+test "a transition that loses a race is re-planned and retried" {
+  val path = useFreshTestDb("ledger-svc-conflict")
+  defer {
+    cleanupTestDb(path)
+  }
+  seedSession("s1", "alice", "tok-s1")
+  agentOk("s1", "register-items", "{\"items\":[{\"id\":\"#1\",\"title\":\"\",\"url\":\"\"}]}")
+  armConflicts("gh:acme/shop#1", 2)
+  val moved = agent("s1", "item-status", status("#1", "in_progress", "", ""))
+  assertEqual(moved.ok, "true", "applied on the third attempt: " + moved.error)
+
+  armConflicts("gh:acme/shop#1", 3)
+  val lost = agent("s1", "item-status", status("#1", "pr_open", "", ""))
+  assertEqual(lost.ok, "false", "three lost races give up")
+  assertTrue(lost.error.contains("changed concurrently"), lost.error)
+  exec("DELETE FROM test_conflicts")
+  match CloudAgents.Sqlite.query("SELECT state FROM ledger_items WHERE item_id = 'gh:acme/shop#1'") {
+    case Ok(rows) -> assertEqual(
+      CloudAgents.Sqlite.getStringArrayValue(CloudAgents.Sqlite.getRowArrayValue(rows, 0).cols, 0),
+      "in_progress",
+      "the lost update wrote nothing"
+    )
+    case Err(e) -> assertTrue(false, CloudAgents.Sqlite.dbErrorMessage(e))
+  }
+}
+
+test "a blocker notifies the owner" {
+  val path = useFreshTestDb("ledger-svc-notify")
+  defer {
+    cleanupTestDb(path)
+  }
+  seedSession("s1", "alice", "tok-s1")
+  agentOk(
+    "s1",
+    "register-items",
+    "{\"items\":[{\"id\":\"#1\",\"title\":\"\",\"url\":\"\"},{\"id\":\"#2\",\"title\":\"\",\"url\":\"\"}]}"
+  )
+  agentOk("s1", "item-status", status("#2", "blocked", "needs the schema", "\"#1\""))
+  match CloudAgents.Sqlite.query("SELECT level, summary FROM notifications WHERE session_id = 's1'") {
+    case Ok(rows) -> {
+      assertEqualInt(CloudAgents.Sqlite.getRowArrayLength(rows), 1, "one notification")
+      val r = CloudAgents.Sqlite.getRowArrayValue(rows, 0)
+      assertEqual(CloudAgents.Sqlite.getStringArrayValue(r.cols, 0), "blocked", "level")
+      assertTrue(CloudAgents.Sqlite.getStringArrayValue(r.cols, 1).contains("needs the schema"), "summary names the reason")
+    }
+    case Err(e) -> assertTrue(false, CloudAgents.Sqlite.dbErrorMessage(e))
+  }
 }

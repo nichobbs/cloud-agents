@@ -315,10 +315,23 @@ case "$ledger_stdout" in
   *) echo "FAIL ledger: illegal move — got: ${ledger_stdout}" >&2; fails=$((fails + 1)) ;;
 esac
 
+BLOCKER_NOTES="$(sqlite3 "$DB" "SELECT COUNT(*) FROM notifications WHERE session_id = '${LEDGER_SESSION_ID}' AND level = 'blocked' AND summary LIKE '%Needs #1%';")"
+if [ "$BLOCKER_NOTES" = "1" ]; then
+  echo "ok   ledger: a blocker notifies the owner"
+else
+  echo "FAIL ledger: blocker notification — found ${BLOCKER_NOTES} matching notification rows" >&2; fails=$((fails + 1))
+fi
+
 assert "ledger snapshot (owner)"       GET  "/api/sessions/${LEDGER_SESSION_ID}/ledger"       yes 200 '"blockingCount":"1"'
 assert "ledger rejects no-auth"        GET  "/api/sessions/${LEDGER_SESSION_ID}/ledger"       no  401 ""
 assert "ledger is owner-scoped"        GET  "/api/sessions/${SEEDED_SESSION_ID}/ledger"       yes 404 "Session"
 assert "ledger inbox"                  GET  "/api/ledger/inbox"                               yes 200 "Skipped a flaky test"
+# GitHub sync (Phase 3): the owner here has no connected GitHub account, so
+# both routes reach the token lookup and report it without calling GitHub.
+assert "ledger sync is owner-scoped"   POST "/api/sessions/${SEEDED_SESSION_ID}/ledger/sync"  yes 404 "Session"
+assert "ledger sync needs GitHub"      POST "/api/sessions/${LEDGER_SESSION_ID}/ledger/sync"  yes 400 "reconnect GitHub"
+assert "ledger maintenance sync"       POST "/api/maintenance/ledger-sync"                    yes 200 "reconnect GitHub"
+assert "ledger maintenance sync auth"  POST "/api/maintenance/ledger-sync"                    no  401 ""
 SHORTCUT_ID="$(sqlite3 "$DB" "SELECT id FROM ledger_entries WHERE session_id = '${LEDGER_SESSION_ID}' AND kind = 'shortcut';")"
 assert "ledger reject needs a body"    POST "/api/sessions/${LEDGER_SESSION_ID}/ledger/entries/${SHORTCUT_ID}/review" yes 400 "body is required" '{"kind":"reject","body":""}'
 assert "ledger reject"                 POST "/api/sessions/${LEDGER_SESSION_ID}/ledger/entries/${SHORTCUT_ID}/review" yes 200 '"kind":"reject"' '{"kind":"reject","body":"Do not skip it"}'
@@ -329,11 +342,16 @@ feedback_stdout="$(ledger_shim <<'MCP'
 {"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"ledger_check_feedback","arguments":{}}}
 {"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"ledger_check_feedback","arguments":{}}}
 {"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"ledger_set_item_status","arguments":{"item":"#1","state":"done"}}}
+{"jsonrpc":"2.0","id":5,"method":"tools/call","params":{"name":"ledger_get_state"}}
 MCP
 )"
 case "$feedback_stdout" in
   *'Do not skip it'*'\"feedback\":[]'*) echo "ok   ledger: feedback is delivered to the agent exactly once" ;;
   *) echo "FAIL ledger: feedback delivery — got: ${feedback_stdout}" >&2; fails=$((fails + 1)) ;;
+esac
+case "$feedback_stdout" in
+  *'"id":5'*'\"openForReview\"'*) echo "ok   ledger: a tool call with no arguments works through the real MCP server" ;;
+  *) echo "FAIL ledger: no-arguments call — got: ${feedback_stdout}" >&2; fails=$((fails + 1)) ;;
 esac
 case "$feedback_stdout" in
   *'\"unblocked\":[\"gh:acme/shop#2\"]'*) echo "ok   ledger: finishing #1 auto-unblocks #2" ;;

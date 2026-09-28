@@ -254,8 +254,8 @@ pub func planStatusChange(
 /// Ids of `blocked` items whose every `blockedBy` ref is an item in this
 /// batch that is now `done` (spec §7's auto-unblock rule). An item with no
 /// `blockedBy` (only a prerequisite proposal), or with any ref outside the
-/// batch, is never auto-unblocked here: out-of-batch refs need GitHub
-/// reconciliation (docs/session-ledger.md §9, a follow-up phase).
+/// batch, is never auto-unblocked here: out-of-batch refs resolve through
+/// GitHub reconciliation (docs/session-ledger.md §9, CloudAgents.Ledger.Sync).
 pub func unblockCandidates(items: in slice[WorkItem]): slice[String] {
   var acc: slice[String] = []
   var i = 0

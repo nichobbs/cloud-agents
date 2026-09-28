@@ -32,7 +32,7 @@ natural boundaries. The transcript stays available as evidence.
 | System-prompt instructions | Rules files rendered into the workspace (`docker/session-tools-guide.md` → `.claude/rules/session-tools.md`, GEMINI.md, opencode instructions); Codex gets an inline prompt prefix | Both rewritten with the spec's §10 agent instructions |
 | zod, Vitest, ULID | `@generate(Json)` records + hand validation; `@test_module` suites with live SQLite; no ULID in the stdlib | Validation in the pure core; ids are UUIDv4, ordering comes from the per-session cursor (`createdSeq`) |
 | ISO timestamps | Epoch-millisecond strings throughout the app | Epoch-millisecond strings |
-| Alarm-driven GitHub sync / observer | Nothing runs periodically in-process; periodic work is an externally polled `POST /api/maintenance/*` endpoint | Phases 3–4 follow the maintenance-endpoint idiom (§9) |
+| Alarm-driven GitHub sync / observer | Nothing runs periodically in-process; periodic work is an externally polled `POST /api/maintenance/*` endpoint | Phases 3–4 follow the maintenance-endpoint idiom (§9, §10) |
 | Inbound GitHub webhooks, GitHub App | Neither exists; OAuth App with `repo read:user` scope | Phase 3 polls with the owner's vaulted token |
 | WebSocket / SSE live fanout | Runs stream over SSE-on-POST; everything else polls | Cursor polling (`GET …/ledger?after=<cursor>`), 3 s while a run streams, 10 s idle |
 | `LedgerIndex` DO for a cross-session inbox | Single DB | One owner-scoped join query (`GET /api/ledger/inbox`) |
@@ -116,9 +116,27 @@ working branch, which the agent can edit. It is fetched once per session on
 the first recorded entry and cached (`absent`, `loaded`, `invalid` with the
 parse error, or `unavailable`); an invalid file is shown in the UI and the
 defaults apply. `unavailable` (a GitHub failure) is retried on the next
-entry rather than kept for the session. Globs are matched by dynamic
-programming, so a hostile pattern costs O(pattern x path). Unknown `match` keys are rejected so a typo cannot silently
-widen a rule.
+entry rather than kept for the session. GitHub answers 404 both for a
+missing file and for a repository the token cannot see, so a 404 counts as
+`absent` only once the repository itself is confirmed readable; otherwise it
+is `unavailable`.
+
+Glob syntax: `*` matches within one path segment, `?` one non-`/`
+character, `**` any run including `/`, and `**/` also matches zero
+directories, but only at a segment start (`**/test.py` matches `test.py`
+and `a/test.py`, never `src/latest.py`).
+
+Validation rejects, with a message naming the rule and the limit:
+- unknown `match` keys, so a typo cannot silently widen a rule;
+- `tagsAny` values that are not valid entry tags (1-32 of `a-z 0-9 -`), so a
+  typo cannot silently make a rule unmatchable;
+- more than 10 tags or 20 globs in a rule, 50 globs across the file, or a
+  glob over 256 characters.
+
+Globs are matched by dynamic programming (O(pattern x path), never
+exponential). Matching one entry's files against every glob is also
+budgeted; an entry over the budget has its file globs treated as matching,
+which can only put it in front of a reviewer.
 
 ## 6. Interfaces
 
@@ -159,15 +177,25 @@ GET  /api/ledger/inbox                              pending review entries acros
 `reject`, `comment` and `directive` require a body. A session the caller
 doesn't own is a 404.
 
+A poll reads the cursor first and returns `unchanged` without loading any
+rows when nothing moved. Lists are capped (1000 items, 5000 entries, 2000
+feedback rows); a delta that reaches a cap is replaced by a full snapshot.
+Past the entry or feedback cap a full snapshot carries the **newest** rows
+and `truncated: "true"`. A session's batch is capped at 1000 work items, so
+the item list is never truncated. Summary counts are computed in SQL over
+every row, so they stay right however large a session grows.
+
 ### Feedback delivery
 
 1. **Pull**: `ledger_check_feedback` claims undelivered rows with a fresh
    batch id and returns exactly those (`deliveredVia = mcp_poll`), so
    feedback created mid-claim is never marked delivered unseen. Everything
    that can fail runs before the claim, and a failed read-back releases the
-   batch, so an error reply never loses feedback.
+   batch, so an error reply never loses feedback. The read-back joins the
+   answered entry's summary, so nothing else is read after the claim.
 2. **Nudge**: every ledger reply includes the pending count and a hint.
-3. **Push at next run**: when feedback is waiting and the session's profile
+3. **Push at next run**: when feedback is waiting, MCP callbacks are enabled
+   (`CLOUD_AGENTS_MCP_CALLBACKS` is not `0`) and the session's profile
    exposes `ledger_check_feedback`, the next run's prompt (interactive and
    scheduled-job) is prefixed with a one-line instruction to call it. The
    feedback itself is not pasted, so delivery tracking stays exact.
@@ -221,13 +249,88 @@ ADRs: a spec + ADR first; Postgres DDL with `tenant_id` leading every key and
 `FORCE ROW LEVEL SECURITY` (ADR-0019); `@p0` placeholders; and the store
 rewritten against `Lyric.Db`. The SQLite store here is not portable as is.
 
-## 9. Follow-ups (not built)
+## 9. GitHub reconciliation (Phase 3)
 
-- **Phase 3 — GitHub reconciliation**: `agent:*` labels, one structured
-  blocker comment per item (hidden marker, edited in place), inbound polling
-  via a `POST /api/maintenance/ledger-sync` endpoint in the existing
-  maintenance idiom, auto-unblock on refs outside the batch. Uses the owner's
-  vaulted OAuth token (`repo` scope); a GitHub App is the longer-term option.
+Items whose id is a GitHub issue (`gh:owner/repo#N`) are mirrored onto that
+issue, and changes made on GitHub flow back. Local items are never synced.
+
+**Outbound.** Each synced issue carries exactly one managed label for the
+item's state; other labels are never touched. A skipped item's issue carries
+none.
+
+| State | Label |
+|---|---|
+| queued | `agent:queued` |
+| in_progress | `agent:in-progress` |
+| pr_open | `agent:pr-open` |
+| blocked | `agent:blocked` |
+| needs_human | `agent:needs-human` |
+| done | `agent:done` |
+
+Managed labels are created in the repo on first use. A blocked or
+needs_human item gets one structured comment (reason, blockers as `#N` or
+`owner/repo#N`, proposed prerequisite work, the agent's recommendation),
+identified by a hidden `<!-- agent-ledger:session=…;item=… -->` marker and
+edited in place as the item changes. Once the item is unstuck the comment is
+rewritten as resolved rather than deleted. A comment deleted on GitHub is
+found again by its marker or posted anew.
+
+**Inbound.** Each pass reads the issue before writing:
+
+- a `pr_open` item whose pull request is merged moves to `done` (actor
+  `github-sync`), and the usual auto-unblock runs;
+- a person removing the `agent:blocked` / `agent:needs-human` label the
+  ledger applied, or adding `agent:queued`, requeues the item (actor
+  `human`). Only a label the ledger itself put there counts as removed, and
+  the ledger's own stale `agent:queued` is not read as a request;
+- a blocked item whose blockers are all resolved (an in-batch item that is
+  done, or a GitHub issue that is closed) is requeued (actor `github-sync`).
+  This is how blockers outside the batch unblock.
+
+Every inbound move writes a system note saying why.
+
+**When.** There is no in-process timer. Two endpoints:
+
+```
+POST /api/maintenance/ledger-sync        operator only; polled by an external scheduler
+POST /api/sessions/{id}/ledger/sync      owner; the panel's "Sync with GitHub" button
+```
+
+Both return `{sessions, items, transitions, calls, errors}`. Sync state lives
+in `ledger_github_sync` (migration 0038): the label last applied, the comment
+id and body hash, the last error and when the item last synced. An item is
+due when it changed since its last sync, its last sync failed, or it is in a
+state GitHub can move (blocked, needs_human, pr_open). The maintenance run
+takes at most 20 sessions, 60 GitHub calls per session and 300 per run;
+whatever is left waits for the next run. Sessions go least recently
+attempted first (`ledger_github_sync_runs`, which also records a session
+that failed before reaching GitHub), and within a session items go least
+recently attempted first (success or not), so neither a failing session, a
+failing item nor always-due stuck items starve the rest. A pass holds a
+per-session lease (`lease_until`, 30 minutes, released at the end), so the
+maintenance run and the sync button never work one session at once; the
+button answers 409 while a pass runs.
+
+**Ownership.** A label and a comment live on the issue, so exactly one
+session manages an issue: the most recent non-archived session to register
+it. An older session's item stays as it was and is not synced, so two
+sessions never fight over labels or read each other's changes as a
+person's. Archiving a session hands its issues back to the previous one.
+
+**Responses.** Calls are 2xx-only with redirects off, so a transferred or
+renamed repo's 3xx is an error, not a body. An issue body without a
+`state` of open/closed and a `labels` array is rejected rather than read as
+an issue with no labels. Unchanged labels and comment bodies
+make no writes, so repeated passes are idempotent.
+
+**Credentials.** Calls run as the session owner, with the GitHub App user
+token from their connected account (`ensureFreshGitHubToken`). The App needs
+Issues read/write and Pull requests read. A failure is recorded against the
+item and retried next pass; an owner without a usable token gets an error
+telling them to reconnect GitHub.
+
+## 10. Follow-ups (not built)
+
 - **Phase 4 — observer**: extract undeclared decisions/shortcuts from
   `session_events` with Claude Haiku, reconcile against declared entries
   (deterministic, in the core), badge `undeclared`. Needs a hand-written
@@ -237,7 +340,7 @@ rewritten against `Lyric.Db`. The SQLite store here is not portable as is.
   MCP-capable harness given a session token; a "create external session"
   action and hook ingestion are open.
 
-## 10. Open questions
+## 11. Open questions
 
 Recorded rather than guessed (spec §20):
 

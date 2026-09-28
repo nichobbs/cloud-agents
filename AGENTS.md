@@ -193,8 +193,12 @@ StateMachine,Policy,Summary}` packages (the Testamur port unit);
 reintroduce parallel agent-reporting tools; extend the ledger. Keep the tool
 name list in sync across `shim/src/ledger_tools.l`, `shim/tests/config_tests.l`,
 `src/handlers/profiles.l`, `src/ledger/schema.l` and
-`frontend/src/pages/Profiles.tsx`. GitHub reconciliation and the observer are
-designed (§9) but not built.
+`frontend/src/pages/Profiles.tsx`. GitHub reconciliation (§9) is built:
+`CloudAgents.Ledger.GitHubSync` holds the pure label/comment/inbound rules,
+`CloudAgents.Ledger.Sync` runs a budgeted pass through the `GitHubPort`
+interface (tested against an in-memory fake), triggered by the operator-polled
+`POST /api/maintenance/ledger-sync` or the owner's per-session sync. The
+observer (§10) is designed but not built.
 
 ## Provenance capture (Testamur §4.1 / ADR-0004; audit WP4)
 

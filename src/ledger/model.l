@@ -540,6 +540,11 @@ pub func validateTags(tags: in slice[String]): Result[Unit, String] {
   return Ok(())
 }
 
+/// Whether `t` is a valid entry tag: 1-32 of a-z 0-9 -.
+pub func isValidTag(t: in String): Bool {
+  return t.length.toInt() > 0 and t.length.toInt() <= 32 and isTagChars(t)
+}
+
 func isTagChars(t: in String): Bool {
   var i = 0
   val n = t.length.toInt()

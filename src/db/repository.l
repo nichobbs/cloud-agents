@@ -470,7 +470,18 @@ pub func allMigrations(): slice[Migration] {
     // consolidation's profile-grant migration — a 'selected'-mode profile
     // that granted any retired agent-reporting tool (add_todo / update_todo
     // / list_todos / add_followup_task) is granted the ledger tools instead.
-    Migration(version = "0037_session_ledger", statements = CloudAgents.Ledger.Schema.sessionLedgerMigrationSql())
+    Migration(
+      version = "0037_session_ledger",
+      statements = CloudAgents.Ledger.Schema.sessionLedgerMigrationSql()
+    ),
+    // Session ledger Phase 3: per-item GitHub reconciliation state.
+    Migration(
+      version = "0038_ledger_github_sync",
+      statements = [
+        CloudAgents.Ledger.Schema.ledgerGithubSyncSchemaSql(),
+        CloudAgents.Ledger.Schema.ledgerGithubSyncRunsSchemaSql()
+      ]
+    )
   ]
 }
 

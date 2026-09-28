@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { api } from '../lib/api';
 import {
   KIND_META,
@@ -54,6 +54,9 @@ export function LedgerEntryCard({ sessionId, entry, feedback, reviewable, onRevi
   const [detail, setDetail] = useState<EntryDetail | null>(null);
   const [detailOpen, setDetailOpen] = useState(false);
   const [detailError, setDetailError] = useState('');
+  // The entry version the cached detail was loaded for: new feedback or a
+  // review bumps entry.updatedSeq, and an open detail then reloads.
+  const [detailSeq, setDetailSeq] = useState('');
 
   const kind = KIND_META[entry.kind] ?? { label: entry.kind, color: '#8b949e' };
   const severityColor = entry.severity === 'blocking' ? '#f85149' : entry.severity === 'review' ? '#d29922' : '#6e7681';
@@ -79,16 +82,25 @@ export function LedgerEntryCard({ sessionId, entry, feedback, reviewable, onRevi
     }
   };
 
-  const toggleDetail = async () => {
+  const loadDetail = useCallback(async () => {
+    setDetailError('');
+    const seq = entry.updatedSeq;
+    try {
+      setDetail(await api.getLedgerEntry(sessionId, entry.id));
+      setDetailSeq(seq);
+    } catch (e) {
+      setDetailError(e instanceof Error ? e.message : String(e));
+    }
+  }, [sessionId, entry.id, entry.updatedSeq]);
+
+  useEffect(() => {
+    if (detailOpen && detail && detailSeq !== entry.updatedSeq) void loadDetail();
+  }, [detailOpen, detail, detailSeq, entry.updatedSeq, loadDetail]);
+
+  const toggleDetail = () => {
     const opening = !detailOpen;
     setDetailOpen(opening);
-    if (opening && !detail) {
-      try {
-        setDetail(await api.getLedgerEntry(sessionId, entry.id));
-      } catch (e) {
-        setDetailError(e instanceof Error ? e.message : String(e));
-      }
-    }
+    if (opening && (!detail || detailSeq !== entry.updatedSeq)) void loadDetail();
   };
 
   return (
@@ -142,29 +154,26 @@ export function LedgerEntryCard({ sessionId, entry, feedback, reviewable, onRevi
         )}
       </div>
 
-      {reviewable && mode === '' && (
-        <div style={actionsStyle}>
-          <button type="button" style={primaryBtnStyle} disabled={busy} onClick={() => void submit('approve')}>
-            Approve
-          </button>
-          <button type="button" style={dangerBtnStyle} disabled={busy} onClick={() => setMode('reject')}>
-            Reject
-          </button>
-          <button type="button" style={smallBtnStyle} disabled={busy} onClick={() => setMode('comment')}>
-            Comment
-          </button>
-          <button type="button" style={detailBtnStyle} onClick={() => void toggleDetail()}>
-            {detailOpen ? 'Hide details' : 'Details'}
-          </button>
-        </div>
-      )}
-      {!reviewable && (
-        <div style={actionsStyle}>
-          <button type="button" style={detailBtnStyle} onClick={() => void toggleDetail()}>
-            {detailOpen ? 'Hide details' : 'Details'}
-          </button>
-        </div>
-      )}
+      <div style={actionsStyle}>
+        {reviewable && mode === '' && (
+          <>
+            <button type="button" style={primaryBtnStyle} disabled={busy} onClick={() => void submit('approve')}>
+              Approve
+            </button>
+            <button type="button" style={dangerBtnStyle} disabled={busy} onClick={() => setMode('reject')}>
+              Reject
+            </button>
+            <button type="button" style={smallBtnStyle} disabled={busy} onClick={() => setMode('comment')}>
+              Comment
+            </button>
+          </>
+        )}
+        {/* Available while composing too: the transcript is often what a
+            rejection needs to point at. */}
+        <button type="button" style={detailBtnStyle} onClick={toggleDetail}>
+          {detailOpen ? 'Hide details' : 'Details'}
+        </button>
+      </div>
 
       {mode !== '' && (
         <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
@@ -214,8 +223,8 @@ function EntryDetailBody({ detail }: { detail: EntryDetail }) {
         <>
           <div style={sectionHeaderStyle}>Options considered</div>
           <ul style={listStyle}>
-            {e.optionsConsidered.map(o => (
-              <li key={o}>{o}</li>
+            {e.optionsConsidered.map((o, i) => (
+              <li key={`${i}-${o}`}>{o}</li>
             ))}
           </ul>
         </>

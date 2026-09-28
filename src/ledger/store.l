@@ -26,6 +26,7 @@ import CloudAgents.Sqlite
 import CloudAgents.Repository
 import CloudAgents.Ledger.Model
 import CloudAgents.Ledger.Schema
+import CloudAgents.Ledger.Summary
 
 func lit(s: in String): String {
   return CloudAgents.Db.sqlLiteral(s)
@@ -164,11 +165,17 @@ pub func registerItems(
         )
       }
     } else {
+      // A ref-derived URL is only a default for a new item: re-registering
+      // with no url keeps whatever the item already has.
+      var url = urls[i]
+      if url.length.toInt() == 0 {
+        url = urlForItemRef(id)
+      }
       stmts = stmts.append(
         "INSERT OR IGNORE INTO ledger_items (" + itemCols + ") VALUES (" + lit(sessionId) + ", " + lit(id) + ", " +
           lit(titles[i]) +
           ", " +
-          lit(urls[i]) +
+          lit(url) +
           ", 'queued', '[]', '', '', '', '', CAST((SELECT COUNT(*) FROM ledger_items WHERE session_id = " +
           lit(sessionId) +
           ") AS TEXT), " +
@@ -498,9 +505,28 @@ pub func getEntry(sessionId: in String, entryId: in String): Result[Option[Ledge
 }
 
 /// A session's entries in creation order (bounded).
+/// Past the cap these are the NEWEST entryRowCap entries (recent activity is
+/// never the part dropped); countEntries says whether any were.
 pub func listEntries(sessionId: in String): Result[slice[LedgerEntry], CloudAgents.Sqlite.DbError] {
-  val rows = CloudAgents.Sqlite.query("SELECT " + entryCols + " FROM ledger_entries WHERE session_id = " + lit(sessionId) + entryOrder + " LIMIT " + toString(entryRowCap))?
+  val newest = "SELECT " + entryCols + " FROM ledger_entries WHERE session_id = " + lit(sessionId) +
+    " ORDER BY CAST(created_seq AS INTEGER) DESC, created_at DESC, id DESC LIMIT " +
+    toString(entryRowCap)
+  val rows = CloudAgents.Sqlite.query("SELECT " + entryCols + " FROM (" + newest + ")" + entryOrder)?
   return Ok(value = entriesFromRows(rows))
+}
+
+/// The entries of this session whose `supersedes` names `entryId`.
+pub func supersedingEntryIds(
+  sessionId: in String, entryId: in String
+): Result[slice[String], CloudAgents.Sqlite.DbError] {
+  val rows = CloudAgents.Sqlite.query("SELECT id FROM ledger_entries WHERE session_id = " + lit(sessionId) + " AND supersedes = " + lit(entryId) + entryOrder)?
+  var acc: slice[String] = []
+  var i = 0
+  while i < CloudAgents.Sqlite.getRowArrayLength(rows) {
+    acc = acc.append(col(CloudAgents.Sqlite.getRowArrayValue(rows, i), 0))
+    i = i + 1
+  }
+  return Ok(value = acc)
 }
 
 pub func entriesChangedAfter(
@@ -604,9 +630,121 @@ pub func addFeedback(
 }
 
 /// A session's feedback, oldest first (bounded).
+/// Past the cap these are the NEWEST feedbackRowCap rows, oldest first.
 pub func listFeedback(sessionId: in String): Result[slice[Feedback], CloudAgents.Sqlite.DbError] {
-  val rows = CloudAgents.Sqlite.query("SELECT " + feedbackCols + " FROM ledger_feedback WHERE session_id = " + lit(sessionId) + " ORDER BY created_at, id LIMIT " + toString(feedbackRowCap))?
+  val newest = "SELECT " + feedbackCols + " FROM ledger_feedback WHERE session_id = " + lit(sessionId) +
+    " ORDER BY created_at DESC, id DESC LIMIT " +
+    toString(feedbackRowCap)
+  val rows = CloudAgents.Sqlite.query("SELECT " + feedbackCols + " FROM (" + newest + ") ORDER BY created_at, id")?
   return Ok(value = feedbackFromRows(rows))
+}
+
+/// Feedback on one entry, oldest first.
+pub func feedbackForEntry(sessionId: in String, entryId: in String): Result[slice[Feedback], CloudAgents.Sqlite.DbError] {
+  val rows = CloudAgents.Sqlite.query("SELECT " + feedbackCols + " FROM ledger_feedback WHERE session_id = " + lit(sessionId) + " AND entry_id = " + lit(entryId) + " ORDER BY created_at, id")?
+  return Ok(value = feedbackFromRows(rows))
+}
+
+/// Row counts, to tell a capped list from a complete one.
+pub func countItems(sessionId: in String): Result[Int, CloudAgents.Sqlite.DbError] {
+  return countWhere("ledger_items", sessionId)
+}
+
+pub func countEntries(sessionId: in String): Result[Int, CloudAgents.Sqlite.DbError] {
+  return countWhere("ledger_entries", sessionId)
+}
+
+pub func countFeedback(sessionId: in String): Result[Int, CloudAgents.Sqlite.DbError] {
+  return countWhere("ledger_feedback", sessionId)
+}
+
+func countWhere(table: in String, sessionId: in String): Result[Int, CloudAgents.Sqlite.DbError] {
+  val rows = CloudAgents.Sqlite.query("SELECT COUNT(*) FROM " + table + " WHERE session_id = " + lit(sessionId))?
+  if CloudAgents.Sqlite.getRowArrayLength(rows) == 0 {
+    return Ok(value = 0)
+  }
+  return Ok(value = decimalToInt(col(CloudAgents.Sqlite.getRowArrayValue(rows, 0), 0)))
+}
+
+func decimalToInt(s: in String): Int {
+  val digits = "0123456789"
+  var n = 0
+  var i = 0
+  while i < s.length.toInt() {
+    var d = 0
+    while d < 10 and digits.substring(d, 1) != s.substring(i, 1) {
+      d = d + 1
+    }
+    if d == 10 {
+      return n
+    }
+    n = n * 10 + d
+    i = i + 1
+  }
+  return n
+}
+
+/// Progress and attention counts computed in SQL over every row, so the
+/// numbers stay right however large the session grows (the lists shipped to
+/// the client are capped; these are not).
+pub func summaryOf(sessionId: in String, pendingFeedback: in Int): Result[LedgerSummary, CloudAgents.Sqlite.DbError] {
+  val sid = lit(sessionId)
+  val items = "FROM ledger_items WHERE session_id = " + sid
+  val entries = "FROM ledger_entries WHERE session_id = " + sid
+  val pending = " AND review_state = 'pending' AND severity IN ('review', 'blocking')"
+  val sql = "SELECT (SELECT COUNT(*) " + items + "), " + stateCount(items, "queued") + ", " +
+    stateCount(items, "in_progress") +
+    ", " +
+    stateCount(items, "pr_open") +
+    ", " +
+    stateCount(items, "done") +
+    ", " +
+    stateCount(items, "blocked") +
+    ", " +
+    stateCount(items, "needs_human") +
+    ", " +
+    stateCount(items, "skipped") +
+    ", (SELECT COUNT(*) " +
+    entries +
+    pending +
+    "), (SELECT COUNT(*) " +
+    entries +
+    pending +
+    " AND severity = 'blocking'), (SELECT COUNT(*) " +
+    entries +
+    " AND undeclared = 'true'), MAX(COALESCE((SELECT MAX(CAST(created_at AS INTEGER)) " +
+    entries +
+    "), 0), COALESCE((SELECT MAX(CAST(updated_at AS INTEGER)) " +
+    items +
+    "), 0))"
+  val rows = CloudAgents.Sqlite.query(sql)?
+  val r = CloudAgents.Sqlite.getRowArrayValue(rows, 0)
+  var last = col(r, 11)
+  if last == "0" {
+    last = ""
+  }
+  return Ok(
+    value = LedgerSummary(
+      sessionId = sessionId,
+      total = col(r, 0),
+      queued = col(r, 1),
+      inProgress = col(r, 2),
+      prOpen = col(r, 3),
+      done = col(r, 4),
+      blocked = col(r, 5),
+      needsHuman = col(r, 6),
+      skipped = col(r, 7),
+      pendingReview = col(r, 8),
+      blockingCount = col(r, 9),
+      undeclaredCount = col(r, 10),
+      pendingFeedback = toString(pendingFeedback),
+      lastActivityAt = last
+    )
+  )
+}
+
+func stateCount(fromItems: in String, state: in String): String {
+  return "(SELECT COUNT(*) " + fromItems + " AND state = " + lit(state) + ")"
 }
 
 pub func feedbackChangedAfter(
@@ -654,12 +792,39 @@ func digitOf(c: in String): Int {
 
 /// Claim every undelivered feedback row for delivery via `via`, then return
 /// exactly the claimed rows (oldest first).
+/// A claimed feedback row with the summary of the entry it answers ("" for
+/// session- or item-level feedback, or an entry that no longer exists).
+pub record ClaimedFeedback {
+  pub feedback: Feedback
+  pub entrySummary: String
+}
+
 pub func collectFeedback(sessionId: in String, via: in String): Result[slice[Feedback], CloudAgents.Sqlite.DbError] {
+  val claimed = claimFeedback(sessionId, via)?
+  var acc: slice[Feedback] = []
+  var i = 0
+  while i < claimed.length.toInt() {
+    acc = acc.append(claimed[i].feedback)
+    i = i + 1
+  }
+  return Ok(value = acc)
+}
+
+/// Claim every undelivered feedback row and read it back, with the entry
+/// summaries the agent sees, in one query: a failure after the claim
+/// releases the batch, so nothing is ever marked delivered unseen.
+pub func claimFeedback(sessionId: in String, via: in String): Result[slice[ClaimedFeedback], CloudAgents.Sqlite.DbError] {
   val now = CloudAgents.Repository.nowMillis()
   val batch = newLedgerId()
   CloudAgents.Sqlite.executeTransaction([ensureSessionSql(sessionId, now), bumpSeqSql(sessionId), "UPDATE ledger_feedback SET delivered_at = " + lit(now) + ", delivered_via = " + lit(via) + ", delivery_batch = " + lit(batch) + ", updated_seq = " + curSeqExpr(sessionId) + " WHERE session_id = " + lit(sessionId) + " AND delivered_at = ''"])?
-  match CloudAgents.Sqlite.query("SELECT " + feedbackCols + " FROM ledger_feedback WHERE session_id = " + lit(sessionId) + " AND delivery_batch = " + lit(batch) + " ORDER BY created_at, id") {
-    case Ok(rows) -> return Ok(value = feedbackFromRows(rows))
+  val sql = "SELECT " + prefixedCols(feedbackCols, "f") +
+    ", COALESCE(e.summary, '') FROM ledger_feedback f LEFT JOIN ledger_entries e ON e.session_id = f.session_id AND e.id = f.entry_id WHERE f.session_id = " +
+    lit(sessionId) +
+    " AND f.delivery_batch = " +
+    lit(batch) +
+    " ORDER BY f.created_at, f.id"
+  match CloudAgents.Sqlite.query(sql) {
+    case Ok(rows) -> return Ok(value = claimedFromRows(rows))
     case Err(e) -> {
       // The claim committed but the agent will get an error, not the rows:
       // release them so the next check delivers them.
@@ -667,6 +832,32 @@ pub func collectFeedback(sessionId: in String, via: in String): Result[slice[Fee
       return Err(error = e)
     }
   }
+}
+
+func claimedFromRows(rows: in CloudAgents.Sqlite.RowArray): slice[ClaimedFeedback] {
+  var acc: slice[ClaimedFeedback] = []
+  var i = 0
+  while i < CloudAgents.Sqlite.getRowArrayLength(rows) {
+    val r = CloudAgents.Sqlite.getRowArrayValue(rows, i)
+    acc = acc.append(ClaimedFeedback(feedback = rowToFeedback(r), entrySummary = col(r, 11)))
+    i = i + 1
+  }
+  return acc
+}
+
+// "a, b" -> "f.a, f.b"
+func prefixedCols(cols: in String, alias: in String): String {
+  val names = splitOn(cols, ",")
+  var acc = ""
+  var i = 0
+  while i < names.length.toInt() {
+    if i > 0 {
+      acc = acc + ", "
+    }
+    acc = acc + alias + "." + names[i].trim()
+    i = i + 1
+  }
+  return acc
 }
 
 /// Undo a claim whose rows never reached the agent (best-effort: a failure
@@ -680,8 +871,144 @@ pub func releaseFeedbackBatch(sessionId: in String, batch: in String): Unit {
     lit(batch)
   match CloudAgents.Sqlite.executeTransaction([bumpSeqSql(sessionId), sql]) {
     case Ok(_) -> ()
-    case Err(e) -> println("WARNING: releasing ledger feedback batch " + batch + " failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+    case Err(e) -> println(
+      "WARNING: releasing ledger feedback batch " + batch + " failed: " +
+        CloudAgents.Sqlite.dbErrorMessage(e)
+    )
   }
+}
+
+// ── GitHub sync state (Phase 3) ───────────────────────────────────────────────
+pub record SyncRow {
+  pub itemId: String
+  pub syncedLabel: String
+  pub commentId: String
+  pub commentHash: String
+  pub lastError: String
+  pub syncedAt: String
+  pub attemptedAt: String
+}
+
+pub func emptySyncRow(itemId: in String): SyncRow {
+  return SyncRow(
+    itemId = itemId,
+    syncedLabel = "",
+    commentId = "",
+    commentHash = "",
+    lastError = "",
+    syncedAt = "",
+    attemptedAt = ""
+  )
+}
+
+/// Every item's sync row for a session (items never synced have none).
+pub func syncRows(sessionId: in String): Result[slice[SyncRow], CloudAgents.Sqlite.DbError] {
+  val rows = CloudAgents.Sqlite.query("SELECT item_id, synced_label, comment_id, comment_hash, last_error, synced_at, attempted_at FROM ledger_github_sync WHERE session_id = " + lit(sessionId))?
+  var acc: slice[SyncRow] = []
+  var i = 0
+  while i < CloudAgents.Sqlite.getRowArrayLength(rows) {
+    val r = CloudAgents.Sqlite.getRowArrayValue(rows, i)
+    acc = acc.append(
+      SyncRow(
+        itemId = col(r, 0),
+        syncedLabel = col(r, 1),
+        commentId = col(r, 2),
+        commentHash = col(r, 3),
+        lastError = col(r, 4),
+        syncedAt = col(r, 5),
+        attemptedAt = col(r, 6)
+      )
+    )
+    i = i + 1
+  }
+  return Ok(value = acc)
+}
+
+pub func saveSyncRow(sessionId: in String, row: in SyncRow): Result[Unit, CloudAgents.Sqlite.DbError] {
+  CloudAgents.Sqlite.execute("INSERT INTO ledger_github_sync (session_id, item_id, synced_label, comment_id, comment_hash, last_error, synced_at, attempted_at) VALUES (" + lit(sessionId) + ", " + lit(row.itemId) + ", " + lit(row.syncedLabel) + ", " + lit(row.commentId) + ", " + lit(row.commentHash) + ", " + lit(row.lastError) + ", " + lit(row.syncedAt) + ", " + lit(row.attemptedAt) + ") ON CONFLICT(session_id, item_id) DO UPDATE SET synced_label = excluded.synced_label, comment_id = excluded.comment_id, comment_hash = excluded.comment_hash, last_error = excluded.last_error, synced_at = excluded.synced_at, attempted_at = excluded.attempted_at")?
+  return Ok(())
+}
+
+// SQL: item `i` (of ledger_items) is the one that owns its GitHub issue. A
+// label and a comment live on the issue, so exactly one session may manage
+// them: the most recent non-archived session to register the issue (ties by
+// session id). An archived session owns nothing.
+func ownsIssueSql(): String {
+  return "i.item_id LIKE 'gh:%' AND s.is_archived = '0' AND NOT EXISTS (SELECT 1 FROM ledger_items o JOIN sessions os ON os.id = o.session_id " +
+    "WHERE o.item_id = i.item_id AND o.session_id != i.session_id AND os.is_archived = '0' AND (CAST(o.created_at AS INTEGER) > CAST(i.created_at AS INTEGER) " +
+    "OR (CAST(o.created_at AS INTEGER) = CAST(i.created_at AS INTEGER) AND o.session_id > i.session_id)))"
+}
+
+/// The session's GitHub-backed items it owns for syncing (see ownsIssueSql):
+/// empty for an archived session, and without any issue a later session has
+/// since taken over.
+pub func ownedIssueItems(sessionId: in String): Result[slice[String], CloudAgents.Sqlite.DbError] {
+  val rows = CloudAgents.Sqlite.query("SELECT i.item_id FROM ledger_items i JOIN sessions s ON s.id = i.session_id WHERE i.session_id = " + lit(sessionId) + " AND " + ownsIssueSql())?
+  var acc: slice[String] = []
+  var i = 0
+  while i < CloudAgents.Sqlite.getRowArrayLength(rows) {
+    acc = acc.append(col(CloudAgents.Sqlite.getRowArrayValue(rows, i), 0))
+    i = i + 1
+  }
+  return Ok(value = acc)
+}
+
+/// Sessions with owned GitHub-backed items that need a sync pass: an item
+/// changed since it was last synced (or never was), or it is waiting on
+/// GitHub (blocked, needs_human, pr_open). Least recently attempted first,
+/// so a session that keeps failing takes its turn and no more.
+pub func sessionsToSync(limit: in Int): Result[slice[String], CloudAgents.Sqlite.DbError] {
+  val sql = "SELECT i.session_id, MAX(COALESCE(CAST(r.attempted_at AS INTEGER), 0)) AS attempted FROM ledger_items i " +
+    "JOIN sessions s ON s.id = i.session_id " +
+    "LEFT JOIN ledger_github_sync g ON g.session_id = i.session_id AND g.item_id = i.item_id " +
+    "LEFT JOIN ledger_github_sync_runs r ON r.session_id = i.session_id " +
+    "WHERE " +
+    ownsIssueSql() +
+    " AND (g.item_id IS NULL OR CAST(g.synced_at AS INTEGER) < CAST(i.updated_at AS INTEGER) OR i.state IN ('blocked', 'needs_human', 'pr_open')) " +
+    "GROUP BY i.session_id ORDER BY attempted, i.session_id LIMIT " +
+    toString(limit)
+  val rows = CloudAgents.Sqlite.query(sql)?
+  var acc: slice[String] = []
+  var i = 0
+  while i < CloudAgents.Sqlite.getRowArrayLength(rows) {
+    acc = acc.append(col(CloudAgents.Sqlite.getRowArrayValue(rows, i), 0))
+    i = i + 1
+  }
+  return Ok(value = acc)
+}
+
+func ensureSyncRunRow(sessionId: in String): Result[Unit, CloudAgents.Sqlite.DbError] {
+  CloudAgents.Sqlite.execute("INSERT INTO ledger_github_sync_runs (session_id, attempted_at, last_error, lease_until) VALUES (" + lit(sessionId) + ", '0', '', '0') ON CONFLICT(session_id) DO NOTHING")?
+  return Ok(())
+}
+
+/// Record that a sync pass was attempted for the session (`error` "" when
+/// it got as far as the items).
+pub func markSyncAttempt(sessionId: in String, error: in String): Result[Unit, CloudAgents.Sqlite.DbError] {
+  ensureSyncRunRow(sessionId)?
+  CloudAgents.Sqlite.execute("UPDATE ledger_github_sync_runs SET attempted_at = " + lit(CloudAgents.Repository.nowMillis()) + ", last_error = " + lit(error) + " WHERE session_id = " + lit(sessionId))?
+  return Ok(())
+}
+
+/// Take the session's sync lease until `now + leaseMillis`. Returns the lease
+/// token to release with, or "" when another pass holds an unexpired lease.
+/// One conditional UPDATE, so two callers can't both win (SQLite serializes
+/// writers). A crashed pass's lease simply expires.
+pub func acquireSyncLease(sessionId: in String, leaseMillis: in Long): Result[String, CloudAgents.Sqlite.DbError] {
+  ensureSyncRunRow(sessionId)?
+  val now = CloudAgents.Repository.nowMillisLong()
+  val until = toString(now + leaseMillis)
+  val changed = CloudAgents.Sqlite.execute("UPDATE ledger_github_sync_runs SET lease_until = " + lit(until) + " WHERE session_id = " + lit(sessionId) + " AND CAST(lease_until AS INTEGER) <= " + toString(now))?
+  if changed == 1 {
+    return Ok(value = until)
+  }
+  return Ok(value = "")
+}
+
+/// Give the lease back, if it is still the one `token` names.
+pub func releaseSyncLease(sessionId: in String, token: in String): Result[Unit, CloudAgents.Sqlite.DbError] {
+  CloudAgents.Sqlite.execute("UPDATE ledger_github_sync_runs SET lease_until = '0' WHERE session_id = " + lit(sessionId) + " AND lease_until = " + lit(token))?
+  return Ok(())
 }
 
 // ── Repo policy cache ─────────────────────────────────────────────────────────
@@ -717,24 +1044,10 @@ pub record InboxEntry {
   pub branch: String
 }
 
-func prefixedEntryCols(): String {
-  var acc = ""
-  val names = splitOn(entryCols, ",")
-  var i = 0
-  while i < names.length.toInt() {
-    if i > 0 {
-      acc = acc + ", "
-    }
-    acc = acc + "e." + names[i].trim()
-    i = i + 1
-  }
-  return acc
-}
-
 /// Every pending review / blocking entry across `userId`'s sessions,
 /// blocking first, then oldest first (bounded).
 pub func inboxForUser(userId: in String): Result[slice[InboxEntry], CloudAgents.Sqlite.DbError] {
-  val rows = CloudAgents.Sqlite.query("SELECT " + prefixedEntryCols() + ", s.repo_url, s.branch FROM ledger_entries e JOIN sessions s ON s.id = e.session_id" + " WHERE s.user_id = " + lit(userId) + " AND e.review_state = 'pending' AND e.severity IN ('review', 'blocking')" + " ORDER BY CASE e.severity WHEN 'blocking' THEN 0 ELSE 1 END, e.created_at, e.id LIMIT 500")?
+  val rows = CloudAgents.Sqlite.query("SELECT " + prefixedCols(entryCols, "e") + ", s.repo_url, s.branch FROM ledger_entries e JOIN sessions s ON s.id = e.session_id" + " WHERE s.user_id = " + lit(userId) + " AND e.review_state = 'pending' AND e.severity IN ('review', 'blocking')" + " ORDER BY CASE e.severity WHEN 'blocking' THEN 0 ELSE 1 END, e.created_at, e.id LIMIT 500")?
   var acc: slice[InboxEntry] = []
   var i = 0
   val len = CloudAgents.Sqlite.getRowArrayLength(rows)

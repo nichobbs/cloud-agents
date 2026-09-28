@@ -27,6 +27,8 @@ extern type HttpWebRequest = "System.Net.HttpWebRequest"
 
 extern type WebResponse = "System.Net.WebResponse"
 
+extern type HttpWebResponse = "System.Net.HttpWebResponse"
+
 extern type NetStream = "System.IO.Stream"
 
 extern type WebHeaderCollection = "System.Net.WebHeaderCollection"
@@ -101,6 +103,26 @@ func getResponse(req: in HttpWebRequest): WebResponse = ()
 @externInstance
 @externTarget("System.Net.WebResponse.GetResponseStream")
 func getResponseStream(resp: in WebResponse): NetStream = ()
+
+// GetResponse narrowed to HttpWebResponse so the status is readable. It
+// throws on 4xx/5xx but returns a 3xx normally when redirects are disabled,
+// so a caller that disables them must check the status itself.
+@externInstance
+@externTarget("System.Net.HttpWebRequest.GetResponse")
+func getHttpResponse(req: in HttpWebRequest): HttpWebResponse = ()
+
+// The numeric HTTP status (HttpStatusCode marshals as its underlying Int).
+@externInstance
+@externTarget("System.Net.HttpWebResponse.get_StatusCode")
+func getStatusCode(resp: in HttpWebResponse): Int = 0
+
+@externInstance
+@externTarget("System.Net.WebResponse.GetResponseStream")
+func getHttpResponseStream(resp: in HttpWebResponse): NetStream = ()
+
+@externInstance
+@externTarget("System.IDisposable.Dispose")
+func httpResponseDispose(resp: in HttpWebResponse): Unit = ()
 
 @externInstance
 @externTarget("System.IO.Stream.Write")
@@ -411,7 +433,11 @@ pub func buildBearerPostRequest(
 /// latency expectations (e.g. CloudAgents.OpenPr's GitHub calls) should pass
 /// their own short timeout rather than reusing an LLM-tuned one (#927).
 pub func httpPostJsonWithBearerTimeout(
-  url: in String, jsonBody: in String, bearerToken: in String, userAgent: in String, timeoutMillis: in Int
+  url: in String,
+  jsonBody: in String,
+  bearerToken: in String,
+  userAgent: in String,
+  timeoutMillis: in Int,
 ): Result[String, String] {
   return try {
     val req = buildBearerPostRequest(url, bearerToken, userAgent, timeoutMillis)
@@ -437,6 +463,62 @@ pub func httpPostJsonWithBearerTimeout(
     Ok(value = body)
   } catch Bug as b {
     Err(error = "POST " + url + " failed: " + b.message)
+  }
+}
+
+/// Any-method JSON request with a bearer token: GET/DELETE with `jsonBody`
+/// "" send no body; POST/PATCH/PUT send it as UTF-8 JSON. Same bounded
+/// timeout, no redirect-follow (a 3xx must not replay the token elsewhere)
+/// and UTF-8 response read as httpPostJsonWithBearerTimeout. A non-2xx
+/// status surfaces as Err carrying the platform message, which names the
+/// status as "(404)" etc.
+pub func httpJsonWithBearer(
+  method: in String,
+  url: in String,
+  jsonBody: in String,
+  bearerToken: in String,
+  userAgent: in String,
+  timeoutMillis: in Int,
+): Result[String, String] {
+  return try {
+    val req = createRequest(url)
+    setMethod(req, method)
+    setTimeout(req, timeoutMillis)
+    setReadWriteTimeout(req, timeoutMillis)
+    setAllowAutoRedirect(req, false)
+    setUserAgent(req, userAgent)
+    setAccept(req, "application/vnd.github+json")
+    if bearerToken.length > 0 {
+      headerSet(getHeaders(req), "Authorization", "Bearer " + bearerToken)
+    }
+    if jsonBody.length > 0 {
+      setContentType(req, "application/json")
+      val bytes = encGetBytes(utf8(), jsonBody)
+      val reqStream = getRequestStream(req)
+      defer {
+        streamDispose(reqStream)
+      }
+      streamWrite(reqStream, bytes, 0, bytes.length.toInt())
+      streamDispose(reqStream)
+    }
+    val resp = getHttpResponse(req)
+    defer {
+      httpResponseDispose(resp)
+    }
+    // With redirects off a 3xx arrives here rather than as an exception;
+    // its body is not the resource asked for.
+    val status = getStatusCode(resp)
+    if status < 200 or status > 299 {
+      Err(error = method + " " + url + " failed: (" + toString(status) + ") unexpected status")
+    } else {
+      val respStream = getHttpResponseStream(resp)
+      defer {
+        streamDispose(respStream)
+      }
+      Ok(value = readAllUtf8(respStream))
+    }
+  } catch Bug as b {
+    Err(error = method + " " + url + " failed: " + b.message)
   }
 }
 

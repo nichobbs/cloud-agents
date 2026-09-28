@@ -61,6 +61,20 @@ test "an error envelope becomes an isError result carrying the host's message" {
   assertEqual(fake.lastArguments, "{}", "absent arguments forward as {}")
 }
 
+func failingWith(error: in String): FakeLedgerTransport {
+  return FakeLedgerTransport(ok = false, body = "", error = error, lastOp = "", lastArguments = "", calls = 0)
+}
+
+record ThrowingLedgerTransport {
+  pub message: String
+}
+
+impl LedgerTransport for ThrowingLedgerTransport {
+  func call(op: in String, argumentsJson: in String): Result[String, String] {
+    panic(self.message)
+  }
+}
+
 test "an unreachable host tells the agent to carry on" {
   val fake = FakeLedgerTransport(
     ok = false,
@@ -115,4 +129,62 @@ test "schemas declare their required fields" {
   )
   assertTrue(writeValue(schemaForOp("ask")).contains("\"proceedingWith\""), "ask requires a default")
   assertTrue(writeValue(schemaForOp("state")).contains("\"required\":[]"), "state takes no arguments")
+}
+
+test "a rejected credential tells the agent to surface it, not carry on" {
+  val r = invokeLedger(
+    failingWith("POST http://h/x failed: The remote server returned an error: (401) Unauthorized."),
+    "decision",
+    None
+  )
+  assertTrue(r.isError, "error")
+  assertTrue(onlyText(r).contains("HTTP 401"), onlyText(r))
+  assertTrue(onlyText(r).contains("Tell the user"), onlyText(r))
+  assertTrue(not onlyText(r).contains("carry on"), onlyText(r))
+  val forbidden = invokeLedger(failingWith("failed: (403) Forbidden."), "note", None)
+  assertTrue(onlyText(forbidden).contains("HTTP 403"), onlyText(forbidden))
+}
+
+test "a missing ledger route is reported as unsupported" {
+  val r = invokeLedger(failingWith("failed: (404) Not Found."), "state", None)
+  assertTrue(onlyText(r).contains("HTTP 404"), onlyText(r))
+  assertTrue(not onlyText(r).contains("carry on"), onlyText(r))
+}
+
+test "an error envelope without a message still says what failed" {
+  val r = invokeLedger(fakeReplying("{\"ok\":\"false\",\"error\":\"\",\"reply\":\"\"}"), "deviation", None)
+  assertTrue(r.isError, "error")
+  assertTrue(onlyText(r).contains("deviation"), onlyText(r))
+}
+
+test "a tool called through its handler with no arguments forwards {}" {
+  val fake = fakeReplying("{\"ok\":\"true\",\"error\":\"\",\"reply\":\"{}\"}")
+  val tool = LedgerTool(transport = fake, op = "check-feedback")
+  match tool.call(None) {
+    case Ok(r) -> assertTrue(not r.isError, onlyText(r))
+    case Err(e) -> assertTrue(false, e)
+  }
+  assertEqual(fake.lastArguments, "{}", "no arguments forward as {}")
+}
+
+test "a crash inside a tool becomes an error result" {
+  val tool = LedgerTool(transport = ThrowingLedgerTransport(message = "boom"), op = "state")
+  match tool.call(Some(value = JObject(fields = []))) {
+    case Ok(r) -> {
+      assertTrue(r.isError, "error result, not a crash")
+      assertTrue(onlyText(r).contains("boom"), onlyText(r))
+    }
+    case Err(e) -> assertTrue(false, "handler returned Err: " + e)
+  }
+}
+
+test "every op maps to its own schema" {
+  assertTrue(writeValue(schemaForOp("register-items")).contains("\"required\":[\"items\"]"), "register-items")
+  assertTrue(
+    writeValue(schemaForOp("decision")).contains("\"required\":[\"summary\",\"chosen\",\"rationale\"]"),
+    "decision"
+  )
+  assertTrue(writeValue(schemaForOp("deviation")).contains("\"required\":[\"kind\",\"summary\"]"), "deviation")
+  assertTrue(writeValue(schemaForOp("note")).contains("\"required\":[\"summary\"]"), "note")
+  assertTrue(writeValue(schemaForOp("check-feedback")).contains("\"required\":[]"), "check-feedback takes none")
 }

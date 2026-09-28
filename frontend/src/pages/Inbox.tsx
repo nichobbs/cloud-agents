@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { LedgerEntryCard } from '../components/LedgerEntryCard';
 import { errorStyle, headerStyle, linkStyle, mutedStyle, panelStyle } from '../components/ledgerStyles';
@@ -22,14 +22,22 @@ export function Inbox() {
   const [loaded, setLoaded] = useState(false);
   const [error, setError] = useState('');
 
+  // Reloads can overlap (the interval and a review's refresh); only the
+  // latest one to START may write, so an older response can't bring back an
+  // entry that was just reviewed.
+  const latest = useRef(0);
   const reload = useCallback(async () => {
+    const mine = ++latest.current;
     try {
-      setEntries(await api.getLedgerInbox());
+      const fresh = await api.getLedgerInbox();
+      if (mine !== latest.current) return;
+      setEntries(fresh);
       setError('');
     } catch (e) {
+      if (mine !== latest.current) return;
       setError(e instanceof Error ? e.message : String(e));
     } finally {
-      setLoaded(true);
+      if (mine === latest.current) setLoaded(true);
     }
   }, []);
 

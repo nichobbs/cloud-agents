@@ -92,14 +92,48 @@ pub func effectiveSeverity(declared: in String, facts: in EntryFacts, rules: in 
   if isValidSeverity(declared) {
     sev = declared
   }
+  // Glob matching costs (pattern x path) per pair. When one entry's files
+  // against every glob would exceed the budget, file globs are treated as
+  // matching: the policy only ever raises severity, so the entry lands in
+  // review rather than the request thread doing unbounded work.
+  val globsAffordable = globWork(rules, facts.files) <= globWorkBudget
   var i = 0
   while i < rules.length.toInt() {
-    if ruleMatches(rules[i], facts) {
+    if ruleMatchesWithin(rules[i], facts, globsAffordable) {
       sev = maxSeverity(sev, rules[i].minSeverity)
     }
     i = i + 1
   }
   return sev
+}
+
+/// The most glob-matching work (DP cells) one entry may cost.
+pub val globWorkBudget: Int = 4000000
+
+/// The DP cells matching every file against every glob would take.
+pub func globWork(rules: in slice[PolicyRule], files: in slice[String]): Int {
+  var pathCells = 0
+  var i = 0
+  while i < files.length.toInt() {
+    pathCells = pathCells + files[i].length.toInt() + 1
+    i = i + 1
+  }
+  var patternCells = 0
+  var r = 0
+  while r < rules.length.toInt() {
+    var g = 0
+    while g < rules[r].filesGlob.length.toInt() {
+      patternCells = patternCells + rules[r].filesGlob[g].length.toInt() + 1
+      g = g + 1
+    }
+    r = r + 1
+  }
+  if pathCells == 0 or patternCells == 0 {
+    return 0
+  }
+  // Both factors are capped by validation (policy globs, entry files), so
+  // the product stays well inside Int.
+  return pathCells * patternCells
 }
 
 /// The initial review state for an entry of effective severity `sev`.
@@ -118,6 +152,10 @@ func boolText(b: in Bool): String {
 }
 
 pub func ruleMatches(r: in PolicyRule, f: in EntryFacts): Bool {
+  return ruleMatchesWithin(r, f, true)
+}
+
+func ruleMatchesWithin(r: in PolicyRule, f: in EntryFacts, globsAffordable: in Bool): Bool {
   if r.kind.length.toInt() > 0 and r.kind != f.kind {
     return false
   }
@@ -133,7 +171,7 @@ pub func ruleMatches(r: in PolicyRule, f: in EntryFacts): Bool {
   if r.tagsAny.length.toInt() > 0 and not anyShared(r.tagsAny, f.tags) {
     return false
   }
-  if r.filesGlob.length.toInt() > 0 and not anyFileMatches(r.filesGlob, f.files) {
+  if r.filesGlob.length.toInt() > 0 and globsAffordable and not anyFileMatches(r.filesGlob, f.files) {
     return false
   }
   return true
@@ -212,7 +250,9 @@ pub func globMatch(pattern: in String, path: in String): Bool {
         if not v and si < sn {
           v = row[sn - si - 1]
         }
-        if not v and zeroDirs {
+        // "**/" matches zero directories only at a segment start, so
+        // "**/test.py" never matches "src/latest.py".
+        if not v and zeroDirs and (si == 0 or path.substring(si - 1, 1) == "/") {
           v = r3[sn - si]
         }
       } else {
@@ -292,6 +332,7 @@ func parseRoot(root: in JsonElement): Result[slice[PolicyRule], String] {
   var sources: slice[String] = []
   var undecls: slice[String] = []
   var mins: slice[String] = []
+  var totalGlobs = 0
   var cur = Std.Json.enumerateArray(rulesEl)
   var idx = 0
   while Std.Json.arrayMoveNext(cur) {
@@ -349,14 +390,21 @@ func parseRoot(root: in JsonElement): Result[slice[PolicyRule], String] {
               return Err(error = at + ".match.source must be declared, observed or system")
             }
           } else if key == "tagsAny" {
-            tags = stringArrayJoined(v)
-            if tags.length.toInt() == 0 {
-              return Err(error = at + ".match.tagsAny must be a non-empty array of strings")
+            val parsed = stringList(v, at + ".match.tagsAny", maxTagsPerRule, 32)
+            tags = parsed?
+            val bad = firstInvalidTag(splitList(tags))
+            if bad.length.toInt() > 0 {
+              return Err(
+                error = at + ".match.tagsAny has invalid tag \"" + bad +
+                  "\": tags are 1-32 of a-z 0-9 -, as agents record them"
+              )
             }
           } else if key == "filesGlob" {
-            globs = stringArrayJoined(v)
-            if globs.length.toInt() == 0 {
-              return Err(error = at + ".match.filesGlob must be a non-empty array of strings")
+            val parsed = stringList(v, at + ".match.filesGlob", maxGlobsPerRule, maxGlobChars)
+            globs = parsed?
+            totalGlobs = totalGlobs + splitList(globs).length.toInt()
+            if totalGlobs > maxGlobsPerPolicy {
+              return Err(error = "too many filesGlob patterns across all rules (max " + toString(maxGlobsPerPolicy) + ")")
             }
           } else {
             return Err(error = at + ".match has unknown key \"" + key + "\"")
@@ -425,19 +473,44 @@ func boolOf(v: in JsonElement): String {
   return ""
 }
 
-// A JSON array of non-empty, newline-free strings joined with "\n"; "" when
-// `v` is not such an array (or is empty).
-func stringArrayJoined(v: in JsonElement): String {
+/// Caps on a repo policy's match lists. With the per-entry `files` cap they
+/// bound glob matching (see globWork); a file over them is rejected with a
+/// message naming the limit, never silently truncated.
+pub val maxTagsPerRule: Int = 10
+
+pub val maxGlobsPerRule: Int = 20
+
+pub val maxGlobsPerPolicy: Int = 50
+
+pub val maxGlobChars: Int = 256
+
+// A JSON array of 1..maxItems non-empty, newline-free strings of at most
+// maxChars each, joined with "\n". Errors name `field` and the rule broken.
+func stringList(v: in JsonElement, field: in String, maxItems: in Int, maxChars: in Int): Result[String, String] {
   if Std.Json.valueKind(v) != jsonKindArray {
-    return ""
+    return Err(error = field + " must be an array of strings")
   }
   var acc = ""
   var n = 0
   var cur = Std.Json.enumerateArray(v)
   while Std.Json.arrayMoveNext(cur) {
-    val s = stringOf(Std.Json.arrayCurrent(cur))
-    if s.length.toInt() == 0 or s.contains("\n") or n >= 50 {
-      return ""
+    val el = Std.Json.arrayCurrent(cur)
+    val at = field + "[" + toString(n) + "]"
+    if Std.Json.valueKind(el) != jsonKindString {
+      return Err(error = at + " must be a string")
+    }
+    val s = Std.Json.getString(el)
+    if s.length.toInt() == 0 {
+      return Err(error = at + " must not be empty")
+    }
+    if s.contains("\n") {
+      return Err(error = at + " must be a single line")
+    }
+    if s.length.toInt() > maxChars {
+      return Err(error = at + " is too long (max " + toString(maxChars) + " characters)")
+    }
+    if n >= maxItems {
+      return Err(error = field + " has too many entries (max " + toString(maxItems) + ")")
     }
     if n > 0 {
       acc = acc + "\n"
@@ -445,5 +518,20 @@ func stringArrayJoined(v: in JsonElement): String {
     acc = acc + s
     n = n + 1
   }
-  return acc
+  if n == 0 {
+    return Err(error = field + " must not be empty")
+  }
+  return Ok(value = acc)
+}
+
+// The first entry that isn't a valid entry tag, or "".
+func firstInvalidTag(tags: in slice[String]): String {
+  var i = 0
+  while i < tags.length.toInt() {
+    if not isValidTag(tags[i]) {
+      return tags[i]
+    }
+    i = i + 1
+  }
+  return ""
 }

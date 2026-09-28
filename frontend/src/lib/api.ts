@@ -2,7 +2,7 @@
 
 import type { Attachment, AttachmentInput, Comment, Credential, Highlight, McpServer, Message, OpenPrResult, PendingCallbacksResponse, Profile, Prompt, RefreshHighlightsResult, Run, SearchMessagesResult, SessionGroup, Skill, Subagent, Todo, Webhook, WorkspaceDiff, WorkspaceFileContent, WorkspaceFileEntry } from '../types';
 import { completeLogin, isSignedIn, setReturnPath, signOut } from './auth';
-import type { EntryDetail, InboxEntry, LedgerFeedback, LedgerSnapshot, WorkItem } from './ledger';
+import type { EntryDetail, InboxEntry, LedgerFeedback, LedgerSnapshot, LedgerSyncReport, WorkItem } from './ledger';
 
 const BASE = (import.meta.env['VITE_API_URL'] as string | undefined) ?? '';
 
@@ -100,6 +100,17 @@ export async function apiFetch(input: RequestInfo | URL, init?: RequestInit): Pr
   }
 
   return res;
+}
+
+/** A failed API response, carrying its HTTP status so callers branch on
+ *  the status rather than on the message text. */
+export class ApiError extends Error {
+  readonly status: number;
+  constructor(status: number, message: string) {
+    super(message);
+    this.name = 'ApiError';
+    this.status = status;
+  }
 }
 
 /** The server's `{"message": ...}` error text for a failed response, so a
@@ -664,7 +675,7 @@ export const api = {
     const res = await apiFetch(`${BASE}/api/sessions/${sessionId}/ledger?after=${encodeURIComponent(after)}`, {
       headers: authHeaders(),
     });
-    if (!res.ok) throw new Error(`${res.status} ${await res.text()}`);
+    if (!res.ok) throw new ApiError(res.status, await errorMessage(res));
     return (await res.json()) as LedgerSnapshot;
   },
 
@@ -729,6 +740,17 @@ export const api = {
     });
     if (!res.ok) throw new Error(await errorMessage(res));
     return (await res.json()) as WorkItem;
+  },
+
+  /** Reconcile this session's GitHub-backed items with GitHub now (labels,
+   *  blocker comments, closed blockers, merged PRs). */
+  syncLedger: async (sessionId: string): Promise<LedgerSyncReport> => {
+    const res = await apiFetch(`${BASE}/api/sessions/${sessionId}/ledger/sync`, {
+      method: 'POST',
+      headers: authHeaders(),
+    });
+    if (!res.ok) throw new Error(await errorMessage(res));
+    return (await res.json()) as LedgerSyncReport;
   },
 
   /** Every entry awaiting review across the user's sessions. */
