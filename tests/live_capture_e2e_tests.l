@@ -38,7 +38,7 @@ func utf8FromBytes(enc: in Encoding, bytes: in slice[Byte]): String = ""
 
 func readFixture(path: in String): String {
   return match Std.File.readBytes(path) {
-    case Ok(bytes) -> utf8FromBytes(utf8Encoding(), bytes.toArray())
+    case Ok(bytes) -> utf8FromBytes(utf8Encoding(), bytes)
     case Err(_) -> ""
   }
 }
