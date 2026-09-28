@@ -80,6 +80,7 @@ func stringType(name: in String): Type = ()
 func createStringArray(elementType: in Type, length: in Int): StringArray = ()
 
 @externTarget("System.Array.Copy")
+@externStatic
 func copyStringArray(
   sourceArray: in StringArray,
   sourceIndex: in Int,

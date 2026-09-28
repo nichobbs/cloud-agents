@@ -79,6 +79,7 @@ func getAgentSessionType(obj: in AgentSession): Type = ()
 func createSessionArray(elementType: in Type, length: in Int): AgentSessionArray = ()
 
 @externTarget("System.Array.Copy")
+@externStatic
 func copySessionArray(
   sourceArray: in AgentSessionArray,
   sourceIndex: in Int,
