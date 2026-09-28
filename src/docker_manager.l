@@ -484,20 +484,25 @@ pub async func waitForContainer(client: in DockerClient, containerId: in String)
 /// `val`/`var` local read after the delay await. This matters because this
 /// function body now has TWO different-callee awaits per attempt
 /// (`waitContainer`, then `Std.Task.delay`) — exactly the shape
-/// lyric-lang#6249 (docs/lyric/gotchas.md "Async") warns can silently lose a
-/// local's value, but which the doc also confirms is safe for a function
-/// *parameter*. `e.message` (the one local bound by the `match`) is only
-/// ever read BEFORE the delay await (to log/return on the non-retry path),
-/// never after it, so it never crosses the hazard. Proven both ways in a
-/// throwaway scratch project before this rewrite: `Std.Task.delay` really
-/// pauses (measured elapsed time close to the requested delay) and this
-/// exact recursive shape correctly threads attempt state through 3 retries
-/// to a delayed success, and separately through 3 exhausted retries to the
-/// final error, on the toolchain this project builds with (0.6.2); the
-/// older, `val`-loses-value shape of lyric-lang#6249 was also independently
-/// reconfirmed to still reproduce on lyric 0.4.36 in that same scratch
-/// session, which is why this function avoids it structurally rather than
-/// relying on the bug being fixed everywhere this project might build.
+/// lyric-lang#6249 warned can silently lose a local's value, but which was
+/// always safe for a function *parameter*. `e.message` (the one local bound
+/// by the `match`) is only ever read BEFORE the delay await (to log/return
+/// on the non-retry path), never after it, so it never crosses the hazard.
+/// Proven both ways in a throwaway scratch project before this rewrite:
+/// `Std.Task.delay` really pauses (measured elapsed time close to the
+/// requested delay) and this exact recursive shape correctly threads
+/// attempt state through 3 retries to a delayed success, and separately
+/// through 3 exhausted retries to the final error, on the toolchain this
+/// project builds with (0.6.2); the older, `val`-loses-value shape of
+/// lyric-lang#6249 was also independently reconfirmed to still reproduce on
+/// lyric 0.4.36 in that same scratch session. lyric-lang#6249 is now
+/// CONFIRMED FIXED as of lyric 0.7.3 (this project's current pin, verified
+/// directly via `./scripts/repro-compiler-bug.sh` check 8) — `docs/lyric/
+/// gotchas.md` no longer documents it for that reason — but this function
+/// keeps the parameter-carrying-recursion shape anyway rather than reverting
+/// to a plain loop: it costs nothing, and staying structurally #6249-safe
+/// means this code doesn't regress if a future toolchain change ever moves
+/// the pin backward.
 async func waitForContainerAttempt(
   client: in DockerClient,
   containerId: in String,
