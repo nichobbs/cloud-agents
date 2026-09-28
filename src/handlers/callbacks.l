@@ -161,12 +161,12 @@ func isValidPercent(s: in String): Bool {
 /// the same "invalid callback token" response so a probing container can't
 /// distinguish "wrong token" from "callbacks aren't on" for this session.
 func authorizeCallbackToken(sessionId: in String, authHeaderValue: in String): Result[Unit, Web.ApiError] {
-  val stored = match CloudAgents.SessionStore.callbackTokenForSession(sessionId) {
+  val storedHash = match CloudAgents.SessionStore.callbackTokenHashForSession(sessionId) {
     case Ok(Some(t)) -> t
     case Ok(None) -> return Err(Web.notFound("Session not found"))
     case Err(e) -> return Err(dbError(e))
   }
-  if stored.length == 0 or not CloudAgents.Auth.authorizeCallback(authHeaderValue, stored) {
+  if not CloudAgents.Auth.authorizeCallback(authHeaderValue, storedHash) {
     return Err(Web.unauthorized("invalid callback token"))
   }
   return Ok(())
@@ -839,23 +839,6 @@ func tryDecodeArtifactBytes(base64: in String): Result[slice[Byte], String] {
   }
 }
 
-/// `slice[Byte]` -> `List[Byte]`, for Std.File.writeBytes (which takes
-/// `List[Byte]`, not `slice[Byte]`). `slice[Byte].toList()` compiles but
-/// fails at runtime ("unsupported method 'toList'", confirmed by this
-/// package's own tests) — the same "convenience method that compiles but
-/// doesn't resolve at runtime" family docs/lyric/gotchas.md catalogues for
-/// Result/Option methods, so build the list by hand instead, mirroring
-/// CloudAgents.Repository.sliceContains' plain-Int indexing loop.
-func sliceBytesToList(b: in slice[Byte]): List[Byte] {
-  val acc: List[Byte] = newList()
-  var i = 0
-  while i < b.length {
-    acc.add(b[i])
-    i = i + 1
-  }
-  return acc
-}
-
 /// The final path segment of `name`, defending against `../` traversal in a
 /// client-supplied fileName (docs/phase6 §7.3: "neutralized server-side —
 /// basename only"). None for a result that is empty, '.', or '..' — a name
@@ -1148,7 +1131,7 @@ pub func uploadArtifactHandler(
     case Ok(_) -> ()
     case Err(e) -> return Err(Web.internalError("failed to create artifact storage: " + IOError.message(e)))
   }
-  match Std.File.writeBytes(artifactDir + "/" + storedName, sliceBytesToList(bytes)) {
+  match Std.File.writeBytes(artifactDir + "/" + storedName, bytes) {
     case Ok(_) -> ()
     case Err(e) -> return Err(Web.internalError("failed to store artifact: " + IOError.message(e)))
   }
@@ -1257,7 +1240,7 @@ func readArtifactBytesResponse(
     case Ok(b) -> b
     case Err(e) -> return Err(Web.internalError("failed to read artifact: " + IOError.message(e)))
   }
-  val resp = Web.bytesResponse(200, a.mimeType, bytes.toArray())
+  val resp = Web.bytesResponse(200, a.mimeType, bytes)
   return Ok(
     Web.withResponseHeader(
       resp,

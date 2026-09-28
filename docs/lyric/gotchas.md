@@ -246,43 +246,22 @@ The Std.String methods (`.length`, `.substring`, `.contains`, ...) and
 **`slice[Byte].toList()` does not resolve at runtime** —
 `unsupported method 'toList' on the receiver type (no matching user method,
 extern binding, or built-in intrinsic)` (confirmed on v0.4.19 by this
-repo's `CloudAgents.CallbacksV2Tests`, `report_artifact`'s upload path:
-`Std.File.writeBytes` takes `List[Byte]`, and base64-decoding a request
-body yields `slice[Byte]`). Same "compiles as a dot-call, dies at runtime"
-family as the `Result`/`Option` convenience methods below, despite
-`lyric-stdlib/std/file.l`'s own module doc describing `slice[T].toList()` /
-`List[T].toArray()` as the intended round-trip shuttle — only the
-`List[T].toArray()` direction is confirmed working (used throughout
-`lyric-stdlib`'s own test suites, e.g. `metadata_reader_tests.l`). Build
-the `List[Byte]` by hand instead: `val acc: List[Byte] = newList(); var i =
+repo's `CloudAgents.CallbacksV2Tests`). Same "compiles as a dot-call, dies at
+runtime" family as the `Result`/`Option` convenience methods below. Build a
+`List[T]` by hand if you need one: `val acc: List[Byte] = newList(); var i =
 0; while i < b.length { acc.add(b[i]); i = i + 1 }` — plain-`Int` slice
-indexing is confirmed working (see the `Int.toNat()` entry below), so this
-loop is cheap and reliable. See `CloudAgents.Callbacks.sliceBytesToList`
-for the worked pattern.
+indexing is confirmed working (see the `Int.toNat()` entry below). The
+`List[T].toArray()` direction is confirmed working.
 
-**`Std.File.readBytes` returns `Result[List[Byte], IOError]` as of Lyric
-v0.5.0, not the `Result[slice[Byte], IoError]` both docs/lyric/stdlib.md and
-docs/lyric/reference.md document** — confirmed against the actual
-`lyric-stdlib` v0.5.0 source (`std/file.l`'s `readBytes`). This is a
-compile-time type error, not a runtime surprise: `T0043 argument type
-List[Byte] does not match parameter type slice[Byte]` at every call site
-that passes a `readBytes` result straight to a `slice[Byte]`-typed
-function/extern binding (hit in this repo at
-`CloudAgents.McpServerSeed.readSeedMcpServer` and
-`CloudAgents.LibrarySeed.readSeedSubagent`/`readSeedSkill`, all three
-feeding a local `bytesToUtf8(enc, bytes: slice[Byte])` extern binding —
-`error[T0043] 104:34` at the first of the three is what actually surfaced
-in CI). Given `Std.File.writeBytes` has taken `List[Byte]` since at least
-v0.4.19 (see the `slice[Byte].toList()` entry above), this plausibly isn't
-a regression so much as `readBytes` now matching `writeBytes`'s
-already-established `List[Byte]` convention — but either way, the two
-project docs are stale against the real v0.5.0 signature. Fix at the call
-site with `.toArray()` (`bytesToUtf8(utf8Encoding(),
-bytes.toArray())`) — the confirmed-working `List[T].toArray()` direction
-noted in the entry above — rather than widening the `slice[Byte]`-typed
-extern binding's parameter to `List[Byte]`, which would be new, unverified
-FFI marshalling for an `@externInstance` call (`Encoding.GetString`'s real
-BCL shape is `byte[]`, i.e. `slice[Byte]`).
+**`Std.File.readBytes`/`writeBytes` use `slice[Byte]` as of Lyric 0.7.0.**
+`readBytes` returns `Result[slice[Byte], IOError]` and `writeBytes` takes
+`slice[Byte]`, matching docs/lyric/stdlib.md. Earlier toolchains used
+`List[Byte]` for both (the reason this repo used to carry
+`sliceBytesToList` helpers and `.toArray()` calls on `readBytes` results);
+those workarounds were removed with the move to 0.7.3, so on an older
+compiler every call site fails with `T0043 argument type List[Byte] does not
+match parameter type slice[Byte]` (or the reverse). `MIN_LYRIC_VERSION`
+enforces the floor.
 
 **`Std.File.exists()` and `Std.File.delete()` do not resolve at runtime** —
 `unsupported method 'exists' on the receiver type (no matching user method,
@@ -658,6 +637,8 @@ More generally: treat any `@externInstance` call whose target is itself reflecti
 **`@externInstance` must be explicit for instance methods.** Default is static. Forgetting it on an instance method = wrong call instruction emitted.
 
 **Unresolvable `@externTarget` on .NET = compile-time error.** On JVM = `NoClassDefFoundError` at runtime.
+
+**Hint-less `@externTarget` whose convention can't be verified is a build error (F0027) as of Lyric 0.7.0.** If the compiler can't confirm from .NET metadata whether the target is static or instance, add `@externStatic` or `@externInstance`. This repo's `System.Array.Copy` bindings carry `@externStatic` for this reason. 0.7.0 also miscompiles an `@externTarget` taking an array extern alias (`extern type StringArray = "System.String[]"`; lyric-lang#7610): it builds but throws `MissingMethodException` at runtime. 0.7.1 fixes that, but a release-installed 0.7.1 or 0.7.2 rejects `List`/`newList` even with `import Std.Collections` (lyric-lang#7617). Use 0.7.3 or later.
 
 ---
 

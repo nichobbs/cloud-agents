@@ -47,17 +47,9 @@ import extern System.String as DotNetString
 // importing another package's — each package here owns its own tiny FFI
 // surface for this instead of sharing one.
 //
-// `readBytes` itself returns `Result[List[Byte], IOError]` on the current
-// (v0.5.0) toolchain, not the `Result[slice[Byte], IoError]` both
-// docs/lyric/stdlib.md and docs/lyric/reference.md document (confirmed
-// against the actual lyric-stdlib source, `std/file.l`'s `readBytes`) —
-// either a stdlib return-type change or a long-stale doc, not yet
-// determined which. `bytesToUtf8` below still takes `slice[Byte]`
-// (`Encoding.GetString`'s real FFI shape), so every `readBytes` call site
-// converts with `.toArray()` — confirmed working per
-// docs/lyric/gotchas.md's `List[T].toArray()` entry — rather than widening
-// this binding's parameter type to `List[Byte]`, which would be new,
-// unverified FFI marshalling for an `@externInstance` call.
+// `readBytes` returns `Result[slice[Byte], IOError]` (Lyric 0.7.0+; earlier
+// toolchains returned `List[Byte]`), which `bytesToUtf8` below takes as-is —
+// `Encoding.GetString`'s real FFI shape is `byte[]`, i.e. `slice[Byte]`.
 extern type Encoding = "System.Text.Encoding"
 
 @externTarget("System.Text.Encoding.get_UTF8")
@@ -217,7 +209,7 @@ func isWithinSubagentBounds(parsed: in ParsedSubagent): Bool {
 func readSeedSubagent(name: in String): Option[ParsedSubagent] {
   val path = seedSubagentsDir() + "/" + name + ".md"
   match Std.File.readBytes(path) {
-    case Ok(bytes) -> return parseSubagentMarkdown(bytesToUtf8(utf8Encoding(), bytes.toArray()))
+    case Ok(bytes) -> return parseSubagentMarkdown(bytesToUtf8(utf8Encoding(), bytes))
     case Err(_) -> return None
   }
 }
@@ -328,7 +320,7 @@ func isWithinSkillBounds(parsed: in ParsedSkill): Bool {
 func readSeedSkill(name: in String): Option[ParsedSkill] {
   val path = seedSkillsDir() + "/" + name + "/SKILL.md"
   match Std.File.readBytes(path) {
-    case Ok(bytes) -> return parseSkillMarkdown(bytesToUtf8(utf8Encoding(), bytes.toArray()))
+    case Ok(bytes) -> return parseSkillMarkdown(bytesToUtf8(utf8Encoding(), bytes))
     case Err(_) -> return None
   }
 }

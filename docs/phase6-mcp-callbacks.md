@@ -66,6 +66,9 @@ creation, rendered into `mcp.json` by `entrypoint.sh`):
 - `CLOUD_AGENTS_CALLBACK_TOKEN` — per-session bearer token, minted at
   container creation, scoped to callback endpoints for that session
   only, expiring with the session. Never the user's OAuth token.
+  The host persists only the token's SHA-256 hash (see "Callback token
+  storage" in §5); the raw token exists only in the container's
+  environment.
 
 ## 3. Permission prompts — the headline tool
 
@@ -146,6 +149,51 @@ request/poll/answer state machine is tested against an in-memory
 transport fake (`shim/tests/fakes.l`), the real HTTP boundary is driven by
 `scripts/e2e-http.sh`'s shim leg (real MCP stdio against the live server),
 and the timeout/fail-closed path has an explicit test.
+
+
+### Callback token storage
+
+`CloudAgents.SessionStore.mintCallbackToken` generates the token (two
+UUIDs, ~244 bits), stores **only** `CloudAgents.Auth.hashCallbackToken(token)`
+(lowercase hex SHA-256 of the UTF-8 bytes, 64 chars) in
+`sessions.callback_token_hash`, and returns the raw token to
+`createRunnerContainer` (`src/docker_manager.l`), which injects it as
+`CLOUD_AGENTS_CALLBACK_TOKEN`. That environment variable is the only
+place the raw token lives, so a database read (backup, leaked file,
+SQL-injection read) yields nothing that authenticates a callback.
+
+Verification (`authorizeCallbackToken` in `src/handlers/callbacks.l`,
+and the identical `authorizeJobCallbackToken` in `src/handlers/jobs.l`)
+reads the stored hash via `callbackTokenHashForSession`, then
+`CloudAgents.Auth.authorizeCallback` hashes the presented bearer and
+compares the two hashes with the shared constant-time
+`CloudAgents.Text.constantTimeEquals`. Hashing first means the compare
+always runs over two fixed-length 64-char strings. An unsalted fast hash
+is sufficient: the token is high-entropy random, so there is nothing to
+brute-force offline.
+
+Fail-closed behaviour is unchanged: an unknown session is 404; an
+existing session with an empty stored hash (callbacks disabled, or no
+container started since migration 0036) rejects every bearer with 401,
+as does a wrong token, a missing/non-Bearer header, or presenting the
+stored hash itself as the bearer. Every container start mints a fresh
+token, replacing the hash, so a superseded token stops working.
+
+Migration `0036_callback_token_hash` (`src/db/repository.l`) adds
+`callback_token_hash TEXT NOT NULL DEFAULT ''`, appended last so the
+fixed `sessionColumns` indices are unaffected, and clears every
+plaintext `callback_token` left by migration 0010. Clearing is safe
+because every container start mints a new token; a container that was
+already running across the upgrade has its callbacks rejected (its
+permission prompts fail closed through the shim's deny path) until its
+container is next started. The `callback_token` column itself is retained, always
+empty and never read, because applied migrations are immutable.
+
+Tests: `tests/auth_tests.l` pins the hash (FIPS 180-2 vectors) and the
+pure accept/reject matrix; `tests/callbacks_tests.l` covers the live
+round trip (stored value equals the hash, never the raw token; the raw
+token authorizes; the stored hash, a superseded token, and a legacy
+plaintext row with no hash are all rejected with 401).
 
 ## 6. Sequencing
 
@@ -268,8 +316,9 @@ Follow-ups (both shipped):
   pollIntervalMs implying many more iterations remained.
 - #541: `scripts/e2e-http.sh` gained a seeded-session leg — a plain
   `sqlite3` CLI `INSERT` (guarded by a `command -v sqlite3` check) adds
-  a session + plaintext `callback_token` row to the throwaway DB after
-  migrations have run, then drives the real shim binary once with a
+  a session row carrying the SHA-256 hash of a known token in
+  `callback_token_hash` (computed with `sha256sum`; see "Callback token
+  storage" in §5) to the throwaway DB after migrations have run, then drives the real shim binary once with a
   wrong bearer (401-driven deny, `SELECT COUNT(*) FROM
   permission_requests` stays 0) and once with the right bearer and
   `CLOUD_AGENTS_CALLBACK_TIMEOUT_MS=1000` (a pending row IS created,
