@@ -310,6 +310,55 @@ pub func isCanonicalItemRef(ref: in String): Bool {
 /// Anything else is an error naming the accepted forms, which the agent sees
 /// verbatim as a tool error and can correct.
 pub func normalizeItemRef(raw: in String, defaultRepo: in String): Result[String, String] {
+  val parsed = parseItemRef(raw, defaultRepo)?
+  return Ok(value = canonicalGhRef(parsed))
+}
+
+// GitHub owner/repo names are case-insensitive and "#012" is issue 12, so a
+// gh: ref is folded to one spelling: owner/repo lowercased, the number
+// without leading zeros. Without this the same issue written two ways would
+// be two items, and a blockedBy edge on one would never auto-unblock.
+func canonicalGhRef(ref: in String): String {
+  if not ref.startsWith("gh:") {
+    return ref
+  }
+  val rest = ref.substring(3, ref.length.toInt() - 3)
+  val hash = indexOfChar(rest, "#")
+  if hash < 0 {
+    return ref
+  }
+  val num = rest.substring(hash + 1, rest.length.toInt() - hash - 1)
+  return "gh:" + asciiLower(rest.substring(0, hash)) + "#" + stripLeadingZeros(num)
+}
+
+/// ASCII-only lowercase (owner/repo names are ASCII by construction).
+pub func asciiLower(s: in String): String {
+  val upper = "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+  val lower = "abcdefghijklmnopqrstuvwxyz"
+  var acc = ""
+  var i = 0
+  while i < s.length.toInt() {
+    val c = s.substring(i, 1)
+    val at = indexOfChar(upper, c)
+    if at >= 0 {
+      acc = acc + lower.substring(at, 1)
+    } else {
+      acc = acc + c
+    }
+    i = i + 1
+  }
+  return acc
+}
+
+func stripLeadingZeros(num: in String): String {
+  var i = 0
+  while i < num.length.toInt() - 1 and num.substring(i, 1) == "0" {
+    i = i + 1
+  }
+  return num.substring(i, num.length.toInt() - i)
+}
+
+func parseItemRef(raw: in String, defaultRepo: in String): Result[String, String] {
   val r = raw.trim()
   if r.length.toInt() == 0 {
     return Err(error = "item ref is empty")
@@ -398,7 +447,7 @@ pub func ownerRepoOfRepoUrl(repoUrl: in String): String {
     rest = rest.substring(0, rest.length.toInt() - 4)
   }
   if isValidOwnerRepo(rest) {
-    return rest
+    return asciiLower(rest)
   }
   return ""
 }
@@ -439,6 +488,24 @@ pub func validateLine(field: in String, s: in String, maxChars: in Int): Result[
     return Err(error = field + " must be a single line")
   }
   return Ok(())
+}
+
+/// An optional link the PWA renders as a clickable href: "" or an absolute
+/// http(s) URL. Anything else (javascript:, data:, relative) is rejected so
+/// agent-supplied text can never become a script URL in the owner's browser.
+pub func validateLink(field: in String, s: in String): Result[Unit, String] {
+  validateLine(field, s, 500)?
+  if s.length.toInt() == 0 {
+    return Ok(())
+  }
+  val lowered = asciiLower(s)
+  if lowered.startsWith("https://") or lowered.startsWith("http://") {
+    if s.contains(" ") {
+      return Err(error = field + " must not contain spaces")
+    }
+    return Ok(())
+  }
+  return Err(error = field + " must be an http(s) URL")
 }
 
 /// A list of single-line strings: at most `maxItems`, each <= `maxChars`.

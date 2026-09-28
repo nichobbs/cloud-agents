@@ -9,6 +9,7 @@ import {
   progress,
   refLabel,
   refUrl,
+  safeHref,
   type LedgerSnapshot,
   type LedgerSummary,
 } from './ledger';
@@ -126,5 +127,17 @@ describe('item helpers', () => {
   it('counts skipped items as resolved progress', () => {
     expect(progress({ ...summary, done: '1', skipped: '1', total: '4' })).toEqual({ resolved: 2, total: 4 });
     expect(progress(null)).toEqual({ resolved: 0, total: 0 });
+  });
+});
+
+describe('safeHref', () => {
+  it('keeps http(s) links and drops script or relative ones', () => {
+    expect(safeHref('https://github.com/acme/shop/pull/3')).toBe('https://github.com/acme/shop/pull/3');
+    expect(safeHref('http://example.test/x')).toBe('http://example.test/x');
+    expect(safeHref("javascript:alert('x')")).toBe('');
+    expect(safeHref(' JavaScript:alert(1)')).toBe('');
+    expect(safeHref('data:text/html,<b>x</b>')).toBe('');
+    expect(safeHref('/relative')).toBe('');
+    expect(safeHref('')).toBe('');
   });
 });

@@ -342,6 +342,41 @@ test "a review updates the entry and queues feedback delivered exactly once" {
   }
 }
 
+test "a released claim is delivered again" {
+  val path = useFreshTestDb("ledger-release")
+  defer {
+    cleanupTestDb(path)
+  }
+  match addFeedback("s1", "", "directive", "Use API v2.", "gh-1") {
+    case Ok(_) -> ()
+    case Err(err) -> assertTrue(false, CloudAgents.Sqlite.dbErrorMessage(err))
+  }
+  match collectFeedback("s1", "mcp_poll") {
+    case Ok(fs) -> assertEqualInt(fs.length.toInt(), 1, "claimed")
+    case Err(err) -> assertTrue(false, CloudAgents.Sqlite.dbErrorMessage(err))
+  }
+  // The read-back failure path: the claimed batch is handed back.
+  releaseFeedbackBatch("s1", batchOf("s1"))
+  match pendingFeedbackCount("s1") {
+    case Ok(n) -> assertEqualInt(n, 1, "pending again")
+    case Err(err) -> assertTrue(false, CloudAgents.Sqlite.dbErrorMessage(err))
+  }
+  match collectFeedback("s1", "mcp_poll") {
+    case Ok(fs) -> assertEqualInt(fs.length.toInt(), 1, "delivered on the next check")
+    case Err(err) -> assertTrue(false, CloudAgents.Sqlite.dbErrorMessage(err))
+  }
+}
+
+func batchOf(sid: in String): String {
+  match CloudAgents.Sqlite.query("SELECT delivery_batch FROM ledger_feedback WHERE session_id = '" + sid + "' LIMIT 1") {
+    case Ok(rows) -> {
+      val r = CloudAgents.Sqlite.getRowArrayValue(rows, 0)
+      return CloudAgents.Sqlite.getStringArrayValue(r.cols, 0)
+    }
+    case Err(e) -> panic(CloudAgents.Sqlite.dbErrorMessage(e))
+  }
+}
+
 test "the inbox is scoped to the owner and orders blocking first" {
   val path = useFreshTestDb("ledger-inbox")
   defer {

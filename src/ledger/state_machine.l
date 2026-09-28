@@ -144,7 +144,7 @@ pub func planStatusChange(
   validateLine("reason", change.reason, 2000)?
   validateText("prerequisiteProposal", change.prerequisiteProposal, 8000)?
   validateText("recommendation", change.recommendation, 8000)?
-  validateLine("prUrl", change.prUrl, 500)?
+  validateLink("prUrl", change.prUrl)?
   validateLines("blockedBy", change.blockedBy, 50, 200)?
   var i = 0
   while i < change.blockedBy.length.toInt() {

@@ -328,6 +328,57 @@ test "item refs normalise from the forms agents write" {
   expectRef("local:refactor-auth", "local:refactor-auth")
 }
 
+test "one GitHub issue is one ref however it is spelled" {
+  expectRef("Acme/Shop#12", "gh:acme/shop#12")
+  expectRef("gh:ACME/shop#012", "gh:acme/shop#12")
+  expectRef("https://github.com/Acme/Shop/issues/0012", "gh:acme/shop#12")
+  expectRef("#0", "gh:acme/shop#0")
+  match normalizeItemRef("#12", ownerRepoOfRepoUrl("https://github.com/Acme/Shop.git")) {
+    case Ok(r) -> assertEqual(r, "gh:acme/shop#12", "session repo folded too")
+    case Err(msg) -> assertTrue(false, msg)
+  }
+  expectRef("local:Refactor-Auth", "local:Refactor-Auth")
+}
+
+test "a PR link must be an http(s) URL" {
+  val base = item("gh:a/b#1", "in_progress", noRefs())
+  val bad: slice[String] = [
+    "javascript:alert(1)",
+    "JavaScript:alert(1)",
+    "data:text/html,x",
+    "/relative",
+    "https://x y"
+  ]
+  var i = 0
+  while i < bad.length.toInt() {
+    val c = StatusChange(
+      to = "pr_open",
+      reason = "",
+      blockedBy = noRefs(),
+      prerequisiteProposal = "",
+      recommendation = "",
+      prUrl = bad[i]
+    )
+    match planStatusChange(base, c, "agent") {
+      case Ok(_) -> assertTrue(false, "accepted " + bad[i])
+      case Err(msg) -> assertTrue(msg.contains("prUrl"), msg)
+    }
+    i = i + 1
+  }
+  val ok = StatusChange(
+    to = "pr_open",
+    reason = "",
+    blockedBy = noRefs(),
+    prerequisiteProposal = "",
+    recommendation = "",
+    prUrl = "https://github.com/a/b/pull/2"
+  )
+  match planStatusChange(base, ok, "agent") {
+    case Ok(p) -> assertEqual(p.item.prUrl, "https://github.com/a/b/pull/2", "kept")
+    case Err(msg) -> assertTrue(false, msg)
+  }
+}
+
 test "malformed refs are rejected with guidance" {
   val bad: slice[String] = ["", "gh:acme#1", "local:", "local:has space", "acme/shop#x", "gh:a/b#1; drop"]
   var i = 0

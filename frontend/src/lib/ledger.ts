@@ -249,6 +249,18 @@ export function refUrl(ref: string): string {
   return m ? `https://github.com/${m[1]}/issues/${m[2]}` : '';
 }
 
+/** `url` if it is safe to render as a clickable link (absolute http(s)),
+ *  else ''. Link fields are agent-supplied: a `javascript:` URL here would
+ *  run in the owner's session on click. The backend rejects these too. */
+export function safeHref(url: string): string {
+  try {
+    const u = new URL(url);
+    return u.protocol === 'https:' || u.protocol === 'http:' ? u.href : '';
+  } catch {
+    return '';
+  }
+}
+
 /** Feedback on `entryId` / for `itemId`, newest first. */
 export function feedbackFor(feedback: LedgerFeedback[], entryId: string): LedgerFeedback[] {
   return feedback.filter(f => f.entryId === entryId).sort((a, b) => num(b.createdAt) - num(a.createdAt));

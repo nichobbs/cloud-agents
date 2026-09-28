@@ -253,7 +253,7 @@ pub func registerBatch(ctx: in SessionContext, req: in RegisterItemsRequest): Re
       case Ok(_) -> ()
       case Err(msg) -> return Err(error = invalid(msg))
     }
-    match validateLine("url", input.url, 500) {
+    match validateLink("url", input.url) {
       case Ok(_) -> ()
       case Err(msg) -> return Err(error = invalid(msg))
     }
@@ -777,11 +777,13 @@ func summaryOfEntry(entries: in slice[LedgerEntry], id: in String): String {
 
 /// ledger_check_feedback: claim and return every undelivered feedback item.
 pub func checkFeedback(ctx: in SessionContext): Result[CheckFeedbackReply, LedgerFailure] {
+  // Everything that can fail runs before the claim: once rows are marked
+  // delivered, only pure code stands between them and the agent's reply.
+  val entries = match listEntries(ctx.sessionId) { case Ok(es) -> es; case Err(e) -> return Err(error = dbFail(e)) }
   val claimed = match collectFeedback(ctx.sessionId, "mcp_poll") {
     case Ok(fs) -> fs
     case Err(e) -> return Err(error = dbFail(e))
   }
-  val entries = match listEntries(ctx.sessionId) { case Ok(es) -> es; case Err(e) -> return Err(error = dbFail(e)) }
   var views: slice[FeedbackView] = []
   var i = 0
   while i < claimed.length.toInt() {

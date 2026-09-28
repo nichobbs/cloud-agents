@@ -153,6 +153,15 @@ describe('LedgerPanel', () => {
     expect(within(timeline).getByText('Used a join table')).toBeInTheDocument();
   });
 
+  it('never renders an agent-supplied non-http PR link as a link', async () => {
+    const snap = snapshot();
+    snap.items = [item({ id: 'gh:acme/shop#1', title: 'Add schema', prUrl: "javascript:alert('x')" })];
+    vi.mocked(api.getLedger).mockReset().mockResolvedValue(snap);
+    render(<LedgerPanel sessionId="s1" isStreaming={false} />);
+    const row = await screen.findByTestId('ledger-item-gh:acme/shop#1');
+    expect(within(row).queryByRole('link', { name: 'PR' })).not.toBeInTheDocument();
+  });
+
   it('renders nothing on a backend without the ledger', async () => {
     vi.mocked(api.getLedger).mockReset().mockRejectedValue(new Error('404 not found'));
     const { container } = render(<LedgerPanel sessionId="s1" isStreaming={false} />);

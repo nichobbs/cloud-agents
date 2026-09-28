@@ -658,8 +658,30 @@ pub func collectFeedback(sessionId: in String, via: in String): Result[slice[Fee
   val now = CloudAgents.Repository.nowMillis()
   val batch = newLedgerId()
   CloudAgents.Sqlite.executeTransaction([ensureSessionSql(sessionId, now), bumpSeqSql(sessionId), "UPDATE ledger_feedback SET delivered_at = " + lit(now) + ", delivered_via = " + lit(via) + ", delivery_batch = " + lit(batch) + ", updated_seq = " + curSeqExpr(sessionId) + " WHERE session_id = " + lit(sessionId) + " AND delivered_at = ''"])?
-  val rows = CloudAgents.Sqlite.query("SELECT " + feedbackCols + " FROM ledger_feedback WHERE session_id = " + lit(sessionId) + " AND delivery_batch = " + lit(batch) + " ORDER BY created_at, id")?
-  return Ok(value = feedbackFromRows(rows))
+  match CloudAgents.Sqlite.query("SELECT " + feedbackCols + " FROM ledger_feedback WHERE session_id = " + lit(sessionId) + " AND delivery_batch = " + lit(batch) + " ORDER BY created_at, id") {
+    case Ok(rows) -> return Ok(value = feedbackFromRows(rows))
+    case Err(e) -> {
+      // The claim committed but the agent will get an error, not the rows:
+      // release them so the next check delivers them.
+      releaseFeedbackBatch(sessionId, batch)
+      return Err(error = e)
+    }
+  }
+}
+
+/// Undo a claim whose rows never reached the agent (best-effort: a failure
+/// here leaves them claimed, which the caller already reports as an error).
+pub func releaseFeedbackBatch(sessionId: in String, batch: in String): Unit {
+  val sql = "UPDATE ledger_feedback SET delivered_at = '', delivered_via = '', delivery_batch = '', updated_seq = " +
+    curSeqExpr(sessionId) +
+    " WHERE session_id = " +
+    lit(sessionId) +
+    " AND delivery_batch = " +
+    lit(batch)
+  match CloudAgents.Sqlite.executeTransaction([bumpSeqSql(sessionId), sql]) {
+    case Ok(_) -> ()
+    case Err(e) -> println("WARNING: releasing ledger feedback batch " + batch + " failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+  }
 }
 
 // ── Repo policy cache ─────────────────────────────────────────────────────────

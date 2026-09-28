@@ -60,7 +60,10 @@ Testamur (§8).
   `system` (the ledger, e.g. an auto-unblock note).
 - **Work item refs**: `gh:owner/repo#N` or `local:<slug>`. The agent may
   write `#N` (this session's repo), `owner/repo#N`, a GitHub issue/PR URL, or
-  a bare number; they are normalised.
+  a bare number; they are normalised, with owner/repo lowercased and
+  leading zeros dropped so one issue is always one ref. Link fields
+  (`prUrl`, an item's `url`) must be absolute http(s) URLs, and the PWA
+  only renders http(s) hrefs.
 - Vocabularies are validated strings, not unions: they round-trip through
   SQLite TEXT and JSON, and a union case name colliding with an imported one
   silently emits invalid IL in the current toolchain.
@@ -160,7 +163,9 @@ doesn't own is a 404.
 
 1. **Pull**: `ledger_check_feedback` claims undelivered rows with a fresh
    batch id and returns exactly those (`deliveredVia = mcp_poll`), so
-   feedback created mid-claim is never marked delivered unseen.
+   feedback created mid-claim is never marked delivered unseen. Everything
+   that can fail runs before the claim, and a failed read-back releases the
+   batch, so an error reply never loses feedback.
 2. **Nudge**: every ledger reply includes the pending count and a hint.
 3. **Push at next run**: when feedback is waiting and the session's profile
    exposes `ledger_check_feedback`, the next run's prompt (interactive and

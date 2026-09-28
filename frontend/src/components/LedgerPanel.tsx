@@ -11,6 +11,7 @@ import {
   progress,
   refLabel,
   refUrl,
+  safeHref,
   type EntryKind,
   type ItemState,
   type LedgerFeedback,
@@ -256,8 +257,8 @@ function WorkItemRow({ sessionId, item, onChanged }: { sessionId: string; item: 
         <span style={{ ...chipStyle, color: meta.color, borderColor: meta.color }}>{meta.label}</span>
         <RefLink refId={item.id} />
         {item.title && <span style={itemTitleStyle}>{item.title}</span>}
-        {item.prUrl && (
-          <a href={item.prUrl} target="_blank" rel="noreferrer" style={{ ...linkStyle, fontSize: '12px', marginLeft: 'auto' }}>
+        {safeHref(item.prUrl) && (
+          <a href={safeHref(item.prUrl)} target="_blank" rel="noreferrer" style={{ ...linkStyle, fontSize: '12px', marginLeft: 'auto' }}>
             PR
           </a>
         )}
