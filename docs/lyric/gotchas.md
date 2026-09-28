@@ -268,9 +268,9 @@ The Std.String methods (`.length`, `.substring`, `.contains`, ...) and
 **`slice[Byte].toList()` does not resolve at runtime** —
 `unsupported method 'toList' on the receiver type (no matching user method,
 extern binding, or built-in intrinsic)` (confirmed on v0.4.19 by this
-repo's `CloudAgents.CallbacksV2Tests`, `report_artifact`'s upload path:
-`Std.File.writeBytes` takes `List[Byte]`, and base64-decoding a request
-body yields `slice[Byte]`). Same "compiles as a dot-call, dies at runtime"
+repo's `CloudAgents.CallbacksV2Tests`, `report_artifact`'s upload path,
+back when `Std.File.writeBytes` took `List[Byte]`; since Lyric 0.7 it takes
+`slice[Byte]`, so decoded bytes are passed straight through). Same "compiles as a dot-call, dies at runtime"
 family as the `Result`/`Option` convenience methods below, despite
 `lyric-stdlib/std/file.l`'s own module doc describing `slice[T].toList()` /
 `List[T].toArray()` as the intended round-trip shuttle — only the
@@ -279,8 +279,7 @@ family as the `Result`/`Option` convenience methods below, despite
 the `List[Byte]` by hand instead: `val acc: List[Byte] = newList(); var i =
 0; while i < b.length { acc.add(b[i]); i = i + 1 }` — plain-`Int` slice
 indexing is confirmed working (see the `Int.toNat()` entry below), so this
-loop is cheap and reliable. See `CloudAgents.Callbacks.sliceBytesToList`
-for the worked pattern.
+loop is cheap and reliable.
 
 **`Std.File.readBytes` returns `Result[List[Byte], IOError]` as of Lyric
 v0.5.0, not the `Result[slice[Byte], IoError]` both docs/lyric/stdlib.md and
@@ -294,11 +293,9 @@ function/extern binding (hit in this repo at
 `CloudAgents.LibrarySeed.readSeedSubagent`/`readSeedSkill`, all three
 feeding a local `bytesToUtf8(enc, bytes: slice[Byte])` extern binding —
 `error[T0043] 104:34` at the first of the three is what actually surfaced
-in CI). Given `Std.File.writeBytes` has taken `List[Byte]` since at least
-v0.4.19 (see the `slice[Byte].toList()` entry above), this plausibly isn't
-a regression so much as `readBytes` now matching `writeBytes`'s
-already-established `List[Byte]` convention — but either way, the two
-project docs are stale against the real v0.5.0 signature. Fix at the call
+in CI). Note the asymmetry since Lyric 0.7: `readBytes` still returns
+`List[Byte]`, but `writeBytes` now takes `slice[Byte]` (it took `List[Byte]`
+before 0.7), so copying a file is `writeBytes(path, bytes.toArray())`. Fix at the call
 site with `.toArray()` (`bytesToUtf8(utf8Encoding(),
 bytes.toArray())`) — the confirmed-working `List[T].toArray()` direction
 noted in the entry above — rather than widening the `slice[Byte]`-typed

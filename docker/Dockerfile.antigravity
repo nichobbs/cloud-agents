@@ -85,7 +85,7 @@ RUN curl -LsSf --connect-timeout 10 --max-time 120 --retry 3 --retry-delay 3 htt
 
 # GitHub CLI (gh) — version pinned like every other agent-facing CLI in
 # this file (bump deliberately, not by dropping the pin).
-ARG GH_CLI_VERSION="2.100.0"
+ARG GH_CLI_VERSION="2.101.0"
 RUN mkdir -p -m 755 /etc/apt/keyrings \
     && curl -fsSL --connect-timeout 10 --max-time 30 --retry 3 --retry-delay 3 \
         https://cli.github.com/packages/githubcli-archive-keyring.gpg \

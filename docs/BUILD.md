@@ -480,8 +480,12 @@ directly unit-tested (#67, #56), just no longer called from
 
 **CI enforces a version floor matching this status**, read from the single
 checked-in [`MIN_LYRIC_VERSION`](../MIN_LYRIC_VERSION) file (currently
-`0.4.34`, bumped from `0.4.19` alongside the `Lyric.Web`/`Lyric.Docker`/
-`Std.Logging` NuGet bumps above) rather than duplicated as a literal here and in
+`0.7.3`; bumped from `0.4.19` to `0.4.34` alongside the `Lyric.Web`/
+`Lyric.Docker`/`Std.Logging` NuGet bumps above, then to `0.7.3` when the
+0.7 line changed `Std.File.writeBytes` to take `slice[Byte]`, which the
+source now passes directly, so older compilers can't build it; 0.7.3 is
+the first 0.7 release that also resolves the pinned 0.4.x packages above,
+which 0.7.0 could not) rather than duplicated as a literal here and in
 `.github/workflows/ci.yml` — the "Verify minimum Lyric version" step fails
 fast with a clear diagnostic if a future release ever resolves to
 something older than that file's contents, rather than the `lyric test`

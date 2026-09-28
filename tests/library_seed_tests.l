@@ -39,20 +39,6 @@ func utf8Encoding(): Encoding = ()
 @externTarget("System.Text.Encoding.GetBytes")
 func utf8ToBytes(enc: in Encoding, s: in String): slice[Byte] = []
 
-// Std.File.writeBytes actually takes List[Byte], not the slice[Byte]
-// docs/lyric/stdlib.md documents — see CloudAgents.Callbacks.sliceBytesToList
-// (docs/lyric/gotchas.md's matching entry). Same conversion, duplicated here
-// rather than imported since it isn't pub on the Callbacks side either.
-func sliceBytesToList(b: in slice[Byte]): List[Byte] {
-  val acc: List[Byte] = newList()
-  var i = 0
-  while i < b.length {
-    acc.add(b[i])
-    i = i + 1
-  }
-  return acc
-}
-
 // Bytes -> string, for reading the real seed files back in this test file
 // (mirrors CloudAgents.LibrarySeed's own private bytesToUtf8 — not reused
 // directly since it isn't pub, same one-FFI-surface-per-package convention).
@@ -403,7 +389,7 @@ test "seedDefaultSubagentsIfEmpty skips a seed file whose description exceeds th
     "---\n" +
     "\n" +
     "Body text.\n"
-  match Std.File.writeBytes(tmpDir + "/explore.md", sliceBytesToList(utf8ToBytes(utf8Encoding(), content))) {
+  match Std.File.writeBytes(tmpDir + "/explore.md", utf8ToBytes(utf8Encoding(), content)) {
     case Ok(_) -> ()
     case Err(_) -> assertTrue(false, "failed to write the oversized fixture file")
   }

@@ -189,7 +189,7 @@ RUN npm install -g @anthropic-ai/claude-code
 # agent-facing CLI in this file (bump deliberately, not by dropping the
 # pin — an unpinned `apt-get install gh` would pick up whatever the apt
 # repo currently calls "stable" on every build).
-ARG GH_CLI_VERSION="2.100.0"
+ARG GH_CLI_VERSION="2.101.0"
 RUN mkdir -p -m 755 /etc/apt/keyrings \
     && curl -fsSL --connect-timeout 10 --max-time 30 --retry 3 --retry-delay 3 \
         https://cli.github.com/packages/githubcli-archive-keyring.gpg \
