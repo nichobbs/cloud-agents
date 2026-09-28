@@ -175,10 +175,11 @@ esac
 # (the server owns the schema — migrations already ran by the time the health
 # check above went green, so the table shape here is exactly what
 # src/db/db_client.l's sessionsSchemaSql + migration 0010_mcp_callbacks
-# produced). callback_token is stored in plain TEXT (src/db/db_client.l:
-# selectSessionCallbackTokenSql's own doc: "the token itself, compared in
-# constant time against this stored value, IS the authentication" — no
-# hashing to reproduce here), so seeding it is a single literal INSERT.
+# produced, plus 0036_callback_token_hash). Only the token's lowercase hex
+# SHA-256 is stored, in callback_token_hash (CloudAgents.Auth
+# .hashCallbackToken); the shim presents the raw token and the server hashes
+# it before a constant-time compare. So the seed computes the hash with
+# sha256sum and INSERTs that, while the shim below is handed the raw token.
 #
 # This drives the other half of authorizeCallbackToken the 404 leg above
 # can't reach:
@@ -198,13 +199,15 @@ command -v sqlite3 >/dev/null || { echo "e2e-http: 'sqlite3' not on PATH (needed
 
 SEEDED_SESSION_ID="e2e-seeded-session"
 SEEDED_TOKEN="e2e-seeded-callback-token"
+command -v sha256sum >/dev/null || { echo "e2e-http: 'sha256sum' not on PATH (needed to hash the seeded callback token)" >&2; exit 1; }
+SEEDED_TOKEN_HASH="$(printf '%s' "$SEEDED_TOKEN" | sha256sum | cut -d' ' -f1)"
 sqlite3 "$DB" <<SQL
 INSERT INTO sessions (
   id, user_id, repo_url, branch, container_id, harness, model,
-  native_session_id, status, created_at, last_message_at, callback_token
+  native_session_id, status, created_at, last_message_at, callback_token_hash
 ) VALUES (
   '${SEEDED_SESSION_ID}', 'e2e-seeded-user', 'https://example.com/repo.git', 'main', '',
-  'claude', 'claude-opus-4-8', '', 'running', '0', '0', '${SEEDED_TOKEN}'
+  'claude', 'claude-opus-4-8', '', 'running', '0', '0', '${SEEDED_TOKEN_HASH}'
 );
 SQL
 

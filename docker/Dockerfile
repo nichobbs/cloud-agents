@@ -185,11 +185,11 @@ RUN npm install -g @anthropic-ai/claude-code
 # proxy restricts direct github.com access (the exact constraint that
 # forces the Lyric compiler's redirect-based version resolution above).
 # Installed after the CA-trust step so the keyring/package fetch works
-# behind a TLS-intercepting proxy too. Version pinned like every other
-# agent-facing CLI in this file (bump deliberately, not by dropping the
-# pin — an unpinned `apt-get install gh` would pick up whatever the apt
-# repo currently calls "stable" on every build).
-ARG GH_CLI_VERSION="2.101.0"
+# behind a TLS-intercepting proxy too. Deliberately NOT version-pinned,
+# unlike the other agent-facing CLIs in this file: the apt repo only ever
+# serves the newest gh, so an exact `gh=<version>` pin fails the build as
+# soon as a new gh ships (2.100.0 did). Installs whatever is current when
+# this layer is (re)built.
 RUN mkdir -p -m 755 /etc/apt/keyrings \
     && curl -fsSL --connect-timeout 10 --max-time 30 --retry 3 --retry-delay 3 \
         https://cli.github.com/packages/githubcli-archive-keyring.gpg \
@@ -198,7 +198,7 @@ RUN mkdir -p -m 755 /etc/apt/keyrings \
     && echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" \
         > /etc/apt/sources.list.d/github-cli.list \
     && apt-get update \
-    && apt-get install -y --no-install-recommends "gh=${GH_CLI_VERSION}" \
+    && apt-get install -y --no-install-recommends gh \
     && rm -rf /var/lib/apt/lists/*
 
 # uv/uvx: a standalone Rust binary (no Python runtime dependency of its own),

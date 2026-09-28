@@ -1,6 +1,7 @@
 package CloudAgents.Auth
 
 import Std.Core
+import CloudAgents.Crypto
 import CloudAgents.Text
 import extern System.String as DotNetString
 
@@ -79,6 +80,7 @@ func stringType(name: in String): Type = ()
 func createStringArray(elementType: in Type, length: in Int): StringArray = ()
 
 @externTarget("System.Array.Copy")
+@externStatic
 func copyStringArray(
   sourceArray: in StringArray,
   sourceIndex: in Int,
@@ -509,16 +511,32 @@ pub func enforce(path: in String, authHeaderValue: in String, apiToken: in Strin
 // report progress) authenticate with a per-session callback bearer token —
 // never the user's OAuth/static token — so they bypass the normal
 // AuthMiddleware bearer check entirely (see isContainerCallbackRoute below)
-// and are checked directly against the session's stored token by
-// CloudAgents.Callbacks. docs/phase6-mcp-callbacks.md §2/§5.
-/// Whether `authHeaderValue` carries a bearer token matching `expectedToken`
-/// (constant-time, same shape as the static-token check above). Pure so it is
-/// unit-testable without a database; CloudAgents.Callbacks supplies the
-/// session's stored token looked up via CloudAgents.SessionStore.
-pub func authorizeCallback(authHeaderValue: in String, expectedToken: in String): Bool {
+// and are checked directly against the session's stored token hash by
+// CloudAgents.Callbacks. Only the SHA-256 hash of the token is persisted
+// (sessions.callback_token_hash, migration 0036): the raw token exists only
+// in the container's environment. docs/phase6-mcp-callbacks.md §2/§5.
+/// The stored form of a callback bearer token: lowercase hex SHA-256 of its
+/// UTF-8 bytes. The token carries ~244 bits of randomness, so an unsalted
+/// fast hash is sufficient — there is nothing to brute-force.
+pub func hashCallbackToken(token: in String): String {
+  return CloudAgents.Crypto.sha256Hex(token)
+}
+
+/// Whether `authHeaderValue` carries a bearer token whose hash matches
+/// `expectedHash` (the session's stored callback_token_hash). The presented
+/// token is hashed first and the two hashes compared in constant time, so the
+/// comparison's timing depends only on the fixed hash length. Fails closed:
+/// an empty `expectedHash` (no token minted for the session) never matches,
+/// whatever the caller presents. Pure so it is unit-testable without a
+/// database; CloudAgents.Callbacks supplies the stored hash looked up via
+/// CloudAgents.SessionStore.
+pub func authorizeCallback(authHeaderValue: in String, expectedHash: in String): Bool {
+  if expectedHash.length == 0 {
+    return false
+  }
   match extractBearerToken(authHeaderValue) {
     case None -> false
-    case Some(token) -> constantTimeEquals(token, expectedToken)
+    case Some(token) -> constantTimeEquals(hashCallbackToken(token), expectedHash)
   }
 }
 

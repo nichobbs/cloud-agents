@@ -457,6 +457,13 @@ pub func allMigrations(): slice[Migration] {
     Migration(
       version = "0035_graph_ingest_outbox",
       statements = [CloudAgents.Db.graphIngestOutboxSchemaSql(), CloudAgents.Db.graphIngestOutboxDueIndexSql()]
+    ),
+    Migration(
+      version = "0036_callback_token_hash",
+      statements = [
+        CloudAgents.Db.alterSessionsAddCallbackTokenHashSql(),
+        CloudAgents.Db.clearSessionsPlaintextCallbackTokensSql()
+      ]
     )
   ]
 }
