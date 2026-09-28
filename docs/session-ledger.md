@@ -26,7 +26,7 @@ natural boundaries. The transcript stays available as evidence.
 
 | Spec assumption | cloud-agents reality | Adaptation |
 |---|---|---|
-| Cloudflare Workers, Hono, KV, Durable Objects (SQLite per session) | Lyric on .NET 10, `Lyric.Web`, one SQLite DB, migrations inline in `src/db/repository.l` | Ledger tables in the shared SQLite DB (migration `0036_session_ledger`); a per-session change cursor stands in for the DO's single writer/fan-out point |
+| Cloudflare Workers, Hono, KV, Durable Objects (SQLite per session) | Lyric on .NET 10, `Lyric.Web`, one SQLite DB, migrations inline in `src/db/repository.l` | Ledger tables in the shared SQLite DB (migration `0037_session_ledger`); a per-session change cursor stands in for the DO's single writer/fan-out point |
 | Managed Agents API session, remote MCP URL + auth header | Each message runs `claude -p --resume` (or codex / opencode / gemini / antigravity) in a fresh container; the in-container `cloud-agents-shim` is a stdio MCP server that calls the host over REST with a per-session callback bearer token | The `ledger_*` tools live in the existing shim. No new MCP endpoint: `Lyric.Mcp` has no HTTP server transport (lyric-lang docs/64 Phase B is unbuilt) and the shim already works for every harness |
 | Inject a user message into a running session (feedback push) | Not possible: a send while RUNNING is a 409; no stdin channel | Feedback is pulled by `ledger_check_feedback`, nudged by a `pendingFeedback` count on every ledger reply, and pushed at the next run's start (a one-line prompt prefix) |
 | System-prompt instructions | Rules files rendered into the workspace (`docker/session-tools-guide.md` → `.claude/rules/session-tools.md`, GEMINI.md, opencode instructions); Codex gets an inline prompt prefix | Both rewritten with the spec's §10 agent instructions |
@@ -209,7 +209,7 @@ future sessions), and the markdown-checkbox plan fallback for sessions
 without the ledger tools.
 
 Tools are enabled by default (an `all`-mode profile gets them). Migration
-0036 grants all eight to any `selected`-mode profile that granted a retired
+0037 grants all eight to any `selected`-mode profile that granted a retired
 tool, then removes the retired grants; other `selected` profiles are left as
 their operator chose.
 

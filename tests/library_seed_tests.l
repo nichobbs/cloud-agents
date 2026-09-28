@@ -340,7 +340,7 @@ test "every real seed/subagents and seed/skills file satisfies the library's own
   while i < subagentNames.length.toInt() {
     match Std.File.readBytes(seedSubagentsDir() + "/" + subagentNames[i] + ".md") {
       case Ok(bytes) -> {
-        match parseSubagentMarkdown(utf8FromBytes(utf8Encoding(), bytes.toArray())) {
+        match parseSubagentMarkdown(utf8FromBytes(utf8Encoding(), bytes)) {
           case Some(p) -> {
             assertTrue(p.description.length.toInt() <= maxDescriptionLen, subagentNames[i] + ": description within cap")
             assertTrue(p.systemPrompt.length.toInt() <= maxBodyLen, subagentNames[i] + ": body within cap")
@@ -359,7 +359,7 @@ test "every real seed/subagents and seed/skills file satisfies the library's own
   while j < skillNames.length.toInt() {
     match Std.File.readBytes(seedSkillsDir() + "/" + skillNames[j] + "/SKILL.md") {
       case Ok(bytes) -> {
-        match parseSkillMarkdown(utf8FromBytes(utf8Encoding(), bytes.toArray())) {
+        match parseSkillMarkdown(utf8FromBytes(utf8Encoding(), bytes)) {
           case Some(p) -> {
             assertTrue(p.description.length.toInt() <= maxDescriptionLen, skillNames[j] + ": description within cap")
             assertTrue(p.body.length.toInt() <= maxBodyLen, skillNames[j] + ": body within cap")

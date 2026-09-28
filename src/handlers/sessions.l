@@ -1079,7 +1079,7 @@ pub func downloadAttachmentHandler(id: in String, aid: in String): Result[Web.Re
     case Ok(b) -> b
     case Err(e) -> return Err(Web.internalError("failed to read attachment: " + IOError.message(e)))
   }
-  val resp = Web.bytesResponse(200, a.mimeType, bytes.toArray())
+  val resp = Web.bytesResponse(200, a.mimeType, bytes)
   // `attachment` (not `inline`), matching CloudAgents.Callbacks.
   // readArtifactBytesResponse's identical convention: mimeType is entirely
   // client-supplied, so a browser that ever navigates here directly must

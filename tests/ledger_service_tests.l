@@ -49,17 +49,17 @@ func exec(sql: in String): Unit {
 }
 
 // A session owned by `owner` on github.com/acme/shop with callback token
-// `token`.
+// `token` (stored, like a real session, only as its hash).
 func seedSession(id: in String, owner: in String, token: in String): Unit {
   exec(
-    "INSERT INTO sessions (id, user_id, repo_url, branch, container_id, harness, model, native_session_id, status, created_at, last_message_at, callback_token) VALUES ('" +
+    "INSERT INTO sessions (id, user_id, repo_url, branch, container_id, harness, model, native_session_id, status, created_at, last_message_at, callback_token_hash) VALUES ('" +
       id +
       "', '" +
       owner +
       "', 'https://github.com/acme/shop', 'main', '', 'claude', '', '" +
       id +
       "', 'IDLE', '1', '1', '" +
-      token +
+      CloudAgents.Auth.hashCallbackToken(token) +
       "')"
   )
 }

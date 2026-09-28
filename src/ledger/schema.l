@@ -1,5 +1,5 @@
 //! CloudAgents.Ledger.Schema — the session ledger's SQLite DDL (migration
-//! 0036_session_ledger) and its small JSON list codec
+//! 0037_session_ledger) and its small JSON list codec
 //! (docs/session-ledger.md §4).
 //!
 //! A leaf package (it imports nothing from cloud-agents) so
@@ -132,7 +132,7 @@ pub func ledgerToolNames(): slice[String] {
 
 val retiredToolsInList = "('add_todo', 'update_todo', 'list_todos', 'add_followup_task')"
 
-/// Migration 0036_session_ledger: the ledger tables and indexes, then the
+/// Migration 0037_session_ledger: the ledger tables and indexes, then the
 /// profile-grant rewrite. Grants are inserted before the retired rows are
 /// deleted so the rewrite is a pure function of the pre-migration grants;
 /// the NOT EXISTS guard makes it idempotent.

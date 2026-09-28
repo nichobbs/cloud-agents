@@ -120,7 +120,7 @@ func readSeedMcpServer(name: in String): Option[ParsedMcpServer] {
     case Ok(b) -> b
     case Err(_) -> return None
   }
-  match ParsedMcpServer.fromJson(bytesToUtf8(utf8Encoding(), bytes.toArray())) {
+  match ParsedMcpServer.fromJson(bytesToUtf8(utf8Encoding(), bytes)) {
     case Ok(p) -> return Some(value = p)
     case Err(_) -> return None
   }

@@ -61,6 +61,7 @@ func createStringArray(elementType: in Type, length: in Int): StringArray = ()
 func createRowArray(elementType: in Type, length: in Int): RowArray = ()
 
 @externTarget("System.Array.Copy")
+@externStatic
 func copyStringArray(
   sourceArray: in StringArray,
   sourceIndex: in Int,
@@ -70,6 +71,7 @@ func copyStringArray(
 ): Unit = ()
 
 @externTarget("System.Array.Copy")
+@externStatic
 func copyRowArray(
   sourceArray: in RowArray,
   sourceIndex: in Int,

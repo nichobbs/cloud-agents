@@ -2777,11 +2777,10 @@ pub func deleteExpiredModelListingsSql(nowMillis: in String, ttlMillis: in Strin
 // again; progress_summary/progress_percent on `sessions` hold the latest
 // fire-and-forget report_progress state. All TEXT affinity, sqlLiteral-escaped
 // like every other statement in this package.
-/// ALTER adding the per-session callback bearer token. Empty means callbacks
-/// were never minted for this session (pre-Phase-6 session, or the
-/// CLOUD_AGENTS_MCP_CALLBACKS feature flag is off) — CloudAgents.Callbacks
-/// treats an empty stored token as "callbacks not enabled" rather than a
-/// comparable secret.
+/// ALTER adding the per-session callback bearer token (migration 0010). No
+/// longer written or read: migration 0036 cleared it and moved verification
+/// to callback_token_hash (below). Kept because applied migrations are
+/// immutable.
 pub func alterSessionsAddCallbackTokenSql(): String {
   return "ALTER TABLE sessions ADD COLUMN callback_token TEXT NOT NULL DEFAULT ''"
 }
@@ -2798,23 +2797,42 @@ pub func alterSessionsAddProgressPercentSql(): String {
   return "ALTER TABLE sessions ADD COLUMN progress_percent TEXT NOT NULL DEFAULT ''"
 }
 
-/// Set (or clear) a session's callback bearer token. Scoped by owner — minted
-/// server-side at container creation with the owning user id already known
-/// (the same explicit-userId pattern as updateSessionContainerSql, since this
-/// runs off the request thread).
-pub func updateSessionCallbackTokenSql(id: in String, userId: in String, token: in String): String {
-  return "UPDATE sessions SET callback_token = " + sqlLiteral(token) + " WHERE id = " + sqlLiteral(id) +
+/// ALTER adding the per-session callback token's SHA-256 hash (lowercase hex,
+/// CloudAgents.Auth.hashCallbackToken) — migration 0036, superseding the
+/// plaintext callback_token column from 0010, which is now always ''. ALTER
+/// ADD COLUMN appends it last, so the fixed sessionColumns indices are
+/// unaffected. Empty means no token has been minted since the migration
+/// (callbacks disabled, or the session's container predates it) —
+/// CloudAgents.Auth.authorizeCallback treats that as "callbacks not enabled"
+/// and rejects every bearer.
+pub func alterSessionsAddCallbackTokenHashSql(): String {
+  return "ALTER TABLE sessions ADD COLUMN callback_token_hash TEXT NOT NULL DEFAULT ''"
+}
+
+/// Clear every plaintext callback token left by the pre-0036 scheme. Safe:
+/// a fresh token (and hash) is minted on every container start, so a session
+/// whose token is cleared here simply gets callbacks back on its next run.
+pub func clearSessionsPlaintextCallbackTokensSql(): String {
+  return "UPDATE sessions SET callback_token = ''"
+}
+
+/// Set a session's callback-token hash. Scoped by owner — minted server-side
+/// at container creation with the owning user id already known (the same
+/// explicit-userId pattern as updateSessionContainerSql, since this runs off
+/// the request thread).
+pub func updateSessionCallbackTokenHashSql(id: in String, userId: in String, tokenHash: in String): String {
+  return "UPDATE sessions SET callback_token_hash = " + sqlLiteral(tokenHash) + " WHERE id = " + sqlLiteral(id) +
     " AND user_id = " +
     sqlLiteral(userId)
 }
 
-/// Read a session's callback token by id ONLY — deliberately unscoped by
-/// user_id. The container presenting this token has no user identity of its
-/// own yet; the token itself, compared in constant time against this stored
-/// value, IS the authentication (mirrors the GitHub-token-cache's hash-keyed
-/// lookup, not an ownership check).
-pub func selectSessionCallbackTokenSql(id: in String): String {
-  return "SELECT callback_token FROM sessions WHERE id = " + sqlLiteral(id)
+/// Read a session's callback-token hash by id ONLY — deliberately unscoped by
+/// user_id. The container presenting a token has no user identity of its own
+/// yet; hashing that token and comparing it in constant time against this
+/// stored hash IS the authentication (mirrors the GitHub-token-cache's
+/// hash-keyed lookup, not an ownership check).
+pub func selectSessionCallbackTokenHashSql(id: in String): String {
+  return "SELECT callback_token_hash FROM sessions WHERE id = " + sqlLiteral(id)
 }
 
 /// Set a session's latest reported progress. Unscoped (system-style write,
@@ -3056,11 +3074,11 @@ pub func timeoutPendingUserQuestionSql(id: in String, nowMillis: in String, time
 // the credential value) and `artifacts` (report_artifact metadata; the bytes
 // themselves live on disk under CloudAgents.Repository.artifactsBaseDir(),
 // not in SQLite). Also: a session-owner lookup unscoped by the current
-// identity (mirrors selectSessionCallbackTokenSql — a container has no user
+// identity (mirrors selectSessionCallbackTokenHashSql — a container has no user
 // identity of its own) and a credential-existence probe used by
 // request_secret's fail-fast validation.
 /// Read a session's owning user id by session id ONLY — deliberately
-/// unscoped by the current identity, mirroring selectSessionCallbackTokenSql.
+/// unscoped by the current identity, mirroring selectSessionCallbackTokenHashSql.
 /// Used by request_secret's create path (container-originated: the caller's
 /// stamped identity is the operator, not the session owner) to resolve whose
 /// credential store to check.

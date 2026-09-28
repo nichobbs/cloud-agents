@@ -40,7 +40,7 @@ REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT
 
-mkdir -p "$WORK/src/streaming" "$WORK/src/db" "$WORK/src/handlers" "$WORK/src/ledger"
+mkdir -p "$WORK/src/streaming" "$WORK/src/db" "$WORK/src/handlers" "$WORK/src/crypto" "$WORK/src/ledger"
 cp "$REPO_ROOT/src/streaming/streaming.l"   "$WORK/src/streaming/"
 cp "$REPO_ROOT/src/db/db_client.l"          "$WORK/src/db/"
 # db_client.l builds the session list's ledger-attention column from it.
@@ -51,6 +51,9 @@ cp "$REPO_ROOT/src/handlers/auth.l"         "$WORK/src/handlers/"
 # otherwise those cross-package calls link to nothing and the CLR rejects the
 # method at runtime (InvalidProgramException in jsonEscape).
 cp "$REPO_ROOT/src/text.l"                  "$WORK/src/"
+# auth.l hashes callback tokens with CloudAgents.Crypto.sha256Hex, so Crypto
+# (itself only Std.Core + CloudAgents.Text) must be in the build as well.
+cp "$REPO_ROOT/src/crypto/crypto.l"         "$WORK/src/crypto/"
 
 cat > "$WORK/lyric.toml" <<'TOML'
 [package]
@@ -62,6 +65,7 @@ output = "single"
 output_assembly = "CloudAgentsVerify.dll"
 [project.packages]
 "CloudAgents.Text"      = "src/text.l"
+"CloudAgents.Crypto"    = "src/crypto/crypto.l"
 "CloudAgents.Streaming" = "src/streaming/streaming.l"
 "CloudAgents.Ledger.Schema" = "src/ledger/schema.l"
 "CloudAgents.Db"        = "src/db/db_client.l"
@@ -136,6 +140,12 @@ pub func main(): Int {
   eqs(parseJsonNumber(body, "id"), "583231", "parse id number")
   eqs(parseJsonString(body, "missing"), "", "missing field -> empty")
   eqs(parseJsonNumber("{\"id\": 42 }", "id"), "42", "parse id with spaces")
+
+  // Phase 6 — callback token stored as its SHA-256 hash
+  eqs(hashCallbackToken("abc"), "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad", "callback token hash (SHA-256 test vector)")
+  eqb(authorizeCallback("Bearer tok", hashCallbackToken("tok")), true, "callback bearer matches stored hash")
+  eqb(authorizeCallback("Bearer wrong", hashCallbackToken("tok")), false, "wrong callback bearer rejected")
+  eqb(authorizeCallback("Bearer tok", ""), false, "empty stored hash fails closed")
 
   Console.println("ALL CLOUD-AGENTS LOGIC CHECKS PASSED")
   0

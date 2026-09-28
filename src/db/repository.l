@@ -459,11 +459,18 @@ pub func allMigrations(): slice[Migration] {
       version = "0035_graph_ingest_outbox",
       statements = [CloudAgents.Db.graphIngestOutboxSchemaSql(), CloudAgents.Db.graphIngestOutboxDueIndexSql()]
     ),
+    Migration(
+      version = "0036_callback_token_hash",
+      statements = [
+        CloudAgents.Db.alterSessionsAddCallbackTokenHashSql(),
+        CloudAgents.Db.clearSessionsPlaintextCallbackTokensSql()
+      ]
+    ),
     // Session ledger (docs/session-ledger.md): the ledger tables, plus the
     // consolidation's profile-grant migration — a 'selected'-mode profile
     // that granted any retired agent-reporting tool (add_todo / update_todo
     // / list_todos / add_followup_task) is granted the ledger tools instead.
-    Migration(version = "0036_session_ledger", statements = CloudAgents.Ledger.Schema.sessionLedgerMigrationSql())
+    Migration(version = "0037_session_ledger", statements = CloudAgents.Ledger.Schema.sessionLedgerMigrationSql())
   ]
 }
 
@@ -4293,7 +4300,7 @@ func copyFileIfExists(sourcePath: in String, targetDir: in String, targetPath: i
         case Ok(_) -> ()
         case Err(_) -> ()
       }
-      match Std.File.writeBytes(targetPath, b.toArray()) {
+      match Std.File.writeBytes(targetPath, b) {
         case Ok(_) -> ()
         case Err(_) -> ()
       }

@@ -226,7 +226,7 @@ already-on-default-branch path) — see §6 of the phase doc for detail.
 | Deliverable | Status | Where |
 |-------------|--------|-------|
 | Pure core: vocabularies, validation, ref normalisation, work-item state machine, raise-only severity policy, summaries | ✅ added | `CloudAgents.Ledger.{Model,StateMachine,Policy,Summary}` (`src/ledger/`) |
-| Storage: migration `0036_session_ledger`, change cursor, optimistic transitions, claim-then-read feedback delivery, inbox query | ✅ added | `CloudAgents.Ledger.{Schema,Store}` |
+| Storage: migration `0037_session_ledger`, change cursor, optimistic transitions, claim-then-read feedback delivery, inbox query | ✅ added | `CloudAgents.Ledger.{Schema,Store}` |
 | Operations, tolerant tool-argument decoding, repo `.agent-ledger.json` policy (default branch) | ✅ added | `CloudAgents.Ledger.{Service,ToolArgs,RepoPolicy}` |
 | Agent callbacks + owner API + inbox routes | ✅ added | `CloudAgents.LedgerHandlers` (`src/handlers/ledger.l`), `src/main.l` |
 | Eight `ledger_*` shim tools; agent todo / follow-up tools retired | ✅ added | `shim/src/ledger_tools.l`, `docker/session-tools-guide.md`, Codex prompt prefix |

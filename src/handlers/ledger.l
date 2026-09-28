@@ -72,12 +72,12 @@ func envelopeOf(r: in Result[String, LedgerFailure]): LedgerToolEnvelope {
 /// same contract as CloudAgents.Callbacks: 404 for an unknown session, 401
 /// for a missing / wrong token or a session with callbacks off.
 func authorizeContainer(sessionId: in String, authHeaderValue: in String): Result[Unit, Web.ApiError] {
-  val stored = match CloudAgents.SessionStore.callbackTokenForSession(sessionId) {
+  val storedHash = match CloudAgents.SessionStore.callbackTokenHashForSession(sessionId) {
     case Ok(Some(t)) -> t
     case Ok(None) -> return Err(Web.notFound("Session not found"))
     case Err(e) -> return Err(Web.internalError(CloudAgents.Sqlite.dbErrorMessage(e)))
   }
-  if stored.length == 0 or not CloudAgents.Auth.authorizeCallback(authHeaderValue, stored) {
+  if not CloudAgents.Auth.authorizeCallback(authHeaderValue, storedHash) {
     return Err(Web.unauthorized("invalid callback token"))
   }
   return Ok(())

@@ -34,9 +34,9 @@ binary packages — no sibling checkout, no source patching:
 
 ```toml
 [nuget]
-"Lyric.Web"             = "0.4.36"
-"Lyric.Docker"          = "0.4.36"
-"Std.Logging"           = "0.4.36"
+"Lyric.Web"             = "0.7.0"
+"Lyric.Docker"          = "0.7.0"
+"Std.Logging"           = "0.7.0"
 "Microsoft.Data.Sqlite" = "10.0.9"
 ```
 
@@ -57,7 +57,12 @@ of `Lyric.Web`, `Lyric.Docker`, and `Std.Logging` were then bumped together,
 0.4.34 → 0.4.36, alongside the cross-package `Long`-arithmetic crash fix
 below (see "Root-caused") — that fix needed a toolchain able to build/run
 this project at all in the session where it was diagnosed, and `Std.Logging`
-rides along on the same pin rather than being tracked independently.**
+rides along on the same pin rather than being tracked independently.
+All three, and the shim's `Lyric.Mcp`, then moved to 0.7.0 together with
+the compiler's move to 0.7.3 (`MIN_LYRIC_VERSION`, see "Compiler notes").
+`Lyric.Docker` 0.7.0 takes a validated, opaque `ContainerId` and requires
+explicit `stopContainer`/`waitContainer` timeouts; `src/docker_manager.l`
+converts at that boundary and keeps container ids as strings elsewhere.**
 `Microsoft.Data.Sqlite` stays at 10.0.9 — the newest *stable*; the 11.0.0
 line is preview-only. The two SQLite-native packages
 (`SourceGear.sqlite3` 3.53.3, `SQLitePCLRaw.provider.dynamic_cdecl` 3.0.3)
@@ -480,12 +485,14 @@ directly unit-tested (#67, #56), just no longer called from
 
 **CI enforces a version floor matching this status**, read from the single
 checked-in [`MIN_LYRIC_VERSION`](../MIN_LYRIC_VERSION) file (currently
-`0.7.3`; bumped from `0.4.19` to `0.4.34` alongside the `Lyric.Web`/
-`Lyric.Docker`/`Std.Logging` NuGet bumps above, then to `0.7.3` when the
-0.7 line changed `Std.File.writeBytes` to take `slice[Byte]`, which the
-source now passes directly, so older compilers can't build it; 0.7.3 is
-the first 0.7 release that also resolves the pinned 0.4.x packages above,
-which 0.7.0 could not) rather than duplicated as a literal here and in
+`0.7.3`: 0.7.0 moved `Std.File.readBytes`/`writeBytes` to `slice[Byte]` and
+made hint-less externs a build error (F0027), but miscompiles
+`@externTarget`s taking an array extern alias (lyric-lang#7610), which breaks
+this project's SQLite driver at runtime; 0.7.1 fixes that but its released
+stdlib hides `Std.Collections`' `List`/`newList` (lyric-lang#7617), so this
+project does not build on it, and 0.7.2 still has that bug; 0.7.3 fixes
+both — see docs/lyric/gotchas.md)
+rather than duplicated as a literal here and in
 `.github/workflows/ci.yml` — the "Verify minimum Lyric version" step fails
 fast with a clear diagnostic if a future release ever resolves to
 something older than that file's contents, rather than the `lyric test`

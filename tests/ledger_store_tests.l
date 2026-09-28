@@ -1,5 +1,5 @@
 //! Live-SQLite tests for the session-ledger store (docs/session-ledger.md
-//! §4): migration 0036, the change cursor, optimistic item transitions,
+//! §4): migration 0037, the change cursor, optimistic item transitions,
 //! entries, reviews, atomic feedback delivery, the cross-session inbox, and
 //! the retired-tool profile-grant rewrite. Fresh temp DB per test (the
 //! tests/session_events_tests.l harness); no network, no clock assertions.
