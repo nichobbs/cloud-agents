@@ -43,6 +43,35 @@ GET /api/sessions/{id}/events?after=<seq>
 - **Auth:** the route lives under `/api/sessions/`, so the global auth
   middleware (`src/main.l`) enforces it exactly like every other session route —
   captured events are sensitive audit data and are never served unauthenticated.
+- **Ownership:** authentication alone is not enough. The `session_events` table
+  carries no `user_id`; ownership is reachable only through the `sessions` row,
+  so the handler first resolves `{id}` with the owner-scoped
+  `CloudAgents.SessionStore.getSession` (scoped by
+  `CloudAgents.Auth.currentUserId()`). A session owned by another user answers
+  `404 Session not found`, byte-identical to a session that doesn't exist, so
+  the endpoint never confirms another tenant's session id. The check runs
+  before the store read and applies to every cursor value.
+
+### 2.1 Operator token / Testamur `CaptureFetch`
+
+The platform's `CaptureFetch` client authenticates with the static operator
+token (`CLOUD_AGENTS_API_TOKEN`). `CloudAgents.Auth.authorize` resolves that
+token to `operatorUserId()` (`"default"`), so `CaptureFetch` reads exactly the
+sessions the operator identity owns:
+
+- **Static-token / single-operator deployments** (no GitHub OAuth): every
+  session is created under `"default"`, so `CaptureFetch` sees every session,
+  as before.
+- **OAuth deployments**: sessions created by a signed-in GitHub user are owned
+  by that user's id, not `"default"`, and the operator token gets `404` for
+  them. The operator token is deliberately **not** a cross-tenant read-all
+  credential here; before this check existed it was (as was any other
+  authenticated caller), which leaked every tenant's transcript-derived capture
+  chain. A platform that must audit other users' sessions needs a dedicated,
+  explicitly-privileged read path (an operator-only route in the style of
+  `POST /api/maintenance/drain-graph-ingest`, which checks
+  `currentUserId() == operatorUserId()`), not a widening of this user-facing
+  endpoint.
 
 ## 3. Response
 
@@ -66,14 +95,15 @@ GET /api/sessions/{id}/events?after=<seq>
   round-trip byte-for-byte so the fetch-client can reconstruct the exact
   `CaptureEvent` and `verifyChain` it. `type` is the verbatim event type
   (or `"malformed"`).
-- An unknown or event-less session returns `{"events":[]}` (the store read is
-  session-scoped and simply empty), not a 404 — consistent with the messages
-  endpoint.
+- An owned session with no captured events returns `{"events":[]}`. An
+  unknown session, or one owned by another user, returns `404 Session not
+  found` (see §2 "Ownership") — consistent with the messages endpoint.
 
 ## 4. Implementation
 
 - `CloudAgents.Interactions.getSessionEvents(id, afterSeq)` — validates `id`
-  and `afterSeq`, calls `sessionEventsAfterSeq`, encodes via
+  and `afterSeq`, gates on `requireOwnedSession(id)` (404 for a missing or
+  foreign session), calls `sessionEventsAfterSeq`, encodes via
   `sessionEventsToJson`, returns `Result[String, Web.ApiError]`.
 - `sessionEventsToJson` / `captureEventToJson` — pure encoders reusing
   `CloudAgents.Streaming.jsonEscape`, mirroring `messageListToJson`.
@@ -104,4 +134,8 @@ GET /api/sessions/{id}/events?after=<seq>
 2. `after` honors the store cursor (strictly greater; empty = from start).
 3. `id` empty → 400; `after` non-numeric → 400.
 4. The route is auth-enforced like the other `/api/sessions/*` routes.
-5. Offline encoder + handler-validation suites pass with no DB.
+5. A session the caller doesn't own → 404, indistinguishable from a missing
+   session (`tests/interactions_tests.l` "user B cannot read user A's messages
+   or capture events" and "operator identity reads its own sessions' events but
+   not an OAuth user's", live SQLite).
+6. Offline encoder + handler-validation suites pass with no DB.

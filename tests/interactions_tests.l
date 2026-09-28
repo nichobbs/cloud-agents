@@ -4,8 +4,10 @@ package CloudAgents.InteractionsTests
 import Std.Core
 import Std.Testing
 import Std.Uuid
+import CloudAgents.Auth
 import CloudAgents.Interactions
 import CloudAgents.Repository
+import CloudAgents.SessionStore
 import CloudAgents.Sqlite
 import CloudAgents.Streaming
 import CloudAgents.Capture
@@ -31,10 +33,36 @@ func cleanupTestDb(path: in String): Unit {
   } catch Bug as b {
     // locked or already gone — fine for a temp file
   }
+  CloudAgents.Auth.setCurrentUserId("default")
 }
 
-// A message id created in `sessionId`, panicking on failure.
+// Every Interactions handler is owner-gated on the session row, so a test
+// session must exist and be owned by the CURRENT user. Idempotent.
+func ensureSession(id: in String): Unit {
+  match CloudAgents.SessionStore.getSession(id) {
+    case Ok(Some(_)) -> return ()
+    case Ok(None) -> ()
+    case Err(e) -> panic("getSession failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+  }
+  val s = makeAgentSession(
+    sessionId = id,
+    repoUrl = "https://github.com/nic/repo",
+    branch = "main",
+    containerId = "",
+    harness = "claude",
+    model = "claude-opus-4-8",
+    nativeSessionId = id
+  )
+  match addSession(s) {
+    case Ok(_) -> ()
+    case Err(e) -> panic("addSession failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+  }
+}
+
+// A message id created in `sessionId` (owned by the current user), panicking
+// on failure.
 func addTestMessage(sessionId: in String): String {
+  ensureSession(sessionId)
   return match CloudAgents.Repository.addMessage(sessionId, "agent", "hello") {
     case Ok(m) -> m.id
     case Err(e) -> panic("addMessage failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
@@ -71,6 +99,7 @@ test "addTodoHandler enforces message ownership (#173)" {
     cleanupTestDb(dbPath)
   }
   val mid = addTestMessage("session-A")
+  ensureSession("session-B")
 
   // 1. Anchoring a todo to a message from its own session succeeds, and the
   // todo is bound to the session the *message* belongs to (derived, not trusted
@@ -202,6 +231,7 @@ test "toggleTodoHandler flips done and deleteTodoHandler removes the row (#335)"
   defer {
     cleanupTestDb(dbPath)
   }
+  ensureSession("session-T")
   val tid = match addTodoHandler("session-T", AddTodoRequest(messageId = "", note = "task")) {
     case Ok(t) -> t.id
     case Err(err) -> panic("addTodo setup failed: " + toString(err.status))
@@ -267,6 +297,7 @@ test "setTodoStatusHandler validates its inputs and persists a valid status" {
     case Err(err) -> assertEqualInt(err.status, 400, "bogus status returns 400")
   }
 
+  ensureSession("session-S")
   val created = match addTodoHandler("session-S", AddTodoRequest(messageId = "", note = "step")) {
     case Ok(t) -> t
     case Err(err) -> panic("addTodoHandler failed: " + toString(err.status))
@@ -588,6 +619,7 @@ test "getSessionEvents rejects an empty id and a non-numeric cursor" {
 // layer itself still needs the running Lyric.Web server, per the spec §5).
 test "getSessionEvents returns the stored chain as the audit envelope" {
   val path = useFreshTestDb("sessevents-endpoint")
+  ensureSession("sess-E")
   val batch = parseStreamJson(fixtureEventsNdjson(), 0.toLong(), "")
   match CloudAgents.Repository.appendSessionEvents("sess-E", batch.events) {
     case Ok(n) -> assertEqualInt(n, 3, "three events appended")
@@ -611,12 +643,170 @@ test "getSessionEvents returns the stored chain as the audit envelope" {
   assertTrue(not tail.contains("\"seq\":\"0\""), "after=0 excludes event 0")
   assertTrue(tail.contains("\"seq\":\"1\""), "after=0 includes event 1")
 
-  // Unknown session -> empty envelope, not an error (parity with messages).
-  val none = match CloudAgents.Interactions.getSessionEvents("sess-does-not-exist", "") {
-    case Ok(s) -> s
-    case Err(e) -> panic("unknown session should be empty, not an error")
+  // Unknown session -> 404, the same answer as a session owned by someone else.
+  match CloudAgents.Interactions.getSessionEvents("sess-does-not-exist", "") {
+    case Ok(_) -> assertTrue(false, "unknown session must not return events")
+    case Err(e) -> assertEqualInt(e.status, 404, "unknown session -> 404")
   }
-  assertEqual(none, "{\"events\":[]}", "unknown session -> empty envelope")
+
+  // An owned session with no captured events yet -> empty envelope.
+  ensureSession("sess-E-empty")
+  val none = match CloudAgents.Interactions.getSessionEvents("sess-E-empty", "") {
+    case Ok(s) -> s
+    case Err(e) -> panic("owned event-less session should be empty, not an error")
+  }
+  assertEqual(none, "{\"events\":[]}", "owned event-less session -> empty envelope")
 
   cleanupTestDb(path)
+}
+
+// ── Tenant isolation ──────────────────────────────────────────────────────────
+// Every Interactions handler is owner-scoped through the session row: a
+// session, message, or todo belonging to another user answers 404 exactly like
+// one that doesn't exist (no existence leak), and its data is never returned
+// or mutated. User A owns the session; user B is a different authenticated
+// caller who knows every id.
+test "user B cannot read user A's messages or capture events" {
+  val dbPath = useFreshTestDb("interactions-tenant-reads")
+  defer {
+    cleanupTestDb(dbPath)
+  }
+  CloudAgents.Auth.setCurrentUserId("user-a")
+  val sid = "sess-tenant-a"
+  val mid = addTestMessage(sid)
+  val batch = parseStreamJson(fixtureEventsNdjson(), 0.toLong(), "")
+  match CloudAgents.Repository.appendSessionEvents(sid, batch.events) {
+    case Ok(n) -> assertEqualInt(n, 3, "three events appended")
+    case Err(e) -> assertTrue(false, "append failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+  }
+
+  // The owner sees both.
+  match getMessages(sid) {
+    case Ok(ml) -> assertEqualInt(ml.messages.length, 1, "owner reads the transcript")
+    case Err(err) -> assertTrue(false, "owner getMessages failed: " + toString(err.status))
+  }
+  match getSessionEvents(sid, "") {
+    case Ok(json) -> assertTrue(json.contains("\"seq\":\"2\""), "owner reads the capture chain")
+    case Err(err) -> assertTrue(false, "owner getSessionEvents failed: " + toString(err.status))
+  }
+
+  CloudAgents.Auth.setCurrentUserId("user-b")
+  match getMessages(sid) {
+    case Ok(_) -> assertTrue(false, "user B must not read user A's transcript")
+    case Err(err) -> assertEqualInt(err.status, 404, "foreign transcript -> 404")
+  }
+  match getSessionEvents(sid, "") {
+    case Ok(_) -> assertTrue(false, "user B must not read user A's capture events")
+    case Err(err) -> assertEqualInt(err.status, 404, "foreign capture events -> 404")
+  }
+  // The cursor form is gated too, not just the from-start read.
+  match getSessionEvents(sid, "0") {
+    case Ok(_) -> assertTrue(false, "user B must not page user A's capture events")
+    case Err(err) -> assertEqualInt(err.status, 404, "foreign capture events with cursor -> 404")
+  }
+  // A foreign session and a nonexistent one are indistinguishable.
+  match getMessages("sess-never-existed") {
+    case Ok(_) -> assertTrue(false, "nonexistent session must not list messages")
+    case Err(err) -> assertEqualInt(err.status, 404, "nonexistent transcript -> 404")
+  }
+  match getComments(mid) {
+    case Ok(_) -> assertTrue(false, "user B must not list comments on user A's message")
+    case Err(err) -> assertEqualInt(err.status, 404, "foreign message comments -> 404")
+  }
+}
+
+test "user B cannot read or mutate user A's todos and comments" {
+  val dbPath = useFreshTestDb("interactions-tenant-writes")
+  defer {
+    cleanupTestDb(dbPath)
+  }
+  CloudAgents.Auth.setCurrentUserId("user-a")
+  val sid = "sess-tenant-a2"
+  val mid = addTestMessage(sid)
+  val tid = match addTodoHandler(sid, AddTodoRequest(messageId = mid, note = "owner todo")) {
+    case Ok(t) -> t.id
+    case Err(err) -> panic("owner addTodo failed: " + toString(err.status))
+  }
+
+  CloudAgents.Auth.setCurrentUserId("user-b")
+  match getTodos(sid) {
+    case Ok(_) -> assertTrue(false, "user B must not list user A's todos")
+    case Err(err) -> assertEqualInt(err.status, 404, "foreign todos -> 404")
+  }
+  match addTodoHandler(sid, AddTodoRequest(messageId = "", note = "intruder")) {
+    case Ok(_) -> assertTrue(false, "user B must not add a todo to user A's session")
+    case Err(err) -> assertEqualInt(err.status, 404, "foreign addTodo -> 404")
+  }
+  match addCommentHandler(mid, AddCommentRequest(body = "intruder")) {
+    case Ok(_) -> assertTrue(false, "user B must not comment on user A's message")
+    case Err(err) -> assertEqualInt(err.status, 404, "foreign addComment -> 404")
+  }
+  match toggleTodoHandler(tid) {
+    case Ok(_) -> assertTrue(false, "user B must not toggle user A's todo")
+    case Err(err) -> assertEqualInt(err.status, 404, "foreign toggle -> 404")
+  }
+  match setTodoStatusHandler(tid, SetTodoStatusRequest(status = "done")) {
+    case Ok(_) -> assertTrue(false, "user B must not set user A's todo status")
+    case Err(err) -> assertEqualInt(err.status, 404, "foreign setTodoStatus -> 404")
+  }
+  match deleteTodoHandler(tid) {
+    case Ok(_) -> assertTrue(false, "user B must not delete user A's todo")
+    case Err(err) -> assertEqualInt(err.status, 404, "foreign deleteTodo -> 404")
+  }
+
+  // Nothing user B attempted reached the store.
+  match CloudAgents.Repository.listTodos(sid) {
+    case Ok(todos) -> {
+      assertEqualInt(todos.length.toInt(), 1, "no intruder todo was added and the owner's survived")
+      assertEqual(todos[0].status, "pending", "owner todo status untouched")
+      assertEqual(todos[0].done, "0", "owner todo done flag untouched")
+    }
+    case Err(e) -> assertTrue(false, "listTodos failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+  }
+  match CloudAgents.Repository.listComments(mid) {
+    case Ok(cs) -> assertEqualInt(cs.length.toInt(), 0, "no intruder comment was added")
+    case Err(e) -> assertTrue(false, "listComments failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+  }
+
+  // The owner still has full access.
+  CloudAgents.Auth.setCurrentUserId("user-a")
+  match getTodos(sid) {
+    case Ok(tl) -> assertEqualInt(tl.todos.length, 1, "owner still lists its todo")
+    case Err(err) -> assertTrue(false, "owner getTodos failed: " + toString(err.status))
+  }
+}
+
+// The Testamur CaptureFetch client authenticates with the static operator
+// token (CLOUD_AGENTS_API_TOKEN), which resolves to operatorUserId()
+// ("default"). It can read the capture chain of every session the operator
+// identity owns, and nothing else.
+test "operator identity reads its own sessions' events but not an OAuth user's" {
+  val dbPath = useFreshTestDb("interactions-operator-events")
+  defer {
+    cleanupTestDb(dbPath)
+  }
+  val batch = parseStreamJson(fixtureEventsNdjson(), 0.toLong(), "")
+
+  CloudAgents.Auth.setCurrentUserId(CloudAgents.Auth.operatorUserId())
+  ensureSession("sess-operator")
+  match CloudAgents.Repository.appendSessionEvents("sess-operator", batch.events) {
+    case Ok(_) -> ()
+    case Err(e) -> assertTrue(false, "append failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+  }
+  CloudAgents.Auth.setCurrentUserId("gh-583231")
+  ensureSession("sess-oauth-user")
+  match CloudAgents.Repository.appendSessionEvents("sess-oauth-user", batch.events) {
+    case Ok(_) -> ()
+    case Err(e) -> assertTrue(false, "append failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+  }
+
+  CloudAgents.Auth.setCurrentUserId(CloudAgents.Auth.operatorUserId())
+  match getSessionEvents("sess-operator", "") {
+    case Ok(json) -> assertTrue(json.contains("\"seq\":\"2\""), "operator reads its own session's chain")
+    case Err(err) -> assertTrue(false, "operator getSessionEvents failed: " + toString(err.status))
+  }
+  match getSessionEvents("sess-oauth-user", "") {
+    case Ok(_) -> assertTrue(false, "operator token must not read an OAuth user's capture events")
+    case Err(err) -> assertEqualInt(err.status, 404, "operator on a foreign session -> 404")
+  }
 }
