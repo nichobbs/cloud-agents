@@ -6,6 +6,7 @@ import Std.Testing
 import Std.Uuid
 import CloudAgents.Auth
 import CloudAgents.Callbacks
+import CloudAgents.Db
 import CloudAgents.Repository
 import CloudAgents.SessionStore
 import CloudAgents.Sqlite
@@ -62,6 +63,25 @@ func mintToken(id: in String, ownerUserId: in String): String {
 
 func bearer(token: in String): String {
   return "Bearer " + token
+}
+
+func execSql(sql: in String): Unit {
+  match CloudAgents.Sqlite.execute(sql) {
+    case Ok(_) -> ()
+    case Err(e) -> panic("execute failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+  }
+}
+
+/// The legacy (migration 0010) plaintext column, read raw — it must stay ''.
+func plaintextCallbackToken(sid: in String): String {
+  val rows = match CloudAgents.Sqlite.query("SELECT callback_token FROM sessions WHERE id = '" + sid + "'") {
+    case Ok(r) -> r
+    case Err(e) -> panic("query failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+  }
+  if CloudAgents.Sqlite.getRowArrayLength(rows) == 0 {
+    panic("session " + sid + " not found")
+  }
+  return CloudAgents.Sqlite.getStringArrayValue(CloudAgents.Sqlite.getRowArrayValue(rows, 0).cols, 0)
 }
 
 // ── Permission requests ────────────────────────────────────────────────────
@@ -223,6 +243,68 @@ test "callback auth failures: bad token, missing header, cross-session token, no
     case Ok(_) -> assertTrue(false, "a caller who does not own the session must not answer its requests")
     case Err(e) -> assertEqualInt(e.status, 404, "non-owner answer returns 404 (no ownership leak)")
   }
+}
+
+test "callback token is persisted only as its SHA-256 hash" {
+  val dbPath = useFreshTestDb("callback-token-hash")
+  defer {
+    cleanupTestDb(dbPath)
+  }
+  CloudAgents.Auth.setCurrentUserId("default")
+  val sid = "sess-token-hash"
+  mkSession(sid)
+  val token = mintToken(sid, "default")
+
+  val storedHash = match CloudAgents.SessionStore.callbackTokenHashForSession(sid) {
+    case Ok(Some(h)) -> h
+    case Ok(None) -> panic("session vanished")
+    case Err(e) -> panic("callbackTokenHashForSession failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+  }
+  assertEqual(storedHash, CloudAgents.Auth.hashCallbackToken(token), "the stored value is the token's hash")
+  assertTrue(storedHash != token, "the raw token is not what is stored")
+  assertEqual(plaintextCallbackToken(sid), "", "the legacy plaintext column is never written")
+
+  // Hash round trip: the raw token authorizes; the stored hash does not.
+  match createPermissionRequestHandler(sid, bearer(token), CreatePermissionRequestRequest(toolName = "Bash", inputJson = "{}")) {
+    case Ok(_) -> ()
+    case Err(e) -> assertTrue(false, "the minted token must authorize, got " + toString(e.status))
+  }
+  match createPermissionRequestHandler(sid, bearer(storedHash), CreatePermissionRequestRequest(toolName = "Bash", inputJson = "{}")) {
+    case Ok(_) -> assertTrue(false, "presenting the stored hash must not authorize")
+    case Err(e) -> assertEqualInt(e.status, 401, "stored hash as bearer returns 401")
+  }
+
+  // Re-minting (a new container start) replaces the hash: the old token stops working.
+  val fresh = mintToken(sid, "default")
+  match createPermissionRequestHandler(sid, bearer(token), CreatePermissionRequestRequest(toolName = "Bash", inputJson = "{}")) {
+    case Ok(_) -> assertTrue(false, "a superseded token must be rejected")
+    case Err(e) -> assertEqualInt(e.status, 401, "superseded token returns 401")
+  }
+  match createPermissionRequestHandler(sid, bearer(fresh), CreatePermissionRequestRequest(toolName = "Bash", inputJson = "{}")) {
+    case Ok(_) -> ()
+    case Err(e) -> assertTrue(false, "the re-minted token must authorize, got " + toString(e.status))
+  }
+}
+
+test "a pre-migration plaintext token with no hash fails closed" {
+  val dbPath = useFreshTestDb("callback-token-legacy")
+  defer {
+    cleanupTestDb(dbPath)
+  }
+  CloudAgents.Auth.setCurrentUserId("default")
+  val sid = "sess-token-legacy"
+  mkSession(sid)
+  // A row as migration 0010 left it: plaintext token, no hash. Migration 0036
+  // clears the plaintext; even if one survived, it must never authorize.
+  execSql(
+    "UPDATE sessions SET callback_token = 'legacy-plaintext-token', callback_token_hash = '' WHERE id = '" + sid + "'"
+  )
+  match createPermissionRequestHandler(sid, bearer("legacy-plaintext-token"), CreatePermissionRequestRequest(toolName = "Bash", inputJson = "{}")) {
+    case Ok(_) -> assertTrue(false, "a legacy plaintext token must not authorize")
+    case Err(e) -> assertEqualInt(e.status, 401, "legacy plaintext token returns 401")
+  }
+  execSql(CloudAgents.Db.clearSessionsPlaintextCallbackTokensSql())
+  assertEqual(plaintextCallbackToken(sid), "", "migration 0036's clear statement blanks the plaintext column")
 }
 
 // ── User questions ──────────────────────────────────────────────────────────

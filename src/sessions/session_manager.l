@@ -800,26 +800,31 @@ pub func reapSessionContainer(sessionId: in String): Result[Unit, CloudAgents.Sq
 // OAuth/static token. Runs on Docker's worker thread (see the container-
 // bookkeeping writes above), so `userId` is explicit, captured on the request
 // thread.
-/// Mint a fresh callback token for a session and persist it, returning the
-/// token. Two UUIDs concatenated gives the caller ~244 bits of randomness —
+/// Mint a fresh callback token for a session, persist ONLY its SHA-256 hash
+/// (CloudAgents.Auth.hashCallbackToken), and return the raw token for the
+/// caller to inject into the container's environment — the one place it ever
+/// lives. Two UUIDs concatenated gives the caller ~244 bits of randomness —
 /// generous for a bearer secret that expires with the session (docs/phase6
 /// §2) — without introducing a new CSPRNG binding beyond the one Std.Uuid
-/// already provides.
+/// already provides. A fresh token is minted on every container start, which
+/// replaces the stored hash.
 pub func mintCallbackToken(sessionId: in String, userId: in String): Result[String, CloudAgents.Sqlite.DbError] {
   val token = Std.Uuid.uuidToString(Std.Uuid.newUuid()) + Std.Uuid.uuidToString(Std.Uuid.newUuid())
-  CloudAgents.Sqlite.execute(CloudAgents.Db.updateSessionCallbackTokenSql(sessionId, userId, token))?
+  val tokenHash = CloudAgents.Auth.hashCallbackToken(token)
+  CloudAgents.Sqlite.execute(CloudAgents.Db.updateSessionCallbackTokenHashSql(sessionId, userId, tokenHash))?
   return Ok(value = token)
 }
 
-/// A session's stored callback token by id ONLY ("" / None handling lives in
-/// the caller) — deliberately unscoped by user_id, since the container
-/// presenting a candidate token has no user identity of its own; the token
-/// comparison itself (CloudAgents.Callbacks, constant-time) is the
-/// authentication. Returns None only when the session id does not exist at
-/// all; an existing session that never minted a token (or had callbacks
-/// disabled) reads back "".
-pub func callbackTokenForSession(sessionId: in String): Result[Option[String], CloudAgents.Sqlite.DbError] {
-  val rows = CloudAgents.Sqlite.query(CloudAgents.Db.selectSessionCallbackTokenSql(sessionId))?
+/// A session's stored callback-token hash by id ONLY ("" / None handling
+/// lives in the caller) — deliberately unscoped by user_id, since the
+/// container presenting a candidate token has no user identity of its own;
+/// hashing the presented token and comparing it in constant time against this
+/// value (CloudAgents.Auth.authorizeCallback) is the authentication. Returns
+/// None only when the session id does not exist at all; an existing session
+/// that never minted a token (callbacks disabled, or a pre-migration-0036
+/// token that was cleared) reads back "".
+pub func callbackTokenHashForSession(sessionId: in String): Result[Option[String], CloudAgents.Sqlite.DbError] {
+  val rows = CloudAgents.Sqlite.query(CloudAgents.Db.selectSessionCallbackTokenHashSql(sessionId))?
   val len = CloudAgents.Sqlite.getRowArrayLength(rows)
   if len == 0 {
     return Ok(value = None)
@@ -828,7 +833,7 @@ pub func callbackTokenForSession(sessionId: in String): Result[Option[String], C
 }
 
 /// A session's owning user id by id ONLY — deliberately unscoped by the
-/// current identity, mirroring callbackTokenForSession. Used by
+/// current identity, mirroring callbackTokenHashForSession. Used by
 /// request_secret's create path (docs/phase6-mcp-callbacks.md §7.1): the
 /// container-originated caller is stamped as the operator, not the session
 /// owner, so resolving whose credential store to check needs this unscoped
