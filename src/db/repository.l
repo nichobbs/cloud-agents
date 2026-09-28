@@ -15,6 +15,7 @@ import CloudAgents.Db
 import CloudAgents.Sqlite
 import CloudAgents.ToolPolicy
 import CloudAgents.Capture
+import CloudAgents.Ledger.Schema
 import Std.Collections
 import extern System.Environment as Env
 import extern System.String as DotNetString
@@ -457,7 +458,12 @@ pub func allMigrations(): slice[Migration] {
     Migration(
       version = "0035_graph_ingest_outbox",
       statements = [CloudAgents.Db.graphIngestOutboxSchemaSql(), CloudAgents.Db.graphIngestOutboxDueIndexSql()]
-    )
+    ),
+    // Session ledger (docs/session-ledger.md): the ledger tables, plus the
+    // consolidation's profile-grant migration — a 'selected'-mode profile
+    // that granted any retired agent-reporting tool (add_todo / update_todo
+    // / list_todos / add_followup_task) is granted the ledger tools instead.
+    Migration(version = "0036_session_ledger", statements = CloudAgents.Ledger.Schema.sessionLedgerMigrationSql())
   ]
 }
 
@@ -3933,6 +3939,32 @@ pub func sessionEventsAfterSeq(
     i = i + 1
   }
   return Ok(value = acc.toArray())
+}
+
+/// A session's captured events in the window `fromExclusive < seq <=
+/// toInclusive` (bounded to 500), ascending — for ledger transcript excerpts.
+pub func sessionEventsInRange(
+  sessionId: in String, fromExclusive: in String, toInclusive: in String
+): Result[slice[CloudAgents.Capture.CaptureEvent], CloudAgents.Sqlite.DbError] {
+  val rows = CloudAgents.Sqlite.query(CloudAgents.Db.selectSessionEventsInRangeSql(sessionId, fromExclusive, toInclusive))?
+  val acc: List[CloudAgents.Capture.CaptureEvent] = newList()
+  var i = 0
+  val len = CloudAgents.Sqlite.getRowArrayLength(rows)
+  while i < len {
+    acc.add(rowToCaptureEvent(CloudAgents.Sqlite.getRowArrayValue(rows, i)))
+    i = i + 1
+  }
+  return Ok(value = acc.toArray())
+}
+
+/// The highest captured event seq for a session, or "" when nothing has been
+/// captured yet — the transcript position a ledger entry is anchored to.
+pub func latestSessionEventSeq(sessionId: in String): Result[String, CloudAgents.Sqlite.DbError] {
+  val rows = CloudAgents.Sqlite.query(CloudAgents.Db.selectLatestSessionEventSeqSql(sessionId))?
+  if CloudAgents.Sqlite.getRowArrayLength(rows) == 0 {
+    return Ok(value = "")
+  }
+  return Ok(value = colAt(CloudAgents.Sqlite.getRowArrayValue(rows, 0).cols, 0))
 }
 
 /// A session's AGENT messages with seq strictly greater than `afterSeq`

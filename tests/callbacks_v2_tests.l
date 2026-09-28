@@ -268,39 +268,6 @@ test "request_secret answer denies-only when the credential was deleted after cr
   }
 }
 
-// ── add_followup_task ───────────────────────────────────────────────────────
-test "add_followup_task creates an unanchored todo and validates the description" {
-  val dbPath = useFreshTestDb("followup")
-  defer {
-    cleanupTestDb(dbPath)
-  }
-  CloudAgents.Auth.setCurrentUserId("default")
-  val sid = "sess-followup-1"
-  mkSession(sid)
-  val token = mintToken(sid, "default")
-
-  val created = match createFollowupTaskHandler(sid, bearer(token), CreateFollowupTaskRequest(description = "double-check the migration")) {
-    case Ok(r) -> r
-    case Err(e) -> panic("create failed: " + toString(e.status))
-  }
-  assertTrue(created.id.length > 0, "a todo id is returned")
-
-  match CloudAgents.Repository.listTodos(sid) {
-    case Ok(todos) -> {
-      assertEqualInt(todos.length.toInt(), 1, "the todo was stored")
-      assertEqual(todos[0].note, "double-check the migration", "description round-trips as the todo note")
-      assertEqual(todos[0].messageId, "", "an add_followup_task todo is unanchored")
-    }
-    case Err(e) -> assertTrue(false, "listTodos failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
-  }
-
-  match createFollowupTaskHandler(sid, bearer(token), CreateFollowupTaskRequest(description = "")) {
-    case Ok(_) -> assertTrue(false, "an empty description must be rejected")
-    case Err(e) -> assertEqualInt(e.status, 400, "empty description -> 400")
-  }
-}
-
-// ── report_artifact ─────────────────────────────────────────────────────────
 test "report_artifact upload -> list -> download round trip, and traversal is neutralized" {
   val dbPath = useFreshTestDb("artifact-roundtrip")
   defer {
@@ -423,10 +390,6 @@ test "v2 callback endpoints reject an empty session id before touching the datab
     cleanupTestDb(dbPath)
   }
   match createSecretRequestHandler("", "", CreateSecretRequestRequest(name = "X", reason = "")) {
-    case Ok(_) -> assertTrue(false, "an empty session id must be rejected")
-    case Err(e) -> assertEqualInt(e.status, 400, "empty id returns 400")
-  }
-  match createFollowupTaskHandler("", "", CreateFollowupTaskRequest(description = "x")) {
     case Ok(_) -> assertTrue(false, "an empty session id must be rejected")
     case Err(e) -> assertEqualInt(e.status, 400, "empty id returns 400")
   }
@@ -815,92 +778,3 @@ test "remember caps the number of distinct keys per repo but always allows overw
   }
 }
 
-// ── session todo plan (add_todo / update_todo / list_todos) ─────────────────
-test "session todo round trip: create pending -> in_progress -> done, visible via list" {
-  val dbPath = useFreshTestDb("session-todos")
-  defer {
-    cleanupTestDb(dbPath)
-  }
-  CloudAgents.Auth.setCurrentUserId("default")
-  val sid = "sess-todos-1"
-  mkSession(sid)
-  val token = mintToken(sid, "default")
-
-  val created = match createSessionTodoHandler(sid, bearer(token), CreateSessionTodoRequest(note = "step one")) {
-    case Ok(r) -> r
-    case Err(e) -> panic("createSessionTodoHandler failed: " + toString(e.status))
-  }
-  assertEqual(created.status, "pending", "a new todo starts pending")
-
-  match setSessionTodoStatusHandler(sid, created.id, bearer(token), SetSessionTodoStatusRequest(status = "in_progress")) {
-    case Ok(r) -> assertEqual(r.status, "in_progress", "status moves to in_progress")
-    case Err(e) -> assertTrue(false, "in_progress update failed: " + toString(e.status))
-  }
-
-  val listed = match listSessionTodosHandler(sid, bearer(token)) {
-    case Ok(l) -> l
-    case Err(e) -> panic("listSessionTodosHandler failed: " + toString(e.status))
-  }
-  assertEqualInt(listed.todos.length.toInt(), 1, "one todo listed")
-  assertEqual(listed.todos[0].status, "in_progress", "list reflects the live status")
-  assertEqual(listed.todos[0].done, "0", "in_progress is not done")
-
-  match setSessionTodoStatusHandler(sid, created.id, bearer(token), SetSessionTodoStatusRequest(status = "done")) {
-    case Ok(r) -> assertEqual(r.status, "done", "status moves to done")
-    case Err(e) -> assertTrue(false, "done update failed: " + toString(e.status))
-  }
-  match CloudAgents.Repository.listTodos(sid) {
-    case Ok(todos) -> {
-      assertEqual(todos[0].status, "done", "status persisted")
-      assertEqual(todos[0].done, "1", "done flag stays in lockstep")
-    }
-    case Err(e) -> assertTrue(false, "listTodos failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
-  }
-}
-
-test "session todo endpoints validate status, auth, and cross-session ids" {
-  val dbPath = useFreshTestDb("session-todos-validation")
-  defer {
-    cleanupTestDb(dbPath)
-  }
-  CloudAgents.Auth.setCurrentUserId("default")
-  val sidA = "sess-todos-A"
-  val sidB = "sess-todos-B"
-  mkSession(sidA)
-  mkSession(sidB)
-  val tokenA = mintToken(sidA, "default")
-  val tokenB = mintToken(sidB, "default")
-
-  // Wrong bearer is rejected.
-  match createSessionTodoHandler(sidA, bearer("not-the-token"), CreateSessionTodoRequest(note = "x")) {
-    case Ok(_) -> assertTrue(false, "wrong token must be rejected")
-    case Err(e) -> assertEqualInt(e.status, 401, "wrong token -> 401")
-  }
-
-  // Empty note is rejected.
-  match createSessionTodoHandler(sidA, bearer(tokenA), CreateSessionTodoRequest(note = "")) {
-    case Ok(_) -> assertTrue(false, "empty note must be rejected")
-    case Err(e) -> assertEqualInt(e.status, 400, "empty note -> 400")
-  }
-
-  val created = match createSessionTodoHandler(sidA, bearer(tokenA), CreateSessionTodoRequest(note = "mine")) {
-    case Ok(r) -> r
-    case Err(e) -> panic("createSessionTodoHandler failed: " + toString(e.status))
-  }
-
-  // A bogus status literal is rejected.
-  match setSessionTodoStatusHandler(sidA, created.id, bearer(tokenA), SetSessionTodoStatusRequest(status = "bogus")) {
-    case Ok(_) -> assertTrue(false, "bogus status must be rejected")
-    case Err(e) -> assertEqualInt(e.status, 400, "bogus status -> 400")
-  }
-
-  // Session B cannot mutate session A's todo — 404, not a cross-session write.
-  match setSessionTodoStatusHandler(sidB, created.id, bearer(tokenB), SetSessionTodoStatusRequest(status = "done")) {
-    case Ok(_) -> assertTrue(false, "cross-session todo mutation must be rejected")
-    case Err(e) -> assertEqualInt(e.status, 404, "cross-session todo id -> 404")
-  }
-  match CloudAgents.Repository.listTodos(sidA) {
-    case Ok(todos) -> assertEqual(todos[0].status, "pending", "the todo is untouched")
-    case Err(e) -> assertTrue(false, "listTodos failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
-  }
-}

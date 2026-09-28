@@ -1,6 +1,7 @@
 package CloudAgents.Db
 
 import Std.Core
+import CloudAgents.Ledger.Schema
 
 /// Phase 2 groundwork: session lifecycle state and the SQLite schema.
 ///
@@ -694,15 +695,19 @@ pub func updateSessionLastViewedSql(id: in String, userId: in String, ts: in Str
 /// The session-list projection for sessionSummariesJson: every sessionColumns
 /// column plus, as one extra trailing column, the per-session count of
 /// still-'pending' callback rows (permission requests + user questions +
-/// secret requests), CAST to TEXT for the GetString-only driver. One scalar
-/// subquery per callback table, all served by their idx_*_session_id
-/// indexes — kept separate from listSessionsByUserSql so getSessions() (and
+/// secret requests), CAST to TEXT for the GetString-only driver, then a
+/// second trailing column: the session ledger's attention-queue size
+/// (docs/session-ledger.md). One scalar subquery per table, all served by
+/// session-keyed indexes — kept separate from listSessionsByUserSql so getSessions() (and
 /// every other reader of the plain projection) doesn't pay for the subqueries.
 pub func listSessionSummariesByUserSql(userId: in String): String {
   return "SELECT " + sessionColumns +
     ", CAST((SELECT COUNT(*) FROM permission_requests WHERE session_id = sessions.id AND status = 'pending')" +
     " + (SELECT COUNT(*) FROM user_questions WHERE session_id = sessions.id AND status = 'pending')" +
     " + (SELECT COUNT(*) FROM secret_requests WHERE session_id = sessions.id AND status = 'pending') AS TEXT)" +
+    ", CAST(" +
+    CloudAgents.Ledger.Schema.attentionCountSubquery() +
+    " AS TEXT)" +
     " FROM sessions WHERE user_id = " +
     sqlLiteral(userId) +
     " ORDER BY last_message_at DESC"
@@ -1310,6 +1315,24 @@ pub func insertSessionEventSql(
 /// SELECT a session's events with seq strictly greater than `afterSeq` (numeric
 /// compare via CAST — seq is digit TEXT), oldest first. Column order matches
 /// CloudAgents.Repository.rowToCaptureEvent.
+/// SELECT a session's captured events with `fromExclusive < seq <= toInclusive`,
+/// ascending — the bounded window a ledger entry's transcript excerpt reads.
+pub func selectSessionEventsInRangeSql(sessionId: in String, fromExclusive: in String, toInclusive: in String): String {
+  return "SELECT session_id, seq, event_type, payload, prev_hash, hash FROM session_events " + "WHERE session_id = " +
+    sqlLiteral(sessionId) +
+    " AND CAST(seq AS INTEGER) > CAST(" +
+    sqlLiteral(fromExclusive) +
+    " AS INTEGER) AND CAST(seq AS INTEGER) <= CAST(" +
+    sqlLiteral(toInclusive) +
+    " AS INTEGER) ORDER BY CAST(seq AS INTEGER) ASC LIMIT 500"
+}
+
+/// The highest captured seq for a session as TEXT ('' when none).
+pub func selectLatestSessionEventSeqSql(sessionId: in String): String {
+  return "SELECT COALESCE(CAST(MAX(CAST(seq AS INTEGER)) AS TEXT), '') FROM session_events WHERE session_id = " +
+    sqlLiteral(sessionId)
+}
+
 pub func selectSessionEventsAfterSeqSql(sessionId: in String, afterSeq: in String): String {
   return "SELECT session_id, seq, event_type, payload, prev_hash, hash FROM session_events " + "WHERE session_id = " +
     sqlLiteral(sessionId) +
