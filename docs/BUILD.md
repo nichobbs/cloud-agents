@@ -480,8 +480,11 @@ directly unit-tested (#67, #56), just no longer called from
 
 **CI enforces a version floor matching this status**, read from the single
 checked-in [`MIN_LYRIC_VERSION`](../MIN_LYRIC_VERSION) file (currently
-`0.4.34`, bumped from `0.4.19` alongside the `Lyric.Web`/`Lyric.Docker`/
-`Std.Logging` NuGet bumps above) rather than duplicated as a literal here and in
+`0.7.3`: Lyric v0.7 changed `Std.File.readBytes`/`writeBytes` from
+`List[Byte]` to `slice[Byte]`, a source-incompatible change in both
+directions, so the floor moved to the first 0.7.x release this project was
+validated against, together with `deploy/api.Dockerfile`'s pinned
+`LYRIC_VERSION`; see docs/lyric/gotchas.md) rather than duplicated as a literal here and in
 `.github/workflows/ci.yml` — the "Verify minimum Lyric version" step fails
 fast with a clear diagnostic if a future release ever resolves to
 something older than that file's contents, rather than the `lyric test`

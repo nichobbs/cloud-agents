@@ -640,7 +640,7 @@ pub func reportArtifact(
     case Ok(b) -> b
     case Err(e) -> return Err(error = "failed to read " + path + ": " + IOError.message(e))
   }
-  val contentBase64 = encodeBase64(bytes.toArray())
+  val contentBase64 = encodeBase64(bytes)
   val fileName = basenameOfLocalPath(path)
   val created = match transport.uploadArtifact(fileName, mimeType, description, contentBase64, artifactScope) {
     case Ok(body) -> body
