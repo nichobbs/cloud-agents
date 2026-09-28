@@ -4261,13 +4261,7 @@ func copyFileIfExists(sourcePath: in String, targetDir: in String, targetPath: i
         case Ok(_) -> ()
         case Err(_) -> ()
       }
-      val acc: List[Byte] = newList()
-      var i = 0
-      while i < b.length {
-        acc.add(b[i])
-        i = i + 1
-      }
-      match Std.File.writeBytes(targetPath, acc) {
+      match Std.File.writeBytes(targetPath, b) {
         case Ok(_) -> ()
         case Err(_) -> ()
       }
