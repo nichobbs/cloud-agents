@@ -116,9 +116,27 @@ working branch, which the agent can edit. It is fetched once per session on
 the first recorded entry and cached (`absent`, `loaded`, `invalid` with the
 parse error, or `unavailable`); an invalid file is shown in the UI and the
 defaults apply. `unavailable` (a GitHub failure) is retried on the next
-entry rather than kept for the session. Globs are matched by dynamic
-programming, so a hostile pattern costs O(pattern x path). Unknown `match` keys are rejected so a typo cannot silently
-widen a rule.
+entry rather than kept for the session. GitHub answers 404 both for a
+missing file and for a repository the token cannot see, so a 404 counts as
+`absent` only once the repository itself is confirmed readable; otherwise it
+is `unavailable`.
+
+Glob syntax: `*` matches within one path segment, `?` one non-`/`
+character, `**` any run including `/`, and `**/` also matches zero
+directories, but only at a segment start (`**/test.py` matches `test.py`
+and `a/test.py`, never `src/latest.py`).
+
+Validation rejects, with a message naming the rule and the limit:
+- unknown `match` keys, so a typo cannot silently widen a rule;
+- `tagsAny` values that are not valid entry tags (1-32 of `a-z 0-9 -`), so a
+  typo cannot silently make a rule unmatchable;
+- more than 10 tags or 20 globs in a rule, 50 globs across the file, or a
+  glob over 256 characters.
+
+Globs are matched by dynamic programming (O(pattern x path), never
+exponential). Matching one entry's files against every glob is also
+budgeted; an entry over the budget has its file globs treated as matching,
+which can only put it in front of a reviewer.
 
 ## 6. Interfaces
 

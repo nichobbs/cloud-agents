@@ -594,6 +594,121 @@ test "a repo policy with a typo or bad value is rejected with a pointer" {
   }
 }
 
+func expectPolicyError(json: in String, fragment: in String): Unit {
+  match parseRepoPolicy(json) {
+    case Ok(_) -> assertTrue(false, "accepted: " + json)
+    case Err(msg) -> assertTrue(msg.contains(fragment), "want '" + fragment + "' in: " + msg)
+  }
+}
+
+func globsJson(n: in Int, len: in Int): String {
+  var pattern = ""
+  var k = 0
+  while k < len {
+    pattern = pattern + "a"
+    k = k + 1
+  }
+  var acc = ""
+  var i = 0
+  while i < n {
+    if i > 0 {
+      acc = acc + ","
+    }
+    acc = acc + "\"" + pattern + toString(i) + "\""
+    i = i + 1
+  }
+  return "[" + acc + "]"
+}
+
+test "globs respect directory boundaries" {
+  assertTrue(not globMatch("**/test.py", "src/latest.py"), "**/ is not a substring match")
+  assertTrue(globMatch("**/test.py", "src/test.py"), "**/ at a boundary")
+  assertTrue(globMatch("**/test.py", "test.py"), "**/ at the root")
+  assertTrue(not globMatch("**/migrations/**", "db_migrations/x.sql"), "segment name must match whole")
+  assertTrue(globMatch("**/migrations/**", "db/migrations/x.sql"), "nested segment")
+  assertTrue(not globMatch("a/**/b", "a/xb"), "a/**/b needs a separator")
+  assertTrue(globMatch("a/**/b", "a/b"), "zero dirs between")
+  assertTrue(not globMatch("*.lock", "a.lock/b"), "* stops at /")
+}
+
+test "repo policy tags and globs are validated with specific errors" {
+  expectPolicyError(
+    "{\"rules\":[{\"match\":{\"tagsAny\":[\"Deps\"]},\"minSeverity\":\"review\"}]}",
+    "invalid tag \"Deps\""
+  )
+  expectPolicyError(
+    "{\"rules\":[{\"match\":{\"tagsAny\":[]},\"minSeverity\":\"review\"}]}",
+    "tagsAny must not be empty"
+  )
+  expectPolicyError(
+    "{\"rules\":[{\"match\":{\"tagsAny\":\"deps\"},\"minSeverity\":\"review\"}]}",
+    "tagsAny must be an array"
+  )
+  expectPolicyError(
+    "{\"rules\":[{\"match\":{\"tagsAny\":[\"\"]},\"minSeverity\":\"review\"}]}",
+    "tagsAny[0] must not be empty"
+  )
+  expectPolicyError(
+    "{\"rules\":[{\"match\":{\"filesGlob\":[1]},\"minSeverity\":\"review\"}]}",
+    "filesGlob[0] must be a string"
+  )
+  expectPolicyError(
+    "{\"rules\":[{\"match\":{\"filesGlob\":" + globsJson(1, 300) + "},\"minSeverity\":\"review\"}]}",
+    "too long (max 256"
+  )
+  expectPolicyError(
+    "{\"rules\":[{\"match\":{\"filesGlob\":" + globsJson(21, 3) + "},\"minSeverity\":\"review\"}]}",
+    "too many entries (max 20)"
+  )
+  var rules = ""
+  var i = 0
+  while i < 3 {
+    if i > 0 {
+      rules = rules + ","
+    }
+    rules = rules + "{\"match\":{\"filesGlob\":" + globsJson(20, 3) + "},\"minSeverity\":\"review\"}"
+    i = i + 1
+  }
+  expectPolicyError("{\"rules\":[" + rules + "]}", "across all rules (max 50)")
+  match parseRepoPolicy("{\"rules\":[{\"match\":{\"tagsAny\":[\"api-change\"],\"filesGlob\":[\"src/**\"]},\"minSeverity\":\"blocking\"}]}") {
+    case Ok(rs) -> assertEqualInt(rs.length.toInt(), 1, "a valid rule parses")
+    case Err(msg) -> assertTrue(false, msg)
+  }
+}
+
+test "glob work over budget raises rather than scanning" {
+  var longPath = ""
+  var k = 0
+  while k < 490 {
+    longPath = longPath + "x"
+    k = k + 1
+  }
+  var files: slice[String] = []
+  var i = 0
+  while i < 100 {
+    files = files.append(longPath + toString(i))
+    i = i + 1
+  }
+  val parsed = parseRepoPolicy(
+    "{\"rules\":[{\"match\":{\"filesGlob\":" + globsJson(20, 200) + "},\"minSeverity\":\"blocking\"}]}"
+  )
+  match parsed {
+    case Ok(extra) -> {
+      var rules = defaultRules()
+      rules = rules.append(extra[0])
+      assertTrue(globWork(rules, files) > globWorkBudget, "this entry is over budget")
+      assertEqual(
+        effectiveSeverity("", facts("note", "", noRefs(), files), rules),
+        "blocking",
+        "over budget: globs count as matching"
+      )
+      val small: slice[String] = ["docs/readme.md"]
+      assertEqual(effectiveSeverity("", facts("note", "", noRefs(), small), rules), "info", "within budget: real match")
+    }
+    case Err(msg) -> assertTrue(false, msg)
+  }
+}
+
 // ── Summary ───────────────────────────────────────────────────────────────────
 test "summary counts states and the attention queue" {
   val items: slice[WorkItem] = [

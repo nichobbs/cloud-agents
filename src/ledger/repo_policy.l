@@ -64,7 +64,18 @@ pub func fetchRepoPolicy(ownerUserId: in String, ownerRepo: in String): PolicyFe
     case Ok(b) -> b
     case Err(e) -> {
       if e.contains("(404)") {
-        return fetchResult("absent", "", "")
+        // GitHub answers 404 both for a missing file and for a repository
+        // the token cannot see. Only a readable repository makes the file
+        // genuinely absent; otherwise it's a scope problem, retried on the
+        // next entry rather than cached as "no policy".
+        if repoReadable(ownerRepo, names, values) {
+          return fetchResult("absent", "", "")
+        }
+        println(
+          "WARNING: .agent-ledger.json for " + ownerRepo +
+            " is unreadable: the session owner's token cannot see the repository"
+        )
+        return fetchResult("unavailable", "", "the session owner's GitHub token cannot read this repository")
       }
       println("WARNING: fetching .agent-ledger.json for " + ownerRepo + " failed: " + e)
       if CloudAgents.OAuth.isConfirmedAuthRejection(e) {
@@ -80,6 +91,14 @@ pub func fetchRepoPolicy(ownerUserId: in String, ownerRepo: in String): PolicyFe
   match parseRepoPolicy(content) {
     case Ok(_) -> return fetchResult("loaded", content, "")
     case Err(msg) -> return fetchResult("invalid", "", msg)
+  }
+}
+
+func repoReadable(ownerRepo: in String, names: in slice[String], values: in slice[String]): Bool {
+  val url = "https://api.github.com/repos/" + ownerRepo
+  match CloudAgents.GitHubApi.httpGetWithHeaders(url, names, values, policyUserAgent) {
+    case Ok(_) -> return true
+    case Err(_) -> return false
   }
 }
 
