@@ -31,7 +31,7 @@ func utf8FromBytes(enc: in Encoding, bytes: in slice[Byte]): String = ""
 // same resolution seed/ uses in library_seed_tests).
 func readFixture(path: in String): String {
   return match Std.File.readBytes(path) {
-    case Ok(bytes) -> utf8FromBytes(utf8Encoding(), bytes.toArray())
+    case Ok(bytes) -> utf8FromBytes(utf8Encoding(), bytes)
     case Err(_) -> ""
   }
 }

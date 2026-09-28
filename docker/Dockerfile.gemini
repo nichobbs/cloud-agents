@@ -124,12 +124,13 @@ RUN curl -LsSf --connect-timeout 10 --max-time 120 --retry 3 --retry-delay 3 htt
 # stable CLIs (git, jq) — and unlike a github.com release download, this
 # repo is reachable even when a build environment's proxy restricts direct
 # github.com access. Installed after the CA-trust step above so the
-# keyring/package fetch works behind a TLS-intercepting proxy too. Version
-# pinned like every other agent-facing CLI in this file (bump deliberately,
-# not by dropping the pin). RUN text kept byte-identical across
-# Dockerfile.codex/.opencode/.gemini so their layer caches share, matching
-# the shim-builder stage's existing convention.
-ARG GH_CLI_VERSION="2.100.0"
+# keyring/package fetch works behind a TLS-intercepting proxy too.
+# Deliberately NOT version-pinned, unlike the other agent-facing CLIs in
+# this file: the apt repo only ever serves the newest gh, so an exact
+# `gh=<version>` pin fails the build as soon as a new gh ships (2.100.0
+# did). RUN text kept byte-identical across Dockerfile.codex/.opencode/
+# .gemini so their layer caches share, matching the shim-builder stage's
+# existing convention.
 RUN mkdir -p -m 755 /etc/apt/keyrings \
     && curl -fsSL --connect-timeout 10 --max-time 30 --retry 3 --retry-delay 3 \
         https://cli.github.com/packages/githubcli-archive-keyring.gpg \
@@ -138,7 +139,7 @@ RUN mkdir -p -m 755 /etc/apt/keyrings \
     && echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" \
         > /etc/apt/sources.list.d/github-cli.list \
     && apt-get update \
-    && apt-get install -y --no-install-recommends "gh=${GH_CLI_VERSION}" \
+    && apt-get install -y --no-install-recommends gh \
     && rm -rf /var/lib/apt/lists/*
 
 RUN n=0; until npm install -g @google/gemini-cli@0.51.0; do \

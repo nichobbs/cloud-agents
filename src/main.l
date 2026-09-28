@@ -2263,6 +2263,7 @@ func setStringArrayValue(arr: in StringArray, value: in String, index: in Int): 
 func createStringArray(elementType: in Type, length: in Int): StringArray = ()
 
 @externTarget("System.Array.Copy")
+@externStatic
 func copyStringArray(
   sourceArray: in StringArray,
   sourceIndex: in Int,

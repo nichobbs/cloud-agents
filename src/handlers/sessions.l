@@ -79,27 +79,13 @@ func tryDecodeAttachmentBytes(base64: in String): Result[slice[Byte], String] {
   }
 }
 
-/// `slice[Byte]` -> `List[Byte]`, for Std.File.writeBytes (which takes
-/// `List[Byte]`, not `slice[Byte]`) — see CloudAgents.Callbacks.
-/// sliceBytesToList's doc comment for why this can't just be `.toList()`.
-func sliceBytesToList(b: in slice[Byte]): List[Byte] {
-  val acc: List[Byte] = newList()
-  var i = 0
-  while i < b.length {
-    acc.add(b[i])
-    i = i + 1
-  }
-  return acc
-}
-
 /// `Std.File.delete` is documented in docs/lyric/stdlib.md but does not
 /// resolve at runtime on this toolchain — `unsupported method 'delete' on
 /// the receiver type (no matching user method, extern binding, or built-in
 /// intrinsic)`, confirmed by cleanupPartialAttachmentBatch's own test before
 /// this workaround. Same "compiles as a dot-call, dies at runtime" family
 /// docs/lyric/gotchas.md catalogues for several other stdlib convenience
-/// methods (see sliceBytesToList's doc comment above for the identical
-/// `slice[Byte].toList()` case). Bind directly to the BCL method instead.
+/// methods. Bind directly to the BCL method instead.
 @externTarget("System.IO.File.Delete")
 func externDeleteFile(path: in String): Unit = ()
 
@@ -939,7 +925,7 @@ pub func storeAttachments(sessionId: in String, inputs: in slice[AttachmentInput
     val attachmentId = Std.Uuid.uuidToString(Std.Uuid.newUuid())
     val storedName = attachmentId + "_" + v.fileName
     val path = hostDir + "/" + storedName
-    match Std.File.writeBytes(path, sliceBytesToList(v.bytes)) {
+    match Std.File.writeBytes(path, v.bytes) {
       case Ok(_) -> ()
       case Err(e) -> {
         cleanupPartialAttachmentBatch(stored, writtenPaths)
@@ -1092,7 +1078,7 @@ pub func downloadAttachmentHandler(id: in String, aid: in String): Result[Web.Re
     case Ok(b) -> b
     case Err(e) -> return Err(Web.internalError("failed to read attachment: " + IOError.message(e)))
   }
-  val resp = Web.bytesResponse(200, a.mimeType, bytes.toArray())
+  val resp = Web.bytesResponse(200, a.mimeType, bytes)
   // `attachment` (not `inline`), matching CloudAgents.Callbacks.
   // readArtifactBytesResponse's identical convention: mimeType is entirely
   // client-supplied, so a browser that ever navigates here directly must

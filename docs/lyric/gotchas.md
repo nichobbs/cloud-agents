@@ -4,14 +4,13 @@ Things that look like TypeScript/Kotlin/Java but aren't. Read before debugging c
 
 **Re-verified 2026-09-28 against lyric 0.7.3** (installed fresh + empirically
 re-tested every entry below with a real `lyric build`/`lyric run`, not just a
-changelog read). Confirmed-fixed entries are **deleted outright** rather than
-kept around with a "FIXED as of X" marker — this file should only describe
-gotchas that still exist, so there's less to read. This project's pin
-(`MIN_LYRIC_VERSION`, `deploy/api.Dockerfile`) is in the process of catching
-up to 0.7.3 (see the in-flight Lyric 0.7.3 migration); if you're stuck on an
-older pin and hit something this doc no longer mentions, it may still apply
-to you — the linked upstream issue number (where one exists) will say which
-release actually fixed it.
+changelog read) — matching this project's current pin (`MIN_LYRIC_VERSION`,
+`deploy/api.Dockerfile`), which moved to 0.7.3 in the same window. Confirmed-fixed
+entries are **deleted outright** rather than kept around with a "FIXED as of X"
+marker — this file should only describe gotchas that still exist, so there's
+less to read. If you're building against an older pin and hit something this
+doc no longer mentions, it may still apply to you — the linked upstream issue
+number (where one exists) will say which release actually fixed it.
 
 ---
 
@@ -370,6 +369,8 @@ More generally: treat any `@externInstance` call whose target is itself reflecti
 **`@externInstance` must be explicit for instance methods.** Default is static. Forgetting it on an instance method = wrong call instruction emitted.
 
 **Unresolvable `@externTarget` on .NET = compile-time error.** On JVM = `NoClassDefFoundError` at runtime.
+
+**Hint-less `@externTarget` whose convention can't be verified is a build error (F0027) as of Lyric 0.7.0.** If the compiler can't confirm from .NET metadata whether the target is static or instance, add `@externStatic` or `@externInstance`. This repo's `System.Array.Copy` bindings carry `@externStatic` for this reason. 0.7.0 also miscompiles an `@externTarget` taking an array extern alias (`extern type StringArray = "System.String[]"`; lyric-lang#7610): it builds but throws `MissingMethodException` at runtime. 0.7.1 fixes that, but a release-installed 0.7.1 or 0.7.2 rejects `List`/`newList` even with `import Std.Collections` (lyric-lang#7617). Use 0.7.3 or later.
 
 ---
 

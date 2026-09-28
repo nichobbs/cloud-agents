@@ -52,6 +52,9 @@ func fromBase64(s: in String): slice[Byte] = []
 @externTarget("System.Convert.ToBase64String")
 func toBase64(b: in slice[Byte]): String = ""
 
+@externTarget("System.Convert.ToHexStringLower")
+func toHexLower(b: in slice[Byte]): String = ""
+
 @externTarget("System.Text.Encoding.get_UTF8")
 func utf8(): Encoding = ()
 
@@ -120,6 +123,14 @@ val macLen = 32
 /// never stores a usable secret.
 pub func sha256Base64(s: in String): String {
   return toBase64(sha256(encGetBytes(utf8(), s)))
+}
+
+/// Lowercase hex SHA-256 of a UTF-8 string (64 chars). Used to store the
+/// per-session MCP-callback bearer token as a hash (CloudAgents.Auth
+/// .hashCallbackToken), so the sessions table never holds a usable secret.
+/// Hex rather than base64 so an operator can reproduce it with `sha256sum`.
+pub func sha256Hex(s: in String): String {
+  return toHexLower(sha256(encGetBytes(utf8(), s)))
 }
 
 /// Constant-time equality of two base64 strings (the two 44-char MAC tags).
