@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { useLedger } from '../hooks/useLedger';
 import { api } from '../lib/api';
 import {
@@ -54,6 +54,8 @@ export function LedgerPanel({ sessionId, isStreaming }: LedgerPanelProps) {
   if (unavailable) return null;
 
   const waitingFeedback = state.feedback.filter(f => !f.deliveredAt).length;
+  // The summary counts every row; the queue only the entries shipped.
+  const olderPending = Math.max(0, parseInt(state.summary?.pendingReview ?? '0', 10) - queue.length);
   const empty = loaded && state.items.length === 0 && state.entries.length === 0;
 
   return (
@@ -78,6 +80,12 @@ export function LedgerPanel({ sessionId, isStreaming }: LedgerPanelProps) {
 
       {total > 0 && <ProgressBar resolved={resolved} total={total} />}
       {state.summary && total > 0 && <StateCounts summary={state.summary} />}
+      {state.truncated && (
+        <div style={mutedStyle}>
+          This session's ledger is long: only the newest entries are shown.
+          {olderPending > 0 && ` ${olderPending} older ${olderPending === 1 ? 'entry awaits' : 'entries await'} review in the Inbox.`}
+        </div>
+      )}
       {state.policyStatus === 'invalid' && (
         <div style={errorStyle}>This repo's .agent-ledger.json is invalid ({state.policyError}); default review rules apply.</div>
       )}
@@ -115,7 +123,7 @@ export function LedgerPanel({ sessionId, isStreaming }: LedgerPanelProps) {
               <RefLink refId={item.id} /> <span style={mutedStyle}>waits on</span>{' '}
               {waitsOn.length > 0 ? (
                 waitsOn.map((w, i) => (
-                  <span key={w}>
+                  <span key={`${i}-${w}`}>
                     {i > 0 ? ', ' : ''}
                     <RefLink refId={w} />
                     <StateOf refId={w} items={state.items} />
@@ -216,6 +224,13 @@ function WorkItemRow({ sessionId, item, onChanged }: { sessionId: string; item: 
   const actions = humanActions(item.state);
   const reasonRequired = pending === 'needs_human';
 
+  // A poll can move the item under a half-entered action; the action may no
+  // longer be allowed from the new state, so start over.
+  useEffect(() => {
+    setPending(null);
+    setReason('');
+  }, [item.state]);
+
   const apply = async (to: ItemState) => {
     if (to === 'needs_human' && !reason.trim()) {
       setError('Say what you need to decide or do.');
@@ -313,7 +328,16 @@ function WorkItemRow({ sessionId, item, onChanged }: { sessionId: string; item: 
             <button type="button" style={primaryBtnStyle} disabled={busy} onClick={() => void apply(pending)}>
               {humanActions(item.state).find(a => a.to === pending)?.label ?? 'Apply'}
             </button>
-            <button type="button" style={smallBtnStyle} disabled={busy} onClick={() => { setPending(null); setError(''); }}>
+            <button
+              type="button"
+              style={smallBtnStyle}
+              disabled={busy}
+              onClick={() => {
+                setPending(null);
+                setReason('');
+                setError('');
+              }}
+            >
               Cancel
             </button>
           </div>

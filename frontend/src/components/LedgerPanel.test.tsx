@@ -14,6 +14,7 @@ vi.mock('../lib/api', () => ({
 
 import { api } from '../lib/api';
 import type { LedgerSnapshot } from '../lib/ledger';
+import { httpError } from '../test/apiErrors';
 import { entry, item } from '../test/ledgerFixtures';
 import { LedgerPanel } from './LedgerPanel';
 
@@ -163,8 +164,39 @@ describe('LedgerPanel', () => {
   });
 
   it('renders nothing on a backend without the ledger', async () => {
-    vi.mocked(api.getLedger).mockReset().mockRejectedValue(new Error('404 not found'));
+    vi.mocked(api.getLedger).mockReset().mockRejectedValue(httpError(404, 'not found'));
     const { container } = render(<LedgerPanel sessionId="s1" isStreaming={false} />);
     await waitFor(() => expect(container).toBeEmptyDOMElement());
+  });
+
+  it('shows an error, not nothing, when a poll fails for another reason', async () => {
+    vi.mocked(api.getLedger).mockReset().mockRejectedValue(httpError(500, 'database is locked'));
+    render(<LedgerPanel sessionId="s1" isStreaming={false} />);
+    expect(await screen.findByText(/Could not refresh the ledger: database is locked/)).toBeInTheDocument();
+  });
+
+  it('says when a long ledger was truncated and how many older entries await review', async () => {
+    const snap = snapshot();
+    snap.truncated = 'true';
+    snap.summary = { ...snap.summary, pendingReview: '5' };
+    vi.mocked(api.getLedger).mockReset().mockResolvedValue(snap);
+    render(<LedgerPanel sessionId="s1" isStreaming={false} />);
+    expect(await screen.findByText(/only the newest entries are shown/)).toBeInTheDocument();
+    expect(screen.getByText(/3 older entries await review in the Inbox/)).toBeInTheDocument();
+  });
+
+  it('drops a half-entered transition when a poll moves the item', async () => {
+    const first = snapshot();
+    const moved = snapshot();
+    moved.items = [first.items[0]!, { ...first.items[1]!, state: 'queued' }];
+    vi.mocked(api.getLedger).mockReset().mockResolvedValueOnce(first).mockResolvedValue(moved);
+    const { rerender } = render(<LedgerPanel sessionId="s1" isStreaming={false} />);
+    const row = await screen.findByTestId('ledger-item-gh:acme/shop#2');
+    fireEvent.click(within(row).getByRole('button', { name: 'Unblock' }));
+    fireEvent.change(within(row).getByRole('textbox', { name: 'Reason' }), { target: { value: 'half typed' } });
+    // A run ending triggers a catch-up poll that returns the moved item.
+    rerender(<LedgerPanel sessionId="s1" isStreaming />);
+    rerender(<LedgerPanel sessionId="s1" isStreaming={false} />);
+    await waitFor(() => expect(within(screen.getByTestId('ledger-item-gh:acme/shop#2')).queryByRole('textbox', { name: 'Reason' })).not.toBeInTheDocument());
   });
 });

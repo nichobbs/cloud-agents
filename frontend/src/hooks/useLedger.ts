@@ -9,7 +9,8 @@ export const LEDGER_POLL_IDLE_MS = 10000;
 
 /** Live session-ledger state via cursor polling: one full snapshot, then
  *  `?after=<cursor>` deltas (the server answers `unchanged` cheaply when
- *  nothing moved). Pauses while the tab is hidden. `refresh()` polls now —
+ *  nothing moved). Pauses while the tab is hidden and catches up the moment
+ *  it is shown again or a run ends. `refresh()` polls now —
  *  call it after the user acts so their change shows immediately. An older
  *  backend without the ledger (404) sets `unavailable` and stops polling. */
 export function useLedger(sessionId: string, active: boolean) {
@@ -47,11 +48,12 @@ export function useLedger(sessionId: string, active: boolean) {
       setError('');
     } catch (e) {
       if (sessionRef.current !== forSession) return;
-      const msg = e instanceof Error ? e.message : String(e);
-      if (msg.startsWith('404')) {
+      // The status ApiError carries (read structurally, so a test double of
+      // the api module needn't provide the class).
+      if ((e as { status?: unknown } | null)?.status === 404) {
         setUnavailable(true);
       } else {
-        setError(msg);
+        setError(e instanceof Error ? e.message : String(e));
       }
     } finally {
       if (inFlight.current === forSession) inFlight.current = '';
@@ -84,6 +86,25 @@ export function useLedger(sessionId: string, active: boolean) {
     );
     return () => window.clearInterval(id);
   }, [poll, active, unavailable]);
+
+  // Catch up at once when the tab comes back into view: polls were skipped
+  // while it was hidden.
+  useEffect(() => {
+    if (unavailable || typeof document === 'undefined') return;
+    const onVisible = () => {
+      if (document.visibilityState === 'visible') void poll();
+    };
+    document.addEventListener('visibilitychange', onVisible);
+    return () => document.removeEventListener('visibilitychange', onVisible);
+  }, [poll, unavailable]);
+
+  // A run that just ended wrote its last entries after the previous fast
+  // poll; fetch them now instead of waiting a whole idle interval.
+  const wasActive = useRef(active);
+  useEffect(() => {
+    if (wasActive.current && !active && !unavailable) void poll();
+    wasActive.current = active;
+  }, [active, poll, unavailable]);
 
   return { state, loaded, unavailable, error, refresh: poll };
 }

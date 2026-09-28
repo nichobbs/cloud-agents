@@ -92,6 +92,10 @@ export interface LedgerSnapshot {
   cursor: string;
   unchanged: string;
   full: string;
+  /** "true" on a full snapshot that left older entries or feedback out
+   *  (past the server's row caps; the newest are kept). Absent on older
+   *  backends. */
+  truncated?: string;
   summary: LedgerSummary;
   items: WorkItem[];
   entries: LedgerEntry[];
@@ -127,6 +131,8 @@ export interface InboxEntry {
  *  with every delta since. */
 export interface LedgerState {
   cursor: string;
+  /** Older entries/feedback were left out of the last full snapshot. */
+  truncated: boolean;
   summary: LedgerSummary | null;
   items: WorkItem[];
   entries: LedgerEntry[];
@@ -137,6 +143,7 @@ export interface LedgerState {
 
 export const EMPTY_LEDGER: LedgerState = {
   cursor: '0',
+  truncated: false,
   summary: null,
   items: [],
   entries: [],
@@ -168,13 +175,20 @@ export function applySnapshot(state: LedgerState, snap: LedgerSnapshot): LedgerS
     policyError: snap.policyError,
   };
   if (snap.full === 'true') {
-    return { ...base, items: snap.items, entries: snap.entries, feedback: snap.feedback };
+    return {
+      ...base,
+      truncated: snap.truncated === 'true',
+      items: snap.items,
+      entries: snap.entries,
+      feedback: snap.feedback,
+    };
   }
   if (snap.unchanged === 'true') {
     return { ...state, ...base };
   }
   return {
     ...base,
+    truncated: state.truncated,
     items: upsert(state.items, snap.items, i => num(i.order)),
     entries: upsert(state.entries, snap.entries, e => num(e.createdSeq)),
     feedback: upsert(state.feedback, snap.feedback, f => num(f.createdAt)),

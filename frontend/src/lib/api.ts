@@ -102,6 +102,17 @@ export async function apiFetch(input: RequestInfo | URL, init?: RequestInit): Pr
   return res;
 }
 
+/** A failed API response, carrying its HTTP status so callers branch on
+ *  the status rather than on the message text. */
+export class ApiError extends Error {
+  readonly status: number;
+  constructor(status: number, message: string) {
+    super(message);
+    this.name = 'ApiError';
+    this.status = status;
+  }
+}
+
 /** The server's `{"message": ...}` error text for a failed response, so a
  *  validation failure (e.g. "body is required for reject") reads as the
  *  server phrased it; falls back to status + raw body. */
@@ -664,7 +675,7 @@ export const api = {
     const res = await apiFetch(`${BASE}/api/sessions/${sessionId}/ledger?after=${encodeURIComponent(after)}`, {
       headers: authHeaders(),
     });
-    if (!res.ok) throw new Error(`${res.status} ${await res.text()}`);
+    if (!res.ok) throw new ApiError(res.status, await errorMessage(res));
     return (await res.json()) as LedgerSnapshot;
   },
 
