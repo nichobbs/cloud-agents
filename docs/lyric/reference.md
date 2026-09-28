@@ -714,7 +714,7 @@ wire ProductionApp {
 }
 
 func main(): Unit {
-  val config = AppConfig.load(RawConfig.readFromEnvironment()).unwrapResult()
+  val config = unwrapResult(AppConfig.load(RawConfig.readFromEnvironment()))
   val app = ProductionApp.bootstrap(config, CancellationToken.none())
   HttpServer.run(app.transferService, config.port)
 }
@@ -1053,12 +1053,14 @@ assertEqualInt(actual, expected, "message")
 assertEqual(actual, expected)
 expect(condition)          // fails test if false
 isOk(result): Bool         // for use with assertTrue
-// unwrapResult: AVOID in this toolchain. The bare call `unwrapResult(r)`
-// fails to compile (T0020 "unknown name"); the dot-call `r.unwrapResult()`
-// compiles but then fails at RUNTIME ("unsupported method", confirmed on
-// v0.4.19 by CloudAgents.PromptTests). Neither form is usable — `match` on
-// Ok/Err instead (e.g. the mustX helpers in tests/prompt_tests.l). See the
-// Result/Option convenience-methods entry in docs/lyric/gotchas.md.
+// unwrapResult: use the BARE call form, `unwrapResult(r)` — confirmed
+// working (compiles and runs) on this project's current toolchain. The
+// dot-call form, `r.unwrapResult()`, compiles but fails at RUNTIME
+// ("unsupported method") — the opposite of what you'd expect, and the
+// opposite of what this comment used to say before the pin moved to
+// lyric 0.7.3. `match` on Ok/Err is always a safe fallback either way
+// (e.g. the mustX helpers in tests/prompt_tests.l). See the Std.Core
+// bare-vs-dot-call entry in docs/lyric/gotchas.md.
 ```
 
 ### `@stubbable` interfaces
