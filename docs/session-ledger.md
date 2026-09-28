@@ -32,7 +32,7 @@ natural boundaries. The transcript stays available as evidence.
 | System-prompt instructions | Rules files rendered into the workspace (`docker/session-tools-guide.md` → `.claude/rules/session-tools.md`, GEMINI.md, opencode instructions); Codex gets an inline prompt prefix | Both rewritten with the spec's §10 agent instructions |
 | zod, Vitest, ULID | `@generate(Json)` records + hand validation; `@test_module` suites with live SQLite; no ULID in the stdlib | Validation in the pure core; ids are UUIDv4, ordering comes from the per-session cursor (`createdSeq`) |
 | ISO timestamps | Epoch-millisecond strings throughout the app | Epoch-millisecond strings |
-| Alarm-driven GitHub sync / observer | Nothing runs periodically in-process; periodic work is an externally polled `POST /api/maintenance/*` endpoint | Phases 3–4 follow the maintenance-endpoint idiom (§9) |
+| Alarm-driven GitHub sync / observer | Nothing runs periodically in-process; periodic work is an externally polled `POST /api/maintenance/*` endpoint | Phases 3–4 follow the maintenance-endpoint idiom (§9, §10) |
 | Inbound GitHub webhooks, GitHub App | Neither exists; OAuth App with `repo read:user` scope | Phase 3 polls with the owner's vaulted token |
 | WebSocket / SSE live fanout | Runs stream over SSE-on-POST; everything else polls | Cursor polling (`GET …/ledger?after=<cursor>`), 3 s while a run streams, 10 s idle |
 | `LedgerIndex` DO for a cross-session inbox | Single DB | One owner-scoped join query (`GET /api/ledger/inbox`) |
@@ -249,13 +249,74 @@ ADRs: a spec + ADR first; Postgres DDL with `tenant_id` leading every key and
 `FORCE ROW LEVEL SECURITY` (ADR-0019); `@p0` placeholders; and the store
 rewritten against `Lyric.Db`. The SQLite store here is not portable as is.
 
-## 9. Follow-ups (not built)
+## 9. GitHub reconciliation (Phase 3)
 
-- **Phase 3 — GitHub reconciliation**: `agent:*` labels, one structured
-  blocker comment per item (hidden marker, edited in place), inbound polling
-  via a `POST /api/maintenance/ledger-sync` endpoint in the existing
-  maintenance idiom, auto-unblock on refs outside the batch. Uses the owner's
-  vaulted OAuth token (`repo` scope); a GitHub App is the longer-term option.
+Items whose id is a GitHub issue (`gh:owner/repo#N`) are mirrored onto that
+issue, and changes made on GitHub flow back. Local items are never synced.
+
+**Outbound.** Each synced issue carries exactly one managed label for the
+item's state; other labels are never touched. A skipped item's issue carries
+none.
+
+| State | Label |
+|---|---|
+| queued | `agent:queued` |
+| in_progress | `agent:in-progress` |
+| pr_open | `agent:pr-open` |
+| blocked | `agent:blocked` |
+| needs_human | `agent:needs-human` |
+| done | `agent:done` |
+
+Managed labels are created in the repo on first use. A blocked or
+needs_human item gets one structured comment (reason, blockers as `#N` or
+`owner/repo#N`, proposed prerequisite work, the agent's recommendation),
+identified by a hidden `<!-- agent-ledger:session=…;item=… -->` marker and
+edited in place as the item changes. Once the item is unstuck the comment is
+rewritten as resolved rather than deleted. A comment deleted on GitHub is
+found again by its marker or posted anew.
+
+**Inbound.** Each pass reads the issue before writing:
+
+- a `pr_open` item whose pull request is merged moves to `done` (actor
+  `github-sync`), and the usual auto-unblock runs;
+- a person removing the `agent:blocked` / `agent:needs-human` label the
+  ledger applied, or adding `agent:queued`, requeues the item (actor
+  `human`). Only a label the ledger itself put there counts as removed, and
+  the ledger's own stale `agent:queued` is not read as a request;
+- a blocked item whose blockers are all resolved (an in-batch item that is
+  done, or a GitHub issue that is closed) is requeued (actor `github-sync`).
+  This is how blockers outside the batch unblock.
+
+Every inbound move writes a system note saying why.
+
+**When.** There is no in-process timer. Two endpoints:
+
+```
+POST /api/maintenance/ledger-sync        operator only; polled by an external scheduler
+POST /api/sessions/{id}/ledger/sync      owner; the panel's "Sync with GitHub" button
+```
+
+Both return `{sessions, items, transitions, calls, errors}`. Sync state lives
+in `ledger_github_sync` (migration 0038): the label last applied, the comment
+id and body hash, the last error and when the item last synced. An item is
+due when it changed since its last sync, its last sync failed, or it is in a
+state GitHub can move (blocked, needs_human, pr_open). The maintenance run
+takes at most 20 sessions, 60 GitHub calls per session and 300 per run;
+whatever is left waits for the next run. Sessions go least recently
+attempted first (`ledger_github_sync_runs`, which also records a session
+that failed before reaching GitHub), and within a session items go least
+recently synced first, so neither a failing session nor always-due stuck
+items starve the rest. Unchanged labels and comment bodies
+make no writes, so repeated passes are idempotent.
+
+**Credentials.** Calls run as the session owner, with the GitHub App user
+token from their connected account (`ensureFreshGitHubToken`). The App needs
+Issues read/write and Pull requests read. A failure is recorded against the
+item and retried next pass; an owner without a usable token gets an error
+telling them to reconnect GitHub.
+
+## 10. Follow-ups (not built)
+
 - **Phase 4 — observer**: extract undeclared decisions/shortcuts from
   `session_events` with Claude Haiku, reconcile against declared entries
   (deterministic, in the core), badge `undeclared`. Needs a hand-written
@@ -265,7 +326,7 @@ rewritten against `Lyric.Db`. The SQLite store here is not portable as is.
   MCP-capable harness given a session token; a "create external session"
   action and hook ingestion are open.
 
-## 10. Open questions
+## 11. Open questions
 
 Recorded rather than guessed (spec §20):
 

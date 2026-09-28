@@ -411,7 +411,11 @@ pub func buildBearerPostRequest(
 /// latency expectations (e.g. CloudAgents.OpenPr's GitHub calls) should pass
 /// their own short timeout rather than reusing an LLM-tuned one (#927).
 pub func httpPostJsonWithBearerTimeout(
-  url: in String, jsonBody: in String, bearerToken: in String, userAgent: in String, timeoutMillis: in Int
+  url: in String,
+  jsonBody: in String,
+  bearerToken: in String,
+  userAgent: in String,
+  timeoutMillis: in Int,
 ): Result[String, String] {
   return try {
     val req = buildBearerPostRequest(url, bearerToken, userAgent, timeoutMillis)
@@ -437,6 +441,56 @@ pub func httpPostJsonWithBearerTimeout(
     Ok(value = body)
   } catch Bug as b {
     Err(error = "POST " + url + " failed: " + b.message)
+  }
+}
+
+/// Any-method JSON request with a bearer token: GET/DELETE with `jsonBody`
+/// "" send no body; POST/PATCH/PUT send it as UTF-8 JSON. Same bounded
+/// timeout, no redirect-follow (a 3xx must not replay the token elsewhere)
+/// and UTF-8 response read as httpPostJsonWithBearerTimeout. A non-2xx
+/// status surfaces as Err carrying the platform message, which names the
+/// status as "(404)" etc.
+pub func httpJsonWithBearer(
+  method: in String,
+  url: in String,
+  jsonBody: in String,
+  bearerToken: in String,
+  userAgent: in String,
+  timeoutMillis: in Int,
+): Result[String, String] {
+  return try {
+    val req = createRequest(url)
+    setMethod(req, method)
+    setTimeout(req, timeoutMillis)
+    setReadWriteTimeout(req, timeoutMillis)
+    setAllowAutoRedirect(req, false)
+    setUserAgent(req, userAgent)
+    setAccept(req, "application/vnd.github+json")
+    if bearerToken.length > 0 {
+      headerSet(getHeaders(req), "Authorization", "Bearer " + bearerToken)
+    }
+    if jsonBody.length > 0 {
+      setContentType(req, "application/json")
+      val bytes = encGetBytes(utf8(), jsonBody)
+      val reqStream = getRequestStream(req)
+      defer {
+        streamDispose(reqStream)
+      }
+      streamWrite(reqStream, bytes, 0, bytes.length.toInt())
+      streamDispose(reqStream)
+    }
+    val resp = getResponse(req)
+    defer {
+      responseDispose(resp)
+    }
+    val respStream = getResponseStream(resp)
+    defer {
+      streamDispose(respStream)
+    }
+    val body = readAllUtf8(respStream)
+    Ok(value = body)
+  } catch Bug as b {
+    Err(error = method + " " + url + " failed: " + b.message)
   }
 }
 

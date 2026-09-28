@@ -115,6 +115,30 @@ pub func ledgerFeedbackIndexSql(): String {
   return "CREATE INDEX IF NOT EXISTS idx_ledger_feedback_session ON ledger_feedback(session_id, delivered_at)"
 }
 
+/// GitHub reconciliation state per item (docs/session-ledger.md §9,
+/// Phase 3): the managed label last applied to the item's issue, the id and
+/// content hash of the ledger's blocker comment, and the last sync error.
+/// `synced_at` is compared with the item's `updated_at` to find work.
+pub func ledgerGithubSyncSchemaSql(): String {
+  return "CREATE TABLE IF NOT EXISTS ledger_github_sync (" + "session_id TEXT NOT NULL, " + "item_id TEXT NOT NULL, " +
+    "synced_label TEXT NOT NULL, " +
+    "comment_id TEXT NOT NULL, " +
+    "comment_hash TEXT NOT NULL, " +
+    "last_error TEXT NOT NULL, " +
+    "synced_at TEXT NOT NULL, " +
+    "PRIMARY KEY (session_id, item_id))"
+}
+
+/// When each session was last put through a sync pass, and why it failed
+/// if it did before reaching any item (no usable GitHub token). The
+/// maintenance run takes the least recently attempted sessions first, so a
+/// session that keeps failing can't starve the others.
+pub func ledgerGithubSyncRunsSchemaSql(): String {
+  return "CREATE TABLE IF NOT EXISTS ledger_github_sync_runs (" + "session_id TEXT PRIMARY KEY, " +
+    "attempted_at TEXT NOT NULL, " +
+    "last_error TEXT NOT NULL)"
+}
+
 /// The ledger tools the in-container shim registers (shim/src/main.l —
 /// kept in sync by hand, as CloudAgents.Profiles.validShimToolNames is).
 pub func ledgerToolNames(): slice[String] {

@@ -27,6 +27,9 @@ import CloudAgents.Ledger.Summary
 import CloudAgents.Ledger.Store
 import CloudAgents.Ledger.Service
 import CloudAgents.Ledger.ToolArgs
+import CloudAgents.Ledger.GitHubPort
+import CloudAgents.Ledger.Sync
+import CloudAgents.OAuth
 
 // ── Failure mapping ───────────────────────────────────────────────────────────
 func toApiError(f: in LedgerFailure): Web.ApiError {
@@ -338,4 +341,113 @@ pub func decodeItemStateBody(body: in String): Option[LedgerItemStateRequest] {
   } catch Bug as b {
     None
   }
+}
+
+// ── GitHub reconciliation (Phase 3) ───────────────────────────────────────────
+/// What a sync run did. Counts are decimal strings (the wire convention).
+@generate(Json)
+pub record LedgerSyncReport {
+  pub sessions: String
+  pub items: String
+  pub transitions: String
+  pub calls: String
+  pub errors: slice[String]
+}
+
+/// GitHub calls one maintenance run may make across all sessions, and one
+/// session may make in a run. Leftover work waits for the next run.
+pub val syncRunBudget: Int = 300
+
+pub val syncSessionBudget: Int = 60
+
+pub val syncMaxSessions: Int = 20
+
+/// POST /api/maintenance/ledger-sync — reconcile the sessions that need it
+/// with GitHub. Operator only, polled by an external scheduler like the other
+/// maintenance endpoints (there is no in-process timer).
+pub func ledgerSyncHandler(): Result[String, Web.ApiError] {
+  if CloudAgents.Auth.currentUserId() != CloudAgents.Auth.operatorUserId() {
+    return Err(Web.unauthorized("the ledger sync may only be triggered by the operator identity"))
+  }
+  val ids = match sessionsToSync(syncMaxSessions) {
+    case Ok(xs) -> xs
+    case Err(e) -> return Err(Web.internalError(CloudAgents.Sqlite.dbErrorMessage(e)))
+  }
+  var sessions = 0
+  var items = 0
+  var transitions = 0
+  var calls = 0
+  var errors: slice[String] = []
+  var i = 0
+  while i < ids.length.toInt() and calls < syncRunBudget {
+    var budget = syncRunBudget - calls
+    if budget > syncSessionBudget {
+      budget = syncSessionBudget
+    }
+    match syncOne(ids[i], budget) {
+      case Ok(o) -> {
+        sessions = sessions + 1
+        items = items + o.items
+        transitions = transitions + o.transitions
+        calls = calls + o.calls
+        errors = appendPrefixed(errors, ids[i], o.errors)
+      }
+      case Err(msg) -> {
+        errors = errors.append(ids[i] + ": " + msg)
+      }
+    }
+    i = i + 1
+  }
+  return Ok(value = syncReportJson(sessions, items, transitions, calls, errors))
+}
+
+/// POST /api/sessions/{id}/ledger/sync — reconcile one of the caller's
+/// sessions now.
+pub func ledgerSessionSyncHandler(id: in String): Result[String, Web.ApiError] {
+  val ctx = ownedContext(id)?
+  match syncOne(ctx.sessionId, syncSessionBudget) {
+    case Ok(o) -> return Ok(value = syncReportJson(1, o.items, o.transitions, o.calls, o.errors))
+    case Err(msg) -> return Err(Web.badRequest(msg))
+  }
+}
+
+func syncOne(sessionId: in String, budget: in Int): Result[SyncOutcome, String] {
+  val ctx = match sessionContext(sessionId) { case Ok(c) -> c; case Err(f) -> return Err(error = f.message) }
+  val token = match CloudAgents.OAuth.ensureFreshGitHubToken(ctx.ownerUserId) {
+    case Ok(t) -> t
+    case Err(_) -> {
+      val msg = "the session owner has no usable GitHub token; reconnect GitHub to sync"
+      noteAttempt(sessionId, msg)
+      return Err(error = msg)
+    }
+  }
+  noteAttempt(sessionId, "")
+  return Ok(value = syncSession(ctx, HttpGitHubPort(token = token), budget))
+}
+
+// Best-effort: a failure here only affects which session goes first next run.
+func noteAttempt(sessionId: in String, error: in String): Unit {
+  match markSyncAttempt(sessionId, error) {
+    case Ok(_) -> ()
+    case Err(e) -> println(
+      "WARNING: ledger sync attempt for " + sessionId + " not recorded: " +
+        CloudAgents.Sqlite.dbErrorMessage(e)
+    )
+  }
+}
+
+func appendPrefixed(acc: in slice[String], sessionId: in String, errors: in slice[String]): slice[String] {
+  var merged = acc
+  var i = 0
+  while i < errors.length.toInt() {
+    merged = merged.append(sessionId + ": " + errors[i])
+    i = i + 1
+  }
+  return merged
+}
+
+func syncReportJson(
+  sessions: in Int, items: in Int, transitions: in Int, calls: in Int, errors: in slice[String]
+): String {
+  return LedgerSyncReport(sessions = toString(sessions), items = toString(items), transitions = toString(transitions), calls = toString(calls), errors = errors).toJson()
 }

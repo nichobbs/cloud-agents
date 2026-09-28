@@ -326,6 +326,12 @@ assert "ledger snapshot (owner)"       GET  "/api/sessions/${LEDGER_SESSION_ID}/
 assert "ledger rejects no-auth"        GET  "/api/sessions/${LEDGER_SESSION_ID}/ledger"       no  401 ""
 assert "ledger is owner-scoped"        GET  "/api/sessions/${SEEDED_SESSION_ID}/ledger"       yes 404 "Session"
 assert "ledger inbox"                  GET  "/api/ledger/inbox"                               yes 200 "Skipped a flaky test"
+# GitHub sync (Phase 3): the owner here has no connected GitHub account, so
+# both routes reach the token lookup and report it without calling GitHub.
+assert "ledger sync is owner-scoped"   POST "/api/sessions/${SEEDED_SESSION_ID}/ledger/sync"  yes 404 "Session"
+assert "ledger sync needs GitHub"      POST "/api/sessions/${LEDGER_SESSION_ID}/ledger/sync"  yes 400 "reconnect GitHub"
+assert "ledger maintenance sync"       POST "/api/maintenance/ledger-sync"                    yes 200 "reconnect GitHub"
+assert "ledger maintenance sync auth"  POST "/api/maintenance/ledger-sync"                    no  401 ""
 SHORTCUT_ID="$(sqlite3 "$DB" "SELECT id FROM ledger_entries WHERE session_id = '${LEDGER_SESSION_ID}' AND kind = 'shortcut';")"
 assert "ledger reject needs a body"    POST "/api/sessions/${LEDGER_SESSION_ID}/ledger/entries/${SHORTCUT_ID}/review" yes 400 "body is required" '{"kind":"reject","body":""}'
 assert "ledger reject"                 POST "/api/sessions/${LEDGER_SESSION_ID}/ledger/entries/${SHORTCUT_ID}/review" yes 200 '"kind":"reject"' '{"kind":"reject","body":"Do not skip it"}'

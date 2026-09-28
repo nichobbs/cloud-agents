@@ -1253,11 +1253,15 @@ func ledgerEnvelopeJson(r: in Result[LedgerToolEnvelope, Web.ApiError]): Result[
   return match r { case Ok(v) -> Ok(value = v.toJson()); case Err(e) -> Err(error = e) }
 }
 
-func ledgerSnapshotJson(r: in Result[CloudAgents.Ledger.Service.LedgerSnapshot, Web.ApiError]): Result[String, Web.ApiError] {
+func ledgerSnapshotJson(
+  r: in Result[CloudAgents.Ledger.Service.LedgerSnapshot, Web.ApiError]
+): Result[String, Web.ApiError] {
   return match r { case Ok(v) -> Ok(value = v.toJson()); case Err(e) -> Err(error = e) }
 }
 
-func ledgerEntryDetailJson(r: in Result[CloudAgents.Ledger.Service.EntryDetail, Web.ApiError]): Result[String, Web.ApiError] {
+func ledgerEntryDetailJson(
+  r: in Result[CloudAgents.Ledger.Service.EntryDetail, Web.ApiError]
+): Result[String, Web.ApiError] {
   return match r { case Ok(v) -> Ok(value = v.toJson()); case Err(e) -> Err(error = e) }
 }
 
@@ -1265,7 +1269,9 @@ func ledgerFeedbackJson(r: in Result[CloudAgents.Ledger.Model.Feedback, Web.ApiE
   return match r { case Ok(v) -> Ok(value = v.toJson()); case Err(e) -> Err(error = e) }
 }
 
-func ledgerRegisterJson(r: in Result[CloudAgents.Ledger.Service.RegisterReply, Web.ApiError]): Result[String, Web.ApiError] {
+func ledgerRegisterJson(
+  r: in Result[CloudAgents.Ledger.Service.RegisterReply, Web.ApiError]
+): Result[String, Web.ApiError] {
   return match r { case Ok(v) -> Ok(value = v.toJson()); case Err(e) -> Err(error = e) }
 }
 
@@ -1284,7 +1290,12 @@ impl Web.Handler for RouteLedgerCallback {
   func handle(req: in Web.Request): Web.Response {
     return ledgerJsonResp(
       ledgerEnvelopeJson(
-        CloudAgents.LedgerHandlers.ledgerCallbackHandler(pparam(req, "id"), pparam(req, "op"), callbackAuthHeader(req), req.body)
+        CloudAgents.LedgerHandlers.ledgerCallbackHandler(
+          pparam(req, "id"),
+          pparam(req, "op"),
+          callbackAuthHeader(req),
+          req.body
+        )
       )
     )
   }
@@ -1295,7 +1306,9 @@ record RouteGetLedger {
 
 impl Web.Handler for RouteGetLedger {
   func handle(req: in Web.Request): Web.Response {
-    return ledgerJsonResp(ledgerSnapshotJson(CloudAgents.LedgerHandlers.getLedgerHandler(pparam(req, "id"), qparam(req, "after"))))
+    return ledgerJsonResp(
+      ledgerSnapshotJson(CloudAgents.LedgerHandlers.getLedgerHandler(pparam(req, "id"), qparam(req, "after")))
+    )
   }
 }
 
@@ -1305,7 +1318,9 @@ record RouteGetLedgerEntry {
 impl Web.Handler for RouteGetLedgerEntry {
   func handle(req: in Web.Request): Web.Response {
     return ledgerJsonResp(
-      ledgerEntryDetailJson(CloudAgents.LedgerHandlers.getLedgerEntryHandler(pparam(req, "id"), pparam(req, "eid")))
+      ledgerEntryDetailJson(
+        CloudAgents.LedgerHandlers.getLedgerEntryHandler(pparam(req, "id"), pparam(req, "eid"))
+      )
     )
   }
 }
@@ -1315,9 +1330,14 @@ record RouteReviewLedgerEntry {
 
 impl Web.Handler for RouteReviewLedgerEntry {
   func handle(req: in Web.Request): Web.Response {
-    val decoded = match CloudAgents.LedgerHandlers.decodeReviewBody(req.body) { case Some(d) -> d; case None -> return badBody() }
+    val decoded = match CloudAgents.LedgerHandlers.decodeReviewBody(req.body) {
+      case Some(d) -> d
+      case None -> return badBody()
+    }
     return ledgerJsonResp(
-      ledgerFeedbackJson(CloudAgents.LedgerHandlers.reviewLedgerEntryHandler(pparam(req, "id"), pparam(req, "eid"), decoded))
+      ledgerFeedbackJson(
+        CloudAgents.LedgerHandlers.reviewLedgerEntryHandler(pparam(req, "id"), pparam(req, "eid"), decoded)
+      )
     )
   }
 }
@@ -1327,8 +1347,13 @@ record RouteLedgerFeedback {
 
 impl Web.Handler for RouteLedgerFeedback {
   func handle(req: in Web.Request): Web.Response {
-    val decoded = match CloudAgents.LedgerHandlers.decodeFeedbackBody(req.body) { case Some(d) -> d; case None -> return badBody() }
-    return ledgerJsonResp(ledgerFeedbackJson(CloudAgents.LedgerHandlers.ledgerFeedbackHandler(pparam(req, "id"), decoded)))
+    val decoded = match CloudAgents.LedgerHandlers.decodeFeedbackBody(req.body) {
+      case Some(d) -> d
+      case None -> return badBody()
+    }
+    return ledgerJsonResp(
+      ledgerFeedbackJson(CloudAgents.LedgerHandlers.ledgerFeedbackHandler(pparam(req, "id"), decoded))
+    )
   }
 }
 
@@ -1341,7 +1366,9 @@ impl Web.Handler for RouteAddLedgerItems {
       case Some(d) -> d
       case None -> return badBody()
     }
-    return ledgerJsonResp(ledgerRegisterJson(CloudAgents.LedgerHandlers.addLedgerItemsHandler(pparam(req, "id"), decoded)))
+    return ledgerJsonResp(
+      ledgerRegisterJson(CloudAgents.LedgerHandlers.addLedgerItemsHandler(pparam(req, "id"), decoded))
+    )
   }
 }
 
@@ -1350,8 +1377,29 @@ record RouteLedgerItemState {
 
 impl Web.Handler for RouteLedgerItemState {
   func handle(req: in Web.Request): Web.Response {
-    val decoded = match CloudAgents.LedgerHandlers.decodeItemStateBody(req.body) { case Some(d) -> d; case None -> return badBody() }
+    val decoded = match CloudAgents.LedgerHandlers.decodeItemStateBody(req.body) {
+      case Some(d) -> d
+      case None -> return badBody()
+    }
     return ledgerJsonResp(ledgerItemJson(CloudAgents.LedgerHandlers.ledgerItemStateHandler(pparam(req, "id"), decoded)))
+  }
+}
+
+record RouteLedgerSync {
+}
+
+impl Web.Handler for RouteLedgerSync {
+  func handle(req: in Web.Request): Web.Response {
+    return ledgerJsonResp(CloudAgents.LedgerHandlers.ledgerSyncHandler())
+  }
+}
+
+record RouteLedgerSessionSync {
+}
+
+impl Web.Handler for RouteLedgerSessionSync {
+  func handle(req: in Web.Request): Web.Response {
+    return ledgerJsonResp(CloudAgents.LedgerHandlers.ledgerSessionSyncHandler(pparam(req, "id")))
   }
 }
 
@@ -2125,6 +2173,8 @@ pub func main(): Unit {
   router = Web.addPost(router, "/api/sessions/{id}/ledger/items", RouteAddLedgerItems())
   router = Web.addPost(router, "/api/sessions/{id}/ledger/item-state", RouteLedgerItemState())
   router = Web.addGet(router, "/api/ledger/inbox", RouteLedgerInbox())
+  router = Web.addPost(router, "/api/sessions/{id}/ledger/sync", RouteLedgerSessionSync())
+  router = Web.addPost(router, "/api/maintenance/ledger-sync", RouteLedgerSync())
 
   // Session highlights: the summarizer-extracted notable items feed
   // (CloudAgents.Highlights) — list + user-triggered refresh.

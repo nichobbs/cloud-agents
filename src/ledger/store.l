@@ -878,6 +878,76 @@ pub func releaseFeedbackBatch(sessionId: in String, batch: in String): Unit {
   }
 }
 
+// ── GitHub sync state (Phase 3) ───────────────────────────────────────────────
+pub record SyncRow {
+  pub itemId: String
+  pub syncedLabel: String
+  pub commentId: String
+  pub commentHash: String
+  pub lastError: String
+  pub syncedAt: String
+}
+
+pub func emptySyncRow(itemId: in String): SyncRow {
+  return SyncRow(itemId = itemId, syncedLabel = "", commentId = "", commentHash = "", lastError = "", syncedAt = "")
+}
+
+/// Every item's sync row for a session (items never synced have none).
+pub func syncRows(sessionId: in String): Result[slice[SyncRow], CloudAgents.Sqlite.DbError] {
+  val rows = CloudAgents.Sqlite.query("SELECT item_id, synced_label, comment_id, comment_hash, last_error, synced_at FROM ledger_github_sync WHERE session_id = " + lit(sessionId))?
+  var acc: slice[SyncRow] = []
+  var i = 0
+  while i < CloudAgents.Sqlite.getRowArrayLength(rows) {
+    val r = CloudAgents.Sqlite.getRowArrayValue(rows, i)
+    acc = acc.append(
+      SyncRow(
+        itemId = col(r, 0),
+        syncedLabel = col(r, 1),
+        commentId = col(r, 2),
+        commentHash = col(r, 3),
+        lastError = col(r, 4),
+        syncedAt = col(r, 5)
+      )
+    )
+    i = i + 1
+  }
+  return Ok(value = acc)
+}
+
+pub func saveSyncRow(sessionId: in String, row: in SyncRow): Result[Unit, CloudAgents.Sqlite.DbError] {
+  CloudAgents.Sqlite.execute("INSERT INTO ledger_github_sync (session_id, item_id, synced_label, comment_id, comment_hash, last_error, synced_at) VALUES (" + lit(sessionId) + ", " + lit(row.itemId) + ", " + lit(row.syncedLabel) + ", " + lit(row.commentId) + ", " + lit(row.commentHash) + ", " + lit(row.lastError) + ", " + lit(row.syncedAt) + ") ON CONFLICT(session_id, item_id) DO UPDATE SET synced_label = excluded.synced_label, comment_id = excluded.comment_id, comment_hash = excluded.comment_hash, last_error = excluded.last_error, synced_at = excluded.synced_at")?
+  return Ok(())
+}
+
+/// Sessions with GitHub-backed items that need a sync pass: an item changed
+/// since it was last synced (or never was), or it is waiting on GitHub
+/// (blocked, needs_human, pr_open). Least recently attempted first, so a
+/// session that keeps failing takes its turn and no more.
+pub func sessionsToSync(limit: in Int): Result[slice[String], CloudAgents.Sqlite.DbError] {
+  val sql = "SELECT i.session_id, MAX(COALESCE(CAST(r.attempted_at AS INTEGER), 0)) AS attempted FROM ledger_items i " +
+    "JOIN sessions s ON s.id = i.session_id " +
+    "LEFT JOIN ledger_github_sync g ON g.session_id = i.session_id AND g.item_id = i.item_id " +
+    "LEFT JOIN ledger_github_sync_runs r ON r.session_id = i.session_id " +
+    "WHERE i.item_id LIKE 'gh:%' AND (g.item_id IS NULL OR CAST(g.synced_at AS INTEGER) < CAST(i.updated_at AS INTEGER) OR i.state IN ('blocked', 'needs_human', 'pr_open')) " +
+    "GROUP BY i.session_id ORDER BY attempted, i.session_id LIMIT " +
+    toString(limit)
+  val rows = CloudAgents.Sqlite.query(sql)?
+  var acc: slice[String] = []
+  var i = 0
+  while i < CloudAgents.Sqlite.getRowArrayLength(rows) {
+    acc = acc.append(col(CloudAgents.Sqlite.getRowArrayValue(rows, i), 0))
+    i = i + 1
+  }
+  return Ok(value = acc)
+}
+
+/// Record that a sync pass was attempted for the session (`error` "" when
+/// it got as far as the items).
+pub func markSyncAttempt(sessionId: in String, error: in String): Result[Unit, CloudAgents.Sqlite.DbError] {
+  CloudAgents.Sqlite.execute("INSERT INTO ledger_github_sync_runs (session_id, attempted_at, last_error) VALUES (" + lit(sessionId) + ", " + lit(CloudAgents.Repository.nowMillis()) + ", " + lit(error) + ") ON CONFLICT(session_id) DO UPDATE SET attempted_at = excluded.attempted_at, last_error = excluded.last_error")?
+  return Ok(())
+}
+
 // ── Repo policy cache ─────────────────────────────────────────────────────────
 pub record PolicyCache {
   pub status: String

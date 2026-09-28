@@ -476,6 +476,29 @@ pub func humanSetStatus(
   return changeStatus(ctx, itemId, change, "human")
 }
 
+/// A transition GitHub asked for (Phase 3 sync): `actor` is "github-sync"
+/// (a merged PR, closed blockers) or "human" (a label a person changed on
+/// GitHub). Records why as a system note, and a move to done runs the usual
+/// auto-unblock. Returns the ids auto-unblocked as a result.
+pub func syncSetStatus(
+  ctx: in SessionContext, itemId: in String, to: in String, reason: in String, actor: in String
+): Result[slice[String], LedgerFailure] {
+  val change = StatusChange(
+    to = to,
+    reason = reason,
+    blockedBy = emptyStrings(),
+    prerequisiteProposal = "",
+    recommendation = "",
+    prUrl = ""
+  )
+  val updated = changeStatus(ctx, itemId, change, actor)?
+  writeSystemNote(ctx, itemId, "Moved " + itemId + " to " + updated.state + ": " + reason)
+  if updated.state == "done" {
+    return autoUnblock(ctx, "github-sync")
+  }
+  return Ok(value = emptyStrings())
+}
+
 // ── Entries ───────────────────────────────────────────────────────────────────
 /// What a declared entry says, before the ledger classifies and anchors it.
 /// `itemRef` is the raw ref as written ("" = session level).

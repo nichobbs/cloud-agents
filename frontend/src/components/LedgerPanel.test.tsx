@@ -9,6 +9,7 @@ vi.mock('../lib/api', () => ({
     giveLedgerFeedback: vi.fn(),
     addLedgerItems: vi.fn(),
     setLedgerItemState: vi.fn(),
+    syncLedger: vi.fn(),
   },
 }));
 
@@ -84,6 +85,7 @@ describe('LedgerPanel', () => {
     vi.mocked(api.reviewLedgerEntry).mockReset().mockResolvedValue({} as never);
     vi.mocked(api.setLedgerItemState).mockReset().mockResolvedValue({} as never);
     vi.mocked(api.giveLedgerFeedback).mockReset().mockResolvedValue({} as never);
+    vi.mocked(api.syncLedger).mockReset();
   });
 
   it('shows the attention queue blocking-first, the work items and what blocks them', async () => {
@@ -198,5 +200,34 @@ describe('LedgerPanel', () => {
     rerender(<LedgerPanel sessionId="s1" isStreaming />);
     rerender(<LedgerPanel sessionId="s1" isStreaming={false} />);
     await waitFor(() => expect(within(screen.getByTestId('ledger-item-gh:acme/shop#2')).queryByRole('textbox', { name: 'Reason' })).not.toBeInTheDocument());
+  });
+  it('syncs with GitHub on demand and says what moved', async () => {
+    vi.mocked(api.syncLedger).mockResolvedValue({ sessions: '1', items: '2', transitions: '1', calls: '5', errors: [] });
+    render(<LedgerPanel sessionId="s1" isStreaming={false} />);
+    fireEvent.click(await screen.findByRole('button', { name: 'Sync with GitHub' }));
+    expect(await screen.findByText('Synced: 1 item moved by changes on GitHub.')).toBeInTheDocument();
+    expect(api.syncLedger).toHaveBeenCalledWith('s1');
+    await waitFor(() => expect(vi.mocked(api.getLedger).mock.calls.length).toBeGreaterThan(1));
+  });
+
+  it('reports GitHub errors from a sync, and a failed sync', async () => {
+    vi.mocked(api.syncLedger)
+      .mockResolvedValueOnce({ sessions: '1', items: '2', transitions: '0', calls: '1', errors: ['gh:acme/shop#1: (403) forbidden'] })
+      .mockRejectedValueOnce(new Error('reconnect GitHub to sync'));
+    render(<LedgerPanel sessionId="s1" isStreaming={false} />);
+    const button = await screen.findByRole('button', { name: 'Sync with GitHub' });
+    fireEvent.click(button);
+    expect(await screen.findByText('Synced with 1 GitHub error: gh:acme/shop#1: (403) forbidden')).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Sync with GitHub' }));
+    expect(await screen.findByText('reconnect GitHub to sync')).toBeInTheDocument();
+  });
+
+  it('offers no GitHub sync when no item is a GitHub issue', async () => {
+    const local = snapshot();
+    local.items = [item({ id: 'local:tidy', title: 'Tidy', state: 'queued', order: '0' })];
+    vi.mocked(api.getLedger).mockReset().mockResolvedValue(local);
+    render(<LedgerPanel sessionId="s1" isStreaming={false} />);
+    await screen.findByText('Tidy');
+    expect(screen.queryByRole('button', { name: 'Sync with GitHub' })).not.toBeInTheDocument();
   });
 });

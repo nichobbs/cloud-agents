@@ -68,6 +68,9 @@ export function LedgerPanel({ sessionId, isStreaming }: LedgerPanelProps) {
           </span>
         )}
       </div>
+      {state.items.some(i => i.id.startsWith('gh:')) && (
+        <GitHubSync sessionId={sessionId} onSynced={() => void refresh()} />
+      )}
 
       {error && <div style={errorStyle}>Could not refresh the ledger: {error}</div>}
       {!loaded && !error && <div style={mutedStyle}>Loading…</div>}
@@ -542,6 +545,54 @@ function AddItem({ sessionId, onAdded }: { sessionId: string; onAdded: () => voi
     </div>
   );
 }
+
+/** Reconcile the session's GitHub issues now: labels, the blocker comment,
+ *  blockers closed and PRs merged on GitHub. A maintenance job does the same
+ *  in the background; this is for when the owner just changed something. */
+function GitHubSync({ sessionId, onSynced }: { sessionId: string; onSynced: () => void }) {
+  const [busy, setBusy] = useState(false);
+  const [message, setMessage] = useState('');
+  const [error, setError] = useState('');
+
+  const sync = async () => {
+    setBusy(true);
+    setError('');
+    setMessage('');
+    try {
+      const r = await api.syncLedger(sessionId);
+      const moved = parseInt(r.transitions, 10) || 0;
+      setMessage(
+        r.errors.length > 0
+          ? `Synced with ${r.errors.length} GitHub ${r.errors.length === 1 ? 'error' : 'errors'}: ${r.errors[0]}`
+          : moved > 0
+            ? `Synced: ${moved} ${moved === 1 ? 'item' : 'items'} moved by changes on GitHub.`
+            : 'Synced: GitHub is up to date.',
+      );
+      onSynced();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div style={syncRowStyle}>
+      <button type="button" style={smallBtnStyle} disabled={busy} onClick={() => void sync()}>
+        {busy ? 'Syncing…' : 'Sync with GitHub'}
+      </button>
+      {message && <span style={mutedStyle}>{message}</span>}
+      {error && <span style={errorStyle}>{error}</span>}
+    </div>
+  );
+}
+
+const syncRowStyle: React.CSSProperties = {
+  display: 'flex',
+  alignItems: 'center',
+  gap: '8px',
+  flexWrap: 'wrap',
+};
 
 const headerRowStyle: React.CSSProperties = {
   display: 'flex',

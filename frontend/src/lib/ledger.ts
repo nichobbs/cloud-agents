@@ -88,6 +88,15 @@ export interface LedgerSummary {
   lastActivityAt: string;
 }
 
+/** What a GitHub sync did (counts are decimal strings). */
+export interface LedgerSyncReport {
+  sessions: string;
+  items: string;
+  transitions: string;
+  calls: string;
+  errors: string[];
+}
+
 export interface LedgerSnapshot {
   cursor: string;
   unchanged: string;
