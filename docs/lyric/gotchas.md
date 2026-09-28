@@ -4,15 +4,22 @@ Things that look like TypeScript/Kotlin/Java but aren't. Read before debugging c
 
 **Re-verified 2026-09-28 against lyric 0.7.3** (installed fresh + empirically
 re-tested every entry below with a real `lyric build`/`lyric run`, not just a
-changelog read). This project currently pins Lyric ~0.4.34–0.4.36
-(`MIN_LYRIC_VERSION`, `deploy/api.Dockerfile`) — **~30 releases behind
-current** — and a large number of the "compiles but crashes at runtime"
-entries that were true at that pin are now fixed upstream. Several stdlib
-method names have also changed shape entirely (renamed, not just fixed).
-Entries below are updated to reflect 0.7.3's actual behavior; anything
-still marked as broken was independently reproduced today, not carried
-forward from an old confirmation. If/when the project's pin is bumped,
-re-run this doc's claims again — this file rots fast in either direction.
+changelog read). **This project currently pins Lyric ~0.4.34–0.4.36**
+(`MIN_LYRIC_VERSION`, `deploy/api.Dockerfile`) **and does not build at all
+against 0.7.3 as-is** (a `src/handlers/sessions.l` call site still assumes a
+`List[Byte]` signature that reverted back to `slice[Byte]` upstream — see
+the `readBytes`/`writeBytes` entry below) — so 0.7.3 is not yet what this
+project actually runs. A large number of the "compiles but crashes at
+runtime" entries that were true at the pinned range are fixed on 0.7.3, and
+this pass re-tested every one directly rather than trusting old
+confirmations or a changelog read — but **every entry below keeps both
+halves**: what still applies on this project's actual pinned toolchain
+today (do not remove a workaround from production code on the strength of
+this doc alone) and what changes once the pin is eventually bumped past
+whatever release fixed it. Where an entry doesn't say otherwise, assume the
+originally-documented pinned-toolchain behavior is unchanged. If/when the
+project's pin is bumped, re-run this doc's claims again — this file rots
+fast in either direction.
 
 ---
 
@@ -133,16 +140,29 @@ match maybeUser {
 
 ---
 
-**FIXED as of lyric 0.7.3** ([lyric-lang#6231](https://github.com/nichobbs/lyric-lang/issues/6231), closed via lyric-lang#6388). Storing a `Result[T,E]` in a record field used to panic `"match not exhaustive"` on read-back even though both cases were handled. Re-tested directly: a record with a `pub r: Result[Int, String]` field, constructed with `Ok(99)` and matched back via `match w.r { case Ok(v) -> ...; case Err(e) -> ... }`, now matches correctly. The `shim/tests/fakes.l` workaround (reconstructing `Ok`/`Err` fresh in an accessor) is no longer necessary on a current toolchain.
+**Still broken on this project's pinned Lyric (~0.4.34–0.4.36): storing a `Result[T,E]` in a record field breaks `match` on read-back (upstream, lyric-lang#6231).**
+Reading the field and matching panics `"match not exhaustive"` at runtime
+even though both cases are handled. Reconstruct `Ok`/`Err` fresh in an
+accessor instead of storing/returning a `Result`-typed field — see
+`shim/tests/fakes.l` for the worked pattern. **Keep this workaround** —
+don't remove it on the strength of the next sentence. **FIXED as of lyric
+0.7.3** (closed via lyric-lang#6388, well past this project's pin):
+re-tested directly, a record with a `pub r: Result[Int, String]` field,
+constructed with `Ok(99)` and matched back via `match w.r { case Ok(v) ->
+...; case Err(e) -> ... }`, now matches correctly. Only drop the
+`shim/tests/fakes.l` workaround once the project's pin is actually bumped
+past whatever release carries the fix.
 
 ---
 
 ## Operators
 
-**`&` is NOT bitwise-and — it's a unary reference/borrow prefix operator, and `x & y` silently compiles to something other than what it looks like.** Confirmed on lyric 0.7.3: `&` is a *prefix-only* operator in the grammar (`docs/grammar.ebnf`'s `PrefixExpr`, alongside `-`/`not`), never a binary one. `val z = x & y` does **not** raise a parse or type error — it parses as two adjacent expressions, `x` (which `z` actually binds to) and a separate, discarded `&y` reference expression. The RHS is still evaluated for its side effects (confirmed: `x & sideEffect()` really calls `sideEffect()`) but its value is silently thrown away and `z` ends up equal to `x`, unchanged. This is a landmine specifically because it doesn't error the way the older toolchain's flat "no bitwise operators, `&` is a compile error" behavior did — it silently produces a wrong value instead. `|`, `^`, `<<`, `>>` are still not supported at all (`^` isn't even a valid token; `|`/`<<`/`>>` are parse errors) — this miscompile is unique to `&`. Use `.and()`/`.or()`/`.xor()`/`.shl()`/`.shr()` for real bitwise ops, always:
+**On this project's pinned Lyric (~0.4.34–0.4.36): `x & 0xFF` is a compile error, as originally documented — not independently re-verified against that exact pin in this pass, but no evidence found to the contrary.** Use `.and()`/`.or()`/`.xor()`/`.shl()`/`.shr()` for real bitwise ops regardless of pin — that part hasn't changed and is confirmed working on both.
+
+**On lyric 0.7.3, `&` no longer raises that compile error — it's actually a unary reference/borrow prefix operator, and `x & y` silently compiles to something other than what it looks like.** Confirmed directly on 0.7.3: `&` is a *prefix-only* operator in the upstream `nichobbs/lyric-lang` repo's grammar (its `docs/grammar.ebnf`'s `PrefixExpr` production, alongside `-`/`not` — not a file present in this repo). `val z = x & y` does **not** raise a parse or type error on 0.7.3 — it parses as two adjacent expressions, `x` (which `z` actually binds to) and a separate, discarded `&y` reference expression. The RHS is still evaluated for its side effects (confirmed: `x & sideEffect()` really calls `sideEffect()`) but its value is silently thrown away and `z` ends up equal to `x`, unchanged. This is a landmine specifically because it doesn't error the way the pinned toolchain's flat "no bitwise operators, `&` is a compile error" behavior does — it would silently produce a wrong value instead, if this project's pin ever moves onto a release with this behavior. `|`, `^`, `<<`, `>>` are still not supported at all on 0.7.3 either (`^` isn't even a valid token; `|`/`<<`/`>>` are parse errors) — this miscompile is unique to `&`.
 ```lyric
-x.and(0xFF)  // correct, confirmed: 6.and(3) == 2
-x & 0xFF     // WRONG: compiles, discards the RHS, evaluates to x unchanged
+x.and(0xFF)  // correct on any pin, confirmed: 6.and(3) == 2
+x & 0xFF     // pinned toolchain: compile error. lyric 0.7.3: compiles, discards the RHS, evaluates to x unchanged
 ```
 
 **Chained comparisons are a parse error.**
@@ -161,60 +181,118 @@ val x = if condition then a else b  // correct
 
 ## Functions and parameters
 
-**REVERSED as of lyric 0.7.3: bare-call now works and is correct; dot-call is what's broken.** The old guidance ("`Std.Core`'s `unwrapResult`/`unwrapResultOr`/`unwrapErrOr`/`unwrapResultStr` only resolve via dot-call, bare-call is `unknown name`") is now backwards. Re-tested directly on 0.7.3:
+**On this project's pinned Lyric (~0.4.34–0.4.36), the original guidance still holds — this is the behavior production code and this doc's own workarounds are written against.**
 ```lyric
 import Std.Core
+// Std.Core declares: pub func unwrapResult[T, E](r: in Result[T, E]): T
 
-val r: Result[Int, String] = Ok(42)
-unwrapResult(r)      // OK   — bare call now compiles AND runs, returns 42
-r.unwrapResult()     // FAIL — dot-call compiles, then dies at runtime:
-                      //   "unsupported method 'unwrapResult' on the receiver type"
+val bare = unwrapResult(someResult)        // compile error: unknown name 'unwrapResult'
+val ufcs = someResult.unwrapResult()       // correct — but see below, still crashes at runtime
 ```
-Confirmed the same reversal for `isOk`/`isSome`/`isNone` (formerly documented as
-either "fine" or "broken regardless of call form" — neither is accurate now):
-`isOk(r)`/`isSome(o)`/`isNone(o)` as **bare calls** all work correctly; `r.isOk()`/
-`o.isSome()`/`o.isNone()` as **dot-calls** all fail at runtime with the same
-"unsupported method" error, even though they compile fine. **Prefer the bare
-`Std.Core` free-function form for all of these now** (`unwrapResult(r)`,
-`unwrapResultOr(r, default)`, `unwrapErrOr(r, default)`, `isOk(r)`, `isErr(r)`,
-`isSome(o)`, `isNone(o)`) — a plain `match` on `Ok`/`Err`/`Some`/`None` is still
-always safe too, just more verbose. The `?` operator remains confirmed working.
+Confirmed for `Std.Core`'s `unwrapResult`/`unwrapResultOr`/`unwrapErrOr`/
+`unwrapResultStr`: bare-call is a compile error, dot-call is required to even
+compile. But **compiling via dot-call does not mean it runs**: `r.unwrapResult()`
+(and `.unwrapResultOr()`, `.unwrapErrOr()`, `.isOk()`, `.isSome()`, `.isNone()`)
+compiles as a dot-call and then fails at runtime with `unsupported method
+'unwrapResult' on the receiver type`. `Std.Testing`'s `assertTrue`/
+`assertEqual`/`isOk` (a different, non-generic `isOk` — see
+`docs/lyric/reference.md`'s Testing section) resolve fine as bare calls, so
+this isn't "every imported free function needs dot-call," just `Std.Core`'s
+generic helpers specifically. **Match on the union instead** — that's the
+only form confirmed reliable at this pin. The `?` operator is confirmed
+working at runtime and is fine.
 
-**Ambiguous names across whole-module imports are now a proper compile-time
-error (T0123), not a silent import-order resolution.** Re-tested directly on
-0.7.3: two imported packages exporting the same unqualified function name
-(`updateThing`, one signature per package) now fails to build with
-`error[T0123]: 'updateThing' is ambiguous: it is declared by 'Pkg.A', 'Pkg.B',
-all imported here — qualify the reference`, rather than silently binding to
-whichever package the import order happened to favor. Still worth fully
-qualifying any name exported by more than one imported package, but a
-collision is now caught at build time instead of silently miscompiling.
+**REVERSED on lyric 0.7.3 — do not apply this to code targeting the pinned toolchain above.** Re-tested directly on 0.7.3: bare-call now compiles AND runs correctly (`unwrapResult(r)` returns the value), while dot-call compiles but fails at runtime with the same "unsupported method" error the pinned toolchain's dot-call form has always had.
+```lyric
+// lyric 0.7.3 only — NOT this project's pinned toolchain:
+unwrapResult(r)      // OK   — bare call now compiles AND runs, returns 42
+r.unwrapResult()     // FAIL — dot-call compiles, then dies at runtime
+```
+Confirmed the same reversal for `isOk`/`isSome`/`isNone` on 0.7.3: bare calls
+(`isOk(r)`, `isSome(o)`, `isNone(o)`) all work correctly; dot-calls (`r.isOk()`,
+`o.isSome()`, `o.isNone()`) all fail at runtime with "unsupported method",
+even though they compile fine. A plain `match` on `Ok`/`Err`/`Some`/`None`
+remains safe on *either* toolchain, just more verbose — when in doubt, or
+when code needs to work across both, prefer `match`.
 
-**FIXED as of lyric 0.7.3.** Package-qualified record construction
-(`Pkg.SomeRecord(field = ...)`) used to compile but die at runtime with
-`unsupported method 'SomeRecord' on the receiver type` on releases through
-~v0.4.19–0.4.36. Re-tested directly: both `Pkg.A.Widget(id = 5)` (qualified)
-and `Widget(id = 9)` (unqualified, after `import Pkg.A`) now construct
-correctly. Qualified `pub val` reads and qualified function calls across a
-package boundary were also re-tested and work fine.
+**On this project's pinned Lyric (~0.4.34–0.4.36): ambiguous names across whole-module imports still resolve silently by import
+order — no compile error, no argument type-check.** If two imported packages
+both export `updateSessionModel`, an unqualified call binds to one of them
+based on import order; if the chosen one has a different parameter type, the
+call still compiles and fails at runtime with an invalid-cast (confirmed on
+v0.4.19: reordering `import CloudAgents.Handlers`/`import
+CloudAgents.SessionStore` alphabetically flipped which `updateSessionModel` a
+test called). Fully qualify any name exported by more than one imported
+package — this is still the only safe practice on the pinned toolchain.
 
-**FIXED as of lyric 0.7.3.** Constructing a `Lyric.Web` `Request` record used
-to crash with a bare `InvalidProgramException` even when every field held a
-value of its documented type (tracked historically as
-[nichobbs/cloud-agents#354](https://github.com/nichobbs/cloud-agents/issues/354),
-confirmed against Lyric.Web 0.4.26/0.4.36). Re-tested directly against
-**Lyric.Web 0.7.0** (the latest published version — check
+**FIXED on lyric 0.7.3 — a proper compile-time error (T0123) instead.** Re-tested directly: two imported packages exporting the same unqualified function name (`updateThing`, one signature per package) now fails to build with `error[T0123]: 'updateThing' is ambiguous: it is declared by 'Pkg.A', 'Pkg.B', all imported here — qualify the reference`, rather than silently binding to whichever package the import order happened to favor. Still fully qualify any such name regardless of pin — it's just no longer a silent miscompile risk once the pin catches up.
+
+**Still broken on this project's pinned Lyric (~0.4.34–0.4.36): package-qualified record construction fails at runtime.**
+`CloudAgents.Prompts.SavePromptRequest(name = ..., body = ...)` compiles but
+dies with `unsupported method 'SavePromptRequest' on the receiver type`
+(confirmed on v0.4.19 by CloudAgents.PromptTests). Import the module and
+construct with the unqualified name — `SavePromptRequest(...)`. Qualified
+*function* calls (`CloudAgents.Sqlite.execute(...)`) work fine; it is only
+record constructors that must be unqualified. **FIXED on lyric 0.7.3**
+(re-tested directly: both `Pkg.A.Widget(id = 5)` qualified and `Widget(id =
+9)` unqualified now construct correctly; qualified `pub val` reads and
+qualified function calls were also re-tested and work fine) — but don't
+switch this project's code to qualified construction until the pin is
+actually bumped.
+
+**A specific unqualified, imported record type crashed on construction
+with a bare `InvalidProgramException` on this project's pinned Lyric,
+while structurally-identical siblings from the same package constructed
+fine — not independently re-tested this pass (no minimal repro exists to
+re-run).** Confirmed on v0.4.34 by `CloudAgents.MainTests`:
+`Comment(id = ..., messageId = ..., sessionId = ..., body = ...,
+createdAt = ...)` — a plain, unqualified construction of a
+`CloudAgents.Repository` record after `import CloudAgents.Repository` —
+crashed with "Common Language Runtime detected an invalid program", while
+`Todo`/`Message`/`MessageList`/`CommentList`/`TodoList` from the exact same
+package, constructed the same unqualified way in adjacent tests in the same
+file, all worked. No trigger condition was ever identified. Given the
+broader family of record-construction `InvalidProgramException`s in this
+doc (package-qualified construction above, `Web.Request` below, the
+cross-package `pub val` entries in Imports) are all confirmed fixed
+upstream by lyric 0.7.3, this specific one is plausibly fixed too — but
+that's a guess, not a re-test, since there's no isolated repro to run
+against 0.7.3. If a record construction you'd expect to work throws this
+exact error on the pinned toolchain, don't assume the whole type/pattern is
+broken — isolate to a single minimal test first. This never affected
+production (`Comment` is only constructed in `repository.l`'s own
+`rowToComment`/`addComment`; check with a grep for `TypeName(` outside a
+type's home package before assuming a given construction is at risk).
+
+**Still broken on this project's pinned Lyric (~0.4.34–0.4.36): constructing a `Lyric.Web` `Request` record crashes with a bare
+`InvalidProgramException`.** Unlike the package-qualified-construction entry
+above, this is already unqualified (`Request(...)` after `import Web`) and
+still crashes — with a different, lower-level CLR error ("Common Language
+Runtime detected an invalid program") — even when every field is a value of
+the documented type. Confirmed on Lyric.Web 0.4.26/0.4.36 by
+`CloudAgents.MainTests`, isolated to the construction itself: a handler that
+never reads a single field off `req` still crashed when the test harness
+built the `req` it was passed. Tracked historically as
+[nichobbs/cloud-agents#354](https://github.com/nichobbs/cloud-agents/issues/354).
+Does not affect production code — this project's `src/main.l`
+Handler/Middleware adapters only ever *receive* a `Request` from the
+framework (reading it via `Web.header()`/`Web.pathParam()`), never construct
+one — so it only blocks constructing a `Request` yourself, e.g. in a test
+harness, on the pinned Lyric.Web version.
+
+**FIXED as of Lyric.Web 0.7.0 — but this project pins Lyric.Web 0.4.36, well below that.** Re-tested directly against **Lyric.Web 0.7.0**
+(the latest published version — check
 `https://api.nuget.org/v3-flatcontainer/lyric.web/index.json` for newer):
 constructing a `Request` with every field populated (`newMap()` for the map
-fields — see the `Map.empty(...)` note below, that constructor name has also
-changed) now succeeds and the constructed value's fields read back correctly.
-`./scripts/repro-web-request-crash.sh` still pins the old `Lyric.Web` version
-(0.4.36) from this project's `lyric.toml` and needs that pin bumped before it
-will observe the fix — it currently fails for an unrelated reason instead
-(the old Lyric.Web version's compiled contract references a `Map.empty`
-static member that no longer resolves under the current compiler's stricter
-auto-FFI, itself a symptom of the same `Map.empty` → `newMap()` rename noted
-below).
+fields — that constructor name has also changed from the `Map.empty(...)`
+form the pinned toolchain uses) now succeeds and the constructed value's
+fields read back correctly. `./scripts/repro-web-request-crash.sh` still
+pins the old `Lyric.Web` version (0.4.36) from this project's `lyric.toml`
+and needs that pin bumped before it will observe the fix — it currently
+fails for an unrelated reason instead (the old Lyric.Web version's compiled
+contract references a `Map.empty` static member that no longer resolves
+under lyric 0.7.3's stricter auto-FFI, itself a symptom of the same
+`Map.empty` → `newMap()` rename).
 
 **`slice[Byte].toList()` still does not resolve at runtime** — re-confirmed
 directly on lyric 0.7.3: `unsupported method 'toList' on the receiver type
@@ -227,42 +305,89 @@ i = 0; while i < b.length { acc.add(b[i]); i = i + 1 }` — plain-`Int` slice
 indexing is confirmed working. See `CloudAgents.Callbacks.sliceBytesToList`
 for the worked pattern.
 
-**REVERTED back to `slice[Byte]` as of a later release — no longer `List[Byte]`.**
-The previously-documented "`Std.File.readBytes` returns `Result[List[Byte],
-IOError]` as of Lyric v0.5.0, not `slice[Byte]`" entry described a real,
-confirmed state at v0.5.0, but it did not last: current `lyric-stdlib/std/file.l`
-(as shipped in lyric 0.7.3) has `readBytes(path): Result[slice[Byte], IOError]`
-and `writeBytes(path, bytes: in slice[Byte]): Result[Unit, IOError]` again —
-matching what `docs/lyric/stdlib.md`/`docs/lyric/reference.md` always
-documented. Re-tested directly: round-tripping bytes through `writeBytes`/
-`readBytes` with a `slice[Byte]` value works with no type error. **If your
-code has a `.toArray()`/`sliceBytesToList()` shim added to work around the
-v0.5.0-era `List[Byte]` signature (e.g. `src/handlers/sessions.l`'s
-`sliceBytesToList(v.bytes)` call into `writeBytes`), it will now fail to
-compile against a current toolchain** with `argument type List[Byte] does not
-match parameter type slice[Byte]` — the shim needs removing, not adding to,
-once the pin is bumped past whatever release reverted this.
+**On this project's pinned Lyric (~0.4.34–0.4.36): `Std.File.readBytes` returns `Result[List[Byte], IOError]`
+as of Lyric v0.5.0, not the `Result[slice[Byte], IoError]` both docs/lyric/stdlib.md and
+docs/lyric/reference.md document** — confirmed against the actual
+`lyric-stdlib` v0.5.0 source (`std/file.l`'s `readBytes`), and this is still
+what the pinned toolchain does. This is a compile-time type error, not a
+runtime surprise: `T0043 argument type List[Byte] does not match parameter
+type slice[Byte]` at every call site that passes a `readBytes` result
+straight to a `slice[Byte]`-typed function/extern binding (hit in this repo
+at `CloudAgents.McpServerSeed.readSeedMcpServer` and
+`CloudAgents.LibrarySeed.readSeedSubagent`/`readSeedSkill`, and `writeBytes`
+similarly wants `List[Byte]` — `src/handlers/sessions.l`'s
+`sliceBytesToList(v.bytes)` call exists for exactly this). Fix at call
+sites with `.toArray()` (the confirmed-working `List[T].toArray()`
+direction) — **keep these shims in place**, they are load-bearing for the
+pinned toolchain, not legacy cruft to clean up.
 
-**RENAMED, not broken, as of lyric 0.7.3.** `Std.File` has no `exists()`/
-`delete()` methods under those names at all anymore (and never resolved as
-dot-calls in the versions that had them) — the current free functions are
+**REVERTED back to `slice[Byte]` on some release after v0.5.0 — CONFIRMED via lyric 0.7.3, well ahead of this project's pin.**
+Current `lyric-stdlib/std/file.l` (as shipped in lyric 0.7.3) has
+`readBytes(path): Result[slice[Byte], IOError]` and `writeBytes(path, bytes:
+in slice[Byte]): Result[Unit, IOError]` again — matching what
+`docs/lyric/stdlib.md`/`docs/lyric/reference.md` always documented, and the
+opposite of the pinned toolchain's `List[Byte]` convention above. Re-tested
+directly: round-tripping bytes through `writeBytes`/`readBytes` with a
+`slice[Byte]` value works with no type error on 0.7.3. **This is exactly why
+this project doesn't currently build against 0.7.3**: `sessions.l:942`'s
+`sliceBytesToList(v.bytes)` call into `writeBytes` now fails with `argument
+type List[Byte] does not match parameter type slice[Byte]` on 0.7.3, the
+mirror image of the pinned-toolchain error above. **Do not touch these call
+sites until the project's pin is actually bumped** — at that point the
+`.toArray()`/`sliceBytesToList()` shims need removing, not adding to.
+
+**Still broken on this project's pinned Lyric (~0.4.34–0.4.36): `Std.File.exists()` and `Std.File.delete()` do not resolve at runtime** —
+`unsupported method 'exists' on the receiver type (no matching user method,
+extern binding, or built-in intrinsic)` (confirmed on v0.4.36 while building
+the chat-attachment rollback in `CloudAgents.Handlers.cleanupPartialAttachmentBatch`,
+nichobbs/cloud-agents#1003). Both are documented in `docs/lyric/stdlib.md`
+and both compile at this pin, so this is the same "compiles as a dot-call,
+dies at runtime" family as the entries above. For deletion bind
+`System.IO.File.Delete` directly (an `@externStatic` binding, wrapped in
+`try`/`catch` since it throws on a missing path) — see
+`cleanupPartialAttachmentBatch` for the worked pattern; for an existence
+check at test time, use `Std.File.readBytes`'s `Ok`/`Err` outcome instead.
+**Keep this workaround on the pinned toolchain.**
+
+**RENAMED (and working) on lyric 0.7.3.** `Std.File` has no `exists()`/
+`delete()` methods under those names at all anymore — the free functions are
 `Std.File.fileExists(path: in String): Bool` and `Std.File.deleteFile(path: in
 String): Result[Unit, IOError]`. Re-tested directly: both work correctly as
 bare calls (`Std.File.fileExists("/tmp")`, `Std.File.deleteFile(path)`) — no
-runtime "unsupported method" failure, no need for a `System.IO.File.Delete`
-extern workaround.
+runtime "unsupported method" failure, no need for the `System.IO.File.Delete`
+extern workaround. Not useful for this project until the pin catches up,
+since these names don't exist at all on the pinned 0.4.34–0.4.36 range.
 
-**RENAMED, not broken, as of lyric 0.7.3.** `String.toUpperCase()`/
-`.toLowerCase()` don't exist under those names anymore — using them is now a
-**compile-time** error (`error[T0120]: no method 'toUpperCase' on type
-'String' at this call site`), not the old "compiles, crashes at runtime"
-failure. The current dot-call methods are `.toUpper()`/`.toLower()`
-(`lyric-stdlib/std/string.l`'s `toUpper`/`toLower`, case-folding without
-locale tailoring per lyric-lang#7261/#5557 — safe under a Turkish locale
-too). Re-tested directly: `"clientId".toUpper()` → `"CLIENTID"`, and
-`.replace(from, to)` also works fine as a dot-call (`"hello
+**Still broken on this project's pinned Lyric (~0.4.34–0.4.36): `String.toUpperCase()` and `String.replace()` do not resolve at runtime** —
+`unsupported method 'toUpperCase' on the receiver type (no matching user
+method, extern binding, or built-in intrinsic)` (confirmed on v0.4.35 with a
+standalone repro: `"clientId".toUpperCase()` compiles fine, crashes the
+instant `main()` runs it). Same "compiles as a dot-call, dies at runtime"
+family as the `Result`/`Option` convenience methods above, despite both
+being documented in `docs/lyric/stdlib.md` (`s.toUpperCase(): String`,
+`s.replace(from: String, to: String): String`). If you need case-folding or
+substring replacement at runtime, do it by hand character-by-character
+(the same `.substring(i, 1)` + comparison-chain pattern this repo already
+uses for `digitValue`/`isAsciiLetter` in `src/handlers/proxy.l`) rather than
+reaching for either method — or, if you only need to assert something
+*about* a literal string shape at test time (not actually transform a
+runtime value), prefer literal string constants + `.contains()` checks,
+which are confirmed working. **Keep this workaround on the pinned toolchain.**
+
+**RENAMED (and working) on lyric 0.7.3.** `String.toUpperCase()`/
+`.toLowerCase()` don't exist under those names at all on 0.7.3 — using them
+is now a **compile-time** error (`error[T0120]: no method 'toUpperCase' on
+type 'String' at this call site`), not the pinned toolchain's "compiles,
+crashes at runtime" failure. The 0.7.3 dot-call methods are
+`.toUpper()`/`.toLower()` (`lyric-stdlib/std/string.l`'s `toUpper`/`toLower`,
+case-folding without locale tailoring per lyric-lang#7261/#5557 — safe under
+a Turkish locale too). Re-tested directly on 0.7.3: `"clientId".toUpper()` →
+`"CLIENTID"`, and `.replace(from, to)` also works fine as a dot-call (`"hello
 world".replace("world", "there")` → `"hello there"`) — no runtime failure
-for either.
+for either. None of this is reachable on the pinned toolchain: `.toUpper()`/
+`.toLower()` don't exist there either (only the broken `.toUpperCase()`/
+`.toLowerCase()` do), so the character-by-character workaround above is
+still what production code should use today.
 
 **`Int.toNat()` still does not resolve at runtime** — re-confirmed directly
 on lyric 0.7.3: `unsupported method 'toNat' on the receiver type`. The
@@ -282,33 +407,47 @@ ordered types (got Int and Nat)") despite `String.length` being documented
 (`max: Nat` parameter) shape. Whichever side `.length` unifies to still
 depends on the other operand.
 
-**A `Nat`-typed function argument crossing a package boundary crashing the
-caller with a bare `InvalidProgramException`: not independently
-re-verified this pass — treat with caution rather than as confirmed-fixed
-or confirmed-still-broken.** The neighboring bugs this entry's "same
-`InvalidProgramException` family" reasoning leaned on
-(`docs/lyric/gotchas.md`'s old package-qualified-record-construction and
-`Web.Request`-construction entries, plus lyric-lang#6133/#6134/#6232) are
-now all independently confirmed fixed as of 0.7.3 (see above and the
-Imports section below), which makes it plausible this one is stale too —
-but there is currently no way to even construct a bare `Nat` value to pass
-across a package boundary without hitting an unrelated compile error first
-(`Int.toNat()` doesn't resolve; a `Nat`-typed parameter fed a
-`String.length` read hits the T0033 gotcha above), so the exact original
-repro shape couldn't be re-run. Re-verify with a real `Nat`-returning
-call (e.g. an actual `slice[T].length` read into a `Nat`-typed cross-package
-parameter, sidestepping both blockers) if you hit anything like it again.
-`Int` remains the safer choice for cross-package parameters/returns in the
-meantime.
+**Assume still broken on this project's pinned Lyric (~0.4.34–0.4.36): a `Nat`-typed function argument crossing a package boundary can crash the
+*caller* at runtime with a bare `InvalidProgramException`, with no compile
+error at all.** Confirmed on Lyric.Web 0.4.26 (within the pinned range):
+`CloudAgents.Interactions` calling `CloudAgents.Text.withinMaxLength(s, max)`
+with `max: Nat` compiled cleanly but crashed every
+`CloudAgents.InteractionsTests` case that reached it — the same
+`InvalidProgramException` family as the `Web.Request`/package-qualified
+record construction entries above, but with no `Web` involved anywhere on
+this call path. **Prefer `Int` for cross-package function parameters and
+return types even where `Nat` would be the more "correct" documented type**,
+normalizing via `.toInt()` at the boundary — this is still the safe default
+on the pinned toolchain. Not independently re-verified this pass against
+lyric 0.7.3: there is currently no way to even construct a bare `Nat` value
+to pass across a package boundary without hitting an unrelated compile error
+first on 0.7.3 (`Int.toNat()` doesn't resolve there either; a `Nat`-typed
+parameter fed a `String.length` read hits the T0033 gotcha above on both
+toolchains), so the exact original repro shape couldn't be re-run on
+current upstream. Given the neighboring bugs in this same
+`InvalidProgramException` family are now confirmed fixed on 0.7.3, this one
+is plausibly fixed too there — but that's a guess, not a re-test, and
+irrelevant to this project until the pin moves. Re-verify with a real
+`Nat`-returning call (e.g. an actual `slice[T].length` read into a
+`Nat`-typed cross-package parameter, sidestepping both blockers) if you hit
+anything like it again on either toolchain.
 
-**FIXED as of lyric 0.7.3.** `Std.Time.now()` (the doc's original entry
+**Still broken on this project's pinned Lyric (~0.4.34–0.4.36): `Std.Time.now()` is broken at runtime** (the original entry in this doc
 named it `Std.Time.Instant.now()`, but the actual API has always been the
-free function `Std.Time.now(): Instant`) used to fail at runtime with
-`Method not found: 'Void System.DateTime.now()'`. Re-tested directly:
-`Std.Time.now()` and `Std.Time.nowEpochMillis()` both work correctly now —
-the `System.DateTimeOffset.get_UtcNow` extern workaround in
-`CloudAgents.Repository.nowMillis` is no longer necessary on a current
-toolchain (though harmless to leave in place).
+free function `Std.Time.now(): Instant`) — it compiles, then fails with
+`Method not found: 'Void System.DateTime.now()'` (a lowercase `now`
+MemberRef the BCL has never had; confirmed on v0.4.19 by this repo's
+live-DB tests). Work around with a direct BCL binding
+(`System.DateTimeOffset.get_UtcNow` + `ToUnixTimeMilliseconds`) — see
+`CloudAgents.Repository.nowMillis`. **Keep this workaround on the pinned
+toolchain.**
+
+**FIXED on lyric 0.7.3.** Re-tested directly: `Std.Time.now()` and
+`Std.Time.nowEpochMillis()` both work correctly on 0.7.3 — the
+`System.DateTimeOffset.get_UtcNow` extern workaround would no longer be
+necessary there, but keep it in `CloudAgents.Repository.nowMillis` until
+this project's pin is actually bumped (it's harmless to leave in place
+either way).
 
 **`out` parameters must be assigned on ALL control flow paths before return.**
 The compiler will reject a function that might return without assigning an `out` param.
@@ -340,17 +479,64 @@ package Foo
 
 ---
 
-**FIXED as of lyric 0.7.3** ([lyric-lang#6232](https://github.com/nichobbs/lyric-lang/issues/6232), [#6134](https://github.com/nichobbs/lyric-lang/issues/6134), [#6133](https://github.com/nichobbs/lyric-lang/issues/6133), all closed). A cross-package `pub val` used to construct several record types in one function used to crash the whole function at JIT with a bare `System.InvalidProgramException`, with no compile error; a qualified constant read inside an `impl` method body crashed the same way (#6134); and a read through a *restored-DLL* dependency could silently produce `0`/null instead (#6133). Re-tested #6232's exact shape directly on 0.7.3: a `pub val` in one package, read to construct three different record types in a single function in another package, now compiles and runs correctly with no crash. #6134/#6133 weren't independently re-run (they need an `impl` block / a separate restored-DLL dependency to set up) but were closed via merged fixes in the same PR batch as #6133 (lyric-lang#6345) around the same time as #6232 — treat as fixed, but re-verify if you hit either shape again. The old workaround (have the consuming package own such constants as its own literals) is no longer necessary on a current toolchain.
+**Assume still broken on this project's pinned Lyric (~0.4.34–0.4.36): a cross-package `pub val` used to construct several record types in one function crashes at JIT (upstream, lyric-lang#6232).**
+`System.InvalidProgramException` for the whole function, at runtime, no
+compile error. Related: a qualified constant read inside an `impl` method
+body crashes the same way (lyric-lang#6134), and reads through a
+*restored-DLL* dependency can silently produce `0`/null instead
+(lyric-lang#6133). Have the consuming package own such constants as its
+own literals — see `shim/src/main.l`'s header note. **Keep this workaround**
+on the pinned toolchain; these issues were filed and fixed in the
+2026-07-18–07-31 window, and this project's pin predates that fix landing
+in a release this project actually uses.
+
+**FIXED as of lyric 0.7.3** (#6232/#6134/#6133 all closed). Re-tested #6232's exact shape directly on 0.7.3: a `pub val` in one package, read to construct three different record types in a single function in another package, now compiles and runs correctly with no crash. #6134/#6133 weren't independently re-run (they need an `impl` block / a separate restored-DLL dependency to set up) but were closed via merged fixes in the same PR batch as #6133 (lyric-lang#6345) around the same time as #6232 — treat as fixed upstream, but re-verify if you hit either shape again. Only drop the `shim/src/main.l` workaround once this project's pin is actually bumped past whatever release carries the fix.
 
 ---
 
-**FIXED as of lyric 0.7.3 — now a real compile-time error instead of a silent JIT-time crash.** Two related "the type checker silently accepts something structurally wrong, then the JIT can't survive it" failure modes used to exist, both re-tested directly and both now caught at compile time:
+**Assume still broken on this project's pinned Lyric (~0.4.34–0.4.36): a type-invalid record-field assignment that the type checker silently
+accepts can corrupt JIT codegen for unrelated methods across the entire
+`output = "single"` bundle.** Confirmed on v0.4.36 by PR #739
+(`sessions.l` assigning a `Result[AgentSessionArray, DbError]` straight into
+a `slice[AgentSession]` field): `lyric build`/`lyric check` both accepted it
+with no error, 27/27 packages "built" cleanly, and at runtime it corrupted
+JIT codegen broadly enough to crash ~24 unrelated tests with a bare
+`InvalidProgramException` across multiple packages compiled into the same
+bundle — even packages the broken function doesn't call into. Fixed
+source-side by properly `match`-unwrapping the `Result` and hand-rolling
+the array-to-slice copy (see `CloudAgents.SessionStore.getSessionArrayLength`/
+`getSessionArrayValue`) — that fix stays in place regardless of compiler
+version, since it's a real logic bug, not a workaround for a compiler
+defect. **Lesson, still applicable on the pinned toolchain**: when a
+from-scratch `InvalidProgramException` regression appears with no
+async/await anywhere in the diff, check every new record construction in
+the diff for a field type that doesn't structurally match its assigned
+expression — the type checker may silently accept it at this pin, but the
+JIT will not survive it, and the blast radius is bundle-wide.
 
-- A type-invalid record-field **assignment** (e.g. assigning a `Result[slice[T], E]` straight into a `slice[T]`-typed field, instead of `match`-unwrapping it first) used to compile clean (`lyric build`/`lyric check` both silent) and then corrupt JIT codegen bundle-wide with a bare `InvalidProgramException` — confirmed historically on v0.4.36 (PR #739), where it took out ~24 unrelated tests across multiple packages compiled into the same `output = "single"` bundle. Re-tested the exact shape (a function returning `Result[slice[Item], String]` assigned directly into a `Response` record's `slice[Item]` field): now a normal, immediate `error[T0104]: argument for field 'items' has type Result[slice[Item], String] but field expects slice[Item]` at build time. No bundle-wide corruption possible anymore since it never reaches the JIT.
+The same silently-accepted-then-`InvalidProgramException` failure mode also
+happened for field **access** on the wrong record type on the pinned
+toolchain — e.g. reading `.nextRunAt` on a `JobSummary` (fields include
+`nextRunAtEpochMillis`, no `nextRunAt`) where that field name exists on the
+*similarly-shaped* `CloudAgents.Repository.ScheduledJob` record instead.
+This compiled with no error and only crashed at test runtime with the same
+signature, isolated to just the tests that exercised the bad access. Fix is
+the same as always: use the field that actually exists. **Still worth
+double-checking field names/types on any diff that touches two
+similarly-shaped records on this project's pinned compiler** — don't trust
+it to catch this.
 
-- The same failure mode for field **access** on the wrong (but similarly-shaped) record type — e.g. reading `.nextRunAt` on a `JobSummary` that only has `.nextRunAtEpochMillis` (that field name exists on a different, similarly-shaped `ScheduledJob` record) — used to silently type-check and only crash at test runtime with the same `InvalidProgramException` signature. Re-tested the exact shape: now `error[T0113]: no member 'nextRunAt' on type 'JobSummary'` at build time.
+**FIXED as of lyric 0.7.3 — now a real compile-time error instead of a silent JIT-time crash, for both failure modes above.** Re-tested both exact shapes directly:
 
-Both were real, narrow type-checker gaps specific to the v0.4.x-era compiler — not general JIT fragility — and both are closed off now. Still worth double-checking field names/types on any diff that touches two similarly-shaped records if you're on an older pinned compiler, but this class of bug can no longer reach a JIT crash on 0.7.3: the type checker rejects it up front.
+- The field-**assignment** shape (a function returning `Result[slice[Item], String]` assigned directly into a `Response` record's `slice[Item]` field) now produces a normal, immediate `error[T0104]: argument for field 'items' has type Result[slice[Item], String] but field expects slice[Item]` at build time. No bundle-wide corruption possible anymore since it never reaches the JIT.
+
+- The field-**access** shape (`JobSummary`/`ScheduledJob`) now produces `error[T0113]: no member 'nextRunAt' on type 'JobSummary'` at build time.
+
+Both were real, narrow type-checker gaps specific to the v0.4.x-era
+compiler this project pins — not general JIT fragility — and both are
+closed off on 0.7.3. This class of bug can no longer reach a JIT crash once
+the pin catches up: the type checker rejects it up front. Until then, the
+"check field names/types by hand" discipline above is still load-bearing.
 
 ---
 
@@ -424,9 +610,11 @@ pub func sqrt(x: in Double): Double
 
 **Async functions cannot have `out`/`inout` params crossing `await` points.** Return a tuple or record instead.
 
-**FIXED as of lyric 0.7.3** ([lyric-lang#6249](https://github.com/nichobbs/lyric-lang/issues/6249), closed via lyric-lang#6514). A `val` bound before one `await` used to silently lose its value after a SECOND, different-callee `await` in the same async function — reading back as the type's default (`""` for `String`) with no exception, no diagnostic. Re-tested the issue's own exact repro directly on 0.7.3 (a `val id = "hello"` bound before `await stepA()`, then `await stepB()`, then `cell.output = id`): now correctly produces `actual=[hello]`, matching what was always expected. **This was also the leading suspect behind `src/docker_manager.l`'s recurring `streamSessionMessage` `AccessViolationException` production crash** — see the "`Long` (Int64) subtract-and-compare" entry below: that crash was root-caused to a *second*, distinct bug and still reproduces today, so #6249's fix alone does not mean `docker_manager.l`'s workarounds (the `cell`-style mutable-field-carrier pattern in `runSessionMessageAsync`, the parameter-carrying-recursion pattern in `waitForContainer`/`waitForContainerAttempt`) can be safely reverted — they're cheap, still correct, and worth keeping regardless of which compiler version ends up building this project.
+**Still very much present on this project's pinned Lyric (~0.4.34–0.4.36) — this is exactly why `src/docker_manager.l`'s async workarounds exist: a `val` bound before one `await` can silently lose its value after a SECOND, different-callee `await` in the same async function** (lyric-lang#6249, confirmed on v0.4.35 — `./scripts/repro-compiler-bug.sh` check 8). It reads back as the type's default (`""` for `String`) instead of the value it was bound to — no exception, no diagnostic. A `val` bound before exactly one `await` and read immediately after that same await is fine; a function *parameter* (not a `val`) or a `var`-mutated loop counter read across a loop that repeatedly awaits the *same* callee is also fine. The risk is specifically: bind a value, `await` something, `await` something ELSE, then read the value. Workaround: thread the value through a mutable record field (e.g. an existing `cell`-style carrier record already passed into the function) instead of a bare local — a field survives reliably across multiple awaits. See `src/docker_manager.l`'s `runSessionMessageAsync` for the pattern (fixed in PR #690 after this bug was root-caused as the leading suspect behind a recurring `streamSessionMessage` `AccessViolationException` crash). **Do not remove this workaround** — the pinned toolchain still needs it.
 
-**`Std.Task.delay(ms): Task` exists and works, but is undocumented in `docs/lyric/stdlib.md`.** `await Std.Task.delay(ms)` really suspends for approximately `ms` milliseconds without blocking the underlying worker thread the way `Thread.Sleep` does. One wrinkle re-confirmed directly on lyric 0.7.3: `async func f(): Unit { await Std.Task.delay(ms) }` as the ONLY statement in the body still fails to compile with `error[T0070]: function body trailing expression has type Task but declared return type is Unit` — still add an explicit `return ()` after the await; this is not an issue when the `await Std.Task.delay(...)` line is followed by more statements, only when it is the sole/trailing statement. (The second wrinkle this entry used to describe — putting `await Std.Task.delay(...)` as the second, different-callee await in a retry loop hitting the lyric-lang#6249 shape — no longer applies; see the entry above, now fixed.)
+**FIXED as of lyric 0.7.3** ([lyric-lang#6249](https://github.com/nichobbs/lyric-lang/issues/6249), closed via lyric-lang#6514). Re-tested the issue's own exact repro directly on 0.7.3 (a `val id = "hello"` bound before `await stepA()`, then `await stepB()`, then `cell.output = id`): now correctly produces `actual=[hello]`, matching what was always expected. This does not mean `docker_manager.l`'s workarounds above (the `cell`-style mutable-field-carrier pattern in `runSessionMessageAsync`, the parameter-carrying-recursion pattern in `waitForContainer`/`waitForContainerAttempt`) can be removed even after the pin is bumped: see the "`Long` (Int64) subtract-and-compare" entry below — the production `AccessViolationException` this fix was originally suspected of causing was actually root-caused to a *second*, distinct bug that still reproduces on 0.7.3 today. The workarounds are cheap, still correct on either toolchain, and worth keeping regardless of which compiler version ends up building this project.
+
+**`Std.Task.delay(ms): Task` exists and works, but is undocumented in `docs/lyric/stdlib.md`.** `await Std.Task.delay(ms)` really suspends for approximately `ms` milliseconds (measured, not simulated: a 500ms delay measured back ~508ms via `System.Environment.TickCount`) without blocking the underlying worker thread the way `Thread.Sleep` does — confirmed on this project's pinned toolchain in a scratch project and in `scripts/repro-compiler-bug.sh` check 8's own repro, and re-confirmed directly on lyric 0.7.3 too. Two wrinkles, on the pinned toolchain, putting it in an `async func` whose body is otherwise trailing-expression-only: (1) `async func f(): Unit { await Std.Task.delay(ms) }` as the ONLY statement fails to compile with `error[T0070]: function body trailing expression has type Task but declared return type is Unit` — add an explicit `return ()` after the await; not an issue when the line is followed by more statements. **Re-confirmed this wrinkle still applies on lyric 0.7.3 too** — this part of the entry holds on both toolchains. (2) putting `await Std.Task.delay(...)` as the SECOND, different-callee await in a loop/retry step is exactly the lyric-lang#6249 shape from the entry above — **on this project's pinned toolchain that is still broken**, so see `waitForContainer`/`waitForContainerAttempt` in `src/docker_manager.l` (#635) for the safe pattern: recurse instead of loop, carrying every value that must survive the delay as a function PARAMETER of the recursive call, never as a `val`/`var` local read after it. Keep that recursion pattern regardless of pin — it costs nothing and is #6249-safe on any compiler version, unlike a plain loop which is only safe once the pin is bumped past whatever release fixed #6249 (confirmed lyric 0.7.3, not confirmed exactly which earlier release first carried the fix).
 
 **A `Long` (Int64) subtract-and-compare inside a large/complex function can crash the process with an `AccessViolationException` — STILL REPRODUCES as of lyric 0.7.3, re-confirmed today.** `Unbox`'s `toTypeHnd` resolves to `System.Int64`; its `obj` is not a valid object reference ("this object has an invalid CLASS field"). This is a second, distinct bug from the #6249 fix above — `nowMs - startMs > timeoutMs` (three `Long`s) done once per poll tick still crashes every time, whether inline or via the pure, cross-package `CloudAgents.DockerPolicy.hasExceededRunTimeout` call `streamSessionMessage` originally used. Re-ran `./scripts/repro-crosspkg-long-crash.sh` directly against a freshly-installed lyric 0.7.3 today (2026-09-28): it still reproduces the exact same crash signature (`System.AccessViolationException` in `System.Runtime.CompilerServices.CastHelpers.Unbox`, same call stack through `CloudAgents.Docker.Program.streamSessionMessage`). Note the script's fixture pins old `Lyric.Web`/`Lyric.Docker` NuGet versions from its own frozen `lyric.toml` snapshot (not this project's current pins) — the compiler itself is current, but the library dependency versions are not, so this doesn't rule out the crash being in how the old library IL interacts with new compiler-emitted IL rather than a still-open compiler codegen defect in isolation. Five independent from-scratch standalone repro attempts (matching local-variable count, a real cross-package `Long` call, the real project's package count/declaration order, real NuGet deps, a real streaming HTTP handler) never reproduced it in isolation; only the actual, unmodified `docker_manager.l`/`docker_policy.l` source does — see `scripts/repro-crosspkg-long-crash.sh` and `docs/BUILD.md`'s ninth compiler-note entry for the full narrative. Still not root-caused to a specific compiler codegen defect or filed upstream. Workaround unchanged and still necessary: avoid `Long` arithmetic entirely in this package — `src/docker_manager.l`'s `streamSessionMessage` approximates elapsed time with an `Int` accumulator of each tick's `pollMs` instead of a `Long` epoch-millisecond subtraction, and `waitForContainer`'s analogous check uses `Int` `System.Environment.TickCount` (`tickCountMs()`) instead of `Long` epoch milliseconds. If you bump this project's `Lyric.Web`/`Lyric.Docker` pins, re-run the repro script — bumping the fixture's own pinned versions (per the script's header comment) is the way to check whether a newer library release clears it.
 
