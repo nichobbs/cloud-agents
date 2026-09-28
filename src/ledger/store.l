@@ -72,6 +72,15 @@ pub func currentSeq(sessionId: in String): Result[String, CloudAgents.Sqlite.DbE
 }
 
 // ── Items ─────────────────────────────────────────────────────────────────────
+/// Row caps on the list/delta queries. `snapshot` falls back to a full
+/// snapshot when a delta reaches one, so a capped delta never silently
+/// skips rows past the client's advancing cursor.
+pub val itemRowCap: Int = 1000
+
+pub val entryRowCap: Int = 5000
+
+pub val feedbackRowCap: Int = 2000
+
 val itemCols = "session_id, item_id, title, url, state, blocked_by, blocked_reason, prerequisite_proposal, recommendation, pr_url, ord, created_at, updated_at, updated_seq"
 
 func rowToItem(r: in CloudAgents.Sqlite.Row): WorkItem {
@@ -106,13 +115,13 @@ func itemsFromRows(rows: in CloudAgents.Sqlite.RowArray): slice[WorkItem] {
 
 /// A session's work items in batch order.
 pub func listItems(sessionId: in String): Result[slice[WorkItem], CloudAgents.Sqlite.DbError] {
-  val rows = CloudAgents.Sqlite.query("SELECT " + itemCols + " FROM ledger_items WHERE session_id = " + lit(sessionId) + " ORDER BY CAST(ord AS INTEGER), item_id LIMIT 1000")?
+  val rows = CloudAgents.Sqlite.query("SELECT " + itemCols + " FROM ledger_items WHERE session_id = " + lit(sessionId) + " ORDER BY CAST(ord AS INTEGER), item_id LIMIT " + toString(itemRowCap))?
   return Ok(value = itemsFromRows(rows))
 }
 
 /// Items changed strictly after cursor `after`.
 pub func itemsChangedAfter(sessionId: in String, after: in String): Result[slice[WorkItem], CloudAgents.Sqlite.DbError] {
-  val rows = CloudAgents.Sqlite.query("SELECT " + itemCols + " FROM ledger_items WHERE session_id = " + lit(sessionId) + " AND CAST(updated_seq AS INTEGER) > CAST(" + lit(after) + " AS INTEGER) ORDER BY CAST(ord AS INTEGER), item_id LIMIT 1000")?
+  val rows = CloudAgents.Sqlite.query("SELECT " + itemCols + " FROM ledger_items WHERE session_id = " + lit(sessionId) + " AND CAST(updated_seq AS INTEGER) > CAST(" + lit(after) + " AS INTEGER) ORDER BY CAST(ord AS INTEGER), item_id LIMIT " + toString(itemRowCap))?
   return Ok(value = itemsFromRows(rows))
 }
 
@@ -273,10 +282,8 @@ pub func applyItemUpdate(
     )
   }
   if auto.summary.length.toInt() > 0 {
-    var origin = ""
-    if auto.source == "declared" {
-      origin = "transition"
-    }
+    // Every automatic entry is born of this transition, whoever the actor
+    // was, so a later leave-blocked transition must be able to resolve it.
     stmts = stmts.append(
       insertEntrySelectSql(
         newLedgerId(),
@@ -287,7 +294,7 @@ pub func applyItemUpdate(
         auto.summary,
         auto.detail,
         auto.source,
-        origin,
+        "transition",
         updated.recommendation,
         now
       ) +
@@ -492,14 +499,14 @@ pub func getEntry(sessionId: in String, entryId: in String): Result[Option[Ledge
 
 /// A session's entries in creation order (bounded).
 pub func listEntries(sessionId: in String): Result[slice[LedgerEntry], CloudAgents.Sqlite.DbError] {
-  val rows = CloudAgents.Sqlite.query("SELECT " + entryCols + " FROM ledger_entries WHERE session_id = " + lit(sessionId) + entryOrder + " LIMIT 5000")?
+  val rows = CloudAgents.Sqlite.query("SELECT " + entryCols + " FROM ledger_entries WHERE session_id = " + lit(sessionId) + entryOrder + " LIMIT " + toString(entryRowCap))?
   return Ok(value = entriesFromRows(rows))
 }
 
 pub func entriesChangedAfter(
   sessionId: in String, after: in String
 ): Result[slice[LedgerEntry], CloudAgents.Sqlite.DbError] {
-  val rows = CloudAgents.Sqlite.query("SELECT " + entryCols + " FROM ledger_entries WHERE session_id = " + lit(sessionId) + " AND CAST(updated_seq AS INTEGER) > CAST(" + lit(after) + " AS INTEGER)" + entryOrder + " LIMIT 5000")?
+  val rows = CloudAgents.Sqlite.query("SELECT " + entryCols + " FROM ledger_entries WHERE session_id = " + lit(sessionId) + " AND CAST(updated_seq AS INTEGER) > CAST(" + lit(after) + " AS INTEGER)" + entryOrder + " LIMIT " + toString(entryRowCap))?
   return Ok(value = entriesFromRows(rows))
 }
 
@@ -598,14 +605,14 @@ pub func addFeedback(
 
 /// A session's feedback, oldest first (bounded).
 pub func listFeedback(sessionId: in String): Result[slice[Feedback], CloudAgents.Sqlite.DbError] {
-  val rows = CloudAgents.Sqlite.query("SELECT " + feedbackCols + " FROM ledger_feedback WHERE session_id = " + lit(sessionId) + " ORDER BY created_at, id LIMIT 2000")?
+  val rows = CloudAgents.Sqlite.query("SELECT " + feedbackCols + " FROM ledger_feedback WHERE session_id = " + lit(sessionId) + " ORDER BY created_at, id LIMIT " + toString(feedbackRowCap))?
   return Ok(value = feedbackFromRows(rows))
 }
 
 pub func feedbackChangedAfter(
   sessionId: in String, after: in String
 ): Result[slice[Feedback], CloudAgents.Sqlite.DbError] {
-  val rows = CloudAgents.Sqlite.query("SELECT " + feedbackCols + " FROM ledger_feedback WHERE session_id = " + lit(sessionId) + " AND CAST(updated_seq AS INTEGER) > CAST(" + lit(after) + " AS INTEGER) ORDER BY created_at, id LIMIT 2000")?
+  val rows = CloudAgents.Sqlite.query("SELECT " + feedbackCols + " FROM ledger_feedback WHERE session_id = " + lit(sessionId) + " AND CAST(updated_seq AS INTEGER) > CAST(" + lit(after) + " AS INTEGER) ORDER BY created_at, id LIMIT " + toString(feedbackRowCap))?
   return Ok(value = feedbackFromRows(rows))
 }
 

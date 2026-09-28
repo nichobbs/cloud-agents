@@ -560,7 +560,9 @@ pub func rulesFor(ctx: in SessionContext): slice[PolicyRule] {
   }
   var status = cache.status
   var json = cache.json
-  if status.length.toInt() == 0 {
+  // "unavailable" is a transient GitHub failure, not an answer: retry it on
+  // the next entry rather than pinning the session to the defaults.
+  if status.length.toInt() == 0 or status == "unavailable" {
     val fetched = fetchRepoPolicy(ctx.ownerUserId, ctx.ownerRepo)
     status = fetched.status
     json = fetched.json
@@ -886,20 +888,7 @@ pub func snapshot(ctx: in SessionContext, after: in String): Result[LedgerSnapsh
     )
   }
   if isZeroCursor(after) {
-    val feedback = match listFeedback(ctx.sessionId) { case Ok(fs) -> fs; case Err(e) -> return Err(error = dbFail(e)) }
-    return Ok(
-      value = LedgerSnapshot(
-        cursor = cursor,
-        unchanged = "false",
-        full = "true",
-        summary = summary,
-        items = items,
-        entries = entries,
-        feedback = feedback,
-        policyStatus = policy.status,
-        policyError = policy.error
-      )
-    )
+    return fullSnapshot(ctx, cursor, summary, items, entries, policy)
   }
   val changedItems = match itemsChangedAfter(ctx.sessionId, after) {
     case Ok(xs) -> xs
@@ -913,6 +902,11 @@ pub func snapshot(ctx: in SessionContext, after: in String): Result[LedgerSnapsh
     case Ok(fs) -> fs
     case Err(e) -> return Err(error = dbFail(e))
   }
+  // A delta at a query cap may have dropped rows the client would then never
+  // see (its cursor jumps past them); send a full snapshot instead.
+  if changedItems.length.toInt() >= itemRowCap or changedEntries.length.toInt() >= entryRowCap or changedFeedback.length.toInt() >= feedbackRowCap {
+    return fullSnapshot(ctx, cursor, summary, items, entries, policy)
+  }
   return Ok(
     value = LedgerSnapshot(
       cursor = cursor,
@@ -922,6 +916,30 @@ pub func snapshot(ctx: in SessionContext, after: in String): Result[LedgerSnapsh
       items = changedItems,
       entries = changedEntries,
       feedback = changedFeedback,
+      policyStatus = policy.status,
+      policyError = policy.error
+    )
+  )
+}
+
+func fullSnapshot(
+  ctx: in SessionContext,
+  cursor: in String,
+  summary: in LedgerSummary,
+  items: in slice[WorkItem],
+  entries: in slice[LedgerEntry],
+  policy: in PolicyCache,
+): Result[LedgerSnapshot, LedgerFailure] {
+  val feedback = match listFeedback(ctx.sessionId) { case Ok(fs) -> fs; case Err(e) -> return Err(error = dbFail(e)) }
+  return Ok(
+    value = LedgerSnapshot(
+      cursor = cursor,
+      unchanged = "false",
+      full = "true",
+      summary = summary,
+      items = items,
+      entries = entries,
+      feedback = feedback,
       policyStatus = policy.status,
       policyError = policy.error
     )

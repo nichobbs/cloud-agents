@@ -79,7 +79,10 @@ Testamur (§8).
 
 - `blocked` requires a reason and `blockedBy` and/or `prerequisiteProposal`;
   `needs_human` requires a reason. Both write a `blocking` blocker entry and
-  notify the owner through the existing notification feed.
+  notify the owner through the existing notification feed. Entering either
+  state starts a fresh blocker from what the actor gives now; leaving it
+  clears the reason, `blockedBy` and `prerequisiteProposal`, and resolves the
+  blocker entry whoever raised it.
 - A same-state "transition" is a field update (recommendation, PR URL,
   blockers), always allowed.
 - **Auto-unblock**: when an item reaches `done`, every `blocked` item whose
@@ -109,7 +112,9 @@ contents API with the owner's vaulted token — never from the workspace or
 working branch, which the agent can edit. It is fetched once per session on
 the first recorded entry and cached (`absent`, `loaded`, `invalid` with the
 parse error, or `unavailable`); an invalid file is shown in the UI and the
-defaults apply. Unknown `match` keys are rejected so a typo cannot silently
+defaults apply. `unavailable` (a GitHub failure) is retried on the next
+entry rather than kept for the session. Globs are matched by dynamic
+programming, so a hostile pattern costs O(pattern x path). Unknown `match` keys are rejected so a typo cannot silently
 widen a rule.
 
 ## 6. Interfaces

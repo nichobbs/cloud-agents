@@ -19,16 +19,24 @@ export function useLedger(sessionId: string, active: boolean) {
   const [error, setError] = useState('');
   const stateRef = useRef(state);
   const sessionRef = useRef(sessionId);
-  const inFlight = useRef(false);
+  // The session a poll is in flight for ('' = none), and whether another
+  // poll was asked for meanwhile (a refresh() after the user acted must not
+  // be swallowed by a poll that started before the action landed).
+  const inFlight = useRef('');
+  const again = useRef(false);
 
   useEffect(() => {
     stateRef.current = state;
   }, [state]);
 
   const poll = useCallback(async () => {
-    if (inFlight.current) return;
-    inFlight.current = true;
     const forSession = sessionId;
+    if (inFlight.current === forSession) {
+      again.current = true;
+      return;
+    }
+    inFlight.current = forSession;
+    again.current = false;
     try {
       const snap = await api.getLedger(forSession, stateRef.current.cursor);
       if (sessionRef.current !== forSession) return;
@@ -46,7 +54,11 @@ export function useLedger(sessionId: string, active: boolean) {
         setError(msg);
       }
     } finally {
-      inFlight.current = false;
+      if (inFlight.current === forSession) inFlight.current = '';
+    }
+    if (again.current && sessionRef.current === forSession) {
+      again.current = false;
+      await poll();
     }
   }, [sessionId]);
 

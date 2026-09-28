@@ -304,3 +304,38 @@ pub func ledgerInboxHandler(): Result[InboxView, Web.ApiError] {
     case Err(f) -> return Err(toApiError(f))
   }
 }
+
+// Guarded body decoders: `@generate(Json)`'s fromJson returns Err for a
+// wrong shape but throws on input that is not JSON at all.
+pub func decodeReviewBody(body: in String): Option[ReviewEntryRequest] {
+  return try {
+    match ReviewEntryRequest.fromJson(body) {
+      case Ok(r) -> Some(value = r)
+      case Err(_) -> None
+    }
+  } catch Bug as b {
+    None
+  }
+}
+
+pub func decodeFeedbackBody(body: in String): Option[LedgerFeedbackRequest] {
+  return try {
+    match LedgerFeedbackRequest.fromJson(body) {
+      case Ok(r) -> Some(value = r)
+      case Err(_) -> None
+    }
+  } catch Bug as b {
+    None
+  }
+}
+
+pub func decodeItemStateBody(body: in String): Option[LedgerItemStateRequest] {
+  return try {
+    match LedgerItemStateRequest.fromJson(body) {
+      case Ok(r) -> Some(value = r)
+      case Err(_) -> None
+    }
+  } catch Bug as b {
+    None
+  }
+}

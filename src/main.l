@@ -1312,7 +1312,7 @@ record RouteReviewLedgerEntry {
 
 impl Web.Handler for RouteReviewLedgerEntry {
   func handle(req: in Web.Request): Web.Response {
-    val decoded = match ReviewEntryRequest.fromJson(req.body) { case Ok(d) -> d; case Err(_) -> return badBody() }
+    val decoded = match CloudAgents.LedgerHandlers.decodeReviewBody(req.body) { case Some(d) -> d; case None -> return badBody() }
     return ledgerJsonResp(
       ledgerFeedbackJson(CloudAgents.LedgerHandlers.reviewLedgerEntryHandler(pparam(req, "id"), pparam(req, "eid"), decoded))
     )
@@ -1324,7 +1324,7 @@ record RouteLedgerFeedback {
 
 impl Web.Handler for RouteLedgerFeedback {
   func handle(req: in Web.Request): Web.Response {
-    val decoded = match LedgerFeedbackRequest.fromJson(req.body) { case Ok(d) -> d; case Err(_) -> return badBody() }
+    val decoded = match CloudAgents.LedgerHandlers.decodeFeedbackBody(req.body) { case Some(d) -> d; case None -> return badBody() }
     return ledgerJsonResp(ledgerFeedbackJson(CloudAgents.LedgerHandlers.ledgerFeedbackHandler(pparam(req, "id"), decoded)))
   }
 }
@@ -1347,7 +1347,7 @@ record RouteLedgerItemState {
 
 impl Web.Handler for RouteLedgerItemState {
   func handle(req: in Web.Request): Web.Response {
-    val decoded = match LedgerItemStateRequest.fromJson(req.body) { case Ok(d) -> d; case Err(_) -> return badBody() }
+    val decoded = match CloudAgents.LedgerHandlers.decodeItemStateBody(req.body) { case Some(d) -> d; case None -> return badBody() }
     return ledgerJsonResp(ledgerItemJson(CloudAgents.LedgerHandlers.ledgerItemStateHandler(pparam(req, "id"), decoded)))
   }
 }

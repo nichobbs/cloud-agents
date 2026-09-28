@@ -273,6 +273,44 @@ test "human item actions follow the state machine" {
   assertEqual(stuck.ok, "false", "needs_human -> in_progress is human-only")
 }
 
+test "a blocker the human raised resolves when the human clears it" {
+  val path = useFreshTestDb("ledger-svc-human-blocker")
+  defer {
+    cleanupTestDb(path)
+  }
+  seedSession("s1", "alice", "tok-s1")
+  CloudAgents.Auth.setCurrentUserId("alice")
+  val add = RegisterItemsRequest(items = [RegisterItemInput(id = "#8", title = "Escalated", url = "")])
+  match addLedgerItemsHandler("s1", add) {
+    case Ok(_) -> ()
+    case Err(e) -> assertTrue(false, e.message)
+  }
+  match ledgerItemStateHandler("s1", LedgerItemStateRequest(item = "gh:acme/shop#8", to = "needs_human", reason = "Legal must sign off")) {
+    case Ok(w) -> assertEqual(w.state, "needs_human", "escalated")
+    case Err(e) -> assertTrue(false, e.message)
+  }
+  assertEqual(blockerReview("s1", "gh:acme/shop#8"), "pending", "blocker raised")
+  match ledgerItemStateHandler("s1", LedgerItemStateRequest(item = "gh:acme/shop#8", to = "queued", reason = "Signed off")) {
+    case Ok(w) -> assertEqual(w.state, "queued", "requeued")
+    case Err(e) -> assertTrue(false, e.message)
+  }
+  assertEqual(blockerReview("s1", "gh:acme/shop#8"), "resolved", "blocker resolved on clear")
+}
+
+// The review state of an item's (single) automatic blocker entry.
+func blockerReview(sid: in String, itemId: in String): String {
+  match CloudAgents.Sqlite.query("SELECT review_state FROM ledger_entries WHERE session_id = '" + sid + "' AND item_id = '" + itemId + "' AND kind = 'blocker'") {
+    case Ok(rows) -> {
+      if CloudAgents.Sqlite.getRowArrayLength(rows) != 1 {
+        return "rows=" + toString(CloudAgents.Sqlite.getRowArrayLength(rows))
+      }
+      val r = CloudAgents.Sqlite.getRowArrayValue(rows, 0)
+      return CloudAgents.Sqlite.getStringArrayValue(r.cols, 0)
+    }
+    case Err(e) -> return CloudAgents.Sqlite.dbErrorMessage(e)
+  }
+}
+
 test "tool arguments are decoded tolerantly, as LLM callers fill them" {
   val path = useFreshTestDb("ledger-svc-args")
   defer {

@@ -251,7 +251,39 @@ test "leaving blocked resolves blockers and clears the reason" {
     case Ok(p) -> {
       assertTrue(p.resolvesBlockers, "resolves")
       assertEqual(p.item.blockedReason, "", "reason cleared")
+      assertEqualInt(p.item.blockedBy.length.toInt(), 0, "blockedBy cleared")
     }
+    case Err(msg) -> assertTrue(false, "unexpected error: " + msg)
+  }
+}
+
+test "leaving blocked clears the prerequisite proposal too" {
+  match planStatusChange(item("gh:a/b#1", "in_progress", noRefs()), change("blocked", "needs auth", noRefs(), "add the auth module first"), "agent") {
+    case Ok(p) -> {
+      match planStatusChange(p.item, change("in_progress", "", noRefs(), ""), "agent") {
+        case Ok(q) -> assertEqual(q.item.prerequisiteProposal, "", "proposal cleared")
+        case Err(msg) -> assertTrue(false, "unexpected error: " + msg)
+      }
+    }
+    case Err(msg) -> assertTrue(false, "unexpected error: " + msg)
+  }
+}
+
+test "entering blocked takes what the agent says now, not a stale edge" {
+  // An item still carrying an old edge (a row written before edges were
+  // cleared on leave) is blocked afresh on a proposal alone.
+  val stale = item("gh:a/b#1", "in_progress", ["gh:a/b#2"])
+  match planStatusChange(stale, change("blocked", "needs auth", noRefs(), "add auth first"), "agent") {
+    case Ok(p) -> {
+      assertEqualInt(p.item.blockedBy.length.toInt(), 0, "no stale edge")
+      assertTrue(not p.blockerDetail.contains("gh:a/b#2"), p.blockerDetail)
+    }
+    case Err(msg) -> assertTrue(false, "unexpected error: " + msg)
+  }
+  // An update while already blocked keeps an edge it does not restate.
+  val blocked = itemWithReason("gh:a/b#1", "blocked", ["gh:a/b#2"], "waiting")
+  match planStatusChange(blocked, change("blocked", "", noRefs(), ""), "agent") {
+    case Ok(p) -> assertEqualInt(p.item.blockedBy.length.toInt(), 1, "edge kept")
     case Err(msg) -> assertTrue(false, "unexpected error: " + msg)
   }
 }
@@ -448,6 +480,20 @@ test "glob semantics" {
   assertTrue(not globMatch("src/?.l", "src/ab.l"), "? exactly one")
   assertTrue(globMatch(".github/workflows/**", ".github/workflows/ci.yml"), "trailing **")
   assertTrue(not globMatch("docs/*.md", "src/docs/a.md"), "anchored")
+  assertTrue(globMatch("", ""), "empty matches empty")
+  assertTrue(not globMatch("", "a"), "empty matches only empty")
+  assertTrue(globMatch("**", "a/b/c"), "bare **")
+  assertTrue(globMatch("a/**/b", "a/b"), "**/ zero dirs mid-pattern")
+  assertTrue(globMatch("a/**/b", "a/x/y/b"), "**/ many dirs mid-pattern")
+  // Backtracking would take exponential time here; the DP is linear-ish.
+  var long = ""
+  var i = 0
+  while i < 200 {
+    long = long + "a"
+    i = i + 1
+  }
+  assertTrue(not globMatch("*a*a*a*a*a*a*a*a*a*a*a*a*a*a*a*a*b", long), "pathological pattern")
+  assertTrue(globMatch("**a**a**a**a**a**a**a**a**a**a**a**", long), "pathological ** pattern")
 }
 
 test "a repo policy appends raise-only rules" {

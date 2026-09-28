@@ -21,6 +21,7 @@
 package CloudAgents.Ledger.Policy
 
 import Std.Core
+import Std.Collections
 import Std.Json
 import CloudAgents.Ledger.Model
 
@@ -182,61 +183,66 @@ func normalizePath(p: in String): String {
 /// matches a root-level `Cargo.lock`); `*` matches any run without '/'; `?`
 /// matches one non-'/' character; everything else is literal.
 pub func globMatch(pattern: in String, path: in String): Bool {
-  return globFrom(pattern, 0, path, 0)
-}
-
-func globFrom(p: in String, pi: in Int, s: in String, si: in Int): Bool {
-  val pn = p.length.toInt()
-  val sn = s.length.toInt()
-  if pi >= pn {
-    return si >= sn
+  // Dynamic programming over (pattern index, path index), one pattern row
+  // at a time from the end, so a pattern with many wildcards (repo policy
+  // files are untrusted input) costs O(pattern x path), never exponential.
+  // Each row is stored reversed: row[sn - si] is the match from path index si.
+  val pn = pattern.length.toInt()
+  val sn = path.length.toInt()
+  var r1: List[Bool] = newList()
+  var si = sn
+  while si >= 0 {
+    r1.add(si == sn)
+    si = si - 1
   }
-  val c = p.substring(pi, 1)
-  if c == "*" {
-    val isDouble = pi + 1 < pn and p.substring(pi + 1, 1) == "*"
-    if isDouble {
-      var next = pi + 2
-      // "**/" may match zero directories.
-      if next < pn and p.substring(next, 1) == "/" {
-        if globFrom(p, next + 1, s, si) {
-          return true
+  var r2: List[Bool] = newList()
+  var r3: List[Bool] = newList()
+  var pi = pn - 1
+  while pi >= 0 {
+    val row: List[Bool] = newList()
+    val c = pattern.substring(pi, 1)
+    val isDouble = c == "*" and pi + 1 < pn and pattern.substring(pi + 1, 1) == "*"
+    // "**/" may also match zero directories.
+    val zeroDirs = isDouble and pi + 2 < pn and pattern.substring(pi + 2, 1) == "/"
+    si = sn
+    while si >= 0 {
+      var v = false
+      if isDouble {
+        v = r2[sn - si]
+        if not v and si < sn {
+          v = row[sn - si - 1]
+        }
+        if not v and zeroDirs {
+          v = r3[sn - si]
+        }
+      } else {
+        if c == "*" {
+          v = r1[sn - si]
+          if not v and si < sn {
+            if path.substring(si, 1) != "/" {
+              v = row[sn - si - 1]
+            }
+          }
+        } else {
+          if si < sn {
+            val sc = path.substring(si, 1)
+            if c == "?" {
+              v = sc != "/" and r1[sn - si - 1]
+            } else {
+              v = c == sc and r1[sn - si - 1]
+            }
+          }
         }
       }
-      var k = si
-      while k <= sn {
-        if globFrom(p, next, s, k) {
-          return true
-        }
-        k = k + 1
-      }
-      return false
+      row.add(v)
+      si = si - 1
     }
-    var k = si
-    while k <= sn {
-      if globFrom(p, pi + 1, s, k) {
-        return true
-      }
-      if k < sn and s.substring(k, 1) == "/" {
-        return false
-      }
-      k = k + 1
-    }
-    return false
+    r3 = r2
+    r2 = r1
+    r1 = row
+    pi = pi - 1
   }
-  if si >= sn {
-    return false
-  }
-  val sc = s.substring(si, 1)
-  if c == "?" {
-    if sc == "/" {
-      return false
-    }
-    return globFrom(p, pi + 1, s, si + 1)
-  }
-  if c != sc {
-    return false
-  }
-  return globFrom(p, pi + 1, s, si + 1)
+  return r1[sn]
 }
 
 // ── Repo policy file ──────────────────────────────────────────────────────────

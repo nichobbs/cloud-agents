@@ -152,11 +152,14 @@ pub func sessionLedgerMigrationSql(): slice[String] {
   while i < names.length.toInt() {
     val t = "'" + names[i] + "'"
     stmts = stmts.append(
-      "INSERT INTO profile_tools (id, profile_id, user_id, tool_name) SELECT lower(hex(randomblob(16))), p.profile_id, p.user_id, " +
+      // One row per profile (the table is UNIQUE on profile_id, tool_name),
+      // and OR IGNORE so a re-run or an odd pre-existing row can never
+      // abort the migration.
+      "INSERT OR IGNORE INTO profile_tools (id, profile_id, user_id, tool_name) SELECT lower(hex(randomblob(16))), p.profile_id, p.user_id, " +
         t +
-        " FROM (SELECT DISTINCT profile_id, user_id FROM profile_tools WHERE tool_name IN " +
+        " FROM (SELECT profile_id, MIN(user_id) AS user_id FROM profile_tools WHERE tool_name IN " +
         retiredToolsInList +
-        ") p WHERE NOT EXISTS (SELECT 1 FROM profile_tools x WHERE x.profile_id = p.profile_id AND x.user_id = p.user_id AND x.tool_name = " +
+        " GROUP BY profile_id) p WHERE NOT EXISTS (SELECT 1 FROM profile_tools x WHERE x.profile_id = p.profile_id AND x.tool_name = " +
         t +
         ")"
     )

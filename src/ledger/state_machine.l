@@ -164,11 +164,20 @@ pub func planStatusChange(
     return Err(error = "cannot move " + current.id + " from " + from + " to " + change.to + " (" + hint + ")")
   }
 
+  val entering = stateChanged and (change.to == "blocked" or change.to == "needs_human")
+  // Entering blocked starts a fresh blocker: what the agent says now is the
+  // whole story, never a stale edge left from an earlier block. An update
+  // while already blocked keeps whatever it does not restate.
   var blockedBy = current.blockedBy
-  if change.blockedBy.length.toInt() > 0 {
+  var proposal = orElse(change.prerequisiteProposal, current.prerequisiteProposal)
+  if entering {
     blockedBy = change.blockedBy
+    proposal = change.prerequisiteProposal
+  } else {
+    if change.blockedBy.length.toInt() > 0 {
+      blockedBy = change.blockedBy
+    }
   }
-  val proposal = orElse(change.prerequisiteProposal, current.prerequisiteProposal)
   val recommendation = orElse(change.recommendation, current.recommendation)
   val prUrl = orElse(change.prUrl, current.prUrl)
 
@@ -209,6 +218,9 @@ pub func planStatusChange(
       // Leaving blocked / needs_human (or never in it): the blocker
       // bookkeeping no longer applies.
       blockedReason = ""
+      val none: slice[String] = []
+      blockedBy = none
+      proposal = ""
     }
   }
   val updated = WorkItem(

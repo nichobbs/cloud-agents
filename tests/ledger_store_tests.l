@@ -414,6 +414,22 @@ test "profiles that granted retired tools are granted the ledger tools" {
   assertEqual(toolsOf("p2"), "notify,", "p2 never granted a retired tool, so it is unchanged")
 }
 
+test "a profile shared across user ids is granted each ledger tool once" {
+  val path = useFreshTestDb("ledger-profiles-shared")
+  defer {
+    cleanupTestDb(path)
+  }
+  exec("INSERT INTO profile_tools (id, profile_id, user_id, tool_name) VALUES ('t1', 'p1', 'alice', 'add_todo')")
+  exec("INSERT INTO profile_tools (id, profile_id, user_id, tool_name) VALUES ('t2', 'p1', 'bob', 'list_todos')")
+  match CloudAgents.Sqlite.executeTransaction(sessionLedgerMigrationSql()) {
+    case Ok(_) -> ()
+    case Err(e) -> assertTrue(false, CloudAgents.Sqlite.dbErrorMessage(e))
+  }
+  val p1 = toolsOf("p1")
+  assertTrue(p1.startsWith("ledger_ask,ledger_check_feedback,"), "each tool once: " + p1)
+  assertTrue(not p1.contains("ledger_ask,ledger_ask"), "no duplicates: " + p1)
+}
+
 // A profile's granted tool names, sorted, each followed by ",".
 func toolsOf(profileId: in String): String {
   match CloudAgents.Sqlite.query("SELECT tool_name FROM profile_tools WHERE profile_id = '" + profileId + "' ORDER BY tool_name") {
