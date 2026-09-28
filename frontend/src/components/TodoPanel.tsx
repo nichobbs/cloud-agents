@@ -31,11 +31,11 @@ const NEXT_STATUS: Record<string, 'pending' | 'in_progress' | 'done'> = {
   done: 'pending',
 };
 
-/// The session's todo list in the right column: database-backed todos the
-/// agent maintains via the add_todo/update_todo MCP tools (and the human via
-/// the panel/todo page), plus a read-only plan parsed from the latest agent
-/// message for runs where the tools weren't available or weren't called
-/// (see lib/agentPlan.ts).
+/// The session's todo list in the right column: the human's own
+/// database-backed todos and bookmarks (added here or on the todo page), plus
+/// a read-only plan parsed from the latest agent message for runs without the
+/// session-ledger tools (see lib/agentPlan.ts). The agent's work items live in
+/// the LedgerPanel.
 export function TodoPanel({ sessionId, latestAgentContent, isStreaming, todoUpdates }: TodoPanelProps) {
   const [todos, setTodos] = useState<Todo[]>([]);
   const [draft, setDraft] = useState('');
@@ -115,8 +115,7 @@ export function TodoPanel({ sessionId, latestAgentContent, isStreaming, todoUpda
   // todo (#800): with server-side plan ingestion enabled
   // (CLOUD_AGENTS_INGEST_AGENT_PLAN=1) every parsed item becomes a DB row
   // with the same note text, so an unfiltered section would render the whole
-  // plan twice. Also dedupes when an agent add_todo'd an item AND restated
-  // it as a checkbox.
+  // plan twice.
   const dbNotes = new Set(todos.map(t => t.note));
   const plan: PlanItem[] = parseAgentPlan(latestAgentContent).filter(p => !dbNotes.has(p.text));
   const doneCount = todos.filter(t => effectiveStatus(t) === 'done').length;

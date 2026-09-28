@@ -3,6 +3,7 @@ import { createPortal } from 'react-dom';
 import { Link, useLocation, useNavigate, useParams } from 'react-router-dom';
 import { GitHubPanel } from '../components/GitHubPanel';
 import { HighlightsPanel } from '../components/HighlightsPanel';
+import { LedgerPanel } from '../components/LedgerPanel';
 import { LinkedReposPanel } from '../components/LinkedReposPanel';
 import { MessageBlock } from '../components/MessageBlock';
 import { Terminal } from '../components/Terminal';
@@ -1535,6 +1536,8 @@ export function SessionDetail() {
 
         {isDesktop ? (
           <div style={sidebarColumnStyle}>
+            <LedgerPanel sessionId={sessionId} isStreaming={isStreaming} />
+
             <TodoPanel
               sessionId={sessionId}
               latestAgentContent={latestAgentContent}
@@ -1575,6 +1578,8 @@ export function SessionDetail() {
           </div>
         ) : (
           <>
+            <LedgerPanel sessionId={sessionId} isStreaming={isStreaming} />
+
             <TodoPanel
               sessionId={sessionId}
               latestAgentContent={latestAgentContent}

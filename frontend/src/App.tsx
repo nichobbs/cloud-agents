@@ -5,6 +5,7 @@ import { AuthConfigProvider } from './context/AuthConfigContext';
 import { SessionsProvider } from './context/SessionsContext';
 import { AuthCallback } from './pages/AuthCallback';
 import { Credentials } from './pages/Credentials';
+import { Inbox } from './pages/Inbox';
 import { Integrations } from './pages/Integrations';
 import { Library } from './pages/Library';
 import { Login } from './pages/Login';
@@ -44,6 +45,7 @@ export function App() {
               path="/sessions/:id/todos"
               element={<RequireAuth><Todos /></RequireAuth>}
             />
+            <Route path="/inbox" element={<RequireAuth><Inbox /></RequireAuth>} />
             <Route path="/repos" element={<RequireAuth><Repos /></RequireAuth>} />
             <Route path="/prompts" element={<RequireAuth><Prompts /></RequireAuth>} />
             <Route path="/search" element={<RequireAuth><Search /></RequireAuth>} />
