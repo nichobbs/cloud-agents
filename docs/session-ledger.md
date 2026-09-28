@@ -177,15 +177,25 @@ GET  /api/ledger/inbox                              pending review entries acros
 `reject`, `comment` and `directive` require a body. A session the caller
 doesn't own is a 404.
 
+A poll reads the cursor first and returns `unchanged` without loading any
+rows when nothing moved. Lists are capped (1000 items, 5000 entries, 2000
+feedback rows); a delta that reaches a cap is replaced by a full snapshot.
+Past the entry or feedback cap a full snapshot carries the **newest** rows
+and `truncated: "true"`. A session's batch is capped at 1000 work items, so
+the item list is never truncated. Summary counts are computed in SQL over
+every row, so they stay right however large a session grows.
+
 ### Feedback delivery
 
 1. **Pull**: `ledger_check_feedback` claims undelivered rows with a fresh
    batch id and returns exactly those (`deliveredVia = mcp_poll`), so
    feedback created mid-claim is never marked delivered unseen. Everything
    that can fail runs before the claim, and a failed read-back releases the
-   batch, so an error reply never loses feedback.
+   batch, so an error reply never loses feedback. The read-back joins the
+   answered entry's summary, so nothing else is read after the claim.
 2. **Nudge**: every ledger reply includes the pending count and a hint.
-3. **Push at next run**: when feedback is waiting and the session's profile
+3. **Push at next run**: when feedback is waiting, MCP callbacks are enabled
+   (`CLOUD_AGENTS_MCP_CALLBACKS` is not `0`) and the session's profile
    exposes `ledger_check_feedback`, the next run's prompt (interactive and
    scheduled-job) is prefixed with a one-line instruction to call it. The
    feedback itself is not pasted, so delivery tracking stays exact.

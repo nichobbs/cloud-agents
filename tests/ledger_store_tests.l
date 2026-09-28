@@ -15,6 +15,7 @@ import CloudAgents.Ledger.Model
 import CloudAgents.Ledger.Schema
 import CloudAgents.Ledger.StateMachine
 import CloudAgents.Ledger.Store
+import CloudAgents.Ledger.Summary
 import extern System.Environment as Env
 
 @externTarget("System.IO.File.Delete")
@@ -480,4 +481,75 @@ func toolsOf(profileId: in String): String {
     }
     case Err(e) -> panic(CloudAgents.Sqlite.dbErrorMessage(e))
   }
+}
+
+// Insert `n` info notes for `sid` directly, numbered 1..n by created_seq.
+func bulkNotes(sid: in String, n: in Int): Unit {
+  exec(
+    "WITH RECURSIVE k(x) AS (SELECT 1 UNION ALL SELECT x + 1 FROM k WHERE x < " + toString(n) +
+      ") INSERT INTO ledger_entries (id, session_id, item_id, kind, severity, declared_severity, summary, detail, options_json, chosen, rationale, recommendation, proceeding_with, reversible, files_json, tags_json, source, undeclared, matched_entry_id, origin, supersedes, transcript_seq, review_state, review_by, review_at, review_comment, created_at, created_seq, updated_seq) SELECT 'e' || x, '" +
+      sid +
+      "', '', 'note', 'info', '', 'note ' || x, '', '[]', '', '', '', '', '', '[]', '[]', 'declared', 'false', '', '', '', '', 'not_required', '', '', '', CAST(x AS TEXT), CAST(x AS TEXT), CAST(x AS TEXT) FROM k"
+  )
+}
+
+test "past the row cap the entry list keeps the newest" {
+  val path = useFreshTestDb("ledger-cap")
+  defer {
+    cleanupTestDb(path)
+  }
+  bulkNotes("s1", entryRowCap + 3)
+  match listEntries("s1") {
+    case Ok(es) -> {
+      assertEqualInt(es.length.toInt(), entryRowCap, "capped")
+      assertEqual(es[0].createdSeq, "4", "the oldest three are the ones left out")
+      assertEqual(es[es.length.toInt() - 1].createdSeq, toString(entryRowCap + 3), "the newest is kept, last")
+    }
+    case Err(e) -> assertTrue(false, CloudAgents.Sqlite.dbErrorMessage(e))
+  }
+  match countEntries("s1") {
+    case Ok(n) -> assertEqualInt(n, entryRowCap + 3, "count sees every row")
+    case Err(e) -> assertTrue(false, CloudAgents.Sqlite.dbErrorMessage(e))
+  }
+}
+
+test "the SQL summary matches the in-memory one" {
+  val path = useFreshTestDb("ledger-summary")
+  defer {
+    cleanupTestDb(path)
+  }
+  val ids: slice[String] = ["gh:a/b#1", "gh:a/b#2", "gh:a/b#3"]
+  val _ = register("s1", ids)
+  val _ = move("s1", "gh:a/b#1", "in_progress", "", noStrings(), "agent")
+  val _ = move("s1", "gh:a/b#2", "blocked", "waiting", ["gh:a/b#1"], "agent")
+  val _ = mustInsert(declaredEntry("s1", "shortcut", "review", "pending"))
+  val _ = mustInsert(declaredEntry("s1", "decision", "info", "not_required"))
+  val fromSql = match summaryOf("s1", 2) { case Ok(x) -> x; case Err(e) -> panic(CloudAgents.Sqlite.dbErrorMessage(e)) }
+  val items = match listItems("s1") { case Ok(xs) -> xs; case Err(e) -> panic(CloudAgents.Sqlite.dbErrorMessage(e)) }
+  val entries = match listEntries("s1") {
+    case Ok(es) -> es
+    case Err(e) -> panic(CloudAgents.Sqlite.dbErrorMessage(e))
+  }
+  val inMemory = summarize("s1", items, entries, 2)
+  assertEqual(fromSql.toJson(), inMemory.toJson(), "same counts either way")
+  assertEqual(fromSql.blockingCount, "1", "the blocker entry is counted")
+}
+
+test "re-registering without a url keeps the item's url" {
+  val path = useFreshTestDb("ledger-url")
+  defer {
+    cleanupTestDb(path)
+  }
+  val ids: slice[String] = ["gh:a/b#7"]
+  val titles: slice[String] = ["Seven"]
+  val custom: slice[String] = ["https://example.com/tracker/7"]
+  match registerItems("s1", ids, titles, custom) {
+    case Ok(_) -> ()
+    case Err(e) -> assertTrue(false, CloudAgents.Sqlite.dbErrorMessage(e))
+  }
+  val _ = register("s1", ids)
+  assertEqual(mustItem("s1", "gh:a/b#7").url, "https://example.com/tracker/7", "custom url kept")
+  val fresh: slice[String] = ["gh:a/b#8"]
+  val _ = register("s1", fresh)
+  assertEqual(mustItem("s1", "gh:a/b#8").url, "https://github.com/a/b/issues/8", "a new item gets the ref's url")
 }

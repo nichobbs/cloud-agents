@@ -340,3 +340,80 @@ test "tool arguments are decoded tolerantly, as LLM callers fill them" {
   // Unknown fields are ignored rather than rejected.
   val _ = agentOk("s1", "note", "{\"summary\":\"fine\",\"extra\":42}")
 }
+
+test "a full snapshot says when older rows were left out" {
+  val path = useFreshTestDb("ledger-svc-truncated")
+  defer {
+    cleanupTestDb(path)
+  }
+  seedSession("s1", "alice", "tok-s1")
+  CloudAgents.Auth.setCurrentUserId("alice")
+  agentOk(
+    "s1",
+    "note",
+    "{\"summary\":\"first\",\"detail\":\"\",\"item\":\"\",\"tags\":[],\"files\":[],\"severity\":\"\"}"
+  )
+  match getLedgerHandler("s1", "0") {
+    case Ok(snap) -> assertEqual(snap.truncated, "false", "small session: complete")
+    case Err(e) -> assertTrue(false, e.message)
+  }
+  exec(
+    "WITH RECURSIVE k(x) AS (SELECT 1 UNION ALL SELECT x + 1 FROM k WHERE x < 5001) INSERT INTO ledger_entries (id, session_id, item_id, kind, severity, declared_severity, summary, detail, options_json, chosen, rationale, recommendation, proceeding_with, reversible, files_json, tags_json, source, undeclared, matched_entry_id, origin, supersedes, transcript_seq, review_state, review_by, review_at, review_comment, created_at, created_seq, updated_seq) SELECT 'bulk' || x, 's1', '', 'note', 'review', '', 'bulk ' || x, '', '[]', '', '', '', '', '', '[]', '[]', 'declared', 'false', '', '', '', '', 'pending', '', '', '', CAST(x AS TEXT), CAST(x AS TEXT), CAST(x AS TEXT) FROM k"
+  )
+  match getLedgerHandler("s1", "0") {
+    case Ok(snap) -> {
+      assertEqual(snap.truncated, "true", "older rows left out")
+      assertEqualInt(snap.entries.length.toInt(), 5000, "capped list")
+      assertEqual(snap.summary.pendingReview, "5001", "the summary still counts every row")
+    }
+    case Err(e) -> assertTrue(false, e.message)
+  }
+}
+
+test "a session's batch is capped" {
+  val path = useFreshTestDb("ledger-svc-itemcap")
+  defer {
+    cleanupTestDb(path)
+  }
+  seedSession("s1", "alice", "tok-s1")
+  var batch = 0
+  while batch < 5 {
+    var items = ""
+    var i = 0
+    while i < 200 {
+      if i > 0 {
+        items = items + ","
+      }
+      items = items + "{\"id\":\"local:item-" + toString(batch * 200 + i) + "\",\"title\":\"\",\"url\":\"\"}"
+      i = i + 1
+    }
+    agentOk("s1", "register-items", "{\"items\":[" + items + "]}")
+    batch = batch + 1
+  }
+  val over = agent("s1", "register-items", "{\"items\":[{\"id\":\"local:one-more\",\"title\":\"\",\"url\":\"\"}]}")
+  assertEqual(over.ok, "false", "item 1001 is refused")
+  assertTrue(over.error.contains("at most 1000"), over.error)
+  val again = agent(
+    "s1",
+    "register-items",
+    "{\"items\":[{\"id\":\"local:item-3\",\"title\":\"renamed\",\"url\":\"\"}]}"
+  )
+  assertEqual(again.ok, "true", "re-registering an existing item still works at the cap")
+}
+
+test "no next-run nudge when MCP callbacks are off" {
+  val path = useFreshTestDb("ledger-svc-nocallbacks")
+  defer {
+    cleanupTestDb(path)
+    Env.SetEnvironmentVariable("CLOUD_AGENTS_MCP_CALLBACKS", "")
+  }
+  seedSession("s1", "alice", "tok-s1")
+  CloudAgents.Auth.setCurrentUserId("alice")
+  match ledgerFeedbackHandler("s1", LedgerFeedbackRequest(item = "", kind = "directive", body = "Also update the changelog.")) {
+    case Ok(_) -> ()
+    case Err(e) -> assertTrue(false, e.message)
+  }
+  assertTrue(nextRunPromptPrefix("s1", "alice", "").length.toInt() > 0, "nudged with callbacks on")
+  Env.SetEnvironmentVariable("CLOUD_AGENTS_MCP_CALLBACKS", "0")
+  assertEqual(nextRunPromptPrefix("s1", "alice", ""), "", "no tool to call, so no nudge")
+}
