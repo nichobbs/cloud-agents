@@ -297,21 +297,19 @@ test "HealthStatus.toJson() encodes the status field (#346/#360)" {
 }
 
 // NOT covered here: HealthHandler.handle() / AuthMiddleware.wrap() end-to-end
-// against a hand-constructed Web.Request. Filed as a tracked upstream defect
-// (nichobbs/cloud-agents#354) rather than left only as this comment — see that
-// issue for the full reproduction. Summary: constructing a Web.Request record
-// (unqualified, per docs/lyric/gotchas.md's package-qualified-record-
-// construction rule; with `import Std.Collections` for Map, ruled out as the
-// cause by direct test) crashes at runtime with a bare "Common Language
-// Runtime detected an invalid program" — reproduced twice, isolated to
-// construction itself (HealthHandler.handle(req) fails even though it never
-// reads a field of req). Web's public API has no alternative
-// Request-constructing function to route around this. Does not prove the live
-// server is broken: main.l's adapters only ever RECEIVE a Request as a
-// parameter (from the framework) and read/query it — they never construct
-// one, unlike this reverted test harness — so Handler/Middleware runtime
-// behavior is exercised only implicitly via the real server
-// (scripts/run-api.sh), not by an automated test, until this is resolved.
+// against a hand-constructed Web.Request. This was originally blocked by a
+// real bug (nichobbs/cloud-agents#354, closed as tracking/doc hygiene, not a
+// fix): constructing a Web.Request record (unqualified; with
+// `import Std.Collections` for Map, ruled out as the cause by direct test)
+// crashed at runtime with a bare "Common Language Runtime detected an
+// invalid program" — reproduced twice, isolated to construction itself
+// (HealthHandler.handle(req) failed even though it never read a field of
+// req). That construction crash is now confirmed fixed as of Lyric.Web
+// 0.7.0, this project's current pin (re-tested directly: a fully-populated
+// Request now constructs and reads back correctly) — so this end-to-end
+// test is now genuinely addable, it just hasn't been written yet. Until it
+// is, Handler/Middleware runtime behavior is still exercised only implicitly
+// via the real server (scripts/run-api.sh), not by an automated test.
 test "isValidPort accepts valid TCP ports" {
   assertTrue(isValidPort("1"), "minimum port")
   assertTrue(isValidPort("8080"), "common port")
