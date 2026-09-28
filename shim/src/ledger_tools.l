@@ -65,15 +65,53 @@ func decodeEnvelope(body: in String): Option[LedgerToolEnvelope] {
 
 /// Forward one tool call and map the host's envelope to a tool result.
 pub func invokeLedger(transport: in LedgerTransport, op: in String, args: in Option[JsonValue]): McpToolResult {
-  val body = match args { case Some(v) -> writeValue(v); case None -> "{}" }
+  // A wildcard, not `case None`: a None that arrives through the
+  // McpToolHandler interface call fails a `case None` arm at runtime
+  // ("match not exhaustive"); anything but Some means no arguments.
+  val body = match args { case Some(v) -> writeValue(v); case _ -> "{}" }
   val raw = match transport.call(op, body) {
     case Ok(b) -> b
-    case Err(e) -> return toolErrorResult("the session ledger is unreachable (" + e + "); carry on and record this later")
+    case Err(e) -> return toolErrorResult(transportFailureMessage(op, e))
   }
   return match decodeEnvelope(raw) {
     case None -> toolErrorResult("malformed response from the cloud-agents host")
-    case Some(env) -> if env.ok == "true" { toolTextResult(env.reply) } else { toolErrorResult(env.error) }
+    case Some(env) -> if env.ok == "true" {
+      toolTextResult(env.reply)
+    } else {
+      toolErrorResult(nonEmptyError(op, env.error))
+    }
   }
+}
+
+/// What the agent is told when the host call itself failed. A rejected
+/// credential or a missing route will fail the same way on every call, so
+/// the agent is told to surface it rather than to carry on and retry.
+pub func transportFailureMessage(op: in String, transportError: in String): String {
+  if transportError.contains("(401)") or transportError.contains("(403)") {
+    return "the session ledger rejected this container's credentials (" + httpStatusOf(transportError) +
+      "), so every ledger call this run will fail. Tell the user the session ledger is unavailable, and put the decisions, blockers and questions you would have recorded in your reply instead."
+  }
+  if transportError.contains("(404)") {
+    return "the cloud-agents host has no session ledger for this session (HTTP 404), so ledger calls will not work this run. Tell the user, and put what you would have recorded in your reply instead."
+  }
+  return "the session ledger is unreachable (" + transportError + "); carry on and retry " + op + " later."
+}
+
+func httpStatusOf(transportError: in String): String {
+  if transportError.contains("(401)") {
+    return "HTTP 401"
+  }
+  return "HTTP 403"
+}
+
+/// The host's error text, or a message naming the operation when the host
+/// sent none: the agent always gets something to act on.
+pub func nonEmptyError(op: in String, hostError: in String): String {
+  if hostError.trim().length.toInt() > 0 {
+    return hostError
+  }
+  return "the session ledger refused " + op +
+    " without saying why; check the arguments against the tool's schema and retry once."
 }
 
 /// One ledger_* tool: which host operation it forwards to.

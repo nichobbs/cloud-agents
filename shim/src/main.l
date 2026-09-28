@@ -95,14 +95,13 @@ func main(): Unit {
   // registered from CloudAgents.Shim.LedgerTools.ledgerToolSpecs() at the
   // end (ledger_get_state, ledger_register_items, ledger_set_item_status,
   // ledger_record_decision, ledger_record_deviation, ledger_ask,
-  // ledger_note, ledger_check_feedback) — this exact count
-  // and name set must stay in sync with two other hand-kept copies with no
-  // automated cross-check (#621: this project has no dependency edge back
-  // to this separate lyric.toml/build, so nothing enforces the three
-  // matching automatically):
-  //   - cloud-agents' src/handlers/profiles.l's validShimToolNames
-  //   - this project's own tests/config_tests.l's allShimToolNames
-  // If this count changes, update both.
+  // ledger_note, ledger_check_feedback). The same name set is kept in
+  // cloud-agents' src/handlers/profiles.l (validShimToolNames),
+  // frontend/src/pages/Profiles.tsx (SHIM_TOOL_NAMES), src/ledger/schema.l
+  // (ledgerToolNames, the ledger subset) and this project's
+  // tests/config_tests.l (allShimToolNames); CI's "Verify the shim's tool
+  // list is in sync across every copy" step fails if any of them drifts, or
+  // if the ledger table below stops being registered.
   if CloudAgents.Shim.Config.toolIsEnabled(enabledToolsCsv, "request_permission") {
     addTool(
       server,

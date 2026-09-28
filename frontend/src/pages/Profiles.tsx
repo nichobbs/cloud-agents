@@ -12,10 +12,10 @@ const PROFILE_HARNESS_IDS = ['claude', 'codex', 'opencode', 'gemini'];
 
 /// The shim's MCP callback tools a 'selected'-mode profile can enable
 /// (CloudAgents.ToolPolicy / docs/phase7-autonomy.md §7, docs/phase8-
-/// scheduling.md §7, docs/session-ledger.md). The backend keeps its own authoritative copy
-/// (src/handlers/profiles.l validShimToolNames) with no automated
-/// cross-check (#621), so this list must be updated by hand when that one
-/// changes. Sorted by tool name for a stable checkbox order.
+/// scheduling.md §7, docs/session-ledger.md). The backend's authoritative
+/// copy is src/handlers/profiles.l validShimToolNames; CI's tool-list sync
+/// step fails if this list drifts from it. Sorted by tool name for a stable
+/// checkbox order.
 const SHIM_TOOL_NAMES = [
   'add_task',
   'ask_user',

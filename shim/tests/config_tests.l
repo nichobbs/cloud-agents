@@ -54,17 +54,15 @@ test "timeoutFromRaw honors a valid override" {
 // CloudAgents.Docker injects CLOUD_AGENTS_ENABLED_TOOLS as a comma-separated
 // allowlist only for a 'selected'-mode profile; main.l wraps every addTool
 // call in `if toolIsEnabled(enabledToolsCsv, "<name>")`. These cases mirror
-// main.l's exact 24-tool set (the original phase-6 tools less the retired
-// add_followup_task, add_task/list_tasks/complete_task from the repo-scoped
+// main.l's exact 24-tool set (the original phase-6 tools, add_task/list_tasks/complete_task from the repo-scoped
 // task list slice, notify, phase 8's schedule_job/list_jobs/update_job/
 // cancel_job, and the session ledger's eight ledger_* tools) so a passing
 // suite proves the real registration gate, not just the parsing helper in
 // isolation.
 //
-// A third hand-kept copy of this same 24-tool set lives in cloud-agents'
-// src/handlers/profiles.l as validShimToolNames, with no automated
-// cross-check tying all three together (#621). If this count changes,
-// update main.l's addTool block comment and validShimToolNames too.
+// The same set is kept in src/handlers/profiles.l (validShimToolNames),
+// frontend/src/pages/Profiles.tsx and main.l; CI's tool-list sync step
+// fails if any copy drifts, so update them together.
 val allShimToolNames: slice[String] = ["request_permission", "ask_user", "report_progress", "request_secret", "report_artifact", "remember", "recall", "forget", "add_task", "list_tasks", "complete_task", "notify", "schedule_job", "list_jobs", "update_job", "cancel_job", "ledger_get_state", "ledger_register_items", "ledger_set_item_status", "ledger_record_decision", "ledger_record_deviation", "ledger_ask", "ledger_note", "ledger_check_feedback"]
 
 func enabledSubsetOf(csv: in String): slice[String] {
