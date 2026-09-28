@@ -480,8 +480,11 @@ directly unit-tested (#67, #56), just no longer called from
 
 **CI enforces a version floor matching this status**, read from the single
 checked-in [`MIN_LYRIC_VERSION`](../MIN_LYRIC_VERSION) file (currently
-`0.7.3`; earlier bumped from `0.4.19` to `0.4.34` alongside the
-`Lyric.Web`/`Lyric.Docker`/`Std.Logging` NuGet bumps above) rather than duplicated as a literal here and in
+`0.7.3`: Lyric v0.7 changed `Std.File.readBytes`/`writeBytes` from
+`List[Byte]` to `slice[Byte]`, a source-incompatible change in both
+directions, so the floor moved to the first 0.7.x release this project was
+validated against, together with `deploy/api.Dockerfile`'s pinned
+`LYRIC_VERSION`; see docs/lyric/gotchas.md) rather than duplicated as a literal here and in
 `.github/workflows/ci.yml` — the "Verify minimum Lyric version" step fails
 fast with a clear diagnostic if a future release ever resolves to
 something older than that file's contents, rather than the `lyric test`
@@ -489,15 +492,6 @@ step below failing opaquely on an unrelated application PR (see
 nichobbs/cloud-agents#140). Bump `MIN_LYRIC_VERSION` if a new bug is ever
 found and fixed — this section's prose above will need updating too, but
 the CI floor itself only needs the one file changed.
-
-The `0.7.3` floor follows a breaking stdlib change: from `0.7.0`,
-`Std.File.readBytes` returns and `Std.File.writeBytes` takes `slice[Byte]`
-rather than `List[Byte]` (see docs/lyric/gotchas.md), so every call site now
-passes the byte slice straight through and no longer builds against a
-`0.6.x`-or-older compiler. `0.7.0`-`0.7.2` also rejected
-hint-less `@externTarget` declarations (`F0027`); `0.7.3` is the first
-release that builds this project cleanly. `deploy/api.Dockerfile` is pinned
-to `0.7.3` to match.
 
 **This is checked into the repo as a runnable reproduction, not just
 prose**: `scripts/repro-compiler-bug.sh` checks all seven bugs — checks 1-4

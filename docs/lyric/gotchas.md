@@ -243,26 +243,18 @@ everything**; the `?` operator is confirmed working at runtime and is fine.
 The Std.String methods (`.length`, `.substring`, `.contains`, ...) and
 `slice` indexing/`.append()` are confirmed working.
 
-**`Std.File.readBytes`/`writeBytes` use `slice[Byte]` since Lyric v0.7.0**
+**`Std.File.readBytes`/`writeBytes` use `slice[Byte]` as of Lyric v0.7**
 (`readBytes(path): Result[slice[Byte], IOError]`,
-`writeBytes(path, bytes: slice[Byte])`, matching docs/lyric/stdlib.md).
-Up to v0.6.x both used `List[Byte]`, so this repo converted at every call
-site: a hand-rolled `slice[Byte]` -> `List[Byte]` loop before `writeBytes`
-and `.toArray()` after `readBytes`. Those conversions are gone; pass the
-slice straight through. A `List[Byte]` argument to `writeBytes` is now a
-compile-time `T0043 argument type List[Byte] does not match parameter type
-slice[Byte]`, which is how the v0.7.0 change first surfaced in CI.
-
-**`slice[Byte].toList()` does not resolve at runtime** (confirmed on v0.4.19
-by this repo's `CloudAgents.CallbacksV2Tests`): `unsupported method 'toList'
-on the receiver type (no matching user method, extern binding, or built-in
-intrinsic)`. Same "compiles as a dot-call, dies at runtime" family as the
-`Result`/`Option` convenience methods below, despite
-`lyric-stdlib/std/file.l`'s own module doc describing `slice[T].toList()` /
-`List[T].toArray()` as the intended round-trip shuttle; only the
-`List[T].toArray()` direction is confirmed working. If a `List[Byte]` is
-ever needed, build it by hand: `val acc: List[Byte] = newList(); var i = 0;
-while i < b.length { acc.add(b[i]); i = i + 1 }`.
+`writeBytes(path, bytes: slice[Byte]): Result[Unit, IOError]`, matching
+docs/lyric/stdlib.md). Before v0.7 both took/returned `List[Byte]`, so this
+repo carried `sliceBytesToList` loops before every `writeBytes` and
+`.toArray()` after every `readBytes`. Those shims were removed when
+`MIN_LYRIC_VERSION` moved to 0.7.3: pass request/base64 `slice[Byte]`
+values straight to `writeBytes`, and `readBytes` results straight to
+`slice[Byte]`-typed extern bindings (`Encoding.GetString`) and
+`Web.bytesResponse`. A pre-0.7 compiler rejects this source with `T0043
+argument type slice[Byte] does not match parameter type List[Byte]`, and a
+0.7+ compiler rejects the old shims with the mirror-image error.
 
 **`Std.File.exists()` and `Std.File.delete()` do not resolve at runtime** —
 `unsupported method 'exists' on the receiver type (no matching user method,
@@ -427,9 +419,7 @@ for `AgentSessionArray`/`slice[AgentSession]` cross-use turned up nothing
 else assigning one to the other). Fixed by properly `match`-unwrapping the
 `Result` and hand-rolling the array-to-slice copy (no direct conversion
 exists — see `CloudAgents.SessionStore.getSessionArrayLength`/
-`getSessionArrayValue`, the same iterate-by-index pattern the
-`slice[Byte].toList()` entry above uses for a similar extern-container
-gap):
+`getSessionArrayValue`, an iterate-by-index copy):
 
 ```lyric
 match CloudAgents.SessionStore.getSessions() {
