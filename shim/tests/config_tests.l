@@ -51,19 +51,18 @@ test "timeoutFromRaw honors a valid override" {
 // CloudAgents.Docker injects CLOUD_AGENTS_ENABLED_TOOLS as a comma-separated
 // allowlist only for a 'selected'-mode profile; main.l wraps every addTool
 // call in `if toolIsEnabled(enabledToolsCsv, "<name>")`. These cases mirror
-// main.l's exact 20-tool set (the original 9, add_task/list_tasks/
-// complete_task from the repo-scoped task list slice, notify, the
-// add_todo/update_todo/list_todos trio, and phase 8's schedule_job/
-// list_jobs/update_job/cancel_job) so a passing suite proves the real
-// registration gate, not just the parsing helper in isolation.
+// main.l's exact 24-tool set (the original phase-6 tools less the retired
+// add_followup_task, add_task/list_tasks/complete_task from the repo-scoped
+// task list slice, notify, phase 8's schedule_job/list_jobs/update_job/
+// cancel_job, and the session ledger's eight ledger_* tools) so a passing
+// suite proves the real registration gate, not just the parsing helper in
+// isolation.
 //
-// A third hand-kept copy of this same 20-tool set lives in cloud-agents'
+// A third hand-kept copy of this same 24-tool set lives in cloud-agents'
 // src/handlers/profiles.l as validShimToolNames, with no automated
 // cross-check tying all three together (#621). If this count changes,
 // update main.l's addTool block comment and validShimToolNames too.
-// schedule_job/list_jobs/update_job/cancel_job are the phase-8 scheduled-jobs
-// tools (docs/phase8-scheduling.md), bringing the total to 20.
-val allShimToolNames: slice[String] = ["request_permission", "ask_user", "report_progress", "request_secret", "add_followup_task", "report_artifact", "remember", "recall", "forget", "add_task", "list_tasks", "complete_task", "notify", "add_todo", "update_todo", "list_todos", "schedule_job", "list_jobs", "update_job", "cancel_job"]
+val allShimToolNames: slice[String] = ["request_permission", "ask_user", "report_progress", "request_secret", "report_artifact", "remember", "recall", "forget", "add_task", "list_tasks", "complete_task", "notify", "schedule_job", "list_jobs", "update_job", "cancel_job", "ledger_get_state", "ledger_register_items", "ledger_set_item_status", "ledger_record_decision", "ledger_record_deviation", "ledger_ask", "ledger_note", "ledger_check_feedback"]
 
 func enabledSubsetOf(csv: in String): slice[String] {
   var acc: slice[String] = []
@@ -76,7 +75,7 @@ func enabledSubsetOf(csv: in String): slice[String] {
 }
 
 test "toolIsEnabled registers every tool when the env var is empty (unchanged behaviour)" {
-  assertEqualInt(enabledSubsetOf("").length.toInt(), 20, "empty CSV enables all 20 known tools")
+  assertEqualInt(enabledSubsetOf("").length.toInt(), 24, "empty CSV enables all 24 known tools")
 }
 
 test "toolIsEnabled restricts registration to a non-empty allowlist" {

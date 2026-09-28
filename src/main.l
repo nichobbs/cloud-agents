@@ -2068,8 +2068,8 @@ pub func main(): Unit {
   router = Web.addPost(router, "/api/sessions/{id}/callbacks/progress", RouteReportProgress())
   router = Web.addGet(router, "/api/sessions/{id}/callbacks/pending", RouteListPendingCallbacks())
 
-  // Phase 6 §7 v2 tools: request_secret (create/poll/answer), add_followup_task
-  // (todo create), report_artifact (upload) + user-facing artifact list/download.
+  // Phase 6 §7 v2 tools: request_secret (create/poll/answer), report_artifact
+  // (upload) + user-facing artifact list/download.
   router = Web.addPost(router, "/api/sessions/{id}/callbacks/secret", RouteCreateSecretRequest())
   router = Web.addGet(router, "/api/sessions/{id}/callbacks/secret/{rid}", RouteGetSecretRequest())
   router = Web.addPost(router, "/api/sessions/{id}/callbacks/secret/{rid}/answer", RouteAnswerSecretRequest())

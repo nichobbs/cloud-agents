@@ -3550,8 +3550,8 @@ pub func artifactsCreatedAfter(
 // ─── Phase 7 §8: repo-scoped task list (add_task / list_tasks / complete_task)
 //
 // docs/phase7-autonomy.md §8. A cross-session, repo-scoped worklist with an
-// open->done lifecycle, distinct from the session-scoped, human-facing
-// `addTodo`/`listTodos` (add_followup_task): this is an agent-completable
+// open->done lifecycle, distinct from the session ledger's per-session work
+// items (docs/session-ledger.md): this is an agent-completable
 // shared backlog scoped to (user_id, repo_key), reusing sessionOwnerAndRepo
 // and CloudAgents.RepoKey exactly as the memory slice does.
 /// One stored task (the API-relevant columns of a `repo_tasks` row).

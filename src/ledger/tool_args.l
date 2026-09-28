@@ -18,11 +18,17 @@ import Std.Json
 import CloudAgents.Ledger.Service
 
 val kindObject = 1
+
 val kindArray = 2
+
 val kindString = 3
+
 val kindNumber = 4
+
 val kindTrue = 5
+
 val kindFalse = 6
+
 val kindNull = 7
 
 func propOf(root: in JsonElement, key: in String): Option[JsonElement] {

@@ -166,7 +166,7 @@ create-fallback-branch.sh "entrypoint-opencode" "${HARNESS}" "${BRANCH}" "${SESS
 /usr/local/bin/inject-library.sh "opencode" || echo "entrypoint-opencode: library injection failed, continuing without it" >&2
 
 # Register (or strip) the cloud-agents MCP callback shim in opencode.json,
-# reconciled every message — gives OpenCode the add_todo/update_todo/
+# reconciled every message — gives OpenCode the ledger_*/report_progress/
 # report_progress/... tools (docker/register-callbacks-mcp.sh). Best-effort:
 # a registration hiccup must never block the prompt run.
 if [ -f /usr/local/bin/register-callbacks-mcp.sh ]; then

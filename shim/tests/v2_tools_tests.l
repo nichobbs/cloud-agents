@@ -137,39 +137,6 @@ test "requestSecretSchema declares name and reason as required" {
   assertTrue(schemaJson.contains("\"required\""), "schema declares required fields")
 }
 
-// ── add_followup_task ─────────────────────────────────────────────────────────
-test "add_followup_task tool returns the created id" {
-  val fake = newFakeV2Transport()
-  fake.createTodoOk = true
-  fake.createTodoBody = "{\"id\":\"todo-1\"}"
-  val tool = AddFollowupTaskTool(transport = fake)
-
-  val args = Some(
-    value = JObject(
-      fields = [
-        JsonField(
-          name = "description",
-          value = JString(value = "double-check the migration")
-        )
-      ]
-    )
-  )
-  val result = match tool.call(args) { case Ok(r) -> r; case Err(e) -> panic("unexpected Err: " + e) }
-  assertTrue(not result.isError, "a successful create is not a tool-execution error")
-  assertTrue(onlyText(result).contains("todo-1"), "result names the created id: " + onlyText(result))
-  assertEqual(fake.lastTodoDescription, "double-check the migration", "the description was forwarded")
-}
-
-test "add_followup_task tool denies for a missing description without contacting the host" {
-  val fake = newFakeV2Transport()
-  val tool = AddFollowupTaskTool(transport = fake)
-
-  val args = Some(value = JObject(fields = newList()))
-  val result = match tool.call(args) { case Ok(r) -> r; case Err(e) -> panic("unexpected Err: " + e) }
-  assertTrue(result.isError, "a missing description is a tool error")
-  assertTrue(onlyText(result).contains("description"), "error names the missing field: " + onlyText(result))
-}
-
 // ── report_artifact ─────────────────────────────────────────────────────────
 func writeTempFile(name: in String, content: in String): String {
   val path = "/tmp/cloud-agents-shim-tool-test-" + name
