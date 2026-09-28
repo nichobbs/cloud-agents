@@ -13,7 +13,9 @@ change: `CLOUD_AGENTS_MCP_CALLBACKS` now defaults on (opt out with
 live (broad pre-Phase-6 set otherwise, #543), and
 the §8 follow-ups shipped alongside (wall-clock long-poll deadline,
 seeded-session e2e legs). **§7's v2 tools (`request_secret`,
-`add_followup_task`, `report_artifact`) also ship in this change** —
+`add_followup_task`, `report_artifact`) also ship in this change**
+(`add_followup_task` has since been retired in favour of the session
+ledger, see §7.2) —
 host endpoints (`src/handlers/callbacks.l`), migration `0011`
 (`secret_requests` + `artifacts` tables), the `secret_request`/
 `artifact_reported` SSE events, and the shim side
@@ -240,11 +242,11 @@ transcript, and never grants without a human in the loop:
    transcripts or streamed output.
 5. Timeout/deny → tool result is a denial message; fail closed.
 
-### 7.2 `add_followup_task(description)`> **Retired.** `add_followup_task` was replaced by the session ledger's
+### 7.2 `add_followup_task(description)`
+
+> **Retired.** `add_followup_task` was replaced by the session ledger's
 > `ledger_note` (docs/session-ledger.md §7); its route and shim tool are
 > gone. The section below is kept as the historical design.
-
-
 
 Shim `POST …/callbacks/todo` `{description}` → the same todo storage
 `CloudAgents.Interactions.addTodoHandler` uses (anchored to the

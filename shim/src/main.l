@@ -231,10 +231,6 @@ func main(): Unit {
     )
   }
 
-
-
-
-
   // Phase 7 §5 notify (docs/phase7-autonomy.md).
   if CloudAgents.Shim.Config.toolIsEnabled(enabledToolsCsv, "notify") {
     addTool(

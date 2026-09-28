@@ -106,7 +106,10 @@ test "requestSecret create failure (e.g. an unconfigured/missing credential) ref
   val outcome = requestSecret(fake, "NOPE", "x", 1, 5000)
   match outcome {
     case Approved(path) -> assertTrue(false, "expected Refused, got Approved(" + path + ")")
-    case Refused(message) -> assertTrue(message.contains("NOPE"), "refusal message surfaces the host's error: " + message)
+    case Refused(message) -> assertTrue(
+      message.contains("NOPE"),
+      "refusal message surfaces the host's error: " + message
+    )
   }
   assertEqualInt(fake.pollSecretCallCount, 0, "a create failure never reaches the poll loop")
 }
@@ -119,8 +122,14 @@ test "requestSecret refuses when approved but the value was already delivered (o
 
   val outcome = requestSecret(fake, "TOKEN", "x", 1, 5000)
   match outcome {
-    case Approved(path) -> assertTrue(false, "an approved-but-empty-value decision must not fabricate a file, got " + path)
-    case Refused(message) -> assertTrue(message.contains("unavailable"), "refusal explains the value is unavailable: " + message)
+    case Approved(path) -> assertTrue(
+      false,
+      "an approved-but-empty-value decision must not fabricate a file, got " + path
+    )
+    case Refused(message) -> assertTrue(
+      message.contains("unavailable"),
+      "refusal explains the value is unavailable: " + message
+    )
   }
 }
 
@@ -145,7 +154,10 @@ test "remember surfaces a transport failure" {
 
   match remember(fake, "k", "v") {
     case Ok(msg) -> assertTrue(false, "expected Err, got Ok(" + msg + ")")
-    case Err(message) -> assertTrue(message.contains("connection refused"), "error carries the transport failure: " + message)
+    case Err(message) -> assertTrue(
+      message.contains("connection refused"),
+      "error carries the transport failure: " + message
+    )
   }
 }
 
@@ -195,7 +207,10 @@ test "recall with a key surfaces a transport failure from the single-key lookup"
 
   match recall(fake, "tests") {
     case Ok(text) -> assertTrue(false, "expected Err, got Ok(" + text + ")")
-    case Err(message) -> assertTrue(message.contains("connection refused"), "error carries the transport failure: " + message)
+    case Err(message) -> assertTrue(
+      message.contains("connection refused"),
+      "error carries the transport failure: " + message
+    )
   }
 }
 
@@ -217,7 +232,10 @@ test "recall surfaces a transport failure" {
 
   match recall(fake, "") {
     case Ok(text) -> assertTrue(false, "expected Err, got Ok(" + text + ")")
-    case Err(message) -> assertTrue(message.contains("connection refused"), "error carries the transport failure: " + message)
+    case Err(message) -> assertTrue(
+      message.contains("connection refused"),
+      "error carries the transport failure: " + message
+    )
   }
 }
 
@@ -251,7 +269,10 @@ test "forget surfaces a transport failure" {
 
   match forget(fake, "k") {
     case Ok(msg) -> assertTrue(false, "expected Err, got Ok(" + msg + ")")
-    case Err(message) -> assertTrue(message.contains("connection refused"), "error carries the transport failure: " + message)
+    case Err(message) -> assertTrue(
+      message.contains("connection refused"),
+      "error carries the transport failure: " + message
+    )
   }
 }
 
@@ -276,7 +297,10 @@ test "notify surfaces a transport failure" {
 
   match notify(fake, "x", "") {
     case Ok(id) -> assertTrue(false, "expected Err, got Ok(" + id + ")")
-    case Err(message) -> assertTrue(message.contains("connection refused"), "error carries the transport failure: " + message)
+    case Err(message) -> assertTrue(
+      message.contains("connection refused"),
+      "error carries the transport failure: " + message
+    )
   }
 }
 
@@ -300,7 +324,10 @@ test "addTask surfaces a transport failure" {
 
   match addTask(fake, "x") {
     case Ok(id) -> assertTrue(false, "expected Err, got Ok(" + id + ")")
-    case Err(message) -> assertTrue(message.contains("connection refused"), "error carries the transport failure: " + message)
+    case Err(message) -> assertTrue(
+      message.contains("connection refused"),
+      "error carries the transport failure: " + message
+    )
   }
 }
 
@@ -349,7 +376,10 @@ test "listTasks surfaces a transport failure" {
 
   match listTasks(fake, "") {
     case Ok(text) -> assertTrue(false, "expected Err, got Ok(" + text + ")")
-    case Err(message) -> assertTrue(message.contains("connection refused"), "error carries the transport failure: " + message)
+    case Err(message) -> assertTrue(
+      message.contains("connection refused"),
+      "error carries the transport failure: " + message
+    )
   }
 }
 
@@ -376,7 +406,6 @@ test "completeTask surfaces a transport failure (e.g. an unknown/cross-scope tas
   }
 }
 
-// ── add_todo / update_todo / list_todos (session todo plan) ─────────────────
 // ── schedule_job / list_jobs / update_job / cancel_job (phase 8, #878) ───────
 test "scheduleJob returns the created id and sends name/prompt/schedule" {
   val fake = newFakeV2Transport()
@@ -399,7 +428,10 @@ test "scheduleJob surfaces a transport failure" {
 
   match scheduleJob(fake, "x", "y", "", "3600") {
     case Ok(id) -> assertTrue(false, "expected Err, got Ok(" + id + ")")
-    case Err(message) -> assertTrue(message.contains("connection refused"), "error carries the transport failure: " + message)
+    case Err(message) -> assertTrue(
+      message.contains("connection refused"),
+      "error carries the transport failure: " + message
+    )
   }
 }
 
@@ -409,11 +441,10 @@ test "listJobs renders every job as id 'name' [status] every Ns next=<epoch>: pr
   fake.listJobsBody = "{\"jobs\":[{\"id\":\"job-1\",\"name\":\"n\",\"prompt\":\"digest\",\"profileId\":\"\",\"repoUrl\":\"\",\"branch\":\"\",\"harness\":\"\",\"model\":\"\",\"runAtEpochMillis\":\"\",\"intervalSeconds\":\"3600\",\"nextRunAtEpochMillis\":\"1700000000000\",\"lastRunAtEpochMillis\":\"\",\"sessionId\":\"s\",\"status\":\"active\",\"createdAt\":\"1\"}]}"
 
   match listJobs(fake) {
-    case Ok(text) ->
-      assertTrue(
-        text.contains("job-1 'n' [active] every 3600s next=1700000000000: digest"),
-        "the job is rendered with its name: " + text
-      )
+    case Ok(text) -> assertTrue(
+      text.contains("job-1 'n' [active] every 3600s next=1700000000000: digest"),
+      "the job is rendered with its name: " + text
+    )
     case Err(message) -> assertTrue(false, "expected Ok, got Err: " + message)
   }
 }
@@ -424,7 +455,10 @@ test "listJobs omits the name annotation when the job has no name" {
   fake.listJobsBody = "{\"jobs\":[{\"id\":\"job-1\",\"name\":\"\",\"prompt\":\"digest\",\"profileId\":\"\",\"repoUrl\":\"\",\"branch\":\"\",\"harness\":\"\",\"model\":\"\",\"runAtEpochMillis\":\"\",\"intervalSeconds\":\"3600\",\"nextRunAtEpochMillis\":\"\",\"lastRunAtEpochMillis\":\"\",\"sessionId\":\"s\",\"status\":\"active\",\"createdAt\":\"1\"}]}"
 
   match listJobs(fake) {
-    case Ok(text) -> assertTrue(text.contains("job-1 [active] every 3600s: digest"), "no stray quotes when unnamed: " + text)
+    case Ok(text) -> assertTrue(
+      text.contains("job-1 [active] every 3600s: digest"),
+      "no stray quotes when unnamed: " + text
+    )
     case Err(message) -> assertTrue(false, "expected Ok, got Err: " + message)
   }
 }
@@ -453,7 +487,8 @@ test "listJobs truncates an overlong prompt instead of dumping it in full (#888)
   while longPrompt.length < 500 {
     longPrompt = longPrompt + longPrompt
   }
-  fake.listJobsBody = "{\"jobs\":[{\"id\":\"job-1\",\"name\":\"\",\"prompt\":\"" + longPrompt + "\",\"profileId\":\"\",\"repoUrl\":\"\",\"branch\":\"\",\"harness\":\"\",\"model\":\"\",\"runAtEpochMillis\":\"\",\"intervalSeconds\":\"\",\"nextRunAtEpochMillis\":\"\",\"lastRunAtEpochMillis\":\"\",\"sessionId\":\"s\",\"status\":\"active\",\"createdAt\":\"1\"}]}"
+  fake.listJobsBody = "{\"jobs\":[{\"id\":\"job-1\",\"name\":\"\",\"prompt\":\"" + longPrompt +
+    "\",\"profileId\":\"\",\"repoUrl\":\"\",\"branch\":\"\",\"harness\":\"\",\"model\":\"\",\"runAtEpochMillis\":\"\",\"intervalSeconds\":\"\",\"nextRunAtEpochMillis\":\"\",\"lastRunAtEpochMillis\":\"\",\"sessionId\":\"s\",\"status\":\"active\",\"createdAt\":\"1\"}]}"
 
   match listJobs(fake) {
     case Ok(text) -> {
@@ -496,7 +531,10 @@ test "updateJob surfaces a host validation error" {
 
   match updateJob(fake, "job-1", "", "", "", "", "bogus") {
     case Ok(msg) -> assertTrue(false, "expected Err, got Ok(" + msg + ")")
-    case Err(message) -> assertTrue(message.contains("status must be one of"), "error surfaces the host's error: " + message)
+    case Err(message) -> assertTrue(
+      message.contains("status must be one of"),
+      "error surfaces the host's error: " + message
+    )
   }
 }
 
@@ -519,7 +557,10 @@ test "cancelJob surfaces a transport failure" {
 
   match cancelJob(fake, "job-1") {
     case Ok(msg) -> assertTrue(false, "expected Err, got Ok(" + msg + ")")
-    case Err(message) -> assertTrue(message.contains("connection refused"), "error carries the transport failure: " + message)
+    case Err(message) -> assertTrue(
+      message.contains("connection refused"),
+      "error carries the transport failure: " + message
+    )
   }
 }
 
@@ -685,7 +726,10 @@ test "requestSecretWithClock refuses via a wall-clock deadline, not an iteration
 
   val outcome = requestSecretWithClock(transport, "GITHUB_TOKEN", "push", 25000, 1000, clock)
   match outcome {
-    case Approved(path) -> assertTrue(false, "expected a fail-closed Refused on a wall-clock timeout, got Approved(" + path + ")")
+    case Approved(path) -> assertTrue(
+      false,
+      "expected a fail-closed Refused on a wall-clock timeout, got Approved(" + path + ")"
+    )
     case Refused(message) -> {
       assertTrue(message.contains("timed out"), "timeout refusal explains why: " + message)
       assertEqualInt(

@@ -233,6 +233,7 @@ already-on-default-branch path) — see §6 of the phase doc for detail.
 | Next-run feedback nudge; ledger reviews in session attention | ✅ added | `nextRunPromptPrefix` (sessions + jobs), `sessionSummariesJson` |
 | PWA: ledger panel, entry detail, inbox, review actions, review badge | ✅ added | `frontend/src/components/Ledger*.tsx`, `frontend/src/pages/Inbox.tsx` |
 | Tests | ✅ added | `tests/ledger_{core,store,service}_tests.l`, `shim/tests/ledger_tools_tests.l`, `frontend/src/**/Ledger*.test.tsx`, `Inbox.test.tsx`, `lib/ledger.test.ts` |
+| Review follow-ups (#1061–#1064, #1066–#1074): glob boundaries, policy caps and tag checks, 404 vs no-access, cheap polls with SQL summaries, newest-first truncation, url and nudge fixes, clearer shim failures, five-copy tool-list CI check, UI polling fixes | ✅ added | same packages; forced-race retry, owner scoping on every human route, blocker notification and no-arguments MCP calls now tested (unit and e2e) |
 | Phase 3 GitHub reconciliation, Phase 4 observer | ⬜ not started | designed in `docs/session-ledger.md` §9 |
 
 See `docs/session-ledger.md` for the design, the recon of how the source spec

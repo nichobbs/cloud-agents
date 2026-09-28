@@ -164,7 +164,7 @@ RUN chmod +x /usr/local/bin/entrypoint.sh /usr/local/bin/reconcile-repos.sh /usr
 
 # ─── cloud-agents-shim (docs/phase6-mcp-callbacks.md) ───────────────────────
 # The in-container MCP callback server, giving this harness the same
-# add_todo/update_todo/report_progress/... tools the claude image has had
+# ledger_*/report_progress/... tools the claude image has had
 # since Phase 6. Managed DLLs come from the shim-builder stage; the .NET
 # runtime to execute them is copied from the official runtime image
 # (bookworm has no dotnet apt packages). Invariant globalization avoids an

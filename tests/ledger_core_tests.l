@@ -10,6 +10,7 @@ import CloudAgents.Ledger.Model
 import CloudAgents.Ledger.StateMachine
 import CloudAgents.Ledger.Policy
 import CloudAgents.Ledger.Summary
+import CloudAgents.Ledger.RepoPolicy
 
 func item(id: in String, state: in String, blockedBy: in slice[String]): WorkItem {
   return itemWithReason(id, state, blockedBy, "")
@@ -308,6 +309,69 @@ test "auto-unblock: all in-batch blockers done" {
   val ids = unblockCandidates(items)
   assertEqualInt(ids.length.toInt(), 1, "only #1 is unblockable")
   assertEqual(ids[0], "gh:a/b#1", "#1 unblocks")
+}
+
+test "auto-unblock never touches a needs_human item or waits on a skipped blocker" {
+  val items: slice[WorkItem] = [
+    item("gh:a/b#1", "needs_human", ["gh:a/b#2"]),
+    item("gh:a/b#2", "done", noRefs()),
+    item("gh:a/b#3", "blocked", ["gh:a/b#4"]),
+    item("gh:a/b#4", "skipped", noRefs())
+  ]
+  assertEqualInt(unblockCandidates(items).length.toInt(), 0, "needs_human is the human's; skipped is not done")
+}
+
+test "a same-state update on a blocked item rejects a blank reason" {
+  val blocked = itemWithReason("gh:a/b#1", "blocked", ["gh:a/b#2"], "waiting")
+  match planStatusChange(blocked, change("blocked", "   ", noRefs(), ""), "agent") {
+    case Ok(_) -> assertTrue(false, "whitespace is not a reason")
+    case Err(msg) -> assertTrue(msg.contains("reason is required"), msg)
+  }
+  match planStatusChange(blocked, change("blocked", "", noRefs(), ""), "agent") {
+    case Ok(p) -> {
+      assertTrue(not p.stateChanged, "a field update, not a transition")
+      assertEqual(p.item.blockedReason, "waiting", "an empty reason keeps the current one")
+    }
+    case Err(msg) -> assertTrue(false, msg)
+  }
+}
+
+// ── GitHub contents decoding ──────────────────────────────────────────────────
+test "a policy file decodes from GitHub's line-wrapped base64" {
+  match decodeContentsBody("{\"type\":\"file\",\"encoding\":\"base64\",\"content\":\"eyJydWxl\\ncyI6W119\\n\"}") {
+    case Ok(text) -> assertEqual(text, "{\"rules\":[]}", "wrapped base64 decodes")
+    case Err(msg) -> assertTrue(false, msg)
+  }
+}
+
+test "an oversized, non-file or undecodable response is refused" {
+  var big = ""
+  var chunk = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+  var i = 0
+  while i < 930 {
+    big = big + chunk
+    i = i + 1
+  }
+  match decodeContentsBody("{\"encoding\":\"base64\",\"content\":\"" + big + "\"}") {
+    case Ok(_) -> assertTrue(false, "over 64 KiB accepted")
+    case Err(msg) -> assertTrue(msg.contains("too large"), msg)
+  }
+  match decodeContentsBody("[{\"name\":\".agent-ledger.json\"}]") {
+    case Ok(_) -> assertTrue(false, "a directory listing accepted")
+    case Err(msg) -> assertTrue(msg.contains("not a file"), msg)
+  }
+  match decodeContentsBody("{\"encoding\":\"none\",\"content\":\"\"}") {
+    case Ok(_) -> assertTrue(false, "unknown encoding accepted")
+    case Err(msg) -> assertTrue(msg.contains("could not be read"), msg)
+  }
+  match decodeContentsBody("{\"encoding\":\"base64\",\"content\":\"%%%not base64%%%\"}") {
+    case Ok(_) -> assertTrue(false, "garbage accepted")
+    case Err(_) -> ()
+  }
+  match decodeContentsBody("<html>rate limited</html>") {
+    case Ok(_) -> assertTrue(false, "non-JSON accepted")
+    case Err(msg) -> assertTrue(msg.contains("unexpected"), msg)
+  }
 }
 
 // ── Refs ──────────────────────────────────────────────────────────────────────

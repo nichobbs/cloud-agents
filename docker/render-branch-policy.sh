@@ -47,7 +47,7 @@ render_branch_policy() {
     esac
 }
 
-# Renders docker/session-tools-guide.md (todo-list usage, progress
+# Renders docker/session-tools-guide.md (session-ledger usage, progress
 # reporting, session-notes conventions — see that file) the same way
 # render_branch_policy renders its rules: per-harness native discovery
 # locations, idempotent per message.
