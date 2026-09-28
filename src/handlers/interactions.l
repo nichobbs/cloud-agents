@@ -3,6 +3,7 @@ package CloudAgents.Interactions
 import Std.Core
 import Web
 import CloudAgents.Repository
+import CloudAgents.SessionStore
 import CloudAgents.Sqlite
 import CloudAgents.Streaming
 import CloudAgents.Text
@@ -27,12 +28,67 @@ func dbError(e: in CloudAgents.Sqlite.DbError): Web.ApiError {
   return Web.internalError(CloudAgents.Sqlite.dbErrorMessage(e))
 }
 
+// Every handler here is user-facing, and the message/todo/comment/event tables
+// carry no user_id of their own: ownership is only reachable through the
+// session row. The global AuthMiddleware authenticates the caller but does not
+// authorize per session, so each handler must gate on the session being owned
+// by CloudAgents.Auth.currentUserId(). A session that doesn't exist and one
+// that belongs to another user both answer 404 (getSession is owner-scoped),
+// the same non-leaking shape as SessionStore and the other requireOwnedSession
+// copies (Callbacks, Groups, Highlights).
+func requireOwnedSession(sessionId: in String): Result[Unit, Web.ApiError] {
+  match CloudAgents.SessionStore.getSession(sessionId) {
+    case Ok(Some(_)) -> return Ok(())
+    case Ok(None) -> return Err(Web.notFound("Session not found"))
+    case Err(e) -> return Err(dbError(e))
+  }
+}
+
+/// The session owning message `mid`, 404 "message not found" both when the
+/// message doesn't exist and when its session belongs to another user.
+func requireOwnedMessageSession(mid: in String): Result[String, Web.ApiError] {
+  val sessionId = match getMessageSessionId(mid) {
+    case Ok(Some(sid)) -> sid
+    case Ok(None) -> return Err(Web.notFound("message not found"))
+    case Err(e) -> return Err(dbError(e))
+  }
+  match requireOwnedSession(sessionId) {
+    case Ok(_) -> return Ok(sessionId)
+    case Err(err) -> {
+      if err.status == 404 {
+        return Err(Web.notFound("message not found"))
+      }
+      return Err(err)
+    }
+  }
+}
+
+/// 404 "todo not found" both when todo `tid` doesn't exist and when its
+/// session belongs to another user.
+func requireOwnedTodo(tid: in String): Result[Unit, Web.ApiError] {
+  val sessionId = match getTodoSessionId(tid) {
+    case Ok(Some(sid)) -> sid
+    case Ok(None) -> return Err(Web.notFound("todo not found"))
+    case Err(e) -> return Err(dbError(e))
+  }
+  match requireOwnedSession(sessionId) {
+    case Ok(_) -> return Ok(())
+    case Err(err) -> {
+      if err.status == 404 {
+        return Err(Web.notFound("todo not found"))
+      }
+      return Err(err)
+    }
+  }
+}
+
 /// Return a session's full transcript (user prompts and agent replies), each
 /// with a stable id so the client can anchor comments and todos to it.
 pub func getMessages(id: in String): Result[MessageList, Web.ApiError] {
   if id.length == 0 {
     return Err(Web.badRequest("id is required"))
   }
+  requireOwnedSession(id)?
   match listMessages(id) {
     case Ok(msgs) -> return Ok(MessageList(messages = msgs))
     case Err(e) -> return Err(dbError(e))
@@ -100,6 +156,7 @@ pub func getSessionEvents(id: in String, afterSeq: in String): Result[String, We
   if afterSeq.length > 0 and not allDigits(afterSeq) {
     return Err(Web.badRequest("after must be a non-negative integer"))
   }
+  requireOwnedSession(id)?
   match sessionEventsAfterSeq(id, afterSeq) {
     case Ok(events) -> return Ok(sessionEventsToJson(events))
     case Err(e) -> return Err(dbError(e))
@@ -122,11 +179,7 @@ pub func addCommentHandler(mid: in String, req: in AddCommentRequest): Result[Co
     return Err(Web.badRequest("body is too long (max " + toString(maxBodyLen) + " bytes)"))
   }
   // Derive sessionId from the stored message rather than trusting the client.
-  val sessionId = match getMessageSessionId(mid) {
-    case Ok(Some(sid)) -> sid
-    case Ok(None) -> return Err(Web.notFound("message not found"))
-    case Err(e) -> return Err(dbError(e))
-  }
+  val sessionId = requireOwnedMessageSession(mid)?
   match addComment(mid, sessionId, req.body) {
     case Ok(c) -> return Ok(c)
     case Err(e) -> return Err(dbError(e))
@@ -138,6 +191,7 @@ pub func getComments(mid: in String): Result[CommentList, Web.ApiError] {
   if mid.length == 0 {
     return Err(Web.badRequest("message id is required"))
   }
+  requireOwnedMessageSession(mid)?
   match listComments(mid) {
     case Ok(cs) -> return Ok(CommentList(comments = cs))
     case Err(e) -> return Err(dbError(e))
@@ -149,6 +203,7 @@ pub func getTodos(id: in String): Result[TodoList, Web.ApiError] {
   if id.length == 0 {
     return Err(Web.badRequest("id is required"))
   }
+  requireOwnedSession(id)?
   match listTodos(id) {
     case Ok(ts) -> return Ok(TodoList(todos = ts))
     case Err(e) -> return Err(dbError(e))
@@ -167,6 +222,7 @@ pub func addTodoHandler(id: in String, req: in AddTodoRequest): Result[Todo, Web
   if not CloudAgents.Text.withinMaxByteLength(req.note, maxBodyLen) {
     return Err(Web.badRequest("note is too long (max " + toString(maxBodyLen) + " bytes)"))
   }
+  requireOwnedSession(id)?
   // When the todo is anchored to a message, the anchor must exist and belong
   // to this session — otherwise todos can point at other sessions' transcripts
   // (or at nothing).
@@ -207,6 +263,7 @@ pub func setTodoStatusHandler(tid: in String, req: in SetTodoStatusRequest): Res
   if not isValidTodoStatus(req.status) {
     return Err(Web.badRequest("status must be one of: pending, in_progress, done"))
   }
+  requireOwnedTodo(tid)?
   match setTodoStatus(tid, req.status) {
     case Ok(_) -> return Ok(())
     case Err(e) -> return Err(dbError(e))
@@ -218,6 +275,7 @@ pub func toggleTodoHandler(tid: in String): Result[Unit, Web.ApiError] {
   if tid.length == 0 {
     return Err(Web.badRequest("todo id is required"))
   }
+  requireOwnedTodo(tid)?
   match toggleTodo(tid) {
     case Ok(_) -> return Ok(())
     case Err(e) -> return Err(dbError(e))
@@ -229,6 +287,7 @@ pub func deleteTodoHandler(tid: in String): Result[Unit, Web.ApiError] {
   if tid.length == 0 {
     return Err(Web.badRequest("todo id is required"))
   }
+  requireOwnedTodo(tid)?
   match deleteTodo(tid) {
     case Ok(_) -> return Ok(())
     case Err(e) -> return Err(dbError(e))
