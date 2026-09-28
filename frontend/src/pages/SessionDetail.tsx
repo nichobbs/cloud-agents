@@ -652,6 +652,21 @@ export function SessionDetail() {
     el?.scrollIntoView({ behavior: 'smooth', block: 'center' });
   }, [highlightedId, messages]);
 
+  // Every hook must run before the `!session` early return below: the
+  // session can be absent on the first render (not yet in local state)
+  // and present on the next, and React requires the same hook order on
+  // every render.
+
+  // Append to any existing draft rather than replace, so a prompt can be
+  // combined with typed context.
+  const insertText = useCallback((text: string) => {
+    setInput(prev => (prev.trim() ? `${prev.trimEnd()}\n\n${text}` : text));
+    textareaRef.current?.focus();
+  }, []);
+
+  const [archiving, setArchiving] = useState(false);
+  const [branching, setBranching] = useState(false);
+
   if (!session) {
     return (
       <div style={{ padding: '32px 24px', color: '#8b949e', textAlign: 'center' }}>
@@ -950,13 +965,6 @@ export function SessionDetail() {
     }
   };
 
-  // Append to any existing draft rather than replace, so a prompt can be
-  // combined with typed context.
-  const insertText = useCallback((text: string) => {
-    setInput(prev => (prev.trim() ? `${prev.trimEnd()}\n\n${text}` : text));
-    textareaRef.current?.focus();
-  }, []);
-
   const handleInsertPrompt = (promptId: string) => {
     const p = prompts.find(x => x.id === promptId);
     if (!p) return;
@@ -1043,8 +1051,6 @@ export function SessionDetail() {
     navigate('/sessions');
   };
 
-  const [archiving, setArchiving] = useState(false);
-
   const handleArchive = async () => {
     if (!session) return;
     setArchiving(true);
@@ -1069,8 +1075,6 @@ export function SessionDetail() {
       setArchiving(false);
     }
   };
-
-  const [branching, setBranching] = useState(false);
 
   const handleCreateThread = async (msg?: Message) => {
     if (!session || branching) return;
