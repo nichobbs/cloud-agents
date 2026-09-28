@@ -116,12 +116,18 @@ access) is **fixed in [v0.4.19](https://github.com/nichobbs/lyric-lang/releases/
 Bug 8 (a local `val` bound before one `await` silently losing its value if
 read again after a SECOND, different-callee `await` in the same async
 function — no exception, no diagnostic — found while root-causing a
-recurring production crash) is filed as
-[lyric-lang#6249](https://github.com/nichobbs/lyric-lang/issues/6249) and
-**still open as of v0.4.35**; unlike bugs 1–7, it doesn't block build/run/
-test, but it DOES need a source-level workaround — see
-`src/docker_manager.l`'s doc comments and `docs/lyric/gotchas.md`'s
-"Async" section.
+recurring production crash) was filed as
+[lyric-lang#6249](https://github.com/nichobbs/lyric-lang/issues/6249),
+**open as of v0.4.35** but **fixed upstream as of v0.7.3** (confirmed by
+re-running the fixed version of `./scripts/repro-compiler-bug.sh` check 8
+directly against a freshly-installed 0.7.3 — this project's current pin).
+It never blocked build/run/test, and needed a source-level workaround —
+see `src/docker_manager.l`'s doc comments for the `runSessionMessageAsync`/
+`waitForContainer` pattern. That workaround has **not** been reverted yet
+(a separate decision from re-verifying this doc) — `docs/lyric/gotchas.md`
+no longer documents this bug since it's fixed on the version this project
+now pins, but the workaround itself is cheap and still correct, so it's
+been left in place pending a deliberate follow-up.
 Run `./scripts/repro-compiler-bug.sh` to check which bugs your compiler
 still has before assuming a local failure needs a local fix. See
 `docs/BUILD.md` "Compiler notes" for full detail.

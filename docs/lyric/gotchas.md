@@ -152,14 +152,17 @@ unwrapResult(r)      // OK   — bare call compiles AND runs, returns 42
 r.unwrapResult()     // FAIL — dot-call compiles, then dies at runtime:
                       //   "unsupported method 'unwrapResult' on the receiver type"
 ```
-Same for `isOk`/`isSome`/`isNone`: `isOk(r)`/`isSome(o)`/`isNone(o)` as bare
-calls all work correctly; `r.isOk()`/`o.isSome()`/`o.isNone()` as dot-calls
-all fail at runtime with the same "unsupported method" error, even though
-they compile fine. **Prefer the bare `Std.Core` free-function form for all of
-these** (`unwrapResult(r)`, `unwrapResultOr(r, default)`, `unwrapErrOr(r,
-default)`, `isOk(r)`, `isErr(r)`, `isSome(o)`, `isNone(o)`) — a plain `match`
-on `Ok`/`Err`/`Some`/`None` is always safe too, just more verbose. The `?`
+Same for `isOk`/`isErr`/`isSome`/`isNone`: `isOk(r)`/`isErr(r)`/`isSome(o)`/
+`isNone(o)` as bare calls all work correctly; `r.isOk()`/`r.isErr()`/
+`o.isSome()`/`o.isNone()` as dot-calls all fail at runtime with the same
+"unsupported method" error, even though they compile fine. **Prefer the
+bare `Std.Core` free-function form for all of these** (`unwrapResult(r)`,
+`unwrapResultOr(r, default)`, `unwrapErrOr(r, default)`, `isOk(r)`,
+`isErr(r)`, `isSome(o)`, `isNone(o)`) — a plain `match` on
+`Ok`/`Err`/`Some`/`None` is always safe too, just more verbose. The `?`
 operator is confirmed working at runtime and is fine.
+
+**`.unwrap()`/`.unwrapOr()` (as opposed to `.unwrapResult()`/`.unwrapResultOr()` above) have no working bare-call replacement under the same literal name.** `r.unwrap()`/`r.unwrapOr(default)`/`o.unwrap()` all fail as dot-calls the same way, but `unwrap(r)`/`unwrap(o)` bare is `unknown name` (there's no `Std.Core` function literally named `unwrap` for `Result`), and a bare `unwrapOr(r, default)` resolves to the wrong overload (`argument type Result[...] does not match parameter type Option[T]` — `unwrapOr` bare is `Option`-only). Use `unwrapResult(r)` in place of `r.unwrap()`, `unwrapResultOr(r, default)` in place of `r.unwrapOr(default)`, and `unwrapOption(o)` (confirmed working as a bare call) in place of `o.unwrap()`.
 
 **`slice[Byte].toList()` does not resolve at runtime** — confirmed
 directly on lyric 0.7.3: `unsupported method 'toList' on the receiver type

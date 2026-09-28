@@ -305,7 +305,7 @@ let z = expensive() // lazy, evaluated on first use, .NET Lazy<T> semantics
 
 ## Operators
 
-- No bitwise operators (`&`, `|`, `^`, `<<`, `>>`). Use `.and()`, `.or()`, `.xor()`, `.shl()`, `.shr()`
+- No bitwise operators (`|`, `^`, `<<`, `>>`) — parse errors. `&` is a separate landmine, not a parse error: it's a unary reference/borrow prefix operator, so `x & y` silently compiles, discards the RHS, and evaluates to `x` unchanged (see `docs/lyric/gotchas.md`'s Operators section). Use `.and()`, `.or()`, `.xor()`, `.shl()`, `.shr()` for real bitwise ops
 - Logical: `and`, `or`, `xor`, `not`
 - Error propagation: `?` (postfix, highest precedence after `.` and `[]`)
 - Nil-coalescing: `??` (right-associative)

@@ -134,7 +134,8 @@ an `IList` cast exception at runtime
 fixed as of v0.4.19 — all seven of the bugs that blocked this project's
 build/run/test pipeline are now fixed. An eighth, different-in-kind bug
 ([lyric-lang#6249](https://github.com/nichobbs/lyric-lang/issues/6249),
-open as of v0.4.35) doesn't block the pipeline — it's a silent runtime
+open as of v0.4.35, fixed upstream as of v0.7.3 — this project's current
+pin) never blocked the pipeline either way — it was a silent runtime
 data-loss bug in a specific async pattern, found via manual investigation
 of a production crash, not a build/run/test blocker — see "Compiler notes"
 below.
@@ -407,20 +408,23 @@ manifest, dependencies, or source — each was found and root-caused using
 this project as the real-world test case that first got far enough to hit
 it.
 
-**An eighth bug, different in kind, is still open**
-([lyric-lang#6249](https://github.com/nichobbs/lyric-lang/issues/6249), as
-of v0.4.35): unlike bugs 1–7, this one doesn't block `lyric build`/`run`/
-`test` — it's a silent runtime data-loss bug (no exception, no diagnostic)
-in a specific `async func` pattern (a local `val` bound before one `await`
-loses its value if read again after a SECOND, different-callee `await` in
-the same function), found while root-causing a recurring production crash
-(`streamSessionMessage`'s `AccessViolationException`). **This one DOES
-need a source workaround** — see `src/docker_manager.l`'s
+**An eighth bug, different in kind, was open as of v0.4.35 and is now fixed
+upstream as of v0.7.3** ([lyric-lang#6249](https://github.com/nichobbs/lyric-lang/issues/6249)):
+unlike bugs 1–7, this one never blocked `lyric build`/`run`/`test` — it was
+a silent runtime data-loss bug (no exception, no diagnostic) in a specific
+`async func` pattern (a local `val` bound before one `await` loses its
+value if read again after a SECOND, different-callee `await` in the same
+function), found while root-causing a recurring production crash
+(`streamSessionMessage`'s `AccessViolationException`). **This one needed a
+source workaround** — see `src/docker_manager.l`'s
 `runSessionMessageAsync`/`terminateSessionContainerAsync` (fixed in PR
 #690: thread the affected value through a mutable record field instead of
-a local `val`, which survives reliably across multiple awaits). Revert
-that workaround once `./scripts/repro-compiler-bug.sh` check 8 reports the
-bug fixed upstream.
+a local `val`, which survives reliably across multiple awaits). Confirmed
+fixed upstream by re-running the fixed version of
+`./scripts/repro-compiler-bug.sh` check 8 directly against a
+freshly-installed lyric 0.7.3 — this project's current pin. The source
+workaround has **not** been reverted yet (a separate decision from
+re-verifying the docs); it's cheap and still correct either way.
 
 **A ninth bug, the actual (sole) root cause of that `streamSessionMessage`
 `AccessViolationException`, was found in a later session with real access
@@ -786,9 +790,11 @@ suite passes fully for the first time in this project's history. (The suite rost
 fixed.** Nothing on this project's manifest, build config, or source
 needs to change for bug 7 — check `./scripts/repro-compiler-bug.sh` if a
 future `lyric` release regresses any of the seven. **An eighth,
-different-in-kind bug (lyric-lang#6249) is still open** and, unlike bugs
-1–7, DOES require a source workaround — see the "Compiler notes" section
-above and `src/docker_manager.l`'s doc comments.
+different-in-kind bug (lyric-lang#6249) was open through v0.4.35 and is
+now fixed upstream as of v0.7.3** (this project's current pin) — unlike
+bugs 1–7, it never blocked build/run/test but did require a source
+workaround, kept in place — see the "Compiler notes" section above and
+`src/docker_manager.l`'s doc comments.
 
 ### A real bug this *did* surface in this project's own source
 
