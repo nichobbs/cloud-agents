@@ -160,6 +160,7 @@ Read `docs/lyric/gotchas.md` before making assumptions.
 | `docs/lyric/stdlib.md` | Before using Std.* imports |
 | `docs/lyric/idioms.md` | Canonical patterns — follow these |
 | `docs/lyric/gotchas.md` | If something won't compile |
+| `docs/session-ledger.md` | Before changing agent reporting / review |
 | `src/` | Working code to pattern-match from |
 
 ## Project layout
@@ -170,6 +171,24 @@ tests/        # @test_module files
 docs/lyric/   # agent reference docs
 lyric.toml    # project manifest
 ```
+
+## Session ledger
+
+`docs/session-ledger.md` is the design (read it before touching `src/ledger/`,
+`src/handlers/ledger.l`, `shim/src/ledger_tools.l` or the frontend's
+`Ledger*` views). The agent reports work items, decisions, deviations,
+shortcuts, questions and blockers through eight `ledger_*` shim tools; the
+owner reviews asynchronously in the PWA (session panel + `/inbox`) and their
+feedback reaches the agent via `ledger_check_feedback` and a next-run prompt
+nudge. Business rules live in the pure `CloudAgents.Ledger.{Model,
+StateMachine,Policy,Summary}` packages (the Testamur port unit);
+`CloudAgents.Ledger.Store` is storage only. The ledger replaced the agent's
+`add_todo`/`update_todo`/`list_todos`/`add_followup_task` tools — don't
+reintroduce parallel agent-reporting tools; extend the ledger. Keep the tool
+name list in sync across `shim/src/ledger_tools.l`, `shim/tests/config_tests.l`,
+`src/handlers/profiles.l`, `src/ledger/schema.l` and
+`frontend/src/pages/Profiles.tsx`. GitHub reconciliation and the observer are
+designed (§9) but not built.
 
 ## Provenance capture (Testamur §4.1 / ADR-0004; audit WP4)
 

@@ -66,8 +66,30 @@ Point(x = 1.0, y = 2.0)     // correct
 ```lyric
 val p = Point(x = 1.0, y = 2.0)
 p.x = 3.0   // compile error
-val p2 = p.copy(x = 3.0)  // correct
 ```
+
+**`record.copy(field = …)` compiles but fails at runtime** — `unsupported
+method 'copy' on the receiver type at this call site` (confirmed on v0.4.36
+while building the session ledger, `src/ledger/`). Same "compiles as a
+dot-call, dies at runtime" family as the `Result`/`Option` convenience
+methods below. Construct the new record explicitly with every field named
+(see `CloudAgents.Ledger.Service.materialize` for the pattern: a small
+function that builds the full record from a draft plus the changed fields).
+
+**`entry`, `result` and `end` are reserved and cannot be field, parameter or
+binding names** — `entry` (protected-type entries), `result` (the return
+value in `ensures:`), `end`. A record field named `entry` or `result` fails
+to parse at every construction site (`P0080 expected ')' to close call
+argument list`), which points at the call, not the declaration. Pick another
+name (`ledgerEntry`, `reply`, `last`).
+
+**An untyped `[]`, or a `slice[T]` variable, passed where a record field is
+`List[T]` compiles but fails at runtime** — `Unable to cast object of type
+'List`1[System.Object]' to type 'List`1[JsonRpc.Json.JsonField]'` (confirmed
+on the shim's `Lyric.Mcp` 0.4.34 `JObject(fields = …)` / `JArray(items = …)`).
+Only a list literal written directly at the construction site is converted.
+Build a real `List` (`val xs: List[T] = newList(); xs.add(…)`) and pass that;
+see `shim/src/ledger_tools.l`'s `fieldList` / `stringValues`.
 
 ---
 

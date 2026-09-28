@@ -1,5 +1,10 @@
 # Session visibility: todos, tool-run collapsing, highlights
 
+> **Superseded in part.** The agent-facing `add_todo` / `update_todo` /
+> `list_todos` tools described below were retired in favour of the session
+> ledger (docs/session-ledger.md §7). The human todo panel, the checkbox-plan
+> fallback and the Session notes convention remain.
+
 Three features that make a long-running session legible from the UI,
 added together (PR: session-ui-todo-tracking):
 
