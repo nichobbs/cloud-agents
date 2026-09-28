@@ -39,6 +39,6 @@ output_assembly = "cloud-agents-shim.dll"
 
 [nuget]
 # Lyric.JsonRpc is a transitive dependency of Lyric.Mcp's own published
-# nuspec (confirmed: Lyric.Mcp 0.4.34 depends on Lyric.JsonRpc 0.4.34) and
+# nuspec (confirmed: Lyric.Mcp 0.7.0 depends on Lyric.JsonRpc 0.7.0) and
 # does not need a separate pin here.
-"Lyric.Mcp" = "0.4.34"
+"Lyric.Mcp" = "0.7.0"

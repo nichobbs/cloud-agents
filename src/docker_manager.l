@@ -350,7 +350,7 @@ pub async func createRunnerContainer(
   val image = imageForHarness(harness)
   val createRes = await createContainerWithNetwork(client, image, envs, binds, networkMode)
   match createRes {
-    case Ok(id) -> Ok(value = id)
+    case Ok(id) -> Ok(value = id.toString())
     case Err(e) -> {
       // Previously silent server-side (only the caller's SSE error frame
       // carried any detail, and even that was just e.message verbatim) —
@@ -374,9 +374,41 @@ pub async func createRunnerContainer(
   }
 }
 
+// Lyric.Docker 0.7+ takes a validated, opaque `ContainerId` rather than a raw
+// string. This project keeps container ids as strings (the sessions table,
+// ResultCell), so each wrapper below validates at the Docker boundary: an id
+// read back from the database that is not a Docker id or name is rejected
+// here, before any request is built from it.
+/// `raw` as a `ContainerId`, or a caller-facing error naming the bad value.
+func dockerContainerId(raw: in String): Result[ContainerId, String] {
+  match ContainerId.tryFrom(raw) {
+    case Ok(id) -> Ok(value = id)
+    case Err(e) -> Err(error = e.message + ": '" + raw + "'")
+  }
+}
+
+/// Docker's own default stop grace period (the `/stop` endpoint's `t`
+/// parameter, seconds): SIGTERM, then SIGKILL after this long. The
+/// pre-0.7 `stopContainer` sent no `t`, so Docker applied this default.
+val stopGraceSec: Int = 10
+
+/// Seconds left until `deadlineTickMs`, as a `waitContainer` client-side
+/// timeout: at least 1, and at most the 2147483s its contract allows.
+func waitTimeoutSec(deadlineTickMs: in Int): Int {
+  val remainingSec = (deadlineTickMs - CloudAgents.Repository.tickCountMs()) / 1000
+  if remainingSec < 1 {
+    return 1
+  }
+  if remainingSec > 2147483 {
+    return 2147483
+  }
+  return remainingSec
+}
+
 /// Start the created runner container.
 pub async func startRunnerContainer(client: in DockerClient, containerId: in String): Result[Unit, String] {
-  val startRes = await startContainer(client, containerId)
+  val cid = dockerContainerId(containerId)?
+  val startRes = await startContainer(client, cid)
   match startRes {
     case Ok(_) -> Ok(value = ())
     case Err(e) -> {
@@ -388,7 +420,8 @@ pub async func startRunnerContainer(client: in DockerClient, containerId: in Str
 
 /// Stop the running container.
 pub async func stopRunnerContainer(client: in DockerClient, containerId: in String): Result[Unit, String] {
-  val stopRes = await stopContainer(client, containerId)
+  val cid = dockerContainerId(containerId)?
+  val stopRes = await stopContainer(client, cid, stopGraceSec)
   match stopRes {
     case Ok(_) -> Ok(value = ())
     case Err(e) -> {
@@ -471,7 +504,16 @@ async func waitForContainerAttempt(
   attempt: in Int,
   deadlineTickMs: in Int,
 ): Result[Unit, String] {
-  match await waitContainer(client, containerId) {
+  val cid = match dockerContainerId(containerId) {
+    case Ok(id) -> id
+    case Err(msg) -> {
+      println("WARNING: failed to wait for container: " + msg)
+      return Err(error = "Failed to wait for container: " + msg)
+    }
+  }
+  // Each attempt's client-side timeout is the time left before the run's
+  // wall-clock deadline, so a single `/wait` can't outlive the cap.
+  match await waitContainer(client, cid, waitTimeoutSec(deadlineTickMs)) {
     case Ok(_) -> {
       return Ok(value = ())
     }
@@ -493,7 +535,8 @@ async func waitForContainerAttempt(
 
 /// Delete the container.
 pub async func deleteRunnerContainer(client: in DockerClient, containerId: in String): Result[Unit, String] {
-  val deleteRes = await removeContainer(client, containerId)
+  val cid = dockerContainerId(containerId)?
+  val deleteRes = await removeContainer(client, cid)
   match deleteRes {
     case Ok(_) -> Ok(value = ())
     case Err(e) -> Err(error = "Failed to delete container: " + e.message)
@@ -521,7 +564,8 @@ async func cleanupRunnerContainer(
 
 /// Retrieve output logs of the runner container.
 pub async func getRunnerLogs(client: in DockerClient, containerId: in String): Result[String, String] {
-  val logsRes = await getContainerLogs(client, containerId)
+  val cid = dockerContainerId(containerId)?
+  val logsRes = await getContainerLogs(client, cid)
   match logsRes {
     case Ok(logs) -> Ok(value = logs)
     case Err(e) -> Err(error = "Failed to retrieve logs: " + e.message)
@@ -1467,7 +1511,7 @@ async func runInspectContainerAsync(
   val image = imageForHarness(harness)
   match await createContainerWithNetwork(dockerClient(), image, envs, binds, "none") {
     case Ok(id) -> {
-      cell.containerId = id
+      cell.containerId = id.toString()
     }
     case Err(e) -> {
       cell.isSuccess = false

@@ -161,12 +161,12 @@ func isValidPercent(s: in String): Bool {
 /// the same "invalid callback token" response so a probing container can't
 /// distinguish "wrong token" from "callbacks aren't on" for this session.
 func authorizeCallbackToken(sessionId: in String, authHeaderValue: in String): Result[Unit, Web.ApiError] {
-  val stored = match CloudAgents.SessionStore.callbackTokenForSession(sessionId) {
+  val storedHash = match CloudAgents.SessionStore.callbackTokenHashForSession(sessionId) {
     case Ok(Some(t)) -> t
     case Ok(None) -> return Err(Web.notFound("Session not found"))
     case Err(e) -> return Err(dbError(e))
   }
-  if stored.length == 0 or not CloudAgents.Auth.authorizeCallback(authHeaderValue, stored) {
+  if not CloudAgents.Auth.authorizeCallback(authHeaderValue, storedHash) {
     return Err(Web.unauthorized("invalid callback token"))
   }
   return Ok(())

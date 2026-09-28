@@ -45,9 +45,11 @@ import extern System.String as DotNetString
 // `readBytes` + a private byte->UTF-8-string decode, mirroring
 // CloudAgents.Crypto's own private `utf8()`/`encGetString` pair rather than
 // importing another package's — each package here owns its own tiny FFI
-// surface for this instead of sharing one. As of Lyric v0.7, `readBytes`
-// returns `Result[slice[Byte], IOError]`, which feeds `bytesToUtf8`
-// (`Encoding.GetString`'s real FFI shape) directly.
+// surface for this instead of sharing one.
+//
+// `readBytes` returns `Result[slice[Byte], IOError]` (Lyric 0.7.0+; earlier
+// toolchains returned `List[Byte]`), which `bytesToUtf8` below takes as-is —
+// `Encoding.GetString`'s real FFI shape is `byte[]`, i.e. `slice[Byte]`.
 extern type Encoding = "System.Text.Encoding"
 
 @externTarget("System.Text.Encoding.get_UTF8")

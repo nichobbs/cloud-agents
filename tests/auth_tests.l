@@ -176,15 +176,40 @@ test "githubIdFromUserId inverts userIdForGitHubId" {
   assertEqual(githubIdFromUserId(""), "", "empty string rejected")
 }
 
-test "authorizeCallback compares a bearer token against the session's stored callback token" {
-  assertTrue(authorizeCallback("Bearer secret-token", "secret-token"), "matching bearer token authorizes")
-  assertFalse(authorizeCallback("Bearer wrong-token", "secret-token"), "wrong bearer token denied")
-  assertFalse(authorizeCallback("", "secret-token"), "missing header denied")
-  assertFalse(authorizeCallback("Basic secret-token", "secret-token"), "wrong scheme denied")
+test "hashCallbackToken is lowercase hex SHA-256 of the UTF-8 token" {
+  assertEqual(
+    hashCallbackToken("abc"),
+    "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad",
+    "FIPS 180-2 SHA-256 test vector for \"abc\""
+  )
+  assertEqual(
+    hashCallbackToken(""),
+    "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "SHA-256 of the empty string"
+  )
+  assertEqualInt(hashCallbackToken("secret-token").length, 64, "always 64 hex chars")
+}
+
+test "authorizeCallback hashes the presented bearer and compares it to the stored hash" {
+  val storedHash = hashCallbackToken("secret-token")
+  assertTrue(authorizeCallback("Bearer secret-token", storedHash), "matching bearer token authorizes")
+  assertFalse(authorizeCallback("Bearer wrong-token", storedHash), "wrong bearer token denied")
+  assertFalse(authorizeCallback("Bearer secret-token2", storedHash), "token with a suffix denied")
+  assertFalse(authorizeCallback("", storedHash), "missing header denied")
+  assertFalse(authorizeCallback("Basic secret-token", storedHash), "wrong scheme denied")
+  assertFalse(
+    authorizeCallback("Bearer " + storedHash, storedHash),
+    "presenting the stored hash itself does not authorize (a leaked hash is not a credential)"
+  )
+  assertFalse(
+    authorizeCallback("Bearer secret-token", "secret-token"),
+    "a plaintext value in the expected slot never matches (hashes are compared, not tokens)"
+  )
   assertFalse(
     authorizeCallback("Bearer secret-token", ""),
-    "an empty expected token never authorizes (callbacks not enabled)"
+    "an empty expected hash never authorizes (callbacks not enabled)"
   )
+  assertFalse(authorizeCallback("Bearer ", ""), "an empty bearer against an empty expected hash never authorizes")
 }
 
 test "isContainerCallbackRoute exempts container create/poll routes but not the human answer routes" {
