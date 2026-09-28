@@ -12,6 +12,7 @@ import CloudAgents.Interactions
 import CloudAgents.NetworkPolicy
 import CloudAgents.Proxy
 import CloudAgents.Repository
+import CloudAgents.Ledger.Service
 import CloudAgents.SessionStore
 import CloudAgents.Sqlite
 import CloudAgents.Streaming
@@ -1244,7 +1245,8 @@ pub func streamSendMessage(id: in String, text: in String, attachments: in slice
       val streamResult = CloudAgents.Docker.streamSessionMessage(
         repoUrl = session.repoUrl,
         branch = session.branch,
-        prompt = promptWithAttachments(text, stored.attachments),
+        prompt = CloudAgents.Ledger.Service.nextRunPromptPrefix(id, userId, profileId) +
+          promptWithAttachments(text, stored.attachments),
         sessionId = id,
         harness = harness,
         model = session.model,

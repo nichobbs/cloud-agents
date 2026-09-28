@@ -1,6 +1,6 @@
 //! src/v2_transport.l — CloudAgents.Shim.V2Transport: the wire records and
 //! HTTP transport seam for the v2 (HTTP-callback) tool family — phase 6
-//! §7's request_secret/add_followup_task/report_artifact through phase 8's
+//! §7's request_secret/report_artifact through phase 8's
 //! scheduled-jobs tools (see v2_tools.l's module doc for the full,
 //! still-growing roster — described there by family rather than a fixed
 //! count so it doesn't go stale on the next addition, #890), mirroring
@@ -38,16 +38,6 @@ pub record CreateSecretRequestResponse {
 pub record SecretDecision {
   pub status: String
   pub value: String
-}
-
-@generate(Json)
-pub record CreateFollowupTaskRequest {
-  pub description: String
-}
-
-@generate(Json)
-pub record CreateFollowupTaskResponse {
-  pub id: String
 }
 
 @generate(Json)
@@ -129,46 +119,6 @@ pub record TaskListResponse {
 
 @generate(Json)
 pub record CompleteTaskResponse {
-  pub id: String
-  pub status: String
-}
-
-// Session todo plan (add_todo / update_todo / list_todos) — mirror
-// CloudAgents.Callbacks / CloudAgents.Repository field-for-field.
-@generate(Json)
-pub record CreateSessionTodoRequest {
-  pub note: String
-}
-
-@generate(Json)
-pub record CreateSessionTodoResponse {
-  pub id: String
-  pub status: String
-}
-
-@generate(Json)
-pub record SessionTodoItem {
-  pub id: String
-  pub sessionId: String
-  pub messageId: String
-  pub note: String
-  pub done: String
-  pub createdAt: String
-  pub status: String
-}
-
-@generate(Json)
-pub record SessionTodoListResponse {
-  pub todos: slice[SessionTodoItem]
-}
-
-@generate(Json)
-pub record SetSessionTodoStatusRequest {
-  pub status: String
-}
-
-@generate(Json)
-pub record SetSessionTodoStatusResponse {
   pub id: String
   pub status: String
 }
@@ -263,17 +213,6 @@ pub func tryDecodeSecretDecision(body: in String): Option[SecretDecision] {
   }
 }
 
-pub func tryDecodeCreateFollowupTaskResponse(body: in String): Option[CreateFollowupTaskResponse] {
-  try {
-    match CreateFollowupTaskResponse.fromJson(body) {
-      case Ok(r) -> Some(value = r)
-      case Err(_) -> None
-    }
-  } catch Bug as b {
-    None
-  }
-}
-
 pub func tryDecodeUploadArtifactResponse(body: in String): Option[UploadArtifactResponse] {
   try {
     match UploadArtifactResponse.fromJson(body) {
@@ -351,39 +290,6 @@ pub func tryDecodeCompleteTaskResponse(body: in String): Option[CompleteTaskResp
   }
 }
 
-pub func tryDecodeCreateSessionTodoResponse(body: in String): Option[CreateSessionTodoResponse] {
-  try {
-    match CreateSessionTodoResponse.fromJson(body) {
-      case Ok(r) -> Some(value = r)
-      case Err(_) -> None
-    }
-  } catch Bug as b {
-    None
-  }
-}
-
-pub func tryDecodeSessionTodoListResponse(body: in String): Option[SessionTodoListResponse] {
-  try {
-    match SessionTodoListResponse.fromJson(body) {
-      case Ok(r) -> Some(value = r)
-      case Err(_) -> None
-    }
-  } catch Bug as b {
-    None
-  }
-}
-
-pub func tryDecodeSetSessionTodoStatusResponse(body: in String): Option[SetSessionTodoStatusResponse] {
-  try {
-    match SetSessionTodoStatusResponse.fromJson(body) {
-      case Ok(r) -> Some(value = r)
-      case Err(_) -> None
-    }
-  } catch Bug as b {
-    None
-  }
-}
-
 pub func tryDecodeNotifyResponse(body: in String): Option[NotifyResponse] {
   try {
     match NotifyResponse.fromJson(body) {
@@ -435,7 +341,6 @@ pub func tryDecodeJobSummary(body: in String): Option[JobSummary] {
 pub interface V2CallbackTransport {
   func createSecret(name: in String, reason: in String): Result[String, String]
   func pollSecret(requestId: in String): Result[String, String]
-  func createTodo(description: in String): Result[String, String]
   func uploadArtifact(fileName: in String, mimeType: in String, description: in String, contentBase64: in String, artifactScope: in String): Result[String, String]
   func remember(key: in String, value: in String): Result[String, String]
   func recallAll(): Result[String, String]
@@ -445,9 +350,6 @@ pub interface V2CallbackTransport {
   func listTasks(statusFilter: in String): Result[String, String]
   func completeTask(taskId: in String): Result[String, String]
   func notify(summary: in String, level: in String): Result[String, String]
-  func createSessionTodo(note: in String): Result[String, String]
-  func listSessionTodos(): Result[String, String]
-  func setSessionTodoStatus(todoId: in String, status: in String): Result[String, String]
   func scheduleJob(name: in String, prompt: in String, runAtEpochMillis: in String, intervalSeconds: in String): Result[String, String]
   func listJobs(): Result[String, String]
   func updateJob(jobId: in String, prompt: in String, profileId: in String, runAtEpochMillis: in String, intervalSeconds: in String, status: in String): Result[String, String]
@@ -506,8 +408,7 @@ func percentEncodeQueryValue(s: in String): String {
 /// Real V2CallbackTransport against the cloud-agents host API. Route shapes
 /// match CloudAgents.Callbacks / src/main.l's route table exactly
 /// (docs/phase6-mcp-callbacks.md §7): POST .../callbacks/secret, GET
-/// .../callbacks/secret/{rid}, POST .../callbacks/todo, POST
-/// .../callbacks/artifact.
+/// .../callbacks/secret/{rid}, POST .../callbacks/artifact.
 pub record HttpV2CallbackTransport {
   pub baseUrl: String
   pub sessionId: String
@@ -528,15 +429,6 @@ impl V2CallbackTransport for HttpV2CallbackTransport {
     CloudAgents.Shim.Transport.getWithBearer(
       self.baseUrl + "/api/sessions/" + self.sessionId + "/callbacks/secret/" + requestId,
       self.token
-    )
-  }
-
-  func createTodo(description: in String): Result[String, String] {
-    val body = CreateFollowupTaskRequest(description = description).toJson()
-    CloudAgents.Shim.Transport.postJsonWithBearer(
-      self.baseUrl + "/api/sessions/" + self.sessionId + "/callbacks/todo",
-      self.token,
-      body
     )
   }
 
@@ -619,31 +511,6 @@ impl V2CallbackTransport for HttpV2CallbackTransport {
     val body = NotifyRequest(summary = summary, level = level).toJson()
     CloudAgents.Shim.Transport.postJsonWithBearer(
       self.baseUrl + "/api/sessions/" + self.sessionId + "/callbacks/notify",
-      self.token,
-      body
-    )
-  }
-
-  func createSessionTodo(note: in String): Result[String, String] {
-    val body = CreateSessionTodoRequest(note = note).toJson()
-    CloudAgents.Shim.Transport.postJsonWithBearer(
-      self.baseUrl + "/api/sessions/" + self.sessionId + "/callbacks/todos",
-      self.token,
-      body
-    )
-  }
-
-  func listSessionTodos(): Result[String, String] {
-    CloudAgents.Shim.Transport.getWithBearer(
-      self.baseUrl + "/api/sessions/" + self.sessionId + "/callbacks/todos",
-      self.token
-    )
-  }
-
-  func setSessionTodoStatus(todoId: in String, status: in String): Result[String, String] {
-    val body = SetSessionTodoStatusRequest(status = status).toJson()
-    CloudAgents.Shim.Transport.postJsonWithBearer(
-      self.baseUrl + "/api/sessions/" + self.sessionId + "/callbacks/todos/" + todoId + "/status",
       self.token,
       body
     )

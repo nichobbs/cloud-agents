@@ -221,6 +221,29 @@ in a follow-up commit alongside two real review findings (an unvalidated
 branch name reaching raw GitHub API URLs, and two wasted API calls on the
 already-on-default-branch path) — see §6 of the phase doc for detail.
 
+## Session ledger 🟡 phases 1–2 complete
+
+| Deliverable | Status | Where |
+|-------------|--------|-------|
+| Pure core: vocabularies, validation, ref normalisation, work-item state machine, raise-only severity policy, summaries | ✅ added | `CloudAgents.Ledger.{Model,StateMachine,Policy,Summary}` (`src/ledger/`) |
+| Storage: migration `0037_session_ledger`, change cursor, optimistic transitions, claim-then-read feedback delivery, inbox query | ✅ added | `CloudAgents.Ledger.{Schema,Store}` |
+| Operations, tolerant tool-argument decoding, repo `.agent-ledger.json` policy (default branch) | ✅ added | `CloudAgents.Ledger.{Service,ToolArgs,RepoPolicy}` |
+| Agent callbacks + owner API + inbox routes | ✅ added | `CloudAgents.LedgerHandlers` (`src/handlers/ledger.l`), `src/main.l` |
+| Eight `ledger_*` shim tools; agent todo / follow-up tools retired | ✅ added | `shim/src/ledger_tools.l`, `docker/session-tools-guide.md`, Codex prompt prefix |
+| Next-run feedback nudge; ledger reviews in session attention | ✅ added | `nextRunPromptPrefix` (sessions + jobs), `sessionSummariesJson` |
+| PWA: ledger panel, entry detail, inbox, review actions, review badge | ✅ added | `frontend/src/components/Ledger*.tsx`, `frontend/src/pages/Inbox.tsx` |
+| Tests | ✅ added | `tests/ledger_{core,store,service}_tests.l`, `shim/tests/ledger_tools_tests.l`, `frontend/src/**/Ledger*.test.tsx`, `Inbox.test.tsx`, `lib/ledger.test.ts` |
+| Phase 3 GitHub reconciliation, Phase 4 observer | ⬜ not started | designed in `docs/session-ledger.md` §9 |
+
+See `docs/session-ledger.md` for the design, the recon of how the source spec
+(written for a Cloudflare Workers stack) maps onto this repo, and the
+consolidation. Verified live end to end, not just by unit tests: the real
+server plus the real `cloud-agents-shim` binary over stdio drove a batch
+(register, progress, a shortcut, a blocked item, an illegal move rejected
+in-band), the owner API rejected an entry, the agent collected that feedback
+exactly once, and finishing the blocking item auto-unblocked the dependent
+one; the PWA views were checked at phone width against the same server.
+
 ## Recent hardening (2026-07)
 
 - **Live output streaming.** `POST /api/sessions/{id}/messages` now streams the

@@ -1,12 +1,12 @@
 //! src/v2_tools.l — CloudAgents.Shim.V2Tools: MCP tool handlers for the v2
 //! (HTTP-callback) tool family, wrapping CloudAgents.Shim.V2Client's state
 //! machines in the wire shapes MCP `tools/call` expects. Started with
-//! phase 6 §7's request_secret/add_followup_task/report_artifact and has
-//! grown every phase since (phase 7's remember/recall/forget,
-//! add_task/list_tasks/complete_task, notify, add_todo/update_todo/
-//! list_todos; phase 8's schedule_job/list_jobs/update_job/cancel_job) —
-//! described here by family, not a fixed roster, so this header doesn't go
-//! stale again on the next addition (#890).
+//! phase 6 §7's request_secret/report_artifact and has grown every phase
+//! since (phase 7's remember/recall/forget, add_task/list_tasks/
+//! complete_task, notify; phase 8's schedule_job/list_jobs/update_job/
+//! cancel_job) — described here by family, not a fixed roster, so this
+//! header doesn't go stale again on the next addition (#890). The session
+//! ledger's ledger_* tools live in CloudAgents.Shim.LedgerTools.
 //!
 //! Every `call` implementation is wrapped in `try { } catch Bug as b { }`
 //! (docs/lyric/gotchas.md "FFI" — the extern-boundary exception-conversion
@@ -50,140 +50,6 @@ func getNumericString(a: in JsonValue, key: in String): String {
     case None -> match getFloat(a, key) {
       case Some(f) -> toString(f.toLong())
       case None -> match getString(a, key) { case Some(s) -> s; case None -> "" }
-    }
-  }
-}
-
-// ── add_todo / update_todo / list_todos (session todo plan) ──────────────────
-pub func addSessionTodoSchema(): JsonValue {
-  JObject(
-    fields = [
-      JsonField(name = "type", value = JString(value = "object")),
-      JsonField(
-        name = "properties",
-        value = JObject(
-          fields = [
-            stringSchemaField(
-              "note",
-              "One step of your working plan for this session, e.g. 'Migrate the auth handler to the new API'."
-            )
-          ]
-        )
-      ),
-      JsonField(name = "required", value = JArray(items = [JString(value = "note")]))
-    ]
-  )
-}
-
-pub record AddSessionTodoTool {
-  pub transport: V2CallbackTransport
-}
-
-func handleAddSessionTodo(tool: in AddSessionTodoTool, args: in Option[JsonValue]): McpToolResult {
-  val a = match args {
-    case Some(v) -> v
-    case None -> return toolErrorResult("missing arguments: 'note' is required")
-  }
-  val note = match getString(a, "note") {
-    case Some(n) -> n
-    case None -> return toolErrorResult("missing required argument 'note'")
-  }
-  return match CloudAgents.Shim.V2Client.addSessionTodo(tool.transport, note) {
-    case Ok(id) -> toolTextResult("created todo " + id)
-    case Err(message) -> toolErrorResult(message)
-  }
-}
-
-impl McpToolHandler for AddSessionTodoTool {
-  func call(args: in Option[JsonValue]): Result[McpToolResult, String] {
-    try {
-      Ok(value = handleAddSessionTodo(self, args))
-    } catch Bug as b {
-      Ok(value = toolErrorResult("internal error in cloud-agents-shim: " + b.message))
-    }
-  }
-}
-
-pub func updateSessionTodoSchema(): JsonValue {
-  JObject(
-    fields = [
-      JsonField(name = "type", value = JString(value = "object")),
-      JsonField(
-        name = "properties",
-        value = JObject(
-          fields = [
-            stringSchemaField("id", "The todo's id (returned by add_todo/list_todos)."),
-            stringSchemaField("status", "The new status: 'pending', 'in_progress', or 'done'.")
-          ]
-        )
-      ),
-      JsonField(
-        name = "required",
-        value = JArray(items = [JString(value = "id"), JString(value = "status")])
-      )
-    ]
-  )
-}
-
-pub record UpdateSessionTodoTool {
-  pub transport: V2CallbackTransport
-}
-
-func handleUpdateSessionTodo(tool: in UpdateSessionTodoTool, args: in Option[JsonValue]): McpToolResult {
-  val a = match args {
-    case Some(v) -> v
-    case None -> return toolErrorResult("missing arguments: 'id' and 'status' are required")
-  }
-  val id = match getString(a, "id") {
-    case Some(v) -> v
-    case None -> return toolErrorResult("missing required argument 'id'")
-  }
-  val status = match getString(a, "status") {
-    case Some(v) -> v
-    case None -> return toolErrorResult("missing required argument 'status'")
-  }
-  return match CloudAgents.Shim.V2Client.setSessionTodoStatus(tool.transport, id, status) {
-    case Ok(msg) -> toolTextResult(msg)
-    case Err(message) -> toolErrorResult(message)
-  }
-}
-
-impl McpToolHandler for UpdateSessionTodoTool {
-  func call(args: in Option[JsonValue]): Result[McpToolResult, String] {
-    try {
-      Ok(value = handleUpdateSessionTodo(self, args))
-    } catch Bug as b {
-      Ok(value = toolErrorResult("internal error in cloud-agents-shim: " + b.message))
-    }
-  }
-}
-
-pub func listSessionTodosSchema(): JsonValue {
-  JObject(
-    fields = [
-      JsonField(name = "type", value = JString(value = "object")),
-      JsonField(name = "properties", value = JObject(fields = []))
-    ]
-  )
-}
-
-pub record ListSessionTodosTool {
-  pub transport: V2CallbackTransport
-}
-
-func handleListSessionTodos(tool: in ListSessionTodosTool, args: in Option[JsonValue]): McpToolResult {
-  return match CloudAgents.Shim.V2Client.listSessionTodos(tool.transport) {
-    case Ok(listing) -> toolTextResult(listing)
-    case Err(message) -> toolErrorResult(message)
-  }
-}
-
-impl McpToolHandler for ListSessionTodosTool {
-  func call(args: in Option[JsonValue]): Result[McpToolResult, String] {
-    try {
-      Ok(value = handleListSessionTodos(self, args))
-    } catch Bug as b {
-      Ok(value = toolErrorResult("internal error in cloud-agents-shim: " + b.message))
     }
   }
 }
@@ -248,56 +114,6 @@ impl McpToolHandler for RequestSecretTool {
   func call(args: in Option[JsonValue]): Result[McpToolResult, String] {
     try {
       Ok(value = handleRequestSecret(self, args))
-    } catch Bug as b {
-      Ok(value = toolErrorResult("internal error in cloud-agents-shim: " + b.message))
-    }
-  }
-}
-
-// ── add_followup_task ─────────────────────────────────────────────────────────
-pub func addFollowupTaskSchema(): JsonValue {
-  JObject(
-    fields = [
-      JsonField(name = "type", value = JString(value = "object")),
-      JsonField(
-        name = "properties",
-        value = JObject(
-          fields = [
-            stringSchemaField(
-              "description",
-              "A short note describing the follow-up work for the human to pick up later."
-            )
-          ]
-        )
-      ),
-      JsonField(name = "required", value = JArray(items = [JString(value = "description")]))
-    ]
-  )
-}
-
-pub record AddFollowupTaskTool {
-  pub transport: V2CallbackTransport
-}
-
-func handleAddFollowupTask(tool: in AddFollowupTaskTool, args: in Option[JsonValue]): McpToolResult {
-  val a = match args {
-    case Some(v) -> v
-    case None -> return toolErrorResult("missing arguments: 'description' is required")
-  }
-  val description = match getString(a, "description") {
-    case Some(d) -> d
-    case None -> return toolErrorResult("missing required argument 'description'")
-  }
-  return match CloudAgents.Shim.V2Client.addFollowupTask(tool.transport, description) {
-    case Ok(id) -> toolTextResult("created follow-up task " + id)
-    case Err(message) -> toolErrorResult(message)
-  }
-}
-
-impl McpToolHandler for AddFollowupTaskTool {
-  func call(args: in Option[JsonValue]): Result[McpToolResult, String] {
-    try {
-      Ok(value = handleAddFollowupTask(self, args))
     } catch Bug as b {
       Ok(value = toolErrorResult("internal error in cloud-agents-shim: " + b.message))
     }
@@ -585,7 +401,7 @@ pub func addTaskSchema(): JsonValue {
           fields = [
             stringSchemaField(
               "description",
-              "A short description of work to track for future sessions on this repository (e.g. 'migrate the auth module'). Distinct from add_followup_task: this is a repo-scoped backlog item a future AGENT can complete, not a session-scoped note for the human."
+              "A short description of work to track for future sessions on this repository (e.g. 'migrate the auth module'). Distinct from the session ledger (ledger_*): this is a repo-scoped backlog item a future AGENT can complete, not part of this session's batch."
             )
           ]
         )

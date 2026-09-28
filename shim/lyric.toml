@@ -23,6 +23,7 @@ output_assembly = "cloud-agents-shim.dll"
 "CloudAgents.Shim.V2Transport" = "src/v2_transport.l"
 "CloudAgents.Shim.V2Client"    = "src/v2_client.l"
 "CloudAgents.Shim.V2Tools"     = "src/v2_tools.l"
+"CloudAgents.Shim.LedgerTools" = "src/ledger_tools.l"
 # Test-only fakes (FakeTransport / FakeV2Transport), registered as regular
 # packages rather than under [project.tests] so multiple test files can
 # `import` them by name — see tests/fakes.l's header comment.
@@ -36,6 +37,7 @@ output_assembly = "cloud-agents-shim.dll"
 "CloudAgents.Shim.V2ClientTests"        = "tests/v2_client_tests.l"
 "CloudAgents.Shim.V2ToolsTests"         = "tests/v2_tools_tests.l"
 "CloudAgents.Shim.TransportTests"       = "tests/transport_tests.l"
+"CloudAgents.Shim.LedgerToolsTests"     = "tests/ledger_tools_tests.l"
 
 [nuget]
 # Lyric.JsonRpc is a transitive dependency of Lyric.Mcp's own published

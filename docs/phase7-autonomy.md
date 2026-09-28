@@ -306,6 +306,11 @@ work items* that outlive a session: one session leaves "still need to
 migrate the auth module," a later session on the same repo lists the open
 items, does one, and marks it done.
 
+> **Note.** `add_followup_task` has since been retired in favour of the
+> session ledger (docs/session-ledger.md §7); this slice's repo-scoped task
+> list is unchanged and remains distinct from the ledger's per-session work
+> items.
+
 **Distinct from phase-6 `add_followup_task`** (deliberately not a rename of
 it). `add_followup_task` writes a **session-scoped** todo — a note *for the
 human* on the current session (`CloudAgents.Repository.addTodo` →

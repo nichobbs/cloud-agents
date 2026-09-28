@@ -30,6 +30,7 @@ import CloudAgents.Docker
 import CloudAgents.Handlers
 import CloudAgents.Proxy
 import CloudAgents.Repository
+import CloudAgents.Ledger.Service
 import CloudAgents.SessionStore
 import CloudAgents.Sqlite
 import CloudAgents.Text
@@ -624,7 +625,7 @@ func runOneJob(job: in CloudAgents.Repository.ScheduledJob): JobRunOutcome {
   val runResult = CloudAgents.Docker.runSessionMessageBlocking(
     repoUrl = session.repoUrl,
     branch = session.branch,
-    prompt = job.prompt,
+    prompt = CloudAgents.Ledger.Service.nextRunPromptPrefix(sessionId, job.userId, profileId) + job.prompt,
     sessionId = sessionId,
     harness = harness,
     model = session.model,

@@ -23,11 +23,6 @@ pub record FakeV2Transport {
   pub var pollSecretBodies: List[String]
   pub var pollSecretCallCount: Int
 
-  pub var createTodoOk: Bool
-  pub var createTodoBody: String
-  pub var createTodoError: String
-  pub var lastTodoDescription: String
-
   pub var uploadArtifactOk: Bool
   pub var uploadArtifactBody: String
   pub var uploadArtifactError: String
@@ -82,21 +77,6 @@ pub record FakeV2Transport {
   pub var lastNotifyLevel: String
   pub var notifyCallCount: Int
 
-  pub var createSessionTodoOk: Bool
-  pub var createSessionTodoBody: String
-  pub var createSessionTodoError: String
-  pub var lastSessionTodoNote: String
-
-  pub var listSessionTodosOk: Bool
-  pub var listSessionTodosBody: String
-  pub var listSessionTodosError: String
-
-  pub var setSessionTodoStatusOk: Bool
-  pub var setSessionTodoStatusBody: String
-  pub var setSessionTodoStatusError: String
-  pub var lastSessionTodoId: String
-  pub var lastSessionTodoStatus: String
-
   pub var scheduleJobOk: Bool
   pub var scheduleJobBody: String
   pub var scheduleJobError: String
@@ -137,10 +117,6 @@ pub func newFakeV2Transport(): FakeV2Transport {
     lastSecretReason = "",
     pollSecretBodies = newList(),
     pollSecretCallCount = 0,
-    createTodoOk = false,
-    createTodoBody = "",
-    createTodoError = "FakeV2Transport: createTodo not configured",
-    lastTodoDescription = "",
     uploadArtifactOk = false,
     uploadArtifactBody = "",
     uploadArtifactError = "FakeV2Transport: uploadArtifact not configured",
@@ -186,18 +162,6 @@ pub func newFakeV2Transport(): FakeV2Transport {
     lastNotifySummary = "",
     lastNotifyLevel = "",
     notifyCallCount = 0,
-    createSessionTodoOk = false,
-    createSessionTodoBody = "",
-    createSessionTodoError = "FakeV2Transport: createSessionTodo not configured",
-    lastSessionTodoNote = "",
-    listSessionTodosOk = false,
-    listSessionTodosBody = "",
-    listSessionTodosError = "FakeV2Transport: listSessionTodos not configured",
-    setSessionTodoStatusOk = false,
-    setSessionTodoStatusBody = "",
-    setSessionTodoStatusError = "FakeV2Transport: setSessionTodoStatus not configured",
-    lastSessionTodoId = "",
-    lastSessionTodoStatus = "",
     scheduleJobOk = false,
     scheduleJobBody = "",
     scheduleJobError = "FakeV2Transport: scheduleJob not configured",
@@ -244,15 +208,6 @@ impl V2CallbackTransport for FakeV2Transport {
     val body = nextScripted(self.pollSecretBodies, self.pollSecretCallCount)
     self.pollSecretCallCount = self.pollSecretCallCount + 1
     Ok(value = body)
-  }
-
-  func createTodo(description: in String): Result[String, String] {
-    self.lastTodoDescription = description
-    if self.createTodoOk {
-      Ok(value = self.createTodoBody)
-    } else {
-      Err(error = self.createTodoError)
-    }
   }
 
   func uploadArtifact(
@@ -348,33 +303,6 @@ impl V2CallbackTransport for FakeV2Transport {
       Ok(value = self.notifyBody)
     } else {
       Err(error = self.notifyError)
-    }
-  }
-
-  func createSessionTodo(note: in String): Result[String, String] {
-    self.lastSessionTodoNote = note
-    if self.createSessionTodoOk {
-      Ok(value = self.createSessionTodoBody)
-    } else {
-      Err(error = self.createSessionTodoError)
-    }
-  }
-
-  func listSessionTodos(): Result[String, String] {
-    if self.listSessionTodosOk {
-      Ok(value = self.listSessionTodosBody)
-    } else {
-      Err(error = self.listSessionTodosError)
-    }
-  }
-
-  func setSessionTodoStatus(todoId: in String, status: in String): Result[String, String] {
-    self.lastSessionTodoId = todoId
-    self.lastSessionTodoStatus = status
-    if self.setSessionTodoStatusOk {
-      Ok(value = self.setSessionTodoStatusBody)
-    } else {
-      Err(error = self.setSessionTodoStatusError)
     }
   }
 

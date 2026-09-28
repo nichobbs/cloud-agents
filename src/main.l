@@ -13,6 +13,7 @@ import CloudAgents.Handlers
 import CloudAgents.Highlights
 import CloudAgents.Interactions
 import CloudAgents.Jobs
+import CloudAgents.LedgerHandlers
 import CloudAgents.Library
 import CloudAgents.OAuth
 import CloudAgents.OpenPr
@@ -328,10 +329,6 @@ func secretDecisionResp(r: in Result[SecretDecision, Web.ApiError]): Web.Respons
   return match r { case Ok(v) -> jsonResp(200, v.toJson()); case Err(e) -> Web.errorResponse(e) }
 }
 
-func createFollowupTaskResp(r: in Result[CreateFollowupTaskResponse, Web.ApiError]): Web.Response {
-  return match r { case Ok(v) -> jsonResp(200, v.toJson()); case Err(e) -> Web.errorResponse(e) }
-}
-
 func uploadArtifactResp(r: in Result[UploadArtifactResponse, Web.ApiError]): Web.Response {
   return match r { case Ok(v) -> jsonResp(200, v.toJson()); case Err(e) -> Web.errorResponse(e) }
 }
@@ -353,14 +350,6 @@ func memoryListResp(r: in Result[MemoryListResponse, Web.ApiError]): Web.Respons
 }
 
 func forgetResp(r: in Result[ForgetResponse, Web.ApiError]): Web.Response {
-  return match r { case Ok(v) -> jsonResp(200, v.toJson()); case Err(e) -> Web.errorResponse(e) }
-}
-
-func createSessionTodoResp(r: in Result[CreateSessionTodoResponse, Web.ApiError]): Web.Response {
-  return match r { case Ok(v) -> jsonResp(200, v.toJson()); case Err(e) -> Web.errorResponse(e) }
-}
-
-func setSessionTodoStatusResp(r: in Result[SetSessionTodoStatusResponse, Web.ApiError]): Web.Response {
   return match r { case Ok(v) -> jsonResp(200, v.toJson()); case Err(e) -> Web.errorResponse(e) }
 }
 
@@ -1219,8 +1208,8 @@ impl Web.Handler for RouteReportProgress {
   }
 }
 
-// ─── Phase 6 §7 v2 tools: request_secret / add_followup_task /
-// report_artifact routes (callbacks.l) ───────────────────────────────────────
+// ─── Phase 6 §7 v2 tools: request_secret / report_artifact routes
+// (callbacks.l) ────────────────────────────────────────────────────────────────
 record RouteCreateSecretRequest {
 }
 
@@ -1255,52 +1244,123 @@ impl Web.Handler for RouteAnswerSecretRequest {
   }
 }
 
-record RouteCreateFollowupTask {
+// ─── Session ledger (src/handlers/ledger.l, docs/session-ledger.md) ──────────
+pub func ledgerJsonResp(r: in Result[String, Web.ApiError]): Web.Response {
+  return match r { case Ok(s) -> jsonResp(200, s); case Err(e) -> Web.errorResponse(e) }
 }
 
-impl Web.Handler for RouteCreateFollowupTask {
+func ledgerEnvelopeJson(r: in Result[LedgerToolEnvelope, Web.ApiError]): Result[String, Web.ApiError] {
+  return match r { case Ok(v) -> Ok(value = v.toJson()); case Err(e) -> Err(error = e) }
+}
+
+func ledgerSnapshotJson(r: in Result[CloudAgents.Ledger.Service.LedgerSnapshot, Web.ApiError]): Result[String, Web.ApiError] {
+  return match r { case Ok(v) -> Ok(value = v.toJson()); case Err(e) -> Err(error = e) }
+}
+
+func ledgerEntryDetailJson(r: in Result[CloudAgents.Ledger.Service.EntryDetail, Web.ApiError]): Result[String, Web.ApiError] {
+  return match r { case Ok(v) -> Ok(value = v.toJson()); case Err(e) -> Err(error = e) }
+}
+
+func ledgerFeedbackJson(r: in Result[CloudAgents.Ledger.Model.Feedback, Web.ApiError]): Result[String, Web.ApiError] {
+  return match r { case Ok(v) -> Ok(value = v.toJson()); case Err(e) -> Err(error = e) }
+}
+
+func ledgerRegisterJson(r: in Result[CloudAgents.Ledger.Service.RegisterReply, Web.ApiError]): Result[String, Web.ApiError] {
+  return match r { case Ok(v) -> Ok(value = v.toJson()); case Err(e) -> Err(error = e) }
+}
+
+func ledgerItemJson(r: in Result[CloudAgents.Ledger.Model.WorkItem, Web.ApiError]): Result[String, Web.ApiError] {
+  return match r { case Ok(v) -> Ok(value = v.toJson()); case Err(e) -> Err(error = e) }
+}
+
+func ledgerInboxJson(r: in Result[CloudAgents.Ledger.Service.InboxView, Web.ApiError]): Result[String, Web.ApiError] {
+  return match r { case Ok(v) -> Ok(value = v.toJson()); case Err(e) -> Err(error = e) }
+}
+
+record RouteLedgerCallback {
+}
+
+impl Web.Handler for RouteLedgerCallback {
   func handle(req: in Web.Request): Web.Response {
-    val id = pparam(req, "id")
-    val decoded = match CreateFollowupTaskRequest.fromJson(req.body) { case Ok(d) -> d; case Err(_) -> return badBody() }
-    return createFollowupTaskResp(CloudAgents.Callbacks.createFollowupTaskHandler(id, callbackAuthHeader(req), decoded))
-  }
-}
-
-// ─── Session todo plan: container-originated (callbacks.l) + user status ────
-record RouteCreateSessionTodo {
-}
-
-impl Web.Handler for RouteCreateSessionTodo {
-  func handle(req: in Web.Request): Web.Response {
-    val id = pparam(req, "id")
-    val decoded = match CreateSessionTodoRequest.fromJson(req.body) { case Ok(d) -> d; case Err(_) -> return badBody() }
-    return createSessionTodoResp(CloudAgents.Callbacks.createSessionTodoHandler(id, callbackAuthHeader(req), decoded))
-  }
-}
-
-record RouteListSessionTodos {
-}
-
-impl Web.Handler for RouteListSessionTodos {
-  func handle(req: in Web.Request): Web.Response {
-    return todoListResp(CloudAgents.Callbacks.listSessionTodosHandler(pparam(req, "id"), callbackAuthHeader(req)))
-  }
-}
-
-record RouteSetSessionTodoStatus {
-}
-
-impl Web.Handler for RouteSetSessionTodoStatus {
-  func handle(req: in Web.Request): Web.Response {
-    val id = pparam(req, "id")
-    val tid = pparam(req, "tid")
-    val decoded = match SetSessionTodoStatusRequest.fromJson(req.body) {
-      case Ok(d) -> d
-      case Err(_) -> return badBody()
-    }
-    return setSessionTodoStatusResp(
-      CloudAgents.Callbacks.setSessionTodoStatusHandler(id, tid, callbackAuthHeader(req), decoded)
+    return ledgerJsonResp(
+      ledgerEnvelopeJson(
+        CloudAgents.LedgerHandlers.ledgerCallbackHandler(pparam(req, "id"), pparam(req, "op"), callbackAuthHeader(req), req.body)
+      )
     )
+  }
+}
+
+record RouteGetLedger {
+}
+
+impl Web.Handler for RouteGetLedger {
+  func handle(req: in Web.Request): Web.Response {
+    return ledgerJsonResp(ledgerSnapshotJson(CloudAgents.LedgerHandlers.getLedgerHandler(pparam(req, "id"), qparam(req, "after"))))
+  }
+}
+
+record RouteGetLedgerEntry {
+}
+
+impl Web.Handler for RouteGetLedgerEntry {
+  func handle(req: in Web.Request): Web.Response {
+    return ledgerJsonResp(
+      ledgerEntryDetailJson(CloudAgents.LedgerHandlers.getLedgerEntryHandler(pparam(req, "id"), pparam(req, "eid")))
+    )
+  }
+}
+
+record RouteReviewLedgerEntry {
+}
+
+impl Web.Handler for RouteReviewLedgerEntry {
+  func handle(req: in Web.Request): Web.Response {
+    val decoded = match CloudAgents.LedgerHandlers.decodeReviewBody(req.body) { case Some(d) -> d; case None -> return badBody() }
+    return ledgerJsonResp(
+      ledgerFeedbackJson(CloudAgents.LedgerHandlers.reviewLedgerEntryHandler(pparam(req, "id"), pparam(req, "eid"), decoded))
+    )
+  }
+}
+
+record RouteLedgerFeedback {
+}
+
+impl Web.Handler for RouteLedgerFeedback {
+  func handle(req: in Web.Request): Web.Response {
+    val decoded = match CloudAgents.LedgerHandlers.decodeFeedbackBody(req.body) { case Some(d) -> d; case None -> return badBody() }
+    return ledgerJsonResp(ledgerFeedbackJson(CloudAgents.LedgerHandlers.ledgerFeedbackHandler(pparam(req, "id"), decoded)))
+  }
+}
+
+record RouteAddLedgerItems {
+}
+
+impl Web.Handler for RouteAddLedgerItems {
+  func handle(req: in Web.Request): Web.Response {
+    val decoded = match CloudAgents.LedgerHandlers.decodeAddItemsBody(req.body) {
+      case Some(d) -> d
+      case None -> return badBody()
+    }
+    return ledgerJsonResp(ledgerRegisterJson(CloudAgents.LedgerHandlers.addLedgerItemsHandler(pparam(req, "id"), decoded)))
+  }
+}
+
+record RouteLedgerItemState {
+}
+
+impl Web.Handler for RouteLedgerItemState {
+  func handle(req: in Web.Request): Web.Response {
+    val decoded = match CloudAgents.LedgerHandlers.decodeItemStateBody(req.body) { case Some(d) -> d; case None -> return badBody() }
+    return ledgerJsonResp(ledgerItemJson(CloudAgents.LedgerHandlers.ledgerItemStateHandler(pparam(req, "id"), decoded)))
+  }
+}
+
+record RouteLedgerInbox {
+}
+
+impl Web.Handler for RouteLedgerInbox {
+  func handle(req: in Web.Request): Web.Response {
+    return ledgerJsonResp(ledgerInboxJson(CloudAgents.LedgerHandlers.ledgerInboxHandler()))
   }
 }
 
@@ -2011,12 +2071,11 @@ pub func main(): Unit {
   router = Web.addPost(router, "/api/sessions/{id}/callbacks/progress", RouteReportProgress())
   router = Web.addGet(router, "/api/sessions/{id}/callbacks/pending", RouteListPendingCallbacks())
 
-  // Phase 6 §7 v2 tools: request_secret (create/poll/answer), add_followup_task
-  // (todo create), report_artifact (upload) + user-facing artifact list/download.
+  // Phase 6 §7 v2 tools: request_secret (create/poll/answer), report_artifact
+  // (upload) + user-facing artifact list/download.
   router = Web.addPost(router, "/api/sessions/{id}/callbacks/secret", RouteCreateSecretRequest())
   router = Web.addGet(router, "/api/sessions/{id}/callbacks/secret/{rid}", RouteGetSecretRequest())
   router = Web.addPost(router, "/api/sessions/{id}/callbacks/secret/{rid}/answer", RouteAnswerSecretRequest())
-  router = Web.addPost(router, "/api/sessions/{id}/callbacks/todo", RouteCreateFollowupTask())
   router = Web.addPost(router, "/api/sessions/{id}/callbacks/artifact", RouteUploadArtifact())
   router = Web.addGet(router, "/api/sessions/{id}/artifacts", RouteListArtifacts())
   router = Web.addGet(router, "/api/sessions/{id}/artifacts/{aid}", RouteDownloadArtifact())
@@ -2055,12 +2114,17 @@ pub func main(): Unit {
   router = Web.addPost(router, "/api/sessions/{id}/callbacks/tasks/{tid}/complete", RouteCompleteTask())
   router = Web.addGet(router, "/api/sessions/{id}/tasks", RouteListSessionTasks())
 
-  // Session todo plan: container-originated add_todo / list_todos /
-  // update_todo (three-state status), sharing the same `todos` storage the
-  // human-facing todo routes above use.
-  router = Web.addPost(router, "/api/sessions/{id}/callbacks/todos", RouteCreateSessionTodo())
-  router = Web.addGet(router, "/api/sessions/{id}/callbacks/todos", RouteListSessionTodos())
-  router = Web.addPost(router, "/api/sessions/{id}/callbacks/todos/{tid}/status", RouteSetSessionTodoStatus())
+  // Session ledger (docs/session-ledger.md): the agent's ledger_* tools
+  // (container callback auth, one route dispatching on {op}), the owner's
+  // review/feedback API, and the cross-session inbox.
+  router = Web.addPost(router, "/api/sessions/{id}/callbacks/ledger/{op}", RouteLedgerCallback())
+  router = Web.addGet(router, "/api/sessions/{id}/ledger", RouteGetLedger())
+  router = Web.addGet(router, "/api/sessions/{id}/ledger/entries/{eid}", RouteGetLedgerEntry())
+  router = Web.addPost(router, "/api/sessions/{id}/ledger/entries/{eid}/review", RouteReviewLedgerEntry())
+  router = Web.addPost(router, "/api/sessions/{id}/ledger/feedback", RouteLedgerFeedback())
+  router = Web.addPost(router, "/api/sessions/{id}/ledger/items", RouteAddLedgerItems())
+  router = Web.addPost(router, "/api/sessions/{id}/ledger/item-state", RouteLedgerItemState())
+  router = Web.addGet(router, "/api/ledger/inbox", RouteLedgerInbox())
 
   // Session highlights: the summarizer-extracted notable items feed
   // (CloudAgents.Highlights) — list + user-triggered refresh.

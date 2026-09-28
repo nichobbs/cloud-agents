@@ -134,7 +134,7 @@ create-fallback-branch.sh "entrypoint-gemini" "${HARNESS}" "${BRANCH}" "${SESSIO
 
 # Register (or strip) the cloud-agents MCP callback shim in
 # .gemini/settings.json, reconciled every message — gives Gemini CLI the
-# add_todo/update_todo/report_progress/... tools
+# ledger_*/report_progress/... tools
 # (docker/register-callbacks-mcp.sh). Best-effort: a registration hiccup
 # must never block the prompt run.
 if [ -f /usr/local/bin/register-callbacks-mcp.sh ]; then

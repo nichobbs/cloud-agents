@@ -240,7 +240,11 @@ transcript, and never grants without a human in the loop:
    transcripts or streamed output.
 5. Timeout/deny → tool result is a denial message; fail closed.
 
-### 7.2 `add_followup_task(description)`
+### 7.2 `add_followup_task(description)`> **Retired.** `add_followup_task` was replaced by the session ledger's
+> `ledger_note` (docs/session-ledger.md §7); its route and shim tool are
+> gone. The section below is kept as the historical design.
+
+
 
 Shim `POST …/callbacks/todo` `{description}` → the same todo storage
 `CloudAgents.Interactions.addTodoHandler` uses (anchored to the

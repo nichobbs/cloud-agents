@@ -2,6 +2,7 @@
 
 import type { Attachment, AttachmentInput, Comment, Credential, Highlight, McpServer, Message, OpenPrResult, PendingCallbacksResponse, Profile, Prompt, RefreshHighlightsResult, Run, SearchMessagesResult, SessionGroup, Skill, Subagent, Todo, Webhook, WorkspaceDiff, WorkspaceFileContent, WorkspaceFileEntry } from '../types';
 import { completeLogin, isSignedIn, setReturnPath, signOut } from './auth';
+import type { EntryDetail, InboxEntry, LedgerFeedback, LedgerSnapshot, WorkItem } from './ledger';
 
 const BASE = (import.meta.env['VITE_API_URL'] as string | undefined) ?? '';
 
@@ -29,6 +30,8 @@ export interface ServerSession {
   pendingCount?: string;
   parentSessionId?: string;
   forkedFromMessageId?: string;
+  /** Ledger entries awaiting the owner's review (docs/session-ledger.md). */
+  ledgerAttention?: string;
   attention?: string;
 }
 
@@ -97,6 +100,20 @@ export async function apiFetch(input: RequestInfo | URL, init?: RequestInit): Pr
   }
 
   return res;
+}
+
+/** The server's `{"message": ...}` error text for a failed response, so a
+ *  validation failure (e.g. "body is required for reject") reads as the
+ *  server phrased it; falls back to status + raw body. */
+async function errorMessage(res: Response): Promise<string> {
+  const text = await res.text();
+  try {
+    const parsed = JSON.parse(text) as { message?: unknown };
+    if (typeof parsed.message === 'string' && parsed.message) return parsed.message;
+  } catch {
+    /* not JSON */
+  }
+  return `${res.status} ${text}`;
 }
 
 /** Ensure `tags` is always an array (older responses may omit it). */
@@ -638,6 +655,89 @@ export const api = {
   },
 
   // ─── Session highlights (summarizer-extracted notable items) ────────────────
+
+  // ─── Session ledger (docs/session-ledger.md) ─────────────────────────────────
+
+  /** The session ledger; with `after` (a previous `cursor`) only what changed
+   *  since. */
+  getLedger: async (sessionId: string, after = '0'): Promise<LedgerSnapshot> => {
+    const res = await apiFetch(`${BASE}/api/sessions/${sessionId}/ledger?after=${encodeURIComponent(after)}`, {
+      headers: authHeaders(),
+    });
+    if (!res.ok) throw new Error(`${res.status} ${await res.text()}`);
+    return (await res.json()) as LedgerSnapshot;
+  },
+
+  getLedgerEntry: async (sessionId: string, entryId: string): Promise<EntryDetail> => {
+    const res = await apiFetch(`${BASE}/api/sessions/${sessionId}/ledger/entries/${encodeURIComponent(entryId)}`, {
+      headers: authHeaders(),
+    });
+    if (!res.ok) throw new Error(`${res.status} ${await res.text()}`);
+    return (await res.json()) as EntryDetail;
+  },
+
+  /** Approve / reject / comment on an entry; the agent receives it as feedback. */
+  reviewLedgerEntry: async (
+    sessionId: string,
+    entryId: string,
+    kind: 'approve' | 'reject' | 'comment',
+    body: string,
+  ): Promise<LedgerFeedback> => {
+    const res = await apiFetch(
+      `${BASE}/api/sessions/${sessionId}/ledger/entries/${encodeURIComponent(entryId)}/review`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...authHeaders() },
+        body: JSON.stringify({ kind, body }),
+      },
+    );
+    if (!res.ok) throw new Error(await errorMessage(res));
+    return (await res.json()) as LedgerFeedback;
+  },
+
+  /** A directive or comment for the agent, session-wide or about one item. */
+  giveLedgerFeedback: async (
+    sessionId: string,
+    item: string,
+    kind: 'directive' | 'comment',
+    body: string,
+  ): Promise<LedgerFeedback> => {
+    const res = await apiFetch(`${BASE}/api/sessions/${sessionId}/ledger/feedback`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', ...authHeaders() },
+      body: JSON.stringify({ item, kind, body }),
+    });
+    if (!res.ok) throw new Error(await errorMessage(res));
+    return (await res.json()) as LedgerFeedback;
+  },
+
+  addLedgerItems: async (sessionId: string, items: Array<{ id: string; title: string; url: string }>): Promise<void> => {
+    const res = await apiFetch(`${BASE}/api/sessions/${sessionId}/ledger/items`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', ...authHeaders() },
+      body: JSON.stringify({ items }),
+    });
+    if (!res.ok) throw new Error(await errorMessage(res));
+  },
+
+  /** A human item transition (unblock, skip, requeue, reopen). */
+  setLedgerItemState: async (sessionId: string, item: string, to: string, reason: string): Promise<WorkItem> => {
+    const res = await apiFetch(`${BASE}/api/sessions/${sessionId}/ledger/item-state`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', ...authHeaders() },
+      body: JSON.stringify({ item, to, reason }),
+    });
+    if (!res.ok) throw new Error(await errorMessage(res));
+    return (await res.json()) as WorkItem;
+  },
+
+  /** Every entry awaiting review across the user's sessions. */
+  getLedgerInbox: async (): Promise<InboxEntry[]> => {
+    const res = await apiFetch(`${BASE}/api/ledger/inbox`, { headers: authHeaders() });
+    if (!res.ok) throw new Error(`${res.status} ${await res.text()}`);
+    const body = (await res.json()) as { entries?: InboxEntry[] };
+    return body.entries ?? [];
+  },
 
   getHighlights: async (sessionId: string): Promise<Highlight[]> => {
     const res = await apiFetch(`${BASE}/api/sessions/${sessionId}/highlights`, {

@@ -1,9 +1,9 @@
 //! src/v2_client.l — CloudAgents.Shim.V2Client: the state machines behind
-//! the three phase-6 §7 v2 tools (docs/phase6-mcp-callbacks.md):
-//! request_secret (long-poll, like request_permission, but writes the
-//! approved value to a container-local file instead of returning it),
-//! add_followup_task (a single create call), report_artifact (reads and
-//! base64-encodes a local file, then a single upload call).
+//! the phase-6 §7 v2 tools (docs/phase6-mcp-callbacks.md) and their
+//! phase 7/8 successors: request_secret (long-poll, like request_permission,
+//! but writes the approved value to a container-local file instead of
+//! returning it), report_artifact (reads and base64-encodes a local file,
+//! then a single upload call), and single-call create/list/update tools.
 //!
 //! Fully synchronous, same reasoning as CloudAgents.Shim.Callbacks' module
 //! doc: importable directly from a `@test_module` (docs/lyric/gotchas.md —
@@ -254,22 +254,9 @@ pub func requestSecretWithClock(
   }
 }
 
-// ── add_followup_task ─────────────────────────────────────────────────────────
-/// Create a follow-up task (todo) for the human, returning its id.
-pub func addFollowupTask(transport: in V2CallbackTransport, description: in String): Result[String, String] {
-  val created = match transport.createTodo(description) {
-    case Ok(body) -> body
-    case Err(e) -> return Err(error = "failed to reach the cloud-agents host: " + e)
-  }
-  return match tryDecodeCreateFollowupTaskResponse(created) {
-    case Some(r) -> Ok(value = r.id)
-    case None -> Err(error = "malformed response from the cloud-agents host when creating the follow-up task")
-  }
-}
-
 // ── notify (phase 7 §5) ───────────────────────────────────────────────────────
 /// Fire-and-forget push to the human that an autonomous run reached a
-/// milestone. Single POST, no polling — same shape as addFollowupTask above.
+/// milestone. Single POST, no polling.
 pub func notify(transport: in V2CallbackTransport, summary: in String, level: in String): Result[String, String] {
   val created = match transport.notify(summary, level) {
     case Ok(body) -> body
@@ -406,61 +393,6 @@ pub func completeTask(transport: in V2CallbackTransport, taskId: in String): Res
   return match tryDecodeCompleteTaskResponse(body) {
     case Some(r) -> Ok(value = "completed task '" + r.id + "'")
     case None -> Err(error = "malformed response from the cloud-agents host when completing the task")
-  }
-}
-
-// ── add_todo / update_todo / list_todos (session todo plan) ──────────────────
-/// Create a 'pending' item on this session's todo list, returning its
-/// host-assigned id.
-pub func addSessionTodo(transport: in V2CallbackTransport, note: in String): Result[String, String] {
-  val created = match transport.createSessionTodo(note) {
-    case Ok(body) -> body
-    case Err(e) -> return Err(error = "failed to reach the cloud-agents host: " + e)
-  }
-  return match tryDecodeCreateSessionTodoResponse(created) {
-    case Some(r) -> Ok(value = r.id)
-    case None -> Err(error = "malformed response from the cloud-agents host when creating the todo")
-  }
-}
-
-/// List this session's todos. Renders as `id [status]: note` lines, newest
-/// first (the host's own ordering), mirroring listTasks' rendering.
-pub func listSessionTodos(transport: in V2CallbackTransport): Result[String, String] {
-  val body = match transport.listSessionTodos() {
-    case Ok(b) -> b
-    case Err(e) -> return Err(error = "failed to reach the cloud-agents host: " + e)
-  }
-  val list = match tryDecodeSessionTodoListResponse(body) {
-    case Some(r) -> r
-    case None -> return Err(error = "malformed response from the cloud-agents host when listing todos")
-  }
-  if list.todos.length == 0 {
-    return Ok(value = "no todos on this session yet")
-  }
-  var acc = ""
-  var i = 0
-  while i < list.todos.length {
-    val t = list.todos[i]
-    if i > 0 {
-      acc = acc + "\n"
-    }
-    acc = acc + t.id + " [" + t.status + "]: " + t.note
-    i = i + 1
-  }
-  return Ok(value = acc)
-}
-
-/// Set a session todo's status (pending/in_progress/done).
-pub func setSessionTodoStatus(
-  transport: in V2CallbackTransport, todoId: in String, status: in String
-): Result[String, String] {
-  val body = match transport.setSessionTodoStatus(todoId, status) {
-    case Ok(b) -> b
-    case Err(e) -> return Err(error = "failed to reach the cloud-agents host: " + e)
-  }
-  return match tryDecodeSetSessionTodoStatusResponse(body) {
-    case Some(r) -> Ok(value = "todo '" + r.id + "' is now " + r.status)
-    case None -> Err(error = "malformed response from the cloud-agents host when updating the todo")
   }
 }
 

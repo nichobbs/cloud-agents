@@ -25,12 +25,13 @@ export function SessionCard({ session, compact }: SessionCardProps) {
   const status = session.status ?? '';
   const attention = sessionAttention(session);
   const attentionMeta = ATTENTION_META[attention];
+  const toReview = parseInt(session.ledgerAttention ?? '0', 10) || 0;
 
   return (
     <Link to={`/sessions/${session.sessionId}`} style={{ textDecoration: 'none' }}>
       <div style={compact ? compactCardStyle : cardStyle}>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: '8px' }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: '8px', minWidth: 0 }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '8px', minWidth: 0, flexWrap: 'wrap' }}>
             <span
               className={attention === 'working' ? 'attention-dot attention-dot--working' : 'attention-dot'}
               style={{ ...statusDotStyle, background: attentionMeta.color }}
@@ -55,6 +56,11 @@ export function SessionCard({ session, compact }: SessionCardProps) {
               </span>
             )}
             {status === 'RUNNING' && <span style={runningBadgeStyle}>running</span>}
+            {toReview > 0 && (
+              <span style={reviewBadgeStyle} title="Session ledger entries awaiting your review">
+                {toReview} to review
+              </span>
+            )}
           </div>
           <span
             style={{ fontSize: '12px', color: '#484f58', flexShrink: 0 }}
@@ -125,4 +131,14 @@ const harnessBadgeStyle: React.CSSProperties = {
   border: '1px solid #30363d',
   borderRadius: '4px',
   padding: '0 6px',
+};
+
+const reviewBadgeStyle: React.CSSProperties = {
+  fontSize: '11px',
+  color: '#d29922',
+  background: 'rgba(210, 153, 34, 0.1)',
+  border: '1px solid rgba(210, 153, 34, 0.35)',
+  borderRadius: '10px',
+  padding: '1px 6px',
+  whiteSpace: 'nowrap',
 };

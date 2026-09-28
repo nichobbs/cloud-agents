@@ -858,8 +858,10 @@ pub func streamSessionMessage(
   // Phase 7 §5 (docs/phase7-autonomy.md): same cursor pattern, for the
   // notify tool's `notification` event.
   var notificationCursor = toString(startMs)
-  // Same cursor pattern, for the session todo plan's `todo_update` event
-  // (add_todo/update_todo MCP tools) — keyed on todos.updated_at (migration
+  // Same cursor pattern, for the todo panel's `todo_update` event (human
+  // todo edits made from another tab or device while this run streams; the
+  // agent reports through the session ledger instead, docs/session-ledger.md)
+  // — keyed on todos.updated_at (migration
   // 0024) rather than created_at, since a status flip on an existing row is
   // exactly what the panel needs to hear about.
   var todoCursor = toString(startMs)
@@ -1067,8 +1069,8 @@ pub func streamSessionMessage(
         }
         case Err(_) -> ()
       }
-      // Session todo plan: forward todos created/status-changed since the
-      // last tick (add_todo/update_todo MCP tools), same best-effort
+      // Todo panel: forward todos created/status-changed since the last tick
+      // (human edits from another tab or device), same best-effort
       // forwarding as the others above, cursored on updated_at. Like every
       // strictly-greater cursor in this loop, an update landing in the SAME
       // millisecond as the cursor after its read can be skipped (#803) —

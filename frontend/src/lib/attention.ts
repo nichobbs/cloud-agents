@@ -28,7 +28,10 @@ function toMillis(v: string | undefined): number {
 export function sessionAttention(s: Session): Attention {
   const a = s.attention;
   if (a === 'working' || a === 'pending' || a === 'viewed' || a === 'idle') return a;
-  const pendingCount = parseInt(s.pendingCount ?? '0', 10) || 0;
+  // Pending callbacks and ledger entries awaiting review both need the owner
+  // (mirrors the backend's attentionFor input, session_manager.l).
+  const pendingCount =
+    (parseInt(s.pendingCount ?? '0', 10) || 0) + (parseInt(s.ledgerAttention ?? '0', 10) || 0);
   const last = toMillis(s.lastMessageAt);
   const viewed = toMillis(s.lastViewedAt);
   if (pendingCount > 0) return 'pending';

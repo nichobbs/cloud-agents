@@ -6,6 +6,7 @@ import { AttentionStatus } from './AttentionStatus';
 
 const NAV_ITEMS: Array<{ to: string; label: string }> = [
   { to: '/sessions', label: 'Sessions' },
+  { to: '/inbox', label: 'Inbox' },
   { to: '/repos', label: 'Repos' },
   { to: '/prompts', label: 'Prompts' },
   { to: '/search', label: 'Search' },

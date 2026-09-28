@@ -2,7 +2,7 @@
 # docker/register-callbacks-mcp.sh — registers the cloud-agents MCP callback
 # shim (cloud-agents-shim, docs/phase6-mcp-callbacks.md) in a NON-CLAUDE
 # harness's native MCP config, so opencode/codex/gemini/antigravity get the same
-# add_todo/update_todo/report_progress/... tools the claude harness has had
+# ledger_*/report_progress/... tools the claude harness has had
 # since Phase 6. The claude harness keeps its own, more involved
 # reconciliation in entrypoint.sh (its registration is coupled to the
 # --permission-prompt-tool contract); this script deliberately covers only

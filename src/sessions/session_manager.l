@@ -389,18 +389,26 @@ pub func sessionSummariesJson(): Result[String, CloudAgents.Sqlite.DbError] {
     }
     val r = CloudAgents.Sqlite.getRowArrayValue(rows, i)
     // Column order matches CloudAgents.Db's sessionColumns (see rowToSession),
-    // plus one trailing computed column: the pending-callback count
-    // (listSessionSummariesByUserSql). `attention` is derived, not stored —
+    // plus two trailing computed columns: the pending-callback count and
+    // the ledger attention count (listSessionSummariesByUserSql). `attention` is derived, not stored —
     // the pure CloudAgents.Db.attentionFor over status / lastMessageAt /
     // lastViewedAt / pendingCount. New fields are APPENDED to each object so
     // existing consumers of the earlier fields are untouched; every value is
     // a string, matching this projection's TEXT-only convention. attention's
     // four values are fixed lowercase literals, safe to embed unescaped.
+    // A session with ledger entries awaiting review needs its owner just as
+    // a pending callback does; attentionFor only asks whether the count is
+    // non-zero, so pick whichever count is (no Long arithmetic — see
+    // docs/lyric/gotchas.md on Int64 subtract/compare crashes).
+    var waitingText = colAt(r.cols, 16)
+    if waitingText == "0" or waitingText.length == 0 {
+      waitingText = colAt(r.cols, 17)
+    }
     val attention = CloudAgents.Db.attentionFor(
       colAt(r.cols, 8),
       CloudAgents.Db.parseEpochMillisText(colAt(r.cols, 10)),
       CloudAgents.Db.parseEpochMillisText(colAt(r.cols, 13)),
-      CloudAgents.Db.parseEpochMillisText(colAt(r.cols, 16))
+      CloudAgents.Db.parseEpochMillisText(waitingText)
     )
     json = json + "{\"sessionId\":\"" + jsonEscapeField(colAt(r.cols, 0)) + "\",\"repoUrl\":\"" +
       jsonEscapeField(colAt(r.cols, 2)) +
@@ -428,6 +436,8 @@ pub func sessionSummariesJson(): Result[String, CloudAgents.Sqlite.DbError] {
       jsonEscapeField(colAt(r.cols, 15)) +
       "\",\"pendingCount\":\"" +
       jsonEscapeField(colAt(r.cols, 16)) +
+      "\",\"ledgerAttention\":\"" +
+      jsonEscapeField(colAt(r.cols, 17)) +
       "\",\"attention\":\"" +
       attention +
       "\"}"

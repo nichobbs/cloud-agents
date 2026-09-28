@@ -1,8 +1,8 @@
 //! src/main.l — CloudAgents.Shim: cloud-agents-shim, the in-container MCP
-//! callback server (docs/phase6-mcp-callbacks.md). Registers the twenty
-//! callback tools (phases 6-8; see the addTool calls below, each gated by
-//! CloudAgents.Shim.Config.toolIsEnabled) against Mcp.Server and serves
-//! them over stdio.
+//! callback server (docs/phase6-mcp-callbacks.md). Registers the callback
+//! tools (phases 6-8 plus the session ledger's ledger_* tools; see the
+//! addTool calls below, each gated by CloudAgents.Shim.Config.toolIsEnabled)
+//! against Mcp.Server and serves them over stdio.
 //!
 //! Environment contract (docs/phase6-mcp-callbacks.md §2, rendered into
 //! mcp.json by docker/entrypoint.sh from docker/mcp-callbacks.json.template
@@ -33,6 +33,7 @@ import CloudAgents.Shim.Callbacks
 import CloudAgents.Shim.Tools
 import CloudAgents.Shim.V2Transport
 import CloudAgents.Shim.V2Tools
+import CloudAgents.Shim.LedgerTools
 import extern System.Environment as Env
 import extern System.String as DotNetString
 
@@ -84,13 +85,17 @@ func main(): Unit {
 
   val transport = HttpCallbackTransport(baseUrl = apiUrl, sessionId = sessionId, token = token)
   val v2Transport = HttpV2CallbackTransport(baseUrl = apiUrl, sessionId = sessionId, token = token)
+  val ledgerTransport = HttpLedgerTransport(baseUrl = apiUrl, sessionId = sessionId, token = token)
 
   val server = newServer(McpImplementation(name = "cloud-agents", version = "0.1.0"))
-  // 20 addTool calls below (request_permission, ask_user, report_progress,
-  // request_secret, add_followup_task, report_artifact, remember, recall,
-  // forget, add_task, list_tasks, complete_task, notify, add_todo,
-  // update_todo, list_todos, schedule_job, list_jobs, update_job,
-  // cancel_job) — this exact count
+  // 24 tools below: 16 addTool calls (request_permission, ask_user,
+  // report_progress, request_secret, report_artifact, remember, recall,
+  // forget, add_task, list_tasks, complete_task, notify, schedule_job,
+  // list_jobs, update_job, cancel_job) plus the 8 session-ledger tools
+  // registered from CloudAgents.Shim.LedgerTools.ledgerToolSpecs() at the
+  // end (ledger_get_state, ledger_register_items, ledger_set_item_status,
+  // ledger_record_decision, ledger_record_deviation, ledger_ask,
+  // ledger_note, ledger_check_feedback) — this exact count
   // and name set must stay in sync with two other hand-kept copies with no
   // automated cross-check (#621: this project has no dependency edge back
   // to this separate lyric.toml/build, so nothing enforces the three
@@ -143,17 +148,7 @@ func main(): Unit {
       )
     )
   }
-  if CloudAgents.Shim.Config.toolIsEnabled(enabledToolsCsv, "add_followup_task") {
-    addTool(
-      server,
-      McpToolDef(
-        name = "add_followup_task",
-        description = "Leave a note for the human to follow up on later, without blocking the current run.",
-        inputSchema = CloudAgents.Shim.V2Tools.addFollowupTaskSchema(),
-        handler = AddFollowupTaskTool(transport = v2Transport)
-      )
-    )
-  }
+
   if CloudAgents.Shim.Config.toolIsEnabled(enabledToolsCsv, "report_artifact") {
     addTool(
       server,
@@ -200,15 +195,15 @@ func main(): Unit {
     )
   }
   // Phase 7 §8 repo-scoped task list (docs/phase7-autonomy.md). Distinct
-  // from add_followup_task: this is a repo-scoped, agent-completable shared
-  // backlog with an open->done lifecycle, not a session-scoped note for the
-  // human.
+  // from the session ledger: this is a repo-scoped, agent-completable shared
+  // backlog for FUTURE sessions with an open->done lifecycle, not part of
+  // this session's batch.
   if CloudAgents.Shim.Config.toolIsEnabled(enabledToolsCsv, "add_task") {
     addTool(
       server,
       McpToolDef(
         name = "add_task",
-        description = "Add a task to this repository's shared backlog for a future session (possibly a different agent) to pick up and complete. Distinct from add_followup_task, which leaves a session-scoped note for a HUMAN — this is repo-scoped and agent-completable via complete_task.",
+        description = "Add a task to this repository's shared backlog for a future session (possibly a different agent) to pick up and complete. Distinct from the session ledger (ledger_register_items / ledger_note), which covers THIS session's work and notes for the human — this is repo-scoped and agent-completable via complete_task.",
         inputSchema = CloudAgents.Shim.V2Tools.addTaskSchema(),
         handler = AddTaskTool(transport = v2Transport)
       )
@@ -237,43 +232,9 @@ func main(): Unit {
     )
   }
 
-  // Session todo plan: the agent's own working plan for THIS session, shown
-  // live in the session UI's todo panel with a three-state lifecycle.
-  // Distinct from add_followup_task (a one-way note for the human) and
-  // add_task (repo-scoped cross-session backlog).
-  if CloudAgents.Shim.Config.toolIsEnabled(enabledToolsCsv, "add_todo") {
-    addTool(
-      server,
-      McpToolDef(
-        name = "add_todo",
-        description = "Add one step of your working plan to this session's todo list, shown live to the human in the session UI. Create your plan with this at the start of a multi-step task, then keep it current with update_todo as you work. Distinct from add_followup_task (a note for the human) and add_task (repo-scoped backlog for future sessions).",
-        inputSchema = CloudAgents.Shim.V2Tools.addSessionTodoSchema(),
-        handler = AddSessionTodoTool(transport = v2Transport)
-      )
-    )
-  }
-  if CloudAgents.Shim.Config.toolIsEnabled(enabledToolsCsv, "update_todo") {
-    addTool(
-      server,
-      McpToolDef(
-        name = "update_todo",
-        description = "Update a session todo's status: 'in_progress' when you start working on it, 'done' when finished, 'pending' to put it back. Keep exactly one item in_progress at a time so the human can see where you are.",
-        inputSchema = CloudAgents.Shim.V2Tools.updateSessionTodoSchema(),
-        handler = UpdateSessionTodoTool(transport = v2Transport)
-      )
-    )
-  }
-  if CloudAgents.Shim.Config.toolIsEnabled(enabledToolsCsv, "list_todos") {
-    addTool(
-      server,
-      McpToolDef(
-        name = "list_todos",
-        description = "List this session's todo list (id, status, note) — including items the human added. Check it when resuming work on a session.",
-        inputSchema = CloudAgents.Shim.V2Tools.listSessionTodosSchema(),
-        handler = ListSessionTodosTool(transport = v2Transport)
-      )
-    )
-  }
+
+
+
 
   // Phase 7 §5 notify (docs/phase7-autonomy.md).
   if CloudAgents.Shim.Config.toolIsEnabled(enabledToolsCsv, "notify") {
@@ -333,6 +294,27 @@ func main(): Unit {
         handler = CancelJobTool(transport = v2Transport)
       )
     )
+  }
+
+  // Session ledger (cloud-agents docs/session-ledger.md): every ledger_*
+  // tool forwards its arguments to one host route, so they register from a
+  // table rather than one hand-written block each.
+  val ledgerSpecs = ledgerToolSpecs()
+  var li = 0
+  while li < ledgerSpecs.length {
+    val spec = ledgerSpecs[li]
+    if CloudAgents.Shim.Config.toolIsEnabled(enabledToolsCsv, spec.name) {
+      addTool(
+        server,
+        McpToolDef(
+          name = spec.name,
+          description = spec.description,
+          inputSchema = schemaForOp(spec.op),
+          handler = LedgerTool(transport = ledgerTransport, op = spec.op)
+        )
+      )
+    }
+    li = li + 1
   }
 
   match serveStdio(server) {

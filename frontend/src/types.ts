@@ -17,6 +17,8 @@ export interface Session {
   lastViewedAt?: string;
   /** Count (as string) of pending callbacks awaiting a human. */
   pendingCount?: string;
+  /** Ledger entries awaiting the owner's review (docs/session-ledger.md). */
+  ledgerAttention?: string;
   /** Parent session ID if branched from another session; '' or absent when root. */
   parentSessionId?: string;
   /** Message ID from which this session branched; '' or absent when root. */

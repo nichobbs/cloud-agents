@@ -125,8 +125,8 @@ create-fallback-branch.sh "entrypoint-codex" "${HARNESS}" "${BRANCH}" "${SESSION
 /usr/local/bin/inject-library.sh "codex" || echo "entrypoint-codex: library injection failed, continuing without it" >&2
 
 # Register (or strip) the cloud-agents MCP callback shim in
-# .codex/config.toml, reconciled every message — gives Codex the add_todo/
-# update_todo/report_progress/... tools (docker/register-callbacks-mcp.sh).
+# .codex/config.toml, reconciled every message — gives Codex the ledger_*/
+# report_progress/... tools (docker/register-callbacks-mcp.sh).
 # Best-effort: a registration hiccup must never block the prompt run.
 if [ -f /usr/local/bin/register-callbacks-mcp.sh ]; then
     # shellcheck source=register-callbacks-mcp.sh
@@ -154,9 +154,10 @@ CODEX_BRANCH_INSTRUCTION="BRANCH POLICY: Before making any changes, rename the c
 "
 # Session-visibility conventions (docker/session-tools-guide.md) — Codex
 # can't discover a rules file (see above), so a condensed version rides the
-# same prompt prefix: a parseable checkbox plan the UI's todo panel shows,
-# and a Session notes section the highlights summarizer mines.
-CODEX_SESSION_INSTRUCTION="SESSION VISIBILITY: For multi-step tasks, maintain a live plan the human can watch: if the cloud-agents MCP tools are available, use add_todo to create one item per step, update_todo to mark each in_progress when you start it and done when finished, and list_todos when resuming. If those tools are unavailable, instead restate your plan at the END of each response as a markdown checkbox list (- [ ] pending, - [~] in progress, - [x] done; one item per line, at least two items) — the session UI parses and displays it. Either way, end your final response with a '## Session notes' section listing (as short, specific bullets) any unexpected discoveries, issues/tickets opened or closed (with number/URL), workarounds, reverts, and incomplete or skipped work; omit the section only if none apply.
+# same prompt prefix: the session-ledger conventions (or, without the
+# ledger tools, a parseable checkbox plan), and a Session notes section the
+# highlights summarizer mines.
+CODEX_SESSION_INSTRUCTION="SESSION VISIBILITY: The human reviews a session ledger asynchronously, not your transcript; anything not in the ledger is invisible to them. If the cloud-agents MCP tools include ledger_get_state: call it at the start of every run and after context compaction; call ledger_register_items once you know the work items (issues like #12, or local:<slug> for a single task); call ledger_set_item_status on every state change (in_progress, pr_open, done, skipped); if an item needs other work first, set it blocked with blockedBy and/or prerequisiteProposal plus a recommendation, then move on instead of stopping; record a decision (ledger_record_decision) whenever a reviewer might have chosen differently and a deviation or shortcut (ledger_record_deviation) whenever you depart from the issue/plan or skip/weaken tests, stub, leave TODOs or suppress warnings, always with a recommendation; use ledger_ask with the default you proceed with instead of waiting; call ledger_check_feedback before each new item and before opening a PR, and apply it. If those tools are unavailable, instead restate your plan at the END of each response as a markdown checkbox list (- [ ] pending, - [~] in progress, - [x] done; one item per line, at least two items) — the session UI parses and displays it. Either way, end your final response with a '## Session notes' section listing (as short, specific bullets) any unexpected discoveries, issues/tickets opened or closed (with number/URL), workarounds, reverts, and incomplete or skipped work; omit the section only if none apply.
 
 "
 exec codex --model "${MODEL}" --full-auto --json -- "${CODEX_BRANCH_INSTRUCTION}${CODEX_SESSION_INSTRUCTION}${PROMPT}"

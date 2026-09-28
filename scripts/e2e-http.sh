@@ -265,6 +265,81 @@ else
   fails=$((fails + 1))
 fi
 
+# ── Session ledger leg (docs/session-ledger.md) ──────────────────────────────
+# The agent side through the REAL shim (ledger_* tools -> the callback route
+# -> tolerant argument decoding -> the {ok,error,reply} envelope), then the
+# owner side over HTTP (snapshot, owner scoping, a rejection), then the agent
+# collecting that rejection exactly once. The session is owned by "default",
+# the identity the operator bearer ($TOKEN) resolves to.
+LEDGER_SESSION_ID="e2e-ledger-session"
+LEDGER_TOKEN="e2e-ledger-callback-token"
+LEDGER_TOKEN_HASH="$(printf '%s' "$LEDGER_TOKEN" | sha256sum | cut -d' ' -f1)"
+sqlite3 "$DB" <<SQL
+INSERT INTO sessions (
+  id, user_id, repo_url, branch, container_id, harness, model,
+  native_session_id, status, created_at, last_message_at, callback_token_hash
+) VALUES (
+  '${LEDGER_SESSION_ID}', 'default', 'https://github.com/acme/shop', 'main', '',
+  'claude', 'claude-opus-4-8', '', 'IDLE', '0', '0', '${LEDGER_TOKEN_HASH}'
+);
+SQL
+
+ledger_shim() {
+  timeout 60 env \
+    CLOUD_AGENTS_API_URL="$BASE" \
+    CLOUD_AGENTS_CALLBACK_TOKEN="$LEDGER_TOKEN" \
+    CLOUD_AGENTS_SESSION_ID="$LEDGER_SESSION_ID" \
+    dotnet "$SHIM_OUT" || true
+}
+
+ledger_stdout="$(ledger_shim <<'MCP'
+{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"e2e-http","version":"0"}}}
+{"jsonrpc":"2.0","method":"notifications/initialized"}
+{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"ledger_register_items","arguments":{"items":["#1",{"id":"acme/shop#2","title":"Use the schema"}]}}}
+{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"ledger_set_item_status","arguments":{"item":"#1","state":"in_progress"}}}
+{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"ledger_record_deviation","arguments":{"kind":"shortcut","summary":"Skipped a flaky test","reversible":true,"item":"#1","recommendation":"Quarantine it"}}}
+{"jsonrpc":"2.0","id":5,"method":"tools/call","params":{"name":"ledger_set_item_status","arguments":{"item":"#2","state":"blocked","reason":"Needs #1","blockedBy":"#1"}}}
+{"jsonrpc":"2.0","id":6,"method":"tools/call","params":{"name":"ledger_set_item_status","arguments":{"item":"#2","state":"done"}}}
+MCP
+)"
+case "$ledger_stdout" in
+  *'\"registered\":\"2\"'*) echo "ok   ledger: register_items via the shim" ;;
+  *) echo "FAIL ledger: register_items — got: ${ledger_stdout}" >&2; fails=$((fails + 1)) ;;
+esac
+case "$ledger_stdout" in
+  *'\"severity\":\"review\"'*) echo "ok   ledger: a shortcut is raised to review" ;;
+  *) echo "FAIL ledger: shortcut severity — got: ${ledger_stdout}" >&2; fails=$((fails + 1)) ;;
+esac
+case "$ledger_stdout" in
+  *'cannot move gh:acme/shop#2 from blocked to done'*'"isError":true'*) echo "ok   ledger: an illegal move is an in-band tool error" ;;
+  *) echo "FAIL ledger: illegal move — got: ${ledger_stdout}" >&2; fails=$((fails + 1)) ;;
+esac
+
+assert "ledger snapshot (owner)"       GET  "/api/sessions/${LEDGER_SESSION_ID}/ledger"       yes 200 '"blockingCount":"1"'
+assert "ledger rejects no-auth"        GET  "/api/sessions/${LEDGER_SESSION_ID}/ledger"       no  401 ""
+assert "ledger is owner-scoped"        GET  "/api/sessions/${SEEDED_SESSION_ID}/ledger"       yes 404 "Session"
+assert "ledger inbox"                  GET  "/api/ledger/inbox"                               yes 200 "Skipped a flaky test"
+SHORTCUT_ID="$(sqlite3 "$DB" "SELECT id FROM ledger_entries WHERE session_id = '${LEDGER_SESSION_ID}' AND kind = 'shortcut';")"
+assert "ledger reject needs a body"    POST "/api/sessions/${LEDGER_SESSION_ID}/ledger/entries/${SHORTCUT_ID}/review" yes 400 "body is required" '{"kind":"reject","body":""}'
+assert "ledger reject"                 POST "/api/sessions/${LEDGER_SESSION_ID}/ledger/entries/${SHORTCUT_ID}/review" yes 200 '"kind":"reject"' '{"kind":"reject","body":"Do not skip it"}'
+
+feedback_stdout="$(ledger_shim <<'MCP'
+{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"e2e-http","version":"0"}}}
+{"jsonrpc":"2.0","method":"notifications/initialized"}
+{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"ledger_check_feedback","arguments":{}}}
+{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"ledger_check_feedback","arguments":{}}}
+{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"ledger_set_item_status","arguments":{"item":"#1","state":"done"}}}
+MCP
+)"
+case "$feedback_stdout" in
+  *'Do not skip it'*'\"feedback\":[]'*) echo "ok   ledger: feedback is delivered to the agent exactly once" ;;
+  *) echo "FAIL ledger: feedback delivery — got: ${feedback_stdout}" >&2; fails=$((fails + 1)) ;;
+esac
+case "$feedback_stdout" in
+  *'\"unblocked\":[\"gh:acme/shop#2\"]'*) echo "ok   ledger: finishing #1 auto-unblocks #2" ;;
+  *) echo "FAIL ledger: auto-unblock — got: ${feedback_stdout}" >&2; fails=$((fails + 1)) ;;
+esac
+
 if [ "$fails" -ne 0 ]; then
   echo "==> e2e-http: ${fails} assertion(s) failed" >&2
   echo "---- server log ----" >&2

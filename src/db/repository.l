@@ -15,6 +15,7 @@ import CloudAgents.Db
 import CloudAgents.Sqlite
 import CloudAgents.ToolPolicy
 import CloudAgents.Capture
+import CloudAgents.Ledger.Schema
 import Std.Collections
 import extern System.Environment as Env
 import extern System.String as DotNetString
@@ -464,7 +465,12 @@ pub func allMigrations(): slice[Migration] {
         CloudAgents.Db.alterSessionsAddCallbackTokenHashSql(),
         CloudAgents.Db.clearSessionsPlaintextCallbackTokensSql()
       ]
-    )
+    ),
+    // Session ledger (docs/session-ledger.md): the ledger tables, plus the
+    // consolidation's profile-grant migration — a 'selected'-mode profile
+    // that granted any retired agent-reporting tool (add_todo / update_todo
+    // / list_todos / add_followup_task) is granted the ledger tools instead.
+    Migration(version = "0037_session_ledger", statements = CloudAgents.Ledger.Schema.sessionLedgerMigrationSql())
   ]
 }
 
@@ -3551,8 +3557,8 @@ pub func artifactsCreatedAfter(
 // ─── Phase 7 §8: repo-scoped task list (add_task / list_tasks / complete_task)
 //
 // docs/phase7-autonomy.md §8. A cross-session, repo-scoped worklist with an
-// open->done lifecycle, distinct from the session-scoped, human-facing
-// `addTodo`/`listTodos` (add_followup_task): this is an agent-completable
+// open->done lifecycle, distinct from the session ledger's per-session work
+// items (docs/session-ledger.md): this is an agent-completable
 // shared backlog scoped to (user_id, repo_key), reusing sessionOwnerAndRepo
 // and CloudAgents.RepoKey exactly as the memory slice does.
 /// One stored task (the API-relevant columns of a `repo_tasks` row).
@@ -3940,6 +3946,32 @@ pub func sessionEventsAfterSeq(
     i = i + 1
   }
   return Ok(value = acc.toArray())
+}
+
+/// A session's captured events in the window `fromExclusive < seq <=
+/// toInclusive` (bounded to 500), ascending — for ledger transcript excerpts.
+pub func sessionEventsInRange(
+  sessionId: in String, fromExclusive: in String, toInclusive: in String
+): Result[slice[CloudAgents.Capture.CaptureEvent], CloudAgents.Sqlite.DbError] {
+  val rows = CloudAgents.Sqlite.query(CloudAgents.Db.selectSessionEventsInRangeSql(sessionId, fromExclusive, toInclusive))?
+  val acc: List[CloudAgents.Capture.CaptureEvent] = newList()
+  var i = 0
+  val len = CloudAgents.Sqlite.getRowArrayLength(rows)
+  while i < len {
+    acc.add(rowToCaptureEvent(CloudAgents.Sqlite.getRowArrayValue(rows, i)))
+    i = i + 1
+  }
+  return Ok(value = acc.toArray())
+}
+
+/// The highest captured event seq for a session, or "" when nothing has been
+/// captured yet — the transcript position a ledger entry is anchored to.
+pub func latestSessionEventSeq(sessionId: in String): Result[String, CloudAgents.Sqlite.DbError] {
+  val rows = CloudAgents.Sqlite.query(CloudAgents.Db.selectLatestSessionEventSeqSql(sessionId))?
+  if CloudAgents.Sqlite.getRowArrayLength(rows) == 0 {
+    return Ok(value = "")
+  }
+  return Ok(value = colAt(CloudAgents.Sqlite.getRowArrayValue(rows, 0).cols, 0))
 }
 
 /// A session's AGENT messages with seq strictly greater than `afterSeq`

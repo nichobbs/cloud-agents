@@ -40,9 +40,11 @@ REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT
 
-mkdir -p "$WORK/src/streaming" "$WORK/src/db" "$WORK/src/handlers" "$WORK/src/crypto"
+mkdir -p "$WORK/src/streaming" "$WORK/src/db" "$WORK/src/handlers" "$WORK/src/crypto" "$WORK/src/ledger"
 cp "$REPO_ROOT/src/streaming/streaming.l"   "$WORK/src/streaming/"
 cp "$REPO_ROOT/src/db/db_client.l"          "$WORK/src/db/"
+# db_client.l builds the session list's ledger-attention column from it.
+cp "$REPO_ROOT/src/ledger/schema.l"         "$WORK/src/ledger/"
 cp "$REPO_ROOT/src/handlers/auth.l"         "$WORK/src/handlers/"
 # streaming.l and auth.l call into CloudAgents.Text (isControlChar /
 # indexOfFrom), so the shared package must be part of this scratch build too —
@@ -65,6 +67,7 @@ output_assembly = "CloudAgentsVerify.dll"
 "CloudAgents.Text"      = "src/text.l"
 "CloudAgents.Crypto"    = "src/crypto/crypto.l"
 "CloudAgents.Streaming" = "src/streaming/streaming.l"
+"CloudAgents.Ledger.Schema" = "src/ledger/schema.l"
 "CloudAgents.Db"        = "src/db/db_client.l"
 "CloudAgents.Auth"      = "src/handlers/auth.l"
 "CloudAgentsVerify"     = "src/main.l"
