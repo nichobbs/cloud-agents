@@ -419,9 +419,7 @@ for `AgentSessionArray`/`slice[AgentSession]` cross-use turned up nothing
 else assigning one to the other). Fixed by properly `match`-unwrapping the
 `Result` and hand-rolling the array-to-slice copy (no direct conversion
 exists — see `CloudAgents.SessionStore.getSessionArrayLength`/
-`getSessionArrayValue`, the same iterate-by-index pattern the
-`slice[Byte].toList()` entry above uses for a similar extern-container
-gap):
+`getSessionArrayValue`, an iterate-by-index copy):
 
 ```lyric
 match CloudAgents.SessionStore.getSessions() {
