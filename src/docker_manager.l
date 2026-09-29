@@ -825,8 +825,33 @@ pub func streamSessionMessage(
   // CloudAgents.Capture.Render.renderLogDelta. `nextSeq`/`lastHash` carry the
   // capture hash chain across ticks; `offset` advances only past COMPLETE NDJSON
   // lines (a partial trailing line is re-read next tick).
+  //
+  // Seeded from the session's own stored cursor, NOT restarted at (0, ""):
+  // this container's log starts at byte 0, but `session_events` accumulates
+  // across every run for this session. A session's first run has no stored
+  // events yet, so latestSessionEventCursor correctly returns (0, "") — the
+  // fresh-chain start this used to hardcode. Every LATER run must resume from
+  // where the previous run's capture left off, or its seq-0.. events collide
+  // with what's already stored and CloudAgents.Repository.appendSessionEvents'
+  // tamper-evidence check (#965) rejects the whole batch, dropping that run's
+  // capture provenance silently save for a WARNING.
   var nextSeq = 0.toLong()
   var lastHash = ""
+  match CloudAgents.Repository.latestSessionEventCursor(sessionId) {
+    case Ok(cursor) -> {
+      nextSeq = cursor.nextSeq
+      lastHash = cursor.lastHash
+    }
+    // Best-effort: a lookup failure must never block the run. Falling back to
+    // (0, "") reproduces the prior always-restart behavior for this one run
+    // rather than blocking it, at the cost of the same collision this fix
+    // targets — but it's a DB read failing, not the normal path, so worth a
+    // WARNING (matches this file's other best-effort log lines).
+    case Err(e) -> println(
+      "WARNING: failed to resume capture hash-chain cursor for session " + sessionId + ": " +
+        CloudAgents.Sqlite.dbErrorMessage(e)
+    )
+  }
   var finished = false
   var clientGone = false
   var timedOut = false

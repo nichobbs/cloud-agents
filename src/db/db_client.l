@@ -1333,6 +1333,19 @@ pub func selectLatestSessionEventSeqSql(sessionId: in String): String {
     sqlLiteral(sessionId)
 }
 
+/// The (seq, hash) of a session's highest-seq captured event — the hash-chain
+/// cursor a NEW run against an EXISTING session must resume from, rather than
+/// restarting the chain at seq 0. Every run after a session's first spawns
+/// its own container with its own log starting at byte 0, so without this
+/// the second and later runs' captures always collide with the first run's
+/// already-stored seq 0.. and CloudAgents.Repository.appendSessionEvents'
+/// tamper-evidence check (#965) rejects the whole batch. No rows for a
+/// session with no captures yet.
+pub func selectLatestSessionEventCursorSql(sessionId: in String): String {
+  return "SELECT seq, hash FROM session_events WHERE session_id = " + sqlLiteral(sessionId) +
+    " ORDER BY CAST(seq AS INTEGER) DESC LIMIT 1"
+}
+
 pub func selectSessionEventsAfterSeqSql(sessionId: in String, afterSeq: in String): String {
   return "SELECT session_id, seq, event_type, payload, prev_hash, hash FROM session_events " + "WHERE session_id = " +
     sqlLiteral(sessionId) +
