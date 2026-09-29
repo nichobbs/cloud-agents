@@ -892,10 +892,14 @@ pub func streamSessionMessage(
   // capture provenance silently save for a WARNING.
   var nextSeq = 0.toLong()
   var lastHash = ""
+  println("[diag] streamSessionMessage " + sessionId + ": before latestSessionEventCursor")
   match CloudAgents.Repository.latestSessionEventCursor(sessionId) {
     case Ok(cursor) -> {
       nextSeq = cursor.nextSeq
       lastHash = cursor.lastHash
+      println(
+        "[diag] streamSessionMessage " + sessionId + ": after latestSessionEventCursor, nextSeq=" + toString(cursor.nextSeq)
+      )
     }
     // Best-effort: a lookup failure must never block the run. Falling back to
     // (0, "") reproduces the prior always-restart behavior for this one run

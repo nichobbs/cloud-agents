@@ -1248,11 +1248,13 @@ pub func streamSendMessage(
   // Capture identity + linked repos on the request thread (the async run body
   // can't read the thread-local identity) — same rationale as the old handler.
   val userId = CloudAgents.Auth.currentUserId()
+  println("[diag] streamSendMessage " + id + ": before listSessionRepos")
   val extraRepos = match CloudAgents.Repository.listSessionRepos(id) {
     case Ok(rs) -> extraReposEnvValue(rs)
     case Err(_) -> ""
   }
 
+  println("[diag] streamSendMessage " + id + ": before getSession")
   val maybeSession = match getSession(id) {
     case Ok(m) -> m
     case Err(e) -> {
@@ -1276,6 +1278,7 @@ pub func streamSendMessage(
       // race (#994; the two-pass validation inside storeAttachments already
       // rules out the equivalent orphan risk *within* one call — see #992 —
       // this closes the same class of risk one level up).
+      println("[diag] streamSendMessage " + id + ": before tryBeginRun")
       val began = match CloudAgents.SessionStore.tryBeginRun(id) {
         case Ok(b) -> b
         case Err(e) -> {
@@ -1302,6 +1305,7 @@ pub func streamSendMessage(
         }
       }
 
+      println("[diag] streamSendMessage " + id + ": before storeAttachments")
       val stored = match storeAttachments(id, attachments) {
         case Ok(s) -> s
         case Err(e) -> {
@@ -1309,6 +1313,7 @@ pub func streamSendMessage(
           return ()
         }
       }
+      println("[diag] streamSendMessage " + id + ": before addMessage (user)")
 
       // Persist the user's prompt (best-effort — a storage hiccup must not stop
       // the run). The ORIGINAL text is stored (not the attachment-manifest-
@@ -1332,6 +1337,7 @@ pub func streamSendMessage(
       // The session's profile governs credential injection and network access;
       // a DB error resolving it must FAIL the run, not fall open to "no profile"
       // (#232). Ok(None) genuinely means no profile.
+      println("[diag] streamSendMessage " + id + ": before sessionProfileId")
       val profileId = match CloudAgents.SessionStore.sessionProfileId(id) {
         case Ok(Some(pid)) -> pid
         case Ok(None) -> ""
@@ -1345,6 +1351,7 @@ pub func streamSendMessage(
       // fail closed in the layers below.
       var harness = session.harness
       if profileId.length > 0 {
+        println("[diag] streamSendMessage " + id + ": before getProfile")
         match CloudAgents.Repository.getProfile(profileId, userId) {
           case Ok(Some(p)) -> if p.harness.length > 0 { harness = p.harness }
           case Ok(None) -> ()
@@ -1353,11 +1360,13 @@ pub func streamSendMessage(
       }
 
       // Record the run (best-effort bookkeeping; proceed with an empty id).
+      println("[diag] streamSendMessage " + id + ": before recordRunStart")
       val runId = match CloudAgents.Repository.recordRunStart(id, userId, text, harness, session.model) {
         case Ok(rid) -> rid
         case Err(_) -> ""
       }
 
+      println("[diag] streamSendMessage " + id + ": before writeStatus(200)")
       // Commit the SSE stream: status + headers are still settable (no chunk
       // written yet), then hand the writer to the streaming run loop. 200 is
       // set explicitly (it is also the default) to mirror the error paths and
@@ -1368,11 +1377,15 @@ pub func streamSendMessage(
       Web.writeHeader(w, "Connection", "keep-alive")
       Web.writeHeader(w, "X-Accel-Buffering", "no")
 
+      println("[diag] streamSendMessage " + id + ": before nextRunPromptPrefix")
+      val promptPrefix = CloudAgents.Ledger.Service.nextRunPromptPrefix(id, userId, profileId)
+      println("[diag] streamSendMessage " + id + ": before promptWithAttachments")
+      val fullPrompt = promptPrefix + promptWithAttachments(text, stored.attachments)
+      println("[diag] streamSendMessage " + id + ": before streamSessionMessage")
       val streamResult = CloudAgents.Docker.streamSessionMessage(
         repoUrl = session.repoUrl,
         branch = session.branch,
-        prompt = CloudAgents.Ledger.Service.nextRunPromptPrefix(id, userId, profileId) +
-          promptWithAttachments(text, stored.attachments),
+        prompt = fullPrompt,
         sessionId = id,
         harness = harness,
         model = session.model,
