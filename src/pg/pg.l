@@ -105,19 +105,19 @@ func setUserSql(): String {
 }
 
 /// Validate a tenant scope; the error names which id is missing.
-pub func checkTenantScope(scope: in TenantScope): Result[Unit, PgError] {
-  if scope.tenantId.length.toInt() == 0 {
+pub func checkTenantScope(sc: in TenantScope): Result[Unit, PgError] {
+  if sc.tenantId.length.toInt() == 0 {
     return Err(error = InvalidScope(message = "empty tenant id"))
   }
-  if scope.userId.length.toInt() == 0 {
+  if sc.userId.length.toInt() == 0 {
     return Err(error = InvalidScope(message = "empty user id"))
   }
   return Ok(value = ())
 }
 
 /// Validate a user scope.
-pub func checkUserScope(scope: in UserScope): Result[Unit, PgError] {
-  if scope.userId.length.toInt() == 0 {
+pub func checkUserScope(sc: in UserScope): Result[Unit, PgError] {
+  if sc.userId.length.toInt() == 0 {
     return Err(error = InvalidScope(message = "empty user id"))
   }
   return Ok(value = ())
@@ -133,10 +133,10 @@ func beginRaw(conn: in DbConnection): Result[DbTransaction, PgError] {
 /// Start a tenant-scoped unit of work on `conn`. The scope is validated
 /// before anything is sent to the server. The caller must `commitUnit` or
 /// `rollbackUnit` the returned transaction.
-pub func beginTenantUnit(conn: in DbConnection, scope: in TenantScope): Result[DbTransaction, PgError] {
-  checkTenantScope(scope)?
+pub func beginTenantUnit(conn: in DbConnection, sc: in TenantScope): Result[DbTransaction, PgError] {
+  checkTenantScope(sc)?
   val tx = beginRaw(conn)?
-  match tx.query(setTenantSql(), [scope.tenantId, scope.userId]) {
+  match tx.query(setTenantSql(), [sc.tenantId, sc.userId]) {
     case Ok(_) -> ()
     case Err(e) -> {
       rollbackUnit(tx)
@@ -147,10 +147,10 @@ pub func beginTenantUnit(conn: in DbConnection, scope: in TenantScope): Result[D
 }
 
 /// Start a user-scoped unit of work on `conn` (user-owned tables only).
-pub func beginUserUnit(conn: in DbConnection, scope: in UserScope): Result[DbTransaction, PgError] {
-  checkUserScope(scope)?
+pub func beginUserUnit(conn: in DbConnection, sc: in UserScope): Result[DbTransaction, PgError] {
+  checkUserScope(sc)?
   val tx = beginRaw(conn)?
-  match tx.query(setUserSql(), [scope.userId]) {
+  match tx.query(setUserSql(), [sc.userId]) {
     case Ok(_) -> ()
     case Err(e) -> {
       rollbackUnit(tx)

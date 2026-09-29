@@ -150,7 +150,7 @@ output_assembly = "CloudAgents.dll"
 [nuget]
 "Lyric.Web"             = "0.7.0"
 "Lyric.Docker"          = "0.7.4"
-"Std.Logging"           = "0.7.0"
+"Std.Logging"           = "0.7.4"
 "Microsoft.Data.Sqlite" = "10.0.9"
 "SourceGear.sqlite3"    = "3.53.3"
 "SQLitePCLRaw.provider.dynamic_cdecl" = "3.0.3"
