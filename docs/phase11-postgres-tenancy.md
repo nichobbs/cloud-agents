@@ -91,11 +91,17 @@ Non-goals (later phases or explicitly deferred):
   bytes); `text` for ids and free text. Enumerated status strings stay
   `text` with a `CHECK` constraint.
 - Every tenant-owned table: `tenant_id text NOT NULL DEFAULT
-  current_setting('app.current_tenant', true)` as the leading column of its
-  primary key, `ENABLE` + `FORCE ROW LEVEL SECURITY`, and one policy
-  `USING (tenant_id = current_setting('app.current_tenant', true))
-  WITH CHECK (same)`. An unset tenant setting matches nothing, so an
-  unscoped query fails closed (returns no rows, inserts are rejected).
+  NULLIF(current_setting('app.current_tenant', true), '') CHECK (tenant_id
+  <> '')` as the leading column of its primary key, `ENABLE` + `FORCE ROW
+  LEVEL SECURITY`, and one policy `USING (tenant_id =
+  NULLIF(current_setting('app.current_tenant', true), '')) WITH CHECK
+  (same)`. The `NULLIF` matters: once a pooled connection has used
+  `set_config`, an unset setting reads back as `''` rather than NULL, and
+  without it the DEFAULT would write `''`-tenant rows that the policy then
+  accepts. With it, an unscoped query fails closed: reads return no rows
+  (NULL never equals anything) and inserts fail the `NOT NULL`/`CHECK`
+  constraints. The same `NULLIF` form is used for `app.current_user` in
+  §4.3.
 - Foreign keys include `tenant_id`, so a row can never reference another
   tenant's row.
 
@@ -127,7 +133,7 @@ and the rest listed in `db_client.l`) gains `tenant_id` and RLS per §4.1.
 Rows that are also per-user keep their `user_id` column. User-scoped
 secrets (`credentials`, `github_oauth_refresh`) additionally have an RLS
 policy clause restricting reads to `user_id =
-current_setting('app.current_user', true)`, so they stay private to their
+NULLIF(current_setting('app.current_user', true), '')`, so they stay private to their
 owner inside a shared organisation (ADR-008 decision 10, ADR-006).
 
 ### 4.4 Message search
@@ -145,6 +151,7 @@ listed in the PR and in `docs/phase9-message-search.md`.
 
 - `cloudagents_owner`: owns all objects; used only by the migration step
   (`--migrate`, separate DSN `CLOUD_AGENTS_MIGRATE_DATABASE_URL`).
+- `cloudagents_claimer`: `NOLOGIN`; owns only the claim functions (§5.3).
 - `cloudagents_app`: the service role. Not owner, not superuser, no
   `BYPASSRLS`. The service refuses to start if it detects it is connected
   as an owner, superuser or `BYPASSRLS` role, because `FORCE ROW LEVEL
@@ -194,9 +201,20 @@ listed in the PR and in `docs/phase9-message-search.md`.
 
 Maintenance endpoints (`trigger-jobs`, `drain-graph-ingest`, `observe`,
 `ledger-sync`, `reap`) must find due work across all tenants. This is done
-without a bypass role: a small set of `SECURITY DEFINER` claim functions,
-owned by `cloudagents_owner`, each return `(tenant_id, id)` pairs for due
-items using `FOR UPDATE SKIP LOCKED`. All subsequent work on a claimed item
+without a login role that bypasses RLS: a small set of `SECURITY DEFINER`
+claim functions each return `(tenant_id, id)` pairs for due items using
+`FOR UPDATE SKIP LOCKED`.
+
+The functions cannot be owned by `cloudagents_owner`: `FORCE ROW LEVEL
+SECURITY` applies to the table owner too, so a function running as the
+owner would see no rows. Instead they are owned by `cloudagents_claimer`, a
+`NOLOGIN` role that can only be reached through these functions. It has no
+`BYPASSRLS`; each claimable table (`scheduled_jobs`,
+`graph_ingest_outbox`, the observer and ledger-sync queues, `runs`) gets
+two extra policies, `FOR SELECT TO cloudagents_claimer USING (true)` and
+`FOR UPDATE TO cloudagents_claimer USING (true)` (both are needed for
+`SELECT ... FOR UPDATE`), plus only the column privileges the claim needs. Every other table stays
+invisible to it. All subsequent work on a claimed item
 runs tenant-scoped as in §5.2. The claim functions are the only
 cross-tenant read path and are reviewed as such. Each one:
 
@@ -347,6 +365,12 @@ until slice F.
 - Each claim function has `EXECUTE` revoked from `PUBLIC`, a fixed
   `search_path`, and returns only `(tenant_id, id)` (checked by a live test
   that queries `pg_proc` and calls it as a role without the grant).
+- With two tenants' due items present, a claim function called with no
+  tenant scope returns both tenants' items; `cloudagents_claimer` cannot
+  log in, and cannot read any non-claimable table.
+- On a pooled connection that has previously run a scoped unit, an
+  unscoped insert into a tenant-owned table is rejected, and no row with an
+  empty `tenant_id` can exist.
 - The export of a fixture database reproduces every row with matching
   counts and typed values, and aborts with a precise error on a malformed
   value.
