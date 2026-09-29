@@ -214,7 +214,18 @@ owner would see no rows. Instead they are owned by `cloudagents_claimer`, a
 two extra policies, `FOR SELECT TO cloudagents_claimer USING (true)` and
 `FOR UPDATE TO cloudagents_claimer USING (true)` (both are needed for
 `SELECT ... FOR UPDATE`), plus only the column privileges the claim needs. Every other table stays
-invisible to it. All subsequent work on a claimed item
+invisible to it.
+
+`SKIP LOCKED` alone does not prevent a double claim: the row lock is released
+when the claim function's transaction commits, before the caller has done
+the work. So each claimable table carries `claimed_until timestamptz`, and a
+claim function selects only due items whose `claimed_until` is NULL or in
+the past (`FOR UPDATE SKIP LOCKED`). It sets `claimed_until = now() +
+lease` on them in the same statement before returning. The tenant-scoped
+worker clears `claimed_until` (and records the outcome) when it finishes. An
+item whose worker dies becomes claimable again once its lease expires.
+Workers are written to be idempotent, as today's outbox and job handlers
+already are, because a lease can expire under a very slow worker. All subsequent work on a claimed item
 runs tenant-scoped as in §5.2. The claim functions are the only
 cross-tenant read path and are reviewed as such. Each one:
 
@@ -260,6 +271,17 @@ mode maps to the `default` user's personal tenant.
   the native row.
 - A sync failure (GitHub unavailable) keeps existing rows and logs; it does
   not lock the user out of their personal organisation.
+- Sign-in alone would leave a removed member with access for as long as
+  their browser session lasts. So GitHub-sourced memberships are also
+  re-verified by a `POST /api/maintenance/membership-sync` endpoint (same
+  operator-polled idiom and claim/lease mechanism as §5.3), using each
+  user's stored GitHub token, at most once an hour per user. A membership
+  GitHub no longer reports is removed. If the user's token has been revoked
+  or lacks `read:org`, their GitHub-sourced memberships are suspended (not
+  deleted) until they sign in again. The revocation window is therefore
+  bounded by the sync interval (one hour by default), and this is stated in
+  the organisation settings UI. Immediate revocation via GitHub
+  organisation webhooks needs a GitHub App installation and is deferred.
 
 ### 6.3 Native organisations and invitations
 
@@ -281,7 +303,17 @@ sign in at all; organisation membership gates what they can access.
 ## 7. SQLite export
 
 A server subcommand, `CloudAgents.dll migrate-from-sqlite --sqlite <path>`,
-run once with the API stopped:
+run once with the API stopped.
+
+It cannot run as `cloudagents_app` or `cloudagents_owner`: under `FORCE ROW
+LEVEL SECURITY` neither can see all tenants' rows, so an emptiness check or
+a row count would silently see nothing. It connects as
+`cloudagents_migrator`, a role with `BYPASSRLS` that is created `NOLOGIN`
+and enabled (`ALTER ROLE ... LOGIN`) only for the cut-over, via its own DSN
+`CLOUD_AGENTS_EXPORT_DATABASE_URL`. The runbook disables it again
+immediately afterwards, and the service's startup self-check fails if that
+role can log in. Inserts still set `tenant_id` explicitly on every row.
+Steps:
 
 1. Refuses to run unless the target database has the baseline schema and
    no tenant-owned rows.
@@ -371,6 +403,14 @@ until slice F.
 - On a pooled connection that has previously run a scoped unit, an
   unscoped insert into a tenant-owned table is rejected, and no row with an
   empty `tenant_id` can exist.
+- Two concurrent callers of the same claim function never receive the same
+  item while its lease is live, and an item whose lease has expired is
+  claimable again.
+- The export's precondition check and row counts see every tenant's rows
+  (verified against a target seeded with rows for two tenants), and the
+  service refuses to start while `cloudagents_migrator` can log in.
+- Removing a member from a connected GitHub organisation removes their
+  cloud-agents membership within one sync interval without a sign-in.
 - The export of a fixture database reproduces every row with matching
   counts and typed values, and aborts with a precise error on a malformed
   value.
