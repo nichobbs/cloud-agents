@@ -127,14 +127,34 @@ them holds session content.
 ### 4.3 Tenant-owned tables
 
 Every other current table (sessions, messages, runs, profiles and their
-join tables, prompts, credentials, ledger tables, scheduled jobs, webhooks,
+join tables, prompts, ledger tables, scheduled jobs, webhooks,
 session events, graph-ingest outbox, attachments and artifacts metadata,
 and the rest listed in `db_client.l`) gains `tenant_id` and RLS per §4.1.
-Rows that are also per-user keep their `user_id` column. User-scoped
-secrets (`credentials`, `github_oauth_refresh`) additionally have an RLS
-policy clause restricting reads to `user_id =
-NULLIF(current_setting('app.current_user', true), '')`, so they stay private to their
-owner inside a shared organisation (ADR-008 decision 10, ADR-006).
+Rows that are also per-user keep their `user_id` column.
+
+### 4.3a User-owned tables
+
+Some data belongs to a person, not to an organisation, and must follow the
+user whichever organisation is active. It must also be readable at sign-in
+and by membership sync, before any tenant is chosen:
+
+| Table | Holds |
+|---|---|
+| `credentials` | the user's encrypted vault entries, including the `GITHUB_TOKEN` that the OAuth callback vaults today |
+| `github_oauth_refresh` | the user's refresh-token metadata (expiring-token OAuth apps only) |
+| `user_sync_state` | `user_id` PK, `github_synced_at`, `claimed_until`: membership-sync bookkeeping (§6.2) |
+
+These tables have no `tenant_id`. They are keyed by `user_id` with forced
+RLS and a policy `USING (user_id = NULLIF(current_setting('app.current_user',
+true), '')) WITH CHECK (same)`, so a unit of work sees only the calling
+user's rows whatever tenant is active. A unit that needs only user-owned
+data (sign-in, membership sync) sets `app.current_user` alone, via a
+`UserScope` that the store layer rejects when empty, exactly as for
+`TenantScope` (§5.2). Harness credentials used by a run are the run
+creator's own. A tenant-owned `profile_credentials` row may reference only
+the profile creator's own credential ids; this is checked on write.
+`user_sync_state` additionally carries the claimer policies of §5.3 so that
+membership sync can be claimed across users.
 
 ### 4.4 Message search
 
@@ -274,8 +294,11 @@ mode maps to the `default` user's personal tenant.
 - Sign-in alone would leave a removed member with access for as long as
   their browser session lasts. So GitHub-sourced memberships are also
   re-verified by a `POST /api/maintenance/membership-sync` endpoint (same
-  operator-polled idiom and claim/lease mechanism as §5.3), using each
-  user's stored GitHub token, at most once an hour per user. A membership
+  operator-polled idiom and claim/lease mechanism as §5.3). A claim function
+  over `user_sync_state` returns users whose `github_synced_at` is over an
+  hour old and who hold at least one `github` membership. For each claimed
+  user the worker runs under that user's `UserScope`, reads their vaulted
+  `GITHUB_TOKEN` (§4.3a), and reconciles `memberships`. A membership
   GitHub no longer reports is removed. If the user's token has been revoked
   or lacks `read:org`, their GitHub-sourced memberships are suspended (not
   deleted) until they sign in again. The revocation window is therefore
@@ -318,9 +341,11 @@ Steps:
 1. Refuses to run unless the target database has the baseline schema and
    no tenant-owned rows.
 2. Creates a `users` row and a personal tenant for every distinct `user_id`
-   in the source.
+   in the source, and a `user_sync_state` row per user.
 3. Copies every table in dependency order, converting text to typed
-   values. Any value that fails conversion aborts the whole export with the
+   values. User-owned tables (§4.3a) keep their `user_id` keys, and each
+   source session's `callback_token_hash` populates its `session_routes`
+   row. Any value that fails conversion aborts the whole export with the
    table, row key and value; nothing is silently coerced or dropped.
 4. Runs in a single transaction; on success prints per-table row counts
    for source and target and exits non-zero if any differ.
@@ -331,11 +356,34 @@ to the Postgres DSN, start the API, then smoke-test.
 
 ## 8. Deployment
 
+- Roles and grants are created by one checked-in script,
+  `deploy/postgres/provision.sql`, run once as the Postgres superuser with
+  `psql` variables for the role passwords. It creates the database and the
+  four roles (§5.1), the migrator as `NOLOGIN`, and grants
+  `cloudagents_owner` what it needs to run migrations. Grants to the other
+  roles and the per-table policies are created by the migrations themselves
+  (as `cloudagents_owner`), so they stay versioned with the schema.
+  `CREATEROLE` and `BYPASSRLS` need a superuser, which is why this step is
+  separate from `--migrate`.
 - Standalone compose (`deploy/docker-compose.yml`): a `postgres` service
   (pinned image, named volume, healthcheck, memory limit), with the API
-  depending on it. Role and database creation via an init script.
-- Coolify: a separate Coolify Postgres resource (not in the compose file),
-  with the two DSNs set in the API's environment. Coolify's scheduled
+  depending on it. It runs `provision.sql` from the image's init directory
+  on first start.
+- Coolify: a separate Coolify Postgres resource (not in the compose file).
+  Coolify creates it with a superuser, and the runbook has the operator run
+  `provision.sql` once through Coolify's database terminal (or `psql` over
+  the resource's internal URL). Only the service, migration and export
+  DSNs, never the superuser's, go into the API's environment. The
+  cut-over's temporary `ALTER ROLE cloudagents_migrator LOGIN` and the
+  `NOLOGIN` afterwards are also superuser steps in the runbook.
+- The startup self-check (§5.1) also verifies that the expected roles
+  exist and that the service role has its grants. If not, it exits with a
+  message naming the missing role or grant and pointing at `provision.sql`,
+  rather than failing on the first query.
+- Managed-provider note for ADR-008 phase 4: some managed Postgres
+  offerings do not grant `BYPASSRLS`. Only the one-off export needs it, and
+  that runs on the Coolify instance before the move, so the design does not
+  depend on it afterwards. Coolify's scheduled
   database backups to S3-compatible storage are configured at least hourly;
   `COOLIFY.md` documents it.
 - `backup.sh` gains a `pg_dump` path for the standalone deployment.
@@ -411,6 +459,14 @@ until slice F.
   service refuses to start while `cloudagents_migrator` can log in.
 - Removing a member from a connected GitHub organisation removes their
   cloud-agents membership within one sync interval without a sign-in.
+- A user's credentials are visible to them whichever organisation is
+  active, invisible to every other user including admins of a shared
+  organisation, and readable at sign-in before a tenant is chosen.
+- A profile cannot reference another user's credential.
+- After the export, every exported session's MCP callback authenticates
+  via `session_routes`.
+- On a database without `provision.sql` applied, the service exits with an
+  error naming the missing role.
 - The export of a fixture database reproduces every row with matching
   counts and typed values, and aborts with a precise error on a malformed
   value.
