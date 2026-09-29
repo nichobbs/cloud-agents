@@ -67,9 +67,12 @@ PYEOF
 )"
   while IFS= read -r p; do
     [ -z "$p" ] && continue
-    # Only exists on a real Docker host, not this CI runner — not what this
-    # check is for.
+    # Absolute host paths that only exist on a real Docker host, not this CI
+    # runner — not what this check is for (it guards repo-relative path
+    # resolution). /var/lib/cloud-agents is the default CLOUD_AGENTS_DATA_DIR
+    # bind mount, which Docker creates on the host at first start.
     [ "$p" = "/var/run/docker.sock" ] && continue
+    [ "$p" = "/var/lib/cloud-agents" ] && continue
     if [ -e "$p" ]; then
       echo "ok ($label): $p"
     else
