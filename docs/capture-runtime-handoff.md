@@ -262,8 +262,10 @@ NOT add a new HTTP stack. `src/github_api.l` exposes
 `httpPostJsonWithBearerTimeout(url, jsonBody, bearerToken, userAgent,
 timeoutMillis)` (System.Net.HttpWebRequest): sets `Content-Type: application/json`,
 `Accept: application/json`, an `Authorization: Bearer …` header, bounded connect
-+ read/write timeout, and `GetResponse` throws on any transport failure OR
-non-2xx status → surfaces as `Err` (so **2xx-only** is already the contract).
++ read/write timeout, and returns `Err` on any transport failure or any status
+outside 200-299 (**2xx-only**). `GetResponse` itself throws on 4xx/5xx; a 3xx
+(returned normally once auto-redirect is off, below) is rejected explicitly by
+`checkSuccessStatus`.
 Call it with a short, self-chosen timeout (e.g. 15s — `requestTimeoutMillis`
 class, not the LLM 120s) and a `CloudAgents-runner/checkpoint-ingest` UA:
 
@@ -289,8 +291,11 @@ and either (a) call it inside `httpPostJsonWithBearerTimeout` (safe — the two
 existing callers, Highlights + OpenPr, POST to fixed trusted hosts and don't rely
 on redirects), or (b) add a dedicated `httpPostJsonNoRedirect` variant if you'd
 rather not touch the shared function's behavior. Recommend (a) with a one-line
-doc note; it's strictly safer for every caller. With auto-redirect off, a 3xx
-surfaces as a non-2xx `Err` (fail-closed), matching testamur's "2xx-only + no
+doc note; it's strictly safer for every caller. With auto-redirect off,
+`GetResponse` returns a 3xx normally rather than throwing, so the helper must
+check the status itself: `httpPostJsonWithBearerTimeout` reads it via
+`getHttpResponse`/`getStatusCode` and `checkSuccessStatus` turns anything outside
+200-299 into `Err` (fail-closed), matching testamur's "2xx-only + no
 redirect-follow" bearer-leak defense.
 
 ### 5.3 Ordering in `emitRunnerCheckpoint`

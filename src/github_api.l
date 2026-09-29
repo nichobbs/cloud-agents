@@ -75,11 +75,14 @@ func setTimeout(req: in HttpWebRequest, millis: in Int): Unit = ()
 func setReadWriteTimeout(req: in HttpWebRequest, millis: in Int): Unit = ()
 
 /// Whether GetResponse silently follows 3xx redirects (BCL default: true). We
-/// disable it on the bearer-authed POST (httpPostJsonWithBearerTimeout) so a
-/// misconfigured/hijacked redirect can't replay the Authorization bearer token to
-/// another host — a 3xx then surfaces as a non-2xx `Err` (fail-closed), mirroring
-/// testamur Transport's "2xx-only + no redirect-follow" bearer-leak defense
-/// (docs/capture-runtime-handoff.md §5.2).
+/// disable it on the bearer-authed requests (httpPostJsonWithBearerTimeout,
+/// httpJsonWithBearer) so a misconfigured/hijacked redirect can't replay the
+/// Authorization bearer token to another host, mirroring testamur Transport's
+/// "2xx-only + no redirect-follow" bearer-leak defense
+/// (docs/capture-runtime-handoff.md §5.2). With it disabled GetResponse
+/// returns a 3xx normally instead of throwing, so every caller that disables
+/// it must read the status (getHttpResponse + checkSuccessStatus) to keep a
+/// 3xx fail-closed.
 @externInstance
 @externTarget("System.Net.HttpWebRequest.set_AllowAutoRedirect")
 func setAllowAutoRedirect(req: in HttpWebRequest, allow: in Bool): Unit = ()
@@ -398,6 +401,19 @@ val llmRequestTimeoutMillis = 120000
 @externTarget("System.Net.HttpWebRequest.get_AllowAutoRedirect")
 pub func getAllowAutoRedirect(req: in HttpWebRequest): Bool = true
 
+/// The 2xx-only gate for requests sent with auto-redirect disabled. GetResponse
+/// throws on 4xx/5xx, but with redirects off a 3xx arrives as a normal
+/// response whose body is not the resource asked for; accepting it would let a
+/// redirecting ingest endpoint count as a delivery. Any status outside 200-299
+/// becomes `Err("<method> <url> failed: (<status>) unexpected status")`, the
+/// same "(<status>)" shape the platform's own 4xx/5xx messages use.
+pub func checkSuccessStatus(method: in String, url: in String, status: in Int): Result[Unit, String] {
+  if status < 200 or status > 299 {
+    return Err(error = method + " " + url + " failed: (" + toString(status) + ") unexpected status")
+  }
+  return Ok(value = ())
+}
+
 /// Build (but do not send — no GetRequestStream/GetResponse call, so no
 /// network I/O) the POST request httpPostJsonWithBearerTimeout below issues:
 /// method, timeouts, the no-redirect-follow bearer-leak defense
@@ -432,6 +448,9 @@ pub func buildBearerPostRequest(
 /// byte-per-char readAll would mangle them). Callers with normal API-call
 /// latency expectations (e.g. CloudAgents.OpenPr's GitHub calls) should pass
 /// their own short timeout rather than reusing an LLM-tuned one (#927).
+/// 2xx-only: redirects are not followed and a 3xx is an Err
+/// (checkSuccessStatus), as is any 4xx/5xx or transport failure, so callers
+/// such as CloudAgents.GraphIngestDrain can treat Ok as "delivered".
 pub func httpPostJsonWithBearerTimeout(
   url: in String,
   jsonBody: in String,
@@ -451,16 +470,20 @@ pub func httpPostJsonWithBearerTimeout(
     }
     streamWrite(reqStream, bytes, 0, bytes.length.toInt())
     streamDispose(reqStream)
-    val resp = getResponse(req)
+    val resp = getHttpResponse(req)
     defer {
-      responseDispose(resp)
+      httpResponseDispose(resp)
     }
-    val respStream = getResponseStream(resp)
-    defer {
-      streamDispose(respStream)
+    match checkSuccessStatus("POST", url, getStatusCode(resp)) {
+      case Err(e) -> Err(error = e)
+      case Ok(_) -> {
+        val respStream = getHttpResponseStream(resp)
+        defer {
+          streamDispose(respStream)
+        }
+        Ok(value = readAllUtf8(respStream))
+      }
     }
-    val body = readAllUtf8(respStream)
-    Ok(value = body)
   } catch Bug as b {
     Err(error = "POST " + url + " failed: " + b.message)
   }
@@ -470,8 +493,9 @@ pub func httpPostJsonWithBearerTimeout(
 /// "" send no body; POST/PATCH/PUT send it as UTF-8 JSON. Same bounded
 /// timeout, no redirect-follow (a 3xx must not replay the token elsewhere)
 /// and UTF-8 response read as httpPostJsonWithBearerTimeout. A non-2xx
-/// status surfaces as Err carrying the platform message, which names the
-/// status as "(404)" etc.
+/// status surfaces as Err: 4xx/5xx carry the platform message, which names
+/// the status as "(404)" etc.; a 3xx (not followed) goes through
+/// checkSuccessStatus.
 pub func httpJsonWithBearer(
   method: in String,
   url: in String,
@@ -505,17 +529,15 @@ pub func httpJsonWithBearer(
     defer {
       httpResponseDispose(resp)
     }
-    // With redirects off a 3xx arrives here rather than as an exception;
-    // its body is not the resource asked for.
-    val status = getStatusCode(resp)
-    if status < 200 or status > 299 {
-      Err(error = method + " " + url + " failed: (" + toString(status) + ") unexpected status")
-    } else {
-      val respStream = getHttpResponseStream(resp)
-      defer {
-        streamDispose(respStream)
+    match checkSuccessStatus(method, url, getStatusCode(resp)) {
+      case Err(e) -> Err(error = e)
+      case Ok(_) -> {
+        val respStream = getHttpResponseStream(resp)
+        defer {
+          streamDispose(respStream)
+        }
+        Ok(value = readAllUtf8(respStream))
       }
-      Ok(value = readAllUtf8(respStream))
     }
   } catch Bug as b {
     Err(error = method + " " + url + " failed: " + b.message)
