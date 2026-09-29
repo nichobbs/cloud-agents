@@ -283,6 +283,14 @@ pub func workspaceVolumeBindFor(userId: in String, sessionId: in String): String
   return "session-" + userId + "-" + sessionId + "-workspace:/workspace"
 }
 
+/// A read-only bind of `sessionId`'s workspace volume at /workspace/observed:
+/// how an observer with workspace access reads the session it observes,
+/// including uncommitted work, without being able to change it.
+pub func observedWorkspaceBindFor(userId: in String, sessionId: in String): String {
+  val rw = workspaceVolumeBindFor(userId, sessionId)
+  return rw.substring(0, rw.length - ":/workspace".length) + ":/workspace/observed:ro"
+}
+
 // ─── Session SQL ──────────────────────────────────────────────────────────────
 //
 // Assembled with `sqlLiteral` escaping like every other statement in this
@@ -384,7 +392,7 @@ pub func selectSessionByIdSql(id: in String, userId: in String): String {
 /// SELECT all sessions owned by a user, most recently active first.
 pub func listSessionsByUserSql(userId: in String): String {
   return "SELECT " + sessionColumns + " FROM sessions WHERE user_id = " + sqlLiteral(userId) +
-    " ORDER BY last_message_at DESC"
+    " AND observes_session_id = '' ORDER BY last_message_at DESC"
 }
 
 /// UPDATE a session's container id.
@@ -710,7 +718,9 @@ pub func listSessionSummariesByUserSql(userId: in String): String {
     " AS TEXT)" +
     " FROM sessions WHERE user_id = " +
     sqlLiteral(userId) +
-    " ORDER BY last_message_at DESC"
+    // Ledger observer sessions (docs/session-ledger.md §10) are machinery,
+    // not the user's work: they never appear in the list.
+    " AND observes_session_id = '' ORDER BY last_message_at DESC"
 }
 
 func attentionDigitValue(c: in String): Int {

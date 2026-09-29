@@ -1129,6 +1129,89 @@ pub func saveObserverState(st: in ObserverState): Result[Unit, CloudAgents.Sqlit
   return Ok(())
 }
 
+/// What a container needs to know when it is an observer: the session it
+/// observes and the repo access its profile grants.
+pub record ObserverRunInfo {
+  pub observedSessionId: String
+  pub repoAccess: String
+}
+
+/// The observer facts for a session about to run, or None for any session that
+/// isn't an observer.
+pub func observerRunInfo(sessionId: in String): Result[Option[ObserverRunInfo], CloudAgents.Sqlite.DbError] {
+  val rows = CloudAgents.Sqlite.query("SELECT o.session_id, COALESCE(st.repo_access, 'none') FROM ledger_observer o JOIN sessions t ON t.id = o.session_id LEFT JOIN ledger_observer_settings st ON st.profile_id = t.profile_id WHERE o.observer_session_id = " + lit(sessionId) + " AND o.observer_session_id != ''")?
+  if CloudAgents.Sqlite.getRowArrayLength(rows) == 0 {
+    return Ok(value = None)
+  }
+  val r = CloudAgents.Sqlite.getRowArrayValue(rows, 0)
+  return Ok(value = Some(value = ObserverRunInfo(observedSessionId = col(r, 0), repoAccess = col(r, 1))))
+}
+
+/// The facts about a session the observer machinery needs, read without an
+/// owner scope (callers are an authenticated container callback, a run hook
+/// on the session's own request, or the operator's maintenance run).
+pub record SessionRunFacts {
+  pub sessionId: String
+  pub userId: String
+  pub repoUrl: String
+  pub branch: String
+  pub harness: String
+  pub status: String
+  pub profileId: String
+  pub isArchived: String
+  pub observesSessionId: String
+  pub containerId: String
+}
+
+pub func sessionRunFacts(sessionId: in String): Result[Option[SessionRunFacts], CloudAgents.Sqlite.DbError] {
+  val rows = CloudAgents.Sqlite.query("SELECT id, user_id, repo_url, branch, harness, status, COALESCE(profile_id, ''), is_archived, observes_session_id, container_id FROM sessions WHERE id = " + lit(sessionId))?
+  if CloudAgents.Sqlite.getRowArrayLength(rows) == 0 {
+    return Ok(value = None)
+  }
+  val r = CloudAgents.Sqlite.getRowArrayValue(rows, 0)
+  return Ok(
+    value = Some(
+      value = SessionRunFacts(
+        sessionId = col(r, 0),
+        userId = col(r, 1),
+        repoUrl = col(r, 2),
+        branch = col(r, 3),
+        harness = col(r, 4),
+        status = col(r, 5),
+        profileId = col(r, 6),
+        isArchived = col(r, 7),
+        observesSessionId = col(r, 8),
+        containerId = col(r, 9)
+      )
+    )
+  )
+}
+
+/// Mark a freshly created session as the observer of `observedSessionId`, on
+/// the observed session's profile (its credentials and network policy; the
+/// container narrows everything else).
+pub func linkObserverSession(
+  observerSessionId: in String, observedSessionId: in String, profileId: in String
+): Result[Unit, CloudAgents.Sqlite.DbError] {
+  CloudAgents.Sqlite.execute("UPDATE sessions SET observes_session_id = " + lit(observedSessionId) + ", profile_id = " + lit(profileId) + " WHERE id = " + lit(observerSessionId))?
+  return Ok(())
+}
+
+/// Remove an observer session's row (a replaced or orphaned observer).
+pub func deleteObserverSessionRow(observerSessionId: in String): Result[Unit, CloudAgents.Sqlite.DbError] {
+  if observerSessionId.length.toInt() == 0 {
+    return Ok(())
+  }
+  CloudAgents.Sqlite.execute("DELETE FROM sessions WHERE id = " + lit(observerSessionId) + " AND observes_session_id != ''")?
+  return Ok(())
+}
+
+/// Forget an observed session's observer (its session was deleted).
+pub func deleteObserverState(sessionId: in String): Result[Unit, CloudAgents.Sqlite.DbError] {
+  CloudAgents.Sqlite.execute("DELETE FROM ledger_observer WHERE session_id = " + lit(sessionId))?
+  return Ok(())
+}
+
 /// Ask for a pass. Idempotent: many asks before a pass runs make one pass.
 pub func markObserverPending(sessionId: in String): Result[Unit, CloudAgents.Sqlite.DbError] {
   CloudAgents.Sqlite.execute("INSERT INTO ledger_observer (" + observerCols + ") VALUES (" + lit(sessionId) + ", '', '', '', '1', '', '0', '', '', '') ON CONFLICT(session_id) DO UPDATE SET pending = '1'")?

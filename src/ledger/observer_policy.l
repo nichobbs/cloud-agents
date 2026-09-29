@@ -155,3 +155,14 @@ pub func midRunDue(s: in ObserverSettings, sinceMillis: in Long, nowMillis: in L
 pub func windowWorthAPass(signal: in Int): Bool {
   return signal > 0
 }
+
+/// The only tools an observer container gets: read the window, report on it.
+pub func observerToolNames(): slice[String] {
+  return ["observer_get_window", "observer_report"]
+}
+
+/// Credentials an observer never receives: anything that could push to or
+/// change a repository. It reads what the host hands it and nothing else.
+pub func isRepoCredential(name: in String): Bool {
+  return name.contains("GITHUB") or name.contains("GH_TOKEN") or name.contains("GITLAB") or name.contains("BITBUCKET")
+}

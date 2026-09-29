@@ -88,6 +88,35 @@ func main(): Unit {
   val ledgerTransport = HttpLedgerTransport(baseUrl = apiUrl, sessionId = sessionId, token = token)
 
   val server = newServer(McpImplementation(name = "cloud-agents", version = "0.1.0"))
+  // A ledger observer (cloud-agents docs/session-ledger.md §10) gets its two
+  // tools and nothing else, whatever the enabled-tools list says: it reports
+  // on another session and must not ask the user, schedule, or write memory.
+  if readEnv("CLOUD_AGENTS_OBSERVER") == "1" {
+    val observerTransport = HttpObserverTransport(baseUrl = apiUrl, sessionId = sessionId, token = token)
+    val observerSpecs = observerToolSpecs()
+    var oi = 0
+    while oi < observerSpecs.length {
+      val spec = observerSpecs[oi]
+      addTool(
+        server,
+        McpToolDef(
+          name = spec.name,
+          description = spec.description,
+          inputSchema = observerSchemaForOp(spec.op),
+          handler = LedgerTool(transport = observerTransport, op = spec.op)
+        )
+      )
+      oi = oi + 1
+    }
+    match serveStdio(server) {
+      case Ok(_) -> ()
+      case Err(e) -> {
+        CloudAgents.Shim.Transport.eprintln("cloud-agents-shim: serveStdio ended: " + e)
+        panic("cloud-agents-shim: serveStdio ended: " + e)
+      }
+    }
+    return ()
+  }
   // 24 tools below: 16 addTool calls (request_permission, ask_user,
   // report_progress, request_secret, report_artifact, remember, recall,
   // forget, add_task, list_tasks, complete_task, notify, schedule_job,

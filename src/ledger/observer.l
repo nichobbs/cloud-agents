@@ -448,3 +448,85 @@ func notify(target: in SessionContext, c: in Candidate): Unit {
     case Err(e) -> println("WARNING: observer notification failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
   }
 }
+
+// ── Triggers ──────────────────────────────────────────────────────────────────
+/// The observer settings that apply to `sessionId`, or None when it isn't
+/// observed: an observer session, an archived one, or one whose profile has
+/// no enabled observer.
+pub func observerSettingsForSession(sessionId: in String): Result[Option[ObserverSettings], CloudAgents.Sqlite.DbError] {
+  val facts = match sessionRunFacts(sessionId)? { case Some(f) -> f; case _ -> return Ok(value = None) }
+  if facts.observesSessionId.length.toInt() > 0 or facts.isArchived == "1" {
+    return Ok(value = None)
+  }
+  match observerSettingsFor(facts.profileId)? {
+    case Some(st) -> {
+      if st.enabled == "true" {
+        return Ok(value = Some(value = st))
+      }
+      return Ok(value = None)
+    }
+    case _ -> return Ok(value = None)
+  }
+}
+
+/// A run of `sessionId` ended (succeeded, failed or cancelled): if it is
+/// observed, ask for an end-of-run pass. Best-effort: never fails the run.
+pub func onRunFinished(sessionId: in String): Unit {
+  match observerSettingsForSession(sessionId) {
+    case Ok(Some(_)) -> {
+      match markObserverPending(sessionId) {
+        case Ok(_) -> ()
+        case Err(e) -> println(
+          "WARNING: queueing the observer for " + sessionId + " failed: " +
+            CloudAgents.Sqlite.dbErrorMessage(e)
+        )
+      }
+    }
+    case Ok(_) -> ()
+    case Err(e) -> println(
+      "WARNING: reading the observer settings for " + sessionId + " failed: " +
+        CloudAgents.Sqlite.dbErrorMessage(e)
+    )
+  }
+}
+
+/// Called from a running session's poll loop: ask for a mid-run pass once the
+/// profile's interval has passed since the last pass (or the run's start).
+pub func midRunTick(sessionId: in String, runStartedAt: in String): Unit {
+  val settings = match observerSettingsForSession(sessionId) { case Ok(Some(st)) -> st; case _ -> return () }
+  val st = match observerState(sessionId) { case Ok(s) -> s; case Err(_) -> return () }
+  var since = decimalLong(runStartedAt)
+  val last = decimalLong(st.lastPassAt)
+  if last > since {
+    since = last
+  }
+  if st.pending != "1" and midRunDue(settings, since, CloudAgents.Repository.nowMillisLong()) {
+    match markObserverPending(sessionId) {
+      case Ok(_) -> ()
+      case Err(e) -> println(
+        "WARNING: queueing a mid-run observer pass for " + sessionId + " failed: " +
+          CloudAgents.Sqlite.dbErrorMessage(e)
+      )
+    }
+  }
+}
+
+/// The message that starts an observer pass. The observer is a long-lived
+/// session: this is what it is told each time it is woken.
+pub func observerPrompt(final: in Bool): String {
+  var stage = "The run you observe is still going; report what you can see so far."
+  if final {
+    stage = "The run you observe has ended."
+  }
+  return "You are the ledger observer for another agent's coding session. " + stage +
+    "\n\n1. Call observer_get_window. If empty is true, stop." +
+    "\n2. Read the transcript. Find what the agent did but did NOT record in its ledger (the window lists what it recorded): " +
+    "decisions a reviewer might have made differently; deviations from the task, issue or plan, including changes outside the task's scope; " +
+    "shortcuts such as skipping, deleting or weakening tests, lowering coverage thresholds, suppressing warnings or type errors " +
+    "(eslint-disable, @ts-ignore, @SuppressWarnings, any casts), broad catch blocks, TODO or FIXME left behind, --no-verify, force pushes, " +
+    "new or upgraded dependencies, and approaches abandoned after failures; and blockers it hit." +
+    "\n3. Call observer_report once with a candidate for each, citing the [seq N] range and a short quote. Report only what the window shows; " +
+    "if unsure, give a lower confidence rather than leaving it out. Send an empty candidates list when there is nothing to report." +
+    "\n4. If the reply says more is true, go back to step 1." +
+    "\n\nDo not change any files and do not run commands: you only read and report."
+}

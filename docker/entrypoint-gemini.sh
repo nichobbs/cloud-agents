@@ -108,12 +108,20 @@ if [ -n "${GITHUB_TOKEN:-}" ]; then
 fi
 
 if [ ! -d /workspace/.git ]; then
-    if [ -z "${REPO_URL:-}" ]; then
-        echo "entrypoint-gemini: REPO_URL is required for the first run" >&2
-        exit 64
+    if [ "${CLOUD_AGENTS_OBSERVER:-0}" = "1" ]; then
+        # A ledger observer (docs/session-ledger.md §10) works from the window
+        # the host hands it, plus at most a read-only /workspace/observed: it
+        # has no repository of its own.
+        echo "entrypoint-gemini: observer session, no repository to clone" >&2
+        mkdir -p /workspace
+    else
+        if [ -z "${REPO_URL:-}" ]; then
+            echo "entrypoint-gemini: REPO_URL is required for the first run" >&2
+            exit 64
+        fi
+        echo "entrypoint-gemini: cloning ${REPO_URL} (${BRANCH})" >&2
+        git clone "${REPO_URL}" --branch "${BRANCH}" /workspace
     fi
-    echo "entrypoint-gemini: cloning ${REPO_URL} (${BRANCH})" >&2
-    git clone "${REPO_URL}" --branch "${BRANCH}" /workspace
 fi
 
 # Reconcile linked repositories (multi-repo sessions): clone the repos
