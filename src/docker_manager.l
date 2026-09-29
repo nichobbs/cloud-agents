@@ -1,6 +1,7 @@
 package CloudAgents.Docker
 
 import Std.Core
+import CloudAgents.Pg
 import Std.Environment
 import Std.Task
 import Web
@@ -271,7 +272,7 @@ pub async func createRunnerContainer(
   // credentials"). What's tested here, via CloudAgents.RunnerEnv, is the
   // NAME=VALUE formatting/ordering this function applies to whatever that
   // call returns (#221).
-  match CloudAgents.Repository.decryptedCredentialsForProfile(userId, profileId) {
+  match CloudAgents.Repository.decryptedCredentialsForProfile(CloudAgents.Pg.personalScope(userId), profileId) {
     case Ok(creds) -> {
       var credNames: slice[String] = []
       var credValues: slice[String] = []
@@ -305,7 +306,7 @@ pub async func createRunnerContainer(
         )
     )
   } else {
-    match CloudAgents.Repository.enabledToolsForProfile(userId, profileId) {
+    match CloudAgents.Repository.enabledToolsForProfile(CloudAgents.Pg.personalScope(userId), profileId) {
       case Ok(toolsEnv) -> {
         if toolsEnv.length > 0 {
           envs = envs.append("CLOUD_AGENTS_ENABLED_TOOLS=" + toolsEnv)
@@ -327,7 +328,7 @@ pub async func createRunnerContainer(
   // failure is best-effort (log and continue with no grants for that kind)
   // rather than aborting the run.
   if not isObserver {
-    match CloudAgents.Repository.skillsForProfile(userId, profileId) {
+    match CloudAgents.Repository.skillsForProfile(CloudAgents.Pg.personalScope(userId), profileId) {
       case Ok(skills) -> {
         if skills.length > 0 {
           envs = envs.append("CLOUD_AGENTS_SKILLS_B64=" + base64Json(SkillList(skills = skills).toJson()))
@@ -338,7 +339,7 @@ pub async func createRunnerContainer(
           CloudAgents.Sqlite.dbErrorMessage(e)
       )
     }
-    match CloudAgents.Repository.subagentsForProfile(userId, profileId) {
+    match CloudAgents.Repository.subagentsForProfile(CloudAgents.Pg.personalScope(userId), profileId) {
       case Ok(subagents) -> {
         if subagents.length > 0 {
           envs = envs.append("CLOUD_AGENTS_SUBAGENTS_B64=" + base64Json(SubagentList(subagents = subagents).toJson()))
@@ -349,7 +350,7 @@ pub async func createRunnerContainer(
           CloudAgents.Sqlite.dbErrorMessage(e)
       )
     }
-    match CloudAgents.Repository.mcpServersForProfile(userId, profileId) {
+    match CloudAgents.Repository.mcpServersForProfile(CloudAgents.Pg.personalScope(userId), profileId) {
       case Ok(mcpServers) -> {
         if mcpServers.length > 0 {
           envs = envs.append("CLOUD_AGENTS_MCP_SERVERS_B64=" + base64Json(McpServerList(mcpServers = mcpServers).toJson()))
@@ -368,7 +369,7 @@ pub async func createRunnerContainer(
   // session must never silently re-open its network (#233), mirroring the
   // credential path above (which propagates its DB error). Both privilege
   // boundaries fail closed together.
-  val policy = match CloudAgents.Repository.profileNetworkPolicy(userId, profileId) {
+  val policy = match CloudAgents.Repository.profileNetworkPolicy(CloudAgents.Pg.personalScope(userId), profileId) {
     case Ok(p) -> p
     case Err(e) -> return Err(error = "Failed to resolve network policy: " + CloudAgents.Sqlite.dbErrorMessage(e))
   }

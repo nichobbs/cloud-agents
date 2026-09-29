@@ -42,6 +42,7 @@
 package CloudAgents.McpServerSeed
 
 import Std.Core
+import CloudAgents.Pg
 import Std.File
 import CloudAgents.Library
 import CloudAgents.Repository
@@ -192,7 +193,7 @@ func isWithinMcpServerBounds(parsed: in ParsedMcpServer): Bool {
 /// directory, a malformed seed file, or a DB hiccup on any one item just
 /// means fewer/zero seeded servers, same as an empty library today).
 pub func seedDefaultMcpServersIfEmpty(userId: in String): Unit {
-  val existing = match CloudAgents.Repository.listMcpServers(userId) {
+  val existing = match CloudAgents.Repository.listMcpServers(CloudAgents.Pg.personalScope(userId)) {
     case Ok(s) -> s
     case Err(_) -> return ()
   }
@@ -205,10 +206,10 @@ pub func seedDefaultMcpServersIfEmpty(userId: in String): Unit {
     match readSeedMcpServer(names[i]) {
       case Some(parsed) -> {
         if CloudAgents.Library.isValidLibraryName(parsed.name) and isWithinMcpServerBounds(parsed) {
-          match CloudAgents.Repository.mcpServerIdByName(userId, parsed.name) {
+          match CloudAgents.Repository.mcpServerIdByName(CloudAgents.Pg.personalScope(userId), parsed.name) {
             case Ok(None) -> {
               match CloudAgents.Repository.addMcpServer(
-                userId, parsed.name, parsed.transport, parsed.command, parsed.args, parsed.url, parsed.env,
+                CloudAgents.Pg.personalScope(userId), parsed.name, parsed.transport, parsed.command, parsed.args, parsed.url, parsed.env,
                 parsed.enabled, parsed.headers
               ) {
                 case Ok(_) -> ()

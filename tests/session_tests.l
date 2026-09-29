@@ -2,6 +2,7 @@
 package CloudAgents.SessionTests
 
 import Std.Core
+import CloudAgents.Pg
 import Std.Testing
 import Std.Uuid
 import CloudAgents.Handlers
@@ -1305,7 +1306,7 @@ test "setSessionProfileHandler validates session and profile (#235)" {
     case Err(err) -> assertEqualInt(err.status, 400, "unknown profile -> 400")
   }
   // Attach a real profile; it reads back on the session.
-  val prof = match CloudAgents.Repository.addProfile("default", "p", "", "none", "all", [], [], [], [], "all", []) {
+  val prof = match CloudAgents.Repository.addProfile(CloudAgents.Pg.personalScope("default"), "p", "", "none", "all", [], [], [], [], "all", []) {
     case Ok(p) -> p
     case Err(e) -> panic("addProfile failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
   }

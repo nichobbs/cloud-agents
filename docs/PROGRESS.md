@@ -228,7 +228,8 @@ already-on-default-branch path) — see §6 of the phase doc for detail.
 |-------------|--------|-------|
 | Spec (ADR-008 phase 1) | ✅ merged (#1140) | `docs/phase11-postgres-tenancy.md` |
 | Slice A: foundations | 🟡 in review | `src/pg/` (scopes/units, migration runner + `--migrate`, typed baseline schema with RLS and claim functions, self-check), `deploy/postgres/provision.sql`, `tests/pg_live_tests.l` (13 live cases), CI Postgres service |
-| Slices B+C, prompts domain | 🟡 in progress | `CloudAgents.PgStore.Prompts`, scope-taking prompt repository functions, `tests/pgstore_prompts_tests.l` |
+| Slices B+C, prompts domain | 🟡 in review (#1161) | `CloudAgents.PgStore.Prompts`, scope-taking prompt repository functions, `tests/pgstore_prompts_tests.l` |
+| Slices B+C, library domain (profiles, skills, subagents, MCP servers) | 🟡 in progress | `CloudAgents.PgStore.Library`, scope-taking library repository functions, `tests/pgstore_library_tests.l`; `decryptedCredentialsForProfile`'s Postgres version lands with the credentials domain |
 | Slices B+C, remaining domains; D-F (export, cut-over, organisations) | ⬜ not started | see spec §9 |
 
 ## Session ledger ✅ phases 1–4 complete

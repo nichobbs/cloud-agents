@@ -2,6 +2,7 @@
 package CloudAgents.JobsTests
 
 import Std.Core
+import CloudAgents.Pg
 import Std.Testing
 import Std.Uuid
 import CloudAgents.Auth
@@ -65,7 +66,7 @@ func bearer(token: in String): String {
 }
 
 func mkProfile(userId: in String): String {
-  return match CloudAgents.Repository.addProfile(userId, "test-profile", "claude", "full", "all", [], [], [], [], "all", []) {
+  return match CloudAgents.Repository.addProfile(CloudAgents.Pg.personalScope(userId), "test-profile", "claude", "full", "all", [], [], [], [], "all", []) {
     case Ok(p) -> p.id
     case Err(e) -> panic("addProfile failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
   }
@@ -481,7 +482,7 @@ test "update_job callback cannot set profileId, even from the owning session" {
   val sid = "sess-jobs-profile"
   mkSession(sid)
   val token = mintToken(sid, "default")
-  val profileId = match CloudAgents.Repository.addProfile("default", "escalated", "", "full", "all", [], [], [], [], "all", []) {
+  val profileId = match CloudAgents.Repository.addProfile(CloudAgents.Pg.personalScope("default"), "escalated", "", "full", "all", [], [], [], [], "all", []) {
     case Ok(p) -> p.id
     case Err(e) -> panic("addProfile failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
   }

@@ -1,6 +1,7 @@
 package CloudAgents.Handlers
 
 import Std.Core
+import CloudAgents.Pg
 import Std.Collections
 import Std.Errors
 import Std.File
@@ -638,7 +639,7 @@ pub func setSessionProfileHandler(id: in String, req: in SetProfileRequest): Res
   }
   // A non-empty profile must exist and be owned by the caller.
   if req.profileId.length > 0 {
-    match CloudAgents.Repository.getProfile(req.profileId, userId) {
+    match CloudAgents.Repository.getProfile(req.profileId, CloudAgents.Pg.personalScope(userId)) {
       case Ok(Some(_)) -> ()
       case Ok(None) -> return Err(Web.badRequest("profileId does not reference a known profile"))
       case Err(e) -> return Err(Web.internalError("profile lookup failed: " + CloudAgents.Sqlite.dbErrorMessage(e)))
@@ -1352,7 +1353,7 @@ pub func streamSendMessage(
       var harness = session.harness
       if profileId.length > 0 {
         println("[diag] streamSendMessage " + id + ": before getProfile")
-        match CloudAgents.Repository.getProfile(profileId, userId) {
+        match CloudAgents.Repository.getProfile(profileId, CloudAgents.Pg.personalScope(userId)) {
           case Ok(Some(p)) -> if p.harness.length > 0 { harness = p.harness }
           case Ok(None) -> ()
           case Err(_) -> ()

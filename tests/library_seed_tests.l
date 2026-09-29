@@ -2,6 +2,7 @@
 package CloudAgents.LibrarySeedTests
 
 import Std.Core
+import CloudAgents.Pg
 import Std.Collections
 import Std.File
 import Std.Testing
@@ -149,7 +150,7 @@ test "seedDefaultSubagentsIfEmpty populates an empty library from the real seed/
 
   seedDefaultSubagentsIfEmpty(userId)
 
-  val seeded = match CloudAgents.Repository.listSubagents(userId) {
+  val seeded = match CloudAgents.Repository.listSubagents(CloudAgents.Pg.personalScope(userId)) {
     case Ok(s) -> s
     case Err(e) -> {
       assertTrue(false, "listSubagents failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
@@ -162,7 +163,7 @@ test "seedDefaultSubagentsIfEmpty populates an empty library from the real seed/
   // A second call is a no-op: the library is no longer empty, so nothing is
   // re-inserted (row count unchanged).
   seedDefaultSubagentsIfEmpty(userId)
-  val afterSecondCall = match CloudAgents.Repository.listSubagents(userId) {
+  val afterSecondCall = match CloudAgents.Repository.listSubagents(CloudAgents.Pg.personalScope(userId)) {
     case Ok(s) -> s
     case Err(_) -> []
   }
@@ -172,14 +173,14 @@ test "seedDefaultSubagentsIfEmpty populates an empty library from the real seed/
   // later sign-in should reseed rather than leave them stuck at zero.
   var i = 0
   while i < seeded.length.toInt() {
-    match CloudAgents.Repository.deleteSubagent(seeded[i].id, userId) {
+    match CloudAgents.Repository.deleteSubagent(seeded[i].id, CloudAgents.Pg.personalScope(userId)) {
       case Ok(_) -> ()
       case Err(e) -> assertTrue(false, "deleteSubagent failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
     }
     i = i + 1
   }
   seedDefaultSubagentsIfEmpty(userId)
-  val reseeded = match CloudAgents.Repository.listSubagents(userId) {
+  val reseeded = match CloudAgents.Repository.listSubagents(CloudAgents.Pg.personalScope(userId)) {
     case Ok(s) -> s
     case Err(_) -> []
   }
@@ -191,14 +192,14 @@ test "seedDefaultSubagentsIfEmpty populates an empty library from the real seed/
 test "seedDefaultSubagentsIfEmpty never touches a library the user has already started customizing" {
   val dbPath = useFreshTestDb("library-seed-nonempty")
   val userId = "gh-seed-test-user-2"
-  match CloudAgents.Repository.addSubagent(userId, "my-own-agent", "a hand-authored subagent", "do the thing", "sonnet") {
+  match CloudAgents.Repository.addSubagent(CloudAgents.Pg.personalScope(userId), "my-own-agent", "a hand-authored subagent", "do the thing", "sonnet") {
     case Ok(_) -> ()
     case Err(e) -> assertTrue(false, "addSubagent failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
   }
 
   seedDefaultSubagentsIfEmpty(userId)
 
-  val subagents = match CloudAgents.Repository.listSubagents(userId) {
+  val subagents = match CloudAgents.Repository.listSubagents(CloudAgents.Pg.personalScope(userId)) {
     case Ok(s) -> s
     case Err(_) -> []
   }
@@ -258,7 +259,7 @@ test "seedDefaultSkillsIfEmpty populates an empty library from the real seed/ski
 
   seedDefaultSkillsIfEmpty(userId)
 
-  val seeded = match CloudAgents.Repository.listSkills(userId) {
+  val seeded = match CloudAgents.Repository.listSkills(CloudAgents.Pg.personalScope(userId)) {
     case Ok(s) -> s
     case Err(e) -> {
       assertTrue(false, "listSkills failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
@@ -269,7 +270,7 @@ test "seedDefaultSkillsIfEmpty populates an empty library from the real seed/ski
   assertEqualInt(seeded.length.toInt(), expectedNames.length.toInt(), "every curated skill seeded from the real files")
 
   seedDefaultSkillsIfEmpty(userId)
-  val afterSecondCall = match CloudAgents.Repository.listSkills(userId) {
+  val afterSecondCall = match CloudAgents.Repository.listSkills(CloudAgents.Pg.personalScope(userId)) {
     case Ok(s) -> s
     case Err(_) -> []
   }
@@ -281,14 +282,14 @@ test "seedDefaultSkillsIfEmpty populates an empty library from the real seed/ski
 test "seedDefaultSkillsIfEmpty never touches a library the user has already started customizing" {
   val dbPath = useFreshTestDb("library-seed-skills-nonempty")
   val userId = "gh-seed-test-user-skills-2"
-  match CloudAgents.Repository.addSkill(userId, "my-own-skill", "a hand-authored skill", "do the thing") {
+  match CloudAgents.Repository.addSkill(CloudAgents.Pg.personalScope(userId), "my-own-skill", "a hand-authored skill", "do the thing") {
     case Ok(_) -> ()
     case Err(e) -> assertTrue(false, "addSkill failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
   }
 
   seedDefaultSkillsIfEmpty(userId)
 
-  val skills = match CloudAgents.Repository.listSkills(userId) {
+  val skills = match CloudAgents.Repository.listSkills(CloudAgents.Pg.personalScope(userId)) {
     case Ok(s) -> s
     case Err(_) -> []
   }
@@ -306,11 +307,11 @@ test "seedDefaultLibraryIfEmpty seeds both subagents and skills independently" {
 
   seedDefaultLibraryIfEmpty(userId)
 
-  val subagents = match CloudAgents.Repository.listSubagents(userId) {
+  val subagents = match CloudAgents.Repository.listSubagents(CloudAgents.Pg.personalScope(userId)) {
     case Ok(s) -> s
     case Err(_) -> []
   }
-  val skills = match CloudAgents.Repository.listSkills(userId) {
+  val skills = match CloudAgents.Repository.listSkills(CloudAgents.Pg.personalScope(userId)) {
     case Ok(s) -> s
     case Err(_) -> []
   }
@@ -398,7 +399,7 @@ test "seedDefaultSubagentsIfEmpty skips a seed file whose description exceeds th
 
   seedDefaultSubagentsIfEmpty(userId)
 
-  val subagents = match CloudAgents.Repository.listSubagents(userId) {
+  val subagents = match CloudAgents.Repository.listSubagents(CloudAgents.Pg.personalScope(userId)) {
     case Ok(s) -> s
     case Err(_) -> []
   }

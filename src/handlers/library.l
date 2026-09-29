@@ -120,7 +120,7 @@ func validateSaveSkill(req: in SaveSkillRequest): Option[Web.ApiError] {
 }
 
 pub func listSkillsHandler(): Result[SkillList, Web.ApiError] {
-  match listSkills(CloudAgents.Auth.currentUserId()) {
+  match listSkills(CloudAgents.Auth.requestScope()) {
     case Ok(ss) -> return Ok(SkillList(skills = ss))
     case Err(e) -> return Err(dbError(e))
   }
@@ -131,13 +131,13 @@ pub func addSkillHandler(req: in SaveSkillRequest): Result[Skill, Web.ApiError] 
     case Some(err) -> return Err(err)
     case None -> ()
   }
-  val userId = CloudAgents.Auth.currentUserId()
-  match skillIdByName(userId, req.name) {
+  val sc = CloudAgents.Auth.requestScope()
+  match skillIdByName(sc, req.name) {
     case Ok(Some(_)) -> return Err(Web.badRequest("a skill with this name already exists"))
     case Ok(None) -> ()
     case Err(e) -> return Err(dbError(e))
   }
-  match addSkill(userId, req.name, req.description, req.body) {
+  match addSkill(sc, req.name, req.description, req.body) {
     case Ok(s) -> return Ok(s)
     case Err(e) -> return Err(dbError(e))
   }
@@ -151,20 +151,20 @@ pub func updateSkillHandler(id: in String, req: in SaveSkillRequest): Result[Ski
     case Some(err) -> return Err(err)
     case None -> ()
   }
-  val userId = CloudAgents.Auth.currentUserId()
-  match skillIdByName(userId, req.name) {
+  val sc = CloudAgents.Auth.requestScope()
+  match skillIdByName(sc, req.name) {
     case Ok(Some(otherId)) -> if otherId != id { return Err(Web.badRequest("a skill with this name already exists")) }
     case Ok(None) -> ()
     case Err(e) -> return Err(dbError(e))
   }
-  val affected = match updateSkill(id, userId, req.name, req.description, req.body) {
+  val affected = match updateSkill(id, sc, req.name, req.description, req.body) {
     case Ok(n) -> n
     case Err(e) -> return Err(dbError(e))
   }
   if affected == 0 {
     return Err(Web.notFound("skill not found"))
   }
-  match getSkill(id, userId) {
+  match getSkill(id, sc) {
     case Ok(Some(s)) -> return Ok(s)
     case Ok(None) -> return Err(Web.notFound("skill not found"))
     case Err(e) -> return Err(dbError(e))
@@ -175,7 +175,7 @@ pub func deleteSkillHandler(id: in String): Result[Unit, Web.ApiError] {
   if id.length == 0 {
     return Err(Web.badRequest("skill id is required"))
   }
-  val affected = match deleteSkill(id, CloudAgents.Auth.currentUserId()) {
+  val affected = match deleteSkill(id, CloudAgents.Auth.requestScope()) {
     case Ok(n) -> n
     case Err(e) -> return Err(dbError(e))
   }
@@ -211,7 +211,7 @@ func validateSaveSubagent(req: in SaveSubagentRequest): Option[Web.ApiError] {
 }
 
 pub func listSubagentsHandler(): Result[SubagentList, Web.ApiError] {
-  match listSubagents(CloudAgents.Auth.currentUserId()) {
+  match listSubagents(CloudAgents.Auth.requestScope()) {
     case Ok(ss) -> return Ok(SubagentList(subagents = ss))
     case Err(e) -> return Err(dbError(e))
   }
@@ -222,13 +222,13 @@ pub func addSubagentHandler(req: in SaveSubagentRequest): Result[Subagent, Web.A
     case Some(err) -> return Err(err)
     case None -> ()
   }
-  val userId = CloudAgents.Auth.currentUserId()
-  match subagentIdByName(userId, req.name) {
+  val sc = CloudAgents.Auth.requestScope()
+  match subagentIdByName(sc, req.name) {
     case Ok(Some(_)) -> return Err(Web.badRequest("a subagent with this name already exists"))
     case Ok(None) -> ()
     case Err(e) -> return Err(dbError(e))
   }
-  match addSubagent(userId, req.name, req.description, req.systemPrompt, req.model) {
+  match addSubagent(sc, req.name, req.description, req.systemPrompt, req.model) {
     case Ok(s) -> return Ok(s)
     case Err(e) -> return Err(dbError(e))
   }
@@ -242,20 +242,20 @@ pub func updateSubagentHandler(id: in String, req: in SaveSubagentRequest): Resu
     case Some(err) -> return Err(err)
     case None -> ()
   }
-  val userId = CloudAgents.Auth.currentUserId()
-  match subagentIdByName(userId, req.name) {
+  val sc = CloudAgents.Auth.requestScope()
+  match subagentIdByName(sc, req.name) {
     case Ok(Some(otherId)) -> if otherId != id { return Err(Web.badRequest("a subagent with this name already exists")) }
     case Ok(None) -> ()
     case Err(e) -> return Err(dbError(e))
   }
-  val affected = match updateSubagent(id, userId, req.name, req.description, req.systemPrompt, req.model) {
+  val affected = match updateSubagent(id, sc, req.name, req.description, req.systemPrompt, req.model) {
     case Ok(n) -> n
     case Err(e) -> return Err(dbError(e))
   }
   if affected == 0 {
     return Err(Web.notFound("subagent not found"))
   }
-  match getSubagent(id, userId) {
+  match getSubagent(id, sc) {
     case Ok(Some(s)) -> return Ok(s)
     case Ok(None) -> return Err(Web.notFound("subagent not found"))
     case Err(e) -> return Err(dbError(e))
@@ -266,7 +266,7 @@ pub func deleteSubagentHandler(id: in String): Result[Unit, Web.ApiError] {
   if id.length == 0 {
     return Err(Web.badRequest("subagent id is required"))
   }
-  val affected = match deleteSubagent(id, CloudAgents.Auth.currentUserId()) {
+  val affected = match deleteSubagent(id, CloudAgents.Auth.requestScope()) {
     case Ok(n) -> n
     case Err(e) -> return Err(dbError(e))
   }
@@ -333,8 +333,8 @@ pub func patchMissingMcpServerEnabled(body: in String): String {
 /// current stored value (falling back to "1" only if the server can't be
 /// found, e.g. a bad id — the update call itself will report that error).
 pub func patchMissingMcpServerEnabledForUpdate(body: in String, id: in String): String {
-  val userId = CloudAgents.Auth.currentUserId()
-  val defaultEnabled = match getMcpServer(id, userId) {
+  val sc = CloudAgents.Auth.requestScope()
+  val defaultEnabled = match getMcpServer(id, sc) {
     case Ok(Some(m)) -> m.enabled
     case _ -> "1"
   }
@@ -402,8 +402,8 @@ pub func patchMissingMcpServerHeaders(body: in String): String {
 /// current stored headers (falling back to `[]` only if the server can't be
 /// found, e.g. a bad id — the update call itself will report that error).
 pub func patchMissingMcpServerHeadersForUpdate(body: in String, id: in String): String {
-  val userId = CloudAgents.Auth.currentUserId()
-  val defaultHeadersJson = match getMcpServer(id, userId) {
+  val sc = CloudAgents.Auth.requestScope()
+  val defaultHeadersJson = match getMcpServer(id, sc) {
     case Ok(Some(m)) -> headersToJsonArray(m.headers)
     case _ -> "[]"
   }
@@ -477,7 +477,7 @@ func validateSaveMcpServer(req: in SaveMcpServerRequest): Option[Web.ApiError] {
 }
 
 pub func listMcpServersHandler(): Result[McpServerList, Web.ApiError] {
-  match listMcpServers(CloudAgents.Auth.currentUserId()) {
+  match listMcpServers(CloudAgents.Auth.requestScope()) {
     case Ok(ms) -> return Ok(McpServerList(mcpServers = ms))
     case Err(e) -> return Err(dbError(e))
   }
@@ -488,13 +488,13 @@ pub func addMcpServerHandler(req: in SaveMcpServerRequest): Result[McpServer, We
     case Some(err) -> return Err(err)
     case None -> ()
   }
-  val userId = CloudAgents.Auth.currentUserId()
-  match mcpServerIdByName(userId, req.name) {
+  val sc = CloudAgents.Auth.requestScope()
+  match mcpServerIdByName(sc, req.name) {
     case Ok(Some(_)) -> return Err(Web.badRequest("an MCP server with this name already exists"))
     case Ok(None) -> ()
     case Err(e) -> return Err(dbError(e))
   }
-  match addMcpServer(userId, req.name, req.transport, req.command, req.args, req.url, req.env, req.enabled, req.headers) {
+  match addMcpServer(sc, req.name, req.transport, req.command, req.args, req.url, req.env, req.enabled, req.headers) {
     case Ok(m) -> return Ok(m)
     case Err(e) -> return Err(dbError(e))
   }
@@ -508,20 +508,20 @@ pub func updateMcpServerHandler(id: in String, req: in SaveMcpServerRequest): Re
     case Some(err) -> return Err(err)
     case None -> ()
   }
-  val userId = CloudAgents.Auth.currentUserId()
-  match mcpServerIdByName(userId, req.name) {
+  val sc = CloudAgents.Auth.requestScope()
+  match mcpServerIdByName(sc, req.name) {
     case Ok(Some(otherId)) -> if otherId != id { return Err(Web.badRequest("an MCP server with this name already exists")) }
     case Ok(None) -> ()
     case Err(e) -> return Err(dbError(e))
   }
-  val affected = match updateMcpServer(id, userId, req.name, req.transport, req.command, req.args, req.url, req.env, req.enabled, req.headers) {
+  val affected = match updateMcpServer(id, sc, req.name, req.transport, req.command, req.args, req.url, req.env, req.enabled, req.headers) {
     case Ok(n) -> n
     case Err(e) -> return Err(dbError(e))
   }
   if affected == 0 {
     return Err(Web.notFound("mcp server not found"))
   }
-  match getMcpServer(id, userId) {
+  match getMcpServer(id, sc) {
     case Ok(Some(m)) -> return Ok(m)
     case Ok(None) -> return Err(Web.notFound("mcp server not found"))
     case Err(e) -> return Err(dbError(e))
@@ -532,7 +532,7 @@ pub func deleteMcpServerHandler(id: in String): Result[Unit, Web.ApiError] {
   if id.length == 0 {
     return Err(Web.badRequest("mcp server id is required"))
   }
-  val affected = match deleteMcpServer(id, CloudAgents.Auth.currentUserId()) {
+  val affected = match deleteMcpServer(id, CloudAgents.Auth.requestScope()) {
     case Ok(n) -> n
     case Err(e) -> return Err(dbError(e))
   }

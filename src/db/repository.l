@@ -1314,11 +1314,14 @@ pub record ProfileList {
 /// but a non-empty profileId that can't be resolved fails closed to "none"
 /// (isolated), so a session whose profile was deleted doesn't silently regain
 /// full network access.
-pub func profileNetworkPolicy(userId: in String, profileId: in String): Result[String, CloudAgents.Sqlite.DbError] {
+pub func profileNetworkPolicy(
+  sc: in CloudAgents.Pg.TenantScope, profileId: in String
+): Result[String, CloudAgents.Sqlite.DbError] {
+  val userId = sc.userId
   if profileId.length == 0 {
     return Ok(value = "full")
   }
-  match getProfile(profileId, userId)? {
+  match getProfile(profileId, sc)? {
     case None -> return Ok(value = "none")
     case Some(p) -> {
       if p.networkPolicy.length == 0 {
@@ -1802,7 +1805,7 @@ func profileToolStatements(profileId: in String, userId: in String, names: in sl
 /// Save a new profile and its granted credential/skill/subagent/MCP-server
 /// sets, returning the stored record.
 pub func addProfile(
-  userId: in String,
+  sc: in CloudAgents.Pg.TenantScope,
   name: in String,
   harness: in String,
   networkPolicy: in String,
@@ -1814,6 +1817,7 @@ pub func addProfile(
   toolMode: in String,
   tools: in slice[String],
 ): Result[Profile, CloudAgents.Sqlite.DbError] {
+  val userId = sc.userId
   val id = newId()
   val ts = nowMillis()
   // Profile row + every grant set commit together (#230).
@@ -1859,7 +1863,8 @@ pub func addProfile(
 
 /// All of a user's profiles (each with its granted credential names and
 /// library-item ids), by name.
-pub func listProfiles(userId: in String): Result[slice[Profile], CloudAgents.Sqlite.DbError] {
+pub func listProfiles(sc: in CloudAgents.Pg.TenantScope): Result[slice[Profile], CloudAgents.Sqlite.DbError] {
+  val userId = sc.userId
   val rows = CloudAgents.Sqlite.query(CloudAgents.Db.selectProfilesSql(userId))?
   var acc: slice[Profile] = []
   var i = 0
@@ -1881,7 +1886,10 @@ pub func listProfiles(userId: in String): Result[slice[Profile], CloudAgents.Sql
 /// The id of a user's profile with the given name, or None if the name is
 /// free. Used to turn a duplicate name into a 400 instead of a UNIQUE-constraint
 /// 500 (#236).
-pub func profileIdByName(userId: in String, name: in String): Result[Option[String], CloudAgents.Sqlite.DbError] {
+pub func profileIdByName(
+  sc: in CloudAgents.Pg.TenantScope, name: in String
+): Result[Option[String], CloudAgents.Sqlite.DbError] {
+  val userId = sc.userId
   val rows = CloudAgents.Sqlite.query(CloudAgents.Db.selectProfileIdByNameSql(userId, name))?
   val len = CloudAgents.Sqlite.getRowArrayLength(rows)
   if len == 0 {
@@ -1892,7 +1900,10 @@ pub func profileIdByName(userId: in String, name: in String): Result[Option[Stri
 
 /// A single profile owned by a user (with its granted credentials and
 /// library-item ids), or None.
-pub func getProfile(id: in String, userId: in String): Result[Option[Profile], CloudAgents.Sqlite.DbError] {
+pub func getProfile(
+  id: in String, sc: in CloudAgents.Pg.TenantScope
+): Result[Option[Profile], CloudAgents.Sqlite.DbError] {
+  val userId = sc.userId
   val rows = CloudAgents.Sqlite.query(CloudAgents.Db.selectProfileByIdSql(id, userId))?
   val len = CloudAgents.Sqlite.getRowArrayLength(rows)
   if len == 0 {
@@ -1911,7 +1922,7 @@ pub func getProfile(id: in String, userId: in String): Result[Option[Profile], C
 /// on the profiles row (0 = not found / not owned, mapped to 404 by the handler).
 pub func updateProfile(
   id: in String,
-  userId: in String,
+  sc: in CloudAgents.Pg.TenantScope,
   name: in String,
   harness: in String,
   networkPolicy: in String,
@@ -1923,12 +1934,13 @@ pub func updateProfile(
   toolMode: in String,
   tools: in slice[String],
 ): Result[Int, CloudAgents.Sqlite.DbError] {
+  val userId = sc.userId
   // Cheap early-exit so an unmistakably-missing profile skips the transaction
   // entirely — NOT the source of truth for the 0-vs-success return (#238): a
   // profile deleted by a concurrent request between this check and the
   // transaction below would make this pass but the UPDATE affect 0 rows, and
   // the actual affected count (not this pre-check) is what gets returned.
-  match getProfile(id, userId)? {
+  match getProfile(id, sc)? {
     case None -> return Ok(value = 0)
     case Some(_) -> ()
   }
@@ -1966,9 +1978,10 @@ pub func updateProfile(
 /// pre-check below, so a profile removed by a concurrent request between the
 /// pre-check and this transaction correctly reports 0 rather than a stale 1
 /// (#238).
-pub func deleteProfile(id: in String, userId: in String): Result[Int, CloudAgents.Sqlite.DbError] {
+pub func deleteProfile(id: in String, sc: in CloudAgents.Pg.TenantScope): Result[Int, CloudAgents.Sqlite.DbError] {
+  val userId = sc.userId
   // Cheap early-exit only — see the affected-count rationale on updateProfile.
-  match getProfile(id, userId)? {
+  match getProfile(id, sc)? {
     case None -> return Ok(value = 0)
     case Some(_) -> ()
   }
@@ -1994,12 +2007,13 @@ pub func deleteProfile(id: in String, userId: in String): Result[Int, CloudAgent
 /// deleted after the session was created) injects NOTHING rather than silently
 /// escalating a scoped session to every secret.
 pub func decryptedCredentialsForProfile(
-  userId: in String, profileId: in String
+  sc: in CloudAgents.Pg.TenantScope, profileId: in String
 ): Result[slice[CredentialValue], CredentialError] {
+  val userId = sc.userId
   if profileId.length == 0 {
     return decryptedCredentials(userId)
   }
-  val profile = match getProfile(profileId, userId) { case Ok(p) -> p; case Err(e) -> return Err(Db(error = e)) }
+  val profile = match getProfile(profileId, sc) { case Ok(p) -> p; case Err(e) -> return Err(Db(error = e)) }
   match profile {
     case None -> {
       // Referenced profile is gone: fail closed, inject no credentials.
@@ -2054,11 +2068,14 @@ pub func decryptedCredentialsForProfile(
 /// follow-up, not this slice — so a dangling profile reference should not
 /// silently disable every tool in the session; it should behave exactly
 /// like "no profile" instead.
-pub func enabledToolsForProfile(userId: in String, profileId: in String): Result[String, CloudAgents.Sqlite.DbError] {
+pub func enabledToolsForProfile(
+  sc: in CloudAgents.Pg.TenantScope, profileId: in String
+): Result[String, CloudAgents.Sqlite.DbError] {
+  val userId = sc.userId
   if profileId.length == 0 {
     return Ok(value = "")
   }
-  match getProfile(profileId, userId)? {
+  match getProfile(profileId, sc)? {
     case None -> return Ok(value = "")
     case Some(p) -> return Ok(value = CloudAgents.ToolPolicy.enabledToolsEnvValue(p.toolMode, p.tools))
   }
@@ -2150,8 +2167,9 @@ func rowToSkill(r: in CloudAgents.Sqlite.Row): Skill {
 
 /// Save a new skill.
 pub func addSkill(
-  userId: in String, name: in String, description: in String, body: in String
+  sc: in CloudAgents.Pg.TenantScope, name: in String, description: in String, body: in String
 ): Result[Skill, CloudAgents.Sqlite.DbError] {
+  val userId = sc.userId
   val id = newId()
   val ts = nowMillis()
   CloudAgents.Sqlite.execute(CloudAgents.Db.insertSkillSql(id, userId, name, description, body, ts))?
@@ -2169,7 +2187,8 @@ pub func addSkill(
 }
 
 /// All of a user's skills, by name.
-pub func listSkills(userId: in String): Result[slice[Skill], CloudAgents.Sqlite.DbError] {
+pub func listSkills(sc: in CloudAgents.Pg.TenantScope): Result[slice[Skill], CloudAgents.Sqlite.DbError] {
+  val userId = sc.userId
   val rows = CloudAgents.Sqlite.query(CloudAgents.Db.selectSkillsSql(userId))?
   var acc: slice[Skill] = []
   var i = 0
@@ -2181,7 +2200,10 @@ pub func listSkills(userId: in String): Result[slice[Skill], CloudAgents.Sqlite.
   return Ok(value = acc)
 }
 
-pub func skillIdByName(userId: in String, name: in String): Result[Option[String], CloudAgents.Sqlite.DbError] {
+pub func skillIdByName(
+  sc: in CloudAgents.Pg.TenantScope, name: in String
+): Result[Option[String], CloudAgents.Sqlite.DbError] {
+  val userId = sc.userId
   val rows = CloudAgents.Sqlite.query(CloudAgents.Db.selectSkillIdByNameSql(userId, name))?
   if CloudAgents.Sqlite.getRowArrayLength(rows) == 0 {
     return Ok(value = None)
@@ -2189,7 +2211,8 @@ pub func skillIdByName(userId: in String, name: in String): Result[Option[String
   return Ok(value = Some(value = colAt(CloudAgents.Sqlite.getRowArrayValue(rows, 0).cols, 0)))
 }
 
-pub func getSkill(id: in String, userId: in String): Result[Option[Skill], CloudAgents.Sqlite.DbError] {
+pub func getSkill(id: in String, sc: in CloudAgents.Pg.TenantScope): Result[Option[Skill], CloudAgents.Sqlite.DbError] {
+  val userId = sc.userId
   val rows = CloudAgents.Sqlite.query(CloudAgents.Db.selectSkillByIdSql(id, userId))?
   if CloudAgents.Sqlite.getRowArrayLength(rows) == 0 {
     return Ok(value = None)
@@ -2202,9 +2225,14 @@ pub func getSkill(id: in String, userId: in String): Result[Option[Skill], Cloud
 /// as updateProfile/#238): a concurrent delete between the pre-check below
 /// and this UPDATE would otherwise still report success.
 pub func updateSkill(
-  id: in String, userId: in String, name: in String, description: in String, body: in String
+  id: in String,
+  sc: in CloudAgents.Pg.TenantScope,
+  name: in String,
+  description: in String,
+  body: in String,
 ): Result[Int, CloudAgents.Sqlite.DbError] {
-  match getSkill(id, userId)? {
+  val userId = sc.userId
+  match getSkill(id, sc)? {
     case None -> return Ok(value = 0)
     case Some(_) -> ()
   }
@@ -2219,8 +2247,9 @@ pub func updateSkill(
 /// the last statement), not from the pre-check below or a hardcoded 1
 /// (#598), so a skill removed by a concurrent request between the pre-check
 /// and this transaction correctly reports 0.
-pub func deleteSkill(id: in String, userId: in String): Result[Int, CloudAgents.Sqlite.DbError] {
-  match getSkill(id, userId)? {
+pub func deleteSkill(id: in String, sc: in CloudAgents.Pg.TenantScope): Result[Int, CloudAgents.Sqlite.DbError] {
+  val userId = sc.userId
+  match getSkill(id, sc)? {
     case None -> return Ok(value = 0)
     case Some(_) -> ()
   }
@@ -2249,12 +2278,13 @@ func rowToSubagent(r: in CloudAgents.Sqlite.Row): Subagent {
 
 /// Save a new subagent.
 pub func addSubagent(
-  userId: in String,
+  sc: in CloudAgents.Pg.TenantScope,
   name: in String,
   description: in String,
   systemPrompt: in String,
   model: in String,
 ): Result[Subagent, CloudAgents.Sqlite.DbError] {
+  val userId = sc.userId
   val id = newId()
   val ts = nowMillis()
   CloudAgents.Sqlite.execute(CloudAgents.Db.insertSubagentSql(id, userId, name, description, systemPrompt, model, ts))?
@@ -2273,7 +2303,8 @@ pub func addSubagent(
 }
 
 /// All of a user's subagents, by name.
-pub func listSubagents(userId: in String): Result[slice[Subagent], CloudAgents.Sqlite.DbError] {
+pub func listSubagents(sc: in CloudAgents.Pg.TenantScope): Result[slice[Subagent], CloudAgents.Sqlite.DbError] {
+  val userId = sc.userId
   val rows = CloudAgents.Sqlite.query(CloudAgents.Db.selectSubagentsSql(userId))?
   var acc: slice[Subagent] = []
   var i = 0
@@ -2285,7 +2316,10 @@ pub func listSubagents(userId: in String): Result[slice[Subagent], CloudAgents.S
   return Ok(value = acc)
 }
 
-pub func subagentIdByName(userId: in String, name: in String): Result[Option[String], CloudAgents.Sqlite.DbError] {
+pub func subagentIdByName(
+  sc: in CloudAgents.Pg.TenantScope, name: in String
+): Result[Option[String], CloudAgents.Sqlite.DbError] {
+  val userId = sc.userId
   val rows = CloudAgents.Sqlite.query(CloudAgents.Db.selectSubagentIdByNameSql(userId, name))?
   if CloudAgents.Sqlite.getRowArrayLength(rows) == 0 {
     return Ok(value = None)
@@ -2293,7 +2327,10 @@ pub func subagentIdByName(userId: in String, name: in String): Result[Option[Str
   return Ok(value = Some(value = colAt(CloudAgents.Sqlite.getRowArrayValue(rows, 0).cols, 0)))
 }
 
-pub func getSubagent(id: in String, userId: in String): Result[Option[Subagent], CloudAgents.Sqlite.DbError] {
+pub func getSubagent(
+  id: in String, sc: in CloudAgents.Pg.TenantScope
+): Result[Option[Subagent], CloudAgents.Sqlite.DbError] {
+  val userId = sc.userId
   val rows = CloudAgents.Sqlite.query(CloudAgents.Db.selectSubagentByIdSql(id, userId))?
   if CloudAgents.Sqlite.getRowArrayLength(rows) == 0 {
     return Ok(value = None)
@@ -2306,13 +2343,14 @@ pub func getSubagent(id: in String, userId: in String): Result[Option[Subagent],
 /// updateSkill above.
 pub func updateSubagent(
   id: in String,
-  userId: in String,
+  sc: in CloudAgents.Pg.TenantScope,
   name: in String,
   description: in String,
   systemPrompt: in String,
   model: in String,
 ): Result[Int, CloudAgents.Sqlite.DbError] {
-  match getSubagent(id, userId)? {
+  val userId = sc.userId
+  match getSubagent(id, sc)? {
     case None -> return Ok(value = 0)
     case Some(_) -> ()
   }
@@ -2324,8 +2362,9 @@ pub func updateSubagent(
 /// Returns rows affected on the subagents row (0 = not found / not owned) —
 /// taken from the transaction's own DELETE on the subagents row (deliberately
 /// the last statement), not a hardcoded 1 (#598), matching deleteSkill above.
-pub func deleteSubagent(id: in String, userId: in String): Result[Int, CloudAgents.Sqlite.DbError] {
-  match getSubagent(id, userId)? {
+pub func deleteSubagent(id: in String, sc: in CloudAgents.Pg.TenantScope): Result[Int, CloudAgents.Sqlite.DbError] {
+  val userId = sc.userId
+  match getSubagent(id, sc)? {
     case None -> return Ok(value = 0)
     case Some(_) -> ()
   }
@@ -2426,7 +2465,7 @@ func mcpServerChildStatements(
 
 /// Save a new MCP server and its ordered args/env/headers.
 pub func addMcpServer(
-  userId: in String,
+  sc: in CloudAgents.Pg.TenantScope,
   name: in String,
   transport: in String,
   command: in String,
@@ -2436,6 +2475,7 @@ pub func addMcpServer(
   enabled: in String = "1",
   headers: in slice[String] = [],
 ): Result[McpServer, CloudAgents.Sqlite.DbError] {
+  val userId = sc.userId
   val id = newId()
   val ts = nowMillis()
   var stmts: slice[String] = []
@@ -2463,7 +2503,8 @@ pub func addMcpServer(
 }
 
 /// All of a user's MCP servers (each with its args/env/headers), by name.
-pub func listMcpServers(userId: in String): Result[slice[McpServer], CloudAgents.Sqlite.DbError] {
+pub func listMcpServers(sc: in CloudAgents.Pg.TenantScope): Result[slice[McpServer], CloudAgents.Sqlite.DbError] {
+  val userId = sc.userId
   val rows = CloudAgents.Sqlite.query(CloudAgents.Db.selectMcpServersSql(userId))?
   var acc: slice[McpServer] = []
   var i = 0
@@ -2480,7 +2521,10 @@ pub func listMcpServers(userId: in String): Result[slice[McpServer], CloudAgents
   return Ok(value = acc)
 }
 
-pub func mcpServerIdByName(userId: in String, name: in String): Result[Option[String], CloudAgents.Sqlite.DbError] {
+pub func mcpServerIdByName(
+  sc: in CloudAgents.Pg.TenantScope, name: in String
+): Result[Option[String], CloudAgents.Sqlite.DbError] {
+  val userId = sc.userId
   val rows = CloudAgents.Sqlite.query(CloudAgents.Db.selectMcpServerIdByNameSql(userId, name))?
   if CloudAgents.Sqlite.getRowArrayLength(rows) == 0 {
     return Ok(value = None)
@@ -2488,7 +2532,10 @@ pub func mcpServerIdByName(userId: in String, name: in String): Result[Option[St
   return Ok(value = Some(value = colAt(CloudAgents.Sqlite.getRowArrayValue(rows, 0).cols, 0)))
 }
 
-pub func getMcpServer(id: in String, userId: in String): Result[Option[McpServer], CloudAgents.Sqlite.DbError] {
+pub func getMcpServer(
+  id: in String, sc: in CloudAgents.Pg.TenantScope
+): Result[Option[McpServer], CloudAgents.Sqlite.DbError] {
+  val userId = sc.userId
   val rows = CloudAgents.Sqlite.query(CloudAgents.Db.selectMcpServerByIdSql(id, userId))?
   if CloudAgents.Sqlite.getRowArrayLength(rows) == 0 {
     return Ok(value = None)
@@ -2506,7 +2553,7 @@ pub func getMcpServer(id: in String, userId: in String): Result[Option[McpServer
 /// hardcoded 1 (#598).
 pub func updateMcpServer(
   id: in String,
-  userId: in String,
+  sc: in CloudAgents.Pg.TenantScope,
   name: in String,
   transport: in String,
   command: in String,
@@ -2516,7 +2563,8 @@ pub func updateMcpServer(
   enabled: in String = "1",
   headers: in slice[String] = [],
 ): Result[Int, CloudAgents.Sqlite.DbError] {
-  match getMcpServer(id, userId)? {
+  val userId = sc.userId
+  match getMcpServer(id, sc)? {
     case None -> return Ok(value = 0)
     case Some(_) -> ()
   }
@@ -2540,8 +2588,9 @@ pub func updateMcpServer(
 /// Returns rows affected on the mcp_servers row (0 = not found / not owned) —
 /// taken from the transaction's own DELETE on the mcp_servers row
 /// (deliberately the last statement), not a hardcoded 1 (#598).
-pub func deleteMcpServer(id: in String, userId: in String): Result[Int, CloudAgents.Sqlite.DbError] {
-  match getMcpServer(id, userId)? {
+pub func deleteMcpServer(id: in String, sc: in CloudAgents.Pg.TenantScope): Result[Int, CloudAgents.Sqlite.DbError] {
+  val userId = sc.userId
+  match getMcpServer(id, sc)? {
     case None -> return Ok(value = 0)
     case Some(_) -> ()
   }
@@ -2619,7 +2668,10 @@ func profileToolNames(profileId: in String, userId: in String): Result[slice[Str
 /// time. Empty profileId -> no grants (unlike credentials/network policy,
 /// there is no "fall open to everything" for a sessionless/profileless run,
 /// since library items are opt-in additions, not access-control scope).
-pub func skillsForProfile(userId: in String, profileId: in String): Result[slice[Skill], CloudAgents.Sqlite.DbError] {
+pub func skillsForProfile(
+  sc: in CloudAgents.Pg.TenantScope, profileId: in String
+): Result[slice[Skill], CloudAgents.Sqlite.DbError] {
+  val userId = sc.userId
   if profileId.length == 0 {
     val empty: slice[Skill] = []
     return Ok(value = empty)
@@ -2627,7 +2679,7 @@ pub func skillsForProfile(userId: in String, profileId: in String): Result[slice
   val ids = profileSkillIds(profileId, userId)?
   var acc: slice[Skill] = []
   for id in ids {
-    match getSkill(id, userId)? {
+    match getSkill(id, sc)? {
       case Some(s) -> {
         acc = acc.append(s)
       }
@@ -2640,8 +2692,9 @@ pub func skillsForProfile(userId: in String, profileId: in String): Result[slice
 /// The subagents a profile grants, resolved to full records. See
 /// skillsForProfile for the dangling-id and empty-profile semantics.
 pub func subagentsForProfile(
-  userId: in String, profileId: in String
+  sc: in CloudAgents.Pg.TenantScope, profileId: in String
 ): Result[slice[Subagent], CloudAgents.Sqlite.DbError] {
+  val userId = sc.userId
   if profileId.length == 0 {
     val empty: slice[Subagent] = []
     return Ok(value = empty)
@@ -2649,7 +2702,7 @@ pub func subagentsForProfile(
   val ids = profileSubagentIds(profileId, userId)?
   var acc: slice[Subagent] = []
   for id in ids {
-    match getSubagent(id, userId)? {
+    match getSubagent(id, sc)? {
       case Some(s) -> {
         acc = acc.append(s)
       }
@@ -2671,8 +2724,9 @@ pub func subagentsForProfile(
 /// function's callers is not those callers. See skillsForProfile for the
 /// dangling-id and empty-profile semantics, both unchanged here.
 pub func mcpServersForProfile(
-  userId: in String, profileId: in String
+  sc: in CloudAgents.Pg.TenantScope, profileId: in String
 ): Result[slice[McpServer], CloudAgents.Sqlite.DbError] {
+  val userId = sc.userId
   if profileId.length == 0 {
     val empty: slice[McpServer] = []
     return Ok(value = empty)
@@ -2680,7 +2734,7 @@ pub func mcpServersForProfile(
   val ids = profileMcpServerIds(profileId, userId)?
   var acc: slice[McpServer] = []
   for id in ids {
-    match getMcpServer(id, userId)? {
+    match getMcpServer(id, sc)? {
       case Some(s) -> {
         if s.enabled == "1" {
           acc = acc.append(s)
