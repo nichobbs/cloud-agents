@@ -122,11 +122,12 @@ func splitByComma(s: in String): slice[String] {
 ///
 /// Operator-overridable via `CLOUD_AGENTS_RUNNER_DNS` (comma-separated, e.g.
 /// `1.1.1.1, 8.8.8.8` — surrounding whitespace around each entry is
-/// trimmed); set it to `off` to opt out and fall back to whatever the
-/// daemon host's own default-bridge DNS resolution does (the pre-existing,
-/// un-pinned behavior — also the right choice for a host with a working
-/// custom/corporate/split-horizon resolver this override would otherwise
-/// shadow). Defaults to Cloudflare's public resolvers when unset.
+/// trimmed); set it to `off` (case-insensitive, surrounding whitespace
+/// tolerated — e.g. `OFF`, ` off `) to opt out and fall back to whatever
+/// the daemon host's own default-bridge DNS resolution does (the
+/// pre-existing, un-pinned behavior — also the right choice for a host with
+/// a working custom/corporate/split-horizon resolver this override would
+/// otherwise shadow). Defaults to Cloudflare's public resolvers when unset.
 pub func runnerDnsServers(policy: in String): slice[String] {
   val empty: slice[String] = []
   if policy == "restricted" or policy == "none" {
@@ -136,7 +137,12 @@ pub func runnerDnsServers(policy: in String): slice[String] {
   if DotNetString.IsNullOrEmpty(override) {
     return ["1.1.1.1", "1.0.0.1"]
   }
-  if override == "off" {
+  // Case/whitespace-tolerant: an un-normalized "OFF" or " off " must never
+  // fall through to splitByComma and come back as a single-entry
+  // ["off"]/["OFF"] "DNS server" list — Docker's daemon would reject that as
+  // an invalid IP at container-create time, breaking every session start
+  // (#1128).
+  if toLowerInvariant(trimAscii(override)) == "off" {
     return empty
   }
   return splitByComma(override)

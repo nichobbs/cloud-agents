@@ -64,6 +64,17 @@ test "runnerDnsServers only applies to the 'full'/default policy, and is operato
   Env.SetEnvironmentVariable("CLOUD_AGENTS_RUNNER_DNS", "off")
   assertTrue(runnerDnsServers("full").length == 0, "\"off\" disables the override")
 
+  // The "off" sentinel is case- and whitespace-tolerant (#1128): an
+  // un-normalized "OFF" or " off " must never fall through to splitByComma
+  // and come back as a single-entry ["OFF"]/["off"] "DNS server" list —
+  // Docker would reject that as an invalid IP at container-create time.
+  Env.SetEnvironmentVariable("CLOUD_AGENTS_RUNNER_DNS", "OFF")
+  assertTrue(runnerDnsServers("full").length == 0, "uppercase \"OFF\" also disables the override")
+  Env.SetEnvironmentVariable("CLOUD_AGENTS_RUNNER_DNS", " off ")
+  assertTrue(runnerDnsServers("full").length == 0, "\" off \" with surrounding whitespace also disables the override")
+  Env.SetEnvironmentVariable("CLOUD_AGENTS_RUNNER_DNS", "Off")
+  assertTrue(runnerDnsServers("full").length == 0, "mixed-case \"Off\" also disables the override")
+
   Env.SetEnvironmentVariable("CLOUD_AGENTS_RUNNER_DNS", "")
 }
 
