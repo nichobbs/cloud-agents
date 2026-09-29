@@ -10,11 +10,13 @@ vi.mock('../lib/api', () => ({
     addLedgerItems: vi.fn(),
     setLedgerItemState: vi.fn(),
     syncLedger: vi.fn(),
+    getObserverStatus: vi.fn(),
+    observeNow: vi.fn(),
   },
 }));
 
 import { api } from '../lib/api';
-import type { LedgerSnapshot } from '../lib/ledger';
+import type { LedgerSnapshot, ObserverStatus } from '../lib/ledger';
 import { httpError } from '../test/apiErrors';
 import { entry, item } from '../test/ledgerFixtures';
 import { LedgerPanel } from './LedgerPanel';
@@ -79,6 +81,21 @@ function snapshot(): LedgerSnapshot {
   };
 }
 
+function observerStatus(over: Partial<ObserverStatus> = {}): ObserverStatus {
+  return {
+    enabled: 'true',
+    harness: 'claude',
+    model: 'claude-haiku-4-5',
+    repoAccess: 'diff',
+    pending: '0',
+    lastPassAt: '',
+    lastError: '',
+    passesToday: '0',
+    maxPassesPerDay: '48',
+    ...over,
+  };
+}
+
 describe('LedgerPanel', () => {
   beforeEach(() => {
     vi.mocked(api.getLedger).mockReset().mockResolvedValue(snapshot());
@@ -86,6 +103,8 @@ describe('LedgerPanel', () => {
     vi.mocked(api.setLedgerItemState).mockReset().mockResolvedValue({} as never);
     vi.mocked(api.giveLedgerFeedback).mockReset().mockResolvedValue({} as never);
     vi.mocked(api.syncLedger).mockReset();
+    vi.mocked(api.getObserverStatus).mockReset().mockResolvedValue(observerStatus({ enabled: 'false' }));
+    vi.mocked(api.observeNow).mockReset().mockResolvedValue(undefined);
   });
 
   it('shows the attention queue blocking-first, the work items and what blocks them', async () => {
@@ -229,5 +248,74 @@ describe('LedgerPanel', () => {
     render(<LedgerPanel sessionId="s1" isStreaming={false} />);
     await screen.findByText('Tidy');
     expect(screen.queryByRole('button', { name: 'Sync with GitHub' })).not.toBeInTheDocument();
+  });
+
+  it('hides the observer bar when the observer is disabled', async () => {
+    render(<LedgerPanel sessionId="s1" isStreaming={false} />);
+    await screen.findByText('Add schema');
+    await waitFor(() => expect(api.getObserverStatus).toHaveBeenCalledWith('s1'));
+    expect(screen.queryByTestId('observer-bar')).not.toBeInTheDocument();
+  });
+
+  it('shows the observer status with its model, and a queued pass', async () => {
+    vi.mocked(api.getObserverStatus).mockResolvedValue(observerStatus());
+    const { rerender } = render(<LedgerPanel sessionId="s1" isStreaming={false} />);
+    expect(await screen.findByText('Observer (claude, claude-haiku-4-5): no passes yet')).toBeInTheDocument();
+    vi.mocked(api.getObserverStatus).mockResolvedValue(observerStatus({ pending: '1', lastError: 'harness exited 1' }));
+    rerender(<LedgerPanel sessionId="s2" isStreaming={false} />);
+    expect(await screen.findByText('Observer (claude, claude-haiku-4-5): pass queued')).toBeInTheDocument();
+    expect(screen.getByText('harness exited 1')).toBeInTheDocument();
+  });
+
+  it('shows when the last pass ran', async () => {
+    vi.mocked(api.getObserverStatus).mockResolvedValue(observerStatus({ lastPassAt: String(Date.now() - 720000) }));
+    render(<LedgerPanel sessionId="s1" isStreaming={false} />);
+    const bar = await screen.findByTestId('observer-bar');
+    expect(bar).toHaveTextContent(/last pass at /);
+  });
+
+  it('runs the observer now and shows the queued message', async () => {
+    vi.mocked(api.getObserverStatus).mockResolvedValue(observerStatus());
+    render(<LedgerPanel sessionId="s1" isStreaming={false} />);
+    fireEvent.click(await screen.findByRole('button', { name: 'Observe now' }));
+    expect(await screen.findByText('Queued: the observer runs at the next maintenance pass.')).toBeInTheDocument();
+    expect(api.observeNow).toHaveBeenCalledWith('s1');
+    await waitFor(() => expect(vi.mocked(api.getObserverStatus).mock.calls.length).toBeGreaterThan(1));
+  });
+
+  it('shows an inline error when Observe now fails', async () => {
+    vi.mocked(api.getObserverStatus).mockResolvedValue(observerStatus());
+    vi.mocked(api.observeNow).mockRejectedValue(new Error('no observer enabled'));
+    render(<LedgerPanel sessionId="s1" isStreaming={false} />);
+    fireEvent.click(await screen.findByRole('button', { name: 'Observe now' }));
+    expect(await screen.findByText('no observer enabled')).toBeInTheDocument();
+  });
+
+  it('hides the observer bar when the backend has no observer endpoint (404)', async () => {
+    vi.mocked(api.getObserverStatus).mockRejectedValue(httpError(404));
+    render(<LedgerPanel sessionId="s1" isStreaming={false} />);
+    await screen.findByText('Add schema');
+    await waitFor(() => expect(api.getObserverStatus).toHaveBeenCalled());
+    expect(screen.queryByTestId('observer-bar')).not.toBeInTheDocument();
+  });
+
+  it('keeps observed entries that matched a declared entry out of the timeline until info is shown', async () => {
+    const snap = snapshot();
+    snap.entries = [
+      entry({
+        id: 'obs',
+        source: 'observed',
+        severity: 'info',
+        matchedEntryId: 'short',
+        summary: 'Observed skipped test',
+        createdSeq: '5',
+      }),
+    ];
+    vi.mocked(api.getLedger).mockReset().mockResolvedValue(snap);
+    render(<LedgerPanel sessionId="s1" isStreaming={false} />);
+    fireEvent.click(await screen.findByRole('button', { name: /Timeline/ }));
+    expect(screen.queryByText('Observed skipped test')).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole('checkbox', { name: /Show info/ }));
+    expect(screen.getByText('Observed skipped test')).toBeInTheDocument();
   });
 });

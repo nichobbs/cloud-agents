@@ -2,7 +2,7 @@
 
 import type { Attachment, AttachmentInput, Comment, Credential, Highlight, McpServer, Message, OpenPrResult, PendingCallbacksResponse, Profile, Prompt, RefreshHighlightsResult, Run, SearchMessagesResult, SessionGroup, Skill, Subagent, Todo, Webhook, WorkspaceDiff, WorkspaceFileContent, WorkspaceFileEntry } from '../types';
 import { completeLogin, isSignedIn, setReturnPath, signOut } from './auth';
-import type { EntryDetail, InboxEntry, LedgerFeedback, LedgerSnapshot, LedgerSyncReport, WorkItem } from './ledger';
+import type { EntryDetail, InboxEntry, LedgerFeedback, LedgerSnapshot, LedgerSyncReport, ObserverSettings, ObserverStatus, WorkItem } from './ledger';
 
 const BASE = (import.meta.env['VITE_API_URL'] as string | undefined) ?? '';
 
@@ -751,6 +751,43 @@ export const api = {
     });
     if (!res.ok) throw new Error(await errorMessage(res));
     return (await res.json()) as LedgerSyncReport;
+  },
+
+  /** A profile's observer settings (disabled defaults when it has none). */
+  getObserverSettings: async (profileId: string): Promise<ObserverSettings> => {
+    const res = await apiFetch(`${BASE}/api/profiles/${encodeURIComponent(profileId)}/observer`, {
+      headers: authHeaders(),
+    });
+    if (!res.ok) throw new Error(await errorMessage(res));
+    return (await res.json()) as ObserverSettings;
+  },
+
+  saveObserverSettings: async (profileId: string, settings: ObserverSettings): Promise<ObserverSettings> => {
+    const res = await apiFetch(`${BASE}/api/profiles/${encodeURIComponent(profileId)}/observer`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', ...authHeaders() },
+      body: JSON.stringify(settings),
+    });
+    if (!res.ok) throw new Error(await errorMessage(res));
+    return (await res.json()) as ObserverSettings;
+  },
+
+  /** The observer's state for a session. A 404 (ApiError) means an older backend. */
+  getObserverStatus: async (sessionId: string): Promise<ObserverStatus> => {
+    const res = await apiFetch(`${BASE}/api/sessions/${sessionId}/ledger/observer`, {
+      headers: authHeaders(),
+    });
+    if (!res.ok) throw new ApiError(res.status, await errorMessage(res));
+    return (await res.json()) as ObserverStatus;
+  },
+
+  /** Queue an observer pass now; it runs at the next maintenance pass. */
+  observeNow: async (sessionId: string): Promise<void> => {
+    const res = await apiFetch(`${BASE}/api/sessions/${sessionId}/ledger/observe`, {
+      method: 'POST',
+      headers: authHeaders(),
+    });
+    if (!res.ok) throw new Error(await errorMessage(res));
   },
 
   /** Every entry awaiting review across the user's sessions. */

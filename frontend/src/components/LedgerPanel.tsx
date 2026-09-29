@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useLedger } from '../hooks/useLedger';
 import { api } from '../lib/api';
 import {
@@ -15,8 +15,10 @@ import {
   type EntryKind,
   type ItemState,
   type LedgerFeedback,
+  type ObserverStatus,
   type WorkItem,
 } from '../lib/ledger';
+import { formatTimestamp } from '../lib/time';
 import { LedgerEntryCard } from './LedgerEntryCard';
 import {
   bodyTextStyle,
@@ -71,6 +73,8 @@ export function LedgerPanel({ sessionId, isStreaming }: LedgerPanelProps) {
       {state.items.some(i => i.id.startsWith('gh:')) && (
         <GitHubSync sessionId={sessionId} onSynced={() => void refresh()} />
       )}
+
+      <ObserverBar sessionId={sessionId} refreshKey={`${state.cursor}:${state.summary?.lastActivityAt ?? ''}`} />
 
       {error && <div style={errorStyle}>Could not refresh the ledger: {error}</div>}
       {!loaded && !error && <div style={mutedStyle}>Loading…</div>}
@@ -582,6 +586,68 @@ function GitHubSync({ sessionId, onSynced }: { sessionId: string; onSynced: () =
         {busy ? 'Syncing…' : 'Sync with GitHub'}
       </button>
       {message && <span style={mutedStyle}>{message}</span>}
+      {error && <span style={errorStyle}>{error}</span>}
+    </div>
+  );
+}
+
+/** The hidden observer's state for this session, and a way to run it now.
+ *  Renders nothing when the profile has no observer or the backend predates it. */
+function ObserverBar({ sessionId, refreshKey }: { sessionId: string; refreshKey: string }) {
+  const [status, setStatus] = useState<ObserverStatus | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [message, setMessage] = useState('');
+  const [error, setError] = useState('');
+
+  const load = useCallback(async () => {
+    try {
+      setStatus(await api.getObserverStatus(sessionId));
+    } catch (e) {
+      // A 404 is an older backend without the observer: hide the bar. Any
+      // other failure keeps the last known status.
+      if ((e as { status?: unknown } | null)?.status === 404) setStatus(null);
+    }
+  }, [sessionId]);
+
+  useEffect(() => {
+    void load();
+  }, [load, refreshKey]);
+
+  if (!status || status.enabled !== 'true') return null;
+
+  const observe = async () => {
+    setBusy(true);
+    setError('');
+    setMessage('');
+    try {
+      await api.observeNow(sessionId);
+      setMessage('Queued: the observer runs at the next maintenance pass.');
+      await load();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const passText =
+    status.pending === '1'
+      ? 'pass queued'
+      : status.lastPassAt
+        ? `last pass at ${formatTimestamp(status.lastPassAt)}`
+        : 'no passes yet';
+  const who = status.model ? `${status.harness}, ${status.model}` : status.harness;
+
+  return (
+    <div style={syncRowStyle} data-testid="observer-bar">
+      <span style={mutedStyle}>
+        Observer ({who}): {passText}
+      </span>
+      <button type="button" style={smallBtnStyle} disabled={busy} onClick={() => void observe()}>
+        {busy ? 'Queuing…' : 'Observe now'}
+      </button>
+      {message && <span style={mutedStyle}>{message}</span>}
+      {status.lastError && <span style={errorStyle}>{status.lastError}</span>}
       {error && <span style={errorStyle}>{error}</span>}
     </div>
   );

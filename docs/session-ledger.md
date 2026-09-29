@@ -329,18 +329,132 @@ Issues read/write and Pull requests read. A failure is recorded against the
 item and retried next pass; an owner without a usable token gets an error
 telling them to reconnect GitHub.
 
-## 10. Follow-ups (not built)
+## 10. Observer (Phase 4)
 
-- **Phase 4 — observer**: extract undeclared decisions/shortcuts from
-  `session_events` with Claude Haiku, reconcile against declared entries
-  (deterministic, in the core), badge `undeclared`. Needs a hand-written
-  Messages API client (none exists in lyric-lang) and budget controls. The
-  schema already carries `source`, `undeclared` and `matchedEntryId`.
+The observer finds what the agent did but didn't declare: decisions a
+reviewer might have made differently, deviations, shortcuts and blockers. It
+is another agent session, not a direct model call: the owner picks its
+harness and model on the profile, and it runs on the user's existing
+credentials. The agent proposes; a deterministic core decides.
+
+**Settings (per profile).** `GET`/`POST /api/profiles/{id}/observer`,
+edited in the profile editor. A session is observed iff its profile's
+observer is enabled.
+
+| Setting | Values |
+|---|---|
+| `enabled` | `true` / `false` |
+| `harness`, `model` | any runner harness; model `""` = the harness default |
+| `repoAccess` | `none` (transcript only), `diff` (plus the observed workspace's `git diff HEAD`), `workspace` (plus a read-only mount of the observed workspace at `/workspace/observed`) |
+| `midRunMinutes` | `0` (end of run only), `15`, `30`, `60` |
+| `maxPassesPerDay` | 1 to 500 passes per observed session per UTC day |
+
+**The observer session.** One long-lived hidden session per observed session
+(`sessions.observes_session_id`), created on first use. It resumes on each
+pass and sees only events after its cursor, so it keeps context across runs.
+Changing the harness, model or repo access starts a fresh observer; the
+cursor lives in `ledger_observer`, not in the observer, so nothing is
+reported twice. It is hidden from session lists, never observed itself, and
+deleted with the session it observes.
+
+It runs on the observed session's profile for credentials and network
+policy, but its container is narrowed whatever the profile grants:
+
+- only `observer_get_window` and `observer_report`, no other shim tools;
+- no skills, subagents or MCP servers;
+- no repository credentials (`GITHUB*`, `GH_TOKEN`, `GITLAB*`, `BITBUCKET*`);
+- no clone of its own (`CLOUD_AGENTS_OBSERVER=1`);
+- at most a read-only view of the observed workspace.
+
+For Claude, its permissions allow only `Read`, `Glob`, `Grep` and the two
+observer tools, and there is no permission-prompt route, so any other tool
+is refused rather than put to the owner. Other harnesses rely on the
+container limits above: they can run commands inside the observer's own
+container, but can't change the observed workspace or push anywhere.
+
+Its callbacks use its own token on
+`POST /api/sessions/{observerId}/callbacks/observer/{window|report}`; the
+host maps the observer to the session it observes.
+
+**Triggers.** No in-process timer, as elsewhere:
+
+- a run's end (success, failure or cancel, interactive or scheduled) queues a
+  pass;
+- while a run goes on, its poll loop queues a mid-run pass once the interval
+  has passed since the last pass (checked about once a minute);
+- `POST /api/sessions/{id}/ledger/observe` queues one on demand (the panel's
+  "Observe now");
+- `POST /api/maintenance/observe` (operator only, polled by an external
+  scheduler like `trigger-jobs`) runs up to 3 due passes per call.
+
+A pass is skipped without starting a container when nothing new was captured,
+or when the new events are only reads and searches (the cursor then moves past
+them). Every pass counts towards the daily cap; a pass that fails or ends
+without reporting records `lastError`, and its window is read again next time.
+
+**A pass.** The observer calls `observer_get_window` and gets:
+
+- the next window of up to 400 captured events or 60,000 characters, as
+  `[seq N]` lines (the agent's words, each tool call with its salient inputs,
+  truncated results);
+- the work items and the last 80 entries (declared and already observed);
+- the workspace diff, up to 30,000 characters, when `repoAccess` grants it;
+- `final` (the run has ended) and `more` (another window follows).
+
+It answers with one `observer_report`: a list of candidates, each with kind,
+summary, detail, item, `seqStart`..`seqEnd` within the window, tags, files,
+reversible, confidence (0..1) and evidence (a quote, kept to 30 words). A
+report is validated whole: any bad candidate rejects it with a message naming
+it, so the observer can fix and resend. On acceptance the cursor moves past
+the window.
+
+**Reconciliation** (`CloudAgents.Ledger.Reconcile`, pure):
+
+- confidence below 0.5 is dropped;
+- a candidate restating an earlier observation (same kind family and item,
+  and near-identical wording or an overlapping range with similar wording) is
+  a duplicate and not stored;
+- a candidate covered by a declared entry (same kind family, a compatible
+  item, the declared entry's transcript anchor within 30 events of the range,
+  and related by wording or a shared file) is stored as matched: severity
+  info, no review, `matchedEntryId` set;
+- anything else is stored undeclared (`source: observed`,
+  `undeclared: true`), which policy raises to at least review.
+
+Kind families: `decision`; `deviation`/`shortcut`; `blocker`/`question`.
+Notes are the agent's own asides and are not observable.
+
+An undeclared shortcut with confidence 0.8 or more, or an undeclared action
+marked not reversible, notifies the owner; the rest wait in the panel and
+inbox.
+
+Findings from a mid-run pass are `provisional`. If the agent declares the
+same thing later in the run, the next pass matches the observation to it
+(it stops needing review unless the owner already reviewed it). When the run
+has ended, the next pass settles the rest as final.
+
+Observed entries carry `observedFrom`..`transcriptSeq` (their event range),
+`confidence` and `evidence`; the PWA badges them observed / undeclared /
+provisional and shows the evidence in the entry detail.
+
+**Tests.** `tests/fixtures/observer/` holds a transcript in Claude's
+stream-json shape, written for the tests, with a skipped test, a scope change
+and an abandoned approach left undeclared and one declared decision, plus a
+recorded observer report. `tests/ledger_observer_tests.l` checks that the
+three are flagged and the decision is matched, not duplicated.
+`tests/observer_handlers_tests.l` runs whole passes through the real
+callbacks with a fake runner playing the observer agent.
+
+## 11. Follow-ups (not built)
+
 - **Phase 5 — external harnesses**: the shim binary works for any local
   MCP-capable harness given a session token; a "create external session"
   action and hook ingestion are open.
+- **Observer, live check**: passes are tested against a fake runner; a live
+  pass with each harness against a real container is the remaining manual
+  step.
 
-## 11. Open questions
+## 12. Open questions
 
 Recorded rather than guessed (spec §20):
 

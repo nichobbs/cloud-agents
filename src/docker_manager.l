@@ -17,6 +17,10 @@ import CloudAgents.Capture.Render
 import CloudAgents.CheckpointBridge
 import CloudAgents.GraphIngestDrain
 import CloudAgents.Workspace
+import CloudAgents.ToolPolicy
+import CloudAgents.Ledger.Store
+import CloudAgents.Ledger.ObserverPolicy
+import CloudAgents.Ledger.Observer
 
 pub record ResultCell {
   pub var isSuccess: Bool = false
@@ -159,6 +163,28 @@ pub async func createRunnerContainer(
     CloudAgents.Db.homeVolumeBindFor(userId, harness)
   ]
 
+  // A ledger observer (docs/session-ledger.md §10) runs with a fixed, minimal
+  // surface whatever its profile grants: only the two observer tools, no
+  // skills/subagents/MCP servers, no repository credentials, no clone (the
+  // entrypoint skips it on CLOUD_AGENTS_OBSERVER=1), and at most a read-only
+  // view of the observed workspace. A lookup failure fails the run closed
+  // rather than starting an observer with the full profile.
+  val observer = match CloudAgents.Ledger.Store.observerRunInfo(sessionId) {
+    case Ok(o) -> o
+    case Err(e) -> return Err(error = "Failed to resolve the observer settings: " + CloudAgents.Sqlite.dbErrorMessage(e))
+  }
+  var isObserver = false
+  match observer {
+    case Some(o) -> {
+      isObserver = true
+      envs = envs.append("CLOUD_AGENTS_OBSERVER=1")
+      if o.repoAccess == "workspace" {
+        binds = binds.append(CloudAgents.Db.observedWorkspaceBindFor(userId, o.observedSessionId))
+      }
+    }
+    case _ -> ()
+  }
+
   // Chat attachments (docs/chat-attachments.md): the host directory a user's
   // uploaded files for THIS message were written to
   // (CloudAgents.Repository.attachmentsBaseDir()/<sessionId>/ —
@@ -251,8 +277,10 @@ pub async func createRunnerContainer(
       var credValues: slice[String] = []
       var i = 0
       while i < creds.length {
-        credNames = credNames.append(creds[i].name)
-        credValues = credValues.append(creds[i].value)
+        if not (isObserver and CloudAgents.Ledger.ObserverPolicy.isRepoCredential(creds[i].name)) {
+          credNames = credNames.append(creds[i].name)
+          credValues = credValues.append(creds[i].value)
+        }
         i = i + 1
       }
       envs = CloudAgents.RunnerEnv.withCredentialEnvs(envs, credNames, credValues)
@@ -268,16 +296,26 @@ pub async func createRunnerContainer(
   // continue with no restriction) rather than aborting the run — tool
   // enablement is not a hard security boundary in v1 (see
   // CloudAgents.Repository.enabledToolsForProfile's doc comment).
-  match CloudAgents.Repository.enabledToolsForProfile(userId, profileId) {
-    case Ok(toolsEnv) -> {
-      if toolsEnv.length > 0 {
-        envs = envs.append("CLOUD_AGENTS_ENABLED_TOOLS=" + toolsEnv)
-      }
-    }
-    case Err(e) -> println(
-      "WARNING: failed to resolve enabled tools for session " + sessionId + ": " +
-        CloudAgents.Sqlite.dbErrorMessage(e)
+  if isObserver {
+    envs = envs.append(
+      "CLOUD_AGENTS_ENABLED_TOOLS=" +
+        CloudAgents.ToolPolicy.enabledToolsEnvValue(
+          "selected",
+          CloudAgents.Ledger.ObserverPolicy.observerToolNames()
+        )
     )
+  } else {
+    match CloudAgents.Repository.enabledToolsForProfile(userId, profileId) {
+      case Ok(toolsEnv) -> {
+        if toolsEnv.length > 0 {
+          envs = envs.append("CLOUD_AGENTS_ENABLED_TOOLS=" + toolsEnv)
+        }
+      }
+      case Err(e) -> println(
+        "WARNING: failed to resolve enabled tools for session " + sessionId + ": " +
+          CloudAgents.Sqlite.dbErrorMessage(e)
+      )
+    }
   }
 
   // Inject the library items the profile grants (skills, subagents, MCP
@@ -288,38 +326,40 @@ pub async func createRunnerContainer(
   // capability grants rather than an access-control boundary, so a read
   // failure is best-effort (log and continue with no grants for that kind)
   // rather than aborting the run.
-  match CloudAgents.Repository.skillsForProfile(userId, profileId) {
-    case Ok(skills) -> {
-      if skills.length > 0 {
-        envs = envs.append("CLOUD_AGENTS_SKILLS_B64=" + base64Json(SkillList(skills = skills).toJson()))
+  if not isObserver {
+    match CloudAgents.Repository.skillsForProfile(userId, profileId) {
+      case Ok(skills) -> {
+        if skills.length > 0 {
+          envs = envs.append("CLOUD_AGENTS_SKILLS_B64=" + base64Json(SkillList(skills = skills).toJson()))
+        }
       }
+      case Err(e) -> println(
+        "WARNING: failed to load granted skills for session " + sessionId + ": " +
+          CloudAgents.Sqlite.dbErrorMessage(e)
+      )
     }
-    case Err(e) -> println(
-      "WARNING: failed to load granted skills for session " + sessionId + ": " +
-        CloudAgents.Sqlite.dbErrorMessage(e)
-    )
-  }
-  match CloudAgents.Repository.subagentsForProfile(userId, profileId) {
-    case Ok(subagents) -> {
-      if subagents.length > 0 {
-        envs = envs.append("CLOUD_AGENTS_SUBAGENTS_B64=" + base64Json(SubagentList(subagents = subagents).toJson()))
+    match CloudAgents.Repository.subagentsForProfile(userId, profileId) {
+      case Ok(subagents) -> {
+        if subagents.length > 0 {
+          envs = envs.append("CLOUD_AGENTS_SUBAGENTS_B64=" + base64Json(SubagentList(subagents = subagents).toJson()))
+        }
       }
+      case Err(e) -> println(
+        "WARNING: failed to load granted subagents for session " + sessionId + ": " +
+          CloudAgents.Sqlite.dbErrorMessage(e)
+      )
     }
-    case Err(e) -> println(
-      "WARNING: failed to load granted subagents for session " + sessionId + ": " +
-        CloudAgents.Sqlite.dbErrorMessage(e)
-    )
-  }
-  match CloudAgents.Repository.mcpServersForProfile(userId, profileId) {
-    case Ok(mcpServers) -> {
-      if mcpServers.length > 0 {
-        envs = envs.append("CLOUD_AGENTS_MCP_SERVERS_B64=" + base64Json(McpServerList(mcpServers = mcpServers).toJson()))
+    match CloudAgents.Repository.mcpServersForProfile(userId, profileId) {
+      case Ok(mcpServers) -> {
+        if mcpServers.length > 0 {
+          envs = envs.append("CLOUD_AGENTS_MCP_SERVERS_B64=" + base64Json(McpServerList(mcpServers = mcpServers).toJson()))
+        }
       }
+      case Err(e) -> println(
+        "WARNING: failed to load granted MCP servers for session " + sessionId + ": " +
+          CloudAgents.Sqlite.dbErrorMessage(e)
+      )
     }
-    case Err(e) -> println(
-      "WARNING: failed to load granted MCP servers for session " + sessionId + ": " +
-        CloudAgents.Sqlite.dbErrorMessage(e)
-    )
   }
 
   // Resolve the profile's network policy: sets the container NetworkMode and,
@@ -439,6 +479,9 @@ pub async func stopRunnerContainer(client: in DockerClient, containerId: in Stri
 // streamSessionMessage's run-timeout check before both were found to crash
 // the process (#561 predates that discovery).
 val runWallClockCapMs = 1800000
+
+/// How often a running session checks whether a mid-run observer pass is due.
+val observerCheckIntervalMs = 60000
 
 // Pause between waitForContainer's /wait retry attempts (#556): retries
 // previously fired back-to-back with no delay — bounded (20 attempts,
@@ -810,6 +853,11 @@ pub func streamSessionMessage(
   // concluded gone within a few seconds.
   val maxConsecutiveWriteFailures = 3
   var writeFailures = 0
+  // Session ledger observer (docs/session-ledger.md §10): about once a minute,
+  // ask whether this run is due a mid-run observer pass. The start time
+  // travels as text for the same cross-package Long reason as elapsedPollMs.
+  val runStartedAt = toString(startMs)
+  var observerCheckMs = 0
   // Adaptive poll cadence (#495): poll responsively while output is flowing,
   // but back off toward maxPollMs during quiet stretches so a long, idle run
   // doesn't refetch the whole container log every second (each tick opens a
@@ -1128,6 +1176,11 @@ pub func streamSessionMessage(
     if elapsedPollMs > runWallClockCapMs {
       timedOut = true
     }
+    observerCheckMs = observerCheckMs + ticked
+    if observerCheckMs >= observerCheckIntervalMs {
+      observerCheckMs = 0
+      CloudAgents.Ledger.Observer.midRunTick(sessionId, runStartedAt)
+    }
   }
   // Bail ONLY when the run did not actually finish (#488). A client disconnect
   // is only detectable on an attempted write, and writes only happen when there
@@ -1357,9 +1410,16 @@ pub func runSessionMessageBlocking(
   val pollMs = 1000
   var elapsedPollMs = 0
   var finished = false
+  val runStartedAt = CloudAgents.Repository.nowMillis()
+  var observerCheckMs = 0
   while not finished and elapsedPollMs <= runWallClockCapMs {
     finished = taskWaitMs(t, pollMs)
     elapsedPollMs = elapsedPollMs + pollMs
+    observerCheckMs = observerCheckMs + pollMs
+    if observerCheckMs >= observerCheckIntervalMs {
+      observerCheckMs = 0
+      CloudAgents.Ledger.Observer.midRunTick(sessionId, runStartedAt)
+    }
   }
   if not finished {
     val containerId = sessionContainerId(sessionId)

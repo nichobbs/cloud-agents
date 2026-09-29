@@ -569,7 +569,11 @@ func materialize(
     reviewComment = "",
     createdAt = "",
     createdSeq = "",
-    updatedSeq = ""
+    updatedSeq = "",
+    observedFrom = "",
+    confidence = "",
+    evidence = "",
+    provisional = ""
   )
 }
 

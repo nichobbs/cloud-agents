@@ -27,6 +27,7 @@ import CloudAgents.Repository
 import CloudAgents.Ledger.Model
 import CloudAgents.Ledger.Schema
 import CloudAgents.Ledger.Summary
+import CloudAgents.Ledger.ObserverPolicy
 
 func lit(s: in String): String {
   return CloudAgents.Db.sqlLiteral(s)
@@ -356,7 +357,8 @@ func insertEntrySelectSql(
     ", " +
     cur +
     ", " +
-    cur
+    cur +
+    ", '', '', '', ''"
 }
 
 pub func listTransitions(
@@ -385,7 +387,7 @@ func rowToTransition(r: in CloudAgents.Sqlite.Row): WorkItemTransition {
 }
 
 // ── Entries ───────────────────────────────────────────────────────────────────
-val entryCols = "id, session_id, item_id, kind, severity, declared_severity, summary, detail, options_json, chosen, rationale, recommendation, proceeding_with, reversible, files_json, tags_json, source, undeclared, matched_entry_id, origin, supersedes, transcript_seq, review_state, review_by, review_at, review_comment, created_at, created_seq, updated_seq"
+val entryCols = "id, session_id, item_id, kind, severity, declared_severity, summary, detail, options_json, chosen, rationale, recommendation, proceeding_with, reversible, files_json, tags_json, source, undeclared, matched_entry_id, origin, supersedes, transcript_seq, review_state, review_by, review_at, review_comment, created_at, created_seq, updated_seq, observed_from, confidence, evidence, provisional"
 
 func rowToEntry(r: in CloudAgents.Sqlite.Row): LedgerEntry {
   return LedgerEntry(
@@ -417,7 +419,11 @@ func rowToEntry(r: in CloudAgents.Sqlite.Row): LedgerEntry {
     reviewComment = col(r, 25),
     createdAt = col(r, 26),
     createdSeq = col(r, 27),
-    updatedSeq = col(r, 28)
+    updatedSeq = col(r, 28),
+    observedFrom = col(r, 29),
+    confidence = col(r, 30),
+    evidence = col(r, 31),
+    provisional = col(r, 32)
   )
 }
 
@@ -488,6 +494,14 @@ pub func insertEntry(e: in LedgerEntry): Result[LedgerEntry, CloudAgents.Sqlite.
     cur +
     ", " +
     cur +
+    ", " +
+    lit(e.observedFrom) +
+    ", " +
+    lit(e.confidence) +
+    ", " +
+    lit(e.evidence) +
+    ", " +
+    lit(e.provisional) +
     ")"
   CloudAgents.Sqlite.executeTransaction([ensureSessionSql(e.sessionId, now), bumpSeqSql(e.sessionId), insert])?
   match getEntry(e.sessionId, id)? {
@@ -1011,6 +1025,247 @@ pub func releaseSyncLease(sessionId: in String, token: in String): Result[Unit, 
   return Ok(())
 }
 
+// ── Observer (Phase 4) ────────────────────────────────────────────────────────
+/// A profile's observer settings, or None when it has none (not observed).
+pub func observerSettingsFor(profileId: in String): Result[Option[ObserverSettings], CloudAgents.Sqlite.DbError] {
+  if profileId.length.toInt() == 0 {
+    return Ok(value = None)
+  }
+  // Joined to profiles: settings outlive a deleted profile's row, and a session
+  // left pointing at a deleted profile must not stay observed.
+  val rows = CloudAgents.Sqlite.query("SELECT s.enabled, s.harness, s.model, s.repo_access, s.mid_run_minutes, s.max_passes_per_day FROM ledger_observer_settings s JOIN profiles p ON p.id = s.profile_id WHERE s.profile_id = " + lit(profileId))?
+  if CloudAgents.Sqlite.getRowArrayLength(rows) == 0 {
+    return Ok(value = None)
+  }
+  val r = CloudAgents.Sqlite.getRowArrayValue(rows, 0)
+  return Ok(
+    value = Some(
+      value = ObserverSettings(
+        enabled = col(r, 0),
+        harness = col(r, 1),
+        model = col(r, 2),
+        repoAccess = col(r, 3),
+        midRunMinutes = col(r, 4),
+        maxPassesPerDay = col(r, 5)
+      )
+    )
+  )
+}
+
+pub func saveObserverSettings(profileId: in String, st: in ObserverSettings): Result[Unit, CloudAgents.Sqlite.DbError] {
+  CloudAgents.Sqlite.execute("INSERT INTO ledger_observer_settings (profile_id, enabled, harness, model, repo_access, mid_run_minutes, max_passes_per_day, updated_at) VALUES (" + lit(profileId) + ", " + lit(st.enabled) + ", " + lit(st.harness) + ", " + lit(st.model) + ", " + lit(st.repoAccess) + ", " + lit(st.midRunMinutes) + ", " + lit(st.maxPassesPerDay) + ", " + lit(CloudAgents.Repository.nowMillis()) + ") ON CONFLICT(profile_id) DO UPDATE SET enabled = excluded.enabled, harness = excluded.harness, model = excluded.model, repo_access = excluded.repo_access, mid_run_minutes = excluded.mid_run_minutes, max_passes_per_day = excluded.max_passes_per_day, updated_at = excluded.updated_at")?
+  return Ok(())
+}
+
+/// An observed session's observer bookkeeping (see ledgerObserverSchemaSql).
+pub record ObserverState {
+  pub sessionId: String
+  pub observerSessionId: String
+  pub cursorSeq: String
+  pub windowEnd: String
+  pub pending: String
+  pub passDay: String
+  pub passesToday: String
+  pub lastPassAt: String
+  pub configHash: String
+  pub lastError: String
+}
+
+pub func emptyObserverState(sessionId: in String): ObserverState {
+  return ObserverState(
+    sessionId = sessionId,
+    observerSessionId = "",
+    cursorSeq = "",
+    windowEnd = "",
+    pending = "0",
+    passDay = "",
+    passesToday = "0",
+    lastPassAt = "",
+    configHash = "",
+    lastError = ""
+  )
+}
+
+val observerCols = "session_id, observer_session_id, cursor_seq, window_end, pending, pass_day, passes_today, last_pass_at, config_hash, last_error"
+
+func rowToObserverState(r: in CloudAgents.Sqlite.Row): ObserverState {
+  return ObserverState(
+    sessionId = col(r, 0),
+    observerSessionId = col(r, 1),
+    cursorSeq = col(r, 2),
+    windowEnd = col(r, 3),
+    pending = col(r, 4),
+    passDay = col(r, 5),
+    passesToday = col(r, 6),
+    lastPassAt = col(r, 7),
+    configHash = col(r, 8),
+    lastError = col(r, 9)
+  )
+}
+
+/// The observer state of an observed session (an empty state when it has
+/// never been observed).
+pub func observerState(sessionId: in String): Result[ObserverState, CloudAgents.Sqlite.DbError] {
+  val rows = CloudAgents.Sqlite.query("SELECT " + observerCols + " FROM ledger_observer WHERE session_id = " + lit(sessionId))?
+  if CloudAgents.Sqlite.getRowArrayLength(rows) == 0 {
+    return Ok(value = emptyObserverState(sessionId))
+  }
+  return Ok(value = rowToObserverState(CloudAgents.Sqlite.getRowArrayValue(rows, 0)))
+}
+
+/// The observed session an observer session works for ("" when `observerSessionId`
+/// is not an observer).
+pub func observedSessionOf(observerSessionId: in String): Result[String, CloudAgents.Sqlite.DbError] {
+  if observerSessionId.length.toInt() == 0 {
+    return Ok(value = "")
+  }
+  val rows = CloudAgents.Sqlite.query("SELECT session_id FROM ledger_observer WHERE observer_session_id = " + lit(observerSessionId))?
+  if CloudAgents.Sqlite.getRowArrayLength(rows) == 0 {
+    return Ok(value = "")
+  }
+  return Ok(value = col(CloudAgents.Sqlite.getRowArrayValue(rows, 0), 0))
+}
+
+pub func saveObserverState(st: in ObserverState): Result[Unit, CloudAgents.Sqlite.DbError] {
+  CloudAgents.Sqlite.execute("INSERT INTO ledger_observer (" + observerCols + ") VALUES (" + lit(st.sessionId) + ", " + lit(st.observerSessionId) + ", " + lit(st.cursorSeq) + ", " + lit(st.windowEnd) + ", " + lit(st.pending) + ", " + lit(st.passDay) + ", " + lit(st.passesToday) + ", " + lit(st.lastPassAt) + ", " + lit(st.configHash) + ", " + lit(st.lastError) + ") ON CONFLICT(session_id) DO UPDATE SET observer_session_id = excluded.observer_session_id, cursor_seq = excluded.cursor_seq, window_end = excluded.window_end, pending = excluded.pending, pass_day = excluded.pass_day, passes_today = excluded.passes_today, last_pass_at = excluded.last_pass_at, config_hash = excluded.config_hash, last_error = excluded.last_error")?
+  return Ok(())
+}
+
+/// What a container needs to know when it is an observer: the session it
+/// observes and the repo access its profile grants.
+pub record ObserverRunInfo {
+  pub observedSessionId: String
+  pub repoAccess: String
+}
+
+/// The observer facts for a session about to run, or None for any session that
+/// isn't an observer.
+pub func observerRunInfo(sessionId: in String): Result[Option[ObserverRunInfo], CloudAgents.Sqlite.DbError] {
+  val rows = CloudAgents.Sqlite.query("SELECT o.session_id, COALESCE(st.repo_access, 'none') FROM ledger_observer o JOIN sessions t ON t.id = o.session_id LEFT JOIN ledger_observer_settings st ON st.profile_id = t.profile_id AND st.profile_id IN (SELECT id FROM profiles) WHERE o.observer_session_id = " + lit(sessionId) + " AND o.observer_session_id != ''")?
+  if CloudAgents.Sqlite.getRowArrayLength(rows) == 0 {
+    return Ok(value = None)
+  }
+  val r = CloudAgents.Sqlite.getRowArrayValue(rows, 0)
+  return Ok(value = Some(value = ObserverRunInfo(observedSessionId = col(r, 0), repoAccess = col(r, 1))))
+}
+
+/// The facts about a session the observer machinery needs, read without an
+/// owner scope (callers are an authenticated container callback, a run hook
+/// on the session's own request, or the operator's maintenance run).
+pub record SessionRunFacts {
+  pub sessionId: String
+  pub userId: String
+  pub repoUrl: String
+  pub branch: String
+  pub harness: String
+  pub status: String
+  pub profileId: String
+  pub isArchived: String
+  pub observesSessionId: String
+  pub containerId: String
+}
+
+pub func sessionRunFacts(sessionId: in String): Result[Option[SessionRunFacts], CloudAgents.Sqlite.DbError] {
+  val rows = CloudAgents.Sqlite.query("SELECT id, user_id, repo_url, branch, harness, status, COALESCE(profile_id, ''), is_archived, observes_session_id, container_id FROM sessions WHERE id = " + lit(sessionId))?
+  if CloudAgents.Sqlite.getRowArrayLength(rows) == 0 {
+    return Ok(value = None)
+  }
+  val r = CloudAgents.Sqlite.getRowArrayValue(rows, 0)
+  return Ok(
+    value = Some(
+      value = SessionRunFacts(
+        sessionId = col(r, 0),
+        userId = col(r, 1),
+        repoUrl = col(r, 2),
+        branch = col(r, 3),
+        harness = col(r, 4),
+        status = col(r, 5),
+        profileId = col(r, 6),
+        isArchived = col(r, 7),
+        observesSessionId = col(r, 8),
+        containerId = col(r, 9)
+      )
+    )
+  )
+}
+
+/// Mark a freshly created session as the observer of `observedSessionId`, on
+/// the observed session's profile (its credentials and network policy; the
+/// container narrows everything else).
+pub func linkObserverSession(
+  observerSessionId: in String, observedSessionId: in String, profileId: in String
+): Result[Unit, CloudAgents.Sqlite.DbError] {
+  CloudAgents.Sqlite.execute("UPDATE sessions SET observes_session_id = " + lit(observedSessionId) + ", profile_id = " + lit(profileId) + " WHERE id = " + lit(observerSessionId))?
+  return Ok(())
+}
+
+/// Remove an observer session's row (a replaced or orphaned observer).
+pub func deleteObserverSessionRow(observerSessionId: in String): Result[Unit, CloudAgents.Sqlite.DbError] {
+  if observerSessionId.length.toInt() == 0 {
+    return Ok(())
+  }
+  CloudAgents.Sqlite.execute("DELETE FROM sessions WHERE id = " + lit(observerSessionId) + " AND observes_session_id != ''")?
+  return Ok(())
+}
+
+/// Forget an observed session's observer (its session was deleted).
+pub func deleteObserverState(sessionId: in String): Result[Unit, CloudAgents.Sqlite.DbError] {
+  CloudAgents.Sqlite.execute("DELETE FROM ledger_observer WHERE session_id = " + lit(sessionId))?
+  return Ok(())
+}
+
+/// Ask for a pass. Idempotent: many asks before a pass runs make one pass.
+pub func markObserverPending(sessionId: in String): Result[Unit, CloudAgents.Sqlite.DbError] {
+  CloudAgents.Sqlite.execute("INSERT INTO ledger_observer (" + observerCols + ") VALUES (" + lit(sessionId) + ", '', '', '', '1', '', '0', '', '', '') ON CONFLICT(session_id) DO UPDATE SET pending = '1'")?
+  return Ok(())
+}
+
+/// Take the pending pass for a session: true for exactly one caller.
+pub func claimObserverPass(sessionId: in String): Result[Bool, CloudAgents.Sqlite.DbError] {
+  val changed = CloudAgents.Sqlite.execute("UPDATE ledger_observer SET pending = '0' WHERE session_id = " + lit(sessionId) + " AND pending = '1'")?
+  return Ok(value = changed == 1)
+}
+
+/// Observed sessions with a pass waiting, the longest-waiting first.
+pub func pendingObserverSessions(limit: in Int): Result[slice[String], CloudAgents.Sqlite.DbError] {
+  val rows = CloudAgents.Sqlite.query("SELECT o.session_id FROM ledger_observer o JOIN sessions s ON s.id = o.session_id WHERE o.pending = '1' AND s.is_archived = '0' ORDER BY CAST(COALESCE(NULLIF(o.last_pass_at, ''), '0') AS INTEGER), o.session_id LIMIT " + toString(limit))?
+  var acc: slice[String] = []
+  var i = 0
+  while i < CloudAgents.Sqlite.getRowArrayLength(rows) {
+    acc = acc.append(col(CloudAgents.Sqlite.getRowArrayValue(rows, i), 0))
+    i = i + 1
+  }
+  return Ok(value = acc)
+}
+
+/// Mark a provisional observation as covered by a declared entry the agent
+/// recorded later: no longer undeclared, and no longer awaiting review unless
+/// the owner already reviewed it.
+pub func applyRetroMatch(
+  sessionId: in String, observedId: in String, declaredId: in String
+): Result[Unit, CloudAgents.Sqlite.DbError] {
+  val now = CloudAgents.Repository.nowMillis()
+  CloudAgents.Sqlite.executeTransaction([ensureSessionSql(sessionId, now), bumpSeqSql(sessionId), "UPDATE ledger_entries SET matched_entry_id = " + lit(declaredId) + ", undeclared = 'false', provisional = 'false', severity = 'info', review_state = CASE WHEN review_state = 'pending' THEN 'not_required' ELSE review_state END, updated_seq = " + curSeqExpr(sessionId) + " WHERE session_id = " + lit(sessionId) + " AND id = " + lit(observedId)])?
+  return Ok(())
+}
+
+/// A run ended: its mid-run observations are final now.
+pub func settleProvisional(sessionId: in String): Result[Unit, CloudAgents.Sqlite.DbError] {
+  val rows = CloudAgents.Sqlite.query("SELECT COUNT(*) FROM ledger_entries WHERE session_id = " + lit(sessionId) + " AND provisional = 'true'")?
+  if decimalToInt(col(CloudAgents.Sqlite.getRowArrayValue(rows, 0), 0)) == 0 {
+    return Ok(())
+  }
+  val now = CloudAgents.Repository.nowMillis()
+  CloudAgents.Sqlite.executeTransaction([ensureSessionSql(sessionId, now), bumpSeqSql(sessionId), "UPDATE ledger_entries SET provisional = 'false', updated_seq = " + curSeqExpr(sessionId) + " WHERE session_id = " + lit(sessionId) + " AND provisional = 'true'"])?
+  return Ok(())
+}
+
+/// Every entry of a session for reconciliation: declared and observed, newest
+/// first up to the cap (the window a candidate can match sits at the end).
+pub func entriesForReconcile(sessionId: in String): Result[slice[LedgerEntry], CloudAgents.Sqlite.DbError] {
+  return listEntries(sessionId)
+}
+
 // ── Repo policy cache ─────────────────────────────────────────────────────────
 pub record PolicyCache {
   pub status: String
@@ -1059,5 +1314,5 @@ pub func inboxForUser(userId: in String): Result[slice[InboxEntry], CloudAgents.
 }
 
 func rowToInboxEntry(r: in CloudAgents.Sqlite.Row): InboxEntry {
-  return InboxEntry(ledgerEntry = rowToEntry(r), repoUrl = col(r, 29), branch = col(r, 30))
+  return InboxEntry(ledgerEntry = rowToEntry(r), repoUrl = col(r, 33), branch = col(r, 34))
 }

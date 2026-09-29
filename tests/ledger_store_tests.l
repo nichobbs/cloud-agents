@@ -145,7 +145,11 @@ func declaredEntry(sid: in String, kind: in String, severity: in String, review:
     reviewComment = "",
     createdAt = "",
     createdSeq = "",
-    updatedSeq = ""
+    updatedSeq = "",
+    observedFrom = "",
+    confidence = "",
+    evidence = "",
+    provisional = ""
   )
 }
 

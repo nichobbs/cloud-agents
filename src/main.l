@@ -27,6 +27,9 @@ import CloudAgents.Sqlite
 import CloudAgents.Streaming
 import CloudAgents.Webhooks
 import CloudAgents.WorkspaceHandlers
+import CloudAgents.ObserverHandlers
+import CloudAgents.ObserverDocker
+import CloudAgents.Ledger.ObserverPolicy
 import extern System.Environment as Env
 import extern System.String as DotNetString
 
@@ -1394,6 +1397,84 @@ impl Web.Handler for RouteLedgerSync {
   }
 }
 
+// ─── Ledger observer (src/handlers/observer.l, docs/session-ledger.md §10) ───
+record RouteObserverCallback {
+}
+
+impl Web.Handler for RouteObserverCallback {
+  func handle(req: in Web.Request): Web.Response {
+    return ledgerJsonResp(
+      ledgerEnvelopeJson(
+        CloudAgents.ObserverHandlers.observerCallbackHandler(
+          pparam(req, "id"),
+          pparam(req, "op"),
+          callbackAuthHeader(req),
+          req.body,
+          CloudAgents.ObserverDocker.dockerObserverRunner()
+        )
+      )
+    )
+  }
+}
+
+func observerSettingsJson(
+  r: in Result[CloudAgents.Ledger.ObserverPolicy.ObserverSettings, Web.ApiError]
+): Result[String, Web.ApiError] {
+  return match r { case Ok(v) -> Ok(value = v.toJson()); case Err(e) -> Err(error = e) }
+}
+
+record RouteGetObserverSettings {
+}
+
+impl Web.Handler for RouteGetObserverSettings {
+  func handle(req: in Web.Request): Web.Response {
+    return ledgerJsonResp(
+      observerSettingsJson(CloudAgents.ObserverHandlers.getObserverSettingsHandler(pparam(req, "pid")))
+    )
+  }
+}
+
+record RouteSaveObserverSettings {
+}
+
+impl Web.Handler for RouteSaveObserverSettings {
+  func handle(req: in Web.Request): Web.Response {
+    return ledgerJsonResp(
+      observerSettingsJson(CloudAgents.ObserverHandlers.putObserverSettingsHandler(pparam(req, "pid"), req.body))
+    )
+  }
+}
+
+record RouteObserveNow {
+}
+
+impl Web.Handler for RouteObserveNow {
+  func handle(req: in Web.Request): Web.Response {
+    val r = CloudAgents.ObserverHandlers.observeNowHandler(pparam(req, "id"))
+    return ledgerJsonResp(match r { case Ok(v) -> Ok(value = v.toJson()); case Err(e) -> Err(error = e) })
+  }
+}
+
+record RouteObserverStatus {
+}
+
+impl Web.Handler for RouteObserverStatus {
+  func handle(req: in Web.Request): Web.Response {
+    val r = CloudAgents.ObserverHandlers.observerStatusHandler(pparam(req, "id"))
+    return ledgerJsonResp(match r { case Ok(v) -> Ok(value = v.toJson()); case Err(e) -> Err(error = e) })
+  }
+}
+
+record RouteObserverMaintenance {
+}
+
+impl Web.Handler for RouteObserverMaintenance {
+  func handle(req: in Web.Request): Web.Response {
+    val r = CloudAgents.ObserverHandlers.observerMaintenanceHandler(CloudAgents.ObserverDocker.dockerObserverRunner())
+    return ledgerJsonResp(match r { case Ok(v) -> Ok(value = v.toJson()); case Err(e) -> Err(error = e) })
+  }
+}
+
 record RouteLedgerSessionSync {
 }
 
@@ -2078,6 +2159,8 @@ pub func main(): Unit {
   router = Web.addPost(router, "/api/profiles", RouteAddProfile())
   router = Web.addPost(router, "/api/profiles/{pid}", RouteUpdateProfile())
   router = Web.addDelete(router, "/api/profiles/{pid}", RouteDeleteProfile())
+  router = Web.addGet(router, "/api/profiles/{pid}/observer", RouteGetObserverSettings())
+  router = Web.addPost(router, "/api/profiles/{pid}/observer", RouteSaveObserverSettings())
 
   // Library: skills, subagents, and MCP servers a profile can grant to a
   // session — rendered into each harness's own native config at container
@@ -2174,6 +2257,10 @@ pub func main(): Unit {
   router = Web.addPost(router, "/api/sessions/{id}/ledger/item-state", RouteLedgerItemState())
   router = Web.addGet(router, "/api/ledger/inbox", RouteLedgerInbox())
   router = Web.addPost(router, "/api/sessions/{id}/ledger/sync", RouteLedgerSessionSync())
+  router = Web.addPost(router, "/api/sessions/{id}/ledger/observe", RouteObserveNow())
+  router = Web.addGet(router, "/api/sessions/{id}/ledger/observer", RouteObserverStatus())
+  router = Web.addPost(router, "/api/sessions/{id}/callbacks/observer/{op}", RouteObserverCallback())
+  router = Web.addPost(router, "/api/maintenance/observe", RouteObserverMaintenance())
   router = Web.addPost(router, "/api/maintenance/ledger-sync", RouteLedgerSync())
 
   // Session highlights: the summarizer-extracted notable items feed

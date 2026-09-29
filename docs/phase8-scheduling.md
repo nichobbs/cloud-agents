@@ -39,7 +39,10 @@ repeatedly (a job not yet due is untouched). The operator is responsible for
 pointing a real cron (system cron, a scheduled CI workflow, an uptime-monitor
 ping, etc.) at this endpoint on a short interval (e.g. every minute) — this
 repo does not ship that cron itself, matching how it doesn't ship the
-webhook-delivery worker or the reaper's poller either.
+webhook-delivery worker or the reaper's poller either. The same scheduler should poll the
+session ledger's `POST /api/maintenance/ledger-sync` (GitHub reconciliation)
+and `POST /api/maintenance/observe` (observer passes); see
+`docs/session-ledger.md` §9–§10.
 
 ## 3. Schedule shape: a time and/or an interval, not a cron DSL
 

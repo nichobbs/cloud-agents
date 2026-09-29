@@ -28,6 +28,14 @@ export interface LedgerEntry {
   source: 'declared' | 'observed' | 'system';
   undeclared: string;
   matchedEntryId: string;
+  /** First transcript event seq an observed entry was seen at; "" when declared. */
+  observedFrom: string;
+  /** Observer confidence as a decimal string such as "0.95"; "" when declared. */
+  confidence: string;
+  /** A short transcript quote backing an observed entry. */
+  evidence: string;
+  /** "true" while the entry came from a mid-run pass the agent may still declare. */
+  provisional: string;
   origin: string;
   supersedes: string;
   transcriptSeq: string;
@@ -38,6 +46,29 @@ export interface LedgerEntry {
   createdAt: string;
   createdSeq: string;
   updatedSeq: string;
+}
+
+/** A profile's observer configuration (every value a string, the wire convention). */
+export interface ObserverSettings {
+  enabled: string;
+  harness: string;
+  model: string;
+  repoAccess: string;
+  midRunMinutes: string;
+  maxPassesPerDay: string;
+}
+
+/** The observer's state for one session. */
+export interface ObserverStatus {
+  enabled: string;
+  harness: string;
+  model: string;
+  repoAccess: string;
+  pending: string;
+  lastPassAt: string;
+  lastError: string;
+  passesToday: string;
+  maxPassesPerDay: string;
 }
 
 export interface WorkItem {

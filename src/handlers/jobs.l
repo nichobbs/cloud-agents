@@ -26,6 +26,7 @@ package CloudAgents.Jobs
 import Std.Core
 import Web
 import CloudAgents.Auth
+import CloudAgents.Ledger.Observer
 import CloudAgents.Docker
 import CloudAgents.Handlers
 import CloudAgents.Proxy
@@ -307,18 +308,7 @@ pub func createJobHandler(userId: in String, req: in CreateJobRequest): Result[J
   if req.runAtEpochMillis.length == 0 and req.intervalSeconds.length == 0 {
     return Err(Web.badRequest("at least one of runAtEpochMillis or intervalSeconds is required"))
   }
-  match CloudAgents.Repository.createScheduledJob(
-    userId,
-    req.name,
-    req.prompt,
-    req.profileId,
-    req.repoUrl,
-    req.branch,
-    harness,
-    model,
-    req.runAtEpochMillis,
-    req.intervalSeconds
-  ) {
+  match CloudAgents.Repository.createScheduledJob(userId, req.name, req.prompt, req.profileId, req.repoUrl, req.branch, harness, model, req.runAtEpochMillis, req.intervalSeconds) {
     case Ok(job) -> return Ok(jobSummaryOf(job))
     case Err(e) -> return Err(dbError(e))
   }
@@ -451,24 +441,17 @@ pub func updateJobHandler(userId: in String, id: in String, req: in UpdateJobReq
   // never runs at all.
   val writeNextRunAt = scheduleChanged or reactivatingCompletedJob
   val nextRunAt = if scheduleChanged {
-    if runAt.length > 0 { runAt } else { CloudAgents.Repository.nowMillis() }
+    if runAt.length > 0 {
+      runAt
+    } else {
+      CloudAgents.Repository.nowMillis()
+    }
   } else if reactivatingCompletedJob {
     CloudAgents.Repository.nowMillis()
   } else {
     existing.nextRunAt
   }
-  match CloudAgents.Repository.updateScheduledJob(
-    id,
-    userId,
-    existing.name,
-    prompt,
-    profileId,
-    runAt,
-    intervalSeconds,
-    nextRunAt,
-    status,
-    writeNextRunAt
-  ) {
+  match CloudAgents.Repository.updateScheduledJob(id, userId, existing.name, prompt, profileId, runAt, intervalSeconds, nextRunAt, status, writeNextRunAt) {
     case Ok(n) -> {
       if n > 0 {
         return getJobHandler(userId, id)
@@ -551,10 +534,7 @@ func runOneJob(job: in CloudAgents.Repository.ScheduledJob): JobRunOutcome {
     CloudAgents.Auth.setCurrentUserId(callerUserId)
   }
   CloudAgents.Auth.setCurrentUserId(job.userId)
-  val sessionId = match ensureJobSession(job) {
-    case Ok(sid) -> sid
-    case Err(msg) -> return JobFailed(message = msg)
-  }
+  val sessionId = match ensureJobSession(job) { case Ok(sid) -> sid; case Err(msg) -> return JobFailed(message = msg) }
   // Resolve the actual run configuration from the SESSION, never from the
   // job row, exactly like streamSendMessage does for any other follow-up
   // message (#880). The job row's repoUrl/branch/harness/model/profileId
@@ -625,7 +605,8 @@ func runOneJob(job: in CloudAgents.Repository.ScheduledJob): JobRunOutcome {
   val runResult = CloudAgents.Docker.runSessionMessageBlocking(
     repoUrl = session.repoUrl,
     branch = session.branch,
-    prompt = CloudAgents.Ledger.Service.nextRunPromptPrefix(sessionId, job.userId, profileId) + job.prompt,
+    prompt = CloudAgents.Ledger.Service.nextRunPromptPrefix(sessionId, job.userId, profileId) +
+      job.prompt,
     sessionId = sessionId,
     harness = harness,
     model = session.model,
@@ -639,6 +620,9 @@ func runOneJob(job: in CloudAgents.Repository.ScheduledJob): JobRunOutcome {
       if runId.length > 0 {
         val _ = CloudAgents.Repository.recordRunEnd(runId, job.userId, "succeeded")
         val _ = CloudAgents.Repository.enqueueWebhookEvent(job.userId, sessionId, runId, "succeeded")
+        // Session ledger observer (docs/session-ledger.md §10): queue an
+        // end-of-run pass if this session is observed. Best-effort.
+        CloudAgents.Ledger.Observer.onRunFinished(sessionId)
       }
       match CloudAgents.Repository.addMessage(sessionId, "agent", logs) {
         case Ok(_) -> ()
@@ -653,6 +637,9 @@ func runOneJob(job: in CloudAgents.Repository.ScheduledJob): JobRunOutcome {
       if runId.length > 0 {
         val _ = CloudAgents.Repository.recordRunEnd(runId, job.userId, "failed")
         val _ = CloudAgents.Repository.enqueueWebhookEvent(job.userId, sessionId, runId, "failed")
+        // Session ledger observer (docs/session-ledger.md §10): queue an
+        // end-of-run pass if this session is observed. Best-effort.
+        CloudAgents.Ledger.Observer.onRunFinished(sessionId)
       }
       // Mirror the success branch (#892/#894): a scheduled job has no live
       // viewer by construction (no ResponseWriter here, unlike
@@ -699,7 +686,12 @@ pub func applyPostRunBookkeeping(claimedJob: in CloudAgents.Repository.Scheduled
     case Err(_) -> claimedJob
   }
   if fresh.intervalSeconds.length > 0 {
-    val _ = CloudAgents.Repository.markScheduledJobRanRecurring(claimedJob.id, firedAt, claimedJob.nextRunAt, fresh.intervalSeconds)
+    val _ = CloudAgents.Repository.markScheduledJobRanRecurring(
+      claimedJob.id,
+      firedAt,
+      claimedJob.nextRunAt,
+      fresh.intervalSeconds
+    )
   } else {
     val _ = CloudAgents.Repository.markScheduledJobCompleted(claimedJob.id, firedAt)
   }
@@ -862,9 +854,7 @@ pub func scheduleJobCallbackHandler(
   // concurrent maintenance-trigger poll can ever observe this job — via
   // dueScheduledJobs()'s due-scan — with its session still unattached, since
   // both writes commit together.
-  val job = match CloudAgents.Repository.createScheduledJobWithSession(
-    ownerUserId, req.name, req.prompt, req.runAtEpochMillis, req.intervalSeconds, sessionId
-  ) {
+  val job = match CloudAgents.Repository.createScheduledJobWithSession(ownerUserId, req.name, req.prompt, req.runAtEpochMillis, req.intervalSeconds, sessionId) {
     case Ok(j) -> j
     case Err(e) -> return Err(dbError(e))
   }
@@ -875,7 +865,9 @@ pub func scheduleJobCallbackHandler(
 /// MCP tool). Lists every job owned by this session's owner, not just jobs
 /// tied to this session — an agent can review and manage the whole backlog it
 /// (or the human) has scheduled.
-pub func listJobsCallbackHandler(sessionId: in String, authHeaderValue: in String): Result[JobListResponse, Web.ApiError] {
+pub func listJobsCallbackHandler(
+  sessionId: in String, authHeaderValue: in String
+): Result[JobListResponse, Web.ApiError] {
   if sessionId.length == 0 {
     return Err(Web.badRequest("id is required"))
   }
@@ -895,7 +887,10 @@ pub func listJobsCallbackHandler(sessionId: in String, authHeaderValue: in Strin
 /// codebase applies here too (a probing caller can't distinguish "exists but
 /// isn't yours" from "doesn't exist").
 pub func updateJobCallbackHandler(
-  sessionId: in String, jobId: in String, authHeaderValue: in String, req: in UpdateJobRequest
+  sessionId: in String,
+  jobId: in String,
+  authHeaderValue: in String,
+  req: in UpdateJobRequest,
 ): Result[JobSummary, Web.ApiError] {
   if sessionId.length == 0 {
     return Err(Web.badRequest("id is required"))
@@ -944,6 +939,12 @@ pub func cancelJobCallbackHandler(
     sessionId,
     jobId,
     authHeaderValue,
-    UpdateJobRequest(prompt = "", profileId = "", runAtEpochMillis = "", intervalSeconds = "", status = "cancelled")
+    UpdateJobRequest(
+      prompt = "",
+      profileId = "",
+      runAtEpochMillis = "",
+      intervalSeconds = "",
+      status = "cancelled"
+    )
   )
 }

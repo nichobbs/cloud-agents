@@ -44,6 +44,25 @@ impl LedgerTransport for HttpLedgerTransport {
   }
 }
 
+/// The observer's tools (cloud-agents docs/session-ledger.md §10) forward the
+/// same way to `POST /api/sessions/{id}/callbacks/observer/{op}`, where `id`
+/// is the observer's own session: the host maps it to the session it observes.
+pub record HttpObserverTransport {
+  pub baseUrl: String
+  pub sessionId: String
+  pub token: String
+}
+
+impl LedgerTransport for HttpObserverTransport {
+  func call(op: in String, argumentsJson: in String): Result[String, String] {
+    CloudAgents.Shim.Transport.postJsonWithBearer(
+      self.baseUrl + "/api/sessions/" + self.sessionId + "/callbacks/observer/" + op,
+      self.token,
+      argumentsJson
+    )
+  }
+}
+
 /// Mirrors CloudAgents.LedgerHandlers.LedgerToolEnvelope field-for-field.
 @generate(Json)
 pub record LedgerToolEnvelope {
@@ -475,4 +494,114 @@ pub func schemaForOp(op: in String): JsonValue {
     return noteSchema()
   }
   return noArgsSchema()
+}
+
+// ── Observer tools ────────────────────────────────────────────────────────────
+/// The tools an observer container registers, and nothing else: it reads the
+/// observed session's window and reports on it. Not grantable on a profile.
+pub func observerToolSpecs(): slice[LedgerToolSpec] {
+  [
+    LedgerToolSpec(
+      name = "observer_get_window",
+      op = "window",
+      description = "Ledger observer: read the next window of the session you observe. Returns its transcript as [seq N] lines (the agent's words, tool calls, results), its work items, the ledger entries already recorded, and (when granted) the workspace diff. empty=true means there is nothing new: stop."
+    ),
+    LedgerToolSpec(
+      name = "observer_report",
+      op = "report",
+      description = "Ledger observer: report what the agent did in this window but did NOT record in the ledger: decisions a reviewer might have made differently, deviations from the task or plan, shortcuts (skipped or weakened tests, suppressed warnings or type errors, broad catch blocks, TODOs, --no-verify or force pushes, new dependencies, changes outside the task's scope, approaches abandoned after failures) and blockers. Skip anything already listed in the window's entries. Send an empty candidates list when there is nothing to report; the window is closed either way. If the reply says more=true, read the next window."
+    )
+  ]
+}
+
+pub func observerSchemaForOp(op: in String): JsonValue {
+  if op == "report" {
+    return observerReportSchema()
+  }
+  return noArgsSchema()
+}
+
+pub func observerReportSchema(): JsonValue {
+  val candidate = JObject(
+    fields = [
+      JsonField(name = "type", value = JString(value = "object")),
+      JsonField(
+        name = "properties",
+        value = JObject(
+          fields = [
+            enumProp(
+              "kind",
+              ["decision", "deviation", "shortcut", "blocker", "question"],
+              "What kind of undeclared action this is."
+            ),
+            prop(
+              "summary",
+              "string",
+              "One line, at most 140 characters, saying what the agent did."
+            ),
+            prop(
+              "detail",
+              "string",
+              "Optional: what happened and why it matters to a reviewer."
+            ),
+            itemProp(),
+            prop(
+              "seqStart",
+              "string",
+              "The first [seq N] of the evidence in this window."
+            ),
+            prop(
+              "seqEnd",
+              "string",
+              "The last [seq N] of the evidence in this window."
+            ),
+            tagsProp(),
+            filesProp(),
+            reversibleProp(),
+            prop(
+              "confidence",
+              "number",
+              "0 to 1: how sure you are this happened and was not declared. Below 0.5 is dropped."
+            ),
+            prop(
+              "evidence",
+              "string",
+              "A short quote (under 30 words) from the window that shows it."
+            )
+          ]
+        )
+      ),
+      JsonField(
+        name = "required",
+        value = JArray(
+          items = [
+            JString(value = "kind"),
+            JString(value = "summary"),
+            JString(value = "seqStart"),
+            JString(value = "seqEnd"),
+            JString(value = "confidence"),
+            JString(value = "evidence")
+          ]
+        )
+      )
+    ]
+  )
+  schema(
+    [
+      JsonField(
+        name = "candidates",
+        value = JObject(
+          fields = [
+            JsonField(name = "type", value = JString(value = "array")),
+            JsonField(name = "items", value = candidate),
+            JsonField(
+              name = "description",
+              value = JString(value = "Undeclared actions in this window; empty when there are none.")
+            )
+          ]
+        )
+      )
+    ],
+    ["candidates"]
+  )
 }

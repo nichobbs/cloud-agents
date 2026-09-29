@@ -403,12 +403,20 @@ fi
 
 # Clone the repository on first run; reuse the volume afterwards.
 if [ ! -d /workspace/.git ]; then
-    if [ -z "${REPO_URL:-}" ]; then
-        echo "entrypoint: REPO_URL is required for the first run" >&2
-        exit 64
+    if [ "${CLOUD_AGENTS_OBSERVER:-0}" = "1" ]; then
+        # A ledger observer (docs/session-ledger.md §10) works from the window
+        # the host hands it, plus at most a read-only /workspace/observed: it
+        # has no repository of its own.
+        echo "entrypoint: observer session, no repository to clone" >&2
+        mkdir -p /workspace
+    else
+        if [ -z "${REPO_URL:-}" ]; then
+            echo "entrypoint: REPO_URL is required for the first run" >&2
+            exit 64
+        fi
+        echo "entrypoint: cloning ${REPO_URL} (${BRANCH})" >&2
+        git clone "${REPO_URL}" --branch "${BRANCH}" /workspace
     fi
-    echo "entrypoint: cloning ${REPO_URL} (${BRANCH})" >&2
-    git clone "${REPO_URL}" --branch "${BRANCH}" /workspace
 fi
 
 # Reconcile linked repositories (multi-repo sessions): clone the repos
@@ -538,7 +546,13 @@ if [ "${CALLBACKS_ACTIVE}" = "1" ]; then
     fi
 fi
 
-if [ "${CALLBACKS_ACTIVE}" = "1" ] && [ -f /etc/claude/settings-callbacks.json.template ]; then
+if [ "${CLOUD_AGENTS_OBSERVER:-0}" = "1" ]; then
+    # A ledger observer reads and reports, nothing else: the read-only tools
+    # plus its two MCP tools are allowed, and with no permission-prompt tool
+    # (below) every other tool is refused in -p mode rather than put to the
+    # owner, who never asked this session to do anything.
+    printf '%s\n' '{"permissions":{"allow":["Read","Glob","Grep","mcp__cloud-agents__observer_get_window","mcp__cloud-agents__observer_report"]}}' > /workspace/.claude/settings.json
+elif [ "${CALLBACKS_ACTIVE}" = "1" ] && [ -f /etc/claude/settings-callbacks.json.template ]; then
     cp /etc/claude/settings-callbacks.json.template /workspace/.claude/settings.json
 elif [ -f /etc/claude/settings.json.template ]; then
     cp /etc/claude/settings.json.template /workspace/.claude/settings.json
@@ -568,7 +582,7 @@ fi
 # through a tool that can't answer, instead of the pre-Phase-6 behavior this
 # run must fall back to. An empty array is a no-op either way.
 PERMISSION_PROMPT_ARGS=()
-if [ "${CALLBACKS_ACTIVE}" = "1" ]; then
+if [ "${CALLBACKS_ACTIVE}" = "1" ] && [ "${CLOUD_AGENTS_OBSERVER:-0}" != "1" ]; then
     PERMISSION_PROMPT_ARGS=(--permission-prompt-tool "mcp__cloud-agents__request_permission")
 fi
 

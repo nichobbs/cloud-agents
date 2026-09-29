@@ -7,6 +7,8 @@ import Std.File
 import Std.Json
 import Web
 import CloudAgents.Auth
+import CloudAgents.Ledger.Observer
+import CloudAgents.Ledger.Store
 import CloudAgents.Docker
 import CloudAgents.Interactions
 import CloudAgents.NetworkPolicy
@@ -205,32 +207,84 @@ pub func patchMissingAttachmentsField(body: in String): String {
 /// and there's no confirmed-working codepoint-shift primitive in this
 /// codebase to build a shorter version safely.
 func lowerAsciiChar(c: in String): String {
-  if c == "A" { return "a" }
-  if c == "B" { return "b" }
-  if c == "C" { return "c" }
-  if c == "D" { return "d" }
-  if c == "E" { return "e" }
-  if c == "F" { return "f" }
-  if c == "G" { return "g" }
-  if c == "H" { return "h" }
-  if c == "I" { return "i" }
-  if c == "J" { return "j" }
-  if c == "K" { return "k" }
-  if c == "L" { return "l" }
-  if c == "M" { return "m" }
-  if c == "N" { return "n" }
-  if c == "O" { return "o" }
-  if c == "P" { return "p" }
-  if c == "Q" { return "q" }
-  if c == "R" { return "r" }
-  if c == "S" { return "s" }
-  if c == "T" { return "t" }
-  if c == "U" { return "u" }
-  if c == "V" { return "v" }
-  if c == "W" { return "w" }
-  if c == "X" { return "x" }
-  if c == "Y" { return "y" }
-  if c == "Z" { return "z" }
+  if c == "A" {
+    return "a"
+  }
+  if c == "B" {
+    return "b"
+  }
+  if c == "C" {
+    return "c"
+  }
+  if c == "D" {
+    return "d"
+  }
+  if c == "E" {
+    return "e"
+  }
+  if c == "F" {
+    return "f"
+  }
+  if c == "G" {
+    return "g"
+  }
+  if c == "H" {
+    return "h"
+  }
+  if c == "I" {
+    return "i"
+  }
+  if c == "J" {
+    return "j"
+  }
+  if c == "K" {
+    return "k"
+  }
+  if c == "L" {
+    return "l"
+  }
+  if c == "M" {
+    return "m"
+  }
+  if c == "N" {
+    return "n"
+  }
+  if c == "O" {
+    return "o"
+  }
+  if c == "P" {
+    return "p"
+  }
+  if c == "Q" {
+    return "q"
+  }
+  if c == "R" {
+    return "r"
+  }
+  if c == "S" {
+    return "s"
+  }
+  if c == "T" {
+    return "t"
+  }
+  if c == "U" {
+    return "u"
+  }
+  if c == "V" {
+    return "v"
+  }
+  if c == "W" {
+    return "w"
+  }
+  if c == "X" {
+    return "x"
+  }
+  if c == "Y" {
+    return "y"
+  }
+  if c == "Z" {
+    return "z"
+  }
   return c
 }
 
@@ -355,7 +409,8 @@ pub func isSafeModelName(model: in String): Bool {
 }
 
 pub func isKnownHarness(harness: in String): Bool {
-  return harness == "claude" or harness == "codex" or harness == "opencode" or harness == "gemini" or harness == "antigravity"
+  return harness == "claude" or harness == "codex" or harness == "opencode" or harness == "gemini" or
+    harness == "antigravity"
 }
 
 @generate(Json)
@@ -538,7 +593,9 @@ pub func createSession(req: in CreateSessionRequest): Result[CreateSessionRespon
 }
 
 /// Branch an existing session from a specified message turn into a new child session (thread).
-pub func branchSession(parentSessionId: in String, req: in BranchSessionRequest): Result[CreateSessionResponse, Web.ApiError] {
+pub func branchSession(
+  parentSessionId: in String, req: in BranchSessionRequest
+): Result[CreateSessionResponse, Web.ApiError] {
   if parentSessionId.length == 0 {
     return Err(Web.badRequest("id is required"))
   }
@@ -690,7 +747,9 @@ pub func addSessionRepoHandler(id: in String, req: in AddRepoRequest): Result[Se
   }
   // Cap the number of linked repos (keeps the EXTRA_REPOS env bounded).
   match CloudAgents.Repository.countSessionRepos(id) {
-    case Ok(n) -> if n >= maxSessionRepos { return Err(Web.badRequest("too many linked repositories (max " + toString(maxSessionRepos) + ")")) }
+    case Ok(n) -> if n >= maxSessionRepos {
+      return Err(Web.badRequest("too many linked repositories (max " + toString(maxSessionRepos) + ")"))
+    }
     case Err(e) -> return Err(Web.internalError("failed to count linked repositories: " + CloudAgents.Sqlite.dbErrorMessage(e)))
   }
   // Refuse a duplicate URL so a repo is never cloned twice into the workspace.
@@ -803,7 +862,12 @@ func existingAttachmentsHostDir(sessionId: in String): Result[StoredAttachments,
       if existing.length == 0 {
         return Ok(value = StoredAttachments(attachments = [], hostDir = ""))
       }
-      return Ok(value = StoredAttachments(attachments = [], hostDir = CloudAgents.Repository.attachmentsBaseDir() + "/" + sessionId))
+      return Ok(
+        value = StoredAttachments(
+          attachments = [],
+          hostDir = CloudAgents.Repository.attachmentsBaseDir() + "/" + sessionId
+        )
+      )
     }
     case Err(_) -> return Ok(value = StoredAttachments(attachments = [], hostDir = ""))
   }
@@ -822,12 +886,19 @@ func existingAttachmentsHostDir(sessionId: in String): Result[StoredAttachments,
 /// new files, and not only when this message itself carries a new
 /// attachment) on every later message, giving the agent access to
 /// everything uploaded so far in the session, not just the latest batch.
-pub func storeAttachments(sessionId: in String, inputs: in slice[AttachmentInput]): Result[StoredAttachments, StoreAttachmentsError] {
+pub func storeAttachments(
+  sessionId: in String, inputs: in slice[AttachmentInput]
+): Result[StoredAttachments, StoreAttachmentsError] {
   if inputs.length == 0 {
     return existingAttachmentsHostDir(sessionId)
   }
   if inputs.length > maxAttachmentsPerMessage {
-    return Err(value = StoreAttachmentsError(code = 400, message = "too many attachments (max " + toString(maxAttachmentsPerMessage) + " per message)"))
+    return Err(
+      value = StoreAttachmentsError(
+        code = 400,
+        message = "too many attachments (max " + toString(maxAttachmentsPerMessage) + " per message)"
+      )
+    )
   }
   // Pass 1: validate + decode EVERY input, accumulating the running total
   // decoded size, WITHOUT writing anything to disk or the database yet. The
@@ -851,7 +922,12 @@ pub func storeAttachments(sessionId: in String, inputs: in slice[AttachmentInput
       return Err(value = StoreAttachmentsError(code = 400, message = "attachment fileName is required"))
     }
     if not CloudAgents.Text.withinMaxByteLength(input.fileName, maxAttachmentFileNameLen) {
-      return Err(value = StoreAttachmentsError(code = 400, message = "attachment fileName is too long (max " + toString(maxAttachmentFileNameLen) + " bytes)"))
+      return Err(
+        value = StoreAttachmentsError(
+          code = 400,
+          message = "attachment fileName is too long (max " + toString(maxAttachmentFileNameLen) + " bytes)"
+        )
+      )
     }
     val fileName = match basenameOfAttachment(input.fileName) {
       case Some(b) -> b
@@ -861,13 +937,25 @@ pub func storeAttachments(sessionId: in String, inputs: in slice[AttachmentInput
       return Err(value = StoreAttachmentsError(code = 400, message = "attachment mimeType is required"))
     }
     if not CloudAgents.Text.withinMaxLength(input.mimeType, maxAttachmentMimeTypeLen) {
-      return Err(value = StoreAttachmentsError(code = 400, message = "attachment mimeType is too long (max " + toString(maxAttachmentMimeTypeLen) + " characters)"))
+      return Err(
+        value = StoreAttachmentsError(
+          code = 400,
+          message = "attachment mimeType is too long (max " + toString(maxAttachmentMimeTypeLen) +
+            " characters)"
+        )
+      )
     }
     // Reject mime types capable of executing as active content — see
     // isDangerousAttachmentMimeType's doc comment. Checked before anything
     // is written to disk or the database.
     if isDangerousAttachmentMimeType(input.mimeType) {
-      return Err(value = StoreAttachmentsError(code = 400, message = "attachment '" + input.fileName + "' has an unsupported mimeType (" + input.mimeType + ")"))
+      return Err(
+        value = StoreAttachmentsError(
+          code = 400,
+          message = "attachment '" + input.fileName + "' has an unsupported mimeType (" + input.mimeType +
+            ")"
+        )
+      )
     }
     // No "contentBase64 is required" rejection here (#1004): an empty string
     // is itself valid base64 for a genuine 0-byte file (decodeAttachmentBase64
@@ -877,7 +965,12 @@ pub func storeAttachments(sessionId: in String, inputs: in slice[AttachmentInput
     // — it can't actually be absent once the JSON has decoded — so there is
     // no "field missing" case left to distinguish from "empty file" here.
     if not CloudAgents.Text.withinMaxLength(input.contentBase64, maxAttachmentBase64Len) {
-      return Err(value = StoreAttachmentsError(code = 400, message = "attachment '" + fileName + "' exceeds the 20 MiB per-file limit"))
+      return Err(
+        value = StoreAttachmentsError(
+          code = 400,
+          message = "attachment '" + fileName + "' exceeds the 20 MiB per-file limit"
+        )
+      )
     }
     val bytes = match tryDecodeAttachmentBytes(input.contentBase64) {
       case Ok(b) -> b
@@ -885,14 +978,24 @@ pub func storeAttachments(sessionId: in String, inputs: in slice[AttachmentInput
     }
     val sizeBytes = bytes.length.toInt()
     if sizeBytes > maxAttachmentBytes {
-      return Err(value = StoreAttachmentsError(code = 400, message = "attachment '" + fileName + "' exceeds the 20 MiB per-file limit"))
+      return Err(
+        value = StoreAttachmentsError(
+          code = 400,
+          message = "attachment '" + fileName + "' exceeds the 20 MiB per-file limit"
+        )
+      )
     }
     totalBytes = totalBytes + sizeBytes
     if totalBytes > maxTotalAttachmentBytes {
       return Err(value = StoreAttachmentsError(code = 400, message = "attachments exceed the 50 MiB per-message limit"))
     }
     validated = validated.append(
-      ValidatedAttachmentInput(fileName = fileName, mimeType = input.mimeType, bytes = bytes, sizeBytes = sizeBytes)
+      ValidatedAttachmentInput(
+        fileName = fileName,
+        mimeType = input.mimeType,
+        bytes = bytes,
+        sizeBytes = sizeBytes
+      )
     )
     i = i + 1
   }
@@ -915,7 +1018,12 @@ pub func storeAttachments(sessionId: in String, inputs: in slice[AttachmentInput
   val hostDir = CloudAgents.Repository.attachmentsBaseDir() + "/" + sessionId
   match Std.File.createDir(hostDir) {
     case Ok(_) -> ()
-    case Err(e) -> return Err(value = StoreAttachmentsError(code = 500, message = "failed to create attachment storage: " + IOError.message(e)))
+    case Err(e) -> return Err(
+      value = StoreAttachmentsError(
+        code = 500,
+        message = "failed to create attachment storage: " + IOError.message(e)
+      )
+    )
   }
   var stored: slice[CloudAgents.Repository.Attachment] = []
   var writtenPaths: slice[String] = []
@@ -935,10 +1043,17 @@ pub func storeAttachments(sessionId: in String, inputs: in slice[AttachmentInput
     }
     writtenPaths = writtenPaths.append(path)
     match CloudAgents.Repository.createAttachment(sessionId, v.fileName, storedName, v.mimeType, kind, toString(v.sizeBytes)) {
-      case Ok(a) -> { stored = stored.append(a) }
+      case Ok(a) -> {
+        stored = stored.append(a)
+      }
       case Err(e) -> {
         cleanupPartialAttachmentBatch(stored, writtenPaths)
-        return Err(value = StoreAttachmentsError(code = 500, message = "failed to record attachment: " + CloudAgents.Sqlite.dbErrorMessage(e)))
+        return Err(
+          value = StoreAttachmentsError(
+            code = 500,
+            message = "failed to record attachment: " + CloudAgents.Sqlite.dbErrorMessage(e)
+          )
+        )
       }
     }
     j = j + 1
@@ -963,7 +1078,10 @@ pub func storeAttachments(sessionId: in String, inputs: in slice[AttachmentInput
 /// mechanism directly — storeAttachments' own pass-2 loop has no test hook to
 /// force a genuine mid-batch I/O/DB failure the way validation failures can
 /// be forced, the same reason promptExceedsMaxLength above is pub+pure.
-pub func cleanupPartialAttachmentBatch(stored: in slice[CloudAgents.Repository.Attachment], writtenPaths: in slice[String]): Unit {
+pub func cleanupPartialAttachmentBatch(
+  stored: in slice[CloudAgents.Repository.Attachment],
+  writtenPaths: in slice[String],
+): Unit {
   var i = 0
   while i < stored.length {
     val _ = CloudAgents.Repository.deleteAttachment(stored[i].id)
@@ -1108,7 +1226,12 @@ pub func downloadAttachmentHandler(id: in String, aid: in String): Result[Web.Re
 /// the transport changed. An error BEFORE the first chunk becomes a real
 /// 4xx/5xx via writeStreamError; a failure once streaming has begun is surfaced
 /// as an error line in the stream, since status/headers are already committed.
-pub func streamSendMessage(id: in String, text: in String, attachments: in slice[AttachmentInput], w: in Web.ResponseWriter): Unit {
+pub func streamSendMessage(
+  id: in String,
+  text: in String,
+  attachments: in slice[AttachmentInput],
+  w: in Web.ResponseWriter,
+): Unit {
   if id.length == 0 {
     writeStreamError(w, 400, "id is required")
     return ()
@@ -1172,7 +1295,10 @@ pub func streamSendMessage(id: in String, text: in String, attachments: in slice
       defer {
         match CloudAgents.SessionStore.endRun(id) {
           case Ok(_) -> ()
-          case Err(e) -> println("WARNING: failed to release run claim for session " + id + " (stays RUNNING until recovery): " + CloudAgents.Sqlite.dbErrorMessage(e))
+          case Err(e) -> println(
+            "WARNING: failed to release run claim for session " + id + " (stays RUNNING until recovery): " +
+              CloudAgents.Sqlite.dbErrorMessage(e)
+          )
         }
       }
 
@@ -1263,6 +1389,9 @@ pub func streamSendMessage(id: in String, text: in String, attachments: in slice
           if runId.length > 0 {
             val _ = CloudAgents.Repository.recordRunEnd(runId, userId, "succeeded")
             val _ = CloudAgents.Repository.enqueueWebhookEvent(userId, id, runId, "succeeded")
+            // Session ledger observer (docs/session-ledger.md §10): queue an
+            // end-of-run pass if this session is observed. Best-effort.
+            CloudAgents.Ledger.Observer.onRunFinished(id)
           }
           // Persist the agent reply and close the stream with a done frame that
           // carries the message id (so the client can anchor comments/todos).
@@ -1277,7 +1406,10 @@ pub func streamSendMessage(id: in String, text: in String, attachments: in slice
               if CloudAgents.Interactions.planIngestEnabled() {
                 match CloudAgents.Interactions.ingestAgentPlan(id, m.id, logs) {
                   case Ok(_) -> ()
-                  case Err(e) -> println("WARNING: agent-plan ingestion failed for session " + id + ": " + CloudAgents.Sqlite.dbErrorMessage(e))
+                  case Err(e) -> println(
+                    "WARNING: agent-plan ingestion failed for session " + id + ": " +
+                      CloudAgents.Sqlite.dbErrorMessage(e)
+                  )
                 }
               }
               val _ = Web.writeChunk(w, CloudAgents.Streaming.sseDoneWithMessage(m.id))
@@ -1292,6 +1424,9 @@ pub func streamSendMessage(id: in String, text: in String, attachments: in slice
           if runId.length > 0 {
             val _ = CloudAgents.Repository.recordRunEnd(runId, userId, "failed")
             val _ = CloudAgents.Repository.enqueueWebhookEvent(userId, id, runId, "failed")
+            // Session ledger observer (docs/session-ledger.md §10): queue an
+            // end-of-run pass if this session is observed. Best-effort.
+            CloudAgents.Ledger.Observer.onRunFinished(id)
           }
           // Status/headers are already committed (200 sent at the first chunk),
           // so the failure can't be an HTTP status. Emit a distinct `event:
@@ -1368,6 +1503,9 @@ pub func cancelRun(id: in String): Result[Unit, Web.ApiError] {
           // (#252), but only with a real run id (#258).
           if runId.length > 0 {
             val _ = CloudAgents.Repository.enqueueWebhookEvent(userId, id, runId, "cancelled")
+            // Session ledger observer (docs/session-ledger.md §10): queue an
+            // end-of-run pass if this session is observed. Best-effort.
+            CloudAgents.Ledger.Observer.onRunFinished(id)
           }
           return Ok(())
         }
@@ -1429,7 +1567,6 @@ pub func reapContainers(): Result[String, Web.ApiError] {
 // offset/nextSeq/lastHash hash-chain cursor streamSessionMessage's poll loop
 // and getRunOutputFrom already use — a call only re-parses the log bytes
 // APPENDED since the last call for this session, not the whole log again.
-
 /// Cached render state for one session's getRunOutput reconnect path:
 /// `offset` is the raw container-log byte offset already rendered,
 /// `nextSeq`/`lastHash` are the NDJSON hash-chain cursor at that offset (as
@@ -1461,7 +1598,12 @@ pub func advanceRunOutputCache(prev: in RunOutputCacheEntry, logs: in String): R
   val total = logs.length.toInt()
   if total < prev.offset {
     val rd = CloudAgents.Capture.Render.renderLogDelta(logs, 0, 0.toLong(), "", false)
-    return RunOutputCacheEntry(offset = rd.consumed, nextSeq = rd.nextSeq, lastHash = rd.lastHash, rendered = rd.displayText)
+    return RunOutputCacheEntry(
+      offset = rd.consumed,
+      nextSeq = rd.nextSeq,
+      lastHash = rd.lastHash,
+      rendered = rd.displayText
+    )
   }
   if total == prev.offset {
     return prev
@@ -1493,7 +1635,6 @@ pub func advanceRunOutputCache(prev: in RunOutputCacheEntry, logs: in String): R
 protected type RunOutputCache {
   var ids: slice[String] = []
   var entries: slice[RunOutputCacheEntry] = []
-
   entry slotOf(id: in String): Int {
     var i = 0
     while i < ids.length {
@@ -1504,7 +1645,6 @@ protected type RunOutputCache {
     }
     return -1
   }
-
   entry get(id: in String): RunOutputCacheEntry {
     val idx = slotOf(id)
     if idx >= 0 {
@@ -1512,7 +1652,6 @@ protected type RunOutputCache {
     }
     return RunOutputCacheEntry(offset = 0, nextSeq = 0.toLong(), lastHash = "", rendered = "")
   }
-
   entry put(id: in String, e: in RunOutputCacheEntry): Unit {
     val idx = slotOf(id)
     if idx < 0 {
@@ -1532,7 +1671,6 @@ protected type RunOutputCache {
     }
     entries = nextEntries
   }
-
   entry evict(id: in String): Unit {
     val idx = slotOf(id)
     if idx < 0 {
@@ -1621,8 +1759,13 @@ pub func getRunOutput(id: in String): Result[String, Web.ApiError] {
         // (endRun's defer, ingestAgentPlan, addMessage in streamSendMessage).
         var lastOutput = ""
         match CloudAgents.Repository.listMessages(id) {
-          case Ok(msgs) -> { lastOutput = lastAgentMessageContent(msgs) }
-          case Err(e) -> println("WARNING: failed to load transcript for output fallback, session " + id + ": " + CloudAgents.Sqlite.dbErrorMessage(e))
+          case Ok(msgs) -> {
+            lastOutput = lastAgentMessageContent(msgs)
+          }
+          case Err(e) -> println(
+            "WARNING: failed to load transcript for output fallback, session " + id + ": " +
+              CloudAgents.Sqlite.dbErrorMessage(e)
+          )
         }
         return Ok(value = "{\"running\":\"false\",\"output\":\"" + CloudAgents.Streaming.jsonEscape(lastOutput) + "\"}")
       }
@@ -1647,7 +1790,11 @@ pub func getRunOutput(id: in String): Result[String, Web.ApiError] {
       runOutputCache.put(id, updated)
       // `length` is the raw log byte length — the cursor the incremental
       // /output/{offset} endpoint advances against.
-      return Ok(value = "{\"running\":\"true\",\"length\":\"" + toString(logs.length.toInt()) + "\",\"output\":\"" + CloudAgents.Streaming.jsonEscape(updated.rendered) + "\"}")
+      return Ok(
+        value = "{\"running\":\"true\",\"length\":\"" + toString(logs.length.toInt()) + "\",\"output\":\"" +
+          CloudAgents.Streaming.jsonEscape(updated.rendered) +
+          "\"}"
+      )
     }
   }
 }
@@ -1813,6 +1960,29 @@ pub func getRunOutputFrom(id: in String, offsetStr: in String): Result[String, W
 }
 
 /// Stop and tear down container and associated session synchronously.
+func removeObserverOf(observedId: in String): Unit {
+  val st = match CloudAgents.Ledger.Store.observerState(observedId) {
+    case Ok(s) -> s
+    case Err(e) -> {
+      println("WARNING: reading the observer of " + observedId + " failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+      return ()
+    }
+  }
+  if st.observerSessionId.length > 0 {
+    match CloudAgents.Ledger.Store.sessionRunFacts(st.observerSessionId) {
+      case Ok(Some(f)) -> {
+        if f.containerId.length > 0 {
+          val _ = CloudAgents.Docker.terminateSessionContainer(f.containerId)
+        }
+      }
+      case _ -> ()
+    }
+    val _ = CloudAgents.Docker.deleteWorkspaceVolume(CloudAgents.Auth.currentUserId(), st.observerSessionId)
+    val _ = CloudAgents.Ledger.Store.deleteObserverSessionRow(st.observerSessionId)
+  }
+  val _ = CloudAgents.Ledger.Store.deleteObserverState(observedId)
+}
+
 pub func deleteSession(id: in String): Result[Unit, Web.ApiError] {
   if id.length == 0 {
     return Err(Web.badRequest("id is required"))
@@ -1837,7 +2007,9 @@ pub func deleteSession(id: in String): Result[Unit, Web.ApiError] {
         case Err(e) -> return Err(Web.internalError("status lookup failed: " + CloudAgents.Sqlite.dbErrorMessage(e)))
       }
       match status {
-        case Some(s) -> if s == "RUNNING" { return Err(Web.conflict("a run is in progress; cancel it before deleting the session")) }
+        case Some(s) -> if s == "RUNNING" {
+          return Err(Web.conflict("a run is in progress; cancel it before deleting the session"))
+        }
         case None -> ()
       }
       val containerId = session.containerId
@@ -1853,6 +2025,10 @@ pub func deleteSession(id: in String): Result[Unit, Web.ApiError] {
       // only reachable through this now-deleted session, so a failure here is
       // harmless bookkeeping, not a blocker for the delete).
       val _ = CloudAgents.Repository.deleteSessionReposForSession(id)
+      // Its ledger observer (docs/session-ledger.md §10), if it has one, goes
+      // with it: container, volume, session row and state. Best-effort, like
+      // the linked repos above: nothing can reach an orphaned observer.
+      removeObserverOf(id)
       // We already fetched and existence-checked the session above, so delete
       // the row directly rather than via removeSession (which would re-read it)
       // — avoids a redundant second lookup (#172).
@@ -1934,7 +2110,10 @@ pub func updateSessionModel(id: in String, req: in UpdateSessionRequest): Result
   }
   match maybeSession {
     case None -> return Err(Web.notFound("Session not found"))
-    case Some(_) -> match CloudAgents.SessionStore.updateSessionModel(id, req.model) { case Ok(_) -> return Ok(()); case Err(e) -> return Err(Web.internalError("failed to update model: " + CloudAgents.Sqlite.dbErrorMessage(e))) }
+    case Some(_) -> match CloudAgents.SessionStore.updateSessionModel(id, req.model) {
+      case Ok(_) -> return Ok(())
+      case Err(e) -> return Err(Web.internalError("failed to update model: " + CloudAgents.Sqlite.dbErrorMessage(e)))
+    }
   }
 }
 
@@ -1948,7 +2127,10 @@ pub func archiveSession(id: in String): Result[Unit, Web.ApiError] {
   }
   match maybeSession {
     case None -> return Err(Web.notFound("Session not found"))
-    case Some(_) -> match CloudAgents.SessionStore.updateSessionArchived(id, "1") { case Ok(_) -> return Ok(()); case Err(e) -> return Err(Web.internalError("failed to archive session: " + CloudAgents.Sqlite.dbErrorMessage(e))) }
+    case Some(_) -> match CloudAgents.SessionStore.updateSessionArchived(id, "1") {
+      case Ok(_) -> return Ok(())
+      case Err(e) -> return Err(Web.internalError("failed to archive session: " + CloudAgents.Sqlite.dbErrorMessage(e)))
+    }
   }
 }
 
@@ -1962,7 +2144,10 @@ pub func unarchiveSession(id: in String): Result[Unit, Web.ApiError] {
   }
   match maybeSession {
     case None -> return Err(Web.notFound("Session not found"))
-    case Some(_) -> match CloudAgents.SessionStore.updateSessionArchived(id, "0") { case Ok(_) -> return Ok(()); case Err(e) -> return Err(Web.internalError("failed to unarchive session: " + CloudAgents.Sqlite.dbErrorMessage(e))) }
+    case Some(_) -> match CloudAgents.SessionStore.updateSessionArchived(id, "0") {
+      case Ok(_) -> return Ok(())
+      case Err(e) -> return Err(Web.internalError("failed to unarchive session: " + CloudAgents.Sqlite.dbErrorMessage(e)))
+    }
   }
 }
 

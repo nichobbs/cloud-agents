@@ -145,6 +145,55 @@ pub func ledgerGithubSyncRunsSchemaSql(): String {
     "lease_until TEXT NOT NULL)"
 }
 
+/// Session ledger Phase 4 (the observer, docs/session-ledger.md §10): the
+/// observation columns on entries, the per-session observer state, the
+/// per-profile settings, and the link from an observer session to the session
+/// it observes (`sessions.observes_session_id`, "" for every other session).
+pub func ledgerObserverMigrationSql(): slice[String] {
+  return [
+    "ALTER TABLE ledger_entries ADD COLUMN observed_from TEXT NOT NULL DEFAULT ''",
+    "ALTER TABLE ledger_entries ADD COLUMN confidence TEXT NOT NULL DEFAULT ''",
+    "ALTER TABLE ledger_entries ADD COLUMN evidence TEXT NOT NULL DEFAULT ''",
+    "ALTER TABLE ledger_entries ADD COLUMN provisional TEXT NOT NULL DEFAULT ''",
+    ledgerObserverSchemaSql(),
+    ledgerObserverSettingsSchemaSql(),
+    "ALTER TABLE sessions ADD COLUMN observes_session_id TEXT NOT NULL DEFAULT ''"
+  ]
+}
+
+/// A profile's observer settings (CloudAgents.Ledger.ObserverPolicy): a
+/// session is observed iff its profile has a row here with enabled = 'true'.
+pub func ledgerObserverSettingsSchemaSql(): String {
+  return "CREATE TABLE IF NOT EXISTS ledger_observer_settings (" + "profile_id TEXT PRIMARY KEY, " +
+    "enabled TEXT NOT NULL, " +
+    "harness TEXT NOT NULL, " +
+    "model TEXT NOT NULL, " +
+    "repo_access TEXT NOT NULL, " +
+    "mid_run_minutes TEXT NOT NULL, " +
+    "max_passes_per_day TEXT NOT NULL, " +
+    "updated_at TEXT NOT NULL)"
+}
+
+/// One row per observed session. `observer_session_id` is the long-lived
+/// session the observer runs in; `cursor_seq` is the last captured event it
+/// has reported on (it owns nothing else, so a fresh observer resumes here);
+/// `pending` is "1" when a pass was asked for while one was running;
+/// `pass_day`/`passes_today` enforce the profile's daily cap; `last_pass_at`
+/// paces mid-run passes; `config_hash` restarts the observer when the
+/// profile's observer settings change.
+pub func ledgerObserverSchemaSql(): String {
+  return "CREATE TABLE IF NOT EXISTS ledger_observer (" + "session_id TEXT PRIMARY KEY, " +
+    "observer_session_id TEXT NOT NULL, " +
+    "cursor_seq TEXT NOT NULL, " +
+    "window_end TEXT NOT NULL, " +
+    "pending TEXT NOT NULL, " +
+    "pass_day TEXT NOT NULL, " +
+    "passes_today TEXT NOT NULL, " +
+    "last_pass_at TEXT NOT NULL, " +
+    "config_hash TEXT NOT NULL, " +
+    "last_error TEXT NOT NULL)"
+}
+
 /// The ledger tools the in-container shim registers (shim/src/main.l —
 /// kept in sync by hand, as CloudAgents.Profiles.validShimToolNames is).
 pub func ledgerToolNames(): slice[String] {

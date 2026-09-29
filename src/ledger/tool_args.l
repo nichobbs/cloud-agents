@@ -16,6 +16,7 @@ package CloudAgents.Ledger.ToolArgs
 import Std.Core
 import Std.Json
 import CloudAgents.Ledger.Service
+import CloudAgents.Ledger.Reconcile
 
 val kindObject = 1
 
@@ -359,6 +360,99 @@ pub func decodeNote(json: in String): Result[NoteRequest, String] {
       item = itemArg,
       tags = tagsArg,
       files = filesArg
+    )
+  )
+}
+
+/// The most candidates one observer report may carry.
+pub val maxReportCandidates: Int = 50
+
+/// observer_report: `{candidates: [...]}`, each candidate an object with
+/// kind, summary, detail, item, seqStart, seqEnd, tags, files, reversible,
+/// confidence, evidence. Numbers are accepted where text is expected, and a
+/// candidates array sent as a JSON string is unwrapped. Field values are
+/// validated by the caller; this only fixes the shape.
+pub func decodeObserverReport(json: in String): Result[slice[Candidate], String] {
+  val doc = withRoot(json)?
+  defer {
+    Std.Json.disposeJson(doc)
+  }
+  val root = Std.Json.rootElement(doc)
+  match propOf(root, "candidates") {
+    case None -> {
+      val none: slice[Candidate] = []
+      return Ok(value = none)
+    }
+    case Some(el) -> {
+      if kindOf(el) == kindNull {
+        val none: slice[Candidate] = []
+        return Ok(value = none)
+      }
+      if kindOf(el) == kindString {
+        val inner = safeGetString(el).trim()
+        if inner.length.toInt() == 0 {
+          val none: slice[Candidate] = []
+          return Ok(value = none)
+        }
+        return decodeObserverReport("{\"candidates\":" + inner + "}")
+      }
+      if kindOf(el) != kindArray {
+        return Err(error = "'candidates' must be an array of objects")
+      }
+      return candidatesOf(el)
+    }
+  }
+}
+
+func candidatesOf(arr: in JsonElement): Result[slice[Candidate], String] {
+  var acc: slice[Candidate] = []
+  var cur = Std.Json.enumerateArray(arr)
+  var n = 0
+  while Std.Json.arrayMoveNext(cur) {
+    val c = Std.Json.arrayCurrent(cur)
+    n = n + 1
+    if n > maxReportCandidates {
+      return Err(error = "at most " + toString(maxReportCandidates) + " candidates per report")
+    }
+    if kindOf(c) != kindObject {
+      return Err(error = "candidates[" + toString(n - 1) + "] must be an object")
+    }
+    val cand = candidateOf(c)
+    match cand {
+      case Ok(x) -> {
+        acc = acc.append(x)
+      }
+      case Err(e) -> return Err(error = "candidates[" + toString(n - 1) + "]: " + e)
+    }
+  }
+  return Ok(value = acc)
+}
+
+func candidateOf(c: in JsonElement): Result[Candidate, String] {
+  val kind = str(c, "kind")?
+  val summary = str(c, "summary")?
+  val detail = str(c, "detail")?
+  val item = str(c, "item")?
+  val seqStart = str(c, "seqStart")?
+  val seqEnd = str(c, "seqEnd")?
+  val tags = strList(c, "tags")?
+  val files = strList(c, "files")?
+  val reversible = boolText(c, "reversible")?
+  val confidence = str(c, "confidence")?
+  val evidence = str(c, "evidence")?
+  return Ok(
+    value = Candidate(
+      kind = kind.trim(),
+      summary = summary,
+      detail = detail,
+      itemId = item.trim(),
+      seqStart = seqStart.trim(),
+      seqEnd = seqEnd.trim(),
+      tags = tags,
+      files = files,
+      reversible = reversible,
+      confidence = confidence.trim(),
+      evidence = evidence
     )
   )
 }
