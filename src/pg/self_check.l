@@ -110,7 +110,12 @@ pub func check(conn: in DbConnection): Result[Unit, String] {
   val have = match one(conn, "SELECT coalesce(max(version), '') AS v FROM public.schema_migrations") {
     case Ok(Some(r)) -> Db.dbGetString(r, "v")
     case Ok(None) -> ""
-    case Err(_) -> ""
+    case Err(e) -> return Err(
+      error = "cannot read public.schema_migrations (" + e + "); run CloudAgents.dll --migrate with " +
+        CloudAgents.Pg.migrateDsnVar() +
+        " set, and check the service role's grants" +
+        provisionHint()
+    )
   }
   if have != want {
     return Err(
