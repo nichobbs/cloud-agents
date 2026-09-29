@@ -2,7 +2,7 @@ package CloudAgents.Auth
 
 import Std.Core
 import CloudAgents.Crypto
-import CloudAgents.Pg
+import CloudAgents.Scope
 import CloudAgents.Text
 import extern System.String as DotNetString
 
@@ -252,8 +252,8 @@ pub func setCurrentUserId(userId: in String): Unit {
 /// request's own thread. Everything downstream receives the returned value
 /// explicitly. Until organisations ship (spec §9 slice F) the scope is the
 /// user's personal tenant.
-pub func requestScope(): CloudAgents.Pg.TenantScope {
-  return CloudAgents.Pg.personalScope(currentUserId())
+pub func requestScope(): CloudAgents.Scope.TenantScope {
+  return CloudAgents.Scope.personalScope(currentUserId())
 }
 
 pub func currentUserId(): String {
