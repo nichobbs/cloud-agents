@@ -324,13 +324,16 @@ deployable after each):
    production instance, then its driver is deleted rather than kept as a
    second backend.
 2. The `runs` table, the runner agent and the internal runner protocol,
-   co-located with the API on today's VM. Moving run ownership out of the
+   co-located with the API on today's VM, authenticated with a single
+   runner credential held as a deployment secret. Moving run ownership out of the
    API process means API deploys stop dropping runs, before any
    multi-host work.
 3. Object storage for attachments and artifacts; credentials materialised
    per run.
 4. Split runner hosts from the API tier; run N API instances behind a load
-   balancer, with session placement and `WORKSPACE_LOST` handling.
+   balancer, with session placement and `WORKSPACE_LOST` handling. This
+   phase also closes open question 2 (per-host credential issuance and
+   rotation).
 5. Fail-closed auth ships no later than the first multi-tenant deployment;
    it can land at any point before then.
 
@@ -354,7 +357,10 @@ deployable after each):
    session survives host loss with its uncommitted changes? This costs
    storage and adds latency to every run end.
 2. Runner-host credential issuance and rotation, and whether to bind
-   credentials to host identity (e.g. mTLS).
+   credentials to host identity (e.g. mTLS). Phase 2 needs only one
+   credential for the single co-located agent, supplied as a deployment
+   secret. The per-host scheme must be decided and implemented in phase 4,
+   before any second runner host is added.
 3. Should output reach the UI by DB polling, or by Postgres `LISTEN/NOTIFY`
    fan-out to the SSE stream? Polling is enough to start with.
 4. Does the tenant equal the GitHub user (today's model), or is an
