@@ -17,6 +17,7 @@ import CloudAgents.LedgerHandlers
 import CloudAgents.Library
 import CloudAgents.OAuth
 import CloudAgents.OpenPr
+import CloudAgents.Pg.Startup
 import CloudAgents.Profiles
 import CloudAgents.Prompts
 import CloudAgents.Proxy
@@ -2008,6 +2009,23 @@ impl Web.Handler for RouteOAuthRefresh {
 // only worked so far because .NET codegen doesn't yet enforce that across
 // assembly boundaries — see nichobbs/cloud-agents#397.
 pub func main(): Unit {
+  // `--migrate` applies the Postgres schema (docs/phase11-postgres-tenancy.md
+  // §8) and exits without serving or touching SQLite.
+  if hasFlag(parseCommandLine(Env.get_CommandLine()), "--migrate") {
+    Env.Exit(CloudAgents.Pg.Startup.runMigrateCommand())
+    return
+  }
+  // Refuse to serve under a Postgres role that could bypass row-level
+  // security (spec §5.1). A no-op until LYRIC_CONFIG_DB_CONNECTION_URL is set.
+  match CloudAgents.Pg.Startup.checkServiceRole() {
+    case Ok(_) -> ()
+    case Err(m) -> {
+      println("FATAL: Postgres self-check failed: " + m)
+      Env.Exit(1)
+      return
+    }
+  }
+
   // Ensure the SQLite tables (transcript/comments/todos/prompts/sessions)
   // exist before serving.
   match CloudAgents.Repository.initSchema() {
@@ -2412,6 +2430,18 @@ pub func isValidPort(s: in String): Bool {
     i = i + 1
   }
   return n >= 1 and n <= 65535
+}
+
+/// Whether `flag` appears among the command-line arguments (after argv[0]).
+func hasFlag(args: in StringArray, flag: in String): Bool {
+  var idx = 1
+  while idx < getStringArrayLength(args) {
+    if getStringArrayValue(args, idx) == flag {
+      return true
+    }
+    idx = idx + 1
+  }
+  return false
 }
 
 pub func parseCommandLine(cmdLine: in String): StringArray {

@@ -393,6 +393,31 @@ CI's "Run lyric test" step does exactly this. Without it the live-DB tests
 fail with `The type initializer for 'Microsoft.Data.Sqlite.SqliteConnection'
 threw an exception` while every non-DB suite still passes.
 
+**The live Postgres suite** (`tests/pg_live_tests.l`, phase 11) runs only
+when both Postgres DSNs are set, and otherwise records a visible skip. To run
+it locally against Postgres 16+ (needed for `GRANT ... WITH INHERIT FALSE` in
+the provisioning script):
+
+```sh
+psql -U postgres -v ON_ERROR_STOP=1 -v owner_password="'owner'" \
+  -v app_password="'app'" -v migrator_password="'migrator'" \
+  -f deploy/postgres/provision.sql
+export CLOUD_AGENTS_MIGRATE_DATABASE_URL=postgres://cloudagents_owner:owner@127.0.0.1:5432/cloudagents
+export LYRIC_CONFIG_DB_CONNECTION_URL=postgres://cloudagents_app:app@127.0.0.1:5432/cloudagents
+dotnet bin/CloudAgents.dll --migrate
+lyric test
+```
+
+The suite must run as `cloudagents_app`: `FORCE ROW LEVEL SECURITY` does not
+bind a superuser or a `BYPASSRLS` role, so isolation tests under one would
+pass vacuously (its self-check test fails the suite if so). CI's "Provision
+and migrate Postgres" step does the same against a `postgres:16` service.
+
+One unrelated suite can fail in a sandbox with an intercepting egress proxy:
+`OAuthTests`' "refreshOAuthToken returns refreshed token" sends an unknown
+token to `api.github.com/user` and expects GitHub's 401; a proxy that
+answers that request itself changes the result. It passes in CI.
+
 ## Compiler notes
 
 **Seven independent upstream compiler bugs blocked this project's

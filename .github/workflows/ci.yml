@@ -16,6 +16,24 @@ jobs:
     name: Build & verify
     if: github.event.pull_request.draft == false
     runs-on: ubuntu-latest
+    # Postgres for the phase 11 live suite (tests/pg_live_tests.l,
+    # docs/phase11-postgres-tenancy.md). The image's POSTGRES_USER is a
+    # superuser, which FORCE ROW LEVEL SECURITY does not bind, so it is used
+    # only to run deploy/postgres/provision.sql; the migration runs as
+    # cloudagents_owner and the tests as cloudagents_app.
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
     steps:
       - name: Checkout
         uses: actions/checkout@v6
@@ -403,7 +421,29 @@ jobs:
       # needs the native libe_sqlite3.so, which the test runner does not
       # resolve from the NuGet cache on its own. build-full.sh (above) already
       # copied the native runtimes to bin/runtimes — expose them to dlopen.
+      # Provision the Postgres roles exactly as an operator would
+      # (deploy/postgres/provision.sql) and apply the schema with the real
+      # `--migrate` entry point, as cloudagents_owner.
+      - name: Provision and migrate Postgres
+        env:
+          PGPASSWORD: postgres
+          CLOUD_AGENTS_MIGRATE_DATABASE_URL: postgres://cloudagents_owner:owner-ci@127.0.0.1:5432/cloudagents
+        run: |
+          psql -h 127.0.0.1 -U postgres -v ON_ERROR_STOP=1 \
+            -v owner_password="'owner-ci'" -v app_password="'app-ci'" -v migrator_password="'migrator-ci'" \
+            -f deploy/postgres/provision.sql
+          if [ -d "$PWD/bin/runtimes/linux-x64/native" ]; then
+            export LD_LIBRARY_PATH="$PWD/bin/runtimes/linux-x64/native:${LD_LIBRARY_PATH:-}"
+          fi
+          dotnet bin/CloudAgents.dll --migrate
+
+      # LYRIC_CONFIG_DB_CONNECTION_URL (cloudagents_app) and
+      # CLOUD_AGENTS_MIGRATE_DATABASE_URL (cloudagents_owner) enable the live
+      # Postgres suite; without them it skips visibly.
       - name: Run lyric test
+        env:
+          LYRIC_CONFIG_DB_CONNECTION_URL: postgres://cloudagents_app:app-ci@127.0.0.1:5432/cloudagents
+          CLOUD_AGENTS_MIGRATE_DATABASE_URL: postgres://cloudagents_owner:owner-ci@127.0.0.1:5432/cloudagents
         run: |
           if [ -d "$PWD/bin/runtimes/linux-x64/native" ]; then
             export LD_LIBRARY_PATH="$PWD/bin/runtimes/linux-x64/native:${LD_LIBRARY_PATH:-}"
