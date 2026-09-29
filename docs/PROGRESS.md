@@ -222,11 +222,11 @@ in a follow-up commit alongside two real review findings (an unvalidated
 branch name reaching raw GitHub API URLs, and two wasted API calls on the
 already-on-default-branch path) — see §6 of the phase doc for detail.
 
-## Phase 11 — Postgres and organisation tenancy ⬜ spec
+## Phase 11 — Postgres and organisation tenancy 🟡 started
 
 | Deliverable | Status | Where |
 |-------------|--------|-------|
-| Spec (ADR-008 phase 1) | 🟡 in review | `docs/phase11-postgres-tenancy.md` |
+| Spec (ADR-008 phase 1) | ✅ merged (#1140) | `docs/phase11-postgres-tenancy.md` |
 | Slices A-F (foundations, tenancy core, store port, organisations, export, cut-over) | ⬜ not started | see spec §9 |
 
 ## Session ledger ✅ phases 1–4 complete

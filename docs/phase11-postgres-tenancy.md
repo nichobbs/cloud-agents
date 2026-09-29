@@ -1,6 +1,6 @@
 # Phase 11: Postgres and organisation tenancy (ADR-008 phase 1)
 
-Status: spec, awaiting review. No implementation yet.
+Status: spec approved (merged in #1140); implementation in progress, slice by slice (§9).
 
 Implements phase 1 of ADR-008 (`docs/architecture-decisions.md`): move the
 store from SQLite to a dedicated Postgres instance behind the existing
@@ -155,8 +155,12 @@ data (sign-in, membership sync) sets `app.current_user` alone, via a
 `TenantScope` (§5.2). Harness credentials used by a run are the run
 creator's own. A tenant-owned `profile_credentials` row may reference only
 the profile creator's own credential ids; this is checked on write.
-`user_sync_state` additionally carries the claimer policies of §5.3 so that
-membership sync can be claimed across users.
+`user_sync_state` is also claimable (§5.3): besides its per-user policy it
+has the two claimer policies (`FOR SELECT` and `FOR UPDATE TO
+cloudagents_claimer USING (true)`). Postgres combines permissive policies
+with OR per role, and the per-user policy never matches for the claimer
+role (it has no `app.current_user`), so the claimer sees every row while
+the service role still sees only the calling user's row.
 
 ### 4.4 Message search
 
@@ -234,7 +238,8 @@ SECURITY` applies to the table owner too, so a function running as the
 owner would see no rows. Instead they are owned by `cloudagents_claimer`, a
 `NOLOGIN` role that can only be reached through these functions. It has no
 `BYPASSRLS`; each claimable table (`scheduled_jobs`,
-`graph_ingest_outbox`, the observer and ledger-sync queues, `runs`) gets
+`graph_ingest_outbox`, the observer and ledger-sync queues, `runs`, and the
+user-owned `user_sync_state` of §4.3a) gets
 two extra policies, `FOR SELECT TO cloudagents_claimer USING (true)` and
 `FOR UPDATE TO cloudagents_claimer USING (true)` (both are needed for
 `SELECT ... FOR UPDATE`), plus only the column privileges the claim needs. Every other table stays
@@ -496,10 +501,11 @@ Postgres-only data.
 - After slice E, no SQLite code or package remains, and `grep -r sqlLiteral
   src` is empty.
 
-## 11. Open questions
+## 11. Resolved questions (owner, 2026-09-29)
 
-1. Should organisation admins be able to see all sessions in their
-   organisation (audit use) in this phase, or is creator-only visibility
-   (§5.4) enough until sharing is designed?
-2. FTS5 to `tsvector` search differences (§4.4): acceptable to document
-   rather than match exactly?
+1. Visibility within an organisation stays creator-only (§5.4) for this
+   phase. Organisation admins get no extra read access; sharing and audit
+   views are a later product decision.
+2. Search differences between FTS5 and Postgres `tsvector` search (§4.4)
+   are documented rather than matched exactly, in the search-slice PR and in
+   `docs/phase9-message-search.md`.
