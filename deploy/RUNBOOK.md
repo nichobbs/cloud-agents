@@ -137,16 +137,27 @@ Before this layout, the database, artifacts and attachments defaulted to
 paths inside the api container (`/app/cloud-agents.db`,
 `/app/cloud-agents-artifacts`, `/app/cloud-agents-attachments`) and were
 discarded on every redeploy. To keep the state of the currently running
-container, copy it out BEFORE deploying the new compose file:
+container, copy it out BEFORE deploying the new compose file. Stop the api
+first so nothing writes while you copy (a copy of a live WAL database can be
+torn); `docker cp` works on a stopped container. Do not remove the container
+until the copy has been verified:
 
 ```sh
+docker compose stop api
+API=$(docker compose ps -a -q api)
 sudo mkdir -p /var/lib/cloud-agents
-docker compose exec api sh -c 'cd /app && tar cf - cloud-agents.db* cloud-agents-artifacts cloud-agents-attachments 2>/dev/null' \
-    | sudo tar xf - -C /var/lib/cloud-agents
-cd /var/lib/cloud-agents
-sudo mv cloud-agents-artifacts artifacts 2>/dev/null || true
-sudo mv cloud-agents-attachments attachments 2>/dev/null || true
+for f in cloud-agents.db cloud-agents.db-wal cloud-agents.db-shm; do
+    sudo docker cp "$API:/app/$f" /var/lib/cloud-agents/ || echo "no $f (fine for -wal/-shm)"
+done
+sudo docker cp "$API:/app/cloud-agents-artifacts" /var/lib/cloud-agents/artifacts || true
+sudo docker cp "$API:/app/cloud-agents-attachments" /var/lib/cloud-agents/attachments || true
+# Must print "ok"; if it does not, or cloud-agents.db was not copied, stop here.
+docker run --rm -v /var/lib/cloud-agents:/data alpine sh -c \
+    'apk add --no-cache sqlite >/dev/null && sqlite3 /data/cloud-agents.db "PRAGMA integrity_check"'
 ```
+
+Then deploy the new compose file. The artifacts/attachments copies fail
+harmlessly when a deployment never stored any.
 
 Artifact and attachment rows store only file names; their directories are
 derived from `CLOUD_AGENTS_ARTIFACTS_DIR`/`CLOUD_AGENTS_ATTACHMENTS_DIR` at
