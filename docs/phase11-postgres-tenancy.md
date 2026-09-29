@@ -156,17 +156,39 @@ listed in the PR and in `docs/phase9-message-search.md`.
   active organisation from the `X-CloudAgents-Org` header, defaulting to
   the user's personal organisation. The organisation is accepted only if a
   `memberships` row exists for that user; otherwise `403`.
-- Scoping is per unit of work, not per request: each repository operation
-  (or explicit multi-statement unit) runs as `BEGIN; SELECT
-  set_config('app.current_tenant', @p0, true); SELECT
-  set_config('app.current_user', @p1, true); ...; COMMIT` on one pooled
-  connection. Transaction-local settings cannot leak to the next borrower
-  of a pooled connection. Long-lived handlers (the SSE output stream and
-  its poll loop) therefore never hold a transaction open between ticks.
-- Tenant and user are read from the thread-scoped request context
-  (extending today's `CloudAgents.Auth.currentUserId` slot); repository
-  function signatures stay unchanged, so handler code does not change in
-  this phase.
+- **Explicit scope, never ambient.** The middleware produces a
+  `TenantScope` value (`tenantId`, `userId`), and it is passed as an explicit
+  parameter to every repository and ledger-store function that touches
+  tenant-owned data. It is not stored in, or read from, the thread-local
+  slot that `CloudAgents.Auth.currentUserId` uses today. That slot is lost
+  or wrong once an `await` resumes on another thread (async handlers, the
+  SSE poll loop, `docker_manager.l`'s async paths), and it falls back to the
+  operator identity when unset. Both properties would defeat the fail-closed
+  guarantee.
+- **No default tenant.** `TenantScope` has no default and no fallback. It is
+  constructed in exactly four places: the auth middleware (from a validated
+  membership), the callback-token resolver (from `session_routes`), the
+  maintenance claim functions (§5.3, per claimed item), and the export tool
+  (§7). Token/open mode resolves the `default` user's personal tenant
+  explicitly in the middleware, not as a fallback. A scope with an empty
+  tenant or user id is rejected by the store layer with an error before any
+  SQL runs.
+- Handler call sites change to pass the scope through. This happens once,
+  in slice B (§9), against the existing SQLite-backed repository, so the
+  thread-slot dependency is removed before any Postgres code is live.
+- **Per unit of work.** Each repository operation (or explicit
+  multi-statement unit) runs on one pooled connection inside a
+  `Lyric.Db` transaction (`conn.transaction()`, then `tx.execute`/`tx.query`,
+  then `commit`): `SELECT set_config('app.current_tenant', @p0, true),
+  set_config('app.current_user', @p1, true)`, the operation's statements,
+  then COMMIT. This is the pattern Testamur's `Server.Tenant` already runs
+  against live Postgres. Transaction-local settings cannot leak to the next
+  borrower of a pooled connection, and long-lived handlers (the SSE output
+  stream and its poll loop) never hold a transaction open between ticks.
+- **Cost.** Each unit adds the `set_config` statement to its transaction (one
+  extra statement, same connection, no extra connection checkout). Hot
+  paths with several reads (e.g. a session page load) group them into one
+  unit rather than paying it per query.
 
 ### 5.3 Cross-tenant background work
 
@@ -176,7 +198,15 @@ without a bypass role: a small set of `SECURITY DEFINER` claim functions,
 owned by `cloudagents_owner`, each return `(tenant_id, id)` pairs for due
 items using `FOR UPDATE SKIP LOCKED`. All subsequent work on a claimed item
 runs tenant-scoped as in §5.2. The claim functions are the only
-cross-tenant read path and are reviewed as such.
+cross-tenant read path and are reviewed as such. Each one:
+
+- is declared with `SET search_path = pg_catalog, pg_temp` and uses
+  schema-qualified table names, so a caller cannot redirect it through an
+  object on its own search path;
+- has `EXECUTE` revoked from `PUBLIC` and granted to `cloudagents_app` only;
+- returns only `(tenant_id, id)` and a bounded number of rows (a `limit`
+  argument with a hard maximum), never row content;
+- takes no argument that is interpolated into SQL.
 
 ### 5.4 Visibility rule
 
@@ -271,23 +301,35 @@ until slice F.
 - **A. Foundations.** `Lyric.Db` + `Npgsql` dependencies, Postgres
   connection, migration runner and `--migrate`, baseline schema with
   global tables, RLS and roles, role self-check at startup, CI Postgres
-  service, and the two-tenant isolation live suite. Not wired into request
+  service, and the two-tenant isolation live suite. It also includes a live
+  test that the §5.2 unit-of-work pattern works through `Lyric.Db` on one
+  pooled connection: `set_config` inside a transaction is visible to later
+  statements in that transaction and gone after COMMIT on the same pooled
+  connection. If that test cannot pass, slice A stops and the design is
+  revisited before any store code is ported. Not wired into request
   handling yet.
-- **B. Tenancy core.** Request scoping (§5.2), personal organisations,
-  `X-CloudAgents-Org` resolution, `SECURITY DEFINER` claim functions.
+- **B. Tenancy core.** `TenantScope` (§5.2) added to every repository and
+  ledger-store function and passed from every handler, still backed by
+  SQLite (which uses `scope.userId` where it used `currentUserId()`, so
+  behaviour is unchanged). Personal organisations, `X-CloudAgents-Org`
+  resolution, and the `SECURITY DEFINER` claim functions (Postgres-side,
+  live-tested only).
 - **C. Store port.** Port the repository and ledger store to parameterised
   Postgres queries, one domain per PR (sessions and messages; profiles and
   library; jobs, webhooks and maintenance; ledger; capture and outbox;
-  search). Behind the unchanged repository API; each ported domain has live
-  Postgres tests. While slices are in flight the service still runs on
-  SQLite in production; ported code is exercised by CI only.
+  search). Each domain gets a Postgres implementation of the same
+  scope-taking signatures from slice B, in a parallel package, with live
+  Postgres tests. Handlers keep calling the SQLite-backed repository, so
+  production is unaffected; ported code is exercised by CI only.
 - **D. Organisations.** GitHub sync with `read:org`, native organisations,
   invitations, `/api/orgs`, frontend switcher and settings.
 - **E. Export tool** (§7) with a test that exports a fixture SQLite database
   containing every table and verifies counts and typed values.
-- **F. Cut-over.** Runbook and compose changes, production migration, then
+- **F. Cut-over.** Point the repository facade at the Postgres
+  implementations, runbook and compose changes, production migration, then
   deletion of `CloudAgents.Sqlite`, the SQLite SQL builders and the SQLite
-  NuGet packages in the same PR.
+  NuGet packages in the same PR. Because signatures were settled in slice B,
+  this switch touches no handler code.
 
 ## 10. Acceptance criteria
 
@@ -298,6 +340,13 @@ until slice F.
 - A query issued without a tenant scope returns no rows.
 - The service refuses to start under an owner, superuser or `BYPASSRLS`
   role.
+- A store call with an empty `TenantScope` fails with an error before
+  issuing SQL, and a store call made from an async continuation (after an
+  `await` that may resume on another thread) uses exactly the scope it was
+  passed.
+- Each claim function has `EXECUTE` revoked from `PUBLIC`, a fixed
+  `search_path`, and returns only `(tenant_id, id)` (checked by a live test
+  that queries `pg_proc` and calls it as a role without the grant).
 - The export of a fixture database reproduces every row with matching
   counts and typed values, and aborts with a precise error on a malformed
   value.
