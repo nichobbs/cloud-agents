@@ -245,16 +245,29 @@ couples everything to one host:
      After an agent restart it resumes from the last acknowledged `seq` by
      re-reading the container log.
 
+   Runner hosts authenticate with mTLS client certificates issued by an
+   internal CA, bound to the host's identity, short-lived and rotated
+   automatically, so a stolen credential expires on its own and one host
+   cannot act as another. Phase 2's single shared credential is the interim
+   until this lands in phase 4.
+
    Runner hosts never receive Postgres credentials. They execute
    attacker-influenced code (ADR-007), so a compromised host must not be able
    to read or write other tenants' rows. The API is the only schema owner and
    the only writer.
 3. **Session placement.** A session is pinned to the runner host that holds
    its workspace volume (`sessions.runner_host_id`); follow-up runs are only
-   offered to that host. If the host is lost, the session moves to a
-   `WORKSPACE_LOST` state. The user can re-attach it to a new host, which
-   re-clones the repo; uncommitted workspace changes are lost. Snapshotting
-   workspaces to object storage is deferred (open question 1).
+   offered to that host. After each run finishes, the runner agent
+   snapshots the workspace volume (compressed tar) to object storage under
+   the tenant's prefix, keyed by session and run. The snapshot is taken
+   after the run is reported finished, so it is off the user's critical
+   path. Snapshots are encrypted at rest (workspaces can hold secrets), the
+   latest few per session are retained, and they are deleted with the
+   session. If the host is lost, the session is restored on another host
+   from its latest snapshot; changes made since that snapshot (i.e. during
+   an in-flight run) are lost. The session moves to `WORKSPACE_LOST` only
+   when no snapshot exists; the user can then re-attach it to a new host,
+   which re-clones the repo.
 4. **Run lifecycle in Postgres.** A `runs` table carries the state machine
    (`queued -> claimed -> running -> finished | failed | lost`), a lease
    expiry and the owning host. Claims use `SELECT ... FOR UPDATE SKIP
@@ -292,7 +305,23 @@ couples everything to one host:
    `SKIP LOCKED` (or a Postgres advisory lock for whole-pass jobs), so any
    number of concurrent callers is safe. Container reaping moves into the
    runner agent, which knows its own containers.
-10. **Fail-closed auth** (CAPABILITY_AUDIT WP3) is a precondition for the
+10. **Tenant = organisation.** The RLS `tenant_id` is an organisation id,
+    not a user id.
+    - `tenants` and `memberships(tenant_id, user_id, role)` tables, with
+      roles `owner`, `admin` and `member`. A user may belong to several
+      organisations.
+    - The active organisation is selected per request and validated against
+      the caller's memberships before `app.current_tenant` is set; it is
+      never taken from the request unchecked.
+    - Sessions, profiles, jobs, ledger entries and capture data belong to
+      the organisation and record their creator. Which members can see a
+      given session is an API-level product rule on top of RLS.
+    - User-scoped secrets (harness credentials, GitHub tokens) carry both
+      `tenant_id` and `user_id` and stay readable only by their owner, even
+      within the organisation (ADR-006's write-only vault is unchanged).
+    - Existing users each become the single owner of a personal
+      organisation during the phase 1 export, so personal use keeps working.
+11. **Fail-closed auth** (CAPABILITY_AUDIT WP3) is a precondition for the
     multi-tenant deployment. Unauthenticated mode becomes an explicit
     single-node opt-in.
 
@@ -319,7 +348,7 @@ deployable after each):
 
 0. Persist state across deploys (#1135). Done.
 1. Postgres behind the repository seam, still single-node: typed schema,
-   `tenant_id` + RLS, a one-shot SQLite-to-Postgres export tool, and live-PG
+   organisation tenants and memberships, `tenant_id` + RLS, a one-shot SQLite-to-Postgres export tool, and live-PG
    CI suites. SQLite remains only until the export has been run on the
    production instance, then its driver is deleted rather than kept as a
    second backend.
@@ -328,12 +357,12 @@ deployable after each):
    runner credential held as a deployment secret. Moving run ownership out of the
    API process means API deploys stop dropping runs, before any
    multi-host work.
-3. Object storage for attachments and artifacts; credentials materialised
-   per run.
+3. Object storage for attachments, artifacts and workspace snapshots;
+   credentials materialised per run.
 4. Split runner hosts from the API tier; run N API instances behind a load
-   balancer, with session placement and `WORKSPACE_LOST` handling. This
-   phase also closes open question 2 (per-host credential issuance and
-   rotation).
+   balancer, with session placement, restore-from-snapshot and
+   `WORKSPACE_LOST` handling, and mTLS runner-host credentials replacing the
+   phase 2 shared credential.
 5. Fail-closed auth ships no later than the first multi-tenant deployment;
    it can land at any point before then.
 
@@ -345,24 +374,35 @@ deployable after each):
 - Tenant isolation is enforced by the database, not by naming conventions.
 - New operational surface: a Postgres instance (backups, PITR, upgrades), an
   object store, runner-host provisioning and per-host credentials.
+- Workspace snapshots add object-storage cost proportional to workspace
+  size times retained snapshots, and a background upload after every run.
+- Organisation tenancy adds membership management and an active-organisation
+  selector to the UI and API.
 - `ENCRYPTION_KEY` must be identical across API instances; it moves to the
   deployment's secret manager.
 - The run path gains a network hop (runner agent to API) for event
   batches. Event ordering and idempotency rest on the existing hash-chained
   `(session_id, seq)` capture model.
 
+**Resolved questions** (owner decisions, 2026-09-29):
+
+1. Workspaces are snapshotted to object storage at run end, so a session
+   survives host loss (decision 3).
+2. Runner-host credentials are bound to host identity via mTLS, issued and
+   rotated automatically (decision 2, phase 4).
+3. Tenants are organisations with members, not individual GitHub users
+   (decision 10).
+
 **Open questions**:
 
-1. Should workspaces be snapshotted to object storage at run end, so a
-   session survives host loss with its uncommitted changes? This costs
-   storage and adds latency to every run end.
-2. Runner-host credential issuance and rotation, and whether to bind
-   credentials to host identity (e.g. mTLS). Phase 2 needs only one
-   credential for the single co-located agent, supplied as a deployment
-   secret. The per-host scheme must be decided and implemented in phase 4,
-   before any second runner host is added.
-3. Should output reach the UI by DB polling, or by Postgres `LISTEN/NOTIFY`
-   fan-out to the SSE stream? Polling is enough to start with.
-4. Does the tenant equal the GitHub user (today's model), or is an
-   organisation/team tenant with members needed before the first
-   multi-tenant deployment?
+1. Should output reach the UI by DB polling, or by Postgres `LISTEN/NOTIFY`
+   fan-out to the SSE stream? Current plan: start with polling, using the
+   same indexed after-`seq` cursor query that
+   `GET /api/sessions/{id}/events` already uses, behind a small reader
+   interface. Move to `LISTEN/NOTIFY` only if polling load is measurably a
+   problem, and only once `Lyric.Db` supports notifications on a dedicated
+   connection (unverified today).
+2. Where does organisation membership come from: GitHub organisation
+   membership synced at sign-in, cloud-agents-native organisations with
+   invitations, or both? This must be settled before the phase 1 schema is
+   final.
