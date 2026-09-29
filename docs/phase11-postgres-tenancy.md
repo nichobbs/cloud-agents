@@ -101,7 +101,7 @@ Non-goals (later phases or explicitly deferred):
   accepts. With it, an unscoped query fails closed: reads return no rows
   (NULL never equals anything) and inserts fail the `NOT NULL`/`CHECK`
   constraints. The same `NULLIF` form is used for `app.current_user` in
-  §4.3.
+  §4.3a.
 - Foreign keys include `tenant_id`, so a row can never reference another
   tenant's row.
 
