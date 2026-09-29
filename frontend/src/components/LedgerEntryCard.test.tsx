@@ -88,4 +88,35 @@ describe('LedgerEntryCard', () => {
     expect(errors.mock.calls.some(c => String(c[0]).includes('same key'))).toBe(false);
     errors.mockRestore();
   });
+
+  it('marks observed and provisional entries with chips', () => {
+    const e = entry({ id: 'o', source: 'observed', provisional: 'true', undeclared: 'true' });
+    render(card(e, false));
+    expect(screen.getByText('observed')).toBeInTheDocument();
+    expect(screen.getByText('provisional')).toBeInTheDocument();
+    expect(screen.getByText('undeclared')).toBeInTheDocument();
+  });
+
+  it('shows no observer chips on a declared entry', () => {
+    render(card(entry({ id: 'd' }), false));
+    expect(screen.queryByText('observed')).not.toBeInTheDocument();
+    expect(screen.queryByText('provisional')).not.toBeInTheDocument();
+  });
+
+  it('shows confidence, evidence and the match note in the details', async () => {
+    const e = entry({
+      id: 'o',
+      source: 'observed',
+      confidence: '0.95',
+      evidence: 'I will just skip the flaky test',
+      matchedEntryId: 'short',
+    });
+    vi.mocked(api.getLedgerEntry).mockResolvedValue(detailOf(e, []));
+    render(card(e, false));
+    expect(screen.queryByText('provisional')).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Details' }));
+    expect(await screen.findByText('Confidence: 95%')).toBeInTheDocument();
+    expect(screen.getByText('I will just skip the flaky test')).toBeInTheDocument();
+    expect(screen.getByText('Matches an entry the agent recorded.')).toBeInTheDocument();
+  });
 });

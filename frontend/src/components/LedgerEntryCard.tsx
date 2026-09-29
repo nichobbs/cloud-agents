@@ -110,6 +110,12 @@ export function LedgerEntryCard({ sessionId, entry, feedback, reviewable, onRevi
         {entry.severity !== 'info' && (
           <span style={{ ...chipStyle, color: severityColor, borderColor: severityColor }}>{entry.severity}</span>
         )}
+        {entry.source === 'observed' && (
+          <span style={{ ...chipStyle, color: '#a371f7', borderColor: '#a371f7' }}>observed</span>
+        )}
+        {entry.source === 'observed' && entry.provisional === 'true' && (
+          <span style={{ ...chipStyle, color: '#d29922', borderColor: '#d29922' }}>provisional</span>
+        )}
         {entry.undeclared === 'true' && <span style={{ ...chipStyle, color: '#f85149', borderColor: '#f85149' }}>undeclared</span>}
         {entry.itemId &&
           (itemUrl ? (
@@ -216,8 +222,14 @@ export function LedgerEntryCard({ sessionId, entry, feedback, reviewable, onRevi
 
 function EntryDetailBody({ detail }: { detail: EntryDetail }) {
   const e = detail.ledgerEntry;
+  const confidence = Number(e.confidence);
   return (
     <>
+      {e.source === 'observed' && e.confidence !== '' && Number.isFinite(confidence) && (
+        <div style={mutedStyle}>Confidence: {Math.round(confidence * 100)}%</div>
+      )}
+      {e.source === 'observed' && e.evidence && <blockquote style={quoteStyle}>{e.evidence}</blockquote>}
+      {e.matchedEntryId && <div style={mutedStyle}>Matches an entry the agent recorded.</div>}
       {e.detail && <div style={bodyTextStyle}>{e.detail}</div>}
       {e.optionsConsidered.length > 0 && (
         <>
@@ -335,4 +347,13 @@ const excerptStyle: React.CSSProperties = {
   border: '1px solid #21262d',
   borderRadius: '6px',
   padding: '6px 8px',
+};
+
+const quoteStyle: React.CSSProperties = {
+  ...bodyTextStyle,
+  fontSize: '12px',
+  margin: 0,
+  color: '#8b949e',
+  borderLeft: '3px solid #30363d',
+  paddingLeft: '8px',
 };

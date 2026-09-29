@@ -1,6 +1,7 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { api } from '../lib/api';
 import { enabledHarnesses } from '../lib/harnessAvailability';
+import type { ObserverSettings } from '../lib/ledger';
 import type { McpServer, Profile, Skill, Subagent } from '../types';
 
 /// Harness ids offered by this form. Kept in sync by hand with the `<option>`
@@ -9,6 +10,31 @@ import type { McpServer, Profile, Skill, Subagent } from '../types';
 /// isValidProfileHarness), or a profile pinned to an id not offered here
 /// can't be re-selected after editing.
 const PROFILE_HARNESS_IDS = ['claude', 'codex', 'opencode', 'gemini'];
+
+/// Harnesses the observer can run on (a superset of PROFILE_HARNESS_IDS).
+const OBSERVER_HARNESS_IDS = ['claude', 'codex', 'opencode', 'gemini', 'antigravity'];
+
+const REPO_ACCESS_OPTIONS: Array<[string, string]> = [
+  ['none', 'Transcript only'],
+  ['diff', 'Transcript + workspace diff'],
+  ['workspace', 'Transcript + read-only workspace'],
+];
+
+const MID_RUN_OPTIONS: Array<[string, string]> = [
+  ['0', 'End of run only'],
+  ['15', 'Every 15 min'],
+  ['30', 'Every 30 min'],
+  ['60', 'Every 60 min'],
+];
+
+const DEFAULT_OBSERVER: ObserverSettings = {
+  enabled: 'false',
+  harness: 'claude',
+  model: '',
+  repoAccess: 'diff',
+  midRunMinutes: '15',
+  maxPassesPerDay: '48',
+};
 
 /// The shim's MCP callback tools a 'selected'-mode profile can enable
 /// (CloudAgents.ToolPolicy / docs/phase7-autonomy.md §7, docs/phase8-
@@ -68,6 +94,9 @@ export function Profiles() {
   const [mcpServerGrants, setMcpServerGrants] = useState<string[]>([]);
   const [toolMode, setToolMode] = useState('all');
   const [tools, setTools] = useState<string[]>([]);
+  const editingIdRef = useRef<string | null>(null);
+  const [observer, setObserver] = useState<ObserverSettings>(DEFAULT_OBSERVER);
+  const [observerLoading, setObserverLoading] = useState(false);
   const [enabledHarnessIds, setEnabledHarnessIds] = useState<Set<string> | null>(null);
 
   // Which harnesses actually have a runner image on this deployment (#523).
@@ -110,6 +139,7 @@ export function Profiles() {
   }, []);
 
   const clearForm = () => {
+    editingIdRef.current = null;
     setEditingId(null);
     setName('');
     setHarness('');
@@ -121,9 +151,12 @@ export function Profiles() {
     setMcpServerGrants([]);
     setToolMode('all');
     setTools([]);
+    setObserver(DEFAULT_OBSERVER);
+    setObserverLoading(false);
   };
 
   const startEdit = (p: Profile) => {
+    editingIdRef.current = p.id;
     setEditingId(p.id);
     setName(p.name);
     setHarness(p.harness);
@@ -135,6 +168,21 @@ export function Profiles() {
     setMcpServerGrants(p.mcpServerIds);
     setToolMode(p.toolMode ?? 'all');
     setTools(p.tools ?? []);
+    setObserver(DEFAULT_OBSERVER);
+    setObserverLoading(true);
+    api
+      .getObserverSettings(p.id)
+      .then(o => {
+        if (editingIdRef.current === p.id) setObserver(o);
+      })
+      .catch(err => {
+        if (editingIdRef.current === p.id) {
+          setError(err instanceof Error ? err.message : 'Failed to load observer settings');
+        }
+      })
+      .finally(() => {
+        if (editingIdRef.current === p.id) setObserverLoading(false);
+      });
   };
 
   const toggleGrant = (grantName: string) => {
@@ -150,7 +198,7 @@ export function Profiles() {
   const toggleTool = toggleIn(setTools);
 
   const save = async () => {
-    if (!name.trim() || saving) return;
+    if (!name.trim() || saving || observerLoading) return;
     // Mirror the backend's rule for toolMode 'selected' (#616): an empty
     // allowlist collapses to "no restriction" in the shim, which is the
     // opposite of what someone deselecting every tool expects.
@@ -173,10 +221,22 @@ export function Profiles() {
       tools: toolMode === 'selected' ? tools : [],
     };
     try {
-      if (editingId) {
-        await api.updateProfile(editingId, payload);
+      let profileId = editingId;
+      if (profileId) {
+        await api.updateProfile(profileId, payload);
       } else {
-        await api.addProfile(payload);
+        profileId = (await api.addProfile(payload)).id;
+      }
+      try {
+        await api.saveObserverSettings(profileId, observer);
+      } catch (err) {
+        // The profile itself is saved; stay on it in edit mode so a retry
+        // updates it rather than creating a duplicate.
+        editingIdRef.current = profileId;
+        setEditingId(profileId);
+        await reload();
+        setError(err instanceof Error ? err.message : 'Failed to save observer settings');
+        return;
       }
       clearForm();
       await reload();
@@ -379,11 +439,97 @@ export function Profiles() {
           )}
         </div>
 
+        <div style={grantsBoxStyle}>
+          <label style={{ display: 'flex', alignItems: 'center', gap: '8px', ...labelStyle }}>
+            <input
+              type="checkbox"
+              checked={observer.enabled === 'true'}
+              disabled={observerLoading}
+              onChange={e => setObserver(o => ({ ...o, enabled: e.target.checked ? 'true' : 'false' }))}
+            />
+            Observe sessions using this profile
+          </label>
+          <div style={hintStyle}>
+            The observer is a separate agent that flags work the agent didn't record in the ledger. It uses this
+            profile's credentials and only reads.
+          </div>
+          {observer.enabled === 'true' && (
+            <>
+              <div style={rowFieldsStyle}>
+                <label style={fieldStyle}>
+                  <span style={labelStyle}>Observer harness</span>
+                  <select
+                    style={selectStyle}
+                    value={observer.harness}
+                    onChange={e => setObserver(o => ({ ...o, harness: e.target.value }))}
+                  >
+                    {OBSERVER_HARNESS_IDS.map(id => (
+                      <option key={id} value={id}>
+                        {id}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                <label style={fieldStyle}>
+                  <span style={labelStyle}>Observer model</span>
+                  <input
+                    style={inputStyle}
+                    placeholder="harness default"
+                    value={observer.model}
+                    onChange={e => setObserver(o => ({ ...o, model: e.target.value }))}
+                  />
+                </label>
+              </div>
+              <div style={rowFieldsStyle}>
+                <label style={fieldStyle}>
+                  <span style={labelStyle}>Repo access</span>
+                  <select
+                    style={selectStyle}
+                    value={observer.repoAccess}
+                    onChange={e => setObserver(o => ({ ...o, repoAccess: e.target.value }))}
+                  >
+                    {REPO_ACCESS_OPTIONS.map(([v, l]) => (
+                      <option key={v} value={v}>
+                        {l}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                <label style={fieldStyle}>
+                  <span style={labelStyle}>Mid-run passes</span>
+                  <select
+                    style={selectStyle}
+                    value={observer.midRunMinutes}
+                    onChange={e => setObserver(o => ({ ...o, midRunMinutes: e.target.value }))}
+                  >
+                    {MID_RUN_OPTIONS.map(([v, l]) => (
+                      <option key={v} value={v}>
+                        {l}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                <label style={fieldStyle}>
+                  <span style={labelStyle}>Max passes per day</span>
+                  <input
+                    style={inputStyle}
+                    type="number"
+                    min={1}
+                    max={500}
+                    value={observer.maxPassesPerDay}
+                    onChange={e => setObserver(o => ({ ...o, maxPassesPerDay: e.target.value }))}
+                  />
+                </label>
+              </div>
+            </>
+          )}
+        </div>
+
         <div style={{ display: 'flex', gap: '8px' }}>
           <button
             style={{ ...saveBtnStyle, opacity: name.trim() && !saving ? 1 : 0.5 }}
             onClick={() => { void save(); }}
-            disabled={!name.trim() || saving}
+            disabled={!name.trim() || saving || observerLoading}
           >
             {saving ? 'Saving…' : editingId ? 'Update profile' : 'Create profile'}
           </button>
