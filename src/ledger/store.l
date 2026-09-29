@@ -1031,7 +1031,9 @@ pub func observerSettingsFor(profileId: in String): Result[Option[ObserverSettin
   if profileId.length.toInt() == 0 {
     return Ok(value = None)
   }
-  val rows = CloudAgents.Sqlite.query("SELECT enabled, harness, model, repo_access, mid_run_minutes, max_passes_per_day FROM ledger_observer_settings WHERE profile_id = " + lit(profileId))?
+  // Joined to profiles: settings outlive a deleted profile's row, and a session
+  // left pointing at a deleted profile must not stay observed.
+  val rows = CloudAgents.Sqlite.query("SELECT s.enabled, s.harness, s.model, s.repo_access, s.mid_run_minutes, s.max_passes_per_day FROM ledger_observer_settings s JOIN profiles p ON p.id = s.profile_id WHERE s.profile_id = " + lit(profileId))?
   if CloudAgents.Sqlite.getRowArrayLength(rows) == 0 {
     return Ok(value = None)
   }
@@ -1139,7 +1141,7 @@ pub record ObserverRunInfo {
 /// The observer facts for a session about to run, or None for any session that
 /// isn't an observer.
 pub func observerRunInfo(sessionId: in String): Result[Option[ObserverRunInfo], CloudAgents.Sqlite.DbError] {
-  val rows = CloudAgents.Sqlite.query("SELECT o.session_id, COALESCE(st.repo_access, 'none') FROM ledger_observer o JOIN sessions t ON t.id = o.session_id LEFT JOIN ledger_observer_settings st ON st.profile_id = t.profile_id WHERE o.observer_session_id = " + lit(sessionId) + " AND o.observer_session_id != ''")?
+  val rows = CloudAgents.Sqlite.query("SELECT o.session_id, COALESCE(st.repo_access, 'none') FROM ledger_observer o JOIN sessions t ON t.id = o.session_id LEFT JOIN ledger_observer_settings st ON st.profile_id = t.profile_id AND st.profile_id IN (SELECT id FROM profiles) WHERE o.observer_session_id = " + lit(sessionId) + " AND o.observer_session_id != ''")?
   if CloudAgents.Sqlite.getRowArrayLength(rows) == 0 {
     return Ok(value = None)
   }

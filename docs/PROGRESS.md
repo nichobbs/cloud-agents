@@ -221,7 +221,7 @@ in a follow-up commit alongside two real review findings (an unvalidated
 branch name reaching raw GitHub API URLs, and two wasted API calls on the
 already-on-default-branch path) — see §6 of the phase doc for detail.
 
-## Session ledger 🟡 phases 1–3 complete
+## Session ledger ✅ phases 1–4 complete
 
 | Deliverable | Status | Where |
 |-------------|--------|-------|
@@ -232,10 +232,10 @@ already-on-default-branch path) — see §6 of the phase doc for detail.
 | Eight `ledger_*` shim tools; agent todo / follow-up tools retired | ✅ added | `shim/src/ledger_tools.l`, `docker/session-tools-guide.md`, Codex prompt prefix |
 | Next-run feedback nudge; ledger reviews in session attention | ✅ added | `nextRunPromptPrefix` (sessions + jobs), `sessionSummariesJson` |
 | PWA: ledger panel, entry detail, inbox, review actions, review badge | ✅ added | `frontend/src/components/Ledger*.tsx`, `frontend/src/pages/Inbox.tsx` |
-| Tests | ✅ added | `tests/ledger_{core,store,service,sync}_tests.l`, `shim/tests/ledger_tools_tests.l`, `frontend/src/**/Ledger*.test.tsx`, `Inbox.test.tsx`, `lib/ledger.test.ts` |
+| Tests | ✅ added | `tests/ledger_{core,store,service,sync,observer}_tests.l`, `tests/observer_handlers_tests.l`, `shim/tests/ledger_tools_tests.l`, `frontend/src/**/Ledger*.test.tsx`, `Inbox.test.tsx`, `lib/ledger.test.ts` |
 | Review follow-ups (#1061–#1064, #1066–#1074): glob boundaries, policy caps and tag checks, 404 vs no-access, cheap polls with SQL summaries, newest-first truncation, url and nudge fixes, clearer shim failures, five-copy tool-list CI check, UI polling fixes | ✅ added | same packages; forced-race retry, owner scoping on every human route, blocker notification and no-arguments MCP calls now tested (unit and e2e) |
 | Phase 3 GitHub reconciliation: `agent:*` labels, one blocker comment per item edited in place, merged PRs finish items, closed issues unblock, label changes on GitHub requeue; operator-polled `POST /api/maintenance/ledger-sync` + owner `POST /api/sessions/{id}/ledger/sync` and a panel button | ✅ added | `CloudAgents.Ledger.{GitHubSync,GitHubPort,Sync}`, migration `0038_ledger_github_sync`, `tests/ledger_sync_tests.l` (in-memory GitHub fake), `docs/session-ledger.md` §9 |
-| Phase 4 observer | ⬜ not started | designed in `docs/session-ledger.md` §10 |
+| Phase 4 observer: a hidden agent session per observed session, on the harness/model/repo access the profile chooses, reads transcript windows and reports undeclared decisions/deviations/shortcuts/blockers; a deterministic core drops, dedups, matches to declared entries or stores undeclared (raised to review), provisional mid-run findings are matched retroactively; end-of-run and mid-run triggers, `POST /api/maintenance/observe`, Observe now, daily cap, narrowed observer container | ✅ added | `CloudAgents.Ledger.{Reconcile,ObserverWindow,ObserverPolicy,Observer}`, `CloudAgents.ObserverHandlers`/`ObserverDocker`, migration `0039_ledger_observer`, shim `observer_*` tools, entrypoints' observer mode, `tests/ledger_observer_tests.l` (fixture acceptance), `tests/observer_handlers_tests.l` (fake runner), `docs/session-ledger.md` §10 |
 
 See `docs/session-ledger.md` for the design, the recon of how the source spec
 (written for a Cloudflare Workers stack) maps onto this repo, and the

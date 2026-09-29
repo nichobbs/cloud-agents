@@ -198,7 +198,15 @@ name list in sync across `shim/src/ledger_tools.l`, `shim/tests/config_tests.l`,
 `CloudAgents.Ledger.Sync` runs a budgeted pass through the `GitHubPort`
 interface (tested against an in-memory fake), triggered by the operator-polled
 `POST /api/maintenance/ledger-sync` or the owner's per-session sync. The
-observer (§10) is designed but not built.
+observer (§10) is built: a profile can enable a hidden observer agent session
+(its own harness/model, repo access none/diff/workspace) that reads transcript
+windows through `observer_get_window` and proposes undeclared entries through
+`observer_report`; `CloudAgents.Ledger.Reconcile` (pure) decides what is kept.
+Passes are queued at run end and mid-run and run from the operator-polled
+`POST /api/maintenance/observe`; `CloudAgents.ObserverHandlers` holds the pass
+logic behind an `ObserverRunner` interface (`CloudAgents.ObserverDocker` is the
+real one). The observer tools are not profile-grantable and stay out of the
+tool-name sync list.
 
 ## Provenance capture (Testamur §4.1 / ADR-0004; audit WP4)
 

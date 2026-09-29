@@ -1455,6 +1455,16 @@ impl Web.Handler for RouteObserveNow {
   }
 }
 
+record RouteObserverStatus {
+}
+
+impl Web.Handler for RouteObserverStatus {
+  func handle(req: in Web.Request): Web.Response {
+    val r = CloudAgents.ObserverHandlers.observerStatusHandler(pparam(req, "id"))
+    return ledgerJsonResp(match r { case Ok(v) -> Ok(value = v.toJson()); case Err(e) -> Err(error = e) })
+  }
+}
+
 record RouteObserverMaintenance {
 }
 
@@ -2248,6 +2258,7 @@ pub func main(): Unit {
   router = Web.addGet(router, "/api/ledger/inbox", RouteLedgerInbox())
   router = Web.addPost(router, "/api/sessions/{id}/ledger/sync", RouteLedgerSessionSync())
   router = Web.addPost(router, "/api/sessions/{id}/ledger/observe", RouteObserveNow())
+  router = Web.addGet(router, "/api/sessions/{id}/ledger/observer", RouteObserverStatus())
   router = Web.addPost(router, "/api/sessions/{id}/callbacks/observer/{op}", RouteObserverCallback())
   router = Web.addPost(router, "/api/maintenance/observe", RouteObserverMaintenance())
   router = Web.addPost(router, "/api/maintenance/ledger-sync", RouteLedgerSync())

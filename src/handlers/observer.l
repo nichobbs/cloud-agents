@@ -211,6 +211,67 @@ pub func observeNowHandler(sessionId: in String): Result[ObserveQueued, Web.ApiE
   }
 }
 
+/// What `GET /api/sessions/{id}/ledger/observer` returns: whether the
+/// session is observed, and what its observer last did. `lastPassAt` is epoch
+/// millis ("" before the first pass); `lastError` is "" after a clean pass.
+@generate(Json)
+pub record ObserverStatus {
+  pub enabled: String
+  pub harness: String
+  pub model: String
+  pub repoAccess: String
+  pub pending: String
+  pub lastPassAt: String
+  pub lastError: String
+  pub passesToday: String
+  pub maxPassesPerDay: String
+}
+
+pub func observerStatusHandler(sessionId: in String): Result[ObserverStatus, Web.ApiError] {
+  val facts = match sessionRunFacts(sessionId) {
+    case Ok(Some(f)) -> f
+    case Ok(None) -> return Err(Web.notFound("Session not found"))
+    case Err(e) -> return Err(dbError(e))
+  }
+  if facts.userId != CloudAgents.Auth.currentUserId() {
+    return Err(Web.notFound("Session not found"))
+  }
+  val settings = match observerSettingsForSession(sessionId) {
+    case Ok(Some(s)) -> s
+    case Ok(None) -> {
+      val off = disabledObserverSettings()
+      return Ok(
+        value = ObserverStatus(
+          enabled = "false",
+          harness = off.harness,
+          model = "",
+          repoAccess = off.repoAccess,
+          pending = "0",
+          lastPassAt = "",
+          lastError = "",
+          passesToday = "0",
+          maxPassesPerDay = off.maxPassesPerDay
+        )
+      )
+    }
+    case Err(e) -> return Err(dbError(e))
+  }
+  val st = match observerState(sessionId) { case Ok(s) -> s; case Err(e) -> return Err(dbError(e)) }
+  return Ok(
+    value = ObserverStatus(
+      enabled = "true",
+      harness = settings.harness,
+      model = settings.model,
+      repoAccess = settings.repoAccess,
+      pending = st.pending,
+      lastPassAt = st.lastPassAt,
+      lastError = st.lastError,
+      passesToday = toString(passesToday(st.passDay, st.passesToday, CloudAgents.Repository.nowMillisLong())),
+      maxPassesPerDay = settings.maxPassesPerDay
+    )
+  )
+}
+
 // ── Passes ────────────────────────────────────────────────────────────────────
 /// What one maintenance call did.
 @generate(Json)

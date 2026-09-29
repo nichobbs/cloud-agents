@@ -334,6 +334,18 @@ test "the owner can ask for a pass; nobody else can" {
     case Err(e) -> assertTrue(false, e.message)
   }
   assertEqual(stateOf("s1").pending, "1", "pending")
+  match observerStatusHandler("s1") {
+    case Ok(st) -> {
+      assertEqual(st.enabled, "true", "observed")
+      assertEqual(st.pending, "1", "a pass is queued")
+      assertEqual(st.model, "claude-haiku-4-5", "the observer's model")
+    }
+    case Err(e) -> assertTrue(false, e.message)
+  }
+  match observerStatusHandler("s2") {
+    case Ok(st) -> assertEqual(st.enabled, "false", "not observed")
+    case Err(e) -> assertTrue(false, e.message)
+  }
   match observeNowHandler("s2") {
     case Ok(_) -> assertTrue(false, "a session without an observer can't be observed")
     case Err(e) -> assertEqualInt(e.status, 400, "400")
@@ -341,6 +353,10 @@ test "the owner can ask for a pass; nobody else can" {
   CloudAgents.Auth.setCurrentUserId("bob")
   match observeNowHandler("s1") {
     case Ok(_) -> assertTrue(false, "not bob's session")
+    case Err(e) -> assertEqualInt(e.status, 404, "404")
+  }
+  match observerStatusHandler("s1") {
+    case Ok(_) -> assertTrue(false, "nor bob's to inspect")
     case Err(e) -> assertEqualInt(e.status, 404, "404")
   }
 }
@@ -554,4 +570,17 @@ test "observer callbacks need the observer's own token" {
     case Ok(_) -> assertTrue(false, "only window and report exist")
     case Err(e) -> assertEqualInt(e.status, 404, "404")
   }
+}
+
+test "a session whose profile was deleted is no longer observed" {
+  val path = useFreshTestDb("obs-noprofile")
+  defer {
+    cleanupTestDb(path)
+  }
+  seedProfile("p1", "alice")
+  enable("p1", settings("true", "workspace", "10"))
+  seedSession("s1", "p1", "IDLE")
+  exec("DELETE FROM profiles WHERE id = 'p1'")
+  onRunFinished("s1")
+  assertEqual(stateOf("s1").pending, "0", "no pass for a deleted profile")
 }

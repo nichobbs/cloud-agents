@@ -332,6 +332,20 @@ assert "ledger sync is owner-scoped"   POST "/api/sessions/${SEEDED_SESSION_ID}/
 assert "ledger sync needs GitHub"      POST "/api/sessions/${LEDGER_SESSION_ID}/ledger/sync"  yes 400 "reconnect GitHub"
 assert "ledger maintenance sync"       POST "/api/maintenance/ledger-sync"                    yes 200 "reconnect GitHub"
 assert "ledger maintenance sync auth"  POST "/api/maintenance/ledger-sync"                    no  401 ""
+# Observer (Phase 4): this session's profile has no observer, so it reports
+# disabled and refuses Observe now; the sweep runs (nothing due); a callback
+# with a non-observer session's own token is refused as not an observer.
+assert "observer status (not observed)" GET  "/api/sessions/${LEDGER_SESSION_ID}/ledger/observer" yes 200 '"enabled":"false"'
+assert "observe now needs an observer"  POST "/api/sessions/${LEDGER_SESSION_ID}/ledger/observe"  yes 400 "no observer"
+assert "observer status is owner-scoped" GET "/api/sessions/${SEEDED_SESSION_ID}/ledger/observer" yes 404 "Session"
+assert "observer maintenance sweep"     POST "/api/maintenance/observe"                        yes 200 '"passes":"0"'
+assert "observer maintenance auth"      POST "/api/maintenance/observe"                        no  401 ""
+OBS_CODE="$(curl -sS --connect-timeout 5 --max-time 20 -o /dev/null -w '%{http_code}' -X POST -H "Authorization: Bearer ${LEDGER_TOKEN}" -H 'Content-Type: application/json' --data '{}' "${BASE}/api/sessions/${LEDGER_SESSION_ID}/callbacks/observer/window" || true)"
+if [ "$OBS_CODE" = "404" ]; then
+  echo "ok   observer callbacks refuse a session that observes nothing (HTTP 404)"
+else
+  echo "FAIL observer callback on a non-observer: expected 404, got ${OBS_CODE}" >&2; fails=$((fails + 1))
+fi
 SHORTCUT_ID="$(sqlite3 "$DB" "SELECT id FROM ledger_entries WHERE session_id = '${LEDGER_SESSION_ID}' AND kind = 'shortcut';")"
 assert "ledger reject needs a body"    POST "/api/sessions/${LEDGER_SESSION_ID}/ledger/entries/${SHORTCUT_ID}/review" yes 400 "body is required" '{"kind":"reject","body":""}'
 assert "ledger reject"                 POST "/api/sessions/${LEDGER_SESSION_ID}/ledger/entries/${SHORTCUT_ID}/review" yes 200 '"kind":"reject"' '{"kind":"reject","body":"Do not skip it"}'

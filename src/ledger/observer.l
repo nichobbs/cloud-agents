@@ -172,6 +172,9 @@ func entryLines(entries: in slice[LedgerEntry]): slice[String] {
 }
 
 // ── Reports ───────────────────────────────────────────────────────────────────
+/// The most notifications one report may raise.
+pub val maxNotificationsPerReport: Int = 3
+
 /// The most words of evidence kept (a short quote, not the transcript).
 pub val evidenceMaxWords: Int = 30
 
@@ -306,6 +309,7 @@ pub func acceptReport(
   }
   val rules = rulesFor(target)
   var undeclared = 0
+  var notified = 0
   var matched = 0
   var duplicates = 0
   var dropped = 0
@@ -326,8 +330,11 @@ pub func acceptReport(
       entries = entries.append(stored)
       if isUndeclared {
         undeclared = undeclared + 1
-        if shouldNotify(c, cfg) {
+        // Capped per report: every finding is in the ledger either way, and a
+        // confused or manipulated observer must not flood the owner.
+        if shouldNotify(c, cfg) and notified < maxNotificationsPerReport {
           notify(target, c)
+          notified = notified + 1
         }
       } else {
         matched = matched + 1

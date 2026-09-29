@@ -629,3 +629,27 @@ test "a report that breaks the rules is refused whole and the cursor stays" {
     case Err(e) -> assertTrue(false, e)
   }
 }
+
+test "a report raises at most three notifications" {
+  val path = useFreshTestDb("observer-notify-cap")
+  defer {
+    cleanupTestDb(path)
+  }
+  seedSession("s1")
+  val _ = capture("s1", readFixture("tests/fixtures/observer/session.ndjson"), 0.toLong(), "")
+  val _ = window("s1", true)
+  var body = "{\"candidates\":["
+  var i = 0
+  while i < 6 {
+    if i > 0 {
+      body = body + ","
+    }
+    body = body + "{\"kind\":\"shortcut\",\"summary\":\"Distinct shortcut number " + toString(i) + " zebra" + toString(i) +
+      "\",\"seqStart\":\"" + toString(i * 4) + "\",\"seqEnd\":\"" + toString(i * 4) + "\",\"confidence\":\"0.95\"}"
+    i = i + 1
+  }
+  body = body + "]}"
+  val r = accept("s1", decodeOk(body), false)
+  assertEqual(r.undeclared, "6", "every finding is recorded")
+  assertEqualInt(countNotifications("s1"), 3, "but only three notify")
+}
