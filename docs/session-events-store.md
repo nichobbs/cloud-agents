@@ -74,9 +74,24 @@ invalidates a captured chain.
   sentinel `"-1"` (`seq > -1` includes event 0) — "from the beginning". `"0"` is
   a real `after=0` cursor and excludes the first event. `afterSeq` is compared as
   an integer, never interpolated as raw SQL (all values go through `sqlLiteral`).
+- `latestSessionEventCursor(sessionId) -> Result[SessionEventCursor, DbError]`
+  returns the hash-chain cursor `{ nextSeq: Long, lastHash: String }` a NEW run's
+  capture must resume from: one past the session's highest stored `seq`, and that
+  event's own `hash` (the `prevHash` the next captured event chains from).
+  Defaults to `{ nextSeq: 0, lastHash: "" }` — the fresh-chain start — for a
+  session with no captured events yet. A session accumulates events across
+  *every* run against it (each run spawns its own container, whose own log
+  starts at byte 0), so `docker_manager.l`'s `streamSessionMessage` seeds its
+  local `nextSeq`/`lastHash` from this cursor at the start of every run rather
+  than hardcoding `(0, "")`: doing the latter for a session's second or later
+  run re-derives events at `seq` `0..` that collide with the *first* run's
+  already-stored `0..`, and `appendSessionEvents`' conflict check (#965)
+  correctly — but unhelpfully — rejects the whole batch as content-mismatched,
+  silently dropping that run's capture provenance behind a WARNING log line.
 
-Both are parameterized through `sqlLiteral` (single quotes doubled), so a payload
-full of JSON quotes/apostrophes stores and round-trips verbatim.
+Both `appendSessionEvents` and `sessionEventsAfterSeq` are parameterized through
+`sqlLiteral` (single quotes doubled), so a payload full of JSON quotes/
+apostrophes stores and round-trips verbatim.
 
 ## 4. Test strategy (two tiers, matching the repo)
 
@@ -91,7 +106,12 @@ full of JSON quotes/apostrophes stores and round-trips verbatim.
   `sessionEventsAfterSeq` with a mid cursor returns only the tail; a second
   append of the same batch is an idempotent no-op (row count unchanged); a
   re-append of an existing seq with a different payload/hash returns
-  `Err(ValidationFailed(...))` and leaves the stored row untouched (#965).
+  `Err(ValidationFailed(...))` and leaves the stored row untouched (#965);
+  `latestSessionEventCursor` defaults to `(0, "")` for an empty session and
+  otherwise resumes one past the last stored seq with that event's own hash;
+  and a second run's fixture, parsed with `parseStreamJson` seeded from that
+  cursor rather than `(0, "")`, appends alongside a first run's events without
+  conflicting them, with the whole two-run chain verifying from genesis.
 
 ## 5. Acceptance criteria
 
@@ -104,6 +124,10 @@ full of JSON quotes/apostrophes stores and round-trips verbatim.
 5. Offline SQL-shape suite passes with no DB; payloads with quotes are safe.
 6. Re-appending an existing seq with different content surfaces a typed
    `ValidationFailed` and does not overwrite the stored row (live, #965).
+7. A session's second (and every later) run resumes the capture hash chain
+   from `latestSessionEventCursor` instead of restarting at `(0, "")`, so its
+   events append alongside an earlier run's without a spurious conflict, and
+   the whole session's chain still `verifyChain`s from genesis (live).
 
 ## 6. Deferred (sequenced follow-ups)
 

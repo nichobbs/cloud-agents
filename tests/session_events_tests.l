@@ -58,6 +58,13 @@ func mustRead(sessionId: in String, afterSeq: in String): slice[CaptureEvent] {
   }
 }
 
+func mustLatestCursor(sessionId: in String): CloudAgents.Repository.SessionEventCursor {
+  return match CloudAgents.Repository.latestSessionEventCursor(sessionId) {
+    case Ok(c) -> c
+    case Err(e) -> panic("latestSessionEventCursor failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+  }
+}
+
 test "append then read back is verbatim, seq-ordered, and verifies the chain" {
   val path = useFreshTestDb("sessevents-rt")
   val batch = parseStreamJson(fixtureNdjson(), 0.toLong(), "")
@@ -177,6 +184,68 @@ test "a conflicting event anywhere in the batch rejects the whole batch, not jus
 
   val back = mustRead("sess-E", "")
   assertEqualInt(back.length.toInt(), 3, "the new event (seq 3) was NOT inserted alongside the conflict")
+
+  cleanupTestDb(path)
+}
+
+test "latestSessionEventCursor defaults to (0, \"\") for a session with no captured events" {
+  val path = useFreshTestDb("sessevents-cursor-empty")
+  val cursor = mustLatestCursor("sess-does-not-exist")
+  assertEqualInt(cursor.nextSeq.toInt(), 0, "a fresh session's cursor starts the chain at seq 0")
+  assertEqual(cursor.lastHash, "", "a fresh session's cursor has no prevHash yet")
+
+  cleanupTestDb(path)
+}
+
+test "latestSessionEventCursor resumes one past the last stored seq, with that event's own hash" {
+  val path = useFreshTestDb("sessevents-cursor-resume")
+  val batch = parseStreamJson(fixtureNdjson(), 0.toLong(), "")
+  val _ = mustAppend("sess-F", batch.events)
+
+  val cursor = mustLatestCursor("sess-F")
+  assertEqualInt(cursor.nextSeq.toInt(), 3, "resumes at one past the last stored seq (0, 1, 2 stored)")
+  assertEqual(cursor.lastHash, batch.events[2].hash, "resumes from the last stored event's own hash")
+
+  cleanupTestDb(path)
+}
+
+// Regression test for the bug this cursor fixes: every run after a session's
+// first parses a BRAND NEW container's log, whose own bytes start at offset
+// 0. Before this fix, docker_manager.l's streamSessionMessage always seeded
+// nextSeq=0/lastHash="" for that parse, so a session's second (and every
+// later) run re-derived events at seq 0.. that collided with the FIRST run's
+// already-stored seq 0.. — appendSessionEvents' tamper-evidence check (#965)
+// then rejected the whole batch as ValidationFailed, exactly the
+// "already-stored content differs from the re-appended content" error a real
+// multi-run (and retried) session hit in production. Seeding the second run's
+// parse from latestSessionEventCursor instead avoids the collision entirely.
+test "a second run's capture, seeded from the resumed cursor, extends the chain without conflicting the first run's events" {
+  val path = useFreshTestDb("sessevents-second-run")
+  // Run 1: a fresh container's log, parsed from genesis — its own log starts
+  // at byte 0, so this is the correct startSeq/prevHash for a session's FIRST
+  // run (exactly what latestSessionEventCursor itself returns for an empty
+  // session, per the test above).
+  val run1 = parseStreamJson(fixtureNdjson(), 0.toLong(), "")
+  val _ = mustAppend("sess-G", run1.events)
+
+  // Run 2: a DIFFERENT container, same session. Its log also starts at byte
+  // 0, but the capture chain must resume from where run 1 left off — this is
+  // exactly what streamSessionMessage now does at the start of every run.
+  val cursor = mustLatestCursor("sess-G")
+  val run2Ndjson = "{\"type\":\"assistant\",\"message\":{\"content\":[{\"type\":\"text\",\"text\":\"second run\"}]}}\n"
+  val run2 = parseStreamJson(run2Ndjson, cursor.nextSeq, cursor.lastHash)
+  assertEqualInt(run2.events.length.toInt(), 1, "run 2's fixture parses to one event")
+  assertEqualInt(run2.events[0].seq.toInt(), 3, "run 2's event continues the seq space rather than restarting at 0")
+
+  assertEqualInt(
+    mustAppend("sess-G", run2.events),
+    1,
+    "run 2's event appends without conflicting run 1's stored events"
+  )
+
+  val all = mustRead("sess-G", "")
+  assertEqualInt(all.length.toInt(), 4, "both runs' events are stored — three from run 1, one from run 2")
+  assertTrue(verifyChain(all, ""), "the whole session's chain, spanning both runs, verifies from genesis")
 
   cleanupTestDb(path)
 }

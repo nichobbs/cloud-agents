@@ -4007,6 +4007,33 @@ pub func latestSessionEventSeq(sessionId: in String): Result[String, CloudAgents
   return Ok(value = colAt(CloudAgents.Sqlite.getRowArrayValue(rows, 0).cols, 0))
 }
 
+/// The hash-chain cursor a fresh run's capture must resume from: one past the
+/// highest stored seq, and that highest event's own hash (the `prevHash` the
+/// next captured event must chain from). Defaults to (0, "") — a fresh
+/// chain's start — when the session has no captured events yet.
+pub record SessionEventCursor {
+  pub nextSeq: Long = 0.toLong()
+  pub lastHash: String = ""
+}
+
+/// The cursor `docker_manager.l`'s `streamSessionMessage` must seed `nextSeq`/
+/// `lastHash` from at the start of EVERY run against a session, not just its
+/// first: each run parses its OWN container's log from byte 0, but
+/// `session_events` accumulates across every run for the session, so
+/// restarting the hash chain at (0, "") on the second and later runs collides
+/// with the first run's already-stored seq 0.. and `appendSessionEvents`'
+/// tamper-evidence check (#965) rejects the whole batch as a content
+/// mismatch, silently dropping that run's capture provenance.
+pub func latestSessionEventCursor(sessionId: in String): Result[SessionEventCursor, CloudAgents.Sqlite.DbError] {
+  val rows = CloudAgents.Sqlite.query(CloudAgents.Db.selectLatestSessionEventCursorSql(sessionId))?
+  if CloudAgents.Sqlite.getRowArrayLength(rows) == 0 {
+    return Ok(value = SessionEventCursor())
+  }
+  val row = CloudAgents.Sqlite.getRowArrayValue(rows, 0)
+  val latestSeq = parseNatString(colAt(row.cols, 0)).toLong()
+  return Ok(value = SessionEventCursor(nextSeq = latestSeq + 1.toLong(), lastHash = colAt(row.cols, 1)))
+}
+
 /// A session's AGENT messages with seq strictly greater than `afterSeq`
 /// (pass "" or "0" for "from the beginning"), oldest first — the summarizer's
 /// work queue.
