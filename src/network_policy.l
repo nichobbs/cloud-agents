@@ -55,28 +55,51 @@ pub func proxyEnvForPolicy(policy: in String): slice[String] {
   return ["HTTP_PROXY=" + proxy, "HTTPS_PROXY=" + proxy, "http_proxy=" + proxy, "https_proxy=" + proxy]
 }
 
-/// Split `s` on literal commas into non-empty pieces, dropping empty runs
-/// (leading/trailing/doubled commas). Hand-rolled char scan, not
-/// `String.split()` — no proven working precedent for that method in this
-/// codebase (docs/lyric/gotchas.md) — mirroring this file's own
-/// `lastColonIndex`/`containsDot` scan idiom. Does NOT trim whitespace
-/// around a piece; `CLOUD_AGENTS_RUNNER_DNS` is documented as comma-separated
-/// with no surrounding spaces.
+func isTrimmableSpace(c: in String): Bool {
+  return c == " " or c == "\t" or c == "\r" or c == "\n"
+}
+
+/// Strip leading/trailing spaces, tabs, CR, and LF (hand-rolled scan, not
+/// `String.Trim()` — matching this repo's other per-file `trimSpaces`
+/// helpers, e.g. `handlers/highlights.l`, `workspace.l`).
+func trimAscii(s: in String): String {
+  var start = 0
+  var stop = s.length.toInt()
+  while start < stop and isTrimmableSpace(s.substring(start, 1)) {
+    start = start + 1
+  }
+  while stop > start and isTrimmableSpace(s.substring(stop - 1, 1)) {
+    stop = stop - 1
+  }
+  return s.substring(start, stop - start)
+}
+
+/// Split `s` on literal commas into trimmed, non-empty pieces, dropping
+/// empty-after-trim runs (leading/trailing/doubled commas, or a piece that's
+/// only whitespace). Hand-rolled char scan, not `String.split()` — no proven
+/// working precedent for that method in this codebase (docs/lyric/gotchas.md)
+/// — mirroring this file's own `lastColonIndex`/`containsDot` scan idiom.
+/// Trims each piece so `"1.1.1.1, 8.8.8.8"` (a space after the comma, the
+/// natural way most people write a list) doesn't produce a leading-space
+/// entry that Docker's daemon would reject as an invalid IP at
+/// container-create time — see the #1126 review finding on this PR.
 func splitByComma(s: in String): slice[String] {
   var result: slice[String] = []
   var start = 0
   var i = 0
   while i < s.length {
     if s.substring(i, 1) == "," {
-      if i > start {
-        result = result.append(s.substring(start, i - start))
+      val piece = trimAscii(s.substring(start, i - start))
+      if piece.length > 0 {
+        result = result.append(piece)
       }
       start = i + 1
     }
     i = i + 1
   }
-  if s.length > start {
-    result = result.append(s.substring(start, s.length - start))
+  val lastPiece = trimAscii(s.substring(start, s.length - start))
+  if lastPiece.length > 0 {
+    result = result.append(lastPiece)
   }
   return result
 }
@@ -97,11 +120,13 @@ func splitByComma(s: in String): slice[String] {
 /// could break resolution of a same-network peer's container name, and
 /// `none` has no network stack to pin DNS on at all.
 ///
-/// Operator-overridable via `CLOUD_AGENTS_RUNNER_DNS` (comma-separated, no
-/// surrounding whitespace, e.g. `1.1.1.1,8.8.8.8`); set it to `off` to
-/// opt out and fall back to whatever the daemon host's own default-bridge
-/// DNS resolution does (the pre-existing, un-pinned behavior). Defaults to
-/// Cloudflare's public resolvers when unset.
+/// Operator-overridable via `CLOUD_AGENTS_RUNNER_DNS` (comma-separated, e.g.
+/// `1.1.1.1, 8.8.8.8` — surrounding whitespace around each entry is
+/// trimmed); set it to `off` to opt out and fall back to whatever the
+/// daemon host's own default-bridge DNS resolution does (the pre-existing,
+/// un-pinned behavior — also the right choice for a host with a working
+/// custom/corporate/split-horizon resolver this override would otherwise
+/// shadow). Defaults to Cloudflare's public resolvers when unset.
 pub func runnerDnsServers(policy: in String): slice[String] {
   val empty: slice[String] = []
   if policy == "restricted" or policy == "none" {
@@ -251,8 +276,8 @@ pub func dockerTransportFor(hostPortVar: in Option[String]): DockerTransport {
 // the webhook path, and closing it fully needs re-checking at connect time
 // inside the clone itself (or the network_policy-level defense-in-depth
 // #300 also suggests: default un-profiled sessions to a restricted network).
-extern type IPAddress = "System.Net.IPAddress"
 
+extern type IPAddress = "System.Net.IPAddress"
 extern type IPAddressArray = "System.Net.IPAddress[]"
 
 // Explicit @externTarget binding (not the lighter `import extern X as Y`

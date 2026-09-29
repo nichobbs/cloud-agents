@@ -67,6 +67,44 @@ test "runnerDnsServers only applies to the 'full'/default policy, and is operato
   Env.SetEnvironmentVariable("CLOUD_AGENTS_RUNNER_DNS", "")
 }
 
+// splitByComma (package-private; exercised through the public
+// runnerDnsServers, its only caller) edge cases (#1126): a naturally-typed
+// list with spaces after commas, leading/trailing/doubled commas, and a
+// single value with no comma at all.
+test "runnerDnsServers tolerates whitespace and stray commas in the operator override (#1126)" {
+  // A space after each comma — the way most people naturally type a list —
+  // must not leak a leading space into an entry (Docker's daemon would
+  // reject a malformed IP like " 8.8.8.8" at container-create time).
+  Env.SetEnvironmentVariable("CLOUD_AGENTS_RUNNER_DNS", "1.1.1.1, 8.8.8.8")
+  val spaced = runnerDnsServers("full")
+  assertEqualInt(spaced.length.toInt(), 2, "a space after the comma still yields two entries")
+  assertEqual(spaced[0], "1.1.1.1", "first entry has no trailing space")
+  assertEqual(spaced[1], "8.8.8.8", "second entry has no leading space")
+
+  // Leading/trailing/doubled commas, and surrounding whitespace around the
+  // whole value, are dropped rather than producing empty entries.
+  Env.SetEnvironmentVariable("CLOUD_AGENTS_RUNNER_DNS", " , 1.1.1.1 ,, 8.8.8.8 , ")
+  val messy = runnerDnsServers("full")
+  assertEqualInt(messy.length.toInt(), 2, "leading/trailing/doubled commas and whitespace are all dropped")
+  assertEqual(messy[0], "1.1.1.1", "first real entry survives the mess")
+  assertEqual(messy[1], "8.8.8.8", "second real entry survives the mess")
+
+  // A single value with no comma at all is one entry, not zero.
+  Env.SetEnvironmentVariable("CLOUD_AGENTS_RUNNER_DNS", "1.1.1.1")
+  val single = runnerDnsServers("full")
+  assertEqualInt(single.length.toInt(), 1, "a single value with no comma yields one entry")
+  assertEqual(single[0], "1.1.1.1", "the single entry is unchanged")
+
+  // An input that's ENTIRELY commas/whitespace (no real value at all) is
+  // indistinguishable from an empty override: no entries survive, so no Dns
+  // override is applied — the same fail-safe outcome as leaving the var
+  // unset-but-"off", not a crash or a malformed Docker request.
+  Env.SetEnvironmentVariable("CLOUD_AGENTS_RUNNER_DNS", " , , ")
+  assertTrue(runnerDnsServers("full").length == 0, "an all-commas/whitespace override yields no entries, not a crash")
+
+  Env.SetEnvironmentVariable("CLOUD_AGENTS_RUNNER_DNS", "")
+}
+
 // ── Phase 6: MCP callbacks (docs/phase6-mcp-callbacks.md) ───────────────────
 // Stage 4 (docs/phase6 §8): default-on, opt out with the literal "0".
 test "callbacksFeatureEnabled is on unless explicitly set to \"0\"" {
@@ -144,7 +182,10 @@ test "networkModeForPolicyWithCallbacks matches networkModeForPolicy except opte
 // even a single pure function from (docs/lyric/gotchas.md) — so it had zero
 // coverage. The decision itself is now the pure dockerTransportFor here.
 func transportLabel(t: in DockerTransport): String {
-  return match t { case Tcp(hostPort) -> "tcp:" + hostPort; case Socket -> "socket" }
+  return match t {
+    case Tcp(hostPort) -> "tcp:" + hostPort
+    case Socket -> "socket"
+  }
 }
 
 test "dockerTransportFor selects TCP for a set, non-empty host:port (#377)" {
@@ -181,6 +222,7 @@ test "dockerTransportFor falls back to the socket transport when the var is abse
 // it straight back out with no lookup, "localhost" resolves via the local
 // NSS/hosts-file path everywhere, and an over-long host name is rejected by
 // the BCL's own local length check before it would ever query a resolver.
+
 test "isPrivateOrReservedIpv4 covers loopback, RFC1918, link-local/metadata, and 172.16-31 boundaries" {
   assertTrue(isPrivateOrReservedIpv4("127.0.0.1"), "loopback")
   assertTrue(isPrivateOrReservedIpv4("10.1.2.3"), "10/8")

@@ -54,8 +54,10 @@ volumes:
   containers unable to resolve external hosts. `runnerDnsServers`
   (`src/network_policy.l`) pins explicit DNS servers on every `full`-policy
   container to sidestep this — Cloudflare's `1.1.1.1`/`1.0.0.1` by default,
-  overridable (or disable-able via `off`) with **`CLOUD_AGENTS_RUNNER_DNS`**
-  (comma-separated, no surrounding whitespace). Never applies to
+  overridable (or disable-able via `off`, the right choice for a host with
+  a working custom/corporate/split-horizon resolver this override would
+  otherwise shadow) with **`CLOUD_AGENTS_RUNNER_DNS`** (comma-separated;
+  surrounding whitespace around each entry is trimmed). Never applies to
   `restricted`/`none` below — a named network already has its own DNS story.
 - `none` — fully isolated, no network.
 - `restricted` — joins the Docker network named by **`CLOUD_AGENTS_RESTRICTED_NETWORK`**

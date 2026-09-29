@@ -41,7 +41,9 @@ compose file for what differs and why.
      unable to resolve external hosts (surfaces as `claude` reporting
      `Can't reach the API server`/`FailedToOpenSocket`). Cloud Agents pins
      `1.1.1.1`/`1.0.0.1` by default to sidestep this; set this var to
-     override the list, or to `off` to disable the override)
+     override the list, or to `off` to disable the override — the right
+     choice if this host's resolver already works and resolves internal/
+     corporate/split-horizon names the public default can't)
    - `NODE_EXTRA_CA_CERTS`, `NODE_TLS_REJECT_UNAUTHORIZED` (optional,
      corporate-proxy TLS interception, #648) — `docker_manager.l`'s
      `createRunnerContainer` reads both from the `api` service's own process
