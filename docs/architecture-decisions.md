@@ -392,6 +392,13 @@ deployable after each):
    rotated automatically (decision 2, phase 4).
 3. Tenants are organisations with members, not individual GitHub users
    (decision 10).
+4. Organisation membership comes from both GitHub organisation membership
+   (synced at sign-in, `read:org` scope accepted) and native organisations
+   with invitations. Specified in `docs/phase11-postgres-tenancy.md`.
+5. Phases 1 to 3 run Postgres as a Coolify-hosted instance on the existing
+   VM, for cost; the move to managed Postgres happens with phase 4, when the
+   database must outlive any single host. Only standard Postgres features
+   are used, so the move is a dump, restore and DSN change.
 
 **Open questions**:
 
@@ -402,7 +409,3 @@ deployable after each):
    interface. Move to `LISTEN/NOTIFY` only if polling load is measurably a
    problem, and only once `Lyric.Db` supports notifications on a dedicated
    connection (unverified today).
-2. Where does organisation membership come from: GitHub organisation
-   membership synced at sign-in, cloud-agents-native organisations with
-   invitations, or both? This must be settled before the phase 1 schema is
-   final.
