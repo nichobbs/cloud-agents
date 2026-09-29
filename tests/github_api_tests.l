@@ -35,7 +35,6 @@ import CloudAgents.GitHubApi
 // production code path (not just the FFI chain it's built from) now has
 // direct coverage. The FFI-chain tests below are kept: they're still the
 // right level for the specific Latin1/UTF8-roundtrip regression #514 caught.
-
 test "charFromCode converts a Unicode code point to its single-character string (#514)" {
   assertEqual(charFromCode(72), "H", "72 -> 'H'")
   assertEqual(charFromCode(101), "e", "101 -> 'e'")
@@ -139,4 +138,40 @@ test "buildBearerPostRequest still allows a request with no bearer token (empty 
   // the no-redirect property is independent of whether a token is set.
   val req = buildBearerPostRequest("http://127.0.0.1:1/ingest", "", "cloud-agents-test/1.0", 5000)
   assertFalse(getAllowAutoRedirect(req), "no-redirect still applies with no bearer token set")
+}
+
+// With AllowAutoRedirect off, GetResponse returns a 3xx normally instead of
+// throwing, so httpPostJsonWithBearerTimeout / httpJsonWithBearer gate the
+// status through checkSuccessStatus. Without it a 301/302 from the graph
+// ingest endpoint read as a delivery and GraphIngestDrain marked the outbox
+// row delivered with nothing ingested.
+func passesStatusGate(method: in String, url: in String, status: in Int): Bool {
+  return match checkSuccessStatus(method, url, status) { case Ok(_) -> true; case Err(_) -> false }
+}
+
+test "checkSuccessStatus accepts every 2xx status" {
+  assertTrue(passesStatusGate("POST", "http://127.0.0.1:1/ingest", 200), "200 is success")
+  assertTrue(passesStatusGate("POST", "http://127.0.0.1:1/ingest", 202), "202 is success")
+  assertTrue(passesStatusGate("POST", "http://127.0.0.1:1/ingest", 299), "299 is the upper bound")
+}
+
+test "checkSuccessStatus rejects a redirect that was not followed" {
+  match checkSuccessStatus("POST", "http://127.0.0.1:1/ingest", 302) {
+    case Ok(_) -> assertTrue(false, "a 302 must not count as a successful delivery")
+    case Err(e) -> assertEqual(
+      e,
+      "POST http://127.0.0.1:1/ingest failed: (302) unexpected status",
+      "names the method, url and status"
+    )
+  }
+  assertFalse(passesStatusGate("POST", "http://127.0.0.1:1/ingest", 301), "301 is not success")
+  assertFalse(passesStatusGate("GET", "http://127.0.0.1:1/x", 304), "304 is not success")
+  assertFalse(passesStatusGate("POST", "http://127.0.0.1:1/ingest", 307), "307 is not success")
+  assertFalse(passesStatusGate("POST", "http://127.0.0.1:1/ingest", 308), "308 is not success")
+}
+
+test "checkSuccessStatus rejects statuses just outside the 2xx range" {
+  assertFalse(passesStatusGate("POST", "http://127.0.0.1:1/ingest", 199), "199 is below 2xx")
+  assertFalse(passesStatusGate("POST", "http://127.0.0.1:1/ingest", 300), "300 is above 2xx")
+  assertFalse(passesStatusGate("POST", "http://127.0.0.1:1/ingest", 500), "500 is not success")
 }
