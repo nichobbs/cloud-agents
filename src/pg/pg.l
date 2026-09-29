@@ -62,6 +62,25 @@ pub func personalTenantId(userId: in String): String {
   return "personal:" + userId
 }
 
+/// The scope of a user acting in their personal tenant. Until organisations
+/// ship (spec §9 slice F) this is every request's scope.
+pub func personalScope(userId: in String): TenantScope {
+  return TenantScope(tenantId = personalTenantId(userId), userId = userId)
+}
+
+/// SQL converting the epoch-milliseconds text parameter `@p<n>` to
+/// `timestamptz`, exactly (integer interval arithmetic, not
+/// `to_timestamp(float)`, which can round a millisecond away).
+pub func msIn(n: in Int): String {
+  return "(timestamptz 'epoch' + @p" + toString(n) + "::bigint * interval '1 millisecond')"
+}
+
+/// SQL rendering a `timestamptz` column as epoch-milliseconds text, the form
+/// the domain records carry. NULL stays NULL (read as "").
+pub func msOut(col: in String): String {
+  return "(extract(epoch FROM " + col + ") * 1000)::bigint::text"
+}
+
 /// The DSN the service connects with (`cloudagents_app`).
 pub func serviceDsnVar(): String {
   return "LYRIC_CONFIG_DB_CONNECTION_URL"

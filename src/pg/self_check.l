@@ -8,7 +8,11 @@
 //! - its role is not a superuser, has no `BYPASSRLS`, and owns no table in
 //!   `public` (and not the schema itself);
 //! - the provisioned roles exist (`deploy/postgres/provision.sql`);
-//! - the export role `cloudagents_migrator` cannot log in (it may only log in
+//! - it is not a member (directly or indirectly) of `cloudagents_owner`,
+//!   `cloudagents_claimer`, `cloudagents_migrator`, or any superuser or
+//!   `BYPASSRLS` role, which would let it switch to that role;
+//! - the claim-function owner `cloudagents_claimer` cannot log in, and the
+//!   export role `cloudagents_migrator` cannot either (it may only log in
 //!   during the one-off cut-over export);
 //! - the schema is at the version this build expects (`--migrate` has run).
 //! Each failure names what is wrong and where to fix it.
@@ -81,6 +85,26 @@ pub func check(conn: in DbConnection): Result[Unit, String] {
           provisionHint()
       )
     }
+    if role == "cloudagents_claimer" and flag(found[0], "login") {
+      return Err(
+        error = "cloudagents_claimer can log in; it must only be reachable through the claim functions " +
+          "(ALTER ROLE cloudagents_claimer NOLOGIN)" +
+          provisionHint()
+      )
+    }
+  }
+  // Membership, direct or indirect, in a privileged role would let the
+  // service SET ROLE to it (or inherit it), bypassing the checks above.
+  val privileged = match one(conn, "SELECT coalesce(string_agg(r.rolname, ', ' ORDER BY r.rolname), '') AS v FROM pg_roles r " + "WHERE r.rolname <> current_user AND pg_has_role(current_user, r.oid, 'MEMBER') " + "AND (r.rolsuper OR r.rolbypassrls OR r.rolname IN " + "('cloudagents_owner', 'cloudagents_claimer', 'cloudagents_migrator'))")? {
+    case Some(r) -> Db.dbGetString(r, "v")
+    case None -> ""
+  }
+  if privileged != "" {
+    return Err(
+      error = "service role '" + name + "' is a member of privileged role(s): " + privileged +
+        "; revoke that membership" +
+        provisionHint()
+    )
   }
   val want = CloudAgents.Pg.Schema.latestVersion()
   val have = match one(conn, "SELECT coalesce(max(version), '') AS v FROM public.schema_migrations") {

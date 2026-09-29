@@ -435,22 +435,29 @@ Postgres-only data.
   flag, a lease column); their claim functions are written with their
   domain's port in slice C so the semantics are carried over and tested
   together. Not wired into request handling.
-- **B. Scope plumbing on SQLite.** `TenantScope`/`UserScope` (§5.2, §4.3a)
-  added to every repository and ledger-store function and passed from every
-  handler, still backed by SQLite. With no organisations yet, every user
-  has exactly one implicit personal tenant whose id is derived
-  deterministically from the user id (`personal:<user id>`). The middleware
-  builds the scope from the authenticated user alone; there is no
-  membership lookup and no `X-CloudAgents-Org` header yet. The SQLite
-  implementation uses `scope.userId` where it used `currentUserId()`, so
-  behaviour is unchanged. This removes the thread-slot dependency before any
-  Postgres code is live.
-- **C. Store port.** Each domain (sessions and messages; profiles and
-  library; jobs, webhooks and maintenance; ledger; capture and outbox;
-  search) gets a Postgres implementation of the same scope-taking
-  signatures from slice B, in a parallel package, with live Postgres tests.
-  Handlers keep calling the SQLite-backed repository, so production is
-  unaffected; ported code is exercised by CI only.
+- **B+C. Scope plumbing and store port, one domain per PR.** Slices B and
+  C are done together, domain by domain (prompts; profiles and library;
+  sessions and messages; interactive requests; jobs, webhooks and
+  maintenance; ledger; capture and outbox; search), rather than as two
+  passes over the same ~270 store functions and their call sites. Each
+  domain PR:
+  - adds `TenantScope`/`UserScope` (§5.2, §4.3a) to that domain's
+    SQLite-backed repository functions in place of the `userId` argument,
+    same position, so production behaviour is unchanged (the SQLite code uses
+    `sc.userId`);
+  - switches the domain's handlers to `CloudAgents.Auth.requestScope()`,
+    read once at handler entry before any `await`, and passes the value
+    down explicitly;
+  - adds `CloudAgents.PgStore.<Domain>`, the Postgres implementation with the
+    same signatures (including the `DbError` type) and semantics, plus live
+    Postgres tests; handlers keep calling the SQLite repository, so
+    production is unaffected.
+  With no organisations yet, every scope is the user's implicit personal
+  tenant, `personal:<user id>` (`CloudAgents.Pg.personalScope`). Postgres
+  store conventions: text ordering uses `COLLATE "C"` to match SQLite's
+  BINARY collation; epoch-millisecond strings convert to and from
+  `timestamptz` with exact integer interval arithmetic
+  (`CloudAgents.Pg.msIn`/`msOut`), never `to_timestamp(float)`.
 - **D. Export tool** (§7), creating each user's personal tenant with the
   same deterministic id as slice B, with a test that exports a fixture
   SQLite database containing every table and verifies counts and typed

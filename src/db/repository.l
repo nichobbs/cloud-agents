@@ -11,6 +11,7 @@ import Std.Core
 import Std.Uuid
 import Std.File
 import CloudAgents.Crypto
+import CloudAgents.Pg
 import CloudAgents.Db
 import CloudAgents.Sqlite
 import CloudAgents.ToolPolicy
@@ -862,8 +863,9 @@ func tagsForPrompt(pairs: in slice[PromptTag], promptId: in String): slice[Strin
 /// Replace a prompt's tag set atomically (clear, then insert each). Returned by
 /// callers through executeTransaction so the set is consistent on partial fail.
 pub func setPromptTags(
-  promptId: in String, userId: in String, tags: in slice[String]
+  promptId: in String, sc: in CloudAgents.Pg.TenantScope, tags: in slice[String]
 ): Result[Unit, CloudAgents.Sqlite.DbError] {
+  val userId = sc.userId
   var stmts: slice[String] = []
   stmts = stmts.append(CloudAgents.Db.deletePromptTagsSql(promptId, userId))
   for t in tags {
@@ -876,17 +878,20 @@ pub func setPromptTags(
 /// Save a new prompt to a user's library and return the stored record (no tags
 /// yet). Kept for callers/tests that don't set tags; the handler uses the
 /// transactional addPromptWithTags.
-pub func addPrompt(userId: in String, name: in String, body: in String): Result[Prompt, CloudAgents.Sqlite.DbError] {
+pub func addPrompt(
+  sc: in CloudAgents.Pg.TenantScope, name: in String, body: in String
+): Result[Prompt, CloudAgents.Sqlite.DbError] {
   val noTags: slice[String] = []
-  return addPromptWithTags(userId, name, body, noTags)
+  return addPromptWithTags(sc, name, body, noTags)
 }
 
 /// Save a new prompt AND its tag set in a single transaction (#244), returning
 /// the stored record with tags attached — so the prompt row and its tags are
 /// never left inconsistent by a partial failure.
 pub func addPromptWithTags(
-  userId: in String, name: in String, body: in String, tags: in slice[String]
+  sc: in CloudAgents.Pg.TenantScope, name: in String, body: in String, tags: in slice[String]
 ): Result[Prompt, CloudAgents.Sqlite.DbError] {
+  val userId = sc.userId
   val id = newId()
   val ts = nowMillis()
   var stmts: slice[String] = []
@@ -910,7 +915,8 @@ pub func addPromptWithTags(
 }
 
 /// All prompts in a user's library, alphabetical by name (each with its tags).
-pub func listPrompts(userId: in String): Result[slice[Prompt], CloudAgents.Sqlite.DbError] {
+pub func listPrompts(sc: in CloudAgents.Pg.TenantScope): Result[slice[Prompt], CloudAgents.Sqlite.DbError] {
+  val userId = sc.userId
   val rows = CloudAgents.Sqlite.query(CloudAgents.Db.selectPromptsSql(userId))?
   val tagPairs = allPromptTagPairs(userId)?
   var acc: slice[Prompt] = []
@@ -925,7 +931,8 @@ pub func listPrompts(userId: in String): Result[slice[Prompt], CloudAgents.Sqlit
 }
 
 /// A user's prompts, most-used first (ties alphabetical).
-pub func listPromptsByUsage(userId: in String): Result[slice[Prompt], CloudAgents.Sqlite.DbError] {
+pub func listPromptsByUsage(sc: in CloudAgents.Pg.TenantScope): Result[slice[Prompt], CloudAgents.Sqlite.DbError] {
+  val userId = sc.userId
   val rows = CloudAgents.Sqlite.query(CloudAgents.Db.selectPromptsByUsageSql(userId))?
   val tagPairs = allPromptTagPairs(userId)?
   var acc: slice[Prompt] = []
@@ -943,7 +950,10 @@ pub func listPromptsByUsage(userId: in String): Result[slice[Prompt], CloudAgent
 /// carries its *full* tag set (not just the filter tag). Fetches the matching
 /// rows and all tag pairs in two queries rather than a per-prompt getPrompt
 /// round trip (#339), reusing the same batching as listPrompts (#246).
-pub func listPromptsByTag(userId: in String, tag: in String): Result[slice[Prompt], CloudAgents.Sqlite.DbError] {
+pub func listPromptsByTag(
+  sc: in CloudAgents.Pg.TenantScope, tag: in String
+): Result[slice[Prompt], CloudAgents.Sqlite.DbError] {
+  val userId = sc.userId
   val rows = CloudAgents.Sqlite.query(CloudAgents.Db.selectPromptsByTagSql(userId, tag))?
   val tagPairs = allPromptTagPairs(userId)?
   var acc: slice[Prompt] = []
@@ -958,7 +968,8 @@ pub func listPromptsByTag(userId: in String, tag: in String): Result[slice[Promp
 }
 
 /// A single prompt owned by a user (with tags), or None.
-pub func getPrompt(id: in String, userId: in String): Result[Option[Prompt], CloudAgents.Sqlite.DbError] {
+pub func getPrompt(id: in String, sc: in CloudAgents.Pg.TenantScope): Result[Option[Prompt], CloudAgents.Sqlite.DbError] {
+  val userId = sc.userId
   val rows = CloudAgents.Sqlite.query(CloudAgents.Db.selectPromptByIdSql(id, userId))?
   val len = CloudAgents.Sqlite.getRowArrayLength(rows)
   if len == 0 {
@@ -972,8 +983,9 @@ pub func getPrompt(id: in String, userId: in String): Result[Option[Prompt], Clo
 /// the prompt does not exist or is not owned by the user — the handler maps
 /// that to 404).
 pub func updatePrompt(
-  id: in String, userId: in String, name: in String, body: in String
+  id: in String, sc: in CloudAgents.Pg.TenantScope, name: in String, body: in String
 ): Result[Int, CloudAgents.Sqlite.DbError] {
+  val userId = sc.userId
   val ts = nowMillis()
   return CloudAgents.Sqlite.execute(CloudAgents.Db.updatePromptSql(id, userId, name, body, ts))
 }
@@ -986,10 +998,15 @@ pub func updatePrompt(
 /// reports 0 rather than a stale 1 (same class of gap as #238, fixed the same
 /// way here since executeTransaction now returns a rows-affected count).
 pub func updatePromptWithTags(
-  id: in String, userId: in String, name: in String, body: in String, tags: in slice[String]
+  id: in String,
+  sc: in CloudAgents.Pg.TenantScope,
+  name: in String,
+  body: in String,
+  tags: in slice[String],
 ): Result[Int, CloudAgents.Sqlite.DbError] {
+  val userId = sc.userId
   // Cheap early-exit only — see the affected-count rationale on updateProfile.
-  match getPrompt(id, userId)? {
+  match getPrompt(id, sc)? {
     case None -> return Ok(value = 0)
     case Some(_) -> ()
   }
@@ -1007,7 +1024,8 @@ pub func updatePromptWithTags(
 }
 
 /// Record one use of a prompt. Returns rows affected (0 = not found).
-pub func markPromptUsed(id: in String, userId: in String): Result[Int, CloudAgents.Sqlite.DbError] {
+pub func markPromptUsed(id: in String, sc: in CloudAgents.Pg.TenantScope): Result[Int, CloudAgents.Sqlite.DbError] {
+  val userId = sc.userId
   val ts = nowMillis()
   return CloudAgents.Sqlite.execute(CloudAgents.Db.touchPromptUsedSql(id, userId, ts))
 }
@@ -1017,9 +1035,10 @@ pub func markPromptUsed(id: in String, userId: in String): Result[Int, CloudAgen
 /// affected on the prompt (0 = not found) — taken from the transaction's own
 /// DELETE on the prompts row (deliberately the last statement), not from the
 /// pre-check below, for the same reason as deleteProfile (#238).
-pub func deletePrompt(id: in String, userId: in String): Result[Int, CloudAgents.Sqlite.DbError] {
+pub func deletePrompt(id: in String, sc: in CloudAgents.Pg.TenantScope): Result[Int, CloudAgents.Sqlite.DbError] {
+  val userId = sc.userId
   // Cheap early-exit only — see the affected-count rationale on updateProfile.
-  match getPrompt(id, userId)? {
+  match getPrompt(id, sc)? {
     case None -> return Ok(value = 0)
     case Some(_) -> ()
   }

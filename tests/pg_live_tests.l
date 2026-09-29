@@ -26,10 +26,17 @@ import CloudAgents.Pg.SelfCheck
 func live(): Bool {
   val ok = CloudAgents.Pg.serviceConfigured() and
     Std.Environment.getVarOrDefault(CloudAgents.Pg.migrateDsnVar(), "").length.toInt() > 0
-  if not ok {
-    println("SKIP: live Postgres suite needs LYRIC_CONFIG_DB_CONNECTION_URL and CLOUD_AGENTS_MIGRATE_DATABASE_URL")
+  if ok {
+    return true
   }
-  return ok
+  // CI sets CLOUD_AGENTS_REQUIRE_LIVE_PG=1 so a missing DSN fails the suite
+  // instead of letting it pass on skips alone.
+  assertTrue(
+    Std.Environment.getVarOrDefault("CLOUD_AGENTS_REQUIRE_LIVE_PG", "") != "1",
+    "CLOUD_AGENTS_REQUIRE_LIVE_PG=1 but LYRIC_CONFIG_DB_CONNECTION_URL or CLOUD_AGENTS_MIGRATE_DATABASE_URL is not set"
+  )
+  println("SKIP: live Postgres suite needs LYRIC_CONFIG_DB_CONNECTION_URL and CLOUD_AGENTS_MIGRATE_DATABASE_URL")
+  return false
 }
 
 func skipped(): Unit {
@@ -578,6 +585,43 @@ test "claim functions are hardened: definer, fixed search_path, no PUBLIC execut
 }
 
 // ── Self-check ─────────────────────────────────────────────────────────────
+test "the self-check refuses a service role that is a member of a privileged role" {
+  if not live() {
+    assertTrue(true, "skipped")
+    return
+  }
+  ensureMigrated()
+  // No test role can create another role (all are NOCREATEROLE), so the
+  // negative case uses the owner, which provision.sql makes a member of
+  // cloudagents_claimer; the positive case checks the service role holds no
+  // such membership.
+  val owner = ownerConn()
+  defer {
+    owner.close()
+  }
+  match CloudAgents.Pg.SelfCheck.check(owner) {
+    case Ok(_) -> assertTrue(false, "the owner role must fail the self-check")
+    case Err(m) -> assertTrue(m.contains("owns") or m.contains("privileged"), "refused: " + m)
+  }
+  val app = appConn()
+  defer {
+    app.close()
+  }
+  val tx = unscoped(app)
+  assertEqual(
+    str1(
+      tx,
+      "SELECT coalesce(string_agg(r.rolname, ','), '') AS v FROM pg_roles r WHERE r.rolname <> current_user " +
+        "AND pg_has_role(current_user, r.oid, 'MEMBER') AND (r.rolsuper OR r.rolbypassrls OR r.rolname IN " +
+        "('cloudagents_owner', 'cloudagents_claimer', 'cloudagents_migrator'))",
+      []
+    ),
+    "",
+    "the provisioned service role holds no privileged membership"
+  )
+  commit(tx)
+}
+
 test "the self-check passes for the service role and fails for the owner" {
   if not live() {
     skipped()
