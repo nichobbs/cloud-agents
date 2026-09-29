@@ -158,7 +158,8 @@ design of each phase and `docs/BUILD.md` for build/verification notes.
 | Compose topology | 🟡 | `deploy/docker-compose.yml`, `deploy/api.Dockerfile` |
 | Reverse proxy + TLS | 🟡 | `deploy/Caddyfile` |
 | VM provisioning | 🟡 | `deploy/install-docker.sh` |
-| Backups | 🟡 | `deploy/backup.sh` |
+| Persistent state | ✅ | `CLOUD_AGENTS_DATA_DIR` host dir (default `/var/lib/cloud-agents`) bind-mounted at the same path in both compose files; holds the SQLite DB, artifacts and attachments, which previously defaulted into the container layer and were lost on every redeploy. Upgrade steps in `deploy/RUNBOOK.md` |
+| Backups | 🟡 | `deploy/backup.sh` now snapshots the DB online (`sqlite3 .backup` + integrity check) and archives artifacts/attachments alongside `user_data`; no off-server copy yet |
 | Runbook | 🟡 | `deploy/RUNBOOK.md` |
 | Automated e2e HTTP smoke test | ✅ added | `scripts/e2e-http.sh` (wired into `ci.yml`) starts the built server on a throwaway DB/port and curls a multi-param route (`/api/sessions/{id}/output/{offset}`) plus the proxy routes — the automated proof of multi-param dispatch that `@test_module` can't give (Web.Request isn't constructible in a test, #354), closing #442 |
 

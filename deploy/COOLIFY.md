@@ -187,6 +187,15 @@ arm64 host today.
 
 ## Backups
 
+Persistent API state (database, artifacts, attachments) lives in the host
+directory `CLOUD_AGENTS_DATA_DIR` (default `/var/lib/cloud-agents`), bind-
+mounted into the api container at the same path, so redeploys no longer lose
+sessions. If you set `CLOUD_AGENTS_DATA_DIR` in Coolify's Environment
+Variables tab, export the same value when running `backup.sh`. When upgrading
+an existing Coolify deployment, copy the old container's state out first; see
+`RUNBOOK.md` "Upgrading from a deployment without a data directory" (use
+`docker exec <api container>` in place of `docker compose exec api`).
+
 `backup.sh` defaults to volume name `deploy_user_data` — Compose's
 `<project>_<volume>` naming when run from a directory literally called
 `deploy`, which is how the standalone-VM setup invokes it. Coolify assigns

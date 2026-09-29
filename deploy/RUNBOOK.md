@@ -114,15 +114,67 @@ rolling back is rolling back the checkout, then rebuilding. Runner container
 images (`claude-code:base`, etc.) are unaffected by an API/frontend rollback
 and don't need rebuilding unless the rollback also reverts `docker/`.
 
-## Backups
+## Persistent state
 
-`backup.sh` archives the `user_data` volume nightly (cron example inside the
-script) and keeps the 14 most recent archives. Copy archives off-server or use
-Hetzner volume snapshots. Restore with:
+All API state lives in two places, both outside the api container so a
+redeploy or rebuild never touches them:
+
+- `CLOUD_AGENTS_DATA_DIR` (host directory, default `/var/lib/cloud-agents`):
+  the SQLite database `cloud-agents.db` (plus its `-wal`/`-shm` files),
+  `artifacts/` and `attachments/`. It is bind-mounted into the api container
+  at the same path, because attachment directories are re-mounted into runner
+  containers by the host's dockerd and so must resolve identically on both
+  sides. Changing `CLOUD_AGENTS_DATA_DIR` after first deploy points the api at
+  an empty directory: move the old directory's contents first.
+- The `user_data` named volume (`/user-home`): per-user harness credentials.
+
+Per-session workspace and home volumes are separate named Docker volumes and
+also survive redeploys.
+
+### Upgrading from a deployment without a data directory
+
+Before this layout, the database, artifacts and attachments defaulted to
+paths inside the api container (`/app/cloud-agents.db`,
+`/app/cloud-agents-artifacts`, `/app/cloud-agents-attachments`) and were
+discarded on every redeploy. To keep the state of the currently running
+container, copy it out BEFORE deploying the new compose file:
 
 ```sh
+sudo mkdir -p /var/lib/cloud-agents
+docker compose exec api sh -c 'cd /app && tar cf - cloud-agents.db* cloud-agents-artifacts cloud-agents-attachments 2>/dev/null' \
+    | sudo tar xf - -C /var/lib/cloud-agents
+cd /var/lib/cloud-agents
+sudo mv cloud-agents-artifacts artifacts 2>/dev/null || true
+sudo mv cloud-agents-attachments attachments 2>/dev/null || true
+```
+
+Artifact and attachment rows store only file names; their directories are
+derived from `CLOUD_AGENTS_ARTIFACTS_DIR`/`CLOUD_AGENTS_ATTACHMENTS_DIR` at
+read time, so moved files are found under the new location.
+
+## Backups
+
+`backup.sh` runs nightly (cron example inside the script) and writes three
+archives per run, keeping the 14 most recent of each:
+
+- `db-<stamp>.db.gz`: an online `sqlite3 .backup` snapshot (consistent while
+  the api is writing), integrity-checked before it is kept;
+- `files-<stamp>.tar.gz`: `artifacts/` and `attachments/`;
+- `user-home-<stamp>.tar.gz`: the `user_data` volume.
+
+It exits non-zero if the database or volume is missing rather than archiving
+nothing. The database step pulls the `sqlite` package into an `alpine`
+container, so it needs registry access at run time. Copy archives off-server
+or use Hetzner volume snapshots. Restore with the api stopped:
+
+```sh
+docker compose stop api
+gunzip -c db-<stamp>.db.gz | sudo tee /var/lib/cloud-agents/cloud-agents.db >/dev/null
+sudo rm -f /var/lib/cloud-agents/cloud-agents.db-wal /var/lib/cloud-agents/cloud-agents.db-shm
+sudo tar xzf files-<stamp>.tar.gz -C /var/lib/cloud-agents
 docker run --rm -v deploy_user_data:/data -v "$PWD:/backup" alpine \
     tar xzf /backup/user-home-<stamp>.tar.gz -C /data
+docker compose start api
 ```
 
 ## Monitoring
