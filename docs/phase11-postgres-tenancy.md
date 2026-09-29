@@ -86,9 +86,11 @@ Non-goals (later phases or explicitly deferred):
   SQLite code is deleted.
 - Types: `bigint` for counts, sizes and sequence numbers; `timestamptz` for
   every timestamp (today RFC 3339 text); `boolean` for today's `'0'`/`'1'`
-  flags; `jsonb` for stored JSON payloads (e.g. `session_events.payload`
-  keeps its verbatim bytes as `text` where the hash chain covers the exact
-  bytes); `text` for ids and free text. Enumerated status strings stay
+  flags; `jsonb` for stored JSON that nothing hashes or byte-compares, and `text`
+  for JSON whose exact bytes matter: `session_events.payload` stays `text`
+  because the capture hash chain is computed over the verbatim bytes and
+  `jsonb` would normalise them, and the same applies to the
+  `graph_ingest_outbox` request body; `text` for ids and free text. Enumerated status strings stay
   `text` with a `CHECK` constraint.
 - Every tenant-owned table: `tenant_id text NOT NULL DEFAULT
   NULLIF(current_setting('app.current_tenant', true), '') CHECK (tenant_id
@@ -182,7 +184,9 @@ listed in the PR and in `docs/phase9-message-search.md`.
 - Auth middleware resolves the user (unchanged token/OAuth logic) and the
   active organisation from the `X-CloudAgents-Org` header, defaulting to
   the user's personal organisation. The organisation is accepted only if a
-  `memberships` row exists for that user; otherwise `403`.
+  `memberships` row exists for that user; otherwise `403`. (Until slice F
+  ships, the scope is always the user's personal tenant and no header is
+  read; §9.)
 - **Explicit scope, never ambient.** The middleware produces a
   `TenantScope` value (`tenantId`, `userId`), and it is passed as an explicit
   parameter to every repository and ledger-store function that touches
@@ -253,8 +257,10 @@ cross-tenant read path and are reviewed as such. Each one:
   schema-qualified table names, so a caller cannot redirect it through an
   object on its own search path;
 - has `EXECUTE` revoked from `PUBLIC` and granted to `cloudagents_app` only;
-- returns only `(tenant_id, id)` and a bounded number of rows (a `limit`
-  argument with a hard maximum), never row content;
+- returns only the keys needed to build the worker's scope and a bounded
+  number of rows (a `limit` argument with a hard maximum), never row
+  content: `(tenant_id, id)` for tenant-owned tables, `(user_id)` for
+  `user_sync_state`, whose worker runs under a `UserScope` (§4.3a);
 - takes no argument that is interpolated into SQL.
 
 ### 5.4 Visibility rule
@@ -269,8 +275,9 @@ defers sharing semantics.
 
 ### 6.1 Personal organisations
 
-Every user has exactly one `personal` tenant, created on first sign-in (or
-by the export for existing users), with the user as `owner`. Token/open
+Every user has exactly one `personal` tenant, id `personal:<user id>`,
+created on first sign-in (or by the export for existing users), with the
+user as `owner`. Token/open
 mode maps to the `default` user's personal tenant.
 
 ### 6.2 GitHub-synced organisations
@@ -331,7 +338,9 @@ run once with the API stopped.
 It cannot run as `cloudagents_app` or `cloudagents_owner`: under `FORCE ROW
 LEVEL SECURITY` neither can see all tenants' rows, so an emptiness check or
 a row count would silently see nothing. It connects as
-`cloudagents_migrator`, a role with `BYPASSRLS` that is created `NOLOGIN`
+`cloudagents_migrator`, a role with `BYPASSRLS`, `SELECT` and `INSERT` on
+every table (granted by the baseline migration) and nothing else, created
+`NOLOGIN`
 and enabled (`ALTER ROLE ... LOGIN`) only for the cut-over, via its own DSN
 `CLOUD_AGENTS_EXPORT_DATABASE_URL`. The runbook disables it again
 immediately afterwards, and the service's startup self-check fails if that
@@ -394,40 +403,52 @@ to the Postgres DSN, start the API, then smoke-test.
 ## 9. Delivery slices
 
 Each slice is its own PR, green and deployable. Production stays on SQLite
-until slice F.
+until slice E. Organisations (slice F) come after cut-over, because
+memberships, invitations and organisation switching need tables that exist
+only in Postgres; nothing that production runs before cut-over depends on
+Postgres-only data.
 
 - **A. Foundations.** `Lyric.Db` + `Npgsql` dependencies, Postgres
-  connection, migration runner and `--migrate`, baseline schema with
-  global tables, RLS and roles, role self-check at startup, CI Postgres
-  service, and the two-tenant isolation live suite. It also includes a live
-  test that the §5.2 unit-of-work pattern works through `Lyric.Db` on one
-  pooled connection: `set_config` inside a transaction is visible to later
-  statements in that transaction and gone after COMMIT on the same pooled
-  connection. If that test cannot pass, slice A stops and the design is
-  revisited before any store code is ported. Not wired into request
-  handling yet.
-- **B. Tenancy core.** `TenantScope` (§5.2) added to every repository and
-  ledger-store function and passed from every handler, still backed by
-  SQLite (which uses `scope.userId` where it used `currentUserId()`, so
-  behaviour is unchanged). Personal organisations, `X-CloudAgents-Org`
-  resolution, and the `SECURITY DEFINER` claim functions (Postgres-side,
-  live-tested only).
-- **C. Store port.** Port the repository and ledger store to parameterised
-  Postgres queries, one domain per PR (sessions and messages; profiles and
+  connection, migration runner and `--migrate`, `provision.sql`, baseline
+  schema with global and user-owned tables, RLS, roles and claim functions,
+  role self-check at startup, CI Postgres service, and the two-tenant
+  isolation live suite. It also includes a live test that the §5.2
+  unit-of-work pattern works through `Lyric.Db` on one pooled connection:
+  `set_config` inside a transaction is visible to later statements in that
+  transaction and gone after COMMIT on the same pooled connection. If that
+  test cannot pass, slice A stops and the design is revisited before any
+  store code is ported. Not wired into request handling.
+- **B. Scope plumbing on SQLite.** `TenantScope`/`UserScope` (§5.2, §4.3a)
+  added to every repository and ledger-store function and passed from every
+  handler, still backed by SQLite. With no organisations yet, every user
+  has exactly one implicit personal tenant whose id is derived
+  deterministically from the user id (`personal:<user id>`). The middleware
+  builds the scope from the authenticated user alone; there is no
+  membership lookup and no `X-CloudAgents-Org` header yet. The SQLite
+  implementation uses `scope.userId` where it used `currentUserId()`, so
+  behaviour is unchanged. This removes the thread-slot dependency before any
+  Postgres code is live.
+- **C. Store port.** Each domain (sessions and messages; profiles and
   library; jobs, webhooks and maintenance; ledger; capture and outbox;
-  search). Each domain gets a Postgres implementation of the same
-  scope-taking signatures from slice B, in a parallel package, with live
-  Postgres tests. Handlers keep calling the SQLite-backed repository, so
-  production is unaffected; ported code is exercised by CI only.
-- **D. Organisations.** GitHub sync with `read:org`, native organisations,
-  invitations, `/api/orgs`, frontend switcher and settings.
-- **E. Export tool** (§7) with a test that exports a fixture SQLite database
-  containing every table and verifies counts and typed values.
-- **F. Cut-over.** Point the repository facade at the Postgres
-  implementations, runbook and compose changes, production migration, then
-  deletion of `CloudAgents.Sqlite`, the SQLite SQL builders and the SQLite
-  NuGet packages in the same PR. Because signatures were settled in slice B,
-  this switch touches no handler code.
+  search) gets a Postgres implementation of the same scope-taking
+  signatures from slice B, in a parallel package, with live Postgres tests.
+  Handlers keep calling the SQLite-backed repository, so production is
+  unaffected; ported code is exercised by CI only.
+- **D. Export tool** (§7), creating each user's personal tenant with the
+  same deterministic id as slice B, with a test that exports a fixture
+  SQLite database containing every table and verifies counts and typed
+  values.
+- **E. Cut-over.** Point the repository facade at the Postgres
+  implementations, add `session_routes`-based callback resolution, runbook
+  and compose changes, production migration, then deletion of
+  `CloudAgents.Sqlite`, the SQLite SQL builders and the SQLite NuGet
+  packages in the same PR. Because signatures were settled in slice B, this
+  switch touches no handler code.
+- **F. Organisations** (§6.2 to §6.4), on Postgres: `X-CloudAgents-Org`
+  resolution against `memberships`, GitHub sync with `read:org` and the
+  hourly membership sync, native organisations and invitations,
+  `/api/orgs`, and the frontend switcher and settings page. The OAuth scope
+  change ships in this slice.
 
 ## 10. Acceptance criteria
 
@@ -443,7 +464,7 @@ until slice F.
   `await` that may resume on another thread) uses exactly the scope it was
   passed.
 - Each claim function has `EXECUTE` revoked from `PUBLIC`, a fixed
-  `search_path`, and returns only `(tenant_id, id)` (checked by a live test
+  `search_path`, and returns only its scope keys (§5.3) (checked by a live test
   that queries `pg_proc` and calls it as a role without the grant).
 - With two tenants' due items present, a claim function called with no
   tenant scope returns both tenants' items; `cloudagents_claimer` cannot
@@ -472,7 +493,7 @@ until slice F.
   value.
 - GitHub sync adds, updates and removes `github`-sourced memberships and
   never changes `native` ones or demotes an owner.
-- After slice F, no SQLite code or package remains, and `grep -r sqlLiteral
+- After slice E, no SQLite code or package remains, and `grep -r sqlLiteral
   src` is empty.
 
 ## 11. Open questions
