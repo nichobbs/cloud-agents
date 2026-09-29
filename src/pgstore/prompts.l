@@ -184,7 +184,7 @@ pub func listPromptsByTag(
     sc,
     "SELECT " + promptCols("p.") + " FROM prompts p JOIN prompt_tags pt " +
       "ON pt.tenant_id = p.tenant_id AND pt.prompt_id = p.id " +
-      "WHERE pt.user_id = @p0 AND pt.tag = @p1 ORDER BY p.name COLLATE \"C\"",
+      "WHERE p.user_id = @p0 AND pt.user_id = @p0 AND pt.tag = @p1 ORDER BY p.name COLLATE \"C\"",
     [sc.userId, tag]
   )
 }
