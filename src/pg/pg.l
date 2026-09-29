@@ -168,10 +168,7 @@ pub func beginUnscopedUnit(conn: in DbConnection): Result[DbTransaction, PgError
 }
 
 pub func commitUnit(tx: in DbTransaction): Result[Unit, PgError] {
-  return match tx.commit() {
-    case Ok(_) -> Ok(value = ())
-    case Err(e) -> Err(error = Query(message = e.message))
-  }
+  return match tx.commit() { case Ok(_) -> Ok(value = ()); case Err(e) -> Err(error = Query(message = e.message)) }
 }
 
 /// Roll back, ignoring errors: used on paths that are already failing.

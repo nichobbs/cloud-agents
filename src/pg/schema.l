@@ -59,7 +59,6 @@ pub func latestVersion(): String {
 }
 
 // ─── Fragments ──────────────────────────────────────────────────────────────
-
 func tenantSetting(): String {
   return "NULLIF(current_setting('app.current_tenant', true), '')"
 }
@@ -131,12 +130,10 @@ func concat(parts: in slice[slice[String]]): slice[String] {
 }
 
 // ─── Global tables ──────────────────────────────────────────────────────────
-
 func globalTables(): slice[String] {
   return [
     "GRANT SELECT ON public.schema_migrations TO cloudagents_app",
-    "CREATE TABLE public.users (" + "id text PRIMARY KEY CHECK (id <> ''), " +
-      "github_id bigint UNIQUE, " +
+    "CREATE TABLE public.users (" + "id text PRIMARY KEY CHECK (id <> ''), " + "github_id bigint UNIQUE, " +
       "github_login text NOT NULL DEFAULT '', " +
       "created_at timestamptz NOT NULL DEFAULT now())",
     "GRANT SELECT, INSERT, UPDATE ON public.users TO cloudagents_app",
@@ -180,7 +177,6 @@ func globalTables(): slice[String] {
 }
 
 // ─── User-owned tables ──────────────────────────────────────────────────────
-
 func userTables(): slice[String] {
   return concat(
     [
@@ -216,7 +212,6 @@ func userTables(): slice[String] {
 }
 
 // ─── Tenant-owned tables: sessions and transcript ───────────────────────────
-
 func sessionTables(): slice[String] {
   return concat(
     [
@@ -338,7 +333,6 @@ func sessionTables(): slice[String] {
 }
 
 // ─── Tenant-owned tables: interactive requests ──────────────────────────────
-
 func requestTables(): slice[String] {
   return concat(
     [
@@ -384,7 +378,6 @@ func requestTables(): slice[String] {
 }
 
 // ─── Tenant-owned tables: library, profiles, jobs ───────────────────────────
-
 func libraryTables(): slice[String] {
   return concat(
     [
@@ -508,7 +501,6 @@ func mcpServerPart(name: in String): slice[String] {
 }
 
 // ─── Tenant-owned tables: capture handoff ───────────────────────────────────
-
 /// The graph-ingest outbox. `body` is canonical JSON whose exact bytes are
 /// hashed into `body_hash` and re-sent verbatim. `given_up_at` replaces the
 /// SQLite store's `next_attempt_at = '99999999999999'` terminal sentinel, and
@@ -538,7 +530,6 @@ func outboxTables(): slice[String] {
 }
 
 // ─── Tenant-owned tables: session ledger ────────────────────────────────────
-
 func ledgerTables(): slice[String] {
   return concat(
     [
@@ -642,7 +633,6 @@ func ledgerTables(): slice[String] {
 // result of scope keys only. The lease (claimed_until) is set in the same
 // statement that selects the rows, because the SKIP LOCKED row lock alone is
 // released when the claim's transaction commits.
-
 func claimOutboxFn(): String {
   return "CREATE FUNCTION public.claim_graph_ingest_outbox(p_limit integer, p_lease_seconds integer) " +
     "RETURNS TABLE (tenant_id text, id text) LANGUAGE sql SECURITY DEFINER " +

@@ -82,8 +82,7 @@ pub func migrate(conn: in DbConnection): Result[slice[String], CloudAgents.Pg.Pg
   if role != requiredRole() {
     return Err(
       error = CloudAgents.Pg.Query(
-        message = "migrations must run as " + requiredRole() + " (connected as '" + role +
-          "'); set " +
+        message = "migrations must run as " + requiredRole() + " (connected as '" + role + "'); set " +
           CloudAgents.Pg.migrateDsnVar() +
           " to that role's DSN"
       )

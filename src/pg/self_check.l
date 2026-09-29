@@ -28,8 +28,7 @@ func one(conn: in DbConnection, sql: in String): Result[Option[DbRow], String] {
 }
 
 func flag(row: in DbRow, name: in String): Bool {
-  return Db.dbGetString(row, name) == "t" or Db.dbGetString(row, name) == "true" or
-    Db.dbGetString(row, name) == "True"
+  return Db.dbGetString(row, name) == "t" or Db.dbGetString(row, name) == "true" or Db.dbGetString(row, name) == "True"
 }
 
 func provisionHint(): String {
@@ -38,11 +37,7 @@ func provisionHint(): String {
 
 /// Check the connected role and database. `Ok(())` means safe to serve.
 pub func check(conn: in DbConnection): Result[Unit, String] {
-  val me = match one(
-    conn,
-    "SELECT current_user::text AS name, rolsuper::text AS su, rolbypassrls::text AS bypass " +
-      "FROM pg_roles WHERE rolname = current_user"
-  )? {
+  val me = match one(conn, "SELECT current_user::text AS name, rolsuper::text AS su, rolbypassrls::text AS bypass " + "FROM pg_roles WHERE rolname = current_user")? {
     case Some(r) -> r
     case None -> return Err(error = "cannot read the service role from pg_roles")
   }
@@ -53,12 +48,7 @@ pub func check(conn: in DbConnection): Result[Unit, String] {
   if flag(me, "bypass") {
     return Err(error = "service role '" + name + "' has BYPASSRLS" + provisionHint())
   }
-  val owned = match one(
-    conn,
-    "SELECT count(*)::text AS n FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace " +
-      "WHERE n.nspname = 'public' AND c.relkind IN ('r', 'p') AND c.relowner = " +
-      "(SELECT oid FROM pg_roles WHERE rolname = current_user)"
-  )? {
+  val owned = match one(conn, "SELECT count(*)::text AS n FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace " + "WHERE n.nspname = 'public' AND c.relkind IN ('r', 'p') AND c.relowner = " + "(SELECT oid FROM pg_roles WHERE rolname = current_user)")? {
     case Some(r) -> Db.dbGetString(r, "n")
     case None -> "0"
   }
@@ -69,10 +59,7 @@ pub func check(conn: in DbConnection): Result[Unit, String] {
         provisionHint()
     )
   }
-  val schemaOwner = match one(
-    conn,
-    "SELECT pg_get_userbyid(nspowner)::text AS o FROM pg_namespace WHERE nspname = 'public'"
-  )? {
+  val schemaOwner = match one(conn, "SELECT pg_get_userbyid(nspowner)::text AS o FROM pg_namespace WHERE nspname = 'public'")? {
     case Some(r) -> Db.dbGetString(r, "o")
     case None -> ""
   }
@@ -96,10 +83,7 @@ pub func check(conn: in DbConnection): Result[Unit, String] {
     }
   }
   val want = CloudAgents.Pg.Schema.latestVersion()
-  val have = match one(
-    conn,
-    "SELECT coalesce(max(version), '') AS v FROM public.schema_migrations"
-  ) {
+  val have = match one(conn, "SELECT coalesce(max(version), '') AS v FROM public.schema_migrations") {
     case Ok(Some(r)) -> Db.dbGetString(r, "v")
     case Ok(None) -> ""
     case Err(_) -> ""

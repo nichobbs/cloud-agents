@@ -85,9 +85,12 @@ Non-goals (later phases or explicitly deferred):
   migrations are not replayed; they stay frozen in history until the
   SQLite code is deleted.
 - Types: `bigint` for counts, sizes and sequence numbers; `timestamptz` for
-  every timestamp (today RFC 3339 text); `boolean` for today's `'0'`/`'1'`
-  flags; `jsonb` for stored JSON that nothing hashes or byte-compares, and `text`
-  for JSON whose exact bytes matter: `session_events.payload` stays `text`
+  every timestamp (today epoch-millisecond text; no column stores RFC 3339),
+  with the SQLite store's `''`/`'0'` "unset" sentinels becoming NULL; `boolean` for today's `'0'`/`'1'`
+  flags; `text` for all stored JSON (every JSON column is either compared or
+  hashed byte for byte, or passed through verbatim, and none is queried by
+  path, so `jsonb` would add normalisation risk for no benefit), including
+  JSON whose exact bytes matter: `session_events.payload` stays `text`
   because the capture hash chain is computed over the verbatim bytes and
   `jsonb` would normalise them, and the same applies to the
   `graph_ingest_outbox` request body; `text` for ids and free text. Enumerated status strings stay
@@ -105,7 +108,13 @@ Non-goals (later phases or explicitly deferred):
   constraints. The same `NULLIF` form is used for `app.current_user` in
   §4.3a.
 - Foreign keys include `tenant_id`, so a row can never reference another
-  tenant's row.
+  tenant's row. The baseline adds none between tenant-owned tables: the
+  SQLite store has none and its delete paths rely on application ordering,
+  so each domain's port (slice C) adds its foreign keys once that ordering is
+  verified. A stray cross-tenant id cannot be read through in the meantime,
+  because both rows are under RLS.
+- `0001_baseline` may be edited in place until cut-over (slice E): no
+  production Postgres database exists before then.
 
 ### 4.2 Global (non-tenant) tables
 
@@ -408,16 +417,19 @@ memberships, invitations and organisation switching need tables that exist
 only in Postgres; nothing that production runs before cut-over depends on
 Postgres-only data.
 
-- **A. Foundations.** `Lyric.Db` + `Npgsql` dependencies, Postgres
-  connection, migration runner and `--migrate`, `provision.sql`, baseline
-  schema with global and user-owned tables, RLS, roles and claim functions,
-  role self-check at startup, CI Postgres service, and the two-tenant
-  isolation live suite. It also includes a live test that the §5.2
-  unit-of-work pattern works through `Lyric.Db` on one pooled connection:
-  `set_config` inside a transaction is visible to later statements in that
-  transaction and gone after COMMIT on the same pooled connection. If that
-  test cannot pass, slice A stops and the design is revisited before any
-  store code is ported. Not wired into request handling.
+- **A. Foundations.** Shipped: `Lyric.Db` + `Npgsql` dependencies,
+  `CloudAgents.Pg` (scopes, units of work), the migration runner and
+  `--migrate`, `provision.sql`, the typed baseline schema with global,
+  user-owned and tenant-owned tables and their RLS, roles, the claim-function
+  mechanism with the two claim functions whose Postgres form is new
+  (`claim_graph_ingest_outbox`, `claim_membership_sync`), the startup
+  self-check, a CI Postgres service, and the live suite
+  (`tests/pg_live_tests.l`). The unit-of-work go/no-go test passed. The
+  other queues (`scheduled_jobs`, the observer, ledger sync) each have their
+  own claim semantics today (compare-and-clear on `next_run_at`, a pending
+  flag, a lease column); their claim functions are written with their
+  domain's port in slice C so the semantics are carried over and tested
+  together. Not wired into request handling.
 - **B. Scope plumbing on SQLite.** `TenantScope`/`UserScope` (§5.2, §4.3a)
   added to every repository and ledger-store function and passed from every
   handler, still backed by SQLite. With no organisations yet, every user

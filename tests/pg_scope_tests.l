@@ -10,10 +10,7 @@ import Std.Testing
 import CloudAgents.Pg
 
 func invalid(r: in Result[Unit, PgError]): String {
-  return match r {
-    case Ok(_) -> ""
-    case Err(e) -> pgErrorMessage(e)
-  }
+  return match r { case Ok(_) -> ""; case Err(e) -> pgErrorMessage(e) }
 }
 
 test "a complete tenant scope is valid" {

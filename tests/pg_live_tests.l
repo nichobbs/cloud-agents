@@ -95,10 +95,7 @@ func exec(tx: in DbTransaction, sql: in String, params: in slice[String]): Int {
 
 /// Execute expecting failure; returns the error message ("" if it succeeded).
 func execErr(tx: in DbTransaction, sql: in String, params: in slice[String]): String {
-  return match tx.execute(sql, params) {
-    case Ok(_) -> ""
-    case Err(e) -> e.message
-  }
+  return match tx.execute(sql, params) { case Ok(_) -> ""; case Err(e) -> e.message }
 }
 
 func rows(tx: in DbTransaction, sql: in String, params: in slice[String]): slice[DbRow] {
@@ -142,7 +139,6 @@ func contains(xs: in slice[String], x: in String): Bool {
 }
 
 // ── Migrations and unit of work ────────────────────────────────────────────
-
 test "migrations are idempotent and the schema is current" {
   if not live() {
     skipped()
@@ -209,7 +205,6 @@ test "a scope set in a unit is visible inside it and gone after commit on the sa
 }
 
 // ── Tenant isolation ───────────────────────────────────────────────────────
-
 test "two tenants see only their own rows, even with colliding ids" {
   if not live() {
     skipped()
@@ -239,7 +234,11 @@ test "two tenants see only their own rows, even with colliding ids" {
 
   val ra = tenantUnit(conn, ta, "u-a")
   assertEqual(str1(ra, "SELECT user_id AS v FROM sessions WHERE id = @p0", [sid]), "u-a", "A sees its own copy")
-  assertEqual(str1(ra, "SELECT count(*)::text AS v FROM session_events WHERE session_id = @p0", [sid]), "1", "A sees its event")
+  assertEqual(
+    str1(ra, "SELECT count(*)::text AS v FROM session_events WHERE session_id = @p0", [sid]),
+    "1",
+    "A sees its event"
+  )
   commit(ra)
   val rb = tenantUnit(conn, tb, "u-b")
   assertEqual(str1(rb, "SELECT user_id AS v FROM sessions WHERE id = @p0", [sid]), "u-b", "B sees its own copy")
@@ -352,7 +351,6 @@ test "an empty scope is rejected before any SQL is sent" {
 }
 
 // ── User-owned tables ──────────────────────────────────────────────────────
-
 test "credentials follow their user across tenants and stay private to them" {
   if not live() {
     skipped()
@@ -389,7 +387,6 @@ test "credentials follow their user across tenants and stay private to them" {
 }
 
 // ── Claim functions ────────────────────────────────────────────────────────
-
 func insertOutboxSql(): String {
   return "INSERT INTO graph_ingest_outbox (id, session_id, body, body_hash, url, created_at, next_attempt_at, delivered_at) " +
     "VALUES (@p0, 's', '{}', @p0, 'https://graph.example/ingest', now(), now() + (@p1 || ' seconds')::interval, " +
@@ -398,7 +395,11 @@ func insertOutboxSql(): String {
 
 func claimOutbox(conn: in DbConnection, leaseSeconds: in String): slice[String] {
   val tx = unscoped(conn)
-  val r = rows(tx, "SELECT tenant_id || '/' || id AS v FROM claim_graph_ingest_outbox(100, @p0::integer)", [leaseSeconds])
+  val r = rows(
+    tx,
+    "SELECT tenant_id || '/' || id AS v FROM claim_graph_ingest_outbox(100, @p0::integer)",
+    [leaseSeconds]
+  )
   commit(tx)
   var acc: slice[String] = []
   for row in r {
@@ -440,7 +441,11 @@ test "the outbox claim spans tenants, skips undue rows, and leases what it retur
   assertTrue(not contains(second, tb + "/due-b-" + run), "a live lease is not claimed again (B)")
 
   val expire = tenantUnit(conn, ta, "u-a")
-  exec(expire, "UPDATE graph_ingest_outbox SET claimed_until = now() - interval '1 second' WHERE id = @p0", ["due-a-" + run])
+  exec(
+    expire,
+    "UPDATE graph_ingest_outbox SET claimed_until = now() - interval '1 second' WHERE id = @p0",
+    ["due-a-" + run]
+  )
   commit(expire)
   val third = claimOutbox(conn, "300")
   assertTrue(contains(third, ta + "/due-a-" + run), "an expired lease is claimable again")
@@ -496,8 +501,16 @@ test "membership-sync claim returns only users with GitHub memberships" {
   val g = unscoped(conn)
   exec(g, "INSERT INTO users (id) VALUES (@p0), (@p1)", [withGh, nativeOnly])
   exec(g, "INSERT INTO tenants (id, name, kind) VALUES (@p0, 'Org', 'native')", [org])
-  exec(g, "INSERT INTO memberships (tenant_id, user_id, role, source) VALUES (@p0, @p1, 'member', 'github')", [org, withGh])
-  exec(g, "INSERT INTO memberships (tenant_id, user_id, role, source) VALUES (@p0, @p1, 'member', 'native')", [org, nativeOnly])
+  exec(
+    g,
+    "INSERT INTO memberships (tenant_id, user_id, role, source) VALUES (@p0, @p1, 'member', 'github')",
+    [org, withGh]
+  )
+  exec(
+    g,
+    "INSERT INTO memberships (tenant_id, user_id, role, source) VALUES (@p0, @p1, 'member', 'native')",
+    [org, nativeOnly]
+  )
   commit(g)
   for u in [withGh, nativeOnly] {
     val w = userUnit(conn, u)
@@ -565,7 +578,6 @@ test "claim functions are hardened: definer, fixed search_path, no PUBLIC execut
 }
 
 // ── Self-check ─────────────────────────────────────────────────────────────
-
 test "the self-check passes for the service role and fails for the owner" {
   if not live() {
     skipped()
