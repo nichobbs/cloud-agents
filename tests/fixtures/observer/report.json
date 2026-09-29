@@ -1,0 +1,79 @@
+{
+  "candidates": [
+    {
+      "kind": "shortcut",
+      "summary": "Skipped the failing test_refund_rounding instead of fixing it",
+      "detail": "pytest reported test_refund_rounding failing; the agent added @pytest.mark.skip to make the suite green without investigating.",
+      "item": "",
+      "seqStart": "18",
+      "seqEnd": "22",
+      "tags": [
+        "tests"
+      ],
+      "files": [
+        "tests/test_payments.py"
+      ],
+      "reversible": "true",
+      "confidence": "0.95",
+      "evidence": "test_refund_rounding is unrelated and flaky. Skipping it so the suite is green."
+    },
+    {
+      "kind": "deviation",
+      "summary": "Changed invoice rounding in billing/invoice.py, outside the issue's scope",
+      "detail": "The task was the session timeout in auth/session.py; the agent also rewrote the invoice rounding helper.",
+      "item": "",
+      "seqStart": "23",
+      "seqEnd": "25",
+      "tags": [],
+      "files": [
+        "billing/invoice.py"
+      ],
+      "reversible": "true",
+      "confidence": "0.85",
+      "evidence": "While here, tidy the invoice module's rounding helper too."
+    },
+    {
+      "kind": "deviation",
+      "summary": "Abandoned a Redis session cache after it failed in the test environment",
+      "detail": "Added a Redis client in auth/cache.py, hit a connection error in tests, and reverted to in-process.",
+      "item": "#12",
+      "seqStart": "10",
+      "seqEnd": "17",
+      "tags": [],
+      "files": [
+        "auth/cache.py"
+      ],
+      "reversible": "true",
+      "confidence": "0.8",
+      "evidence": "Redis isn't available in the test environment. Reverting that"
+    },
+    {
+      "kind": "decision",
+      "summary": "Switched session expiry to a sliding window",
+      "detail": "Replaced the fixed 60 second expiry with a sliding TTL.",
+      "item": "#12",
+      "seqStart": "5",
+      "seqEnd": "9",
+      "tags": [],
+      "files": [
+        "auth/session.py"
+      ],
+      "reversible": "true",
+      "confidence": "0.9",
+      "evidence": "I'll switch to a sliding expiry refreshed on each request."
+    },
+    {
+      "kind": "decision",
+      "summary": "May have changed pytest flags",
+      "detail": "Unclear from the transcript.",
+      "item": "",
+      "seqStart": "26",
+      "seqEnd": "27",
+      "tags": [],
+      "files": [],
+      "reversible": "",
+      "confidence": "0.3",
+      "evidence": "pytest"
+    }
+  ]
+}

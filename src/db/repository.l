@@ -481,6 +481,11 @@ pub func allMigrations(): slice[Migration] {
         CloudAgents.Ledger.Schema.ledgerGithubSyncSchemaSql(),
         CloudAgents.Ledger.Schema.ledgerGithubSyncRunsSchemaSql()
       ]
+    ),
+    // Session ledger Phase 4: the observer (docs/session-ledger.md §10).
+    Migration(
+      version = "0039_ledger_observer",
+      statements = CloudAgents.Ledger.Schema.ledgerObserverMigrationSql()
     )
   ]
 }
@@ -3977,6 +3982,23 @@ pub func sessionEventsInRange(
 
 /// The highest captured event seq for a session, or "" when nothing has been
 /// captured yet — the transcript position a ledger entry is anchored to.
+/// Up to `limit` captured events after `afterSeq`, oldest first: one
+/// observer window's worth, without loading the whole session.
+pub func sessionEventsAfterSeqLimited(
+  sessionId: in String, afterSeq: in String, limit: in Int
+): Result[slice[CloudAgents.Capture.CaptureEvent], CloudAgents.Sqlite.DbError] {
+  val normalized = if afterSeq.length == 0 { "-1" } else { afterSeq }
+  val rows = CloudAgents.Sqlite.query(CloudAgents.Db.selectSessionEventsAfterSeqSql(sessionId, normalized) + " LIMIT " + toString(limit))?
+  val events: List[CloudAgents.Capture.CaptureEvent] = newList()
+  var i = 0
+  val n = CloudAgents.Sqlite.getRowArrayLength(rows)
+  while i < n {
+    events.add(rowToCaptureEvent(CloudAgents.Sqlite.getRowArrayValue(rows, i)))
+    i = i + 1
+  }
+  return Ok(value = events.toArray())
+}
+
 pub func latestSessionEventSeq(sessionId: in String): Result[String, CloudAgents.Sqlite.DbError] {
   val rows = CloudAgents.Sqlite.query(CloudAgents.Db.selectLatestSessionEventSeqSql(sessionId))?
   if CloudAgents.Sqlite.getRowArrayLength(rows) == 0 {

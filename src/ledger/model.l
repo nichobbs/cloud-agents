@@ -125,7 +125,11 @@ pub func maxSummaryChars(): Int {
 /// `origin` is "" or "transition" (an entry the state machine created
 /// automatically on a move into blocked / needs_human). `undeclared` ("true"
 /// / "false") and `matchedEntryId` are the observer's reconciliation result
-/// (spec §15, a follow-up phase); declared entries carry "false" / "".
+/// (docs/session-ledger.md §10); declared entries carry "false" / "". An
+/// observed entry also carries the captured-event range it rests on
+/// (`observedFrom`..`transcriptSeq`), the observer's `confidence` (0..1) and
+/// `evidence` (a short quote), and `provisional` "true" while it came from a
+/// mid-run pass the agent may yet declare.
 @generate(Json)
 pub record LedgerEntry {
   pub id: String
@@ -157,6 +161,10 @@ pub record LedgerEntry {
   pub createdAt: String
   pub createdSeq: String
   pub updatedSeq: String
+  pub observedFrom: String
+  pub confidence: String
+  pub evidence: String
+  pub provisional: String
 }
 
 /// One work item in a session's batch. `id` is a canonical ref

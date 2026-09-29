@@ -81,7 +81,11 @@ func entry(kind: in String, severity: in String, review: in String, createdAt: i
     reviewComment = "",
     createdAt = createdAt,
     createdSeq = "1",
-    updatedSeq = "1"
+    updatedSeq = "1",
+    observedFrom = "",
+    confidence = "",
+    evidence = "",
+    provisional = ""
   )
 }
 
