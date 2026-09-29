@@ -37,6 +37,10 @@ services:
       # 'restricted' join-network branch is unreachable.
       - CLOUD_AGENTS_RESTRICTED_NETWORK=${CLOUD_AGENTS_RESTRICTED_NETWORK:-}
       - CLOUD_AGENTS_EGRESS_PROXY=${CLOUD_AGENTS_EGRESS_PROXY:-}
+      # Explicit DNS servers pinned on 'full'-policy runner containers (the
+      # default-bridge DNS-resolution fix — see .env.example for why). Same
+      # forwarding requirement as the two vars above.
+      - CLOUD_AGENTS_RUNNER_DNS=${CLOUD_AGENTS_RUNNER_DNS:-}
       # Corporate-proxy TLS interception (#648): docker_manager.l's
       # createRunnerContainer reads these from the api PROCESS's own
       # environment, so they must be listed here or they never reach it —

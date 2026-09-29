@@ -34,6 +34,88 @@ test "proxyEnvForPolicy only emits proxy vars for restricted, when a proxy is se
   Env.SetEnvironmentVariable("CLOUD_AGENTS_EGRESS_PROXY", "")
 }
 
+// runnerDnsServers: the explicit-DNS override for the default-bridge
+// ('full') network, gated off for 'restricted'/'none' (a named network
+// already has its own DNS story; overriding it risks breaking a same-network
+// peer's name resolution — see the function's own doc comment).
+test "runnerDnsServers only applies to the 'full'/default policy, and is operator-overridable" {
+  Env.SetEnvironmentVariable("CLOUD_AGENTS_RUNNER_DNS", "")
+  assertTrue(runnerDnsServers("restricted").length == 0, "'restricted' never gets a DNS override")
+  assertTrue(runnerDnsServers("none").length == 0, "'none' never gets a DNS override")
+
+  val defaults = runnerDnsServers("full")
+  assertEqualInt(defaults.length.toInt(), 2, "'full' gets the default two-server list when unset")
+  assertEqual(defaults[0], "1.1.1.1", "first default is Cloudflare's primary resolver")
+  assertEqual(defaults[1], "1.0.0.1", "second default is Cloudflare's secondary resolver")
+
+  // An empty policy string (no profile) is treated the same as 'full'.
+  assertEqualInt(runnerDnsServers("").length.toInt(), 2, "no profile behaves like 'full'")
+
+  // Operator override wins over the default list.
+  Env.SetEnvironmentVariable("CLOUD_AGENTS_RUNNER_DNS", "9.9.9.9,8.8.4.4")
+  val overridden = runnerDnsServers("full")
+  assertEqualInt(overridden.length.toInt(), 2, "override list has two servers")
+  assertEqual(overridden[0], "9.9.9.9", "override's first server")
+  assertEqual(overridden[1], "8.8.4.4", "override's second server")
+  // The override still never applies to 'restricted'/'none'.
+  assertTrue(runnerDnsServers("restricted").length == 0, "override does not leak into 'restricted'")
+
+  // "off" opts out entirely, restoring the pre-existing un-pinned behavior.
+  Env.SetEnvironmentVariable("CLOUD_AGENTS_RUNNER_DNS", "off")
+  assertTrue(runnerDnsServers("full").length == 0, "\"off\" disables the override")
+
+  // The "off" sentinel is case- and whitespace-tolerant (#1128): an
+  // un-normalized "OFF" or " off " must never fall through to splitByComma
+  // and come back as a single-entry ["OFF"]/["off"] "DNS server" list —
+  // Docker would reject that as an invalid IP at container-create time.
+  Env.SetEnvironmentVariable("CLOUD_AGENTS_RUNNER_DNS", "OFF")
+  assertTrue(runnerDnsServers("full").length == 0, "uppercase \"OFF\" also disables the override")
+  Env.SetEnvironmentVariable("CLOUD_AGENTS_RUNNER_DNS", " off ")
+  assertTrue(runnerDnsServers("full").length == 0, "\" off \" with surrounding whitespace also disables the override")
+  Env.SetEnvironmentVariable("CLOUD_AGENTS_RUNNER_DNS", "Off")
+  assertTrue(runnerDnsServers("full").length == 0, "mixed-case \"Off\" also disables the override")
+
+  Env.SetEnvironmentVariable("CLOUD_AGENTS_RUNNER_DNS", "")
+}
+
+// splitByComma (package-private; exercised through the public
+// runnerDnsServers, its only caller) edge cases (#1126): a naturally-typed
+// list with spaces after commas, leading/trailing/doubled commas, and a
+// single value with no comma at all.
+test "runnerDnsServers tolerates whitespace and stray commas in the operator override (#1126)" {
+  // A space after each comma — the way most people naturally type a list —
+  // must not leak a leading space into an entry (Docker's daemon would
+  // reject a malformed IP like " 8.8.8.8" at container-create time).
+  Env.SetEnvironmentVariable("CLOUD_AGENTS_RUNNER_DNS", "1.1.1.1, 8.8.8.8")
+  val spaced = runnerDnsServers("full")
+  assertEqualInt(spaced.length.toInt(), 2, "a space after the comma still yields two entries")
+  assertEqual(spaced[0], "1.1.1.1", "first entry has no trailing space")
+  assertEqual(spaced[1], "8.8.8.8", "second entry has no leading space")
+
+  // Leading/trailing/doubled commas, and surrounding whitespace around the
+  // whole value, are dropped rather than producing empty entries.
+  Env.SetEnvironmentVariable("CLOUD_AGENTS_RUNNER_DNS", " , 1.1.1.1 ,, 8.8.8.8 , ")
+  val messy = runnerDnsServers("full")
+  assertEqualInt(messy.length.toInt(), 2, "leading/trailing/doubled commas and whitespace are all dropped")
+  assertEqual(messy[0], "1.1.1.1", "first real entry survives the mess")
+  assertEqual(messy[1], "8.8.8.8", "second real entry survives the mess")
+
+  // A single value with no comma at all is one entry, not zero.
+  Env.SetEnvironmentVariable("CLOUD_AGENTS_RUNNER_DNS", "1.1.1.1")
+  val single = runnerDnsServers("full")
+  assertEqualInt(single.length.toInt(), 1, "a single value with no comma yields one entry")
+  assertEqual(single[0], "1.1.1.1", "the single entry is unchanged")
+
+  // An input that's ENTIRELY commas/whitespace (no real value at all) is
+  // indistinguishable from an empty override: no entries survive, so no Dns
+  // override is applied — the same fail-safe outcome as leaving the var
+  // unset-but-"off", not a crash or a malformed Docker request.
+  Env.SetEnvironmentVariable("CLOUD_AGENTS_RUNNER_DNS", " , , ")
+  assertTrue(runnerDnsServers("full").length == 0, "an all-commas/whitespace override yields no entries, not a crash")
+
+  Env.SetEnvironmentVariable("CLOUD_AGENTS_RUNNER_DNS", "")
+}
+
 // ── Phase 6: MCP callbacks (docs/phase6-mcp-callbacks.md) ───────────────────
 // Stage 4 (docs/phase6 §8): default-on, opt out with the literal "0".
 test "callbacksFeatureEnabled is on unless explicitly set to \"0\"" {

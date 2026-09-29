@@ -55,6 +55,99 @@ pub func proxyEnvForPolicy(policy: in String): slice[String] {
   return ["HTTP_PROXY=" + proxy, "HTTPS_PROXY=" + proxy, "http_proxy=" + proxy, "https_proxy=" + proxy]
 }
 
+func isTrimmableSpace(c: in String): Bool {
+  return c == " " or c == "\t" or c == "\r" or c == "\n"
+}
+
+/// Strip leading/trailing spaces, tabs, CR, and LF (hand-rolled scan, not
+/// `String.Trim()` — matching this repo's other per-file `trimSpaces`
+/// helpers, e.g. `handlers/highlights.l`, `workspace.l`).
+func trimAscii(s: in String): String {
+  var start = 0
+  var stop = s.length.toInt()
+  while start < stop and isTrimmableSpace(s.substring(start, 1)) {
+    start = start + 1
+  }
+  while stop > start and isTrimmableSpace(s.substring(stop - 1, 1)) {
+    stop = stop - 1
+  }
+  return s.substring(start, stop - start)
+}
+
+/// Split `s` on literal commas into trimmed, non-empty pieces, dropping
+/// empty-after-trim runs (leading/trailing/doubled commas, or a piece that's
+/// only whitespace). Hand-rolled char scan, not `String.split()` — no proven
+/// working precedent for that method in this codebase (docs/lyric/gotchas.md)
+/// — mirroring this file's own `lastColonIndex`/`containsDot` scan idiom.
+/// Trims each piece so `"1.1.1.1, 8.8.8.8"` (a space after the comma, the
+/// natural way most people write a list) doesn't produce a leading-space
+/// entry that Docker's daemon would reject as an invalid IP at
+/// container-create time — see the #1126 review finding on this PR.
+func splitByComma(s: in String): slice[String] {
+  var result: slice[String] = []
+  var start = 0
+  var i = 0
+  while i < s.length {
+    if s.substring(i, 1) == "," {
+      val piece = trimAscii(s.substring(start, i - start))
+      if piece.length > 0 {
+        result = result.append(piece)
+      }
+      start = i + 1
+    }
+    i = i + 1
+  }
+  val lastPiece = trimAscii(s.substring(start, s.length - start))
+  if lastPiece.length > 0 {
+    result = result.append(lastPiece)
+  }
+  return result
+}
+
+/// Explicit DNS resolver list to pin on a runner container, or empty when
+/// none should be pinned.
+///
+/// Only meaningful for the 'full' (and un-profiled/default) policy, whose
+/// containers land on Docker's default `bridge` network — see
+/// `Lyric.Docker.createContainerWithNetworkAndDns`'s own doc comment for why
+/// that network's DNS resolution is unreliable: it copies the DAEMON HOST's
+/// own `/etc/resolv.conf` rather than using Docker's embedded DNS, so a host
+/// whose resolver is a loopback stub (e.g. `systemd-resolved`'s 127.0.0.53,
+/// the common case on modern Debian/Ubuntu) leaves such containers unable to
+/// resolve external hosts. `restricted` and `none` get an empty list here —
+/// a restricted-network container should rely on that named network's own
+/// (embedded, or egress-proxy-routed) DNS story instead of an override that
+/// could break resolution of a same-network peer's container name, and
+/// `none` has no network stack to pin DNS on at all.
+///
+/// Operator-overridable via `CLOUD_AGENTS_RUNNER_DNS` (comma-separated, e.g.
+/// `1.1.1.1, 8.8.8.8` — surrounding whitespace around each entry is
+/// trimmed); set it to `off` (case-insensitive, surrounding whitespace
+/// tolerated — e.g. `OFF`, ` off `) to opt out and fall back to whatever
+/// the daemon host's own default-bridge DNS resolution does (the
+/// pre-existing, un-pinned behavior — also the right choice for a host with
+/// a working custom/corporate/split-horizon resolver this override would
+/// otherwise shadow). Defaults to Cloudflare's public resolvers when unset.
+pub func runnerDnsServers(policy: in String): slice[String] {
+  val empty: slice[String] = []
+  if policy == "restricted" or policy == "none" {
+    return empty
+  }
+  val override = Env.GetEnvironmentVariable("CLOUD_AGENTS_RUNNER_DNS")
+  if DotNetString.IsNullOrEmpty(override) {
+    return ["1.1.1.1", "1.0.0.1"]
+  }
+  // Case/whitespace-tolerant: an un-normalized "OFF" or " off " must never
+  // fall through to splitByComma and come back as a single-entry
+  // ["off"]/["OFF"] "DNS server" list — Docker's daemon would reject that as
+  // an invalid IP at container-create time, breaking every session start
+  // (#1128).
+  if toLowerInvariant(trimAscii(override)) == "off" {
+    return empty
+  }
+  return splitByComma(override)
+}
+
 // ─── Phase 6: MCP callbacks (docs/phase6-mcp-callbacks.md) ───────────────────
 //
 // Stage 4 (docs/phase6 §8): on by default now that the in-container shim
