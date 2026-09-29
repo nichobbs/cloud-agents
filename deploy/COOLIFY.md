@@ -32,6 +32,16 @@ compose file for what differs and why.
      authenticated GitHub user, not "no one".
    - `CLOUD_AGENTS_RESTRICTED_NETWORK`, `CLOUD_AGENTS_EGRESS_PROXY` (optional,
      only needed for the `restricted` network policy)
+   - `CLOUD_AGENTS_RUNNER_DNS` (optional; see `.env.example` — the default
+     ("full"-policy) network mode puts runner containers on Docker's
+     default `bridge` network, which uses the HOST's own `/etc/resolv.conf`
+     rather than Docker's embedded DNS. On a host whose resolver is a
+     loopback stub (`systemd-resolved`'s 127.0.0.53, common on Ubuntu — and
+     the default on most Coolify hosts), that leaves runner containers
+     unable to resolve external hosts (surfaces as `claude` reporting
+     `Can't reach the API server`/`FailedToOpenSocket`). Cloud Agents pins
+     `1.1.1.1`/`1.0.0.1` by default to sidestep this; set this var to
+     override the list, or to `off` to disable the override)
    - `NODE_EXTRA_CA_CERTS`, `NODE_TLS_REJECT_UNAUTHORIZED` (optional,
      corporate-proxy TLS interception, #648) — `docker_manager.l`'s
      `createRunnerContainer` reads both from the `api` service's own process

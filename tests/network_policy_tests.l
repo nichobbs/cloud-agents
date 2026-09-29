@@ -34,6 +34,39 @@ test "proxyEnvForPolicy only emits proxy vars for restricted, when a proxy is se
   Env.SetEnvironmentVariable("CLOUD_AGENTS_EGRESS_PROXY", "")
 }
 
+// runnerDnsServers: the explicit-DNS override for the default-bridge
+// ('full') network, gated off for 'restricted'/'none' (a named network
+// already has its own DNS story; overriding it risks breaking a same-network
+// peer's name resolution — see the function's own doc comment).
+test "runnerDnsServers only applies to the 'full'/default policy, and is operator-overridable" {
+  Env.SetEnvironmentVariable("CLOUD_AGENTS_RUNNER_DNS", "")
+  assertTrue(runnerDnsServers("restricted").length == 0, "'restricted' never gets a DNS override")
+  assertTrue(runnerDnsServers("none").length == 0, "'none' never gets a DNS override")
+
+  val defaults = runnerDnsServers("full")
+  assertEqualInt(defaults.length.toInt(), 2, "'full' gets the default two-server list when unset")
+  assertEqual(defaults[0], "1.1.1.1", "first default is Cloudflare's primary resolver")
+  assertEqual(defaults[1], "1.0.0.1", "second default is Cloudflare's secondary resolver")
+
+  // An empty policy string (no profile) is treated the same as 'full'.
+  assertEqualInt(runnerDnsServers("").length.toInt(), 2, "no profile behaves like 'full'")
+
+  // Operator override wins over the default list.
+  Env.SetEnvironmentVariable("CLOUD_AGENTS_RUNNER_DNS", "9.9.9.9,8.8.4.4")
+  val overridden = runnerDnsServers("full")
+  assertEqualInt(overridden.length.toInt(), 2, "override list has two servers")
+  assertEqual(overridden[0], "9.9.9.9", "override's first server")
+  assertEqual(overridden[1], "8.8.4.4", "override's second server")
+  // The override still never applies to 'restricted'/'none'.
+  assertTrue(runnerDnsServers("restricted").length == 0, "override does not leak into 'restricted'")
+
+  // "off" opts out entirely, restoring the pre-existing un-pinned behavior.
+  Env.SetEnvironmentVariable("CLOUD_AGENTS_RUNNER_DNS", "off")
+  assertTrue(runnerDnsServers("full").length == 0, "\"off\" disables the override")
+
+  Env.SetEnvironmentVariable("CLOUD_AGENTS_RUNNER_DNS", "")
+}
+
 // ── Phase 6: MCP callbacks (docs/phase6-mcp-callbacks.md) ───────────────────
 // Stage 4 (docs/phase6 §8): default-on, opt out with the literal "0".
 test "callbacksFeatureEnabled is on unless explicitly set to \"0\"" {
@@ -111,10 +144,7 @@ test "networkModeForPolicyWithCallbacks matches networkModeForPolicy except opte
 // even a single pure function from (docs/lyric/gotchas.md) — so it had zero
 // coverage. The decision itself is now the pure dockerTransportFor here.
 func transportLabel(t: in DockerTransport): String {
-  return match t {
-    case Tcp(hostPort) -> "tcp:" + hostPort
-    case Socket -> "socket"
-  }
+  return match t { case Tcp(hostPort) -> "tcp:" + hostPort; case Socket -> "socket" }
 }
 
 test "dockerTransportFor selects TCP for a set, non-empty host:port (#377)" {
@@ -151,7 +181,6 @@ test "dockerTransportFor falls back to the socket transport when the var is abse
 // it straight back out with no lookup, "localhost" resolves via the local
 // NSS/hosts-file path everywhere, and an over-long host name is rejected by
 // the BCL's own local length check before it would ever query a resolver.
-
 test "isPrivateOrReservedIpv4 covers loopback, RFC1918, link-local/metadata, and 172.16-31 boundaries" {
   assertTrue(isPrivateOrReservedIpv4("127.0.0.1"), "loopback")
   assertTrue(isPrivateOrReservedIpv4("10.1.2.3"), "10/8")

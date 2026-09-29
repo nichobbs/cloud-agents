@@ -47,7 +47,16 @@ volumes:
 **Network-policy environment variables (optional).** A session profile's
 `network_policy` maps to the runner container's network access:
 
-- `full` (or no profile) — default Docker bridge, full egress.
+- `full` (or no profile) — default Docker bridge, full egress. This network
+  doesn't use Docker's embedded DNS (only a user-defined network gets that) —
+  it copies the DAEMON HOST's own `/etc/resolv.conf`, so a host whose
+  resolver is a loopback stub (e.g. `systemd-resolved`'s 127.0.0.53) leaves
+  containers unable to resolve external hosts. `runnerDnsServers`
+  (`src/network_policy.l`) pins explicit DNS servers on every `full`-policy
+  container to sidestep this — Cloudflare's `1.1.1.1`/`1.0.0.1` by default,
+  overridable (or disable-able via `off`) with **`CLOUD_AGENTS_RUNNER_DNS`**
+  (comma-separated, no surrounding whitespace). Never applies to
+  `restricted`/`none` below — a named network already has its own DNS story.
 - `none` — fully isolated, no network.
 - `restricted` — joins the Docker network named by **`CLOUD_AGENTS_RESTRICTED_NETWORK`**
   (create it `--internal`, with an allowlisting egress proxy as its only route

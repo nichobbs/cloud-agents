@@ -346,9 +346,16 @@ pub async func createRunnerContainer(
     policy,
     CloudAgents.NetworkPolicy.callbacksFeatureEnabled()
   )
+  // Explicit DNS servers for the 'full'/default policy's default-bridge
+  // container (empty for 'restricted'/'none' — see runnerDnsServers' doc
+  // comment). createContainerWithNetworkAndDns with an empty dns list is
+  // byte-identical to createContainerWithNetwork, so this always calls the
+  // Dns-aware constructor rather than branching on whether dnsServers is
+  // empty.
+  val dnsServers = CloudAgents.NetworkPolicy.runnerDnsServers(policy)
 
   val image = imageForHarness(harness)
-  val createRes = await createContainerWithNetwork(client, image, envs, binds, networkMode)
+  val createRes = await createContainerWithNetworkAndDns(client, image, envs, binds, networkMode, dnsServers)
   match createRes {
     case Ok(id) -> Ok(value = id.toString())
     case Err(e) -> {

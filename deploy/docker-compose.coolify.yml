@@ -60,10 +60,11 @@ services:
       - LYRIC_CONFIG_CLOUDAGENTS_OAUTH_GITHUB_CLIENTID=${LYRIC_CONFIG_CLOUDAGENTS_OAUTH_GITHUB_CLIENTID:-}
       - LYRIC_CONFIG_CLOUDAGENTS_OAUTH_GITHUB_CLIENTSECRET=${LYRIC_CONFIG_CLOUDAGENTS_OAUTH_GITHUB_CLIENTSECRET:-}
       - LYRIC_CONFIG_CLOUDAGENTS_OAUTH_GITHUB_WHITELIST=${LYRIC_CONFIG_CLOUDAGENTS_OAUTH_GITHUB_WHITELIST:-}
-      # See docker-compose.yml for what these two control (runner container
-      # network policy) — same meaning here.
+      # See docker-compose.yml for what these three control (runner container
+      # network policy / DNS) — same meaning here.
       - CLOUD_AGENTS_RESTRICTED_NETWORK=${CLOUD_AGENTS_RESTRICTED_NETWORK:-}
       - CLOUD_AGENTS_EGRESS_PROXY=${CLOUD_AGENTS_EGRESS_PROXY:-}
+      - CLOUD_AGENTS_RUNNER_DNS=${CLOUD_AGENTS_RUNNER_DNS:-}
       # Corporate-proxy TLS interception (#648): docker_manager.l's
       # createRunnerContainer reads these from the api PROCESS's own
       # environment, so they must be listed here or they never reach it —
