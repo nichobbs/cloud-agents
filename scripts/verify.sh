@@ -40,7 +40,7 @@ REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT
 
-mkdir -p "$WORK/src/streaming" "$WORK/src/db" "$WORK/src/handlers" "$WORK/src/crypto" "$WORK/src/ledger"
+mkdir -p "$WORK/src/pg" "$WORK/src/streaming" "$WORK/src/db" "$WORK/src/handlers" "$WORK/src/crypto" "$WORK/src/ledger"
 cp "$REPO_ROOT/src/streaming/streaming.l"   "$WORK/src/streaming/"
 cp "$REPO_ROOT/src/db/db_client.l"          "$WORK/src/db/"
 # db_client.l builds the session list's ledger-attention column from it.
@@ -54,6 +54,8 @@ cp "$REPO_ROOT/src/text.l"                  "$WORK/src/"
 # auth.l hashes callback tokens with CloudAgents.Crypto.sha256Hex, so Crypto
 # (itself only Std.Core + CloudAgents.Text) must be in the build as well.
 cp "$REPO_ROOT/src/crypto/crypto.l"         "$WORK/src/crypto/"
+# auth.l builds the request's tenant scope (CloudAgents.Scope, Std.Core only).
+cp "$REPO_ROOT/src/pg/scope.l"              "$WORK/src/pg/"
 
 cat > "$WORK/lyric.toml" <<'TOML'
 [package]
@@ -66,6 +68,7 @@ output_assembly = "CloudAgentsVerify.dll"
 [project.packages]
 "CloudAgents.Text"      = "src/text.l"
 "CloudAgents.Crypto"    = "src/crypto/crypto.l"
+"CloudAgents.Scope"     = "src/pg/scope.l"
 "CloudAgents.Streaming" = "src/streaming/streaming.l"
 "CloudAgents.Ledger.Schema" = "src/ledger/schema.l"
 "CloudAgents.Db"        = "src/db/db_client.l"

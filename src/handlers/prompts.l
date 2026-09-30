@@ -1,7 +1,7 @@
 //! HTTP handlers for the prompt library: save, list, edit, delete and mark
-//! prompts as used. Storage lives in CloudAgents.Repository; ownership is
-//! scoped by CloudAgents.Auth.currentUserId() (single operator identity in
-//! the static-token phase, per-user once GitHub OAuth lands).
+//! prompts as used. Storage lives in CloudAgents.Repository; every call is
+//! scoped by the request's `TenantScope` (CloudAgents.Auth.requestScope),
+//! taken once at handler entry, and a user sees only their own prompts.
 package CloudAgents.Prompts
 
 import Std.Core
@@ -158,7 +158,7 @@ func validateSavePrompt(req: in SavePromptRequest): Option[Web.ApiError] {
 
 /// List the caller's saved prompts, alphabetical by name.
 pub func listPromptsHandler(): Result[PromptList, Web.ApiError] {
-  match listPrompts(CloudAgents.Auth.currentUserId()) {
+  match listPrompts(CloudAgents.Auth.requestScope()) {
     case Ok(ps) -> return Ok(PromptList(prompts = ps))
     case Err(e) -> return Err(dbError(e))
   }
@@ -167,7 +167,7 @@ pub func listPromptsHandler(): Result[PromptList, Web.ApiError] {
 /// List the caller's prompts most-used first — the "popular" ordering the UI
 /// uses to surface frequently-run prompts.
 pub func listPopularPromptsHandler(): Result[PromptList, Web.ApiError] {
-  match listPromptsByUsage(CloudAgents.Auth.currentUserId()) {
+  match listPromptsByUsage(CloudAgents.Auth.requestScope()) {
     case Ok(ps) -> return Ok(PromptList(prompts = ps))
     case Err(e) -> return Err(dbError(e))
   }
@@ -178,7 +178,7 @@ pub func listPromptsByTagHandler(tag: in String): Result[PromptList, Web.ApiErro
   if tag.length == 0 {
     return Err(Web.badRequest("tag is required"))
   }
-  match listPromptsByTag(CloudAgents.Auth.currentUserId(), tag) {
+  match listPromptsByTag(CloudAgents.Auth.requestScope(), tag) {
     case Ok(ps) -> return Ok(PromptList(prompts = ps))
     case Err(e) -> return Err(dbError(e))
   }
@@ -209,15 +209,15 @@ pub func renderPromptHandler(pid: in String, req: in RenderPromptRequest): Resul
     }
     vi = vi + 1
   }
-  val userId = CloudAgents.Auth.currentUserId()
-  val prompt = match getPrompt(pid, userId) {
+  val sc = CloudAgents.Auth.requestScope()
+  val prompt = match getPrompt(pid, sc) {
     case Ok(Some(p)) -> p
     case Ok(None) -> return Err(Web.notFound("prompt not found"))
     case Err(e) -> return Err(dbError(e))
   }
   val rendered = renderTemplate(prompt.body, req.keys, req.values)
   // Rendering a prompt is a use; best-effort bookkeeping.
-  val _ = markPromptUsed(pid, userId)
+  val _ = markPromptUsed(pid, sc)
   return Ok(RenderedPrompt(rendered = rendered))
 }
 
@@ -231,10 +231,10 @@ pub func addPromptHandler(req: in SavePromptRequest): Result[Prompt, Web.ApiErro
   // stored value must match or a " foo " name would round-trip with the
   // surrounding whitespace the check quietly ignored. Body is stored as-is
   // (leading/trailing whitespace in a prompt body can be meaningful).
-  val userId = CloudAgents.Auth.currentUserId()
+  val sc = CloudAgents.Auth.requestScope()
   // Prompt row + its tags commit together (#244); the returned record carries
   // its tags, so no re-read is needed.
-  match addPromptWithTags(userId, req.name.trim(), req.body, req.tags) {
+  match addPromptWithTags(sc, req.name.trim(), req.body, req.tags) {
     case Ok(p) -> return Ok(p)
     case Err(e) -> return Err(dbError(e))
   }
@@ -249,10 +249,10 @@ pub func updatePromptHandler(pid: in String, req: in SavePromptRequest): Result[
     case Some(err) -> return Err(err)
     case None -> ()
   }
-  val userId = CloudAgents.Auth.currentUserId()
+  val sc = CloudAgents.Auth.requestScope()
   // Store the trimmed name for the same reason as addPromptHandler above.
   // Name/body + the replaced tag set commit together (#244).
-  val affected = match updatePromptWithTags(pid, userId, req.name.trim(), req.body, req.tags) {
+  val affected = match updatePromptWithTags(pid, sc, req.name.trim(), req.body, req.tags) {
     case Ok(n) -> n
     case Err(e) -> return Err(dbError(e))
   }
@@ -260,7 +260,7 @@ pub func updatePromptHandler(pid: in String, req: in SavePromptRequest): Result[
     return Err(Web.notFound("prompt not found"))
   }
   // Return the stored record so the client gets the fresh updated_at + tags.
-  match getPrompt(pid, userId) {
+  match getPrompt(pid, sc) {
     case Ok(Some(p)) -> return Ok(p)
     case Ok(None) -> return Err(Web.notFound("prompt not found"))
     case Err(e) -> return Err(dbError(e))
@@ -273,7 +273,7 @@ pub func usePromptHandler(pid: in String): Result[Unit, Web.ApiError] {
   if pid.length == 0 {
     return Err(Web.badRequest("prompt id is required"))
   }
-  val affected = match markPromptUsed(pid, CloudAgents.Auth.currentUserId()) {
+  val affected = match markPromptUsed(pid, CloudAgents.Auth.requestScope()) {
     case Ok(n) -> n
     case Err(e) -> return Err(dbError(e))
   }
@@ -288,7 +288,7 @@ pub func deletePromptHandler(pid: in String): Result[Unit, Web.ApiError] {
   if pid.length == 0 {
     return Err(Web.badRequest("prompt id is required"))
   }
-  val affected = match deletePrompt(pid, CloudAgents.Auth.currentUserId()) {
+  val affected = match deletePrompt(pid, CloudAgents.Auth.requestScope()) {
     case Ok(n) -> n
     case Err(e) -> return Err(dbError(e))
   }

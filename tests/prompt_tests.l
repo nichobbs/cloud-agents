@@ -5,13 +5,13 @@ import Std.Core
 import Std.Testing
 import Std.Uuid
 import CloudAgents.Db
+import CloudAgents.Pg
 import CloudAgents.Prompts
 import CloudAgents.Repository
 import CloudAgents.Sqlite
 import extern System.Environment as Env
 
 // ── SQL builder tests (no database needed) ────────────────────────────────────
-
 test "prompt SQL builders are owner-scoped and escaped" {
   val ins = insertPromptSql("p1", "u1", "it's a name", "body", "1000")
   assertTrue(ins.startsWith("INSERT INTO prompts"), "insert target")
@@ -21,7 +21,10 @@ test "prompt SQL builders are owner-scoped and escaped" {
   assertTrue(selectPromptsSql("u1").contains("ORDER BY name ASC"), "library is alphabetical")
   assertTrue(selectPromptByIdSql("p1", "u1").contains("AND user_id = 'u1'"), "get scoped by owner")
   assertTrue(updatePromptSql("p1", "u1", "n", "b", "2000").contains("AND user_id = 'u1'"), "update scoped by owner")
-  assertTrue(touchPromptUsedSql("p1", "u1", "2000").contains("CAST(CAST(use_count AS INTEGER) + 1 AS TEXT)"), "use bumps count numerically")
+  assertTrue(
+    touchPromptUsedSql("p1", "u1", "2000").contains("CAST(CAST(use_count AS INTEGER) + 1 AS TEXT)"),
+    "use bumps count numerically"
+  )
   assertTrue(deletePromptSql("p1", "u1").endsWith("AND user_id = 'u1'"), "delete scoped by owner")
   assertTrue(promptsSchemaSql().contains("CREATE TABLE IF NOT EXISTS prompts"), "ddl idempotent")
 }
@@ -42,7 +45,6 @@ test "prompt SQL builders are owner-scoped and escaped" {
 // the env var on every connection, so each test sees its own database. If
 // the runner ever parallelises tests within a suite, these must switch to a
 // per-test connection-string mechanism instead.
-
 @externTarget("System.IO.File.Delete")
 func fileDelete(path: in String): Unit = ()
 
@@ -68,15 +70,11 @@ func cleanupTestDb(path: in String): Unit {
   }
 }
 
-
 // Result convenience methods (.unwrapResult(), .isOk(), ...) compile as
 // dot-calls but fail at runtime with "unsupported method" in the current
 // toolchain (see docs/lyric/gotchas.md) — unwrap via match+panic instead.
 func mustPrompt(r: in Result[Prompt, CloudAgents.Sqlite.DbError]): Prompt {
-  return match r {
-    case Ok(p) -> p
-    case Err(e) -> panic("prompt op failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
-  }
+  return match r { case Ok(p) -> p; case Err(e) -> panic("prompt op failed: " + CloudAgents.Sqlite.dbErrorMessage(e)) }
 }
 
 func mustPrompts(r: in Result[slice[Prompt], CloudAgents.Sqlite.DbError]): slice[Prompt] {
@@ -87,10 +85,7 @@ func mustPrompts(r: in Result[slice[Prompt], CloudAgents.Sqlite.DbError]): slice
 }
 
 func mustOptPrompt(r: in Result[Option[Prompt], CloudAgents.Sqlite.DbError]): Option[Prompt] {
-  return match r {
-    case Ok(o) -> o
-    case Err(e) -> panic("prompt get failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
-  }
+  return match r { case Ok(o) -> o; case Err(e) -> panic("prompt get failed: " + CloudAgents.Sqlite.dbErrorMessage(e)) }
 }
 
 func mustRows(r: in Result[Int, CloudAgents.Sqlite.DbError]): Int {
@@ -112,7 +107,7 @@ func mustRows(r: in Result[Int, CloudAgents.Sqlite.DbError]): Int {
 // both calls pass the pre-check before either's DELETE commits, is the only
 // way to force the transaction's real rows-affected count to matter.
 async func deletePromptAsync(id: in String, userId: in String): Int {
-  return mustRows(CloudAgents.Repository.deletePrompt(id, userId))
+  return mustRows(CloudAgents.Repository.deletePrompt(id, personalScope(userId)))
 }
 
 test "Migrations are idempotent and back-fill the ledger" {
@@ -127,7 +122,7 @@ test "Migrations are idempotent and back-fill the ledger" {
     case Ok(_) -> ()
     case Err(e) -> assertTrue(false, "second runMigrations should no-op: " + CloudAgents.Sqlite.dbErrorMessage(e))
   }
-  val created = mustPrompt(addPrompt("default", "post-migrate", "still works"))
+  val created = mustPrompt(addPrompt(personalScope("default"), "post-migrate", "still works"))
   assertTrue(created.id.length > 0, "schema is usable after a repeat migration run")
 }
 
@@ -143,7 +138,7 @@ test "executeTransaction rolls back the whole batch on failure" {
     case Ok(_) -> assertTrue(false, "a batch with an invalid statement must fail")
     case Err(_) -> ()
   }
-  match getPrompt("txn-1", "default") {
+  match getPrompt("txn-1", personalScope("default")) {
     case Ok(Some(_)) -> assertTrue(false, "rolled-back insert must not persist")
     case Ok(None) -> ()
     case Err(e) -> assertTrue(false, "getPrompt failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
@@ -160,7 +155,11 @@ test "renderTemplate substitutes bound placeholders and leaves others" {
   assertEqual(renderTemplate("Hi {{ name }}!", ["name"], ["Nic"]), "Hi Nic!", "whitespace in placeholder is tolerated")
   // #265: a substituted value that itself contains "{{...}}" must NOT be
   // re-expanded — one variable can't inject a reference to another.
-  assertEqual(renderTemplate("{{a}}", ["a", "b"], ["{{b}}", "secret"]), "{{b}}", "value is not re-scanned for placeholders")
+  assertEqual(
+    renderTemplate("{{a}}", ["a", "b"], ["{{b}}", "secret"]),
+    "{{b}}",
+    "value is not re-scanned for placeholders"
+  )
   assertEqual(renderTemplate("no close {{a", ["a"], ["x"]), "no close {{a", "unclosed placeholder left intact")
 }
 
@@ -170,13 +169,13 @@ test "Popular prompts are ordered by use count" {
     cleanupTestDb(dbPath)
   }
   val userId = "default"
-  val a = mustPrompt(addPrompt(userId, "alpha", "a"))
-  val b = mustPrompt(addPrompt(userId, "beta", "b"))
+  val a = mustPrompt(addPrompt(personalScope(userId), "alpha", "a"))
+  val b = mustPrompt(addPrompt(personalScope(userId), "beta", "b"))
   // Use beta twice, alpha once -> beta is more popular.
-  mustRows(markPromptUsed(b.id, userId))
-  mustRows(markPromptUsed(b.id, userId))
-  mustRows(markPromptUsed(a.id, userId))
-  val popular = mustPrompts(listPromptsByUsage(userId))
+  mustRows(markPromptUsed(b.id, personalScope(userId)))
+  mustRows(markPromptUsed(b.id, personalScope(userId)))
+  mustRows(markPromptUsed(a.id, personalScope(userId)))
+  val popular = mustPrompts(listPromptsByUsage(personalScope(userId)))
   assertEqualInt(popular.length.toInt(), 2, "two prompts listed")
   assertEqual(popular[0].name, "beta", "most-used first")
   assertEqual(popular[1].name, "alpha", "less-used second")
@@ -187,7 +186,7 @@ test "renderPromptHandler renders a template and counts a use" {
   defer {
     cleanupTestDb(dbPath)
   }
-  val created = mustPrompt(addPrompt("default", "greet", "Hi {{who}} on {{repo}}"))
+  val created = mustPrompt(addPrompt(personalScope("default"), "greet", "Hi {{who}} on {{repo}}"))
   match renderPromptHandler(created.id, RenderPromptRequest(keys = ["who", "repo"], values = ["Nic", "cloud-agents"])) {
     case Ok(r) -> assertEqual(r.rendered, "Hi Nic on cloud-agents", "template rendered with bindings")
     case Err(_) -> assertTrue(false, "render should succeed")
@@ -196,7 +195,7 @@ test "renderPromptHandler renders a template and counts a use" {
     case Ok(_) -> assertTrue(false, "unknown id should 404")
     case Err(err) -> assertEqualInt(err.status, 404, "unknown prompt -> 404")
   }
-  match getPrompt(created.id, "default") {
+  match getPrompt(created.id, personalScope("default")) {
     case Ok(Some(p)) -> assertEqual(p.useCount, "1", "render counted as a use")
     case Ok(None) -> assertTrue(false, "prompt should exist")
     case Err(e) -> assertTrue(false, "getPrompt failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
@@ -210,31 +209,31 @@ test "Prompt CRUD round-trips through SQLite" {
   }
   val userId = "default"
 
-  val created = mustPrompt(addPrompt(userId, "greeting", "Say hello to the repo"))
+  val created = mustPrompt(addPrompt(personalScope(userId), "greeting", "Say hello to the repo"))
   assertTrue(created.id.length > 0, "created prompt has an id")
   assertEqual(created.useCount, "0", "new prompt starts unused")
 
-  val listed = mustPrompts(listPrompts(userId))
+  val listed = mustPrompts(listPrompts(personalScope(userId)))
   assertEqualInt(listed.length.toInt(), 1, "one prompt listed")
   assertEqual(listed[0].name, "greeting", "listed prompt name matches")
 
-  val updated = mustRows(updatePrompt(created.id, userId, "greeting v2", "Say hello twice"))
+  val updated = mustRows(updatePrompt(created.id, personalScope(userId), "greeting v2", "Say hello twice"))
   assertEqualInt(updated, 1, "update touches one row")
-  match mustOptPrompt(getPrompt(created.id, userId)) {
+  match mustOptPrompt(getPrompt(created.id, personalScope(userId))) {
     case Some(p) -> assertEqual(p.name, "greeting v2", "update persisted")
     case None -> assertTrue(false, "updated prompt should exist")
   }
 
-  val used = mustRows(markPromptUsed(created.id, userId))
+  val used = mustRows(markPromptUsed(created.id, personalScope(userId)))
   assertEqualInt(used, 1, "use touches one row")
-  match mustOptPrompt(getPrompt(created.id, userId)) {
+  match mustOptPrompt(getPrompt(created.id, personalScope(userId))) {
     case Some(p) -> assertEqual(p.useCount, "1", "use count bumped")
     case None -> assertTrue(false, "used prompt should exist")
   }
 
-  val deleted = mustRows(deletePrompt(created.id, userId))
+  val deleted = mustRows(deletePrompt(created.id, personalScope(userId)))
   assertEqualInt(deleted, 1, "delete touches one row")
-  val after = mustPrompts(listPrompts(userId))
+  val after = mustPrompts(listPrompts(personalScope(userId)))
   assertEqualInt(after.length.toInt(), 0, "library empty after delete")
 }
 
@@ -243,21 +242,29 @@ test "Prompt ownership scoping hides other users' prompts" {
   defer {
     cleanupTestDb(dbPath)
   }
-  val mine = mustPrompt(addPrompt("default", "mine", "my body"))
-  val theirs = mustPrompt(addPrompt("someone-else", "theirs", "their body"))
+  val mine = mustPrompt(addPrompt(personalScope("default"), "mine", "my body"))
+  val theirs = mustPrompt(addPrompt(personalScope("someone-else"), "theirs", "their body"))
 
-  val myList = mustPrompts(listPrompts("default"))
+  val myList = mustPrompts(listPrompts(personalScope("default")))
   assertEqualInt(myList.length.toInt(), 1, "only my prompt listed")
   assertEqual(myList[0].id, mine.id, "listed prompt is mine")
 
   // Cross-user read/use/update/delete must all no-op against another user's row.
-  match mustOptPrompt(getPrompt(theirs.id, "default")) {
+  match mustOptPrompt(getPrompt(theirs.id, personalScope("default"))) {
     case Some(_) -> assertTrue(false, "cannot read another user's prompt")
     case None -> ()
   }
-  assertEqualInt(mustRows(markPromptUsed(theirs.id, "default")), 0, "cannot mark another user's prompt used")
-  assertEqualInt(mustRows(updatePrompt(theirs.id, "default", "x", "y")), 0, "cannot update another user's prompt")
-  assertEqualInt(mustRows(deletePrompt(theirs.id, "default")), 0, "cannot delete another user's prompt")
+  assertEqualInt(
+    mustRows(markPromptUsed(theirs.id, personalScope("default"))),
+    0,
+    "cannot mark another user's prompt used"
+  )
+  assertEqualInt(
+    mustRows(updatePrompt(theirs.id, personalScope("default"), "x", "y")),
+    0,
+    "cannot update another user's prompt"
+  )
+  assertEqualInt(mustRows(deletePrompt(theirs.id, personalScope("default"))), 0, "cannot delete another user's prompt")
 }
 
 test "Concurrent deletePrompt calls on the same row: exactly one reports the real affected count (#577/#238)" {
@@ -277,7 +284,7 @@ test "Concurrent deletePrompt calls on the same row: exactly one reports the rea
     cleanupTestDb(dbPath)
   }
   val userId = "default"
-  val p = mustPrompt(addPrompt(userId, "race-me", "body"))
+  val p = mustPrompt(addPrompt(personalScope(userId), "race-me", "body"))
 
   scope {
     val t1 = spawn deletePromptAsync(p.id, userId)
@@ -287,7 +294,7 @@ test "Concurrent deletePrompt calls on the same row: exactly one reports the rea
     assertEqualInt(r1 + r2, 1, "exactly one concurrent delete reports the real affected row; the other reports 0")
   }
 
-  match getPrompt(p.id, userId) {
+  match getPrompt(p.id, personalScope(userId)) {
     case Ok(Some(_)) -> assertTrue(false, "prompt should be gone after either concurrent delete wins")
     case Ok(None) -> ()
     case Err(e) -> assertTrue(false, "getPrompt failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
@@ -305,15 +312,15 @@ test "updatePromptWithTags round-trips name/body/tags and 0-affects a foreign pr
     cleanupTestDb(dbPath)
   }
   val userId = "default"
-  val p = mustPrompt(addPrompt(userId, "orig", "orig body"))
-  match setPromptTags(p.id, userId, ["red"]) {
+  val p = mustPrompt(addPrompt(personalScope(userId), "orig", "orig body"))
+  match setPromptTags(p.id, personalScope(userId), ["red"]) {
     case Ok(_) -> ()
     case Err(e) -> assertTrue(false, "setPromptTags failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
   }
 
-  val updated = mustRows(updatePromptWithTags(p.id, userId, "renamed", "new body", ["blue", "green"]))
+  val updated = mustRows(updatePromptWithTags(p.id, personalScope(userId), "renamed", "new body", ["blue", "green"]))
   assertEqualInt(updated, 1, "update touches one row")
-  match getPrompt(p.id, userId) {
+  match getPrompt(p.id, personalScope(userId)) {
     case Ok(Some(gp)) -> {
       assertEqual(gp.name, "renamed", "name updated")
       assertEqual(gp.body, "new body", "body updated")
@@ -329,16 +336,15 @@ test "updatePromptWithTags round-trips name/body/tags and 0-affects a foreign pr
   // getPrompt), the same shape as the existing cross-user tests above — kept
   // here so updatePromptWithTags has its own explicit 0-path assertion rather
   // than relying on updatePrompt's coverage to stand in for it.
-  val theirs = mustPrompt(addPrompt("someone-else", "theirs", "their body"))
+  val theirs = mustPrompt(addPrompt(personalScope("someone-else"), "theirs", "their body"))
   assertEqualInt(
-    mustRows(updatePromptWithTags(theirs.id, "default", "x", "y", [])),
+    mustRows(updatePromptWithTags(theirs.id, personalScope("default"), "x", "y", [])),
     0,
     "cannot update another user's prompt via updatePromptWithTags"
   )
 }
 
 // ── Handler-level coverage (review #177) ──────────────────────────────────────
-
 func verifyCreatedPromptHandler(p: in Prompt): Unit {
   assertEqual(p.name, "handler prompt", "handler returns stored name")
   assertTrue(p.id.length > 0, "handler returns stored id")
@@ -350,23 +356,31 @@ test "Prompt tags round-trip, replace, and filter" {
     cleanupTestDb(dbPath)
   }
   val userId = "default"
-  val p = mustPrompt(addPrompt(userId, "tagged", "body"))
-  match setPromptTags(p.id, userId, ["red", "blue"]) {
+  val p = mustPrompt(addPrompt(personalScope(userId), "tagged", "body"))
+  match setPromptTags(p.id, personalScope(userId), ["red", "blue"]) {
     case Ok(_) -> ()
     case Err(e) -> assertTrue(false, "setPromptTags failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
   }
-  match getPrompt(p.id, userId) {
+  match getPrompt(p.id, personalScope(userId)) {
     case Ok(Some(gp)) -> assertEqualInt(gp.tags.length.toInt(), 2, "two tags attached to the prompt")
     case Ok(None) -> assertTrue(false, "prompt should exist")
     case Err(e) -> assertTrue(false, "getPrompt failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
   }
   // setPromptTags is a full replace, not an append.
-  match setPromptTags(p.id, userId, ["green"]) {
+  match setPromptTags(p.id, personalScope(userId), ["green"]) {
     case Ok(_) -> ()
     case Err(_) -> ()
   }
-  assertEqualInt(mustPrompts(listPromptsByTag(userId, "green")).length.toInt(), 1, "found under the new tag")
-  assertEqualInt(mustPrompts(listPromptsByTag(userId, "red")).length.toInt(), 0, "old tag no longer matches")
+  assertEqualInt(
+    mustPrompts(listPromptsByTag(personalScope(userId), "green")).length.toInt(),
+    1,
+    "found under the new tag"
+  )
+  assertEqualInt(
+    mustPrompts(listPromptsByTag(personalScope(userId), "red")).length.toInt(),
+    0,
+    "old tag no longer matches"
+  )
 }
 
 test "listPromptsByTag returns each matching prompt with its full tag set (#339)" {
@@ -375,20 +389,20 @@ test "listPromptsByTag returns each matching prompt with its full tag set (#339)
     cleanupTestDb(dbPath)
   }
   val userId = "default"
-  val a = mustPrompt(addPrompt(userId, "alpha", "a"))
-  val b = mustPrompt(addPrompt(userId, "beta", "b"))
-  match setPromptTags(a.id, userId, ["red", "green"]) {
+  val a = mustPrompt(addPrompt(personalScope(userId), "alpha", "a"))
+  val b = mustPrompt(addPrompt(personalScope(userId), "beta", "b"))
+  match setPromptTags(a.id, personalScope(userId), ["red", "green"]) {
     case Ok(_) -> ()
     case Err(e) -> assertTrue(false, "setPromptTags a failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
   }
-  match setPromptTags(b.id, userId, ["blue"]) {
+  match setPromptTags(b.id, personalScope(userId), ["blue"]) {
     case Ok(_) -> ()
     case Err(e) -> assertTrue(false, "setPromptTags b failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
   }
 
   // Filtering by one of alpha's tags returns only alpha — but with its whole
   // tag set attached (green, red), not just the filter tag, and never beta's.
-  val byRed = mustPrompts(listPromptsByTag(userId, "red"))
+  val byRed = mustPrompts(listPromptsByTag(personalScope(userId), "red"))
   assertEqualInt(byRed.length.toInt(), 1, "only alpha carries 'red'")
   assertEqual(byRed[0].name, "alpha", "the match is alpha")
   assertEqualInt(byRed[0].tags.length.toInt(), 2, "alpha's full tag set is attached")
@@ -396,7 +410,7 @@ test "listPromptsByTag returns each matching prompt with its full tag set (#339)
   assertEqual(byRed[0].tags[1], "red", "full tags alphabetical: red second")
 
   // The other tag returns only beta with its own single tag.
-  val byBlue = mustPrompts(listPromptsByTag(userId, "blue"))
+  val byBlue = mustPrompts(listPromptsByTag(personalScope(userId), "blue"))
   assertEqualInt(byBlue.length.toInt(), 1, "only beta carries 'blue'")
   assertEqual(byBlue[0].name, "beta", "the match is beta")
   assertEqualInt(byBlue[0].tags.length.toInt(), 1, "beta has only its own tag")
@@ -409,13 +423,13 @@ test "listPrompts attaches each prompt's own tags from one batched read (#246)" 
     cleanupTestDb(dbPath)
   }
   val userId = "default"
-  val a = mustPrompt(addPrompt(userId, "alpha", "body-a"))
-  val b = mustPrompt(addPrompt(userId, "beta", "body-b"))
-  match setPromptTags(a.id, userId, ["red", "green"]) {
+  val a = mustPrompt(addPrompt(personalScope(userId), "alpha", "body-a"))
+  val b = mustPrompt(addPrompt(personalScope(userId), "beta", "body-b"))
+  match setPromptTags(a.id, personalScope(userId), ["red", "green"]) {
     case Ok(_) -> ()
     case Err(e) -> assertTrue(false, "setPromptTags a failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
   }
-  match setPromptTags(b.id, userId, ["blue"]) {
+  match setPromptTags(b.id, personalScope(userId), ["blue"]) {
     case Ok(_) -> ()
     case Err(e) -> assertTrue(false, "setPromptTags b failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
   }
@@ -423,7 +437,7 @@ test "listPrompts attaches each prompt's own tags from one batched read (#246)" 
   // listPrompts now fetches all tags in one query and attaches each prompt's
   // own set — the batched path must still give every prompt exactly its tags,
   // alphabetically, and never another prompt's.
-  val listed = mustPrompts(listPrompts(userId))
+  val listed = mustPrompts(listPrompts(personalScope(userId)))
   assertEqualInt(listed.length.toInt(), 2, "both prompts listed")
   // selectPromptsSql is name-ordered: alpha then beta.
   assertEqual(listed[0].name, "alpha", "first prompt is alpha")
@@ -441,20 +455,20 @@ test "listPromptsByUsage attaches each prompt's own tags from the batched read (
     cleanupTestDb(dbPath)
   }
   val userId = "default"
-  val a = mustPrompt(addPrompt(userId, "alpha", "a"))
-  val b = mustPrompt(addPrompt(userId, "beta", "b"))
-  match setPromptTags(a.id, userId, ["red", "green"]) {
+  val a = mustPrompt(addPrompt(personalScope(userId), "alpha", "a"))
+  val b = mustPrompt(addPrompt(personalScope(userId), "beta", "b"))
+  match setPromptTags(a.id, personalScope(userId), ["red", "green"]) {
     case Ok(_) -> ()
     case Err(e) -> assertTrue(false, "setPromptTags a failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
   }
-  match setPromptTags(b.id, userId, ["blue"]) {
+  match setPromptTags(b.id, personalScope(userId), ["blue"]) {
     case Ok(_) -> ()
     case Err(e) -> assertTrue(false, "setPromptTags b failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
   }
   // Use beta once so the usage ordering is deterministic (beta first).
-  mustRows(markPromptUsed(b.id, userId))
+  mustRows(markPromptUsed(b.id, personalScope(userId)))
 
-  val popular = mustPrompts(listPromptsByUsage(userId))
+  val popular = mustPrompts(listPromptsByUsage(personalScope(userId)))
   assertEqualInt(popular.length.toInt(), 2, "two prompts listed")
   assertEqual(popular[0].name, "beta", "most-used first")
   assertEqualInt(popular[0].tags.length.toInt(), 1, "beta keeps its one tag")

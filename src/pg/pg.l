@@ -25,20 +25,13 @@ package CloudAgents.Pg
 import Std.Core
 import Std.Environment
 import Db
+import CloudAgents.Scope
 
-/// The tenant and user a unit of work acts for. Constructed only by the auth
-/// middleware (from a validated membership), the callback-token resolver, a
-/// maintenance claim, or the SQLite export (spec §5.2).
-pub record TenantScope {
-  pub tenantId: String
-  pub userId: String
-}
+/// The scope types live in the dependency-free `CloudAgents.Scope` so request
+/// handling can build one without linking the Postgres driver.
+pub alias TenantScope = CloudAgents.Scope.TenantScope
 
-/// The user a unit of work acts for when it touches only user-owned data
-/// (spec §4.3a): no tenant is set, so tenant-owned tables stay invisible.
-pub record UserScope {
-  pub userId: String
-}
+pub alias UserScope = CloudAgents.Scope.UserScope
 
 pub union PgError {
   // A scope with an empty tenant or user id: rejected before any SQL runs.
@@ -55,11 +48,25 @@ pub func pgErrorMessage(e: in PgError): String {
   }
 }
 
-/// The implicit personal tenant of a user (spec §6.1, §9 slice B): every user
-/// has exactly one, and its id is derived from the user id so the SQLite-era
-/// code, the export and the organisation code all agree on it.
 pub func personalTenantId(userId: in String): String {
-  return "personal:" + userId
+  return CloudAgents.Scope.personalTenantId(userId)
+}
+
+pub func personalScope(userId: in String): TenantScope {
+  return CloudAgents.Scope.personalScope(userId)
+}
+
+/// SQL converting the epoch-milliseconds text parameter `@p<n>` to
+/// `timestamptz`, exactly (integer interval arithmetic, not
+/// `to_timestamp(float)`, which can round a millisecond away).
+pub func msIn(n: in Int): String {
+  return "(timestamptz 'epoch' + @p" + toString(n) + "::bigint * interval '1 millisecond')"
+}
+
+/// SQL rendering a `timestamptz` column as epoch-milliseconds text, the form
+/// the domain records carry. NULL stays NULL (read as "").
+pub func msOut(col: in String): String {
+  return "(extract(epoch FROM " + col + ") * 1000)::bigint::text"
 }
 
 /// The DSN the service connects with (`cloudagents_app`).

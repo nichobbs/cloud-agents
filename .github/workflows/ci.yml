@@ -411,16 +411,6 @@ jobs:
       - name: Run tests
         run: ./scripts/verify.sh
 
-      # The real @test_module suites. All seven known upstream compiler bugs
-      # (see docs/BUILD.md "Compiler notes") are now fixed as of v0.4.19, so
-      # this is expected to pass — the first time in this project's history
-      # that `lyric test` has been a viable CI gate.
-      #
-      # LD_LIBRARY_PATH: the live-database suites (prompt/session tests) open
-      # real SQLite connections, and Microsoft.Data.Sqlite's type initializer
-      # needs the native libe_sqlite3.so, which the test runner does not
-      # resolve from the NuGet cache on its own. build-full.sh (above) already
-      # copied the native runtimes to bin/runtimes — expose them to dlopen.
       # Provision the Postgres roles exactly as an operator would
       # (deploy/postgres/provision.sql) and apply the schema with the real
       # `--migrate` entry point, as cloudagents_owner.
@@ -437,11 +427,25 @@ jobs:
           fi
           dotnet bin/CloudAgents.dll --migrate
 
+      # The real @test_module suites. All seven known upstream compiler bugs
+      # (see docs/BUILD.md "Compiler notes") are now fixed as of v0.4.19, so
+      # this is expected to pass — the first time in this project's history
+      # that `lyric test` has been a viable CI gate.
+      #
+      # LD_LIBRARY_PATH: the live-database suites (prompt/session tests) open
+      # real SQLite connections, and Microsoft.Data.Sqlite's type initializer
+      # needs the native libe_sqlite3.so, which the test runner does not
+      # resolve from the NuGet cache on its own. build-full.sh (above) already
+      # copied the native runtimes to bin/runtimes — expose them to dlopen.
+      #
       # LYRIC_CONFIG_DB_CONNECTION_URL (cloudagents_app) and
       # CLOUD_AGENTS_MIGRATE_DATABASE_URL (cloudagents_owner) enable the live
-      # Postgres suite; without them it skips visibly.
+      # Postgres suites. CLOUD_AGENTS_REQUIRE_LIVE_PG=1 turns a missing DSN
+      # into a test failure instead of a visible skip, so CI can never pass
+      # with the live suites silently not running.
       - name: Run lyric test
         env:
+          CLOUD_AGENTS_REQUIRE_LIVE_PG: '1'
           LYRIC_CONFIG_DB_CONNECTION_URL: postgres://cloudagents_app:app-ci@127.0.0.1:5432/cloudagents
           CLOUD_AGENTS_MIGRATE_DATABASE_URL: postgres://cloudagents_owner:owner-ci@127.0.0.1:5432/cloudagents
         run: |
