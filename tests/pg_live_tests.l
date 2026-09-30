@@ -546,7 +546,7 @@ test "claim functions are hardened: definer, fixed search_path, no PUBLIC execut
     conn.close()
   }
   val tx = unscoped(conn)
-  for fn in ["claim_graph_ingest_outbox", "prune_graph_ingest_outbox", "claim_membership_sync", "claim_scheduled_jobs", "claim_stranded_runs", "claim_warm_sessions"] {
+  for fn in ["claim_graph_ingest_outbox", "prune_graph_ingest_outbox", "claim_membership_sync", "claim_scheduled_jobs", "claim_stranded_runs", "claim_warm_sessions", "list_observer_passes", "list_sessions_to_sync"] {
     assertEqual(
       str1(
         tx,
@@ -580,6 +580,17 @@ test "claim functions are hardened: definer, fixed search_path, no PUBLIC execut
     ),
     "false",
     "on sessions the claimer reads only the sweep's columns and cannot change a session's status"
+  )
+  assertEqual(
+    str1(
+      tx,
+      "SELECT (has_column_privilege('cloudagents_claimer', 'public.ledger_items', 'title', 'SELECT') " +
+        "OR has_table_privilege('cloudagents_claimer', 'public.ledger_items', 'UPDATE') " +
+        "OR has_table_privilege('cloudagents_claimer', 'public.ledger_entries', 'SELECT'))::text AS v",
+      []
+    ),
+    "false",
+    "the ledger listings read keys and state only, and change nothing"
   )
   assertEqual(
     str1(

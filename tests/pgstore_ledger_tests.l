@@ -874,3 +874,81 @@ test "observer settings, state, pending passes and observer sessions" {
 func bool(r: in Result[Bool, DbError]): Bool {
   return match r { case Ok(v) -> v; case Err(e) -> panic("store call failed: " + dbErrorMessage(e)) }
 }
+
+func listed(r: in Result[slice[String], DbError], id: in String): Bool {
+  val ids = match r { case Ok(v) -> v; case Err(e) -> panic("listing failed: " + dbErrorMessage(e)) }
+  for x in ids {
+    if x == id {
+      return true
+    }
+  }
+  return false
+}
+
+test "the cross-tenant listings find sync work and pending passes in every tenant" {
+  if not live() {
+    return
+  }
+  migrate()
+  val a = fresh()
+  val b = fresh()
+  // Sync: issue ownership is decided within a tenant, so the same issue in
+  // two tenants is owned (and listed) in both.
+  val olderA = "s-" + uid()
+  val newerA = "s-" + uid()
+  val inB = "s-" + uid()
+  val localOnly = "s-" + uid()
+  val archived = "s-" + uid()
+  val synced = "s-" + uid()
+  addSession(olderA, a)
+  int(Store.registerItems(olderA, a, ["gh:acme/shop#9"], ["Nine"], [""]))
+  addSession(newerA, a)
+  int(Store.registerItems(newerA, a, ["gh:acme/shop#9"], ["Nine"], [""]))
+  addSession(inB, b)
+  int(Store.registerItems(inB, b, ["gh:acme/shop#9"], ["Nine"], [""]))
+  addSession(localOnly, a)
+  int(Store.registerItems(localOnly, a, ["local:x"], ["X"], [""]))
+  addSession(archived, b)
+  int(Store.registerItems(archived, b, ["gh:acme/shop#10"], ["Ten"], [""]))
+  unit(Sessions.updateSessionArchived(archived, b, "1"))
+  addSession(synced, b)
+  int(Store.registerItems(synced, b, ["gh:acme/shop#11"], ["Eleven"], [""]))
+  unit(
+    Store.saveSyncRow(
+      synced,
+      b,
+      SqliteLedger.SyncRow(
+        itemId = "gh:acme/shop#11",
+        syncedLabel = "",
+        commentId = "",
+        commentHash = "",
+        lastError = "",
+        syncedAt = "9999999999999",
+        attemptedAt = "9999999999999"
+      )
+    )
+  )
+  assertTrue(listed(Store.sessionsToSync(100), newerA), "tenant A's owner of the issue is listed")
+  assertTrue(listed(Store.sessionsToSync(100), inB), "tenant B's session owning the same issue is listed too")
+  assertTrue(not listed(Store.sessionsToSync(100), olderA), "a session whose issue a newer one took over is not")
+  assertTrue(not listed(Store.sessionsToSync(100), localOnly), "a session with no GitHub-backed item is not")
+  assertTrue(not listed(Store.sessionsToSync(100), archived), "an archived session is not")
+  assertTrue(not listed(Store.sessionsToSync(100), synced), "a session already in sync is not")
+
+  // Observer passes: pending in both tenants, archived and claimed excluded.
+  val watchedA = "s-" + uid()
+  val watchedB = "s-" + uid()
+  val watchedArchived = "s-" + uid()
+  addSession(watchedA, a)
+  addSession(watchedB, b)
+  addSession(watchedArchived, b)
+  unit(Store.markObserverPending(watchedA, a))
+  unit(Store.markObserverPending(watchedB, b))
+  unit(Store.markObserverPending(watchedArchived, b))
+  unit(Sessions.updateSessionArchived(watchedArchived, b, "1"))
+  assertTrue(listed(Store.pendingObserverSessions(100), watchedA), "tenant A's pending pass is listed")
+  assertTrue(listed(Store.pendingObserverSessions(100), watchedB), "tenant B's pending pass is listed")
+  assertTrue(not listed(Store.pendingObserverSessions(100), watchedArchived), "an archived session's pass is not")
+  assertTrue(bool(Store.claimObserverPass(watchedA, a)), "the pass is claimed under the session's scope")
+  assertTrue(not listed(Store.pendingObserverSessions(100), watchedA), "a claimed pass is no longer listed")
+}

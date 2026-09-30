@@ -112,6 +112,12 @@ func userTable(name: in String, body: in String): slice[String] {
 /// `cloudagents_claimer`) see and lease rows across tenants or users (spec
 /// §5.3). Permissive policies combine with OR per role; the isolation policy
 /// never matches for the claimer, which has no scope set.
+/// Read-only access for a listing function (§5.3a): the claimer may select
+/// the table's rows, never change them.
+func claimerReadPolicy(name: in String): String {
+  return "CREATE POLICY claimer_select ON public." + name + " FOR SELECT TO cloudagents_claimer USING (true)"
+}
+
 func claimerPolicies(name: in String): slice[String] {
   return [
     "CREATE POLICY claimer_select ON public." + name + " FOR SELECT TO cloudagents_claimer USING (true)",
@@ -242,7 +248,7 @@ func sessionTables(): slice[String] {
       // holder and heartbeat and the reap lease.
       claimerPolicies("sessions"),
       [
-        "GRANT SELECT (tenant_id, id, user_id, status, container_id, last_message_at, run_instance, " +
+        "GRANT SELECT (tenant_id, id, user_id, status, container_id, last_message_at, is_archived, run_instance, " +
           "run_heartbeat_at, reap_claimed_until), UPDATE (run_instance, run_heartbeat_at, reap_claimed_until) " +
           "ON public.sessions TO cloudagents_claimer"
       ],
@@ -725,6 +731,62 @@ func claimWarmSessionsFn(): String {
     "RETURNING s.tenant_id, s.id, s.user_id $fn$"
 }
 
+/// Observed sessions with an observer pass waiting, in every tenant, the
+/// longest-waiting first: the scope keys only. Read-only; the pass itself is
+/// claimed per session by clearing its pending flag under the observed
+/// session's scope, so overlapping sweeps run each pass once.
+func listObserverPassesFn(): String {
+  return "CREATE FUNCTION public.list_observer_passes(p_limit integer) " +
+    "RETURNS TABLE (tenant_id text, session_id text, user_id text) LANGUAGE sql STABLE SECURITY DEFINER " +
+    "SET search_path = pg_catalog, pg_temp AS $fn$ " +
+    "SELECT o.tenant_id, o.session_id, s.user_id FROM public.ledger_observer AS o " +
+    "JOIN public.sessions AS s ON s.tenant_id = o.tenant_id AND s.id = o.session_id " +
+    "WHERE o.pending AND NOT s.is_archived " +
+    "ORDER BY o.last_pass_at NULLS FIRST, o.tenant_id, o.session_id " +
+    "LIMIT LEAST(GREATEST(p_limit, 0), 100) $fn$"
+}
+
+/// Sessions with GitHub-backed items to reconcile, in every tenant, least
+/// recently attempted first: the scope keys only. An issue is owned by the
+/// newest unarchived session in the same tenant that registered it (as
+/// `ownedIssueItems`). Read-only; each session's pass takes its own sync
+/// lease under its scope, so overlapping sweeps never sync a session twice.
+func listSessionsToSyncFn(): String {
+  return "CREATE FUNCTION public.list_sessions_to_sync(p_limit integer) " +
+    "RETURNS TABLE (tenant_id text, session_id text, user_id text) LANGUAGE sql STABLE SECURITY DEFINER " +
+    "SET search_path = pg_catalog, pg_temp AS $fn$ " +
+    "SELECT i.tenant_id, i.session_id, s.user_id FROM public.ledger_items AS i " +
+    "JOIN public.sessions AS s ON s.tenant_id = i.tenant_id AND s.id = i.session_id " +
+    "LEFT JOIN public.ledger_github_sync AS g ON g.tenant_id = i.tenant_id AND g.session_id = i.session_id " +
+    "AND g.item_id = i.item_id " +
+    "LEFT JOIN public.ledger_github_sync_runs AS r ON r.tenant_id = i.tenant_id AND r.session_id = i.session_id " +
+    "WHERE i.item_id LIKE 'gh:%' AND NOT s.is_archived AND NOT EXISTS (" +
+    "SELECT 1 FROM public.ledger_items AS o JOIN public.sessions AS os ON os.tenant_id = o.tenant_id " +
+    "AND os.id = o.session_id WHERE o.tenant_id = i.tenant_id AND o.item_id = i.item_id " +
+    "AND o.session_id <> i.session_id AND NOT os.is_archived AND (o.created_at > i.created_at " +
+    "OR (o.created_at = i.created_at AND o.session_id COLLATE \"C\" > i.session_id COLLATE \"C\"))) " +
+    "AND (g.item_id IS NULL OR g.synced_at IS NULL OR g.synced_at < i.updated_at " +
+    "OR i.state IN ('blocked', 'needs_human', 'pr_open')) " +
+    "GROUP BY i.tenant_id, i.session_id, s.user_id " +
+    "ORDER BY max(COALESCE(r.attempted_at, timestamptz 'epoch')), i.tenant_id, i.session_id " +
+    "LIMIT LEAST(GREATEST(p_limit, 0), 100) $fn$"
+}
+
+/// What the two listing functions read: row visibility on each table they
+/// join, and only the columns they use.
+func listingGrants(): slice[String] {
+  return [
+    claimerReadPolicy("ledger_items"),
+    claimerReadPolicy("ledger_github_sync"),
+    claimerReadPolicy("ledger_github_sync_runs"),
+    claimerReadPolicy("ledger_observer"),
+    "GRANT SELECT (tenant_id, session_id, item_id, state, created_at, updated_at) ON public.ledger_items TO cloudagents_claimer",
+    "GRANT SELECT (tenant_id, session_id, item_id, synced_at) ON public.ledger_github_sync TO cloudagents_claimer",
+    "GRANT SELECT (tenant_id, session_id, attempted_at) ON public.ledger_github_sync_runs TO cloudagents_claimer",
+    "GRANT SELECT (tenant_id, session_id, pending, last_pass_at) ON public.ledger_observer TO cloudagents_claimer"
+  ]
+}
+
 func claimMembershipSyncFn(): String {
   return "CREATE FUNCTION public.claim_membership_sync(p_limit integer, p_lease_seconds integer) " +
     "RETURNS TABLE (user_id text) LANGUAGE sql SECURITY DEFINER " +
@@ -773,6 +835,8 @@ func claimScheduledJobsFn(): String {
 
 func claimFunctions(): slice[String] {
   return [
+    listObserverPassesFn(),
+    listSessionsToSyncFn(),
     claimOutboxFn(),
     pruneOutboxFn(),
     claimMembershipSyncFn(),
@@ -789,12 +853,16 @@ func claimFunctions(): slice[String] {
     "REVOKE ALL ON FUNCTION public.claim_scheduled_jobs(integer) FROM PUBLIC",
     "REVOKE ALL ON FUNCTION public.claim_stranded_runs(integer, integer, text) FROM PUBLIC",
     "REVOKE ALL ON FUNCTION public.claim_warm_sessions(integer, integer, integer) FROM PUBLIC",
+    "REVOKE ALL ON FUNCTION public.list_observer_passes(integer) FROM PUBLIC",
+    "REVOKE ALL ON FUNCTION public.list_sessions_to_sync(integer) FROM PUBLIC",
     "GRANT EXECUTE ON FUNCTION public.claim_graph_ingest_outbox(integer, integer) TO cloudagents_app",
     "GRANT EXECUTE ON FUNCTION public.prune_graph_ingest_outbox(integer) TO cloudagents_app",
     "GRANT EXECUTE ON FUNCTION public.claim_membership_sync(integer, integer) TO cloudagents_app",
     "GRANT EXECUTE ON FUNCTION public.claim_scheduled_jobs(integer) TO cloudagents_app",
     "GRANT EXECUTE ON FUNCTION public.claim_stranded_runs(integer, integer, text) TO cloudagents_app",
     "GRANT EXECUTE ON FUNCTION public.claim_warm_sessions(integer, integer, integer) TO cloudagents_app",
+    "GRANT EXECUTE ON FUNCTION public.list_observer_passes(integer) TO cloudagents_app",
+    "GRANT EXECUTE ON FUNCTION public.list_sessions_to_sync(integer) TO cloudagents_app",
     // ALTER ... OWNER TO needs the new owner to hold CREATE on the schema;
     // grant it only for the ownership change.
     "GRANT CREATE ON SCHEMA public TO cloudagents_claimer",
@@ -804,6 +872,8 @@ func claimFunctions(): slice[String] {
     "ALTER FUNCTION public.claim_scheduled_jobs(integer) OWNER TO cloudagents_claimer",
     "ALTER FUNCTION public.claim_stranded_runs(integer, integer, text) OWNER TO cloudagents_claimer",
     "ALTER FUNCTION public.claim_warm_sessions(integer, integer, integer) OWNER TO cloudagents_claimer",
+    "ALTER FUNCTION public.list_observer_passes(integer) OWNER TO cloudagents_claimer",
+    "ALTER FUNCTION public.list_sessions_to_sync(integer) OWNER TO cloudagents_claimer",
     "REVOKE CREATE ON SCHEMA public FROM cloudagents_claimer"
   ]
 }
@@ -824,6 +894,7 @@ func baselineStatements(): slice[String] {
       libraryTables(),
       outboxTables(),
       ledgerTables(),
+      listingGrants(),
       claimFunctions(),
       migratorGrants()
     ]
