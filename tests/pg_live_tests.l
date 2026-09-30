@@ -585,41 +585,30 @@ test "claim functions are hardened: definer, fixed search_path, no PUBLIC execut
 }
 
 // ── Self-check ─────────────────────────────────────────────────────────────
-test "the self-check refuses a service role that is a member of a privileged role" {
+test "the privileged-membership check flags the owner and clears the service role" {
   if not live() {
     assertTrue(true, "skipped")
     return
   }
   ensureMigrated()
-  // No test role can create another role (all are NOCREATEROLE), so the
-  // negative case uses the owner, which provision.sql makes a member of
-  // cloudagents_claimer; the positive case checks the service role holds no
-  // such membership.
+  // provision.sql makes cloudagents_owner a member of cloudagents_claimer, so
+  // the owner is the one provisioned role the check must flag.
   val owner = ownerConn()
   defer {
     owner.close()
   }
-  match CloudAgents.Pg.SelfCheck.check(owner) {
-    case Ok(_) -> assertTrue(false, "the owner role must fail the self-check")
-    case Err(m) -> assertTrue(m.contains("owns") or m.contains("privileged"), "refused: " + m)
+  match CloudAgents.Pg.SelfCheck.privilegedMemberships(owner) {
+    case Ok(v) -> assertEqual(v, "cloudagents_claimer", "the owner's claimer membership is reported")
+    case Err(m) -> assertTrue(false, "membership query failed: " + m)
   }
   val app = appConn()
   defer {
     app.close()
   }
-  val tx = unscoped(app)
-  assertEqual(
-    str1(
-      tx,
-      "SELECT coalesce(string_agg(r.rolname, ','), '') AS v FROM pg_roles r WHERE r.rolname <> current_user " +
-        "AND pg_has_role(current_user, r.oid, 'MEMBER') AND (r.rolsuper OR r.rolbypassrls OR r.rolname IN " +
-        "('cloudagents_owner', 'cloudagents_claimer', 'cloudagents_migrator'))",
-      []
-    ),
-    "",
-    "the provisioned service role holds no privileged membership"
-  )
-  commit(tx)
+  match CloudAgents.Pg.SelfCheck.privilegedMemberships(app) {
+    case Ok(v) -> assertEqual(v, "", "the provisioned service role holds no privileged membership")
+    case Err(m) -> assertTrue(false, "membership query failed: " + m)
+  }
 }
 
 test "the self-check passes for the service role and fails for the owner" {

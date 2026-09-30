@@ -27,6 +27,7 @@
 package CloudAgents.LibrarySeed
 
 import Std.Core
+import CloudAgents.Pg
 import Std.File
 import CloudAgents.Library
 import CloudAgents.McpServerSeed
@@ -224,7 +225,7 @@ func readSeedSubagent(name: in String): Option[ParsedSubagent] {
 /// re-checked per name below anyway, for the rare case a request races this
 /// same call twice.
 pub func seedDefaultSubagentsIfEmpty(userId: in String): Unit {
-  val existing = match CloudAgents.Repository.listSubagents(userId) {
+  val existing = match CloudAgents.Repository.listSubagents(CloudAgents.Pg.personalScope(userId)) {
     case Ok(s) -> s
     case Err(_) -> return ()
   }
@@ -237,9 +238,9 @@ pub func seedDefaultSubagentsIfEmpty(userId: in String): Unit {
     match readSeedSubagent(names[i]) {
       case Some(parsed) -> {
         if CloudAgents.Library.isValidLibraryName(parsed.name) and isWithinSubagentBounds(parsed) {
-          match CloudAgents.Repository.subagentIdByName(userId, parsed.name) {
+          match CloudAgents.Repository.subagentIdByName(CloudAgents.Pg.personalScope(userId), parsed.name) {
             case Ok(None) -> {
-              match CloudAgents.Repository.addSubagent(userId, parsed.name, parsed.description, parsed.systemPrompt, parsed.model) {
+              match CloudAgents.Repository.addSubagent(CloudAgents.Pg.personalScope(userId), parsed.name, parsed.description, parsed.systemPrompt, parsed.model) {
                 case Ok(_) -> ()
                 case Err(_) -> ()
               }
@@ -329,7 +330,7 @@ func readSeedSkill(name: in String): Option[ParsedSkill] {
 /// Same never-fails / empty-library-gated / per-name-double-checked shape as
 /// seedDefaultSubagentsIfEmpty — see its doc comment for the reasoning.
 pub func seedDefaultSkillsIfEmpty(userId: in String): Unit {
-  val existing = match CloudAgents.Repository.listSkills(userId) {
+  val existing = match CloudAgents.Repository.listSkills(CloudAgents.Pg.personalScope(userId)) {
     case Ok(s) -> s
     case Err(_) -> return ()
   }
@@ -342,9 +343,9 @@ pub func seedDefaultSkillsIfEmpty(userId: in String): Unit {
     match readSeedSkill(names[i]) {
       case Some(parsed) -> {
         if CloudAgents.Library.isValidLibraryName(parsed.name) and isWithinSkillBounds(parsed) {
-          match CloudAgents.Repository.skillIdByName(userId, parsed.name) {
+          match CloudAgents.Repository.skillIdByName(CloudAgents.Pg.personalScope(userId), parsed.name) {
             case Ok(None) -> {
-              match CloudAgents.Repository.addSkill(userId, parsed.name, parsed.description, parsed.body) {
+              match CloudAgents.Repository.addSkill(CloudAgents.Pg.personalScope(userId), parsed.name, parsed.description, parsed.body) {
                 case Ok(_) -> ()
                 case Err(_) -> ()
               }

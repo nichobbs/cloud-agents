@@ -39,6 +39,17 @@ func provisionHint(): String {
   return " (see deploy/postgres/provision.sql and docs/phase11-postgres-tenancy.md §8)"
 }
 
+/// The privileged roles the connected role is a member of, directly or
+/// indirectly, comma-separated ("" when none): cloudagents_owner,
+/// cloudagents_claimer, cloudagents_migrator, and any superuser or BYPASSRLS
+/// role.
+pub func privilegedMemberships(conn: in DbConnection): Result[String, String] {
+  return match one(conn, "SELECT coalesce(string_agg(r.rolname, ', ' ORDER BY r.rolname), '') AS v FROM pg_roles r " + "WHERE r.rolname <> current_user AND pg_has_role(current_user, r.oid, 'MEMBER') " + "AND (r.rolsuper OR r.rolbypassrls OR r.rolname IN " + "('cloudagents_owner', 'cloudagents_claimer', 'cloudagents_migrator'))")? {
+    case Some(r) -> Ok(value = Db.dbGetString(r, "v"))
+    case None -> Ok(value = "")
+  }
+}
+
 /// Check the connected role and database. `Ok(())` means safe to serve.
 pub func check(conn: in DbConnection): Result[Unit, String] {
   val me = match one(conn, "SELECT current_user::text AS name, rolsuper::text AS su, rolbypassrls::text AS bypass " + "FROM pg_roles WHERE rolname = current_user")? {
@@ -95,10 +106,7 @@ pub func check(conn: in DbConnection): Result[Unit, String] {
   }
   // Membership, direct or indirect, in a privileged role would let the
   // service SET ROLE to it (or inherit it), bypassing the checks above.
-  val privileged = match one(conn, "SELECT coalesce(string_agg(r.rolname, ', ' ORDER BY r.rolname), '') AS v FROM pg_roles r " + "WHERE r.rolname <> current_user AND pg_has_role(current_user, r.oid, 'MEMBER') " + "AND (r.rolsuper OR r.rolbypassrls OR r.rolname IN " + "('cloudagents_owner', 'cloudagents_claimer', 'cloudagents_migrator'))")? {
-    case Some(r) -> Db.dbGetString(r, "v")
-    case None -> ""
-  }
+  val privileged = privilegedMemberships(conn)?
   if privileged != "" {
     return Err(
       error = "service role '" + name + "' is a member of privileged role(s): " + privileged +

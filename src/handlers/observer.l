@@ -136,7 +136,7 @@ func diffFor(facts: in SessionRunFacts, runner: in ObserverRunner): String {
 
 // ── Owner routes ──────────────────────────────────────────────────────────────
 func ownedProfile(pid: in String): Result[Unit, Web.ApiError] {
-  match CloudAgents.Repository.getProfile(pid, CloudAgents.Auth.currentUserId()) {
+  match CloudAgents.Repository.getProfile(pid, CloudAgents.Auth.requestScope()) {
     case Ok(Some(_)) -> return Ok(())
     case Ok(None) -> return Err(Web.notFound("Profile not found"))
     case Err(e) -> return Err(dbError(e))

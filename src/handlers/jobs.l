@@ -24,6 +24,7 @@
 package CloudAgents.Jobs
 
 import Std.Core
+import CloudAgents.Pg
 import Web
 import CloudAgents.Auth
 import CloudAgents.Ledger.Observer
@@ -288,7 +289,7 @@ pub func createJobHandler(userId: in String, req: in CreateJobRequest): Result[J
   }
   val model = if req.model.length == 0 { CloudAgents.SessionStore.defaultModelForHarness(harness) } else { req.model }
   if req.profileId.length > 0 {
-    match CloudAgents.Repository.getProfile(req.profileId, userId) {
+    match CloudAgents.Repository.getProfile(req.profileId, CloudAgents.Pg.personalScope(userId)) {
       case Ok(Some(_)) -> ()
       case Ok(None) -> return Err(Web.badRequest("profileId does not reference a known profile"))
       case Err(e) -> return Err(dbError(e))
@@ -378,7 +379,7 @@ pub func updateJobHandler(userId: in String, id: in String, req: in UpdateJobReq
   }
   val profileId = if req.profileId.length > 0 { req.profileId } else { existing.profileId }
   if profileId.length > 0 and profileId != existing.profileId {
-    match CloudAgents.Repository.getProfile(profileId, userId) {
+    match CloudAgents.Repository.getProfile(profileId, CloudAgents.Pg.personalScope(userId)) {
       case Ok(Some(_)) -> ()
       case Ok(None) -> return Err(Web.badRequest("profileId does not reference a known profile"))
       case Err(e) -> return Err(dbError(e))
@@ -543,8 +544,8 @@ func runOneJob(job: in CloudAgents.Repository.ScheduledJob): JobRunOutcome {
   // created via the schedule_job MCP tool leaves them blank on the row by
   // design, since it already has a session. Using the row's blank fields
   // directly here (the previous behavior) silently ran every MCP-scheduled
-  // re-trigger with NO profile at all: profileNetworkPolicy("") resolves to
-  // "full" network access and decryptedCredentialsForProfile("") injects
+  // re-trigger with NO profile at all: profileNetworkPolicy(CloudAgents.Pg.personalScope("")) resolves to
+  // "full" network access and decryptedCredentialsForProfile(CloudAgents.Pg.personalScope("")) injects
   // every credential the user has stored, regardless of whatever
   // network/credential restriction the calling session itself was under —
   // a real privilege-escalation path for a job an agent schedules for
@@ -588,7 +589,7 @@ func runOneJob(job: in CloudAgents.Repository.ScheduledJob): JobRunOutcome {
   }
   var harness = session.harness
   if profileId.length > 0 {
-    match CloudAgents.Repository.getProfile(profileId, job.userId) {
+    match CloudAgents.Repository.getProfile(profileId, CloudAgents.Pg.personalScope(job.userId)) {
       case Ok(Some(p)) -> {
         if p.harness.length > 0 {
           harness = p.harness

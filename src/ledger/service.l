@@ -12,6 +12,7 @@
 package CloudAgents.Ledger.Service
 
 import Std.Core
+import CloudAgents.Pg
 import CloudAgents.Sqlite
 import CloudAgents.Repository
 import CloudAgents.NetworkPolicy
@@ -1166,7 +1167,7 @@ pub func nextRunPromptPrefix(sessionId: in String, userId: in String, profileId:
   if pending <= 0 {
     return ""
   }
-  val enabled = match CloudAgents.Repository.enabledToolsForProfile(userId, profileId) {
+  val enabled = match CloudAgents.Repository.enabledToolsForProfile(CloudAgents.Pg.personalScope(userId), profileId) {
     case Ok(v) -> v
     case Err(_) -> return ""
   }

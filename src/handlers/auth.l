@@ -246,6 +246,14 @@ pub func setCurrentUserId(userId: in String): Unit {
 /// the current request: whatever the middleware stamped for this thread, or
 /// the operator identity when nothing was (tests, startup code, static-token
 /// deployments). Every schema and query is scoped by this value.
+pub func currentUserId(): String {
+  val v = threadGetData(getNamedDataSlot("cloud-agents-current-user"))
+  if DotNetString.IsNullOrEmpty(v) {
+    return operatorUserId()
+  }
+  return v
+}
+
 /// The tenant scope of the current request (docs/phase11-postgres-tenancy.md
 /// §5.2). Handlers call this ONCE, at entry, before any `await`: it reads the
 /// same thread-local slot as `currentUserId`, which is only reliable on the
@@ -254,14 +262,6 @@ pub func setCurrentUserId(userId: in String): Unit {
 /// user's personal tenant.
 pub func requestScope(): CloudAgents.Scope.TenantScope {
   return CloudAgents.Scope.personalScope(currentUserId())
-}
-
-pub func currentUserId(): String {
-  val v = threadGetData(getNamedDataSlot("cloud-agents-current-user"))
-  if DotNetString.IsNullOrEmpty(v) {
-    return operatorUserId()
-  }
-  return v
 }
 
 // ─── Static-token authentication ──────────────────────────────────────────────

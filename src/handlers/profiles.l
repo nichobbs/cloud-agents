@@ -343,7 +343,7 @@ func toolsFor(req: in SaveProfileRequest): slice[String] {
 
 /// List the caller's profiles, alphabetical by name.
 pub func listProfilesHandler(): Result[ProfileList, Web.ApiError] {
-  match listProfiles(CloudAgents.Auth.currentUserId()) {
+  match listProfiles(CloudAgents.Auth.requestScope()) {
     case Ok(ps) -> return Ok(ProfileList(profiles = ps))
     case Err(e) -> return Err(dbError(e))
   }
@@ -355,16 +355,16 @@ pub func addProfileHandler(req: in SaveProfileRequest): Result[Profile, Web.ApiE
     case Some(err) -> return Err(err)
     case None -> ()
   }
-  val userId = CloudAgents.Auth.currentUserId()
+  val sc = CloudAgents.Auth.requestScope()
   val name = req.name.trim()
   // Turn a duplicate name into a 400 rather than a UNIQUE-constraint 500 (#236).
-  match profileIdByName(userId, name) {
+  match profileIdByName(sc, name) {
     case Ok(Some(_)) -> return Err(Web.badRequest("a profile with this name already exists"))
     case Ok(None) -> ()
     case Err(e) -> return Err(dbError(e))
   }
   match addProfile(
-    userId,
+    sc,
     name,
     req.harness,
     req.networkPolicy,
@@ -398,17 +398,17 @@ pub func updateProfileHandler(pid: in String, req: in SaveProfileRequest): Resul
     case Some(err) -> return Err(err)
     case None -> ()
   }
-  val userId = CloudAgents.Auth.currentUserId()
+  val sc = CloudAgents.Auth.requestScope()
   val name = req.name.trim()
   // A rename that collides with another profile's name is a 400, not a 500.
-  match profileIdByName(userId, name) {
+  match profileIdByName(sc, name) {
     case Ok(Some(otherId)) -> if otherId != pid { return Err(Web.badRequest("a profile with this name already exists")) }
     case Ok(None) -> ()
     case Err(e) -> return Err(dbError(e))
   }
   val affected = match updateProfile(
     pid,
-    userId,
+    sc,
     name,
     req.harness,
     req.networkPolicy,
@@ -434,7 +434,7 @@ pub func updateProfileHandler(pid: in String, req: in SaveProfileRequest): Resul
   if affected == 0 {
     return Err(Web.notFound("profile not found"))
   }
-  match getProfile(pid, userId) {
+  match getProfile(pid, sc) {
     case Ok(Some(p)) -> return Ok(p)
     case Ok(None) -> return Err(Web.notFound("profile not found"))
     case Err(e) -> return Err(dbError(e))
@@ -446,7 +446,7 @@ pub func deleteProfileHandler(pid: in String): Result[Unit, Web.ApiError] {
   if pid.length == 0 {
     return Err(Web.badRequest("profile id is required"))
   }
-  val affected = match deleteProfile(pid, CloudAgents.Auth.currentUserId()) {
+  val affected = match deleteProfile(pid, CloudAgents.Auth.requestScope()) {
     case Ok(n) -> n
     case Err(e) -> return Err(dbError(e))
   }
