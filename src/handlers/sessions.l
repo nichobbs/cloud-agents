@@ -1556,10 +1556,13 @@ val maxStrandedRunsPerSweep = 25
 
 /// Free one stranded run: stop its container, fail the run rows it left
 /// "running" (with the usual failed-run webhook), then return the session to
-/// IDLE. If the container cannot be stopped, the session is left held by this
-/// sweep rather than freed, so it never points away from an agent that may
-/// still be running (#1201); its renewed heartbeat goes stale again and a
-/// later sweep retries. Returns whether the session was freed.
+/// IDLE. A container Docker no longer has (the usual case after a Docker or
+/// host restart) counts as stopped: `terminateSessionContainer` returns Ok for
+/// it, since `deleteRunnerContainer` treats Docker's 404 as removed (#1210).
+/// Any other failure to stop it leaves the session held by this sweep rather
+/// than freed, so it never points away from an agent that may still be
+/// running (#1201); its renewed heartbeat goes stale again and a later sweep
+/// retries. Returns whether the session was freed.
 func sweepStrandedRun(r: in CloudAgents.SessionStore.StrandedRun): Bool {
   println(
     "stranded run: session " + r.sessionId + " had no heartbeat from instance '" + r.previousInstance + "' for " +
