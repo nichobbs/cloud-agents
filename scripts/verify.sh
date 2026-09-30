@@ -127,7 +127,7 @@ pub func main(): Int {
   // that never existed)
   eqb(deleteSessionSql("s1", "u1") == "DELETE FROM sessions WHERE id = 's1' AND user_id = 'u1'", true, "delete sql")
   eqb(selectSessionByIdSql("s1", "u1").endsWith("AND user_id = 'u1'"), true, "select scoped by owner")
-  eqb(tryBeginRunSql("s1", "u1", "1000").contains("AND status <> 'RUNNING'"), true, "run claim is status-guarded")
+  eqb(tryBeginRunSql("s1", "u1", "1000", "api-1").contains("AND status <> 'RUNNING'"), true, "run claim is status-guarded")
 
   // Phase 3 — token cache + ownership
   val entry = CachedToken(userId = "42", login = "octocat", expiresAtMillis = 1000.toLong())
