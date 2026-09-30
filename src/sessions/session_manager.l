@@ -1,6 +1,7 @@
 package CloudAgents.SessionStore
 
 import Std.Core
+import Std.Uuid
 import CloudAgents.Auth
 import CloudAgents.Pg
 import CloudAgents.Db
@@ -796,7 +797,8 @@ pub val strandedRunAfterMs: Int = 120000
 
 /// This instance's name, recorded on the runs it drives:
 /// `CLOUDAGENTS_INSTANCE_ID`, else the host name (a container's id under
-/// Docker), else "local".
+/// Docker), else a name minted once for this process ("local-<uuid>"), so
+/// two instances never share one (#1196).
 pub func instanceId(): String {
   val configured = Env.GetEnvironmentVariable("CLOUDAGENTS_INSTANCE_ID")
   if not DotNetString.IsNullOrEmpty(configured) {
@@ -806,7 +808,9 @@ pub func instanceId(): String {
   if not DotNetString.IsNullOrEmpty(host) {
     return host
   }
-  return "local"
+  val minted = "local-" + Std.Uuid.uuidToString(Std.Uuid.newUuid())
+  Env.SetEnvironmentVariable("CLOUDAGENTS_INSTANCE_ID", minted)
+  return minted
 }
 
 /// The name a sweep on this instance takes stranded runs over under.

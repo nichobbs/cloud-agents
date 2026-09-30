@@ -862,6 +862,9 @@ pub func streamSessionMessage(
   w: in Web.ResponseWriter,
 ): Result[String, String] {
   val cell = ResultCell(isSuccess = false, output = "", error = "")
+  // The work since the run was claimed (attachments, run record) happened
+  // outside any poll loop; start this one with a fresh heartbeat (#1194).
+  renewRunHeartbeat(sessionId, userId)
   val t = runSessionMessageAsync(
     repoUrl,
     branch,
@@ -1367,6 +1370,9 @@ pub func streamSessionMessage(
       }
     }
     // End-of-run provenance emission (best-effort; never fails the run).
+    // The end-of-run work below runs outside the poll loop; renew first so
+    // it starts with a fresh heartbeat (#1194).
+    renewRunHeartbeat(sessionId, userId)
     emitRunnerCheckpoint(sessionId, harness, userId, model, prompt, finalLogs)
     return Ok(value = CloudAgents.Capture.Render.renderFullLog(finalLogs))
   }
@@ -1516,6 +1522,9 @@ pub func runSessionMessageBlocking(
   // No live browser tab means no attachment upload for this run either
   // (docs/phase8-scheduling.md scheduled jobs have no composer UI) — always
   // "" here, unlike streamSessionMessage's caller-supplied value.
+  // The work since the run was claimed (attachments, run record) happened
+  // outside any poll loop; start this one with a fresh heartbeat (#1194).
+  renewRunHeartbeat(sessionId, userId)
   val t = runSessionMessageAsync(
     repoUrl,
     branch,
@@ -1560,6 +1569,9 @@ pub func runSessionMessageBlocking(
   if cell.isSuccess {
     val finalLogs = cell.output
     // End-of-run provenance emission (best-effort; never fails the run).
+    // The end-of-run work below runs outside the poll loop; renew first so
+    // it starts with a fresh heartbeat (#1194).
+    renewRunHeartbeat(sessionId, userId)
     emitRunnerCheckpoint(sessionId, harness, userId, model, prompt, finalLogs)
     return Ok(value = CloudAgents.Capture.Render.renderFullLog(finalLogs))
   }

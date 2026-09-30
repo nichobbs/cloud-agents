@@ -1627,10 +1627,16 @@ pub func reapContainers(): Result[String, Web.ApiError] {
   for t in targets {
     match CloudAgents.SessionStore.reapWarmSession(t) {
       case Ok(true) -> {
-        // Terminate is best-effort (the container may already be gone).
+        // The session no longer references the container, so a failed
+        // terminate is logged with its id for the operator to remove by
+        // hand (#1195); it may simply be gone already.
         match CloudAgents.Docker.terminateSessionContainer(t.containerId) {
           case Ok(_) -> ()
-          case Err(_) -> ()
+          case Err(e) -> println(
+            "WARNING: reaped session " + t.sessionId + " but could not terminate container " + t.containerId +
+              ": " +
+              e
+          )
         }
         reaped = reaped + 1
       }
