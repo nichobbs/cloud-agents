@@ -4088,16 +4088,37 @@ pub func selectGraphIngestOutboxBySessionAndHashSql(sessionId: in String, bodyHa
     sqlLiteral(bodyHash)
 }
 
+/// Read one row by id.
+pub func selectGraphIngestOutboxByIdSql(id: in String): String {
+  return "SELECT " + graphIngestOutboxColumns + " FROM graph_ingest_outbox WHERE id = " + sqlLiteral(id)
+}
+
 /// Every undelivered row whose next_attempt_at has arrived, earliest-due
-/// first, capped at `limit` rows — the same shape as
-/// selectDueScheduledJobsSql, unscoped by user (the outbox spans every
-/// tenant's runner-emitted sessions).
+/// first, capped at `limit` rows: the candidates for a drain's claim,
+/// unscoped by user (the outbox spans every tenant's runner-emitted
+/// sessions).
 pub func selectDueGraphIngestOutboxSql(nowMillis: in String, limit: in Int): String {
   return "SELECT " + graphIngestOutboxColumns +
     " FROM graph_ingest_outbox WHERE delivered_at = '' AND CAST(next_attempt_at AS INTEGER) <= CAST(" +
     sqlLiteral(nowMillis) +
     " AS INTEGER) ORDER BY CAST(next_attempt_at AS INTEGER) ASC LIMIT " +
     toString(limit)
+}
+
+/// Claim one row for delivery: if it is undelivered and due, push its
+/// next_attempt_at out by the lease, so no other caller finds it due until
+/// the claimant records an outcome or the lease runs out
+/// (docs/phase11-postgres-tenancy.md §5.3a). One row affected means the
+/// claim is held. `leaseMillis` is a code constant, embedded as an integer
+/// literal like `delayMillis` below.
+pub func claimGraphIngestOutboxRowSql(id: in String, nowMillis: in String, leaseMillis: in Int): String {
+  return "UPDATE graph_ingest_outbox SET next_attempt_at = CAST(CAST(" + sqlLiteral(nowMillis) + " AS INTEGER) + " +
+    toString(leaseMillis) +
+    " AS TEXT) WHERE id = " +
+    sqlLiteral(id) +
+    " AND delivered_at = '' AND CAST(next_attempt_at AS INTEGER) <= CAST(" +
+    sqlLiteral(nowMillis) +
+    " AS INTEGER)"
 }
 
 /// Record a retryable delivery failure: bump attempts, store the (bounded)

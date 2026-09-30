@@ -47,6 +47,11 @@ pub val terminalSentinelMillis: String = "99999999999999"
 /// <message>"`), so truncation here is purely a size bound, not a redaction.
 pub val maxErrorLen: Int = 500
 
+/// How long a claim holds a row before another drain may take it
+/// (docs/phase11-postgres-tenancy.md §5.3a). Longer than one delivery
+/// attempt's bounded timeout, so only a crashed worker's rows are re-claimed.
+pub val leaseSeconds: Int = 300
+
 func digitValue(c: in String): Int {
   if c == "0" {
     return 0

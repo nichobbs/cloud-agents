@@ -395,8 +395,8 @@ test "credentials follow their user across tenants and stay private to them" {
 
 // ── Claim functions ────────────────────────────────────────────────────────
 func insertOutboxSql(): String {
-  return "INSERT INTO graph_ingest_outbox (id, session_id, body, body_hash, url, created_at, next_attempt_at, delivered_at) " +
-    "VALUES (@p0, 's', '{}', @p0, 'https://graph.example/ingest', now(), now() + (@p1 || ' seconds')::interval, " +
+  return "INSERT INTO graph_ingest_outbox (id, user_id, session_id, body, body_hash, url, created_at, next_attempt_at, delivered_at) " +
+    "VALUES (@p0, 'u', 's', '{}', @p0, 'https://graph.example/ingest', now(), now() + (@p1 || ' seconds')::interval, " +
     "CASE WHEN @p2 = 'delivered' THEN now() ELSE NULL END)"
 }
 
@@ -546,7 +546,7 @@ test "claim functions are hardened: definer, fixed search_path, no PUBLIC execut
     conn.close()
   }
   val tx = unscoped(conn)
-  for fn in ["claim_graph_ingest_outbox", "claim_membership_sync", "claim_scheduled_jobs"] {
+  for fn in ["claim_graph_ingest_outbox", "prune_graph_ingest_outbox", "claim_membership_sync", "claim_scheduled_jobs"] {
     assertEqual(
       str1(
         tx,

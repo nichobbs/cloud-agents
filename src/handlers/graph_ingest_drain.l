@@ -38,6 +38,7 @@ import Web
 import CloudAgents.Auth
 import CloudAgents.GitHubApi
 import CloudAgents.GraphIngestOutbox
+import CloudAgents.Pg
 import CloudAgents.Repository
 import CloudAgents.Sqlite
 
@@ -148,7 +149,11 @@ func pruneRetentionDaysConfigured(): Int {
 /// schedule a backoff retry or (past the attempt cap) mark the row terminal.
 /// Never fails the caller — a DB write failure here is logged and swallowed,
 /// same best-effort posture as every other hop in this pipeline.
-func recordFailure(row: in CloudAgents.Repository.GraphIngestOutboxRow, rawError: in String): Unit {
+func recordFailure(
+  row: in CloudAgents.Repository.GraphIngestOutboxRow,
+  rawError: in String,
+  sc: in CloudAgents.Pg.TenantScope,
+): Unit {
   val priorAttempts = CloudAgents.GraphIngestOutbox.parseAttemptsCount(row.attempts)
   val newAttempts = priorAttempts + 1
   val cap = maxAttemptsConfigured()
@@ -161,7 +166,7 @@ func recordFailure(row: in CloudAgents.Repository.GraphIngestOutboxRow, rawError
         toString(cap) +
         "); giving up"
     )
-    match CloudAgents.Repository.markGraphIngestTerminal(row.id, toString(newAttempts), msg) {
+    match CloudAgents.Repository.markGraphIngestTerminal(row.id, toString(newAttempts), msg, sc) {
       case Ok(_) -> ()
       case Err(e) -> println(
         "WARNING: graph-ingest-outbox: failed to mark id=" + row.id + " terminal: " +
@@ -179,7 +184,7 @@ func recordFailure(row: in CloudAgents.Repository.GraphIngestOutboxRow, rawError
         " retryInMs=" +
         toString(delay)
     )
-    match CloudAgents.Repository.markGraphIngestAttempt(row.id, toString(newAttempts), msg, CloudAgents.Repository.nowMillis(), delay) {
+    match CloudAgents.Repository.markGraphIngestAttempt(row.id, toString(newAttempts), msg, CloudAgents.Repository.nowMillis(), delay, sc) {
       case Ok(_) -> ()
       case Err(e) -> println(
         "WARNING: graph-ingest-outbox: failed to record attempt for id=" + row.id + ": " +
@@ -195,15 +200,17 @@ func recordFailure(row: in CloudAgents.Repository.GraphIngestOutboxRow, rawError
 /// (and marks the row delivered as a side effect); `false` on any failure
 /// (token not configured, transport error, non-2xx) — the row is left (or
 /// re-scheduled / marked terminal via `recordFailure`) for the next attempt.
-pub func attemptDeliverRow(row: in CloudAgents.Repository.GraphIngestOutboxRow): Bool {
+/// The caller must hold the row's claim (`claimGraphIngest` or
+/// `claimDueGraphIngest`); recording the outcome releases it.
+pub func attemptDeliverRow(row: in CloudAgents.Repository.GraphIngestOutboxRow, sc: in CloudAgents.Pg.TenantScope): Bool {
   val ingestToken = ingestTokenConfigured()
   if ingestToken == "" {
-    recordFailure(row, "graph ingest token not configured (CLOUDAGENTS_GRAPH_INGEST_TOKEN is empty)")
+    recordFailure(row, "graph ingest token not configured (CLOUDAGENTS_GRAPH_INGEST_TOKEN is empty)", sc)
     return false
   }
   return match CloudAgents.GitHubApi.httpPostJsonWithBearerTimeout(row.url, row.body, ingestToken, graphIngestUserAgent, graphIngestTimeoutMillis) {
     case Ok(_) -> {
-      match CloudAgents.Repository.markGraphIngestDelivered(row.id, CloudAgents.Repository.nowMillis()) {
+      match CloudAgents.Repository.markGraphIngestDelivered(row.id, CloudAgents.Repository.nowMillis(), sc) {
         case Ok(_) -> ()
         case Err(e) -> println(
           "WARNING: graph-ingest-outbox: delivered id=" + row.id + " but failed to mark delivered: " +
@@ -214,7 +221,7 @@ pub func attemptDeliverRow(row: in CloudAgents.Repository.GraphIngestOutboxRow):
       true
     }
     case Err(m) -> {
-      recordFailure(row, m)
+      recordFailure(row, m, sc)
       false
     }
   }
@@ -234,15 +241,15 @@ pub func attemptDeliverRow(row: in CloudAgents.Repository.GraphIngestOutboxRow):
 /// misconfiguration, logged and skipped the same way (fail-closed, matching
 /// docs/capture-runtime-handoff.md §3's URL-validation rule).
 ///
-/// The immediate attempt only fires for a row that is BOTH undelivered AND
-/// actually due (`CloudAgents.GraphIngestOutbox.isDueNow`) — #1051: a fresh
-/// row's `next_attempt_at` starts at `created_at` (immediately due), so the
-/// ordinary first-enqueue happy path is unaffected, but `enqueueGraphIngest`
-/// is idempotent on `(sessionId, bodyHash)`, so a re-enqueue of a
-/// byte-identical body for a row that is currently mid-backoff (scheduled
-/// minutes-to-hours out after prior failures) must NOT jump that schedule —
-/// see `docs/capture-ingest-outbox.md` §6.
-pub func enqueueAndAttemptDelivery(sessionId: in String, body: in String): Unit {
+/// The immediate attempt only fires when the row can be claimed
+/// (`CloudAgents.Repository.claimGraphIngest`): undelivered, due, and not
+/// held by a drain on this or another instance. A fresh row's
+/// `next_attempt_at` starts at `created_at`, so the ordinary first-enqueue
+/// happy path is unaffected, but `enqueueGraphIngest` is idempotent on
+/// `(sessionId, bodyHash)`, so a re-enqueue of a byte-identical body for a
+/// row that is already delivered or mid-backoff (#1051) must not POST again
+/// ahead of schedule — see `docs/capture-ingest-outbox.md` §6.
+pub func enqueueAndAttemptDelivery(sessionId: in String, body: in String, sc: in CloudAgents.Pg.TenantScope): Unit {
   val ingestUrl = ingestUrlConfigured()
   if ingestUrl == "" {
     return ()
@@ -251,7 +258,7 @@ pub func enqueueAndAttemptDelivery(sessionId: in String, body: in String): Unit 
     println("WARNING: graph ingest URL is not http(s), skipping enqueue for session " + sessionId + ": " + ingestUrl)
     return ()
   }
-  match CloudAgents.Repository.enqueueGraphIngest(sessionId, body, ingestUrl) {
+  match CloudAgents.Repository.enqueueGraphIngest(sessionId, body, ingestUrl, sc) {
     case Err(e) -> println(
       "WARNING: graph-ingest-outbox enqueue failed for session " + sessionId + ": " +
         CloudAgents.Sqlite.dbErrorMessage(e)
@@ -261,20 +268,26 @@ pub func enqueueAndAttemptDelivery(sessionId: in String, body: in String): Unit 
         println(
           "graph-ingest-outbox: session " + sessionId + " re-enqueue is already delivered (idempotent no-op), id=" + row.id
         )
-      } else if CloudAgents.GraphIngestOutbox.isDueNow(row.nextAttemptAt, CloudAgents.Repository.nowMillis()) {
-        val _ = attemptDeliverRow(row)
       } else {
-        // #1051: a re-enqueue of an already-queued, currently-mid-backoff
-        // row (identical session + body, e.g. a caller that reproduces the
-        // same mapped objects) must not jump the Equal-Jitter schedule
-        // recordFailure computed for it — leave it for the drain sweep
-        // instead of firing a second attempt ahead of schedule.
-        println(
-          "graph-ingest-outbox: session " + sessionId + " re-enqueue is mid-backoff (next attempt at " + row.nextAttemptAt +
-            "), leaving id=" +
-            row.id +
-            " for the drain sweep"
-        )
+        match CloudAgents.Repository.claimGraphIngest(row.id, sc) {
+          case Ok(true) -> {
+            val _ = attemptDeliverRow(row, sc)
+          }
+          // #1051: a re-enqueue of a row that is mid-backoff, or held by a
+          // drain, is left for the drain sweep rather than attempted early.
+          case Ok(false) -> println(
+            "graph-ingest-outbox: session " + sessionId +
+              " re-enqueue is not due or is claimed (next attempt at " +
+              row.nextAttemptAt +
+              "), leaving id=" +
+              row.id +
+              " for the drain sweep"
+          )
+          case Err(e) -> println(
+            "WARNING: graph-ingest-outbox: could not claim id=" + row.id + ": " +
+              CloudAgents.Sqlite.dbErrorMessage(e)
+          )
+        }
       }
     }
   }
@@ -283,10 +296,11 @@ pub func enqueueAndAttemptDelivery(sessionId: in String, body: in String): Unit 
 /// `POST /api/maintenance/drain-graph-ingest` — an operator-only maintenance
 /// endpoint for an external scheduler to poll (no in-process timer; see the
 /// module doc), mirroring `CloudAgents.Jobs.triggerDueJobsHandler` exactly:
-/// restricted to the operator identity because `dueGraphIngest` is a
-/// system-wide, unscoped-by-user sweep. Safe to call repeatedly — a row not
-/// yet due is untouched, and a delivered/terminal row is excluded from the
-/// scan. Processes at most `drainLimit()` due rows (earliest-due first) per
+/// restricted to the operator identity because `claimDueGraphIngest` is a
+/// system-wide, unscoped-by-user sweep. Safe to call repeatedly and from
+/// several instances at once — each row is claimed with a lease before it is
+/// attempted, a row not yet due is untouched, and a delivered/terminal row is
+/// never claimed. Processes at most `drainLimit()` due rows (earliest-due first) per
 /// call; anything left over is picked up on the next poll. Also prunes
 /// delivered rows older than `pruneRetentionDaysConfigured()` days on every
 /// call. Returns `{"delivered":N,"failed":M,"terminal":K,"pruned":P}`.
@@ -294,7 +308,7 @@ pub func drainGraphIngestHandler(): Result[String, Web.ApiError] {
   if CloudAgents.Auth.currentUserId() != CloudAgents.Auth.operatorUserId() {
     return Err(Web.unauthorized("the graph-ingest-outbox drain may only be triggered by the operator identity"))
   }
-  val due = match CloudAgents.Repository.dueGraphIngest(CloudAgents.Repository.nowMillis(), drainLimit()) {
+  val due = match CloudAgents.Repository.claimDueGraphIngest(drainLimit()) {
     case Ok(rs) -> rs
     case Err(e) -> return Err(dbError(e))
   }
@@ -304,9 +318,9 @@ pub func drainGraphIngestHandler(): Result[String, Web.ApiError] {
   var terminal = 0
   var i = 0
   while i < due.length {
-    val row = due[i]
+    val row = due[i].row
     val beforeAttempts = CloudAgents.GraphIngestOutbox.parseAttemptsCount(row.attempts)
-    if attemptDeliverRow(row) {
+    if attemptDeliverRow(row, due[i].tenantScope) {
       delivered = delivered + 1
     } else if CloudAgents.GraphIngestOutbox.isTerminal(beforeAttempts + 1, cap) {
       terminal = terminal + 1
