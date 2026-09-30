@@ -28,6 +28,7 @@ import CloudAgents.Crypto
 import CloudAgents.GitHubApi
 import CloudAgents.LibrarySeed
 import CloudAgents.Repository
+import CloudAgents.Scope
 import CloudAgents.SessionStore
 import CloudAgents.Sqlite
 import extern System.Environment as Env
@@ -213,7 +214,7 @@ pub func isConfirmedAuthRejection(errorText: in String): Bool {
 /// (name check only — no decryption). Fails closed to "present" on a DB
 /// error so a transient read failure can't cause an overwrite (#441).
 func hasGitHubTokenCredential(userId: in String): Bool {
-  match CloudAgents.Repository.listCredentialNames(userId) {
+  match CloudAgents.Repository.listCredentialNames(CloudAgents.Scope.userScope(userId)) {
     case Ok(names) -> {
       var i = 0
       while i < names.length {
@@ -320,7 +321,7 @@ pub func exchangeCode(req: in ExchangeRequest): Result[TokenGrant, Web.ApiError]
       // a vault miss (e.g. ENCRYPTION_KEY unconfigured) must never fail a
       // successful login — log a NOTE and continue.
       if not hasGitHubTokenCredential(userId) {
-        match CloudAgents.Repository.putCredential(userId, "GITHUB_TOKEN", token) {
+        match CloudAgents.Repository.putCredential(CloudAgents.Scope.userScope(userId), "GITHUB_TOKEN", token) {
           case Ok(_) -> ()
           case Err(e) -> println("NOTE: could not store GITHUB_TOKEN in the credential vault: " + CloudAgents.Repository.credentialErrorMessage(e))
         }
@@ -340,7 +341,7 @@ pub func exchangeCode(req: in ExchangeRequest): Result[TokenGrant, Web.ApiError]
       val accessExpiresIn = CloudAgents.Auth.parseJsonNumber(body, "expires_in")
       val refreshExpiresIn = CloudAgents.Auth.parseJsonNumber(body, "refresh_token_expires_in")
       if refreshToken.length > 0 and accessExpiresIn.length > 0 and refreshExpiresIn.length > 0 {
-        match CloudAgents.Repository.upsertGitHubOAuthRefresh(userId, refreshToken, accessExpiresIn, refreshExpiresIn) {
+        match CloudAgents.Repository.upsertGitHubOAuthRefresh(CloudAgents.Scope.userScope(userId), refreshToken, accessExpiresIn, refreshExpiresIn) {
           case Ok(_) -> ()
           case Err(e) -> println("NOTE: could not persist GitHub OAuth refresh metadata: " + CloudAgents.Repository.credentialErrorMessage(e))
         }
@@ -348,7 +349,7 @@ pub func exchangeCode(req: in ExchangeRequest): Result[TokenGrant, Web.ApiError]
         // No expiring-token fields this time (e.g. the app registration was
         // switched to non-expiring tokens) — drop any stale row so a past
         // refresh-token expiry can't wrongly gate a now-non-expiring token.
-        match CloudAgents.Repository.deleteGitHubOAuthRefresh(userId) {
+        match CloudAgents.Repository.deleteGitHubOAuthRefresh(CloudAgents.Scope.userScope(userId)) {
           case Ok(_) -> ()
           case Err(_) -> ()
         }
@@ -369,10 +370,10 @@ pub func reconnectGitHubMessage(): String {
 }
 
 func isTokenRefreshedByConcurrentRequest(userId: in String, sentRefreshToken: in String): Option[String] {
-  match CloudAgents.Repository.githubOAuthRefreshStatus(userId) {
+  match CloudAgents.Repository.githubOAuthRefreshStatus(CloudAgents.Scope.userScope(userId)) {
     case Ok(Some(s)) -> {
       if not s.accessTokenExpired or s.refreshToken != sentRefreshToken {
-        match CloudAgents.Repository.decryptedCredentialValue(userId, "GITHUB_TOKEN") {
+        match CloudAgents.Repository.decryptedCredentialValue(CloudAgents.Scope.userScope(userId), "GITHUB_TOKEN") {
           case Ok(Some(t)) -> return Some(value = t)
           case Ok(None) -> return None
           case Err(_) -> return None
@@ -420,13 +421,13 @@ func doRefresh(userId: in String, refreshToken: in String): Result[String, Web.A
     // the dead metadata so the next request fails the same clear way instead
     // of retrying a doomed refresh every time.
     println("WARNING: GitHub rejected a token refresh: " + exchangeErrorFromJson(body))
-    match CloudAgents.Repository.deleteGitHubOAuthRefresh(userId) {
+    match CloudAgents.Repository.deleteGitHubOAuthRefresh(CloudAgents.Scope.userScope(userId)) {
       case Ok(_) -> ()
       case Err(_) -> ()
     }
     return Err(Web.unauthorized(reconnectGitHubMessage()))
   }
-  match CloudAgents.Repository.putCredential(userId, "GITHUB_TOKEN", newToken) {
+  match CloudAgents.Repository.putCredential(CloudAgents.Scope.userScope(userId), "GITHUB_TOKEN", newToken) {
     case Ok(_) -> ()
     case Err(e) -> println("NOTE: could not store the refreshed GITHUB_TOKEN in the credential vault: " + CloudAgents.Repository.credentialErrorMessage(e))
   }
@@ -445,7 +446,7 @@ func doRefresh(userId: in String, refreshToken: in String): Result[String, Web.A
   val accessExpiresIn = CloudAgents.Auth.parseJsonNumber(body, "expires_in")
   val refreshExpiresIn = CloudAgents.Auth.parseJsonNumber(body, "refresh_token_expires_in")
   if newRefreshToken.length > 0 and accessExpiresIn.length > 0 and refreshExpiresIn.length > 0 {
-    match CloudAgents.Repository.upsertGitHubOAuthRefresh(userId, newRefreshToken, accessExpiresIn, refreshExpiresIn) {
+    match CloudAgents.Repository.upsertGitHubOAuthRefresh(CloudAgents.Scope.userScope(userId), newRefreshToken, accessExpiresIn, refreshExpiresIn) {
       case Ok(_) -> ()
       case Err(e) -> println("NOTE: could not persist refreshed GitHub OAuth metadata: " + CloudAgents.Repository.credentialErrorMessage(e))
     }
@@ -460,7 +461,7 @@ func doRefresh(userId: in String, refreshToken: in String): Result[String, Web.A
 /// turns a dead refresh token into an actionable "sign in again" message
 /// instead of a generic upstream failure.
 pub func ensureFreshGitHubToken(userId: in String): Result[String, Web.ApiError] {
-  match CloudAgents.Repository.githubOAuthRefreshStatus(userId) {
+  match CloudAgents.Repository.githubOAuthRefreshStatus(CloudAgents.Scope.userScope(userId)) {
     case Ok(Some(status)) -> {
       if status.refreshTokenExpired {
         return Err(Web.unauthorized(reconnectGitHubMessage()))
@@ -472,7 +473,7 @@ pub func ensureFreshGitHubToken(userId: in String): Result[String, Web.ApiError]
     case Ok(None) -> ()
     case Err(e) -> println("WARNING: reading GitHub OAuth refresh status failed: " + CloudAgents.Repository.credentialErrorMessage(e))
   }
-  match CloudAgents.Repository.decryptedCredentialValue(userId, "GITHUB_TOKEN") {
+  match CloudAgents.Repository.decryptedCredentialValue(CloudAgents.Scope.userScope(userId), "GITHUB_TOKEN") {
     case Ok(Some(t)) -> return Ok(value = t)
     case Ok(None) -> return Err(Web.notFound("no GITHUB_TOKEN in the credential vault"))
     case Err(e) -> {

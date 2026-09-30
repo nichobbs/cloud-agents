@@ -33,3 +33,8 @@ pub func personalTenantId(userId: in String): String {
 pub func personalScope(userId: in String): TenantScope {
   return TenantScope(tenantId = personalTenantId(userId), userId = userId)
 }
+
+/// The scope of a user acting on their own user-owned data (spec §4.3a).
+pub func userScope(userId: in String): UserScope {
+  return UserScope(userId = userId)
+}

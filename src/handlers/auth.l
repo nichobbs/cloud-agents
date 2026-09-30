@@ -264,6 +264,13 @@ pub func requestScope(): CloudAgents.Scope.TenantScope {
   return CloudAgents.Scope.personalScope(currentUserId())
 }
 
+/// The user scope of the current request, for the user-owned vault
+/// (credentials, OAuth refresh metadata; spec §4.3a). Same rule as
+/// `requestScope`: call once at entry, before any `await`.
+pub func requestUserScope(): CloudAgents.Scope.UserScope {
+  return CloudAgents.Scope.userScope(currentUserId())
+}
+
 // ─── Static-token authentication ──────────────────────────────────────────────
 //
 // Phase-1 auth: a single shared secret in CLOUD_AGENTS_API_TOKEN. Requests

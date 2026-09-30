@@ -2,6 +2,7 @@
 package CloudAgents.OAuthTests
 
 import Std.Core
+import CloudAgents.Scope
 import Std.Testing
 import Std.Uuid
 import CloudAgents.Auth
@@ -508,18 +509,18 @@ test "github oauth refresh metadata round-trips through repository CRUD" {
   val userId = "gh-500"
 
   // No metadata yet -> None (the common non-expiring-token case).
-  match CloudAgents.Repository.githubOAuthRefreshStatus(userId) {
+  match CloudAgents.Repository.githubOAuthRefreshStatus(CloudAgents.Scope.userScope(userId)) {
     case Ok(None) -> ()
     case Ok(Some(_)) -> assertTrue(false, "no row expected before any upsert")
     case Err(e) -> assertTrue(false, "status read failed: " + CloudAgents.Repository.credentialErrorMessage(e))
   }
 
   // Both tokens fresh.
-  match CloudAgents.Repository.upsertGitHubOAuthRefresh(userId, "refresh-abc", "3600", "604800") {
+  match CloudAgents.Repository.upsertGitHubOAuthRefresh(CloudAgents.Scope.userScope(userId), "refresh-abc", "3600", "604800") {
     case Ok(_) -> ()
     case Err(e) -> assertTrue(false, "upsert failed: " + CloudAgents.Repository.credentialErrorMessage(e))
   }
-  match CloudAgents.Repository.githubOAuthRefreshStatus(userId) {
+  match CloudAgents.Repository.githubOAuthRefreshStatus(CloudAgents.Scope.userScope(userId)) {
     case Ok(Some(status)) -> {
       assertEqual(status.refreshToken, "refresh-abc", "refresh token decrypts back unchanged")
       assertTrue(not status.accessTokenExpired, "access token still fresh (> 5m remaining)")
@@ -530,11 +531,11 @@ test "github oauth refresh metadata round-trips through repository CRUD" {
   }
 
   // Token expiring in 2 minutes (120s) -> within 5-minute proactive buffer -> accessTokenExpired is true.
-  match CloudAgents.Repository.upsertGitHubOAuthRefresh(userId, "refresh-abc", "120", "604800") {
+  match CloudAgents.Repository.upsertGitHubOAuthRefresh(CloudAgents.Scope.userScope(userId), "refresh-abc", "120", "604800") {
     case Ok(_) -> ()
     case Err(e) -> assertTrue(false, "upsert failed: " + CloudAgents.Repository.credentialErrorMessage(e))
   }
-  match CloudAgents.Repository.githubOAuthRefreshStatus(userId) {
+  match CloudAgents.Repository.githubOAuthRefreshStatus(CloudAgents.Scope.userScope(userId)) {
     case Ok(Some(status)) -> {
       assertTrue(status.accessTokenExpired, "access token expiring in 2 minutes marked for proactive refresh")
     }
@@ -545,11 +546,11 @@ test "github oauth refresh metadata round-trips through repository CRUD" {
   // Re-upsert (GitHub rotates the refresh token on every use): access token
   // now expired, refresh token still good — and the old value is replaced,
   // not duplicated.
-  match CloudAgents.Repository.upsertGitHubOAuthRefresh(userId, "refresh-def", "-100", "604800") {
+  match CloudAgents.Repository.upsertGitHubOAuthRefresh(CloudAgents.Scope.userScope(userId), "refresh-def", "-100", "604800") {
     case Ok(_) -> ()
     case Err(e) -> assertTrue(false, "re-upsert failed: " + CloudAgents.Repository.credentialErrorMessage(e))
   }
-  match CloudAgents.Repository.githubOAuthRefreshStatus(userId) {
+  match CloudAgents.Repository.githubOAuthRefreshStatus(CloudAgents.Scope.userScope(userId)) {
     case Ok(Some(status)) -> {
       assertEqual(status.refreshToken, "refresh-def", "upsert replaces the prior row")
       assertTrue(status.accessTokenExpired, "access token now expired")
@@ -560,11 +561,11 @@ test "github oauth refresh metadata round-trips through repository CRUD" {
   }
 
   // Both expired — the unrecoverable case.
-  match CloudAgents.Repository.upsertGitHubOAuthRefresh(userId, "refresh-ghi", "-100", "-100") {
+  match CloudAgents.Repository.upsertGitHubOAuthRefresh(CloudAgents.Scope.userScope(userId), "refresh-ghi", "-100", "-100") {
     case Ok(_) -> ()
     case Err(e) -> assertTrue(false, "re-upsert failed: " + CloudAgents.Repository.credentialErrorMessage(e))
   }
-  match CloudAgents.Repository.githubOAuthRefreshStatus(userId) {
+  match CloudAgents.Repository.githubOAuthRefreshStatus(CloudAgents.Scope.userScope(userId)) {
     case Ok(Some(status)) -> {
       assertTrue(status.accessTokenExpired, "access token expired")
       assertTrue(status.refreshTokenExpired, "refresh token also expired")
@@ -574,11 +575,11 @@ test "github oauth refresh metadata round-trips through repository CRUD" {
   }
 
   // Delete drops the row entirely.
-  match CloudAgents.Repository.deleteGitHubOAuthRefresh(userId) {
+  match CloudAgents.Repository.deleteGitHubOAuthRefresh(CloudAgents.Scope.userScope(userId)) {
     case Ok(_) -> ()
     case Err(e) -> assertTrue(false, "delete failed: " + CloudAgents.Repository.credentialErrorMessage(e))
   }
-  match CloudAgents.Repository.githubOAuthRefreshStatus(userId) {
+  match CloudAgents.Repository.githubOAuthRefreshStatus(CloudAgents.Scope.userScope(userId)) {
     case Ok(None) -> ()
     case Ok(Some(_)) -> assertTrue(false, "row must be gone after delete")
     case Err(e) -> assertTrue(false, "status read failed: " + CloudAgents.Repository.credentialErrorMessage(e))
@@ -600,7 +601,7 @@ test "ensureFreshGitHubToken falls back to a direct vault read with no refresh m
 
   // Vaulted directly, as a non-expiring-token OAuth App's sign-in would leave
   // it (the common case) -> returned unchanged, no refresh attempted.
-  match CloudAgents.Repository.putCredential(userId, "GITHUB_TOKEN", "gho_plain") {
+  match CloudAgents.Repository.putCredential(CloudAgents.Scope.userScope(userId), "GITHUB_TOKEN", "gho_plain") {
     case Ok(_) -> ()
     case Err(e) -> assertTrue(false, "putCredential failed: " + CloudAgents.Repository.credentialErrorMessage(e))
   }
@@ -616,11 +617,11 @@ test "ensureFreshGitHubToken returns the vaulted token unchanged while still fre
     cleanupTestDb(dbPath)
   }
   val userId = "gh-502"
-  match CloudAgents.Repository.upsertGitHubOAuthRefresh(userId, "refresh-xyz", "3600", "604800") {
+  match CloudAgents.Repository.upsertGitHubOAuthRefresh(CloudAgents.Scope.userScope(userId), "refresh-xyz", "3600", "604800") {
     case Ok(_) -> ()
     case Err(e) -> assertTrue(false, "upsert failed: " + CloudAgents.Repository.credentialErrorMessage(e))
   }
-  match CloudAgents.Repository.putCredential(userId, "GITHUB_TOKEN", "gho_stillfresh") {
+  match CloudAgents.Repository.putCredential(CloudAgents.Scope.userScope(userId), "GITHUB_TOKEN", "gho_stillfresh") {
     case Ok(_) -> ()
     case Err(e) -> assertTrue(false, "putCredential failed: " + CloudAgents.Repository.credentialErrorMessage(e))
   }
@@ -637,11 +638,11 @@ test "ensureFreshGitHubToken gives a clear reconnect message once the refresh to
     cleanupTestDb(dbPath)
   }
   val userId = "gh-503"
-  match CloudAgents.Repository.upsertGitHubOAuthRefresh(userId, "refresh-dead", "-100", "-100") {
+  match CloudAgents.Repository.upsertGitHubOAuthRefresh(CloudAgents.Scope.userScope(userId), "refresh-dead", "-100", "-100") {
     case Ok(_) -> ()
     case Err(e) -> assertTrue(false, "upsert failed: " + CloudAgents.Repository.credentialErrorMessage(e))
   }
-  match CloudAgents.Repository.putCredential(userId, "GITHUB_TOKEN", "gho_stale") {
+  match CloudAgents.Repository.putCredential(CloudAgents.Scope.userScope(userId), "GITHUB_TOKEN", "gho_stale") {
     case Ok(_) -> ()
     case Err(e) -> assertTrue(false, "putCredential failed: " + CloudAgents.Repository.credentialErrorMessage(e))
   }
@@ -713,7 +714,7 @@ test "refreshOAuthToken returns refreshed token for authenticated user" {
   val tokenHash = CloudAgents.Crypto.sha256Base64(token)
 
   // Seed vault credential
-  match CloudAgents.Repository.putCredential(userId, "GITHUB_TOKEN", token) {
+  match CloudAgents.Repository.putCredential(CloudAgents.Scope.userScope(userId), "GITHUB_TOKEN", token) {
     case Ok(_) -> ()
     case Err(e) -> assertTrue(false, "putCredential failed: " + CloudAgents.Repository.credentialErrorMessage(e))
   }

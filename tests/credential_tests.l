@@ -2,6 +2,7 @@
 package CloudAgents.CredentialTests
 
 import Std.Core
+import CloudAgents.Scope
 import Std.Testing
 import Std.Uuid
 import CloudAgents.Credentials
@@ -35,21 +36,21 @@ func cleanupTestDb(path: in String): Unit {
 }
 
 func mustPut(userId: in String, name: in String, value: in String): Unit {
-  match putCredential(userId, name, value) {
+  match putCredential(CloudAgents.Scope.userScope(userId), name, value) {
     case Ok(_) -> ()
     case Err(e) -> panic("putCredential failed: " + credentialErrorMessage(e))
   }
 }
 
 func mustNames(userId: in String): slice[CredentialName] {
-  return match listCredentialNames(userId) {
+  return match listCredentialNames(CloudAgents.Scope.userScope(userId)) {
     case Ok(ns) -> ns
     case Err(e) -> panic("listCredentialNames failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
   }
 }
 
 func mustDecrypted(userId: in String): slice[CredentialValue] {
-  return match decryptedCredentials(userId) {
+  return match decryptedCredentials(CloudAgents.Scope.userScope(userId)) {
     case Ok(cs) -> cs
     case Err(e) -> panic("decryptedCredentials failed: " + credentialErrorMessage(e))
   }
@@ -184,11 +185,11 @@ test "Credentials are per-user isolated and deletable" {
   assertEqual(findValue(mustDecrypted("default"), "SECRET"), "mine", "I see my own value")
 
   // Deleting another user's credential touches nothing.
-  match deleteCredential("default", "SECRET") {
+  match deleteCredential(CloudAgents.Scope.userScope("default"), "SECRET") {
     case Ok(n) -> assertEqualInt(n, 1, "delete my own credential")
     case Err(e) -> assertTrue(false, CloudAgents.Sqlite.dbErrorMessage(e))
   }
-  match deleteCredential("default", "SECRET") {
+  match deleteCredential(CloudAgents.Scope.userScope("default"), "SECRET") {
     case Ok(n) -> assertEqualInt(n, 0, "second delete finds nothing")
     case Err(e) -> assertTrue(false, CloudAgents.Sqlite.dbErrorMessage(e))
   }
@@ -201,12 +202,12 @@ test "deleting GITHUB_TOKEN also drops GitHub OAuth refresh metadata, preventing
     cleanupTestDb(dbPath)
   }
   mustPut("gh-777", "GITHUB_TOKEN", "gho_original")
-  match CloudAgents.Repository.upsertGitHubOAuthRefresh("gh-777", "refresh-still-valid", "3600", "604800") {
+  match CloudAgents.Repository.upsertGitHubOAuthRefresh(CloudAgents.Scope.userScope("gh-777"), "refresh-still-valid", "3600", "604800") {
     case Ok(_) -> ()
     case Err(e) -> assertTrue(false, "upsert failed: " + CloudAgents.Repository.credentialErrorMessage(e))
   }
 
-  match deleteCredential("gh-777", "GITHUB_TOKEN") {
+  match deleteCredential(CloudAgents.Scope.userScope("gh-777"), "GITHUB_TOKEN") {
     case Ok(n) -> assertEqualInt(n, 1, "GITHUB_TOKEN deleted")
     case Err(e) -> assertTrue(false, CloudAgents.Sqlite.dbErrorMessage(e))
   }
@@ -214,7 +215,7 @@ test "deleting GITHUB_TOKEN also drops GitHub OAuth refresh metadata, preventing
   // The refresh row must be gone too, or a still-valid refresh token would
   // silently re-vault a fresh GITHUB_TOKEN on the next request despite the
   // tenant having just deleted it.
-  match CloudAgents.Repository.githubOAuthRefreshStatus("gh-777") {
+  match CloudAgents.Repository.githubOAuthRefreshStatus(CloudAgents.Scope.userScope("gh-777")) {
     case Ok(None) -> ()
     case Ok(Some(_)) -> assertTrue(false, "refresh metadata must be dropped alongside GITHUB_TOKEN")
     case Err(e) -> assertTrue(false, "status read failed: " + CloudAgents.Repository.credentialErrorMessage(e))
@@ -223,15 +224,15 @@ test "deleting GITHUB_TOKEN also drops GitHub OAuth refresh metadata, preventing
   // Deleting an unrelated credential must never touch refresh metadata.
   mustPut("gh-888", "GITHUB_TOKEN", "gho_other")
   mustPut("gh-888", "OTHER_SECRET", "unrelated")
-  match CloudAgents.Repository.upsertGitHubOAuthRefresh("gh-888", "refresh-888", "3600", "604800") {
+  match CloudAgents.Repository.upsertGitHubOAuthRefresh(CloudAgents.Scope.userScope("gh-888"), "refresh-888", "3600", "604800") {
     case Ok(_) -> ()
     case Err(e) -> assertTrue(false, "upsert failed: " + CloudAgents.Repository.credentialErrorMessage(e))
   }
-  match deleteCredential("gh-888", "OTHER_SECRET") {
+  match deleteCredential(CloudAgents.Scope.userScope("gh-888"), "OTHER_SECRET") {
     case Ok(n) -> assertEqualInt(n, 1, "unrelated credential deleted")
     case Err(e) -> assertTrue(false, CloudAgents.Sqlite.dbErrorMessage(e))
   }
-  match CloudAgents.Repository.githubOAuthRefreshStatus("gh-888") {
+  match CloudAgents.Repository.githubOAuthRefreshStatus(CloudAgents.Scope.userScope("gh-888")) {
     case Ok(Some(_)) -> ()
     case Ok(None) -> assertTrue(false, "refresh metadata must survive deleting an unrelated credential")
     case Err(e) -> assertTrue(false, "status read failed: " + CloudAgents.Repository.credentialErrorMessage(e))

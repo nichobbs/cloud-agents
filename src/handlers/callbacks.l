@@ -26,6 +26,7 @@ import Std.Uuid
 import Web
 import CloudAgents.Auth
 import CloudAgents.Repository
+import CloudAgents.Scope
 import CloudAgents.RepoKey
 import CloudAgents.SessionStore
 import CloudAgents.Sqlite
@@ -522,7 +523,7 @@ pub func createSecretRequestHandler(
     case Ok(None) -> return Err(Web.notFound("Session not found"))
     case Err(e) -> return Err(dbError(e))
   }
-  val credentialExists = match CloudAgents.Repository.credentialNameExists(ownerUserId, req.name) {
+  val credentialExists = match CloudAgents.Repository.credentialNameExists(CloudAgents.Scope.userScope(ownerUserId), req.name) {
     case Ok(b) -> b
     case Err(e) -> return Err(dbError(e))
   }
@@ -582,7 +583,7 @@ pub func getSecretRequestHandler(
     case Ok(None) -> return Ok(SecretDecision(status = "approved", value = ""))
     case Err(e) -> return Err(dbError(e))
   }
-  return match CloudAgents.Repository.decryptedCredentialValue(ownerUserId, sr.name) {
+  return match CloudAgents.Repository.decryptedCredentialValue(CloudAgents.Scope.userScope(ownerUserId), sr.name) {
     case Ok(Some(v)) -> Ok(SecretDecision(status = "approved", value = v))
     // Credential deleted between create/approve and this delivery, or
     // undecryptable (rotated key) — fail closed to an empty value; the
@@ -624,7 +625,7 @@ pub func answerSecretRequestHandler(
     // between create and this answer. requireOwnedSession above already
     // established the current caller owns this session, so currentUserId()
     // IS the session owner here.
-    val credentialExists = match CloudAgents.Repository.credentialNameExists(CloudAgents.Auth.currentUserId(), sr.name) {
+    val credentialExists = match CloudAgents.Repository.credentialNameExists(CloudAgents.Auth.requestUserScope(), sr.name) {
       case Ok(b) -> b
       case Err(e) -> return Err(dbError(e))
     }

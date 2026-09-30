@@ -1086,7 +1086,10 @@ pub func credentialErrorMessage(e: in CredentialError): String {
 }
 
 /// Store (or replace) a user's credential, encrypting the value at rest.
-pub func putCredential(userId: in String, name: in String, value: in String): Result[Unit, CredentialError] {
+pub func putCredential(
+  sc: in CloudAgents.Pg.UserScope, name: in String, value: in String
+): Result[Unit, CredentialError] {
+  val userId = sc.userId
   val encrypted = match CloudAgents.Crypto.encrypt(value) {
     case Ok(blob) -> blob
     case Err(e) -> return Err(Crypto(error = e))
@@ -1100,7 +1103,8 @@ pub func putCredential(userId: in String, name: in String, value: in String): Re
 }
 
 /// List a user's credential names (never values).
-pub func listCredentialNames(userId: in String): Result[slice[CredentialName], CloudAgents.Sqlite.DbError] {
+pub func listCredentialNames(sc: in CloudAgents.Pg.UserScope): Result[slice[CredentialName], CloudAgents.Sqlite.DbError] {
+  val userId = sc.userId
   val rows = CloudAgents.Sqlite.query(CloudAgents.Db.selectCredentialNamesSql(userId))?
   var acc: slice[CredentialName] = []
   var i = 0
@@ -1119,12 +1123,13 @@ pub func listCredentialNames(userId: in String): Result[slice[CredentialName], C
 /// fresh GITHUB_TOKEN on the tenant's next request, resurrecting a
 /// credential the tenant just deleted. Best-effort — a cleanup failure here
 /// must never block the credential deletion itself.
-pub func deleteCredential(userId: in String, name: in String): Result[Int, CloudAgents.Sqlite.DbError] {
+pub func deleteCredential(sc: in CloudAgents.Pg.UserScope, name: in String): Result[Int, CloudAgents.Sqlite.DbError] {
+  val userId = sc.userId
   val result = CloudAgents.Sqlite.execute(CloudAgents.Db.deleteCredentialSql(userId, name))
   match result {
     case Ok(_) -> {
       if name == "GITHUB_TOKEN" {
-        match deleteGitHubOAuthRefresh(userId) {
+        match deleteGitHubOAuthRefresh(sc) {
           case Ok(_) -> ()
           case Err(e) -> println(
             "NOTE: could not drop GitHub OAuth refresh metadata after deleting GITHUB_TOKEN: " +
@@ -1143,7 +1148,10 @@ pub func deleteCredential(userId: in String, name: in String): Result[Int, Cloud
 /// §7.1): the create endpoint refuses a request for a name that isn't
 /// actually configured, instead of creating a pending row a human could
 /// only ever deny.
-pub func credentialNameExists(userId: in String, name: in String): Result[Bool, CloudAgents.Sqlite.DbError] {
+pub func credentialNameExists(
+  sc: in CloudAgents.Pg.UserScope, name: in String
+): Result[Bool, CloudAgents.Sqlite.DbError] {
+  val userId = sc.userId
   val rows = CloudAgents.Sqlite.query(CloudAgents.Db.selectCredentialExistsSql(userId, name))?
   return Ok(value = CloudAgents.Sqlite.getRowArrayLength(rows) > 0)
 }
@@ -1154,7 +1162,8 @@ pub func credentialNameExists(userId: in String, name: in String): Result[Bool, 
 /// than failing the whole batch — otherwise one bad secret would block every
 /// future run, including runs that never needed it. A database-read failure
 /// (can't reach the store at all) is still fatal.
-pub func decryptedCredentials(userId: in String): Result[slice[CredentialValue], CredentialError] {
+pub func decryptedCredentials(sc: in CloudAgents.Pg.UserScope): Result[slice[CredentialValue], CredentialError] {
+  val userId = sc.userId
   val rows = match CloudAgents.Sqlite.query(CloudAgents.Db.selectCredentialsForInjectionSql(userId)) {
     case Ok(r) -> r
     case Err(e) -> return Err(Db(error = e))
@@ -1186,7 +1195,10 @@ pub func decryptedCredentials(userId: in String): Result[slice[CredentialValue],
 /// the injection paths above, a present-but-undecryptable value is an error,
 /// not a skip: the caller asked for exactly this credential, so silently
 /// treating it as absent would misreport a rotated-key problem as "no key".
-pub func decryptedCredentialValue(userId: in String, name: in String): Result[Option[String], CredentialError] {
+pub func decryptedCredentialValue(
+  sc: in CloudAgents.Pg.UserScope, name: in String
+): Result[Option[String], CredentialError] {
+  val userId = sc.userId
   val rows = match CloudAgents.Sqlite.query(CloudAgents.Db.selectCredentialsForInjectionSql(userId)) {
     case Ok(r) -> r
     case Err(e) -> return Err(Db(error = e))
@@ -1225,11 +1237,12 @@ pub record GitHubOAuthRefreshStatus {
 /// `accessExpiresInSeconds`/`refreshExpiresInSeconds` are GitHub's own
 /// `expires_in`/`refresh_token_expires_in` response fields, verbatim.
 pub func upsertGitHubOAuthRefresh(
-  userId: in String,
+  sc: in CloudAgents.Pg.UserScope,
   refreshToken: in String,
   accessExpiresInSeconds: in String,
   refreshExpiresInSeconds: in String,
 ): Result[Unit, CredentialError] {
+  val userId = sc.userId
   val encrypted = match CloudAgents.Crypto.encrypt(refreshToken) {
     case Ok(blob) -> blob
     case Err(e) -> return Err(Crypto(error = e))
@@ -1243,7 +1256,10 @@ pub func upsertGitHubOAuthRefresh(
 /// Look up a tenant's refresh-token status: the decrypted refresh token plus
 /// whether the access token and/or refresh token have expired. Returns
 /// Ok(None) for a tenant with no expiring-token metadata (the common case).
-pub func githubOAuthRefreshStatus(userId: in String): Result[Option[GitHubOAuthRefreshStatus], CredentialError] {
+pub func githubOAuthRefreshStatus(
+  sc: in CloudAgents.Pg.UserScope
+): Result[Option[GitHubOAuthRefreshStatus], CredentialError] {
+  val userId = sc.userId
   val rows = match CloudAgents.Sqlite.query(CloudAgents.Db.selectGitHubOAuthRefreshStatusSql(userId, nowMillis())) {
     case Ok(r) -> r
     case Err(e) -> return Err(Db(error = e))
@@ -1271,7 +1287,8 @@ pub func githubOAuthRefreshStatus(userId: in String): Result[Option[GitHubOAuthR
 /// Drop a tenant's refresh-token metadata — the refresh token itself expired
 /// or GitHub rejected it, so there's no point retrying a dead refresh token
 /// on the next request.
-pub func deleteGitHubOAuthRefresh(userId: in String): Result[Unit, CredentialError] {
+pub func deleteGitHubOAuthRefresh(sc: in CloudAgents.Pg.UserScope): Result[Unit, CredentialError] {
+  val userId = sc.userId
   match CloudAgents.Sqlite.execute(CloudAgents.Db.deleteGitHubOAuthRefreshSql(userId)) {
     case Ok(_) -> return Ok(value = ())
     case Err(e) -> return Err(Db(error = e))
@@ -2011,7 +2028,7 @@ pub func decryptedCredentialsForProfile(
 ): Result[slice[CredentialValue], CredentialError] {
   val userId = sc.userId
   if profileId.length == 0 {
-    return decryptedCredentials(userId)
+    return decryptedCredentials(CloudAgents.Pg.UserScope(userId = userId))
   }
   val profile = match getProfile(profileId, sc) { case Ok(p) -> p; case Err(e) -> return Err(Db(error = e)) }
   match profile {
@@ -2022,7 +2039,7 @@ pub func decryptedCredentialsForProfile(
     }
     case Some(p) -> {
       if p.credentialMode != "selected" {
-        return decryptedCredentials(userId)
+        return decryptedCredentials(CloudAgents.Pg.UserScope(userId = userId))
       }
       // Least-privilege at the crypto boundary (#267): decrypt ONLY the granted
       // credentials, rather than decrypting every one and discarding the rest.
@@ -2897,7 +2914,10 @@ func modelListingTtlMillis(): String {
 }
 
 /// A still-fresh cached listing body for (user, provider), or None.
-pub func cachedModelListing(userId: in String, provider: in String): Result[Option[String], CloudAgents.Sqlite.DbError] {
+pub func cachedModelListing(
+  sc: in CloudAgents.Pg.UserScope, provider: in String
+): Result[Option[String], CloudAgents.Sqlite.DbError] {
+  val userId = sc.userId
   val rows = CloudAgents.Sqlite.query(CloudAgents.Db.selectModelListingSql(userId, provider, nowMillis(), modelListingTtlMillis()))?
   val len = CloudAgents.Sqlite.getRowArrayLength(rows)
   if len == 0 {
@@ -2909,8 +2929,9 @@ pub func cachedModelListing(userId: in String, provider: in String): Result[Opti
 /// Cache a provider's freshly-fetched listing body for a user. Sweeps expired
 /// rows first (best-effort), mirroring the token cache's write path (#432).
 pub func cacheModelListing(
-  userId: in String, provider: in String, body: in String
+  sc: in CloudAgents.Pg.UserScope, provider: in String, body: in String
 ): Result[Unit, CloudAgents.Sqlite.DbError] {
+  val userId = sc.userId
   val now = nowMillis()
   match CloudAgents.Sqlite.execute(CloudAgents.Db.deleteExpiredModelListingsSql(now, modelListingTtlMillis())) {
     case Ok(_) -> ()
