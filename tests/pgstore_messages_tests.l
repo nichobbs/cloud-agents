@@ -12,8 +12,11 @@ import Std.Testing
 import Std.Uuid
 import CloudAgents.Pg
 import CloudAgents.Pg.Migrate
+import CloudAgents.PgStore
 import CloudAgents.PgStore.Messages as Store
+import CloudAgents.PgStore.Sessions as Sessions
 import CloudAgents.Repository
+import CloudAgents.SessionStore
 import CloudAgents.Sqlite
 
 func live(): Bool {
@@ -233,5 +236,155 @@ test "a session's transcript is invisible to another tenant" {
     msgs(Store.listMessages(sid, sc)).length.toInt(),
     1,
     "the original tenant still sees only its own message"
+  )
+}
+
+func ensureTenant(tenantId: in String): Unit {
+  val conn = match CloudAgents.Pg.connectService() {
+    case Ok(c) -> c
+    case Err(e) -> panic(CloudAgents.Pg.pgErrorMessage(e))
+  }
+  defer {
+    conn.close()
+  }
+  match conn.execute("INSERT INTO tenants (id, name, kind) VALUES (@p0, @p0, 'personal') ON CONFLICT (id) DO NOTHING", [tenantId]) {
+    case Ok(_) -> ()
+    case Err(e) -> panic("tenant insert failed: " + e.message)
+  }
+}
+
+func newSession(sc: in CloudAgents.Pg.TenantScope): String {
+  ensureTenant(sc.tenantId)
+  val sid = "s-" + uid()
+  unit(
+    Sessions.addSession(
+      makeAgentSession(
+        sessionId = sid,
+        repoUrl = "r",
+        branch = "",
+        containerId = "",
+        harness = "claude",
+        model = "",
+        nativeSessionId = sid
+      ),
+      sc
+    )
+  )
+  return sid
+}
+
+// Pin a message's created_at so newest-first assertions never depend on two
+// inserts landing in different milliseconds.
+func pinCreated(sc: in CloudAgents.Pg.TenantScope, id: in String, ms: in String): Unit {
+  val u = match CloudAgents.PgStore.open(sc) { case Ok(v) -> v; case Err(e) -> panic(dbErrorMessage(e)) }
+  defer {
+    CloudAgents.PgStore.release(u)
+  }
+  match CloudAgents.PgStore.ex(u, "UPDATE messages SET created_at = " + CloudAgents.Pg.msIn(1) + " WHERE id = @p0", [id, ms]) {
+    case Ok(n) -> assertEqualInt(n, 1, "pinned " + id)
+    case Err(e) -> panic(dbErrorMessage(e))
+  }
+  unit(CloudAgents.PgStore.commit(u))
+}
+
+func found(sc: in CloudAgents.Pg.TenantScope, term: in String): String {
+  val rows = msgs(Store.searchMessages(sc, term, 50))
+  var acc = ""
+  for m in rows {
+    acc = if acc.length == 0 { m.content } else { acc + "|" + m.content }
+  }
+  return acc
+}
+
+test "search: every word must match as a case-insensitive prefix, newest first" {
+  if not live() {
+    return
+  }
+  migrate()
+  val sc = fresh()
+  val sid = newSession(sc)
+  val a = msg(Store.addMessage(sid, sc, "user", "Please reschedule the deploy"))
+  val b = msg(Store.addMessage(sid, sc, "agent", "The deploy is SCHEDULED for Friday"))
+  val c = msg(Store.addMessage(sid, sc, "agent", "Unrelated chatter"))
+  pinCreated(sc, a.id, "1700000001000")
+  pinCreated(sc, b.id, "1700000002000")
+  pinCreated(sc, c.id, "1700000003000")
+  assertEqual(
+    found(sc, "sched"),
+    "The deploy is SCHEDULED for Friday",
+    "prefix, case-insensitive; not a mid-word match"
+  )
+  assertEqual(found(sc, "deploy"), "The deploy is SCHEDULED for Friday|Please reschedule the deploy", "newest first")
+  assertEqual(found(sc, "deploy fri"), "The deploy is SCHEDULED for Friday", "every word must match")
+  assertEqual(found(sc, "  DEPLOY   please  "), "Please reschedule the deploy", "extra whitespace and case are ignored")
+  assertEqual(found(sc, "nothing-like-this"), "", "no match is an empty result")
+  assertEqual(found(sc, "!!!"), "", "a term with no words matches nothing")
+  match Store.searchMessages(sc, "deploy", 1) {
+    case Ok(rows) -> assertEqualInt(rows.length.toInt(), 1, "the limit applies")
+    case Err(e) -> panic(dbErrorMessage(e))
+  }
+  val hit = msgs(Store.searchMessages(sc, "friday", 50))
+  assertEqual(
+    hit[0].id + "|" + hit[0].sessionId + "|" + hit[0].role + "|" + hit[0].createdAt,
+    b.id + "|" + sid + "|agent|1700000002000",
+    "the full row"
+  )
+  assertEqual(hit[0].seq, "000000000001", "padded sequence number")
+}
+
+test "search: query syntax in the text is inert" {
+  if not live() {
+    return
+  }
+  migrate()
+  val sc = fresh()
+  val sid = newSession(sc)
+  msg(Store.addMessage(sid, sc, "user", "alpha beta"))
+  msg(Store.addMessage(sid, sc, "user", "gamma"))
+  assertEqual(found(sc, "alpha | gamma"), "", "a pipe is not OR")
+  assertEqual(found(sc, "alpha OR gamma"), "", "OR is just a word")
+  assertEqual(found(sc, "!gamma"), "gamma", "a bang is not NOT")
+  assertEqual(found(sc, "alpha & beta"), "alpha beta", "an ampersand is not an operator either")
+  assertEqual(found(sc, "'); DROP TABLE messages; --"), "", "SQL in the text is only text")
+  assertEqual(found(sc, "a\" OR content MATCH \"x"), "", "the FTS5 injection attempt matches nothing")
+  assertEqual(found(sc, "gamma:*"), "gamma", "tsquery prefix syntax is just punctuation")
+}
+
+test "search covers only the caller's own sessions in the tenant" {
+  if not live() {
+    return
+  }
+  migrate()
+  val sc = fresh()
+  val mine = newSession(sc)
+  msg(Store.addMessage(mine, sc, "user", "needle mine"))
+  val other = CloudAgents.Pg.TenantScope(tenantId = sc.tenantId, userId = "gh-pgm-other-" + uid())
+  val theirs = newSession(other)
+  msg(Store.addMessage(theirs, other, "user", "needle theirs"))
+  assertEqual(found(sc, "needle"), "needle mine", "another user's session in the same tenant is not searched")
+  assertEqual(found(other, "needle"), "needle theirs", "and the other way round")
+  assertEqual(found(fresh(), "needle"), "", "another tenant finds nothing")
+}
+
+// Pins the differences from FTS5 that docs/phase9-message-search.md §8
+// documents, so a change in them is a visible test change.
+test "search: the documented differences from FTS5" {
+  if not live() {
+    return
+  }
+  migrate()
+  val sc = fresh()
+  val sid = newSession(sc)
+  msg(Store.addMessage(sid, sc, "user", "rename foo-bar now"))
+  msg(Store.addMessage(sid, sc, "user", "split foo bar later"))
+  msg(Store.addMessage(sid, sc, "user", "meet at the café"))
+  msg(Store.addMessage(sid, sc, "user", "it's done"))
+  assertEqual(found(sc, "foo-bar"), "rename foo-bar now", "a hyphenated term needs the whole compound, unlike FTS5")
+  assertEqual(found(sc, "cafe"), "", "accents are not folded, unlike FTS5")
+  assertEqual(found(sc, "café"), "meet at the café", "an accented term finds itself")
+  assertEqual(
+    found(sc, "it's"),
+    "it's done",
+    "an apostrophe splits a word into prefixes that must all match, as in FTS5"
   )
 }

@@ -5,6 +5,7 @@ import Std.Core
 import Std.Testing
 import Std.Uuid
 import CloudAgents.Auth
+import CloudAgents.Db
 import CloudAgents.Repository
 import CloudAgents.Search
 import CloudAgents.SessionStore
@@ -73,17 +74,17 @@ func mkMessageReturningId(sessionId: in String, content: in String): String {
 
 // ── buildFts5MatchExpr: pure tokenizer/escaper ────────────────────────────────
 test "buildFts5MatchExpr wraps a single word as a quoted prefix token" {
-  assertEqual(CloudAgents.Search.buildFts5MatchExpr("scheduled"), "\"scheduled\"*", "one word -> one quoted-prefix token")
+  assertEqual(CloudAgents.Db.buildFts5MatchExpr("scheduled"), "\"scheduled\"*", "one word -> one quoted-prefix token")
 }
 
 test "buildFts5MatchExpr space-joins multiple words, collapsing extra whitespace" {
   assertEqual(
-    CloudAgents.Search.buildFts5MatchExpr("hello   world"),
+    CloudAgents.Db.buildFts5MatchExpr("hello   world"),
     "\"hello\"* \"world\"*",
     "runs of internal whitespace collapse to a single implicit-AND join"
   )
   assertEqual(
-    CloudAgents.Search.buildFts5MatchExpr("  leading and trailing  "),
+    CloudAgents.Db.buildFts5MatchExpr("  leading and trailing  "),
     "\"leading\"* \"and\"* \"trailing\"*",
     "leading/trailing whitespace is ignored, not turned into empty tokens"
   )
@@ -91,14 +92,14 @@ test "buildFts5MatchExpr space-joins multiple words, collapsing extra whitespace
 
 test "buildFts5MatchExpr doubles embedded double-quotes per word" {
   assertEqual(
-    CloudAgents.Search.buildFts5MatchExpr("say \"hi\""),
+    CloudAgents.Db.buildFts5MatchExpr("say \"hi\""),
     "\"say\"* \"\"\"hi\"\"\"*",
     "an embedded double-quote is doubled, mirroring sqlLiteral's doubling of '"
   )
 }
 
 test "buildFts5MatchExpr neutralizes FTS5 operator syntax as inert literal text" {
-  assertEqual(CloudAgents.Search.buildFts5MatchExpr("AND"), "\"AND\"*", "a bare FTS5 keyword is just a literal word")
+  assertEqual(CloudAgents.Db.buildFts5MatchExpr("AND"), "\"AND\"*", "a bare FTS5 keyword is just a literal word")
   // The tokenizer splits on whitespace BEFORE escaping (like every other
   // multi-word input), so this quote-injection attempt becomes five
   // separately-quoted-and-prefixed tokens, not one joined literal — CI's
@@ -106,20 +107,20 @@ test "buildFts5MatchExpr neutralizes FTS5 operator syntax as inert literal text"
   // Still safe either way: each word (including "OR"/"MATCH") is its own
   // inert quoted-prefix token, never reinterpreted as FTS5 query syntax.
   assertEqual(
-    CloudAgents.Search.buildFts5MatchExpr("a\" OR content MATCH \"x"),
+    CloudAgents.Db.buildFts5MatchExpr("a\" OR content MATCH \"x"),
     "\"a\"\"\"* \"OR\"* \"content\"* \"MATCH\"* \"\"\"x\"*",
     "a quote-injection attempt is split into per-word quoted-prefix tokens, each one inert literal text, never reopening FTS5 query syntax"
   )
   assertEqual(
-    CloudAgents.Search.buildFts5MatchExpr("content:foo"),
+    CloudAgents.Db.buildFts5MatchExpr("content:foo"),
     "\"content:foo\"*",
     "a column-filter-shaped word is inert literal text, not reinterpreted"
   )
 }
 
 test "buildFts5MatchExpr returns empty for input with no actual words" {
-  assertEqual(CloudAgents.Search.buildFts5MatchExpr(""), "", "empty input has no words")
-  assertEqual(CloudAgents.Search.buildFts5MatchExpr("   "), "", "whitespace-only input has no words")
+  assertEqual(CloudAgents.Db.buildFts5MatchExpr(""), "", "empty input has no words")
+  assertEqual(CloudAgents.Db.buildFts5MatchExpr("   "), "", "whitespace-only input has no words")
 }
 
 // ── searchMessagesHandler: input validation ───────────────────────────────────

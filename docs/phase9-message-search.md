@@ -94,7 +94,9 @@ passed straight into `MATCH` would let a search box double as an FTS5 query
 console (and, via quote characters, as an FTS5 syntax-injection vector even
 before touching SQL string-literal escaping).
 
-`CloudAgents.Search.buildFts5MatchExpr` closes that gap: the input is
+`CloudAgents.Db.buildFts5MatchExpr` closes that gap (it lived in
+`CloudAgents.Search` until phase 11, when `Repository.searchMessages` began
+taking the user's raw term, so the Postgres store can take the same term): the input is
 hand-split on whitespace (no `String.split()` — see §5), and each word is
 wrapped as a **quoted-prefix token** — `"word"*` — by
 `fts5EscapeWord`, which also doubles any embedded `"` (FTS5's own quoting
@@ -136,8 +138,8 @@ through `sqlLiteral()` (which would quote it as TEXT).
 
 `GET /api/search/messages?q=...` (`CloudAgents.Search.searchMessagesHandler`,
 registered before the `AuthMiddleware` wrap in `main.l`, like every other
-route) validates `q` (required, ≤200 chars), builds the MATCH expression,
-and returns `CloudAgents.Search.SearchMessagesResult { messages, truncated }`
+route) validates `q` (required, ≤200 chars), passes the trimmed term to
+`Repository.searchMessages` (which builds the MATCH expression), and returns `CloudAgents.Search.SearchMessagesResult { messages, truncated }`
 — the same `messages` array shape `GET /api/sessions/{id}/messages` already
 uses, plus a `truncated` flag. `truncated` closes a UX gap a review caught
 (#908): the handler asks the repository for `maxSearchResults + 1` rows: if
@@ -186,3 +188,39 @@ ownership isolation) — it just hasn't been executed by a real compiler yet.
 The frontend half (`npx tsc --noEmit`, `npm run build`, and the full
 `npm test` suite) *has* actually run, since the JS/TS toolchain is
 available in this environment.
+
+## 8. Postgres (phase 11)
+
+On Postgres (`CloudAgents.PgStore.Messages.searchMessages`,
+docs/phase11-postgres-tenancy.md §4.4) the FTS5 table is replaced by a
+generated column, `messages.search_vector =
+to_tsvector('simple', content)`, with a GIN index. The store takes the same
+raw term and binds it as a parameter, so there is no string-building for
+either SQL or query syntax:
+
+```sql
+m.search_vector @@ regexp_replace(plainto_tsquery('simple', $term)::text,
+                                  '''( |$)', ''':*\1', 'g')::tsquery
+```
+
+`plainto_tsquery` reads the text as plain words, never operators, and ANDs
+them; the rewrite marks each lexeme `:*` so it matches as a prefix. The
+contract is the same as on SQLite: every word must match as a
+case-insensitive prefix, operators and quotes in the text are inert
+(`|`, `&`, `!`, `:*`, `OR`, SQL, and the FTS5 injection attempt above are
+all tested), only the caller's own sessions are searched, and results come
+newest first (ties by id), capped the same way.
+
+Differences from FTS5, documented rather than matched (owner decision,
+docs/phase11-postgres-tenancy.md §11):
+
+- **Compound tokens.** Postgres's parser keeps hyphenated words, email
+  addresses, URLs, host names and file paths as whole tokens as well as
+  their parts, and the query requires all of them. `foo-bar` finds
+  "foo-bar" but not "foo bar"; FTS5 splits it into `foo` and `bar` and
+  finds both.
+- **Accents.** FTS5's default tokenizer folds diacritics, so `cafe` finds
+  "café"; the 'simple' configuration does not.
+- **Punctuation-only terms.** A term with no words (`!!!`) matches nothing
+  on both; Postgres also logs a notice about an empty query.
+- **Ranking.** Neither ranks by relevance; both order by recency.

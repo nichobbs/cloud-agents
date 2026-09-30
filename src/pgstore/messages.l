@@ -20,7 +20,14 @@
 //!   human or tool created (`source = ''`);
 //! - the todo-update cursor is exclusive, and "" means "from the start".
 //!
-//! Full-text search over messages is the search domain's port.
+//!
+//! Full-text search (`searchMessages`) runs against the generated
+//! `messages.search_vector` (`to_tsvector('simple', content)`, GIN-indexed)
+//! instead of SQLite's FTS5 table, with the same contract: every word of the
+//! user's text must match as a case-insensitive prefix, operators in the
+//! text are inert, only the caller's own sessions are searched, and results
+//! come newest first. Tokenisation differs from FTS5 in the ways listed in
+//! docs/phase9-message-search.md, "Postgres".
 @runtime_checked
 package CloudAgents.PgStore.Messages
 
@@ -119,6 +126,42 @@ pub func getMessageSessionId(
   messageId: in String, sc: in CloudAgents.Pg.TenantScope
 ): Result[Option[String], CloudAgents.Sqlite.DbError] {
   return columnById(sc, "messages", messageId, "session_id")
+}
+
+/// SQL: the user's raw text (`@pN`) as a prefix query. `plainto_tsquery`
+/// parses it as plain words (no operator in it is interpreted) and ANDs
+/// them; the rewrite then marks every lexeme `:*` so each matches as a
+/// prefix. Lexemes from the 'simple' parser never contain a space, so the
+/// only quote followed by a space or the end is a lexeme's closing quote.
+func prefixQuery(n: in Int): String {
+  return "regexp_replace(plainto_tsquery('simple', @p" + toString(n) + ")::text, " +
+    r"'''( |$)', ''':*\1', 'g')::tsquery"
+}
+
+/// Full-text search across every message in the caller's own sessions,
+/// newest first (ties by id). `term` is the user's raw search text; a term
+/// with no words matches nothing.
+pub func searchMessages(
+  sc: in CloudAgents.Pg.TenantScope, term: in String, limit: in Int
+): Result[slice[CloudAgents.Repository.Message], CloudAgents.Sqlite.DbError] {
+  val u = CloudAgents.PgStore.open(sc)?
+  defer {
+    CloudAgents.PgStore.release(u)
+  }
+  val sql = "SELECT m.id, m.session_id, m.role, m.content, lpad(m.seq::text, 12, '0') AS seq, " +
+    CloudAgents.Pg.msOut("m.created_at") +
+    " AS created_at FROM messages m JOIN sessions s ON s.id = m.session_id " +
+    "WHERE s.user_id = @p0 AND m.search_vector @@ " +
+    prefixQuery(1) +
+    " ORDER BY m.created_at DESC, m.id COLLATE \"C\" LIMIT " +
+    toString(limit)
+  val rows = CloudAgents.PgStore.q(u, sql, [sc.userId, term])?
+  CloudAgents.PgStore.commit(u)?
+  var acc: slice[CloudAgents.Repository.Message] = []
+  for r in rows {
+    acc = acc.append(toMessage(r))
+  }
+  return Ok(value = acc)
 }
 
 // ─── Comments ───────────────────────────────────────────────────────────────

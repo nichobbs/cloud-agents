@@ -583,15 +583,19 @@ pub func listMessages(
   return Ok(value = acc)
 }
 
-/// Full-text search across every message in `userId`'s own sessions,
-/// newest first. `matchExpr` must already be a safe, fully-built FTS5 MATCH
-/// expression (CloudAgents.Search.buildFts5MatchExpr) — this function's only
-/// job is running it, same division of labor as every other repository
-/// function and its SQL builder.
+/// Full-text search across every message in the caller's own sessions,
+/// newest first. `term` is the user's raw search text: each whitespace-
+/// separated word must match as a prefix (CloudAgents.Db.buildFts5MatchExpr
+/// turns it into a safe FTS5 MATCH expression). A term with no words
+/// matches nothing.
 pub func searchMessages(
-  sc: in CloudAgents.Pg.TenantScope, matchExpr: in String, limit: in Int
+  sc: in CloudAgents.Pg.TenantScope, term: in String, limit: in Int
 ): Result[slice[Message], CloudAgents.Sqlite.DbError] {
   val userId = sc.userId
+  val matchExpr = CloudAgents.Db.buildFts5MatchExpr(term)
+  if matchExpr.length == 0 {
+    return Ok(value = [])
+  }
   val rows = CloudAgents.Sqlite.query(CloudAgents.Db.searchMessagesSql(userId, matchExpr, limit))?
   var acc: slice[Message] = []
   var i = 0
