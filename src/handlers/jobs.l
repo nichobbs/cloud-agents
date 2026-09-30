@@ -579,7 +579,7 @@ func runOneJob(job: in CloudAgents.Repository.ScheduledJob): JobRunOutcome {
       )
     }
   }
-  match CloudAgents.Repository.addMessage(sessionId, "user", job.prompt) {
+  match CloudAgents.Repository.addMessage(sessionId, CloudAgents.Pg.personalScope(job.userId), "user", job.prompt) {
     case Ok(_) -> ()
     case Err(_) -> ()
   }
@@ -625,7 +625,7 @@ func runOneJob(job: in CloudAgents.Repository.ScheduledJob): JobRunOutcome {
         // end-of-run pass if this session is observed. Best-effort.
         CloudAgents.Ledger.Observer.onRunFinished(sessionId)
       }
-      match CloudAgents.Repository.addMessage(sessionId, "agent", logs) {
+      match CloudAgents.Repository.addMessage(sessionId, CloudAgents.Pg.personalScope(job.userId), "agent", logs) {
         case Ok(_) -> ()
         case Err(e) -> println(
           "WARNING: failed to persist agent message for scheduled job session " + sessionId + ": " +
@@ -649,7 +649,7 @@ func runOneJob(job: in CloudAgents.Repository.ScheduledJob): JobRunOutcome {
       // /api/sessions/{id}/runs, the webhook outbox, and server logs are the
       // only other signals, and none of them is the primary UI surface a
       // human reopening the session sees.
-      match CloudAgents.Repository.addMessage(sessionId, "agent", "Scheduled run failed: " + msg) {
+      match CloudAgents.Repository.addMessage(sessionId, CloudAgents.Pg.personalScope(job.userId), "agent", "Scheduled run failed: " + msg) {
         case Ok(_) -> ()
         case Err(e) -> println(
           "WARNING: failed to persist failure message for scheduled job session " + sessionId + ": " +

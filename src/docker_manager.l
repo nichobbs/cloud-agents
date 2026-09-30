@@ -1212,7 +1212,7 @@ pub func streamSessionMessage(
       // benign here by design: the frame only triggers a panel reload, and
       // the panel's own polling (its reattach/other-tab fallback) picks up
       // anything a dropped frame missed within one poll interval.
-      match CloudAgents.Repository.todosUpdatedAfter(sessionId, todoCursor) {
+      match CloudAgents.Repository.todosUpdatedAfter(sessionId, CloudAgents.Pg.personalScope(userId), todoCursor) {
         case Ok(tds) -> {
           var ti = 0
           while ti < tds.length {

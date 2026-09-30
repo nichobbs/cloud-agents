@@ -1,0 +1,221 @@
+//! Live-Postgres tests for CloudAgents.PgStore.Messages
+//! (docs/phase11-postgres-tenancy.md §9 slices B/C): a session's messages,
+//! comments and todos behave like the SQLite store and are isolated by
+//! tenant. Runs iff the Postgres DSNs are set (see tests/pg_live_tests.l).
+//! Per-run unique ids keep it re-runnable.
+@test_module
+package CloudAgents.PgStoreMessagesTests
+
+import Std.Core
+import Std.Environment
+import Std.Testing
+import Std.Uuid
+import CloudAgents.Pg
+import CloudAgents.Pg.Migrate
+import CloudAgents.PgStore.Messages as Store
+import CloudAgents.Repository
+import CloudAgents.Sqlite
+
+func live(): Bool {
+  val ok = CloudAgents.Pg.serviceConfigured() and
+    Std.Environment.getVarOrDefault(CloudAgents.Pg.migrateDsnVar(), "").length.toInt() > 0
+  if ok {
+    return true
+  }
+  assertTrue(
+    Std.Environment.getVarOrDefault("CLOUD_AGENTS_REQUIRE_LIVE_PG", "") != "1",
+    "CLOUD_AGENTS_REQUIRE_LIVE_PG=1 but LYRIC_CONFIG_DB_CONNECTION_URL or CLOUD_AGENTS_MIGRATE_DATABASE_URL is not set"
+  )
+  println("SKIP: PgStore message tests need LYRIC_CONFIG_DB_CONNECTION_URL and CLOUD_AGENTS_MIGRATE_DATABASE_URL")
+  return false
+}
+
+func migrate(): Unit {
+  val conn = match CloudAgents.Pg.connectDsn(Std.Environment.getVarOrDefault(CloudAgents.Pg.migrateDsnVar(), "")) {
+    case Ok(c) -> c
+    case Err(e) -> panic(CloudAgents.Pg.pgErrorMessage(e))
+  }
+  defer {
+    conn.close()
+  }
+  match CloudAgents.Pg.Migrate.migrate(conn) {
+    case Ok(_) -> ()
+    case Err(e) -> panic("migrate failed: " + CloudAgents.Pg.pgErrorMessage(e))
+  }
+}
+
+func uid(): String {
+  return Std.Uuid.uuidToString(Std.Uuid.newUuid())
+}
+
+func fresh(): CloudAgents.Pg.TenantScope {
+  return CloudAgents.Pg.personalScope("gh-pgm-" + uid())
+}
+
+func msg(r: in Result[Message, DbError]): Message {
+  return match r { case Ok(v) -> v; case Err(e) -> panic("store call failed: " + dbErrorMessage(e)) }
+}
+
+func msgs(r: in Result[slice[Message], DbError]): slice[Message] {
+  return match r { case Ok(v) -> v; case Err(e) -> panic("store call failed: " + dbErrorMessage(e)) }
+}
+
+func todoList(r: in Result[slice[Todo], DbError]): slice[Todo] {
+  return match r { case Ok(v) -> v; case Err(e) -> panic("store call failed: " + dbErrorMessage(e)) }
+}
+
+func updates(r: in Result[slice[TodoUpdate], DbError]): slice[TodoUpdate] {
+  return match r { case Ok(v) -> v; case Err(e) -> panic("store call failed: " + dbErrorMessage(e)) }
+}
+
+func optStr(r: in Result[Option[String], DbError]): String {
+  return match r {
+    case Ok(Some(v)) -> v
+    case Ok(None) -> "<none>"
+    case Err(e) -> panic("store call failed: " + dbErrorMessage(e))
+  }
+}
+
+func unit(r: in Result[Unit, DbError]): Unit {
+  match r {
+    case Ok(_) -> ()
+    case Err(e) -> panic("store call failed: " + dbErrorMessage(e))
+  }
+}
+
+func todoSummary(sid: in String, sc: in CloudAgents.Pg.TenantScope): String {
+  var acc = ""
+  for t in todoList(Store.listTodos(sid, sc)) {
+    acc = acc + t.note + ":" + t.status + ":" + t.done + ","
+  }
+  return acc
+}
+
+test "messages get padded sequence numbers in order and round-trip exactly" {
+  if not live() {
+    return
+  }
+  migrate()
+  val sc = fresh()
+  val sid = "s-" + uid()
+  val a = msg(Store.addMessage(sid, sc, "user", "hello"))
+  val b = msg(Store.addMessage(sid, sc, "agent", "hi there"))
+  assertEqual(a.seq, "000000000000", "first seq")
+  assertEqual(b.seq, "000000000001", "second seq")
+  val listed = msgs(Store.listMessages(sid, sc))
+  assertEqualInt(listed.length.toInt(), 2, "two messages")
+  assertEqual(listed[0].id, a.id, "sequence order")
+  assertEqual(listed[1].content, "hi there", "content")
+  assertEqual(listed[1].seq, "000000000001", "listed seq padded")
+  assertEqual(listed[0].createdAt, a.createdAt, "exact created_at round-trip")
+  assertEqual(optStr(Store.getMessageSessionId(b.id, sc)), sid, "message to session")
+  assertEqual(optStr(Store.getMessageSessionId("missing-" + uid(), sc)), "<none>", "unknown message")
+}
+
+test "comments list oldest first under their message" {
+  if not live() {
+    return
+  }
+  migrate()
+  val sc = fresh()
+  val sid = "s-" + uid()
+  val m = msg(Store.addMessage(sid, sc, "agent", "text"))
+  match Store.addComment(m.id, sc, sid, "first") {
+    case Ok(_) -> ()
+    case Err(e) -> panic(dbErrorMessage(e))
+  }
+  match Store.addComment(m.id, sc, sid, "second") {
+    case Ok(_) -> ()
+    case Err(e) -> panic(dbErrorMessage(e))
+  }
+  val cs = match Store.listComments(m.id, sc) { case Ok(v) -> v; case Err(e) -> panic(dbErrorMessage(e)) }
+  assertEqualInt(cs.length.toInt(), 2, "two comments")
+  assertEqual(cs[0].body, "first", "oldest first")
+  assertEqual(cs[1].sessionId, sid, "bound to its session")
+}
+
+test "todos: add, status, toggle, delete, and the update cursor" {
+  if not live() {
+    return
+  }
+  migrate()
+  val sc = fresh()
+  val sid = "s-" + uid()
+  val t = match Store.addTodo(sid, sc, "", "write docs") { case Ok(v) -> v; case Err(e) -> panic(dbErrorMessage(e)) }
+  assertEqual(t.status, "pending", "new todo pending")
+  assertEqual(todoSummary(sid, sc), "write docs:pending:0,", "listed")
+  assertEqualInt(updates(Store.todosUpdatedAfter(sid, sc, "")).length.toInt(), 1, "empty cursor sees everything")
+  val cursor = updates(Store.todosUpdatedAfter(sid, sc, ""))[0].updatedAt
+  assertEqualInt(updates(Store.todosUpdatedAfter(sid, sc, cursor)).length.toInt(), 0, "the cursor is exclusive")
+  unit(Store.setTodoStatus(t.id, sc, "in_progress"))
+  assertEqual(todoSummary(sid, sc), "write docs:in_progress:0,", "status set")
+  unit(Store.setTodoStatus(t.id, sc, "done"))
+  assertEqual(todoSummary(sid, sc), "write docs:done:1,", "done follows status")
+  unit(Store.toggleTodo(t.id, sc))
+  assertEqual(todoSummary(sid, sc), "write docs:pending:0,", "toggle back to pending")
+  unit(Store.toggleTodo(t.id, sc))
+  assertEqual(todoSummary(sid, sc), "write docs:done:1,", "toggle to done")
+  assertEqual(optStr(Store.getTodoSessionId(t.id, sc)), sid, "todo to session")
+  unit(Store.deleteTodo(t.id, sc))
+  assertEqual(todoSummary(sid, sc), "", "deleted")
+}
+
+test "plan replacement keeps human todos and lists steps in plan order" {
+  if not live() {
+    return
+  }
+  migrate()
+  val sc = fresh()
+  val sid = "s-" + uid()
+  match Store.addTodo(sid, sc, "", "human note") {
+    case Ok(_) -> ()
+    case Err(e) -> panic(dbErrorMessage(e))
+  }
+  unit(Store.replacePlanTodos(sid, sc, "m1", ["old one", "old two"], ["pending", "pending"]))
+  unit(
+    Store.replacePlanTodos(
+      sid,
+      sc,
+      "m2",
+      ["step one", "step two", "step three"],
+      ["done", "in_progress", "pending", "extra"]
+    )
+  )
+  val all = todoList(Store.listTodos(sid, sc))
+  var plan = ""
+  var human = 0
+  for td in all {
+    if td.note == "human note" {
+      human = human + 1
+    } else {
+      plan = plan + td.note + ":" + td.status + ":" + td.done + ","
+    }
+  }
+  assertEqualInt(human, 1, "the human todo survives")
+  assertEqual(
+    plan,
+    "step one:done:1,step two:in_progress:0,step three:pending:0,",
+    "latest plan only, step order, parallel slices bounded"
+  )
+}
+
+test "a session's transcript is invisible to another tenant" {
+  if not live() {
+    return
+  }
+  migrate()
+  val sc = fresh()
+  val sid = "s-" + uid()
+  val m = msg(Store.addMessage(sid, sc, "user", "secret"))
+  val other = CloudAgents.Pg.personalScope("gh-pgm-other-" + uid())
+  assertEqualInt(msgs(Store.listMessages(sid, other)).length.toInt(), 0, "no messages across tenants")
+  assertEqual(optStr(Store.getMessageSessionId(m.id, other)), "<none>", "no message lookup across tenants")
+  // The next sequence number counts only this tenant's rows.
+  val n = msg(Store.addMessage(sid, other, "user", "same session id, other tenant"))
+  assertEqual(n.seq, "000000000000", "sequence is per tenant")
+  assertEqualInt(
+    msgs(Store.listMessages(sid, sc)).length.toInt(),
+    1,
+    "the original tenant still sees only its own message"
+  )
+}

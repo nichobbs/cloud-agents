@@ -1324,7 +1324,7 @@ pub func streamSendMessage(
       // attachment won't show up grouped under its message in the UI — its
       // bytes are already safely on disk and it still lists under the
       // session).
-      match CloudAgents.Repository.addMessage(id, "user", text) {
+      match CloudAgents.Repository.addMessage(id, CloudAgents.Pg.personalScope(userId), "user", text) {
         case Ok(m) -> {
           var ai = 0
           while ai < stored.attachments.length {
@@ -1409,7 +1409,7 @@ pub func streamSendMessage(
           }
           // Persist the agent reply and close the stream with a done frame that
           // carries the message id (so the client can anchor comments/todos).
-          match CloudAgents.Repository.addMessage(id, "agent", logs) {
+          match CloudAgents.Repository.addMessage(id, CloudAgents.Pg.personalScope(userId), "agent", logs) {
             case Ok(m) -> {
               // Env-gated (off by default): materialize a markdown checkbox
               // plan in the reply into todos rows (source='plan') — see
@@ -1418,7 +1418,7 @@ pub func streamSendMessage(
               // and AFTER the run-loop await, so no cross-await local state
               // is at stake (lyric-lang#6249).
               if CloudAgents.Interactions.planIngestEnabled() {
-                match CloudAgents.Interactions.ingestAgentPlan(id, m.id, logs) {
+                match CloudAgents.Interactions.ingestAgentPlan(id, CloudAgents.Pg.personalScope(userId), m.id, logs) {
                   case Ok(_) -> ()
                   case Err(e) -> println(
                     "WARNING: agent-plan ingestion failed for session " + id + ": " +
@@ -1772,7 +1772,7 @@ pub func getRunOutput(id: in String): Result[String, Web.ApiError] {
         // invisible, matching this file's other best-effort error paths
         // (endRun's defer, ingestAgentPlan, addMessage in streamSendMessage).
         var lastOutput = ""
-        match CloudAgents.Repository.listMessages(id) {
+        match CloudAgents.Repository.listMessages(id, CloudAgents.Auth.requestScope()) {
           case Ok(msgs) -> {
             lastOutput = lastAgentMessageContent(msgs)
           }

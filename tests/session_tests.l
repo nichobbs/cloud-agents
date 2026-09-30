@@ -1577,16 +1577,16 @@ test "branch session from message creates copy with parent reference and slices 
   }
 
   // Insert 3 messages into parent
-  val m1 = mustMessage(CloudAgents.Repository.addMessage(parentId, "user", "Hello 1"))
-  val m2 = mustMessage(CloudAgents.Repository.addMessage(parentId, "assistant", "Answer 1"))
-  val m3 = mustMessage(CloudAgents.Repository.addMessage(parentId, "user", "Hello 2"))
+  val m1 = mustMessage(CloudAgents.Repository.addMessage(parentId, CloudAgents.Auth.requestScope(), "user", "Hello 1"))
+  val m2 = mustMessage(CloudAgents.Repository.addMessage(parentId, CloudAgents.Auth.requestScope(), "assistant", "Answer 1"))
+  val m3 = mustMessage(CloudAgents.Repository.addMessage(parentId, CloudAgents.Auth.requestScope(), "user", "Hello 2"))
   val msg1Id = m1.id
   val msg2Id = m2.id
   val msg3Id = m3.id
 
   // Add a comment to msg2 and a todo on msg2
-  mustComment(CloudAgents.Repository.addComment(msg2Id, parentId, "Important note on turn 2"))
-  mustTodo(CloudAgents.Repository.addTodo(parentId, msg2Id, "Review turn 2"))
+  mustComment(CloudAgents.Repository.addComment(msg2Id, CloudAgents.Auth.requestScope(), parentId, "Important note on turn 2"))
+  mustTodo(CloudAgents.Repository.addTodo(parentId, CloudAgents.Auth.requestScope(), msg2Id, "Review turn 2"))
 
   // Branch from msg2 (seq 2)
   val branchReq = BranchSessionRequest(
@@ -1613,7 +1613,7 @@ test "branch session from message creates copy with parent reference and slices 
   }
 
   // Verify child messages (should only have 2 messages, seq 1 and 2, not seq 3)
-  val childMsgs = match CloudAgents.Repository.listMessages(childId) {
+  val childMsgs = match CloudAgents.Repository.listMessages(childId, CloudAgents.Auth.requestScope()) {
     case Ok(list) -> list
     case Err(_) -> {
       assertTrue(false, "listMessages on child failed")
@@ -1626,7 +1626,7 @@ test "branch session from message creates copy with parent reference and slices 
 
   // Verify comments cloned on child message
   val childMsg2Id = childMsgs[1].id
-  val childComments = match CloudAgents.Repository.listComments(childMsg2Id) {
+  val childComments = match CloudAgents.Repository.listComments(childMsg2Id, CloudAgents.Auth.requestScope()) {
     case Ok(list) -> list
     case Err(_) -> {
       assertTrue(false, "listComments on child failed")
@@ -1637,7 +1637,7 @@ test "branch session from message creates copy with parent reference and slices 
   assertEqual(childComments[0].body, "Important note on turn 2", "comment body match")
 
   // Verify todos cloned on child
-  val childTodos = match CloudAgents.Repository.listTodos(childId) {
+  val childTodos = match CloudAgents.Repository.listTodos(childId, CloudAgents.Auth.requestScope()) {
     case Ok(list) -> list
     case Err(_) -> {
       assertTrue(false, "listTodos on child failed")
@@ -1725,7 +1725,7 @@ test "branchSession returns 400 when the forked message belongs to a different s
 
   // A message belonging to session B; branching session A from it must fail —
   // it is not session A's own history.
-  val msgB = mustMessage(CloudAgents.Repository.addMessage(sessionBId, "user", "hello from B"))
+  val msgB = mustMessage(CloudAgents.Repository.addMessage(sessionBId, CloudAgents.Auth.requestScope(), "user", "hello from B"))
   val branchReq = BranchSessionRequest(messageId = msgB.id, branch = "")
   match CloudAgents.Handlers.branchSession(sessionAId, branchReq) {
     case Ok(_) -> assertTrue(false, "branching session A from a message owned by session B must fail")

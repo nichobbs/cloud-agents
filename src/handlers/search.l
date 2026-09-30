@@ -118,7 +118,7 @@ pub func searchMessagesHandler(term: in String): Result[SearchMessagesResult, We
   // Fetch one extra row beyond the cap: its mere presence (not its content)
   // is the truncation signal, so it's dropped below rather than ever
   // reaching the response.
-  match CloudAgents.Repository.searchMessages(CloudAgents.Auth.currentUserId(), matchExpr, maxSearchResults + 1) {
+  match CloudAgents.Repository.searchMessages(CloudAgents.Auth.requestScope(), matchExpr, maxSearchResults + 1) {
     case Ok(rows) -> {
       val truncated = rows.length.toInt() > maxSearchResults
       var messages: slice[CloudAgents.Repository.Message] = []

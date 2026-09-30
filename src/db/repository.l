@@ -556,7 +556,7 @@ func nextSeq(sessionId: in String): Result[Int, CloudAgents.Sqlite.DbError] {
 /// Append a message to a session's transcript and return the stored record
 /// (with its freshly minted id and sequence number).
 pub func addMessage(
-  sessionId: in String, role: in String, content: in String
+  sessionId: in String, sc: in CloudAgents.Pg.TenantScope, role: in String, content: in String
 ): Result[Message, CloudAgents.Sqlite.DbError] {
   val seqN = nextSeq(sessionId)?
   val id = newId()
@@ -569,7 +569,9 @@ pub func addMessage(
 }
 
 /// All messages in a session, oldest first.
-pub func listMessages(sessionId: in String): Result[slice[Message], CloudAgents.Sqlite.DbError] {
+pub func listMessages(
+  sessionId: in String, sc: in CloudAgents.Pg.TenantScope
+): Result[slice[Message], CloudAgents.Sqlite.DbError] {
   val rows = CloudAgents.Sqlite.query(CloudAgents.Db.selectMessagesSql(sessionId))?
   var acc: slice[Message] = []
   var i = 0
@@ -587,8 +589,9 @@ pub func listMessages(sessionId: in String): Result[slice[Message], CloudAgents.
 /// job is running it, same division of labor as every other repository
 /// function and its SQL builder.
 pub func searchMessages(
-  userId: in String, matchExpr: in String, limit: in Int
+  sc: in CloudAgents.Pg.TenantScope, matchExpr: in String, limit: in Int
 ): Result[slice[Message], CloudAgents.Sqlite.DbError] {
+  val userId = sc.userId
   val rows = CloudAgents.Sqlite.query(CloudAgents.Db.searchMessagesSql(userId, matchExpr, limit))?
   var acc: slice[Message] = []
   var i = 0
@@ -602,7 +605,9 @@ pub func searchMessages(
 
 /// Look up the session that owns a message. Used to bind comments to the
 /// correct session without trusting client-supplied sessionId values.
-pub func getMessageSessionId(messageId: in String): Result[Option[String], CloudAgents.Sqlite.DbError] {
+pub func getMessageSessionId(
+  messageId: in String, sc: in CloudAgents.Pg.TenantScope
+): Result[Option[String], CloudAgents.Sqlite.DbError] {
   val rows = CloudAgents.Sqlite.query(CloudAgents.Db.selectMessageSessionIdSql(messageId))?
   val len = CloudAgents.Sqlite.getRowArrayLength(rows)
   if len == 0 {
@@ -625,7 +630,7 @@ func rowToComment(r: in CloudAgents.Sqlite.Row): Comment {
 
 /// Attach a comment to a message.
 pub func addComment(
-  messageId: in String, sessionId: in String, body: in String
+  messageId: in String, sc: in CloudAgents.Pg.TenantScope, sessionId: in String, body: in String
 ): Result[Comment, CloudAgents.Sqlite.DbError] {
   val id = newId()
   val ts = nowMillis()
@@ -634,7 +639,9 @@ pub func addComment(
 }
 
 /// All comments on a message, oldest first.
-pub func listComments(messageId: in String): Result[slice[Comment], CloudAgents.Sqlite.DbError] {
+pub func listComments(
+  messageId: in String, sc: in CloudAgents.Pg.TenantScope
+): Result[slice[Comment], CloudAgents.Sqlite.DbError] {
   val rows = CloudAgents.Sqlite.query(CloudAgents.Db.selectCommentsSql(messageId))?
   var acc: slice[Comment] = []
   var i = 0
@@ -661,7 +668,9 @@ func rowToTodo(r: in CloudAgents.Sqlite.Row): Todo {
 
 /// Create a todo / bookmark, optionally anchored to a message (pass "" for a
 /// free-standing todo). New todos start 'pending'.
-pub func addTodo(sessionId: in String, messageId: in String, note: in String): Result[Todo, CloudAgents.Sqlite.DbError] {
+pub func addTodo(
+  sessionId: in String, sc: in CloudAgents.Pg.TenantScope, messageId: in String, note: in String
+): Result[Todo, CloudAgents.Sqlite.DbError] {
   val id = newId()
   val ts = nowMillis()
   CloudAgents.Sqlite.execute(CloudAgents.Db.insertTodoSql(id, sessionId, messageId, note, "pending", ts, ""))?
@@ -687,6 +696,7 @@ pub func addTodo(sessionId: in String, messageId: in String, note: in String): R
 /// plan was parsed from. Never touches human/tool-created rows (source '').
 pub func replacePlanTodos(
   sessionId: in String,
+  sc: in CloudAgents.Pg.TenantScope,
   messageId: in String,
   notes: in slice[String],
   statuses: in slice[String],
@@ -716,7 +726,9 @@ pub func replacePlanTodos(
 /// Set a todo's lifecycle status directly (pending/in_progress/done) — the
 /// three-state counterpart of toggleTodo. `done` is kept in lockstep by the
 /// SQL itself. Validation of the status literal happens in the handlers.
-pub func setTodoStatus(id: in String, status: in String): Result[Unit, CloudAgents.Sqlite.DbError] {
+pub func setTodoStatus(
+  id: in String, sc: in CloudAgents.Pg.TenantScope, status: in String
+): Result[Unit, CloudAgents.Sqlite.DbError] {
   CloudAgents.Sqlite.execute(CloudAgents.Db.setTodoStatusSql(id, status, nowMillis()))?
   return Ok(value = ())
 }
@@ -734,7 +746,7 @@ pub record TodoUpdate {
 /// Todos changed strictly after `afterUpdatedAt`, oldest change first —
 /// mirrors artifactsCreatedAfter for SSE emission.
 pub func todosUpdatedAfter(
-  sessionId: in String, afterUpdatedAt: in String
+  sessionId: in String, sc: in CloudAgents.Pg.TenantScope, afterUpdatedAt: in String
 ): Result[slice[TodoUpdate], CloudAgents.Sqlite.DbError] {
   val rows = CloudAgents.Sqlite.query(CloudAgents.Db.selectTodosUpdatedAfterSql(sessionId, afterUpdatedAt))?
   var acc: slice[TodoUpdate] = []
@@ -758,7 +770,9 @@ pub func todosUpdatedAfter(
 /// Look up the session that owns a todo — the container-originated status
 /// endpoint verifies the todo belongs to the calling session before mutating
 /// it (mirrors getMessageSessionId).
-pub func getTodoSessionId(id: in String): Result[Option[String], CloudAgents.Sqlite.DbError] {
+pub func getTodoSessionId(
+  id: in String, sc: in CloudAgents.Pg.TenantScope
+): Result[Option[String], CloudAgents.Sqlite.DbError] {
   val rows = CloudAgents.Sqlite.query(CloudAgents.Db.selectTodoSessionIdSql(id))?
   val len = CloudAgents.Sqlite.getRowArrayLength(rows)
   if len == 0 {
@@ -769,7 +783,9 @@ pub func getTodoSessionId(id: in String): Result[Option[String], CloudAgents.Sql
 }
 
 /// All todos for a session, newest first.
-pub func listTodos(sessionId: in String): Result[slice[Todo], CloudAgents.Sqlite.DbError] {
+pub func listTodos(
+  sessionId: in String, sc: in CloudAgents.Pg.TenantScope
+): Result[slice[Todo], CloudAgents.Sqlite.DbError] {
   val rows = CloudAgents.Sqlite.query(CloudAgents.Db.selectTodosSql(sessionId))?
   var acc: slice[Todo] = []
   var i = 0
@@ -782,13 +798,13 @@ pub func listTodos(sessionId: in String): Result[slice[Todo], CloudAgents.Sqlite
 }
 
 /// Flip a todo's done flag.
-pub func toggleTodo(id: in String): Result[Unit, CloudAgents.Sqlite.DbError] {
+pub func toggleTodo(id: in String, sc: in CloudAgents.Pg.TenantScope): Result[Unit, CloudAgents.Sqlite.DbError] {
   CloudAgents.Sqlite.execute(CloudAgents.Db.toggleTodoSql(id, nowMillis()))?
   return Ok(value = ())
 }
 
 /// Delete a todo.
-pub func deleteTodo(id: in String): Result[Unit, CloudAgents.Sqlite.DbError] {
+pub func deleteTodo(id: in String, sc: in CloudAgents.Pg.TenantScope): Result[Unit, CloudAgents.Sqlite.DbError] {
   CloudAgents.Sqlite.execute(CloudAgents.Db.deleteTodoSql(id))?
   return Ok(value = ())
 }
