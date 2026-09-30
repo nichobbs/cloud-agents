@@ -4115,7 +4115,9 @@ func rowToCaptureEvent(r: in CloudAgents.Sqlite.Row): CloudAgents.Capture.Captur
 /// legitimately needs to replace stored events (not just append/retry) must go
 /// through some other, explicit path — this accessor never overwrites.
 pub func appendSessionEvents(
-  sessionId: in String, events: in slice[CloudAgents.Capture.CaptureEvent]
+  sessionId: in String,
+  sc: in CloudAgents.Pg.TenantScope,
+  events: in slice[CloudAgents.Capture.CaptureEvent],
 ): Result[Int, CloudAgents.Sqlite.DbError] {
   if events.length.toInt() == 0 {
     return Ok(value = 0)
@@ -4191,7 +4193,7 @@ pub func appendSessionEvents(
 /// (`seq > -1` includes seq 0), NOT "0" (which, as a real `after=0` cursor,
 /// excludes the first event).
 pub func sessionEventsAfterSeq(
-  sessionId: in String, afterSeq: in String
+  sessionId: in String, sc: in CloudAgents.Pg.TenantScope, afterSeq: in String
 ): Result[slice[CloudAgents.Capture.CaptureEvent], CloudAgents.Sqlite.DbError] {
   val normalized = if afterSeq.length == 0 { "-1" } else { afterSeq }
   val rows = CloudAgents.Sqlite.query(CloudAgents.Db.selectSessionEventsAfterSeqSql(sessionId, normalized))?
@@ -4213,7 +4215,10 @@ pub func sessionEventsAfterSeq(
 /// A session's captured events in the window `fromExclusive < seq <=
 /// toInclusive` (bounded to 500), ascending — for ledger transcript excerpts.
 pub func sessionEventsInRange(
-  sessionId: in String, fromExclusive: in String, toInclusive: in String
+  sessionId: in String,
+  sc: in CloudAgents.Pg.TenantScope,
+  fromExclusive: in String,
+  toInclusive: in String,
 ): Result[slice[CloudAgents.Capture.CaptureEvent], CloudAgents.Sqlite.DbError] {
   val rows = CloudAgents.Sqlite.query(CloudAgents.Db.selectSessionEventsInRangeSql(sessionId, fromExclusive, toInclusive))?
   val acc: List[CloudAgents.Capture.CaptureEvent] = newList()
@@ -4231,7 +4236,10 @@ pub func sessionEventsInRange(
 /// Up to `limit` captured events after `afterSeq`, oldest first: one
 /// observer window's worth, without loading the whole session.
 pub func sessionEventsAfterSeqLimited(
-  sessionId: in String, afterSeq: in String, limit: in Int
+  sessionId: in String,
+  sc: in CloudAgents.Pg.TenantScope,
+  afterSeq: in String,
+  limit: in Int,
 ): Result[slice[CloudAgents.Capture.CaptureEvent], CloudAgents.Sqlite.DbError] {
   val normalized = if afterSeq.length == 0 { "-1" } else { afterSeq }
   val rows = CloudAgents.Sqlite.query(CloudAgents.Db.selectSessionEventsAfterSeqSql(sessionId, normalized) + " LIMIT " + toString(limit))?
@@ -4245,7 +4253,9 @@ pub func sessionEventsAfterSeqLimited(
   return Ok(value = events.toArray())
 }
 
-pub func latestSessionEventSeq(sessionId: in String): Result[String, CloudAgents.Sqlite.DbError] {
+pub func latestSessionEventSeq(
+  sessionId: in String, sc: in CloudAgents.Pg.TenantScope
+): Result[String, CloudAgents.Sqlite.DbError] {
   val rows = CloudAgents.Sqlite.query(CloudAgents.Db.selectLatestSessionEventSeqSql(sessionId))?
   if CloudAgents.Sqlite.getRowArrayLength(rows) == 0 {
     return Ok(value = "")
@@ -4270,7 +4280,9 @@ pub record SessionEventCursor {
 /// with the first run's already-stored seq 0.. and `appendSessionEvents`'
 /// tamper-evidence check (#965) rejects the whole batch as a content
 /// mismatch, silently dropping that run's capture provenance.
-pub func latestSessionEventCursor(sessionId: in String): Result[SessionEventCursor, CloudAgents.Sqlite.DbError] {
+pub func latestSessionEventCursor(
+  sessionId: in String, sc: in CloudAgents.Pg.TenantScope
+): Result[SessionEventCursor, CloudAgents.Sqlite.DbError] {
   val rows = CloudAgents.Sqlite.query(CloudAgents.Db.selectLatestSessionEventCursorSql(sessionId))?
   if CloudAgents.Sqlite.getRowArrayLength(rows) == 0 {
     return Ok(value = SessionEventCursor())

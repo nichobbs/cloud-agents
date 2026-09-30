@@ -116,7 +116,7 @@ func enable(profileId: in String, st: in ObserverSettings): Unit {
 
 func captureFixture(sid: in String): Unit {
   val b = parseStreamJson(readFixture("tests/fixtures/observer/session.ndjson"), 0.toLong(), "")
-  match CloudAgents.Repository.appendSessionEvents(sid, b.events) {
+  match CloudAgents.Repository.appendSessionEvents(sid, CloudAgents.Auth.requestScope(), b.events) {
     case Ok(_) -> ()
     case Err(e) -> panic(CloudAgents.Sqlite.dbErrorMessage(e))
   }
@@ -462,7 +462,7 @@ test "a window of nothing but reads is skipped without a container" {
     "{\"type\":\"assistant\",\"message\":{\"role\":\"assistant\",\"content\":[{\"type\":\"tool_use\",\"id\":\"t1\",\"name\":\"Read\",\"input\":{\"file_path\":\"/workspace/auth/session.py\"}}]}}\n" +
     "{\"type\":\"user\",\"message\":{\"role\":\"user\",\"content\":[{\"type\":\"tool_result\",\"tool_use_id\":\"t1\",\"content\":\"def expiry(ts): ...\"}]}}\n"
   val b = parseStreamJson(head, 0.toLong(), "")
-  match CloudAgents.Repository.appendSessionEvents("s1", b.events) {
+  match CloudAgents.Repository.appendSessionEvents("s1", CloudAgents.Auth.requestScope(), b.events) {
     case Ok(_) -> ()
     case Err(e) -> panic(CloudAgents.Sqlite.dbErrorMessage(e))
   }
@@ -523,7 +523,7 @@ test "changing the observer's harness starts a fresh observer and keeps the curs
   )
   // New transcript after the first pass.
   val more = parseStreamJson(readFixture("tests/fixtures/observer/session.ndjson"), 29.toLong(), "")
-  match CloudAgents.Repository.appendSessionEvents("s1", more.events) {
+  match CloudAgents.Repository.appendSessionEvents("s1", CloudAgents.Auth.requestScope(), more.events) {
     case Ok(_) -> ()
     case Err(e) -> panic(CloudAgents.Sqlite.dbErrorMessage(e))
   }

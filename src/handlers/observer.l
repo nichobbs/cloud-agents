@@ -337,6 +337,12 @@ pub func runPass(observedId: in String, runner: in ObserverRunner): String {
     case Ok(None) -> return "skipped: not observed"
     case Err(e) -> return "error: " + CloudAgents.Sqlite.dbErrorMessage(e)
   }
+  // The observed session's tenant, from its route (spec §5.2).
+  val routeScope = match CloudAgents.SessionStore.sessionRouteScope(observedId) {
+    case Ok(Some(v)) -> v
+    case Ok(None) -> return "skipped: the session no longer exists"
+    case Err(e) -> return "error: " + CloudAgents.Sqlite.dbErrorMessage(e)
+  }
   var st = match observerState(observedId) {
     case Ok(s) -> s
     case Err(e) -> return "error: " + CloudAgents.Sqlite.dbErrorMessage(e)
@@ -347,7 +353,7 @@ pub func runPass(observedId: in String, runner: in ObserverRunner): String {
     return "skipped: daily limit"
   }
   // Nothing new, or nothing but reading and searching: no container.
-  val preview = match CloudAgents.Repository.sessionEventsAfterSeqLimited(observedId, st.cursorSeq, windowMaxEvents) {
+  val preview = match CloudAgents.Repository.sessionEventsAfterSeqLimited(observedId, routeScope, st.cursorSeq, windowMaxEvents) {
     case Ok(es) -> renderWindow(es, windowMaxChars)
     case Err(e) -> return "error: " + CloudAgents.Sqlite.dbErrorMessage(e)
   }
@@ -426,7 +432,7 @@ pub func runPass(observedId: in String, runner: in ObserverRunner): String {
   // The observed run has ended and there is still unread transcript (a pass
   // capped by its window, or one that failed): queue another.
   if final and problem.length.toInt() == 0 {
-    match CloudAgents.Repository.sessionEventsAfterSeqLimited(observedId, after.cursorSeq, 1) {
+    match CloudAgents.Repository.sessionEventsAfterSeqLimited(observedId, routeScope, after.cursorSeq, 1) {
       case Ok(es) -> {
         if es.length.toInt() > 0 {
           val _ = markObserverPending(observedId)

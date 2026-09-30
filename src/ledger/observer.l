@@ -73,12 +73,12 @@ pub func buildWindow(
   target: in SessionContext, final: in Bool, diff: in String
 ): Result[ObserverWindowView, LedgerFailure] {
   val st = match observerState(target.sessionId) { case Ok(s) -> s; case Err(e) -> return Err(error = dbFailure(e)) }
-  val events = match CloudAgents.Repository.sessionEventsAfterSeqLimited(target.sessionId, st.cursorSeq, windowMaxEvents) {
+  val events = match CloudAgents.Repository.sessionEventsAfterSeqLimited(target.sessionId, target.tenantScope, st.cursorSeq, windowMaxEvents) {
     case Ok(es) -> es
     case Err(e) -> return Err(error = dbFailure(e))
   }
   val rendered = renderWindow(events, windowMaxChars)
-  val more = rendered.events > 0 and eventsAfter(target.sessionId, rendered.lastSeq)
+  val more = rendered.events > 0 and eventsAfter(target, rendered.lastSeq)
   val items = match listItems(target.sessionId, target.tenantScope) {
     case Ok(xs) -> xs
     case Err(e) -> return Err(error = dbFailure(e))
@@ -119,8 +119,8 @@ pub func buildWindow(
   )
 }
 
-func eventsAfter(sessionId: in String, seq: in String): Bool {
-  return match CloudAgents.Repository.sessionEventsAfterSeqLimited(sessionId, seq, 1) {
+func eventsAfter(target: in SessionContext, seq: in String): Bool {
+  return match CloudAgents.Repository.sessionEventsAfterSeqLimited(target.sessionId, target.tenantScope, seq, 1) {
     case Ok(es) -> es.length.toInt() > 0
     case Err(_) -> false
   }
@@ -378,7 +378,7 @@ pub func acceptReport(
     case Ok(_) -> ()
     case Err(e) -> return Err(error = dbFailure(e))
   }
-  val remaining = eventsAfter(target.sessionId, st.windowEnd)
+  val remaining = eventsAfter(target, st.windowEnd)
   return Ok(
     value = ObserverReportReply(
       undeclared = toString(undeclared),
