@@ -597,12 +597,22 @@ async func waitForContainerAttempt(
 }
 
 /// Delete the container.
+/// Remove a container. One that no longer exists (Docker 404) counts as
+/// removed: every caller wants it gone, and after a Docker or host restart it
+/// already is. Without this a stranded run's sweep could never free its
+/// session (#1210).
 pub async func deleteRunnerContainer(client: in DockerClient, containerId: in String): Result[Unit, String] {
   val cid = dockerContainerId(containerId)?
   val deleteRes = await removeContainer(client, cid)
   match deleteRes {
     case Ok(_) -> Ok(value = ())
-    case Err(e) -> Err(error = "Failed to delete container: " + e.message)
+    case Err(e) -> {
+      if CloudAgents.DockerPolicy.containerAlreadyGone(e.statusCode) {
+        Ok(value = ())
+      } else {
+        Err(error = "Failed to delete container: " + e.message)
+      }
+    }
   }
 }
 
