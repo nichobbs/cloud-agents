@@ -3061,7 +3061,11 @@ func rowToUserQuestion(r: in CloudAgents.Sqlite.Row): UserQuestion {
 /// row is created already decided ('allowed', with an explanatory note) so
 /// the container's very first poll sees the decision — no prompt round trip.
 pub func createPermissionRequest(
-  sessionId: in String, sc: in CloudAgents.Pg.TenantScope, toolName: in String, inputJson: in String, preApproved: in Bool
+  sessionId: in String,
+  sc: in CloudAgents.Pg.TenantScope,
+  toolName: in String,
+  inputJson: in String,
+  preApproved: in Bool,
 ): Result[PermissionRequest, CloudAgents.Sqlite.DbError] {
   val id = newId()
   val ts = nowMillis()
@@ -3085,7 +3089,9 @@ pub func createPermissionRequest(
 }
 
 /// A permission request by id, or None.
-pub func getPermissionRequest(id: in String, sc: in CloudAgents.Pg.TenantScope): Result[Option[PermissionRequest], CloudAgents.Sqlite.DbError] {
+pub func getPermissionRequest(
+  id: in String, sc: in CloudAgents.Pg.TenantScope
+): Result[Option[PermissionRequest], CloudAgents.Sqlite.DbError] {
   val rows = CloudAgents.Sqlite.query(CloudAgents.Db.selectPermissionRequestByIdSql(id))?
   val len = CloudAgents.Sqlite.getRowArrayLength(rows)
   if len == 0 {
@@ -3098,7 +3104,9 @@ pub func getPermissionRequest(id: in String, sc: in CloudAgents.Pg.TenantScope):
 /// oldest first — used by the streaming poll loop to discover new requests to
 /// emit as SSE events.
 pub func permissionRequestsCreatedAfter(
-  sessionId: in String, sc: in CloudAgents.Pg.TenantScope, afterCreatedAt: in String
+  sessionId: in String,
+  sc: in CloudAgents.Pg.TenantScope,
+  afterCreatedAt: in String,
 ): Result[slice[PermissionRequest], CloudAgents.Sqlite.DbError] {
   val rows = CloudAgents.Sqlite.query(CloudAgents.Db.selectPermissionRequestsCreatedAfterSql(sessionId, afterCreatedAt))?
   var acc: slice[PermissionRequest] = []
@@ -3115,7 +3123,11 @@ pub func permissionRequestsCreatedAfter(
 /// pending anymore — already answered, or already timed out — the handler
 /// maps that to 409).
 pub func answerPermissionRequest(
-  id: in String, sc: in CloudAgents.Pg.TenantScope, status: in String, updatedInputJson: in String, note: in String
+  id: in String,
+  sc: in CloudAgents.Pg.TenantScope,
+  status: in String,
+  updatedInputJson: in String,
+  note: in String,
 ): Result[Int, CloudAgents.Sqlite.DbError] {
   return CloudAgents.Sqlite.execute(
     CloudAgents.Db.answerPermissionRequestSql(id, status, updatedInputJson, note, nowMillis())
@@ -3134,7 +3146,10 @@ pub func timeoutPendingPermissionRequest(
 
 /// Whether an allow-always rule exists for this exact (session, tool, input).
 pub func permissionRuleMatches(
-  sessionId: in String, sc: in CloudAgents.Pg.TenantScope, toolName: in String, inputJson: in String
+  sessionId: in String,
+  sc: in CloudAgents.Pg.TenantScope,
+  toolName: in String,
+  inputJson: in String,
 ): Result[Bool, CloudAgents.Sqlite.DbError] {
   val rows = CloudAgents.Sqlite.query(CloudAgents.Db.selectPermissionRuleMatchSql(sessionId, toolName, inputJson))?
   return Ok(value = CloudAgents.Sqlite.getRowArrayLength(rows) > 0)
@@ -3143,7 +3158,10 @@ pub func permissionRuleMatches(
 /// Persist an allow-always rule for a (session, tool, input) triple.
 /// Idempotent (ON CONFLICT DO NOTHING at the SQL layer).
 pub func addPermissionRule(
-  sessionId: in String, sc: in CloudAgents.Pg.TenantScope, toolName: in String, inputJson: in String
+  sessionId: in String,
+  sc: in CloudAgents.Pg.TenantScope,
+  toolName: in String,
+  inputJson: in String,
 ): Result[Unit, CloudAgents.Sqlite.DbError] {
   CloudAgents.Sqlite.execute(CloudAgents.Db.insertPermissionRuleSql(newId(), sessionId, toolName, inputJson, nowMillis()))?
   return Ok(value = ())
@@ -3152,7 +3170,10 @@ pub func addPermissionRule(
 /// Create a user question (ask_user MCP tool). `optionsJson` is "" for a
 /// free-text question or a JSON array of choices for multiple-choice.
 pub func createUserQuestion(
-  sessionId: in String, sc: in CloudAgents.Pg.TenantScope, question: in String, optionsJson: in String
+  sessionId: in String,
+  sc: in CloudAgents.Pg.TenantScope,
+  question: in String,
+  optionsJson: in String,
 ): Result[UserQuestion, CloudAgents.Sqlite.DbError] {
   val id = newId()
   val ts = nowMillis()
@@ -3172,7 +3193,9 @@ pub func createUserQuestion(
 }
 
 /// A user question by id, or None.
-pub func getUserQuestion(id: in String, sc: in CloudAgents.Pg.TenantScope): Result[Option[UserQuestion], CloudAgents.Sqlite.DbError] {
+pub func getUserQuestion(
+  id: in String, sc: in CloudAgents.Pg.TenantScope
+): Result[Option[UserQuestion], CloudAgents.Sqlite.DbError] {
   val rows = CloudAgents.Sqlite.query(CloudAgents.Db.selectUserQuestionByIdSql(id))?
   val len = CloudAgents.Sqlite.getRowArrayLength(rows)
   if len == 0 {
@@ -3199,14 +3222,18 @@ pub func userQuestionsCreatedAfter(
 
 /// Answer a still-pending question. Returns rows affected (0 = already
 /// answered/timed out — the handler maps that to 409).
-pub func answerUserQuestion(id: in String, sc: in CloudAgents.Pg.TenantScope, answer: in String): Result[Int, CloudAgents.Sqlite.DbError] {
+pub func answerUserQuestion(
+  id: in String, sc: in CloudAgents.Pg.TenantScope, answer: in String
+): Result[Int, CloudAgents.Sqlite.DbError] {
   return CloudAgents.Sqlite.execute(CloudAgents.Db.answerUserQuestionSql(id, answer, nowMillis()))
 }
 
 /// Host-side fail-closed timeout backstop for questions: marks a still-pending
 /// question 'timed_out' (distinct from an empty-string answer) once it has
 /// been pending at least `timeoutMillis`.
-pub func timeoutPendingUserQuestion(id: in String, sc: in CloudAgents.Pg.TenantScope, timeoutMillis: in Long): Result[Unit, CloudAgents.Sqlite.DbError] {
+pub func timeoutPendingUserQuestion(
+  id: in String, sc: in CloudAgents.Pg.TenantScope, timeoutMillis: in Long
+): Result[Unit, CloudAgents.Sqlite.DbError] {
   CloudAgents.Sqlite.execute(CloudAgents.Db.timeoutPendingUserQuestionSql(id, nowMillis(), toString(timeoutMillis)))?
   return Ok(value = ())
 }
@@ -3214,14 +3241,19 @@ pub func timeoutPendingUserQuestion(id: in String, sc: in CloudAgents.Pg.TenantS
 /// Set a session's latest reported progress (report_progress MCP tool,
 /// fire-and-forget).
 pub func updateSessionProgress(
-  sessionId: in String, sc: in CloudAgents.Pg.TenantScope, summary: in String, percent: in String
+  sessionId: in String,
+  sc: in CloudAgents.Pg.TenantScope,
+  summary: in String,
+  percent: in String,
 ): Result[Unit, CloudAgents.Sqlite.DbError] {
   CloudAgents.Sqlite.execute(CloudAgents.Db.updateSessionProgressSql(sessionId, summary, percent))?
   return Ok(value = ())
 }
 
 /// A session's latest reported progress (both fields "" if never reported).
-pub func sessionProgress(sessionId: in String, sc: in CloudAgents.Pg.TenantScope): Result[SessionProgress, CloudAgents.Sqlite.DbError] {
+pub func sessionProgress(
+  sessionId: in String, sc: in CloudAgents.Pg.TenantScope
+): Result[SessionProgress, CloudAgents.Sqlite.DbError] {
   val rows = CloudAgents.Sqlite.query(CloudAgents.Db.selectSessionProgressSql(sessionId))?
   val len = CloudAgents.Sqlite.getRowArrayLength(rows)
   if len == 0 {
@@ -3290,7 +3322,9 @@ pub func createSecretRequest(
 }
 
 /// A secret request by id, or None.
-pub func getSecretRequest(id: in String, sc: in CloudAgents.Pg.TenantScope): Result[Option[SecretRequest], CloudAgents.Sqlite.DbError] {
+pub func getSecretRequest(
+  id: in String, sc: in CloudAgents.Pg.TenantScope
+): Result[Option[SecretRequest], CloudAgents.Sqlite.DbError] {
   val rows = CloudAgents.Sqlite.query(CloudAgents.Db.selectSecretRequestByIdSql(id))?
   val len = CloudAgents.Sqlite.getRowArrayLength(rows)
   if len == 0 {
@@ -3320,13 +3354,17 @@ pub func secretRequestsCreatedAfter(
 /// 'denied' — this IS the audit trail's decision column, written once.
 /// Returns rows affected (0 = not pending anymore, the handler maps that to
 /// 409, mirroring answerPermissionRequest).
-pub func answerSecretRequest(id: in String, sc: in CloudAgents.Pg.TenantScope, status: in String): Result[Int, CloudAgents.Sqlite.DbError] {
+pub func answerSecretRequest(
+  id: in String, sc: in CloudAgents.Pg.TenantScope, status: in String
+): Result[Int, CloudAgents.Sqlite.DbError] {
   return CloudAgents.Sqlite.execute(CloudAgents.Db.answerSecretRequestSql(id, status, nowMillis()))
 }
 
 /// Host-side fail-closed timeout backstop, mirroring
 /// timeoutPendingPermissionRequest.
-pub func timeoutPendingSecretRequest(id: in String, sc: in CloudAgents.Pg.TenantScope, timeoutMillis: in Long): Result[Unit, CloudAgents.Sqlite.DbError] {
+pub func timeoutPendingSecretRequest(
+  id: in String, sc: in CloudAgents.Pg.TenantScope, timeoutMillis: in Long
+): Result[Unit, CloudAgents.Sqlite.DbError] {
   CloudAgents.Sqlite.execute(CloudAgents.Db.timeoutPendingSecretRequestSql(id, nowMillis(), toString(timeoutMillis)))?
   return Ok(value = ())
 }
@@ -3336,7 +3374,9 @@ pub func timeoutPendingSecretRequest(id: in String, sc: in CloudAgents.Pg.Tenant
 /// THIS call is the one that flips the guard — i.e. the caller may now
 /// decrypt and hand back the value; false means some earlier poll already
 /// delivered it.
-pub func markSecretRequestDelivered(id: in String, sc: in CloudAgents.Pg.TenantScope): Result[Bool, CloudAgents.Sqlite.DbError] {
+pub func markSecretRequestDelivered(
+  id: in String, sc: in CloudAgents.Pg.TenantScope
+): Result[Bool, CloudAgents.Sqlite.DbError] {
   val affected = CloudAgents.Sqlite.execute(CloudAgents.Db.markSecretRequestDeliveredSql(id, nowMillis()))?
   return Ok(value = affected > 0)
 }
@@ -3429,7 +3469,9 @@ pub func createArtifact(
 }
 
 /// An artifact by id, or None.
-pub func getArtifact(id: in String, sc: in CloudAgents.Pg.TenantScope): Result[Option[Artifact], CloudAgents.Sqlite.DbError] {
+pub func getArtifact(
+  id: in String, sc: in CloudAgents.Pg.TenantScope
+): Result[Option[Artifact], CloudAgents.Sqlite.DbError] {
   val rows = CloudAgents.Sqlite.query(CloudAgents.Db.selectArtifactByIdSql(id))?
   val len = CloudAgents.Sqlite.getRowArrayLength(rows)
   if len == 0 {
@@ -3439,7 +3481,9 @@ pub func getArtifact(id: in String, sc: in CloudAgents.Pg.TenantScope): Result[O
 }
 
 /// A session's artifacts, oldest first.
-pub func listArtifacts(sessionId: in String, sc: in CloudAgents.Pg.TenantScope): Result[slice[Artifact], CloudAgents.Sqlite.DbError] {
+pub func listArtifacts(
+  sessionId: in String, sc: in CloudAgents.Pg.TenantScope
+): Result[slice[Artifact], CloudAgents.Sqlite.DbError] {
   val rows = CloudAgents.Sqlite.query(CloudAgents.Db.selectArtifactsBySessionSql(sessionId))?
   var acc: slice[Artifact] = []
   var i = 0
@@ -3455,7 +3499,9 @@ pub func listArtifacts(sessionId: in String, sc: in CloudAgents.Pg.TenantScope):
 /// (docs/phase7-autonomy.md §6). Scoped by (user_id, repo_key) — never by
 /// repo_key alone, since repoKeys derive from public git URLs and are not
 /// secret.
-pub func listRepoArtifacts(sc: in CloudAgents.Pg.TenantScope, repoKey: in String): Result[slice[Artifact], CloudAgents.Sqlite.DbError] {
+pub func listRepoArtifacts(
+  sc: in CloudAgents.Pg.TenantScope, repoKey: in String
+): Result[slice[Artifact], CloudAgents.Sqlite.DbError] {
   val userId = sc.userId
   val rows = CloudAgents.Sqlite.query(CloudAgents.Db.selectRepoArtifactsSql(userId, repoKey))?
   var acc: slice[Artifact] = []
@@ -3473,7 +3519,9 @@ pub func listRepoArtifacts(sc: in CloudAgents.Pg.TenantScope, repoKey: in String
 /// being deleted. Backs the session-independent repo-artifact download
 /// route; returns None for an unknown id, a session-scoped artifact, or one
 /// owned by a different user.
-pub func getRepoArtifactById(id: in String, sc: in CloudAgents.Pg.TenantScope): Result[Option[Artifact], CloudAgents.Sqlite.DbError] {
+pub func getRepoArtifactById(
+  id: in String, sc: in CloudAgents.Pg.TenantScope
+): Result[Option[Artifact], CloudAgents.Sqlite.DbError] {
   val userId = sc.userId
   val rows = CloudAgents.Sqlite.query(CloudAgents.Db.selectRepoArtifactByIdSql(id, userId))?
   val len = CloudAgents.Sqlite.getRowArrayLength(rows)
@@ -3627,7 +3675,9 @@ pub record SessionOwnerRepo {
   pub repoUrl: String
 }
 
-pub func sessionOwnerAndRepo(id: in String, sc: in CloudAgents.Pg.TenantScope): Result[Option[SessionOwnerRepo], CloudAgents.Sqlite.DbError] {
+pub func sessionOwnerAndRepo(
+  id: in String, sc: in CloudAgents.Pg.TenantScope
+): Result[Option[SessionOwnerRepo], CloudAgents.Sqlite.DbError] {
   val rows = CloudAgents.Sqlite.query(CloudAgents.Db.selectSessionOwnerAndRepoSql(id))?
   val len = CloudAgents.Sqlite.getRowArrayLength(rows)
   if len == 0 {
@@ -3669,7 +3719,9 @@ pub func upsertMemoryCapped(
 }
 
 /// All memory entries for (user, repo), key-ordered.
-pub func listMemory(sc: in CloudAgents.Pg.TenantScope, repoKey: in String): Result[slice[MemoryRecord], CloudAgents.Sqlite.DbError] {
+pub func listMemory(
+  sc: in CloudAgents.Pg.TenantScope, repoKey: in String
+): Result[slice[MemoryRecord], CloudAgents.Sqlite.DbError] {
   val userId = sc.userId
   val rows = CloudAgents.Sqlite.query(CloudAgents.Db.selectMemoryBySql(userId, repoKey))?
   var acc: slice[MemoryRecord] = []
@@ -3765,7 +3817,10 @@ pub record AddTaskResult {
 /// key to overwrite, every call is a fresh row). The cap counts only
 /// currently-open tasks, so completing a task frees capacity for a new one.
 pub func addTaskCapped(
-  sc: in CloudAgents.Pg.TenantScope, repoKey: in String, description: in String, maxOpenTasks: in Int
+  sc: in CloudAgents.Pg.TenantScope,
+  repoKey: in String,
+  description: in String,
+  maxOpenTasks: in Int,
 ): Result[AddTaskResult, CloudAgents.Sqlite.DbError] {
   val userId = sc.userId
   val id = newId()
@@ -3853,7 +3908,10 @@ func rowToNotification(r: in CloudAgents.Sqlite.Row): Notification {
 
 /// Record a fire-and-forget notification for a session.
 pub func createNotification(
-  sessionId: in String, sc: in CloudAgents.Pg.TenantScope, level: in String, summary: in String
+  sessionId: in String,
+  sc: in CloudAgents.Pg.TenantScope,
+  level: in String,
+  summary: in String,
 ): Result[Notification, CloudAgents.Sqlite.DbError] {
   val id = newId()
   val ts = nowMillis()
@@ -3871,7 +3929,9 @@ pub func createNotification(
 }
 
 /// A session's notifications, newest first — for the UI feed.
-pub func listNotifications(sessionId: in String, sc: in CloudAgents.Pg.TenantScope): Result[slice[Notification], CloudAgents.Sqlite.DbError] {
+pub func listNotifications(
+  sessionId: in String, sc: in CloudAgents.Pg.TenantScope
+): Result[slice[Notification], CloudAgents.Sqlite.DbError] {
   val rows = CloudAgents.Sqlite.query(CloudAgents.Db.selectNotificationsBySessionSql(sessionId))?
   var acc: slice[Notification] = []
   var i = 0
