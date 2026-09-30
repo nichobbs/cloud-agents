@@ -34,6 +34,7 @@ import Std.Uuid
 import CloudAgents.Auth
 import CloudAgents.GraphIngestDrain
 import CloudAgents.GraphIngestOutbox
+import CloudAgents.Pg
 import CloudAgents.Repository
 import CloudAgents.Sqlite
 import extern System.Environment as Env
@@ -150,29 +151,46 @@ test "isDueNow compares epoch-millis digit strings correctly (#1051)" {
   )
 }
 
+test "a drain's lease covers its whole batch timing out, and never drops below the default" {
+  assertEqualInt(CloudAgents.GraphIngestOutbox.drainLeaseSeconds(25, 15000), 435, "25 rows at 15 s each plus a minute")
+  assertEqualInt(
+    CloudAgents.GraphIngestOutbox.drainLeaseSeconds(5, 15000),
+    CloudAgents.GraphIngestOutbox.leaseSeconds,
+    "a small batch keeps the default lease"
+  )
+  assertEqualInt(CloudAgents.GraphIngestOutbox.drainLeaseSeconds(10, 15500), 220 + 80, "a partial second rounds up")
+}
+
 // ─── Live-SQLite: enqueue -> due -> attempt -> delivered / terminal ─────────
+func owner(): CloudAgents.Pg.TenantScope {
+  return CloudAgents.Pg.personalScope("alice")
+}
+
 func mustEnqueue(sessionId: in String, body: in String, url: in String): CloudAgents.Repository.GraphIngestOutboxRow {
-  return match CloudAgents.Repository.enqueueGraphIngest(sessionId, body, url) {
+  return match CloudAgents.Repository.enqueueGraphIngest(sessionId, body, url, owner()) {
     case Ok(row) -> row
     case Err(e) -> panic("enqueueGraphIngest failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
   }
 }
 
-func mustDue(limit: in Int): slice[CloudAgents.Repository.GraphIngestOutboxRow] {
-  return mustDueAsOf(CloudAgents.Repository.nowMillis(), limit)
-}
-
-func mustDueAsOf(nowMillisStr: in String, limit: in Int): slice[CloudAgents.Repository.GraphIngestOutboxRow] {
-  return match CloudAgents.Repository.dueGraphIngest(nowMillisStr, limit) {
+func mustClaimDue(limit: in Int): slice[CloudAgents.Repository.ClaimedGraphIngest] {
+  return match CloudAgents.Repository.claimDueGraphIngest(limit, CloudAgents.GraphIngestOutbox.leaseSeconds) {
     case Ok(rows) -> rows
-    case Err(e) -> panic("dueGraphIngest failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+    case Err(e) -> panic("claimDueGraphIngest failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
   }
 }
 
-func containsId(rows: in slice[CloudAgents.Repository.GraphIngestOutboxRow], id: in String): Bool {
+func mustGet(id: in String): Option[CloudAgents.Repository.GraphIngestOutboxRow] {
+  return match CloudAgents.Repository.getGraphIngest(id, owner()) {
+    case Ok(r) -> r
+    case Err(e) -> panic("getGraphIngest failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+  }
+}
+
+func claimsId(claims: in slice[CloudAgents.Repository.ClaimedGraphIngest], id: in String): Bool {
   var i = 0
-  while i < rows.length {
-    if rows[i].id == id {
+  while i < claims.length {
+    if claims[i].row.id == id {
       return true
     }
     i = i + 1
@@ -180,31 +198,13 @@ func containsId(rows: in slice[CloudAgents.Repository.GraphIngestOutboxRow], id:
   return false
 }
 
-func findById(
-  rows: in slice[CloudAgents.Repository.GraphIngestOutboxRow], id: in String
-): Option[CloudAgents.Repository.GraphIngestOutboxRow] {
-  var i = 0
-  while i < rows.length {
-    if rows[i].id == id {
-      return Some(value = rows[i])
-    }
-    i = i + 1
-  }
-  return None
-}
-
-// A due-scan cursor far enough in the future to include every undelivered
-// row regardless of its actual next_attempt_at — an introspection query for
-// tests only (dueGraphIngest's real callers always pass "now").
-val farFutureCursor = "99999999999999"
-
-test "a freshly enqueued row is immediately due" {
+test "a freshly enqueued row is immediately claimable" {
   val path = useFreshTestDb("outbox-enqueue-due")
   val row = mustEnqueue("sess-A", "{\"objects\":[]}", "https://platform.example/api/ingest")
   assertTrue(row.id.length > 0, "enqueue mints an id")
   assertEqual(row.attempts, "0", "attempts starts at zero")
   assertEqual(row.deliveredAt, "", "not delivered yet")
-  assertTrue(containsId(mustDue(50), row.id), "a fresh row is due immediately (next_attempt_at = created_at)")
+  assertTrue(claimsId(mustClaimDue(50), row.id), "a fresh row is due immediately (next_attempt_at = created_at)")
 
   cleanupTestDb(path)
 }
@@ -212,16 +212,16 @@ test "a freshly enqueued row is immediately due" {
 test "a failed attempt schedules a future retry and excludes the row from the due scan" {
   val path = useFreshTestDb("outbox-attempt")
   val row = mustEnqueue("sess-B", "{\"objects\":[]}", "https://platform.example/api/ingest")
-  assertTrue(containsId(mustDue(50), row.id), "due before any attempt is recorded")
+  assertTrue(claimsId(mustClaimDue(50), row.id), "due before any attempt is recorded")
 
   val delay = CloudAgents.GraphIngestOutbox.backoffDelayMillis(1, row.id)
-  match CloudAgents.Repository.markGraphIngestAttempt(row.id, "1", "simulated: connection refused", CloudAgents.Repository.nowMillis(), delay) {
+  match CloudAgents.Repository.markGraphIngestAttempt(row.id, "1", "simulated: connection refused", CloudAgents.Repository.nowMillis(), delay, owner()) {
     case Ok(n) -> assertEqualInt(n, 1, "one row updated")
     case Err(e) -> assertTrue(false, "markGraphIngestAttempt failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
   }
   // The scheduled retry is at least 15s out (attempt 1's minimum delay), so it
   // is never due "right now" in the few milliseconds this test takes to run.
-  assertTrue(not containsId(mustDue(50), row.id), "a row with a future next_attempt_at is not due yet")
+  assertTrue(not claimsId(mustClaimDue(50), row.id), "a row with a future next_attempt_at is not due yet")
 
   cleanupTestDb(path)
 }
@@ -229,16 +229,16 @@ test "a failed attempt schedules a future retry and excludes the row from the du
 test "marking a row delivered removes it from the due scan" {
   val path = useFreshTestDb("outbox-delivered")
   val row = mustEnqueue("sess-C", "{\"objects\":[]}", "https://platform.example/api/ingest")
-  match CloudAgents.Repository.markGraphIngestDelivered(row.id, CloudAgents.Repository.nowMillis()) {
+  match CloudAgents.Repository.markGraphIngestDelivered(row.id, CloudAgents.Repository.nowMillis(), owner()) {
     case Ok(n) -> assertEqualInt(n, 1, "one row marked delivered")
     case Err(e) -> assertTrue(false, "markGraphIngestDelivered failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
   }
-  assertTrue(not containsId(mustDue(50), row.id), "a delivered row is never due again")
+  assertTrue(not claimsId(mustClaimDue(50), row.id), "a delivered row is never due again")
 
   // A second markGraphIngestDelivered on the same (now-delivered) row is a
   // guarded no-op (delivered_at = '' in the WHERE clause) — 0 rows affected,
   // not an error and not a corrupted double-write.
-  match CloudAgents.Repository.markGraphIngestDelivered(row.id, CloudAgents.Repository.nowMillis()) {
+  match CloudAgents.Repository.markGraphIngestDelivered(row.id, CloudAgents.Repository.nowMillis(), owner()) {
     case Ok(n) -> assertEqualInt(n, 0, "re-marking an already-delivered row is a no-op")
     case Err(e) -> assertTrue(false, "unexpected error re-marking delivered: " + CloudAgents.Sqlite.dbErrorMessage(e))
   }
@@ -249,11 +249,11 @@ test "marking a row delivered removes it from the due scan" {
 test "a row that exhausts its attempt cap is marked terminal and excluded forever" {
   val path = useFreshTestDb("outbox-terminal")
   val row = mustEnqueue("sess-D", "{\"objects\":[]}", "https://platform.example/api/ingest")
-  match CloudAgents.Repository.markGraphIngestTerminal(row.id, "50", CloudAgents.GraphIngestOutbox.terminalErrorMessage("simulated: platform unreachable")) {
+  match CloudAgents.Repository.markGraphIngestTerminal(row.id, "50", CloudAgents.GraphIngestOutbox.terminalErrorMessage("simulated: platform unreachable"), owner()) {
     case Ok(n) -> assertEqualInt(n, 1, "one row marked terminal")
     case Err(e) -> assertTrue(false, "markGraphIngestTerminal failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
   }
-  assertTrue(not containsId(mustDue(50), row.id), "a terminal row is excluded from the due scan")
+  assertTrue(not claimsId(mustClaimDue(50), row.id), "a terminal row is excluded from the due scan")
 
   cleanupTestDb(path)
 }
@@ -269,7 +269,7 @@ test "idempotent re-enqueue of the same session+body returns the existing row, n
   // (now-delivered) row rather than resurrecting it as pending — this is the
   // property CloudAgents.GraphIngestDrain.enqueueAndAttemptDelivery relies on
   // to skip a redundant POST for an already-delivered body.
-  match CloudAgents.Repository.markGraphIngestDelivered(first.id, CloudAgents.Repository.nowMillis()) {
+  match CloudAgents.Repository.markGraphIngestDelivered(first.id, CloudAgents.Repository.nowMillis(), owner()) {
     case Ok(_) -> ()
     case Err(e) -> assertTrue(false, "markGraphIngestDelivered failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
   }
@@ -294,7 +294,7 @@ test "pruneDeliveredGraphIngest removes only delivered rows, never pending ones"
   val path = useFreshTestDb("outbox-prune")
   val delivered = mustEnqueue("sess-F", "{\"objects\":[]}", "https://platform.example/api/ingest")
   val pending = mustEnqueue("sess-G", "{\"objects\":[\"other\"]}", "https://platform.example/api/ingest")
-  match CloudAgents.Repository.markGraphIngestDelivered(delivered.id, CloudAgents.Repository.nowMillis()) {
+  match CloudAgents.Repository.markGraphIngestDelivered(delivered.id, CloudAgents.Repository.nowMillis(), owner()) {
     case Ok(_) -> ()
     case Err(e) -> assertTrue(false, "markGraphIngestDelivered failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
   }
@@ -307,7 +307,63 @@ test "pruneDeliveredGraphIngest removes only delivered rows, never pending ones"
   }
   // The still-pending row is never touched by pruning regardless of
   // retention window (only delivered_at <> '' rows are eligible).
-  assertTrue(containsId(mustDue(50), pending.id), "a pending row survives pruning")
+  match mustGet(pending.id) {
+    case Some(_) -> ()
+    case None -> assertTrue(false, "a pending row survives pruning")
+  }
+
+  cleanupTestDb(path)
+}
+
+test "a claimed row is not claimed again while its lease holds" {
+  val path = useFreshTestDb("outbox-lease")
+  val row = mustEnqueue("sess-L", "{\"objects\":[]}", "https://platform.example/api/ingest")
+  assertTrue(claimsId(mustClaimDue(50), row.id), "the first drain claims the due row")
+  assertTrue(not claimsId(mustClaimDue(50), row.id), "an overlapping drain does not claim it again")
+  match CloudAgents.Repository.claimGraphIngest(row.id, owner()) {
+    case Ok(b) -> assertTrue(not b, "an immediate attempt cannot take a row a drain holds")
+    case Err(e) -> assertTrue(false, "claimGraphIngest failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+  }
+
+  cleanupTestDb(path)
+}
+
+test "claimGraphIngest takes a due row exactly once" {
+  val path = useFreshTestDb("outbox-claim-one")
+  val row = mustEnqueue("sess-M", "{\"objects\":[]}", "https://platform.example/api/ingest")
+  match CloudAgents.Repository.claimGraphIngest(row.id, owner()) {
+    case Ok(b) -> assertTrue(b, "a due, unclaimed row is claimed")
+    case Err(e) -> assertTrue(false, "claimGraphIngest failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+  }
+  match CloudAgents.Repository.claimGraphIngest(row.id, owner()) {
+    case Ok(b) -> assertTrue(not b, "a second claim fails while the first holds")
+    case Err(e) -> assertTrue(false, "claimGraphIngest failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+  }
+  assertTrue(not claimsId(mustClaimDue(50), row.id), "a drain does not take a row an immediate attempt holds")
+
+  cleanupTestDb(path)
+}
+
+// #1197: a row whose session has since been deleted is still claimed and
+// delivered. The SQLite outbox is not keyed by owner and none of its outcome
+// writes read the scope, so the empty-owner scope such a row carries changes
+// nothing, and the platform keeps the session's provenance.
+test "a row whose session no longer exists is still claimed and its outcome recorded" {
+  val path = useFreshTestDb("outbox-orphan")
+  val row = mustEnqueue("sess-deleted", "{\"objects\":[]}", "https://platform.example/api/ingest")
+  val claims = mustClaimDue(50)
+  assertTrue(claimsId(claims, row.id), "the orphaned row is claimed")
+  var claimed = claims[0]
+  for c in claims {
+    if c.row.id == row.id {
+      claimed = c
+    }
+  }
+  assertEqual(claimed.tenantScope.userId, "", "it carries an empty owner")
+  match CloudAgents.Repository.markGraphIngestDelivered(row.id, CloudAgents.Repository.nowMillis(), claimed.tenantScope) {
+    case Ok(n) -> assertEqualInt(n, 1, "its delivery is recorded under that scope")
+    case Err(e) -> assertTrue(false, "markGraphIngestDelivered failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+  }
 
   cleanupTestDb(path)
 }
@@ -345,7 +401,7 @@ test "enqueueAndAttemptDelivery does not bypass backoff for a re-enqueued in-bac
   val row = mustEnqueue("sess-H", body, "https://platform.example/api/ingest")
   // Force the row into backoff, simulating a prior failed delivery attempt.
   val delay = CloudAgents.GraphIngestOutbox.backoffDelayMillis(1, row.id)
-  match CloudAgents.Repository.markGraphIngestAttempt(row.id, "1", "simulated failure", CloudAgents.Repository.nowMillis(), delay) {
+  match CloudAgents.Repository.markGraphIngestAttempt(row.id, "1", "simulated failure", CloudAgents.Repository.nowMillis(), delay, owner()) {
     case Ok(_) -> ()
     case Err(e) -> assertTrue(false, "markGraphIngestAttempt failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
   }
@@ -357,9 +413,9 @@ test "enqueueAndAttemptDelivery does not bypass backoff for a re-enqueued in-bac
   // configured, that fails and bumps attempts to "2". The fix must leave the
   // row's attempts/last_error completely untouched, and never even reach
   // attemptDeliverRow (no HTTP call, configured token or not).
-  CloudAgents.GraphIngestDrain.enqueueAndAttemptDelivery("sess-H", body)
+  CloudAgents.GraphIngestDrain.enqueueAndAttemptDelivery("sess-H", body, owner())
 
-  match findById(mustDueAsOf(farFutureCursor, 50), row.id) {
+  match mustGet(row.id) {
     case Some(r) -> assertEqual(
       r.attempts,
       "1",

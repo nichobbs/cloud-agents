@@ -11,6 +11,7 @@ import Std.Core
 import Std.Uuid
 import Std.File
 import CloudAgents.Crypto
+import CloudAgents.GraphIngestOutbox
 import CloudAgents.Pg
 import CloudAgents.Scope
 import CloudAgents.Db
@@ -4824,6 +4825,12 @@ func rowToGraphIngestOutbox(r: in CloudAgents.Sqlite.Row): GraphIngestOutboxRow 
   )
 }
 
+/// A row a drain has claimed, with the scope its outcome is recorded under.
+pub record ClaimedGraphIngest {
+  pub tenantScope: CloudAgents.Pg.TenantScope
+  pub row: GraphIngestOutboxRow
+}
+
 /// Enqueue a session's emitted ingest body for durable delivery. Idempotent
 /// per (sessionId, body) — a byte-identical re-enqueue (e.g. a retried
 /// `emitRunnerCheckpoint` reproducing the same mapped objects) returns the
@@ -4831,10 +4838,10 @@ func rowToGraphIngestOutbox(r: in CloudAgents.Sqlite.Row): GraphIngestOutboxRow 
 /// rather than minting a duplicate, mirroring `addWebhook`'s
 /// insert-then-read-back-by-natural-key idiom for an `ON CONFLICT DO NOTHING`
 /// insert. The caller (`CloudAgents.GraphIngestDrain.enqueueAndAttemptDelivery`)
-/// only attempts an immediate delivery when the returned row's `deliveredAt`
-/// is still empty, so re-enqueuing an already-delivered body never re-POSTs.
+/// then claims the row before its immediate delivery attempt, so an
+/// already-delivered or mid-backoff row is never re-POSTed early.
 pub func enqueueGraphIngest(
-  sessionId: in String, body: in String, url: in String
+  sessionId: in String, body: in String, url: in String, sc: in CloudAgents.Pg.TenantScope
 ): Result[GraphIngestOutboxRow, CloudAgents.Sqlite.DbError] {
   val bodyHash = CloudAgents.Crypto.sha256Base64(body)
   val id = newId()
@@ -4863,36 +4870,69 @@ pub func enqueueGraphIngest(
   return Ok(value = rowToGraphIngestOutbox(CloudAgents.Sqlite.getRowArrayValue(rows, 0)))
 }
 
-/// Every undelivered row whose `next_attempt_at` has arrived (or a row just
-/// enqueued, whose `next_attempt_at` starts at its `created_at` — see
-/// `insertGraphIngestOutboxSql`), earliest-due first, capped at `limit`.
-/// System-wide (unscoped by user), matching `claimDueScheduledJobs`' maintenance-
-/// sweep shape.
-pub func dueGraphIngest(
-  nowMillisStr: in String, limit: in Int
-): Result[slice[GraphIngestOutboxRow], CloudAgents.Sqlite.DbError] {
-  val rows = CloudAgents.Sqlite.query(CloudAgents.Db.selectDueGraphIngestOutboxSql(nowMillisStr, limit))?
-  val acc: List[GraphIngestOutboxRow] = newList()
+/// One row by id, or None.
+pub func getGraphIngest(
+  id: in String, sc: in CloudAgents.Pg.TenantScope
+): Result[Option[GraphIngestOutboxRow], CloudAgents.Sqlite.DbError] {
+  val rows = CloudAgents.Sqlite.query(CloudAgents.Db.selectGraphIngestOutboxByIdSql(id))?
+  if CloudAgents.Sqlite.getRowArrayLength(rows) == 0 {
+    return Ok(value = None)
+  }
+  return Ok(value = Some(value = rowToGraphIngestOutbox(CloudAgents.Sqlite.getRowArrayValue(rows, 0))))
+}
+
+/// Claim one row for an immediate delivery attempt: true when the row is
+/// undelivered, due and not held by another claim, in which case the caller
+/// now holds it for `CloudAgents.GraphIngestOutbox.leaseSeconds`
+/// (docs/phase11-postgres-tenancy.md §5.3a).
+pub func claimGraphIngest(id: in String, sc: in CloudAgents.Pg.TenantScope): Result[Bool, CloudAgents.Sqlite.DbError] {
+  val n = CloudAgents.Sqlite.execute(CloudAgents.Db.claimGraphIngestOutboxRowSql(id, nowMillis(), CloudAgents.GraphIngestOutbox.leaseSeconds * 1000))?
+  return Ok(value = n == 1)
+}
+
+/// Claim up to `limit` due rows across every user, earliest-due first. Each
+/// claimed row is held for `leaseSeconds` (see
+/// `CloudAgents.GraphIngestOutbox.drainLeaseSeconds`): no
+/// other drain or immediate attempt takes it until its outcome is recorded
+/// or the lease runs out, so a drain that dies mid-row leaves it for a later
+/// one. Each row carries its session owner's scope.
+pub func claimDueGraphIngest(
+  limit: in Int, leaseSeconds: in Int
+): Result[slice[ClaimedGraphIngest], CloudAgents.Sqlite.DbError] {
+  val now = nowMillis()
+  val rows = CloudAgents.Sqlite.query(CloudAgents.Db.selectDueGraphIngestOutboxSql(now, limit))?
+  var acc: slice[ClaimedGraphIngest] = []
   var i = 0
   val len = CloudAgents.Sqlite.getRowArrayLength(rows)
   while i < len {
-    acc.add(rowToGraphIngestOutbox(CloudAgents.Sqlite.getRowArrayValue(rows, i)))
+    val row = rowToGraphIngestOutbox(CloudAgents.Sqlite.getRowArrayValue(rows, i))
+    val owner = match sessionOwnerAndRepo(row.sessionId, CloudAgents.Pg.personalScope(""))? {
+      case Some(o) -> o.userId
+      case None -> ""
+    }
+    val sc = CloudAgents.Pg.personalScope(owner)
+    val n = CloudAgents.Sqlite.execute(CloudAgents.Db.claimGraphIngestOutboxRowSql(row.id, now, leaseSeconds * 1000))?
+    if n == 1 {
+      acc = acc.append(ClaimedGraphIngest(tenantScope = sc, row = row))
+    }
     i = i + 1
   }
-  return Ok(value = acc.toArray())
+  return Ok(value = acc)
 }
 
 /// Record a retryable delivery failure: bump `attempts` to the caller-computed
 /// new count, store the (already-bounded) error, and schedule the next
 /// attempt at `nowMillisStr + delayMillis` (computed in SQL — see
-/// `updateGraphIngestOutboxAttemptSql`'s doc comment). Returns rows affected
-/// (0 if the row was concurrently delivered or no longer exists).
+/// `updateGraphIngestOutboxAttemptSql`'s doc comment), releasing the claim.
+/// Returns rows affected (0 if the row was concurrently delivered or no
+/// longer exists).
 pub func markGraphIngestAttempt(
   id: in String,
   newAttempts: in String,
   error: in String,
   nowMillisStr: in String,
   delayMillis: in Int,
+  sc: in CloudAgents.Pg.TenantScope,
 ): Result[Int, CloudAgents.Sqlite.DbError] {
   return CloudAgents.Sqlite.execute(
     CloudAgents.Db.updateGraphIngestOutboxAttemptSql(id, newAttempts, error, nowMillisStr, delayMillis)
@@ -4900,23 +4940,29 @@ pub func markGraphIngestAttempt(
 }
 
 /// Record that a row has exhausted its retry budget: bump `attempts`, store
-/// the terminal-labelled error, and push `next_attempt_at` out to the
-/// permanent-exclusion sentinel. Returns rows affected.
+/// the terminal-labelled error, and exclude it from every later claim.
+/// Returns rows affected.
 pub func markGraphIngestTerminal(
-  id: in String, newAttempts: in String, error: in String
+  id: in String,
+  newAttempts: in String,
+  error: in String,
+  sc: in CloudAgents.Pg.TenantScope,
 ): Result[Int, CloudAgents.Sqlite.DbError] {
   return CloudAgents.Sqlite.execute(CloudAgents.Db.updateGraphIngestOutboxTerminalSql(id, newAttempts, error))
 }
 
 /// Mark a row delivered. Returns rows affected (0 = already delivered by a
 /// concurrent drain, or the row no longer exists).
-pub func markGraphIngestDelivered(id: in String, deliveredAt: in String): Result[Int, CloudAgents.Sqlite.DbError] {
+pub func markGraphIngestDelivered(
+  id: in String, deliveredAt: in String, sc: in CloudAgents.Pg.TenantScope
+): Result[Int, CloudAgents.Sqlite.DbError] {
   return CloudAgents.Sqlite.execute(CloudAgents.Db.updateGraphIngestOutboxDeliveredSql(id, deliveredAt))
 }
 
-/// Delete delivered rows older than `retentionDays`. Returns rows deleted.
-/// Best-effort housekeeping — a caller (`CloudAgents.GraphIngestDrain`) runs
-/// this on every drain call and doesn't fail the drain if it errors.
+/// Delete delivered rows older than `retentionDays`, across every user.
+/// Returns rows deleted. Best-effort housekeeping — a caller
+/// (`CloudAgents.GraphIngestDrain`) runs this on every drain call and doesn't
+/// fail the drain if it errors.
 pub func pruneDeliveredGraphIngest(retentionDays: in Int): Result[Int, CloudAgents.Sqlite.DbError] {
   return CloudAgents.Sqlite.execute(CloudAgents.Db.pruneDeliveredGraphIngestOutboxSql(nowMillis(), retentionDays))
 }

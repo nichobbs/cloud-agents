@@ -512,13 +512,15 @@ func mcpServerPart(name: in String): slice[String] {
 /// The graph-ingest outbox. `body` is canonical JSON whose exact bytes are
 /// hashed into `body_hash` and re-sent verbatim. `given_up_at` replaces the
 /// SQLite store's `next_attempt_at = '99999999999999'` terminal sentinel, and
-/// `claimed_until` is the §5.3 lease.
+/// `claimed_until` is the §5.3 lease. `user_id` is the session owner, whose
+/// scope a drain records the outcome under. The claimer may delete delivered
+/// rows only, for `prune_graph_ingest_outbox`.
 func outboxTables(): slice[String] {
   return concat(
     [
       tenantTable(
         "graph_ingest_outbox",
-        "id text NOT NULL, session_id text NOT NULL, body text NOT NULL, body_hash text NOT NULL, " +
+        "id text NOT NULL, user_id text NOT NULL, session_id text NOT NULL, body text NOT NULL, body_hash text NOT NULL, " +
           "url text NOT NULL, created_at timestamptz NOT NULL, attempts integer NOT NULL DEFAULT 0 CHECK (attempts >= 0), " +
           "next_attempt_at timestamptz NOT NULL, last_error text NOT NULL DEFAULT '', delivered_at timestamptz, " +
           "given_up_at timestamptz, claimed_until timestamptz, " +
@@ -530,8 +532,10 @@ func outboxTables(): slice[String] {
       ],
       claimerPolicies("graph_ingest_outbox"),
       [
-        "GRANT SELECT (tenant_id, id, next_attempt_at, delivered_at, given_up_at, claimed_until), " +
-          "UPDATE (claimed_until) ON public.graph_ingest_outbox TO cloudagents_claimer"
+        "CREATE POLICY claimer_delete ON public.graph_ingest_outbox FOR DELETE TO cloudagents_claimer " +
+          "USING (delivered_at IS NOT NULL)",
+        "GRANT SELECT (tenant_id, id, user_id, next_attempt_at, delivered_at, given_up_at, claimed_until), " +
+          "UPDATE (claimed_until), DELETE ON public.graph_ingest_outbox TO cloudagents_claimer"
       ]
     ]
   )
@@ -643,7 +647,7 @@ func ledgerTables(): slice[String] {
 // released when the claim's transaction commits.
 func claimOutboxFn(): String {
   return "CREATE FUNCTION public.claim_graph_ingest_outbox(p_limit integer, p_lease_seconds integer) " +
-    "RETURNS TABLE (tenant_id text, id text) LANGUAGE sql SECURITY DEFINER " +
+    "RETURNS TABLE (tenant_id text, id text, user_id text) LANGUAGE sql SECURITY DEFINER " +
     "SET search_path = pg_catalog, pg_temp AS $fn$ " +
     "UPDATE public.graph_ingest_outbox AS o " +
     "SET claimed_until = pg_catalog.now() + pg_catalog.make_interval(secs => " +
@@ -653,7 +657,21 @@ func claimOutboxFn(): String {
     "AND (q.claimed_until IS NULL OR q.claimed_until < pg_catalog.now()) " +
     "ORDER BY q.next_attempt_at LIMIT LEAST(GREATEST(p_limit, 0), 100) FOR UPDATE SKIP LOCKED) AS d " +
     "WHERE o.tenant_id = d.tenant_id AND o.id = d.id " +
-    "RETURNING o.tenant_id, o.id $fn$"
+    "RETURNING o.tenant_id, o.id, o.user_id $fn$"
+}
+
+/// Deletes delivered outbox rows older than the retention window, in every
+/// tenant, and returns how many. The window is at least one day, and the
+/// claimer's delete policy admits delivered rows only, so a pending row can
+/// never be removed through it.
+func pruneOutboxFn(): String {
+  return "CREATE FUNCTION public.prune_graph_ingest_outbox(p_retention_days integer) " +
+    "RETURNS bigint LANGUAGE sql SECURITY DEFINER " +
+    "SET search_path = pg_catalog, pg_temp AS $fn$ " +
+    "WITH d AS (DELETE FROM public.graph_ingest_outbox AS o " +
+    "WHERE o.delivered_at IS NOT NULL AND o.delivered_at < pg_catalog.now() - " +
+    "pg_catalog.make_interval(days => GREATEST(p_retention_days, 1)) RETURNING 1) " +
+    "SELECT pg_catalog.count(*) FROM d $fn$"
 }
 
 func claimMembershipSyncFn(): String {
@@ -705,6 +723,7 @@ func claimScheduledJobsFn(): String {
 func claimFunctions(): slice[String] {
   return [
     claimOutboxFn(),
+    pruneOutboxFn(),
     claimMembershipSyncFn(),
     claimScheduledJobsFn(),
     // Privileges first, while cloudagents_owner still owns the functions: a
@@ -712,15 +731,18 @@ func claimFunctions(): slice[String] {
     // which would leave EXECUTE with PUBLIC. ALTER ... OWNER TO then carries
     // the ACL across to the new owner.
     "REVOKE ALL ON FUNCTION public.claim_graph_ingest_outbox(integer, integer) FROM PUBLIC",
+    "REVOKE ALL ON FUNCTION public.prune_graph_ingest_outbox(integer) FROM PUBLIC",
     "REVOKE ALL ON FUNCTION public.claim_membership_sync(integer, integer) FROM PUBLIC",
     "REVOKE ALL ON FUNCTION public.claim_scheduled_jobs(integer) FROM PUBLIC",
     "GRANT EXECUTE ON FUNCTION public.claim_graph_ingest_outbox(integer, integer) TO cloudagents_app",
+    "GRANT EXECUTE ON FUNCTION public.prune_graph_ingest_outbox(integer) TO cloudagents_app",
     "GRANT EXECUTE ON FUNCTION public.claim_membership_sync(integer, integer) TO cloudagents_app",
     "GRANT EXECUTE ON FUNCTION public.claim_scheduled_jobs(integer) TO cloudagents_app",
     // ALTER ... OWNER TO needs the new owner to hold CREATE on the schema;
     // grant it only for the ownership change.
     "GRANT CREATE ON SCHEMA public TO cloudagents_claimer",
     "ALTER FUNCTION public.claim_graph_ingest_outbox(integer, integer) OWNER TO cloudagents_claimer",
+    "ALTER FUNCTION public.prune_graph_ingest_outbox(integer) OWNER TO cloudagents_claimer",
     "ALTER FUNCTION public.claim_membership_sync(integer, integer) OWNER TO cloudagents_claimer",
     "ALTER FUNCTION public.claim_scheduled_jobs(integer) OWNER TO cloudagents_claimer",
     "REVOKE CREATE ON SCHEMA public FROM cloudagents_claimer"

@@ -278,9 +278,18 @@ cross-tenant read path and are reviewed as such. Each one:
 - has `EXECUTE` revoked from `PUBLIC` and granted to `cloudagents_app` only;
 - returns only the keys needed to build the worker's scope and a bounded
   number of rows (a `limit` argument with a hard maximum), never row
-  content: `(tenant_id, id)` for tenant-owned tables, `(user_id)` for
-  `user_sync_state`, whose worker runs under a `UserScope` (§4.3a);
+  content: `(tenant_id, id, user_id)` for tenant-owned tables, where
+  `user_id` is the row's owner and completes the worker's `TenantScope`,
+  `(user_id)` for `user_sync_state`, whose worker runs under a `UserScope`
+  (§4.3a);
 - takes no argument that is interpolated into SQL.
+
+One function is not a claim: `prune_graph_ingest_outbox(p_retention_days)`
+deletes delivered outbox rows older than the retention window (at least one
+day) in every tenant, so the outbox stays bounded without a per-tenant sweep.
+It is hardened the same way, and `cloudagents_claimer` holds `DELETE` on the
+outbox through a policy that admits delivered rows only, so it cannot remove
+a pending row whatever its argument.
 
 ### 5.3a Several API instances
 

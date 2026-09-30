@@ -251,19 +251,21 @@ Called synchronously (no new `await`, so `emitRunnerCheckpoint` stays
 3. **Enqueue durably FIRST** (`CloudAgents.Repository.enqueueGraphIngest`). A
    DB failure here is logged and the call returns — nothing to deliver.
 4. If the returned row is not already delivered (the idempotent-re-enqueue
-   case, §4) **AND is actually due right now**
-   (`CloudAgents.GraphIngestOutbox.isDueNow(row.nextAttemptAt, now)`), attempt
-   **one immediate delivery** (`CloudAgents.GraphIngestDrain.attemptDeliverRow`).
+   case, §4) **and can be claimed** (`CloudAgents.Repository.claimGraphIngest`:
+   undelivered, due, and not held by a drain on any instance), attempt **one
+   immediate delivery** (`CloudAgents.GraphIngestDrain.attemptDeliverRow`).
    Success marks the row delivered; failure records the first backoff attempt
    via the shared `recordFailure` path (§6) — leaving a durable row for the
-   drain sweep. The due-check matters only for the idempotent-re-enqueue case:
+   drain sweep. Either outcome releases the claim. The claim matters only for
+   the idempotent-re-enqueue case and for a drain running at the same moment:
    a brand-new row's `next_attempt_at` starts at `created_at` (always due), so
    the ordinary first-enqueue happy path never skips this step — but without
    it, re-enqueuing a byte-identical body for a row that is currently
    mid-backoff (scheduled minutes-to-hours out after prior failures) would
    fire a second delivery attempt ahead of the Equal-Jitter schedule §6
-   computed for it, silently jumping the queue (#1051). A not-yet-due row is
-   simply logged and left for the drain sweep, same as any other pending row.
+   computed for it, silently jumping the queue (#1051). A row that cannot be
+   claimed is logged and left for the drain sweep, same as any other pending
+   row.
 
 The happy path (destination configured, platform reachable) is therefore
 still exactly one enqueue + one POST, with the enqueue adding a single local
@@ -274,8 +276,13 @@ only a durable fallback for the failure case.
 
 `POST /api/maintenance/drain-graph-ingest` (operator-only, §3):
 
-1. Scan up to `CLOUDAGENTS_GRAPH_INGEST_DRAIN_LIMIT` due rows
-   (`CloudAgents.Repository.dueGraphIngest`), earliest-due first.
+1. Claim up to `CLOUDAGENTS_GRAPH_INGEST_DRAIN_LIMIT` due rows across every
+   user (`CloudAgents.Repository.claimDueGraphIngest`), earliest-due first.
+   Each claimed row is leased for long enough for the whole batch to time out
+   in turn plus a minute, and never less than 5 minutes
+   (`CloudAgents.GraphIngestOutbox.drainLeaseSeconds`,
+   `docs/phase11-postgres-tenancy.md` §5.3a), and carries the
+   session owner's scope, under which its outcome is recorded.
 2. For each: `attemptDeliverRow` (same function the producer path calls) —
    success marks delivered; failure calls `recordFailure`, which either
    schedules the next backoff (§6) or marks the row terminal past the attempt
@@ -286,11 +293,21 @@ only a durable fallback for the failure case.
    record of what was ingested.
 4. Return `{"delivered":N,"failed":M,"terminal":K,"pruned":P}`.
 
-Safe to call repeatedly (a row not yet due is untouched); a lost race between
-two overlapping drain calls attempting the same row is harmless (both POST —
-the platform's idempotent upsert absorbs the duplicate, §2 — and the losing
-call's DB write is a guarded no-op via `delivered_at = ''` in every UPDATE's
-`WHERE` clause, so it can't corrupt the winner's state).
+Safe to call repeatedly and from several API instances at once: a row not
+yet due is untouched, and a claimed row is not claimed again until its
+outcome is recorded or its lease runs out, so overlapping drains (and an
+immediate attempt racing a drain) never POST the same row together. A drain
+that dies mid-row leaves the row leased; it is claimed again once the lease
+runs out. A lease can still run out under a very slow delivery, in which case
+two POSTs of the same row are possible; the platform's idempotent upsert
+absorbs the duplicate (§2), and every outcome UPDATE is guarded on
+`delivered_at` being unset, so a late writer cannot un-deliver a row.
+
+On SQLite the lease is the row's `next_attempt_at`, pushed out by the lease
+when it is claimed. On Postgres it is `claimed_until`, set by
+`claim_graph_ingest_outbox` in the statement that selects the rows; pruning
+there goes through `prune_graph_ingest_outbox`, which can delete delivered
+rows only (`CloudAgents.PgStore.GraphIngest`).
 
 ## 8. Test strategy
 
@@ -307,13 +324,15 @@ network):**
 
 **Live-SQLite tests (`tests/graph_ingest_outbox_tests.l`, same fresh-temp-DB
 harness as `tests/session_events_tests.l`):**
-- A freshly enqueued row is immediately due.
+- A freshly enqueued row is immediately claimable.
+- A claimed row is not claimed again, by a drain or an immediate attempt,
+  while its lease holds.
 - `markGraphIngestAttempt` schedules a future retry and the row drops out of
-  the due scan (the scheduled delay is always ≥15s, so it is never
+  the claimable set (the scheduled delay is always ≥15s, so it is never
   spuriously due again within the test's own runtime).
-- `markGraphIngestDelivered` removes a row from the due scan permanently; a
+- `markGraphIngestDelivered` removes a row from the claimable set permanently; a
   second call is a guarded no-op (0 rows affected).
-- `markGraphIngestTerminal` excludes a row from the due scan permanently.
+- `markGraphIngestTerminal` excludes a row from the claimable set permanently.
 - Re-enqueuing an identical `(sessionId, body)` pair — pending, or after
   delivery — returns the SAME row rather than a duplicate; a genuinely
   different body for the same session enqueues a distinct row.

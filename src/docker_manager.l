@@ -811,7 +811,11 @@ func emitRunnerCheckpoint(
         case Err(se) -> println(
           "WARNING: checkpoint serialize failed for session " + sessionId + ": " + bridgeErrorMessage(se)
         )
-        case Ok(body) -> CloudAgents.GraphIngestDrain.enqueueAndAttemptDelivery(sessionId, body)
+        case Ok(body) -> CloudAgents.GraphIngestDrain.enqueueAndAttemptDelivery(
+          sessionId,
+          body,
+          CloudAgents.Pg.personalScope(userId)
+        )
       }
     }
     case Err(e) -> println(
