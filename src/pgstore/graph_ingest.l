@@ -123,13 +123,13 @@ pub func claimGraphIngest(id: in String, sc: in CloudAgents.Pg.TenantScope): Res
 /// Claim up to `limit` due rows across every tenant, each leased, and read
 /// each back under its owner's scope.
 pub func claimDueGraphIngest(
-  limit: in Int
+  limit: in Int, leaseSeconds: in Int
 ): Result[slice[CloudAgents.Repository.ClaimedGraphIngest], CloudAgents.Sqlite.DbError] {
   val u = CloudAgents.PgStore.openUnscoped()?
   defer {
     CloudAgents.PgStore.release(u)
   }
-  val keys = CloudAgents.PgStore.q(u, "SELECT tenant_id, id, user_id FROM public.claim_graph_ingest_outbox(@p0::integer, @p1::integer)", [toString(limit), toString(CloudAgents.GraphIngestOutbox.leaseSeconds)])?
+  val keys = CloudAgents.PgStore.q(u, "SELECT tenant_id, id, user_id FROM public.claim_graph_ingest_outbox(@p0::integer, @p1::integer)", [toString(limit), toString(leaseSeconds)])?
   CloudAgents.PgStore.commit(u)?
   var acc: slice[CloudAgents.Repository.ClaimedGraphIngest] = []
   for k in keys {

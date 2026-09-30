@@ -4891,11 +4891,14 @@ pub func claimGraphIngest(id: in String, sc: in CloudAgents.Pg.TenantScope): Res
 }
 
 /// Claim up to `limit` due rows across every user, earliest-due first. Each
-/// claimed row is held for `CloudAgents.GraphIngestOutbox.leaseSeconds`: no
+/// claimed row is held for `leaseSeconds` (see
+/// `CloudAgents.GraphIngestOutbox.drainLeaseSeconds`): no
 /// other drain or immediate attempt takes it until its outcome is recorded
 /// or the lease runs out, so a drain that dies mid-row leaves it for a later
 /// one. Each row carries its session owner's scope.
-pub func claimDueGraphIngest(limit: in Int): Result[slice[ClaimedGraphIngest], CloudAgents.Sqlite.DbError] {
+pub func claimDueGraphIngest(
+  limit: in Int, leaseSeconds: in Int
+): Result[slice[ClaimedGraphIngest], CloudAgents.Sqlite.DbError] {
   val now = nowMillis()
   val rows = CloudAgents.Sqlite.query(CloudAgents.Db.selectDueGraphIngestOutboxSql(now, limit))?
   var acc: slice[ClaimedGraphIngest] = []
@@ -4908,7 +4911,7 @@ pub func claimDueGraphIngest(limit: in Int): Result[slice[ClaimedGraphIngest], C
       case None -> ""
     }
     val sc = CloudAgents.Pg.personalScope(owner)
-    val n = CloudAgents.Sqlite.execute(CloudAgents.Db.claimGraphIngestOutboxRowSql(row.id, now, CloudAgents.GraphIngestOutbox.leaseSeconds * 1000))?
+    val n = CloudAgents.Sqlite.execute(CloudAgents.Db.claimGraphIngestOutboxRowSql(row.id, now, leaseSeconds * 1000))?
     if n == 1 {
       acc = acc.append(ClaimedGraphIngest(tenantScope = sc, row = row))
     }

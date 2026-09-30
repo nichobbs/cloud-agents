@@ -151,6 +151,16 @@ test "isDueNow compares epoch-millis digit strings correctly (#1051)" {
   )
 }
 
+test "a drain's lease covers its whole batch timing out, and never drops below the default" {
+  assertEqualInt(CloudAgents.GraphIngestOutbox.drainLeaseSeconds(25, 15000), 435, "25 rows at 15 s each plus a minute")
+  assertEqualInt(
+    CloudAgents.GraphIngestOutbox.drainLeaseSeconds(5, 15000),
+    CloudAgents.GraphIngestOutbox.leaseSeconds,
+    "a small batch keeps the default lease"
+  )
+  assertEqualInt(CloudAgents.GraphIngestOutbox.drainLeaseSeconds(10, 15500), 220 + 80, "a partial second rounds up")
+}
+
 // ─── Live-SQLite: enqueue -> due -> attempt -> delivered / terminal ─────────
 func owner(): CloudAgents.Pg.TenantScope {
   return CloudAgents.Pg.personalScope("alice")
@@ -164,7 +174,7 @@ func mustEnqueue(sessionId: in String, body: in String, url: in String): CloudAg
 }
 
 func mustClaimDue(limit: in Int): slice[CloudAgents.Repository.ClaimedGraphIngest] {
-  return match CloudAgents.Repository.claimDueGraphIngest(limit) {
+  return match CloudAgents.Repository.claimDueGraphIngest(limit, CloudAgents.GraphIngestOutbox.leaseSeconds) {
     case Ok(rows) -> rows
     case Err(e) -> panic("claimDueGraphIngest failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
   }

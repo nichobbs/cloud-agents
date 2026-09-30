@@ -82,7 +82,7 @@ func claim(sc: in CloudAgents.Pg.TenantScope, id: in String): Bool {
 }
 
 func claimDue(): slice[ClaimedGraphIngest] {
-  return match Outbox.claimDueGraphIngest(100) {
+  return match Outbox.claimDueGraphIngest(100, CloudAgents.GraphIngestOutbox.leaseSeconds) {
     case Ok(v) -> v
     case Err(e) -> panic("claimDue failed: " + dbErrorMessage(e))
   }

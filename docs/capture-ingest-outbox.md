@@ -278,8 +278,10 @@ only a durable fallback for the failure case.
 
 1. Claim up to `CLOUDAGENTS_GRAPH_INGEST_DRAIN_LIMIT` due rows across every
    user (`CloudAgents.Repository.claimDueGraphIngest`), earliest-due first.
-   Each claimed row is leased for `CloudAgents.GraphIngestOutbox.leaseSeconds`
-   (5 minutes, `docs/phase11-postgres-tenancy.md` §5.3a) and carries the
+   Each claimed row is leased for long enough for the whole batch to time out
+   in turn plus a minute, and never less than 5 minutes
+   (`CloudAgents.GraphIngestOutbox.drainLeaseSeconds`,
+   `docs/phase11-postgres-tenancy.md` §5.3a), and carries the
    session owner's scope, under which its outcome is recorded.
 2. For each: `attemptDeliverRow` (same function the producer path calls) —
    success marks delivered; failure calls `recordFailure`, which either

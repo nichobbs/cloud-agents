@@ -52,6 +52,19 @@ pub val maxErrorLen: Int = 500
 /// attempt's bounded timeout, so only a crashed worker's rows are re-claimed.
 pub val leaseSeconds: Int = 300
 
+/// The lease a drain takes on its batch: long enough for every row in it to
+/// time out in turn plus a minute's margin, and never less than
+/// `leaseSeconds`, so a slow batch's last rows are not claimed again by an
+/// overlapping drain while still waiting their turn (#1192).
+pub func drainLeaseSeconds(limit: in Int, attemptTimeoutMs: in Int): Int {
+  val perAttempt = (attemptTimeoutMs + 999) / 1000
+  val needed = limit * perAttempt + 60
+  if needed > leaseSeconds {
+    return needed
+  }
+  return leaseSeconds
+}
+
 func digitValue(c: in String): Int {
   if c == "0" {
     return 0

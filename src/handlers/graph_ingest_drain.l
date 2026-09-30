@@ -308,7 +308,7 @@ pub func drainGraphIngestHandler(): Result[String, Web.ApiError] {
   if CloudAgents.Auth.currentUserId() != CloudAgents.Auth.operatorUserId() {
     return Err(Web.unauthorized("the graph-ingest-outbox drain may only be triggered by the operator identity"))
   }
-  val due = match CloudAgents.Repository.claimDueGraphIngest(drainLimit()) {
+  val due = match CloudAgents.Repository.claimDueGraphIngest(drainLimit(), CloudAgents.GraphIngestOutbox.drainLeaseSeconds(drainLimit(), graphIngestTimeoutMillis)) {
     case Ok(rs) -> rs
     case Err(e) -> return Err(dbError(e))
   }
