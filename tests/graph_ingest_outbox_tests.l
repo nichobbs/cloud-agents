@@ -344,6 +344,30 @@ test "claimGraphIngest takes a due row exactly once" {
   cleanupTestDb(path)
 }
 
+// #1197: a row whose session has since been deleted is still claimed and
+// delivered. The SQLite outbox is not keyed by owner and none of its outcome
+// writes read the scope, so the empty-owner scope such a row carries changes
+// nothing, and the platform keeps the session's provenance.
+test "a row whose session no longer exists is still claimed and its outcome recorded" {
+  val path = useFreshTestDb("outbox-orphan")
+  val row = mustEnqueue("sess-deleted", "{\"objects\":[]}", "https://platform.example/api/ingest")
+  val claims = mustClaimDue(50)
+  assertTrue(claimsId(claims, row.id), "the orphaned row is claimed")
+  var claimed = claims[0]
+  for c in claims {
+    if c.row.id == row.id {
+      claimed = c
+    }
+  }
+  assertEqual(claimed.tenantScope.userId, "", "it carries an empty owner")
+  match CloudAgents.Repository.markGraphIngestDelivered(row.id, CloudAgents.Repository.nowMillis(), claimed.tenantScope) {
+    case Ok(n) -> assertEqualInt(n, 1, "its delivery is recorded under that scope")
+    case Err(e) -> assertTrue(false, "markGraphIngestDelivered failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+  }
+
+  cleanupTestDb(path)
+}
+
 // ─── drainGraphIngestHandler: operator-auth gate + empty-summary (#1050) ────
 // Mirrors tests/jobs_tests.l's "triggerDueJobsHandler refuses a non-operator
 // identity" / "... runs for the operator identity when nothing is due"
