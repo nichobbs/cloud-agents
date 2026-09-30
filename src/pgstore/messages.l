@@ -10,8 +10,9 @@
 //!
 //! Semantics carried over from the SQLite store:
 //! - a message's sequence number is the session's message count at insert
-//!   time, rendered as 12-digit zero-padded text; the count and the insert
-//!   run in one unit;
+//!   time, rendered as 12-digit zero-padded text; appends to one session are
+//!   serialised by a transaction-scoped advisory lock, so concurrent inserts
+//!   cannot take the same number (#1170);
 //! - messages list in sequence order, comments oldest first, todos newest
 //!   first (ties broken by id so the order is deterministic);
 //! - `done` renders as "0"/"1" and is kept in step with `status` by the SQL;
@@ -62,6 +63,10 @@ pub func addMessage(
   }
   val id = newId()
   val ts = CloudAgents.Repository.nowMillis()
+  // Serialise appends to one session (#1170): without this, two concurrent
+  // inserts would both count the same rows and take the same sequence
+  // number. The lock is transaction-scoped, so it is released at commit.
+  CloudAgents.PgStore.q(u, "SELECT pg_advisory_xact_lock(hashtextextended(current_setting('app.current_tenant') || ':' || @p0, 0))", [sessionId])?
   val rows = CloudAgents.PgStore.q(u, "INSERT INTO messages (id, session_id, role, content, seq, created_at) " + "VALUES (@p0, @p1, @p2, @p3, (SELECT count(*) FROM messages WHERE session_id = @p1), " + CloudAgents.Pg.msIn(4) + ") RETURNING lpad(seq::text, 12, '0') AS seq", [id, sessionId, role, content, ts])?
   CloudAgents.PgStore.commit(u)?
   return Ok(
