@@ -37,7 +37,7 @@ func dbError(e: in CloudAgents.Sqlite.DbError): Web.ApiError {
 // the same non-leaking shape as SessionStore and the other requireOwnedSession
 // copies (Callbacks, Groups, Highlights).
 func requireOwnedSession(sessionId: in String): Result[Unit, Web.ApiError] {
-  match CloudAgents.SessionStore.getSession(sessionId) {
+  match CloudAgents.SessionStore.getSession(sessionId, CloudAgents.Auth.requestScope()) {
     case Ok(Some(_)) -> return Ok(())
     case Ok(None) -> return Err(Web.notFound("Session not found"))
     case Err(e) -> return Err(dbError(e))

@@ -73,6 +73,23 @@ pub func openUser(sc: in CloudAgents.Pg.UserScope): Result[PgUnit, CloudAgents.S
   }
 }
 
+/// Open an unscoped unit: neither setting is set, so tenant- and user-owned
+/// tables read nothing and reject writes. Only for the global routing tables
+/// read before a tenant is known (spec §4.2), such as `session_routes`.
+pub func openUnscoped(): Result[PgUnit, CloudAgents.Sqlite.DbError] {
+  val conn = match CloudAgents.Pg.connectService() {
+    case Ok(c) -> c
+    case Err(e) -> return Err(error = toDbError("connect", e))
+  }
+  match CloudAgents.Pg.beginUnscopedUnit(conn) {
+    case Ok(tx) -> return Ok(value = PgUnit(conn = conn, tx = tx))
+    case Err(e) -> {
+      conn.close()
+      return Err(error = toDbError("begin", e))
+    }
+  }
+}
+
 /// Roll back (a no-op after commit) and return the connection to the pool.
 pub func release(u: in PgUnit): Unit {
   CloudAgents.Pg.rollbackUnit(u.tx)

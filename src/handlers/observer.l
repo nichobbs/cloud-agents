@@ -379,7 +379,7 @@ pub func runPass(observedId: in String, runner: in ObserverRunner): String {
     case Ok(s) -> s
     case Err(e) -> return "error: " + CloudAgents.Sqlite.dbErrorMessage(e)
   }
-  val began = match CloudAgents.SessionStore.tryBeginRun(observerId) {
+  val began = match CloudAgents.SessionStore.tryBeginRun(observerId, CloudAgents.Pg.personalScope(facts.userId)) {
     case Ok(b) -> b
     case Err(e) -> return "error: " + CloudAgents.Sqlite.dbErrorMessage(e)
   }
@@ -389,7 +389,7 @@ pub func runPass(observedId: in String, runner: in ObserverRunner): String {
     return "skipped: the observer is still running"
   }
   defer {
-    val _ = CloudAgents.SessionStore.endRun(observerId)
+    val _ = CloudAgents.SessionStore.endRun(observerId, CloudAgents.Pg.personalScope(facts.userId))
   }
   var model = settings.model
   if model.length.toInt() == 0 {
@@ -543,7 +543,7 @@ pub func ensureObserverSession(
     model = model,
     nativeSessionId = observerId
   )
-  match CloudAgents.SessionStore.addSession(session) {
+  match CloudAgents.SessionStore.addSession(session, CloudAgents.Pg.personalScope(facts.userId)) {
     case Ok(_) -> ()
     case Err(e) -> return Err(error = "creating the observer session failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
   }

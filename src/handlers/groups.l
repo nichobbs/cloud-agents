@@ -40,7 +40,7 @@ func dbError(e: in CloudAgents.Sqlite.DbError): Web.ApiError {
 /// package-private): 404 both when the session doesn't exist and when it
 /// belongs to someone else — getSession is already owner-scoped.
 func requireOwnedSession(sessionId: in String): Result[Unit, Web.ApiError] {
-  match CloudAgents.SessionStore.getSession(sessionId) {
+  match CloudAgents.SessionStore.getSession(sessionId, CloudAgents.Auth.requestScope()) {
     case Ok(Some(_)) -> return Ok(())
     case Ok(None) -> return Err(Web.notFound("Session not found"))
     case Err(e) -> return Err(dbError(e))
@@ -192,7 +192,7 @@ pub func setSessionGroupHandler(id: in String, req: in SetSessionGroupRequest): 
       case Err(e) -> return Err(dbError(e))
     }
   }
-  match CloudAgents.SessionStore.setSessionGroup(id, req.groupId) {
+  match CloudAgents.SessionStore.setSessionGroup(id, CloudAgents.Auth.requestScope(), req.groupId) {
     case Ok(_) -> return Ok(())
     case Err(e) -> return Err(dbError(e))
   }
@@ -206,7 +206,7 @@ pub func markSessionViewedHandler(id: in String): Result[Unit, Web.ApiError] {
     return Err(Web.badRequest("id is required"))
   }
   requireOwnedSession(id)?
-  match CloudAgents.SessionStore.markSessionViewed(id) {
+  match CloudAgents.SessionStore.markSessionViewed(id, CloudAgents.Auth.requestScope()) {
     case Ok(_) -> return Ok(())
     case Err(e) -> return Err(dbError(e))
   }

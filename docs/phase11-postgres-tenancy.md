@@ -127,7 +127,7 @@ holds the minimum needed to resolve identity or route a request.
 | `tenants` | `id`, `name`, `kind` (`personal`, `github_org`, `native`), `github_org_id` (nullable, unique), `created_at` |
 | `memberships` | `(tenant_id, user_id)` PK, `role` (`owner`, `admin`, `member`), `source` (`github`, `native`), `created_at`, `synced_at` |
 | `invitations` | `id`, `tenant_id`, `token_hash`, invitee `github_login`, `role`, `expires_at`, `accepted_at`, `created_by` |
-| `session_routes` | `session_id` PK, `tenant_id`, `callback_token_hash`: the callback path's pre-tenant lookup (moved out of `sessions`) |
+| `session_routes` | `session_id` PK, `tenant_id`, `user_id` (the session's owner), `callback_token_hash`: the callback path's pre-tenant lookup (moved out of `sessions`), from which the resolver builds the full `TenantScope` |
 | `github_token_cache` | unchanged purpose: `token_hash -> user_id` |
 | `schema_migrations` | migration ledger |
 

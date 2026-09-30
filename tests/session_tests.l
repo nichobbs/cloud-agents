@@ -85,7 +85,7 @@ func mustTodo(r: in Result[CloudAgents.Repository.Todo, CloudAgents.Sqlite.DbErr
 // concurrent test needs an async entry point to race it under `spawn`/`await`
 // rather than calling it twice, sequentially, on one thread.
 async func claimAsync(sessionId: in String): Bool {
-  return mustClaim(CloudAgents.SessionStore.tryBeginRun(sessionId))
+  return mustClaim(CloudAgents.SessionStore.tryBeginRun(sessionId, CloudAgents.Auth.requestScope()))
 }
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
@@ -114,31 +114,31 @@ func verifyModelSwitch(s: in AgentSession, sessionId: in String): Unit {
 
 func verifyAndCleanCreateSession(resp: in CreateSessionResponse): Unit {
   assertTrue(resp.sessionId.length > 0, "generates a non-empty sessionId")
-  val _ = mustOptSession(removeSession(resp.sessionId))
+  val _ = mustOptSession(removeSession(resp.sessionId, CloudAgents.Auth.requestScope()))
 }
 
 func verifyModelBackfill(resp: in CreateSessionResponse): Unit {
-  match mustOptSession(CloudAgents.SessionStore.getSession(resp.sessionId)) {
+  match mustOptSession(CloudAgents.SessionStore.getSession(resp.sessionId, CloudAgents.Auth.requestScope())) {
     case Some(s) -> assertEqual(s.model, "o4-mini", "empty model backfilled with codex default")
     case None -> assertTrue(false, "created session should exist")
   }
-  val _ = mustOptSession(removeSession(resp.sessionId))
+  val _ = mustOptSession(removeSession(resp.sessionId, CloudAgents.Auth.requestScope()))
 }
 
 func verifyGeminiBackfill(resp: in CreateSessionResponse): Unit {
-  match mustOptSession(CloudAgents.SessionStore.getSession(resp.sessionId)) {
+  match mustOptSession(CloudAgents.SessionStore.getSession(resp.sessionId, CloudAgents.Auth.requestScope())) {
     case Some(s) -> assertEqual(s.model, "gemini-2.5-pro", "empty model backfilled with gemini default")
     case None -> assertTrue(false, "created session should exist")
   }
-  val _ = mustOptSession(removeSession(resp.sessionId))
+  val _ = mustOptSession(removeSession(resp.sessionId, CloudAgents.Auth.requestScope()))
 }
 
 func verifyAntigravityBackfill(resp: in CreateSessionResponse): Unit {
-  match mustOptSession(CloudAgents.SessionStore.getSession(resp.sessionId)) {
+  match mustOptSession(CloudAgents.SessionStore.getSession(resp.sessionId, CloudAgents.Auth.requestScope())) {
     case Some(s) -> assertEqual(s.model, "gemini-2.5-pro", "empty model backfilled with antigravity default")
     case None -> assertTrue(false, "created session should exist")
   }
-  val _ = mustOptSession(removeSession(resp.sessionId))
+  val _ = mustOptSession(removeSession(resp.sessionId, CloudAgents.Auth.requestScope()))
 }
 
 func verifyEscapedRoundTrip(p: in AgentSession): Unit {
@@ -182,10 +182,10 @@ test "Test Session Store CRUD Operations" {
   )
 
   // 1. Add session
-  mustUnit(CloudAgents.SessionStore.addSession(session))
+  mustUnit(CloudAgents.SessionStore.addSession(session, CloudAgents.Auth.requestScope()))
 
   // 2. Get and verify session
-  match mustOptSession(CloudAgents.SessionStore.getSession(sessionId)) {
+  match mustOptSession(CloudAgents.SessionStore.getSession(sessionId, CloudAgents.Auth.requestScope())) {
     case Some(s) -> verifyNewSession(s, sessionId)
     case None -> assertTrue(false, "session should exist in store")
   }
@@ -193,8 +193,8 @@ test "Test Session Store CRUD Operations" {
   // 3. Update container ID ("default" = the operator identity addSession
   // stored the session under on this test thread; the explicit-owner form is
   // the only one — see #426)
-  mustUnit(CloudAgents.SessionStore.updateSessionContainerFor(sessionId, "default", "container-abc"))
-  match mustOptSession(CloudAgents.SessionStore.getSession(sessionId)) {
+  mustUnit(CloudAgents.SessionStore.updateSessionContainerFor(sessionId, CloudAgents.Pg.personalScope("default"), "container-abc"))
+  match mustOptSession(CloudAgents.SessionStore.getSession(sessionId, CloudAgents.Auth.requestScope())) {
     case Some(s) -> verifyContainerUpdate(s)
     case None -> assertTrue(false, "session should still exist in store")
   }
@@ -204,20 +204,20 @@ test "Test Session Store CRUD Operations" {
   // ambiguity silently by import order rather than erroring — an unqualified
   // call here bound to the Handlers overload (wrong argument type, runtime
   // cast crash) when the imports were reordered.
-  mustUnit(CloudAgents.SessionStore.updateSessionModel(sessionId, "claude-sonnet-4-6"))
-  match mustOptSession(CloudAgents.SessionStore.getSession(sessionId)) {
+  mustUnit(CloudAgents.SessionStore.updateSessionModel(sessionId, CloudAgents.Auth.requestScope(), "claude-sonnet-4-6"))
+  match mustOptSession(CloudAgents.SessionStore.getSession(sessionId, CloudAgents.Auth.requestScope())) {
     case Some(s) -> verifyModelSwitch(s, sessionId)
     case None -> assertTrue(false, "session should still exist in store")
   }
 
   // 5. Remove session
-  match mustOptSession(CloudAgents.SessionStore.removeSession(sessionId)) {
+  match mustOptSession(CloudAgents.SessionStore.removeSession(sessionId, CloudAgents.Auth.requestScope())) {
     case Some(s) -> assertEqual(s.sessionId, sessionId, "removed session ID matches")
     case None -> assertTrue(false, "should successfully remove session")
   }
 
   // 6. Verify removed
-  match mustOptSession(CloudAgents.SessionStore.getSession(sessionId)) {
+  match mustOptSession(CloudAgents.SessionStore.getSession(sessionId, CloudAgents.Auth.requestScope())) {
     case Some(_) -> assertTrue(false, "session should no longer exist")
     case None -> ()
   }
@@ -241,14 +241,14 @@ test "Run claim is exclusive per session" {
         model = "claude-opus-4-8",
         nativeSessionId = "claim-1"
       )
-    )
+    , CloudAgents.Auth.requestScope())
   )
 
-  assertTrue(mustClaim(CloudAgents.SessionStore.tryBeginRun("claim-1")), "first claim wins")
-  assertFalse(mustClaim(CloudAgents.SessionStore.tryBeginRun("claim-1")), "second claim refused while running")
-  mustUnit(CloudAgents.SessionStore.endRun("claim-1"))
-  assertTrue(mustClaim(CloudAgents.SessionStore.tryBeginRun("claim-1")), "claim available again after endRun")
-  assertFalse(mustClaim(CloudAgents.SessionStore.tryBeginRun("missing")), "claiming a nonexistent session fails")
+  assertTrue(mustClaim(CloudAgents.SessionStore.tryBeginRun("claim-1", CloudAgents.Auth.requestScope())), "first claim wins")
+  assertFalse(mustClaim(CloudAgents.SessionStore.tryBeginRun("claim-1", CloudAgents.Auth.requestScope())), "second claim refused while running")
+  mustUnit(CloudAgents.SessionStore.endRun("claim-1", CloudAgents.Auth.requestScope()))
+  assertTrue(mustClaim(CloudAgents.SessionStore.tryBeginRun("claim-1", CloudAgents.Auth.requestScope())), "claim available again after endRun")
+  assertFalse(mustClaim(CloudAgents.SessionStore.tryBeginRun("missing", CloudAgents.Auth.requestScope())), "claiming a nonexistent session fails")
 }
 
 test "Run claim is exclusive under real concurrent contention (#206)" {
@@ -276,7 +276,7 @@ test "Run claim is exclusive under real concurrent contention (#206)" {
         model = "claude-opus-4-8",
         nativeSessionId = "claim-race"
       )
-    )
+    , CloudAgents.Auth.requestScope())
   )
 
   scope {
@@ -289,9 +289,9 @@ test "Run claim is exclusive under real concurrent contention (#206)" {
 
   // The loser's failure was contention, not a stuck row: the winner's run is
   // still open (endRun not yet called), so a further claim must still refuse.
-  assertFalse(mustClaim(CloudAgents.SessionStore.tryBeginRun("claim-race")), "session stays claimed after the race")
-  mustUnit(CloudAgents.SessionStore.endRun("claim-race"))
-  assertTrue(mustClaim(CloudAgents.SessionStore.tryBeginRun("claim-race")), "claim available again after endRun")
+  assertFalse(mustClaim(CloudAgents.SessionStore.tryBeginRun("claim-race", CloudAgents.Auth.requestScope())), "session stays claimed after the race")
+  mustUnit(CloudAgents.SessionStore.endRun("claim-race", CloudAgents.Auth.requestScope()))
+  assertTrue(mustClaim(CloudAgents.SessionStore.tryBeginRun("claim-race", CloudAgents.Auth.requestScope())), "claim available again after endRun")
 }
 
 test "deleteSessionRecord removes the row and is a no-op when already gone (#310)" {
@@ -311,21 +311,21 @@ test "deleteSessionRecord removes the row and is a no-op when already gone (#310
         model = "claude-opus-4-8",
         nativeSessionId = sessionId
       )
-    )
+    , CloudAgents.Auth.requestScope())
   )
   // Present before the delete.
-  match mustOptSession(CloudAgents.SessionStore.getSession(sessionId)) {
+  match mustOptSession(CloudAgents.SessionStore.getSession(sessionId, CloudAgents.Auth.requestScope())) {
     case Some(_) -> ()
     case None -> assertTrue(false, "session should exist before deleteSessionRecord")
   }
   // deleteSessionRecord drops the row without re-reading it first (#172).
-  mustUnit(deleteSessionRecord(sessionId))
-  match mustOptSession(CloudAgents.SessionStore.getSession(sessionId)) {
+  mustUnit(deleteSessionRecord(sessionId, CloudAgents.Auth.requestScope()))
+  match mustOptSession(CloudAgents.SessionStore.getSession(sessionId, CloudAgents.Auth.requestScope())) {
     case Some(_) -> assertTrue(false, "session should be gone after deleteSessionRecord")
     case None -> ()
   }
   // Deleting an already-gone row is a no-op success, not an error.
-  mustUnit(deleteSessionRecord(sessionId))
+  mustUnit(deleteSessionRecord(sessionId, CloudAgents.Auth.requestScope()))
 }
 
 test "recoverDanglingSessions frees sessions stuck RUNNING on restart (#198)" {
@@ -344,16 +344,16 @@ test "recoverDanglingSessions frees sessions stuck RUNNING on restart (#198)" {
         model = "claude-opus-4-8",
         nativeSessionId = "dangling-1"
       )
-    )
+    , CloudAgents.Auth.requestScope())
   )
   // Claim it so it is RUNNING, then "crash" — the process dies without ever
   // calling endRun, leaving the row dangling. A second claim is refused.
-  assertTrue(mustClaim(CloudAgents.SessionStore.tryBeginRun("dangling-1")), "claim wins")
-  assertFalse(mustClaim(CloudAgents.SessionStore.tryBeginRun("dangling-1")), "second claim refused while RUNNING")
+  assertTrue(mustClaim(CloudAgents.SessionStore.tryBeginRun("dangling-1", CloudAgents.Auth.requestScope())), "claim wins")
+  assertFalse(mustClaim(CloudAgents.SessionStore.tryBeginRun("dangling-1", CloudAgents.Auth.requestScope())), "second claim refused while RUNNING")
   // Startup recovery resets the dangling RUNNING row back to a usable state.
   val recovered = mustInt(recoverDanglingSessions())
   assertTrue(recovered >= 1, "at least one dangling session recovered")
-  assertTrue(mustClaim(CloudAgents.SessionStore.tryBeginRun("dangling-1")), "claim available again after recovery")
+  assertTrue(mustClaim(CloudAgents.SessionStore.tryBeginRun("dangling-1", CloudAgents.Auth.requestScope())), "claim available again after recovery")
 }
 
 test "importLegacyEnvSessions inserts env sessions into the store and clears the env (#198)" {
@@ -373,7 +373,7 @@ test "importLegacyEnvSessions inserts env sessions into the store and clears the
   Env.SetEnvironmentVariable("CLOUD_AGENTS_SESSIONS_JSON", "{\"sessions\":[" + agentSessionToJson(s) + "]}")
   importLegacyEnvSessions()
   // The env session is now persisted in SQLite...
-  match mustOptSession(CloudAgents.SessionStore.getSession("legacy-import-1")) {
+  match mustOptSession(CloudAgents.SessionStore.getSession("legacy-import-1", CloudAgents.Auth.requestScope())) {
     case Some(imported) -> assertEqual(imported.sessionId, "legacy-import-1", "imported session id matches")
     case None -> assertTrue(false, "legacy env session should have been imported into the store")
   }
@@ -401,7 +401,7 @@ test "importLegacyEnvSessions imports only sessions not already in the store (#3
         model = "claude-opus-4-8",
         nativeSessionId = "legacy-existing"
       )
-    )
+    , CloudAgents.Auth.requestScope())
   )
   // The env carries a *changed* copy of that existing session plus a brand-new
   // one. Import must insert only the new session and leave the existing row
@@ -431,12 +431,12 @@ test "importLegacyEnvSessions imports only sessions not already in the store (#3
   importLegacyEnvSessions()
 
   // The new session was inserted.
-  match mustOptSession(CloudAgents.SessionStore.getSession("legacy-new")) {
+  match mustOptSession(CloudAgents.SessionStore.getSession("legacy-new", CloudAgents.Auth.requestScope())) {
     case Some(_) -> ()
     case None -> assertTrue(false, "the new legacy session should have been imported")
   }
   // The pre-existing session was skipped, not overwritten by the env copy.
-  match mustOptSession(CloudAgents.SessionStore.getSession("legacy-existing")) {
+  match mustOptSession(CloudAgents.SessionStore.getSession("legacy-existing", CloudAgents.Auth.requestScope())) {
     case Some(s) -> assertEqual(s.repoUrl, "https://github.com/nic/original", "existing session left untouched (not overwritten by the env copy)")
     case None -> assertTrue(false, "existing session should still be present after import")
   }
@@ -1020,7 +1020,7 @@ test "Handler listSessions returns stored sessions" {
         model = "claude-opus-4-8",
         nativeSessionId = "ls-1"
       )
-    )
+    , CloudAgents.Auth.requestScope())
   )
   mustUnit(
     addSession(
@@ -1033,7 +1033,7 @@ test "Handler listSessions returns stored sessions" {
         model = "o4-mini",
         nativeSessionId = "ls-2"
       )
-    )
+    , CloudAgents.Auth.requestScope())
   )
   match listSessions() {
     case Ok(body) -> verifyListSessionsBody(body)
@@ -1066,7 +1066,7 @@ test "Handler listSessionsResponse converts the stored session array to a typed 
         model = "claude-opus-4-8",
         nativeSessionId = "lst-1"
       )
-    )
+    , CloudAgents.Auth.requestScope())
   )
   mustUnit(
     addSession(
@@ -1079,7 +1079,7 @@ test "Handler listSessionsResponse converts the stored session array to a typed 
         model = "o4-mini",
         nativeSessionId = "lst-2"
       )
-    )
+    , CloudAgents.Auth.requestScope())
   )
   match listSessionsResponse() {
     case Ok(resp) -> {
@@ -1119,7 +1119,7 @@ test "getRuns 404s for an unknown session (#239)" {
         model = "claude-opus-4-8",
         nativeSessionId = "gr-1"
       )
-    )
+    , CloudAgents.Auth.requestScope())
   )
   match getRuns("gr-1") {
     case Ok(rl) -> assertEqualInt(rl.runs.length.toInt(), 0, "known session with no runs -> empty list")
@@ -1143,7 +1143,7 @@ test "reapableWarmContainers finds and frees aged WARM sessions (#241)" {
         model = "claude-opus-4-8",
         nativeSessionId = "warm-1"
       )
-    )
+    , CloudAgents.Auth.requestScope())
   )
   // Force it WARM with an ancient last_message_at (epoch 0) and a container id,
   // so it is unambiguously past the warm window.
@@ -1182,13 +1182,13 @@ test "Session ownership isolation hides other users' sessions (#207)" {
     case Err(e) -> assertTrue(false, "setup insert failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
   }
   // The current user ("default") cannot read another user's session by id...
-  match CloudAgents.SessionStore.getSession("foreign-1") {
+  match CloudAgents.SessionStore.getSession("foreign-1", CloudAgents.Auth.requestScope()) {
     case Ok(Some(_)) -> assertTrue(false, "must not read another user's session")
     case Ok(None) -> ()
     case Err(e) -> assertTrue(false, "getSession failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
   }
   // ...nor see it in the list.
-  match CloudAgents.SessionStore.getSessions() {
+  match CloudAgents.SessionStore.getSessions(CloudAgents.Auth.requestScope()) {
     case Ok(arr) -> assertEqualInt(CloudAgents.SessionStore.getSessionArrayLength(arr), 0, "foreign session not listed")
     case Err(e) -> assertTrue(false, "getSessions failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
   }
@@ -1204,15 +1204,15 @@ test "Session ownership isolation hides other users' sessions (#207)" {
         model = "claude-opus-4-8",
         nativeSessionId = "mine-1"
       )
-    )
+    , CloudAgents.Auth.requestScope())
   )
-  match CloudAgents.SessionStore.getSession("mine-1") {
+  match CloudAgents.SessionStore.getSession("mine-1", CloudAgents.Auth.requestScope()) {
     case Ok(Some(_)) -> ()
     case Ok(None) -> assertTrue(false, "own session should be visible")
     case Err(e) -> assertTrue(false, "getSession failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
   }
   // The list now holds exactly my one session — the foreign row stays hidden.
-  match CloudAgents.SessionStore.getSessions() {
+  match CloudAgents.SessionStore.getSessions(CloudAgents.Auth.requestScope()) {
     case Ok(arr) -> assertEqualInt(CloudAgents.SessionStore.getSessionArrayLength(arr), 1, "only my own session listed")
     case Err(e) -> assertTrue(false, "getSessions failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
   }
@@ -1293,7 +1293,7 @@ test "setSessionProfileHandler validates session and profile (#235)" {
         model = "claude-opus-4-8",
         nativeSessionId = "sp-1"
       )
-    )
+    , CloudAgents.Auth.requestScope())
   )
   // A session with no profile attached reports an empty profileId (#272).
   match getSessionProfileHandler("sp-1") {
@@ -1314,7 +1314,7 @@ test "setSessionProfileHandler validates session and profile (#235)" {
     case Ok(_) -> ()
     case Err(_) -> assertTrue(false, "attaching a valid profile should succeed")
   }
-  match CloudAgents.SessionStore.sessionProfileId("sp-1") {
+  match CloudAgents.SessionStore.sessionProfileId("sp-1", CloudAgents.Auth.requestScope()) {
     case Ok(Some(pid)) -> assertEqual(pid, prof.id, "profile attached to session")
     case Ok(None) -> assertTrue(false, "profile should be set")
     case Err(e) -> assertTrue(false, "sessionProfileId failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
@@ -1384,7 +1384,7 @@ test "session-repo handlers validate, link, list and unlink (#multi-repo)" {
         model = "claude-opus-4-8",
         nativeSessionId = "sr-1"
       )
-    )
+    , CloudAgents.Auth.requestScope())
   )
 
   // Initially empty.
@@ -1528,7 +1528,7 @@ test "archive and unarchive sessions successfully persists changes in the DB" {
   }
 
   // Initially isArchived should be '0'
-  match mustOptSession(CloudAgents.SessionStore.getSession(sessionId)) {
+  match mustOptSession(CloudAgents.SessionStore.getSession(sessionId, CloudAgents.Auth.requestScope())) {
     case Some(s) -> assertEqual(s.isArchived, "0", "session should initially be active (isArchived = '0')")
     case None -> assertTrue(false, "session should exist")
   }
@@ -1540,7 +1540,7 @@ test "archive and unarchive sessions successfully persists changes in the DB" {
   }
 
   // After archiving, isArchived should be '1'
-  match mustOptSession(CloudAgents.SessionStore.getSession(sessionId)) {
+  match mustOptSession(CloudAgents.SessionStore.getSession(sessionId, CloudAgents.Auth.requestScope())) {
     case Some(s) -> assertEqual(s.isArchived, "1", "session should be archived (isArchived = '1')")
     case None -> assertTrue(false, "session should exist")
   }
@@ -1552,7 +1552,7 @@ test "archive and unarchive sessions successfully persists changes in the DB" {
   }
 
   // After unarchiving, isArchived should be '0' again
-  match mustOptSession(CloudAgents.SessionStore.getSession(sessionId)) {
+  match mustOptSession(CloudAgents.SessionStore.getSession(sessionId, CloudAgents.Auth.requestScope())) {
     case Some(s) -> assertEqual(s.isArchived, "0", "session should be active again (isArchived = '0')")
     case None -> assertTrue(false, "session should exist")
   }
@@ -1602,7 +1602,7 @@ test "branch session from message creates copy with parent reference and slices 
   }
 
   // Verify child session properties
-  match mustOptSession(CloudAgents.SessionStore.getSession(childId)) {
+  match mustOptSession(CloudAgents.SessionStore.getSession(childId, CloudAgents.Auth.requestScope())) {
     case Some(s) -> {
       assertEqual(s.parentSessionId, parentId, "child should reference parentSessionId")
       assertEqual(s.forkedFromMessageId, msg2Id, "child should reference forkedFromMessageId")

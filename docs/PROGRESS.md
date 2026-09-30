@@ -231,6 +231,7 @@ already-on-default-branch path) — see §6 of the phase doc for detail.
 | Slices B+C, prompts domain | ✅ merged (#1161) | `CloudAgents.PgStore.Prompts`, scope-taking prompt repository functions, `tests/pgstore_prompts_tests.l` |
 | Slices B+C, library domain (profiles, skills, subagents, MCP servers) | ✅ merged (#1165) | `CloudAgents.PgStore.Library`, scope-taking library repository functions, `tests/pgstore_library_tests.l`; `decryptedCredentialsForProfile`'s Postgres version lands with the credentials domain |
 | Slices B+C, credentials domain (vault, GitHub OAuth refresh, model-listing cache) | 🟡 in progress | `CloudAgents.PgStore.Credentials` (user-scoped units, spec §4.3a), `UserScope`-taking repository functions, `CloudAgents.Auth.requestUserScope()`, `tests/pgstore_credentials_tests.l` |
+| Slices B+C, sessions core (`sessions`, `session_routes`) | 🟡 in progress | `CloudAgents.PgStore.Sessions`, scope-taking `CloudAgents.SessionStore` functions (no more thread-local reads), `session_routes` (with the owner's `user_id`) written with each session and resolving callback scope, `tests/pgstore_sessions_tests.l`. Not yet: the cross-tenant startup sweep and warm-container reaper (`strandedContainerIds`, `recoverDanglingSessions`, `reapableWarmContainers`, `reapSessionContainer`), and the session child tables (messages, comments, todos, runs, repos, groups, highlights, attachments, branching) |
 | Slices B+C, remaining domains; D-F (export, cut-over, organisations) | ⬜ not started | see spec §9 |
 
 ## Session ledger ✅ phases 1–4 complete

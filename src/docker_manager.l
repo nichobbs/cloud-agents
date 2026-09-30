@@ -240,7 +240,7 @@ pub async func createRunnerContainer(
   // tolerance as the credential/network resolution failures logged elsewhere
   // in this function.
   if CloudAgents.NetworkPolicy.callbacksFeatureEnabled() {
-    match CloudAgents.SessionStore.mintCallbackToken(sessionId, userId) {
+    match CloudAgents.SessionStore.mintCallbackToken(sessionId, CloudAgents.Pg.personalScope(userId)) {
       case Ok(token) -> {
         envs = envs.append("CLOUD_AGENTS_API_URL=" + CloudAgents.NetworkPolicy.callbackApiUrl())
         envs = envs.append("CLOUD_AGENTS_CALLBACK_TOKEN=" + token)
@@ -615,7 +615,11 @@ async func cleanupRunnerContainer(
     case Ok(_) -> ()
     case Err(e) -> println("WARNING: failed to remove container " + containerId + ": " + e)
   }
-  val _ = CloudAgents.SessionStore.clearSessionContainerIfMatchesFor(sessionId, userId, containerId)
+  val _ = CloudAgents.SessionStore.clearSessionContainerIfMatchesFor(
+    sessionId,
+    CloudAgents.Pg.personalScope(userId),
+    containerId
+  )
 }
 
 /// Retrieve output logs of the runner container.
@@ -673,7 +677,7 @@ async func partialContainerLogsAsync(containerId: in String, cell: in ResultCell
 /// caller). Owner-scoped via getSession; runs on the request thread where the
 /// identity is stamped, matching getRunOutputFrom.
 func sessionContainerId(sessionId: in String): String {
-  return match CloudAgents.SessionStore.getSession(sessionId) {
+  return match CloudAgents.SessionStore.getSession(sessionId, CloudAgents.Auth.requestScope()) {
     case Ok(Some(s)) -> s.containerId
     case Ok(None) -> ""
     case Err(_) -> ""
@@ -1396,7 +1400,11 @@ async func runSessionMessageAsync(
 
   // Persist container ID to the session store (best-effort: the run matters
   // more than the bookkeeping).
-  val _ = CloudAgents.SessionStore.updateSessionContainerFor(sessionId, userId, cell.containerId)
+  val _ = CloudAgents.SessionStore.updateSessionContainerFor(
+    sessionId,
+    CloudAgents.Pg.personalScope(userId),
+    cell.containerId
+  )
 
   val startResult = await startRunnerContainer(dockerClient(), cell.containerId)
   match startResult {

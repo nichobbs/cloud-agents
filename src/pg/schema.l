@@ -165,7 +165,7 @@ func globalTables(): slice[String] {
     "CREATE INDEX invitations_tenant ON public.invitations (tenant_id)",
     "GRANT SELECT, INSERT, UPDATE, DELETE ON public.invitations TO cloudagents_app",
     "CREATE TABLE public.session_routes (" + "session_id text PRIMARY KEY, " +
-      "tenant_id text NOT NULL REFERENCES public.tenants (id), " +
+      "tenant_id text NOT NULL REFERENCES public.tenants (id), user_id text NOT NULL, " +
       "callback_token_hash text NOT NULL DEFAULT '')",
     "GRANT SELECT, INSERT, UPDATE, DELETE ON public.session_routes TO cloudagents_app",
     "CREATE TABLE public.github_token_cache (" + "token_hash text PRIMARY KEY, " +

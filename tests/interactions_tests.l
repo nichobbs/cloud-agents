@@ -39,7 +39,7 @@ func cleanupTestDb(path: in String): Unit {
 // Every Interactions handler is owner-gated on the session row, so a test
 // session must exist and be owned by the CURRENT user. Idempotent.
 func ensureSession(id: in String): Unit {
-  match CloudAgents.SessionStore.getSession(id) {
+  match CloudAgents.SessionStore.getSession(id, CloudAgents.Auth.requestScope()) {
     case Ok(Some(_)) -> return ()
     case Ok(None) -> ()
     case Err(e) -> panic("getSession failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
@@ -53,7 +53,7 @@ func ensureSession(id: in String): Unit {
     model = "claude-opus-4-8",
     nativeSessionId = id
   )
-  match addSession(s) {
+  match addSession(s, CloudAgents.Auth.requestScope()) {
     case Ok(_) -> ()
     case Err(e) -> panic("addSession failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
   }

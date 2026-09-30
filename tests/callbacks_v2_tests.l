@@ -81,7 +81,7 @@ func mkSessionRepo(id: in String, repoUrl: in String): Unit {
     model = "claude-opus-4-8",
     nativeSessionId = id
   )
-  match addSession(s) {
+  match addSession(s, CloudAgents.Auth.requestScope()) {
     case Ok(_) -> ()
     case Err(e) -> panic("addSession failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
   }
@@ -92,7 +92,7 @@ func mkSession(id: in String): Unit {
 }
 
 func mintToken(id: in String, ownerUserId: in String): String {
-  return match CloudAgents.SessionStore.mintCallbackToken(id, ownerUserId) {
+  return match CloudAgents.SessionStore.mintCallbackToken(id, CloudAgents.Pg.personalScope(ownerUserId)) {
     case Ok(t) -> t
     case Err(e) -> panic("mintCallbackToken failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
   }
