@@ -251,7 +251,7 @@ func observedWith(sid: in String, fragment: in String): LedgerEntry {
 }
 
 func countNotifications(sid: in String): Int {
-  match CloudAgents.Repository.listNotifications(sid) {
+  match CloudAgents.Repository.listNotifications(sid, CloudAgents.Auth.requestScope()) {
     case Ok(ns) -> return ns.length.toInt()
     case Err(e) -> panic(CloudAgents.Sqlite.dbErrorMessage(e))
   }

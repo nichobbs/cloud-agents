@@ -907,6 +907,19 @@ pub func sessionOwnerUserId(sessionId: in String): Result[Option[String], CloudA
   return Ok(value = Some(value = colAt(CloudAgents.Sqlite.getRowArrayValue(rows, 0).cols, 0)))
 }
 
+/// The scope a session's container callbacks run under (spec §5.2's
+/// callback-token resolver): its owner's personal tenant, or None for an
+/// unknown session. Deliberately unscoped by the current identity, like
+/// sessionOwnerUserId; callers authenticate the presented token against
+/// callbackTokenHashForSession before acting in this scope. The Postgres
+/// store reads the same answer from `session_routes`.
+pub func sessionRouteScope(sessionId: in String): Result[Option[CloudAgents.Pg.TenantScope], CloudAgents.Sqlite.DbError] {
+  return match sessionOwnerUserId(sessionId)? {
+    case Some(owner) -> Ok(value = Some(value = CloudAgents.Pg.personalScope(owner)))
+    case None -> Ok(value = None)
+  }
+}
+
 // ─── Legacy env-var store import ──────────────────────────────────────────────
 /// One-time migration: sessions created before the SQLite store lived as JSON
 /// in CLOUD_AGENTS_SESSIONS_JSON. Import any that aren't already in the

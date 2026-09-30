@@ -48,6 +48,7 @@ package CloudAgents.PermissionEnrichment
 import Std.Core
 import Std.Collections
 import Std.Encoding
+import CloudAgents.Scope
 import CloudAgents.Repository
 import CloudAgents.Sqlite
 import Testamur.CheckpointFormat.Model
@@ -239,9 +240,11 @@ pub func permissionForTool(perms: in List[ToolPermission], tool: in String): Per
 /// accessors with the empty cursor (`created_at > ''` matches every row, since
 /// `created_at` is always a non-empty millis string), so no new SQL is needed.
 /// Synchronous — the whole repository layer is.
-pub func permissionsForSession(sessionId: in String): Result[List[ToolPermission], CloudAgents.Sqlite.DbError] {
-  val perms = CloudAgents.Repository.permissionRequestsCreatedAfter(sessionId, "")?
-  val secrets = CloudAgents.Repository.secretRequestsCreatedAfter(sessionId, "")?
+pub func permissionsForSession(
+  sessionId: in String, sc: in CloudAgents.Scope.TenantScope
+): Result[List[ToolPermission], CloudAgents.Sqlite.DbError] {
+  val perms = CloudAgents.Repository.permissionRequestsCreatedAfter(sessionId, sc, "")?
+  val secrets = CloudAgents.Repository.secretRequestsCreatedAfter(sessionId, sc, "")?
   val rows: List[ToolPermission] = newList()
   var i = 0
   while i < perms.length.toInt() {

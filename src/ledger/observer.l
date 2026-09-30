@@ -450,7 +450,7 @@ func notify(target: in SessionContext, c: in Candidate): Unit {
   if c.reversible == "false" {
     what = what + " that can't easily be undone"
   }
-  match CloudAgents.Repository.createNotification(target.sessionId, "info", "Observer found " + what + ": " + c.summary) {
+  match CloudAgents.Repository.createNotification(target.sessionId, target.tenantScope, "info", "Observer found " + what + ": " + c.summary) {
     case Ok(_) -> ()
     case Err(e) -> println("WARNING: observer notification failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
   }
