@@ -78,9 +78,10 @@ pub func validInspectPath(path: in String): Bool {
 
 /// The parsed shape of one inspect container's captured logs. Plain fields,
 /// not a Result — storing a Result in a record field used to break match on
-/// read-back (lyric-lang#6231, confirmed fixed as of lyric 0.7.3, this
-/// project's current pin; docs/lyric/gotchas.md no longer documents it for
-/// that reason). Kept as plain fields anyway rather than reverting: no
+/// read-back (lyric-lang#6231, confirmed fixed as of lyric 0.7.3;
+/// docs/lyric/gotchas.md no longer documents it for that reason. This
+/// project now pins 0.7.5, which also has the fix). Kept as plain fields
+/// anyway rather than reverting: no
 /// benefit to a Result-typed field here, and it costs nothing to stay clear
 /// of the bug's shape regardless of which toolchain builds this. `ok` false with a
 /// non-empty `err` is an entrypoint-reported failure (the text after

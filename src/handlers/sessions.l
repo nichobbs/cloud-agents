@@ -895,7 +895,7 @@ pub func storeAttachments(
   }
   if inputs.length > maxAttachmentsPerMessage {
     return Err(
-      value = StoreAttachmentsError(
+      error = StoreAttachmentsError(
         code = 400,
         message = "too many attachments (max " + toString(maxAttachmentsPerMessage) + " per message)"
       )
@@ -920,11 +920,11 @@ pub func storeAttachments(
   while i < inputs.length {
     val input = inputs[i]
     if input.fileName.length == 0 {
-      return Err(value = StoreAttachmentsError(code = 400, message = "attachment fileName is required"))
+      return Err(error = StoreAttachmentsError(code = 400, message = "attachment fileName is required"))
     }
     if not CloudAgents.Text.withinMaxByteLength(input.fileName, maxAttachmentFileNameLen) {
       return Err(
-        value = StoreAttachmentsError(
+        error = StoreAttachmentsError(
           code = 400,
           message = "attachment fileName is too long (max " + toString(maxAttachmentFileNameLen) + " bytes)"
         )
@@ -932,14 +932,14 @@ pub func storeAttachments(
     }
     val fileName = match basenameOfAttachment(input.fileName) {
       case Some(b) -> b
-      case None -> return Err(value = StoreAttachmentsError(code = 400, message = "attachment fileName is invalid"))
+      case None -> return Err(error = StoreAttachmentsError(code = 400, message = "attachment fileName is invalid"))
     }
     if input.mimeType.length == 0 {
-      return Err(value = StoreAttachmentsError(code = 400, message = "attachment mimeType is required"))
+      return Err(error = StoreAttachmentsError(code = 400, message = "attachment mimeType is required"))
     }
     if not CloudAgents.Text.withinMaxLength(input.mimeType, maxAttachmentMimeTypeLen) {
       return Err(
-        value = StoreAttachmentsError(
+        error = StoreAttachmentsError(
           code = 400,
           message = "attachment mimeType is too long (max " + toString(maxAttachmentMimeTypeLen) +
             " characters)"
@@ -951,7 +951,7 @@ pub func storeAttachments(
     // is written to disk or the database.
     if isDangerousAttachmentMimeType(input.mimeType) {
       return Err(
-        value = StoreAttachmentsError(
+        error = StoreAttachmentsError(
           code = 400,
           message = "attachment '" + input.fileName + "' has an unsupported mimeType (" + input.mimeType +
             ")"
@@ -967,7 +967,7 @@ pub func storeAttachments(
     // no "field missing" case left to distinguish from "empty file" here.
     if not CloudAgents.Text.withinMaxLength(input.contentBase64, maxAttachmentBase64Len) {
       return Err(
-        value = StoreAttachmentsError(
+        error = StoreAttachmentsError(
           code = 400,
           message = "attachment '" + fileName + "' exceeds the 20 MiB per-file limit"
         )
@@ -975,12 +975,12 @@ pub func storeAttachments(
     }
     val bytes = match tryDecodeAttachmentBytes(input.contentBase64) {
       case Ok(b) -> b
-      case Err(msg) -> return Err(value = StoreAttachmentsError(code = 400, message = "attachment '" + fileName + "': " + msg))
+      case Err(msg) -> return Err(error = StoreAttachmentsError(code = 400, message = "attachment '" + fileName + "': " + msg))
     }
     val sizeBytes = bytes.length.toInt()
     if sizeBytes > maxAttachmentBytes {
       return Err(
-        value = StoreAttachmentsError(
+        error = StoreAttachmentsError(
           code = 400,
           message = "attachment '" + fileName + "' exceeds the 20 MiB per-file limit"
         )
@@ -988,7 +988,7 @@ pub func storeAttachments(
     }
     totalBytes = totalBytes + sizeBytes
     if totalBytes > maxTotalAttachmentBytes {
-      return Err(value = StoreAttachmentsError(code = 400, message = "attachments exceed the 50 MiB per-message limit"))
+      return Err(error = StoreAttachmentsError(code = 400, message = "attachments exceed the 50 MiB per-message limit"))
     }
     validated = validated.append(
       ValidatedAttachmentInput(
@@ -1020,7 +1020,7 @@ pub func storeAttachments(
   match Std.File.createDir(hostDir) {
     case Ok(_) -> ()
     case Err(e) -> return Err(
-      value = StoreAttachmentsError(
+      error = StoreAttachmentsError(
         code = 500,
         message = "failed to create attachment storage: " + IOError.message(e)
       )
@@ -1039,7 +1039,7 @@ pub func storeAttachments(
       case Ok(_) -> ()
       case Err(e) -> {
         cleanupPartialAttachmentBatch(stored, writtenPaths)
-        return Err(value = StoreAttachmentsError(code = 500, message = "failed to store attachment: " + IOError.message(e)))
+        return Err(error = StoreAttachmentsError(code = 500, message = "failed to store attachment: " + IOError.message(e)))
       }
     }
     writtenPaths = writtenPaths.append(path)
@@ -1050,7 +1050,7 @@ pub func storeAttachments(
       case Err(e) -> {
         cleanupPartialAttachmentBatch(stored, writtenPaths)
         return Err(
-          value = StoreAttachmentsError(
+          error = StoreAttachmentsError(
             code = 500,
             message = "failed to record attachment: " + CloudAgents.Sqlite.dbErrorMessage(e)
           )
@@ -2211,8 +2211,9 @@ pub func checkHealth(): Result[String, Web.ApiError] {
 /// started throwing a bare `System.InvalidProgramException` ("Common
 /// Language Runtime detected an invalid program"), exactly the corruption
 /// class documented in docs/BUILD.md's Bug 5 and lyric-lang#6232/#6134/#6133
-/// (all three confirmed fixed as of lyric 0.7.3, this project's current pin
-/// — docs/lyric/gotchas.md no longer documents that family for that reason),
+/// (all three confirmed fixed as of lyric 0.7.3 — docs/lyric/gotchas.md no
+/// longer documents that family for that reason; this project now pins
+/// 0.7.5, which also has the fix),
 /// but via a new trigger: a type-invalid record-field assignment slipping
 /// past the type checker, not an async/await ordering issue. That specific
 /// gap is also closed on 0.7.3 — the same assignment now fails at compile

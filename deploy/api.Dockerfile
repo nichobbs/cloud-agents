@@ -33,7 +33,7 @@ FROM mcr.microsoft.com/dotnet/sdk:10.0 AS build
 # Downloads the exact tarball directly rather than trusting install.sh's own
 # --version flag, mirroring .github/workflows/ci.yml's same reasoning
 # (see its "Install Lyric compiler" step and docs/BUILD.md).
-ARG LYRIC_VERSION=0.7.3
+ARG LYRIC_VERSION=0.7.5
 # RID matches THIS build's actual architecture (this FROM has no --platform
 # override, so it's whatever amd64/arm64 host actually runs the build) — the
 # x86_64->linux-x64 / aarch64->linux-arm64 mapping now lives in one place,

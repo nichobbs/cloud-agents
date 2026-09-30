@@ -120,7 +120,8 @@ recurring production crash) was filed as
 [lyric-lang#6249](https://github.com/nichobbs/lyric-lang/issues/6249),
 **open as of v0.4.35** but **fixed upstream as of v0.7.3** (confirmed by
 re-running the fixed version of `./scripts/repro-compiler-bug.sh` check 8
-directly against a freshly-installed 0.7.3 — this project's current pin).
+directly against a freshly-installed 0.7.3; this project now pins 0.7.5,
+which also has the fix).
 It never blocked build/run/test, and needed a source-level workaround —
 see `src/docker_manager.l`'s doc comments for the `runSessionMessageAsync`/
 `waitForContainer` pattern. That workaround has **not** been reverted yet

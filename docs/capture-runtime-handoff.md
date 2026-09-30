@@ -219,8 +219,8 @@ A new pure serializer + one call into the existing HTTP primitive, both invoked
 synchronously from `emitRunnerCheckpoint` after a successful emit (no new
 `await`, so `emitRunnerCheckpoint` stays a plain sync func and never risks the
 lyric-lang#6249 await-value-loss trap — confirmed fixed upstream as of lyric
-0.7.3, this project's current pin, but staying sync here costs nothing and
-needs no toolchain-version caveat either way).
+0.7.3 (this project now pins 0.7.5, which also has the fix), but staying
+sync here costs nothing and needs no toolchain-version caveat either way).
 
 ### 5.1 Serialize `List[ProvenanceObject]` → canonical JSON array
 
