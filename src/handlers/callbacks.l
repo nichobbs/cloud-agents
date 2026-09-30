@@ -25,6 +25,7 @@ import Std.File
 import Std.Uuid
 import Web
 import CloudAgents.Auth
+import CloudAgents.Pg
 import CloudAgents.Repository
 import CloudAgents.Scope
 import CloudAgents.RepoKey
@@ -161,7 +162,13 @@ func isValidPercent(s: in String): Bool {
 /// exists but never minted a token (callbacks disabled for it) — both map to
 /// the same "invalid callback token" response so a probing container can't
 /// distinguish "wrong token" from "callbacks aren't on" for this session.
-func authorizeCallbackToken(sessionId: in String, authHeaderValue: in String): Result[Unit, Web.ApiError] {
+///
+/// On success, returns the scope the container's calls run under: the
+/// session's tenant and owner, from its route (spec §5.2). It is the only
+/// scope a container-originated handler may use.
+func authorizeCallbackToken(
+  sessionId: in String, authHeaderValue: in String
+): Result[CloudAgents.Pg.TenantScope, Web.ApiError] {
   val storedHash = match CloudAgents.SessionStore.callbackTokenHashForSession(sessionId) {
     case Ok(Some(t)) -> t
     case Ok(None) -> return Err(Web.notFound("Session not found"))
@@ -170,7 +177,11 @@ func authorizeCallbackToken(sessionId: in String, authHeaderValue: in String): R
   if not CloudAgents.Auth.authorizeCallback(authHeaderValue, storedHash) {
     return Err(Web.unauthorized("invalid callback token"))
   }
-  return Ok(())
+  return match CloudAgents.SessionStore.sessionRouteScope(sessionId) {
+    case Ok(Some(sc)) -> Ok(sc)
+    case Ok(None) -> Err(Web.notFound("Session not found"))
+    case Err(e) -> Err(dbError(e))
+  }
 }
 
 /// The session a permission request/question belongs to, owner-checked
@@ -228,7 +239,7 @@ pub func createPermissionRequestHandler(
   if id.length == 0 {
     return Err(Web.badRequest("id is required"))
   }
-  authorizeCallbackToken(id, authHeaderValue)?
+  val sc = authorizeCallbackToken(id, authHeaderValue)?
   if req.toolName.length == 0 {
     return Err(Web.badRequest("toolName is required"))
   }
@@ -238,11 +249,11 @@ pub func createPermissionRequestHandler(
   if not CloudAgents.Text.withinMaxByteLength(req.inputJson, maxInputJsonLen) {
     return Err(Web.badRequest("inputJson is too long (max " + toString(maxInputJsonLen) + " bytes)"))
   }
-  val ruleMatched = match CloudAgents.Repository.permissionRuleMatches(id, req.toolName, req.inputJson) {
+  val ruleMatched = match CloudAgents.Repository.permissionRuleMatches(id, sc, req.toolName, req.inputJson) {
     case Ok(b) -> b
     case Err(e) -> return Err(dbError(e))
   }
-  match CloudAgents.Repository.createPermissionRequest(id, req.toolName, req.inputJson, ruleMatched) {
+  match CloudAgents.Repository.createPermissionRequest(id, sc, req.toolName, req.inputJson, ruleMatched) {
     case Ok(pr) -> return Ok(CreatePermissionRequestResponse(id = pr.id, status = pr.status))
     case Err(e) -> return Err(dbError(e))
   }
@@ -261,12 +272,12 @@ pub func getPermissionRequestHandler(
   if rid.length == 0 {
     return Err(Web.badRequest("request id is required"))
   }
-  authorizeCallbackToken(id, authHeaderValue)?
-  match CloudAgents.Repository.timeoutPendingPermissionRequest(rid, callbackTimeoutMillis()) {
+  val sc = authorizeCallbackToken(id, authHeaderValue)?
+  match CloudAgents.Repository.timeoutPendingPermissionRequest(rid, sc, callbackTimeoutMillis()) {
     case Ok(_) -> ()
     case Err(_) -> ()
   }
-  val pr = match CloudAgents.Repository.getPermissionRequest(rid) {
+  val pr = match CloudAgents.Repository.getPermissionRequest(rid, sc) {
     case Ok(Some(p)) -> p
     case Ok(None) -> return Err(Web.notFound("permission request not found"))
     case Err(e) -> return Err(dbError(e))
@@ -300,7 +311,7 @@ pub func answerPermissionRequestHandler(
     return Err(Web.badRequest("updatedInputJson is too long (max " + toString(maxInputJsonLen) + " bytes)"))
   }
   requireOwnedSession(id)?
-  val pr = match CloudAgents.Repository.getPermissionRequest(rid) {
+  val pr = match CloudAgents.Repository.getPermissionRequest(rid, CloudAgents.Auth.requestScope()) {
     case Ok(Some(p)) -> p
     case Ok(None) -> return Err(Web.notFound("permission request not found"))
     case Err(e) -> return Err(dbError(e))
@@ -309,7 +320,7 @@ pub func answerPermissionRequestHandler(
     return Err(Web.notFound("permission request not found"))
   }
   val status = if req.decision == "deny" { "denied" } else { "allowed" }
-  val affected = match CloudAgents.Repository.answerPermissionRequest(rid, status, req.updatedInputJson, req.note) {
+  val affected = match CloudAgents.Repository.answerPermissionRequest(rid, CloudAgents.Auth.requestScope(), status, req.updatedInputJson, req.note) {
     case Ok(n) -> n
     case Err(e) -> return Err(dbError(e))
   }
@@ -317,7 +328,7 @@ pub func answerPermissionRequestHandler(
     return Err(Web.conflict("permission request has already been decided"))
   }
   if req.decision == "allow_always" {
-    match CloudAgents.Repository.addPermissionRule(id, pr.toolName, pr.inputJson) {
+    match CloudAgents.Repository.addPermissionRule(id, CloudAgents.Auth.requestScope(), pr.toolName, pr.inputJson) {
       case Ok(_) -> ()
       case Err(e) -> println("WARNING: failed to persist allow-always rule for session " + id + ": " + CloudAgents.Sqlite.dbErrorMessage(e))
     }
@@ -355,7 +366,7 @@ pub func createUserQuestionHandler(
   if id.length == 0 {
     return Err(Web.badRequest("id is required"))
   }
-  authorizeCallbackToken(id, authHeaderValue)?
+  val sc = authorizeCallbackToken(id, authHeaderValue)?
   if req.question.length == 0 {
     return Err(Web.badRequest("question is required"))
   }
@@ -365,7 +376,7 @@ pub func createUserQuestionHandler(
   if not CloudAgents.Text.withinMaxByteLength(req.optionsJson, maxOptionsJsonLen) {
     return Err(Web.badRequest("optionsJson is too long (max " + toString(maxOptionsJsonLen) + " bytes)"))
   }
-  match CloudAgents.Repository.createUserQuestion(id, req.question, req.optionsJson) {
+  match CloudAgents.Repository.createUserQuestion(id, sc, req.question, req.optionsJson) {
     case Ok(q) -> return Ok(CreateUserQuestionResponse(id = q.id))
     case Err(e) -> return Err(dbError(e))
   }
@@ -384,12 +395,12 @@ pub func getUserQuestionHandler(
   if rid.length == 0 {
     return Err(Web.badRequest("question id is required"))
   }
-  authorizeCallbackToken(id, authHeaderValue)?
-  match CloudAgents.Repository.timeoutPendingUserQuestion(rid, callbackTimeoutMillis()) {
+  val sc = authorizeCallbackToken(id, authHeaderValue)?
+  match CloudAgents.Repository.timeoutPendingUserQuestion(rid, sc, callbackTimeoutMillis()) {
     case Ok(_) -> ()
     case Err(_) -> ()
   }
-  val q = match CloudAgents.Repository.getUserQuestion(rid) {
+  val q = match CloudAgents.Repository.getUserQuestion(rid, sc) {
     case Ok(Some(qq)) -> qq
     case Ok(None) -> return Err(Web.notFound("question not found"))
     case Err(e) -> return Err(dbError(e))
@@ -415,7 +426,7 @@ pub func answerUserQuestionHandler(
     return Err(Web.badRequest("answer is too long (max " + toString(maxAnswerLen) + " bytes)"))
   }
   requireOwnedSession(id)?
-  val q = match CloudAgents.Repository.getUserQuestion(rid) {
+  val q = match CloudAgents.Repository.getUserQuestion(rid, CloudAgents.Auth.requestScope()) {
     case Ok(Some(qq)) -> qq
     case Ok(None) -> return Err(Web.notFound("question not found"))
     case Err(e) -> return Err(dbError(e))
@@ -423,7 +434,7 @@ pub func answerUserQuestionHandler(
   if q.sessionId != id {
     return Err(Web.notFound("question not found"))
   }
-  val affected = match CloudAgents.Repository.answerUserQuestion(rid, req.answer) {
+  val affected = match CloudAgents.Repository.answerUserQuestion(rid, CloudAgents.Auth.requestScope(), req.answer) {
     case Ok(n) -> n
     case Err(e) -> return Err(dbError(e))
   }
@@ -450,14 +461,14 @@ pub func reportProgressHandler(
   if id.length == 0 {
     return Err(Web.badRequest("id is required"))
   }
-  authorizeCallbackToken(id, authHeaderValue)?
+  val sc = authorizeCallbackToken(id, authHeaderValue)?
   if not CloudAgents.Text.withinMaxByteLength(req.summary, maxProgressSummaryLen) {
     return Err(Web.badRequest("summary is too long (max " + toString(maxProgressSummaryLen) + " bytes)"))
   }
   if not isValidPercent(req.percentComplete) {
     return Err(Web.badRequest("percentComplete must be a decimal 0-100"))
   }
-  match CloudAgents.Repository.updateSessionProgress(id, req.summary, req.percentComplete) {
+  match CloudAgents.Repository.updateSessionProgress(id, sc, req.summary, req.percentComplete) {
     case Ok(_) -> return Ok(())
     case Err(e) -> return Err(dbError(e))
   }
@@ -508,7 +519,7 @@ pub func createSecretRequestHandler(
   if id.length == 0 {
     return Err(Web.badRequest("id is required"))
   }
-  authorizeCallbackToken(id, authHeaderValue)?
+  val sc = authorizeCallbackToken(id, authHeaderValue)?
   if req.name.length == 0 {
     return Err(Web.badRequest("name is required"))
   }
@@ -530,7 +541,7 @@ pub func createSecretRequestHandler(
   if not credentialExists {
     return Err(Web.badRequest("no credential named '" + req.name + "' is configured for this session"))
   }
-  match CloudAgents.Repository.createSecretRequest(id, req.name, req.reason) {
+  match CloudAgents.Repository.createSecretRequest(id, sc, req.name, req.reason) {
     case Ok(sr) -> return Ok(CreateSecretRequestResponse(id = sr.id, status = sr.status))
     case Err(e) -> return Err(dbError(e))
   }
@@ -550,12 +561,12 @@ pub func getSecretRequestHandler(
   if rid.length == 0 {
     return Err(Web.badRequest("request id is required"))
   }
-  authorizeCallbackToken(id, authHeaderValue)?
-  match CloudAgents.Repository.timeoutPendingSecretRequest(rid, callbackTimeoutMillis()) {
+  val sc = authorizeCallbackToken(id, authHeaderValue)?
+  match CloudAgents.Repository.timeoutPendingSecretRequest(rid, sc, callbackTimeoutMillis()) {
     case Ok(_) -> ()
     case Err(_) -> ()
   }
-  val sr = match CloudAgents.Repository.getSecretRequest(rid) {
+  val sr = match CloudAgents.Repository.getSecretRequest(rid, sc) {
     case Ok(Some(s)) -> s
     case Ok(None) -> return Err(Web.notFound("secret request not found"))
     case Err(e) -> return Err(dbError(e))
@@ -566,7 +577,7 @@ pub func getSecretRequestHandler(
   if sr.status != "approved" {
     return Ok(SecretDecision(status = sr.status, value = ""))
   }
-  val delivering = match CloudAgents.Repository.markSecretRequestDelivered(rid) {
+  val delivering = match CloudAgents.Repository.markSecretRequestDelivered(rid, sc) {
     case Ok(b) -> b
     case Err(e) -> return Err(dbError(e))
   }
@@ -611,7 +622,7 @@ pub func answerSecretRequestHandler(
     return Err(Web.badRequest("decision must be one of: approve, deny"))
   }
   requireOwnedSession(id)?
-  val sr = match CloudAgents.Repository.getSecretRequest(rid) {
+  val sr = match CloudAgents.Repository.getSecretRequest(rid, CloudAgents.Auth.requestScope()) {
     case Ok(Some(s)) -> s
     case Ok(None) -> return Err(Web.notFound("secret request not found"))
     case Err(e) -> return Err(dbError(e))
@@ -634,7 +645,7 @@ pub func answerSecretRequestHandler(
     }
   }
   val status = if req.decision == "deny" { "denied" } else { "approved" }
-  val affected = match CloudAgents.Repository.answerSecretRequest(rid, status) {
+  val affected = match CloudAgents.Repository.answerSecretRequest(rid, CloudAgents.Auth.requestScope(), status) {
     case Ok(n) -> n
     case Err(e) -> return Err(dbError(e))
   }
@@ -782,7 +793,7 @@ func isDangerousArtifactMimeType(mimeType: in String): Bool {
 /// duplication over a premature shared abstraction across unrelated
 /// features.
 record ArtifactRepoScope {
-  userId: String
+  ownerScope: CloudAgents.Pg.TenantScope
   repoKey: String
 }
 
@@ -827,8 +838,8 @@ func containsPathTraversal(s: in String): Bool {
 /// path-traversal segment (see containsPathTraversal) since — unlike
 /// memory's SQL-only use — this repoKey is about to become a filesystem
 /// path component.
-func resolveArtifactRepoScope(id: in String): Result[ArtifactRepoScope, Web.ApiError] {
-  val ownerRepo = match CloudAgents.Repository.sessionOwnerAndRepo(id) {
+func resolveArtifactRepoScope(id: in String, sc: in CloudAgents.Pg.TenantScope): Result[ArtifactRepoScope, Web.ApiError] {
+  val ownerRepo = match CloudAgents.Repository.sessionOwnerAndRepo(id, sc) {
     case Ok(Some(sr)) -> sr
     case Ok(None) -> return Err(Web.notFound("Session not found"))
     case Err(e) -> return Err(dbError(e))
@@ -840,7 +851,7 @@ func resolveArtifactRepoScope(id: in String): Result[ArtifactRepoScope, Web.ApiE
   if containsPathTraversal(repoKey) {
     return Err(Web.badRequest("this session's repository cannot be used to scope an artifact"))
   }
-  return Ok(ArtifactRepoScope(userId = ownerRepo.userId, repoKey = repoKey))
+  return Ok(ArtifactRepoScope(ownerScope = CloudAgents.Pg.TenantScope(tenantId = sc.tenantId, userId = ownerRepo.userId), repoKey = repoKey))
 }
 
 @generate(Json)
@@ -906,7 +917,7 @@ pub func uploadArtifactHandler(
   if id.length == 0 {
     return Err(Web.badRequest("id is required"))
   }
-  authorizeCallbackToken(id, authHeaderValue)?
+  val sc = authorizeCallbackToken(id, authHeaderValue)?
   if req.fileName.length == 0 {
     return Err(Web.badRequest("fileName is required"))
   }
@@ -960,9 +971,9 @@ pub func uploadArtifactHandler(
   // Either way `id` (the reporting session) stays the row's session_id —
   // repo scope is additive, so the artifact still shows up in this session's
   // own GET /api/sessions/{id}/artifacts listing (docs/phase7-autonomy.md §6).
-  val repoScope = if req.artifactScope == "repo" { Some(value = resolveArtifactRepoScope(id)?) } else { None }
+  val repoScope = if req.artifactScope == "repo" { Some(value = resolveArtifactRepoScope(id, sc)?) } else { None }
   val repoKey = match repoScope { case Some(s) -> s.repoKey; case None -> "" }
-  val ownerUserId = match repoScope { case Some(s) -> s.userId; case None -> "" }
+  val ownerUserId = match repoScope { case Some(s) -> s.ownerScope.userId; case None -> "" }
   val artifactId = Std.Uuid.uuidToString(Std.Uuid.newUuid())
   val storedName = artifactId + "_" + fileName
   val artifactDir = if repoKey.length > 0 {
@@ -978,7 +989,7 @@ pub func uploadArtifactHandler(
     case Ok(_) -> ()
     case Err(e) -> return Err(Web.internalError("failed to store artifact: " + IOError.message(e)))
   }
-  match CloudAgents.Repository.createArtifact(id, fileName, storedName, req.mimeType, req.description, toString(sizeBytes), repoKey, ownerUserId) {
+  match CloudAgents.Repository.createArtifact(id, sc, fileName, storedName, req.mimeType, req.description, toString(sizeBytes), repoKey, ownerUserId) {
     case Ok(a) -> return Ok(UploadArtifactResponse(id = a.id))
     case Err(e) -> return Err(dbError(e))
   }
@@ -990,7 +1001,7 @@ pub func listArtifactsHandler(id: in String): Result[ArtifactListResponse, Web.A
     return Err(Web.badRequest("id is required"))
   }
   requireOwnedSession(id)?
-  match CloudAgents.Repository.listArtifacts(id) {
+  match CloudAgents.Repository.listArtifacts(id, CloudAgents.Auth.requestScope()) {
     case Ok(arts) -> {
       var acc: slice[ArtifactSummary] = []
       for a in arts {
@@ -1022,7 +1033,7 @@ pub func listRepoArtifactsHandler(repoKey: in String): Result[ArtifactListRespon
   if not CloudAgents.Text.withinMaxLength(repoKey, maxRepoKeyQueryLen) {
     return Err(Web.badRequest("repoKey is too long (max " + toString(maxRepoKeyQueryLen) + " characters)"))
   }
-  match CloudAgents.Repository.listRepoArtifacts(CloudAgents.Auth.currentUserId(), repoKey) {
+  match CloudAgents.Repository.listRepoArtifacts(CloudAgents.Auth.requestScope(), repoKey) {
     case Ok(arts) -> {
       var acc: slice[ArtifactSummary] = []
       for a in arts {
@@ -1105,7 +1116,7 @@ pub func downloadArtifactHandler(id: in String, aid: in String): Result[Web.Resp
     return Err(Web.badRequest("artifact id is required"))
   }
   requireOwnedSession(id)?
-  val a = match CloudAgents.Repository.getArtifact(aid) {
+  val a = match CloudAgents.Repository.getArtifact(aid, CloudAgents.Auth.requestScope()) {
     case Ok(Some(art)) -> art
     case Ok(None) -> return Err(Web.notFound("artifact not found"))
     case Err(e) -> return Err(dbError(e))
@@ -1130,7 +1141,7 @@ pub func downloadRepoArtifactHandler(aid: in String): Result[Web.Response, Web.A
   if aid.length == 0 {
     return Err(Web.badRequest("artifact id is required"))
   }
-  val a = match CloudAgents.Repository.getRepoArtifactById(aid, CloudAgents.Auth.currentUserId()) {
+  val a = match CloudAgents.Repository.getRepoArtifactById(aid, CloudAgents.Auth.requestScope()) {
     case Ok(Some(art)) -> art
     case Ok(None) -> return Err(Web.notFound("artifact not found"))
     case Err(e) -> return Err(dbError(e))
@@ -1200,15 +1211,15 @@ pub record ForgetResponse {
 
 /// The (owner, repo) a session's memory is scoped to.
 record SessionMemoryScope {
-  userId: String
+  ownerScope: CloudAgents.Pg.TenantScope
   repoKey: String
 }
 
 /// Resolve the owning user + normalized repo key for a session, or an
 /// ApiError. A session whose repo_url yields no usable key (empty / host-only)
 /// is rejected rather than writing an unscoped row.
-func resolveMemoryScope(id: in String): Result[SessionMemoryScope, Web.ApiError] {
-  val ownerRepo = match CloudAgents.Repository.sessionOwnerAndRepo(id) {
+func resolveMemoryScope(id: in String, sc: in CloudAgents.Pg.TenantScope): Result[SessionMemoryScope, Web.ApiError] {
+  val ownerRepo = match CloudAgents.Repository.sessionOwnerAndRepo(id, sc) {
     case Ok(Some(sr)) -> sr
     case Ok(None) -> return Err(Web.notFound("Session not found"))
     case Err(e) -> return Err(dbError(e))
@@ -1217,12 +1228,12 @@ func resolveMemoryScope(id: in String): Result[SessionMemoryScope, Web.ApiError]
   if repoKey.length == 0 {
     return Err(Web.badRequest("this session has no repository to scope memory to"))
   }
-  return Ok(SessionMemoryScope(userId = ownerRepo.userId, repoKey = repoKey))
+  return Ok(SessionMemoryScope(ownerScope = CloudAgents.Pg.TenantScope(tenantId = sc.tenantId, userId = ownerRepo.userId), repoKey = repoKey))
 }
 
-func memoryListFor(id: in String): Result[MemoryListResponse, Web.ApiError] {
-  val memScope = resolveMemoryScope(id)?
-  match CloudAgents.Repository.listMemory(memScope.userId, memScope.repoKey) {
+func memoryListFor(id: in String, sc: in CloudAgents.Pg.TenantScope): Result[MemoryListResponse, Web.ApiError] {
+  val memScope = resolveMemoryScope(id, sc)?
+  match CloudAgents.Repository.listMemory(memScope.ownerScope, memScope.repoKey) {
     case Ok(rows) -> {
       var acc: slice[MemoryEntry] = []
       for m in rows {
@@ -1411,7 +1422,7 @@ pub func rememberHandler(
   if id.length == 0 {
     return Err(Web.badRequest("id is required"))
   }
-  authorizeCallbackToken(id, authHeaderValue)?
+  val sc = authorizeCallbackToken(id, authHeaderValue)?
   if req.key.length == 0 {
     return Err(Web.badRequest("key is required"))
   }
@@ -1431,12 +1442,12 @@ pub func rememberHandler(
       )
     )
   }
-  val memScope = resolveMemoryScope(id)?
+  val memScope = resolveMemoryScope(id, sc)?
   // Per-repo entry cap (#575), enforced atomically (#586): overwriting an
   // existing key is always allowed (it doesn't grow the store); a NEW key is
   // written only while the repo is under the cap. A `false` result means the
   // cap blocked a new key.
-  match CloudAgents.Repository.upsertMemoryCapped(memScope.userId, memScope.repoKey, req.key, req.value, maxMemoryEntries) {
+  match CloudAgents.Repository.upsertMemoryCapped(memScope.ownerScope, memScope.repoKey, req.key, req.value, maxMemoryEntries) {
     case Ok(true) -> return Ok(RememberResponse(key = req.key))
     case Ok(false) -> return Err(
       Web.badRequest(
@@ -1462,18 +1473,18 @@ pub func recallHandler(
   if id.length == 0 {
     return Err(Web.badRequest("id is required"))
   }
-  authorizeCallbackToken(id, authHeaderValue)?
+  val sc = authorizeCallbackToken(id, authHeaderValue)?
   match keyFilterRaw {
-    case None -> return memoryListFor(id)
+    case None -> return memoryListFor(id, sc)
     case Some(key) -> {
       if key.length == 0 {
-        return memoryListFor(id)
+        return memoryListFor(id, sc)
       }
       if not CloudAgents.Text.withinMaxLength(key, maxMemoryKeyLen) {
         return Err(Web.badRequest("key is too long (max " + toString(maxMemoryKeyLen) + " characters)"))
       }
-      val memScope = resolveMemoryScope(id)?
-      match CloudAgents.Repository.getMemory(memScope.userId, memScope.repoKey, key) {
+      val memScope = resolveMemoryScope(id, sc)?
+      match CloudAgents.Repository.getMemory(memScope.ownerScope, memScope.repoKey, key) {
         case Ok(Some(m)) -> {
           var acc: slice[MemoryEntry] = []
           acc = acc.append(MemoryEntry(key = m.memKey, value = m.value))
@@ -1493,7 +1504,7 @@ pub func listMemoryHandler(id: in String): Result[MemoryListResponse, Web.ApiErr
     return Err(Web.badRequest("id is required"))
   }
   requireOwnedSession(id)?
-  return memoryListFor(id)
+  return memoryListFor(id, CloudAgents.Auth.requestScope())
 }
 
 /// POST /api/sessions/{id}/callbacks/memory/forget — container-originated
@@ -1506,7 +1517,7 @@ pub func forgetHandler(
   if id.length == 0 {
     return Err(Web.badRequest("id is required"))
   }
-  authorizeCallbackToken(id, authHeaderValue)?
+  val sc = authorizeCallbackToken(id, authHeaderValue)?
   if req.key.length == 0 {
     return Err(Web.badRequest("key is required"))
   }
@@ -1516,8 +1527,8 @@ pub func forgetHandler(
   if not CloudAgents.Text.withinMaxLength(req.key, maxMemoryKeyLen) {
     return Err(Web.badRequest("key is too long (max " + toString(maxMemoryKeyLen) + " characters)"))
   }
-  val memScope = resolveMemoryScope(id)?
-  match CloudAgents.Repository.deleteMemory(memScope.userId, memScope.repoKey, req.key) {
+  val memScope = resolveMemoryScope(id, sc)?
+  match CloudAgents.Repository.deleteMemory(memScope.ownerScope, memScope.repoKey, req.key) {
     case Ok(true) -> return Ok(ForgetResponse(key = req.key, status = "deleted"))
     case Ok(false) -> return Ok(ForgetResponse(key = req.key, status = "absent"))
     case Err(e) -> return Err(dbError(e))
@@ -1577,15 +1588,15 @@ pub record CompleteTaskResponse {
 
 /// The (owner, repo) a session's task list is scoped to.
 record SessionTaskScope {
-  userId: String
+  ownerScope: CloudAgents.Pg.TenantScope
   repoKey: String
 }
 
 /// Resolve the owning user + normalized repo key for a session's task list,
 /// or an ApiError — the same shape as resolveMemoryScope, with a
 /// tasks-specific message.
-func resolveTaskScope(id: in String): Result[SessionTaskScope, Web.ApiError] {
-  val ownerRepo = match CloudAgents.Repository.sessionOwnerAndRepo(id) {
+func resolveTaskScope(id: in String, sc: in CloudAgents.Pg.TenantScope): Result[SessionTaskScope, Web.ApiError] {
+  val ownerRepo = match CloudAgents.Repository.sessionOwnerAndRepo(id, sc) {
     case Ok(Some(sr)) -> sr
     case Ok(None) -> return Err(Web.notFound("Session not found"))
     case Err(e) -> return Err(dbError(e))
@@ -1594,7 +1605,7 @@ func resolveTaskScope(id: in String): Result[SessionTaskScope, Web.ApiError] {
   if repoKey.length == 0 {
     return Err(Web.badRequest("this session has no repository to scope tasks to"))
   }
-  return Ok(SessionTaskScope(userId = ownerRepo.userId, repoKey = repoKey))
+  return Ok(SessionTaskScope(ownerScope = CloudAgents.Pg.TenantScope(tenantId = sc.tenantId, userId = ownerRepo.userId), repoKey = repoKey))
 }
 
 func taskSummaryOf(t: in CloudAgents.Repository.RepoTask): TaskSummary {
@@ -1607,9 +1618,9 @@ func taskSummaryOf(t: in CloudAgents.Repository.RepoTask): TaskSummary {
   )
 }
 
-func taskListFor(id: in String, statusFilter: in Option[String]): Result[TaskListResponse, Web.ApiError] {
-  val taskScope = resolveTaskScope(id)?
-  match CloudAgents.Repository.listTasks(taskScope.userId, taskScope.repoKey, statusFilter) {
+func taskListFor(id: in String, sc: in CloudAgents.Pg.TenantScope, statusFilter: in Option[String]): Result[TaskListResponse, Web.ApiError] {
+  val taskScope = resolveTaskScope(id, sc)?
+  match CloudAgents.Repository.listTasks(taskScope.ownerScope, taskScope.repoKey, statusFilter) {
     case Ok(rows) -> {
       var acc: slice[TaskSummary] = []
       for t in rows {
@@ -1647,15 +1658,15 @@ pub func createTaskHandler(
   if id.length == 0 {
     return Err(Web.badRequest("id is required"))
   }
-  authorizeCallbackToken(id, authHeaderValue)?
+  val sc = authorizeCallbackToken(id, authHeaderValue)?
   if req.description.length == 0 {
     return Err(Web.badRequest("description is required"))
   }
   if not CloudAgents.Text.withinMaxLength(req.description, maxTaskDescriptionLen) {
     return Err(Web.badRequest("description is too long (max " + toString(maxTaskDescriptionLen) + " characters)"))
   }
-  val taskScope = resolveTaskScope(id)?
-  match CloudAgents.Repository.addTaskCapped(taskScope.userId, taskScope.repoKey, req.description, maxOpenTasks) {
+  val taskScope = resolveTaskScope(id, sc)?
+  match CloudAgents.Repository.addTaskCapped(taskScope.ownerScope, taskScope.repoKey, req.description, maxOpenTasks) {
     case Ok(r) -> {
       if r.created {
         return Ok(CreateTaskResponse(id = r.id))
@@ -1680,9 +1691,9 @@ pub func listTasksHandler(
   if id.length == 0 {
     return Err(Web.badRequest("id is required"))
   }
-  authorizeCallbackToken(id, authHeaderValue)?
+  val sc = authorizeCallbackToken(id, authHeaderValue)?
   val statusFilter = normalizeStatusFilter(statusFilterRaw)?
-  return taskListFor(id, statusFilter)
+  return taskListFor(id, sc, statusFilter)
 }
 
 /// GET /api/sessions/{id}/tasks — user-originated. Lets the UI inspect a
@@ -1692,7 +1703,7 @@ pub func listSessionTasksHandler(id: in String): Result[TaskListResponse, Web.Ap
     return Err(Web.badRequest("id is required"))
   }
   requireOwnedSession(id)?
-  return taskListFor(id, None)
+  return taskListFor(id, CloudAgents.Auth.requestScope(), None)
 }
 
 /// POST /api/sessions/{id}/callbacks/tasks/{tid}/complete — container-
@@ -1707,12 +1718,12 @@ pub func completeTaskHandler(
   if id.length == 0 {
     return Err(Web.badRequest("id is required"))
   }
-  authorizeCallbackToken(id, authHeaderValue)?
+  val sc = authorizeCallbackToken(id, authHeaderValue)?
   if tid.length == 0 {
     return Err(Web.badRequest("task id is required"))
   }
-  val taskScope = resolveTaskScope(id)?
-  match CloudAgents.Repository.completeTask(taskScope.userId, taskScope.repoKey, tid) {
+  val taskScope = resolveTaskScope(id, sc)?
+  match CloudAgents.Repository.completeTask(taskScope.ownerScope, taskScope.repoKey, tid) {
     case Ok(TaskNotFound) -> return Err(Web.notFound("task not found"))
     case Ok(TaskAlreadyDone) -> return Ok(CompleteTaskResponse(id = tid, status = "done"))
     case Ok(TaskCompleted) -> return Ok(CompleteTaskResponse(id = tid, status = "done"))
@@ -1778,7 +1789,7 @@ pub func createNotificationHandler(
   if id.length == 0 {
     return Err(Web.badRequest("id is required"))
   }
-  authorizeCallbackToken(id, authHeaderValue)?
+  val sc = authorizeCallbackToken(id, authHeaderValue)?
   if req.summary.length == 0 {
     return Err(Web.badRequest("summary is required"))
   }
@@ -1793,7 +1804,7 @@ pub func createNotificationHandler(
   if not isValidNotifyLevel(req.level) {
     return Err(Web.badRequest("level must be one of: info, done, blocked"))
   }
-  match CloudAgents.Repository.createNotification(id, normalizedNotifyLevel(req.level), req.summary) {
+  match CloudAgents.Repository.createNotification(id, sc, normalizedNotifyLevel(req.level), req.summary) {
     case Ok(n) -> return Ok(NotifyResponse(id = n.id))
     case Err(e) -> return Err(dbError(e))
   }
@@ -1805,7 +1816,7 @@ pub func listNotificationsHandler(id: in String): Result[NotificationListRespons
     return Err(Web.badRequest("id is required"))
   }
   requireOwnedSession(id)?
-  match CloudAgents.Repository.listNotifications(id) {
+  match CloudAgents.Repository.listNotifications(id, CloudAgents.Auth.requestScope()) {
     case Ok(ns) -> {
       var acc: slice[NotificationSummary] = []
       for n in ns {
@@ -1834,15 +1845,15 @@ pub func listPendingCallbacksHandler(id: in String): Result[PendingCallbacksResp
   }
   requireOwnedSession(id)?
 
-  val prs = match CloudAgents.Repository.permissionRequestsCreatedAfter(id, "0") {
+  val prs = match CloudAgents.Repository.permissionRequestsCreatedAfter(id, CloudAgents.Auth.requestScope(), "0") {
     case Ok(items) -> items
     case Err(e) -> return Err(dbError(e))
   }
-  val qs = match CloudAgents.Repository.userQuestionsCreatedAfter(id, "0") {
+  val qs = match CloudAgents.Repository.userQuestionsCreatedAfter(id, CloudAgents.Auth.requestScope(), "0") {
     case Ok(items) -> items
     case Err(e) -> return Err(dbError(e))
   }
-  val srs = match CloudAgents.Repository.secretRequestsCreatedAfter(id, "0") {
+  val srs = match CloudAgents.Repository.secretRequestsCreatedAfter(id, CloudAgents.Auth.requestScope(), "0") {
     case Ok(items) -> items
     case Err(e) -> return Err(dbError(e))
   }

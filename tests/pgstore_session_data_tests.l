@@ -8,6 +8,7 @@ package CloudAgents.PgStoreSessionDataTests
 
 import Std.Core
 import Std.Environment
+import Std.File
 import Std.Testing
 import Std.Uuid
 import CloudAgents.Pg
@@ -18,6 +19,7 @@ import CloudAgents.PgStore.Messages
 import CloudAgents.Repository
 import CloudAgents.SessionStore
 import CloudAgents.Sqlite
+import extern System.Environment as Env
 
 func live(): Bool {
   val ok = CloudAgents.Pg.serviceConfigured() and
@@ -334,8 +336,26 @@ test "branching copies the transcript prefix and what hangs off it, with its own
     case Ok(_) -> ()
     case Err(e) -> panic(dbErrorMessage(e))
   }
+  match Store.createAttachment(parent, sc, "pic.png", "stored-pic", "image/png", "image", "3") {
+    case Ok(_) -> ()
+    case Err(e) -> panic(dbErrorMessage(e))
+  }
+  Env.SetEnvironmentVariable("CLOUD_AGENTS_ATTACHMENTS_DIR", "/tmp/cloud-agents-tests-att-" + uid())
+  val attDir = CloudAgents.Repository.attachmentsBaseDir()
+  match Std.File.createDir(attDir + "/" + parent) {
+    case Ok(_) -> ()
+    case Err(_) -> ()
+  }
+  match Std.File.writeText(attDir + "/" + parent + "/stored-pic", "png") {
+    case Ok(_) -> ()
+    case Err(_) -> panic("could not write the fixture file")
+  }
   val child = "c-" + uid()
   unit(Store.branchSession(parent, m1.id, child, sc, "feature"))
+  match Std.File.readText(attDir + "/" + child + "/stored-pic") {
+    case Ok(t) -> assertEqual(t, "png", "free-standing attachment's file copied after commit")
+    case Err(_) -> assertTrue(false, "attachment file was not copied to the branch")
+  }
   match Sessions.getSession(child, sc) {
     case Ok(Some(s)) -> {
       assertEqual(s.branch, "feature", "new branch")

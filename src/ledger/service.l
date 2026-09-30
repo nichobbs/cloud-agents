@@ -15,6 +15,7 @@ import Std.Core
 import CloudAgents.Pg
 import CloudAgents.Sqlite
 import CloudAgents.Repository
+import CloudAgents.SessionStore
 import CloudAgents.NetworkPolicy
 import CloudAgents.Capture
 import CloudAgents.Capture.Render
@@ -53,18 +54,26 @@ pub record SessionContext {
   pub sessionId: String
   pub ownerUserId: String
   pub ownerRepo: String
+  /// The session's tenant and owner, from its route (spec §5.2).
+  pub tenantScope: CloudAgents.Pg.TenantScope
 }
 
 /// The context for `sessionId`, unscoped (the caller has already
 /// authenticated the session: a container callback token, or an
 /// owner-scoped lookup on the human path).
 pub func sessionContext(sessionId: in String): Result[SessionContext, LedgerFailure] {
-  match CloudAgents.Repository.sessionOwnerAndRepo(sessionId) {
+  val sc = match CloudAgents.SessionStore.sessionRouteScope(sessionId) {
+    case Ok(Some(v)) -> v
+    case Ok(None) -> return Err(error = notFound("Session not found"))
+    case Err(e) -> return Err(error = dbFail(e))
+  }
+  match CloudAgents.Repository.sessionOwnerAndRepo(sessionId, sc) {
     case Ok(Some(sr)) -> return Ok(
       value = SessionContext(
         sessionId = sessionId,
         ownerUserId = sr.userId,
-        ownerRepo = ownerRepoOfRepoUrl(sr.repoUrl)
+        ownerRepo = ownerRepoOfRepoUrl(sr.repoUrl),
+        tenantScope = sc
       )
     )
     case Ok(None) -> return Err(error = notFound("Session not found"))
@@ -370,7 +379,7 @@ func changeStatus(
 /// Fire-and-forget "needs you" notification through the existing notify
 /// channel (docs/phase7-autonomy.md §5); a failure is logged, never fatal.
 func notifyOwner(ctx: in SessionContext, level: in String, summary: in String): Unit {
-  match CloudAgents.Repository.createNotification(ctx.sessionId, level, "Ledger: " + summary) {
+  match CloudAgents.Repository.createNotification(ctx.sessionId, ctx.tenantScope, level, "Ledger: " + summary) {
     case Ok(_) -> ()
     case Err(e) -> println("WARNING: ledger notification failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
   }

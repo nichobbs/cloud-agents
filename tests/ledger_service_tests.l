@@ -136,7 +136,7 @@ test "a three-issue batch: register, progress, decide, block, review, feedback, 
   // Block #2 on #1: a blocking entry + a notification.
   val blocked = agentOk("s1", "item-status", status("#2", "blocked", "Needs the schema from #1", "\"#1\""))
   assertTrue(blocked.contains("\"state\":\"blocked\""), blocked)
-  match CloudAgents.Repository.listNotifications("s1") {
+  match CloudAgents.Repository.listNotifications("s1", CloudAgents.Auth.requestScope()) {
     case Ok(ns) -> assertEqualInt(ns.length.toInt(), 1, "the owner is notified of the blocker")
     case Err(e) -> assertTrue(false, CloudAgents.Sqlite.dbErrorMessage(e))
   }

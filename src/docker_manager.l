@@ -1112,7 +1112,7 @@ pub func streamSessionMessage(
     // output-stream disconnect counter above, since these are supplementary
     // events on top of the primary output stream.
     if callbacksOn {
-      match CloudAgents.Repository.permissionRequestsCreatedAfter(sessionId, permissionCursor) {
+      match CloudAgents.Repository.permissionRequestsCreatedAfter(sessionId, CloudAgents.Pg.personalScope(userId), permissionCursor) {
         case Ok(reqs) -> {
           var ri = 0
           while ri < reqs.length {
@@ -1127,7 +1127,7 @@ pub func streamSessionMessage(
         }
         case Err(_) -> ()
       }
-      match CloudAgents.Repository.userQuestionsCreatedAfter(sessionId, questionCursor) {
+      match CloudAgents.Repository.userQuestionsCreatedAfter(sessionId, CloudAgents.Pg.personalScope(userId), questionCursor) {
         case Ok(qs) -> {
           var qi = 0
           while qi < qs.length {
@@ -1142,7 +1142,7 @@ pub func streamSessionMessage(
         }
         case Err(_) -> ()
       }
-      match CloudAgents.Repository.sessionProgress(sessionId) {
+      match CloudAgents.Repository.sessionProgress(sessionId, CloudAgents.Pg.personalScope(userId)) {
         case Ok(p) -> {
           if p.summary.length > 0 and (p.summary != lastProgressSummary or p.percent != lastProgressPercent) {
             lastProgressSummary = p.summary
@@ -1157,7 +1157,7 @@ pub func streamSessionMessage(
       }
       // Phase 6 §7: v2 tools' secret_request / artifact_reported events,
       // same best-effort forwarding as permission/question/progress above.
-      match CloudAgents.Repository.secretRequestsCreatedAfter(sessionId, secretCursor) {
+      match CloudAgents.Repository.secretRequestsCreatedAfter(sessionId, CloudAgents.Pg.personalScope(userId), secretCursor) {
         case Ok(reqs) -> {
           var si = 0
           while si < reqs.length {
@@ -1172,7 +1172,7 @@ pub func streamSessionMessage(
         }
         case Err(_) -> ()
       }
-      match CloudAgents.Repository.artifactsCreatedAfter(sessionId, artifactCursor) {
+      match CloudAgents.Repository.artifactsCreatedAfter(sessionId, CloudAgents.Pg.personalScope(userId), artifactCursor) {
         case Ok(arts) -> {
           var ai = 0
           while ai < arts.length {
@@ -1189,7 +1189,7 @@ pub func streamSessionMessage(
       }
       // Phase 7 §5: notify tool's notification events, same best-effort
       // forwarding as the others above.
-      match CloudAgents.Repository.notificationsCreatedAfter(sessionId, notificationCursor) {
+      match CloudAgents.Repository.notificationsCreatedAfter(sessionId, CloudAgents.Pg.personalScope(userId), notificationCursor) {
         case Ok(notes) -> {
           var ni = 0
           while ni < notes.length {

@@ -387,7 +387,7 @@ test "report_progress persists and validates percentComplete" {
     case Ok(_) -> ()
     case Err(e) -> assertTrue(false, "report failed: " + toString(e.status))
   }
-  match CloudAgents.Repository.sessionProgress(sid) {
+  match CloudAgents.Repository.sessionProgress(sid, CloudAgents.Auth.requestScope()) {
     case Ok(p) -> {
       assertEqual(p.summary, "cloning repo", "summary persisted")
       assertEqual(p.percent, "10", "percent persisted")
@@ -400,7 +400,7 @@ test "report_progress persists and validates percentComplete" {
     case Ok(_) -> ()
     case Err(e) -> assertTrue(false, "second report failed: " + toString(e.status))
   }
-  match CloudAgents.Repository.sessionProgress(sid) {
+  match CloudAgents.Repository.sessionProgress(sid, CloudAgents.Auth.requestScope()) {
     case Ok(p) -> assertEqual(p.summary, "running tests", "latest report replaces the prior one")
     case Err(e) -> assertTrue(false, "sessionProgress lookup failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
   }
@@ -410,7 +410,7 @@ test "report_progress persists and validates percentComplete" {
     case Ok(_) -> assertTrue(false, "percentComplete over 100 must be rejected")
     case Err(e) -> assertEqualInt(e.status, 400, "out-of-range percent returns 400")
   }
-  match CloudAgents.Repository.sessionProgress(sid) {
+  match CloudAgents.Repository.sessionProgress(sid, CloudAgents.Auth.requestScope()) {
     case Ok(p) -> assertEqual(p.summary, "running tests", "rejected report leaves the prior state untouched")
     case Err(e) -> assertTrue(false, "sessionProgress lookup failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
   }

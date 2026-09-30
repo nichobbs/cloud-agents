@@ -16,6 +16,7 @@ import Std.Core
 import Std.Collections
 import Std.Testing
 import Std.Uuid
+import CloudAgents.Scope
 import CloudAgents.PermissionEnrichment
 import CloudAgents.Repository
 import CloudAgents.Sqlite
@@ -138,35 +139,35 @@ func cleanupTestDb(path: in String): Unit {
 }
 
 func mustCreatePerm(sessionId: in String, tool: in String): String {
-  return match CloudAgents.Repository.createPermissionRequest(sessionId, tool, "{}", false) {
+  return match CloudAgents.Repository.createPermissionRequest(sessionId, CloudAgents.Scope.personalScope("default"), tool, "{}", false) {
     case Ok(r) -> r.id
     case Err(e) -> panic("createPermissionRequest failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
   }
 }
 
 func mustAnswerPerm(id: in String, status: in String): Unit {
-  match CloudAgents.Repository.answerPermissionRequest(id, status, "", "") {
+  match CloudAgents.Repository.answerPermissionRequest(id, CloudAgents.Scope.personalScope("default"), status, "", "") {
     case Ok(_) -> ()
     case Err(e) -> panic("answerPermissionRequest failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
   }
 }
 
 func mustCreateSecret(sessionId: in String, name: in String): String {
-  return match CloudAgents.Repository.createSecretRequest(sessionId, name, "why") {
+  return match CloudAgents.Repository.createSecretRequest(sessionId, CloudAgents.Scope.personalScope("default"), name, "why") {
     case Ok(r) -> r.id
     case Err(e) -> panic("createSecretRequest failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
   }
 }
 
 func mustAnswerSecret(id: in String, status: in String): Unit {
-  match CloudAgents.Repository.answerSecretRequest(id, status) {
+  match CloudAgents.Repository.answerSecretRequest(id, CloudAgents.Scope.personalScope("default"), status) {
     case Ok(_) -> ()
     case Err(e) -> panic("answerSecretRequest failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
   }
 }
 
 func mustDerive(sessionId: in String): List[ToolPermission] {
-  return match CloudAgents.PermissionEnrichment.permissionsForSession(sessionId) {
+  return match CloudAgents.PermissionEnrichment.permissionsForSession(sessionId, CloudAgents.Scope.personalScope("default")) {
     case Ok(perms) -> perms
     case Err(e) -> panic("permissionsForSession failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
   }
