@@ -780,48 +780,134 @@ pub func deleteSessionRecord(sessionId: in String, sc: in CloudAgents.Pg.TenantS
 }
 
 // ─── Run status ───────────────────────────────────────────────────────────────
+// Several API instances may serve the same database
+// (docs/phase11-postgres-tenancy.md §5.3a). The instance that starts a run
+// drives it and renews the session's heartbeat while it does; a RUNNING
+// session whose heartbeat has stopped is stranded, and the maintenance sweep
+// (CloudAgents.Handlers.reapContainers) takes it over and frees it. Instance
+// startup no longer resets RUNNING sessions, which would kill runs another
+// instance is driving.
+
+/// How often a driving instance renews a running session's heartbeat.
+pub val runHeartbeatIntervalMs: Int = 30000
+
+/// A RUNNING session whose heartbeat is this old is stranded.
+pub val strandedRunAfterMs: Int = 120000
+
+/// This instance's name, recorded on the runs it drives:
+/// `CLOUDAGENTS_INSTANCE_ID`, else the host name (a container's id under
+/// Docker), else the machine name and process id. Each is fixed for the
+/// process's life, so every call returns the same name without shared state
+/// (#1200), and two instances never share one (#1196).
+pub func instanceId(): String {
+  val configured = Env.GetEnvironmentVariable("CLOUDAGENTS_INSTANCE_ID")
+  if not DotNetString.IsNullOrEmpty(configured) {
+    return configured
+  }
+  val host = Env.GetEnvironmentVariable("HOSTNAME")
+  if not DotNetString.IsNullOrEmpty(host) {
+    return host
+  }
+  return Env.MachineName + "-" + toString(Env.ProcessId)
+}
+
+/// The name a sweep on this instance takes stranded runs over under.
+pub func sweeperId(): String {
+  return "sweep:" + instanceId()
+}
+
 /// Atomically claim a session for a run. Ok(false) means another run is
 /// already in progress (the caller should respond 409); the single UPDATE
-/// with a status guard makes two concurrent sends unable to both win.
+/// with a status guard makes two concurrent sends unable to both win. The
+/// claim records this instance and the run's first heartbeat.
 pub func tryBeginRun(sessionId: in String, sc: in CloudAgents.Pg.TenantScope): Result[Bool, CloudAgents.Sqlite.DbError] {
-  val n = CloudAgents.Sqlite.execute(CloudAgents.Db.tryBeginRunSql(sessionId, sc.userId, CloudAgents.Repository.nowMillis()))?
+  val n = CloudAgents.Sqlite.execute(
+    CloudAgents.Db.tryBeginRunSql(sessionId, sc.userId, CloudAgents.Repository.nowMillis(), instanceId())
+  )?
+  return Ok(value = n > 0)
+}
+
+/// Renew the heartbeat of a run this instance drives. Ok(false) when the
+/// session is no longer running here (it ended, or a sweep took it over).
+pub func heartbeatRun(sessionId: in String, sc: in CloudAgents.Pg.TenantScope): Result[Bool, CloudAgents.Sqlite.DbError] {
+  val n = CloudAgents.Sqlite.execute(
+    CloudAgents.Db.heartbeatRunSql(sessionId, sc.userId, CloudAgents.Repository.nowMillis(), instanceId())
+  )?
   return Ok(value = n > 0)
 }
 
 /// Return a session to IDLE after a run (success or failure) and record the
 /// activity time.
 pub func endRun(sessionId: in String, sc: in CloudAgents.Pg.TenantScope): Result[Unit, CloudAgents.Sqlite.DbError] {
-  CloudAgents.Sqlite.execute(CloudAgents.Db.endRunSql(sessionId, sc.userId, CloudAgents.Repository.nowMillis()))?
+  CloudAgents.Sqlite.execute(CloudAgents.Db.endRunSql(sessionId, sc.userId, CloudAgents.Repository.nowMillis(), instanceId()))?
   return Ok(value = ())
 }
 
-/// Container ids of sessions stranded RUNNING/WARM by a crash/restart. The
-/// startup sweep terminates these before recoverDanglingSessions blanks the
-/// container_id column, so no container is orphaned. (SessionStore cannot
-/// terminate them itself — that would need CloudAgents.Docker, which already
-/// depends on SessionStore; main() owns the cleanup to avoid the cycle.)
-pub func strandedContainerIds(): Result[slice[String], CloudAgents.Sqlite.DbError] {
-  val rows = CloudAgents.Sqlite.query(CloudAgents.Db.selectStrandedContainerIdsSql())?
-  var acc: slice[String] = []
+/// A stranded run the sweep has taken over. `containerId` is the container
+/// the run was using ("" if it had none yet), and `previousInstance` the
+/// instance that stopped heartbeating.
+pub record StrandedRun {
+  pub tenantScope: CloudAgents.Pg.TenantScope
+  pub sessionId: String
+  pub containerId: String
+  pub previousInstance: String
+  pub sweeper: String
+}
+
+/// Take over up to `limit` stranded runs, across every user: RUNNING
+/// sessions with no heartbeat for `strandedRunAfterMs`. Taking one over
+/// renews its heartbeat under this instance's sweeper name, so an
+/// overlapping sweep on any instance does not take it too. The caller
+/// terminates the container, records the outcome and calls
+/// `releaseStrandedRun` (SessionStore cannot reach CloudAgents.Docker).
+pub func claimStrandedRuns(limit: in Int): Result[slice[StrandedRun], CloudAgents.Sqlite.DbError] {
+  val now = CloudAgents.Repository.nowMillis()
+  val sweeper = sweeperId()
+  val rows = CloudAgents.Sqlite.query(CloudAgents.Db.selectStaleRunningSessionsSql(now, strandedRunAfterMs, limit))?
+  var acc: slice[StrandedRun] = []
   var i = 0
   val len = CloudAgents.Sqlite.getRowArrayLength(rows)
   while i < len {
-    acc = acc.append(colAt(CloudAgents.Sqlite.getRowArrayValue(rows, i).cols, 0))
+    val r = CloudAgents.Sqlite.getRowArrayValue(rows, i)
+    val id = colAt(r.cols, 0)
+    val n = CloudAgents.Sqlite.execute(CloudAgents.Db.takeOverStaleRunSql(id, colAt(r.cols, 2), sweeper, now))?
+    if n == 1 {
+      val sc = CloudAgents.Pg.personalScope(colAt(r.cols, 1))
+      acc = acc.append(
+        StrandedRun(
+          tenantScope = sc,
+          sessionId = id,
+          containerId = containerIdOf(id, sc)?,
+          previousInstance = colAt(r.cols, 3),
+          sweeper = sweeper
+        )
+      )
+    }
     i = i + 1
   }
   return Ok(value = acc)
 }
 
-/// Reset sessions stranded RUNNING/WARM by a crash or restart back to IDLE.
-/// Called once at startup, after the schema is created and any stranded
-/// containers have been terminated (see strandedContainerIds).
-pub func recoverDanglingSessions(): Result[Int, CloudAgents.Sqlite.DbError] {
-  return CloudAgents.Sqlite.execute(CloudAgents.Db.recoverDanglingSessionsSql())
+func containerIdOf(sessionId: in String, sc: in CloudAgents.Pg.TenantScope): Result[String, CloudAgents.Sqlite.DbError] {
+  return match getSession(sessionId, sc)? {
+    case Some(sess) -> Ok(value = sess.containerId)
+    case None -> Ok(value = "")
+  }
+}
+
+/// Return a stranded session to IDLE once its container is gone. Ok(false)
+/// when the sweep no longer holds it.
+pub func releaseStrandedRun(r: in StrandedRun): Result[Bool, CloudAgents.Sqlite.DbError] {
+  val n = CloudAgents.Sqlite.execute(
+    CloudAgents.Db.releaseStrandedRunSql(r.sessionId, r.sweeper, CloudAgents.Repository.nowMillis())
+  )?
+  return Ok(value = n > 0)
 }
 
 // ─── Idle container reaping ─────────────────────────────────────────────────────
 /// A WARM session whose container is past the warm window and should be stopped.
 pub record ReapTarget {
+  pub tenantScope: CloudAgents.Pg.TenantScope
   pub sessionId: String
   pub containerId: String
 }
@@ -829,7 +915,7 @@ pub record ReapTarget {
 /// Sessions whose WARM container has been idle past the warm window — ready for
 /// the reaper to stop. System-wide (reaping is maintenance, not per-request).
 /// The age filter runs in SQL; the caller (which can reach CloudAgents.Docker)
-/// terminates each container, then calls reapSessionContainer to blank the row.
+/// calls reapWarmSession and terminates the container only if that wins.
 pub func reapableWarmContainers(): Result[slice[ReapTarget], CloudAgents.Sqlite.DbError] {
   val rows = CloudAgents.Sqlite.query(CloudAgents.Db.selectReapableWarmSql(CloudAgents.Repository.nowMillis(), toString(CloudAgents.Db.warmWindowMillis())))?
   var acc: slice[ReapTarget] = []
@@ -837,16 +923,36 @@ pub func reapableWarmContainers(): Result[slice[ReapTarget], CloudAgents.Sqlite.
   val len = CloudAgents.Sqlite.getRowArrayLength(rows)
   while i < len {
     val r = CloudAgents.Sqlite.getRowArrayValue(rows, i)
-    acc = acc.append(ReapTarget(sessionId = colAt(r.cols, 0), containerId = colAt(r.cols, 1)))
+    acc = acc.append(
+      ReapTarget(
+        tenantScope = CloudAgents.Pg.personalScope(colAt(r.cols, 2)),
+        sessionId = colAt(r.cols, 0),
+        containerId = colAt(r.cols, 1)
+      )
+    )
     i = i + 1
   }
   return Ok(value = acc)
 }
 
-/// Return a reaped session to IDLE and blank its container id. System-wide (no
-/// per-user scoping — the reaper acts on the whole deployment).
-pub func reapSessionContainer(sessionId: in String): Result[Unit, CloudAgents.Sqlite.DbError] {
-  CloudAgents.Sqlite.execute(CloudAgents.Db.reapSessionContainerSql(sessionId))?
+/// The warm window in seconds, for the Postgres reaper's claim.
+pub func warmWindowSeconds(): String {
+  return toString(CloudAgents.Db.warmWindowMillis() / 1000.toLong())
+}
+
+/// Free a reap target's session row: Ok(true) when it was still WARM on the
+/// same container, in which case the caller terminates the container. Ok(false)
+/// when a run has started on it since, or another reaper got there first.
+pub func reapWarmSession(t: in ReapTarget): Result[Bool, CloudAgents.Sqlite.DbError] {
+  val n = CloudAgents.Sqlite.execute(CloudAgents.Db.reapWarmSessionSql(t.sessionId, t.containerId))?
+  return Ok(value = n > 0)
+}
+
+/// Return one of the caller's sessions to IDLE and drop its container
+/// reference, after the caller has terminated the container. A no-op while a
+/// run is in progress.
+pub func resetSessionContainer(sessionId: in String, sc: in CloudAgents.Pg.TenantScope): Result[Unit, CloudAgents.Sqlite.DbError] {
+  CloudAgents.Sqlite.execute(CloudAgents.Db.resetSessionContainerSql(sessionId, sc.userId))?
   return Ok(value = ())
 }
 

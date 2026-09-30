@@ -18,6 +18,7 @@ import CloudAgents.Pg.Migrate
 import CloudAgents.PgStore.Sessions as Store
 import CloudAgents.SessionStore
 import CloudAgents.Sqlite
+import extern System.Environment as Env
 
 func live(): Bool {
   val ok = CloudAgents.Pg.serviceConfigured() and
@@ -358,4 +359,218 @@ test "sessions are private to their user and tenant" {
       "rejected before any SQL: " + dbErrorMessage(e)
     )
   }
+}
+
+// ── Several instances (spec §5.3a) ─────────────────────────────────────────
+func stranded(): slice[StrandedRun] {
+  return match Store.claimStrandedRuns(100) {
+    case Ok(v) -> v
+    case Err(e) -> panic("claimStrandedRuns failed: " + dbErrorMessage(e))
+  }
+}
+
+func strandedFor(runs: in slice[StrandedRun], id: in String): Option[StrandedRun] {
+  for r in runs {
+    if r.sessionId == id {
+      return Some(value = r)
+    }
+  }
+  return None
+}
+
+func warm(): slice[ReapTarget] {
+  return match Store.reapableWarmContainers() {
+    case Ok(v) -> v
+    case Err(e) -> panic("reapableWarmContainers failed: " + dbErrorMessage(e))
+  }
+}
+
+func warmFor(targets: in slice[ReapTarget], id: in String): Option[ReapTarget] {
+  for t in targets {
+    if t.sessionId == id {
+      return Some(value = t)
+    }
+  }
+  return None
+}
+
+func running(sc: in CloudAgents.Pg.TenantScope, container: in String): String {
+  val id = "run-" + uid()
+  add(sc, id)
+  assertTrue(claim(Store.tryBeginRun(id, sc)), "claim " + id)
+  execScoped(sc, "UPDATE sessions SET container_id = @p1 WHERE id = @p0", [id, container])
+  return id
+}
+
+// The oldest possible heartbeat, so these rows lead the sweep's order even
+// when earlier runs of this suite have left stale rows behind.
+func goStale(sc: in CloudAgents.Pg.TenantScope, id: in String): Unit {
+  execScoped(
+    sc,
+    "UPDATE sessions SET run_heartbeat_at = timestamptz 'epoch' + interval '1 millisecond' WHERE id = @p0",
+    [id]
+  )
+}
+
+test "a sweep takes stranded runs over in every tenant, once, and frees them" {
+  if not live() {
+    return
+  }
+  migrate()
+  val a = fresh()
+  val b = fresh()
+  val staleA = running(a, "c-a")
+  val staleB = running(b, "c-b")
+  val live = running(a, "c-live")
+  goStale(a, staleA)
+  goStale(b, staleB)
+  assertTrue(claim(Store.heartbeatRun(live, a)), "the live run heartbeats")
+
+  val first = stranded()
+  match strandedFor(first, staleA) {
+    case Some(r) -> {
+      assertEqual(r.tenantScope.tenantId, a.tenantId, "tenant A's run carries tenant A")
+      assertEqual(r.tenantScope.userId, a.userId, "and its owner")
+      assertEqual(r.containerId, "c-a", "and its container")
+      assertEqual(r.previousInstance, CloudAgents.SessionStore.instanceId(), "and the instance that went quiet")
+    }
+    case None -> assertTrue(false, "tenant A's stranded run is taken over")
+  }
+  val rb = match strandedFor(first, staleB) {
+    case Some(r) -> r
+    case None -> panic("tenant B's stranded run is taken over")
+  }
+  match strandedFor(first, live) {
+    case Some(_) -> assertTrue(false, "a run with a live heartbeat is not taken over")
+    case None -> ()
+  }
+  match strandedFor(stranded(), staleA) {
+    case Some(_) -> assertTrue(false, "an overlapping sweep does not take the same run")
+    case None -> ()
+  }
+  assertFalse(claim(Store.heartbeatRun(staleA, a)), "a late heartbeat from the original instance changes nothing")
+  unit(Store.endRun(staleA, a))
+  assertEqual(optStr(Store.sessionStatus(staleA, a)), "RUNNING", "nor does its late endRun")
+
+  assertTrue(claim(Store.releaseStrandedRun(rb)), "the sweep frees B's session")
+  assertFalse(claim(Store.releaseStrandedRun(rb)), "freeing it twice is a no-op")
+  match opt(Store.getSession(staleB, b)) {
+    case Some(s) -> {
+      assertEqual(s.status, "IDLE", "B is idle again")
+      assertEqual(s.containerId, "", "with no container")
+    }
+    case None -> assertTrue(false, "B's session exists")
+  }
+  assertTrue(claim(Store.tryBeginRun(staleB, b)), "and can run again")
+}
+
+test "a RUNNING session with no heartbeat is stranded" {
+  if not live() {
+    return
+  }
+  migrate()
+  val sc = fresh()
+  val id = running(sc, "c-none")
+  execScoped(sc, "UPDATE sessions SET run_heartbeat_at = NULL WHERE id = @p0", [id])
+  val r = match strandedFor(stranded(), id) {
+    case Some(v) -> v
+    case None -> panic("a heartbeat-less RUNNING session is taken over")
+  }
+  assertTrue(claim(Store.releaseStrandedRun(r)), "and freed")
+}
+
+test "the warm reaper leases idle WARM sessions in every tenant and never frees a running one" {
+  if not live() {
+    return
+  }
+  migrate()
+  val a = fresh()
+  val b = fresh()
+  val oldA = "warm-" + uid()
+  val oldB = "warm-" + uid()
+  val recent = "warm-" + uid()
+  val raced = "warm-" + uid()
+  add(a, oldA)
+  add(b, oldB)
+  add(a, recent)
+  add(a, raced)
+  val idleWarm = "status = 'WARM', last_message_at = now() - interval '1 hour'"
+  execScoped(a, "UPDATE sessions SET " + idleWarm + ", container_id = 'c-old-a' WHERE id = @p0", [oldA])
+  execScoped(b, "UPDATE sessions SET " + idleWarm + ", container_id = 'c-old-b' WHERE id = @p0", [oldB])
+  execScoped(a, "UPDATE sessions SET " + idleWarm + ", container_id = 'c-raced' WHERE id = @p0", [raced])
+  execScoped(
+    a,
+    "UPDATE sessions SET status = 'WARM', container_id = 'c-recent', last_message_at = now() WHERE id = @p0",
+    [recent]
+  )
+
+  val first = warm()
+  val ta = match warmFor(first, oldA) { case Some(t) -> t; case None -> panic("tenant A's idle WARM session is found") }
+  assertEqual(ta.containerId, "c-old-a", "with its container")
+  assertEqual(ta.tenantScope.tenantId, a.tenantId, "under its tenant")
+  match warmFor(first, oldB) {
+    case Some(t) -> assertEqual(t.tenantScope.tenantId, b.tenantId, "tenant B's is found under tenant B")
+    case None -> assertTrue(false, "tenant B's idle WARM session is found")
+  }
+  match warmFor(first, recent) {
+    case Some(_) -> assertTrue(false, "a session inside the warm window is not reaped")
+    case None -> ()
+  }
+  match warmFor(warm(), oldA) {
+    case Some(_) -> assertTrue(false, "a leased session is not found by an overlapping reaper")
+    case None -> ()
+  }
+
+  assertTrue(claim(Store.reapWarmSession(ta)), "the reaper frees A's session")
+  assertFalse(claim(Store.reapWarmSession(ta)), "a second reap is a no-op")
+  match warmFor(first, raced) {
+    case Some(t) -> {
+      assertTrue(claim(Store.tryBeginRun(raced, a)), "a run starts on the session after the scan")
+      assertFalse(claim(Store.reapWarmSession(t)), "the reaper leaves the running session alone")
+    }
+    case None -> assertTrue(false, "the raced session is found")
+  }
+}
+
+test "resetting a session's container is refused while it runs" {
+  if not live() {
+    return
+  }
+  migrate()
+  val sc = fresh()
+  val id = running(sc, "c-reset")
+  unit(Store.resetSessionContainer(id, sc))
+  assertEqual(optStr(Store.sessionStatus(id, sc)), "RUNNING", "still running")
+  unit(Store.endRun(id, sc))
+  unit(Store.resetSessionContainer(id, sc))
+  match opt(Store.getSession(id, sc)) {
+    case Some(s) -> assertEqual(s.containerId, "", "an idle session's container is dropped")
+    case None -> assertTrue(false, "session exists")
+  }
+}
+
+// #1206: the sweep's name is stored whole, so its release still matches when
+// the instance name is long.
+test "a stranded run taken over under a long instance name is released" {
+  if not live() {
+    return
+  }
+  migrate()
+  val original = Env.GetEnvironmentVariable("CLOUDAGENTS_INSTANCE_ID")
+  defer {
+    Env.SetEnvironmentVariable("CLOUDAGENTS_INSTANCE_ID", original)
+  }
+  var long = ""
+  var i = 0
+  while i < 250 {
+    long = long + "x"
+    i = i + 1
+  }
+  Env.SetEnvironmentVariable("CLOUDAGENTS_INSTANCE_ID", long)
+  val sc = fresh()
+  val id = running(sc, "c-long")
+  goStale(sc, id)
+  val r = match strandedFor(stranded(), id) { case Some(v) -> v; case None -> panic("the stale run is taken over") }
+  assertTrue(r.sweeper.length.toInt() > 250, "the sweeper name is long")
+  assertTrue(claim(Store.releaseStrandedRun(r)), "and the release still matches it")
 }

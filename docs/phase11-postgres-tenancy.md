@@ -315,14 +315,30 @@ concurrent callers on any instance:
   lease (§5.3). A crashed pass's items become claimable again when it
   expires.
 - **Runs.** Until the runner agent owns runs (ADR-008 §2, §4), the instance
-  that starts a run drives it. The run records that instance and a
-  heartbeat, renewed every 30 seconds by its poll loop. A run with no
-  heartbeat for 2 minutes is stranded: the maintenance sweep terminates its
-  container, marks the run failed, surfaces it on the session, and returns
-  the session to `IDLE`. Instance startup no longer resets every `RUNNING`
-  or `WARM` session, which would kill runs another instance is driving.
-- **Warm containers** can be reaped by any instance; each is claimed with a
-  lease, so two reapers never stop the same container.
+  that starts a run drives it. The session row records that instance
+  (`run_instance`: `CLOUDAGENTS_INSTANCE_ID`, else the host name) and a
+  heartbeat (`run_heartbeat_at`), set when the run is claimed and renewed
+  every 30 seconds by the poll loops that drive it (the run, an observer
+  pass, an end-of-run inspect container). The heartbeat is on the session
+  rather than the `runs` row because an observer pass holds a session
+  `RUNNING` without a `runs` row. A `RUNNING` session with no heartbeat for
+  2 minutes (or none at all, e.g. left by an older version) is stranded:
+  the maintenance sweep (`POST /api/maintenance/reap`) takes it over by a
+  compare-and-set that hands the run to `sweep:<instance>` and renews its
+  heartbeat (`claim_stranded_runs` on Postgres, which also returns the
+  instance that went quiet, for the log), stops its container, marks its
+  running `runs` rows failed with the usual failed-run webhook, and returns
+  the session to `IDLE`. A container that cannot be stopped (one already
+  gone counts as stopped) leaves the session held by the sweep, and a later sweep retries once its renewed
+  heartbeat goes stale. A late heartbeat from the original instance
+  changes nothing once the run is taken over. Instance startup no longer
+  resets every `RUNNING` or `WARM` session, which would kill runs another
+  instance is driving.
+- **Warm containers** can be reaped by any instance. On Postgres each is
+  claimed with a lease (`claim_warm_sessions`); on both stores the session
+  is freed before its container is stopped, only while it is still `WARM`
+  on that container, so a run that started on it since keeps its container
+  and two reapers never both stop it.
 
 | Setting | Default |
 |---|---|

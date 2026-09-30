@@ -1550,30 +1550,115 @@ pub func getRuns(id: in String): Result[RunList, Web.ApiError] {
   }
 }
 
-/// Stop WARM containers idle past the warm window and free their session rows.
-/// A maintenance endpoint for an external scheduler to poll (Lyric.Web has no
-/// in-process timer yet); safe to call repeatedly — it no-ops when nothing is
-/// reapable. Returns `{"reaped":N}`.
+/// Most stranded runs one maintenance call takes over; the rest wait for
+/// the next call.
+val maxStrandedRunsPerSweep = 25
+
+/// Free one stranded run: stop its container, fail the run rows it left
+/// "running" (with the usual failed-run webhook), then return the session to
+/// IDLE. A container Docker no longer has (the usual case after a Docker or
+/// host restart) counts as stopped: `terminateSessionContainer` returns Ok for
+/// it, since `deleteRunnerContainer` treats Docker's 404 as removed (#1210).
+/// Any other failure to stop it leaves the session held by this sweep rather
+/// than freed, so it never points away from an agent that may still be
+/// running (#1201); its renewed heartbeat goes stale again and a later sweep
+/// retries. Returns whether the session was freed.
+func sweepStrandedRun(r: in CloudAgents.SessionStore.StrandedRun): Bool {
+  println(
+    "stranded run: session " + r.sessionId + " had no heartbeat from instance '" + r.previousInstance + "' for " +
+      toString(CloudAgents.SessionStore.strandedRunAfterMs / 1000) +
+      "s; stopping it"
+  )
+  if r.containerId.length > 0 {
+    match CloudAgents.Docker.terminateSessionContainer(r.containerId) {
+      case Ok(_) -> ()
+      case Err(e) -> {
+        println(
+          "WARNING: could not terminate stranded container " + r.containerId + " of session " + r.sessionId + ": " + e +
+            "; leaving the session held for a later sweep"
+        )
+        return false
+      }
+    }
+  }
+  match CloudAgents.Repository.listRuns(r.sessionId, r.tenantScope) {
+    case Ok(rl) -> {
+      val runs: slice[CloudAgents.Repository.Run] = rl.runs
+      for run in runs {
+        if run.status == "running" {
+          val _ = CloudAgents.Repository.recordRunEnd(run.id, r.tenantScope, "failed")
+          val _ = CloudAgents.Repository.enqueueWebhookEvent(r.tenantScope, r.sessionId, run.id, "failed")
+        }
+      }
+    }
+    case Err(e) -> println(
+      "WARNING: could not list runs of stranded session " + r.sessionId + ": " +
+        CloudAgents.Sqlite.dbErrorMessage(e)
+    )
+  }
+  return match CloudAgents.SessionStore.releaseStrandedRun(r) {
+    case Ok(b) -> b
+    case Err(e) -> {
+      println("WARNING: could not free stranded session " + r.sessionId + ": " + CloudAgents.Sqlite.dbErrorMessage(e))
+      false
+    }
+  }
+}
+
+/// The maintenance sweep behind `POST /api/maintenance/reap`, for an external
+/// scheduler to poll (Lyric.Web has no in-process timer yet). Safe to call
+/// repeatedly and from several instances at once
+/// (docs/phase11-postgres-tenancy.md §5.3a):
+///
+/// - Stranded runs: a RUNNING session whose driving instance stopped renewing
+///   its heartbeat (`CloudAgents.SessionStore.strandedRunAfterMs`) is taken
+///   over, its container stopped, its runs marked failed, and the session
+///   returned to IDLE.
+/// - Idle WARM containers past the warm window are stopped and their
+///   sessions freed; a session is freed before its container is stopped, and
+///   only while it is still WARM on that container, so a run that has since
+///   started keeps its container and two reapers never both stop it.
+///
+/// Returns `{"reaped":N,"stranded":M}`.
 pub func reapContainers(): Result[String, Web.ApiError] {
+  val stranded = match CloudAgents.SessionStore.claimStrandedRuns(maxStrandedRunsPerSweep) {
+    case Ok(t) -> t
+    case Err(e) -> return Err(Web.internalError("failed to list stranded runs: " + CloudAgents.Sqlite.dbErrorMessage(e)))
+  }
+  var freed = 0
+  for r in stranded {
+    if sweepStrandedRun(r) {
+      freed = freed + 1
+    }
+  }
   val targets = match CloudAgents.SessionStore.reapableWarmContainers() {
     case Ok(t) -> t
     case Err(e) -> return Err(Web.internalError("failed to list reapable containers: " + CloudAgents.Sqlite.dbErrorMessage(e)))
   }
   var reaped = 0
-  var i = 0
-  while i < targets.length {
-    val t = targets[i]
-    // Terminate is best-effort (the container may already be gone); blank the
-    // session row regardless so it returns to IDLE.
-    match CloudAgents.Docker.terminateSessionContainer(t.containerId) {
-      case Ok(_) -> ()
-      case Err(_) -> ()
+  for t in targets {
+    match CloudAgents.SessionStore.reapWarmSession(t) {
+      case Ok(true) -> {
+        // The session no longer references the container, so a failed
+        // terminate is logged with its id for the operator to remove by
+        // hand (#1195); it may simply be gone already.
+        match CloudAgents.Docker.terminateSessionContainer(t.containerId) {
+          case Ok(_) -> ()
+          case Err(e) -> println(
+            "WARNING: reaped session " + t.sessionId + " but could not terminate container " + t.containerId +
+              ": " +
+              e
+          )
+        }
+        reaped = reaped + 1
+      }
+      case Ok(false) -> ()
+      case Err(e) -> println(
+        "WARNING: could not reap session " + t.sessionId + ": " + CloudAgents.Sqlite.dbErrorMessage(e)
+      )
     }
-    val _ = CloudAgents.SessionStore.reapSessionContainer(t.sessionId)
-    reaped = reaped + 1
-    i = i + 1
   }
-  return Ok(value = "{\"reaped\":" + toString(reaped) + "}")
+  return Ok(value = "{\"reaped\":" + toString(reaped) + ",\"stranded\":" + toString(freed) + "}")
 }
 
 // ─── getRunOutput reconnect cache (#974) ───────────────────────────────────
@@ -2105,7 +2190,7 @@ pub func restartSessionContainer(id: in String): Result[Unit, Web.ApiError] {
     }
   }
 
-  match CloudAgents.SessionStore.reapSessionContainer(id) {
+  match CloudAgents.SessionStore.resetSessionContainer(id, CloudAgents.Auth.requestScope()) {
     case Ok(_) -> return Ok(())
     case Err(e) -> return Err(Web.internalError("failed to reset session status: " + CloudAgents.Sqlite.dbErrorMessage(e)))
   }

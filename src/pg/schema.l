@@ -227,11 +227,24 @@ func sessionTables(): slice[String] {
           "is_archived boolean NOT NULL DEFAULT false, group_id text NOT NULL DEFAULT '', " +
           "last_viewed_at timestamptz, parent_session_id text NOT NULL DEFAULT '', " +
           "forked_from_message_id text NOT NULL DEFAULT '', observes_session_id text NOT NULL DEFAULT '', " +
+          "run_instance text NOT NULL DEFAULT '', run_heartbeat_at timestamptz, reap_claimed_until timestamptz, " +
           "PRIMARY KEY (tenant_id, id)"
       ),
       [
         "CREATE INDEX sessions_user ON public.sessions (tenant_id, user_id)",
-        "CREATE INDEX sessions_parent ON public.sessions (tenant_id, parent_session_id)"
+        "CREATE INDEX sessions_parent ON public.sessions (tenant_id, parent_session_id)",
+        "CREATE INDEX sessions_running ON public.sessions (run_heartbeat_at) WHERE status = 'RUNNING'",
+        "CREATE INDEX sessions_warm ON public.sessions (last_message_at) WHERE status = 'WARM'"
+      ],
+      // The stranded-run sweep and the warm reaper (§5.3a) find sessions in
+      // every tenant through claim_stranded_runs and claim_warm_sessions; the
+      // claimer sees only the columns those need, and writes only the run's
+      // holder and heartbeat and the reap lease.
+      claimerPolicies("sessions"),
+      [
+        "GRANT SELECT (tenant_id, id, user_id, status, container_id, last_message_at, run_instance, " +
+          "run_heartbeat_at, reap_claimed_until), UPDATE (run_instance, run_heartbeat_at, reap_claimed_until) " +
+          "ON public.sessions TO cloudagents_claimer"
       ],
       tenantTable(
         "messages",
@@ -674,6 +687,44 @@ func pruneOutboxFn(): String {
     "SELECT pg_catalog.count(*) FROM d $fn$"
 }
 
+/// Takes over RUNNING sessions whose heartbeat is older than `p_stale_seconds`
+/// (at least 30) or missing, in every tenant: the run is handed to
+/// `p_sweeper` and its heartbeat renewed, so an overlapping sweep neither sees
+/// it as stale nor takes it. Returns the scope keys plus the instance that
+/// stopped heartbeating (an operator-side name, for the sweep's log).
+func claimStrandedRunsFn(): String {
+  return "CREATE FUNCTION public.claim_stranded_runs(p_limit integer, p_stale_seconds integer, p_sweeper text) " +
+    "RETURNS TABLE (tenant_id text, id text, user_id text, previous_instance text) LANGUAGE sql SECURITY DEFINER " +
+    "SET search_path = pg_catalog, pg_temp AS $fn$ " +
+    "UPDATE public.sessions AS s " +
+    "SET run_instance = p_sweeper, run_heartbeat_at = pg_catalog.now() " +
+    "FROM (SELECT q.tenant_id, q.id, q.run_instance AS prev FROM public.sessions AS q " +
+    "WHERE q.status = 'RUNNING' AND (q.run_heartbeat_at IS NULL OR q.run_heartbeat_at < pg_catalog.now() - " +
+    "pg_catalog.make_interval(secs => GREATEST(p_stale_seconds, 30))) " +
+    "ORDER BY q.run_heartbeat_at NULLS FIRST LIMIT LEAST(GREATEST(p_limit, 0), 100) FOR UPDATE SKIP LOCKED) AS d " +
+    "WHERE s.tenant_id = d.tenant_id AND s.id = d.id " +
+    "RETURNING s.tenant_id, s.id, s.user_id, d.prev $fn$"
+}
+
+/// Leases WARM sessions idle for at least `p_warm_window_seconds` (at least
+/// 60) that still hold a container, in every tenant.
+func claimWarmSessionsFn(): String {
+  return "CREATE FUNCTION public.claim_warm_sessions(p_limit integer, p_lease_seconds integer, " +
+    "p_warm_window_seconds integer) " +
+    "RETURNS TABLE (tenant_id text, id text, user_id text) LANGUAGE sql SECURITY DEFINER " +
+    "SET search_path = pg_catalog, pg_temp AS $fn$ " +
+    "UPDATE public.sessions AS s " +
+    "SET reap_claimed_until = pg_catalog.now() + pg_catalog.make_interval(secs => " +
+    "LEAST(GREATEST(p_lease_seconds, 1), 3600)) " +
+    "FROM (SELECT q.tenant_id, q.id FROM public.sessions AS q " +
+    "WHERE q.status = 'WARM' AND q.container_id <> '' AND q.last_message_at <= pg_catalog.now() - " +
+    "pg_catalog.make_interval(secs => GREATEST(p_warm_window_seconds, 60)) " +
+    "AND (q.reap_claimed_until IS NULL OR q.reap_claimed_until < pg_catalog.now()) " +
+    "ORDER BY q.last_message_at LIMIT LEAST(GREATEST(p_limit, 0), 100) FOR UPDATE SKIP LOCKED) AS d " +
+    "WHERE s.tenant_id = d.tenant_id AND s.id = d.id " +
+    "RETURNING s.tenant_id, s.id, s.user_id $fn$"
+}
+
 func claimMembershipSyncFn(): String {
   return "CREATE FUNCTION public.claim_membership_sync(p_limit integer, p_lease_seconds integer) " +
     "RETURNS TABLE (user_id text) LANGUAGE sql SECURITY DEFINER " +
@@ -726,6 +777,8 @@ func claimFunctions(): slice[String] {
     pruneOutboxFn(),
     claimMembershipSyncFn(),
     claimScheduledJobsFn(),
+    claimStrandedRunsFn(),
+    claimWarmSessionsFn(),
     // Privileges first, while cloudagents_owner still owns the functions: a
     // GRANT/REVOKE by a non-owner is silently a no-op (with only a warning),
     // which would leave EXECUTE with PUBLIC. ALTER ... OWNER TO then carries
@@ -734,10 +787,14 @@ func claimFunctions(): slice[String] {
     "REVOKE ALL ON FUNCTION public.prune_graph_ingest_outbox(integer) FROM PUBLIC",
     "REVOKE ALL ON FUNCTION public.claim_membership_sync(integer, integer) FROM PUBLIC",
     "REVOKE ALL ON FUNCTION public.claim_scheduled_jobs(integer) FROM PUBLIC",
+    "REVOKE ALL ON FUNCTION public.claim_stranded_runs(integer, integer, text) FROM PUBLIC",
+    "REVOKE ALL ON FUNCTION public.claim_warm_sessions(integer, integer, integer) FROM PUBLIC",
     "GRANT EXECUTE ON FUNCTION public.claim_graph_ingest_outbox(integer, integer) TO cloudagents_app",
     "GRANT EXECUTE ON FUNCTION public.prune_graph_ingest_outbox(integer) TO cloudagents_app",
     "GRANT EXECUTE ON FUNCTION public.claim_membership_sync(integer, integer) TO cloudagents_app",
     "GRANT EXECUTE ON FUNCTION public.claim_scheduled_jobs(integer) TO cloudagents_app",
+    "GRANT EXECUTE ON FUNCTION public.claim_stranded_runs(integer, integer, text) TO cloudagents_app",
+    "GRANT EXECUTE ON FUNCTION public.claim_warm_sessions(integer, integer, integer) TO cloudagents_app",
     // ALTER ... OWNER TO needs the new owner to hold CREATE on the schema;
     // grant it only for the ownership change.
     "GRANT CREATE ON SCHEMA public TO cloudagents_claimer",
@@ -745,6 +802,8 @@ func claimFunctions(): slice[String] {
     "ALTER FUNCTION public.prune_graph_ingest_outbox(integer) OWNER TO cloudagents_claimer",
     "ALTER FUNCTION public.claim_membership_sync(integer, integer) OWNER TO cloudagents_claimer",
     "ALTER FUNCTION public.claim_scheduled_jobs(integer) OWNER TO cloudagents_claimer",
+    "ALTER FUNCTION public.claim_stranded_runs(integer, integer, text) OWNER TO cloudagents_claimer",
+    "ALTER FUNCTION public.claim_warm_sessions(integer, integer, integer) OWNER TO cloudagents_claimer",
     "REVOKE CREATE ON SCHEMA public FROM cloudagents_claimer"
   ]
 }

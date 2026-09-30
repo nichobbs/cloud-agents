@@ -80,6 +80,19 @@ func updateOwned(
   return Ok(value = n)
 }
 
+/// `updateOwned` with an extra guard appended to the WHERE clause.
+func updateOwnedWhen(
+  sc: in CloudAgents.Pg.TenantScope, set: in String, guard: in String, params: in slice[String]
+): Result[Int, CloudAgents.Sqlite.DbError] {
+  val u = CloudAgents.PgStore.open(sc)?
+  defer {
+    CloudAgents.PgStore.release(u)
+  }
+  val n = CloudAgents.PgStore.ex(u, "UPDATE sessions SET " + set + ownedWhere() + guard, params)?
+  CloudAgents.PgStore.commit(u)?
+  return Ok(value = n)
+}
+
 /// The session-list projection as `{"sessions":[...]}`, most recently active
 /// first, observer sessions excluded.
 pub func sessionSummariesJson(sc: in CloudAgents.Pg.TenantScope): Result[String, CloudAgents.Sqlite.DbError] {
@@ -299,20 +312,129 @@ pub func deleteSessionRecord(
 }
 
 /// Atomically claim a session for a run: false when a run is already in
-/// progress (or the session is not the caller's).
+/// progress (or the session is not the caller's). The claim records this
+/// instance and the run's first heartbeat (spec §5.3a).
 pub func tryBeginRun(sessionId: in String, sc: in CloudAgents.Pg.TenantScope): Result[Bool, CloudAgents.Sqlite.DbError] {
-  val u = CloudAgents.PgStore.open(sc)?
-  defer {
-    CloudAgents.PgStore.release(u)
-  }
-  val n = CloudAgents.PgStore.ex(u, "UPDATE sessions SET status = 'RUNNING', last_message_at = " + CloudAgents.Pg.msIn(2) + ownedWhere() + " AND status <> 'RUNNING'", [sessionId, sc.userId, CloudAgents.Repository.nowMillis()])?
-  CloudAgents.PgStore.commit(u)?
+  val n = updateOwnedWhen(sc, "status = 'RUNNING', last_message_at = " + CloudAgents.Pg.msIn(2) + ", run_instance = @p3, run_heartbeat_at = now()", " AND status <> 'RUNNING'", [sessionId, sc.userId, CloudAgents.Repository.nowMillis(), CloudAgents.SessionStore.instanceId()])?
   return Ok(value = n > 0)
 }
 
-/// Return a session to IDLE after a run and record the activity time.
+/// Renew the heartbeat of a run this instance drives; false once the run has
+/// ended or a sweep has taken it over. The heartbeat is the database's clock,
+/// the same one `claim_stranded_runs` judges staleness by, so clock skew
+/// between an instance and the database cannot make a live run look stranded
+/// (#1198).
+pub func heartbeatRun(sessionId: in String, sc: in CloudAgents.Pg.TenantScope): Result[Bool, CloudAgents.Sqlite.DbError] {
+  val n = updateOwnedWhen(sc, "run_heartbeat_at = now()", " AND status = 'RUNNING' AND run_instance = @p2", [sessionId, sc.userId, CloudAgents.SessionStore.instanceId()])?
+  return Ok(value = n > 0)
+}
+
+/// Return a session to IDLE after a run and record the activity time. A
+/// RUNNING session is only ended by the instance driving it: once a sweep
+/// has taken the run over (and perhaps another run has started), the
+/// original instance's late endRun changes nothing (#1199).
 pub func endRun(sessionId: in String, sc: in CloudAgents.Pg.TenantScope): Result[Unit, CloudAgents.Sqlite.DbError] {
-  updateOwned(sc, "status = 'IDLE', last_message_at = " + CloudAgents.Pg.msIn(2), [sessionId, sc.userId, CloudAgents.Repository.nowMillis()])?
+  updateOwnedWhen(sc, "status = 'IDLE', last_message_at = " + CloudAgents.Pg.msIn(2), " AND (status <> 'RUNNING' OR run_instance = @p3)", [sessionId, sc.userId, CloudAgents.Repository.nowMillis(), CloudAgents.SessionStore.instanceId()])?
+  return Ok(value = ())
+}
+
+/// Take over up to `limit` stranded runs in every tenant through
+/// `claim_stranded_runs`, then read each one's container under its owner's
+/// scope. A run whose read-back fails stays held by this sweep until its
+/// renewed heartbeat goes stale again, when a later sweep takes it.
+pub func claimStrandedRuns(
+  limit: in Int
+): Result[slice[CloudAgents.SessionStore.StrandedRun], CloudAgents.Sqlite.DbError] {
+  val sweeper = CloudAgents.SessionStore.sweeperId()
+  val u = CloudAgents.PgStore.openUnscoped()?
+  defer {
+    CloudAgents.PgStore.release(u)
+  }
+  val keys = CloudAgents.PgStore.q(u, "SELECT tenant_id, id, user_id, previous_instance FROM public.claim_stranded_runs(@p0::integer, @p1::integer, @p2)", [toString(limit), toString(CloudAgents.SessionStore.strandedRunAfterMs / 1000), sweeper])?
+  CloudAgents.PgStore.commit(u)?
+  var acc: slice[CloudAgents.SessionStore.StrandedRun] = []
+  for k in keys {
+    val id = CloudAgents.PgStore.col(k, "id")
+    val sc = CloudAgents.Pg.TenantScope(
+      tenantId = CloudAgents.PgStore.col(k, "tenant_id"),
+      userId = CloudAgents.PgStore.col(k, "user_id")
+    )
+    match getSession(id, sc) {
+      case Ok(found) -> {
+        val containerId = match found { case Some(sess) -> sess.containerId; case None -> "" }
+        acc = acc.append(
+          CloudAgents.SessionStore.StrandedRun(
+            tenantScope = sc,
+            sessionId = id,
+            containerId = containerId,
+            previousInstance = CloudAgents.PgStore.col(k, "previous_instance"),
+            sweeper = sweeper
+          )
+        )
+      }
+      case Err(e) -> println(
+        "WARNING: could not read stranded session " + id + ": " + CloudAgents.Sqlite.dbErrorMessage(e)
+      )
+    }
+  }
+  return Ok(value = acc)
+}
+
+/// Return a stranded session to IDLE once its container is gone; false when
+/// the sweep no longer holds it.
+pub func releaseStrandedRun(r: in CloudAgents.SessionStore.StrandedRun): Result[Bool, CloudAgents.Sqlite.DbError] {
+  val n = updateOwnedWhen(r.tenantScope, "status = 'IDLE', container_id = '', last_message_at = " + CloudAgents.Pg.msIn(2), " AND status = 'RUNNING' AND run_instance = @p3", [r.sessionId, r.tenantScope.userId, CloudAgents.Repository.nowMillis(), r.sweeper])?
+  return Ok(value = n > 0)
+}
+
+/// How long a reaper holds a WARM session it has found.
+val warmReapLeaseSeconds = 300
+
+/// Lease up to 100 WARM sessions past the warm window in every tenant through
+/// `claim_warm_sessions`, and read each one's container under its owner's
+/// scope.
+pub func reapableWarmContainers(): Result[slice[CloudAgents.SessionStore.ReapTarget], CloudAgents.Sqlite.DbError] {
+  val u = CloudAgents.PgStore.openUnscoped()?
+  defer {
+    CloudAgents.PgStore.release(u)
+  }
+  val keys = CloudAgents.PgStore.q(u, "SELECT tenant_id, id, user_id FROM public.claim_warm_sessions(100, @p0::integer, @p1::integer)", [toString(warmReapLeaseSeconds), CloudAgents.SessionStore.warmWindowSeconds()])?
+  CloudAgents.PgStore.commit(u)?
+  var acc: slice[CloudAgents.SessionStore.ReapTarget] = []
+  for k in keys {
+    val id = CloudAgents.PgStore.col(k, "id")
+    val sc = CloudAgents.Pg.TenantScope(
+      tenantId = CloudAgents.PgStore.col(k, "tenant_id"),
+      userId = CloudAgents.PgStore.col(k, "user_id")
+    )
+    match getSession(id, sc) {
+      case Ok(Some(sess)) -> {
+        if sess.containerId.length > 0 {
+          acc = acc.append(
+            CloudAgents.SessionStore.ReapTarget(tenantScope = sc, sessionId = id, containerId = sess.containerId)
+          )
+        }
+      }
+      case Ok(None) -> ()
+      case Err(e) -> println("WARNING: could not read warm session " + id + ": " + CloudAgents.Sqlite.dbErrorMessage(e))
+    }
+  }
+  return Ok(value = acc)
+}
+
+/// Free a reap target's session: true when it was still WARM on the same
+/// container, in which case the caller stops the container.
+pub func reapWarmSession(t: in CloudAgents.SessionStore.ReapTarget): Result[Bool, CloudAgents.Sqlite.DbError] {
+  val n = updateOwnedWhen(t.tenantScope, "status = 'IDLE', container_id = '', reap_claimed_until = NULL", " AND status = 'WARM' AND container_id = @p2", [t.sessionId, t.tenantScope.userId, t.containerId])?
+  return Ok(value = n > 0)
+}
+
+/// Return one of the caller's sessions to IDLE and drop its container
+/// reference; a no-op while a run is in progress.
+pub func resetSessionContainer(
+  sessionId: in String, sc: in CloudAgents.Pg.TenantScope
+): Result[Unit, CloudAgents.Sqlite.DbError] {
+  updateOwnedWhen(sc, "status = 'IDLE', container_id = ''", " AND status <> 'RUNNING'", [sessionId, sc.userId])?
   return Ok(value = ())
 }
 

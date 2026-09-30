@@ -98,3 +98,9 @@ pub func formatDockerError(message: in String, details: in String): String {
   }
   return message
 }
+
+/// Whether a Docker error status means the container does not exist, so a
+/// remove has nothing left to do (#1210).
+pub func containerAlreadyGone(statusCode: in Option[Int]): Bool {
+  return match statusCode { case Some(code) -> code == 404; case None -> false }
+}

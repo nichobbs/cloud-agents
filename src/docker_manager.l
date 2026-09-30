@@ -597,12 +597,22 @@ async func waitForContainerAttempt(
 }
 
 /// Delete the container.
+/// Remove a container. One that no longer exists (Docker 404) counts as
+/// removed: every caller wants it gone, and after a Docker or host restart it
+/// already is. Without this a stranded run's sweep could never free its
+/// session (#1210).
 pub async func deleteRunnerContainer(client: in DockerClient, containerId: in String): Result[Unit, String] {
   val cid = dockerContainerId(containerId)?
   val deleteRes = await removeContainer(client, cid)
   match deleteRes {
     case Ok(_) -> Ok(value = ())
-    case Err(e) -> Err(error = "Failed to delete container: " + e.message)
+    case Err(e) -> {
+      if CloudAgents.DockerPolicy.containerAlreadyGone(e.statusCode) {
+        Ok(value = ())
+      } else {
+        Err(error = "Failed to delete container: " + e.message)
+      }
+    }
   }
 }
 
@@ -677,6 +687,21 @@ async func partialContainerLogsAsync(containerId: in String, cell: in ResultCell
     case Err(_) -> {
       cell.isSuccess = false
     }
+  }
+}
+
+/// Renew the heartbeat of a run this instance drives
+/// (docs/phase11-postgres-tenancy.md §5.3a). Best-effort: a failed write is
+/// logged; a run that misses heartbeats for
+/// `CloudAgents.SessionStore.strandedRunAfterMs` is freed by the maintenance
+/// sweep.
+func renewRunHeartbeat(sessionId: in String, userId: in String): Unit {
+  match CloudAgents.SessionStore.heartbeatRun(sessionId, CloudAgents.Pg.personalScope(userId)) {
+    case Ok(_) -> ()
+    case Err(e) -> println(
+      "WARNING: run heartbeat failed for session " + sessionId + ": " +
+        CloudAgents.Sqlite.dbErrorMessage(e)
+    )
   }
 }
 
@@ -847,6 +872,9 @@ pub func streamSessionMessage(
   w: in Web.ResponseWriter,
 ): Result[String, String] {
   val cell = ResultCell(isSuccess = false, output = "", error = "")
+  // The work since the run was claimed (attachments, run record) happened
+  // outside any poll loop; start this one with a fresh heartbeat (#1194).
+  renewRunHeartbeat(sessionId, userId)
   val t = runSessionMessageAsync(
     repoUrl,
     branch,
@@ -881,6 +909,7 @@ pub func streamSessionMessage(
   // travels as text for the same cross-package Long reason as elapsedPollMs.
   val runStartedAt = toString(startMs)
   var observerCheckMs = 0
+  var heartbeatMs = 0
   // Adaptive poll cadence (#495): poll responsively while output is flowing,
   // but back off toward maxPollMs during quiet stretches so a long, idle run
   // doesn't refetch the whole container log every second (each tick opens a
@@ -1274,6 +1303,11 @@ pub func streamSessionMessage(
     if elapsedPollMs > runWallClockCapMs {
       timedOut = true
     }
+    heartbeatMs = heartbeatMs + ticked
+    if heartbeatMs >= CloudAgents.SessionStore.runHeartbeatIntervalMs {
+      heartbeatMs = 0
+      renewRunHeartbeat(sessionId, userId)
+    }
     observerCheckMs = observerCheckMs + ticked
     if observerCheckMs >= observerCheckIntervalMs {
       observerCheckMs = 0
@@ -1346,6 +1380,9 @@ pub func streamSessionMessage(
       }
     }
     // End-of-run provenance emission (best-effort; never fails the run).
+    // The end-of-run work below runs outside the poll loop; renew first so
+    // it starts with a fresh heartbeat (#1194).
+    renewRunHeartbeat(sessionId, userId)
     emitRunnerCheckpoint(sessionId, harness, userId, model, prompt, finalLogs)
     return Ok(value = CloudAgents.Capture.Render.renderFullLog(finalLogs))
   }
@@ -1495,6 +1532,9 @@ pub func runSessionMessageBlocking(
   // No live browser tab means no attachment upload for this run either
   // (docs/phase8-scheduling.md scheduled jobs have no composer UI) — always
   // "" here, unlike streamSessionMessage's caller-supplied value.
+  // The work since the run was claimed (attachments, run record) happened
+  // outside any poll loop; start this one with a fresh heartbeat (#1194).
+  renewRunHeartbeat(sessionId, userId)
   val t = runSessionMessageAsync(
     repoUrl,
     branch,
@@ -1514,9 +1554,15 @@ pub func runSessionMessageBlocking(
   var finished = false
   val runStartedAt = CloudAgents.Repository.nowMillis()
   var observerCheckMs = 0
+  var heartbeatMs = 0
   while not finished and elapsedPollMs <= runWallClockCapMs {
     finished = taskWaitMs(t, pollMs)
     elapsedPollMs = elapsedPollMs + pollMs
+    heartbeatMs = heartbeatMs + pollMs
+    if heartbeatMs >= CloudAgents.SessionStore.runHeartbeatIntervalMs {
+      heartbeatMs = 0
+      renewRunHeartbeat(sessionId, userId)
+    }
     observerCheckMs = observerCheckMs + pollMs
     if observerCheckMs >= observerCheckIntervalMs {
       observerCheckMs = 0
@@ -1533,6 +1579,9 @@ pub func runSessionMessageBlocking(
   if cell.isSuccess {
     val finalLogs = cell.output
     // End-of-run provenance emission (best-effort; never fails the run).
+    // The end-of-run work below runs outside the poll loop; renew first so
+    // it starts with a fresh heartbeat (#1194).
+    renewRunHeartbeat(sessionId, userId)
     emitRunnerCheckpoint(sessionId, harness, userId, model, prompt, finalLogs)
     return Ok(value = CloudAgents.Capture.Render.renderFullLog(finalLogs))
   }
@@ -1637,9 +1686,18 @@ pub func runInspectContainer(
   val pollMs = 500
   var elapsedPollMs = 0
   var finished = false
+  var heartbeatMs = 0
   while not finished and elapsedPollMs <= inspectWallClockCapMs {
     finished = taskWaitMs(t, pollMs)
     elapsedPollMs = elapsedPollMs + pollMs
+    // An inspect can run inside a run (the end-of-run checkpoint diff), so
+    // it keeps that run's heartbeat alive; for an idle session this is a
+    // no-op.
+    heartbeatMs = heartbeatMs + pollMs
+    if heartbeatMs >= CloudAgents.SessionStore.runHeartbeatIntervalMs {
+      heartbeatMs = 0
+      renewRunHeartbeat(sessionId, userId)
+    }
   }
   if not finished {
     if cell.containerId.length > 0 {

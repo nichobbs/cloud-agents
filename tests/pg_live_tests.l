@@ -546,7 +546,7 @@ test "claim functions are hardened: definer, fixed search_path, no PUBLIC execut
     conn.close()
   }
   val tx = unscoped(conn)
-  for fn in ["claim_graph_ingest_outbox", "prune_graph_ingest_outbox", "claim_membership_sync", "claim_scheduled_jobs"] {
+  for fn in ["claim_graph_ingest_outbox", "prune_graph_ingest_outbox", "claim_membership_sync", "claim_scheduled_jobs", "claim_stranded_runs", "claim_warm_sessions"] {
     assertEqual(
       str1(
         tx,
@@ -567,9 +567,19 @@ test "claim functions are hardened: definer, fixed search_path, no PUBLIC execut
     "the claimer role cannot log in"
   )
   assertEqual(
-    str1(tx, "SELECT has_table_privilege('cloudagents_claimer', 'public.sessions', 'SELECT')::text AS v", []),
+    str1(tx, "SELECT has_table_privilege('cloudagents_claimer', 'public.messages', 'SELECT')::text AS v", []),
     "false",
     "the claimer cannot read non-claimable tables"
+  )
+  assertEqual(
+    str1(
+      tx,
+      "SELECT (has_column_privilege('cloudagents_claimer', 'public.sessions', 'repo_url', 'SELECT') " +
+        "OR has_column_privilege('cloudagents_claimer', 'public.sessions', 'status', 'UPDATE'))::text AS v",
+      []
+    ),
+    "false",
+    "on sessions the claimer reads only the sweep's columns and cannot change a session's status"
   )
   assertEqual(
     str1(

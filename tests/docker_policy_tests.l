@@ -63,3 +63,10 @@ test "formatDockerError appends non-empty details, leaves a bare message untouch
     "empty details leave the generic message untouched (no trailing separator)"
   )
 }
+
+test "a Docker 404 means the container is already gone, and nothing else does" {
+  assertTrue(CloudAgents.DockerPolicy.containerAlreadyGone(Some(value = 404)), "404 is gone")
+  assertTrue(not CloudAgents.DockerPolicy.containerAlreadyGone(Some(value = 409)), "409 is a conflict, not gone")
+  assertTrue(not CloudAgents.DockerPolicy.containerAlreadyGone(Some(value = 500)), "500 is a failure")
+  assertTrue(not CloudAgents.DockerPolicy.containerAlreadyGone(None), "no status (connection failure) is a failure")
+}
