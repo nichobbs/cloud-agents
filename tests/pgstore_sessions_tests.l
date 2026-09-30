@@ -448,6 +448,8 @@ test "a sweep takes stranded runs over in every tenant, once, and frees them" {
     case None -> ()
   }
   assertFalse(claim(Store.heartbeatRun(staleA, a)), "a late heartbeat from the original instance changes nothing")
+  unit(Store.endRun(staleA, a))
+  assertEqual(optStr(Store.sessionStatus(staleA, a)), "RUNNING", "nor does its late endRun")
 
   assertTrue(claim(Store.releaseStrandedRun(rb)), "the sweep frees B's session")
   assertFalse(claim(Store.releaseStrandedRun(rb)), "freeing it twice is a no-op")

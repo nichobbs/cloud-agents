@@ -448,10 +448,15 @@ pub func heartbeatRunSql(id: in String, userId: in String, ts: in String, instan
 }
 
 /// Return a session to IDLE after a run completes (success or failure).
-pub func endRunSql(id: in String, userId: in String, ts: in String): String {
+/// A RUNNING session is only ended by the instance driving it, so a late
+/// endRun after a sweep's takeover changes nothing (#1199).
+pub func endRunSql(id: in String, userId: in String, ts: in String, instance: in String): String {
   return "UPDATE sessions SET status = 'IDLE', last_message_at = " + sqlLiteral(ts) + " WHERE id = " + sqlLiteral(id) +
     " AND user_id = " +
-    sqlLiteral(userId)
+    sqlLiteral(userId) +
+    " AND (status <> 'RUNNING' OR run_instance = " +
+    sqlLiteral(instance) +
+    ")"
 }
 
 /// RUNNING sessions (across all users) whose heartbeat is at least

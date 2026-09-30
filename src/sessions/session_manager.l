@@ -841,7 +841,7 @@ pub func heartbeatRun(sessionId: in String, sc: in CloudAgents.Pg.TenantScope): 
 /// Return a session to IDLE after a run (success or failure) and record the
 /// activity time.
 pub func endRun(sessionId: in String, sc: in CloudAgents.Pg.TenantScope): Result[Unit, CloudAgents.Sqlite.DbError] {
-  CloudAgents.Sqlite.execute(CloudAgents.Db.endRunSql(sessionId, sc.userId, CloudAgents.Repository.nowMillis()))?
+  CloudAgents.Sqlite.execute(CloudAgents.Db.endRunSql(sessionId, sc.userId, CloudAgents.Repository.nowMillis(), instanceId()))?
   return Ok(value = ())
 }
 

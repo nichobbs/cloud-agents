@@ -315,20 +315,26 @@ pub func deleteSessionRecord(
 /// progress (or the session is not the caller's). The claim records this
 /// instance and the run's first heartbeat (spec §5.3a).
 pub func tryBeginRun(sessionId: in String, sc: in CloudAgents.Pg.TenantScope): Result[Bool, CloudAgents.Sqlite.DbError] {
-  val n = updateOwnedWhen(sc, "status = 'RUNNING', last_message_at = " + CloudAgents.Pg.msIn(2) + ", run_instance = @p3, run_heartbeat_at = " + CloudAgents.Pg.msIn(2), " AND status <> 'RUNNING'", [sessionId, sc.userId, CloudAgents.Repository.nowMillis(), CloudAgents.SessionStore.instanceId()])?
+  val n = updateOwnedWhen(sc, "status = 'RUNNING', last_message_at = " + CloudAgents.Pg.msIn(2) + ", run_instance = @p3, run_heartbeat_at = now()", " AND status <> 'RUNNING'", [sessionId, sc.userId, CloudAgents.Repository.nowMillis(), CloudAgents.SessionStore.instanceId()])?
   return Ok(value = n > 0)
 }
 
 /// Renew the heartbeat of a run this instance drives; false once the run has
-/// ended or a sweep has taken it over.
+/// ended or a sweep has taken it over. The heartbeat is the database's clock,
+/// the same one `claim_stranded_runs` judges staleness by, so clock skew
+/// between an instance and the database cannot make a live run look stranded
+/// (#1198).
 pub func heartbeatRun(sessionId: in String, sc: in CloudAgents.Pg.TenantScope): Result[Bool, CloudAgents.Sqlite.DbError] {
-  val n = updateOwnedWhen(sc, "run_heartbeat_at = " + CloudAgents.Pg.msIn(2), " AND status = 'RUNNING' AND run_instance = @p3", [sessionId, sc.userId, CloudAgents.Repository.nowMillis(), CloudAgents.SessionStore.instanceId()])?
+  val n = updateOwnedWhen(sc, "run_heartbeat_at = now()", " AND status = 'RUNNING' AND run_instance = @p2", [sessionId, sc.userId, CloudAgents.SessionStore.instanceId()])?
   return Ok(value = n > 0)
 }
 
-/// Return a session to IDLE after a run and record the activity time.
+/// Return a session to IDLE after a run and record the activity time. A
+/// RUNNING session is only ended by the instance driving it: once a sweep
+/// has taken the run over (and perhaps another run has started), the
+/// original instance's late endRun changes nothing (#1199).
 pub func endRun(sessionId: in String, sc: in CloudAgents.Pg.TenantScope): Result[Unit, CloudAgents.Sqlite.DbError] {
-  updateOwned(sc, "status = 'IDLE', last_message_at = " + CloudAgents.Pg.msIn(2), [sessionId, sc.userId, CloudAgents.Repository.nowMillis()])?
+  updateOwnedWhen(sc, "status = 'IDLE', last_message_at = " + CloudAgents.Pg.msIn(2), " AND (status <> 'RUNNING' OR run_instance = @p3)", [sessionId, sc.userId, CloudAgents.Repository.nowMillis(), CloudAgents.SessionStore.instanceId()])?
   return Ok(value = ())
 }
 

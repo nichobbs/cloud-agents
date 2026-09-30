@@ -87,7 +87,7 @@ test "run-claim SQL is atomic and status-guarded" {
   assertTrue(claimSql.contains("SET status = 'RUNNING'"), "claim sets RUNNING")
   assertTrue(claimSql.contains("AND status <> 'RUNNING'"), "claim refuses an already-running session")
   assertTrue(claimSql.contains("AND user_id = 'u1'"), "claim scoped by owner")
-  val releaseSql = endRunSql("s1", "u1", "2000")
+  val releaseSql = endRunSql("s1", "u1", "2000", "api-1")
   assertTrue(releaseSql.contains("SET status = 'IDLE'"), "end returns to IDLE")
   assertTrue(claimSql.contains("run_instance = 'api-1'"), "claim records the driving instance")
   assertTrue(claimSql.contains("run_heartbeat_at = '1000'"), "and the first heartbeat")

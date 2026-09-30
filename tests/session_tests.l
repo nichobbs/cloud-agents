@@ -400,6 +400,11 @@ test "a run whose heartbeat stopped is taken over once and freed" {
     mustClaim(CloudAgents.SessionStore.heartbeatRun("dangling-1", CloudAgents.Auth.requestScope())),
     "the original instance's late heartbeat changes nothing after a takeover"
   )
+  mustUnit(CloudAgents.SessionStore.endRun("dangling-1", CloudAgents.Auth.requestScope()))
+  assertFalse(
+    mustClaim(CloudAgents.SessionStore.tryBeginRun("dangling-1", CloudAgents.Auth.requestScope())),
+    "the original instance's late endRun does not free a run the sweep holds"
+  )
   assertTrue(mustClaim(CloudAgents.SessionStore.releaseStrandedRun(r)), "the sweep frees the session")
   assertFalse(mustClaim(CloudAgents.SessionStore.releaseStrandedRun(r)), "freeing it twice is a no-op")
   assertTrue(mustClaim(CloudAgents.SessionStore.tryBeginRun("dangling-1", CloudAgents.Auth.requestScope())), "claim available again")
