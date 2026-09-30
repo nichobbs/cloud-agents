@@ -620,7 +620,12 @@ func runOneJob(job: in CloudAgents.Repository.ScheduledJob): JobRunOutcome {
     case Ok(logs) -> {
       if runId.length > 0 {
         val _ = CloudAgents.Repository.recordRunEnd(runId, CloudAgents.Pg.personalScope(job.userId), "succeeded")
-        val _ = CloudAgents.Repository.enqueueWebhookEvent(job.userId, sessionId, runId, "succeeded")
+        val _ = CloudAgents.Repository.enqueueWebhookEvent(
+          CloudAgents.Pg.personalScope(job.userId),
+          sessionId,
+          runId,
+          "succeeded"
+        )
         // Session ledger observer (docs/session-ledger.md §10): queue an
         // end-of-run pass if this session is observed. Best-effort.
         CloudAgents.Ledger.Observer.onRunFinished(sessionId)
@@ -637,7 +642,12 @@ func runOneJob(job: in CloudAgents.Repository.ScheduledJob): JobRunOutcome {
     case Err(msg) -> {
       if runId.length > 0 {
         val _ = CloudAgents.Repository.recordRunEnd(runId, CloudAgents.Pg.personalScope(job.userId), "failed")
-        val _ = CloudAgents.Repository.enqueueWebhookEvent(job.userId, sessionId, runId, "failed")
+        val _ = CloudAgents.Repository.enqueueWebhookEvent(
+          CloudAgents.Pg.personalScope(job.userId),
+          sessionId,
+          runId,
+          "failed"
+        )
         // Session ledger observer (docs/session-ledger.md §10): queue an
         // end-of-run pass if this session is observed. Best-effort.
         CloudAgents.Ledger.Observer.onRunFinished(sessionId)

@@ -116,20 +116,20 @@ test "Webhook registration is idempotent and per-user" {
   defer {
     cleanupTestDb(dbPath)
   }
-  val mine = mustWebhook(addWebhook("default", "https://example.com/hook"))
+  val mine = mustWebhook(addWebhook(CloudAgents.Pg.personalScope("default"), "https://example.com/hook"))
   assertTrue(mine.id.length > 0, "registered webhook has an id")
   // Re-registering the same URL is a no-op (UNIQUE) and must return the SAME
   // persisted row, not a freshly-minted id/timestamp (#255).
-  val again = mustWebhook(addWebhook("default", "https://example.com/hook"))
+  val again = mustWebhook(addWebhook(CloudAgents.Pg.personalScope("default"), "https://example.com/hook"))
   assertEqual(again.id, mine.id, "re-register returns the existing row's id")
-  assertEqualInt(mustWebhooks(listWebhooks("default")).length.toInt(), 1, "same url not duplicated")
+  assertEqualInt(mustWebhooks(listWebhooks(CloudAgents.Pg.personalScope("default"))).length.toInt(), 1, "same url not duplicated")
 
   // Another user's webhook is invisible.
-  val _ = mustWebhook(addWebhook("someone-else", "https://other.com/hook"))
-  assertEqualInt(mustWebhooks(listWebhooks("default")).length.toInt(), 1, "only my webhook listed")
+  val _ = mustWebhook(addWebhook(CloudAgents.Pg.personalScope("someone-else"), "https://other.com/hook"))
+  assertEqualInt(mustWebhooks(listWebhooks(CloudAgents.Pg.personalScope("default"))).length.toInt(), 1, "only my webhook listed")
 
-  assertEqualInt(mustRows(deleteWebhook(mine.id, "default")), 1, "delete my webhook")
-  assertEqualInt(mustWebhooks(listWebhooks("default")).length.toInt(), 0, "empty after delete")
+  assertEqualInt(mustRows(deleteWebhook(mine.id, CloudAgents.Pg.personalScope("default"))), 1, "delete my webhook")
+  assertEqualInt(mustWebhooks(listWebhooks(CloudAgents.Pg.personalScope("default"))).length.toInt(), 0, "empty after delete")
 }
 
 test "Run-completion events flow through the outbox" {
@@ -139,23 +139,23 @@ test "Run-completion events flow through the outbox" {
   }
   val userId = "default"
   // Events are only enqueued when the user has a registered webhook (#251).
-  val _ = mustWebhook(addWebhook(userId, "https://example.com/hook"))
-  match enqueueWebhookEvent(userId, "s1", "r1", "succeeded") {
+  val _ = mustWebhook(addWebhook(CloudAgents.Pg.personalScope(userId), "https://example.com/hook"))
+  match enqueueWebhookEvent(CloudAgents.Pg.personalScope(userId), "s1", "r1", "succeeded") {
     case Ok(_) -> ()
     case Err(e) -> assertTrue(false, "enqueue failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
   }
-  match enqueueWebhookEvent(userId, "s2", "r2", "failed") {
+  match enqueueWebhookEvent(CloudAgents.Pg.personalScope(userId), "s2", "r2", "failed") {
     case Ok(_) -> ()
     case Err(e) -> assertTrue(false, "enqueue failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
   }
-  val pending = mustEvents(listPendingWebhookEvents(userId))
+  val pending = mustEvents(listPendingWebhookEvents(CloudAgents.Pg.personalScope(userId)))
   assertEqualInt(pending.length.toInt(), 2, "two events pending")
   // FIFO: the first enqueued is delivered first.
   assertEqual(pending[0].sessionId, "s1", "oldest event first")
 
   // Marking one delivered removes it from pending.
-  assertEqualInt(mustRows(markWebhookEventDelivered(pending[0].id, userId)), 1, "mark delivered")
-  val after = mustEvents(listPendingWebhookEvents(userId))
+  assertEqualInt(mustRows(markWebhookEventDelivered(pending[0].id, CloudAgents.Pg.personalScope(userId))), 1, "mark delivered")
+  val after = mustEvents(listPendingWebhookEvents(CloudAgents.Pg.personalScope(userId)))
   assertEqualInt(after.length.toInt(), 1, "one event still pending")
   assertEqual(after[0].sessionId, "s2", "remaining event is the undelivered one")
 }
@@ -165,11 +165,11 @@ test "Events are not enqueued without a registered webhook (#251)" {
   defer {
     cleanupTestDb(dbPath)
   }
-  match enqueueWebhookEvent("default", "s1", "r1", "succeeded") {
+  match enqueueWebhookEvent(CloudAgents.Pg.personalScope("default"), "s1", "r1", "succeeded") {
     case Ok(_) -> ()
     case Err(e) -> assertTrue(false, "enqueue failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
   }
-  assertEqualInt(mustEvents(listPendingWebhookEvents("default")).length.toInt(), 0, "no event enqueued when no webhook is registered")
+  assertEqualInt(mustEvents(listPendingWebhookEvents(CloudAgents.Pg.personalScope("default"))).length.toInt(), 0, "no event enqueued when no webhook is registered")
 }
 
 test "Webhook handlers validate and 404 correctly" {

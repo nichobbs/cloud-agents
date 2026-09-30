@@ -1406,7 +1406,7 @@ pub func streamSendMessage(
         case Ok(logs) -> {
           if runId.length > 0 {
             val _ = CloudAgents.Repository.recordRunEnd(runId, CloudAgents.Pg.personalScope(userId), "succeeded")
-            val _ = CloudAgents.Repository.enqueueWebhookEvent(userId, id, runId, "succeeded")
+            val _ = CloudAgents.Repository.enqueueWebhookEvent(CloudAgents.Pg.personalScope(userId), id, runId, "succeeded")
             // Session ledger observer (docs/session-ledger.md §10): queue an
             // end-of-run pass if this session is observed. Best-effort.
             CloudAgents.Ledger.Observer.onRunFinished(id)
@@ -1441,7 +1441,7 @@ pub func streamSendMessage(
         case Err(err) -> {
           if runId.length > 0 {
             val _ = CloudAgents.Repository.recordRunEnd(runId, CloudAgents.Pg.personalScope(userId), "failed")
-            val _ = CloudAgents.Repository.enqueueWebhookEvent(userId, id, runId, "failed")
+            val _ = CloudAgents.Repository.enqueueWebhookEvent(CloudAgents.Pg.personalScope(userId), id, runId, "failed")
             // Session ledger observer (docs/session-ledger.md §10): queue an
             // end-of-run pass if this session is observed. Best-effort.
             CloudAgents.Ledger.Observer.onRunFinished(id)
@@ -1520,7 +1520,7 @@ pub func cancelRun(id: in String): Result[Unit, Web.ApiError] {
           // A cancel is a run completion too — notify like succeeded/failed
           // (#252), but only with a real run id (#258).
           if runId.length > 0 {
-            val _ = CloudAgents.Repository.enqueueWebhookEvent(userId, id, runId, "cancelled")
+            val _ = CloudAgents.Repository.enqueueWebhookEvent(CloudAgents.Pg.personalScope(userId), id, runId, "cancelled")
             // Session ledger observer (docs/session-ledger.md §10): queue an
             // end-of-run pass if this session is observed. Best-effort.
             CloudAgents.Ledger.Observer.onRunFinished(id)
