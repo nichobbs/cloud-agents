@@ -227,7 +227,7 @@ pub func registerWebhookHandler(req: in RegisterWebhookRequest): Result[Webhook,
   if not isValidWebhookUrl(req.url) {
     return Err(Web.badRequest("url must be a valid https:// URL"))
   }
-  match addWebhook(CloudAgents.Auth.currentUserId(), req.url) {
+  match addWebhook(CloudAgents.Auth.requestScope(), req.url) {
     case Ok(w) -> return Ok(w)
     case Err(e) -> return Err(dbError(e))
   }
@@ -235,7 +235,7 @@ pub func registerWebhookHandler(req: in RegisterWebhookRequest): Result[Webhook,
 
 /// List the caller's registered webhooks.
 pub func listWebhooksHandler(): Result[WebhookList, Web.ApiError] {
-  match listWebhooks(CloudAgents.Auth.currentUserId()) {
+  match listWebhooks(CloudAgents.Auth.requestScope()) {
     case Ok(ws) -> return Ok(WebhookList(webhooks = ws))
     case Err(e) -> return Err(dbError(e))
   }
@@ -246,7 +246,7 @@ pub func deleteWebhookHandler(id: in String): Result[Unit, Web.ApiError] {
   if id.length == 0 {
     return Err(Web.badRequest("webhook id is required"))
   }
-  val affected = match deleteWebhook(id, CloudAgents.Auth.currentUserId()) {
+  val affected = match deleteWebhook(id, CloudAgents.Auth.requestScope()) {
     case Ok(n) -> n
     case Err(e) -> return Err(dbError(e))
   }
@@ -260,7 +260,7 @@ pub func deleteWebhookHandler(id: in String): Result[Unit, Web.ApiError] {
 /// delivery worker polls. It POSTs each event to the caller's registered
 /// webhook URLs, then calls the mark-delivered endpoint.
 pub func pendingWebhookEventsHandler(): Result[WebhookEventList, Web.ApiError] {
-  match listPendingWebhookEvents(CloudAgents.Auth.currentUserId()) {
+  match listPendingWebhookEvents(CloudAgents.Auth.requestScope()) {
     case Ok(es) -> return Ok(WebhookEventList(events = es))
     case Err(e) -> return Err(dbError(e))
   }
@@ -271,7 +271,7 @@ pub func markWebhookDeliveredHandler(id: in String): Result[Unit, Web.ApiError] 
   if id.length == 0 {
     return Err(Web.badRequest("event id is required"))
   }
-  val affected = match markWebhookEventDelivered(id, CloudAgents.Auth.currentUserId()) {
+  val affected = match markWebhookEventDelivered(id, CloudAgents.Auth.requestScope()) {
     case Ok(n) -> n
     case Err(e) -> return Err(dbError(e))
   }

@@ -1703,7 +1703,8 @@ pub record WebhookEventList {
 /// re-registration is a no-op — so we read the row back by (user, url) and
 /// return its real id/created_at rather than the freshly-minted ones, which for
 /// an already-registered URL would not match any stored row (#255).
-pub func addWebhook(userId: in String, url: in String): Result[Webhook, CloudAgents.Sqlite.DbError] {
+pub func addWebhook(sc: in CloudAgents.Pg.TenantScope, url: in String): Result[Webhook, CloudAgents.Sqlite.DbError] {
+  val userId = sc.userId
   val id = newId()
   val ts = nowMillis()
   CloudAgents.Sqlite.execute(CloudAgents.Db.insertWebhookSql(id, userId, url, ts))?
@@ -1726,7 +1727,8 @@ pub func addWebhook(userId: in String, url: in String): Result[Webhook, CloudAge
 }
 
 /// A user's registered webhooks, newest first.
-pub func listWebhooks(userId: in String): Result[slice[Webhook], CloudAgents.Sqlite.DbError] {
+pub func listWebhooks(sc: in CloudAgents.Pg.TenantScope): Result[slice[Webhook], CloudAgents.Sqlite.DbError] {
+  val userId = sc.userId
   val rows = CloudAgents.Sqlite.query(CloudAgents.Db.selectWebhooksSql(userId))?
   var acc: slice[Webhook] = []
   var i = 0
@@ -1747,12 +1749,14 @@ pub func listWebhooks(userId: in String): Result[slice[Webhook], CloudAgents.Sql
 }
 
 /// Delete a webhook by id. Returns rows affected (0 = not found).
-pub func deleteWebhook(id: in String, userId: in String): Result[Int, CloudAgents.Sqlite.DbError] {
+pub func deleteWebhook(id: in String, sc: in CloudAgents.Pg.TenantScope): Result[Int, CloudAgents.Sqlite.DbError] {
+  val userId = sc.userId
   return CloudAgents.Sqlite.execute(CloudAgents.Db.deleteWebhookSql(id, userId))
 }
 
 /// Whether a user has at least one registered webhook.
-pub func userHasWebhooks(userId: in String): Result[Bool, CloudAgents.Sqlite.DbError] {
+pub func userHasWebhooks(sc: in CloudAgents.Pg.TenantScope): Result[Bool, CloudAgents.Sqlite.DbError] {
+  val userId = sc.userId
   val rows = CloudAgents.Sqlite.query(CloudAgents.Db.countWebhooksSql(userId))?
   val len = CloudAgents.Sqlite.getRowArrayLength(rows)
   if len == 0 {
@@ -1766,9 +1770,13 @@ pub func userHasWebhooks(userId: in String): Result[Bool, CloudAgents.Sqlite.DbE
 /// that never configured one (#251). Best-effort bookkeeping: a failure here
 /// must not affect the run, so callers ignore the error.
 pub func enqueueWebhookEvent(
-  userId: in String, sessionId: in String, runId: in String, status: in String
+  sc: in CloudAgents.Pg.TenantScope,
+  sessionId: in String,
+  runId: in String,
+  status: in String,
 ): Result[Unit, CloudAgents.Sqlite.DbError] {
-  if not userHasWebhooks(userId)? {
+  val userId = sc.userId
+  if not userHasWebhooks(sc)? {
     return Ok(value = ())
   }
   val id = newId()
@@ -1778,7 +1786,10 @@ pub func enqueueWebhookEvent(
 }
 
 /// A user's undelivered outbox events, oldest first (for the external deliverer).
-pub func listPendingWebhookEvents(userId: in String): Result[slice[WebhookEvent], CloudAgents.Sqlite.DbError] {
+pub func listPendingWebhookEvents(
+  sc: in CloudAgents.Pg.TenantScope
+): Result[slice[WebhookEvent], CloudAgents.Sqlite.DbError] {
+  val userId = sc.userId
   val rows = CloudAgents.Sqlite.query(CloudAgents.Db.selectPendingWebhookEventsSql(userId))?
   var acc: slice[WebhookEvent] = []
   var i = 0
@@ -1801,7 +1812,10 @@ pub func listPendingWebhookEvents(userId: in String): Result[slice[WebhookEvent]
 }
 
 /// Mark an outbox event delivered. Returns rows affected (0 = not found).
-pub func markWebhookEventDelivered(id: in String, userId: in String): Result[Int, CloudAgents.Sqlite.DbError] {
+pub func markWebhookEventDelivered(
+  id: in String, sc: in CloudAgents.Pg.TenantScope
+): Result[Int, CloudAgents.Sqlite.DbError] {
+  val userId = sc.userId
   return CloudAgents.Sqlite.execute(CloudAgents.Db.markWebhookEventDeliveredSql(id, userId))
 }
 
