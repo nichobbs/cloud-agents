@@ -457,6 +457,14 @@ func libraryTables(): slice[String] {
         "CREATE INDEX scheduled_jobs_user ON public.scheduled_jobs (tenant_id, user_id)",
         "CREATE INDEX scheduled_jobs_due ON public.scheduled_jobs (status, next_run_at)"
       ],
+      // Claimed by claim_scheduled_jobs (§5.3a), which advances the schedule
+      // itself: the claimer reads the scheduling columns and writes only
+      // next_run_at, last_run_at and status.
+      claimerPolicies("scheduled_jobs"),
+      [
+        "GRANT SELECT (tenant_id, id, user_id, status, next_run_at, last_run_at, interval_seconds), " +
+          "UPDATE (next_run_at, last_run_at, status) ON public.scheduled_jobs TO cloudagents_claimer"
+      ],
       tenantTable(
         "webhooks",
         "id text NOT NULL, user_id text NOT NULL, url text NOT NULL, created_at timestamptz NOT NULL, " +
@@ -665,23 +673,56 @@ func claimMembershipSyncFn(): String {
     "RETURNING s.user_id $fn$"
 }
 
+/// Scheduled jobs (§5.3a) are claimed by advancing their schedule rather than
+/// leasing them, since a run can take up to 30 minutes: in one statement the
+/// claim stamps `last_run_at` with the firing time and moves `next_run_at` to
+/// the first slot on the job's cadence after it (a one-shot job becomes
+/// `completed` with no next run), so no other caller can fire the same slot
+/// and an interrupted run is never re-fired. It returns the scope keys plus
+/// the slot and `last_run_at` it replaced, which a skipped run needs to
+/// release the claim. The firing time is truncated to milliseconds, the
+/// precision every store timestamp round-trips at, so a release can match it.
+/// The due test and the advance use the same truncated now(): a
+/// sub-millisecond next_run_at could otherwise be due by the raw clock yet
+/// not passed by the truncated one, leaving the slot in place (#1186). The
+/// multiplier is also floored at 0, so a claim always moves the schedule on.
+func claimScheduledJobsFn(): String {
+  return "CREATE FUNCTION public.claim_scheduled_jobs(p_limit integer) " +
+    "RETURNS TABLE (tenant_id text, id text, user_id text, due_at timestamptz, previous_last_run_at timestamptz) " +
+    "LANGUAGE sql SECURITY DEFINER SET search_path = pg_catalog, pg_temp AS $fn$ " +
+    "UPDATE public.scheduled_jobs AS j SET last_run_at = pg_catalog.date_trunc('milliseconds', pg_catalog.now()), " +
+    "next_run_at = CASE WHEN j.interval_seconds IS NULL THEN NULL ELSE d.next_run_at + " +
+    "pg_catalog.make_interval(secs => j.interval_seconds * (GREATEST(pg_catalog.floor(pg_catalog.date_part('epoch', " +
+    "pg_catalog.date_trunc('milliseconds', pg_catalog.now()) - d.next_run_at) / j.interval_seconds), 0) + 1)) END, " +
+    "status = CASE WHEN j.interval_seconds IS NULL THEN 'completed' ELSE j.status END " +
+    "FROM (SELECT q.tenant_id, q.id, q.next_run_at, q.last_run_at FROM public.scheduled_jobs AS q " +
+    "WHERE q.status = 'active' AND q.next_run_at <= pg_catalog.date_trunc('milliseconds', pg_catalog.now()) " +
+    "ORDER BY q.next_run_at LIMIT LEAST(GREATEST(p_limit, 0), 100) FOR UPDATE SKIP LOCKED) AS d " +
+    "WHERE j.tenant_id = d.tenant_id AND j.id = d.id " +
+    "RETURNING j.tenant_id, j.id, j.user_id, d.next_run_at, d.last_run_at $fn$"
+}
+
 func claimFunctions(): slice[String] {
   return [
     claimOutboxFn(),
     claimMembershipSyncFn(),
+    claimScheduledJobsFn(),
     // Privileges first, while cloudagents_owner still owns the functions: a
     // GRANT/REVOKE by a non-owner is silently a no-op (with only a warning),
     // which would leave EXECUTE with PUBLIC. ALTER ... OWNER TO then carries
     // the ACL across to the new owner.
     "REVOKE ALL ON FUNCTION public.claim_graph_ingest_outbox(integer, integer) FROM PUBLIC",
     "REVOKE ALL ON FUNCTION public.claim_membership_sync(integer, integer) FROM PUBLIC",
+    "REVOKE ALL ON FUNCTION public.claim_scheduled_jobs(integer) FROM PUBLIC",
     "GRANT EXECUTE ON FUNCTION public.claim_graph_ingest_outbox(integer, integer) TO cloudagents_app",
     "GRANT EXECUTE ON FUNCTION public.claim_membership_sync(integer, integer) TO cloudagents_app",
+    "GRANT EXECUTE ON FUNCTION public.claim_scheduled_jobs(integer) TO cloudagents_app",
     // ALTER ... OWNER TO needs the new owner to hold CREATE on the schema;
     // grant it only for the ownership change.
     "GRANT CREATE ON SCHEMA public TO cloudagents_claimer",
     "ALTER FUNCTION public.claim_graph_ingest_outbox(integer, integer) OWNER TO cloudagents_claimer",
     "ALTER FUNCTION public.claim_membership_sync(integer, integer) OWNER TO cloudagents_claimer",
+    "ALTER FUNCTION public.claim_scheduled_jobs(integer) OWNER TO cloudagents_claimer",
     "REVOKE CREATE ON SCHEMA public FROM cloudagents_claimer"
   ]
 }

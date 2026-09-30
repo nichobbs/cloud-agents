@@ -1674,7 +1674,7 @@ record RouteCreateJob {
 impl Web.Handler for RouteCreateJob {
   func handle(req: in Web.Request): Web.Response {
     val decoded = match CreateJobRequest.fromJson(req.body) { case Ok(d) -> d; case Err(_) -> return badBody() }
-    return jobSummaryResp(CloudAgents.Jobs.createJobHandler(CloudAgents.Auth.currentUserId(), decoded))
+    return jobSummaryResp(CloudAgents.Jobs.createJobHandler(CloudAgents.Auth.requestScope(), decoded))
   }
 }
 
@@ -1683,7 +1683,7 @@ record RouteListJobs {
 
 impl Web.Handler for RouteListJobs {
   func handle(req: in Web.Request): Web.Response {
-    return jobListResp(CloudAgents.Jobs.listJobsHandler(CloudAgents.Auth.currentUserId()))
+    return jobListResp(CloudAgents.Jobs.listJobsHandler(CloudAgents.Auth.requestScope()))
   }
 }
 
@@ -1692,7 +1692,7 @@ record RouteGetJob {
 
 impl Web.Handler for RouteGetJob {
   func handle(req: in Web.Request): Web.Response {
-    return jobSummaryResp(CloudAgents.Jobs.getJobHandler(CloudAgents.Auth.currentUserId(), pparam(req, "jid")))
+    return jobSummaryResp(CloudAgents.Jobs.getJobHandler(CloudAgents.Auth.requestScope(), pparam(req, "jid")))
   }
 }
 
@@ -1703,7 +1703,7 @@ impl Web.Handler for RouteUpdateJob {
   func handle(req: in Web.Request): Web.Response {
     val jid = pparam(req, "jid")
     val decoded = match UpdateJobRequest.fromJson(req.body) { case Ok(d) -> d; case Err(_) -> return badBody() }
-    return jobSummaryResp(CloudAgents.Jobs.updateJobHandler(CloudAgents.Auth.currentUserId(), jid, decoded))
+    return jobSummaryResp(CloudAgents.Jobs.updateJobHandler(CloudAgents.Auth.requestScope(), jid, decoded))
   }
 }
 
@@ -1712,7 +1712,7 @@ record RouteDeleteJob {
 
 impl Web.Handler for RouteDeleteJob {
   func handle(req: in Web.Request): Web.Response {
-    return unitResp(CloudAgents.Jobs.deleteJobHandler(CloudAgents.Auth.currentUserId(), pparam(req, "jid")))
+    return unitResp(CloudAgents.Jobs.deleteJobHandler(CloudAgents.Auth.requestScope(), pparam(req, "jid")))
   }
 }
 
@@ -2051,18 +2051,6 @@ pub func main(): Unit {
   match CloudAgents.SessionStore.recoverDanglingSessions() {
     case Ok(_) -> ()
     case Err(e) -> println("WARNING: failed to recover dangling sessions: " + CloudAgents.Sqlite.dbErrorMessage(e))
-  }
-
-  // Scheduled jobs stranded mid-run by the same crash/restart (#882): a
-  // claimed job's next_run_at is cleared to '' before any session/container
-  // work starts, and nothing but the same in-process trigger-jobs call ever
-  // restores it. Recompute a fresh due time for anything left in that state
-  // so it isn't permanently excluded from every future due-scan.
-  match CloudAgents.Repository.recoverStrandedScheduledJobs() {
-    case Ok(_) -> ()
-    case Err(e) -> println(
-      "WARNING: failed to recover stranded scheduled jobs: " + CloudAgents.Sqlite.dbErrorMessage(e)
-    )
   }
 
   // Fail loudly at startup — not at first credential use — if ENCRYPTION_KEY

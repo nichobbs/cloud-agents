@@ -26,7 +26,9 @@ Goals:
 
 Non-goals (later phases or explicitly deferred):
 
-- Multi-instance API, runner hosts, object storage (ADR-008 phases 2 to 4).
+- Runner hosts and object storage (ADR-008 phases 2 to 4). Several API
+  instances are supported from this phase (§5.3a); until the runner agent
+  exists, a run is driven by the API instance that started it.
 - Organisation-wide session sharing. Phase 11 keeps today's visibility rule:
   a user sees only the sessions they created, now also scoped to the active
   organisation (§5.4). Sharing is a later product decision.
@@ -280,6 +282,46 @@ cross-tenant read path and are reviewed as such. Each one:
   `user_sync_state`, whose worker runs under a `UserScope` (§4.3a);
 - takes no argument that is interpolated into SQL.
 
+### 5.3a Several API instances
+
+Owner decision (§11, resolved question 3): phase 11 supports several API
+instances behind a load balancer before ADR-008's runner agent exists. Every
+piece of background work that assumed a single instance is made safe for
+concurrent callers on any instance:
+
+- **Scheduled jobs** are claimed by advancing their schedule rather than by a
+  lease, because a run can take up to 30 minutes. `claim_scheduled_jobs`
+  stamps `last_run_at` with the firing time and moves `next_run_at` to the
+  first slot on the job's cadence after it, in the statement that selects
+  the job (`FOR UPDATE SKIP LOCKED`); a one-shot job becomes `completed`. No
+  other caller can fire the same slot, and nothing is recorded after the
+  run. A run cut short by an instance crash is not re-fired, which follows
+  ADR-008 §4: a run that may have had side effects is never silently
+  retried. A skipped run (its session was busy) releases the claim, guarded
+  on the row still holding what the claim wrote. The SQLite store uses the
+  same semantics (a conditional UPDATE per job), so the cut-over changes
+  nothing for jobs.
+- **Leased queues**: the graph-ingest outbox, the ledger's GitHub sync and
+  observer passes are claimed through their claim functions with a 5-minute
+  lease (§5.3). A crashed pass's items become claimable again when it
+  expires.
+- **Runs.** Until the runner agent owns runs (ADR-008 §2, §4), the instance
+  that starts a run drives it. The run records that instance and a
+  heartbeat, renewed every 30 seconds by its poll loop. A run with no
+  heartbeat for 2 minutes is stranded: the maintenance sweep terminates its
+  container, marks the run failed, surfaces it on the session, and returns
+  the session to `IDLE`. Instance startup no longer resets every `RUNNING`
+  or `WARM` session, which would kill runs another instance is driving.
+- **Warm containers** can be reaped by any instance; each is claimed with a
+  lease, so two reapers never stop the same container.
+
+| Setting | Default |
+|---|---|
+| Run heartbeat interval | 30 s |
+| A run is stranded after | 2 min without a heartbeat |
+| Lease on outbox, ledger-sync, observer and reaper items | 5 min |
+| A scheduled run interrupted mid-run | marked failed, not re-run |
+
 ### 5.4 Visibility rule
 
 Within an organisation, list and read endpoints keep today's filter: a user
@@ -434,10 +476,8 @@ Postgres-only data.
   self-check, a CI Postgres service, and the live suite
   (`tests/pg_live_tests.l`). The unit-of-work go/no-go test passed. The
   other queues (`scheduled_jobs`, the observer, ledger sync) each have their
-  own claim semantics today (compare-and-clear on `next_run_at`, a pending
-  flag, a lease column); their claim functions are written with their
-  domain's port in slice C so the semantics are carried over and tested
-  together. Not wired into request handling.
+  own claim semantics; their claim functions are written with their domain's
+  port in slice C and tested together with it (§5.3a). Not wired into request handling.
 - **B+C. Scope plumbing and store port, one domain per PR.** Slices B and
   C are done together, domain by domain (prompts; profiles and library;
   sessions and messages; interactive requests; jobs, webhooks and
@@ -531,3 +571,8 @@ Postgres-only data.
 2. Search differences between FTS5 and Postgres `tsvector` search (§4.4)
    are documented rather than matched exactly, in the search-slice PR and in
    `docs/phase9-message-search.md`.
+3. Several API instances are supported in this phase (§5.3a), using leases
+   and heartbeats, with the defaults in §5.3a's table: a 30-second run
+   heartbeat, a run stranded after 2 minutes without one, 5-minute leases,
+   and a scheduled run interrupted by an instance crash marked failed rather
+   than re-run (owner, 2026-09-30).
