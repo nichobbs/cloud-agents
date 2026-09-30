@@ -110,6 +110,22 @@ test "messages get padded sequence numbers in order and round-trip exactly" {
   assertEqual(listed[0].createdAt, a.createdAt, "exact created_at round-trip")
   assertEqual(optStr(Store.getMessageSessionId(b.id, sc)), sid, "message to session")
   assertEqual(optStr(Store.getMessageSessionId("missing-" + uid(), sc)), "<none>", "unknown message")
+  var i = 0
+  while i < 10 {
+    msg(Store.addMessage(sid, sc, "user", "more"))
+    i = i + 1
+  }
+  val all = msgs(Store.listMessages(sid, sc))
+  var distinct = true
+  var j = 1
+  while j < all.length {
+    if all[j].seq == all[j - 1].seq {
+      distinct = false
+    }
+    j = j + 1
+  }
+  assertTrue(distinct, "sequence numbers stay distinct")
+  assertEqual(all[all.length - 1].seq, "000000000011", "twelve messages, last seq 11")
 }
 
 test "comments list oldest first under their message" {

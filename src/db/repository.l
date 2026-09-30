@@ -197,7 +197,7 @@ func digitValue(c: in String): Int {
 }
 
 /// Parse a run of decimal digits into an Int, ignoring non-digit characters.
-func parseNatString(s: in String): Int {
+pub func parseNatString(s: in String): Int {
   var n = 0
   var i = 0
   while i < s.length {
@@ -1418,7 +1418,7 @@ func rowToRun(r: in CloudAgents.Sqlite.Row): Run {
 }
 
 /// First `runPreviewMaxLen` characters of a prompt, for the lean run record.
-func promptPreview(prompt: in String): String {
+pub func promptPreview(prompt: in String): String {
   if prompt.length <= runPreviewMaxLen {
     return prompt
   }
@@ -1429,8 +1429,13 @@ func promptPreview(prompt: in String): String {
 /// caller can finish it. Best-effort bookkeeping — a failure here must not stop
 /// the actual run, so callers ignore the error and pass "" as the run id.
 pub func recordRunStart(
-  sessionId: in String, userId: in String, prompt: in String, harness: in String, model: in String
+  sessionId: in String,
+  sc: in CloudAgents.Pg.TenantScope,
+  prompt: in String,
+  harness: in String,
+  model: in String,
 ): Result[String, CloudAgents.Sqlite.DbError] {
+  val userId = sc.userId
   val id = newId()
   val ts = nowMillis()
   CloudAgents.Sqlite.execute(CloudAgents.Db.insertRunSql(id, sessionId, userId, promptPreview(prompt), harness, model, ts))?
@@ -1438,7 +1443,10 @@ pub func recordRunStart(
 }
 
 /// Move a run to a terminal status ('succeeded' | 'failed' | 'cancelled').
-pub func recordRunEnd(runId: in String, userId: in String, status: in String): Result[Unit, CloudAgents.Sqlite.DbError] {
+pub func recordRunEnd(
+  runId: in String, sc: in CloudAgents.Pg.TenantScope, status: in String
+): Result[Unit, CloudAgents.Sqlite.DbError] {
+  val userId = sc.userId
   CloudAgents.Sqlite.execute(CloudAgents.Db.finishRunSql(runId, userId, status, nowMillis()))?
   return Ok(value = ())
 }
@@ -1447,14 +1455,18 @@ pub func recordRunEnd(runId: in String, userId: in String, status: in String): R
 /// without the run id in hand (a cancel from another request), so history never
 /// strands a phantom 'running' row.
 pub func finishSessionRuns(
-  sessionId: in String, userId: in String, status: in String
+  sessionId: in String, sc: in CloudAgents.Pg.TenantScope, status: in String
 ): Result[Unit, CloudAgents.Sqlite.DbError] {
+  val userId = sc.userId
   CloudAgents.Sqlite.execute(CloudAgents.Db.finishSessionRunsSql(sessionId, userId, status, nowMillis()))?
   return Ok(value = ())
 }
 
 /// A session's run history, newest first.
-pub func listRuns(sessionId: in String, userId: in String): Result[slice[Run], CloudAgents.Sqlite.DbError] {
+pub func listRuns(
+  sessionId: in String, sc: in CloudAgents.Pg.TenantScope
+): Result[slice[Run], CloudAgents.Sqlite.DbError] {
+  val userId = sc.userId
   val rows = CloudAgents.Sqlite.query(CloudAgents.Db.selectRunsBySessionSql(sessionId, userId))?
   var acc: slice[Run] = []
   var i = 0
@@ -1497,7 +1509,9 @@ func rowToSessionRepo(r: in CloudAgents.Sqlite.Row): SessionRepo {
 }
 
 /// A session's linked repositories, oldest first.
-pub func listSessionRepos(sessionId: in String): Result[slice[SessionRepo], CloudAgents.Sqlite.DbError] {
+pub func listSessionRepos(
+  sessionId: in String, sc: in CloudAgents.Pg.TenantScope
+): Result[slice[SessionRepo], CloudAgents.Sqlite.DbError] {
   val rows = CloudAgents.Sqlite.query(CloudAgents.Db.selectSessionReposSql(sessionId))?
   var acc: slice[SessionRepo] = []
   var i = 0
@@ -1510,7 +1524,9 @@ pub func listSessionRepos(sessionId: in String): Result[slice[SessionRepo], Clou
 }
 
 /// How many repositories are linked to a session (for the per-session cap).
-pub func countSessionRepos(sessionId: in String): Result[Int, CloudAgents.Sqlite.DbError] {
+pub func countSessionRepos(
+  sessionId: in String, sc: in CloudAgents.Pg.TenantScope
+): Result[Int, CloudAgents.Sqlite.DbError] {
   val rows = CloudAgents.Sqlite.query(CloudAgents.Db.countSessionReposSql(sessionId))?
   val len = CloudAgents.Sqlite.getRowArrayLength(rows)
   if len == 0 {
@@ -1520,14 +1536,16 @@ pub func countSessionRepos(sessionId: in String): Result[Int, CloudAgents.Sqlite
 }
 
 /// Whether a session already has a repo linked at the given URL (duplicate guard).
-pub func sessionRepoUrlExists(sessionId: in String, repoUrl: in String): Result[Bool, CloudAgents.Sqlite.DbError] {
+pub func sessionRepoUrlExists(
+  sessionId: in String, sc: in CloudAgents.Pg.TenantScope, repoUrl: in String
+): Result[Bool, CloudAgents.Sqlite.DbError] {
   val rows = CloudAgents.Sqlite.query(CloudAgents.Db.selectSessionRepoByUrlSql(sessionId, repoUrl))?
   return Ok(value = CloudAgents.Sqlite.getRowArrayLength(rows) > 0)
 }
 
 /// Link a repository to a session and return the stored record.
 pub func addSessionRepo(
-  sessionId: in String, repoUrl: in String, branch: in String
+  sessionId: in String, sc: in CloudAgents.Pg.TenantScope, repoUrl: in String, branch: in String
 ): Result[SessionRepo, CloudAgents.Sqlite.DbError] {
   val id = newId()
   val ts = nowMillis()
@@ -1536,12 +1554,16 @@ pub func addSessionRepo(
 }
 
 /// Unlink a repository from a session. Returns rows affected (0 = not found).
-pub func deleteSessionRepo(sessionId: in String, repoId: in String): Result[Int, CloudAgents.Sqlite.DbError] {
+pub func deleteSessionRepo(
+  sessionId: in String, sc: in CloudAgents.Pg.TenantScope, repoId: in String
+): Result[Int, CloudAgents.Sqlite.DbError] {
   return CloudAgents.Sqlite.execute(CloudAgents.Db.deleteSessionRepoSql(sessionId, repoId))
 }
 
 /// Remove every repository linked to a session (session-deletion cleanup).
-pub func deleteSessionReposForSession(sessionId: in String): Result[Unit, CloudAgents.Sqlite.DbError] {
+pub func deleteSessionReposForSession(
+  sessionId: in String, sc: in CloudAgents.Pg.TenantScope
+): Result[Unit, CloudAgents.Sqlite.DbError] {
   CloudAgents.Sqlite.execute(CloudAgents.Db.deleteSessionReposForSessionSql(sessionId))?
   return Ok(value = ())
 }
@@ -1576,7 +1598,8 @@ func rowToSessionGroup(r: in CloudAgents.Sqlite.Row): SessionGroup {
 }
 
 /// One user's groups, alphabetical by name.
-pub func listSessionGroups(userId: in String): Result[slice[SessionGroup], CloudAgents.Sqlite.DbError] {
+pub func listSessionGroups(sc: in CloudAgents.Pg.TenantScope): Result[slice[SessionGroup], CloudAgents.Sqlite.DbError] {
+  val userId = sc.userId
   val rows = CloudAgents.Sqlite.query(CloudAgents.Db.selectSessionGroupsSql(userId))?
   var acc: slice[SessionGroup] = []
   var i = 0
@@ -1589,7 +1612,10 @@ pub func listSessionGroups(userId: in String): Result[slice[SessionGroup], Cloud
 }
 
 /// A single group owned by a user, or None (unknown and foreign look the same).
-pub func getSessionGroup(id: in String, userId: in String): Result[Option[SessionGroup], CloudAgents.Sqlite.DbError] {
+pub func getSessionGroup(
+  id: in String, sc: in CloudAgents.Pg.TenantScope
+): Result[Option[SessionGroup], CloudAgents.Sqlite.DbError] {
+  val userId = sc.userId
   val rows = CloudAgents.Sqlite.query(CloudAgents.Db.selectSessionGroupByIdSql(id, userId))?
   val len = CloudAgents.Sqlite.getRowArrayLength(rows)
   if len == 0 {
@@ -1600,8 +1626,9 @@ pub func getSessionGroup(id: in String, userId: in String): Result[Option[Sessio
 
 /// Create a group and return the stored record.
 pub func addSessionGroup(
-  userId: in String, name: in String, parentId: in String
+  sc: in CloudAgents.Pg.TenantScope, name: in String, parentId: in String
 ): Result[SessionGroup, CloudAgents.Sqlite.DbError] {
+  val userId = sc.userId
   val id = newId()
   val ts = nowMillis()
   CloudAgents.Sqlite.execute(CloudAgents.Db.insertSessionGroupSql(id, userId, name, parentId, ts))?
@@ -1611,8 +1638,9 @@ pub func addSessionGroup(
 /// Full update of a group's name and parent. Returns rows affected (0 = not
 /// found / not owned). Parent-chain validation happens in the handler.
 pub func updateSessionGroup(
-  id: in String, userId: in String, name: in String, parentId: in String
+  id: in String, sc: in CloudAgents.Pg.TenantScope, name: in String, parentId: in String
 ): Result[Int, CloudAgents.Sqlite.DbError] {
+  val userId = sc.userId
   return CloudAgents.Sqlite.execute(CloudAgents.Db.updateSessionGroupSql(id, userId, name, parentId))
 }
 
@@ -1621,8 +1649,9 @@ pub func updateSessionGroup(
 /// all three statements in ONE transaction so a mid-delete failure can never
 /// leave orphaned children pointing at a gone group.
 pub func deleteSessionGroupReparenting(
-  id: in String, userId: in String, newParentId: in String
+  id: in String, sc: in CloudAgents.Pg.TenantScope, newParentId: in String
 ): Result[Unit, CloudAgents.Sqlite.DbError] {
+  val userId = sc.userId
   val stmts: slice[String] = [
     CloudAgents.Db.reparentSessionGroupsSql(userId, id, newParentId),
     CloudAgents.Db.reassignSessionsGroupSql(userId, id, newParentId),
@@ -3509,6 +3538,7 @@ pub func attachmentsBaseDir(): String {
 /// attachment was sent with has been persisted.
 pub func createAttachment(
   sessionId: in String,
+  sc: in CloudAgents.Pg.TenantScope,
   fileName: in String,
   storedName: in String,
   mimeType: in String,
@@ -3539,13 +3569,17 @@ pub func createAttachment(
 /// link only means the attachment won't show up grouped under its message in
 /// the transcript; it still lists under the session and its bytes are
 /// already safely on disk.
-pub func linkAttachmentToMessage(id: in String, messageId: in String): Result[Unit, CloudAgents.Sqlite.DbError] {
+pub func linkAttachmentToMessage(
+  id: in String, sc: in CloudAgents.Pg.TenantScope, messageId: in String
+): Result[Unit, CloudAgents.Sqlite.DbError] {
   CloudAgents.Sqlite.execute(CloudAgents.Db.setSessionAttachmentMessageIdSql(id, messageId))?
   return Ok(value = ())
 }
 
 /// An attachment by id, or None.
-pub func getAttachment(id: in String): Result[Option[Attachment], CloudAgents.Sqlite.DbError] {
+pub func getAttachment(
+  id: in String, sc: in CloudAgents.Pg.TenantScope
+): Result[Option[Attachment], CloudAgents.Sqlite.DbError] {
   val rows = CloudAgents.Sqlite.query(CloudAgents.Db.selectSessionAttachmentByIdSql(id))?
   val len = CloudAgents.Sqlite.getRowArrayLength(rows)
   if len == 0 {
@@ -3558,13 +3592,15 @@ pub func getAttachment(id: in String): Result[Option[Attachment], CloudAgents.Sq
 /// storeAttachments' pass-2 partial-failure cleanup (#1003) — not used on any
 /// normal (non-error) path, so callers ignore the Result (`val _ = ...`)
 /// exactly as this codebase's other best-effort cleanup calls do.
-pub func deleteAttachment(id: in String): Result[Unit, CloudAgents.Sqlite.DbError] {
+pub func deleteAttachment(id: in String, sc: in CloudAgents.Pg.TenantScope): Result[Unit, CloudAgents.Sqlite.DbError] {
   CloudAgents.Sqlite.execute(CloudAgents.Db.deleteSessionAttachmentSql(id))?
   return Ok(value = ())
 }
 
 /// A session's attachments, oldest first.
-pub func listAttachments(sessionId: in String): Result[slice[Attachment], CloudAgents.Sqlite.DbError] {
+pub func listAttachments(
+  sessionId: in String, sc: in CloudAgents.Pg.TenantScope
+): Result[slice[Attachment], CloudAgents.Sqlite.DbError] {
   val rows = CloudAgents.Sqlite.query(CloudAgents.Db.selectSessionAttachmentsBySessionSql(sessionId))?
   var acc: slice[Attachment] = []
   var i = 0
@@ -3891,7 +3927,12 @@ func rowToHighlight(r: in CloudAgents.Sqlite.Row): Highlight {
 
 /// Store one extracted highlight, anchored to the agent message it came from.
 pub func addHighlight(
-  sessionId: in String, messageId: in String, kind: in String, title: in String, detail: in String
+  sessionId: in String,
+  sc: in CloudAgents.Pg.TenantScope,
+  messageId: in String,
+  kind: in String,
+  title: in String,
+  detail: in String,
 ): Result[Highlight, CloudAgents.Sqlite.DbError] {
   val id = newId()
   val ts = nowMillis()
@@ -3910,7 +3951,9 @@ pub func addHighlight(
 }
 
 /// A session's highlights, newest first.
-pub func listHighlights(sessionId: in String): Result[slice[Highlight], CloudAgents.Sqlite.DbError] {
+pub func listHighlights(
+  sessionId: in String, sc: in CloudAgents.Pg.TenantScope
+): Result[slice[Highlight], CloudAgents.Sqlite.DbError] {
   val rows = CloudAgents.Sqlite.query(CloudAgents.Db.selectHighlightsSql(sessionId))?
   var acc: slice[Highlight] = []
   var i = 0
@@ -3924,7 +3967,9 @@ pub func listHighlights(sessionId: in String): Result[slice[Highlight], CloudAge
 
 /// The highest transcript seq already scanned for highlights, or "" when the
 /// session has never been scanned.
-pub func highlightScanSeq(sessionId: in String): Result[String, CloudAgents.Sqlite.DbError] {
+pub func highlightScanSeq(
+  sessionId: in String, sc: in CloudAgents.Pg.TenantScope
+): Result[String, CloudAgents.Sqlite.DbError] {
   val rows = CloudAgents.Sqlite.query(CloudAgents.Db.selectHighlightScanSeqSql(sessionId))?
   val len = CloudAgents.Sqlite.getRowArrayLength(rows)
   if len == 0 {
@@ -3935,7 +3980,9 @@ pub func highlightScanSeq(sessionId: in String): Result[String, CloudAgents.Sqli
 }
 
 /// Record the highest transcript seq scanned for highlights.
-pub func setHighlightScanSeq(sessionId: in String, lastSeq: in String): Result[Unit, CloudAgents.Sqlite.DbError] {
+pub func setHighlightScanSeq(
+  sessionId: in String, sc: in CloudAgents.Pg.TenantScope, lastSeq: in String
+): Result[Unit, CloudAgents.Sqlite.DbError] {
   CloudAgents.Sqlite.execute(CloudAgents.Db.upsertHighlightScanSeqSql(sessionId, lastSeq))?
   return Ok(value = ())
 }
@@ -4464,7 +4511,7 @@ func findMappedId(entries: in slice[IdMapEntry], oldId: in String): String {
   return ""
 }
 
-func copyFileIfExists(sourcePath: in String, targetDir: in String, targetPath: in String): Unit {
+pub func copyFileIfExists(sourcePath: in String, targetDir: in String, targetPath: in String): Unit {
   match Std.File.readBytes(sourcePath) {
     case Ok(b) -> {
       match Std.File.createDir(targetDir) {
@@ -4488,9 +4535,10 @@ pub func branchSession(
   parentSessionId: in String,
   forkedMessageId: in String,
   newSessionId: in String,
-  userId: in String,
+  sc: in CloudAgents.Pg.TenantScope,
   newBranch: in String,
 ): Result[Unit, CloudAgents.Sqlite.DbError] {
+  val userId = sc.userId
   val sRows = CloudAgents.Sqlite.query(CloudAgents.Db.selectSessionByIdSql(parentSessionId, userId))?
   val sLen = CloudAgents.Sqlite.getRowArrayLength(sRows)
   if sLen == 0 {

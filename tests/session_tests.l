@@ -1236,30 +1236,30 @@ test "Run history records, lists, and finishes write-once" {
     cleanupTestDb(dbPath)
   }
   val userId = "default"
-  val runId = mustRunId(CloudAgents.Repository.recordRunStart("rh-1", userId, "do a thing", "claude", "opus"))
+  val runId = mustRunId(CloudAgents.Repository.recordRunStart("rh-1", CloudAgents.Pg.personalScope(userId), "do a thing", "claude", "opus"))
   assertTrue(runId.length > 0, "run id returned")
 
-  val running = mustRuns(CloudAgents.Repository.listRuns("rh-1", userId))
+  val running = mustRuns(CloudAgents.Repository.listRuns("rh-1", CloudAgents.Pg.personalScope(userId)))
   assertEqualInt(running.length.toInt(), 1, "one run recorded")
   assertEqual(running[0].status, "running", "run starts running")
 
-  match CloudAgents.Repository.recordRunEnd(runId, userId, "succeeded") {
+  match CloudAgents.Repository.recordRunEnd(runId, CloudAgents.Pg.personalScope(userId), "succeeded") {
     case Ok(_) -> ()
     case Err(e) -> assertTrue(false, "recordRunEnd failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
   }
   assertEqual(
-    mustRuns(CloudAgents.Repository.listRuns("rh-1", userId))[0].status,
+    mustRuns(CloudAgents.Repository.listRuns("rh-1", CloudAgents.Pg.personalScope(userId)))[0].status,
     "succeeded",
     "run moved to succeeded"
   )
 
   // Write-once: a late 'failed' does not overwrite the terminal status.
-  match CloudAgents.Repository.recordRunEnd(runId, userId, "failed") {
+  match CloudAgents.Repository.recordRunEnd(runId, CloudAgents.Pg.personalScope(userId), "failed") {
     case Ok(_) -> ()
     case Err(_) -> ()
   }
   assertEqual(
-    mustRuns(CloudAgents.Repository.listRuns("rh-1", userId))[0].status,
+    mustRuns(CloudAgents.Repository.listRuns("rh-1", CloudAgents.Pg.personalScope(userId)))[0].status,
     "succeeded",
     "terminal status is write-once"
   )

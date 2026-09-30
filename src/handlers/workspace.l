@@ -41,7 +41,7 @@ func requireOwnedSessionHarness(sessionId: in String): Result[String, Web.ApiErr
 /// cleanest existing signal that a runner container has actually mounted and
 /// populated the volume.
 func requireWorkspaceInitialized(sessionId: in String): Result[Unit, Web.ApiError] {
-  match CloudAgents.Repository.listRuns(sessionId, CloudAgents.Auth.currentUserId()) {
+  match CloudAgents.Repository.listRuns(sessionId, CloudAgents.Auth.requestScope()) {
     case Ok(runs) -> {
       if runs.length == 0 {
         return Err(Web.conflict("workspace not initialized yet"))

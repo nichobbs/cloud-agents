@@ -283,7 +283,7 @@ test "storeAttachments rejects a dangerous mimeType before storing anything (#98
     case Ok(_) -> assertTrue(false, "an SVG upload must be rejected")
     case Err(e) -> assertEqualInt(e.code, 400, "dangerous mimeType -> 400")
   }
-  match CloudAgents.Repository.listAttachments(sid) {
+  match CloudAgents.Repository.listAttachments(sid, CloudAgents.Auth.requestScope()) {
     case Ok(l) -> assertEqualInt(l.length.toInt(), 0, "nothing was stored for the rejected upload")
     case Err(e) -> assertTrue(false, "list failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
   }
@@ -328,7 +328,7 @@ test "storeAttachments validates, writes to disk, and records metadata" {
   assertTrue(not stored.attachments[1].fileName.contains("/"), "no path separator survives sanitization")
 
   // The bytes are genuinely on disk at attachmentsBaseDir()/<sessionId>/<storedName>.
-  match CloudAgents.Repository.listAttachments(sid) {
+  match CloudAgents.Repository.listAttachments(sid, CloudAgents.Auth.requestScope()) {
     case Ok(l) -> assertEqualInt(l.length.toInt(), 2, "both rows are persisted")
     case Err(e) -> assertTrue(false, "list failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
   }
@@ -377,7 +377,7 @@ test "storeAttachments rejects an oversize file before storing anything" {
     case Ok(_) -> assertTrue(false, "an oversize attachment must be rejected")
     case Err(e) -> assertEqualInt(e.code, 400, "oversize -> 400")
   }
-  match CloudAgents.Repository.listAttachments(sid) {
+  match CloudAgents.Repository.listAttachments(sid, CloudAgents.Auth.requestScope()) {
     case Ok(l) -> assertEqualInt(l.length.toInt(), 0, "nothing was stored for the rejected upload")
     case Err(e) -> assertTrue(false, "list failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
   }
@@ -434,7 +434,7 @@ test "storeAttachments rejects the whole request atomically when only a LATER fi
   }
   // Nothing from ANY of the three files — including the first two, each
   // individually within the per-file cap — was written or recorded.
-  match CloudAgents.Repository.listAttachments(sid) {
+  match CloudAgents.Repository.listAttachments(sid, CloudAgents.Auth.requestScope()) {
     case Ok(l) -> assertEqualInt(l.length.toInt(), 0, "no rows were persisted for the rejected request")
     case Err(e) -> assertTrue(false, "list failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
   }
@@ -476,7 +476,7 @@ test "cleanupPartialAttachmentBatch best-effort deletes the rows and files it is
 
   cleanupPartialAttachmentBatch(stored.attachments, paths)
 
-  match CloudAgents.Repository.listAttachments(sid) {
+  match CloudAgents.Repository.listAttachments(sid, CloudAgents.Auth.requestScope()) {
     case Ok(l) -> assertEqualInt(l.length.toInt(), 0, "both rows are rolled back")
     case Err(e) -> assertTrue(false, "list failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
   }
@@ -533,7 +533,7 @@ test "storeAttachments mounts the session's existing attachment dir for a follow
 
   // The screenshot itself is unaffected — still exactly one attachment on
   // the session, still under the same directory.
-  match CloudAgents.Repository.listAttachments(sid) {
+  match CloudAgents.Repository.listAttachments(sid, CloudAgents.Auth.requestScope()) {
     case Ok(l) -> assertEqualInt(l.length.toInt(), 1, "the follow-up did not touch the stored attachment")
     case Err(e) -> assertTrue(false, "list failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
   }
@@ -567,7 +567,7 @@ test "listAttachmentsHandler and downloadAttachmentHandler serve what storeAttac
     case Err(e) -> assertTrue(false, "list failed: status " + toString(e.status))
   }
 
-  match CloudAgents.Repository.linkAttachmentToMessage(attachmentId, "msg-1") {
+  match CloudAgents.Repository.linkAttachmentToMessage(attachmentId, CloudAgents.Auth.requestScope(), "msg-1") {
     case Ok(_) -> ()
     case Err(e) -> assertTrue(false, "link failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
   }
