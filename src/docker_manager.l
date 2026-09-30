@@ -680,6 +680,21 @@ async func partialContainerLogsAsync(containerId: in String, cell: in ResultCell
   }
 }
 
+/// Renew the heartbeat of a run this instance drives
+/// (docs/phase11-postgres-tenancy.md §5.3a). Best-effort: a failed write is
+/// logged; a run that misses heartbeats for
+/// `CloudAgents.SessionStore.strandedRunAfterMs` is freed by the maintenance
+/// sweep.
+func renewRunHeartbeat(sessionId: in String, userId: in String): Unit {
+  match CloudAgents.SessionStore.heartbeatRun(sessionId, CloudAgents.Pg.personalScope(userId)) {
+    case Ok(_) -> ()
+    case Err(e) -> println(
+      "WARNING: run heartbeat failed for session " + sessionId + ": " +
+        CloudAgents.Sqlite.dbErrorMessage(e)
+    )
+  }
+}
+
 /// The session's current container id ("" when unknown / not owned by the
 /// caller). Owner-scoped via getSession; runs on the request thread where the
 /// identity is stamped, matching getRunOutputFrom.
@@ -881,6 +896,7 @@ pub func streamSessionMessage(
   // travels as text for the same cross-package Long reason as elapsedPollMs.
   val runStartedAt = toString(startMs)
   var observerCheckMs = 0
+  var heartbeatMs = 0
   // Adaptive poll cadence (#495): poll responsively while output is flowing,
   // but back off toward maxPollMs during quiet stretches so a long, idle run
   // doesn't refetch the whole container log every second (each tick opens a
@@ -1274,6 +1290,11 @@ pub func streamSessionMessage(
     if elapsedPollMs > runWallClockCapMs {
       timedOut = true
     }
+    heartbeatMs = heartbeatMs + ticked
+    if heartbeatMs >= CloudAgents.SessionStore.runHeartbeatIntervalMs {
+      heartbeatMs = 0
+      renewRunHeartbeat(sessionId, userId)
+    }
     observerCheckMs = observerCheckMs + ticked
     if observerCheckMs >= observerCheckIntervalMs {
       observerCheckMs = 0
@@ -1514,9 +1535,15 @@ pub func runSessionMessageBlocking(
   var finished = false
   val runStartedAt = CloudAgents.Repository.nowMillis()
   var observerCheckMs = 0
+  var heartbeatMs = 0
   while not finished and elapsedPollMs <= runWallClockCapMs {
     finished = taskWaitMs(t, pollMs)
     elapsedPollMs = elapsedPollMs + pollMs
+    heartbeatMs = heartbeatMs + pollMs
+    if heartbeatMs >= CloudAgents.SessionStore.runHeartbeatIntervalMs {
+      heartbeatMs = 0
+      renewRunHeartbeat(sessionId, userId)
+    }
     observerCheckMs = observerCheckMs + pollMs
     if observerCheckMs >= observerCheckIntervalMs {
       observerCheckMs = 0
@@ -1637,9 +1664,18 @@ pub func runInspectContainer(
   val pollMs = 500
   var elapsedPollMs = 0
   var finished = false
+  var heartbeatMs = 0
   while not finished and elapsedPollMs <= inspectWallClockCapMs {
     finished = taskWaitMs(t, pollMs)
     elapsedPollMs = elapsedPollMs + pollMs
+    // An inspect can run inside a run (the end-of-run checkpoint diff), so
+    // it keeps that run's heartbeat alive; for an idle session this is a
+    // no-op.
+    heartbeatMs = heartbeatMs + pollMs
+    if heartbeatMs >= CloudAgents.SessionStore.runHeartbeatIntervalMs {
+      heartbeatMs = 0
+      renewRunHeartbeat(sessionId, userId)
+    }
   }
   if not finished {
     if cell.containerId.length > 0 {

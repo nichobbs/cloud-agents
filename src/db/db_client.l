@@ -421,12 +421,30 @@ pub func updateSessionModelSql(id: in String, userId: in String, model: in Strin
 
 /// Atomically claim a session for a run: flips status to RUNNING only when
 /// it is not already RUNNING, in one statement, so two concurrent sends
-/// cannot both win (rows affected = 1 means the claim succeeded).
-pub func tryBeginRunSql(id: in String, userId: in String, ts: in String): String {
-  return "UPDATE sessions SET status = 'RUNNING', last_message_at = " + sqlLiteral(ts) + " WHERE id = " + sqlLiteral(id) +
+/// cannot both win (rows affected = 1 means the claim succeeded). The claim
+/// records the instance driving the run and its first heartbeat
+/// (docs/phase11-postgres-tenancy.md §5.3a).
+pub func tryBeginRunSql(id: in String, userId: in String, ts: in String, instance: in String): String {
+  return "UPDATE sessions SET status = 'RUNNING', last_message_at = " + sqlLiteral(ts) + ", run_instance = " +
+    sqlLiteral(instance) +
+    ", run_heartbeat_at = " +
+    sqlLiteral(ts) +
+    " WHERE id = " +
+    sqlLiteral(id) +
     " AND user_id = " +
     sqlLiteral(userId) +
     " AND status <> 'RUNNING'"
+}
+
+/// Renew a running session's heartbeat, only while the run is still this
+/// instance's: once a sweep has taken a stranded run over, the original
+/// instance's late heartbeats change nothing.
+pub func heartbeatRunSql(id: in String, userId: in String, ts: in String, instance: in String): String {
+  return "UPDATE sessions SET run_heartbeat_at = " + sqlLiteral(ts) + " WHERE id = " + sqlLiteral(id) +
+    " AND user_id = " +
+    sqlLiteral(userId) +
+    " AND status = 'RUNNING' AND run_instance = " +
+    sqlLiteral(instance)
 }
 
 /// Return a session to IDLE after a run completes (success or failure).
@@ -436,24 +454,51 @@ pub func endRunSql(id: in String, userId: in String, ts: in String): String {
     sqlLiteral(userId)
 }
 
+/// RUNNING sessions (across all users) whose heartbeat is at least
+/// `staleMillis` old, or missing: the candidates for the stranded-run sweep.
+/// The age is computed in SQL (64-bit), like selectReapableWarmSql's.
+pub func selectStaleRunningSessionsSql(nowMillis: in String, staleMillis: in Int, limit: in Int): String {
+  return "SELECT id, user_id, run_heartbeat_at, run_instance FROM sessions WHERE status = 'RUNNING' AND " +
+    "(run_heartbeat_at = '' OR CAST(" +
+    sqlLiteral(nowMillis) +
+    " AS INTEGER) - CAST(run_heartbeat_at AS INTEGER) >= " +
+    toString(staleMillis) +
+    ") LIMIT " +
+    toString(limit)
+}
+
+/// Take a stranded run over for the sweep: a compare-and-set on the stale
+/// heartbeat just read, which hands the run to `sweeper` and renews the
+/// heartbeat, so an overlapping sweep neither sees it as stale nor takes it.
+pub func takeOverStaleRunSql(id: in String, staleHeartbeat: in String, sweeper: in String, ts: in String): String {
+  return "UPDATE sessions SET run_instance = " + sqlLiteral(sweeper) + ", run_heartbeat_at = " + sqlLiteral(ts) +
+    " WHERE id = " +
+    sqlLiteral(id) +
+    " AND status = 'RUNNING' AND run_heartbeat_at = " +
+    sqlLiteral(staleHeartbeat)
+}
+
+/// Return a stranded session to IDLE and drop its container reference, only
+/// while the sweep still holds the run.
+pub func releaseStrandedRunSql(id: in String, sweeper: in String, ts: in String): String {
+  return "UPDATE sessions SET status = 'IDLE', container_id = '', last_message_at = " + sqlLiteral(ts) + " WHERE id = " +
+    sqlLiteral(id) +
+    " AND status = 'RUNNING' AND run_instance = " +
+    sqlLiteral(sweeper)
+}
+
+/// Columns added by migration 0040 (docs/phase11-postgres-tenancy.md §5.3a).
+pub func alterSessionsAddRunInstanceSql(): String {
+  return "ALTER TABLE sessions ADD COLUMN run_instance TEXT NOT NULL DEFAULT ''"
+}
+
+pub func alterSessionsAddRunHeartbeatAtSql(): String {
+  return "ALTER TABLE sessions ADD COLUMN run_heartbeat_at TEXT NOT NULL DEFAULT ''"
+}
+
 /// DELETE a session.
 pub func deleteSessionSql(id: in String, userId: in String): String {
   return "DELETE FROM sessions WHERE id = " + sqlLiteral(id) + " AND user_id = " + sqlLiteral(userId)
-}
-
-/// Container ids of sessions stranded RUNNING/WARM (across all users), for the
-/// startup sweep to terminate before recoverDanglingSessionsSql blanks them —
-/// otherwise those containers are orphaned. Un-scoped: startup recovery is
-/// system-wide, not per-request.
-pub func selectStrandedContainerIdsSql(): String {
-  return "SELECT container_id FROM sessions WHERE (status = 'RUNNING' OR status = 'WARM') AND container_id <> ''"
-}
-
-/// Reset any sessions still marked RUNNING or WARM back to IDLE. Used by the
-/// startup recovery routine after a Docker daemon or VM restart (docs/phase2
-/// §Constraints). No params.
-pub func recoverDanglingSessionsSql(): String {
-  return "UPDATE sessions SET status = 'IDLE', container_id = '' " + "WHERE status = 'RUNNING' OR status = 'WARM'"
 }
 
 /// ALTER adding the profile association to an existing sessions table. A
@@ -2489,21 +2534,33 @@ pub func finishSessionRunsSql(sessionId: in String, userId: in String, status: i
 /// Sessions (system-wide) that still hold a WARM container that has been idle
 /// at least `warmWindowMillis`, i.e. ready for the reaper to stop. The age
 /// filter is done in SQL (SQLite's integer arithmetic is 64-bit) so Lyric never
-/// has to parse epoch-millis into a Long. Returns (id, container_id). Un-scoped:
+/// has to parse epoch-millis into a Long. Returns (id, container_id, user_id). Un-scoped:
 /// reaping is a system maintenance task, not a per-user request.
 pub func selectReapableWarmSql(nowMillis: in String, warmWindowMillis: in String): String {
-  return "SELECT id, container_id FROM sessions WHERE status = 'WARM' AND container_id <> '' AND (CAST(" +
+  return "SELECT id, container_id, user_id FROM sessions WHERE status = 'WARM' AND container_id <> '' AND (CAST(" +
     sqlLiteral(nowMillis) +
     " AS INTEGER) - CAST(last_message_at AS INTEGER)) >= CAST(" +
     sqlLiteral(warmWindowMillis) +
     " AS INTEGER)"
 }
 
-/// Stop tracking a session's container after its container has been reaped:
-/// blank the container id and return the session to IDLE. Un-scoped (system
-/// maintenance). Params: id.
-pub func reapSessionContainerSql(id: in String): String {
-  return "UPDATE sessions SET status = 'IDLE', container_id = '' WHERE id = " + sqlLiteral(id)
+/// Reap a WARM session: return it to IDLE and drop its container reference,
+/// only while it is still WARM on that same container. Run BEFORE the
+/// container is terminated, so a run that has since started on the session
+/// (RUNNING) keeps its container, and of two overlapping reapers only the one
+/// whose update lands terminates it. Un-scoped (system maintenance).
+pub func reapWarmSessionSql(id: in String, containerId: in String): String {
+  return "UPDATE sessions SET status = 'IDLE', container_id = '' WHERE id = " + sqlLiteral(id) +
+    " AND status = 'WARM' AND container_id = " +
+    sqlLiteral(containerId)
+}
+
+/// Return a session to IDLE and drop its container reference, for an owner
+/// resetting a session that is not running. Scoped by owner.
+pub func resetSessionContainerSql(id: in String, userId: in String): String {
+  return "UPDATE sessions SET status = 'IDLE', container_id = '' WHERE id = " + sqlLiteral(id) + " AND user_id = " +
+    sqlLiteral(userId) +
+    " AND status <> 'RUNNING'"
 }
 
 // ─── Webhooks (transactional outbox) ────────────────────────────────────────────

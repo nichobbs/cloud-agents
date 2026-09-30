@@ -489,6 +489,15 @@ pub func allMigrations(): slice[Migration] {
     Migration(
       version = "0039_ledger_observer",
       statements = CloudAgents.Ledger.Schema.ledgerObserverMigrationSql()
+    ),
+    // Several API instances (docs/phase11-postgres-tenancy.md §5.3a): the
+    // instance driving a run and its heartbeat.
+    Migration(
+      version = "0040_run_heartbeat",
+      statements = [
+        CloudAgents.Db.alterSessionsAddRunInstanceSql(),
+        CloudAgents.Db.alterSessionsAddRunHeartbeatAtSql()
+      ]
     )
   ]
 }

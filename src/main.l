@@ -2033,25 +2033,10 @@ pub func main(): Unit {
     case Err(e) -> println("WARNING: failed to initialise database schema: " + CloudAgents.Sqlite.dbErrorMessage(e))
   }
 
-  // Sessions stranded RUNNING/WARM by a crash/restart can never be claimed
-  // again (the concurrency guard would 409 forever). Terminate any container
-  // they still reference before blanking it, so nothing is orphaned, then
-  // reset the rows to IDLE.
-  match CloudAgents.SessionStore.strandedContainerIds() {
-    case Ok(ids) -> {
-      for cid in ids {
-        match CloudAgents.Docker.terminateSessionContainer(cid) {
-          case Ok(_) -> ()
-          case Err(e) -> println("WARNING: could not terminate stranded container " + cid + ": " + e)
-        }
-      }
-    }
-    case Err(e) -> println("WARNING: could not list stranded containers: " + CloudAgents.Sqlite.dbErrorMessage(e))
-  }
-  match CloudAgents.SessionStore.recoverDanglingSessions() {
-    case Ok(_) -> ()
-    case Err(e) -> println("WARNING: failed to recover dangling sessions: " + CloudAgents.Sqlite.dbErrorMessage(e))
-  }
+  // Sessions left RUNNING by a crash or restart are not reset here: another
+  // instance may be driving them (docs/phase11-postgres-tenancy.md §5.3a).
+  // Once their heartbeat stops, the maintenance sweep
+  // (POST /api/maintenance/reap) stops their containers and frees them.
 
   // Fail loudly at startup — not at first credential use — if ENCRYPTION_KEY
   // is set but unusable (wrong length, bad base64). A configured-but-broken

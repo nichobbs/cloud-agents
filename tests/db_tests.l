@@ -83,15 +83,26 @@ test "SQL statements are scoped by owner" {
 test "run-claim SQL is atomic and status-guarded" {
   // 'end' (and defensively 'begin') are reserved keywords in Lyric (P0051),
   // hence the Sql-suffixed binding names.
-  val claimSql = tryBeginRunSql("s1", "u1", "1000")
+  val claimSql = tryBeginRunSql("s1", "u1", "1000", "api-1")
   assertTrue(claimSql.contains("SET status = 'RUNNING'"), "claim sets RUNNING")
   assertTrue(claimSql.contains("AND status <> 'RUNNING'"), "claim refuses an already-running session")
   assertTrue(claimSql.contains("AND user_id = 'u1'"), "claim scoped by owner")
   val releaseSql = endRunSql("s1", "u1", "2000")
   assertTrue(releaseSql.contains("SET status = 'IDLE'"), "end returns to IDLE")
+  assertTrue(claimSql.contains("run_instance = 'api-1'"), "claim records the driving instance")
+  assertTrue(claimSql.contains("run_heartbeat_at = '1000'"), "and the first heartbeat")
+  val beat = heartbeatRunSql("s1", "u1", "3000", "api-1")
+  assertTrue(beat.contains("AND status = 'RUNNING' AND run_instance = 'api-1'"), "heartbeat only for our own run")
+  val stale = selectStaleRunningSessionsSql("200000", 120000, 25)
+  assertTrue(stale.contains("run_heartbeat_at = '' OR"), "a missing heartbeat is stale")
+  assertTrue(stale.contains("- CAST(run_heartbeat_at AS INTEGER) >= 120000"), "age computed in SQL")
   assertTrue(
-    recoverDanglingSessionsSql().contains("WHERE status = 'RUNNING' OR status = 'WARM'"),
-    "recovery targets stranded sessions"
+    takeOverStaleRunSql("s1", "1000", "sweep:api-2", "200000").contains("AND run_heartbeat_at = '1000'"),
+    "takeover is a compare-and-set"
+  )
+  assertTrue(
+    releaseStrandedRunSql("s1", "sweep:api-2", "200000").contains("AND run_instance = 'sweep:api-2'"),
+    "release only by the holder"
   )
 }
 
@@ -362,7 +373,9 @@ test "reap SQL filters by warm window in SQL" {
   assertTrue(sel.contains("status = 'WARM'"), "reaps warm sessions")
   assertTrue(sel.contains("container_id <> ''"), "only sessions with a container")
   assertTrue(sel.contains("- CAST(last_message_at AS INTEGER)) >= CAST('300000' AS INTEGER)"), "age filter in SQL")
-  assertTrue(reapSessionContainerSql("s1").contains("SET status = 'IDLE', container_id = ''"), "reap frees the row")
+  val reap = reapWarmSessionSql("s1", "c1")
+  assertTrue(reap.contains("SET status = 'IDLE', container_id = ''"), "reap frees the row")
+  assertTrue(reap.contains("AND status = 'WARM' AND container_id = 'c1'"), "only while still WARM on that container")
 }
 
 test "migration ledger SQL is well-formed" {

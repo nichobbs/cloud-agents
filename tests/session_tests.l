@@ -328,32 +328,114 @@ test "deleteSessionRecord removes the row and is a no-op when already gone (#310
   mustUnit(deleteSessionRecord(sessionId, CloudAgents.Auth.requestScope()))
 }
 
-test "recoverDanglingSessions frees sessions stuck RUNNING on restart (#198)" {
-  val dbPath = useFreshTestDb("recover-dangling")
-  defer {
-    cleanupTestDb(dbPath)
-  }
+func addPlainSession(sessionId: in String): Unit {
   mustUnit(
     addSession(
       makeAgentSession(
-        sessionId = "dangling-1",
+        sessionId = sessionId,
         repoUrl = "https://github.com/nic/repo",
         branch = "main",
         containerId = "",
         harness = "claude",
         model = "claude-opus-4-8",
-        nativeSessionId = "dangling-1"
+        nativeSessionId = sessionId
       )
     , CloudAgents.Auth.requestScope())
   )
-  // Claim it so it is RUNNING, then "crash" — the process dies without ever
-  // calling endRun, leaving the row dangling. A second claim is refused.
+}
+
+func setSessionColumns(sessionId: in String, assignments: in String): Unit {
+  match CloudAgents.Sqlite.execute("UPDATE sessions SET " + assignments + " WHERE id = '" + sessionId + "'") {
+    case Ok(_) -> ()
+    case Err(e) -> assertTrue(false, "setup update failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+  }
+}
+
+func mustStranded(): slice[CloudAgents.SessionStore.StrandedRun] {
+  return match CloudAgents.SessionStore.claimStrandedRuns(50) {
+    case Ok(v) -> v
+    case Err(e) -> panic("claimStrandedRuns failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+  }
+}
+
+func strandedFor(
+  runs: in slice[CloudAgents.SessionStore.StrandedRun], sessionId: in String
+): Option[CloudAgents.SessionStore.StrandedRun] {
+  for r in runs {
+    if r.sessionId == sessionId {
+      return Some(value = r)
+    }
+  }
+  return None
+}
+
+// A crash or restart that kills the instance driving a run leaves the session
+// RUNNING (#198). Startup no longer resets it, since on several instances
+// another may be driving it (docs/phase11-postgres-tenancy.md §5.3a); once
+// its heartbeat is stale the maintenance sweep takes it over exactly once
+// and frees it.
+test "a run whose heartbeat stopped is taken over once and freed" {
+  val dbPath = useFreshTestDb("stranded-run")
+  defer {
+    cleanupTestDb(dbPath)
+  }
+  addPlainSession("dangling-1")
   assertTrue(mustClaim(CloudAgents.SessionStore.tryBeginRun("dangling-1", CloudAgents.Auth.requestScope())), "claim wins")
-  assertFalse(mustClaim(CloudAgents.SessionStore.tryBeginRun("dangling-1", CloudAgents.Auth.requestScope())), "second claim refused while RUNNING")
-  // Startup recovery resets the dangling RUNNING row back to a usable state.
-  val recovered = mustInt(recoverDanglingSessions())
-  assertTrue(recovered >= 1, "at least one dangling session recovered")
-  assertTrue(mustClaim(CloudAgents.SessionStore.tryBeginRun("dangling-1", CloudAgents.Auth.requestScope())), "claim available again after recovery")
+  setSessionColumns("dangling-1", "run_heartbeat_at = '0', container_id = 'c-stranded'")
+  assertFalse(mustClaim(CloudAgents.SessionStore.tryBeginRun("dangling-1", CloudAgents.Auth.requestScope())), "still RUNNING")
+
+  val first = mustStranded()
+  val r = match strandedFor(first, "dangling-1") {
+    case Some(v) -> v
+    case None -> panic("a stale run is taken over")
+  }
+  assertEqual(r.containerId, "c-stranded", "the takeover carries the run's container")
+  assertEqual(r.previousInstance, CloudAgents.SessionStore.instanceId(), "and the instance that stopped heartbeating")
+  assertEqual(r.sweeper, CloudAgents.SessionStore.sweeperId(), "held under this instance's sweeper name")
+  match strandedFor(mustStranded(), "dangling-1") {
+    case Some(_) -> assertTrue(false, "an overlapping sweep does not take the same run over")
+    case None -> ()
+  }
+  assertFalse(
+    mustClaim(CloudAgents.SessionStore.heartbeatRun("dangling-1", CloudAgents.Auth.requestScope())),
+    "the original instance's late heartbeat changes nothing after a takeover"
+  )
+  assertTrue(mustClaim(CloudAgents.SessionStore.releaseStrandedRun(r)), "the sweep frees the session")
+  assertFalse(mustClaim(CloudAgents.SessionStore.releaseStrandedRun(r)), "freeing it twice is a no-op")
+  assertTrue(mustClaim(CloudAgents.SessionStore.tryBeginRun("dangling-1", CloudAgents.Auth.requestScope())), "claim available again")
+}
+
+test "a run with a live heartbeat is never taken over" {
+  val dbPath = useFreshTestDb("live-run")
+  defer {
+    cleanupTestDb(dbPath)
+  }
+  addPlainSession("live-1")
+  assertTrue(mustClaim(CloudAgents.SessionStore.tryBeginRun("live-1", CloudAgents.Auth.requestScope())), "claim wins")
+  assertTrue(mustClaim(CloudAgents.SessionStore.heartbeatRun("live-1", CloudAgents.Auth.requestScope())), "heartbeat renewed")
+  match strandedFor(mustStranded(), "live-1") {
+    case Some(_) -> assertTrue(false, "a run heartbeating now is not stranded")
+    case None -> ()
+  }
+  mustUnit(CloudAgents.SessionStore.endRun("live-1", CloudAgents.Auth.requestScope()))
+  assertFalse(
+    mustClaim(CloudAgents.SessionStore.heartbeatRun("live-1", CloudAgents.Auth.requestScope())),
+    "an ended run takes no heartbeat"
+  )
+}
+
+test "a RUNNING session with no heartbeat at all is stranded" {
+  val dbPath = useFreshTestDb("no-heartbeat")
+  defer {
+    cleanupTestDb(dbPath)
+  }
+  // A session left RUNNING by a version before migration 0040 has none.
+  addPlainSession("legacy-1")
+  setSessionColumns("legacy-1", "status = 'RUNNING', run_heartbeat_at = '', run_instance = ''")
+  match strandedFor(mustStranded(), "legacy-1") {
+    case Some(r) -> assertEqual(r.previousInstance, "", "no previous instance recorded")
+    case None -> assertTrue(false, "a heartbeat-less RUNNING session is stranded")
+  }
 }
 
 test "importLegacyEnvSessions inserts env sessions into the store and clears the env (#198)" {
@@ -1157,16 +1239,32 @@ test "reapableWarmContainers finds and frees aged WARM sessions (#241)" {
   }
   assertEqualInt(targets.length.toInt(), 1, "aged warm session is reapable")
   assertEqual(targets[0].containerId, "c-warm", "reap target carries the container id")
+  assertEqual(targets[0].tenantScope.userId, CloudAgents.Auth.requestScope().userId, "and the owner's scope")
 
-  match CloudAgents.SessionStore.reapSessionContainer("warm-1") {
-    case Ok(_) -> ()
-    case Err(e) -> assertTrue(false, "reapSessionContainer failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
-  }
+  assertTrue(mustClaim(CloudAgents.SessionStore.reapWarmSession(targets[0])), "the first reaper frees the session")
+  assertFalse(mustClaim(CloudAgents.SessionStore.reapWarmSession(targets[0])), "an overlapping reaper does not")
   val after = match CloudAgents.SessionStore.reapableWarmContainers() {
     case Ok(t) -> t
     case Err(e) -> panic("reapableWarmContainers failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
   }
   assertEqualInt(after.length.toInt(), 0, "reaped session is no longer reapable")
+}
+
+test "a WARM session a run has since started on is not reaped" {
+  val dbPath = useFreshTestDb("reap-race")
+  defer {
+    cleanupTestDb(dbPath)
+  }
+  addPlainSession("warm-2")
+  setSessionColumns("warm-2", "status = 'WARM', container_id = 'c-warm-2', last_message_at = '0'")
+  val targets = match CloudAgents.SessionStore.reapableWarmContainers() {
+    case Ok(t) -> t
+    case Err(e) -> panic("reapableWarmContainers failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+  }
+  assertEqualInt(targets.length.toInt(), 1, "found as reapable")
+  // A message arrives between the scan and the reap.
+  assertTrue(mustClaim(CloudAgents.SessionStore.tryBeginRun("warm-2", CloudAgents.Auth.requestScope())), "run starts")
+  assertFalse(mustClaim(CloudAgents.SessionStore.reapWarmSession(targets[0])), "the reaper leaves a running session alone")
 }
 
 test "Session ownership isolation hides other users' sessions (#207)" {
