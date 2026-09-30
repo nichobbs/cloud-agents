@@ -1409,7 +1409,7 @@ pub func streamSendMessage(
             val _ = CloudAgents.Repository.enqueueWebhookEvent(CloudAgents.Pg.personalScope(userId), id, runId, "succeeded")
             // Session ledger observer (docs/session-ledger.md §10): queue an
             // end-of-run pass if this session is observed. Best-effort.
-            CloudAgents.Ledger.Observer.onRunFinished(id, CloudAgents.Pg.personalScope(userId))
+            CloudAgents.Ledger.Observer.onRunFinished(id)
           }
           // Persist the agent reply and close the stream with a done frame that
           // carries the message id (so the client can anchor comments/todos).
@@ -1444,7 +1444,7 @@ pub func streamSendMessage(
             val _ = CloudAgents.Repository.enqueueWebhookEvent(CloudAgents.Pg.personalScope(userId), id, runId, "failed")
             // Session ledger observer (docs/session-ledger.md §10): queue an
             // end-of-run pass if this session is observed. Best-effort.
-            CloudAgents.Ledger.Observer.onRunFinished(id, CloudAgents.Pg.personalScope(userId))
+            CloudAgents.Ledger.Observer.onRunFinished(id)
           }
           // Status/headers are already committed (200 sent at the first chunk),
           // so the failure can't be an HTTP status. Emit a distinct `event:
@@ -1523,7 +1523,7 @@ pub func cancelRun(id: in String): Result[Unit, Web.ApiError] {
             val _ = CloudAgents.Repository.enqueueWebhookEvent(CloudAgents.Pg.personalScope(userId), id, runId, "cancelled")
             // Session ledger observer (docs/session-ledger.md §10): queue an
             // end-of-run pass if this session is observed. Best-effort.
-            CloudAgents.Ledger.Observer.onRunFinished(id, CloudAgents.Pg.personalScope(userId))
+            CloudAgents.Ledger.Observer.onRunFinished(id)
           }
           return Ok(())
         }

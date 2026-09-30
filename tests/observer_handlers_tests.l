@@ -289,19 +289,19 @@ test "a run's end queues a pass only for an observed session" {
   enable("p2", settings("false", "none", "10"))
   seedSession("watched", "p1", "IDLE")
   seedSession("unwatched", "p2", "IDLE")
-  onRunFinished("watched", testScope())
-  onRunFinished("unwatched", testScope())
+  onRunFinished("watched")
+  onRunFinished("unwatched")
   assertEqual(stateOf("watched").pending, "1", "an observed session gets a pass")
   assertEqual(stateOf("unwatched").pending, "0", "a disabled observer doesn't")
   // An observer session is never observed, whatever its profile says.
   seedSession("obs", "p1", "IDLE")
   exec("UPDATE sessions SET observes_session_id = 'watched' WHERE id = 'obs'")
-  onRunFinished("obs", testScope())
+  onRunFinished("obs")
   assertEqual(stateOf("obs").pending, "0", "observers aren't observed")
   // An archived session isn't either.
   seedSession("old", "p1", "IDLE")
   exec("UPDATE sessions SET is_archived = '1' WHERE id = 'old'")
-  onRunFinished("old", testScope())
+  onRunFinished("old")
   assertEqual(stateOf("old").pending, "0", "archived sessions aren't observed")
 }
 
@@ -314,9 +314,9 @@ test "a long run is due a mid-run pass once the interval passes" {
   enable("p1", settings("true", "none", "10"))
   seedSession("s1", "p1", "RUNNING")
   val now = CloudAgents.Repository.nowMillisLong()
-  midRunTick("s1", testScope(), toString(now - 5.toLong() * 60000.toLong()))
+  midRunTick("s1", toString(now - 5.toLong() * 60000.toLong()))
   assertEqual(stateOf("s1").pending, "0", "5 minutes in: not yet")
-  midRunTick("s1", testScope(), toString(now - 16.toLong() * 60000.toLong()))
+  midRunTick("s1", toString(now - 16.toLong() * 60000.toLong()))
   assertEqual(stateOf("s1").pending, "1", "16 minutes in: due")
 }
 
@@ -372,7 +372,7 @@ test "a pass runs the observer, which reads the window and reports into the ledg
   enable("p1", settings("true", "diff", "10"))
   seedSession("s1", "p1", "IDLE")
   captureFixture("s1")
-  onRunFinished("s1", testScope())
+  onRunFinished("s1")
   val runner = fakeRunner(readFixture("tests/fixtures/observer/report.json"))
   val report = runAsOperator(runner)
   assertEqual(report.passes, "1", "one pass")
@@ -582,7 +582,7 @@ test "a session whose profile was deleted is no longer observed" {
   enable("p1", settings("true", "workspace", "10"))
   seedSession("s1", "p1", "IDLE")
   exec("DELETE FROM profiles WHERE id = 'p1'")
-  onRunFinished("s1", testScope())
+  onRunFinished("s1")
   assertEqual(stateOf("s1").pending, "0", "no pass for a deleted profile")
 }
 

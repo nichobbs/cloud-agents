@@ -14,6 +14,7 @@ package CloudAgents.Ledger.Observer
 import Std.Core
 import CloudAgents.Pg
 import CloudAgents.Repository
+import CloudAgents.SessionStore
 import CloudAgents.Sqlite
 import CloudAgents.Capture
 import CloudAgents.Ledger.Model
@@ -488,9 +489,22 @@ pub func observerSettingsForSession(
   }
 }
 
+/// The scope a session's observer bookkeeping lives under: its route's, the
+/// tenant the session itself was created in (#1188).
+func routeScope(sessionId: in String): Option[CloudAgents.Pg.TenantScope] {
+  return match CloudAgents.SessionStore.sessionRouteScope(sessionId) {
+    case Ok(found) -> found
+    case Err(e) -> {
+      println("WARNING: resolving the scope of " + sessionId + " failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+      None
+    }
+  }
+}
+
 /// A run of `sessionId` ended (succeeded, failed or cancelled): if it is
 /// observed, ask for an end-of-run pass. Best-effort: never fails the run.
-pub func onRunFinished(sessionId: in String, sc: in CloudAgents.Pg.TenantScope): Unit {
+pub func onRunFinished(sessionId: in String): Unit {
+  val sc = match routeScope(sessionId) { case Some(v) -> v; case None -> return () }
   match observerSettingsForSession(sessionId, sc) {
     case Ok(Some(_)) -> {
       match markObserverPending(sessionId, sc) {
@@ -511,7 +525,8 @@ pub func onRunFinished(sessionId: in String, sc: in CloudAgents.Pg.TenantScope):
 
 /// Called from a running session's poll loop: ask for a mid-run pass once the
 /// profile's interval has passed since the last pass (or the run's start).
-pub func midRunTick(sessionId: in String, sc: in CloudAgents.Pg.TenantScope, runStartedAt: in String): Unit {
+pub func midRunTick(sessionId: in String, runStartedAt: in String): Unit {
+  val sc = match routeScope(sessionId) { case Some(v) -> v; case None -> return () }
   val settings = match observerSettingsForSession(sessionId, sc) { case Ok(Some(st)) -> st; case _ -> return () }
   val st = match observerState(sessionId, sc) { case Ok(s) -> s; case Err(_) -> return () }
   var since = decimalLong(runStartedAt)
