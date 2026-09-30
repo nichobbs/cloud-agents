@@ -168,9 +168,16 @@ pub async func createRunnerContainer(
   // surface whatever its profile grants: only the two observer tools, no
   // skills/subagents/MCP servers, no repository credentials, no clone (the
   // entrypoint skips it on CLOUD_AGENTS_OBSERVER=1), and at most a read-only
-  // view of the observed workspace. A lookup failure fails the run closed
-  // rather than starting an observer with the full profile.
-  val observer = match CloudAgents.Ledger.Store.observerRunInfo(sessionId) {
+  // view of the observed workspace. The lookup runs in the tenant the
+  // session's route names (#1188), and any failure, including a missing
+  // route, fails the run closed rather than starting an observer with the
+  // full profile.
+  val routeScope = match CloudAgents.SessionStore.sessionRouteScope(sessionId) {
+    case Ok(Some(v)) -> v
+    case Ok(None) -> return Err(error = "Failed to resolve the session's tenant: no route for session " + sessionId)
+    case Err(e) -> return Err(error = "Failed to resolve the session's tenant: " + CloudAgents.Sqlite.dbErrorMessage(e))
+  }
+  val observer = match CloudAgents.Ledger.Store.observerRunInfo(sessionId, routeScope) {
     case Ok(o) -> o
     case Err(e) -> return Err(error = "Failed to resolve the observer settings: " + CloudAgents.Sqlite.dbErrorMessage(e))
   }

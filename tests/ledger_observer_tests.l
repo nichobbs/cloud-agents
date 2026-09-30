@@ -518,7 +518,7 @@ test "fixtures: planted shortcuts are flagged and the declared decision is match
   assertEqual(decision.severity, "info", "and needs no review")
   assertEqualInt(countNotifications("s1"), 1, "only the confident skipped test notifies")
 
-  match observerState("s1") {
+  match observerState("s1", testScope()) {
     case Ok(st) -> {
       assertEqual(st.cursorSeq, "28", "the cursor moved past the window")
       assertEqual(st.windowEnd, "", "and the window is closed")
@@ -618,7 +618,7 @@ test "a report that breaks the rules is refused whole and the cursor stays" {
     case Err(f) -> assertTrue(f.message.contains("candidates[1]"), "names the bad candidate: " + f.message)
   }
   assertEqualInt(observedEntries("s1").length.toInt(), 0, "nothing stored from a refused report")
-  match observerState("s1") {
+  match observerState("s1", testScope()) {
     case Ok(st) -> assertEqual(st.cursorSeq, "", "the cursor did not move")
     case Err(e) -> panic(CloudAgents.Sqlite.dbErrorMessage(e))
   }

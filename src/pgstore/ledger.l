@@ -4,6 +4,10 @@
 //! `CloudAgents.Ledger.Store` with the same signatures and semantics, and
 //! reuses that package's record types.
 //!
+//! It also holds the observer bookkeeping (docs/session-ledger.md §10): a
+//! profile's observer settings, an observed session's observer state and
+//! pending-pass flag, and the observer-session link.
+//!
 //! Every call runs in one unit scoped by the session's tenant (the route
 //! scope in `SessionContext.tenantScope`), so row-level security confines it
 //! to that tenant; within it, rows are keyed by session as on SQLite.
@@ -44,6 +48,7 @@ import CloudAgents.Sqlite
 import CloudAgents.Ledger.Model
 import CloudAgents.Ledger.Schema
 import CloudAgents.Ledger.Summary
+import CloudAgents.Ledger.ObserverPolicy
 import CloudAgents.Ledger.Store as LedgerStore
 
 func newId(): String {
@@ -1028,4 +1033,201 @@ pub func inboxForUser(
     i = i + 1
   }
   return Ok(value = acc)
+}
+
+// ── Observer bookkeeping ─────────────────────────────────────────────────────
+/// A profile's observer settings, or None when it has none (not observed).
+/// Joined to profiles: settings outlive a deleted profile's row, and a
+/// session left pointing at a deleted profile must not stay observed.
+pub func observerSettingsFor(
+  profileId: in String, sc: in CloudAgents.Pg.TenantScope
+): Result[Option[ObserverSettings], CloudAgents.Sqlite.DbError] {
+  if profileId.length.toInt() == 0 {
+    return Ok(value = None)
+  }
+  val rows = query(sc, "SELECT s.enabled::text AS enabled, s.harness, s.model, s.repo_access, s.mid_run_minutes::text AS mid_run_minutes, " + "s.max_passes_per_day::text AS max_passes_per_day FROM ledger_observer_settings s JOIN profiles p ON p.id = s.profile_id " + "WHERE s.profile_id = @p0", [profileId])?
+  if rows.length == 0 {
+    return Ok(value = None)
+  }
+  val r = rows[0]
+  return Ok(
+    value = Some(
+      value = ObserverSettings(
+        enabled = c(r, "enabled"),
+        harness = c(r, "harness"),
+        model = c(r, "model"),
+        repoAccess = c(r, "repo_access"),
+        midRunMinutes = c(r, "mid_run_minutes"),
+        maxPassesPerDay = c(r, "max_passes_per_day")
+      )
+    )
+  )
+}
+
+/// Save a profile's observer settings (already validated).
+pub func saveObserverSettings(
+  profileId: in String, sc: in CloudAgents.Pg.TenantScope, st: in ObserverSettings
+): Result[Unit, CloudAgents.Sqlite.DbError] {
+  exec(sc, "INSERT INTO ledger_observer_settings (profile_id, enabled, harness, model, repo_access, mid_run_minutes, max_passes_per_day, updated_at) " + "VALUES (@p0, @p1::boolean, @p2, @p3, @p4, @p5::integer, @p6::integer, " + CloudAgents.Pg.msIn(7) + ") ON CONFLICT (tenant_id, profile_id) DO UPDATE SET " + "enabled = excluded.enabled, harness = excluded.harness, model = excluded.model, repo_access = excluded.repo_access, " + "mid_run_minutes = excluded.mid_run_minutes, max_passes_per_day = excluded.max_passes_per_day, updated_at = excluded.updated_at", [profileId, st.enabled, st.harness, st.model, st.repoAccess, st.midRunMinutes, st.maxPassesPerDay, now()])?
+  return Ok(value = ())
+}
+
+func observerCols(): String {
+  return "session_id, observer_session_id, cursor_seq::text AS cursor_seq, window_end::text AS window_end, " +
+    "CASE WHEN pending THEN '1' ELSE '0' END AS pending, pass_day::text AS pass_day, passes_today::text AS passes_today, " +
+    ms("last_pass_at", "last_pass_at") +
+    ", config_key, last_error"
+}
+
+func toObserverState(r: in DbRow): LedgerStore.ObserverState {
+  return LedgerStore.ObserverState(
+    sessionId = c(r, "session_id"),
+    observerSessionId = c(r, "observer_session_id"),
+    cursorSeq = c(r, "cursor_seq"),
+    windowEnd = c(r, "window_end"),
+    pending = c(r, "pending"),
+    passDay = c(r, "pass_day"),
+    passesToday = c(r, "passes_today"),
+    lastPassAt = c(r, "last_pass_at"),
+    configHash = c(r, "config_key"),
+    lastError = c(r, "last_error")
+  )
+}
+
+/// The observer state of an observed session (an empty state when it has
+/// never been observed).
+pub func observerState(
+  sessionId: in String, sc: in CloudAgents.Pg.TenantScope
+): Result[LedgerStore.ObserverState, CloudAgents.Sqlite.DbError] {
+  val rows = query(sc, "SELECT " + observerCols() + " FROM ledger_observer WHERE session_id = @p0", [sessionId])?
+  if rows.length == 0 {
+    return Ok(value = LedgerStore.emptyObserverState(sessionId))
+  }
+  return Ok(value = toObserverState(rows[0]))
+}
+
+/// The observed session an observer session works for ("" when
+/// `observerSessionId` is not an observer).
+pub func observedSessionOf(
+  observerSessionId: in String, sc: in CloudAgents.Pg.TenantScope
+): Result[String, CloudAgents.Sqlite.DbError] {
+  if observerSessionId.length.toInt() == 0 {
+    return Ok(value = "")
+  }
+  val rows = query(sc, "SELECT session_id FROM ledger_observer WHERE observer_session_id = @p0", [observerSessionId])?
+  if rows.length == 0 {
+    return Ok(value = "")
+  }
+  return Ok(value = c(rows[0], "session_id"))
+}
+
+pub func saveObserverState(
+  sc: in CloudAgents.Pg.TenantScope, st: in LedgerStore.ObserverState
+): Result[Unit, CloudAgents.Sqlite.DbError] {
+  exec(sc, "INSERT INTO ledger_observer (session_id, observer_session_id, cursor_seq, window_end, pending, pass_day, passes_today, last_pass_at, config_key, last_error) " + "VALUES (@p0, @p1, " + numOpt(2, "bigint") + ", " + numOpt(3, "bigint") + ", @p4 = '1', " + numOpt(5, "integer") + ", COALESCE(" + numOpt(6, "integer") + ", 0), " + msOpt(7) + ", @p8, @p9) " + "ON CONFLICT (tenant_id, session_id) DO UPDATE SET observer_session_id = excluded.observer_session_id, cursor_seq = excluded.cursor_seq, " + "window_end = excluded.window_end, pending = excluded.pending, pass_day = excluded.pass_day, passes_today = excluded.passes_today, " + "last_pass_at = excluded.last_pass_at, config_key = excluded.config_key, last_error = excluded.last_error", [st.sessionId, st.observerSessionId, st.cursorSeq, st.windowEnd, st.pending, st.passDay, st.passesToday, st.lastPassAt, st.configHash, st.lastError])?
+  return Ok(value = ())
+}
+
+/// The observer facts for a session about to run, or None for any session
+/// that isn't an observer.
+pub func observerRunInfo(
+  sessionId: in String, sc: in CloudAgents.Pg.TenantScope
+): Result[Option[LedgerStore.ObserverRunInfo], CloudAgents.Sqlite.DbError] {
+  val rows = query(sc, "SELECT o.session_id, COALESCE(st.repo_access, 'none') AS repo_access FROM ledger_observer o " + "JOIN sessions t ON t.id = o.session_id LEFT JOIN ledger_observer_settings st ON st.profile_id = t.profile_id " + "AND st.profile_id IN (SELECT id FROM profiles) WHERE o.observer_session_id = @p0 AND o.observer_session_id <> ''", [sessionId])?
+  if rows.length == 0 {
+    return Ok(value = None)
+  }
+  return Ok(
+    value = Some(
+      value = LedgerStore.ObserverRunInfo(
+        observedSessionId = c(rows[0], "session_id"),
+        repoAccess = c(rows[0], "repo_access")
+      )
+    )
+  )
+}
+
+/// The facts about a session the observer machinery needs, in the given
+/// tenant, without an owner check (callers are an authenticated container
+/// callback, a run hook on the session's own request, or a maintenance pass).
+pub func sessionRunFacts(
+  sessionId: in String, sc: in CloudAgents.Pg.TenantScope
+): Result[Option[LedgerStore.SessionRunFacts], CloudAgents.Sqlite.DbError] {
+  val rows = query(sc, "SELECT id, user_id, repo_url, branch, harness, status, profile_id, CASE WHEN is_archived THEN '1' ELSE '0' END AS is_archived, " + "observes_session_id, container_id FROM sessions WHERE id = @p0", [sessionId])?
+  if rows.length == 0 {
+    return Ok(value = None)
+  }
+  val r = rows[0]
+  return Ok(
+    value = Some(
+      value = LedgerStore.SessionRunFacts(
+        sessionId = c(r, "id"),
+        userId = c(r, "user_id"),
+        repoUrl = c(r, "repo_url"),
+        branch = c(r, "branch"),
+        harness = c(r, "harness"),
+        status = c(r, "status"),
+        profileId = c(r, "profile_id"),
+        isArchived = c(r, "is_archived"),
+        observesSessionId = c(r, "observes_session_id"),
+        containerId = c(r, "container_id")
+      )
+    )
+  )
+}
+
+/// Mark a freshly created session as the observer of `observedSessionId`, on
+/// the observed session's profile.
+pub func linkObserverSession(
+  observerSessionId: in String,
+  sc: in CloudAgents.Pg.TenantScope,
+  observedSessionId: in String,
+  profileId: in String,
+): Result[Unit, CloudAgents.Sqlite.DbError] {
+  exec(sc, "UPDATE sessions SET observes_session_id = @p1, profile_id = @p2 WHERE id = @p0", [observerSessionId, observedSessionId, profileId])?
+  return Ok(value = ())
+}
+
+/// Remove an observer session's row and its route (a replaced or orphaned
+/// observer). Only ever an observer: an ordinary session is left alone.
+pub func deleteObserverSessionRow(
+  observerSessionId: in String, sc: in CloudAgents.Pg.TenantScope
+): Result[Unit, CloudAgents.Sqlite.DbError] {
+  if observerSessionId.length.toInt() == 0 {
+    return Ok(value = ())
+  }
+  val u = CloudAgents.PgStore.open(sc)?
+  defer {
+    CloudAgents.PgStore.release(u)
+  }
+  val n = CloudAgents.PgStore.ex(u, "DELETE FROM sessions WHERE id = @p0 AND observes_session_id <> ''", [observerSessionId])?
+  if n > 0 {
+    CloudAgents.PgStore.ex(u, "DELETE FROM session_routes WHERE session_id = @p0 AND tenant_id = @p1", [observerSessionId, sc.tenantId])?
+  }
+  CloudAgents.PgStore.commit(u)?
+  return Ok(value = ())
+}
+
+/// Forget an observed session's observer (its session was deleted).
+pub func deleteObserverState(
+  sessionId: in String, sc: in CloudAgents.Pg.TenantScope
+): Result[Unit, CloudAgents.Sqlite.DbError] {
+  exec(sc, "DELETE FROM ledger_observer WHERE session_id = @p0", [sessionId])?
+  return Ok(value = ())
+}
+
+/// Ask for a pass. Idempotent: many asks before a pass runs make one pass.
+pub func markObserverPending(
+  sessionId: in String, sc: in CloudAgents.Pg.TenantScope
+): Result[Unit, CloudAgents.Sqlite.DbError] {
+  exec(sc, "INSERT INTO ledger_observer (session_id, pending) VALUES (@p0, true) ON CONFLICT (tenant_id, session_id) DO UPDATE SET pending = true", [sessionId])?
+  return Ok(value = ())
+}
+
+/// Take the pending pass for a session: true for exactly one caller.
+pub func claimObserverPass(
+  sessionId: in String, sc: in CloudAgents.Pg.TenantScope
+): Result[Bool, CloudAgents.Sqlite.DbError] {
+  val n = exec(sc, "UPDATE ledger_observer SET pending = false WHERE session_id = @p0 AND pending", [sessionId])?
+  return Ok(value = n == 1)
 }

@@ -1979,7 +1979,8 @@ pub func getRunOutputFrom(id: in String, offsetStr: in String): Result[String, W
 
 /// Stop and tear down container and associated session synchronously.
 func removeObserverOf(observedId: in String): Unit {
-  val st = match CloudAgents.Ledger.Store.observerState(observedId) {
+  val sc = CloudAgents.Auth.requestScope()
+  val st = match CloudAgents.Ledger.Store.observerState(observedId, sc) {
     case Ok(s) -> s
     case Err(e) -> {
       println("WARNING: reading the observer of " + observedId + " failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
@@ -1987,7 +1988,7 @@ func removeObserverOf(observedId: in String): Unit {
     }
   }
   if st.observerSessionId.length > 0 {
-    match CloudAgents.Ledger.Store.sessionRunFacts(st.observerSessionId) {
+    match CloudAgents.Ledger.Store.sessionRunFacts(st.observerSessionId, sc) {
       case Ok(Some(f)) -> {
         if f.containerId.length > 0 {
           val _ = CloudAgents.Docker.terminateSessionContainer(f.containerId)
@@ -1996,9 +1997,9 @@ func removeObserverOf(observedId: in String): Unit {
       case _ -> ()
     }
     val _ = CloudAgents.Docker.deleteWorkspaceVolume(CloudAgents.Auth.currentUserId(), st.observerSessionId)
-    val _ = CloudAgents.Ledger.Store.deleteObserverSessionRow(st.observerSessionId)
+    val _ = CloudAgents.Ledger.Store.deleteObserverSessionRow(st.observerSessionId, sc)
   }
-  val _ = CloudAgents.Ledger.Store.deleteObserverState(observedId)
+  val _ = CloudAgents.Ledger.Store.deleteObserverState(observedId, sc)
 }
 
 pub func deleteSession(id: in String): Result[Unit, Web.ApiError] {

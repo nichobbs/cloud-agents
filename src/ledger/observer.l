@@ -12,7 +12,9 @@
 package CloudAgents.Ledger.Observer
 
 import Std.Core
+import CloudAgents.Pg
 import CloudAgents.Repository
+import CloudAgents.SessionStore
 import CloudAgents.Sqlite
 import CloudAgents.Capture
 import CloudAgents.Ledger.Model
@@ -72,7 +74,10 @@ func dbFailure(e: in CloudAgents.Sqlite.DbError): LedgerFailure {
 pub func buildWindow(
   target: in SessionContext, final: in Bool, diff: in String
 ): Result[ObserverWindowView, LedgerFailure] {
-  val st = match observerState(target.sessionId) { case Ok(s) -> s; case Err(e) -> return Err(error = dbFailure(e)) }
+  val st = match observerState(target.sessionId, target.tenantScope) {
+    case Ok(s) -> s
+    case Err(e) -> return Err(error = dbFailure(e))
+  }
   val events = match CloudAgents.Repository.sessionEventsAfterSeqLimited(target.sessionId, target.tenantScope, st.cursorSeq, windowMaxEvents) {
     case Ok(es) -> es
     case Err(e) -> return Err(error = dbFailure(e))
@@ -99,7 +104,7 @@ pub func buildWindow(
     configHash = st.configHash,
     lastError = st.lastError
   )
-  match saveObserverState(next) {
+  match saveObserverState(target.tenantScope, next) {
     case Ok(_) -> ()
     case Err(e) -> return Err(error = dbFailure(e))
   }
@@ -278,7 +283,10 @@ pub func acceptReport(
   provisional: in Bool,
   cfg: in ReconcileConfig,
 ): Result[ObserverReportReply, LedgerFailure] {
-  val st = match observerState(target.sessionId) { case Ok(s) -> s; case Err(e) -> return Err(error = dbFailure(e)) }
+  val st = match observerState(target.sessionId, target.tenantScope) {
+    case Ok(s) -> s
+    case Err(e) -> return Err(error = dbFailure(e))
+  }
   if st.windowEnd.length.toInt() == 0 {
     return Err(error = fail("call observer_get_window before observer_report"))
   }
@@ -374,7 +382,7 @@ pub func acceptReport(
     configHash = st.configHash,
     lastError = ""
   )
-  match saveObserverState(advanced) {
+  match saveObserverState(target.tenantScope, advanced) {
     case Ok(_) -> ()
     case Err(e) -> return Err(error = dbFailure(e))
   }
@@ -463,12 +471,14 @@ func notify(target: in SessionContext, c: in Candidate): Unit {
 /// The observer settings that apply to `sessionId`, or None when it isn't
 /// observed: an observer session, an archived one, or one whose profile has
 /// no enabled observer.
-pub func observerSettingsForSession(sessionId: in String): Result[Option[ObserverSettings], CloudAgents.Sqlite.DbError] {
-  val facts = match sessionRunFacts(sessionId)? { case Some(f) -> f; case _ -> return Ok(value = None) }
+pub func observerSettingsForSession(
+  sessionId: in String, sc: in CloudAgents.Pg.TenantScope
+): Result[Option[ObserverSettings], CloudAgents.Sqlite.DbError] {
+  val facts = match sessionRunFacts(sessionId, sc)? { case Some(f) -> f; case _ -> return Ok(value = None) }
   if facts.observesSessionId.length.toInt() > 0 or facts.isArchived == "1" {
     return Ok(value = None)
   }
-  match observerSettingsFor(facts.profileId)? {
+  match observerSettingsFor(facts.profileId, sc)? {
     case Some(st) -> {
       if st.enabled == "true" {
         return Ok(value = Some(value = st))
@@ -479,12 +489,25 @@ pub func observerSettingsForSession(sessionId: in String): Result[Option[Observe
   }
 }
 
+/// The scope a session's observer bookkeeping lives under: its route's, the
+/// tenant the session itself was created in (#1188).
+func routeScope(sessionId: in String): Option[CloudAgents.Pg.TenantScope] {
+  return match CloudAgents.SessionStore.sessionRouteScope(sessionId) {
+    case Ok(found) -> found
+    case Err(e) -> {
+      println("WARNING: resolving the scope of " + sessionId + " failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+      None
+    }
+  }
+}
+
 /// A run of `sessionId` ended (succeeded, failed or cancelled): if it is
 /// observed, ask for an end-of-run pass. Best-effort: never fails the run.
 pub func onRunFinished(sessionId: in String): Unit {
-  match observerSettingsForSession(sessionId) {
+  val sc = match routeScope(sessionId) { case Some(v) -> v; case None -> return () }
+  match observerSettingsForSession(sessionId, sc) {
     case Ok(Some(_)) -> {
-      match markObserverPending(sessionId) {
+      match markObserverPending(sessionId, sc) {
         case Ok(_) -> ()
         case Err(e) -> println(
           "WARNING: queueing the observer for " + sessionId + " failed: " +
@@ -503,15 +526,16 @@ pub func onRunFinished(sessionId: in String): Unit {
 /// Called from a running session's poll loop: ask for a mid-run pass once the
 /// profile's interval has passed since the last pass (or the run's start).
 pub func midRunTick(sessionId: in String, runStartedAt: in String): Unit {
-  val settings = match observerSettingsForSession(sessionId) { case Ok(Some(st)) -> st; case _ -> return () }
-  val st = match observerState(sessionId) { case Ok(s) -> s; case Err(_) -> return () }
+  val sc = match routeScope(sessionId) { case Some(v) -> v; case None -> return () }
+  val settings = match observerSettingsForSession(sessionId, sc) { case Ok(Some(st)) -> st; case _ -> return () }
+  val st = match observerState(sessionId, sc) { case Ok(s) -> s; case Err(_) -> return () }
   var since = decimalLong(runStartedAt)
   val last = decimalLong(st.lastPassAt)
   if last > since {
     since = last
   }
   if st.pending != "1" and midRunDue(settings, since, CloudAgents.Repository.nowMillisLong()) {
-    match markObserverPending(sessionId) {
+    match markObserverPending(sessionId, sc) {
       case Ok(_) -> ()
       case Err(e) -> println(
         "WARNING: queueing a mid-run observer pass for " + sessionId + " failed: " +
