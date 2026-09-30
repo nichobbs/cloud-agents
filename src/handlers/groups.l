@@ -77,7 +77,7 @@ func checkParentChain(userId: in String, startId: in String, forbiddenId: in Str
     if depth > maxGroupDepth {
       return Err(Web.badRequest("parent chain too deep"))
     }
-    val next = match CloudAgents.Repository.getSessionGroup(cur, userId) {
+    val next = match CloudAgents.Repository.getSessionGroup(cur, CloudAgents.Pg.personalScope(userId)) {
       case Ok(Some(g)) -> g.parentId
       case Ok(None) -> ""
       case Err(e) -> return Err(dbError(e))
@@ -102,7 +102,7 @@ func validateGroupWrite(userId: in String, req: in SaveGroupRequest, selfId: in 
     if selfId.length > 0 and req.parentId == selfId {
       return Err(Web.badRequest("parentId must not be the group itself or one of its descendants"))
     }
-    match CloudAgents.Repository.getSessionGroup(req.parentId, userId) {
+    match CloudAgents.Repository.getSessionGroup(req.parentId, CloudAgents.Pg.personalScope(userId)) {
       case Ok(Some(_)) -> ()
       case Ok(None) -> return Err(Web.notFound("Group not found"))
       case Err(e) -> return Err(dbError(e))
@@ -114,7 +114,7 @@ func validateGroupWrite(userId: in String, req: in SaveGroupRequest, selfId: in 
 
 /// GET /api/groups — the caller's groups, alphabetical by name.
 pub func listGroupsHandler(): Result[CloudAgents.Repository.SessionGroupList, Web.ApiError] {
-  match CloudAgents.Repository.listSessionGroups(CloudAgents.Auth.currentUserId()) {
+  match CloudAgents.Repository.listSessionGroups(CloudAgents.Auth.requestScope()) {
     // Constructed unqualified — package-qualified record construction
     // compiles but dies at runtime (docs/lyric/gotchas.md).
     case Ok(gs) -> return Ok(SessionGroupList(groups = gs))
@@ -126,7 +126,7 @@ pub func listGroupsHandler(): Result[CloudAgents.Repository.SessionGroupList, We
 pub func createGroupHandler(req: in SaveGroupRequest): Result[CloudAgents.Repository.SessionGroup, Web.ApiError] {
   val userId = CloudAgents.Auth.currentUserId()
   validateGroupWrite(userId, req, "")?
-  match CloudAgents.Repository.addSessionGroup(userId, req.name.trim(), req.parentId) {
+  match CloudAgents.Repository.addSessionGroup(CloudAgents.Pg.personalScope(userId), req.name.trim(), req.parentId) {
     case Ok(g) -> return Ok(g)
     case Err(e) -> return Err(dbError(e))
   }
@@ -139,20 +139,20 @@ pub func updateGroupHandler(gid: in String, req: in SaveGroupRequest): Result[Cl
     return Err(Web.badRequest("group id is required"))
   }
   val userId = CloudAgents.Auth.currentUserId()
-  match CloudAgents.Repository.getSessionGroup(gid, userId) {
+  match CloudAgents.Repository.getSessionGroup(gid, CloudAgents.Pg.personalScope(userId)) {
     case Ok(Some(_)) -> ()
     case Ok(None) -> return Err(Web.notFound("Group not found"))
     case Err(e) -> return Err(dbError(e))
   }
   validateGroupWrite(userId, req, gid)?
-  val affected = match CloudAgents.Repository.updateSessionGroup(gid, userId, req.name.trim(), req.parentId) {
+  val affected = match CloudAgents.Repository.updateSessionGroup(gid, CloudAgents.Pg.personalScope(userId), req.name.trim(), req.parentId) {
     case Ok(n) -> n
     case Err(e) -> return Err(dbError(e))
   }
   if affected == 0 {
     return Err(Web.notFound("Group not found"))
   }
-  match CloudAgents.Repository.getSessionGroup(gid, userId) {
+  match CloudAgents.Repository.getSessionGroup(gid, CloudAgents.Pg.personalScope(userId)) {
     case Ok(Some(g)) -> return Ok(g)
     case Ok(None) -> return Err(Web.notFound("Group not found"))
     case Err(e) -> return Err(dbError(e))
@@ -167,12 +167,12 @@ pub func deleteGroupHandler(gid: in String): Result[Unit, Web.ApiError] {
     return Err(Web.badRequest("group id is required"))
   }
   val userId = CloudAgents.Auth.currentUserId()
-  val existing = match CloudAgents.Repository.getSessionGroup(gid, userId) {
+  val existing = match CloudAgents.Repository.getSessionGroup(gid, CloudAgents.Pg.personalScope(userId)) {
     case Ok(Some(g)) -> g
     case Ok(None) -> return Err(Web.notFound("Group not found"))
     case Err(e) -> return Err(dbError(e))
   }
-  match CloudAgents.Repository.deleteSessionGroupReparenting(gid, userId, existing.parentId) {
+  match CloudAgents.Repository.deleteSessionGroupReparenting(gid, CloudAgents.Pg.personalScope(userId), existing.parentId) {
     case Ok(_) -> return Ok(())
     case Err(e) -> return Err(dbError(e))
   }
@@ -186,7 +186,7 @@ pub func setSessionGroupHandler(id: in String, req: in SetSessionGroupRequest): 
   }
   requireOwnedSession(id)?
   if req.groupId.length > 0 {
-    match CloudAgents.Repository.getSessionGroup(req.groupId, CloudAgents.Auth.currentUserId()) {
+    match CloudAgents.Repository.getSessionGroup(req.groupId, CloudAgents.Auth.requestScope()) {
       case Ok(Some(_)) -> ()
       case Ok(None) -> return Err(Web.notFound("Group not found"))
       case Err(e) -> return Err(dbError(e))

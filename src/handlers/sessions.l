@@ -696,7 +696,7 @@ pub func listSessionReposHandler(id: in String): Result[SessionRepoList, Web.Api
     case Ok(None) -> return Err(Web.notFound("Session not found"))
     case Err(e) -> return Err(Web.internalError("session lookup failed: " + CloudAgents.Sqlite.dbErrorMessage(e)))
   }
-  match CloudAgents.Repository.listSessionRepos(id) {
+  match CloudAgents.Repository.listSessionRepos(id, CloudAgents.Auth.requestScope()) {
     case Ok(repos) -> return Ok(SessionRepoList(repos = repos))
     case Err(e) -> return Err(Web.internalError("failed to list linked repositories: " + CloudAgents.Sqlite.dbErrorMessage(e)))
   }
@@ -747,18 +747,18 @@ pub func addSessionRepoHandler(id: in String, req: in AddRepoRequest): Result[Se
     case Err(e) -> return Err(Web.internalError("session lookup failed: " + CloudAgents.Sqlite.dbErrorMessage(e)))
   }
   // Cap the number of linked repos (keeps the EXTRA_REPOS env bounded).
-  match CloudAgents.Repository.countSessionRepos(id) {
+  match CloudAgents.Repository.countSessionRepos(id, CloudAgents.Auth.requestScope()) {
     case Ok(n) -> if n >= maxSessionRepos {
       return Err(Web.badRequest("too many linked repositories (max " + toString(maxSessionRepos) + ")"))
     }
     case Err(e) -> return Err(Web.internalError("failed to count linked repositories: " + CloudAgents.Sqlite.dbErrorMessage(e)))
   }
   // Refuse a duplicate URL so a repo is never cloned twice into the workspace.
-  match CloudAgents.Repository.sessionRepoUrlExists(id, req.repoUrl) {
+  match CloudAgents.Repository.sessionRepoUrlExists(id, CloudAgents.Auth.requestScope(), req.repoUrl) {
     case Ok(exists) -> if exists { return Err(Web.badRequest("repository already linked to this session")) }
     case Err(e) -> return Err(Web.internalError("failed to check linked repositories: " + CloudAgents.Sqlite.dbErrorMessage(e)))
   }
-  match CloudAgents.Repository.addSessionRepo(id, req.repoUrl, req.branch) {
+  match CloudAgents.Repository.addSessionRepo(id, CloudAgents.Auth.requestScope(), req.repoUrl, req.branch) {
     case Ok(repo) -> return Ok(repo)
     case Err(e) -> return Err(Web.internalError("failed to link repository: " + CloudAgents.Sqlite.dbErrorMessage(e)))
   }
@@ -778,7 +778,7 @@ pub func deleteSessionRepoHandler(id: in String, repoId: in String): Result[Unit
     case Ok(None) -> return Err(Web.notFound("Session not found"))
     case Err(e) -> return Err(Web.internalError("session lookup failed: " + CloudAgents.Sqlite.dbErrorMessage(e)))
   }
-  match CloudAgents.Repository.deleteSessionRepo(id, repoId) {
+  match CloudAgents.Repository.deleteSessionRepo(id, CloudAgents.Auth.requestScope(), repoId) {
     case Ok(n) -> {
       if n > 0 {
         return Ok(())
@@ -1250,7 +1250,7 @@ pub func streamSendMessage(
   // can't read the thread-local identity) — same rationale as the old handler.
   val userId = CloudAgents.Auth.currentUserId()
   println("[diag] streamSendMessage " + id + ": before listSessionRepos")
-  val extraRepos = match CloudAgents.Repository.listSessionRepos(id) {
+  val extraRepos = match CloudAgents.Repository.listSessionRepos(id, CloudAgents.Pg.personalScope(userId)) {
     case Ok(rs) -> extraReposEnvValue(rs)
     case Err(_) -> ""
   }
@@ -1362,7 +1362,7 @@ pub func streamSendMessage(
 
       // Record the run (best-effort bookkeeping; proceed with an empty id).
       println("[diag] streamSendMessage " + id + ": before recordRunStart")
-      val runId = match CloudAgents.Repository.recordRunStart(id, userId, text, harness, session.model) {
+      val runId = match CloudAgents.Repository.recordRunStart(id, CloudAgents.Pg.personalScope(userId), text, harness, session.model) {
         case Ok(rid) -> rid
         case Err(_) -> ""
       }
@@ -1401,7 +1401,7 @@ pub func streamSendMessage(
       match streamResult {
         case Ok(logs) -> {
           if runId.length > 0 {
-            val _ = CloudAgents.Repository.recordRunEnd(runId, userId, "succeeded")
+            val _ = CloudAgents.Repository.recordRunEnd(runId, CloudAgents.Pg.personalScope(userId), "succeeded")
             val _ = CloudAgents.Repository.enqueueWebhookEvent(userId, id, runId, "succeeded")
             // Session ledger observer (docs/session-ledger.md §10): queue an
             // end-of-run pass if this session is observed. Best-effort.
@@ -1436,7 +1436,7 @@ pub func streamSendMessage(
         }
         case Err(err) -> {
           if runId.length > 0 {
-            val _ = CloudAgents.Repository.recordRunEnd(runId, userId, "failed")
+            val _ = CloudAgents.Repository.recordRunEnd(runId, CloudAgents.Pg.personalScope(userId), "failed")
             val _ = CloudAgents.Repository.enqueueWebhookEvent(userId, id, runId, "failed")
             // Session ledger observer (docs/session-ledger.md §10): queue an
             // end-of-run pass if this session is observed. Best-effort.
@@ -1496,7 +1496,7 @@ pub func cancelRun(id: in String): Result[Unit, Web.ApiError] {
       // the event rather than emit one with an empty run_id (same rationale as
       // #256). There is at most one 'running' row per session.
       var runId = ""
-      match CloudAgents.Repository.listRuns(id, userId) {
+      match CloudAgents.Repository.listRuns(id, CloudAgents.Pg.personalScope(userId)) {
         case Ok(runs) -> {
           var k = 0
           while k < runs.length and runId.length == 0 {
@@ -1512,7 +1512,7 @@ pub func cancelRun(id: in String): Result[Unit, Web.ApiError] {
       // gone, so history never claims a cancel that didn't take effect.
       match CloudAgents.Docker.terminateSessionContainer(session.containerId) {
         case Ok(_) -> {
-          val _ = CloudAgents.Repository.finishSessionRuns(id, userId, "cancelled")
+          val _ = CloudAgents.Repository.finishSessionRuns(id, CloudAgents.Pg.personalScope(userId), "cancelled")
           // A cancel is a run completion too — notify like succeeded/failed
           // (#252), but only with a real run id (#258).
           if runId.length > 0 {
@@ -1540,7 +1540,7 @@ pub func getRuns(id: in String): Result[RunList, Web.ApiError] {
     case Ok(None) -> return Err(Web.notFound("Session not found"))
     case Err(e) -> return Err(Web.internalError("session lookup failed: " + CloudAgents.Sqlite.dbErrorMessage(e)))
   }
-  match CloudAgents.Repository.listRuns(id, CloudAgents.Auth.currentUserId()) {
+  match CloudAgents.Repository.listRuns(id, CloudAgents.Auth.requestScope()) {
     case Ok(rs) -> return Ok(RunList(runs = rs))
     case Err(e) -> return Err(Web.internalError("failed to list runs: " + CloudAgents.Sqlite.dbErrorMessage(e)))
   }
@@ -2038,7 +2038,7 @@ pub func deleteSession(id: in String): Result[Unit, Web.ApiError] {
       // Drop any linked repositories first (best-effort: leftover rows are
       // only reachable through this now-deleted session, so a failure here is
       // harmless bookkeeping, not a blocker for the delete).
-      val _ = CloudAgents.Repository.deleteSessionReposForSession(id)
+      val _ = CloudAgents.Repository.deleteSessionReposForSession(id, CloudAgents.Auth.requestScope())
       // Its ledger observer (docs/session-ledger.md §10), if it has one, goes
       // with it: container, volume, session row and state. Best-effort, like
       // the linked repos above: nothing can reach an orphaned observer.

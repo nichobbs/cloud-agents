@@ -583,7 +583,7 @@ func runOneJob(job: in CloudAgents.Repository.ScheduledJob): JobRunOutcome {
     case Ok(_) -> ()
     case Err(_) -> ()
   }
-  val extraRepos = match CloudAgents.Repository.listSessionRepos(sessionId) {
+  val extraRepos = match CloudAgents.Repository.listSessionRepos(sessionId, CloudAgents.Pg.personalScope(job.userId)) {
     case Ok(rs) -> CloudAgents.Handlers.extraReposEnvValue(rs)
     case Err(_) -> ""
   }
@@ -599,7 +599,7 @@ func runOneJob(job: in CloudAgents.Repository.ScheduledJob): JobRunOutcome {
       case Err(_) -> ()
     }
   }
-  val runId = match CloudAgents.Repository.recordRunStart(sessionId, job.userId, job.prompt, harness, session.model) {
+  val runId = match CloudAgents.Repository.recordRunStart(sessionId, CloudAgents.Pg.personalScope(job.userId), job.prompt, harness, session.model) {
     case Ok(rid) -> rid
     case Err(_) -> ""
   }
@@ -619,7 +619,7 @@ func runOneJob(job: in CloudAgents.Repository.ScheduledJob): JobRunOutcome {
   return match runResult {
     case Ok(logs) -> {
       if runId.length > 0 {
-        val _ = CloudAgents.Repository.recordRunEnd(runId, job.userId, "succeeded")
+        val _ = CloudAgents.Repository.recordRunEnd(runId, CloudAgents.Pg.personalScope(job.userId), "succeeded")
         val _ = CloudAgents.Repository.enqueueWebhookEvent(job.userId, sessionId, runId, "succeeded")
         // Session ledger observer (docs/session-ledger.md §10): queue an
         // end-of-run pass if this session is observed. Best-effort.
@@ -636,7 +636,7 @@ func runOneJob(job: in CloudAgents.Repository.ScheduledJob): JobRunOutcome {
     }
     case Err(msg) -> {
       if runId.length > 0 {
-        val _ = CloudAgents.Repository.recordRunEnd(runId, job.userId, "failed")
+        val _ = CloudAgents.Repository.recordRunEnd(runId, CloudAgents.Pg.personalScope(job.userId), "failed")
         val _ = CloudAgents.Repository.enqueueWebhookEvent(job.userId, sessionId, runId, "failed")
         // Session ledger observer (docs/session-ledger.md §10): queue an
         // end-of-run pass if this session is observed. Best-effort.

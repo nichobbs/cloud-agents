@@ -67,7 +67,7 @@ func mustGetSession(id: in String): AgentSession {
 }
 
 func mustGetGroup(id: in String, userId: in String): CloudAgents.Repository.SessionGroup {
-  return match CloudAgents.Repository.getSessionGroup(id, userId) {
+  return match CloudAgents.Repository.getSessionGroup(id, CloudAgents.Pg.personalScope(userId)) {
     case Ok(Some(g)) -> g
     case Ok(None) -> panic("group " + id + " should exist")
     case Err(e) -> panic("getSessionGroup failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
