@@ -45,6 +45,11 @@ pub func addWebhook(
   }
   CloudAgents.PgStore.ex(u, "INSERT INTO webhooks (id, user_id, url, created_at) VALUES (@p0, @p1, @p2, " + CloudAgents.Pg.msIn(3) + ") " + "ON CONFLICT (tenant_id, user_id, url) DO NOTHING", [Std.Uuid.uuidToString(Std.Uuid.newUuid()), sc.userId, url, CloudAgents.Repository.nowMillis()])?
   val rows = CloudAgents.PgStore.q(u, "SELECT " + webhookCols() + " FROM webhooks WHERE user_id = @p0 AND url = @p1", [sc.userId, url])?
+  if rows.length == 0 {
+    // Inserted or already present in this unit, so a row must be visible;
+    // an empty read is a store fault, reported rather than indexed past.
+    return Err(error = CloudAgents.Sqlite.ExecFailed(sql = "SELECT webhooks", message = "webhook missing after insert"))
+  }
   CloudAgents.PgStore.commit(u)?
   return Ok(value = toWebhook(rows[0]))
 }
