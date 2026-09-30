@@ -15,7 +15,7 @@
 //! (`CloudAgents.Db.updateGraphIngestOutboxAttemptSql`) — the same "let
 //! SQLite's 64-bit arithmetic do it" idiom `scheduled_jobs`' due-date
 //! bookkeeping already uses (see `src/db/db_client.l`'s
-//! `markScheduledJobRanRecurringSql` doc comment) — rather than adding an
+//! `claimDueScheduledJobSql` doc comment) — rather than adding an
 //! `Int` delay to a `Long` epoch millis value in Lyric application code. This
 //! isn't strictly required by any confirmed bug (docs/lyric/gotchas.md's
 //! `Long` crash entry is about subtract-and-compare inside a large, complex

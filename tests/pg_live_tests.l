@@ -546,7 +546,7 @@ test "claim functions are hardened: definer, fixed search_path, no PUBLIC execut
     conn.close()
   }
   val tx = unscoped(conn)
-  for fn in ["claim_graph_ingest_outbox", "claim_membership_sync"] {
+  for fn in ["claim_graph_ingest_outbox", "claim_membership_sync", "claim_scheduled_jobs"] {
     assertEqual(
       str1(
         tx,

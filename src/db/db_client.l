@@ -3861,88 +3861,76 @@ pub func selectScheduledJobsByUserSql(userId: in String): String {
 }
 
 /// Every ACTIVE job whose next_run_at has arrived, earliest-due first,
-/// capped at `limit` rows (#893) — the caller (triggerDueJobsHandler) never
-/// attempts more than maxJobsPerTrigger of these in one call anyway, so an
-/// unbounded backlog (e.g. the external poller missed several cycles) no
-/// longer means loading and materializing every due job system-wide into a
-/// slice on every single poll tick just to use the first few. System-wide
-/// (unscoped by user) — the maintenance endpoint spans every tenant,
-/// mirroring selectReapableWarmSql's unscoped maintenance shape.
+/// capped at `limit` rows (#893). System-wide (unscoped by user): the
+/// maintenance endpoint spans every tenant. A legacy `next_run_at = ''` on an
+/// active row (the claim sentinel older builds wrote, left behind if one
+/// crashed mid-run) counts as due now, so such a job fires once more and then
+/// follows its schedule; no current write path produces it.
 pub func selectDueScheduledJobsSql(nowMillis: in String, limit: in Int): String {
   return "SELECT " + scheduledJobColumns +
-    " FROM scheduled_jobs WHERE status = 'active' AND next_run_at <> '' AND CAST(next_run_at AS INTEGER) <= CAST(" +
+    " FROM scheduled_jobs WHERE status = 'active' AND (next_run_at = '' OR CAST(next_run_at AS INTEGER) <= CAST(" +
     sqlLiteral(nowMillis) +
-    " AS INTEGER) ORDER BY CAST(next_run_at AS INTEGER) ASC LIMIT " +
+    " AS INTEGER)) ORDER BY CAST(next_run_at AS INTEGER) ASC LIMIT " +
     toString(limit)
 }
 
-/// Atomically claim a due job for firing: clears next_run_at (excluding it
-/// from selectDueScheduledJobsSql's `next_run_at <> ''` filter) only if it
-/// still equals the exact value the maintenance scan just read — a
-/// compare-and-clear mirroring clearSessionContainerIfMatchesSql's idiom.
-/// Rows affected = 1 means this caller won the claim; two overlapping
-/// `POST /api/maintenance/trigger-jobs` calls racing on the same due row
-/// cannot both proceed to ensureJobSession/runOneJob for the same job.
-pub func claimDueScheduledJobSql(id: in String, expectedNextRunAt: in String): String {
-  return "UPDATE scheduled_jobs SET next_run_at = '' WHERE id = " + sqlLiteral(id) + " AND next_run_at = " +
+/// Claim a due job for firing (docs/phase11-postgres-tenancy.md §5.3a): in
+/// one conditional UPDATE, stamp `last_run_at` with the firing time and
+/// advance the schedule, so no other caller can fire the same slot. A
+/// recurring job moves to the first slot on its own cadence
+/// (`expectedNextRunAt + k * interval`) that is after the firing time: an
+/// on-time job moves exactly one interval on from the slot it was due at, so
+/// its cadence doesn't drift by however late each poll lands (#874), and a job
+/// that fell behind skips the slots it missed instead of firing once per
+/// missed slot. A one-shot job becomes `completed` with no next run. Guarded
+/// on the exact (next_run_at, last_run_at) the scan read and on
+/// `status = 'active'`: rows affected = 1 means this caller won; 0 means a
+/// concurrent claim or edit got there first.
+pub func claimDueScheduledJobSql(
+  id: in String,
+  expectedNextRunAt: in String,
+  expectedLastRunAt: in String,
+  firedAt: in String,
+): String {
+  return "UPDATE scheduled_jobs SET last_run_at = " + sqlLiteral(firedAt) +
+    ", next_run_at = CASE WHEN interval_seconds <> '' THEN CAST(CAST(next_run_at AS INTEGER) + " +
+    "CAST(interval_seconds AS INTEGER) * 1000 * ((CAST(" +
+    sqlLiteral(firedAt) +
+    " AS INTEGER) - CAST(next_run_at AS INTEGER)) / (CAST(interval_seconds AS INTEGER) * 1000) + 1) AS TEXT) " +
+    "ELSE '' END, status = CASE WHEN interval_seconds <> '' THEN status ELSE 'completed' END" +
+    " WHERE id = " +
+    sqlLiteral(id) +
+    " AND next_run_at = " +
     sqlLiteral(expectedNextRunAt) +
+    " AND last_run_at = " +
+    sqlLiteral(expectedLastRunAt) +
     " AND status = 'active'"
 }
 
-/// Restore a claimed job's next_run_at after a skipped run (its session was
-/// already mid-run for an unrelated reason) so it's retried on the next
-/// poll instead of sitting silently un-due forever. Guarded on next_run_at
-/// still being the claim's empty sentinel, so it can't clobber a value a
-/// concurrent markScheduledJobRanRecurring/markScheduledJobCompleted/
-/// updateScheduledJob already wrote.
-pub func restoreScheduledJobNextRunAtSql(id: in String, nextRunAt: in String): String {
-  return "UPDATE scheduled_jobs SET next_run_at = " + sqlLiteral(nextRunAt) + " WHERE id = " + sqlLiteral(id) +
-    " AND next_run_at = ''"
-}
-
-/// Startup recovery sweep (#882) for a job stranded mid-run by a host
-/// crash/restart: claimDueScheduledJobSql clears next_run_at to '' BEFORE
-/// runOneJob does any session/container work, and the only writers that ever
-/// restore it (restoreScheduledJobNextRunAtSql on a lost tryBeginRun race,
-/// markScheduledJobRanRecurringSql/markScheduledJobCompletedSql after the run
-/// returns) all require the same in-process triggerDueJobsHandler call to
-/// keep running to completion — a call that can legitimately block up to
-/// runWallClockCapMs (30 min) per job. A crash in that window leaves the row
-/// `status = 'active', next_run_at = ''` forever: selectDueScheduledJobsSql's
-/// `next_run_at <> ''` filter excludes it from every future poll, and
-/// `GET /api/jobs` still reports it `active` with no indication anything is
-/// wrong.
-///
-/// Mirrors recoverDanglingSessionsSql's role (reset a status startup-crash
-/// left inconsistent) but for the *schedule*, not the *session*: the job's
-/// own session, if the in-flight run left it RUNNING, is separately recovered
-/// by that exact call (recoverDanglingSessions), already invoked at startup —
-/// this sweep only ever needs to touch scheduled_jobs.next_run_at.
-///
-/// Only ever needs to run once, at startup, so there is no concurrent-claim
-/// race to guard against here the way restoreScheduledJobNextRunAtSql must:
-/// nothing else can be claiming (next_run_at = '' -> a real value) while the
-/// process that would run triggerDueJobsHandler is still starting up.
-///
-/// Recomputes a fresh next_run_at rather than trying to recover the exact
-/// value that was cleared (which is gone by the time this runs — the
-/// original due slot was only ever held in triggerDueJobsHandler's now-lost
-/// in-memory `due` snapshot):
-/// - A recurring job that has fired at least once: `last_run_at +
-///   interval_seconds` — the same arithmetic markScheduledJobRanRecurringSql
-///   uses, treating the stranded run as if it simply hadn't happened yet.
-/// - Anything else (a one-shot, or a recurring job stranded on its very
-///   first-ever run before last_run_at was ever set): `run_at`.
-/// Either way, clamped to never fall before `nowMillis` (the same MAX
-/// idiom markScheduledJobRanRecurringSql uses for an overrun run) so a
-/// long-crashed job is simply due again immediately on the next poll instead
-/// of computing a next_run_at already in the past.
-pub func recoverStrandedScheduledJobsSql(nowMillis: in String): String {
-  return "UPDATE scheduled_jobs SET next_run_at = CAST(MAX(" + "CASE WHEN interval_seconds <> '' AND last_run_at <> '' " +
-    "THEN CAST(last_run_at AS INTEGER) + CAST(interval_seconds AS INTEGER) * 1000 " +
-    "ELSE CAST(run_at AS INTEGER) END, CAST(" +
-    sqlLiteral(nowMillis) +
-    " AS INTEGER)) AS TEXT) WHERE status = 'active' AND next_run_at = ''"
+/// Undo a claim whose run was skipped (its session was busy), so the slot is
+/// retried on the next poll: put back the schedule, `last_run_at` and status
+/// the claim replaced. Guarded on the row still holding exactly what the claim
+/// wrote, so an edit, pause or cancel made in between is never overwritten.
+pub func releaseScheduledJobClaimSql(
+  id: in String,
+  userId: in String,
+  claimedAt: in String,
+  claimedNextRunAt: in String,
+  claimedStatus: in String,
+  nextRunAt: in String,
+  lastRunAt: in String,
+): String {
+  return "UPDATE scheduled_jobs SET next_run_at = " + sqlLiteral(nextRunAt) + ", last_run_at = " + sqlLiteral(lastRunAt) +
+    ", status = 'active' WHERE id = " +
+    sqlLiteral(id) +
+    " AND user_id = " +
+    sqlLiteral(userId) +
+    " AND last_run_at = " +
+    sqlLiteral(claimedAt) +
+    " AND next_run_at = " +
+    sqlLiteral(claimedNextRunAt) +
+    " AND status = " +
+    sqlLiteral(claimedStatus)
 }
 
 /// First-run session attachment: only ever meant to apply once, guarded on
@@ -3956,59 +3944,15 @@ pub func attachScheduledJobSessionSql(id: in String, sessionId: in String): Stri
     " AND session_id = ''"
 }
 
-/// Bookkeeping after a recurring job's run: last_run_at = firedAt (when the
-/// run actually completed); next_run_at advances from `previousNextRunAt`
-/// (the slot the job was actually due at, i.e. the row's next_run_at
-/// *before* this run) rather than from firedAt, so a job's cadence doesn't
-/// drift later by however long each run itself takes (#874) — "every hour"
-/// stays every hour even if each run takes 5 minutes. Clamped to never fall
-/// before firedAt (MAX in SQL): if a run took longer than the interval
-/// itself, the job is due again immediately on the next poll rather than
-/// computing a next_run_at already in the past. Computed in SQL (see the
-/// module comment above for why). Guarded on `status = 'active'` (#876): a
-/// one-shot/recurring run can take long enough for a human to concurrently
-/// `POST /api/jobs/{jid}` a pause/cancel while it's in flight — without this
-/// guard, this bookkeeping write would silently win and stomp that status
-/// change back toward active/completed once the run finishes. A status
-/// change that lands wins; this write then correctly no-ops (0 rows).
-pub func markScheduledJobRanRecurringSql(
-  id: in String,
-  firedAt: in String,
-  previousNextRunAt: in String,
-  intervalSeconds: in String,
-): String {
-  return "UPDATE scheduled_jobs SET last_run_at = " + sqlLiteral(firedAt) + ", next_run_at = CAST(MAX(CAST(" +
-    sqlLiteral(previousNextRunAt) +
-    " AS INTEGER) + CAST(" +
-    sqlLiteral(intervalSeconds) +
-    " AS INTEGER) * 1000, CAST(" +
-    sqlLiteral(firedAt) +
-    " AS INTEGER)) AS TEXT) WHERE id = " +
-    sqlLiteral(id) +
-    " AND status = 'active'"
-}
-
-/// Bookkeeping after a one-shot job's (only) run: it never fires again.
-/// Guarded on `status = 'active'` for the same reason as
-/// markScheduledJobRanRecurringSql above (#876) — a concurrent pause/cancel
-/// while the run was in flight must not be silently overwritten back to
-/// 'completed' once it finishes.
-pub func markScheduledJobCompletedSql(id: in String, firedAt: in String): String {
-  return "UPDATE scheduled_jobs SET last_run_at = " + sqlLiteral(firedAt) +
-    ", status = 'completed', next_run_at = '' WHERE id = " +
-    sqlLiteral(id) +
-    " AND status = 'active'"
-}
-
 /// Update a job's mutable fields (prompt/profile/schedule/status). Each
 /// String parameter is written as-is — the caller
 /// (CloudAgents.Repository.updateScheduledJob) resolves "keep the existing
 /// value" before this is built, mirroring updateSessionModelSql's plain
 /// single-field-set shape. `writeNextRunAt` (#891) omits the `next_run_at`
 /// assignment entirely when false, so an ordinary edit that doesn't touch
-/// the schedule can't clobber a concurrent triggerDueJobsHandler claim's
-/// transient empty sentinel (or any other value) sitting in that column —
-/// only a caller that actually means to set a new next_run_at writes it.
+/// the schedule can't write back a stale next_run_at over the slot a
+/// concurrent claim just advanced it to — only a caller that actually means
+/// to set a new next_run_at writes it.
 pub func updateScheduledJobSql(
   id: in String,
   userId: in String,

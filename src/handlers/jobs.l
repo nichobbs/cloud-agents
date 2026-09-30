@@ -249,7 +249,7 @@ func jobSummaryOf(j: in CloudAgents.Repository.ScheduledJob): JobSummary {
 /// same validation createSession applies (CloudAgents.Handlers, made pub for
 /// this reuse) — a job's first trigger creates a session the same way a
 /// human-initiated createSession call does.
-pub func createJobHandler(userId: in String, req: in CreateJobRequest): Result[JobSummary, Web.ApiError] {
+pub func createJobHandler(sc: in CloudAgents.Pg.TenantScope, req: in CreateJobRequest): Result[JobSummary, Web.ApiError] {
   if req.prompt.length == 0 {
     return Err(Web.badRequest("prompt is required"))
   }
@@ -289,7 +289,7 @@ pub func createJobHandler(userId: in String, req: in CreateJobRequest): Result[J
   }
   val model = if req.model.length == 0 { CloudAgents.SessionStore.defaultModelForHarness(harness) } else { req.model }
   if req.profileId.length > 0 {
-    match CloudAgents.Repository.getProfile(req.profileId, CloudAgents.Pg.personalScope(userId)) {
+    match CloudAgents.Repository.getProfile(req.profileId, sc) {
       case Ok(Some(_)) -> ()
       case Ok(None) -> return Err(Web.badRequest("profileId does not reference a known profile"))
       case Err(e) -> return Err(dbError(e))
@@ -309,14 +309,14 @@ pub func createJobHandler(userId: in String, req: in CreateJobRequest): Result[J
   if req.runAtEpochMillis.length == 0 and req.intervalSeconds.length == 0 {
     return Err(Web.badRequest("at least one of runAtEpochMillis or intervalSeconds is required"))
   }
-  match CloudAgents.Repository.createScheduledJob(userId, req.name, req.prompt, req.profileId, req.repoUrl, req.branch, harness, model, req.runAtEpochMillis, req.intervalSeconds) {
+  match CloudAgents.Repository.createScheduledJob(sc, req.name, req.prompt, req.profileId, req.repoUrl, req.branch, harness, model, req.runAtEpochMillis, req.intervalSeconds) {
     case Ok(job) -> return Ok(jobSummaryOf(job))
     case Err(e) -> return Err(dbError(e))
   }
 }
 
-pub func listJobsHandler(userId: in String): Result[JobListResponse, Web.ApiError] {
-  match CloudAgents.Repository.listScheduledJobs(userId) {
+pub func listJobsHandler(sc: in CloudAgents.Pg.TenantScope): Result[JobListResponse, Web.ApiError] {
+  match CloudAgents.Repository.listScheduledJobs(sc) {
     case Ok(js) -> {
       var acc: slice[JobSummary] = []
       for j in js {
@@ -328,22 +328,22 @@ pub func listJobsHandler(userId: in String): Result[JobListResponse, Web.ApiErro
   }
 }
 
-pub func getJobHandler(userId: in String, id: in String): Result[JobSummary, Web.ApiError] {
+pub func getJobHandler(sc: in CloudAgents.Pg.TenantScope, id: in String): Result[JobSummary, Web.ApiError] {
   if id.length == 0 {
     return Err(Web.badRequest("id is required"))
   }
-  match CloudAgents.Repository.getScheduledJob(id, userId) {
+  match CloudAgents.Repository.getScheduledJob(id, sc) {
     case Ok(Some(j)) -> return Ok(jobSummaryOf(j))
     case Ok(None) -> return Err(Web.notFound("job not found"))
     case Err(e) -> return Err(dbError(e))
   }
 }
 
-pub func deleteJobHandler(userId: in String, id: in String): Result[Unit, Web.ApiError] {
+pub func deleteJobHandler(sc: in CloudAgents.Pg.TenantScope, id: in String): Result[Unit, Web.ApiError] {
   if id.length == 0 {
     return Err(Web.badRequest("id is required"))
   }
-  match CloudAgents.Repository.deleteScheduledJob(id, userId) {
+  match CloudAgents.Repository.deleteScheduledJob(id, sc) {
     case Ok(n) -> {
       if n > 0 {
         return Ok(())
@@ -361,11 +361,13 @@ pub func isValidJobStatusUpdate(s: in String): Bool {
 /// Update a job's prompt/profile/schedule/status. See UpdateJobRequest's doc
 /// comment for the "" == "leave unchanged" convention and the
 /// runAtEpochMillis/intervalSeconds pairing rule.
-pub func updateJobHandler(userId: in String, id: in String, req: in UpdateJobRequest): Result[JobSummary, Web.ApiError] {
+pub func updateJobHandler(
+  sc: in CloudAgents.Pg.TenantScope, id: in String, req: in UpdateJobRequest
+): Result[JobSummary, Web.ApiError] {
   if id.length == 0 {
     return Err(Web.badRequest("id is required"))
   }
-  val existing = match CloudAgents.Repository.getScheduledJob(id, userId) {
+  val existing = match CloudAgents.Repository.getScheduledJob(id, sc) {
     case Ok(Some(j)) -> j
     case Ok(None) -> return Err(Web.notFound("job not found"))
     case Err(e) -> return Err(dbError(e))
@@ -379,7 +381,7 @@ pub func updateJobHandler(userId: in String, id: in String, req: in UpdateJobReq
   }
   val profileId = if req.profileId.length > 0 { req.profileId } else { existing.profileId }
   if profileId.length > 0 and profileId != existing.profileId {
-    match CloudAgents.Repository.getProfile(profileId, CloudAgents.Pg.personalScope(userId)) {
+    match CloudAgents.Repository.getProfile(profileId, sc) {
       case Ok(Some(_)) -> ()
       case Ok(None) -> return Err(Web.badRequest("profileId does not reference a known profile"))
       case Err(e) -> return Err(dbError(e))
@@ -418,28 +420,15 @@ pub func updateJobHandler(userId: in String, id: in String, req: in UpdateJobReq
     return Err(Web.badRequest("at least one of runAtEpochMillis or intervalSeconds is required"))
   }
   val status = if req.status.length > 0 { req.status } else { existing.status }
-  // A completed one-shot job's next_run_at is permanently cleared to '' by
-  // markScheduledJobCompletedSql — it never fires again on its own. Simply
-  // carrying that '' forward as "existing, unchanged" (the plain `else`
-  // branch below) when a caller reactivates the job via `status` alone, with
-  // no new schedule, would look like a 200 success but leave the job
-  // permanently excluded from the due scan (#883):
-  // selectDueScheduledJobsSql filters on `next_run_at <> ''`. Recompute a
-  // fresh nextRunAt ("now", so it fires on the very next poll tick) whenever
-  // this update is moving the job OUT of 'completed' without an explicit new
-  // schedule.
+  // A completed one-shot job has no next run: the claim that fired it cleared
+  // next_run_at. Reactivating it via `status` alone, with no new schedule,
+  // must give it a fresh due time ("now", so it fires on the next poll),
+  // or it would look like a 200 success but never fire (#883).
   val reactivatingCompletedJob = existing.status == "completed" and status != "completed" and not scheduleChanged
-  // Whether this update should touch next_run_at at all. When neither is
-  // true (an ordinary edit to prompt/profile/status that leaves the
-  // schedule alone), next_run_at is left OUT of the UPDATE entirely — not
-  // written back to `existing.nextRunAt` — so a concurrent
-  // triggerDueJobsHandler claim in flight on this same row (next_run_at
-  // temporarily cleared to the claimDueScheduledJobSql sentinel) can't have
-  // that transient '' echoed straight back by this unrelated edit and
-  // permanently stuck there (#891): the run's own post-completion
-  // bookkeeping (applyPostRunBookkeeping) is left as the sole writer of
-  // next_run_at in that case, exactly as it already is when this update
-  // never runs at all.
+  // Whether this update should touch next_run_at at all. An ordinary edit to
+  // prompt/profile/status that leaves the schedule alone doesn't write it,
+  // so it can't put back a stale slot over one a concurrent claim just
+  // advanced (#891).
   val writeNextRunAt = scheduleChanged or reactivatingCompletedJob
   val nextRunAt = if scheduleChanged {
     if runAt.length > 0 {
@@ -452,10 +441,10 @@ pub func updateJobHandler(userId: in String, id: in String, req: in UpdateJobReq
   } else {
     existing.nextRunAt
   }
-  match CloudAgents.Repository.updateScheduledJob(id, userId, existing.name, prompt, profileId, runAt, intervalSeconds, nextRunAt, status, writeNextRunAt) {
+  match CloudAgents.Repository.updateScheduledJob(id, sc, existing.name, prompt, profileId, runAt, intervalSeconds, nextRunAt, status, writeNextRunAt) {
     case Ok(n) -> {
       if n > 0 {
-        return getJobHandler(userId, id)
+        return getJobHandler(sc, id)
       }
       return Err(Web.notFound("job not found"))
     }
@@ -465,10 +454,10 @@ pub func updateJobHandler(userId: in String, id: in String, req: in UpdateJobReq
 
 // ─── Running a due job ───────────────────────────────────────────────────────
 /// Whether a job's due-run attempt actually happened. JobSkipped means the
-/// session was busy (a concurrent human message or another job's run) —
-/// next_run_at is left untouched so the poller retries on its next tick,
-/// unlike JobFailed (a real run that errored), which still advances the
-/// schedule so a persistently-broken job doesn't retry-storm every tick.
+/// session was busy (a concurrent human message or another job's run): the
+/// claim is released so the poller retries on its next tick. JobFailed (a
+/// real run that errored) keeps the advanced schedule, so a persistently
+/// broken job doesn't retry-storm every tick.
 pub union JobRunOutcome {
   case JobSucceeded
   case JobFailed(message: String)
@@ -479,7 +468,9 @@ pub union JobRunOutcome {
 /// one, else a freshly created session (mirrors createSession, minus
 /// re-validating fields already validated at job-creation time), persisted
 /// back onto the job row so every later trigger reuses it.
-func ensureJobSession(job: in CloudAgents.Repository.ScheduledJob): Result[String, String] {
+func ensureJobSession(
+  job: in CloudAgents.Repository.ScheduledJob, sc: in CloudAgents.Pg.TenantScope
+): Result[String, String] {
   if job.sessionId.length > 0 {
     return Ok(value = job.sessionId)
   }
@@ -493,17 +484,17 @@ func ensureJobSession(job: in CloudAgents.Repository.ScheduledJob): Result[Strin
     model = job.model,
     nativeSessionId = sessionId
   )
-  match CloudAgents.SessionStore.addSession(session, CloudAgents.Pg.personalScope(job.userId)) {
+  match CloudAgents.SessionStore.addSession(session, sc) {
     case Ok(_) -> ()
     case Err(e) -> return Err(error = "failed to create a session for this job: " + CloudAgents.Sqlite.dbErrorMessage(e))
   }
   if job.profileId.length > 0 {
-    match CloudAgents.SessionStore.setSessionProfile(sessionId, CloudAgents.Pg.personalScope(job.userId), job.profileId) {
+    match CloudAgents.SessionStore.setSessionProfile(sessionId, sc, job.profileId) {
       case Ok(_) -> ()
       case Err(_) -> ()
     }
   }
-  match CloudAgents.Repository.attachScheduledJobSession(job.id, sessionId) {
+  match CloudAgents.Repository.attachScheduledJobSession(job.id, sc, sessionId) {
     case Ok(_) -> ()
     // Not fatal (the run still proceeds against the freshly created
     // session), but MUST be surfaced (#884): a silently-swallowed attach
@@ -524,7 +515,9 @@ func ensureJobSession(job: in CloudAgents.Repository.ScheduledJob): Result[Strin
 /// CloudAgents.Handlers.streamSendMessage's claim/persist/resolve/record
 /// lifecycle but via CloudAgents.Docker.runSessionMessageBlocking (no
 /// ResponseWriter — there is no live viewer for a scheduler-triggered run).
-func runOneJob(job: in CloudAgents.Repository.ScheduledJob): JobRunOutcome {
+func runOneJob(claim: in CloudAgents.Repository.ClaimedJob): JobRunOutcome {
+  val job = claim.job
+  val sc = claim.tenantScope
   // Restore the maintenance request's own identity before returning, rather
   // than leaving the last-processed job's owner stamped on this pooled
   // thread — the same defense-in-depth AuthMiddleware's own re-stamp-every-
@@ -535,7 +528,10 @@ func runOneJob(job: in CloudAgents.Repository.ScheduledJob): JobRunOutcome {
     CloudAgents.Auth.setCurrentUserId(callerUserId)
   }
   CloudAgents.Auth.setCurrentUserId(job.userId)
-  val sessionId = match ensureJobSession(job) { case Ok(sid) -> sid; case Err(msg) -> return JobFailed(message = msg) }
+  val sessionId = match ensureJobSession(job, sc) {
+    case Ok(sid) -> sid
+    case Err(msg) -> return JobFailed(message = msg)
+  }
   // Resolve the actual run configuration from the SESSION, never from the
   // job row, exactly like streamSendMessage does for any other follow-up
   // message (#880). The job row's repoUrl/branch/harness/model/profileId
@@ -551,19 +547,19 @@ func runOneJob(job: in CloudAgents.Repository.ScheduledJob): JobRunOutcome {
   // a real privilege-escalation path for a job an agent schedules for
   // itself. It also passed sessionId as nativeSessionId, breaking the
   // harness's own session continuity (--resume) on every re-trigger.
-  val session = match CloudAgents.SessionStore.getSession(sessionId, CloudAgents.Pg.personalScope(job.userId)) {
+  val session = match CloudAgents.SessionStore.getSession(sessionId, sc) {
     case Ok(Some(s)) -> s
     case Ok(None) -> return JobFailed(message = "job's session no longer exists")
     case Err(e) -> return JobFailed(message = "failed to resolve job session: " + CloudAgents.Sqlite.dbErrorMessage(e))
   }
-  val profileId = match CloudAgents.SessionStore.sessionProfileId(sessionId, CloudAgents.Pg.personalScope(job.userId)) {
+  val profileId = match CloudAgents.SessionStore.sessionProfileId(sessionId, sc) {
     case Ok(Some(pid)) -> pid
     case Ok(None) -> ""
     // Fails closed (#232's same reasoning): a DB error resolving the
     // session's profile must not silently fall open to "no profile".
     case Err(e) -> return JobFailed(message = "failed to resolve session profile: " + CloudAgents.Sqlite.dbErrorMessage(e))
   }
-  val began = match CloudAgents.SessionStore.tryBeginRun(sessionId, CloudAgents.Pg.personalScope(job.userId)) {
+  val began = match CloudAgents.SessionStore.tryBeginRun(sessionId, sc) {
     case Ok(b) -> b
     case Err(e) -> return JobFailed(message = "failed to claim session: " + CloudAgents.Sqlite.dbErrorMessage(e))
   }
@@ -571,7 +567,7 @@ func runOneJob(job: in CloudAgents.Repository.ScheduledJob): JobRunOutcome {
     return JobSkipped(reason = "a run is already in progress for this job's session")
   }
   defer {
-    match CloudAgents.SessionStore.endRun(sessionId, CloudAgents.Pg.personalScope(job.userId)) {
+    match CloudAgents.SessionStore.endRun(sessionId, sc) {
       case Ok(_) -> ()
       case Err(e) -> println(
         "WARNING: failed to release run claim for scheduled job session " + sessionId + ": " +
@@ -579,17 +575,17 @@ func runOneJob(job: in CloudAgents.Repository.ScheduledJob): JobRunOutcome {
       )
     }
   }
-  match CloudAgents.Repository.addMessage(sessionId, CloudAgents.Pg.personalScope(job.userId), "user", job.prompt) {
+  match CloudAgents.Repository.addMessage(sessionId, sc, "user", job.prompt) {
     case Ok(_) -> ()
     case Err(_) -> ()
   }
-  val extraRepos = match CloudAgents.Repository.listSessionRepos(sessionId, CloudAgents.Pg.personalScope(job.userId)) {
+  val extraRepos = match CloudAgents.Repository.listSessionRepos(sessionId, sc) {
     case Ok(rs) -> CloudAgents.Handlers.extraReposEnvValue(rs)
     case Err(_) -> ""
   }
   var harness = session.harness
   if profileId.length > 0 {
-    match CloudAgents.Repository.getProfile(profileId, CloudAgents.Pg.personalScope(job.userId)) {
+    match CloudAgents.Repository.getProfile(profileId, sc) {
       case Ok(Some(p)) -> {
         if p.harness.length > 0 {
           harness = p.harness
@@ -599,7 +595,7 @@ func runOneJob(job: in CloudAgents.Repository.ScheduledJob): JobRunOutcome {
       case Err(_) -> ()
     }
   }
-  val runId = match CloudAgents.Repository.recordRunStart(sessionId, CloudAgents.Pg.personalScope(job.userId), job.prompt, harness, session.model) {
+  val runId = match CloudAgents.Repository.recordRunStart(sessionId, sc, job.prompt, harness, session.model) {
     case Ok(rid) -> rid
     case Err(_) -> ""
   }
@@ -618,18 +614,13 @@ func runOneJob(job: in CloudAgents.Repository.ScheduledJob): JobRunOutcome {
   return match runResult {
     case Ok(logs) -> {
       if runId.length > 0 {
-        val _ = CloudAgents.Repository.recordRunEnd(runId, CloudAgents.Pg.personalScope(job.userId), "succeeded")
-        val _ = CloudAgents.Repository.enqueueWebhookEvent(
-          CloudAgents.Pg.personalScope(job.userId),
-          sessionId,
-          runId,
-          "succeeded"
-        )
+        val _ = CloudAgents.Repository.recordRunEnd(runId, sc, "succeeded")
+        val _ = CloudAgents.Repository.enqueueWebhookEvent(sc, sessionId, runId, "succeeded")
         // Session ledger observer (docs/session-ledger.md §10): queue an
         // end-of-run pass if this session is observed. Best-effort.
         CloudAgents.Ledger.Observer.onRunFinished(sessionId)
       }
-      match CloudAgents.Repository.addMessage(sessionId, CloudAgents.Pg.personalScope(job.userId), "agent", logs) {
+      match CloudAgents.Repository.addMessage(sessionId, sc, "agent", logs) {
         case Ok(_) -> ()
         case Err(e) -> println(
           "WARNING: failed to persist agent message for scheduled job session " + sessionId + ": " +
@@ -640,13 +631,8 @@ func runOneJob(job: in CloudAgents.Repository.ScheduledJob): JobRunOutcome {
     }
     case Err(msg) -> {
       if runId.length > 0 {
-        val _ = CloudAgents.Repository.recordRunEnd(runId, CloudAgents.Pg.personalScope(job.userId), "failed")
-        val _ = CloudAgents.Repository.enqueueWebhookEvent(
-          CloudAgents.Pg.personalScope(job.userId),
-          sessionId,
-          runId,
-          "failed"
-        )
+        val _ = CloudAgents.Repository.recordRunEnd(runId, sc, "failed")
+        val _ = CloudAgents.Repository.enqueueWebhookEvent(sc, sessionId, runId, "failed")
         // Session ledger observer (docs/session-ledger.md §10): queue an
         // end-of-run pass if this session is observed. Best-effort.
         CloudAgents.Ledger.Observer.onRunFinished(sessionId)
@@ -658,7 +644,7 @@ func runOneJob(job: in CloudAgents.Repository.ScheduledJob): JobRunOutcome {
       // /api/sessions/{id}/runs, the webhook outbox, and server logs are the
       // only other signals, and none of them is the primary UI surface a
       // human reopening the session sees.
-      match CloudAgents.Repository.addMessage(sessionId, CloudAgents.Pg.personalScope(job.userId), "agent", "Scheduled run failed: " + msg) {
+      match CloudAgents.Repository.addMessage(sessionId, sc, "agent", "Scheduled run failed: " + msg) {
         case Ok(_) -> ()
         case Err(e) -> println(
           "WARNING: failed to persist failure message for scheduled job session " + sessionId + ": " +
@@ -670,50 +656,13 @@ func runOneJob(job: in CloudAgents.Repository.ScheduledJob): JobRunOutcome {
   }
 }
 
-/// Decide and apply the correct post-run bookkeeping for a job that was just
-/// claimed and run, re-reading the job row FRESH rather than trusting
-/// `claimedJob` — the snapshot `triggerDueJobsHandler` read at the top of the
-/// request, before `runOneJob` spent up to `runWallClockCapMs` (30 min)
-/// blocked inside the container run (#876). Only `claimedJob.id`/`userId`/
-/// `nextRunAt` are ever used from that snapshot: `nextRunAt` because
-/// `markScheduledJobRanRecurringSql` needs the slot the job was actually due
-/// at (the row's own `next_run_at` is the empty claim sentinel by now) to
-/// avoid cadence drift (#874) — never `claimedJob.intervalSeconds` or
-/// `.status`, which a concurrent `POST /api/jobs/{jid}` may have changed
-/// while the run was in flight (e.g. flipping the job between one-shot and
-/// recurring). `markScheduledJobRanRecurringSql`/`markScheduledJobCompletedSql`
-/// are additionally guarded on `status = 'active'`, so a concurrent
-/// pause/cancel still can't be clobbered even if this re-read raced with
-/// that same update. `pub` (mirrors `isValidRunAt`'s reasoning) so
-/// tests/jobs_tests.l can pin this directly: `runOneJob`/`triggerDueJobsHandler`
-/// reach `CloudAgents.Docker` and cannot run in a `@test_module`, but this
-/// re-read-before-deciding logic itself touches only `CloudAgents.Repository`
-/// and is fully test-invocable on its own.
-pub func applyPostRunBookkeeping(claimedJob: in CloudAgents.Repository.ScheduledJob, firedAt: in String): Unit {
-  val fresh = match CloudAgents.Repository.getScheduledJob(claimedJob.id, claimedJob.userId) {
-    case Ok(Some(j)) -> j
-    case Ok(None) -> claimedJob
-    case Err(_) -> claimedJob
-  }
-  if fresh.intervalSeconds.length > 0 {
-    val _ = CloudAgents.Repository.markScheduledJobRanRecurring(
-      claimedJob.id,
-      firedAt,
-      claimedJob.nextRunAt,
-      fresh.intervalSeconds
-    )
-  } else {
-    val _ = CloudAgents.Repository.markScheduledJobCompleted(claimedJob.id, firedAt)
-  }
-}
-
 /// POST /api/maintenance/trigger-jobs — a maintenance endpoint for an
 /// external scheduler to poll (Lyric.Web has no in-process timer), mirroring
 /// CloudAgents.Handlers.reapContainers exactly, restricted the same way
 /// CloudAgents.Handlers.reapContainers' own blast radius is scoped by being
 /// an unauthenticated-tenant-agnostic sweep: this is a system-wide,
-/// unscoped-by-user maintenance action (dueScheduledJobs() intentionally has
-/// no user_id filter), so it is restricted to the operator identity rather
+/// cross-tenant maintenance action (claimDueScheduledJobs has no tenant or
+/// user filter), so it is restricted to the operator identity rather
 /// than any authenticated caller (#873) — in a multi-tenant OAuth
 /// deployment, an ordinary authenticated user must not be able to force
 /// another tenant's due-or-not-yet-due job to run early just by holding a
@@ -721,8 +670,11 @@ pub func applyPostRunBookkeeping(claimedJob: in CloudAgents.Repository.Scheduled
 /// is unaffected: AuthMiddleware/CloudAgents.Auth.authorize always resolves
 /// such requests to operatorUserId() already.
 ///
-/// Safe to call repeatedly: a job not yet due is untouched, and a skipped
-/// (busy-session) job is retried on the next call with no double-firing.
+/// Safe to call repeatedly, from any number of instances: a job not yet due
+/// is untouched, each due slot is claimed by exactly one caller, and a
+/// skipped (busy-session) job is released and retried on the next call. A run
+/// cut short by an instance crash is not re-fired: its slot was advanced when
+/// it was claimed (docs/phase11-postgres-tenancy.md §5.3a).
 /// Processes at most `maxJobsPerTrigger` jobs (earliest-due first) so one
 /// call's wall-clock time stays bounded; anything left over is picked up on
 /// the next poll. Returns `{"triggered":N,"failed":M,"skipped":K}`.
@@ -730,49 +682,35 @@ pub func triggerDueJobsHandler(): Result[String, Web.ApiError] {
   if CloudAgents.Auth.currentUserId() != CloudAgents.Auth.operatorUserId() {
     return Err(Web.unauthorized("the scheduled-jobs maintenance sweep may only be triggered by the operator identity"))
   }
-  val due = match CloudAgents.Repository.dueScheduledJobs(maxJobsPerTrigger) {
-    case Ok(js) -> js
+  // Claiming advances each job's schedule before its run starts, so an
+  // overlapping poll (on this instance or another) never fires the same slot.
+  val claims = match CloudAgents.Repository.claimDueScheduledJobs(maxJobsPerTrigger) {
+    case Ok(cs) -> cs
     case Err(e) -> return Err(dbError(e))
   }
   var triggered = 0
   var failed = 0
   var skipped = 0
-  // Bounds how many jobs this call actually attempts (claims), mirroring
-  // CloudAgents.Highlights' maxMessagesPerRefresh cap idiom — a lost claim
-  // doesn't count against the budget, since no session/container work was
-  // done for it.
-  var attempted = 0
-  var i = 0
-  while i < due.length and attempted < maxJobsPerTrigger {
-    val job = due[i]
-    val claimed = match CloudAgents.Repository.claimDueScheduledJob(job.id, job.nextRunAt) {
-      case Ok(b) -> b
-      case Err(_) -> false
-    }
-    if not claimed {
-      // Lost the race to a concurrent trigger-jobs call (or the row changed
-      // underneath us) — the other caller (or a later poll) owns this job now.
-      skipped = skipped + 1
-      i = i + 1
-      continue
-    }
-    attempted = attempted + 1
-    match runOneJob(job) {
+  for claim in claims {
+    match runOneJob(claim) {
       case JobSucceeded -> {
         triggered = triggered + 1
-        applyPostRunBookkeeping(job, CloudAgents.Repository.nowMillis())
       }
       case JobFailed(msg) -> {
         failed = failed + 1
-        println("WARNING: scheduled job " + job.id + " failed: " + msg)
-        applyPostRunBookkeeping(job, CloudAgents.Repository.nowMillis())
+        println("WARNING: scheduled job " + claim.job.id + " failed: " + msg)
       }
       case JobSkipped(_) -> {
         skipped = skipped + 1
-        val _ = CloudAgents.Repository.restoreScheduledJobNextRunAt(job.id, job.nextRunAt)
+        match CloudAgents.Repository.releaseScheduledJobClaim(claim) {
+          case Ok(_) -> ()
+          case Err(e) -> println(
+            "WARNING: could not release the claim on skipped scheduled job " + claim.job.id + ": " +
+              CloudAgents.Sqlite.dbErrorMessage(e)
+          )
+        }
       }
     }
-    i = i + 1
   }
   return Ok(
     value = "{\"triggered\":" + toString(triggered) + ",\"failed\":" + toString(failed) + ",\"skipped\":" +
@@ -785,14 +723,18 @@ pub func triggerDueJobsHandler(): Result[String, Web.ApiError] {
 // MCP tools) ───────────────────────────────────────────────────────────────
 //
 // Authenticates with the calling session's own callback bearer token — never
-// the current request identity — then resolves the session's OWNER (not the
-// caller) to scope every job operation, mirroring
-// CloudAgents.Callbacks.createSecretRequestHandler's ownerUserId lookup
-// exactly. A job these tools create always attaches the CALLING session
+// the current request identity — then scopes every job operation to the
+// session's OWNER in the session's tenant, resolved from its route, as
+// CloudAgents.Callbacks.authorizeCallbackToken does. A job these tools create always attaches the CALLING session
 // immediately (repoUrl/branch/harness/model stay empty on the row — they are
 // only ever consulted by ensureJobSession when a job has no session yet,
 // which never happens for one of these).
-func authorizeJobCallbackToken(sessionId: in String, authHeaderValue: in String): Result[Unit, Web.ApiError] {
+/// Authenticate a container callback with the session's own callback token and
+/// return the scope its job operations run under: the session owner in the
+/// session's tenant, from its route (spec §5.2).
+func authorizeJobCallbackToken(
+  sessionId: in String, authHeaderValue: in String
+): Result[CloudAgents.Pg.TenantScope, Web.ApiError] {
   val storedHash = match CloudAgents.SessionStore.callbackTokenHashForSession(sessionId) {
     case Ok(Some(t)) -> t
     case Ok(None) -> return Err(Web.notFound("Session not found"))
@@ -801,12 +743,8 @@ func authorizeJobCallbackToken(sessionId: in String, authHeaderValue: in String)
   if not CloudAgents.Auth.authorizeCallback(authHeaderValue, storedHash) {
     return Err(Web.unauthorized("invalid callback token"))
   }
-  return Ok(())
-}
-
-func ownerOfSession(sessionId: in String): Result[String, Web.ApiError] {
-  match CloudAgents.SessionStore.sessionOwnerUserId(sessionId) {
-    case Ok(Some(u)) -> return Ok(value = u)
+  match CloudAgents.SessionStore.sessionRouteScope(sessionId) {
+    case Ok(Some(sc)) -> return Ok(value = sc)
     case Ok(None) -> return Err(Web.notFound("Session not found"))
     case Err(e) -> return Err(dbError(e))
   }
@@ -834,7 +772,7 @@ pub func scheduleJobCallbackHandler(
   if sessionId.length == 0 {
     return Err(Web.badRequest("id is required"))
   }
-  authorizeJobCallbackToken(sessionId, authHeaderValue)?
+  val sc = authorizeJobCallbackToken(sessionId, authHeaderValue)?
   if req.prompt.length == 0 {
     return Err(Web.badRequest("prompt is required"))
   }
@@ -858,13 +796,11 @@ pub func scheduleJobCallbackHandler(
   if req.runAtEpochMillis.length == 0 and req.intervalSeconds.length == 0 {
     return Err(Web.badRequest("at least one of runAtEpochMillis or intervalSeconds is required"))
   }
-  val ownerUserId = ownerOfSession(sessionId)?
   // Insert + attach as one transaction (#875/#877): no orphaned row is ever
   // possible on a failed attach (the whole transaction rolls back), and no
-  // concurrent maintenance-trigger poll can ever observe this job — via
-  // dueScheduledJobs()'s due-scan — with its session still unattached, since
-  // both writes commit together.
-  val job = match CloudAgents.Repository.createScheduledJobWithSession(ownerUserId, req.name, req.prompt, req.runAtEpochMillis, req.intervalSeconds, sessionId) {
+  // concurrent trigger poll can ever claim this job with its session still
+  // unattached, since both writes commit together.
+  val job = match CloudAgents.Repository.createScheduledJobWithSession(sc, req.name, req.prompt, req.runAtEpochMillis, req.intervalSeconds, sessionId) {
     case Ok(j) -> j
     case Err(e) -> return Err(dbError(e))
   }
@@ -881,9 +817,8 @@ pub func listJobsCallbackHandler(
   if sessionId.length == 0 {
     return Err(Web.badRequest("id is required"))
   }
-  authorizeJobCallbackToken(sessionId, authHeaderValue)?
-  val ownerUserId = ownerOfSession(sessionId)?
-  return listJobsHandler(ownerUserId)
+  val sc = authorizeJobCallbackToken(sessionId, authHeaderValue)?
+  return listJobsHandler(sc)
 }
 
 /// POST /api/sessions/{id}/callbacks/jobs/{jid}/update — container-originated
@@ -908,9 +843,8 @@ pub func updateJobCallbackHandler(
   if jobId.length == 0 {
     return Err(Web.badRequest("job id is required"))
   }
-  authorizeJobCallbackToken(sessionId, authHeaderValue)?
-  val ownerUserId = ownerOfSession(sessionId)?
-  val existing = match CloudAgents.Repository.getScheduledJob(jobId, ownerUserId) {
+  val sc = authorizeJobCallbackToken(sessionId, authHeaderValue)?
+  val existing = match CloudAgents.Repository.getScheduledJob(jobId, sc) {
     case Ok(Some(j)) -> j
     case Ok(None) -> return Err(Web.notFound("job not found"))
     case Err(e) -> return Err(dbError(e))
@@ -935,7 +869,7 @@ pub func updateJobCallbackHandler(
     intervalSeconds = req.intervalSeconds,
     status = req.status
   )
-  return updateJobHandler(ownerUserId, jobId, restricted)
+  return updateJobHandler(sc, jobId, restricted)
 }
 
 /// POST /api/sessions/{id}/callbacks/jobs/{jid}/cancel — container-originated

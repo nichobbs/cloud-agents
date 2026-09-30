@@ -204,7 +204,10 @@ can answer.
 ## ADR-008: Multi-instance topology: stateless API tier, runner hosts, dedicated Postgres
 
 **Status**: Accepted (direction). Supersedes ADR-004. Implementation is
-phased (see Migration); each phase lands as its own spec + PR.
+phased (see Migration); each phase lands as its own spec + PR. Phase 11
+already supports several API instances before the runner agent exists,
+through leases, schedule-advancing job claims and run heartbeats
+(docs/phase11-postgres-tenancy.md §5.3a).
 
 **Context**: cloud-agents is moving from a personal single-VM tool to a
 multi-tenant service that feeds Testamur (capture, checkpoints, graph

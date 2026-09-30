@@ -4357,12 +4357,11 @@ func rowToScheduledJob(r: in CloudAgents.Sqlite.Row): ScheduledJob {
   )
 }
 
-/// Create a new job. `nextRunAt` is `runAt` when a one-shot/start time was
-/// given, else "now" (a pure-interval job fires on the very next poll tick,
-/// then recurs from there) — a plain choice between two already-computed TEXT
-/// values, no arithmetic needed.
+/// Create a new job owned by the caller. `nextRunAt` is `runAt` when a
+/// one-shot/start time was given, else "now" (a pure-interval job fires on
+/// the very next poll tick, then recurs from there).
 pub func createScheduledJob(
-  userId: in String,
+  sc: in CloudAgents.Pg.TenantScope,
   name: in String,
   prompt: in String,
   profileId: in String,
@@ -4376,11 +4375,11 @@ pub func createScheduledJob(
   val id = newId()
   val ts = nowMillis()
   val nextRunAt = if runAt.length > 0 { runAt } else { ts }
-  CloudAgents.Sqlite.execute(CloudAgents.Db.insertScheduledJobSql(id, userId, name, prompt, profileId, repoUrl, branch, harness, model, runAt, intervalSeconds, nextRunAt, ts))?
+  CloudAgents.Sqlite.execute(CloudAgents.Db.insertScheduledJobSql(id, sc.userId, name, prompt, profileId, repoUrl, branch, harness, model, runAt, intervalSeconds, nextRunAt, ts))?
   return Ok(
     value = ScheduledJob(
       id = id,
-      userId = userId,
+      userId = sc.userId,
       name = name,
       prompt = prompt,
       profileId = profileId,
@@ -4401,19 +4400,12 @@ pub func createScheduledJob(
 
 /// Create a new job with `sessionId` already attached, atomically — used
 /// only by the schedule_job MCP callback, which always attaches the calling
-/// session immediately (unlike createScheduledJob's REST-CRUD path, where
-/// session_id legitimately starts empty and is filled in later, at first
-/// trigger). Doing the insert and the attach in one transaction (mirrors
-/// addPromptWithTags) closes a race (#877): a pure-interval job's
-/// next_run_at defaults to "now" (immediately due), so a two-call
-/// insert-then-attach could let a concurrent maintenance-trigger poll's
-/// due-scan claim the job and have its own ensureJobSession attach a
-/// *different*, freshly created session in the gap between the two calls —
-/// silently breaking "if it triggers again, continue this session" for
-/// that job, with no error surfaced to the caller (attachScheduledJobSession
-/// doesn't check affected-row count, so a lost attach still returns Ok).
+/// session immediately. Doing the insert and the attach in one transaction
+/// closes a race (#877): a pure-interval job is due at once, so a two-step
+/// insert-then-attach could let a concurrent trigger poll claim the job and
+/// attach a different, freshly created session in the gap.
 pub func createScheduledJobWithSession(
-  userId: in String,
+  sc: in CloudAgents.Pg.TenantScope,
   name: in String,
   prompt: in String,
   runAt: in String,
@@ -4425,7 +4417,7 @@ pub func createScheduledJobWithSession(
   val nextRunAt = if runAt.length > 0 { runAt } else { ts }
   val insertSql = CloudAgents.Db.insertScheduledJobSql(
     id,
-    userId,
+    sc.userId,
     name,
     prompt,
     "",
@@ -4443,7 +4435,7 @@ pub func createScheduledJobWithSession(
   return Ok(
     value = ScheduledJob(
       id = id,
-      userId = userId,
+      userId = sc.userId,
       name = name,
       prompt = prompt,
       profileId = "",
@@ -4462,10 +4454,12 @@ pub func createScheduledJobWithSession(
   )
 }
 
-/// A single job scoped to (id, user_id), or None (unknown id or foreign
-/// owner — both look identical to the caller, mirroring getProfile).
-pub func getScheduledJob(id: in String, userId: in String): Result[Option[ScheduledJob], CloudAgents.Sqlite.DbError] {
-  val rows = CloudAgents.Sqlite.query(CloudAgents.Db.selectScheduledJobByIdSql(id, userId))?
+/// One of the caller's jobs, or None (unknown id or foreign owner — both
+/// look identical to the caller, mirroring getProfile).
+pub func getScheduledJob(
+  id: in String, sc: in CloudAgents.Pg.TenantScope
+): Result[Option[ScheduledJob], CloudAgents.Sqlite.DbError] {
+  val rows = CloudAgents.Sqlite.query(CloudAgents.Db.selectScheduledJobByIdSql(id, sc.userId))?
   val len = CloudAgents.Sqlite.getRowArrayLength(rows)
   if len == 0 {
     return Ok(value = None)
@@ -4473,9 +4467,9 @@ pub func getScheduledJob(id: in String, userId: in String): Result[Option[Schedu
   return Ok(value = Some(value = rowToScheduledJob(CloudAgents.Sqlite.getRowArrayValue(rows, 0))))
 }
 
-/// All of a user's jobs, newest first.
-pub func listScheduledJobs(userId: in String): Result[slice[ScheduledJob], CloudAgents.Sqlite.DbError] {
-  val rows = CloudAgents.Sqlite.query(CloudAgents.Db.selectScheduledJobsByUserSql(userId))?
+/// All of the caller's jobs, newest first.
+pub func listScheduledJobs(sc: in CloudAgents.Pg.TenantScope): Result[slice[ScheduledJob], CloudAgents.Sqlite.DbError] {
+  val rows = CloudAgents.Sqlite.query(CloudAgents.Db.selectScheduledJobsByUserSql(sc.userId))?
   var acc: slice[ScheduledJob] = []
   var i = 0
   val len = CloudAgents.Sqlite.getRowArrayLength(rows)
@@ -4486,84 +4480,79 @@ pub func listScheduledJobs(userId: in String): Result[slice[ScheduledJob], Cloud
   return Ok(value = acc)
 }
 
-/// Every active job due to fire right now, system-wide, capped at `limit`
-/// rows (#893) — mirrors reapableWarmContainers' unscoped maintenance-scan
-/// shape.
-pub func dueScheduledJobs(limit: in Int): Result[slice[ScheduledJob], CloudAgents.Sqlite.DbError] {
+/// A job this caller claimed to fire (docs/phase11-postgres-tenancy.md
+/// §5.3a). The claim has already stamped the row's `last_run_at` with
+/// `claimedAt` and advanced its schedule (`claimedNextRunAt`, "" for a
+/// one-shot, which the claim also marked `completed`), so no other caller can
+/// fire the same slot and nothing needs recording after the run. `job` is the
+/// row as it was just before the claim: its `nextRunAt` is the slot it was
+/// due at. `tenantScope` is the job owner's scope in the job's tenant; the
+/// whole run happens in it.
+pub record ClaimedJob {
+  pub tenantScope: CloudAgents.Pg.TenantScope
+  pub job: ScheduledJob
+  pub claimedAt: String
+  pub claimedNextRunAt: String
+  pub claimedStatus: String
+}
+
+/// Claim up to `limit` due jobs across every tenant, earliest-due first. Each
+/// claim is a conditional UPDATE (claimDueScheduledJobSql), so overlapping
+/// trigger polls never fire the same slot twice. A run that is interrupted
+/// (the instance dies) is not re-fired: its slot is already advanced.
+pub func claimDueScheduledJobs(limit: in Int): Result[slice[ClaimedJob], CloudAgents.Sqlite.DbError] {
   val rows = CloudAgents.Sqlite.query(CloudAgents.Db.selectDueScheduledJobsSql(nowMillis(), limit))?
-  var acc: slice[ScheduledJob] = []
+  var acc: slice[ClaimedJob] = []
   var i = 0
   val len = CloudAgents.Sqlite.getRowArrayLength(rows)
   while i < len {
-    acc = acc.append(rowToScheduledJob(CloudAgents.Sqlite.getRowArrayValue(rows, i)))
+    val job = rowToScheduledJob(CloudAgents.Sqlite.getRowArrayValue(rows, i))
+    val firedAt = nowMillis()
+    val n = CloudAgents.Sqlite.execute(CloudAgents.Db.claimDueScheduledJobSql(job.id, job.nextRunAt, job.lastRunAt, firedAt))?
+    if n > 0 {
+      val sc = CloudAgents.Scope.personalScope(job.userId)
+      val claimed = match getScheduledJob(job.id, sc)? { case Some(j) -> j; case None -> job }
+      acc = acc.append(
+        ClaimedJob(
+          tenantScope = sc,
+          job = job,
+          claimedAt = claimed.lastRunAt,
+          claimedNextRunAt = claimed.nextRunAt,
+          claimedStatus = claimed.status
+        )
+      )
+    }
     i = i + 1
   }
   return Ok(value = acc)
 }
 
-/// Atomically claim a due job before firing it. Returns true if this caller
-/// won the claim (see claimDueScheduledJobSql) — false means a concurrent
-/// maintenance-endpoint call already claimed (or otherwise changed) the
-/// same row, and the caller should skip it rather than double-fire.
-pub func claimDueScheduledJob(id: in String, expectedNextRunAt: in String): Result[Bool, CloudAgents.Sqlite.DbError] {
-  val n = CloudAgents.Sqlite.execute(CloudAgents.Db.claimDueScheduledJobSql(id, expectedNextRunAt))?
-  return Ok(value = n > 0)
-}
-
-/// Restore a claimed-but-skipped job's next_run_at (see
-/// restoreScheduledJobNextRunAtSql).
-pub func restoreScheduledJobNextRunAt(id: in String, nextRunAt: in String): Result[Unit, CloudAgents.Sqlite.DbError] {
-  CloudAgents.Sqlite.execute(CloudAgents.Db.restoreScheduledJobNextRunAtSql(id, nextRunAt))?
+/// Undo a claim whose run was skipped (its session was busy), so the slot is
+/// retried on the next poll. A no-op if the row changed since the claim (an
+/// edit, pause or cancel), which then stands.
+pub func releaseScheduledJobClaim(c: in ClaimedJob): Result[Unit, CloudAgents.Sqlite.DbError] {
+  CloudAgents.Sqlite.execute(CloudAgents.Db.releaseScheduledJobClaimSql(c.job.id, c.tenantScope.userId, c.claimedAt, c.claimedNextRunAt, c.claimedStatus, c.job.nextRunAt, c.job.lastRunAt))?
   return Ok(value = ())
-}
-
-/// Startup recovery sweep (#882) for jobs left claimed-but-never-resolved by
-/// a host crash/restart mid-run (see recoverStrandedScheduledJobsSql).
-/// Returns the number of rows recovered. Called once at startup, mirroring
-/// CloudAgents.SessionStore.recoverDanglingSessions.
-pub func recoverStrandedScheduledJobs(): Result[Int, CloudAgents.Sqlite.DbError] {
-  return CloudAgents.Sqlite.execute(CloudAgents.Db.recoverStrandedScheduledJobsSql(nowMillis()))
 }
 
 /// Attach a session to a job on its first run (or immediately, for a job an
 /// in-container schedule_job call created for its own calling session) — a
 /// no-op if the job already has one (attachScheduledJobSessionSql's guard).
-pub func attachScheduledJobSession(id: in String, sessionId: in String): Result[Unit, CloudAgents.Sqlite.DbError] {
+pub func attachScheduledJobSession(
+  id: in String, sc: in CloudAgents.Pg.TenantScope, sessionId: in String
+): Result[Unit, CloudAgents.Sqlite.DbError] {
   CloudAgents.Sqlite.execute(CloudAgents.Db.attachScheduledJobSessionSql(id, sessionId))?
   return Ok(value = ())
 }
 
-/// Bookkeeping after a recurring job's run. `previousNextRunAt` is the job's
-/// own next_run_at as it was when this run fired (i.e. the value the caller
-/// read from dueScheduledJobs), not the current time — see
-/// markScheduledJobRanRecurringSql for why (#874, cadence drift).
-pub func markScheduledJobRanRecurring(
-  id: in String,
-  firedAt: in String,
-  previousNextRunAt: in String,
-  intervalSeconds: in String,
-): Result[Unit, CloudAgents.Sqlite.DbError] {
-  CloudAgents.Sqlite.execute(CloudAgents.Db.markScheduledJobRanRecurringSql(id, firedAt, previousNextRunAt, intervalSeconds))?
-  return Ok(value = ())
-}
-
-/// Bookkeeping after a one-shot job's (only) run.
-pub func markScheduledJobCompleted(id: in String, firedAt: in String): Result[Unit, CloudAgents.Sqlite.DbError] {
-  CloudAgents.Sqlite.execute(CloudAgents.Db.markScheduledJobCompletedSql(id, firedAt))?
-  return Ok(value = ())
-}
-
-/// Update a job's mutable fields. Returns the affected row count (0 means no
-/// such job under this owner). `writeNextRunAt` (#891) controls whether
-/// `next_run_at` is written at all: the caller (CloudAgents.Jobs.updateJobHandler)
-/// passes `false` for an ordinary edit that doesn't touch the schedule, so a
-/// next_run_at value this same UPDATE would otherwise echo straight back
-/// (including a concurrent triggerDueJobsHandler claim's transient empty
-/// sentinel) is left alone instead of being permanently pinned to whatever
-/// this request happened to read.
+/// Update one of the caller's jobs. Returns the affected row count (0 means
+/// no such job under this owner). `writeNextRunAt` (#891) controls whether
+/// `next_run_at` is written at all: an ordinary edit that doesn't touch the
+/// schedule passes `false`, so it can't write back a stale slot over one a
+/// concurrent claim just advanced.
 pub func updateScheduledJob(
   id: in String,
-  userId: in String,
+  sc: in CloudAgents.Pg.TenantScope,
   name: in String,
   prompt: in String,
   profileId: in String,
@@ -4576,7 +4565,7 @@ pub func updateScheduledJob(
   return CloudAgents.Sqlite.execute(
     CloudAgents.Db.updateScheduledJobSql(
       id,
-      userId,
+      sc.userId,
       name,
       prompt,
       profileId,
@@ -4589,9 +4578,9 @@ pub func updateScheduledJob(
   )
 }
 
-/// Delete a job scoped by owner. Returns the affected row count.
-pub func deleteScheduledJob(id: in String, userId: in String): Result[Int, CloudAgents.Sqlite.DbError] {
-  return CloudAgents.Sqlite.execute(CloudAgents.Db.deleteScheduledJobSql(id, userId))
+/// Delete one of the caller's jobs. Returns the affected row count.
+pub func deleteScheduledJob(id: in String, sc: in CloudAgents.Pg.TenantScope): Result[Int, CloudAgents.Sqlite.DbError] {
+  return CloudAgents.Sqlite.execute(CloudAgents.Db.deleteScheduledJobSql(id, sc.userId))
 }
 
 // ─── Chat Thread Branching ────────────────────────────────────────────────────
@@ -4877,7 +4866,7 @@ pub func enqueueGraphIngest(
 /// Every undelivered row whose `next_attempt_at` has arrived (or a row just
 /// enqueued, whose `next_attempt_at` starts at its `created_at` — see
 /// `insertGraphIngestOutboxSql`), earliest-due first, capped at `limit`.
-/// System-wide (unscoped by user), matching `dueScheduledJobs`' maintenance-
+/// System-wide (unscoped by user), matching `claimDueScheduledJobs`' maintenance-
 /// sweep shape.
 pub func dueGraphIngest(
   nowMillisStr: in String, limit: in Int
