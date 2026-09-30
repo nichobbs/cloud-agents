@@ -898,7 +898,7 @@ pub func streamSessionMessage(
   var nextSeq = 0.toLong()
   var lastHash = ""
   println("[diag] streamSessionMessage " + sessionId + ": before latestSessionEventCursor")
-  match CloudAgents.Repository.latestSessionEventCursor(sessionId) {
+  match CloudAgents.Repository.latestSessionEventCursor(sessionId, CloudAgents.Pg.personalScope(userId)) {
     case Ok(cursor) -> {
       nextSeq = cursor.nextSeq
       lastHash = cursor.lastHash
@@ -1029,7 +1029,7 @@ pub func streamSessionMessage(
             "[diag] streamSessionMessage " + sessionId + ": tick " + toString(diagTickCount) + " before appendSessionEvents"
           )
         }
-        match CloudAgents.Repository.appendSessionEvents(sessionId, rd.events) {
+        match CloudAgents.Repository.appendSessionEvents(sessionId, CloudAgents.Pg.personalScope(userId), rd.events) {
           case Ok(_) -> ()
           // Best-effort: a persistence failure must never break the live stream.
           // But log it (#976) — a silent failure here is an unretried GAP in the
@@ -1315,7 +1315,7 @@ pub func streamSessionMessage(
     // not dropped — there is no later tick to re-read it (#973).
     val rd = CloudAgents.Capture.Render.renderLogDelta(finalLogs, offset, nextSeq, lastHash, true)
     if rd.events.length.toInt() > 0 {
-      match CloudAgents.Repository.appendSessionEvents(sessionId, rd.events) {
+      match CloudAgents.Repository.appendSessionEvents(sessionId, CloudAgents.Pg.personalScope(userId), rd.events) {
         case Ok(_) -> ()
         // Best-effort, but logged (#976): a silent failure to persist the tail
         // events is an unretried gap in the audit hash chain.

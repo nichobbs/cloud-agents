@@ -621,7 +621,7 @@ test "getSessionEvents returns the stored chain as the audit envelope" {
   val path = useFreshTestDb("sessevents-endpoint")
   ensureSession("sess-E")
   val batch = parseStreamJson(fixtureEventsNdjson(), 0.toLong(), "")
-  match CloudAgents.Repository.appendSessionEvents("sess-E", batch.events) {
+  match CloudAgents.Repository.appendSessionEvents("sess-E", CloudAgents.Auth.requestScope(), batch.events) {
     case Ok(n) -> assertEqualInt(n, 3, "three events appended")
     case Err(e) -> assertTrue(false, "append failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
   }
@@ -675,7 +675,7 @@ test "user B cannot read user A's messages or capture events" {
   val sid = "sess-tenant-a"
   val mid = addTestMessage(sid)
   val batch = parseStreamJson(fixtureEventsNdjson(), 0.toLong(), "")
-  match CloudAgents.Repository.appendSessionEvents(sid, batch.events) {
+  match CloudAgents.Repository.appendSessionEvents(sid, CloudAgents.Auth.requestScope(), batch.events) {
     case Ok(n) -> assertEqualInt(n, 3, "three events appended")
     case Err(e) -> assertTrue(false, "append failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
   }
@@ -789,13 +789,13 @@ test "operator identity reads its own sessions' events but not an OAuth user's" 
 
   CloudAgents.Auth.setCurrentUserId(CloudAgents.Auth.operatorUserId())
   ensureSession("sess-operator")
-  match CloudAgents.Repository.appendSessionEvents("sess-operator", batch.events) {
+  match CloudAgents.Repository.appendSessionEvents("sess-operator", CloudAgents.Auth.requestScope(), batch.events) {
     case Ok(_) -> ()
     case Err(e) -> assertTrue(false, "append failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
   }
   CloudAgents.Auth.setCurrentUserId("gh-583231")
   ensureSession("sess-oauth-user")
-  match CloudAgents.Repository.appendSessionEvents("sess-oauth-user", batch.events) {
+  match CloudAgents.Repository.appendSessionEvents("sess-oauth-user", CloudAgents.Auth.requestScope(), batch.events) {
     case Ok(_) -> ()
     case Err(e) -> assertTrue(false, "append failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
   }

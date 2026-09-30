@@ -698,7 +698,7 @@ func recordDeclared(ctx: in SessionContext, e: in DraftEntry): Result[RecordRepl
     undeclared = false
   )
   val severity = effectiveSeverity(e.declaredSeverity, facts, rulesFor(ctx))
-  val transcriptSeq = match CloudAgents.Repository.latestSessionEventSeq(ctx.sessionId) {
+  val transcriptSeq = match CloudAgents.Repository.latestSessionEventSeq(ctx.sessionId, ctx.tenantScope) {
     case Ok(s) -> s
     case Err(_) -> ""
   }
@@ -1089,7 +1089,7 @@ func parseDecimal(s: in String): Int {
 
 /// The rendered assistant text of the 40 captured events up to and
 /// including `endSeq`, keeping the last 4000 characters.
-func transcriptExcerpt(sessionId: in String, endSeq: in String): String {
+func transcriptExcerpt(ctx: in SessionContext, endSeq: in String): String {
   if not isDecimal(endSeq) {
     return ""
   }
@@ -1098,7 +1098,7 @@ func transcriptExcerpt(sessionId: in String, endSeq: in String): String {
   if start < -1 {
     start = -1
   }
-  match CloudAgents.Repository.sessionEventsInRange(sessionId, toString(start), toString(last)) {
+  match CloudAgents.Repository.sessionEventsInRange(ctx.sessionId, ctx.tenantScope, toString(start), toString(last)) {
     case Ok(events) -> {
       val text = CloudAgents.Capture.Render.renderDisplayText(events)
       if text.length.toInt() > 4000 {
@@ -1139,7 +1139,7 @@ pub func entryDetail(ctx: in SessionContext, entryId: in String): Result[EntryDe
       ledgerEntry = e,
       feedback = fb,
       transitions = transitions,
-      transcriptExcerpt = transcriptExcerpt(ctx.sessionId, e.transcriptSeq),
+      transcriptExcerpt = transcriptExcerpt(ctx, e.transcriptSeq),
       supersededBy = supersededBy
     )
   )

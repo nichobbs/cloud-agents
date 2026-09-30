@@ -128,7 +128,7 @@ func tailLines(text: in String, n: Int): String {
 // Capture `ndjson` for `sid`, continuing the session's existing chain.
 func capture(sid: in String, ndjson: in String, startSeq: Long, prevHash: in String): CaptureBatch {
   val b = parseStreamJson(ndjson, startSeq, prevHash)
-  match CloudAgents.Repository.appendSessionEvents(sid, b.events) {
+  match CloudAgents.Repository.appendSessionEvents(sid, CloudAgents.Auth.requestScope(), b.events) {
     case Ok(_) -> ()
     case Err(e) -> panic("appendSessionEvents: " + CloudAgents.Sqlite.dbErrorMessage(e))
   }

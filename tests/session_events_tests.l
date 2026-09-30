@@ -10,6 +10,7 @@ import Std.Core
 import Std.Testing
 import Std.Uuid
 import CloudAgents.Repository
+import CloudAgents.Scope as EvScope
 import CloudAgents.Sqlite
 import CloudAgents.Capture
 import extern System.Environment as Env
@@ -45,21 +46,21 @@ func fixtureNdjson(): String {
 }
 
 func mustAppend(sessionId: in String, events: in slice[CaptureEvent]): Int {
-  return match CloudAgents.Repository.appendSessionEvents(sessionId, events) {
+  return match CloudAgents.Repository.appendSessionEvents(sessionId, evScope(), events) {
     case Ok(n) -> n
     case Err(e) -> panic("appendSessionEvents failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
   }
 }
 
 func mustRead(sessionId: in String, afterSeq: in String): slice[CaptureEvent] {
-  return match CloudAgents.Repository.sessionEventsAfterSeq(sessionId, afterSeq) {
+  return match CloudAgents.Repository.sessionEventsAfterSeq(sessionId, evScope(), afterSeq) {
     case Ok(evs) -> evs
     case Err(e) -> panic("sessionEventsAfterSeq failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
   }
 }
 
 func mustLatestCursor(sessionId: in String): CloudAgents.Repository.SessionEventCursor {
-  return match CloudAgents.Repository.latestSessionEventCursor(sessionId) {
+  return match CloudAgents.Repository.latestSessionEventCursor(sessionId, evScope()) {
     case Ok(c) -> c
     case Err(e) -> panic("latestSessionEventCursor failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
   }
@@ -132,7 +133,7 @@ test "re-appending an existing seq with a different payload/hash surfaces a DbEr
     prevHash = batch.events[1].prevHash,
     hash = "not-the-real-hash"
   )
-  match CloudAgents.Repository.appendSessionEvents("sess-D", [diverged]) {
+  match CloudAgents.Repository.appendSessionEvents("sess-D", evScope(), [diverged]) {
     case Ok(_) -> assertTrue(false, "a content mismatch at an existing seq must not succeed silently")
     case Err(e) -> {
       // ValidationFailed's message rendering (CloudAgents.Sqlite.dbErrorMessage)
@@ -177,7 +178,7 @@ test "a conflicting event anywhere in the batch rejects the whole batch, not jus
     prevHash = batch.events[2].hash,
     hash = "some-new-hash-3"
   )
-  match CloudAgents.Repository.appendSessionEvents("sess-E", [diverged, newEvent]) {
+  match CloudAgents.Repository.appendSessionEvents("sess-E", evScope(), [diverged, newEvent]) {
     case Ok(_) -> assertTrue(false, "a batch containing a conflict must not succeed")
     case Err(_) -> assertTrue(true, "whole batch rejected")
   }
@@ -248,4 +249,10 @@ test "a second run's capture, seeded from the resumed cursor, extends the chain 
   assertTrue(verifyChain(all, ""), "the whole session's chain, spanning both runs, verifies from genesis")
 
   cleanupTestDb(path)
+}
+
+// SQLite keys session events by session alone; the scope is for the
+// Postgres store.
+func evScope(): EvScope.TenantScope {
+  return EvScope.personalScope("u")
 }

@@ -157,7 +157,7 @@ pub func getSessionEvents(id: in String, afterSeq: in String): Result[String, We
     return Err(Web.badRequest("after must be a non-negative integer"))
   }
   requireOwnedSession(id)?
-  match sessionEventsAfterSeq(id, afterSeq) {
+  match sessionEventsAfterSeq(id, CloudAgents.Auth.requestScope(), afterSeq) {
     case Ok(events) -> return Ok(sessionEventsToJson(events))
     case Err(e) -> return Err(dbError(e))
   }
