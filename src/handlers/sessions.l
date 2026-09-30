@@ -1556,7 +1556,10 @@ val maxStrandedRunsPerSweep = 25
 
 /// Free one stranded run: stop its container, fail the run rows it left
 /// "running" (with the usual failed-run webhook), then return the session to
-/// IDLE. Best-effort per step, logged; returns whether the session was freed.
+/// IDLE. If the container cannot be stopped, the session is left held by this
+/// sweep rather than freed, so it never points away from an agent that may
+/// still be running (#1201); its renewed heartbeat goes stale again and a
+/// later sweep retries. Returns whether the session was freed.
 func sweepStrandedRun(r: in CloudAgents.SessionStore.StrandedRun): Bool {
   println(
     "stranded run: session " + r.sessionId + " had no heartbeat from instance '" + r.previousInstance + "' for " +
@@ -1566,7 +1569,13 @@ func sweepStrandedRun(r: in CloudAgents.SessionStore.StrandedRun): Bool {
   if r.containerId.length > 0 {
     match CloudAgents.Docker.terminateSessionContainer(r.containerId) {
       case Ok(_) -> ()
-      case Err(e) -> println("WARNING: could not terminate stranded container " + r.containerId + ": " + e)
+      case Err(e) -> {
+        println(
+          "WARNING: could not terminate stranded container " + r.containerId + " of session " + r.sessionId + ": " + e +
+            "; leaving the session held for a later sweep"
+        )
+        return false
+      }
     }
   }
   match CloudAgents.Repository.listRuns(r.sessionId, r.tenantScope) {

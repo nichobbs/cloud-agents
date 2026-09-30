@@ -2994,7 +2994,7 @@ pub func selectSessionCallbackTokenHashSql(id: in String): String {
 }
 
 /// Set a session's latest reported progress. Unscoped (system-style write,
-/// like reapSessionContainerSql) — authorization happens one layer up, at the
+/// like reapWarmSessionSql) — authorization happens one layer up, at the
 /// callback-token check.
 pub func updateSessionProgressSql(id: in String, summary: in String, percent: in String): String {
   return "UPDATE sessions SET progress_summary = " + sqlLiteral(summary) + ", progress_percent = " + sqlLiteral(percent) +

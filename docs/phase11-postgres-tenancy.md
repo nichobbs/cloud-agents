@@ -328,7 +328,9 @@ concurrent callers on any instance:
   heartbeat (`claim_stranded_runs` on Postgres, which also returns the
   instance that went quiet, for the log), stops its container, marks its
   running `runs` rows failed with the usual failed-run webhook, and returns
-  the session to `IDLE`. A late heartbeat from the original instance
+  the session to `IDLE`. A container that cannot be stopped leaves the
+  session held by the sweep, and a later sweep retries once its renewed
+  heartbeat goes stale. A late heartbeat from the original instance
   changes nothing once the run is taken over. Instance startup no longer
   resets every `RUNNING` or `WARM` session, which would kill runs another
   instance is driving.
