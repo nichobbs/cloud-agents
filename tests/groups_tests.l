@@ -45,7 +45,7 @@ func mkSession(id: in String): Unit {
     model = "claude-opus-4-8",
     nativeSessionId = id
   )
-  match addSession(s) {
+  match addSession(s, CloudAgents.Auth.requestScope()) {
     case Ok(_) -> ()
     case Err(e) -> panic("addSession failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
   }
@@ -59,7 +59,7 @@ func mustCreateGroup(name: in String, parentId: in String): CloudAgents.Reposito
 }
 
 func mustGetSession(id: in String): AgentSession {
-  return match CloudAgents.SessionStore.getSession(id) {
+  return match CloudAgents.SessionStore.getSession(id, CloudAgents.Auth.requestScope()) {
     case Ok(Some(s)) -> s
     case Ok(None) -> panic("session " + id + " should exist")
     case Err(e) -> panic("getSession failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
@@ -363,7 +363,7 @@ test "sessionSummariesJson carries groupId/lastViewedAt/pendingCount/attention" 
 
   // Fresh session: last_message_at = created_at > 0 and never viewed, so the
   // attention model reports 'pending' (activity the user hasn't seen).
-  match CloudAgents.SessionStore.sessionSummariesJson() {
+  match CloudAgents.SessionStore.sessionSummariesJson(CloudAgents.Auth.requestScope()) {
     case Ok(json) -> {
       assertTrue(json.contains("\"groupId\":\"\""), "groupId present (ungrouped): " + json)
       assertTrue(json.contains("\"lastViewedAt\":\"0\""), "lastViewedAt present (never viewed)")
@@ -378,7 +378,7 @@ test "sessionSummariesJson carries groupId/lastViewedAt/pendingCount/attention" 
     case Ok(_) -> ()
     case Err(e) -> assertTrue(false, "viewed stamp failed: " + toString(e.status))
   }
-  match CloudAgents.SessionStore.sessionSummariesJson() {
+  match CloudAgents.SessionStore.sessionSummariesJson(CloudAgents.Auth.requestScope()) {
     case Ok(json) -> assertTrue(json.contains("\"attention\":\"viewed\""), "viewed after stamp: " + json)
     case Err(e) -> assertTrue(false, "sessionSummariesJson failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
   }
@@ -399,7 +399,7 @@ test "sessionSummariesJson carries groupId/lastViewedAt/pendingCount/attention" 
     case Ok(_) -> ()
     case Err(e) -> assertTrue(false, "insert permission request failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
   }
-  match CloudAgents.SessionStore.sessionSummariesJson() {
+  match CloudAgents.SessionStore.sessionSummariesJson(CloudAgents.Auth.requestScope()) {
     case Ok(json) -> {
       assertTrue(json.contains("\"pendingCount\":\"1\""), "pending callback counted: " + json)
       assertTrue(json.contains("\"attention\":\"pending\""), "pending callback -> pending")
@@ -413,7 +413,7 @@ test "sessionSummariesJson carries groupId/lastViewedAt/pendingCount/attention" 
     case Ok(_) -> ()
     case Err(e) -> assertTrue(false, "assign failed: " + toString(e.status))
   }
-  match CloudAgents.SessionStore.sessionSummariesJson() {
+  match CloudAgents.SessionStore.sessionSummariesJson(CloudAgents.Auth.requestScope()) {
     case Ok(json) -> assertTrue(json.contains("\"groupId\":\"" + g.id + "\""), "assigned group id projected")
     case Err(e) -> assertTrue(false, "sessionSummariesJson failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
   }

@@ -181,7 +181,7 @@ func authorizeCallbackToken(sessionId: in String, authHeaderValue: in String): R
 /// same non-leaking shape every other owner-scoped lookup in this codebase
 /// has.
 func requireOwnedSession(sessionId: in String): Result[Unit, Web.ApiError] {
-  match getSession(sessionId) {
+  match getSession(sessionId, CloudAgents.Auth.requestScope()) {
     case Ok(Some(_)) -> return Ok(())
     case Ok(None) -> return Err(Web.notFound("Session not found"))
     case Err(e) -> return Err(dbError(e))

@@ -196,7 +196,7 @@ func ownedContext(id: in String): Result[SessionContext, Web.ApiError] {
   if id.length == 0 {
     return Err(Web.badRequest("Session id is required"))
   }
-  match CloudAgents.SessionStore.getSession(id) {
+  match CloudAgents.SessionStore.getSession(id, CloudAgents.Auth.requestScope()) {
     case Ok(Some(_)) -> ()
     case Ok(None) -> return Err(Web.notFound("Session not found"))
     case Err(e) -> return Err(Web.internalError(CloudAgents.Sqlite.dbErrorMessage(e)))

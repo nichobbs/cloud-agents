@@ -47,14 +47,14 @@ func mkSession(id: in String): Unit {
     model = "claude-opus-4-8",
     nativeSessionId = id
   )
-  match addSession(s) {
+  match addSession(s, CloudAgents.Auth.requestScope()) {
     case Ok(_) -> ()
     case Err(e) -> panic("addSession failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
   }
 }
 
 func mkMessage(sessionId: in String, content: in String): Unit {
-  match CloudAgents.Repository.addMessage(sessionId, "user", content) {
+  match CloudAgents.Repository.addMessage(sessionId, CloudAgents.Auth.requestScope(), "user", content) {
     case Ok(_) -> ()
     case Err(e) -> panic("addMessage failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
   }
@@ -64,7 +64,7 @@ func mkMessage(sessionId: in String, content: in String): Unit {
 // that exact row with a raw UPDATE/DELETE (used by the #918 sync-trigger
 // tests below).
 func mkMessageReturningId(sessionId: in String, content: in String): String {
-  val m = match CloudAgents.Repository.addMessage(sessionId, "user", content) {
+  val m = match CloudAgents.Repository.addMessage(sessionId, CloudAgents.Auth.requestScope(), "user", content) {
     case Ok(msg) -> msg
     case Err(e) -> panic("addMessage failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
   }

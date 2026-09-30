@@ -257,7 +257,7 @@ pub func openPrHandler(sessionId: in String): Result[OpenPrResult, Web.ApiError]
   if sessionId.length == 0 {
     return Err(Web.badRequest("session id is required"))
   }
-  val session = match CloudAgents.SessionStore.getSession(sessionId) {
+  val session = match CloudAgents.SessionStore.getSession(sessionId, CloudAgents.Auth.requestScope()) {
     case Ok(Some(s)) -> s
     case Ok(None) -> return Err(Web.notFound("session not found"))
     case Err(e) -> return Err(sessionDbError(e))

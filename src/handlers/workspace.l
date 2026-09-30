@@ -27,7 +27,7 @@ func dbError(e: in CloudAgents.Sqlite.DbError): Web.ApiError {
 /// CloudAgents.Auth.currentUserId(), the same non-leaking shape as
 /// CloudAgents.Callbacks/Highlights' requireOwnedSession.
 func requireOwnedSessionHarness(sessionId: in String): Result[String, Web.ApiError] {
-  match CloudAgents.SessionStore.getSession(sessionId) {
+  match CloudAgents.SessionStore.getSession(sessionId, CloudAgents.Auth.requestScope()) {
     case Ok(Some(s)) -> return Ok(value = s.harness)
     case Ok(None) -> return Err(Web.notFound("Session not found"))
     case Err(e) -> return Err(dbError(e))

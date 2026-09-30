@@ -5,6 +5,7 @@ import Std.Core
 import CloudAgents.Scope
 import Std.Testing
 import Std.Uuid
+import CloudAgents.Auth
 import CloudAgents.Repository
 import CloudAgents.Sqlite
 import CloudAgents.Db
@@ -57,7 +58,7 @@ func insertTestSession(id: in String, userId: in String): Unit {
 }
 
 func mustAddMessage(sessionId: in String, role: in String, content: in String): CloudAgents.Repository.Message {
-  return match CloudAgents.Repository.addMessage(sessionId, role, content) {
+  return match CloudAgents.Repository.addMessage(sessionId, CloudAgents.Auth.requestScope(), role, content) {
     case Ok(m) -> m
     case Err(e) -> panic("addMessage failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
   }

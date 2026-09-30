@@ -37,7 +37,7 @@ func dbError(e: in CloudAgents.Sqlite.DbError): Web.ApiError {
 // the same non-leaking shape as SessionStore and the other requireOwnedSession
 // copies (Callbacks, Groups, Highlights).
 func requireOwnedSession(sessionId: in String): Result[Unit, Web.ApiError] {
-  match CloudAgents.SessionStore.getSession(sessionId) {
+  match CloudAgents.SessionStore.getSession(sessionId, CloudAgents.Auth.requestScope()) {
     case Ok(Some(_)) -> return Ok(())
     case Ok(None) -> return Err(Web.notFound("Session not found"))
     case Err(e) -> return Err(dbError(e))
@@ -47,7 +47,7 @@ func requireOwnedSession(sessionId: in String): Result[Unit, Web.ApiError] {
 /// The session owning message `mid`, 404 "message not found" both when the
 /// message doesn't exist and when its session belongs to another user.
 func requireOwnedMessageSession(mid: in String): Result[String, Web.ApiError] {
-  val sessionId = match getMessageSessionId(mid) {
+  val sessionId = match getMessageSessionId(mid, CloudAgents.Auth.requestScope()) {
     case Ok(Some(sid)) -> sid
     case Ok(None) -> return Err(Web.notFound("message not found"))
     case Err(e) -> return Err(dbError(e))
@@ -66,7 +66,7 @@ func requireOwnedMessageSession(mid: in String): Result[String, Web.ApiError] {
 /// 404 "todo not found" both when todo `tid` doesn't exist and when its
 /// session belongs to another user.
 func requireOwnedTodo(tid: in String): Result[Unit, Web.ApiError] {
-  val sessionId = match getTodoSessionId(tid) {
+  val sessionId = match getTodoSessionId(tid, CloudAgents.Auth.requestScope()) {
     case Ok(Some(sid)) -> sid
     case Ok(None) -> return Err(Web.notFound("todo not found"))
     case Err(e) -> return Err(dbError(e))
@@ -89,7 +89,7 @@ pub func getMessages(id: in String): Result[MessageList, Web.ApiError] {
     return Err(Web.badRequest("id is required"))
   }
   requireOwnedSession(id)?
-  match listMessages(id) {
+  match listMessages(id, CloudAgents.Auth.requestScope()) {
     case Ok(msgs) -> return Ok(MessageList(messages = msgs))
     case Err(e) -> return Err(dbError(e))
   }
@@ -180,7 +180,7 @@ pub func addCommentHandler(mid: in String, req: in AddCommentRequest): Result[Co
   }
   // Derive sessionId from the stored message rather than trusting the client.
   val sessionId = requireOwnedMessageSession(mid)?
-  match addComment(mid, sessionId, req.body) {
+  match addComment(mid, CloudAgents.Auth.requestScope(), sessionId, req.body) {
     case Ok(c) -> return Ok(c)
     case Err(e) -> return Err(dbError(e))
   }
@@ -192,7 +192,7 @@ pub func getComments(mid: in String): Result[CommentList, Web.ApiError] {
     return Err(Web.badRequest("message id is required"))
   }
   requireOwnedMessageSession(mid)?
-  match listComments(mid) {
+  match listComments(mid, CloudAgents.Auth.requestScope()) {
     case Ok(cs) -> return Ok(CommentList(comments = cs))
     case Err(e) -> return Err(dbError(e))
   }
@@ -204,7 +204,7 @@ pub func getTodos(id: in String): Result[TodoList, Web.ApiError] {
     return Err(Web.badRequest("id is required"))
   }
   requireOwnedSession(id)?
-  match listTodos(id) {
+  match listTodos(id, CloudAgents.Auth.requestScope()) {
     case Ok(ts) -> return Ok(TodoList(todos = ts))
     case Err(e) -> return Err(dbError(e))
   }
@@ -227,7 +227,7 @@ pub func addTodoHandler(id: in String, req: in AddTodoRequest): Result[Todo, Web
   // to this session — otherwise todos can point at other sessions' transcripts
   // (or at nothing).
   if req.messageId.length > 0 {
-    val ownerSid = match getMessageSessionId(req.messageId) {
+    val ownerSid = match getMessageSessionId(req.messageId, CloudAgents.Auth.requestScope()) {
       case Ok(Some(sid)) -> sid
       case Ok(None) -> return Err(Web.notFound("message not found"))
       case Err(e) -> return Err(dbError(e))
@@ -236,7 +236,7 @@ pub func addTodoHandler(id: in String, req: in AddTodoRequest): Result[Todo, Web
       return Err(Web.badRequest("messageId does not belong to this session"))
     }
   }
-  match addTodo(id, req.messageId, req.note) {
+  match addTodo(id, CloudAgents.Auth.requestScope(), req.messageId, req.note) {
     case Ok(t) -> return Ok(t)
     case Err(e) -> return Err(dbError(e))
   }
@@ -264,7 +264,7 @@ pub func setTodoStatusHandler(tid: in String, req: in SetTodoStatusRequest): Res
     return Err(Web.badRequest("status must be one of: pending, in_progress, done"))
   }
   requireOwnedTodo(tid)?
-  match setTodoStatus(tid, req.status) {
+  match setTodoStatus(tid, CloudAgents.Auth.requestScope(), req.status) {
     case Ok(_) -> return Ok(())
     case Err(e) -> return Err(dbError(e))
   }
@@ -276,7 +276,7 @@ pub func toggleTodoHandler(tid: in String): Result[Unit, Web.ApiError] {
     return Err(Web.badRequest("todo id is required"))
   }
   requireOwnedTodo(tid)?
-  match toggleTodo(tid) {
+  match toggleTodo(tid, CloudAgents.Auth.requestScope()) {
     case Ok(_) -> return Ok(())
     case Err(e) -> return Err(dbError(e))
   }
@@ -288,7 +288,7 @@ pub func deleteTodoHandler(tid: in String): Result[Unit, Web.ApiError] {
     return Err(Web.badRequest("todo id is required"))
   }
   requireOwnedTodo(tid)?
-  match deleteTodo(tid) {
+  match deleteTodo(tid, CloudAgents.Auth.requestScope()) {
     case Ok(_) -> return Ok(())
     case Err(e) -> return Err(dbError(e))
   }
@@ -563,7 +563,10 @@ pub func planIngestEnabled(): Bool {
 val maxPlanIngestItems = 50
 
 pub func ingestAgentPlan(
-  sessionId: in String, messageId: in String, content: in String
+  sessionId: in String,
+  sc: in CloudAgents.Pg.TenantScope,
+  messageId: in String,
+  content: in String,
 ): Result[Int, CloudAgents.Sqlite.DbError] {
   val items = parseAgentPlan(content)
   if items.length < 2 {
@@ -586,6 +589,6 @@ pub func ingestAgentPlan(
   if kept < 2 {
     return Ok(value = 0)
   }
-  CloudAgents.Repository.replacePlanTodos(sessionId, messageId, notes, statuses)?
+  CloudAgents.Repository.replacePlanTodos(sessionId, sc, messageId, notes, statuses)?
   return Ok(value = kept)
 }

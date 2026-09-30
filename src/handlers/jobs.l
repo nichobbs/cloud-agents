@@ -493,12 +493,12 @@ func ensureJobSession(job: in CloudAgents.Repository.ScheduledJob): Result[Strin
     model = job.model,
     nativeSessionId = sessionId
   )
-  match CloudAgents.SessionStore.addSession(session) {
+  match CloudAgents.SessionStore.addSession(session, CloudAgents.Pg.personalScope(job.userId)) {
     case Ok(_) -> ()
     case Err(e) -> return Err(error = "failed to create a session for this job: " + CloudAgents.Sqlite.dbErrorMessage(e))
   }
   if job.profileId.length > 0 {
-    match CloudAgents.SessionStore.setSessionProfile(sessionId, job.profileId) {
+    match CloudAgents.SessionStore.setSessionProfile(sessionId, CloudAgents.Pg.personalScope(job.userId), job.profileId) {
       case Ok(_) -> ()
       case Err(_) -> ()
     }
@@ -551,19 +551,19 @@ func runOneJob(job: in CloudAgents.Repository.ScheduledJob): JobRunOutcome {
   // a real privilege-escalation path for a job an agent schedules for
   // itself. It also passed sessionId as nativeSessionId, breaking the
   // harness's own session continuity (--resume) on every re-trigger.
-  val session = match CloudAgents.SessionStore.getSession(sessionId) {
+  val session = match CloudAgents.SessionStore.getSession(sessionId, CloudAgents.Pg.personalScope(job.userId)) {
     case Ok(Some(s)) -> s
     case Ok(None) -> return JobFailed(message = "job's session no longer exists")
     case Err(e) -> return JobFailed(message = "failed to resolve job session: " + CloudAgents.Sqlite.dbErrorMessage(e))
   }
-  val profileId = match CloudAgents.SessionStore.sessionProfileId(sessionId) {
+  val profileId = match CloudAgents.SessionStore.sessionProfileId(sessionId, CloudAgents.Pg.personalScope(job.userId)) {
     case Ok(Some(pid)) -> pid
     case Ok(None) -> ""
     // Fails closed (#232's same reasoning): a DB error resolving the
     // session's profile must not silently fall open to "no profile".
     case Err(e) -> return JobFailed(message = "failed to resolve session profile: " + CloudAgents.Sqlite.dbErrorMessage(e))
   }
-  val began = match CloudAgents.SessionStore.tryBeginRun(sessionId) {
+  val began = match CloudAgents.SessionStore.tryBeginRun(sessionId, CloudAgents.Pg.personalScope(job.userId)) {
     case Ok(b) -> b
     case Err(e) -> return JobFailed(message = "failed to claim session: " + CloudAgents.Sqlite.dbErrorMessage(e))
   }
@@ -571,7 +571,7 @@ func runOneJob(job: in CloudAgents.Repository.ScheduledJob): JobRunOutcome {
     return JobSkipped(reason = "a run is already in progress for this job's session")
   }
   defer {
-    match CloudAgents.SessionStore.endRun(sessionId) {
+    match CloudAgents.SessionStore.endRun(sessionId, CloudAgents.Pg.personalScope(job.userId)) {
       case Ok(_) -> ()
       case Err(e) -> println(
         "WARNING: failed to release run claim for scheduled job session " + sessionId + ": " +
@@ -579,7 +579,7 @@ func runOneJob(job: in CloudAgents.Repository.ScheduledJob): JobRunOutcome {
       )
     }
   }
-  match CloudAgents.Repository.addMessage(sessionId, "user", job.prompt) {
+  match CloudAgents.Repository.addMessage(sessionId, CloudAgents.Pg.personalScope(job.userId), "user", job.prompt) {
     case Ok(_) -> ()
     case Err(_) -> ()
   }
@@ -625,7 +625,7 @@ func runOneJob(job: in CloudAgents.Repository.ScheduledJob): JobRunOutcome {
         // end-of-run pass if this session is observed. Best-effort.
         CloudAgents.Ledger.Observer.onRunFinished(sessionId)
       }
-      match CloudAgents.Repository.addMessage(sessionId, "agent", logs) {
+      match CloudAgents.Repository.addMessage(sessionId, CloudAgents.Pg.personalScope(job.userId), "agent", logs) {
         case Ok(_) -> ()
         case Err(e) -> println(
           "WARNING: failed to persist agent message for scheduled job session " + sessionId + ": " +
@@ -649,7 +649,7 @@ func runOneJob(job: in CloudAgents.Repository.ScheduledJob): JobRunOutcome {
       // /api/sessions/{id}/runs, the webhook outbox, and server logs are the
       // only other signals, and none of them is the primary UI surface a
       // human reopening the session sees.
-      match CloudAgents.Repository.addMessage(sessionId, "agent", "Scheduled run failed: " + msg) {
+      match CloudAgents.Repository.addMessage(sessionId, CloudAgents.Pg.personalScope(job.userId), "agent", "Scheduled run failed: " + msg) {
         case Ok(_) -> ()
         case Err(e) -> println(
           "WARNING: failed to persist failure message for scheduled job session " + sessionId + ": " +

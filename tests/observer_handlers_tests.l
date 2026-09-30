@@ -403,7 +403,7 @@ test "a pass runs the observer, which reads the window and reports into the ledg
     }
     case _ -> assertTrue(false, "the observer session row is missing")
   }
-  match CloudAgents.SessionStore.sessionSummariesJson() {
+  match CloudAgents.SessionStore.sessionSummariesJson(CloudAgents.Auth.requestScope()) {
     case Ok(json) -> assertTrue(not json.contains(st.observerSessionId), "observer sessions are not listed")
     case Err(e) -> panic(CloudAgents.Sqlite.dbErrorMessage(e))
   }
