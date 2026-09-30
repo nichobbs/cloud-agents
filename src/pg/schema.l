@@ -697,7 +697,7 @@ func claimStrandedRunsFn(): String {
     "RETURNS TABLE (tenant_id text, id text, user_id text, previous_instance text) LANGUAGE sql SECURITY DEFINER " +
     "SET search_path = pg_catalog, pg_temp AS $fn$ " +
     "UPDATE public.sessions AS s " +
-    "SET run_instance = pg_catalog.left(p_sweeper, 200), run_heartbeat_at = pg_catalog.now() " +
+    "SET run_instance = p_sweeper, run_heartbeat_at = pg_catalog.now() " +
     "FROM (SELECT q.tenant_id, q.id, q.run_instance AS prev FROM public.sessions AS q " +
     "WHERE q.status = 'RUNNING' AND (q.run_heartbeat_at IS NULL OR q.run_heartbeat_at < pg_catalog.now() - " +
     "pg_catalog.make_interval(secs => GREATEST(p_stale_seconds, 30))) " +

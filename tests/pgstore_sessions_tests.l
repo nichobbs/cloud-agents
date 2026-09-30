@@ -18,6 +18,7 @@ import CloudAgents.Pg.Migrate
 import CloudAgents.PgStore.Sessions as Store
 import CloudAgents.SessionStore
 import CloudAgents.Sqlite
+import extern System.Environment as Env
 
 func live(): Bool {
   val ok = CloudAgents.Pg.serviceConfigured() and
@@ -546,4 +547,30 @@ test "resetting a session's container is refused while it runs" {
     case Some(s) -> assertEqual(s.containerId, "", "an idle session's container is dropped")
     case None -> assertTrue(false, "session exists")
   }
+}
+
+// #1206: the sweep's name is stored whole, so its release still matches when
+// the instance name is long.
+test "a stranded run taken over under a long instance name is released" {
+  if not live() {
+    return
+  }
+  migrate()
+  val original = Env.GetEnvironmentVariable("CLOUDAGENTS_INSTANCE_ID")
+  defer {
+    Env.SetEnvironmentVariable("CLOUDAGENTS_INSTANCE_ID", original)
+  }
+  var long = ""
+  var i = 0
+  while i < 250 {
+    long = long + "x"
+    i = i + 1
+  }
+  Env.SetEnvironmentVariable("CLOUDAGENTS_INSTANCE_ID", long)
+  val sc = fresh()
+  val id = running(sc, "c-long")
+  goStale(sc, id)
+  val r = match strandedFor(stranded(), id) { case Some(v) -> v; case None -> panic("the stale run is taken over") }
+  assertTrue(r.sweeper.length.toInt() > 250, "the sweeper name is long")
+  assertTrue(claim(Store.releaseStrandedRun(r)), "and the release still matches it")
 }
