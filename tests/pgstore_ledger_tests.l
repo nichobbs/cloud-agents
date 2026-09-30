@@ -15,7 +15,9 @@ import CloudAgents.Pg.Migrate
 import CloudAgents.PgStore
 import CloudAgents.PgStore.Ledger as Store
 import CloudAgents.PgStore.Sessions as Sessions
+import CloudAgents.PgStore.Library as Library
 import CloudAgents.Ledger.Model
+import CloudAgents.Ledger.ObserverPolicy
 import CloudAgents.Ledger.Store as SqliteLedger
 import CloudAgents.SessionStore
 import CloudAgents.Sqlite
@@ -729,4 +731,146 @@ test "the policy cache and the inbox" {
     case Ok(xs) -> assertEqualInt(xs.length.toInt(), 0, "another tenant sees nothing")
     case Err(e) -> panic(dbErrorMessage(e))
   }
+}
+
+func settings(enabled: in String, access: in String): ObserverSettings {
+  return ObserverSettings(
+    enabled = enabled,
+    harness = "claude",
+    model = "m",
+    repoAccess = access,
+    midRunMinutes = "15",
+    maxPassesPerDay = "20"
+  )
+}
+
+test "observer settings, state, pending passes and observer sessions" {
+  if not live() {
+    return
+  }
+  migrate()
+  val sc = fresh()
+  ensureTenant(sc.tenantId)
+  val none: slice[String] = []
+  val profile = match Library.addProfile(sc, "p", "claude", "full", "all", none, none, none, none, "all", none) {
+    case Ok(p) -> p
+    case Err(e) -> panic(dbErrorMessage(e))
+  }
+  match Store.observerSettingsFor(profile.id, sc) {
+    case Ok(None) -> ()
+    case _ -> assertTrue(false, "no settings before any save")
+  }
+  unit(Store.saveObserverSettings(profile.id, sc, settings("true", "diff")))
+  unit(Store.saveObserverSettings(profile.id, sc, settings("true", "workspace")))
+  match Store.observerSettingsFor(profile.id, sc) {
+    case Ok(Some(s)) -> assertEqual(
+      s.enabled + "|" + s.repoAccess + "|" + s.midRunMinutes + "|" + s.maxPassesPerDay,
+      "true|workspace|15|20",
+      "saved and updated"
+    )
+    case _ -> assertTrue(false, "settings missing")
+  }
+  match Store.observerSettingsFor("", sc) {
+    case Ok(None) -> ()
+    case _ -> assertTrue(false, "no profile, no settings")
+  }
+  match Store.observerSettingsFor(profile.id, fresh()) {
+    case Ok(None) -> ()
+    case _ -> assertTrue(false, "another tenant sees no settings")
+  }
+  // The observed session and its facts.
+  val observed = "s-" + uid()
+  addSession(observed, sc)
+  unit(Sessions.setSessionProfile(observed, sc, profile.id))
+  match Store.sessionRunFacts(observed, sc) {
+    case Ok(Some(f)) -> assertEqual(
+      f.userId + "|" + f.profileId + "|" + f.isArchived + "|" + f.observesSessionId + "|" + f.status,
+      sc.userId + "|" + profile.id + "|0||IDLE",
+      "run facts"
+    )
+    case _ -> assertTrue(false, "facts missing")
+  }
+  // Pending passes: idempotent asks, claimed once.
+  match Store.observerState(observed, sc) {
+    case Ok(st) -> assertEqual(
+      st.sessionId + "|" + st.pending + "|" + st.passesToday + "|" + st.cursorSeq,
+      observed + "|0|0|",
+      "an empty state"
+    )
+    case Err(e) -> panic(dbErrorMessage(e))
+  }
+  unit(Store.markObserverPending(observed, sc))
+  unit(Store.markObserverPending(observed, sc))
+  assertTrue(bool(Store.claimObserverPass(observed, sc)), "the first claim takes the pass")
+  assertFalse(bool(Store.claimObserverPass(observed, sc)), "and only one")
+  // An observer session, linked and saved into the state.
+  val observer = "s-" + uid()
+  addSession(observer, sc)
+  unit(Store.linkObserverSession(observer, sc, observed, profile.id))
+  val saved = SqliteLedger.ObserverState(
+    sessionId = observed,
+    observerSessionId = observer,
+    cursorSeq = "7",
+    windowEnd = "",
+    pending = "1",
+    passDay = "20000",
+    passesToday = "2",
+    lastPassAt = "1700000000000",
+    configHash = "claude|m|workspace",
+    lastError = ""
+  )
+  unit(Store.saveObserverState(sc, saved))
+  match Store.observerState(observed, sc) {
+    case Ok(st) -> assertEqual(
+      st.observerSessionId + "|" + st.cursorSeq + "|" + st.windowEnd + "|" + st.pending + "|" +
+        st.passDay +
+        "|" +
+        st.passesToday +
+        "|" +
+        st.lastPassAt +
+        "|" +
+        st.configHash,
+      observer + "|7||1|20000|2|1700000000000|claude|m|workspace",
+      "state round-trips"
+    )
+    case Err(e) -> panic(dbErrorMessage(e))
+  }
+  assertEqual(str(Store.observedSessionOf(observer, sc)), observed, "the observer's observed session")
+  assertEqual(str(Store.observedSessionOf(observed, sc)), "", "an ordinary session observes nothing")
+  match Store.observerRunInfo(observer, sc) {
+    case Ok(Some(o)) -> assertEqual(o.observedSessionId + "|" + o.repoAccess, observed + "|workspace", "run info")
+    case _ -> assertTrue(false, "run info missing")
+  }
+  match Store.observerRunInfo(observed, sc) {
+    case Ok(None) -> ()
+    case _ -> assertTrue(false, "an ordinary session is no observer")
+  }
+  match Store.sessionRunFacts(observer, sc) {
+    case Ok(Some(f)) -> assertEqual(f.observesSessionId + "|" + f.profileId, observed + "|" + profile.id, "linked")
+    case _ -> assertTrue(false, "observer facts missing")
+  }
+  // Removing: an ordinary session is never deleted as an observer.
+  unit(Store.deleteObserverSessionRow(observed, sc))
+  match Store.sessionRunFacts(observed, sc) {
+    case Ok(Some(_)) -> ()
+    case _ -> assertTrue(false, "the observed session survives")
+  }
+  unit(Store.deleteObserverSessionRow(observer, sc))
+  match Store.sessionRunFacts(observer, sc) {
+    case Ok(None) -> ()
+    case _ -> assertTrue(false, "the observer session is gone")
+  }
+  match Sessions.sessionRouteScope(observer) {
+    case Ok(None) -> ()
+    case _ -> assertTrue(false, "and its route with it")
+  }
+  unit(Store.deleteObserverState(observed, sc))
+  match Store.observerState(observed, sc) {
+    case Ok(st) -> assertEqual(st.observerSessionId + st.pending, "0", "state forgotten")
+    case Err(e) -> panic(dbErrorMessage(e))
+  }
+}
+
+func bool(r: in Result[Bool, DbError]): Bool {
+  return match r { case Ok(v) -> v; case Err(e) -> panic("store call failed: " + dbErrorMessage(e)) }
 }

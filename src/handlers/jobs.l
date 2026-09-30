@@ -618,7 +618,7 @@ func runOneJob(claim: in CloudAgents.Repository.ClaimedJob): JobRunOutcome {
         val _ = CloudAgents.Repository.enqueueWebhookEvent(sc, sessionId, runId, "succeeded")
         // Session ledger observer (docs/session-ledger.md §10): queue an
         // end-of-run pass if this session is observed. Best-effort.
-        CloudAgents.Ledger.Observer.onRunFinished(sessionId)
+        CloudAgents.Ledger.Observer.onRunFinished(sessionId, CloudAgents.Pg.personalScope(job.userId))
       }
       match CloudAgents.Repository.addMessage(sessionId, sc, "agent", logs) {
         case Ok(_) -> ()
@@ -635,7 +635,7 @@ func runOneJob(claim: in CloudAgents.Repository.ClaimedJob): JobRunOutcome {
         val _ = CloudAgents.Repository.enqueueWebhookEvent(sc, sessionId, runId, "failed")
         // Session ledger observer (docs/session-ledger.md §10): queue an
         // end-of-run pass if this session is observed. Best-effort.
-        CloudAgents.Ledger.Observer.onRunFinished(sessionId)
+        CloudAgents.Ledger.Observer.onRunFinished(sessionId, CloudAgents.Pg.personalScope(job.userId))
       }
       // Mirror the success branch (#892/#894): a scheduled job has no live
       // viewer by construction (no ResponseWriter here, unlike

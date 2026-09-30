@@ -170,7 +170,7 @@ pub async func createRunnerContainer(
   // entrypoint skips it on CLOUD_AGENTS_OBSERVER=1), and at most a read-only
   // view of the observed workspace. A lookup failure fails the run closed
   // rather than starting an observer with the full profile.
-  val observer = match CloudAgents.Ledger.Store.observerRunInfo(sessionId) {
+  val observer = match CloudAgents.Ledger.Store.observerRunInfo(sessionId, CloudAgents.Pg.personalScope(userId)) {
     case Ok(o) -> o
     case Err(e) -> return Err(error = "Failed to resolve the observer settings: " + CloudAgents.Sqlite.dbErrorMessage(e))
   }
@@ -1270,7 +1270,7 @@ pub func streamSessionMessage(
     observerCheckMs = observerCheckMs + ticked
     if observerCheckMs >= observerCheckIntervalMs {
       observerCheckMs = 0
-      CloudAgents.Ledger.Observer.midRunTick(sessionId, runStartedAt)
+      CloudAgents.Ledger.Observer.midRunTick(sessionId, CloudAgents.Pg.personalScope(userId), runStartedAt)
     }
   }
   // Bail ONLY when the run did not actually finish (#488). A client disconnect
@@ -1513,7 +1513,7 @@ pub func runSessionMessageBlocking(
     observerCheckMs = observerCheckMs + pollMs
     if observerCheckMs >= observerCheckIntervalMs {
       observerCheckMs = 0
-      CloudAgents.Ledger.Observer.midRunTick(sessionId, runStartedAt)
+      CloudAgents.Ledger.Observer.midRunTick(sessionId, CloudAgents.Pg.personalScope(userId), runStartedAt)
     }
   }
   if not finished {

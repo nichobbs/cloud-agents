@@ -108,7 +108,7 @@ func settings(enabled: in String, access: in String, cap: in String): ObserverSe
 }
 
 func enable(profileId: in String, st: in ObserverSettings): Unit {
-  match saveObserverSettings(profileId, st) {
+  match saveObserverSettings(profileId, testScope(), st) {
     case Ok(_) -> ()
     case Err(e) -> panic(CloudAgents.Sqlite.dbErrorMessage(e))
   }
@@ -123,7 +123,7 @@ func captureFixture(sid: in String): Unit {
 }
 
 func stateOf(sid: in String): ObserverState {
-  match observerState(sid) {
+  match observerState(sid, testScope()) {
     case Ok(s) -> return s
     case Err(e) -> panic(CloudAgents.Sqlite.dbErrorMessage(e))
   }
@@ -289,19 +289,19 @@ test "a run's end queues a pass only for an observed session" {
   enable("p2", settings("false", "none", "10"))
   seedSession("watched", "p1", "IDLE")
   seedSession("unwatched", "p2", "IDLE")
-  onRunFinished("watched")
-  onRunFinished("unwatched")
+  onRunFinished("watched", testScope())
+  onRunFinished("unwatched", testScope())
   assertEqual(stateOf("watched").pending, "1", "an observed session gets a pass")
   assertEqual(stateOf("unwatched").pending, "0", "a disabled observer doesn't")
   // An observer session is never observed, whatever its profile says.
   seedSession("obs", "p1", "IDLE")
   exec("UPDATE sessions SET observes_session_id = 'watched' WHERE id = 'obs'")
-  onRunFinished("obs")
+  onRunFinished("obs", testScope())
   assertEqual(stateOf("obs").pending, "0", "observers aren't observed")
   // An archived session isn't either.
   seedSession("old", "p1", "IDLE")
   exec("UPDATE sessions SET is_archived = '1' WHERE id = 'old'")
-  onRunFinished("old")
+  onRunFinished("old", testScope())
   assertEqual(stateOf("old").pending, "0", "archived sessions aren't observed")
 }
 
@@ -314,9 +314,9 @@ test "a long run is due a mid-run pass once the interval passes" {
   enable("p1", settings("true", "none", "10"))
   seedSession("s1", "p1", "RUNNING")
   val now = CloudAgents.Repository.nowMillisLong()
-  midRunTick("s1", toString(now - 5.toLong() * 60000.toLong()))
+  midRunTick("s1", testScope(), toString(now - 5.toLong() * 60000.toLong()))
   assertEqual(stateOf("s1").pending, "0", "5 minutes in: not yet")
-  midRunTick("s1", toString(now - 16.toLong() * 60000.toLong()))
+  midRunTick("s1", testScope(), toString(now - 16.toLong() * 60000.toLong()))
   assertEqual(stateOf("s1").pending, "1", "16 minutes in: due")
 }
 
@@ -372,7 +372,7 @@ test "a pass runs the observer, which reads the window and reports into the ledg
   enable("p1", settings("true", "diff", "10"))
   seedSession("s1", "p1", "IDLE")
   captureFixture("s1")
-  onRunFinished("s1")
+  onRunFinished("s1", testScope())
   val runner = fakeRunner(readFixture("tests/fixtures/observer/report.json"))
   val report = runAsOperator(runner)
   assertEqual(report.passes, "1", "one pass")
@@ -396,7 +396,7 @@ test "a pass runs the observer, which reads the window and reports into the ledg
   assertEqual(st.lastError, "", "no error")
   assertEqual(st.pending, "0", "nothing more to do")
   assertTrue(st.observerSessionId.length.toInt() > 0, "an observer session exists")
-  match sessionRunFacts(st.observerSessionId) {
+  match sessionRunFacts(st.observerSessionId, testScope()) {
     case Ok(Some(f)) -> {
       assertEqual(f.observesSessionId, "s1", "linked to the session it observes")
       assertEqual(f.profileId, "p1", "on the observed profile's credentials")
@@ -409,7 +409,7 @@ test "a pass runs the observer, which reads the window and reports into the ledg
     case Err(e) -> panic(CloudAgents.Sqlite.dbErrorMessage(e))
   }
   // A second pass has nothing new to read, so no container starts.
-  val _ = markObserverPending("s1")
+  val _ = markObserverPending("s1", testScope())
   val again = runAsOperator(runner)
   assertEqual(again.skipped, "1", "skipped")
   assertEqualInt(runner.runs, 1, "no second run")
@@ -424,7 +424,7 @@ test "a mid-run pass sees the run as live and its findings are provisional" {
   enable("p1", settings("true", "none", "10"))
   seedSession("s1", "p1", "RUNNING")
   captureFixture("s1")
-  val _ = markObserverPending("s1")
+  val _ = markObserverPending("s1", testScope())
   val runner = fakeRunner(
     "{\"candidates\":[{\"kind\":\"shortcut\",\"summary\":\"Skipped test_refund_rounding\",\"seqStart\":\"18\",\"seqEnd\":\"22\",\"confidence\":\"0.9\",\"evidence\":\"Skipping it\"}]}"
   )
@@ -466,7 +466,7 @@ test "a window of nothing but reads is skipped without a container" {
     case Ok(_) -> ()
     case Err(e) -> panic(CloudAgents.Sqlite.dbErrorMessage(e))
   }
-  val _ = markObserverPending("s1")
+  val _ = markObserverPending("s1", testScope())
   val runner = fakeRunner("{\"candidates\":[]}")
   val report = runAsOperator(runner)
   assertEqual(report.skipped, "1", "skipped")
@@ -483,7 +483,7 @@ test "the daily cap stops passes, and an observer that never reports is noted" {
   enable("p1", settings("true", "none", "1"))
   seedSession("s1", "p1", "IDLE")
   captureFixture("s1")
-  val _ = markObserverPending("s1")
+  val _ = markObserverPending("s1", testScope())
   val silent = fakeRunner("")
   val first = runAsOperator(silent)
   assertEqualInt(first.errors.length.toInt(), 1, "the silent observer is an error")
@@ -492,7 +492,7 @@ test "the daily cap stops passes, and an observer that never reports is noted" {
   assertEqual(st.cursorSeq, "", "the cursor did not move")
   assertEqual(st.windowEnd, "", "the unreported window is closed, to be read again")
   assertEqual(st.passesToday, "1", "it still counts")
-  val _ = markObserverPending("s1")
+  val _ = markObserverPending("s1", testScope())
   val second = runAsOperator(fakeRunner("{\"candidates\":[]}"))
   assertEqual(second.skipped, "1", "the daily cap of one is reached")
   assertTrue(stateOf("s1").lastError.contains("daily pass limit"), "and says so")
@@ -507,7 +507,7 @@ test "changing the observer's harness starts a fresh observer and keeps the curs
   enable("p1", settings("true", "none", "10"))
   seedSession("s1", "p1", "IDLE")
   captureFixture("s1")
-  val _ = markObserverPending("s1")
+  val _ = markObserverPending("s1", testScope())
   val _ = runAsOperator(fakeRunner(readFixture("tests/fixtures/observer/report.json")))
   val firstObserver = stateOf("s1").observerSessionId
   enable(
@@ -527,7 +527,7 @@ test "changing the observer's harness starts a fresh observer and keeps the curs
     case Ok(_) -> ()
     case Err(e) -> panic(CloudAgents.Sqlite.dbErrorMessage(e))
   }
-  val _ = markObserverPending("s1")
+  val _ = markObserverPending("s1", testScope())
   val runner = fakeRunner("{\"candidates\":[]}")
   val _ = runAsOperator(runner)
   val st = stateOf("s1")
@@ -535,7 +535,7 @@ test "changing the observer's harness starts a fresh observer and keeps the curs
   assertEqual(runner.lastHarness, "codex", "on the new harness")
   assertEqual(runner.lastModel, "o4-mini", "with that harness's default model")
   assertEqual(st.cursorSeq, "57", "the cursor carried over and moved on")
-  match sessionRunFacts(firstObserver) {
+  match sessionRunFacts(firstObserver, testScope()) {
     case Ok(None) -> ()
     case _ -> assertTrue(false, "the replaced observer session is removed")
   }
@@ -582,7 +582,7 @@ test "a session whose profile was deleted is no longer observed" {
   enable("p1", settings("true", "workspace", "10"))
   seedSession("s1", "p1", "IDLE")
   exec("DELETE FROM profiles WHERE id = 'p1'")
-  onRunFinished("s1")
+  onRunFinished("s1", testScope())
   assertEqual(stateOf("s1").pending, "0", "no pass for a deleted profile")
 }
 

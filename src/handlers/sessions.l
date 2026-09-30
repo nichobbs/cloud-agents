@@ -1409,7 +1409,7 @@ pub func streamSendMessage(
             val _ = CloudAgents.Repository.enqueueWebhookEvent(CloudAgents.Pg.personalScope(userId), id, runId, "succeeded")
             // Session ledger observer (docs/session-ledger.md §10): queue an
             // end-of-run pass if this session is observed. Best-effort.
-            CloudAgents.Ledger.Observer.onRunFinished(id)
+            CloudAgents.Ledger.Observer.onRunFinished(id, CloudAgents.Pg.personalScope(userId))
           }
           // Persist the agent reply and close the stream with a done frame that
           // carries the message id (so the client can anchor comments/todos).
@@ -1444,7 +1444,7 @@ pub func streamSendMessage(
             val _ = CloudAgents.Repository.enqueueWebhookEvent(CloudAgents.Pg.personalScope(userId), id, runId, "failed")
             // Session ledger observer (docs/session-ledger.md §10): queue an
             // end-of-run pass if this session is observed. Best-effort.
-            CloudAgents.Ledger.Observer.onRunFinished(id)
+            CloudAgents.Ledger.Observer.onRunFinished(id, CloudAgents.Pg.personalScope(userId))
           }
           // Status/headers are already committed (200 sent at the first chunk),
           // so the failure can't be an HTTP status. Emit a distinct `event:
@@ -1523,7 +1523,7 @@ pub func cancelRun(id: in String): Result[Unit, Web.ApiError] {
             val _ = CloudAgents.Repository.enqueueWebhookEvent(CloudAgents.Pg.personalScope(userId), id, runId, "cancelled")
             // Session ledger observer (docs/session-ledger.md §10): queue an
             // end-of-run pass if this session is observed. Best-effort.
-            CloudAgents.Ledger.Observer.onRunFinished(id)
+            CloudAgents.Ledger.Observer.onRunFinished(id, CloudAgents.Pg.personalScope(userId))
           }
           return Ok(())
         }
@@ -1979,7 +1979,8 @@ pub func getRunOutputFrom(id: in String, offsetStr: in String): Result[String, W
 
 /// Stop and tear down container and associated session synchronously.
 func removeObserverOf(observedId: in String): Unit {
-  val st = match CloudAgents.Ledger.Store.observerState(observedId) {
+  val sc = CloudAgents.Auth.requestScope()
+  val st = match CloudAgents.Ledger.Store.observerState(observedId, sc) {
     case Ok(s) -> s
     case Err(e) -> {
       println("WARNING: reading the observer of " + observedId + " failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
@@ -1987,7 +1988,7 @@ func removeObserverOf(observedId: in String): Unit {
     }
   }
   if st.observerSessionId.length > 0 {
-    match CloudAgents.Ledger.Store.sessionRunFacts(st.observerSessionId) {
+    match CloudAgents.Ledger.Store.sessionRunFacts(st.observerSessionId, sc) {
       case Ok(Some(f)) -> {
         if f.containerId.length > 0 {
           val _ = CloudAgents.Docker.terminateSessionContainer(f.containerId)
@@ -1996,9 +1997,9 @@ func removeObserverOf(observedId: in String): Unit {
       case _ -> ()
     }
     val _ = CloudAgents.Docker.deleteWorkspaceVolume(CloudAgents.Auth.currentUserId(), st.observerSessionId)
-    val _ = CloudAgents.Ledger.Store.deleteObserverSessionRow(st.observerSessionId)
+    val _ = CloudAgents.Ledger.Store.deleteObserverSessionRow(st.observerSessionId, sc)
   }
-  val _ = CloudAgents.Ledger.Store.deleteObserverState(observedId)
+  val _ = CloudAgents.Ledger.Store.deleteObserverState(observedId, sc)
 }
 
 pub func deleteSession(id: in String): Result[Unit, Web.ApiError] {
