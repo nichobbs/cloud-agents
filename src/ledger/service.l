@@ -1204,13 +1204,16 @@ pub func undeliveredFeedbackCount(sessionId: in String, sc: in CloudAgents.Pg.Te
 /// ledger_check_feedback (an 'all'-mode profile, or 'selected' including
 /// it), else "". The cloud-agents runner cannot inject a message into a
 /// running agent, so the start of the next run is the push point
-/// (docs/session-ledger.md §7). Best-effort: any lookup failure yields "".
-pub func nextRunPromptPrefix(sessionId: in String, sc: in CloudAgents.Pg.TenantScope, profileId: in String): String {
+/// (docs/session-ledger.md §7). The feedback is read in the session's own
+/// tenant, from its route (spec §5.2). Best-effort: any lookup failure
+/// yields "".
+pub func nextRunPromptPrefix(sessionId: in String, profileId: in String): String {
   // With MCP callbacks off the shim isn't registered, so there is no
   // ledger_check_feedback to call: nudging would repeat on every run.
   if not CloudAgents.NetworkPolicy.callbacksFeatureEnabled() {
     return ""
   }
+  val sc = match CloudAgents.SessionStore.sessionRouteScope(sessionId) { case Ok(Some(v)) -> v; case _ -> return "" }
   val pending = undeliveredFeedbackCount(sessionId, sc)
   if pending <= 0 {
     return ""

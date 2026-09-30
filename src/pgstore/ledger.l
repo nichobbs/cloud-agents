@@ -100,25 +100,7 @@ func firstCount(rows: in slice[DbRow]): Int {
   if rows.length == 0 {
     return 0
   }
-  return parseCount(c(rows[0], "n"))
-}
-
-func parseCount(s: in String): Int {
-  val digits = "0123456789"
-  var n = 0
-  var i = 0
-  while i < s.length.toInt() {
-    var d = 0
-    while d < 10 and digits.substring(d, 1) != s.substring(i, 1) {
-      d = d + 1
-    }
-    if d == 10 {
-      return n
-    }
-    n = n * 10 + d
-    i = i + 1
-  }
-  return n
+  return CloudAgents.Repository.parseNatString(c(rows[0], "n"))
 }
 
 // ── Cursor ────────────────────────────────────────────────────────────────────

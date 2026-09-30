@@ -1383,7 +1383,7 @@ pub func streamSendMessage(
       Web.writeHeader(w, "X-Accel-Buffering", "no")
 
       println("[diag] streamSendMessage " + id + ": before nextRunPromptPrefix")
-      val promptPrefix = CloudAgents.Ledger.Service.nextRunPromptPrefix(id, CloudAgents.Pg.personalScope(userId), profileId)
+      val promptPrefix = CloudAgents.Ledger.Service.nextRunPromptPrefix(id, profileId)
       println("[diag] streamSendMessage " + id + ": before promptWithAttachments")
       val fullPrompt = promptPrefix + promptWithAttachments(text, stored.attachments)
       println("[diag] streamSendMessage " + id + ": before streamSessionMessage")
