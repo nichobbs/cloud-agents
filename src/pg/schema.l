@@ -108,16 +108,16 @@ func userTable(name: in String, body: in String): slice[String] {
   ]
 }
 
-/// The two policies that let the claim functions (owned by
-/// `cloudagents_claimer`) see and lease rows across tenants or users (spec
-/// §5.3). Permissive policies combine with OR per role; the isolation policy
-/// never matches for the claimer, which has no scope set.
 /// Read-only access for a listing function (§5.3a): the claimer may select
 /// the table's rows, never change them.
 func claimerReadPolicy(name: in String): String {
   return "CREATE POLICY claimer_select ON public." + name + " FOR SELECT TO cloudagents_claimer USING (true)"
 }
 
+/// The two policies that let the claim functions (owned by
+/// `cloudagents_claimer`) see and lease rows across tenants or users (spec
+/// §5.3). Permissive policies combine with OR per role; the isolation policy
+/// never matches for the claimer, which has no scope set.
 func claimerPolicies(name: in String): slice[String] {
   return [
     "CREATE POLICY claimer_select ON public." + name + " FOR SELECT TO cloudagents_claimer USING (true)",
