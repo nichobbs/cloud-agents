@@ -20,6 +20,7 @@ import CloudAgents.SessionStore
 import CloudAgents.Capture
 import CloudAgents.Ledger.Model
 import CloudAgents.Ledger.Store
+import CloudAgents.Scope as TestScope
 import CloudAgents.Ledger.Service
 import CloudAgents.Ledger.ObserverPolicy
 import CloudAgents.Ledger.Observer
@@ -130,7 +131,7 @@ func stateOf(sid: in String): ObserverState {
 
 func observedCount(sid: in String): Int {
   var n = 0
-  match listEntries(sid) {
+  match listEntries(sid, testScope()) {
     case Ok(es) -> {
       var i = 0
       while i < es.length.toInt() {
@@ -432,7 +433,7 @@ test "a mid-run pass sees the run as live and its findings are provisional" {
   assertEqual(runner.windowFinal, "false", "the window says the run is still going")
   assertTrue(runner.lastPrompt.contains("still going"), "and so does the prompt")
   assertEqualInt(runner.diffCalls, 0, "no repo access, no diff")
-  match listEntries("s1") {
+  match listEntries("s1", testScope()) {
     case Ok(es) -> {
       var provisional = 0
       var i = 0
@@ -583,4 +584,10 @@ test "a session whose profile was deleted is no longer observed" {
   exec("DELETE FROM profiles WHERE id = 'p1'")
   onRunFinished("s1")
   assertEqual(stateOf("s1").pending, "0", "no pass for a deleted profile")
+}
+
+// The scope the store calls run under: SQLite keys ledger rows by session
+// alone, so only the inbox reads the user from it.
+func testScope(): TestScope.TenantScope {
+  return TestScope.personalScope("alice")
 }

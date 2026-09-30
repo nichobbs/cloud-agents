@@ -25,6 +25,7 @@ import CloudAgents.Sqlite
 import CloudAgents.Capture
 import CloudAgents.Ledger.Model
 import CloudAgents.Ledger.Store
+import CloudAgents.Scope as TestScope
 import CloudAgents.Ledger.Service
 import CloudAgents.Ledger.Reconcile
 import CloudAgents.Ledger.ObserverPolicy
@@ -223,7 +224,7 @@ func window(sid: in String, final: Bool): ObserverWindowView {
 
 func observedEntries(sid: in String): slice[LedgerEntry] {
   var acc: slice[LedgerEntry] = []
-  match listEntries(sid) {
+  match listEntries(sid, testScope()) {
     case Ok(es) -> {
       var i = 0
       while i < es.length.toInt() {
@@ -652,4 +653,10 @@ test "a report raises at most three notifications" {
   val r = accept("s1", decodeOk(body), false)
   assertEqual(r.undeclared, "6", "every finding is recorded")
   assertEqualInt(countNotifications("s1"), 3, "but only three notify")
+}
+
+// The scope the store calls run under: SQLite keys ledger rows by session
+// alone, so only the inbox reads the user from it.
+func testScope(): TestScope.TenantScope {
+  return TestScope.personalScope("alice")
 }

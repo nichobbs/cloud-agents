@@ -207,8 +207,8 @@ func feedbackHint(pending: in Int): String {
   return ""
 }
 
-func pendingCount(sessionId: in String): Result[Int, LedgerFailure] {
-  match pendingFeedbackCount(sessionId) {
+func pendingCount(ctx: in SessionContext): Result[Int, LedgerFailure] {
+  match pendingFeedbackCount(ctx.sessionId, ctx.tenantScope) {
     case Ok(n) -> return Ok(value = n)
     case Err(e) -> return Err(error = dbFail(e))
   }
@@ -237,14 +237,14 @@ func normalizeRef(ctx: in SessionContext, raw: in String): Result[String, Ledger
 
 /// Make sure `itemId` exists (registering it queued if not) and return it.
 func ensureItem(ctx: in SessionContext, itemId: in String, title: in String): Result[WorkItem, LedgerFailure] {
-  match getItem(ctx.sessionId, itemId) {
+  match getItem(ctx.sessionId, ctx.tenantScope, itemId) {
     case Ok(Some(w)) -> return Ok(value = w)
     case Ok(None) -> ()
     case Err(e) -> return Err(error = dbFail(e))
   }
   // The same cap registerBatch applies: every tool that names an unknown
   // item registers it here, so without it the cap is only advisory.
-  match countItems(ctx.sessionId) {
+  match countItems(ctx.sessionId, ctx.tenantScope) {
     case Ok(n) -> {
       if n >= itemRowCap {
         return Err(error = invalid("a session holds at most " + toString(itemRowCap) + " work items; reuse an existing item"))
@@ -255,11 +255,11 @@ func ensureItem(ctx: in SessionContext, itemId: in String, title: in String): Re
   val ids: slice[String] = [itemId]
   val titles: slice[String] = [title]
   val urls: slice[String] = [urlForItemRef(itemId)]
-  match registerItems(ctx.sessionId, ids, titles, urls) {
+  match registerItems(ctx.sessionId, ctx.tenantScope, ids, titles, urls) {
     case Ok(_) -> ()
     case Err(e) -> return Err(error = dbFail(e))
   }
-  match getItem(ctx.sessionId, itemId) {
+  match getItem(ctx.sessionId, ctx.tenantScope, itemId) {
     case Ok(Some(w)) -> return Ok(value = w)
     case Ok(None) -> return Err(error = LedgerFailure(status = "error", message = "item registration did not persist"))
     case Err(e) -> return Err(error = dbFail(e))
@@ -298,7 +298,10 @@ pub func registerBatch(ctx: in SessionContext, req: in RegisterItemsRequest): Re
   }
   // Every item always fits the snapshot: the batch is capped at
   // itemRowCap, so item lists are never truncated.
-  val existing = match listItems(ctx.sessionId) { case Ok(xs) -> xs; case Err(e) -> return Err(error = dbFail(e)) }
+  val existing = match listItems(ctx.sessionId, ctx.tenantScope) {
+    case Ok(xs) -> xs
+    case Err(e) -> return Err(error = dbFail(e))
+  }
   var fresh = 0
   var j = 0
   while j < ids.length.toInt() {
@@ -310,12 +313,15 @@ pub func registerBatch(ctx: in SessionContext, req: in RegisterItemsRequest): Re
   if existing.length.toInt() + fresh > itemRowCap {
     return Err(error = invalid("a session holds at most " + toString(itemRowCap) + " work items"))
   }
-  val added = match registerItems(ctx.sessionId, ids, titles, urls) {
+  val added = match registerItems(ctx.sessionId, ctx.tenantScope, ids, titles, urls) {
     case Ok(n) -> n
     case Err(e) -> return Err(error = dbFail(e))
   }
-  val total = match countItems(ctx.sessionId) { case Ok(n) -> n; case Err(e) -> return Err(error = dbFail(e)) }
-  val pending = pendingCount(ctx.sessionId)?
+  val total = match countItems(ctx.sessionId, ctx.tenantScope) {
+    case Ok(n) -> n
+    case Err(e) -> return Err(error = dbFail(e))
+  }
+  val pending = pendingCount(ctx)?
   return Ok(
     value = RegisterReply(
       registered = toString(added),
@@ -333,7 +339,7 @@ func changeStatus(
 ): Result[WorkItem, LedgerFailure] {
   var attempt = 0
   while attempt < 3 {
-    val current = match getItem(ctx.sessionId, itemId) {
+    val current = match getItem(ctx.sessionId, ctx.tenantScope, itemId) {
       case Ok(Some(w)) -> w
       case Ok(None) -> return Err(error = notFound("item " + itemId + " is not registered in this session"))
       case Err(e) -> return Err(error = dbFail(e))
@@ -356,7 +362,7 @@ func changeStatus(
         detail = plan.blockerDetail
       )
     }
-    val applied = match applyItemUpdate(ctx.sessionId, plan.item, current.updatedSeq, plan.fromState, plan.stateChanged, actor, change.reason, auto, plan.resolvesBlockers) {
+    val applied = match applyItemUpdate(ctx.sessionId, ctx.tenantScope, plan.item, current.updatedSeq, plan.fromState, plan.stateChanged, actor, change.reason, auto, plan.resolvesBlockers) {
       case Ok(a) -> a
       case Err(e) -> return Err(error = dbFail(e))
     }
@@ -388,7 +394,10 @@ func notifyOwner(ctx: in SessionContext, level: in String, summary: in String): 
 /// After an item reaches `done`, requeue every blocked item whose in-batch
 /// blockers are now all done (spec §7), writing an info entry for each.
 func autoUnblock(ctx: in SessionContext, actor: in String): Result[slice[String], LedgerFailure] {
-  val items = match listItems(ctx.sessionId) { case Ok(xs) -> xs; case Err(e) -> return Err(error = dbFail(e)) }
+  val items = match listItems(ctx.sessionId, ctx.tenantScope) {
+    case Ok(xs) -> xs
+    case Err(e) -> return Err(error = dbFail(e))
+  }
   val candidates = unblockCandidates(items)
   var done: slice[String] = []
   var i = 0
@@ -421,7 +430,7 @@ func emptyStrings(): slice[String] {
 
 func writeSystemNote(ctx: in SessionContext, itemId: in String, summary: in String): Unit {
   val d = simpleDraft("note", truncate(summary, 140), itemId)
-  match insertEntry(materialize(ctx.sessionId, d, itemId, "info", "not_required", "", "system")) {
+  match insertEntry(ctx.tenantScope, materialize(ctx.sessionId, d, itemId, "info", "not_required", "", "system")) {
     case Ok(_) -> ()
     case Err(err) -> println("WARNING: ledger system note failed: " + CloudAgents.Sqlite.dbErrorMessage(err))
   }
@@ -460,7 +469,7 @@ pub func agentSetStatus(ctx: in SessionContext, req: in SetItemStatusRequest): R
   if updated.state == "done" {
     unblocked = autoUnblock(ctx, "agent")?
   }
-  val pending = pendingCount(ctx.sessionId)?
+  val pending = pendingCount(ctx)?
   var hint = feedbackHint(pending)
   if hint.length.toInt() == 0 and (updated.state == "blocked" or updated.state == "needs_human") {
     hint = "Recorded; the human has been notified. Move on to the next queued item rather than waiting."
@@ -480,7 +489,7 @@ pub func agentSetStatus(ctx: in SessionContext, req: in SetItemStatusRequest): R
 pub func humanSetStatus(
   ctx: in SessionContext, itemId: in String, to: in String, reason: in String
 ): Result[WorkItem, LedgerFailure] {
-  match getItem(ctx.sessionId, itemId) {
+  match getItem(ctx.sessionId, ctx.tenantScope, itemId) {
     case Ok(Some(_)) -> ()
     case Ok(None) -> return Err(error = notFound("item not found"))
     case Err(e) -> return Err(error = dbFail(e))
@@ -617,7 +626,7 @@ func check(r: in Result[Unit, String]): Result[Unit, LedgerFailure] {
 /// once per session from the repo's default branch, then cached).
 pub func rulesFor(ctx: in SessionContext): slice[PolicyRule] {
   val base = defaultRules()
-  val cache = match getPolicyCache(ctx.sessionId) {
+  val cache = match getPolicyCache(ctx.sessionId, ctx.tenantScope) {
     case Ok(c) -> c
     case Err(e) -> {
       println("WARNING: reading the ledger policy cache failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
@@ -632,7 +641,7 @@ pub func rulesFor(ctx: in SessionContext): slice[PolicyRule] {
     val fetched = fetchRepoPolicy(ctx.ownerUserId, ctx.ownerRepo)
     status = fetched.status
     json = fetched.json
-    match setPolicyCache(ctx.sessionId, fetched.status, fetched.json, fetched.error) {
+    match setPolicyCache(ctx.sessionId, ctx.tenantScope, fetched.status, fetched.json, fetched.error) {
       case Ok(_) -> ()
       case Err(e) -> println("WARNING: caching the ledger policy failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
     }
@@ -674,7 +683,7 @@ func recordDeclared(ctx: in SessionContext, e: in DraftEntry): Result[RecordRepl
     ensureItem(ctx, itemId, "")?
   }
   if e.supersedes.length.toInt() > 0 {
-    match getEntry(ctx.sessionId, e.supersedes) {
+    match getEntry(ctx.sessionId, ctx.tenantScope, e.supersedes) {
       case Ok(Some(_)) -> ()
       case Ok(None) -> return Err(error = invalid("supersedes names an entry that does not exist in this session: " + e.supersedes))
       case Err(err) -> return Err(error = dbFail(err))
@@ -694,11 +703,14 @@ func recordDeclared(ctx: in SessionContext, e: in DraftEntry): Result[RecordRepl
     case Err(_) -> ""
   }
   val toStore = materialize(ctx.sessionId, e, itemId, severity, initialReviewState(severity), transcriptSeq, "declared")
-  val stored = match insertEntry(toStore) { case Ok(s) -> s; case Err(err) -> return Err(error = dbFail(err)) }
+  val stored = match insertEntry(ctx.tenantScope, toStore) {
+    case Ok(s) -> s
+    case Err(err) -> return Err(error = dbFail(err))
+  }
   if severity == "blocking" {
     notifyOwner(ctx, "blocked", stored.summary)
   }
-  val pending = pendingCount(ctx.sessionId)?
+  val pending = pendingCount(ctx)?
   var hint = feedbackHint(pending)
   if hint.length.toInt() == 0 and severity != "info" {
     hint = "Recorded for human review. Carry on; you will get their response via ledger_check_feedback."
@@ -835,7 +847,7 @@ pub func checkFeedback(ctx: in SessionContext): Result[CheckFeedbackReply, Ledge
   // The claim reads back entry summaries in the same query (and releases
   // the batch if that read fails), so only pure code runs between rows
   // being marked delivered and the agent's reply.
-  val claimed = match claimFeedback(ctx.sessionId, "mcp_poll") {
+  val claimed = match claimFeedback(ctx.sessionId, ctx.tenantScope, "mcp_poll") {
     case Ok(fs) -> fs
     case Err(e) -> return Err(error = dbFail(e))
   }
@@ -864,9 +876,15 @@ pub func checkFeedback(ctx: in SessionContext): Result[CheckFeedbackReply, Ledge
 
 /// ledger_get_state.
 pub func agentStateOf(ctx: in SessionContext): Result[AgentStateView, LedgerFailure] {
-  val items = match listItems(ctx.sessionId) { case Ok(xs) -> xs; case Err(e) -> return Err(error = dbFail(e)) }
-  val entries = match listEntries(ctx.sessionId) { case Ok(es) -> es; case Err(e) -> return Err(error = dbFail(e)) }
-  val pending = pendingCount(ctx.sessionId)?
+  val items = match listItems(ctx.sessionId, ctx.tenantScope) {
+    case Ok(xs) -> xs
+    case Err(e) -> return Err(error = dbFail(e))
+  }
+  val entries = match listEntries(ctx.sessionId, ctx.tenantScope) {
+    case Ok(es) -> es
+    case Err(e) -> return Err(error = dbFail(e))
+  }
+  val pending = pendingCount(ctx)?
   return Ok(value = agentState(items, entries, pending))
 }
 
@@ -925,13 +943,19 @@ pub func snapshot(ctx: in SessionContext, after: in String): Result[LedgerSnapsh
     return Err(error = invalid("after must be a non-negative integer cursor"))
   }
   // Cheap checks first: most polls find nothing new and load no rows.
-  val cursor = match currentSeq(ctx.sessionId) { case Ok(c) -> c; case Err(e) -> return Err(error = dbFail(e)) }
-  val pending = pendingCount(ctx.sessionId)?
-  val summary = match summaryOf(ctx.sessionId, pending) {
+  val cursor = match currentSeq(ctx.sessionId, ctx.tenantScope) {
+    case Ok(c) -> c
+    case Err(e) -> return Err(error = dbFail(e))
+  }
+  val pending = pendingCount(ctx)?
+  val summary = match summaryOf(ctx.sessionId, ctx.tenantScope, pending) {
     case Ok(x) -> x
     case Err(e) -> return Err(error = dbFail(e))
   }
-  val policy = match getPolicyCache(ctx.sessionId) { case Ok(p) -> p; case Err(e) -> return Err(error = dbFail(e)) }
+  val policy = match getPolicyCache(ctx.sessionId, ctx.tenantScope) {
+    case Ok(p) -> p
+    case Err(e) -> return Err(error = dbFail(e))
+  }
   if not isZeroCursor(after) and after == cursor {
     return Ok(
       value = LedgerSnapshot(
@@ -951,15 +975,15 @@ pub func snapshot(ctx: in SessionContext, after: in String): Result[LedgerSnapsh
   if isZeroCursor(after) {
     return fullSnapshot(ctx, cursor, summary, policy)
   }
-  val changedItems = match itemsChangedAfter(ctx.sessionId, after) {
+  val changedItems = match itemsChangedAfter(ctx.sessionId, ctx.tenantScope, after) {
     case Ok(xs) -> xs
     case Err(e) -> return Err(error = dbFail(e))
   }
-  val changedEntries = match entriesChangedAfter(ctx.sessionId, after) {
+  val changedEntries = match entriesChangedAfter(ctx.sessionId, ctx.tenantScope, after) {
     case Ok(es) -> es
     case Err(e) -> return Err(error = dbFail(e))
   }
-  val changedFeedback = match feedbackChangedAfter(ctx.sessionId, after) {
+  val changedFeedback = match feedbackChangedAfter(ctx.sessionId, ctx.tenantScope, after) {
     case Ok(fs) -> fs
     case Err(e) -> return Err(error = dbFail(e))
   }
@@ -989,12 +1013,27 @@ pub func snapshot(ctx: in SessionContext, after: in String): Result[LedgerSnapsh
 func fullSnapshot(
   ctx: in SessionContext, cursor: in String, summary: in LedgerSummary, policy: in PolicyCache
 ): Result[LedgerSnapshot, LedgerFailure] {
-  val items = match listItems(ctx.sessionId) { case Ok(xs) -> xs; case Err(e) -> return Err(error = dbFail(e)) }
-  val entries = match listEntries(ctx.sessionId) { case Ok(es) -> es; case Err(e) -> return Err(error = dbFail(e)) }
-  val feedback = match listFeedback(ctx.sessionId) { case Ok(fs) -> fs; case Err(e) -> return Err(error = dbFail(e)) }
-  val itemTotal = match countItems(ctx.sessionId) { case Ok(n) -> n; case Err(e) -> return Err(error = dbFail(e)) }
-  val entryTotal = match countEntries(ctx.sessionId) { case Ok(n) -> n; case Err(e) -> return Err(error = dbFail(e)) }
-  val feedbackTotal = match countFeedback(ctx.sessionId) {
+  val items = match listItems(ctx.sessionId, ctx.tenantScope) {
+    case Ok(xs) -> xs
+    case Err(e) -> return Err(error = dbFail(e))
+  }
+  val entries = match listEntries(ctx.sessionId, ctx.tenantScope) {
+    case Ok(es) -> es
+    case Err(e) -> return Err(error = dbFail(e))
+  }
+  val feedback = match listFeedback(ctx.sessionId, ctx.tenantScope) {
+    case Ok(fs) -> fs
+    case Err(e) -> return Err(error = dbFail(e))
+  }
+  val itemTotal = match countItems(ctx.sessionId, ctx.tenantScope) {
+    case Ok(n) -> n
+    case Err(e) -> return Err(error = dbFail(e))
+  }
+  val entryTotal = match countEntries(ctx.sessionId, ctx.tenantScope) {
+    case Ok(n) -> n
+    case Err(e) -> return Err(error = dbFail(e))
+  }
+  val feedbackTotal = match countFeedback(ctx.sessionId, ctx.tenantScope) {
     case Ok(n) -> n
     case Err(e) -> return Err(error = dbFail(e))
   }
@@ -1075,23 +1114,23 @@ func transcriptExcerpt(sessionId: in String, endSeq: in String): String {
 }
 
 pub func entryDetail(ctx: in SessionContext, entryId: in String): Result[EntryDetail, LedgerFailure] {
-  val e = match getEntry(ctx.sessionId, entryId) {
+  val e = match getEntry(ctx.sessionId, ctx.tenantScope, entryId) {
     case Ok(Some(x)) -> x
     case Ok(None) -> return Err(error = notFound("entry not found"))
     case Err(err) -> return Err(error = dbFail(err))
   }
-  val fb = match feedbackForEntry(ctx.sessionId, entryId) {
+  val fb = match feedbackForEntry(ctx.sessionId, ctx.tenantScope, entryId) {
     case Ok(fs) -> fs
     case Err(err) -> return Err(error = dbFail(err))
   }
   var transitions: slice[WorkItemTransition] = []
   if e.itemId.length.toInt() > 0 {
-    transitions = match listTransitions(ctx.sessionId, e.itemId) {
+    transitions = match listTransitions(ctx.sessionId, ctx.tenantScope, e.itemId) {
       case Ok(ts) -> ts
       case Err(err) -> return Err(error = dbFail(err))
     }
   }
-  val supersededBy = match supersedingEntryIds(ctx.sessionId, entryId) {
+  val supersededBy = match supersedingEntryIds(ctx.sessionId, ctx.tenantScope, entryId) {
     case Ok(ids) -> ids
     case Err(err) -> return Err(error = dbFail(err))
   }
@@ -1115,12 +1154,12 @@ pub func review(
     return Err(error = invalid("kind must be approve, reject or comment"))
   }
   check(validateFeedback(kind, body))?
-  val e = match getEntry(ctx.sessionId, entryId) {
+  val e = match getEntry(ctx.sessionId, ctx.tenantScope, entryId) {
     case Ok(Some(x)) -> x
     case Ok(None) -> return Err(error = notFound("entry not found"))
     case Err(err) -> return Err(error = dbFail(err))
   }
-  match reviewEntry(ctx.sessionId, e, state, kind, body, by) {
+  match reviewEntry(ctx.sessionId, ctx.tenantScope, e, state, kind, body, by) {
     case Ok(f) -> return Ok(value = f)
     case Err(err) -> return Err(error = dbFail(err))
   }
@@ -1137,21 +1176,21 @@ pub func giveFeedback(
   var itemId = ""
   if itemRef.trim().length.toInt() > 0 {
     itemId = normalizeRef(ctx, itemRef)?
-    match getItem(ctx.sessionId, itemId) {
+    match getItem(ctx.sessionId, ctx.tenantScope, itemId) {
       case Ok(Some(_)) -> ()
       case Ok(None) -> return Err(error = notFound("item not found"))
       case Err(e) -> return Err(error = dbFail(e))
     }
   }
-  match addFeedback(ctx.sessionId, itemId, kind, body, by) {
+  match addFeedback(ctx.sessionId, ctx.tenantScope, itemId, kind, body, by) {
     case Ok(f) -> return Ok(value = f)
     case Err(e) -> return Err(error = dbFail(e))
   }
 }
 
 /// Pending undelivered feedback, for the next-run nudge.
-pub func undeliveredFeedbackCount(sessionId: in String): Int {
-  match pendingFeedbackCount(sessionId) {
+pub func undeliveredFeedbackCount(sessionId: in String, sc: in CloudAgents.Pg.TenantScope): Int {
+  match pendingFeedbackCount(sessionId, sc) {
     case Ok(n) -> return n
     case Err(e) -> {
       println("WARNING: counting ledger feedback failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
@@ -1166,17 +1205,17 @@ pub func undeliveredFeedbackCount(sessionId: in String): Int {
 /// it), else "". The cloud-agents runner cannot inject a message into a
 /// running agent, so the start of the next run is the push point
 /// (docs/session-ledger.md §7). Best-effort: any lookup failure yields "".
-pub func nextRunPromptPrefix(sessionId: in String, userId: in String, profileId: in String): String {
+pub func nextRunPromptPrefix(sessionId: in String, sc: in CloudAgents.Pg.TenantScope, profileId: in String): String {
   // With MCP callbacks off the shim isn't registered, so there is no
   // ledger_check_feedback to call: nudging would repeat on every run.
   if not CloudAgents.NetworkPolicy.callbacksFeatureEnabled() {
     return ""
   }
-  val pending = undeliveredFeedbackCount(sessionId)
+  val pending = undeliveredFeedbackCount(sessionId, sc)
   if pending <= 0 {
     return ""
   }
-  val enabled = match CloudAgents.Repository.enabledToolsForProfile(CloudAgents.Pg.personalScope(userId), profileId) {
+  val enabled = match CloudAgents.Repository.enabledToolsForProfile(sc, profileId) {
     case Ok(v) -> v
     case Err(_) -> return ""
   }
@@ -1200,8 +1239,8 @@ pub record InboxView {
   pub entries: slice[InboxEntry]
 }
 
-pub func inbox(userId: in String): Result[InboxView, LedgerFailure] {
-  match inboxForUser(userId) {
+pub func inbox(sc: in CloudAgents.Pg.TenantScope): Result[InboxView, LedgerFailure] {
+  match inboxForUser(sc) {
     case Ok(xs) -> return Ok(value = InboxView(entries = xs))
     case Err(e) -> return Err(error = dbFail(e))
   }

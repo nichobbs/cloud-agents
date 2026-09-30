@@ -175,7 +175,10 @@ test "a three-issue batch: register, progress, decide, block, review, feedback, 
   }
 
   // The next run is nudged, and the agent's next reply carries the count.
-  assertTrue(nextRunPromptPrefix("s1", "alice", "").contains("ledger_check_feedback"), "next-run nudge")
+  assertTrue(
+    nextRunPromptPrefix("s1", CloudAgents.Auth.requestScope(), "").contains("ledger_check_feedback"),
+    "next-run nudge"
+  )
   val nudged = agentOk("s1", "item-status", status("#1", "in_progress", "", ""))
   assertTrue(nudged.contains("\"pendingFeedback\":\"1\""), nudged)
 
@@ -185,7 +188,7 @@ test "a three-issue batch: register, progress, decide, block, review, feedback, 
   assertTrue(fb.contains("Store refs as JSON arrays"), "names the entry: " + fb)
   val again = agentOk("s1", "check-feedback", "{}")
   assertTrue(again.contains("\"feedback\":[]"), again)
-  assertEqual(nextRunPromptPrefix("s1", "alice", ""), "", "no nudge once delivered")
+  assertEqual(nextRunPromptPrefix("s1", CloudAgents.Auth.requestScope(), ""), "", "no nudge once delivered")
 
   // Finishing #1 unblocks #2 and resolves its blocker.
   val finished = agentOk("s1", "item-status", status("#1", "done", "", ""))
@@ -477,9 +480,12 @@ test "no next-run nudge when MCP callbacks are off" {
     case Ok(_) -> ()
     case Err(e) -> assertTrue(false, e.message)
   }
-  assertTrue(nextRunPromptPrefix("s1", "alice", "").length.toInt() > 0, "nudged with callbacks on")
+  assertTrue(
+    nextRunPromptPrefix("s1", CloudAgents.Auth.requestScope(), "").length.toInt() > 0,
+    "nudged with callbacks on"
+  )
   Env.SetEnvironmentVariable("CLOUD_AGENTS_MCP_CALLBACKS", "0")
-  assertEqual(nextRunPromptPrefix("s1", "alice", ""), "", "no tool to call, so no nudge")
+  assertEqual(nextRunPromptPrefix("s1", CloudAgents.Auth.requestScope(), ""), "", "no tool to call, so no nudge")
 }
 
 // A test-only trigger that, while armed, moves the item's version inside
