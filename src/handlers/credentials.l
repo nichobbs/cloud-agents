@@ -18,6 +18,7 @@ import Std.Core
 import Web
 import CloudAgents.Auth
 import CloudAgents.Repository
+import CloudAgents.Scope
 import CloudAgents.Sqlite
 
 val maxCredentialNameLen = 128
@@ -98,7 +99,7 @@ func isValidCredentialName(name: in String): Bool {
 
 /// List the caller's stored credential names (never values).
 pub func listCredentialsHandler(): Result[CredentialNameList, Web.ApiError] {
-  match listCredentialNames(CloudAgents.Auth.currentUserId()) {
+  match listCredentialNames(CloudAgents.Auth.requestUserScope()) {
     case Ok(names) -> return Ok(CredentialNameList(credentials = names))
     case Err(e) -> return Err(Web.internalError(CloudAgents.Sqlite.dbErrorMessage(e)))
   }
@@ -122,7 +123,7 @@ pub func putCredentialHandler(req: in PutCredentialRequest): Result[Unit, Web.Ap
   if req.value.length > maxCredentialValueLen {
     return Err(Web.badRequest("value is too long (max 65536 characters)"))
   }
-  match putCredential(CloudAgents.Auth.currentUserId(), req.name, req.value) {
+  match putCredential(CloudAgents.Auth.requestUserScope(), req.name, req.value) {
     case Ok(_) -> return Ok(())
     case Err(e) -> return Err(Web.internalError("failed to store credential: " + credentialErrorMessage(e)))
   }
@@ -133,7 +134,7 @@ pub func deleteCredentialHandler(name: in String): Result[Unit, Web.ApiError] {
   if name.length == 0 {
     return Err(Web.badRequest("credential name is required"))
   }
-  val affected = match deleteCredential(CloudAgents.Auth.currentUserId(), name) {
+  val affected = match deleteCredential(CloudAgents.Auth.requestUserScope(), name) {
     case Ok(n) -> n
     case Err(e) -> return Err(Web.internalError(CloudAgents.Sqlite.dbErrorMessage(e)))
   }

@@ -23,6 +23,7 @@ import CloudAgents.Auth
 import CloudAgents.GitHubApi
 import CloudAgents.OAuth
 import CloudAgents.Repository
+import CloudAgents.Scope
 import CloudAgents.SessionStore
 import extern System.Environment as Env
 import extern System.String as DotNetString
@@ -167,7 +168,7 @@ func vaultGitHubToken(): Result[String, Web.ApiError] {
 /// A named vault credential for the models proxy, where absence (and any
 /// read/decrypt failure, logged) just means "skip this provider".
 func vaultKeyOrNone(name: in String): Option[String] {
-  match CloudAgents.Repository.decryptedCredentialValue(CloudAgents.Auth.currentUserId(), name) {
+  match CloudAgents.Repository.decryptedCredentialValue(CloudAgents.Auth.requestUserScope(), name) {
     case Ok(Some(v)) -> return Some(value = v)
     case Ok(None) -> return None
     case Err(e) -> {
@@ -311,14 +312,14 @@ pub func keyForProvider(provider: in String): Option[String] {
 /// read/write failures are non-fatal (logged) and simply fall back to a live
 /// fetch, so a broken cache never breaks discovery.
 func cachedOrFetchedModelsBody(userId: in String, provider: in String, key: in String): Result[String, String] {
-  match CloudAgents.Repository.cachedModelListing(userId, provider) {
+  match CloudAgents.Repository.cachedModelListing(CloudAgents.Scope.userScope(userId), provider) {
     case Ok(Some(body)) -> return Ok(value = body)
     case Ok(None) -> ()
     case Err(_) -> println("WARNING: model-listing cache read failed for " + provider)
   }
   match providerModelsBody(provider, key) {
     case Ok(body) -> {
-      match CloudAgents.Repository.cacheModelListing(userId, provider, body) {
+      match CloudAgents.Repository.cacheModelListing(CloudAgents.Scope.userScope(userId), provider, body) {
         case Ok(_) -> ()
         case Err(_) -> println("WARNING: model-listing cache write failed for " + provider)
       }

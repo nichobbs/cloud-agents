@@ -6,7 +6,7 @@
 //! signatures (including the `CloudAgents.Sqlite.DbError` error type), so the
 //! cut-over (slice E) is an import switch rather than a rewrite. Every call
 //! is one unit of work on one pooled connection, scoped by the caller's
-//! explicit `TenantScope` (spec §5.2).
+//! explicit `TenantScope`, or `UserScope` for user-owned data (spec §5.2, §4.3a).
 //!
 //! Lyric has no closures here, so each store function follows the same
 //! shape: `open` a unit, `defer` its `release`, run statements with `q`/`ex`,
@@ -44,6 +44,27 @@ pub func open(sc: in CloudAgents.Pg.TenantScope): Result[PgUnit, CloudAgents.Sql
     case Err(e) -> return Err(error = toDbError("connect", e))
   }
   match CloudAgents.Pg.beginTenantUnit(conn, sc) {
+    case Ok(tx) -> return Ok(value = PgUnit(conn = conn, tx = tx))
+    case Err(e) -> {
+      conn.close()
+      return Err(error = toDbError("begin", e))
+    }
+  }
+}
+
+/// Open a user-scoped unit of work: only `app.current_user` is set, so only
+/// user-owned tables (spec §4.3a) are visible. For sign-in and other paths
+/// that act before a tenant is chosen.
+pub func openUser(sc: in CloudAgents.Pg.UserScope): Result[PgUnit, CloudAgents.Sqlite.DbError] {
+  match CloudAgents.Pg.checkUserScope(sc) {
+    case Ok(_) -> ()
+    case Err(e) -> return Err(error = toDbError("scope", e))
+  }
+  val conn = match CloudAgents.Pg.connectService() {
+    case Ok(c) -> c
+    case Err(e) -> return Err(error = toDbError("connect", e))
+  }
+  match CloudAgents.Pg.beginUserUnit(conn, sc) {
     case Ok(tx) -> return Ok(value = PgUnit(conn = conn, tx = tx))
     case Err(e) -> {
       conn.close()

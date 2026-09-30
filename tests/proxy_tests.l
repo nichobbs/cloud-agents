@@ -2,6 +2,7 @@
 package CloudAgents.ProxyTests
 
 import Std.Core
+import CloudAgents.Scope
 import Std.Testing
 import Std.Uuid
 import CloudAgents.Proxy
@@ -250,7 +251,7 @@ test "decryptedCredentialValue is Ok(None) on an empty vault without crypto" {
   }
   // ENCRYPTION_KEY is not set in this suite: absence must be decided before
   // any decryption, so this returns Ok(None) rather than a crypto error.
-  match CloudAgents.Repository.decryptedCredentialValue("default", "GITHUB_TOKEN") {
+  match CloudAgents.Repository.decryptedCredentialValue(CloudAgents.Scope.userScope("default"), "GITHUB_TOKEN") {
     case Ok(None) -> ()
     case Ok(Some(_)) -> assertTrue(false, "empty vault must have no value")
     case Err(e) -> assertTrue(false, "lookup failed: " + CloudAgents.Repository.credentialErrorMessage(e))

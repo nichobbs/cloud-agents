@@ -2,6 +2,7 @@
 package CloudAgents.RepositoryTests
 
 import Std.Core
+import CloudAgents.Scope
 import Std.Testing
 import Std.Uuid
 import CloudAgents.Repository
@@ -81,32 +82,36 @@ test "model-listing cache round-trips and is scoped by (user, provider)" {
   }
 
   // Absent before any write.
-  match mustOptStr(CloudAgents.Repository.cachedModelListing("gh-1", "anthropic")) {
+  match mustOptStr(CloudAgents.Repository.cachedModelListing(CloudAgents.Scope.userScope("gh-1"), "anthropic")) {
     case Some(_) -> assertTrue(false, "no cached listing before a write")
     case None -> ()
   }
 
   // Write, then read back the exact body.
-  mustCacheWrite(CloudAgents.Repository.cacheModelListing("gh-1", "anthropic", "{\"data\":[1]}"))
-  match mustOptStr(CloudAgents.Repository.cachedModelListing("gh-1", "anthropic")) {
+  mustCacheWrite(
+    CloudAgents.Repository.cacheModelListing(CloudAgents.Scope.userScope("gh-1"), "anthropic", "{\"data\":[1]}")
+  )
+  match mustOptStr(CloudAgents.Repository.cachedModelListing(CloudAgents.Scope.userScope("gh-1"), "anthropic")) {
     case Some(body) -> assertEqual(body, "{\"data\":[1]}", "freshly-cached body reads back")
     case None -> assertTrue(false, "freshly-cached listing should be present")
   }
 
   // Scoped by provider: a different provider for the same user is independent.
-  match mustOptStr(CloudAgents.Repository.cachedModelListing("gh-1", "openai")) {
+  match mustOptStr(CloudAgents.Repository.cachedModelListing(CloudAgents.Scope.userScope("gh-1"), "openai")) {
     case Some(_) -> assertTrue(false, "a different provider is a separate cache entry")
     case None -> ()
   }
   // Scoped by user: another user never sees gh-1's entry.
-  match mustOptStr(CloudAgents.Repository.cachedModelListing("gh-2", "anthropic")) {
+  match mustOptStr(CloudAgents.Repository.cachedModelListing(CloudAgents.Scope.userScope("gh-2"), "anthropic")) {
     case Some(_) -> assertTrue(false, "a different user is a separate cache entry")
     case None -> ()
   }
 
   // Upsert replaces the body for the same (user, provider) key.
-  mustCacheWrite(CloudAgents.Repository.cacheModelListing("gh-1", "anthropic", "{\"data\":[2]}"))
-  match mustOptStr(CloudAgents.Repository.cachedModelListing("gh-1", "anthropic")) {
+  mustCacheWrite(
+    CloudAgents.Repository.cacheModelListing(CloudAgents.Scope.userScope("gh-1"), "anthropic", "{\"data\":[2]}")
+  )
+  match mustOptStr(CloudAgents.Repository.cachedModelListing(CloudAgents.Scope.userScope("gh-1"), "anthropic")) {
     case Some(body) -> assertEqual(body, "{\"data\":[2]}", "upsert replaces the cached body")
     case None -> assertTrue(false, "upserted listing should be present")
   }

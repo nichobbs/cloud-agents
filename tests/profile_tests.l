@@ -2,6 +2,7 @@
 package CloudAgents.ProfileTests
 
 import Std.Core
+import CloudAgents.Scope
 import CloudAgents.Pg
 import Std.Testing
 import Std.Uuid
@@ -120,7 +121,7 @@ func mustRows(r: in Result[Int, CloudAgents.Sqlite.DbError]): Int {
 }
 
 func mustPutCredential(userId: in String, name: in String, value: in String): Unit {
-  match putCredential(userId, name, value) {
+  match putCredential(CloudAgents.Scope.userScope(userId), name, value) {
     case Ok(_) -> ()
     case Err(e) -> panic("putCredential failed: " + credentialErrorMessage(e))
   }

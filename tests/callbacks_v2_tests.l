@@ -2,6 +2,7 @@
 package CloudAgents.CallbacksV2Tests
 
 import Std.Core
+import CloudAgents.Scope
 import Std.Testing
 import Std.Uuid
 import CloudAgents.Auth
@@ -102,7 +103,7 @@ func bearer(token: in String): String {
 }
 
 func mustPutCredential(userId: in String, name: in String, value: in String): Unit {
-  match CloudAgents.Repository.putCredential(userId, name, value) {
+  match CloudAgents.Repository.putCredential(CloudAgents.Scope.userScope(userId), name, value) {
     case Ok(_) -> ()
     case Err(e) -> panic("putCredential failed: " + CloudAgents.Repository.credentialErrorMessage(e))
   }
@@ -253,7 +254,7 @@ test "request_secret answer denies-only when the credential was deleted after cr
     case Err(e) -> panic("create failed: " + toString(e.status))
   }
   // Credential deleted between create and answer (a real race in production).
-  match CloudAgents.Repository.deleteCredential("default", "ROTATING") {
+  match CloudAgents.Repository.deleteCredential(CloudAgents.Scope.userScope("default"), "ROTATING") {
     case Ok(_) -> ()
     case Err(e) -> panic("deleteCredential failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
   }
