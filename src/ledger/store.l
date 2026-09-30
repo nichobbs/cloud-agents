@@ -22,6 +22,7 @@ package CloudAgents.Ledger.Store
 import Std.Core
 import Std.Uuid
 import CloudAgents.Db
+import CloudAgents.Scope
 import CloudAgents.Sqlite
 import CloudAgents.Repository
 import CloudAgents.Ledger.Model
@@ -65,7 +66,9 @@ func curSeqExpr(sessionId: in String): String {
 }
 
 /// The session's current change cursor ("0" before the first write).
-pub func currentSeq(sessionId: in String): Result[String, CloudAgents.Sqlite.DbError] {
+pub func currentSeq(
+  sessionId: in String, sc: in CloudAgents.Scope.TenantScope
+): Result[String, CloudAgents.Sqlite.DbError] {
   val rows = CloudAgents.Sqlite.query("SELECT seq FROM ledger_sessions WHERE session_id = " + lit(sessionId))?
   if CloudAgents.Sqlite.getRowArrayLength(rows) == 0 {
     return Ok(value = "0")
@@ -116,18 +119,24 @@ func itemsFromRows(rows: in CloudAgents.Sqlite.RowArray): slice[WorkItem] {
 }
 
 /// A session's work items in batch order.
-pub func listItems(sessionId: in String): Result[slice[WorkItem], CloudAgents.Sqlite.DbError] {
+pub func listItems(
+  sessionId: in String, sc: in CloudAgents.Scope.TenantScope
+): Result[slice[WorkItem], CloudAgents.Sqlite.DbError] {
   val rows = CloudAgents.Sqlite.query("SELECT " + itemCols + " FROM ledger_items WHERE session_id = " + lit(sessionId) + " ORDER BY CAST(ord AS INTEGER), item_id LIMIT " + toString(itemRowCap))?
   return Ok(value = itemsFromRows(rows))
 }
 
 /// Items changed strictly after cursor `after`.
-pub func itemsChangedAfter(sessionId: in String, after: in String): Result[slice[WorkItem], CloudAgents.Sqlite.DbError] {
+pub func itemsChangedAfter(
+  sessionId: in String, sc: in CloudAgents.Scope.TenantScope, after: in String
+): Result[slice[WorkItem], CloudAgents.Sqlite.DbError] {
   val rows = CloudAgents.Sqlite.query("SELECT " + itemCols + " FROM ledger_items WHERE session_id = " + lit(sessionId) + " AND CAST(updated_seq AS INTEGER) > CAST(" + lit(after) + " AS INTEGER) ORDER BY CAST(ord AS INTEGER), item_id LIMIT " + toString(itemRowCap))?
   return Ok(value = itemsFromRows(rows))
 }
 
-pub func getItem(sessionId: in String, itemId: in String): Result[Option[WorkItem], CloudAgents.Sqlite.DbError] {
+pub func getItem(
+  sessionId: in String, sc: in CloudAgents.Scope.TenantScope, itemId: in String
+): Result[Option[WorkItem], CloudAgents.Sqlite.DbError] {
   val rows = CloudAgents.Sqlite.query("SELECT " + itemCols + " FROM ledger_items WHERE session_id = " + lit(sessionId) + " AND item_id = " + lit(itemId))?
   if CloudAgents.Sqlite.getRowArrayLength(rows) == 0 {
     return Ok(value = None)
@@ -139,9 +148,13 @@ pub func getItem(sessionId: in String, itemId: in String): Result[Option[WorkIte
 /// the batch; an existing id only has a non-empty title / url updated (its
 /// state is untouched). Parallel slices; returns how many were new.
 pub func registerItems(
-  sessionId: in String, ids: in slice[String], titles: in slice[String], urls: in slice[String]
+  sessionId: in String,
+  sc: in CloudAgents.Scope.TenantScope,
+  ids: in slice[String],
+  titles: in slice[String],
+  urls: in slice[String],
 ): Result[Int, CloudAgents.Sqlite.DbError] {
-  val existing = listItems(sessionId)?
+  val existing = listItems(sessionId, sc)?
   val now = CloudAgents.Repository.nowMillis()
   var stmts: slice[String] = [ensureSessionSql(sessionId, now), bumpSeqSql(sessionId)]
   var added = 0
@@ -220,6 +233,7 @@ pub record AutoEntry {
 /// concurrent change (nothing written — re-read and re-plan).
 pub func applyItemUpdate(
   sessionId: in String,
+  sc: in CloudAgents.Scope.TenantScope,
   updated: in WorkItem,
   readVersion: in String,
   fromState: in String,
@@ -362,7 +376,7 @@ func insertEntrySelectSql(
 }
 
 pub func listTransitions(
-  sessionId: in String, itemId: in String
+  sessionId: in String, sc: in CloudAgents.Scope.TenantScope, itemId: in String
 ): Result[slice[WorkItemTransition], CloudAgents.Sqlite.DbError] {
   val rows = CloudAgents.Sqlite.query("SELECT item_id, from_state, to_state, actor, reason, at FROM ledger_transitions WHERE session_id = " + lit(sessionId) + " AND item_id = " + lit(itemId) + " ORDER BY CAST(seq AS INTEGER), at LIMIT 500")?
   var acc: slice[WorkItemTransition] = []
@@ -442,7 +456,9 @@ val entryOrder = " ORDER BY CAST(created_seq AS INTEGER), created_at, id"
 
 /// Insert a fully decided entry (id / createdAt / seq fields are assigned
 /// here) and return it as stored.
-pub func insertEntry(e: in LedgerEntry): Result[LedgerEntry, CloudAgents.Sqlite.DbError] {
+pub func insertEntry(
+  sc: in CloudAgents.Scope.TenantScope, e: in LedgerEntry
+): Result[LedgerEntry, CloudAgents.Sqlite.DbError] {
   val id = newLedgerId()
   val now = CloudAgents.Repository.nowMillis()
   val cur = curSeqExpr(e.sessionId)
@@ -504,13 +520,15 @@ pub func insertEntry(e: in LedgerEntry): Result[LedgerEntry, CloudAgents.Sqlite.
     lit(e.provisional) +
     ")"
   CloudAgents.Sqlite.executeTransaction([ensureSessionSql(e.sessionId, now), bumpSeqSql(e.sessionId), insert])?
-  match getEntry(e.sessionId, id)? {
+  match getEntry(e.sessionId, sc, id)? {
     case Some(stored) -> return Ok(value = stored)
     case None -> return Err(error = ExecFailed(sql = "SELECT ledger entry", message = "entry vanished after insert"))
   }
 }
 
-pub func getEntry(sessionId: in String, entryId: in String): Result[Option[LedgerEntry], CloudAgents.Sqlite.DbError] {
+pub func getEntry(
+  sessionId: in String, sc: in CloudAgents.Scope.TenantScope, entryId: in String
+): Result[Option[LedgerEntry], CloudAgents.Sqlite.DbError] {
   val rows = CloudAgents.Sqlite.query("SELECT " + entryCols + " FROM ledger_entries WHERE session_id = " + lit(sessionId) + " AND id = " + lit(entryId))?
   if CloudAgents.Sqlite.getRowArrayLength(rows) == 0 {
     return Ok(value = None)
@@ -521,7 +539,9 @@ pub func getEntry(sessionId: in String, entryId: in String): Result[Option[Ledge
 /// A session's entries in creation order (bounded).
 /// Past the cap these are the NEWEST entryRowCap entries (recent activity is
 /// never the part dropped); countEntries says whether any were.
-pub func listEntries(sessionId: in String): Result[slice[LedgerEntry], CloudAgents.Sqlite.DbError] {
+pub func listEntries(
+  sessionId: in String, sc: in CloudAgents.Scope.TenantScope
+): Result[slice[LedgerEntry], CloudAgents.Sqlite.DbError] {
   val newest = "SELECT " + entryCols + " FROM ledger_entries WHERE session_id = " + lit(sessionId) +
     " ORDER BY CAST(created_seq AS INTEGER) DESC, created_at DESC, id DESC LIMIT " +
     toString(entryRowCap)
@@ -531,7 +551,7 @@ pub func listEntries(sessionId: in String): Result[slice[LedgerEntry], CloudAgen
 
 /// The entries of this session whose `supersedes` names `entryId`.
 pub func supersedingEntryIds(
-  sessionId: in String, entryId: in String
+  sessionId: in String, sc: in CloudAgents.Scope.TenantScope, entryId: in String
 ): Result[slice[String], CloudAgents.Sqlite.DbError] {
   val rows = CloudAgents.Sqlite.query("SELECT id FROM ledger_entries WHERE session_id = " + lit(sessionId) + " AND supersedes = " + lit(entryId) + entryOrder)?
   var acc: slice[String] = []
@@ -544,7 +564,7 @@ pub func supersedingEntryIds(
 }
 
 pub func entriesChangedAfter(
-  sessionId: in String, after: in String
+  sessionId: in String, sc: in CloudAgents.Scope.TenantScope, after: in String
 ): Result[slice[LedgerEntry], CloudAgents.Sqlite.DbError] {
   val rows = CloudAgents.Sqlite.query("SELECT " + entryCols + " FROM ledger_entries WHERE session_id = " + lit(sessionId) + " AND CAST(updated_seq AS INTEGER) > CAST(" + lit(after) + " AS INTEGER)" + entryOrder + " LIMIT " + toString(entryRowCap))?
   return Ok(value = entriesFromRows(rows))
@@ -554,6 +574,7 @@ pub func entriesChangedAfter(
 /// transaction. `reviewState` / `kind` are already validated.
 pub func reviewEntry(
   sessionId: in String,
+  sc: in CloudAgents.Scope.TenantScope,
   entry: in LedgerEntry,
   reviewState: in String,
   kind: in String,
@@ -635,7 +656,12 @@ func getFeedbackOrFail(sessionId: in String, id: in String): Result[Feedback, Cl
 
 /// Add session- or item-level feedback (kind / body already validated).
 pub func addFeedback(
-  sessionId: in String, itemId: in String, kind: in String, body: in String, by: in String
+  sessionId: in String,
+  sc: in CloudAgents.Scope.TenantScope,
+  itemId: in String,
+  kind: in String,
+  body: in String,
+  by: in String,
 ): Result[Feedback, CloudAgents.Sqlite.DbError] {
   val now = CloudAgents.Repository.nowMillis()
   val fid = newLedgerId()
@@ -645,7 +671,9 @@ pub func addFeedback(
 
 /// A session's feedback, oldest first (bounded).
 /// Past the cap these are the NEWEST feedbackRowCap rows, oldest first.
-pub func listFeedback(sessionId: in String): Result[slice[Feedback], CloudAgents.Sqlite.DbError] {
+pub func listFeedback(
+  sessionId: in String, sc: in CloudAgents.Scope.TenantScope
+): Result[slice[Feedback], CloudAgents.Sqlite.DbError] {
   val newest = "SELECT " + feedbackCols + " FROM ledger_feedback WHERE session_id = " + lit(sessionId) +
     " ORDER BY created_at DESC, id DESC LIMIT " +
     toString(feedbackRowCap)
@@ -654,21 +682,27 @@ pub func listFeedback(sessionId: in String): Result[slice[Feedback], CloudAgents
 }
 
 /// Feedback on one entry, oldest first.
-pub func feedbackForEntry(sessionId: in String, entryId: in String): Result[slice[Feedback], CloudAgents.Sqlite.DbError] {
+pub func feedbackForEntry(
+  sessionId: in String, sc: in CloudAgents.Scope.TenantScope, entryId: in String
+): Result[slice[Feedback], CloudAgents.Sqlite.DbError] {
   val rows = CloudAgents.Sqlite.query("SELECT " + feedbackCols + " FROM ledger_feedback WHERE session_id = " + lit(sessionId) + " AND entry_id = " + lit(entryId) + " ORDER BY created_at, id")?
   return Ok(value = feedbackFromRows(rows))
 }
 
 /// Row counts, to tell a capped list from a complete one.
-pub func countItems(sessionId: in String): Result[Int, CloudAgents.Sqlite.DbError] {
+pub func countItems(sessionId: in String, sc: in CloudAgents.Scope.TenantScope): Result[Int, CloudAgents.Sqlite.DbError] {
   return countWhere("ledger_items", sessionId)
 }
 
-pub func countEntries(sessionId: in String): Result[Int, CloudAgents.Sqlite.DbError] {
+pub func countEntries(
+  sessionId: in String, sc: in CloudAgents.Scope.TenantScope
+): Result[Int, CloudAgents.Sqlite.DbError] {
   return countWhere("ledger_entries", sessionId)
 }
 
-pub func countFeedback(sessionId: in String): Result[Int, CloudAgents.Sqlite.DbError] {
+pub func countFeedback(
+  sessionId: in String, sc: in CloudAgents.Scope.TenantScope
+): Result[Int, CloudAgents.Sqlite.DbError] {
   return countWhere("ledger_feedback", sessionId)
 }
 
@@ -701,7 +735,9 @@ func decimalToInt(s: in String): Int {
 /// Progress and attention counts computed in SQL over every row, so the
 /// numbers stay right however large the session grows (the lists shipped to
 /// the client are capped; these are not).
-pub func summaryOf(sessionId: in String, pendingFeedback: in Int): Result[LedgerSummary, CloudAgents.Sqlite.DbError] {
+pub func summaryOf(
+  sessionId: in String, sc: in CloudAgents.Scope.TenantScope, pendingFeedback: in Int
+): Result[LedgerSummary, CloudAgents.Sqlite.DbError] {
   val sid = lit(sessionId)
   val items = "FROM ledger_items WHERE session_id = " + sid
   val entries = "FROM ledger_entries WHERE session_id = " + sid
@@ -762,14 +798,16 @@ func stateCount(fromItems: in String, state: in String): String {
 }
 
 pub func feedbackChangedAfter(
-  sessionId: in String, after: in String
+  sessionId: in String, sc: in CloudAgents.Scope.TenantScope, after: in String
 ): Result[slice[Feedback], CloudAgents.Sqlite.DbError] {
   val rows = CloudAgents.Sqlite.query("SELECT " + feedbackCols + " FROM ledger_feedback WHERE session_id = " + lit(sessionId) + " AND CAST(updated_seq AS INTEGER) > CAST(" + lit(after) + " AS INTEGER) ORDER BY created_at, id LIMIT " + toString(feedbackRowCap))?
   return Ok(value = feedbackFromRows(rows))
 }
 
 /// Undelivered feedback count.
-pub func pendingFeedbackCount(sessionId: in String): Result[Int, CloudAgents.Sqlite.DbError] {
+pub func pendingFeedbackCount(
+  sessionId: in String, sc: in CloudAgents.Scope.TenantScope
+): Result[Int, CloudAgents.Sqlite.DbError] {
   val rows = CloudAgents.Sqlite.query("SELECT CAST(COUNT(*) AS TEXT) FROM ledger_feedback WHERE session_id = " + lit(sessionId) + " AND delivered_at = ''")?
   if CloudAgents.Sqlite.getRowArrayLength(rows) == 0 {
     return Ok(value = 0)
@@ -813,8 +851,10 @@ pub record ClaimedFeedback {
   pub entrySummary: String
 }
 
-pub func collectFeedback(sessionId: in String, via: in String): Result[slice[Feedback], CloudAgents.Sqlite.DbError] {
-  val claimed = claimFeedback(sessionId, via)?
+pub func collectFeedback(
+  sessionId: in String, sc: in CloudAgents.Scope.TenantScope, via: in String
+): Result[slice[Feedback], CloudAgents.Sqlite.DbError] {
+  val claimed = claimFeedback(sessionId, sc, via)?
   var acc: slice[Feedback] = []
   var i = 0
   while i < claimed.length.toInt() {
@@ -827,7 +867,9 @@ pub func collectFeedback(sessionId: in String, via: in String): Result[slice[Fee
 /// Claim every undelivered feedback row and read it back, with the entry
 /// summaries the agent sees, in one query: a failure after the claim
 /// releases the batch, so nothing is ever marked delivered unseen.
-pub func claimFeedback(sessionId: in String, via: in String): Result[slice[ClaimedFeedback], CloudAgents.Sqlite.DbError] {
+pub func claimFeedback(
+  sessionId: in String, sc: in CloudAgents.Scope.TenantScope, via: in String
+): Result[slice[ClaimedFeedback], CloudAgents.Sqlite.DbError] {
   val now = CloudAgents.Repository.nowMillis()
   val batch = newLedgerId()
   CloudAgents.Sqlite.executeTransaction([ensureSessionSql(sessionId, now), bumpSeqSql(sessionId), "UPDATE ledger_feedback SET delivered_at = " + lit(now) + ", delivered_via = " + lit(via) + ", delivery_batch = " + lit(batch) + ", updated_seq = " + curSeqExpr(sessionId) + " WHERE session_id = " + lit(sessionId) + " AND delivered_at = ''"])?
@@ -842,7 +884,7 @@ pub func claimFeedback(sessionId: in String, via: in String): Result[slice[Claim
     case Err(e) -> {
       // The claim committed but the agent will get an error, not the rows:
       // release them so the next check delivers them.
-      releaseFeedbackBatch(sessionId, batch)
+      releaseFeedbackBatch(sessionId, sc, batch)
       return Err(error = e)
     }
   }
@@ -876,7 +918,7 @@ func prefixedCols(cols: in String, alias: in String): String {
 
 /// Undo a claim whose rows never reached the agent (best-effort: a failure
 /// here leaves them claimed, which the caller already reports as an error).
-pub func releaseFeedbackBatch(sessionId: in String, batch: in String): Unit {
+pub func releaseFeedbackBatch(sessionId: in String, sc: in CloudAgents.Scope.TenantScope, batch: in String): Unit {
   val sql = "UPDATE ledger_feedback SET delivered_at = '', delivered_via = '', delivery_batch = '', updated_seq = " +
     curSeqExpr(sessionId) +
     " WHERE session_id = " +
@@ -916,7 +958,9 @@ pub func emptySyncRow(itemId: in String): SyncRow {
 }
 
 /// Every item's sync row for a session (items never synced have none).
-pub func syncRows(sessionId: in String): Result[slice[SyncRow], CloudAgents.Sqlite.DbError] {
+pub func syncRows(
+  sessionId: in String, sc: in CloudAgents.Scope.TenantScope
+): Result[slice[SyncRow], CloudAgents.Sqlite.DbError] {
   val rows = CloudAgents.Sqlite.query("SELECT item_id, synced_label, comment_id, comment_hash, last_error, synced_at, attempted_at FROM ledger_github_sync WHERE session_id = " + lit(sessionId))?
   var acc: slice[SyncRow] = []
   var i = 0
@@ -938,7 +982,9 @@ pub func syncRows(sessionId: in String): Result[slice[SyncRow], CloudAgents.Sqli
   return Ok(value = acc)
 }
 
-pub func saveSyncRow(sessionId: in String, row: in SyncRow): Result[Unit, CloudAgents.Sqlite.DbError] {
+pub func saveSyncRow(
+  sessionId: in String, sc: in CloudAgents.Scope.TenantScope, row: in SyncRow
+): Result[Unit, CloudAgents.Sqlite.DbError] {
   CloudAgents.Sqlite.execute("INSERT INTO ledger_github_sync (session_id, item_id, synced_label, comment_id, comment_hash, last_error, synced_at, attempted_at) VALUES (" + lit(sessionId) + ", " + lit(row.itemId) + ", " + lit(row.syncedLabel) + ", " + lit(row.commentId) + ", " + lit(row.commentHash) + ", " + lit(row.lastError) + ", " + lit(row.syncedAt) + ", " + lit(row.attemptedAt) + ") ON CONFLICT(session_id, item_id) DO UPDATE SET synced_label = excluded.synced_label, comment_id = excluded.comment_id, comment_hash = excluded.comment_hash, last_error = excluded.last_error, synced_at = excluded.synced_at, attempted_at = excluded.attempted_at")?
   return Ok(())
 }
@@ -956,7 +1002,9 @@ func ownsIssueSql(): String {
 /// The session's GitHub-backed items it owns for syncing (see ownsIssueSql):
 /// empty for an archived session, and without any issue a later session has
 /// since taken over.
-pub func ownedIssueItems(sessionId: in String): Result[slice[String], CloudAgents.Sqlite.DbError] {
+pub func ownedIssueItems(
+  sessionId: in String, sc: in CloudAgents.Scope.TenantScope
+): Result[slice[String], CloudAgents.Sqlite.DbError] {
   val rows = CloudAgents.Sqlite.query("SELECT i.item_id FROM ledger_items i JOIN sessions s ON s.id = i.session_id WHERE i.session_id = " + lit(sessionId) + " AND " + ownsIssueSql())?
   var acc: slice[String] = []
   var i = 0
@@ -998,7 +1046,9 @@ func ensureSyncRunRow(sessionId: in String): Result[Unit, CloudAgents.Sqlite.DbE
 
 /// Record that a sync pass was attempted for the session (`error` "" when
 /// it got as far as the items).
-pub func markSyncAttempt(sessionId: in String, error: in String): Result[Unit, CloudAgents.Sqlite.DbError] {
+pub func markSyncAttempt(
+  sessionId: in String, sc: in CloudAgents.Scope.TenantScope, error: in String
+): Result[Unit, CloudAgents.Sqlite.DbError] {
   ensureSyncRunRow(sessionId)?
   CloudAgents.Sqlite.execute("UPDATE ledger_github_sync_runs SET attempted_at = " + lit(CloudAgents.Repository.nowMillis()) + ", last_error = " + lit(error) + " WHERE session_id = " + lit(sessionId))?
   return Ok(())
@@ -1008,7 +1058,9 @@ pub func markSyncAttempt(sessionId: in String, error: in String): Result[Unit, C
 /// token to release with, or "" when another pass holds an unexpired lease.
 /// One conditional UPDATE, so two callers can't both win (SQLite serializes
 /// writers). A crashed pass's lease simply expires.
-pub func acquireSyncLease(sessionId: in String, leaseMillis: in Long): Result[String, CloudAgents.Sqlite.DbError] {
+pub func acquireSyncLease(
+  sessionId: in String, sc: in CloudAgents.Scope.TenantScope, leaseMillis: in Long
+): Result[String, CloudAgents.Sqlite.DbError] {
   ensureSyncRunRow(sessionId)?
   val now = CloudAgents.Repository.nowMillisLong()
   val until = toString(now + leaseMillis)
@@ -1020,7 +1072,9 @@ pub func acquireSyncLease(sessionId: in String, leaseMillis: in Long): Result[St
 }
 
 /// Give the lease back, if it is still the one `token` names.
-pub func releaseSyncLease(sessionId: in String, token: in String): Result[Unit, CloudAgents.Sqlite.DbError] {
+pub func releaseSyncLease(
+  sessionId: in String, sc: in CloudAgents.Scope.TenantScope, token: in String
+): Result[Unit, CloudAgents.Sqlite.DbError] {
   CloudAgents.Sqlite.execute("UPDATE ledger_github_sync_runs SET lease_until = '0' WHERE session_id = " + lit(sessionId) + " AND lease_until = " + lit(token))?
   return Ok(())
 }
@@ -1242,7 +1296,10 @@ pub func pendingObserverSessions(limit: in Int): Result[slice[String], CloudAgen
 /// recorded later: no longer undeclared, and no longer awaiting review unless
 /// the owner already reviewed it.
 pub func applyRetroMatch(
-  sessionId: in String, observedId: in String, declaredId: in String
+  sessionId: in String,
+  sc: in CloudAgents.Scope.TenantScope,
+  observedId: in String,
+  declaredId: in String,
 ): Result[Unit, CloudAgents.Sqlite.DbError] {
   val now = CloudAgents.Repository.nowMillis()
   CloudAgents.Sqlite.executeTransaction([ensureSessionSql(sessionId, now), bumpSeqSql(sessionId), "UPDATE ledger_entries SET matched_entry_id = " + lit(declaredId) + ", undeclared = 'false', provisional = 'false', severity = 'info', review_state = CASE WHEN review_state = 'pending' THEN 'not_required' ELSE review_state END, updated_seq = " + curSeqExpr(sessionId) + " WHERE session_id = " + lit(sessionId) + " AND id = " + lit(observedId)])?
@@ -1250,7 +1307,9 @@ pub func applyRetroMatch(
 }
 
 /// A run ended: its mid-run observations are final now.
-pub func settleProvisional(sessionId: in String): Result[Unit, CloudAgents.Sqlite.DbError] {
+pub func settleProvisional(
+  sessionId: in String, sc: in CloudAgents.Scope.TenantScope
+): Result[Unit, CloudAgents.Sqlite.DbError] {
   val rows = CloudAgents.Sqlite.query("SELECT COUNT(*) FROM ledger_entries WHERE session_id = " + lit(sessionId) + " AND provisional = 'true'")?
   if decimalToInt(col(CloudAgents.Sqlite.getRowArrayValue(rows, 0), 0)) == 0 {
     return Ok(())
@@ -1262,8 +1321,10 @@ pub func settleProvisional(sessionId: in String): Result[Unit, CloudAgents.Sqlit
 
 /// Every entry of a session for reconciliation: declared and observed, newest
 /// first up to the cap (the window a candidate can match sits at the end).
-pub func entriesForReconcile(sessionId: in String): Result[slice[LedgerEntry], CloudAgents.Sqlite.DbError] {
-  return listEntries(sessionId)
+pub func entriesForReconcile(
+  sessionId: in String, sc: in CloudAgents.Scope.TenantScope
+): Result[slice[LedgerEntry], CloudAgents.Sqlite.DbError] {
+  return listEntries(sessionId, sc)
 }
 
 // ── Repo policy cache ─────────────────────────────────────────────────────────
@@ -1273,7 +1334,9 @@ pub record PolicyCache {
   pub error: String
 }
 
-pub func getPolicyCache(sessionId: in String): Result[PolicyCache, CloudAgents.Sqlite.DbError] {
+pub func getPolicyCache(
+  sessionId: in String, sc: in CloudAgents.Scope.TenantScope
+): Result[PolicyCache, CloudAgents.Sqlite.DbError] {
   val rows = CloudAgents.Sqlite.query("SELECT policy_status, policy_json, policy_error FROM ledger_sessions WHERE session_id = " + lit(sessionId))?
   if CloudAgents.Sqlite.getRowArrayLength(rows) == 0 {
     return Ok(value = PolicyCache(status = "", json = "", error = ""))
@@ -1283,7 +1346,11 @@ pub func getPolicyCache(sessionId: in String): Result[PolicyCache, CloudAgents.S
 }
 
 pub func setPolicyCache(
-  sessionId: in String, status: in String, json: in String, error: in String
+  sessionId: in String,
+  sc: in CloudAgents.Scope.TenantScope,
+  status: in String,
+  json: in String,
+  error: in String,
 ): Result[Unit, CloudAgents.Sqlite.DbError] {
   val now = CloudAgents.Repository.nowMillis()
   CloudAgents.Sqlite.executeTransaction([ensureSessionSql(sessionId, now), "UPDATE ledger_sessions SET policy_status = " + lit(status) + ", policy_json = " + lit(json) + ", policy_error = " + lit(error) + " WHERE session_id = " + lit(sessionId)])?
@@ -1301,8 +1368,8 @@ pub record InboxEntry {
 
 /// Every pending review / blocking entry across `userId`'s sessions,
 /// blocking first, then oldest first (bounded).
-pub func inboxForUser(userId: in String): Result[slice[InboxEntry], CloudAgents.Sqlite.DbError] {
-  val rows = CloudAgents.Sqlite.query("SELECT " + prefixedCols(entryCols, "e") + ", s.repo_url, s.branch FROM ledger_entries e JOIN sessions s ON s.id = e.session_id" + " WHERE s.user_id = " + lit(userId) + " AND e.review_state = 'pending' AND e.severity IN ('review', 'blocking')" + " ORDER BY CASE e.severity WHEN 'blocking' THEN 0 ELSE 1 END, e.created_at, e.id LIMIT 500")?
+pub func inboxForUser(sc: in CloudAgents.Scope.TenantScope): Result[slice[InboxEntry], CloudAgents.Sqlite.DbError] {
+  val rows = CloudAgents.Sqlite.query("SELECT " + prefixedCols(entryCols, "e") + ", s.repo_url, s.branch FROM ledger_entries e JOIN sessions s ON s.id = e.session_id" + " WHERE s.user_id = " + lit(sc.userId) + " AND e.review_state = 'pending' AND e.severity IN ('review', 'blocking')" + " ORDER BY CASE e.severity WHEN 'blocking' THEN 0 ELSE 1 END, e.created_at, e.id LIMIT 500")?
   var acc: slice[InboxEntry] = []
   var i = 0
   val len = CloudAgents.Sqlite.getRowArrayLength(rows)

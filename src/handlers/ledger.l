@@ -302,7 +302,7 @@ pub func ledgerItemStateHandler(id: in String, req: in LedgerItemStateRequest): 
 /// GET /api/ledger/inbox — every pending review / blocking entry across the
 /// current user's sessions.
 pub func ledgerInboxHandler(): Result[InboxView, Web.ApiError] {
-  match inbox(CloudAgents.Auth.currentUserId()) {
+  match inbox(CloudAgents.Auth.requestScope()) {
     case Ok(v) -> return Ok(v)
     case Err(f) -> return Err(toApiError(f))
   }
@@ -427,7 +427,7 @@ func syncOne(sessionId: in String, budget: in Int): Result[SyncOutcome, String] 
   val ctx = match sessionContext(sessionId) { case Ok(c) -> c; case Err(f) -> return Err(error = f.message) }
   // One pass per session at a time: two at once could each post the blocker
   // comment before either records its id.
-  val lease = match acquireSyncLease(sessionId, syncLeaseMillis) {
+  val lease = match acquireSyncLease(sessionId, ctx.tenantScope, syncLeaseMillis) {
     case Ok(t) -> t
     case Err(e) -> return Err(error = CloudAgents.Sqlite.dbErrorMessage(e))
   }
@@ -435,7 +435,7 @@ func syncOne(sessionId: in String, budget: in Int): Result[SyncOutcome, String] 
     return Err(error = syncBusyMessage)
   }
   defer {
-    match releaseSyncLease(sessionId, lease) {
+    match releaseSyncLease(sessionId, ctx.tenantScope, lease) {
       case Ok(_) -> ()
       case Err(e) -> println(
         "WARNING: ledger sync lease for " + sessionId + " not released: " +
@@ -447,20 +447,20 @@ func syncOne(sessionId: in String, budget: in Int): Result[SyncOutcome, String] 
     case Ok(t) -> t
     case Err(_) -> {
       val msg = "the session owner has no usable GitHub token; reconnect GitHub to sync"
-      noteAttempt(sessionId, msg)
+      noteAttempt(ctx, msg)
       return Err(error = msg)
     }
   }
-  noteAttempt(sessionId, "")
+  noteAttempt(ctx, "")
   return Ok(value = syncSession(ctx, HttpGitHubPort(token = token), budget))
 }
 
 // Best-effort: a failure here only affects which session goes first next run.
-func noteAttempt(sessionId: in String, error: in String): Unit {
-  match markSyncAttempt(sessionId, error) {
+func noteAttempt(ctx: in SessionContext, error: in String): Unit {
+  match markSyncAttempt(ctx.sessionId, ctx.tenantScope, error) {
     case Ok(_) -> ()
     case Err(e) -> println(
-      "WARNING: ledger sync attempt for " + sessionId + " not recorded: " +
+      "WARNING: ledger sync attempt for " + ctx.sessionId + " not recorded: " +
         CloudAgents.Sqlite.dbErrorMessage(e)
     )
   }

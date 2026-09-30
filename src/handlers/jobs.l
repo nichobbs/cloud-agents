@@ -606,8 +606,7 @@ func runOneJob(job: in CloudAgents.Repository.ScheduledJob): JobRunOutcome {
   val runResult = CloudAgents.Docker.runSessionMessageBlocking(
     repoUrl = session.repoUrl,
     branch = session.branch,
-    prompt = CloudAgents.Ledger.Service.nextRunPromptPrefix(sessionId, job.userId, profileId) +
-      job.prompt,
+    prompt = CloudAgents.Ledger.Service.nextRunPromptPrefix(sessionId, profileId) + job.prompt,
     sessionId = sessionId,
     harness = harness,
     model = session.model,

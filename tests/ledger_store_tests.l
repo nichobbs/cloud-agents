@@ -15,6 +15,7 @@ import CloudAgents.Ledger.Model
 import CloudAgents.Ledger.Schema
 import CloudAgents.Ledger.StateMachine
 import CloudAgents.Ledger.Store
+import CloudAgents.Scope as TestScope
 import CloudAgents.Ledger.Summary
 import extern System.Environment as Env
 
@@ -60,7 +61,7 @@ func register(sid: in String, ids: in slice[String]): Int {
     urls = urls.append("")
     i = i + 1
   }
-  match registerItems(sid, ids, titles, urls) {
+  match registerItems(sid, testScope(), ids, titles, urls) {
     case Ok(n) -> return n
     case Err(e) -> {
       assertTrue(false, "registerItems failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
@@ -70,7 +71,7 @@ func register(sid: in String, ids: in slice[String]): Int {
 }
 
 func mustItem(sid: in String, id: in String): WorkItem {
-  match getItem(sid, id) {
+  match getItem(sid, testScope(), id) {
     case Ok(Some(w)) -> return w
     case Ok(None) -> panic("item not found: " + id)
     case Err(e) -> panic("getItem failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
@@ -107,7 +108,7 @@ func move(
           detail = plan.blockerDetail
         )
       }
-      match applyItemUpdate(sid, plan.item, current.updatedSeq, plan.fromState, plan.stateChanged, actor, reason, auto, plan.resolvesBlockers) {
+      match applyItemUpdate(sid, testScope(), plan.item, current.updatedSeq, plan.fromState, plan.stateChanged, actor, reason, auto, plan.resolvesBlockers) {
         case Ok(applied) -> return applied
         case Err(e) -> panic("apply failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
       }
@@ -154,7 +155,7 @@ func declaredEntry(sid: in String, kind: in String, severity: in String, review:
 }
 
 func mustInsert(e: in LedgerEntry): LedgerEntry {
-  match insertEntry(e) {
+  match insertEntry(testScope(), e) {
     case Ok(stored) -> return stored
     case Err(err) -> panic("insertEntry failed: " + CloudAgents.Sqlite.dbErrorMessage(err))
   }
@@ -177,7 +178,7 @@ test "register is ordered and idempotent" {
   }
   assertEqualInt(register("s1", ["gh:a/b#1", "gh:a/b#2"]), 2, "two new")
   assertEqualInt(register("s1", ["gh:a/b#2", "gh:a/b#3"]), 1, "one new, one refreshed")
-  match listItems("s1") {
+  match listItems("s1", testScope()) {
     case Ok(items) -> {
       assertEqualInt(items.length.toInt(), 3, "three items")
       assertEqual(items[0].id, "gh:a/b#1", "batch order")
@@ -186,7 +187,7 @@ test "register is ordered and idempotent" {
     }
     case Err(e) -> assertTrue(false, CloudAgents.Sqlite.dbErrorMessage(e))
   }
-  match listItems("other") {
+  match listItems("other", testScope()) {
     case Ok(items) -> assertEqualInt(items.length.toInt(), 0, "session scoped")
     case Err(e) -> assertTrue(false, CloudAgents.Sqlite.dbErrorMessage(e))
   }
@@ -204,7 +205,7 @@ test "a transition writes the item, a transition row and a blocker entry" {
   assertEqual(w.state, "blocked", "state persisted")
   assertEqualInt(w.blockedBy.length.toInt(), 1, "blockedBy persisted")
   assertEqual(w.blockedBy[0], "gh:a/b#2", "blocker ref")
-  match listTransitions("s1", "gh:a/b#1") {
+  match listTransitions("s1", testScope(), "gh:a/b#1") {
     case Ok(ts) -> {
       assertEqualInt(ts.length.toInt(), 2, "two transitions")
       assertEqual(ts[1].fromState, "in_progress", "from")
@@ -213,7 +214,7 @@ test "a transition writes the item, a transition row and a blocker entry" {
     }
     case Err(e) -> assertTrue(false, CloudAgents.Sqlite.dbErrorMessage(e))
   }
-  match listEntries("s1") {
+  match listEntries("s1", testScope()) {
     case Ok(es) -> {
       assertEqualInt(es.length.toInt(), 1, "one automatic blocker entry")
       assertEqual(es[0].kind, "blocker", "kind")
@@ -225,7 +226,7 @@ test "a transition writes the item, a transition row and a blocker entry" {
   }
   // Leaving blocked resolves the automatic blocker.
   assertTrue(move("s1", "gh:a/b#1", "queued", "", noStrings(), "human"), "requeue applied")
-  match listEntries("s1") {
+  match listEntries("s1", testScope()) {
     case Ok(es) -> assertEqual(es[0].reviewState, "resolved", "blocker resolved")
     case Err(e) -> assertTrue(false, CloudAgents.Sqlite.dbErrorMessage(e))
   }
@@ -257,18 +258,18 @@ test "a stale plan is rejected and writes nothing" {
         summary = plan.blockerSummary,
         detail = ""
       )
-      match applyItemUpdate("s1", plan.item, stale.updatedSeq, plan.fromState, plan.stateChanged, "human", "which API?", auto, false) {
+      match applyItemUpdate("s1", testScope(), plan.item, stale.updatedSeq, plan.fromState, plan.stateChanged, "human", "which API?", auto, false) {
         case Ok(applied) -> assertTrue(not applied, "stale version must not apply")
         case Err(e) -> assertTrue(false, CloudAgents.Sqlite.dbErrorMessage(e))
       }
     }
   }
   assertEqual(mustItem("s1", "gh:a/b#1").state, "in_progress", "state unchanged")
-  match listEntries("s1") {
+  match listEntries("s1", testScope()) {
     case Ok(es) -> assertEqualInt(es.length.toInt(), 0, "no blocker written")
     case Err(e) -> assertTrue(false, CloudAgents.Sqlite.dbErrorMessage(e))
   }
-  match listTransitions("s1", "gh:a/b#1") {
+  match listTransitions("s1", testScope(), "gh:a/b#1") {
     case Ok(ts) -> assertEqualInt(ts.length.toInt(), 1, "only the winning transition")
     case Err(e) -> assertTrue(false, CloudAgents.Sqlite.dbErrorMessage(e))
   }
@@ -284,16 +285,19 @@ test "entries round-trip and the cursor returns only changes" {
   assertEqual(e1.files[0], "src/db.l", "files")
   assertEqual(e1.tags[0], "schema", "tags")
   assertEqual(e1.transcriptSeq, "12", "transcript ref")
-  val cursor = match currentSeq("s1") { case Ok(s) -> s; case Err(e) -> panic(CloudAgents.Sqlite.dbErrorMessage(e)) }
+  val cursor = match currentSeq("s1", testScope()) {
+    case Ok(s) -> s
+    case Err(e) -> panic(CloudAgents.Sqlite.dbErrorMessage(e))
+  }
   val e2 = mustInsert(declaredEntry("s1", "note", "info", "not_required"))
-  match entriesChangedAfter("s1", cursor) {
+  match entriesChangedAfter("s1", testScope(), cursor) {
     case Ok(es) -> {
       assertEqualInt(es.length.toInt(), 1, "only the new entry")
       assertEqual(es[0].id, e2.id, "the new entry")
     }
     case Err(e) -> assertTrue(false, CloudAgents.Sqlite.dbErrorMessage(e))
   }
-  match currentSeq("never-written") {
+  match currentSeq("never-written", testScope()) {
     case Ok(s) -> assertEqual(s, "0", "fresh session cursor")
     case Err(e) -> assertTrue(false, CloudAgents.Sqlite.dbErrorMessage(e))
   }
@@ -305,7 +309,7 @@ test "a review updates the entry and queues feedback delivered exactly once" {
     cleanupTestDb(path)
   }
   val e = mustInsert(declaredEntry("s1", "shortcut", "review", "pending"))
-  match reviewEntry("s1", e, "rejected", "reject", "Don't skip; quarantine it.", "gh-1") {
+  match reviewEntry("s1", testScope(), e, "rejected", "reject", "Don't skip; quarantine it.", "gh-1") {
     case Ok(f) -> {
       assertEqual(f.entryId, e.id, "linked to the entry")
       assertEqual(f.itemId, "gh:a/b#1", "inherits the entry's item")
@@ -313,11 +317,11 @@ test "a review updates the entry and queues feedback delivered exactly once" {
     }
     case Err(err) -> assertTrue(false, CloudAgents.Sqlite.dbErrorMessage(err))
   }
-  match addFeedback("s1", "", "directive", "Also update the changelog.", "gh-1") {
+  match addFeedback("s1", testScope(), "", "directive", "Also update the changelog.", "gh-1") {
     case Ok(_) -> ()
     case Err(err) -> assertTrue(false, CloudAgents.Sqlite.dbErrorMessage(err))
   }
-  match getEntry("s1", e.id) {
+  match getEntry("s1", testScope(), e.id) {
     case Ok(Some(stored)) -> {
       assertEqual(stored.reviewState, "rejected", "review state")
       assertEqual(stored.reviewComment, "Don't skip; quarantine it.", "comment")
@@ -326,22 +330,22 @@ test "a review updates the entry and queues feedback delivered exactly once" {
     case Ok(None) -> assertTrue(false, "entry missing")
     case Err(err) -> assertTrue(false, CloudAgents.Sqlite.dbErrorMessage(err))
   }
-  match pendingFeedbackCount("s1") {
+  match pendingFeedbackCount("s1", testScope()) {
     case Ok(n) -> assertEqualInt(n, 2, "two pending")
     case Err(err) -> assertTrue(false, CloudAgents.Sqlite.dbErrorMessage(err))
   }
-  match collectFeedback("s1", "mcp_poll") {
+  match collectFeedback("s1", testScope(), "mcp_poll") {
     case Ok(fs) -> {
       assertEqualInt(fs.length.toInt(), 2, "both delivered")
       assertEqual(fs[0].deliveredVia, "mcp_poll", "via")
     }
     case Err(err) -> assertTrue(false, CloudAgents.Sqlite.dbErrorMessage(err))
   }
-  match collectFeedback("s1", "mcp_poll") {
+  match collectFeedback("s1", testScope(), "mcp_poll") {
     case Ok(fs) -> assertEqualInt(fs.length.toInt(), 0, "never delivered twice")
     case Err(err) -> assertTrue(false, CloudAgents.Sqlite.dbErrorMessage(err))
   }
-  match pendingFeedbackCount("s1") {
+  match pendingFeedbackCount("s1", testScope()) {
     case Ok(n) -> assertEqualInt(n, 0, "none pending")
     case Err(err) -> assertTrue(false, CloudAgents.Sqlite.dbErrorMessage(err))
   }
@@ -352,21 +356,21 @@ test "a released claim is delivered again" {
   defer {
     cleanupTestDb(path)
   }
-  match addFeedback("s1", "", "directive", "Use API v2.", "gh-1") {
+  match addFeedback("s1", testScope(), "", "directive", "Use API v2.", "gh-1") {
     case Ok(_) -> ()
     case Err(err) -> assertTrue(false, CloudAgents.Sqlite.dbErrorMessage(err))
   }
-  match collectFeedback("s1", "mcp_poll") {
+  match collectFeedback("s1", testScope(), "mcp_poll") {
     case Ok(fs) -> assertEqualInt(fs.length.toInt(), 1, "claimed")
     case Err(err) -> assertTrue(false, CloudAgents.Sqlite.dbErrorMessage(err))
   }
   // The read-back failure path: the claimed batch is handed back.
-  releaseFeedbackBatch("s1", batchOf("s1"))
-  match pendingFeedbackCount("s1") {
+  releaseFeedbackBatch("s1", testScope(), batchOf("s1"))
+  match pendingFeedbackCount("s1", testScope()) {
     case Ok(n) -> assertEqualInt(n, 1, "pending again")
     case Err(err) -> assertTrue(false, CloudAgents.Sqlite.dbErrorMessage(err))
   }
-  match collectFeedback("s1", "mcp_poll") {
+  match collectFeedback("s1", testScope(), "mcp_poll") {
     case Ok(fs) -> assertEqualInt(fs.length.toInt(), 1, "delivered on the next check")
     case Err(err) -> assertTrue(false, CloudAgents.Sqlite.dbErrorMessage(err))
   }
@@ -397,7 +401,7 @@ test "the inbox is scoped to the owner and orders blocking first" {
   mustInsert(declaredEntry("s1", "blocker", "blocking", "pending"))
   mustInsert(declaredEntry("s1", "note", "info", "not_required"))
   mustInsert(declaredEntry("s2", "shortcut", "review", "pending"))
-  match inboxForUser("alice") {
+  match inboxForUser(testScope()) {
     case Ok(xs) -> {
       assertEqualInt(xs.length.toInt(), 2, "alice sees her two attention entries only")
       assertEqual(xs[0].ledgerEntry.kind, "blocker", "blocking first")
@@ -412,15 +416,15 @@ test "policy cache round-trips" {
   defer {
     cleanupTestDb(path)
   }
-  match getPolicyCache("s1") {
+  match getPolicyCache("s1", testScope()) {
     case Ok(p) -> assertEqual(p.status, "", "unfetched")
     case Err(e) -> assertTrue(false, CloudAgents.Sqlite.dbErrorMessage(e))
   }
-  match setPolicyCache("s1", "loaded", "{\"rules\":[]}", "") {
+  match setPolicyCache("s1", testScope(), "loaded", "{\"rules\":[]}", "") {
     case Ok(_) -> ()
     case Err(e) -> assertTrue(false, CloudAgents.Sqlite.dbErrorMessage(e))
   }
-  match getPolicyCache("s1") {
+  match getPolicyCache("s1", testScope()) {
     case Ok(p) -> {
       assertEqual(p.status, "loaded", "status")
       assertEqual(p.json, "{\"rules\":[]}", "json")
@@ -503,7 +507,7 @@ test "past the row cap the entry list keeps the newest" {
     cleanupTestDb(path)
   }
   bulkNotes("s1", entryRowCap + 3)
-  match listEntries("s1") {
+  match listEntries("s1", testScope()) {
     case Ok(es) -> {
       assertEqualInt(es.length.toInt(), entryRowCap, "capped")
       assertEqual(es[0].createdSeq, "4", "the oldest three are the ones left out")
@@ -511,7 +515,7 @@ test "past the row cap the entry list keeps the newest" {
     }
     case Err(e) -> assertTrue(false, CloudAgents.Sqlite.dbErrorMessage(e))
   }
-  match countEntries("s1") {
+  match countEntries("s1", testScope()) {
     case Ok(n) -> assertEqualInt(n, entryRowCap + 3, "count sees every row")
     case Err(e) -> assertTrue(false, CloudAgents.Sqlite.dbErrorMessage(e))
   }
@@ -528,9 +532,15 @@ test "the SQL summary matches the in-memory one" {
   val _ = move("s1", "gh:a/b#2", "blocked", "waiting", ["gh:a/b#1"], "agent")
   val _ = mustInsert(declaredEntry("s1", "shortcut", "review", "pending"))
   val _ = mustInsert(declaredEntry("s1", "decision", "info", "not_required"))
-  val fromSql = match summaryOf("s1", 2) { case Ok(x) -> x; case Err(e) -> panic(CloudAgents.Sqlite.dbErrorMessage(e)) }
-  val items = match listItems("s1") { case Ok(xs) -> xs; case Err(e) -> panic(CloudAgents.Sqlite.dbErrorMessage(e)) }
-  val entries = match listEntries("s1") {
+  val fromSql = match summaryOf("s1", testScope(), 2) {
+    case Ok(x) -> x
+    case Err(e) -> panic(CloudAgents.Sqlite.dbErrorMessage(e))
+  }
+  val items = match listItems("s1", testScope()) {
+    case Ok(xs) -> xs
+    case Err(e) -> panic(CloudAgents.Sqlite.dbErrorMessage(e))
+  }
+  val entries = match listEntries("s1", testScope()) {
     case Ok(es) -> es
     case Err(e) -> panic(CloudAgents.Sqlite.dbErrorMessage(e))
   }
@@ -547,7 +557,7 @@ test "re-registering without a url keeps the item's url" {
   val ids: slice[String] = ["gh:a/b#7"]
   val titles: slice[String] = ["Seven"]
   val custom: slice[String] = ["https://example.com/tracker/7"]
-  match registerItems("s1", ids, titles, custom) {
+  match registerItems("s1", testScope(), ids, titles, custom) {
     case Ok(_) -> ()
     case Err(e) -> assertTrue(false, CloudAgents.Sqlite.dbErrorMessage(e))
   }
@@ -556,4 +566,10 @@ test "re-registering without a url keeps the item's url" {
   val fresh: slice[String] = ["gh:a/b#8"]
   val _ = register("s1", fresh)
   assertEqual(mustItem("s1", "gh:a/b#8").url, "https://github.com/a/b/issues/8", "a new item gets the ref's url")
+}
+
+// The scope the store calls run under: SQLite keys ledger rows by session
+// alone, so only the inbox reads the user from it.
+func testScope(): TestScope.TenantScope {
+  return TestScope.personalScope("alice")
 }

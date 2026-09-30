@@ -200,15 +200,15 @@ pub func syncSession(ctx: in SessionContext, port: in GitHubPort, budget: in Int
   val none: slice[String] = []
   val pass = Pass(calls = 0, budget = budget, transitions = 0, errors = none, ensured = none)
   val cache = FactsCache(refs = none, states = none, labelLists = none, errors = none)
-  val items = match listItems(ctx.sessionId) {
+  val items = match listItems(ctx.sessionId, ctx.tenantScope) {
     case Ok(xs) -> xs
     case Err(e) -> return failed(pass, "reading items: " + CloudAgents.Sqlite.dbErrorMessage(e))
   }
-  val rows = match syncRows(ctx.sessionId) {
+  val rows = match syncRows(ctx.sessionId, ctx.tenantScope) {
     case Ok(rs) -> rs
     case Err(e) -> return failed(pass, "reading sync state: " + CloudAgents.Sqlite.dbErrorMessage(e))
   }
-  val owned = match ownedIssueItems(ctx.sessionId) {
+  val owned = match ownedIssueItems(ctx.sessionId, ctx.tenantScope) {
     case Ok(xs) -> xs
     case Err(e) -> return failed(pass, "reading issue ownership: " + CloudAgents.Sqlite.dbErrorMessage(e))
   }
@@ -221,12 +221,12 @@ pub func syncSession(ctx: in SessionContext, port: in GitHubPort, budget: in Int
   var synced = 0
   var k = 0
   while k < due.length.toInt() and pass.calls < pass.budget {
-    val current = match listItems(ctx.sessionId) { case Ok(xs) -> xs; case Err(_) -> items }
+    val current = match listItems(ctx.sessionId, ctx.tenantScope) { case Ok(xs) -> xs; case Err(_) -> items }
     match itemById(current, due[k]) {
       case Some(item) -> inbound(ctx, port, pass, cache, item, current, rowFor(rows, item.id))
       case _ -> ()
     }
-    val after = match listItems(ctx.sessionId) { case Ok(xs) -> xs; case Err(_) -> current }
+    val after = match listItems(ctx.sessionId, ctx.tenantScope) { case Ok(xs) -> xs; case Err(_) -> current }
     match itemById(after, due[k]) {
       case Some(item) -> {
         if outbound(ctx, port, pass, cache, item, rowFor(rows, item.id)) {
@@ -528,7 +528,7 @@ func persist(ctx: in SessionContext, row: in SyncRow, error: in String): Unit {
     syncedAt = at,
     attemptedAt = now
   )
-  match saveSyncRow(ctx.sessionId, toSave) {
+  match saveSyncRow(ctx.sessionId, ctx.tenantScope, toSave) {
     case Ok(_) -> ()
     case Err(e) -> println(
       "WARNING: ledger sync state for " + row.itemId + " not saved: " +

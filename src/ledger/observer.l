@@ -79,8 +79,11 @@ pub func buildWindow(
   }
   val rendered = renderWindow(events, windowMaxChars)
   val more = rendered.events > 0 and eventsAfter(target.sessionId, rendered.lastSeq)
-  val items = match listItems(target.sessionId) { case Ok(xs) -> xs; case Err(e) -> return Err(error = dbFailure(e)) }
-  val entries = match listEntries(target.sessionId) {
+  val items = match listItems(target.sessionId, target.tenantScope) {
+    case Ok(xs) -> xs
+    case Err(e) -> return Err(error = dbFailure(e))
+  }
+  val entries = match listEntries(target.sessionId, target.tenantScope) {
     case Ok(es) -> es
     case Err(e) -> return Err(error = dbFailure(e))
   }
@@ -303,7 +306,7 @@ pub func acceptReport(
     ready = ready.append(withItem(c, itemId))
     i = i + 1
   }
-  var entries = match listEntries(target.sessionId) {
+  var entries = match listEntries(target.sessionId, target.tenantScope) {
     case Ok(es) -> es
     case Err(e) -> return Err(error = dbFailure(e))
   }
@@ -323,7 +326,7 @@ pub func acceptReport(
       duplicates = duplicates + 1
     } else {
       val isUndeclared = verdict.action == "undeclared"
-      val stored = match insertEntry(observedEntry(target, c, verdict, isUndeclared, provisional, rules)) {
+      val stored = match insertEntry(target.tenantScope, observedEntry(target, c, verdict, isUndeclared, provisional, rules)) {
         case Ok(e) -> e
         case Err(e) -> return Err(error = dbFailure(e))
       }
@@ -347,14 +350,14 @@ pub func acceptReport(
   val retro = retroMatches(entries, cfg)
   var r = 0
   while r < retro.length.toInt() {
-    match applyRetroMatch(target.sessionId, retro[r].observedId, retro[r].declaredId) {
+    match applyRetroMatch(target.sessionId, target.tenantScope, retro[r].observedId, retro[r].declaredId) {
       case Ok(_) -> ()
       case Err(e) -> return Err(error = dbFailure(e))
     }
     r = r + 1
   }
   if not provisional {
-    match settleProvisional(target.sessionId) {
+    match settleProvisional(target.sessionId, target.tenantScope) {
       case Ok(_) -> ()
       case Err(e) -> return Err(error = dbFailure(e))
     }
