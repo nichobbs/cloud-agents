@@ -13,6 +13,7 @@ import Std.Testing
 import Std.Uuid
 import CloudAgents.Pg
 import CloudAgents.Pg.Migrate
+import CloudAgents.PgStore
 import CloudAgents.PgStore.Webhooks as Hooks
 import CloudAgents.PgStore.TokenCache as Tokens
 import CloudAgents.Repository
@@ -85,6 +86,42 @@ func tokenEntry(r: in Result[Option[GitHubTokenCacheEntry], DbError]): String {
   }
 }
 
+// Pin a row's created_at so ordering assertions never depend on two inserts
+// landing in different milliseconds. `table`/`keyCol` are literals.
+func setCreatedAt(
+  sc: in CloudAgents.Pg.TenantScope, table: in String, keyCol: in String, key: in String, ms: in String
+): Unit {
+  val u = match CloudAgents.PgStore.open(sc) { case Ok(v) -> v; case Err(e) -> panic(dbErrorMessage(e)) }
+  defer {
+    CloudAgents.PgStore.release(u)
+  }
+  match CloudAgents.PgStore.ex(u, "UPDATE " + table + " SET created_at = " + CloudAgents.Pg.msIn(1) + " WHERE " + keyCol + " = @p0", [key, ms]) {
+    case Ok(n) -> assertEqualInt(n, 1, "pinned " + table + " " + key)
+    case Err(e) -> panic(dbErrorMessage(e))
+  }
+  unit(CloudAgents.PgStore.commit(u))
+}
+
+// Write a token-cache row directly with an explicit expiry, to exercise the
+// TTL and grace window without waiting for them.
+func seedToken(tokenHash: in String, userId: in String, login: in String, expiresAt: in String): Unit {
+  val conn = match CloudAgents.Pg.connectService() {
+    case Ok(c) -> c
+    case Err(e) -> panic(CloudAgents.Pg.pgErrorMessage(e))
+  }
+  defer {
+    conn.close()
+  }
+  match conn.execute("INSERT INTO github_token_cache (token_hash, user_id, login, expires_at) VALUES (@p0, @p1, @p2, " + CloudAgents.Pg.msIn(3) + ")", [tokenHash, userId, login, expiresAt]) {
+    case Ok(_) -> ()
+    case Err(e) -> panic("seed failed: " + e.message)
+  }
+}
+
+func msAgo(millis: in Int): String {
+  return toString(CloudAgents.Repository.nowMillisLong() - millis.toLong())
+}
+
 test "webhooks: no duplicates, per user, newest first, delete" {
   if not live() {
     return
@@ -94,7 +131,9 @@ test "webhooks: no duplicates, per user, newest first, delete" {
   val a = hook(Hooks.addWebhook(sc, "https://example.com/a"))
   val again = hook(Hooks.addWebhook(sc, "https://example.com/a"))
   assertEqual(again.id, a.id, "a repeated URL returns the existing webhook")
-  hook(Hooks.addWebhook(sc, "https://example.com/b"))
+  val b = hook(Hooks.addWebhook(sc, "https://example.com/b"))
+  setCreatedAt(sc, "webhooks", "id", a.id, "1700000001000")
+  setCreatedAt(sc, "webhooks", "id", b.id, "1700000002000")
   val other = CloudAgents.Pg.TenantScope(tenantId = sc.tenantId, userId = "gh-pgw-other-" + uid())
   hook(Hooks.addWebhook(other, "https://other.example.com/"))
   val mine = hooks(Hooks.listWebhooks(sc))
@@ -116,6 +155,8 @@ test "events are enqueued only with a webhook, listed oldest first, delivered on
   hook(Hooks.addWebhook(sc, "https://example.com/hook"))
   unit(Hooks.enqueueWebhookEvent(sc, "s1", "r1", "succeeded"))
   unit(Hooks.enqueueWebhookEvent(sc, "s2", "r2", "failed"))
+  setCreatedAt(sc, "webhook_events", "run_id", "r2", "1700000002000")
+  setCreatedAt(sc, "webhook_events", "run_id", "r1", "1700000001000")
   val pending = events(Hooks.listPendingWebhookEvents(sc))
   assertEqualInt(pending.length.toInt(), 2, "two pending")
   assertEqual(pending[0].runId, "r1", "oldest first")
@@ -158,4 +199,56 @@ test "the token cache resolves identities and denials without a tenant" {
   assertEqual(tokenEntry(Tokens.cachedGitHubToken(valid)), user + "/octo-renamed", "a re-cache replaces the entry")
   unit(Tokens.invalidateGitHubToken(valid))
   assertEqual(tokenEntry(Tokens.cachedGitHubToken(valid)), "<none>", "invalidated")
+}
+
+test "the token cache hides expired entries, keeps identities for the grace window, and sweeps after it" {
+  if not live() {
+    return
+  }
+  migrate()
+  val user = "gh-pgw-" + uid()
+  val recent = "tok-" + uid()
+  val stale = "tok-" + uid()
+  // Expired a minute ago: inside the two-hour grace window.
+  seedToken(recent, user, "octo", msAgo(60000))
+  // Expired three hours ago: past the grace window.
+  seedToken(stale, user, "octo", msAgo(10800000))
+  assertEqual(tokenEntry(Tokens.cachedGitHubToken(recent)), "<none>", "an expired entry is not a cache hit")
+  assertEqual(
+    tokenEntry(Tokens.lookupHistoricalGitHubToken(recent)),
+    user + "/octo",
+    "still an identity within the grace window"
+  )
+  assertEqual(tokenEntry(Tokens.lookupHistoricalGitHubToken(stale)), "<none>", "not past the grace window")
+  // Any write sweeps rows past the grace window, and only those.
+  unit(Tokens.cacheGitHubTokenDenied("tok-" + uid()))
+  val conn = match CloudAgents.Pg.connectService() {
+    case Ok(c) -> c
+    case Err(e) -> panic(CloudAgents.Pg.pgErrorMessage(e))
+  }
+  defer {
+    conn.close()
+  }
+  match conn.query("SELECT token_hash FROM github_token_cache WHERE token_hash IN (@p0, @p1)", [recent, stale]) {
+    case Ok(rows) -> {
+      assertEqualInt(rows.length.toInt(), 1, "the stale row was swept")
+      assertEqual(CloudAgents.PgStore.col(rows[0], "token_hash"), recent, "the recent row was kept")
+    }
+    case Err(e) -> panic(e.message)
+  }
+  // A fresh denial expires sooner than a validated identity.
+  val denied = "tok-" + uid()
+  val valid = "tok-" + uid()
+  unit(Tokens.cacheGitHubTokenDenied(denied))
+  unit(Tokens.cacheGitHubToken(valid, user, "octo"))
+  // Expiry windows, checked against the database clock with a few seconds of slack for clock skew.
+  val window = "SELECT token_hash FROM github_token_cache WHERE token_hash = @p0 AND expires_at > now() + @p1::bigint * interval '1 millisecond' AND expires_at <= now() + @p2::bigint * interval '1 millisecond'"
+  match conn.query(window, [denied, "0", "65000"]) {
+    case Ok(rows) -> assertEqualInt(rows.length.toInt(), 1, "a denial lasts a minute")
+    case Err(e) -> panic(e.message)
+  }
+  match conn.query(window, [valid, "540000", "605000"]) {
+    case Ok(rows) -> assertEqualInt(rows.length.toInt(), 1, "an identity lasts ten minutes")
+    case Err(e) -> panic(e.message)
+  }
 }
