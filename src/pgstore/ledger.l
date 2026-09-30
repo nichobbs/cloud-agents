@@ -1231,3 +1231,32 @@ pub func claimObserverPass(
   val n = exec(sc, "UPDATE ledger_observer SET pending = false WHERE session_id = @p0 AND pending", [sessionId])?
   return Ok(value = n == 1)
 }
+
+// ─── Cross-tenant listings (docs/phase11-postgres-tenancy.md §5.3a) ─────────
+func listSessionIds(fn: in String, limit: in Int): Result[slice[String], CloudAgents.Sqlite.DbError] {
+  val u = CloudAgents.PgStore.openUnscoped()?
+  defer {
+    CloudAgents.PgStore.release(u)
+  }
+  val rows = CloudAgents.PgStore.q(u, "SELECT session_id FROM public." + fn + "(@p0::integer)", [toString(limit)])?
+  CloudAgents.PgStore.commit(u)?
+  var acc: slice[String] = []
+  for r in rows {
+    acc = acc.append(c(r, "session_id"))
+  }
+  return Ok(value = acc)
+}
+
+/// Sessions with owned GitHub-backed items that need a sync pass, in every
+/// tenant, least recently attempted first (`list_sessions_to_sync`). Each
+/// session's pass then takes its sync lease under the session's route scope.
+pub func sessionsToSync(limit: in Int): Result[slice[String], CloudAgents.Sqlite.DbError] {
+  return listSessionIds("list_sessions_to_sync", limit)
+}
+
+/// Observed sessions with a pass waiting, in every tenant, the
+/// longest-waiting first (`list_observer_passes`). Each pass is then claimed
+/// by `claimObserverPass` under the session's route scope.
+pub func pendingObserverSessions(limit: in Int): Result[slice[String], CloudAgents.Sqlite.DbError] {
+  return listSessionIds("list_observer_passes", limit)
+}

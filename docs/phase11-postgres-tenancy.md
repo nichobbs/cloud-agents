@@ -310,10 +310,19 @@ concurrent callers on any instance:
   on the row still holding what the claim wrote. The SQLite store uses the
   same semantics (a conditional UPDATE per job), so the cut-over changes
   nothing for jobs.
-- **Leased queues**: the graph-ingest outbox, the ledger's GitHub sync and
-  observer passes are claimed through their claim functions with a 5-minute
-  lease (§5.3). A crashed pass's items become claimable again when it
-  expires.
+- **Leased queues**: the graph-ingest outbox is claimed through its claim
+  function with a 5-minute lease (§5.3); a crashed drain's rows become
+  claimable again when it expires.
+- **Ledger sync and observer passes** already claim per session, so they
+  need no new lease: a sync pass takes the session's sync lease
+  (`acquireSyncLease`, 30 minutes, longer than a full budget of GitHub
+  calls), and an observer pass is taken by clearing the session's pending
+  flag in one conditional update (`claimObserverPass`). What Postgres adds is
+  how a sweep finds them across tenants: `list_sessions_to_sync` and
+  `list_observer_passes` are read-only listing functions, hardened like the
+  claim functions, that return scope keys only; each session is then claimed
+  under its route scope. Issue ownership for sync is decided within a
+  tenant.
 - **Runs.** Until the runner agent owns runs (ADR-008 §2, §4), the instance
   that starts a run drives it. The session row records that instance
   (`run_instance`: `CLOUDAGENTS_INSTANCE_ID`, else the host name) and a
@@ -344,7 +353,8 @@ concurrent callers on any instance:
 |---|---|
 | Run heartbeat interval | 30 s |
 | A run is stranded after | 2 min without a heartbeat |
-| Lease on outbox, ledger-sync, observer and reaper items | 5 min |
+| Lease on outbox and warm-reaper items | 5 min |
+| Ledger-sync lease per session (existing) | 30 min |
 | A scheduled run interrupted mid-run | marked failed, not re-run |
 
 ### 5.4 Visibility rule
