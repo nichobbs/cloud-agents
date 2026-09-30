@@ -174,9 +174,12 @@ the service role still sees only the calling user's row.
 ### 4.4 Message search
 
 The FTS5 table is replaced by a generated `tsvector` column on `messages`
-with a GIN index, queried with `websearch_to_tsquery`. The current query
-builder in `src/handlers/search.l` (quote-injection handling, term
-semantics) is rewritten against the new syntax. Any behaviour difference
+with a GIN index, queried with `plainto_tsquery` rewritten to prefix
+lexemes (every word a case-insensitive prefix, operators inert; see
+docs/phase9-message-search.md §8). `websearch_to_tsquery` was rejected
+because it interprets `OR`, `-` and quotes as operators, which the FTS5
+builder deliberately neutralises. The FTS5 builder moved beside its SQL in
+`CloudAgents.Db`, and both stores take the user's raw term. Any behaviour difference
 from FTS5 (prefix matching, phrase handling, ranking) is either matched or
 listed in the PR and in `docs/phase9-message-search.md`.
 
