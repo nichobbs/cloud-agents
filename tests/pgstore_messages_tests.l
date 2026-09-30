@@ -365,3 +365,26 @@ test "search covers only the caller's own sessions in the tenant" {
   assertEqual(found(other, "needle"), "needle theirs", "and the other way round")
   assertEqual(found(fresh(), "needle"), "", "another tenant finds nothing")
 }
+
+// Pins the differences from FTS5 that docs/phase9-message-search.md §8
+// documents, so a change in them is a visible test change.
+test "search: the documented differences from FTS5" {
+  if not live() {
+    return
+  }
+  migrate()
+  val sc = fresh()
+  val sid = newSession(sc)
+  msg(Store.addMessage(sid, sc, "user", "rename foo-bar now"))
+  msg(Store.addMessage(sid, sc, "user", "split foo bar later"))
+  msg(Store.addMessage(sid, sc, "user", "meet at the café"))
+  msg(Store.addMessage(sid, sc, "user", "it's done"))
+  assertEqual(found(sc, "foo-bar"), "rename foo-bar now", "a hyphenated term needs the whole compound, unlike FTS5")
+  assertEqual(found(sc, "cafe"), "", "accents are not folded, unlike FTS5")
+  assertEqual(found(sc, "café"), "meet at the café", "an accented term finds itself")
+  assertEqual(
+    found(sc, "it's"),
+    "it's done",
+    "an apostrophe splits a word into prefixes that must all match, as in FTS5"
+  )
+}
