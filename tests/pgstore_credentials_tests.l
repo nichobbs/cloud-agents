@@ -147,6 +147,9 @@ test "SQLite integer-cast parity for GitHub's expiry fields" {
   assertEqual(Vault.sqliteIntPrefix(""), "0", "empty is 0")
   assertEqual(Vault.sqliteIntPrefix("abc"), "0", "no digits is 0")
   assertEqual(Vault.sqliteIntPrefix("-"), "0", "a lone sign is 0")
+  assertEqual(Vault.sqliteIntPrefix("99999999999999999999"), "9999999999", "a huge value clamps to a far-future expiry")
+  assertEqual(Vault.sqliteIntPrefix("-99999999999999999999"), "-9999999999", "and a huge negative one to the far past")
+  assertEqual(Vault.sqliteIntPrefix("0000000000003600"), "3600", "leading zeros do not count toward the clamp")
 }
 
 test "credentials round-trip encrypted, byte-ordered, and a re-put replaces the value" {
@@ -234,6 +237,8 @@ test "refresh status applies the five-minute access margin and SQLite's cast sem
   assertEqual(refreshState(u), "r2:expired:fresh", "two minutes left is inside the margin")
   upsertRefresh(u, "r3", "-100", "-100")
   assertEqual(refreshState(u), "r3:expired:expired", "both past")
+  upsertRefresh(u, "r5", "99999999999999999999", "99999999999999999999")
+  assertEqual(refreshState(u), "r5:fresh:fresh", "an absurd expiry is stored as far future, not an error")
   upsertRefresh(u, "r4", "", "junk")
   assertEqual(refreshState(u), "r4:expired:expired", "missing or malformed expiries are 0, as on SQLite")
   match Vault.deleteGitHubOAuthRefresh(us(u)) {

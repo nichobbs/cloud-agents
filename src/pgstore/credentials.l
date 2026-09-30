@@ -30,6 +30,7 @@ import CloudAgents.Pg
 import CloudAgents.PgStore
 import CloudAgents.PgStore.Library
 import CloudAgents.Repository
+import CloudAgents.Scope
 import CloudAgents.Sqlite
 
 func newId(): String {
@@ -48,7 +49,8 @@ func cryptoErr(e: in CloudAgents.Crypto.CryptoError): CloudAgents.Repository.Cre
 /// spaces and sign, then the leading digits; anything else (including "")
 /// is 0. GitHub's `expires_in` fields go through this so a missing or
 /// malformed value expires the token immediately, exactly as on SQLite.
-/// Capped at 15 digits so the result always fits `bigint`.
+/// Values beyond ten significant digits are clamped to 9999999999 seconds,
+/// so the resulting timestamp is always in Postgres's range.
 pub func sqliteIntPrefix(s: in String): String {
   var i = 0
   while i < s.length and s.substring(i, 1) == " " {
@@ -62,7 +64,7 @@ pub func sqliteIntPrefix(s: in String): String {
     i = i + 1
   }
   var digits = ""
-  while i < s.length and digits.length < 15 {
+  while i < s.length {
     val c = s.substring(i, 1)
     if not (c >= "0" and c <= "9") {
       break
@@ -73,11 +75,20 @@ pub func sqliteIntPrefix(s: in String): String {
   if digits.length == 0 {
     return "0"
   }
-  return sign + digits
-}
-
-func userScopeOf(userId: in String): CloudAgents.Pg.UserScope {
-  return CloudAgents.Pg.UserScope(userId = userId)
+  // SQLite saturates a huge value instead of failing; Postgres would raise
+  // "timestamp out of range" adding it to now(). Clamp to ten digits (about
+  // 317 years), which is a far-future expiry either way.
+  var n = 0
+  while n < digits.length and digits.substring(n, 1) == "0" {
+    n = n + 1
+  }
+  if n == digits.length {
+    return "0"
+  }
+  if digits.length - n > 10 {
+    return sign + "9999999999"
+  }
+  return sign + digits.substring(n, digits.length - n)
 }
 
 /// Store (or replace) a credential, encrypting the value at rest.
@@ -250,7 +261,7 @@ pub func decryptedCredentialValue(
 pub func decryptedCredentialsForProfile(
   sc: in CloudAgents.Pg.TenantScope, profileId: in String
 ): Result[slice[CloudAgents.Repository.CredentialValue], CloudAgents.Repository.CredentialError] {
-  val user = userScopeOf(sc.userId)
+  val user = CloudAgents.Scope.userScope(sc.userId)
   if profileId.length == 0 {
     return decryptedCredentials(user)
   }

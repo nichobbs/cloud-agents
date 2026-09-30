@@ -12,6 +12,7 @@ import Std.Uuid
 import Std.File
 import CloudAgents.Crypto
 import CloudAgents.Pg
+import CloudAgents.Scope
 import CloudAgents.Db
 import CloudAgents.Sqlite
 import CloudAgents.ToolPolicy
@@ -2028,7 +2029,7 @@ pub func decryptedCredentialsForProfile(
 ): Result[slice[CredentialValue], CredentialError] {
   val userId = sc.userId
   if profileId.length == 0 {
-    return decryptedCredentials(CloudAgents.Pg.UserScope(userId = userId))
+    return decryptedCredentials(CloudAgents.Scope.userScope(userId))
   }
   val profile = match getProfile(profileId, sc) { case Ok(p) -> p; case Err(e) -> return Err(Db(error = e)) }
   match profile {
@@ -2039,7 +2040,7 @@ pub func decryptedCredentialsForProfile(
     }
     case Some(p) -> {
       if p.credentialMode != "selected" {
-        return decryptedCredentials(CloudAgents.Pg.UserScope(userId = userId))
+        return decryptedCredentials(CloudAgents.Scope.userScope(userId))
       }
       // Least-privilege at the crypto boundary (#267): decrypt ONLY the granted
       // credentials, rather than decrypting every one and discarding the rest.
