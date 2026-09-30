@@ -129,7 +129,7 @@ test "branchSession rejects a parent session not found or not owned by user" {
 
   // No parent session inserted at all → the id resolves to zero owned rows.
   expectBranchValidationFailed(
-    CloudAgents.Repository.branchSession("missing-parent", "", "new-1", "gh-1", ""),
+    CloudAgents.Repository.branchSession("missing-parent", "", "new-1", CloudAgents.Pg.personalScope("gh-1"), ""),
     "parent session not found or not owned by user",
     "unknown parent id is rejected"
   )
@@ -138,7 +138,7 @@ test "branchSession rejects a parent session not found or not owned by user" {
   // (selectSessionByIdSql is scoped by (id, user_id)).
   insertTestSession("owned-by-other", "gh-other")
   expectBranchValidationFailed(
-    CloudAgents.Repository.branchSession("owned-by-other", "", "new-2", "gh-1", ""),
+    CloudAgents.Repository.branchSession("owned-by-other", "", "new-2", CloudAgents.Pg.personalScope("gh-1"), ""),
     "parent session not found or not owned by user",
     "parent owned by a different user is rejected"
   )
@@ -153,7 +153,13 @@ test "branchSession rejects a forked message that does not exist" {
   insertTestSession("parent-1", "gh-1")
   // Valid, owned parent — but the forked message id points at nothing.
   expectBranchValidationFailed(
-    CloudAgents.Repository.branchSession("parent-1", "no-such-message", "new-3", "gh-1", ""),
+    CloudAgents.Repository.branchSession(
+      "parent-1",
+      "no-such-message",
+      "new-3",
+      CloudAgents.Pg.personalScope("gh-1"),
+      ""
+    ),
     "forked message not found",
     "unknown forked message id is rejected"
   )
@@ -170,7 +176,7 @@ test "branchSession rejects a forked message from a different session" {
   // A real message, but it belongs to other-session, not parent-2.
   val strayMsg = mustAddMessage("other-session", "user", "hello from the other session")
   expectBranchValidationFailed(
-    CloudAgents.Repository.branchSession("parent-2", strayMsg.id, "new-4", "gh-1", ""),
+    CloudAgents.Repository.branchSession("parent-2", strayMsg.id, "new-4", CloudAgents.Pg.personalScope("gh-1"), ""),
     "forked message does not belong to parent session",
     "a message from another session is rejected"
   )

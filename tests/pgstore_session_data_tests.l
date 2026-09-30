@@ -14,6 +14,7 @@ import CloudAgents.Pg
 import CloudAgents.Pg.Migrate
 import CloudAgents.PgStore.SessionData as Store
 import CloudAgents.PgStore.Sessions as Sessions
+import CloudAgents.PgStore.Messages
 import CloudAgents.Repository
 import CloudAgents.SessionStore
 import CloudAgents.Sqlite
@@ -221,4 +222,168 @@ test "groups sort by byte order and deleting one reparents children and sessions
   }
   assertEqual(groupNames(other), "", "another user's list is empty")
   assertEqual(groupNames(sc), "Gamma<>,Root<>,", "owner sees the update")
+}
+
+test "attachments link to their message and list oldest first" {
+  if not live() {
+    return
+  }
+  migrate()
+  val sc = fresh()
+  val sid = "s-" + uid()
+  val a = match Store.createAttachment(sid, sc, "a.png", "stored-a", "image/png", "image", "1234") {
+    case Ok(v) -> v
+    case Err(e) -> panic(dbErrorMessage(e))
+  }
+  match Store.createAttachment(sid, sc, "b.pdf", "stored-b", "application/pdf", "document", "99") {
+    case Ok(_) -> ()
+    case Err(e) -> panic(dbErrorMessage(e))
+  }
+  unit(Store.linkAttachmentToMessage(a.id, sc, "msg-1"))
+  match Store.getAttachment(a.id, sc) {
+    case Ok(Some(x)) -> {
+      assertEqual(x.messageId, "msg-1", "linked")
+      assertEqual(x.sizeBytes, "1234", "size text form")
+      assertEqual(x.createdAt, a.createdAt, "exact created_at")
+    }
+    case Ok(None) -> assertTrue(false, "attachment missing")
+    case Err(e) -> panic(dbErrorMessage(e))
+  }
+  val listed = match Store.listAttachments(sid, sc) { case Ok(v) -> v; case Err(e) -> panic(dbErrorMessage(e)) }
+  assertEqualInt(listed.length.toInt(), 2, "two attachments")
+  assertEqual(listed[0].fileName, "a.png", "oldest first")
+  unit(Store.deleteAttachment(a.id, sc))
+  match Store.getAttachment(a.id, sc) {
+    case Ok(Some(_)) -> assertTrue(false, "deleted attachment still present")
+    case Ok(None) -> ()
+    case Err(e) -> panic(dbErrorMessage(e))
+  }
+}
+
+test "highlights and the scan cursor round-trip" {
+  if not live() {
+    return
+  }
+  migrate()
+  val sc = fresh()
+  val sid = "s-" + uid()
+  match Store.highlightScanSeq(sid, sc) {
+    case Ok(v) -> assertEqual(v, "", "never scanned")
+    case Err(e) -> panic(dbErrorMessage(e))
+  }
+  match Store.addHighlight(sid, sc, "m1", "discovery", "Found it", "details") {
+    case Ok(_) -> ()
+    case Err(e) -> panic(dbErrorMessage(e))
+  }
+  unit(Store.setHighlightScanSeq(sid, sc, "000000000005"))
+  unit(Store.setHighlightScanSeq(sid, sc, "000000000007"))
+  match Store.highlightScanSeq(sid, sc) {
+    case Ok(v) -> assertEqual(v, "000000000007", "latest cursor in 12-digit form")
+    case Err(e) -> panic(dbErrorMessage(e))
+  }
+  val hs = match Store.listHighlights(sid, sc) { case Ok(v) -> v; case Err(e) -> panic(dbErrorMessage(e)) }
+  assertEqualInt(hs.length.toInt(), 1, "one highlight")
+  assertEqual(hs[0].title, "Found it", "title")
+}
+
+test "branching copies the transcript prefix and what hangs off it, with its own route" {
+  if not live() {
+    return
+  }
+  migrate()
+  val sc = fresh()
+  ensureTenant(sc.tenantId)
+  val parent = "p-" + uid()
+  match Sessions.addSession(makeAgentSession(sessionId = parent, repoUrl = "https://github.com/acme/app", branch = "main", containerId = "", harness = "claude", model = "m", nativeSessionId = parent), sc) {
+    case Ok(_) -> ()
+    case Err(e) -> panic(dbErrorMessage(e))
+  }
+  match Sessions.setSessionProfile(parent, sc, "prof-1") {
+    case Ok(_) -> ()
+    case Err(e) -> panic(dbErrorMessage(e))
+  }
+  match Store.addSessionRepo(parent, sc, "https://github.com/acme/lib", "dev") {
+    case Ok(_) -> ()
+    case Err(e) -> panic(dbErrorMessage(e))
+  }
+  val m0 = match CloudAgents.PgStore.Messages.addMessage(parent, sc, "user", "one") {
+    case Ok(v) -> v
+    case Err(e) -> panic(dbErrorMessage(e))
+  }
+  val m1 = match CloudAgents.PgStore.Messages.addMessage(parent, sc, "agent", "two") {
+    case Ok(v) -> v
+    case Err(e) -> panic(dbErrorMessage(e))
+  }
+  val m2 = match CloudAgents.PgStore.Messages.addMessage(parent, sc, "user", "three") {
+    case Ok(v) -> v
+    case Err(e) -> panic(dbErrorMessage(e))
+  }
+  match CloudAgents.PgStore.Messages.addComment(m1.id, sc, parent, "note on two") {
+    case Ok(_) -> ()
+    case Err(e) -> panic(dbErrorMessage(e))
+  }
+  match CloudAgents.PgStore.Messages.addTodo(parent, sc, m2.id, "after the fork") {
+    case Ok(_) -> ()
+    case Err(e) -> panic(dbErrorMessage(e))
+  }
+  match CloudAgents.PgStore.Messages.addTodo(parent, sc, "", "free-standing") {
+    case Ok(_) -> ()
+    case Err(e) -> panic(dbErrorMessage(e))
+  }
+  match Store.addHighlight(parent, sc, m0.id, "discovery", "early", "d") {
+    case Ok(_) -> ()
+    case Err(e) -> panic(dbErrorMessage(e))
+  }
+  val child = "c-" + uid()
+  unit(Store.branchSession(parent, m1.id, child, sc, "feature"))
+  match Sessions.getSession(child, sc) {
+    case Ok(Some(s)) -> {
+      assertEqual(s.branch, "feature", "new branch")
+      assertEqual(s.parentSessionId, parent, "parent recorded")
+      assertEqual(s.forkedFromMessageId, m1.id, "fork point recorded")
+    }
+    case Ok(None) -> assertTrue(false, "child missing")
+    case Err(e) -> panic(dbErrorMessage(e))
+  }
+  match Sessions.sessionProfileId(child, sc) {
+    case Ok(Some(p)) -> assertEqual(p, "prof-1", "profile copied")
+    case Ok(None) -> assertTrue(false, "child missing")
+    case Err(e) -> panic(dbErrorMessage(e))
+  }
+  match Sessions.sessionOwnerUserId(child) {
+    case Ok(Some(o)) -> assertEqual(o, sc.userId, "child has its own route")
+    case Ok(None) -> assertTrue(false, "child route missing")
+    case Err(e) -> panic(dbErrorMessage(e))
+  }
+  val copied = match CloudAgents.PgStore.Messages.listMessages(child, sc) {
+    case Ok(v) -> v
+    case Err(e) -> panic(dbErrorMessage(e))
+  }
+  assertEqualInt(copied.length.toInt(), 2, "prefix up to and including the fork message")
+  assertEqual(copied[1].seq, m1.seq, "sequence numbers kept")
+  assertEqual(copied[1].createdAt, m1.createdAt, "timestamps kept")
+  assertTrue(copied[1].id != m1.id, "fresh message ids")
+  val comments = match CloudAgents.PgStore.Messages.listComments(copied[1].id, sc) {
+    case Ok(v) -> v
+    case Err(e) -> panic(dbErrorMessage(e))
+  }
+  assertEqualInt(comments.length.toInt(), 1, "comment follows its message")
+  val todos = match CloudAgents.PgStore.Messages.listTodos(child, sc) {
+    case Ok(v) -> v
+    case Err(e) -> panic(dbErrorMessage(e))
+  }
+  assertEqualInt(todos.length.toInt(), 1, "only the free-standing todo (the other hangs off a message after the fork)")
+  assertEqual(todos[0].note, "free-standing", "which todo")
+  val hs = match Store.listHighlights(child, sc) { case Ok(v) -> v; case Err(e) -> panic(dbErrorMessage(e)) }
+  assertEqualInt(hs.length.toInt(), 1, "highlight on a copied message follows")
+  assertEqualInt(int(Store.countSessionRepos(child, sc)), 1, "linked repos copied")
+  match Store.branchSession(parent, "no-such-message", "c-" + uid(), sc, "") {
+    case Ok(_) -> assertTrue(false, "an unknown fork point must fail")
+    case Err(e) -> assertTrue(dbErrorMessage(e).contains("forked message not found"), dbErrorMessage(e))
+  }
+  val other = CloudAgents.Pg.TenantScope(tenantId = sc.tenantId, userId = "gh-pgd-other-" + uid())
+  match Store.branchSession(parent, "", "c-" + uid(), other, "") {
+    case Ok(_) -> assertTrue(false, "another user must not branch the session")
+    case Err(e) -> assertTrue(dbErrorMessage(e).contains("parent session not found"), dbErrorMessage(e))
+  }
 }

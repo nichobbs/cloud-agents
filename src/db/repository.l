@@ -3538,6 +3538,7 @@ pub func attachmentsBaseDir(): String {
 /// attachment was sent with has been persisted.
 pub func createAttachment(
   sessionId: in String,
+  sc: in CloudAgents.Pg.TenantScope,
   fileName: in String,
   storedName: in String,
   mimeType: in String,
@@ -3568,13 +3569,17 @@ pub func createAttachment(
 /// link only means the attachment won't show up grouped under its message in
 /// the transcript; it still lists under the session and its bytes are
 /// already safely on disk.
-pub func linkAttachmentToMessage(id: in String, messageId: in String): Result[Unit, CloudAgents.Sqlite.DbError] {
+pub func linkAttachmentToMessage(
+  id: in String, sc: in CloudAgents.Pg.TenantScope, messageId: in String
+): Result[Unit, CloudAgents.Sqlite.DbError] {
   CloudAgents.Sqlite.execute(CloudAgents.Db.setSessionAttachmentMessageIdSql(id, messageId))?
   return Ok(value = ())
 }
 
 /// An attachment by id, or None.
-pub func getAttachment(id: in String): Result[Option[Attachment], CloudAgents.Sqlite.DbError] {
+pub func getAttachment(
+  id: in String, sc: in CloudAgents.Pg.TenantScope
+): Result[Option[Attachment], CloudAgents.Sqlite.DbError] {
   val rows = CloudAgents.Sqlite.query(CloudAgents.Db.selectSessionAttachmentByIdSql(id))?
   val len = CloudAgents.Sqlite.getRowArrayLength(rows)
   if len == 0 {
@@ -3587,13 +3592,15 @@ pub func getAttachment(id: in String): Result[Option[Attachment], CloudAgents.Sq
 /// storeAttachments' pass-2 partial-failure cleanup (#1003) — not used on any
 /// normal (non-error) path, so callers ignore the Result (`val _ = ...`)
 /// exactly as this codebase's other best-effort cleanup calls do.
-pub func deleteAttachment(id: in String): Result[Unit, CloudAgents.Sqlite.DbError] {
+pub func deleteAttachment(id: in String, sc: in CloudAgents.Pg.TenantScope): Result[Unit, CloudAgents.Sqlite.DbError] {
   CloudAgents.Sqlite.execute(CloudAgents.Db.deleteSessionAttachmentSql(id))?
   return Ok(value = ())
 }
 
 /// A session's attachments, oldest first.
-pub func listAttachments(sessionId: in String): Result[slice[Attachment], CloudAgents.Sqlite.DbError] {
+pub func listAttachments(
+  sessionId: in String, sc: in CloudAgents.Pg.TenantScope
+): Result[slice[Attachment], CloudAgents.Sqlite.DbError] {
   val rows = CloudAgents.Sqlite.query(CloudAgents.Db.selectSessionAttachmentsBySessionSql(sessionId))?
   var acc: slice[Attachment] = []
   var i = 0
@@ -3920,7 +3927,12 @@ func rowToHighlight(r: in CloudAgents.Sqlite.Row): Highlight {
 
 /// Store one extracted highlight, anchored to the agent message it came from.
 pub func addHighlight(
-  sessionId: in String, messageId: in String, kind: in String, title: in String, detail: in String
+  sessionId: in String,
+  sc: in CloudAgents.Pg.TenantScope,
+  messageId: in String,
+  kind: in String,
+  title: in String,
+  detail: in String,
 ): Result[Highlight, CloudAgents.Sqlite.DbError] {
   val id = newId()
   val ts = nowMillis()
@@ -3939,7 +3951,9 @@ pub func addHighlight(
 }
 
 /// A session's highlights, newest first.
-pub func listHighlights(sessionId: in String): Result[slice[Highlight], CloudAgents.Sqlite.DbError] {
+pub func listHighlights(
+  sessionId: in String, sc: in CloudAgents.Pg.TenantScope
+): Result[slice[Highlight], CloudAgents.Sqlite.DbError] {
   val rows = CloudAgents.Sqlite.query(CloudAgents.Db.selectHighlightsSql(sessionId))?
   var acc: slice[Highlight] = []
   var i = 0
@@ -3953,7 +3967,9 @@ pub func listHighlights(sessionId: in String): Result[slice[Highlight], CloudAge
 
 /// The highest transcript seq already scanned for highlights, or "" when the
 /// session has never been scanned.
-pub func highlightScanSeq(sessionId: in String): Result[String, CloudAgents.Sqlite.DbError] {
+pub func highlightScanSeq(
+  sessionId: in String, sc: in CloudAgents.Pg.TenantScope
+): Result[String, CloudAgents.Sqlite.DbError] {
   val rows = CloudAgents.Sqlite.query(CloudAgents.Db.selectHighlightScanSeqSql(sessionId))?
   val len = CloudAgents.Sqlite.getRowArrayLength(rows)
   if len == 0 {
@@ -3964,7 +3980,9 @@ pub func highlightScanSeq(sessionId: in String): Result[String, CloudAgents.Sqli
 }
 
 /// Record the highest transcript seq scanned for highlights.
-pub func setHighlightScanSeq(sessionId: in String, lastSeq: in String): Result[Unit, CloudAgents.Sqlite.DbError] {
+pub func setHighlightScanSeq(
+  sessionId: in String, sc: in CloudAgents.Pg.TenantScope, lastSeq: in String
+): Result[Unit, CloudAgents.Sqlite.DbError] {
   CloudAgents.Sqlite.execute(CloudAgents.Db.upsertHighlightScanSeqSql(sessionId, lastSeq))?
   return Ok(value = ())
 }
@@ -4493,7 +4511,7 @@ func findMappedId(entries: in slice[IdMapEntry], oldId: in String): String {
   return ""
 }
 
-func copyFileIfExists(sourcePath: in String, targetDir: in String, targetPath: in String): Unit {
+pub func copyFileIfExists(sourcePath: in String, targetDir: in String, targetPath: in String): Unit {
   match Std.File.readBytes(sourcePath) {
     case Ok(b) -> {
       match Std.File.createDir(targetDir) {
@@ -4517,9 +4535,10 @@ pub func branchSession(
   parentSessionId: in String,
   forkedMessageId: in String,
   newSessionId: in String,
-  userId: in String,
+  sc: in CloudAgents.Pg.TenantScope,
   newBranch: in String,
 ): Result[Unit, CloudAgents.Sqlite.DbError] {
+  val userId = sc.userId
   val sRows = CloudAgents.Sqlite.query(CloudAgents.Db.selectSessionByIdSql(parentSessionId, userId))?
   val sLen = CloudAgents.Sqlite.getRowArrayLength(sRows)
   if sLen == 0 {

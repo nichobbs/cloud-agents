@@ -316,7 +316,7 @@ pub func listHighlightsHandler(id: in String): Result[CloudAgents.Repository.Hig
     return Err(Web.badRequest("id is required"))
   }
   requireOwnedSession(id)?
-  match CloudAgents.Repository.listHighlights(id) {
+  match CloudAgents.Repository.listHighlights(id, CloudAgents.Auth.requestScope()) {
     // Constructed unqualified — package-qualified record construction
     // compiles but dies at runtime (docs/lyric/gotchas.md).
     case Ok(hs) -> return Ok(HighlightList(highlights = hs))
@@ -338,7 +338,7 @@ pub func refreshHighlightsHandler(id: in String): Result[RefreshHighlightsRespon
   if url.length == 0 {
     return Ok(RefreshHighlightsResponse(status = "disabled", scanned = "0", added = "0", detail = ""))
   }
-  val lastSeq = match CloudAgents.Repository.highlightScanSeq(id) {
+  val lastSeq = match CloudAgents.Repository.highlightScanSeq(id, CloudAgents.Auth.requestScope()) {
     case Ok(s) -> s
     case Err(e) -> return Err(dbError(e))
   }
@@ -412,7 +412,7 @@ pub func refreshHighlightsHandler(id: in String): Result[RefreshHighlightsRespon
     var j = 0
     while j < items.length {
       val it = items[j]
-      match CloudAgents.Repository.addHighlight(id, m.id, it.kind, it.title, it.detail) {
+      match CloudAgents.Repository.addHighlight(id, CloudAgents.Auth.requestScope(), m.id, it.kind, it.title, it.detail) {
         case Ok(_) -> {
           added = added + 1
         }
@@ -422,7 +422,7 @@ pub func refreshHighlightsHandler(id: in String): Result[RefreshHighlightsRespon
     }
     // Advance the cursor past this message even when nothing was extracted —
     // an empty result is a scan outcome, not a retryable failure.
-    match CloudAgents.Repository.setHighlightScanSeq(id, m.seq) {
+    match CloudAgents.Repository.setHighlightScanSeq(id, CloudAgents.Auth.requestScope(), m.seq) {
       case Ok(_) -> ()
       case Err(e) -> return Err(dbError(e))
     }

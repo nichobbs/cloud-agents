@@ -606,7 +606,7 @@ pub func branchSession(
   val userId = CloudAgents.Auth.currentUserId()
   val newSessionId = generateSessionId()
 
-  match CloudAgents.Repository.branchSession(parentSessionId, req.messageId, newSessionId, userId, req.branch) {
+  match CloudAgents.Repository.branchSession(parentSessionId, req.messageId, newSessionId, CloudAgents.Pg.personalScope(userId), req.branch) {
     case Ok(_) -> return Ok(CreateSessionResponse(sessionId = newSessionId))
     case Err(e) -> {
       val msg = CloudAgents.Sqlite.dbErrorMessage(e)
@@ -858,7 +858,7 @@ pub func promptExceedsMaxLength(text: in String): Bool {
 /// function's own error-tolerant precedent (addMessage/linkAttachmentToMessage
 /// failures are swallowed the same way just below).
 func existingAttachmentsHostDir(sessionId: in String): Result[StoredAttachments, StoreAttachmentsError] {
-  match CloudAgents.Repository.listAttachments(sessionId) {
+  match CloudAgents.Repository.listAttachments(sessionId, CloudAgents.Auth.requestScope()) {
     case Ok(existing) -> {
       if existing.length == 0 {
         return Ok(value = StoredAttachments(attachments = [], hostDir = ""))
@@ -1043,7 +1043,7 @@ pub func storeAttachments(
       }
     }
     writtenPaths = writtenPaths.append(path)
-    match CloudAgents.Repository.createAttachment(sessionId, v.fileName, storedName, v.mimeType, kind, toString(v.sizeBytes)) {
+    match CloudAgents.Repository.createAttachment(sessionId, CloudAgents.Auth.requestScope(), v.fileName, storedName, v.mimeType, kind, toString(v.sizeBytes)) {
       case Ok(a) -> {
         stored = stored.append(a)
       }
@@ -1085,7 +1085,7 @@ pub func cleanupPartialAttachmentBatch(
 ): Unit {
   var i = 0
   while i < stored.length {
-    val _ = CloudAgents.Repository.deleteAttachment(stored[i].id)
+    val _ = CloudAgents.Repository.deleteAttachment(stored[i].id, CloudAgents.Auth.requestScope())
     i = i + 1
   }
   var k = 0
@@ -1154,7 +1154,7 @@ pub func listAttachmentsHandler(id: in String): Result[AttachmentListResponse, W
     case Ok(None) -> return Err(Web.notFound("Session not found"))
     case Err(e) -> return Err(Web.internalError("session lookup failed: " + CloudAgents.Sqlite.dbErrorMessage(e)))
   }
-  match CloudAgents.Repository.listAttachments(id) {
+  match CloudAgents.Repository.listAttachments(id, CloudAgents.Auth.requestScope()) {
     case Ok(atts) -> {
       var acc: slice[AttachmentSummary] = []
       var i = 0
@@ -1185,7 +1185,7 @@ pub func downloadAttachmentHandler(id: in String, aid: in String): Result[Web.Re
     case Ok(None) -> return Err(Web.notFound("Session not found"))
     case Err(e) -> return Err(Web.internalError("session lookup failed: " + CloudAgents.Sqlite.dbErrorMessage(e)))
   }
-  val a = match CloudAgents.Repository.getAttachment(aid) {
+  val a = match CloudAgents.Repository.getAttachment(aid, CloudAgents.Auth.requestScope()) {
     case Ok(Some(att)) -> att
     case Ok(None) -> return Err(Web.notFound("Attachment not found"))
     case Err(e) -> return Err(Web.internalError("attachment lookup failed: " + CloudAgents.Sqlite.dbErrorMessage(e)))
@@ -1328,7 +1328,11 @@ pub func streamSendMessage(
         case Ok(m) -> {
           var ai = 0
           while ai < stored.attachments.length {
-            val _ = CloudAgents.Repository.linkAttachmentToMessage(stored.attachments[ai].id, m.id)
+            val _ = CloudAgents.Repository.linkAttachmentToMessage(
+              stored.attachments[ai].id,
+              CloudAgents.Pg.personalScope(userId),
+              m.id
+            )
             ai = ai + 1
           }
         }
