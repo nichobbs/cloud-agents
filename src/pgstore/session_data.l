@@ -452,7 +452,8 @@ func mappedId(pairs: in slice[String], oldId: in String): String {
 /// todos and highlights likewise (copied todos become ordinary todos, as on
 /// SQLite); the linked repositories; and the profile. The new session keeps
 /// the parent's group and gets its own route. Unlike SQLite, the database
-/// side is one transaction, so a failure leaves no partial branch.
+/// side is one transaction, so a failure leaves no partial branch; attachment
+/// files are copied only after it commits (#1172).
 pub func branchSession(
   parentSessionId: in String,
   forkedMessageId: in String,
@@ -501,17 +502,16 @@ pub func branchSession(
     CloudAgents.PgStore.ex(u, "INSERT INTO comments (id, message_id, session_id, body, created_at) " + "SELECT gen_random_uuid()::text, @p2, @p1, body, created_at FROM comments WHERE message_id = @p0", [oldId, newSessionId, nid])?
   }
 
-  // Attachments (rows and files).
+  // Attachment rows now; their files are copied only after the commit, so a
+  // rolled-back branch leaves no orphaned copies on disk (#1172).
+  var filesToCopy: slice[String] = []
   val atts = CloudAgents.PgStore.q(u, "SELECT id, message_id, stored_name FROM session_attachments WHERE session_id = @p0 ORDER BY created_at, id COLLATE \"C\"", [parentSessionId])?
   for a in atts {
     val oldMsg = CloudAgents.PgStore.col(a, "message_id")
     val newMsg = mappedId(idPairs, oldMsg)
     if oldMsg.length == 0 or newMsg.length > 0 {
       CloudAgents.PgStore.ex(u, "INSERT INTO session_attachments (id, session_id, message_id, file_name, stored_name, mime_type, kind, size_bytes, created_at) " + "SELECT gen_random_uuid()::text, @p1, @p2, file_name, stored_name, mime_type, kind, size_bytes, created_at " + "FROM session_attachments WHERE id = @p0", [CloudAgents.PgStore.col(a, "id"), newSessionId, newMsg])?
-      val storedName = CloudAgents.PgStore.col(a, "stored_name")
-      val sourceDir = CloudAgents.Repository.attachmentsBaseDir() + "/" + parentSessionId
-      val targetDir = CloudAgents.Repository.attachmentsBaseDir() + "/" + newSessionId
-      CloudAgents.Repository.copyFileIfExists(sourceDir + "/" + storedName, targetDir, targetDir + "/" + storedName)
+      filesToCopy = filesToCopy.append(CloudAgents.PgStore.col(a, "stored_name"))
     }
   }
 
@@ -533,5 +533,10 @@ pub func branchSession(
     }
   }
   CloudAgents.PgStore.commit(u)?
+  val sourceDir = CloudAgents.Repository.attachmentsBaseDir() + "/" + parentSessionId
+  val targetDir = CloudAgents.Repository.attachmentsBaseDir() + "/" + newSessionId
+  for storedName in filesToCopy {
+    CloudAgents.Repository.copyFileIfExists(sourceDir + "/" + storedName, targetDir, targetDir + "/" + storedName)
+  }
   return Ok(value = ())
 }
