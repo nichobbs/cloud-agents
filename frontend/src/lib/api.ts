@@ -1,6 +1,7 @@
 /// <reference types="vite/client" />
 
 import type { Attachment, AttachmentInput, Comment, Credential, Highlight, McpServer, Message, OpenPrResult, PendingCallbacksResponse, Profile, Prompt, RefreshHighlightsResult, Run, SearchMessagesResult, SessionGroup, Skill, Subagent, Todo, Webhook, WorkspaceDiff, WorkspaceFileContent, WorkspaceFileEntry } from '../types';
+import { getStoredOrgId, storeOrgId } from './activeOrg';
 import { completeLogin, isSignedIn, setReturnPath, signOut } from './auth';
 import type { EntryDetail, InboxEntry, LedgerFeedback, LedgerSnapshot, LedgerSyncReport, ObserverSettings, ObserverStatus, WorkItem } from './ledger';
 
@@ -45,8 +46,23 @@ let refreshPromise: Promise<string | null> | null = null;
 /** Central fetch wrapper for API endpoints: intercepts HTTP 401 status when
  *  signed in, attempts transparent token refresh (queuing concurrent 401s behind
  *  one in-flight refresh), and redirects to /login on failure. */
-export async function apiFetch(input: RequestInfo | URL, init?: RequestInit): Promise<Response> {
+export async function apiFetch(input: RequestInfo | URL, rawInit?: RequestInit): Promise<Response> {
+  // The one place the active organisation is attached; absent means personal.
+  const orgId = getStoredOrgId();
+  let init = rawInit;
+  if (orgId) {
+    const headers = new Headers(rawInit?.headers);
+    headers.set('X-CloudAgents-Org', orgId);
+    init = { ...rawInit, headers };
+  }
   const res = await fetch(input, init);
+
+  if (res.status === 403 && orgId) {
+    // Membership was lost (removed, suspended): fall back to personal rather
+    // than leaving every request failing.
+    const text = await res.clone().text().catch(() => '');
+    if (/organi[sz]ation/i.test(text) && getStoredOrgId() === orgId) storeOrgId('');
+  }
 
   if (res.status === 401 && isSignedIn()) {
     const urlStr = typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url;

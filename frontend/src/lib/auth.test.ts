@@ -51,7 +51,7 @@ describe('authorizeUrl', () => {
     expect(url.origin + url.pathname).toBe('https://github.com/login/oauth/authorize');
     expect(url.searchParams.get('client_id')).toBe('cid123');
     expect(url.searchParams.get('redirect_uri')).toBe(`${window.location.origin}/auth/callback`);
-    expect(url.searchParams.get('scope')).toBe('repo read:user');
+    expect(url.searchParams.get('scope')).toBe('repo read:user read:org');
     expect(url.searchParams.get('state')).toBe('state456');
   });
 });
