@@ -217,12 +217,10 @@ pub func parseNatString(s: in String): Int {
   return n
 }
 
-
 /// A liveness probe against the database.
 pub func ping(): Result[Unit, CloudAgents.Db.DbError] {
   return CloudAgents.PgStore.ping()
 }
-
 
 /// Append a message to a session's transcript and return the stored record
 /// (with its freshly minted id and sequence number).
@@ -334,9 +332,7 @@ pub func getTodoSessionId(
 }
 
 /// All todos for a session, newest first.
-pub func listTodos(
-  sessionId: in String, sc: in CloudAgents.Pg.TenantScope
-): Result[slice[Todo], CloudAgents.Db.DbError] {
+pub func listTodos(sessionId: in String, sc: in CloudAgents.Pg.TenantScope): Result[slice[Todo], CloudAgents.Db.DbError] {
   return CloudAgents.PgStore.Messages.listTodos(sessionId, sc)
 }
 
@@ -511,9 +507,7 @@ pub func deleteCredential(sc: in CloudAgents.Pg.UserScope, name: in String): Res
 /// §7.1): the create endpoint refuses a request for a name that isn't
 /// actually configured, instead of creating a pending row a human could
 /// only ever deny.
-pub func credentialNameExists(
-  sc: in CloudAgents.Pg.UserScope, name: in String
-): Result[Bool, CloudAgents.Db.DbError] {
+pub func credentialNameExists(sc: in CloudAgents.Pg.UserScope, name: in String): Result[Bool, CloudAgents.Db.DbError] {
   return CloudAgents.PgStore.Credentials.credentialNameExists(sc, name)
 }
 
@@ -565,7 +559,12 @@ pub func upsertGitHubOAuthRefresh(
   accessExpiresInSeconds: in String,
   refreshExpiresInSeconds: in String,
 ): Result[Unit, CredentialError] {
-  return CloudAgents.PgStore.Credentials.upsertGitHubOAuthRefresh(sc, refreshToken, accessExpiresInSeconds, refreshExpiresInSeconds)
+  return CloudAgents.PgStore.Credentials.upsertGitHubOAuthRefresh(
+    sc,
+    refreshToken,
+    accessExpiresInSeconds,
+    refreshExpiresInSeconds
+  )
 }
 
 /// Look up a tenant's refresh-token status: the decrypted refresh token plus
@@ -689,9 +688,7 @@ pub func finishSessionRuns(
 }
 
 /// A session's run history, newest first.
-pub func listRuns(
-  sessionId: in String, sc: in CloudAgents.Pg.TenantScope
-): Result[slice[Run], CloudAgents.Db.DbError] {
+pub func listRuns(sessionId: in String, sc: in CloudAgents.Pg.TenantScope): Result[slice[Run], CloudAgents.Db.DbError] {
   return CloudAgents.PgStore.SessionData.listRuns(sessionId, sc)
 }
 
@@ -723,9 +720,7 @@ pub func listSessionRepos(
 }
 
 /// How many repositories are linked to a session (for the per-session cap).
-pub func countSessionRepos(
-  sessionId: in String, sc: in CloudAgents.Pg.TenantScope
-): Result[Int, CloudAgents.Db.DbError] {
+pub func countSessionRepos(sessionId: in String, sc: in CloudAgents.Pg.TenantScope): Result[Int, CloudAgents.Db.DbError] {
   return CloudAgents.PgStore.SessionData.countSessionRepos(sessionId, sc)
 }
 
@@ -913,7 +908,19 @@ pub func addProfile(
   toolMode: in String,
   tools: in slice[String],
 ): Result[Profile, CloudAgents.Db.DbError] {
-  return CloudAgents.PgStore.Library.addProfile(sc, name, harness, networkPolicy, credentialMode, credentials, skillIds, subagentIds, mcpServerIds, toolMode, tools)
+  return CloudAgents.PgStore.Library.addProfile(
+    sc,
+    name,
+    harness,
+    networkPolicy,
+    credentialMode,
+    credentials,
+    skillIds,
+    subagentIds,
+    mcpServerIds,
+    toolMode,
+    tools
+  )
 }
 
 /// All of a user's profiles (each with its granted credential names and
@@ -933,9 +940,7 @@ pub func profileIdByName(
 
 /// A single profile owned by a user (with its granted credentials and
 /// library-item ids), or None.
-pub func getProfile(
-  id: in String, sc: in CloudAgents.Pg.TenantScope
-): Result[Option[Profile], CloudAgents.Db.DbError] {
+pub func getProfile(id: in String, sc: in CloudAgents.Pg.TenantScope): Result[Option[Profile], CloudAgents.Db.DbError] {
   return CloudAgents.PgStore.Library.getProfile(id, sc)
 }
 
@@ -955,7 +960,20 @@ pub func updateProfile(
   toolMode: in String,
   tools: in slice[String],
 ): Result[Int, CloudAgents.Db.DbError] {
-  return CloudAgents.PgStore.Library.updateProfile(id, sc, name, harness, networkPolicy, credentialMode, credentials, skillIds, subagentIds, mcpServerIds, toolMode, tools)
+  return CloudAgents.PgStore.Library.updateProfile(
+    id,
+    sc,
+    name,
+    harness,
+    networkPolicy,
+    credentialMode,
+    credentials,
+    skillIds,
+    subagentIds,
+    mcpServerIds,
+    toolMode,
+    tools
+  )
 }
 
 /// Delete a profile and every grant set (atomically, #230). Returns rows
@@ -1145,9 +1163,7 @@ pub func subagentIdByName(
   return CloudAgents.PgStore.Library.subagentIdByName(sc, name)
 }
 
-pub func getSubagent(
-  id: in String, sc: in CloudAgents.Pg.TenantScope
-): Result[Option[Subagent], CloudAgents.Db.DbError] {
+pub func getSubagent(id: in String, sc: in CloudAgents.Pg.TenantScope): Result[Option[Subagent], CloudAgents.Db.DbError] {
   return CloudAgents.PgStore.Library.getSubagent(id, sc)
 }
 
@@ -1660,13 +1676,21 @@ pub func createArtifact(
   repoKey: in String,
   ownerUserId: in String,
 ): Result[Artifact, CloudAgents.Db.DbError] {
-  return CloudAgents.PgStore.Interactive.createArtifact(sessionId, sc, fileName, storedName, mimeType, description, sizeBytes, repoKey, ownerUserId)
+  return CloudAgents.PgStore.Interactive.createArtifact(
+    sessionId,
+    sc,
+    fileName,
+    storedName,
+    mimeType,
+    description,
+    sizeBytes,
+    repoKey,
+    ownerUserId
+  )
 }
 
 /// An artifact by id, or None.
-pub func getArtifact(
-  id: in String, sc: in CloudAgents.Pg.TenantScope
-): Result[Option[Artifact], CloudAgents.Db.DbError] {
+pub func getArtifact(id: in String, sc: in CloudAgents.Pg.TenantScope): Result[Option[Artifact], CloudAgents.Db.DbError] {
   return CloudAgents.PgStore.Interactive.getArtifact(id, sc)
 }
 
@@ -1749,7 +1773,15 @@ pub func createAttachment(
   kind: in String,
   sizeBytes: in String,
 ): Result[Attachment, CloudAgents.Db.DbError] {
-  return CloudAgents.PgStore.SessionData.createAttachment(sessionId, sc, fileName, storedName, mimeType, kind, sizeBytes)
+  return CloudAgents.PgStore.SessionData.createAttachment(
+    sessionId,
+    sc,
+    fileName,
+    storedName,
+    mimeType,
+    kind,
+    sizeBytes
+  )
 }
 
 /// Link a stored attachment to the user message it was sent with.
@@ -2167,7 +2199,18 @@ pub func createScheduledJob(
   runAt: in String,
   intervalSeconds: in String,
 ): Result[ScheduledJob, CloudAgents.Db.DbError] {
-  return CloudAgents.PgStore.Jobs.createScheduledJob(sc, name, prompt, profileId, repoUrl, branch, harness, model, runAt, intervalSeconds)
+  return CloudAgents.PgStore.Jobs.createScheduledJob(
+    sc,
+    name,
+    prompt,
+    profileId,
+    repoUrl,
+    branch,
+    harness,
+    model,
+    runAt,
+    intervalSeconds
+  )
 }
 
 /// Create a new job with `sessionId` already attached, atomically — used
@@ -2257,7 +2300,18 @@ pub func updateScheduledJob(
   status: in String,
   writeNextRunAt: in Bool,
 ): Result[Int, CloudAgents.Db.DbError] {
-  return CloudAgents.PgStore.Jobs.updateScheduledJob(id, sc, name, prompt, profileId, runAt, intervalSeconds, nextRunAt, status, writeNextRunAt)
+  return CloudAgents.PgStore.Jobs.updateScheduledJob(
+    id,
+    sc,
+    name,
+    prompt,
+    profileId,
+    runAt,
+    intervalSeconds,
+    nextRunAt,
+    status,
+    writeNextRunAt
+  )
 }
 
 /// Delete one of the caller's jobs. Returns the affected row count.

@@ -111,7 +111,7 @@ prune `session-*` workspace volumes for deleted sessions.
   created, so fixing the variable is enough. If provisioning failed for
   another reason after that, the volume is left without the roles; then
   `docker compose down` and `docker volume rm deploy_pg_data` before starting
-  again. Only do that while Postgres holds no data (before the cut-over).
+  again. That deletes the database: only do it on a fresh install.
 
 ## Postgres
 
@@ -119,9 +119,9 @@ The `postgres` service creates the `cloudagents` database and its roles on
 first start from `deploy/postgres/provision.sql`, with the passwords in
 `.env`; later starts leave the volume alone. The `migrate` service applies
 the schema as `cloudagents_owner` on every deploy (a no-op when current) and
-the API starts after it succeeds, connected as `cloudagents_app`. Until the
-cut-over (`docs/phase11-postgres-tenancy.md` §9, slice E) the API still
-stores everything in SQLite.
+the API starts after it succeeds, connected as `cloudagents_app`. Every store
+is in Postgres (`docs/phase11-postgres-tenancy.md`); each user's rows live in
+their personal tenant, created on their first authenticated request.
 
 - Change a password: `docker compose exec postgres psql -U postgres -c
   "ALTER ROLE cloudagents_app PASSWORD '<new>'"`, update `.env`, then
@@ -158,11 +158,11 @@ and don't need rebuilding unless the rollback also reverts `docker/`.
 
 ## Persistent state
 
-All API state lives in two places, both outside the api container so a
+All API state lives in three places, all outside the api container so a
 redeploy or rebuild never touches them:
 
+- Postgres (the `pg_data` volume of the `postgres` service): every store.
 - `CLOUD_AGENTS_DATA_DIR` (host directory, default `/var/lib/cloud-agents`):
-  the SQLite database `cloud-agents.db` (plus its `-wal`/`-shm` files),
   `artifacts/` and `attachments/`. It is bind-mounted into the api container
   at the same path, because attachment directories are re-mounted into runner
   containers by the host's dockerd and so must resolve identically on both
@@ -173,33 +173,14 @@ redeploy or rebuild never touches them:
 Per-session workspace and home volumes are separate named Docker volumes and
 also survive redeploys.
 
-### Upgrading from a deployment without a data directory
+### Upgrading from SQLite
 
-Before this layout, the database, artifacts and attachments defaulted to
-paths inside the api container (`/app/cloud-agents.db`,
-`/app/cloud-agents-artifacts`, `/app/cloud-agents-attachments`) and were
-discarded on every redeploy. To keep the state of the currently running
-container, copy it out BEFORE deploying the new compose file. Stop the api
-first so nothing writes while you copy (a copy of a live WAL database can be
-torn); `docker cp` works on a stopped container. Do not remove the container
-until the copy has been verified:
-
-```sh
-docker compose stop api
-API=$(docker compose ps -a -q api)
-sudo mkdir -p /var/lib/cloud-agents
-for f in cloud-agents.db cloud-agents.db-wal cloud-agents.db-shm; do
-    sudo docker cp "$API:/app/$f" /var/lib/cloud-agents/ || echo "no $f (fine for -wal/-shm)"
-done
-sudo docker cp "$API:/app/cloud-agents-artifacts" /var/lib/cloud-agents/artifacts || true
-sudo docker cp "$API:/app/cloud-agents-attachments" /var/lib/cloud-agents/attachments || true
-# Must print "ok"; if it does not, or cloud-agents.db was not copied, stop here.
-docker run --rm -v /var/lib/cloud-agents:/data alpine sh -c \
-    'apk add --no-cache sqlite >/dev/null && sqlite3 /data/cloud-agents.db "PRAGMA integrity_check"'
-```
-
-Then deploy the new compose file. The artifacts/attachments copies fail
-harmlessly when a deployment never stored any.
+Deployments from before phase 11 slice E kept their data in a SQLite file
+(`cloud-agents.db` in the data directory). That data is not migrated: the
+switch to Postgres started from an empty database
+(`docs/phase11-postgres-tenancy.md` §7). Once the new deploy is healthy, the
+old `cloud-agents.db*` files and any `db-<stamp>.db.gz` backups can be
+deleted; `backup.sh` no longer writes or prunes them.
 
 Artifact and attachment rows store only file names; their directories are
 derived from `CLOUD_AGENTS_ARTIFACTS_DIR`/`CLOUD_AGENTS_ATTACHMENTS_DIR` at
@@ -207,25 +188,21 @@ read time, so moved files are found under the new location.
 
 ## Backups
 
-`backup.sh` runs nightly (cron example inside the script) and writes four
+`backup.sh` runs nightly (cron example inside the script) and writes three
 archives per run, keeping the 14 most recent of each:
 
-- `db-<stamp>.db.gz`: an online `sqlite3 .backup` snapshot (consistent while
-  the api is writing), integrity-checked before it is kept;
 - `files-<stamp>.tar.gz`: `artifacts/` and `attachments/`;
 - `user-home-<stamp>.tar.gz`: the `user_data` volume;
 - `pg-<stamp>.dump`: `pg_dump` of the `cloudagents` database (custom
   format), checked with `pg_restore --list` before it is kept.
 
-It exits non-zero if the database or volume is missing rather than archiving
-nothing. The database step pulls the `sqlite` package into an `alpine`
-container, so it needs registry access at run time. Copy archives off-server
-or use Hetzner volume snapshots. Restore with the api stopped:
+It exits non-zero if the data directory, the volume or the postgres container
+is missing rather than archiving nothing (a Postgres failure still writes the
+other two archives first). Copy archives off-server or use Hetzner volume
+snapshots. Restore the files with the api stopped:
 
 ```sh
 docker compose stop api
-gunzip -c db-<stamp>.db.gz | sudo tee /var/lib/cloud-agents/cloud-agents.db >/dev/null
-sudo rm -f /var/lib/cloud-agents/cloud-agents.db-wal /var/lib/cloud-agents/cloud-agents.db-shm
 sudo tar xzf files-<stamp>.tar.gz -C /var/lib/cloud-agents
 docker run --rm -v deploy_user_data:/data -v "$PWD:/backup" alpine \
     tar xzf /backup/user-home-<stamp>.tar.gz -C /data

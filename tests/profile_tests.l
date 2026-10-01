@@ -118,17 +118,11 @@ func mustProfile(r: in Result[Profile, CloudAgents.Db.DbError]): Profile {
 }
 
 func mustProfiles(r: in Result[slice[Profile], CloudAgents.Db.DbError]): slice[Profile] {
-  return match r {
-    case Ok(ps) -> ps
-    case Err(e) -> panic("profile list failed: " + CloudAgents.Db.dbErrorMessage(e))
-  }
+  return match r { case Ok(ps) -> ps; case Err(e) -> panic("profile list failed: " + CloudAgents.Db.dbErrorMessage(e)) }
 }
 
 func mustRows(r: in Result[Int, CloudAgents.Db.DbError]): Int {
-  return match r {
-    case Ok(n) -> n
-    case Err(e) -> panic("profile write failed: " + CloudAgents.Db.dbErrorMessage(e))
-  }
+  return match r { case Ok(n) -> n; case Err(e) -> panic("profile write failed: " + CloudAgents.Db.dbErrorMessage(e)) }
 }
 
 func mustPutCredential(userId: in String, name: in String, value: in String): Unit {
@@ -412,7 +406,10 @@ test "a duplicate profile name from the store is recognised as a name collision,
   mustProfile(addProfile(sc, "dup", "", "full", "all", [], [], [], [], "all", []))
   match addProfile(sc, "dup", "", "full", "all", [], [], [], [], "all", []) {
     case Ok(_) -> assertTrue(false, "a second profile with the same name must fail at the constraint")
-    case Err(e) -> assertTrue(isDuplicateNameError(e), "the name constraint is recognised: " + CloudAgents.Db.dbErrorMessage(e))
+    case Err(e) -> assertTrue(
+      isDuplicateNameError(e),
+      "the name constraint is recognised: " + CloudAgents.Db.dbErrorMessage(e)
+    )
   }
   match addProfile(sc, "dup-grants", "", "full", "selected", ["GH_TOKEN", "GH_TOKEN"], [], [], [], "all", []) {
     case Ok(_) -> ()
@@ -430,19 +427,7 @@ test "Profile ownership scoping hides other users' profiles" {
     addProfile(CloudAgents.Pg.personalScope(me), "mine", "", "full", "all", [], [], [], [], "all", [])
   )
   val theirs = mustProfile(
-    addProfile(
-      CloudAgents.Pg.personalScope(other),
-      "theirs",
-      "",
-      "full",
-      "all",
-      [],
-      [],
-      [],
-      [],
-      "all",
-      []
-    )
+    addProfile(CloudAgents.Pg.personalScope(other), "theirs", "", "full", "all", [], [], [], [], "all", [])
   )
 
   val myList = mustProfiles(listProfiles(CloudAgents.Pg.personalScope(me)))
@@ -456,20 +441,7 @@ test "Profile ownership scoping hides other users' profiles" {
   }
   assertEqualInt(
     mustRows(
-      updateProfile(
-        theirs.id,
-        CloudAgents.Pg.personalScope(me),
-        "x",
-        "",
-        "full",
-        "all",
-        [],
-        [],
-        [],
-        [],
-        "all",
-        []
-      )
+      updateProfile(theirs.id, CloudAgents.Pg.personalScope(me), "x", "", "full", "all", [], [], [], [], "all", [])
     ),
     0,
     "cannot update another user's profile"

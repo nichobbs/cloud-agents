@@ -699,8 +699,7 @@ func renewRunHeartbeat(sessionId: in String, userId: in String): Unit {
   match CloudAgents.SessionStore.heartbeatRun(sessionId, CloudAgents.Pg.personalScope(userId)) {
     case Ok(_) -> ()
     case Err(e) -> println(
-      "WARNING: run heartbeat failed for session " + sessionId + ": " +
-        CloudAgents.Db.dbErrorMessage(e)
+      "WARNING: run heartbeat failed for session " + sessionId + ": " + CloudAgents.Db.dbErrorMessage(e)
     )
   }
 }

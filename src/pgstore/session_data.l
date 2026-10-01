@@ -137,9 +137,7 @@ pub func listSessionRepos(
 }
 
 /// How many repositories are linked to a session.
-pub func countSessionRepos(
-  sessionId: in String, sc: in CloudAgents.Pg.TenantScope
-): Result[Int, CloudAgents.Db.DbError] {
+pub func countSessionRepos(sessionId: in String, sc: in CloudAgents.Pg.TenantScope): Result[Int, CloudAgents.Db.DbError] {
   val rows = query(sc, "SELECT count(*)::text AS n FROM session_repos WHERE session_id = @p0", [sessionId])?
   return Ok(value = CloudAgents.Repository.parseNatString(CloudAgents.PgStore.col(rows[0], "n")))
 }

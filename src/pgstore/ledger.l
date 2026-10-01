@@ -117,9 +117,7 @@ func ensureSession(
 
 /// Bump the session's cursor for this unit and return the new value. The
 /// row lock it takes is held to commit, serialising the session's writers.
-func bump(
-  u: in CloudAgents.PgStore.PgUnit, sessionId: in String, ts: in String
-): Result[String, CloudAgents.Db.DbError] {
+func bump(u: in CloudAgents.PgStore.PgUnit, sessionId: in String, ts: in String): Result[String, CloudAgents.Db.DbError] {
   ensureSession(u, sessionId, ts)?
   val rows = CloudAgents.PgStore.q(u, "UPDATE ledger_sessions SET seq = seq + 1 WHERE session_id = @p0 RETURNING seq::text AS seq", [sessionId])?
   if rows.length == 0 {
@@ -434,9 +432,7 @@ func toEntries(rows: in slice[DbRow]): slice[LedgerEntry] {
 
 /// Insert a fully decided entry (id / createdAt / seq fields are assigned
 /// here) and return it as stored.
-pub func insertEntry(
-  sc: in CloudAgents.Pg.TenantScope, e: in LedgerEntry
-): Result[LedgerEntry, CloudAgents.Db.DbError] {
+pub func insertEntry(sc: in CloudAgents.Pg.TenantScope, e: in LedgerEntry): Result[LedgerEntry, CloudAgents.Db.DbError] {
   val u = CloudAgents.PgStore.open(sc)?
   defer {
     CloudAgents.PgStore.release(u)
@@ -494,9 +490,7 @@ pub func insertEntry(
   CloudAgents.PgStore.ex(u, "INSERT INTO ledger_entries (" + cols + ") VALUES (" + values + ")", params)?
   val rows = CloudAgents.PgStore.q(u, "SELECT " + entryCols("e") + " FROM ledger_entries e WHERE e.session_id = @p0 AND e.id = @p1", [e.sessionId, id])?
   if rows.length == 0 {
-    return Err(
-      error = CloudAgents.Db.ExecFailed(sql = "SELECT ledger entry", message = "entry vanished after insert")
-    )
+    return Err(error = CloudAgents.Db.ExecFailed(sql = "SELECT ledger entry", message = "entry vanished after insert"))
   }
   val stored = toEntry(rows[0])
   CloudAgents.PgStore.commit(u)?
@@ -631,10 +625,7 @@ func insertFeedback(
   val rows = CloudAgents.PgStore.q(u, "SELECT " + feedbackCols("f") + " FROM ledger_feedback f WHERE f.session_id = @p0 AND f.id = @p1", [sessionId, id])?
   if rows.length == 0 {
     return Err(
-      error = CloudAgents.Db.ExecFailed(
-        sql = "SELECT ledger feedback",
-        message = "feedback vanished after insert"
-      )
+      error = CloudAgents.Db.ExecFailed(sql = "SELECT ledger feedback", message = "feedback vanished after insert")
     )
   }
   return Ok(value = toFeedback(rows[0]))
@@ -1016,9 +1007,7 @@ pub func setPolicyCache(
 // ── Cross-session inbox ───────────────────────────────────────────────────────
 /// Every pending review / blocking entry across the caller's sessions in the
 /// tenant, blocking first, then oldest first (bounded).
-pub func inboxForUser(
-  sc: in CloudAgents.Pg.TenantScope
-): Result[slice[LedgerStore.InboxEntry], CloudAgents.Db.DbError] {
+pub func inboxForUser(sc: in CloudAgents.Pg.TenantScope): Result[slice[LedgerStore.InboxEntry], CloudAgents.Db.DbError] {
   val rows = query(sc, "SELECT " + entryCols("e") + ", s.repo_url AS repo_url, s.branch AS branch FROM ledger_entries e " + "JOIN sessions s ON s.id = e.session_id WHERE s.user_id = @p0 AND e.review_state = 'pending' " + "AND e.severity IN ('review', 'blocking') ORDER BY CASE e.severity WHEN 'blocking' THEN 0 ELSE 1 END, e.created_at, e.id COLLATE \"C\" LIMIT 500", [sc.userId])?
   var acc: slice[LedgerStore.InboxEntry] = []
   var i = 0

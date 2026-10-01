@@ -510,8 +510,7 @@ pub func onRunFinished(sessionId: in String): Unit {
       match markObserverPending(sessionId, sc) {
         case Ok(_) -> ()
         case Err(e) -> println(
-          "WARNING: queueing the observer for " + sessionId + " failed: " +
-            CloudAgents.Db.dbErrorMessage(e)
+          "WARNING: queueing the observer for " + sessionId + " failed: " + CloudAgents.Db.dbErrorMessage(e)
         )
       }
     }

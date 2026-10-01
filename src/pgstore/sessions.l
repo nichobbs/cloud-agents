@@ -341,9 +341,7 @@ pub func endRun(sessionId: in String, sc: in CloudAgents.Pg.TenantScope): Result
 /// `claim_stranded_runs`, then read each one's container under its owner's
 /// scope. A run whose read-back fails stays held by this sweep until its
 /// renewed heartbeat goes stale again, when a later sweep takes it.
-pub func claimStrandedRuns(
-  limit: in Int
-): Result[slice[CloudAgents.SessionStore.StrandedRun], CloudAgents.Db.DbError] {
+pub func claimStrandedRuns(limit: in Int): Result[slice[CloudAgents.SessionStore.StrandedRun], CloudAgents.Db.DbError] {
   val sweeper = CloudAgents.SessionStore.sweeperId()
   val u = CloudAgents.PgStore.openUnscoped()?
   defer {
@@ -371,9 +369,7 @@ pub func claimStrandedRuns(
           )
         )
       }
-      case Err(e) -> println(
-        "WARNING: could not read stranded session " + id + ": " + CloudAgents.Db.dbErrorMessage(e)
-      )
+      case Err(e) -> println("WARNING: could not read stranded session " + id + ": " + CloudAgents.Db.dbErrorMessage(e))
     }
   }
   return Ok(value = acc)

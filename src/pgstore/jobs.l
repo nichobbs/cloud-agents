@@ -207,9 +207,7 @@ pub func listScheduledJobs(
 /// Claim up to `limit` due jobs across every tenant, earliest-due first, via
 /// `claim_scheduled_jobs` (§5.3a). Each claimed job is returned with its
 /// owner's scope in its tenant and the row as it was before the claim.
-pub func claimDueScheduledJobs(
-  limit: in Int
-): Result[slice[CloudAgents.Repository.ClaimedJob], CloudAgents.Db.DbError] {
+pub func claimDueScheduledJobs(limit: in Int): Result[slice[CloudAgents.Repository.ClaimedJob], CloudAgents.Db.DbError] {
   val u = CloudAgents.PgStore.openUnscoped()?
   defer {
     CloudAgents.PgStore.release(u)

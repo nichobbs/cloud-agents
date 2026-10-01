@@ -164,9 +164,7 @@ pub func deleteCredential(sc: in CloudAgents.Pg.UserScope, name: in String): Res
 }
 
 /// Whether the user has a credential stored under exactly `name`.
-pub func credentialNameExists(
-  sc: in CloudAgents.Pg.UserScope, name: in String
-): Result[Bool, CloudAgents.Db.DbError] {
+pub func credentialNameExists(sc: in CloudAgents.Pg.UserScope, name: in String): Result[Bool, CloudAgents.Db.DbError] {
   val u = CloudAgents.PgStore.openUser(sc)?
   defer {
     CloudAgents.PgStore.release(u)

@@ -1425,8 +1425,7 @@ pub func streamSendMessage(
                 match CloudAgents.Interactions.ingestAgentPlan(id, CloudAgents.Pg.personalScope(userId), m.id, logs) {
                   case Ok(_) -> ()
                   case Err(e) -> println(
-                    "WARNING: agent-plan ingestion failed for session " + id + ": " +
-                      CloudAgents.Db.dbErrorMessage(e)
+                    "WARNING: agent-plan ingestion failed for session " + id + ": " + CloudAgents.Db.dbErrorMessage(e)
                   )
                 }
               }
@@ -1653,9 +1652,7 @@ pub func reapContainers(): Result[String, Web.ApiError] {
         reaped = reaped + 1
       }
       case Ok(false) -> ()
-      case Err(e) -> println(
-        "WARNING: could not reap session " + t.sessionId + ": " + CloudAgents.Db.dbErrorMessage(e)
-      )
+      case Err(e) -> println("WARNING: could not reap session " + t.sessionId + ": " + CloudAgents.Db.dbErrorMessage(e))
     }
   }
   return Ok(value = "{\"reaped\":" + toString(reaped) + ",\"stranded\":" + toString(freed) + "}")

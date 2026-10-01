@@ -180,7 +180,13 @@ test "branchSession rejects a parent session not found or not owned by user" {
 
   // No parent session inserted at all → the id resolves to zero owned rows.
   expectBranchValidationFailed(
-    CloudAgents.Repository.branchSession("missing-parent" + sfx, "", "new-1" + sfx, CloudAgents.Pg.personalScope(u1), ""),
+    CloudAgents.Repository.branchSession(
+      "missing-parent" + sfx,
+      "",
+      "new-1" + sfx,
+      CloudAgents.Pg.personalScope(u1),
+      ""
+    ),
     "parent session not found or not owned by user",
     "unknown parent id is rejected"
   )
@@ -189,7 +195,13 @@ test "branchSession rejects a parent session not found or not owned by user" {
   // (selectSessionByIdSql is scoped by (id, user_id)).
   insertTestSession("owned-by-other" + sfx, other)
   expectBranchValidationFailed(
-    CloudAgents.Repository.branchSession("owned-by-other" + sfx, "", "new-2" + sfx, CloudAgents.Pg.personalScope(u1), ""),
+    CloudAgents.Repository.branchSession(
+      "owned-by-other" + sfx,
+      "",
+      "new-2" + sfx,
+      CloudAgents.Pg.personalScope(u1),
+      ""
+    ),
     "parent session not found or not owned by user",
     "parent owned by a different user is rejected"
   )
@@ -229,7 +241,13 @@ test "branchSession rejects a forked message from a different session" {
   // A real message, but it belongs to other-session, not parent-2.
   val strayMsg = mustAddMessage("other-session" + sfx, "user", "hello from the other session")
   expectBranchValidationFailed(
-    CloudAgents.Repository.branchSession("parent-2" + sfx, strayMsg.id, "new-4" + sfx, CloudAgents.Pg.personalScope(u1), ""),
+    CloudAgents.Repository.branchSession(
+      "parent-2" + sfx,
+      strayMsg.id,
+      "new-4" + sfx,
+      CloudAgents.Pg.personalScope(u1),
+      ""
+    ),
     "forked message does not belong to parent session",
     "a message from another session is rejected"
   )

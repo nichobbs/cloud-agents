@@ -32,9 +32,7 @@ import CloudAgents.Ledger.ObserverPolicy
 import CloudAgents.PgStore.Ledger
 
 /// The session's current change cursor ("0" before the first write).
-pub func currentSeq(
-  sessionId: in String, sc: in CloudAgents.Scope.TenantScope
-): Result[String, CloudAgents.Db.DbError] {
+pub func currentSeq(sessionId: in String, sc: in CloudAgents.Scope.TenantScope): Result[String, CloudAgents.Db.DbError] {
   return CloudAgents.PgStore.Ledger.currentSeq(sessionId, sc)
 }
 
@@ -107,7 +105,18 @@ pub func applyItemUpdate(
   auto: in AutoEntry,
   resolveBlockers: in Bool,
 ): Result[Bool, CloudAgents.Db.DbError] {
-  return CloudAgents.PgStore.Ledger.applyItemUpdate(sessionId, sc, updated, readVersion, fromState, stateChanged, actor, reason, auto, resolveBlockers)
+  return CloudAgents.PgStore.Ledger.applyItemUpdate(
+    sessionId,
+    sc,
+    updated,
+    readVersion,
+    fromState,
+    stateChanged,
+    actor,
+    reason,
+    auto,
+    resolveBlockers
+  )
 }
 
 pub func listTransitions(
@@ -206,15 +215,11 @@ pub func countItems(sessionId: in String, sc: in CloudAgents.Scope.TenantScope):
   return CloudAgents.PgStore.Ledger.countItems(sessionId, sc)
 }
 
-pub func countEntries(
-  sessionId: in String, sc: in CloudAgents.Scope.TenantScope
-): Result[Int, CloudAgents.Db.DbError] {
+pub func countEntries(sessionId: in String, sc: in CloudAgents.Scope.TenantScope): Result[Int, CloudAgents.Db.DbError] {
   return CloudAgents.PgStore.Ledger.countEntries(sessionId, sc)
 }
 
-pub func countFeedback(
-  sessionId: in String, sc: in CloudAgents.Scope.TenantScope
-): Result[Int, CloudAgents.Db.DbError] {
+pub func countFeedback(sessionId: in String, sc: in CloudAgents.Scope.TenantScope): Result[Int, CloudAgents.Db.DbError] {
   return CloudAgents.PgStore.Ledger.countFeedback(sessionId, sc)
 }
 
@@ -561,4 +566,3 @@ pub record InboxEntry {
 pub func inboxForUser(sc: in CloudAgents.Scope.TenantScope): Result[slice[InboxEntry], CloudAgents.Db.DbError] {
   return CloudAgents.PgStore.Ledger.inboxForUser(sc)
 }
-

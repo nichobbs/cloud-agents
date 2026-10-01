@@ -698,7 +698,6 @@ test "getSessionEvents returns the stored chain as the audit envelope" {
     case Err(e) -> panic("owned event-less session should be empty, not an error")
   }
   assertEqual(none, "{\"events\":[]}", "owned event-less session -> empty envelope")
-
 }
 
 // ── Tenant isolation ──────────────────────────────────────────────────────────

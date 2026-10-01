@@ -531,8 +531,7 @@ func persist(ctx: in SessionContext, row: in SyncRow, error: in String): Unit {
   match saveSyncRow(ctx.sessionId, ctx.tenantScope, toSave) {
     case Ok(_) -> ()
     case Err(e) -> println(
-      "WARNING: ledger sync state for " + row.itemId + " not saved: " +
-        CloudAgents.Db.dbErrorMessage(e)
+      "WARNING: ledger sync state for " + row.itemId + " not saved: " + CloudAgents.Db.dbErrorMessage(e)
     )
   }
 }

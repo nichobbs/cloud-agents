@@ -205,7 +205,9 @@ func owner(uid: in String): CloudAgents.Pg.TenantScope {
   return CloudAgents.Pg.personalScope(uid)
 }
 
-func mustEnqueue(uid: in String, sessionId: in String, body: in String, url: in String): CloudAgents.Repository.GraphIngestOutboxRow {
+func mustEnqueue(
+  uid: in String, sessionId: in String, body: in String, url: in String
+): CloudAgents.Repository.GraphIngestOutboxRow {
   return match CloudAgents.Repository.enqueueGraphIngest(sessionId, body, url, owner(uid)) {
     case Ok(row) -> row
     case Err(e) -> panic("enqueueGraphIngest failed: " + CloudAgents.Db.dbErrorMessage(e))
@@ -257,7 +259,6 @@ test "a freshly enqueued row is immediately claimable" {
   assertEqual(row.deliveredAt, "", "not delivered yet")
   assertTrue(claimsId(mustClaimDue(500), row.id), "a fresh row is due immediately (next_attempt_at = created_at)")
   settle(me, row.id)
-
 }
 
 test "a failed attempt schedules a future retry and excludes the row from the due scan" {
@@ -277,7 +278,6 @@ test "a failed attempt schedules a future retry and excludes the row from the du
   // is never due "right now" in the few milliseconds this test takes to run.
   assertTrue(not claimsId(mustClaimDue(500), row.id), "a row with a future next_attempt_at is not due yet")
   settle(me, row.id)
-
 }
 
 test "marking a row delivered removes it from the due scan" {
@@ -299,7 +299,6 @@ test "marking a row delivered removes it from the due scan" {
     case Ok(n) -> assertEqualInt(n, 0, "re-marking an already-delivered row is a no-op")
     case Err(e) -> assertTrue(false, "unexpected error re-marking delivered: " + CloudAgents.Db.dbErrorMessage(e))
   }
-
 }
 
 test "a row that exhausts its attempt cap is marked terminal and excluded forever" {
@@ -313,7 +312,6 @@ test "a row that exhausts its attempt cap is marked terminal and excluded foreve
     case Err(e) -> assertTrue(false, "markGraphIngestTerminal failed: " + CloudAgents.Db.dbErrorMessage(e))
   }
   assertTrue(not claimsId(mustClaimDue(500), row.id), "a terminal row is excluded from the due scan")
-
 }
 
 test "idempotent re-enqueue of the same session+body returns the existing row, not a duplicate" {
@@ -349,7 +347,6 @@ test "idempotent re-enqueue of the same session+body returns the existing row, n
   )
   assertTrue(differentBody.id != first.id, "a different body for the same session enqueues a distinct row")
   settle(me, differentBody.id)
-
 }
 
 test "pruneDeliveredGraphIngest removes only delivered rows, never pending ones" {
@@ -377,7 +374,6 @@ test "pruneDeliveredGraphIngest removes only delivered rows, never pending ones"
     case None -> assertTrue(false, "a pending row survives pruning")
   }
   settle(me, pending.id)
-
 }
 
 test "a claimed row is not claimed again while its lease holds" {
@@ -393,7 +389,6 @@ test "a claimed row is not claimed again while its lease holds" {
     case Err(e) -> assertTrue(false, "claimGraphIngest failed: " + CloudAgents.Db.dbErrorMessage(e))
   }
   settle(me, row.id)
-
 }
 
 test "claimGraphIngest takes a due row exactly once" {
@@ -412,7 +407,6 @@ test "claimGraphIngest takes a due row exactly once" {
   }
   assertTrue(not claimsId(mustClaimDue(500), row.id), "a drain does not take a row an immediate attempt holds")
   settle(me, row.id)
-
 }
 
 // #1197: a row whose session has since been deleted is still claimed and
@@ -437,7 +431,6 @@ test "a row whose session no longer exists is still claimed and its outcome reco
     case Ok(n) -> assertEqualInt(n, 1, "its delivery is recorded under that scope")
     case Err(e) -> assertTrue(false, "markGraphIngestDelivered failed: " + CloudAgents.Db.dbErrorMessage(e))
   }
-
 }
 
 // ─── drainGraphIngestHandler: operator-auth gate + empty-summary (#1050) ────
@@ -455,7 +448,6 @@ test "drainGraphIngestHandler refuses a non-operator identity" {
     case Ok(_) -> assertTrue(false, "a non-operator identity must not be able to trigger the drain sweep")
     case Err(e) -> assertEqualInt(e.status, 401, "non-operator caller -> 401, not the system-wide sweep")
   }
-
 }
 
 // #1051: enqueueAndAttemptDelivery must not bypass the backoff schedule when
@@ -519,7 +511,10 @@ test "drainGraphIngestHandler runs for the operator identity and returns a summa
   }
   match CloudAgents.GraphIngestDrain.drainGraphIngestHandler() {
     case Ok(body) -> {
-      assertTrue(body.startsWith("{\"delivered\":"), "the sweep answers a delivered/failed/terminal/pruned summary: " + body)
+      assertTrue(
+        body.startsWith("{\"delivered\":"),
+        "the sweep answers a delivered/failed/terminal/pruned summary: " + body
+      )
       assertTrue(body.contains("\"pruned\":"), "the summary carries the prune count: " + body)
     }
     case Err(e) -> assertTrue(

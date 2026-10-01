@@ -92,10 +92,7 @@ func seedSession(owner: in String): String {
     case Ok(_) -> ()
     case Err(e) -> panic("addSession failed: " + CloudAgents.Db.dbErrorMessage(e))
   }
-  val u = match CloudAgents.PgStore.open(sc) {
-    case Ok(x) -> x
-    case Err(e) -> panic(CloudAgents.Db.dbErrorMessage(e))
-  }
+  val u = match CloudAgents.PgStore.open(sc) { case Ok(x) -> x; case Err(e) -> panic(CloudAgents.Db.dbErrorMessage(e)) }
   defer {
     CloudAgents.PgStore.release(u)
   }

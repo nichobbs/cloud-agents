@@ -116,8 +116,9 @@ Non-goals (later phases or explicitly deferred):
   so each domain's port (slice C) adds its foreign keys once that ordering is
   verified. A stray cross-tenant id cannot be read through in the meantime,
   because both rows are under RLS.
-- `0001_baseline` may be edited in place until cut-over (slice E): no
-  production Postgres database exists before then.
+- `0001_baseline` was edited in place until deployments started applying
+  it (before slice E); it is now frozen, and every change is a new migration
+  (`0002_cutover`, slice E).
 
 ### 4.2 Global (non-tenant) tables
 
@@ -430,9 +431,12 @@ Dropped (owner, 2026-10-01): production holds no data worth keeping, so the
 cut-over (slice E) starts the service on an empty, freshly migrated
 database instead of exporting SQLite. Slice D is not built.
 
-`provision.sql` still creates `cloudagents_migrator` (`NOLOGIN`,
-`BYPASSRLS`), and the startup self-check still refuses to serve while it can
-log in. Nothing uses it now; slice E removes the role and its check.
+The role `cloudagents_migrator` stays, unused: the frozen baseline grants to
+it, so it must exist. `provision.sql` now creates it `NOLOGIN NOBYPASSRLS`
+(an earlier install keeps `BYPASSRLS` until a superuser runs `ALTER ROLE
+cloudagents_migrator NOBYPASSRLS`), migration `0002_cutover` revokes its
+table grants, and the startup self-check still refuses to serve while it can
+log in.
 
 ## 8. Deployment
 
@@ -462,9 +466,9 @@ log in. Nothing uses it now; slice E removes the role and its check.
     owner DSN, after `postgres` is healthy. The owner's credentials reach
     only this container.
   - `api`: starts after `migrate` succeeds, with only the service DSN
-    (`LYRIC_CONFIG_DB_CONNECTION_URL`, as `cloudagents_app`). Until slice E
-    it still serves from SQLite; the startup self-check runs against
-    Postgres on every start.
+    (`LYRIC_CONFIG_DB_CONNECTION_URL`, as `cloudagents_app`); the startup
+    self-check runs on every start, and the service refuses to start without
+    the DSN.
   - `maintenance`: the poller for the operator-only maintenance endpoints
     (`deploy/maintenance.sh`, one loop per endpoint, intervals from
     `MAINTENANCE_*_SECONDS`), authenticating with
@@ -487,7 +491,7 @@ log in. Nothing uses it now; slice E removes the role and its check.
 
 ## 9. Delivery slices
 
-Each slice is its own PR, green and deployable. Production stays on SQLite
+Each slice is its own PR, green and deployable. Production stayed on SQLite
 until slice E; slice D is dropped (§7). Organisations (slice F) come after cut-over, because
 memberships, invitations and organisation switching need tables that exist
 only in Postgres; nothing that production runs before cut-over depends on
@@ -529,13 +533,30 @@ Postgres-only data.
   (`CloudAgents.Pg.msIn`/`msOut`), never `to_timestamp(float)`.
 - **D. Export tool.** Dropped (§7): the cut-over starts on an empty
   database.
-- **E. Cut-over.** Point the repository facade at the Postgres
-  implementations, starting on the empty database the compose stack has
-  already provisioned and migrated, add `session_routes`-based callback resolution, runbook
-  and compose changes, production migration, then deletion of
-  `CloudAgents.Sqlite`, the SQLite SQL builders and the SQLite NuGet
-  packages in the same PR. Because signatures were settled in slice B, this
-  switch touches no handler code.
+- **E. Cut-over.** Shipped as one PR:
+  - `CloudAgents.Repository`, `CloudAgents.SessionStore` and
+    `CloudAgents.Ledger.Store` keep their signatures and delegate every store
+    function to `CloudAgents.PgStore.*` (handlers unchanged apart from the
+    two fixes below). The facades' SQLite bodies are gone.
+  - Personal tenants (§6.1) are provisioned on a user's first authenticated
+    request (`CloudAgents.PgStore.Tenancy.ensurePersonalTenant`, cached per
+    process): the `users` row, the tenant and the owner membership.
+  - The service refuses to start without `LYRIC_CONFIG_DB_CONNECTION_URL`;
+    the SQLite schema runner and the legacy `CLOUD_AGENTS_SESSIONS_JSON`
+    import are removed.
+  - `CloudAgents.Sqlite`, the SQLite SQL builders and the SQLite NuGet
+    packages and native runtimes are deleted; the store error type moved to
+    `CloudAgents.Db.DbError`.
+  - Migration `0002_cutover`: the ledger policy cache may record
+    `unavailable` (as the SQLite store did), and the export role loses its
+    grants (§7).
+  - Fixes found in the switch: the agent-messages read for highlights now
+    takes the request's scope; the duplicate-profile-name race is detected
+    from Postgres's 23505 on the profiles name constraint; two ledger store
+    bugs (an `unavailable` policy status, a non-numeric sync-lease token).
+  - The test suites run against live Postgres, each test as a fresh user
+    with its own personal tenant, so suites and repeated runs never see each
+    other's rows.
 - **F. Organisations** (§6.2 to §6.4), on Postgres: `X-CloudAgents-Org`
   resolution against `memberships`, GitHub sync with `read:org` and the
   hourly membership sync, native organisations and invitations,
@@ -568,7 +589,7 @@ Postgres-only data.
   item while its lease is live, and an item whose lease has expired is
   claimable again.
 - The service refuses to start while `cloudagents_migrator` can log in
-  (until slice E removes the role, §7).
+  (§7).
 - Removing a member from a connected GitHub organisation removes their
   cloud-agents membership within one sync interval without a sign-in.
 - A user's credentials are visible to them whichever organisation is

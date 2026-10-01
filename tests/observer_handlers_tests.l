@@ -118,10 +118,7 @@ func seedProfile(owner: in String): String {
 // (like a real session's) only as its hash.
 func setToken(sid: in String, userId: in String): Unit {
   val sc = CloudAgents.Pg.personalScope(userId)
-  val u = match CloudAgents.PgStore.open(sc) {
-    case Ok(x) -> x
-    case Err(e) -> panic(CloudAgents.Db.dbErrorMessage(e))
-  }
+  val u = match CloudAgents.PgStore.open(sc) { case Ok(x) -> x; case Err(e) -> panic(CloudAgents.Db.dbErrorMessage(e)) }
   defer {
     CloudAgents.PgStore.release(u)
   }

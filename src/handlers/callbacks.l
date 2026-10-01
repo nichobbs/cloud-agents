@@ -1027,9 +1027,9 @@ pub func listRepoArtifactsHandler(repoKey: in String): Result[ArtifactListRespon
   }
   // repoKey is a normalized, always-shorter derivative of a repo_url — bound
   // it the same as CloudAgents.Handlers.maxRepoUrlLen (#612) for consistency
-  // with every other user-supplied string in this file; it's already
-  // sqlLiteral-escaped before reaching SQL, so this is a sanity/consistency
-  // bound, not a security one.
+  // with every other user-supplied string in this file; it reaches SQL only
+  // as a bound parameter, so this is a sanity/consistency bound, not a
+  // security one.
   if not CloudAgents.Text.withinMaxLength(repoKey, maxRepoKeyQueryLen) {
     return Err(Web.badRequest("repoKey is too long (max " + toString(maxRepoKeyQueryLen) + " characters)"))
   }

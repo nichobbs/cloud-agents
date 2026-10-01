@@ -79,10 +79,7 @@ func mustPrompt(r: in Result[Prompt, CloudAgents.Db.DbError]): Prompt {
 }
 
 func mustPrompts(r: in Result[slice[Prompt], CloudAgents.Db.DbError]): slice[Prompt] {
-  return match r {
-    case Ok(ps) -> ps
-    case Err(e) -> panic("prompt list failed: " + CloudAgents.Db.dbErrorMessage(e))
-  }
+  return match r { case Ok(ps) -> ps; case Err(e) -> panic("prompt list failed: " + CloudAgents.Db.dbErrorMessage(e)) }
 }
 
 func mustOptPrompt(r: in Result[Option[Prompt], CloudAgents.Db.DbError]): Option[Prompt] {
@@ -90,10 +87,7 @@ func mustOptPrompt(r: in Result[Option[Prompt], CloudAgents.Db.DbError]): Option
 }
 
 func mustRows(r: in Result[Int, CloudAgents.Db.DbError]): Int {
-  return match r {
-    case Ok(n) -> n
-    case Err(e) -> panic("prompt write failed: " + CloudAgents.Db.dbErrorMessage(e))
-  }
+  return match r { case Ok(n) -> n; case Err(e) -> panic("prompt write failed: " + CloudAgents.Db.dbErrorMessage(e)) }
 }
 
 // Async wrapper so deletePrompt can be raced under real concurrent
@@ -220,11 +214,7 @@ test "Prompt ownership scoping hides other users' prompts" {
     case Some(_) -> assertTrue(false, "cannot read another user's prompt")
     case None -> ()
   }
-  assertEqualInt(
-    mustRows(markPromptUsed(theirs.id, personalScope(me))),
-    0,
-    "cannot mark another user's prompt used"
-  )
+  assertEqualInt(mustRows(markPromptUsed(theirs.id, personalScope(me))), 0, "cannot mark another user's prompt used")
   assertEqualInt(
     mustRows(updatePrompt(theirs.id, personalScope(me), "x", "y")),
     0,

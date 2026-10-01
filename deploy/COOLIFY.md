@@ -89,9 +89,10 @@ It connects as `cloudagents_app` and checks at startup that the role cannot
 bypass row-level security; if the check fails it logs `FATAL: Postgres
 self-check failed` and exits.
 
-Until the cut-over (`docs/phase11-postgres-tenancy.md` §9, slice E) the API
-still stores everything in SQLite; Postgres is provisioned and checked but
-holds no data.
+Every store is in Postgres (`docs/phase11-postgres-tenancy.md`). The files
+in `/var/lib/cloud-agents` are only artifact and attachment bytes; a
+pre-Postgres deployment's `cloud-agents.db` there is no longer read and can be
+deleted once the new deploy is healthy.
 
 - The passwords take effect only when `pg_data` is first created. To change
   one later, run `ALTER ROLE <role> PASSWORD '<new>'` as `postgres` from the
@@ -147,7 +148,7 @@ docker compose exec api test -S /var/run/docker.sock && echo ok
 
 If that fails, the mount didn't come through as a socket — and note
 `/api/health` won't tell you that: `checkHealth()`
-(`src/handlers/sessions.l`) only probes SQLite, there's no Docker
+(`src/handlers/sessions.l`) only probes the database, there's no Docker
 connectivity check anywhere in the stack. Uptime monitoring pointed at
 `/api/health` (per `RUNBOOK.md`) will report healthy even with a broken
 `docker.sock` mount — the `test -S` command above is the only way to catch
@@ -250,18 +251,16 @@ arm64 host today.
 
 ## Backups
 
-Persistent API state (database, artifacts, attachments) lives in the host
-directory `/var/lib/cloud-agents`, bind-mounted into the api container at the
-same path, so redeploys no longer lose sessions. Unlike the standalone
+Artifact and attachment bytes live in the host directory
+`/var/lib/cloud-agents`, bind-mounted into the api container at the
+same path, so redeploys keep them. Unlike the standalone
 compose file, the Coolify one cannot take the directory from
 `CLOUD_AGENTS_DATA_DIR`: Coolify rejects a volume path containing `${`. To
 use another directory, change every `/var/lib/cloud-agents` in
-`docker-compose.coolify.yml` together (the three path variables and both
+`docker-compose.coolify.yml` together (the two path variables and both
 sides of the mount), and export the same path as
-`CLOUD_AGENTS_DATA_DIR` when running `backup.sh`. When upgrading
-an existing Coolify deployment, copy the old container's state out first; see
-`RUNBOOK.md` "Upgrading from a deployment without a data directory" (use
-`docker exec <api container>` in place of `docker compose exec api`).
+`CLOUD_AGENTS_DATA_DIR` when running `backup.sh`. Upgrading a pre-Postgres
+deployment: see `RUNBOOK.md` "Upgrading from SQLite".
 
 `backup.sh` defaults to volume name `deploy_user_data` — Compose's
 `<project>_<volume>` naming when run from a directory literally called
