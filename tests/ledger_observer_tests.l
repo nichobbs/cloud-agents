@@ -1,6 +1,6 @@
 //! Tests for the session-ledger observer (docs/session-ledger.md §10): the
 //! pure reconciliation and settings rules, the transcript window, and whole
-//! report passes against live SQLite.
+//! report passes against live Postgres.
 //!
 //! Fixtures (tests/fixtures/observer/): `session.ndjson` is one run in
 //! Claude's real `--output-format stream-json` event shape, written by hand
@@ -16,11 +16,16 @@
 package CloudAgents.LedgerObserverTests
 
 import Std.Core
+import Std.Environment
 import Std.File
 import Std.Testing
 import Std.Uuid
 import CloudAgents.Auth
+import CloudAgents.Pg
+import CloudAgents.Pg.Migrate
+import CloudAgents.PgStore.Tenancy
 import CloudAgents.Repository
+import CloudAgents.SessionStore
 import CloudAgents.Sqlite
 import CloudAgents.Capture
 import CloudAgents.Ledger.Model
@@ -33,11 +38,7 @@ import CloudAgents.Ledger.ObserverWindow
 import CloudAgents.Ledger.Observer
 import CloudAgents.Ledger.ToolArgs
 import CloudAgents.LedgerHandlers
-import extern System.Environment as Env
 import extern System.Text.Encoding as Encoding
-
-@externTarget("System.IO.File.Delete")
-func fileDelete(path: in String): Unit = ()
 
 @externTarget("System.Text.Encoding.get_UTF8")
 func utf8Encoding(): Encoding = ()
@@ -50,41 +51,111 @@ func readFixture(path: in String): String {
   return match Std.File.readBytes(path) { case Ok(bytes) -> utf8FromBytes(utf8Encoding(), bytes); case Err(_) -> "" }
 }
 
-func useFreshTestDb(tag: in String): String {
-  val path = "/tmp/cloud-agents-tests-" + tag + "-" + Std.Uuid.uuidToString(Std.Uuid.newUuid()) + ".db"
-  Env.SetEnvironmentVariable("CLOUD_AGENTS_DB_PATH", path)
-  match CloudAgents.Repository.initSchema() {
-    case Ok(_) -> ()
-    case Err(e) -> assertTrue(false, "initSchema failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+// ── Live Postgres ─────────────────────────────────────────────────────────────
+//
+// The store is Postgres (docs/phase11-postgres-tenancy.md). These tests run iff
+// LYRIC_CONFIG_DB_CONNECTION_URL (cloudagents_app) and
+// CLOUD_AGENTS_MIGRATE_DATABASE_URL (cloudagents_owner) are set, and fail rather
+// than skip when CLOUD_AGENTS_REQUIRE_LIVE_PG=1 (CI). Each test acts as a fresh
+// user with its own personal tenant, so tests, suites and repeated runs against
+// the same database never see each other's rows.
+func live(): Bool {
+  val ok = CloudAgents.Pg.serviceConfigured() and
+    Std.Environment.getVarOrDefault(CloudAgents.Pg.migrateDsnVar(), "").length.toInt() > 0
+  if ok {
+    return true
   }
-  return path
-}
-
-func cleanupTestDb(path: in String): Unit {
-  try {
-    fileDelete(path)
-  } catch Bug as b {
-    // locked or already gone
-  }
-}
-
-func exec(sql: in String): Unit {
-  match CloudAgents.Sqlite.execute(sql) {
-    case Ok(_) -> ()
-    case Err(e) -> assertTrue(false, "exec failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
-  }
-}
-
-func seedSession(id: in String): Unit {
-  exec(
-    "INSERT INTO sessions (id, user_id, repo_url, branch, container_id, harness, model, native_session_id, status, created_at, last_message_at, callback_token_hash) VALUES ('" +
-      id +
-      "', 'alice', 'https://github.com/acme/shop', 'main', '', 'claude', '', '" +
-      id +
-      "', 'IDLE', '1', '1', '" +
-      CloudAgents.Auth.hashCallbackToken("tok-" + id) +
-      "')"
+  assertTrue(
+    Std.Environment.getVarOrDefault("CLOUD_AGENTS_REQUIRE_LIVE_PG", "") != "1",
+    "CLOUD_AGENTS_REQUIRE_LIVE_PG=1 but LYRIC_CONFIG_DB_CONNECTION_URL or CLOUD_AGENTS_MIGRATE_DATABASE_URL is not set"
   )
+  println("SKIP: ledger observer tests need LYRIC_CONFIG_DB_CONNECTION_URL and CLOUD_AGENTS_MIGRATE_DATABASE_URL")
+  return false
+}
+
+func migrate(): Unit {
+  val conn = match CloudAgents.Pg.connectDsn(Std.Environment.getVarOrDefault(CloudAgents.Pg.migrateDsnVar(), "")) {
+    case Ok(c) -> c
+    case Err(e) -> panic(CloudAgents.Pg.pgErrorMessage(e))
+  }
+  defer {
+    conn.close()
+  }
+  match CloudAgents.Pg.Migrate.migrate(conn) {
+    case Ok(_) -> ()
+    case Err(e) -> panic("migrate failed: " + CloudAgents.Pg.pgErrorMessage(e))
+  }
+}
+
+/// A new user with a provisioned personal tenant. Does not change the request
+/// identity.
+func newUser(tag: in String): String {
+  val uid = "t-" + tag + "-" + Std.Uuid.uuidToString(Std.Uuid.newUuid())
+  match CloudAgents.PgStore.Tenancy.ensurePersonalTenant(uid) {
+    case Ok(_) -> ()
+    case Err(e) -> panic("provisioning " + uid + " failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+  }
+  return uid
+}
+
+/// Migrate, then make a new user the request identity (what handlers read via
+/// CloudAgents.Auth.requestScope()).
+func freshUser(tag: in String): String {
+  migrate()
+  val uid = newUser(tag)
+  CloudAgents.Auth.setCurrentUserId(uid)
+  return uid
+}
+
+// A new session owned by the current test user on github.com/acme/shop with
+// callback token "tok-" + its id (stored, like a real session, only as its
+// hash). Session ids are global (session_routes), so each is unique.
+func seedSession(): String {
+  val id = "s-" + Std.Uuid.uuidToString(Std.Uuid.newUuid())
+  val sc = testScope()
+  match CloudAgents.SessionStore.addSession(
+    makeAgentSession(
+      sessionId = id,
+      repoUrl = "https://github.com/acme/shop",
+      branch = "main",
+      containerId = "",
+      harness = "claude",
+      model = "",
+      nativeSessionId = id
+    ),
+    sc
+  ) {
+    case Ok(_) -> ()
+    case Err(e) -> panic("addSession failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+  }
+  val u = match CloudAgents.PgStore.open(sc) {
+    case Ok(x) -> x
+    case Err(e) -> panic(CloudAgents.Sqlite.dbErrorMessage(e))
+  }
+  defer {
+    CloudAgents.PgStore.release(u)
+  }
+  match CloudAgents.PgStore.ex(
+    u,
+    "UPDATE session_routes SET callback_token_hash = @p1 WHERE session_id = @p0 AND tenant_id = @p2",
+    [id, CloudAgents.Auth.hashCallbackToken("tok-" + id), sc.tenantId]
+  ) {
+    case Ok(n) -> assertEqualInt(n, 1, "token stored on the session's route")
+    case Err(e) -> panic(CloudAgents.Sqlite.dbErrorMessage(e))
+  }
+  match CloudAgents.PgStore.commit(u) {
+    case Ok(_) -> ()
+    case Err(e) -> panic(CloudAgents.Sqlite.dbErrorMessage(e))
+  }
+  return id
+}
+
+// Archive a session so the cross-tenant observer sweep stops listing it (best effort).
+func retire(sid: in String): Unit {
+  match CloudAgents.SessionStore.updateSessionArchived(sid, testScope(), "1") {
+    case Ok(_) -> ()
+    case Err(e) -> println("WARNING: could not archive " + sid + ": " + CloudAgents.Sqlite.dbErrorMessage(e))
+  }
 }
 
 func agentOk(sid: in String, op: in String, body: in String): String {
@@ -464,26 +535,29 @@ test "reading and searching are not worth a pass on their own" {
   assertTrue(toolCarriesSignal("Edit", "file_path=/workspace/a.py"), "an edit")
 }
 
-// ── Whole passes (live SQLite) ────────────────────────────────────────────────
+// ── Whole passes (live Postgres) ────────────────────────────────────────────────
 test "fixtures: planted shortcuts are flagged and the declared decision is matched" {
-  val path = useFreshTestDb("observer-accept")
-  defer {
-    cleanupTestDb(path)
+  if not live() {
+    return
   }
-  seedSession("s1")
+  val me = freshUser("observer-accept")
+  val s1 = seedSession()
+  defer {
+    retire(s1)
+  }
   val fixture = readFixture("tests/fixtures/observer/session.ndjson")
-  val _ = agentOk("s1", "register-items", "{\"items\":[\"#12\"]}")
+  val _ = agentOk(s1, "register-items", "{\"items\":[\"#12\"]}")
   // The run up to the decision, then the agent declares it, then the rest.
-  val first = capture("s1", headLines(fixture, 8), 0.toLong(), "")
+  val first = capture(s1, headLines(fixture, 8), 0.toLong(), "")
   val declared = agentOk(
-    "s1",
+    s1,
     "decision",
     "{\"summary\":\"Use sliding expiry for session tokens\",\"item\":\"#12\",\"chosen\":\"sliding expiry\",\"rationale\":\"Active users should stay signed in\",\"optionsConsidered\":[\"fixed window\",\"sliding expiry\"]}"
   )
   assertTrue(declared.contains("\"severity\":\"info\""), "an ordinary declared decision")
-  val _ = capture("s1", tailLines(fixture, 8), first.nextSeq, first.lastHash)
+  val _ = capture(s1, tailLines(fixture, 8), first.nextSeq, first.lastHash)
 
-  val w = window("s1", true)
+  val w = window(s1, true)
   assertEqual(w.fromSeq, "0", "window starts at the beginning")
   assertEqual(w.toSeq, "28", "and covers the run")
   assertEqual(w.more, "false", "nothing after it")
@@ -493,13 +567,13 @@ test "fixtures: planted shortcuts are flagged and the declared decision is match
   )
   assertTrue(w.workItems[0].startsWith("gh:acme/shop#12"), "lists the work items")
 
-  val reply = accept("s1", decodeOk(readFixture("tests/fixtures/observer/report.json")), false)
+  val reply = accept(s1, decodeOk(readFixture("tests/fixtures/observer/report.json")), false)
   assertEqual(reply.undeclared, "3", "the skipped test, the scope change and the abandoned approach")
   assertEqual(reply.matched, "1", "the restated decision")
   assertEqual(reply.dropped, "1", "the low-confidence guess")
   assertEqual(reply.duplicates, "0", "nothing seen before")
 
-  val skip = observedWith("s1", "test_refund_rounding")
+  val skip = observedWith(s1, "test_refund_rounding")
   assertEqual(skip.undeclared, "true", "undeclared")
   assertEqual(skip.severity, "review", "policy raises an undeclared observation to review")
   assertEqual(skip.reviewState, "pending", "awaiting the owner")
@@ -508,45 +582,48 @@ test "fixtures: planted shortcuts are flagged and the declared decision is match
   assertEqual(skip.confidence, "0.95", "confidence kept")
   assertTrue(skip.evidence.contains("Skipping it so the suite is green"), "evidence kept")
   assertEqual(skip.provisional, "false", "an end-of-run pass is final")
-  val offScope = observedWith("s1", "billing/invoice.py")
+  val offScope = observedWith(s1, "billing/invoice.py")
   assertEqual(offScope.undeclared, "true", "the scope change is undeclared")
-  val abandoned = observedWith("s1", "Redis")
+  val abandoned = observedWith(s1, "Redis")
   assertEqual(abandoned.itemId, "gh:acme/shop#12", "item refs are normalized")
-  val decision = observedWith("s1", "sliding window")
+  val decision = observedWith(s1, "sliding window")
   assertEqual(decision.undeclared, "false", "the declared decision is not flagged")
   assertTrue(decision.matchedEntryId.length.toInt() > 0, "it points at the declared entry")
   assertEqual(decision.severity, "info", "and needs no review")
-  assertEqualInt(countNotifications("s1"), 1, "only the confident skipped test notifies")
+  assertEqualInt(countNotifications(s1), 1, "only the confident skipped test notifies")
 
-  match observerState("s1", testScope()) {
+  match observerState(s1, testScope()) {
     case Ok(st) -> {
       assertEqual(st.cursorSeq, "28", "the cursor moved past the window")
       assertEqual(st.windowEnd, "", "and the window is closed")
     }
     case Err(e) -> panic(CloudAgents.Sqlite.dbErrorMessage(e))
   }
-  match acceptReport(ctxOf("s1"), decodeOk(readFixture("tests/fixtures/observer/report.json")), false, defaultReconcileConfig()) {
+  match acceptReport(ctxOf(s1), decodeOk(readFixture("tests/fixtures/observer/report.json")), false, defaultReconcileConfig()) {
     case Ok(_) -> assertTrue(false, "a report without a window is refused")
     case Err(f) -> assertTrue(f.message.contains("observer_get_window"), f.message)
   }
-  assertEqual(window("s1", true).empty, "true", "nothing new to read")
+  assertEqual(window(s1, true).empty, "true", "nothing new to read")
 }
 
 test "a later window restating an observation is a duplicate" {
-  val path = useFreshTestDb("observer-dup")
-  defer {
-    cleanupTestDb(path)
+  if not live() {
+    return
   }
-  seedSession("s1")
+  val me = freshUser("observer-dup")
+  val s1 = seedSession()
+  defer {
+    retire(s1)
+  }
   val fixture = readFixture("tests/fixtures/observer/session.ndjson")
-  val all = capture("s1", fixture, 0.toLong(), "")
-  val _ = window("s1", true)
-  val _ = accept("s1", decodeOk(readFixture("tests/fixtures/observer/report.json")), false)
-  val _ = capture("s1", headLines(fixture, 3), all.nextSeq, all.lastHash)
-  val w = window("s1", true)
+  val all = capture(s1, fixture, 0.toLong(), "")
+  val _ = window(s1, true)
+  val _ = accept(s1, decodeOk(readFixture("tests/fixtures/observer/report.json")), false)
+  val _ = capture(s1, headLines(fixture, 3), all.nextSeq, all.lastHash)
+  val w = window(s1, true)
   assertEqual(w.fromSeq, "29", "only the new events")
   val again = accept(
-    "s1",
+    s1,
     decodeOk(
       "{\"candidates\":[{\"kind\":\"shortcut\",\"summary\":\"Skipped the failing test_refund_rounding instead of fixing it\",\"seqStart\":\"29\",\"seqEnd\":\"31\",\"confidence\":0.9}]}"
     ),
@@ -557,16 +634,19 @@ test "a later window restating an observation is a duplicate" {
 }
 
 test "a mid-run observation the agent declares later is matched, and settles at run end" {
-  val path = useFreshTestDb("observer-provisional")
-  defer {
-    cleanupTestDb(path)
+  if not live() {
+    return
   }
-  seedSession("s1")
+  val me = freshUser("observer-provisional")
+  val s1 = seedSession()
+  defer {
+    retire(s1)
+  }
   val fixture = readFixture("tests/fixtures/observer/session.ndjson")
-  val part = capture("s1", headLines(fixture, 23), 0.toLong(), "")
-  val _ = window("s1", false)
+  val part = capture(s1, headLines(fixture, 23), 0.toLong(), "")
+  val _ = window(s1, false)
   val mid = accept(
-    "s1",
+    s1,
     decodeOk(
       "{\"candidates\":[{\"kind\":\"shortcut\",\"summary\":\"Skipped the failing test_refund_rounding\",\"seqStart\":\"18\",\"seqEnd\":\"22\",\"confidence\":\"0.7\"}," +
         "{\"kind\":\"deviation\",\"summary\":\"Abandoned the Redis cache\",\"seqStart\":\"10\",\"seqEnd\":\"17\",\"confidence\":\"0.7\"}]}"
@@ -574,51 +654,54 @@ test "a mid-run observation the agent declares later is matched, and settles at 
     true
   )
   assertEqual(mid.undeclared, "2", "two findings mid-run")
-  assertEqual(observedWith("s1", "test_refund_rounding").provisional, "true", "provisional while the run goes on")
+  assertEqual(observedWith(s1, "test_refund_rounding").provisional, "true", "provisional while the run goes on")
   // The agent now declares the skip itself.
   val _ = agentOk(
-    "s1",
+    s1,
     "deviation",
     "{\"kind\":\"shortcut\",\"summary\":\"Skipped flaky test_refund_rounding to unblock the fix\",\"reversible\":true}"
   )
-  val _ = capture("s1", tailLines(fixture, 23), part.nextSeq, part.lastHash)
-  val _ = window("s1", true)
-  val last = accept("s1", decodeOk("{\"candidates\":[]}"), false)
+  val _ = capture(s1, tailLines(fixture, 23), part.nextSeq, part.lastHash)
+  val _ = window(s1, true)
+  val last = accept(s1, decodeOk("{\"candidates\":[]}"), false)
   assertEqual(last.undeclared, "0", "nothing new")
-  val skip = observedWith("s1", "test_refund_rounding")
+  val skip = observedWith(s1, "test_refund_rounding")
   assertEqual(skip.undeclared, "false", "covered by the later declaration")
   assertTrue(skip.matchedEntryId.length.toInt() > 0, "matched to it")
   assertEqual(skip.severity, "info", "no longer needs review")
   assertEqual(skip.reviewState, "not_required", "nor waits for it")
-  val redis = observedWith("s1", "Redis")
+  val redis = observedWith(s1, "Redis")
   assertEqual(redis.undeclared, "true", "the undeclared one stays flagged")
   assertEqual(redis.provisional, "false", "and is final now the run has ended")
 }
 
 test "a report that breaks the rules is refused whole and the cursor stays" {
-  val path = useFreshTestDb("observer-invalid")
-  defer {
-    cleanupTestDb(path)
+  if not live() {
+    return
   }
-  seedSession("s1")
-  val _ = capture("s1", readFixture("tests/fixtures/observer/session.ndjson"), 0.toLong(), "")
-  val _ = window("s1", true)
+  val me = freshUser("observer-invalid")
+  val s1 = seedSession()
+  defer {
+    retire(s1)
+  }
+  val _ = capture(s1, readFixture("tests/fixtures/observer/session.ndjson"), 0.toLong(), "")
+  val _ = window(s1, true)
   val outside = decodeOk(
     "{\"candidates\":[{\"kind\":\"shortcut\",\"summary\":\"x\",\"seqStart\":\"20\",\"seqEnd\":\"90\",\"confidence\":\"0.9\"}]}"
   )
-  match acceptReport(ctxOf("s1"), outside, false, defaultReconcileConfig()) {
+  match acceptReport(ctxOf(s1), outside, false, defaultReconcileConfig()) {
     case Ok(_) -> assertTrue(false, "a range outside the window is refused")
     case Err(f) -> assertTrue(f.message.contains("inside this window"), f.message)
   }
   val badKind = decodeOk(
     "{\"candidates\":[{\"kind\":\"shortcut\",\"summary\":\"fine\",\"seqStart\":\"2\",\"seqEnd\":\"3\",\"confidence\":\"0.9\"},{\"kind\":\"note\",\"summary\":\"x\",\"seqStart\":\"2\",\"seqEnd\":\"3\",\"confidence\":\"0.9\"}]}"
   )
-  match acceptReport(ctxOf("s1"), badKind, false, defaultReconcileConfig()) {
+  match acceptReport(ctxOf(s1), badKind, false, defaultReconcileConfig()) {
     case Ok(_) -> assertTrue(false, "a note is refused")
     case Err(f) -> assertTrue(f.message.contains("candidates[1]"), "names the bad candidate: " + f.message)
   }
-  assertEqualInt(observedEntries("s1").length.toInt(), 0, "nothing stored from a refused report")
-  match observerState("s1", testScope()) {
+  assertEqualInt(observedEntries(s1).length.toInt(), 0, "nothing stored from a refused report")
+  match observerState(s1, testScope()) {
     case Ok(st) -> assertEqual(st.cursorSeq, "", "the cursor did not move")
     case Err(e) -> panic(CloudAgents.Sqlite.dbErrorMessage(e))
   }
@@ -632,13 +715,16 @@ test "a report that breaks the rules is refused whole and the cursor stays" {
 }
 
 test "a report raises at most three notifications" {
-  val path = useFreshTestDb("observer-notify-cap")
-  defer {
-    cleanupTestDb(path)
+  if not live() {
+    return
   }
-  seedSession("s1")
-  val _ = capture("s1", readFixture("tests/fixtures/observer/session.ndjson"), 0.toLong(), "")
-  val _ = window("s1", true)
+  val me = freshUser("observer-notify-cap")
+  val s1 = seedSession()
+  defer {
+    retire(s1)
+  }
+  val _ = capture(s1, readFixture("tests/fixtures/observer/session.ndjson"), 0.toLong(), "")
+  val _ = window(s1, true)
   var body = "{\"candidates\":["
   var i = 0
   while i < 6 {
@@ -650,13 +736,12 @@ test "a report raises at most three notifications" {
     i = i + 1
   }
   body = body + "]}"
-  val r = accept("s1", decodeOk(body), false)
+  val r = accept(s1, decodeOk(body), false)
   assertEqual(r.undeclared, "6", "every finding is recorded")
-  assertEqualInt(countNotifications("s1"), 3, "but only three notify")
+  assertEqualInt(countNotifications(s1), 3, "but only three notify")
 }
 
-// The scope the store calls run under: SQLite keys ledger rows by session
-// alone, so only the inbox reads the user from it.
+// The scope the store calls run under: the current test's fresh user.
 func testScope(): TestScope.TenantScope {
-  return TestScope.personalScope("alice")
+  return CloudAgents.Auth.requestScope()
 }

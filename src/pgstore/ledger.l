@@ -929,7 +929,9 @@ pub func releaseSyncLease(
   if token.length.toInt() == 0 {
     return Ok(value = ())
   }
-  exec(sc, "UPDATE ledger_github_sync_runs SET lease_until = NULL WHERE session_id = @p0 AND lease_until = " + CloudAgents.Pg.msIn(1), [sessionId, token])?
+  // Compared as text: a token that is not a lease (not even a number) simply
+  // matches nothing, as on SQLite, rather than failing the cast.
+  exec(sc, "UPDATE ledger_github_sync_runs SET lease_until = NULL WHERE session_id = @p0 AND " + CloudAgents.Pg.msOut("lease_until") + " = @p1", [sessionId, token])?
   return Ok(value = ())
 }
 
@@ -1008,7 +1010,14 @@ pub func setPolicyCache(
     CloudAgents.PgStore.release(u)
   }
   ensureSession(u, sessionId, now())?
-  CloudAgents.PgStore.ex(u, "UPDATE ledger_sessions SET policy_status = @p1, policy_json = @p2, policy_error = @p3 WHERE session_id = @p0", [sessionId, status, json, error])?
+  // "unavailable" (a transient GitHub failure) is not an answer: the column's
+  // CHECK has no such value, and the service retries it exactly as it does an
+  // unfetched policy, so it is stored as unfetched (keeping the error text).
+  var stored = status
+  if status == "unavailable" {
+    stored = ""
+  }
+  CloudAgents.PgStore.ex(u, "UPDATE ledger_sessions SET policy_status = @p1, policy_json = @p2, policy_error = @p3 WHERE session_id = @p0", [sessionId, stored, json, error])?
   CloudAgents.PgStore.commit(u)?
   return Ok(value = ())
 }

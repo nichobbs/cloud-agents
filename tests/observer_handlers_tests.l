@@ -4,16 +4,27 @@
 //! the pass limits. Containers are replaced by FakeRunner, which plays the
 //! observer agent: it reads the window and sends a recorded report with the
 //! observer session's own callback token, exactly as the shim would. Live
-//! SQLite, no Docker, no network.
+//! Postgres, no Docker, no network.
+//!
+//! The observer sweep (`pendingObserverSessions`, `observerMaintenanceHandler`)
+//! lists passes across ALL tenants and takes at most three per call, so other
+//! tests' sessions would crowd out a test's own. Whole passes therefore run
+//! through `runPass` on the test's own session; the sweep itself is checked for
+//! its operator gate and for listing (only) this test's pending sessions.
+//! Every session is archived on exit so it leaves no pass pending.
 @test_module
 package CloudAgents.ObserverHandlersTests
 
 import Std.Core
+import Std.Environment
 import Std.File
 import Std.Testing
 import Std.Uuid
 import Web
 import CloudAgents.Auth
+import CloudAgents.Pg
+import CloudAgents.Pg.Migrate
+import CloudAgents.PgStore.Tenancy
 import CloudAgents.Repository
 import CloudAgents.Sqlite
 import CloudAgents.SessionStore
@@ -26,11 +37,7 @@ import CloudAgents.Ledger.ObserverPolicy
 import CloudAgents.Ledger.Observer
 import CloudAgents.LedgerHandlers
 import CloudAgents.ObserverHandlers
-import extern System.Environment as Env
 import extern System.Text.Encoding as Encoding
-
-@externTarget("System.IO.File.Delete")
-func fileDelete(path: in String): Unit = ()
 
 @externTarget("System.Text.Encoding.get_UTF8")
 func utf8Encoding(): Encoding = ()
@@ -43,57 +50,122 @@ func readFixture(path: in String): String {
   return match Std.File.readBytes(path) { case Ok(bytes) -> utf8FromBytes(utf8Encoding(), bytes); case Err(_) -> "" }
 }
 
-func useFreshTestDb(tag: in String): String {
-  val path = "/tmp/cloud-agents-tests-" + tag + "-" + Std.Uuid.uuidToString(Std.Uuid.newUuid()) + ".db"
-  Env.SetEnvironmentVariable("CLOUD_AGENTS_DB_PATH", path)
-  match CloudAgents.Repository.initSchema() {
-    case Ok(_) -> ()
-    case Err(e) -> assertTrue(false, "initSchema failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+// ── Live Postgres ─────────────────────────────────────────────────────────────
+//
+// The store is Postgres (docs/phase11-postgres-tenancy.md). These tests run iff
+// LYRIC_CONFIG_DB_CONNECTION_URL (cloudagents_app) and
+// CLOUD_AGENTS_MIGRATE_DATABASE_URL (cloudagents_owner) are set, and fail rather
+// than skip when CLOUD_AGENTS_REQUIRE_LIVE_PG=1 (CI). Each test acts as a fresh
+// user with its own personal tenant, so tests, suites and repeated runs against
+// the same database never see each other's rows.
+func live(): Bool {
+  val ok = CloudAgents.Pg.serviceConfigured() and
+    Std.Environment.getVarOrDefault(CloudAgents.Pg.migrateDsnVar(), "").length.toInt() > 0
+  if ok {
+    return true
   }
-  CloudAgents.Auth.setCurrentUserId("alice")
-  return path
-}
-
-func cleanupTestDb(path: in String): Unit {
-  try {
-    fileDelete(path)
-  } catch Bug as b {
-    // locked or already gone
-  }
-}
-
-func exec(sql: in String): Unit {
-  match CloudAgents.Sqlite.execute(sql) {
-    case Ok(_) -> ()
-    case Err(e) -> assertTrue(false, "exec failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
-  }
-}
-
-func seedProfile(id: in String, owner: in String): Unit {
-  exec(
-    "INSERT INTO profiles (id, user_id, name, harness, network_policy, credential_mode, created_at, updated_at) VALUES ('" +
-      id +
-      "', '" +
-      owner +
-      "', '" +
-      id +
-      "', '', 'full', 'all', '1', '1')"
+  assertTrue(
+    Std.Environment.getVarOrDefault("CLOUD_AGENTS_REQUIRE_LIVE_PG", "") != "1",
+    "CLOUD_AGENTS_REQUIRE_LIVE_PG=1 but LYRIC_CONFIG_DB_CONNECTION_URL or CLOUD_AGENTS_MIGRATE_DATABASE_URL is not set"
   )
+  println("SKIP: observer tests need LYRIC_CONFIG_DB_CONNECTION_URL and CLOUD_AGENTS_MIGRATE_DATABASE_URL")
+  return false
 }
 
-func seedSession(id: in String, profileId: in String, status: in String): Unit {
-  exec(
-    "INSERT INTO sessions (id, user_id, repo_url, branch, container_id, harness, model, native_session_id, status, created_at, last_message_at, callback_token_hash) VALUES ('" +
-      id +
-      "', 'alice', 'https://github.com/acme/shop', 'main', '', 'claude', '', '" +
-      id +
-      "', '" +
-      status +
-      "', '1', '1', '" +
-      CloudAgents.Auth.hashCallbackToken("tok-" + id) +
-      "')"
-  )
-  exec("UPDATE sessions SET profile_id = '" + profileId + "' WHERE id = '" + id + "'")
+func migrate(): Unit {
+  val conn = match CloudAgents.Pg.connectDsn(Std.Environment.getVarOrDefault(CloudAgents.Pg.migrateDsnVar(), "")) {
+    case Ok(c) -> c
+    case Err(e) -> panic(CloudAgents.Pg.pgErrorMessage(e))
+  }
+  defer {
+    conn.close()
+  }
+  match CloudAgents.Pg.Migrate.migrate(conn) {
+    case Ok(_) -> ()
+    case Err(e) -> panic("migrate failed: " + CloudAgents.Pg.pgErrorMessage(e))
+  }
+}
+
+/// A new user with a provisioned personal tenant. Does not change the request
+/// identity.
+func newUser(tag: in String): String {
+  val uid = "t-" + tag + "-" + Std.Uuid.uuidToString(Std.Uuid.newUuid())
+  match CloudAgents.PgStore.Tenancy.ensurePersonalTenant(uid) {
+    case Ok(_) -> ()
+    case Err(e) -> panic("provisioning " + uid + " failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+  }
+  return uid
+}
+
+/// Migrate, then make a new user the request identity (what handlers read via
+/// CloudAgents.Auth.requestScope()).
+func freshUser(tag: in String): String {
+  migrate()
+  val uid = newUser(tag)
+  CloudAgents.Auth.setCurrentUserId(uid)
+  return uid
+}
+
+func seedProfile(owner: in String): String {
+  val sc = CloudAgents.Pg.personalScope(owner)
+  match CloudAgents.Repository.addProfile(sc, "prof-" + Std.Uuid.uuidToString(Std.Uuid.newUuid()), "", "full", "all", [], [], [], [], "all", []) {
+    case Ok(pr) -> return pr.id
+    case Err(e) -> panic("addProfile failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+  }
+}
+
+// Point a session's route at a known callback token, "tok-" + its id, stored
+// (like a real session's) only as its hash.
+func setToken(sid: in String, userId: in String): Unit {
+  val sc = CloudAgents.Pg.personalScope(userId)
+  val u = match CloudAgents.PgStore.open(sc) {
+    case Ok(x) -> x
+    case Err(e) -> panic(CloudAgents.Sqlite.dbErrorMessage(e))
+  }
+  defer {
+    CloudAgents.PgStore.release(u)
+  }
+  match CloudAgents.PgStore.ex(u, "UPDATE session_routes SET callback_token_hash = @p1 WHERE session_id = @p0 AND tenant_id = @p2", [sid, CloudAgents.Auth.hashCallbackToken("tok-" + sid), sc.tenantId]) {
+    case Ok(n) -> assertEqualInt(n, 1, "token stored on the session's route")
+    case Err(e) -> panic(CloudAgents.Sqlite.dbErrorMessage(e))
+  }
+  match CloudAgents.PgStore.commit(u) {
+    case Ok(_) -> ()
+    case Err(e) -> panic(CloudAgents.Sqlite.dbErrorMessage(e))
+  }
+}
+
+// A new session owned by the current test user on github.com/acme/shop, in
+// `profileId`'s profile, with callback token "tok-" + its id. Session ids are
+// global (session_routes), so each is unique.
+func seedSession(profileId: in String, status: in String): String {
+  val id = "s-" + Std.Uuid.uuidToString(Std.Uuid.newUuid())
+  val sc = testScope()
+  match CloudAgents.SessionStore.addSession(makeAgentSession(sessionId = id, repoUrl = "https://github.com/acme/shop", branch = "main", containerId = "", harness = "claude", model = "", nativeSessionId = id, status = status), sc) {
+    case Ok(_) -> ()
+    case Err(e) -> panic("addSession failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+  }
+  match CloudAgents.SessionStore.setSessionProfile(id, sc, profileId) {
+    case Ok(_) -> ()
+    case Err(e) -> panic("setSessionProfile failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+  }
+  setToken(id, sc.userId)
+  return id
+}
+
+// Archive a session so the cross-tenant observer sweep stops listing it.
+func retire(sid: in String): Unit {
+  match CloudAgents.SessionStore.updateSessionArchived(sid, testScope(), "1") {
+    case Ok(_) -> ()
+    case Err(e) -> println("WARNING: could not archive " + sid + ": " + CloudAgents.Sqlite.dbErrorMessage(e))
+  }
+}
+
+func linkObserver(observerId: in String, observedId: in String, profileId: in String): Unit {
+  match linkObserverSession(observerId, testScope(), observedId, profileId) {
+    case Ok(_) -> ()
+    case Err(e) -> panic(CloudAgents.Sqlite.dbErrorMessage(e))
+  }
 }
 
 func settings(enabled: in String, access: in String, cap: in String): ObserverSettings {
@@ -192,10 +264,7 @@ impl ObserverRunner for FakeRunner {
     self.lastPrompt = prompt
     self.lastObserver = observerSessionId
     // The container would receive a freshly minted token; stand one in.
-    match CloudAgents.Sqlite.execute("UPDATE sessions SET callback_token_hash = '" + CloudAgents.Auth.hashCallbackToken("tok-" + observerSessionId) + "' WHERE id = '" + observerSessionId + "'") {
-      case Ok(_) -> ()
-      case Err(e) -> return Err(error = CloudAgents.Sqlite.dbErrorMessage(e))
-    }
+    setToken(observerSessionId, userId)
     val w = match observerCallbackHandler(observerSessionId, "window", "Bearer tok-" + observerSessionId, "{}", self) {
       case Ok(env) -> env
       case Err(e) -> return Err(error = "window: HTTP " + toString(e.status) + " " + e.message)
@@ -222,36 +291,30 @@ impl ObserverRunner for FakeRunner {
   }
 }
 
-func runAsOperator(runner: in FakeRunner): ObserverRunReport {
-  val prior = CloudAgents.Auth.currentUserId()
-  defer {
-    CloudAgents.Auth.setCurrentUserId(prior)
-  }
-  CloudAgents.Auth.setCurrentUserId(CloudAgents.Auth.operatorUserId())
-  match observerMaintenanceHandler(runner) {
-    case Ok(r) -> return r
-    case Err(e) -> panic("observerMaintenanceHandler: " + e.message)
-  }
+// One pass for the test's own session: "ran", "skipped: <why>" or "error: <why>".
+func runPassFor(runner: in FakeRunner, sid: in String): String {
+  return runPass(sid, testScope(), runner)
 }
 
 // ── Settings ──────────────────────────────────────────────────────────────────
 test "a profile's observer settings are the owner's to read and change" {
-  val path = useFreshTestDb("obs-settings")
-  defer {
-    cleanupTestDb(path)
+  if not live() {
+    return
   }
-  seedProfile("p1", "alice")
-  seedProfile("p2", "bob")
-  match getObserverSettingsHandler("p1") {
+  val me = freshUser("obs-settings")
+  val p1 = seedProfile(me)
+  val bob = newUser("obs-bob")
+  val p2 = seedProfile(bob)
+  match getObserverSettingsHandler(p1) {
     case Ok(st) -> assertEqual(st.enabled, "false", "off until set")
     case Err(e) -> assertTrue(false, e.message)
   }
   val body = "{\"enabled\":\"true\",\"harness\":\"codex\",\"model\":\"o4-mini\",\"repoAccess\":\"workspace\",\"midRunMinutes\":\"30\",\"maxPassesPerDay\":\"20\"}"
-  match putObserverSettingsHandler("p1", body) {
+  match putObserverSettingsHandler(p1, body) {
     case Ok(st) -> assertEqual(st.harness, "codex", "saved")
     case Err(e) -> assertTrue(false, e.message)
   }
-  match getObserverSettingsHandler("p1") {
+  match getObserverSettingsHandler(p1) {
     case Ok(st) -> {
       assertEqual(st.enabled, "true", "enabled")
       assertEqual(st.repoAccess, "workspace", "repo access kept")
@@ -259,19 +322,19 @@ test "a profile's observer settings are the owner's to read and change" {
     }
     case Err(e) -> assertTrue(false, e.message)
   }
-  match putObserverSettingsHandler("p1", "{\"enabled\":\"true\",\"harness\":\"claude\",\"model\":\"\",\"repoAccess\":\"clone\",\"midRunMinutes\":\"15\",\"maxPassesPerDay\":\"5\"}") {
+  match putObserverSettingsHandler(p1, "{\"enabled\":\"true\",\"harness\":\"claude\",\"model\":\"\",\"repoAccess\":\"clone\",\"midRunMinutes\":\"15\",\"maxPassesPerDay\":\"5\"}") {
     case Ok(_) -> assertTrue(false, "an unknown repo access is refused")
     case Err(e) -> assertEqualInt(e.status, 400, "a bad value is a 400")
   }
-  match putObserverSettingsHandler("p1", "not json") {
+  match putObserverSettingsHandler(p1, "not json") {
     case Ok(_) -> assertTrue(false, "garbage is refused")
     case Err(e) -> assertEqualInt(e.status, 400, "not JSON is a 400, not a crash")
   }
-  match getObserverSettingsHandler("p2") {
+  match getObserverSettingsHandler(p2) {
     case Ok(_) -> assertTrue(false, "another user's profile is not visible")
     case Err(e) -> assertEqualInt(e.status, 404, "404")
   }
-  match putObserverSettingsHandler("p2", body) {
+  match putObserverSettingsHandler(p2, body) {
     case Ok(_) -> assertTrue(false, "nor changeable")
     case Err(e) -> assertEqualInt(e.status, 404, "404")
   }
@@ -279,63 +342,85 @@ test "a profile's observer settings are the owner's to read and change" {
 
 // ── Triggers ──────────────────────────────────────────────────────────────────
 test "a run's end queues a pass only for an observed session" {
-  val path = useFreshTestDb("obs-trigger")
-  defer {
-    cleanupTestDb(path)
+  if not live() {
+    return
   }
-  seedProfile("p1", "alice")
-  seedProfile("p2", "alice")
-  enable("p1", settings("true", "none", "10"))
-  enable("p2", settings("false", "none", "10"))
-  seedSession("watched", "p1", "IDLE")
-  seedSession("unwatched", "p2", "IDLE")
-  onRunFinished("watched")
-  onRunFinished("unwatched")
-  assertEqual(stateOf("watched").pending, "1", "an observed session gets a pass")
-  assertEqual(stateOf("unwatched").pending, "0", "a disabled observer doesn't")
+  val me = freshUser("obs-trigger")
+  val p1 = seedProfile(me)
+  val p2 = seedProfile(me)
+  enable(p1, settings("true", "none", "10"))
+  enable(p2, settings("false", "none", "10"))
+  val watched = seedSession(p1, "IDLE")
+  defer {
+    retire(watched)
+  }
+  val unwatched = seedSession(p2, "IDLE")
+  defer {
+    retire(unwatched)
+  }
+  onRunFinished(watched)
+  onRunFinished(unwatched)
+  assertEqual(stateOf(watched).pending, "1", "an observed session gets a pass")
+  assertEqual(stateOf(unwatched).pending, "0", "a disabled observer doesn't")
   // An observer session is never observed, whatever its profile says.
-  seedSession("obs", "p1", "IDLE")
-  exec("UPDATE sessions SET observes_session_id = 'watched' WHERE id = 'obs'")
-  onRunFinished("obs")
-  assertEqual(stateOf("obs").pending, "0", "observers aren't observed")
+  val obs = seedSession(p1, "IDLE")
+  defer {
+    retire(obs)
+  }
+  linkObserver(obs, watched, p1)
+  onRunFinished(obs)
+  assertEqual(stateOf(obs).pending, "0", "observers aren't observed")
   // An archived session isn't either.
-  seedSession("old", "p1", "IDLE")
-  exec("UPDATE sessions SET is_archived = '1' WHERE id = 'old'")
-  onRunFinished("old")
-  assertEqual(stateOf("old").pending, "0", "archived sessions aren't observed")
+  val oldSess = seedSession(p1, "IDLE")
+  defer {
+    retire(oldSess)
+  }
+  retire(oldSess)
+  onRunFinished(oldSess)
+  assertEqual(stateOf(oldSess).pending, "0", "archived sessions aren't observed")
 }
 
 test "a long run is due a mid-run pass once the interval passes" {
-  val path = useFreshTestDb("obs-midrun")
-  defer {
-    cleanupTestDb(path)
+  if not live() {
+    return
   }
-  seedProfile("p1", "alice")
-  enable("p1", settings("true", "none", "10"))
-  seedSession("s1", "p1", "RUNNING")
+  val me = freshUser("obs-midrun")
+  val p1 = seedProfile(me)
+  enable(p1, settings("true", "none", "10"))
+  val s1 = seedSession(p1, "RUNNING")
+  defer {
+    retire(s1)
+  }
   val now = CloudAgents.Repository.nowMillisLong()
-  midRunTick("s1", toString(now - 5.toLong() * 60000.toLong()))
-  assertEqual(stateOf("s1").pending, "0", "5 minutes in: not yet")
-  midRunTick("s1", toString(now - 16.toLong() * 60000.toLong()))
-  assertEqual(stateOf("s1").pending, "1", "16 minutes in: due")
+  midRunTick(s1, toString(now - 5.toLong() * 60000.toLong()))
+  assertEqual(stateOf(s1).pending, "0", "5 minutes in: not yet")
+  midRunTick(s1, toString(now - 16.toLong() * 60000.toLong()))
+  assertEqual(stateOf(s1).pending, "1", "16 minutes in: due")
 }
 
 test "the owner can ask for a pass; nobody else can" {
-  val path = useFreshTestDb("obs-now")
-  defer {
-    cleanupTestDb(path)
+  if not live() {
+    return
   }
-  seedProfile("p1", "alice")
-  seedProfile("p2", "alice")
-  enable("p1", settings("true", "none", "10"))
-  seedSession("s1", "p1", "IDLE")
-  seedSession("s2", "p2", "IDLE")
-  match observeNowHandler("s1") {
+  val me = freshUser("obs-now")
+  val p1 = seedProfile(me)
+  val p2 = seedProfile(me)
+  enable(p1, settings("true", "none", "10"))
+  val s1 = seedSession(p1, "IDLE")
+  defer {
+    retire(s1)
+  }
+  val s2 = seedSession(p2, "IDLE")
+  defer {
+    retire(s2)
+  }
+  val bob = newUser("obs-bob")
+  match observeNowHandler(s1) {
     case Ok(q) -> assertEqual(q.queued, "true", "queued")
     case Err(e) -> assertTrue(false, e.message)
   }
-  assertEqual(stateOf("s1").pending, "1", "pending")
-  match observerStatusHandler("s1") {
+  assertEqual(stateOf(s1).pending, "1", "pending")
+  match observerStatusHandler(s1) {
     case Ok(st) -> {
       assertEqual(st.enabled, "true", "observed")
       assertEqual(st.pending, "1", "a pass is queued")
@@ -343,44 +428,83 @@ test "the owner can ask for a pass; nobody else can" {
     }
     case Err(e) -> assertTrue(false, e.message)
   }
-  match observerStatusHandler("s2") {
+  match observerStatusHandler(s2) {
     case Ok(st) -> assertEqual(st.enabled, "false", "not observed")
     case Err(e) -> assertTrue(false, e.message)
   }
-  match observeNowHandler("s2") {
+  match observeNowHandler(s2) {
     case Ok(_) -> assertTrue(false, "a session without an observer can't be observed")
     case Err(e) -> assertEqualInt(e.status, 400, "400")
   }
-  CloudAgents.Auth.setCurrentUserId("bob")
-  match observeNowHandler("s1") {
+  CloudAgents.Auth.setCurrentUserId(bob)
+  match observeNowHandler(s1) {
     case Ok(_) -> assertTrue(false, "not bob's session")
     case Err(e) -> assertEqualInt(e.status, 404, "404")
   }
-  match observerStatusHandler("s1") {
+  match observerStatusHandler(s1) {
     case Ok(_) -> assertTrue(false, "nor bob's to inspect")
     case Err(e) -> assertEqualInt(e.status, 404, "404")
   }
 }
 
+// The sweep lists pending passes across tenants, so it is checked by
+// membership: this test's pending session is listed, its archived one is not.
+test "the observer sweep is operator-only and lists a pending pass until it is archived" {
+  if not live() {
+    return
+  }
+  val me = freshUser("obs-sweep")
+  val p1 = seedProfile(me)
+  enable(p1, settings("true", "none", "10"))
+  val live1 = seedSession(p1, "IDLE")
+  val gone = seedSession(p1, "IDLE")
+  defer {
+    retire(live1)
+    retire(gone)
+  }
+  onRunFinished(live1)
+  onRunFinished(gone)
+  retire(gone)
+  match observerMaintenanceHandler(fakeRunner("")) {
+    case Ok(_) -> assertTrue(false, "a non-operator may not trigger the sweep")
+    case Err(e) -> assertEqualInt(e.status, 401, "401")
+  }
+  val listed = match pendingObserverSessions(100) {
+    case Ok(ids) -> ids
+    case Err(e) -> panic(CloudAgents.Sqlite.dbErrorMessage(e))
+  }
+  var seenLive = false
+  var seenGone = false
+  var i = 0
+  while i < listed.length.toInt() {
+    if listed[i] == live1 {
+      seenLive = true
+    }
+    if listed[i] == gone {
+      seenGone = true
+    }
+    i = i + 1
+  }
+  assertTrue(seenLive, "the pending session is due")
+  assertTrue(not seenGone, "an archived session is not")
+}
+
 // ── Passes ────────────────────────────────────────────────────────────────────
 test "a pass runs the observer, which reads the window and reports into the ledger" {
-  val path = useFreshTestDb("obs-pass")
-  defer {
-    cleanupTestDb(path)
+  if not live() {
+    return
   }
-  seedProfile("p1", "alice")
-  enable("p1", settings("true", "diff", "10"))
-  seedSession("s1", "p1", "IDLE")
-  captureFixture("s1")
-  onRunFinished("s1")
+  val me = freshUser("obs-pass")
+  val p1 = seedProfile(me)
+  enable(p1, settings("true", "diff", "10"))
+  val s1 = seedSession(p1, "IDLE")
+  defer {
+    retire(s1)
+  }
+  captureFixture(s1)
+  onRunFinished(s1)
   val runner = fakeRunner(readFixture("tests/fixtures/observer/report.json"))
-  val report = runAsOperator(runner)
-  assertEqual(report.passes, "1", "one pass")
-  assertEqualInt(
-    report.errors.length.toInt(),
-    0,
-    "no errors: " + (if report.errors.length.toInt() > 0 { report.errors[0] } else { "" })
-  )
+  assertEqual(runPassFor(runner, s1), "ran", "one pass, no errors")
   assertEqualInt(runner.runs, 1, "the observer ran once")
   assertEqual(runner.lastHarness, "claude", "with the profile's harness")
   assertEqual(runner.lastModel, "claude-haiku-4-5", "and model")
@@ -389,8 +513,8 @@ test "a pass runs the observer, which reads the window and reports into the ledg
   assertEqual(runner.windowFinal, "true", "the window says the run is over")
   assertEqualInt(runner.diffCalls, 1, "diff access reads the workspace diff")
   assertTrue(runner.replies[0].startsWith("true:"), "the report was accepted: " + runner.replies[0])
-  assertEqualInt(observedCount("s1"), 4, "three undeclared and one matched... ")
-  val st = stateOf("s1")
+  assertEqualInt(observedCount(s1), 4, "three undeclared and one matched... ")
+  val st = stateOf(s1)
   assertEqual(st.cursorSeq, "28", "the cursor moved past the run")
   assertEqual(st.passesToday, "1", "one pass counted")
   assertEqual(st.lastError, "", "no error")
@@ -398,8 +522,8 @@ test "a pass runs the observer, which reads the window and reports into the ledg
   assertTrue(st.observerSessionId.length.toInt() > 0, "an observer session exists")
   match sessionRunFacts(st.observerSessionId, testScope()) {
     case Ok(Some(f)) -> {
-      assertEqual(f.observesSessionId, "s1", "linked to the session it observes")
-      assertEqual(f.profileId, "p1", "on the observed profile's credentials")
+      assertEqual(f.observesSessionId, s1, "linked to the session it observes")
+      assertEqual(f.profileId, p1, "on the observed profile's credentials")
       assertEqual(f.status, "IDLE", "and idle again after the pass")
     }
     case _ -> assertTrue(false, "the observer session row is missing")
@@ -409,31 +533,32 @@ test "a pass runs the observer, which reads the window and reports into the ledg
     case Err(e) -> panic(CloudAgents.Sqlite.dbErrorMessage(e))
   }
   // A second pass has nothing new to read, so no container starts.
-  val _ = markObserverPending("s1", testScope())
-  val again = runAsOperator(runner)
-  assertEqual(again.skipped, "1", "skipped")
+  val _ = markObserverPending(s1, testScope())
+  assertTrue(runPassFor(runner, s1).startsWith("skipped"), "skipped")
   assertEqualInt(runner.runs, 1, "no second run")
 }
 
 test "a mid-run pass sees the run as live and its findings are provisional" {
-  val path = useFreshTestDb("obs-live")
-  defer {
-    cleanupTestDb(path)
+  if not live() {
+    return
   }
-  seedProfile("p1", "alice")
-  enable("p1", settings("true", "none", "10"))
-  seedSession("s1", "p1", "RUNNING")
-  captureFixture("s1")
-  val _ = markObserverPending("s1", testScope())
+  val me = freshUser("obs-live")
+  val p1 = seedProfile(me)
+  enable(p1, settings("true", "none", "10"))
+  val s1 = seedSession(p1, "RUNNING")
+  defer {
+    retire(s1)
+  }
+  captureFixture(s1)
+  val _ = markObserverPending(s1, testScope())
   val runner = fakeRunner(
     "{\"candidates\":[{\"kind\":\"shortcut\",\"summary\":\"Skipped test_refund_rounding\",\"seqStart\":\"18\",\"seqEnd\":\"22\",\"confidence\":\"0.9\",\"evidence\":\"Skipping it\"}]}"
   )
-  val report = runAsOperator(runner)
-  assertEqual(report.passes, "1", "ran")
+  assertEqual(runPassFor(runner, s1), "ran", "ran")
   assertEqual(runner.windowFinal, "false", "the window says the run is still going")
   assertTrue(runner.lastPrompt.contains("still going"), "and so does the prompt")
   assertEqualInt(runner.diffCalls, 0, "no repo access, no diff")
-  match listEntries("s1", testScope()) {
+  match listEntries(s1, testScope()) {
     case Ok(es) -> {
       var provisional = 0
       var i = 0
@@ -450,68 +575,76 @@ test "a mid-run pass sees the run as live and its findings are provisional" {
 }
 
 test "a window of nothing but reads is skipped without a container" {
-  val path = useFreshTestDb("obs-lowsignal")
-  defer {
-    cleanupTestDb(path)
+  if not live() {
+    return
   }
-  seedProfile("p1", "alice")
-  enable("p1", settings("true", "none", "10"))
-  seedSession("s1", "p1", "IDLE")
+  val me = freshUser("obs-lowsignal")
+  val p1 = seedProfile(me)
+  enable(p1, settings("true", "none", "10"))
+  val s1 = seedSession(p1, "IDLE")
+  defer {
+    retire(s1)
+  }
   // The task, then a Read and its result: nothing that can be undeclared work.
   val head = "{\"type\":\"user\",\"message\":{\"role\":\"user\",\"content\":\"Fix the timeout\"}}\n" +
     "{\"type\":\"assistant\",\"message\":{\"role\":\"assistant\",\"content\":[{\"type\":\"tool_use\",\"id\":\"t1\",\"name\":\"Read\",\"input\":{\"file_path\":\"/workspace/auth/session.py\"}}]}}\n" +
     "{\"type\":\"user\",\"message\":{\"role\":\"user\",\"content\":[{\"type\":\"tool_result\",\"tool_use_id\":\"t1\",\"content\":\"def expiry(ts): ...\"}]}}\n"
   val b = parseStreamJson(head, 0.toLong(), "")
-  match CloudAgents.Repository.appendSessionEvents("s1", CloudAgents.Auth.requestScope(), b.events) {
+  match CloudAgents.Repository.appendSessionEvents(s1, CloudAgents.Auth.requestScope(), b.events) {
     case Ok(_) -> ()
     case Err(e) -> panic(CloudAgents.Sqlite.dbErrorMessage(e))
   }
-  val _ = markObserverPending("s1", testScope())
+  val _ = markObserverPending(s1, testScope())
   val runner = fakeRunner("{\"candidates\":[]}")
-  val report = runAsOperator(runner)
-  assertEqual(report.skipped, "1", "skipped")
+  assertTrue(runPassFor(runner, s1).startsWith("skipped"), "skipped")
   assertEqualInt(runner.runs, 0, "no observer run")
-  assertEqual(stateOf("s1").cursorSeq, "2", "but the reads are behind the cursor now")
+  assertEqual(stateOf(s1).cursorSeq, "2", "but the reads are behind the cursor now")
 }
 
 test "the daily cap stops passes, and an observer that never reports is noted" {
-  val path = useFreshTestDb("obs-cap")
-  defer {
-    cleanupTestDb(path)
+  if not live() {
+    return
   }
-  seedProfile("p1", "alice")
-  enable("p1", settings("true", "none", "1"))
-  seedSession("s1", "p1", "IDLE")
-  captureFixture("s1")
-  val _ = markObserverPending("s1", testScope())
+  val me = freshUser("obs-cap")
+  val p1 = seedProfile(me)
+  enable(p1, settings("true", "none", "1"))
+  val s1 = seedSession(p1, "IDLE")
+  defer {
+    retire(s1)
+  }
+  captureFixture(s1)
+  val _ = markObserverPending(s1, testScope())
   val silent = fakeRunner("")
-  val first = runAsOperator(silent)
-  assertEqualInt(first.errors.length.toInt(), 1, "the silent observer is an error")
-  assertTrue(first.errors[0].contains("without reporting"), first.errors[0])
-  val st = stateOf("s1")
+  val first = runPassFor(silent, s1)
+  assertTrue(first.startsWith("error: "), "the silent observer is an error: " + first)
+  assertTrue(first.contains("without reporting"), first)
+  val st = stateOf(s1)
   assertEqual(st.cursorSeq, "", "the cursor did not move")
   assertEqual(st.windowEnd, "", "the unreported window is closed, to be read again")
   assertEqual(st.passesToday, "1", "it still counts")
-  val _ = markObserverPending("s1", testScope())
-  val second = runAsOperator(fakeRunner("{\"candidates\":[]}"))
-  assertEqual(second.skipped, "1", "the daily cap of one is reached")
-  assertTrue(stateOf("s1").lastError.contains("daily pass limit"), "and says so")
+  val _ = markObserverPending(s1, testScope())
+  val second = runPassFor(fakeRunner("{\"candidates\":[]}"), s1)
+  assertTrue(second.startsWith("skipped"), "the daily cap of one is reached: " + second)
+  assertTrue(stateOf(s1).lastError.contains("daily pass limit"), "and says so")
 }
 
 test "changing the observer's harness starts a fresh observer and keeps the cursor" {
-  val path = useFreshTestDb("obs-reconfig")
-  defer {
-    cleanupTestDb(path)
+  if not live() {
+    return
   }
-  seedProfile("p1", "alice")
-  enable("p1", settings("true", "none", "10"))
-  seedSession("s1", "p1", "IDLE")
-  captureFixture("s1")
-  val _ = markObserverPending("s1", testScope())
-  val _ = runAsOperator(fakeRunner(readFixture("tests/fixtures/observer/report.json")))
-  val firstObserver = stateOf("s1").observerSessionId
+  val me = freshUser("obs-reconfig")
+  val p1 = seedProfile(me)
+  enable(p1, settings("true", "none", "10"))
+  val s1 = seedSession(p1, "IDLE")
+  defer {
+    retire(s1)
+  }
+  captureFixture(s1)
+  val _ = markObserverPending(s1, testScope())
+  val _ = runPassFor(fakeRunner(readFixture("tests/fixtures/observer/report.json")), s1)
+  val firstObserver = stateOf(s1).observerSessionId
   enable(
-    "p1",
+    p1,
     ObserverSettings(
       enabled = "true",
       harness = "codex",
@@ -523,14 +656,14 @@ test "changing the observer's harness starts a fresh observer and keeps the curs
   )
   // New transcript after the first pass.
   val more = parseStreamJson(readFixture("tests/fixtures/observer/session.ndjson"), 29.toLong(), "")
-  match CloudAgents.Repository.appendSessionEvents("s1", CloudAgents.Auth.requestScope(), more.events) {
+  match CloudAgents.Repository.appendSessionEvents(s1, CloudAgents.Auth.requestScope(), more.events) {
     case Ok(_) -> ()
     case Err(e) -> panic(CloudAgents.Sqlite.dbErrorMessage(e))
   }
-  val _ = markObserverPending("s1", testScope())
+  val _ = markObserverPending(s1, testScope())
   val runner = fakeRunner("{\"candidates\":[]}")
-  val _ = runAsOperator(runner)
-  val st = stateOf("s1")
+  val _ = runPassFor(runner, s1)
+  val st = stateOf(s1)
   assertTrue(st.observerSessionId != firstObserver, "a new observer session")
   assertEqual(runner.lastHarness, "codex", "on the new harness")
   assertEqual(runner.lastModel, "o4-mini", "with that harness's default model")
@@ -542,52 +675,64 @@ test "changing the observer's harness starts a fresh observer and keeps the curs
 }
 
 test "observer callbacks need the observer's own token" {
-  val path = useFreshTestDb("obs-auth")
-  defer {
-    cleanupTestDb(path)
+  if not live() {
+    return
   }
-  seedProfile("p1", "alice")
-  enable("p1", settings("true", "none", "10"))
-  seedSession("s1", "p1", "IDLE")
-  seedSession("obs", "p1", "IDLE")
-  exec("UPDATE sessions SET observes_session_id = 's1' WHERE id = 'obs'")
-  exec(
-    "INSERT INTO ledger_observer (session_id, observer_session_id, cursor_seq, window_end, pending, pass_day, passes_today, last_pass_at, config_hash, last_error) VALUES ('s1', 'obs', '', '', '0', '', '0', '', '', '')"
-  )
+  val me = freshUser("obs-auth")
+  val p1 = seedProfile(me)
+  enable(p1, settings("true", "none", "10"))
+  val s1 = seedSession(p1, "IDLE")
+  defer {
+    retire(s1)
+  }
+  val obs = seedSession(p1, "IDLE")
+  defer {
+    retire(obs)
+  }
+  linkObserver(obs, s1, p1)
+  match saveObserverState(testScope(), ObserverState(sessionId = s1, observerSessionId = obs, cursorSeq = "", windowEnd = "", pending = "0", passDay = "", passesToday = "0", lastPassAt = "", configHash = "", lastError = "")) {
+    case Ok(_) -> ()
+    case Err(e) -> panic(CloudAgents.Sqlite.dbErrorMessage(e))
+  }
   val runner = fakeRunner("")
-  match observerCallbackHandler("obs", "window", "Bearer tok-s1", "{}", runner) {
+  match observerCallbackHandler(obs, "window", "Bearer tok-" + s1, "{}", runner) {
     case Ok(_) -> assertTrue(false, "the observed session's token is not the observer's")
     case Err(e) -> assertEqualInt(e.status, 401, "401")
   }
-  match observerCallbackHandler("s1", "window", "Bearer tok-s1", "{}", runner) {
+  match observerCallbackHandler(s1, "window", "Bearer tok-" + s1, "{}", runner) {
     case Ok(_) -> assertTrue(false, "a session that observes nothing has no observer routes")
     case Err(e) -> assertEqualInt(e.status, 404, "404")
   }
-  match observerCallbackHandler("obs", "window", "Bearer tok-obs", "{}", runner) {
+  match observerCallbackHandler(obs, "window", "Bearer tok-" + obs, "{}", runner) {
     case Ok(env) -> assertEqual(env.ok, "true", "the observer's own token works")
     case Err(e) -> assertTrue(false, e.message)
   }
-  match observerCallbackHandler("obs", "rewrite", "Bearer tok-obs", "{}", runner) {
+  match observerCallbackHandler(obs, "rewrite", "Bearer tok-" + obs, "{}", runner) {
     case Ok(_) -> assertTrue(false, "only window and report exist")
     case Err(e) -> assertEqualInt(e.status, 404, "404")
   }
 }
 
 test "a session whose profile was deleted is no longer observed" {
-  val path = useFreshTestDb("obs-noprofile")
-  defer {
-    cleanupTestDb(path)
+  if not live() {
+    return
   }
-  seedProfile("p1", "alice")
-  enable("p1", settings("true", "workspace", "10"))
-  seedSession("s1", "p1", "IDLE")
-  exec("DELETE FROM profiles WHERE id = 'p1'")
-  onRunFinished("s1")
-  assertEqual(stateOf("s1").pending, "0", "no pass for a deleted profile")
+  val me = freshUser("obs-noprofile")
+  val p1 = seedProfile(me)
+  enable(p1, settings("true", "workspace", "10"))
+  val s1 = seedSession(p1, "IDLE")
+  defer {
+    retire(s1)
+  }
+  match CloudAgents.Repository.deleteProfile(p1, testScope()) {
+    case Ok(_) -> ()
+    case Err(e) -> panic(CloudAgents.Sqlite.dbErrorMessage(e))
+  }
+  onRunFinished(s1)
+  assertEqual(stateOf(s1).pending, "0", "no pass for a deleted profile")
 }
 
-// The scope the store calls run under: SQLite keys ledger rows by session
-// alone, so only the inbox reads the user from it.
+// The scope the store calls run under: the current test's fresh user.
 func testScope(): TestScope.TenantScope {
-  return TestScope.personalScope("alice")
+  return CloudAgents.Auth.requestScope()
 }

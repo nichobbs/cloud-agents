@@ -1,16 +1,23 @@
 //! Tests for session-ledger GitHub reconciliation (docs/session-ledger.md §9,
 //! Phase 3): the pure rules (CloudAgents.Ledger.GitHubSync), the response
 //! parsing (CloudAgents.Ledger.GitHubPort), and full sync passes
-//! (CloudAgents.Ledger.Sync) against an in-memory GitHub. Live SQLite, no
-//! network.
+//! (CloudAgents.Ledger.Sync) against an in-memory GitHub. Live Postgres, no
+//! network. Sessions are global and the sweeps (`sessionsToSync`) list across
+//! tenants, so every test uses fresh session ids, asserts only about its own,
+//! and archives them on exit so it leaves nothing due behind.
 @test_module
 package CloudAgents.LedgerSyncTests
 
 import Std.Core
+import Std.Environment
 import Std.Testing
 import Std.Uuid
 import CloudAgents.Auth
+import CloudAgents.Pg
+import CloudAgents.Pg.Migrate
+import CloudAgents.PgStore.Tenancy
 import CloudAgents.Repository
+import CloudAgents.SessionStore
 import CloudAgents.Sqlite
 import CloudAgents.Ledger.Model
 import CloudAgents.Ledger.Store
@@ -20,46 +27,135 @@ import CloudAgents.Ledger.GitHubSync
 import CloudAgents.Ledger.GitHubPort
 import CloudAgents.Ledger.Sync
 import CloudAgents.LedgerHandlers
-import extern System.Environment as Env
 
-@externTarget("System.IO.File.Delete")
-func fileDelete(path: in String): Unit = ()
+// ── Live Postgres ─────────────────────────────────────────────────────────────
+//
+// The store is Postgres (docs/phase11-postgres-tenancy.md). These tests run iff
+// LYRIC_CONFIG_DB_CONNECTION_URL (cloudagents_app) and
+// CLOUD_AGENTS_MIGRATE_DATABASE_URL (cloudagents_owner) are set, and fail rather
+// than skip when CLOUD_AGENTS_REQUIRE_LIVE_PG=1 (CI). Each test acts as a fresh
+// user with its own personal tenant, so tests, suites and repeated runs against
+// the same database never see each other's rows.
+func live(): Bool {
+  val ok = CloudAgents.Pg.serviceConfigured() and
+    Std.Environment.getVarOrDefault(CloudAgents.Pg.migrateDsnVar(), "").length.toInt() > 0
+  if ok {
+    return true
+  }
+  assertTrue(
+    Std.Environment.getVarOrDefault("CLOUD_AGENTS_REQUIRE_LIVE_PG", "") != "1",
+    "CLOUD_AGENTS_REQUIRE_LIVE_PG=1 but LYRIC_CONFIG_DB_CONNECTION_URL or CLOUD_AGENTS_MIGRATE_DATABASE_URL is not set"
+  )
+  println("SKIP: ledger sync tests need LYRIC_CONFIG_DB_CONNECTION_URL and CLOUD_AGENTS_MIGRATE_DATABASE_URL")
+  return false
+}
 
-func useFreshTestDb(tag: in String): String {
-  val path = "/tmp/cloud-agents-tests-" + tag + "-" + Std.Uuid.uuidToString(Std.Uuid.newUuid()) + ".db"
-  Env.SetEnvironmentVariable("CLOUD_AGENTS_DB_PATH", path)
-  match CloudAgents.Repository.initSchema() {
+func migrate(): Unit {
+  val conn = match CloudAgents.Pg.connectDsn(Std.Environment.getVarOrDefault(CloudAgents.Pg.migrateDsnVar(), "")) {
+    case Ok(c) -> c
+    case Err(e) -> panic(CloudAgents.Pg.pgErrorMessage(e))
+  }
+  defer {
+    conn.close()
+  }
+  match CloudAgents.Pg.Migrate.migrate(conn) {
     case Ok(_) -> ()
-    case Err(e) -> assertTrue(false, "initSchema failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
-  }
-  return path
-}
-
-func cleanupTestDb(path: in String): Unit {
-  try {
-    fileDelete(path)
-  } catch Bug as b {
-    // locked or already gone — fine for a temp file
+    case Err(e) -> panic("migrate failed: " + CloudAgents.Pg.pgErrorMessage(e))
   }
 }
 
-func exec(sql: in String): Unit {
-  match CloudAgents.Sqlite.execute(sql) {
+/// A new user with a provisioned personal tenant. Does not change the request
+/// identity.
+func newUser(tag: in String): String {
+  val uid = "t-" + tag + "-" + Std.Uuid.uuidToString(Std.Uuid.newUuid())
+  match CloudAgents.PgStore.Tenancy.ensurePersonalTenant(uid) {
+    case Ok(_) -> ()
+    case Err(e) -> panic("provisioning " + uid + " failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+  }
+  return uid
+}
+
+/// Migrate, then make a new user the request identity (what handlers read via
+/// CloudAgents.Auth.requestScope()).
+func freshUser(tag: in String): String {
+  migrate()
+  val uid = newUser(tag)
+  CloudAgents.Auth.setCurrentUserId(uid)
+  return uid
+}
+
+// A new session owned by the current test user on github.com/acme/shop with
+// callback token "tok-" + its id (stored, like a real session, only as its
+// hash). Session ids are global (session_routes), so each is unique.
+func seedSession(): String {
+  val id = "s-" + Std.Uuid.uuidToString(Std.Uuid.newUuid())
+  val sc = testScope()
+  match CloudAgents.SessionStore.addSession(makeAgentSession(sessionId = id, repoUrl = "https://github.com/acme/shop", branch = "main", containerId = "", harness = "claude", model = "", nativeSessionId = id), sc) {
+    case Ok(_) -> ()
+    case Err(e) -> panic("addSession failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+  }
+  val u = match CloudAgents.PgStore.open(sc) {
+    case Ok(x) -> x
+    case Err(e) -> panic(CloudAgents.Sqlite.dbErrorMessage(e))
+  }
+  defer {
+    CloudAgents.PgStore.release(u)
+  }
+  match CloudAgents.PgStore.ex(u, "UPDATE session_routes SET callback_token_hash = @p1 WHERE session_id = @p0 AND tenant_id = @p2", [id, CloudAgents.Auth.hashCallbackToken("tok-" + id), sc.tenantId]) {
+    case Ok(n) -> assertEqualInt(n, 1, "token stored on the session's route")
+    case Err(e) -> panic(CloudAgents.Sqlite.dbErrorMessage(e))
+  }
+  match CloudAgents.PgStore.commit(u) {
+    case Ok(_) -> ()
+    case Err(e) -> panic(CloudAgents.Sqlite.dbErrorMessage(e))
+  }
+  return id
+}
+
+// Archive a session so the cross-tenant sweeps stop listing it (best effort).
+func retire(sid: in String): Unit {
+  match CloudAgents.SessionStore.updateSessionArchived(sid, testScope(), "1") {
+    case Ok(_) -> ()
+    case Err(e) -> println("WARNING: could not archive " + sid + ": " + CloudAgents.Sqlite.dbErrorMessage(e))
+  }
+}
+
+// Run one statement in the test user's tenant (fixtures the store has no call for).
+func execScoped(sql: in String, params: in slice[String]): Unit {
+  val u = match CloudAgents.PgStore.open(testScope()) {
+    case Ok(x) -> x
+    case Err(e) -> panic(CloudAgents.Sqlite.dbErrorMessage(e))
+  }
+  defer {
+    CloudAgents.PgStore.release(u)
+  }
+  match CloudAgents.PgStore.ex(u, sql, params) {
     case Ok(_) -> ()
     case Err(e) -> assertTrue(false, "exec failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
   }
+  match CloudAgents.PgStore.commit(u) {
+    case Ok(_) -> ()
+    case Err(e) -> assertTrue(false, CloudAgents.Sqlite.dbErrorMessage(e))
+  }
 }
 
-func seedSession(id: in String): Unit {
-  exec(
-    "INSERT INTO sessions (id, user_id, repo_url, branch, container_id, harness, model, native_session_id, status, created_at, last_message_at, callback_token_hash) VALUES ('" +
-      id +
-      "', 'alice', 'https://github.com/acme/shop', 'main', '', 'claude', '', '" +
-      id +
-      "', 'IDLE', '1', '1', '" +
-      CloudAgents.Auth.hashCallbackToken("tok-" + id) +
-      "')"
-  )
+func indexIn(xs: in slice[String], x: in String): Int {
+  var i = 0
+  while i < xs.length.toInt() {
+    if xs[i] == x {
+      return i
+    }
+    i = i + 1
+  }
+  return -1
+}
+
+// The sessions due for a sync pass, across tenants (the store's cap is 100).
+func due(): slice[String] {
+  match sessionsToSync(100) {
+    case Ok(ids) -> return ids
+    case Err(e) -> panic(CloudAgents.Sqlite.dbErrorMessage(e))
+  }
 }
 
 func agentOk(sid: in String, op: in String, body: in String): String {
@@ -439,203 +535,224 @@ test "GitHub response bodies are read as recorded" {
 
 // ── Sync passes ───────────────────────────────────────────────────────────────
 test "labels on GitHub follow the ledger state" {
-  val path = useFreshTestDb("sync-labels")
-  defer {
-    cleanupTestDb(path)
+  if not live() {
+    return
   }
-  seedSession("s1")
+  val me = freshUser("sync-labels")
+  val s1 = seedSession()
+  defer {
+    retire(s1)
+  }
   val gh = fakeGitHub()
   setLabels(gh, "acme/shop#1", ["bug"])
-  register("s1", "{\"id\":\"#1\",\"title\":\"\",\"url\":\"\"}")
-  setStatus("s1", "#1", "in_progress", "", "", "")
-  expectNoErrors(sync(gh, "s1"))
+  register(s1, "{\"id\":\"#1\",\"title\":\"\",\"url\":\"\"}")
+  setStatus(s1, "#1", "in_progress", "", "", "")
+  expectNoErrors(sync(gh, s1))
   assertEqual(joinSorted(labelsOf(gh, "acme/shop#1")), "agent:in-progress,bug", "state label added, others kept")
 
-  setStatus("s1", "#1", "done", "", "", "")
-  expectNoErrors(sync(gh, "s1"))
+  setStatus(s1, "#1", "done", "", "", "")
+  expectNoErrors(sync(gh, s1))
   assertEqual(joinSorted(labelsOf(gh, "acme/shop#1")), "agent:done,bug", "previous agent label removed")
 
   val before = gh.calls
-  val quiet = sync(gh, "s1")
+  val quiet = sync(gh, s1)
   assertEqualInt(quiet.calls, 0, "an unchanged done item costs no GitHub calls")
   assertEqualInt(gh.calls, before, "nothing called")
 }
 
 test "a blocked item gets one comment, edited in place, and marked resolved" {
-  val path = useFreshTestDb("sync-comment")
-  defer {
-    cleanupTestDb(path)
+  if not live() {
+    return
   }
-  seedSession("s1")
+  val me = freshUser("sync-comment")
+  val s1 = seedSession()
+  defer {
+    retire(s1)
+  }
   val gh = fakeGitHub()
-  register("s1", "{\"id\":\"#1\",\"title\":\"\",\"url\":\"\"},{\"id\":\"#2\",\"title\":\"\",\"url\":\"\"}")
-  setStatus("s1", "#2", "blocked", "needs the schema", "\"#1\"", "")
-  expectNoErrors(sync(gh, "s1"))
+  register(s1, "{\"id\":\"#1\",\"title\":\"\",\"url\":\"\"},{\"id\":\"#2\",\"title\":\"\",\"url\":\"\"}")
+  setStatus(s1, "#2", "blocked", "needs the schema", "\"#1\"", "")
+  expectNoErrors(sync(gh, s1))
   assertEqualInt(commentsOn(gh, "acme/shop#2").length.toInt(), 1, "one comment")
   assertTrue(commentsOn(gh, "acme/shop#2")[0].contains("**Blocked:** needs the schema"), "structured body")
   assertTrue(joinSorted(labelsOf(gh, "acme/shop#2")).contains("agent:blocked"), "blocked label")
 
   // A same-state update changes the comment, not the comment count.
-  setStatus("s1", "#2", "blocked", "needs the schema and a migration", "", "")
-  expectNoErrors(sync(gh, "s1"))
+  setStatus(s1, "#2", "blocked", "needs the schema and a migration", "", "")
+  expectNoErrors(sync(gh, s1))
   assertEqualInt(commentsOn(gh, "acme/shop#2").length.toInt(), 1, "still one comment")
   assertTrue(commentsOn(gh, "acme/shop#2")[0].contains("and a migration"), "edited in place")
 
   // Re-syncing an unchanged blocked item rewrites nothing.
-  val calls = sync(gh, "s1").calls
+  val calls = sync(gh, s1).calls
   assertTrue(calls <= 3, "a blocked item only polls its issue and blockers: " + toString(calls))
 
-  val _ = humanSetStatus(ctxOf("s1"), "gh:acme/shop#2", "queued", "done by hand")
-  expectNoErrors(sync(gh, "s1"))
+  val _ = humanSetStatus(ctxOf(s1), "gh:acme/shop#2", "queued", "done by hand")
+  expectNoErrors(sync(gh, s1))
   assertEqualInt(commentsOn(gh, "acme/shop#2").length.toInt(), 1, "still one comment")
   assertTrue(commentsOn(gh, "acme/shop#2")[0].contains("**Resolved:**"), commentsOn(gh, "acme/shop#2")[0])
   assertEqual(joinSorted(labelsOf(gh, "acme/shop#2")), "agent:queued", "label follows")
 }
 
 test "closing a blocking issue on GitHub unblocks the dependent in one pass" {
-  val path = useFreshTestDb("sync-closed")
-  defer {
-    cleanupTestDb(path)
+  if not live() {
+    return
   }
-  seedSession("s1")
+  val me = freshUser("sync-closed")
+  val s1 = seedSession()
+  defer {
+    retire(s1)
+  }
   val gh = fakeGitHub()
-  register("s1", "{\"id\":\"#2\",\"title\":\"\",\"url\":\"\"}")
-  setStatus("s1", "#2", "blocked", "waits on the other repo", "\"acme/other#9\"", "")
-  expectNoErrors(sync(gh, "s1"))
-  assertEqual(stateOf("s1", "gh:acme/shop#2"), "blocked", "still blocked while #9 is open")
+  register(s1, "{\"id\":\"#2\",\"title\":\"\",\"url\":\"\"}")
+  setStatus(s1, "#2", "blocked", "waits on the other repo", "\"acme/other#9\"", "")
+  expectNoErrors(sync(gh, s1))
+  assertEqual(stateOf(s1, "gh:acme/shop#2"), "blocked", "still blocked while #9 is open")
 
   closeIssue(gh, "acme/other#9")
-  val o = sync(gh, "s1")
+  val o = sync(gh, s1)
   expectNoErrors(o)
   assertEqualInt(o.transitions, 1, "one transition")
-  assertEqual(stateOf("s1", "gh:acme/shop#2"), "queued", "requeued by the sync")
+  assertEqual(stateOf(s1, "gh:acme/shop#2"), "queued", "requeued by the sync")
   assertEqual(joinSorted(labelsOf(gh, "acme/shop#2")), "agent:queued", "and its label follows in the same pass")
 }
 
 test "a merged PR finishes its item and unblocks what waited on it" {
-  val path = useFreshTestDb("sync-merged")
-  defer {
-    cleanupTestDb(path)
+  if not live() {
+    return
   }
-  seedSession("s1")
+  val me = freshUser("sync-merged")
+  val s1 = seedSession()
+  defer {
+    retire(s1)
+  }
   val gh = fakeGitHub()
-  register("s1", "{\"id\":\"#1\",\"title\":\"\",\"url\":\"\"},{\"id\":\"#2\",\"title\":\"\",\"url\":\"\"}")
-  setStatus("s1", "#1", "in_progress", "", "", "")
-  setStatus("s1", "#1", "pr_open", "", "", "https://github.com/acme/shop/pull/5")
-  setStatus("s1", "#2", "blocked", "needs #1", "\"#1\"", "")
-  expectNoErrors(sync(gh, "s1"))
-  assertEqual(stateOf("s1", "gh:acme/shop#1"), "pr_open", "PR not merged yet")
+  register(s1, "{\"id\":\"#1\",\"title\":\"\",\"url\":\"\"},{\"id\":\"#2\",\"title\":\"\",\"url\":\"\"}")
+  setStatus(s1, "#1", "in_progress", "", "", "")
+  setStatus(s1, "#1", "pr_open", "", "", "https://github.com/acme/shop/pull/5")
+  setStatus(s1, "#2", "blocked", "needs #1", "\"#1\"", "")
+  expectNoErrors(sync(gh, s1))
+  assertEqual(stateOf(s1, "gh:acme/shop#1"), "pr_open", "PR not merged yet")
 
   gh.mergedPulls = gh.mergedPulls.append("acme/shop#5")
-  expectNoErrors(sync(gh, "s1"))
-  assertEqual(stateOf("s1", "gh:acme/shop#1"), "done", "merged PR -> done")
-  assertEqual(stateOf("s1", "gh:acme/shop#2"), "queued", "auto-unblocked")
+  expectNoErrors(sync(gh, s1))
+  assertEqual(stateOf(s1, "gh:acme/shop#1"), "done", "merged PR -> done")
+  assertEqual(stateOf(s1, "gh:acme/shop#2"), "queued", "auto-unblocked")
   assertTrue(joinSorted(labelsOf(gh, "acme/shop#1")).contains("agent:done"), "done label")
 }
 
 test "a person removing agent:blocked on GitHub requeues the item" {
-  val path = useFreshTestDb("sync-human")
-  defer {
-    cleanupTestDb(path)
+  if not live() {
+    return
   }
-  seedSession("s1")
+  val me = freshUser("sync-human")
+  val s1 = seedSession()
+  defer {
+    retire(s1)
+  }
   val gh = fakeGitHub()
-  register("s1", "{\"id\":\"#1\",\"title\":\"\",\"url\":\"\"},{\"id\":\"#2\",\"title\":\"\",\"url\":\"\"}")
-  setStatus("s1", "#2", "blocked", "needs #1", "\"#1\"", "")
-  expectNoErrors(sync(gh, "s1"))
+  register(s1, "{\"id\":\"#1\",\"title\":\"\",\"url\":\"\"},{\"id\":\"#2\",\"title\":\"\",\"url\":\"\"}")
+  setStatus(s1, "#2", "blocked", "needs #1", "\"#1\"", "")
+  expectNoErrors(sync(gh, s1))
   setLabels(gh, "acme/shop#2", ["bug"])
-  expectNoErrors(sync(gh, "s1"))
-  assertEqual(stateOf("s1", "gh:acme/shop#2"), "queued", "label removal is a human requeue")
-  match listTransitions("s1", testScope(), "gh:acme/shop#2") {
+  expectNoErrors(sync(gh, s1))
+  assertEqual(stateOf(s1, "gh:acme/shop#2"), "queued", "label removal is a human requeue")
+  match listTransitions(s1, testScope(), "gh:acme/shop#2") {
     case Ok(ts) -> assertEqual(ts[ts.length.toInt() - 1].actor, "human", "recorded as the human's move")
     case Err(e) -> assertTrue(false, CloudAgents.Sqlite.dbErrorMessage(e))
   }
 }
 
 test "the ledger's own stale agent:queued label is not read as a human requeue" {
-  val path = useFreshTestDb("sync-stale")
-  defer {
-    cleanupTestDb(path)
+  if not live() {
+    return
   }
-  seedSession("s1")
+  val me = freshUser("sync-stale")
+  val s1 = seedSession()
+  defer {
+    retire(s1)
+  }
   val gh = fakeGitHub()
-  register("s1", "{\"id\":\"#1\",\"title\":\"\",\"url\":\"\"},{\"id\":\"#2\",\"title\":\"\",\"url\":\"\"}")
-  expectNoErrors(sync(gh, "s1"))
+  register(s1, "{\"id\":\"#1\",\"title\":\"\",\"url\":\"\"},{\"id\":\"#2\",\"title\":\"\",\"url\":\"\"}")
+  expectNoErrors(sync(gh, s1))
   assertEqual(joinSorted(labelsOf(gh, "acme/shop#2")), "agent:queued", "queued label applied")
-  setStatus("s1", "#2", "blocked", "needs #1", "\"#1\"", "")
-  expectNoErrors(sync(gh, "s1"))
-  assertEqual(stateOf("s1", "gh:acme/shop#2"), "blocked", "still blocked")
+  setStatus(s1, "#2", "blocked", "needs #1", "\"#1\"", "")
+  expectNoErrors(sync(gh, s1))
+  assertEqual(stateOf(s1, "gh:acme/shop#2"), "blocked", "still blocked")
   assertEqual(joinSorted(labelsOf(gh, "acme/shop#2")), "agent:blocked", "label swapped")
 }
 
 test "GitHub failures are recorded per item and retried" {
-  val path = useFreshTestDb("sync-errors")
-  defer {
-    cleanupTestDb(path)
+  if not live() {
+    return
   }
-  seedSession("s1")
+  val me = freshUser("sync-errors")
+  val s1 = seedSession()
+  defer {
+    retire(s1)
+  }
   val gh = fakeGitHub()
-  register("s1", "{\"id\":\"#1\",\"title\":\"\",\"url\":\"\"}")
+  register(s1, "{\"id\":\"#1\",\"title\":\"\",\"url\":\"\"}")
   gh.failIssues = "GET failed: The remote server returned an error: (403) Forbidden."
-  val failed = sync(gh, "s1")
+  val failed = sync(gh, s1)
   assertEqualInt(failed.errors.length.toInt(), 1, "one error")
   assertTrue(failed.errors[0].contains("(403)"), failed.errors[0])
-  match syncRows("s1", testScope()) {
+  match syncRows(s1, testScope()) {
     case Ok(rows) -> assertTrue(rows[0].lastError.contains("(403)"), "error kept on the item")
     case Err(e) -> assertTrue(false, CloudAgents.Sqlite.dbErrorMessage(e))
   }
   gh.failIssues = ""
-  expectNoErrors(sync(gh, "s1"))
+  expectNoErrors(sync(gh, s1))
   assertEqual(joinSorted(labelsOf(gh, "acme/shop#1")), "agent:queued", "retried and applied")
-  match syncRows("s1", testScope()) {
+  match syncRows(s1, testScope()) {
     case Ok(rows) -> assertEqual(rows[0].lastError, "", "error cleared")
     case Err(e) -> assertTrue(false, CloudAgents.Sqlite.dbErrorMessage(e))
   }
 }
 
 test "a pass stops at its call budget and the rest waits for the next" {
-  val path = useFreshTestDb("sync-budget")
-  defer {
-    cleanupTestDb(path)
+  if not live() {
+    return
   }
-  seedSession("s1")
+  val me = freshUser("sync-budget")
+  val s1 = seedSession()
+  defer {
+    retire(s1)
+  }
   val gh = fakeGitHub()
   register(
-    "s1",
+    s1,
     "{\"id\":\"#1\",\"title\":\"\",\"url\":\"\"},{\"id\":\"#2\",\"title\":\"\",\"url\":\"\"},{\"id\":\"#3\",\"title\":\"\",\"url\":\"\"}"
   )
-  val partial = syncSession(ctxOf("s1"), gh, 4)
+  val partial = syncSession(ctxOf(s1), gh, 4)
   assertTrue(partial.calls <= 4, "never over budget: " + toString(partial.calls))
   assertTrue(partial.items < 3, "not everything fit")
-  match sessionsToSync(10) {
-    case Ok(ids) -> assertEqualInt(ids.length.toInt(), 1, "the session is still due")
-    case Err(e) -> assertTrue(false, CloudAgents.Sqlite.dbErrorMessage(e))
-  }
-  expectNoErrors(sync(gh, "s1"))
+  assertTrue(indexIn(due(), s1) >= 0, "the session is still due")
+  expectNoErrors(sync(gh, s1))
   assertEqual(joinSorted(labelsOf(gh, "acme/shop#3")), "agent:queued", "finished on the next pass")
-  match sessionsToSync(10) {
-    case Ok(ids) -> assertEqualInt(ids.length.toInt(), 0, "nothing due once synced")
-    case Err(e) -> assertTrue(false, CloudAgents.Sqlite.dbErrorMessage(e))
-  }
+  assertTrue(indexIn(due(), s1) < 0, "nothing due once synced")
 }
 
 test "items waiting on GitHub don't starve the rest of a batch" {
-  val path = useFreshTestDb("sync-fair-items")
-  defer {
-    cleanupTestDb(path)
+  if not live() {
+    return
   }
-  seedSession("s1")
+  val me = freshUser("sync-fair-items")
+  val s1 = seedSession()
+  defer {
+    retire(s1)
+  }
   val gh = fakeGitHub()
   register(
-    "s1",
+    s1,
     "{\"id\":\"#1\",\"title\":\"\",\"url\":\"\"},{\"id\":\"#2\",\"title\":\"\",\"url\":\"\"},{\"id\":\"#3\",\"title\":\"\",\"url\":\"\"}"
   )
   // Stuck items are due on every pass; the queued #3 must still get its turn.
-  setStatus("s1", "#1", "needs_human", "pick a vendor", "", "")
-  setStatus("s1", "#2", "needs_human", "pick a region", "", "")
+  setStatus(s1, "#1", "needs_human", "pick a vendor", "", "")
+  setStatus(s1, "#2", "needs_human", "pick a region", "", "")
   var passes = 0
   while passes < 3 {
-    val o = syncSession(ctxOf("s1"), gh, 6)
+    val o = syncSession(ctxOf(s1), gh, 6)
     assertTrue(o.calls <= 6, "never over budget")
     passes = passes + 1
   }
@@ -645,129 +762,142 @@ test "items waiting on GitHub don't starve the rest of a batch" {
 }
 
 test "the maintenance run takes the least recently attempted sessions first" {
-  val path = useFreshTestDb("sync-fair-sessions")
+  if not live() {
+    return
+  }
+  val me = freshUser("sync-fair-sessions")
+  val s1 = seedSession()
   defer {
-    cleanupTestDb(path)
+    retire(s1)
   }
-  seedSession("s1")
-  seedSession("s2")
-  register("s1", "{\"id\":\"#1\",\"title\":\"\",\"url\":\"\"}")
-  register("s2", "{\"id\":\"#2\",\"title\":\"\",\"url\":\"\"}")
-  match sessionsToSync(1) {
-    case Ok(ids) -> assertEqual(ids[0], "s1", "never attempted: by id")
-    case Err(e) -> assertTrue(false, CloudAgents.Sqlite.dbErrorMessage(e))
+  val s2 = seedSession()
+  defer {
+    retire(s2)
   }
+  register(s1, "{\"id\":\"#1\",\"title\":\"\",\"url\":\"\"}")
+  register(s2, "{\"id\":\"#2\",\"title\":\"\",\"url\":\"\"}")
+  assertTrue(indexIn(due(), s1) >= 0 and indexIn(due(), s2) >= 0, "both due")
   // s1 fails without reaching GitHub (no token): it still takes its turn.
-  match markSyncAttempt("s1", testScope(), "no usable GitHub token") {
+  match markSyncAttempt(s1, testScope(), "no usable GitHub token") {
     case Ok(_) -> ()
     case Err(e) -> assertTrue(false, CloudAgents.Sqlite.dbErrorMessage(e))
   }
-  match sessionsToSync(1) {
-    case Ok(ids) -> assertEqual(ids[0], "s2", "the failing session goes to the back")
-    case Err(e) -> assertTrue(false, CloudAgents.Sqlite.dbErrorMessage(e))
-  }
-  match sessionsToSync(10) {
-    case Ok(ids) -> assertEqualInt(ids.length.toInt(), 2, "both still due")
-    case Err(e) -> assertTrue(false, CloudAgents.Sqlite.dbErrorMessage(e))
-  }
+  val order = due()
+  assertTrue(
+    indexIn(order, s2) >= 0 and indexIn(order, s2) < indexIn(order, s1),
+    "the failing session goes to the back"
+  )
+  assertTrue(indexIn(due(), s1) >= 0 and indexIn(due(), s2) >= 0, "both still due")
 }
 
 test "an item that keeps failing doesn't eat every pass" {
-  val path = useFreshTestDb("sync-fail-order")
-  defer {
-    cleanupTestDb(path)
+  if not live() {
+    return
   }
-  seedSession("s1")
+  val me = freshUser("sync-fail-order")
+  val s1 = seedSession()
+  defer {
+    retire(s1)
+  }
   val gh = fakeGitHub()
-  register("s1", "{\"id\":\"#1\",\"title\":\"\",\"url\":\"\"},{\"id\":\"#2\",\"title\":\"\",\"url\":\"\"}")
+  register(s1, "{\"id\":\"#1\",\"title\":\"\",\"url\":\"\"},{\"id\":\"#2\",\"title\":\"\",\"url\":\"\"}")
   // #1 can never be read; each pass affords only one issue read.
   gh.failIssues = "GET failed: (403) Forbidden"
   gh.failKey = "acme/shop#1"
-  val first = syncSession(ctxOf("s1"), gh, 1)
+  val first = syncSession(ctxOf(s1), gh, 1)
   assertEqualInt(first.errors.length.toInt(), 1, "#1 failed first")
-  val second = syncSession(ctxOf("s1"), gh, 3)
+  val second = syncSession(ctxOf(s1), gh, 3)
   assertEqual(joinSorted(labelsOf(gh, "acme/shop#2")), "agent:queued", "#2 went ahead of the failing #1")
   assertEqualInt(second.errors.length.toInt(), 0, "the pass spent its budget on #2 first")
 }
 
 test "one session at a time manages an issue" {
-  val path = useFreshTestDb("sync-owner")
-  defer {
-    cleanupTestDb(path)
+  if not live() {
+    return
   }
-  seedSession("s1")
-  seedSession("s2")
+  val me = freshUser("sync-owner")
+  val s1 = seedSession()
+  defer {
+    retire(s1)
+  }
+  val s2 = seedSession()
+  defer {
+    retire(s2)
+  }
   val gh = fakeGitHub()
-  register("s1", "{\"id\":\"#1\",\"title\":\"\",\"url\":\"\"}")
-  expectNoErrors(sync(gh, "s1"))
-  setStatus("s1", "#1", "needs_human", "pick a vendor", "", "")
-  expectNoErrors(sync(gh, "s1"))
+  register(s1, "{\"id\":\"#1\",\"title\":\"\",\"url\":\"\"}")
+  expectNoErrors(sync(gh, s1))
+  setStatus(s1, "#1", "needs_human", "pick a vendor", "", "")
+  expectNoErrors(sync(gh, s1))
   assertEqual(joinSorted(labelsOf(gh, "acme/shop#1")), "agent:needs-human", "s1 labelled it")
   // s2 picks the same issue up later: it owns it now.
-  exec("UPDATE ledger_items SET created_at = '1' WHERE session_id = 's1'")
-  register("s2", "{\"id\":\"#1\",\"title\":\"\",\"url\":\"\"}")
-  setStatus("s2", "#1", "in_progress", "", "", "")
-  expectNoErrors(sync(gh, "s2"))
+  execScoped("UPDATE ledger_items SET created_at = " + CloudAgents.Pg.msIn(1) + " WHERE session_id = @p0", [s1, "1"])
+  register(s2, "{\"id\":\"#1\",\"title\":\"\",\"url\":\"\"}")
+  setStatus(s2, "#1", "in_progress", "", "", "")
+  expectNoErrors(sync(gh, s2))
   assertEqual(joinSorted(labelsOf(gh, "acme/shop#1")), "agent:in-progress", "s2 relabelled it")
   val before = gh.calls
-  val stale = sync(gh, "s1")
+  val stale = sync(gh, s1)
   assertEqualInt(gh.calls, before, "the superseded session doesn't touch the issue")
   assertEqualInt(stale.transitions, 0, "nor reads s2's label change as a human's")
-  assertEqual(stateOf("s1", "gh:acme/shop#1"), "needs_human", "s1's item is left as it was")
-  match sessionsToSync(10) {
-    case Ok(ids) -> assertTrue(not containsString(ids, "s1"), "s1 isn't due for an issue it doesn't own")
-    case Err(e) -> assertTrue(false, CloudAgents.Sqlite.dbErrorMessage(e))
-  }
+  assertEqual(stateOf(s1, "gh:acme/shop#1"), "needs_human", "s1's item is left as it was")
+  assertTrue(indexIn(due(), s1) < 0, "s1 isn't due for an issue it doesn't own")
   // Archiving s2 hands the issue back.
-  exec("UPDATE sessions SET is_archived = '1' WHERE id = 's2'")
-  match ownedIssueItems("s1", testScope()) {
+  retire(s2)
+  match ownedIssueItems(s1, testScope()) {
     case Ok(ids) -> assertEqualInt(ids.length.toInt(), 1, "s1 owns it again")
     case Err(e) -> assertTrue(false, CloudAgents.Sqlite.dbErrorMessage(e))
   }
-  match ownedIssueItems("s2", testScope()) {
+  match ownedIssueItems(s2, testScope()) {
     case Ok(ids) -> assertEqualInt(ids.length.toInt(), 0, "an archived session owns nothing")
     case Err(e) -> assertTrue(false, CloudAgents.Sqlite.dbErrorMessage(e))
   }
 }
 
 test "only one sync pass holds a session at a time" {
-  val path = useFreshTestDb("sync-lease")
-  defer {
-    cleanupTestDb(path)
+  if not live() {
+    return
   }
-  seedSession("s1")
+  val me = freshUser("sync-lease")
+  val s1 = seedSession()
+  defer {
+    retire(s1)
+  }
   val lease = 60000.toLong()
-  val first = match acquireSyncLease("s1", testScope(), lease) {
+  val first = match acquireSyncLease(s1, testScope(), lease) {
     case Ok(t) -> t
     case Err(e) -> panic(CloudAgents.Sqlite.dbErrorMessage(e))
   }
   assertTrue(first.length.toInt() > 0, "the first pass gets the lease")
-  val second = match acquireSyncLease("s1", testScope(), lease) {
+  val second = match acquireSyncLease(s1, testScope(), lease) {
     case Ok(t) -> t
     case Err(e) -> panic(CloudAgents.Sqlite.dbErrorMessage(e))
   }
   assertEqual(second, "", "a concurrent pass is refused")
-  match releaseSyncLease("s1", testScope(), "not-the-token") {
+  match releaseSyncLease(s1, testScope(), "not-the-token") {
     case Ok(_) -> ()
     case Err(e) -> assertTrue(false, CloudAgents.Sqlite.dbErrorMessage(e))
   }
-  val stillHeld = match acquireSyncLease("s1", testScope(), lease) {
+  val stillHeld = match acquireSyncLease(s1, testScope(), lease) {
     case Ok(t) -> t
     case Err(e) -> panic(CloudAgents.Sqlite.dbErrorMessage(e))
   }
   assertEqual(stillHeld, "", "only the holder's token releases it")
-  match releaseSyncLease("s1", testScope(), first) {
+  match releaseSyncLease(s1, testScope(), first) {
     case Ok(_) -> ()
     case Err(e) -> assertTrue(false, CloudAgents.Sqlite.dbErrorMessage(e))
   }
-  val third = match acquireSyncLease("s1", testScope(), lease) {
+  val third = match acquireSyncLease(s1, testScope(), lease) {
     case Ok(t) -> t
     case Err(e) -> panic(CloudAgents.Sqlite.dbErrorMessage(e))
   }
   assertTrue(third.length.toInt() > 0, "free again once released")
   // An expired lease (a crashed pass) is taken over.
-  exec("UPDATE ledger_github_sync_runs SET lease_until = '1' WHERE session_id = 's1'")
-  val fourth = match acquireSyncLease("s1", testScope(), lease) {
+  execScoped(
+    "UPDATE ledger_github_sync_runs SET lease_until = " + CloudAgents.Pg.msIn(1) + " WHERE session_id = @p0",
+    [s1, "1"]
+  )
+  val fourth = match acquireSyncLease(s1, testScope(), lease) {
     case Ok(t) -> t
     case Err(e) -> panic(CloudAgents.Sqlite.dbErrorMessage(e))
   }
@@ -833,8 +963,7 @@ func rank(order: in String, c: in String): Int {
   return order.length.toInt()
 }
 
-// The scope the store calls run under: SQLite keys ledger rows by session
-// alone, so only the inbox reads the user from it.
+// The scope the store calls run under: the current test's fresh user.
 func testScope(): TestScope.TenantScope {
-  return TestScope.personalScope("alice")
+  return CloudAgents.Auth.requestScope()
 }
