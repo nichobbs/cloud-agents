@@ -1,6 +1,8 @@
 import { useEffect, useState } from 'react';
 import { Link, useLocation } from 'react-router-dom';
 import { useAuthConfig } from '../context/AuthConfigContext';
+import { useOrgs } from '../context/OrgContext';
+import type { Org } from '../lib/orgs';
 import { beginLogin, getLogin, isSignedIn, signOut } from '../lib/auth';
 import { AttentionStatus } from './AttentionStatus';
 
@@ -15,7 +17,15 @@ const NAV_ITEMS: Array<{ to: string; label: string }> = [
   { to: '/credentials', label: 'Credentials' },
   { to: '/integrations', label: 'Integrations' },
   { to: '/webhooks', label: 'Webhooks' },
+  { to: '/orgs', label: 'Organisations' },
 ];
+
+export const SUSPENDED_REASON = 'GitHub membership suspended until you sign in again';
+
+function orgLabel(o: Org): string {
+  const kind = o.kind === 'github_org' ? 'GitHub' : o.kind;
+  return o.suspended ? `${o.name} (${kind}) - ${SUSPENDED_REASON}` : `${o.name} (${kind})`;
+}
 
 export function Nav() {
   const { pathname } = useLocation();
@@ -29,6 +39,7 @@ export function Nav() {
   // separately (best-effort; older backends without the endpoint just
   // resolve to "not configured", hiding the button).
   const { configured, clientId } = useAuthConfig();
+  const { orgs, activeOrgId, setActiveOrg } = useOrgs();
 
   // Login state can change on other pages (the OAuth callback, a sign-out);
   // re-read it whenever the route changes. A route change also means a nav
@@ -79,6 +90,20 @@ export function Nav() {
         >
           New session
         </Link>
+        {signedIn && orgs.length > 1 && (
+          <select
+            aria-label="Organisation"
+            style={orgSelectStyle}
+            value={activeOrgId}
+            onChange={e => setActiveOrg(e.target.value)}
+          >
+            {orgs.map(o => (
+              <option key={o.id} value={o.id} disabled={o.suspended} title={o.suspended ? SUSPENDED_REASON : undefined}>
+                {orgLabel(o)}
+              </option>
+            ))}
+          </select>
+        )}
         {signedIn ? (
           <span style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
             <span style={loginStyle} title="Signed in with GitHub">
@@ -146,4 +171,14 @@ const signOutBtnStyle: React.CSSProperties = {
   background: 'transparent',
   color: '#8b949e',
   cursor: 'pointer',
+};
+
+const orgSelectStyle: React.CSSProperties = {
+  fontSize: '13px',
+  padding: '4px 8px',
+  borderRadius: '6px',
+  border: '1px solid #30363d',
+  background: '#0d1117',
+  color: '#c9d1d9',
+  maxWidth: '260px',
 };

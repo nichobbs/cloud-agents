@@ -44,12 +44,13 @@ export function newOAuthState(): string {
 }
 
 /** The GitHub authorize URL for this app. `repo` scope lets the token clone
- *  private repos and drive the PR/CI panels; `read:user` identifies the user. */
+ *  private repos and drive the PR/CI panels; `read:user` identifies the user;
+ *  `read:org` lets the server sync GitHub organisation memberships. */
 export function authorizeUrl(clientId: string, state: string): string {
   const params = new URLSearchParams({
     client_id: clientId,
     redirect_uri: `${window.location.origin}/auth/callback`,
-    scope: 'repo read:user',
+    scope: 'repo read:user read:org',
     state,
   });
   return `https://github.com/login/oauth/authorize?${params.toString()}`;
