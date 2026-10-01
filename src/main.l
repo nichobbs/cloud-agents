@@ -19,6 +19,9 @@ import CloudAgents.OAuth
 import CloudAgents.OpenPr
 import CloudAgents.Pg.Startup
 import CloudAgents.PgStore.Tenancy
+import CloudAgents.PgStore.Orgs
+import CloudAgents.Orgs
+import CloudAgents.Scope
 import CloudAgents.Profiles
 import CloudAgents.Prompts
 import CloudAgents.Proxy
@@ -76,7 +79,6 @@ pub record AuthMiddleware {
 
 impl Web.Middleware for AuthMiddleware {
   func wrap(req: in Web.Request, next: in Web.Handler): Web.Response {
-    println("[diag] AuthMiddleware.wrap: path=" + req.path + " method=" + req.method)
     if req.path == "/api/health" or req.path.startsWith("/api/auth/") or CloudAgents.Auth.isContainerCallbackRoute(req.path) {
       // These handlers never read the per-request identity, but stamp the
       // operator id anyway so a pooled thread can't carry a previous
@@ -93,7 +95,6 @@ impl Web.Middleware for AuthMiddleware {
       apiToken = ""
     }
     val authHeader = match Web.header(req, "Authorization") { case Some(h) -> h; case None -> "" }
-    println("[diag] AuthMiddleware.wrap: before authenticateRequest, path=" + req.path)
     match CloudAgents.OAuth.authenticateRequest(req.path, authHeader, apiToken) {
       case Allowed(userId) -> {
         // Tenant-owned rows reference the user's personal tenant, so it must
@@ -106,6 +107,24 @@ impl Web.Middleware for AuthMiddleware {
           }
         }
         CloudAgents.Auth.setCurrentUserId(userId)
+        // The active organisation (spec §5.2): the header's tenant if the
+        // user is an active member of it, otherwise refuse. No header, or the
+        // user's own personal tenant, leaves the personal scope in place.
+        val org = match Web.header(req, CloudAgents.Auth.orgHeaderName()) { case Some(h) -> h.trim(); case None -> "" }
+        if org.length > 0 and org != CloudAgents.Scope.personalTenantId(userId) {
+          match CloudAgents.PgStore.Orgs.isActiveMember(userId, org) {
+            case Ok(true) -> CloudAgents.Auth.setCurrentTenantId(org)
+            case Ok(false) -> return Web.errorResponse(
+              Web.forbidden(
+                "you are not an active member of the organisation named in " + CloudAgents.Auth.orgHeaderName()
+              )
+            )
+            case Err(e) -> {
+              println("ERROR: could not check organisation membership for " + userId + ": " + CloudAgents.Db.dbErrorMessage(e))
+              return Web.errorResponse(Web.internalError("database unavailable"))
+            }
+          }
+        }
         return next.handle(req)
       }
       case Denied(e) -> return Web.errorResponse(Web.unauthorized(CloudAgents.Auth.authErrorMessage(e)))
@@ -476,12 +495,8 @@ record SendMessageStreamHandler {
 
 impl Web.StreamingHandler for SendMessageStreamHandler {
   func streamHandle(req: in Web.Request, w: in Web.ResponseWriter): Unit {
-    println("[diag] SendMessageStreamHandler.streamHandle: entered, bodyLength=" + toString(req.body.length))
     val id = pparam(req, "id")
-    println("[diag] SendMessageStreamHandler.streamHandle: before patchMissingAttachmentsField, id=" + id)
-    val patched = CloudAgents.Handlers.patchMissingAttachmentsField(req.body)
-    println("[diag] SendMessageStreamHandler.streamHandle: before SendMessageRequest.fromJson")
-    val decoded = match SendMessageRequest.fromJson(patched) {
+    val decoded = match SendMessageRequest.fromJson(CloudAgents.Handlers.patchMissingAttachmentsField(req.body)) {
       case Ok(d) -> d
       case Err(_) -> {
         // No chunk written yet, so a real 400 is still possible — reuse the
@@ -490,7 +505,6 @@ impl Web.StreamingHandler for SendMessageStreamHandler {
         return ()
       }
     }
-    println("[diag] SendMessageStreamHandler.streamHandle: before streamSendMessage")
     CloudAgents.Handlers.streamSendMessage(id, decoded.text, decoded.attachments, w)
     return ()
   }
@@ -878,6 +892,104 @@ record RouteDeletePrompt {
 impl Web.Handler for RouteDeletePrompt {
   func handle(req: in Web.Request): Web.Response {
     return unitResp(CloudAgents.Prompts.deletePromptHandler(pparam(req, "pid")))
+  }
+}
+
+// ─── CloudAgents.Orgs routes (orgs.l) ───────────────────────────────────────
+record RouteListOrgs {
+}
+
+impl Web.Handler for RouteListOrgs {
+  func handle(req: in Web.Request): Web.Response {
+    return jsonStringResp(CloudAgents.Orgs.listOrgsHandler())
+  }
+}
+
+record RouteCreateOrg {
+}
+
+impl Web.Handler for RouteCreateOrg {
+  func handle(req: in Web.Request): Web.Response {
+    val decoded = match CloudAgents.Orgs.CreateOrgRequest.fromJson(req.body) {
+      case Ok(d) -> d
+      case Err(_) -> return badBody()
+    }
+    return jsonStringResp(CloudAgents.Orgs.createOrgHandler(decoded))
+  }
+}
+
+record RouteListOrgMembers {
+}
+
+impl Web.Handler for RouteListOrgMembers {
+  func handle(req: in Web.Request): Web.Response {
+    return jsonStringResp(CloudAgents.Orgs.listMembersHandler(pparam(req, "oid")))
+  }
+}
+
+record RouteSetOrgMemberRole {
+}
+
+impl Web.Handler for RouteSetOrgMemberRole {
+  func handle(req: in Web.Request): Web.Response {
+    val decoded = match CloudAgents.Orgs.SetRoleRequest.fromJson(req.body) {
+      case Ok(d) -> d
+      case Err(_) -> return badBody()
+    }
+    return jsonStringResp(CloudAgents.Orgs.setRoleHandler(pparam(req, "oid"), pparam(req, "uid"), decoded))
+  }
+}
+
+record RouteRemoveOrgMember {
+}
+
+impl Web.Handler for RouteRemoveOrgMember {
+  func handle(req: in Web.Request): Web.Response {
+    return jsonStringResp(CloudAgents.Orgs.removeMemberHandler(pparam(req, "oid"), pparam(req, "uid")))
+  }
+}
+
+record RouteListOrgInvitations {
+}
+
+impl Web.Handler for RouteListOrgInvitations {
+  func handle(req: in Web.Request): Web.Response {
+    return jsonStringResp(CloudAgents.Orgs.listInvitationsHandler(pparam(req, "oid")))
+  }
+}
+
+record RouteCreateOrgInvitation {
+}
+
+impl Web.Handler for RouteCreateOrgInvitation {
+  func handle(req: in Web.Request): Web.Response {
+    val decoded = match CloudAgents.Orgs.CreateInvitationRequest.fromJson(req.body) {
+      case Ok(d) -> d
+      case Err(_) -> return badBody()
+    }
+    return jsonStringResp(CloudAgents.Orgs.createInvitationHandler(pparam(req, "oid"), decoded))
+  }
+}
+
+record RouteRevokeOrgInvitation {
+}
+
+impl Web.Handler for RouteRevokeOrgInvitation {
+  func handle(req: in Web.Request): Web.Response {
+    return jsonStringResp(CloudAgents.Orgs.revokeInvitationHandler(pparam(req, "oid"), pparam(req, "iid")))
+  }
+}
+
+record RouteAcceptInvitation {
+}
+
+impl Web.Handler for RouteAcceptInvitation {
+  func handle(req: in Web.Request): Web.Response {
+    val decoded = match CloudAgents.Orgs.AcceptInvitationRequest.fromJson(req.body) {
+      case Ok(d) -> d
+      case Err(_) -> return badBody()
+    }
+    return jsonStringResp(CloudAgents.Orgs.acceptInvitationHandler(decoded))
   }
 }
 
@@ -1459,7 +1571,7 @@ record RouteSaveObserverSettings {
 impl Web.Handler for RouteSaveObserverSettings {
   func handle(req: in Web.Request): Web.Response {
     return ledgerJsonResp(
-      observerSettingsJson(CloudAgents.ObserverHandlers.putObserverSettingsHandler(pparam(req, "pid"), req.body))
+      observerSettingsJson(CloudAgents.ObserverHandlers.saveObserverSettingsHandler(pparam(req, "pid"), req.body))
     )
   }
 }
@@ -2160,6 +2272,17 @@ pub func main(): Unit {
   router = Web.addPost(router, "/api/prompts/{pid}/use", RouteUsePrompt())
   router = Web.addPost(router, "/api/prompts/{pid}/render", RouteRenderPrompt())
   router = Web.addDelete(router, "/api/prompts/{pid}", RouteDeletePrompt())
+
+  // Organisations (docs/phase11-postgres-tenancy.md §6.3, §6.4).
+  router = Web.addGet(router, "/api/orgs", RouteListOrgs())
+  router = Web.addPost(router, "/api/orgs", RouteCreateOrg())
+  router = Web.addGet(router, "/api/orgs/{oid}/members", RouteListOrgMembers())
+  router = Web.addPost(router, "/api/orgs/{oid}/members/{uid}", RouteSetOrgMemberRole())
+  router = Web.addDelete(router, "/api/orgs/{oid}/members/{uid}", RouteRemoveOrgMember())
+  router = Web.addGet(router, "/api/orgs/{oid}/invitations", RouteListOrgInvitations())
+  router = Web.addPost(router, "/api/orgs/{oid}/invitations", RouteCreateOrgInvitation())
+  router = Web.addDelete(router, "/api/orgs/{oid}/invitations/{iid}", RouteRevokeOrgInvitation())
+  router = Web.addPost(router, "/api/invitations/accept", RouteAcceptInvitation())
 
   // Credential store: per-user secrets injected into runner containers.
   // Write-only — values are never read back, only their names.

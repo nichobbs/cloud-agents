@@ -240,6 +240,16 @@ pub func operatorUserId(): String {
 /// leak the previous request's identity into this one).
 pub func setCurrentUserId(userId: in String): Unit {
   threadSetData(getNamedDataSlot("cloud-agents-current-user"), userId)
+  // A new identity starts in its personal organisation; the middleware then
+  // selects a validated organisation with setCurrentTenantId.
+  threadSetData(getNamedDataSlot("cloud-agents-current-tenant"), "")
+}
+
+/// Stamp the active organisation for the current request's thread. Only the
+/// auth middleware calls this, after checking that the user (stamped first
+/// with setCurrentUserId) is an active member of `tenantId` (spec §5.2).
+pub func setCurrentTenantId(tenantId: in String): Unit {
+  threadSetData(getNamedDataSlot("cloud-agents-current-tenant"), tenantId)
 }
 
 /// The identity that owns per-user data (prompts, credentials, sessions) for
@@ -258,10 +268,21 @@ pub func currentUserId(): String {
 /// §5.2). Handlers call this ONCE, at entry, before any `await`: it reads the
 /// same thread-local slot as `currentUserId`, which is only reliable on the
 /// request's own thread. Everything downstream receives the returned value
-/// explicitly. Until organisations ship (spec §9 slice F) the scope is the
-/// user's personal tenant.
+/// explicitly. The tenant is the organisation the middleware validated from
+/// the `X-CloudAgents-Org` header, or the user's personal tenant when the
+/// request named none.
 pub func requestScope(): CloudAgents.Scope.TenantScope {
-  return CloudAgents.Scope.personalScope(currentUserId())
+  val userId = currentUserId()
+  val tenantId = threadGetData(getNamedDataSlot("cloud-agents-current-tenant"))
+  if DotNetString.IsNullOrEmpty(tenantId) {
+    return CloudAgents.Scope.personalScope(userId)
+  }
+  return CloudAgents.Scope.TenantScope(tenantId = tenantId, userId = userId)
+}
+
+/// The organisation header a request may carry (spec §5.2).
+pub func orgHeaderName(): String {
+  return "X-CloudAgents-Org"
 }
 
 /// The user scope of the current request, for the user-owned vault

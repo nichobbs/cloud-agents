@@ -29,6 +29,7 @@ import CloudAgents.Crypto
 import CloudAgents.GitHubApi
 import CloudAgents.LibrarySeed
 import CloudAgents.Repository
+import CloudAgents.PgStore.Orgs
 import CloudAgents.Scope
 import CloudAgents.SessionStore
 import CloudAgents.Db
@@ -240,6 +241,18 @@ func fetchIdentity(token: in String): Result[GitHubIdentity, String] {
   return Ok(value = GitHubIdentity(githubId = githubId, login = CloudAgents.Auth.githubLoginFromJson(json)))
 }
 
+/// Keep the user's GitHub login current (invitations are matched against it,
+/// docs/phase11-postgres-tenancy.md §6.3). Best-effort: a store failure must
+/// not fail a sign-in.
+func recordLogin(userId: in String, identity: in GitHubIdentity): Unit {
+  match CloudAgents.PgStore.Orgs.recordGitHubLogin(userId, identity.githubId, identity.login) {
+    case Ok(_) -> ()
+    case Err(e) -> println(
+      "NOTE: could not record the GitHub login of " + userId + ": " + CloudAgents.Db.dbErrorMessage(e)
+    )
+  }
+}
+
 /// POST /api/auth/github/exchange: swap the one-time code for the user's
 /// OAuth token, validate the token's identity, apply the whitelist, and prime
 /// the validation cache so the client's first real API call is fast.
@@ -304,6 +317,7 @@ pub func exchangeCode(req: in ExchangeRequest): Result[TokenGrant, Web.ApiError]
   match CloudAgents.Auth.authorizeGitHub(identity.githubId, whitelistCsv()) {
     case Allowed(userId) -> {
       val vault = CloudAgents.Scope.userScope(userId)
+      recordLogin(userId, identity)
       // Prime the bearer-validation cache (best-effort — a cache write
       // failure must not fail a successful login).
       match CloudAgents.Repository.cacheGitHubToken(CloudAgents.Crypto.sha256Base64(token), userId, identity.login) {
@@ -325,7 +339,10 @@ pub func exchangeCode(req: in ExchangeRequest): Result[TokenGrant, Web.ApiError]
       if not hasGitHubTokenCredential(userId) {
         match CloudAgents.Repository.putCredential(vault, "GITHUB_TOKEN", token) {
           case Ok(_) -> ()
-          case Err(e) -> println("NOTE: could not store GITHUB_TOKEN in the credential vault: " + CloudAgents.Repository.credentialErrorMessage(e))
+          case Err(e) -> println(
+            "NOTE: could not store GITHUB_TOKEN in the credential vault: " +
+              CloudAgents.Repository.credentialErrorMessage(e)
+          )
         }
       }
       // Give a brand-new sign-in the curated default subagent/skill sets
@@ -345,7 +362,10 @@ pub func exchangeCode(req: in ExchangeRequest): Result[TokenGrant, Web.ApiError]
       if refreshToken.length > 0 and accessExpiresIn.length > 0 and refreshExpiresIn.length > 0 {
         match CloudAgents.Repository.upsertGitHubOAuthRefresh(vault, refreshToken, accessExpiresIn, refreshExpiresIn) {
           case Ok(_) -> ()
-          case Err(e) -> println("NOTE: could not persist GitHub OAuth refresh metadata: " + CloudAgents.Repository.credentialErrorMessage(e))
+          case Err(e) -> println(
+            "NOTE: could not persist GitHub OAuth refresh metadata: " +
+              CloudAgents.Repository.credentialErrorMessage(e)
+          )
         }
       } else {
         // No expiring-token fields this time (e.g. the app registration was
@@ -433,7 +453,10 @@ func doRefresh(userId: in String, refreshToken: in String): Result[String, Web.A
   }
   match CloudAgents.Repository.putCredential(vault, "GITHUB_TOKEN", newToken) {
     case Ok(_) -> ()
-    case Err(e) -> println("NOTE: could not store the refreshed GITHUB_TOKEN in the credential vault: " + CloudAgents.Repository.credentialErrorMessage(e))
+    case Err(e) -> println(
+      "NOTE: could not store the refreshed GITHUB_TOKEN in the credential vault: " +
+        CloudAgents.Repository.credentialErrorMessage(e)
+    )
   }
   var login = ""
   match CloudAgents.Repository.lookupGitHubLoginForUser(userId) {
@@ -452,7 +475,10 @@ func doRefresh(userId: in String, refreshToken: in String): Result[String, Web.A
   if newRefreshToken.length > 0 and accessExpiresIn.length > 0 and refreshExpiresIn.length > 0 {
     match CloudAgents.Repository.upsertGitHubOAuthRefresh(vault, newRefreshToken, accessExpiresIn, refreshExpiresIn) {
       case Ok(_) -> ()
-      case Err(e) -> println("NOTE: could not persist refreshed GitHub OAuth metadata: " + CloudAgents.Repository.credentialErrorMessage(e))
+      case Err(e) -> println(
+        "NOTE: could not persist refreshed GitHub OAuth metadata: " +
+          CloudAgents.Repository.credentialErrorMessage(e)
+      )
     }
   }
   return Ok(value = newToken)
@@ -476,7 +502,10 @@ pub func ensureFreshGitHubToken(userId: in String): Result[String, Web.ApiError]
       }
     }
     case Ok(None) -> ()
-    case Err(e) -> println("WARNING: reading GitHub OAuth refresh status failed: " + CloudAgents.Repository.credentialErrorMessage(e))
+    case Err(e) -> println(
+      "WARNING: reading GitHub OAuth refresh status failed: " +
+        CloudAgents.Repository.credentialErrorMessage(e)
+    )
   }
   match CloudAgents.Repository.decryptedCredentialValue(vault, "GITHUB_TOKEN") {
     case Ok(Some(t)) -> return Ok(value = t)
@@ -495,11 +524,7 @@ pub func ensureFreshGitHubToken(userId: in String): Result[String, Web.ApiError]
 /// OAuth token for the authenticated user.
 pub func refreshOAuthToken(authHeaderValue: in String): Result[TokenGrant, Web.ApiError] {
   if not oauthConfigured() {
-    return Err(
-      Web.badRequest(
-        "GitHub OAuth is not configured on this server"
-      )
-    )
+    return Err(Web.badRequest("GitHub OAuth is not configured on this server"))
   }
   var userId = ""
   var cachedLogin = ""
@@ -556,10 +581,7 @@ pub func refreshOAuthToken(authHeaderValue: in String): Result[TokenGrant, Web.A
     case Allowed(_) -> ()
     case Denied(e) -> return Err(Web.unauthorized(CloudAgents.Auth.authErrorMessage(e)))
   }
-  val freshToken = match ensureFreshGitHubToken(userId) {
-    case Ok(t) -> t
-    case Err(e) -> return Err(e)
-  }
+  val freshToken = match ensureFreshGitHubToken(userId) { case Ok(t) -> t; case Err(e) -> return Err(e) }
   match CloudAgents.Repository.cacheGitHubToken(CloudAgents.Crypto.sha256Base64(freshToken), userId, cachedLogin) {
     case Ok(_) -> ()
     case Err(_) -> ()
@@ -581,9 +603,7 @@ pub func logout(authHeaderValue: in String): Result[Unit, Web.ApiError] {
       match CloudAgents.Repository.invalidateGitHubToken(CloudAgents.Crypto.sha256Base64(token)) {
         case Ok(_) -> return Ok(())
         case Err(e) -> {
-          println(
-            "WARNING: logout could not invalidate the token-validation cache row: " + CloudAgents.Db.dbErrorMessage(e)
-          )
+          println("WARNING: logout could not invalidate the token-validation cache row: " + CloudAgents.Db.dbErrorMessage(e))
           return Err(Web.internalError("logout failed"))
         }
       }
@@ -679,7 +699,10 @@ pub func authenticateGitHubBearer(token: in String): AuthOutcome {
     case Err(_) -> ()
   }
   match CloudAgents.Auth.authorizeGitHub(identity.githubId, whitelistCsv()) {
-    case Allowed(userId) -> return CloudAgents.Auth.allowedOutcome(userId)
+    case Allowed(userId) -> {
+      recordLogin(userId, identity)
+      return CloudAgents.Auth.allowedOutcome(userId)
+    }
     case Denied(e) -> return CloudAgents.Auth.deniedOutcome(e)
   }
 }

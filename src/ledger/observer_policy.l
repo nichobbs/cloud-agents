@@ -161,8 +161,40 @@ pub func observerToolNames(): slice[String] {
   return ["observer_get_window", "observer_report"]
 }
 
-/// Credentials an observer never receives: anything that could push to or
-/// change a repository. It reads what the host hands it and nothing else.
-pub func isRepoCredential(name: in String): Bool {
-  return name.contains("GITHUB") or name.contains("GH_TOKEN") or name.contains("GITLAB") or name.contains("BITBUCKET")
+/// The model credentials a harness reads (its entrypoint and CLI), and so
+/// the only credentials an observer on that harness receives. An allowlist,
+/// not a denylist of repository credentials: a credential the observer has
+/// no use for (a cloud or registry token, a repository token under any name)
+/// never reaches it. An unknown harness gets nothing.
+pub func observerCredentialNames(harness: in String): slice[String] {
+  if harness == "claude" {
+    return ["ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN"]
+  }
+  if harness == "codex" {
+    return ["OPENAI_API_KEY"]
+  }
+  if harness == "opencode" {
+    return ["ANTHROPIC_API_KEY", "OPENAI_API_KEY", "GOOGLE_API_KEY", "OPENCODE_API_KEY", "OPENCODE_ZEN_API_KEY"]
+  }
+  if harness == "gemini" {
+    return ["GEMINI_API_KEY", "GOOGLE_API_KEY"]
+  }
+  if harness == "antigravity" {
+    return ["ANTIGRAVITY_API_KEY", "GEMINI_API_KEY", "GOOGLE_API_KEY"]
+  }
+  return []
+}
+
+/// Whether an observer running on `harness` may receive the credential
+/// `name` (exact match against observerCredentialNames).
+pub func observerMayReceiveCredential(harness: in String, name: in String): Bool {
+  val allowed = observerCredentialNames(harness)
+  var i = 0
+  while i < allowed.length {
+    if allowed[i] == name {
+      return true
+    }
+    i = i + 1
+  }
+  return false
 }
