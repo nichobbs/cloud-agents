@@ -21,6 +21,7 @@ import CloudAgents.Pg
 import CloudAgents.PgStore
 import CloudAgents.Db
 import CloudAgents.Crypto
+import CloudAgents.Scope
 
 /// Why an organisation operation was refused. `Db` carries a store failure;
 /// the others carry a message fit to show the caller.
@@ -543,6 +544,173 @@ pub func acceptInvitation(callerId: in String, token: in String): Result[Org, Or
     exo(u, "UPDATE memberships SET role = @p2, source = 'native', suspended = false WHERE tenant_id = @p0 AND user_id = @p1", [tenantId, callerId, role])?
   }
   exo(u, "UPDATE invitations SET accepted_at = now() WHERE id = @p0", [col(inv, "id")])?
+  val org = orgFor(u, tenantId, callerId)?
+  commitO(u)?
+  return Ok(value = org)
+}
+
+// ─── GitHub organisations (spec §6.2) ──────────────────────────────────────
+/// One GitHub organisation membership as GitHub reports it: the
+/// organisation's numeric id and login, and the user's role there
+/// (`admin` or `member`).
+pub record GitHubOrgMembership {
+  pub orgId: String
+  pub orgLogin: String
+  pub role: String
+}
+
+/// What one reconciliation changed.
+pub record SyncOutcome {
+  pub added: Int
+  pub updated: Int
+  pub removed: Int
+}
+
+pub func tenantIdForGitHubOrg(orgId: in String): String {
+  return "github:" + orgId
+}
+
+func isDigits(s: in String): Bool {
+  if s.length == 0 or s.length > 19 {
+    return false
+  }
+  var i = 0
+  while i < s.length {
+    val c = s.substring(i, 1)
+    if c < "0" or c > "9" {
+      return false
+    }
+    i = i + 1
+  }
+  return true
+}
+
+/// Mark the user's sync done now and free its claim. Runs in a user unit:
+/// `user_sync_state` is user-owned (spec §4.3a).
+func markSynced(u: in CloudAgents.PgStore.PgUnit, userId: in String): Result[Unit, CloudAgents.Db.DbError] {
+  CloudAgents.PgStore.ex(u, "INSERT INTO user_sync_state (user_id, github_synced_at, claimed_until) VALUES (@p0, now(), NULL) " + "ON CONFLICT (user_id) DO UPDATE SET github_synced_at = now(), claimed_until = NULL", [userId])?
+  return Ok(value = ())
+}
+
+/// Reconcile the user's `github`-sourced memberships with what GitHub reports
+/// (spec §6.2): add a membership for each reported organisation that is
+/// connected, update roles (GitHub `admin` maps to `admin`, otherwise
+/// `member`; an owner is never demoted), lift any suspension, and remove
+/// `github` memberships of connected organisations GitHub no longer reports.
+/// `native` memberships are never touched.
+pub func reconcileGitHubMemberships(
+  userId: in String, reported: in slice[GitHubOrgMembership]
+): Result[SyncOutcome, CloudAgents.Db.DbError] {
+  val u = CloudAgents.PgStore.openUser(CloudAgents.Scope.userScope(userId))?
+  defer {
+    CloudAgents.PgStore.release(u)
+  }
+  var added = 0
+  var updated = 0
+  var keep = ""
+  for m in reported {
+    if isDigits(m.orgId) {
+      keep = if keep.length == 0 { m.orgId } else { keep + "," + m.orgId }
+      val role = if m.role == "admin" { "admin" } else { "member" }
+      val tenants = CloudAgents.PgStore.q(u, "SELECT id FROM tenants WHERE github_org_id = @p0::bigint", [m.orgId])?
+      if tenants.length > 0 {
+        val tenantId = CloudAgents.PgStore.col(tenants[0], "id")
+        val existing = CloudAgents.PgStore.q(u, "SELECT role, source FROM memberships WHERE tenant_id = @p0 AND user_id = @p1 FOR UPDATE", [tenantId, userId])?
+        if existing.length == 0 {
+          CloudAgents.PgStore.ex(u, "INSERT INTO memberships (tenant_id, user_id, role, source, synced_at) VALUES (@p0, @p1, @p2, 'github', now())", [tenantId, userId, role])?
+          added = added + 1
+        } else if CloudAgents.PgStore.col(existing[0], "source") == "github" {
+          val current = CloudAgents.PgStore.col(existing[0], "role")
+          val next = if current == "owner" { "owner" } else { role }
+          val n = CloudAgents.PgStore.ex(u, "UPDATE memberships SET role = @p2, suspended = false, synced_at = now() " + "WHERE tenant_id = @p0 AND user_id = @p1 AND (role <> @p2 OR suspended)", [tenantId, userId, next])?
+          CloudAgents.PgStore.ex(u, "UPDATE memberships SET synced_at = now() WHERE tenant_id = @p0 AND user_id = @p1", [tenantId, userId])?
+          updated = updated + n
+        }
+      }
+    }
+  }
+  val removed = CloudAgents.PgStore.ex(u, "DELETE FROM memberships m USING tenants t WHERE m.tenant_id = t.id AND m.user_id = @p0 " + "AND m.source = 'github' AND NOT (t.github_org_id = ANY (string_to_array(@p1, ',')::bigint[]))", [userId, keep])?
+  markSynced(u, userId)?
+  CloudAgents.PgStore.commit(u)?
+  return Ok(value = SyncOutcome(added = added, updated = updated, removed = removed))
+}
+
+/// Suspend the user's `github`-sourced memberships until they sign in again
+/// (spec §6.2: the token was revoked or lacks `read:org`). Returns how many
+/// were suspended.
+pub func suspendGitHubMemberships(userId: in String): Result[Int, CloudAgents.Db.DbError] {
+  val u = CloudAgents.PgStore.openUser(CloudAgents.Scope.userScope(userId))?
+  defer {
+    CloudAgents.PgStore.release(u)
+  }
+  val n = CloudAgents.PgStore.ex(u, "UPDATE memberships SET suspended = true WHERE user_id = @p0 AND source = 'github' AND NOT suspended", [userId])?
+  markSynced(u, userId)?
+  CloudAgents.PgStore.commit(u)?
+  return Ok(value = n)
+}
+
+/// Users due a membership re-check (over an hour since their last sync, with
+/// at least one `github` membership), each leased for `leaseSeconds` (spec
+/// §6.2, §5.3).
+pub func claimMembershipSync(limit: in Int, leaseSeconds: in Int): Result[slice[String], CloudAgents.Db.DbError] {
+  val u = CloudAgents.PgStore.openUnscoped()?
+  defer {
+    CloudAgents.PgStore.release(u)
+  }
+  val rows = CloudAgents.PgStore.q(u, "SELECT user_id FROM public.claim_membership_sync(@p0::integer, @p1::integer)", [toString(limit), toString(leaseSeconds)])?
+  CloudAgents.PgStore.commit(u)?
+  var acc: slice[String] = []
+  for r in rows {
+    acc = acc.append(CloudAgents.PgStore.col(r, "user_id"))
+  }
+  return Ok(value = acc)
+}
+
+/// Connect a GitHub organisation the caller administers (the caller has
+/// already been checked against GitHub). Creates the tenant with the caller
+/// as `owner`; an organisation that is already connected is refused unless
+/// it has lost every owner, in which case the caller becomes its owner. A
+/// caller who is already a member gets their organisation back unchanged.
+pub func connectGitHubOrg(callerId: in String, orgId: in String, orgLogin: in String): Result[Org, OrgFailure] {
+  if not isDigits(orgId) {
+    return Err(error = Invalid(message = "not a GitHub organisation id"))
+  }
+  if not isValidGitHubLogin(orgLogin) {
+    return Err(error = Invalid(message = "not a GitHub organisation login"))
+  }
+  val u = match CloudAgents.PgStore.openUser(CloudAgents.Scope.userScope(callerId)) {
+    case Ok(x) -> x
+    case Err(e) -> return Err(error = Db(error = e))
+  }
+  defer {
+    CloudAgents.PgStore.release(u)
+  }
+  val tenants = qo(u, "SELECT id FROM tenants WHERE github_org_id = @p0::bigint FOR UPDATE", [orgId])?
+  var tenantId = tenantIdForGitHubOrg(orgId)
+  if tenants.length == 0 {
+    exo(u, "INSERT INTO tenants (id, name, kind, github_org_id) VALUES (@p0, @p1, 'github_org', @p2::bigint)", [tenantId, orgLogin, orgId])?
+  } else {
+    tenantId = col(tenants[0], "id")
+    val mine = qo(u, "SELECT 1 AS one FROM memberships WHERE tenant_id = @p0 AND user_id = @p1", [tenantId, callerId])?
+    val owners = qo(u, "SELECT 1 AS one FROM memberships WHERE tenant_id = @p0 AND role = 'owner' LIMIT 1", [tenantId])?
+    if mine.length > 0 and owners.length > 0 {
+      val org = orgFor(u, tenantId, callerId)?
+      commitO(u)?
+      return Ok(value = org)
+    }
+    if owners.length > 0 {
+      return Err(
+        error = Conflict(
+          message = "this GitHub organisation is already connected; its members join it when they next sign in"
+        )
+      )
+    }
+  }
+  exo(u, "INSERT INTO memberships (tenant_id, user_id, role, source, synced_at) VALUES (@p0, @p1, 'owner', 'github', now()) " + "ON CONFLICT (tenant_id, user_id) DO UPDATE SET role = 'owner', suspended = false, synced_at = now()", [tenantId, callerId])?
+  match markSynced(u, callerId) {
+    case Ok(_) -> ()
+    case Err(e) -> return Err(error = Db(error = e))
+  }
   val org = orgFor(u, tenantId, callerId)?
   commitO(u)?
   return Ok(value = org)

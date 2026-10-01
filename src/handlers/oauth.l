@@ -30,6 +30,7 @@ import CloudAgents.GitHubApi
 import CloudAgents.LibrarySeed
 import CloudAgents.Repository
 import CloudAgents.PgStore.Orgs
+import CloudAgents.OrgSync
 import CloudAgents.Scope
 import CloudAgents.SessionStore
 import CloudAgents.Db
@@ -318,6 +319,9 @@ pub func exchangeCode(req: in ExchangeRequest): Result[TokenGrant, Web.ApiError]
     case Allowed(userId) -> {
       val vault = CloudAgents.Scope.userScope(userId)
       recordLogin(userId, identity)
+      // Reconcile GitHub organisation memberships with the fresh token
+      // (docs/phase11-postgres-tenancy.md §6.2); best-effort.
+      CloudAgents.OrgSync.syncAtSignIn(userId, token)
       // Prime the bearer-validation cache (best-effort — a cache write
       // failure must not fail a successful login).
       match CloudAgents.Repository.cacheGitHubToken(CloudAgents.Crypto.sha256Base64(token), userId, identity.login) {

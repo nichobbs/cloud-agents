@@ -21,6 +21,7 @@ import CloudAgents.Pg.Startup
 import CloudAgents.PgStore.Tenancy
 import CloudAgents.PgStore.Orgs
 import CloudAgents.Orgs
+import CloudAgents.OrgSync
 import CloudAgents.Scope
 import CloudAgents.Profiles
 import CloudAgents.Prompts
@@ -997,6 +998,28 @@ impl Web.Handler for RouteAcceptInvitation {
       case Err(_) -> return badBody()
     }
     return jsonStringResp(CloudAgents.Orgs.acceptInvitationHandler(decoded))
+  }
+}
+
+record RouteConnectGitHubOrg {
+}
+
+impl Web.Handler for RouteConnectGitHubOrg {
+  func handle(req: in Web.Request): Web.Response {
+    val decoded = match CloudAgents.OrgSync.ConnectGitHubOrgRequest.fromJson(req.body) {
+      case Ok(d) -> d
+      case Err(_) -> return badBody()
+    }
+    return jsonStringResp(CloudAgents.OrgSync.connectGitHubOrgHandler(decoded))
+  }
+}
+
+record RouteMembershipSync {
+}
+
+impl Web.Handler for RouteMembershipSync {
+  func handle(req: in Web.Request): Web.Response {
+    return jsonStringResp(CloudAgents.OrgSync.membershipSyncHandler())
   }
 }
 
@@ -2283,6 +2306,7 @@ pub func main(): Unit {
   // Organisations (docs/phase11-postgres-tenancy.md §6.3, §6.4).
   router = Web.addGet(router, "/api/orgs", RouteListOrgs())
   router = Web.addPost(router, "/api/orgs", RouteCreateOrg())
+  router = Web.addPost(router, "/api/orgs/github", RouteConnectGitHubOrg())
   router = Web.addGet(router, "/api/orgs/{oid}/members", RouteListOrgMembers())
   router = Web.addPost(router, "/api/orgs/{oid}/members/{uid}", RouteSetOrgMemberRole())
   router = Web.addDelete(router, "/api/orgs/{oid}/members/{uid}", RouteRemoveOrgMember())
@@ -2405,6 +2429,9 @@ pub func main(): Unit {
   router = Web.addPost(router, "/api/sessions/{id}/callbacks/observer/{op}", RouteObserverCallback())
   router = Web.addPost(router, "/api/maintenance/observe", RouteObserverMaintenance())
   router = Web.addPost(router, "/api/maintenance/ledger-sync", RouteLedgerSync())
+  // GitHub organisation memberships older than an hour are re-checked
+  // (docs/phase11-postgres-tenancy.md §6.2); operator-polled like the rest.
+  router = Web.addPost(router, "/api/maintenance/membership-sync", RouteMembershipSync())
 
   // Session highlights: the summarizer-extracted notable items feed
   // (CloudAgents.Highlights) — list + user-triggered refresh.

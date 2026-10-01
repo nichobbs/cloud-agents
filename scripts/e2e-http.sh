@@ -196,6 +196,8 @@ else
   assert "member org header accepted"  GET  "/api/prompts"                          yes 200 "prompts" "" "$org_id"
   assert "org members"                 GET  "/api/orgs/${org_id}/members"           yes 200 '"role":"owner"'
 fi
+assert "membership sync (operator)"    POST "/api/maintenance/membership-sync"      yes 200 '"synced":'
+assert "membership sync rejects no-auth" POST "/api/maintenance/membership-sync"    no  401 ""
 
 # ── cloud-agents-shim integration leg (#531) ─────────────────────────────────
 # Drive the REAL shim binary (shim/bin, built by the CI step before this
