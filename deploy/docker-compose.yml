@@ -145,7 +145,7 @@ services:
   # in-process timer, so this calls its maintenance endpoints on a schedule.
   # /api/maintenance/reap is what frees sessions whose run died (a restart,
   # a crash); without it they stay RUNNING. Intervals are in seconds; 0
-  # disables an endpoint.
+  # disables an endpoint. Each endpoint also has a call timeout.
   maintenance:
     build:
       context: ..
@@ -158,6 +158,11 @@ services:
       - MAINTENANCE_DRAIN_GRAPH_INGEST_SECONDS=${MAINTENANCE_DRAIN_GRAPH_INGEST_SECONDS:-60}
       - MAINTENANCE_OBSERVE_SECONDS=${MAINTENANCE_OBSERVE_SECONDS:-60}
       - MAINTENANCE_LEDGER_SYNC_SECONDS=${MAINTENANCE_LEDGER_SYNC_SECONDS:-300}
+      - MAINTENANCE_REAP_TIMEOUT_SECONDS=${MAINTENANCE_REAP_TIMEOUT_SECONDS:-1800}
+      - MAINTENANCE_TRIGGER_JOBS_TIMEOUT_SECONDS=${MAINTENANCE_TRIGGER_JOBS_TIMEOUT_SECONDS:-10800}
+      - MAINTENANCE_DRAIN_GRAPH_INGEST_TIMEOUT_SECONDS=${MAINTENANCE_DRAIN_GRAPH_INGEST_TIMEOUT_SECONDS:-1800}
+      - MAINTENANCE_OBSERVE_TIMEOUT_SECONDS=${MAINTENANCE_OBSERVE_TIMEOUT_SECONDS:-10800}
+      - MAINTENANCE_LEDGER_SYNC_TIMEOUT_SECONDS=${MAINTENANCE_LEDGER_SYNC_TIMEOUT_SECONDS:-3600}
     depends_on:
       - api
     restart: unless-stopped

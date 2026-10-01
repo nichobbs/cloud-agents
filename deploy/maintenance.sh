@@ -18,9 +18,15 @@
 #   MAINTENANCE_OBSERVE_SECONDS            default 60
 #   MAINTENANCE_LEDGER_SYNC_SECONDS        default 300
 #   MAINTENANCE_START_DELAY_SECONDS        default 15 (wait for the API on start)
-#   MAINTENANCE_CALL_TIMEOUT_SECONDS       default 10800 (3 h): the longest one
-#                                          call may take before it is abandoned
 # An interval of 0 disables that endpoint.
+#
+# Each endpoint also has a timeout, the longest one call may take before it
+# is abandoned (at least 1 second), sized to the work that endpoint does:
+#   MAINTENANCE_REAP_TIMEOUT_SECONDS               default 1800
+#   MAINTENANCE_TRIGGER_JOBS_TIMEOUT_SECONDS       default 10800 (runs jobs inline, ~150 min worst case)
+#   MAINTENANCE_DRAIN_GRAPH_INGEST_TIMEOUT_SECONDS default 1800
+#   MAINTENANCE_OBSERVE_TIMEOUT_SECONDS            default 10800 (runs observer passes inline)
+#   MAINTENANCE_LEDGER_SYNC_TIMEOUT_SECONDS        default 3600
 set -eu
 
 if [ -z "${CLOUD_AGENTS_API_TOKEN:-}" ]; then
@@ -35,11 +41,10 @@ log() {
 
 call() {
   path=$1
-  # trigger-jobs and observe run their work inline, so the overall limit is
-  # long (trigger-jobs' worst case is about 150 minutes); it only stops a
-  # hung connection from stalling the loop for good. The connect timeout
-  # catches an API that is down.
-  if out=$(curl -sS --connect-timeout 10 --max-time "$CALL_TIMEOUT" -X POST \
+  timeout=$2
+  # The timeout only stops a hung connection from stalling the loop for
+  # good; the connect timeout catches an API that is down.
+  if out=$(curl -sS --connect-timeout 10 --max-time "$timeout" -X POST \
     -H "Authorization: Bearer ${CLOUD_AGENTS_API_TOKEN}" \
     -w ' [HTTP %{http_code}]' \
     "${API_URL}/api/maintenance/${path}" 2>&1); then
@@ -58,16 +63,25 @@ check_interval() {
   esac
 }
 
+check_timeout() {
+  check_interval "$1" "$2"
+  if [ "$2" -eq 0 ]; then
+    echo "maintenance: $1 must be at least 1" >&2
+    exit 1
+  fi
+}
+
 loop() {
   path=$1
   seconds=$2
+  timeout=$3
   if [ "$seconds" -eq 0 ]; then
     log "${path}: disabled"
     return 0
   fi
-  log "${path}: every ${seconds}s"
+  log "${path}: every ${seconds}s, timeout ${timeout}s"
   while true; do
-    call "$path"
+    call "$path" "$timeout"
     sleep "$seconds"
   done
 }
@@ -78,27 +92,31 @@ DRAIN="${MAINTENANCE_DRAIN_GRAPH_INGEST_SECONDS:-60}"
 OBSERVE="${MAINTENANCE_OBSERVE_SECONDS:-60}"
 LEDGER_SYNC="${MAINTENANCE_LEDGER_SYNC_SECONDS:-300}"
 START_DELAY="${MAINTENANCE_START_DELAY_SECONDS:-15}"
-CALL_TIMEOUT="${MAINTENANCE_CALL_TIMEOUT_SECONDS:-10800}"
+REAP_TIMEOUT="${MAINTENANCE_REAP_TIMEOUT_SECONDS:-1800}"
+TRIGGER_JOBS_TIMEOUT="${MAINTENANCE_TRIGGER_JOBS_TIMEOUT_SECONDS:-10800}"
+DRAIN_TIMEOUT="${MAINTENANCE_DRAIN_GRAPH_INGEST_TIMEOUT_SECONDS:-1800}"
+OBSERVE_TIMEOUT="${MAINTENANCE_OBSERVE_TIMEOUT_SECONDS:-10800}"
+LEDGER_SYNC_TIMEOUT="${MAINTENANCE_LEDGER_SYNC_TIMEOUT_SECONDS:-3600}"
 check_interval MAINTENANCE_REAP_SECONDS "$REAP"
 check_interval MAINTENANCE_TRIGGER_JOBS_SECONDS "$TRIGGER_JOBS"
 check_interval MAINTENANCE_DRAIN_GRAPH_INGEST_SECONDS "$DRAIN"
 check_interval MAINTENANCE_OBSERVE_SECONDS "$OBSERVE"
 check_interval MAINTENANCE_LEDGER_SYNC_SECONDS "$LEDGER_SYNC"
 check_interval MAINTENANCE_START_DELAY_SECONDS "$START_DELAY"
-check_interval MAINTENANCE_CALL_TIMEOUT_SECONDS "$CALL_TIMEOUT"
-if [ "$CALL_TIMEOUT" -eq 0 ]; then
-  echo "maintenance: MAINTENANCE_CALL_TIMEOUT_SECONDS must be at least 1" >&2
-  exit 1
-fi
+check_timeout MAINTENANCE_REAP_TIMEOUT_SECONDS "$REAP_TIMEOUT"
+check_timeout MAINTENANCE_TRIGGER_JOBS_TIMEOUT_SECONDS "$TRIGGER_JOBS_TIMEOUT"
+check_timeout MAINTENANCE_DRAIN_GRAPH_INGEST_TIMEOUT_SECONDS "$DRAIN_TIMEOUT"
+check_timeout MAINTENANCE_OBSERVE_TIMEOUT_SECONDS "$OBSERVE_TIMEOUT"
+check_timeout MAINTENANCE_LEDGER_SYNC_TIMEOUT_SECONDS "$LEDGER_SYNC_TIMEOUT"
 
 # Give the API a moment to start listening on a fresh deploy.
 sleep "$START_DELAY"
 
-loop reap "$REAP" &
-loop trigger-jobs "$TRIGGER_JOBS" &
-loop drain-graph-ingest "$DRAIN" &
-loop observe "$OBSERVE" &
-loop ledger-sync "$LEDGER_SYNC" &
+loop reap "$REAP" "$REAP_TIMEOUT" &
+loop trigger-jobs "$TRIGGER_JOBS" "$TRIGGER_JOBS_TIMEOUT" &
+loop drain-graph-ingest "$DRAIN" "$DRAIN_TIMEOUT" &
+loop observe "$OBSERVE" "$OBSERVE_TIMEOUT" &
+loop ledger-sync "$LEDGER_SYNC" "$LEDGER_SYNC_TIMEOUT" &
 
 # The enabled loops never return, so this blocks until the container stops.
 wait

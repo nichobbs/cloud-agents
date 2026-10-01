@@ -108,18 +108,19 @@ operator-only maintenance endpoints. The `maintenance` service
 (`deploy/maintenance.sh`) does that on a schedule, authenticating with
 `CLOUD_AGENTS_API_TOKEN`:
 
-| Endpoint | Default interval | Variable | What it does |
+| Endpoint | Interval (default) | Timeout (default) | What it does |
 |---|---|---|---|
-| `/api/maintenance/reap` | 60 s | `MAINTENANCE_REAP_SECONDS` | frees sessions whose run died (no heartbeat for 2 minutes) and stops idle warm containers |
-| `/api/maintenance/trigger-jobs` | 60 s | `MAINTENANCE_TRIGGER_JOBS_SECONDS` | runs due scheduled jobs |
-| `/api/maintenance/drain-graph-ingest` | 60 s | `MAINTENANCE_DRAIN_GRAPH_INGEST_SECONDS` | retries failed graph-ingest deliveries |
-| `/api/maintenance/observe` | 60 s | `MAINTENANCE_OBSERVE_SECONDS` | runs queued ledger observer passes |
-| `/api/maintenance/ledger-sync` | 300 s | `MAINTENANCE_LEDGER_SYNC_SECONDS` | reconciles ledger items with GitHub |
+| `/api/maintenance/reap` | `MAINTENANCE_REAP_SECONDS` (60) | `MAINTENANCE_REAP_TIMEOUT_SECONDS` (1800) | frees sessions whose run died (no heartbeat for 2 minutes) and stops idle warm containers |
+| `/api/maintenance/trigger-jobs` | `MAINTENANCE_TRIGGER_JOBS_SECONDS` (60) | `MAINTENANCE_TRIGGER_JOBS_TIMEOUT_SECONDS` (10800) | runs due scheduled jobs |
+| `/api/maintenance/drain-graph-ingest` | `MAINTENANCE_DRAIN_GRAPH_INGEST_SECONDS` (60) | `MAINTENANCE_DRAIN_GRAPH_INGEST_TIMEOUT_SECONDS` (1800) | retries failed graph-ingest deliveries |
+| `/api/maintenance/observe` | `MAINTENANCE_OBSERVE_SECONDS` (60) | `MAINTENANCE_OBSERVE_TIMEOUT_SECONDS` (10800) | runs queued ledger observer passes |
+| `/api/maintenance/ledger-sync` | `MAINTENANCE_LEDGER_SYNC_SECONDS` (300) | `MAINTENANCE_LEDGER_SYNC_TIMEOUT_SECONDS` (3600) | reconciles ledger items with GitHub |
 
 Set an interval to `0` to disable that endpoint. Each endpoint has its own
 loop, so a long call (`trigger-jobs` runs due jobs inline) never delays the
-others; `MAINTENANCE_CALL_TIMEOUT_SECONDS` (default 3 hours) abandons a call
-that hangs. The `maintenance` container's logs show every call and its result.
+others, and each call is abandoned after its endpoint's timeout, so a hung
+connection cannot stall a loop for long. `trigger-jobs` and `observe` run
+their work inline, hence their longer timeouts. The `maintenance` container's logs show every call and its result.
 
 `reap` matters most: the API no longer resets sessions at startup, so after a
 redeploy, crash or Docker restart, a session whose run was cut off stays

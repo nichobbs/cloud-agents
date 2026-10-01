@@ -91,8 +91,8 @@ if docker run --rm -e CLOUD_AGENTS_API_TOKEN=t -e MAINTENANCE_REAP_SECONDS=1m "$
   echo "FAIL: maintenance accepted MAINTENANCE_REAP_SECONDS=1m" >&2
   exit 1
 fi
-if docker run --rm -e CLOUD_AGENTS_API_TOKEN=t -e MAINTENANCE_CALL_TIMEOUT_SECONDS=0 "$MAINT_IMAGE" >/dev/null 2>&1; then
-  echo "FAIL: maintenance accepted MAINTENANCE_CALL_TIMEOUT_SECONDS=0" >&2
+if docker run --rm -e CLOUD_AGENTS_API_TOKEN=t -e MAINTENANCE_REAP_TIMEOUT_SECONDS=0 "$MAINT_IMAGE" >/dev/null 2>&1; then
+  echo "FAIL: maintenance accepted MAINTENANCE_REAP_TIMEOUT_SECONDS=0" >&2
   exit 1
 fi
 echo "ok"
