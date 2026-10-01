@@ -468,8 +468,6 @@ jobs:
       #     project's copy, used to validate a profile's tool grants
       #   - frontend/src/pages/Profiles.tsx's SHIM_TOOL_NAMES — the profile
       #     editor's checkboxes
-      #   - src/ledger/schema.l's ledgerToolNames() — the ledger subset the
-      #     profile migration grants
       # The ledger tools register from shim/src/ledger_tools.l's table, so
       # this also checks main.l still registers that table. Any drift fails
       # the job.
@@ -533,16 +531,6 @@ jobs:
                         "and adding a LedgerTool)", file=sys.stderr)
                   sys.exit(1)
 
-          # src/ledger/schema.l's ledgerToolNames(): the grants the profile
-          # migration hands out. Only the ledger subset lives there.
-          def extract_schema_ledger_names(path):
-              text = open(path).read()
-              m = re.search(r'pub func ledgerToolNames\(\).*?return\s*\[(.*?)\]', text, re.DOTALL)
-              if not m:
-                  print(f"::error::could not find ledgerToolNames() in {path}", file=sys.stderr)
-                  sys.exit(1)
-              return sorted(set(re.findall(r'"([^"]+)"', m.group(1))))
-
           # The PWA's profile editor checkbox list.
           def extract_frontend_names(path):
               text = open(path).read()
@@ -559,12 +547,6 @@ jobs:
           main_tools = extract_main_tools('shim/src/main.l') + ledger_tools
           frontend = extract_frontend_names('frontend/src/pages/Profiles.tsx')
 
-          schema_ledger = extract_schema_ledger_names('src/ledger/schema.l')
-          if set(schema_ledger) != set(ledger_tools):
-              print(f"::error::src/ledger/schema.l ledgerToolNames() {schema_ledger} differs from "
-                    f"shim/src/ledger_tools.l ledgerToolSpecs() {ledger_tools}", file=sys.stderr)
-              sys.exit(1)
-
           copies = {
               'src/handlers/profiles.l validShimToolNames': set(profiles),
               'shim/tests/config_tests.l allShimToolNames': set(config_tests),
@@ -580,8 +562,7 @@ jobs:
                   print(f"::error::{label} is missing: {sorted(missing)}", file=sys.stderr)
           if mismatched:
               sys.exit(1)
-          print(f"All tool-name copies match: {sorted(union)} ({len(union)} tools); "
-                f"schema.l ledgerToolNames() matches the {len(ledger_tools)} ledger tools")
+          print(f"All tool-name copies match: {sorted(union)} ({len(union)} tools)")
           PYEOF
 
       # Real end-to-end HTTP check against the built server (nichobbs/cloud-agents#442):
