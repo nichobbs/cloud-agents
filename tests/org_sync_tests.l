@@ -96,7 +96,7 @@ func connect(owner: in String, orgId: in String, login: in String): CloudAgents.
 func reconcile(
   userId: in String, reported: in slice[CloudAgents.PgStore.Orgs.GitHubOrgMembership]
 ): CloudAgents.PgStore.Orgs.SyncOutcome {
-  return match CloudAgents.PgStore.Orgs.reconcileGitHubMemberships(userId, reported) {
+  return match CloudAgents.PgStore.Orgs.reconcileGitHubMemberships(userId, reported, true) {
     case Ok(o) -> o
     case Err(e) -> panic("reconcile failed: " + CloudAgents.Db.dbErrorMessage(e))
   }
@@ -203,25 +203,26 @@ test "a single membership response is parsed, and anything else is not a members
   }
 }
 
-test "a refused token is told apart from GitHub being unreachable" {
+test "a 401 refuses the token; a 403 or 404 needs a second look; anything else keeps the rows" {
   assertTrue(
-    CloudAgents.OrgSync.isTokenRefusal("GET x failed: The remote server returned an error: (401) Unauthorized."),
+    CloudAgents.OrgSync.isUnauthorized("GET x failed: The remote server returned an error: (401) Unauthorized."),
     "401"
   )
+  assertFalse(
+    CloudAgents.OrgSync.isUnauthorized("GET x failed: The remote server returned an error: (403) Forbidden."),
+    "403 is not decided by status alone"
+  )
   assertTrue(
-    CloudAgents.OrgSync.isTokenRefusal("GET x failed: The remote server returned an error: (403) Forbidden."),
+    CloudAgents.OrgSync.isForbiddenOrMissing("GET x failed: The remote server returned an error: (403) Forbidden."),
     "403"
   )
   assertTrue(
-    CloudAgents.OrgSync.isTokenRefusal("GET x failed: The remote server returned an error: (404) Not Found."),
+    CloudAgents.OrgSync.isForbiddenOrMissing("GET x failed: The remote server returned an error: (404) Not Found."),
     "404"
   )
+  assertFalse(CloudAgents.OrgSync.isForbiddenOrMissing("GET x failed: No such host is known."), "a transport failure")
   assertFalse(
-    CloudAgents.OrgSync.isTokenRefusal("GET x failed: No such host is known."),
-    "a transport failure keeps the rows"
-  )
-  assertFalse(
-    CloudAgents.OrgSync.isTokenRefusal("GET x failed: The remote server returned an error: (502) Bad Gateway."),
+    CloudAgents.OrgSync.isUnauthorized("GET x failed: The remote server returned an error: (502) Bad Gateway."),
     "a GitHub outage"
   )
 }
@@ -311,6 +312,27 @@ test "reconciliation never demotes an owner and never touches native memberships
     }
     case None -> assertTrue(false, "still a member")
   }
+}
+
+test "a partial membership list adds and updates but removes nothing" {
+  if not live() {
+    return
+  }
+  migrate()
+  val owner = newUser("owner" + short())
+  val user = newUser("dev" + short())
+  val a = freshOrgId()
+  val b = freshOrgId()
+  val ta = connect(owner, a, "pa-" + short()).id
+  val tb = connect(owner, b, "pb-" + short()).id
+  reconcile(user, [gm(a, "pa", "member"), gm(b, "pb", "member")])
+  val partial = match CloudAgents.PgStore.Orgs.reconcileGitHubMemberships(user, [gm(a, "pa", "admin")], false) {
+    case Ok(o) -> o
+    case Err(e) -> panic(CloudAgents.Db.dbErrorMessage(e))
+  }
+  assertEqualInt(partial.removed, 0, "nothing removed from a partial list")
+  assertEqual(roleOf(user, ta), "admin", "updated from the partial list")
+  assertEqual(roleOf(user, tb), "member", "kept although missing from the partial list")
 }
 
 test "a refused token suspends GitHub memberships until the next sync reports them" {

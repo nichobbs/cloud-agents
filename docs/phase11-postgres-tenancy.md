@@ -576,9 +576,12 @@ Postgres-only data.
     adds, updates and removes `github` memberships of connected
     organisations, lifts suspensions, never demotes an owner (it does remove
     one GitHub no longer reports, since access follows GitHub) and never
-    touches `native` rows. GitHub answering 401, 403 or 404 suspends the
-    user's `github` memberships; an unreachable GitHub leaves them as they
-    are and the next sweep retries. A connected organisation that has lost
+    touches `native` rows. A list cut short (over 1000 organisations)
+    removes nothing. GitHub answering 401 suspends the user's `github`
+    memberships, and so does a 403 or 404 when `GET /user` still works
+    with the same token (a valid token without `read:org`); a rate limit,
+    an outage or an unreachable GitHub leaves them as they are and the next
+    sweep retries. A connected organisation that has lost
     every owner can be reconnected by a GitHub admin, who becomes its owner.
   - **F3.** The frontend switcher and settings page (§6.4). The OAuth scope
     change ships here with the UI that needs it.

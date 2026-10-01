@@ -135,7 +135,15 @@ pub func parseSingleMembership(body: in String): Option[CloudAgents.PgStore.Orgs
 }
 
 /// Every active GitHub organisation membership of the token's user.
-pub func fetchMemberships(token: in String): Result[slice[CloudAgents.PgStore.Orgs.GitHubOrgMembership], String] {
+/// A user's memberships as fetched. `complete` is false when the user is in
+/// more organisations than `maxPages` pages hold: memberships missing from a
+/// partial list must not be read as removed.
+pub record FetchedMemberships {
+  pub items: slice[CloudAgents.PgStore.Orgs.GitHubOrgMembership]
+  pub complete: Bool
+}
+
+pub func fetchMemberships(token: in String): Result[FetchedMemberships, String] {
   var acc: slice[CloudAgents.PgStore.Orgs.GitHubOrgMembership] = []
   var page = 1
   while page <= maxPages {
@@ -145,24 +153,47 @@ pub func fetchMemberships(token: in String): Result[slice[CloudAgents.PgStore.Or
       acc = acc.append(m)
     }
     if parsed.count < 100 {
-      return Ok(value = acc)
+      return Ok(value = FetchedMemberships(items = acc, complete = true))
     }
     page = page + 1
   }
-  return Ok(value = acc)
+  return Ok(value = FetchedMemberships(items = acc, complete = false))
 }
 
-/// Whether a GitHub call failed because the token was refused: revoked,
-/// expired, or missing `read:org`.
-pub func isTokenRefusal(errorText: in String): Bool {
-  return CloudAgents.OAuth.isConfirmedAuthRejection(errorText) or errorText.contains("(404)")
+/// Whether a failed GitHub call's status says the token itself was refused:
+/// 401 always does. A 403 or 404 can also mean a rate limit or a missing
+/// `read:org` scope, so `isTokenRefused` checks those against `/user`.
+pub func isUnauthorized(errorText: in String): Bool {
+  return errorText.contains("(401)")
+}
+
+pub func isForbiddenOrMissing(errorText: in String): Bool {
+  return errorText.contains("(403)") or errorText.contains("(404)")
+}
+
+/// Whether the memberships call failed because the token is unusable for it
+/// (revoked, expired, or without `read:org`), as opposed to GitHub being
+/// unavailable or rate-limiting. For a 403 or 404 the token is checked
+/// against `GET /user`: if that works, the token is valid but lacks the
+/// scope; if it fails too (a rate limit applies to both), nothing is decided.
+func isTokenRefused(token: in String, errorText: in String): Bool {
+  if isUnauthorized(errorText) {
+    return true
+  }
+  if not isForbiddenOrMissing(errorText) {
+    return false
+  }
+  return match CloudAgents.GitHubApi.httpGetWithBearer(apiBase() + "/user", token, CloudAgents.OAuth.userAgent()) {
+    case Ok(_) -> true
+    case Err(_) -> false
+  }
 }
 
 /// Reconcile at sign-in with the token just issued (spec §6.2). Best-effort:
 /// a failure is logged and never fails the sign-in.
 pub func syncAtSignIn(userId: in String, token: in String): Unit {
   match fetchMemberships(token) {
-    case Ok(ms) -> match CloudAgents.PgStore.Orgs.reconcileGitHubMemberships(userId, ms) {
+    case Ok(f) -> match CloudAgents.PgStore.Orgs.reconcileGitHubMemberships(userId, f.items, f.complete) {
       case Ok(_) -> ()
       case Err(e) -> println(
         "NOTE: could not reconcile GitHub organisations for " + userId + ": " +
@@ -185,7 +216,7 @@ pub func connectGitHubOrgHandler(req: in ConnectGitHubOrgRequest): Result[String
   val body = match CloudAgents.GitHubApi.httpGetWithBearer(apiBase() + "/user/memberships/orgs/" + orgLogin, token, CloudAgents.OAuth.userAgent()) {
     case Ok(b) -> b
     case Err(e) -> {
-      if isTokenRefusal(e) {
+      if isUnauthorized(e) or isForbiddenOrMissing(e) {
         return Err(
           Web.forbidden(
             "GitHub did not confirm your membership of " + orgLogin +
@@ -231,7 +262,7 @@ pub func syncUser(userId: in String): SyncResult {
     }
   }
   match fetchMemberships(token) {
-    case Ok(ms) -> match CloudAgents.PgStore.Orgs.reconcileGitHubMemberships(userId, ms) {
+    case Ok(f) -> match CloudAgents.PgStore.Orgs.reconcileGitHubMemberships(userId, f.items, f.complete) {
       case Ok(_) -> return UserSynced
       case Err(e) -> {
         println("WARNING: membership sync for " + userId + ": " + CloudAgents.Db.dbErrorMessage(e))
@@ -239,11 +270,11 @@ pub func syncUser(userId: in String): SyncResult {
       }
     }
     case Err(e) -> {
-      if isTokenRefusal(e) {
+      if isTokenRefused(token, e) {
         return suspend(userId)
       }
-      // GitHub unreachable: keep the rows; the lease lapses and a later
-      // sweep retries.
+      // GitHub unreachable or rate-limiting: keep the rows; the lease lapses
+      // and a later sweep retries.
       println("WARNING: membership sync for " + userId + " could not reach GitHub: " + e)
       return UserSyncFailed
     }

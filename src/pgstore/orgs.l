@@ -597,9 +597,10 @@ func markSynced(u: in CloudAgents.PgStore.PgUnit, userId: in String): Result[Uni
 /// connected, update roles (GitHub `admin` maps to `admin`, otherwise
 /// `member`; an owner is never demoted), lift any suspension, and remove
 /// `github` memberships of connected organisations GitHub no longer reports.
-/// `native` memberships are never touched.
+/// `native` memberships are never touched. With `complete` false (GitHub's
+/// list was cut short), nothing is removed.
 pub func reconcileGitHubMemberships(
-  userId: in String, reported: in slice[GitHubOrgMembership]
+  userId: in String, reported: in slice[GitHubOrgMembership], complete: in Bool
 ): Result[SyncOutcome, CloudAgents.Db.DbError] {
   val u = CloudAgents.PgStore.openUser(CloudAgents.Scope.userScope(userId))?
   defer {
@@ -629,7 +630,13 @@ pub func reconcileGitHubMemberships(
       }
     }
   }
-  val removed = CloudAgents.PgStore.ex(u, "DELETE FROM memberships m USING tenants t WHERE m.tenant_id = t.id AND m.user_id = @p0 " + "AND m.source = 'github' AND NOT (t.github_org_id = ANY (string_to_array(@p1, ',')::bigint[]))", [userId, keep])?
+  // A partial list (more organisations than one fetch reads) removes
+  // nothing: a membership missing from it may simply be on a later page.
+  var removed = 0
+  if complete {
+    val n = CloudAgents.PgStore.ex(u, "DELETE FROM memberships m USING tenants t WHERE m.tenant_id = t.id AND m.user_id = @p0 " + "AND m.source = 'github' AND NOT (t.github_org_id = ANY (string_to_array(@p1, ',')::bigint[]))", [userId, keep])?
+    removed = n
+  }
   markSynced(u, userId)?
   CloudAgents.PgStore.commit(u)?
   return Ok(value = SyncOutcome(added = added, updated = updated, removed = removed))
