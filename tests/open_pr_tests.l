@@ -1,17 +1,78 @@
+//! openPrHandler tests: pure URL/decision helpers plus the handler's
+//! validation paths against the Postgres store.
 @test_module
 package CloudAgents.OpenPrTests
 
 import Std.Core
+import Std.Environment
 import Std.Testing
 import Std.Uuid
 import CloudAgents.Auth
 import CloudAgents.OpenPr
 import CloudAgents.Repository
 import CloudAgents.SessionStore
+import CloudAgents.Pg
+import CloudAgents.Pg.Migrate
+import CloudAgents.PgStore.Tenancy
 import CloudAgents.Sqlite
-import extern System.Environment as Env
 
-// ── Live-DB plumbing (same pattern as tests/proxy_tests.l) ────────────────────
+// ── Live Postgres ─────────────────────────────────────────────────────────────
+//
+// The store is Postgres (docs/phase11-postgres-tenancy.md). These tests run iff
+// LYRIC_CONFIG_DB_CONNECTION_URL (cloudagents_app) and
+// CLOUD_AGENTS_MIGRATE_DATABASE_URL (cloudagents_owner) are set, and fail rather
+// than skip when CLOUD_AGENTS_REQUIRE_LIVE_PG=1 (CI). Each test acts as a fresh
+// user with its own personal tenant, so tests, suites and repeated runs against
+// the same database never see each other's rows.
+func live(): Bool {
+  val ok = CloudAgents.Pg.serviceConfigured() and
+    Std.Environment.getVarOrDefault(CloudAgents.Pg.migrateDsnVar(), "").length.toInt() > 0
+  if ok {
+    return true
+  }
+  assertTrue(
+    Std.Environment.getVarOrDefault("CLOUD_AGENTS_REQUIRE_LIVE_PG", "") != "1",
+    "CLOUD_AGENTS_REQUIRE_LIVE_PG=1 but LYRIC_CONFIG_DB_CONNECTION_URL or CLOUD_AGENTS_MIGRATE_DATABASE_URL is not set"
+  )
+  println("SKIP: open-PR tests need LYRIC_CONFIG_DB_CONNECTION_URL and CLOUD_AGENTS_MIGRATE_DATABASE_URL")
+  return false
+}
+
+func migrate(): Unit {
+  val conn = match CloudAgents.Pg.connectDsn(Std.Environment.getVarOrDefault(CloudAgents.Pg.migrateDsnVar(), "")) {
+    case Ok(c) -> c
+    case Err(e) -> panic(CloudAgents.Pg.pgErrorMessage(e))
+  }
+  defer {
+    conn.close()
+  }
+  match CloudAgents.Pg.Migrate.migrate(conn) {
+    case Ok(_) -> ()
+    case Err(e) -> panic("migrate failed: " + CloudAgents.Pg.pgErrorMessage(e))
+  }
+}
+
+/// A new user with a provisioned personal tenant. Does not change the request
+/// identity.
+func newUser(tag: in String): String {
+  val uid = "t-" + tag + "-" + Std.Uuid.uuidToString(Std.Uuid.newUuid())
+  match CloudAgents.PgStore.Tenancy.ensurePersonalTenant(uid) {
+    case Ok(_) -> ()
+    case Err(e) -> panic("provisioning " + uid + " failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+  }
+  return uid
+}
+
+/// Migrate, then make a new user the request identity (what handlers read via
+/// CloudAgents.Auth.requestScope()).
+func freshUser(tag: in String): String {
+  migrate()
+  val uid = newUser(tag)
+  CloudAgents.Auth.setCurrentUserId(uid)
+  return uid
+}
+
+// ── Notes ─────────────────────────────────────────────────────────────────────
 //
 // NB: no network path is ever exercised here — the no-vaulted-token and
 // non-github-repo tests both fail closed before any outbound GitHub request
@@ -20,28 +81,6 @@ import extern System.Environment as Env
 // covered purely via decidePrAction, with no HTTP round trip involved at
 // all. ENCRYPTION_KEY is deliberately NOT set — decryptedCredentialValue
 // answers Ok(None) for an absent row before any decryption.
-
-@externTarget("System.IO.File.Delete")
-func fileDelete(path: in String): Unit = ()
-
-func useFreshTestDb(tag: in String): String {
-  val path = "/tmp/cloud-agents-tests-" + tag + "-" + Std.Uuid.uuidToString(Std.Uuid.newUuid()) + ".db"
-  Env.SetEnvironmentVariable("CLOUD_AGENTS_DB_PATH", path)
-  match CloudAgents.Repository.initSchema() {
-    case Ok(_) -> ()
-    case Err(e) -> assertTrue(false, "initSchema failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
-  }
-  return path
-}
-
-func cleanupTestDb(path: in String): Unit {
-  try {
-    fileDelete(path)
-  } catch Bug as b {
-    // locked or already gone — fine for a temp file
-  }
-  CloudAgents.Auth.setCurrentUserId("default")
-}
 
 func mkSession(id: in String, repoUrl: in String, branch: in String): Unit {
   val s = makeAgentSession(
@@ -167,10 +206,10 @@ test "decidePrAction reuses an already-open PR instead of creating a duplicate" 
 
 // ── openPrHandler: validation paths reachable without a real GitHub call ─────
 test "openPrHandler rejects an empty session id" {
-  val dbPath = useFreshTestDb("open-pr-empty-id")
-  defer {
-    cleanupTestDb(dbPath)
+  if not live() {
+    return
   }
+  val me = freshUser("open-pr-empty-id")
   match CloudAgents.OpenPr.openPrHandler("") {
     case Ok(_) -> assertTrue(false, "an empty session id must be rejected")
     case Err(e) -> assertEqualInt(e.status, 400, "empty id -> 400")
@@ -178,64 +217,62 @@ test "openPrHandler rejects an empty session id" {
 }
 
 test "openPrHandler 404s for an unknown or foreign session id" {
-  val dbPath = useFreshTestDb("open-pr-unknown-session")
-  defer {
-    cleanupTestDb(dbPath)
+  if not live() {
+    return
   }
-  CloudAgents.Auth.setCurrentUserId("alice")
-  mkSession("sess-alice", "https://github.com/nic/repo", "feature")
+  val me = freshUser("open-pr-unknown-session")
+  val sidAlice = "sess-alice-" + me
+  mkSession(sidAlice, "https://github.com/nic/repo", "feature")
 
-  CloudAgents.Auth.setCurrentUserId("bob")
+  val bob = newUser("open-pr-bob")
+  CloudAgents.Auth.setCurrentUserId(bob)
   match CloudAgents.OpenPr.openPrHandler("does-not-exist") {
     case Ok(_) -> assertTrue(false, "an unknown session id must 404")
     case Err(e) -> assertEqualInt(e.status, 404, "unknown session -> 404")
   }
-  match CloudAgents.OpenPr.openPrHandler("sess-alice") {
+  match CloudAgents.OpenPr.openPrHandler(sidAlice) {
     case Ok(_) -> assertTrue(false, "bob must not be able to open a PR for alice's session")
     case Err(e) -> assertEqualInt(e.status, 404, "foreign session -> 404, not a leak")
   }
 }
 
 test "openPrHandler rejects a session whose repo is not a github.com repo" {
-  val dbPath = useFreshTestDb("open-pr-non-github")
-  defer {
-    cleanupTestDb(dbPath)
+  if not live() {
+    return
   }
-  CloudAgents.Auth.setCurrentUserId("default")
-  mkSession("sess-non-github", "https://gitlab.com/nic/repo", "feature")
+  val me = freshUser("open-pr-non-github")
+  mkSession("sess-non-github-" + me, "https://gitlab.com/nic/repo", "feature")
 
-  match CloudAgents.OpenPr.openPrHandler("sess-non-github") {
+  match CloudAgents.OpenPr.openPrHandler("sess-non-github-" + me) {
     case Ok(_) -> assertTrue(false, "a non-github.com repo must be rejected")
     case Err(e) -> assertEqualInt(e.status, 400, "non-github.com repo -> 400")
   }
 }
 
 test "openPrHandler rejects a branch name that isn't safe to embed in a GitHub API URL" {
-  val dbPath = useFreshTestDb("open-pr-unsafe-branch")
-  defer {
-    cleanupTestDb(dbPath)
+  if not live() {
+    return
   }
-  CloudAgents.Auth.setCurrentUserId("default")
+  val me = freshUser("open-pr-unsafe-branch")
   // '#' is valid in a real git branch name (isSafeBranchName at
   // session-creation time allows it) but would truncate the compare API's
   // URL path if embedded unvalidated (#923).
-  mkSession("sess-unsafe-branch", "https://github.com/nic/repo", "feature#123")
+  mkSession("sess-unsafe-branch-" + me, "https://github.com/nic/repo", "feature#123")
 
-  match CloudAgents.OpenPr.openPrHandler("sess-unsafe-branch") {
+  match CloudAgents.OpenPr.openPrHandler("sess-unsafe-branch-" + me) {
     case Ok(_) -> assertTrue(false, "an unsafe branch name must be rejected before reaching GitHub")
     case Err(e) -> assertEqualInt(e.status, 400, "unsafe branch name -> 400")
   }
 }
 
 test "openPrHandler answers 404 when the vault has no GITHUB_TOKEN, without reaching GitHub" {
-  val dbPath = useFreshTestDb("open-pr-no-token")
-  defer {
-    cleanupTestDb(dbPath)
+  if not live() {
+    return
   }
-  CloudAgents.Auth.setCurrentUserId("default")
-  mkSession("sess-no-token", "https://github.com/nic/repo", "feature")
+  val me = freshUser("open-pr-no-token")
+  mkSession("sess-no-token-" + me, "https://github.com/nic/repo", "feature")
 
-  match CloudAgents.OpenPr.openPrHandler("sess-no-token") {
+  match CloudAgents.OpenPr.openPrHandler("sess-no-token-" + me) {
     case Ok(_) -> assertTrue(false, "an empty vault must not reach GitHub")
     case Err(e) -> assertEqualInt(e.status, 404, "no vault token -> 404")
   }

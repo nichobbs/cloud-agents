@@ -1,38 +1,75 @@
+//! Session-group tests: group CRUD, cycle/depth guards, session assignment,
+//! viewed tracking and the session-summary projection on the Postgres store.
 @test_module
 package CloudAgents.GroupsTests
 
 import Std.Core
+import Std.Environment
 import Std.Testing
 import Std.Uuid
 import CloudAgents.Auth
-import CloudAgents.Db
+import CloudAgents.Pg
+import CloudAgents.Pg.Migrate
+import CloudAgents.PgStore.Tenancy
 import CloudAgents.Groups
 import CloudAgents.Repository
 import CloudAgents.SessionStore
 import CloudAgents.Sqlite
-import extern System.Environment as Env
 
-// ── Live-DB plumbing (same pattern as tests/highlights_tests.l) ──────────────
-@externTarget("System.IO.File.Delete")
-func fileDelete(path: in String): Unit = ()
-
-func useFreshTestDb(tag: in String): String {
-  val path = "/tmp/cloud-agents-tests-" + tag + "-" + Std.Uuid.uuidToString(Std.Uuid.newUuid()) + ".db"
-  Env.SetEnvironmentVariable("CLOUD_AGENTS_DB_PATH", path)
-  match CloudAgents.Repository.initSchema() {
-    case Ok(_) -> ()
-    case Err(e) -> assertTrue(false, "initSchema failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+// ── Live Postgres ─────────────────────────────────────────────────────────────
+//
+// The store is Postgres (docs/phase11-postgres-tenancy.md). These tests run iff
+// LYRIC_CONFIG_DB_CONNECTION_URL (cloudagents_app) and
+// CLOUD_AGENTS_MIGRATE_DATABASE_URL (cloudagents_owner) are set, and fail rather
+// than skip when CLOUD_AGENTS_REQUIRE_LIVE_PG=1 (CI). Each test acts as a fresh
+// user with its own personal tenant, so tests, suites and repeated runs against
+// the same database never see each other's rows.
+func live(): Bool {
+  val ok = CloudAgents.Pg.serviceConfigured() and
+    Std.Environment.getVarOrDefault(CloudAgents.Pg.migrateDsnVar(), "").length.toInt() > 0
+  if ok {
+    return true
   }
-  return path
+  assertTrue(
+    Std.Environment.getVarOrDefault("CLOUD_AGENTS_REQUIRE_LIVE_PG", "") != "1",
+    "CLOUD_AGENTS_REQUIRE_LIVE_PG=1 but LYRIC_CONFIG_DB_CONNECTION_URL or CLOUD_AGENTS_MIGRATE_DATABASE_URL is not set"
+  )
+  println("SKIP: session-group tests need LYRIC_CONFIG_DB_CONNECTION_URL and CLOUD_AGENTS_MIGRATE_DATABASE_URL")
+  return false
 }
 
-func cleanupTestDb(path: in String): Unit {
-  try {
-    fileDelete(path)
-  } catch Bug as b {
-    // locked or already gone — fine for a temp file
+func migrate(): Unit {
+  val conn = match CloudAgents.Pg.connectDsn(Std.Environment.getVarOrDefault(CloudAgents.Pg.migrateDsnVar(), "")) {
+    case Ok(c) -> c
+    case Err(e) -> panic(CloudAgents.Pg.pgErrorMessage(e))
   }
-  CloudAgents.Auth.setCurrentUserId("default")
+  defer {
+    conn.close()
+  }
+  match CloudAgents.Pg.Migrate.migrate(conn) {
+    case Ok(_) -> ()
+    case Err(e) -> panic("migrate failed: " + CloudAgents.Pg.pgErrorMessage(e))
+  }
+}
+
+/// A new user with a provisioned personal tenant. Does not change the request
+/// identity.
+func newUser(tag: in String): String {
+  val uid = "t-" + tag + "-" + Std.Uuid.uuidToString(Std.Uuid.newUuid())
+  match CloudAgents.PgStore.Tenancy.ensurePersonalTenant(uid) {
+    case Ok(_) -> ()
+    case Err(e) -> panic("provisioning " + uid + " failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+  }
+  return uid
+}
+
+/// Migrate, then make a new user the request identity (what handlers read via
+/// CloudAgents.Auth.requestScope()).
+func freshUser(tag: in String): String {
+  migrate()
+  val uid = newUser(tag)
+  CloudAgents.Auth.setCurrentUserId(uid)
+  return uid
 }
 
 func mkSession(id: in String): Unit {
@@ -74,26 +111,24 @@ func mustGetGroup(id: in String, userId: in String): CloudAgents.Repository.Sess
   }
 }
 
-// ── Migration 0029 ───────────────────────────────────────────────────────────
-test "migration 0029 applies: fresh sessions carry group/viewed defaults" {
-  val dbPath = useFreshTestDb("groups-migration")
-  defer {
-    cleanupTestDb(dbPath)
+// ── Defaults ───────────────────────────────────────────────────────────
+test "fresh sessions carry group/viewed defaults" {
+  if not live() {
+    return
   }
-  CloudAgents.Auth.setCurrentUserId("default")
-  mkSession("sess-g-0")
-  val s = mustGetSession("sess-g-0")
+  val me = freshUser("groups-migration")
+  mkSession("sess-g-0-" + me)
+  val s = mustGetSession("sess-g-0-" + me)
   assertEqual(s.groupId, "", "fresh session is ungrouped")
   assertEqual(s.lastViewedAt, "0", "fresh session was never viewed")
 }
 
 // ── Group CRUD ───────────────────────────────────────────────────────────────
 test "group CRUD round-trips and lists alphabetically" {
-  val dbPath = useFreshTestDb("groups-crud")
-  defer {
-    cleanupTestDb(dbPath)
+  if not live() {
+    return
   }
-  CloudAgents.Auth.setCurrentUserId("default")
+  val me = freshUser("groups-crud")
 
   val beta = mustCreateGroup("Beta", "")
   val alpha = mustCreateGroup("Alpha", "")
@@ -131,11 +166,10 @@ test "group CRUD round-trips and lists alphabetically" {
 }
 
 test "group validation: empty name 400, unknown parent 404, unknown id 404" {
-  val dbPath = useFreshTestDb("groups-validation")
-  defer {
-    cleanupTestDb(dbPath)
+  if not live() {
+    return
   }
-  CloudAgents.Auth.setCurrentUserId("default")
+  val me = freshUser("groups-validation")
 
   match createGroupHandler(SaveGroupRequest(name = "", parentId = "")) {
     case Ok(_) -> assertTrue(false, "empty name must be rejected")
@@ -161,11 +195,10 @@ test "group validation: empty name 400, unknown parent 404, unknown id 404" {
 
 // ── Cycle / depth rejection ──────────────────────────────────────────────────
 test "update rejects self and descendant parents (cycle guard)" {
-  val dbPath = useFreshTestDb("groups-cycles")
-  defer {
-    cleanupTestDb(dbPath)
+  if not live() {
+    return
   }
-  CloudAgents.Auth.setCurrentUserId("default")
+  val me = freshUser("groups-cycles")
 
   val a = mustCreateGroup("a", "")
   val b = mustCreateGroup("b", a.id)
@@ -187,11 +220,10 @@ test "update rejects self and descendant parents (cycle guard)" {
 }
 
 test "create rejects a parent chain deeper than 10 levels" {
-  val dbPath = useFreshTestDb("groups-depth")
-  defer {
-    cleanupTestDb(dbPath)
+  if not live() {
+    return
   }
-  CloudAgents.Auth.setCurrentUserId("default")
+  val me = freshUser("groups-depth")
 
   // Build an 11-deep chain g1 <- g2 <- ... <- g11: every creation walks a
   // parent chain of at most 10 nodes, so all succeed.
@@ -211,22 +243,21 @@ test "create rejects a parent chain deeper than 10 levels" {
 
 // ── Delete reparents children and reassigns sessions ─────────────────────────
 test "deleting a group reparents child groups and reassigns sessions to its parent" {
-  val dbPath = useFreshTestDb("groups-reparent")
-  defer {
-    cleanupTestDb(dbPath)
+  if not live() {
+    return
   }
-  CloudAgents.Auth.setCurrentUserId("default")
+  val me = freshUser("groups-reparent")
 
   val a = mustCreateGroup("a", "")
   val b = mustCreateGroup("b", a.id)
   val c = mustCreateGroup("c", b.id)
-  mkSession("sess-in-b")
-  mkSession("sess-in-a")
-  match setSessionGroupHandler("sess-in-b", SetSessionGroupRequest(groupId = b.id)) {
+  mkSession("sess-in-b-" + me)
+  mkSession("sess-in-a-" + me)
+  match setSessionGroupHandler("sess-in-b-" + me, SetSessionGroupRequest(groupId = b.id)) {
     case Ok(_) -> ()
     case Err(e) -> assertTrue(false, "assign to b failed: " + toString(e.status))
   }
-  match setSessionGroupHandler("sess-in-a", SetSessionGroupRequest(groupId = a.id)) {
+  match setSessionGroupHandler("sess-in-a-" + me, SetSessionGroupRequest(groupId = a.id)) {
     case Ok(_) -> ()
     case Err(e) -> assertTrue(false, "assign to a failed: " + toString(e.status))
   }
@@ -236,29 +267,29 @@ test "deleting a group reparents child groups and reassigns sessions to its pare
     case Ok(_) -> ()
     case Err(e) -> assertTrue(false, "delete b failed: " + toString(e.status))
   }
-  assertEqual(mustGetGroup(c.id, "default").parentId, a.id, "child group reparented to grandparent")
-  assertEqual(mustGetSession("sess-in-b").groupId, a.id, "session reassigned to grandparent")
+  assertEqual(mustGetGroup(c.id, me).parentId, a.id, "child group reparented to grandparent")
+  assertEqual(mustGetSession("sess-in-b-" + me).groupId, a.id, "session reassigned to grandparent")
 
   // Delete the root: c and both sessions become ungrouped.
   match deleteGroupHandler(a.id) {
     case Ok(_) -> ()
     case Err(e) -> assertTrue(false, "delete a failed: " + toString(e.status))
   }
-  assertEqual(mustGetGroup(c.id, "default").parentId, "", "child of a deleted root becomes a root")
-  assertEqual(mustGetSession("sess-in-b").groupId, "", "session of a deleted root becomes ungrouped")
-  assertEqual(mustGetSession("sess-in-a").groupId, "", "session directly in the deleted root becomes ungrouped")
+  assertEqual(mustGetGroup(c.id, me).parentId, "", "child of a deleted root becomes a root")
+  assertEqual(mustGetSession("sess-in-b-" + me).groupId, "", "session of a deleted root becomes ungrouped")
+  assertEqual(mustGetSession("sess-in-a-" + me).groupId, "", "session directly in the deleted root becomes ungrouped")
 }
 
 // ── Owner scoping ────────────────────────────────────────────────────────────
 test "groups are owner-scoped: another user cannot see or mutate them" {
-  val dbPath = useFreshTestDb("groups-ownership")
-  defer {
-    cleanupTestDb(dbPath)
+  if not live() {
+    return
   }
-  CloudAgents.Auth.setCurrentUserId("default")
+  val me = freshUser("groups-ownership")
   val g = mustCreateGroup("mine", "")
 
-  CloudAgents.Auth.setCurrentUserId("intruder")
+  val intruder = newUser("groups-intruder")
+  CloudAgents.Auth.setCurrentUserId(intruder)
   match listGroupsHandler() {
     case Ok(l) -> assertEqualInt(l.groups.length.toInt(), 0, "another user's listing is empty")
     case Err(e) -> assertTrue(false, "intruder list failed: " + toString(e.status))
@@ -277,89 +308,88 @@ test "groups are owner-scoped: another user cannot see or mutate them" {
     case Err(e) -> assertEqualInt(e.status, 404, "foreign parent -> 404")
   }
 
-  CloudAgents.Auth.setCurrentUserId("default")
-  assertEqual(mustGetGroup(g.id, "default").name, "mine", "owner's group is untouched")
+  CloudAgents.Auth.setCurrentUserId(me)
+  assertEqual(mustGetGroup(g.id, me).name, "mine", "owner's group is untouched")
 }
 
 // ── Session-group assignment ─────────────────────────────────────────────────
 test "setSessionGroupHandler assigns, clears, and 404s unknown/foreign refs" {
-  val dbPath = useFreshTestDb("groups-assign")
-  defer {
-    cleanupTestDb(dbPath)
+  if not live() {
+    return
   }
-  CloudAgents.Auth.setCurrentUserId("default")
+  val me = freshUser("groups-assign")
   val g = mustCreateGroup("folder", "")
-  mkSession("sess-assign")
+  mkSession("sess-assign-" + me)
 
   match setSessionGroupHandler("no-such-session", SetSessionGroupRequest(groupId = g.id)) {
     case Ok(_) -> assertTrue(false, "unknown session must 404")
     case Err(e) -> assertEqualInt(e.status, 404, "unknown session -> 404")
   }
-  match setSessionGroupHandler("sess-assign", SetSessionGroupRequest(groupId = "no-such-group")) {
+  match setSessionGroupHandler("sess-assign-" + me, SetSessionGroupRequest(groupId = "no-such-group")) {
     case Ok(_) -> assertTrue(false, "unknown group must 404")
     case Err(e) -> assertEqualInt(e.status, 404, "unknown group -> 404")
   }
-  match setSessionGroupHandler("sess-assign", SetSessionGroupRequest(groupId = g.id)) {
+  match setSessionGroupHandler("sess-assign-" + me, SetSessionGroupRequest(groupId = g.id)) {
     case Ok(_) -> ()
     case Err(e) -> assertTrue(false, "assign failed: " + toString(e.status))
   }
-  assertEqual(mustGetSession("sess-assign").groupId, g.id, "session filed under the group")
+  assertEqual(mustGetSession("sess-assign-" + me).groupId, g.id, "session filed under the group")
 
   // Another user cannot file a foreign session.
-  CloudAgents.Auth.setCurrentUserId("intruder")
-  match setSessionGroupHandler("sess-assign", SetSessionGroupRequest(groupId = "")) {
+  val intruder = newUser("groups-intruder")
+  CloudAgents.Auth.setCurrentUserId(intruder)
+  match setSessionGroupHandler("sess-assign-" + me, SetSessionGroupRequest(groupId = "")) {
     case Ok(_) -> assertTrue(false, "another user must not touch this session's group")
     case Err(e) -> assertEqualInt(e.status, 404, "foreign session -> 404")
   }
 
-  CloudAgents.Auth.setCurrentUserId("default")
-  match setSessionGroupHandler("sess-assign", SetSessionGroupRequest(groupId = "")) {
+  CloudAgents.Auth.setCurrentUserId(me)
+  match setSessionGroupHandler("sess-assign-" + me, SetSessionGroupRequest(groupId = "")) {
     case Ok(_) -> ()
     case Err(e) -> assertTrue(false, "clear failed: " + toString(e.status))
   }
-  assertEqual(mustGetSession("sess-assign").groupId, "", "empty groupId clears the association")
+  assertEqual(mustGetSession("sess-assign-" + me).groupId, "", "empty groupId clears the association")
 }
 
 // ── Viewed tracking ──────────────────────────────────────────────────────────
 test "markSessionViewedHandler stamps last_viewed_at and is owner-scoped" {
-  val dbPath = useFreshTestDb("groups-viewed")
-  defer {
-    cleanupTestDb(dbPath)
+  if not live() {
+    return
   }
-  CloudAgents.Auth.setCurrentUserId("default")
-  mkSession("sess-viewed")
-  assertEqual(mustGetSession("sess-viewed").lastViewedAt, "0", "never viewed initially")
+  val me = freshUser("groups-viewed")
+  mkSession("sess-viewed-" + me)
+  assertEqual(mustGetSession("sess-viewed-" + me).lastViewedAt, "0", "never viewed initially")
 
   match markSessionViewedHandler("no-such-session") {
     case Ok(_) -> assertTrue(false, "unknown session must 404")
     case Err(e) -> assertEqualInt(e.status, 404, "unknown session -> 404")
   }
 
-  CloudAgents.Auth.setCurrentUserId("intruder")
-  match markSessionViewedHandler("sess-viewed") {
+  val intruder = newUser("groups-intruder")
+  CloudAgents.Auth.setCurrentUserId(intruder)
+  match markSessionViewedHandler("sess-viewed-" + me) {
     case Ok(_) -> assertTrue(false, "another user must not stamp this session")
     case Err(e) -> assertEqualInt(e.status, 404, "foreign session -> 404")
   }
-  CloudAgents.Auth.setCurrentUserId("default")
-  assertEqual(mustGetSession("sess-viewed").lastViewedAt, "0", "foreign attempt left the stamp untouched")
+  CloudAgents.Auth.setCurrentUserId(me)
+  assertEqual(mustGetSession("sess-viewed-" + me).lastViewedAt, "0", "foreign attempt left the stamp untouched")
 
-  match markSessionViewedHandler("sess-viewed") {
+  match markSessionViewedHandler("sess-viewed-" + me) {
     case Ok(_) -> ()
     case Err(e) -> assertTrue(false, "viewed stamp failed: " + toString(e.status))
   }
-  val stamped = mustGetSession("sess-viewed").lastViewedAt
+  val stamped = mustGetSession("sess-viewed-" + me).lastViewedAt
   assertTrue(stamped != "0", "last_viewed_at updated")
   assertTrue(stamped.length >= 13, "epoch-millis magnitude: " + stamped)
 }
 
 // ── Extended session-list payload ────────────────────────────────────────────
 test "sessionSummariesJson carries groupId/lastViewedAt/pendingCount/attention" {
-  val dbPath = useFreshTestDb("groups-summaries")
-  defer {
-    cleanupTestDb(dbPath)
+  if not live() {
+    return
   }
-  CloudAgents.Auth.setCurrentUserId("default")
-  mkSession("sess-summary")
+  val me = freshUser("groups-summaries")
+  mkSession("sess-summary-" + me)
 
   // Fresh session: last_message_at = created_at > 0 and never viewed, so the
   // attention model reports 'pending' (activity the user hasn't seen).
@@ -374,7 +404,7 @@ test "sessionSummariesJson carries groupId/lastViewedAt/pendingCount/attention" 
   }
 
   // After viewing, everything is seen: attention flips to 'viewed'.
-  match markSessionViewedHandler("sess-summary") {
+  match markSessionViewedHandler("sess-summary-" + me) {
     case Ok(_) -> ()
     case Err(e) -> assertTrue(false, "viewed stamp failed: " + toString(e.status))
   }
@@ -384,20 +414,9 @@ test "sessionSummariesJson carries groupId/lastViewedAt/pendingCount/attention" 
   }
 
   // A pending permission request bumps pendingCount and wins the priority.
-  match CloudAgents.Sqlite.execute(
-    CloudAgents.Db.insertPermissionRequestSql(
-      "pr-1",
-      "sess-summary",
-      "Bash",
-      "{}",
-      "pending",
-      "",
-      CloudAgents.Repository.nowMillis(),
-      ""
-    )
-  ) {
+  match CloudAgents.Repository.createPermissionRequest("sess-summary-" + me, CloudAgents.Auth.requestScope(), "Bash", "{}", false) {
     case Ok(_) -> ()
-    case Err(e) -> assertTrue(false, "insert permission request failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+    case Err(e) -> assertTrue(false, "create permission request failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
   }
   match CloudAgents.SessionStore.sessionSummariesJson(CloudAgents.Auth.requestScope()) {
     case Ok(json) -> {
@@ -409,7 +428,7 @@ test "sessionSummariesJson carries groupId/lastViewedAt/pendingCount/attention" 
 
   // Grouping shows up in the projection too.
   val g = mustCreateGroup("folder", "")
-  match setSessionGroupHandler("sess-summary", SetSessionGroupRequest(groupId = g.id)) {
+  match setSessionGroupHandler("sess-summary-" + me, SetSessionGroupRequest(groupId = g.id)) {
     case Ok(_) -> ()
     case Err(e) -> assertTrue(false, "assign failed: " + toString(e.status))
   }
