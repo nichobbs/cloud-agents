@@ -4,7 +4,7 @@
 # toolchain and runs the resulting .NET assembly. It needs the Docker CLI to
 # manage runner containers via the mounted host socket.
 #
-# Lyric.Web, Lyric.Docker, Std.Logging, and Microsoft.Data.Sqlite are all
+# Lyric.Web, Lyric.Docker, Std.Logging, Lyric.Db and Npgsql are all
 # declared as NuGet packages in lyric.toml and fetched by `lyric restore` —
 # no sibling lyric-lang checkout or vendored package required.
 
@@ -68,12 +68,9 @@ WORKDIR /src
 COPY . .
 # build-full.sh handles the NuGet restore and a compiler workaround (see its
 # own comments and docs/BUILD.md); verify.sh is the hand-rolled, `lyric
-# test`-free harness this image builds against. `lyric test` itself has
-# fully passed (every suite in lyric.toml's [project.tests]) since compiler
-# v0.4.19 — see docs/BUILD.md "Running tests" — but its live-DB suites need
-# LD_LIBRARY_PATH pointed at the native SQLite runtime that build-full.sh
-# copies to bin/runtimes/, which this build step doesn't set up; verify.sh
-# needs no such setup, so it's what's wired in here.
+# test`-free harness this image builds against. `lyric test` itself needs a
+# migrated Postgres (LYRIC_CONFIG_DB_CONNECTION_URL) for its live suites,
+# which an image build doesn't have, so verify.sh is what's wired in here.
 RUN ./scripts/build-full.sh && ./scripts/verify.sh
 
 FROM mcr.microsoft.com/dotnet/aspnet:10.0

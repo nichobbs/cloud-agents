@@ -23,7 +23,7 @@
     <NoWarn>$(NoWarn);NU1510</NoWarn>
     <!-- Directory holding CloudAgents.dll and every dependency DLL `lyric
          build` already copies alongside it (Lyric.Web/Docker, the full
-         Lyric.Stdlib.* closure, Microsoft.Data.Sqlite + SQLitePCLRaw).
+         Lyric.Stdlib.* closure, Lyric.Db + Npgsql).
          Defaults to the repo's own bin/, overridable via -p:BinDir=/abs/path
          so a caller can AOT-link a specific build output instead. -->
     <BinDir Condition="'$(BinDir)' == ''">$(MSBuildThisFileDirectory)../../bin</BinDir>

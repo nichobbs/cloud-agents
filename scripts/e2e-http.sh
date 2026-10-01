@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# End-to-end HTTP smoke test: start the built server against a throwaway DB on a
+# End-to-end HTTP smoke test: start the built server against Postgres on a
 # local port, wait for it to answer, and curl a handful of routes — including a
 # MULTI-PARAM route (/api/sessions/{id}/output/{offset}) and the proxy routes,
 # which @test_module suites can't exercise because Lyric's Web.Request can't be
@@ -7,8 +7,21 @@
 # proof that multi-param route dispatch works, closing the verification gap #442
 # tracks. None of the asserted endpoints touch Docker, so no daemon is needed.
 #
-# Assumes `scripts/build-full.sh` has already produced bin/CloudAgents.dll and
-# bin/runtimes (CI runs it earlier in the same job); this script only runs it.
+# Assumes `scripts/build-full.sh` has already produced bin/CloudAgents.dll (CI
+# runs it earlier in the same job); this script only runs it.
+#
+# Postgres (docs/phase11-postgres-tenancy.md): takes the DSNs from the
+# environment and needs `psql` on PATH to seed and inspect rows.
+#   LYRIC_CONFIG_DB_CONNECTION_URL     (required) cloudagents_app service DSN, a
+#                                      postgres:// URI. The server exits at
+#                                      startup without it.
+#   CLOUD_AGENTS_MIGRATE_DATABASE_URL  (optional) cloudagents_owner DSN. When
+#                                      set, `dotnet bin/CloudAgents.dll --migrate`
+#                                      runs first; otherwise the database must
+#                                      already be migrated.
+# The rows this script seeds use fixed ids and are removed again on exit (and
+# before seeding, in case an earlier run was killed), so it is safe to point at
+# a scratch database, never at one holding real data.
 #
 # Exit 0 = all assertions passed. Non-zero = a failure (server log is dumped).
 set -euo pipefail
@@ -22,28 +35,59 @@ command -v curl   >/dev/null || { echo "e2e-http: 'curl' not on PATH"   >&2; exi
 command -v dotnet >/dev/null || { echo "e2e-http: 'dotnet' not on PATH" >&2; exit 1; }
 [ -f "$OUT" ] || { echo "e2e-http: $OUT not found — run scripts/build-full.sh first" >&2; exit 1; }
 
-DB="$(mktemp -t cloud-agents-e2e-XXXXXX.db)"
-LOG="$(mktemp -t cloud-agents-e2e-log-XXXXXX)"
-export CLOUD_AGENTS_DB_PATH="$DB"
-
-# The live-DB code opens real SQLite connections whose native libe_sqlite3.so is
-# not resolved from the NuGet cache on its own — expose the runtimes build-full
-# copied to bin/, exactly as the "Run lyric test" CI step does.
-if [ -d "$REPO_ROOT/bin/runtimes/linux-x64/native" ]; then
-  export LD_LIBRARY_PATH="$REPO_ROOT/bin/runtimes/linux-x64/native:${LD_LIBRARY_PATH:-}"
+if [ -z "${LYRIC_CONFIG_DB_CONNECTION_URL:-}" ]; then
+  echo "e2e-http: LYRIC_CONFIG_DB_CONNECTION_URL is not set (the cloudagents_app Postgres DSN); the server cannot start without it" >&2
+  exit 1
 fi
+command -v psql >/dev/null || { echo "e2e-http: 'psql' not on PATH (needed to seed and inspect Postgres rows)" >&2; exit 1; }
+PGURL="$LYRIC_CONFIG_DB_CONNECTION_URL"
 
+# Run SQL on stdin as cloudagents_app with a tenant/user scope (session-level
+# GUCs, which the RLS policies read through current_setting). Usage:
+#   pg_scoped <tenant-id> <user-id>  < sql
+pg_scoped() {
+  PGOPTIONS="-c app.current_tenant=$1 -c app.current_user=$2" \
+    psql "$PGURL" -X -q -At -v ON_ERROR_STOP=1
+}
+
+# Fixed ids for every row this script seeds; the personal tenant of a user is
+# `personal:<user id>` (CloudAgents.Pg.personalTenantId).
+SEEDED_SESSION_ID="e2e-seeded-session"
+SEEDED_USER="e2e-seeded-user"
+LEDGER_SESSION_ID="e2e-ledger-session"
+LEDGER_USER="default"
+
+seed_cleanup() {
+  psql "$PGURL" -X -q -At -c "DELETE FROM session_routes WHERE session_id IN ('${SEEDED_SESSION_ID}', '${LEDGER_SESSION_ID}')" >/dev/null 2>&1 || true
+  local tbl
+  for pair in "personal:${SEEDED_USER}|${SEEDED_USER}|${SEEDED_SESSION_ID}" "personal:${LEDGER_USER}|${LEDGER_USER}|${LEDGER_SESSION_ID}"; do
+    IFS='|' read -r tenant user sid <<<"$pair"
+    for tbl in permission_requests notifications ledger_entries ledger_items ledger_transitions ledger_sessions; do
+      echo "DELETE FROM ${tbl} WHERE session_id = '${sid}';" | pg_scoped "$tenant" "$user" >/dev/null 2>&1 || true
+    done
+    echo "DELETE FROM sessions WHERE id = '${sid}';" | pg_scoped "$tenant" "$user" >/dev/null 2>&1 || true
+  done
+}
+
+LOG="$(mktemp -t cloud-agents-e2e-log-XXXXXX)"
 SERVER_PID=""
 cleanup() {
   if [ -n "$SERVER_PID" ]; then
     kill "$SERVER_PID" 2>/dev/null || true
     wait "$SERVER_PID" 2>/dev/null || true
   fi
-  rm -f "$DB" "$DB-wal" "$DB-shm" "$LOG"
+  seed_cleanup
+  rm -f "$LOG"
 }
 trap cleanup EXIT
 
-echo "==> starting server on ${BASE} (db=${DB})"
+if [ -n "${CLOUD_AGENTS_MIGRATE_DATABASE_URL:-}" ]; then
+  echo "==> applying migrations (--migrate)"
+  dotnet "$OUT" --migrate
+fi
+seed_cleanup
+
+echo "==> starting server on ${BASE}"
 # Run with a STATIC API token configured (auth-enforced mode) so this harness
 # can prove AuthMiddleware protects every non-exempt route — including the
 # STREAMING send route, which moved onto a separate StreamingRoutes table and
@@ -171,12 +215,12 @@ case "$shim_stdout" in
 esac
 
 # ── seeded-session legs (#541) ────────────────────────────────────────────────
-# Seed a REAL session + callback token directly into the throwaway sqlite DB
-# (the server owns the schema — migrations already ran by the time the health
-# check above went green, so the table shape here is exactly what
-# src/db/db_client.l's sessionsSchemaSql + migration 0010_mcp_callbacks
-# produced, plus 0036_callback_token_hash). Only the token's lowercase hex
-# SHA-256 is stored, in callback_token_hash (CloudAgents.Auth
+# Seed a REAL session + callback token directly into Postgres (the schema is
+# the migrated one, src/pg/schema.l). A session is a tenant-owned `sessions`
+# row (RLS on app.current_tenant, so it is inserted under the owner's personal
+# tenant scope) plus a global `session_routes` row, which is what the callback
+# path reads before any tenant is known and where the token hash lives. Only
+# the token's lowercase hex SHA-256 is stored (CloudAgents.Auth
 # .hashCallbackToken); the shim presents the raw token and the server hashes
 # it before a constant-time compare. So the seed computes the hash with
 # sha256sum and INSERTs that, while the shim below is handed the raw token.
@@ -195,24 +239,32 @@ esac
 #       cadence (main.l's defaultPollIntervalMs) is a hardcoded 25s, and the
 #       pre-#540 iteration-count timeout logic would sleep a full interval in
 #       REAL wall-clock time before ever re-checking a 1000ms budget.
-command -v sqlite3 >/dev/null || { echo "e2e-http: 'sqlite3' not on PATH (needed to seed the session for #541)" >&2; exit 1; }
+# seed_session <session-id> <user-id> <repo-url> <status> <token-hash>
+seed_session() {
+  local sid="$1" user="$2" repo="$3" status="$4" hash="$5" tenant="personal:$2"
+  psql "$PGURL" -X -q -At -v ON_ERROR_STOP=1 <<SQL
+INSERT INTO tenants (id, name, kind) VALUES ('${tenant}', '${user}', 'personal') ON CONFLICT (id) DO NOTHING;
+INSERT INTO session_routes (session_id, tenant_id, user_id, callback_token_hash)
+VALUES ('${sid}', '${tenant}', '${user}', '${hash}');
+SQL
+  pg_scoped "$tenant" "$user" <<SQL
+INSERT INTO sessions (
+  id, user_id, repo_url, branch, container_id, harness, model,
+  native_session_id, status, created_at, last_message_at
+) VALUES (
+  '${sid}', '${user}', '${repo}', 'main', '',
+  'claude', 'claude-opus-4-8', '', '${status}', now(), now()
+);
+SQL
+}
 
-SEEDED_SESSION_ID="e2e-seeded-session"
 SEEDED_TOKEN="e2e-seeded-callback-token"
 command -v sha256sum >/dev/null || { echo "e2e-http: 'sha256sum' not on PATH (needed to hash the seeded callback token)" >&2; exit 1; }
 SEEDED_TOKEN_HASH="$(printf '%s' "$SEEDED_TOKEN" | sha256sum | cut -d' ' -f1)"
-sqlite3 "$DB" <<SQL
-INSERT INTO sessions (
-  id, user_id, repo_url, branch, container_id, harness, model,
-  native_session_id, status, created_at, last_message_at, callback_token_hash
-) VALUES (
-  '${SEEDED_SESSION_ID}', 'e2e-seeded-user', 'https://example.com/repo.git', 'main', '',
-  'claude', 'claude-opus-4-8', '', 'running', '0', '0', '${SEEDED_TOKEN_HASH}'
-);
-SQL
+seed_session "$SEEDED_SESSION_ID" "$SEEDED_USER" 'https://example.com/repo.git' RUNNING "$SEEDED_TOKEN_HASH"
 
 permission_request_count() {
-  sqlite3 "$DB" "SELECT COUNT(*) FROM permission_requests WHERE session_id = '${SEEDED_SESSION_ID}';"
+  echo "SELECT COUNT(*) FROM permission_requests WHERE session_id = '${SEEDED_SESSION_ID}';" | pg_scoped "personal:${SEEDED_USER}" "$SEEDED_USER"
 }
 
 # (a) Wrong bearer.
@@ -271,18 +323,9 @@ fi
 # owner side over HTTP (snapshot, owner scoping, a rejection), then the agent
 # collecting that rejection exactly once. The session is owned by "default",
 # the identity the operator bearer ($TOKEN) resolves to.
-LEDGER_SESSION_ID="e2e-ledger-session"
 LEDGER_TOKEN="e2e-ledger-callback-token"
 LEDGER_TOKEN_HASH="$(printf '%s' "$LEDGER_TOKEN" | sha256sum | cut -d' ' -f1)"
-sqlite3 "$DB" <<SQL
-INSERT INTO sessions (
-  id, user_id, repo_url, branch, container_id, harness, model,
-  native_session_id, status, created_at, last_message_at, callback_token_hash
-) VALUES (
-  '${LEDGER_SESSION_ID}', 'default', 'https://github.com/acme/shop', 'main', '',
-  'claude', 'claude-opus-4-8', '', 'IDLE', '0', '0', '${LEDGER_TOKEN_HASH}'
-);
-SQL
+seed_session "$LEDGER_SESSION_ID" "$LEDGER_USER" 'https://github.com/acme/shop' IDLE "$LEDGER_TOKEN_HASH"
 
 ledger_shim() {
   timeout 60 env \
@@ -315,7 +358,7 @@ case "$ledger_stdout" in
   *) echo "FAIL ledger: illegal move — got: ${ledger_stdout}" >&2; fails=$((fails + 1)) ;;
 esac
 
-BLOCKER_NOTES="$(sqlite3 "$DB" "SELECT COUNT(*) FROM notifications WHERE session_id = '${LEDGER_SESSION_ID}' AND level = 'blocked' AND summary LIKE '%Needs #1%';")"
+BLOCKER_NOTES="$(echo "SELECT COUNT(*) FROM notifications WHERE session_id = '${LEDGER_SESSION_ID}' AND level = 'blocked' AND summary LIKE '%Needs #1%';" | pg_scoped "personal:${LEDGER_USER}" "$LEDGER_USER")"
 if [ "$BLOCKER_NOTES" = "1" ]; then
   echo "ok   ledger: a blocker notifies the owner"
 else
@@ -346,7 +389,7 @@ if [ "$OBS_CODE" = "404" ]; then
 else
   echo "FAIL observer callback on a non-observer: expected 404, got ${OBS_CODE}" >&2; fails=$((fails + 1))
 fi
-SHORTCUT_ID="$(sqlite3 "$DB" "SELECT id FROM ledger_entries WHERE session_id = '${LEDGER_SESSION_ID}' AND kind = 'shortcut';")"
+SHORTCUT_ID="$(echo "SELECT id FROM ledger_entries WHERE session_id = '${LEDGER_SESSION_ID}' AND kind = 'shortcut';" | pg_scoped "personal:${LEDGER_USER}" "$LEDGER_USER")"
 assert "ledger reject needs a body"    POST "/api/sessions/${LEDGER_SESSION_ID}/ledger/entries/${SHORTCUT_ID}/review" yes 400 "body is required" '{"kind":"reject","body":""}'
 assert "ledger reject"                 POST "/api/sessions/${LEDGER_SESSION_ID}/ledger/entries/${SHORTCUT_ID}/review" yes 200 '"kind":"reject"' '{"kind":"reject","body":"Do not skip it"}'
 

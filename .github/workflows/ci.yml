@@ -401,7 +401,7 @@ jobs:
           done
 
       # Build the entire server. Lyric.Web/Lyric.Docker/Std.Logging/
-      # Microsoft.Data.Sqlite all restore from NuGet — see docs/BUILD.md.
+      # Lyric.Db/Npgsql all restore from NuGet — see docs/BUILD.md.
       # No sibling lyric-lang checkout.
       - name: Build full server
         run: ./scripts/build-full.sh
@@ -426,21 +426,12 @@ jobs:
           psql -h 127.0.0.1 -U postgres -v ON_ERROR_STOP=1 \
             -v owner_password="'owner-ci'" -v app_password="'app-ci'" -v migrator_password="'migrator-ci'" \
             -f deploy/postgres/provision.sql
-          if [ -d "$PWD/bin/runtimes/linux-x64/native" ]; then
-            export LD_LIBRARY_PATH="$PWD/bin/runtimes/linux-x64/native:${LD_LIBRARY_PATH:-}"
-          fi
           dotnet bin/CloudAgents.dll --migrate
 
       # The real @test_module suites. All seven known upstream compiler bugs
       # (see docs/BUILD.md "Compiler notes") are now fixed as of v0.4.19, so
       # this is expected to pass — the first time in this project's history
       # that `lyric test` has been a viable CI gate.
-      #
-      # LD_LIBRARY_PATH: the live-database suites (prompt/session tests) open
-      # real SQLite connections, and Microsoft.Data.Sqlite's type initializer
-      # needs the native libe_sqlite3.so, which the test runner does not
-      # resolve from the NuGet cache on its own. build-full.sh (above) already
-      # copied the native runtimes to bin/runtimes — expose them to dlopen.
       #
       # LYRIC_CONFIG_DB_CONNECTION_URL (cloudagents_app) and
       # CLOUD_AGENTS_MIGRATE_DATABASE_URL (cloudagents_owner) enable the live
@@ -452,11 +443,7 @@ jobs:
           CLOUD_AGENTS_REQUIRE_LIVE_PG: '1'
           LYRIC_CONFIG_DB_CONNECTION_URL: postgres://cloudagents_app:app-ci@127.0.0.1:5432/cloudagents
           CLOUD_AGENTS_MIGRATE_DATABASE_URL: postgres://cloudagents_owner:owner-ci@127.0.0.1:5432/cloudagents
-        run: |
-          if [ -d "$PWD/bin/runtimes/linux-x64/native" ]; then
-            export LD_LIBRARY_PATH="$PWD/bin/runtimes/linux-x64/native:${LD_LIBRARY_PATH:-}"
-          fi
-          lyric test
+        run: lyric test
 
       # cloud-agents-shim (docs/phase6-mcp-callbacks.md §5, stage 3): the
       # in-container MCP callback server, built and tested as its own
@@ -598,7 +585,7 @@ jobs:
           PYEOF
 
       # Real end-to-end HTTP check against the built server (nichobbs/cloud-agents#442):
-      # starts bin/CloudAgents.dll on a throwaway DB/port and curls a multi-param
+      # starts bin/CloudAgents.dll against the CI Postgres on a local port and curls a multi-param
       # route (/api/sessions/{id}/output/{offset}) plus the proxy routes — the
       # dispatch paths @test_module suites can't reach because Web.Request can't
       # be constructed in a test (#354). No Docker needed. This is the automated
@@ -607,6 +594,8 @@ jobs:
       # script also drives the real cloud-agents-shim binary over MCP stdio
       # against the running server (#531), so shim/bin must exist.
       - name: E2E HTTP smoke test
+        env:
+          LYRIC_CONFIG_DB_CONNECTION_URL: postgres://cloudagents_app:app-ci@127.0.0.1:5432/cloudagents
         run: ./scripts/e2e-http.sh
 
       # LYRIC_CONFIG_* env-var-to-config-block wiring, end to end
@@ -619,5 +608,7 @@ jobs:
       # exercise this path; a wrong derived env var name (the #677 regression)
       # would otherwise compile and unit-test clean with no CI signal.
       - name: LYRIC_CONFIG_* env wiring smoke test
+        env:
+          LYRIC_CONFIG_DB_CONNECTION_URL: postgres://cloudagents_app:app-ci@127.0.0.1:5432/cloudagents
         run: ./scripts/test-lyric-config-env.sh
 

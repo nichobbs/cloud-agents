@@ -3,8 +3,7 @@ name: Distribution smoke test
 # release.yml (the workflow that actually publishes dist/CloudAgents.Native)
 # only ever runs on a pushed `vX.Y.Z` tag or a manual dispatch — never on a
 # PR. That leaves the entire distribution path (the trampoline project, the
-# `dotnet publish` step, the RID-parameterized SQLite staging/wrapper logic,
-# the smoke test) with zero PR-time coverage: a regression here is only
+# `dotnet publish` step, the Postgres provisioning, the smoke test) with zero PR-time coverage: a regression here is only
 # discovered when someone actually cuts a release. This workflow closes that
 # gap by running the linux-x64 leg of release.yml's build job (publish +
 # stage + smoke test, minus the release-only packaging/upload steps) on every
@@ -38,6 +37,22 @@ jobs:
     name: Build & smoke-test dist/CloudAgents.Native (linux-x64)
     if: github.event.pull_request.draft == false
     runs-on: ubuntu-latest
+    # Postgres for the smoke test below: the API exits at startup without
+    # LYRIC_CONFIG_DB_CONNECTION_URL and a migrated schema (same service and
+    # role provisioning as ci.yml; docs/phase11-postgres-tenancy.md).
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
     steps:
       - uses: actions/checkout@v6
 
@@ -89,10 +104,7 @@ jobs:
           tar -xzf /tmp/lyric.tgz -C "$HOME/.local/bin"
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
 
-      # Uses build-full.sh rather than a bare `lyric restore && lyric build`:
-      # the latter does NOT populate bin/runtimes/, which the "Stage SQLite
-      # native runtime" step below depends on.
-      - name: Build CloudAgents.dll (including native SQLite runtimes)
+      - name: Build CloudAgents.dll
         run: ./scripts/build-full.sh
 
       # Publishes dist/CloudAgents.Native — a thin C# trampoline into the
@@ -106,31 +118,25 @@ jobs:
             --self-contained true \
             --output publish/linux-x64
 
-      # Same staging logic as release.yml: `dotnet publish` has no
-      # runtime-asset metadata for the loose-file DLL glob this project
-      # references CloudAgents.dll's siblings through, so the SQLite native
-      # runtime has to be staged manually, plus a wrapper script pointing
-      # the native loader at it.
-      - name: Stage SQLite native runtime + launcher wrapper
+      # Provision the Postgres roles and apply the schema exactly as ci.yml's
+      # "Provision and migrate Postgres" step does, so the published
+      # executable has a database to start against.
+      - name: Provision and migrate Postgres
+        env:
+          PGPASSWORD: postgres
+          CLOUD_AGENTS_MIGRATE_DATABASE_URL: postgres://cloudagents_owner:owner-ci@127.0.0.1:5432/cloudagents
         run: |
-          set -euo pipefail
-          OUT="publish/linux-x64"
-          mkdir -p "$OUT/runtimes/linux-x64/native"
-          cp "bin/runtimes/linux-x64/native/"*.so "$OUT/runtimes/linux-x64/native/"
-          mv "$OUT/cloud-agents" "$OUT/cloud-agents.bin"
-          cat > "$OUT/cloud-agents" <<WRAPPER
-          #!/usr/bin/env bash
-          set -euo pipefail
-          DIR="\$(cd "\$(dirname "\${BASH_SOURCE[0]}")" && pwd)"
-          export LD_LIBRARY_PATH="\$DIR/runtimes/linux-x64/native:\${LD_LIBRARY_PATH:-}"
-          exec "\$DIR/cloud-agents.bin" "\$@"
-          WRAPPER
-          chmod +x "$OUT/cloud-agents" "$OUT/cloud-agents.bin"
+          psql -h 127.0.0.1 -U postgres -v ON_ERROR_STOP=1 \
+            -v owner_password="'owner-ci'" -v app_password="'app-ci'" -v migrator_password="'migrator-ci'" \
+            -f deploy/postgres/provision.sql
+          dotnet bin/CloudAgents.dll --migrate
 
       # Runs the actual published artifact and hits a real endpoint over a
       # real socket — the same smoke test release.yml runs before ever
       # uploading a release asset, just moved to PR time.
       - name: Smoke-test the published executable
+        env:
+          LYRIC_CONFIG_DB_CONNECTION_URL: postgres://cloudagents_app:app-ci@127.0.0.1:5432/cloudagents
         run: |
           set -euo pipefail
           ./publish/linux-x64/cloud-agents --port 18123 &
