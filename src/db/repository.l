@@ -535,6 +535,12 @@ pub func decryptedCredentialValue(
   return CloudAgents.PgStore.Credentials.decryptedCredentialValue(sc, name)
 }
 
+/// Write a refreshed Claude login back to the vault when it is newer than the
+/// stored one; see CloudAgents.PgStore.Credentials.refreshClaudeLogin.
+pub func refreshClaudeLogin(sc: in CloudAgents.Pg.UserScope, fresh: in String): Result[Bool, CredentialError] {
+  return CloudAgents.PgStore.Credentials.refreshClaudeLogin(sc, fresh)
+}
+
 // ─── GitHub OAuth token refresh ─────────────────────────────────────────────────
 //
 // Most GitHub OAuth Apps issue non-expiring user tokens, but ones enrolled in

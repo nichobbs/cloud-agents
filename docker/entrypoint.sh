@@ -59,6 +59,25 @@ set -euo pipefail
 # never kill the script before a marker is printed (e.g. `head -5000`
 # SIGPIPE-ing `git ls-files` under pipefail).
 if [ -n "${CLOUD_AGENTS_INSPECT_MODE:-}" ]; then
+    # "claude-login" (docker_manager.l writeBackClaudeLogin): the API server
+    # mounted ONLY the home volume, read-only, with no network and no
+    # credentials, to read back a login the CLI refreshed. Print just the
+    # claudeAiOauth object under the same marker protocol and exit; nothing
+    # here may touch /workspace.
+    if [ "${CLOUD_AGENTS_INSPECT_MODE}" = "claude-login" ]; then
+        _ca_login=""
+        _ca_login_file="${CLOUD_AGENTS_LOGIN_HOME:-/home/claude-user}/.claude/.credentials.json"
+        if [ -f "${_ca_login_file}" ] && command -v jq >/dev/null 2>&1; then
+            _ca_login="$(jq -c 'select((.claudeAiOauth.accessToken | type) == "string") | {claudeAiOauth: .claudeAiOauth}' "${_ca_login_file}" 2>/dev/null || true)"
+        fi
+        if [ -n "${_ca_login}" ]; then
+            echo "CLOUD_AGENTS_INSPECT_OK"
+            printf '%s\n' "${_ca_login}"
+        else
+            echo "CLOUD_AGENTS_INSPECT_ERR no login"
+        fi
+        exit 0
+    fi
     if [ ! -d /workspace/.git ]; then
         # The workspace volume auto-creates on bind, so it always mounts —
         # but no run has ever cloned a repo into it yet.

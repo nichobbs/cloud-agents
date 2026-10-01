@@ -195,6 +195,7 @@ jobs:
             scripts/test-branch-policy-inject.sh \
             scripts/test-register-callbacks-mcp.sh \
             scripts/test-restore-claude-credentials.sh \
+            scripts/test-claude-login-readback.sh \
             scripts/check-shim-stage-sync.sh \
             docker/render-branch-policy.sh \
             docker/register-callbacks-mcp.sh \
@@ -261,6 +262,7 @@ jobs:
           ./scripts/test-branch-policy-inject.sh
           ./scripts/test-register-callbacks-mcp.sh
           ./scripts/test-restore-claude-credentials.sh
+          ./scripts/test-claude-login-readback.sh
 
       # #795: the five runner Dockerfiles' shim-builder stages must stay
       # byte-identical (docker/Dockerfile is canonical) so a sequential

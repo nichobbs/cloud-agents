@@ -177,12 +177,22 @@ refresh token still falls back to the bare `CLAUDE_CODE_OAUTH_TOKEN`.
   pasted login replaces an old one. When `CLAUDE_CREDENTIALS_JSON` is present
   the entrypoint unsets `CLAUDE_CODE_OAUTH_TOKEN` so the CLI uses the file and
   can refresh it. Covered by `scripts/test-restore-claude-credentials.sh`.
-- **Known gap.** Refreshes are not yet written back to the vault. Home volumes
-  are host-local Docker volumes, so with several backend hosts a refresh on one
-  host is not visible to the others (and if refresh tokens rotate, the others'
-  copies go stale). Post-run write-back to the vault (a compare-and-swap on
-  `expiresAt`, read from the home volume by a read-only, network-less helper
-  container) is the planned follow-up.
+- **Write-back.** After each successful run, for users who have a
+  `CLAUDE_CREDENTIALS_JSON` in the vault, the server starts a short-lived helper
+  container (the inspect container's `claude-login` mode: the home volume
+  mounted read-only, no workspace, no network, no credentials) that prints the
+  `claudeAiOauth` object. `CloudAgents.Repository.refreshClaudeLogin` stores it
+  only if it expires later than the vault copy, with an `UPDATE` conditioned on
+  the exact ciphertext read, so concurrent runs or hosts cannot lose an update
+  (rules in `CloudAgents.ClaudeLogin`, tested in `tests/claude_login_tests.l` and
+  live in `tests/credential_tests.l`; the read-back mode in
+  `scripts/test-claude-login-readback.sh`). Because home volumes are host-local,
+  this is what carries a refresh from one backend host to another: the next run
+  on any host restores the newer vault login before the CLI starts. Residual
+  window: a refresh on host A while host B is mid-run on the previous token (if
+  refresh tokens rotate, B's run may fail to refresh; its next run recovers from
+  the vault). Not written back: a run that fails, and users who stored only a
+  bare `CLAUDE_CODE_OAUTH_TOKEN`.
 
 ## Claude subscription (OAuth) credentials
 
