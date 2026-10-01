@@ -240,7 +240,7 @@ function OrgDetail({
         <>
           <h4 style={subheadStyle}>Members</h4>
           {members.map(m => {
-            const self = m.githubLogin === me;
+            const self = !!me && m.githubLogin.toLowerCase() === me.toLowerCase();
             return (
               <div key={m.userId} style={rowStyle}>
                 <span style={{ color: '#c9d1d9', fontSize: '13px' }}>

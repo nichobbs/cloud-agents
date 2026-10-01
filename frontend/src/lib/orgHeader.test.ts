@@ -33,9 +33,9 @@ describe('apiFetch organisation header', () => {
     expect(headerOf(fetchMock, 'Authorization')).toBe('Bearer t');
   });
 
-  it('falls back to personal on a 403 that mentions the organisation', async () => {
+  it('falls back to personal when the server refuses the organisation header', async () => {
     storeOrgId('org-1');
-    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response('{"error":"not a member of this organisation"}', { status: 403 })));
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response('{"error":"you are not an active member of the organisation named in X-CloudAgents-Org"}', { status: 403 })));
     const res = await apiFetch('/api/sessions');
     expect(res.status).toBe(403);
     expect(getStoredOrgId()).toBe('');
@@ -43,7 +43,7 @@ describe('apiFetch organisation header', () => {
 
   it('keeps the selection on an unrelated 403', async () => {
     storeOrgId('org-1');
-    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response('{"error":"forbidden"}', { status: 403 })));
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response('{"error":"only an admin of the GitHub organisation acme can connect it"}', { status: 403 })));
     await apiFetch('/api/sessions');
     expect(getStoredOrgId()).toBe('org-1');
   });

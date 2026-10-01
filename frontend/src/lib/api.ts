@@ -61,7 +61,9 @@ export async function apiFetch(input: RequestInfo | URL, rawInit?: RequestInit):
     // Membership was lost (removed, suspended): fall back to personal rather
     // than leaving every request failing.
     const text = await res.clone().text().catch(() => '');
-    if (/organi[sz]ation/i.test(text) && getStoredOrgId() === orgId) storeOrgId('');
+    // Only the middleware's membership refusal names the header; other 403s
+    // (an owner-only action, a GitHub check) leave the selection alone.
+    if (text.includes('X-CloudAgents-Org') && getStoredOrgId() === orgId) storeOrgId('');
   }
 
   if (res.status === 401 && isSignedIn()) {
