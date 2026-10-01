@@ -2297,8 +2297,9 @@ pub func checkHealth(): Result[String, Web.ApiError] {
 /// started throwing a bare `System.InvalidProgramException` ("Common
 /// Language Runtime detected an invalid program"), exactly the corruption
 /// class documented in docs/BUILD.md's Bug 5 and lyric-lang#6232/#6134/#6133
-/// (all three confirmed fixed as of lyric 0.7.3, this project's current pin
-/// — docs/lyric/gotchas.md no longer documents that family for that reason),
+/// (all three confirmed fixed as of lyric 0.7.3 — docs/lyric/gotchas.md no
+/// longer documents that family for that reason; this project now pins
+/// 0.7.5, which also has the fix),
 /// but via a new trigger: a type-invalid record-field assignment slipping
 /// past the type checker, not an async/await ordering issue. That specific
 /// gap is also closed on 0.7.3 — the same assignment now fails at compile

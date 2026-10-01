@@ -3,7 +3,7 @@
   "isRoot": true,
   "tools": {
     "lyric": {
-      "version": "0.7.3",
+      "version": "0.7.5",
       "commands": [
         "lyric"
       ],

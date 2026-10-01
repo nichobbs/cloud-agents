@@ -2,10 +2,14 @@
 
 Things that look like TypeScript/Kotlin/Java but aren't. Read before debugging compile errors.
 
-**Re-verified 2026-09-28 against lyric 0.7.3** (installed fresh + empirically
+**Re-verified 2026-09-30 against lyric 0.7.5** (installed fresh + empirically
 re-tested every entry below with a real `lyric build`/`lyric run`, not just a
 changelog read) — matching this project's current pin (`MIN_LYRIC_VERSION`,
-`deploy/api.Dockerfile`), which moved to 0.7.3 in the same window. Confirmed-fixed
+`deploy/api.Dockerfile`), which moved to 0.7.5 in the same window. That bump
+confirmed three more gotchas fixed since the previous (0.7.3) pass — the `&`
+prefix-operator RHS-discard miscompile, `slice[Byte].toList()` not resolving
+at runtime, and `Int.toNat()` not resolving at runtime — all removed outright
+per this file's own convention below. Confirmed-fixed
 entries are **deleted outright** rather than kept around with a "FIXED as of X"
 marker — this file should only describe gotchas that still exist, so there's
 less to read. If you're building against an older pin and hit something this
@@ -143,12 +147,6 @@ match maybeUser {
 
 ## Operators
 
-**`&` is NOT bitwise-and — it's a unary reference/borrow prefix operator, and `x & y` silently compiles to something other than what it looks like.** Confirmed on lyric 0.7.3: `&` is a *prefix-only* operator in the upstream `nichobbs/lyric-lang` repo's grammar (its `docs/grammar.ebnf`'s `PrefixExpr` production, alongside `-`/`not` — not a file present in this repo). `val z = x & y` does **not** raise a parse or type error — it parses as two adjacent expressions, `x` (which `z` actually binds to) and a separate, discarded `&y` reference expression. The RHS is still evaluated for its side effects (confirmed: `x & sideEffect()` really calls `sideEffect()`) but its value is silently thrown away and `z` ends up equal to `x`, unchanged. `|`, `^`, `<<`, `>>` are still not supported at all (`^` isn't even a valid token; `|`/`<<`/`>>` are parse errors) — this miscompile is unique to `&`. Use `.and()`/`.or()`/`.xor()`/`.shl()`/`.shr()` for real bitwise ops, always:
-```lyric
-x.and(0xFF)  // correct, confirmed: 6.and(3) == 2
-x & 0xFF     // WRONG: compiles, discards the RHS, evaluates to x unchanged
-```
-
 **Chained comparisons are a parse error.**
 ```lyric
 a < b < c        // compile error
@@ -185,27 +183,6 @@ bare `Std.Core` free-function form for all of these** (`unwrapResult(r)`,
 operator is confirmed working at runtime and is fine.
 
 **`.unwrap()`/`.unwrapOr()` (as opposed to `.unwrapResult()`/`.unwrapResultOr()` above) have no working bare-call replacement under the same literal name.** `r.unwrap()`/`r.unwrapOr(default)`/`o.unwrap()` all fail as dot-calls the same way, but `unwrap(r)`/`unwrap(o)` bare is `unknown name` (there's no `Std.Core` function literally named `unwrap` for `Result`), and a bare `unwrapOr(r, default)` resolves to the wrong overload (`argument type Result[...] does not match parameter type Option[T]` — `unwrapOr` bare is `Option`-only). Use `unwrapResult(r)` in place of `r.unwrap()`, `unwrapResultOr(r, default)` in place of `r.unwrapOr(default)`, and `unwrapOption(o)` (confirmed working as a bare call) in place of `o.unwrap()`.
-
-**`slice[Byte].toList()` does not resolve at runtime** — confirmed
-directly on lyric 0.7.3: `unsupported method 'toList' on the receiver type
-(no matching user method, extern binding, or built-in intrinsic)`. Despite
-`lyric-stdlib/std/file.l`'s own module doc describing `slice[T].toList()` /
-`List[T].toArray()` as the intended round-trip shuttle, only the
-`List[T].toArray()` direction is confirmed working (re-tested, works fine).
-Build the `List[Byte]` by hand instead: `val acc: List[Byte] = newList(); var
-i = 0; while i < b.length { acc.add(b[i]); i = i + 1 }` — plain-`Int` slice
-indexing is confirmed working. See `CloudAgents.Callbacks.sliceBytesToList`
-for the worked pattern.
-
-**`Int.toNat()` does not resolve at runtime** — confirmed directly
-on lyric 0.7.3: `unsupported method 'toNat' on the receiver type`. The
-reverse, `Nat.toInt()`, works fine. And you can't dodge it with
-`val n: Nat = 7` either: integer literals are typed `Int` with no implicit
-Nat coercion, confirmed a compile error (`error[T0060]: val binding
-declared as Nat but initialiser has type Int`) — there is no way to
-produce a `Nat` value from a literal at all. Practical consequence:
-prefer working over `String`/base64 (whose `.length.toInt()` + `.substring`
-are known-good) when you need an index-driven loop.
 
 **`String.length` compared directly against an explicitly-`Nat`-typed value
 is a T0033 compile error** ("comparison operands must be matching
@@ -316,7 +293,7 @@ pub func sqrt(x: in Double): Double
 
 **`Std.Task.delay(ms): Task` exists and works, but is undocumented in `docs/lyric/stdlib.md`.** `await Std.Task.delay(ms)` really suspends for approximately `ms` milliseconds (measured, not simulated: a 500ms delay measured back ~508ms via `System.Environment.TickCount`) without blocking the underlying worker thread the way `Thread.Sleep` does. One wrinkle, confirmed directly on lyric 0.7.3: putting it in an `async func` whose body is otherwise trailing-expression-only — `async func f(): Unit { await Std.Task.delay(ms) }` as the ONLY statement fails to compile with `error[T0070]: function body trailing expression has type Task but declared return type is Unit` — add an explicit `return ()` after the await; not an issue when the line is followed by more statements.
 
-**A `Long` (Int64) subtract-and-compare inside a large/complex function can crash the process with an `AccessViolationException` — STILL REPRODUCES as of lyric 0.7.3, re-confirmed today.** `Unbox`'s `toTypeHnd` resolves to `System.Int64`; its `obj` is not a valid object reference ("this object has an invalid CLASS field"). `nowMs - startMs > timeoutMs` (three `Long`s) done once per poll tick still crashes every time, whether inline or via the pure, cross-package `CloudAgents.DockerPolicy.hasExceededRunTimeout` call `streamSessionMessage` originally used. Re-ran `./scripts/repro-crosspkg-long-crash.sh` directly against a freshly-installed lyric 0.7.3 today (2026-09-28): it still reproduces the exact same crash signature (`System.AccessViolationException` in `System.Runtime.CompilerServices.CastHelpers.Unbox`, same call stack through `CloudAgents.Docker.Program.streamSessionMessage`). Note the script's fixture pins old `Lyric.Web`/`Lyric.Docker` NuGet versions from its own frozen `lyric.toml` snapshot (not this project's current pins) — the compiler itself is current, but the library dependency versions are not, so this doesn't rule out the crash being in how the old library IL interacts with new compiler-emitted IL rather than a still-open compiler codegen defect in isolation. Five independent from-scratch standalone repro attempts (matching local-variable count, a real cross-package `Long` call, the real project's package count/declaration order, real NuGet deps, a real streaming HTTP handler) never reproduced it in isolation; only the actual, unmodified `docker_manager.l`/`docker_policy.l` source does — see `scripts/repro-crosspkg-long-crash.sh` and `docs/BUILD.md`'s ninth compiler-note entry for the full narrative. Still not root-caused to a specific compiler codegen defect or filed upstream. Workaround unchanged and still necessary: avoid `Long` arithmetic entirely in this package — `src/docker_manager.l`'s `streamSessionMessage` approximates elapsed time with an `Int` accumulator of each tick's `pollMs` instead of a `Long` epoch-millisecond subtraction, and `waitForContainer`'s analogous check uses `Int` `System.Environment.TickCount` (`tickCountMs()`) instead of `Long` epoch milliseconds. If you bump this project's `Lyric.Web`/`Lyric.Docker` pins, re-run the repro script — bumping the fixture's own pinned versions (per the script's header comment) is the way to check whether a newer library release clears it.
+**A `Long` (Int64) subtract-and-compare inside a large/complex function can crash the process with an `AccessViolationException` — STILL REPRODUCES as of lyric 0.7.5, re-confirmed today.** `Unbox`'s `toTypeHnd` resolves to `System.Int64`; its `obj` is not a valid object reference ("this object has an invalid CLASS field"). `nowMs - startMs > timeoutMs` (three `Long`s) done once per poll tick still crashes every time, whether inline or via the pure, cross-package `CloudAgents.DockerPolicy.hasExceededRunTimeout` call `streamSessionMessage` originally used. Re-ran `./scripts/repro-crosspkg-long-crash.sh` directly against a freshly-installed lyric 0.7.5 today (2026-09-30): it still reproduces the exact same crash signature (`System.AccessViolationException` in `System.Runtime.CompilerServices.CastHelpers.Unbox`, same call stack through `CloudAgents.Docker.Program.streamSessionMessage`). Note the script's fixture pins old `Lyric.Web`/`Lyric.Docker` NuGet versions from its own frozen `lyric.toml` snapshot (not this project's current pins) — the compiler itself is current, but the library dependency versions are not, so this doesn't rule out the crash being in how the old library IL interacts with new compiler-emitted IL rather than a still-open compiler codegen defect in isolation. Five independent from-scratch standalone repro attempts (matching local-variable count, a real cross-package `Long` call, the real project's package count/declaration order, real NuGet deps, a real streaming HTTP handler) never reproduced it in isolation; only the actual, unmodified `docker_manager.l`/`docker_policy.l` source does — see `scripts/repro-crosspkg-long-crash.sh` and `docs/BUILD.md`'s ninth compiler-note entry for the full narrative. Still not root-caused to a specific compiler codegen defect or filed upstream. Workaround unchanged and still necessary: avoid `Long` arithmetic entirely in this package — `src/docker_manager.l`'s `streamSessionMessage` approximates elapsed time with an `Int` accumulator of each tick's `pollMs` instead of a `Long` epoch-millisecond subtraction, and `waitForContainer`'s analogous check uses `Int` `System.Environment.TickCount` (`tickCountMs()`) instead of `Long` epoch milliseconds. If you bump this project's `Lyric.Web`/`Lyric.Docker` pins, re-run the repro script — bumping the fixture's own pinned versions (per the script's header comment) is the way to check whether a newer library release clears it.
 
 **`protected type` entries are mutually exclusive.** Only one `entry` runs at a time. `when:` blocks the caller (not spins) until condition is true. `invariant:` violation on entry exit = terminates the program.
 

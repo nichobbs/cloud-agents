@@ -554,8 +554,9 @@ pub async func waitForContainer(client: in DockerClient, containerId: in String)
 /// project builds with (0.6.2); the older, `val`-loses-value shape of
 /// lyric-lang#6249 was also independently reconfirmed to still reproduce on
 /// lyric 0.4.36 in that same scratch session. lyric-lang#6249 is now
-/// CONFIRMED FIXED as of lyric 0.7.3 (this project's current pin, verified
-/// directly via `./scripts/repro-compiler-bug.sh` check 8) — `docs/lyric/
+/// CONFIRMED FIXED as of lyric 0.7.3 (verified directly via
+/// `./scripts/repro-compiler-bug.sh` check 8; this project now pins 0.7.5,
+/// which also has the fix) — `docs/lyric/
 /// gotchas.md` no longer documents it for that reason — but this function
 /// keeps the parameter-carrying-recursion shape anyway rather than reverting
 /// to a plain loop: it costs nothing, and staying structurally #6249-safe

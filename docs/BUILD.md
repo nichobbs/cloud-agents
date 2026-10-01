@@ -134,8 +134,8 @@ an `IList` cast exception at runtime
 fixed as of v0.4.19 — all seven of the bugs that blocked this project's
 build/run/test pipeline are now fixed. An eighth, different-in-kind bug
 ([lyric-lang#6249](https://github.com/nichobbs/lyric-lang/issues/6249),
-open as of v0.4.35, fixed upstream as of v0.7.3 — this project's current
-pin) never blocked the pipeline either way — it was a silent runtime
+open as of v0.4.35, fixed upstream as of v0.7.3; this project now pins
+0.7.5, which also has the fix) never blocked the pipeline either way — it was a silent runtime
 data-loss bug in a specific async pattern, found via manual investigation
 of a production crash, not a build/run/test blocker — see "Compiler notes"
 below.
@@ -447,7 +447,8 @@ source workaround** — see `src/docker_manager.l`'s
 a local `val`, which survives reliably across multiple awaits). Confirmed
 fixed upstream by re-running the fixed version of
 `./scripts/repro-compiler-bug.sh` check 8 directly against a
-freshly-installed lyric 0.7.3 — this project's current pin. The source
+freshly-installed lyric 0.7.3; this project now pins 0.7.5, which also
+has the fix. The source
 workaround has **not** been reverted yet (a separate decision from
 re-verifying the docs); it's cheap and still correct either way.
 
@@ -514,13 +515,18 @@ directly unit-tested (#67, #56), just no longer called from
 
 **CI enforces a version floor matching this status**, read from the single
 checked-in [`MIN_LYRIC_VERSION`](../MIN_LYRIC_VERSION) file (currently
-`0.7.3`: 0.7.0 moved `Std.File.readBytes`/`writeBytes` to `slice[Byte]` and
+`0.7.5`: 0.7.0 moved `Std.File.readBytes`/`writeBytes` to `slice[Byte]` and
 made hint-less externs a build error (F0027), but miscompiles
 `@externTarget`s taking an array extern alias (lyric-lang#7610), which breaks
 this project's SQLite driver at runtime; 0.7.1 fixes that but its released
 stdlib hides `Std.Collections`' `List`/`newList` (lyric-lang#7617), so this
 project does not build on it, and 0.7.2 still has that bug; 0.7.3 fixes
-both — see docs/lyric/gotchas.md)
+both. 0.7.4/0.7.5 additionally tighten named-argument field-name checking
+for union case construction (`T0101` — this project had several
+`Err(value = ...)` call sites that should always have been
+`Err(error = ...)`, now fixed) and fix the `&`/`slice[Byte].toList()`/
+`Int.toNat()` gotchas that used to be documented in docs/lyric/gotchas.md
+(now removed from that file since they no longer reproduce))
 rather than duplicated as a literal here and in
 `.github/workflows/ci.yml` — the "Verify minimum Lyric version" step fails
 fast with a clear diagnostic if a future release ever resolves to
@@ -816,7 +822,8 @@ fixed.** Nothing on this project's manifest, build config, or source
 needs to change for bug 7 — check `./scripts/repro-compiler-bug.sh` if a
 future `lyric` release regresses any of the seven. **An eighth,
 different-in-kind bug (lyric-lang#6249) was open through v0.4.35 and is
-now fixed upstream as of v0.7.3** (this project's current pin) — unlike
+now fixed upstream as of v0.7.3** (this project now pins 0.7.5, which
+also has the fix) — unlike
 bugs 1–7, it never blocked build/run/test but did require a source
 workaround, kept in place — see the "Compiler notes" section above and
 `src/docker_manager.l`'s doc comments.
