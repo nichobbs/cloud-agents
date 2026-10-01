@@ -126,10 +126,11 @@ wait_healthy
 echo "==> server is healthy"
 
 fails=0
-# assert <desc> <method> <path> <auth:yes|no> <want-code> <want-substr> [body]
-# Sends the bearer only when <auth> is "yes"; sends a JSON body when provided.
+# assert <desc> <method> <path> <auth:yes|no> <want-code> <want-substr> [body] [org]
+# Sends the bearer only when <auth> is "yes"; sends a JSON body when provided,
+# and the X-CloudAgents-Org header when <org> is given.
 assert() {
-  local desc="$1" method="$2" path="$3" auth="$4" want_code="$5" want_sub="$6" body="${7:-}"
+  local desc="$1" method="$2" path="$3" auth="$4" want_code="$5" want_sub="$6" body="${7:-}" org="${8:-}"
   # --max-time bounds every request so a bug in the (brand-new) middleware ->
   # streaming-handler hand-off that hangs the response fails the job fast
   # instead of stalling CI for hours (#494). These endpoints all answer in
@@ -137,6 +138,7 @@ assert() {
   local args=(-sS --connect-timeout 5 --max-time 20 -X "$method" -w $'\n%{http_code}')
   [ "$auth" = "yes" ] && args+=(-H "Authorization: Bearer ${TOKEN}")
   [ -n "$body" ] && args+=(-H "Content-Type: application/json" --data "$body")
+  [ -n "$org" ] && args+=(-H "X-CloudAgents-Org: ${org}")
   local out code out_body
   out=$(curl "${args[@]}" "${BASE}${path}" 2>/dev/null || printf '\n000')
   code="${out##*$'\n'}"
@@ -177,6 +179,23 @@ assert "streaming send dispatches (auth)" POST "/api/sessions/does-not-exist/mes
 # Session container restart endpoint
 assert "restart container rejects no-auth" POST "/api/sessions/x/restart"             no  401 ""
 assert "restart container dispatches (auth)" POST "/api/sessions/does-not-exist/restart" yes 404 "Session"
+
+# Organisations (docs/phase11-postgres-tenancy.md §5.2, §6.4): the active
+# organisation comes from X-CloudAgents-Org and must be one the caller belongs to.
+assert "orgs list (auth)"              GET  "/api/orgs"                             yes 200 '"personal":"personal:default"'
+assert "orgs list rejects no-auth"     GET  "/api/orgs"                             no  401 ""
+assert "unknown org header refused"    GET  "/api/prompts"                          yes 403 "organisation" "" "native:not-a-member"
+org_body=$(curl -sS --connect-timeout 5 --max-time 20 -X POST -H "Authorization: Bearer ${TOKEN}" \
+  -H "Content-Type: application/json" --data '{"name":"e2e org"}' "${BASE}/api/orgs" 2>/dev/null || true)
+org_id=$(printf '%s' "$org_body" | sed -n 's/.*"id":"\(native:[^"]*\)".*/\1/p')
+if [ -z "$org_id" ]; then
+  echo "FAIL create org: no native organisation id in: ${org_body}" >&2
+  fails=$((fails + 1))
+else
+  echo "ok   create org (${org_id})"
+  assert "member org header accepted"  GET  "/api/prompts"                          yes 200 "prompts" "" "$org_id"
+  assert "org members"                 GET  "/api/orgs/${org_id}/members"           yes 200 '"role":"owner"'
+fi
 
 # ── cloud-agents-shim integration leg (#531) ─────────────────────────────────
 # Drive the REAL shim binary (shim/bin, built by the CI step before this

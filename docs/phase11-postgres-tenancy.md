@@ -204,9 +204,10 @@ listed in the PR and in `docs/phase9-message-search.md`.
 - Auth middleware resolves the user (unchanged token/OAuth logic) and the
   active organisation from the `X-CloudAgents-Org` header, defaulting to
   the user's personal organisation. The organisation is accepted only if a
-  `memberships` row exists for that user; otherwise `403`. (Until slice F
-  ships, the scope is always the user's personal tenant and no header is
-  read; §9.)
+  `memberships` row exists for that user and is not suspended; otherwise
+  `403`. The middleware stamps the validated tenant with the user for the
+  request thread, and `CloudAgents.Auth.requestScope()`, read once at handler
+  entry, returns it (slice F1).
 - **Explicit scope, never ambient.** The middleware produces a
   `TenantScope` value (`tenantId`, `userId`), and it is passed as an explicit
   parameter to every repository and ledger-store function that touches
@@ -557,11 +558,20 @@ Postgres-only data.
   - The test suites run against live Postgres, each test as a fresh user
     with its own personal tenant, so suites and repeated runs never see each
     other's rows.
-- **F. Organisations** (§6.2 to §6.4), on Postgres: `X-CloudAgents-Org`
-  resolution against `memberships`, GitHub sync with `read:org` and the
-  hourly membership sync, native organisations and invitations,
-  `/api/orgs`, and the frontend switcher and settings page. The OAuth scope
-  change ships in this slice.
+- **F. Organisations** (§6.2 to §6.4), on Postgres, in three PRs:
+  - **F1.** `X-CloudAgents-Org` resolution against `memberships`; native
+    organisations and invitations; `/api/orgs` (§6.3, §6.4). Global tables
+    have no RLS, so `CloudAgents.PgStore.Orgs` authorises every call against
+    the caller's own membership row, and locks the tenant row before any
+    change that could remove its last owner. Invitations are matched against
+    the login recorded at sign-in (case-insensitively), last 7 days, and a
+    newer invitation for the same login replaces a pending one. The
+    invitation link is returned once to the inviter, who shares it; there is
+    no email.
+  - **F2.** GitHub organisations (§6.2): the `read:org` scope, connecting an
+    organisation, sync at sign-in and the hourly membership sync.
+  - **F3.** The frontend switcher and settings page (§6.4). The OAuth scope
+    change ships here with the UI that needs it.
 
 ## 10. Acceptance criteria
 
