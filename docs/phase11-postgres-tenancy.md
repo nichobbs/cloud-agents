@@ -1,6 +1,6 @@
 # Phase 11: Postgres and organisation tenancy (ADR-008 phase 1)
 
-Status: spec approved (merged in #1140); implementation in progress, slice by slice (§9).
+Status: spec approved (merged in #1140); implemented. Every slice in §9 has shipped (D dropped).
 
 Implements phase 1 of ADR-008 (`docs/architecture-decisions.md`): move the
 store from SQLite to a dedicated Postgres instance behind the existing
