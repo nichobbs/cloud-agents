@@ -1578,7 +1578,7 @@ record RouteSaveObserverSettings {
 impl Web.Handler for RouteSaveObserverSettings {
   func handle(req: in Web.Request): Web.Response {
     return ledgerJsonResp(
-      observerSettingsJson(CloudAgents.ObserverHandlers.putObserverSettingsHandler(pparam(req, "pid"), req.body))
+      observerSettingsJson(CloudAgents.ObserverHandlers.saveObserverSettingsHandler(pparam(req, "pid"), req.body))
     )
   }
 }

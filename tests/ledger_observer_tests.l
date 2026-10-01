@@ -113,33 +113,15 @@ func freshUser(tag: in String): String {
 func seedSession(): String {
   val id = "s-" + Std.Uuid.uuidToString(Std.Uuid.newUuid())
   val sc = testScope()
-  match CloudAgents.SessionStore.addSession(
-    makeAgentSession(
-      sessionId = id,
-      repoUrl = "https://github.com/acme/shop",
-      branch = "main",
-      containerId = "",
-      harness = "claude",
-      model = "",
-      nativeSessionId = id
-    ),
-    sc
-  ) {
+  match CloudAgents.SessionStore.addSession(makeAgentSession(sessionId = id, repoUrl = "https://github.com/acme/shop", branch = "main", containerId = "", harness = "claude", model = "", nativeSessionId = id), sc) {
     case Ok(_) -> ()
     case Err(e) -> panic("addSession failed: " + CloudAgents.Db.dbErrorMessage(e))
   }
-  val u = match CloudAgents.PgStore.open(sc) {
-    case Ok(x) -> x
-    case Err(e) -> panic(CloudAgents.Db.dbErrorMessage(e))
-  }
+  val u = match CloudAgents.PgStore.open(sc) { case Ok(x) -> x; case Err(e) -> panic(CloudAgents.Db.dbErrorMessage(e)) }
   defer {
     CloudAgents.PgStore.release(u)
   }
-  match CloudAgents.PgStore.ex(
-    u,
-    "UPDATE session_routes SET callback_token_hash = @p1 WHERE session_id = @p0 AND tenant_id = @p2",
-    [id, CloudAgents.Auth.hashCallbackToken("tok-" + id), sc.tenantId]
-  ) {
+  match CloudAgents.PgStore.ex(u, "UPDATE session_routes SET callback_token_hash = @p1 WHERE session_id = @p0 AND tenant_id = @p2", [id, CloudAgents.Auth.hashCallbackToken("tok-" + id), sc.tenantId]) {
     case Ok(n) -> assertEqualInt(n, 1, "token stored on the session's route")
     case Err(e) -> panic(CloudAgents.Db.dbErrorMessage(e))
   }
@@ -732,13 +714,30 @@ test "a report raises at most three notifications" {
       body = body + ","
     }
     body = body + "{\"kind\":\"shortcut\",\"summary\":\"Distinct shortcut number " + toString(i) + " zebra" + toString(i) +
-      "\",\"seqStart\":\"" + toString(i * 4) + "\",\"seqEnd\":\"" + toString(i * 4) + "\",\"confidence\":\"0.95\"}"
+      "\",\"seqStart\":\"" +
+      toString(i * 4) +
+      "\",\"seqEnd\":\"" +
+      toString(i * 4) +
+      "\",\"confidence\":\"0.95\"}"
     i = i + 1
   }
   body = body + "]}"
   val r = accept(s1, decodeOk(body), false)
   assertEqual(r.undeclared, "6", "every finding is recorded")
   assertEqualInt(countNotifications(s1), 3, "but only three notify")
+}
+
+test "an observer receives only its harness's model credentials" {
+  assertTrue(observerMayReceiveCredential("claude", "ANTHROPIC_API_KEY"), "claude gets its API key")
+  assertTrue(observerMayReceiveCredential("claude", "CLAUDE_CODE_OAUTH_TOKEN"), "claude gets its OAuth token")
+  assertFalse(observerMayReceiveCredential("claude", "OPENAI_API_KEY"), "claude gets no other model's key")
+  assertTrue(observerMayReceiveCredential("antigravity", "ANTIGRAVITY_API_KEY"), "antigravity gets its key")
+  assertTrue(observerMayReceiveCredential("opencode", "OPENCODE_ZEN_API_KEY"), "opencode gets its key")
+  assertFalse(observerMayReceiveCredential("claude", "GITHUB_TOKEN"), "no repository token")
+  assertFalse(observerMayReceiveCredential("codex", "GITEA_TOKEN"), "nor one under an unforeseen name")
+  assertFalse(observerMayReceiveCredential("codex", "AWS_SECRET_ACCESS_KEY"), "nor a cloud token")
+  assertFalse(observerMayReceiveCredential("codex", "openai_api_key"), "names match exactly")
+  assertFalse(observerMayReceiveCredential("unknown", "OPENAI_API_KEY"), "an unknown harness gets nothing")
 }
 
 // The scope the store calls run under: the current test's fresh user.

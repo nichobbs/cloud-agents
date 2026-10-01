@@ -362,7 +362,10 @@ policy, but its container is narrowed whatever the profile grants:
 
 - only `observer_get_window` and `observer_report`, no other shim tools;
 - no skills, subagents or MCP servers;
-- no repository credentials (`GITHUB*`, `GH_TOKEN`, `GITLAB*`, `BITBUCKET*`);
+- only its harness's model credentials, an allowlist
+  (`ObserverPolicy.observerCredentialNames`: e.g. `ANTHROPIC_API_KEY` and
+  `CLAUDE_CODE_OAUTH_TOKEN` for Claude); every other credential the profile
+  grants, repository and cloud tokens included, is withheld;
 - no clone of its own (`CLOUD_AGENTS_OBSERVER=1`);
 - at most a read-only view of the observed workspace.
 

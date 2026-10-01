@@ -1,18 +1,16 @@
 import { useEffect, useRef, useState } from 'react';
 import { api } from '../lib/api';
+import { HARNESSES } from '../lib/harnesses';
 import { enabledHarnesses } from '../lib/harnessAvailability';
 import type { ObserverSettings } from '../lib/ledger';
 import type { McpServer, Profile, Skill, Subagent } from '../types';
 
-/// Harness ids offered by this form. Kept in sync by hand with the `<option>`
-/// list below. Must cover every harness the backend accepts for a profile
-/// pin (''/claude/codex/opencode/gemini — CloudAgents.Profiles
-/// isValidProfileHarness), or a profile pinned to an id not offered here
-/// can't be re-selected after editing.
-const PROFILE_HARNESS_IDS = ['claude', 'codex', 'opencode', 'gemini'];
-
-/// Harnesses the observer can run on (a superset of PROFILE_HARNESS_IDS).
-const OBSERVER_HARNESS_IDS = ['claude', 'codex', 'opencode', 'gemini', 'antigravity'];
+/// Harness ids offered by the profile pin and the observer picker: every
+/// harness the frontend knows (lib/harnesses), the same set the backend
+/// accepts (CloudAgents.Profiles isValidProfileHarness and
+/// CloudAgents.Ledger.ObserverPolicy isObserverHarness). Derived rather than
+/// listed, so a new harness can't be missing here (as antigravity was).
+const PROFILE_HARNESS_IDS = Object.keys(HARNESSES);
 
 const REPO_ACCESS_OPTIONS: Array<[string, string]> = [
   ['none', 'Transcript only'],
@@ -463,7 +461,7 @@ export function Profiles() {
                     value={observer.harness}
                     onChange={e => setObserver(o => ({ ...o, harness: e.target.value }))}
                   >
-                    {OBSERVER_HARNESS_IDS.map(id => (
+                    {PROFILE_HARNESS_IDS.map(id => (
                       <option key={id} value={id}>
                         {id}
                       </option>

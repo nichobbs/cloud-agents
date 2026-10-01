@@ -9,7 +9,7 @@
 //!   callbacks/observer/{window|report}`, authenticated with the OBSERVER's
 //!   callback token; the host maps it to the session it observes. Answers
 //!   200 with a LedgerToolEnvelope, like the ledger callbacks.
-//! - The owner: `GET`/`PUT /api/profiles/{id}/observer` (the settings) and
+//! - The owner: `GET`/`POST /api/profiles/{id}/observer` (the settings) and
 //!   `POST /api/sessions/{id}/ledger/observe` (queue a pass now).
 //! - The operator's scheduler: `POST /api/maintenance/observe` runs the passes
 //!   that are due. Like scheduled jobs there is no in-process timer: a run's
@@ -64,7 +64,9 @@ record AuthorizedObserver {
   tenantScope: CloudAgents.Pg.TenantScope
 }
 
-func authorizeObserver(observerSessionId: in String, authHeaderValue: in String): Result[AuthorizedObserver, Web.ApiError] {
+func authorizeObserver(
+  observerSessionId: in String, authHeaderValue: in String
+): Result[AuthorizedObserver, Web.ApiError] {
   val storedHash = match CloudAgents.SessionStore.callbackTokenHashForSession(observerSessionId) {
     case Ok(Some(t)) -> t
     case Ok(None) -> return Err(Web.notFound("Session not found"))
@@ -78,7 +80,10 @@ func authorizeObserver(observerSessionId: in String, authHeaderValue: in String)
     case Ok(None) -> return Err(Web.notFound("Session not found"))
     case Err(e) -> return Err(dbError(e))
   }
-  val observed = match observedSessionOf(observerSessionId, sc) { case Ok(s) -> s; case Err(e) -> return Err(dbError(e)) }
+  val observed = match observedSessionOf(observerSessionId, sc) {
+    case Ok(s) -> s
+    case Err(e) -> return Err(dbError(e))
+  }
   if observed.length.toInt() == 0 {
     // A valid token, but this session observes nothing: not an observer.
     return Err(Web.notFound("this session is not a ledger observer"))
@@ -168,8 +173,8 @@ pub func getObserverSettingsHandler(pid: in String): Result[ObserverSettings, We
   }
 }
 
-/// `PUT /api/profiles/{id}/observer`.
-pub func putObserverSettingsHandler(pid: in String, body: in String): Result[ObserverSettings, Web.ApiError] {
+/// `POST /api/profiles/{id}/observer`.
+pub func saveObserverSettingsHandler(pid: in String, body: in String): Result[ObserverSettings, Web.ApiError] {
   ownedProfile(pid)?
   val st = match decodeSettings(body) {
     case Some(s) -> s
@@ -282,7 +287,9 @@ pub func observerStatusHandler(sessionId: in String): Result[ObserverStatus, Web
       pending = st.pending,
       lastPassAt = st.lastPassAt,
       lastError = st.lastError,
-      passesToday = toString(passesToday(st.passDay, st.passesToday, CloudAgents.Repository.nowMillisLong())),
+      passesToday = toString(
+        passesToday(st.passDay, st.passesToday, CloudAgents.Repository.nowMillisLong())
+      ),
       maxPassesPerDay = settings.maxPassesPerDay
     )
   )
@@ -484,7 +491,13 @@ func withWindowClosed(st: in ObserverState): ObserverState {
 
 // Persist a pass's outcome: `counted` passes count towards the daily cap and
 // pace mid-run passes.
-func recordOutcome(sc: in CloudAgents.Pg.TenantScope, st: in ObserverState, problem: in String, counted: in Bool, now: in Long): Unit {
+func recordOutcome(
+  sc: in CloudAgents.Pg.TenantScope,
+  st: in ObserverState,
+  problem: in String,
+  counted: in Bool,
+  now: in Long,
+): Unit {
   var day = st.passDay
   var count = st.passesToday
   var last = st.lastPassAt
@@ -545,7 +558,10 @@ func recordOutcome(sc: in CloudAgents.Pg.TenantScope, st: in ObserverState, prob
 /// is kept, so nothing is reported twice). Runs as the observed session's
 /// owner (the caller stamped the identity).
 pub func ensureObserverSession(
-  facts: in SessionRunFacts, sc: in CloudAgents.Pg.TenantScope, settings: in ObserverSettings, st: in ObserverState
+  facts: in SessionRunFacts,
+  sc: in CloudAgents.Pg.TenantScope,
+  settings: in ObserverSettings,
+  st: in ObserverState,
 ): Result[String, String] {
   val key = observerConfigKey(settings)
   if st.observerSessionId.length.toInt() > 0 and st.configHash == key {

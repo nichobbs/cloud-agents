@@ -288,7 +288,9 @@ pub async func createRunnerContainer(
       var credValues: slice[String] = []
       var i = 0
       while i < creds.length {
-        if not (isObserver and CloudAgents.Ledger.ObserverPolicy.isRepoCredential(creds[i].name)) {
+        // An observer receives only its harness's model credentials
+        // (docs/session-ledger.md §10): never a repository or cloud token.
+        if not isObserver or CloudAgents.Ledger.ObserverPolicy.observerMayReceiveCredential(harness, creds[i].name) {
           credNames = credNames.append(creds[i].name)
           credValues = credValues.append(creds[i].value)
         }

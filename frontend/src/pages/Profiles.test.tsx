@@ -107,12 +107,12 @@ describe('Profiles harness availability (#523/#599)', () => {
     expect(claudeOption).not.toBeDisabled();
   });
 
-  it('enables every harness option (incl. gemini) when availability is unknown (fail-open)', async () => {
+  it('enables every harness option (incl. gemini and antigravity) when availability is unknown (fail-open)', async () => {
     vi.mocked(enabledHarnesses).mockResolvedValue(null);
     render(<Profiles />);
 
     await screen.findByText('No profiles yet — create one above.');
-    for (const id of ['claude', 'codex', 'opencode', 'gemini']) {
+    for (const id of ['claude', 'codex', 'opencode', 'gemini', 'antigravity']) {
       expect(screen.getByRole('option', { name: id })).not.toBeDisabled();
     }
   });
