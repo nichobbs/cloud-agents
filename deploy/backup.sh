@@ -4,7 +4,9 @@
 #     safe while the api container is running and writing in WAL mode; a raw
 #     file copy of a live WAL database can capture a torn state);
 #   - artifact and chat-attachment bytes under CLOUD_AGENTS_DATA_DIR;
-#   - the user credential volume (user_data, mounted at /user-home).
+#   - the user credential volume (user_data, mounted at /user-home);
+#   - the Postgres database (pg_dump custom format from the running postgres
+#     container, checked with pg_restore --list).
 #
 # Schedule via cron:
 #   0 3 * * * /opt/cloud-agents/deploy/backup.sh >> /var/log/cloud-agents-backup.log 2>&1
@@ -15,11 +17,14 @@
 #                          must match the value the compose file was deployed with)
 #   USER_DATA_VOLUME       name of the user_data volume (default deploy_user_data;
 #                          Coolify assigns its own project prefix, see COOLIFY.md)
+#   PG_CONTAINER           name of the postgres container (default
+#                          deploy-postgres-1; on Coolify see COOLIFY.md)
 set -euo pipefail
 
 BACKUP_DIR="${BACKUP_DIR:-/opt/cloud-agents/backups}"
 DATA_DIR="${CLOUD_AGENTS_DATA_DIR:-/var/lib/cloud-agents}"
 VOLUME="${USER_DATA_VOLUME:-deploy_user_data}"
+PG_CONTAINER="${PG_CONTAINER:-deploy-postgres-1}"
 STAMP="$(date +%Y%m%d-%H%M%S)"
 DB_FILE="cloud-agents.db"
 
@@ -34,6 +39,10 @@ if [ ! -f "${DATA_DIR}/${DB_FILE}" ]; then
 fi
 if ! docker volume inspect "${VOLUME}" >/dev/null 2>&1; then
     echo "backup failed: volume ${VOLUME} not found (check USER_DATA_VOLUME)" >&2
+    exit 1
+fi
+if [ "$(docker inspect -f '{{.State.Running}}' "${PG_CONTAINER}" 2>/dev/null)" != "true" ]; then
+    echo "backup failed: postgres container ${PG_CONTAINER} is not running (check PG_CONTAINER)" >&2
     exit 1
 fi
 
@@ -61,9 +70,19 @@ docker run --rm \
     alpine \
     tar czf "/backup/user-home-${STAMP}.tar.gz" -C /data .
 
+# pg_dump takes a consistent snapshot while the API is writing. The
+# superuser connects over the container's local socket, so no password is
+# needed here. A dump that pg_restore cannot list is deleted, not kept.
+docker exec "${PG_CONTAINER}" pg_dump -U postgres -d cloudagents -Fc > "${BACKUP_DIR}/pg-${STAMP}.dump"
+if ! docker exec -i "${PG_CONTAINER}" pg_restore --list < "${BACKUP_DIR}/pg-${STAMP}.dump" >/dev/null; then
+    rm -f "${BACKUP_DIR}/pg-${STAMP}.dump"
+    echo "backup failed: pg_dump output for ${PG_CONTAINER} is not a readable archive" >&2
+    exit 1
+fi
+
 # Retain the 14 most recent archives of each kind.
-for prefix in db files user-home; do
+for prefix in db files user-home pg; do
     ls -1t "${BACKUP_DIR}/${prefix}-"* 2>/dev/null | tail -n +15 | xargs -r rm -f
 done
 
-echo "backup complete: ${BACKUP_DIR}/{db,files,user-home}-${STAMP}.*"
+echo "backup complete: ${BACKUP_DIR}/{db,files,user-home,pg}-${STAMP}.*"

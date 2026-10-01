@@ -107,10 +107,86 @@ services:
       - CLOUD_AGENTS_ARTIFACTS_DIR=/var/lib/cloud-agents/artifacts
       - CLOUD_AGENTS_ATTACHMENTS_DIR=/var/lib/cloud-agents/attachments
       - LYRIC_CONFIG_WEB_SERVER_PORT=8080
+      # The operator bearer token. Required: the maintenance poller below
+      # authenticates with it, and without it any request that carries no
+      # Authorization header is served as the operator, even when GitHub
+      # OAuth is configured (docs/CAPABILITY_AUDIT.md §2.2).
+      - CLOUD_AGENTS_API_TOKEN=${CLOUD_AGENTS_API_TOKEN:?set CLOUD_AGENTS_API_TOKEN in Coolify's environment variables}
+      # The Postgres service role (docs/phase11-postgres-tenancy.md §5.1).
+      # Until the cut-over the API still stores everything in SQLite; with
+      # this set, startup checks that the role cannot bypass row-level
+      # security and that the schema's roles exist, and refuses to start
+      # otherwise.
+      - LYRIC_CONFIG_DB_CONNECTION_URL=postgres://cloudagents_app:${CLOUD_AGENTS_PG_APP_PASSWORD:?set CLOUD_AGENTS_PG_APP_PASSWORD in Coolify's environment variables}@postgres:5432/cloudagents
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
       - user_data:/user-home
       - /var/lib/cloud-agents:/var/lib/cloud-agents
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    restart: unless-stopped
+
+  # Postgres (docs/phase11-postgres-tenancy.md §8). On first start with an
+  # empty volume, deploy/postgres/init.sh runs provision.sql to create the
+  # cloudagents database and its roles. The passwords must be letters and
+  # digits only (openssl rand -hex 24). The superuser password is used only
+  # inside this container; never give it to the API.
+  postgres:
+    build:
+      context: .
+      dockerfile: deploy/postgres.Dockerfile
+    environment:
+      - POSTGRES_PASSWORD=${CLOUD_AGENTS_PG_SUPERUSER_PASSWORD:?set CLOUD_AGENTS_PG_SUPERUSER_PASSWORD in Coolify's environment variables}
+      - CLOUD_AGENTS_PG_OWNER_PASSWORD=${CLOUD_AGENTS_PG_OWNER_PASSWORD:?set CLOUD_AGENTS_PG_OWNER_PASSWORD in Coolify's environment variables}
+      - CLOUD_AGENTS_PG_APP_PASSWORD=${CLOUD_AGENTS_PG_APP_PASSWORD:?set CLOUD_AGENTS_PG_APP_PASSWORD in Coolify's environment variables}
+    volumes:
+      - pg_data:/var/lib/postgresql/data
+    healthcheck:
+      # Over TCP, so it only passes once first-start provisioning has
+      # finished (the init scripts run with TCP disabled).
+      test: ["CMD", "pg_isready", "-h", "127.0.0.1", "-U", "postgres", "-d", "cloudagents"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+    mem_limit: 1g
+    restart: unless-stopped
+
+  # Applies the Postgres schema as cloudagents_owner (`--migrate`), then
+  # exits; the API starts only after it succeeds. The owner's credentials go
+  # only to this one-shot container, never to the API.
+  migrate:
+    build:
+      context: .
+      dockerfile: deploy/api.Dockerfile
+    command: ["--migrate"]
+    environment:
+      - CLOUD_AGENTS_MIGRATE_DATABASE_URL=postgres://cloudagents_owner:${CLOUD_AGENTS_PG_OWNER_PASSWORD:?set CLOUD_AGENTS_PG_OWNER_PASSWORD in Coolify's environment variables}@postgres:5432/cloudagents
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: "no"
+    exclude_from_hc: true
+
+  # The maintenance poller (deploy/maintenance.sh): the API has no
+  # in-process timer, so this calls its maintenance endpoints on a schedule.
+  # /api/maintenance/reap is what frees sessions whose run died (a restart,
+  # a crash); without it they stay RUNNING. Intervals are in seconds; 0
+  # disables an endpoint.
+  maintenance:
+    build:
+      context: .
+      dockerfile: deploy/maintenance.Dockerfile
+    environment:
+      - CLOUD_AGENTS_API_TOKEN=${CLOUD_AGENTS_API_TOKEN:?set CLOUD_AGENTS_API_TOKEN in Coolify's environment variables}
+      - CLOUD_AGENTS_API_URL=http://api:8080
+      - MAINTENANCE_REAP_SECONDS=${MAINTENANCE_REAP_SECONDS:-60}
+      - MAINTENANCE_TRIGGER_JOBS_SECONDS=${MAINTENANCE_TRIGGER_JOBS_SECONDS:-60}
+      - MAINTENANCE_DRAIN_GRAPH_INGEST_SECONDS=${MAINTENANCE_DRAIN_GRAPH_INGEST_SECONDS:-60}
+      - MAINTENANCE_OBSERVE_SECONDS=${MAINTENANCE_OBSERVE_SECONDS:-60}
+      - MAINTENANCE_LEDGER_SYNC_SECONDS=${MAINTENANCE_LEDGER_SYNC_SECONDS:-300}
+    depends_on:
+      - api
     restart: unless-stopped
 
   frontend:
@@ -230,4 +306,5 @@ services:
 
 volumes:
   user_data:
+  pg_data:
   caddy_config:

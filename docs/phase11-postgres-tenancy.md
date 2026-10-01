@@ -19,7 +19,8 @@ Goals:
   This follows Testamur ADR-0019.
 - Organisation membership from two sources: GitHub organisation membership
   synced at sign-in, and native organisations with invitations.
-- A one-shot, verified export of an existing SQLite database into Postgres.
+- No data migration: production holds no data worth keeping, so the
+  cut-over starts on an empty database (owner, 2026-10-01; §7).
 - Live-Postgres test suites in CI, including a two-tenant isolation proof.
 - SQLite driver and SQLite-specific SQL deleted once production has been
   migrated (ADR-008: no second backend kept).
@@ -32,8 +33,8 @@ Non-goals (later phases or explicitly deferred):
 - Organisation-wide session sharing. Phase 11 keeps today's visibility rule:
   a user sees only the sessions they created, now also scoped to the active
   organisation (§5.4). Sharing is a later product decision.
-- Managed Postgres. Phase 11 targets a Coolify-hosted Postgres instance on
-  the existing VM; the move to managed Postgres happens at ADR-008 phase 4
+- Managed Postgres. Phase 11 targets a Postgres service in the app's own
+  compose stack on the existing VM (§8); the move to managed Postgres happens at ADR-008 phase 4
   and must be a connection-string change only (§8).
 
 ## 2. Current state (what is being replaced)
@@ -215,10 +216,9 @@ listed in the PR and in `docs/phase9-message-search.md`.
   operator identity when unset. Both properties would defeat the fail-closed
   guarantee.
 - **No default tenant.** `TenantScope` has no default and no fallback. It is
-  constructed in exactly four places: the auth middleware (from a validated
-  membership), the callback-token resolver (from `session_routes`), the
-  maintenance claim functions (§5.3, per claimed item), and the export tool
-  (§7). Token/open mode resolves the `default` user's personal tenant
+  constructed in exactly three places: the auth middleware (from a validated
+  membership), the callback-token resolver (from `session_routes`), and the
+  maintenance claim functions (§5.3, per claimed item). Token/open mode resolves the `default` user's personal tenant
   explicitly in the middleware, not as a fallback. A scope with an empty
   tenant or user id is rejected by the store layer with an error before any
   SQL runs.
@@ -370,7 +370,7 @@ defers sharing semantics.
 ### 6.1 Personal organisations
 
 Every user has exactly one `personal` tenant, id `personal:<user id>`,
-created on first sign-in (or by the export for existing users), with the
+created on first sign-in, with the
 user as `owner`. Token/open
 mode maps to the `default` user's personal tenant.
 
@@ -424,38 +424,15 @@ members, invitations, accept). The frontend gains an organisation switcher
 organisation settings page. `CLOUD_AGENTS_WHITELIST` keeps gating who may
 sign in at all; organisation membership gates what they can access.
 
-## 7. SQLite export
+## 7. SQLite export (dropped)
 
-A server subcommand, `CloudAgents.dll migrate-from-sqlite --sqlite <path>`,
-run once with the API stopped.
+Dropped (owner, 2026-10-01): production holds no data worth keeping, so the
+cut-over (slice E) starts the service on an empty, freshly migrated
+database instead of exporting SQLite. Slice D is not built.
 
-It cannot run as `cloudagents_app` or `cloudagents_owner`: under `FORCE ROW
-LEVEL SECURITY` neither can see all tenants' rows, so an emptiness check or
-a row count would silently see nothing. It connects as
-`cloudagents_migrator`, a role with `BYPASSRLS`, `SELECT` and `INSERT` on
-every table (granted by the baseline migration) and nothing else, created
-`NOLOGIN`
-and enabled (`ALTER ROLE ... LOGIN`) only for the cut-over, via its own DSN
-`CLOUD_AGENTS_EXPORT_DATABASE_URL`. The runbook disables it again
-immediately afterwards, and the service's startup self-check fails if that
-role can log in. Inserts still set `tenant_id` explicitly on every row.
-Steps:
-
-1. Refuses to run unless the target database has the baseline schema and
-   no tenant-owned rows.
-2. Creates a `users` row and a personal tenant for every distinct `user_id`
-   in the source, and a `user_sync_state` row per user.
-3. Copies every table in dependency order, converting text to typed
-   values. User-owned tables (§4.3a) keep their `user_id` keys, and each
-   source session's `callback_token_hash` populates its `session_routes`
-   row. Any value that fails conversion aborts the whole export with the
-   table, row key and value; nothing is silently coerced or dropped.
-4. Runs in a single transaction; on success prints per-table row counts
-   for source and target and exits non-zero if any differ.
-
-The runbook gains the cut-over procedure: stop the API, back up the SQLite
-file (`backup.sh`), run migrations, run the export, switch the environment
-to the Postgres DSN, start the API, then smoke-test.
+`provision.sql` still creates `cloudagents_migrator` (`NOLOGIN`,
+`BYPASSRLS`), and the startup self-check still refuses to serve while it can
+log in. Nothing uses it now; slice E removes the role and its check.
 
 ## 8. Deployment
 
@@ -468,28 +445,42 @@ to the Postgres DSN, start the API, then smoke-test.
   (as `cloudagents_owner`), so they stay versioned with the schema.
   `CREATEROLE` and `BYPASSRLS` need a superuser, which is why this step is
   separate from `--migrate`.
-- Standalone compose (`deploy/docker-compose.yml`): a `postgres` service
-  (pinned image, named volume, healthcheck, memory limit), with the API
-  depending on it. It runs `provision.sql` from the image's init directory
-  on first start.
-- Coolify: a separate Coolify Postgres resource (not in the compose file).
-  Coolify creates it with a superuser, and the runbook has the operator run
-  `provision.sql` once through Coolify's database terminal (or `psql` over
-  the resource's internal URL). Only the service, migration and export
-  DSNs, never the superuser's, go into the API's environment. The
-  cut-over's temporary `ALTER ROLE cloudagents_migrator LOGIN` and the
-  `NOLOGIN` afterwards are also superuser steps in the runbook.
+- Both compose files (`deploy/docker-compose.yml`, and
+  `deploy/docker-compose.coolify.yml` for Coolify) run Postgres as a
+  service of the app's stack (owner, 2026-10-01; this replaces a separate
+  Coolify database resource):
+  - `postgres`: `deploy/postgres.Dockerfile` (pinned `postgres` image),
+    named volume `pg_data`, healthcheck over TCP (so it passes only after
+    first-start provisioning), 1 GB memory limit, no published port. On
+    first start `deploy/postgres/init.sh` runs `provision.sql` with the
+    owner and app passwords from the environment
+    (`CLOUD_AGENTS_PG_OWNER_PASSWORD`, `CLOUD_AGENTS_PG_APP_PASSWORD`,
+    letters and digits only) and a random migrator password. The
+    superuser password (`CLOUD_AGENTS_PG_SUPERUSER_PASSWORD`) stays inside
+    that container.
+  - `migrate`: a one-shot run of the API image with `--migrate` and the
+    owner DSN, after `postgres` is healthy. The owner's credentials reach
+    only this container.
+  - `api`: starts after `migrate` succeeds, with only the service DSN
+    (`LYRIC_CONFIG_DB_CONNECTION_URL`, as `cloudagents_app`). Until slice E
+    it still serves from SQLite; the startup self-check runs against
+    Postgres on every start.
+  - `maintenance`: the poller for the operator-only maintenance endpoints
+    (`deploy/maintenance.sh`, one loop per endpoint, intervals from
+    `MAINTENANCE_*_SECONDS`), authenticating with
+    `CLOUD_AGENTS_API_TOKEN`, which both compose files now require. It is
+    what runs the §5.3a sweeps on a schedule.
 - The startup self-check (§5.1) also verifies that the expected roles
   exist and that the service role has its grants. If not, it exits with a
   message naming the missing role or grant and pointing at `provision.sql`,
   rather than failing on the first query.
 - Managed-provider note for ADR-008 phase 4: some managed Postgres
-  offerings do not grant `BYPASSRLS`. Only the one-off export needs it, and
-  that runs on the Coolify instance before the move, so the design does not
-  depend on it afterwards. Coolify's scheduled
-  database backups to S3-compatible storage are configured at least hourly;
-  `COOLIFY.md` documents it.
-- `backup.sh` gains a `pg_dump` path for the standalone deployment.
+  offerings do not grant `BYPASSRLS`. Nothing needs it now that the export
+  is dropped (§7).
+- Backups: Coolify's scheduled database backups cover database resources,
+  not compose services, so `backup.sh` takes a `pg_dump` (custom format,
+  checked with `pg_restore --list`) from the running `postgres` container
+  on both deployments.
 - Only standard Postgres features are used, and the service connects via
   DSN environment variables, so moving to managed Postgres at ADR-008
   phase 4 is dump, restore and a DSN change.
@@ -497,7 +488,7 @@ to the Postgres DSN, start the API, then smoke-test.
 ## 9. Delivery slices
 
 Each slice is its own PR, green and deployable. Production stays on SQLite
-until slice E. Organisations (slice F) come after cut-over, because
+until slice E; slice D is dropped (§7). Organisations (slice F) come after cut-over, because
 memberships, invitations and organisation switching need tables that exist
 only in Postgres; nothing that production runs before cut-over depends on
 Postgres-only data.
@@ -536,12 +527,11 @@ Postgres-only data.
   BINARY collation; epoch-millisecond strings convert to and from
   `timestamptz` with exact integer interval arithmetic
   (`CloudAgents.Pg.msIn`/`msOut`), never `to_timestamp(float)`.
-- **D. Export tool** (§7), creating each user's personal tenant with the
-  same deterministic id as slice B, with a test that exports a fixture
-  SQLite database containing every table and verifies counts and typed
-  values.
+- **D. Export tool.** Dropped (§7): the cut-over starts on an empty
+  database.
 - **E. Cut-over.** Point the repository facade at the Postgres
-  implementations, add `session_routes`-based callback resolution, runbook
+  implementations, starting on the empty database the compose stack has
+  already provisioned and migrated, add `session_routes`-based callback resolution, runbook
   and compose changes, production migration, then deletion of
   `CloudAgents.Sqlite`, the SQLite SQL builders and the SQLite NuGet
   packages in the same PR. Because signatures were settled in slice B, this
@@ -577,22 +567,18 @@ Postgres-only data.
 - Two concurrent callers of the same claim function never receive the same
   item while its lease is live, and an item whose lease has expired is
   claimable again.
-- The export's precondition check and row counts see every tenant's rows
-  (verified against a target seeded with rows for two tenants), and the
-  service refuses to start while `cloudagents_migrator` can log in.
+- The service refuses to start while `cloudagents_migrator` can log in
+  (until slice E removes the role, §7).
 - Removing a member from a connected GitHub organisation removes their
   cloud-agents membership within one sync interval without a sign-in.
 - A user's credentials are visible to them whichever organisation is
   active, invisible to every other user including admins of a shared
   organisation, and readable at sign-in before a tenant is chosen.
 - A profile cannot reference another user's credential.
-- After the export, every exported session's MCP callback authenticates
-  via `session_routes`.
+- After the cut-over, every session's MCP callback authenticates via
+  `session_routes`.
 - On a database without `provision.sql` applied, the service exits with an
   error naming the missing role.
-- The export of a fixture database reproduces every row with matching
-  counts and typed values, and aborts with a precise error on a malformed
-  value.
 - GitHub sync adds, updates and removes `github`-sourced memberships and
   never changes `native` ones or demotes an owner.
 - After slice E, no SQLite code or package remains, and `grep -r sqlLiteral
@@ -611,3 +597,9 @@ Postgres-only data.
    heartbeat, a run stranded after 2 minutes without one, 5-minute leases,
    and a scheduled run interrupted by an instance crash marked failed rather
    than re-run (owner, 2026-09-30).
+4. No SQLite export (owner, 2026-10-01): production holds no data worth
+   keeping, so slice D is dropped and the cut-over starts on an empty
+   database (§7). Postgres runs as a service in the app's compose stack on
+   both the standalone and the Coolify deployment, backed up by
+   `backup.sh`'s `pg_dump`, rather than as a separate Coolify database
+   resource (§8).

@@ -200,6 +200,9 @@ jobs:
             docker/split-ca-bundle.sh \
             docker/inject-library.sh \
             scripts/check-compose-paths.sh \
+            scripts/test-deploy-images.sh \
+            deploy/maintenance.sh \
+            deploy/postgres/init.sh \
             scripts/repro-compiler-bug.sh \
             scripts/repro-web-bug.sh \
             scripts/repro-web-request-crash.sh \
