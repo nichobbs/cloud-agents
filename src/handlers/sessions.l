@@ -1619,8 +1619,16 @@ func sweepStrandedRun(r: in CloudAgents.SessionStore.StrandedRun): Bool {
 ///   only while it is still WARM on that container, so a run that has since
 ///   started keeps its container and two reapers never both stop it.
 ///
+/// A system-wide, cross-tenant sweep, so it is restricted to the operator
+/// identity like the other maintenance endpoints (triggerDueJobsHandler,
+/// ledgerSyncHandler): an ordinary OAuth user must not be able to stop other
+/// tenants' warm containers or fail their stranded runs.
+///
 /// Returns `{"reaped":N,"stranded":M}`.
 pub func reapContainers(): Result[String, Web.ApiError] {
+  if CloudAgents.Auth.currentUserId() != CloudAgents.Auth.operatorUserId() {
+    return Err(Web.unauthorized("the container reaping sweep may only be triggered by the operator identity"))
+  }
   val stranded = match CloudAgents.SessionStore.claimStrandedRuns(maxStrandedRunsPerSweep) {
     case Ok(t) -> t
     case Err(e) -> return Err(Web.internalError("failed to list stranded runs: " + CloudAgents.Sqlite.dbErrorMessage(e)))

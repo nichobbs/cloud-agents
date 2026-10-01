@@ -199,23 +199,34 @@ events as "refresh a panel" signals (`frontend/src/lib/api.ts:307-337`,
 
 ### 2.2 Auth model
 
-`AuthMiddleware` (`src/main.l:66-95`) → `CloudAgents.OAuth.authenticateRequest`
-(`src/handlers/oauth.l:691-704`):
+`AuthMiddleware` (`src/main.l`) exempts `/api/health`, `/api/auth/*` and the
+container-callback routes, then calls `CloudAgents.OAuth.authenticateRequest`
+(`src/handlers/oauth.l`):
 
 1. Bearer == `CLOUD_AGENTS_API_TOKEN` (constant-time) → operator identity.
-2. Otherwise, if GitHub OAuth is configured → validate as GitHub token
-   (cached by SHA-256; optional `CLOUD_AGENTS_WHITELIST` of GitHub user IDs);
-   tenant key = `gh-<github-id>`.
-3. Otherwise → `enforce()`: **requests are allowed through unauthenticated
-   unless the route touches credentials** (`src/handlers/auth.l:499-504`).
-   i.e. **a deployment with neither `CLOUD_AGENTS_API_TOKEN` nor OAuth
-   configured is an open, unauthenticated session runner by design** — the
-   README warns about this (`README.md:24-31`), though its blanket "no
-   endpoint currently enforces authentication" wording is stale (enforcement
-   landed with the Lyric.Web 0.4.26 migration; it's now *conditional*, not
-   absent).
+2. If GitHub OAuth is configured:
+   - any other bearer → validated as a GitHub token (cached by SHA-256;
+     optional `CLOUD_AGENTS_WHITELIST` of GitHub user IDs); tenant key =
+     `gh-<github-id>`;
+   - **no bearer → 401 `MissingToken` on every route**, whether or not
+     `CLOUD_AGENTS_API_TOKEN` is set. Before this was fixed, a deployment
+     with OAuth configured but no static token ran every bearer-less request
+     as the operator — maintenance endpoints and session creation included —
+     and the compose files had to require `CLOUD_AGENTS_API_TOKEN` to close
+     it (#1211).
+3. Otherwise (no OAuth) → `CloudAgents.Auth.enforce` (`src/handlers/auth.l`):
+   with a static token configured, a matching bearer is required. With
+   **neither `CLOUD_AGENTS_API_TOKEN` nor OAuth configured, every request is
+   refused (401 `AuthNotConfigured`)** unless the operator opts in with
+   `CLOUD_AGENTS_ALLOW_UNAUTHENTICATED=1`, which runs requests as the
+   operator, unauthenticated. Credential routes refuse even with the opt-in.
+   The server logs a startup `WARNING` in either unconfigured state.
 4. Container callback routes authenticate against a per-session minted
-   callback bearer token instead (`src/handlers/callbacks.l:163`).
+   callback bearer token instead (`src/handlers/callbacks.l`).
+
+The maintenance endpoints (`reap`, `trigger-jobs`, `drain-graph-ingest`,
+`ledger-sync`, `observe`) additionally require the resolved identity to be
+the operator, so an OAuth user cannot run a cross-tenant sweep.
 
 Ownership scoping: per-request identity is stamped thread-locally and every
 repository query is owner-scoped (`src/main.l:79-89`, throughout
@@ -437,7 +448,7 @@ Gaps relative to a credential-broker future:
      Verdict: **the current storage/runtime does not survive the capture
      workload; plan queue + PG from day one of the adapter.**
 3. **Containment-plane posture is currently inverted from the platform's.**
-   Open-by-default auth, full-egress default network policy, hostname-only
+   Open-by-default auth (since closed, §2.2), full-egress default network policy, hostname-only
    SSRF checks, auto-trusted repo `.mcp.json` (ADR-007), pull-based
    maintenance with no scheduler in the box. All are documented, deliberate
    personal-scale trade-offs — but every one must flip to fail-closed before
@@ -470,11 +481,13 @@ Ordered; sizes S/M/L. 1–3 are decision-gating; 4–7 build the §4.1 adapter;
    bus-factor in the analysis.
    *Acceptance: ADR merged in `docs/DECISIONS.md` with a costed migration
    path; platform Phase-3 plan references it.*
-3. **(S) Fail-closed auth default.** Require `CLOUD_AGENTS_API_TOKEN` or
-   OAuth on all non-health/non-auth/non-callback routes; make open mode an
-   explicit `CLOUD_AGENTS_ALLOW_UNAUTHENTICATED=1` opt-in.
-   *Acceptance: on a clean deployment with no auth env vars,
-   `GET /api/sessions` returns 401; e2e-http.sh covers it.*
+3. **(S) Fail-closed auth default. Done.** `CLOUD_AGENTS_API_TOKEN` or
+   OAuth is required on all non-health/non-auth/non-callback routes; open
+   mode is an explicit `CLOUD_AGENTS_ALLOW_UNAUTHENTICATED=1` opt-in, and
+   with OAuth configured a bearer-less request is always refused (§2.2).
+   *Acceptance met: on a clean deployment with no auth env vars,
+   `GET /api/sessions` returns 401; `scripts/e2e-http.sh` covers it, the
+   OAuth-without-static-token case and the opt-in.*
 4. **(M) Structured event capture from the harnesses.** Switch the claude
    entrypoint to `--output-format stream-json --include-partial-messages`
    (equivalents for codex/opencode/gemini where available), persist one row

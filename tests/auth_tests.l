@@ -59,20 +59,61 @@ test "Constant-time equality" {
 }
 
 test "Static-token authorization" {
-  // No token configured -> open (general routes), resolves the operator id.
-  assertEqual(outcomeLabel(authorize("", "")), "allow:default", "unconfigured token allows")
-  assertEqual(outcomeLabel(authorize("Bearer anything", "")), "allow:default", "unconfigured ignores header")
+  // No token configured -> refused unless the operator opted in to open access.
+  assertEqual(
+    outcomeLabel(authorize("", "", false)),
+    "deny:authentication is not configured; access is disabled",
+    "unconfigured token refuses by default"
+  )
+  assertEqual(
+    outcomeLabel(authorize("Bearer anything", "", false)),
+    "deny:authentication is not configured; access is disabled",
+    "unconfigured refuses whatever bearer is presented"
+  )
+  assertEqual(outcomeLabel(authorize("", "", true)), "allow:default", "opted-in open access allows")
+  assertEqual(
+    outcomeLabel(authorize("Bearer anything", "", true)),
+    "allow:default",
+    "opted-in open access ignores header"
+  )
 
   // Configured token -> must present a matching bearer. Messages are
   // scheme-neutral (no "GitHub"), since this is the static-token flow.
-  assertEqual(outcomeLabel(authorize("Bearer secret", "secret")), "allow:default", "correct token allowed")
-  assertEqual(outcomeLabel(authorize("Bearer wrong", "secret")), "deny:invalid or expired token", "wrong token denied")
-  assertEqual(outcomeLabel(authorize("", "secret")), "deny:missing Authorization bearer token", "missing header denied")
+  assertEqual(outcomeLabel(authorize("Bearer secret", "secret", false)), "allow:default", "correct token allowed")
   assertEqual(
-    outcomeLabel(authorize("Basic secret", "secret")),
+    outcomeLabel(authorize("Bearer wrong", "secret", false)),
+    "deny:invalid or expired token",
+    "wrong token denied"
+  )
+  assertEqual(
+    outcomeLabel(authorize("", "secret", false)),
+    "deny:missing Authorization bearer token",
+    "missing header denied"
+  )
+  assertEqual(
+    outcomeLabel(authorize("Basic secret", "secret", false)),
     "deny:missing Authorization bearer token",
     "wrong scheme denied"
   )
+  // The opt-in does not weaken a configured token.
+  assertEqual(
+    outcomeLabel(authorize("", "secret", true)),
+    "deny:missing Authorization bearer token",
+    "opt-in ignored once a token is configured"
+  )
+  assertEqual(
+    outcomeLabel(authorize("Bearer wrong", "secret", true)),
+    "deny:invalid or expired token",
+    "opt-in does not admit a wrong token"
+  )
+}
+
+test "Open-access opt-in accepts only the exact value 1" {
+  assertTrue(isAllowUnauthenticatedValue("1"), "1 opts in")
+  assertFalse(isAllowUnauthenticatedValue(""), "unset stays closed")
+  assertFalse(isAllowUnauthenticatedValue("0"), "0 stays closed")
+  assertFalse(isAllowUnauthenticatedValue("true"), "true stays closed")
+  assertFalse(isAllowUnauthenticatedValue(" 1"), "padded value stays closed")
 }
 
 test "Secret routes refuse unconfigured auth" {
@@ -130,13 +171,27 @@ test "Per-request enforcement classifies secret routes" {
   assertFalse(routeRequiresSecret("/api/sessions"), "sessions are not secret")
   // enforce() picks the right scheme per route.
   assertEqual(
-    outcomeLabel(enforce("/api/credentials", "", "")),
+    outcomeLabel(enforce("/api/credentials", "", "", false)),
     "deny:authentication is not configured; access is disabled",
     "secret route refuses unconfigured"
   )
-  assertEqual(outcomeLabel(enforce("/api/prompts", "", "")), "allow:default", "general route open when unconfigured")
   assertEqual(
-    outcomeLabel(enforce("/api/credentials", "Bearer s", "s")),
+    outcomeLabel(enforce("/api/credentials", "", "", true)),
+    "deny:authentication is not configured; access is disabled",
+    "secret route refuses unconfigured even with the open-access opt-in"
+  )
+  assertEqual(
+    outcomeLabel(enforce("/api/prompts", "", "", false)),
+    "deny:authentication is not configured; access is disabled",
+    "general route refuses when unconfigured by default"
+  )
+  assertEqual(
+    outcomeLabel(enforce("/api/prompts", "", "", true)),
+    "allow:default",
+    "general route open when unconfigured and opted in"
+  )
+  assertEqual(
+    outcomeLabel(enforce("/api/credentials", "Bearer s", "s", false)),
     "allow:default",
     "secret route allows with a correct token"
   )

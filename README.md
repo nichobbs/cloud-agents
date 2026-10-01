@@ -25,9 +25,11 @@ each session shows repo, PR, and CI status for its branch.
 for what's actually shipped vs. designed, and
 [`docs/review-2026-07-03.md`](docs/review-2026-07-03.md) /
 [`docs/review-2026-07-03-followup.md`](docs/review-2026-07-03-followup.md) for
-known gaps — notably, **no endpoint currently enforces authentication** and
-output is not yet truly real-time (see the followup review's headline
-finding). Read those before deploying this anywhere reachable by untrusted
+known gaps — notably, output is not yet truly real-time (see the followup
+review's headline finding). The API refuses every request until
+`CLOUD_AGENTS_API_TOKEN` or GitHub OAuth is configured
+(`CLOUD_AGENTS_ALLOW_UNAUTHENTICATED=1` runs it open, for local development
+only; see [`docs/CAPABILITY_AUDIT.md`](docs/CAPABILITY_AUDIT.md) §2.2). Read those before deploying this anywhere reachable by untrusted
 traffic.
 
 ## Architecture
