@@ -43,8 +43,8 @@ services:
       - CLOUD_AGENTS_WHITELIST=${CLOUD_AGENTS_WHITELIST:-}
       # GitHub OAuth app credentials (optional). Unset -> oauthConfigured()
       # is false, the frontend never shows "Sign in with GitHub" or
-      # enforces the login guard, and the app is open access — same as
-      # today if you don't set these.
+      # enforces the login guard, and the API accepts only the
+      # CLOUD_AGENTS_API_TOKEN bearer.
       - CLOUD_AGENTS_GITHUB_CLIENT_ID=${CLOUD_AGENTS_GITHUB_CLIENT_ID:-}
       - CLOUD_AGENTS_GITHUB_CLIENT_SECRET=${CLOUD_AGENTS_GITHUB_CLIENT_SECRET:-}
       # Idiomatic Lyric alternative to the two vars above (D046,
@@ -108,9 +108,8 @@ services:
       - CLOUD_AGENTS_ATTACHMENTS_DIR=/var/lib/cloud-agents/attachments
       - LYRIC_CONFIG_WEB_SERVER_PORT=8080
       # The operator bearer token. Required: the maintenance poller below
-      # authenticates with it, and without it any request that carries no
-      # Authorization header is served as the operator, even when GitHub
-      # OAuth is configured (docs/CAPABILITY_AUDIT.md §2.2).
+      # authenticates with it. Without it or GitHub OAuth, the API refuses
+      # every request (docs/CAPABILITY_AUDIT.md §2.2).
       - CLOUD_AGENTS_API_TOKEN=${CLOUD_AGENTS_API_TOKEN:?set CLOUD_AGENTS_API_TOKEN in Coolify's environment variables}
       # The Postgres service role (docs/phase11-postgres-tenancy.md §5.1),
       # where every store lives. Startup checks that the role cannot bypass

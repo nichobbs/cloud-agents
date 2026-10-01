@@ -108,7 +108,8 @@ OAuth setup" below).
 
 The static `CLOUD_AGENTS_API_TOKEN` keeps working as the single-operator
 fallback; a bearer matching it authenticates as the `default` tenant exactly
-as before.
+as before. With OAuth configured, a request that carries no bearer is refused
+(401), whether or not the static token is set.
 
 Validation-cache latencies: whitelist changes — removals *and* additions —
 take effect on the affected user's **next request** (the whitelist is

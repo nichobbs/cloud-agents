@@ -485,6 +485,43 @@ test "a run with a live heartbeat is never taken over" {
   )
 }
 
+// ── The reap sweep is operator-only ──────────────────────────────────────────
+test "reapContainers refuses a non-operator identity" {
+  val dbPath = useFreshTestDb("reap-auth-denied")
+  defer {
+    cleanupTestDb(dbPath)
+  }
+  // A stranded run that a successful sweep would take over: the refusal must
+  // leave it untouched.
+  addPlainSession("reap-denied-1")
+  setSessionColumns("reap-denied-1", "status = 'RUNNING', run_heartbeat_at = '', run_instance = ''")
+  CloudAgents.Auth.setCurrentUserId("gh-42")
+  match reapContainers() {
+    case Ok(_) -> assertTrue(false, "a non-operator identity must not be able to run the reaping sweep")
+    case Err(e) -> assertEqualInt(e.status, 401, "non-operator caller -> 401")
+  }
+  CloudAgents.Auth.setCurrentUserId("")
+  match strandedFor(mustStranded(), "reap-denied-1") {
+    case Some(_) -> ()
+    case None -> assertTrue(false, "a refused sweep leaves the stranded run in place")
+  }
+}
+
+test "reapContainers runs for the operator identity when nothing is reapable" {
+  val dbPath = useFreshTestDb("reap-auth-allowed")
+  defer {
+    cleanupTestDb(dbPath)
+  }
+  // Nothing stranded or warm in a fresh DB, so the sweep never reaches
+  // CloudAgents.Docker and needs no Docker host.
+  CloudAgents.Auth.setCurrentUserId(CloudAgents.Auth.operatorUserId())
+  match reapContainers() {
+    case Ok(body) -> assertEqual(body, "{\"reaped\":0,\"stranded\":0}", "empty sweep summary")
+    case Err(e) -> assertTrue(false, "the operator identity must be allowed to run the sweep: " + toString(e.status))
+  }
+  CloudAgents.Auth.setCurrentUserId("")
+}
+
 test "a RUNNING session with no heartbeat at all is stranded" {
   if not live() {
     return

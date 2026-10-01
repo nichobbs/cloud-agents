@@ -104,22 +104,25 @@ export LYRIC_CONFIG_WEB_SERVER_PORT="$PORT"
 dotnet "$OUT" --port "$PORT" >"$LOG" 2>&1 &
 SERVER_PID=$!
 
-ready=0
-for _ in $(seq 1 60); do
-  if ! kill -0 "$SERVER_PID" 2>/dev/null; then
-    echo "e2e-http: server exited during startup" >&2
+wait_healthy() {
+  local ready=0
+  for _ in $(seq 1 60); do
+    if ! kill -0 "$SERVER_PID" 2>/dev/null; then
+      echo "e2e-http: server exited during startup" >&2
+      sed -e 's/^/  /' "$LOG" >&2
+      exit 1
+    fi
+    code=$(curl -sS --connect-timeout 5 --max-time 10 -o /dev/null -w '%{http_code}' "${BASE}/api/health" 2>/dev/null || echo 000)
+    if [ "$code" = "200" ]; then ready=1; break; fi
+    sleep 1
+  done
+  if [ "$ready" != "1" ]; then
+    echo "e2e-http: server did not become healthy within 60s" >&2
     sed -e 's/^/  /' "$LOG" >&2
     exit 1
   fi
-  code=$(curl -sS --connect-timeout 5 --max-time 10 -o /dev/null -w '%{http_code}' "${BASE}/api/health" 2>/dev/null || echo 000)
-  if [ "$code" = "200" ]; then ready=1; break; fi
-  sleep 1
-done
-if [ "$ready" != "1" ]; then
-  echo "e2e-http: server did not become healthy within 60s" >&2
-  sed -e 's/^/  /' "$LOG" >&2
-  exit 1
-fi
+}
+wait_healthy
 echo "==> server is healthy"
 
 fails=0
@@ -414,6 +417,50 @@ case "$feedback_stdout" in
   *'\"unblocked\":[\"gh:acme/shop#2\"]'*) echo "ok   ledger: finishing #1 auto-unblocks #2" ;;
   *) echo "FAIL ledger: auto-unblock — got: ${feedback_stdout}" >&2; fails=$((fails + 1)) ;;
 esac
+
+# ── Auth modes without a static token (docs/CAPABILITY_AUDIT.md §2.2) ───────
+# Restart the server with CLOUD_AGENTS_API_TOKEN unset in each remaining mode.
+# No request below carries a bearer, so none reaches GitHub: the OAuth client
+# id/secret are placeholders that only make oauthConfigured() true.
+# restart_server VAR=VALUE... — the given variables are set for the new
+# server process only; CLOUD_AGENTS_API_TOKEN is always unset.
+restart_server() {
+  kill "$SERVER_PID" 2>/dev/null || true
+  wait "$SERVER_PID" 2>/dev/null || true
+  (
+    unset CLOUD_AGENTS_API_TOKEN
+    for kv in "$@"; do export "$kv"; done
+    exec dotnet "$OUT" --port "$PORT"
+  ) >"$LOG" 2>&1 &
+  SERVER_PID=$!
+  wait_healthy
+}
+
+# GitHub OAuth configured, no static token: a request with no bearer is
+# refused on every checked route instead of running as the operator — even
+# with the open-access opt-in set, which only applies when nothing is
+# configured.
+restart_server CLOUD_AGENTS_GITHUB_CLIENT_ID=e2e-client-id CLOUD_AGENTS_GITHUB_CLIENT_SECRET=e2e-client-secret CLOUD_AGENTS_ALLOW_UNAUTHENTICATED=1
+echo "==> restarted: GitHub OAuth configured, no static token"
+assert "oauth: health stays open"              GET  "/api/health"               no 200 "status"
+assert "oauth: auth config stays open"         GET  "/api/auth/github/config"   no 200 '"configured":"true"'
+assert "oauth: session list needs a bearer"    GET  "/api/sessions"             no 401 "missing Authorization bearer token"
+assert "oauth: session creation needs a bearer" POST "/api/sessions"            no 401 "missing Authorization bearer token" '{}'
+assert "oauth: reap needs a bearer"            POST "/api/maintenance/reap"     no 401 "missing Authorization bearer token"
+assert "oauth: trigger-jobs needs a bearer"    POST "/api/maintenance/trigger-jobs" no 401 "missing Authorization bearer token"
+assert "oauth: credentials need a bearer"      GET  "/api/credentials"          no 401 "missing Authorization bearer token"
+
+# Nothing configured: refused unless the operator opts in.
+restart_server
+echo "==> restarted: no static token, no OAuth, no opt-in"
+assert "unconfigured: health stays open"       GET  "/api/health"               no 200 "status"
+assert "unconfigured: session list refused"    GET  "/api/sessions"             no 401 "authentication is not configured"
+assert "unconfigured: reap refused"            POST "/api/maintenance/reap"     no 401 "authentication is not configured"
+
+restart_server CLOUD_AGENTS_ALLOW_UNAUTHENTICATED=1
+echo "==> restarted: no static token, no OAuth, CLOUD_AGENTS_ALLOW_UNAUTHENTICATED=1"
+assert "opted in: session list open"           GET  "/api/sessions"             no 200 ""
+assert "opted in: credentials still refused"   GET  "/api/credentials"          no 401 "authentication is not configured"
 
 if [ "$fails" -ne 0 ]; then
   echo "==> e2e-http: ${fails} assertion(s) failed" >&2

@@ -13,7 +13,8 @@
 //!
 //! The static CLOUD_AGENTS_API_TOKEN scheme keeps working unchanged as the
 //! single-operator fallback; a bearer that matches it authenticates as the
-//! operator identity exactly as before.
+//! operator identity exactly as before. Once OAuth is configured, a request
+//! with no bearer is always refused.
 //!
 //! Pure pieces (URL/body builders, response parsing, decision logic) are
 //! separated from the two network calls so they stay unit-testable; the
@@ -683,27 +684,55 @@ pub func authenticateGitHubBearer(token: in String): AuthOutcome {
   }
 }
 
+/// Whether the operator opted in to running with no authentication at all
+/// (CLOUD_AGENTS_ALLOW_UNAUTHENTICATED=1). Only consulted when neither a
+/// static token nor GitHub OAuth is configured.
+pub func allowUnauthenticatedConfigured(): Bool {
+  return CloudAgents.Auth.isAllowUnauthenticatedValue(envOr("CLOUD_AGENTS_ALLOW_UNAUTHENTICATED"))
+}
+
 /// The full per-request auth decision, replacing bare Auth.enforce in the
-/// middleware:
-///  1. a bearer matching the static CLOUD_AGENTS_API_TOKEN authenticates as
-///     the operator identity (unchanged behaviour);
-///  2. any other bearer, when OAuth is configured, is treated as a GitHub
-///     OAuth token and validated (works for secret routes too — a validated
-///     GitHub identity is real authentication);
-///  3. everything else falls back to Auth.enforce, preserving the existing
-///     static-token semantics (open when unconfigured, secret routes always
-///     refusing to run unauthenticated).
+/// middleware. Reads the OAuth and open-access configuration from the
+/// environment; the decision itself is `authenticateRequestWith`.
 pub func authenticateRequest(path: in String, authHeaderValue: in String, apiToken: in String): AuthOutcome {
+  return authenticateRequestWith(path, authHeaderValue, apiToken, oauthConfigured(), allowUnauthenticatedConfigured())
+}
+
+/// The per-request auth decision with its configuration passed in:
+///  1. a bearer matching the static CLOUD_AGENTS_API_TOKEN authenticates as
+///     the operator identity;
+///  2. when OAuth is configured, any other bearer is treated as a GitHub
+///     OAuth token and validated (works for secret routes too — a validated
+///     GitHub identity is real authentication), and a request with no bearer
+///     is refused (MissingToken) on every route — OAuth being configured
+///     means this deployment authenticates its callers, so the static-token
+///     fallback's open mode must never apply;
+///  3. without OAuth, everything else falls back to Auth.enforce: a
+///     configured static token is required, and with no token configured
+///     the request is refused unless `allowUnauthenticated` (secret routes
+///     refuse regardless).
+pub func authenticateRequestWith(
+  path: in String,
+  authHeaderValue: in String,
+  apiToken: in String,
+  oauthOn: in Bool,
+  allowUnauthenticated: in Bool,
+): AuthOutcome {
   match CloudAgents.Auth.extractBearerToken(authHeaderValue) {
-    case None -> return CloudAgents.Auth.enforce(path, authHeaderValue, apiToken)
+    case None -> {
+      if oauthOn {
+        return CloudAgents.Auth.deniedOutcome(CloudAgents.Auth.missingTokenError())
+      }
+      return CloudAgents.Auth.enforce(path, authHeaderValue, apiToken, allowUnauthenticated)
+    }
     case Some(token) -> {
       if apiToken.length > 0 and CloudAgents.Auth.constantTimeEquals(token, apiToken) {
         return CloudAgents.Auth.allowedOutcome(CloudAgents.Auth.operatorUserId())
       }
-      if oauthConfigured() {
+      if oauthOn {
         return authenticateGitHubBearer(token)
       }
-      return CloudAgents.Auth.enforce(path, authHeaderValue, apiToken)
+      return CloudAgents.Auth.enforce(path, authHeaderValue, apiToken, allowUnauthenticated)
     }
   }
 }

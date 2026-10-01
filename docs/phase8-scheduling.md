@@ -369,7 +369,9 @@ already-runtime-verified code paths as closely as possible to minimize risk:
   cross-cutting decision affecting a route this phase doesn't own; the
   original finding's "at minimum, document this" fallback also no longer
   applies since the endpoint is now actually restricted rather than merely
-  documented as open. Tests: `"triggerDueJobsHandler refuses a non-operator
+  documented as open. (`/api/maintenance/reap` has since been restricted to
+  the operator too: it fails other tenants' stranded runs and stops their
+  containers.) Tests: `"triggerDueJobsHandler refuses a non-operator
   identity"`, `"triggerDueJobsHandler runs for the operator identity when
   nothing is due"`.
 - **Fixed (#884):** `ensureJobSession`'s `attachScheduledJobSession` call now

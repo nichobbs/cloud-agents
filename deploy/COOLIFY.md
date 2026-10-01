@@ -19,12 +19,9 @@ compose file for what differs and why.
    - `ENCRYPTION_KEY` (required — generate with `openssl rand -base64 32`)
    - `CLOUD_AGENTS_API_TOKEN` (required — generate with `openssl rand -hex 32`).
      The maintenance poller authenticates with it (see "Maintenance
-     poller" below). It also closes the API to requests that carry no
-     `Authorization` header, which are otherwise served as the operator
-     even when GitHub OAuth is configured. Signing in with GitHub keeps
-     working; the static token is an extra operator credential. The web UI
-     has no field for the static token, so with it set, browser users need
-     GitHub OAuth (below) to sign in.
+     poller" below). Signing in with GitHub keeps working; the static token
+     is an extra operator credential. The web UI has no field for the
+     static token, so browser users need GitHub OAuth (below) to sign in.
    - `CLOUD_AGENTS_PG_SUPERUSER_PASSWORD`, `CLOUD_AGENTS_PG_OWNER_PASSWORD`,
      `CLOUD_AGENTS_PG_APP_PASSWORD` (required — letters and digits only,
      generate each with `openssl rand -hex 24`; see "Postgres" below)

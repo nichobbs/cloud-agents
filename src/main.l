@@ -62,9 +62,10 @@ impl Web.Handler for HealthHandler {
 // matching the static CLOUD_AGENTS_API_TOKEN authenticates as the operator
 // (unchanged); any other bearer, when GitHub OAuth is configured, is
 // validated as a GitHub token (cached, whitelisted) and resolves a real
-// per-tenant identity; everything else keeps the pre-OAuth semantics
-// (open when unconfigured, credential routes always refusing to run
-// unauthenticated — #347). The resolved identity is stamped into the
+// per-tenant identity, and a request with no bearer is refused; without
+// OAuth, a configured static token is required, and with none configured
+// requests are refused unless CLOUD_AGENTS_ALLOW_UNAUTHENTICATED=1
+// (credential routes always refuse to run unauthenticated — #347). The resolved identity is stamped into the
 // request thread before dispatch so Auth.currentUserId() scopes every
 // query to the caller.
 //
@@ -2055,6 +2056,23 @@ pub func main(): Unit {
   } else {
     println("NOTE: ENCRYPTION_KEY is not set — the credential store is disabled")
   }
+
+  // Say at startup how the API authenticates, so a deployment that refuses
+  // every request because nothing is configured is diagnosable from the log.
+  if not CloudAgents.OAuth.oauthConfigured() and DotNetString.IsNullOrEmpty(Env.GetEnvironmentVariable("CLOUD_AGENTS_API_TOKEN")) {
+    if CloudAgents.OAuth.allowUnauthenticatedConfigured() {
+      println(
+        "WARNING: CLOUD_AGENTS_ALLOW_UNAUTHENTICATED=1 and no CLOUD_AGENTS_API_TOKEN or GitHub OAuth is configured — every API request runs as the operator, unauthenticated"
+      )
+    } else {
+      println(
+        "WARNING: no CLOUD_AGENTS_API_TOKEN or GitHub OAuth is configured — API requests are refused (set CLOUD_AGENTS_ALLOW_UNAUTHENTICATED=1 to run open)"
+      )
+    }
+  }
+
+  // One-time migration of sessions from the legacy env-var store.
+  CloudAgents.SessionStore.importLegacyEnvSessions()
 
   var router = Web.create()
 

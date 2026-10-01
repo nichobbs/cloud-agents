@@ -139,8 +139,10 @@ design of each phase and `docs/BUILD.md` for build/verification notes.
 > it on every push). With the OAuth rows above, requests bearing a GitHub
 > OAuth token now resolve a real per-tenant identity (`gh-<id>`), whitelisted
 > via `CLOUD_AGENTS_WHITELIST`; the static `CLOUD_AGENTS_API_TOKEN` scheme
-> remains the single-operator fallback and unauthenticated deployments stay
-> open (credential routes excepted) exactly as before.
+> remains the single-operator fallback. With OAuth configured, a request with
+> no bearer is refused; with neither configured, every request is refused
+> unless `CLOUD_AGENTS_ALLOW_UNAUTHENTICATED=1` (credential routes refuse
+> regardless; `docs/CAPABILITY_AUDIT.md` §2.2).
 
 ## Phase 4 — GitHub Tools & Tool Packs 🟡 started
 
