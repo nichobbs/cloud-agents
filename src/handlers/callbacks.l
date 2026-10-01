@@ -659,7 +659,7 @@ pub func answerSecretRequestHandler(
 //
 // docs/phase6-mcp-callbacks.md §7.3. Metadata lives in CloudAgents.Repository's
 // `artifacts` table; bytes live on disk under artifactsBaseDir()/<sessionId>/
-// <storedName> — never in SQLite. The 8 MiB cap is enforced twice: a cheap
+// <storedName> — never in the database. The 8 MiB cap is enforced twice: a cheap
 // pre-decode length check on the base64 text, then the authoritative check
 // on the actual decoded byte count (non-standard base64 padding can't be
 // used to sneak past the first check).

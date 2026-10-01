@@ -1,7 +1,7 @@
 //! src/handlers/search.l — CloudAgents.Search: full-text search across a
 //! user's own message transcripts (docs/phase9-message-search.md), backed by
-//! the FTS5 index CloudAgents.Db/CloudAgents.Repository maintain
-//! (`messages_fts`, migration 0028_message_search).
+//! the Postgres full-text index on `messages.search_vector`
+//! (`CloudAgents.PgStore.Messages.searchMessages`).
 package CloudAgents.Search
 
 import Std.Core

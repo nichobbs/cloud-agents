@@ -53,7 +53,7 @@ val minIntervalSeconds = 60
 val maxIntervalSeconds = 2592000
 
 /// Epoch-millisecond timestamps are 13 digits today; bounded generously above
-/// that so this never needs updating before the SQLite-side 64-bit arithmetic
+/// that so this never needs updating before the database's 64-bit arithmetic
 /// itself would need revisiting.
 val maxEpochDigits = 15
 
@@ -97,7 +97,7 @@ func isAllDigits(s: in String): Bool {
 
 /// "" (unset) or a bounded run of decimal digits — never parsed into a Lyric
 /// integer: the only place it is ever compared/added is inside SQL
-/// (CAST ... AS INTEGER, SQLite's 64-bit arithmetic), matching this schema's
+/// (cast to bigint, Postgres's 64-bit arithmetic), matching this schema's
 /// existing epoch-millis-as-TEXT convention. pub so tests/jobs_tests.l can
 /// pin this boundary directly — createJobHandler/updateJobHandler/
 /// scheduleJobCallbackHandler all reach CloudAgents.SessionStore/Repository,

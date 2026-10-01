@@ -1,5 +1,6 @@
-//! CloudAgents.Ledger.Store — SQLite persistence for the session ledger
-//! (docs/session-ledger.md §4).
+//! CloudAgents.Ledger.Store — the store facade for the session ledger
+//! (docs/session-ledger.md §4); its functions delegate to the Postgres
+//! implementation in `src/pgstore/ledger.l` (`CloudAgents.PgStore.Ledger`).
 //!
 //! Storage and atomicity only: every business rule (validation, transition
 //! legality, severity, summaries) lives in the pure CloudAgents.Ledger.*
@@ -332,8 +333,8 @@ pub func markSyncAttempt(
 
 /// Take the session's sync lease until `now + leaseMillis`. Returns the lease
 /// token to release with, or "" when another pass holds an unexpired lease.
-/// One conditional UPDATE, so two callers can't both win (SQLite serializes
-/// writers). A crashed pass's lease simply expires.
+/// One conditional UPDATE, so two callers can't both win (writers are serialised
+/// by the row lock). A crashed pass's lease simply expires.
 pub func acquireSyncLease(
   sessionId: in String, sc: in CloudAgents.Scope.TenantScope, leaseMillis: in Long
 ): Result[String, CloudAgents.Db.DbError] {

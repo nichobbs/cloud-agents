@@ -1,14 +1,14 @@
-//! CloudAgents.PgStore.Messages — the Postgres implementation of a session's
-//! transcript and annotations (`messages`, `comments`, `todos`), mirroring
-//! the SQLite-backed functions in `CloudAgents.Repository` with the same
-//! signatures and semantics (docs/phase11-postgres-tenancy.md §9 slices B/C).
+//! CloudAgents.PgStore.Messages — the Postgres store for a session's
+//! transcript and annotations (`messages`, `comments`, `todos`), behind the
+//! `CloudAgents.Repository` facade (docs/phase11-postgres-tenancy.md §9
+//! slices B/C).
 //!
 //! These rows carry no user id of their own: ownership is reached through
 //! the session, which the handlers check (`requireOwnedSession`) before
-//! calling here, exactly as with SQLite. Row-level security adds the tenant
+//! calling here. Row-level security adds the tenant
 //! boundary underneath.
 //!
-//! Semantics carried over from the SQLite store:
+//! Semantics:
 //! - a message's sequence number is the session's message count at insert
 //!   time, rendered as 12-digit zero-padded text; appends to one session are
 //!   serialised by a transaction-scoped advisory lock, so concurrent inserts
@@ -20,13 +20,12 @@
 //!   human or tool created (`source = ''`);
 //! - the todo-update cursor is exclusive, and "" means "from the start".
 //!
-//!
 //! Full-text search (`searchMessages`) runs against the generated
-//! `messages.search_vector` (`to_tsvector('simple', content)`, GIN-indexed)
-//! instead of SQLite's FTS5 table, with the same contract: every word of the
-//! user's text must match as a case-insensitive prefix, operators in the
-//! text are inert, only the caller's own sessions are searched, and results
-//! come newest first. Tokenisation differs from FTS5 in the ways listed in
+//! `messages.search_vector` (`to_tsvector('simple', content)`, GIN-indexed):
+//! every word of the user's text must match as a case-insensitive prefix,
+//! operators in the text are inert, only the caller's own sessions are
+//! searched, and results come newest first. Tokenisation differs from the
+//! earlier SQLite FTS5 index in the ways listed in
 //! docs/phase9-message-search.md, "Postgres".
 @runtime_checked
 package CloudAgents.PgStore.Messages

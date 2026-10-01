@@ -1,11 +1,11 @@
 //! CloudAgents.PgStore.Jobs — the Postgres implementation of scheduled jobs
 //! (docs/phase8-scheduling.md, docs/phase11-postgres-tenancy.md §5.3a, §9
-//! slices B/C). It mirrors the SQLite-backed functions in
-//! `CloudAgents.Repository` with the same signatures and semantics.
+//! slices B/C). It is the Postgres store for scheduled
+//! jobs, behind the `CloudAgents.Repository` facade.
 //!
 //! Human and container calls arrive with the owner's scope in the job's
 //! tenant, and row-level security confines them to it; within it a job is
-//! the owner's alone, as on SQLite.
+//! the owner's alone.
 //!
 //! Firing is claimed across every tenant through `claim_scheduled_jobs`
 //! (§5.3a), which advances each claimed job's schedule in the same statement:

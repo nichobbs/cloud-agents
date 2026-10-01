@@ -125,8 +125,7 @@ func dbError(e: in CloudAgents.Db.DbError): Web.ApiError {
 /// can slip between the two — so the constraint itself is the actual guarantee
 /// (#245); this lets the mutation's own failure be turned into the same clean
 /// 400 the pre-check produces in the non-racy case, instead of a raw
-/// UNIQUE-constraint 500. SQLite's own error text ("UNIQUE constraint
-/// failed: ...") is stable across the Microsoft.Data.Sqlite driver.
+/// UNIQUE-constraint 500. The match below keys on the constraint's error text.
 ///
 /// A plain "UNIQUE constraint" substring check isn't specific enough
 /// (#558): addProfile/updateProfile run the profiles-row upsert and the

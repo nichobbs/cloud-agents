@@ -219,7 +219,7 @@ extern type DataSlot = "System.LocalDataStoreSlot"
 func getNamedDataSlot(name: in String): DataSlot = ()
 
 // Thread.SetData's parameter is object; passing String binds fine — the same
-// assignability sqlite_driver.l relies on for Array.SetValue.
+// assignability the other extern bindings here rely on.
 @externTarget("System.Threading.Thread.SetData")
 func threadSetData(slot: in DataSlot, data: in String): Unit = ()
 

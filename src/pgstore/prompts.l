@@ -1,12 +1,11 @@
 //! CloudAgents.PgStore.Prompts — the Postgres implementation of the prompt
-//! library (`prompts`, `prompt_tags`), mirroring the SQLite-backed functions
-//! in `CloudAgents.Repository` with the same signatures and semantics
-//! (docs/phase11-postgres-tenancy.md §9 slices B/C).
+//! library (`prompts`, `prompt_tags`), behind the `CloudAgents.Repository`
+//! facade (docs/phase11-postgres-tenancy.md §9 slices B/C).
 //!
-//! Semantics carried over from the SQLite store:
+//! Semantics:
 //! - every read and write is additionally filtered by the caller's user id,
 //!   so a user sees only their own prompts within the tenant (spec §5.4);
-//! - names sort in byte order (`COLLATE "C"`, SQLite's BINARY), tags
+//! - names sort in byte order (`COLLATE "C"`), tags
 //!   alphabetically within a prompt;
 //! - a prompt and its tag set are written in one transaction;
 //! - update/delete return the rows affected on the prompt row (0 = not found

@@ -1,8 +1,8 @@
-//! Persistence for the conversation transcript, comments and todos.
-//!
-//! Builds SQL with the pure CloudAgents.Db builders and runs it through the
-//! CloudAgents.Sqlite driver, mapping result rows to domain records. This is
-//! the seam the HTTP handlers depend on — they never see SQL or `extern`
+//! The store facade: persistence for the conversation transcript, comments,
+//! todos and the rest of the app's data. Its functions delegate to the
+//! Postgres implementations in `src/pgstore/*.l` (`CloudAgents.PgStore.*`),
+//! which map result rows to the domain records declared here. This is the
+//! seam the HTTP handlers depend on — they never see SQL or `extern`
 //! handles, only records and `Result`.
 @runtime_checked
 package CloudAgents.Repository
@@ -241,8 +241,8 @@ pub func listMessages(
 
 /// Full-text search across every message in the caller's own sessions,
 /// newest first. `term` is the user's raw search text: each whitespace-
-/// separated word must match as a prefix (CloudAgents.Db.buildFts5MatchExpr
-/// turns it into a safe FTS5 MATCH expression). A term with no words
+/// separated word must match as a prefix (the Postgres store turns it into a
+/// safe prefix tsquery over `messages.search_vector`). A term with no words
 /// matches nothing.
 pub func searchMessages(
   sc: in CloudAgents.Pg.TenantScope, term: in String, limit: in Int
@@ -450,7 +450,7 @@ pub func deletePrompt(id: in String, sc: in CloudAgents.Pg.TenantScope): Result[
 
 // ─── Credentials ─────────────────────────────────────────────────────────────
 //
-// Values are AES-256-CBC + HMAC-SHA256 encrypted (CloudAgents.Crypto) before they touch SQLite,
+// Values are AES-256-CBC + HMAC-SHA256 encrypted (CloudAgents.Crypto) before they touch the database,
 // and decrypted only when building a container's environment — never returned
 // to any HTTP response. The store surfaces credential *names* to the API, not
 // their values.
@@ -1816,7 +1816,7 @@ pub record MemoryRecord {
 /// a NEW key is written only while the repo holds fewer than `maxEntries`.
 /// created_at is preserved on overwrite. Returns true when the entry was
 /// written, false when the cap blocked a new key — race-free, since the whole
-/// decision is a single serialized SQLite statement, not a check-then-act.
+/// decision is a single serialized SQL statement, not a check-then-act.
 pub func upsertMemoryCapped(
   sc: in CloudAgents.Pg.TenantScope,
   repoKey: in String,

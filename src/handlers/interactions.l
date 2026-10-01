@@ -148,7 +148,7 @@ pub func sessionEventsToJson(events: in slice[CloudAgents.Capture.CaptureEvent])
 /// events with seq strictly greater than `afterSeq` (empty = from the start),
 /// oldest first. Feeds the platform fetch-client → GraphIngest handoff. A
 /// non-numeric `afterSeq` is rejected rather than silently treated as 0 by
-/// SQLite's CAST. See docs/session-events-endpoint.md.
+/// a numeric cast. See docs/session-events-endpoint.md.
 pub func getSessionEvents(id: in String, afterSeq: in String): Result[String, Web.ApiError] {
   if id.length == 0 {
     return Err(Web.badRequest("id is required"))

@@ -1,13 +1,13 @@
-//! CloudAgents.PgStore.TokenCache — the Postgres implementation of the
-//! GitHub token-validation cache (`github_token_cache`), mirroring the
-//! SQLite-backed functions in `CloudAgents.Repository` with the same
-//! signatures and semantics (docs/phase11-postgres-tenancy.md §4.2, §9).
+//! CloudAgents.PgStore.TokenCache — the Postgres store for the
+//! GitHub token-validation cache (`github_token_cache`), behind the
+//! `CloudAgents.Repository` facade (docs/phase11-postgres-tenancy.md §4.2,
+//! §9).
 //!
 //! The cache is read before any tenant is known (it is how a bearer token
 //! resolves to a user), so it is a global table and every function here runs
 //! in an unscoped unit.
 //!
-//! Semantics carried over from the SQLite store:
+//! Semantics:
 //! - a validated token is cached for ten minutes, a denied token or a
 //!   rejected OAuth code for one minute;
 //! - a denial is a row with empty user and login, a rejected code a row with

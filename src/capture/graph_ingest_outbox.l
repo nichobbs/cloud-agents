@@ -12,10 +12,9 @@
 //! DURATION (bounded well under `maxDelayMillis`), not an absolute epoch
 //! timestamp. The one place an absolute timestamp is needed (`next_attempt_at
 //! = now + delay`), the addition is pushed into SQL
-//! (`CloudAgents.Db.updateGraphIngestOutboxAttemptSql`) — the same "let
-//! SQLite's 64-bit arithmetic do it" idiom `scheduled_jobs`' due-date
-//! bookkeeping already uses (see `src/db/db_client.l`'s
-//! `claimDueScheduledJobSql` doc comment) — rather than adding an
+//! (`CloudAgents.PgStore.GraphIngest`) — the same "let the database's 64-bit
+//! arithmetic do it" idiom `scheduled_jobs`' due-date bookkeeping already
+//! uses (`CloudAgents.PgStore.Jobs`) — rather than adding an
 //! `Int` delay to a `Long` epoch millis value in Lyric application code. This
 //! isn't strictly required by any confirmed bug (docs/lyric/gotchas.md's
 //! `Long` crash entry is about subtract-and-compare inside a large, complex

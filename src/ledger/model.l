@@ -9,7 +9,7 @@
 //!
 //! Vocabularies (entry kinds, severities, work-item states, …) are plain
 //! strings validated here at every trust boundary rather than Lyric unions:
-//! every one of them round-trips through SQLite TEXT columns and JSON wire
+//! every one of them round-trips through text columns and JSON wire
 //! records, the rest of this codebase models status literals the same way,
 //! and a bare union case name that collides with an imported one silently
 //! emits invalid IL in the current toolchain (see testamur AGENTS.md's
@@ -118,7 +118,7 @@ pub func maxSummaryChars(): Int {
 }
 
 // ── Domain records ────────────────────────────────────────────────────────────
-/// One ledger entry. Every scalar is a string (SQLite TEXT affinity, JSON
+/// One ledger entry. Every scalar is a string (the store's text form, JSON
 /// wire convention of this codebase); `reversible` is "true" / "false" / ""
 /// (unstated). `createdSeq` / `updatedSeq` are the session ledger's change
 /// cursor (a monotonic per-session counter) at creation / last change.

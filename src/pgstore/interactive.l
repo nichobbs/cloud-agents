@@ -1,18 +1,17 @@
-//! CloudAgents.PgStore.Interactive — the Postgres implementation of a
+//! CloudAgents.PgStore.Interactive — the Postgres store for a
 //! session's interactive requests and agent-reported state: permission
 //! requests and allow-always rules, user questions, progress, secret
 //! requests, artifacts, notifications, and the per-repository memory and
-//! task list (docs/phase11-postgres-tenancy.md §9 slices B/C). It mirrors the
-//! SQLite-backed functions in `CloudAgents.Repository` with the same
-//! signatures and semantics.
+//! task list (docs/phase11-postgres-tenancy.md §9 slices B/C), behind the
+//! `CloudAgents.Repository` facade.
 //!
 //! Container-originated calls arrive with the scope resolved from the
 //! session's route (`authorizeCallbackToken`), human calls with the request's
 //! scope; either way row-level security confines every statement to that
 //! tenant. Within it, these rows are keyed by session (or by the session
-//! owner and repository), exactly as on SQLite.
+//! owner and repository).
 //!
-//! Semantics carried over from the SQLite store:
+//! Semantics:
 //! - answers and timeouts only move a request out of "pending", once, and
 //!   report rows affected so a late answer maps to 409;
 //! - a timeout fires only once the request has been pending at least the
@@ -22,8 +21,7 @@
 //! - memory and open tasks are capped per (owner, repository): a write that
 //!   would exceed the cap is refused (an update to an existing memory key
 //!   always succeeds). A transaction-scoped advisory lock per (tenant,
-//!   owner, repository) keeps the cap exact under concurrent writes, which
-//!   SQLite got from serialised writes;
+//!   owner, repository) keeps the cap exact under concurrent writes;
 //! - "created after" cursors are exclusive, and "" means every row;
 //! - timestamps read back as epoch milliseconds, an unset one as "", and a
 //!   never-reported progress percent as "".

@@ -1,8 +1,7 @@
-//! CloudAgents.PgStore.GraphIngest — the Postgres implementation of the
+//! CloudAgents.PgStore.GraphIngest — the Postgres store for the
 //! graph-ingest outbox (docs/capture-ingest-outbox.md,
-//! docs/phase11-postgres-tenancy.md §5.3, §5.3a). It mirrors the
-//! SQLite-backed functions in `CloudAgents.Repository` with the same
-//! signatures and semantics.
+//! docs/phase11-postgres-tenancy.md §5.3, §5.3a), behind the
+//! `CloudAgents.Repository` facade.
 //!
 //! Enqueue and every outcome run under the session owner's scope, and
 //! row-level security confines them to its tenant. A drain finds due rows in
@@ -14,7 +13,7 @@
 //! are pruned across tenants through `prune_graph_ingest_outbox`, which can
 //! delete delivered rows only.
 //!
-//! Rows read back in the SQLite shape: timestamps as epoch milliseconds, an
+//! Rows read back as text: timestamps as epoch milliseconds, an
 //! undelivered row's `deliveredAt` as "", and a row that has been given up on
 //! with `CloudAgents.GraphIngestOutbox.terminalSentinelMillis` as its
 //! `nextAttemptAt`.

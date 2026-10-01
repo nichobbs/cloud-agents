@@ -290,7 +290,7 @@ extern type IPAddressArray = "System.Net.IPAddress[]"
 // form network_policy.l otherwise uses for Environment) — that lighter form
 // is only proven elsewhere for primitive returns; a complex array return
 // type follows the explicit-binding shape confirmed working for
-// AgentSessionArray/StringArray/RowArray (session_manager.l, sqlite_driver.l).
+// AgentSessionArray/StringArray (session_manager.l).
 @externTarget("System.Net.Dns.GetHostAddresses")
 func dnsGetHostAddresses(host: in String): IPAddressArray = ()
 

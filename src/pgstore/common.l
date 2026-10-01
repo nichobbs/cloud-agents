@@ -1,10 +1,10 @@
 //! CloudAgents.PgStore — shared plumbing for the Postgres implementations of
 //! the store (docs/phase11-postgres-tenancy.md §9 slices B/C).
 //!
-//! Each `CloudAgents.PgStore.<Domain>` package mirrors the SQLite-backed
-//! functions of `CloudAgents.Repository` for one domain, with the same
-//! signatures (including the `CloudAgents.Db.DbError` error type), so the
-//! cut-over (slice E) is an import switch rather than a rewrite. Every call
+//! Each `CloudAgents.PgStore.<Domain>` package implements one domain of the
+//! store behind the `CloudAgents.Repository` / `CloudAgents.SessionStore` /
+//! `CloudAgents.Ledger.Store` facades, which delegate here and share the
+//! `CloudAgents.Db.DbError` error type. Every call
 //! is one unit of work on one pooled connection, scoped by the caller's
 //! explicit `TenantScope`, or `UserScope` for user-owned data (spec §5.2, §4.3a).
 //!

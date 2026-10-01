@@ -40,7 +40,7 @@ val maxModelLen = 128
 // ─── Chat attachments (uploads) ───────────────────────────────────────────────
 //
 // Bytes live on disk under CloudAgents.Repository.attachmentsBaseDir()/
-// <sessionId>/<storedName> — never in SQLite, mirroring CloudAgents.Callbacks'
+// <sessionId>/<storedName> — never in the database, mirroring CloudAgents.Callbacks'
 // report_artifact storage split. The per-file/per-message caps are enforced
 // twice: a cheap pre-decode length check on the base64 text, then the
 // authoritative check on the actual decoded byte count (non-standard base64
@@ -1001,10 +1001,10 @@ pub func storeAttachments(
     i = i + 1
   }
   // Pass 2: every input validated — now actually persist. This loop is
-  // itself not wrapped in a DB transaction (SQLite access here goes through
+  // itself not wrapped in a DB transaction (store access here goes through
   // one statement at a time, same as everywhere else in this codebase), so a
   // failure partway through a multi-file request (disk full, a transient
-  // SQLite error) COULD leave files already written/inserted earlier in
+  // database error) COULD leave files already written/inserted earlier in
   // THIS loop orphaned — messageId permanently '', same failure shape pass 1
   // exists to rule out for the far more common validation-rejection case.
   // Fixed for #1003: on any pass-2 failure, cleanupPartialAttachmentBatch

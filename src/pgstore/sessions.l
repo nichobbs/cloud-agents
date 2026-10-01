@@ -1,10 +1,9 @@
-//! CloudAgents.PgStore.Sessions — the Postgres implementation of the session
-//! store (`sessions`, plus the global `session_routes`), mirroring the
-//! SQLite-backed functions in `CloudAgents.SessionStore` with the same
-//! signatures and semantics (docs/phase11-postgres-tenancy.md §4.2, §9 slices
-//! B/C).
+//! CloudAgents.PgStore.Sessions — the Postgres store for sessions
+//! (`sessions`, plus the global `session_routes`), behind the
+//! `CloudAgents.SessionStore` facade (docs/phase11-postgres-tenancy.md §4.2,
+//! §9 slices B/C).
 //!
-//! Semantics carried over from the SQLite store:
+//! Semantics:
 //! - every read and write is filtered by the caller's user within the tenant
 //!   (creator-only visibility, spec §5.4); observer sessions never appear in
 //!   the lists;
@@ -12,7 +11,7 @@
 //! - `tryBeginRun` is a single guarded UPDATE, so two concurrent sends cannot
 //!   both win;
 //! - the container compare-and-clear only clears a still-matching id (#45);
-//! - text forms match SQLite exactly: timestamps as epoch milliseconds,
+//! - text forms are stable: timestamps as epoch milliseconds,
 //!   `is_archived` as "0"/"1", and "0" for a session never viewed.
 //!
 //! `session_routes` is the one global table here (spec §4.2). It maps a
@@ -442,7 +441,7 @@ pub func resetSessionContainer(
 /// Mint a fresh callback token for one of the caller's sessions, store only
 /// its hash on the session's route, and return the raw token. A session
 /// that is not the caller's gets no hash written (the token is still
-/// returned, as on SQLite, and authorises nothing).
+/// returned and authorises nothing).
 pub func mintCallbackToken(
   sessionId: in String, sc: in CloudAgents.Pg.TenantScope
 ): Result[String, CloudAgents.Db.DbError] {

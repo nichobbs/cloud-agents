@@ -1,3 +1,6 @@
+//! CloudAgents.SessionStore — the session store facade. Its functions
+//! delegate to the Postgres implementation in `src/pgstore/sessions.l`
+//! (`CloudAgents.PgStore.Sessions`).
 package CloudAgents.SessionStore
 
 import Std.Core
@@ -346,7 +349,7 @@ pub func sessionSummariesJson(sc: in CloudAgents.Pg.TenantScope): Result[String,
 }
 
 /// One row of the session-list projection, every value as the store's text
-/// form. Built by both the SQLite and the Postgres store so the JSON shape
+/// form. Built by the Postgres store so the JSON shape
 /// has a single definition (`sessionSummariesToJson`).
 pub record SessionSummaryRow {
   pub sessionId: String

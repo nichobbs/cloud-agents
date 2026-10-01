@@ -1,8 +1,7 @@
-//! CloudAgents.PgStore.Ledger — the Postgres implementation of the session
-//! ledger store (docs/session-ledger.md §4, docs/phase11-postgres-tenancy.md
-//! §9 slices B/C). It mirrors the per-session functions of
-//! `CloudAgents.Ledger.Store` with the same signatures and semantics, and
-//! reuses that package's record types.
+//! CloudAgents.PgStore.Ledger — the Postgres store for the session
+//! ledger (docs/session-ledger.md §4, docs/phase11-postgres-tenancy.md §9
+//! slices B/C), behind the `CloudAgents.Ledger.Store` facade, whose record
+//! types it reuses.
 //!
 //! It also holds the observer bookkeeping (docs/session-ledger.md §10): a
 //! profile's observer settings, an observed session's observer state and
@@ -10,13 +9,12 @@
 //!
 //! Every call runs in one unit scoped by the session's tenant (the route
 //! scope in `SessionContext.tenantScope`), so row-level security confines it
-//! to that tenant; within it, rows are keyed by session as on SQLite.
+//! to that tenant; within it, rows are keyed by session.
 //!
-//! Semantics carried over from the SQLite store:
+//! Semantics:
 //! - `ledger_sessions.seq` is bumped once by every write unit and stamped on
 //!   every row the unit touches, so `after=<seq>` reads return exactly the
-//!   rows changed since. The bump's row lock serialises a session's writers,
-//!   which SQLite got from serialised writes;
+//!   rows changed since. The bump's row lock serialises a session's writers;
 //! - an item update is optimistic: it applies only if the item is still at
 //!   the version the caller planned against, and its dependent writes
 //!   (transition row, blocker resolution, automatic entry) happen only then.
@@ -930,7 +928,7 @@ pub func releaseSyncLease(
     return Ok(value = ())
   }
   // Compared as text: a token that is not a lease (not even a number) simply
-  // matches nothing, as on SQLite, rather than failing the cast.
+  // matches nothing, rather than failing the cast.
   exec(sc, "UPDATE ledger_github_sync_runs SET lease_until = NULL WHERE session_id = @p0 AND " + CloudAgents.Pg.msOut("lease_until") + " = @p1", [sessionId, token])?
   return Ok(value = ())
 }

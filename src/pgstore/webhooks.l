@@ -1,10 +1,9 @@
-//! CloudAgents.PgStore.Webhooks — the Postgres implementation of per-user
+//! CloudAgents.PgStore.Webhooks — the Postgres store for per-user
 //! webhooks and their transactional outbox (`webhooks`, `webhook_events`),
-//! mirroring the SQLite-backed functions in `CloudAgents.Repository` with the
-//! same signatures and semantics (docs/phase11-postgres-tenancy.md §9 slices
-//! B/C).
+//! behind the `CloudAgents.Repository` facade
+//! (docs/phase11-postgres-tenancy.md §9 slices B/C).
 //!
-//! Semantics carried over from the SQLite store:
+//! Semantics:
 //! - webhooks and events belong to the caller's user within the tenant;
 //! - registering a URL the user already has returns the existing webhook
 //!   rather than a duplicate;

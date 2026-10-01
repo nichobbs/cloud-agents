@@ -2122,7 +2122,7 @@ pub func main(): Unit {
   router = Web.addGet(router, "/api/sessions/{id}/events", RouteGetSessionEvents())
 
   // Full-text search across every message in the caller's own sessions
-  // (docs/phase9-message-search.md), backed by the messages_fts FTS5 index.
+  // (docs/phase9-message-search.md), backed by the Postgres full-text index on messages.search_vector.
   router = Web.addGet(router, "/api/search/messages", RouteSearchMessages())
 
   // Comments anchored to a specific message

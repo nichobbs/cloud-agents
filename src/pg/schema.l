@@ -22,8 +22,8 @@
 //! rejected (by the policy's WITH CHECK, and by `NOT NULL` if it ever got that
 //! far).
 //!
-//! Types follow what the SQLite store actually writes (every SQLite column is
-//! TEXT): epoch-millisecond strings become `timestamptz`, with `''`/`'0'`
+//! Types follow what the earlier SQLite store wrote (every column was TEXT):
+//! epoch-millisecond strings become `timestamptz`, with `''`/`'0'`
 //! "unset" sentinels becoming NULL; `'0'`/`'1'` and `'true'`/`'false'` flags
 //! become `boolean` (nullable where `''` is a third state); counts, positions
 //! and sequence numbers become integers (12-digit zero padding on
@@ -32,9 +32,9 @@
 //! payloads, the ingest outbox body, permission rule inputs) or passed through
 //! verbatim, and none is queried by path.
 //!
-//! No foreign keys between tenant-owned tables yet: the SQLite store has none
-//! and its delete paths rely on application ordering, so each is added with
-//! its domain's port (slice C) once that ordering is verified. A stray
+//! No foreign keys between tenant-owned tables yet: the earlier SQLite store had
+//! none and its delete paths rely on application ordering, so each is added
+//! with its domain's port (slice C) once that ordering is verified. A stray
 //! cross-tenant id cannot be read through, because both rows are under RLS.
 //!
 //! `0001_baseline` is frozen: deployments applied it before the cut-over
@@ -532,7 +532,7 @@ func mcpServerPart(name: in String): slice[String] {
 // ─── Tenant-owned tables: capture handoff ───────────────────────────────────
 /// The graph-ingest outbox. `body` is canonical JSON whose exact bytes are
 /// hashed into `body_hash` and re-sent verbatim. `given_up_at` replaces the
-/// SQLite store's `next_attempt_at = '99999999999999'` terminal sentinel, and
+/// earlier SQLite store's `next_attempt_at = '99999999999999'` terminal sentinel, and
 /// `claimed_until` is the §5.3 lease. `user_id` is the session owner, whose
 /// scope a drain records the outcome under. The claimer may delete delivered
 /// rows only, for `prune_graph_ingest_outbox`.
@@ -634,7 +634,7 @@ func ledgerTables(): slice[String] {
         "session_id text NOT NULL, attempted_at timestamptz, last_error text NOT NULL DEFAULT '', " +
           "lease_until timestamptz, PRIMARY KEY (tenant_id, session_id)"
       ),
-      // config_key replaces the SQLite column misnamed config_hash: it is the
+      // config_key replaces the old column misnamed config_hash: it is the
       // plain `harness|model|repoAccess` string, not a hash.
       tenantTable(
         "ledger_observer",
@@ -880,7 +880,7 @@ func claimFunctions(): slice[String] {
   ]
 }
 
-/// Grants for the one-off SQLite export role, which slice D was to use. The
+/// Grants for a one-off SQLite-export role, which slice D was to use. The
 /// export was dropped (spec §7) and `0002_cutover` revokes these; the baseline
 /// is frozen, so they stay here.
 func migratorGrants(): slice[String] {
@@ -907,7 +907,7 @@ func baselineStatements(): slice[String] {
 /// `0002_cutover` (spec §9 slice E):
 /// - the ledger's repository-policy cache may record "unavailable", a
 ///   transient GitHub failure the service retries (src/ledger/service.l), as
-///   the SQLite store did;
+///   the earlier SQLite store did;
 /// - the unused export role loses its table grants (the export was dropped,
 ///   spec §7). Dropping the role itself needs a superuser; provision.sql no
 ///   longer gives it BYPASSRLS, and the self-check still refuses to serve

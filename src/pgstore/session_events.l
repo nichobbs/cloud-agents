@@ -1,10 +1,9 @@
-//! CloudAgents.PgStore.SessionEvents — the Postgres implementation of a
+//! CloudAgents.PgStore.SessionEvents — the Postgres store for a
 //! session's captured provenance events (`session_events`,
-//! docs/session-events-store.md), mirroring the SQLite-backed functions in
-//! `CloudAgents.Repository` with the same signatures and semantics
+//! docs/session-events-store.md), behind the `CloudAgents.Repository` facade
 //! (docs/phase11-postgres-tenancy.md §9 slices B/C).
 //!
-//! Semantics carried over from the SQLite store:
+//! Semantics:
 //! - an append is all-or-nothing, so a stored chain never has a hole;
 //! - re-appending a byte-identical, already-stored event is a no-op, but an
 //!   event whose stored payload or hash differs rejects the whole batch

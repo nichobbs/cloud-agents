@@ -1,10 +1,9 @@
-//! CloudAgents.PgStore.Library — the Postgres implementation of profiles and
+//! CloudAgents.PgStore.Library — the Postgres store for profiles and
 //! the per-user library (skills, subagents, MCP servers) and the grants that
-//! link them, mirroring the SQLite-backed functions in
-//! `CloudAgents.Repository` with the same signatures and semantics
+//! link them, behind the `CloudAgents.Repository` facade
 //! (docs/phase11-postgres-tenancy.md §9 slices B/C).
 //!
-//! Semantics carried over from the SQLite store:
+//! Semantics:
 //! - every read and write is also filtered by the caller's user id (creator-
 //!   only visibility within the tenant, spec §5.4);
 //! - names and grant ids sort in byte order (`COLLATE "C"`); MCP server
@@ -20,7 +19,7 @@
 //!   `mcpServersForProfile` returns only enabled servers.
 //!
 //! `decryptedCredentialsForProfile` reads the user-owned credential vault and
-//! is ported with the credentials domain.
+//! lives with the credentials domain.
 @runtime_checked
 package CloudAgents.PgStore.Library
 

@@ -8,8 +8,8 @@ package CloudAgents.Scope
 import Std.Core
 
 /// The tenant and user a unit of work acts for. Constructed only by the auth
-/// middleware (from a validated membership), the callback-token resolver, a
-/// maintenance claim, or the SQLite export (spec §5.2).
+/// middleware (from a validated membership), the callback-token resolver, or a
+/// maintenance claim (spec §5.2).
 pub record TenantScope {
   pub tenantId: String
   pub userId: String
@@ -22,8 +22,8 @@ pub record UserScope {
 }
 
 /// The implicit personal tenant of a user (spec §6.1, §9 slice B): every user
-/// has exactly one, and its id is derived from the user id so the SQLite-era
-/// code, the export and the organisation code all agree on it.
+/// has exactly one, and its id is derived from the user id so every path that
+/// needs it (auth, callbacks, organisations) derives the same id.
 pub func personalTenantId(userId: in String): String {
   return "personal:" + userId
 }

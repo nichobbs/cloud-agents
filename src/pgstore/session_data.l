@@ -2,14 +2,13 @@
 //! session's run history, linked repositories, attachments, highlights and
 //! branching, and the user's session groups (`runs`, `session_repos`,
 //! `session_attachments`, `session_highlights`, `highlight_scans`,
-//! `session_groups`), mirroring the SQLite-backed
-//! functions in `CloudAgents.Repository` with the same signatures and
-//! semantics (docs/phase11-postgres-tenancy.md §9 slices B/C).
+//! `session_groups`), behind the `CloudAgents.Repository` facade
+//! (docs/phase11-postgres-tenancy.md §9 slices B/C).
 //!
-//! Semantics carried over from the SQLite store:
+//! Semantics:
 //! - runs and groups are filtered by the caller's user; linked repositories
 //!   carry no user id, so the handlers' owner-checked session lookup gates
-//!   them, as with SQLite (row-level security adds the tenant boundary);
+//!   them (row-level security adds the tenant boundary);
 //! - a run's prompt preview is the same bounded prefix, a run only leaves
 //!   "running" once, and a still-running run reads back with `endedAt` "";
 //! - runs and highlights list newest first, repositories and attachments
@@ -449,10 +448,10 @@ func mappedId(pairs: in slice[String], oldId: in String): String {
 /// `forkedMessageId` is ""), with fresh message ids and the original sequence
 /// numbers and timestamps; the comments on copied messages; attachments that
 /// are free-standing or on a copied message (and their files on disk);
-/// todos and highlights likewise (copied todos become ordinary todos, as on
-/// SQLite); the linked repositories; and the profile. The new session keeps
-/// the parent's group and gets its own route. Unlike SQLite, the database
-/// side is one transaction, so a failure leaves no partial branch; attachment
+/// todos and highlights likewise (copied todos become ordinary todos); the linked
+/// repositories; and the profile. The new session keeps the parent's group and
+/// gets its own route. Unlike the old SQLite store, the database side is one
+/// transaction, so a failure leaves no partial branch; attachment
 /// files are copied only after it commits (#1172).
 pub func branchSession(
   parentSessionId: in String,
