@@ -73,12 +73,20 @@ docker run --rm \
 # pg_dump takes a consistent snapshot while the API is writing. The
 # superuser connects over the container's local socket, so no password is
 # needed here. A dump that pg_restore cannot list is deleted, not kept.
-docker exec "${PG_CONTAINER}" pg_dump -U postgres -d cloudagents -Fc > "${BACKUP_DIR}/pg-${STAMP}.dump"
-if ! docker exec -i "${PG_CONTAINER}" pg_restore --list < "${BACKUP_DIR}/pg-${STAMP}.dump" >/dev/null; then
-    rm -f "${BACKUP_DIR}/pg-${STAMP}.dump"
+# The dump is written to a .partial file and renamed only once it checks
+# out, so a failed run never leaves a dump that retention would count.
+PG_DUMP="${BACKUP_DIR}/pg-${STAMP}.dump"
+if ! docker exec "${PG_CONTAINER}" pg_dump -U postgres -d cloudagents -Fc > "${PG_DUMP}.partial"; then
+    rm -f "${PG_DUMP}.partial"
+    echo "backup failed: pg_dump in ${PG_CONTAINER} failed" >&2
+    exit 1
+fi
+if ! docker exec -i "${PG_CONTAINER}" pg_restore --list < "${PG_DUMP}.partial" >/dev/null; then
+    rm -f "${PG_DUMP}.partial"
     echo "backup failed: pg_dump output for ${PG_CONTAINER} is not a readable archive" >&2
     exit 1
 fi
+mv "${PG_DUMP}.partial" "${PG_DUMP}"
 
 # Retain the 14 most recent archives of each kind.
 for prefix in db files user-home pg; do
