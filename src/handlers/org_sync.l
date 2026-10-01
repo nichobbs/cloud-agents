@@ -301,6 +301,14 @@ func suspend(userId: in String): SyncResult {
   }
 }
 
+/// Whether a sweep claims another user: the last claim found one (`more`),
+/// fewer than `usersPerSweep` have been claimed, and the time budget is not
+/// spent. A user whose check fails keeps its lease, so it is not claimed
+/// again in the same sweep; it is retried once the lease lapses.
+pub func sweepContinues(more: in Bool, claimed: in Int, nowMs: in Long, deadlineMs: in Long): Bool {
+  return more and claimed < usersPerSweep and nowMs < deadlineMs
+}
+
 /// `POST /api/maintenance/membership-sync` (operator only): re-check the
 /// users whose GitHub memberships are over an hour old.
 pub func membershipSyncHandler(): Result[String, Web.ApiError] {
@@ -313,7 +321,7 @@ pub func membershipSyncHandler(): Result[String, Web.ApiError] {
   var failed = 0
   var claimed = 0
   var more = true
-  while more and claimed < usersPerSweep and CloudAgents.KeyCache.nowMillis() < deadline {
+  while sweepContinues(more, claimed, CloudAgents.KeyCache.nowMillis(), deadline) {
     val users = match CloudAgents.PgStore.Orgs.claimMembershipSync(1, syncLeaseSeconds) {
       case Ok(v) -> v
       case Err(e) -> return Err(Web.internalError("failed to claim a user for membership sync: " + CloudAgents.Db.dbErrorMessage(e)))
