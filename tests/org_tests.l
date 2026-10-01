@@ -515,3 +515,67 @@ test "a suspended owner does not count as the remaining owner" {
     "nor be demoted"
   )
 }
+
+test "the cached membership check forgets a member as soon as they are removed" {
+  if not live() {
+    return
+  }
+  migrate()
+  val owner = newUser("owner" + shortId())
+  val login = "cached" + shortId()
+  val member = newUser(login)
+  val org = mustOrg(CloudAgents.PgStore.Orgs.createNativeOrg(owner, "Cached"))
+  val joined = mustOrg(
+    CloudAgents.PgStore.Orgs.acceptInvitation(
+      member,
+      mustInvite(CloudAgents.PgStore.Orgs.createInvitation(owner, org.id, login, "member")).token
+    )
+  )
+  assertEqual(joined.id, org.id, "joined")
+  match CloudAgents.PgStore.Orgs.isActiveMemberCached(member, org.id) {
+    case Ok(b) -> assertTrue(b, "confirmed and cached")
+    case Err(e) -> panic(CloudAgents.Db.dbErrorMessage(e))
+  }
+  mustOk(CloudAgents.PgStore.Orgs.removeMember(owner, org.id, member), "removed")
+  match CloudAgents.PgStore.Orgs.isActiveMemberCached(member, org.id) {
+    case Ok(b) -> assertFalse(b, "the removal is seen at once, not after the cache window")
+    case Err(e) -> panic(CloudAgents.Db.dbErrorMessage(e))
+  }
+}
+
+test "a membership forgotten by a removal is not cached again within the window" {
+  if not live() {
+    return
+  }
+  migrate()
+  val owner = newUser("owner" + shortId())
+  val login = "again" + shortId()
+  val member = newUser(login)
+  val org = mustOrg(CloudAgents.PgStore.Orgs.createNativeOrg(owner, "Again"))
+  val first = mustOrg(
+    CloudAgents.PgStore.Orgs.acceptInvitation(
+      member,
+      mustInvite(CloudAgents.PgStore.Orgs.createInvitation(owner, org.id, login, "member")).token
+    )
+  )
+  assertEqual(first.id, org.id, "joined")
+  mustOk(CloudAgents.PgStore.Orgs.removeMember(owner, org.id, member), "removed, which marks the membership forgotten")
+  val second = mustOrg(
+    CloudAgents.PgStore.Orgs.acceptInvitation(
+      member,
+      mustInvite(CloudAgents.PgStore.Orgs.createInvitation(owner, org.id, login, "member")).token
+    )
+  )
+  assertEqual(second.id, org.id, "joined again")
+  match CloudAgents.PgStore.Orgs.isActiveMemberCached(member, org.id) {
+    case Ok(b) -> assertTrue(b, "answered from the database")
+    case Err(e) -> panic(CloudAgents.Db.dbErrorMessage(e))
+  }
+  // Removed behind the cache's back: had the answer above been cached, the
+  // next check would still say yes.
+  unscopedExec("DELETE FROM memberships WHERE tenant_id = @p0 AND user_id = @p1", [org.id, member])
+  match CloudAgents.PgStore.Orgs.isActiveMemberCached(member, org.id) {
+    case Ok(b) -> assertFalse(b, "nothing was cached while the membership was marked forgotten")
+    case Err(e) -> panic(CloudAgents.Db.dbErrorMessage(e))
+  }
+}

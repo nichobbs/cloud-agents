@@ -175,3 +175,20 @@ test "checkSuccessStatus rejects statuses just outside the 2xx range" {
   assertFalse(passesStatusGate("POST", "http://127.0.0.1:1/ingest", 300), "300 is above 2xx")
   assertFalse(passesStatusGate("POST", "http://127.0.0.1:1/ingest", 500), "500 is not success")
 }
+
+test "httpStatusOf reads the status from the platform message, never the URL" {
+  assertEqualInt(
+    httpStatusOf("GET https://api.github.com/user failed: The remote server returned an error: (401) Unauthorized."),
+    401,
+    "401"
+  )
+  assertEqualInt(httpStatusOf("POST https://x/y failed: (302) unexpected status"), 302, "our own status message")
+  assertEqualInt(
+    httpStatusOf("GET https://h/(401)/x failed: No such host is known."),
+    0,
+    "a status-like URL is ignored"
+  )
+  assertEqualInt(httpStatusOf("GET https://h/x failed: The operation has timed out."), 0, "no status")
+  assertEqualInt(httpStatusOf("garbage"), 0, "not one of this module's errors")
+  assertEqualInt(httpStatusOf("GET u failed: (abc) and (404) Not Found"), 404, "the first well-formed status")
+}

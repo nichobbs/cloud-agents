@@ -346,11 +346,19 @@ test "a refused token suspends GitHub memberships until the next sync reports th
   val tenantId = connect(owner, orgId, "sus-" + short()).id
   reconcile(user, [gm(orgId, "sus", "member")])
   assertTrue(active(user, tenantId), "active after sync")
+  match CloudAgents.PgStore.Orgs.isActiveMemberCached(user, tenantId) {
+    case Ok(b) -> assertTrue(b, "confirmed and cached")
+    case Err(e) -> panic(CloudAgents.Db.dbErrorMessage(e))
+  }
   match CloudAgents.PgStore.Orgs.suspendGitHubMemberships(user) {
     case Ok(n) -> assertEqualInt(n, 1, "one membership suspended")
     case Err(e) -> assertTrue(false, CloudAgents.Db.dbErrorMessage(e))
   }
   assertFalse(active(user, tenantId), "a suspended member cannot act in the organisation")
+  match CloudAgents.PgStore.Orgs.isActiveMemberCached(user, tenantId) {
+    case Ok(b) -> assertFalse(b, "the suspension clears the middleware's cached confirmation")
+    case Err(e) -> panic(CloudAgents.Db.dbErrorMessage(e))
+  }
   match membership(user, tenantId) {
     case Some(o) -> assertTrue(o.suspended, "listed as suspended")
     case None -> assertTrue(false, "suspended, not deleted")
@@ -388,4 +396,31 @@ test "the membership sync endpoint is operator-only" {
     case Err(e) -> assertEqualInt(e.status, 401, "non-operator -> 401")
   }
   CloudAgents.Auth.setCurrentUserId("")
+}
+
+test "the sweep re-checks due users one at a time and suspends those without a usable token" {
+  if not live() {
+    return
+  }
+  migrate()
+  val owner = newUser("owner" + short())
+  val a = newUser("sweepa" + short())
+  val b = newUser("sweepb" + short())
+  val orgId = freshOrgId()
+  val tenantId = connect(owner, orgId, "sweep-" + short()).id
+  reconcile(a, [gm(orgId, "sweep", "member")])
+  reconcile(b, [gm(orgId, "sweep", "member")])
+  backdateSync(a)
+  backdateSync(b)
+  // Neither user has a vaulted GITHUB_TOKEN, so each check ends in a
+  // suspension without any call to GitHub.
+  CloudAgents.Auth.setCurrentUserId(CloudAgents.Auth.operatorUserId())
+  match CloudAgents.OrgSync.membershipSyncHandler() {
+    case Ok(body) -> assertTrue(body.startsWith("{\"synced\":"), "sweep summary: " + body)
+    case Err(e) -> assertTrue(false, "the operator sweep failed: " + e.message)
+  }
+  CloudAgents.Auth.setCurrentUserId("")
+  assertFalse(active(a, tenantId), "the first due user was checked and suspended")
+  assertFalse(active(b, tenantId), "so was the second")
+  assertFalse(containsId(claimedNow(), a), "a checked user is not due again")
 }

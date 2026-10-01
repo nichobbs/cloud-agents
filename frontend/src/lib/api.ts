@@ -36,7 +36,7 @@ export interface ServerSession {
   attention?: string;
 }
 
-function authHeaders(): HeadersInit {
+export function authHeaders(): HeadersInit {
   const token = localStorage.getItem('cloud_agents_token');
   return token ? { Authorization: `Bearer ${token}` } : {};
 }

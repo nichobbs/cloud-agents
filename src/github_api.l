@@ -22,6 +22,7 @@
 package CloudAgents.GitHubApi
 
 import Std.Core
+import CloudAgents.Text
 
 extern type HttpWebRequest = "System.Net.HttpWebRequest"
 
@@ -347,6 +348,48 @@ pub func httpGetWithBearer(url: in String, bearerToken: in String, userAgent: in
   } catch Bug as b {
     Err(error = "GET " + url + " failed: " + b.message)
   }
+}
+
+/// The HTTP status a failed request reported, or 0 when it reported none (a
+/// transport failure). Every error from this module reads
+/// `"<METHOD> <url> failed: <message>"`, and the platform names the status as
+/// `(NNN)` in the message; only the text after `" failed: "` is read, so a
+/// URL that happens to contain `(401)` cannot be mistaken for a status.
+pub func httpStatusOf(errorText: in String): Int {
+  val marker = " failed: "
+  val at = CloudAgents.Text.indexOfFrom(errorText, marker, 0)
+  if at < 0 {
+    return 0
+  }
+  var i = at + marker.length.toInt()
+  val n = errorText.length.toInt()
+  while i + 5 <= n {
+    if errorText.substring(i, 1) == "(" and errorText.substring(i + 4, 1) == ")" {
+      val digits = errorText.substring(i + 1, 3)
+      var value = 0
+      var ok = true
+      var k = 0
+      while k < 3 {
+        val c = digits.substring(k, 1)
+        if c < "0" or c > "9" {
+          ok = false
+        } else {
+          value = value * 10 + digitValue(c)
+        }
+        k = k + 1
+      }
+      if ok and value >= 100 {
+        return value
+      }
+    }
+    i = i + 1
+  }
+  return 0
+}
+
+func digitValue(c: in String): Int {
+  val digits = "0123456789"
+  return CloudAgents.Text.indexOfFrom(digits, c, 0)
 }
 
 /// POST a form-encoded body to `url`, asking for a JSON response (GitHub's

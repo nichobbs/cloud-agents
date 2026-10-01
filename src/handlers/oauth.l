@@ -210,7 +210,8 @@ pub record GitHubIdentity {
 /// .NET's "(401) Unauthorized"-style message text is stable there; a missed
 /// match merely skips the negative-cache write (fail-safe) (#435).
 pub func isConfirmedAuthRejection(errorText: in String): Bool {
-  return errorText.contains("(401)") or errorText.contains("(403)")
+  val status = CloudAgents.GitHubApi.httpStatusOf(errorText)
+  return status == 401 or status == 403
 }
 
 /// Whether the tenant already has a GITHUB_TOKEN in the credential vault

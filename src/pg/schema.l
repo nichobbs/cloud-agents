@@ -914,7 +914,14 @@ func baselineStatements(): slice[String] {
 ///   while it can log in.
 func cutoverStatements(): slice[String] {
   return [
-    "ALTER TABLE public.ledger_sessions DROP CONSTRAINT ledger_sessions_policy_status_check",
+    // The baseline declared this check inline, so its name was generated.
+    // Drop whichever check constrains policy_status, by definition rather
+    // than by that name.
+    "DO $do$ DECLARE c text; BEGIN " + "FOR c IN SELECT conname FROM pg_catalog.pg_constraint " +
+      "WHERE conrelid = 'public.ledger_sessions'::regclass AND contype = 'c' " +
+      "AND pg_catalog.pg_get_constraintdef(oid) LIKE '%policy_status%' LOOP " +
+      "EXECUTE pg_catalog.format('ALTER TABLE public.ledger_sessions DROP CONSTRAINT %I', c); " +
+      "END LOOP; END $do$",
     "ALTER TABLE public.ledger_sessions ADD CONSTRAINT ledger_sessions_policy_status_check " +
       "CHECK (policy_status IN ('', 'absent', 'loaded', 'invalid', 'unavailable'))",
     "REVOKE ALL ON ALL TABLES IN SCHEMA public FROM cloudagents_migrator"

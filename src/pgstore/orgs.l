@@ -22,6 +22,7 @@ import CloudAgents.PgStore
 import CloudAgents.Db
 import CloudAgents.Crypto
 import CloudAgents.Scope
+import CloudAgents.KeyCache
 
 /// Why an organisation operation was refused. `Db` carries a store failure;
 /// the others carry a message fit to show the caller.
@@ -208,8 +209,67 @@ func tenantKind(u: in CloudAgents.PgStore.PgUnit, tenantId: in String, lock: in 
   return Ok(value = col(rows[0], "kind"))
 }
 
-/// Whether `userId` may act in `tenantId`: an active membership exists. The
-/// auth middleware calls this for the `X-CloudAgents-Org` header (spec §5.2).
+/// Memberships the middleware confirmed recently, keyed by `memberKey`.
+/// Only positive answers are cached, for `membershipCacheMillis`, so a
+/// removal or suspension made on another instance (or by the hourly GitHub
+/// sync) takes effect within that window; this instance's own removals and
+/// suspensions drop the entry at once.
+protected type ConfirmedMembers {
+  var table: CloudAgents.KeyCache.Hashtable = CloudAgents.KeyCache.newTable()
+  entry isLive(key: in String, nowMs: in Long): Bool {
+    return CloudAgents.KeyCache.liveIn(table, key, nowMs)
+  }
+  /// Cache a confirmation, unless the membership was forgotten since the
+  /// confirming read could have started: a removal that commits after that
+  /// read but before this call leaves a marker, so the stale "yes" is not
+  /// cached.
+  entry rememberUnlessForgotten(key: in String, nowMs: in Long, expiresAtMs: in Long): Unit {
+    if CloudAgents.KeyCache.liveIn(table, forgottenKey(key), nowMs) {
+      return
+    }
+    CloudAgents.KeyCache.rememberIn(table, key, expiresAtMs, 10000)
+  }
+  /// Drop a confirmation and mark it forgotten for one cache window.
+  entry forget(key: in String, nowMs: in Long): Unit {
+    CloudAgents.KeyCache.forgetIn(table, key)
+    CloudAgents.KeyCache.rememberIn(table, forgottenKey(key), nowMs + membershipCacheMillis.toLong(), 10000)
+  }
+}
+
+func forgottenKey(key: in String): String {
+  return "forgotten\n" + key
+}
+
+val confirmedMembers = ConfirmedMembers()
+
+pub val membershipCacheMillis = 30000
+
+func memberKey(userId: in String, tenantId: in String): String {
+  return userId + "\n" + tenantId
+}
+
+/// `isActiveMember`, answered from a 30-second cache of confirmed
+/// memberships. The auth middleware calls this for every request carrying
+/// the `X-CloudAgents-Org` header (spec §5.2).
+pub func isActiveMemberCached(userId: in String, tenantId: in String): Result[Bool, CloudAgents.Db.DbError] {
+  val key = memberKey(userId, tenantId)
+  val now = CloudAgents.KeyCache.nowMillis()
+  if confirmedMembers.isLive(key, now) {
+    return Ok(value = true)
+  }
+  val active = isActiveMember(userId, tenantId)?
+  if active {
+    confirmedMembers.rememberUnlessForgotten(key, CloudAgents.KeyCache.nowMillis(), now + membershipCacheMillis.toLong())
+  }
+  return Ok(value = active)
+}
+
+/// Drop a cached confirmation, after a change that can end the membership.
+func forgetMember(userId: in String, tenantId: in String): Unit {
+  confirmedMembers.forget(memberKey(userId, tenantId), CloudAgents.KeyCache.nowMillis())
+}
+
+/// Whether `userId` may act in `tenantId`: an active membership exists.
 pub func isActiveMember(userId: in String, tenantId: in String): Result[Bool, CloudAgents.Db.DbError] {
   val u = CloudAgents.PgStore.openUnscoped()?
   defer {
@@ -408,6 +468,7 @@ pub func removeMember(callerId: in String, tenantId: in String, targetId: in Str
   }
   exo(u, "DELETE FROM memberships WHERE tenant_id = @p0 AND user_id = @p1", [tenantId, targetId])?
   commitO(u)?
+  forgetMember(targetId, tenantId)
   return Ok(value = ())
 }
 
@@ -632,14 +693,19 @@ pub func reconcileGitHubMemberships(
   }
   // A partial list (more organisations than one fetch reads) removes
   // nothing: a membership missing from it may simply be on a later page.
-  var removed = 0
+  var removedTenants: slice[String] = []
   if complete {
-    val n = CloudAgents.PgStore.ex(u, "DELETE FROM memberships m USING tenants t WHERE m.tenant_id = t.id AND m.user_id = @p0 " + "AND m.source = 'github' AND NOT (t.github_org_id = ANY (string_to_array(@p1, ',')::bigint[]))", [userId, keep])?
-    removed = n
+    val gone = CloudAgents.PgStore.q(u, "DELETE FROM memberships m USING tenants t WHERE m.tenant_id = t.id AND m.user_id = @p0 " + "AND m.source = 'github' AND NOT (t.github_org_id = ANY (string_to_array(@p1, ',')::bigint[])) RETURNING m.tenant_id AS tenant_id", [userId, keep])?
+    for r in gone {
+      removedTenants = removedTenants.append(CloudAgents.PgStore.col(r, "tenant_id"))
+    }
   }
   markSynced(u, userId)?
   CloudAgents.PgStore.commit(u)?
-  return Ok(value = SyncOutcome(added = added, updated = updated, removed = removed))
+  for t in removedTenants {
+    forgetMember(userId, t)
+  }
+  return Ok(value = SyncOutcome(added = added, updated = updated, removed = removedTenants.length.toInt()))
 }
 
 /// Suspend the user's `github`-sourced memberships until they sign in again
@@ -650,10 +716,13 @@ pub func suspendGitHubMemberships(userId: in String): Result[Int, CloudAgents.Db
   defer {
     CloudAgents.PgStore.release(u)
   }
-  val n = CloudAgents.PgStore.ex(u, "UPDATE memberships SET suspended = true WHERE user_id = @p0 AND source = 'github' AND NOT suspended", [userId])?
+  val rows = CloudAgents.PgStore.q(u, "UPDATE memberships SET suspended = true WHERE user_id = @p0 AND source = 'github' AND NOT suspended " + "RETURNING tenant_id", [userId])?
   markSynced(u, userId)?
   CloudAgents.PgStore.commit(u)?
-  return Ok(value = n)
+  for r in rows {
+    forgetMember(userId, CloudAgents.PgStore.col(r, "tenant_id"))
+  }
+  return Ok(value = rows.length.toInt())
 }
 
 /// Users due a membership re-check (over an hour since their last sync, with
