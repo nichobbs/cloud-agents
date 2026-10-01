@@ -229,8 +229,8 @@ func threadSetData(slot: in DataSlot, data: in String): Unit = ()
 @externTarget("System.Threading.Thread.GetData")
 func threadGetData(slot: in DataSlot): String = ""
 
-/// The single-operator identity: static-token auth and unauthenticated-open
-/// deployments resolve to this, exactly as before OAuth existed.
+/// The single-operator identity: static-token auth and (opted-in)
+/// unauthenticated-open deployments resolve to this.
 pub func operatorUserId(): String {
   return "default"
 }
@@ -331,16 +331,22 @@ pub func invalidTokenError(): AuthError {
   return InvalidToken
 }
 
+pub func missingTokenError(): AuthError {
+  return MissingToken
+}
+
 /// Decide whether a request bearing `authHeaderValue` may proceed, given the
 /// configured `apiToken`.
 ///
-/// - An empty `apiToken` means auth is not configured. Callers decide per
-/// //   route whether that is acceptable: general endpoints stay open (matching
-///   today's behaviour), but credential endpoints must refuse rather than
-///   expose secrets unauthenticated — see `authorizeSecret`.
+/// - An empty `apiToken` means no static token is configured. That is only
+///   an open deployment when the operator opted in explicitly
+///   (`allowUnauthenticated`, from CLOUD_AGENTS_ALLOW_UNAUTHENTICATED=1);
+///   otherwise the request is refused with AuthNotConfigured, so a missing
+///   env var can never silently expose the API. Credential routes refuse
+///   even with the opt-in — see `authorizeSecret`.
 /// - A configured token requires a well-formed bearer header whose token
-///   matches in constant time.
-pub func authorize(authHeaderValue: in String, apiToken: in String): AuthOutcome {
+///   matches in constant time; the opt-in has no effect.
+pub func authorize(authHeaderValue: in String, apiToken: in String, allowUnauthenticated: in Bool): AuthOutcome {
   // Both Allowed arms resolve the OPERATOR identity explicitly — never
   // currentUserId(). currentUserId() reads the per-thread stamp left by the
   // *previous* request on a pooled thread, so reading it while deciding this
@@ -349,7 +355,10 @@ pub func authorize(authHeaderValue: in String, apiToken: in String): AuthOutcome
   // (#420). The stamp is only ever written from an outcome, after this
   // decision.
   if apiToken.length == 0 {
-    return Allowed(userId = operatorUserId())
+    if allowUnauthenticated {
+      return Allowed(userId = operatorUserId())
+    }
+    return Denied(error = AuthNotConfigured)
   }
   match extractBearerToken(authHeaderValue) {
     case None -> return Denied(error = MissingToken)
@@ -364,13 +373,13 @@ pub func authorize(authHeaderValue: in String, apiToken: in String): AuthOutcome
 
 /// Whether a route that must never run unauthenticated (credential storage)
 /// may proceed. Distinct from `authorize`: here a missing/empty configured
-/// token is itself a denial, so secrets can never be served on an
-/// unauthenticated deployment.
+/// token is a denial even when the operator opted in to unauthenticated
+/// access, so secrets can never be served on an unauthenticated deployment.
 pub func authorizeSecret(authHeaderValue: in String, apiToken: in String): AuthOutcome {
   if apiToken.length == 0 {
     return Denied(error = AuthNotConfigured)
   }
-  return authorize(authHeaderValue, apiToken)
+  return authorize(authHeaderValue, apiToken, false)
 }
 
 // ─── GitHub /user response parsing ────────────────────────────────────────────
@@ -504,23 +513,32 @@ pub func authorizeGitHub(githubId: in String, whitelistCsv: in String): AuthOutc
 // main.l's AuthMiddleware wires this in as a pre-handler guard (Lyric.Web
 // 0.4.26 exposes the request's Authorization header via Web.header). Secret
 // routes (credential storage) use authorizeSecret so they refuse when no
-// token is configured; all others use authorize (open when unconfigured,
-// matching today's behaviour). Both the classification and the decision
-// stayed pure and unit-tested throughout, so wiring them in was a one-line
-// change once the framework supported it.
+// token is configured; all others use authorize (refusing when unconfigured
+// unless the operator set CLOUD_AGENTS_ALLOW_UNAUTHENTICATED=1). Both the
+// classification and the decision stayed pure and unit-tested throughout, so
+// wiring them in was a one-line change once the framework supported it.
 /// Whether a request path must never run unauthenticated — the credential
 /// routes, which read/write secrets. Matches the /api/credentials prefix.
 pub func routeRequiresSecret(path: in String): Bool {
   return path == "/api/credentials" or path.startsWith("/api/credentials/")
 }
 
-/// The auth decision for a request: authorizeSecret for secret routes,
-/// authorize otherwise.
-pub func enforce(path: in String, authHeaderValue: in String, apiToken: in String): AuthOutcome {
+/// The static-token auth decision for a request: authorizeSecret for secret
+/// routes, authorize otherwise.
+pub func enforce(
+  path: in String, authHeaderValue: in String, apiToken: in String, allowUnauthenticated: in Bool
+): AuthOutcome {
   if routeRequiresSecret(path) {
     return authorizeSecret(authHeaderValue, apiToken)
   }
-  return authorize(authHeaderValue, apiToken)
+  return authorize(authHeaderValue, apiToken, allowUnauthenticated)
+}
+
+/// Whether a CLOUD_AGENTS_ALLOW_UNAUTHENTICATED value opts in to open access.
+/// Only the exact value "1" does; anything else (unset, "0", "true", a typo)
+/// keeps the API closed, so the opt-in can't be switched on by accident.
+pub func isAllowUnauthenticatedValue(value: in String): Bool {
+  return value == "1"
 }
 
 // ─── Phase 6: MCP-callback authentication ────────────────────────────────────

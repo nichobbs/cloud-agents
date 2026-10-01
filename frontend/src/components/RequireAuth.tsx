@@ -8,10 +8,11 @@ import { AUTH_CHANGED_EVENT, isSignedIn, refreshSessionToken } from '../lib/auth
 /// configured on this deployment and the device isn't signed in.
 ///
 /// When sign-in isn't configured at all (no CLOUD_AGENTS_GITHUB_CLIENT_ID/
-/// _SECRET set), renders children unguarded instead — matching the
-/// backend's own "open access when unconfigured" behavior (auth.l) rather
-/// than stranding every user behind a login page with no way to actually
-/// sign in.
+/// _SECRET set), renders children unguarded instead rather than stranding
+/// every user behind a login page with no way to actually sign in. The
+/// backend still decides access there: it accepts only the static
+/// CLOUD_AGENTS_API_TOKEN bearer, or runs open when the operator set
+/// CLOUD_AGENTS_ALLOW_UNAUTHENTICATED=1 (auth.l), so pages show its 401s.
 export function RequireAuth({ children }: { children: ReactNode }) {
   const location = useLocation();
   const { configured } = useAuthConfig();

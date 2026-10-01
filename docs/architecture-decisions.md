@@ -326,7 +326,8 @@ couples everything to one host:
       organisation during the phase 1 export, so personal use keeps working.
 11. **Fail-closed auth** (CAPABILITY_AUDIT WP3) is a precondition for the
     multi-tenant deployment. Unauthenticated mode becomes an explicit
-    single-node opt-in.
+    single-node opt-in. *Shipped: `CLOUD_AGENTS_ALLOW_UNAUTHENTICATED=1`
+    (CAPABILITY_AUDIT §2.2).*
 
 **Alternatives considered**:
 

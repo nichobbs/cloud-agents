@@ -42,6 +42,11 @@ func cleanupTestDb(path: in String): Unit {
 func clearOAuthEnv(): Unit {
   Env.SetEnvironmentVariable("CLOUD_AGENTS_GITHUB_CLIENT_ID", "")
   Env.SetEnvironmentVariable("CLOUD_AGENTS_GITHUB_CLIENT_SECRET", "")
+  Env.SetEnvironmentVariable("CLOUD_AGENTS_ALLOW_UNAUTHENTICATED", "")
+}
+
+func outcomeLabel(o: in AuthOutcome): String {
+  return match o { case Allowed(uid) -> "allow:" + uid; case Denied(e) -> "deny:" + authErrorMessage(e) }
 }
 
 // ── Pure builders and parsers ─────────────────────────────────────────────────
@@ -194,17 +199,26 @@ test "authenticateRequest keeps static-token semantics" {
     case Denied(_) -> assertTrue(false, "static match must be allowed")
   }
 
-  // No bearer, nothing configured -> open access (unchanged behaviour).
+  // No bearer, nothing configured, no opt-in -> refused.
+  assertEqual(
+    outcomeLabel(authenticateRequest("/api/sessions", "", "")),
+    "deny:authentication is not configured; access is disabled",
+    "unconfigured non-secret route refuses without the opt-in"
+  )
+
+  // No bearer, nothing configured, opted in -> open access.
+  Env.SetEnvironmentVariable("CLOUD_AGENTS_ALLOW_UNAUTHENTICATED", "1")
   match authenticateRequest("/api/sessions", "", "") {
-    case Allowed(uid) -> assertEqual(uid, operatorUserId(), "open when unconfigured")
-    case Denied(_) -> assertTrue(false, "unconfigured non-secret route stays open")
+    case Allowed(uid) -> assertEqual(uid, operatorUserId(), "open when unconfigured and opted in")
+    case Denied(_) -> assertTrue(false, "opted-in unconfigured non-secret route is open")
   }
 
-  // Secret route with no auth configured still refuses.
+  // Secret route with no auth configured still refuses, opt-in or not.
   match authenticateRequest("/api/credentials", "", "") {
     case Allowed(_) -> assertTrue(false, "secret route must refuse unauthenticated")
     case Denied(_) -> ()
   }
+  Env.SetEnvironmentVariable("CLOUD_AGENTS_ALLOW_UNAUTHENTICATED", "")
 
   // Wrong bearer with a static token and no OAuth -> denied.
   match authenticateRequest("/api/sessions", "Bearer wrong", "s3cret") {
@@ -215,19 +229,116 @@ test "authenticateRequest keeps static-token semantics" {
 
 test "open-access decision never inherits a stale thread identity (#420)" {
   clearOAuthEnv()
+  Env.SetEnvironmentVariable("CLOUD_AGENTS_ALLOW_UNAUTHENTICATED", "1")
   // Simulate a pooled thread that just served an OAuth user: the per-thread
   // stamp is still set when the next (unauthenticated) request's decision
   // runs. The decision must resolve the operator identity, not the stale one.
   setCurrentUserId("gh-99999")
   match authenticateRequest("/api/sessions", "", "") {
     case Allowed(uid) -> assertEqual(uid, operatorUserId(), "open access resolves the operator, never the stale stamp")
-    case Denied(_) -> assertTrue(false, "open access should be allowed")
+    case Denied(_) -> assertTrue(false, "opted-in open access should be allowed")
   }
   match authenticateRequest("/api/sessions", "Bearer s3cret", "s3cret") {
     case Allowed(uid) -> assertEqual(uid, operatorUserId(), "static match resolves the operator, never the stale stamp")
     case Denied(_) -> assertTrue(false, "static match should be allowed")
   }
   setCurrentUserId("")
+  clearOAuthEnv()
+}
+
+// ── OAuth configured: a request with no bearer fails closed ──────────────────
+test "with OAuth configured, a request with no bearer is refused on every checked route" {
+  // Pure decision, configuration passed in: no env, DB or network involved
+  // (a no-bearer request never reaches GitHub validation).
+  val routes = [
+    "/api/sessions",
+    "/api/sessions/abc/messages",
+    "/api/prompts",
+    "/api/maintenance/reap",
+    "/api/maintenance/trigger-jobs",
+    "/api/maintenance/ledger-sync",
+    "/api/maintenance/observe",
+    "/api/maintenance/drain-graph-ingest",
+    "/api/credentials"
+  ]
+  for path in routes {
+    // No static token configured: the case the compose files used to have to
+    // cover for (the open fallback ran these as the operator).
+    assertEqual(
+      outcomeLabel(authenticateRequestWith(path, "", "", true, false)),
+      "deny:missing Authorization bearer token",
+      "no bearer, OAuth on, no static token -> refused: " + path
+    )
+    // The open-access opt-in has no effect once OAuth is configured.
+    assertEqual(
+      outcomeLabel(authenticateRequestWith(path, "", "", true, true)),
+      "deny:missing Authorization bearer token",
+      "no bearer, OAuth on, opted in -> still refused: " + path
+    )
+    // A static token configured alongside OAuth changes nothing either.
+    assertEqual(
+      outcomeLabel(authenticateRequestWith(path, "", "s3cret", true, false)),
+      "deny:missing Authorization bearer token",
+      "no bearer, OAuth on, static token set -> refused: " + path
+    )
+    // A non-bearer Authorization header is no bearer at all.
+    assertEqual(
+      outcomeLabel(authenticateRequestWith(path, "Basic czNjcmV0", "", true, false)),
+      "deny:missing Authorization bearer token",
+      "non-bearer header, OAuth on -> refused: " + path
+    )
+  }
+}
+
+test "with OAuth configured, the static token still authenticates as the operator" {
+  setCurrentUserId("gh-99999")
+  match authenticateRequestWith("/api/maintenance/reap", "Bearer s3cret", "s3cret", true, false) {
+    case Allowed(uid) -> assertEqual(uid, operatorUserId(), "static match -> operator, even with OAuth on")
+    case Denied(_) -> assertTrue(false, "a matching static token must be allowed alongside OAuth")
+  }
+  setCurrentUserId("")
+}
+
+test "without OAuth, the no-bearer decision follows the static-token rules" {
+  assertEqual(
+    outcomeLabel(authenticateRequestWith("/api/sessions", "", "", false, false)),
+    "deny:authentication is not configured; access is disabled",
+    "nothing configured, no opt-in -> refused"
+  )
+  assertEqual(
+    outcomeLabel(authenticateRequestWith("/api/sessions", "", "", false, true)),
+    "allow:default",
+    "nothing configured, opted in -> operator"
+  )
+  assertEqual(
+    outcomeLabel(authenticateRequestWith("/api/credentials", "", "", false, true)),
+    "deny:authentication is not configured; access is disabled",
+    "secret route refuses even when opted in"
+  )
+  assertEqual(
+    outcomeLabel(authenticateRequestWith("/api/sessions", "", "s3cret", false, true)),
+    "deny:missing Authorization bearer token",
+    "static token configured -> bearer required, opt-in ignored"
+  )
+}
+
+test "the middleware entry point reads OAuth config from the environment and fails closed" {
+  clearOAuthEnv()
+  Env.SetEnvironmentVariable("CLOUD_AGENTS_GITHUB_CLIENT_ID", "cid")
+  Env.SetEnvironmentVariable("CLOUD_AGENTS_GITHUB_CLIENT_SECRET", "sec")
+  Env.SetEnvironmentVariable("CLOUD_AGENTS_ALLOW_UNAUTHENTICATED", "1")
+  setCurrentUserId("")
+  assertEqual(
+    outcomeLabel(authenticateRequest("/api/maintenance/reap", "", "")),
+    "deny:missing Authorization bearer token",
+    "OAuth configured via env, no bearer, no static token -> refused"
+  )
+  assertEqual(
+    outcomeLabel(authenticateRequest("/api/sessions", "", "")),
+    "deny:missing Authorization bearer token",
+    "session creation refused without a bearer"
+  )
+  clearOAuthEnv()
 }
 
 // ── Token-validation cache (live DB, no network) ─────────────────────────────
