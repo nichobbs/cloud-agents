@@ -1,38 +1,79 @@
+//! Credential vault tests: the user-owned vault on the Postgres store (phase
+//! 11 cut-over, spec section 4.3a) and the credential handlers.
 @test_module
 package CloudAgents.CredentialTests
 
 import Std.Core
-import CloudAgents.Scope
+import Std.Environment
 import Std.Testing
 import Std.Uuid
+import CloudAgents.Auth
 import CloudAgents.Credentials
-import CloudAgents.Db
+import CloudAgents.Pg
+import CloudAgents.Pg.Migrate
+import CloudAgents.PgStore.Tenancy
 import CloudAgents.Repository
+import CloudAgents.Scope
 import CloudAgents.Sqlite
 import extern System.Environment as Env
 
 val testKey = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="
 
-@externTarget("System.IO.File.Delete")
-func fileDelete(path: in String): Unit = ()
-
-func useFreshTestDb(tag: in String): String {
-  val path = "/tmp/cloud-agents-tests-" + tag + "-" + Std.Uuid.uuidToString(Std.Uuid.newUuid()) + ".db"
-  Env.SetEnvironmentVariable("CLOUD_AGENTS_DB_PATH", path)
-  Env.SetEnvironmentVariable("ENCRYPTION_KEY", testKey)
-  match CloudAgents.Repository.initSchema() {
-    case Ok(_) -> ()
-    case Err(e) -> assertTrue(false, "initSchema failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+// ── Live Postgres ─────────────────────────────────────────────────────────────
+//
+// The store is Postgres (docs/phase11-postgres-tenancy.md). These tests run iff
+// LYRIC_CONFIG_DB_CONNECTION_URL (cloudagents_app) and
+// CLOUD_AGENTS_MIGRATE_DATABASE_URL (cloudagents_owner) are set, and fail rather
+// than skip when CLOUD_AGENTS_REQUIRE_LIVE_PG=1 (CI). Each test acts as a fresh
+// user with its own personal tenant, so tests, suites and repeated runs against
+// the same database never see each other's rows.
+func live(): Bool {
+  val ok = CloudAgents.Pg.serviceConfigured() and
+    Std.Environment.getVarOrDefault(CloudAgents.Pg.migrateDsnVar(), "").length.toInt() > 0
+  if ok {
+    Env.SetEnvironmentVariable("ENCRYPTION_KEY", testKey)
+    return true
   }
-  return path
+  assertTrue(
+    Std.Environment.getVarOrDefault("CLOUD_AGENTS_REQUIRE_LIVE_PG", "") != "1",
+    "CLOUD_AGENTS_REQUIRE_LIVE_PG=1 but LYRIC_CONFIG_DB_CONNECTION_URL or CLOUD_AGENTS_MIGRATE_DATABASE_URL is not set"
+  )
+  println("SKIP: credential tests need LYRIC_CONFIG_DB_CONNECTION_URL and CLOUD_AGENTS_MIGRATE_DATABASE_URL")
+  return false
 }
 
-func cleanupTestDb(path: in String): Unit {
-  try {
-    fileDelete(path)
-  } catch Bug as b {
-    // fine
+func migrate(): Unit {
+  val conn = match CloudAgents.Pg.connectDsn(Std.Environment.getVarOrDefault(CloudAgents.Pg.migrateDsnVar(), "")) {
+    case Ok(c) -> c
+    case Err(e) -> panic(CloudAgents.Pg.pgErrorMessage(e))
   }
+  defer {
+    conn.close()
+  }
+  match CloudAgents.Pg.Migrate.migrate(conn) {
+    case Ok(_) -> ()
+    case Err(e) -> panic("migrate failed: " + CloudAgents.Pg.pgErrorMessage(e))
+  }
+}
+
+/// A new user with a provisioned personal tenant. Does not change the request
+/// identity.
+func newUser(tag: in String): String {
+  val uid = "t-" + tag + "-" + Std.Uuid.uuidToString(Std.Uuid.newUuid())
+  match CloudAgents.PgStore.Tenancy.ensurePersonalTenant(uid) {
+    case Ok(_) -> ()
+    case Err(e) -> panic("provisioning " + uid + " failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+  }
+  return uid
+}
+
+/// Migrate, then make a new user the request identity (what handlers read via
+/// CloudAgents.Auth.requestScope()).
+func freshUser(tag: in String): String {
+  migrate()
+  val uid = newUser(tag)
+  CloudAgents.Auth.setCurrentUserId(uid)
+  return uid
 }
 
 func mustPut(userId: in String, name: in String, value: in String): Unit {
@@ -68,11 +109,11 @@ func findValue(creds: in slice[CredentialValue], name: in String): String {
 }
 
 test "Credentials store, list names, and decrypt for injection" {
-  val dbPath = useFreshTestDb("cred-crud")
-  defer {
-    cleanupTestDb(dbPath)
+  if not live() {
+    return
   }
-  val userId = "default"
+  val me = freshUser("cred-cred-crud")
+  val userId = me
 
   mustPut(userId, "GITHUB_TOKEN", "ghp_secret_value")
   mustPut(userId, "GOOGLE_PROJECT", "my-project-123")
@@ -90,11 +131,11 @@ test "Credentials store, list names, and decrypt for injection" {
 }
 
 test "Upsert replaces a credential value in place" {
-  val dbPath = useFreshTestDb("cred-upsert")
-  defer {
-    cleanupTestDb(dbPath)
+  if not live() {
+    return
   }
-  val userId = "default"
+  val me = freshUser("cred-cred-upsert")
+  val userId = me
   mustPut(userId, "API_KEY", "old-value")
   mustPut(userId, "API_KEY", "new-value")
 
@@ -103,10 +144,10 @@ test "Upsert replaces a credential value in place" {
 }
 
 test "Credential handler rejects invalid and reserved names" {
-  val dbPath = useFreshTestDb("cred-validate")
-  defer {
-    cleanupTestDb(dbPath)
+  if not live() {
+    return
   }
+  val me = freshUser("cred-cred-validate")
   // Reserved runner env-var names must not be storable (would override the
   // runner's own value on injection).
   match putCredentialHandler(PutCredentialRequest(name = "MODEL", value = "x")) {
@@ -174,40 +215,42 @@ test "Credential handler rejects invalid and reserved names" {
 }
 
 test "Credentials are per-user isolated and deletable" {
-  val dbPath = useFreshTestDb("cred-scope")
-  defer {
-    cleanupTestDb(dbPath)
+  if not live() {
+    return
   }
-  mustPut("default", "SECRET", "mine")
-  mustPut("someone-else", "SECRET", "theirs")
+  val me = freshUser("cred-cred-scope")
+  val other = newUser("cred-other")
+  mustPut(me, "SECRET", "mine")
+  mustPut(other, "SECRET", "theirs")
 
-  assertEqualInt(mustNames("default").length.toInt(), 1, "only my credential listed")
-  assertEqual(findValue(mustDecrypted("default"), "SECRET"), "mine", "I see my own value")
+  assertEqualInt(mustNames(me).length.toInt(), 1, "only my credential listed")
+  assertEqual(findValue(mustDecrypted(me), "SECRET"), "mine", "I see my own value")
 
   // Deleting another user's credential touches nothing.
-  match deleteCredential(CloudAgents.Scope.userScope("default"), "SECRET") {
+  match deleteCredential(CloudAgents.Scope.userScope(me), "SECRET") {
     case Ok(n) -> assertEqualInt(n, 1, "delete my own credential")
     case Err(e) -> assertTrue(false, CloudAgents.Sqlite.dbErrorMessage(e))
   }
-  match deleteCredential(CloudAgents.Scope.userScope("default"), "SECRET") {
+  match deleteCredential(CloudAgents.Scope.userScope(me), "SECRET") {
     case Ok(n) -> assertEqualInt(n, 0, "second delete finds nothing")
     case Err(e) -> assertTrue(false, CloudAgents.Sqlite.dbErrorMessage(e))
   }
-  assertEqualInt(mustNames("someone-else").length.toInt(), 1, "other user's credential untouched")
+  assertEqualInt(mustNames(other).length.toInt(), 1, "other user's credential untouched")
 }
 
 test "deleting GITHUB_TOKEN also drops GitHub OAuth refresh metadata, preventing silent resurrection (#668)" {
-  val dbPath = useFreshTestDb("cred-github-token-refresh-cleanup")
-  defer {
-    cleanupTestDb(dbPath)
+  if not live() {
+    return
   }
-  mustPut("gh-777", "GITHUB_TOKEN", "gho_original")
-  match CloudAgents.Repository.upsertGitHubOAuthRefresh(CloudAgents.Scope.userScope("gh-777"), "refresh-still-valid", "3600", "604800") {
+  val me = freshUser("cred-cred-github-token-refresh-cleanup")
+  val gh1 = newUser("cred-gh1")
+  mustPut(gh1, "GITHUB_TOKEN", "gho_original")
+  match CloudAgents.Repository.upsertGitHubOAuthRefresh(CloudAgents.Scope.userScope(gh1), "refresh-still-valid", "3600", "604800") {
     case Ok(_) -> ()
     case Err(e) -> assertTrue(false, "upsert failed: " + CloudAgents.Repository.credentialErrorMessage(e))
   }
 
-  match deleteCredential(CloudAgents.Scope.userScope("gh-777"), "GITHUB_TOKEN") {
+  match deleteCredential(CloudAgents.Scope.userScope(gh1), "GITHUB_TOKEN") {
     case Ok(n) -> assertEqualInt(n, 1, "GITHUB_TOKEN deleted")
     case Err(e) -> assertTrue(false, CloudAgents.Sqlite.dbErrorMessage(e))
   }
@@ -215,24 +258,25 @@ test "deleting GITHUB_TOKEN also drops GitHub OAuth refresh metadata, preventing
   // The refresh row must be gone too, or a still-valid refresh token would
   // silently re-vault a fresh GITHUB_TOKEN on the next request despite the
   // tenant having just deleted it.
-  match CloudAgents.Repository.githubOAuthRefreshStatus(CloudAgents.Scope.userScope("gh-777")) {
+  match CloudAgents.Repository.githubOAuthRefreshStatus(CloudAgents.Scope.userScope(gh1)) {
     case Ok(None) -> ()
     case Ok(Some(_)) -> assertTrue(false, "refresh metadata must be dropped alongside GITHUB_TOKEN")
     case Err(e) -> assertTrue(false, "status read failed: " + CloudAgents.Repository.credentialErrorMessage(e))
   }
 
   // Deleting an unrelated credential must never touch refresh metadata.
-  mustPut("gh-888", "GITHUB_TOKEN", "gho_other")
-  mustPut("gh-888", "OTHER_SECRET", "unrelated")
-  match CloudAgents.Repository.upsertGitHubOAuthRefresh(CloudAgents.Scope.userScope("gh-888"), "refresh-888", "3600", "604800") {
+  val gh2 = newUser("cred-gh2")
+  mustPut(gh2, "GITHUB_TOKEN", "gho_other")
+  mustPut(gh2, "OTHER_SECRET", "unrelated")
+  match CloudAgents.Repository.upsertGitHubOAuthRefresh(CloudAgents.Scope.userScope(gh2), "refresh-888", "3600", "604800") {
     case Ok(_) -> ()
     case Err(e) -> assertTrue(false, "upsert failed: " + CloudAgents.Repository.credentialErrorMessage(e))
   }
-  match deleteCredential(CloudAgents.Scope.userScope("gh-888"), "OTHER_SECRET") {
+  match deleteCredential(CloudAgents.Scope.userScope(gh2), "OTHER_SECRET") {
     case Ok(n) -> assertEqualInt(n, 1, "unrelated credential deleted")
     case Err(e) -> assertTrue(false, CloudAgents.Sqlite.dbErrorMessage(e))
   }
-  match CloudAgents.Repository.githubOAuthRefreshStatus(CloudAgents.Scope.userScope("gh-888")) {
+  match CloudAgents.Repository.githubOAuthRefreshStatus(CloudAgents.Scope.userScope(gh2)) {
     case Ok(Some(_)) -> ()
     case Ok(None) -> assertTrue(false, "refresh metadata must survive deleting an unrelated credential")
     case Err(e) -> assertTrue(false, "status read failed: " + CloudAgents.Repository.credentialErrorMessage(e))

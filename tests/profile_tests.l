@@ -1,15 +1,20 @@
+//! Profile tests: validation, and the profile store (grants, tools, network
+//! policy, credential injection) on Postgres since the phase 11 cut-over.
 @test_module
 package CloudAgents.ProfileTests
 
 import Std.Core
-import CloudAgents.Scope
-import CloudAgents.Pg
+import Std.Environment
 import Std.Testing
 import Std.Uuid
 import CloudAgents
-import CloudAgents.Db
+import CloudAgents.Auth
+import CloudAgents.Pg
+import CloudAgents.Pg.Migrate
+import CloudAgents.PgStore.Tenancy
 import CloudAgents.Profiles
 import CloudAgents.Repository
+import CloudAgents.Scope
 import CloudAgents.Sqlite
 import extern System.Environment as Env
 
@@ -28,34 +33,6 @@ func utf8Encoding(): Encoding = ()
 @externInstance
 @externTarget("System.Text.Encoding.GetString")
 func bytesToUtf8(enc: in Encoding, bytes: in slice[Byte]): String = ""
-
-// ── SQL builder tests (no database needed) ────────────────────────────────────
-test "profile SQL builders are owner-scoped and escaped" {
-  val ins = insertProfileSql("p1", "u1", "it's a name", "claude", "none", "selected", "all", "1000")
-  assertTrue(ins.startsWith("INSERT INTO profiles"), "insert target")
-  assertTrue(ins.contains("'it''s a name'"), "name is escaped")
-  assertTrue(selectProfilesSql("u1").contains("WHERE user_id = 'u1'"), "list scoped by owner")
-  assertTrue(selectProfilesSql("u1").contains("ORDER BY name ASC"), "profiles alphabetical")
-  assertTrue(selectProfileByIdSql("p1", "u1").contains("AND user_id = 'u1'"), "get scoped by owner")
-  assertTrue(
-    updateProfileSql("p1", "u1", "n", "codex", "full", "all", "selected", "2000").contains("AND user_id = 'u1'"),
-    "update scoped by owner"
-  )
-  assertTrue(deleteProfileSql("p1", "u1").endsWith("AND user_id = 'u1'"), "delete scoped by owner")
-  assertTrue(profilesSchemaSql().contains("CREATE TABLE IF NOT EXISTS profiles"), "ddl idempotent")
-  assertTrue(alterProfilesAddToolModeSql().contains("ADD COLUMN tool_mode"), "tool_mode column migration")
-  assertTrue(profileCredentialsSchemaSql().contains("UNIQUE(profile_id, credential_name)"), "grants unique per profile")
-  val grant = insertProfileCredentialSql("g1", "p1", "u1", "GITHUB_TOKEN")
-  assertTrue(grant.contains("ON CONFLICT(profile_id, credential_name) DO NOTHING"), "grant insert is idempotent")
-  assertTrue(selectProfileCredentialsSql("p1", "u1").contains("WHERE profile_id = 'p1'"), "grants scoped to profile")
-  assertTrue(deleteProfileCredentialsSql("p1", "u1").contains("AND user_id = 'u1'"), "grant delete scoped by owner")
-  // Profile tools (docs/phase7-autonomy.md §7) mirror profile_credentials exactly.
-  assertTrue(profileToolsSchemaSql().contains("UNIQUE(profile_id, tool_name)"), "tool grants unique per profile")
-  val toolGrant = insertProfileToolSql("t1", "p1", "u1", "remember")
-  assertTrue(toolGrant.contains("ON CONFLICT(profile_id, tool_name) DO NOTHING"), "tool grant insert is idempotent")
-  assertTrue(selectProfileToolsSql("p1", "u1").contains("WHERE profile_id = 'p1'"), "tool grants scoped to profile")
-  assertTrue(deleteProfileToolsSql("p1", "u1").contains("AND user_id = 'u1'"), "tool grant delete scoped by owner")
-}
 
 test "handler validation rejects bad enums" {
   assertTrue(isValidNetworkPolicy("full"), "full is valid")
@@ -79,27 +56,61 @@ test "handler validation rejects bad enums" {
   assertTrue(isValidToolName("notify"), "notify is a valid tool name (#625)")
 }
 
-// ── Live-database tests ───────────────────────────────────────────────────────
-@externTarget("System.IO.File.Delete")
-func fileDelete(path: in String): Unit = ()
-
-func useFreshTestDb(tag: in String): String {
-  val path = "/tmp/cloud-agents-tests-" + tag + "-" + Std.Uuid.uuidToString(Std.Uuid.newUuid()) + ".db"
-  Env.SetEnvironmentVariable("CLOUD_AGENTS_DB_PATH", path)
-  Env.SetEnvironmentVariable("ENCRYPTION_KEY", testKey)
-  match CloudAgents.Repository.initSchema() {
-    case Ok(_) -> ()
-    case Err(e) -> assertTrue(false, "initSchema failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+// ── Live Postgres ─────────────────────────────────────────────────────────────
+//
+// The store is Postgres (docs/phase11-postgres-tenancy.md). These tests run iff
+// LYRIC_CONFIG_DB_CONNECTION_URL (cloudagents_app) and
+// CLOUD_AGENTS_MIGRATE_DATABASE_URL (cloudagents_owner) are set, and fail rather
+// than skip when CLOUD_AGENTS_REQUIRE_LIVE_PG=1 (CI). Each test acts as a fresh
+// user with its own personal tenant, so tests, suites and repeated runs against
+// the same database never see each other's rows.
+func live(): Bool {
+  val ok = CloudAgents.Pg.serviceConfigured() and
+    Std.Environment.getVarOrDefault(CloudAgents.Pg.migrateDsnVar(), "").length.toInt() > 0
+  if ok {
+    Env.SetEnvironmentVariable("ENCRYPTION_KEY", testKey)
+    return true
   }
-  return path
+  assertTrue(
+    Std.Environment.getVarOrDefault("CLOUD_AGENTS_REQUIRE_LIVE_PG", "") != "1",
+    "CLOUD_AGENTS_REQUIRE_LIVE_PG=1 but LYRIC_CONFIG_DB_CONNECTION_URL or CLOUD_AGENTS_MIGRATE_DATABASE_URL is not set"
+  )
+  println("SKIP: profile tests need LYRIC_CONFIG_DB_CONNECTION_URL and CLOUD_AGENTS_MIGRATE_DATABASE_URL")
+  return false
 }
 
-func cleanupTestDb(path: in String): Unit {
-  try {
-    fileDelete(path)
-  } catch Bug as b {
-    // fine
+func migrate(): Unit {
+  val conn = match CloudAgents.Pg.connectDsn(Std.Environment.getVarOrDefault(CloudAgents.Pg.migrateDsnVar(), "")) {
+    case Ok(c) -> c
+    case Err(e) -> panic(CloudAgents.Pg.pgErrorMessage(e))
   }
+  defer {
+    conn.close()
+  }
+  match CloudAgents.Pg.Migrate.migrate(conn) {
+    case Ok(_) -> ()
+    case Err(e) -> panic("migrate failed: " + CloudAgents.Pg.pgErrorMessage(e))
+  }
+}
+
+/// A new user with a provisioned personal tenant. Does not change the request
+/// identity.
+func newUser(tag: in String): String {
+  val uid = "t-" + tag + "-" + Std.Uuid.uuidToString(Std.Uuid.newUuid())
+  match CloudAgents.PgStore.Tenancy.ensurePersonalTenant(uid) {
+    case Ok(_) -> ()
+    case Err(e) -> panic("provisioning " + uid + " failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+  }
+  return uid
+}
+
+/// Migrate, then make a new user the request identity (what handlers read via
+/// CloudAgents.Auth.requestScope()).
+func freshUser(tag: in String): String {
+  migrate()
+  val uid = newUser(tag)
+  CloudAgents.Auth.setCurrentUserId(uid)
+  return uid
 }
 
 func mustProfile(r: in Result[Profile, CloudAgents.Sqlite.DbError]): Profile {
@@ -143,10 +154,10 @@ func hasCred(creds: in slice[CredentialValue], name: in String): Bool {
 }
 
 test "Profile handlers validate enums, grants, and reject duplicates" {
-  val dbPath = useFreshTestDb("profile-handlers")
-  defer {
-    cleanupTestDb(dbPath)
+  if not live() {
+    return
   }
+  val me = freshUser("prof-profile-handlers")
   // Bad network policy -> 400.
   match addProfileHandler(SaveProfileRequest(name = "p", harness = "", networkPolicy = "open", credentialMode = "all", credentials = [], skillIds = [], subagentIds = [], mcpServerIds = [], toolMode = "all", tools = [])) {
     case Ok(_) -> assertTrue(false, "bad policy should be rejected")
@@ -197,10 +208,10 @@ test "Profile handlers validate enums, grants, and reject duplicates" {
 }
 
 test "an absent/empty toolMode (a not-yet-updated frontend) defaults to 'all', not a 400 (#614)" {
-  val dbPath = useFreshTestDb("profile-toolmode-default")
-  defer {
-    cleanupTestDb(dbPath)
+  if not live() {
+    return
   }
+  val me = freshUser("prof-profile-toolmode-default")
   // Exactly the shape a pre-phase-7 frontend still sends: toolMode/tools
   // never populated. Must succeed, not 400 — every existing profile
   // create/update from the current UI would otherwise break the moment
@@ -256,10 +267,10 @@ test "SaveProfileRequest.fromJson decodes a body that omits toolMode/tools entir
 }
 
 test "duplicate tool names in 'selected' mode are rejected (#615)" {
-  val dbPath = useFreshTestDb("profile-toolmode-dup")
-  defer {
-    cleanupTestDb(dbPath)
+  if not live() {
+    return
   }
+  val me = freshUser("prof-profile-toolmode-dup")
   match addProfileHandler(SaveProfileRequest(name = "dup-tools", harness = "", networkPolicy = "none", credentialMode = "all", credentials = [], skillIds = [], subagentIds = [], mcpServerIds = [], toolMode = "selected", tools = ["remember", "recall", "remember"])) {
     case Ok(_) -> assertTrue(false, "a repeated tool name must be rejected")
     case Err(err) -> assertEqualInt(err.status, 400, "duplicate tool name -> 400")
@@ -267,11 +278,11 @@ test "duplicate tool names in 'selected' mode are rejected (#615)" {
 }
 
 test "Profile CRUD round-trips with its credential grants" {
-  val dbPath = useFreshTestDb("profile-crud")
-  defer {
-    cleanupTestDb(dbPath)
+  if not live() {
+    return
   }
-  val userId = "default"
+  val me = freshUser("prof-profile-crud")
+  val userId = me
 
   val created = mustProfile(
     addProfile(
@@ -359,10 +370,10 @@ test "Profile CRUD round-trips with its credential grants" {
 // Map does not answer .get(), and Lyric.Web exposes no reader for it), while
 // the record's contentType field keeps Web.text's text/plain default.
 test "Profile Resp helpers emit the raw profile JSON, not a double-encoded JSON string (#734)" {
-  val dbPath = useFreshTestDb("profile-jsonresp")
-  defer {
-    cleanupTestDb(dbPath)
+  if not live() {
+    return
   }
+  val me = freshUser("prof-profile-jsonresp")
   val p = match addProfileHandler(SaveProfileRequest(name = "json-check", harness = "", networkPolicy = "none", credentialMode = "all", credentials = [], skillIds = [], subagentIds = [], mcpServerIds = [], toolMode = "all", tools = [])) {
     case Ok(v) -> v
     case Err(_) -> panic("setup: profile create failed")
@@ -390,16 +401,17 @@ test "Profile Resp helpers emit the raw profile JSON, not a double-encoded JSON 
 }
 
 test "Profile ownership scoping hides other users' profiles" {
-  val dbPath = useFreshTestDb("profile-scope")
-  defer {
-    cleanupTestDb(dbPath)
+  if not live() {
+    return
   }
+  val me = freshUser("prof-profile-scope")
+  val other = newUser("prof-scope-other")
   val mine = mustProfile(
-    addProfile(CloudAgents.Pg.personalScope("default"), "mine", "", "full", "all", [], [], [], [], "all", [])
+    addProfile(CloudAgents.Pg.personalScope(me), "mine", "", "full", "all", [], [], [], [], "all", [])
   )
   val theirs = mustProfile(
     addProfile(
-      CloudAgents.Pg.personalScope("someone-else"),
+      CloudAgents.Pg.personalScope(other),
       "theirs",
       "",
       "full",
@@ -413,11 +425,11 @@ test "Profile ownership scoping hides other users' profiles" {
     )
   )
 
-  val myList = mustProfiles(listProfiles(CloudAgents.Pg.personalScope("default")))
+  val myList = mustProfiles(listProfiles(CloudAgents.Pg.personalScope(me)))
   assertEqualInt(myList.length.toInt(), 1, "only my profile listed")
   assertEqual(myList[0].id, mine.id, "listed profile is mine")
 
-  match getProfile(theirs.id, CloudAgents.Pg.personalScope("default")) {
+  match getProfile(theirs.id, CloudAgents.Pg.personalScope(me)) {
     case Ok(Some(_)) -> assertTrue(false, "cannot read another user's profile")
     case Ok(None) -> ()
     case Err(e) -> assertTrue(false, "getProfile failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
@@ -426,7 +438,7 @@ test "Profile ownership scoping hides other users' profiles" {
     mustRows(
       updateProfile(
         theirs.id,
-        CloudAgents.Pg.personalScope("default"),
+        CloudAgents.Pg.personalScope(me),
         "x",
         "",
         "full",
@@ -443,18 +455,18 @@ test "Profile ownership scoping hides other users' profiles" {
     "cannot update another user's profile"
   )
   assertEqualInt(
-    mustRows(deleteProfile(theirs.id, CloudAgents.Pg.personalScope("default"))),
+    mustRows(deleteProfile(theirs.id, CloudAgents.Pg.personalScope(me))),
     0,
     "cannot delete another user's profile"
   )
 }
 
 test "Selected-mode profile injects only its granted credentials" {
-  val dbPath = useFreshTestDb("profile-inject")
-  defer {
-    cleanupTestDb(dbPath)
+  if not live() {
+    return
   }
-  val userId = "default"
+  val me = freshUser("prof-profile-inject")
+  val userId = me
   mustPutCredential(userId, "GITHUB_TOKEN", "ghp_secret")
   mustPutCredential(userId, "AWS_KEY", "aws_secret")
   mustPutCredential(userId, "OPENAI_KEY", "oai_secret")
@@ -514,11 +526,11 @@ test "Selected-mode profile injects only its granted credentials" {
 }
 
 test "Selected-mode profile enables only its granted tools, and fails OPEN for unresolved profiles" {
-  val dbPath = useFreshTestDb("profile-tools")
-  defer {
-    cleanupTestDb(dbPath)
+  if not live() {
+    return
   }
-  val userId = "default"
+  val me = freshUser("prof-profile-tools")
+  val userId = me
 
   // 'selected' profile grants only remember + recall. Read back alphabetical
   // (selectProfileToolsSql orders by tool_name ASC, mirroring
@@ -581,11 +593,11 @@ test "Selected-mode profile enables only its granted tools, and fails OPEN for u
 }
 
 test "Network policy resolves and fails closed for unknown profiles" {
-  val dbPath = useFreshTestDb("profile-network")
-  defer {
-    cleanupTestDb(dbPath)
+  if not live() {
+    return
   }
-  val userId = "default"
+  val me = freshUser("prof-profile-network")
+  val userId = me
   val isolated = mustProfile(
     addProfile(
       CloudAgents.Pg.personalScope(userId),

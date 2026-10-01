@@ -1,38 +1,75 @@
+//! MCP server seeding tests: the curated catalog seeded into the Postgres
+//! library store (phase 11 cut-over) from the real seed/mcp-servers files.
 @test_module
 package CloudAgents.McpServerSeedTests
 
 import Std.Core
-import CloudAgents.Pg
+import Std.Environment
 import Std.Testing
 import Std.Uuid
+import CloudAgents.Auth
 import CloudAgents.McpServerSeed
+import CloudAgents.Pg
+import CloudAgents.Pg.Migrate
+import CloudAgents.PgStore.Tenancy
 import CloudAgents.Repository
 import CloudAgents.Sqlite
 import extern System.Environment as Env
 
-// ── Live-DB plumbing (same pattern as tests/library_seed_tests.l) ──────────
-@externTarget("System.IO.File.Delete")
-func fileDelete(path: in String): Unit = ()
-
-val testKey = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="
-
-func useFreshTestDb(tag: in String): String {
-  val path = "/tmp/cloud-agents-tests-" + tag + "-" + Std.Uuid.uuidToString(Std.Uuid.newUuid()) + ".db"
-  Env.SetEnvironmentVariable("CLOUD_AGENTS_DB_PATH", path)
-  Env.SetEnvironmentVariable("ENCRYPTION_KEY", testKey)
-  match CloudAgents.Repository.initSchema() {
-    case Ok(_) -> ()
-    case Err(e) -> assertTrue(false, "initSchema failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+// ── Live Postgres ─────────────────────────────────────────────────────────────
+//
+// The store is Postgres (docs/phase11-postgres-tenancy.md). These tests run iff
+// LYRIC_CONFIG_DB_CONNECTION_URL (cloudagents_app) and
+// CLOUD_AGENTS_MIGRATE_DATABASE_URL (cloudagents_owner) are set, and fail rather
+// than skip when CLOUD_AGENTS_REQUIRE_LIVE_PG=1 (CI). Each test acts as a fresh
+// user with its own personal tenant, so tests, suites and repeated runs against
+// the same database never see each other's rows.
+func live(): Bool {
+  val ok = CloudAgents.Pg.serviceConfigured() and
+    Std.Environment.getVarOrDefault(CloudAgents.Pg.migrateDsnVar(), "").length.toInt() > 0
+  if ok {
+    return true
   }
-  return path
+  assertTrue(
+    Std.Environment.getVarOrDefault("CLOUD_AGENTS_REQUIRE_LIVE_PG", "") != "1",
+    "CLOUD_AGENTS_REQUIRE_LIVE_PG=1 but LYRIC_CONFIG_DB_CONNECTION_URL or CLOUD_AGENTS_MIGRATE_DATABASE_URL is not set"
+  )
+  println("SKIP: MCP server seed tests need LYRIC_CONFIG_DB_CONNECTION_URL and CLOUD_AGENTS_MIGRATE_DATABASE_URL")
+  return false
 }
 
-func cleanupTestDb(path: in String): Unit {
-  try {
-    fileDelete(path)
-  } catch Bug as b {
-    // locked or already gone — fine for a temp file
+func migrate(): Unit {
+  val conn = match CloudAgents.Pg.connectDsn(Std.Environment.getVarOrDefault(CloudAgents.Pg.migrateDsnVar(), "")) {
+    case Ok(c) -> c
+    case Err(e) -> panic(CloudAgents.Pg.pgErrorMessage(e))
   }
+  defer {
+    conn.close()
+  }
+  match CloudAgents.Pg.Migrate.migrate(conn) {
+    case Ok(_) -> ()
+    case Err(e) -> panic("migrate failed: " + CloudAgents.Pg.pgErrorMessage(e))
+  }
+}
+
+/// A new user with a provisioned personal tenant. Does not change the request
+/// identity.
+func newUser(tag: in String): String {
+  val uid = "t-" + tag + "-" + Std.Uuid.uuidToString(Std.Uuid.newUuid())
+  match CloudAgents.PgStore.Tenancy.ensurePersonalTenant(uid) {
+    case Ok(_) -> ()
+    case Err(e) -> panic("provisioning " + uid + " failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+  }
+  return uid
+}
+
+/// Migrate, then make a new user the request identity (what handlers read via
+/// CloudAgents.Auth.requestScope()).
+func freshUser(tag: in String): String {
+  migrate()
+  val uid = newUser(tag)
+  CloudAgents.Auth.setCurrentUserId(uid)
+  return uid
 }
 
 test "seedMcpServersDir defaults to seed/mcp-servers and honors CLOUD_AGENTS_SEED_MCP_SERVERS_DIR" {
@@ -67,8 +104,11 @@ test "defaultMcpServerNames is the fixed curated set of four" {
 // ── seedDefaultMcpServersIfEmpty against a live DB and the real repo-root seed files ──
 test "seedDefaultMcpServersIfEmpty populates an empty library from the real seed/mcp-servers files, is idempotent, and never overwrites" {
   Env.SetEnvironmentVariable("CLOUD_AGENTS_SEED_MCP_SERVERS_DIR", "")
-  val dbPath = useFreshTestDb("mcp-server-seed")
-  val userId = "gh-mcp-seed-test-user"
+  if not live() {
+    return
+  }
+  val me = freshUser("mcp-server-seed")
+  val userId = me
 
   seedDefaultMcpServersIfEmpty(userId)
 
@@ -108,12 +148,14 @@ test "seedDefaultMcpServersIfEmpty populates an empty library from the real seed
   }
   assertEqualInt(reseeded.length.toInt(), expectedNames.length.toInt(), "an emptied library is reseeded on the next call")
 
-  cleanupTestDb(dbPath)
 }
 
 test "seedDefaultMcpServersIfEmpty never touches a library the user has already started customizing" {
-  val dbPath = useFreshTestDb("mcp-server-seed-nonempty")
-  val userId = "gh-mcp-seed-test-user-2"
+  if not live() {
+    return
+  }
+  val me = freshUser("mcp-server-seed-nonempty")
+  val userId = me
   val noArgs: slice[String] = []
   match CloudAgents.Repository.addMcpServer(CloudAgents.Pg.personalScope(userId), "my-own-server", "stdio", "npx", ["-y", "my-mcp"], "", noArgs) {
     case Ok(_) -> ()
@@ -129,13 +171,15 @@ test "seedDefaultMcpServersIfEmpty never touches a library the user has already 
   assertEqualInt(servers.length.toInt(), 1, "a non-empty library is left exactly as the user made it")
   assertEqual(servers[0].name, "my-own-server", "the user's own MCP server is untouched")
 
-  cleanupTestDb(dbPath)
 }
 
 test "the curated catalog's enabled/disabled defaults match the design: credential-requiring or heavier servers ship disabled" {
   Env.SetEnvironmentVariable("CLOUD_AGENTS_SEED_MCP_SERVERS_DIR", "")
-  val dbPath = useFreshTestDb("mcp-server-seed-enabled")
-  val userId = "gh-mcp-seed-test-user-enabled"
+  if not live() {
+    return
+  }
+  val me = freshUser("mcp-server-seed-enabled")
+  val userId = me
 
   seedDefaultMcpServersIfEmpty(userId)
 
@@ -163,13 +207,15 @@ test "the curated catalog's enabled/disabled defaults match the design: credenti
     i = i + 1
   }
 
-  cleanupTestDb(dbPath)
 }
 
 test "the seeded github server points at the hosted GitHub MCP endpoint with a bearer-token Authorization header (#768)" {
   Env.SetEnvironmentVariable("CLOUD_AGENTS_SEED_MCP_SERVERS_DIR", "")
-  val dbPath = useFreshTestDb("mcp-server-seed-github-url")
-  val userId = "gh-mcp-seed-test-user-github-url"
+  if not live() {
+    return
+  }
+  val me = freshUser("mcp-server-seed-github-url")
+  val userId = me
 
   seedDefaultMcpServersIfEmpty(userId)
 
@@ -192,13 +238,15 @@ test "the seeded github server points at the hosted GitHub MCP endpoint with a b
   }
   assertTrue(found, "github is present in the seeded catalog")
 
-  cleanupTestDb(dbPath)
 }
 
 test "a disabled seeded MCP server granted to a profile is excluded from container injection" {
   Env.SetEnvironmentVariable("CLOUD_AGENTS_SEED_MCP_SERVERS_DIR", "")
-  val dbPath = useFreshTestDb("mcp-server-seed-injection")
-  val userId = "gh-mcp-seed-test-user-injection"
+  if not live() {
+    return
+  }
+  val me = freshUser("mcp-server-seed-injection")
+  val userId = me
 
   seedDefaultMcpServersIfEmpty(userId)
   val servers = match CloudAgents.Repository.listMcpServers(CloudAgents.Pg.personalScope(userId)) {
@@ -244,5 +292,4 @@ test "a disabled seeded MCP server granted to a profile is excluded from contain
   assertTrue(foundFetch, "enabled fetch server is still injected")
   assertEqualInt(granted.length.toInt(), 2, "only the two enabled servers (fetch, context7) make it through")
 
-  cleanupTestDb(dbPath)
 }
