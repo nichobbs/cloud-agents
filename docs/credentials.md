@@ -167,8 +167,8 @@ including the refresh token, under `CLAUDE_CREDENTIALS_JSON`. A file with no
 refresh token still falls back to the bare `CLAUDE_CODE_OAUTH_TOKEN`.
 
 - **Why not the bare access token.** `CLAUDE_CODE_OAUTH_TOKEN` is read by the
-  CLI straight from the environment, in preference to the credentials file, and
-  an access token is short-lived. Nothing could renew it, so the login lapsed
+  CLI from the environment (believed, not verified, to take precedence over the
+  credentials file), and an access token is short-lived. Nothing could renew it, so the login lapsed
   until the file was pasted again.
 - **Restore rule.** On every container start, `docker/restore-claude-credentials.sh`
   writes the vault login to the home volume's `.credentials.json` only if its

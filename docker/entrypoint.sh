@@ -267,17 +267,28 @@ if [ "$(id -u)" -eq 0 ]; then
     # Refreshable login (CLAUDE_CREDENTIALS_JSON): restore it to the home
     # volume when the vault copy is newer than what is already there, and from
     # then on let the CLI use the file (and refresh it) instead of a bare token.
-    # CLAUDE_CODE_OAUTH_TOKEN is dropped in that case because the CLI prefers
-    # that env var over the file and its access token cannot be renewed.
+    # CLAUDE_CODE_OAUTH_TOKEN is dropped once the file holds a usable login (it
+    # is assumed, not verified, that the CLI prefers that env var over the file,
+    # and a bare access token cannot be renewed); if the file is unusable the
+    # token stays as a fallback.
     if [ -n "${CLAUDE_CREDENTIALS_JSON:-}" ]; then
         # shellcheck source=restore-claude-credentials.sh
         source /usr/local/bin/restore-claude-credentials.sh
         mkdir -p "$HOME/.claude"
-        if restore_claude_credentials "$HOME/.claude/.credentials.json"; then
+        restore_rc=0
+        restore_claude_credentials "$HOME/.claude/.credentials.json" || restore_rc=$?
+        if [ "$restore_rc" = "0" ]; then
             echo "entrypoint: restored ~/.claude/.credentials.json from the vault (newer than the volume copy)" >&2
+        elif [ "$restore_rc" = "2" ]; then
+            echo "entrypoint: WARNING: CLAUDE_CREDENTIALS_JSON is unusable (malformed, no access token, or jq missing)" >&2
         fi
         chown -R claude-user:claude-user "$HOME/.claude" || true
-        unset CLAUDE_CODE_OAUTH_TOKEN CLAUDE_CREDENTIALS_JSON
+        if claude_credentials_usable "$HOME/.claude/.credentials.json"; then
+            unset CLAUDE_CODE_OAUTH_TOKEN
+        else
+            echo "entrypoint: WARNING: no usable ~/.claude/.credentials.json; keeping CLAUDE_CODE_OAUTH_TOKEN as a fallback" >&2
+        fi
+        unset CLAUDE_CREDENTIALS_JSON
     fi
 
     # If CLAUDE_CODE_OAUTH_TOKEN is injected from the credential vault, populate

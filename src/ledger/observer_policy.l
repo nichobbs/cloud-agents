@@ -168,7 +168,7 @@ pub func observerToolNames(): slice[String] {
 /// never reaches it. An unknown harness gets nothing.
 pub func observerCredentialNames(harness: in String): slice[String] {
   if harness == "claude" {
-    return ["ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN"]
+    return ["ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN", "CLAUDE_CREDENTIALS_JSON"]
   }
   if harness == "codex" {
     return ["OPENAI_API_KEY"]

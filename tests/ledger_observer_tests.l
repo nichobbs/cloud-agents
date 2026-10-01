@@ -730,6 +730,7 @@ test "a report raises at most three notifications" {
 test "an observer receives only its harness's model credentials" {
   assertTrue(observerMayReceiveCredential("claude", "ANTHROPIC_API_KEY"), "claude gets its API key")
   assertTrue(observerMayReceiveCredential("claude", "CLAUDE_CODE_OAUTH_TOKEN"), "claude gets its OAuth token")
+  assertTrue(observerMayReceiveCredential("claude", "CLAUDE_CREDENTIALS_JSON"), "claude gets its refreshable login")
   assertFalse(observerMayReceiveCredential("claude", "OPENAI_API_KEY"), "claude gets no other model's key")
   assertTrue(observerMayReceiveCredential("antigravity", "ANTIGRAVITY_API_KEY"), "antigravity gets its key")
   assertTrue(observerMayReceiveCredential("opencode", "OPENCODE_ZEN_API_KEY"), "opencode gets its key")

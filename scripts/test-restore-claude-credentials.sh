@@ -56,13 +56,22 @@ check "replaced access token" test "$(access_of "$F")" = "pasted-a"
 # Unusable vault input leaves everything alone.
 login "keep-a" "keep-r" 1 > "$F"
 export CLAUDE_CREDENTIALS_JSON='not json'
-restore_claude_credentials "$F" || true
+rc=0; restore_claude_credentials "$F" || rc=$?
+check "garbage vault value returns 2" test "$rc" = "2"
 check "garbage vault value ignored" test "$(access_of "$F")" = "keep-a"
 export CLAUDE_CREDENTIALS_JSON='{"claudeAiOauth":{"refreshToken":"r"}}'
-restore_claude_credentials "$F" || true
+rc=0; restore_claude_credentials "$F" || rc=$?
+check "vault value without access token returns 2" test "$rc" = "2"
 check "vault value without access token ignored" test "$(access_of "$F")" = "keep-a"
 unset CLAUDE_CREDENTIALS_JSON
-check "unset vault value is a no-op" not restore_claude_credentials "$F"
+rc=0; restore_claude_credentials "$F" || rc=$?
+check "unset vault value is a no-op (returns 1)" test "$rc" = "1"
+
+# claude_credentials_usable: gates dropping the bare-token fallback.
+check "usable file detected" claude_credentials_usable "$F"
+echo '{"claudeAiOauth":{}}' > "$F"
+check "file without access token is not usable" not claude_credentials_usable "$F"
+check "missing file is not usable" not claude_credentials_usable "$D/nope.json"
 
 rm -rf "$D"
 if [ "$fails" -ne 0 ]; then echo "$fails check(s) failed" >&2; exit 1; fi
