@@ -18,6 +18,7 @@ import CloudAgents.Library
 import CloudAgents.OAuth
 import CloudAgents.OpenPr
 import CloudAgents.Pg.Startup
+import CloudAgents.PgStore.Tenancy
 import CloudAgents.Profiles
 import CloudAgents.Prompts
 import CloudAgents.Proxy
@@ -94,6 +95,15 @@ impl Web.Middleware for AuthMiddleware {
     println("[diag] AuthMiddleware.wrap: before authenticateRequest, path=" + req.path)
     match CloudAgents.OAuth.authenticateRequest(req.path, authHeader, apiToken) {
       case Allowed(userId) -> {
+        // Tenant-owned rows reference the user's personal tenant, so it must
+        // exist before the request writes anything (cached per process).
+        match CloudAgents.PgStore.Tenancy.ensurePersonalTenant(userId) {
+          case Ok(_) -> ()
+          case Err(e) -> {
+            println("ERROR: could not provision the personal tenant for " + userId + ": " + CloudAgents.Sqlite.dbErrorMessage(e))
+            return Web.errorResponse(Web.internalError("database unavailable"))
+          }
+        }
         CloudAgents.Auth.setCurrentUserId(userId)
         return next.handle(req)
       }
@@ -2010,13 +2020,13 @@ impl Web.Handler for RouteOAuthRefresh {
 // assembly boundaries — see nichobbs/cloud-agents#397.
 pub func main(): Unit {
   // `--migrate` applies the Postgres schema (docs/phase11-postgres-tenancy.md
-  // §8) and exits without serving or touching SQLite.
+  // §8) and exits without serving.
   if hasFlag(parseCommandLine(Env.get_CommandLine()), "--migrate") {
     Env.Exit(CloudAgents.Pg.Startup.runMigrateCommand())
     return
   }
-  // Refuse to serve under a Postgres role that could bypass row-level
-  // security (spec §5.1). A no-op until LYRIC_CONFIG_DB_CONNECTION_URL is set.
+  // Refuse to serve without Postgres, or under a role that could bypass
+  // row-level security (spec §5.1).
   match CloudAgents.Pg.Startup.checkServiceRole() {
     case Ok(_) -> ()
     case Err(m) -> {
@@ -2024,13 +2034,6 @@ pub func main(): Unit {
       Env.Exit(1)
       return
     }
-  }
-
-  // Ensure the SQLite tables (transcript/comments/todos/prompts/sessions)
-  // exist before serving.
-  match CloudAgents.Repository.initSchema() {
-    case Ok(_) -> ()
-    case Err(e) -> println("WARNING: failed to initialise database schema: " + CloudAgents.Sqlite.dbErrorMessage(e))
   }
 
   // Sessions left RUNNING by a crash or restart are not reset here: another
@@ -2052,9 +2055,6 @@ pub func main(): Unit {
   } else {
     println("NOTE: ENCRYPTION_KEY is not set — the credential store is disabled")
   }
-
-  // One-time migration of sessions from the legacy env-var store.
-  CloudAgents.SessionStore.importLegacyEnvSessions()
 
   var router = Web.create()
 

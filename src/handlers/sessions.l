@@ -2255,13 +2255,13 @@ pub func unarchiveSession(id: in String): Result[Unit, Web.ApiError] {
   }
 }
 
-/// Retrieve service health, including a live SQLite probe.
+/// Retrieve service health, including a live database probe.
 pub func checkHealth(): Result[String, Web.ApiError] {
   match CloudAgents.Repository.ping() {
     case Ok(_) -> return Ok("Healthy")
     case Err(e) -> {
       // /api/health is reachable unauthenticated; the raw DB error can include
-      // the SQLite file path, so log the detail server-side and return a
+      // connection details, so log the detail server-side and return a
       // generic message to the caller (#55).
       println("WARNING: health probe failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
       return Err(Web.internalError("database unavailable"))

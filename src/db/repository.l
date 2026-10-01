@@ -22,6 +22,18 @@ import CloudAgents.Ledger.Schema
 import Std.Collections
 import extern System.Environment as Env
 import extern System.String as DotNetString
+import CloudAgents.PgStore
+import CloudAgents.PgStore.Credentials
+import CloudAgents.PgStore.GraphIngest
+import CloudAgents.PgStore.Interactive
+import CloudAgents.PgStore.Jobs
+import CloudAgents.PgStore.Library
+import CloudAgents.PgStore.Messages
+import CloudAgents.PgStore.Prompts
+import CloudAgents.PgStore.SessionData
+import CloudAgents.PgStore.SessionEvents
+import CloudAgents.PgStore.TokenCache
+import CloudAgents.PgStore.Webhooks
 
 @generate(Json)
 pub record Message {
@@ -85,11 +97,6 @@ pub record CommentList {
 @generate(Json)
 pub record TodoList {
   pub todos: slice[Todo]
-}
-
-// ─── Small helpers ─────────────────────────────────────────────────────────────
-func newId(): String {
-  return Std.Uuid.uuidToString(Std.Uuid.newUuid())
 }
 
 // Std.Time.Instant.now() emits a broken extern binding in the current
@@ -219,325 +226,9 @@ func colAt(cols: in CloudAgents.Sqlite.StringArray, i: in Int): String {
   return ""
 }
 
-// ─── Schema ────────────────────────────────────────────────────────────────────
-/// Verify the database is reachable. Used by the health endpoint.
+/// A liveness probe against the database.
 pub func ping(): Result[Unit, CloudAgents.Sqlite.DbError] {
-  CloudAgents.Sqlite.execute("SELECT 1")?
-  return Ok(value = ())
-}
-
-/// One ordered schema migration: a stable version id and the statements that
-/// bring the schema up to that version. Statements run in order, exactly once
-/// per database (tracked in the schema_migrations ledger).
-pub record Migration {
-  pub version: String
-  pub statements: slice[String]
-}
-
-/// Every migration, oldest first. Append new migrations to the END with a new
-/// version id — never edit or reorder an applied one, or databases will diverge.
-///
-/// 0001_init is the full baseline: all tables + indexes as they stood before
-/// the ledger existed. Its statements are all `IF NOT EXISTS`, so recording it
-/// against a pre-ledger database that already has these tables is a harmless
-/// no-op that simply back-fills the ledger.
-pub func allMigrations(): slice[Migration] {
-  return [
-    Migration(
-      version = "0001_init",
-      statements = [
-        CloudAgents.Db.messagesSchemaSql(),
-        CloudAgents.Db.commentsSchemaSql(),
-        CloudAgents.Db.todosSchemaSql(),
-        CloudAgents.Db.promptsSchemaSql(),
-        CloudAgents.Db.sessionsSchemaSql(),
-        CloudAgents.Db.credentialsSchemaSql(),
-        CloudAgents.Db.promptsUserIndexSql(),
-        CloudAgents.Db.sessionsUserIndexSql(),
-        CloudAgents.Db.credentialsUserIndexSql()
-      ]
-    ),
-    Migration(
-      version = "0002_profiles",
-      statements = [
-        CloudAgents.Db.profilesSchemaSql(),
-        CloudAgents.Db.profileCredentialsSchemaSql(),
-        CloudAgents.Db.profilesUserIndexSql(),
-        CloudAgents.Db.profileCredentialsProfileIndexSql()
-      ]
-    ),
-    Migration(version = "0003_session_profile", statements = [CloudAgents.Db.alterSessionsAddProfileSql()]),
-    Migration(
-      version = "0004_runs",
-      statements = [
-        CloudAgents.Db.runsSchemaSql(),
-        CloudAgents.Db.runsSessionIndexSql(),
-        CloudAgents.Db.runsUserIndexSql()
-      ]
-    ),
-    Migration(
-      version = "0005_prompt_tags",
-      statements = [
-        CloudAgents.Db.promptTagsSchemaSql(),
-        CloudAgents.Db.promptTagsPromptIndexSql(),
-        CloudAgents.Db.promptTagsTagIndexSql()
-      ]
-    ),
-    Migration(
-      version = "0006_webhooks",
-      statements = [
-        CloudAgents.Db.webhooksSchemaSql(),
-        CloudAgents.Db.webhookEventsSchemaSql(),
-        CloudAgents.Db.webhooksUserIndexSql(),
-        CloudAgents.Db.webhookEventsPendingIndexSql()
-      ]
-    ),
-    Migration(version = "0007_github_token_cache", statements = [CloudAgents.Db.githubTokenCacheSchemaSql()]),
-    Migration(
-      version = "0008_session_repos",
-      statements = [CloudAgents.Db.sessionReposSchemaSql(), CloudAgents.Db.sessionReposSessionIndexSql()]
-    ),
-    Migration(version = "0009_model_listing_cache", statements = [CloudAgents.Db.modelListingCacheSchemaSql()]),
-    Migration(
-      version = "0010_mcp_callbacks",
-      statements = [
-        CloudAgents.Db.alterSessionsAddCallbackTokenSql(),
-        CloudAgents.Db.alterSessionsAddProgressSql(),
-        CloudAgents.Db.alterSessionsAddProgressPercentSql(),
-        CloudAgents.Db.permissionRequestsSchemaSql(),
-        CloudAgents.Db.permissionRequestsSessionIndexSql(),
-        CloudAgents.Db.permissionRulesSchemaSql(),
-        CloudAgents.Db.permissionRulesSessionIndexSql(),
-        CloudAgents.Db.userQuestionsSchemaSql(),
-        CloudAgents.Db.userQuestionsSessionIndexSql()
-      ]
-    ),
-    Migration(
-      version = "0011_mcp_callbacks_v2",
-      statements = [
-        CloudAgents.Db.secretRequestsSchemaSql(),
-        CloudAgents.Db.secretRequestsSessionIndexSql(),
-        CloudAgents.Db.artifactsSchemaSql(),
-        CloudAgents.Db.artifactsSessionIndexSql()
-      ]
-    ),
-    Migration(
-      version = "0012_library",
-      statements = [
-        CloudAgents.Db.skillsSchemaSql(),
-        CloudAgents.Db.subagentsSchemaSql(),
-        CloudAgents.Db.mcpServersSchemaSql(),
-        CloudAgents.Db.mcpServerArgsSchemaSql(),
-        CloudAgents.Db.mcpServerEnvSchemaSql(),
-        CloudAgents.Db.profileSkillsSchemaSql(),
-        CloudAgents.Db.profileSubagentsSchemaSql(),
-        CloudAgents.Db.profileMcpServersSchemaSql(),
-        CloudAgents.Db.skillsUserIndexSql(),
-        CloudAgents.Db.subagentsUserIndexSql(),
-        CloudAgents.Db.mcpServersUserIndexSql(),
-        CloudAgents.Db.mcpServerArgsServerIndexSql(),
-        CloudAgents.Db.mcpServerEnvServerIndexSql(),
-        CloudAgents.Db.profileSkillsProfileIndexSql(),
-        CloudAgents.Db.profileSubagentsProfileIndexSql(),
-        CloudAgents.Db.profileMcpServersProfileIndexSql()
-      ]
-    ),
-    Migration(
-      version = "0013_repo_memory",
-      statements = [CloudAgents.Db.repoMemorySchemaSql(), CloudAgents.Db.repoMemoryIndexSql()]
-    ),
-    Migration(
-      version = "0014_notifications",
-      statements = [CloudAgents.Db.notificationsSchemaSql(), CloudAgents.Db.notificationsSessionIndexSql()]
-    ),
-    Migration(
-      version = "0015_repo_artifacts",
-      statements = [CloudAgents.Db.alterArtifactsAddRepoKeySql(), CloudAgents.Db.artifactsRepoKeyIndexSql()]
-    ),
-    Migration(
-      version = "0016_profile_tools",
-      statements = [
-        CloudAgents.Db.alterProfilesAddToolModeSql(),
-        CloudAgents.Db.profileToolsSchemaSql(),
-        CloudAgents.Db.profileToolsProfileIndexSql()
-      ]
-    ),
-    Migration(
-      version = "0017_repo_tasks",
-      statements = [CloudAgents.Db.repoTasksSchemaSql(), CloudAgents.Db.repoTasksIndexSql()]
-    ),
-    Migration(
-      version = "0018_repo_artifacts_owner",
-      statements = [
-        CloudAgents.Db.alterArtifactsAddOwnerUserIdSql(),
-        CloudAgents.Db.artifactsOwnerRepoIndexSql()
-      ]
-    ),
-    Migration(version = "0019_github_oauth_refresh", statements = [CloudAgents.Db.githubOAuthRefreshSchemaSql()]),
-    Migration(version = "0020_archive_sessions", statements = [CloudAgents.Db.alterSessionsAddIsArchivedSql()]),
-    Migration(
-      version = "0021_todo_status",
-      statements = [CloudAgents.Db.alterTodosAddStatusSql(), CloudAgents.Db.backfillTodoStatusSql()]
-    ),
-    Migration(
-      version = "0022_session_highlights",
-      statements = [
-        CloudAgents.Db.sessionHighlightsSchemaSql(),
-        CloudAgents.Db.sessionHighlightsSessionIndexSql(),
-        CloudAgents.Db.highlightScansSchemaSql()
-      ]
-    ),
-    Migration(version = "0023_mcp_server_enabled", statements = [CloudAgents.Db.alterMcpServersAddEnabledSql()]),
-    Migration(
-      version = "0024_todo_updated_at",
-      statements = [CloudAgents.Db.alterTodosAddUpdatedAtSql(), CloudAgents.Db.backfillTodoUpdatedAtSql()]
-    ),
-    Migration(version = "0025_todo_source", statements = [CloudAgents.Db.alterTodosAddSourceSql()]),
-    Migration(version = "0026_todo_updated_index", statements = [CloudAgents.Db.todosSessionUpdatedIndexSql()]),
-    Migration(
-      version = "0027_scheduled_jobs",
-      statements = [
-        CloudAgents.Db.scheduledJobsSchemaSql(),
-        CloudAgents.Db.scheduledJobsUserIndexSql(),
-        CloudAgents.Db.scheduledJobsDueIndexSql()
-      ]
-    ),
-    // Statement order matters: the FTS5 table must exist before the backfill
-    // can populate it, and the trigger must be created last so its own
-    // firing doesn't double-insert rows the backfill's SELECT already
-    // picked up. All three run in one transaction (runMigrations), so there
-    // is no window between them for a concurrent insert to fall through.
-    Migration(
-      version = "0028_message_search",
-      statements = [
-        CloudAgents.Db.messageSearchSchemaSql(),
-        CloudAgents.Db.messageSearchBackfillSql(),
-        CloudAgents.Db.messageSearchTriggerSql()
-      ]
-    ),
-    Migration(
-      version = "0029_session_groups",
-      statements = [
-        CloudAgents.Db.sessionGroupsSchemaSql(),
-        CloudAgents.Db.sessionGroupsUserIndexSql(),
-        CloudAgents.Db.alterSessionsAddGroupIdSql(),
-        CloudAgents.Db.alterSessionsAddLastViewedAtSql()
-      ]
-    ),
-    Migration(version = "0030_session_events", statements = [CloudAgents.Db.sessionEventsSchemaSql()]),
-    Migration(
-      version = "0031_session_attachments",
-      statements = [
-        CloudAgents.Db.sessionAttachmentsSchemaSql(),
-        CloudAgents.Db.sessionAttachmentsSessionIndexSql(),
-        CloudAgents.Db.sessionAttachmentsMessageIndexSql()
-      ]
-    ),
-    Migration(
-      version = "0032_chat_branching",
-      statements = [
-        CloudAgents.Db.alterSessionsAddParentSessionIdSql(),
-        CloudAgents.Db.alterSessionsAddForkedFromMessageIdSql(),
-        CloudAgents.Db.sessionsParentIndexSql()
-      ]
-    ),
-    // Makes `messages_fts` self-maintaining against any future UPDATE/DELETE
-    // on `messages` (#918): the original migration 0028 only added an AFTER
-    // INSERT trigger, safe at the time because `messages` was INSERT-only by
-    // convention, not by anything the schema enforced. These two triggers
-    // close that gap so the index can never silently desync, regardless of
-    // whether/when a message-editing or message-deletion code path is added.
-    Migration(
-      version = "0033_message_search_sync",
-      statements = [
-        CloudAgents.Db.messageSearchUpdateTriggerSql(),
-        CloudAgents.Db.messageSearchDeleteTriggerSql()
-      ]
-    ),
-    Migration(
-      version = "0034_mcp_server_headers",
-      statements = [CloudAgents.Db.mcpServerHeadersSchemaSql(), CloudAgents.Db.mcpServerHeadersServerIndexSql()]
-    ),
-    Migration(
-      version = "0035_graph_ingest_outbox",
-      statements = [CloudAgents.Db.graphIngestOutboxSchemaSql(), CloudAgents.Db.graphIngestOutboxDueIndexSql()]
-    ),
-    Migration(
-      version = "0036_callback_token_hash",
-      statements = [
-        CloudAgents.Db.alterSessionsAddCallbackTokenHashSql(),
-        CloudAgents.Db.clearSessionsPlaintextCallbackTokensSql()
-      ]
-    ),
-    // Session ledger (docs/session-ledger.md): the ledger tables, plus the
-    // consolidation's profile-grant migration — a 'selected'-mode profile
-    // that granted any retired agent-reporting tool (add_todo / update_todo
-    // / list_todos / add_followup_task) is granted the ledger tools instead.
-    Migration(
-      version = "0037_session_ledger",
-      statements = CloudAgents.Ledger.Schema.sessionLedgerMigrationSql()
-    ),
-    // Session ledger Phase 3: per-item GitHub reconciliation state.
-    Migration(
-      version = "0038_ledger_github_sync",
-      statements = [
-        CloudAgents.Ledger.Schema.ledgerGithubSyncSchemaSql(),
-        CloudAgents.Ledger.Schema.ledgerGithubSyncRunsSchemaSql()
-      ]
-    ),
-    // Session ledger Phase 4: the observer (docs/session-ledger.md §10).
-    Migration(
-      version = "0039_ledger_observer",
-      statements = CloudAgents.Ledger.Schema.ledgerObserverMigrationSql()
-    ),
-    // Several API instances (docs/phase11-postgres-tenancy.md §5.3a): the
-    // instance driving a run and its heartbeat.
-    Migration(
-      version = "0040_run_heartbeat",
-      statements = [
-        CloudAgents.Db.alterSessionsAddRunInstanceSql(),
-        CloudAgents.Db.alterSessionsAddRunHeartbeatAtSql()
-      ]
-    )
-  ]
-}
-
-/// Whether a migration version has already been recorded as applied.
-func migrationApplied(version: in String): Result[Bool, CloudAgents.Sqlite.DbError] {
-  val rows = CloudAgents.Sqlite.query(CloudAgents.Db.countMigrationSql(version))?
-  val len = CloudAgents.Sqlite.getRowArrayLength(rows)
-  if len == 0 {
-    return Ok(value = false)
-  }
-  val r0 = CloudAgents.Sqlite.getRowArrayValue(rows, 0)
-  return Ok(value = parseNatString(colAt(r0.cols, 0)) > 0)
-}
-
-/// Apply every not-yet-applied migration in order, recording each in the
-/// ledger. Idempotent: a database already at the latest version is a no-op.
-pub func runMigrations(): Result[Unit, CloudAgents.Sqlite.DbError] {
-  CloudAgents.Sqlite.execute(CloudAgents.Db.migrationsSchemaSql())?
-  for m in allMigrations() {
-    val applied = migrationApplied(m.version)?
-    if not applied {
-      // Run the migration's statements AND its ledger record in one
-      // transaction: either the whole migration applies and is recorded, or
-      // nothing is, so a mid-migration failure (e.g. a bad ALTER) leaves the
-      // database at the prior version and the next startup retries cleanly
-      // rather than getting stuck half-applied (review #229).
-      var stmts = m.statements
-      stmts = stmts.append(CloudAgents.Db.recordMigrationSql(m.version, nowMillis()))
-      CloudAgents.Sqlite.executeTransaction(stmts)?
-    }
-  }
-  return Ok(value = ())
-}
-
-/// Bring the database schema up to date. Safe to call at every startup.
-/// Delegates to the versioned migration runner (`runMigrations`); the name is
-/// kept for its many call sites (main, tests).
-pub func initSchema(): Result[Unit, CloudAgents.Sqlite.DbError] {
-  return runMigrations()
+  return CloudAgents.PgStore.ping()
 }
 
 // ─── Messages ──────────────────────────────────────────────────────────────────
@@ -552,45 +243,19 @@ func rowToMessage(r: in CloudAgents.Sqlite.Row): Message {
   )
 }
 
-/// Next sequence number for a session (its current message count).
-func nextSeq(sessionId: in String): Result[Int, CloudAgents.Sqlite.DbError] {
-  val rows = CloudAgents.Sqlite.query(CloudAgents.Db.countMessagesSql(sessionId))?
-  val len = CloudAgents.Sqlite.getRowArrayLength(rows)
-  if len == 0 {
-    return Ok(value = 0)
-  }
-  val r0 = CloudAgents.Sqlite.getRowArrayValue(rows, 0)
-  return Ok(value = parseNatString(colAt(r0.cols, 0)))
-}
-
 /// Append a message to a session's transcript and return the stored record
 /// (with its freshly minted id and sequence number).
 pub func addMessage(
   sessionId: in String, sc: in CloudAgents.Pg.TenantScope, role: in String, content: in String
 ): Result[Message, CloudAgents.Sqlite.DbError] {
-  val seqN = nextSeq(sessionId)?
-  val id = newId()
-  val ts = nowMillis()
-  val seqStr = CloudAgents.Db.padSeq(seqN)
-  CloudAgents.Sqlite.execute(CloudAgents.Db.insertMessageSql(id, sessionId, role, content, seqStr, ts))?
-  return Ok(
-    value = Message(id = id, sessionId = sessionId, role = role, content = content, seq = seqStr, createdAt = ts)
-  )
+  return CloudAgents.PgStore.Messages.addMessage(sessionId, sc, role, content)
 }
 
 /// All messages in a session, oldest first.
 pub func listMessages(
   sessionId: in String, sc: in CloudAgents.Pg.TenantScope
 ): Result[slice[Message], CloudAgents.Sqlite.DbError] {
-  val rows = CloudAgents.Sqlite.query(CloudAgents.Db.selectMessagesSql(sessionId))?
-  var acc: slice[Message] = []
-  var i = 0
-  val len = CloudAgents.Sqlite.getRowArrayLength(rows)
-  while i < len {
-    acc = acc.append(rowToMessage(CloudAgents.Sqlite.getRowArrayValue(rows, i)))
-    i = i + 1
-  }
-  return Ok(value = acc)
+  return CloudAgents.PgStore.Messages.listMessages(sessionId, sc)
 }
 
 /// Full-text search across every message in the caller's own sessions,
@@ -601,20 +266,7 @@ pub func listMessages(
 pub func searchMessages(
   sc: in CloudAgents.Pg.TenantScope, term: in String, limit: in Int
 ): Result[slice[Message], CloudAgents.Sqlite.DbError] {
-  val userId = sc.userId
-  val matchExpr = CloudAgents.Db.buildFts5MatchExpr(term)
-  if matchExpr.length == 0 {
-    return Ok(value = [])
-  }
-  val rows = CloudAgents.Sqlite.query(CloudAgents.Db.searchMessagesSql(userId, matchExpr, limit))?
-  var acc: slice[Message] = []
-  var i = 0
-  val len = CloudAgents.Sqlite.getRowArrayLength(rows)
-  while i < len {
-    acc = acc.append(rowToMessage(CloudAgents.Sqlite.getRowArrayValue(rows, i)))
-    i = i + 1
-  }
-  return Ok(value = acc)
+  return CloudAgents.PgStore.Messages.searchMessages(sc, term, limit)
 }
 
 /// Look up the session that owns a message. Used to bind comments to the
@@ -622,62 +274,21 @@ pub func searchMessages(
 pub func getMessageSessionId(
   messageId: in String, sc: in CloudAgents.Pg.TenantScope
 ): Result[Option[String], CloudAgents.Sqlite.DbError] {
-  val rows = CloudAgents.Sqlite.query(CloudAgents.Db.selectMessageSessionIdSql(messageId))?
-  val len = CloudAgents.Sqlite.getRowArrayLength(rows)
-  if len == 0 {
-    return Ok(value = None)
-  }
-  val r0 = CloudAgents.Sqlite.getRowArrayValue(rows, 0)
-  return Ok(value = Some(value = colAt(r0.cols, 0)))
-}
-
-// ─── Comments ──────────────────────────────────────────────────────────────────
-func rowToComment(r: in CloudAgents.Sqlite.Row): Comment {
-  return Comment(
-    id = colAt(r.cols, 0),
-    messageId = colAt(r.cols, 1),
-    sessionId = colAt(r.cols, 2),
-    body = colAt(r.cols, 3),
-    createdAt = colAt(r.cols, 4)
-  )
+  return CloudAgents.PgStore.Messages.getMessageSessionId(messageId, sc)
 }
 
 /// Attach a comment to a message.
 pub func addComment(
   messageId: in String, sc: in CloudAgents.Pg.TenantScope, sessionId: in String, body: in String
 ): Result[Comment, CloudAgents.Sqlite.DbError] {
-  val id = newId()
-  val ts = nowMillis()
-  CloudAgents.Sqlite.execute(CloudAgents.Db.insertCommentSql(id, messageId, sessionId, body, ts))?
-  return Ok(value = Comment(id = id, messageId = messageId, sessionId = sessionId, body = body, createdAt = ts))
+  return CloudAgents.PgStore.Messages.addComment(messageId, sc, sessionId, body)
 }
 
 /// All comments on a message, oldest first.
 pub func listComments(
   messageId: in String, sc: in CloudAgents.Pg.TenantScope
 ): Result[slice[Comment], CloudAgents.Sqlite.DbError] {
-  val rows = CloudAgents.Sqlite.query(CloudAgents.Db.selectCommentsSql(messageId))?
-  var acc: slice[Comment] = []
-  var i = 0
-  val len = CloudAgents.Sqlite.getRowArrayLength(rows)
-  while i < len {
-    acc = acc.append(rowToComment(CloudAgents.Sqlite.getRowArrayValue(rows, i)))
-    i = i + 1
-  }
-  return Ok(value = acc)
-}
-
-// ─── Todos ─────────────────────────────────────────────────────────────────────
-func rowToTodo(r: in CloudAgents.Sqlite.Row): Todo {
-  return Todo(
-    id = colAt(r.cols, 0),
-    sessionId = colAt(r.cols, 1),
-    messageId = colAt(r.cols, 2),
-    note = colAt(r.cols, 3),
-    done = colAt(r.cols, 4),
-    createdAt = colAt(r.cols, 5),
-    status = colAt(r.cols, 6)
-  )
+  return CloudAgents.PgStore.Messages.listComments(messageId, sc)
 }
 
 /// Create a todo / bookmark, optionally anchored to a message (pass "" for a
@@ -685,20 +296,7 @@ func rowToTodo(r: in CloudAgents.Sqlite.Row): Todo {
 pub func addTodo(
   sessionId: in String, sc: in CloudAgents.Pg.TenantScope, messageId: in String, note: in String
 ): Result[Todo, CloudAgents.Sqlite.DbError] {
-  val id = newId()
-  val ts = nowMillis()
-  CloudAgents.Sqlite.execute(CloudAgents.Db.insertTodoSql(id, sessionId, messageId, note, "pending", ts, ""))?
-  return Ok(
-    value = Todo(
-      id = id,
-      sessionId = sessionId,
-      messageId = messageId,
-      note = note,
-      done = "0",
-      createdAt = ts,
-      status = "pending"
-    )
-  )
+  return CloudAgents.PgStore.Messages.addTodo(sessionId, sc, messageId, note)
 }
 
 /// Replace a session's plan-ingested todos (source = 'plan') with the
@@ -715,26 +313,7 @@ pub func replacePlanTodos(
   notes: in slice[String],
   statuses: in slice[String],
 ): Result[Unit, CloudAgents.Sqlite.DbError] {
-  // Each row gets a distinct timestamp (#801) so listTodos' created_at
-  // ordering is deterministic — and the offsets DESCEND with the index
-  // (#826): the listing is newest-first, so the plan's FIRST step needs the
-  // LARGEST timestamp for the panel to read step 1 → step N top-to-bottom
-  // instead of reversed.
-  val baseMs = nowMillisLong()
-  var count = notes.length.toInt()
-  if statuses.length.toInt() < count {
-    count = statuses.length.toInt()
-  }
-  var stmts: slice[String] = []
-  stmts = stmts.append(CloudAgents.Db.deletePlanTodosSql(sessionId))
-  var i = 0
-  while i < count {
-    val ts = toString(baseMs + (count - 1 - i).toLong())
-    stmts = stmts.append(CloudAgents.Db.insertTodoSql(newId(), sessionId, messageId, notes[i], statuses[i], ts, "plan"))
-    i = i + 1
-  }
-  CloudAgents.Sqlite.executeTransaction(stmts)?
-  return Ok(value = ())
+  return CloudAgents.PgStore.Messages.replacePlanTodos(sessionId, sc, messageId, notes, statuses)
 }
 
 /// Set a todo's lifecycle status directly (pending/in_progress/done) — the
@@ -743,8 +322,7 @@ pub func replacePlanTodos(
 pub func setTodoStatus(
   id: in String, sc: in CloudAgents.Pg.TenantScope, status: in String
 ): Result[Unit, CloudAgents.Sqlite.DbError] {
-  CloudAgents.Sqlite.execute(CloudAgents.Db.setTodoStatusSql(id, status, nowMillis()))?
-  return Ok(value = ())
+  return CloudAgents.PgStore.Messages.setTodoStatus(id, sc, status)
 }
 
 /// The poll-loop-relevant view of one changed todo, for `todo_update` SSE
@@ -762,23 +340,7 @@ pub record TodoUpdate {
 pub func todosUpdatedAfter(
   sessionId: in String, sc: in CloudAgents.Pg.TenantScope, afterUpdatedAt: in String
 ): Result[slice[TodoUpdate], CloudAgents.Sqlite.DbError] {
-  val rows = CloudAgents.Sqlite.query(CloudAgents.Db.selectTodosUpdatedAfterSql(sessionId, afterUpdatedAt))?
-  var acc: slice[TodoUpdate] = []
-  var i = 0
-  val len = CloudAgents.Sqlite.getRowArrayLength(rows)
-  while i < len {
-    val r = CloudAgents.Sqlite.getRowArrayValue(rows, i)
-    acc = acc.append(
-      TodoUpdate(
-        id = colAt(r.cols, 0),
-        note = colAt(r.cols, 1),
-        status = colAt(r.cols, 2),
-        updatedAt = colAt(r.cols, 3)
-      )
-    )
-    i = i + 1
-  }
-  return Ok(value = acc)
+  return CloudAgents.PgStore.Messages.todosUpdatedAfter(sessionId, sc, afterUpdatedAt)
 }
 
 /// Look up the session that owns a todo — the container-originated status
@@ -787,73 +349,24 @@ pub func todosUpdatedAfter(
 pub func getTodoSessionId(
   id: in String, sc: in CloudAgents.Pg.TenantScope
 ): Result[Option[String], CloudAgents.Sqlite.DbError] {
-  val rows = CloudAgents.Sqlite.query(CloudAgents.Db.selectTodoSessionIdSql(id))?
-  val len = CloudAgents.Sqlite.getRowArrayLength(rows)
-  if len == 0 {
-    return Ok(value = None)
-  }
-  val r0 = CloudAgents.Sqlite.getRowArrayValue(rows, 0)
-  return Ok(value = Some(value = colAt(r0.cols, 0)))
+  return CloudAgents.PgStore.Messages.getTodoSessionId(id, sc)
 }
 
 /// All todos for a session, newest first.
 pub func listTodos(
   sessionId: in String, sc: in CloudAgents.Pg.TenantScope
 ): Result[slice[Todo], CloudAgents.Sqlite.DbError] {
-  val rows = CloudAgents.Sqlite.query(CloudAgents.Db.selectTodosSql(sessionId))?
-  var acc: slice[Todo] = []
-  var i = 0
-  val len = CloudAgents.Sqlite.getRowArrayLength(rows)
-  while i < len {
-    acc = acc.append(rowToTodo(CloudAgents.Sqlite.getRowArrayValue(rows, i)))
-    i = i + 1
-  }
-  return Ok(value = acc)
+  return CloudAgents.PgStore.Messages.listTodos(sessionId, sc)
 }
 
 /// Flip a todo's done flag.
 pub func toggleTodo(id: in String, sc: in CloudAgents.Pg.TenantScope): Result[Unit, CloudAgents.Sqlite.DbError] {
-  CloudAgents.Sqlite.execute(CloudAgents.Db.toggleTodoSql(id, nowMillis()))?
-  return Ok(value = ())
+  return CloudAgents.PgStore.Messages.toggleTodo(id, sc)
 }
 
 /// Delete a todo.
 pub func deleteTodo(id: in String, sc: in CloudAgents.Pg.TenantScope): Result[Unit, CloudAgents.Sqlite.DbError] {
-  CloudAgents.Sqlite.execute(CloudAgents.Db.deleteTodoSql(id))?
-  return Ok(value = ())
-}
-
-// ─── Prompt library ────────────────────────────────────────────────────────────
-func rowToPrompt(r: in CloudAgents.Sqlite.Row, tags: in slice[String]): Prompt {
-  return Prompt(
-    id = colAt(r.cols, 0),
-    userId = colAt(r.cols, 1),
-    name = colAt(r.cols, 2),
-    body = colAt(r.cols, 3),
-    useCount = colAt(r.cols, 4),
-    createdAt = colAt(r.cols, 5),
-    updatedAt = colAt(r.cols, 6),
-    tags = tags
-  )
-}
-
-/// A prompt's tags, alphabetical (empty when none).
-func promptTagNames(promptId: in String, userId: in String): Result[slice[String], CloudAgents.Sqlite.DbError] {
-  val rows = CloudAgents.Sqlite.query(CloudAgents.Db.selectPromptTagsSql(promptId, userId))?
-  var acc: slice[String] = []
-  var i = 0
-  val len = CloudAgents.Sqlite.getRowArrayLength(rows)
-  while i < len {
-    acc = acc.append(colAt(CloudAgents.Sqlite.getRowArrayValue(rows, i).cols, 0))
-    i = i + 1
-  }
-  return Ok(value = acc)
-}
-
-/// Build a Prompt from a row, fetching its tags.
-func rowToPromptWithTags(r: in CloudAgents.Sqlite.Row, userId: in String): Result[Prompt, CloudAgents.Sqlite.DbError] {
-  val tags = promptTagNames(colAt(r.cols, 0), userId)?
-  return Ok(value = rowToPrompt(r, tags))
+  return CloudAgents.PgStore.Messages.deleteTodo(id, sc)
 }
 
 /// A (prompt_id, tag) pair, used to attach tags to a whole list of prompts from
@@ -863,47 +376,12 @@ pub record PromptTag {
   pub tag: String
 }
 
-/// All of a user's (prompt_id, tag) pairs in one query, so listing N prompts
-/// costs 2 queries instead of 1 + N (#246). Ordered by tag within each prompt,
-/// matching promptTagNames' alphabetical contract.
-func allPromptTagPairs(userId: in String): Result[slice[PromptTag], CloudAgents.Sqlite.DbError] {
-  val rows = CloudAgents.Sqlite.query(CloudAgents.Db.selectAllPromptTagsSql(userId))?
-  var acc: slice[PromptTag] = []
-  var i = 0
-  val len = CloudAgents.Sqlite.getRowArrayLength(rows)
-  while i < len {
-    val r = CloudAgents.Sqlite.getRowArrayValue(rows, i)
-    acc = acc.append(PromptTag(promptId = colAt(r.cols, 0), tag = colAt(r.cols, 1)))
-    i = i + 1
-  }
-  return Ok(value = acc)
-}
-
-/// The tags belonging to one prompt id, filtered from the pre-fetched pair list.
-/// The pairs are already tag-ordered per prompt, so the result stays alphabetical.
-func tagsForPrompt(pairs: in slice[PromptTag], promptId: in String): slice[String] {
-  var acc: slice[String] = []
-  for p in pairs {
-    if p.promptId == promptId {
-      acc = acc.append(p.tag)
-    }
-  }
-  return acc
-}
-
 /// Replace a prompt's tag set atomically (clear, then insert each). Returned by
 /// callers through executeTransaction so the set is consistent on partial fail.
 pub func setPromptTags(
   promptId: in String, sc: in CloudAgents.Pg.TenantScope, tags: in slice[String]
 ): Result[Unit, CloudAgents.Sqlite.DbError] {
-  val userId = sc.userId
-  var stmts: slice[String] = []
-  stmts = stmts.append(CloudAgents.Db.deletePromptTagsSql(promptId, userId))
-  for t in tags {
-    stmts = stmts.append(CloudAgents.Db.insertPromptTagSql(newId(), promptId, userId, t))
-  }
-  CloudAgents.Sqlite.executeTransaction(stmts)?
-  return Ok(value = ())
+  return CloudAgents.PgStore.Prompts.setPromptTags(promptId, sc, tags)
 }
 
 /// Save a new prompt to a user's library and return the stored record (no tags
@@ -912,8 +390,7 @@ pub func setPromptTags(
 pub func addPrompt(
   sc: in CloudAgents.Pg.TenantScope, name: in String, body: in String
 ): Result[Prompt, CloudAgents.Sqlite.DbError] {
-  val noTags: slice[String] = []
-  return addPromptWithTags(sc, name, body, noTags)
+  return CloudAgents.PgStore.Prompts.addPrompt(sc, name, body)
 }
 
 /// Save a new prompt AND its tag set in a single transaction (#244), returning
@@ -922,59 +399,17 @@ pub func addPrompt(
 pub func addPromptWithTags(
   sc: in CloudAgents.Pg.TenantScope, name: in String, body: in String, tags: in slice[String]
 ): Result[Prompt, CloudAgents.Sqlite.DbError] {
-  val userId = sc.userId
-  val id = newId()
-  val ts = nowMillis()
-  var stmts: slice[String] = []
-  stmts = stmts.append(CloudAgents.Db.insertPromptSql(id, userId, name, body, ts))
-  for t in tags {
-    stmts = stmts.append(CloudAgents.Db.insertPromptTagSql(newId(), id, userId, t))
-  }
-  CloudAgents.Sqlite.executeTransaction(stmts)?
-  return Ok(
-    value = Prompt(
-      id = id,
-      userId = userId,
-      name = name,
-      body = body,
-      useCount = "0",
-      createdAt = ts,
-      updatedAt = ts,
-      tags = tags
-    )
-  )
+  return CloudAgents.PgStore.Prompts.addPromptWithTags(sc, name, body, tags)
 }
 
 /// All prompts in a user's library, alphabetical by name (each with its tags).
 pub func listPrompts(sc: in CloudAgents.Pg.TenantScope): Result[slice[Prompt], CloudAgents.Sqlite.DbError] {
-  val userId = sc.userId
-  val rows = CloudAgents.Sqlite.query(CloudAgents.Db.selectPromptsSql(userId))?
-  val tagPairs = allPromptTagPairs(userId)?
-  var acc: slice[Prompt] = []
-  var i = 0
-  val len = CloudAgents.Sqlite.getRowArrayLength(rows)
-  while i < len {
-    val r = CloudAgents.Sqlite.getRowArrayValue(rows, i)
-    acc = acc.append(rowToPrompt(r, tagsForPrompt(tagPairs, colAt(r.cols, 0))))
-    i = i + 1
-  }
-  return Ok(value = acc)
+  return CloudAgents.PgStore.Prompts.listPrompts(sc)
 }
 
 /// A user's prompts, most-used first (ties alphabetical).
 pub func listPromptsByUsage(sc: in CloudAgents.Pg.TenantScope): Result[slice[Prompt], CloudAgents.Sqlite.DbError] {
-  val userId = sc.userId
-  val rows = CloudAgents.Sqlite.query(CloudAgents.Db.selectPromptsByUsageSql(userId))?
-  val tagPairs = allPromptTagPairs(userId)?
-  var acc: slice[Prompt] = []
-  var i = 0
-  val len = CloudAgents.Sqlite.getRowArrayLength(rows)
-  while i < len {
-    val r = CloudAgents.Sqlite.getRowArrayValue(rows, i)
-    acc = acc.append(rowToPrompt(r, tagsForPrompt(tagPairs, colAt(r.cols, 0))))
-    i = i + 1
-  }
-  return Ok(value = acc)
+  return CloudAgents.PgStore.Prompts.listPromptsByUsage(sc)
 }
 
 /// A user's prompts carrying a given tag, alphabetical by name. Each prompt
@@ -984,30 +419,12 @@ pub func listPromptsByUsage(sc: in CloudAgents.Pg.TenantScope): Result[slice[Pro
 pub func listPromptsByTag(
   sc: in CloudAgents.Pg.TenantScope, tag: in String
 ): Result[slice[Prompt], CloudAgents.Sqlite.DbError] {
-  val userId = sc.userId
-  val rows = CloudAgents.Sqlite.query(CloudAgents.Db.selectPromptsByTagSql(userId, tag))?
-  val tagPairs = allPromptTagPairs(userId)?
-  var acc: slice[Prompt] = []
-  var i = 0
-  val len = CloudAgents.Sqlite.getRowArrayLength(rows)
-  while i < len {
-    val r = CloudAgents.Sqlite.getRowArrayValue(rows, i)
-    acc = acc.append(rowToPrompt(r, tagsForPrompt(tagPairs, colAt(r.cols, 0))))
-    i = i + 1
-  }
-  return Ok(value = acc)
+  return CloudAgents.PgStore.Prompts.listPromptsByTag(sc, tag)
 }
 
 /// A single prompt owned by a user (with tags), or None.
 pub func getPrompt(id: in String, sc: in CloudAgents.Pg.TenantScope): Result[Option[Prompt], CloudAgents.Sqlite.DbError] {
-  val userId = sc.userId
-  val rows = CloudAgents.Sqlite.query(CloudAgents.Db.selectPromptByIdSql(id, userId))?
-  val len = CloudAgents.Sqlite.getRowArrayLength(rows)
-  if len == 0 {
-    return Ok(value = None)
-  }
-  val p = rowToPromptWithTags(CloudAgents.Sqlite.getRowArrayValue(rows, 0), userId)?
-  return Ok(value = Some(value = p))
+  return CloudAgents.PgStore.Prompts.getPrompt(id, sc)
 }
 
 /// Update a prompt's name/body. Returns the number of rows affected (0 when
@@ -1016,9 +433,7 @@ pub func getPrompt(id: in String, sc: in CloudAgents.Pg.TenantScope): Result[Opt
 pub func updatePrompt(
   id: in String, sc: in CloudAgents.Pg.TenantScope, name: in String, body: in String
 ): Result[Int, CloudAgents.Sqlite.DbError] {
-  val userId = sc.userId
-  val ts = nowMillis()
-  return CloudAgents.Sqlite.execute(CloudAgents.Db.updatePromptSql(id, userId, name, body, ts))
+  return CloudAgents.PgStore.Prompts.updatePrompt(id, sc, name, body)
 }
 
 /// Update a prompt's name/body AND replace its tag set in one transaction
@@ -1035,30 +450,12 @@ pub func updatePromptWithTags(
   body: in String,
   tags: in slice[String],
 ): Result[Int, CloudAgents.Sqlite.DbError] {
-  val userId = sc.userId
-  // Cheap early-exit only — see the affected-count rationale on updateProfile.
-  match getPrompt(id, sc)? {
-    case None -> return Ok(value = 0)
-    case Some(_) -> ()
-  }
-  val ts = nowMillis()
-  // The prompt UPDATE is deliberately LAST so executeTransaction's
-  // rows-affected return (which reports the last statement) reflects it.
-  var stmts: slice[String] = []
-  stmts = stmts.append(CloudAgents.Db.deletePromptTagsSql(id, userId))
-  for t in tags {
-    stmts = stmts.append(CloudAgents.Db.insertPromptTagSql(newId(), id, userId, t))
-  }
-  stmts = stmts.append(CloudAgents.Db.updatePromptSql(id, userId, name, body, ts))
-  val affected = CloudAgents.Sqlite.executeTransaction(stmts)?
-  return Ok(value = affected)
+  return CloudAgents.PgStore.Prompts.updatePromptWithTags(id, sc, name, body, tags)
 }
 
 /// Record one use of a prompt. Returns rows affected (0 = not found).
 pub func markPromptUsed(id: in String, sc: in CloudAgents.Pg.TenantScope): Result[Int, CloudAgents.Sqlite.DbError] {
-  val userId = sc.userId
-  val ts = nowMillis()
-  return CloudAgents.Sqlite.execute(CloudAgents.Db.touchPromptUsedSql(id, userId, ts))
+  return CloudAgents.PgStore.Prompts.markPromptUsed(id, sc)
 }
 
 /// Delete a prompt and its tags in one transaction (#254), consistent with the
@@ -1067,17 +464,7 @@ pub func markPromptUsed(id: in String, sc: in CloudAgents.Pg.TenantScope): Resul
 /// DELETE on the prompts row (deliberately the last statement), not from the
 /// pre-check below, for the same reason as deleteProfile (#238).
 pub func deletePrompt(id: in String, sc: in CloudAgents.Pg.TenantScope): Result[Int, CloudAgents.Sqlite.DbError] {
-  val userId = sc.userId
-  // Cheap early-exit only — see the affected-count rationale on updateProfile.
-  match getPrompt(id, sc)? {
-    case None -> return Ok(value = 0)
-    case Some(_) -> ()
-  }
-  var stmts: slice[String] = []
-  stmts = stmts.append(CloudAgents.Db.deletePromptTagsSql(id, userId))
-  stmts = stmts.append(CloudAgents.Db.deletePromptSql(id, userId))
-  val affected = CloudAgents.Sqlite.executeTransaction(stmts)?
-  return Ok(value = affected)
+  return CloudAgents.PgStore.Prompts.deletePrompt(id, sc)
 }
 
 // ─── Credentials ─────────────────────────────────────────────────────────────
@@ -1120,32 +507,12 @@ pub func credentialErrorMessage(e: in CredentialError): String {
 pub func putCredential(
   sc: in CloudAgents.Pg.UserScope, name: in String, value: in String
 ): Result[Unit, CredentialError] {
-  val userId = sc.userId
-  val encrypted = match CloudAgents.Crypto.encrypt(value) {
-    case Ok(blob) -> blob
-    case Err(e) -> return Err(Crypto(error = e))
-  }
-  val id = newId()
-  val ts = nowMillis()
-  match CloudAgents.Sqlite.execute(CloudAgents.Db.upsertCredentialSql(id, userId, name, encrypted, ts)) {
-    case Ok(_) -> return Ok(value = ())
-    case Err(e) -> return Err(Db(error = e))
-  }
+  return CloudAgents.PgStore.Credentials.putCredential(sc, name, value)
 }
 
 /// List a user's credential names (never values).
 pub func listCredentialNames(sc: in CloudAgents.Pg.UserScope): Result[slice[CredentialName], CloudAgents.Sqlite.DbError] {
-  val userId = sc.userId
-  val rows = CloudAgents.Sqlite.query(CloudAgents.Db.selectCredentialNamesSql(userId))?
-  var acc: slice[CredentialName] = []
-  var i = 0
-  val len = CloudAgents.Sqlite.getRowArrayLength(rows)
-  while i < len {
-    val r = CloudAgents.Sqlite.getRowArrayValue(rows, i)
-    acc = acc.append(CredentialName(name = colAt(r.cols, 0), updatedAt = colAt(r.cols, 1)))
-    i = i + 1
-  }
-  return Ok(value = acc)
+  return CloudAgents.PgStore.Credentials.listCredentialNames(sc)
 }
 
 /// Delete a credential by name. Returns rows affected (0 = not found).
@@ -1155,23 +522,7 @@ pub func listCredentialNames(sc: in CloudAgents.Pg.UserScope): Result[slice[Cred
 /// credential the tenant just deleted. Best-effort — a cleanup failure here
 /// must never block the credential deletion itself.
 pub func deleteCredential(sc: in CloudAgents.Pg.UserScope, name: in String): Result[Int, CloudAgents.Sqlite.DbError] {
-  val userId = sc.userId
-  val result = CloudAgents.Sqlite.execute(CloudAgents.Db.deleteCredentialSql(userId, name))
-  match result {
-    case Ok(_) -> {
-      if name == "GITHUB_TOKEN" {
-        match deleteGitHubOAuthRefresh(sc) {
-          case Ok(_) -> ()
-          case Err(e) -> println(
-            "NOTE: could not drop GitHub OAuth refresh metadata after deleting GITHUB_TOKEN: " +
-              credentialErrorMessage(e)
-          )
-        }
-      }
-    }
-    case Err(_) -> ()
-  }
-  return result
+  return CloudAgents.PgStore.Credentials.deleteCredential(sc, name)
 }
 
 /// Whether a user has a credential stored under exactly `name`. Used by
@@ -1182,9 +533,7 @@ pub func deleteCredential(sc: in CloudAgents.Pg.UserScope, name: in String): Res
 pub func credentialNameExists(
   sc: in CloudAgents.Pg.UserScope, name: in String
 ): Result[Bool, CloudAgents.Sqlite.DbError] {
-  val userId = sc.userId
-  val rows = CloudAgents.Sqlite.query(CloudAgents.Db.selectCredentialExistsSql(userId, name))?
-  return Ok(value = CloudAgents.Sqlite.getRowArrayLength(rows) > 0)
+  return CloudAgents.PgStore.Credentials.credentialNameExists(sc, name)
 }
 
 /// Decrypt a user's stored credentials for injection into a container
@@ -1194,28 +543,7 @@ pub func credentialNameExists(
 /// future run, including runs that never needed it. A database-read failure
 /// (can't reach the store at all) is still fatal.
 pub func decryptedCredentials(sc: in CloudAgents.Pg.UserScope): Result[slice[CredentialValue], CredentialError] {
-  val userId = sc.userId
-  val rows = match CloudAgents.Sqlite.query(CloudAgents.Db.selectCredentialsForInjectionSql(userId)) {
-    case Ok(r) -> r
-    case Err(e) -> return Err(Db(error = e))
-  }
-  var acc: slice[CredentialValue] = []
-  var i = 0
-  val len = CloudAgents.Sqlite.getRowArrayLength(rows)
-  while i < len {
-    val r = CloudAgents.Sqlite.getRowArrayValue(rows, i)
-    val name = colAt(r.cols, 0)
-    match CloudAgents.Crypto.decrypt(colAt(r.cols, 1)) {
-      case Ok(p) -> {
-        acc = acc.append(CredentialValue(name = name, value = p))
-      }
-      case Err(e) -> {
-        println("WARNING: skipping undecryptable credential '" + name + "': " + CloudAgents.Crypto.cryptoErrorMessage(e))
-      }
-    }
-    i = i + 1
-  }
-  return Ok(value = acc)
+  return CloudAgents.PgStore.Credentials.decryptedCredentials(sc)
 }
 
 /// Decrypt a single named credential for server-side use (the CloudAgents.Proxy
@@ -1229,24 +557,7 @@ pub func decryptedCredentials(sc: in CloudAgents.Pg.UserScope): Result[slice[Cre
 pub func decryptedCredentialValue(
   sc: in CloudAgents.Pg.UserScope, name: in String
 ): Result[Option[String], CredentialError] {
-  val userId = sc.userId
-  val rows = match CloudAgents.Sqlite.query(CloudAgents.Db.selectCredentialsForInjectionSql(userId)) {
-    case Ok(r) -> r
-    case Err(e) -> return Err(Db(error = e))
-  }
-  var i = 0
-  val len = CloudAgents.Sqlite.getRowArrayLength(rows)
-  while i < len {
-    val r = CloudAgents.Sqlite.getRowArrayValue(rows, i)
-    if colAt(r.cols, 0) == name {
-      match CloudAgents.Crypto.decrypt(colAt(r.cols, 1)) {
-        case Ok(p) -> return Ok(value = Some(value = p))
-        case Err(e) -> return Err(Crypto(error = e))
-      }
-    }
-    i = i + 1
-  }
-  return Ok(value = None)
+  return CloudAgents.PgStore.Credentials.decryptedCredentialValue(sc, name)
 }
 
 // ─── GitHub OAuth token refresh ─────────────────────────────────────────────────
@@ -1273,15 +584,7 @@ pub func upsertGitHubOAuthRefresh(
   accessExpiresInSeconds: in String,
   refreshExpiresInSeconds: in String,
 ): Result[Unit, CredentialError] {
-  val userId = sc.userId
-  val encrypted = match CloudAgents.Crypto.encrypt(refreshToken) {
-    case Ok(blob) -> blob
-    case Err(e) -> return Err(Crypto(error = e))
-  }
-  match CloudAgents.Sqlite.execute(CloudAgents.Db.upsertGitHubOAuthRefreshSql(userId, encrypted, nowMillis(), accessExpiresInSeconds, refreshExpiresInSeconds)) {
-    case Ok(_) -> return Ok(value = ())
-    case Err(e) -> return Err(Db(error = e))
-  }
+  return CloudAgents.PgStore.Credentials.upsertGitHubOAuthRefresh(sc, refreshToken, accessExpiresInSeconds, refreshExpiresInSeconds)
 }
 
 /// Look up a tenant's refresh-token status: the decrypted refresh token plus
@@ -1290,40 +593,14 @@ pub func upsertGitHubOAuthRefresh(
 pub func githubOAuthRefreshStatus(
   sc: in CloudAgents.Pg.UserScope
 ): Result[Option[GitHubOAuthRefreshStatus], CredentialError] {
-  val userId = sc.userId
-  val rows = match CloudAgents.Sqlite.query(CloudAgents.Db.selectGitHubOAuthRefreshStatusSql(userId, nowMillis())) {
-    case Ok(r) -> r
-    case Err(e) -> return Err(Db(error = e))
-  }
-  if CloudAgents.Sqlite.getRowArrayLength(rows) == 0 {
-    return Ok(value = None)
-  }
-  val r0 = CloudAgents.Sqlite.getRowArrayValue(rows, 0)
-  match CloudAgents.Crypto.decrypt(colAt(r0.cols, 0)) {
-    case Ok(token) -> {
-      return Ok(
-        value = Some(
-          value = GitHubOAuthRefreshStatus(
-            refreshToken = token,
-            accessTokenExpired = colAt(r0.cols, 1) == "1",
-            refreshTokenExpired = colAt(r0.cols, 2) == "1"
-          )
-        )
-      )
-    }
-    case Err(e) -> return Err(Crypto(error = e))
-  }
+  return CloudAgents.PgStore.Credentials.githubOAuthRefreshStatus(sc)
 }
 
 /// Drop a tenant's refresh-token metadata — the refresh token itself expired
 /// or GitHub rejected it, so there's no point retrying a dead refresh token
 /// on the next request.
 pub func deleteGitHubOAuthRefresh(sc: in CloudAgents.Pg.UserScope): Result[Unit, CredentialError] {
-  val userId = sc.userId
-  match CloudAgents.Sqlite.execute(CloudAgents.Db.deleteGitHubOAuthRefreshSql(userId)) {
-    case Ok(_) -> return Ok(value = ())
-    case Err(e) -> return Err(Db(error = e))
-  }
+  return CloudAgents.PgStore.Credentials.deleteGitHubOAuthRefresh(sc)
 }
 
 // ─── Profiles ──────────────────────────────────────────────────────────────────
@@ -1365,31 +642,7 @@ pub record ProfileList {
 pub func profileNetworkPolicy(
   sc: in CloudAgents.Pg.TenantScope, profileId: in String
 ): Result[String, CloudAgents.Sqlite.DbError] {
-  val userId = sc.userId
-  if profileId.length == 0 {
-    return Ok(value = "full")
-  }
-  match getProfile(profileId, sc)? {
-    case None -> return Ok(value = "none")
-    case Some(p) -> {
-      if p.networkPolicy.length == 0 {
-        return Ok(value = "full")
-      }
-      return Ok(value = p.networkPolicy)
-    }
-  }
-}
-
-/// Whether a string slice contains a value (small linear scan).
-func sliceContains(xs: in slice[String], target: in String): Bool {
-  var i = 0
-  while i < xs.length {
-    if xs[i] == target {
-      return true
-    }
-    i = i + 1
-  }
-  return false
+  return CloudAgents.PgStore.Library.profileNetworkPolicy(sc, profileId)
 }
 
 // ─── Run history ───────────────────────────────────────────────────────────────
@@ -1417,20 +670,6 @@ pub record RunList {
   pub runs: slice[Run]
 }
 
-func rowToRun(r: in CloudAgents.Sqlite.Row): Run {
-  return Run(
-    id = colAt(r.cols, 0),
-    sessionId = colAt(r.cols, 1),
-    userId = colAt(r.cols, 2),
-    promptPreview = colAt(r.cols, 3),
-    harness = colAt(r.cols, 4),
-    model = colAt(r.cols, 5),
-    status = colAt(r.cols, 6),
-    startedAt = colAt(r.cols, 7),
-    endedAt = colAt(r.cols, 8)
-  )
-}
-
 /// First `runPreviewMaxLen` characters of a prompt, for the lean run record.
 pub func promptPreview(prompt: in String): String {
   if prompt.length <= runPreviewMaxLen {
@@ -1449,20 +688,14 @@ pub func recordRunStart(
   harness: in String,
   model: in String,
 ): Result[String, CloudAgents.Sqlite.DbError] {
-  val userId = sc.userId
-  val id = newId()
-  val ts = nowMillis()
-  CloudAgents.Sqlite.execute(CloudAgents.Db.insertRunSql(id, sessionId, userId, promptPreview(prompt), harness, model, ts))?
-  return Ok(value = id)
+  return CloudAgents.PgStore.SessionData.recordRunStart(sessionId, sc, prompt, harness, model)
 }
 
 /// Move a run to a terminal status ('succeeded' | 'failed' | 'cancelled').
 pub func recordRunEnd(
   runId: in String, sc: in CloudAgents.Pg.TenantScope, status: in String
 ): Result[Unit, CloudAgents.Sqlite.DbError] {
-  val userId = sc.userId
-  CloudAgents.Sqlite.execute(CloudAgents.Db.finishRunSql(runId, userId, status, nowMillis()))?
-  return Ok(value = ())
+  return CloudAgents.PgStore.SessionData.recordRunEnd(runId, sc, status)
 }
 
 /// Mark every still-'running' run for a session terminal — used when a run ends
@@ -1471,25 +704,14 @@ pub func recordRunEnd(
 pub func finishSessionRuns(
   sessionId: in String, sc: in CloudAgents.Pg.TenantScope, status: in String
 ): Result[Unit, CloudAgents.Sqlite.DbError] {
-  val userId = sc.userId
-  CloudAgents.Sqlite.execute(CloudAgents.Db.finishSessionRunsSql(sessionId, userId, status, nowMillis()))?
-  return Ok(value = ())
+  return CloudAgents.PgStore.SessionData.finishSessionRuns(sessionId, sc, status)
 }
 
 /// A session's run history, newest first.
 pub func listRuns(
   sessionId: in String, sc: in CloudAgents.Pg.TenantScope
 ): Result[slice[Run], CloudAgents.Sqlite.DbError] {
-  val userId = sc.userId
-  val rows = CloudAgents.Sqlite.query(CloudAgents.Db.selectRunsBySessionSql(sessionId, userId))?
-  var acc: slice[Run] = []
-  var i = 0
-  val len = CloudAgents.Sqlite.getRowArrayLength(rows)
-  while i < len {
-    acc = acc.append(rowToRun(CloudAgents.Sqlite.getRowArrayValue(rows, i)))
-    i = i + 1
-  }
-  return Ok(value = acc)
+  return CloudAgents.PgStore.SessionData.listRuns(sessionId, sc)
 }
 
 // ─── Session repositories (multi-repo sessions) ─────────────────────────────
@@ -1512,74 +734,46 @@ pub record SessionRepoList {
   pub repos: slice[SessionRepo]
 }
 
-func rowToSessionRepo(r: in CloudAgents.Sqlite.Row): SessionRepo {
-  return SessionRepo(
-    id = colAt(r.cols, 0),
-    sessionId = colAt(r.cols, 1),
-    repoUrl = colAt(r.cols, 2),
-    branch = colAt(r.cols, 3),
-    createdAt = colAt(r.cols, 4)
-  )
-}
-
 /// A session's linked repositories, oldest first.
 pub func listSessionRepos(
   sessionId: in String, sc: in CloudAgents.Pg.TenantScope
 ): Result[slice[SessionRepo], CloudAgents.Sqlite.DbError] {
-  val rows = CloudAgents.Sqlite.query(CloudAgents.Db.selectSessionReposSql(sessionId))?
-  var acc: slice[SessionRepo] = []
-  var i = 0
-  val len = CloudAgents.Sqlite.getRowArrayLength(rows)
-  while i < len {
-    acc = acc.append(rowToSessionRepo(CloudAgents.Sqlite.getRowArrayValue(rows, i)))
-    i = i + 1
-  }
-  return Ok(value = acc)
+  return CloudAgents.PgStore.SessionData.listSessionRepos(sessionId, sc)
 }
 
 /// How many repositories are linked to a session (for the per-session cap).
 pub func countSessionRepos(
   sessionId: in String, sc: in CloudAgents.Pg.TenantScope
 ): Result[Int, CloudAgents.Sqlite.DbError] {
-  val rows = CloudAgents.Sqlite.query(CloudAgents.Db.countSessionReposSql(sessionId))?
-  val len = CloudAgents.Sqlite.getRowArrayLength(rows)
-  if len == 0 {
-    return Ok(value = 0)
-  }
-  return Ok(value = parseNatString(colAt(CloudAgents.Sqlite.getRowArrayValue(rows, 0).cols, 0)))
+  return CloudAgents.PgStore.SessionData.countSessionRepos(sessionId, sc)
 }
 
 /// Whether a session already has a repo linked at the given URL (duplicate guard).
 pub func sessionRepoUrlExists(
   sessionId: in String, sc: in CloudAgents.Pg.TenantScope, repoUrl: in String
 ): Result[Bool, CloudAgents.Sqlite.DbError] {
-  val rows = CloudAgents.Sqlite.query(CloudAgents.Db.selectSessionRepoByUrlSql(sessionId, repoUrl))?
-  return Ok(value = CloudAgents.Sqlite.getRowArrayLength(rows) > 0)
+  return CloudAgents.PgStore.SessionData.sessionRepoUrlExists(sessionId, sc, repoUrl)
 }
 
 /// Link a repository to a session and return the stored record.
 pub func addSessionRepo(
   sessionId: in String, sc: in CloudAgents.Pg.TenantScope, repoUrl: in String, branch: in String
 ): Result[SessionRepo, CloudAgents.Sqlite.DbError] {
-  val id = newId()
-  val ts = nowMillis()
-  CloudAgents.Sqlite.execute(CloudAgents.Db.insertSessionRepoSql(id, sessionId, repoUrl, branch, ts))?
-  return Ok(value = SessionRepo(id = id, sessionId = sessionId, repoUrl = repoUrl, branch = branch, createdAt = ts))
+  return CloudAgents.PgStore.SessionData.addSessionRepo(sessionId, sc, repoUrl, branch)
 }
 
 /// Unlink a repository from a session. Returns rows affected (0 = not found).
 pub func deleteSessionRepo(
   sessionId: in String, sc: in CloudAgents.Pg.TenantScope, repoId: in String
 ): Result[Int, CloudAgents.Sqlite.DbError] {
-  return CloudAgents.Sqlite.execute(CloudAgents.Db.deleteSessionRepoSql(sessionId, repoId))
+  return CloudAgents.PgStore.SessionData.deleteSessionRepo(sessionId, sc, repoId)
 }
 
 /// Remove every repository linked to a session (session-deletion cleanup).
 pub func deleteSessionReposForSession(
   sessionId: in String, sc: in CloudAgents.Pg.TenantScope
 ): Result[Unit, CloudAgents.Sqlite.DbError] {
-  CloudAgents.Sqlite.execute(CloudAgents.Db.deleteSessionReposForSessionSql(sessionId))?
-  return Ok(value = ())
+  return CloudAgents.PgStore.SessionData.deleteSessionReposForSession(sessionId, sc)
 }
 
 // ─── Session groups (tree) ───────────────────────────────────────────────────
@@ -1602,51 +796,23 @@ pub record SessionGroupList {
   pub groups: slice[SessionGroup]
 }
 
-func rowToSessionGroup(r: in CloudAgents.Sqlite.Row): SessionGroup {
-  return SessionGroup(
-    id = colAt(r.cols, 0),
-    name = colAt(r.cols, 1),
-    parentId = colAt(r.cols, 2),
-    createdAt = colAt(r.cols, 3)
-  )
-}
-
 /// One user's groups, alphabetical by name.
 pub func listSessionGroups(sc: in CloudAgents.Pg.TenantScope): Result[slice[SessionGroup], CloudAgents.Sqlite.DbError] {
-  val userId = sc.userId
-  val rows = CloudAgents.Sqlite.query(CloudAgents.Db.selectSessionGroupsSql(userId))?
-  var acc: slice[SessionGroup] = []
-  var i = 0
-  val len = CloudAgents.Sqlite.getRowArrayLength(rows)
-  while i < len {
-    acc = acc.append(rowToSessionGroup(CloudAgents.Sqlite.getRowArrayValue(rows, i)))
-    i = i + 1
-  }
-  return Ok(value = acc)
+  return CloudAgents.PgStore.SessionData.listSessionGroups(sc)
 }
 
 /// A single group owned by a user, or None (unknown and foreign look the same).
 pub func getSessionGroup(
   id: in String, sc: in CloudAgents.Pg.TenantScope
 ): Result[Option[SessionGroup], CloudAgents.Sqlite.DbError] {
-  val userId = sc.userId
-  val rows = CloudAgents.Sqlite.query(CloudAgents.Db.selectSessionGroupByIdSql(id, userId))?
-  val len = CloudAgents.Sqlite.getRowArrayLength(rows)
-  if len == 0 {
-    return Ok(value = None)
-  }
-  return Ok(value = Some(value = rowToSessionGroup(CloudAgents.Sqlite.getRowArrayValue(rows, 0))))
+  return CloudAgents.PgStore.SessionData.getSessionGroup(id, sc)
 }
 
 /// Create a group and return the stored record.
 pub func addSessionGroup(
   sc: in CloudAgents.Pg.TenantScope, name: in String, parentId: in String
 ): Result[SessionGroup, CloudAgents.Sqlite.DbError] {
-  val userId = sc.userId
-  val id = newId()
-  val ts = nowMillis()
-  CloudAgents.Sqlite.execute(CloudAgents.Db.insertSessionGroupSql(id, userId, name, parentId, ts))?
-  return Ok(value = SessionGroup(id = id, name = name, parentId = parentId, createdAt = ts))
+  return CloudAgents.PgStore.SessionData.addSessionGroup(sc, name, parentId)
 }
 
 /// Full update of a group's name and parent. Returns rows affected (0 = not
@@ -1654,8 +820,7 @@ pub func addSessionGroup(
 pub func updateSessionGroup(
   id: in String, sc: in CloudAgents.Pg.TenantScope, name: in String, parentId: in String
 ): Result[Int, CloudAgents.Sqlite.DbError] {
-  val userId = sc.userId
-  return CloudAgents.Sqlite.execute(CloudAgents.Db.updateSessionGroupSql(id, userId, name, parentId))
+  return CloudAgents.PgStore.SessionData.updateSessionGroup(id, sc, name, parentId)
 }
 
 /// Delete a group, reparenting its child groups AND reassigning its sessions
@@ -1665,14 +830,7 @@ pub func updateSessionGroup(
 pub func deleteSessionGroupReparenting(
   id: in String, sc: in CloudAgents.Pg.TenantScope, newParentId: in String
 ): Result[Unit, CloudAgents.Sqlite.DbError] {
-  val userId = sc.userId
-  val stmts: slice[String] = [
-    CloudAgents.Db.reparentSessionGroupsSql(userId, id, newParentId),
-    CloudAgents.Db.reassignSessionsGroupSql(userId, id, newParentId),
-    CloudAgents.Db.deleteSessionGroupSql(id, userId)
-  ]
-  CloudAgents.Sqlite.executeTransaction(stmts)?
-  return Ok(value = ())
+  return CloudAgents.PgStore.SessionData.deleteSessionGroupReparenting(id, sc, newParentId)
 }
 
 // ─── Webhooks (transactional outbox) ─────────────────────────────────────────────
@@ -1714,65 +872,22 @@ pub record WebhookEventList {
 /// return its real id/created_at rather than the freshly-minted ones, which for
 /// an already-registered URL would not match any stored row (#255).
 pub func addWebhook(sc: in CloudAgents.Pg.TenantScope, url: in String): Result[Webhook, CloudAgents.Sqlite.DbError] {
-  val userId = sc.userId
-  val id = newId()
-  val ts = nowMillis()
-  CloudAgents.Sqlite.execute(CloudAgents.Db.insertWebhookSql(id, userId, url, ts))?
-  val rows = CloudAgents.Sqlite.query(CloudAgents.Db.selectWebhookByUrlSql(userId, url))?
-  val len = CloudAgents.Sqlite.getRowArrayLength(rows)
-  if len == 0 {
-    // Defensive: we just inserted or it already existed, so a row should be
-    // present; fall back to the minted values rather than error.
-    return Ok(value = Webhook(id = id, userId = userId, url = url, createdAt = ts))
-  }
-  val r = CloudAgents.Sqlite.getRowArrayValue(rows, 0)
-  return Ok(
-    value = Webhook(
-      id = colAt(r.cols, 0),
-      userId = colAt(r.cols, 1),
-      url = colAt(r.cols, 2),
-      createdAt = colAt(r.cols, 3)
-    )
-  )
+  return CloudAgents.PgStore.Webhooks.addWebhook(sc, url)
 }
 
 /// A user's registered webhooks, newest first.
 pub func listWebhooks(sc: in CloudAgents.Pg.TenantScope): Result[slice[Webhook], CloudAgents.Sqlite.DbError] {
-  val userId = sc.userId
-  val rows = CloudAgents.Sqlite.query(CloudAgents.Db.selectWebhooksSql(userId))?
-  var acc: slice[Webhook] = []
-  var i = 0
-  val len = CloudAgents.Sqlite.getRowArrayLength(rows)
-  while i < len {
-    val r = CloudAgents.Sqlite.getRowArrayValue(rows, i)
-    acc = acc.append(
-      Webhook(
-        id = colAt(r.cols, 0),
-        userId = colAt(r.cols, 1),
-        url = colAt(r.cols, 2),
-        createdAt = colAt(r.cols, 3)
-      )
-    )
-    i = i + 1
-  }
-  return Ok(value = acc)
+  return CloudAgents.PgStore.Webhooks.listWebhooks(sc)
 }
 
 /// Delete a webhook by id. Returns rows affected (0 = not found).
 pub func deleteWebhook(id: in String, sc: in CloudAgents.Pg.TenantScope): Result[Int, CloudAgents.Sqlite.DbError] {
-  val userId = sc.userId
-  return CloudAgents.Sqlite.execute(CloudAgents.Db.deleteWebhookSql(id, userId))
+  return CloudAgents.PgStore.Webhooks.deleteWebhook(id, sc)
 }
 
 /// Whether a user has at least one registered webhook.
 pub func userHasWebhooks(sc: in CloudAgents.Pg.TenantScope): Result[Bool, CloudAgents.Sqlite.DbError] {
-  val userId = sc.userId
-  val rows = CloudAgents.Sqlite.query(CloudAgents.Db.countWebhooksSql(userId))?
-  val len = CloudAgents.Sqlite.getRowArrayLength(rows)
-  if len == 0 {
-    return Ok(value = false)
-  }
-  return Ok(value = parseNatString(colAt(CloudAgents.Sqlite.getRowArrayValue(rows, 0).cols, 0)) > 0)
+  return CloudAgents.PgStore.Webhooks.userHasWebhooks(sc)
 }
 
 /// Enqueue a run-completion event for delivery — but only when the user has a
@@ -1785,112 +900,21 @@ pub func enqueueWebhookEvent(
   runId: in String,
   status: in String,
 ): Result[Unit, CloudAgents.Sqlite.DbError] {
-  val userId = sc.userId
-  if not userHasWebhooks(sc)? {
-    return Ok(value = ())
-  }
-  val id = newId()
-  val ts = nowMillis()
-  CloudAgents.Sqlite.execute(CloudAgents.Db.insertWebhookEventSql(id, userId, sessionId, runId, status, ts))?
-  return Ok(value = ())
+  return CloudAgents.PgStore.Webhooks.enqueueWebhookEvent(sc, sessionId, runId, status)
 }
 
 /// A user's undelivered outbox events, oldest first (for the external deliverer).
 pub func listPendingWebhookEvents(
   sc: in CloudAgents.Pg.TenantScope
 ): Result[slice[WebhookEvent], CloudAgents.Sqlite.DbError] {
-  val userId = sc.userId
-  val rows = CloudAgents.Sqlite.query(CloudAgents.Db.selectPendingWebhookEventsSql(userId))?
-  var acc: slice[WebhookEvent] = []
-  var i = 0
-  val len = CloudAgents.Sqlite.getRowArrayLength(rows)
-  while i < len {
-    val r = CloudAgents.Sqlite.getRowArrayValue(rows, i)
-    acc = acc.append(
-      WebhookEvent(
-        id = colAt(r.cols, 0),
-        userId = colAt(r.cols, 1),
-        sessionId = colAt(r.cols, 2),
-        runId = colAt(r.cols, 3),
-        status = colAt(r.cols, 4),
-        createdAt = colAt(r.cols, 5)
-      )
-    )
-    i = i + 1
-  }
-  return Ok(value = acc)
+  return CloudAgents.PgStore.Webhooks.listPendingWebhookEvents(sc)
 }
 
 /// Mark an outbox event delivered. Returns rows affected (0 = not found).
 pub func markWebhookEventDelivered(
   id: in String, sc: in CloudAgents.Pg.TenantScope
 ): Result[Int, CloudAgents.Sqlite.DbError] {
-  val userId = sc.userId
-  return CloudAgents.Sqlite.execute(CloudAgents.Db.markWebhookEventDeliveredSql(id, userId))
-}
-
-/// The granted credential names for a profile (empty for 'all' mode).
-func profileCredentialNames(profileId: in String, userId: in String): Result[slice[String], CloudAgents.Sqlite.DbError] {
-  val rows = CloudAgents.Sqlite.query(CloudAgents.Db.selectProfileCredentialsSql(profileId, userId))?
-  var acc: slice[String] = []
-  var i = 0
-  val len = CloudAgents.Sqlite.getRowArrayLength(rows)
-  while i < len {
-    acc = acc.append(colAt(CloudAgents.Sqlite.getRowArrayValue(rows, i).cols, 0))
-    i = i + 1
-  }
-  return Ok(value = acc)
-}
-
-func rowToProfile(
-  r: in CloudAgents.Sqlite.Row,
-  creds: in slice[String],
-  skillIds: in slice[String],
-  subagentIds: in slice[String],
-  mcpServerIds: in slice[String],
-  tools: in slice[String],
-): Profile {
-  return Profile(
-    id = colAt(r.cols, 0),
-    userId = colAt(r.cols, 1),
-    name = colAt(r.cols, 2),
-    harness = colAt(r.cols, 3),
-    networkPolicy = colAt(r.cols, 4),
-    credentialMode = colAt(r.cols, 5),
-    credentials = creds,
-    skillIds = skillIds,
-    subagentIds = subagentIds,
-    mcpServerIds = mcpServerIds,
-    // tool_mode is column 8 (appended last, per profileColumns' comment).
-    toolMode = colAt(r.cols, 8),
-    tools = tools,
-    createdAt = colAt(r.cols, 6),
-    updatedAt = colAt(r.cols, 7)
-  )
-}
-
-/// Statements that replace a profile's granted credential set: clear, then one
-/// insert per name. Returned as a list (not executed) so callers can run them
-/// in the same transaction as the profile row itself (review #230), keeping the
-/// profile and its grants consistent on partial failure.
-func profileCredentialStatements(profileId: in String, userId: in String, names: in slice[String]): slice[String] {
-  var stmts: slice[String] = []
-  stmts = stmts.append(CloudAgents.Db.deleteProfileCredentialsSql(profileId, userId))
-  for name in names {
-    stmts = stmts.append(CloudAgents.Db.insertProfileCredentialSql(newId(), profileId, userId, name))
-  }
-  return stmts
-}
-
-/// Statements that replace a profile's enabled-tool set. Mirrors
-/// profileCredentialStatements exactly (docs/phase7-autonomy.md §7).
-func profileToolStatements(profileId: in String, userId: in String, names: in slice[String]): slice[String] {
-  var stmts: slice[String] = []
-  stmts = stmts.append(CloudAgents.Db.deleteProfileToolsSql(profileId, userId))
-  for name in names {
-    stmts = stmts.append(CloudAgents.Db.insertProfileToolSql(newId(), profileId, userId, name))
-  }
-  return stmts
+  return CloudAgents.PgStore.Webhooks.markWebhookEventDelivered(id, sc)
 }
 
 /// Save a new profile and its granted credential/skill/subagent/MCP-server
@@ -1908,70 +932,13 @@ pub func addProfile(
   toolMode: in String,
   tools: in slice[String],
 ): Result[Profile, CloudAgents.Sqlite.DbError] {
-  val userId = sc.userId
-  val id = newId()
-  val ts = nowMillis()
-  // Profile row + every grant set commit together (#230).
-  var stmts: slice[String] = []
-  stmts = stmts.append(
-    CloudAgents.Db.insertProfileSql(id, userId, name, harness, networkPolicy, credentialMode, toolMode, ts)
-  )
-  for s in profileCredentialStatements(id, userId, credentials) {
-    stmts = stmts.append(s)
-  }
-  for s in profileSkillStatements(id, userId, skillIds) {
-    stmts = stmts.append(s)
-  }
-  for s in profileSubagentStatements(id, userId, subagentIds) {
-    stmts = stmts.append(s)
-  }
-  for s in profileMcpServerStatements(id, userId, mcpServerIds) {
-    stmts = stmts.append(s)
-  }
-  for s in profileToolStatements(id, userId, tools) {
-    stmts = stmts.append(s)
-  }
-  CloudAgents.Sqlite.executeTransaction(stmts)?
-  return Ok(
-    value = Profile(
-      id = id,
-      userId = userId,
-      name = name,
-      harness = harness,
-      networkPolicy = networkPolicy,
-      credentialMode = credentialMode,
-      credentials = credentials,
-      skillIds = skillIds,
-      subagentIds = subagentIds,
-      mcpServerIds = mcpServerIds,
-      toolMode = toolMode,
-      tools = tools,
-      createdAt = ts,
-      updatedAt = ts
-    )
-  )
+  return CloudAgents.PgStore.Library.addProfile(sc, name, harness, networkPolicy, credentialMode, credentials, skillIds, subagentIds, mcpServerIds, toolMode, tools)
 }
 
 /// All of a user's profiles (each with its granted credential names and
 /// library-item ids), by name.
 pub func listProfiles(sc: in CloudAgents.Pg.TenantScope): Result[slice[Profile], CloudAgents.Sqlite.DbError] {
-  val userId = sc.userId
-  val rows = CloudAgents.Sqlite.query(CloudAgents.Db.selectProfilesSql(userId))?
-  var acc: slice[Profile] = []
-  var i = 0
-  val len = CloudAgents.Sqlite.getRowArrayLength(rows)
-  while i < len {
-    val r = CloudAgents.Sqlite.getRowArrayValue(rows, i)
-    val pid = colAt(r.cols, 0)
-    val creds = profileCredentialNames(pid, userId)?
-    val skillIds = profileSkillIds(pid, userId)?
-    val subagentIds = profileSubagentIds(pid, userId)?
-    val mcpServerIds = profileMcpServerIds(pid, userId)?
-    val toolNames = profileToolNames(pid, userId)?
-    acc = acc.append(rowToProfile(r, creds, skillIds, subagentIds, mcpServerIds, toolNames))
-    i = i + 1
-  }
-  return Ok(value = acc)
+  return CloudAgents.PgStore.Library.listProfiles(sc)
 }
 
 /// The id of a user's profile with the given name, or None if the name is
@@ -1980,13 +947,7 @@ pub func listProfiles(sc: in CloudAgents.Pg.TenantScope): Result[slice[Profile],
 pub func profileIdByName(
   sc: in CloudAgents.Pg.TenantScope, name: in String
 ): Result[Option[String], CloudAgents.Sqlite.DbError] {
-  val userId = sc.userId
-  val rows = CloudAgents.Sqlite.query(CloudAgents.Db.selectProfileIdByNameSql(userId, name))?
-  val len = CloudAgents.Sqlite.getRowArrayLength(rows)
-  if len == 0 {
-    return Ok(value = None)
-  }
-  return Ok(value = Some(value = colAt(CloudAgents.Sqlite.getRowArrayValue(rows, 0).cols, 0)))
+  return CloudAgents.PgStore.Library.profileIdByName(sc, name)
 }
 
 /// A single profile owned by a user (with its granted credentials and
@@ -1994,19 +955,7 @@ pub func profileIdByName(
 pub func getProfile(
   id: in String, sc: in CloudAgents.Pg.TenantScope
 ): Result[Option[Profile], CloudAgents.Sqlite.DbError] {
-  val userId = sc.userId
-  val rows = CloudAgents.Sqlite.query(CloudAgents.Db.selectProfileByIdSql(id, userId))?
-  val len = CloudAgents.Sqlite.getRowArrayLength(rows)
-  if len == 0 {
-    return Ok(value = None)
-  }
-  val r = CloudAgents.Sqlite.getRowArrayValue(rows, 0)
-  val creds = profileCredentialNames(id, userId)?
-  val skillIds = profileSkillIds(id, userId)?
-  val subagentIds = profileSubagentIds(id, userId)?
-  val mcpServerIds = profileMcpServerIds(id, userId)?
-  val toolNames = profileToolNames(id, userId)?
-  return Ok(value = Some(value = rowToProfile(r, creds, skillIds, subagentIds, mcpServerIds, toolNames)))
+  return CloudAgents.PgStore.Library.getProfile(id, sc)
 }
 
 /// Update a profile's settings and every grant set. Returns rows affected
@@ -2025,42 +974,7 @@ pub func updateProfile(
   toolMode: in String,
   tools: in slice[String],
 ): Result[Int, CloudAgents.Sqlite.DbError] {
-  val userId = sc.userId
-  // Cheap early-exit so an unmistakably-missing profile skips the transaction
-  // entirely — NOT the source of truth for the 0-vs-success return (#238): a
-  // profile deleted by a concurrent request between this check and the
-  // transaction below would make this pass but the UPDATE affect 0 rows, and
-  // the actual affected count (not this pre-check) is what gets returned.
-  match getProfile(id, sc)? {
-    case None -> return Ok(value = 0)
-    case Some(_) -> ()
-  }
-  val ts = nowMillis()
-  // Profile row + every grant set commit together (#230). The profile
-  // UPDATE is deliberately LAST so executeTransaction's rows-affected return
-  // (which reports the last statement) reflects it, not a grant-set
-  // statement (#238).
-  var stmts: slice[String] = []
-  for s in profileCredentialStatements(id, userId, credentials) {
-    stmts = stmts.append(s)
-  }
-  for s in profileSkillStatements(id, userId, skillIds) {
-    stmts = stmts.append(s)
-  }
-  for s in profileSubagentStatements(id, userId, subagentIds) {
-    stmts = stmts.append(s)
-  }
-  for s in profileMcpServerStatements(id, userId, mcpServerIds) {
-    stmts = stmts.append(s)
-  }
-  for s in profileToolStatements(id, userId, tools) {
-    stmts = stmts.append(s)
-  }
-  stmts = stmts.append(
-    CloudAgents.Db.updateProfileSql(id, userId, name, harness, networkPolicy, credentialMode, toolMode, ts)
-  )
-  val affected = CloudAgents.Sqlite.executeTransaction(stmts)?
-  return Ok(value = affected)
+  return CloudAgents.PgStore.Library.updateProfile(id, sc, name, harness, networkPolicy, credentialMode, credentials, skillIds, subagentIds, mcpServerIds, toolMode, tools)
 }
 
 /// Delete a profile and every grant set (atomically, #230). Returns rows
@@ -2070,21 +984,7 @@ pub func updateProfile(
 /// pre-check and this transaction correctly reports 0 rather than a stale 1
 /// (#238).
 pub func deleteProfile(id: in String, sc: in CloudAgents.Pg.TenantScope): Result[Int, CloudAgents.Sqlite.DbError] {
-  val userId = sc.userId
-  // Cheap early-exit only — see the affected-count rationale on updateProfile.
-  match getProfile(id, sc)? {
-    case None -> return Ok(value = 0)
-    case Some(_) -> ()
-  }
-  var stmts: slice[String] = []
-  stmts = stmts.append(CloudAgents.Db.deleteProfileCredentialsSql(id, userId))
-  stmts = stmts.append(CloudAgents.Db.deleteProfileSkillsSql(id, userId))
-  stmts = stmts.append(CloudAgents.Db.deleteProfileSubagentsSql(id, userId))
-  stmts = stmts.append(CloudAgents.Db.deleteProfileMcpServersSql(id, userId))
-  stmts = stmts.append(CloudAgents.Db.deleteProfileToolsSql(id, userId))
-  stmts = stmts.append(CloudAgents.Db.deleteProfileSql(id, userId))
-  val affected = CloudAgents.Sqlite.executeTransaction(stmts)?
-  return Ok(value = affected)
+  return CloudAgents.PgStore.Library.deleteProfile(id, sc)
 }
 
 /// Decrypt only the credentials a profile grants, for least-privilege
@@ -2100,50 +1000,7 @@ pub func deleteProfile(id: in String, sc: in CloudAgents.Pg.TenantScope): Result
 pub func decryptedCredentialsForProfile(
   sc: in CloudAgents.Pg.TenantScope, profileId: in String
 ): Result[slice[CredentialValue], CredentialError] {
-  val userId = sc.userId
-  if profileId.length == 0 {
-    return decryptedCredentials(CloudAgents.Scope.userScope(userId))
-  }
-  val profile = match getProfile(profileId, sc) { case Ok(p) -> p; case Err(e) -> return Err(Db(error = e)) }
-  match profile {
-    case None -> {
-      // Referenced profile is gone: fail closed, inject no credentials.
-      val empty: slice[CredentialValue] = []
-      return Ok(value = empty)
-    }
-    case Some(p) -> {
-      if p.credentialMode != "selected" {
-        return decryptedCredentials(CloudAgents.Scope.userScope(userId))
-      }
-      // Least-privilege at the crypto boundary (#267): decrypt ONLY the granted
-      // credentials, rather than decrypting every one and discarding the rest.
-      // Fetch the raw rows, filter by granted name, then decrypt just those
-      // (best-effort per credential, exactly like decryptedCredentials).
-      val rows = match CloudAgents.Sqlite.query(CloudAgents.Db.selectCredentialsForInjectionSql(userId)) {
-        case Ok(r) -> r
-        case Err(e) -> return Err(Db(error = e))
-      }
-      var acc: slice[CredentialValue] = []
-      var i = 0
-      val len = CloudAgents.Sqlite.getRowArrayLength(rows)
-      while i < len {
-        val r = CloudAgents.Sqlite.getRowArrayValue(rows, i)
-        val name = colAt(r.cols, 0)
-        if sliceContains(p.credentials, name) {
-          match CloudAgents.Crypto.decrypt(colAt(r.cols, 1)) {
-            case Ok(pt) -> {
-              acc = acc.append(CredentialValue(name = name, value = pt))
-            }
-            case Err(e) -> {
-              println("WARNING: skipping undecryptable credential '" + name + "': " + CloudAgents.Crypto.cryptoErrorMessage(e))
-            }
-          }
-        }
-        i = i + 1
-      }
-      return Ok(value = acc)
-    }
-  }
+  return CloudAgents.PgStore.Credentials.decryptedCredentialsForProfile(sc, profileId)
 }
 
 /// The CLOUD_AGENTS_ENABLED_TOOLS value to inject for a profile's session,
@@ -2162,14 +1019,7 @@ pub func decryptedCredentialsForProfile(
 pub func enabledToolsForProfile(
   sc: in CloudAgents.Pg.TenantScope, profileId: in String
 ): Result[String, CloudAgents.Sqlite.DbError] {
-  val userId = sc.userId
-  if profileId.length == 0 {
-    return Ok(value = "")
-  }
-  match getProfile(profileId, sc)? {
-    case None -> return Ok(value = "")
-    case Some(p) -> return Ok(value = CloudAgents.ToolPolicy.enabledToolsEnvValue(p.toolMode, p.tools))
-  }
+  return CloudAgents.PgStore.Library.enabledToolsForProfile(sc, profileId)
 }
 
 // ─── Library: skills, subagents, MCP servers ───────────────────────────────────
@@ -2244,71 +1094,26 @@ pub record McpServerList {
   pub mcpServers: slice[McpServer]
 }
 
-func rowToSkill(r: in CloudAgents.Sqlite.Row): Skill {
-  return Skill(
-    id = colAt(r.cols, 0),
-    userId = colAt(r.cols, 1),
-    name = colAt(r.cols, 2),
-    description = colAt(r.cols, 3),
-    body = colAt(r.cols, 4),
-    createdAt = colAt(r.cols, 5),
-    updatedAt = colAt(r.cols, 6)
-  )
-}
-
 /// Save a new skill.
 pub func addSkill(
   sc: in CloudAgents.Pg.TenantScope, name: in String, description: in String, body: in String
 ): Result[Skill, CloudAgents.Sqlite.DbError] {
-  val userId = sc.userId
-  val id = newId()
-  val ts = nowMillis()
-  CloudAgents.Sqlite.execute(CloudAgents.Db.insertSkillSql(id, userId, name, description, body, ts))?
-  return Ok(
-    value = Skill(
-      id = id,
-      userId = userId,
-      name = name,
-      description = description,
-      body = body,
-      createdAt = ts,
-      updatedAt = ts
-    )
-  )
+  return CloudAgents.PgStore.Library.addSkill(sc, name, description, body)
 }
 
 /// All of a user's skills, by name.
 pub func listSkills(sc: in CloudAgents.Pg.TenantScope): Result[slice[Skill], CloudAgents.Sqlite.DbError] {
-  val userId = sc.userId
-  val rows = CloudAgents.Sqlite.query(CloudAgents.Db.selectSkillsSql(userId))?
-  var acc: slice[Skill] = []
-  var i = 0
-  val len = CloudAgents.Sqlite.getRowArrayLength(rows)
-  while i < len {
-    acc = acc.append(rowToSkill(CloudAgents.Sqlite.getRowArrayValue(rows, i)))
-    i = i + 1
-  }
-  return Ok(value = acc)
+  return CloudAgents.PgStore.Library.listSkills(sc)
 }
 
 pub func skillIdByName(
   sc: in CloudAgents.Pg.TenantScope, name: in String
 ): Result[Option[String], CloudAgents.Sqlite.DbError] {
-  val userId = sc.userId
-  val rows = CloudAgents.Sqlite.query(CloudAgents.Db.selectSkillIdByNameSql(userId, name))?
-  if CloudAgents.Sqlite.getRowArrayLength(rows) == 0 {
-    return Ok(value = None)
-  }
-  return Ok(value = Some(value = colAt(CloudAgents.Sqlite.getRowArrayValue(rows, 0).cols, 0)))
+  return CloudAgents.PgStore.Library.skillIdByName(sc, name)
 }
 
 pub func getSkill(id: in String, sc: in CloudAgents.Pg.TenantScope): Result[Option[Skill], CloudAgents.Sqlite.DbError] {
-  val userId = sc.userId
-  val rows = CloudAgents.Sqlite.query(CloudAgents.Db.selectSkillByIdSql(id, userId))?
-  if CloudAgents.Sqlite.getRowArrayLength(rows) == 0 {
-    return Ok(value = None)
-  }
-  return Ok(value = Some(value = rowToSkill(CloudAgents.Sqlite.getRowArrayValue(rows, 0))))
+  return CloudAgents.PgStore.Library.getSkill(id, sc)
 }
 
 /// Returns rows affected on the skills row (0 = not found / not owned) — the
@@ -2322,12 +1127,7 @@ pub func updateSkill(
   description: in String,
   body: in String,
 ): Result[Int, CloudAgents.Sqlite.DbError] {
-  val userId = sc.userId
-  match getSkill(id, sc)? {
-    case None -> return Ok(value = 0)
-    case Some(_) -> ()
-  }
-  return CloudAgents.Sqlite.execute(CloudAgents.Db.updateSkillSql(id, userId, name, description, body, nowMillis()))
+  return CloudAgents.PgStore.Library.updateSkill(id, sc, name, description, body)
 }
 
 /// Delete a skill and every profile grant referencing it (#230-style
@@ -2339,32 +1139,7 @@ pub func updateSkill(
 /// (#598), so a skill removed by a concurrent request between the pre-check
 /// and this transaction correctly reports 0.
 pub func deleteSkill(id: in String, sc: in CloudAgents.Pg.TenantScope): Result[Int, CloudAgents.Sqlite.DbError] {
-  val userId = sc.userId
-  match getSkill(id, sc)? {
-    case None -> return Ok(value = 0)
-    case Some(_) -> ()
-  }
-  var stmts: slice[String] = []
-  stmts = stmts.append(
-    "DELETE FROM profile_skills WHERE skill_id = " + CloudAgents.Db.sqlLiteral(id) + " AND user_id = " +
-      CloudAgents.Db.sqlLiteral(userId)
-  )
-  stmts = stmts.append(CloudAgents.Db.deleteSkillSql(id, userId))
-  val affected = CloudAgents.Sqlite.executeTransaction(stmts)?
-  return Ok(value = affected)
-}
-
-func rowToSubagent(r: in CloudAgents.Sqlite.Row): Subagent {
-  return Subagent(
-    id = colAt(r.cols, 0),
-    userId = colAt(r.cols, 1),
-    name = colAt(r.cols, 2),
-    description = colAt(r.cols, 3),
-    systemPrompt = colAt(r.cols, 4),
-    model = colAt(r.cols, 5),
-    createdAt = colAt(r.cols, 6),
-    updatedAt = colAt(r.cols, 7)
-  )
+  return CloudAgents.PgStore.Library.deleteSkill(id, sc)
 }
 
 /// Save a new subagent.
@@ -2375,58 +1150,24 @@ pub func addSubagent(
   systemPrompt: in String,
   model: in String,
 ): Result[Subagent, CloudAgents.Sqlite.DbError] {
-  val userId = sc.userId
-  val id = newId()
-  val ts = nowMillis()
-  CloudAgents.Sqlite.execute(CloudAgents.Db.insertSubagentSql(id, userId, name, description, systemPrompt, model, ts))?
-  return Ok(
-    value = Subagent(
-      id = id,
-      userId = userId,
-      name = name,
-      description = description,
-      systemPrompt = systemPrompt,
-      model = model,
-      createdAt = ts,
-      updatedAt = ts
-    )
-  )
+  return CloudAgents.PgStore.Library.addSubagent(sc, name, description, systemPrompt, model)
 }
 
 /// All of a user's subagents, by name.
 pub func listSubagents(sc: in CloudAgents.Pg.TenantScope): Result[slice[Subagent], CloudAgents.Sqlite.DbError] {
-  val userId = sc.userId
-  val rows = CloudAgents.Sqlite.query(CloudAgents.Db.selectSubagentsSql(userId))?
-  var acc: slice[Subagent] = []
-  var i = 0
-  val len = CloudAgents.Sqlite.getRowArrayLength(rows)
-  while i < len {
-    acc = acc.append(rowToSubagent(CloudAgents.Sqlite.getRowArrayValue(rows, i)))
-    i = i + 1
-  }
-  return Ok(value = acc)
+  return CloudAgents.PgStore.Library.listSubagents(sc)
 }
 
 pub func subagentIdByName(
   sc: in CloudAgents.Pg.TenantScope, name: in String
 ): Result[Option[String], CloudAgents.Sqlite.DbError] {
-  val userId = sc.userId
-  val rows = CloudAgents.Sqlite.query(CloudAgents.Db.selectSubagentIdByNameSql(userId, name))?
-  if CloudAgents.Sqlite.getRowArrayLength(rows) == 0 {
-    return Ok(value = None)
-  }
-  return Ok(value = Some(value = colAt(CloudAgents.Sqlite.getRowArrayValue(rows, 0).cols, 0)))
+  return CloudAgents.PgStore.Library.subagentIdByName(sc, name)
 }
 
 pub func getSubagent(
   id: in String, sc: in CloudAgents.Pg.TenantScope
 ): Result[Option[Subagent], CloudAgents.Sqlite.DbError] {
-  val userId = sc.userId
-  val rows = CloudAgents.Sqlite.query(CloudAgents.Db.selectSubagentByIdSql(id, userId))?
-  if CloudAgents.Sqlite.getRowArrayLength(rows) == 0 {
-    return Ok(value = None)
-  }
-  return Ok(value = Some(value = rowToSubagent(CloudAgents.Sqlite.getRowArrayValue(rows, 0))))
+  return CloudAgents.PgStore.Library.getSubagent(id, sc)
 }
 
 /// Returns rows affected on the subagents row (0 = not found / not owned) —
@@ -2440,118 +1181,14 @@ pub func updateSubagent(
   systemPrompt: in String,
   model: in String,
 ): Result[Int, CloudAgents.Sqlite.DbError] {
-  val userId = sc.userId
-  match getSubagent(id, sc)? {
-    case None -> return Ok(value = 0)
-    case Some(_) -> ()
-  }
-  return CloudAgents.Sqlite.execute(
-    CloudAgents.Db.updateSubagentSql(id, userId, name, description, systemPrompt, model, nowMillis())
-  )
+  return CloudAgents.PgStore.Library.updateSubagent(id, sc, name, description, systemPrompt, model)
 }
 
 /// Returns rows affected on the subagents row (0 = not found / not owned) —
 /// taken from the transaction's own DELETE on the subagents row (deliberately
 /// the last statement), not a hardcoded 1 (#598), matching deleteSkill above.
 pub func deleteSubagent(id: in String, sc: in CloudAgents.Pg.TenantScope): Result[Int, CloudAgents.Sqlite.DbError] {
-  val userId = sc.userId
-  match getSubagent(id, sc)? {
-    case None -> return Ok(value = 0)
-    case Some(_) -> ()
-  }
-  var stmts: slice[String] = []
-  stmts = stmts.append(
-    "DELETE FROM profile_subagents WHERE subagent_id = " + CloudAgents.Db.sqlLiteral(id) + " AND user_id = " +
-      CloudAgents.Db.sqlLiteral(userId)
-  )
-  stmts = stmts.append(CloudAgents.Db.deleteSubagentSql(id, userId))
-  val affected = CloudAgents.Sqlite.executeTransaction(stmts)?
-  return Ok(value = affected)
-}
-
-/// The first column of every row as a flat slice — used both for MCP server
-/// args/env (already selected in position order by the SQL layer) and for
-/// the profile_skills/profile_subagents/profile_mcp_servers grant-id lists.
-func singleColumnValues(rows: in CloudAgents.Sqlite.RowArray): slice[String] {
-  var acc: slice[String] = []
-  var i = 0
-  val len = CloudAgents.Sqlite.getRowArrayLength(rows)
-  while i < len {
-    acc = acc.append(colAt(CloudAgents.Sqlite.getRowArrayValue(rows, i).cols, 0))
-    i = i + 1
-  }
-  return acc
-}
-
-func mcpServerArgs(mcpServerId: in String, userId: in String): Result[slice[String], CloudAgents.Sqlite.DbError] {
-  val rows = CloudAgents.Sqlite.query(CloudAgents.Db.selectMcpServerArgsSql(mcpServerId, userId))?
-  return Ok(value = singleColumnValues(rows))
-}
-
-func mcpServerEnv(mcpServerId: in String, userId: in String): Result[slice[String], CloudAgents.Sqlite.DbError] {
-  val rows = CloudAgents.Sqlite.query(CloudAgents.Db.selectMcpServerEnvSql(mcpServerId, userId))?
-  return Ok(value = singleColumnValues(rows))
-}
-
-func mcpServerHeaders(mcpServerId: in String, userId: in String): Result[slice[String], CloudAgents.Sqlite.DbError] {
-  val rows = CloudAgents.Sqlite.query(CloudAgents.Db.selectMcpServerHeadersSql(mcpServerId, userId))?
-  return Ok(value = singleColumnValues(rows))
-}
-
-func rowToMcpServer(
-  r: in CloudAgents.Sqlite.Row,
-  args: in slice[String],
-  env: in slice[String],
-  headers: in slice[String],
-): McpServer {
-  return McpServer(
-    id = colAt(r.cols, 0),
-    userId = colAt(r.cols, 1),
-    name = colAt(r.cols, 2),
-    transport = colAt(r.cols, 3),
-    command = colAt(r.cols, 4),
-    args = args,
-    url = colAt(r.cols, 5),
-    env = env,
-    createdAt = colAt(r.cols, 6),
-    updatedAt = colAt(r.cols, 7),
-    enabled = colAt(r.cols, 8),
-    headers = headers
-  )
-}
-
-/// Statements that replace an MCP server's args/env/headers child rows:
-/// clear all three, then one insert per entry, positioned by slice index —
-/// mirrors profileCredentialStatements' clear-then-reinsert shape.
-func mcpServerChildStatements(
-  mcpServerId: in String,
-  userId: in String,
-  args: in slice[String],
-  env: in slice[String],
-  headers: in slice[String],
-): slice[String] {
-  var stmts: slice[String] = []
-  stmts = stmts.append(CloudAgents.Db.deleteMcpServerArgsSql(mcpServerId, userId))
-  stmts = stmts.append(CloudAgents.Db.deleteMcpServerEnvSql(mcpServerId, userId))
-  stmts = stmts.append(CloudAgents.Db.deleteMcpServerHeadersSql(mcpServerId, userId))
-  var ai = 0
-  while ai < args.length {
-    stmts = stmts.append(CloudAgents.Db.insertMcpServerArgSql(newId(), mcpServerId, userId, ai.toString(), args[ai]))
-    ai = ai + 1
-  }
-  var ei = 0
-  while ei < env.length {
-    stmts = stmts.append(CloudAgents.Db.insertMcpServerEnvSql(newId(), mcpServerId, userId, ei.toString(), env[ei]))
-    ei = ei + 1
-  }
-  var hi = 0
-  while hi < headers.length {
-    stmts = stmts.append(
-      CloudAgents.Db.insertMcpServerHeaderSql(newId(), mcpServerId, userId, hi.toString(), headers[hi])
-    )
-    hi = hi + 1
-  }
-  return stmts
+  return CloudAgents.PgStore.Library.deleteSubagent(id, sc)
 }
 
 /// Save a new MCP server and its ordered args/env/headers.
@@ -2566,76 +1203,24 @@ pub func addMcpServer(
   enabled: in String = "1",
   headers: in slice[String] = [],
 ): Result[McpServer, CloudAgents.Sqlite.DbError] {
-  val userId = sc.userId
-  val id = newId()
-  val ts = nowMillis()
-  var stmts: slice[String] = []
-  stmts = stmts.append(CloudAgents.Db.insertMcpServerSql(id, userId, name, transport, command, url, ts, enabled))
-  for s in mcpServerChildStatements(id, userId, args, env, headers) {
-    stmts = stmts.append(s)
-  }
-  CloudAgents.Sqlite.executeTransaction(stmts)?
-  return Ok(
-    value = McpServer(
-      id = id,
-      userId = userId,
-      name = name,
-      transport = transport,
-      command = command,
-      args = args,
-      url = url,
-      env = env,
-      createdAt = ts,
-      updatedAt = ts,
-      enabled = enabled,
-      headers = headers
-    )
-  )
+  return CloudAgents.PgStore.Library.addMcpServer(sc, name, transport, command, args, url, env, enabled, headers)
 }
 
 /// All of a user's MCP servers (each with its args/env/headers), by name.
 pub func listMcpServers(sc: in CloudAgents.Pg.TenantScope): Result[slice[McpServer], CloudAgents.Sqlite.DbError] {
-  val userId = sc.userId
-  val rows = CloudAgents.Sqlite.query(CloudAgents.Db.selectMcpServersSql(userId))?
-  var acc: slice[McpServer] = []
-  var i = 0
-  val len = CloudAgents.Sqlite.getRowArrayLength(rows)
-  while i < len {
-    val r = CloudAgents.Sqlite.getRowArrayValue(rows, i)
-    val id = colAt(r.cols, 0)
-    val args = mcpServerArgs(id, userId)?
-    val env = mcpServerEnv(id, userId)?
-    val headers = mcpServerHeaders(id, userId)?
-    acc = acc.append(rowToMcpServer(r, args, env, headers))
-    i = i + 1
-  }
-  return Ok(value = acc)
+  return CloudAgents.PgStore.Library.listMcpServers(sc)
 }
 
 pub func mcpServerIdByName(
   sc: in CloudAgents.Pg.TenantScope, name: in String
 ): Result[Option[String], CloudAgents.Sqlite.DbError] {
-  val userId = sc.userId
-  val rows = CloudAgents.Sqlite.query(CloudAgents.Db.selectMcpServerIdByNameSql(userId, name))?
-  if CloudAgents.Sqlite.getRowArrayLength(rows) == 0 {
-    return Ok(value = None)
-  }
-  return Ok(value = Some(value = colAt(CloudAgents.Sqlite.getRowArrayValue(rows, 0).cols, 0)))
+  return CloudAgents.PgStore.Library.mcpServerIdByName(sc, name)
 }
 
 pub func getMcpServer(
   id: in String, sc: in CloudAgents.Pg.TenantScope
 ): Result[Option[McpServer], CloudAgents.Sqlite.DbError] {
-  val userId = sc.userId
-  val rows = CloudAgents.Sqlite.query(CloudAgents.Db.selectMcpServerByIdSql(id, userId))?
-  if CloudAgents.Sqlite.getRowArrayLength(rows) == 0 {
-    return Ok(value = None)
-  }
-  val r = CloudAgents.Sqlite.getRowArrayValue(rows, 0)
-  val args = mcpServerArgs(id, userId)?
-  val env = mcpServerEnv(id, userId)?
-  val headers = mcpServerHeaders(id, userId)?
-  return Ok(value = Some(value = rowToMcpServer(r, args, env, headers)))
+  return CloudAgents.PgStore.Library.getMcpServer(id, sc)
 }
 
 /// Returns rows affected on the mcp_servers row (0 = not found / not owned) —
@@ -2654,103 +1239,14 @@ pub func updateMcpServer(
   enabled: in String = "1",
   headers: in slice[String] = [],
 ): Result[Int, CloudAgents.Sqlite.DbError] {
-  val userId = sc.userId
-  match getMcpServer(id, sc)? {
-    case None -> return Ok(value = 0)
-    case Some(_) -> ()
-  }
-  // Child statements (args/env/headers clear-then-reinsert) FIRST, then the
-  // mcp_servers UPDATE deliberately LAST (#598 — this previously had the
-  // UPDATE first and the child statements last, the opposite of the
-  // "mutation last" convention updateProfile/updatePromptWithTags establish)
-  // so executeTransaction's rows-affected return (which reports the LAST
-  // statement) actually reflects the mcp_servers row, not a child insert.
-  var stmts: slice[String] = []
-  for s in mcpServerChildStatements(id, userId, args, env, headers) {
-    stmts = stmts.append(s)
-  }
-  stmts = stmts.append(
-    CloudAgents.Db.updateMcpServerSql(id, userId, name, transport, command, url, nowMillis(), enabled)
-  )
-  val affected = CloudAgents.Sqlite.executeTransaction(stmts)?
-  return Ok(value = affected)
+  return CloudAgents.PgStore.Library.updateMcpServer(id, sc, name, transport, command, args, url, env, enabled, headers)
 }
 
 /// Returns rows affected on the mcp_servers row (0 = not found / not owned) —
 /// taken from the transaction's own DELETE on the mcp_servers row
 /// (deliberately the last statement), not a hardcoded 1 (#598).
 pub func deleteMcpServer(id: in String, sc: in CloudAgents.Pg.TenantScope): Result[Int, CloudAgents.Sqlite.DbError] {
-  val userId = sc.userId
-  match getMcpServer(id, sc)? {
-    case None -> return Ok(value = 0)
-    case Some(_) -> ()
-  }
-  var stmts: slice[String] = []
-  stmts = stmts.append(
-    "DELETE FROM profile_mcp_servers WHERE mcp_server_id = " + CloudAgents.Db.sqlLiteral(id) + " AND user_id = " +
-      CloudAgents.Db.sqlLiteral(userId)
-  )
-  stmts = stmts.append(CloudAgents.Db.deleteMcpServerArgsSql(id, userId))
-  stmts = stmts.append(CloudAgents.Db.deleteMcpServerEnvSql(id, userId))
-  stmts = stmts.append(CloudAgents.Db.deleteMcpServerHeadersSql(id, userId))
-  stmts = stmts.append(CloudAgents.Db.deleteMcpServerSql(id, userId))
-  val affected = CloudAgents.Sqlite.executeTransaction(stmts)?
-  return Ok(value = affected)
-}
-
-// ─── Profile library grants ─────────────────────────────────────────────────
-//
-// Mirrors profileCredentialNames/profileCredentialStatements above, one set
-// per grantable resource. Kept separate (rather than generic over resource
-// kind) because Lyric has no reflection and each join table's column name
-// differs (skill_id/subagent_id/mcp_server_id) — see docs/lyric/gotchas.md.
-func profileSkillIds(profileId: in String, userId: in String): Result[slice[String], CloudAgents.Sqlite.DbError] {
-  val rows = CloudAgents.Sqlite.query(CloudAgents.Db.selectProfileSkillIdsSql(profileId, userId))?
-  return Ok(value = singleColumnValues(rows))
-}
-
-func profileSkillStatements(profileId: in String, userId: in String, ids: in slice[String]): slice[String] {
-  var stmts: slice[String] = []
-  stmts = stmts.append(CloudAgents.Db.deleteProfileSkillsSql(profileId, userId))
-  for skillId in ids {
-    stmts = stmts.append(CloudAgents.Db.insertProfileSkillSql(newId(), profileId, userId, skillId))
-  }
-  return stmts
-}
-
-func profileSubagentIds(profileId: in String, userId: in String): Result[slice[String], CloudAgents.Sqlite.DbError] {
-  val rows = CloudAgents.Sqlite.query(CloudAgents.Db.selectProfileSubagentIdsSql(profileId, userId))?
-  return Ok(value = singleColumnValues(rows))
-}
-
-func profileSubagentStatements(profileId: in String, userId: in String, ids: in slice[String]): slice[String] {
-  var stmts: slice[String] = []
-  stmts = stmts.append(CloudAgents.Db.deleteProfileSubagentsSql(profileId, userId))
-  for subagentId in ids {
-    stmts = stmts.append(CloudAgents.Db.insertProfileSubagentSql(newId(), profileId, userId, subagentId))
-  }
-  return stmts
-}
-
-func profileMcpServerIds(profileId: in String, userId: in String): Result[slice[String], CloudAgents.Sqlite.DbError] {
-  val rows = CloudAgents.Sqlite.query(CloudAgents.Db.selectProfileMcpServerIdsSql(profileId, userId))?
-  return Ok(value = singleColumnValues(rows))
-}
-
-func profileMcpServerStatements(profileId: in String, userId: in String, ids: in slice[String]): slice[String] {
-  var stmts: slice[String] = []
-  stmts = stmts.append(CloudAgents.Db.deleteProfileMcpServersSql(profileId, userId))
-  for mcpServerId in ids {
-    stmts = stmts.append(CloudAgents.Db.insertProfileMcpServerSql(newId(), profileId, userId, mcpServerId))
-  }
-  return stmts
-}
-
-/// The enabled tool names for a profile (empty for 'all' mode). Mirrors
-/// profileCredentialNames above (docs/phase7-autonomy.md §7).
-func profileToolNames(profileId: in String, userId: in String): Result[slice[String], CloudAgents.Sqlite.DbError] {
-  val rows = CloudAgents.Sqlite.query(CloudAgents.Db.selectProfileToolsSql(profileId, userId))?
-  return Ok(value = singleColumnValues(rows))
+  return CloudAgents.PgStore.Library.deleteMcpServer(id, sc)
 }
 
 /// The skills a profile grants, resolved to full records. Dangling ids
@@ -2762,22 +1258,7 @@ func profileToolNames(profileId: in String, userId: in String): Result[slice[Str
 pub func skillsForProfile(
   sc: in CloudAgents.Pg.TenantScope, profileId: in String
 ): Result[slice[Skill], CloudAgents.Sqlite.DbError] {
-  val userId = sc.userId
-  if profileId.length == 0 {
-    val empty: slice[Skill] = []
-    return Ok(value = empty)
-  }
-  val ids = profileSkillIds(profileId, userId)?
-  var acc: slice[Skill] = []
-  for id in ids {
-    match getSkill(id, sc)? {
-      case Some(s) -> {
-        acc = acc.append(s)
-      }
-      case None -> ()
-    }
-  }
-  return Ok(value = acc)
+  return CloudAgents.PgStore.Library.skillsForProfile(sc, profileId)
 }
 
 /// The subagents a profile grants, resolved to full records. See
@@ -2785,22 +1266,7 @@ pub func skillsForProfile(
 pub func subagentsForProfile(
   sc: in CloudAgents.Pg.TenantScope, profileId: in String
 ): Result[slice[Subagent], CloudAgents.Sqlite.DbError] {
-  val userId = sc.userId
-  if profileId.length == 0 {
-    val empty: slice[Subagent] = []
-    return Ok(value = empty)
-  }
-  val ids = profileSubagentIds(profileId, userId)?
-  var acc: slice[Subagent] = []
-  for id in ids {
-    match getSubagent(id, sc)? {
-      case Some(s) -> {
-        acc = acc.append(s)
-      }
-      case None -> ()
-    }
-  }
-  return Ok(value = acc)
+  return CloudAgents.PgStore.Library.subagentsForProfile(sc, profileId)
 }
 
 /// The MCP servers a profile grants, resolved to full records — EXCLUDING
@@ -2817,24 +1283,7 @@ pub func subagentsForProfile(
 pub func mcpServersForProfile(
   sc: in CloudAgents.Pg.TenantScope, profileId: in String
 ): Result[slice[McpServer], CloudAgents.Sqlite.DbError] {
-  val userId = sc.userId
-  if profileId.length == 0 {
-    val empty: slice[McpServer] = []
-    return Ok(value = empty)
-  }
-  val ids = profileMcpServerIds(profileId, userId)?
-  var acc: slice[McpServer] = []
-  for id in ids {
-    match getMcpServer(id, sc)? {
-      case Some(s) -> {
-        if s.enabled == "1" {
-          acc = acc.append(s)
-        }
-      }
-      case None -> ()
-    }
-  }
-  return Ok(value = acc)
+  return CloudAgents.PgStore.Library.mcpServersForProfile(sc, profileId)
 }
 
 // ─── GitHub OAuth token-validation cache ────────────────────────────────────
@@ -2849,30 +1298,11 @@ pub record GitHubTokenCacheEntry {
   pub login: String
 }
 
-/// How long a validated GitHub token stays trusted before revalidation (10
-/// minutes, as a millis string for the SQL expiry arithmetic).
-func githubTokenTtlMillis(): String {
-  return "600000"
-}
-
-/// How long a denial stays negatively cached (1 minute — deliberately short
-/// so a transient-network denial can't lock a valid token out for long; the
-/// named constant is here so the two TTLs read side by side, #430).
-func githubTokenDeniedTtlMillis(): String {
-  return "60000"
-}
-
 /// Cache a successful validation. The expired-row sweep is best-effort.
 pub func cacheGitHubToken(
   tokenHash: in String, userId: in String, login: in String
 ): Result[Unit, CloudAgents.Sqlite.DbError] {
-  val now = nowMillis()
-  match CloudAgents.Sqlite.execute(CloudAgents.Db.deleteExpiredGitHubTokensSql(now)) {
-    case Ok(_) -> ()
-    case Err(_) -> ()
-  }
-  CloudAgents.Sqlite.execute(CloudAgents.Db.upsertGitHubTokenSql(tokenHash, userId, login, now, githubTokenTtlMillis()))?
-  return Ok(value = ())
+  return CloudAgents.PgStore.TokenCache.cacheGitHubToken(tokenHash, userId, login)
 }
 
 /// Cache a *denial* briefly — an empty userId marks the entry as negative.
@@ -2882,122 +1312,56 @@ pub func cacheGitHubToken(
 /// of the same bad bearer, which would otherwise each cost an outbound
 /// GitHub round trip that blocks a request thread (#425).
 pub func cacheGitHubTokenDenied(tokenHash: in String): Result[Unit, CloudAgents.Sqlite.DbError] {
-  val now = nowMillis()
-  // Sweep expired rows on THIS write path too (#432): during a sustained
-  // flood of distinct bad bearers this is the only path writing at all, and
-  // without the sweep those rows would accumulate until a legitimate
-  // sign-in happened to run the positive path's sweep.
-  match CloudAgents.Sqlite.execute(CloudAgents.Db.deleteExpiredGitHubTokensSql(now)) {
-    case Ok(_) -> ()
-    case Err(_) -> ()
-  }
-  CloudAgents.Sqlite.execute(CloudAgents.Db.upsertGitHubTokenSql(tokenHash, "", "", now, githubTokenDeniedTtlMillis()))?
-  return Ok(value = ())
+  return CloudAgents.PgStore.TokenCache.cacheGitHubTokenDenied(tokenHash)
 }
 
 /// How many distinct bad bearers are currently negatively cached (i.e. seen
 /// within the last minute). The authentication path uses this as a global
 /// flood backstop (#425).
 pub func activeNegativeGitHubTokens(): Result[Int, CloudAgents.Sqlite.DbError] {
-  val rows = CloudAgents.Sqlite.query(CloudAgents.Db.countActiveNegativeGitHubTokensSql(nowMillis()))?
-  val len = CloudAgents.Sqlite.getRowArrayLength(rows)
-  if len == 0 {
-    return Ok(value = 0)
-  }
-  val r0 = CloudAgents.Sqlite.getRowArrayValue(rows, 0)
-  return Ok(value = parseNatString(colAt(r0.cols, 0)))
+  return CloudAgents.PgStore.TokenCache.activeNegativeGitHubTokens()
 }
 
 /// Record a GitHub-rejected authorization code (marker login 'oauth-code',
 /// so these never count toward the bearer backstop and vice versa — #434).
 pub func cacheOAuthCodeRejected(codeHash: in String): Result[Unit, CloudAgents.Sqlite.DbError] {
-  val now = nowMillis()
-  match CloudAgents.Sqlite.execute(CloudAgents.Db.deleteExpiredGitHubTokensSql(now)) {
-    case Ok(_) -> ()
-    case Err(_) -> ()
-  }
-  CloudAgents.Sqlite.execute(CloudAgents.Db.upsertGitHubTokenSql(codeHash, "", "oauth-code", now, githubTokenDeniedTtlMillis()))?
-  return Ok(value = ())
+  return CloudAgents.PgStore.TokenCache.cacheOAuthCodeRejected(codeHash)
 }
 
 /// How many distinct GitHub-rejected authorization codes are in-window (#434).
 pub func activeRejectedOAuthCodes(): Result[Int, CloudAgents.Sqlite.DbError] {
-  val rows = CloudAgents.Sqlite.query(CloudAgents.Db.countActiveRejectedOAuthCodesSql(nowMillis()))?
-  val len = CloudAgents.Sqlite.getRowArrayLength(rows)
-  if len == 0 {
-    return Ok(value = 0)
-  }
-  val r0 = CloudAgents.Sqlite.getRowArrayValue(rows, 0)
-  return Ok(value = parseNatString(colAt(r0.cols, 0)))
+  return CloudAgents.PgStore.TokenCache.activeRejectedOAuthCodes()
 }
 
 /// The still-valid cache entry for a token hash, or None (missing or expired).
 pub func cachedGitHubToken(tokenHash: in String): Result[Option[GitHubTokenCacheEntry], CloudAgents.Sqlite.DbError] {
-  val rows = CloudAgents.Sqlite.query(CloudAgents.Db.selectGitHubTokenSql(tokenHash, nowMillis()))?
-  val len = CloudAgents.Sqlite.getRowArrayLength(rows)
-  if len == 0 {
-    return Ok(value = None)
-  }
-  val r0 = CloudAgents.Sqlite.getRowArrayValue(rows, 0)
-  return Ok(value = Some(value = GitHubTokenCacheEntry(userId = colAt(r0.cols, 0), login = colAt(r0.cols, 1))))
+  return CloudAgents.PgStore.TokenCache.cachedGitHubToken(tokenHash)
 }
 
 /// Look up a token's cache entry even if expired (for identifying the tenant during token refresh).
 pub func lookupHistoricalGitHubToken(
   tokenHash: in String
 ): Result[Option[GitHubTokenCacheEntry], CloudAgents.Sqlite.DbError] {
-  val rows = CloudAgents.Sqlite.query(CloudAgents.Db.selectHistoricalGitHubTokenSql(tokenHash, nowMillis()))?
-  val len = CloudAgents.Sqlite.getRowArrayLength(rows)
-  if len == 0 {
-    return Ok(value = None)
-  }
-  val r0 = CloudAgents.Sqlite.getRowArrayValue(rows, 0)
-  return Ok(value = Some(value = GitHubTokenCacheEntry(userId = colAt(r0.cols, 0), login = colAt(r0.cols, 1))))
+  return CloudAgents.PgStore.TokenCache.lookupHistoricalGitHubToken(tokenHash)
 }
 
 /// Look up the GitHub login handle for a given userId from the token cache.
 pub func lookupGitHubLoginForUser(userId: in String): Result[String, CloudAgents.Sqlite.DbError] {
-  val rows = CloudAgents.Sqlite.query(CloudAgents.Db.selectGitHubLoginForUserSql(userId))?
-  val len = CloudAgents.Sqlite.getRowArrayLength(rows)
-  if len == 0 {
-    return Ok(value = "")
-  }
-  val r0 = CloudAgents.Sqlite.getRowArrayValue(rows, 0)
-  return Ok(value = colAt(r0.cols, 0))
+  return CloudAgents.PgStore.TokenCache.lookupGitHubLoginForUser(userId)
 }
 
 /// Server-side logout: delete a token's cache row so the next presentation of
 /// that token must revalidate live. Deleting a row that does not exist is
 /// still Ok — logout is idempotent.
 pub func invalidateGitHubToken(tokenHash: in String): Result[Unit, CloudAgents.Sqlite.DbError] {
-  CloudAgents.Sqlite.execute(CloudAgents.Db.deleteGitHubTokenSql(tokenHash))?
-  return Ok(value = ())
-}
-
-// ─── Model-listing cache ────────────────────────────────────────────────────
-//
-// The models proxy calls each provider's models API sequentially on every
-// request. Caching each provider's raw body per (user, provider) for a short
-// TTL amortises that cost to at most once per window (#446). The catalogue
-// itself isn't secret, but it's scoped by user so a listing fetched with one
-// tenant's key is never served to another.
-/// How long a cached provider listing stays fresh (1 hour, as a millis string
-/// for the SQL arithmetic — matches the frontend's per-harness cache TTL).
-func modelListingTtlMillis(): String {
-  return "3600000"
+  return CloudAgents.PgStore.TokenCache.invalidateGitHubToken(tokenHash)
 }
 
 /// A still-fresh cached listing body for (user, provider), or None.
 pub func cachedModelListing(
   sc: in CloudAgents.Pg.UserScope, provider: in String
 ): Result[Option[String], CloudAgents.Sqlite.DbError] {
-  val userId = sc.userId
-  val rows = CloudAgents.Sqlite.query(CloudAgents.Db.selectModelListingSql(userId, provider, nowMillis(), modelListingTtlMillis()))?
-  val len = CloudAgents.Sqlite.getRowArrayLength(rows)
-  if len == 0 {
-    return Ok(value = None)
-  }
-  return Ok(value = Some(value = colAt(CloudAgents.Sqlite.getRowArrayValue(rows, 0).cols, 0)))
+  return CloudAgents.PgStore.Credentials.cachedModelListing(sc, provider)
 }
 
 /// Cache a provider's freshly-fetched listing body for a user. Sweeps expired
@@ -3005,14 +1369,7 @@ pub func cachedModelListing(
 pub func cacheModelListing(
   sc: in CloudAgents.Pg.UserScope, provider: in String, body: in String
 ): Result[Unit, CloudAgents.Sqlite.DbError] {
-  val userId = sc.userId
-  val now = nowMillis()
-  match CloudAgents.Sqlite.execute(CloudAgents.Db.deleteExpiredModelListingsSql(now, modelListingTtlMillis())) {
-    case Ok(_) -> ()
-    case Err(_) -> ()
-  }
-  CloudAgents.Sqlite.execute(CloudAgents.Db.upsertModelListingSql(userId, provider, body, now))?
-  return Ok(value = ())
+  return CloudAgents.PgStore.Credentials.cacheModelListing(sc, provider, body)
 }
 
 // ─── Phase 6: MCP callbacks ──────────────────────────────────────────────────
@@ -3057,33 +1414,6 @@ pub record SessionProgress {
   pub percent: String
 }
 
-func rowToPermissionRequest(r: in CloudAgents.Sqlite.Row): PermissionRequest {
-  return PermissionRequest(
-    id = colAt(r.cols, 0),
-    sessionId = colAt(r.cols, 1),
-    toolName = colAt(r.cols, 2),
-    inputJson = colAt(r.cols, 3),
-    status = colAt(r.cols, 4),
-    updatedInputJson = colAt(r.cols, 5),
-    note = colAt(r.cols, 6),
-    createdAt = colAt(r.cols, 7),
-    decidedAt = colAt(r.cols, 8)
-  )
-}
-
-func rowToUserQuestion(r: in CloudAgents.Sqlite.Row): UserQuestion {
-  return UserQuestion(
-    id = colAt(r.cols, 0),
-    sessionId = colAt(r.cols, 1),
-    question = colAt(r.cols, 2),
-    optionsJson = colAt(r.cols, 3),
-    status = colAt(r.cols, 4),
-    answer = colAt(r.cols, 5),
-    createdAt = colAt(r.cols, 6),
-    decidedAt = colAt(r.cols, 7)
-  )
-}
-
 /// Create a permission request. When `preApproved` is true (an allow-always
 /// rule already matched this exact (tool, input) pair for the session) the
 /// row is created already decided ('allowed', with an explanatory note) so
@@ -3095,37 +1425,14 @@ pub func createPermissionRequest(
   inputJson: in String,
   preApproved: in Bool,
 ): Result[PermissionRequest, CloudAgents.Sqlite.DbError] {
-  val id = newId()
-  val ts = nowMillis()
-  val status = if preApproved { "allowed" } else { "pending" }
-  val note = if preApproved { "allow-always rule matched" } else { "" }
-  val decidedAt = if preApproved { ts } else { "" }
-  CloudAgents.Sqlite.execute(CloudAgents.Db.insertPermissionRequestSql(id, sessionId, toolName, inputJson, status, note, ts, decidedAt))?
-  return Ok(
-    value = PermissionRequest(
-      id = id,
-      sessionId = sessionId,
-      toolName = toolName,
-      inputJson = inputJson,
-      status = status,
-      updatedInputJson = "",
-      note = note,
-      createdAt = ts,
-      decidedAt = decidedAt
-    )
-  )
+  return CloudAgents.PgStore.Interactive.createPermissionRequest(sessionId, sc, toolName, inputJson, preApproved)
 }
 
 /// A permission request by id, or None.
 pub func getPermissionRequest(
   id: in String, sc: in CloudAgents.Pg.TenantScope
 ): Result[Option[PermissionRequest], CloudAgents.Sqlite.DbError] {
-  val rows = CloudAgents.Sqlite.query(CloudAgents.Db.selectPermissionRequestByIdSql(id))?
-  val len = CloudAgents.Sqlite.getRowArrayLength(rows)
-  if len == 0 {
-    return Ok(value = None)
-  }
-  return Ok(value = Some(value = rowToPermissionRequest(CloudAgents.Sqlite.getRowArrayValue(rows, 0))))
+  return CloudAgents.PgStore.Interactive.getPermissionRequest(id, sc)
 }
 
 /// Permission requests created for a session strictly after `afterCreatedAt`,
@@ -3136,15 +1443,7 @@ pub func permissionRequestsCreatedAfter(
   sc: in CloudAgents.Pg.TenantScope,
   afterCreatedAt: in String,
 ): Result[slice[PermissionRequest], CloudAgents.Sqlite.DbError] {
-  val rows = CloudAgents.Sqlite.query(CloudAgents.Db.selectPermissionRequestsCreatedAfterSql(sessionId, afterCreatedAt))?
-  var acc: slice[PermissionRequest] = []
-  var i = 0
-  val len = CloudAgents.Sqlite.getRowArrayLength(rows)
-  while i < len {
-    acc = acc.append(rowToPermissionRequest(CloudAgents.Sqlite.getRowArrayValue(rows, i)))
-    i = i + 1
-  }
-  return Ok(value = acc)
+  return CloudAgents.PgStore.Interactive.permissionRequestsCreatedAfter(sessionId, sc, afterCreatedAt)
 }
 
 /// Answer a still-pending permission request. Returns rows affected (0 = not
@@ -3157,9 +1456,7 @@ pub func answerPermissionRequest(
   updatedInputJson: in String,
   note: in String,
 ): Result[Int, CloudAgents.Sqlite.DbError] {
-  return CloudAgents.Sqlite.execute(
-    CloudAgents.Db.answerPermissionRequestSql(id, status, updatedInputJson, note, nowMillis())
-  )
+  return CloudAgents.PgStore.Interactive.answerPermissionRequest(id, sc, status, updatedInputJson, note)
 }
 
 /// Host-side fail-closed timeout backstop (docs/phase6-mcp-callbacks.md §3
@@ -3168,8 +1465,7 @@ pub func answerPermissionRequest(
 pub func timeoutPendingPermissionRequest(
   id: in String, sc: in CloudAgents.Pg.TenantScope, timeoutMillis: in Long
 ): Result[Unit, CloudAgents.Sqlite.DbError] {
-  CloudAgents.Sqlite.execute(CloudAgents.Db.timeoutPendingPermissionRequestSql(id, nowMillis(), toString(timeoutMillis)))?
-  return Ok(value = ())
+  return CloudAgents.PgStore.Interactive.timeoutPendingPermissionRequest(id, sc, timeoutMillis)
 }
 
 /// Whether an allow-always rule exists for this exact (session, tool, input).
@@ -3179,8 +1475,7 @@ pub func permissionRuleMatches(
   toolName: in String,
   inputJson: in String,
 ): Result[Bool, CloudAgents.Sqlite.DbError] {
-  val rows = CloudAgents.Sqlite.query(CloudAgents.Db.selectPermissionRuleMatchSql(sessionId, toolName, inputJson))?
-  return Ok(value = CloudAgents.Sqlite.getRowArrayLength(rows) > 0)
+  return CloudAgents.PgStore.Interactive.permissionRuleMatches(sessionId, sc, toolName, inputJson)
 }
 
 /// Persist an allow-always rule for a (session, tool, input) triple.
@@ -3191,8 +1486,7 @@ pub func addPermissionRule(
   toolName: in String,
   inputJson: in String,
 ): Result[Unit, CloudAgents.Sqlite.DbError] {
-  CloudAgents.Sqlite.execute(CloudAgents.Db.insertPermissionRuleSql(newId(), sessionId, toolName, inputJson, nowMillis()))?
-  return Ok(value = ())
+  return CloudAgents.PgStore.Interactive.addPermissionRule(sessionId, sc, toolName, inputJson)
 }
 
 /// Create a user question (ask_user MCP tool). `optionsJson` is "" for a
@@ -3203,33 +1497,14 @@ pub func createUserQuestion(
   question: in String,
   optionsJson: in String,
 ): Result[UserQuestion, CloudAgents.Sqlite.DbError] {
-  val id = newId()
-  val ts = nowMillis()
-  CloudAgents.Sqlite.execute(CloudAgents.Db.insertUserQuestionSql(id, sessionId, question, optionsJson, ts))?
-  return Ok(
-    value = UserQuestion(
-      id = id,
-      sessionId = sessionId,
-      question = question,
-      optionsJson = optionsJson,
-      status = "pending",
-      answer = "",
-      createdAt = ts,
-      decidedAt = ""
-    )
-  )
+  return CloudAgents.PgStore.Interactive.createUserQuestion(sessionId, sc, question, optionsJson)
 }
 
 /// A user question by id, or None.
 pub func getUserQuestion(
   id: in String, sc: in CloudAgents.Pg.TenantScope
 ): Result[Option[UserQuestion], CloudAgents.Sqlite.DbError] {
-  val rows = CloudAgents.Sqlite.query(CloudAgents.Db.selectUserQuestionByIdSql(id))?
-  val len = CloudAgents.Sqlite.getRowArrayLength(rows)
-  if len == 0 {
-    return Ok(value = None)
-  }
-  return Ok(value = Some(value = rowToUserQuestion(CloudAgents.Sqlite.getRowArrayValue(rows, 0))))
+  return CloudAgents.PgStore.Interactive.getUserQuestion(id, sc)
 }
 
 /// User questions created for a session strictly after `afterCreatedAt`,
@@ -3237,15 +1512,7 @@ pub func getUserQuestion(
 pub func userQuestionsCreatedAfter(
   sessionId: in String, sc: in CloudAgents.Pg.TenantScope, afterCreatedAt: in String
 ): Result[slice[UserQuestion], CloudAgents.Sqlite.DbError] {
-  val rows = CloudAgents.Sqlite.query(CloudAgents.Db.selectUserQuestionsCreatedAfterSql(sessionId, afterCreatedAt))?
-  var acc: slice[UserQuestion] = []
-  var i = 0
-  val len = CloudAgents.Sqlite.getRowArrayLength(rows)
-  while i < len {
-    acc = acc.append(rowToUserQuestion(CloudAgents.Sqlite.getRowArrayValue(rows, i)))
-    i = i + 1
-  }
-  return Ok(value = acc)
+  return CloudAgents.PgStore.Interactive.userQuestionsCreatedAfter(sessionId, sc, afterCreatedAt)
 }
 
 /// Answer a still-pending question. Returns rows affected (0 = already
@@ -3253,7 +1520,7 @@ pub func userQuestionsCreatedAfter(
 pub func answerUserQuestion(
   id: in String, sc: in CloudAgents.Pg.TenantScope, answer: in String
 ): Result[Int, CloudAgents.Sqlite.DbError] {
-  return CloudAgents.Sqlite.execute(CloudAgents.Db.answerUserQuestionSql(id, answer, nowMillis()))
+  return CloudAgents.PgStore.Interactive.answerUserQuestion(id, sc, answer)
 }
 
 /// Host-side fail-closed timeout backstop for questions: marks a still-pending
@@ -3262,8 +1529,7 @@ pub func answerUserQuestion(
 pub func timeoutPendingUserQuestion(
   id: in String, sc: in CloudAgents.Pg.TenantScope, timeoutMillis: in Long
 ): Result[Unit, CloudAgents.Sqlite.DbError] {
-  CloudAgents.Sqlite.execute(CloudAgents.Db.timeoutPendingUserQuestionSql(id, nowMillis(), toString(timeoutMillis)))?
-  return Ok(value = ())
+  return CloudAgents.PgStore.Interactive.timeoutPendingUserQuestion(id, sc, timeoutMillis)
 }
 
 /// Set a session's latest reported progress (report_progress MCP tool,
@@ -3274,21 +1540,14 @@ pub func updateSessionProgress(
   summary: in String,
   percent: in String,
 ): Result[Unit, CloudAgents.Sqlite.DbError] {
-  CloudAgents.Sqlite.execute(CloudAgents.Db.updateSessionProgressSql(sessionId, summary, percent))?
-  return Ok(value = ())
+  return CloudAgents.PgStore.Interactive.updateSessionProgress(sessionId, sc, summary, percent)
 }
 
 /// A session's latest reported progress (both fields "" if never reported).
 pub func sessionProgress(
   sessionId: in String, sc: in CloudAgents.Pg.TenantScope
 ): Result[SessionProgress, CloudAgents.Sqlite.DbError] {
-  val rows = CloudAgents.Sqlite.query(CloudAgents.Db.selectSessionProgressSql(sessionId))?
-  val len = CloudAgents.Sqlite.getRowArrayLength(rows)
-  if len == 0 {
-    return Ok(value = SessionProgress(summary = "", percent = ""))
-  }
-  val r0 = CloudAgents.Sqlite.getRowArrayValue(rows, 0)
-  return Ok(value = SessionProgress(summary = colAt(r0.cols, 0), percent = colAt(r0.cols, 1)))
+  return CloudAgents.PgStore.Interactive.sessionProgress(sessionId, sc)
 }
 
 // ─── Phase 6 §7: request_secret ──────────────────────────────────────────────
@@ -3311,20 +1570,6 @@ pub record SecretRequest {
   pub decidedAt: String
 }
 
-func rowToSecretRequest(r: in CloudAgents.Sqlite.Row): SecretRequest {
-  return SecretRequest(
-    id = colAt(r.cols, 0),
-    sessionId = colAt(r.cols, 1),
-    name = colAt(r.cols, 2),
-    reason = colAt(r.cols, 3),
-    status = colAt(r.cols, 4),
-    createdAt = colAt(r.cols, 5),
-    decidedAt = colAt(r.cols, 6)
-  )
-  // col 7 (delivered_at) is a mechanical write-once guard, not part of the
-  // audit-facing shape — see markSecretRequestDelivered below.
-}
-
 /// Create a secret request (request_secret MCP tool). Callers must have
 /// already verified the named credential exists for the session owner
 /// (CloudAgents.Callbacks does this before calling here) — this function
@@ -3333,32 +1578,14 @@ func rowToSecretRequest(r: in CloudAgents.Sqlite.Row): SecretRequest {
 pub func createSecretRequest(
   sessionId: in String, sc: in CloudAgents.Pg.TenantScope, name: in String, reason: in String
 ): Result[SecretRequest, CloudAgents.Sqlite.DbError] {
-  val id = newId()
-  val ts = nowMillis()
-  CloudAgents.Sqlite.execute(CloudAgents.Db.insertSecretRequestSql(id, sessionId, name, reason, ts))?
-  return Ok(
-    value = SecretRequest(
-      id = id,
-      sessionId = sessionId,
-      name = name,
-      reason = reason,
-      status = "pending",
-      createdAt = ts,
-      decidedAt = ""
-    )
-  )
+  return CloudAgents.PgStore.Interactive.createSecretRequest(sessionId, sc, name, reason)
 }
 
 /// A secret request by id, or None.
 pub func getSecretRequest(
   id: in String, sc: in CloudAgents.Pg.TenantScope
 ): Result[Option[SecretRequest], CloudAgents.Sqlite.DbError] {
-  val rows = CloudAgents.Sqlite.query(CloudAgents.Db.selectSecretRequestByIdSql(id))?
-  val len = CloudAgents.Sqlite.getRowArrayLength(rows)
-  if len == 0 {
-    return Ok(value = None)
-  }
-  return Ok(value = Some(value = rowToSecretRequest(CloudAgents.Sqlite.getRowArrayValue(rows, 0))))
+  return CloudAgents.PgStore.Interactive.getSecretRequest(id, sc)
 }
 
 /// Secret requests created for a session strictly after `afterCreatedAt`,
@@ -3367,15 +1594,7 @@ pub func getSecretRequest(
 pub func secretRequestsCreatedAfter(
   sessionId: in String, sc: in CloudAgents.Pg.TenantScope, afterCreatedAt: in String
 ): Result[slice[SecretRequest], CloudAgents.Sqlite.DbError] {
-  val rows = CloudAgents.Sqlite.query(CloudAgents.Db.selectSecretRequestsCreatedAfterSql(sessionId, afterCreatedAt))?
-  var acc: slice[SecretRequest] = []
-  var i = 0
-  val len = CloudAgents.Sqlite.getRowArrayLength(rows)
-  while i < len {
-    acc = acc.append(rowToSecretRequest(CloudAgents.Sqlite.getRowArrayValue(rows, i)))
-    i = i + 1
-  }
-  return Ok(value = acc)
+  return CloudAgents.PgStore.Interactive.secretRequestsCreatedAfter(sessionId, sc, afterCreatedAt)
 }
 
 /// Answer a still-pending secret request. `status` is 'approved' or
@@ -3385,7 +1604,7 @@ pub func secretRequestsCreatedAfter(
 pub func answerSecretRequest(
   id: in String, sc: in CloudAgents.Pg.TenantScope, status: in String
 ): Result[Int, CloudAgents.Sqlite.DbError] {
-  return CloudAgents.Sqlite.execute(CloudAgents.Db.answerSecretRequestSql(id, status, nowMillis()))
+  return CloudAgents.PgStore.Interactive.answerSecretRequest(id, sc, status)
 }
 
 /// Host-side fail-closed timeout backstop, mirroring
@@ -3393,8 +1612,7 @@ pub func answerSecretRequest(
 pub func timeoutPendingSecretRequest(
   id: in String, sc: in CloudAgents.Pg.TenantScope, timeoutMillis: in Long
 ): Result[Unit, CloudAgents.Sqlite.DbError] {
-  CloudAgents.Sqlite.execute(CloudAgents.Db.timeoutPendingSecretRequestSql(id, nowMillis(), toString(timeoutMillis)))?
-  return Ok(value = ())
+  return CloudAgents.PgStore.Interactive.timeoutPendingSecretRequest(id, sc, timeoutMillis)
 }
 
 /// Write-once delivery guard (docs/phase6 §7.1 step 3: the decrypted value
@@ -3405,8 +1623,7 @@ pub func timeoutPendingSecretRequest(
 pub func markSecretRequestDelivered(
   id: in String, sc: in CloudAgents.Pg.TenantScope
 ): Result[Bool, CloudAgents.Sqlite.DbError] {
-  val affected = CloudAgents.Sqlite.execute(CloudAgents.Db.markSecretRequestDeliveredSql(id, nowMillis()))?
-  return Ok(value = affected > 0)
+  return CloudAgents.PgStore.Interactive.markSecretRequestDelivered(id, sc)
 }
 
 // ─── Phase 6 §7: report_artifact ─────────────────────────────────────────────
@@ -3426,21 +1643,6 @@ pub record Artifact {
   pub createdAt: String
   pub repoKey: String
   pub ownerUserId: String
-}
-
-func rowToArtifact(r: in CloudAgents.Sqlite.Row): Artifact {
-  return Artifact(
-    id = colAt(r.cols, 0),
-    sessionId = colAt(r.cols, 1),
-    fileName = colAt(r.cols, 2),
-    storedName = colAt(r.cols, 3),
-    mimeType = colAt(r.cols, 4),
-    description = colAt(r.cols, 5),
-    sizeBytes = colAt(r.cols, 6),
-    createdAt = colAt(r.cols, 7),
-    repoKey = colAt(r.cols, 8),
-    ownerUserId = colAt(r.cols, 9)
-  )
 }
 
 /// Base directory for artifact bytes, mirroring CloudAgents.Sqlite.dbPath's
@@ -3477,50 +1679,21 @@ pub func createArtifact(
   repoKey: in String,
   ownerUserId: in String,
 ): Result[Artifact, CloudAgents.Sqlite.DbError] {
-  val id = newId()
-  val ts = nowMillis()
-  CloudAgents.Sqlite.execute(CloudAgents.Db.insertArtifactSql(id, sessionId, fileName, storedName, mimeType, description, sizeBytes, ts, repoKey, ownerUserId))?
-  return Ok(
-    value = Artifact(
-      id = id,
-      sessionId = sessionId,
-      fileName = fileName,
-      storedName = storedName,
-      mimeType = mimeType,
-      description = description,
-      sizeBytes = sizeBytes,
-      createdAt = ts,
-      repoKey = repoKey,
-      ownerUserId = ownerUserId
-    )
-  )
+  return CloudAgents.PgStore.Interactive.createArtifact(sessionId, sc, fileName, storedName, mimeType, description, sizeBytes, repoKey, ownerUserId)
 }
 
 /// An artifact by id, or None.
 pub func getArtifact(
   id: in String, sc: in CloudAgents.Pg.TenantScope
 ): Result[Option[Artifact], CloudAgents.Sqlite.DbError] {
-  val rows = CloudAgents.Sqlite.query(CloudAgents.Db.selectArtifactByIdSql(id))?
-  val len = CloudAgents.Sqlite.getRowArrayLength(rows)
-  if len == 0 {
-    return Ok(value = None)
-  }
-  return Ok(value = Some(value = rowToArtifact(CloudAgents.Sqlite.getRowArrayValue(rows, 0))))
+  return CloudAgents.PgStore.Interactive.getArtifact(id, sc)
 }
 
 /// A session's artifacts, oldest first.
 pub func listArtifacts(
   sessionId: in String, sc: in CloudAgents.Pg.TenantScope
 ): Result[slice[Artifact], CloudAgents.Sqlite.DbError] {
-  val rows = CloudAgents.Sqlite.query(CloudAgents.Db.selectArtifactsBySessionSql(sessionId))?
-  var acc: slice[Artifact] = []
-  var i = 0
-  val len = CloudAgents.Sqlite.getRowArrayLength(rows)
-  while i < len {
-    acc = acc.append(rowToArtifact(CloudAgents.Sqlite.getRowArrayValue(rows, i)))
-    i = i + 1
-  }
-  return Ok(value = acc)
+  return CloudAgents.PgStore.Interactive.listArtifacts(sessionId, sc)
 }
 
 /// A repo's durable artifacts for ONE user, oldest first
@@ -3530,16 +1703,7 @@ pub func listArtifacts(
 pub func listRepoArtifacts(
   sc: in CloudAgents.Pg.TenantScope, repoKey: in String
 ): Result[slice[Artifact], CloudAgents.Sqlite.DbError] {
-  val userId = sc.userId
-  val rows = CloudAgents.Sqlite.query(CloudAgents.Db.selectRepoArtifactsSql(userId, repoKey))?
-  var acc: slice[Artifact] = []
-  var i = 0
-  val len = CloudAgents.Sqlite.getRowArrayLength(rows)
-  while i < len {
-    acc = acc.append(rowToArtifact(CloudAgents.Sqlite.getRowArrayValue(rows, i)))
-    i = i + 1
-  }
-  return Ok(value = acc)
+  return CloudAgents.PgStore.Interactive.listRepoArtifacts(sc, repoKey)
 }
 
 /// A single repo-scoped artifact by id, owner-scoped by `owner_user_id`
@@ -3550,13 +1714,7 @@ pub func listRepoArtifacts(
 pub func getRepoArtifactById(
   id: in String, sc: in CloudAgents.Pg.TenantScope
 ): Result[Option[Artifact], CloudAgents.Sqlite.DbError] {
-  val userId = sc.userId
-  val rows = CloudAgents.Sqlite.query(CloudAgents.Db.selectRepoArtifactByIdSql(id, userId))?
-  val len = CloudAgents.Sqlite.getRowArrayLength(rows)
-  if len == 0 {
-    return Ok(value = None)
-  }
-  return Ok(value = Some(value = rowToArtifact(CloudAgents.Sqlite.getRowArrayValue(rows, 0))))
+  return CloudAgents.PgStore.Interactive.getRepoArtifactById(id, sc)
 }
 
 // ─── Session attachments (chat uploads) ──────────────────────────────────────
@@ -3580,20 +1738,6 @@ pub record Attachment {
   pub kind: String
   pub sizeBytes: String
   pub createdAt: String
-}
-
-func rowToAttachment(r: in CloudAgents.Sqlite.Row): Attachment {
-  return Attachment(
-    id = colAt(r.cols, 0),
-    sessionId = colAt(r.cols, 1),
-    messageId = colAt(r.cols, 2),
-    fileName = colAt(r.cols, 3),
-    storedName = colAt(r.cols, 4),
-    mimeType = colAt(r.cols, 5),
-    kind = colAt(r.cols, 6),
-    sizeBytes = colAt(r.cols, 7),
-    createdAt = colAt(r.cols, 8)
-  )
 }
 
 /// Base directory for uploaded attachment bytes, mirroring artifactsBaseDir's
@@ -3624,22 +1768,7 @@ pub func createAttachment(
   kind: in String,
   sizeBytes: in String,
 ): Result[Attachment, CloudAgents.Sqlite.DbError] {
-  val id = newId()
-  val ts = nowMillis()
-  CloudAgents.Sqlite.execute(CloudAgents.Db.insertSessionAttachmentSql(id, sessionId, fileName, storedName, mimeType, kind, sizeBytes, ts))?
-  return Ok(
-    value = Attachment(
-      id = id,
-      sessionId = sessionId,
-      messageId = "",
-      fileName = fileName,
-      storedName = storedName,
-      mimeType = mimeType,
-      kind = kind,
-      sizeBytes = sizeBytes,
-      createdAt = ts
-    )
-  )
+  return CloudAgents.PgStore.SessionData.createAttachment(sessionId, sc, fileName, storedName, mimeType, kind, sizeBytes)
 }
 
 /// Link a stored attachment to the user message it was sent with.
@@ -3651,20 +1780,14 @@ pub func createAttachment(
 pub func linkAttachmentToMessage(
   id: in String, sc: in CloudAgents.Pg.TenantScope, messageId: in String
 ): Result[Unit, CloudAgents.Sqlite.DbError] {
-  CloudAgents.Sqlite.execute(CloudAgents.Db.setSessionAttachmentMessageIdSql(id, messageId))?
-  return Ok(value = ())
+  return CloudAgents.PgStore.SessionData.linkAttachmentToMessage(id, sc, messageId)
 }
 
 /// An attachment by id, or None.
 pub func getAttachment(
   id: in String, sc: in CloudAgents.Pg.TenantScope
 ): Result[Option[Attachment], CloudAgents.Sqlite.DbError] {
-  val rows = CloudAgents.Sqlite.query(CloudAgents.Db.selectSessionAttachmentByIdSql(id))?
-  val len = CloudAgents.Sqlite.getRowArrayLength(rows)
-  if len == 0 {
-    return Ok(value = None)
-  }
-  return Ok(value = Some(value = rowToAttachment(CloudAgents.Sqlite.getRowArrayValue(rows, 0))))
+  return CloudAgents.PgStore.SessionData.getAttachment(id, sc)
 }
 
 /// Remove one attachment row by id. Best-effort rollback helper for
@@ -3672,23 +1795,14 @@ pub func getAttachment(
 /// normal (non-error) path, so callers ignore the Result (`val _ = ...`)
 /// exactly as this codebase's other best-effort cleanup calls do.
 pub func deleteAttachment(id: in String, sc: in CloudAgents.Pg.TenantScope): Result[Unit, CloudAgents.Sqlite.DbError] {
-  CloudAgents.Sqlite.execute(CloudAgents.Db.deleteSessionAttachmentSql(id))?
-  return Ok(value = ())
+  return CloudAgents.PgStore.SessionData.deleteAttachment(id, sc)
 }
 
 /// A session's attachments, oldest first.
 pub func listAttachments(
   sessionId: in String, sc: in CloudAgents.Pg.TenantScope
 ): Result[slice[Attachment], CloudAgents.Sqlite.DbError] {
-  val rows = CloudAgents.Sqlite.query(CloudAgents.Db.selectSessionAttachmentsBySessionSql(sessionId))?
-  var acc: slice[Attachment] = []
-  var i = 0
-  val len = CloudAgents.Sqlite.getRowArrayLength(rows)
-  while i < len {
-    acc = acc.append(rowToAttachment(CloudAgents.Sqlite.getRowArrayValue(rows, i)))
-    i = i + 1
-  }
-  return Ok(value = acc)
+  return CloudAgents.PgStore.SessionData.listAttachments(sessionId, sc)
 }
 
 // ─── Phase 7: repo-scoped memory (remember / recall) ─────────────────────────
@@ -3706,13 +1820,7 @@ pub record SessionOwnerRepo {
 pub func sessionOwnerAndRepo(
   id: in String, sc: in CloudAgents.Pg.TenantScope
 ): Result[Option[SessionOwnerRepo], CloudAgents.Sqlite.DbError] {
-  val rows = CloudAgents.Sqlite.query(CloudAgents.Db.selectSessionOwnerAndRepoSql(id))?
-  val len = CloudAgents.Sqlite.getRowArrayLength(rows)
-  if len == 0 {
-    return Ok(value = None)
-  }
-  val r0 = CloudAgents.Sqlite.getRowArrayValue(rows, 0)
-  return Ok(value = Some(value = SessionOwnerRepo(userId = colAt(r0.cols, 0), repoUrl = colAt(r0.cols, 1))))
+  return CloudAgents.PgStore.Interactive.sessionOwnerAndRepo(id, sc)
 }
 
 /// One stored memory entry (the API-relevant columns of a `memory` row).
@@ -3720,10 +1828,6 @@ pub record MemoryRecord {
   pub memKey: String
   pub value: String
   pub updatedAt: String
-}
-
-func rowToMemory(r: in CloudAgents.Sqlite.Row): MemoryRecord {
-  return MemoryRecord(memKey = colAt(r.cols, 3), value = colAt(r.cols, 4), updatedAt = colAt(r.cols, 6))
 }
 
 /// Upsert a memory entry under a per-repo entry cap, atomically (#575, #586).
@@ -3739,27 +1843,14 @@ pub func upsertMemoryCapped(
   value: in String,
   maxEntries: in Int,
 ): Result[Bool, CloudAgents.Sqlite.DbError] {
-  val userId = sc.userId
-  val id = newId()
-  val ts = nowMillis()
-  val affected = CloudAgents.Sqlite.execute(CloudAgents.Db.upsertMemoryCappedSql(id, userId, repoKey, memKey, value, ts, ts, maxEntries))?
-  return Ok(value = affected > 0)
+  return CloudAgents.PgStore.Interactive.upsertMemoryCapped(sc, repoKey, memKey, value, maxEntries)
 }
 
 /// All memory entries for (user, repo), key-ordered.
 pub func listMemory(
   sc: in CloudAgents.Pg.TenantScope, repoKey: in String
 ): Result[slice[MemoryRecord], CloudAgents.Sqlite.DbError] {
-  val userId = sc.userId
-  val rows = CloudAgents.Sqlite.query(CloudAgents.Db.selectMemoryBySql(userId, repoKey))?
-  var acc: slice[MemoryRecord] = []
-  var i = 0
-  val len = CloudAgents.Sqlite.getRowArrayLength(rows)
-  while i < len {
-    acc = acc.append(rowToMemory(CloudAgents.Sqlite.getRowArrayValue(rows, i)))
-    i = i + 1
-  }
-  return Ok(value = acc)
+  return CloudAgents.PgStore.Interactive.listMemory(sc, repoKey)
 }
 
 /// Single memory entry lookup by exact (user, repo, key) (#590). Returns
@@ -3769,13 +1860,7 @@ pub func listMemory(
 pub func getMemory(
   sc: in CloudAgents.Pg.TenantScope, repoKey: in String, memKey: in String
 ): Result[Option[MemoryRecord], CloudAgents.Sqlite.DbError] {
-  val userId = sc.userId
-  val rows = CloudAgents.Sqlite.query(CloudAgents.Db.selectMemoryByKeySql(userId, repoKey, memKey))?
-  val len = CloudAgents.Sqlite.getRowArrayLength(rows)
-  if len == 0 {
-    return Ok(value = None)
-  }
-  return Ok(value = Some(value = rowToMemory(CloudAgents.Sqlite.getRowArrayValue(rows, 0))))
+  return CloudAgents.PgStore.Interactive.getMemory(sc, repoKey, memKey)
 }
 
 /// Delete a memory entry by key (#592). Returns true when a row was removed,
@@ -3783,9 +1868,7 @@ pub func getMemory(
 pub func deleteMemory(
   sc: in CloudAgents.Pg.TenantScope, repoKey: in String, memKey: in String
 ): Result[Bool, CloudAgents.Sqlite.DbError] {
-  val userId = sc.userId
-  val affected = CloudAgents.Sqlite.execute(CloudAgents.Db.deleteMemorySql(userId, repoKey, memKey))?
-  return Ok(value = affected > 0)
+  return CloudAgents.PgStore.Interactive.deleteMemory(sc, repoKey, memKey)
 }
 
 /// Artifacts reported for a session strictly after `afterCreatedAt`, oldest
@@ -3793,15 +1876,7 @@ pub func deleteMemory(
 pub func artifactsCreatedAfter(
   sessionId: in String, sc: in CloudAgents.Pg.TenantScope, afterCreatedAt: in String
 ): Result[slice[Artifact], CloudAgents.Sqlite.DbError] {
-  val rows = CloudAgents.Sqlite.query(CloudAgents.Db.selectArtifactsCreatedAfterSql(sessionId, afterCreatedAt))?
-  var acc: slice[Artifact] = []
-  var i = 0
-  val len = CloudAgents.Sqlite.getRowArrayLength(rows)
-  while i < len {
-    acc = acc.append(rowToArtifact(CloudAgents.Sqlite.getRowArrayValue(rows, i)))
-    i = i + 1
-  }
-  return Ok(value = acc)
+  return CloudAgents.PgStore.Interactive.artifactsCreatedAfter(sessionId, sc, afterCreatedAt)
 }
 
 // ─── Phase 7 §8: repo-scoped task list (add_task / list_tasks / complete_task)
@@ -3818,16 +1893,6 @@ pub record RepoTask {
   pub status: String
   pub createdAt: String
   pub updatedAt: String
-}
-
-func rowToRepoTask(r: in CloudAgents.Sqlite.Row): RepoTask {
-  return RepoTask(
-    id = colAt(r.cols, 0),
-    description = colAt(r.cols, 3),
-    status = colAt(r.cols, 4),
-    createdAt = colAt(r.cols, 5),
-    updatedAt = colAt(r.cols, 6)
-  )
 }
 
 /// The outcome of a capped task creation: whether a new row was actually
@@ -3850,11 +1915,7 @@ pub func addTaskCapped(
   description: in String,
   maxOpenTasks: in Int,
 ): Result[AddTaskResult, CloudAgents.Sqlite.DbError] {
-  val userId = sc.userId
-  val id = newId()
-  val ts = nowMillis()
-  val affected = CloudAgents.Sqlite.execute(CloudAgents.Db.insertTaskCappedSql(id, userId, repoKey, description, ts, ts, maxOpenTasks))?
-  return Ok(value = AddTaskResult(created = affected > 0, id = id))
+  return CloudAgents.PgStore.Interactive.addTaskCapped(sc, repoKey, description, maxOpenTasks)
 }
 
 /// All tasks for (user, repo), newest first. `statusFilter` None/empty means
@@ -3862,17 +1923,7 @@ pub func addTaskCapped(
 pub func listTasks(
   sc: in CloudAgents.Pg.TenantScope, repoKey: in String, statusFilter: in Option[String]
 ): Result[slice[RepoTask], CloudAgents.Sqlite.DbError] {
-  val userId = sc.userId
-  val filter = match statusFilter { case Some(s) -> s; case None -> "" }
-  val rows = CloudAgents.Sqlite.query(CloudAgents.Db.selectTasksSql(userId, repoKey, filter))?
-  var acc: slice[RepoTask] = []
-  var i = 0
-  val len = CloudAgents.Sqlite.getRowArrayLength(rows)
-  while i < len {
-    acc = acc.append(rowToRepoTask(CloudAgents.Sqlite.getRowArrayValue(rows, i)))
-    i = i + 1
-  }
-  return Ok(value = acc)
+  return CloudAgents.PgStore.Interactive.listTasks(sc, repoKey, statusFilter)
 }
 
 /// The result of attempting to complete a task: whether it existed in this
@@ -3894,19 +1945,7 @@ pub union CompleteTaskOutcome {
 pub func completeTask(
   sc: in CloudAgents.Pg.TenantScope, repoKey: in String, taskId: in String
 ): Result[CompleteTaskOutcome, CloudAgents.Sqlite.DbError] {
-  val userId = sc.userId
-  val rows = CloudAgents.Sqlite.query(CloudAgents.Db.selectTaskByIdScopedSql(taskId, userId, repoKey))?
-  val len = CloudAgents.Sqlite.getRowArrayLength(rows)
-  if len == 0 {
-    return Ok(value = TaskNotFound)
-  }
-  val r0 = CloudAgents.Sqlite.getRowArrayValue(rows, 0)
-  if colAt(r0.cols, 4) == "done" {
-    return Ok(value = TaskAlreadyDone)
-  }
-  val ts = nowMillis()
-  CloudAgents.Sqlite.execute(CloudAgents.Db.completeTaskSql(taskId, userId, repoKey, ts))?
-  return Ok(value = TaskCompleted)
+  return CloudAgents.PgStore.Interactive.completeTask(sc, repoKey, taskId)
 }
 
 // ─── Phase 7 §5: notify ─────────────────────────────────────────────────────────
@@ -3923,17 +1962,6 @@ pub record Notification {
   pub readAt: String
 }
 
-func rowToNotification(r: in CloudAgents.Sqlite.Row): Notification {
-  return Notification(
-    id = colAt(r.cols, 0),
-    sessionId = colAt(r.cols, 1),
-    level = colAt(r.cols, 2),
-    summary = colAt(r.cols, 3),
-    createdAt = colAt(r.cols, 4),
-    readAt = colAt(r.cols, 5)
-  )
-}
-
 /// Record a fire-and-forget notification for a session.
 pub func createNotification(
   sessionId: in String,
@@ -3941,34 +1969,14 @@ pub func createNotification(
   level: in String,
   summary: in String,
 ): Result[Notification, CloudAgents.Sqlite.DbError] {
-  val id = newId()
-  val ts = nowMillis()
-  CloudAgents.Sqlite.execute(CloudAgents.Db.insertNotificationSql(id, sessionId, level, summary, ts))?
-  return Ok(
-    value = Notification(
-      id = id,
-      sessionId = sessionId,
-      level = level,
-      summary = summary,
-      createdAt = ts,
-      readAt = ""
-    )
-  )
+  return CloudAgents.PgStore.Interactive.createNotification(sessionId, sc, level, summary)
 }
 
 /// A session's notifications, newest first — for the UI feed.
 pub func listNotifications(
   sessionId: in String, sc: in CloudAgents.Pg.TenantScope
 ): Result[slice[Notification], CloudAgents.Sqlite.DbError] {
-  val rows = CloudAgents.Sqlite.query(CloudAgents.Db.selectNotificationsBySessionSql(sessionId))?
-  var acc: slice[Notification] = []
-  var i = 0
-  val len = CloudAgents.Sqlite.getRowArrayLength(rows)
-  while i < len {
-    acc = acc.append(rowToNotification(CloudAgents.Sqlite.getRowArrayValue(rows, i)))
-    i = i + 1
-  }
-  return Ok(value = acc)
+  return CloudAgents.PgStore.Interactive.listNotifications(sessionId, sc)
 }
 
 /// Notifications for a session strictly after `afterCreatedAt`, oldest
@@ -3976,15 +1984,7 @@ pub func listNotifications(
 pub func notificationsCreatedAfter(
   sessionId: in String, sc: in CloudAgents.Pg.TenantScope, afterCreatedAt: in String
 ): Result[slice[Notification], CloudAgents.Sqlite.DbError] {
-  val rows = CloudAgents.Sqlite.query(CloudAgents.Db.selectNotificationsCreatedAfterSql(sessionId, afterCreatedAt))?
-  var acc: slice[Notification] = []
-  var i = 0
-  val len = CloudAgents.Sqlite.getRowArrayLength(rows)
-  while i < len {
-    acc = acc.append(rowToNotification(CloudAgents.Sqlite.getRowArrayValue(rows, i)))
-    i = i + 1
-  }
-  return Ok(value = acc)
+  return CloudAgents.PgStore.Interactive.notificationsCreatedAfter(sessionId, sc, afterCreatedAt)
 }
 
 // ─── Session highlights ─────────────────────────────────────────────────────────
@@ -4011,18 +2011,6 @@ pub record HighlightList {
   pub highlights: slice[Highlight]
 }
 
-func rowToHighlight(r: in CloudAgents.Sqlite.Row): Highlight {
-  return Highlight(
-    id = colAt(r.cols, 0),
-    sessionId = colAt(r.cols, 1),
-    messageId = colAt(r.cols, 2),
-    kind = colAt(r.cols, 3),
-    title = colAt(r.cols, 4),
-    detail = colAt(r.cols, 5),
-    createdAt = colAt(r.cols, 6)
-  )
-}
-
 /// Store one extracted highlight, anchored to the agent message it came from.
 pub func addHighlight(
   sessionId: in String,
@@ -4032,35 +2020,14 @@ pub func addHighlight(
   title: in String,
   detail: in String,
 ): Result[Highlight, CloudAgents.Sqlite.DbError] {
-  val id = newId()
-  val ts = nowMillis()
-  CloudAgents.Sqlite.execute(CloudAgents.Db.insertHighlightSql(id, sessionId, messageId, kind, title, detail, ts))?
-  return Ok(
-    value = Highlight(
-      id = id,
-      sessionId = sessionId,
-      messageId = messageId,
-      kind = kind,
-      title = title,
-      detail = detail,
-      createdAt = ts
-    )
-  )
+  return CloudAgents.PgStore.SessionData.addHighlight(sessionId, sc, messageId, kind, title, detail)
 }
 
 /// A session's highlights, newest first.
 pub func listHighlights(
   sessionId: in String, sc: in CloudAgents.Pg.TenantScope
 ): Result[slice[Highlight], CloudAgents.Sqlite.DbError] {
-  val rows = CloudAgents.Sqlite.query(CloudAgents.Db.selectHighlightsSql(sessionId))?
-  var acc: slice[Highlight] = []
-  var i = 0
-  val len = CloudAgents.Sqlite.getRowArrayLength(rows)
-  while i < len {
-    acc = acc.append(rowToHighlight(CloudAgents.Sqlite.getRowArrayValue(rows, i)))
-    i = i + 1
-  }
-  return Ok(value = acc)
+  return CloudAgents.PgStore.SessionData.listHighlights(sessionId, sc)
 }
 
 /// The highest transcript seq already scanned for highlights, or "" when the
@@ -4068,40 +2035,14 @@ pub func listHighlights(
 pub func highlightScanSeq(
   sessionId: in String, sc: in CloudAgents.Pg.TenantScope
 ): Result[String, CloudAgents.Sqlite.DbError] {
-  val rows = CloudAgents.Sqlite.query(CloudAgents.Db.selectHighlightScanSeqSql(sessionId))?
-  val len = CloudAgents.Sqlite.getRowArrayLength(rows)
-  if len == 0 {
-    return Ok(value = "")
-  }
-  val r0 = CloudAgents.Sqlite.getRowArrayValue(rows, 0)
-  return Ok(value = colAt(r0.cols, 0))
+  return CloudAgents.PgStore.SessionData.highlightScanSeq(sessionId, sc)
 }
 
 /// Record the highest transcript seq scanned for highlights.
 pub func setHighlightScanSeq(
   sessionId: in String, sc: in CloudAgents.Pg.TenantScope, lastSeq: in String
 ): Result[Unit, CloudAgents.Sqlite.DbError] {
-  CloudAgents.Sqlite.execute(CloudAgents.Db.upsertHighlightScanSeqSql(sessionId, lastSeq))?
-  return Ok(value = ())
-}
-
-// ─── Session events (provenance capture, WP4) ────────────────────────────────
-// The durable form of a captured stream-json run: CloudAgents.Capture
-// CaptureEvents, one row each, appended in seq order and read back verbatim so a
-// consumer can re-verify the hash chain (docs/session-events-store.md).
-func rowToCaptureEvent(r: in CloudAgents.Sqlite.Row): CloudAgents.Capture.CaptureEvent {
-  // seq is stored as digit TEXT; parse back to the Long CaptureEvent carries.
-  // Construct UNQUALIFIED (CaptureEvent, not CloudAgents.Capture.CaptureEvent):
-  // package-qualified record construction is a documented runtime trap
-  // (docs/lyric/gotchas.md), and every other record in this repo — including the
-  // CheckpointBridge — is built unqualified via its import (#964).
-  return CaptureEvent(
-    seq = parseNatString(colAt(r.cols, 1)).toLong(),
-    eventType = colAt(r.cols, 2),
-    payload = colAt(r.cols, 3),
-    prevHash = colAt(r.cols, 4),
-    hash = colAt(r.cols, 5)
-  )
+  return CloudAgents.PgStore.SessionData.setHighlightScanSeq(sessionId, sc, lastSeq)
 }
 
 /// Append a session's captured events in one transaction (all-or-nothing, so a
@@ -4129,71 +2070,7 @@ pub func appendSessionEvents(
   sc: in CloudAgents.Pg.TenantScope,
   events: in slice[CloudAgents.Capture.CaptureEvent],
 ): Result[Int, CloudAgents.Sqlite.DbError] {
-  if events.length.toInt() == 0 {
-    return Ok(value = 0)
-  }
-  // One indexed range query covers the whole incoming batch's seq span, rather
-  // than one query per event.
-  var minSeq = events[0].seq
-  var maxSeq = events[0].seq
-  var i = 0
-  while i < events.length.toInt() {
-    if events[i].seq < minSeq {
-      minSeq = events[i].seq
-    }
-    if events[i].seq > maxSeq {
-      maxSeq = events[i].seq
-    }
-    i = i + 1
-  }
-  val existingRows = CloudAgents.Sqlite.query(CloudAgents.Db.selectSessionEventsBySeqRangeSql(sessionId, toString(minSeq), toString(maxSeq)))?
-  val existingLen = CloudAgents.Sqlite.getRowArrayLength(existingRows)
-  i = 0
-  while i < events.length.toInt() {
-    val e = events[i]
-    val eSeqStr = toString(e.seq)
-    var j = 0
-    while j < existingLen {
-      val row = CloudAgents.Sqlite.getRowArrayValue(existingRows, j)
-      if colAt(row.cols, 0) == eSeqStr {
-        val storedPayload = colAt(row.cols, 1)
-        val storedHash = colAt(row.cols, 2)
-        if storedPayload != e.payload or storedHash != e.hash {
-          return Err(
-            error = ValidationFailed(
-              message = "session_events conflict for session " + sessionId + " seq " + eSeqStr +
-                ": already-stored content differs from the re-appended content"
-            )
-          )
-        }
-      }
-      j = j + 1
-    }
-    i = i + 1
-  }
-
-  val createdAt = nowMillis()
-  // Build via List.add + toArray rather than slice.append() in a per-event loop
-  // (same OSR-promotion concern as sessionEventsAfterSeq, #963 / lyric-lang#6322).
-  val stmts: List[String] = newList()
-  i = 0
-  while i < events.length.toInt() {
-    val e = events[i]
-    stmts.add(
-      CloudAgents.Db.insertSessionEventSql(
-        sessionId,
-        toString(e.seq),
-        e.eventType,
-        e.payload,
-        e.prevHash,
-        e.hash,
-        createdAt
-      )
-    )
-    i = i + 1
-  }
-  CloudAgents.Sqlite.executeTransaction(stmts.toArray())?
-  return Ok(value = events.length.toInt())
+  return CloudAgents.PgStore.SessionEvents.appendSessionEvents(sessionId, sc, events)
 }
 
 /// A session's captured events with seq strictly greater than `afterSeq`,
@@ -4205,21 +2082,7 @@ pub func appendSessionEvents(
 pub func sessionEventsAfterSeq(
   sessionId: in String, sc: in CloudAgents.Pg.TenantScope, afterSeq: in String
 ): Result[slice[CloudAgents.Capture.CaptureEvent], CloudAgents.Sqlite.DbError] {
-  val normalized = if afterSeq.length == 0 { "-1" } else { afterSeq }
-  val rows = CloudAgents.Sqlite.query(CloudAgents.Db.selectSessionEventsAfterSeqSql(sessionId, normalized))?
-  // Build via List.add + toArray rather than slice[Record].append() in a loop:
-  // session_events is the highest-cardinality table (one row per fine-grained
-  // stream-json event), so this read path is the one most likely to reach the
-  // OSR-promotion threshold of lyric-lang#6322 (slice[Record].append()
-  // miscompiling in long loops) — #963. Matches the CloudAgents.Capture idiom.
-  val acc: List[CloudAgents.Capture.CaptureEvent] = newList()
-  var i = 0
-  val len = CloudAgents.Sqlite.getRowArrayLength(rows)
-  while i < len {
-    acc.add(rowToCaptureEvent(CloudAgents.Sqlite.getRowArrayValue(rows, i)))
-    i = i + 1
-  }
-  return Ok(value = acc.toArray())
+  return CloudAgents.PgStore.SessionEvents.sessionEventsAfterSeq(sessionId, sc, afterSeq)
 }
 
 /// A session's captured events in the window `fromExclusive < seq <=
@@ -4230,15 +2093,7 @@ pub func sessionEventsInRange(
   fromExclusive: in String,
   toInclusive: in String,
 ): Result[slice[CloudAgents.Capture.CaptureEvent], CloudAgents.Sqlite.DbError] {
-  val rows = CloudAgents.Sqlite.query(CloudAgents.Db.selectSessionEventsInRangeSql(sessionId, fromExclusive, toInclusive))?
-  val acc: List[CloudAgents.Capture.CaptureEvent] = newList()
-  var i = 0
-  val len = CloudAgents.Sqlite.getRowArrayLength(rows)
-  while i < len {
-    acc.add(rowToCaptureEvent(CloudAgents.Sqlite.getRowArrayValue(rows, i)))
-    i = i + 1
-  }
-  return Ok(value = acc.toArray())
+  return CloudAgents.PgStore.SessionEvents.sessionEventsInRange(sessionId, sc, fromExclusive, toInclusive)
 }
 
 /// The highest captured event seq for a session, or "" when nothing has been
@@ -4251,26 +2106,13 @@ pub func sessionEventsAfterSeqLimited(
   afterSeq: in String,
   limit: in Int,
 ): Result[slice[CloudAgents.Capture.CaptureEvent], CloudAgents.Sqlite.DbError] {
-  val normalized = if afterSeq.length == 0 { "-1" } else { afterSeq }
-  val rows = CloudAgents.Sqlite.query(CloudAgents.Db.selectSessionEventsAfterSeqSql(sessionId, normalized) + " LIMIT " + toString(limit))?
-  val events: List[CloudAgents.Capture.CaptureEvent] = newList()
-  var i = 0
-  val n = CloudAgents.Sqlite.getRowArrayLength(rows)
-  while i < n {
-    events.add(rowToCaptureEvent(CloudAgents.Sqlite.getRowArrayValue(rows, i)))
-    i = i + 1
-  }
-  return Ok(value = events.toArray())
+  return CloudAgents.PgStore.SessionEvents.sessionEventsAfterSeqLimited(sessionId, sc, afterSeq, limit)
 }
 
 pub func latestSessionEventSeq(
   sessionId: in String, sc: in CloudAgents.Pg.TenantScope
 ): Result[String, CloudAgents.Sqlite.DbError] {
-  val rows = CloudAgents.Sqlite.query(CloudAgents.Db.selectLatestSessionEventSeqSql(sessionId))?
-  if CloudAgents.Sqlite.getRowArrayLength(rows) == 0 {
-    return Ok(value = "")
-  }
-  return Ok(value = colAt(CloudAgents.Sqlite.getRowArrayValue(rows, 0).cols, 0))
+  return CloudAgents.PgStore.SessionEvents.latestSessionEventSeq(sessionId, sc)
 }
 
 /// The hash-chain cursor a fresh run's capture must resume from: one past the
@@ -4293,31 +2135,14 @@ pub record SessionEventCursor {
 pub func latestSessionEventCursor(
   sessionId: in String, sc: in CloudAgents.Pg.TenantScope
 ): Result[SessionEventCursor, CloudAgents.Sqlite.DbError] {
-  val rows = CloudAgents.Sqlite.query(CloudAgents.Db.selectLatestSessionEventCursorSql(sessionId))?
-  if CloudAgents.Sqlite.getRowArrayLength(rows) == 0 {
-    return Ok(value = SessionEventCursor())
-  }
-  val row = CloudAgents.Sqlite.getRowArrayValue(rows, 0)
-  val latestSeq = parseNatString(colAt(row.cols, 0)).toLong()
-  return Ok(value = SessionEventCursor(nextSeq = latestSeq + 1.toLong(), lastHash = colAt(row.cols, 1)))
+  return CloudAgents.PgStore.SessionEvents.latestSessionEventCursor(sessionId, sc)
 }
 
-/// A session's AGENT messages with seq strictly greater than `afterSeq`
-/// (pass "" or "0" for "from the beginning"), oldest first — the summarizer's
-/// work queue.
+/// A session's agent messages with a sequence number above `afterSeq`.
 pub func agentMessagesAfterSeq(
-  sessionId: in String, afterSeq: in String
+  sessionId: in String, sc: in CloudAgents.Pg.TenantScope, afterSeq: in String
 ): Result[slice[Message], CloudAgents.Sqlite.DbError] {
-  val normalized = if afterSeq.length == 0 { "0" } else { afterSeq }
-  val rows = CloudAgents.Sqlite.query(CloudAgents.Db.selectAgentMessagesAfterSeqSql(sessionId, normalized))?
-  var acc: slice[Message] = []
-  var i = 0
-  val len = CloudAgents.Sqlite.getRowArrayLength(rows)
-  while i < len {
-    acc = acc.append(rowToMessage(CloudAgents.Sqlite.getRowArrayValue(rows, i)))
-    i = i + 1
-  }
-  return Ok(value = acc)
+  return CloudAgents.PgStore.Messages.agentMessagesAfterSeq(sessionId, sc, afterSeq)
 }
 
 // ─── Phase 8: scheduled jobs (docs/phase8-scheduling.md) ────────────────────
@@ -4346,27 +2171,6 @@ pub record ScheduledJob {
   pub createdAt: String
 }
 
-func rowToScheduledJob(r: in CloudAgents.Sqlite.Row): ScheduledJob {
-  return ScheduledJob(
-    id = colAt(r.cols, 0),
-    userId = colAt(r.cols, 1),
-    name = colAt(r.cols, 2),
-    prompt = colAt(r.cols, 3),
-    profileId = colAt(r.cols, 4),
-    repoUrl = colAt(r.cols, 5),
-    branch = colAt(r.cols, 6),
-    harness = colAt(r.cols, 7),
-    model = colAt(r.cols, 8),
-    runAt = colAt(r.cols, 9),
-    intervalSeconds = colAt(r.cols, 10),
-    nextRunAt = colAt(r.cols, 11),
-    lastRunAt = colAt(r.cols, 12),
-    sessionId = colAt(r.cols, 13),
-    status = colAt(r.cols, 14),
-    createdAt = colAt(r.cols, 15)
-  )
-}
-
 /// Create a new job owned by the caller. `nextRunAt` is `runAt` when a
 /// one-shot/start time was given, else "now" (a pure-interval job fires on
 /// the very next poll tick, then recurs from there).
@@ -4382,30 +2186,7 @@ pub func createScheduledJob(
   runAt: in String,
   intervalSeconds: in String,
 ): Result[ScheduledJob, CloudAgents.Sqlite.DbError] {
-  val id = newId()
-  val ts = nowMillis()
-  val nextRunAt = if runAt.length > 0 { runAt } else { ts }
-  CloudAgents.Sqlite.execute(CloudAgents.Db.insertScheduledJobSql(id, sc.userId, name, prompt, profileId, repoUrl, branch, harness, model, runAt, intervalSeconds, nextRunAt, ts))?
-  return Ok(
-    value = ScheduledJob(
-      id = id,
-      userId = sc.userId,
-      name = name,
-      prompt = prompt,
-      profileId = profileId,
-      repoUrl = repoUrl,
-      branch = branch,
-      harness = harness,
-      model = model,
-      runAt = runAt,
-      intervalSeconds = intervalSeconds,
-      nextRunAt = nextRunAt,
-      lastRunAt = "",
-      sessionId = "",
-      status = "active",
-      createdAt = ts
-    )
-  )
+  return CloudAgents.PgStore.Jobs.createScheduledJob(sc, name, prompt, profileId, repoUrl, branch, harness, model, runAt, intervalSeconds)
 }
 
 /// Create a new job with `sessionId` already attached, atomically — used
@@ -4422,46 +2203,7 @@ pub func createScheduledJobWithSession(
   intervalSeconds: in String,
   sessionId: in String,
 ): Result[ScheduledJob, CloudAgents.Sqlite.DbError] {
-  val id = newId()
-  val ts = nowMillis()
-  val nextRunAt = if runAt.length > 0 { runAt } else { ts }
-  val insertSql = CloudAgents.Db.insertScheduledJobSql(
-    id,
-    sc.userId,
-    name,
-    prompt,
-    "",
-    "",
-    "",
-    "",
-    "",
-    runAt,
-    intervalSeconds,
-    nextRunAt,
-    ts
-  )
-  val attachSql = CloudAgents.Db.attachScheduledJobSessionSql(id, sessionId)
-  CloudAgents.Sqlite.executeTransaction([insertSql, attachSql])?
-  return Ok(
-    value = ScheduledJob(
-      id = id,
-      userId = sc.userId,
-      name = name,
-      prompt = prompt,
-      profileId = "",
-      repoUrl = "",
-      branch = "",
-      harness = "",
-      model = "",
-      runAt = runAt,
-      intervalSeconds = intervalSeconds,
-      nextRunAt = nextRunAt,
-      lastRunAt = "",
-      sessionId = sessionId,
-      status = "active",
-      createdAt = ts
-    )
-  )
+  return CloudAgents.PgStore.Jobs.createScheduledJobWithSession(sc, name, prompt, runAt, intervalSeconds, sessionId)
 }
 
 /// One of the caller's jobs, or None (unknown id or foreign owner — both
@@ -4469,25 +2211,12 @@ pub func createScheduledJobWithSession(
 pub func getScheduledJob(
   id: in String, sc: in CloudAgents.Pg.TenantScope
 ): Result[Option[ScheduledJob], CloudAgents.Sqlite.DbError] {
-  val rows = CloudAgents.Sqlite.query(CloudAgents.Db.selectScheduledJobByIdSql(id, sc.userId))?
-  val len = CloudAgents.Sqlite.getRowArrayLength(rows)
-  if len == 0 {
-    return Ok(value = None)
-  }
-  return Ok(value = Some(value = rowToScheduledJob(CloudAgents.Sqlite.getRowArrayValue(rows, 0))))
+  return CloudAgents.PgStore.Jobs.getScheduledJob(id, sc)
 }
 
 /// All of the caller's jobs, newest first.
 pub func listScheduledJobs(sc: in CloudAgents.Pg.TenantScope): Result[slice[ScheduledJob], CloudAgents.Sqlite.DbError] {
-  val rows = CloudAgents.Sqlite.query(CloudAgents.Db.selectScheduledJobsByUserSql(sc.userId))?
-  var acc: slice[ScheduledJob] = []
-  var i = 0
-  val len = CloudAgents.Sqlite.getRowArrayLength(rows)
-  while i < len {
-    acc = acc.append(rowToScheduledJob(CloudAgents.Sqlite.getRowArrayValue(rows, i)))
-    i = i + 1
-  }
-  return Ok(value = acc)
+  return CloudAgents.PgStore.Jobs.listScheduledJobs(sc)
 }
 
 /// A job this caller claimed to fire (docs/phase11-postgres-tenancy.md
@@ -4511,38 +2240,14 @@ pub record ClaimedJob {
 /// trigger polls never fire the same slot twice. A run that is interrupted
 /// (the instance dies) is not re-fired: its slot is already advanced.
 pub func claimDueScheduledJobs(limit: in Int): Result[slice[ClaimedJob], CloudAgents.Sqlite.DbError] {
-  val rows = CloudAgents.Sqlite.query(CloudAgents.Db.selectDueScheduledJobsSql(nowMillis(), limit))?
-  var acc: slice[ClaimedJob] = []
-  var i = 0
-  val len = CloudAgents.Sqlite.getRowArrayLength(rows)
-  while i < len {
-    val job = rowToScheduledJob(CloudAgents.Sqlite.getRowArrayValue(rows, i))
-    val firedAt = nowMillis()
-    val n = CloudAgents.Sqlite.execute(CloudAgents.Db.claimDueScheduledJobSql(job.id, job.nextRunAt, job.lastRunAt, firedAt))?
-    if n > 0 {
-      val sc = CloudAgents.Scope.personalScope(job.userId)
-      val claimed = match getScheduledJob(job.id, sc)? { case Some(j) -> j; case None -> job }
-      acc = acc.append(
-        ClaimedJob(
-          tenantScope = sc,
-          job = job,
-          claimedAt = claimed.lastRunAt,
-          claimedNextRunAt = claimed.nextRunAt,
-          claimedStatus = claimed.status
-        )
-      )
-    }
-    i = i + 1
-  }
-  return Ok(value = acc)
+  return CloudAgents.PgStore.Jobs.claimDueScheduledJobs(limit)
 }
 
 /// Undo a claim whose run was skipped (its session was busy), so the slot is
 /// retried on the next poll. A no-op if the row changed since the claim (an
 /// edit, pause or cancel), which then stands.
 pub func releaseScheduledJobClaim(c: in ClaimedJob): Result[Unit, CloudAgents.Sqlite.DbError] {
-  CloudAgents.Sqlite.execute(CloudAgents.Db.releaseScheduledJobClaimSql(c.job.id, c.tenantScope.userId, c.claimedAt, c.claimedNextRunAt, c.claimedStatus, c.job.nextRunAt, c.job.lastRunAt))?
-  return Ok(value = ())
+  return CloudAgents.PgStore.Jobs.releaseScheduledJobClaim(c)
 }
 
 /// Attach a session to a job on its first run (or immediately, for a job an
@@ -4551,8 +2256,7 @@ pub func releaseScheduledJobClaim(c: in ClaimedJob): Result[Unit, CloudAgents.Sq
 pub func attachScheduledJobSession(
   id: in String, sc: in CloudAgents.Pg.TenantScope, sessionId: in String
 ): Result[Unit, CloudAgents.Sqlite.DbError] {
-  CloudAgents.Sqlite.execute(CloudAgents.Db.attachScheduledJobSessionSql(id, sessionId))?
-  return Ok(value = ())
+  return CloudAgents.PgStore.Jobs.attachScheduledJobSession(id, sc, sessionId)
 }
 
 /// Update one of the caller's jobs. Returns the affected row count (0 means
@@ -4572,42 +2276,18 @@ pub func updateScheduledJob(
   status: in String,
   writeNextRunAt: in Bool,
 ): Result[Int, CloudAgents.Sqlite.DbError] {
-  return CloudAgents.Sqlite.execute(
-    CloudAgents.Db.updateScheduledJobSql(
-      id,
-      sc.userId,
-      name,
-      prompt,
-      profileId,
-      runAt,
-      intervalSeconds,
-      nextRunAt,
-      status,
-      writeNextRunAt
-    )
-  )
+  return CloudAgents.PgStore.Jobs.updateScheduledJob(id, sc, name, prompt, profileId, runAt, intervalSeconds, nextRunAt, status, writeNextRunAt)
 }
 
 /// Delete one of the caller's jobs. Returns the affected row count.
 pub func deleteScheduledJob(id: in String, sc: in CloudAgents.Pg.TenantScope): Result[Int, CloudAgents.Sqlite.DbError] {
-  return CloudAgents.Sqlite.execute(CloudAgents.Db.deleteScheduledJobSql(id, sc.userId))
+  return CloudAgents.PgStore.Jobs.deleteScheduledJob(id, sc)
 }
 
 // ─── Chat Thread Branching ────────────────────────────────────────────────────
 record IdMapEntry {
   pub oldId: String
   pub newId: String
-}
-
-func findMappedId(entries: in slice[IdMapEntry], oldId: in String): String {
-  var i = 0
-  while i < entries.length {
-    if entries[i].oldId == oldId {
-      return entries[i].newId
-    }
-    i = i + 1
-  }
-  return ""
 }
 
 pub func copyFileIfExists(sourcePath: in String, targetDir: in String, targetPath: in String): Unit {
@@ -4637,165 +2317,7 @@ pub func branchSession(
   sc: in CloudAgents.Pg.TenantScope,
   newBranch: in String,
 ): Result[Unit, CloudAgents.Sqlite.DbError] {
-  val userId = sc.userId
-  val sRows = CloudAgents.Sqlite.query(CloudAgents.Db.selectSessionByIdSql(parentSessionId, userId))?
-  val sLen = CloudAgents.Sqlite.getRowArrayLength(sRows)
-  if sLen == 0 {
-    return Err(error = ValidationFailed(message = "parent session not found or not owned by user"))
-  }
-  val parentRow = CloudAgents.Sqlite.getRowArrayValue(sRows, 0)
-  val repoUrl = colAt(parentRow.cols, 2)
-  val parentBranch = colAt(parentRow.cols, 3)
-  val harness = colAt(parentRow.cols, 5)
-  val model = colAt(parentRow.cols, 6)
-  val groupId = colAt(parentRow.cols, 12)
-
-  var targetSeq = 999999999
-  if forkedMessageId.length > 0 {
-    val mRows = CloudAgents.Sqlite.query(CloudAgents.Db.selectMessageByIdSql(forkedMessageId))?
-    val mLen = CloudAgents.Sqlite.getRowArrayLength(mRows)
-    if mLen == 0 {
-      return Err(error = ValidationFailed(message = "forked message not found"))
-    }
-    val mRow = CloudAgents.Sqlite.getRowArrayValue(mRows, 0)
-    val msgSessionId = colAt(mRow.cols, 1)
-    if msgSessionId != parentSessionId {
-      return Err(error = ValidationFailed(message = "forked message does not belong to parent session"))
-    }
-    targetSeq = parseNatString(colAt(mRow.cols, 4))
-  }
-
-  val actualBranch = if newBranch.length > 0 { newBranch } else { parentBranch }
-  val ts = nowMillis()
-
-  CloudAgents.Sqlite.execute(CloudAgents.Db.insertBranchedSessionSql(newSessionId, userId, repoUrl, actualBranch, "", harness, model, newSessionId, ts, groupId, parentSessionId, forkedMessageId))?
-
-  // Profile clone
-  val profRows = CloudAgents.Sqlite.query(CloudAgents.Db.selectSessionProfileIdSql(parentSessionId, userId))?
-  if CloudAgents.Sqlite.getRowArrayLength(profRows) > 0 {
-    val profId = colAt(CloudAgents.Sqlite.getRowArrayValue(profRows, 0).cols, 0)
-    if profId.length > 0 {
-      CloudAgents.Sqlite.execute(CloudAgents.Db.updateSessionProfileSql(newSessionId, userId, profId))?
-    }
-  }
-
-  // Linked repos clone
-  val repoRows = CloudAgents.Sqlite.query(CloudAgents.Db.selectSessionReposSql(parentSessionId))?
-  val repoLen = CloudAgents.Sqlite.getRowArrayLength(repoRows)
-  var rIdx = 0
-  while rIdx < repoLen {
-    val rRow = CloudAgents.Sqlite.getRowArrayValue(repoRows, rIdx)
-    CloudAgents.Sqlite.execute(CloudAgents.Db.insertSessionRepoSql(newId(), newSessionId, colAt(rRow.cols, 2), colAt(rRow.cols, 3), ts))?
-    rIdx = rIdx + 1
-  }
-
-  // Messages clone & ID mapping
-  val msgRows = CloudAgents.Sqlite.query(CloudAgents.Db.selectMessagesUpToSeqSql(parentSessionId, targetSeq))?
-  val msgLen = CloudAgents.Sqlite.getRowArrayLength(msgRows)
-  var idMap: slice[IdMapEntry] = []
-  var mIdx = 0
-  while mIdx < msgLen {
-    val mRow = CloudAgents.Sqlite.getRowArrayValue(msgRows, mIdx)
-    val oldMsgId = colAt(mRow.cols, 0)
-    val role = colAt(mRow.cols, 2)
-    val content = colAt(mRow.cols, 3)
-    val seq = colAt(mRow.cols, 4)
-    val msgCreatedAt = colAt(mRow.cols, 5)
-    val newMsgId = newId()
-    idMap = idMap.append(IdMapEntry(oldId = oldMsgId, newId = newMsgId))
-    CloudAgents.Sqlite.execute(CloudAgents.Db.insertMessageSql(newMsgId, newSessionId, role, content, seq, msgCreatedAt))?
-    mIdx = mIdx + 1
-  }
-
-  // Comments clone
-  var mapIdx = 0
-  while mapIdx < idMap.length {
-    val entry = idMap[mapIdx]
-    val cRows = CloudAgents.Sqlite.query(CloudAgents.Db.selectCommentsSql(entry.oldId))?
-    val cLen = CloudAgents.Sqlite.getRowArrayLength(cRows)
-    var cIdx = 0
-    while cIdx < cLen {
-      val cRow = CloudAgents.Sqlite.getRowArrayValue(cRows, cIdx)
-      val body = colAt(cRow.cols, 3)
-      val commentCreatedAt = colAt(cRow.cols, 4)
-      CloudAgents.Sqlite.execute(CloudAgents.Db.insertCommentSql(newId(), entry.newId, newSessionId, body, commentCreatedAt))?
-      cIdx = cIdx + 1
-    }
-    mapIdx = mapIdx + 1
-  }
-
-  // Attachments clone (DB + disk files)
-  val attRows = CloudAgents.Sqlite.query(CloudAgents.Db.selectSessionAttachmentsBySessionSql(parentSessionId))?
-  val attLen = CloudAgents.Sqlite.getRowArrayLength(attRows)
-  var aIdx = 0
-  while aIdx < attLen {
-    val aRow = CloudAgents.Sqlite.getRowArrayValue(attRows, aIdx)
-    val oldAttMsgId = colAt(aRow.cols, 2)
-    val newMappedMsgId = findMappedId(idMap, oldAttMsgId)
-    // Only copy attachments that are free-standing or linked to a message in the branched prefix
-    if oldAttMsgId.length == 0 or newMappedMsgId.length > 0 {
-      val fileName = colAt(aRow.cols, 3)
-      val storedName = colAt(aRow.cols, 4)
-      val mimeType = colAt(aRow.cols, 5)
-      val kind = colAt(aRow.cols, 6)
-      val sizeBytes = colAt(aRow.cols, 7)
-      val attCreatedAt = colAt(aRow.cols, 8)
-      val newAttId = newId()
-      CloudAgents.Sqlite.execute(CloudAgents.Db.insertSessionAttachmentSql(newAttId, newSessionId, fileName, storedName, mimeType, kind, sizeBytes, attCreatedAt))?
-      if newMappedMsgId.length > 0 {
-        CloudAgents.Sqlite.execute(CloudAgents.Db.setSessionAttachmentMessageIdSql(newAttId, newMappedMsgId))?
-      }
-      val sourceDir = attachmentsBaseDir() + "/" + parentSessionId
-      val targetDir = attachmentsBaseDir() + "/" + newSessionId
-      copyFileIfExists(sourceDir + "/" + storedName, targetDir, targetDir + "/" + storedName)
-    }
-    aIdx = aIdx + 1
-  }
-
-  // Todos clone
-  val todoRows = CloudAgents.Sqlite.query(CloudAgents.Db.selectTodosSql(parentSessionId))?
-  val todoLen = CloudAgents.Sqlite.getRowArrayLength(todoRows)
-  var tIdx = 0
-  while tIdx < todoLen {
-    val tRow = CloudAgents.Sqlite.getRowArrayValue(todoRows, tIdx)
-    val oldTodoMsgId = colAt(tRow.cols, 2)
-    val note = colAt(tRow.cols, 3)
-    val todoCreatedAt = colAt(tRow.cols, 5)
-    val status = colAt(tRow.cols, 6)
-    if oldTodoMsgId.length > 0 {
-      val newMappedMsgId = findMappedId(idMap, oldTodoMsgId)
-      if newMappedMsgId.length > 0 {
-        CloudAgents.Sqlite.execute(CloudAgents.Db.insertTodoSql(newId(), newSessionId, newMappedMsgId, note, status, todoCreatedAt, ""))?
-      }
-    } else {
-      CloudAgents.Sqlite.execute(CloudAgents.Db.insertTodoSql(newId(), newSessionId, "", note, status, todoCreatedAt, ""))?
-    }
-    tIdx = tIdx + 1
-  }
-
-  // Highlights clone
-  val hlRows = CloudAgents.Sqlite.query(CloudAgents.Db.selectHighlightsSql(parentSessionId))?
-  val hlLen = CloudAgents.Sqlite.getRowArrayLength(hlRows)
-  var hIdx = 0
-  while hIdx < hlLen {
-    val hRow = CloudAgents.Sqlite.getRowArrayValue(hlRows, hIdx)
-    val oldHlMsgId = colAt(hRow.cols, 2)
-    val kind = colAt(hRow.cols, 3)
-    val title = colAt(hRow.cols, 4)
-    val detail = colAt(hRow.cols, 5)
-    val hlCreatedAt = colAt(hRow.cols, 6)
-    if oldHlMsgId.length > 0 {
-      val newMappedMsgId = findMappedId(idMap, oldHlMsgId)
-      if newMappedMsgId.length > 0 {
-        CloudAgents.Sqlite.execute(CloudAgents.Db.insertHighlightSql(newId(), newSessionId, newMappedMsgId, kind, title, detail, hlCreatedAt))?
-      }
-    } else {
-      CloudAgents.Sqlite.execute(CloudAgents.Db.insertHighlightSql(newId(), newSessionId, "", kind, title, detail, hlCreatedAt))?
-    }
-    hIdx = hIdx + 1
-  }
-
-  return Ok(value = ())
+  return CloudAgents.PgStore.SessionData.branchSession(parentSessionId, forkedMessageId, newSessionId, sc, newBranch)
 }
 
 // ─── Graph ingest outbox (docs/capture-ingest-outbox.md) ────────────────────
@@ -4820,20 +2342,6 @@ pub record GraphIngestOutboxRow {
   pub deliveredAt: String
 }
 
-func rowToGraphIngestOutbox(r: in CloudAgents.Sqlite.Row): GraphIngestOutboxRow {
-  return GraphIngestOutboxRow(
-    id = colAt(r.cols, 0),
-    sessionId = colAt(r.cols, 1),
-    body = colAt(r.cols, 2),
-    url = colAt(r.cols, 3),
-    createdAt = colAt(r.cols, 4),
-    attempts = colAt(r.cols, 5),
-    nextAttemptAt = colAt(r.cols, 6),
-    lastError = colAt(r.cols, 7),
-    deliveredAt = colAt(r.cols, 8)
-  )
-}
-
 /// A row a drain has claimed, with the scope its outcome is recorded under.
 pub record ClaimedGraphIngest {
   pub tenantScope: CloudAgents.Pg.TenantScope
@@ -4852,42 +2360,14 @@ pub record ClaimedGraphIngest {
 pub func enqueueGraphIngest(
   sessionId: in String, body: in String, url: in String, sc: in CloudAgents.Pg.TenantScope
 ): Result[GraphIngestOutboxRow, CloudAgents.Sqlite.DbError] {
-  val bodyHash = CloudAgents.Crypto.sha256Base64(body)
-  val id = newId()
-  val ts = nowMillis()
-  CloudAgents.Sqlite.execute(CloudAgents.Db.insertGraphIngestOutboxSql(id, sessionId, body, bodyHash, url, ts))?
-  val rows = CloudAgents.Sqlite.query(CloudAgents.Db.selectGraphIngestOutboxBySessionAndHashSql(sessionId, bodyHash))?
-  val len = CloudAgents.Sqlite.getRowArrayLength(rows)
-  if len == 0 {
-    // Defensive: we just inserted (or an identical row already existed), so a
-    // row should be present; fall back to the freshly-minted values rather
-    // than error out of what should always succeed.
-    return Ok(
-      value = GraphIngestOutboxRow(
-        id = id,
-        sessionId = sessionId,
-        body = body,
-        url = url,
-        createdAt = ts,
-        attempts = "0",
-        nextAttemptAt = ts,
-        lastError = "",
-        deliveredAt = ""
-      )
-    )
-  }
-  return Ok(value = rowToGraphIngestOutbox(CloudAgents.Sqlite.getRowArrayValue(rows, 0)))
+  return CloudAgents.PgStore.GraphIngest.enqueueGraphIngest(sessionId, body, url, sc)
 }
 
 /// One row by id, or None.
 pub func getGraphIngest(
   id: in String, sc: in CloudAgents.Pg.TenantScope
 ): Result[Option[GraphIngestOutboxRow], CloudAgents.Sqlite.DbError] {
-  val rows = CloudAgents.Sqlite.query(CloudAgents.Db.selectGraphIngestOutboxByIdSql(id))?
-  if CloudAgents.Sqlite.getRowArrayLength(rows) == 0 {
-    return Ok(value = None)
-  }
-  return Ok(value = Some(value = rowToGraphIngestOutbox(CloudAgents.Sqlite.getRowArrayValue(rows, 0))))
+  return CloudAgents.PgStore.GraphIngest.getGraphIngest(id, sc)
 }
 
 /// Claim one row for an immediate delivery attempt: true when the row is
@@ -4895,8 +2375,7 @@ pub func getGraphIngest(
 /// now holds it for `CloudAgents.GraphIngestOutbox.leaseSeconds`
 /// (docs/phase11-postgres-tenancy.md §5.3a).
 pub func claimGraphIngest(id: in String, sc: in CloudAgents.Pg.TenantScope): Result[Bool, CloudAgents.Sqlite.DbError] {
-  val n = CloudAgents.Sqlite.execute(CloudAgents.Db.claimGraphIngestOutboxRowSql(id, nowMillis(), CloudAgents.GraphIngestOutbox.leaseSeconds * 1000))?
-  return Ok(value = n == 1)
+  return CloudAgents.PgStore.GraphIngest.claimGraphIngest(id, sc)
 }
 
 /// Claim up to `limit` due rows across every user, earliest-due first. Each
@@ -4908,25 +2387,7 @@ pub func claimGraphIngest(id: in String, sc: in CloudAgents.Pg.TenantScope): Res
 pub func claimDueGraphIngest(
   limit: in Int, leaseSeconds: in Int
 ): Result[slice[ClaimedGraphIngest], CloudAgents.Sqlite.DbError] {
-  val now = nowMillis()
-  val rows = CloudAgents.Sqlite.query(CloudAgents.Db.selectDueGraphIngestOutboxSql(now, limit))?
-  var acc: slice[ClaimedGraphIngest] = []
-  var i = 0
-  val len = CloudAgents.Sqlite.getRowArrayLength(rows)
-  while i < len {
-    val row = rowToGraphIngestOutbox(CloudAgents.Sqlite.getRowArrayValue(rows, i))
-    val owner = match sessionOwnerAndRepo(row.sessionId, CloudAgents.Pg.personalScope(""))? {
-      case Some(o) -> o.userId
-      case None -> ""
-    }
-    val sc = CloudAgents.Pg.personalScope(owner)
-    val n = CloudAgents.Sqlite.execute(CloudAgents.Db.claimGraphIngestOutboxRowSql(row.id, now, leaseSeconds * 1000))?
-    if n == 1 {
-      acc = acc.append(ClaimedGraphIngest(tenantScope = sc, row = row))
-    }
-    i = i + 1
-  }
-  return Ok(value = acc)
+  return CloudAgents.PgStore.GraphIngest.claimDueGraphIngest(limit, leaseSeconds)
 }
 
 /// Record a retryable delivery failure: bump `attempts` to the caller-computed
@@ -4943,9 +2404,7 @@ pub func markGraphIngestAttempt(
   delayMillis: in Int,
   sc: in CloudAgents.Pg.TenantScope,
 ): Result[Int, CloudAgents.Sqlite.DbError] {
-  return CloudAgents.Sqlite.execute(
-    CloudAgents.Db.updateGraphIngestOutboxAttemptSql(id, newAttempts, error, nowMillisStr, delayMillis)
-  )
+  return CloudAgents.PgStore.GraphIngest.markGraphIngestAttempt(id, newAttempts, error, nowMillisStr, delayMillis, sc)
 }
 
 /// Record that a row has exhausted its retry budget: bump `attempts`, store
@@ -4957,7 +2416,7 @@ pub func markGraphIngestTerminal(
   error: in String,
   sc: in CloudAgents.Pg.TenantScope,
 ): Result[Int, CloudAgents.Sqlite.DbError] {
-  return CloudAgents.Sqlite.execute(CloudAgents.Db.updateGraphIngestOutboxTerminalSql(id, newAttempts, error))
+  return CloudAgents.PgStore.GraphIngest.markGraphIngestTerminal(id, newAttempts, error, sc)
 }
 
 /// Mark a row delivered. Returns rows affected (0 = already delivered by a
@@ -4965,7 +2424,7 @@ pub func markGraphIngestTerminal(
 pub func markGraphIngestDelivered(
   id: in String, deliveredAt: in String, sc: in CloudAgents.Pg.TenantScope
 ): Result[Int, CloudAgents.Sqlite.DbError] {
-  return CloudAgents.Sqlite.execute(CloudAgents.Db.updateGraphIngestOutboxDeliveredSql(id, deliveredAt))
+  return CloudAgents.PgStore.GraphIngest.markGraphIngestDelivered(id, deliveredAt, sc)
 }
 
 /// Delete delivered rows older than `retentionDays`, across every user.
@@ -4973,5 +2432,5 @@ pub func markGraphIngestDelivered(
 /// (`CloudAgents.GraphIngestDrain`) runs this on every drain call and doesn't
 /// fail the drain if it errors.
 pub func pruneDeliveredGraphIngest(retentionDays: in Int): Result[Int, CloudAgents.Sqlite.DbError] {
-  return CloudAgents.Sqlite.execute(CloudAgents.Db.pruneDeliveredGraphIngestOutboxSql(nowMillis(), retentionDays))
+  return CloudAgents.PgStore.GraphIngest.pruneDeliveredGraphIngest(retentionDays)
 }

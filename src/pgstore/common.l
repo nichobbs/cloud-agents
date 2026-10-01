@@ -121,3 +121,14 @@ pub func ex(u: in PgUnit, sql: in String, params: in slice[String]): Result[Int,
 pub func col(row: in DbRow, name: in String): String {
   return match Db.dbGetStringOpt(row, name) { case Some(v) -> v; case None -> "" }
 }
+
+/// A liveness probe: one unscoped round trip to the database.
+pub func ping(): Result[Unit, CloudAgents.Sqlite.DbError] {
+  val u = openUnscoped()?
+  defer {
+    release(u)
+  }
+  q(u, "SELECT 1 AS one", [])?
+  commit(u)?
+  return Ok(value = ())
+}

@@ -105,6 +105,25 @@ pub func listMessages(
   return Ok(value = acc)
 }
 
+/// A session's agent messages with a sequence number above `afterSeq`, in
+/// order. `afterSeq` is a stored (zero-padded) seq, or "" for all of them.
+pub func agentMessagesAfterSeq(
+  sessionId: in String, sc: in CloudAgents.Pg.TenantScope, afterSeq: in String
+): Result[slice[CloudAgents.Repository.Message], CloudAgents.Sqlite.DbError] {
+  val after = if afterSeq.length == 0 { "0" } else { afterSeq }
+  val u = CloudAgents.PgStore.open(sc)?
+  defer {
+    CloudAgents.PgStore.release(u)
+  }
+  val rows = CloudAgents.PgStore.q(u, "SELECT " + messageCols() + " FROM messages WHERE session_id = @p0 AND role = 'agent' " + "AND seq > @p1::integer ORDER BY seq", [sessionId, after])?
+  CloudAgents.PgStore.commit(u)?
+  var acc: slice[CloudAgents.Repository.Message] = []
+  for r in rows {
+    acc = acc.append(toMessage(r))
+  }
+  return Ok(value = acc)
+}
+
 /// One column of one row by id, or None.
 func columnById(
   sc: in CloudAgents.Pg.TenantScope, table: in String, id: in String, column: in String

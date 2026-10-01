@@ -1,73 +1,74 @@
+//! Prompt library tests: the repository's prompt store (Postgres since the
+//! phase 11 cut-over), template rendering, and the prompt handlers.
 @test_module
 package CloudAgents.PromptTests
 
 import Std.Core
+import Std.Environment
 import Std.Testing
 import Std.Uuid
-import CloudAgents.Db
+import CloudAgents.Auth
 import CloudAgents.Pg
+import CloudAgents.Pg.Migrate
+import CloudAgents.PgStore.Tenancy
 import CloudAgents.Prompts
 import CloudAgents.Repository
 import CloudAgents.Sqlite
-import extern System.Environment as Env
 
-// ── SQL builder tests (no database needed) ────────────────────────────────────
-test "prompt SQL builders are owner-scoped and escaped" {
-  val ins = insertPromptSql("p1", "u1", "it's a name", "body", "1000")
-  assertTrue(ins.startsWith("INSERT INTO prompts"), "insert target")
-  assertTrue(ins.contains("'it''s a name'"), "name is escaped")
-  assertTrue(ins.contains("'0'"), "use_count starts at zero")
-  assertTrue(selectPromptsSql("u1").contains("WHERE user_id = 'u1'"), "list scoped by owner")
-  assertTrue(selectPromptsSql("u1").contains("ORDER BY name ASC"), "library is alphabetical")
-  assertTrue(selectPromptByIdSql("p1", "u1").contains("AND user_id = 'u1'"), "get scoped by owner")
-  assertTrue(updatePromptSql("p1", "u1", "n", "b", "2000").contains("AND user_id = 'u1'"), "update scoped by owner")
+// ── Live Postgres ─────────────────────────────────────────────────────────────
+//
+// The store is Postgres (docs/phase11-postgres-tenancy.md). These tests run iff
+// LYRIC_CONFIG_DB_CONNECTION_URL (cloudagents_app) and
+// CLOUD_AGENTS_MIGRATE_DATABASE_URL (cloudagents_owner) are set, and fail rather
+// than skip when CLOUD_AGENTS_REQUIRE_LIVE_PG=1 (CI). Each test acts as a fresh
+// user with its own personal tenant, so tests, suites and repeated runs against
+// the same database never see each other's rows.
+func live(): Bool {
+  val ok = CloudAgents.Pg.serviceConfigured() and
+    Std.Environment.getVarOrDefault(CloudAgents.Pg.migrateDsnVar(), "").length.toInt() > 0
+  if ok {
+    return true
+  }
   assertTrue(
-    touchPromptUsedSql("p1", "u1", "2000").contains("CAST(CAST(use_count AS INTEGER) + 1 AS TEXT)"),
-    "use bumps count numerically"
+    Std.Environment.getVarOrDefault("CLOUD_AGENTS_REQUIRE_LIVE_PG", "") != "1",
+    "CLOUD_AGENTS_REQUIRE_LIVE_PG=1 but LYRIC_CONFIG_DB_CONNECTION_URL or CLOUD_AGENTS_MIGRATE_DATABASE_URL is not set"
   )
-  assertTrue(deletePromptSql("p1", "u1").endsWith("AND user_id = 'u1'"), "delete scoped by owner")
-  assertTrue(promptsSchemaSql().contains("CREATE TABLE IF NOT EXISTS prompts"), "ddl idempotent")
+  println("SKIP: prompt store tests need LYRIC_CONFIG_DB_CONNECTION_URL and CLOUD_AGENTS_MIGRATE_DATABASE_URL")
+  return false
 }
 
-// ── Live-database tests ───────────────────────────────────────────────────────
-//
-// First live-DB coverage in the repo: points CLOUD_AGENTS_DB_PATH at a unique
-// temp file, creates the schema, and exercises the real Repository functions
-// through Microsoft.Data.Sqlite. If these fail with OpenFailed / a
-// SqliteConnection type-initializer error, the native libe_sqlite3.so isn't
-// reachable from the test runner — CI exports LD_LIBRARY_PATH pointing at
-// bin/runtimes/linux-x64/native (populated by scripts/build-full.sh) before
-// `lyric test` for exactly this reason; do the same locally.
-//
-// Assumption (review #178): tests within one suite run sequentially in a
-// single process, so re-pointing the CLOUD_AGENTS_DB_PATH env var at the top
-// of each test cannot race another test in this suite. The driver re-reads
-// the env var on every connection, so each test sees its own database. If
-// the runner ever parallelises tests within a suite, these must switch to a
-// per-test connection-string mechanism instead.
-@externTarget("System.IO.File.Delete")
-func fileDelete(path: in String): Unit = ()
-
-/// Point the driver at a fresh, unique database file and create the schema.
-/// Returns the file path so the test can clean it up (review #175).
-func useFreshTestDb(tag: in String): String {
-  val path = "/tmp/cloud-agents-tests-" + tag + "-" + Std.Uuid.uuidToString(Std.Uuid.newUuid()) + ".db"
-  Env.SetEnvironmentVariable("CLOUD_AGENTS_DB_PATH", path)
-  match CloudAgents.Repository.initSchema() {
+func migrate(): Unit {
+  val conn = match CloudAgents.Pg.connectDsn(Std.Environment.getVarOrDefault(CloudAgents.Pg.migrateDsnVar(), "")) {
+    case Ok(c) -> c
+    case Err(e) -> panic(CloudAgents.Pg.pgErrorMessage(e))
+  }
+  defer {
+    conn.close()
+  }
+  match CloudAgents.Pg.Migrate.migrate(conn) {
     case Ok(_) -> ()
-    case Err(e) -> assertTrue(false, "initSchema failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+    case Err(e) -> panic("migrate failed: " + CloudAgents.Pg.pgErrorMessage(e))
   }
-  return path
 }
 
-/// Best-effort removal of a test database file. A failed assertion earlier in
-/// the test skips this — acceptable, the paths are unique per run.
-func cleanupTestDb(path: in String): Unit {
-  try {
-    fileDelete(path)
-  } catch Bug as b {
-    // locked or already gone — fine for a temp file
+/// A new user with a provisioned personal tenant. Does not change the request
+/// identity.
+func newUser(tag: in String): String {
+  val uid = "t-" + tag + "-" + Std.Uuid.uuidToString(Std.Uuid.newUuid())
+  match CloudAgents.PgStore.Tenancy.ensurePersonalTenant(uid) {
+    case Ok(_) -> ()
+    case Err(e) -> panic("provisioning " + uid + " failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
   }
+  return uid
+}
+
+/// Migrate, then make a new user the request identity (what handlers read via
+/// CloudAgents.Auth.requestScope()).
+func freshUser(tag: in String): String {
+  migrate()
+  val uid = newUser(tag)
+  CloudAgents.Auth.setCurrentUserId(uid)
+  return uid
 }
 
 // Result convenience methods (.unwrapResult(), .isOk(), ...) compile as
@@ -110,41 +111,6 @@ async func deletePromptAsync(id: in String, userId: in String): Int {
   return mustRows(CloudAgents.Repository.deletePrompt(id, personalScope(userId)))
 }
 
-test "Migrations are idempotent and back-fill the ledger" {
-  val dbPath = useFreshTestDb("migrations")
-  defer {
-    cleanupTestDb(dbPath)
-  }
-  // useFreshTestDb already ran initSchema (-> runMigrations) once. Running it
-  // again must be a clean no-op: the ledger already records 0001_init, so no
-  // statement re-executes, and prompt CRUD still works afterwards.
-  match CloudAgents.Repository.runMigrations() {
-    case Ok(_) -> ()
-    case Err(e) -> assertTrue(false, "second runMigrations should no-op: " + CloudAgents.Sqlite.dbErrorMessage(e))
-  }
-  val created = mustPrompt(addPrompt(personalScope("default"), "post-migrate", "still works"))
-  assertTrue(created.id.length > 0, "schema is usable after a repeat migration run")
-}
-
-test "executeTransaction rolls back the whole batch on failure" {
-  val dbPath = useFreshTestDb("txn-rollback")
-  defer {
-    cleanupTestDb(dbPath)
-  }
-  // The atomicity the migration runner relies on (#229): a batch whose second
-  // statement is invalid must leave no trace of the first.
-  val goodInsert = insertPromptSql("txn-1", "default", "should-not-persist", "body", "1000")
-  match CloudAgents.Sqlite.executeTransaction([goodInsert, "THIS IS NOT SQL"]) {
-    case Ok(_) -> assertTrue(false, "a batch with an invalid statement must fail")
-    case Err(_) -> ()
-  }
-  match getPrompt("txn-1", personalScope("default")) {
-    case Ok(Some(_)) -> assertTrue(false, "rolled-back insert must not persist")
-    case Ok(None) -> ()
-    case Err(e) -> assertTrue(false, "getPrompt failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
-  }
-}
-
 test "renderTemplate substitutes bound placeholders and leaves others" {
   assertEqual(renderTemplate("Hello {{name}}!", ["name"], ["world"]), "Hello world!", "single var")
   assertEqual(renderTemplate("{{a}}-{{b}}-{{a}}", ["a", "b"], ["1", "2"]), "1-2-1", "repeated + multiple vars")
@@ -164,11 +130,11 @@ test "renderTemplate substitutes bound placeholders and leaves others" {
 }
 
 test "Popular prompts are ordered by use count" {
-  val dbPath = useFreshTestDb("prompt-popular")
-  defer {
-    cleanupTestDb(dbPath)
+  if not live() {
+    return
   }
-  val userId = "default"
+  val me = freshUser("prompt-popular")
+  val userId = me
   val a = mustPrompt(addPrompt(personalScope(userId), "alpha", "a"))
   val b = mustPrompt(addPrompt(personalScope(userId), "beta", "b"))
   // Use beta twice, alpha once -> beta is more popular.
@@ -182,11 +148,11 @@ test "Popular prompts are ordered by use count" {
 }
 
 test "renderPromptHandler renders a template and counts a use" {
-  val dbPath = useFreshTestDb("prompt-render")
-  defer {
-    cleanupTestDb(dbPath)
+  if not live() {
+    return
   }
-  val created = mustPrompt(addPrompt(personalScope("default"), "greet", "Hi {{who}} on {{repo}}"))
+  val me = freshUser("prompt-render")
+  val created = mustPrompt(addPrompt(personalScope(me), "greet", "Hi {{who}} on {{repo}}"))
   match renderPromptHandler(created.id, RenderPromptRequest(keys = ["who", "repo"], values = ["Nic", "cloud-agents"])) {
     case Ok(r) -> assertEqual(r.rendered, "Hi Nic on cloud-agents", "template rendered with bindings")
     case Err(_) -> assertTrue(false, "render should succeed")
@@ -195,19 +161,19 @@ test "renderPromptHandler renders a template and counts a use" {
     case Ok(_) -> assertTrue(false, "unknown id should 404")
     case Err(err) -> assertEqualInt(err.status, 404, "unknown prompt -> 404")
   }
-  match getPrompt(created.id, personalScope("default")) {
+  match getPrompt(created.id, personalScope(me)) {
     case Ok(Some(p)) -> assertEqual(p.useCount, "1", "render counted as a use")
     case Ok(None) -> assertTrue(false, "prompt should exist")
     case Err(e) -> assertTrue(false, "getPrompt failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
   }
 }
 
-test "Prompt CRUD round-trips through SQLite" {
-  val dbPath = useFreshTestDb("prompt-crud")
-  defer {
-    cleanupTestDb(dbPath) // defer: also runs when an assertion panics (#176)
+test "Prompt CRUD round-trips through the store" {
+  if not live() {
+    return
   }
-  val userId = "default"
+  val me = freshUser("prompt-crud")
+  val userId = me
 
   val created = mustPrompt(addPrompt(personalScope(userId), "greeting", "Say hello to the repo"))
   assertTrue(created.id.length > 0, "created prompt has an id")
@@ -238,33 +204,33 @@ test "Prompt CRUD round-trips through SQLite" {
 }
 
 test "Prompt ownership scoping hides other users' prompts" {
-  val dbPath = useFreshTestDb("prompt-scope")
-  defer {
-    cleanupTestDb(dbPath)
+  if not live() {
+    return
   }
-  val mine = mustPrompt(addPrompt(personalScope("default"), "mine", "my body"))
-  val theirs = mustPrompt(addPrompt(personalScope("someone-else"), "theirs", "their body"))
+  val me = freshUser("prompt-scope")
+  val mine = mustPrompt(addPrompt(personalScope(me), "mine", "my body"))
+  val theirs = mustPrompt(addPrompt(personalScope(newUser("someone-else")), "theirs", "their body"))
 
-  val myList = mustPrompts(listPrompts(personalScope("default")))
+  val myList = mustPrompts(listPrompts(personalScope(me)))
   assertEqualInt(myList.length.toInt(), 1, "only my prompt listed")
   assertEqual(myList[0].id, mine.id, "listed prompt is mine")
 
   // Cross-user read/use/update/delete must all no-op against another user's row.
-  match mustOptPrompt(getPrompt(theirs.id, personalScope("default"))) {
+  match mustOptPrompt(getPrompt(theirs.id, personalScope(me))) {
     case Some(_) -> assertTrue(false, "cannot read another user's prompt")
     case None -> ()
   }
   assertEqualInt(
-    mustRows(markPromptUsed(theirs.id, personalScope("default"))),
+    mustRows(markPromptUsed(theirs.id, personalScope(me))),
     0,
     "cannot mark another user's prompt used"
   )
   assertEqualInt(
-    mustRows(updatePrompt(theirs.id, personalScope("default"), "x", "y")),
+    mustRows(updatePrompt(theirs.id, personalScope(me), "x", "y")),
     0,
     "cannot update another user's prompt"
   )
-  assertEqualInt(mustRows(deletePrompt(theirs.id, personalScope("default"))), 0, "cannot delete another user's prompt")
+  assertEqualInt(mustRows(deletePrompt(theirs.id, personalScope(me))), 0, "cannot delete another user's prompt")
 }
 
 test "Concurrent deletePrompt calls on the same row: exactly one reports the real affected count (#577/#238)" {
@@ -279,11 +245,11 @@ test "Concurrent deletePrompt calls on the same row: exactly one reports the rea
   // DELETE affects 0 rows because the row is already gone by the time its
   // transaction runs. Under the old hardcoded return, both would report 1
   // (sum 2) regardless of what the database actually did.
-  val dbPath = useFreshTestDb("prompt-delete-race")
-  defer {
-    cleanupTestDb(dbPath)
+  if not live() {
+    return
   }
-  val userId = "default"
+  val me = freshUser("prompt-delete-race")
+  val userId = me
   val p = mustPrompt(addPrompt(personalScope(userId), "race-me", "body"))
 
   scope {
@@ -307,11 +273,11 @@ test "updatePromptWithTags round-trips name/body/tags and 0-affects a foreign pr
   // all prior to this — it's the transactional function #238's fix actually
   // touched (its own doc comment cites #238 directly), so it should be
   // covered the same way updateProfile/updatePrompt already are.
-  val dbPath = useFreshTestDb("prompt-update-with-tags")
-  defer {
-    cleanupTestDb(dbPath)
+  if not live() {
+    return
   }
-  val userId = "default"
+  val me = freshUser("prompt-update-with-tags")
+  val userId = me
   val p = mustPrompt(addPrompt(personalScope(userId), "orig", "orig body"))
   match setPromptTags(p.id, personalScope(userId), ["red"]) {
     case Ok(_) -> ()
@@ -336,9 +302,9 @@ test "updatePromptWithTags round-trips name/body/tags and 0-affects a foreign pr
   // getPrompt), the same shape as the existing cross-user tests above — kept
   // here so updatePromptWithTags has its own explicit 0-path assertion rather
   // than relying on updatePrompt's coverage to stand in for it.
-  val theirs = mustPrompt(addPrompt(personalScope("someone-else"), "theirs", "their body"))
+  val theirs = mustPrompt(addPrompt(personalScope(newUser("someone-else")), "theirs", "their body"))
   assertEqualInt(
-    mustRows(updatePromptWithTags(theirs.id, personalScope("default"), "x", "y", [])),
+    mustRows(updatePromptWithTags(theirs.id, personalScope(me), "x", "y", [])),
     0,
     "cannot update another user's prompt via updatePromptWithTags"
   )
@@ -351,11 +317,11 @@ func verifyCreatedPromptHandler(p: in Prompt): Unit {
 }
 
 test "Prompt tags round-trip, replace, and filter" {
-  val dbPath = useFreshTestDb("prompt-tags")
-  defer {
-    cleanupTestDb(dbPath)
+  if not live() {
+    return
   }
-  val userId = "default"
+  val me = freshUser("prompt-tags")
+  val userId = me
   val p = mustPrompt(addPrompt(personalScope(userId), "tagged", "body"))
   match setPromptTags(p.id, personalScope(userId), ["red", "blue"]) {
     case Ok(_) -> ()
@@ -384,11 +350,11 @@ test "Prompt tags round-trip, replace, and filter" {
 }
 
 test "listPromptsByTag returns each matching prompt with its full tag set (#339)" {
-  val dbPath = useFreshTestDb("prompt-by-tag-tags")
-  defer {
-    cleanupTestDb(dbPath)
+  if not live() {
+    return
   }
-  val userId = "default"
+  val me = freshUser("prompt-by-tag-tags")
+  val userId = me
   val a = mustPrompt(addPrompt(personalScope(userId), "alpha", "a"))
   val b = mustPrompt(addPrompt(personalScope(userId), "beta", "b"))
   match setPromptTags(a.id, personalScope(userId), ["red", "green"]) {
@@ -418,11 +384,11 @@ test "listPromptsByTag returns each matching prompt with its full tag set (#339)
 }
 
 test "listPrompts attaches each prompt's own tags from one batched read (#246)" {
-  val dbPath = useFreshTestDb("prompt-list-tags")
-  defer {
-    cleanupTestDb(dbPath)
+  if not live() {
+    return
   }
-  val userId = "default"
+  val me = freshUser("prompt-list-tags")
+  val userId = me
   val a = mustPrompt(addPrompt(personalScope(userId), "alpha", "body-a"))
   val b = mustPrompt(addPrompt(personalScope(userId), "beta", "body-b"))
   match setPromptTags(a.id, personalScope(userId), ["red", "green"]) {
@@ -450,11 +416,11 @@ test "listPrompts attaches each prompt's own tags from one batched read (#246)" 
 }
 
 test "listPromptsByUsage attaches each prompt's own tags from the batched read (#338)" {
-  val dbPath = useFreshTestDb("prompt-usage-tags")
-  defer {
-    cleanupTestDb(dbPath)
+  if not live() {
+    return
   }
-  val userId = "default"
+  val me = freshUser("prompt-usage-tags")
+  val userId = me
   val a = mustPrompt(addPrompt(personalScope(userId), "alpha", "a"))
   val b = mustPrompt(addPrompt(personalScope(userId), "beta", "b"))
   match setPromptTags(a.id, personalScope(userId), ["red", "green"]) {
@@ -480,10 +446,10 @@ test "listPromptsByUsage attaches each prompt's own tags from the batched read (
 }
 
 test "Prompt handlers validate, store and 404 correctly" {
-  val dbPath = useFreshTestDb("prompt-handlers")
-  defer {
-    cleanupTestDb(dbPath)
+  if not live() {
+    return
   }
+  val me = freshUser("prompt-handlers")
 
   // Validation: empty name / empty body are 400s.
   match addPromptHandler(SavePromptRequest(name = "", body = "b", tags = [])) {

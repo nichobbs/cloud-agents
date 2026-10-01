@@ -342,7 +342,7 @@ pub func refreshHighlightsHandler(id: in String): Result[RefreshHighlightsRespon
     case Ok(s) -> s
     case Err(e) -> return Err(dbError(e))
   }
-  val msgs = match CloudAgents.Repository.agentMessagesAfterSeq(id, lastSeq) {
+  val msgs = match CloudAgents.Repository.agentMessagesAfterSeq(id, CloudAgents.Auth.requestScope(), lastSeq) {
     case Ok(ms) -> ms
     case Err(e) -> return Err(dbError(e))
   }
