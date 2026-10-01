@@ -2071,9 +2071,6 @@ pub func main(): Unit {
     }
   }
 
-  // One-time migration of sessions from the legacy env-var store.
-  CloudAgents.SessionStore.importLegacyEnvSessions()
-
   var router = Web.create()
 
   // Register session routes. NOTE: POST /api/sessions/{id}/messages is NOT here

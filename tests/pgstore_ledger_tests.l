@@ -18,7 +18,7 @@ import CloudAgents.PgStore.Sessions as Sessions
 import CloudAgents.PgStore.Library as Library
 import CloudAgents.Ledger.Model
 import CloudAgents.Ledger.ObserverPolicy
-import CloudAgents.Ledger.Store as SqliteLedger
+import CloudAgents.Ledger.Store as LedgerStore
 import CloudAgents.SessionStore
 import CloudAgents.Db
 
@@ -170,8 +170,8 @@ func insert(sc: in CloudAgents.Pg.TenantScope, e: in LedgerEntry): LedgerEntry {
   return match Store.insertEntry(sc, e) { case Ok(v) -> v; case Err(err) -> panic(dbErrorMessage(err)) }
 }
 
-func noAuto(): SqliteLedger.AutoEntry {
-  return SqliteLedger.AutoEntry(kind = "", severity = "", source = "", summary = "", detail = "")
+func noAuto(): LedgerStore.AutoEntry {
+  return LedgerStore.AutoEntry(kind = "", severity = "", source = "", summary = "", detail = "")
 }
 
 func moved(w: in WorkItem, state: in String): WorkItem {
@@ -263,7 +263,7 @@ test "item updates are optimistic and write their transition, blocker and resolu
   val sid = "s-" + uid()
   int(Store.registerItems(sid, sc, ["gh:acme/shop#1"], ["One"], [""]))
   val w = item(sid, sc, "gh:acme/shop#1")
-  val auto = SqliteLedger.AutoEntry(
+  val auto = LedgerStore.AutoEntry(
     kind = "blocker",
     severity = "blocking",
     source = "system",
@@ -639,7 +639,7 @@ test "GitHub sync rows, issue ownership and the sync lease" {
     case Err(e) -> panic(dbErrorMessage(e))
   }
   // Sync rows upsert and read back.
-  val row = SqliteLedger.SyncRow(
+  val row = LedgerStore.SyncRow(
     itemId = "gh:acme/shop#7",
     syncedLabel = "agent:blocked",
     commentId = "",
@@ -653,7 +653,7 @@ test "GitHub sync rows, issue ownership and the sync lease" {
     Store.saveSyncRow(
       older,
       sc,
-      SqliteLedger.SyncRow(
+      LedgerStore.SyncRow(
         itemId = row.itemId,
         syncedLabel = row.syncedLabel,
         commentId = "c9",
@@ -807,7 +807,7 @@ test "observer settings, state, pending passes and observer sessions" {
   val observer = "s-" + uid()
   addSession(observer, sc)
   unit(Store.linkObserverSession(observer, sc, observed, profile.id))
-  val saved = SqliteLedger.ObserverState(
+  val saved = LedgerStore.ObserverState(
     sessionId = observed,
     observerSessionId = observer,
     cursorSeq = "7",
@@ -917,7 +917,7 @@ test "the cross-tenant listings find sync work and pending passes in every tenan
     Store.saveSyncRow(
       synced,
       b,
-      SqliteLedger.SyncRow(
+      LedgerStore.SyncRow(
         itemId = "gh:acme/shop#11",
         syncedLabel = "",
         commentId = "",
