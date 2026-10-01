@@ -159,7 +159,12 @@ SQLite, its driver, SQL builders and NuGet packages are gone, with no data
 migration. `CloudAgents.Repository`, `CloudAgents.SessionStore` and
 `CloudAgents.Ledger.Store` are thin facades over `src/pgstore/`. Every user
 gets a personal tenant (`personal:<user id>`) on their first authenticated
-request (`src/pgstore/tenancy.l`). The schema is applied by
+request (`src/pgstore/tenancy.l`). A request acts in the organisation named
+by its `X-CloudAgents-Org` header (default: personal) once the auth middleware
+has checked an active membership; handlers get it from
+`CloudAgents.Auth.requestScope()`. Organisations, memberships and invitations
+live in `src/pgstore/orgs.l` (global tables, so that package authorises each
+call itself) behind `/api/orgs` (`src/handlers/orgs.l`). The schema is applied by
 `dotnet bin/CloudAgents.dll --migrate` (migrations in `src/pg/schema.l`); the
 API needs `LYRIC_CONFIG_DB_CONNECTION_URL` (the `cloudagents_app` DSN) and
 refuses to start without it. For a local database, provision with
