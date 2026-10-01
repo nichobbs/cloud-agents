@@ -101,7 +101,7 @@ echo "== maintenance stays up with every endpoint disabled =="
 docker run -d --name "$IDLE" -e CLOUD_AGENTS_API_TOKEN=t -e MAINTENANCE_START_DELAY_SECONDS=0 \
   -e MAINTENANCE_REAP_SECONDS=0 -e MAINTENANCE_TRIGGER_JOBS_SECONDS=0 \
   -e MAINTENANCE_DRAIN_GRAPH_INGEST_SECONDS=0 -e MAINTENANCE_OBSERVE_SECONDS=0 \
-  -e MAINTENANCE_LEDGER_SYNC_SECONDS=0 "$MAINT_IMAGE" >/dev/null
+  -e MAINTENANCE_LEDGER_SYNC_SECONDS=0 -e MAINTENANCE_MEMBERSHIP_SYNC_SECONDS=0 "$MAINT_IMAGE" >/dev/null
 sleep 3
 if [ "$(docker inspect -f '{{.State.Running}}' "$IDLE")" != "true" ]; then
   docker logs "$IDLE" >&2
