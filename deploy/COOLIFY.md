@@ -254,8 +254,9 @@ directory `/var/lib/cloud-agents`, bind-mounted into the api container at the
 same path, so redeploys no longer lose sessions. Unlike the standalone
 compose file, the Coolify one cannot take the directory from
 `CLOUD_AGENTS_DATA_DIR`: Coolify rejects a volume path containing `${`. To
-use another directory, edit the four occurrences in
-`docker-compose.coolify.yml`, and export the same path as
+use another directory, change every `/var/lib/cloud-agents` in
+`docker-compose.coolify.yml` together (the three path variables and both
+sides of the mount), and export the same path as
 `CLOUD_AGENTS_DATA_DIR` when running `backup.sh`. When upgrading
 an existing Coolify deployment, copy the old container's state out first; see
 `RUNBOOK.md` "Upgrading from a deployment without a data directory" (use
