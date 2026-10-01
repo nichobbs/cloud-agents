@@ -36,3 +36,24 @@ pub func harnessIdsText(): String {
   }
   return text
 }
+
+/// The runner image for a harness (built by scripts/build-docker.sh). An
+/// unknown harness falls back to the claude image, as the home mount path and
+/// volume name do (CloudAgents.Db); session creation rejects unknown
+/// harnesses before any of these is reached. Pure, so it is testable here
+/// rather than inside the async CloudAgents.Docker package.
+pub func imageForHarness(harness: in String): String {
+  if harness == "codex" {
+    return "codex:base"
+  }
+  if harness == "opencode" {
+    return "opencode:base"
+  }
+  if harness == "gemini" {
+    return "gemini:base"
+  }
+  if harness == "antigravity" {
+    return "antigravity:base"
+  }
+  return "claude-code:base"
+}
