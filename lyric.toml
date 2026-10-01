@@ -6,9 +6,8 @@ license     = "MIT"
 description = "Cloud Agents backend API server written in Lyric targeting .NET 10"
 
 [features]
-default = ["dotnet", "sqlite"]
+default = ["dotnet"]
 dotnet  = []
-sqlite  = []
 
 [project]
 name            = "CloudAgents"
@@ -178,11 +177,7 @@ output_assembly = "CloudAgents.dll"
 "Lyric.Web"             = "0.7.0"
 "Lyric.Docker"          = "0.7.4"
 "Std.Logging"           = "0.7.4"
-"Microsoft.Data.Sqlite" = "10.0.9"
-"SourceGear.sqlite3"    = "3.53.3"
-"SQLitePCLRaw.provider.dynamic_cdecl" = "3.0.3"
-# Postgres store (docs/phase11-postgres-tenancy.md). Lyric.Db 0.7.4 is built
-# against Npgsql 8.0.3; its SQLite driver shares the Microsoft.Data.Sqlite pin
-# above.
+# The store is Postgres (docs/phase11-postgres-tenancy.md). Lyric.Db 0.7.4 is
+# built against Npgsql 8.0.3.
 "Lyric.Db"              = "0.7.4"
 "Npgsql"                = "8.0.3"

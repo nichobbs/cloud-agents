@@ -400,6 +400,26 @@ test "Profile Resp helpers emit the raw profile JSON, not a double-encoded JSON 
   assertTrue(not listBody.startsWith("\""), "a JSON object body must start with '{', not an escaping quote")
 }
 
+test "a duplicate profile name from the store is recognised as a name collision, a duplicate grant is not (#245, #558)" {
+  // The handlers' name pre-check is not atomic with the insert, so a racing
+  // create reaches the constraint; isDuplicateNameError turns that into the
+  // pre-check's 400. It must key on the profiles name constraint only.
+  if not live() {
+    return
+  }
+  val me = freshUser("prof-dup-name")
+  val sc = CloudAgents.Pg.personalScope(me)
+  mustProfile(addProfile(sc, "dup", "", "full", "all", [], [], [], [], "all", []))
+  match addProfile(sc, "dup", "", "full", "all", [], [], [], [], "all", []) {
+    case Ok(_) -> assertTrue(false, "a second profile with the same name must fail at the constraint")
+    case Err(e) -> assertTrue(isDuplicateNameError(e), "the name constraint is recognised: " + CloudAgents.Db.dbErrorMessage(e))
+  }
+  match addProfile(sc, "dup-grants", "", "full", "selected", ["GH_TOKEN", "GH_TOKEN"], [], [], [], "all", []) {
+    case Ok(_) -> ()
+    case Err(e) -> assertTrue(not isDuplicateNameError(e), "a duplicate grant is not a name collision")
+  }
+}
+
 test "Profile ownership scoping hides other users' profiles" {
   if not live() {
     return
