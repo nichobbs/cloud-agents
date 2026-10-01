@@ -264,6 +264,22 @@ if [ "$(id -u)" -eq 0 ]; then
         chown -R claude-user:claude-user "$HOME/.claude" || true
     fi
 
+    # Refreshable login (CLAUDE_CREDENTIALS_JSON): restore it to the home
+    # volume when the vault copy is newer than what is already there, and from
+    # then on let the CLI use the file (and refresh it) instead of a bare token.
+    # CLAUDE_CODE_OAUTH_TOKEN is dropped in that case because the CLI prefers
+    # that env var over the file and its access token cannot be renewed.
+    if [ -n "${CLAUDE_CREDENTIALS_JSON:-}" ]; then
+        # shellcheck source=restore-claude-credentials.sh
+        source /usr/local/bin/restore-claude-credentials.sh
+        mkdir -p "$HOME/.claude"
+        if restore_claude_credentials "$HOME/.claude/.credentials.json"; then
+            echo "entrypoint: restored ~/.claude/.credentials.json from the vault (newer than the volume copy)" >&2
+        fi
+        chown -R claude-user:claude-user "$HOME/.claude" || true
+        unset CLAUDE_CODE_OAUTH_TOKEN CLAUDE_CREDENTIALS_JSON
+    fi
+
     # If CLAUDE_CODE_OAUTH_TOKEN is injected from the credential vault, populate
     # ~/.claude/.credentials.json so the Claude Code CLI discovers it.
     if [ -n "${CLAUDE_CODE_OAUTH_TOKEN:-}" ]; then

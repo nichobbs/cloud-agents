@@ -159,6 +159,31 @@ without hand-typing names and values:
   `--claude-home` (see below); configure `CLOUD_AGENTS_URL` /
   `CLOUD_AGENTS_API_TOKEN`.
 
+## Refreshable Claude login (`CLAUDE_CREDENTIALS_JSON`)
+
+Pasting `~/.claude/.credentials.json` on the Integrations page (or running
+`scripts/upload-credentials.sh`) stores the whole `claudeAiOauth` object,
+including the refresh token, under `CLAUDE_CREDENTIALS_JSON`. A file with no
+refresh token still falls back to the bare `CLAUDE_CODE_OAUTH_TOKEN`.
+
+- **Why not the bare access token.** `CLAUDE_CODE_OAUTH_TOKEN` is read by the
+  CLI straight from the environment, in preference to the credentials file, and
+  an access token is short-lived. Nothing could renew it, so the login lapsed
+  until the file was pasted again.
+- **Restore rule.** On every container start, `docker/restore-claude-credentials.sh`
+  writes the vault login to the home volume's `.credentials.json` only if its
+  `expiresAt` is later than the file already there, so a token the CLI has
+  refreshed in place is never overwritten by a stale vault copy, and a freshly
+  pasted login replaces an old one. When `CLAUDE_CREDENTIALS_JSON` is present
+  the entrypoint unsets `CLAUDE_CODE_OAUTH_TOKEN` so the CLI uses the file and
+  can refresh it. Covered by `scripts/test-restore-claude-credentials.sh`.
+- **Known gap.** Refreshes are not yet written back to the vault. Home volumes
+  are host-local Docker volumes, so with several backend hosts a refresh on one
+  host is not visible to the others (and if refresh tokens rotate, the others'
+  copies go stale). Post-run write-back to the vault (a compare-and-swap on
+  `expiresAt`, read from the home volume by a read-only, network-less helper
+  container) is the planned follow-up.
+
 ## Claude subscription (OAuth) credentials
 
 A Claude Code **API key** (`ANTHROPIC_API_KEY`) is a single value and rides the

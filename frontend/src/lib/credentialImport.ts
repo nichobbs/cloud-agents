@@ -41,7 +41,7 @@ function fromRawKey(key: string): ImportedCredential | null {
 }
 
 interface ClaudeCredentialsFile {
-  claudeAiOauth?: { accessToken?: string };
+  claudeAiOauth?: { accessToken?: string; refreshToken?: string };
 }
 
 interface CodexAuthFile {
@@ -72,8 +72,18 @@ function fromJson(text: string): ImportedCredential[] {
   const out: ImportedCredential[] = [];
 
   const claude = parsed as ClaudeCredentialsFile;
-  const oauthToken = claude.claudeAiOauth?.accessToken;
-  if (typeof oauthToken === 'string' && oauthToken) {
+  const oauth = claude.claudeAiOauth;
+  const oauthToken = oauth?.accessToken;
+  if (typeof oauth?.refreshToken === 'string' && oauth.refreshToken) {
+    // A refreshable login: keep the whole claudeAiOauth object (access +
+    // refresh token + expiry) so the runner can restore and refresh it. The
+    // bare access token below is short-lived and cannot be renewed.
+    out.push({
+      name: 'CLAUDE_CREDENTIALS_JSON',
+      value: JSON.stringify({ claudeAiOauth: oauth }),
+      source: '~/.claude/.credentials.json (refreshable login)',
+    });
+  } else if (typeof oauthToken === 'string' && oauthToken) {
     out.push({
       name: 'CLAUDE_CODE_OAUTH_TOKEN',
       value: oauthToken,

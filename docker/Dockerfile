@@ -253,6 +253,7 @@ COPY --from=shim-builder /src/shim/bin/. /opt/cloud-agents-shim/
 COPY docker/cloud-agents-shim /usr/local/bin/cloud-agents-shim
 
 COPY docker/entrypoint.sh /usr/local/bin/entrypoint.sh
+COPY docker/restore-claude-credentials.sh /usr/local/bin/restore-claude-credentials.sh
 COPY docker/reconcile-repos.sh /usr/local/bin/reconcile-repos.sh
 COPY docker/create-fallback-branch.sh /usr/local/bin/create-fallback-branch.sh
 COPY docker/inject-library.sh /usr/local/bin/inject-library.sh

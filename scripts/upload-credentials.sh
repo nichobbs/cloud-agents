@@ -53,7 +53,7 @@ import json, sys
 try:
     with open(sys.argv[1]) as f:
         d = json.load(f)
-    v = eval(sys.argv[2], {"d": d})
+    v = eval(sys.argv[2], {"d": d, "json": json})
     if isinstance(v, str) and v:
         print(v)
 except Exception:
@@ -96,8 +96,16 @@ upload() {
 if [ -n "${CLAUDE_CODE_OAUTH_TOKEN:-}" ]; then
     upload CLAUDE_CODE_OAUTH_TOKEN "$CLAUDE_CODE_OAUTH_TOKEN" "env"
 elif [ -f "$HOME/.claude/.credentials.json" ]; then
-    token=$(json_extract "$HOME/.claude/.credentials.json" 'd["claudeAiOauth"]["accessToken"]')
-    upload CLAUDE_CODE_OAUTH_TOKEN "$token" "~/.claude/.credentials.json"
+    # A refreshable login (has a refresh token) ships whole so the runner can
+    # restore and refresh it; otherwise fall back to the bare access token.
+    login=$(json_extract "$HOME/.claude/.credentials.json" \
+        'json.dumps({"claudeAiOauth": d["claudeAiOauth"]}) if d["claudeAiOauth"].get("refreshToken") else ""')
+    if [ -n "$login" ]; then
+        upload CLAUDE_CREDENTIALS_JSON "$login" "~/.claude/.credentials.json (refreshable login)"
+    else
+        token=$(json_extract "$HOME/.claude/.credentials.json" 'd["claudeAiOauth"]["accessToken"]')
+        upload CLAUDE_CODE_OAUTH_TOKEN "$token" "~/.claude/.credentials.json"
+    fi
 fi
 [ -n "${ANTHROPIC_API_KEY:-}" ] && upload ANTHROPIC_API_KEY "$ANTHROPIC_API_KEY" "env"
 
