@@ -177,6 +177,18 @@ refresh token still falls back to the bare `CLAUDE_CODE_OAUTH_TOKEN`.
   pasted login replaces an old one. When `CLAUDE_CREDENTIALS_JSON` is present
   the entrypoint unsets `CLAUDE_CODE_OAUTH_TOKEN` so the CLI uses the file and
   can refresh it. Covered by `scripts/test-restore-claude-credentials.sh`.
+- **Exposure.** The refresh token is a long-lived subscription credential, and
+  the CLI has to be able to read it, so it sits in the home volume's
+  `.credentials.json` where the agent (and a prompt-injected agent) can read it.
+  This is no wider than the older `CLAUDE_HOME_TARBALL_B64` path; what changed is
+  that a bare access token (hours) is replaced by the full login. The entrypoint
+  unsets `CLAUDE_CREDENTIALS_JSON` before handing off to the agent user, so it is
+  not in the agent's environment, only on the volume. The ledger observer
+  mounts the same per-user home volume, so withholding the variable from it
+  would not protect the token, and on a fresh volume it would leave the observer
+  unable to authenticate; hence it is on the observer allowlist. A refresh made
+  by an observer lands on the shared volume and is written back to the vault by
+  the next main run's write-back (observer runs do not write back themselves).
 - **Write-back.** After each successful run, for users who have a
   `CLAUDE_CREDENTIALS_JSON` in the vault, the server starts a short-lived helper
   container (the inspect container's `claude-login` mode: the home volume
