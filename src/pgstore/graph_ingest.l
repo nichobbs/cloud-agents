@@ -29,7 +29,7 @@ import CloudAgents.GraphIngestOutbox
 import CloudAgents.Pg
 import CloudAgents.PgStore
 import CloudAgents.Repository
-import CloudAgents.Sqlite
+import CloudAgents.Db
 
 func newId(): String {
   return Std.Uuid.uuidToString(Std.Uuid.newUuid())
@@ -41,7 +41,7 @@ func c(r: in DbRow, name: in String): String {
 
 func exec(
   sc: in CloudAgents.Pg.TenantScope, sql: in String, params: in slice[String]
-): Result[Int, CloudAgents.Sqlite.DbError] {
+): Result[Int, CloudAgents.Db.DbError] {
   val u = CloudAgents.PgStore.open(sc)?
   defer {
     CloudAgents.PgStore.release(u)
@@ -82,7 +82,7 @@ func toRow(r: in DbRow): CloudAgents.Repository.GraphIngestOutboxRow {
 /// A new row is due at once.
 pub func enqueueGraphIngest(
   sessionId: in String, body: in String, url: in String, sc: in CloudAgents.Pg.TenantScope
-): Result[CloudAgents.Repository.GraphIngestOutboxRow, CloudAgents.Sqlite.DbError] {
+): Result[CloudAgents.Repository.GraphIngestOutboxRow, CloudAgents.Db.DbError] {
   val bodyHash = CloudAgents.Crypto.sha256Base64(body)
   val u = CloudAgents.PgStore.open(sc)?
   defer {
@@ -92,7 +92,7 @@ pub func enqueueGraphIngest(
   val rows = CloudAgents.PgStore.q(u, "SELECT " + rowCols() + " FROM graph_ingest_outbox WHERE session_id = @p0 AND body_hash = @p1", [sessionId, bodyHash])?
   CloudAgents.PgStore.commit(u)?
   if rows.length == 0 {
-    return Err(error = CloudAgents.Sqlite.ValidationFailed(message = "graph-ingest outbox row missing after enqueue"))
+    return Err(error = CloudAgents.Db.ValidationFailed(message = "graph-ingest outbox row missing after enqueue"))
   }
   return Ok(value = toRow(rows[0]))
 }
@@ -100,7 +100,7 @@ pub func enqueueGraphIngest(
 /// One row by id, or None.
 pub func getGraphIngest(
   id: in String, sc: in CloudAgents.Pg.TenantScope
-): Result[Option[CloudAgents.Repository.GraphIngestOutboxRow], CloudAgents.Sqlite.DbError] {
+): Result[Option[CloudAgents.Repository.GraphIngestOutboxRow], CloudAgents.Db.DbError] {
   val u = CloudAgents.PgStore.open(sc)?
   defer {
     CloudAgents.PgStore.release(u)
@@ -115,7 +115,7 @@ pub func getGraphIngest(
 
 /// Lease one row for an immediate delivery attempt: true when it is
 /// undelivered, not given up on, due, and not held by another claim.
-pub func claimGraphIngest(id: in String, sc: in CloudAgents.Pg.TenantScope): Result[Bool, CloudAgents.Sqlite.DbError] {
+pub func claimGraphIngest(id: in String, sc: in CloudAgents.Pg.TenantScope): Result[Bool, CloudAgents.Db.DbError] {
   val n = exec(sc, "UPDATE graph_ingest_outbox SET claimed_until = now() + make_interval(secs => @p1::integer) " + "WHERE id = @p0 AND delivered_at IS NULL AND given_up_at IS NULL AND next_attempt_at <= now() " + "AND (claimed_until IS NULL OR claimed_until < now())", [id, toString(CloudAgents.GraphIngestOutbox.leaseSeconds)])?
   return Ok(value = n == 1)
 }
@@ -124,7 +124,7 @@ pub func claimGraphIngest(id: in String, sc: in CloudAgents.Pg.TenantScope): Res
 /// each back under its owner's scope.
 pub func claimDueGraphIngest(
   limit: in Int, leaseSeconds: in Int
-): Result[slice[CloudAgents.Repository.ClaimedGraphIngest], CloudAgents.Sqlite.DbError] {
+): Result[slice[CloudAgents.Repository.ClaimedGraphIngest], CloudAgents.Db.DbError] {
   val u = CloudAgents.PgStore.openUnscoped()?
   defer {
     CloudAgents.PgStore.release(u)
@@ -143,7 +143,7 @@ pub func claimDueGraphIngest(
       case Ok(None) -> println("WARNING: claimed graph-ingest row " + c(k, "id") + " vanished before delivery")
       case Err(e) -> println(
         "WARNING: could not read claimed graph-ingest row " + c(k, "id") + ": " +
-          CloudAgents.Sqlite.dbErrorMessage(e)
+          CloudAgents.Db.dbErrorMessage(e)
       )
     }
   }
@@ -159,7 +159,7 @@ pub func markGraphIngestAttempt(
   nowMillisStr: in String,
   delayMillis: in Int,
   sc: in CloudAgents.Pg.TenantScope,
-): Result[Int, CloudAgents.Sqlite.DbError] {
+): Result[Int, CloudAgents.Db.DbError] {
   return exec(
     sc,
     "UPDATE graph_ingest_outbox SET attempts = @p1::integer, last_error = @p2, next_attempt_at = " +
@@ -177,7 +177,7 @@ pub func markGraphIngestTerminal(
   newAttempts: in String,
   error: in String,
   sc: in CloudAgents.Pg.TenantScope,
-): Result[Int, CloudAgents.Sqlite.DbError] {
+): Result[Int, CloudAgents.Db.DbError] {
   return exec(
     sc,
     "UPDATE graph_ingest_outbox SET attempts = @p1::integer, last_error = @p2, given_up_at = now(), " +
@@ -190,7 +190,7 @@ pub func markGraphIngestTerminal(
 /// it was already delivered).
 pub func markGraphIngestDelivered(
   id: in String, deliveredAt: in String, sc: in CloudAgents.Pg.TenantScope
-): Result[Int, CloudAgents.Sqlite.DbError] {
+): Result[Int, CloudAgents.Db.DbError] {
   return exec(
     sc,
     "UPDATE graph_ingest_outbox SET delivered_at = " + CloudAgents.Pg.msIn(1) +
@@ -201,7 +201,7 @@ pub func markGraphIngestDelivered(
 
 /// Delete delivered rows older than `retentionDays` (at least one day) in
 /// every tenant. Returns rows deleted.
-pub func pruneDeliveredGraphIngest(retentionDays: in Int): Result[Int, CloudAgents.Sqlite.DbError] {
+pub func pruneDeliveredGraphIngest(retentionDays: in Int): Result[Int, CloudAgents.Db.DbError] {
   val u = CloudAgents.PgStore.openUnscoped()?
   defer {
     CloudAgents.PgStore.release(u)

@@ -14,7 +14,7 @@ import Std.Uuid
 import CloudAgents.Handlers
 import CloudAgents.Repository
 import CloudAgents.SessionStore
-import CloudAgents.Sqlite
+import CloudAgents.Db
 import CloudAgents.Streaming
 import extern System.Environment as Env
 
@@ -60,7 +60,7 @@ func newUser(tag: in String): String {
   val uid = "t-" + tag + "-" + Std.Uuid.uuidToString(Std.Uuid.newUuid())
   match CloudAgents.PgStore.Tenancy.ensurePersonalTenant(uid) {
     case Ok(_) -> ()
-    case Err(e) -> panic("provisioning " + uid + " failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+    case Err(e) -> panic("provisioning " + uid + " failed: " + CloudAgents.Db.dbErrorMessage(e))
   }
   return uid
 }
@@ -76,46 +76,46 @@ func freshUser(tag: in String): String {
 
 // Result convenience methods fail at runtime (docs/lyric/gotchas.md) —
 // unwrap via match+panic.
-func mustUnit(r: in Result[Unit, CloudAgents.Sqlite.DbError]): Unit {
+func mustUnit(r: in Result[Unit, CloudAgents.Db.DbError]): Unit {
   return match r {
     case Ok(_) -> ()
-    case Err(e) -> panic("session store op failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+    case Err(e) -> panic("session store op failed: " + CloudAgents.Db.dbErrorMessage(e))
   }
 }
 
-func mustOptSession(r: in Result[Option[AgentSession], CloudAgents.Sqlite.DbError]): Option[AgentSession] {
+func mustOptSession(r: in Result[Option[AgentSession], CloudAgents.Db.DbError]): Option[AgentSession] {
   return match r {
     case Ok(o) -> o
-    case Err(e) -> panic("session lookup failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+    case Err(e) -> panic("session lookup failed: " + CloudAgents.Db.dbErrorMessage(e))
   }
 }
 
-func mustClaim(r: in Result[Bool, CloudAgents.Sqlite.DbError]): Bool {
-  return match r { case Ok(b) -> b; case Err(e) -> panic("run claim failed: " + CloudAgents.Sqlite.dbErrorMessage(e)) }
+func mustClaim(r: in Result[Bool, CloudAgents.Db.DbError]): Bool {
+  return match r { case Ok(b) -> b; case Err(e) -> panic("run claim failed: " + CloudAgents.Db.dbErrorMessage(e)) }
 }
 
-func mustInt(r: in Result[Int, CloudAgents.Sqlite.DbError]): Int {
-  return match r { case Ok(n) -> n; case Err(e) -> panic("expected Ok(Int): " + CloudAgents.Sqlite.dbErrorMessage(e)) }
+func mustInt(r: in Result[Int, CloudAgents.Db.DbError]): Int {
+  return match r { case Ok(n) -> n; case Err(e) -> panic("expected Ok(Int): " + CloudAgents.Db.dbErrorMessage(e)) }
 }
 
-func mustMessage(r: in Result[CloudAgents.Repository.Message, CloudAgents.Sqlite.DbError]): CloudAgents.Repository.Message {
+func mustMessage(r: in Result[CloudAgents.Repository.Message, CloudAgents.Db.DbError]): CloudAgents.Repository.Message {
   return match r {
     case Ok(m) -> m
-    case Err(e) -> panic("message op failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+    case Err(e) -> panic("message op failed: " + CloudAgents.Db.dbErrorMessage(e))
   }
 }
 
-func mustComment(r: in Result[CloudAgents.Repository.Comment, CloudAgents.Sqlite.DbError]): CloudAgents.Repository.Comment {
+func mustComment(r: in Result[CloudAgents.Repository.Comment, CloudAgents.Db.DbError]): CloudAgents.Repository.Comment {
   return match r {
     case Ok(c) -> c
-    case Err(e) -> panic("comment op failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+    case Err(e) -> panic("comment op failed: " + CloudAgents.Db.dbErrorMessage(e))
   }
 }
 
-func mustTodo(r: in Result[CloudAgents.Repository.Todo, CloudAgents.Sqlite.DbError]): CloudAgents.Repository.Todo {
+func mustTodo(r: in Result[CloudAgents.Repository.Todo, CloudAgents.Db.DbError]): CloudAgents.Repository.Todo {
   return match r {
     case Ok(t) -> t
-    case Err(e) -> panic("todo op failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+    case Err(e) -> panic("todo op failed: " + CloudAgents.Db.dbErrorMessage(e))
   }
 }
 
@@ -390,25 +390,25 @@ func addPlainSession(sessionId: in String): Unit {
 func setSessionColumns(owner: in String, sessionId: in String, assignments: in String): Unit {
   val u = match CloudAgents.PgStore.open(CloudAgents.Pg.personalScope(owner)) {
     case Ok(x) -> x
-    case Err(e) -> panic("setup open failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+    case Err(e) -> panic("setup open failed: " + CloudAgents.Db.dbErrorMessage(e))
   }
   defer {
     CloudAgents.PgStore.release(u)
   }
   match CloudAgents.PgStore.ex(u, "UPDATE sessions SET " + assignments + " WHERE id = @p0", [sessionId]) {
     case Ok(_) -> ()
-    case Err(e) -> assertTrue(false, "setup update failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+    case Err(e) -> assertTrue(false, "setup update failed: " + CloudAgents.Db.dbErrorMessage(e))
   }
   match CloudAgents.PgStore.commit(u) {
     case Ok(_) -> ()
-    case Err(e) -> assertTrue(false, "setup commit failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+    case Err(e) -> assertTrue(false, "setup commit failed: " + CloudAgents.Db.dbErrorMessage(e))
   }
 }
 
 func mustStranded(): slice[CloudAgents.SessionStore.StrandedRun] {
   return match CloudAgents.SessionStore.claimStrandedRuns(50) {
     case Ok(v) -> v
-    case Err(e) -> panic("claimStrandedRuns failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+    case Err(e) -> panic("claimStrandedRuns failed: " + CloudAgents.Db.dbErrorMessage(e))
   }
 }
 
@@ -1195,7 +1195,7 @@ test "getRuns 404s for an unknown session (#239)" {
 func mustReapable(): slice[CloudAgents.SessionStore.ReapTarget] {
   return match CloudAgents.SessionStore.reapableWarmContainers() {
     case Ok(t) -> t
-    case Err(e) -> panic("reapableWarmContainers failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+    case Err(e) -> panic("reapableWarmContainers failed: " + CloudAgents.Db.dbErrorMessage(e))
   }
 }
 
@@ -1289,12 +1289,12 @@ test "Session ownership isolation hides other users' sessions (#207)" {
   match CloudAgents.SessionStore.getSession("foreign-1" + sfx, CloudAgents.Auth.requestScope()) {
     case Ok(Some(_)) -> assertTrue(false, "must not read another user's session")
     case Ok(None) -> ()
-    case Err(e) -> assertTrue(false, "getSession failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+    case Err(e) -> assertTrue(false, "getSession failed: " + CloudAgents.Db.dbErrorMessage(e))
   }
   // ...nor see it in the list.
   match CloudAgents.SessionStore.getSessions(CloudAgents.Auth.requestScope()) {
     case Ok(arr) -> assertEqualInt(CloudAgents.SessionStore.getSessionArrayLength(arr), 0, "foreign session not listed")
-    case Err(e) -> assertTrue(false, "getSessions failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+    case Err(e) -> assertTrue(false, "getSessions failed: " + CloudAgents.Db.dbErrorMessage(e))
   }
   // The current user's own session is visible.
   mustUnit(
@@ -1313,25 +1313,25 @@ test "Session ownership isolation hides other users' sessions (#207)" {
   match CloudAgents.SessionStore.getSession("mine-1" + sfx, CloudAgents.Auth.requestScope()) {
     case Ok(Some(_)) -> ()
     case Ok(None) -> assertTrue(false, "own session should be visible")
-    case Err(e) -> assertTrue(false, "getSession failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+    case Err(e) -> assertTrue(false, "getSession failed: " + CloudAgents.Db.dbErrorMessage(e))
   }
   // The list now holds exactly my one session — the foreign row stays hidden.
   match CloudAgents.SessionStore.getSessions(CloudAgents.Auth.requestScope()) {
     case Ok(arr) -> assertEqualInt(CloudAgents.SessionStore.getSessionArrayLength(arr), 1, "only my own session listed")
-    case Err(e) -> assertTrue(false, "getSessions failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+    case Err(e) -> assertTrue(false, "getSessions failed: " + CloudAgents.Db.dbErrorMessage(e))
   }
 }
 
 // ── Session lifecycle: run history, cancel, profile wiring ────────────────────
-func mustRunId(r: in Result[String, CloudAgents.Sqlite.DbError]): String {
+func mustRunId(r: in Result[String, CloudAgents.Db.DbError]): String {
   return match r {
     case Ok(rid) -> rid
-    case Err(e) -> panic("recordRunStart failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+    case Err(e) -> panic("recordRunStart failed: " + CloudAgents.Db.dbErrorMessage(e))
   }
 }
 
-func mustRuns(r: in Result[slice[Run], CloudAgents.Sqlite.DbError]): slice[Run] {
-  return match r { case Ok(rs) -> rs; case Err(e) -> panic("listRuns failed: " + CloudAgents.Sqlite.dbErrorMessage(e)) }
+func mustRuns(r: in Result[slice[Run], CloudAgents.Db.DbError]): slice[Run] {
+  return match r { case Ok(rs) -> rs; case Err(e) -> panic("listRuns failed: " + CloudAgents.Db.dbErrorMessage(e)) }
 }
 
 test "Run history records, lists, and finishes write-once" {
@@ -1350,7 +1350,7 @@ test "Run history records, lists, and finishes write-once" {
 
   match CloudAgents.Repository.recordRunEnd(runId, CloudAgents.Pg.personalScope(userId), "succeeded") {
     case Ok(_) -> ()
-    case Err(e) -> assertTrue(false, "recordRunEnd failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+    case Err(e) -> assertTrue(false, "recordRunEnd failed: " + CloudAgents.Db.dbErrorMessage(e))
   }
   assertEqual(
     mustRuns(CloudAgents.Repository.listRuns("rh-1" + sfx, CloudAgents.Pg.personalScope(userId)))[0].status,
@@ -1414,7 +1414,7 @@ test "setSessionProfileHandler validates session and profile (#235)" {
   // Attach a real profile; it reads back on the session.
   val prof = match CloudAgents.Repository.addProfile(CloudAgents.Pg.personalScope(me), "p", "", "none", "all", [], [], [], [], "all", []) {
     case Ok(p) -> p
-    case Err(e) -> panic("addProfile failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+    case Err(e) -> panic("addProfile failed: " + CloudAgents.Db.dbErrorMessage(e))
   }
   match setSessionProfileHandler("sp-1" + sfx, SetProfileRequest(profileId = prof.id)) {
     case Ok(_) -> ()
@@ -1423,7 +1423,7 @@ test "setSessionProfileHandler validates session and profile (#235)" {
   match CloudAgents.SessionStore.sessionProfileId("sp-1" + sfx, CloudAgents.Auth.requestScope()) {
     case Ok(Some(pid)) -> assertEqual(pid, prof.id, "profile attached to session")
     case Ok(None) -> assertTrue(false, "profile should be set")
-    case Err(e) -> assertTrue(false, "sessionProfileId failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+    case Err(e) -> assertTrue(false, "sessionProfileId failed: " + CloudAgents.Db.dbErrorMessage(e))
   }
   // getSessionProfileHandler reflects the attached profile (#270)...
   match getSessionProfileHandler("sp-1" + sfx) {

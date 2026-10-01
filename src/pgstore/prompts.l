@@ -20,7 +20,7 @@ import Db
 import CloudAgents.Pg
 import CloudAgents.PgStore
 import CloudAgents.Repository
-import CloudAgents.Sqlite
+import CloudAgents.Db
 
 func newId(): String {
   return Std.Uuid.uuidToString(Std.Uuid.newUuid())
@@ -51,7 +51,7 @@ func toPrompt(r: in DbRow, tags: in slice[String]): CloudAgents.Repository.Promp
 
 func insertTags(
   u: in CloudAgents.PgStore.PgUnit, promptId: in String, userId: in String, tags: in slice[String]
-): Result[Unit, CloudAgents.Sqlite.DbError] {
+): Result[Unit, CloudAgents.Db.DbError] {
   for t in tags {
     CloudAgents.PgStore.ex(u, "INSERT INTO prompt_tags (id, prompt_id, user_id, tag) VALUES (@p0, @p1, @p2, @p3) " + "ON CONFLICT (tenant_id, prompt_id, tag) DO NOTHING", [newId(), promptId, userId, t])?
   }
@@ -65,7 +65,7 @@ func deleteTagsSql(): String {
 /// Every (prompt_id, tag) pair of the user, tag-ordered within each prompt.
 func tagPairs(
   u: in CloudAgents.PgStore.PgUnit, userId: in String
-): Result[slice[CloudAgents.Repository.PromptTag], CloudAgents.Sqlite.DbError] {
+): Result[slice[CloudAgents.Repository.PromptTag], CloudAgents.Db.DbError] {
   val rows = CloudAgents.PgStore.q(u, "SELECT prompt_id, tag FROM prompt_tags WHERE user_id = @p0 ORDER BY prompt_id COLLATE \"C\", tag COLLATE \"C\"", [userId])?
   var acc: slice[CloudAgents.Repository.PromptTag] = []
   for r in rows {
@@ -91,7 +91,7 @@ func tagsFor(pairs: in slice[CloudAgents.Repository.PromptTag], promptId: in Str
 
 func listWith(
   sc: in CloudAgents.Pg.TenantScope, sql: in String, params: in slice[String]
-): Result[slice[CloudAgents.Repository.Prompt], CloudAgents.Sqlite.DbError] {
+): Result[slice[CloudAgents.Repository.Prompt], CloudAgents.Db.DbError] {
   val u = CloudAgents.PgStore.open(sc)?
   defer {
     CloudAgents.PgStore.release(u)
@@ -109,7 +109,7 @@ func listWith(
 /// Replace a prompt's tag set atomically.
 pub func setPromptTags(
   promptId: in String, sc: in CloudAgents.Pg.TenantScope, tags: in slice[String]
-): Result[Unit, CloudAgents.Sqlite.DbError] {
+): Result[Unit, CloudAgents.Db.DbError] {
   val u = CloudAgents.PgStore.open(sc)?
   defer {
     CloudAgents.PgStore.release(u)
@@ -122,7 +122,7 @@ pub func setPromptTags(
 
 pub func addPrompt(
   sc: in CloudAgents.Pg.TenantScope, name: in String, body: in String
-): Result[CloudAgents.Repository.Prompt, CloudAgents.Sqlite.DbError] {
+): Result[CloudAgents.Repository.Prompt, CloudAgents.Db.DbError] {
   val noTags: slice[String] = []
   return addPromptWithTags(sc, name, body, noTags)
 }
@@ -130,7 +130,7 @@ pub func addPrompt(
 /// Save a new prompt and its tag set in one transaction.
 pub func addPromptWithTags(
   sc: in CloudAgents.Pg.TenantScope, name: in String, body: in String, tags: in slice[String]
-): Result[CloudAgents.Repository.Prompt, CloudAgents.Sqlite.DbError] {
+): Result[CloudAgents.Repository.Prompt, CloudAgents.Db.DbError] {
   val id = newId()
   val ts = CloudAgents.Repository.nowMillis()
   val u = CloudAgents.PgStore.open(sc)?
@@ -157,7 +157,7 @@ pub func addPromptWithTags(
 /// All of the user's prompts, by name.
 pub func listPrompts(
   sc: in CloudAgents.Pg.TenantScope
-): Result[slice[CloudAgents.Repository.Prompt], CloudAgents.Sqlite.DbError] {
+): Result[slice[CloudAgents.Repository.Prompt], CloudAgents.Db.DbError] {
   return listWith(
     sc,
     "SELECT " + promptCols("") + " FROM prompts WHERE user_id = @p0 ORDER BY name COLLATE \"C\"",
@@ -168,7 +168,7 @@ pub func listPrompts(
 /// The user's prompts, most used first (ties by name).
 pub func listPromptsByUsage(
   sc: in CloudAgents.Pg.TenantScope
-): Result[slice[CloudAgents.Repository.Prompt], CloudAgents.Sqlite.DbError] {
+): Result[slice[CloudAgents.Repository.Prompt], CloudAgents.Db.DbError] {
   return listWith(
     sc,
     "SELECT " + promptCols("") + " FROM prompts WHERE user_id = @p0 ORDER BY use_count DESC, name COLLATE \"C\"",
@@ -179,7 +179,7 @@ pub func listPromptsByUsage(
 /// The user's prompts carrying `tag`, by name, each with its full tag set.
 pub func listPromptsByTag(
   sc: in CloudAgents.Pg.TenantScope, tag: in String
-): Result[slice[CloudAgents.Repository.Prompt], CloudAgents.Sqlite.DbError] {
+): Result[slice[CloudAgents.Repository.Prompt], CloudAgents.Db.DbError] {
   return listWith(
     sc,
     "SELECT " + promptCols("p.") + " FROM prompts p JOIN prompt_tags pt " +
@@ -192,7 +192,7 @@ pub func listPromptsByTag(
 /// One of the user's prompts (with tags), or None.
 pub func getPrompt(
   id: in String, sc: in CloudAgents.Pg.TenantScope
-): Result[Option[CloudAgents.Repository.Prompt], CloudAgents.Sqlite.DbError] {
+): Result[Option[CloudAgents.Repository.Prompt], CloudAgents.Db.DbError] {
   val u = CloudAgents.PgStore.open(sc)?
   defer {
     CloudAgents.PgStore.release(u)
@@ -219,7 +219,7 @@ func updateSql(): String {
 /// Update name/body. Rows affected (0 = not found or not owned).
 pub func updatePrompt(
   id: in String, sc: in CloudAgents.Pg.TenantScope, name: in String, body: in String
-): Result[Int, CloudAgents.Sqlite.DbError] {
+): Result[Int, CloudAgents.Db.DbError] {
   val u = CloudAgents.PgStore.open(sc)?
   defer {
     CloudAgents.PgStore.release(u)
@@ -238,7 +238,7 @@ pub func updatePromptWithTags(
   name: in String,
   body: in String,
   tags: in slice[String],
-): Result[Int, CloudAgents.Sqlite.DbError] {
+): Result[Int, CloudAgents.Db.DbError] {
   val u = CloudAgents.PgStore.open(sc)?
   defer {
     CloudAgents.PgStore.release(u)
@@ -253,7 +253,7 @@ pub func updatePromptWithTags(
 }
 
 /// Record one use. Rows affected (0 = not found).
-pub func markPromptUsed(id: in String, sc: in CloudAgents.Pg.TenantScope): Result[Int, CloudAgents.Sqlite.DbError] {
+pub func markPromptUsed(id: in String, sc: in CloudAgents.Pg.TenantScope): Result[Int, CloudAgents.Db.DbError] {
   val u = CloudAgents.PgStore.open(sc)?
   defer {
     CloudAgents.PgStore.release(u)
@@ -265,7 +265,7 @@ pub func markPromptUsed(id: in String, sc: in CloudAgents.Pg.TenantScope): Resul
 
 /// Delete a prompt and its tags in one transaction. Rows affected on the
 /// prompt (0 = not found or not owned).
-pub func deletePrompt(id: in String, sc: in CloudAgents.Pg.TenantScope): Result[Int, CloudAgents.Sqlite.DbError] {
+pub func deletePrompt(id: in String, sc: in CloudAgents.Pg.TenantScope): Result[Int, CloudAgents.Db.DbError] {
   val u = CloudAgents.PgStore.open(sc)?
   defer {
     CloudAgents.PgStore.release(u)

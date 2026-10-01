@@ -15,7 +15,7 @@ import CloudAgents.PgStore.Tenancy
 import CloudAgents.Repository
 import CloudAgents.Scope
 import CloudAgents.SessionStore
-import CloudAgents.Sqlite
+import CloudAgents.Db
 import extern System.Environment as Env
 import extern System.Text.Encoding as Utf8Encoding
 
@@ -91,7 +91,7 @@ func newUser(tag: in String): String {
   val uid = "t-" + tag + "-" + Std.Uuid.uuidToString(Std.Uuid.newUuid())
   match CloudAgents.PgStore.Tenancy.ensurePersonalTenant(uid) {
     case Ok(_) -> ()
-    case Err(e) -> panic("provisioning " + uid + " failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+    case Err(e) -> panic("provisioning " + uid + " failed: " + CloudAgents.Db.dbErrorMessage(e))
   }
   return uid
 }
@@ -130,7 +130,7 @@ func mkSessionRepo(id: in String, repoUrl: in String): Unit {
   )
   match addSession(s, CloudAgents.Auth.requestScope()) {
     case Ok(_) -> ()
-    case Err(e) -> panic("addSession failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+    case Err(e) -> panic("addSession failed: " + CloudAgents.Db.dbErrorMessage(e))
   }
 }
 
@@ -141,7 +141,7 @@ func mkSession(id: in String): Unit {
 func mintToken(id: in String, ownerUserId: in String): String {
   return match CloudAgents.SessionStore.mintCallbackToken(id, CloudAgents.Pg.personalScope(ownerUserId)) {
     case Ok(t) -> t
-    case Err(e) -> panic("mintCallbackToken failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+    case Err(e) -> panic("mintCallbackToken failed: " + CloudAgents.Db.dbErrorMessage(e))
   }
 }
 
@@ -301,7 +301,7 @@ test "request_secret answer denies-only when the credential was deleted after cr
   // Credential deleted between create and answer (a real race in production).
   match CloudAgents.Repository.deleteCredential(CloudAgents.Scope.userScope(me), "ROTATING") {
     case Ok(_) -> ()
-    case Err(e) -> panic("deleteCredential failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+    case Err(e) -> panic("deleteCredential failed: " + CloudAgents.Db.dbErrorMessage(e))
   }
   match answerSecretRequestHandler(sid, created.id, AnswerSecretRequestRequest(decision = "approve")) {
     case Ok(_) -> assertTrue(false, "approving a request for a now-missing credential must fail")

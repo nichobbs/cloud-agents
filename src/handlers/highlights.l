@@ -37,15 +37,15 @@ import Std.Core
 import Web
 import CloudAgents.Repository
 import CloudAgents.SessionStore
-import CloudAgents.Sqlite
+import CloudAgents.Db
 import CloudAgents.Streaming
 import CloudAgents.Text
 import CloudAgents.GitHubApi
 import extern System.Environment as Env
 import extern System.String as DotNetString
 
-func dbError(e: in CloudAgents.Sqlite.DbError): Web.ApiError {
-  return Web.internalError(CloudAgents.Sqlite.dbErrorMessage(e))
+func dbError(e: in CloudAgents.Db.DbError): Web.ApiError {
+  return Web.internalError(CloudAgents.Db.dbErrorMessage(e))
 }
 
 /// Small local copy of CloudAgents.Callbacks.requireOwnedSession (that one is

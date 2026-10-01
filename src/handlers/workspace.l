@@ -14,11 +14,11 @@ import CloudAgents.Auth
 import CloudAgents.Docker
 import CloudAgents.Repository
 import CloudAgents.SessionStore
-import CloudAgents.Sqlite
+import CloudAgents.Db
 import CloudAgents.Workspace
 
-func dbError(e: in CloudAgents.Sqlite.DbError): Web.ApiError {
-  return Web.internalError(CloudAgents.Sqlite.dbErrorMessage(e))
+func dbError(e: in CloudAgents.Db.DbError): Web.ApiError {
+  return Web.internalError(CloudAgents.Db.dbErrorMessage(e))
 }
 
 /// Owner-scoped session lookup returning the session's harness (which picks

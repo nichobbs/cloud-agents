@@ -31,13 +31,13 @@ import CloudAgents.PgStore
 import CloudAgents.PgStore.Library
 import CloudAgents.Repository
 import CloudAgents.Scope
-import CloudAgents.Sqlite
+import CloudAgents.Db
 
 func newId(): String {
   return Std.Uuid.uuidToString(Std.Uuid.newUuid())
 }
 
-func dbErr(e: in CloudAgents.Sqlite.DbError): CloudAgents.Repository.CredentialError {
+func dbErr(e: in CloudAgents.Db.DbError): CloudAgents.Repository.CredentialError {
   return CloudAgents.Repository.Db(error = e)
 }
 
@@ -122,7 +122,7 @@ pub func putCredential(
 /// The user's credential names and last-update times (never values).
 pub func listCredentialNames(
   sc: in CloudAgents.Pg.UserScope
-): Result[slice[CloudAgents.Repository.CredentialName], CloudAgents.Sqlite.DbError] {
+): Result[slice[CloudAgents.Repository.CredentialName], CloudAgents.Db.DbError] {
   val u = CloudAgents.PgStore.openUser(sc)?
   defer {
     CloudAgents.PgStore.release(u)
@@ -144,7 +144,7 @@ pub func listCredentialNames(
 /// Delete a credential by name; rows affected (0 = not found). Deleting
 /// `GITHUB_TOKEN` also drops the refresh metadata (#668), best-effort: a
 /// cleanup failure never blocks the deletion itself.
-pub func deleteCredential(sc: in CloudAgents.Pg.UserScope, name: in String): Result[Int, CloudAgents.Sqlite.DbError] {
+pub func deleteCredential(sc: in CloudAgents.Pg.UserScope, name: in String): Result[Int, CloudAgents.Db.DbError] {
   val u = CloudAgents.PgStore.openUser(sc)?
   defer {
     CloudAgents.PgStore.release(u)
@@ -166,7 +166,7 @@ pub func deleteCredential(sc: in CloudAgents.Pg.UserScope, name: in String): Res
 /// Whether the user has a credential stored under exactly `name`.
 pub func credentialNameExists(
   sc: in CloudAgents.Pg.UserScope, name: in String
-): Result[Bool, CloudAgents.Sqlite.DbError] {
+): Result[Bool, CloudAgents.Db.DbError] {
   val u = CloudAgents.PgStore.openUser(sc)?
   defer {
     CloudAgents.PgStore.release(u)
@@ -177,7 +177,7 @@ pub func credentialNameExists(
 }
 
 /// Encrypted (name, value) rows of the user, byte-ordered by name.
-func encryptedRows(sc: in CloudAgents.Pg.UserScope): Result[slice[DbRow], CloudAgents.Sqlite.DbError] {
+func encryptedRows(sc: in CloudAgents.Pg.UserScope): Result[slice[DbRow], CloudAgents.Db.DbError] {
   val u = CloudAgents.PgStore.openUser(sc)?
   defer {
     CloudAgents.PgStore.release(u)
@@ -399,7 +399,7 @@ func modelListingTtlMillis(): String {
 /// means fetched less than the TTL (one hour) ago.
 pub func cachedModelListing(
   sc: in CloudAgents.Pg.UserScope, provider: in String
-): Result[Option[String], CloudAgents.Sqlite.DbError] {
+): Result[Option[String], CloudAgents.Db.DbError] {
   val u = CloudAgents.PgStore.openUser(sc)?
   defer {
     CloudAgents.PgStore.release(u)
@@ -439,7 +439,7 @@ func sweepExpiredModelListings(sc: in CloudAgents.Pg.UserScope, now: in String):
 /// users' expired rows are swept on their own next write.
 pub func cacheModelListing(
   sc: in CloudAgents.Pg.UserScope, provider: in String, body: in String
-): Result[Unit, CloudAgents.Sqlite.DbError] {
+): Result[Unit, CloudAgents.Db.DbError] {
   val now = CloudAgents.Repository.nowMillis()
   sweepExpiredModelListings(sc, now)
   val u = CloudAgents.PgStore.openUser(sc)?

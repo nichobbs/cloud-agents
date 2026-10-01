@@ -10,7 +10,7 @@ import Std.Core
 import Web
 import CloudAgents.Auth
 import CloudAgents.Repository
-import CloudAgents.Sqlite
+import CloudAgents.Db
 import CloudAgents.Text
 
 val maxWebhookUrlLen = 2048
@@ -20,8 +20,8 @@ pub record RegisterWebhookRequest {
   pub url: String
 }
 
-func dbError(e: in CloudAgents.Sqlite.DbError): Web.ApiError {
-  return Web.internalError(CloudAgents.Sqlite.dbErrorMessage(e))
+func dbError(e: in CloudAgents.Db.DbError): Web.ApiError {
+  return Web.internalError(CloudAgents.Db.dbErrorMessage(e))
 }
 
 @externInstance

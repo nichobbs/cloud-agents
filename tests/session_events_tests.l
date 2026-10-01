@@ -15,7 +15,7 @@ import CloudAgents.Pg.Migrate
 import CloudAgents.PgStore.Tenancy
 import CloudAgents.Repository
 import CloudAgents.Scope as EvScope
-import CloudAgents.Sqlite
+import CloudAgents.Db
 import CloudAgents.Capture
 
 // ── Live Postgres ─────────────────────────────────────────────────────────────
@@ -60,7 +60,7 @@ func newUser(tag: in String): String {
   val uid = "t-" + tag + "-" + Std.Uuid.uuidToString(Std.Uuid.newUuid())
   match CloudAgents.PgStore.Tenancy.ensurePersonalTenant(uid) {
     case Ok(_) -> ()
-    case Err(e) -> panic("provisioning " + uid + " failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+    case Err(e) -> panic("provisioning " + uid + " failed: " + CloudAgents.Db.dbErrorMessage(e))
   }
   return uid
 }
@@ -86,21 +86,21 @@ func fixtureNdjson(): String {
 func mustAppend(sessionId: in String, events: in slice[CaptureEvent]): Int {
   return match CloudAgents.Repository.appendSessionEvents(sessionId, evScope(), events) {
     case Ok(n) -> n
-    case Err(e) -> panic("appendSessionEvents failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+    case Err(e) -> panic("appendSessionEvents failed: " + CloudAgents.Db.dbErrorMessage(e))
   }
 }
 
 func mustRead(sessionId: in String, afterSeq: in String): slice[CaptureEvent] {
   return match CloudAgents.Repository.sessionEventsAfterSeq(sessionId, evScope(), afterSeq) {
     case Ok(evs) -> evs
-    case Err(e) -> panic("sessionEventsAfterSeq failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+    case Err(e) -> panic("sessionEventsAfterSeq failed: " + CloudAgents.Db.dbErrorMessage(e))
   }
 }
 
 func mustLatestCursor(sessionId: in String): CloudAgents.Repository.SessionEventCursor {
   return match CloudAgents.Repository.latestSessionEventCursor(sessionId, evScope()) {
     case Ok(c) -> c
-    case Err(e) -> panic("latestSessionEventCursor failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+    case Err(e) -> panic("latestSessionEventCursor failed: " + CloudAgents.Db.dbErrorMessage(e))
   }
 }
 
@@ -180,13 +180,13 @@ test "re-appending an existing seq with a different payload/hash surfaces a DbEr
   match CloudAgents.Repository.appendSessionEvents("sess-D", evScope(), [diverged]) {
     case Ok(_) -> assertTrue(false, "a content mismatch at an existing seq must not succeed silently")
     case Err(e) -> {
-      // ValidationFailed's message rendering (CloudAgents.Sqlite.dbErrorMessage)
+      // ValidationFailed's message rendering (CloudAgents.Db.dbErrorMessage)
       // is the message itself, with no prefix (unlike OpenFailed/ExecFailed) —
       // confirming that also confirms the DbError case, without a qualified
       // union-case match pattern (docs/lyric/gotchas.md territory).
       // .contains(), not .indexOf(...).isSome() — Option[T].isSome()/.isNone()
       // do not resolve at runtime in this toolchain (docs/lyric/gotchas.md).
-      val msg = CloudAgents.Sqlite.dbErrorMessage(e)
+      val msg = CloudAgents.Db.dbErrorMessage(e)
       assertTrue(msg.contains("conflict"), "error message names the conflict: " + msg)
     }
   }

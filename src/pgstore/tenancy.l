@@ -22,7 +22,7 @@ import Db
 import CloudAgents.Auth
 import CloudAgents.Pg
 import CloudAgents.PgStore
-import CloudAgents.Sqlite
+import CloudAgents.Db
 
 /// User ids whose personal tenant this process has already provisioned.
 /// Bounded by the number of distinct users who sign in during the process's
@@ -52,9 +52,9 @@ val provisioned = ProvisionedUsers()
 /// Make sure `userId` has a `users` row, a personal tenant and an owner
 /// membership of it. Idempotent; after the first success in this process it
 /// returns without touching the database.
-pub func ensurePersonalTenant(userId: in String): Result[Unit, CloudAgents.Sqlite.DbError] {
+pub func ensurePersonalTenant(userId: in String): Result[Unit, CloudAgents.Db.DbError] {
   if userId.length == 0 {
-    return Err(error = CloudAgents.Sqlite.ValidationFailed(message = "cannot provision a tenant for an empty user id"))
+    return Err(error = CloudAgents.Db.ValidationFailed(message = "cannot provision a tenant for an empty user id"))
   }
   if provisioned.contains(userId) {
     return Ok(value = ())
@@ -66,7 +66,7 @@ pub func ensurePersonalTenant(userId: in String): Result[Unit, CloudAgents.Sqlit
 
 /// The database half of `ensurePersonalTenant`, without the cache. Tests use
 /// it directly to check the rows it writes.
-pub func provisionPersonalTenant(userId: in String): Result[Unit, CloudAgents.Sqlite.DbError] {
+pub func provisionPersonalTenant(userId: in String): Result[Unit, CloudAgents.Db.DbError] {
   val sc = CloudAgents.Pg.personalScope(userId)
   val githubId = CloudAgents.Auth.githubIdFromUserId(userId)
   val u = CloudAgents.PgStore.open(sc)?

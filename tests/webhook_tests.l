@@ -12,7 +12,7 @@ import CloudAgents.Pg
 import CloudAgents.Pg.Migrate
 import CloudAgents.PgStore.Tenancy
 import CloudAgents.Repository
-import CloudAgents.Sqlite
+import CloudAgents.Db
 import CloudAgents.Webhooks
 
 // ── URL validation (pure) ─────────────────────────────────────────────────────
@@ -94,7 +94,7 @@ func newUser(tag: in String): String {
   val uid = "t-" + tag + "-" + Std.Uuid.uuidToString(Std.Uuid.newUuid())
   match CloudAgents.PgStore.Tenancy.ensurePersonalTenant(uid) {
     case Ok(_) -> ()
-    case Err(e) -> panic("provisioning " + uid + " failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+    case Err(e) -> panic("provisioning " + uid + " failed: " + CloudAgents.Db.dbErrorMessage(e))
   }
   return uid
 }
@@ -108,31 +108,31 @@ func freshUser(tag: in String): String {
   return uid
 }
 
-func mustWebhook(r: in Result[Webhook, CloudAgents.Sqlite.DbError]): Webhook {
+func mustWebhook(r: in Result[Webhook, CloudAgents.Db.DbError]): Webhook {
   return match r {
     case Ok(w) -> w
-    case Err(e) -> panic("webhook op failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+    case Err(e) -> panic("webhook op failed: " + CloudAgents.Db.dbErrorMessage(e))
   }
 }
 
-func mustWebhooks(r: in Result[slice[Webhook], CloudAgents.Sqlite.DbError]): slice[Webhook] {
+func mustWebhooks(r: in Result[slice[Webhook], CloudAgents.Db.DbError]): slice[Webhook] {
   return match r {
     case Ok(ws) -> ws
-    case Err(e) -> panic("webhook list failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+    case Err(e) -> panic("webhook list failed: " + CloudAgents.Db.dbErrorMessage(e))
   }
 }
 
-func mustEvents(r: in Result[slice[WebhookEvent], CloudAgents.Sqlite.DbError]): slice[WebhookEvent] {
+func mustEvents(r: in Result[slice[WebhookEvent], CloudAgents.Db.DbError]): slice[WebhookEvent] {
   return match r {
     case Ok(es) -> es
-    case Err(e) -> panic("event list failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+    case Err(e) -> panic("event list failed: " + CloudAgents.Db.dbErrorMessage(e))
   }
 }
 
-func mustRows(r: in Result[Int, CloudAgents.Sqlite.DbError]): Int {
+func mustRows(r: in Result[Int, CloudAgents.Db.DbError]): Int {
   return match r {
     case Ok(n) -> n
-    case Err(e) -> panic("webhook write failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+    case Err(e) -> panic("webhook write failed: " + CloudAgents.Db.dbErrorMessage(e))
   }
 }
 
@@ -168,11 +168,11 @@ test "Run-completion events flow through the outbox" {
   val _ = mustWebhook(addWebhook(CloudAgents.Pg.personalScope(userId), "https://example.com/hook"))
   match enqueueWebhookEvent(CloudAgents.Pg.personalScope(userId), "s1", "r1", "succeeded") {
     case Ok(_) -> ()
-    case Err(e) -> assertTrue(false, "enqueue failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+    case Err(e) -> assertTrue(false, "enqueue failed: " + CloudAgents.Db.dbErrorMessage(e))
   }
   match enqueueWebhookEvent(CloudAgents.Pg.personalScope(userId), "s2", "r2", "failed") {
     case Ok(_) -> ()
-    case Err(e) -> assertTrue(false, "enqueue failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+    case Err(e) -> assertTrue(false, "enqueue failed: " + CloudAgents.Db.dbErrorMessage(e))
   }
   val pending = mustEvents(listPendingWebhookEvents(CloudAgents.Pg.personalScope(userId)))
   assertEqualInt(pending.length.toInt(), 2, "two events pending")
@@ -193,7 +193,7 @@ test "Events are not enqueued without a registered webhook (#251)" {
   val me = freshUser("wh-webhook-gate")
   match enqueueWebhookEvent(CloudAgents.Pg.personalScope(me), "s1", "r1", "succeeded") {
     case Ok(_) -> ()
-    case Err(e) -> assertTrue(false, "enqueue failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+    case Err(e) -> assertTrue(false, "enqueue failed: " + CloudAgents.Db.dbErrorMessage(e))
   }
   assertEqualInt(mustEvents(listPendingWebhookEvents(CloudAgents.Pg.personalScope(me))).length.toInt(), 0, "no event enqueued when no webhook is registered")
 }

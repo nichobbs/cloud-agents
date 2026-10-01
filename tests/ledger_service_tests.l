@@ -20,7 +20,7 @@ import CloudAgents.Pg.Migrate
 import CloudAgents.PgStore.Tenancy
 import CloudAgents.Repository
 import CloudAgents.SessionStore
-import CloudAgents.Sqlite
+import CloudAgents.Db
 import extern System.Environment as Env
 import CloudAgents.Ledger.Model
 import CloudAgents.Ledger.Service
@@ -68,7 +68,7 @@ func newUser(tag: in String): String {
   val uid = "t-" + tag + "-" + Std.Uuid.uuidToString(Std.Uuid.newUuid())
   match CloudAgents.PgStore.Tenancy.ensurePersonalTenant(uid) {
     case Ok(_) -> ()
-    case Err(e) -> panic("provisioning " + uid + " failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+    case Err(e) -> panic("provisioning " + uid + " failed: " + CloudAgents.Db.dbErrorMessage(e))
   }
   return uid
 }
@@ -90,22 +90,22 @@ func seedSession(owner: in String): String {
   val sc = CloudAgents.Pg.personalScope(owner)
   match CloudAgents.SessionStore.addSession(makeAgentSession(sessionId = id, repoUrl = "https://github.com/acme/shop", branch = "main", containerId = "", harness = "claude", model = "", nativeSessionId = id), sc) {
     case Ok(_) -> ()
-    case Err(e) -> panic("addSession failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+    case Err(e) -> panic("addSession failed: " + CloudAgents.Db.dbErrorMessage(e))
   }
   val u = match CloudAgents.PgStore.open(sc) {
     case Ok(x) -> x
-    case Err(e) -> panic(CloudAgents.Sqlite.dbErrorMessage(e))
+    case Err(e) -> panic(CloudAgents.Db.dbErrorMessage(e))
   }
   defer {
     CloudAgents.PgStore.release(u)
   }
   match CloudAgents.PgStore.ex(u, "UPDATE session_routes SET callback_token_hash = @p1 WHERE session_id = @p0 AND tenant_id = @p2", [id, CloudAgents.Auth.hashCallbackToken("tok-" + id), sc.tenantId]) {
     case Ok(n) -> assertEqualInt(n, 1, "token stored on the session's route")
-    case Err(e) -> panic(CloudAgents.Sqlite.dbErrorMessage(e))
+    case Err(e) -> panic(CloudAgents.Db.dbErrorMessage(e))
   }
   match CloudAgents.PgStore.commit(u) {
     case Ok(_) -> ()
-    case Err(e) -> panic(CloudAgents.Sqlite.dbErrorMessage(e))
+    case Err(e) -> panic(CloudAgents.Db.dbErrorMessage(e))
   }
   return id
 }
@@ -184,7 +184,7 @@ test "a three-issue batch: register, progress, decide, block, review, feedback, 
   assertTrue(blocked.contains("\"state\":\"blocked\""), blocked)
   match CloudAgents.Repository.listNotifications(sid, CloudAgents.Auth.requestScope()) {
     case Ok(ns) -> assertEqualInt(ns.length.toInt(), 1, "the owner is notified of the blocker")
-    case Err(e) -> assertTrue(false, CloudAgents.Sqlite.dbErrorMessage(e))
+    case Err(e) -> assertTrue(false, CloudAgents.Db.dbErrorMessage(e))
   }
 
   // An illegal move is an in-band error the agent can read.
@@ -401,7 +401,7 @@ test "a blocker the human raised resolves when the human clears it" {
 func blockerReview(sid: in String, itemId: in String): String {
   val u = match CloudAgents.PgStore.open(CloudAgents.Auth.requestScope()) {
     case Ok(x) -> x
-    case Err(e) -> return CloudAgents.Sqlite.dbErrorMessage(e)
+    case Err(e) -> return CloudAgents.Db.dbErrorMessage(e)
   }
   defer {
     CloudAgents.PgStore.release(u)
@@ -413,7 +413,7 @@ func blockerReview(sid: in String, itemId: in String): String {
       }
       return CloudAgents.PgStore.col(rows[0], "review_state")
     }
-    case Err(e) -> return CloudAgents.Sqlite.dbErrorMessage(e)
+    case Err(e) -> return CloudAgents.Db.dbErrorMessage(e)
   }
 }
 
@@ -465,18 +465,18 @@ test "a full snapshot says when older rows were left out" {
   }
   val u = match CloudAgents.PgStore.open(CloudAgents.Auth.requestScope()) {
     case Ok(x) -> x
-    case Err(e) -> panic(CloudAgents.Sqlite.dbErrorMessage(e))
+    case Err(e) -> panic(CloudAgents.Db.dbErrorMessage(e))
   }
   defer {
     CloudAgents.PgStore.release(u)
   }
   match CloudAgents.PgStore.ex(u, "INSERT INTO ledger_entries (id, session_id, item_id, kind, severity, summary, source, undeclared, review_state, created_at, created_seq, updated_seq) " + "SELECT 'bulk' || x::text, @p0, '', 'note', 'review', 'bulk ' || x::text, 'declared', false, 'pending', " + "timestamptz 'epoch' + x * interval '1 millisecond', x, x FROM generate_series(1, 5001) AS x", [sid]) {
     case Ok(_) -> ()
-    case Err(e) -> assertTrue(false, "bulk insert failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+    case Err(e) -> assertTrue(false, "bulk insert failed: " + CloudAgents.Db.dbErrorMessage(e))
   }
   match CloudAgents.PgStore.commit(u) {
     case Ok(_) -> ()
-    case Err(e) -> assertTrue(false, CloudAgents.Sqlite.dbErrorMessage(e))
+    case Err(e) -> assertTrue(false, CloudAgents.Db.dbErrorMessage(e))
   }
   match getLedgerHandler(sid, "0") {
     case Ok(snap) -> {
@@ -628,7 +628,7 @@ test "a transition that loses a race is re-planned and retried" {
   rearmConflicts(name, 0)
   val u = match CloudAgents.PgStore.open(CloudAgents.Auth.requestScope()) {
     case Ok(x) -> x
-    case Err(e) -> panic(CloudAgents.Sqlite.dbErrorMessage(e))
+    case Err(e) -> panic(CloudAgents.Db.dbErrorMessage(e))
   }
   defer {
     CloudAgents.PgStore.release(u)
@@ -639,7 +639,7 @@ test "a transition that loses a race is re-planned and retried" {
       "in_progress",
       "the lost update wrote nothing"
     )
-    case Err(e) -> assertTrue(false, CloudAgents.Sqlite.dbErrorMessage(e))
+    case Err(e) -> assertTrue(false, CloudAgents.Db.dbErrorMessage(e))
   }
 }
 
@@ -661,6 +661,6 @@ test "a blocker notifies the owner" {
       assertEqual(ns[0].level, "blocked", "level")
       assertTrue(ns[0].summary.contains("needs the schema"), "summary names the reason")
     }
-    case Err(e) -> assertTrue(false, CloudAgents.Sqlite.dbErrorMessage(e))
+    case Err(e) -> assertTrue(false, CloudAgents.Db.dbErrorMessage(e))
   }
 }

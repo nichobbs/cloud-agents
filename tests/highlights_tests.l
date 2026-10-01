@@ -14,7 +14,7 @@ import CloudAgents.Pg.Migrate
 import CloudAgents.PgStore.Tenancy
 import CloudAgents.Repository
 import CloudAgents.SessionStore
-import CloudAgents.Sqlite
+import CloudAgents.Db
 import extern System.Environment as Env
 
 // ── Live Postgres ─────────────────────────────────────────────────────────────
@@ -59,7 +59,7 @@ func newUser(tag: in String): String {
   val uid = "t-" + tag + "-" + Std.Uuid.uuidToString(Std.Uuid.newUuid())
   match CloudAgents.PgStore.Tenancy.ensurePersonalTenant(uid) {
     case Ok(_) -> ()
-    case Err(e) -> panic("provisioning " + uid + " failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+    case Err(e) -> panic("provisioning " + uid + " failed: " + CloudAgents.Db.dbErrorMessage(e))
   }
   return uid
 }
@@ -85,7 +85,7 @@ func mkSession(id: in String): Unit {
   )
   match addSession(s, CloudAgents.Auth.requestScope()) {
     case Ok(_) -> ()
-    case Err(e) -> panic("addSession failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+    case Err(e) -> panic("addSession failed: " + CloudAgents.Db.dbErrorMessage(e))
   }
 }
 

@@ -37,7 +37,7 @@ import Db
 import CloudAgents.Pg
 import CloudAgents.PgStore
 import CloudAgents.Repository
-import CloudAgents.Sqlite
+import CloudAgents.Db
 
 func newId(): String {
   return Std.Uuid.uuidToString(Std.Uuid.newUuid())
@@ -63,7 +63,7 @@ func toMessage(r: in DbRow): CloudAgents.Repository.Message {
 /// session's next sequence number.
 pub func addMessage(
   sessionId: in String, sc: in CloudAgents.Pg.TenantScope, role: in String, content: in String
-): Result[CloudAgents.Repository.Message, CloudAgents.Sqlite.DbError] {
+): Result[CloudAgents.Repository.Message, CloudAgents.Db.DbError] {
   val u = CloudAgents.PgStore.open(sc)?
   defer {
     CloudAgents.PgStore.release(u)
@@ -91,7 +91,7 @@ pub func addMessage(
 /// All messages in a session, in sequence order.
 pub func listMessages(
   sessionId: in String, sc: in CloudAgents.Pg.TenantScope
-): Result[slice[CloudAgents.Repository.Message], CloudAgents.Sqlite.DbError] {
+): Result[slice[CloudAgents.Repository.Message], CloudAgents.Db.DbError] {
   val u = CloudAgents.PgStore.open(sc)?
   defer {
     CloudAgents.PgStore.release(u)
@@ -109,7 +109,7 @@ pub func listMessages(
 /// order. `afterSeq` is a stored (zero-padded) seq, or "" for all of them.
 pub func agentMessagesAfterSeq(
   sessionId: in String, sc: in CloudAgents.Pg.TenantScope, afterSeq: in String
-): Result[slice[CloudAgents.Repository.Message], CloudAgents.Sqlite.DbError] {
+): Result[slice[CloudAgents.Repository.Message], CloudAgents.Db.DbError] {
   val after = if afterSeq.length == 0 { "0" } else { afterSeq }
   val u = CloudAgents.PgStore.open(sc)?
   defer {
@@ -127,7 +127,7 @@ pub func agentMessagesAfterSeq(
 /// One column of one row by id, or None.
 func columnById(
   sc: in CloudAgents.Pg.TenantScope, table: in String, id: in String, column: in String
-): Result[Option[String], CloudAgents.Sqlite.DbError] {
+): Result[Option[String], CloudAgents.Db.DbError] {
   val u = CloudAgents.PgStore.open(sc)?
   defer {
     CloudAgents.PgStore.release(u)
@@ -143,7 +143,7 @@ func columnById(
 /// The session a message belongs to, or None.
 pub func getMessageSessionId(
   messageId: in String, sc: in CloudAgents.Pg.TenantScope
-): Result[Option[String], CloudAgents.Sqlite.DbError] {
+): Result[Option[String], CloudAgents.Db.DbError] {
   return columnById(sc, "messages", messageId, "session_id")
 }
 
@@ -162,7 +162,7 @@ func prefixQuery(n: in Int): String {
 /// with no words matches nothing.
 pub func searchMessages(
   sc: in CloudAgents.Pg.TenantScope, term: in String, limit: in Int
-): Result[slice[CloudAgents.Repository.Message], CloudAgents.Sqlite.DbError] {
+): Result[slice[CloudAgents.Repository.Message], CloudAgents.Db.DbError] {
   val u = CloudAgents.PgStore.open(sc)?
   defer {
     CloudAgents.PgStore.release(u)
@@ -187,7 +187,7 @@ pub func searchMessages(
 /// Attach a comment to a message.
 pub func addComment(
   messageId: in String, sc: in CloudAgents.Pg.TenantScope, sessionId: in String, body: in String
-): Result[CloudAgents.Repository.Comment, CloudAgents.Sqlite.DbError] {
+): Result[CloudAgents.Repository.Comment, CloudAgents.Db.DbError] {
   val u = CloudAgents.PgStore.open(sc)?
   defer {
     CloudAgents.PgStore.release(u)
@@ -210,7 +210,7 @@ pub func addComment(
 /// All comments on a message, oldest first.
 pub func listComments(
   messageId: in String, sc: in CloudAgents.Pg.TenantScope
-): Result[slice[CloudAgents.Repository.Comment], CloudAgents.Sqlite.DbError] {
+): Result[slice[CloudAgents.Repository.Comment], CloudAgents.Db.DbError] {
   val u = CloudAgents.PgStore.open(sc)?
   defer {
     CloudAgents.PgStore.release(u)
@@ -246,7 +246,7 @@ func insertTodoSql(): String {
 /// start "pending".
 pub func addTodo(
   sessionId: in String, sc: in CloudAgents.Pg.TenantScope, messageId: in String, note: in String
-): Result[CloudAgents.Repository.Todo, CloudAgents.Sqlite.DbError] {
+): Result[CloudAgents.Repository.Todo, CloudAgents.Db.DbError] {
   val u = CloudAgents.PgStore.open(sc)?
   defer {
     CloudAgents.PgStore.release(u)
@@ -278,7 +278,7 @@ pub func replacePlanTodos(
   messageId: in String,
   notes: in slice[String],
   statuses: in slice[String],
-): Result[Unit, CloudAgents.Sqlite.DbError] {
+): Result[Unit, CloudAgents.Db.DbError] {
   val u = CloudAgents.PgStore.open(sc)?
   defer {
     CloudAgents.PgStore.release(u)
@@ -302,7 +302,7 @@ pub func replacePlanTodos(
 /// Run one statement on a todo by id, `@p0` = id.
 func todoWrite(
   sc: in CloudAgents.Pg.TenantScope, sql: in String, params: in slice[String]
-): Result[Unit, CloudAgents.Sqlite.DbError] {
+): Result[Unit, CloudAgents.Db.DbError] {
   val u = CloudAgents.PgStore.open(sc)?
   defer {
     CloudAgents.PgStore.release(u)
@@ -315,7 +315,7 @@ func todoWrite(
 /// Set a todo's status directly; `done` follows it.
 pub func setTodoStatus(
   id: in String, sc: in CloudAgents.Pg.TenantScope, status: in String
-): Result[Unit, CloudAgents.Sqlite.DbError] {
+): Result[Unit, CloudAgents.Db.DbError] {
   return todoWrite(
     sc,
     "UPDATE todos SET status = @p1, done = (@p1 = 'done'), updated_at = " + CloudAgents.Pg.msIn(2) +
@@ -328,7 +328,7 @@ pub func setTodoStatus(
 /// initial cursor and matches every todo.
 pub func todosUpdatedAfter(
   sessionId: in String, sc: in CloudAgents.Pg.TenantScope, afterUpdatedAt: in String
-): Result[slice[CloudAgents.Repository.TodoUpdate], CloudAgents.Sqlite.DbError] {
+): Result[slice[CloudAgents.Repository.TodoUpdate], CloudAgents.Db.DbError] {
   val u = CloudAgents.PgStore.open(sc)?
   defer {
     CloudAgents.PgStore.release(u)
@@ -360,14 +360,14 @@ pub func todosUpdatedAfter(
 /// The session a todo belongs to, or None.
 pub func getTodoSessionId(
   id: in String, sc: in CloudAgents.Pg.TenantScope
-): Result[Option[String], CloudAgents.Sqlite.DbError] {
+): Result[Option[String], CloudAgents.Db.DbError] {
   return columnById(sc, "todos", id, "session_id")
 }
 
 /// All todos for a session, newest first.
 pub func listTodos(
   sessionId: in String, sc: in CloudAgents.Pg.TenantScope
-): Result[slice[CloudAgents.Repository.Todo], CloudAgents.Sqlite.DbError] {
+): Result[slice[CloudAgents.Repository.Todo], CloudAgents.Db.DbError] {
   val u = CloudAgents.PgStore.open(sc)?
   defer {
     CloudAgents.PgStore.release(u)
@@ -392,7 +392,7 @@ pub func listTodos(
 }
 
 /// Flip a todo's done flag; the status moves between "pending" and "done".
-pub func toggleTodo(id: in String, sc: in CloudAgents.Pg.TenantScope): Result[Unit, CloudAgents.Sqlite.DbError] {
+pub func toggleTodo(id: in String, sc: in CloudAgents.Pg.TenantScope): Result[Unit, CloudAgents.Db.DbError] {
   return todoWrite(
     sc,
     "UPDATE todos SET done = NOT done, status = CASE WHEN done THEN 'pending' ELSE 'done' END, " +
@@ -404,6 +404,6 @@ pub func toggleTodo(id: in String, sc: in CloudAgents.Pg.TenantScope): Result[Un
 }
 
 /// Delete a todo.
-pub func deleteTodo(id: in String, sc: in CloudAgents.Pg.TenantScope): Result[Unit, CloudAgents.Sqlite.DbError] {
+pub func deleteTodo(id: in String, sc: in CloudAgents.Pg.TenantScope): Result[Unit, CloudAgents.Db.DbError] {
   return todoWrite(sc, "DELETE FROM todos WHERE id = @p0", [id])
 }

@@ -37,9 +37,8 @@
 //! its domain's port (slice C) once that ordering is verified. A stray
 //! cross-tenant id cannot be read through, because both rows are under RLS.
 //!
-//! `0001_baseline` may be edited in place until the production cut-over
-//! (slice E): no production Postgres database exists before then. After
-//! cut-over it is frozen and changes go in new migrations.
+//! `0001_baseline` is frozen: deployments applied it before the cut-over
+//! (slice E), so every change goes in a new migration.
 @runtime_checked
 package CloudAgents.Pg.Schema
 
@@ -51,11 +50,14 @@ pub record PgMigration {
 }
 
 pub func migrations(): slice[PgMigration] {
-  return [PgMigration(version = "0001_baseline", statements = baselineStatements())]
+  return [
+    PgMigration(version = "0001_baseline", statements = baselineStatements()),
+    PgMigration(version = "0002_cutover", statements = cutoverStatements())
+  ]
 }
 
 pub func latestVersion(): String {
-  return "0001_baseline"
+  return "0002_cutover"
 }
 
 // ─── Fragments ──────────────────────────────────────────────────────────────
@@ -878,8 +880,9 @@ func claimFunctions(): slice[String] {
   ]
 }
 
-/// The one-off SQLite export runs as the BYPASSRLS migrator (spec §7): it may
-/// read (for its precondition and count checks) and insert, nothing else.
+/// Grants for the one-off SQLite export role, which slice D was to use. The
+/// export was dropped (spec §7) and `0002_cutover` revokes these; the baseline
+/// is frozen, so they stay here.
 func migratorGrants(): slice[String] {
   return ["GRANT SELECT, INSERT ON ALL TABLES IN SCHEMA public TO cloudagents_migrator"]
 }
@@ -899,4 +902,21 @@ func baselineStatements(): slice[String] {
       migratorGrants()
     ]
   )
+}
+
+/// `0002_cutover` (spec §9 slice E):
+/// - the ledger's repository-policy cache may record "unavailable", a
+///   transient GitHub failure the service retries (src/ledger/service.l), as
+///   the SQLite store did;
+/// - the unused export role loses its table grants (the export was dropped,
+///   spec §7). Dropping the role itself needs a superuser; provision.sql no
+///   longer gives it BYPASSRLS, and the self-check still refuses to serve
+///   while it can log in.
+func cutoverStatements(): slice[String] {
+  return [
+    "ALTER TABLE public.ledger_sessions DROP CONSTRAINT ledger_sessions_policy_status_check",
+    "ALTER TABLE public.ledger_sessions ADD CONSTRAINT ledger_sessions_policy_status_check " +
+      "CHECK (policy_status IN ('', 'absent', 'loaded', 'invalid', 'unavailable'))",
+    "REVOKE ALL ON ALL TABLES IN SCHEMA public FROM cloudagents_migrator"
+  ]
 }

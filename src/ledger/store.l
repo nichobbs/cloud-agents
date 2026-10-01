@@ -23,7 +23,6 @@ import Std.Core
 import Std.Uuid
 import CloudAgents.Db
 import CloudAgents.Scope
-import CloudAgents.Sqlite
 import CloudAgents.Repository
 import CloudAgents.Ledger.Model
 import CloudAgents.Ledger.Schema
@@ -34,7 +33,7 @@ import CloudAgents.PgStore.Ledger
 /// The session's current change cursor ("0" before the first write).
 pub func currentSeq(
   sessionId: in String, sc: in CloudAgents.Scope.TenantScope
-): Result[String, CloudAgents.Sqlite.DbError] {
+): Result[String, CloudAgents.Db.DbError] {
   return CloudAgents.PgStore.Ledger.currentSeq(sessionId, sc)
 }
 
@@ -53,20 +52,20 @@ val itemCols = "session_id, item_id, title, url, state, blocked_by, blocked_reas
 /// A session's work items in batch order.
 pub func listItems(
   sessionId: in String, sc: in CloudAgents.Scope.TenantScope
-): Result[slice[WorkItem], CloudAgents.Sqlite.DbError] {
+): Result[slice[WorkItem], CloudAgents.Db.DbError] {
   return CloudAgents.PgStore.Ledger.listItems(sessionId, sc)
 }
 
 /// Items changed strictly after cursor `after`.
 pub func itemsChangedAfter(
   sessionId: in String, sc: in CloudAgents.Scope.TenantScope, after: in String
-): Result[slice[WorkItem], CloudAgents.Sqlite.DbError] {
+): Result[slice[WorkItem], CloudAgents.Db.DbError] {
   return CloudAgents.PgStore.Ledger.itemsChangedAfter(sessionId, sc, after)
 }
 
 pub func getItem(
   sessionId: in String, sc: in CloudAgents.Scope.TenantScope, itemId: in String
-): Result[Option[WorkItem], CloudAgents.Sqlite.DbError] {
+): Result[Option[WorkItem], CloudAgents.Db.DbError] {
   return CloudAgents.PgStore.Ledger.getItem(sessionId, sc, itemId)
 }
 
@@ -79,7 +78,7 @@ pub func registerItems(
   ids: in slice[String],
   titles: in slice[String],
   urls: in slice[String],
-): Result[Int, CloudAgents.Sqlite.DbError] {
+): Result[Int, CloudAgents.Db.DbError] {
   return CloudAgents.PgStore.Ledger.registerItems(sessionId, sc, ids, titles, urls)
 }
 
@@ -106,13 +105,13 @@ pub func applyItemUpdate(
   reason: in String,
   auto: in AutoEntry,
   resolveBlockers: in Bool,
-): Result[Bool, CloudAgents.Sqlite.DbError] {
+): Result[Bool, CloudAgents.Db.DbError] {
   return CloudAgents.PgStore.Ledger.applyItemUpdate(sessionId, sc, updated, readVersion, fromState, stateChanged, actor, reason, auto, resolveBlockers)
 }
 
 pub func listTransitions(
   sessionId: in String, sc: in CloudAgents.Scope.TenantScope, itemId: in String
-): Result[slice[WorkItemTransition], CloudAgents.Sqlite.DbError] {
+): Result[slice[WorkItemTransition], CloudAgents.Db.DbError] {
   return CloudAgents.PgStore.Ledger.listTransitions(sessionId, sc, itemId)
 }
 
@@ -125,13 +124,13 @@ val entryOrder = " ORDER BY CAST(created_seq AS INTEGER), created_at, id"
 /// here) and return it as stored.
 pub func insertEntry(
   sc: in CloudAgents.Scope.TenantScope, e: in LedgerEntry
-): Result[LedgerEntry, CloudAgents.Sqlite.DbError] {
+): Result[LedgerEntry, CloudAgents.Db.DbError] {
   return CloudAgents.PgStore.Ledger.insertEntry(sc, e)
 }
 
 pub func getEntry(
   sessionId: in String, sc: in CloudAgents.Scope.TenantScope, entryId: in String
-): Result[Option[LedgerEntry], CloudAgents.Sqlite.DbError] {
+): Result[Option[LedgerEntry], CloudAgents.Db.DbError] {
   return CloudAgents.PgStore.Ledger.getEntry(sessionId, sc, entryId)
 }
 
@@ -140,20 +139,20 @@ pub func getEntry(
 /// never the part dropped); countEntries says whether any were.
 pub func listEntries(
   sessionId: in String, sc: in CloudAgents.Scope.TenantScope
-): Result[slice[LedgerEntry], CloudAgents.Sqlite.DbError] {
+): Result[slice[LedgerEntry], CloudAgents.Db.DbError] {
   return CloudAgents.PgStore.Ledger.listEntries(sessionId, sc)
 }
 
 /// The entries of this session whose `supersedes` names `entryId`.
 pub func supersedingEntryIds(
   sessionId: in String, sc: in CloudAgents.Scope.TenantScope, entryId: in String
-): Result[slice[String], CloudAgents.Sqlite.DbError] {
+): Result[slice[String], CloudAgents.Db.DbError] {
   return CloudAgents.PgStore.Ledger.supersedingEntryIds(sessionId, sc, entryId)
 }
 
 pub func entriesChangedAfter(
   sessionId: in String, sc: in CloudAgents.Scope.TenantScope, after: in String
-): Result[slice[LedgerEntry], CloudAgents.Sqlite.DbError] {
+): Result[slice[LedgerEntry], CloudAgents.Db.DbError] {
   return CloudAgents.PgStore.Ledger.entriesChangedAfter(sessionId, sc, after)
 }
 
@@ -167,7 +166,7 @@ pub func reviewEntry(
   kind: in String,
   body: in String,
   by: in String,
-): Result[Feedback, CloudAgents.Sqlite.DbError] {
+): Result[Feedback, CloudAgents.Db.DbError] {
   return CloudAgents.PgStore.Ledger.reviewEntry(sessionId, sc, entry, reviewState, kind, body, by)
 }
 
@@ -182,7 +181,7 @@ pub func addFeedback(
   kind: in String,
   body: in String,
   by: in String,
-): Result[Feedback, CloudAgents.Sqlite.DbError] {
+): Result[Feedback, CloudAgents.Db.DbError] {
   return CloudAgents.PgStore.Ledger.addFeedback(sessionId, sc, itemId, kind, body, by)
 }
 
@@ -190,31 +189,31 @@ pub func addFeedback(
 /// Past the cap these are the NEWEST feedbackRowCap rows, oldest first.
 pub func listFeedback(
   sessionId: in String, sc: in CloudAgents.Scope.TenantScope
-): Result[slice[Feedback], CloudAgents.Sqlite.DbError] {
+): Result[slice[Feedback], CloudAgents.Db.DbError] {
   return CloudAgents.PgStore.Ledger.listFeedback(sessionId, sc)
 }
 
 /// Feedback on one entry, oldest first.
 pub func feedbackForEntry(
   sessionId: in String, sc: in CloudAgents.Scope.TenantScope, entryId: in String
-): Result[slice[Feedback], CloudAgents.Sqlite.DbError] {
+): Result[slice[Feedback], CloudAgents.Db.DbError] {
   return CloudAgents.PgStore.Ledger.feedbackForEntry(sessionId, sc, entryId)
 }
 
 /// Row counts, to tell a capped list from a complete one.
-pub func countItems(sessionId: in String, sc: in CloudAgents.Scope.TenantScope): Result[Int, CloudAgents.Sqlite.DbError] {
+pub func countItems(sessionId: in String, sc: in CloudAgents.Scope.TenantScope): Result[Int, CloudAgents.Db.DbError] {
   return CloudAgents.PgStore.Ledger.countItems(sessionId, sc)
 }
 
 pub func countEntries(
   sessionId: in String, sc: in CloudAgents.Scope.TenantScope
-): Result[Int, CloudAgents.Sqlite.DbError] {
+): Result[Int, CloudAgents.Db.DbError] {
   return CloudAgents.PgStore.Ledger.countEntries(sessionId, sc)
 }
 
 pub func countFeedback(
   sessionId: in String, sc: in CloudAgents.Scope.TenantScope
-): Result[Int, CloudAgents.Sqlite.DbError] {
+): Result[Int, CloudAgents.Db.DbError] {
   return CloudAgents.PgStore.Ledger.countFeedback(sessionId, sc)
 }
 
@@ -223,20 +222,20 @@ pub func countFeedback(
 /// the client are capped; these are not).
 pub func summaryOf(
   sessionId: in String, sc: in CloudAgents.Scope.TenantScope, pendingFeedback: in Int
-): Result[LedgerSummary, CloudAgents.Sqlite.DbError] {
+): Result[LedgerSummary, CloudAgents.Db.DbError] {
   return CloudAgents.PgStore.Ledger.summaryOf(sessionId, sc, pendingFeedback)
 }
 
 pub func feedbackChangedAfter(
   sessionId: in String, sc: in CloudAgents.Scope.TenantScope, after: in String
-): Result[slice[Feedback], CloudAgents.Sqlite.DbError] {
+): Result[slice[Feedback], CloudAgents.Db.DbError] {
   return CloudAgents.PgStore.Ledger.feedbackChangedAfter(sessionId, sc, after)
 }
 
 /// Undelivered feedback count.
 pub func pendingFeedbackCount(
   sessionId: in String, sc: in CloudAgents.Scope.TenantScope
-): Result[Int, CloudAgents.Sqlite.DbError] {
+): Result[Int, CloudAgents.Db.DbError] {
   return CloudAgents.PgStore.Ledger.pendingFeedbackCount(sessionId, sc)
 }
 
@@ -251,7 +250,7 @@ pub record ClaimedFeedback {
 
 pub func collectFeedback(
   sessionId: in String, sc: in CloudAgents.Scope.TenantScope, via: in String
-): Result[slice[Feedback], CloudAgents.Sqlite.DbError] {
+): Result[slice[Feedback], CloudAgents.Db.DbError] {
   return CloudAgents.PgStore.Ledger.collectFeedback(sessionId, sc, via)
 }
 
@@ -260,7 +259,7 @@ pub func collectFeedback(
 /// releases the batch, so nothing is ever marked delivered unseen.
 pub func claimFeedback(
   sessionId: in String, sc: in CloudAgents.Scope.TenantScope, via: in String
-): Result[slice[ClaimedFeedback], CloudAgents.Sqlite.DbError] {
+): Result[slice[ClaimedFeedback], CloudAgents.Db.DbError] {
   return CloudAgents.PgStore.Ledger.claimFeedback(sessionId, sc, via)
 }
 
@@ -296,13 +295,13 @@ pub func emptySyncRow(itemId: in String): SyncRow {
 /// Every item's sync row for a session (items never synced have none).
 pub func syncRows(
   sessionId: in String, sc: in CloudAgents.Scope.TenantScope
-): Result[slice[SyncRow], CloudAgents.Sqlite.DbError] {
+): Result[slice[SyncRow], CloudAgents.Db.DbError] {
   return CloudAgents.PgStore.Ledger.syncRows(sessionId, sc)
 }
 
 pub func saveSyncRow(
   sessionId: in String, sc: in CloudAgents.Scope.TenantScope, row: in SyncRow
-): Result[Unit, CloudAgents.Sqlite.DbError] {
+): Result[Unit, CloudAgents.Db.DbError] {
   return CloudAgents.PgStore.Ledger.saveSyncRow(sessionId, sc, row)
 }
 
@@ -311,7 +310,7 @@ pub func saveSyncRow(
 /// since taken over.
 pub func ownedIssueItems(
   sessionId: in String, sc: in CloudAgents.Scope.TenantScope
-): Result[slice[String], CloudAgents.Sqlite.DbError] {
+): Result[slice[String], CloudAgents.Db.DbError] {
   return CloudAgents.PgStore.Ledger.ownedIssueItems(sessionId, sc)
 }
 
@@ -319,7 +318,7 @@ pub func ownedIssueItems(
 /// changed since it was last synced (or never was), or it is waiting on
 /// GitHub (blocked, needs_human, pr_open). Least recently attempted first,
 /// so a session that keeps failing takes its turn and no more.
-pub func sessionsToSync(limit: in Int): Result[slice[String], CloudAgents.Sqlite.DbError] {
+pub func sessionsToSync(limit: in Int): Result[slice[String], CloudAgents.Db.DbError] {
   return CloudAgents.PgStore.Ledger.sessionsToSync(limit)
 }
 
@@ -327,7 +326,7 @@ pub func sessionsToSync(limit: in Int): Result[slice[String], CloudAgents.Sqlite
 /// it got as far as the items).
 pub func markSyncAttempt(
   sessionId: in String, sc: in CloudAgents.Scope.TenantScope, error: in String
-): Result[Unit, CloudAgents.Sqlite.DbError] {
+): Result[Unit, CloudAgents.Db.DbError] {
   return CloudAgents.PgStore.Ledger.markSyncAttempt(sessionId, sc, error)
 }
 
@@ -337,14 +336,14 @@ pub func markSyncAttempt(
 /// writers). A crashed pass's lease simply expires.
 pub func acquireSyncLease(
   sessionId: in String, sc: in CloudAgents.Scope.TenantScope, leaseMillis: in Long
-): Result[String, CloudAgents.Sqlite.DbError] {
+): Result[String, CloudAgents.Db.DbError] {
   return CloudAgents.PgStore.Ledger.acquireSyncLease(sessionId, sc, leaseMillis)
 }
 
 /// Give the lease back, if it is still the one `token` names.
 pub func releaseSyncLease(
   sessionId: in String, sc: in CloudAgents.Scope.TenantScope, token: in String
-): Result[Unit, CloudAgents.Sqlite.DbError] {
+): Result[Unit, CloudAgents.Db.DbError] {
   return CloudAgents.PgStore.Ledger.releaseSyncLease(sessionId, sc, token)
 }
 
@@ -352,13 +351,13 @@ pub func releaseSyncLease(
 /// A profile's observer settings, or None when it has none (not observed).
 pub func observerSettingsFor(
   profileId: in String, sc: in CloudAgents.Scope.TenantScope
-): Result[Option[ObserverSettings], CloudAgents.Sqlite.DbError] {
+): Result[Option[ObserverSettings], CloudAgents.Db.DbError] {
   return CloudAgents.PgStore.Ledger.observerSettingsFor(profileId, sc)
 }
 
 pub func saveObserverSettings(
   profileId: in String, sc: in CloudAgents.Scope.TenantScope, st: in ObserverSettings
-): Result[Unit, CloudAgents.Sqlite.DbError] {
+): Result[Unit, CloudAgents.Db.DbError] {
   return CloudAgents.PgStore.Ledger.saveObserverSettings(profileId, sc, st)
 }
 
@@ -397,7 +396,7 @@ val observerCols = "session_id, observer_session_id, cursor_seq, window_end, pen
 /// never been observed).
 pub func observerState(
   sessionId: in String, sc: in CloudAgents.Scope.TenantScope
-): Result[ObserverState, CloudAgents.Sqlite.DbError] {
+): Result[ObserverState, CloudAgents.Db.DbError] {
   return CloudAgents.PgStore.Ledger.observerState(sessionId, sc)
 }
 
@@ -405,13 +404,13 @@ pub func observerState(
 /// is not an observer).
 pub func observedSessionOf(
   observerSessionId: in String, sc: in CloudAgents.Scope.TenantScope
-): Result[String, CloudAgents.Sqlite.DbError] {
+): Result[String, CloudAgents.Db.DbError] {
   return CloudAgents.PgStore.Ledger.observedSessionOf(observerSessionId, sc)
 }
 
 pub func saveObserverState(
   sc: in CloudAgents.Scope.TenantScope, st: in ObserverState
-): Result[Unit, CloudAgents.Sqlite.DbError] {
+): Result[Unit, CloudAgents.Db.DbError] {
   return CloudAgents.PgStore.Ledger.saveObserverState(sc, st)
 }
 
@@ -426,7 +425,7 @@ pub record ObserverRunInfo {
 /// isn't an observer.
 pub func observerRunInfo(
   sessionId: in String, sc: in CloudAgents.Scope.TenantScope
-): Result[Option[ObserverRunInfo], CloudAgents.Sqlite.DbError] {
+): Result[Option[ObserverRunInfo], CloudAgents.Db.DbError] {
   return CloudAgents.PgStore.Ledger.observerRunInfo(sessionId, sc)
 }
 
@@ -448,7 +447,7 @@ pub record SessionRunFacts {
 
 pub func sessionRunFacts(
   sessionId: in String, sc: in CloudAgents.Scope.TenantScope
-): Result[Option[SessionRunFacts], CloudAgents.Sqlite.DbError] {
+): Result[Option[SessionRunFacts], CloudAgents.Db.DbError] {
   return CloudAgents.PgStore.Ledger.sessionRunFacts(sessionId, sc)
 }
 
@@ -460,40 +459,40 @@ pub func linkObserverSession(
   sc: in CloudAgents.Scope.TenantScope,
   observedSessionId: in String,
   profileId: in String,
-): Result[Unit, CloudAgents.Sqlite.DbError] {
+): Result[Unit, CloudAgents.Db.DbError] {
   return CloudAgents.PgStore.Ledger.linkObserverSession(observerSessionId, sc, observedSessionId, profileId)
 }
 
 /// Remove an observer session's row (a replaced or orphaned observer).
 pub func deleteObserverSessionRow(
   observerSessionId: in String, sc: in CloudAgents.Scope.TenantScope
-): Result[Unit, CloudAgents.Sqlite.DbError] {
+): Result[Unit, CloudAgents.Db.DbError] {
   return CloudAgents.PgStore.Ledger.deleteObserverSessionRow(observerSessionId, sc)
 }
 
 /// Forget an observed session's observer (its session was deleted).
 pub func deleteObserverState(
   sessionId: in String, sc: in CloudAgents.Scope.TenantScope
-): Result[Unit, CloudAgents.Sqlite.DbError] {
+): Result[Unit, CloudAgents.Db.DbError] {
   return CloudAgents.PgStore.Ledger.deleteObserverState(sessionId, sc)
 }
 
 /// Ask for a pass. Idempotent: many asks before a pass runs make one pass.
 pub func markObserverPending(
   sessionId: in String, sc: in CloudAgents.Scope.TenantScope
-): Result[Unit, CloudAgents.Sqlite.DbError] {
+): Result[Unit, CloudAgents.Db.DbError] {
   return CloudAgents.PgStore.Ledger.markObserverPending(sessionId, sc)
 }
 
 /// Take the pending pass for a session: true for exactly one caller.
 pub func claimObserverPass(
   sessionId: in String, sc: in CloudAgents.Scope.TenantScope
-): Result[Bool, CloudAgents.Sqlite.DbError] {
+): Result[Bool, CloudAgents.Db.DbError] {
   return CloudAgents.PgStore.Ledger.claimObserverPass(sessionId, sc)
 }
 
 /// Observed sessions with a pass waiting, the longest-waiting first.
-pub func pendingObserverSessions(limit: in Int): Result[slice[String], CloudAgents.Sqlite.DbError] {
+pub func pendingObserverSessions(limit: in Int): Result[slice[String], CloudAgents.Db.DbError] {
   return CloudAgents.PgStore.Ledger.pendingObserverSessions(limit)
 }
 
@@ -505,14 +504,14 @@ pub func applyRetroMatch(
   sc: in CloudAgents.Scope.TenantScope,
   observedId: in String,
   declaredId: in String,
-): Result[Unit, CloudAgents.Sqlite.DbError] {
+): Result[Unit, CloudAgents.Db.DbError] {
   return CloudAgents.PgStore.Ledger.applyRetroMatch(sessionId, sc, observedId, declaredId)
 }
 
 /// A run ended: its mid-run observations are final now.
 pub func settleProvisional(
   sessionId: in String, sc: in CloudAgents.Scope.TenantScope
-): Result[Unit, CloudAgents.Sqlite.DbError] {
+): Result[Unit, CloudAgents.Db.DbError] {
   return CloudAgents.PgStore.Ledger.settleProvisional(sessionId, sc)
 }
 
@@ -520,7 +519,7 @@ pub func settleProvisional(
 /// first up to the cap (the window a candidate can match sits at the end).
 pub func entriesForReconcile(
   sessionId: in String, sc: in CloudAgents.Scope.TenantScope
-): Result[slice[LedgerEntry], CloudAgents.Sqlite.DbError] {
+): Result[slice[LedgerEntry], CloudAgents.Db.DbError] {
   return CloudAgents.PgStore.Ledger.entriesForReconcile(sessionId, sc)
 }
 
@@ -533,7 +532,7 @@ pub record PolicyCache {
 
 pub func getPolicyCache(
   sessionId: in String, sc: in CloudAgents.Scope.TenantScope
-): Result[PolicyCache, CloudAgents.Sqlite.DbError] {
+): Result[PolicyCache, CloudAgents.Db.DbError] {
   return CloudAgents.PgStore.Ledger.getPolicyCache(sessionId, sc)
 }
 
@@ -543,7 +542,7 @@ pub func setPolicyCache(
   status: in String,
   json: in String,
   error: in String,
-): Result[Unit, CloudAgents.Sqlite.DbError] {
+): Result[Unit, CloudAgents.Db.DbError] {
   return CloudAgents.PgStore.Ledger.setPolicyCache(sessionId, sc, status, json, error)
 }
 
@@ -558,7 +557,7 @@ pub record InboxEntry {
 
 /// Every pending review / blocking entry across `userId`'s sessions,
 /// blocking first, then oldest first (bounded).
-pub func inboxForUser(sc: in CloudAgents.Scope.TenantScope): Result[slice[InboxEntry], CloudAgents.Sqlite.DbError] {
+pub func inboxForUser(sc: in CloudAgents.Scope.TenantScope): Result[slice[InboxEntry], CloudAgents.Db.DbError] {
   return CloudAgents.PgStore.Ledger.inboxForUser(sc)
 }
 

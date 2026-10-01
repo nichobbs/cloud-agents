@@ -8,7 +8,7 @@ import Std.Core
 import Web
 import CloudAgents.Auth
 import CloudAgents.Repository
-import CloudAgents.Sqlite
+import CloudAgents.Db
 
 val maxSearchTermLen = 200
 
@@ -18,8 +18,8 @@ val maxSearchTermLen = 200
 /// constant.
 val maxSearchResults = 50
 
-func dbError(e: in CloudAgents.Sqlite.DbError): Web.ApiError {
-  return Web.internalError(CloudAgents.Sqlite.dbErrorMessage(e))
+func dbError(e: in CloudAgents.Db.DbError): Web.ApiError {
+  return Web.internalError(CloudAgents.Db.dbErrorMessage(e))
 }
 
 /// GET /api/search/messages?q=... response: the (possibly capped) matches,

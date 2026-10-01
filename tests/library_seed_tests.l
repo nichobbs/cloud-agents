@@ -16,7 +16,7 @@ import CloudAgents.Pg
 import CloudAgents.Pg.Migrate
 import CloudAgents.PgStore.Tenancy
 import CloudAgents.Repository
-import CloudAgents.Sqlite
+import CloudAgents.Db
 import extern System.Environment as Env
 
 // Mirrors src/handlers/library.l's maxDescriptionLen/maxBodyLen by value, not
@@ -70,7 +70,7 @@ func newUser(tag: in String): String {
   val uid = "t-" + tag + "-" + Std.Uuid.uuidToString(Std.Uuid.newUuid())
   match CloudAgents.PgStore.Tenancy.ensurePersonalTenant(uid) {
     case Ok(_) -> ()
-    case Err(e) -> panic("provisioning " + uid + " failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+    case Err(e) -> panic("provisioning " + uid + " failed: " + CloudAgents.Db.dbErrorMessage(e))
   }
   return uid
 }
@@ -193,7 +193,7 @@ test "seedDefaultSubagentsIfEmpty populates an empty library from the real seed/
   val seeded = match CloudAgents.Repository.listSubagents(CloudAgents.Pg.personalScope(userId)) {
     case Ok(s) -> s
     case Err(e) -> {
-      assertTrue(false, "listSubagents failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+      assertTrue(false, "listSubagents failed: " + CloudAgents.Db.dbErrorMessage(e))
       []
     }
   }
@@ -215,7 +215,7 @@ test "seedDefaultSubagentsIfEmpty populates an empty library from the real seed/
   while i < seeded.length.toInt() {
     match CloudAgents.Repository.deleteSubagent(seeded[i].id, CloudAgents.Pg.personalScope(userId)) {
       case Ok(_) -> ()
-      case Err(e) -> assertTrue(false, "deleteSubagent failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+      case Err(e) -> assertTrue(false, "deleteSubagent failed: " + CloudAgents.Db.dbErrorMessage(e))
     }
     i = i + 1
   }
@@ -236,7 +236,7 @@ test "seedDefaultSubagentsIfEmpty never touches a library the user has already s
   val userId = me
   match CloudAgents.Repository.addSubagent(CloudAgents.Pg.personalScope(userId), "my-own-agent", "a hand-authored subagent", "do the thing", "sonnet") {
     case Ok(_) -> ()
-    case Err(e) -> assertTrue(false, "addSubagent failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+    case Err(e) -> assertTrue(false, "addSubagent failed: " + CloudAgents.Db.dbErrorMessage(e))
   }
 
   seedDefaultSubagentsIfEmpty(userId)
@@ -306,7 +306,7 @@ test "seedDefaultSkillsIfEmpty populates an empty library from the real seed/ski
   val seeded = match CloudAgents.Repository.listSkills(CloudAgents.Pg.personalScope(userId)) {
     case Ok(s) -> s
     case Err(e) -> {
-      assertTrue(false, "listSkills failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+      assertTrue(false, "listSkills failed: " + CloudAgents.Db.dbErrorMessage(e))
       []
     }
   }
@@ -330,7 +330,7 @@ test "seedDefaultSkillsIfEmpty never touches a library the user has already star
   val userId = me
   match CloudAgents.Repository.addSkill(CloudAgents.Pg.personalScope(userId), "my-own-skill", "a hand-authored skill", "do the thing") {
     case Ok(_) -> ()
-    case Err(e) -> assertTrue(false, "addSkill failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+    case Err(e) -> assertTrue(false, "addSkill failed: " + CloudAgents.Db.dbErrorMessage(e))
   }
 
   seedDefaultSkillsIfEmpty(userId)

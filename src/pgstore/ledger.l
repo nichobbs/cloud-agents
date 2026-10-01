@@ -44,7 +44,7 @@ import Db
 import CloudAgents.Pg
 import CloudAgents.PgStore
 import CloudAgents.Repository
-import CloudAgents.Sqlite
+import CloudAgents.Db
 import CloudAgents.Ledger.Model
 import CloudAgents.Ledger.Schema
 import CloudAgents.Ledger.Summary
@@ -65,7 +65,7 @@ func c(r: in DbRow, name: in String): String {
 
 func query(
   sc: in CloudAgents.Pg.TenantScope, sql: in String, params: in slice[String]
-): Result[slice[DbRow], CloudAgents.Sqlite.DbError] {
+): Result[slice[DbRow], CloudAgents.Db.DbError] {
   val u = CloudAgents.PgStore.open(sc)?
   defer {
     CloudAgents.PgStore.release(u)
@@ -77,7 +77,7 @@ func query(
 
 func exec(
   sc: in CloudAgents.Pg.TenantScope, sql: in String, params: in slice[String]
-): Result[Int, CloudAgents.Sqlite.DbError] {
+): Result[Int, CloudAgents.Db.DbError] {
   val u = CloudAgents.PgStore.open(sc)?
   defer {
     CloudAgents.PgStore.release(u)
@@ -112,7 +112,7 @@ func firstCount(rows: in slice[DbRow]): Int {
 /// Create the session's ledger row if it has none.
 func ensureSession(
   u: in CloudAgents.PgStore.PgUnit, sessionId: in String, ts: in String
-): Result[Unit, CloudAgents.Sqlite.DbError] {
+): Result[Unit, CloudAgents.Db.DbError] {
   CloudAgents.PgStore.ex(u, "INSERT INTO ledger_sessions (session_id, created_at) VALUES (@p0, " + CloudAgents.Pg.msIn(1) + ") ON CONFLICT (tenant_id, session_id) DO NOTHING", [sessionId, ts])?
   return Ok(value = ())
 }
@@ -121,12 +121,12 @@ func ensureSession(
 /// row lock it takes is held to commit, serialising the session's writers.
 func bump(
   u: in CloudAgents.PgStore.PgUnit, sessionId: in String, ts: in String
-): Result[String, CloudAgents.Sqlite.DbError] {
+): Result[String, CloudAgents.Db.DbError] {
   ensureSession(u, sessionId, ts)?
   val rows = CloudAgents.PgStore.q(u, "UPDATE ledger_sessions SET seq = seq + 1 WHERE session_id = @p0 RETURNING seq::text AS seq", [sessionId])?
   if rows.length == 0 {
     return Err(
-      error = CloudAgents.Sqlite.ExecFailed(
+      error = CloudAgents.Db.ExecFailed(
         sql = "UPDATE ledger_sessions",
         message = "ledger session row missing after insert"
       )
@@ -136,7 +136,7 @@ func bump(
 }
 
 /// The session's current change cursor ("0" before the first write).
-pub func currentSeq(sessionId: in String, sc: in CloudAgents.Pg.TenantScope): Result[String, CloudAgents.Sqlite.DbError] {
+pub func currentSeq(sessionId: in String, sc: in CloudAgents.Pg.TenantScope): Result[String, CloudAgents.Db.DbError] {
   val rows = query(sc, "SELECT seq::text AS seq FROM ledger_sessions WHERE session_id = @p0", [sessionId])?
   if rows.length == 0 {
     return Ok(value = "0")
@@ -189,7 +189,7 @@ func toItems(rows: in slice[DbRow]): slice[WorkItem] {
 /// A session's work items in batch order.
 pub func listItems(
   sessionId: in String, sc: in CloudAgents.Pg.TenantScope
-): Result[slice[WorkItem], CloudAgents.Sqlite.DbError] {
+): Result[slice[WorkItem], CloudAgents.Db.DbError] {
   val rows = query(sc, "SELECT " + itemCols() + " FROM ledger_items WHERE session_id = @p0" + itemOrder + " LIMIT " + toString(LedgerStore.itemRowCap), [sessionId])?
   return Ok(value = toItems(rows))
 }
@@ -197,14 +197,14 @@ pub func listItems(
 /// Items changed strictly after cursor `after`.
 pub func itemsChangedAfter(
   sessionId: in String, sc: in CloudAgents.Pg.TenantScope, after: in String
-): Result[slice[WorkItem], CloudAgents.Sqlite.DbError] {
+): Result[slice[WorkItem], CloudAgents.Db.DbError] {
   val rows = query(sc, "SELECT " + itemCols() + " FROM ledger_items WHERE session_id = @p0 AND updated_seq > @p1::bigint" + itemOrder + " LIMIT " + toString(LedgerStore.itemRowCap), [sessionId, after])?
   return Ok(value = toItems(rows))
 }
 
 pub func getItem(
   sessionId: in String, sc: in CloudAgents.Pg.TenantScope, itemId: in String
-): Result[Option[WorkItem], CloudAgents.Sqlite.DbError] {
+): Result[Option[WorkItem], CloudAgents.Db.DbError] {
   val rows = query(sc, "SELECT " + itemCols() + " FROM ledger_items WHERE session_id = @p0 AND item_id = @p1", [sessionId, itemId])?
   if rows.length == 0 {
     return Ok(value = None)
@@ -221,7 +221,7 @@ pub func registerItems(
   ids: in slice[String],
   titles: in slice[String],
   urls: in slice[String],
-): Result[Int, CloudAgents.Sqlite.DbError] {
+): Result[Int, CloudAgents.Db.DbError] {
   val u = CloudAgents.PgStore.open(sc)?
   defer {
     CloudAgents.PgStore.release(u)
@@ -267,7 +267,7 @@ pub func applyItemUpdate(
   reason: in String,
   auto: in LedgerStore.AutoEntry,
   resolveBlockers: in Bool,
-): Result[Bool, CloudAgents.Sqlite.DbError] {
+): Result[Bool, CloudAgents.Db.DbError] {
   val u = CloudAgents.PgStore.open(sc)?
   defer {
     CloudAgents.PgStore.release(u)
@@ -300,7 +300,7 @@ pub func applyItemUpdate(
 
 pub func listTransitions(
   sessionId: in String, sc: in CloudAgents.Pg.TenantScope, itemId: in String
-): Result[slice[WorkItemTransition], CloudAgents.Sqlite.DbError] {
+): Result[slice[WorkItemTransition], CloudAgents.Db.DbError] {
   val rows = query(sc, "SELECT item_id, from_state, to_state, actor, reason, " + ms("at", "at") + " FROM ledger_transitions " + "WHERE session_id = @p0 AND item_id = @p1 ORDER BY seq, ledger_transitions.at LIMIT 500", [sessionId, itemId])?
   var acc: slice[WorkItemTransition] = []
   var i = 0
@@ -438,7 +438,7 @@ func toEntries(rows: in slice[DbRow]): slice[LedgerEntry] {
 /// here) and return it as stored.
 pub func insertEntry(
   sc: in CloudAgents.Pg.TenantScope, e: in LedgerEntry
-): Result[LedgerEntry, CloudAgents.Sqlite.DbError] {
+): Result[LedgerEntry, CloudAgents.Db.DbError] {
   val u = CloudAgents.PgStore.open(sc)?
   defer {
     CloudAgents.PgStore.release(u)
@@ -497,7 +497,7 @@ pub func insertEntry(
   val rows = CloudAgents.PgStore.q(u, "SELECT " + entryCols("e") + " FROM ledger_entries e WHERE e.session_id = @p0 AND e.id = @p1", [e.sessionId, id])?
   if rows.length == 0 {
     return Err(
-      error = CloudAgents.Sqlite.ExecFailed(sql = "SELECT ledger entry", message = "entry vanished after insert")
+      error = CloudAgents.Db.ExecFailed(sql = "SELECT ledger entry", message = "entry vanished after insert")
     )
   }
   val stored = toEntry(rows[0])
@@ -507,7 +507,7 @@ pub func insertEntry(
 
 pub func getEntry(
   sessionId: in String, sc: in CloudAgents.Pg.TenantScope, entryId: in String
-): Result[Option[LedgerEntry], CloudAgents.Sqlite.DbError] {
+): Result[Option[LedgerEntry], CloudAgents.Db.DbError] {
   val rows = query(sc, "SELECT " + entryCols("e") + " FROM ledger_entries e WHERE e.session_id = @p0 AND e.id = @p1", [sessionId, entryId])?
   if rows.length == 0 {
     return Ok(value = None)
@@ -520,7 +520,7 @@ pub func getEntry(
 /// never the part dropped); countEntries says whether any were.
 pub func listEntries(
   sessionId: in String, sc: in CloudAgents.Pg.TenantScope
-): Result[slice[LedgerEntry], CloudAgents.Sqlite.DbError] {
+): Result[slice[LedgerEntry], CloudAgents.Db.DbError] {
   val newest = "SELECT * FROM ledger_entries WHERE session_id = @p0 " +
     "ORDER BY created_seq DESC, created_at DESC, id COLLATE \"C\" DESC LIMIT " +
     toString(LedgerStore.entryRowCap)
@@ -531,7 +531,7 @@ pub func listEntries(
 /// The entries of this session whose `supersedes` names `entryId`.
 pub func supersedingEntryIds(
   sessionId: in String, sc: in CloudAgents.Pg.TenantScope, entryId: in String
-): Result[slice[String], CloudAgents.Sqlite.DbError] {
+): Result[slice[String], CloudAgents.Db.DbError] {
   val rows = query(sc, "SELECT e.id FROM ledger_entries e WHERE e.session_id = @p0 AND e.supersedes = @p1" + entryOrder("e"), [sessionId, entryId])?
   var acc: slice[String] = []
   var i = 0
@@ -544,7 +544,7 @@ pub func supersedingEntryIds(
 
 pub func entriesChangedAfter(
   sessionId: in String, sc: in CloudAgents.Pg.TenantScope, after: in String
-): Result[slice[LedgerEntry], CloudAgents.Sqlite.DbError] {
+): Result[slice[LedgerEntry], CloudAgents.Db.DbError] {
   val rows = query(sc, "SELECT " + entryCols("e") + " FROM ledger_entries e WHERE e.session_id = @p0 AND e.updated_seq > @p1::bigint" + entryOrder("e") + " LIMIT " + toString(LedgerStore.entryRowCap), [sessionId, after])?
   return Ok(value = toEntries(rows))
 }
@@ -559,7 +559,7 @@ pub func reviewEntry(
   kind: in String,
   body: in String,
   by: in String,
-): Result[Feedback, CloudAgents.Sqlite.DbError] {
+): Result[Feedback, CloudAgents.Db.DbError] {
   val u = CloudAgents.PgStore.open(sc)?
   defer {
     CloudAgents.PgStore.release(u)
@@ -627,13 +627,13 @@ func insertFeedback(
   by: in String,
   ts: in String,
   seq: in String,
-): Result[Feedback, CloudAgents.Sqlite.DbError] {
+): Result[Feedback, CloudAgents.Db.DbError] {
   val id = newId()
   CloudAgents.PgStore.ex(u, "INSERT INTO ledger_feedback (id, session_id, entry_id, item_id, kind, body, created_by, created_at, updated_seq) " + "VALUES (@p0, @p1, @p2, @p3, @p4, @p5, @p6, " + CloudAgents.Pg.msIn(7) + ", @p8::bigint)", [id, sessionId, entryId, itemId, kind, body, by, ts, seq])?
   val rows = CloudAgents.PgStore.q(u, "SELECT " + feedbackCols("f") + " FROM ledger_feedback f WHERE f.session_id = @p0 AND f.id = @p1", [sessionId, id])?
   if rows.length == 0 {
     return Err(
-      error = CloudAgents.Sqlite.ExecFailed(
+      error = CloudAgents.Db.ExecFailed(
         sql = "SELECT ledger feedback",
         message = "feedback vanished after insert"
       )
@@ -650,7 +650,7 @@ pub func addFeedback(
   kind: in String,
   body: in String,
   by: in String,
-): Result[Feedback, CloudAgents.Sqlite.DbError] {
+): Result[Feedback, CloudAgents.Db.DbError] {
   val u = CloudAgents.PgStore.open(sc)?
   defer {
     CloudAgents.PgStore.release(u)
@@ -666,7 +666,7 @@ pub func addFeedback(
 /// Past the cap these are the NEWEST feedbackRowCap rows, oldest first.
 pub func listFeedback(
   sessionId: in String, sc: in CloudAgents.Pg.TenantScope
-): Result[slice[Feedback], CloudAgents.Sqlite.DbError] {
+): Result[slice[Feedback], CloudAgents.Db.DbError] {
   val newest = "SELECT * FROM ledger_feedback WHERE session_id = @p0 ORDER BY created_at DESC, id COLLATE \"C\" DESC LIMIT " +
     toString(LedgerStore.feedbackRowCap)
   val rows = query(sc, "SELECT " + feedbackCols("f") + " FROM (" + newest + ") f" + feedbackOrder("f"), [sessionId])?
@@ -676,41 +676,41 @@ pub func listFeedback(
 /// Feedback on one entry, oldest first.
 pub func feedbackForEntry(
   sessionId: in String, sc: in CloudAgents.Pg.TenantScope, entryId: in String
-): Result[slice[Feedback], CloudAgents.Sqlite.DbError] {
+): Result[slice[Feedback], CloudAgents.Db.DbError] {
   val rows = query(sc, "SELECT " + feedbackCols("f") + " FROM ledger_feedback f WHERE f.session_id = @p0 AND f.entry_id = @p1" + feedbackOrder("f"), [sessionId, entryId])?
   return Ok(value = toFeedbackList(rows))
 }
 
 pub func feedbackChangedAfter(
   sessionId: in String, sc: in CloudAgents.Pg.TenantScope, after: in String
-): Result[slice[Feedback], CloudAgents.Sqlite.DbError] {
+): Result[slice[Feedback], CloudAgents.Db.DbError] {
   val rows = query(sc, "SELECT " + feedbackCols("f") + " FROM ledger_feedback f WHERE f.session_id = @p0 AND f.updated_seq > @p1::bigint" + feedbackOrder("f") + " LIMIT " + toString(LedgerStore.feedbackRowCap), [sessionId, after])?
   return Ok(value = toFeedbackList(rows))
 }
 
 /// Row counts, to tell a capped list from a complete one.
-pub func countItems(sessionId: in String, sc: in CloudAgents.Pg.TenantScope): Result[Int, CloudAgents.Sqlite.DbError] {
+pub func countItems(sessionId: in String, sc: in CloudAgents.Pg.TenantScope): Result[Int, CloudAgents.Db.DbError] {
   return countWhere(sc, "ledger_items", sessionId, "")
 }
 
-pub func countEntries(sessionId: in String, sc: in CloudAgents.Pg.TenantScope): Result[Int, CloudAgents.Sqlite.DbError] {
+pub func countEntries(sessionId: in String, sc: in CloudAgents.Pg.TenantScope): Result[Int, CloudAgents.Db.DbError] {
   return countWhere(sc, "ledger_entries", sessionId, "")
 }
 
-pub func countFeedback(sessionId: in String, sc: in CloudAgents.Pg.TenantScope): Result[Int, CloudAgents.Sqlite.DbError] {
+pub func countFeedback(sessionId: in String, sc: in CloudAgents.Pg.TenantScope): Result[Int, CloudAgents.Db.DbError] {
   return countWhere(sc, "ledger_feedback", sessionId, "")
 }
 
 /// Undelivered feedback count.
 pub func pendingFeedbackCount(
   sessionId: in String, sc: in CloudAgents.Pg.TenantScope
-): Result[Int, CloudAgents.Sqlite.DbError] {
+): Result[Int, CloudAgents.Db.DbError] {
   return countWhere(sc, "ledger_feedback", sessionId, " AND delivered_at IS NULL")
 }
 
 func countWhere(
   sc: in CloudAgents.Pg.TenantScope, table: in String, sessionId: in String, extra: in String
-): Result[Int, CloudAgents.Sqlite.DbError] {
+): Result[Int, CloudAgents.Db.DbError] {
   val rows = query(sc, "SELECT count(*)::text AS n FROM " + table + " WHERE session_id = @p0" + extra, [sessionId])?
   return Ok(value = firstCount(rows))
 }
@@ -719,7 +719,7 @@ func countWhere(
 /// numbers stay right however large the session grows.
 pub func summaryOf(
   sessionId: in String, sc: in CloudAgents.Pg.TenantScope, pendingFeedback: in Int
-): Result[LedgerSummary, CloudAgents.Sqlite.DbError] {
+): Result[LedgerSummary, CloudAgents.Db.DbError] {
   val pending = "review_state = 'pending' AND severity IN ('review', 'blocking')"
   val sql = "SELECT " + "(SELECT count(*) FROM ledger_items WHERE session_id = @p0)::text AS total, " +
     stateCount("queued") +
@@ -773,7 +773,7 @@ func stateCount(state: in String): String {
 /// exactly the claimed rows (oldest first).
 pub func collectFeedback(
   sessionId: in String, sc: in CloudAgents.Pg.TenantScope, via: in String
-): Result[slice[Feedback], CloudAgents.Sqlite.DbError] {
+): Result[slice[Feedback], CloudAgents.Db.DbError] {
   val claimed = claimFeedback(sessionId, sc, via)?
   var acc: slice[Feedback] = []
   var i = 0
@@ -789,7 +789,7 @@ pub func collectFeedback(
 /// rolled back, so nothing is ever marked delivered unseen.
 pub func claimFeedback(
   sessionId: in String, sc: in CloudAgents.Pg.TenantScope, via: in String
-): Result[slice[LedgerStore.ClaimedFeedback], CloudAgents.Sqlite.DbError] {
+): Result[slice[LedgerStore.ClaimedFeedback], CloudAgents.Db.DbError] {
   val u = CloudAgents.PgStore.open(sc)?
   defer {
     CloudAgents.PgStore.release(u)
@@ -818,14 +818,14 @@ pub func releaseFeedbackBatch(sessionId: in String, sc: in CloudAgents.Pg.Tenant
     case Ok(_) -> ()
     case Err(e) -> println(
       "WARNING: releasing ledger feedback batch " + batch + " failed: " +
-        CloudAgents.Sqlite.dbErrorMessage(e)
+        CloudAgents.Db.dbErrorMessage(e)
     )
   }
 }
 
 func releaseBatch(
   sessionId: in String, sc: in CloudAgents.Pg.TenantScope, batch: in String
-): Result[Unit, CloudAgents.Sqlite.DbError] {
+): Result[Unit, CloudAgents.Db.DbError] {
   val u = CloudAgents.PgStore.open(sc)?
   defer {
     CloudAgents.PgStore.release(u)
@@ -840,7 +840,7 @@ func releaseBatch(
 /// Every item's sync row for a session (items never synced have none).
 pub func syncRows(
   sessionId: in String, sc: in CloudAgents.Pg.TenantScope
-): Result[slice[LedgerStore.SyncRow], CloudAgents.Sqlite.DbError] {
+): Result[slice[LedgerStore.SyncRow], CloudAgents.Db.DbError] {
   val rows = query(sc, "SELECT item_id, synced_label, comment_id, comment_hash, last_error, " + ms("synced_at", "synced_at") + ", " + ms("attempted_at", "attempted_at") + " FROM ledger_github_sync WHERE session_id = @p0 ORDER BY item_id COLLATE \"C\"", [sessionId])?
   var acc: slice[LedgerStore.SyncRow] = []
   var i = 0
@@ -864,7 +864,7 @@ pub func syncRows(
 
 pub func saveSyncRow(
   sessionId: in String, sc: in CloudAgents.Pg.TenantScope, row: in LedgerStore.SyncRow
-): Result[Unit, CloudAgents.Sqlite.DbError] {
+): Result[Unit, CloudAgents.Db.DbError] {
   exec(sc, "INSERT INTO ledger_github_sync (session_id, item_id, synced_label, comment_id, comment_hash, last_error, synced_at, attempted_at) " + "VALUES (@p0, @p1, @p2, @p3, @p4, @p5, " + msOpt(6) + ", " + msOpt(7) + ") ON CONFLICT (tenant_id, session_id, item_id) DO UPDATE SET " + "synced_label = excluded.synced_label, comment_id = excluded.comment_id, comment_hash = excluded.comment_hash, " + "last_error = excluded.last_error, synced_at = excluded.synced_at, attempted_at = excluded.attempted_at", [sessionId, row.itemId, row.syncedLabel, row.commentId, row.commentHash, row.lastError, row.syncedAt, row.attemptedAt])?
   return Ok(value = ())
 }
@@ -874,7 +874,7 @@ pub func saveSyncRow(
 /// session id). Empty for an archived session.
 pub func ownedIssueItems(
   sessionId: in String, sc: in CloudAgents.Pg.TenantScope
-): Result[slice[String], CloudAgents.Sqlite.DbError] {
+): Result[slice[String], CloudAgents.Db.DbError] {
   val sql = "SELECT i.item_id FROM ledger_items i JOIN sessions s ON s.id = i.session_id " +
     "WHERE i.session_id = @p0 AND i.item_id LIKE 'gh:%' AND NOT s.is_archived AND NOT EXISTS (" +
     "SELECT 1 FROM ledger_items o JOIN sessions os ON os.id = o.session_id " +
@@ -895,7 +895,7 @@ pub func ownedIssueItems(
 /// it got as far as the items).
 pub func markSyncAttempt(
   sessionId: in String, sc: in CloudAgents.Pg.TenantScope, error: in String
-): Result[Unit, CloudAgents.Sqlite.DbError] {
+): Result[Unit, CloudAgents.Db.DbError] {
   exec(sc, "INSERT INTO ledger_github_sync_runs (session_id, attempted_at, last_error) VALUES (@p0, " + CloudAgents.Pg.msIn(1) + ", @p2) " + "ON CONFLICT (tenant_id, session_id) DO UPDATE SET attempted_at = excluded.attempted_at, last_error = excluded.last_error", [sessionId, now(), error])?
   return Ok(value = ())
 }
@@ -906,7 +906,7 @@ pub func markSyncAttempt(
 /// A crashed pass's lease simply expires.
 pub func acquireSyncLease(
   sessionId: in String, sc: in CloudAgents.Pg.TenantScope, leaseMillis: in Long
-): Result[String, CloudAgents.Sqlite.DbError] {
+): Result[String, CloudAgents.Db.DbError] {
   val u = CloudAgents.PgStore.open(sc)?
   defer {
     CloudAgents.PgStore.release(u)
@@ -925,7 +925,7 @@ pub func acquireSyncLease(
 /// Give the lease back, if it is still the one `token` names.
 pub func releaseSyncLease(
   sessionId: in String, sc: in CloudAgents.Pg.TenantScope, token: in String
-): Result[Unit, CloudAgents.Sqlite.DbError] {
+): Result[Unit, CloudAgents.Db.DbError] {
   if token.length.toInt() == 0 {
     return Ok(value = ())
   }
@@ -944,7 +944,7 @@ pub func applyRetroMatch(
   sc: in CloudAgents.Pg.TenantScope,
   observedId: in String,
   declaredId: in String,
-): Result[Unit, CloudAgents.Sqlite.DbError] {
+): Result[Unit, CloudAgents.Db.DbError] {
   val u = CloudAgents.PgStore.open(sc)?
   defer {
     CloudAgents.PgStore.release(u)
@@ -958,7 +958,7 @@ pub func applyRetroMatch(
 /// A run ended: its mid-run observations are final now.
 pub func settleProvisional(
   sessionId: in String, sc: in CloudAgents.Pg.TenantScope
-): Result[Unit, CloudAgents.Sqlite.DbError] {
+): Result[Unit, CloudAgents.Db.DbError] {
   val u = CloudAgents.PgStore.open(sc)?
   defer {
     CloudAgents.PgStore.release(u)
@@ -976,14 +976,14 @@ pub func settleProvisional(
 /// Every entry of a session for reconciliation (see listEntries).
 pub func entriesForReconcile(
   sessionId: in String, sc: in CloudAgents.Pg.TenantScope
-): Result[slice[LedgerEntry], CloudAgents.Sqlite.DbError] {
+): Result[slice[LedgerEntry], CloudAgents.Db.DbError] {
   return listEntries(sessionId, sc)
 }
 
 // ── Repo policy cache ─────────────────────────────────────────────────────────
 pub func getPolicyCache(
   sessionId: in String, sc: in CloudAgents.Pg.TenantScope
-): Result[LedgerStore.PolicyCache, CloudAgents.Sqlite.DbError] {
+): Result[LedgerStore.PolicyCache, CloudAgents.Db.DbError] {
   val rows = query(sc, "SELECT policy_status, policy_json, policy_error FROM ledger_sessions WHERE session_id = @p0", [sessionId])?
   if rows.length == 0 {
     return Ok(value = LedgerStore.PolicyCache(status = "", json = "", error = ""))
@@ -1004,20 +1004,13 @@ pub func setPolicyCache(
   status: in String,
   json: in String,
   error: in String,
-): Result[Unit, CloudAgents.Sqlite.DbError] {
+): Result[Unit, CloudAgents.Db.DbError] {
   val u = CloudAgents.PgStore.open(sc)?
   defer {
     CloudAgents.PgStore.release(u)
   }
   ensureSession(u, sessionId, now())?
-  // "unavailable" (a transient GitHub failure) is not an answer: the column's
-  // CHECK has no such value, and the service retries it exactly as it does an
-  // unfetched policy, so it is stored as unfetched (keeping the error text).
-  var stored = status
-  if status == "unavailable" {
-    stored = ""
-  }
-  CloudAgents.PgStore.ex(u, "UPDATE ledger_sessions SET policy_status = @p1, policy_json = @p2, policy_error = @p3 WHERE session_id = @p0", [sessionId, stored, json, error])?
+  CloudAgents.PgStore.ex(u, "UPDATE ledger_sessions SET policy_status = @p1, policy_json = @p2, policy_error = @p3 WHERE session_id = @p0", [sessionId, status, json, error])?
   CloudAgents.PgStore.commit(u)?
   return Ok(value = ())
 }
@@ -1027,7 +1020,7 @@ pub func setPolicyCache(
 /// tenant, blocking first, then oldest first (bounded).
 pub func inboxForUser(
   sc: in CloudAgents.Pg.TenantScope
-): Result[slice[LedgerStore.InboxEntry], CloudAgents.Sqlite.DbError] {
+): Result[slice[LedgerStore.InboxEntry], CloudAgents.Db.DbError] {
   val rows = query(sc, "SELECT " + entryCols("e") + ", s.repo_url AS repo_url, s.branch AS branch FROM ledger_entries e " + "JOIN sessions s ON s.id = e.session_id WHERE s.user_id = @p0 AND e.review_state = 'pending' " + "AND e.severity IN ('review', 'blocking') ORDER BY CASE e.severity WHEN 'blocking' THEN 0 ELSE 1 END, e.created_at, e.id COLLATE \"C\" LIMIT 500", [sc.userId])?
   var acc: slice[LedgerStore.InboxEntry] = []
   var i = 0
@@ -1050,7 +1043,7 @@ pub func inboxForUser(
 /// session left pointing at a deleted profile must not stay observed.
 pub func observerSettingsFor(
   profileId: in String, sc: in CloudAgents.Pg.TenantScope
-): Result[Option[ObserverSettings], CloudAgents.Sqlite.DbError] {
+): Result[Option[ObserverSettings], CloudAgents.Db.DbError] {
   if profileId.length.toInt() == 0 {
     return Ok(value = None)
   }
@@ -1076,7 +1069,7 @@ pub func observerSettingsFor(
 /// Save a profile's observer settings (already validated).
 pub func saveObserverSettings(
   profileId: in String, sc: in CloudAgents.Pg.TenantScope, st: in ObserverSettings
-): Result[Unit, CloudAgents.Sqlite.DbError] {
+): Result[Unit, CloudAgents.Db.DbError] {
   exec(sc, "INSERT INTO ledger_observer_settings (profile_id, enabled, harness, model, repo_access, mid_run_minutes, max_passes_per_day, updated_at) " + "VALUES (@p0, @p1::boolean, @p2, @p3, @p4, @p5::integer, @p6::integer, " + CloudAgents.Pg.msIn(7) + ") ON CONFLICT (tenant_id, profile_id) DO UPDATE SET " + "enabled = excluded.enabled, harness = excluded.harness, model = excluded.model, repo_access = excluded.repo_access, " + "mid_run_minutes = excluded.mid_run_minutes, max_passes_per_day = excluded.max_passes_per_day, updated_at = excluded.updated_at", [profileId, st.enabled, st.harness, st.model, st.repoAccess, st.midRunMinutes, st.maxPassesPerDay, now()])?
   return Ok(value = ())
 }
@@ -1107,7 +1100,7 @@ func toObserverState(r: in DbRow): LedgerStore.ObserverState {
 /// never been observed).
 pub func observerState(
   sessionId: in String, sc: in CloudAgents.Pg.TenantScope
-): Result[LedgerStore.ObserverState, CloudAgents.Sqlite.DbError] {
+): Result[LedgerStore.ObserverState, CloudAgents.Db.DbError] {
   val rows = query(sc, "SELECT " + observerCols() + " FROM ledger_observer WHERE session_id = @p0", [sessionId])?
   if rows.length == 0 {
     return Ok(value = LedgerStore.emptyObserverState(sessionId))
@@ -1119,7 +1112,7 @@ pub func observerState(
 /// `observerSessionId` is not an observer).
 pub func observedSessionOf(
   observerSessionId: in String, sc: in CloudAgents.Pg.TenantScope
-): Result[String, CloudAgents.Sqlite.DbError] {
+): Result[String, CloudAgents.Db.DbError] {
   if observerSessionId.length.toInt() == 0 {
     return Ok(value = "")
   }
@@ -1132,7 +1125,7 @@ pub func observedSessionOf(
 
 pub func saveObserverState(
   sc: in CloudAgents.Pg.TenantScope, st: in LedgerStore.ObserverState
-): Result[Unit, CloudAgents.Sqlite.DbError] {
+): Result[Unit, CloudAgents.Db.DbError] {
   exec(sc, "INSERT INTO ledger_observer (session_id, observer_session_id, cursor_seq, window_end, pending, pass_day, passes_today, last_pass_at, config_key, last_error) " + "VALUES (@p0, @p1, " + numOpt(2, "bigint") + ", " + numOpt(3, "bigint") + ", @p4 = '1', " + numOpt(5, "integer") + ", COALESCE(" + numOpt(6, "integer") + ", 0), " + msOpt(7) + ", @p8, @p9) " + "ON CONFLICT (tenant_id, session_id) DO UPDATE SET observer_session_id = excluded.observer_session_id, cursor_seq = excluded.cursor_seq, " + "window_end = excluded.window_end, pending = excluded.pending, pass_day = excluded.pass_day, passes_today = excluded.passes_today, " + "last_pass_at = excluded.last_pass_at, config_key = excluded.config_key, last_error = excluded.last_error", [st.sessionId, st.observerSessionId, st.cursorSeq, st.windowEnd, st.pending, st.passDay, st.passesToday, st.lastPassAt, st.configHash, st.lastError])?
   return Ok(value = ())
 }
@@ -1141,7 +1134,7 @@ pub func saveObserverState(
 /// that isn't an observer.
 pub func observerRunInfo(
   sessionId: in String, sc: in CloudAgents.Pg.TenantScope
-): Result[Option[LedgerStore.ObserverRunInfo], CloudAgents.Sqlite.DbError] {
+): Result[Option[LedgerStore.ObserverRunInfo], CloudAgents.Db.DbError] {
   val rows = query(sc, "SELECT o.session_id, COALESCE(st.repo_access, 'none') AS repo_access FROM ledger_observer o " + "JOIN sessions t ON t.id = o.session_id LEFT JOIN ledger_observer_settings st ON st.profile_id = t.profile_id " + "AND st.profile_id IN (SELECT id FROM profiles) WHERE o.observer_session_id = @p0 AND o.observer_session_id <> ''", [sessionId])?
   if rows.length == 0 {
     return Ok(value = None)
@@ -1161,7 +1154,7 @@ pub func observerRunInfo(
 /// callback, a run hook on the session's own request, or a maintenance pass).
 pub func sessionRunFacts(
   sessionId: in String, sc: in CloudAgents.Pg.TenantScope
-): Result[Option[LedgerStore.SessionRunFacts], CloudAgents.Sqlite.DbError] {
+): Result[Option[LedgerStore.SessionRunFacts], CloudAgents.Db.DbError] {
   val rows = query(sc, "SELECT id, user_id, repo_url, branch, harness, status, profile_id, CASE WHEN is_archived THEN '1' ELSE '0' END AS is_archived, " + "observes_session_id, container_id FROM sessions WHERE id = @p0", [sessionId])?
   if rows.length == 0 {
     return Ok(value = None)
@@ -1192,7 +1185,7 @@ pub func linkObserverSession(
   sc: in CloudAgents.Pg.TenantScope,
   observedSessionId: in String,
   profileId: in String,
-): Result[Unit, CloudAgents.Sqlite.DbError] {
+): Result[Unit, CloudAgents.Db.DbError] {
   exec(sc, "UPDATE sessions SET observes_session_id = @p1, profile_id = @p2 WHERE id = @p0", [observerSessionId, observedSessionId, profileId])?
   return Ok(value = ())
 }
@@ -1201,7 +1194,7 @@ pub func linkObserverSession(
 /// observer). Only ever an observer: an ordinary session is left alone.
 pub func deleteObserverSessionRow(
   observerSessionId: in String, sc: in CloudAgents.Pg.TenantScope
-): Result[Unit, CloudAgents.Sqlite.DbError] {
+): Result[Unit, CloudAgents.Db.DbError] {
   if observerSessionId.length.toInt() == 0 {
     return Ok(value = ())
   }
@@ -1220,7 +1213,7 @@ pub func deleteObserverSessionRow(
 /// Forget an observed session's observer (its session was deleted).
 pub func deleteObserverState(
   sessionId: in String, sc: in CloudAgents.Pg.TenantScope
-): Result[Unit, CloudAgents.Sqlite.DbError] {
+): Result[Unit, CloudAgents.Db.DbError] {
   exec(sc, "DELETE FROM ledger_observer WHERE session_id = @p0", [sessionId])?
   return Ok(value = ())
 }
@@ -1228,7 +1221,7 @@ pub func deleteObserverState(
 /// Ask for a pass. Idempotent: many asks before a pass runs make one pass.
 pub func markObserverPending(
   sessionId: in String, sc: in CloudAgents.Pg.TenantScope
-): Result[Unit, CloudAgents.Sqlite.DbError] {
+): Result[Unit, CloudAgents.Db.DbError] {
   exec(sc, "INSERT INTO ledger_observer (session_id, pending) VALUES (@p0, true) ON CONFLICT (tenant_id, session_id) DO UPDATE SET pending = true", [sessionId])?
   return Ok(value = ())
 }
@@ -1236,13 +1229,13 @@ pub func markObserverPending(
 /// Take the pending pass for a session: true for exactly one caller.
 pub func claimObserverPass(
   sessionId: in String, sc: in CloudAgents.Pg.TenantScope
-): Result[Bool, CloudAgents.Sqlite.DbError] {
+): Result[Bool, CloudAgents.Db.DbError] {
   val n = exec(sc, "UPDATE ledger_observer SET pending = false WHERE session_id = @p0 AND pending", [sessionId])?
   return Ok(value = n == 1)
 }
 
 // ─── Cross-tenant listings (docs/phase11-postgres-tenancy.md §5.3a) ─────────
-func listSessionIds(fn: in String, limit: in Int): Result[slice[String], CloudAgents.Sqlite.DbError] {
+func listSessionIds(fn: in String, limit: in Int): Result[slice[String], CloudAgents.Db.DbError] {
   val u = CloudAgents.PgStore.openUnscoped()?
   defer {
     CloudAgents.PgStore.release(u)
@@ -1259,13 +1252,13 @@ func listSessionIds(fn: in String, limit: in Int): Result[slice[String], CloudAg
 /// Sessions with owned GitHub-backed items that need a sync pass, in every
 /// tenant, least recently attempted first (`list_sessions_to_sync`). Each
 /// session's pass then takes its sync lease under the session's route scope.
-pub func sessionsToSync(limit: in Int): Result[slice[String], CloudAgents.Sqlite.DbError] {
+pub func sessionsToSync(limit: in Int): Result[slice[String], CloudAgents.Db.DbError] {
   return listSessionIds("list_sessions_to_sync", limit)
 }
 
 /// Observed sessions with a pass waiting, in every tenant, the
 /// longest-waiting first (`list_observer_passes`). Each pass is then claimed
 /// by `claimObserverPass` under the session's route scope.
-pub func pendingObserverSessions(limit: in Int): Result[slice[String], CloudAgents.Sqlite.DbError] {
+pub func pendingObserverSessions(limit: in Int): Result[slice[String], CloudAgents.Db.DbError] {
   return listSessionIds("list_observer_passes", limit)
 }

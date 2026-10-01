@@ -25,7 +25,7 @@ import CloudAgents.Proxy
 import CloudAgents.Repository
 import CloudAgents.Search
 import CloudAgents.SessionStore
-import CloudAgents.Sqlite
+import CloudAgents.Db
 import CloudAgents.Streaming
 import CloudAgents.Webhooks
 import CloudAgents.WorkspaceHandlers
@@ -100,7 +100,7 @@ impl Web.Middleware for AuthMiddleware {
         match CloudAgents.PgStore.Tenancy.ensurePersonalTenant(userId) {
           case Ok(_) -> ()
           case Err(e) -> {
-            println("ERROR: could not provision the personal tenant for " + userId + ": " + CloudAgents.Sqlite.dbErrorMessage(e))
+            println("ERROR: could not provision the personal tenant for " + userId + ": " + CloudAgents.Db.dbErrorMessage(e))
             return Web.errorResponse(Web.internalError("database unavailable"))
           }
         }

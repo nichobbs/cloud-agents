@@ -30,7 +30,7 @@ import CloudAgents.LibrarySeed
 import CloudAgents.Repository
 import CloudAgents.Scope
 import CloudAgents.SessionStore
-import CloudAgents.Sqlite
+import CloudAgents.Db
 import extern System.Environment as Env
 import extern System.String as DotNetString
 
@@ -581,7 +581,7 @@ pub func logout(authHeaderValue: in String): Result[Unit, Web.ApiError] {
         case Ok(_) -> return Ok(())
         case Err(e) -> {
           println(
-            "WARNING: logout could not invalidate the token-validation cache row: " + CloudAgents.Sqlite.dbErrorMessage(e)
+            "WARNING: logout could not invalidate the token-validation cache row: " + CloudAgents.Db.dbErrorMessage(e)
           )
           return Err(Web.internalError("logout failed"))
         }

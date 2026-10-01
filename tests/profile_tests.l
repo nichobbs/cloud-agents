@@ -15,7 +15,7 @@ import CloudAgents.PgStore.Tenancy
 import CloudAgents.Profiles
 import CloudAgents.Repository
 import CloudAgents.Scope
-import CloudAgents.Sqlite
+import CloudAgents.Db
 import extern System.Environment as Env
 
 val testKey = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="
@@ -99,7 +99,7 @@ func newUser(tag: in String): String {
   val uid = "t-" + tag + "-" + Std.Uuid.uuidToString(Std.Uuid.newUuid())
   match CloudAgents.PgStore.Tenancy.ensurePersonalTenant(uid) {
     case Ok(_) -> ()
-    case Err(e) -> panic("provisioning " + uid + " failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+    case Err(e) -> panic("provisioning " + uid + " failed: " + CloudAgents.Db.dbErrorMessage(e))
   }
   return uid
 }
@@ -113,21 +113,21 @@ func freshUser(tag: in String): String {
   return uid
 }
 
-func mustProfile(r: in Result[Profile, CloudAgents.Sqlite.DbError]): Profile {
-  return match r { case Ok(p) -> p; case Err(e) -> panic("profile op failed: " + CloudAgents.Sqlite.dbErrorMessage(e)) }
+func mustProfile(r: in Result[Profile, CloudAgents.Db.DbError]): Profile {
+  return match r { case Ok(p) -> p; case Err(e) -> panic("profile op failed: " + CloudAgents.Db.dbErrorMessage(e)) }
 }
 
-func mustProfiles(r: in Result[slice[Profile], CloudAgents.Sqlite.DbError]): slice[Profile] {
+func mustProfiles(r: in Result[slice[Profile], CloudAgents.Db.DbError]): slice[Profile] {
   return match r {
     case Ok(ps) -> ps
-    case Err(e) -> panic("profile list failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+    case Err(e) -> panic("profile list failed: " + CloudAgents.Db.dbErrorMessage(e))
   }
 }
 
-func mustRows(r: in Result[Int, CloudAgents.Sqlite.DbError]): Int {
+func mustRows(r: in Result[Int, CloudAgents.Db.DbError]): Int {
   return match r {
     case Ok(n) -> n
-    case Err(e) -> panic("profile write failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+    case Err(e) -> panic("profile write failed: " + CloudAgents.Db.dbErrorMessage(e))
   }
 }
 
@@ -339,7 +339,7 @@ test "Profile CRUD round-trips with its credential grants" {
       assertEqualInt(p.tools.length.toInt(), 0, "tool grants cleared on switch to all")
     }
     case Ok(None) -> assertTrue(false, "updated profile should exist")
-    case Err(e) -> assertTrue(false, "getProfile failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+    case Err(e) -> assertTrue(false, "getProfile failed: " + CloudAgents.Db.dbErrorMessage(e))
   }
 
   val deleted = mustRows(deleteProfile(created.id, CloudAgents.Pg.personalScope(userId)))
@@ -432,7 +432,7 @@ test "Profile ownership scoping hides other users' profiles" {
   match getProfile(theirs.id, CloudAgents.Pg.personalScope(me)) {
     case Ok(Some(_)) -> assertTrue(false, "cannot read another user's profile")
     case Ok(None) -> ()
-    case Err(e) -> assertTrue(false, "getProfile failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+    case Err(e) -> assertTrue(false, "getProfile failed: " + CloudAgents.Db.dbErrorMessage(e))
   }
   assertEqualInt(
     mustRows(
@@ -552,7 +552,7 @@ test "Selected-mode profile enables only its granted tools, and fails OPEN for u
   )
   match enabledToolsForProfile(CloudAgents.Pg.personalScope(userId), locked.id) {
     case Ok(v) -> assertEqual(v, "recall,remember", "selected mode joins the granted tool names, alphabetical")
-    case Err(e) -> assertTrue(false, "enabledToolsForProfile failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+    case Err(e) -> assertTrue(false, "enabledToolsForProfile failed: " + CloudAgents.Db.dbErrorMessage(e))
   }
 
   // 'all' mode -> no restriction (empty string sentinel).
@@ -573,14 +573,14 @@ test "Selected-mode profile enables only its granted tools, and fails OPEN for u
   )
   match enabledToolsForProfile(CloudAgents.Pg.personalScope(userId), allProfile.id) {
     case Ok(v) -> assertEqual(v, "", "'all' mode -> no restriction")
-    case Err(e) -> assertTrue(false, "enabledToolsForProfile failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+    case Err(e) -> assertTrue(false, "enabledToolsForProfile failed: " + CloudAgents.Db.dbErrorMessage(e))
   }
 
   // No profile (empty id) -> no restriction (unlike credentials, this isn't a
   // security boundary in v1).
   match enabledToolsForProfile(CloudAgents.Pg.personalScope(userId), "") {
     case Ok(v) -> assertEqual(v, "", "empty profile id -> no restriction")
-    case Err(e) -> assertTrue(false, "enabledToolsForProfile failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+    case Err(e) -> assertTrue(false, "enabledToolsForProfile failed: " + CloudAgents.Db.dbErrorMessage(e))
   }
 
   // Fail OPEN (deliberately unlike decryptedCredentialsForProfile above): a
@@ -588,7 +588,7 @@ test "Selected-mode profile enables only its granted tools, and fails OPEN for u
   // resolves to "no restriction" rather than disabling every tool.
   match enabledToolsForProfile(CloudAgents.Pg.personalScope(userId), "does-not-exist") {
     case Ok(v) -> assertEqual(v, "", "unknown profile id -> no restriction (fail open)")
-    case Err(e) -> assertTrue(false, "enabledToolsForProfile failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+    case Err(e) -> assertTrue(false, "enabledToolsForProfile failed: " + CloudAgents.Db.dbErrorMessage(e))
   }
 }
 
@@ -616,15 +616,15 @@ test "Network policy resolves and fails closed for unknown profiles" {
 
   match profileNetworkPolicy(CloudAgents.Pg.personalScope(userId), isolated.id) {
     case Ok(p) -> assertEqual(p, "none", "profile network policy read back")
-    case Err(e) -> assertTrue(false, "policy read failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+    case Err(e) -> assertTrue(false, "policy read failed: " + CloudAgents.Db.dbErrorMessage(e))
   }
   // Empty profile -> full (legacy default); unknown non-empty -> none (closed).
   match profileNetworkPolicy(CloudAgents.Pg.personalScope(userId), "") {
     case Ok(p) -> assertEqual(p, "full", "no profile -> full network")
-    case Err(e) -> assertTrue(false, "policy read failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+    case Err(e) -> assertTrue(false, "policy read failed: " + CloudAgents.Db.dbErrorMessage(e))
   }
   match profileNetworkPolicy(CloudAgents.Pg.personalScope(userId), "does-not-exist") {
     case Ok(p) -> assertEqual(p, "none", "unknown profile -> isolated (fail closed)")
-    case Err(e) -> assertTrue(false, "policy read failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+    case Err(e) -> assertTrue(false, "policy read failed: " + CloudAgents.Db.dbErrorMessage(e))
   }
 }

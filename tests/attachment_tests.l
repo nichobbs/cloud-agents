@@ -15,7 +15,7 @@ import CloudAgents.Pg.Migrate
 import CloudAgents.PgStore.Tenancy
 import CloudAgents.Repository
 import CloudAgents.SessionStore
-import CloudAgents.Sqlite
+import CloudAgents.Db
 import extern System.Environment as Env
 import extern System.Text.Encoding as Utf8Encoding
 
@@ -61,7 +61,7 @@ func newUser(tag: in String): String {
   val uid = "t-" + tag + "-" + Std.Uuid.uuidToString(Std.Uuid.newUuid())
   match CloudAgents.PgStore.Tenancy.ensurePersonalTenant(uid) {
     case Ok(_) -> ()
-    case Err(e) -> panic("provisioning " + uid + " failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+    case Err(e) -> panic("provisioning " + uid + " failed: " + CloudAgents.Db.dbErrorMessage(e))
   }
   return uid
 }
@@ -110,7 +110,7 @@ func mkSession(id: in String): Unit {
   )
   match addSession(s, CloudAgents.Auth.requestScope()) {
     case Ok(_) -> ()
-    case Err(e) -> panic("addSession failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+    case Err(e) -> panic("addSession failed: " + CloudAgents.Db.dbErrorMessage(e))
   }
 }
 
@@ -330,7 +330,7 @@ test "storeAttachments rejects a dangerous mimeType before storing anything (#98
   }
   match CloudAgents.Repository.listAttachments(sid, CloudAgents.Auth.requestScope()) {
     case Ok(l) -> assertEqualInt(l.length.toInt(), 0, "nothing was stored for the rejected upload")
-    case Err(e) -> assertTrue(false, "list failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+    case Err(e) -> assertTrue(false, "list failed: " + CloudAgents.Db.dbErrorMessage(e))
   }
 }
 
@@ -375,7 +375,7 @@ test "storeAttachments validates, writes to disk, and records metadata" {
   // The bytes are genuinely on disk at attachmentsBaseDir()/<sessionId>/<storedName>.
   match CloudAgents.Repository.listAttachments(sid, CloudAgents.Auth.requestScope()) {
     case Ok(l) -> assertEqualInt(l.length.toInt(), 2, "both rows are persisted")
-    case Err(e) -> assertTrue(false, "list failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+    case Err(e) -> assertTrue(false, "list failed: " + CloudAgents.Db.dbErrorMessage(e))
   }
 }
 
@@ -424,7 +424,7 @@ test "storeAttachments rejects an oversize file before storing anything" {
   }
   match CloudAgents.Repository.listAttachments(sid, CloudAgents.Auth.requestScope()) {
     case Ok(l) -> assertEqualInt(l.length.toInt(), 0, "nothing was stored for the rejected upload")
-    case Err(e) -> assertTrue(false, "list failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+    case Err(e) -> assertTrue(false, "list failed: " + CloudAgents.Db.dbErrorMessage(e))
   }
 }
 
@@ -481,7 +481,7 @@ test "storeAttachments rejects the whole request atomically when only a LATER fi
   // individually within the per-file cap — was written or recorded.
   match CloudAgents.Repository.listAttachments(sid, CloudAgents.Auth.requestScope()) {
     case Ok(l) -> assertEqualInt(l.length.toInt(), 0, "no rows were persisted for the rejected request")
-    case Err(e) -> assertTrue(false, "list failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+    case Err(e) -> assertTrue(false, "list failed: " + CloudAgents.Db.dbErrorMessage(e))
   }
 }
 
@@ -523,7 +523,7 @@ test "cleanupPartialAttachmentBatch best-effort deletes the rows and files it is
 
   match CloudAgents.Repository.listAttachments(sid, CloudAgents.Auth.requestScope()) {
     case Ok(l) -> assertEqualInt(l.length.toInt(), 0, "both rows are rolled back")
-    case Err(e) -> assertTrue(false, "list failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+    case Err(e) -> assertTrue(false, "list failed: " + CloudAgents.Db.dbErrorMessage(e))
   }
   var j = 0
   while j < paths.length {
@@ -580,7 +580,7 @@ test "storeAttachments mounts the session's existing attachment dir for a follow
   // the session, still under the same directory.
   match CloudAgents.Repository.listAttachments(sid, CloudAgents.Auth.requestScope()) {
     case Ok(l) -> assertEqualInt(l.length.toInt(), 1, "the follow-up did not touch the stored attachment")
-    case Err(e) -> assertTrue(false, "list failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+    case Err(e) -> assertTrue(false, "list failed: " + CloudAgents.Db.dbErrorMessage(e))
   }
 }
 
@@ -614,7 +614,7 @@ test "listAttachmentsHandler and downloadAttachmentHandler serve what storeAttac
 
   match CloudAgents.Repository.linkAttachmentToMessage(attachmentId, CloudAgents.Auth.requestScope(), "msg-1") {
     case Ok(_) -> ()
-    case Err(e) -> assertTrue(false, "link failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+    case Err(e) -> assertTrue(false, "link failed: " + CloudAgents.Db.dbErrorMessage(e))
   }
   match listAttachmentsHandler(sid) {
     case Ok(l) -> assertEqual(l.attachments[0].messageId, "msg-1", "messageId round-trips after linking")

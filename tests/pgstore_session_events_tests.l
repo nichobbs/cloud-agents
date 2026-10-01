@@ -15,7 +15,7 @@ import CloudAgents.Pg
 import CloudAgents.Pg.Migrate
 import CloudAgents.PgStore.SessionEvents as Store
 import CloudAgents.Repository
-import CloudAgents.Sqlite
+import CloudAgents.Db
 import CloudAgents.Capture
 
 func live(): Bool {

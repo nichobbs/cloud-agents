@@ -22,7 +22,7 @@ package CloudAgents.ObserverHandlers
 import Std.Core
 import Web
 import CloudAgents.Auth
-import CloudAgents.Sqlite
+import CloudAgents.Db
 import CloudAgents.Repository
 import CloudAgents.SessionStore
 import CloudAgents.Handlers
@@ -51,8 +51,8 @@ pub val windowMaxDiffChars: Int = 30000
 /// Passes one maintenance call may run (each can take minutes).
 pub val maxPassesPerCall: Int = 3
 
-func dbError(e: in CloudAgents.Sqlite.DbError): Web.ApiError {
-  return Web.internalError(CloudAgents.Sqlite.dbErrorMessage(e))
+func dbError(e: in CloudAgents.Db.DbError): Web.ApiError {
+  return Web.internalError(CloudAgents.Db.dbErrorMessage(e))
 }
 
 // ── Container callbacks ───────────────────────────────────────────────────────
@@ -313,7 +313,7 @@ pub func runDuePasses(runner: in ObserverRunner, limit: in Int): ObserverRunRepo
   var errors: slice[String] = []
   val due = match pendingObserverSessions(limit) {
     case Ok(ids) -> ids
-    case Err(e) -> return ObserverRunReport(passes = "0", skipped = "0", errors = [CloudAgents.Sqlite.dbErrorMessage(e)])
+    case Err(e) -> return ObserverRunReport(passes = "0", skipped = "0", errors = [CloudAgents.Db.dbErrorMessage(e)])
   }
   var i = 0
   while i < due.length.toInt() {
@@ -322,7 +322,7 @@ pub func runDuePasses(runner: in ObserverRunner, limit: in Int): ObserverRunRepo
     val outcome = match CloudAgents.SessionStore.sessionRouteScope(due[i]) {
       case Ok(Some(sc)) -> runPass(due[i], sc, runner)
       case Ok(None) -> "skipped: the session no longer exists"
-      case Err(e) -> "error: " + CloudAgents.Sqlite.dbErrorMessage(e)
+      case Err(e) -> "error: " + CloudAgents.Db.dbErrorMessage(e)
     }
     if outcome == "ran" {
       passes = passes + 1
@@ -341,7 +341,7 @@ pub func runDuePasses(runner: in ObserverRunner, limit: in Int): ObserverRunRepo
 pub func runPass(observedId: in String, sc: in CloudAgents.Pg.TenantScope, runner: in ObserverRunner): String {
   val claimed = match claimObserverPass(observedId, sc) {
     case Ok(b) -> b
-    case Err(e) -> return "error: " + CloudAgents.Sqlite.dbErrorMessage(e)
+    case Err(e) -> return "error: " + CloudAgents.Db.dbErrorMessage(e)
   }
   if not claimed {
     return "skipped: another caller took this pass"
@@ -352,16 +352,16 @@ pub func runPass(observedId: in String, sc: in CloudAgents.Pg.TenantScope, runne
       val _ = deleteObserverState(observedId, sc)
       return "skipped: the session no longer exists"
     }
-    case Err(e) -> return "error: " + CloudAgents.Sqlite.dbErrorMessage(e)
+    case Err(e) -> return "error: " + CloudAgents.Db.dbErrorMessage(e)
   }
   val settings = match observerSettingsForSession(observedId, sc) {
     case Ok(Some(s)) -> s
     case Ok(None) -> return "skipped: not observed"
-    case Err(e) -> return "error: " + CloudAgents.Sqlite.dbErrorMessage(e)
+    case Err(e) -> return "error: " + CloudAgents.Db.dbErrorMessage(e)
   }
   var st = match observerState(observedId, sc) {
     case Ok(s) -> s
-    case Err(e) -> return "error: " + CloudAgents.Sqlite.dbErrorMessage(e)
+    case Err(e) -> return "error: " + CloudAgents.Db.dbErrorMessage(e)
   }
   val now = CloudAgents.Repository.nowMillisLong()
   if not underDailyCap(settings, st.passDay, st.passesToday, now) {
@@ -371,7 +371,7 @@ pub func runPass(observedId: in String, sc: in CloudAgents.Pg.TenantScope, runne
   // Nothing new, or nothing but reading and searching: no container.
   val preview = match CloudAgents.Repository.sessionEventsAfterSeqLimited(observedId, sc, st.cursorSeq, windowMaxEvents) {
     case Ok(es) -> renderWindow(es, windowMaxChars)
-    case Err(e) -> return "error: " + CloudAgents.Sqlite.dbErrorMessage(e)
+    case Err(e) -> return "error: " + CloudAgents.Db.dbErrorMessage(e)
   }
   if preview.events == 0 {
     return "skipped: nothing new"
@@ -399,11 +399,11 @@ pub func runPass(observedId: in String, sc: in CloudAgents.Pg.TenantScope, runne
   }
   st = match observerState(observedId, sc) {
     case Ok(s) -> s
-    case Err(e) -> return "error: " + CloudAgents.Sqlite.dbErrorMessage(e)
+    case Err(e) -> return "error: " + CloudAgents.Db.dbErrorMessage(e)
   }
   val began = match CloudAgents.SessionStore.tryBeginRun(observerId, sc) {
     case Ok(b) -> b
-    case Err(e) -> return "error: " + CloudAgents.Sqlite.dbErrorMessage(e)
+    case Err(e) -> return "error: " + CloudAgents.Db.dbErrorMessage(e)
   }
   if not began {
     // The observer is still busy with the last pass: try again next call.
@@ -430,7 +430,7 @@ pub func runPass(observedId: in String, sc: in CloudAgents.Pg.TenantScope, runne
   )
   val after = match observerState(observedId, sc) {
     case Ok(s) -> s
-    case Err(e) -> return "error: " + CloudAgents.Sqlite.dbErrorMessage(e)
+    case Err(e) -> return "error: " + CloudAgents.Db.dbErrorMessage(e)
   }
   var problem = ""
   match result {
@@ -526,13 +526,13 @@ func recordOutcome(sc: in CloudAgents.Pg.TenantScope, st: in ObserverState, prob
         case Ok(_) -> ()
         case Err(e) -> println(
           "WARNING: saving the observer state of " + st.sessionId + " failed: " +
-            CloudAgents.Sqlite.dbErrorMessage(e)
+            CloudAgents.Db.dbErrorMessage(e)
         )
       }
     }
     case Err(e) -> println(
       "WARNING: reading the observer state of " + st.sessionId + " failed: " +
-        CloudAgents.Sqlite.dbErrorMessage(e)
+        CloudAgents.Db.dbErrorMessage(e)
     )
   }
   if problem.length.toInt() > 0 {
@@ -567,11 +567,11 @@ pub func ensureObserverSession(
   )
   match CloudAgents.SessionStore.addSession(session, sc) {
     case Ok(_) -> ()
-    case Err(e) -> return Err(error = "creating the observer session failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+    case Err(e) -> return Err(error = "creating the observer session failed: " + CloudAgents.Db.dbErrorMessage(e))
   }
   match linkObserverSession(observerId, sc, facts.sessionId, facts.profileId) {
     case Ok(_) -> ()
-    case Err(e) -> return Err(error = "linking the observer session failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+    case Err(e) -> return Err(error = "linking the observer session failed: " + CloudAgents.Db.dbErrorMessage(e))
   }
   val previous = st.observerSessionId
   val next = ObserverState(
@@ -588,13 +588,13 @@ pub func ensureObserverSession(
   )
   match saveObserverState(sc, next) {
     case Ok(_) -> ()
-    case Err(e) -> return Err(error = "saving the observer state failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+    case Err(e) -> return Err(error = "saving the observer state failed: " + CloudAgents.Db.dbErrorMessage(e))
   }
   match deleteObserverSessionRow(previous, sc) {
     case Ok(_) -> ()
     case Err(e) -> println(
       "WARNING: removing the replaced observer session " + previous + " failed: " +
-        CloudAgents.Sqlite.dbErrorMessage(e)
+        CloudAgents.Db.dbErrorMessage(e)
     )
   }
   return Ok(value = observerId)

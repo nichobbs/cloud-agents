@@ -14,7 +14,7 @@ import CloudAgents.Pg.Migrate
 import CloudAgents.PgStore.Tenancy
 import CloudAgents.Repository
 import CloudAgents.SessionStore
-import CloudAgents.Sqlite
+import CloudAgents.Db
 import CloudAgents.Streaming
 import CloudAgents.Capture
 import extern System.Environment as Env
@@ -61,7 +61,7 @@ func newUser(tag: in String): String {
   val uid = "t-" + tag + "-" + Std.Uuid.uuidToString(Std.Uuid.newUuid())
   match CloudAgents.PgStore.Tenancy.ensurePersonalTenant(uid) {
     case Ok(_) -> ()
-    case Err(e) -> panic("provisioning " + uid + " failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+    case Err(e) -> panic("provisioning " + uid + " failed: " + CloudAgents.Db.dbErrorMessage(e))
   }
   return uid
 }
@@ -81,7 +81,7 @@ func ensureSession(id: in String): Unit {
   match CloudAgents.SessionStore.getSession(id, CloudAgents.Auth.requestScope()) {
     case Ok(Some(_)) -> return ()
     case Ok(None) -> ()
-    case Err(e) -> panic("getSession failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+    case Err(e) -> panic("getSession failed: " + CloudAgents.Db.dbErrorMessage(e))
   }
   val s = makeAgentSession(
     sessionId = id,
@@ -94,7 +94,7 @@ func ensureSession(id: in String): Unit {
   )
   match addSession(s, CloudAgents.Auth.requestScope()) {
     case Ok(_) -> ()
-    case Err(e) -> panic("addSession failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+    case Err(e) -> panic("addSession failed: " + CloudAgents.Db.dbErrorMessage(e))
   }
 }
 
@@ -104,7 +104,7 @@ func addTestMessage(sessionId: in String): String {
   ensureSession(sessionId)
   return match CloudAgents.Repository.addMessage(sessionId, CloudAgents.Auth.requestScope(), "agent", "hello") {
     case Ok(m) -> m.id
-    case Err(e) -> panic("addMessage failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+    case Err(e) -> panic("addMessage failed: " + CloudAgents.Db.dbErrorMessage(e))
   }
 }
 
@@ -351,7 +351,7 @@ test "setTodoStatusHandler validates its inputs and persists a valid status" {
       assertEqual(todos[0].status, "in_progress", "status persisted")
       assertEqual(todos[0].done, "0", "done stays in lockstep")
     }
-    case Err(e) -> assertTrue(false, "listTodos failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+    case Err(e) -> assertTrue(false, "listTodos failed: " + CloudAgents.Db.dbErrorMessage(e))
   }
 }
 
@@ -391,17 +391,17 @@ test "ingestAgentPlan replaces prior plan rows and never touches human todos" {
 
   match ingestAgentPlan(("session-P-" + me), CloudAgents.Auth.requestScope(), mid, "- [x] step one\n- [~] step two\n- [ ] step three") {
     case Ok(n) -> assertEqualInt(n, 3, "three items ingested")
-    case Err(e) -> assertTrue(false, "ingest failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+    case Err(e) -> assertTrue(false, "ingest failed: " + CloudAgents.Db.dbErrorMessage(e))
   }
   match CloudAgents.Repository.listTodos(("session-P-" + me), CloudAgents.Auth.requestScope()) {
     case Ok(todos) -> assertEqualInt(todos.length.toInt(), 4, "3 plan rows + 1 human row")
-    case Err(e) -> assertTrue(false, "listTodos failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+    case Err(e) -> assertTrue(false, "listTodos failed: " + CloudAgents.Db.dbErrorMessage(e))
   }
 
   // The agent restates its plan — the old plan rows are replaced, not stacked.
   match ingestAgentPlan(("session-P-" + me), CloudAgents.Auth.requestScope(), mid, "- [x] step one\n- [x] step two\n- [~] step three") {
     case Ok(n) -> assertEqualInt(n, 3, "restated plan re-ingested")
-    case Err(e) -> assertTrue(false, "re-ingest failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+    case Err(e) -> assertTrue(false, "re-ingest failed: " + CloudAgents.Db.dbErrorMessage(e))
   }
   match CloudAgents.Repository.listTodos(("session-P-" + me), CloudAgents.Auth.requestScope()) {
     case Ok(todos) -> {
@@ -414,17 +414,17 @@ test "ingestAgentPlan replaces prior plan rows and never touches human todos" {
       }
       assertTrue(humanSeen, "the human todo survived both ingests")
     }
-    case Err(e) -> assertTrue(false, "listTodos failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+    case Err(e) -> assertTrue(false, "listTodos failed: " + CloudAgents.Db.dbErrorMessage(e))
   }
 
   // A reply with no plan (or a lone checkbox) leaves everything untouched.
   match ingestAgentPlan(("session-P-" + me), CloudAgents.Auth.requestScope(), mid, "all done, no list here\n- [x] just one") {
     case Ok(n) -> assertEqualInt(n, 0, "no >=2-item list -> nothing ingested")
-    case Err(e) -> assertTrue(false, "no-op ingest failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+    case Err(e) -> assertTrue(false, "no-op ingest failed: " + CloudAgents.Db.dbErrorMessage(e))
   }
   match CloudAgents.Repository.listTodos(("session-P-" + me), CloudAgents.Auth.requestScope()) {
     case Ok(todos) -> assertEqualInt(todos.length.toInt(), 4, "no-op ingest left rows alone")
-    case Err(e) -> assertTrue(false, "listTodos failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+    case Err(e) -> assertTrue(false, "listTodos failed: " + CloudAgents.Db.dbErrorMessage(e))
   }
 }
 
@@ -487,17 +487,17 @@ test "todosUpdatedAfter is session-scoped and cursor-correct; plan ingest is iso
   // Ingest a plan in A and a different one in B.
   match ingestAgentPlan(("session-CU-A-" + me), CloudAgents.Auth.requestScope(), midA, "- [ ] a-one\n- [x] a-two") {
     case Ok(n) -> assertEqualInt(n, 2, "A's plan ingested")
-    case Err(e) -> assertTrue(false, "A ingest failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+    case Err(e) -> assertTrue(false, "A ingest failed: " + CloudAgents.Db.dbErrorMessage(e))
   }
   match ingestAgentPlan(("session-CU-B-" + me), CloudAgents.Auth.requestScope(), midB, "- [ ] b-one\n- [ ] b-two") {
     case Ok(n) -> assertEqualInt(n, 2, "B's plan ingested")
-    case Err(e) -> assertTrue(false, "B ingest failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+    case Err(e) -> assertTrue(false, "B ingest failed: " + CloudAgents.Db.dbErrorMessage(e))
   }
 
   // Cross-session isolation: A's cursor query never sees B's rows.
   val updatesA = match CloudAgents.Repository.todosUpdatedAfter(("session-CU-A-" + me), CloudAgents.Auth.requestScope(), "0") {
     case Ok(us) -> us
-    case Err(e) -> panic("todosUpdatedAfter failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+    case Err(e) -> panic("todosUpdatedAfter failed: " + CloudAgents.Db.dbErrorMessage(e))
   }
   assertEqualInt(updatesA.length.toInt(), 2, "only A's two rows")
   for u in updatesA {
@@ -508,7 +508,7 @@ test "todosUpdatedAfter is session-scoped and cursor-correct; plan ingest is iso
   val lastCursor = updatesA[updatesA.length - 1].updatedAt
   match CloudAgents.Repository.todosUpdatedAfter(("session-CU-A-" + me), CloudAgents.Auth.requestScope(), lastCursor) {
     case Ok(us) -> assertEqualInt(us.length.toInt(), 0, "caught up -> empty")
-    case Err(e) -> assertTrue(false, "cursor query failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+    case Err(e) -> assertTrue(false, "cursor query failed: " + CloudAgents.Db.dbErrorMessage(e))
   }
   // ...and a later status change surfaces past that same cursor. The bump
   // lands at nowMillis(); in the SAME millisecond as lastCursor the
@@ -527,14 +527,14 @@ test "todosUpdatedAfter is session-scoped and cursor-correct; plan ingest is iso
         case Err(err) -> assertTrue(false, "status update failed: " + toString(err.status))
       }
     }
-    case Err(e) -> assertTrue(false, "listTodos failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+    case Err(e) -> assertTrue(false, "listTodos failed: " + CloudAgents.Db.dbErrorMessage(e))
   }
   match CloudAgents.Repository.todosUpdatedAfter(("session-CU-A-" + me), CloudAgents.Auth.requestScope(), lastCursor) {
     case Ok(us) -> {
       assertEqualInt(us.length.toInt(), 1, "the status change surfaces past the cursor")
       assertEqual(us[0].status, "in_progress", "with its new status")
     }
-    case Err(e) -> assertTrue(false, "cursor query failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+    case Err(e) -> assertTrue(false, "cursor query failed: " + CloudAgents.Db.dbErrorMessage(e))
   }
 }
 
@@ -546,7 +546,7 @@ test "ingested plan lists first step first (#826) and enforces storage caps (#82
   val mid = addTestMessage(("session-PO-" + me))
   match ingestAgentPlan(("session-PO-" + me), CloudAgents.Auth.requestScope(), mid, "- [x] first step\n- [~] second step\n- [ ] third step") {
     case Ok(n) -> assertEqualInt(n, 3, "three steps ingested")
-    case Err(e) -> assertTrue(false, "ingest failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+    case Err(e) -> assertTrue(false, "ingest failed: " + CloudAgents.Db.dbErrorMessage(e))
   }
   match CloudAgents.Repository.listTodos(("session-PO-" + me), CloudAgents.Auth.requestScope()) {
     case Ok(todos) -> {
@@ -554,7 +554,7 @@ test "ingested plan lists first step first (#826) and enforces storage caps (#82
       assertEqual(todos[1].note, "second step", "middle step in place")
       assertEqual(todos[2].note, "third step", "last step last")
     }
-    case Err(e) -> assertTrue(false, "listTodos failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+    case Err(e) -> assertTrue(false, "listTodos failed: " + CloudAgents.Db.dbErrorMessage(e))
   }
 
   // An over-long NOTE is dropped at the ingestion boundary (the display
@@ -565,7 +565,7 @@ test "ingested plan lists first step first (#826) and enforces storage caps (#82
   // the scan tail so all three lines reach the parser.
   match ingestAgentPlan(("session-PO-" + me), CloudAgents.Auth.requestScope(), mid, "- [ ] ok one\n- [ ] " + overWideText() + "\n- [ ] ok two") {
     case Ok(n) -> assertEqualInt(n, 2, "over-long note dropped, two kept")
-    case Err(e) -> assertTrue(false, "capped ingest failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+    case Err(e) -> assertTrue(false, "capped ingest failed: " + CloudAgents.Db.dbErrorMessage(e))
   }
   match CloudAgents.Repository.listTodos(("session-PO-" + me), CloudAgents.Auth.requestScope()) {
     case Ok(todos) -> {
@@ -573,7 +573,7 @@ test "ingested plan lists first step first (#826) and enforces storage caps (#82
       assertEqual(todos[0].note, "ok one", "first kept item first")
       assertEqual(todos[1].note, "ok two", "second kept item second")
     }
-    case Err(e) -> assertTrue(false, "listTodos failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+    case Err(e) -> assertTrue(false, "listTodos failed: " + CloudAgents.Db.dbErrorMessage(e))
   }
 
   // A "plan" longer than maxPlanIngestItems is truncated to the cap.
@@ -585,7 +585,7 @@ test "ingested plan lists first step first (#826) and enforces storage caps (#82
   }
   match ingestAgentPlan(("session-PO-" + me), CloudAgents.Auth.requestScope(), mid, big) {
     case Ok(n) -> assertEqualInt(n, 50, "60-step plan capped at 50")
-    case Err(e) -> assertTrue(false, "count-capped ingest failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+    case Err(e) -> assertTrue(false, "count-capped ingest failed: " + CloudAgents.Db.dbErrorMessage(e))
   }
 
   // An over-long ITEM near the end of a huge message pushes earlier lines
@@ -596,11 +596,11 @@ test "ingested plan lists first step first (#826) and enforces storage caps (#82
   // when parseAgentPlan appended records inside that loop.
   match ingestAgentPlan(("session-PO-" + me), CloudAgents.Auth.requestScope(), mid, "- [ ] ok one\n- [ ] " + overLongText() + "\n- [ ] ok two") {
     case Ok(n) -> assertEqualInt(n, 0, "tail-capped scan leaves <2 items -> no-op")
-    case Err(e) -> assertTrue(false, "tail-capped ingest failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+    case Err(e) -> assertTrue(false, "tail-capped ingest failed: " + CloudAgents.Db.dbErrorMessage(e))
   }
   match CloudAgents.Repository.listTodos(("session-PO-" + me), CloudAgents.Auth.requestScope()) {
     case Ok(todos) -> assertEqualInt(todos.length.toInt(), 50, "no-op ingest left the capped plan alone")
-    case Err(e) -> assertTrue(false, "listTodos failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+    case Err(e) -> assertTrue(false, "listTodos failed: " + CloudAgents.Db.dbErrorMessage(e))
   }
 }
 
@@ -665,7 +665,7 @@ test "getSessionEvents returns the stored chain as the audit envelope" {
   val batch = parseStreamJson(fixtureEventsNdjson(), 0.toLong(), "")
   match CloudAgents.Repository.appendSessionEvents(("sess-E-" + me), CloudAgents.Auth.requestScope(), batch.events) {
     case Ok(n) -> assertEqualInt(n, 3, "three events appended")
-    case Err(e) -> assertTrue(false, "append failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+    case Err(e) -> assertTrue(false, "append failed: " + CloudAgents.Db.dbErrorMessage(e))
   }
 
   val json = match CloudAgents.Interactions.getSessionEvents(("sess-E-" + me), "") {
@@ -719,7 +719,7 @@ test "user B cannot read user A's messages or capture events" {
   val batch = parseStreamJson(fixtureEventsNdjson(), 0.toLong(), "")
   match CloudAgents.Repository.appendSessionEvents(sid, CloudAgents.Auth.requestScope(), batch.events) {
     case Ok(n) -> assertEqualInt(n, 3, "three events appended")
-    case Err(e) -> assertTrue(false, "append failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+    case Err(e) -> assertTrue(false, "append failed: " + CloudAgents.Db.dbErrorMessage(e))
   }
 
   // The owner sees both.
@@ -806,11 +806,11 @@ test "user B cannot read or mutate user A's todos and comments" {
       assertEqual(todos[0].status, "pending", "owner todo status untouched")
       assertEqual(todos[0].done, "0", "owner todo done flag untouched")
     }
-    case Err(e) -> assertTrue(false, "listTodos failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+    case Err(e) -> assertTrue(false, "listTodos failed: " + CloudAgents.Db.dbErrorMessage(e))
   }
   match CloudAgents.Repository.listComments(mid, CloudAgents.Auth.requestScope()) {
     case Ok(cs) -> assertEqualInt(cs.length.toInt(), 0, "no intruder comment was added")
-    case Err(e) -> assertTrue(false, "listComments failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+    case Err(e) -> assertTrue(false, "listComments failed: " + CloudAgents.Db.dbErrorMessage(e))
   }
 
   // The owner still has full access.
@@ -833,7 +833,7 @@ test "operator identity reads its own sessions' events but not an OAuth user's" 
   // The operator identity is the one fixed user the static API token resolves to.
   match CloudAgents.PgStore.Tenancy.ensurePersonalTenant(CloudAgents.Auth.operatorUserId()) {
     case Ok(_) -> ()
-    case Err(e) -> panic("provisioning the operator failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+    case Err(e) -> panic("provisioning the operator failed: " + CloudAgents.Db.dbErrorMessage(e))
   }
   val batch = parseStreamJson(fixtureEventsNdjson(), 0.toLong(), "")
 
@@ -841,13 +841,13 @@ test "operator identity reads its own sessions' events but not an OAuth user's" 
   ensureSession(("sess-operator-" + me))
   match CloudAgents.Repository.appendSessionEvents(("sess-operator-" + me), CloudAgents.Auth.requestScope(), batch.events) {
     case Ok(_) -> ()
-    case Err(e) -> assertTrue(false, "append failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+    case Err(e) -> assertTrue(false, "append failed: " + CloudAgents.Db.dbErrorMessage(e))
   }
   CloudAgents.Auth.setCurrentUserId(oauthUser)
   ensureSession(("sess-oauth-user-" + me))
   match CloudAgents.Repository.appendSessionEvents(("sess-oauth-user-" + me), CloudAgents.Auth.requestScope(), batch.events) {
     case Ok(_) -> ()
-    case Err(e) -> assertTrue(false, "append failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+    case Err(e) -> assertTrue(false, "append failed: " + CloudAgents.Db.dbErrorMessage(e))
   }
 
   CloudAgents.Auth.setCurrentUserId(CloudAgents.Auth.operatorUserId())

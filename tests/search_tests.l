@@ -15,7 +15,7 @@ import CloudAgents.PgStore.Tenancy
 import CloudAgents.Repository
 import CloudAgents.Search
 import CloudAgents.SessionStore
-import CloudAgents.Sqlite
+import CloudAgents.Db
 
 // ── Live Postgres ─────────────────────────────────────────────────────────────
 //
@@ -59,7 +59,7 @@ func newUser(tag: in String): String {
   val uid = "t-" + tag + "-" + Std.Uuid.uuidToString(Std.Uuid.newUuid())
   match CloudAgents.PgStore.Tenancy.ensurePersonalTenant(uid) {
     case Ok(_) -> ()
-    case Err(e) -> panic("provisioning " + uid + " failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+    case Err(e) -> panic("provisioning " + uid + " failed: " + CloudAgents.Db.dbErrorMessage(e))
   }
   return uid
 }
@@ -89,14 +89,14 @@ func mkSession(id: in String): Unit {
   )
   match addSession(s, CloudAgents.Auth.requestScope()) {
     case Ok(_) -> ()
-    case Err(e) -> panic("addSession failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+    case Err(e) -> panic("addSession failed: " + CloudAgents.Db.dbErrorMessage(e))
   }
 }
 
 func mkMessage(sessionId: in String, content: in String): Unit {
   match CloudAgents.Repository.addMessage(sessionId, CloudAgents.Auth.requestScope(), "user", content) {
     case Ok(_) -> ()
-    case Err(e) -> panic("addMessage failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+    case Err(e) -> panic("addMessage failed: " + CloudAgents.Db.dbErrorMessage(e))
   }
 }
 
@@ -106,7 +106,7 @@ func mkMessage(sessionId: in String, content: in String): Unit {
 func mkMessageReturningId(sessionId: in String, content: in String): String {
   val m = match CloudAgents.Repository.addMessage(sessionId, CloudAgents.Auth.requestScope(), "user", content) {
     case Ok(msg) -> msg
-    case Err(e) -> panic("addMessage failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+    case Err(e) -> panic("addMessage failed: " + CloudAgents.Db.dbErrorMessage(e))
   }
   return m.id
 }
@@ -295,18 +295,18 @@ test "searchMessagesHandler only ever returns the calling user's own messages" {
 func pokeMessage(owner: in String, sql: in String, params: in slice[String]): Unit {
   val u = match CloudAgents.PgStore.open(CloudAgents.Pg.personalScope(owner)) {
     case Ok(x) -> x
-    case Err(e) -> panic("open failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+    case Err(e) -> panic("open failed: " + CloudAgents.Db.dbErrorMessage(e))
   }
   match CloudAgents.PgStore.ex(u, sql, params) {
     case Ok(_) -> ()
     case Err(e) -> {
       CloudAgents.PgStore.release(u)
-      panic("poke failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+      panic("poke failed: " + CloudAgents.Db.dbErrorMessage(e))
     }
   }
   match CloudAgents.PgStore.commit(u) {
     case Ok(_) -> ()
-    case Err(e) -> panic("commit failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+    case Err(e) -> panic("commit failed: " + CloudAgents.Db.dbErrorMessage(e))
   }
   CloudAgents.PgStore.release(u)
 }

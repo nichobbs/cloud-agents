@@ -17,7 +17,7 @@ import CloudAgents.Pg.Migrate
 import CloudAgents.PgStore.Credentials as Vault
 import CloudAgents.PgStore.Library as Library
 import CloudAgents.Repository
-import CloudAgents.Sqlite
+import CloudAgents.Db
 import extern System.Environment as Env
 
 val testKey = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="

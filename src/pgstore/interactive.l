@@ -36,7 +36,7 @@ import Db
 import CloudAgents.Pg
 import CloudAgents.PgStore
 import CloudAgents.Repository
-import CloudAgents.Sqlite
+import CloudAgents.Db
 
 func newId(): String {
   return Std.Uuid.uuidToString(Std.Uuid.newUuid())
@@ -48,7 +48,7 @@ func now(): String {
 
 func exec(
   sc: in CloudAgents.Pg.TenantScope, sql: in String, params: in slice[String]
-): Result[Int, CloudAgents.Sqlite.DbError] {
+): Result[Int, CloudAgents.Db.DbError] {
   val u = CloudAgents.PgStore.open(sc)?
   defer {
     CloudAgents.PgStore.release(u)
@@ -60,7 +60,7 @@ func exec(
 
 func query(
   sc: in CloudAgents.Pg.TenantScope, sql: in String, params: in slice[String]
-): Result[slice[DbRow], CloudAgents.Sqlite.DbError] {
+): Result[slice[DbRow], CloudAgents.Db.DbError] {
   val u = CloudAgents.PgStore.open(sc)?
   defer {
     CloudAgents.PgStore.release(u)
@@ -82,7 +82,7 @@ func createdAfter(
   table: in String,
   sessionId: in String,
   after: in String,
-): Result[slice[DbRow], CloudAgents.Sqlite.DbError] {
+): Result[slice[DbRow], CloudAgents.Db.DbError] {
   var sql = "SELECT " + cols + " FROM " + table + " WHERE session_id = @p0"
   var params: slice[String] = [sessionId]
   if after.length > 0 {
@@ -127,7 +127,7 @@ pub func createPermissionRequest(
   toolName: in String,
   inputJson: in String,
   preApproved: in Bool,
-): Result[CloudAgents.Repository.PermissionRequest, CloudAgents.Sqlite.DbError] {
+): Result[CloudAgents.Repository.PermissionRequest, CloudAgents.Db.DbError] {
   val id = newId()
   val ts = now()
   val status = if preApproved { "allowed" } else { "pending" }
@@ -155,7 +155,7 @@ pub func createPermissionRequest(
 
 pub func getPermissionRequest(
   id: in String, sc: in CloudAgents.Pg.TenantScope
-): Result[Option[CloudAgents.Repository.PermissionRequest], CloudAgents.Sqlite.DbError] {
+): Result[Option[CloudAgents.Repository.PermissionRequest], CloudAgents.Db.DbError] {
   val rows = query(sc, "SELECT " + permissionCols() + " FROM permission_requests WHERE id = @p0", [id])?
   if rows.length == 0 {
     return Ok(value = None)
@@ -167,7 +167,7 @@ pub func permissionRequestsCreatedAfter(
   sessionId: in String,
   sc: in CloudAgents.Pg.TenantScope,
   afterCreatedAt: in String,
-): Result[slice[CloudAgents.Repository.PermissionRequest], CloudAgents.Sqlite.DbError] {
+): Result[slice[CloudAgents.Repository.PermissionRequest], CloudAgents.Db.DbError] {
   val rows = createdAfter(sc, permissionCols(), "permission_requests", sessionId, afterCreatedAt)?
   var acc: slice[CloudAgents.Repository.PermissionRequest] = []
   for r in rows {
@@ -183,7 +183,7 @@ pub func answerPermissionRequest(
   status: in String,
   updatedInputJson: in String,
   note: in String,
-): Result[Int, CloudAgents.Sqlite.DbError] {
+): Result[Int, CloudAgents.Db.DbError] {
   return exec(
     sc,
     "UPDATE permission_requests SET status = @p1, updated_input_json = @p2, note = @p3, decided_at = " +
@@ -196,7 +196,7 @@ pub func answerPermissionRequest(
 /// Deny a request still pending after `timeoutMillis` (write-once).
 pub func timeoutPendingPermissionRequest(
   id: in String, sc: in CloudAgents.Pg.TenantScope, timeoutMillis: in Long
-): Result[Unit, CloudAgents.Sqlite.DbError] {
+): Result[Unit, CloudAgents.Db.DbError] {
   exec(sc, "UPDATE permission_requests SET status = 'denied', note = 'timed out waiting for a human response', decided_at = " + CloudAgents.Pg.msIn(1) + pendingLongEnough(), [id, now(), toString(timeoutMillis)])?
   return Ok(value = ())
 }
@@ -207,7 +207,7 @@ pub func permissionRuleMatches(
   sc: in CloudAgents.Pg.TenantScope,
   toolName: in String,
   inputJson: in String,
-): Result[Bool, CloudAgents.Sqlite.DbError] {
+): Result[Bool, CloudAgents.Db.DbError] {
   val rows = query(sc, "SELECT 1 AS one FROM permission_rules WHERE session_id = @p0 AND tool_name = @p1 " + "AND input_digest = md5(@p2) AND input_json = @p2", [sessionId, toolName, inputJson])?
   return Ok(value = rows.length > 0)
 }
@@ -218,7 +218,7 @@ pub func addPermissionRule(
   sc: in CloudAgents.Pg.TenantScope,
   toolName: in String,
   inputJson: in String,
-): Result[Unit, CloudAgents.Sqlite.DbError] {
+): Result[Unit, CloudAgents.Db.DbError] {
   exec(sc, "INSERT INTO permission_rules (id, session_id, tool_name, input_json, created_at) VALUES (@p0, @p1, @p2, @p3, " + CloudAgents.Pg.msIn(4) + ") ON CONFLICT (tenant_id, session_id, tool_name, input_digest) DO NOTHING", [newId(), sessionId, toolName, inputJson, now()])?
   return Ok(value = ())
 }
@@ -246,7 +246,7 @@ pub func createUserQuestion(
   sc: in CloudAgents.Pg.TenantScope,
   question: in String,
   optionsJson: in String,
-): Result[CloudAgents.Repository.UserQuestion, CloudAgents.Sqlite.DbError] {
+): Result[CloudAgents.Repository.UserQuestion, CloudAgents.Db.DbError] {
   val id = newId()
   val ts = now()
   exec(sc, "INSERT INTO user_questions (id, session_id, question, options_json, status, created_at) " + "VALUES (@p0, @p1, @p2, @p3, 'pending', " + CloudAgents.Pg.msIn(4) + ")", [id, sessionId, question, optionsJson, ts])?
@@ -266,7 +266,7 @@ pub func createUserQuestion(
 
 pub func getUserQuestion(
   id: in String, sc: in CloudAgents.Pg.TenantScope
-): Result[Option[CloudAgents.Repository.UserQuestion], CloudAgents.Sqlite.DbError] {
+): Result[Option[CloudAgents.Repository.UserQuestion], CloudAgents.Db.DbError] {
   val rows = query(sc, "SELECT " + questionCols() + " FROM user_questions WHERE id = @p0", [id])?
   if rows.length == 0 {
     return Ok(value = None)
@@ -276,7 +276,7 @@ pub func getUserQuestion(
 
 pub func userQuestionsCreatedAfter(
   sessionId: in String, sc: in CloudAgents.Pg.TenantScope, afterCreatedAt: in String
-): Result[slice[CloudAgents.Repository.UserQuestion], CloudAgents.Sqlite.DbError] {
+): Result[slice[CloudAgents.Repository.UserQuestion], CloudAgents.Db.DbError] {
   val rows = createdAfter(sc, questionCols(), "user_questions", sessionId, afterCreatedAt)?
   var acc: slice[CloudAgents.Repository.UserQuestion] = []
   for r in rows {
@@ -287,7 +287,7 @@ pub func userQuestionsCreatedAfter(
 
 pub func answerUserQuestion(
   id: in String, sc: in CloudAgents.Pg.TenantScope, answer: in String
-): Result[Int, CloudAgents.Sqlite.DbError] {
+): Result[Int, CloudAgents.Db.DbError] {
   return exec(
     sc,
     "UPDATE user_questions SET status = 'answered', answer = @p1, decided_at = " + CloudAgents.Pg.msIn(2) +
@@ -298,7 +298,7 @@ pub func answerUserQuestion(
 
 pub func timeoutPendingUserQuestion(
   id: in String, sc: in CloudAgents.Pg.TenantScope, timeoutMillis: in Long
-): Result[Unit, CloudAgents.Sqlite.DbError] {
+): Result[Unit, CloudAgents.Db.DbError] {
   exec(sc, "UPDATE user_questions SET status = 'timed_out', decided_at = " + CloudAgents.Pg.msIn(1) + pendingLongEnough(), [id, now(), toString(timeoutMillis)])?
   return Ok(value = ())
 }
@@ -310,7 +310,7 @@ pub func updateSessionProgress(
   sc: in CloudAgents.Pg.TenantScope,
   summary: in String,
   percent: in String,
-): Result[Unit, CloudAgents.Sqlite.DbError] {
+): Result[Unit, CloudAgents.Db.DbError] {
   exec(sc, "UPDATE sessions SET progress_summary = @p1, progress_percent = NULLIF(@p2, '')::smallint WHERE id = @p0", [sessionId, summary, percent])?
   return Ok(value = ())
 }
@@ -319,7 +319,7 @@ pub func updateSessionProgress(
 /// when there is no such session).
 pub func sessionProgress(
   sessionId: in String, sc: in CloudAgents.Pg.TenantScope
-): Result[CloudAgents.Repository.SessionProgress, CloudAgents.Sqlite.DbError] {
+): Result[CloudAgents.Repository.SessionProgress, CloudAgents.Db.DbError] {
   val rows = query(sc, "SELECT progress_summary, coalesce(progress_percent::text, '') AS progress_percent FROM sessions WHERE id = @p0", [sessionId])?
   if rows.length == 0 {
     return Ok(value = CloudAgents.Repository.SessionProgress(summary = "", percent = ""))
@@ -351,7 +351,7 @@ func toSecret(r: in DbRow): CloudAgents.Repository.SecretRequest {
 
 pub func createSecretRequest(
   sessionId: in String, sc: in CloudAgents.Pg.TenantScope, name: in String, reason: in String
-): Result[CloudAgents.Repository.SecretRequest, CloudAgents.Sqlite.DbError] {
+): Result[CloudAgents.Repository.SecretRequest, CloudAgents.Db.DbError] {
   val id = newId()
   val ts = now()
   exec(sc, "INSERT INTO secret_requests (id, session_id, name, reason, status, created_at) VALUES (@p0, @p1, @p2, @p3, 'pending', " + CloudAgents.Pg.msIn(4) + ")", [id, sessionId, name, reason, ts])?
@@ -370,7 +370,7 @@ pub func createSecretRequest(
 
 pub func getSecretRequest(
   id: in String, sc: in CloudAgents.Pg.TenantScope
-): Result[Option[CloudAgents.Repository.SecretRequest], CloudAgents.Sqlite.DbError] {
+): Result[Option[CloudAgents.Repository.SecretRequest], CloudAgents.Db.DbError] {
   val rows = query(sc, "SELECT " + secretCols() + " FROM secret_requests WHERE id = @p0", [id])?
   if rows.length == 0 {
     return Ok(value = None)
@@ -380,7 +380,7 @@ pub func getSecretRequest(
 
 pub func secretRequestsCreatedAfter(
   sessionId: in String, sc: in CloudAgents.Pg.TenantScope, afterCreatedAt: in String
-): Result[slice[CloudAgents.Repository.SecretRequest], CloudAgents.Sqlite.DbError] {
+): Result[slice[CloudAgents.Repository.SecretRequest], CloudAgents.Db.DbError] {
   val rows = createdAfter(sc, secretCols(), "secret_requests", sessionId, afterCreatedAt)?
   var acc: slice[CloudAgents.Repository.SecretRequest] = []
   for r in rows {
@@ -391,7 +391,7 @@ pub func secretRequestsCreatedAfter(
 
 pub func answerSecretRequest(
   id: in String, sc: in CloudAgents.Pg.TenantScope, status: in String
-): Result[Int, CloudAgents.Sqlite.DbError] {
+): Result[Int, CloudAgents.Db.DbError] {
   return exec(
     sc,
     "UPDATE secret_requests SET status = @p1, decided_at = " + CloudAgents.Pg.msIn(2) +
@@ -402,7 +402,7 @@ pub func answerSecretRequest(
 
 pub func timeoutPendingSecretRequest(
   id: in String, sc: in CloudAgents.Pg.TenantScope, timeoutMillis: in Long
-): Result[Unit, CloudAgents.Sqlite.DbError] {
+): Result[Unit, CloudAgents.Db.DbError] {
   exec(sc, "UPDATE secret_requests SET status = 'timed_out', decided_at = " + CloudAgents.Pg.msIn(1) + pendingLongEnough(), [id, now(), toString(timeoutMillis)])?
   return Ok(value = ())
 }
@@ -410,7 +410,7 @@ pub func timeoutPendingSecretRequest(
 /// Mark an approved secret delivered; true only for the first delivery.
 pub func markSecretRequestDelivered(
   id: in String, sc: in CloudAgents.Pg.TenantScope
-): Result[Bool, CloudAgents.Sqlite.DbError] {
+): Result[Bool, CloudAgents.Db.DbError] {
   val n = exec(sc, "UPDATE secret_requests SET delivered_at = " + CloudAgents.Pg.msIn(1) + " WHERE id = @p0 AND status = 'approved' AND delivered_at IS NULL", [id, now()])?
   return Ok(value = n > 0)
 }
@@ -458,7 +458,7 @@ pub func createArtifact(
   sizeBytes: in String,
   repoKey: in String,
   ownerUserId: in String,
-): Result[CloudAgents.Repository.Artifact, CloudAgents.Sqlite.DbError] {
+): Result[CloudAgents.Repository.Artifact, CloudAgents.Db.DbError] {
   val id = newId()
   val ts = now()
   exec(sc, "INSERT INTO artifacts (id, session_id, file_name, stored_name, mime_type, description, size_bytes, created_at, repo_key, owner_user_id) " + "VALUES (@p0, @p1, @p2, @p3, @p4, @p5, @p6::bigint, " + CloudAgents.Pg.msIn(7) + ", @p8, @p9)", [id, sessionId, fileName, storedName, mimeType, description, sizeBytes, ts, repoKey, ownerUserId])?
@@ -480,7 +480,7 @@ pub func createArtifact(
 
 pub func getArtifact(
   id: in String, sc: in CloudAgents.Pg.TenantScope
-): Result[Option[CloudAgents.Repository.Artifact], CloudAgents.Sqlite.DbError] {
+): Result[Option[CloudAgents.Repository.Artifact], CloudAgents.Db.DbError] {
   val rows = query(sc, "SELECT " + artifactCols() + " FROM artifacts WHERE id = @p0", [id])?
   if rows.length == 0 {
     return Ok(value = None)
@@ -491,7 +491,7 @@ pub func getArtifact(
 /// A session's artifacts, oldest first.
 pub func listArtifacts(
   sessionId: in String, sc: in CloudAgents.Pg.TenantScope
-): Result[slice[CloudAgents.Repository.Artifact], CloudAgents.Sqlite.DbError] {
+): Result[slice[CloudAgents.Repository.Artifact], CloudAgents.Db.DbError] {
   val rows = query(sc, "SELECT " + artifactCols() + " FROM artifacts WHERE session_id = @p0 ORDER BY created_at, id COLLATE \"C\"", [sessionId])?
   return Ok(value = artifactList(rows))
 }
@@ -499,7 +499,7 @@ pub func listArtifacts(
 /// The caller's repository-scoped artifacts for `repoKey`, oldest first.
 pub func listRepoArtifacts(
   sc: in CloudAgents.Pg.TenantScope, repoKey: in String
-): Result[slice[CloudAgents.Repository.Artifact], CloudAgents.Sqlite.DbError] {
+): Result[slice[CloudAgents.Repository.Artifact], CloudAgents.Db.DbError] {
   val rows = query(sc, "SELECT " + artifactCols() + " FROM artifacts WHERE owner_user_id = @p0 AND repo_key = @p1 " + "ORDER BY created_at, id COLLATE \"C\"", [sc.userId, repoKey])?
   return Ok(value = artifactList(rows))
 }
@@ -507,7 +507,7 @@ pub func listRepoArtifacts(
 /// One of the caller's repository-scoped artifacts by id, or None.
 pub func getRepoArtifactById(
   id: in String, sc: in CloudAgents.Pg.TenantScope
-): Result[Option[CloudAgents.Repository.Artifact], CloudAgents.Sqlite.DbError] {
+): Result[Option[CloudAgents.Repository.Artifact], CloudAgents.Db.DbError] {
   val rows = query(sc, "SELECT " + artifactCols() + " FROM artifacts WHERE id = @p0 AND owner_user_id = @p1", [id, sc.userId])?
   if rows.length == 0 {
     return Ok(value = None)
@@ -517,7 +517,7 @@ pub func getRepoArtifactById(
 
 pub func artifactsCreatedAfter(
   sessionId: in String, sc: in CloudAgents.Pg.TenantScope, afterCreatedAt: in String
-): Result[slice[CloudAgents.Repository.Artifact], CloudAgents.Sqlite.DbError] {
+): Result[slice[CloudAgents.Repository.Artifact], CloudAgents.Db.DbError] {
   val rows = createdAfter(sc, artifactCols(), "artifacts", sessionId, afterCreatedAt)?
   return Ok(value = artifactList(rows))
 }
@@ -526,7 +526,7 @@ pub func artifactsCreatedAfter(
 /// A session's owner and repository URL, or None.
 pub func sessionOwnerAndRepo(
   id: in String, sc: in CloudAgents.Pg.TenantScope
-): Result[Option[CloudAgents.Repository.SessionOwnerRepo], CloudAgents.Sqlite.DbError] {
+): Result[Option[CloudAgents.Repository.SessionOwnerRepo], CloudAgents.Db.DbError] {
   val rows = query(sc, "SELECT user_id, repo_url FROM sessions WHERE id = @p0", [id])?
   if rows.length == 0 {
     return Ok(value = None)
@@ -565,7 +565,7 @@ pub func upsertMemoryCapped(
   memKey: in String,
   value: in String,
   maxEntries: in Int,
-): Result[Bool, CloudAgents.Sqlite.DbError] {
+): Result[Bool, CloudAgents.Db.DbError] {
   val u = CloudAgents.PgStore.open(sc)?
   defer {
     CloudAgents.PgStore.release(u)
@@ -580,7 +580,7 @@ pub func upsertMemoryCapped(
 /// The owner's memory for a repository, by key in byte order.
 pub func listMemory(
   sc: in CloudAgents.Pg.TenantScope, repoKey: in String
-): Result[slice[CloudAgents.Repository.MemoryRecord], CloudAgents.Sqlite.DbError] {
+): Result[slice[CloudAgents.Repository.MemoryRecord], CloudAgents.Db.DbError] {
   val rows = query(sc, "SELECT mem_key, value, " + ms("updated_at") + " FROM memories WHERE user_id = @p0 AND repo_key = @p1 " + "ORDER BY mem_key COLLATE \"C\"", [sc.userId, repoKey])?
   var acc: slice[CloudAgents.Repository.MemoryRecord] = []
   for r in rows {
@@ -591,7 +591,7 @@ pub func listMemory(
 
 pub func getMemory(
   sc: in CloudAgents.Pg.TenantScope, repoKey: in String, memKey: in String
-): Result[Option[CloudAgents.Repository.MemoryRecord], CloudAgents.Sqlite.DbError] {
+): Result[Option[CloudAgents.Repository.MemoryRecord], CloudAgents.Db.DbError] {
   val rows = query(sc, "SELECT mem_key, value, " + ms("updated_at") + " FROM memories WHERE user_id = @p0 AND repo_key = @p1 AND mem_key = @p2", [sc.userId, repoKey, memKey])?
   if rows.length == 0 {
     return Ok(value = None)
@@ -602,7 +602,7 @@ pub func getMemory(
 /// Delete a memory entry; true when one was deleted.
 pub func deleteMemory(
   sc: in CloudAgents.Pg.TenantScope, repoKey: in String, memKey: in String
-): Result[Bool, CloudAgents.Sqlite.DbError] {
+): Result[Bool, CloudAgents.Db.DbError] {
   val n = exec(sc, "DELETE FROM memories WHERE user_id = @p0 AND repo_key = @p1 AND mem_key = @p2", [sc.userId, repoKey, memKey])?
   return Ok(value = n > 0)
 }
@@ -614,7 +614,7 @@ pub func addTaskCapped(
   repoKey: in String,
   description: in String,
   maxOpenTasks: in Int,
-): Result[CloudAgents.Repository.AddTaskResult, CloudAgents.Sqlite.DbError] {
+): Result[CloudAgents.Repository.AddTaskResult, CloudAgents.Db.DbError] {
   val u = CloudAgents.PgStore.open(sc)?
   defer {
     CloudAgents.PgStore.release(u)
@@ -630,7 +630,7 @@ pub func addTaskCapped(
 /// status.
 pub func listTasks(
   sc: in CloudAgents.Pg.TenantScope, repoKey: in String, statusFilter: in Option[String]
-): Result[slice[CloudAgents.Repository.RepoTask], CloudAgents.Sqlite.DbError] {
+): Result[slice[CloudAgents.Repository.RepoTask], CloudAgents.Db.DbError] {
   val filter = match statusFilter { case Some(s) -> s; case None -> "" }
   var sql = "SELECT id, description, status, " + ms("created_at") + ", " + ms("updated_at") +
     " FROM repo_tasks WHERE user_id = @p0 AND repo_key = @p1"
@@ -658,7 +658,7 @@ pub func listTasks(
 /// Complete one of the owner's tasks for a repository.
 pub func completeTask(
   sc: in CloudAgents.Pg.TenantScope, repoKey: in String, taskId: in String
-): Result[CloudAgents.Repository.CompleteTaskOutcome, CloudAgents.Sqlite.DbError] {
+): Result[CloudAgents.Repository.CompleteTaskOutcome, CloudAgents.Db.DbError] {
   val u = CloudAgents.PgStore.open(sc)?
   defer {
     CloudAgents.PgStore.release(u)
@@ -704,7 +704,7 @@ pub func createNotification(
   sc: in CloudAgents.Pg.TenantScope,
   level: in String,
   summary: in String,
-): Result[CloudAgents.Repository.Notification, CloudAgents.Sqlite.DbError] {
+): Result[CloudAgents.Repository.Notification, CloudAgents.Db.DbError] {
   val id = newId()
   val ts = now()
   exec(sc, "INSERT INTO notifications (id, session_id, level, summary, created_at) VALUES (@p0, @p1, @p2, @p3, " + CloudAgents.Pg.msIn(4) + ")", [id, sessionId, level, summary, ts])?
@@ -723,14 +723,14 @@ pub func createNotification(
 /// A session's notifications, newest first.
 pub func listNotifications(
   sessionId: in String, sc: in CloudAgents.Pg.TenantScope
-): Result[slice[CloudAgents.Repository.Notification], CloudAgents.Sqlite.DbError] {
+): Result[slice[CloudAgents.Repository.Notification], CloudAgents.Db.DbError] {
   val rows = query(sc, "SELECT " + notificationCols() + " FROM notifications WHERE session_id = @p0 ORDER BY created_at DESC, id COLLATE \"C\"", [sessionId])?
   return Ok(value = notificationList(rows))
 }
 
 pub func notificationsCreatedAfter(
   sessionId: in String, sc: in CloudAgents.Pg.TenantScope, afterCreatedAt: in String
-): Result[slice[CloudAgents.Repository.Notification], CloudAgents.Sqlite.DbError] {
+): Result[slice[CloudAgents.Repository.Notification], CloudAgents.Db.DbError] {
   val rows = createdAfter(sc, notificationCols(), "notifications", sessionId, afterCreatedAt)?
   return Ok(value = notificationList(rows))
 }

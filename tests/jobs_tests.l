@@ -19,7 +19,7 @@ import CloudAgents.Pg.Migrate
 import CloudAgents.PgStore.Tenancy
 import CloudAgents.Repository
 import CloudAgents.SessionStore
-import CloudAgents.Sqlite
+import CloudAgents.Db
 import extern System.Environment as Env
 
 // ── Live Postgres ─────────────────────────────────────────────────────────────
@@ -64,7 +64,7 @@ func newUser(tag: in String): String {
   val uid = "t-" + tag + "-" + Std.Uuid.uuidToString(Std.Uuid.newUuid())
   match CloudAgents.PgStore.Tenancy.ensurePersonalTenant(uid) {
     case Ok(_) -> ()
-    case Err(e) -> panic("provisioning " + uid + " failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+    case Err(e) -> panic("provisioning " + uid + " failed: " + CloudAgents.Db.dbErrorMessage(e))
   }
   return uid
 }
@@ -103,14 +103,14 @@ func mkSession(id: in String): Unit {
   )
   match addSession(s, CloudAgents.Auth.requestScope()) {
     case Ok(_) -> ()
-    case Err(e) -> panic("addSession failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+    case Err(e) -> panic("addSession failed: " + CloudAgents.Db.dbErrorMessage(e))
   }
 }
 
 func mintToken(id: in String, ownerUserId: in String): String {
   return match CloudAgents.SessionStore.mintCallbackToken(id, CloudAgents.Pg.personalScope(ownerUserId)) {
     case Ok(t) -> t
-    case Err(e) -> panic("mintCallbackToken failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+    case Err(e) -> panic("mintCallbackToken failed: " + CloudAgents.Db.dbErrorMessage(e))
   }
 }
 
@@ -121,7 +121,7 @@ func bearer(token: in String): String {
 func mkProfile(userId: in String): String {
   return match CloudAgents.Repository.addProfile(CloudAgents.Pg.personalScope(userId), "test-profile", "claude", "full", "all", [], [], [], [], "all", []) {
     case Ok(p) -> p.id
-    case Err(e) -> panic("addProfile failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+    case Err(e) -> panic("addProfile failed: " + CloudAgents.Db.dbErrorMessage(e))
   }
 }
 
@@ -458,7 +458,7 @@ test "schedule_job attaches the calling session immediately, and list/update/can
   match CloudAgents.Repository.getScheduledJob(created.id, CloudAgents.Pg.personalScope(me)) {
     case Ok(Some(j)) -> assertEqual(j.sessionId, sid, "schedule_job attaches the calling session at creation time")
     case Ok(None) -> assertTrue(false, "the job must exist")
-    case Err(e) -> assertTrue(false, "getScheduledJob failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+    case Err(e) -> assertTrue(false, "getScheduledJob failed: " + CloudAgents.Db.dbErrorMessage(e))
   }
 
   match CloudAgents.Jobs.listJobsCallbackHandler(sid, bearer(token)) {
@@ -534,7 +534,7 @@ test "update_job/cancel_job callbacks cannot reach a job attached to a DIFFERENT
       assertEqual(j.status, "active", "the job was not cancelled by the other session")
     }
     case Ok(None) -> assertTrue(false, "the job must still exist")
-    case Err(e) -> assertTrue(false, "getScheduledJob failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+    case Err(e) -> assertTrue(false, "getScheduledJob failed: " + CloudAgents.Db.dbErrorMessage(e))
   }
 
   // The OWNING session can still update/cancel its own job normally.
@@ -560,7 +560,7 @@ test "update_job callback cannot set profileId, even from the owning session" {
   val token = mintToken(sid, me)
   val profileId = match CloudAgents.Repository.addProfile(CloudAgents.Pg.personalScope(me), "escalated", "", "full", "all", [], [], [], [], "all", []) {
     case Ok(p) -> p.id
-    case Err(e) -> panic("addProfile failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+    case Err(e) -> panic("addProfile failed: " + CloudAgents.Db.dbErrorMessage(e))
   }
 
   val created = match CloudAgents.Jobs.scheduleJobCallbackHandler(
@@ -593,7 +593,7 @@ func claimMine(owner: in String): slice[CloudAgents.Repository.ClaimedJob] {
   while rounds < 50 {
     val batch = match CloudAgents.Repository.claimDueScheduledJobs(100) {
       case Ok(cs) -> cs
-      case Err(e) -> panic("claimDueScheduledJobs failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+      case Err(e) -> panic("claimDueScheduledJobs failed: " + CloudAgents.Db.dbErrorMessage(e))
     }
     for c in batch {
       if c.tenantScope.userId == owner {
@@ -739,7 +739,7 @@ test "of two overlapping polls only one claims a slot, and a released claim is d
   // slot, last_run_at and status back so the next poll retries it.
   match CloudAgents.Repository.releaseScheduledJobClaim(first[0]) {
     case Ok(_) -> ()
-    case Err(e) -> panic("releaseScheduledJobClaim failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+    case Err(e) -> panic("releaseScheduledJobClaim failed: " + CloudAgents.Db.dbErrorMessage(e))
   }
   val released = jobNow(me, job.id)
   assertEqual(released.nextRunAtEpochMillis + "|" + released.lastRunAtEpochMillis, job.nextRunAtEpochMillis + "|", "the claim is undone")
@@ -769,7 +769,7 @@ test "releasing a claim never overwrites an edit made while the run was in fligh
   }
   match CloudAgents.Repository.releaseScheduledJobClaim(claims[0]) {
     case Ok(_) -> ()
-    case Err(e) -> panic("releaseScheduledJobClaim failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+    case Err(e) -> panic("releaseScheduledJobClaim failed: " + CloudAgents.Db.dbErrorMessage(e))
   }
   val after = jobNow(me, recurring.id)
   assertEqual(after.status, "paused", "the concurrent pause stands")
@@ -879,7 +879,7 @@ test "triggerDueJobsHandler runs for the operator identity when nothing is due" 
   claimMine(me)
   match CloudAgents.PgStore.Tenancy.ensurePersonalTenant(CloudAgents.Auth.operatorUserId()) {
     case Ok(_) -> ()
-    case Err(e) -> panic("provisioning the operator failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+    case Err(e) -> panic("provisioning the operator failed: " + CloudAgents.Db.dbErrorMessage(e))
   }
   CloudAgents.Auth.setCurrentUserId(CloudAgents.Auth.operatorUserId())
   defer {
@@ -925,12 +925,12 @@ test "callback handlers scope jobs to the SESSION'S OWNER, not the ambient calle
   match CloudAgents.Repository.getScheduledJob(created.id, CloudAgents.Pg.personalScope(alice)) {
     case Ok(Some(j)) -> assertEqual(j.userId, alice, "the job is scoped to the session's owner")
     case Ok(None) -> assertTrue(false, "alice must be able to see the job she owns")
-    case Err(e) -> assertTrue(false, "getScheduledJob failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+    case Err(e) -> assertTrue(false, "getScheduledJob failed: " + CloudAgents.Db.dbErrorMessage(e))
   }
   match CloudAgents.Repository.getScheduledJob(created.id, CloudAgents.Pg.personalScope(mallory)) {
     case Ok(None) -> ()
     case Ok(Some(_)) -> assertTrue(false, "the ambient caller identity must not own the job")
-    case Err(e) -> assertTrue(false, "getScheduledJob failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+    case Err(e) -> assertTrue(false, "getScheduledJob failed: " + CloudAgents.Db.dbErrorMessage(e))
   }
 
   // list_jobs, still invoked with the ambient identity stamped as mallory,

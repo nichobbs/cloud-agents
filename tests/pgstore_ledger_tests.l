@@ -20,7 +20,7 @@ import CloudAgents.Ledger.Model
 import CloudAgents.Ledger.ObserverPolicy
 import CloudAgents.Ledger.Store as SqliteLedger
 import CloudAgents.SessionStore
-import CloudAgents.Sqlite
+import CloudAgents.Db
 
 func live(): Bool {
   val ok = CloudAgents.Pg.serviceConfigured() and

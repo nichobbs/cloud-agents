@@ -11,7 +11,7 @@ import Std.Json
 import Web
 import CloudAgents.Auth
 import CloudAgents.Repository
-import CloudAgents.Sqlite
+import CloudAgents.Db
 
 val maxProfileNameLen = 200
 
@@ -114,8 +114,8 @@ pub func patchMissingToolFields(body: in String): String {
   return body.substring(0, closeIdx) + toAdd + body.substring(closeIdx, body.length - closeIdx)
 }
 
-func dbError(e: in CloudAgents.Sqlite.DbError): Web.ApiError {
-  return Web.internalError(CloudAgents.Sqlite.dbErrorMessage(e))
+func dbError(e: in CloudAgents.Db.DbError): Web.ApiError {
+  return Web.internalError(CloudAgents.Db.dbErrorMessage(e))
 }
 
 /// Whether a DbError is the profiles table's `UNIQUE(user_id, name)`
@@ -134,15 +134,15 @@ func dbError(e: in CloudAgents.Sqlite.DbError): Web.ApiError {
 /// `UNIQUE(profile_id, credential_name)`) in the SAME transaction, so a
 /// duplicate credential NAME in the request would trip that other table's
 /// constraint and get misreported here as a profile-name collision instead
-/// of the real problem (a duplicate grant). CloudAgents.Sqlite.dbErrorMessage
+/// of the real problem (a duplicate grant). CloudAgents.Db.dbErrorMessage
 /// embeds the failing statement's own SQL text (`ExecFailed(sql, m)`), so
 /// checking for the profiles table's own INSERT/UPDATE keeps this scoped to
 /// the constraint it actually names. "profiles " (trailing space, matching
 /// insertProfileSql's "INTO profiles (") never matches
 /// insertProfileCredentialSql's "INTO profile_credentials (" — different
 /// table name, not a prefix of it.
-func isDuplicateNameError(e: in CloudAgents.Sqlite.DbError): Bool {
-  val msg = CloudAgents.Sqlite.dbErrorMessage(e)
+func isDuplicateNameError(e: in CloudAgents.Db.DbError): Bool {
+  val msg = CloudAgents.Db.dbErrorMessage(e)
   return msg.contains("UNIQUE constraint") and msg.contains("profiles ")
 }
 

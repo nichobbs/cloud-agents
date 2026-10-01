@@ -202,15 +202,15 @@ pub func syncSession(ctx: in SessionContext, port: in GitHubPort, budget: in Int
   val cache = FactsCache(refs = none, states = none, labelLists = none, errors = none)
   val items = match listItems(ctx.sessionId, ctx.tenantScope) {
     case Ok(xs) -> xs
-    case Err(e) -> return failed(pass, "reading items: " + CloudAgents.Sqlite.dbErrorMessage(e))
+    case Err(e) -> return failed(pass, "reading items: " + CloudAgents.Db.dbErrorMessage(e))
   }
   val rows = match syncRows(ctx.sessionId, ctx.tenantScope) {
     case Ok(rs) -> rs
-    case Err(e) -> return failed(pass, "reading sync state: " + CloudAgents.Sqlite.dbErrorMessage(e))
+    case Err(e) -> return failed(pass, "reading sync state: " + CloudAgents.Db.dbErrorMessage(e))
   }
   val owned = match ownedIssueItems(ctx.sessionId, ctx.tenantScope) {
     case Ok(xs) -> xs
-    case Err(e) -> return failed(pass, "reading issue ownership: " + CloudAgents.Sqlite.dbErrorMessage(e))
+    case Err(e) -> return failed(pass, "reading issue ownership: " + CloudAgents.Db.dbErrorMessage(e))
   }
   val due = dueInOrder(items, rows, owned)
 
@@ -532,7 +532,7 @@ func persist(ctx: in SessionContext, row: in SyncRow, error: in String): Unit {
     case Ok(_) -> ()
     case Err(e) -> println(
       "WARNING: ledger sync state for " + row.itemId + " not saved: " +
-        CloudAgents.Sqlite.dbErrorMessage(e)
+        CloudAgents.Db.dbErrorMessage(e)
     )
   }
 }

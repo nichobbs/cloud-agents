@@ -13,7 +13,7 @@ package CloudAgents.Ledger.Service
 
 import Std.Core
 import CloudAgents.Pg
-import CloudAgents.Sqlite
+import CloudAgents.Db
 import CloudAgents.Repository
 import CloudAgents.SessionStore
 import CloudAgents.NetworkPolicy
@@ -43,8 +43,8 @@ func notFound(msg: in String): LedgerFailure {
   return LedgerFailure(status = "not_found", message = msg)
 }
 
-func dbFail(e: in CloudAgents.Sqlite.DbError): LedgerFailure {
-  println("WARNING: session ledger storage failure: " + CloudAgents.Sqlite.dbErrorMessage(e))
+func dbFail(e: in CloudAgents.Db.DbError): LedgerFailure {
+  println("WARNING: session ledger storage failure: " + CloudAgents.Db.dbErrorMessage(e))
   return LedgerFailure(status = "error", message = "the session ledger could not be updated; try again")
 }
 
@@ -387,7 +387,7 @@ func changeStatus(
 func notifyOwner(ctx: in SessionContext, level: in String, summary: in String): Unit {
   match CloudAgents.Repository.createNotification(ctx.sessionId, ctx.tenantScope, level, "Ledger: " + summary) {
     case Ok(_) -> ()
-    case Err(e) -> println("WARNING: ledger notification failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+    case Err(e) -> println("WARNING: ledger notification failed: " + CloudAgents.Db.dbErrorMessage(e))
   }
 }
 
@@ -432,7 +432,7 @@ func writeSystemNote(ctx: in SessionContext, itemId: in String, summary: in Stri
   val d = simpleDraft("note", truncate(summary, 140), itemId)
   match insertEntry(ctx.tenantScope, materialize(ctx.sessionId, d, itemId, "info", "not_required", "", "system")) {
     case Ok(_) -> ()
-    case Err(err) -> println("WARNING: ledger system note failed: " + CloudAgents.Sqlite.dbErrorMessage(err))
+    case Err(err) -> println("WARNING: ledger system note failed: " + CloudAgents.Db.dbErrorMessage(err))
   }
 }
 
@@ -629,7 +629,7 @@ pub func rulesFor(ctx: in SessionContext): slice[PolicyRule] {
   val cache = match getPolicyCache(ctx.sessionId, ctx.tenantScope) {
     case Ok(c) -> c
     case Err(e) -> {
-      println("WARNING: reading the ledger policy cache failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+      println("WARNING: reading the ledger policy cache failed: " + CloudAgents.Db.dbErrorMessage(e))
       return base
     }
   }
@@ -643,7 +643,7 @@ pub func rulesFor(ctx: in SessionContext): slice[PolicyRule] {
     json = fetched.json
     match setPolicyCache(ctx.sessionId, ctx.tenantScope, fetched.status, fetched.json, fetched.error) {
       case Ok(_) -> ()
-      case Err(e) -> println("WARNING: caching the ledger policy failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+      case Err(e) -> println("WARNING: caching the ledger policy failed: " + CloudAgents.Db.dbErrorMessage(e))
     }
   }
   if status != "loaded" {
@@ -1107,7 +1107,7 @@ func transcriptExcerpt(ctx: in SessionContext, endSeq: in String): String {
       return text
     }
     case Err(e) -> {
-      println("WARNING: reading the ledger transcript excerpt failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+      println("WARNING: reading the ledger transcript excerpt failed: " + CloudAgents.Db.dbErrorMessage(e))
       return ""
     }
   }
@@ -1193,7 +1193,7 @@ pub func undeliveredFeedbackCount(sessionId: in String, sc: in CloudAgents.Pg.Te
   match pendingFeedbackCount(sessionId, sc) {
     case Ok(n) -> return n
     case Err(e) -> {
-      println("WARNING: counting ledger feedback failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+      println("WARNING: counting ledger feedback failed: " + CloudAgents.Db.dbErrorMessage(e))
       return 0
     }
   }

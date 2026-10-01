@@ -4,7 +4,7 @@ import Std.Core
 import Web
 import CloudAgents.Repository
 import CloudAgents.SessionStore
-import CloudAgents.Sqlite
+import CloudAgents.Db
 import CloudAgents.Streaming
 import CloudAgents.Text
 import CloudAgents.Capture
@@ -24,8 +24,8 @@ pub record AddTodoRequest {
 
 val maxBodyLen = 32768
 
-func dbError(e: in CloudAgents.Sqlite.DbError): Web.ApiError {
-  return Web.internalError(CloudAgents.Sqlite.dbErrorMessage(e))
+func dbError(e: in CloudAgents.Db.DbError): Web.ApiError {
+  return Web.internalError(CloudAgents.Db.dbErrorMessage(e))
 }
 
 // Every handler here is user-facing, and the message/todo/comment/event tables
@@ -567,7 +567,7 @@ pub func ingestAgentPlan(
   sc: in CloudAgents.Pg.TenantScope,
   messageId: in String,
   content: in String,
-): Result[Int, CloudAgents.Sqlite.DbError] {
+): Result[Int, CloudAgents.Db.DbError] {
   val items = parseAgentPlan(content)
   if items.length < 2 {
     return Ok(value = 0)

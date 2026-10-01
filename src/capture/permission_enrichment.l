@@ -50,7 +50,7 @@ import Std.Collections
 import Std.Encoding
 import CloudAgents.Scope
 import CloudAgents.Repository
-import CloudAgents.Sqlite
+import CloudAgents.Db
 import Testamur.CheckpointFormat.Model
 
 // ─── Derived shape ───────────────────────────────────────────────────────────
@@ -242,7 +242,7 @@ pub func permissionForTool(perms: in List[ToolPermission], tool: in String): Per
 /// Synchronous — the whole repository layer is.
 pub func permissionsForSession(
   sessionId: in String, sc: in CloudAgents.Scope.TenantScope
-): Result[List[ToolPermission], CloudAgents.Sqlite.DbError] {
+): Result[List[ToolPermission], CloudAgents.Db.DbError] {
   val perms = CloudAgents.Repository.permissionRequestsCreatedAfter(sessionId, sc, "")?
   val secrets = CloudAgents.Repository.secretRequestsCreatedAfter(sessionId, sc, "")?
   val rows: List[ToolPermission] = newList()

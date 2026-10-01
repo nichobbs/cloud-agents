@@ -14,7 +14,7 @@ import CloudAgents.Pg.Migrate
 import CloudAgents.PgStore.Tenancy
 import CloudAgents.Repository
 import CloudAgents.SessionStore
-import CloudAgents.Sqlite
+import CloudAgents.Db
 
 // ── Live Postgres ─────────────────────────────────────────────────────────────
 //
@@ -58,7 +58,7 @@ func newUser(tag: in String): String {
   val uid = "t-" + tag + "-" + Std.Uuid.uuidToString(Std.Uuid.newUuid())
   match CloudAgents.PgStore.Tenancy.ensurePersonalTenant(uid) {
     case Ok(_) -> ()
-    case Err(e) -> panic("provisioning " + uid + " failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+    case Err(e) -> panic("provisioning " + uid + " failed: " + CloudAgents.Db.dbErrorMessage(e))
   }
   return uid
 }
@@ -72,17 +72,17 @@ func freshUser(tag: in String): String {
   return uid
 }
 
-func mustOptStr(r: in Result[Option[String], CloudAgents.Sqlite.DbError]): Option[String] {
+func mustOptStr(r: in Result[Option[String], CloudAgents.Db.DbError]): Option[String] {
   return match r {
     case Ok(o) -> o
-    case Err(e) -> panic("model-listing cache read failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+    case Err(e) -> panic("model-listing cache read failed: " + CloudAgents.Db.dbErrorMessage(e))
   }
 }
 
-func mustCacheWrite(r: in Result[Unit, CloudAgents.Sqlite.DbError]): Unit {
+func mustCacheWrite(r: in Result[Unit, CloudAgents.Db.DbError]): Unit {
   return match r {
     case Ok(_) -> ()
-    case Err(e) -> panic("cacheModelListing failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+    case Err(e) -> panic("cacheModelListing failed: " + CloudAgents.Db.dbErrorMessage(e))
   }
 }
 
@@ -101,25 +101,25 @@ func insertTestSession(id: in String, userId: in String): Unit {
   )
   match CloudAgents.SessionStore.addSession(sess, CloudAgents.Pg.personalScope(userId)) {
     case Ok(_) -> ()
-    case Err(e) -> assertTrue(false, "insertTestSession failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+    case Err(e) -> assertTrue(false, "insertTestSession failed: " + CloudAgents.Db.dbErrorMessage(e))
   }
 }
 
 func mustAddMessage(sessionId: in String, role: in String, content: in String): CloudAgents.Repository.Message {
   return match CloudAgents.Repository.addMessage(sessionId, CloudAgents.Auth.requestScope(), role, content) {
     case Ok(m) -> m
-    case Err(e) -> panic("addMessage failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+    case Err(e) -> panic("addMessage failed: " + CloudAgents.Db.dbErrorMessage(e))
   }
 }
 
 // Assert branchSession returned a ValidationFailed whose rendered message (via
 // dbErrorMessage) equals the expected precondition message.
 func expectBranchValidationFailed(
-  r: in Result[Unit, CloudAgents.Sqlite.DbError], expected: in String, label: in String
+  r: in Result[Unit, CloudAgents.Db.DbError], expected: in String, label: in String
 ): Unit {
   match r {
     case Ok(_) -> assertTrue(false, label + ": expected Err(ValidationFailed), got Ok")
-    case Err(e) -> assertEqual(CloudAgents.Sqlite.dbErrorMessage(e), expected, label)
+    case Err(e) -> assertEqual(CloudAgents.Db.dbErrorMessage(e), expected, label)
   }
 }
 
@@ -169,7 +169,7 @@ test "model-listing cache round-trips and is scoped by (user, provider)" {
 
 // ── branchSession precondition failures (#1033) ───────────────────────────────
 // Each of branchSession's three ValidationFailed precondition sites, asserting the
-// rendered message via CloudAgents.Sqlite.dbErrorMessage.
+// rendered message via CloudAgents.Db.dbErrorMessage.
 test "branchSession rejects a parent session not found or not owned by user" {
   if not live() {
     return

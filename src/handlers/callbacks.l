@@ -30,7 +30,7 @@ import CloudAgents.Repository
 import CloudAgents.Scope
 import CloudAgents.RepoKey
 import CloudAgents.SessionStore
-import CloudAgents.Sqlite
+import CloudAgents.Db
 import CloudAgents.Text
 import extern System.Environment as Env
 import extern System.String as DotNetString
@@ -56,8 +56,8 @@ val maxAnswerLen = 8192
 
 val maxProgressSummaryLen = 4096
 
-func dbError(e: in CloudAgents.Sqlite.DbError): Web.ApiError {
-  return Web.internalError(CloudAgents.Sqlite.dbErrorMessage(e))
+func dbError(e: in CloudAgents.Db.DbError): Web.ApiError {
+  return Web.internalError(CloudAgents.Db.dbErrorMessage(e))
 }
 
 /// Host-side fail-closed timeout (docs/phase6 §3 step 4): a still-pending
@@ -330,7 +330,7 @@ pub func answerPermissionRequestHandler(
   if req.decision == "allow_always" {
     match CloudAgents.Repository.addPermissionRule(id, CloudAgents.Auth.requestScope(), pr.toolName, pr.inputJson) {
       case Ok(_) -> ()
-      case Err(e) -> println("WARNING: failed to persist allow-always rule for session " + id + ": " + CloudAgents.Sqlite.dbErrorMessage(e))
+      case Err(e) -> println("WARNING: failed to persist allow-always rule for session " + id + ": " + CloudAgents.Db.dbErrorMessage(e))
     }
   }
   return Ok(())

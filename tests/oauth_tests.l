@@ -18,7 +18,7 @@ import CloudAgents.Pg.Migrate
 import CloudAgents.PgStore
 import CloudAgents.PgStore.Tenancy
 import CloudAgents.Repository
-import CloudAgents.Sqlite
+import CloudAgents.Db
 import extern System.Environment as Env
 
 // ── Live Postgres ─────────────────────────────────────────────────────────────
@@ -63,7 +63,7 @@ func newUser(tag: in String): String {
   val uid = "t-" + tag + "-" + Std.Uuid.uuidToString(Std.Uuid.newUuid())
   match CloudAgents.PgStore.Tenancy.ensurePersonalTenant(uid) {
     case Ok(_) -> ()
-    case Err(e) -> panic("provisioning " + uid + " failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+    case Err(e) -> panic("provisioning " + uid + " failed: " + CloudAgents.Db.dbErrorMessage(e))
   }
   return uid
 }
@@ -90,7 +90,7 @@ func freshOAuthUser(tag: in String): String {
   val uid = "gh-" + CloudAgents.Repository.nowMillis()
   match CloudAgents.PgStore.Tenancy.ensurePersonalTenant(uid) {
     case Ok(_) -> ()
-    case Err(e) -> panic("provisioning " + uid + " failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+    case Err(e) -> panic("provisioning " + uid + " failed: " + CloudAgents.Db.dbErrorMessage(e))
   }
   CloudAgents.Auth.setCurrentUserId(uid)
   return uid
@@ -107,18 +107,18 @@ func uniq(base: in String): String {
 func expireCachedToken(hash: in String): Unit {
   val u = match CloudAgents.PgStore.openUnscoped() {
     case Ok(u) -> u
-    case Err(e) -> panic("open failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+    case Err(e) -> panic("open failed: " + CloudAgents.Db.dbErrorMessage(e))
   }
   defer {
     CloudAgents.PgStore.release(u)
   }
   match CloudAgents.PgStore.ex(u, "UPDATE github_token_cache SET expires_at = now() - interval '300 seconds' WHERE token_hash = @p0", [hash]) {
     case Ok(_) -> ()
-    case Err(e) -> panic("expiring the cache row failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+    case Err(e) -> panic("expiring the cache row failed: " + CloudAgents.Db.dbErrorMessage(e))
   }
   match CloudAgents.PgStore.commit(u) {
     case Ok(_) -> ()
-    case Err(e) -> panic("commit failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+    case Err(e) -> panic("commit failed: " + CloudAgents.Db.dbErrorMessage(e))
   }
 }
 
@@ -329,7 +329,7 @@ test "cached bearer authenticates without a network round trip" {
   val hash = CloudAgents.Crypto.sha256Base64(token)
   match CloudAgents.Repository.cacheGitHubToken(hash, me, "octocat") {
     case Ok(_) -> ()
-    case Err(e) -> assertTrue(false, "cache write failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+    case Err(e) -> assertTrue(false, "cache write failed: " + CloudAgents.Db.dbErrorMessage(e))
   }
 
   // The middleware path resolves it from the cache alone.
@@ -343,7 +343,7 @@ test "cached bearer authenticates without a network round trip" {
   match CloudAgents.Repository.cachedGitHubToken(CloudAgents.Crypto.sha256Base64(uniq("gho_other"))) {
     case Ok(Some(_)) -> assertTrue(false, "different token must miss the cache")
     case Ok(None) -> ()
-    case Err(e) -> assertTrue(false, "cache read failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+    case Err(e) -> assertTrue(false, "cache read failed: " + CloudAgents.Db.dbErrorMessage(e))
   }
   clearOAuthEnv()
 }
@@ -358,7 +358,7 @@ test "cache hits re-apply the whitelist so removals take effect immediately (#42
   val token = uniq("gho_whitelisted")
   match CloudAgents.Repository.cacheGitHubToken(CloudAgents.Crypto.sha256Base64(token), "gh-42", "octocat") {
     case Ok(_) -> ()
-    case Err(e) -> assertTrue(false, "cache write failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+    case Err(e) -> assertTrue(false, "cache write failed: " + CloudAgents.Db.dbErrorMessage(e))
   }
   // Whitelist allows 42 -> cached identity resolves.
   Env.SetEnvironmentVariable("CLOUD_AGENTS_WHITELIST", "42")
@@ -395,7 +395,7 @@ test "negative cache entries refuse a bad bearer without a round trip (#425)" {
   val token = uniq("gho_knownbad")
   match CloudAgents.Repository.cacheGitHubTokenDenied(CloudAgents.Crypto.sha256Base64(token)) {
     case Ok(_) -> ()
-    case Err(e) -> assertTrue(false, "negative cache write failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+    case Err(e) -> assertTrue(false, "negative cache write failed: " + CloudAgents.Db.dbErrorMessage(e))
   }
   // If this ever tried a live validation it would need the network — a
   // denial here proves the negative entry short-circuits.
@@ -416,7 +416,7 @@ test "a validated OAuth bearer satisfies secret routes without a static token (#
   val token = uniq("gho_secretroute")
   match CloudAgents.Repository.cacheGitHubToken(CloudAgents.Crypto.sha256Base64(token), me, "octocat") {
     case Ok(_) -> ()
-    case Err(e) -> assertTrue(false, "cache write failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+    case Err(e) -> assertTrue(false, "cache write failed: " + CloudAgents.Db.dbErrorMessage(e))
   }
   // A validated GitHub identity is real authentication — credential routes
   // accept it even with no CLOUD_AGENTS_API_TOKEN configured.
@@ -444,14 +444,14 @@ test "the flood backstop stops validating unrecognised bearers (#425)" {
   while i < 30 {
     match CloudAgents.Repository.cacheGitHubTokenDenied(CloudAgents.Crypto.sha256Base64(uniq("gho_flood" + toString(i)))) {
       case Ok(_) -> ()
-      case Err(e) -> assertTrue(false, "negative cache write failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+      case Err(e) -> assertTrue(false, "negative cache write failed: " + CloudAgents.Db.dbErrorMessage(e))
     }
     i = i + 1
   }
   match CloudAgents.Repository.activeNegativeGitHubTokens() {
     // The cache is global: other tests and runs may hold active negative rows too.
     case Ok(n) -> assertTrue(n >= 30, "all negative entries counted: " + toString(n))
-    case Err(e) -> assertTrue(false, "counter failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+    case Err(e) -> assertTrue(false, "counter failed: " + CloudAgents.Db.dbErrorMessage(e))
   }
   // A fresh, never-seen bearer is refused WITHOUT a network round trip (if
   // the backstop didn't fire, this test would need the network to proceed).
@@ -463,7 +463,7 @@ test "the flood backstop stops validating unrecognised bearers (#425)" {
   val good = uniq("gho_stillgood")
   match CloudAgents.Repository.cacheGitHubToken(CloudAgents.Crypto.sha256Base64(good), me, "octocat") {
     case Ok(_) -> ()
-    case Err(e) -> assertTrue(false, "cache write failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+    case Err(e) -> assertTrue(false, "cache write failed: " + CloudAgents.Db.dbErrorMessage(e))
   }
   match authenticateRequest("/api/sessions", "Bearer " + good, "") {
     case Allowed(uid) -> assertEqual(uid, me, "validated users ride out the flood")
@@ -482,14 +482,14 @@ test "the exchange endpoint has its own flood backstop, independent of bearers (
 
   val bearerNegativesBefore = match CloudAgents.Repository.activeNegativeGitHubTokens() {
     case Ok(n) -> n
-    case Err(e) -> panic("counter failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+    case Err(e) -> panic("counter failed: " + CloudAgents.Db.dbErrorMessage(e))
   }
   // A code GitHub already rejected is refused while its negative row lives —
   // no second outbound exchange for the same code.
   val replayed = uniq("replayedcode")
   match CloudAgents.Repository.cacheOAuthCodeRejected(CloudAgents.Crypto.sha256Base64("oauth-code:" + replayed)) {
     case Ok(_) -> ()
-    case Err(e) -> assertTrue(false, "code-rejection write failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+    case Err(e) -> assertTrue(false, "code-rejection write failed: " + CloudAgents.Db.dbErrorMessage(e))
   }
   match exchangeCode(ExchangeRequest(code = replayed)) {
     case Ok(_) -> assertTrue(false, "recently rejected code must be refused")
@@ -501,7 +501,7 @@ test "the exchange endpoint has its own flood backstop, independent of bearers (
   while i < 30 {
     match CloudAgents.Repository.cacheOAuthCodeRejected(CloudAgents.Crypto.sha256Base64("oauth-code:" + uniq("bad" + toString(i)))) {
       case Ok(_) -> ()
-      case Err(e) -> assertTrue(false, "code-rejection write failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+      case Err(e) -> assertTrue(false, "code-rejection write failed: " + CloudAgents.Db.dbErrorMessage(e))
     }
     i = i + 1
   }
@@ -514,7 +514,7 @@ test "the exchange endpoint has its own flood backstop, independent of bearers (
   // blast-radius argument stays intact).
   match CloudAgents.Repository.activeNegativeGitHubTokens() {
     case Ok(n) -> assertEqualInt(n, bearerNegativesBefore, "code rejections don't pollute the bearer counter")
-    case Err(e) -> assertTrue(false, "counter failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+    case Err(e) -> assertTrue(false, "counter failed: " + CloudAgents.Db.dbErrorMessage(e))
   }
   clearOAuthEnv()
 }
@@ -559,7 +559,7 @@ test "logout invalidates the token-validation cache row" {
   val hash = CloudAgents.Crypto.sha256Base64(token)
   match CloudAgents.Repository.cacheGitHubToken(hash, me, "octocat") {
     case Ok(_) -> ()
-    case Err(e) -> assertTrue(false, "cache write failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+    case Err(e) -> assertTrue(false, "cache write failed: " + CloudAgents.Db.dbErrorMessage(e))
   }
   // ...confirm the bearer authenticates via the cache...
   match authenticateRequest("/api/sessions", "Bearer " + token, "") {
@@ -575,7 +575,7 @@ test "logout invalidates the token-validation cache row" {
   match CloudAgents.Repository.cachedGitHubToken(hash) {
     case Ok(Some(_)) -> assertTrue(false, "cache row must be gone after logout")
     case Ok(None) -> ()
-    case Err(e) -> assertTrue(false, "cache read failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+    case Err(e) -> assertTrue(false, "cache read failed: " + CloudAgents.Db.dbErrorMessage(e))
   }
 
   // Idempotent: no header, or one that is not a well-formed bearer, means
@@ -760,14 +760,14 @@ test "expired cache entries never match" {
   val hash = CloudAgents.Crypto.sha256Base64(uniq("gho_expired"))
   match CloudAgents.Repository.cacheGitHubToken(hash, me, "old") {
     case Ok(_) -> ()
-    case Err(e) -> assertTrue(false, "cache write failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+    case Err(e) -> assertTrue(false, "cache write failed: " + CloudAgents.Db.dbErrorMessage(e))
   }
   // Force the entry into the recent past (5 minutes ago -> expired for cachedGitHubToken, within 2h window for lookupHistoricalGitHubToken).
   expireCachedToken(hash)
   match CloudAgents.Repository.cachedGitHubToken(hash) {
     case Ok(Some(_)) -> assertTrue(false, "expired entry must not match")
     case Ok(None) -> ()
-    case Err(e) -> assertTrue(false, "cache read failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+    case Err(e) -> assertTrue(false, "cache read failed: " + CloudAgents.Db.dbErrorMessage(e))
   }
   // Historical lookup finds the user ID even when the cache entry is expired.
   match CloudAgents.Repository.lookupHistoricalGitHubToken(hash) {
@@ -776,7 +776,7 @@ test "expired cache entries never match" {
       assertEqual(entry.login, "old", "historical lookup recovers login")
     }
     case Ok(None) -> assertTrue(false, "historical lookup must find expired row")
-    case Err(e) -> assertTrue(false, "historical lookup failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+    case Err(e) -> assertTrue(false, "historical lookup failed: " + CloudAgents.Db.dbErrorMessage(e))
   }
 }
 
@@ -811,7 +811,7 @@ test "refreshOAuthToken returns refreshed token for authenticated user" {
   // Seed active token cache
   match CloudAgents.Repository.cacheGitHubToken(tokenHash, userId, "octocat") {
     case Ok(_) -> ()
-    case Err(e) -> assertTrue(false, "cache write failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+    case Err(e) -> assertTrue(false, "cache write failed: " + CloudAgents.Db.dbErrorMessage(e))
   }
 
   // 1. Success path with active token in cache

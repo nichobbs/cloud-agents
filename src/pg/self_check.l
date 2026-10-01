@@ -12,8 +12,7 @@
 //!   `cloudagents_claimer`, `cloudagents_migrator`, or any superuser or
 //!   `BYPASSRLS` role, which would let it switch to that role;
 //! - the claim-function owner `cloudagents_claimer` cannot log in, and the
-//!   export role `cloudagents_migrator` cannot either (it may only log in
-//!   during the one-off cut-over export);
+//!   unused former export role `cloudagents_migrator` cannot either;
 //! - the schema is at the version this build expects (`--migrate` has run).
 //! Each failure names what is wrong and where to fix it.
 @runtime_checked
@@ -91,7 +90,7 @@ pub func check(conn: in DbConnection): Result[Unit, String] {
     }
     if role == "cloudagents_migrator" and flag(found[0], "login") {
       return Err(
-        error = "cloudagents_migrator can log in; it may only do so during the cut-over export " +
+        error = "cloudagents_migrator can log in; it is unused and must stay NOLOGIN " +
           "(ALTER ROLE cloudagents_migrator NOLOGIN)" +
           provisionHint()
       )

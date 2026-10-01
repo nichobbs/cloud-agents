@@ -18,7 +18,7 @@ import CloudAgents.Pg.Migrate
 import CloudAgents.PgStore.Tenancy
 import CloudAgents.Repository
 import CloudAgents.SessionStore
-import CloudAgents.Sqlite
+import CloudAgents.Db
 import CloudAgents.Ledger.Model
 import CloudAgents.Ledger.Store
 import CloudAgents.Scope as TestScope
@@ -70,7 +70,7 @@ func newUser(tag: in String): String {
   val uid = "t-" + tag + "-" + Std.Uuid.uuidToString(Std.Uuid.newUuid())
   match CloudAgents.PgStore.Tenancy.ensurePersonalTenant(uid) {
     case Ok(_) -> ()
-    case Err(e) -> panic("provisioning " + uid + " failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+    case Err(e) -> panic("provisioning " + uid + " failed: " + CloudAgents.Db.dbErrorMessage(e))
   }
   return uid
 }
@@ -92,22 +92,22 @@ func seedSession(): String {
   val sc = testScope()
   match CloudAgents.SessionStore.addSession(makeAgentSession(sessionId = id, repoUrl = "https://github.com/acme/shop", branch = "main", containerId = "", harness = "claude", model = "", nativeSessionId = id), sc) {
     case Ok(_) -> ()
-    case Err(e) -> panic("addSession failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+    case Err(e) -> panic("addSession failed: " + CloudAgents.Db.dbErrorMessage(e))
   }
   val u = match CloudAgents.PgStore.open(sc) {
     case Ok(x) -> x
-    case Err(e) -> panic(CloudAgents.Sqlite.dbErrorMessage(e))
+    case Err(e) -> panic(CloudAgents.Db.dbErrorMessage(e))
   }
   defer {
     CloudAgents.PgStore.release(u)
   }
   match CloudAgents.PgStore.ex(u, "UPDATE session_routes SET callback_token_hash = @p1 WHERE session_id = @p0 AND tenant_id = @p2", [id, CloudAgents.Auth.hashCallbackToken("tok-" + id), sc.tenantId]) {
     case Ok(n) -> assertEqualInt(n, 1, "token stored on the session's route")
-    case Err(e) -> panic(CloudAgents.Sqlite.dbErrorMessage(e))
+    case Err(e) -> panic(CloudAgents.Db.dbErrorMessage(e))
   }
   match CloudAgents.PgStore.commit(u) {
     case Ok(_) -> ()
-    case Err(e) -> panic(CloudAgents.Sqlite.dbErrorMessage(e))
+    case Err(e) -> panic(CloudAgents.Db.dbErrorMessage(e))
   }
   return id
 }
@@ -116,7 +116,7 @@ func seedSession(): String {
 func retire(sid: in String): Unit {
   match CloudAgents.SessionStore.updateSessionArchived(sid, testScope(), "1") {
     case Ok(_) -> ()
-    case Err(e) -> println("WARNING: could not archive " + sid + ": " + CloudAgents.Sqlite.dbErrorMessage(e))
+    case Err(e) -> println("WARNING: could not archive " + sid + ": " + CloudAgents.Db.dbErrorMessage(e))
   }
 }
 
@@ -124,18 +124,18 @@ func retire(sid: in String): Unit {
 func execScoped(sql: in String, params: in slice[String]): Unit {
   val u = match CloudAgents.PgStore.open(testScope()) {
     case Ok(x) -> x
-    case Err(e) -> panic(CloudAgents.Sqlite.dbErrorMessage(e))
+    case Err(e) -> panic(CloudAgents.Db.dbErrorMessage(e))
   }
   defer {
     CloudAgents.PgStore.release(u)
   }
   match CloudAgents.PgStore.ex(u, sql, params) {
     case Ok(_) -> ()
-    case Err(e) -> assertTrue(false, "exec failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+    case Err(e) -> assertTrue(false, "exec failed: " + CloudAgents.Db.dbErrorMessage(e))
   }
   match CloudAgents.PgStore.commit(u) {
     case Ok(_) -> ()
-    case Err(e) -> assertTrue(false, CloudAgents.Sqlite.dbErrorMessage(e))
+    case Err(e) -> assertTrue(false, CloudAgents.Db.dbErrorMessage(e))
   }
 }
 
@@ -154,7 +154,7 @@ func indexIn(xs: in slice[String], x: in String): Int {
 func due(): slice[String] {
   match sessionsToSync(100) {
     case Ok(ids) -> return ids
-    case Err(e) -> panic(CloudAgents.Sqlite.dbErrorMessage(e))
+    case Err(e) -> panic(CloudAgents.Db.dbErrorMessage(e))
   }
 }
 
@@ -202,7 +202,7 @@ func stateOf(sid: in String, id: in String): String {
   match getItem(sid, testScope(), id) {
     case Ok(Some(w)) -> return w.state
     case Ok(None) -> return "(missing)"
-    case Err(e) -> return CloudAgents.Sqlite.dbErrorMessage(e)
+    case Err(e) -> return CloudAgents.Db.dbErrorMessage(e)
   }
 }
 
@@ -659,7 +659,7 @@ test "a person removing agent:blocked on GitHub requeues the item" {
   assertEqual(stateOf(s1, "gh:acme/shop#2"), "queued", "label removal is a human requeue")
   match listTransitions(s1, testScope(), "gh:acme/shop#2") {
     case Ok(ts) -> assertEqual(ts[ts.length.toInt() - 1].actor, "human", "recorded as the human's move")
-    case Err(e) -> assertTrue(false, CloudAgents.Sqlite.dbErrorMessage(e))
+    case Err(e) -> assertTrue(false, CloudAgents.Db.dbErrorMessage(e))
   }
 }
 
@@ -699,14 +699,14 @@ test "GitHub failures are recorded per item and retried" {
   assertTrue(failed.errors[0].contains("(403)"), failed.errors[0])
   match syncRows(s1, testScope()) {
     case Ok(rows) -> assertTrue(rows[0].lastError.contains("(403)"), "error kept on the item")
-    case Err(e) -> assertTrue(false, CloudAgents.Sqlite.dbErrorMessage(e))
+    case Err(e) -> assertTrue(false, CloudAgents.Db.dbErrorMessage(e))
   }
   gh.failIssues = ""
   expectNoErrors(sync(gh, s1))
   assertEqual(joinSorted(labelsOf(gh, "acme/shop#1")), "agent:queued", "retried and applied")
   match syncRows(s1, testScope()) {
     case Ok(rows) -> assertEqual(rows[0].lastError, "", "error cleared")
-    case Err(e) -> assertTrue(false, CloudAgents.Sqlite.dbErrorMessage(e))
+    case Err(e) -> assertTrue(false, CloudAgents.Db.dbErrorMessage(e))
   }
 }
 
@@ -780,7 +780,7 @@ test "the maintenance run takes the least recently attempted sessions first" {
   // s1 fails without reaching GitHub (no token): it still takes its turn.
   match markSyncAttempt(s1, testScope(), "no usable GitHub token") {
     case Ok(_) -> ()
-    case Err(e) -> assertTrue(false, CloudAgents.Sqlite.dbErrorMessage(e))
+    case Err(e) -> assertTrue(false, CloudAgents.Db.dbErrorMessage(e))
   }
   val order = due()
   assertTrue(
@@ -846,11 +846,11 @@ test "one session at a time manages an issue" {
   retire(s2)
   match ownedIssueItems(s1, testScope()) {
     case Ok(ids) -> assertEqualInt(ids.length.toInt(), 1, "s1 owns it again")
-    case Err(e) -> assertTrue(false, CloudAgents.Sqlite.dbErrorMessage(e))
+    case Err(e) -> assertTrue(false, CloudAgents.Db.dbErrorMessage(e))
   }
   match ownedIssueItems(s2, testScope()) {
     case Ok(ids) -> assertEqualInt(ids.length.toInt(), 0, "an archived session owns nothing")
-    case Err(e) -> assertTrue(false, CloudAgents.Sqlite.dbErrorMessage(e))
+    case Err(e) -> assertTrue(false, CloudAgents.Db.dbErrorMessage(e))
   }
 }
 
@@ -866,30 +866,30 @@ test "only one sync pass holds a session at a time" {
   val lease = 60000.toLong()
   val first = match acquireSyncLease(s1, testScope(), lease) {
     case Ok(t) -> t
-    case Err(e) -> panic(CloudAgents.Sqlite.dbErrorMessage(e))
+    case Err(e) -> panic(CloudAgents.Db.dbErrorMessage(e))
   }
   assertTrue(first.length.toInt() > 0, "the first pass gets the lease")
   val second = match acquireSyncLease(s1, testScope(), lease) {
     case Ok(t) -> t
-    case Err(e) -> panic(CloudAgents.Sqlite.dbErrorMessage(e))
+    case Err(e) -> panic(CloudAgents.Db.dbErrorMessage(e))
   }
   assertEqual(second, "", "a concurrent pass is refused")
   match releaseSyncLease(s1, testScope(), "not-the-token") {
     case Ok(_) -> ()
-    case Err(e) -> assertTrue(false, CloudAgents.Sqlite.dbErrorMessage(e))
+    case Err(e) -> assertTrue(false, CloudAgents.Db.dbErrorMessage(e))
   }
   val stillHeld = match acquireSyncLease(s1, testScope(), lease) {
     case Ok(t) -> t
-    case Err(e) -> panic(CloudAgents.Sqlite.dbErrorMessage(e))
+    case Err(e) -> panic(CloudAgents.Db.dbErrorMessage(e))
   }
   assertEqual(stillHeld, "", "only the holder's token releases it")
   match releaseSyncLease(s1, testScope(), first) {
     case Ok(_) -> ()
-    case Err(e) -> assertTrue(false, CloudAgents.Sqlite.dbErrorMessage(e))
+    case Err(e) -> assertTrue(false, CloudAgents.Db.dbErrorMessage(e))
   }
   val third = match acquireSyncLease(s1, testScope(), lease) {
     case Ok(t) -> t
-    case Err(e) -> panic(CloudAgents.Sqlite.dbErrorMessage(e))
+    case Err(e) -> panic(CloudAgents.Db.dbErrorMessage(e))
   }
   assertTrue(third.length.toInt() > 0, "free again once released")
   // An expired lease (a crashed pass) is taken over.
@@ -899,7 +899,7 @@ test "only one sync pass holds a session at a time" {
   )
   val fourth = match acquireSyncLease(s1, testScope(), lease) {
     case Ok(t) -> t
-    case Err(e) -> panic(CloudAgents.Sqlite.dbErrorMessage(e))
+    case Err(e) -> panic(CloudAgents.Db.dbErrorMessage(e))
   }
   assertTrue(fourth.length.toInt() > 0, "an expired lease is taken over")
 }

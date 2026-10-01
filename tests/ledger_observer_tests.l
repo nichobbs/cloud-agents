@@ -26,7 +26,7 @@ import CloudAgents.Pg.Migrate
 import CloudAgents.PgStore.Tenancy
 import CloudAgents.Repository
 import CloudAgents.SessionStore
-import CloudAgents.Sqlite
+import CloudAgents.Db
 import CloudAgents.Capture
 import CloudAgents.Ledger.Model
 import CloudAgents.Ledger.Store
@@ -93,7 +93,7 @@ func newUser(tag: in String): String {
   val uid = "t-" + tag + "-" + Std.Uuid.uuidToString(Std.Uuid.newUuid())
   match CloudAgents.PgStore.Tenancy.ensurePersonalTenant(uid) {
     case Ok(_) -> ()
-    case Err(e) -> panic("provisioning " + uid + " failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+    case Err(e) -> panic("provisioning " + uid + " failed: " + CloudAgents.Db.dbErrorMessage(e))
   }
   return uid
 }
@@ -126,11 +126,11 @@ func seedSession(): String {
     sc
   ) {
     case Ok(_) -> ()
-    case Err(e) -> panic("addSession failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+    case Err(e) -> panic("addSession failed: " + CloudAgents.Db.dbErrorMessage(e))
   }
   val u = match CloudAgents.PgStore.open(sc) {
     case Ok(x) -> x
-    case Err(e) -> panic(CloudAgents.Sqlite.dbErrorMessage(e))
+    case Err(e) -> panic(CloudAgents.Db.dbErrorMessage(e))
   }
   defer {
     CloudAgents.PgStore.release(u)
@@ -141,11 +141,11 @@ func seedSession(): String {
     [id, CloudAgents.Auth.hashCallbackToken("tok-" + id), sc.tenantId]
   ) {
     case Ok(n) -> assertEqualInt(n, 1, "token stored on the session's route")
-    case Err(e) -> panic(CloudAgents.Sqlite.dbErrorMessage(e))
+    case Err(e) -> panic(CloudAgents.Db.dbErrorMessage(e))
   }
   match CloudAgents.PgStore.commit(u) {
     case Ok(_) -> ()
-    case Err(e) -> panic(CloudAgents.Sqlite.dbErrorMessage(e))
+    case Err(e) -> panic(CloudAgents.Db.dbErrorMessage(e))
   }
   return id
 }
@@ -154,7 +154,7 @@ func seedSession(): String {
 func retire(sid: in String): Unit {
   match CloudAgents.SessionStore.updateSessionArchived(sid, testScope(), "1") {
     case Ok(_) -> ()
-    case Err(e) -> println("WARNING: could not archive " + sid + ": " + CloudAgents.Sqlite.dbErrorMessage(e))
+    case Err(e) -> println("WARNING: could not archive " + sid + ": " + CloudAgents.Db.dbErrorMessage(e))
   }
 }
 
@@ -201,7 +201,7 @@ func capture(sid: in String, ndjson: in String, startSeq: Long, prevHash: in Str
   val b = parseStreamJson(ndjson, startSeq, prevHash)
   match CloudAgents.Repository.appendSessionEvents(sid, CloudAgents.Auth.requestScope(), b.events) {
     case Ok(_) -> ()
-    case Err(e) -> panic("appendSessionEvents: " + CloudAgents.Sqlite.dbErrorMessage(e))
+    case Err(e) -> panic("appendSessionEvents: " + CloudAgents.Db.dbErrorMessage(e))
   }
   return b
 }
@@ -305,7 +305,7 @@ func observedEntries(sid: in String): slice[LedgerEntry] {
         i = i + 1
       }
     }
-    case Err(e) -> panic(CloudAgents.Sqlite.dbErrorMessage(e))
+    case Err(e) -> panic(CloudAgents.Db.dbErrorMessage(e))
   }
   return acc
 }
@@ -325,7 +325,7 @@ func observedWith(sid: in String, fragment: in String): LedgerEntry {
 func countNotifications(sid: in String): Int {
   match CloudAgents.Repository.listNotifications(sid, CloudAgents.Auth.requestScope()) {
     case Ok(ns) -> return ns.length.toInt()
-    case Err(e) -> panic(CloudAgents.Sqlite.dbErrorMessage(e))
+    case Err(e) -> panic(CloudAgents.Db.dbErrorMessage(e))
   }
 }
 
@@ -597,7 +597,7 @@ test "fixtures: planted shortcuts are flagged and the declared decision is match
       assertEqual(st.cursorSeq, "28", "the cursor moved past the window")
       assertEqual(st.windowEnd, "", "and the window is closed")
     }
-    case Err(e) -> panic(CloudAgents.Sqlite.dbErrorMessage(e))
+    case Err(e) -> panic(CloudAgents.Db.dbErrorMessage(e))
   }
   match acceptReport(ctxOf(s1), decodeOk(readFixture("tests/fixtures/observer/report.json")), false, defaultReconcileConfig()) {
     case Ok(_) -> assertTrue(false, "a report without a window is refused")
@@ -703,7 +703,7 @@ test "a report that breaks the rules is refused whole and the cursor stays" {
   assertEqualInt(observedEntries(s1).length.toInt(), 0, "nothing stored from a refused report")
   match observerState(s1, testScope()) {
     case Ok(st) -> assertEqual(st.cursorSeq, "", "the cursor did not move")
-    case Err(e) -> panic(CloudAgents.Sqlite.dbErrorMessage(e))
+    case Err(e) -> panic(CloudAgents.Db.dbErrorMessage(e))
   }
   match decodeObserverReport("{\"candidates\":\"[{\\\"kind\\\":\\\"shortcut\\\",\\\"summary\\\":\\\"s\\\",\\\"seqStart\\\":2,\\\"seqEnd\\\":3,\\\"confidence\\\":0.8}]\"}") {
     case Ok(cs) -> {

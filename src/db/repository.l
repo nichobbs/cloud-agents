@@ -15,7 +15,6 @@ import CloudAgents.GraphIngestOutbox
 import CloudAgents.Pg
 import CloudAgents.Scope
 import CloudAgents.Db
-import CloudAgents.Sqlite
 import CloudAgents.ToolPolicy
 import CloudAgents.Capture
 import CloudAgents.Ledger.Schema
@@ -218,43 +217,25 @@ pub func parseNatString(s: in String): Int {
   return n
 }
 
-func colAt(cols: in CloudAgents.Sqlite.StringArray, i: in Int): String {
-  val len = CloudAgents.Sqlite.getStringArrayLength(cols)
-  if i < len {
-    return CloudAgents.Sqlite.getStringArrayValue(cols, i)
-  }
-  return ""
-}
 
 /// A liveness probe against the database.
-pub func ping(): Result[Unit, CloudAgents.Sqlite.DbError] {
+pub func ping(): Result[Unit, CloudAgents.Db.DbError] {
   return CloudAgents.PgStore.ping()
 }
 
-// ─── Messages ──────────────────────────────────────────────────────────────────
-func rowToMessage(r: in CloudAgents.Sqlite.Row): Message {
-  return Message(
-    id = colAt(r.cols, 0),
-    sessionId = colAt(r.cols, 1),
-    role = colAt(r.cols, 2),
-    content = colAt(r.cols, 3),
-    seq = colAt(r.cols, 4),
-    createdAt = colAt(r.cols, 5)
-  )
-}
 
 /// Append a message to a session's transcript and return the stored record
 /// (with its freshly minted id and sequence number).
 pub func addMessage(
   sessionId: in String, sc: in CloudAgents.Pg.TenantScope, role: in String, content: in String
-): Result[Message, CloudAgents.Sqlite.DbError] {
+): Result[Message, CloudAgents.Db.DbError] {
   return CloudAgents.PgStore.Messages.addMessage(sessionId, sc, role, content)
 }
 
 /// All messages in a session, oldest first.
 pub func listMessages(
   sessionId: in String, sc: in CloudAgents.Pg.TenantScope
-): Result[slice[Message], CloudAgents.Sqlite.DbError] {
+): Result[slice[Message], CloudAgents.Db.DbError] {
   return CloudAgents.PgStore.Messages.listMessages(sessionId, sc)
 }
 
@@ -265,7 +246,7 @@ pub func listMessages(
 /// matches nothing.
 pub func searchMessages(
   sc: in CloudAgents.Pg.TenantScope, term: in String, limit: in Int
-): Result[slice[Message], CloudAgents.Sqlite.DbError] {
+): Result[slice[Message], CloudAgents.Db.DbError] {
   return CloudAgents.PgStore.Messages.searchMessages(sc, term, limit)
 }
 
@@ -273,21 +254,21 @@ pub func searchMessages(
 /// correct session without trusting client-supplied sessionId values.
 pub func getMessageSessionId(
   messageId: in String, sc: in CloudAgents.Pg.TenantScope
-): Result[Option[String], CloudAgents.Sqlite.DbError] {
+): Result[Option[String], CloudAgents.Db.DbError] {
   return CloudAgents.PgStore.Messages.getMessageSessionId(messageId, sc)
 }
 
 /// Attach a comment to a message.
 pub func addComment(
   messageId: in String, sc: in CloudAgents.Pg.TenantScope, sessionId: in String, body: in String
-): Result[Comment, CloudAgents.Sqlite.DbError] {
+): Result[Comment, CloudAgents.Db.DbError] {
   return CloudAgents.PgStore.Messages.addComment(messageId, sc, sessionId, body)
 }
 
 /// All comments on a message, oldest first.
 pub func listComments(
   messageId: in String, sc: in CloudAgents.Pg.TenantScope
-): Result[slice[Comment], CloudAgents.Sqlite.DbError] {
+): Result[slice[Comment], CloudAgents.Db.DbError] {
   return CloudAgents.PgStore.Messages.listComments(messageId, sc)
 }
 
@@ -295,7 +276,7 @@ pub func listComments(
 /// free-standing todo). New todos start 'pending'.
 pub func addTodo(
   sessionId: in String, sc: in CloudAgents.Pg.TenantScope, messageId: in String, note: in String
-): Result[Todo, CloudAgents.Sqlite.DbError] {
+): Result[Todo, CloudAgents.Db.DbError] {
   return CloudAgents.PgStore.Messages.addTodo(sessionId, sc, messageId, note)
 }
 
@@ -312,7 +293,7 @@ pub func replacePlanTodos(
   messageId: in String,
   notes: in slice[String],
   statuses: in slice[String],
-): Result[Unit, CloudAgents.Sqlite.DbError] {
+): Result[Unit, CloudAgents.Db.DbError] {
   return CloudAgents.PgStore.Messages.replacePlanTodos(sessionId, sc, messageId, notes, statuses)
 }
 
@@ -321,7 +302,7 @@ pub func replacePlanTodos(
 /// SQL itself. Validation of the status literal happens in the handlers.
 pub func setTodoStatus(
   id: in String, sc: in CloudAgents.Pg.TenantScope, status: in String
-): Result[Unit, CloudAgents.Sqlite.DbError] {
+): Result[Unit, CloudAgents.Db.DbError] {
   return CloudAgents.PgStore.Messages.setTodoStatus(id, sc, status)
 }
 
@@ -339,7 +320,7 @@ pub record TodoUpdate {
 /// mirrors artifactsCreatedAfter for SSE emission.
 pub func todosUpdatedAfter(
   sessionId: in String, sc: in CloudAgents.Pg.TenantScope, afterUpdatedAt: in String
-): Result[slice[TodoUpdate], CloudAgents.Sqlite.DbError] {
+): Result[slice[TodoUpdate], CloudAgents.Db.DbError] {
   return CloudAgents.PgStore.Messages.todosUpdatedAfter(sessionId, sc, afterUpdatedAt)
 }
 
@@ -348,24 +329,24 @@ pub func todosUpdatedAfter(
 /// it (mirrors getMessageSessionId).
 pub func getTodoSessionId(
   id: in String, sc: in CloudAgents.Pg.TenantScope
-): Result[Option[String], CloudAgents.Sqlite.DbError] {
+): Result[Option[String], CloudAgents.Db.DbError] {
   return CloudAgents.PgStore.Messages.getTodoSessionId(id, sc)
 }
 
 /// All todos for a session, newest first.
 pub func listTodos(
   sessionId: in String, sc: in CloudAgents.Pg.TenantScope
-): Result[slice[Todo], CloudAgents.Sqlite.DbError] {
+): Result[slice[Todo], CloudAgents.Db.DbError] {
   return CloudAgents.PgStore.Messages.listTodos(sessionId, sc)
 }
 
 /// Flip a todo's done flag.
-pub func toggleTodo(id: in String, sc: in CloudAgents.Pg.TenantScope): Result[Unit, CloudAgents.Sqlite.DbError] {
+pub func toggleTodo(id: in String, sc: in CloudAgents.Pg.TenantScope): Result[Unit, CloudAgents.Db.DbError] {
   return CloudAgents.PgStore.Messages.toggleTodo(id, sc)
 }
 
 /// Delete a todo.
-pub func deleteTodo(id: in String, sc: in CloudAgents.Pg.TenantScope): Result[Unit, CloudAgents.Sqlite.DbError] {
+pub func deleteTodo(id: in String, sc: in CloudAgents.Pg.TenantScope): Result[Unit, CloudAgents.Db.DbError] {
   return CloudAgents.PgStore.Messages.deleteTodo(id, sc)
 }
 
@@ -380,7 +361,7 @@ pub record PromptTag {
 /// callers through executeTransaction so the set is consistent on partial fail.
 pub func setPromptTags(
   promptId: in String, sc: in CloudAgents.Pg.TenantScope, tags: in slice[String]
-): Result[Unit, CloudAgents.Sqlite.DbError] {
+): Result[Unit, CloudAgents.Db.DbError] {
   return CloudAgents.PgStore.Prompts.setPromptTags(promptId, sc, tags)
 }
 
@@ -389,7 +370,7 @@ pub func setPromptTags(
 /// transactional addPromptWithTags.
 pub func addPrompt(
   sc: in CloudAgents.Pg.TenantScope, name: in String, body: in String
-): Result[Prompt, CloudAgents.Sqlite.DbError] {
+): Result[Prompt, CloudAgents.Db.DbError] {
   return CloudAgents.PgStore.Prompts.addPrompt(sc, name, body)
 }
 
@@ -398,17 +379,17 @@ pub func addPrompt(
 /// never left inconsistent by a partial failure.
 pub func addPromptWithTags(
   sc: in CloudAgents.Pg.TenantScope, name: in String, body: in String, tags: in slice[String]
-): Result[Prompt, CloudAgents.Sqlite.DbError] {
+): Result[Prompt, CloudAgents.Db.DbError] {
   return CloudAgents.PgStore.Prompts.addPromptWithTags(sc, name, body, tags)
 }
 
 /// All prompts in a user's library, alphabetical by name (each with its tags).
-pub func listPrompts(sc: in CloudAgents.Pg.TenantScope): Result[slice[Prompt], CloudAgents.Sqlite.DbError] {
+pub func listPrompts(sc: in CloudAgents.Pg.TenantScope): Result[slice[Prompt], CloudAgents.Db.DbError] {
   return CloudAgents.PgStore.Prompts.listPrompts(sc)
 }
 
 /// A user's prompts, most-used first (ties alphabetical).
-pub func listPromptsByUsage(sc: in CloudAgents.Pg.TenantScope): Result[slice[Prompt], CloudAgents.Sqlite.DbError] {
+pub func listPromptsByUsage(sc: in CloudAgents.Pg.TenantScope): Result[slice[Prompt], CloudAgents.Db.DbError] {
   return CloudAgents.PgStore.Prompts.listPromptsByUsage(sc)
 }
 
@@ -418,12 +399,12 @@ pub func listPromptsByUsage(sc: in CloudAgents.Pg.TenantScope): Result[slice[Pro
 /// round trip (#339), reusing the same batching as listPrompts (#246).
 pub func listPromptsByTag(
   sc: in CloudAgents.Pg.TenantScope, tag: in String
-): Result[slice[Prompt], CloudAgents.Sqlite.DbError] {
+): Result[slice[Prompt], CloudAgents.Db.DbError] {
   return CloudAgents.PgStore.Prompts.listPromptsByTag(sc, tag)
 }
 
 /// A single prompt owned by a user (with tags), or None.
-pub func getPrompt(id: in String, sc: in CloudAgents.Pg.TenantScope): Result[Option[Prompt], CloudAgents.Sqlite.DbError] {
+pub func getPrompt(id: in String, sc: in CloudAgents.Pg.TenantScope): Result[Option[Prompt], CloudAgents.Db.DbError] {
   return CloudAgents.PgStore.Prompts.getPrompt(id, sc)
 }
 
@@ -432,7 +413,7 @@ pub func getPrompt(id: in String, sc: in CloudAgents.Pg.TenantScope): Result[Opt
 /// that to 404).
 pub func updatePrompt(
   id: in String, sc: in CloudAgents.Pg.TenantScope, name: in String, body: in String
-): Result[Int, CloudAgents.Sqlite.DbError] {
+): Result[Int, CloudAgents.Db.DbError] {
   return CloudAgents.PgStore.Prompts.updatePrompt(id, sc, name, body)
 }
 
@@ -449,12 +430,12 @@ pub func updatePromptWithTags(
   name: in String,
   body: in String,
   tags: in slice[String],
-): Result[Int, CloudAgents.Sqlite.DbError] {
+): Result[Int, CloudAgents.Db.DbError] {
   return CloudAgents.PgStore.Prompts.updatePromptWithTags(id, sc, name, body, tags)
 }
 
 /// Record one use of a prompt. Returns rows affected (0 = not found).
-pub func markPromptUsed(id: in String, sc: in CloudAgents.Pg.TenantScope): Result[Int, CloudAgents.Sqlite.DbError] {
+pub func markPromptUsed(id: in String, sc: in CloudAgents.Pg.TenantScope): Result[Int, CloudAgents.Db.DbError] {
   return CloudAgents.PgStore.Prompts.markPromptUsed(id, sc)
 }
 
@@ -463,7 +444,7 @@ pub func markPromptUsed(id: in String, sc: in CloudAgents.Pg.TenantScope): Resul
 /// affected on the prompt (0 = not found) — taken from the transaction's own
 /// DELETE on the prompts row (deliberately the last statement), not from the
 /// pre-check below, for the same reason as deleteProfile (#238).
-pub func deletePrompt(id: in String, sc: in CloudAgents.Pg.TenantScope): Result[Int, CloudAgents.Sqlite.DbError] {
+pub func deletePrompt(id: in String, sc: in CloudAgents.Pg.TenantScope): Result[Int, CloudAgents.Db.DbError] {
   return CloudAgents.PgStore.Prompts.deletePrompt(id, sc)
 }
 
@@ -492,13 +473,13 @@ pub record CredentialValue {
 
 /// Failure at the credential layer: either the database or the crypto boundary.
 pub union CredentialError {
-  case Db(error: CloudAgents.Sqlite.DbError)
+  case Db(error: CloudAgents.Db.DbError)
   case Crypto(error: CloudAgents.Crypto.CryptoError)
 }
 
 pub func credentialErrorMessage(e: in CredentialError): String {
   return match e {
-    case Db(dbErr) -> CloudAgents.Sqlite.dbErrorMessage(dbErr)
+    case Db(dbErr) -> CloudAgents.Db.dbErrorMessage(dbErr)
     case Crypto(cErr) -> CloudAgents.Crypto.cryptoErrorMessage(cErr)
   }
 }
@@ -511,7 +492,7 @@ pub func putCredential(
 }
 
 /// List a user's credential names (never values).
-pub func listCredentialNames(sc: in CloudAgents.Pg.UserScope): Result[slice[CredentialName], CloudAgents.Sqlite.DbError] {
+pub func listCredentialNames(sc: in CloudAgents.Pg.UserScope): Result[slice[CredentialName], CloudAgents.Db.DbError] {
   return CloudAgents.PgStore.Credentials.listCredentialNames(sc)
 }
 
@@ -521,7 +502,7 @@ pub func listCredentialNames(sc: in CloudAgents.Pg.UserScope): Result[slice[Cred
 /// fresh GITHUB_TOKEN on the tenant's next request, resurrecting a
 /// credential the tenant just deleted. Best-effort — a cleanup failure here
 /// must never block the credential deletion itself.
-pub func deleteCredential(sc: in CloudAgents.Pg.UserScope, name: in String): Result[Int, CloudAgents.Sqlite.DbError] {
+pub func deleteCredential(sc: in CloudAgents.Pg.UserScope, name: in String): Result[Int, CloudAgents.Db.DbError] {
   return CloudAgents.PgStore.Credentials.deleteCredential(sc, name)
 }
 
@@ -532,7 +513,7 @@ pub func deleteCredential(sc: in CloudAgents.Pg.UserScope, name: in String): Res
 /// only ever deny.
 pub func credentialNameExists(
   sc: in CloudAgents.Pg.UserScope, name: in String
-): Result[Bool, CloudAgents.Sqlite.DbError] {
+): Result[Bool, CloudAgents.Db.DbError] {
   return CloudAgents.PgStore.Credentials.credentialNameExists(sc, name)
 }
 
@@ -641,7 +622,7 @@ pub record ProfileList {
 /// full network access.
 pub func profileNetworkPolicy(
   sc: in CloudAgents.Pg.TenantScope, profileId: in String
-): Result[String, CloudAgents.Sqlite.DbError] {
+): Result[String, CloudAgents.Db.DbError] {
   return CloudAgents.PgStore.Library.profileNetworkPolicy(sc, profileId)
 }
 
@@ -687,14 +668,14 @@ pub func recordRunStart(
   prompt: in String,
   harness: in String,
   model: in String,
-): Result[String, CloudAgents.Sqlite.DbError] {
+): Result[String, CloudAgents.Db.DbError] {
   return CloudAgents.PgStore.SessionData.recordRunStart(sessionId, sc, prompt, harness, model)
 }
 
 /// Move a run to a terminal status ('succeeded' | 'failed' | 'cancelled').
 pub func recordRunEnd(
   runId: in String, sc: in CloudAgents.Pg.TenantScope, status: in String
-): Result[Unit, CloudAgents.Sqlite.DbError] {
+): Result[Unit, CloudAgents.Db.DbError] {
   return CloudAgents.PgStore.SessionData.recordRunEnd(runId, sc, status)
 }
 
@@ -703,14 +684,14 @@ pub func recordRunEnd(
 /// strands a phantom 'running' row.
 pub func finishSessionRuns(
   sessionId: in String, sc: in CloudAgents.Pg.TenantScope, status: in String
-): Result[Unit, CloudAgents.Sqlite.DbError] {
+): Result[Unit, CloudAgents.Db.DbError] {
   return CloudAgents.PgStore.SessionData.finishSessionRuns(sessionId, sc, status)
 }
 
 /// A session's run history, newest first.
 pub func listRuns(
   sessionId: in String, sc: in CloudAgents.Pg.TenantScope
-): Result[slice[Run], CloudAgents.Sqlite.DbError] {
+): Result[slice[Run], CloudAgents.Db.DbError] {
   return CloudAgents.PgStore.SessionData.listRuns(sessionId, sc)
 }
 
@@ -737,42 +718,42 @@ pub record SessionRepoList {
 /// A session's linked repositories, oldest first.
 pub func listSessionRepos(
   sessionId: in String, sc: in CloudAgents.Pg.TenantScope
-): Result[slice[SessionRepo], CloudAgents.Sqlite.DbError] {
+): Result[slice[SessionRepo], CloudAgents.Db.DbError] {
   return CloudAgents.PgStore.SessionData.listSessionRepos(sessionId, sc)
 }
 
 /// How many repositories are linked to a session (for the per-session cap).
 pub func countSessionRepos(
   sessionId: in String, sc: in CloudAgents.Pg.TenantScope
-): Result[Int, CloudAgents.Sqlite.DbError] {
+): Result[Int, CloudAgents.Db.DbError] {
   return CloudAgents.PgStore.SessionData.countSessionRepos(sessionId, sc)
 }
 
 /// Whether a session already has a repo linked at the given URL (duplicate guard).
 pub func sessionRepoUrlExists(
   sessionId: in String, sc: in CloudAgents.Pg.TenantScope, repoUrl: in String
-): Result[Bool, CloudAgents.Sqlite.DbError] {
+): Result[Bool, CloudAgents.Db.DbError] {
   return CloudAgents.PgStore.SessionData.sessionRepoUrlExists(sessionId, sc, repoUrl)
 }
 
 /// Link a repository to a session and return the stored record.
 pub func addSessionRepo(
   sessionId: in String, sc: in CloudAgents.Pg.TenantScope, repoUrl: in String, branch: in String
-): Result[SessionRepo, CloudAgents.Sqlite.DbError] {
+): Result[SessionRepo, CloudAgents.Db.DbError] {
   return CloudAgents.PgStore.SessionData.addSessionRepo(sessionId, sc, repoUrl, branch)
 }
 
 /// Unlink a repository from a session. Returns rows affected (0 = not found).
 pub func deleteSessionRepo(
   sessionId: in String, sc: in CloudAgents.Pg.TenantScope, repoId: in String
-): Result[Int, CloudAgents.Sqlite.DbError] {
+): Result[Int, CloudAgents.Db.DbError] {
   return CloudAgents.PgStore.SessionData.deleteSessionRepo(sessionId, sc, repoId)
 }
 
 /// Remove every repository linked to a session (session-deletion cleanup).
 pub func deleteSessionReposForSession(
   sessionId: in String, sc: in CloudAgents.Pg.TenantScope
-): Result[Unit, CloudAgents.Sqlite.DbError] {
+): Result[Unit, CloudAgents.Db.DbError] {
   return CloudAgents.PgStore.SessionData.deleteSessionReposForSession(sessionId, sc)
 }
 
@@ -797,21 +778,21 @@ pub record SessionGroupList {
 }
 
 /// One user's groups, alphabetical by name.
-pub func listSessionGroups(sc: in CloudAgents.Pg.TenantScope): Result[slice[SessionGroup], CloudAgents.Sqlite.DbError] {
+pub func listSessionGroups(sc: in CloudAgents.Pg.TenantScope): Result[slice[SessionGroup], CloudAgents.Db.DbError] {
   return CloudAgents.PgStore.SessionData.listSessionGroups(sc)
 }
 
 /// A single group owned by a user, or None (unknown and foreign look the same).
 pub func getSessionGroup(
   id: in String, sc: in CloudAgents.Pg.TenantScope
-): Result[Option[SessionGroup], CloudAgents.Sqlite.DbError] {
+): Result[Option[SessionGroup], CloudAgents.Db.DbError] {
   return CloudAgents.PgStore.SessionData.getSessionGroup(id, sc)
 }
 
 /// Create a group and return the stored record.
 pub func addSessionGroup(
   sc: in CloudAgents.Pg.TenantScope, name: in String, parentId: in String
-): Result[SessionGroup, CloudAgents.Sqlite.DbError] {
+): Result[SessionGroup, CloudAgents.Db.DbError] {
   return CloudAgents.PgStore.SessionData.addSessionGroup(sc, name, parentId)
 }
 
@@ -819,7 +800,7 @@ pub func addSessionGroup(
 /// found / not owned). Parent-chain validation happens in the handler.
 pub func updateSessionGroup(
   id: in String, sc: in CloudAgents.Pg.TenantScope, name: in String, parentId: in String
-): Result[Int, CloudAgents.Sqlite.DbError] {
+): Result[Int, CloudAgents.Db.DbError] {
   return CloudAgents.PgStore.SessionData.updateSessionGroup(id, sc, name, parentId)
 }
 
@@ -829,7 +810,7 @@ pub func updateSessionGroup(
 /// leave orphaned children pointing at a gone group.
 pub func deleteSessionGroupReparenting(
   id: in String, sc: in CloudAgents.Pg.TenantScope, newParentId: in String
-): Result[Unit, CloudAgents.Sqlite.DbError] {
+): Result[Unit, CloudAgents.Db.DbError] {
   return CloudAgents.PgStore.SessionData.deleteSessionGroupReparenting(id, sc, newParentId)
 }
 
@@ -871,22 +852,22 @@ pub record WebhookEventList {
 /// re-registration is a no-op — so we read the row back by (user, url) and
 /// return its real id/created_at rather than the freshly-minted ones, which for
 /// an already-registered URL would not match any stored row (#255).
-pub func addWebhook(sc: in CloudAgents.Pg.TenantScope, url: in String): Result[Webhook, CloudAgents.Sqlite.DbError] {
+pub func addWebhook(sc: in CloudAgents.Pg.TenantScope, url: in String): Result[Webhook, CloudAgents.Db.DbError] {
   return CloudAgents.PgStore.Webhooks.addWebhook(sc, url)
 }
 
 /// A user's registered webhooks, newest first.
-pub func listWebhooks(sc: in CloudAgents.Pg.TenantScope): Result[slice[Webhook], CloudAgents.Sqlite.DbError] {
+pub func listWebhooks(sc: in CloudAgents.Pg.TenantScope): Result[slice[Webhook], CloudAgents.Db.DbError] {
   return CloudAgents.PgStore.Webhooks.listWebhooks(sc)
 }
 
 /// Delete a webhook by id. Returns rows affected (0 = not found).
-pub func deleteWebhook(id: in String, sc: in CloudAgents.Pg.TenantScope): Result[Int, CloudAgents.Sqlite.DbError] {
+pub func deleteWebhook(id: in String, sc: in CloudAgents.Pg.TenantScope): Result[Int, CloudAgents.Db.DbError] {
   return CloudAgents.PgStore.Webhooks.deleteWebhook(id, sc)
 }
 
 /// Whether a user has at least one registered webhook.
-pub func userHasWebhooks(sc: in CloudAgents.Pg.TenantScope): Result[Bool, CloudAgents.Sqlite.DbError] {
+pub func userHasWebhooks(sc: in CloudAgents.Pg.TenantScope): Result[Bool, CloudAgents.Db.DbError] {
   return CloudAgents.PgStore.Webhooks.userHasWebhooks(sc)
 }
 
@@ -899,21 +880,21 @@ pub func enqueueWebhookEvent(
   sessionId: in String,
   runId: in String,
   status: in String,
-): Result[Unit, CloudAgents.Sqlite.DbError] {
+): Result[Unit, CloudAgents.Db.DbError] {
   return CloudAgents.PgStore.Webhooks.enqueueWebhookEvent(sc, sessionId, runId, status)
 }
 
 /// A user's undelivered outbox events, oldest first (for the external deliverer).
 pub func listPendingWebhookEvents(
   sc: in CloudAgents.Pg.TenantScope
-): Result[slice[WebhookEvent], CloudAgents.Sqlite.DbError] {
+): Result[slice[WebhookEvent], CloudAgents.Db.DbError] {
   return CloudAgents.PgStore.Webhooks.listPendingWebhookEvents(sc)
 }
 
 /// Mark an outbox event delivered. Returns rows affected (0 = not found).
 pub func markWebhookEventDelivered(
   id: in String, sc: in CloudAgents.Pg.TenantScope
-): Result[Int, CloudAgents.Sqlite.DbError] {
+): Result[Int, CloudAgents.Db.DbError] {
   return CloudAgents.PgStore.Webhooks.markWebhookEventDelivered(id, sc)
 }
 
@@ -931,13 +912,13 @@ pub func addProfile(
   mcpServerIds: in slice[String],
   toolMode: in String,
   tools: in slice[String],
-): Result[Profile, CloudAgents.Sqlite.DbError] {
+): Result[Profile, CloudAgents.Db.DbError] {
   return CloudAgents.PgStore.Library.addProfile(sc, name, harness, networkPolicy, credentialMode, credentials, skillIds, subagentIds, mcpServerIds, toolMode, tools)
 }
 
 /// All of a user's profiles (each with its granted credential names and
 /// library-item ids), by name.
-pub func listProfiles(sc: in CloudAgents.Pg.TenantScope): Result[slice[Profile], CloudAgents.Sqlite.DbError] {
+pub func listProfiles(sc: in CloudAgents.Pg.TenantScope): Result[slice[Profile], CloudAgents.Db.DbError] {
   return CloudAgents.PgStore.Library.listProfiles(sc)
 }
 
@@ -946,7 +927,7 @@ pub func listProfiles(sc: in CloudAgents.Pg.TenantScope): Result[slice[Profile],
 /// 500 (#236).
 pub func profileIdByName(
   sc: in CloudAgents.Pg.TenantScope, name: in String
-): Result[Option[String], CloudAgents.Sqlite.DbError] {
+): Result[Option[String], CloudAgents.Db.DbError] {
   return CloudAgents.PgStore.Library.profileIdByName(sc, name)
 }
 
@@ -954,7 +935,7 @@ pub func profileIdByName(
 /// library-item ids), or None.
 pub func getProfile(
   id: in String, sc: in CloudAgents.Pg.TenantScope
-): Result[Option[Profile], CloudAgents.Sqlite.DbError] {
+): Result[Option[Profile], CloudAgents.Db.DbError] {
   return CloudAgents.PgStore.Library.getProfile(id, sc)
 }
 
@@ -973,7 +954,7 @@ pub func updateProfile(
   mcpServerIds: in slice[String],
   toolMode: in String,
   tools: in slice[String],
-): Result[Int, CloudAgents.Sqlite.DbError] {
+): Result[Int, CloudAgents.Db.DbError] {
   return CloudAgents.PgStore.Library.updateProfile(id, sc, name, harness, networkPolicy, credentialMode, credentials, skillIds, subagentIds, mcpServerIds, toolMode, tools)
 }
 
@@ -983,7 +964,7 @@ pub func updateProfile(
 /// pre-check below, so a profile removed by a concurrent request between the
 /// pre-check and this transaction correctly reports 0 rather than a stale 1
 /// (#238).
-pub func deleteProfile(id: in String, sc: in CloudAgents.Pg.TenantScope): Result[Int, CloudAgents.Sqlite.DbError] {
+pub func deleteProfile(id: in String, sc: in CloudAgents.Pg.TenantScope): Result[Int, CloudAgents.Db.DbError] {
   return CloudAgents.PgStore.Library.deleteProfile(id, sc)
 }
 
@@ -1018,7 +999,7 @@ pub func decryptedCredentialsForProfile(
 /// like "no profile" instead.
 pub func enabledToolsForProfile(
   sc: in CloudAgents.Pg.TenantScope, profileId: in String
-): Result[String, CloudAgents.Sqlite.DbError] {
+): Result[String, CloudAgents.Db.DbError] {
   return CloudAgents.PgStore.Library.enabledToolsForProfile(sc, profileId)
 }
 
@@ -1097,22 +1078,22 @@ pub record McpServerList {
 /// Save a new skill.
 pub func addSkill(
   sc: in CloudAgents.Pg.TenantScope, name: in String, description: in String, body: in String
-): Result[Skill, CloudAgents.Sqlite.DbError] {
+): Result[Skill, CloudAgents.Db.DbError] {
   return CloudAgents.PgStore.Library.addSkill(sc, name, description, body)
 }
 
 /// All of a user's skills, by name.
-pub func listSkills(sc: in CloudAgents.Pg.TenantScope): Result[slice[Skill], CloudAgents.Sqlite.DbError] {
+pub func listSkills(sc: in CloudAgents.Pg.TenantScope): Result[slice[Skill], CloudAgents.Db.DbError] {
   return CloudAgents.PgStore.Library.listSkills(sc)
 }
 
 pub func skillIdByName(
   sc: in CloudAgents.Pg.TenantScope, name: in String
-): Result[Option[String], CloudAgents.Sqlite.DbError] {
+): Result[Option[String], CloudAgents.Db.DbError] {
   return CloudAgents.PgStore.Library.skillIdByName(sc, name)
 }
 
-pub func getSkill(id: in String, sc: in CloudAgents.Pg.TenantScope): Result[Option[Skill], CloudAgents.Sqlite.DbError] {
+pub func getSkill(id: in String, sc: in CloudAgents.Pg.TenantScope): Result[Option[Skill], CloudAgents.Db.DbError] {
   return CloudAgents.PgStore.Library.getSkill(id, sc)
 }
 
@@ -1126,7 +1107,7 @@ pub func updateSkill(
   name: in String,
   description: in String,
   body: in String,
-): Result[Int, CloudAgents.Sqlite.DbError] {
+): Result[Int, CloudAgents.Db.DbError] {
   return CloudAgents.PgStore.Library.updateSkill(id, sc, name, description, body)
 }
 
@@ -1138,7 +1119,7 @@ pub func updateSkill(
 /// the last statement), not from the pre-check below or a hardcoded 1
 /// (#598), so a skill removed by a concurrent request between the pre-check
 /// and this transaction correctly reports 0.
-pub func deleteSkill(id: in String, sc: in CloudAgents.Pg.TenantScope): Result[Int, CloudAgents.Sqlite.DbError] {
+pub func deleteSkill(id: in String, sc: in CloudAgents.Pg.TenantScope): Result[Int, CloudAgents.Db.DbError] {
   return CloudAgents.PgStore.Library.deleteSkill(id, sc)
 }
 
@@ -1149,24 +1130,24 @@ pub func addSubagent(
   description: in String,
   systemPrompt: in String,
   model: in String,
-): Result[Subagent, CloudAgents.Sqlite.DbError] {
+): Result[Subagent, CloudAgents.Db.DbError] {
   return CloudAgents.PgStore.Library.addSubagent(sc, name, description, systemPrompt, model)
 }
 
 /// All of a user's subagents, by name.
-pub func listSubagents(sc: in CloudAgents.Pg.TenantScope): Result[slice[Subagent], CloudAgents.Sqlite.DbError] {
+pub func listSubagents(sc: in CloudAgents.Pg.TenantScope): Result[slice[Subagent], CloudAgents.Db.DbError] {
   return CloudAgents.PgStore.Library.listSubagents(sc)
 }
 
 pub func subagentIdByName(
   sc: in CloudAgents.Pg.TenantScope, name: in String
-): Result[Option[String], CloudAgents.Sqlite.DbError] {
+): Result[Option[String], CloudAgents.Db.DbError] {
   return CloudAgents.PgStore.Library.subagentIdByName(sc, name)
 }
 
 pub func getSubagent(
   id: in String, sc: in CloudAgents.Pg.TenantScope
-): Result[Option[Subagent], CloudAgents.Sqlite.DbError] {
+): Result[Option[Subagent], CloudAgents.Db.DbError] {
   return CloudAgents.PgStore.Library.getSubagent(id, sc)
 }
 
@@ -1180,14 +1161,14 @@ pub func updateSubagent(
   description: in String,
   systemPrompt: in String,
   model: in String,
-): Result[Int, CloudAgents.Sqlite.DbError] {
+): Result[Int, CloudAgents.Db.DbError] {
   return CloudAgents.PgStore.Library.updateSubagent(id, sc, name, description, systemPrompt, model)
 }
 
 /// Returns rows affected on the subagents row (0 = not found / not owned) —
 /// taken from the transaction's own DELETE on the subagents row (deliberately
 /// the last statement), not a hardcoded 1 (#598), matching deleteSkill above.
-pub func deleteSubagent(id: in String, sc: in CloudAgents.Pg.TenantScope): Result[Int, CloudAgents.Sqlite.DbError] {
+pub func deleteSubagent(id: in String, sc: in CloudAgents.Pg.TenantScope): Result[Int, CloudAgents.Db.DbError] {
   return CloudAgents.PgStore.Library.deleteSubagent(id, sc)
 }
 
@@ -1202,24 +1183,24 @@ pub func addMcpServer(
   env: in slice[String],
   enabled: in String = "1",
   headers: in slice[String] = [],
-): Result[McpServer, CloudAgents.Sqlite.DbError] {
+): Result[McpServer, CloudAgents.Db.DbError] {
   return CloudAgents.PgStore.Library.addMcpServer(sc, name, transport, command, args, url, env, enabled, headers)
 }
 
 /// All of a user's MCP servers (each with its args/env/headers), by name.
-pub func listMcpServers(sc: in CloudAgents.Pg.TenantScope): Result[slice[McpServer], CloudAgents.Sqlite.DbError] {
+pub func listMcpServers(sc: in CloudAgents.Pg.TenantScope): Result[slice[McpServer], CloudAgents.Db.DbError] {
   return CloudAgents.PgStore.Library.listMcpServers(sc)
 }
 
 pub func mcpServerIdByName(
   sc: in CloudAgents.Pg.TenantScope, name: in String
-): Result[Option[String], CloudAgents.Sqlite.DbError] {
+): Result[Option[String], CloudAgents.Db.DbError] {
   return CloudAgents.PgStore.Library.mcpServerIdByName(sc, name)
 }
 
 pub func getMcpServer(
   id: in String, sc: in CloudAgents.Pg.TenantScope
-): Result[Option[McpServer], CloudAgents.Sqlite.DbError] {
+): Result[Option[McpServer], CloudAgents.Db.DbError] {
   return CloudAgents.PgStore.Library.getMcpServer(id, sc)
 }
 
@@ -1238,14 +1219,14 @@ pub func updateMcpServer(
   env: in slice[String],
   enabled: in String = "1",
   headers: in slice[String] = [],
-): Result[Int, CloudAgents.Sqlite.DbError] {
+): Result[Int, CloudAgents.Db.DbError] {
   return CloudAgents.PgStore.Library.updateMcpServer(id, sc, name, transport, command, args, url, env, enabled, headers)
 }
 
 /// Returns rows affected on the mcp_servers row (0 = not found / not owned) —
 /// taken from the transaction's own DELETE on the mcp_servers row
 /// (deliberately the last statement), not a hardcoded 1 (#598).
-pub func deleteMcpServer(id: in String, sc: in CloudAgents.Pg.TenantScope): Result[Int, CloudAgents.Sqlite.DbError] {
+pub func deleteMcpServer(id: in String, sc: in CloudAgents.Pg.TenantScope): Result[Int, CloudAgents.Db.DbError] {
   return CloudAgents.PgStore.Library.deleteMcpServer(id, sc)
 }
 
@@ -1257,7 +1238,7 @@ pub func deleteMcpServer(id: in String, sc: in CloudAgents.Pg.TenantScope): Resu
 /// since library items are opt-in additions, not access-control scope).
 pub func skillsForProfile(
   sc: in CloudAgents.Pg.TenantScope, profileId: in String
-): Result[slice[Skill], CloudAgents.Sqlite.DbError] {
+): Result[slice[Skill], CloudAgents.Db.DbError] {
   return CloudAgents.PgStore.Library.skillsForProfile(sc, profileId)
 }
 
@@ -1265,7 +1246,7 @@ pub func skillsForProfile(
 /// skillsForProfile for the dangling-id and empty-profile semantics.
 pub func subagentsForProfile(
   sc: in CloudAgents.Pg.TenantScope, profileId: in String
-): Result[slice[Subagent], CloudAgents.Sqlite.DbError] {
+): Result[slice[Subagent], CloudAgents.Db.DbError] {
   return CloudAgents.PgStore.Library.subagentsForProfile(sc, profileId)
 }
 
@@ -1282,7 +1263,7 @@ pub func subagentsForProfile(
 /// dangling-id and empty-profile semantics, both unchanged here.
 pub func mcpServersForProfile(
   sc: in CloudAgents.Pg.TenantScope, profileId: in String
-): Result[slice[McpServer], CloudAgents.Sqlite.DbError] {
+): Result[slice[McpServer], CloudAgents.Db.DbError] {
   return CloudAgents.PgStore.Library.mcpServersForProfile(sc, profileId)
 }
 
@@ -1301,7 +1282,7 @@ pub record GitHubTokenCacheEntry {
 /// Cache a successful validation. The expired-row sweep is best-effort.
 pub func cacheGitHubToken(
   tokenHash: in String, userId: in String, login: in String
-): Result[Unit, CloudAgents.Sqlite.DbError] {
+): Result[Unit, CloudAgents.Db.DbError] {
   return CloudAgents.PgStore.TokenCache.cacheGitHubToken(tokenHash, userId, login)
 }
 
@@ -1311,56 +1292,56 @@ pub func cacheGitHubToken(
 /// additions take effect immediately (#429). Blunts repeated presentations
 /// of the same bad bearer, which would otherwise each cost an outbound
 /// GitHub round trip that blocks a request thread (#425).
-pub func cacheGitHubTokenDenied(tokenHash: in String): Result[Unit, CloudAgents.Sqlite.DbError] {
+pub func cacheGitHubTokenDenied(tokenHash: in String): Result[Unit, CloudAgents.Db.DbError] {
   return CloudAgents.PgStore.TokenCache.cacheGitHubTokenDenied(tokenHash)
 }
 
 /// How many distinct bad bearers are currently negatively cached (i.e. seen
 /// within the last minute). The authentication path uses this as a global
 /// flood backstop (#425).
-pub func activeNegativeGitHubTokens(): Result[Int, CloudAgents.Sqlite.DbError] {
+pub func activeNegativeGitHubTokens(): Result[Int, CloudAgents.Db.DbError] {
   return CloudAgents.PgStore.TokenCache.activeNegativeGitHubTokens()
 }
 
 /// Record a GitHub-rejected authorization code (marker login 'oauth-code',
 /// so these never count toward the bearer backstop and vice versa — #434).
-pub func cacheOAuthCodeRejected(codeHash: in String): Result[Unit, CloudAgents.Sqlite.DbError] {
+pub func cacheOAuthCodeRejected(codeHash: in String): Result[Unit, CloudAgents.Db.DbError] {
   return CloudAgents.PgStore.TokenCache.cacheOAuthCodeRejected(codeHash)
 }
 
 /// How many distinct GitHub-rejected authorization codes are in-window (#434).
-pub func activeRejectedOAuthCodes(): Result[Int, CloudAgents.Sqlite.DbError] {
+pub func activeRejectedOAuthCodes(): Result[Int, CloudAgents.Db.DbError] {
   return CloudAgents.PgStore.TokenCache.activeRejectedOAuthCodes()
 }
 
 /// The still-valid cache entry for a token hash, or None (missing or expired).
-pub func cachedGitHubToken(tokenHash: in String): Result[Option[GitHubTokenCacheEntry], CloudAgents.Sqlite.DbError] {
+pub func cachedGitHubToken(tokenHash: in String): Result[Option[GitHubTokenCacheEntry], CloudAgents.Db.DbError] {
   return CloudAgents.PgStore.TokenCache.cachedGitHubToken(tokenHash)
 }
 
 /// Look up a token's cache entry even if expired (for identifying the tenant during token refresh).
 pub func lookupHistoricalGitHubToken(
   tokenHash: in String
-): Result[Option[GitHubTokenCacheEntry], CloudAgents.Sqlite.DbError] {
+): Result[Option[GitHubTokenCacheEntry], CloudAgents.Db.DbError] {
   return CloudAgents.PgStore.TokenCache.lookupHistoricalGitHubToken(tokenHash)
 }
 
 /// Look up the GitHub login handle for a given userId from the token cache.
-pub func lookupGitHubLoginForUser(userId: in String): Result[String, CloudAgents.Sqlite.DbError] {
+pub func lookupGitHubLoginForUser(userId: in String): Result[String, CloudAgents.Db.DbError] {
   return CloudAgents.PgStore.TokenCache.lookupGitHubLoginForUser(userId)
 }
 
 /// Server-side logout: delete a token's cache row so the next presentation of
 /// that token must revalidate live. Deleting a row that does not exist is
 /// still Ok — logout is idempotent.
-pub func invalidateGitHubToken(tokenHash: in String): Result[Unit, CloudAgents.Sqlite.DbError] {
+pub func invalidateGitHubToken(tokenHash: in String): Result[Unit, CloudAgents.Db.DbError] {
   return CloudAgents.PgStore.TokenCache.invalidateGitHubToken(tokenHash)
 }
 
 /// A still-fresh cached listing body for (user, provider), or None.
 pub func cachedModelListing(
   sc: in CloudAgents.Pg.UserScope, provider: in String
-): Result[Option[String], CloudAgents.Sqlite.DbError] {
+): Result[Option[String], CloudAgents.Db.DbError] {
   return CloudAgents.PgStore.Credentials.cachedModelListing(sc, provider)
 }
 
@@ -1368,7 +1349,7 @@ pub func cachedModelListing(
 /// rows first (best-effort), mirroring the token cache's write path (#432).
 pub func cacheModelListing(
   sc: in CloudAgents.Pg.UserScope, provider: in String, body: in String
-): Result[Unit, CloudAgents.Sqlite.DbError] {
+): Result[Unit, CloudAgents.Db.DbError] {
   return CloudAgents.PgStore.Credentials.cacheModelListing(sc, provider, body)
 }
 
@@ -1424,14 +1405,14 @@ pub func createPermissionRequest(
   toolName: in String,
   inputJson: in String,
   preApproved: in Bool,
-): Result[PermissionRequest, CloudAgents.Sqlite.DbError] {
+): Result[PermissionRequest, CloudAgents.Db.DbError] {
   return CloudAgents.PgStore.Interactive.createPermissionRequest(sessionId, sc, toolName, inputJson, preApproved)
 }
 
 /// A permission request by id, or None.
 pub func getPermissionRequest(
   id: in String, sc: in CloudAgents.Pg.TenantScope
-): Result[Option[PermissionRequest], CloudAgents.Sqlite.DbError] {
+): Result[Option[PermissionRequest], CloudAgents.Db.DbError] {
   return CloudAgents.PgStore.Interactive.getPermissionRequest(id, sc)
 }
 
@@ -1442,7 +1423,7 @@ pub func permissionRequestsCreatedAfter(
   sessionId: in String,
   sc: in CloudAgents.Pg.TenantScope,
   afterCreatedAt: in String,
-): Result[slice[PermissionRequest], CloudAgents.Sqlite.DbError] {
+): Result[slice[PermissionRequest], CloudAgents.Db.DbError] {
   return CloudAgents.PgStore.Interactive.permissionRequestsCreatedAfter(sessionId, sc, afterCreatedAt)
 }
 
@@ -1455,7 +1436,7 @@ pub func answerPermissionRequest(
   status: in String,
   updatedInputJson: in String,
   note: in String,
-): Result[Int, CloudAgents.Sqlite.DbError] {
+): Result[Int, CloudAgents.Db.DbError] {
   return CloudAgents.PgStore.Interactive.answerPermissionRequest(id, sc, status, updatedInputJson, note)
 }
 
@@ -1464,7 +1445,7 @@ pub func answerPermissionRequest(
 /// `timeoutMillis`. Write-once — safe to call on every poll.
 pub func timeoutPendingPermissionRequest(
   id: in String, sc: in CloudAgents.Pg.TenantScope, timeoutMillis: in Long
-): Result[Unit, CloudAgents.Sqlite.DbError] {
+): Result[Unit, CloudAgents.Db.DbError] {
   return CloudAgents.PgStore.Interactive.timeoutPendingPermissionRequest(id, sc, timeoutMillis)
 }
 
@@ -1474,7 +1455,7 @@ pub func permissionRuleMatches(
   sc: in CloudAgents.Pg.TenantScope,
   toolName: in String,
   inputJson: in String,
-): Result[Bool, CloudAgents.Sqlite.DbError] {
+): Result[Bool, CloudAgents.Db.DbError] {
   return CloudAgents.PgStore.Interactive.permissionRuleMatches(sessionId, sc, toolName, inputJson)
 }
 
@@ -1485,7 +1466,7 @@ pub func addPermissionRule(
   sc: in CloudAgents.Pg.TenantScope,
   toolName: in String,
   inputJson: in String,
-): Result[Unit, CloudAgents.Sqlite.DbError] {
+): Result[Unit, CloudAgents.Db.DbError] {
   return CloudAgents.PgStore.Interactive.addPermissionRule(sessionId, sc, toolName, inputJson)
 }
 
@@ -1496,14 +1477,14 @@ pub func createUserQuestion(
   sc: in CloudAgents.Pg.TenantScope,
   question: in String,
   optionsJson: in String,
-): Result[UserQuestion, CloudAgents.Sqlite.DbError] {
+): Result[UserQuestion, CloudAgents.Db.DbError] {
   return CloudAgents.PgStore.Interactive.createUserQuestion(sessionId, sc, question, optionsJson)
 }
 
 /// A user question by id, or None.
 pub func getUserQuestion(
   id: in String, sc: in CloudAgents.Pg.TenantScope
-): Result[Option[UserQuestion], CloudAgents.Sqlite.DbError] {
+): Result[Option[UserQuestion], CloudAgents.Db.DbError] {
   return CloudAgents.PgStore.Interactive.getUserQuestion(id, sc)
 }
 
@@ -1511,7 +1492,7 @@ pub func getUserQuestion(
 /// oldest first — mirrors permissionRequestsCreatedAfter for SSE emission.
 pub func userQuestionsCreatedAfter(
   sessionId: in String, sc: in CloudAgents.Pg.TenantScope, afterCreatedAt: in String
-): Result[slice[UserQuestion], CloudAgents.Sqlite.DbError] {
+): Result[slice[UserQuestion], CloudAgents.Db.DbError] {
   return CloudAgents.PgStore.Interactive.userQuestionsCreatedAfter(sessionId, sc, afterCreatedAt)
 }
 
@@ -1519,7 +1500,7 @@ pub func userQuestionsCreatedAfter(
 /// answered/timed out — the handler maps that to 409).
 pub func answerUserQuestion(
   id: in String, sc: in CloudAgents.Pg.TenantScope, answer: in String
-): Result[Int, CloudAgents.Sqlite.DbError] {
+): Result[Int, CloudAgents.Db.DbError] {
   return CloudAgents.PgStore.Interactive.answerUserQuestion(id, sc, answer)
 }
 
@@ -1528,7 +1509,7 @@ pub func answerUserQuestion(
 /// been pending at least `timeoutMillis`.
 pub func timeoutPendingUserQuestion(
   id: in String, sc: in CloudAgents.Pg.TenantScope, timeoutMillis: in Long
-): Result[Unit, CloudAgents.Sqlite.DbError] {
+): Result[Unit, CloudAgents.Db.DbError] {
   return CloudAgents.PgStore.Interactive.timeoutPendingUserQuestion(id, sc, timeoutMillis)
 }
 
@@ -1539,14 +1520,14 @@ pub func updateSessionProgress(
   sc: in CloudAgents.Pg.TenantScope,
   summary: in String,
   percent: in String,
-): Result[Unit, CloudAgents.Sqlite.DbError] {
+): Result[Unit, CloudAgents.Db.DbError] {
   return CloudAgents.PgStore.Interactive.updateSessionProgress(sessionId, sc, summary, percent)
 }
 
 /// A session's latest reported progress (both fields "" if never reported).
 pub func sessionProgress(
   sessionId: in String, sc: in CloudAgents.Pg.TenantScope
-): Result[SessionProgress, CloudAgents.Sqlite.DbError] {
+): Result[SessionProgress, CloudAgents.Db.DbError] {
   return CloudAgents.PgStore.Interactive.sessionProgress(sessionId, sc)
 }
 
@@ -1577,14 +1558,14 @@ pub record SecretRequest {
 /// createUserQuestion's division of labor (validation lives one layer up).
 pub func createSecretRequest(
   sessionId: in String, sc: in CloudAgents.Pg.TenantScope, name: in String, reason: in String
-): Result[SecretRequest, CloudAgents.Sqlite.DbError] {
+): Result[SecretRequest, CloudAgents.Db.DbError] {
   return CloudAgents.PgStore.Interactive.createSecretRequest(sessionId, sc, name, reason)
 }
 
 /// A secret request by id, or None.
 pub func getSecretRequest(
   id: in String, sc: in CloudAgents.Pg.TenantScope
-): Result[Option[SecretRequest], CloudAgents.Sqlite.DbError] {
+): Result[Option[SecretRequest], CloudAgents.Db.DbError] {
   return CloudAgents.PgStore.Interactive.getSecretRequest(id, sc)
 }
 
@@ -1593,7 +1574,7 @@ pub func getSecretRequest(
 /// never a value, so this is safe to stream unconditionally).
 pub func secretRequestsCreatedAfter(
   sessionId: in String, sc: in CloudAgents.Pg.TenantScope, afterCreatedAt: in String
-): Result[slice[SecretRequest], CloudAgents.Sqlite.DbError] {
+): Result[slice[SecretRequest], CloudAgents.Db.DbError] {
   return CloudAgents.PgStore.Interactive.secretRequestsCreatedAfter(sessionId, sc, afterCreatedAt)
 }
 
@@ -1603,7 +1584,7 @@ pub func secretRequestsCreatedAfter(
 /// 409, mirroring answerPermissionRequest).
 pub func answerSecretRequest(
   id: in String, sc: in CloudAgents.Pg.TenantScope, status: in String
-): Result[Int, CloudAgents.Sqlite.DbError] {
+): Result[Int, CloudAgents.Db.DbError] {
   return CloudAgents.PgStore.Interactive.answerSecretRequest(id, sc, status)
 }
 
@@ -1611,7 +1592,7 @@ pub func answerSecretRequest(
 /// timeoutPendingPermissionRequest.
 pub func timeoutPendingSecretRequest(
   id: in String, sc: in CloudAgents.Pg.TenantScope, timeoutMillis: in Long
-): Result[Unit, CloudAgents.Sqlite.DbError] {
+): Result[Unit, CloudAgents.Db.DbError] {
   return CloudAgents.PgStore.Interactive.timeoutPendingSecretRequest(id, sc, timeoutMillis)
 }
 
@@ -1622,7 +1603,7 @@ pub func timeoutPendingSecretRequest(
 /// delivered it.
 pub func markSecretRequestDelivered(
   id: in String, sc: in CloudAgents.Pg.TenantScope
-): Result[Bool, CloudAgents.Sqlite.DbError] {
+): Result[Bool, CloudAgents.Db.DbError] {
   return CloudAgents.PgStore.Interactive.markSecretRequestDelivered(id, sc)
 }
 
@@ -1645,7 +1626,7 @@ pub record Artifact {
   pub ownerUserId: String
 }
 
-/// Base directory for artifact bytes, mirroring CloudAgents.Sqlite.dbPath's
+/// Base directory for artifact bytes, mirroring CloudAgents.Db.dbPath's
 /// override convention: CLOUD_AGENTS_ARTIFACTS_DIR when set, else a relative
 /// default in the working directory. Actual files live at
 /// `<this>/<sessionId>/<storedName>`. Exported so CloudAgents.Callbacks
@@ -1678,21 +1659,21 @@ pub func createArtifact(
   sizeBytes: in String,
   repoKey: in String,
   ownerUserId: in String,
-): Result[Artifact, CloudAgents.Sqlite.DbError] {
+): Result[Artifact, CloudAgents.Db.DbError] {
   return CloudAgents.PgStore.Interactive.createArtifact(sessionId, sc, fileName, storedName, mimeType, description, sizeBytes, repoKey, ownerUserId)
 }
 
 /// An artifact by id, or None.
 pub func getArtifact(
   id: in String, sc: in CloudAgents.Pg.TenantScope
-): Result[Option[Artifact], CloudAgents.Sqlite.DbError] {
+): Result[Option[Artifact], CloudAgents.Db.DbError] {
   return CloudAgents.PgStore.Interactive.getArtifact(id, sc)
 }
 
 /// A session's artifacts, oldest first.
 pub func listArtifacts(
   sessionId: in String, sc: in CloudAgents.Pg.TenantScope
-): Result[slice[Artifact], CloudAgents.Sqlite.DbError] {
+): Result[slice[Artifact], CloudAgents.Db.DbError] {
   return CloudAgents.PgStore.Interactive.listArtifacts(sessionId, sc)
 }
 
@@ -1702,7 +1683,7 @@ pub func listArtifacts(
 /// secret.
 pub func listRepoArtifacts(
   sc: in CloudAgents.Pg.TenantScope, repoKey: in String
-): Result[slice[Artifact], CloudAgents.Sqlite.DbError] {
+): Result[slice[Artifact], CloudAgents.Db.DbError] {
   return CloudAgents.PgStore.Interactive.listRepoArtifacts(sc, repoKey)
 }
 
@@ -1713,7 +1694,7 @@ pub func listRepoArtifacts(
 /// owned by a different user.
 pub func getRepoArtifactById(
   id: in String, sc: in CloudAgents.Pg.TenantScope
-): Result[Option[Artifact], CloudAgents.Sqlite.DbError] {
+): Result[Option[Artifact], CloudAgents.Db.DbError] {
   return CloudAgents.PgStore.Interactive.getRepoArtifactById(id, sc)
 }
 
@@ -1767,7 +1748,7 @@ pub func createAttachment(
   mimeType: in String,
   kind: in String,
   sizeBytes: in String,
-): Result[Attachment, CloudAgents.Sqlite.DbError] {
+): Result[Attachment, CloudAgents.Db.DbError] {
   return CloudAgents.PgStore.SessionData.createAttachment(sessionId, sc, fileName, storedName, mimeType, kind, sizeBytes)
 }
 
@@ -1779,14 +1760,14 @@ pub func createAttachment(
 /// already safely on disk.
 pub func linkAttachmentToMessage(
   id: in String, sc: in CloudAgents.Pg.TenantScope, messageId: in String
-): Result[Unit, CloudAgents.Sqlite.DbError] {
+): Result[Unit, CloudAgents.Db.DbError] {
   return CloudAgents.PgStore.SessionData.linkAttachmentToMessage(id, sc, messageId)
 }
 
 /// An attachment by id, or None.
 pub func getAttachment(
   id: in String, sc: in CloudAgents.Pg.TenantScope
-): Result[Option[Attachment], CloudAgents.Sqlite.DbError] {
+): Result[Option[Attachment], CloudAgents.Db.DbError] {
   return CloudAgents.PgStore.SessionData.getAttachment(id, sc)
 }
 
@@ -1794,14 +1775,14 @@ pub func getAttachment(
 /// storeAttachments' pass-2 partial-failure cleanup (#1003) — not used on any
 /// normal (non-error) path, so callers ignore the Result (`val _ = ...`)
 /// exactly as this codebase's other best-effort cleanup calls do.
-pub func deleteAttachment(id: in String, sc: in CloudAgents.Pg.TenantScope): Result[Unit, CloudAgents.Sqlite.DbError] {
+pub func deleteAttachment(id: in String, sc: in CloudAgents.Pg.TenantScope): Result[Unit, CloudAgents.Db.DbError] {
   return CloudAgents.PgStore.SessionData.deleteAttachment(id, sc)
 }
 
 /// A session's attachments, oldest first.
 pub func listAttachments(
   sessionId: in String, sc: in CloudAgents.Pg.TenantScope
-): Result[slice[Attachment], CloudAgents.Sqlite.DbError] {
+): Result[slice[Attachment], CloudAgents.Db.DbError] {
   return CloudAgents.PgStore.SessionData.listAttachments(sessionId, sc)
 }
 
@@ -1819,7 +1800,7 @@ pub record SessionOwnerRepo {
 
 pub func sessionOwnerAndRepo(
   id: in String, sc: in CloudAgents.Pg.TenantScope
-): Result[Option[SessionOwnerRepo], CloudAgents.Sqlite.DbError] {
+): Result[Option[SessionOwnerRepo], CloudAgents.Db.DbError] {
   return CloudAgents.PgStore.Interactive.sessionOwnerAndRepo(id, sc)
 }
 
@@ -1842,14 +1823,14 @@ pub func upsertMemoryCapped(
   memKey: in String,
   value: in String,
   maxEntries: in Int,
-): Result[Bool, CloudAgents.Sqlite.DbError] {
+): Result[Bool, CloudAgents.Db.DbError] {
   return CloudAgents.PgStore.Interactive.upsertMemoryCapped(sc, repoKey, memKey, value, maxEntries)
 }
 
 /// All memory entries for (user, repo), key-ordered.
 pub func listMemory(
   sc: in CloudAgents.Pg.TenantScope, repoKey: in String
-): Result[slice[MemoryRecord], CloudAgents.Sqlite.DbError] {
+): Result[slice[MemoryRecord], CloudAgents.Db.DbError] {
   return CloudAgents.PgStore.Interactive.listMemory(sc, repoKey)
 }
 
@@ -1859,7 +1840,7 @@ pub func listMemory(
 /// client-side filter.
 pub func getMemory(
   sc: in CloudAgents.Pg.TenantScope, repoKey: in String, memKey: in String
-): Result[Option[MemoryRecord], CloudAgents.Sqlite.DbError] {
+): Result[Option[MemoryRecord], CloudAgents.Db.DbError] {
   return CloudAgents.PgStore.Interactive.getMemory(sc, repoKey, memKey)
 }
 
@@ -1867,7 +1848,7 @@ pub func getMemory(
 /// false when no entry existed under that key.
 pub func deleteMemory(
   sc: in CloudAgents.Pg.TenantScope, repoKey: in String, memKey: in String
-): Result[Bool, CloudAgents.Sqlite.DbError] {
+): Result[Bool, CloudAgents.Db.DbError] {
   return CloudAgents.PgStore.Interactive.deleteMemory(sc, repoKey, memKey)
 }
 
@@ -1875,7 +1856,7 @@ pub func deleteMemory(
 /// first — for the `artifact_reported` SSE event.
 pub func artifactsCreatedAfter(
   sessionId: in String, sc: in CloudAgents.Pg.TenantScope, afterCreatedAt: in String
-): Result[slice[Artifact], CloudAgents.Sqlite.DbError] {
+): Result[slice[Artifact], CloudAgents.Db.DbError] {
   return CloudAgents.PgStore.Interactive.artifactsCreatedAfter(sessionId, sc, afterCreatedAt)
 }
 
@@ -1914,7 +1895,7 @@ pub func addTaskCapped(
   repoKey: in String,
   description: in String,
   maxOpenTasks: in Int,
-): Result[AddTaskResult, CloudAgents.Sqlite.DbError] {
+): Result[AddTaskResult, CloudAgents.Db.DbError] {
   return CloudAgents.PgStore.Interactive.addTaskCapped(sc, repoKey, description, maxOpenTasks)
 }
 
@@ -1922,7 +1903,7 @@ pub func addTaskCapped(
 /// every status; Some("open")/Some("done") filters to just that status.
 pub func listTasks(
   sc: in CloudAgents.Pg.TenantScope, repoKey: in String, statusFilter: in Option[String]
-): Result[slice[RepoTask], CloudAgents.Sqlite.DbError] {
+): Result[slice[RepoTask], CloudAgents.Db.DbError] {
   return CloudAgents.PgStore.Interactive.listTasks(sc, repoKey, statusFilter)
 }
 
@@ -1944,7 +1925,7 @@ pub union CompleteTaskOutcome {
 /// concurrent second completion can never double-apply.
 pub func completeTask(
   sc: in CloudAgents.Pg.TenantScope, repoKey: in String, taskId: in String
-): Result[CompleteTaskOutcome, CloudAgents.Sqlite.DbError] {
+): Result[CompleteTaskOutcome, CloudAgents.Db.DbError] {
   return CloudAgents.PgStore.Interactive.completeTask(sc, repoKey, taskId)
 }
 
@@ -1968,14 +1949,14 @@ pub func createNotification(
   sc: in CloudAgents.Pg.TenantScope,
   level: in String,
   summary: in String,
-): Result[Notification, CloudAgents.Sqlite.DbError] {
+): Result[Notification, CloudAgents.Db.DbError] {
   return CloudAgents.PgStore.Interactive.createNotification(sessionId, sc, level, summary)
 }
 
 /// A session's notifications, newest first — for the UI feed.
 pub func listNotifications(
   sessionId: in String, sc: in CloudAgents.Pg.TenantScope
-): Result[slice[Notification], CloudAgents.Sqlite.DbError] {
+): Result[slice[Notification], CloudAgents.Db.DbError] {
   return CloudAgents.PgStore.Interactive.listNotifications(sessionId, sc)
 }
 
@@ -1983,7 +1964,7 @@ pub func listNotifications(
 /// first — for the `notification` SSE event, mirroring artifactsCreatedAfter.
 pub func notificationsCreatedAfter(
   sessionId: in String, sc: in CloudAgents.Pg.TenantScope, afterCreatedAt: in String
-): Result[slice[Notification], CloudAgents.Sqlite.DbError] {
+): Result[slice[Notification], CloudAgents.Db.DbError] {
   return CloudAgents.PgStore.Interactive.notificationsCreatedAfter(sessionId, sc, afterCreatedAt)
 }
 
@@ -2019,14 +2000,14 @@ pub func addHighlight(
   kind: in String,
   title: in String,
   detail: in String,
-): Result[Highlight, CloudAgents.Sqlite.DbError] {
+): Result[Highlight, CloudAgents.Db.DbError] {
   return CloudAgents.PgStore.SessionData.addHighlight(sessionId, sc, messageId, kind, title, detail)
 }
 
 /// A session's highlights, newest first.
 pub func listHighlights(
   sessionId: in String, sc: in CloudAgents.Pg.TenantScope
-): Result[slice[Highlight], CloudAgents.Sqlite.DbError] {
+): Result[slice[Highlight], CloudAgents.Db.DbError] {
   return CloudAgents.PgStore.SessionData.listHighlights(sessionId, sc)
 }
 
@@ -2034,14 +2015,14 @@ pub func listHighlights(
 /// session has never been scanned.
 pub func highlightScanSeq(
   sessionId: in String, sc: in CloudAgents.Pg.TenantScope
-): Result[String, CloudAgents.Sqlite.DbError] {
+): Result[String, CloudAgents.Db.DbError] {
   return CloudAgents.PgStore.SessionData.highlightScanSeq(sessionId, sc)
 }
 
 /// Record the highest transcript seq scanned for highlights.
 pub func setHighlightScanSeq(
   sessionId: in String, sc: in CloudAgents.Pg.TenantScope, lastSeq: in String
-): Result[Unit, CloudAgents.Sqlite.DbError] {
+): Result[Unit, CloudAgents.Db.DbError] {
   return CloudAgents.PgStore.SessionData.setHighlightScanSeq(sessionId, sc, lastSeq)
 }
 
@@ -2069,7 +2050,7 @@ pub func appendSessionEvents(
   sessionId: in String,
   sc: in CloudAgents.Pg.TenantScope,
   events: in slice[CloudAgents.Capture.CaptureEvent],
-): Result[Int, CloudAgents.Sqlite.DbError] {
+): Result[Int, CloudAgents.Db.DbError] {
   return CloudAgents.PgStore.SessionEvents.appendSessionEvents(sessionId, sc, events)
 }
 
@@ -2081,7 +2062,7 @@ pub func appendSessionEvents(
 /// excludes the first event).
 pub func sessionEventsAfterSeq(
   sessionId: in String, sc: in CloudAgents.Pg.TenantScope, afterSeq: in String
-): Result[slice[CloudAgents.Capture.CaptureEvent], CloudAgents.Sqlite.DbError] {
+): Result[slice[CloudAgents.Capture.CaptureEvent], CloudAgents.Db.DbError] {
   return CloudAgents.PgStore.SessionEvents.sessionEventsAfterSeq(sessionId, sc, afterSeq)
 }
 
@@ -2092,7 +2073,7 @@ pub func sessionEventsInRange(
   sc: in CloudAgents.Pg.TenantScope,
   fromExclusive: in String,
   toInclusive: in String,
-): Result[slice[CloudAgents.Capture.CaptureEvent], CloudAgents.Sqlite.DbError] {
+): Result[slice[CloudAgents.Capture.CaptureEvent], CloudAgents.Db.DbError] {
   return CloudAgents.PgStore.SessionEvents.sessionEventsInRange(sessionId, sc, fromExclusive, toInclusive)
 }
 
@@ -2105,13 +2086,13 @@ pub func sessionEventsAfterSeqLimited(
   sc: in CloudAgents.Pg.TenantScope,
   afterSeq: in String,
   limit: in Int,
-): Result[slice[CloudAgents.Capture.CaptureEvent], CloudAgents.Sqlite.DbError] {
+): Result[slice[CloudAgents.Capture.CaptureEvent], CloudAgents.Db.DbError] {
   return CloudAgents.PgStore.SessionEvents.sessionEventsAfterSeqLimited(sessionId, sc, afterSeq, limit)
 }
 
 pub func latestSessionEventSeq(
   sessionId: in String, sc: in CloudAgents.Pg.TenantScope
-): Result[String, CloudAgents.Sqlite.DbError] {
+): Result[String, CloudAgents.Db.DbError] {
   return CloudAgents.PgStore.SessionEvents.latestSessionEventSeq(sessionId, sc)
 }
 
@@ -2134,14 +2115,14 @@ pub record SessionEventCursor {
 /// mismatch, silently dropping that run's capture provenance.
 pub func latestSessionEventCursor(
   sessionId: in String, sc: in CloudAgents.Pg.TenantScope
-): Result[SessionEventCursor, CloudAgents.Sqlite.DbError] {
+): Result[SessionEventCursor, CloudAgents.Db.DbError] {
   return CloudAgents.PgStore.SessionEvents.latestSessionEventCursor(sessionId, sc)
 }
 
 /// A session's agent messages with a sequence number above `afterSeq`.
 pub func agentMessagesAfterSeq(
   sessionId: in String, sc: in CloudAgents.Pg.TenantScope, afterSeq: in String
-): Result[slice[Message], CloudAgents.Sqlite.DbError] {
+): Result[slice[Message], CloudAgents.Db.DbError] {
   return CloudAgents.PgStore.Messages.agentMessagesAfterSeq(sessionId, sc, afterSeq)
 }
 
@@ -2185,7 +2166,7 @@ pub func createScheduledJob(
   model: in String,
   runAt: in String,
   intervalSeconds: in String,
-): Result[ScheduledJob, CloudAgents.Sqlite.DbError] {
+): Result[ScheduledJob, CloudAgents.Db.DbError] {
   return CloudAgents.PgStore.Jobs.createScheduledJob(sc, name, prompt, profileId, repoUrl, branch, harness, model, runAt, intervalSeconds)
 }
 
@@ -2202,7 +2183,7 @@ pub func createScheduledJobWithSession(
   runAt: in String,
   intervalSeconds: in String,
   sessionId: in String,
-): Result[ScheduledJob, CloudAgents.Sqlite.DbError] {
+): Result[ScheduledJob, CloudAgents.Db.DbError] {
   return CloudAgents.PgStore.Jobs.createScheduledJobWithSession(sc, name, prompt, runAt, intervalSeconds, sessionId)
 }
 
@@ -2210,12 +2191,12 @@ pub func createScheduledJobWithSession(
 /// look identical to the caller, mirroring getProfile).
 pub func getScheduledJob(
   id: in String, sc: in CloudAgents.Pg.TenantScope
-): Result[Option[ScheduledJob], CloudAgents.Sqlite.DbError] {
+): Result[Option[ScheduledJob], CloudAgents.Db.DbError] {
   return CloudAgents.PgStore.Jobs.getScheduledJob(id, sc)
 }
 
 /// All of the caller's jobs, newest first.
-pub func listScheduledJobs(sc: in CloudAgents.Pg.TenantScope): Result[slice[ScheduledJob], CloudAgents.Sqlite.DbError] {
+pub func listScheduledJobs(sc: in CloudAgents.Pg.TenantScope): Result[slice[ScheduledJob], CloudAgents.Db.DbError] {
   return CloudAgents.PgStore.Jobs.listScheduledJobs(sc)
 }
 
@@ -2239,14 +2220,14 @@ pub record ClaimedJob {
 /// claim is a conditional UPDATE (claimDueScheduledJobSql), so overlapping
 /// trigger polls never fire the same slot twice. A run that is interrupted
 /// (the instance dies) is not re-fired: its slot is already advanced.
-pub func claimDueScheduledJobs(limit: in Int): Result[slice[ClaimedJob], CloudAgents.Sqlite.DbError] {
+pub func claimDueScheduledJobs(limit: in Int): Result[slice[ClaimedJob], CloudAgents.Db.DbError] {
   return CloudAgents.PgStore.Jobs.claimDueScheduledJobs(limit)
 }
 
 /// Undo a claim whose run was skipped (its session was busy), so the slot is
 /// retried on the next poll. A no-op if the row changed since the claim (an
 /// edit, pause or cancel), which then stands.
-pub func releaseScheduledJobClaim(c: in ClaimedJob): Result[Unit, CloudAgents.Sqlite.DbError] {
+pub func releaseScheduledJobClaim(c: in ClaimedJob): Result[Unit, CloudAgents.Db.DbError] {
   return CloudAgents.PgStore.Jobs.releaseScheduledJobClaim(c)
 }
 
@@ -2255,7 +2236,7 @@ pub func releaseScheduledJobClaim(c: in ClaimedJob): Result[Unit, CloudAgents.Sq
 /// no-op if the job already has one (attachScheduledJobSessionSql's guard).
 pub func attachScheduledJobSession(
   id: in String, sc: in CloudAgents.Pg.TenantScope, sessionId: in String
-): Result[Unit, CloudAgents.Sqlite.DbError] {
+): Result[Unit, CloudAgents.Db.DbError] {
   return CloudAgents.PgStore.Jobs.attachScheduledJobSession(id, sc, sessionId)
 }
 
@@ -2275,12 +2256,12 @@ pub func updateScheduledJob(
   nextRunAt: in String,
   status: in String,
   writeNextRunAt: in Bool,
-): Result[Int, CloudAgents.Sqlite.DbError] {
+): Result[Int, CloudAgents.Db.DbError] {
   return CloudAgents.PgStore.Jobs.updateScheduledJob(id, sc, name, prompt, profileId, runAt, intervalSeconds, nextRunAt, status, writeNextRunAt)
 }
 
 /// Delete one of the caller's jobs. Returns the affected row count.
-pub func deleteScheduledJob(id: in String, sc: in CloudAgents.Pg.TenantScope): Result[Int, CloudAgents.Sqlite.DbError] {
+pub func deleteScheduledJob(id: in String, sc: in CloudAgents.Pg.TenantScope): Result[Int, CloudAgents.Db.DbError] {
   return CloudAgents.PgStore.Jobs.deleteScheduledJob(id, sc)
 }
 
@@ -2316,7 +2297,7 @@ pub func branchSession(
   newSessionId: in String,
   sc: in CloudAgents.Pg.TenantScope,
   newBranch: in String,
-): Result[Unit, CloudAgents.Sqlite.DbError] {
+): Result[Unit, CloudAgents.Db.DbError] {
   return CloudAgents.PgStore.SessionData.branchSession(parentSessionId, forkedMessageId, newSessionId, sc, newBranch)
 }
 
@@ -2359,14 +2340,14 @@ pub record ClaimedGraphIngest {
 /// already-delivered or mid-backoff row is never re-POSTed early.
 pub func enqueueGraphIngest(
   sessionId: in String, body: in String, url: in String, sc: in CloudAgents.Pg.TenantScope
-): Result[GraphIngestOutboxRow, CloudAgents.Sqlite.DbError] {
+): Result[GraphIngestOutboxRow, CloudAgents.Db.DbError] {
   return CloudAgents.PgStore.GraphIngest.enqueueGraphIngest(sessionId, body, url, sc)
 }
 
 /// One row by id, or None.
 pub func getGraphIngest(
   id: in String, sc: in CloudAgents.Pg.TenantScope
-): Result[Option[GraphIngestOutboxRow], CloudAgents.Sqlite.DbError] {
+): Result[Option[GraphIngestOutboxRow], CloudAgents.Db.DbError] {
   return CloudAgents.PgStore.GraphIngest.getGraphIngest(id, sc)
 }
 
@@ -2374,7 +2355,7 @@ pub func getGraphIngest(
 /// undelivered, due and not held by another claim, in which case the caller
 /// now holds it for `CloudAgents.GraphIngestOutbox.leaseSeconds`
 /// (docs/phase11-postgres-tenancy.md §5.3a).
-pub func claimGraphIngest(id: in String, sc: in CloudAgents.Pg.TenantScope): Result[Bool, CloudAgents.Sqlite.DbError] {
+pub func claimGraphIngest(id: in String, sc: in CloudAgents.Pg.TenantScope): Result[Bool, CloudAgents.Db.DbError] {
   return CloudAgents.PgStore.GraphIngest.claimGraphIngest(id, sc)
 }
 
@@ -2386,7 +2367,7 @@ pub func claimGraphIngest(id: in String, sc: in CloudAgents.Pg.TenantScope): Res
 /// one. Each row carries its session owner's scope.
 pub func claimDueGraphIngest(
   limit: in Int, leaseSeconds: in Int
-): Result[slice[ClaimedGraphIngest], CloudAgents.Sqlite.DbError] {
+): Result[slice[ClaimedGraphIngest], CloudAgents.Db.DbError] {
   return CloudAgents.PgStore.GraphIngest.claimDueGraphIngest(limit, leaseSeconds)
 }
 
@@ -2403,7 +2384,7 @@ pub func markGraphIngestAttempt(
   nowMillisStr: in String,
   delayMillis: in Int,
   sc: in CloudAgents.Pg.TenantScope,
-): Result[Int, CloudAgents.Sqlite.DbError] {
+): Result[Int, CloudAgents.Db.DbError] {
   return CloudAgents.PgStore.GraphIngest.markGraphIngestAttempt(id, newAttempts, error, nowMillisStr, delayMillis, sc)
 }
 
@@ -2415,7 +2396,7 @@ pub func markGraphIngestTerminal(
   newAttempts: in String,
   error: in String,
   sc: in CloudAgents.Pg.TenantScope,
-): Result[Int, CloudAgents.Sqlite.DbError] {
+): Result[Int, CloudAgents.Db.DbError] {
   return CloudAgents.PgStore.GraphIngest.markGraphIngestTerminal(id, newAttempts, error, sc)
 }
 
@@ -2423,7 +2404,7 @@ pub func markGraphIngestTerminal(
 /// concurrent drain, or the row no longer exists).
 pub func markGraphIngestDelivered(
   id: in String, deliveredAt: in String, sc: in CloudAgents.Pg.TenantScope
-): Result[Int, CloudAgents.Sqlite.DbError] {
+): Result[Int, CloudAgents.Db.DbError] {
   return CloudAgents.PgStore.GraphIngest.markGraphIngestDelivered(id, deliveredAt, sc)
 }
 
@@ -2431,6 +2412,6 @@ pub func markGraphIngestDelivered(
 /// Returns rows deleted. Best-effort housekeeping — a caller
 /// (`CloudAgents.GraphIngestDrain`) runs this on every drain call and doesn't
 /// fail the drain if it errors.
-pub func pruneDeliveredGraphIngest(retentionDays: in Int): Result[Int, CloudAgents.Sqlite.DbError] {
+pub func pruneDeliveredGraphIngest(retentionDays: in Int): Result[Int, CloudAgents.Db.DbError] {
   return CloudAgents.PgStore.GraphIngest.pruneDeliveredGraphIngest(retentionDays)
 }

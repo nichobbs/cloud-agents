@@ -34,7 +34,7 @@ import CloudAgents.Proxy
 import CloudAgents.Repository
 import CloudAgents.Ledger.Service
 import CloudAgents.SessionStore
-import CloudAgents.Sqlite
+import CloudAgents.Db
 import CloudAgents.Text
 
 val maxJobNameLen = 200
@@ -76,8 +76,8 @@ val maxEpochDigits = 15
 /// (#872).
 val maxJobsPerTrigger = 5
 
-func dbError(e: in CloudAgents.Sqlite.DbError): Web.ApiError {
-  return Web.internalError(CloudAgents.Sqlite.dbErrorMessage(e))
+func dbError(e: in CloudAgents.Db.DbError): Web.ApiError {
+  return Web.internalError(CloudAgents.Db.dbErrorMessage(e))
 }
 
 func isAllDigits(s: in String): Bool {
@@ -486,7 +486,7 @@ func ensureJobSession(
   )
   match CloudAgents.SessionStore.addSession(session, sc) {
     case Ok(_) -> ()
-    case Err(e) -> return Err(error = "failed to create a session for this job: " + CloudAgents.Sqlite.dbErrorMessage(e))
+    case Err(e) -> return Err(error = "failed to create a session for this job: " + CloudAgents.Db.dbErrorMessage(e))
   }
   if job.profileId.length > 0 {
     match CloudAgents.SessionStore.setSessionProfile(sessionId, sc, job.profileId) {
@@ -505,7 +505,7 @@ func ensureJobSession(
     // failure paths in this file already are.
     case Err(e) -> println(
       "WARNING: failed to attach session " + sessionId + " to scheduled job " + job.id + ": " +
-        CloudAgents.Sqlite.dbErrorMessage(e)
+        CloudAgents.Db.dbErrorMessage(e)
     )
   }
   return Ok(value = sessionId)
@@ -550,18 +550,18 @@ func runOneJob(claim: in CloudAgents.Repository.ClaimedJob): JobRunOutcome {
   val session = match CloudAgents.SessionStore.getSession(sessionId, sc) {
     case Ok(Some(s)) -> s
     case Ok(None) -> return JobFailed(message = "job's session no longer exists")
-    case Err(e) -> return JobFailed(message = "failed to resolve job session: " + CloudAgents.Sqlite.dbErrorMessage(e))
+    case Err(e) -> return JobFailed(message = "failed to resolve job session: " + CloudAgents.Db.dbErrorMessage(e))
   }
   val profileId = match CloudAgents.SessionStore.sessionProfileId(sessionId, sc) {
     case Ok(Some(pid)) -> pid
     case Ok(None) -> ""
     // Fails closed (#232's same reasoning): a DB error resolving the
     // session's profile must not silently fall open to "no profile".
-    case Err(e) -> return JobFailed(message = "failed to resolve session profile: " + CloudAgents.Sqlite.dbErrorMessage(e))
+    case Err(e) -> return JobFailed(message = "failed to resolve session profile: " + CloudAgents.Db.dbErrorMessage(e))
   }
   val began = match CloudAgents.SessionStore.tryBeginRun(sessionId, sc) {
     case Ok(b) -> b
-    case Err(e) -> return JobFailed(message = "failed to claim session: " + CloudAgents.Sqlite.dbErrorMessage(e))
+    case Err(e) -> return JobFailed(message = "failed to claim session: " + CloudAgents.Db.dbErrorMessage(e))
   }
   if not began {
     return JobSkipped(reason = "a run is already in progress for this job's session")
@@ -571,7 +571,7 @@ func runOneJob(claim: in CloudAgents.Repository.ClaimedJob): JobRunOutcome {
       case Ok(_) -> ()
       case Err(e) -> println(
         "WARNING: failed to release run claim for scheduled job session " + sessionId + ": " +
-          CloudAgents.Sqlite.dbErrorMessage(e)
+          CloudAgents.Db.dbErrorMessage(e)
       )
     }
   }
@@ -624,7 +624,7 @@ func runOneJob(claim: in CloudAgents.Repository.ClaimedJob): JobRunOutcome {
         case Ok(_) -> ()
         case Err(e) -> println(
           "WARNING: failed to persist agent message for scheduled job session " + sessionId + ": " +
-            CloudAgents.Sqlite.dbErrorMessage(e)
+            CloudAgents.Db.dbErrorMessage(e)
         )
       }
       JobSucceeded
@@ -648,7 +648,7 @@ func runOneJob(claim: in CloudAgents.Repository.ClaimedJob): JobRunOutcome {
         case Ok(_) -> ()
         case Err(e) -> println(
           "WARNING: failed to persist failure message for scheduled job session " + sessionId + ": " +
-            CloudAgents.Sqlite.dbErrorMessage(e)
+            CloudAgents.Db.dbErrorMessage(e)
         )
       }
       JobFailed(message = msg)
@@ -706,7 +706,7 @@ pub func triggerDueJobsHandler(): Result[String, Web.ApiError] {
           case Ok(_) -> ()
           case Err(e) -> println(
             "WARNING: could not release the claim on skipped scheduled job " + claim.job.id + ": " +
-              CloudAgents.Sqlite.dbErrorMessage(e)
+              CloudAgents.Db.dbErrorMessage(e)
           )
         }
       }

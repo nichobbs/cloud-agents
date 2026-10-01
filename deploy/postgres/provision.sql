@@ -21,9 +21,11 @@
 --                        no BYPASSRLS, so FORCE ROW LEVEL SECURITY applies.
 --   cloudagents_claimer  NOLOGIN. Owns only the SECURITY DEFINER claim
 --                        functions; reachable only through them.
---   cloudagents_migrator NOLOGIN + BYPASSRLS. Was for the one-shot SQLite
---                        export, which is dropped (phase 11 spec §7); unused,
---                        and removed at the cut-over (slice E).
+--   cloudagents_migrator NOLOGIN. Was for the one-shot SQLite export, which
+--                        is dropped (phase 11 spec §7). Unused: it exists only
+--                        because the frozen baseline migration grants to it,
+--                        and migration 0002 revokes those grants. It must never
+--                        log in (the service's self-check enforces this).
 
 \set ON_ERROR_STOP on
 
@@ -32,7 +34,7 @@ CREATE ROLE cloudagents_owner LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOBYPASS
 CREATE ROLE cloudagents_app LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOBYPASSRLS
     PASSWORD :app_password;
 CREATE ROLE cloudagents_claimer NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOBYPASSRLS;
-CREATE ROLE cloudagents_migrator NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE BYPASSRLS
+CREATE ROLE cloudagents_migrator NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOBYPASSRLS
     PASSWORD :migrator_password;
 
 -- The owner must be able to make the claimer own the claim functions

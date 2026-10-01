@@ -13,7 +13,7 @@ import CloudAgents.Pg.Migrate
 import CloudAgents.PgStore.Tenancy
 import CloudAgents.Prompts
 import CloudAgents.Repository
-import CloudAgents.Sqlite
+import CloudAgents.Db
 
 // ── Live Postgres ─────────────────────────────────────────────────────────────
 //
@@ -57,7 +57,7 @@ func newUser(tag: in String): String {
   val uid = "t-" + tag + "-" + Std.Uuid.uuidToString(Std.Uuid.newUuid())
   match CloudAgents.PgStore.Tenancy.ensurePersonalTenant(uid) {
     case Ok(_) -> ()
-    case Err(e) -> panic("provisioning " + uid + " failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+    case Err(e) -> panic("provisioning " + uid + " failed: " + CloudAgents.Db.dbErrorMessage(e))
   }
   return uid
 }
@@ -74,25 +74,25 @@ func freshUser(tag: in String): String {
 // Result convenience methods (.unwrapResult(), .isOk(), ...) compile as
 // dot-calls but fail at runtime with "unsupported method" in the current
 // toolchain (see docs/lyric/gotchas.md) — unwrap via match+panic instead.
-func mustPrompt(r: in Result[Prompt, CloudAgents.Sqlite.DbError]): Prompt {
-  return match r { case Ok(p) -> p; case Err(e) -> panic("prompt op failed: " + CloudAgents.Sqlite.dbErrorMessage(e)) }
+func mustPrompt(r: in Result[Prompt, CloudAgents.Db.DbError]): Prompt {
+  return match r { case Ok(p) -> p; case Err(e) -> panic("prompt op failed: " + CloudAgents.Db.dbErrorMessage(e)) }
 }
 
-func mustPrompts(r: in Result[slice[Prompt], CloudAgents.Sqlite.DbError]): slice[Prompt] {
+func mustPrompts(r: in Result[slice[Prompt], CloudAgents.Db.DbError]): slice[Prompt] {
   return match r {
     case Ok(ps) -> ps
-    case Err(e) -> panic("prompt list failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+    case Err(e) -> panic("prompt list failed: " + CloudAgents.Db.dbErrorMessage(e))
   }
 }
 
-func mustOptPrompt(r: in Result[Option[Prompt], CloudAgents.Sqlite.DbError]): Option[Prompt] {
-  return match r { case Ok(o) -> o; case Err(e) -> panic("prompt get failed: " + CloudAgents.Sqlite.dbErrorMessage(e)) }
+func mustOptPrompt(r: in Result[Option[Prompt], CloudAgents.Db.DbError]): Option[Prompt] {
+  return match r { case Ok(o) -> o; case Err(e) -> panic("prompt get failed: " + CloudAgents.Db.dbErrorMessage(e)) }
 }
 
-func mustRows(r: in Result[Int, CloudAgents.Sqlite.DbError]): Int {
+func mustRows(r: in Result[Int, CloudAgents.Db.DbError]): Int {
   return match r {
     case Ok(n) -> n
-    case Err(e) -> panic("prompt write failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+    case Err(e) -> panic("prompt write failed: " + CloudAgents.Db.dbErrorMessage(e))
   }
 }
 
@@ -164,7 +164,7 @@ test "renderPromptHandler renders a template and counts a use" {
   match getPrompt(created.id, personalScope(me)) {
     case Ok(Some(p)) -> assertEqual(p.useCount, "1", "render counted as a use")
     case Ok(None) -> assertTrue(false, "prompt should exist")
-    case Err(e) -> assertTrue(false, "getPrompt failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+    case Err(e) -> assertTrue(false, "getPrompt failed: " + CloudAgents.Db.dbErrorMessage(e))
   }
 }
 
@@ -263,7 +263,7 @@ test "Concurrent deletePrompt calls on the same row: exactly one reports the rea
   match getPrompt(p.id, personalScope(userId)) {
     case Ok(Some(_)) -> assertTrue(false, "prompt should be gone after either concurrent delete wins")
     case Ok(None) -> ()
-    case Err(e) -> assertTrue(false, "getPrompt failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+    case Err(e) -> assertTrue(false, "getPrompt failed: " + CloudAgents.Db.dbErrorMessage(e))
   }
 }
 
@@ -281,7 +281,7 @@ test "updatePromptWithTags round-trips name/body/tags and 0-affects a foreign pr
   val p = mustPrompt(addPrompt(personalScope(userId), "orig", "orig body"))
   match setPromptTags(p.id, personalScope(userId), ["red"]) {
     case Ok(_) -> ()
-    case Err(e) -> assertTrue(false, "setPromptTags failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+    case Err(e) -> assertTrue(false, "setPromptTags failed: " + CloudAgents.Db.dbErrorMessage(e))
   }
 
   val updated = mustRows(updatePromptWithTags(p.id, personalScope(userId), "renamed", "new body", ["blue", "green"]))
@@ -295,7 +295,7 @@ test "updatePromptWithTags round-trips name/body/tags and 0-affects a foreign pr
       assertEqual(gp.tags[1], "green", "tags alphabetical: green second")
     }
     case Ok(None) -> assertTrue(false, "updated prompt should exist")
-    case Err(e) -> assertTrue(false, "getPrompt failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+    case Err(e) -> assertTrue(false, "getPrompt failed: " + CloudAgents.Db.dbErrorMessage(e))
   }
 
   // Another user's prompt: the pre-check itself already 0s this (owner-scoped
@@ -325,12 +325,12 @@ test "Prompt tags round-trip, replace, and filter" {
   val p = mustPrompt(addPrompt(personalScope(userId), "tagged", "body"))
   match setPromptTags(p.id, personalScope(userId), ["red", "blue"]) {
     case Ok(_) -> ()
-    case Err(e) -> assertTrue(false, "setPromptTags failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+    case Err(e) -> assertTrue(false, "setPromptTags failed: " + CloudAgents.Db.dbErrorMessage(e))
   }
   match getPrompt(p.id, personalScope(userId)) {
     case Ok(Some(gp)) -> assertEqualInt(gp.tags.length.toInt(), 2, "two tags attached to the prompt")
     case Ok(None) -> assertTrue(false, "prompt should exist")
-    case Err(e) -> assertTrue(false, "getPrompt failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+    case Err(e) -> assertTrue(false, "getPrompt failed: " + CloudAgents.Db.dbErrorMessage(e))
   }
   // setPromptTags is a full replace, not an append.
   match setPromptTags(p.id, personalScope(userId), ["green"]) {
@@ -359,11 +359,11 @@ test "listPromptsByTag returns each matching prompt with its full tag set (#339)
   val b = mustPrompt(addPrompt(personalScope(userId), "beta", "b"))
   match setPromptTags(a.id, personalScope(userId), ["red", "green"]) {
     case Ok(_) -> ()
-    case Err(e) -> assertTrue(false, "setPromptTags a failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+    case Err(e) -> assertTrue(false, "setPromptTags a failed: " + CloudAgents.Db.dbErrorMessage(e))
   }
   match setPromptTags(b.id, personalScope(userId), ["blue"]) {
     case Ok(_) -> ()
-    case Err(e) -> assertTrue(false, "setPromptTags b failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+    case Err(e) -> assertTrue(false, "setPromptTags b failed: " + CloudAgents.Db.dbErrorMessage(e))
   }
 
   // Filtering by one of alpha's tags returns only alpha — but with its whole
@@ -393,11 +393,11 @@ test "listPrompts attaches each prompt's own tags from one batched read (#246)" 
   val b = mustPrompt(addPrompt(personalScope(userId), "beta", "body-b"))
   match setPromptTags(a.id, personalScope(userId), ["red", "green"]) {
     case Ok(_) -> ()
-    case Err(e) -> assertTrue(false, "setPromptTags a failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+    case Err(e) -> assertTrue(false, "setPromptTags a failed: " + CloudAgents.Db.dbErrorMessage(e))
   }
   match setPromptTags(b.id, personalScope(userId), ["blue"]) {
     case Ok(_) -> ()
-    case Err(e) -> assertTrue(false, "setPromptTags b failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+    case Err(e) -> assertTrue(false, "setPromptTags b failed: " + CloudAgents.Db.dbErrorMessage(e))
   }
 
   // listPrompts now fetches all tags in one query and attaches each prompt's
@@ -425,11 +425,11 @@ test "listPromptsByUsage attaches each prompt's own tags from the batched read (
   val b = mustPrompt(addPrompt(personalScope(userId), "beta", "b"))
   match setPromptTags(a.id, personalScope(userId), ["red", "green"]) {
     case Ok(_) -> ()
-    case Err(e) -> assertTrue(false, "setPromptTags a failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+    case Err(e) -> assertTrue(false, "setPromptTags a failed: " + CloudAgents.Db.dbErrorMessage(e))
   }
   match setPromptTags(b.id, personalScope(userId), ["blue"]) {
     case Ok(_) -> ()
-    case Err(e) -> assertTrue(false, "setPromptTags b failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+    case Err(e) -> assertTrue(false, "setPromptTags b failed: " + CloudAgents.Db.dbErrorMessage(e))
   }
   // Use beta once so the usage ordering is deterministic (beta first).
   mustRows(markPromptUsed(b.id, personalScope(userId)))

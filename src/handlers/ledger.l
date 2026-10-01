@@ -20,7 +20,7 @@ package CloudAgents.LedgerHandlers
 import Std.Core
 import Web
 import CloudAgents.Auth
-import CloudAgents.Sqlite
+import CloudAgents.Db
 import CloudAgents.SessionStore
 import CloudAgents.Ledger.Model
 import CloudAgents.Ledger.Summary
@@ -78,7 +78,7 @@ func authorizeContainer(sessionId: in String, authHeaderValue: in String): Resul
   val storedHash = match CloudAgents.SessionStore.callbackTokenHashForSession(sessionId) {
     case Ok(Some(t)) -> t
     case Ok(None) -> return Err(Web.notFound("Session not found"))
-    case Err(e) -> return Err(Web.internalError(CloudAgents.Sqlite.dbErrorMessage(e)))
+    case Err(e) -> return Err(Web.internalError(CloudAgents.Db.dbErrorMessage(e)))
   }
   if not CloudAgents.Auth.authorizeCallback(authHeaderValue, storedHash) {
     return Err(Web.unauthorized("invalid callback token"))
@@ -199,7 +199,7 @@ func ownedContext(id: in String): Result[SessionContext, Web.ApiError] {
   match CloudAgents.SessionStore.getSession(id, CloudAgents.Auth.requestScope()) {
     case Ok(Some(_)) -> ()
     case Ok(None) -> return Err(Web.notFound("Session not found"))
-    case Err(e) -> return Err(Web.internalError(CloudAgents.Sqlite.dbErrorMessage(e)))
+    case Err(e) -> return Err(Web.internalError(CloudAgents.Db.dbErrorMessage(e)))
   }
   match sessionContext(id) {
     case Ok(c) -> return Ok(c)
@@ -371,7 +371,7 @@ pub func ledgerSyncHandler(): Result[String, Web.ApiError] {
   }
   val ids = match sessionsToSync(syncMaxSessions) {
     case Ok(xs) -> xs
-    case Err(e) -> return Err(Web.internalError(CloudAgents.Sqlite.dbErrorMessage(e)))
+    case Err(e) -> return Err(Web.internalError(CloudAgents.Db.dbErrorMessage(e)))
   }
   var sessions = 0
   var items = 0
@@ -429,7 +429,7 @@ func syncOne(sessionId: in String, budget: in Int): Result[SyncOutcome, String] 
   // comment before either records its id.
   val lease = match acquireSyncLease(sessionId, ctx.tenantScope, syncLeaseMillis) {
     case Ok(t) -> t
-    case Err(e) -> return Err(error = CloudAgents.Sqlite.dbErrorMessage(e))
+    case Err(e) -> return Err(error = CloudAgents.Db.dbErrorMessage(e))
   }
   if lease.length.toInt() == 0 {
     return Err(error = syncBusyMessage)
@@ -439,7 +439,7 @@ func syncOne(sessionId: in String, budget: in Int): Result[SyncOutcome, String] 
       case Ok(_) -> ()
       case Err(e) -> println(
         "WARNING: ledger sync lease for " + sessionId + " not released: " +
-          CloudAgents.Sqlite.dbErrorMessage(e)
+          CloudAgents.Db.dbErrorMessage(e)
       )
     }
   }
@@ -461,7 +461,7 @@ func noteAttempt(ctx: in SessionContext, error: in String): Unit {
     case Ok(_) -> ()
     case Err(e) -> println(
       "WARNING: ledger sync attempt for " + ctx.sessionId + " not recorded: " +
-        CloudAgents.Sqlite.dbErrorMessage(e)
+        CloudAgents.Db.dbErrorMessage(e)
     )
   }
 }

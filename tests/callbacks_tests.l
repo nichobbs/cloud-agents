@@ -14,7 +14,7 @@ import CloudAgents.Pg.Migrate
 import CloudAgents.PgStore.Tenancy
 import CloudAgents.Repository
 import CloudAgents.SessionStore
-import CloudAgents.Sqlite
+import CloudAgents.Db
 import extern System.Environment as Env
 
 // ── Live Postgres ─────────────────────────────────────────────────────────────
@@ -59,7 +59,7 @@ func newUser(tag: in String): String {
   val uid = "t-" + tag + "-" + Std.Uuid.uuidToString(Std.Uuid.newUuid())
   match CloudAgents.PgStore.Tenancy.ensurePersonalTenant(uid) {
     case Ok(_) -> ()
-    case Err(e) -> panic("provisioning " + uid + " failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+    case Err(e) -> panic("provisioning " + uid + " failed: " + CloudAgents.Db.dbErrorMessage(e))
   }
   return uid
 }
@@ -91,14 +91,14 @@ func mkSession(id: in String): Unit {
   )
   match addSession(s, CloudAgents.Auth.requestScope()) {
     case Ok(_) -> ()
-    case Err(e) -> panic("addSession failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+    case Err(e) -> panic("addSession failed: " + CloudAgents.Db.dbErrorMessage(e))
   }
 }
 
 func mintToken(id: in String, ownerUserId: in String): String {
   return match CloudAgents.SessionStore.mintCallbackToken(id, CloudAgents.Pg.personalScope(ownerUserId)) {
     case Ok(t) -> t
-    case Err(e) -> panic("mintCallbackToken failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+    case Err(e) -> panic("mintCallbackToken failed: " + CloudAgents.Db.dbErrorMessage(e))
   }
 }
 
@@ -279,7 +279,7 @@ test "callback token is persisted only as its SHA-256 hash" {
   val storedHash = match CloudAgents.SessionStore.callbackTokenHashForSession(sid) {
     case Ok(Some(h)) -> h
     case Ok(None) -> panic("session vanished")
-    case Err(e) -> panic("callbackTokenHashForSession failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+    case Err(e) -> panic("callbackTokenHashForSession failed: " + CloudAgents.Db.dbErrorMessage(e))
   }
   assertEqual(storedHash, CloudAgents.Auth.hashCallbackToken(token), "the stored value is the token's hash")
   assertTrue(storedHash != token, "the raw token is not what is stored")
@@ -318,18 +318,18 @@ test "a session route with an empty stored hash fails closed" {
   // caller can present may hash to it.
   val u = match CloudAgents.PgStore.open(CloudAgents.Pg.personalScope(me)) {
     case Ok(x) -> x
-    case Err(e) -> panic("open failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+    case Err(e) -> panic("open failed: " + CloudAgents.Db.dbErrorMessage(e))
   }
   defer {
     CloudAgents.PgStore.release(u)
   }
   match CloudAgents.PgStore.ex(u, "UPDATE session_routes SET callback_token_hash = '' WHERE session_id = @p0", [sid]) {
     case Ok(n) -> assertEqualInt(n, 1, "the route's hash was blanked")
-    case Err(e) -> panic("blanking the hash failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+    case Err(e) -> panic("blanking the hash failed: " + CloudAgents.Db.dbErrorMessage(e))
   }
   match CloudAgents.PgStore.commit(u) {
     case Ok(_) -> ()
-    case Err(e) -> panic("commit failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+    case Err(e) -> panic("commit failed: " + CloudAgents.Db.dbErrorMessage(e))
   }
   match createPermissionRequestHandler(sid, bearer(token), CreatePermissionRequestRequest(toolName = "Bash", inputJson = "{}")) {
     case Ok(_) -> assertTrue(false, "a token must not authorize against an empty stored hash")
@@ -426,7 +426,7 @@ test "report_progress persists and validates percentComplete" {
       assertEqual(p.summary, "cloning repo", "summary persisted")
       assertEqual(p.percent, "10", "percent persisted")
     }
-    case Err(e) -> assertTrue(false, "sessionProgress lookup failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+    case Err(e) -> assertTrue(false, "sessionProgress lookup failed: " + CloudAgents.Db.dbErrorMessage(e))
   }
 
   // A later report replaces the prior one (latest-only, not a history log).
@@ -436,7 +436,7 @@ test "report_progress persists and validates percentComplete" {
   }
   match CloudAgents.Repository.sessionProgress(sid, CloudAgents.Auth.requestScope()) {
     case Ok(p) -> assertEqual(p.summary, "running tests", "latest report replaces the prior one")
-    case Err(e) -> assertTrue(false, "sessionProgress lookup failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+    case Err(e) -> assertTrue(false, "sessionProgress lookup failed: " + CloudAgents.Db.dbErrorMessage(e))
   }
 
   // Out-of-range percent is rejected before anything is written.
@@ -446,7 +446,7 @@ test "report_progress persists and validates percentComplete" {
   }
   match CloudAgents.Repository.sessionProgress(sid, CloudAgents.Auth.requestScope()) {
     case Ok(p) -> assertEqual(p.summary, "running tests", "rejected report leaves the prior state untouched")
-    case Err(e) -> assertTrue(false, "sessionProgress lookup failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+    case Err(e) -> assertTrue(false, "sessionProgress lookup failed: " + CloudAgents.Db.dbErrorMessage(e))
   }
 }
 

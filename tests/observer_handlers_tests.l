@@ -26,7 +26,7 @@ import CloudAgents.Pg
 import CloudAgents.Pg.Migrate
 import CloudAgents.PgStore.Tenancy
 import CloudAgents.Repository
-import CloudAgents.Sqlite
+import CloudAgents.Db
 import CloudAgents.SessionStore
 import CloudAgents.Capture
 import CloudAgents.Ledger.Model
@@ -92,7 +92,7 @@ func newUser(tag: in String): String {
   val uid = "t-" + tag + "-" + Std.Uuid.uuidToString(Std.Uuid.newUuid())
   match CloudAgents.PgStore.Tenancy.ensurePersonalTenant(uid) {
     case Ok(_) -> ()
-    case Err(e) -> panic("provisioning " + uid + " failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+    case Err(e) -> panic("provisioning " + uid + " failed: " + CloudAgents.Db.dbErrorMessage(e))
   }
   return uid
 }
@@ -110,7 +110,7 @@ func seedProfile(owner: in String): String {
   val sc = CloudAgents.Pg.personalScope(owner)
   match CloudAgents.Repository.addProfile(sc, "prof-" + Std.Uuid.uuidToString(Std.Uuid.newUuid()), "", "full", "all", [], [], [], [], "all", []) {
     case Ok(pr) -> return pr.id
-    case Err(e) -> panic("addProfile failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+    case Err(e) -> panic("addProfile failed: " + CloudAgents.Db.dbErrorMessage(e))
   }
 }
 
@@ -120,18 +120,18 @@ func setToken(sid: in String, userId: in String): Unit {
   val sc = CloudAgents.Pg.personalScope(userId)
   val u = match CloudAgents.PgStore.open(sc) {
     case Ok(x) -> x
-    case Err(e) -> panic(CloudAgents.Sqlite.dbErrorMessage(e))
+    case Err(e) -> panic(CloudAgents.Db.dbErrorMessage(e))
   }
   defer {
     CloudAgents.PgStore.release(u)
   }
   match CloudAgents.PgStore.ex(u, "UPDATE session_routes SET callback_token_hash = @p1 WHERE session_id = @p0 AND tenant_id = @p2", [sid, CloudAgents.Auth.hashCallbackToken("tok-" + sid), sc.tenantId]) {
     case Ok(n) -> assertEqualInt(n, 1, "token stored on the session's route")
-    case Err(e) -> panic(CloudAgents.Sqlite.dbErrorMessage(e))
+    case Err(e) -> panic(CloudAgents.Db.dbErrorMessage(e))
   }
   match CloudAgents.PgStore.commit(u) {
     case Ok(_) -> ()
-    case Err(e) -> panic(CloudAgents.Sqlite.dbErrorMessage(e))
+    case Err(e) -> panic(CloudAgents.Db.dbErrorMessage(e))
   }
 }
 
@@ -143,11 +143,11 @@ func seedSession(profileId: in String, status: in String): String {
   val sc = testScope()
   match CloudAgents.SessionStore.addSession(makeAgentSession(sessionId = id, repoUrl = "https://github.com/acme/shop", branch = "main", containerId = "", harness = "claude", model = "", nativeSessionId = id, status = status), sc) {
     case Ok(_) -> ()
-    case Err(e) -> panic("addSession failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+    case Err(e) -> panic("addSession failed: " + CloudAgents.Db.dbErrorMessage(e))
   }
   match CloudAgents.SessionStore.setSessionProfile(id, sc, profileId) {
     case Ok(_) -> ()
-    case Err(e) -> panic("setSessionProfile failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+    case Err(e) -> panic("setSessionProfile failed: " + CloudAgents.Db.dbErrorMessage(e))
   }
   setToken(id, sc.userId)
   return id
@@ -157,14 +157,14 @@ func seedSession(profileId: in String, status: in String): String {
 func retire(sid: in String): Unit {
   match CloudAgents.SessionStore.updateSessionArchived(sid, testScope(), "1") {
     case Ok(_) -> ()
-    case Err(e) -> println("WARNING: could not archive " + sid + ": " + CloudAgents.Sqlite.dbErrorMessage(e))
+    case Err(e) -> println("WARNING: could not archive " + sid + ": " + CloudAgents.Db.dbErrorMessage(e))
   }
 }
 
 func linkObserver(observerId: in String, observedId: in String, profileId: in String): Unit {
   match linkObserverSession(observerId, testScope(), observedId, profileId) {
     case Ok(_) -> ()
-    case Err(e) -> panic(CloudAgents.Sqlite.dbErrorMessage(e))
+    case Err(e) -> panic(CloudAgents.Db.dbErrorMessage(e))
   }
 }
 
@@ -182,7 +182,7 @@ func settings(enabled: in String, access: in String, cap: in String): ObserverSe
 func enable(profileId: in String, st: in ObserverSettings): Unit {
   match saveObserverSettings(profileId, testScope(), st) {
     case Ok(_) -> ()
-    case Err(e) -> panic(CloudAgents.Sqlite.dbErrorMessage(e))
+    case Err(e) -> panic(CloudAgents.Db.dbErrorMessage(e))
   }
 }
 
@@ -190,14 +190,14 @@ func captureFixture(sid: in String): Unit {
   val b = parseStreamJson(readFixture("tests/fixtures/observer/session.ndjson"), 0.toLong(), "")
   match CloudAgents.Repository.appendSessionEvents(sid, CloudAgents.Auth.requestScope(), b.events) {
     case Ok(_) -> ()
-    case Err(e) -> panic(CloudAgents.Sqlite.dbErrorMessage(e))
+    case Err(e) -> panic(CloudAgents.Db.dbErrorMessage(e))
   }
 }
 
 func stateOf(sid: in String): ObserverState {
   match observerState(sid, testScope()) {
     case Ok(s) -> return s
-    case Err(e) -> panic(CloudAgents.Sqlite.dbErrorMessage(e))
+    case Err(e) -> panic(CloudAgents.Db.dbErrorMessage(e))
   }
 }
 
@@ -213,7 +213,7 @@ func observedCount(sid: in String): Int {
         i = i + 1
       }
     }
-    case Err(e) -> panic(CloudAgents.Sqlite.dbErrorMessage(e))
+    case Err(e) -> panic(CloudAgents.Db.dbErrorMessage(e))
   }
   return n
 }
@@ -471,7 +471,7 @@ test "the observer sweep is operator-only and lists a pending pass until it is a
   }
   val listed = match pendingObserverSessions(100) {
     case Ok(ids) -> ids
-    case Err(e) -> panic(CloudAgents.Sqlite.dbErrorMessage(e))
+    case Err(e) -> panic(CloudAgents.Db.dbErrorMessage(e))
   }
   var seenLive = false
   var seenGone = false
@@ -530,7 +530,7 @@ test "a pass runs the observer, which reads the window and reports into the ledg
   }
   match CloudAgents.SessionStore.sessionSummariesJson(CloudAgents.Auth.requestScope()) {
     case Ok(json) -> assertTrue(not json.contains(st.observerSessionId), "observer sessions are not listed")
-    case Err(e) -> panic(CloudAgents.Sqlite.dbErrorMessage(e))
+    case Err(e) -> panic(CloudAgents.Db.dbErrorMessage(e))
   }
   // A second pass has nothing new to read, so no container starts.
   val _ = markObserverPending(s1, testScope())
@@ -570,7 +570,7 @@ test "a mid-run pass sees the run as live and its findings are provisional" {
       }
       assertEqualInt(provisional, 1, "the finding is provisional")
     }
-    case Err(e) -> panic(CloudAgents.Sqlite.dbErrorMessage(e))
+    case Err(e) -> panic(CloudAgents.Db.dbErrorMessage(e))
   }
 }
 
@@ -592,7 +592,7 @@ test "a window of nothing but reads is skipped without a container" {
   val b = parseStreamJson(head, 0.toLong(), "")
   match CloudAgents.Repository.appendSessionEvents(s1, CloudAgents.Auth.requestScope(), b.events) {
     case Ok(_) -> ()
-    case Err(e) -> panic(CloudAgents.Sqlite.dbErrorMessage(e))
+    case Err(e) -> panic(CloudAgents.Db.dbErrorMessage(e))
   }
   val _ = markObserverPending(s1, testScope())
   val runner = fakeRunner("{\"candidates\":[]}")
@@ -658,7 +658,7 @@ test "changing the observer's harness starts a fresh observer and keeps the curs
   val more = parseStreamJson(readFixture("tests/fixtures/observer/session.ndjson"), 29.toLong(), "")
   match CloudAgents.Repository.appendSessionEvents(s1, CloudAgents.Auth.requestScope(), more.events) {
     case Ok(_) -> ()
-    case Err(e) -> panic(CloudAgents.Sqlite.dbErrorMessage(e))
+    case Err(e) -> panic(CloudAgents.Db.dbErrorMessage(e))
   }
   val _ = markObserverPending(s1, testScope())
   val runner = fakeRunner("{\"candidates\":[]}")
@@ -692,7 +692,7 @@ test "observer callbacks need the observer's own token" {
   linkObserver(obs, s1, p1)
   match saveObserverState(testScope(), ObserverState(sessionId = s1, observerSessionId = obs, cursorSeq = "", windowEnd = "", pending = "0", passDay = "", passesToday = "0", lastPassAt = "", configHash = "", lastError = "")) {
     case Ok(_) -> ()
-    case Err(e) -> panic(CloudAgents.Sqlite.dbErrorMessage(e))
+    case Err(e) -> panic(CloudAgents.Db.dbErrorMessage(e))
   }
   val runner = fakeRunner("")
   match observerCallbackHandler(obs, "window", "Bearer tok-" + s1, "{}", runner) {
@@ -726,7 +726,7 @@ test "a session whose profile was deleted is no longer observed" {
   }
   match CloudAgents.Repository.deleteProfile(p1, testScope()) {
     case Ok(_) -> ()
-    case Err(e) -> panic(CloudAgents.Sqlite.dbErrorMessage(e))
+    case Err(e) -> panic(CloudAgents.Db.dbErrorMessage(e))
   }
   onRunFinished(s1)
   assertEqual(stateOf(s1).pending, "0", "no pass for a deleted profile")

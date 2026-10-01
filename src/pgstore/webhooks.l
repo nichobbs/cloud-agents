@@ -19,7 +19,7 @@ import Db
 import CloudAgents.Pg
 import CloudAgents.PgStore
 import CloudAgents.Repository
-import CloudAgents.Sqlite
+import CloudAgents.Db
 
 func toWebhook(r: in DbRow): CloudAgents.Repository.Webhook {
   return CloudAgents.Repository.Webhook(
@@ -38,7 +38,7 @@ func webhookCols(): String {
 /// same URL is returned as is.
 pub func addWebhook(
   sc: in CloudAgents.Pg.TenantScope, url: in String
-): Result[CloudAgents.Repository.Webhook, CloudAgents.Sqlite.DbError] {
+): Result[CloudAgents.Repository.Webhook, CloudAgents.Db.DbError] {
   val u = CloudAgents.PgStore.open(sc)?
   defer {
     CloudAgents.PgStore.release(u)
@@ -48,7 +48,7 @@ pub func addWebhook(
   if rows.length == 0 {
     // Inserted or already present in this unit, so a row must be visible;
     // an empty read is a store fault, reported rather than indexed past.
-    return Err(error = CloudAgents.Sqlite.ExecFailed(sql = "SELECT webhooks", message = "webhook missing after insert"))
+    return Err(error = CloudAgents.Db.ExecFailed(sql = "SELECT webhooks", message = "webhook missing after insert"))
   }
   CloudAgents.PgStore.commit(u)?
   return Ok(value = toWebhook(rows[0]))
@@ -57,7 +57,7 @@ pub func addWebhook(
 /// The caller's webhooks, newest first.
 pub func listWebhooks(
   sc: in CloudAgents.Pg.TenantScope
-): Result[slice[CloudAgents.Repository.Webhook], CloudAgents.Sqlite.DbError] {
+): Result[slice[CloudAgents.Repository.Webhook], CloudAgents.Db.DbError] {
   val u = CloudAgents.PgStore.open(sc)?
   defer {
     CloudAgents.PgStore.release(u)
@@ -72,7 +72,7 @@ pub func listWebhooks(
 }
 
 /// Delete one of the caller's webhooks; rows affected.
-pub func deleteWebhook(id: in String, sc: in CloudAgents.Pg.TenantScope): Result[Int, CloudAgents.Sqlite.DbError] {
+pub func deleteWebhook(id: in String, sc: in CloudAgents.Pg.TenantScope): Result[Int, CloudAgents.Db.DbError] {
   val u = CloudAgents.PgStore.open(sc)?
   defer {
     CloudAgents.PgStore.release(u)
@@ -83,7 +83,7 @@ pub func deleteWebhook(id: in String, sc: in CloudAgents.Pg.TenantScope): Result
 }
 
 /// Whether the caller has any webhook.
-pub func userHasWebhooks(sc: in CloudAgents.Pg.TenantScope): Result[Bool, CloudAgents.Sqlite.DbError] {
+pub func userHasWebhooks(sc: in CloudAgents.Pg.TenantScope): Result[Bool, CloudAgents.Db.DbError] {
   val u = CloudAgents.PgStore.open(sc)?
   defer {
     CloudAgents.PgStore.release(u)
@@ -100,7 +100,7 @@ pub func enqueueWebhookEvent(
   sessionId: in String,
   runId: in String,
   status: in String,
-): Result[Unit, CloudAgents.Sqlite.DbError] {
+): Result[Unit, CloudAgents.Db.DbError] {
   val u = CloudAgents.PgStore.open(sc)?
   defer {
     CloudAgents.PgStore.release(u)
@@ -113,7 +113,7 @@ pub func enqueueWebhookEvent(
 /// The caller's undelivered events, oldest first.
 pub func listPendingWebhookEvents(
   sc: in CloudAgents.Pg.TenantScope
-): Result[slice[CloudAgents.Repository.WebhookEvent], CloudAgents.Sqlite.DbError] {
+): Result[slice[CloudAgents.Repository.WebhookEvent], CloudAgents.Db.DbError] {
   val u = CloudAgents.PgStore.open(sc)?
   defer {
     CloudAgents.PgStore.release(u)
@@ -139,7 +139,7 @@ pub func listPendingWebhookEvents(
 /// Mark one of the caller's events delivered; rows affected.
 pub func markWebhookEventDelivered(
   id: in String, sc: in CloudAgents.Pg.TenantScope
-): Result[Int, CloudAgents.Sqlite.DbError] {
+): Result[Int, CloudAgents.Db.DbError] {
   val u = CloudAgents.PgStore.open(sc)?
   defer {
     CloudAgents.PgStore.release(u)

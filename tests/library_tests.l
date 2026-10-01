@@ -15,7 +15,7 @@ import CloudAgents.Pg.Migrate
 import CloudAgents.PgStore
 import CloudAgents.PgStore.Tenancy
 import CloudAgents.Repository
-import CloudAgents.Sqlite
+import CloudAgents.Db
 
 test "handler validation rejects bad names, enums, and content" {
   assertTrue(isValidLibraryName("my-skill_1"), "valid slug accepted")
@@ -70,7 +70,7 @@ func newUser(tag: in String): String {
   val uid = "t-" + tag + "-" + Std.Uuid.uuidToString(Std.Uuid.newUuid())
   match CloudAgents.PgStore.Tenancy.ensurePersonalTenant(uid) {
     case Ok(_) -> ()
-    case Err(e) -> panic("provisioning " + uid + " failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+    case Err(e) -> panic("provisioning " + uid + " failed: " + CloudAgents.Db.dbErrorMessage(e))
   }
   return uid
 }
@@ -84,19 +84,19 @@ func freshUser(tag: in String): String {
   return uid
 }
 
-func mustSkill(r: in Result[Skill, CloudAgents.Sqlite.DbError]): Skill {
-  return match r { case Ok(s) -> s; case Err(e) -> panic("skill op failed: " + CloudAgents.Sqlite.dbErrorMessage(e)) }
+func mustSkill(r: in Result[Skill, CloudAgents.Db.DbError]): Skill {
+  return match r { case Ok(s) -> s; case Err(e) -> panic("skill op failed: " + CloudAgents.Db.dbErrorMessage(e)) }
 }
 
-func mustMcpServer(r: in Result[McpServer, CloudAgents.Sqlite.DbError]): McpServer {
+func mustMcpServer(r: in Result[McpServer, CloudAgents.Db.DbError]): McpServer {
   return match r {
     case Ok(m) -> m
-    case Err(e) -> panic("mcp server op failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+    case Err(e) -> panic("mcp server op failed: " + CloudAgents.Db.dbErrorMessage(e))
   }
 }
 
-func mustProfile(r: in Result[Profile, CloudAgents.Sqlite.DbError]): Profile {
-  return match r { case Ok(p) -> p; case Err(e) -> panic("profile op failed: " + CloudAgents.Sqlite.dbErrorMessage(e)) }
+func mustProfile(r: in Result[Profile, CloudAgents.Db.DbError]): Profile {
+  return match r { case Ok(p) -> p; case Err(e) -> panic("profile op failed: " + CloudAgents.Db.dbErrorMessage(e)) }
 }
 
 test "Skill handlers validate names and reject duplicates" {
@@ -208,7 +208,7 @@ test "MCP server 'enabled' flag: rejected if not '0'/'1', persisted through add/
   val profile = mustProfile(addProfile(CloudAgents.Pg.personalScope(userId), "p", "claude", "none", "all", noArgs, noArgs, noArgs, [created.id], "all", noArgs))
   match mcpServersForProfile(CloudAgents.Pg.personalScope(userId), profile.id) {
     case Ok(granted) -> assertEqualInt(granted.length.toInt(), 0, "a disabled server is withheld from container injection even when granted")
-    case Err(e) -> assertTrue(false, "mcpServersForProfile failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+    case Err(e) -> assertTrue(false, "mcpServersForProfile failed: " + CloudAgents.Db.dbErrorMessage(e))
   }
 
   match updateMcpServerHandler(created.id, SaveMcpServerRequest(name = "gh", transport = "stdio", command = "npx", args = noArgs, url = "", env = noArgs, enabled = "1")) {
@@ -217,7 +217,7 @@ test "MCP server 'enabled' flag: rejected if not '0'/'1', persisted through add/
   }
   match mcpServersForProfile(CloudAgents.Pg.personalScope(userId), profile.id) {
     case Ok(granted) -> assertEqualInt(granted.length.toInt(), 1, "now-enabled server is injected once flipped on")
-    case Err(e) -> assertTrue(false, "mcpServersForProfile failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+    case Err(e) -> assertTrue(false, "mcpServersForProfile failed: " + CloudAgents.Db.dbErrorMessage(e))
   }
 }
 
@@ -379,7 +379,7 @@ test "Skill CRUD round-trips" {
   match getSkill(created.id, CloudAgents.Pg.personalScope(userId)) {
     case Ok(Some(s)) -> assertEqual(s.description, "says hi warmly", "description updated")
     case Ok(None) -> assertTrue(false, "updated skill should exist")
-    case Err(e) -> assertTrue(false, "getSkill failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+    case Err(e) -> assertTrue(false, "getSkill failed: " + CloudAgents.Db.dbErrorMessage(e))
   }
 
   val deleted = mustRows(deleteSkill(created.id, CloudAgents.Pg.personalScope(userId)))
@@ -387,15 +387,15 @@ test "Skill CRUD round-trips" {
   assertEqualInt(mustSkills(listSkills(CloudAgents.Pg.personalScope(userId))).length.toInt(), 0, "empty after delete")
 }
 
-func mustSkills(r: in Result[slice[Skill], CloudAgents.Sqlite.DbError]): slice[Skill] {
+func mustSkills(r: in Result[slice[Skill], CloudAgents.Db.DbError]): slice[Skill] {
   return match r {
     case Ok(ss) -> ss
-    case Err(e) -> panic("skill list failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+    case Err(e) -> panic("skill list failed: " + CloudAgents.Db.dbErrorMessage(e))
   }
 }
 
-func mustRows(r: in Result[Int, CloudAgents.Sqlite.DbError]): Int {
-  return match r { case Ok(n) -> n; case Err(e) -> panic("write failed: " + CloudAgents.Sqlite.dbErrorMessage(e)) }
+func mustRows(r: in Result[Int, CloudAgents.Db.DbError]): Int {
+  return match r { case Ok(n) -> n; case Err(e) -> panic("write failed: " + CloudAgents.Db.dbErrorMessage(e)) }
 }
 
 test "MCP server CRUD round-trips its ordered args and env" {
@@ -418,7 +418,7 @@ test "MCP server CRUD round-trips its ordered args and env" {
       assertEqual(m.env[0], "DEBUG=1", "env survives round-trip")
     }
     case Ok(None) -> assertTrue(false, "created server should exist")
-    case Err(e) -> assertTrue(false, "getMcpServer failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+    case Err(e) -> assertTrue(false, "getMcpServer failed: " + CloudAgents.Db.dbErrorMessage(e))
   }
 
   // Update replaces the args wholesale (shorter list) — old rows must not linger.
@@ -431,7 +431,7 @@ test "MCP server CRUD round-trips its ordered args and env" {
       assertEqualInt(m.env.length.toInt(), 0, "env cleared on update")
     }
     case Ok(None) -> assertTrue(false, "updated server should exist")
-    case Err(e) -> assertTrue(false, "getMcpServer failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+    case Err(e) -> assertTrue(false, "getMcpServer failed: " + CloudAgents.Db.dbErrorMessage(e))
   }
 }
 
@@ -456,7 +456,7 @@ test "MCP server CRUD round-trips its ordered headers, independently of args/env
   match getMcpServer(created.id, CloudAgents.Pg.personalScope(userId)) {
     case Ok(Some(m)) -> assertEqualInt(m.headers.length.toInt(), 2, "headers survive round-trip")
     case Ok(None) -> assertTrue(false, "created server should exist")
-    case Err(e) -> assertTrue(false, "getMcpServer failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+    case Err(e) -> assertTrue(false, "getMcpServer failed: " + CloudAgents.Db.dbErrorMessage(e))
   }
 
   // Update replaces headers wholesale, same clear-then-reinsert shape as args/env.
@@ -469,7 +469,7 @@ test "MCP server CRUD round-trips its ordered headers, independently of args/env
       assertEqual(m.headers[0], "Authorization=Bearer new-token", "new header value stored")
     }
     case Ok(None) -> assertTrue(false, "updated server should exist")
-    case Err(e) -> assertTrue(false, "getMcpServer failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+    case Err(e) -> assertTrue(false, "getMcpServer failed: " + CloudAgents.Db.dbErrorMessage(e))
   }
 
   // Deleting the server must not leave orphaned mcp_server_headers rows (#1039):
@@ -478,14 +478,14 @@ test "MCP server CRUD round-trips its ordered headers, independently of args/env
   assertEqualInt(deleted, 1, "delete touches one row")
   val u = match CloudAgents.PgStore.open(CloudAgents.Pg.personalScope(userId)) {
     case Ok(x) -> x
-    case Err(e) -> panic("open failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+    case Err(e) -> panic("open failed: " + CloudAgents.Db.dbErrorMessage(e))
   }
   defer {
     CloudAgents.PgStore.release(u)
   }
   match CloudAgents.PgStore.q(u, "SELECT id FROM mcp_server_headers WHERE mcp_server_id = @p0", [created.id]) {
     case Ok(rows) -> assertEqualInt(rows.length.toInt(), 0, "no orphaned mcp_server_headers rows after delete")
-    case Err(e) -> assertTrue(false, "header query failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+    case Err(e) -> assertTrue(false, "header query failed: " + CloudAgents.Db.dbErrorMessage(e))
   }
   val deletedAgain = mustRows(deleteMcpServer(created.id, CloudAgents.Pg.personalScope(userId)))
   assertEqualInt(deletedAgain, 0, "second delete finds nothing")
@@ -504,7 +504,7 @@ test "Library ownership scoping hides other users' items" {
   match getSkill(theirs.id, CloudAgents.Pg.personalScope(me)) {
     case Ok(Some(_)) -> assertTrue(false, "cannot read another user's skill")
     case Ok(None) -> ()
-    case Err(e) -> assertTrue(false, "getSkill failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+    case Err(e) -> assertTrue(false, "getSkill failed: " + CloudAgents.Db.dbErrorMessage(e))
   }
   assertEqualInt(mustRows(deleteSkill(theirs.id, CloudAgents.Pg.personalScope(me))), 0, "cannot delete another user's skill")
   // Silences unused-binding warnings on `mine` if the toolchain has one — also
@@ -545,23 +545,23 @@ test "Profile grants resolve skills, subagents, and MCP servers, skipping dangli
       assertEqualInt(resolvedSkills.length.toInt(), 1, "one skill resolves")
       assertEqual(resolvedSkills[0].name, "greet", "resolved skill matches the grant")
     }
-    case Err(e) -> assertTrue(false, "skillsForProfile failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+    case Err(e) -> assertTrue(false, "skillsForProfile failed: " + CloudAgents.Db.dbErrorMessage(e))
   }
 
   match mcpServersForProfile(CloudAgents.Pg.personalScope(userId), profile.id) {
     case Ok(servers) -> assertEqualInt(servers.length.toInt(), 1, "dangling mcp server id is silently skipped")
-    case Err(e) -> assertTrue(false, "mcpServersForProfile failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+    case Err(e) -> assertTrue(false, "mcpServersForProfile failed: " + CloudAgents.Db.dbErrorMessage(e))
   }
 
   match subagentsForProfile(CloudAgents.Pg.personalScope(userId), profile.id) {
     case Ok(subagents) -> assertEqualInt(subagents.length.toInt(), 0, "no subagents granted")
-    case Err(e) -> assertTrue(false, "subagentsForProfile failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+    case Err(e) -> assertTrue(false, "subagentsForProfile failed: " + CloudAgents.Db.dbErrorMessage(e))
   }
 
   // A sessionless/profileless run gets no library grants (unlike credentials,
   // there is no "fall open to everything" default).
   match skillsForProfile(CloudAgents.Pg.personalScope(userId), "") {
     case Ok(skills) -> assertEqualInt(skills.length.toInt(), 0, "empty profile id -> no skill grants")
-    case Err(e) -> assertTrue(false, "skillsForProfile failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+    case Err(e) -> assertTrue(false, "skillsForProfile failed: " + CloudAgents.Db.dbErrorMessage(e))
   }
 }

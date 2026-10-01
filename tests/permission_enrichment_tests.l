@@ -23,7 +23,7 @@ import CloudAgents.PgStore.Tenancy
 import CloudAgents.Scope
 import CloudAgents.PermissionEnrichment
 import CloudAgents.Repository
-import CloudAgents.Sqlite
+import CloudAgents.Db
 import Testamur.CheckpointFormat.Model
 
 // ── Small helpers ────────────────────────────────────────────────────────────
@@ -161,7 +161,7 @@ func newUser(tag: in String): String {
   val uid = "t-" + tag + "-" + Std.Uuid.uuidToString(Std.Uuid.newUuid())
   match CloudAgents.PgStore.Tenancy.ensurePersonalTenant(uid) {
     case Ok(_) -> ()
-    case Err(e) -> panic("provisioning " + uid + " failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+    case Err(e) -> panic("provisioning " + uid + " failed: " + CloudAgents.Db.dbErrorMessage(e))
   }
   return uid
 }
@@ -178,35 +178,35 @@ func freshUser(tag: in String): String {
 func mustCreatePerm(sessionId: in String, tool: in String): String {
   return match CloudAgents.Repository.createPermissionRequest(sessionId, CloudAgents.Auth.requestScope(), tool, "{}", false) {
     case Ok(r) -> r.id
-    case Err(e) -> panic("createPermissionRequest failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+    case Err(e) -> panic("createPermissionRequest failed: " + CloudAgents.Db.dbErrorMessage(e))
   }
 }
 
 func mustAnswerPerm(id: in String, status: in String): Unit {
   match CloudAgents.Repository.answerPermissionRequest(id, CloudAgents.Auth.requestScope(), status, "", "") {
     case Ok(_) -> ()
-    case Err(e) -> panic("answerPermissionRequest failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+    case Err(e) -> panic("answerPermissionRequest failed: " + CloudAgents.Db.dbErrorMessage(e))
   }
 }
 
 func mustCreateSecret(sessionId: in String, name: in String): String {
   return match CloudAgents.Repository.createSecretRequest(sessionId, CloudAgents.Auth.requestScope(), name, "why") {
     case Ok(r) -> r.id
-    case Err(e) -> panic("createSecretRequest failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+    case Err(e) -> panic("createSecretRequest failed: " + CloudAgents.Db.dbErrorMessage(e))
   }
 }
 
 func mustAnswerSecret(id: in String, status: in String): Unit {
   match CloudAgents.Repository.answerSecretRequest(id, CloudAgents.Auth.requestScope(), status) {
     case Ok(_) -> ()
-    case Err(e) -> panic("answerSecretRequest failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+    case Err(e) -> panic("answerSecretRequest failed: " + CloudAgents.Db.dbErrorMessage(e))
   }
 }
 
 func mustDerive(sessionId: in String): List[ToolPermission] {
   return match CloudAgents.PermissionEnrichment.permissionsForSession(sessionId, CloudAgents.Auth.requestScope()) {
     case Ok(perms) -> perms
-    case Err(e) -> panic("permissionsForSession failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+    case Err(e) -> panic("permissionsForSession failed: " + CloudAgents.Db.dbErrorMessage(e))
   }
 }
 

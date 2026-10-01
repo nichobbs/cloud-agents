@@ -13,7 +13,7 @@ import CloudAgents.Pg
 import CloudAgents.Pg.Migrate
 import CloudAgents.PgStore.Tenancy
 import CloudAgents.Repository
-import CloudAgents.Sqlite
+import CloudAgents.Db
 import extern System.Environment as Env
 
 // ── Live Postgres ─────────────────────────────────────────────────────────────
@@ -58,7 +58,7 @@ func newUser(tag: in String): String {
   val uid = "t-" + tag + "-" + Std.Uuid.uuidToString(Std.Uuid.newUuid())
   match CloudAgents.PgStore.Tenancy.ensurePersonalTenant(uid) {
     case Ok(_) -> ()
-    case Err(e) -> panic("provisioning " + uid + " failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+    case Err(e) -> panic("provisioning " + uid + " failed: " + CloudAgents.Db.dbErrorMessage(e))
   }
   return uid
 }
@@ -115,7 +115,7 @@ test "seedDefaultMcpServersIfEmpty populates an empty library from the real seed
   val seeded = match CloudAgents.Repository.listMcpServers(CloudAgents.Pg.personalScope(userId)) {
     case Ok(s) -> s
     case Err(e) -> {
-      assertTrue(false, "listMcpServers failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+      assertTrue(false, "listMcpServers failed: " + CloudAgents.Db.dbErrorMessage(e))
       []
     }
   }
@@ -137,7 +137,7 @@ test "seedDefaultMcpServersIfEmpty populates an empty library from the real seed
   while i < seeded.length.toInt() {
     match CloudAgents.Repository.deleteMcpServer(seeded[i].id, CloudAgents.Pg.personalScope(userId)) {
       case Ok(_) -> ()
-      case Err(e) -> assertTrue(false, "deleteMcpServer failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+      case Err(e) -> assertTrue(false, "deleteMcpServer failed: " + CloudAgents.Db.dbErrorMessage(e))
     }
     i = i + 1
   }
@@ -159,7 +159,7 @@ test "seedDefaultMcpServersIfEmpty never touches a library the user has already 
   val noArgs: slice[String] = []
   match CloudAgents.Repository.addMcpServer(CloudAgents.Pg.personalScope(userId), "my-own-server", "stdio", "npx", ["-y", "my-mcp"], "", noArgs) {
     case Ok(_) -> ()
-    case Err(e) -> assertTrue(false, "addMcpServer failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+    case Err(e) -> assertTrue(false, "addMcpServer failed: " + CloudAgents.Db.dbErrorMessage(e))
   }
 
   seedDefaultMcpServersIfEmpty(userId)
@@ -262,7 +262,7 @@ test "a disabled seeded MCP server granted to a profile is excluded from contain
   val profile = match CloudAgents.Repository.addProfile(CloudAgents.Pg.personalScope(userId), "p", "claude", "none", "all", [], [], [], ids, "all", []) {
     case Ok(p) -> p
     case Err(e) -> {
-      assertTrue(false, "addProfile failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+      assertTrue(false, "addProfile failed: " + CloudAgents.Db.dbErrorMessage(e))
       CloudAgents.Repository.Profile(
         id = "", userId = "", name = "", harness = "", networkPolicy = "", credentialMode = "", credentials = [],
         skillIds = [], subagentIds = [], mcpServerIds = [], toolMode = "", tools = [], createdAt = "", updatedAt = ""
@@ -273,7 +273,7 @@ test "a disabled seeded MCP server granted to a profile is excluded from contain
   val granted = match CloudAgents.Repository.mcpServersForProfile(CloudAgents.Pg.personalScope(userId), profile.id) {
     case Ok(s) -> s
     case Err(e) -> {
-      assertTrue(false, "mcpServersForProfile failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+      assertTrue(false, "mcpServersForProfile failed: " + CloudAgents.Db.dbErrorMessage(e))
       []
     }
   }

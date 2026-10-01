@@ -17,7 +17,7 @@ import CloudAgents.Proxy
 import CloudAgents.Repository
 import CloudAgents.Ledger.Service
 import CloudAgents.SessionStore
-import CloudAgents.Sqlite
+import CloudAgents.Db
 import CloudAgents.Streaming
 import CloudAgents.Capture.Render
 import CloudAgents.Text
@@ -589,7 +589,7 @@ pub func createSession(req: in CreateSessionRequest): Result[CreateSessionRespon
 
   match addSession(session, CloudAgents.Auth.requestScope()) {
     case Ok(_) -> return Ok(CreateSessionResponse(sessionId = sessionId))
-    case Err(e) -> return Err(Web.internalError("failed to persist session: " + CloudAgents.Sqlite.dbErrorMessage(e)))
+    case Err(e) -> return Err(Web.internalError("failed to persist session: " + CloudAgents.Db.dbErrorMessage(e)))
   }
 }
 
@@ -609,7 +609,7 @@ pub func branchSession(
   match CloudAgents.Repository.branchSession(parentSessionId, req.messageId, newSessionId, CloudAgents.Pg.personalScope(userId), req.branch) {
     case Ok(_) -> return Ok(CreateSessionResponse(sessionId = newSessionId))
     case Err(e) -> {
-      val msg = CloudAgents.Sqlite.dbErrorMessage(e)
+      val msg = CloudAgents.Db.dbErrorMessage(e)
       if msg == "parent session not found or not owned by user" {
         return Err(Web.notFound("Session not found"))
       }
@@ -635,19 +635,19 @@ pub func setSessionProfileHandler(id: in String, req: in SetProfileRequest): Res
   match getSession(id, CloudAgents.Auth.requestScope()) {
     case Ok(Some(_)) -> ()
     case Ok(None) -> return Err(Web.notFound("Session not found"))
-    case Err(e) -> return Err(Web.internalError("session lookup failed: " + CloudAgents.Sqlite.dbErrorMessage(e)))
+    case Err(e) -> return Err(Web.internalError("session lookup failed: " + CloudAgents.Db.dbErrorMessage(e)))
   }
   // A non-empty profile must exist and be owned by the caller.
   if req.profileId.length > 0 {
     match CloudAgents.Repository.getProfile(req.profileId, CloudAgents.Pg.personalScope(userId)) {
       case Ok(Some(_)) -> ()
       case Ok(None) -> return Err(Web.badRequest("profileId does not reference a known profile"))
-      case Err(e) -> return Err(Web.internalError("profile lookup failed: " + CloudAgents.Sqlite.dbErrorMessage(e)))
+      case Err(e) -> return Err(Web.internalError("profile lookup failed: " + CloudAgents.Db.dbErrorMessage(e)))
     }
   }
   match CloudAgents.SessionStore.setSessionProfile(id, CloudAgents.Auth.requestScope(), req.profileId) {
     case Ok(_) -> return Ok(())
-    case Err(e) -> return Err(Web.internalError("failed to attach profile: " + CloudAgents.Sqlite.dbErrorMessage(e)))
+    case Err(e) -> return Err(Web.internalError("failed to attach profile: " + CloudAgents.Db.dbErrorMessage(e)))
   }
 }
 
@@ -661,7 +661,7 @@ pub func getSessionProfileHandler(id: in String): Result[SessionProfileRef, Web.
   match CloudAgents.SessionStore.sessionProfileId(id, CloudAgents.Auth.requestScope()) {
     case Ok(Some(pid)) -> return Ok(SessionProfileRef(profileId = pid))
     case Ok(None) -> return Err(Web.notFound("Session not found"))
-    case Err(e) -> return Err(Web.internalError("session profile lookup failed: " + CloudAgents.Sqlite.dbErrorMessage(e)))
+    case Err(e) -> return Err(Web.internalError("session profile lookup failed: " + CloudAgents.Db.dbErrorMessage(e)))
   }
 }
 
@@ -674,7 +674,7 @@ pub func getSessionProfileHandler(id: in String): Result[SessionProfileRef, Web.
 pub func listSessions(): Result[String, Web.ApiError] {
   match CloudAgents.SessionStore.sessionSummariesJson(CloudAgents.Auth.requestScope()) {
     case Ok(json) -> return Ok(value = json)
-    case Err(e) -> return Err(Web.internalError("failed to list sessions: " + CloudAgents.Sqlite.dbErrorMessage(e)))
+    case Err(e) -> return Err(Web.internalError("failed to list sessions: " + CloudAgents.Db.dbErrorMessage(e)))
   }
 }
 
@@ -694,11 +694,11 @@ pub func listSessionReposHandler(id: in String): Result[SessionRepoList, Web.Api
   match getSession(id, CloudAgents.Auth.requestScope()) {
     case Ok(Some(_)) -> ()
     case Ok(None) -> return Err(Web.notFound("Session not found"))
-    case Err(e) -> return Err(Web.internalError("session lookup failed: " + CloudAgents.Sqlite.dbErrorMessage(e)))
+    case Err(e) -> return Err(Web.internalError("session lookup failed: " + CloudAgents.Db.dbErrorMessage(e)))
   }
   match CloudAgents.Repository.listSessionRepos(id, CloudAgents.Auth.requestScope()) {
     case Ok(repos) -> return Ok(SessionRepoList(repos = repos))
-    case Err(e) -> return Err(Web.internalError("failed to list linked repositories: " + CloudAgents.Sqlite.dbErrorMessage(e)))
+    case Err(e) -> return Err(Web.internalError("failed to list linked repositories: " + CloudAgents.Db.dbErrorMessage(e)))
   }
 }
 
@@ -744,23 +744,23 @@ pub func addSessionRepoHandler(id: in String, req: in AddRepoRequest): Result[Se
   match getSession(id, CloudAgents.Auth.requestScope()) {
     case Ok(Some(_)) -> ()
     case Ok(None) -> return Err(Web.notFound("Session not found"))
-    case Err(e) -> return Err(Web.internalError("session lookup failed: " + CloudAgents.Sqlite.dbErrorMessage(e)))
+    case Err(e) -> return Err(Web.internalError("session lookup failed: " + CloudAgents.Db.dbErrorMessage(e)))
   }
   // Cap the number of linked repos (keeps the EXTRA_REPOS env bounded).
   match CloudAgents.Repository.countSessionRepos(id, CloudAgents.Auth.requestScope()) {
     case Ok(n) -> if n >= maxSessionRepos {
       return Err(Web.badRequest("too many linked repositories (max " + toString(maxSessionRepos) + ")"))
     }
-    case Err(e) -> return Err(Web.internalError("failed to count linked repositories: " + CloudAgents.Sqlite.dbErrorMessage(e)))
+    case Err(e) -> return Err(Web.internalError("failed to count linked repositories: " + CloudAgents.Db.dbErrorMessage(e)))
   }
   // Refuse a duplicate URL so a repo is never cloned twice into the workspace.
   match CloudAgents.Repository.sessionRepoUrlExists(id, CloudAgents.Auth.requestScope(), req.repoUrl) {
     case Ok(exists) -> if exists { return Err(Web.badRequest("repository already linked to this session")) }
-    case Err(e) -> return Err(Web.internalError("failed to check linked repositories: " + CloudAgents.Sqlite.dbErrorMessage(e)))
+    case Err(e) -> return Err(Web.internalError("failed to check linked repositories: " + CloudAgents.Db.dbErrorMessage(e)))
   }
   match CloudAgents.Repository.addSessionRepo(id, CloudAgents.Auth.requestScope(), req.repoUrl, req.branch) {
     case Ok(repo) -> return Ok(repo)
-    case Err(e) -> return Err(Web.internalError("failed to link repository: " + CloudAgents.Sqlite.dbErrorMessage(e)))
+    case Err(e) -> return Err(Web.internalError("failed to link repository: " + CloudAgents.Db.dbErrorMessage(e)))
   }
 }
 
@@ -776,7 +776,7 @@ pub func deleteSessionRepoHandler(id: in String, repoId: in String): Result[Unit
   match getSession(id, CloudAgents.Auth.requestScope()) {
     case Ok(Some(_)) -> ()
     case Ok(None) -> return Err(Web.notFound("Session not found"))
-    case Err(e) -> return Err(Web.internalError("session lookup failed: " + CloudAgents.Sqlite.dbErrorMessage(e)))
+    case Err(e) -> return Err(Web.internalError("session lookup failed: " + CloudAgents.Db.dbErrorMessage(e)))
   }
   match CloudAgents.Repository.deleteSessionRepo(id, CloudAgents.Auth.requestScope(), repoId) {
     case Ok(n) -> {
@@ -785,7 +785,7 @@ pub func deleteSessionRepoHandler(id: in String, repoId: in String): Result[Unit
       }
       return Err(Web.notFound("Linked repository not found"))
     }
-    case Err(e) -> return Err(Web.internalError("failed to unlink repository: " + CloudAgents.Sqlite.dbErrorMessage(e)))
+    case Err(e) -> return Err(Web.internalError("failed to unlink repository: " + CloudAgents.Db.dbErrorMessage(e)))
   }
 }
 
@@ -1052,7 +1052,7 @@ pub func storeAttachments(
         return Err(
           error = StoreAttachmentsError(
             code = 500,
-            message = "failed to record attachment: " + CloudAgents.Sqlite.dbErrorMessage(e)
+            message = "failed to record attachment: " + CloudAgents.Db.dbErrorMessage(e)
           )
         )
       }
@@ -1152,7 +1152,7 @@ pub func listAttachmentsHandler(id: in String): Result[AttachmentListResponse, W
   match getSession(id, CloudAgents.Auth.requestScope()) {
     case Ok(Some(_)) -> ()
     case Ok(None) -> return Err(Web.notFound("Session not found"))
-    case Err(e) -> return Err(Web.internalError("session lookup failed: " + CloudAgents.Sqlite.dbErrorMessage(e)))
+    case Err(e) -> return Err(Web.internalError("session lookup failed: " + CloudAgents.Db.dbErrorMessage(e)))
   }
   match CloudAgents.Repository.listAttachments(id, CloudAgents.Auth.requestScope()) {
     case Ok(atts) -> {
@@ -1164,7 +1164,7 @@ pub func listAttachmentsHandler(id: in String): Result[AttachmentListResponse, W
       }
       return Ok(value = AttachmentListResponse(attachments = acc))
     }
-    case Err(e) -> return Err(Web.internalError("failed to list attachments: " + CloudAgents.Sqlite.dbErrorMessage(e)))
+    case Err(e) -> return Err(Web.internalError("failed to list attachments: " + CloudAgents.Db.dbErrorMessage(e)))
   }
 }
 
@@ -1183,12 +1183,12 @@ pub func downloadAttachmentHandler(id: in String, aid: in String): Result[Web.Re
   match getSession(id, CloudAgents.Auth.requestScope()) {
     case Ok(Some(_)) -> ()
     case Ok(None) -> return Err(Web.notFound("Session not found"))
-    case Err(e) -> return Err(Web.internalError("session lookup failed: " + CloudAgents.Sqlite.dbErrorMessage(e)))
+    case Err(e) -> return Err(Web.internalError("session lookup failed: " + CloudAgents.Db.dbErrorMessage(e)))
   }
   val a = match CloudAgents.Repository.getAttachment(aid, CloudAgents.Auth.requestScope()) {
     case Ok(Some(att)) -> att
     case Ok(None) -> return Err(Web.notFound("Attachment not found"))
-    case Err(e) -> return Err(Web.internalError("attachment lookup failed: " + CloudAgents.Sqlite.dbErrorMessage(e)))
+    case Err(e) -> return Err(Web.internalError("attachment lookup failed: " + CloudAgents.Db.dbErrorMessage(e)))
   }
   if a.sessionId != id {
     return Err(Web.notFound("Attachment not found"))
@@ -1259,7 +1259,7 @@ pub func streamSendMessage(
   val maybeSession = match getSession(id, CloudAgents.Auth.requestScope()) {
     case Ok(m) -> m
     case Err(e) -> {
-      writeStreamError(w, 500, "session lookup failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+      writeStreamError(w, 500, "session lookup failed: " + CloudAgents.Db.dbErrorMessage(e))
       return ()
     }
   }
@@ -1283,7 +1283,7 @@ pub func streamSendMessage(
       val began = match CloudAgents.SessionStore.tryBeginRun(id, CloudAgents.Auth.requestScope()) {
         case Ok(b) -> b
         case Err(e) -> {
-          writeStreamError(w, 500, "failed to claim session for run: " + CloudAgents.Sqlite.dbErrorMessage(e))
+          writeStreamError(w, 500, "failed to claim session for run: " + CloudAgents.Db.dbErrorMessage(e))
           return ()
         }
       }
@@ -1301,7 +1301,7 @@ pub func streamSendMessage(
           case Ok(_) -> ()
           case Err(e) -> println(
             "WARNING: failed to release run claim for session " + id + " (stays RUNNING until recovery): " +
-              CloudAgents.Sqlite.dbErrorMessage(e)
+              CloudAgents.Db.dbErrorMessage(e)
           )
         }
       }
@@ -1347,7 +1347,7 @@ pub func streamSendMessage(
         case Ok(Some(pid)) -> pid
         case Ok(None) -> ""
         case Err(e) -> {
-          writeStreamError(w, 500, "failed to resolve session profile: " + CloudAgents.Sqlite.dbErrorMessage(e))
+          writeStreamError(w, 500, "failed to resolve session profile: " + CloudAgents.Db.dbErrorMessage(e))
           return ()
         }
       }
@@ -1426,14 +1426,14 @@ pub func streamSendMessage(
                   case Ok(_) -> ()
                   case Err(e) -> println(
                     "WARNING: agent-plan ingestion failed for session " + id + ": " +
-                      CloudAgents.Sqlite.dbErrorMessage(e)
+                      CloudAgents.Db.dbErrorMessage(e)
                   )
                 }
               }
               val _ = Web.writeChunk(w, CloudAgents.Streaming.sseDoneWithMessage(m.id))
             }
             case Err(e) -> {
-              println("WARNING: failed to persist agent message for session " + id + ": " + CloudAgents.Sqlite.dbErrorMessage(e))
+              println("WARNING: failed to persist agent message for session " + id + ": " + CloudAgents.Db.dbErrorMessage(e))
               val _ = Web.writeChunk(w, CloudAgents.Streaming.sseDone())
             }
           }
@@ -1473,14 +1473,14 @@ pub func cancelRun(id: in String): Result[Unit, Web.ApiError] {
   val userId = CloudAgents.Auth.currentUserId()
   val maybeSession = match getSession(id, CloudAgents.Auth.requestScope()) {
     case Ok(m) -> m
-    case Err(e) -> return Err(Web.internalError("session lookup failed: " + CloudAgents.Sqlite.dbErrorMessage(e)))
+    case Err(e) -> return Err(Web.internalError("session lookup failed: " + CloudAgents.Db.dbErrorMessage(e)))
   }
   match maybeSession {
     case None -> return Err(Web.notFound("Session not found"))
     case Some(session) -> {
       val status = match CloudAgents.SessionStore.sessionStatus(id, CloudAgents.Auth.requestScope()) {
         case Ok(s) -> s
-        case Err(e) -> return Err(Web.internalError("status lookup failed: " + CloudAgents.Sqlite.dbErrorMessage(e)))
+        case Err(e) -> return Err(Web.internalError("status lookup failed: " + CloudAgents.Db.dbErrorMessage(e)))
       }
       val isRunning = match status { case Some(s) -> s == "RUNNING"; case None -> false }
       if not isRunning {
@@ -1542,11 +1542,11 @@ pub func getRuns(id: in String): Result[RunList, Web.ApiError] {
   match getSession(id, CloudAgents.Auth.requestScope()) {
     case Ok(Some(_)) -> ()
     case Ok(None) -> return Err(Web.notFound("Session not found"))
-    case Err(e) -> return Err(Web.internalError("session lookup failed: " + CloudAgents.Sqlite.dbErrorMessage(e)))
+    case Err(e) -> return Err(Web.internalError("session lookup failed: " + CloudAgents.Db.dbErrorMessage(e)))
   }
   match CloudAgents.Repository.listRuns(id, CloudAgents.Auth.requestScope()) {
     case Ok(rs) -> return Ok(RunList(runs = rs))
-    case Err(e) -> return Err(Web.internalError("failed to list runs: " + CloudAgents.Sqlite.dbErrorMessage(e)))
+    case Err(e) -> return Err(Web.internalError("failed to list runs: " + CloudAgents.Db.dbErrorMessage(e)))
   }
 }
 
@@ -1593,13 +1593,13 @@ func sweepStrandedRun(r: in CloudAgents.SessionStore.StrandedRun): Bool {
     }
     case Err(e) -> println(
       "WARNING: could not list runs of stranded session " + r.sessionId + ": " +
-        CloudAgents.Sqlite.dbErrorMessage(e)
+        CloudAgents.Db.dbErrorMessage(e)
     )
   }
   return match CloudAgents.SessionStore.releaseStrandedRun(r) {
     case Ok(b) -> b
     case Err(e) -> {
-      println("WARNING: could not free stranded session " + r.sessionId + ": " + CloudAgents.Sqlite.dbErrorMessage(e))
+      println("WARNING: could not free stranded session " + r.sessionId + ": " + CloudAgents.Db.dbErrorMessage(e))
       false
     }
   }
@@ -1623,7 +1623,7 @@ func sweepStrandedRun(r: in CloudAgents.SessionStore.StrandedRun): Bool {
 pub func reapContainers(): Result[String, Web.ApiError] {
   val stranded = match CloudAgents.SessionStore.claimStrandedRuns(maxStrandedRunsPerSweep) {
     case Ok(t) -> t
-    case Err(e) -> return Err(Web.internalError("failed to list stranded runs: " + CloudAgents.Sqlite.dbErrorMessage(e)))
+    case Err(e) -> return Err(Web.internalError("failed to list stranded runs: " + CloudAgents.Db.dbErrorMessage(e)))
   }
   var freed = 0
   for r in stranded {
@@ -1633,7 +1633,7 @@ pub func reapContainers(): Result[String, Web.ApiError] {
   }
   val targets = match CloudAgents.SessionStore.reapableWarmContainers() {
     case Ok(t) -> t
-    case Err(e) -> return Err(Web.internalError("failed to list reapable containers: " + CloudAgents.Sqlite.dbErrorMessage(e)))
+    case Err(e) -> return Err(Web.internalError("failed to list reapable containers: " + CloudAgents.Db.dbErrorMessage(e)))
   }
   var reaped = 0
   for t in targets {
@@ -1654,7 +1654,7 @@ pub func reapContainers(): Result[String, Web.ApiError] {
       }
       case Ok(false) -> ()
       case Err(e) -> println(
-        "WARNING: could not reap session " + t.sessionId + ": " + CloudAgents.Sqlite.dbErrorMessage(e)
+        "WARNING: could not reap session " + t.sessionId + ": " + CloudAgents.Db.dbErrorMessage(e)
       )
     }
   }
@@ -1839,7 +1839,7 @@ pub func getRunOutput(id: in String): Result[String, Web.ApiError] {
   }
   val maybeStatus = match CloudAgents.SessionStore.sessionStatus(id, CloudAgents.Auth.requestScope()) {
     case Ok(m) -> m
-    case Err(e) -> return Err(Web.internalError("session lookup failed: " + CloudAgents.Sqlite.dbErrorMessage(e)))
+    case Err(e) -> return Err(Web.internalError("session lookup failed: " + CloudAgents.Db.dbErrorMessage(e)))
   }
   match maybeStatus {
     case None -> return Err(Web.notFound("Session not found"))
@@ -1867,7 +1867,7 @@ pub func getRunOutput(id: in String): Result[String, Web.ApiError] {
           }
           case Err(e) -> println(
             "WARNING: failed to load transcript for output fallback, session " + id + ": " +
-              CloudAgents.Sqlite.dbErrorMessage(e)
+              CloudAgents.Db.dbErrorMessage(e)
           )
         }
         return Ok(value = "{\"running\":\"false\",\"output\":\"" + CloudAgents.Streaming.jsonEscape(lastOutput) + "\"}")
@@ -1880,7 +1880,7 @@ pub func getRunOutput(id: in String): Result[String, Web.ApiError] {
           containerId = s.containerId
         }
         case Ok(None) -> ()
-        case Err(e) -> return Err(Web.internalError("session lookup failed: " + CloudAgents.Sqlite.dbErrorMessage(e)))
+        case Err(e) -> return Err(Web.internalError("session lookup failed: " + CloudAgents.Db.dbErrorMessage(e)))
       }
       val logs = if containerId.length > 0 { CloudAgents.Docker.partialContainerLogs(containerId) } else { "" }
       // Render the NDJSON log to the visible assistant transcript the PWA expects,
@@ -2038,7 +2038,7 @@ pub func getRunOutputFrom(id: in String, offsetStr: in String): Result[String, W
   }
   val maybeStatus = match CloudAgents.SessionStore.sessionStatus(id, CloudAgents.Auth.requestScope()) {
     case Ok(m) -> m
-    case Err(e) -> return Err(Web.internalError("session lookup failed: " + CloudAgents.Sqlite.dbErrorMessage(e)))
+    case Err(e) -> return Err(Web.internalError("session lookup failed: " + CloudAgents.Db.dbErrorMessage(e)))
   }
   match maybeStatus {
     case None -> return Err(Web.notFound("Session not found"))
@@ -2054,7 +2054,7 @@ pub func getRunOutputFrom(id: in String, offsetStr: in String): Result[String, W
           containerId = s.containerId
         }
         case Ok(None) -> ()
-        case Err(e) -> return Err(Web.internalError("session lookup failed: " + CloudAgents.Sqlite.dbErrorMessage(e)))
+        case Err(e) -> return Err(Web.internalError("session lookup failed: " + CloudAgents.Db.dbErrorMessage(e)))
       }
       val logs = if containerId.length > 0 { CloudAgents.Docker.partialContainerLogs(containerId) } else { "" }
       return Ok(value = runOutputRenderedDeltaJson(true, logs, offset))
@@ -2068,7 +2068,7 @@ func removeObserverOf(observedId: in String): Unit {
   val st = match CloudAgents.Ledger.Store.observerState(observedId, sc) {
     case Ok(s) -> s
     case Err(e) -> {
-      println("WARNING: reading the observer of " + observedId + " failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+      println("WARNING: reading the observer of " + observedId + " failed: " + CloudAgents.Db.dbErrorMessage(e))
       return ()
     }
   }
@@ -2097,7 +2097,7 @@ pub func deleteSession(id: in String): Result[Unit, Web.ApiError] {
   // retried, instead of orphaning a running container with no record of it.
   val maybeSession = match getSession(id, CloudAgents.Auth.requestScope()) {
     case Ok(m) -> m
-    case Err(e) -> return Err(Web.internalError("session lookup failed: " + CloudAgents.Sqlite.dbErrorMessage(e)))
+    case Err(e) -> return Err(Web.internalError("session lookup failed: " + CloudAgents.Db.dbErrorMessage(e)))
   }
   match maybeSession {
     case None -> return Err(Web.notFound("Session not found"))
@@ -2108,7 +2108,7 @@ pub func deleteSession(id: in String): Result[Unit, Web.ApiError] {
       // and a dangling run row. Cancel the run first, then delete.
       val status = match CloudAgents.SessionStore.sessionStatus(id, CloudAgents.Auth.requestScope()) {
         case Ok(s) -> s
-        case Err(e) -> return Err(Web.internalError("status lookup failed: " + CloudAgents.Sqlite.dbErrorMessage(e)))
+        case Err(e) -> return Err(Web.internalError("status lookup failed: " + CloudAgents.Db.dbErrorMessage(e)))
       }
       match status {
         case Some(s) -> if s == "RUNNING" {
@@ -2138,7 +2138,7 @@ pub func deleteSession(id: in String): Result[Unit, Web.ApiError] {
       // — avoids a redundant second lookup (#172).
       match CloudAgents.SessionStore.deleteSessionRecord(id, CloudAgents.Auth.requestScope()) {
         case Ok(_) -> return Ok(())
-        case Err(e) -> return Err(Web.internalError("failed to remove session: " + CloudAgents.Sqlite.dbErrorMessage(e)))
+        case Err(e) -> return Err(Web.internalError("failed to remove session: " + CloudAgents.Db.dbErrorMessage(e)))
       }
     }
   }
@@ -2153,7 +2153,7 @@ pub func restartSessionContainer(id: in String): Result[Unit, Web.ApiError] {
 
   val maybeSession = match getSession(id, CloudAgents.Auth.requestScope()) {
     case Ok(m) -> m
-    case Err(e) -> return Err(Web.internalError("session lookup failed: " + CloudAgents.Sqlite.dbErrorMessage(e)))
+    case Err(e) -> return Err(Web.internalError("session lookup failed: " + CloudAgents.Db.dbErrorMessage(e)))
   }
   var hasSession = false
   var containerId = ""
@@ -2171,7 +2171,7 @@ pub func restartSessionContainer(id: in String): Result[Unit, Web.ApiError] {
   // Refuse to restart if a run is in progress
   val maybeStatus = match CloudAgents.SessionStore.sessionStatus(id, CloudAgents.Auth.requestScope()) {
     case Ok(s) -> s
-    case Err(e) -> return Err(Web.internalError("status lookup failed: " + CloudAgents.Sqlite.dbErrorMessage(e)))
+    case Err(e) -> return Err(Web.internalError("status lookup failed: " + CloudAgents.Db.dbErrorMessage(e)))
   }
   var isRunning = false
   match maybeStatus {
@@ -2192,7 +2192,7 @@ pub func restartSessionContainer(id: in String): Result[Unit, Web.ApiError] {
 
   match CloudAgents.SessionStore.resetSessionContainer(id, CloudAgents.Auth.requestScope()) {
     case Ok(_) -> return Ok(())
-    case Err(e) -> return Err(Web.internalError("failed to reset session status: " + CloudAgents.Sqlite.dbErrorMessage(e)))
+    case Err(e) -> return Err(Web.internalError("failed to reset session status: " + CloudAgents.Db.dbErrorMessage(e)))
   }
 }
 
@@ -2210,13 +2210,13 @@ pub func updateSessionModel(id: in String, req: in UpdateSessionRequest): Result
   }
   val maybeSession = match getSession(id, CloudAgents.Auth.requestScope()) {
     case Ok(m) -> m
-    case Err(e) -> return Err(Web.internalError("session lookup failed: " + CloudAgents.Sqlite.dbErrorMessage(e)))
+    case Err(e) -> return Err(Web.internalError("session lookup failed: " + CloudAgents.Db.dbErrorMessage(e)))
   }
   match maybeSession {
     case None -> return Err(Web.notFound("Session not found"))
     case Some(_) -> match CloudAgents.SessionStore.updateSessionModel(id, CloudAgents.Auth.requestScope(), req.model) {
       case Ok(_) -> return Ok(())
-      case Err(e) -> return Err(Web.internalError("failed to update model: " + CloudAgents.Sqlite.dbErrorMessage(e)))
+      case Err(e) -> return Err(Web.internalError("failed to update model: " + CloudAgents.Db.dbErrorMessage(e)))
     }
   }
 }
@@ -2227,13 +2227,13 @@ pub func archiveSession(id: in String): Result[Unit, Web.ApiError] {
   }
   val maybeSession = match getSession(id, CloudAgents.Auth.requestScope()) {
     case Ok(m) -> m
-    case Err(e) -> return Err(Web.internalError("session lookup failed: " + CloudAgents.Sqlite.dbErrorMessage(e)))
+    case Err(e) -> return Err(Web.internalError("session lookup failed: " + CloudAgents.Db.dbErrorMessage(e)))
   }
   match maybeSession {
     case None -> return Err(Web.notFound("Session not found"))
     case Some(_) -> match CloudAgents.SessionStore.updateSessionArchived(id, CloudAgents.Auth.requestScope(), "1") {
       case Ok(_) -> return Ok(())
-      case Err(e) -> return Err(Web.internalError("failed to archive session: " + CloudAgents.Sqlite.dbErrorMessage(e)))
+      case Err(e) -> return Err(Web.internalError("failed to archive session: " + CloudAgents.Db.dbErrorMessage(e)))
     }
   }
 }
@@ -2244,13 +2244,13 @@ pub func unarchiveSession(id: in String): Result[Unit, Web.ApiError] {
   }
   val maybeSession = match getSession(id, CloudAgents.Auth.requestScope()) {
     case Ok(m) -> m
-    case Err(e) -> return Err(Web.internalError("session lookup failed: " + CloudAgents.Sqlite.dbErrorMessage(e)))
+    case Err(e) -> return Err(Web.internalError("session lookup failed: " + CloudAgents.Db.dbErrorMessage(e)))
   }
   match maybeSession {
     case None -> return Err(Web.notFound("Session not found"))
     case Some(_) -> match CloudAgents.SessionStore.updateSessionArchived(id, CloudAgents.Auth.requestScope(), "0") {
       case Ok(_) -> return Ok(())
-      case Err(e) -> return Err(Web.internalError("failed to unarchive session: " + CloudAgents.Sqlite.dbErrorMessage(e)))
+      case Err(e) -> return Err(Web.internalError("failed to unarchive session: " + CloudAgents.Db.dbErrorMessage(e)))
     }
   }
 }
@@ -2263,7 +2263,7 @@ pub func checkHealth(): Result[String, Web.ApiError] {
       // /api/health is reachable unauthenticated; the raw DB error can include
       // connection details, so log the detail server-side and return a
       // generic message to the caller (#55).
-      println("WARNING: health probe failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+      println("WARNING: health probe failed: " + CloudAgents.Db.dbErrorMessage(e))
       return Err(Web.internalError("database unavailable"))
     }
   }
@@ -2329,6 +2329,6 @@ pub func listSessionsResponse(authHeader: in String = ""): Result[ListSessionsRe
       }
       return Ok(ListSessionsResponse(sessions = sessions))
     }
-    case Err(e) -> return Err(Web.internalError("failed to list sessions: " + CloudAgents.Sqlite.dbErrorMessage(e)))
+    case Err(e) -> return Err(Web.internalError("failed to list sessions: " + CloudAgents.Db.dbErrorMessage(e)))
   }
 }
