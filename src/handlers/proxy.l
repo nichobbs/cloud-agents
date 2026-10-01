@@ -21,6 +21,7 @@ import Std.Core
 import Web
 import CloudAgents.Auth
 import CloudAgents.GitHubApi
+import CloudAgents.Harnesses
 import CloudAgents.OAuth
 import CloudAgents.Repository
 import CloudAgents.Scope
@@ -149,7 +150,7 @@ pub func isValidProxyBranch(branch: in String): Bool {
 
 /// The harnesses the models proxy knows provider mappings for.
 pub func isKnownProxyHarness(harness: in String): Bool {
-  return harness == "claude" or harness == "codex" or harness == "opencode" or harness == "gemini" or harness == "antigravity"
+  return CloudAgents.Harnesses.isSupportedHarness(harness)
 }
 
 // ─── Vault lookups ────────────────────────────────────────────────────────────
@@ -370,7 +371,7 @@ func providerModelsBody(provider: in String, key: in String): Result[String, Str
 /// zero usable providers is the 404 the frontend falls back on.
 pub func modelsHandler(harness: in String): Result[String, Web.ApiError] {
   if not isKnownProxyHarness(harness) {
-    return Err(Web.badRequest("harness must be one of: claude, codex, opencode, gemini, antigravity"))
+    return Err(Web.badRequest("harness must be one of: " + CloudAgents.Harnesses.harnessIdsText()))
   }
   // Providers are queried SEQUENTIALLY by design (#446): making this
   // concurrent would require async funcs, and an async func anywhere in this
@@ -477,11 +478,11 @@ pub func isHarnessEnabled(harness: in String): Bool {
 }
 
 /// GET /api/harnesses: `{"enabled":["claude","codex",...]}` — which of the
-/// four known harnesses have a runner image on this deployment, per
+/// known harnesses (CloudAgents.Harnesses) have a runner image on this deployment, per
 /// CLOUD_AGENTS_ENABLED_HARNESSES. Always succeeds (no vault/network access),
 /// unlike the other proxy handlers above.
 pub func harnessesHandler(): String {
-  val all: slice[String] = ["claude", "codex", "opencode", "gemini", "antigravity"]
+  val all = CloudAgents.Harnesses.harnessIds()
   var entries = ""
   var count = 0
   for h in all {
@@ -523,4 +524,3 @@ pub func validateKeyHandler(provider: in String, key: in String): Result[String,
     }
   }
 }
-

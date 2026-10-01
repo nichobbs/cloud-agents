@@ -27,6 +27,7 @@ import Std.Core
 import CloudAgents.Pg
 import Web
 import CloudAgents.Auth
+import CloudAgents.Harnesses
 import CloudAgents.Ledger.Observer
 import CloudAgents.Docker
 import CloudAgents.Handlers
@@ -278,7 +279,7 @@ pub func createJobHandler(sc: in CloudAgents.Pg.TenantScope, req: in CreateJobRe
     return Err(Web.badRequest("branch is not a valid git branch name"))
   }
   if req.harness.length > 0 and not CloudAgents.Handlers.isKnownHarness(req.harness) {
-    return Err(Web.badRequest("harness must be one of: claude, codex, opencode, gemini, antigravity"))
+    return Err(Web.badRequest("harness must be one of: " + CloudAgents.Harnesses.harnessIdsText()))
   }
   val harness = if req.harness.length == 0 { "claude" } else { req.harness }
   if not CloudAgents.Proxy.isHarnessEnabled(harness) {

@@ -54,6 +54,8 @@ cp "$REPO_ROOT/src/text.l"                  "$WORK/src/"
 # auth.l hashes callback tokens with CloudAgents.Crypto.sha256Hex, so Crypto
 # (itself only Std.Core + CloudAgents.Text) must be in the build as well.
 cp "$REPO_ROOT/src/crypto/crypto.l"         "$WORK/src/crypto/"
+# db_client.l checks harness names against CloudAgents.Harnesses (Std.Core only).
+cp "$REPO_ROOT/src/harnesses.l"             "$WORK/src/"
 # auth.l builds the request's tenant scope (CloudAgents.Scope, Std.Core only).
 cp "$REPO_ROOT/src/pg/scope.l"              "$WORK/src/pg/"
 
@@ -67,6 +69,7 @@ output = "single"
 output_assembly = "CloudAgentsVerify.dll"
 [project.packages]
 "CloudAgents.Text"      = "src/text.l"
+"CloudAgents.Harnesses" = "src/harnesses.l"
 "CloudAgents.Crypto"    = "src/crypto/crypto.l"
 "CloudAgents.Scope"     = "src/pg/scope.l"
 "CloudAgents.Streaming" = "src/streaming/streaming.l"

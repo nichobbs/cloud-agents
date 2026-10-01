@@ -5,6 +5,7 @@
 package CloudAgents.Ledger.ObserverPolicy
 
 import Std.Core
+import CloudAgents.Harnesses
 
 /// A profile's observer settings. Strings on the wire like the rest of the
 /// API: `enabled` "true"/"false"; `harness`/`model` run the observer (model ""
@@ -35,7 +36,7 @@ pub func disabledObserverSettings(): ObserverSettings {
 }
 
 pub func isObserverHarness(h: in String): Bool {
-  return h == "claude" or h == "codex" or h == "opencode" or h == "gemini" or h == "antigravity"
+  return CloudAgents.Harnesses.isSupportedHarness(h)
 }
 
 pub func isRepoAccess(r: in String): Bool {
@@ -87,7 +88,7 @@ pub func validateObserverSettings(s: in ObserverSettings): String {
     return "enabled must be \"true\" or \"false\""
   }
   if not isObserverHarness(s.harness) {
-    return "harness must be one of: claude, codex, opencode, gemini, antigravity"
+    return "harness must be one of: " + CloudAgents.Harnesses.harnessIdsText()
   }
   if s.model.length.toInt() > 100 {
     return "model is too long (max 100 characters)"

@@ -10,6 +10,7 @@ import Std.Core
 import Std.Json
 import Web
 import CloudAgents.Auth
+import CloudAgents.Harnesses
 import CloudAgents.Repository
 import CloudAgents.Db
 
@@ -188,7 +189,7 @@ pub func isValidToolName(name: in String): Bool {
 /// Harness the profile pins, or "" to let the session choose. Mirrors the
 /// harnesses CloudAgents.Docker knows how to image.
 pub func isValidProfileHarness(h: in String): Bool {
-  return h == "" or h == "claude" or h == "codex" or h == "opencode" or h == "gemini" or h == "antigravity"
+  return h == "" or CloudAgents.Harnesses.isSupportedHarness(h)
 }
 
 /// A credential grant name must be a valid environment-variable name (the same
@@ -235,7 +236,7 @@ func validateSaveProfile(req: in SaveProfileRequest): Option[Web.ApiError] {
     return Some(value = Web.badRequest("credentialMode must be one of: all, selected"))
   }
   if not isValidProfileHarness(req.harness) {
-    return Some(value = Web.badRequest("harness must be empty or one of: claude, codex, opencode, gemini, antigravity"))
+    return Some(value = Web.badRequest("harness must be empty or one of: " + CloudAgents.Harnesses.harnessIdsText()))
   }
   if not isValidToolMode(req.toolMode) {
     return Some(value = Web.badRequest("toolMode must be one of: all, selected"))

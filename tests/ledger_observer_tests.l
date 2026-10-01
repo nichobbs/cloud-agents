@@ -34,6 +34,7 @@ import CloudAgents.Scope as TestScope
 import CloudAgents.Ledger.Service
 import CloudAgents.Ledger.Reconcile
 import CloudAgents.Ledger.ObserverPolicy
+import CloudAgents.Harnesses
 import CloudAgents.Ledger.ObserverWindow
 import CloudAgents.Ledger.Observer
 import CloudAgents.Ledger.ToolArgs
@@ -739,6 +740,16 @@ test "an observer receives only its harness's model credentials" {
   assertFalse(observerMayReceiveCredential("codex", "AWS_SECRET_ACCESS_KEY"), "nor a cloud token")
   assertFalse(observerMayReceiveCredential("codex", "openai_api_key"), "names match exactly")
   assertFalse(observerMayReceiveCredential("unknown", "OPENAI_API_KEY"), "an unknown harness gets nothing")
+}
+
+test "every supported harness has observer credentials" {
+  val ids = CloudAgents.Harnesses.harnessIds()
+  var i = 0
+  while i < ids.length {
+    assertTrue(isObserverHarness(ids[i]), ids[i] + " can run an observer")
+    assertTrue(observerCredentialNames(ids[i]).length > 0, ids[i] + " has observer credentials")
+    i = i + 1
+  }
 }
 
 // The scope the store calls run under: the current test's fresh user.

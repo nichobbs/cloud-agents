@@ -4,6 +4,7 @@
 package CloudAgents.ProfileTests
 
 import Std.Core
+import CloudAgents.Harnesses
 import Std.Environment
 import Std.Testing
 import Std.Uuid
@@ -45,6 +46,12 @@ test "handler validation rejects bad enums" {
   assertTrue(isValidProfileHarness("gemini"), "gemini harness ok")
   assertTrue(isValidProfileHarness("antigravity"), "antigravity harness ok")
   assertTrue(not isValidProfileHarness("bogus"), "unknown harness rejected")
+  val ids = CloudAgents.Harnesses.harnessIds()
+  var i = 0
+  while i < ids.length {
+    assertTrue(isValidProfileHarness(ids[i]), ids[i] + " can be pinned")
+    i = i + 1
+  }
   assertTrue(isValidToolMode("all") and isValidToolMode("selected"), "tool modes")
   assertTrue(not isValidToolMode("some"), "unknown tool mode rejected")
   assertTrue(isValidToolName("remember") and isValidToolName("request_permission"), "known tool names accepted")
