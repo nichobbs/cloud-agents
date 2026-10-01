@@ -319,12 +319,12 @@ pub func createNativeOrg(callerId: in String, name: in String): Result[Org, OrgF
   return Ok(value = org)
 }
 
-/// Whether a tenant whose row the unit has locked has an owner other than
-/// `exceptUserId`.
+/// Whether a tenant whose row the unit has locked has an active (not
+/// suspended) owner other than `exceptUserId`.
 func hasOtherOwner(
   u: in CloudAgents.PgStore.PgUnit, tenantId: in String, exceptUserId: in String
 ): Result[Bool, OrgFailure] {
-  val rows = qo(u, "SELECT 1 AS one FROM memberships WHERE tenant_id = @p0 AND role = 'owner' AND user_id <> @p1 LIMIT 1", [tenantId, exceptUserId])?
+  val rows = qo(u, "SELECT 1 AS one FROM memberships WHERE tenant_id = @p0 AND role = 'owner' AND NOT suspended AND user_id <> @p1 LIMIT 1", [tenantId, exceptUserId])?
   return Ok(value = rows.length > 0)
 }
 

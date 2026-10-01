@@ -486,3 +486,32 @@ test "a recycled GitHub login belongs only to its newest holder" {
   val joined = mustOrg(CloudAgents.PgStore.Orgs.acceptInvitation(newHolder, inv.token))
   assertEqual(joined.id, org.id, "the newest holder accepts")
 }
+
+test "a suspended owner does not count as the remaining owner" {
+  if not live() {
+    return
+  }
+  migrate()
+  val owner = newUser("owner" + shortId())
+  val login = "second" + shortId()
+  val second = newUser(login)
+  val org = mustOrg(CloudAgents.PgStore.Orgs.createNativeOrg(owner, "Suspended owners"))
+  mustOrg(
+    CloudAgents.PgStore.Orgs.acceptInvitation(
+      second,
+      mustInvite(CloudAgents.PgStore.Orgs.createInvitation(owner, org.id, login, "member")).token
+    )
+  )
+  mustOk(CloudAgents.PgStore.Orgs.setMemberRole(owner, org.id, second, "owner"), "a second owner")
+  unscopedExec("UPDATE memberships SET suspended = true WHERE tenant_id = @p0 AND user_id = @p1", [org.id, second])
+  expectUnitFailure(
+    CloudAgents.PgStore.Orgs.removeMember(owner, org.id, owner),
+    "conflict",
+    "the only active owner cannot leave"
+  )
+  expectUnitFailure(
+    CloudAgents.PgStore.Orgs.setMemberRole(owner, org.id, owner, "member"),
+    "conflict",
+    "nor be demoted"
+  )
+}
