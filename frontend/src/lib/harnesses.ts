@@ -14,6 +14,10 @@ export interface HarnessConfig {
   providers: ProviderId[];
 }
 
+/** Every harness the UI offers. The ids must match the backend's list
+ *  (CloudAgents.Harnesses.harnessIds() in src/harnesses.l); CI's "harness
+ *  list is in sync" step fails the build when they differ. A new harness also
+ *  needs its observer credentials (ObserverPolicy.observerCredentialNames). */
 export const HARNESSES: Record<string, HarnessConfig> = {
   claude: {
     label: 'Claude Code',

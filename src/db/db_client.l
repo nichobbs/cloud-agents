@@ -6,6 +6,7 @@
 package CloudAgents.Db
 
 import Std.Core
+import CloudAgents.Harnesses
 
 /// Failure modes at the store boundary (the Postgres store's error type).
 pub union DbError {
@@ -104,7 +105,7 @@ pub func homeVolumeBindFor(userId: in String, harness: in String): String {
   // (homeMountPathForHarness / imageForHarness). Unreachable today
   // (isKnownHarness rejects unknown harnesses upstream), but a divergent
   // name here would silently split a tenant's claude state in two (#437).
-  val harnessName = if harness == "codex" or harness == "opencode" or harness == "gemini" or harness == "antigravity" then harness else "claude"
+  val harnessName = if CloudAgents.Harnesses.isSupportedHarness(harness) then harness else "claude"
   return "user-" + userId + "-" + harnessName + "-home:" + homeMountPathForHarness(harness)
 }
 

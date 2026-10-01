@@ -212,6 +212,37 @@ jobs:
             bash -n "$f" && echo "ok: $f"
           done
 
+      - name: Verify the harness list is in sync (backend and frontend)
+        run: |
+          python3 - <<'PYEOF'
+          import re
+          import sys
+
+          # CloudAgents.Harnesses.harnessIds() is the backend's one list; the
+          # frontend catalog (lib/harnesses.ts HARNESSES) must name the same
+          # ids, or the pickers offer a harness the API rejects (#1228).
+          backend_src = open("src/harnesses.l").read()
+          m = re.search(r"func harnessIds\(\)[^{]*\{\s*return\s*\[(.*?)\]", backend_src, re.DOTALL)
+          if not m:
+              sys.exit("could not find harnessIds() in src/harnesses.l")
+          backend = re.findall(r'"([a-z0-9-]+)"', m.group(1))
+
+          frontend_src = open("frontend/src/lib/harnesses.ts").read()
+          m = re.search(r"export const HARNESSES[^=]*=\s*\{(.*?)\n\};", frontend_src, re.DOTALL)
+          if not m:
+              sys.exit("could not find HARNESSES in frontend/src/lib/harnesses.ts")
+          frontend = re.findall(r"^  ([a-z0-9-]+):\s*\{", m.group(1), re.MULTILINE)
+
+          if not backend:
+              sys.exit("harnessIds() in src/harnesses.l is empty")
+          if sorted(backend) != sorted(frontend):
+              print("Harness lists differ:")
+              print("  src/harnesses.l harnessIds():          " + ", ".join(backend))
+              print("  frontend/src/lib/harnesses.ts HARNESSES: " + ", ".join(frontend))
+              sys.exit(1)
+          print("harness list in sync: " + ", ".join(backend))
+          PYEOF
+
       - name: Validate JSON templates
         run: |
           for f in docker/settings.json.template docker/settings-callbacks.json.template docker/mcp-callbacks.json.template; do

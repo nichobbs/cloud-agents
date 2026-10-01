@@ -17,6 +17,7 @@ output_assembly = "CloudAgents.dll"
 [project.packages]
 "CloudAgents"          = "src/main.l"
 "CloudAgents.Text"     = "src/text.l"
+"CloudAgents.Harnesses" = "src/harnesses.l"
 "CloudAgents.Ledger.Model" = "src/ledger/model.l"
 "CloudAgents.Ledger.StateMachine" = "src/ledger/state_machine.l"
 "CloudAgents.Ledger.Policy" = "src/ledger/policy.l"
