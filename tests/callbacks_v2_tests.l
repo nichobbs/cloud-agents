@@ -1,23 +1,25 @@
+//! Container callback tests, v2 (request_secret, report_artifact, remember /
+//! recall / forget) against the Postgres store.
 @test_module
 package CloudAgents.CallbacksV2Tests
 
 import Std.Core
-import CloudAgents.Scope
+import Std.Environment
 import Std.Testing
 import Std.Uuid
 import CloudAgents.Auth
 import CloudAgents.Callbacks
+import CloudAgents.Pg
+import CloudAgents.Pg.Migrate
+import CloudAgents.PgStore.Tenancy
 import CloudAgents.Repository
+import CloudAgents.Scope
 import CloudAgents.SessionStore
 import CloudAgents.Sqlite
 import extern System.Environment as Env
 import extern System.Text.Encoding as Utf8Encoding
 
-// ── Live-DB plumbing (same pattern as tests/callbacks_tests.l) ────────────────
 val testKey = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="
-
-@externTarget("System.IO.File.Delete")
-func fileDelete(path: in String): Unit = ()
 
 @externTarget("System.Text.Encoding.get_UTF8")
 func utf8Encoding(): Utf8Encoding = ()
@@ -47,28 +49,73 @@ func atLeast(minLen: in Int): String {
   return s
 }
 
-func useFreshTestDb(tag: in String): String {
-  val path = "/tmp/cloud-agents-tests-" + tag + "-" + Std.Uuid.uuidToString(Std.Uuid.newUuid()) + ".db"
-  val artifactsDir = "/tmp/cloud-agents-artifacts-" + tag + "-" + Std.Uuid.uuidToString(Std.Uuid.newUuid())
-  Env.SetEnvironmentVariable("CLOUD_AGENTS_DB_PATH", path)
-  Env.SetEnvironmentVariable("ENCRYPTION_KEY", testKey)
-  Env.SetEnvironmentVariable("CLOUD_AGENTS_ARTIFACTS_DIR", artifactsDir)
-  match CloudAgents.Repository.initSchema() {
-    case Ok(_) -> ()
-    case Err(e) -> assertTrue(false, "initSchema failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+// ── Live Postgres ─────────────────────────────────────────────────────────────
+//
+// The store is Postgres (docs/phase11-postgres-tenancy.md). These tests run iff
+// LYRIC_CONFIG_DB_CONNECTION_URL (cloudagents_app) and
+// CLOUD_AGENTS_MIGRATE_DATABASE_URL (cloudagents_owner) are set, and fail rather
+// than skip when CLOUD_AGENTS_REQUIRE_LIVE_PG=1 (CI). Each test acts as a fresh
+// user with its own personal tenant, so tests, suites and repeated runs against
+// the same database never see each other's rows.
+func live(): Bool {
+  val ok = CloudAgents.Pg.serviceConfigured() and
+    Std.Environment.getVarOrDefault(CloudAgents.Pg.migrateDsnVar(), "").length.toInt() > 0
+  if ok {
+    return true
   }
-  return path
+  assertTrue(
+    Std.Environment.getVarOrDefault("CLOUD_AGENTS_REQUIRE_LIVE_PG", "") != "1",
+    "CLOUD_AGENTS_REQUIRE_LIVE_PG=1 but LYRIC_CONFIG_DB_CONNECTION_URL or CLOUD_AGENTS_MIGRATE_DATABASE_URL is not set"
+  )
+  println("SKIP: callbacks v2 tests need LYRIC_CONFIG_DB_CONNECTION_URL and CLOUD_AGENTS_MIGRATE_DATABASE_URL")
+  return false
 }
 
-func cleanupTestDb(path: in String): Unit {
-  try {
-    fileDelete(path)
-  } catch Bug as b {
-    // locked or already gone — fine for a temp file
+func migrate(): Unit {
+  val conn = match CloudAgents.Pg.connectDsn(Std.Environment.getVarOrDefault(CloudAgents.Pg.migrateDsnVar(), "")) {
+    case Ok(c) -> c
+    case Err(e) -> panic(CloudAgents.Pg.pgErrorMessage(e))
   }
-  Env.SetEnvironmentVariable("CLOUD_AGENTS_CALLBACK_TIMEOUT_MS", "")
-  Env.SetEnvironmentVariable("CLOUD_AGENTS_ARTIFACTS_DIR", "")
-  CloudAgents.Auth.setCurrentUserId("default")
+  defer {
+    conn.close()
+  }
+  match CloudAgents.Pg.Migrate.migrate(conn) {
+    case Ok(_) -> ()
+    case Err(e) -> panic("migrate failed: " + CloudAgents.Pg.pgErrorMessage(e))
+  }
+}
+
+/// A new user with a provisioned personal tenant. Does not change the request
+/// identity.
+func newUser(tag: in String): String {
+  val uid = "t-" + tag + "-" + Std.Uuid.uuidToString(Std.Uuid.newUuid())
+  match CloudAgents.PgStore.Tenancy.ensurePersonalTenant(uid) {
+    case Ok(_) -> ()
+    case Err(e) -> panic("provisioning " + uid + " failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+  }
+  return uid
+}
+
+/// Migrate, then make a new user the request identity (what handlers read via
+/// CloudAgents.Auth.requestScope()).
+func freshUser(tag: in String): String {
+  migrate()
+  val uid = newUser(tag)
+  CloudAgents.Auth.setCurrentUserId(uid)
+  return uid
+}
+
+/// Session ids are global primary keys that persist across runs.
+func uniq(prefix: in String): String {
+  return prefix + "-" + Std.Uuid.uuidToString(Std.Uuid.newUuid())
+}
+
+/// freshUser plus the encryption key and artifact directory the secret and
+/// artifact handlers need.
+func fresh(tag: in String): String {
+  Env.SetEnvironmentVariable("ENCRYPTION_KEY", testKey)
+  Env.SetEnvironmentVariable("CLOUD_AGENTS_ARTIFACTS_DIR", "/tmp/cloud-agents-artifacts-" + Std.Uuid.uuidToString(Std.Uuid.newUuid()))
+  return freshUser(tag)
 }
 
 func mkSessionRepo(id: in String, repoUrl: in String): Unit {
@@ -111,15 +158,14 @@ func mustPutCredential(userId: in String, name: in String, value: in String): Un
 
 // ── request_secret ──────────────────────────────────────────────────────────
 test "request_secret round trip: create -> poll pending -> approve -> poll delivers value ONCE" {
-  val dbPath = useFreshTestDb("secret-roundtrip")
-  defer {
-    cleanupTestDb(dbPath)
+  if not live() {
+    return
   }
-  CloudAgents.Auth.setCurrentUserId("default")
-  val sid = "sess-secret-1"
+  val me = fresh("secret-roundtrip")
+  val sid = uniq("sess-secret-1")
   mkSession(sid)
-  val token = mintToken(sid, "default")
-  mustPutCredential("default", "GITHUB_TOKEN", "ghp_super_secret")
+  val token = mintToken(sid, me)
+  mustPutCredential(me, "GITHUB_TOKEN", "ghp_super_secret")
 
   val created = match createSecretRequestHandler(sid, bearer(token), CreateSecretRequestRequest(name = "GITHUB_TOKEN", reason = "push a branch")) {
     case Ok(r) -> r
@@ -166,15 +212,14 @@ test "request_secret round trip: create -> poll pending -> approve -> poll deliv
 }
 
 test "request_secret deny path never carries a value" {
-  val dbPath = useFreshTestDb("secret-deny")
-  defer {
-    cleanupTestDb(dbPath)
+  if not live() {
+    return
   }
-  CloudAgents.Auth.setCurrentUserId("default")
-  val sid = "sess-secret-2"
+  val me = fresh("secret-deny")
+  val sid = uniq("sess-secret-2")
   mkSession(sid)
-  val token = mintToken(sid, "default")
-  mustPutCredential("default", "AWS_KEY", "aws-secret-value")
+  val token = mintToken(sid, me)
+  mustPutCredential(me, "AWS_KEY", "aws-secret-value")
 
   val created = match createSecretRequestHandler(sid, bearer(token), CreateSecretRequestRequest(name = "AWS_KEY", reason = "deploy")) {
     case Ok(r) -> r
@@ -194,17 +239,19 @@ test "request_secret deny path never carries a value" {
 }
 
 test "request_secret deny-on-timeout backstop never carries a value" {
-  val dbPath = useFreshTestDb("secret-timeout")
-  defer {
-    cleanupTestDb(dbPath)
+  if not live() {
+    return
   }
-  CloudAgents.Auth.setCurrentUserId("default")
-  val sid = "sess-secret-3"
+  val me = fresh("secret-timeout")
+  val sid = uniq("sess-secret-3")
   mkSession(sid)
-  val token = mintToken(sid, "default")
-  mustPutCredential("default", "TOKEN", "value")
+  val token = mintToken(sid, me)
+  mustPutCredential(me, "TOKEN", "value")
 
   Env.SetEnvironmentVariable("CLOUD_AGENTS_CALLBACK_TIMEOUT_MS", "0")
+  defer {
+    Env.SetEnvironmentVariable("CLOUD_AGENTS_CALLBACK_TIMEOUT_MS", "")
+  }
   val created = match createSecretRequestHandler(sid, bearer(token), CreateSecretRequestRequest(name = "TOKEN", reason = "x")) {
     case Ok(r) -> r
     case Err(e) -> panic("create failed: " + toString(e.status))
@@ -219,14 +266,13 @@ test "request_secret deny-on-timeout backstop never carries a value" {
 }
 
 test "request_secret create fails fast when the named credential does not exist" {
-  val dbPath = useFreshTestDb("secret-missing-cred")
-  defer {
-    cleanupTestDb(dbPath)
+  if not live() {
+    return
   }
-  CloudAgents.Auth.setCurrentUserId("default")
-  val sid = "sess-secret-4"
+  val me = fresh("secret-missing-cred")
+  val sid = uniq("sess-secret-4")
   mkSession(sid)
-  val token = mintToken(sid, "default")
+  val token = mintToken(sid, me)
 
   // No credential named NOPE has been stored for this user.
   match createSecretRequestHandler(sid, bearer(token), CreateSecretRequestRequest(name = "NOPE", reason = "x")) {
@@ -239,22 +285,21 @@ test "request_secret create fails fast when the named credential does not exist"
 }
 
 test "request_secret answer denies-only when the credential was deleted after creation" {
-  val dbPath = useFreshTestDb("secret-race")
-  defer {
-    cleanupTestDb(dbPath)
+  if not live() {
+    return
   }
-  CloudAgents.Auth.setCurrentUserId("default")
-  val sid = "sess-secret-5"
+  val me = fresh("secret-race")
+  val sid = uniq("sess-secret-5")
   mkSession(sid)
-  val token = mintToken(sid, "default")
-  mustPutCredential("default", "ROTATING", "value")
+  val token = mintToken(sid, me)
+  mustPutCredential(me, "ROTATING", "value")
 
   val created = match createSecretRequestHandler(sid, bearer(token), CreateSecretRequestRequest(name = "ROTATING", reason = "x")) {
     case Ok(r) -> r
     case Err(e) -> panic("create failed: " + toString(e.status))
   }
   // Credential deleted between create and answer (a real race in production).
-  match CloudAgents.Repository.deleteCredential(CloudAgents.Scope.userScope("default"), "ROTATING") {
+  match CloudAgents.Repository.deleteCredential(CloudAgents.Scope.userScope(me), "ROTATING") {
     case Ok(_) -> ()
     case Err(e) -> panic("deleteCredential failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
   }
@@ -270,14 +315,13 @@ test "request_secret answer denies-only when the credential was deleted after cr
 }
 
 test "report_artifact upload -> list -> download round trip, and traversal is neutralized" {
-  val dbPath = useFreshTestDb("artifact-roundtrip")
-  defer {
-    cleanupTestDb(dbPath)
+  if not live() {
+    return
   }
-  CloudAgents.Auth.setCurrentUserId("default")
-  val sid = "sess-artifact-1"
+  val me = fresh("artifact-roundtrip")
+  val sid = uniq("sess-artifact-1")
   mkSession(sid)
-  val token = mintToken(sid, "default")
+  val token = mintToken(sid, me)
 
   val uploaded = match uploadArtifactHandler(sid, bearer(token), UploadArtifactRequest(fileName = "report.txt", mimeType = "text/plain", description = "a report", contentBase64 = base64Of("hello artifact"), artifactScope = "")) {
     case Ok(r) -> r
@@ -323,14 +367,13 @@ test "report_artifact upload -> list -> download round trip, and traversal is ne
 }
 
 test "report_artifact rejects an oversize upload before storing anything" {
-  val dbPath = useFreshTestDb("artifact-oversize")
-  defer {
-    cleanupTestDb(dbPath)
+  if not live() {
+    return
   }
-  CloudAgents.Auth.setCurrentUserId("default")
-  val sid = "sess-artifact-2"
+  val me = fresh("artifact-oversize")
+  val sid = uniq("sess-artifact-2")
   mkSession(sid)
-  val token = mintToken(sid, "default")
+  val token = mintToken(sid, me)
 
   // A contentBase64 string longer than the pre-decode cap is rejected
   // without ever reaching the decoder.
@@ -353,14 +396,13 @@ test "report_artifact rejects a dangerous mimeType before storing anything (#100
   // way (downloadArtifactHandler) but had no equivalent check — this pins
   // the duplicated CloudAgents.Callbacks.isDangerousArtifactMimeType closing
   // that gap.
-  val dbPath = useFreshTestDb("artifact-dangerous-mime")
-  defer {
-    cleanupTestDb(dbPath)
+  if not live() {
+    return
   }
-  CloudAgents.Auth.setCurrentUserId("default")
-  val sid = "sess-artifact-dangerous"
+  val me = fresh("artifact-dangerous-mime")
+  val sid = uniq("sess-artifact-dangerous")
   mkSession(sid)
-  val token = mintToken(sid, "default")
+  val token = mintToken(sid, me)
 
   match uploadArtifactHandler(sid, bearer(token), UploadArtifactRequest(fileName = "evil.svg", mimeType = "image/svg+xml", description = "", contentBase64 = base64Of("<svg onload=alert(1)>"), artifactScope = "")) {
     case Ok(_) -> assertTrue(false, "an SVG upload must be rejected")
@@ -386,10 +428,10 @@ test "report_artifact rejects a dangerous mimeType before storing anything (#100
 
 // ── Validation ───────────────────────────────────────────────────────────────
 test "v2 callback endpoints reject an empty session id before touching the database" {
-  val dbPath = useFreshTestDb("v2-empty-id")
-  defer {
-    cleanupTestDb(dbPath)
+  if not live() {
+    return
   }
+  val me = fresh("v2-empty-id")
   match createSecretRequestHandler("", "", CreateSecretRequestRequest(name = "X", reason = "")) {
     case Ok(_) -> assertTrue(false, "an empty session id must be rejected")
     case Err(e) -> assertEqualInt(e.status, 400, "empty id returns 400")
@@ -424,14 +466,13 @@ test "contentDispositionQuoted escapes quotes/backslashes and strips control cha
 
 // ── remember / recall (phase 7 §4) ────────────────────────────────────────────
 test "remember then recall round-trips, overwrites by key, and stays repo-scoped" {
-  val dbPath = useFreshTestDb("memory-roundtrip")
-  defer {
-    cleanupTestDb(dbPath)
+  if not live() {
+    return
   }
-  CloudAgents.Auth.setCurrentUserId("default")
-  val sid = "sess-memory-1"
+  val me = fresh("memory-roundtrip")
+  val sid = uniq("sess-memory-1")
   mkSession(sid)
-  val token = mintToken(sid, "default")
+  val token = mintToken(sid, me)
 
   match rememberHandler(sid, bearer(token), RememberRequest(key = "build", value = "make lyric")) {
     case Ok(r) -> assertEqual(r.key, "build", "remember echoes the stored key")
@@ -467,14 +508,13 @@ test "remember then recall round-trips, overwrites by key, and stays repo-scoped
 }
 
 test "recall with a key does a single-entry lookup instead of the whole list (#590)" {
-  val dbPath = useFreshTestDb("memory-recall-key")
-  defer {
-    cleanupTestDb(dbPath)
+  if not live() {
+    return
   }
-  CloudAgents.Auth.setCurrentUserId("default")
-  val sid = "sess-memory-key"
+  val me = fresh("memory-recall-key")
+  val sid = uniq("sess-memory-key")
   mkSession(sid)
-  val token = mintToken(sid, "default")
+  val token = mintToken(sid, me)
 
   match rememberHandler(sid, bearer(token), RememberRequest(key = "build", value = "make lyric")) {
     case Ok(_) -> ()
@@ -521,36 +561,35 @@ test "recall with a key does a single-entry lookup instead of the whole list (#5
 }
 
 test "memory carries across sessions on the same repo, isolated from other repos" {
-  val dbPath = useFreshTestDb("memory-cross-session")
-  defer {
-    cleanupTestDb(dbPath)
+  if not live() {
+    return
   }
-  CloudAgents.Auth.setCurrentUserId("default")
+  val me = fresh("memory-cross-session")
 
-  val sidA = "sess-memory-A"
+  val sidA = uniq("sess-memory-A")
   mkSession(sidA)
-  val tokenA = mintToken(sidA, "default")
-  match rememberHandler(sidA, bearer(tokenA), RememberRequest(key = "quirk", value = "sqlite native lib needed")) {
+  val tokenA = mintToken(sidA, me)
+  match rememberHandler(sidA, bearer(tokenA), RememberRequest(key = "quirk", value = "native lib needed")) {
     case Ok(_) -> ()
     case Err(e) -> assertTrue(false, "remember A failed: " + toString(e.status))
   }
 
   // A brand-new session on the SAME repo recalls the earlier note — the point.
-  val sidB = "sess-memory-B"
+  val sidB = uniq("sess-memory-B")
   mkSession(sidB)
-  val tokenB = mintToken(sidB, "default")
+  val tokenB = mintToken(sidB, me)
   match recallHandler(sidB, bearer(tokenB), None) {
     case Ok(l) -> {
       assertEqualInt(l.entries.length.toInt(), 1, "a new session on the same repo inherits the memory")
-      assertEqual(l.entries[0].value, "sqlite native lib needed", "the earlier session's note is readable")
+      assertEqual(l.entries[0].value, "native lib needed", "the earlier session's note is readable")
     }
     case Err(e) -> assertTrue(false, "recall B failed: " + toString(e.status))
   }
 
   // A session on a DIFFERENT repo sees none of it.
-  val sidC = "sess-memory-C"
+  val sidC = uniq("sess-memory-C")
   mkSessionRepo(sidC, "https://github.com/nic/other")
-  val tokenC = mintToken(sidC, "default")
+  val tokenC = mintToken(sidC, me)
   match recallHandler(sidC, bearer(tokenC), None) {
     case Ok(l) -> assertEqualInt(l.entries.length.toInt(), 0, "a different repo shares no memory")
     case Err(e) -> assertTrue(false, "recall C failed: " + toString(e.status))
@@ -558,14 +597,13 @@ test "memory carries across sessions on the same repo, isolated from other repos
 }
 
 test "remember validates key/value and rejects a session with no repo to scope to" {
-  val dbPath = useFreshTestDb("memory-validation")
-  defer {
-    cleanupTestDb(dbPath)
+  if not live() {
+    return
   }
-  CloudAgents.Auth.setCurrentUserId("default")
-  val sid = "sess-memory-val"
+  val me = fresh("memory-validation")
+  val sid = uniq("sess-memory-val")
   mkSession(sid)
-  val token = mintToken(sid, "default")
+  val token = mintToken(sid, me)
 
   match rememberHandler(sid, bearer(token), RememberRequest(key = "", value = "v")) {
     case Ok(_) -> assertTrue(false, "empty key must be rejected")
@@ -586,9 +624,9 @@ test "remember validates key/value and rejects a session with no repo to scope t
     case Err(e) -> assertEqualInt(e.status, 400, "over-length value -> 400")
   }
 
-  val sidNoRepo = "sess-memory-norepo"
+  val sidNoRepo = uniq("sess-memory-norepo")
   mkSessionRepo(sidNoRepo, "")
-  val tokenNoRepo = mintToken(sidNoRepo, "default")
+  val tokenNoRepo = mintToken(sidNoRepo, me)
   match rememberHandler(sidNoRepo, bearer(tokenNoRepo), RememberRequest(key = "k", value = "v")) {
     case Ok(_) -> assertTrue(false, "a session with no repo must be rejected")
     case Err(e) -> assertEqualInt(e.status, 400, "no repo -> 400")
@@ -596,14 +634,13 @@ test "remember validates key/value and rejects a session with no repo to scope t
 }
 
 test "remember rejects values shaped like common credential formats (#593)" {
-  val dbPath = useFreshTestDb("memory-secret-heuristic")
-  defer {
-    cleanupTestDb(dbPath)
+  if not live() {
+    return
   }
-  CloudAgents.Auth.setCurrentUserId("default")
-  val sid = "sess-memory-secret"
+  val me = fresh("memory-secret-heuristic")
+  val sid = uniq("sess-memory-secret")
   mkSession(sid)
-  val token = mintToken(sid, "default")
+  val token = mintToken(sid, me)
 
   // Known provider prefixes (#593).
   match rememberHandler(sid, bearer(token), RememberRequest(key = "k", value = "sk-abcdefghijklmnopqrstuvwxyz012345")) {
@@ -679,14 +716,13 @@ test "remember rejects values shaped like common credential formats (#593)" {
 }
 
 test "recall requires a valid callback token; the owner can list via the user route" {
-  val dbPath = useFreshTestDb("memory-auth")
-  defer {
-    cleanupTestDb(dbPath)
+  if not live() {
+    return
   }
-  CloudAgents.Auth.setCurrentUserId("default")
-  val sid = "sess-memory-auth"
+  val me = fresh("memory-auth")
+  val sid = uniq("sess-memory-auth")
   mkSession(sid)
-  val token = mintToken(sid, "default")
+  val token = mintToken(sid, me)
 
   match recallHandler(sid, bearer("wrong-token"), None) {
     case Ok(_) -> assertTrue(false, "a wrong callback token must be rejected")
@@ -703,14 +739,13 @@ test "recall requires a valid callback token; the owner can list via the user ro
 }
 
 test "forget deletes an entry, frees a slot under the cap, and is idempotent (#592)" {
-  val dbPath = useFreshTestDb("memory-forget")
-  defer {
-    cleanupTestDb(dbPath)
+  if not live() {
+    return
   }
-  CloudAgents.Auth.setCurrentUserId("default")
-  val sid = "sess-memory-forget"
+  val me = fresh("memory-forget")
+  val sid = uniq("sess-memory-forget")
   mkSession(sid)
-  val token = mintToken(sid, "default")
+  val token = mintToken(sid, me)
 
   match rememberHandler(sid, bearer(token), RememberRequest(key = "build", value = "make lyric")) {
     case Ok(_) -> ()
@@ -747,14 +782,13 @@ test "forget deletes an entry, frees a slot under the cap, and is idempotent (#5
 }
 
 test "remember caps the number of distinct keys per repo but always allows overwrites (#575)" {
-  val dbPath = useFreshTestDb("memory-cap")
-  defer {
-    cleanupTestDb(dbPath)
+  if not live() {
+    return
   }
-  CloudAgents.Auth.setCurrentUserId("default")
-  val sid = "sess-memory-cap"
+  val me = fresh("memory-cap")
+  val sid = uniq("sess-memory-cap")
   mkSession(sid)
-  val token = mintToken(sid, "default")
+  val token = mintToken(sid, me)
 
   // Fill the repo to exactly the cap (256 distinct keys).
   var i = 0
