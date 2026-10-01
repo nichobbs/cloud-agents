@@ -17,6 +17,19 @@ compose file for what differs and why.
 3. **Set environment variables** in the resource's Environment Variables tab
    (see `.env.example` for what each does):
    - `ENCRYPTION_KEY` (required — generate with `openssl rand -base64 32`)
+   - `CLOUD_AGENTS_API_TOKEN` (required — generate with `openssl rand -hex 32`).
+     The maintenance poller authenticates with it (see "Maintenance
+     poller" below). It also closes the API to requests that carry no
+     `Authorization` header, which are otherwise served as the operator
+     even when GitHub OAuth is configured. Signing in with GitHub keeps
+     working; the static token is an extra operator credential. The web UI
+     has no field for the static token, so with it set, browser users need
+     GitHub OAuth (below) to sign in.
+   - `CLOUD_AGENTS_PG_SUPERUSER_PASSWORD`, `CLOUD_AGENTS_PG_OWNER_PASSWORD`,
+     `CLOUD_AGENTS_PG_APP_PASSWORD` (required — letters and digits only,
+     generate each with `openssl rand -hex 24`; see "Postgres" below)
+   - `MAINTENANCE_*_SECONDS` (optional — poller intervals, see
+     "Maintenance poller" below)
    - `CLOUD_AGENTS_WHITELIST` (optional)
    - `CLOUD_AGENTS_GITHUB_CLIENT_ID`, `CLOUD_AGENTS_GITHUB_CLIENT_SECRET`
      (optional — from a GitHub OAuth App with its callback URL set to
@@ -62,6 +75,56 @@ compose file for what differs and why.
 4. **Enable auto-deploy** on push to whichever branch you want live. Every
    push fires the GitHub App's webhook, which Coolify verifies and redeploys
    from, posting a commit status back to GitHub.
+
+## Postgres
+
+The compose file runs Postgres as a service of this resource (`postgres`,
+built from `deploy/postgres.Dockerfile`, data in the `pg_data` volume), not
+as a separate Coolify database resource. On its first start with an empty
+volume it creates the `cloudagents` database and its roles from
+`deploy/postgres/provision.sql`, using the three `CLOUD_AGENTS_PG_*`
+passwords. The one-shot `migrate` service then applies the schema as
+`cloudagents_owner` and exits, and the API starts only after that succeeds.
+It connects as `cloudagents_app` and checks at startup that the role cannot
+bypass row-level security; if the check fails it logs `FATAL: Postgres
+self-check failed` and exits.
+
+Until the cut-over (`docs/phase11-postgres-tenancy.md` §9, slice E) the API
+still stores everything in SQLite; Postgres is provisioned and checked but
+holds no data.
+
+- The passwords take effect only when `pg_data` is first created. To change
+  one later, run `ALTER ROLE <role> PASSWORD '<new>'` as `postgres` from the
+  `postgres` container's terminal, then update the variable and redeploy.
+- No port is published; only services in this resource can reach it.
+- Coolify's scheduled database backups cover database resources only, not
+  a compose service, so back it up with `backup.sh` (see "Backups").
+- The container is limited to 1 GB of memory (`mem_limit`).
+
+## Maintenance poller
+
+The API has no in-process timer, so periodic work is done by POSTing its
+operator-only maintenance endpoints. The `maintenance` service
+(`deploy/maintenance.sh`) does that on a schedule, authenticating with
+`CLOUD_AGENTS_API_TOKEN`:
+
+| Endpoint | Interval (default) | Timeout (default) | What it does |
+|---|---|---|---|
+| `/api/maintenance/reap` | `MAINTENANCE_REAP_SECONDS` (60) | `MAINTENANCE_REAP_TIMEOUT_SECONDS` (1800) | frees sessions whose run died (no heartbeat for 2 minutes) and stops idle warm containers |
+| `/api/maintenance/trigger-jobs` | `MAINTENANCE_TRIGGER_JOBS_SECONDS` (60) | `MAINTENANCE_TRIGGER_JOBS_TIMEOUT_SECONDS` (10800) | runs due scheduled jobs |
+| `/api/maintenance/drain-graph-ingest` | `MAINTENANCE_DRAIN_GRAPH_INGEST_SECONDS` (60) | `MAINTENANCE_DRAIN_GRAPH_INGEST_TIMEOUT_SECONDS` (1800) | retries failed graph-ingest deliveries |
+| `/api/maintenance/observe` | `MAINTENANCE_OBSERVE_SECONDS` (60) | `MAINTENANCE_OBSERVE_TIMEOUT_SECONDS` (10800) | runs queued ledger observer passes |
+| `/api/maintenance/ledger-sync` | `MAINTENANCE_LEDGER_SYNC_SECONDS` (300) | `MAINTENANCE_LEDGER_SYNC_TIMEOUT_SECONDS` (3600) | reconciles ledger items with GitHub |
+
+Set an interval to `0` to disable that endpoint. Each endpoint has its own
+loop, so a long call (`trigger-jobs` runs due jobs inline) never delays the
+others, and each call is abandoned after its endpoint's timeout, so a hung
+connection cannot stall a loop for long. `trigger-jobs` and `observe` run
+their work inline, hence their longer timeouts. The `maintenance` container's logs show every call and its result.
+
+`reap` matters most: the API no longer resets sessions at startup, so after a
+redeploy, crash or Docker restart, a session whose run was cut off stays
+`RUNNING` until `reap` frees it (`docs/phase11-postgres-tenancy.md` §5.3a).
 
 ## Docker socket
 
@@ -192,8 +255,9 @@ directory `/var/lib/cloud-agents`, bind-mounted into the api container at the
 same path, so redeploys no longer lose sessions. Unlike the standalone
 compose file, the Coolify one cannot take the directory from
 `CLOUD_AGENTS_DATA_DIR`: Coolify rejects a volume path containing `${`. To
-use another directory, edit the four occurrences in
-`docker-compose.coolify.yml`, and export the same path as
+use another directory, change every `/var/lib/cloud-agents` in
+`docker-compose.coolify.yml` together (the three path variables and both
+sides of the mount), and export the same path as
 `CLOUD_AGENTS_DATA_DIR` when running `backup.sh`. When upgrading
 an existing Coolify deployment, copy the old container's state out first; see
 `RUNBOOK.md` "Upgrading from a deployment without a data directory" (use
@@ -209,6 +273,13 @@ edit `USER_DATA_VOLUME` in your cron invocation or export it before running
 (`VOLUME="${USER_DATA_VOLUME:-deploy_user_data}"`). Skipping this doesn't
 error: `docker run -v <wrong-name>:...` silently creates and archives an
 empty volume, so backups would look like they're working while being empty.
+
+`backup.sh` also dumps Postgres with `pg_dump` from the running postgres
+container, which it finds by name (`PG_CONTAINER`, default
+`deploy-postgres-1`). Coolify names containers differently; find the name
+with `docker ps --format '{{.Names}}' | grep postgres` and export
+`PG_CONTAINER` before running `backup.sh`. A wrong name fails the backup
+rather than skipping the dump.
 
 ## Everything else
 

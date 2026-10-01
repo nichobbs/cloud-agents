@@ -82,8 +82,14 @@ PYEOF
   done <<< "$paths"
 }
 
+# Placeholder values for every variable the compose files require (`:?`), so
+# `docker compose config` renders them; only paths are checked here.
+export ENCRYPTION_KEY=ci-check CLOUD_AGENTS_API_TOKEN=ci-check \
+  CLOUD_AGENTS_PG_SUPERUSER_PASSWORD=cicheck CLOUD_AGENTS_PG_OWNER_PASSWORD=cicheck \
+  CLOUD_AGENTS_PG_APP_PASSWORD=cicheck
+
 echo "== docker-compose.yml (cd deploy/ invocation, per RUNBOOK.md) =="
-json_std="$(cd "$REPO_ROOT/deploy" && ENCRYPTION_KEY=ci-check docker compose config --format json)"
+json_std="$(cd "$REPO_ROOT/deploy" && docker compose config --format json)"
 check_json_paths "docker-compose.yml" "$json_std"
 
 echo "== docker-compose.coolify.yml (--project-directory repo-root, per Coolify) =="
@@ -104,7 +110,7 @@ echo "== docker-compose.coolify.yml (--project-directory repo-root, per Coolify)
 coolify_scratch="$(mktemp "$REPO_ROOT/deploy/.coolify-path-check.XXXXXX.yml")"
 trap 'rm -f "$coolify_scratch"' EXIT
 grep -v 'exclude_from_hc:' "$REPO_ROOT/deploy/docker-compose.coolify.yml" > "$coolify_scratch"
-json_coolify="$(cd "$REPO_ROOT" && ENCRYPTION_KEY=ci-check docker compose --project-directory . -f "$coolify_scratch" config --format json)"
+json_coolify="$(cd "$REPO_ROOT" && docker compose --project-directory . -f "$coolify_scratch" config --format json)"
 check_json_paths "docker-compose.coolify.yml" "$json_coolify"
 
 exit $FAIL

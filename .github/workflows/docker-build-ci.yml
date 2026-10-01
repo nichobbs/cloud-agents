@@ -60,6 +60,11 @@ on:
       - 'docker/session-tools-guide.md'
       - 'scripts/test-entrypoint-privsep.sh'
       - '.github/workflows/docker-build-ci.yml'
+      - 'deploy/postgres.Dockerfile'
+      - 'deploy/postgres/**'
+      - 'deploy/maintenance.Dockerfile'
+      - 'deploy/maintenance.sh'
+      - 'scripts/test-deploy-images.sh'
 
 concurrency:
   group: docker-build-ci-${{ github.ref }}
@@ -225,3 +230,13 @@ jobs:
           push: false
           cache-from: type=gha,scope=api-build
           cache-to: type=gha,mode=max,scope=api-build
+
+  deploy-images:
+    name: Deploy images (postgres, maintenance)
+    if: github.event.pull_request.draft == false
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Build and smoke-test the postgres and maintenance images
+        run: ./scripts/test-deploy-images.sh

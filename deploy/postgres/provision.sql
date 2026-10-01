@@ -6,9 +6,10 @@
 --        -v migrator_password="'...'" \
 --        -f deploy/postgres/provision.sql
 --
--- (Each password variable is passed already single-quoted, as shown.) On
--- Coolify, run it through the Postgres resource's terminal. The superuser's
--- own credentials never go into the API's environment.
+-- (Each password variable is passed already single-quoted, as shown.) The
+-- compose files' postgres service runs it on first start through
+-- deploy/postgres/init.sh. The superuser's own credentials never go into the
+-- API's environment.
 --
 -- Everything else (tables, RLS policies, claim functions, per-table grants)
 -- is created by the service's migrations (`--migrate`), which run as
@@ -20,9 +21,9 @@
 --                        no BYPASSRLS, so FORCE ROW LEVEL SECURITY applies.
 --   cloudagents_claimer  NOLOGIN. Owns only the SECURITY DEFINER claim
 --                        functions; reachable only through them.
---   cloudagents_migrator NOLOGIN + BYPASSRLS. Used only by the one-shot SQLite
---                        export; the runbook enables LOGIN for the cut-over and
---                        disables it again straight afterwards.
+--   cloudagents_migrator NOLOGIN + BYPASSRLS. Was for the one-shot SQLite
+--                        export, which is dropped (phase 11 spec §7); unused,
+--                        and removed at the cut-over (slice E).
 
 \set ON_ERROR_STOP on
 

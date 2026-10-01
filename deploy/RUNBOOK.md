@@ -2,7 +2,7 @@
 
 ## Topology
 
-A single VM (Hetzner CX41 or similar) running Docker. Three long-lived
+A single VM (Hetzner CX41 or similar) running Docker. Five long-lived
 containers managed by `docker-compose.yml`:
 
 - **caddy** — TLS termination + reverse proxy (ports 80/443).
@@ -10,6 +10,12 @@ containers managed by `docker-compose.yml`:
   containers via the mounted Docker socket.
 - **frontend** — the Vite/React app, built in a Docker multi-stage build
   (`frontend/Dockerfile`) and served as static files by nginx.
+- **postgres** — the Postgres database (`pg_data` volume); see "Postgres".
+- **maintenance** — calls the API's maintenance endpoints on a schedule
+  (`deploy/maintenance.sh`); see "Maintenance poller".
+
+A one-shot **migrate** container applies the Postgres schema on every
+deploy and exits before the API starts.
 
 Runner containers are **ephemeral**: one per message, removed after the run.
 Session state lives on Docker volumes (`session-*` workspaces, `user-*-home`
@@ -21,7 +27,7 @@ credentials), not in the containers.
 sudo ./install-docker.sh                 # install Docker + build all five runner images
 sudo mkdir -p /opt/cloud-agents && sudo rsync -a . /opt/cloud-agents/
 cd /opt/cloud-agents/deploy
-cp .env.example .env && edit .env        # set ENCRYPTION_KEY, CLOUD_AGENTS_WHITELIST
+cp .env.example .env && edit .env        # set ENCRYPTION_KEY, CLOUD_AGENTS_API_TOKEN, the CLOUD_AGENTS_PG_* passwords
 docker compose up -d
 ```
 
@@ -84,10 +90,11 @@ prune `session-*` workspace volumes for deleted sessions.
   instances another one may be driving them
   (`docs/phase11-postgres-tenancy.md` §5.3a). A run whose instance died
   stops renewing its heartbeat; two minutes later the maintenance sweep
-  (`POST /api/maintenance/reap`, which the external scheduler already polls
-  for idle-container reaping) stops its container, marks the run failed and
-  returns the session to `IDLE`. To free such sessions sooner after a
-  restart, call that endpoint by hand once two minutes have passed. On the
+  (`POST /api/maintenance/reap`, called every minute by the `maintenance`
+  container) stops its container, marks the run failed and returns the
+  session to `IDLE`. To free such sessions sooner after a restart, call that
+  endpoint by hand once two minutes have passed:
+  `curl -X POST -H "Authorization: Bearer $CLOUD_AGENTS_API_TOKEN" https://<domain>/api/maintenance/reap`. On the
   next message the API recreates a fresh container from the session's
   volumes.
 - **API crash loop:** check `docker compose logs api`. `ENCRYPTION_KEY` is
@@ -96,6 +103,39 @@ prune `session-*` workspace volumes for deleted sessions.
   Lyric source actually reads this variable today, so don't expect an
   app-level error message pointing at it; the compose-level guard is the
   only enforcement.
+
+- **API exits with `FATAL: Postgres self-check failed`:** the message names
+  the problem (a missing role, a role that can bypass row-level security).
+  Check `docker compose logs postgres migrate`. A password with characters
+  other than letters and digits is rejected before the data directory is
+  created, so fixing the variable is enough. If provisioning failed for
+  another reason after that, the volume is left without the roles; then
+  `docker compose down` and `docker volume rm deploy_pg_data` before starting
+  again. Only do that while Postgres holds no data (before the cut-over).
+
+## Postgres
+
+The `postgres` service creates the `cloudagents` database and its roles on
+first start from `deploy/postgres/provision.sql`, with the passwords in
+`.env`; later starts leave the volume alone. The `migrate` service applies
+the schema as `cloudagents_owner` on every deploy (a no-op when current) and
+the API starts after it succeeds, connected as `cloudagents_app`. Until the
+cut-over (`docs/phase11-postgres-tenancy.md` §9, slice E) the API still
+stores everything in SQLite.
+
+- Change a password: `docker compose exec postgres psql -U postgres -c
+  "ALTER ROLE cloudagents_app PASSWORD '<new>'"`, update `.env`, then
+  `docker compose up -d`.
+- A `psql` shell: `docker compose exec postgres psql -U postgres -d cloudagents`.
+
+## Maintenance poller
+
+The `maintenance` container POSTs the API's operator-only maintenance
+endpoints with `CLOUD_AGENTS_API_TOKEN`: `reap`, `trigger-jobs`,
+`drain-graph-ingest` and `observe` every 60 s, and `ledger-sync` every 300 s.
+Each interval is set by a `MAINTENANCE_*_SECONDS` variable in `.env` (0
+disables it); `COOLIFY.md` "Maintenance poller" lists them. Every call and
+its result is logged: `docker compose logs maintenance`.
 
 ## Rollback
 
@@ -167,13 +207,15 @@ read time, so moved files are found under the new location.
 
 ## Backups
 
-`backup.sh` runs nightly (cron example inside the script) and writes three
+`backup.sh` runs nightly (cron example inside the script) and writes four
 archives per run, keeping the 14 most recent of each:
 
 - `db-<stamp>.db.gz`: an online `sqlite3 .backup` snapshot (consistent while
   the api is writing), integrity-checked before it is kept;
 - `files-<stamp>.tar.gz`: `artifacts/` and `attachments/`;
-- `user-home-<stamp>.tar.gz`: the `user_data` volume.
+- `user-home-<stamp>.tar.gz`: the `user_data` volume;
+- `pg-<stamp>.dump`: `pg_dump` of the `cloudagents` database (custom
+  format), checked with `pg_restore --list` before it is kept.
 
 It exits non-zero if the database or volume is missing rather than archiving
 nothing. The database step pulls the `sqlite` package into an `alpine`
@@ -188,6 +230,14 @@ sudo tar xzf files-<stamp>.tar.gz -C /var/lib/cloud-agents
 docker run --rm -v deploy_user_data:/data -v "$PWD:/backup" alpine \
     tar xzf /backup/user-home-<stamp>.tar.gz -C /data
 docker compose start api
+```
+
+Restore Postgres into the running `postgres` container with the API stopped:
+
+```sh
+docker compose stop api maintenance
+docker compose exec -T postgres pg_restore -U postgres -d cloudagents --clean --if-exists < pg-<stamp>.dump
+docker compose start api maintenance
 ```
 
 ## Monitoring
