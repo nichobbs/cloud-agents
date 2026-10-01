@@ -14,9 +14,10 @@ PG_IMAGE=cloud-agents-postgres-test
 MAINT_IMAGE=cloud-agents-maintenance-test
 GOOD=ca-deploy-test-pg-good
 BAD=ca-deploy-test-pg-bad
+IDLE=ca-deploy-test-maint-idle
 
 cleanup() {
-  docker rm -f "$GOOD" "$BAD" >/dev/null 2>&1 || true
+  docker rm -f "$GOOD" "$BAD" "$IDLE" >/dev/null 2>&1 || true
 }
 trap cleanup EXIT
 
@@ -72,13 +73,30 @@ docker logs "$BAD" 2>&1 | grep -q "must contain only letters and digits" \
   || { echo "FAIL: no password error in the log" >&2; exit 1; }
 echo "ok"
 
-echo "== maintenance refuses a missing token and a malformed interval =="
+echo "== maintenance refuses a missing token, a malformed interval and a zero timeout =="
 if docker run --rm "$MAINT_IMAGE" >/dev/null 2>&1; then
   echo "FAIL: maintenance started without CLOUD_AGENTS_API_TOKEN" >&2
   exit 1
 fi
 if docker run --rm -e CLOUD_AGENTS_API_TOKEN=t -e MAINTENANCE_REAP_SECONDS=1m "$MAINT_IMAGE" >/dev/null 2>&1; then
   echo "FAIL: maintenance accepted MAINTENANCE_REAP_SECONDS=1m" >&2
+  exit 1
+fi
+if docker run --rm -e CLOUD_AGENTS_API_TOKEN=t -e MAINTENANCE_CALL_TIMEOUT_SECONDS=0 "$MAINT_IMAGE" >/dev/null 2>&1; then
+  echo "FAIL: maintenance accepted MAINTENANCE_CALL_TIMEOUT_SECONDS=0" >&2
+  exit 1
+fi
+echo "ok"
+
+echo "== maintenance stays up with every endpoint disabled =="
+docker run -d --name "$IDLE" -e CLOUD_AGENTS_API_TOKEN=t -e MAINTENANCE_START_DELAY_SECONDS=0 \
+  -e MAINTENANCE_REAP_SECONDS=0 -e MAINTENANCE_TRIGGER_JOBS_SECONDS=0 \
+  -e MAINTENANCE_DRAIN_GRAPH_INGEST_SECONDS=0 -e MAINTENANCE_OBSERVE_SECONDS=0 \
+  -e MAINTENANCE_LEDGER_SYNC_SECONDS=0 "$MAINT_IMAGE" >/dev/null
+sleep 3
+if [ "$(docker inspect -f '{{.State.Running}}' "$IDLE")" != "true" ]; then
+  docker logs "$IDLE" >&2
+  echo "FAIL: maintenance exited with every endpoint disabled" >&2
   exit 1
 fi
 echo "ok"

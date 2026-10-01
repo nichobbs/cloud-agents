@@ -41,10 +41,6 @@ if ! docker volume inspect "${VOLUME}" >/dev/null 2>&1; then
     echo "backup failed: volume ${VOLUME} not found (check USER_DATA_VOLUME)" >&2
     exit 1
 fi
-if [ "$(docker inspect -f '{{.State.Running}}' "${PG_CONTAINER}" 2>/dev/null)" != "true" ]; then
-    echo "backup failed: postgres container ${PG_CONTAINER} is not running (check PG_CONTAINER)" >&2
-    exit 1
-fi
 
 # The data directory is mounted read-write: sqlite3 needs to open the -shm
 # file of a WAL database even to read it.
@@ -72,25 +68,38 @@ docker run --rm \
 
 # pg_dump takes a consistent snapshot while the API is writing. The
 # superuser connects over the container's local socket, so no password is
-# needed here. A dump that pg_restore cannot list is deleted, not kept.
-# The dump is written to a .partial file and renamed only once it checks
-# out, so a failed run never leaves a dump that retention would count.
+# needed here. The dump is written to a .partial file and renamed only once
+# pg_restore can list it, so a failed run never leaves a dump that retention
+# would count. It runs after the other archives, so a Postgres problem fails
+# the run without costing them.
 PG_DUMP="${BACKUP_DIR}/pg-${STAMP}.dump"
-if ! docker exec "${PG_CONTAINER}" pg_dump -U postgres -d cloudagents -Fc > "${PG_DUMP}.partial"; then
-    rm -f "${PG_DUMP}.partial"
-    echo "backup failed: pg_dump in ${PG_CONTAINER} failed" >&2
-    exit 1
-fi
-if ! docker exec -i "${PG_CONTAINER}" pg_restore --list < "${PG_DUMP}.partial" >/dev/null; then
-    rm -f "${PG_DUMP}.partial"
-    echo "backup failed: pg_dump output for ${PG_CONTAINER} is not a readable archive" >&2
-    exit 1
-fi
-mv "${PG_DUMP}.partial" "${PG_DUMP}"
+pg_backup() {
+    if [ "$(docker inspect -f '{{.State.Running}}' "${PG_CONTAINER}" 2>/dev/null)" != "true" ]; then
+        echo "backup failed: postgres container ${PG_CONTAINER} is not running (check PG_CONTAINER)" >&2
+        return 1
+    fi
+    if ! docker exec "${PG_CONTAINER}" pg_dump -U postgres -d cloudagents -Fc > "${PG_DUMP}.partial"; then
+        rm -f "${PG_DUMP}.partial"
+        echo "backup failed: pg_dump in ${PG_CONTAINER} failed" >&2
+        return 1
+    fi
+    if ! docker exec -i "${PG_CONTAINER}" pg_restore --list < "${PG_DUMP}.partial" >/dev/null; then
+        rm -f "${PG_DUMP}.partial"
+        echo "backup failed: pg_dump output for ${PG_CONTAINER} is not a readable archive" >&2
+        return 1
+    fi
+    mv "${PG_DUMP}.partial" "${PG_DUMP}"
+}
+PG_OK=1
+pg_backup || PG_OK=0
 
 # Retain the 14 most recent archives of each kind.
 for prefix in db files user-home pg; do
     ls -1t "${BACKUP_DIR}/${prefix}-"* 2>/dev/null | tail -n +15 | xargs -r rm -f
 done
 
+if [ "${PG_OK}" != 1 ]; then
+    echo "backup incomplete: ${BACKUP_DIR}/{db,files,user-home}-${STAMP}.* written, Postgres dump failed (see above)" >&2
+    exit 1
+fi
 echo "backup complete: ${BACKUP_DIR}/{db,files,user-home,pg}-${STAMP}.*"

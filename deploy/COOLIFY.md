@@ -118,7 +118,8 @@ operator-only maintenance endpoints. The `maintenance` service
 
 Set an interval to `0` to disable that endpoint. Each endpoint has its own
 loop, so a long call (`trigger-jobs` runs due jobs inline) never delays the
-others. The `maintenance` container's logs show every call and its result.
+others; `MAINTENANCE_CALL_TIMEOUT_SECONDS` (default 3 hours) abandons a call
+that hangs. The `maintenance` container's logs show every call and its result.
 
 `reap` matters most: the API no longer resets sessions at startup, so after a
 redeploy, crash or Docker restart, a session whose run was cut off stays

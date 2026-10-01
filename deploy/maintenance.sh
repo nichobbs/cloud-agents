@@ -18,6 +18,8 @@
 #   MAINTENANCE_OBSERVE_SECONDS            default 60
 #   MAINTENANCE_LEDGER_SYNC_SECONDS        default 300
 #   MAINTENANCE_START_DELAY_SECONDS        default 15 (wait for the API on start)
+#   MAINTENANCE_CALL_TIMEOUT_SECONDS       default 10800 (3 h): the longest one
+#                                          call may take before it is abandoned
 # An interval of 0 disables that endpoint.
 set -eu
 
@@ -33,9 +35,11 @@ log() {
 
 call() {
   path=$1
-  # No overall time limit: trigger-jobs and observe run their work inline.
-  # The connect timeout catches an API that is down.
-  if out=$(curl -sS --connect-timeout 10 -X POST \
+  # trigger-jobs and observe run their work inline, so the overall limit is
+  # long (trigger-jobs' worst case is about 150 minutes); it only stops a
+  # hung connection from stalling the loop for good. The connect timeout
+  # catches an API that is down.
+  if out=$(curl -sS --connect-timeout 10 --max-time "$CALL_TIMEOUT" -X POST \
     -H "Authorization: Bearer ${CLOUD_AGENTS_API_TOKEN}" \
     -w ' [HTTP %{http_code}]' \
     "${API_URL}/api/maintenance/${path}" 2>&1); then
@@ -74,12 +78,18 @@ DRAIN="${MAINTENANCE_DRAIN_GRAPH_INGEST_SECONDS:-60}"
 OBSERVE="${MAINTENANCE_OBSERVE_SECONDS:-60}"
 LEDGER_SYNC="${MAINTENANCE_LEDGER_SYNC_SECONDS:-300}"
 START_DELAY="${MAINTENANCE_START_DELAY_SECONDS:-15}"
+CALL_TIMEOUT="${MAINTENANCE_CALL_TIMEOUT_SECONDS:-10800}"
 check_interval MAINTENANCE_REAP_SECONDS "$REAP"
 check_interval MAINTENANCE_TRIGGER_JOBS_SECONDS "$TRIGGER_JOBS"
 check_interval MAINTENANCE_DRAIN_GRAPH_INGEST_SECONDS "$DRAIN"
 check_interval MAINTENANCE_OBSERVE_SECONDS "$OBSERVE"
 check_interval MAINTENANCE_LEDGER_SYNC_SECONDS "$LEDGER_SYNC"
 check_interval MAINTENANCE_START_DELAY_SECONDS "$START_DELAY"
+check_interval MAINTENANCE_CALL_TIMEOUT_SECONDS "$CALL_TIMEOUT"
+if [ "$CALL_TIMEOUT" -eq 0 ]; then
+  echo "maintenance: MAINTENANCE_CALL_TIMEOUT_SECONDS must be at least 1" >&2
+  exit 1
+fi
 
 # Give the API a moment to start listening on a fresh deploy.
 sleep "$START_DELAY"
@@ -92,3 +102,9 @@ loop ledger-sync "$LEDGER_SYNC" &
 
 # The enabled loops never return, so this blocks until the container stops.
 wait
+# Every endpoint is disabled: stay up rather than exit, so the restart
+# policy does not restart the container over and over.
+log "every endpoint is disabled; idling"
+while true; do
+  sleep 3600
+done
