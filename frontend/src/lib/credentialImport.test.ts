@@ -25,10 +25,18 @@ describe('parseCredentialInput', () => {
     expect(parseCredentialInput('not-a-key')).toEqual([]);
   });
 
-  it('parses ~/.claude/.credentials.json', () => {
-    const file = JSON.stringify({ claudeAiOauth: { accessToken: 'sk-ant-oat01-tok', refreshToken: 'r' } });
+  it('keeps the whole refreshable login from ~/.claude/.credentials.json', () => {
+    const oauth = { accessToken: 'sk-ant-oat01-tok', refreshToken: 'sk-ant-ort01-r', expiresAt: 1790000000000 };
+    const file = JSON.stringify({ claudeAiOauth: oauth, mcpOAuth: { other: 'ignored' } });
     const out = parseCredentialInput(file);
-    expect(out).toEqual([
+    expect(out).toHaveLength(1);
+    expect(out[0]?.name).toBe('CLAUDE_CREDENTIALS_JSON');
+    expect(JSON.parse(out[0]?.value ?? '')).toEqual({ claudeAiOauth: oauth });
+  });
+
+  it('falls back to the bare access token when there is no refresh token', () => {
+    const file = JSON.stringify({ claudeAiOauth: { accessToken: 'sk-ant-oat01-tok' } });
+    expect(parseCredentialInput(file)).toEqual([
       { name: 'CLAUDE_CODE_OAUTH_TOKEN', value: 'sk-ant-oat01-tok', source: '~/.claude/.credentials.json' },
     ]);
   });

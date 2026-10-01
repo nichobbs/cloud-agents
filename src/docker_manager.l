@@ -761,6 +761,52 @@ func captureCheckpointsEnabled(): Bool {
   return v == "1" or v == "true"
 }
 
+/// Best-effort end-of-run write-back of a Claude login the CLI refreshed on the
+/// home volume (docs/credentials.md "Refreshable Claude login"). Only for users
+/// who opted in by storing `CLAUDE_CREDENTIALS_JSON`, so every other run pays
+/// nothing. A short-lived, network-less helper container (the inspect
+/// container's "claude-login" mode) reads `.credentials.json` from the home
+/// volume read-only; the store then writes it to the vault only if it is newer
+/// than the stored copy (compare-and-swap, so concurrent runs and hosts cannot
+/// lose an update). The credentials are never logged. Failures are logged and
+/// swallowed, never fail the run. A plain sync func (no `await`), so it is not
+/// exposed to the lyric-lang#6249 await-value-loss trap.
+func writeBackClaudeLogin(sessionId: in String, harness: in String, userId: in String): Unit {
+  if harness != "" and harness != "claude" {
+    return ()
+  }
+  val owner = CloudAgents.Scope.userScope(userId)
+  val opted = match CloudAgents.Repository.credentialNameExists(owner, "CLAUDE_CREDENTIALS_JSON") {
+    case Ok(b) -> b
+    case Err(_) -> false
+  }
+  if not opted {
+    return ()
+  }
+  match runInspectContainer(sessionId, harness, userId, "claude-login", "") {
+    case Ok(logs) -> {
+      val outcome = CloudAgents.Workspace.parseInspectLog(logs)
+      if outcome.ok and outcome.sections.length.toInt() >= 1 {
+        val fresh = outcome.sections[0].trim()
+        if fresh.length > 0 {
+          match CloudAgents.Repository.refreshClaudeLogin(owner, fresh) {
+            case Ok(changed) -> {
+              if changed {
+                println("NOTE: wrote a refreshed Claude login back to the vault (session " + sessionId + ")")
+              }
+            }
+            case Err(e) -> println(
+              "WARNING: could not write the refreshed Claude login back to the vault: " +
+                CloudAgents.Repository.credentialErrorMessage(e)
+            )
+          }
+        }
+      }
+    }
+    case Err(_) -> ()
+  }
+}
+
 func emitRunnerCheckpoint(
   sessionId: in String,
   harness: in String,
@@ -1338,6 +1384,7 @@ pub func streamSessionMessage(
     // The end-of-run work below runs outside the poll loop; renew first so
     // it starts with a fresh heartbeat (#1194).
     renewRunHeartbeat(sessionId, userId)
+    writeBackClaudeLogin(sessionId, harness, userId)
     emitRunnerCheckpoint(sessionId, harness, userId, model, prompt, finalLogs)
     return Ok(value = CloudAgents.Capture.Render.renderFullLog(finalLogs))
   }
@@ -1537,6 +1584,7 @@ pub func runSessionMessageBlocking(
     // The end-of-run work below runs outside the poll loop; renew first so
     // it starts with a fresh heartbeat (#1194).
     renewRunHeartbeat(sessionId, userId)
+    writeBackClaudeLogin(sessionId, harness, userId)
     emitRunnerCheckpoint(sessionId, harness, userId, model, prompt, finalLogs)
     return Ok(value = CloudAgents.Capture.Render.renderFullLog(finalLogs))
   }
@@ -1614,7 +1662,9 @@ val inspectWallClockCapMs = 120000
 ///     whose entrypoint carries the inspect block, and the only one
 ///     guaranteed pulled for this session);
 ///   - binds: ONLY the workspace volume (workspaceVolumeBindFor). No home
-///     volume, so no ~/.claude / CLI credentials are ever mounted;
+///     volume, so no ~/.claude / CLI credentials are ever mounted (the one
+///     exception is the "claude-login" mode: ONLY the home volume, read-only,
+///     no workspace, see writeBackClaudeLogin);
 ///   - envs: ONLY the two CLOUD_AGENTS_INSPECT_* vars
 ///     (CloudAgents.RunnerEnv.inspectEnvs — pure, unit-tested). No
 ///     credentials, no callback token;
@@ -1689,7 +1739,12 @@ async func runInspectContainerAsync(
   // Pure env/bind assembly, all before the first await; every value below is
   // either consumed at that first await or a parameter (safe across awaits).
   val envs = CloudAgents.RunnerEnv.inspectEnvs(mode, path)
-  val binds: slice[String] = [CloudAgents.Db.workspaceVolumeBindFor(userId, sessionId)]
+  // "claude-login" is the one inspect mode that reads the home volume, not the
+  // workspace: read-only, so the helper can never alter the live login.
+  var binds: slice[String] = [CloudAgents.Db.workspaceVolumeBindFor(userId, sessionId)]
+  if mode == "claude-login" {
+    binds = [CloudAgents.Db.homeVolumeBindFor(userId, harness) + ":ro"]
+  }
   val image = imageForHarness(harness)
   match await createContainerWithNetwork(dockerClient(), image, envs, binds, "none") {
     case Ok(id) -> {

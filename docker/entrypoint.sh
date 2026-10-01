@@ -59,6 +59,25 @@ set -euo pipefail
 # never kill the script before a marker is printed (e.g. `head -5000`
 # SIGPIPE-ing `git ls-files` under pipefail).
 if [ -n "${CLOUD_AGENTS_INSPECT_MODE:-}" ]; then
+    # "claude-login" (docker_manager.l writeBackClaudeLogin): the API server
+    # mounted ONLY the home volume, read-only, with no network and no
+    # credentials, to read back a login the CLI refreshed. Print just the
+    # claudeAiOauth object under the same marker protocol and exit; nothing
+    # here may touch /workspace.
+    if [ "${CLOUD_AGENTS_INSPECT_MODE}" = "claude-login" ]; then
+        _ca_login=""
+        _ca_login_file="${CLOUD_AGENTS_LOGIN_HOME:-/home/claude-user}/.claude/.credentials.json"
+        if [ -f "${_ca_login_file}" ] && command -v jq >/dev/null 2>&1; then
+            _ca_login="$(jq -c 'select((.claudeAiOauth.accessToken | type) == "string") | {claudeAiOauth: .claudeAiOauth}' "${_ca_login_file}" 2>/dev/null || true)"
+        fi
+        if [ -n "${_ca_login}" ]; then
+            echo "CLOUD_AGENTS_INSPECT_OK"
+            printf '%s\n' "${_ca_login}"
+        else
+            echo "CLOUD_AGENTS_INSPECT_ERR no login"
+        fi
+        exit 0
+    fi
     if [ ! -d /workspace/.git ]; then
         # The workspace volume auto-creates on bind, so it always mounts —
         # but no run has ever cloned a repo into it yet.
@@ -262,6 +281,33 @@ if [ "$(id -u)" -eq 0 ]; then
         mkdir -p "$HOME/.claude"
         printf '%s' "${CLAUDE_HOME_TARBALL_B64}" | base64 -d | tar -xzf - -C "$HOME/.claude"
         chown -R claude-user:claude-user "$HOME/.claude" || true
+    fi
+
+    # Refreshable login (CLAUDE_CREDENTIALS_JSON): restore it to the home
+    # volume when the vault copy is newer than what is already there, and from
+    # then on let the CLI use the file (and refresh it) instead of a bare token.
+    # CLAUDE_CODE_OAUTH_TOKEN is dropped once the file holds a usable login (it
+    # is assumed, not verified, that the CLI prefers that env var over the file,
+    # and a bare access token cannot be renewed); if the file is unusable the
+    # token stays as a fallback.
+    if [ -n "${CLAUDE_CREDENTIALS_JSON:-}" ]; then
+        # shellcheck source=restore-claude-credentials.sh
+        source /usr/local/bin/restore-claude-credentials.sh
+        mkdir -p "$HOME/.claude"
+        restore_rc=0
+        restore_claude_credentials "$HOME/.claude/.credentials.json" || restore_rc=$?
+        if [ "$restore_rc" = "0" ]; then
+            echo "entrypoint: restored ~/.claude/.credentials.json from the vault (newer than the volume copy)" >&2
+        elif [ "$restore_rc" = "2" ]; then
+            echo "entrypoint: WARNING: CLAUDE_CREDENTIALS_JSON is unusable (malformed, no access token, or jq missing)" >&2
+        fi
+        chown -R claude-user:claude-user "$HOME/.claude" || true
+        if claude_credentials_usable "$HOME/.claude/.credentials.json"; then
+            unset CLAUDE_CODE_OAUTH_TOKEN
+        else
+            echo "entrypoint: WARNING: no usable ~/.claude/.credentials.json; keeping CLAUDE_CODE_OAUTH_TOKEN as a fallback" >&2
+        fi
+        unset CLAUDE_CREDENTIALS_JSON
     fi
 
     # If CLAUDE_CODE_OAUTH_TOKEN is injected from the credential vault, populate

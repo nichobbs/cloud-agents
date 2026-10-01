@@ -159,6 +159,53 @@ without hand-typing names and values:
   `--claude-home` (see below); configure `CLOUD_AGENTS_URL` /
   `CLOUD_AGENTS_API_TOKEN`.
 
+## Refreshable Claude login (`CLAUDE_CREDENTIALS_JSON`)
+
+Pasting `~/.claude/.credentials.json` on the Integrations page (or running
+`scripts/upload-credentials.sh`) stores the whole `claudeAiOauth` object,
+including the refresh token, under `CLAUDE_CREDENTIALS_JSON`. A file with no
+refresh token still falls back to the bare `CLAUDE_CODE_OAUTH_TOKEN`.
+
+- **Why not the bare access token.** `CLAUDE_CODE_OAUTH_TOKEN` is read by the
+  CLI from the environment (believed, not verified, to take precedence over the
+  credentials file), and an access token is short-lived. Nothing could renew it, so the login lapsed
+  until the file was pasted again.
+- **Restore rule.** On every container start, `docker/restore-claude-credentials.sh`
+  writes the vault login to the home volume's `.credentials.json` only if its
+  `expiresAt` is later than the file already there, so a token the CLI has
+  refreshed in place is never overwritten by a stale vault copy, and a freshly
+  pasted login replaces an old one. When `CLAUDE_CREDENTIALS_JSON` is present
+  the entrypoint unsets `CLAUDE_CODE_OAUTH_TOKEN` so the CLI uses the file and
+  can refresh it. Covered by `scripts/test-restore-claude-credentials.sh`.
+- **Exposure.** The refresh token is a long-lived subscription credential, and
+  the CLI has to be able to read it, so it sits in the home volume's
+  `.credentials.json` where the agent (and a prompt-injected agent) can read it.
+  This is no wider than the older `CLAUDE_HOME_TARBALL_B64` path; what changed is
+  that a bare access token (hours) is replaced by the full login. The entrypoint
+  unsets `CLAUDE_CREDENTIALS_JSON` before handing off to the agent user, so it is
+  not in the agent's environment, only on the volume. The ledger observer
+  mounts the same per-user home volume, so withholding the variable from it
+  would not protect the token, and on a fresh volume it would leave the observer
+  unable to authenticate; hence it is on the observer allowlist. A refresh made
+  by an observer lands on the shared volume and is written back to the vault by
+  the next main run's write-back (observer runs do not write back themselves).
+- **Write-back.** After each successful run, for users who have a
+  `CLAUDE_CREDENTIALS_JSON` in the vault, the server starts a short-lived helper
+  container (the inspect container's `claude-login` mode: the home volume
+  mounted read-only, no workspace, no network, no credentials) that prints the
+  `claudeAiOauth` object. `CloudAgents.Repository.refreshClaudeLogin` stores it
+  only if it expires later than the vault copy, with an `UPDATE` conditioned on
+  the exact ciphertext read, so concurrent runs or hosts cannot lose an update
+  (rules in `CloudAgents.ClaudeLogin`, tested in `tests/claude_login_tests.l` and
+  live in `tests/credential_tests.l`; the read-back mode in
+  `scripts/test-claude-login-readback.sh`). Because home volumes are host-local,
+  this is what carries a refresh from one backend host to another: the next run
+  on any host restores the newer vault login before the CLI starts. Residual
+  window: a refresh on host A while host B is mid-run on the previous token (if
+  refresh tokens rotate, B's run may fail to refresh; its next run recovers from
+  the vault). Not written back: a run that fails, and users who stored only a
+  bare `CLAUDE_CODE_OAUTH_TOKEN`.
+
 ## Claude subscription (OAuth) credentials
 
 A Claude Code **API key** (`ANTHROPIC_API_KEY`) is a single value and rides the

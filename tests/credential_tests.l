@@ -290,3 +290,43 @@ test "deleting GITHUB_TOKEN also drops GitHub OAuth refresh metadata, preventing
     case Err(e) -> assertTrue(false, "status read failed: " + CloudAgents.Repository.credentialErrorMessage(e))
   }
 }
+
+func loginJson(access: in String, expiresAt: in String): String {
+  return "{\"claudeAiOauth\":{\"accessToken\":\"" + access + "\",\"refreshToken\":\"r\",\"expiresAt\":" + expiresAt + "}}"
+}
+
+func mustRefresh(userId: in String, fresh: in String): Bool {
+  return match refreshClaudeLogin(CloudAgents.Scope.userScope(userId), fresh) {
+    case Ok(changed) -> changed
+    case Err(e) -> panic("refreshClaudeLogin failed: " + credentialErrorMessage(e))
+  }
+}
+
+test "refreshClaudeLogin writes back only a newer login and never creates the entry" {
+  if live() {
+    val uid = freshUser("login-refresh")
+    // Not opted in (no CLAUDE_CREDENTIALS_JSON): nothing is created.
+    assertFalse(mustRefresh(uid, loginJson("fresh", "1791000000000")), "no entry, no write")
+    assertEqual(findValue(mustDecrypted(uid), "CLAUDE_CREDENTIALS_JSON"), "<missing>", "still absent")
+
+    mustPut(uid, "CLAUDE_CREDENTIALS_JSON", loginJson("seed", "1790000000000"))
+    assertTrue(mustRefresh(uid, loginJson("refreshed", "1791000000000")), "later expiry is written")
+    assertEqual(findValue(mustDecrypted(uid), "CLAUDE_CREDENTIALS_JSON"), loginJson("refreshed", "1791000000000"), "stored")
+
+    assertFalse(mustRefresh(uid, loginJson("stale", "1790500000000")), "an older login never overwrites")
+    assertFalse(mustRefresh(uid, loginJson("same", "1791000000000")), "equal expiry is a no-op")
+    assertFalse(mustRefresh(uid, "not json"), "garbage is ignored")
+    assertEqual(findValue(mustDecrypted(uid), "CLAUDE_CREDENTIALS_JSON"), loginJson("refreshed", "1791000000000"), "unchanged")
+  }
+}
+
+test "refreshClaudeLogin is per-user" {
+  if live() {
+    val a = freshUser("login-a")
+    val b = newUser("login-b")
+    mustPut(a, "CLAUDE_CREDENTIALS_JSON", loginJson("a-seed", "1"))
+    mustPut(b, "CLAUDE_CREDENTIALS_JSON", loginJson("b-seed", "1"))
+    assertTrue(mustRefresh(a, loginJson("a-new", "2")), "a updated")
+    assertEqual(findValue(mustDecrypted(b), "CLAUDE_CREDENTIALS_JSON"), loginJson("b-seed", "1"), "b untouched")
+  }
+}

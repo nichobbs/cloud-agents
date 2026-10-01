@@ -24,6 +24,7 @@ package CloudAgents.PgStore.Credentials
 import Std.Core
 import Std.Uuid
 import Db
+import CloudAgents.ClaudeLogin
 import CloudAgents.Crypto
 import CloudAgents.Pg
 import CloudAgents.PgStore
@@ -249,6 +250,57 @@ pub func decryptedCredentialValue(
   return match CloudAgents.Crypto.decrypt(CloudAgents.PgStore.col(rows[0], "value_encrypted")) {
     case Ok(p) -> Ok(value = Some(value = p))
     case Err(e) -> Err(error = cryptoErr(e))
+  }
+}
+
+/// Vault name of the refreshable Claude login (docs/credentials.md).
+pub val claudeLoginCredentialName = "CLAUDE_CREDENTIALS_JSON"
+
+/// Write a login the CLI refreshed on a home volume back to the vault.
+///
+/// Only an existing `CLAUDE_CREDENTIALS_JSON` is updated (the user opted in by
+/// pasting a full login; a user who never did gets nothing created), and only
+/// when `fresh` expires strictly later than the stored copy
+/// (CloudAgents.ClaudeLogin.isNewerLogin). The UPDATE is conditioned on the
+/// exact ciphertext that was read, so if another run or host wrote in between
+/// the update matches no row and this is a no-op instead of a lost update
+/// (every encryption uses a fresh nonce, so equal ciphertext means the same
+/// write). Returns Ok(true) only when the vault changed.
+pub func refreshClaudeLogin(
+  sc: in CloudAgents.Pg.UserScope, fresh: in String
+): Result[Bool, CloudAgents.Repository.CredentialError] {
+  val u = match CloudAgents.PgStore.openUser(sc) { case Ok(x) -> x; case Err(e) -> return Err(error = dbErr(e)) }
+  defer {
+    CloudAgents.PgStore.release(u)
+  }
+  val rows = match CloudAgents.PgStore.q(u, "SELECT value_encrypted FROM credentials WHERE user_id = @p0 AND name = @p1", [sc.userId, claudeLoginCredentialName]) {
+    case Ok(r) -> r
+    case Err(e) -> return Err(error = dbErr(e))
+  }
+  if rows.length == 0 {
+    return Ok(value = false)
+  }
+  val oldBlob = CloudAgents.PgStore.col(rows[0], "value_encrypted")
+  val current = match CloudAgents.Crypto.decrypt(oldBlob) {
+    case Ok(p) -> p
+    case Err(e) -> return Err(error = cryptoErr(e))
+  }
+  if not CloudAgents.ClaudeLogin.isNewerLogin(fresh, current) {
+    return Ok(value = false)
+  }
+  val newBlob = match CloudAgents.Crypto.encrypt(fresh) {
+    case Ok(blob) -> blob
+    case Err(e) -> return Err(error = cryptoErr(e))
+  }
+  val sql = "UPDATE credentials SET value_encrypted = @p2, updated_at = " + CloudAgents.Pg.msIn(3) +
+    " WHERE user_id = @p0 AND name = @p1 AND value_encrypted = @p4"
+  val n = match CloudAgents.PgStore.ex(u, sql, [sc.userId, claudeLoginCredentialName, newBlob, CloudAgents.Repository.nowMillis(), oldBlob]) {
+    case Ok(x) -> x
+    case Err(e) -> return Err(error = dbErr(e))
+  }
+  match CloudAgents.PgStore.commit(u) {
+    case Ok(_) -> return Ok(value = n > 0)
+    case Err(e) -> return Err(error = dbErr(e))
   }
 }
 
