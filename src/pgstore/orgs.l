@@ -219,12 +219,25 @@ protected type ConfirmedMembers {
   entry isLive(key: in String, nowMs: in Long): Bool {
     return CloudAgents.KeyCache.liveIn(table, key, nowMs)
   }
-  entry remember(key: in String, expiresAtMs: in Long): Unit {
+  /// Cache a confirmation, unless the membership was forgotten since the
+  /// confirming read could have started: a removal that commits after that
+  /// read but before this call leaves a marker, so the stale "yes" is not
+  /// cached.
+  entry rememberUnlessForgotten(key: in String, nowMs: in Long, expiresAtMs: in Long): Unit {
+    if CloudAgents.KeyCache.liveIn(table, forgottenKey(key), nowMs) {
+      return
+    }
     CloudAgents.KeyCache.rememberIn(table, key, expiresAtMs, 10000)
   }
-  entry forget(key: in String): Unit {
+  /// Drop a confirmation and mark it forgotten for one cache window.
+  entry forget(key: in String, nowMs: in Long): Unit {
     CloudAgents.KeyCache.forgetIn(table, key)
+    CloudAgents.KeyCache.rememberIn(table, forgottenKey(key), nowMs + membershipCacheMillis.toLong(), 10000)
   }
+}
+
+func forgottenKey(key: in String): String {
+  return "forgotten\n" + key
 }
 
 val confirmedMembers = ConfirmedMembers()
@@ -246,14 +259,14 @@ pub func isActiveMemberCached(userId: in String, tenantId: in String): Result[Bo
   }
   val active = isActiveMember(userId, tenantId)?
   if active {
-    confirmedMembers.remember(key, now + membershipCacheMillis.toLong())
+    confirmedMembers.rememberUnlessForgotten(key, CloudAgents.KeyCache.nowMillis(), now + membershipCacheMillis.toLong())
   }
   return Ok(value = active)
 }
 
 /// Drop a cached confirmation, after a change that can end the membership.
 func forgetMember(userId: in String, tenantId: in String): Unit {
-  confirmedMembers.forget(memberKey(userId, tenantId))
+  confirmedMembers.forget(memberKey(userId, tenantId), CloudAgents.KeyCache.nowMillis())
 }
 
 /// Whether `userId` may act in `tenantId`: an active membership exists.

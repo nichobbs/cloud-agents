@@ -397,3 +397,30 @@ test "the membership sync endpoint is operator-only" {
   }
   CloudAgents.Auth.setCurrentUserId("")
 }
+
+test "the sweep re-checks due users one at a time and suspends those without a usable token" {
+  if not live() {
+    return
+  }
+  migrate()
+  val owner = newUser("owner" + short())
+  val a = newUser("sweepa" + short())
+  val b = newUser("sweepb" + short())
+  val orgId = freshOrgId()
+  val tenantId = connect(owner, orgId, "sweep-" + short()).id
+  reconcile(a, [gm(orgId, "sweep", "member")])
+  reconcile(b, [gm(orgId, "sweep", "member")])
+  backdateSync(a)
+  backdateSync(b)
+  // Neither user has a vaulted GITHUB_TOKEN, so each check ends in a
+  // suspension without any call to GitHub.
+  CloudAgents.Auth.setCurrentUserId(CloudAgents.Auth.operatorUserId())
+  match CloudAgents.OrgSync.membershipSyncHandler() {
+    case Ok(body) -> assertTrue(body.startsWith("{\"synced\":"), "sweep summary: " + body)
+    case Err(e) -> assertTrue(false, "the operator sweep failed: " + e.message)
+  }
+  CloudAgents.Auth.setCurrentUserId("")
+  assertFalse(active(a, tenantId), "the first due user was checked and suspended")
+  assertFalse(active(b, tenantId), "so was the second")
+  assertFalse(containsId(claimedNow(), a), "a checked user is not due again")
+}
