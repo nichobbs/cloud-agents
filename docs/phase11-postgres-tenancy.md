@@ -207,7 +207,11 @@ listed in the PR and in `docs/phase9-message-search.md`.
   `memberships` row exists for that user and is not suspended; otherwise
   `403`. The middleware stamps the validated tenant with the user for the
   request thread, and `CloudAgents.Auth.requestScope()`, read once at handler
-  entry, returns it (slice F1).
+  entry, returns it (slice F1). A confirmed membership is cached in the
+  process for 30 seconds, so the check costs one query per user and
+  organisation per window rather than per request. Removals and suspensions
+  made by the same instance drop the entry at once; one made on another
+  instance takes effect within the 30 seconds.
 - **Explicit scope, never ambient.** The middleware produces a
   `TenantScope` value (`tenantId`, `userId`), and it is passed as an explicit
   parameter to every repository and ledger-store function that touches
@@ -572,7 +576,9 @@ Postgres-only data.
     (`POST /api/orgs/github`, tenant `github:<org id>`, the caller as owner
     once GitHub confirms they are an admin), sync at sign-in, and the hourly
     re-check (`POST /api/maintenance/membership-sync`, polled every 300 s by
-    the maintenance service, 5-minute lease per user). A reconciliation
+    the maintenance service). A sweep claims one user at a time, each under a
+    15-minute lease (longer than one user's worst case), and stops claiming
+    after 4 minutes or 50 users. A reconciliation
     adds, updates and removes `github` memberships of connected
     organisations, lifts suspensions, never demotes an owner (it does remove
     one GitHub no longer reports, since access follows GitHub) and never

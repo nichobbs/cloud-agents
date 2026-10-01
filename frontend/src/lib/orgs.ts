@@ -1,4 +1,4 @@
-import { apiFetch } from './api';
+import { apiFetch, authHeaders } from './api';
 
 const BASE = (import.meta.env['VITE_API_URL'] as string | undefined) ?? '';
 
@@ -34,13 +34,8 @@ export interface OrgInvitation {
   expiresAt: string;
 }
 
-function authHeaders(json: boolean): HeadersInit {
-  const token = localStorage.getItem('cloud_agents_token');
-  return {
-    ...(json ? { 'Content-Type': 'application/json' } : {}),
-    ...(token ? { Authorization: `Bearer ${token}` } : {}),
-  };
-}
+/** Shown for a GitHub membership the hourly sync suspended. */
+export const SUSPENDED_REASON = 'GitHub membership suspended until you sign in again';
 
 /** The server's `{"error": ...}` text, falling back to status + raw body. */
 async function failure(res: Response): Promise<Error> {
@@ -57,7 +52,7 @@ async function failure(res: Response): Promise<Error> {
 async function call<T>(method: string, path: string, body?: unknown): Promise<T> {
   const res = await apiFetch(`${BASE}${path}`, {
     method,
-    headers: authHeaders(body !== undefined),
+    headers: body !== undefined ? { 'Content-Type': 'application/json', ...authHeaders() } : authHeaders(),
     ...(body !== undefined ? { body: JSON.stringify(body) } : {}),
   });
   if (!res.ok) throw await failure(res);
@@ -74,7 +69,7 @@ export const orgsApi = {
   members: async (orgId: string): Promise<OrgMember[]> =>
     (await call<{ members: OrgMember[] }>('GET', `/api/orgs/${enc(orgId)}/members`)).members,
   setRole: (orgId: string, userId: string, role: OrgRole) =>
-    call<{ ok: boolean }>('POST',`/api/orgs/${enc(orgId)}/members/${enc(userId)}`, { role }),
+    call<{ ok: boolean }>('POST', `/api/orgs/${enc(orgId)}/members/${enc(userId)}`, { role }),
   removeMember: (orgId: string, userId: string) =>
     call<{ ok: boolean }>('DELETE', `/api/orgs/${enc(orgId)}/members/${enc(userId)}`),
   invitations: async (orgId: string): Promise<OrgInvitation[]> =>

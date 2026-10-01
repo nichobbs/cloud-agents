@@ -113,7 +113,7 @@ impl Web.Middleware for AuthMiddleware {
         // user's own personal tenant, leaves the personal scope in place.
         val org = match Web.header(req, CloudAgents.Auth.orgHeaderName()) { case Some(h) -> h.trim(); case None -> "" }
         if org.length > 0 and org != CloudAgents.Scope.personalTenantId(userId) {
-          match CloudAgents.PgStore.Orgs.isActiveMember(userId, org) {
+          match CloudAgents.PgStore.Orgs.isActiveMemberCached(userId, org) {
             case Ok(true) -> CloudAgents.Auth.setCurrentTenantId(org)
             case Ok(false) -> return Web.errorResponse(
               Web.forbidden(

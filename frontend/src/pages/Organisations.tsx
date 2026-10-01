@@ -1,10 +1,9 @@
 import { useCallback, useEffect, useState } from 'react';
 import { useOrgs } from '../context/OrgContext';
 import { getLogin } from '../lib/auth';
-import { inviteLink, orgsApi } from '../lib/orgs';
+import { SUSPENDED_REASON, inviteLink, orgsApi } from '../lib/orgs';
 import type { Org, OrgInvitation, OrgMember, OrgRole } from '../lib/orgs';
 
-const SUSPENDED_REASON = 'GitHub membership suspended until you sign in again';
 
 const msg = (err: unknown, fallback: string) => (err instanceof Error ? err.message : fallback);
 

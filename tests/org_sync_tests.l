@@ -346,11 +346,19 @@ test "a refused token suspends GitHub memberships until the next sync reports th
   val tenantId = connect(owner, orgId, "sus-" + short()).id
   reconcile(user, [gm(orgId, "sus", "member")])
   assertTrue(active(user, tenantId), "active after sync")
+  match CloudAgents.PgStore.Orgs.isActiveMemberCached(user, tenantId) {
+    case Ok(b) -> assertTrue(b, "confirmed and cached")
+    case Err(e) -> panic(CloudAgents.Db.dbErrorMessage(e))
+  }
   match CloudAgents.PgStore.Orgs.suspendGitHubMemberships(user) {
     case Ok(n) -> assertEqualInt(n, 1, "one membership suspended")
     case Err(e) -> assertTrue(false, CloudAgents.Db.dbErrorMessage(e))
   }
   assertFalse(active(user, tenantId), "a suspended member cannot act in the organisation")
+  match CloudAgents.PgStore.Orgs.isActiveMemberCached(user, tenantId) {
+    case Ok(b) -> assertFalse(b, "the suspension clears the middleware's cached confirmation")
+    case Err(e) -> panic(CloudAgents.Db.dbErrorMessage(e))
+  }
   match membership(user, tenantId) {
     case Some(o) -> assertTrue(o.suspended, "listed as suspended")
     case None -> assertTrue(false, "suspended, not deleted")

@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { Link, useLocation } from 'react-router-dom';
 import { useAuthConfig } from '../context/AuthConfigContext';
 import { useOrgs } from '../context/OrgContext';
+import { SUSPENDED_REASON } from '../lib/orgs';
 import type { Org } from '../lib/orgs';
 import { beginLogin, getLogin, isSignedIn, signOut } from '../lib/auth';
 import { AttentionStatus } from './AttentionStatus';
@@ -20,7 +21,6 @@ const NAV_ITEMS: Array<{ to: string; label: string }> = [
   { to: '/orgs', label: 'Organisations' },
 ];
 
-export const SUSPENDED_REASON = 'GitHub membership suspended until you sign in again';
 
 function orgLabel(o: Org): string {
   const kind = o.kind === 'github_org' ? 'GitHub' : o.kind;

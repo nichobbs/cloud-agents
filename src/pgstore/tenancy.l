@@ -7,8 +7,8 @@
 //! user's first write. `ensurePersonalTenant` creates the `users` row, the
 //! tenant and the membership in one transaction, idempotently, and the auth
 //! middleware calls it for every authenticated request. A process-wide cache
-//! of users already provisioned keeps that to one round trip per user per
-//! process; the inserts are `ON CONFLICT DO NOTHING`, so a second instance or
+//! of users already provisioned (an O(1) `CloudAgents.KeyCache`) keeps that to
+//! one round trip per user per process; the inserts are `ON CONFLICT DO NOTHING`, so a second instance or
 //! a race within this one is harmless.
 //!
 //! A `gh-<id>` user id also records the GitHub numeric id. The GitHub login
@@ -23,31 +23,30 @@ import CloudAgents.Auth
 import CloudAgents.Pg
 import CloudAgents.PgStore
 import CloudAgents.Db
+import CloudAgents.KeyCache
 
 /// User ids whose personal tenant this process has already provisioned.
-/// Bounded by the number of distinct users who sign in during the process's
-/// lifetime.
+/// Bounded by `CloudAgents.KeyCache`; an entry never expires on its own,
+/// since a provisioned tenant stays provisioned.
 protected type ProvisionedUsers {
-  var ids: slice[String] = []
-  entry contains(userId: in String): Bool {
-    for id in ids {
-      if id == userId {
-        return true
-      }
-    }
-    return false
+  var table: CloudAgents.KeyCache.Hashtable = CloudAgents.KeyCache.newTable()
+  entry isLive(key: in String, nowMs: in Long): Bool {
+    return CloudAgents.KeyCache.liveIn(table, key, nowMs)
   }
-  entry add(userId: in String): Unit {
-    for id in ids {
-      if id == userId {
-        return
-      }
-    }
-    ids = ids.append(userId)
+  entry remember(key: in String, expiresAtMs: in Long): Unit {
+    CloudAgents.KeyCache.rememberIn(table, key, expiresAtMs, 10000)
+  }
+  entry forget(key: in String): Unit {
+    CloudAgents.KeyCache.forgetIn(table, key)
   }
 }
 
 val provisioned = ProvisionedUsers()
+
+/// An expiry far enough ahead to mean "for the life of the process".
+func forever(): Long {
+  return CloudAgents.KeyCache.nowMillis() + 3153600000000.toLong()
+}
 
 /// Make sure `userId` has a `users` row, a personal tenant and an owner
 /// membership of it. Idempotent; after the first success in this process it
@@ -56,11 +55,11 @@ pub func ensurePersonalTenant(userId: in String): Result[Unit, CloudAgents.Db.Db
   if userId.length == 0 {
     return Err(error = CloudAgents.Db.ValidationFailed(message = "cannot provision a tenant for an empty user id"))
   }
-  if provisioned.contains(userId) {
+  if provisioned.isLive(userId, CloudAgents.KeyCache.nowMillis()) {
     return Ok(value = ())
   }
   provisionPersonalTenant(userId)?
-  provisioned.add(userId)
+  provisioned.remember(userId, forever())
   return Ok(value = ())
 }
 

@@ -19,16 +19,25 @@ import CloudAgents.Orgs
 import CloudAgents.PgStore.Orgs
 import CloudAgents.Db
 import CloudAgents.Streaming
+import CloudAgents.KeyCache
 
 @generate(Json)
 pub record ConnectGitHubOrgRequest {
   pub githubOrg: String
 }
 
-/// Users re-checked per sweep, and how long each is leased.
+/// At most this many users are re-checked per sweep.
 val usersPerSweep = 50
 
-val syncLeaseSeconds = 300
+/// A sweep stops claiming new users after this long, so it ends well inside
+/// the maintenance poller's call timeout.
+val sweepBudgetMillis = 240000
+
+/// Each user is claimed on its own, just before it is checked, with a lease
+/// longer than one user's worst case (a token refresh, ten membership pages
+/// and a `/user` check, each up to the GitHub client's timeout). So no claim
+/// can lapse while its user is still being checked, however long the sweep.
+val syncLeaseSeconds = 900
 
 /// GitHub pages of 100 memberships; a user in more organisations than this
 /// is reconciled against the first 1000.
@@ -164,11 +173,12 @@ pub func fetchMemberships(token: in String): Result[FetchedMemberships, String] 
 /// 401 always does. A 403 or 404 can also mean a rate limit or a missing
 /// `read:org` scope, so `isTokenRefused` checks those against `/user`.
 pub func isUnauthorized(errorText: in String): Bool {
-  return errorText.contains("(401)")
+  return CloudAgents.GitHubApi.httpStatusOf(errorText) == 401
 }
 
 pub func isForbiddenOrMissing(errorText: in String): Bool {
-  return errorText.contains("(403)") or errorText.contains("(404)")
+  val status = CloudAgents.GitHubApi.httpStatusOf(errorText)
+  return status == 403 or status == 404
 }
 
 /// Whether the memberships call failed because the token is unusable for it
@@ -297,23 +307,31 @@ pub func membershipSyncHandler(): Result[String, Web.ApiError] {
   if CloudAgents.Auth.currentUserId() != CloudAgents.Auth.operatorUserId() {
     return Err(Web.unauthorized("the membership sync may only be triggered by the operator identity"))
   }
-  val users = match CloudAgents.PgStore.Orgs.claimMembershipSync(usersPerSweep, syncLeaseSeconds) {
-    case Ok(v) -> v
-    case Err(e) -> return Err(Web.internalError("failed to claim users for membership sync: " + CloudAgents.Db.dbErrorMessage(e)))
-  }
+  val deadline = CloudAgents.KeyCache.nowMillis() + sweepBudgetMillis.toLong()
   var synced = 0
   var suspended = 0
   var failed = 0
-  for userId in users {
-    match syncUser(userId) {
-      case UserSynced -> {
-        synced = synced + 1
-      }
-      case UserSuspended -> {
-        suspended = suspended + 1
-      }
-      case UserSyncFailed -> {
-        failed = failed + 1
+  var claimed = 0
+  var more = true
+  while more and claimed < usersPerSweep and CloudAgents.KeyCache.nowMillis() < deadline {
+    val users = match CloudAgents.PgStore.Orgs.claimMembershipSync(1, syncLeaseSeconds) {
+      case Ok(v) -> v
+      case Err(e) -> return Err(Web.internalError("failed to claim a user for membership sync: " + CloudAgents.Db.dbErrorMessage(e)))
+    }
+    if users.length == 0 {
+      more = false
+    } else {
+      claimed = claimed + 1
+      match syncUser(users[0]) {
+        case UserSynced -> {
+          synced = synced + 1
+        }
+        case UserSuspended -> {
+          suspended = suspended + 1
+        }
+        case UserSyncFailed -> {
+          failed = failed + 1
+        }
       }
     }
   }
