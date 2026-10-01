@@ -280,6 +280,12 @@ pub func recordGitHubLogin(
   defer {
     CloudAgents.PgStore.release(u)
   }
+  // GitHub logins are recycled after a rename: the newest sign-in holds the
+  // login, and any other user still recorded with it loses it, so they
+  // cannot accept an invitation meant for the new holder.
+  if login.length > 0 {
+    CloudAgents.PgStore.ex(u, "UPDATE users SET github_login = '' WHERE lower(github_login) = lower(@p1) AND id <> @p0", [userId, login])?
+  }
   if githubId.length > 0 {
     CloudAgents.PgStore.ex(u, "INSERT INTO users (id, github_id, github_login) VALUES (@p0, @p1::bigint, @p2) " + "ON CONFLICT (id) DO UPDATE SET github_login = EXCLUDED.github_login", [userId, githubId, login])?
   } else {
@@ -346,11 +352,13 @@ pub func setMemberRole(
   defer {
     CloudAgents.PgStore.release(u)
   }
+  // Lock before reading the caller's role, so a concurrent change to it
+  // cannot slip in between the check and the write.
+  lockManagedTenant(u, tenantId)?
   val callerRole = activeRole(u, tenantId, callerId)?
   if callerRole.length == 0 {
     return Err(error = NotFound(message = "organisation not found"))
   }
-  lockManagedTenant(u, tenantId)?
   if callerRole != "owner" {
     return Err(error = Forbidden(message = "only an owner can change roles"))
   }
@@ -376,11 +384,12 @@ pub func removeMember(callerId: in String, tenantId: in String, targetId: in Str
   defer {
     CloudAgents.PgStore.release(u)
   }
+  lockManagedTenant(u, tenantId)?
   val callerRole = activeRole(u, tenantId, callerId)?
-  if callerRole.length == 0 {
+  // A suspended member may still leave; everything else needs an active role.
+  if callerRole.length == 0 and callerId != targetId {
     return Err(error = NotFound(message = "organisation not found"))
   }
-  lockManagedTenant(u, tenantId)?
   if callerRole != "owner" and callerId != targetId {
     return Err(error = Forbidden(message = "only an owner can remove other members"))
   }

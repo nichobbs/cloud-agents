@@ -441,3 +441,48 @@ test "the organisation handlers shape JSON and map failures to HTTP statuses" {
   }
   CloudAgents.Auth.setCurrentUserId("")
 }
+
+test "a suspended member can still leave" {
+  if not live() {
+    return
+  }
+  migrate()
+  val owner = newUser("owner" + shortId())
+  val login = "leaver" + shortId()
+  val leaver = newUser(login)
+  val org = mustOrg(CloudAgents.PgStore.Orgs.createNativeOrg(owner, "Leavers"))
+  mustOrg(
+    CloudAgents.PgStore.Orgs.acceptInvitation(
+      leaver,
+      mustInvite(CloudAgents.PgStore.Orgs.createInvitation(owner, org.id, login, "member")).token
+    )
+  )
+  unscopedExec("UPDATE memberships SET suspended = true WHERE tenant_id = @p0 AND user_id = @p1", [org.id, leaver])
+  mustOk(CloudAgents.PgStore.Orgs.removeMember(leaver, org.id, leaver), "a suspended member leaves")
+  assertEqual(roleIn(leaver, org.id), "", "gone")
+  expectUnitFailure(
+    CloudAgents.PgStore.Orgs.removeMember(leaver, org.id, owner),
+    "notfound",
+    "but cannot remove others"
+  )
+}
+
+test "a recycled GitHub login belongs only to its newest holder" {
+  if not live() {
+    return
+  }
+  migrate()
+  val owner = newUser("owner" + shortId())
+  val login = "recycled" + shortId()
+  val oldHolder = newUser(login)
+  val newHolder = newUser(login)
+  val org = mustOrg(CloudAgents.PgStore.Orgs.createNativeOrg(owner, "Recycled"))
+  val inv = mustInvite(CloudAgents.PgStore.Orgs.createInvitation(owner, org.id, login, "member"))
+  expectOrgFailure(
+    CloudAgents.PgStore.Orgs.acceptInvitation(oldHolder, inv.token),
+    "forbidden",
+    "the earlier holder lost the login"
+  )
+  val joined = mustOrg(CloudAgents.PgStore.Orgs.acceptInvitation(newHolder, inv.token))
+  assertEqual(joined.id, org.id, "the newest holder accepts")
+}

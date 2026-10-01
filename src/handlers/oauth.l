@@ -241,9 +241,6 @@ func fetchIdentity(token: in String): Result[GitHubIdentity, String] {
   return Ok(value = GitHubIdentity(githubId = githubId, login = CloudAgents.Auth.githubLoginFromJson(json)))
 }
 
-/// POST /api/auth/github/exchange: swap the one-time code for the user's
-/// OAuth token, validate the token's identity, apply the whitelist, and prime
-/// the validation cache so the client's first real API call is fast.
 /// Keep the user's GitHub login current (invitations are matched against it,
 /// docs/phase11-postgres-tenancy.md §6.3). Best-effort: a store failure must
 /// not fail a sign-in.
@@ -256,6 +253,9 @@ func recordLogin(userId: in String, identity: in GitHubIdentity): Unit {
   }
 }
 
+/// POST /api/auth/github/exchange: swap the one-time code for the user's
+/// OAuth token, validate the token's identity, apply the whitelist, and prime
+/// the validation cache so the client's first real API call is fast.
 pub func exchangeCode(req: in ExchangeRequest): Result[TokenGrant, Web.ApiError] {
   if not oauthConfigured() {
     return Err(
