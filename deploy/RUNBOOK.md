@@ -132,7 +132,8 @@ their personal tenant, created on their first authenticated request.
 
 The `maintenance` container POSTs the API's operator-only maintenance
 endpoints with `CLOUD_AGENTS_API_TOKEN`: `reap`, `trigger-jobs`,
-`drain-graph-ingest` and `observe` every 60 s, and `ledger-sync` every 300 s.
+`drain-graph-ingest` and `observe` every 60 s, and `ledger-sync` and
+`membership-sync` every 300 s.
 Each interval is set by a `MAINTENANCE_*_SECONDS` variable in `.env` (0
 disables it); `COOLIFY.md` "Maintenance poller" lists them. Every call and
 its result is logged: `docker compose logs maintenance`.

@@ -113,6 +113,7 @@ operator-only maintenance endpoints. The `maintenance` service
 | `/api/maintenance/drain-graph-ingest` | `MAINTENANCE_DRAIN_GRAPH_INGEST_SECONDS` (60) | `MAINTENANCE_DRAIN_GRAPH_INGEST_TIMEOUT_SECONDS` (1800) | retries failed graph-ingest deliveries |
 | `/api/maintenance/observe` | `MAINTENANCE_OBSERVE_SECONDS` (60) | `MAINTENANCE_OBSERVE_TIMEOUT_SECONDS` (10800) | runs queued ledger observer passes |
 | `/api/maintenance/ledger-sync` | `MAINTENANCE_LEDGER_SYNC_SECONDS` (300) | `MAINTENANCE_LEDGER_SYNC_TIMEOUT_SECONDS` (3600) | reconciles ledger items with GitHub |
+| `/api/maintenance/membership-sync` | `MAINTENANCE_MEMBERSHIP_SYNC_SECONDS` (300) | `MAINTENANCE_MEMBERSHIP_SYNC_TIMEOUT_SECONDS` (1800) | re-checks GitHub organisation memberships over an hour old, so a member removed on GitHub loses access within the hour |
 
 Set an interval to `0` to disable that endpoint. Each endpoint has its own
 loop, so a long call (`trigger-jobs` runs due jobs inline) never delays the

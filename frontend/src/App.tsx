@@ -2,15 +2,18 @@ import { Navigate, Route, BrowserRouter as Router, Routes } from 'react-router-d
 import { Nav } from './components/Nav';
 import { RequireAuth } from './components/RequireAuth';
 import { AuthConfigProvider } from './context/AuthConfigContext';
+import { OrgProvider, useOrgs } from './context/OrgContext';
 import { SessionsProvider } from './context/SessionsContext';
 import { AuthCallback } from './pages/AuthCallback';
 import { Credentials } from './pages/Credentials';
 import { Inbox } from './pages/Inbox';
 import { Integrations } from './pages/Integrations';
+import { AcceptInvitation } from './pages/AcceptInvitation';
 import { Library } from './pages/Library';
 import { Login } from './pages/Login';
 import { NewSession } from './pages/NewSession';
 import { Profiles } from './pages/Profiles';
+import { Organisations } from './pages/Organisations';
 import { Prompts } from './pages/Prompts';
 import { Repos } from './pages/Repos';
 import { Search } from './pages/Search';
@@ -19,10 +22,21 @@ import { SessionList } from './pages/SessionList';
 import { Todos } from './pages/Todos';
 import { Webhooks } from './pages/Webhooks';
 
+/// Every page loads its data on mount, so switching organisation remounts the
+/// whole routed tree (sessions poller included) by keying it on the active
+/// org id: no page needs its own refetch-on-switch logic.
+function OrgScoped({ children }: { children: React.ReactNode }) {
+  const { activeOrgId, personalId } = useOrgs();
+  // Personal maps to one stable key so the org list loading in does not remount.
+  const key = activeOrgId === personalId ? 'personal' : activeOrgId;
+  return <SessionsProvider key={key}>{children}</SessionsProvider>;
+}
+
 export function App() {
   return (
     <AuthConfigProvider>
-      <SessionsProvider>
+      <OrgProvider>
+      <OrgScoped>
         <Router>
           <Nav />
           <Routes>
@@ -60,9 +74,12 @@ export function App() {
               element={<RequireAuth><Integrations /></RequireAuth>}
             />
             <Route path="/webhooks" element={<RequireAuth><Webhooks /></RequireAuth>} />
+            <Route path="/orgs" element={<RequireAuth><Organisations /></RequireAuth>} />
+            <Route path="/invite/:token" element={<RequireAuth><AcceptInvitation /></RequireAuth>} />
           </Routes>
         </Router>
-      </SessionsProvider>
+      </OrgScoped>
+      </OrgProvider>
     </AuthConfigProvider>
   );
 }
