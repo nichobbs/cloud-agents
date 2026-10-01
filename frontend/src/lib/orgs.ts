@@ -74,7 +74,7 @@ export const orgsApi = {
   members: async (orgId: string): Promise<OrgMember[]> =>
     (await call<{ members: OrgMember[] }>('GET', `/api/orgs/${enc(orgId)}/members`)).members,
   setRole: (orgId: string, userId: string, role: OrgRole) =>
-    call<{ ok: boolean }>('PUT', `/api/orgs/${enc(orgId)}/members/${enc(userId)}`, { role }),
+    call<{ ok: boolean }>('POST',`/api/orgs/${enc(orgId)}/members/${enc(userId)}`, { role }),
   removeMember: (orgId: string, userId: string) =>
     call<{ ok: boolean }>('DELETE', `/api/orgs/${enc(orgId)}/members/${enc(userId)}`),
   invitations: async (orgId: string): Promise<OrgInvitation[]> =>
