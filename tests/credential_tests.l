@@ -171,6 +171,14 @@ test "Credential handler rejects invalid and reserved names" {
     case Ok(_) -> assertTrue(false, "reserved name EXTRA_REPOS must be rejected")
     case Err(err) -> assertEqualInt(err.status, 400, "reserved name -> 400")
   }
+  // NODE_OPTIONS is forced to --dns-result-order=ipv4first on every runner
+  // container (the IPv6-unreachable-but-DNS-advertises-AAAA fix): a
+  // same-named credential would be appended after it and, since Docker
+  // keeps the last value, silently reopen that bug for just that profile.
+  match putCredentialHandler(PutCredentialRequest(name = "NODE_OPTIONS", value = "x")) {
+    case Ok(_) -> assertTrue(false, "reserved name NODE_OPTIONS must be rejected")
+    case Err(err) -> assertEqualInt(err.status, 400, "reserved name -> 400")
+  }
   // System- and loader-critical env vars are reserved too: PATH/HOME would
   // break the runner, LD_PRELOAD/LD_LIBRARY_PATH could hijack it (#226).
   match putCredentialHandler(PutCredentialRequest(name = "PATH", value = "x")) {

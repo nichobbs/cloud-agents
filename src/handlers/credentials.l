@@ -59,6 +59,7 @@ func isReservedEnvName(name: in String): Bool {
     name == "NATIVE_SESSION_ID" or
     name == "SESSION_ID" or
     name == "EXTRA_REPOS" or
+    name == "NODE_OPTIONS" or
     name == "PATH" or
     name == "HOME" or
     name == "USER" or
