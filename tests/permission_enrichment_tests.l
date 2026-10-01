@@ -5,8 +5,8 @@
 //!   conservative fold precedence, the `permissionForTool` accessor, and the
 //!   `request_secret:<name>` key convention — over hand-built `ToolPermission`
 //!   lists.
-//! - **Live-SQLite** (same fresh-temp-DB harness as tests/session_events_tests.l,
-//!   gated on the native SQLite lib): create + answer real
+//! - **Live-Postgres** (same fresh-user harness as tests/session_events_tests.l,
+//!   gated on the Postgres DSNs): create + answer real
 //!   `permission_requests` / `secret_requests` rows through the repository, then
 //!   `permissionsForSession` derives the expected per-tool map.
 @test_module
@@ -14,17 +14,17 @@ package CloudAgents.PermissionEnrichmentTests
 
 import Std.Core
 import Std.Collections
+import Std.Environment
 import Std.Testing
 import Std.Uuid
+import CloudAgents.Pg
+import CloudAgents.Pg.Migrate
+import CloudAgents.PgStore.Tenancy
 import CloudAgents.Scope
 import CloudAgents.PermissionEnrichment
 import CloudAgents.Repository
 import CloudAgents.Sqlite
 import Testamur.CheckpointFormat.Model
-import extern System.Environment as Env
-
-@externTarget("System.IO.File.Delete")
-func fileDelete(path: in String): Unit = ()
 
 // ── Small helpers ────────────────────────────────────────────────────────────
 // Build ToolPermission through the home-package constructor func, not by
@@ -119,62 +119,102 @@ test "permissionForTool returns the folded outcome, Auto for unknown tools" {
   assertEqual(lookup(derived, "Read"), "auto", "unprompted tool → auto")
 }
 
-// ── Live-SQLite: fresh-temp-DB harness (as session_events_tests.l) ───────────
-func useFreshTestDb(tag: in String): String {
-  val path = "/tmp/cloud-agents-tests-" + tag + "-" + Std.Uuid.uuidToString(Std.Uuid.newUuid()) + ".db"
-  Env.SetEnvironmentVariable("CLOUD_AGENTS_DB_PATH", path)
-  match CloudAgents.Repository.initSchema() {
-    case Ok(_) -> ()
-    case Err(e) -> assertTrue(false, "initSchema failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+// ── Live Postgres ─────────────────────────────────────────────────────────────
+//
+// The store is Postgres (docs/phase11-postgres-tenancy.md). These tests run iff
+// LYRIC_CONFIG_DB_CONNECTION_URL (cloudagents_app) and
+// CLOUD_AGENTS_MIGRATE_DATABASE_URL (cloudagents_owner) are set, and fail rather
+// than skip when CLOUD_AGENTS_REQUIRE_LIVE_PG=1 (CI). Each test acts as a fresh
+// user with its own personal tenant, so tests, suites and repeated runs against
+// the same database never see each other's rows.
+func live(): Bool {
+  val ok = CloudAgents.Pg.serviceConfigured() and
+    Std.Environment.getVarOrDefault(CloudAgents.Pg.migrateDsnVar(), "").length.toInt() > 0
+  if ok {
+    return true
   }
-  return path
+  assertTrue(
+    Std.Environment.getVarOrDefault("CLOUD_AGENTS_REQUIRE_LIVE_PG", "") != "1",
+    "CLOUD_AGENTS_REQUIRE_LIVE_PG=1 but LYRIC_CONFIG_DB_CONNECTION_URL or CLOUD_AGENTS_MIGRATE_DATABASE_URL is not set"
+  )
+  println("SKIP: permission enrichment tests need LYRIC_CONFIG_DB_CONNECTION_URL and CLOUD_AGENTS_MIGRATE_DATABASE_URL")
+  return false
 }
 
-func cleanupTestDb(path: in String): Unit {
-  try {
-    fileDelete(path)
-  } catch Bug as b {
-    // locked or already gone — fine for a temp file
+func migrate(): Unit {
+  val conn = match CloudAgents.Pg.connectDsn(Std.Environment.getVarOrDefault(CloudAgents.Pg.migrateDsnVar(), "")) {
+    case Ok(c) -> c
+    case Err(e) -> panic(CloudAgents.Pg.pgErrorMessage(e))
   }
+  defer {
+    conn.close()
+  }
+  match CloudAgents.Pg.Migrate.migrate(conn) {
+    case Ok(_) -> ()
+    case Err(e) -> panic("migrate failed: " + CloudAgents.Pg.pgErrorMessage(e))
+  }
+}
+
+/// A new user with a provisioned personal tenant. Does not change the request
+/// identity.
+func newUser(tag: in String): String {
+  val uid = "t-" + tag + "-" + Std.Uuid.uuidToString(Std.Uuid.newUuid())
+  match CloudAgents.PgStore.Tenancy.ensurePersonalTenant(uid) {
+    case Ok(_) -> ()
+    case Err(e) -> panic("provisioning " + uid + " failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+  }
+  return uid
+}
+
+/// Migrate, then make a new user the request identity (what handlers read via
+/// CloudAgents.Auth.requestScope()).
+func freshUser(tag: in String): String {
+  migrate()
+  val uid = newUser(tag)
+  CloudAgents.Auth.setCurrentUserId(uid)
+  return uid
 }
 
 func mustCreatePerm(sessionId: in String, tool: in String): String {
-  return match CloudAgents.Repository.createPermissionRequest(sessionId, CloudAgents.Scope.personalScope("default"), tool, "{}", false) {
+  return match CloudAgents.Repository.createPermissionRequest(sessionId, CloudAgents.Auth.requestScope(), tool, "{}", false) {
     case Ok(r) -> r.id
     case Err(e) -> panic("createPermissionRequest failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
   }
 }
 
 func mustAnswerPerm(id: in String, status: in String): Unit {
-  match CloudAgents.Repository.answerPermissionRequest(id, CloudAgents.Scope.personalScope("default"), status, "", "") {
+  match CloudAgents.Repository.answerPermissionRequest(id, CloudAgents.Auth.requestScope(), status, "", "") {
     case Ok(_) -> ()
     case Err(e) -> panic("answerPermissionRequest failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
   }
 }
 
 func mustCreateSecret(sessionId: in String, name: in String): String {
-  return match CloudAgents.Repository.createSecretRequest(sessionId, CloudAgents.Scope.personalScope("default"), name, "why") {
+  return match CloudAgents.Repository.createSecretRequest(sessionId, CloudAgents.Auth.requestScope(), name, "why") {
     case Ok(r) -> r.id
     case Err(e) -> panic("createSecretRequest failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
   }
 }
 
 func mustAnswerSecret(id: in String, status: in String): Unit {
-  match CloudAgents.Repository.answerSecretRequest(id, CloudAgents.Scope.personalScope("default"), status) {
+  match CloudAgents.Repository.answerSecretRequest(id, CloudAgents.Auth.requestScope(), status) {
     case Ok(_) -> ()
     case Err(e) -> panic("answerSecretRequest failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
   }
 }
 
 func mustDerive(sessionId: in String): List[ToolPermission] {
-  return match CloudAgents.PermissionEnrichment.permissionsForSession(sessionId, CloudAgents.Scope.personalScope("default")) {
+  return match CloudAgents.PermissionEnrichment.permissionsForSession(sessionId, CloudAgents.Auth.requestScope()) {
     case Ok(perms) -> perms
     case Err(e) -> panic("permissionsForSession failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
   }
 }
 
 test "permissionsForSession folds real permission and secret rows per tool" {
-  val path = useFreshTestDb("permenrich-live")
+  if not live() {
+    return
+  }
+  val me = freshUser("pe")
 
   // Bash: allowed. Write: denied. Read: prompted but still pending → auto.
   mustAnswerPerm(mustCreatePerm("sess-P", "Bash"), "allowed")
@@ -196,12 +236,13 @@ test "permissionsForSession folds real permission and secret rows per tool" {
 
   // A different session is isolated.
   assertEqualInt(mustDerive("sess-other").count, 0, "unknown session → empty map")
-
-  cleanupTestDb(path)
 }
 
 test "permissionsForSession folds repeated tool prompts conservatively" {
-  val path = useFreshTestDb("permenrich-fold")
+  if not live() {
+    return
+  }
+  val me = freshUser("pe")
 
   // Two Bash prompts for the session: one allowed, one denied → denied wins.
   mustAnswerPerm(mustCreatePerm("sess-F", "Bash"), "allowed")
@@ -210,6 +251,4 @@ test "permissionsForSession folds repeated tool prompts conservatively" {
   val derived = mustDerive("sess-F")
   assertEqualInt(derived.count, 1, "one folded Bash entry")
   assertEqual(permName(permissionForTool(derived, "Bash")), "denied", "any denial wins the fold")
-
-  cleanupTestDb(path)
 }
