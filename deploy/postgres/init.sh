@@ -8,7 +8,9 @@ set -eu
 
 check_password() {
   # The passwords are interpolated into SQL and into DSNs, so they are
-  # restricted to characters that need no quoting in either.
+  # restricted to characters that need no quoting in either. entrypoint.sh
+  # already checked them before the data directory existed; this repeats the
+  # check next to the interpolation it protects.
   name=$1
   value=$2
   if [ -z "$value" ]; then

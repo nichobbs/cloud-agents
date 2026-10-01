@@ -203,6 +203,7 @@ jobs:
             scripts/test-deploy-images.sh \
             deploy/maintenance.sh \
             deploy/postgres/init.sh \
+            deploy/postgres/entrypoint.sh \
             scripts/repro-compiler-bug.sh \
             scripts/repro-web-bug.sh \
             scripts/repro-web-request-crash.sh \

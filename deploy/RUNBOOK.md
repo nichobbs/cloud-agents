@@ -106,12 +106,12 @@ prune `session-*` workspace volumes for deleted sessions.
 
 - **API exits with `FATAL: Postgres self-check failed`:** the message names
   the problem (a missing role, a role that can bypass row-level security).
-  Check `docker compose logs postgres migrate`: a first start whose
-  `init.sh` failed (for example a password with characters other than
-  letters and digits) leaves a volume without the roles; fix the variable,
-  then `docker compose down` and `docker volume rm deploy_pg_data` before
-  starting again. Only do that while Postgres holds no data (before the
-  cut-over).
+  Check `docker compose logs postgres migrate`. A password with characters
+  other than letters and digits is rejected before the data directory is
+  created, so fixing the variable is enough. If provisioning failed for
+  another reason after that, the volume is left without the roles; then
+  `docker compose down` and `docker volume rm deploy_pg_data` before starting
+  again. Only do that while Postgres holds no data (before the cut-over).
 
 ## Postgres
 

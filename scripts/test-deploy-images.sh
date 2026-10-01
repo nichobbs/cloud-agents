@@ -1,8 +1,9 @@
 #!/bin/bash
 # Smoke test for the deploy images that are not the API: builds
 # deploy/postgres.Dockerfile and deploy/maintenance.Dockerfile, then checks
-#   - postgres provisions the cloudagents database and roles on first start
-#     and refuses a password the init script cannot quote safely;
+#   - postgres provisions the cloudagents database and roles on first start,
+#     and refuses a password that cannot be quoted safely before it creates
+#     the data directory;
 #   - the maintenance poller refuses to start without a token or with a
 #     malformed interval.
 # Needs a Docker daemon. Run from anywhere: ./scripts/test-deploy-images.sh
@@ -15,9 +16,11 @@ MAINT_IMAGE=cloud-agents-maintenance-test
 GOOD=ca-deploy-test-pg-good
 BAD=ca-deploy-test-pg-bad
 IDLE=ca-deploy-test-maint-idle
+BAD_VOLUME=ca-deploy-test-pg-bad-data
 
 cleanup() {
   docker rm -f "$GOOD" "$BAD" "$IDLE" >/dev/null 2>&1 || true
+  docker volume rm -f "$BAD_VOLUME" >/dev/null 2>&1 || true
 }
 trap cleanup EXIT
 
@@ -58,8 +61,9 @@ fi
 docker exec -e PGPASSWORD=app1 "$GOOD" psql -h 127.0.0.1 -U cloudagents_app -d cloudagents -tA -c "SELECT 1" >/dev/null
 echo "ok"
 
-echo "== postgres refuses an unsafe password =="
-docker run -d --name "$BAD" -e POSTGRES_PASSWORD=super1 \
+echo "== postgres refuses an unsafe password before creating the data directory =="
+docker volume rm -f "$BAD_VOLUME" >/dev/null 2>&1 || true
+docker run -d --name "$BAD" -v "$BAD_VOLUME:/var/lib/postgresql/data" -e POSTGRES_PASSWORD=super1 \
   -e "CLOUD_AGENTS_PG_OWNER_PASSWORD=bad'pw" -e CLOUD_AGENTS_PG_APP_PASSWORD=app1 "$PG_IMAGE" >/dev/null
 for _ in $(seq 1 30); do
   [ "$(docker inspect -f '{{.State.Running}}' "$BAD")" = "false" ] && break
@@ -71,6 +75,11 @@ if [ "$(docker inspect -f '{{.State.Running}}' "$BAD")" != "false" ]; then
 fi
 docker logs "$BAD" 2>&1 | grep -q "must contain only letters and digits" \
   || { echo "FAIL: no password error in the log" >&2; exit 1; }
+leftover="$(docker run --rm --entrypoint sh -v "$BAD_VOLUME:/data" "$PG_IMAGE" -c 'ls -A /data | wc -l')"
+if [ "$leftover" != "0" ]; then
+  echo "FAIL: the rejected start left $leftover entries in the data volume" >&2
+  exit 1
+fi
 echo "ok"
 
 echo "== maintenance refuses a missing token, a malformed interval and a zero timeout =="
