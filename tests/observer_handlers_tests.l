@@ -307,7 +307,7 @@ test "a profile's observer settings are the owner's to read and change" {
     case Err(e) -> assertTrue(false, e.message)
   }
   val body = "{\"enabled\":\"true\",\"harness\":\"codex\",\"model\":\"o4-mini\",\"repoAccess\":\"workspace\",\"midRunMinutes\":\"30\",\"maxPassesPerDay\":\"20\"}"
-  match putObserverSettingsHandler(p1, body) {
+  match saveObserverSettingsHandler(p1, body) {
     case Ok(st) -> assertEqual(st.harness, "codex", "saved")
     case Err(e) -> assertTrue(false, e.message)
   }
@@ -319,11 +319,11 @@ test "a profile's observer settings are the owner's to read and change" {
     }
     case Err(e) -> assertTrue(false, e.message)
   }
-  match putObserverSettingsHandler(p1, "{\"enabled\":\"true\",\"harness\":\"claude\",\"model\":\"\",\"repoAccess\":\"clone\",\"midRunMinutes\":\"15\",\"maxPassesPerDay\":\"5\"}") {
+  match saveObserverSettingsHandler(p1, "{\"enabled\":\"true\",\"harness\":\"claude\",\"model\":\"\",\"repoAccess\":\"clone\",\"midRunMinutes\":\"15\",\"maxPassesPerDay\":\"5\"}") {
     case Ok(_) -> assertTrue(false, "an unknown repo access is refused")
     case Err(e) -> assertEqualInt(e.status, 400, "a bad value is a 400")
   }
-  match putObserverSettingsHandler(p1, "not json") {
+  match saveObserverSettingsHandler(p1, "not json") {
     case Ok(_) -> assertTrue(false, "garbage is refused")
     case Err(e) -> assertEqualInt(e.status, 400, "not JSON is a 400, not a crash")
   }
@@ -331,7 +331,7 @@ test "a profile's observer settings are the owner's to read and change" {
     case Ok(_) -> assertTrue(false, "another user's profile is not visible")
     case Err(e) -> assertEqualInt(e.status, 404, "404")
   }
-  match putObserverSettingsHandler(p2, body) {
+  match saveObserverSettingsHandler(p2, body) {
     case Ok(_) -> assertTrue(false, "nor changeable")
     case Err(e) -> assertEqualInt(e.status, 404, "404")
   }
