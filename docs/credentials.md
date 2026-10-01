@@ -149,7 +149,12 @@ without hand-typing names and values:
   browser as a *fallback* for live model discovery and the GitHub repo/PR/CI
   panels (the vault is write-only, so the UI cannot read the key back; the
   primary path for those features is now the backend proxy, which uses the
-  vault copy server-side — see the security note below). The page also
+  vault copy server-side — see the security note below). Each provider's
+  "connected" badge reflects the vault (the same on every device), listing
+  the stored credential *names*: `connected` (vault + this device),
+  `connected (vault)` (stored server-side, no local copy here), or `this device
+  only` (local copy, not in the vault); if the vault can't be reached it falls
+  back to this device's state. The page also
   imports pasted credential files — `~/.claude/.credentials.json` (Claude Code
   OAuth → `CLAUDE_CODE_OAUTH_TOKEN`), `~/.codex/auth.json`, and OpenCode's
   `auth.json` — recognising each secret and uploading it under the right name.

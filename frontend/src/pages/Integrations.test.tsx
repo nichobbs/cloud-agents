@@ -5,6 +5,7 @@ import userEvent from '@testing-library/user-event';
 vi.mock('../lib/api', () => ({
   api: {
     putCredential: vi.fn(),
+    getCredentialNames: vi.fn(),
   },
 }));
 
@@ -21,7 +22,7 @@ vi.mock('../lib/github', async importOriginal => ({
 }));
 
 import { api } from '../lib/api';
-import { getConnection } from '../lib/connections';
+import { getConnection, setConnection } from '../lib/connections';
 import { validateGitHubToken } from '../lib/github';
 import { validateModelProviderKey } from '../lib/models';
 import { Integrations } from './Integrations';
@@ -29,6 +30,7 @@ import { Integrations } from './Integrations';
 beforeEach(() => {
   localStorage.clear();
   vi.mocked(api.putCredential).mockReset().mockResolvedValue(undefined);
+  vi.mocked(api.getCredentialNames).mockReset().mockResolvedValue([]);
   vi.mocked(validateModelProviderKey).mockReset().mockResolvedValue(12);
   vi.mocked(validateGitHubToken).mockReset().mockResolvedValue('octocat');
 });
@@ -101,5 +103,54 @@ describe('Integrations', () => {
     await userEvent.paste('hello world');
     expect(await screen.findByText(/Nothing recognised yet/)).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: /Upload/ })).not.toBeInTheDocument();
+  });
+});
+
+describe('Integrations badge reflects the vault', () => {
+  const vault = (...names: string[]) =>
+    vi.mocked(api.getCredentialNames).mockResolvedValue(
+      names.map(name => ({ name, updatedAt: '1' })),
+    );
+
+  it('shows connected (vault) when the vault holds the key but this device has no local copy', async () => {
+    vault('ANTHROPIC_API_KEY');
+    render(<Integrations />);
+    expect(await screen.findByText('connected (vault)')).toBeInTheDocument();
+    expect(screen.getByText(/This\s+device has no local copy/)).toBeInTheDocument();
+    expect(screen.getAllByText('not connected')).toHaveLength(4);
+  });
+
+  it('shows plain connected when both the vault and this device have the key', async () => {
+    setConnection('anthropic', 'sk-ant-local');
+    vault('ANTHROPIC_API_KEY');
+    render(<Integrations />);
+    await waitFor(() => expect(screen.queryByText('this device only')).not.toBeInTheDocument());
+    expect(await screen.findByText('connected')).toBeInTheDocument();
+    expect(screen.queryByText(/has no local copy/)).not.toBeInTheDocument();
+  });
+
+  it('flags a key that exists only on this device', async () => {
+    setConnection('github', 'ghp_local');
+    vault('ANTHROPIC_API_KEY');
+    render(<Integrations />);
+    expect(await screen.findByText('this device only')).toBeInTheDocument();
+  });
+
+  it('falls back to this device when the vault cannot be reached', async () => {
+    setConnection('openai', 'sk-local');
+    vi.mocked(api.getCredentialNames).mockRejectedValue(new Error('503'));
+    render(<Integrations />);
+    expect(await screen.findByText('connected')).toBeInTheDocument();
+    expect(screen.getAllByText('not connected')).toHaveLength(4);
+  });
+
+  it('refreshes from the vault after a successful connect', async () => {
+    render(<Integrations />);
+    await waitFor(() => expect(api.getCredentialNames).toHaveBeenCalledTimes(1));
+    vault('ANTHROPIC_API_KEY');
+    await userEvent.type(screen.getByLabelText('Anthropic key'), 'sk-ant-test');
+    await userEvent.click(screen.getAllByRole('button', { name: 'Connect' })[0]!);
+    await waitFor(() => expect(api.getCredentialNames).toHaveBeenCalledTimes(2));
+    expect(await screen.findByText('connected')).toBeInTheDocument();
   });
 });
