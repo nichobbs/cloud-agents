@@ -1,44 +1,84 @@
+//! Repo-scoped task tests (phase 7 §8): the add_task / list_tasks / complete_task
+//! callbacks over the Postgres store.
 @test_module
 package CloudAgents.RepoTasksTests
 
 import Std.Core
+import Std.Environment
 import Std.Testing
 import Std.Uuid
 import CloudAgents.Auth
 import CloudAgents.Callbacks
+import CloudAgents.Pg
+import CloudAgents.Pg.Migrate
+import CloudAgents.PgStore.Tenancy
 import CloudAgents.Repository
 import CloudAgents.SessionStore
-import CloudAgents.Sqlite
-import extern System.Environment as Env
+import CloudAgents.Db
 
-// ── Live-DB plumbing (same pattern as tests/callbacks_v2_tests.l) ────────────
-val testKey = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="
-
-@externTarget("System.IO.File.Delete")
-func fileDelete(path: in String): Unit = ()
-
-func useFreshTestDb(tag: in String): String {
-  val path = "/tmp/cloud-agents-tests-" + tag + "-" + Std.Uuid.uuidToString(Std.Uuid.newUuid()) + ".db"
-  val artifactsDir = "/tmp/cloud-agents-artifacts-" + tag + "-" + Std.Uuid.uuidToString(Std.Uuid.newUuid())
-  Env.SetEnvironmentVariable("CLOUD_AGENTS_DB_PATH", path)
-  Env.SetEnvironmentVariable("ENCRYPTION_KEY", testKey)
-  Env.SetEnvironmentVariable("CLOUD_AGENTS_ARTIFACTS_DIR", artifactsDir)
-  match CloudAgents.Repository.initSchema() {
-    case Ok(_) -> ()
-    case Err(e) -> assertTrue(false, "initSchema failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+// ── Live Postgres ─────────────────────────────────────────────────────────────
+//
+// The store is Postgres (docs/phase11-postgres-tenancy.md). These tests run iff
+// LYRIC_CONFIG_DB_CONNECTION_URL (cloudagents_app) and
+// CLOUD_AGENTS_MIGRATE_DATABASE_URL (cloudagents_owner) are set, and fail rather
+// than skip when CLOUD_AGENTS_REQUIRE_LIVE_PG=1 (CI). Each test acts as a fresh
+// user with its own personal tenant, so tests, suites and repeated runs against
+// the same database never see each other's rows.
+func live(): Bool {
+  val ok = CloudAgents.Pg.serviceConfigured() and
+    Std.Environment.getVarOrDefault(CloudAgents.Pg.migrateDsnVar(), "").length.toInt() > 0
+  if ok {
+    return true
   }
-  return path
+  assertTrue(
+    Std.Environment.getVarOrDefault("CLOUD_AGENTS_REQUIRE_LIVE_PG", "") != "1",
+    "CLOUD_AGENTS_REQUIRE_LIVE_PG=1 but LYRIC_CONFIG_DB_CONNECTION_URL or CLOUD_AGENTS_MIGRATE_DATABASE_URL is not set"
+  )
+  println("SKIP: repo task tests need LYRIC_CONFIG_DB_CONNECTION_URL and CLOUD_AGENTS_MIGRATE_DATABASE_URL")
+  return false
 }
 
-func cleanupTestDb(path: in String): Unit {
-  try {
-    fileDelete(path)
-  } catch Bug as b {
-    // locked or already gone — fine for a temp file
+func migrate(): Unit {
+  val conn = match CloudAgents.Pg.connectDsn(Std.Environment.getVarOrDefault(CloudAgents.Pg.migrateDsnVar(), "")) {
+    case Ok(c) -> c
+    case Err(e) -> panic(CloudAgents.Pg.pgErrorMessage(e))
   }
-  Env.SetEnvironmentVariable("CLOUD_AGENTS_CALLBACK_TIMEOUT_MS", "")
-  Env.SetEnvironmentVariable("CLOUD_AGENTS_ARTIFACTS_DIR", "")
-  CloudAgents.Auth.setCurrentUserId("default")
+  defer {
+    conn.close()
+  }
+  match CloudAgents.Pg.Migrate.migrate(conn) {
+    case Ok(_) -> ()
+    case Err(e) -> panic("migrate failed: " + CloudAgents.Pg.pgErrorMessage(e))
+  }
+}
+
+/// A new user with a provisioned personal tenant. Does not change the request
+/// identity.
+func newUser(tag: in String): String {
+  val uid = "t-" + tag + "-" + Std.Uuid.uuidToString(Std.Uuid.newUuid())
+  match CloudAgents.PgStore.Tenancy.ensurePersonalTenant(uid) {
+    case Ok(_) -> ()
+    case Err(e) -> panic("provisioning " + uid + " failed: " + CloudAgents.Db.dbErrorMessage(e))
+  }
+  return uid
+}
+
+/// Migrate, then make a new user the request identity (what handlers read via
+/// CloudAgents.Auth.requestScope()).
+func freshUser(tag: in String): String {
+  migrate()
+  val uid = newUser(tag)
+  CloudAgents.Auth.setCurrentUserId(uid)
+  return uid
+}
+
+func uniq(prefix: in String): String {
+  return prefix + "-" + Std.Uuid.uuidToString(Std.Uuid.newUuid())
+}
+
+/// A repo URL unique to this test's user, so tasks never leak across tests.
+func repoOf(me: in String): String {
+  return "https://github.com/t/" + me
 }
 
 func mkSessionRepo(id: in String, repoUrl: in String): Unit {
@@ -53,18 +93,18 @@ func mkSessionRepo(id: in String, repoUrl: in String): Unit {
   )
   match addSession(s, CloudAgents.Auth.requestScope()) {
     case Ok(_) -> ()
-    case Err(e) -> panic("addSession failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+    case Err(e) -> panic("addSession failed: " + CloudAgents.Db.dbErrorMessage(e))
   }
 }
 
-func mkSession(id: in String): Unit {
-  mkSessionRepo(id, "https://github.com/nic/repo")
+func mkSession(id: in String, me: in String): Unit {
+  mkSessionRepo(id, repoOf(me))
 }
 
 func mintToken(id: in String, ownerUserId: in String): String {
   return match CloudAgents.SessionStore.mintCallbackToken(id, CloudAgents.Pg.personalScope(ownerUserId)) {
     case Ok(t) -> t
-    case Err(e) -> panic("mintCallbackToken failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+    case Err(e) -> panic("mintCallbackToken failed: " + CloudAgents.Db.dbErrorMessage(e))
   }
 }
 
@@ -74,14 +114,13 @@ func bearer(token: in String): String {
 
 // ── add_task / list_tasks / complete_task (phase 7 §8) ───────────────────────
 test "add_task then list_tasks: appears in the open list" {
-  val dbPath = useFreshTestDb("tasks-roundtrip")
-  defer {
-    cleanupTestDb(dbPath)
+  if not live() {
+    return
   }
-  CloudAgents.Auth.setCurrentUserId("default")
-  val sid = "sess-tasks-1"
-  mkSession(sid)
-  val token = mintToken(sid, "default")
+  val me = freshUser("tasks-roundtrip")
+  val sid = uniq("sess-tasks-1")
+  mkSession(sid, me)
+  val token = mintToken(sid, me)
 
   val created = match createTaskHandler(sid, bearer(token), CreateTaskRequest(description = "migrate the auth module")) {
     case Ok(r) -> r
@@ -110,14 +149,13 @@ test "add_task then list_tasks: appears in the open list" {
 }
 
 test "complete_task moves a task from open to done, and re-completing is a no-op success" {
-  val dbPath = useFreshTestDb("tasks-complete")
-  defer {
-    cleanupTestDb(dbPath)
+  if not live() {
+    return
   }
-  CloudAgents.Auth.setCurrentUserId("default")
-  val sid = "sess-tasks-2"
-  mkSession(sid)
-  val token = mintToken(sid, "default")
+  val me = freshUser("tasks-complete")
+  val sid = uniq("sess-tasks-2")
+  mkSession(sid, me)
+  val token = mintToken(sid, me)
 
   val created = match createTaskHandler(sid, bearer(token), CreateTaskRequest(description = "write the release notes")) {
     case Ok(r) -> r
@@ -153,15 +191,14 @@ test "complete_task moves a task from open to done, and re-completing is a no-op
 }
 
 test "complete_task 404s for an unknown or cross-scope task id" {
-  val dbPath = useFreshTestDb("tasks-scope")
-  defer {
-    cleanupTestDb(dbPath)
+  if not live() {
+    return
   }
-  CloudAgents.Auth.setCurrentUserId("default")
+  val me = freshUser("tasks-scope")
 
-  val sidA = "sess-tasks-scope-A"
-  mkSessionRepo(sidA, "https://github.com/nic/repo-a")
-  val tokenA = mintToken(sidA, "default")
+  val sidA = uniq("sess-tasks-scope-A")
+  mkSessionRepo(sidA, repoOf(me) + "-a")
+  val tokenA = mintToken(sidA, me)
   val created = match createTaskHandler(sidA, bearer(tokenA), CreateTaskRequest(description = "repo-a task")) {
     case Ok(r) -> r
     case Err(e) -> panic("createTask failed: " + toString(e.status))
@@ -169,9 +206,9 @@ test "complete_task 404s for an unknown or cross-scope task id" {
 
   // A session on a DIFFERENT repo cannot complete repo-a's task — 404, not a
   // leak of "it exists elsewhere".
-  val sidB = "sess-tasks-scope-B"
-  mkSessionRepo(sidB, "https://github.com/nic/repo-b")
-  val tokenB = mintToken(sidB, "default")
+  val sidB = uniq("sess-tasks-scope-B")
+  mkSessionRepo(sidB, repoOf(me) + "-b")
+  val tokenB = mintToken(sidB, me)
   match completeTaskHandler(sidB, bearer(tokenB), created.id) {
     case Ok(_) -> assertTrue(false, "a cross-repo task id must not be completable")
     case Err(e) -> assertEqualInt(e.status, 404, "cross-repo task id -> 404")
@@ -185,24 +222,23 @@ test "complete_task 404s for an unknown or cross-scope task id" {
 }
 
 test "tasks carry across sessions on the same repo, isolated from other repos" {
-  val dbPath = useFreshTestDb("tasks-cross-session")
-  defer {
-    cleanupTestDb(dbPath)
+  if not live() {
+    return
   }
-  CloudAgents.Auth.setCurrentUserId("default")
+  val me = freshUser("tasks-cross-session")
 
-  val sidA = "sess-tasks-cross-A"
-  mkSession(sidA)
-  val tokenA = mintToken(sidA, "default")
+  val sidA = uniq("sess-tasks-cross-A")
+  mkSession(sidA, me)
+  val tokenA = mintToken(sidA, me)
   match createTaskHandler(sidA, bearer(tokenA), CreateTaskRequest(description = "left for the next session")) {
     case Ok(_) -> ()
     case Err(e) -> assertTrue(false, "createTask A failed: " + toString(e.status))
   }
 
   // A brand-new session on the SAME repo sees the earlier session's task.
-  val sidB = "sess-tasks-cross-B"
-  mkSession(sidB)
-  val tokenB = mintToken(sidB, "default")
+  val sidB = uniq("sess-tasks-cross-B")
+  mkSession(sidB, me)
+  val tokenB = mintToken(sidB, me)
   match listTasksHandler(sidB, bearer(tokenB), None) {
     case Ok(l) -> {
       assertEqualInt(l.tasks.length.toInt(), 1, "a new session on the same repo inherits the task")
@@ -212,9 +248,9 @@ test "tasks carry across sessions on the same repo, isolated from other repos" {
   }
 
   // A session on a DIFFERENT repo sees none of it.
-  val sidC = "sess-tasks-cross-C"
-  mkSessionRepo(sidC, "https://github.com/nic/other")
-  val tokenC = mintToken(sidC, "default")
+  val sidC = uniq("sess-tasks-cross-C")
+  mkSessionRepo(sidC, repoOf(me) + "-other")
+  val tokenC = mintToken(sidC, me)
   match listTasksHandler(sidC, bearer(tokenC), None) {
     case Ok(l) -> assertEqualInt(l.tasks.length.toInt(), 0, "a different repo shares no tasks")
     case Err(e) -> assertTrue(false, "listTasks C failed: " + toString(e.status))
@@ -222,23 +258,22 @@ test "tasks carry across sessions on the same repo, isolated from other repos" {
 }
 
 test "add_task validates description and rejects a session with no repo to scope to" {
-  val dbPath = useFreshTestDb("tasks-validation")
-  defer {
-    cleanupTestDb(dbPath)
+  if not live() {
+    return
   }
-  CloudAgents.Auth.setCurrentUserId("default")
-  val sid = "sess-tasks-val"
-  mkSession(sid)
-  val token = mintToken(sid, "default")
+  val me = freshUser("tasks-validation")
+  val sid = uniq("sess-tasks-val")
+  mkSession(sid, me)
+  val token = mintToken(sid, me)
 
   match createTaskHandler(sid, bearer(token), CreateTaskRequest(description = "")) {
     case Ok(_) -> assertTrue(false, "empty description must be rejected")
     case Err(e) -> assertEqualInt(e.status, 400, "empty description -> 400")
   }
 
-  val sidNoRepo = "sess-tasks-norepo"
+  val sidNoRepo = uniq("sess-tasks-norepo")
   mkSessionRepo(sidNoRepo, "")
-  val tokenNoRepo = mintToken(sidNoRepo, "default")
+  val tokenNoRepo = mintToken(sidNoRepo, me)
   match createTaskHandler(sidNoRepo, bearer(tokenNoRepo), CreateTaskRequest(description = "x")) {
     case Ok(_) -> assertTrue(false, "a session with no repo must be rejected")
     case Err(e) -> assertEqualInt(e.status, 400, "no repo -> 400")
@@ -246,14 +281,13 @@ test "add_task validates description and rejects a session with no repo to scope
 }
 
 test "list_tasks requires a valid callback token; the owner can list via the user route" {
-  val dbPath = useFreshTestDb("tasks-auth")
-  defer {
-    cleanupTestDb(dbPath)
+  if not live() {
+    return
   }
-  CloudAgents.Auth.setCurrentUserId("default")
-  val sid = "sess-tasks-auth"
-  mkSession(sid)
-  val token = mintToken(sid, "default")
+  val me = freshUser("tasks-auth")
+  val sid = uniq("sess-tasks-auth")
+  mkSession(sid, me)
+  val token = mintToken(sid, me)
 
   match listTasksHandler(sid, bearer("wrong-token"), None) {
     case Ok(_) -> assertTrue(false, "a wrong callback token must be rejected")
@@ -270,14 +304,13 @@ test "list_tasks requires a valid callback token; the owner can list via the use
 }
 
 test "list_tasks rejects an invalid status filter" {
-  val dbPath = useFreshTestDb("tasks-status-filter")
-  defer {
-    cleanupTestDb(dbPath)
+  if not live() {
+    return
   }
-  CloudAgents.Auth.setCurrentUserId("default")
-  val sid = "sess-tasks-filter"
-  mkSession(sid)
-  val token = mintToken(sid, "default")
+  val me = freshUser("tasks-status-filter")
+  val sid = uniq("sess-tasks-filter")
+  mkSession(sid, me)
+  val token = mintToken(sid, me)
 
   match listTasksHandler(sid, bearer(token), Some(value = "bogus")) {
     case Ok(_) -> assertTrue(false, "an invalid status filter must be rejected")
@@ -291,14 +324,13 @@ test "list_tasks rejects an invalid status filter" {
 // slot for a new task (docs/phase7-autonomy.md §8's headline design
 // decision).
 test "add_task caps the number of OPEN tasks per repo; completing one frees a slot" {
-  val dbPath = useFreshTestDb("tasks-cap")
-  defer {
-    cleanupTestDb(dbPath)
+  if not live() {
+    return
   }
-  CloudAgents.Auth.setCurrentUserId("default")
-  val sid = "sess-tasks-cap"
-  mkSession(sid)
-  val token = mintToken(sid, "default")
+  val me = freshUser("tasks-cap")
+  val sid = uniq("sess-tasks-cap")
+  mkSession(sid, me)
+  val token = mintToken(sid, me)
 
   // Fill the repo to exactly the cap (256 open tasks).
   var i = 0

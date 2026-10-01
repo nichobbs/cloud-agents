@@ -11,7 +11,7 @@ import Std.Json
 import Web
 import CloudAgents.Auth
 import CloudAgents.Repository
-import CloudAgents.Sqlite
+import CloudAgents.Db
 
 val maxProfileNameLen = 200
 
@@ -114,8 +114,8 @@ pub func patchMissingToolFields(body: in String): String {
   return body.substring(0, closeIdx) + toAdd + body.substring(closeIdx, body.length - closeIdx)
 }
 
-func dbError(e: in CloudAgents.Sqlite.DbError): Web.ApiError {
-  return Web.internalError(CloudAgents.Sqlite.dbErrorMessage(e))
+func dbError(e: in CloudAgents.Db.DbError): Web.ApiError {
+  return Web.internalError(CloudAgents.Db.dbErrorMessage(e))
 }
 
 /// Whether a DbError is the profiles table's `UNIQUE(user_id, name)`
@@ -125,25 +125,17 @@ func dbError(e: in CloudAgents.Sqlite.DbError): Web.ApiError {
 /// can slip between the two — so the constraint itself is the actual guarantee
 /// (#245); this lets the mutation's own failure be turned into the same clean
 /// 400 the pre-check produces in the non-racy case, instead of a raw
-/// UNIQUE-constraint 500. SQLite's own error text ("UNIQUE constraint
-/// failed: ...") is stable across the Microsoft.Data.Sqlite driver.
+/// UNIQUE-constraint 500.
 ///
-/// A plain "UNIQUE constraint" substring check isn't specific enough
-/// (#558): addProfile/updateProfile run the profiles-row upsert and the
-/// caller's credential grants (`profile_credentials`, its own
-/// `UNIQUE(profile_id, credential_name)`) in the SAME transaction, so a
-/// duplicate credential NAME in the request would trip that other table's
-/// constraint and get misreported here as a profile-name collision instead
-/// of the real problem (a duplicate grant). CloudAgents.Sqlite.dbErrorMessage
-/// embeds the failing statement's own SQL text (`ExecFailed(sql, m)`), so
-/// checking for the profiles table's own INSERT/UPDATE keeps this scoped to
-/// the constraint it actually names. "profiles " (trailing space, matching
-/// insertProfileSql's "INTO profiles (") never matches
-/// insertProfileCredentialSql's "INTO profile_credentials (" — different
-/// table name, not a prefix of it.
-func isDuplicateNameError(e: in CloudAgents.Sqlite.DbError): Bool {
-  val msg = CloudAgents.Sqlite.dbErrorMessage(e)
-  return msg.contains("UNIQUE constraint") and msg.contains("profiles ")
+/// Postgres reports it as SQLSTATE 23505 naming the violated constraint, and
+/// the profiles table's name constraint is the only one named
+/// `profiles_tenant_id_user_id_name_key` (src/pg/schema.l). Matching the
+/// constraint name, not just "duplicate key", keeps a duplicate credential
+/// grant (`profile_credentials`' own unique constraint, written in the same
+/// transaction) from being misreported as a profile-name collision (#558).
+pub func isDuplicateNameError(e: in CloudAgents.Db.DbError): Bool {
+  val msg = CloudAgents.Db.dbErrorMessage(e)
+  return msg.contains("23505") and msg.contains("profiles_tenant_id_user_id_name_key")
 }
 
 /// Network policy vocabulary — see CloudAgents.Db profiles DDL.

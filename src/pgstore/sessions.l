@@ -1,10 +1,9 @@
-//! CloudAgents.PgStore.Sessions — the Postgres implementation of the session
-//! store (`sessions`, plus the global `session_routes`), mirroring the
-//! SQLite-backed functions in `CloudAgents.SessionStore` with the same
-//! signatures and semantics (docs/phase11-postgres-tenancy.md §4.2, §9 slices
-//! B/C).
+//! CloudAgents.PgStore.Sessions — the Postgres store for sessions
+//! (`sessions`, plus the global `session_routes`), behind the
+//! `CloudAgents.SessionStore` facade (docs/phase11-postgres-tenancy.md §4.2,
+//! §9 slices B/C).
 //!
-//! Semantics carried over from the SQLite store:
+//! Semantics:
 //! - every read and write is filtered by the caller's user within the tenant
 //!   (creator-only visibility, spec §5.4); observer sessions never appear in
 //!   the lists;
@@ -12,7 +11,7 @@
 //! - `tryBeginRun` is a single guarded UPDATE, so two concurrent sends cannot
 //!   both win;
 //! - the container compare-and-clear only clears a still-matching id (#45);
-//! - text forms match SQLite exactly: timestamps as epoch milliseconds,
+//! - text forms are stable: timestamps as epoch milliseconds,
 //!   `is_archived` as "0"/"1", and "0" for a session never viewed.
 //!
 //! `session_routes` is the one global table here (spec §4.2). It maps a
@@ -32,7 +31,7 @@ import CloudAgents.Pg
 import CloudAgents.PgStore
 import CloudAgents.Repository
 import CloudAgents.SessionStore
-import CloudAgents.Sqlite
+import CloudAgents.Db
 
 func sessionCols(): String {
   return "id, user_id, repo_url, branch, container_id, harness, model, native_session_id, status, " +
@@ -70,7 +69,7 @@ func ownedWhere(): String {
 /// Run one owner-scoped UPDATE on a session, `@p0` = id, `@p1` = user.
 func updateOwned(
   sc: in CloudAgents.Pg.TenantScope, set: in String, params: in slice[String]
-): Result[Int, CloudAgents.Sqlite.DbError] {
+): Result[Int, CloudAgents.Db.DbError] {
   val u = CloudAgents.PgStore.open(sc)?
   defer {
     CloudAgents.PgStore.release(u)
@@ -83,7 +82,7 @@ func updateOwned(
 /// `updateOwned` with an extra guard appended to the WHERE clause.
 func updateOwnedWhen(
   sc: in CloudAgents.Pg.TenantScope, set: in String, guard: in String, params: in slice[String]
-): Result[Int, CloudAgents.Sqlite.DbError] {
+): Result[Int, CloudAgents.Db.DbError] {
   val u = CloudAgents.PgStore.open(sc)?
   defer {
     CloudAgents.PgStore.release(u)
@@ -95,7 +94,7 @@ func updateOwnedWhen(
 
 /// The session-list projection as `{"sessions":[...]}`, most recently active
 /// first, observer sessions excluded.
-pub func sessionSummariesJson(sc: in CloudAgents.Pg.TenantScope): Result[String, CloudAgents.Sqlite.DbError] {
+pub func sessionSummariesJson(sc: in CloudAgents.Pg.TenantScope): Result[String, CloudAgents.Db.DbError] {
   val u = CloudAgents.PgStore.open(sc)?
   defer {
     CloudAgents.PgStore.release(u)
@@ -138,7 +137,7 @@ pub func sessionSummariesJson(sc: in CloudAgents.Pg.TenantScope): Result[String,
 /// sessions excluded.
 pub func getSessions(
   sc: in CloudAgents.Pg.TenantScope
-): Result[CloudAgents.SessionStore.AgentSessionArray, CloudAgents.Sqlite.DbError] {
+): Result[CloudAgents.SessionStore.AgentSessionArray, CloudAgents.Db.DbError] {
   val u = CloudAgents.PgStore.open(sc)?
   defer {
     CloudAgents.PgStore.release(u)
@@ -156,7 +155,7 @@ pub func getSessions(
 /// `last_message_at` starts at `created_at`.
 pub func addSession(
   session: in CloudAgents.SessionStore.AgentSession, sc: in CloudAgents.Pg.TenantScope
-): Result[Unit, CloudAgents.Sqlite.DbError] {
+): Result[Unit, CloudAgents.Db.DbError] {
   val u = CloudAgents.PgStore.open(sc)?
   defer {
     CloudAgents.PgStore.release(u)
@@ -171,7 +170,7 @@ pub func addSession(
 /// One column of one of the caller's sessions, or None.
 func ownedColumn(
   sessionId: in String, sc: in CloudAgents.Pg.TenantScope, column: in String
-): Result[Option[String], CloudAgents.Sqlite.DbError] {
+): Result[Option[String], CloudAgents.Db.DbError] {
   val u = CloudAgents.PgStore.open(sc)?
   defer {
     CloudAgents.PgStore.release(u)
@@ -187,14 +186,14 @@ func ownedColumn(
 /// A session's status, or None when it does not exist or is not the caller's.
 pub func sessionStatus(
   sessionId: in String, sc: in CloudAgents.Pg.TenantScope
-): Result[Option[String], CloudAgents.Sqlite.DbError] {
+): Result[Option[String], CloudAgents.Db.DbError] {
   return ownedColumn(sessionId, sc, "status")
 }
 
 /// Associate a session with a profile ("" clears it).
 pub func setSessionProfile(
   sessionId: in String, sc: in CloudAgents.Pg.TenantScope, profileId: in String
-): Result[Unit, CloudAgents.Sqlite.DbError] {
+): Result[Unit, CloudAgents.Db.DbError] {
   updateOwned(sc, "profile_id = @p2", [sessionId, sc.userId, profileId])?
   return Ok(value = ())
 }
@@ -202,14 +201,14 @@ pub func setSessionProfile(
 /// A session's profile id ("" when none), or None.
 pub func sessionProfileId(
   sessionId: in String, sc: in CloudAgents.Pg.TenantScope
-): Result[Option[String], CloudAgents.Sqlite.DbError] {
+): Result[Option[String], CloudAgents.Db.DbError] {
   return ownedColumn(sessionId, sc, "profile_id")
 }
 
 /// One of the caller's sessions, or None.
 pub func getSession(
   sessionId: in String, sc: in CloudAgents.Pg.TenantScope
-): Result[Option[CloudAgents.SessionStore.AgentSession], CloudAgents.Sqlite.DbError] {
+): Result[Option[CloudAgents.SessionStore.AgentSession], CloudAgents.Db.DbError] {
   val u = CloudAgents.PgStore.open(sc)?
   defer {
     CloudAgents.PgStore.release(u)
@@ -224,7 +223,7 @@ pub func getSession(
 
 pub func updateSessionContainerFor(
   sessionId: in String, sc: in CloudAgents.Pg.TenantScope, containerId: in String
-): Result[Unit, CloudAgents.Sqlite.DbError] {
+): Result[Unit, CloudAgents.Db.DbError] {
   updateOwned(sc, "container_id = @p2", [sessionId, sc.userId, containerId])?
   return Ok(value = ())
 }
@@ -234,7 +233,7 @@ pub func clearSessionContainerIfMatchesFor(
   sessionId: in String,
   sc: in CloudAgents.Pg.TenantScope,
   containerId: in String,
-): Result[Unit, CloudAgents.Sqlite.DbError] {
+): Result[Unit, CloudAgents.Db.DbError] {
   val u = CloudAgents.PgStore.open(sc)?
   defer {
     CloudAgents.PgStore.release(u)
@@ -246,7 +245,7 @@ pub func clearSessionContainerIfMatchesFor(
 
 pub func updateSessionModel(
   sessionId: in String, sc: in CloudAgents.Pg.TenantScope, model: in String
-): Result[Unit, CloudAgents.Sqlite.DbError] {
+): Result[Unit, CloudAgents.Db.DbError] {
   updateOwned(sc, "model = @p2", [sessionId, sc.userId, model])?
   return Ok(value = ())
 }
@@ -255,14 +254,14 @@ pub func updateSessionModel(
 /// unarchives; callers pass "1" or "0").
 pub func updateSessionArchived(
   sessionId: in String, sc: in CloudAgents.Pg.TenantScope, isArchived: in String
-): Result[Unit, CloudAgents.Sqlite.DbError] {
+): Result[Unit, CloudAgents.Db.DbError] {
   updateOwned(sc, "is_archived = (@p2 = '1')", [sessionId, sc.userId, isArchived])?
   return Ok(value = ())
 }
 
 pub func setSessionGroup(
   sessionId: in String, sc: in CloudAgents.Pg.TenantScope, groupId: in String
-): Result[Unit, CloudAgents.Sqlite.DbError] {
+): Result[Unit, CloudAgents.Db.DbError] {
   updateOwned(sc, "group_id = @p2", [sessionId, sc.userId, groupId])?
   return Ok(value = ())
 }
@@ -270,13 +269,13 @@ pub func setSessionGroup(
 /// Stamp "the user looked at this session just now".
 pub func markSessionViewed(
   sessionId: in String, sc: in CloudAgents.Pg.TenantScope
-): Result[Unit, CloudAgents.Sqlite.DbError] {
+): Result[Unit, CloudAgents.Db.DbError] {
   updateOwned(sc, "last_viewed_at = " + CloudAgents.Pg.msIn(2), [sessionId, sc.userId, CloudAgents.Repository.nowMillis()])?
   return Ok(value = ())
 }
 
 /// Delete one of the caller's sessions and its route; rows deleted.
-func deleteOwned(sessionId: in String, sc: in CloudAgents.Pg.TenantScope): Result[Int, CloudAgents.Sqlite.DbError] {
+func deleteOwned(sessionId: in String, sc: in CloudAgents.Pg.TenantScope): Result[Int, CloudAgents.Db.DbError] {
   val u = CloudAgents.PgStore.open(sc)?
   defer {
     CloudAgents.PgStore.release(u)
@@ -293,7 +292,7 @@ func deleteOwned(sessionId: in String, sc: in CloudAgents.Pg.TenantScope): Resul
 /// exist or is not the caller's).
 pub func removeSession(
   sessionId: in String, sc: in CloudAgents.Pg.TenantScope
-): Result[Option[CloudAgents.SessionStore.AgentSession], CloudAgents.Sqlite.DbError] {
+): Result[Option[CloudAgents.SessionStore.AgentSession], CloudAgents.Db.DbError] {
   val existing = getSession(sessionId, sc)?
   match existing {
     case None -> return Ok(value = None)
@@ -306,7 +305,7 @@ pub func removeSession(
 /// Delete a session row without re-reading it; a no-op if already gone.
 pub func deleteSessionRecord(
   sessionId: in String, sc: in CloudAgents.Pg.TenantScope
-): Result[Unit, CloudAgents.Sqlite.DbError] {
+): Result[Unit, CloudAgents.Db.DbError] {
   deleteOwned(sessionId, sc)?
   return Ok(value = ())
 }
@@ -314,7 +313,7 @@ pub func deleteSessionRecord(
 /// Atomically claim a session for a run: false when a run is already in
 /// progress (or the session is not the caller's). The claim records this
 /// instance and the run's first heartbeat (spec §5.3a).
-pub func tryBeginRun(sessionId: in String, sc: in CloudAgents.Pg.TenantScope): Result[Bool, CloudAgents.Sqlite.DbError] {
+pub func tryBeginRun(sessionId: in String, sc: in CloudAgents.Pg.TenantScope): Result[Bool, CloudAgents.Db.DbError] {
   val n = updateOwnedWhen(sc, "status = 'RUNNING', last_message_at = " + CloudAgents.Pg.msIn(2) + ", run_instance = @p3, run_heartbeat_at = now()", " AND status <> 'RUNNING'", [sessionId, sc.userId, CloudAgents.Repository.nowMillis(), CloudAgents.SessionStore.instanceId()])?
   return Ok(value = n > 0)
 }
@@ -324,7 +323,7 @@ pub func tryBeginRun(sessionId: in String, sc: in CloudAgents.Pg.TenantScope): R
 /// the same one `claim_stranded_runs` judges staleness by, so clock skew
 /// between an instance and the database cannot make a live run look stranded
 /// (#1198).
-pub func heartbeatRun(sessionId: in String, sc: in CloudAgents.Pg.TenantScope): Result[Bool, CloudAgents.Sqlite.DbError] {
+pub func heartbeatRun(sessionId: in String, sc: in CloudAgents.Pg.TenantScope): Result[Bool, CloudAgents.Db.DbError] {
   val n = updateOwnedWhen(sc, "run_heartbeat_at = now()", " AND status = 'RUNNING' AND run_instance = @p2", [sessionId, sc.userId, CloudAgents.SessionStore.instanceId()])?
   return Ok(value = n > 0)
 }
@@ -333,7 +332,7 @@ pub func heartbeatRun(sessionId: in String, sc: in CloudAgents.Pg.TenantScope): 
 /// RUNNING session is only ended by the instance driving it: once a sweep
 /// has taken the run over (and perhaps another run has started), the
 /// original instance's late endRun changes nothing (#1199).
-pub func endRun(sessionId: in String, sc: in CloudAgents.Pg.TenantScope): Result[Unit, CloudAgents.Sqlite.DbError] {
+pub func endRun(sessionId: in String, sc: in CloudAgents.Pg.TenantScope): Result[Unit, CloudAgents.Db.DbError] {
   updateOwnedWhen(sc, "status = 'IDLE', last_message_at = " + CloudAgents.Pg.msIn(2), " AND (status <> 'RUNNING' OR run_instance = @p3)", [sessionId, sc.userId, CloudAgents.Repository.nowMillis(), CloudAgents.SessionStore.instanceId()])?
   return Ok(value = ())
 }
@@ -342,9 +341,7 @@ pub func endRun(sessionId: in String, sc: in CloudAgents.Pg.TenantScope): Result
 /// `claim_stranded_runs`, then read each one's container under its owner's
 /// scope. A run whose read-back fails stays held by this sweep until its
 /// renewed heartbeat goes stale again, when a later sweep takes it.
-pub func claimStrandedRuns(
-  limit: in Int
-): Result[slice[CloudAgents.SessionStore.StrandedRun], CloudAgents.Sqlite.DbError] {
+pub func claimStrandedRuns(limit: in Int): Result[slice[CloudAgents.SessionStore.StrandedRun], CloudAgents.Db.DbError] {
   val sweeper = CloudAgents.SessionStore.sweeperId()
   val u = CloudAgents.PgStore.openUnscoped()?
   defer {
@@ -372,9 +369,7 @@ pub func claimStrandedRuns(
           )
         )
       }
-      case Err(e) -> println(
-        "WARNING: could not read stranded session " + id + ": " + CloudAgents.Sqlite.dbErrorMessage(e)
-      )
+      case Err(e) -> println("WARNING: could not read stranded session " + id + ": " + CloudAgents.Db.dbErrorMessage(e))
     }
   }
   return Ok(value = acc)
@@ -382,7 +377,7 @@ pub func claimStrandedRuns(
 
 /// Return a stranded session to IDLE once its container is gone; false when
 /// the sweep no longer holds it.
-pub func releaseStrandedRun(r: in CloudAgents.SessionStore.StrandedRun): Result[Bool, CloudAgents.Sqlite.DbError] {
+pub func releaseStrandedRun(r: in CloudAgents.SessionStore.StrandedRun): Result[Bool, CloudAgents.Db.DbError] {
   val n = updateOwnedWhen(r.tenantScope, "status = 'IDLE', container_id = '', last_message_at = " + CloudAgents.Pg.msIn(2), " AND status = 'RUNNING' AND run_instance = @p3", [r.sessionId, r.tenantScope.userId, CloudAgents.Repository.nowMillis(), r.sweeper])?
   return Ok(value = n > 0)
 }
@@ -393,7 +388,7 @@ val warmReapLeaseSeconds = 300
 /// Lease up to 100 WARM sessions past the warm window in every tenant through
 /// `claim_warm_sessions`, and read each one's container under its owner's
 /// scope.
-pub func reapableWarmContainers(): Result[slice[CloudAgents.SessionStore.ReapTarget], CloudAgents.Sqlite.DbError] {
+pub func reapableWarmContainers(): Result[slice[CloudAgents.SessionStore.ReapTarget], CloudAgents.Db.DbError] {
   val u = CloudAgents.PgStore.openUnscoped()?
   defer {
     CloudAgents.PgStore.release(u)
@@ -416,7 +411,7 @@ pub func reapableWarmContainers(): Result[slice[CloudAgents.SessionStore.ReapTar
         }
       }
       case Ok(None) -> ()
-      case Err(e) -> println("WARNING: could not read warm session " + id + ": " + CloudAgents.Sqlite.dbErrorMessage(e))
+      case Err(e) -> println("WARNING: could not read warm session " + id + ": " + CloudAgents.Db.dbErrorMessage(e))
     }
   }
   return Ok(value = acc)
@@ -424,7 +419,7 @@ pub func reapableWarmContainers(): Result[slice[CloudAgents.SessionStore.ReapTar
 
 /// Free a reap target's session: true when it was still WARM on the same
 /// container, in which case the caller stops the container.
-pub func reapWarmSession(t: in CloudAgents.SessionStore.ReapTarget): Result[Bool, CloudAgents.Sqlite.DbError] {
+pub func reapWarmSession(t: in CloudAgents.SessionStore.ReapTarget): Result[Bool, CloudAgents.Db.DbError] {
   val n = updateOwnedWhen(t.tenantScope, "status = 'IDLE', container_id = '', reap_claimed_until = NULL", " AND status = 'WARM' AND container_id = @p2", [t.sessionId, t.tenantScope.userId, t.containerId])?
   return Ok(value = n > 0)
 }
@@ -433,7 +428,7 @@ pub func reapWarmSession(t: in CloudAgents.SessionStore.ReapTarget): Result[Bool
 /// reference; a no-op while a run is in progress.
 pub func resetSessionContainer(
   sessionId: in String, sc: in CloudAgents.Pg.TenantScope
-): Result[Unit, CloudAgents.Sqlite.DbError] {
+): Result[Unit, CloudAgents.Db.DbError] {
   updateOwnedWhen(sc, "status = 'IDLE', container_id = ''", " AND status <> 'RUNNING'", [sessionId, sc.userId])?
   return Ok(value = ())
 }
@@ -442,10 +437,10 @@ pub func resetSessionContainer(
 /// Mint a fresh callback token for one of the caller's sessions, store only
 /// its hash on the session's route, and return the raw token. A session
 /// that is not the caller's gets no hash written (the token is still
-/// returned, as on SQLite, and authorises nothing).
+/// returned and authorises nothing).
 pub func mintCallbackToken(
   sessionId: in String, sc: in CloudAgents.Pg.TenantScope
-): Result[String, CloudAgents.Sqlite.DbError] {
+): Result[String, CloudAgents.Db.DbError] {
   val token = Std.Uuid.uuidToString(Std.Uuid.newUuid()) + Std.Uuid.uuidToString(Std.Uuid.newUuid())
   val tokenHash = CloudAgents.Auth.hashCallbackToken(token)
   val u = CloudAgents.PgStore.open(sc)?
@@ -460,7 +455,7 @@ pub func mintCallbackToken(
 /// One column of a session's route by id only, or None when there is no
 /// such session. Deliberately unscoped: it is read before any tenant is
 /// known.
-func routeColumn(sessionId: in String, column: in String): Result[Option[String], CloudAgents.Sqlite.DbError] {
+func routeColumn(sessionId: in String, column: in String): Result[Option[String], CloudAgents.Db.DbError] {
   val u = CloudAgents.PgStore.openUnscoped()?
   defer {
     CloudAgents.PgStore.release(u)
@@ -477,12 +472,12 @@ func routeColumn(sessionId: in String, column: in String): Result[Option[String]
 /// session, "" for one that never minted a token. Comparing a presented
 /// token's hash against it (CloudAgents.Auth.authorizeCallback) is the
 /// authentication.
-pub func callbackTokenHashForSession(sessionId: in String): Result[Option[String], CloudAgents.Sqlite.DbError] {
+pub func callbackTokenHashForSession(sessionId: in String): Result[Option[String], CloudAgents.Db.DbError] {
   return routeColumn(sessionId, "callback_token_hash")
 }
 
 /// A session's owning user id by id only, or None.
-pub func sessionOwnerUserId(sessionId: in String): Result[Option[String], CloudAgents.Sqlite.DbError] {
+pub func sessionOwnerUserId(sessionId: in String): Result[Option[String], CloudAgents.Db.DbError] {
   return routeColumn(sessionId, "user_id")
 }
 
@@ -490,7 +485,7 @@ pub func sessionOwnerUserId(sessionId: in String): Result[Option[String], CloudA
 /// owner, from the route (spec §5.2's callback-token resolver). None for an
 /// unknown session. Callers authenticate the presented token against
 /// `callbackTokenHashForSession` before acting in this scope.
-pub func sessionRouteScope(sessionId: in String): Result[Option[CloudAgents.Pg.TenantScope], CloudAgents.Sqlite.DbError] {
+pub func sessionRouteScope(sessionId: in String): Result[Option[CloudAgents.Pg.TenantScope], CloudAgents.Db.DbError] {
   val u = CloudAgents.PgStore.openUnscoped()?
   defer {
     CloudAgents.PgStore.release(u)

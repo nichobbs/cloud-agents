@@ -67,17 +67,15 @@ services:
       # open). docker-compose.coolify.yml now leaves it unset too, for the
       # same reason (all five runner images there build unconditionally as
       # well).
-      # Persistent state: the SQLite database, artifact bytes and
-      # chat-attachment bytes all live under CLOUD_AGENTS_DATA_DIR, a HOST
+      # Persistent files: artifact bytes and chat-attachment bytes live under CLOUD_AGENTS_DATA_DIR, a HOST
       # directory bind-mounted into this container at the SAME path (volumes
-      # below). Without these, every one of them defaulted to a relative path
-      # inside the container's writable layer (/app), so every redeploy
-      # silently discarded all sessions. The same-path mount matters for
+      # below). Without these, both defaulted to a relative path inside the
+      # container's writable layer (/app), so every redeploy discarded them.
+      # Everything else is in Postgres (the postgres service below). The same-path mount matters for
       # attachments specifically: their directory is bind-mounted into runner
       # containers by the HOST's dockerd (docker-outside-of-docker, like
       # NODE_EXTRA_CA_CERTS below), so the path the api process sees must also
       # exist at that exact path on the host.
-      - CLOUD_AGENTS_DB_PATH=${CLOUD_AGENTS_DATA_DIR:-/var/lib/cloud-agents}/cloud-agents.db
       - CLOUD_AGENTS_ARTIFACTS_DIR=${CLOUD_AGENTS_DATA_DIR:-/var/lib/cloud-agents}/artifacts
       - CLOUD_AGENTS_ATTACHMENTS_DIR=${CLOUD_AGENTS_DATA_DIR:-/var/lib/cloud-agents}/attachments
       - LYRIC_CONFIG_WEB_SERVER_PORT=8080
@@ -85,11 +83,10 @@ services:
       # authenticates with it. Without it or GitHub OAuth, the API refuses
       # every request (docs/CAPABILITY_AUDIT.md §2.2).
       - CLOUD_AGENTS_API_TOKEN=${CLOUD_AGENTS_API_TOKEN:?set CLOUD_AGENTS_API_TOKEN in .env}
-      # The Postgres service role (docs/phase11-postgres-tenancy.md §5.1).
-      # Until the cut-over the API still stores everything in SQLite; with
-      # this set, startup checks that the role cannot bypass row-level
-      # security and that the schema's roles exist, and refuses to start
-      # otherwise.
+      # The Postgres service role (docs/phase11-postgres-tenancy.md §5.1),
+      # where every store lives. Startup checks that the role cannot bypass
+      # row-level security, that the provisioned roles exist and that the
+      # schema is migrated, and refuses to start otherwise.
       - LYRIC_CONFIG_DB_CONNECTION_URL=postgres://cloudagents_app:${CLOUD_AGENTS_PG_APP_PASSWORD:?set CLOUD_AGENTS_PG_APP_PASSWORD in .env}@postgres:5432/cloudagents
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock

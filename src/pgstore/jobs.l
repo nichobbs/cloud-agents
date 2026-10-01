@@ -1,11 +1,11 @@
 //! CloudAgents.PgStore.Jobs — the Postgres implementation of scheduled jobs
 //! (docs/phase8-scheduling.md, docs/phase11-postgres-tenancy.md §5.3a, §9
-//! slices B/C). It mirrors the SQLite-backed functions in
-//! `CloudAgents.Repository` with the same signatures and semantics.
+//! slices B/C). It is the Postgres store for scheduled
+//! jobs, behind the `CloudAgents.Repository` facade.
 //!
 //! Human and container calls arrive with the owner's scope in the job's
 //! tenant, and row-level security confines them to it; within it a job is
-//! the owner's alone, as on SQLite.
+//! the owner's alone.
 //!
 //! Firing is claimed across every tenant through `claim_scheduled_jobs`
 //! (§5.3a), which advances each claimed job's schedule in the same statement:
@@ -27,7 +27,7 @@ import Db
 import CloudAgents.Pg
 import CloudAgents.PgStore
 import CloudAgents.Repository
-import CloudAgents.Sqlite
+import CloudAgents.Db
 
 func newId(): String {
   return Std.Uuid.uuidToString(Std.Uuid.newUuid())
@@ -39,7 +39,7 @@ func c(r: in DbRow, name: in String): String {
 
 func query(
   sc: in CloudAgents.Pg.TenantScope, sql: in String, params: in slice[String]
-): Result[slice[DbRow], CloudAgents.Sqlite.DbError] {
+): Result[slice[DbRow], CloudAgents.Db.DbError] {
   val u = CloudAgents.PgStore.open(sc)?
   defer {
     CloudAgents.PgStore.release(u)
@@ -51,7 +51,7 @@ func query(
 
 func exec(
   sc: in CloudAgents.Pg.TenantScope, sql: in String, params: in slice[String]
-): Result[Int, CloudAgents.Sqlite.DbError] {
+): Result[Int, CloudAgents.Db.DbError] {
   val u = CloudAgents.PgStore.open(sc)?
   defer {
     CloudAgents.PgStore.release(u)
@@ -125,7 +125,7 @@ pub func createScheduledJob(
   model: in String,
   runAt: in String,
   intervalSeconds: in String,
-): Result[CloudAgents.Repository.ScheduledJob, CloudAgents.Sqlite.DbError] {
+): Result[CloudAgents.Repository.ScheduledJob, CloudAgents.Db.DbError] {
   return insertJob(sc, name, prompt, profileId, repoUrl, branch, harness, model, runAt, intervalSeconds, "")
 }
 
@@ -138,7 +138,7 @@ pub func createScheduledJobWithSession(
   runAt: in String,
   intervalSeconds: in String,
   sessionId: in String,
-): Result[CloudAgents.Repository.ScheduledJob, CloudAgents.Sqlite.DbError] {
+): Result[CloudAgents.Repository.ScheduledJob, CloudAgents.Db.DbError] {
   return insertJob(sc, name, prompt, "", "", "", "", "", runAt, intervalSeconds, sessionId)
 }
 
@@ -154,7 +154,7 @@ func insertJob(
   runAt: in String,
   intervalSeconds: in String,
   sessionId: in String,
-): Result[CloudAgents.Repository.ScheduledJob, CloudAgents.Sqlite.DbError] {
+): Result[CloudAgents.Repository.ScheduledJob, CloudAgents.Db.DbError] {
   val id = newId()
   val ts = CloudAgents.Repository.nowMillis()
   val nextRunAt = if runAt.length > 0 { runAt } else { ts }
@@ -184,7 +184,7 @@ func insertJob(
 /// One of the caller's jobs, or None (unknown id or foreign owner).
 pub func getScheduledJob(
   id: in String, sc: in CloudAgents.Pg.TenantScope
-): Result[Option[CloudAgents.Repository.ScheduledJob], CloudAgents.Sqlite.DbError] {
+): Result[Option[CloudAgents.Repository.ScheduledJob], CloudAgents.Db.DbError] {
   val rows = query(sc, "SELECT " + jobCols() + " FROM scheduled_jobs WHERE id = @p0 AND user_id = @p1", [id, sc.userId])?
   if rows.length == 0 {
     return Ok(value = None)
@@ -195,7 +195,7 @@ pub func getScheduledJob(
 /// All of the caller's jobs, newest first.
 pub func listScheduledJobs(
   sc: in CloudAgents.Pg.TenantScope
-): Result[slice[CloudAgents.Repository.ScheduledJob], CloudAgents.Sqlite.DbError] {
+): Result[slice[CloudAgents.Repository.ScheduledJob], CloudAgents.Db.DbError] {
   val rows = query(sc, "SELECT " + jobCols() + " FROM scheduled_jobs WHERE user_id = @p0 " + "ORDER BY scheduled_jobs.created_at DESC, scheduled_jobs.id COLLATE \"C\"", [sc.userId])?
   var acc: slice[CloudAgents.Repository.ScheduledJob] = []
   for r in rows {
@@ -207,9 +207,7 @@ pub func listScheduledJobs(
 /// Claim up to `limit` due jobs across every tenant, earliest-due first, via
 /// `claim_scheduled_jobs` (§5.3a). Each claimed job is returned with its
 /// owner's scope in its tenant and the row as it was before the claim.
-pub func claimDueScheduledJobs(
-  limit: in Int
-): Result[slice[CloudAgents.Repository.ClaimedJob], CloudAgents.Sqlite.DbError] {
+pub func claimDueScheduledJobs(limit: in Int): Result[slice[CloudAgents.Repository.ClaimedJob], CloudAgents.Db.DbError] {
   val u = CloudAgents.PgStore.openUnscoped()?
   defer {
     CloudAgents.PgStore.release(u)
@@ -254,7 +252,7 @@ pub func claimDueScheduledJobs(
       case Ok(None) -> println("WARNING: claimed scheduled job " + c(k, "id") + " vanished before it could run")
       case Err(e) -> println(
         "WARNING: could not read claimed scheduled job " + c(k, "id") + ": " +
-          CloudAgents.Sqlite.dbErrorMessage(e)
+          CloudAgents.Db.dbErrorMessage(e)
       )
     }
   }
@@ -263,7 +261,7 @@ pub func claimDueScheduledJobs(
 
 /// Undo a claim whose run was skipped (its session was busy), so the slot is
 /// retried on the next poll. A no-op if the row changed since the claim.
-pub func releaseScheduledJobClaim(c0: in CloudAgents.Repository.ClaimedJob): Result[Unit, CloudAgents.Sqlite.DbError] {
+pub func releaseScheduledJobClaim(c0: in CloudAgents.Repository.ClaimedJob): Result[Unit, CloudAgents.Db.DbError] {
   exec(c0.tenantScope, "UPDATE scheduled_jobs SET next_run_at = " + msOpt(2) + ", last_run_at = " + msOpt(3) + ", status = 'active' " + "WHERE id = @p0 AND user_id = @p1 AND last_run_at = " + msOpt(4) + " AND next_run_at IS NOT DISTINCT FROM " + msOpt(5) + " AND status = @p6", [c0.job.id, c0.tenantScope.userId, c0.job.nextRunAt, c0.job.lastRunAt, c0.claimedAt, c0.claimedNextRunAt, c0.claimedStatus])?
   return Ok(value = ())
 }
@@ -271,7 +269,7 @@ pub func releaseScheduledJobClaim(c0: in CloudAgents.Repository.ClaimedJob): Res
 /// Attach a session to a job on its first run — a no-op if it already has one.
 pub func attachScheduledJobSession(
   id: in String, sc: in CloudAgents.Pg.TenantScope, sessionId: in String
-): Result[Unit, CloudAgents.Sqlite.DbError] {
+): Result[Unit, CloudAgents.Db.DbError] {
   exec(sc, "UPDATE scheduled_jobs SET session_id = @p1 WHERE id = @p0 AND session_id = ''", [id, sessionId])?
   return Ok(value = ())
 }
@@ -289,7 +287,7 @@ pub func updateScheduledJob(
   nextRunAt: in String,
   status: in String,
   writeNextRunAt: in Bool,
-): Result[Int, CloudAgents.Sqlite.DbError] {
+): Result[Int, CloudAgents.Db.DbError] {
   val sql = "UPDATE scheduled_jobs SET name = @p2, prompt = @p3, profile_id = @p4, run_at = " + msOpt(5) +
     ", interval_seconds = NULLIF(@p6, '')::integer, status = @p7"
   val params: slice[String] = [id, sc.userId, name, prompt, profileId, runAt, intervalSeconds, status]
@@ -300,6 +298,6 @@ pub func updateScheduledJob(
 }
 
 /// Delete one of the caller's jobs. Returns the affected row count.
-pub func deleteScheduledJob(id: in String, sc: in CloudAgents.Pg.TenantScope): Result[Int, CloudAgents.Sqlite.DbError] {
+pub func deleteScheduledJob(id: in String, sc: in CloudAgents.Pg.TenantScope): Result[Int, CloudAgents.Db.DbError] {
   return exec(sc, "DELETE FROM scheduled_jobs WHERE id = @p0 AND user_id = @p1", [id, sc.userId])
 }

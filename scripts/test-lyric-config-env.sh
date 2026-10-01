@@ -38,13 +38,14 @@ command -v curl   >/dev/null || { echo "test-lyric-config-env: 'curl' not on PAT
 command -v dotnet >/dev/null || { echo "test-lyric-config-env: 'dotnet' not on PATH" >&2; exit 1; }
 [ -f "$OUT" ] || { echo "test-lyric-config-env: $OUT not found — run scripts/build-full.sh first" >&2; exit 1; }
 
-# Same native-sqlite exposure as scripts/e2e-http.sh / the "Run lyric test" CI
-# step: the live-DB code needs libe_sqlite3.so resolvable from bin/runtimes.
-if [ -d "$REPO_ROOT/bin/runtimes/linux-x64/native" ]; then
-  export LD_LIBRARY_PATH="$REPO_ROOT/bin/runtimes/linux-x64/native:${LD_LIBRARY_PATH:-}"
+# The server needs the cloudagents_app Postgres DSN (it exits at startup
+# without it) against a schema already migrated by `--migrate`, same as
+# scripts/e2e-http.sh. This script writes nothing to the database.
+if [ -z "${LYRIC_CONFIG_DB_CONNECTION_URL:-}" ]; then
+  echo "test-lyric-config-env: LYRIC_CONFIG_DB_CONNECTION_URL is not set (the cloudagents_app Postgres DSN); the server cannot start without it" >&2
+  exit 1
 fi
 
-DB=""
 LOG=""
 SERVER_PID=""
 fails=0
@@ -52,14 +53,11 @@ fails=0
 cleanup() {
   # Every branch below is written to never itself return non-zero — this runs
   # as an EXIT trap, so its own exit status would otherwise clobber the
-  # script's real one (e.g. `[ -n "$DB" ] && rm -f ...` evaluates to a
-  # failing status, 1, once stop_server has already cleared DB to "").
+  # script's real one (e.g. `[ -n "$LOG" ] && rm -f ...` evaluates to a
+  # failing status, 1, once stop_server has already cleared LOG to "").
   if [ -n "$SERVER_PID" ]; then
     kill "$SERVER_PID" 2>/dev/null || true
     wait "$SERVER_PID" 2>/dev/null || true
-  fi
-  if [ -n "$DB" ]; then
-    rm -f "$DB" "$DB-wal" "$DB-shm"
   fi
   if [ -n "$LOG" ]; then
     rm -f "$LOG"
@@ -68,18 +66,16 @@ cleanup() {
 }
 trap cleanup EXIT
 
-# start_server <label> — launches the binary against a fresh throwaway DB
-# under whatever env the caller has already exported/unset (config blocks
+# start_server <label> — launches the binary under whatever env the caller
+# has already exported/unset (config blocks
 # only read the environment once, at process start, so the caller must set
 # up its LYRIC_CONFIG_*/CLOUD_AGENTS_* state BEFORE calling this), and waits
-# for /api/health. Leaves SERVER_PID/DB/LOG set for stop_server.
+# for /api/health. Leaves SERVER_PID/LOG set for stop_server.
 start_server() {
   local label="$1"
-  DB="$(mktemp -t cloud-agents-config-e2e-XXXXXX.db)"
   LOG="$(mktemp -t cloud-agents-config-e2e-log-XXXXXX)"
-  export CLOUD_AGENTS_DB_PATH="$DB"
   export LYRIC_CONFIG_WEB_SERVER_PORT="$PORT"
-  echo "==> starting server (${label}) on ${BASE} (db=${DB})"
+  echo "==> starting server (${label}) on ${BASE}"
   dotnet "$OUT" --port "$PORT" >"$LOG" 2>&1 &
   SERVER_PID=$!
   local ready=0 code
@@ -106,8 +102,7 @@ stop_server() {
     wait "$SERVER_PID" 2>/dev/null || true
     SERVER_PID=""
   fi
-  rm -f "$DB" "$DB-wal" "$DB-shm" "$LOG"
-  DB=""
+  rm -f "$LOG"
   LOG=""
 }
 

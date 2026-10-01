@@ -1,5 +1,10 @@
 # Phase 8 — Scheduled jobs
 
+> Since phase 11 the store is Postgres, not SQLite (see
+> [`docs/phase11-postgres-tenancy.md`](phase11-postgres-tenancy.md)); the SQL
+> and migration references below are historical, and the live schema is in
+> `src/pg/schema.l`.
+
 Status: shipped (host-side CRUD + trigger endpoint, the four MCP tools, and
 tests). Not yet exercised end-to-end against a live external scheduler or a
 real Docker daemon — see "Verification status" at the end.

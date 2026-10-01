@@ -1,50 +1,83 @@
-//! Live-SQLite tests for the session-ledger store (docs/session-ledger.md
-//! §4): migration 0037, the change cursor, optimistic item transitions,
-//! entries, reviews, atomic feedback delivery, the cross-session inbox, and
-//! the retired-tool profile-grant rewrite. Fresh temp DB per test (the
-//! tests/session_events_tests.l harness); no network, no clock assertions.
+//! Tests for the session-ledger store on Postgres (docs/session-ledger.md §4):
+//! the change cursor, optimistic item transitions, entries, reviews, atomic
+//! feedback delivery and the cross-session inbox. Each test acts as a fresh
+//! user with its own personal tenant, so ledger rows (keyed by session id
+//! within a tenant) never meet another test's; no network, no clock assertions.
 @test_module
 package CloudAgents.LedgerStoreTests
 
 import Std.Core
+import Std.Environment
 import Std.Testing
 import Std.Uuid
+import CloudAgents.Auth
+import CloudAgents.Pg
+import CloudAgents.Pg.Migrate
+import CloudAgents.PgStore.Tenancy
 import CloudAgents.Repository
-import CloudAgents.Sqlite
+import CloudAgents.SessionStore
+import CloudAgents.Db
 import CloudAgents.Ledger.Model
 import CloudAgents.Ledger.Schema
 import CloudAgents.Ledger.StateMachine
 import CloudAgents.Ledger.Store
 import CloudAgents.Scope as TestScope
 import CloudAgents.Ledger.Summary
-import extern System.Environment as Env
 
-@externTarget("System.IO.File.Delete")
-func fileDelete(path: in String): Unit = ()
-
-func useFreshTestDb(tag: in String): String {
-  val path = "/tmp/cloud-agents-tests-" + tag + "-" + Std.Uuid.uuidToString(Std.Uuid.newUuid()) + ".db"
-  Env.SetEnvironmentVariable("CLOUD_AGENTS_DB_PATH", path)
-  match CloudAgents.Repository.initSchema() {
-    case Ok(_) -> ()
-    case Err(e) -> assertTrue(false, "initSchema failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+// ── Live Postgres ─────────────────────────────────────────────────────────────
+//
+// The store is Postgres (docs/phase11-postgres-tenancy.md). These tests run iff
+// LYRIC_CONFIG_DB_CONNECTION_URL (cloudagents_app) and
+// CLOUD_AGENTS_MIGRATE_DATABASE_URL (cloudagents_owner) are set, and fail rather
+// than skip when CLOUD_AGENTS_REQUIRE_LIVE_PG=1 (CI). Each test acts as a fresh
+// user with its own personal tenant, so tests, suites and repeated runs against
+// the same database never see each other's rows.
+func live(): Bool {
+  val ok = CloudAgents.Pg.serviceConfigured() and
+    Std.Environment.getVarOrDefault(CloudAgents.Pg.migrateDsnVar(), "").length.toInt() > 0
+  if ok {
+    return true
   }
-  return path
+  assertTrue(
+    Std.Environment.getVarOrDefault("CLOUD_AGENTS_REQUIRE_LIVE_PG", "") != "1",
+    "CLOUD_AGENTS_REQUIRE_LIVE_PG=1 but LYRIC_CONFIG_DB_CONNECTION_URL or CLOUD_AGENTS_MIGRATE_DATABASE_URL is not set"
+  )
+  println("SKIP: ledger store tests need LYRIC_CONFIG_DB_CONNECTION_URL and CLOUD_AGENTS_MIGRATE_DATABASE_URL")
+  return false
 }
 
-func cleanupTestDb(path: in String): Unit {
-  try {
-    fileDelete(path)
-  } catch Bug as b {
-    // locked or already gone — fine for a temp file
+func migrate(): Unit {
+  val conn = match CloudAgents.Pg.connectDsn(Std.Environment.getVarOrDefault(CloudAgents.Pg.migrateDsnVar(), "")) {
+    case Ok(c) -> c
+    case Err(e) -> panic(CloudAgents.Pg.pgErrorMessage(e))
+  }
+  defer {
+    conn.close()
+  }
+  match CloudAgents.Pg.Migrate.migrate(conn) {
+    case Ok(_) -> ()
+    case Err(e) -> panic("migrate failed: " + CloudAgents.Pg.pgErrorMessage(e))
   }
 }
 
-func exec(sql: in String): Unit {
-  match CloudAgents.Sqlite.execute(sql) {
+/// A new user with a provisioned personal tenant. Does not change the request
+/// identity.
+func newUser(tag: in String): String {
+  val uid = "t-" + tag + "-" + Std.Uuid.uuidToString(Std.Uuid.newUuid())
+  match CloudAgents.PgStore.Tenancy.ensurePersonalTenant(uid) {
     case Ok(_) -> ()
-    case Err(e) -> assertTrue(false, "exec failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+    case Err(e) -> panic("provisioning " + uid + " failed: " + CloudAgents.Db.dbErrorMessage(e))
   }
+  return uid
+}
+
+/// Migrate, then make a new user the request identity (what handlers read via
+/// CloudAgents.Auth.requestScope()).
+func freshUser(tag: in String): String {
+  migrate()
+  val uid = newUser(tag)
+  CloudAgents.Auth.setCurrentUserId(uid)
+  return uid
 }
 
 func noStrings(): slice[String] {
@@ -64,7 +97,7 @@ func register(sid: in String, ids: in slice[String]): Int {
   match registerItems(sid, testScope(), ids, titles, urls) {
     case Ok(n) -> return n
     case Err(e) -> {
-      assertTrue(false, "registerItems failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+      assertTrue(false, "registerItems failed: " + CloudAgents.Db.dbErrorMessage(e))
       return 0
     }
   }
@@ -74,7 +107,7 @@ func mustItem(sid: in String, id: in String): WorkItem {
   match getItem(sid, testScope(), id) {
     case Ok(Some(w)) -> return w
     case Ok(None) -> panic("item not found: " + id)
-    case Err(e) -> panic("getItem failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+    case Err(e) -> panic("getItem failed: " + CloudAgents.Db.dbErrorMessage(e))
   }
 }
 
@@ -110,7 +143,7 @@ func move(
       }
       match applyItemUpdate(sid, testScope(), plan.item, current.updatedSeq, plan.fromState, plan.stateChanged, actor, reason, auto, plan.resolvesBlockers) {
         case Ok(applied) -> return applied
-        case Err(e) -> panic("apply failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+        case Err(e) -> panic("apply failed: " + CloudAgents.Db.dbErrorMessage(e))
       }
     }
   }
@@ -157,7 +190,7 @@ func declaredEntry(sid: in String, kind: in String, severity: in String, review:
 func mustInsert(e: in LedgerEntry): LedgerEntry {
   match insertEntry(testScope(), e) {
     case Ok(stored) -> return stored
-    case Err(err) -> panic("insertEntry failed: " + CloudAgents.Sqlite.dbErrorMessage(err))
+    case Err(err) -> panic("insertEntry failed: " + CloudAgents.Db.dbErrorMessage(err))
   }
 }
 
@@ -172,10 +205,10 @@ test "string list codec round-trips awkward values" {
 }
 
 test "register is ordered and idempotent" {
-  val path = useFreshTestDb("ledger-register")
-  defer {
-    cleanupTestDb(path)
+  if not live() {
+    return
   }
+  val me = freshUser("ledger-register")
   assertEqualInt(register("s1", ["gh:a/b#1", "gh:a/b#2"]), 2, "two new")
   assertEqualInt(register("s1", ["gh:a/b#2", "gh:a/b#3"]), 1, "one new, one refreshed")
   match listItems("s1", testScope()) {
@@ -185,19 +218,19 @@ test "register is ordered and idempotent" {
       assertEqual(items[2].id, "gh:a/b#3", "appended last")
       assertEqual(items[2].state, "queued", "new items are queued")
     }
-    case Err(e) -> assertTrue(false, CloudAgents.Sqlite.dbErrorMessage(e))
+    case Err(e) -> assertTrue(false, CloudAgents.Db.dbErrorMessage(e))
   }
   match listItems("other", testScope()) {
     case Ok(items) -> assertEqualInt(items.length.toInt(), 0, "session scoped")
-    case Err(e) -> assertTrue(false, CloudAgents.Sqlite.dbErrorMessage(e))
+    case Err(e) -> assertTrue(false, CloudAgents.Db.dbErrorMessage(e))
   }
 }
 
 test "a transition writes the item, a transition row and a blocker entry" {
-  val path = useFreshTestDb("ledger-transition")
-  defer {
-    cleanupTestDb(path)
+  if not live() {
+    return
   }
+  val me = freshUser("ledger-transition")
   register("s1", ["gh:a/b#1", "gh:a/b#2"])
   assertTrue(move("s1", "gh:a/b#1", "in_progress", "", noStrings(), "agent"), "start applied")
   assertTrue(move("s1", "gh:a/b#1", "blocked", "needs #2's schema", ["gh:a/b#2"], "agent"), "block applied")
@@ -212,7 +245,7 @@ test "a transition writes the item, a transition row and a blocker entry" {
       assertEqual(ts[1].toState, "blocked", "to")
       assertEqual(ts[1].actor, "agent", "actor")
     }
-    case Err(e) -> assertTrue(false, CloudAgents.Sqlite.dbErrorMessage(e))
+    case Err(e) -> assertTrue(false, CloudAgents.Db.dbErrorMessage(e))
   }
   match listEntries("s1", testScope()) {
     case Ok(es) -> {
@@ -222,21 +255,21 @@ test "a transition writes the item, a transition row and a blocker entry" {
       assertEqual(es[0].reviewState, "pending", "in the attention queue")
       assertEqual(es[0].origin, "transition", "origin")
     }
-    case Err(e) -> assertTrue(false, CloudAgents.Sqlite.dbErrorMessage(e))
+    case Err(e) -> assertTrue(false, CloudAgents.Db.dbErrorMessage(e))
   }
   // Leaving blocked resolves the automatic blocker.
   assertTrue(move("s1", "gh:a/b#1", "queued", "", noStrings(), "human"), "requeue applied")
   match listEntries("s1", testScope()) {
     case Ok(es) -> assertEqual(es[0].reviewState, "resolved", "blocker resolved")
-    case Err(e) -> assertTrue(false, CloudAgents.Sqlite.dbErrorMessage(e))
+    case Err(e) -> assertTrue(false, CloudAgents.Db.dbErrorMessage(e))
   }
 }
 
 test "a stale plan is rejected and writes nothing" {
-  val path = useFreshTestDb("ledger-conflict")
-  defer {
-    cleanupTestDb(path)
+  if not live() {
+    return
   }
+  val me = freshUser("ledger-conflict")
   register("s1", ["gh:a/b#1"])
   val stale = mustItem("s1", "gh:a/b#1")
   assertTrue(move("s1", "gh:a/b#1", "in_progress", "", noStrings(), "agent"), "concurrent writer wins")
@@ -260,26 +293,26 @@ test "a stale plan is rejected and writes nothing" {
       )
       match applyItemUpdate("s1", testScope(), plan.item, stale.updatedSeq, plan.fromState, plan.stateChanged, "human", "which API?", auto, false) {
         case Ok(applied) -> assertTrue(not applied, "stale version must not apply")
-        case Err(e) -> assertTrue(false, CloudAgents.Sqlite.dbErrorMessage(e))
+        case Err(e) -> assertTrue(false, CloudAgents.Db.dbErrorMessage(e))
       }
     }
   }
   assertEqual(mustItem("s1", "gh:a/b#1").state, "in_progress", "state unchanged")
   match listEntries("s1", testScope()) {
     case Ok(es) -> assertEqualInt(es.length.toInt(), 0, "no blocker written")
-    case Err(e) -> assertTrue(false, CloudAgents.Sqlite.dbErrorMessage(e))
+    case Err(e) -> assertTrue(false, CloudAgents.Db.dbErrorMessage(e))
   }
   match listTransitions("s1", testScope(), "gh:a/b#1") {
     case Ok(ts) -> assertEqualInt(ts.length.toInt(), 1, "only the winning transition")
-    case Err(e) -> assertTrue(false, CloudAgents.Sqlite.dbErrorMessage(e))
+    case Err(e) -> assertTrue(false, CloudAgents.Db.dbErrorMessage(e))
   }
 }
 
 test "entries round-trip and the cursor returns only changes" {
-  val path = useFreshTestDb("ledger-entries")
-  defer {
-    cleanupTestDb(path)
+  if not live() {
+    return
   }
+  val me = freshUser("ledger-entries")
   val e1 = mustInsert(declaredEntry("s1", "decision", "review", "pending"))
   assertEqual(e1.optionsConsidered[1], "postgres, with \"quotes\"", "options round-trip")
   assertEqual(e1.files[0], "src/db.l", "files")
@@ -287,7 +320,7 @@ test "entries round-trip and the cursor returns only changes" {
   assertEqual(e1.transcriptSeq, "12", "transcript ref")
   val cursor = match currentSeq("s1", testScope()) {
     case Ok(s) -> s
-    case Err(e) -> panic(CloudAgents.Sqlite.dbErrorMessage(e))
+    case Err(e) -> panic(CloudAgents.Db.dbErrorMessage(e))
   }
   val e2 = mustInsert(declaredEntry("s1", "note", "info", "not_required"))
   match entriesChangedAfter("s1", testScope(), cursor) {
@@ -295,19 +328,19 @@ test "entries round-trip and the cursor returns only changes" {
       assertEqualInt(es.length.toInt(), 1, "only the new entry")
       assertEqual(es[0].id, e2.id, "the new entry")
     }
-    case Err(e) -> assertTrue(false, CloudAgents.Sqlite.dbErrorMessage(e))
+    case Err(e) -> assertTrue(false, CloudAgents.Db.dbErrorMessage(e))
   }
   match currentSeq("never-written", testScope()) {
     case Ok(s) -> assertEqual(s, "0", "fresh session cursor")
-    case Err(e) -> assertTrue(false, CloudAgents.Sqlite.dbErrorMessage(e))
+    case Err(e) -> assertTrue(false, CloudAgents.Db.dbErrorMessage(e))
   }
 }
 
 test "a review updates the entry and queues feedback delivered exactly once" {
-  val path = useFreshTestDb("ledger-review")
-  defer {
-    cleanupTestDb(path)
+  if not live() {
+    return
   }
+  val me = freshUser("ledger-review")
   val e = mustInsert(declaredEntry("s1", "shortcut", "review", "pending"))
   match reviewEntry("s1", testScope(), e, "rejected", "reject", "Don't skip; quarantine it.", "gh-1") {
     case Ok(f) -> {
@@ -315,11 +348,11 @@ test "a review updates the entry and queues feedback delivered exactly once" {
       assertEqual(f.itemId, "gh:a/b#1", "inherits the entry's item")
       assertEqual(f.deliveredAt, "", "undelivered")
     }
-    case Err(err) -> assertTrue(false, CloudAgents.Sqlite.dbErrorMessage(err))
+    case Err(err) -> assertTrue(false, CloudAgents.Db.dbErrorMessage(err))
   }
   match addFeedback("s1", testScope(), "", "directive", "Also update the changelog.", "gh-1") {
     case Ok(_) -> ()
-    case Err(err) -> assertTrue(false, CloudAgents.Sqlite.dbErrorMessage(err))
+    case Err(err) -> assertTrue(false, CloudAgents.Db.dbErrorMessage(err))
   }
   match getEntry("s1", testScope(), e.id) {
     case Ok(Some(stored)) -> {
@@ -328,184 +361,143 @@ test "a review updates the entry and queues feedback delivered exactly once" {
       assertEqual(stored.reviewBy, "gh-1", "reviewer")
     }
     case Ok(None) -> assertTrue(false, "entry missing")
-    case Err(err) -> assertTrue(false, CloudAgents.Sqlite.dbErrorMessage(err))
+    case Err(err) -> assertTrue(false, CloudAgents.Db.dbErrorMessage(err))
   }
   match pendingFeedbackCount("s1", testScope()) {
     case Ok(n) -> assertEqualInt(n, 2, "two pending")
-    case Err(err) -> assertTrue(false, CloudAgents.Sqlite.dbErrorMessage(err))
+    case Err(err) -> assertTrue(false, CloudAgents.Db.dbErrorMessage(err))
   }
   match collectFeedback("s1", testScope(), "mcp_poll") {
     case Ok(fs) -> {
       assertEqualInt(fs.length.toInt(), 2, "both delivered")
       assertEqual(fs[0].deliveredVia, "mcp_poll", "via")
     }
-    case Err(err) -> assertTrue(false, CloudAgents.Sqlite.dbErrorMessage(err))
+    case Err(err) -> assertTrue(false, CloudAgents.Db.dbErrorMessage(err))
   }
   match collectFeedback("s1", testScope(), "mcp_poll") {
     case Ok(fs) -> assertEqualInt(fs.length.toInt(), 0, "never delivered twice")
-    case Err(err) -> assertTrue(false, CloudAgents.Sqlite.dbErrorMessage(err))
+    case Err(err) -> assertTrue(false, CloudAgents.Db.dbErrorMessage(err))
   }
   match pendingFeedbackCount("s1", testScope()) {
     case Ok(n) -> assertEqualInt(n, 0, "none pending")
-    case Err(err) -> assertTrue(false, CloudAgents.Sqlite.dbErrorMessage(err))
+    case Err(err) -> assertTrue(false, CloudAgents.Db.dbErrorMessage(err))
   }
 }
 
 test "a released claim is delivered again" {
-  val path = useFreshTestDb("ledger-release")
-  defer {
-    cleanupTestDb(path)
+  if not live() {
+    return
   }
+  val me = freshUser("ledger-release")
   match addFeedback("s1", testScope(), "", "directive", "Use API v2.", "gh-1") {
     case Ok(_) -> ()
-    case Err(err) -> assertTrue(false, CloudAgents.Sqlite.dbErrorMessage(err))
+    case Err(err) -> assertTrue(false, CloudAgents.Db.dbErrorMessage(err))
   }
   match collectFeedback("s1", testScope(), "mcp_poll") {
     case Ok(fs) -> assertEqualInt(fs.length.toInt(), 1, "claimed")
-    case Err(err) -> assertTrue(false, CloudAgents.Sqlite.dbErrorMessage(err))
+    case Err(err) -> assertTrue(false, CloudAgents.Db.dbErrorMessage(err))
   }
   // The read-back failure path: the claimed batch is handed back.
   releaseFeedbackBatch("s1", testScope(), batchOf("s1"))
   match pendingFeedbackCount("s1", testScope()) {
     case Ok(n) -> assertEqualInt(n, 1, "pending again")
-    case Err(err) -> assertTrue(false, CloudAgents.Sqlite.dbErrorMessage(err))
+    case Err(err) -> assertTrue(false, CloudAgents.Db.dbErrorMessage(err))
   }
   match collectFeedback("s1", testScope(), "mcp_poll") {
     case Ok(fs) -> assertEqualInt(fs.length.toInt(), 1, "delivered on the next check")
-    case Err(err) -> assertTrue(false, CloudAgents.Sqlite.dbErrorMessage(err))
+    case Err(err) -> assertTrue(false, CloudAgents.Db.dbErrorMessage(err))
   }
 }
 
 func batchOf(sid: in String): String {
-  match CloudAgents.Sqlite.query("SELECT delivery_batch FROM ledger_feedback WHERE session_id = '" + sid + "' LIMIT 1") {
-    case Ok(rows) -> {
-      val r = CloudAgents.Sqlite.getRowArrayValue(rows, 0)
-      return CloudAgents.Sqlite.getStringArrayValue(r.cols, 0)
-    }
-    case Err(e) -> panic(CloudAgents.Sqlite.dbErrorMessage(e))
+  val u = match CloudAgents.PgStore.open(testScope()) {
+    case Ok(x) -> x
+    case Err(e) -> panic(CloudAgents.Db.dbErrorMessage(e))
+  }
+  defer {
+    CloudAgents.PgStore.release(u)
+  }
+  match CloudAgents.PgStore.q(u, "SELECT delivery_batch FROM ledger_feedback WHERE session_id = @p0 LIMIT 1", [sid]) {
+    case Ok(rows) -> return CloudAgents.PgStore.col(rows[0], "delivery_batch")
+    case Err(e) -> panic(CloudAgents.Db.dbErrorMessage(e))
   }
 }
 
 test "the inbox is scoped to the owner and orders blocking first" {
-  val path = useFreshTestDb("ledger-inbox")
-  defer {
-    cleanupTestDb(path)
+  if not live() {
+    return
   }
-  exec(
-    "INSERT INTO sessions (id, user_id, repo_url, branch, container_id, harness, model, native_session_id, status, created_at, last_message_at) VALUES ('s1', 'alice', 'https://github.com/a/b', 'main', '', 'claude', '', 's1', 'IDLE', '1', '1')"
-  )
-  exec(
-    "INSERT INTO sessions (id, user_id, repo_url, branch, container_id, harness, model, native_session_id, status, created_at, last_message_at) VALUES ('s2', 'bob', 'https://github.com/c/d', 'main', '', 'claude', '', 's2', 'IDLE', '1', '1')"
-  )
-  mustInsert(declaredEntry("s1", "shortcut", "review", "pending"))
-  mustInsert(declaredEntry("s1", "blocker", "blocking", "pending"))
-  mustInsert(declaredEntry("s1", "note", "info", "not_required"))
-  mustInsert(declaredEntry("s2", "shortcut", "review", "pending"))
+  val me = freshUser("ledger-inbox")
+  val bob = newUser("ledger-inbox-bob")
+  val bobScope = TestScope.personalScope(bob)
+  // Session ids are global (session_routes), so these are unique to the run.
+  val s1 = "s-" + Std.Uuid.uuidToString(Std.Uuid.newUuid())
+  val s2 = "s-" + Std.Uuid.uuidToString(Std.Uuid.newUuid())
+  addSession(s1, testScope())
+  addSession(s2, bobScope)
+  mustInsert(declaredEntry(s1, "shortcut", "review", "pending"))
+  mustInsert(declaredEntry(s1, "blocker", "blocking", "pending"))
+  mustInsert(declaredEntry(s1, "note", "info", "not_required"))
+  match insertEntry(bobScope, declaredEntry(s2, "shortcut", "review", "pending")) {
+    case Ok(_) -> ()
+    case Err(e) -> assertTrue(false, CloudAgents.Db.dbErrorMessage(e))
+  }
   match inboxForUser(testScope()) {
     case Ok(xs) -> {
-      assertEqualInt(xs.length.toInt(), 2, "alice sees her two attention entries only")
+      assertEqualInt(xs.length.toInt(), 2, "the owner sees her two attention entries only")
       assertEqual(xs[0].ledgerEntry.kind, "blocker", "blocking first")
       assertEqual(xs[0].repoUrl, "https://github.com/a/b", "session context")
     }
-    case Err(e) -> assertTrue(false, CloudAgents.Sqlite.dbErrorMessage(e))
+    case Err(e) -> assertTrue(false, CloudAgents.Db.dbErrorMessage(e))
   }
 }
 
 test "policy cache round-trips" {
-  val path = useFreshTestDb("ledger-policy")
-  defer {
-    cleanupTestDb(path)
+  if not live() {
+    return
   }
+  val me = freshUser("ledger-policy")
   match getPolicyCache("s1", testScope()) {
     case Ok(p) -> assertEqual(p.status, "", "unfetched")
-    case Err(e) -> assertTrue(false, CloudAgents.Sqlite.dbErrorMessage(e))
+    case Err(e) -> assertTrue(false, CloudAgents.Db.dbErrorMessage(e))
   }
   match setPolicyCache("s1", testScope(), "loaded", "{\"rules\":[]}", "") {
     case Ok(_) -> ()
-    case Err(e) -> assertTrue(false, CloudAgents.Sqlite.dbErrorMessage(e))
+    case Err(e) -> assertTrue(false, CloudAgents.Db.dbErrorMessage(e))
   }
   match getPolicyCache("s1", testScope()) {
     case Ok(p) -> {
       assertEqual(p.status, "loaded", "status")
       assertEqual(p.json, "{\"rules\":[]}", "json")
     }
-    case Err(e) -> assertTrue(false, CloudAgents.Sqlite.dbErrorMessage(e))
-  }
-}
-
-test "profiles that granted retired tools are granted the ledger tools" {
-  val path = useFreshTestDb("ledger-profiles")
-  defer {
-    cleanupTestDb(path)
-  }
-  exec("INSERT INTO profile_tools (id, profile_id, user_id, tool_name) VALUES ('t1', 'p1', 'alice', 'add_todo')")
-  exec("INSERT INTO profile_tools (id, profile_id, user_id, tool_name) VALUES ('t2', 'p1', 'alice', 'notify')")
-  exec("INSERT INTO profile_tools (id, profile_id, user_id, tool_name) VALUES ('t3', 'p2', 'alice', 'notify')")
-  // Re-run the migration's statements (all idempotent) against these grants.
-  match CloudAgents.Sqlite.executeTransaction(sessionLedgerMigrationSql()) {
-    case Ok(_) -> ()
-    case Err(e) -> assertTrue(false, CloudAgents.Sqlite.dbErrorMessage(e))
-  }
-  match CloudAgents.Sqlite.executeTransaction(sessionLedgerMigrationSql()) {
-    case Ok(_) -> ()
-    case Err(e) -> assertTrue(false, "second run: " + CloudAgents.Sqlite.dbErrorMessage(e))
-  }
-  val p1 = toolsOf("p1")
-  assertTrue(p1.contains("ledger_check_feedback,"), "p1 gains ledger tools: " + p1)
-  assertTrue(p1.contains("ledger_get_state,"), "p1 gains every ledger tool: " + p1)
-  assertTrue(p1.contains("notify,"), "p1 keeps notify")
-  assertTrue(not p1.contains("add_todo"), "retired tool removed")
-  assertEqual(toolsOf("p2"), "notify,", "p2 never granted a retired tool, so it is unchanged")
-}
-
-test "a profile shared across user ids is granted each ledger tool once" {
-  val path = useFreshTestDb("ledger-profiles-shared")
-  defer {
-    cleanupTestDb(path)
-  }
-  exec("INSERT INTO profile_tools (id, profile_id, user_id, tool_name) VALUES ('t1', 'p1', 'alice', 'add_todo')")
-  exec("INSERT INTO profile_tools (id, profile_id, user_id, tool_name) VALUES ('t2', 'p1', 'bob', 'list_todos')")
-  match CloudAgents.Sqlite.executeTransaction(sessionLedgerMigrationSql()) {
-    case Ok(_) -> ()
-    case Err(e) -> assertTrue(false, CloudAgents.Sqlite.dbErrorMessage(e))
-  }
-  val p1 = toolsOf("p1")
-  assertTrue(p1.startsWith("ledger_ask,ledger_check_feedback,"), "each tool once: " + p1)
-  assertTrue(not p1.contains("ledger_ask,ledger_ask"), "no duplicates: " + p1)
-}
-
-// A profile's granted tool names, sorted, each followed by ",".
-func toolsOf(profileId: in String): String {
-  match CloudAgents.Sqlite.query("SELECT tool_name FROM profile_tools WHERE profile_id = '" + profileId + "' ORDER BY tool_name") {
-    case Ok(rows) -> {
-      var acc = ""
-      var i = 0
-      while i < CloudAgents.Sqlite.getRowArrayLength(rows) {
-        val r = CloudAgents.Sqlite.getRowArrayValue(rows, i)
-        acc = acc + CloudAgents.Sqlite.getStringArrayValue(r.cols, 0) + ","
-        i = i + 1
-      }
-      return acc
-    }
-    case Err(e) -> panic(CloudAgents.Sqlite.dbErrorMessage(e))
+    case Err(e) -> assertTrue(false, CloudAgents.Db.dbErrorMessage(e))
   }
 }
 
 // Insert `n` info notes for `sid` directly, numbered 1..n by created_seq.
 func bulkNotes(sid: in String, n: in Int): Unit {
-  exec(
-    "WITH RECURSIVE k(x) AS (SELECT 1 UNION ALL SELECT x + 1 FROM k WHERE x < " + toString(n) +
-      ") INSERT INTO ledger_entries (id, session_id, item_id, kind, severity, declared_severity, summary, detail, options_json, chosen, rationale, recommendation, proceeding_with, reversible, files_json, tags_json, source, undeclared, matched_entry_id, origin, supersedes, transcript_seq, review_state, review_by, review_at, review_comment, created_at, created_seq, updated_seq) SELECT 'e' || x, '" +
-      sid +
-      "', '', 'note', 'info', '', 'note ' || x, '', '[]', '', '', '', '', '', '[]', '[]', 'declared', 'false', '', '', '', '', 'not_required', '', '', '', CAST(x AS TEXT), CAST(x AS TEXT), CAST(x AS TEXT) FROM k"
-  )
+  val u = match CloudAgents.PgStore.open(testScope()) {
+    case Ok(x) -> x
+    case Err(e) -> panic(CloudAgents.Db.dbErrorMessage(e))
+  }
+  defer {
+    CloudAgents.PgStore.release(u)
+  }
+  match CloudAgents.PgStore.ex(u, "INSERT INTO ledger_entries (id, session_id, item_id, kind, severity, summary, source, undeclared, review_state, created_at, created_seq, updated_seq) " + "SELECT 'e' || x::text, @p0, '', 'note', 'info', 'note ' || x::text, 'declared', false, 'not_required', " + "timestamptz 'epoch' + x * interval '1 millisecond', x, x FROM generate_series(1, @p1::int) AS x", [sid, toString(n)]) {
+    case Ok(_) -> ()
+    case Err(e) -> assertTrue(false, "bulk insert failed: " + CloudAgents.Db.dbErrorMessage(e))
+  }
+  match CloudAgents.PgStore.commit(u) {
+    case Ok(_) -> ()
+    case Err(e) -> assertTrue(false, CloudAgents.Db.dbErrorMessage(e))
+  }
 }
 
 test "past the row cap the entry list keeps the newest" {
-  val path = useFreshTestDb("ledger-cap")
-  defer {
-    cleanupTestDb(path)
+  if not live() {
+    return
   }
+  val me = freshUser("ledger-cap")
   bulkNotes("s1", entryRowCap + 3)
   match listEntries("s1", testScope()) {
     case Ok(es) -> {
@@ -513,19 +505,19 @@ test "past the row cap the entry list keeps the newest" {
       assertEqual(es[0].createdSeq, "4", "the oldest three are the ones left out")
       assertEqual(es[es.length.toInt() - 1].createdSeq, toString(entryRowCap + 3), "the newest is kept, last")
     }
-    case Err(e) -> assertTrue(false, CloudAgents.Sqlite.dbErrorMessage(e))
+    case Err(e) -> assertTrue(false, CloudAgents.Db.dbErrorMessage(e))
   }
   match countEntries("s1", testScope()) {
     case Ok(n) -> assertEqualInt(n, entryRowCap + 3, "count sees every row")
-    case Err(e) -> assertTrue(false, CloudAgents.Sqlite.dbErrorMessage(e))
+    case Err(e) -> assertTrue(false, CloudAgents.Db.dbErrorMessage(e))
   }
 }
 
 test "the SQL summary matches the in-memory one" {
-  val path = useFreshTestDb("ledger-summary")
-  defer {
-    cleanupTestDb(path)
+  if not live() {
+    return
   }
+  val me = freshUser("ledger-summary")
   val ids: slice[String] = ["gh:a/b#1", "gh:a/b#2", "gh:a/b#3"]
   val _ = register("s1", ids)
   val _ = move("s1", "gh:a/b#1", "in_progress", "", noStrings(), "agent")
@@ -534,15 +526,15 @@ test "the SQL summary matches the in-memory one" {
   val _ = mustInsert(declaredEntry("s1", "decision", "info", "not_required"))
   val fromSql = match summaryOf("s1", testScope(), 2) {
     case Ok(x) -> x
-    case Err(e) -> panic(CloudAgents.Sqlite.dbErrorMessage(e))
+    case Err(e) -> panic(CloudAgents.Db.dbErrorMessage(e))
   }
   val items = match listItems("s1", testScope()) {
     case Ok(xs) -> xs
-    case Err(e) -> panic(CloudAgents.Sqlite.dbErrorMessage(e))
+    case Err(e) -> panic(CloudAgents.Db.dbErrorMessage(e))
   }
   val entries = match listEntries("s1", testScope()) {
     case Ok(es) -> es
-    case Err(e) -> panic(CloudAgents.Sqlite.dbErrorMessage(e))
+    case Err(e) -> panic(CloudAgents.Db.dbErrorMessage(e))
   }
   val inMemory = summarize("s1", items, entries, 2)
   assertEqual(fromSql.toJson(), inMemory.toJson(), "same counts either way")
@@ -550,16 +542,16 @@ test "the SQL summary matches the in-memory one" {
 }
 
 test "re-registering without a url keeps the item's url" {
-  val path = useFreshTestDb("ledger-url")
-  defer {
-    cleanupTestDb(path)
+  if not live() {
+    return
   }
+  val me = freshUser("ledger-url")
   val ids: slice[String] = ["gh:a/b#7"]
   val titles: slice[String] = ["Seven"]
   val custom: slice[String] = ["https://example.com/tracker/7"]
   match registerItems("s1", testScope(), ids, titles, custom) {
     case Ok(_) -> ()
-    case Err(e) -> assertTrue(false, CloudAgents.Sqlite.dbErrorMessage(e))
+    case Err(e) -> assertTrue(false, CloudAgents.Db.dbErrorMessage(e))
   }
   val _ = register("s1", ids)
   assertEqual(mustItem("s1", "gh:a/b#7").url, "https://example.com/tracker/7", "custom url kept")
@@ -568,8 +560,14 @@ test "re-registering without a url keeps the item's url" {
   assertEqual(mustItem("s1", "gh:a/b#8").url, "https://github.com/a/b/issues/8", "a new item gets the ref's url")
 }
 
-// The scope the store calls run under: SQLite keys ledger rows by session
-// alone, so only the inbox reads the user from it.
+// The scope the store calls run under: the current test's fresh user.
 func testScope(): TestScope.TenantScope {
-  return TestScope.personalScope("alice")
+  return CloudAgents.Auth.requestScope()
+}
+
+func addSession(sid: in String, sc: in TestScope.TenantScope): Unit {
+  match CloudAgents.SessionStore.addSession(makeAgentSession(sessionId = sid, repoUrl = "https://github.com/a/b", branch = "main", containerId = "", harness = "claude", model = "", nativeSessionId = sid), sc) {
+    case Ok(_) -> ()
+    case Err(e) -> panic("addSession failed: " + CloudAgents.Db.dbErrorMessage(e))
+  }
 }

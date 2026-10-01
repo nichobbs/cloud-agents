@@ -18,7 +18,7 @@ import CloudAgents.PgStore.Interactive as Store
 import CloudAgents.PgStore.Sessions as Sessions
 import CloudAgents.Repository
 import CloudAgents.SessionStore
-import CloudAgents.Sqlite
+import CloudAgents.Db
 
 func live(): Bool {
   val ok = CloudAgents.Pg.serviceConfigured() and

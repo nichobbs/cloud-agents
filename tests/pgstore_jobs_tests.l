@@ -19,7 +19,7 @@ import CloudAgents.Pg.Migrate
 import CloudAgents.PgStore
 import CloudAgents.PgStore.Jobs as Store
 import CloudAgents.Repository
-import CloudAgents.Sqlite
+import CloudAgents.Db
 
 func live(): Bool {
   val ok = CloudAgents.Pg.serviceConfigured() and

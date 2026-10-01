@@ -1,5 +1,10 @@
 # Phase 6 — In-container MCP callback server
 
+> Since phase 11 the store is Postgres, not SQLite (see
+> [`docs/phase11-postgres-tenancy.md`](phase11-postgres-tenancy.md)); the SQL
+> and migration references below are historical, and the live schema is in
+> `src/pg/schema.l`.
+
 Status: complete — §6 steps 1-4, the §8 follow-ups (#540, #541), and
 §7's three v2 tools are all shipped. Step 1 (host-side callback
 endpoints, DB, tests) landed in PR #525; step 2 (token minting, env

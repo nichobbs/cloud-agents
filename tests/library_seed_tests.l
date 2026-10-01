@@ -1,15 +1,22 @@
+//! Library seeding tests: the pure frontmatter parsers and the seeders run
+//! against the Postgres library store (phase 11 cut-over) and the real
+//! seed/ files.
 @test_module
 package CloudAgents.LibrarySeedTests
 
 import Std.Core
-import CloudAgents.Pg
 import Std.Collections
+import Std.Environment
 import Std.File
 import Std.Testing
 import Std.Uuid
+import CloudAgents.Auth
 import CloudAgents.LibrarySeed
+import CloudAgents.Pg
+import CloudAgents.Pg.Migrate
+import CloudAgents.PgStore.Tenancy
 import CloudAgents.Repository
-import CloudAgents.Sqlite
+import CloudAgents.Db
 import extern System.Environment as Env
 
 // Mirrors src/handlers/library.l's maxDescriptionLen/maxBodyLen by value, not
@@ -21,9 +28,61 @@ val maxBodyLen = 200000
 
 val maxModelLen = 200
 
-// ── Live-DB plumbing (same pattern as tests/oauth_tests.l) ────────────────────
-@externTarget("System.IO.File.Delete")
-func fileDelete(path: in String): Unit = ()
+// ── Live Postgres ─────────────────────────────────────────────────────────────
+//
+// The store is Postgres (docs/phase11-postgres-tenancy.md). These tests run iff
+// LYRIC_CONFIG_DB_CONNECTION_URL (cloudagents_app) and
+// CLOUD_AGENTS_MIGRATE_DATABASE_URL (cloudagents_owner) are set, and fail rather
+// than skip when CLOUD_AGENTS_REQUIRE_LIVE_PG=1 (CI). Each test acts as a fresh
+// user with its own personal tenant, so tests, suites and repeated runs against
+// the same database never see each other's rows.
+func live(): Bool {
+  val ok = CloudAgents.Pg.serviceConfigured() and
+    Std.Environment.getVarOrDefault(CloudAgents.Pg.migrateDsnVar(), "").length.toInt() > 0
+  if ok {
+    return true
+  }
+  assertTrue(
+    Std.Environment.getVarOrDefault("CLOUD_AGENTS_REQUIRE_LIVE_PG", "") != "1",
+    "CLOUD_AGENTS_REQUIRE_LIVE_PG=1 but LYRIC_CONFIG_DB_CONNECTION_URL or CLOUD_AGENTS_MIGRATE_DATABASE_URL is not set"
+  )
+  println("SKIP: library seed tests need LYRIC_CONFIG_DB_CONNECTION_URL and CLOUD_AGENTS_MIGRATE_DATABASE_URL")
+  return false
+}
+
+func migrate(): Unit {
+  val conn = match CloudAgents.Pg.connectDsn(Std.Environment.getVarOrDefault(CloudAgents.Pg.migrateDsnVar(), "")) {
+    case Ok(c) -> c
+    case Err(e) -> panic(CloudAgents.Pg.pgErrorMessage(e))
+  }
+  defer {
+    conn.close()
+  }
+  match CloudAgents.Pg.Migrate.migrate(conn) {
+    case Ok(_) -> ()
+    case Err(e) -> panic("migrate failed: " + CloudAgents.Pg.pgErrorMessage(e))
+  }
+}
+
+/// A new user with a provisioned personal tenant. Does not change the request
+/// identity.
+func newUser(tag: in String): String {
+  val uid = "t-" + tag + "-" + Std.Uuid.uuidToString(Std.Uuid.newUuid())
+  match CloudAgents.PgStore.Tenancy.ensurePersonalTenant(uid) {
+    case Ok(_) -> ()
+    case Err(e) -> panic("provisioning " + uid + " failed: " + CloudAgents.Db.dbErrorMessage(e))
+  }
+  return uid
+}
+
+/// Migrate, then make a new user the request identity (what handlers read via
+/// CloudAgents.Auth.requestScope()).
+func freshUser(tag: in String): String {
+  migrate()
+  val uid = newUser(tag)
+  CloudAgents.Auth.setCurrentUserId(uid)
+  return uid
+}
 
 // Own tiny FFI surface for building the oversized-fixture test below, same
 // convention CloudAgents.LibrarySeed itself follows (see its module comment
@@ -46,27 +105,6 @@ func utf8ToBytes(enc: in Encoding, s: in String): slice[Byte] = []
 @externInstance
 @externTarget("System.Text.Encoding.GetString")
 func utf8FromBytes(enc: in Encoding, bytes: in slice[Byte]): String = ""
-
-val testKey = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="
-
-func useFreshTestDb(tag: in String): String {
-  val path = "/tmp/cloud-agents-tests-" + tag + "-" + Std.Uuid.uuidToString(Std.Uuid.newUuid()) + ".db"
-  Env.SetEnvironmentVariable("CLOUD_AGENTS_DB_PATH", path)
-  Env.SetEnvironmentVariable("ENCRYPTION_KEY", testKey)
-  match CloudAgents.Repository.initSchema() {
-    case Ok(_) -> ()
-    case Err(e) -> assertTrue(false, "initSchema failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
-  }
-  return path
-}
-
-func cleanupTestDb(path: in String): Unit {
-  try {
-    fileDelete(path)
-  } catch Bug as b {
-    // locked or already gone — fine for a temp file
-  }
-}
 
 // ── Pure frontmatter parsing ───────────────────────────────────────────────
 test "parseSubagentMarkdown reads name/description/model and keeps the rest of the file as the prompt body" {
@@ -144,16 +182,18 @@ test "defaultSubagentNames is the fixed curated set, eighteen names, qa-tester e
 
 // ── seedDefaultSubagentsIfEmpty against a live DB and the real repo-root seed files ──
 test "seedDefaultSubagentsIfEmpty populates an empty library from the real seed/subagents files, is idempotent, and never overwrites" {
-  Env.SetEnvironmentVariable("CLOUD_AGENTS_SEED_SUBAGENTS_DIR", "")
-  val dbPath = useFreshTestDb("library-seed")
-  val userId = "gh-seed-test-user"
+  if not live() {
+    return
+  }
+  val me = freshUser("library-seed")
+  val userId = me
 
   seedDefaultSubagentsIfEmpty(userId)
 
   val seeded = match CloudAgents.Repository.listSubagents(CloudAgents.Pg.personalScope(userId)) {
     case Ok(s) -> s
     case Err(e) -> {
-      assertTrue(false, "listSubagents failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+      assertTrue(false, "listSubagents failed: " + CloudAgents.Db.dbErrorMessage(e))
       []
     }
   }
@@ -175,7 +215,7 @@ test "seedDefaultSubagentsIfEmpty populates an empty library from the real seed/
   while i < seeded.length.toInt() {
     match CloudAgents.Repository.deleteSubagent(seeded[i].id, CloudAgents.Pg.personalScope(userId)) {
       case Ok(_) -> ()
-      case Err(e) -> assertTrue(false, "deleteSubagent failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+      case Err(e) -> assertTrue(false, "deleteSubagent failed: " + CloudAgents.Db.dbErrorMessage(e))
     }
     i = i + 1
   }
@@ -186,15 +226,17 @@ test "seedDefaultSubagentsIfEmpty populates an empty library from the real seed/
   }
   assertEqualInt(reseeded.length.toInt(), expectedNames.length.toInt(), "an emptied library is reseeded on the next call")
 
-  cleanupTestDb(dbPath)
 }
 
 test "seedDefaultSubagentsIfEmpty never touches a library the user has already started customizing" {
-  val dbPath = useFreshTestDb("library-seed-nonempty")
-  val userId = "gh-seed-test-user-2"
+  if not live() {
+    return
+  }
+  val me = freshUser("library-seed-nonempty")
+  val userId = me
   match CloudAgents.Repository.addSubagent(CloudAgents.Pg.personalScope(userId), "my-own-agent", "a hand-authored subagent", "do the thing", "sonnet") {
     case Ok(_) -> ()
-    case Err(e) -> assertTrue(false, "addSubagent failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+    case Err(e) -> assertTrue(false, "addSubagent failed: " + CloudAgents.Db.dbErrorMessage(e))
   }
 
   seedDefaultSubagentsIfEmpty(userId)
@@ -206,7 +248,6 @@ test "seedDefaultSubagentsIfEmpty never touches a library the user has already s
   assertEqualInt(subagents.length.toInt(), 1, "a non-empty library is left exactly as the user made it")
   assertEqual(subagents[0].name, "my-own-agent", "the user's own subagent is untouched")
 
-  cleanupTestDb(dbPath)
 }
 
 // ── Skills: pure parsing ───────────────────────────────────────────────────
@@ -254,15 +295,18 @@ test "defaultSkillNames is the fixed curated set of five" {
 // ── seedDefaultSkillsIfEmpty against a live DB and the real repo-root seed files ──
 test "seedDefaultSkillsIfEmpty populates an empty library from the real seed/skills files, is idempotent, and never overwrites" {
   Env.SetEnvironmentVariable("CLOUD_AGENTS_SEED_SKILLS_DIR", "")
-  val dbPath = useFreshTestDb("library-seed-skills")
-  val userId = "gh-seed-test-user-skills"
+  if not live() {
+    return
+  }
+  val me = freshUser("library-seed-skills")
+  val userId = me
 
   seedDefaultSkillsIfEmpty(userId)
 
   val seeded = match CloudAgents.Repository.listSkills(CloudAgents.Pg.personalScope(userId)) {
     case Ok(s) -> s
     case Err(e) -> {
-      assertTrue(false, "listSkills failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+      assertTrue(false, "listSkills failed: " + CloudAgents.Db.dbErrorMessage(e))
       []
     }
   }
@@ -276,15 +320,17 @@ test "seedDefaultSkillsIfEmpty populates an empty library from the real seed/ski
   }
   assertEqualInt(afterSecondCall.length.toInt(), seeded.length.toInt(), "re-seeding an already-populated library is a no-op")
 
-  cleanupTestDb(dbPath)
 }
 
 test "seedDefaultSkillsIfEmpty never touches a library the user has already started customizing" {
-  val dbPath = useFreshTestDb("library-seed-skills-nonempty")
-  val userId = "gh-seed-test-user-skills-2"
+  if not live() {
+    return
+  }
+  val me = freshUser("library-seed-skills-nonempty")
+  val userId = me
   match CloudAgents.Repository.addSkill(CloudAgents.Pg.personalScope(userId), "my-own-skill", "a hand-authored skill", "do the thing") {
     case Ok(_) -> ()
-    case Err(e) -> assertTrue(false, "addSkill failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+    case Err(e) -> assertTrue(false, "addSkill failed: " + CloudAgents.Db.dbErrorMessage(e))
   }
 
   seedDefaultSkillsIfEmpty(userId)
@@ -296,14 +342,16 @@ test "seedDefaultSkillsIfEmpty never touches a library the user has already star
   assertEqualInt(skills.length.toInt(), 1, "a non-empty library is left exactly as the user made it")
   assertEqual(skills[0].name, "my-own-skill", "the user's own skill is untouched")
 
-  cleanupTestDb(dbPath)
 }
 
 test "seedDefaultLibraryIfEmpty seeds both subagents and skills independently" {
   Env.SetEnvironmentVariable("CLOUD_AGENTS_SEED_SUBAGENTS_DIR", "")
   Env.SetEnvironmentVariable("CLOUD_AGENTS_SEED_SKILLS_DIR", "")
-  val dbPath = useFreshTestDb("library-seed-combined")
-  val userId = "gh-seed-test-user-combined"
+  if not live() {
+    return
+  }
+  val me = freshUser("library-seed-combined")
+  val userId = me
 
   seedDefaultLibraryIfEmpty(userId)
 
@@ -318,7 +366,6 @@ test "seedDefaultLibraryIfEmpty seeds both subagents and skills independently" {
   assertEqualInt(subagents.length.toInt(), defaultSubagentNames().length.toInt(), "subagents seeded")
   assertEqualInt(skills.length.toInt(), defaultSkillNames().length.toInt(), "skills seeded")
 
-  cleanupTestDb(dbPath)
 }
 
 // ── #750 regression: seeded content is bounds-checked, not trusted blindly ──
@@ -375,7 +422,10 @@ test "every real seed/subagents and seed/skills file satisfies the library's own
 }
 
 test "seedDefaultSubagentsIfEmpty skips a seed file whose description exceeds the library's own cap, instead of inserting it anyway (#750)" {
-  val dbPath = useFreshTestDb("library-seed-oversized")
+  if not live() {
+    return
+  }
+  val me = freshUser("library-seed-oversized")
   val tmpDir = "/tmp/cloud-agents-tests-oversized-" + Std.Uuid.uuidToString(Std.Uuid.newUuid())
   match Std.File.createDir(tmpDir) {
     case Ok(_) -> ()
@@ -395,7 +445,7 @@ test "seedDefaultSubagentsIfEmpty skips a seed file whose description exceeds th
     case Err(_) -> assertTrue(false, "failed to write the oversized fixture file")
   }
   Env.SetEnvironmentVariable("CLOUD_AGENTS_SEED_SUBAGENTS_DIR", tmpDir)
-  val userId = "gh-seed-test-user-oversized"
+  val userId = me
 
   seedDefaultSubagentsIfEmpty(userId)
 
@@ -406,5 +456,4 @@ test "seedDefaultSubagentsIfEmpty skips a seed file whose description exceeds th
   assertEqualInt(subagents.length.toInt(), 0, "the oversized entry is skipped rather than inserted with a truncated/oversized field")
 
   Env.SetEnvironmentVariable("CLOUD_AGENTS_SEED_SUBAGENTS_DIR", "")
-  cleanupTestDb(dbPath)
 }

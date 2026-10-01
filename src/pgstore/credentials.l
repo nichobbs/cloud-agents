@@ -1,7 +1,6 @@
-//! CloudAgents.PgStore.Credentials — the Postgres implementation of the
+//! CloudAgents.PgStore.Credentials — the Postgres store for the
 //! user-owned vault (`credentials`, `github_oauth_refresh`,
-//! `model_listing_cache`), mirroring the SQLite-backed functions in
-//! `CloudAgents.Repository` with the same signatures and semantics
+//! `model_listing_cache`), behind the `CloudAgents.Repository` facade
 //! (docs/phase11-postgres-tenancy.md §4.3a, §9 slices B/C).
 //!
 //! These tables belong to a person, not a tenant: they have no `tenant_id`,
@@ -11,10 +10,10 @@
 //! exception is `decryptedCredentialsForProfile`, which reads a tenant-owned
 //! profile first and then the creator's own credentials.
 //!
-//! Semantics carried over from the SQLite store:
+//! Semantics:
 //! - values are encrypted before they are written and decrypted only for
 //!   injection or server-side use, never returned by the listing;
-//! - names sort in byte order (`COLLATE "C"`, SQLite's BINARY);
+//! - names sort in byte order (`COLLATE "C"`);
 //! - a re-put keeps the credential's id and `created_at`;
 //! - bulk decryption skips an undecryptable row with a warning, while a single
 //!   named lookup reports it as an error;
@@ -31,13 +30,13 @@ import CloudAgents.PgStore
 import CloudAgents.PgStore.Library
 import CloudAgents.Repository
 import CloudAgents.Scope
-import CloudAgents.Sqlite
+import CloudAgents.Db
 
 func newId(): String {
   return Std.Uuid.uuidToString(Std.Uuid.newUuid())
 }
 
-func dbErr(e: in CloudAgents.Sqlite.DbError): CloudAgents.Repository.CredentialError {
+func dbErr(e: in CloudAgents.Db.DbError): CloudAgents.Repository.CredentialError {
   return CloudAgents.Repository.Db(error = e)
 }
 
@@ -45,10 +44,11 @@ func cryptoErr(e: in CloudAgents.Crypto.CryptoError): CloudAgents.Repository.Cre
   return CloudAgents.Repository.Crypto(error = e)
 }
 
-/// The integer SQLite's `CAST(x AS INTEGER)` yields for `x`: optional leading
-/// spaces and sign, then the leading digits; anything else (including "")
-/// is 0. GitHub's `expires_in` fields go through this so a missing or
-/// malformed value expires the token immediately, exactly as on SQLite.
+/// The leading integer of `s`: optional leading spaces and sign, then the
+/// leading digits; anything else (including "") is 0. GitHub's `expires_in`
+/// fields go through this so a missing or malformed value expires the token
+/// immediately, as the API has always treated them (the name records that
+/// this was originally SQLite's `CAST(x AS INTEGER)` behaviour).
 /// Values beyond ten significant digits are clamped to 9999999999 seconds,
 /// so the resulting timestamp is always in Postgres's range.
 pub func sqliteIntPrefix(s: in String): String {
@@ -75,8 +75,8 @@ pub func sqliteIntPrefix(s: in String): String {
   if digits.length == 0 {
     return "0"
   }
-  // SQLite saturates a huge value instead of failing; Postgres would raise
-  // "timestamp out of range" adding it to now(). Clamp to ten digits (about
+  // Postgres would raise "timestamp out of range" adding a huge value to
+  // now(), where the old SQLite store saturated. Clamp to ten digits (about
   // 317 years), which is a far-future expiry either way.
   var n = 0
   while n < digits.length and digits.substring(n, 1) == "0" {
@@ -122,7 +122,7 @@ pub func putCredential(
 /// The user's credential names and last-update times (never values).
 pub func listCredentialNames(
   sc: in CloudAgents.Pg.UserScope
-): Result[slice[CloudAgents.Repository.CredentialName], CloudAgents.Sqlite.DbError] {
+): Result[slice[CloudAgents.Repository.CredentialName], CloudAgents.Db.DbError] {
   val u = CloudAgents.PgStore.openUser(sc)?
   defer {
     CloudAgents.PgStore.release(u)
@@ -144,7 +144,7 @@ pub func listCredentialNames(
 /// Delete a credential by name; rows affected (0 = not found). Deleting
 /// `GITHUB_TOKEN` also drops the refresh metadata (#668), best-effort: a
 /// cleanup failure never blocks the deletion itself.
-pub func deleteCredential(sc: in CloudAgents.Pg.UserScope, name: in String): Result[Int, CloudAgents.Sqlite.DbError] {
+pub func deleteCredential(sc: in CloudAgents.Pg.UserScope, name: in String): Result[Int, CloudAgents.Db.DbError] {
   val u = CloudAgents.PgStore.openUser(sc)?
   defer {
     CloudAgents.PgStore.release(u)
@@ -164,9 +164,7 @@ pub func deleteCredential(sc: in CloudAgents.Pg.UserScope, name: in String): Res
 }
 
 /// Whether the user has a credential stored under exactly `name`.
-pub func credentialNameExists(
-  sc: in CloudAgents.Pg.UserScope, name: in String
-): Result[Bool, CloudAgents.Sqlite.DbError] {
+pub func credentialNameExists(sc: in CloudAgents.Pg.UserScope, name: in String): Result[Bool, CloudAgents.Db.DbError] {
   val u = CloudAgents.PgStore.openUser(sc)?
   defer {
     CloudAgents.PgStore.release(u)
@@ -177,7 +175,7 @@ pub func credentialNameExists(
 }
 
 /// Encrypted (name, value) rows of the user, byte-ordered by name.
-func encryptedRows(sc: in CloudAgents.Pg.UserScope): Result[slice[DbRow], CloudAgents.Sqlite.DbError] {
+func encryptedRows(sc: in CloudAgents.Pg.UserScope): Result[slice[DbRow], CloudAgents.Db.DbError] {
   val u = CloudAgents.PgStore.openUser(sc)?
   defer {
     CloudAgents.PgStore.release(u)
@@ -331,7 +329,7 @@ pub func upsertGitHubOAuthRefresh(
 }
 
 /// The user's refresh-token status, or `Ok(None)` for a non-expiring token.
-/// The access token counts as expired five minutes early, as on SQLite.
+/// The access token counts as expired five minutes early.
 pub func githubOAuthRefreshStatus(
   sc: in CloudAgents.Pg.UserScope
 ): Result[Option[CloudAgents.Repository.GitHubOAuthRefreshStatus], CloudAgents.Repository.CredentialError] {
@@ -399,7 +397,7 @@ func modelListingTtlMillis(): String {
 /// means fetched less than the TTL (one hour) ago.
 pub func cachedModelListing(
   sc: in CloudAgents.Pg.UserScope, provider: in String
-): Result[Option[String], CloudAgents.Sqlite.DbError] {
+): Result[Option[String], CloudAgents.Db.DbError] {
   val u = CloudAgents.PgStore.openUser(sc)?
   defer {
     CloudAgents.PgStore.release(u)
@@ -439,7 +437,7 @@ func sweepExpiredModelListings(sc: in CloudAgents.Pg.UserScope, now: in String):
 /// users' expired rows are swept on their own next write.
 pub func cacheModelListing(
   sc: in CloudAgents.Pg.UserScope, provider: in String, body: in String
-): Result[Unit, CloudAgents.Sqlite.DbError] {
+): Result[Unit, CloudAgents.Db.DbError] {
   val now = CloudAgents.Repository.nowMillis()
   sweepExpiredModelListings(sc, now)
   val u = CloudAgents.PgStore.openUser(sc)?

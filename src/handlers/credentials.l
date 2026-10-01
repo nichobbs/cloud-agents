@@ -19,7 +19,7 @@ import Web
 import CloudAgents.Auth
 import CloudAgents.Repository
 import CloudAgents.Scope
-import CloudAgents.Sqlite
+import CloudAgents.Db
 
 val maxCredentialNameLen = 128
 
@@ -101,7 +101,7 @@ func isValidCredentialName(name: in String): Bool {
 pub func listCredentialsHandler(): Result[CredentialNameList, Web.ApiError] {
   match listCredentialNames(CloudAgents.Auth.requestUserScope()) {
     case Ok(names) -> return Ok(CredentialNameList(credentials = names))
-    case Err(e) -> return Err(Web.internalError(CloudAgents.Sqlite.dbErrorMessage(e)))
+    case Err(e) -> return Err(Web.internalError(CloudAgents.Db.dbErrorMessage(e)))
   }
 }
 
@@ -136,7 +136,7 @@ pub func deleteCredentialHandler(name: in String): Result[Unit, Web.ApiError] {
   }
   val affected = match deleteCredential(CloudAgents.Auth.requestUserScope(), name) {
     case Ok(n) -> n
-    case Err(e) -> return Err(Web.internalError(CloudAgents.Sqlite.dbErrorMessage(e)))
+    case Err(e) -> return Err(Web.internalError(CloudAgents.Db.dbErrorMessage(e)))
   }
   if affected == 0 {
     return Err(Web.notFound("credential not found"))

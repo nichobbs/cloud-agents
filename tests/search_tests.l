@@ -1,47 +1,86 @@
+//! Message search tests: `searchMessagesHandler` over the Postgres store
+//! (`messages.search_vector` full-text search, docs/phase9-message-search.md §8).
 @test_module
 package CloudAgents.SearchTests
 
 import Std.Core
+import Std.Environment
 import Std.Testing
 import Std.Uuid
 import CloudAgents.Auth
-import CloudAgents.Db
+import CloudAgents.Pg
+import CloudAgents.Pg.Migrate
+import CloudAgents.PgStore
+import CloudAgents.PgStore.Tenancy
 import CloudAgents.Repository
 import CloudAgents.Search
 import CloudAgents.SessionStore
-import CloudAgents.Sqlite
-import extern System.Environment as Env
+import CloudAgents.Db
 
-// ── Live-DB plumbing (same pattern as tests/jobs_tests.l) ────────────────────
-val testKey = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="
-
-@externTarget("System.IO.File.Delete")
-func fileDelete(path: in String): Unit = ()
-
-func useFreshTestDb(tag: in String): String {
-  val path = "/tmp/cloud-agents-tests-" + tag + "-" + Std.Uuid.uuidToString(Std.Uuid.newUuid()) + ".db"
-  Env.SetEnvironmentVariable("CLOUD_AGENTS_DB_PATH", path)
-  Env.SetEnvironmentVariable("ENCRYPTION_KEY", testKey)
-  match CloudAgents.Repository.initSchema() {
-    case Ok(_) -> ()
-    case Err(e) -> assertTrue(false, "initSchema failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+// ── Live Postgres ─────────────────────────────────────────────────────────────
+//
+// The store is Postgres (docs/phase11-postgres-tenancy.md). These tests run iff
+// LYRIC_CONFIG_DB_CONNECTION_URL (cloudagents_app) and
+// CLOUD_AGENTS_MIGRATE_DATABASE_URL (cloudagents_owner) are set, and fail rather
+// than skip when CLOUD_AGENTS_REQUIRE_LIVE_PG=1 (CI). Each test acts as a fresh
+// user with its own personal tenant, so tests, suites and repeated runs against
+// the same database never see each other's rows.
+func live(): Bool {
+  val ok = CloudAgents.Pg.serviceConfigured() and
+    Std.Environment.getVarOrDefault(CloudAgents.Pg.migrateDsnVar(), "").length.toInt() > 0
+  if ok {
+    return true
   }
-  return path
+  assertTrue(
+    Std.Environment.getVarOrDefault("CLOUD_AGENTS_REQUIRE_LIVE_PG", "") != "1",
+    "CLOUD_AGENTS_REQUIRE_LIVE_PG=1 but LYRIC_CONFIG_DB_CONNECTION_URL or CLOUD_AGENTS_MIGRATE_DATABASE_URL is not set"
+  )
+  println("SKIP: message search tests need LYRIC_CONFIG_DB_CONNECTION_URL and CLOUD_AGENTS_MIGRATE_DATABASE_URL")
+  return false
 }
 
-func cleanupTestDb(path: in String): Unit {
-  try {
-    fileDelete(path)
-  } catch Bug as b {
-    // locked or already gone — fine for a temp file
+func migrate(): Unit {
+  val conn = match CloudAgents.Pg.connectDsn(Std.Environment.getVarOrDefault(CloudAgents.Pg.migrateDsnVar(), "")) {
+    case Ok(c) -> c
+    case Err(e) -> panic(CloudAgents.Pg.pgErrorMessage(e))
   }
-  CloudAgents.Auth.setCurrentUserId("default")
+  defer {
+    conn.close()
+  }
+  match CloudAgents.Pg.Migrate.migrate(conn) {
+    case Ok(_) -> ()
+    case Err(e) -> panic("migrate failed: " + CloudAgents.Pg.pgErrorMessage(e))
+  }
+}
+
+/// A new user with a provisioned personal tenant. Does not change the request
+/// identity.
+func newUser(tag: in String): String {
+  val uid = "t-" + tag + "-" + Std.Uuid.uuidToString(Std.Uuid.newUuid())
+  match CloudAgents.PgStore.Tenancy.ensurePersonalTenant(uid) {
+    case Ok(_) -> ()
+    case Err(e) -> panic("provisioning " + uid + " failed: " + CloudAgents.Db.dbErrorMessage(e))
+  }
+  return uid
+}
+
+/// Migrate, then make a new user the request identity (what handlers read via
+/// CloudAgents.Auth.requestScope()).
+func freshUser(tag: in String): String {
+  migrate()
+  val uid = newUser(tag)
+  CloudAgents.Auth.setCurrentUserId(uid)
+  return uid
+}
+
+func uniq(prefix: in String): String {
+  return prefix + "-" + Std.Uuid.uuidToString(Std.Uuid.newUuid())
 }
 
 func mkSession(id: in String): Unit {
   val s = makeAgentSession(
     sessionId = id,
-    repoUrl = "https://github.com/nic/repo",
+    repoUrl = "https://github.com/t/search",
     branch = "main",
     containerId = "",
     harness = "claude",
@@ -50,14 +89,14 @@ func mkSession(id: in String): Unit {
   )
   match addSession(s, CloudAgents.Auth.requestScope()) {
     case Ok(_) -> ()
-    case Err(e) -> panic("addSession failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+    case Err(e) -> panic("addSession failed: " + CloudAgents.Db.dbErrorMessage(e))
   }
 }
 
 func mkMessage(sessionId: in String, content: in String): Unit {
   match CloudAgents.Repository.addMessage(sessionId, CloudAgents.Auth.requestScope(), "user", content) {
     case Ok(_) -> ()
-    case Err(e) -> panic("addMessage failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+    case Err(e) -> panic("addMessage failed: " + CloudAgents.Db.dbErrorMessage(e))
   }
 }
 
@@ -67,69 +106,17 @@ func mkMessage(sessionId: in String, content: in String): Unit {
 func mkMessageReturningId(sessionId: in String, content: in String): String {
   val m = match CloudAgents.Repository.addMessage(sessionId, CloudAgents.Auth.requestScope(), "user", content) {
     case Ok(msg) -> msg
-    case Err(e) -> panic("addMessage failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+    case Err(e) -> panic("addMessage failed: " + CloudAgents.Db.dbErrorMessage(e))
   }
   return m.id
 }
 
-// ── buildFts5MatchExpr: pure tokenizer/escaper ────────────────────────────────
-test "buildFts5MatchExpr wraps a single word as a quoted prefix token" {
-  assertEqual(CloudAgents.Db.buildFts5MatchExpr("scheduled"), "\"scheduled\"*", "one word -> one quoted-prefix token")
-}
-
-test "buildFts5MatchExpr space-joins multiple words, collapsing extra whitespace" {
-  assertEqual(
-    CloudAgents.Db.buildFts5MatchExpr("hello   world"),
-    "\"hello\"* \"world\"*",
-    "runs of internal whitespace collapse to a single implicit-AND join"
-  )
-  assertEqual(
-    CloudAgents.Db.buildFts5MatchExpr("  leading and trailing  "),
-    "\"leading\"* \"and\"* \"trailing\"*",
-    "leading/trailing whitespace is ignored, not turned into empty tokens"
-  )
-}
-
-test "buildFts5MatchExpr doubles embedded double-quotes per word" {
-  assertEqual(
-    CloudAgents.Db.buildFts5MatchExpr("say \"hi\""),
-    "\"say\"* \"\"\"hi\"\"\"*",
-    "an embedded double-quote is doubled, mirroring sqlLiteral's doubling of '"
-  )
-}
-
-test "buildFts5MatchExpr neutralizes FTS5 operator syntax as inert literal text" {
-  assertEqual(CloudAgents.Db.buildFts5MatchExpr("AND"), "\"AND\"*", "a bare FTS5 keyword is just a literal word")
-  // The tokenizer splits on whitespace BEFORE escaping (like every other
-  // multi-word input), so this quote-injection attempt becomes five
-  // separately-quoted-and-prefixed tokens, not one joined literal — CI's
-  // real lyric test caught this test's expected value assuming the latter.
-  // Still safe either way: each word (including "OR"/"MATCH") is its own
-  // inert quoted-prefix token, never reinterpreted as FTS5 query syntax.
-  assertEqual(
-    CloudAgents.Db.buildFts5MatchExpr("a\" OR content MATCH \"x"),
-    "\"a\"\"\"* \"OR\"* \"content\"* \"MATCH\"* \"\"\"x\"*",
-    "a quote-injection attempt is split into per-word quoted-prefix tokens, each one inert literal text, never reopening FTS5 query syntax"
-  )
-  assertEqual(
-    CloudAgents.Db.buildFts5MatchExpr("content:foo"),
-    "\"content:foo\"*",
-    "a column-filter-shaped word is inert literal text, not reinterpreted"
-  )
-}
-
-test "buildFts5MatchExpr returns empty for input with no actual words" {
-  assertEqual(CloudAgents.Db.buildFts5MatchExpr(""), "", "empty input has no words")
-  assertEqual(CloudAgents.Db.buildFts5MatchExpr("   "), "", "whitespace-only input has no words")
-}
-
 // ── searchMessagesHandler: input validation ───────────────────────────────────
 test "searchMessagesHandler rejects an empty or whitespace-only q" {
-  val dbPath = useFreshTestDb("search-validate-empty")
-  defer {
-    cleanupTestDb(dbPath)
+  if not live() {
+    return
   }
-  CloudAgents.Auth.setCurrentUserId("default")
+  val me = freshUser("search-validate-empty")
   match CloudAgents.Search.searchMessagesHandler("") {
     case Ok(_) -> assertTrue(false, "an empty q must be rejected")
     case Err(e) -> assertEqualInt(e.status, 400, "empty q -> 400")
@@ -141,11 +128,10 @@ test "searchMessagesHandler rejects an empty or whitespace-only q" {
 }
 
 test "searchMessagesHandler rejects a q longer than the max length" {
-  val dbPath = useFreshTestDb("search-validate-toolong")
-  defer {
-    cleanupTestDb(dbPath)
+  if not live() {
+    return
   }
-  CloudAgents.Auth.setCurrentUserId("default")
+  val me = freshUser("search-validate-toolong")
   var longTerm = ""
   var i = 0
   while i < 201 {
@@ -160,12 +146,11 @@ test "searchMessagesHandler rejects a q longer than the max length" {
 
 // ── searchMessagesHandler: DB-backed matching behavior ────────────────────────
 test "searchMessagesHandler returns an empty, non-truncated result (not an error) when nothing matches" {
-  val dbPath = useFreshTestDb("search-no-match")
-  defer {
-    cleanupTestDb(dbPath)
+  if not live() {
+    return
   }
-  CloudAgents.Auth.setCurrentUserId("default")
-  val sid = "sess-search-1"
+  val me = freshUser("search-no-match")
+  val sid = uniq("sess-search-1")
   mkSession(sid)
   mkMessage(sid, "let's talk about pancakes")
 
@@ -179,12 +164,11 @@ test "searchMessagesHandler returns an empty, non-truncated result (not an error
 }
 
 test "searchMessagesHandler finds a real match and returns it newest first" {
-  val dbPath = useFreshTestDb("search-match")
-  defer {
-    cleanupTestDb(dbPath)
+  if not live() {
+    return
   }
-  CloudAgents.Auth.setCurrentUserId("default")
-  val sid = "sess-search-2"
+  val me = freshUser("search-match")
+  val sid = uniq("sess-search-2")
   mkSession(sid)
   mkMessage(sid, "first: let's schedule the migration")
   // "first" and "third" (asserted for relative order below) could otherwise
@@ -212,12 +196,11 @@ test "searchMessagesHandler finds a real match and returns it newest first" {
 
 // ── searchMessagesHandler: truncation signal (#908) ───────────────────────────
 test "searchMessagesHandler caps results at 50 and reports truncated when there are more" {
-  val dbPath = useFreshTestDb("search-truncated")
-  defer {
-    cleanupTestDb(dbPath)
+  if not live() {
+    return
   }
-  CloudAgents.Auth.setCurrentUserId("default")
-  val sid = "sess-search-truncated"
+  val me = freshUser("search-truncated")
+  val sid = uniq("sess-search-truncated")
   mkSession(sid)
   var i = 0
   while i < 51 {
@@ -235,12 +218,11 @@ test "searchMessagesHandler caps results at 50 and reports truncated when there 
 }
 
 test "searchMessagesHandler does not report truncated when the match count exactly equals the cap" {
-  val dbPath = useFreshTestDb("search-exact-cap")
-  defer {
-    cleanupTestDb(dbPath)
+  if not live() {
+    return
   }
-  CloudAgents.Auth.setCurrentUserId("default")
-  val sid = "sess-search-exact-cap"
+  val me = freshUser("search-exact-cap")
+  val sid = uniq("sess-search-exact-cap")
   mkSession(sid)
   var i = 0
   while i < 50 {
@@ -258,37 +240,38 @@ test "searchMessagesHandler does not report truncated when the match count exact
 }
 
 test "searchMessagesHandler supports prefix matching" {
-  val dbPath = useFreshTestDb("search-prefix")
-  defer {
-    cleanupTestDb(dbPath)
+  if not live() {
+    return
   }
-  CloudAgents.Auth.setCurrentUserId("default")
-  val sid = "sess-search-3"
+  val me = freshUser("search-prefix")
+  val sid = uniq("sess-search-3")
   mkSession(sid)
   mkMessage(sid, "the job is scheduled to run nightly")
 
   match CloudAgents.Search.searchMessagesHandler("sched") {
-    case Ok(result) -> assertEqualInt(result.messages.length.toInt(), 1, "a word prefix matches via FTS5's quoted-prefix token")
+    case Ok(result) -> assertEqualInt(result.messages.length.toInt(), 1, "a word prefix matches via the quoted-prefix tsquery rewrite")
     case Err(e) -> assertTrue(false, "expected a successful prefix search: " + toString(e.status))
   }
 }
 
 test "searchMessagesHandler only ever returns the calling user's own messages" {
-  val dbPath = useFreshTestDb("search-ownership")
-  defer {
-    cleanupTestDb(dbPath)
+  if not live() {
+    return
   }
-  CloudAgents.Auth.setCurrentUserId("alice")
-  val aliceSession = "sess-search-alice"
+  val me = freshUser("search-ownership")
+  val alice = newUser("alice")
+  val bob = newUser("bob")
+  CloudAgents.Auth.setCurrentUserId(alice)
+  val aliceSession = uniq("sess-search-alice")
   mkSession(aliceSession)
   mkMessage(aliceSession, "alice's secret roadmap notes")
 
-  CloudAgents.Auth.setCurrentUserId("bob")
-  val bobSession = "sess-search-bob"
+  CloudAgents.Auth.setCurrentUserId(bob)
+  val bobSession = uniq("sess-search-bob")
   mkSession(bobSession)
   mkMessage(bobSession, "bob's secret roadmap notes")
 
-  CloudAgents.Auth.setCurrentUserId("alice")
+  CloudAgents.Auth.setCurrentUserId(alice)
   match CloudAgents.Search.searchMessagesHandler("roadmap") {
     case Ok(result) -> {
       assertEqualInt(result.messages.length.toInt(), 1, "alice sees only her own matching message")
@@ -297,7 +280,7 @@ test "searchMessagesHandler only ever returns the calling user's own messages" {
     case Err(e) -> assertTrue(false, "expected a successful search: " + toString(e.status))
   }
 
-  CloudAgents.Auth.setCurrentUserId("bob")
+  CloudAgents.Auth.setCurrentUserId(bob)
   match CloudAgents.Search.searchMessagesHandler("roadmap") {
     case Ok(result) -> {
       assertEqualInt(result.messages.length.toInt(), 1, "bob sees only his own matching message")
@@ -307,30 +290,44 @@ test "searchMessagesHandler only ever returns the calling user's own messages" {
   }
 }
 
-// ── messages_fts sync triggers (#918) ─────────────────────────────────────────
+// Raw writes straight at `messages` (bypassing the INSERT-only repository API
+// on purpose), through a tenant-scoped unit so RLS applies.
+func pokeMessage(owner: in String, sql: in String, params: in slice[String]): Unit {
+  val u = match CloudAgents.PgStore.open(CloudAgents.Pg.personalScope(owner)) {
+    case Ok(x) -> x
+    case Err(e) -> panic("open failed: " + CloudAgents.Db.dbErrorMessage(e))
+  }
+  match CloudAgents.PgStore.ex(u, sql, params) {
+    case Ok(_) -> ()
+    case Err(e) -> {
+      CloudAgents.PgStore.release(u)
+      panic("poke failed: " + CloudAgents.Db.dbErrorMessage(e))
+    }
+  }
+  match CloudAgents.PgStore.commit(u) {
+    case Ok(_) -> ()
+    case Err(e) -> panic("commit failed: " + CloudAgents.Db.dbErrorMessage(e))
+  }
+  CloudAgents.PgStore.release(u)
+}
+
+// ── messages.search_vector sync (#918) ─────────────────────────────────────────
 // `messages` is still INSERT-only in application code, but the index itself
 // must not silently desync if that ever changes. These drive raw UPDATE/
 // DELETE statements straight at `messages` (bypassing the app's own
-// INSERT-only repository API on purpose) to prove the AFTER UPDATE OF
-// content / AFTER DELETE triggers added in migration 0033 keep
-// `messages_fts` correct regardless of how the row changed.
-test "messages_fts stays in sync when a message's content is updated" {
-  val dbPath = useFreshTestDb("search-sync-update")
-  defer {
-    cleanupTestDb(dbPath)
+// INSERT-only repository API on purpose) to prove the
+// content / AFTER DELETE behaviour keeps the search index correct (on Postgres
+// `search_vector` is a generated column, so it follows the row by construction).
+test "messages.search_vector stays in sync when a message's content is updated" {
+  if not live() {
+    return
   }
-  CloudAgents.Auth.setCurrentUserId("default")
-  val sid = "sess-search-sync-update"
+  val me = freshUser("search-sync-update")
+  val sid = uniq("sess-search-sync-update")
   mkSession(sid)
   val id = mkMessageReturningId(sid, "the original stew recipe")
 
-  match CloudAgents.Sqlite.execute(
-    "UPDATE messages SET content = " + CloudAgents.Db.sqlLiteral("a brand new casserole recipe") + " WHERE id = " +
-      CloudAgents.Db.sqlLiteral(id)
-  ) {
-    case Ok(_) -> ()
-    case Err(e) -> assertTrue(false, "UPDATE messages failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
-  }
+  pokeMessage(me, "UPDATE messages SET content = @p0 WHERE id = @p1", ["a brand new casserole recipe", id])
 
   match CloudAgents.Search.searchMessagesHandler("stew") {
     case Ok(result) -> assertEqualInt(result.messages.length.toInt(), 0, "the old content must no longer match")
@@ -345,13 +342,12 @@ test "messages_fts stays in sync when a message's content is updated" {
   }
 }
 
-test "messages_fts stays in sync when a message is deleted" {
-  val dbPath = useFreshTestDb("search-sync-delete")
-  defer {
-    cleanupTestDb(dbPath)
+test "messages.search_vector stays in sync when a message is deleted" {
+  if not live() {
+    return
   }
-  CloudAgents.Auth.setCurrentUserId("default")
-  val sid = "sess-search-sync-delete"
+  val me = freshUser("search-sync-delete")
+  val sid = uniq("sess-search-sync-delete")
   mkSession(sid)
   val id = mkMessageReturningId(sid, "a message about deletionprobe topics")
 
@@ -360,10 +356,7 @@ test "messages_fts stays in sync when a message is deleted" {
     case Err(e) -> assertTrue(false, "expected a successful search: " + toString(e.status))
   }
 
-  match CloudAgents.Sqlite.execute("DELETE FROM messages WHERE id = " + CloudAgents.Db.sqlLiteral(id)) {
-    case Ok(_) -> ()
-    case Err(e) -> assertTrue(false, "DELETE FROM messages failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
-  }
+  pokeMessage(me, "DELETE FROM messages WHERE id = @p0", [id])
 
   match CloudAgents.Search.searchMessagesHandler("deletionprobe") {
     case Ok(result) -> assertEqualInt(result.messages.length.toInt(), 0, "a deleted message must never surface in search")

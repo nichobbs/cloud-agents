@@ -1,5 +1,10 @@
 # Spec: per-tool permission enrichment
 
+> Since phase 11 the store is Postgres, not SQLite (see
+> [`docs/phase11-postgres-tenancy.md`](phase11-postgres-tenancy.md)); the SQL
+> and migration references below are historical, and the live schema is in
+> `src/pg/schema.l`.
+
 Status: **Derivation + accessor implemented; checkpoint attachment deferred
 (cross-repo).** The "audit-row enrichment" follow-up of the provenance-capture
 work (Testamur §4.1 / ADR-0004; `docs/CAPABILITY_AUDIT.md` WP4), building on the

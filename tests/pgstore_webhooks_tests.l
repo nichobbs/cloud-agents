@@ -17,7 +17,7 @@ import CloudAgents.PgStore
 import CloudAgents.PgStore.Webhooks as Hooks
 import CloudAgents.PgStore.TokenCache as Tokens
 import CloudAgents.Repository
-import CloudAgents.Sqlite
+import CloudAgents.Db
 
 func live(): Bool {
   val ok = CloudAgents.Pg.serviceConfigured() and

@@ -7,7 +7,7 @@
 //! client secret, which never leaves this server — for the user's OAuth
 //! token. The frontend then presents that token as its Authorization bearer
 //! on every API call; authenticateRequest() below validates it against
-//! api.github.com/user (cached in SQLite, hashed), applies the
+//! api.github.com/user (cached in the store, hashed), applies the
 //! CLOUD_AGENTS_WHITELIST, and resolves the per-tenant user id (gh-<id>)
 //! that scopes every query.
 //!
@@ -31,7 +31,7 @@ import CloudAgents.LibrarySeed
 import CloudAgents.Repository
 import CloudAgents.Scope
 import CloudAgents.SessionStore
-import CloudAgents.Sqlite
+import CloudAgents.Db
 import extern System.Environment as Env
 import extern System.String as DotNetString
 
@@ -582,7 +582,7 @@ pub func logout(authHeaderValue: in String): Result[Unit, Web.ApiError] {
         case Ok(_) -> return Ok(())
         case Err(e) -> {
           println(
-            "WARNING: logout could not invalidate the token-validation cache row: " + CloudAgents.Sqlite.dbErrorMessage(e)
+            "WARNING: logout could not invalidate the token-validation cache row: " + CloudAgents.Db.dbErrorMessage(e)
           )
           return Err(Web.internalError("logout failed"))
         }
@@ -592,7 +592,7 @@ pub func logout(authHeaderValue: in String): Result[Unit, Web.ApiError] {
 }
 
 // ─── Per-request bearer authentication ───────────────────────────────────────
-/// Authenticate a GitHub OAuth bearer: SQLite cache first (keyed by the
+/// Authenticate a GitHub OAuth bearer: token cache first (keyed by the
 /// token's SHA-256, never the token itself), then a live /user validation
 /// with whitelist enforcement, caching the outcome either way.
 ///

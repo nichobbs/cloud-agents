@@ -77,7 +77,7 @@ output_assembly = "CloudAgentsVerify.dll"
 TOML
 
 # Runtime harness — exercises the Docker-independent logic (streaming, the
-# Phase 2 state machine / recycling / SQL, and the Phase 3 auth helpers). These
+# Phase 3 auth helpers). These
 # use only enums, unions, records and primitives, so they run without any
 # external dependency.
 cat > "$WORK/src/main.l" <<'LYRIC'
@@ -95,8 +95,6 @@ func eqs(a: in String, e: in String, l: in String): Unit {
 func eqb(a: in Bool, e: in Bool, l: in String): Unit {
   if a == e { Console.println("ok   - " + l) } else { Console.println("FAIL - " + l); panic(l) }
 }
-func tshow(t: in Transition): String { return match t { case To(s) -> statusToString(s); case Invalid -> "INVALID" } }
-func rshow(r: in RecycleAction): String { return match r { case StopAndIdle -> "STOP"; case EvictCold -> "EVICT"; case NoAction -> "NONE" } }
 
 pub func main(): Int {
   // Phase 1 — SSE framing
@@ -108,26 +106,6 @@ pub func main(): Int {
   eqs(toString(nextPollMs(1000, 5000)), "2000", "nextPollMs doubles below cap")
   eqs(toString(nextPollMs(4000, 5000)), "5000", "nextPollMs caps the doubling")
   eqs(sseKeepalive(), ": keepalive\n\n", "sseKeepalive comment frame")
-
-  // Phase 2 — state machine
-  eqs(tshow(nextStatus(Created, CloneStarted)), "CLONING", "Created+CloneStarted")
-  eqs(tshow(nextStatus(Idle, MessageReceived)), "RUNNING", "Idle+MessageReceived")
-  eqs(tshow(nextStatus(Running, ProcessExited)), "WARM", "Running+ProcessExited")
-  eqs(tshow(nextStatus(Warm, IdleTimeout)), "IDLE", "Warm+IdleTimeout")
-  eqs(tshow(nextStatus(Running, MessageReceived)), "INVALID", "illegal transition")
-  eqs(tshow(nextStatus(Destroyed, MessageReceived)), "INVALID", "terminal state")
-
-  // Phase 2 — idle recycling
-  eqs(rshow(recycleDecision(Warm, 300000.toLong())), "STOP", "Warm at 5min")
-  eqs(rshow(recycleDecision(Idle, 3600000.toLong())), "EVICT", "Idle at 1h")
-  eqs(rshow(recycleDecision(Running, 9999999.toLong())), "NONE", "Running not swept")
-
-  // Phase 2 — SQL (ownership-scoped, sqlLiteral-inlined like every other
-  // statement; the `?`-placeholder forms were dead code for a binding layer
-  // that never existed)
-  eqb(deleteSessionSql("s1", "u1") == "DELETE FROM sessions WHERE id = 's1' AND user_id = 'u1'", true, "delete sql")
-  eqb(selectSessionByIdSql("s1", "u1").endsWith("AND user_id = 'u1'"), true, "select scoped by owner")
-  eqb(tryBeginRunSql("s1", "u1", "1000", "api-1").contains("AND status <> 'RUNNING'"), true, "run claim is status-guarded")
 
   // Phase 3 — token cache + ownership
   val entry = CachedToken(userId = "42", login = "octocat", expiresAtMillis = 1000.toLong())
@@ -161,7 +139,7 @@ command -v dotnet >/dev/null || { echo "verify: 'dotnet' not on PATH" >&2; exit 
 echo "==> Compiling CloudAgents.Streaming / Db / Auth"
 ( cd "$WORK" && lyric build )
 
-echo "==> Runtime-verifying streaming + Phase 2/3 logic"
+echo "==> Runtime-verifying streaming + Phase 3 logic"
 ( cd "$WORK" && lyric run )
 
 echo "==> Verification succeeded"

@@ -1,43 +1,85 @@
+//! Proxy handler tests: pure validators plus the no-credential paths against
+//! the Postgres store (a fresh user's vault is empty).
 @test_module
 package CloudAgents.ProxyTests
 
 import Std.Core
+import Std.Environment
 import CloudAgents.Scope
 import Std.Testing
 import Std.Uuid
 import CloudAgents.Proxy
 import CloudAgents.Repository
-import CloudAgents.Sqlite
+import CloudAgents.Auth
+import CloudAgents.Pg
+import CloudAgents.Pg.Migrate
+import CloudAgents.PgStore.Tenancy
+import CloudAgents.Db
 import extern System.Environment as Env
 
-// ── Live-DB plumbing (same pattern as tests/oauth_tests.l) ────────────────────
+// ── Live Postgres ─────────────────────────────────────────────────────────────
+//
+// The store is Postgres (docs/phase11-postgres-tenancy.md). These tests run iff
+// LYRIC_CONFIG_DB_CONNECTION_URL (cloudagents_app) and
+// CLOUD_AGENTS_MIGRATE_DATABASE_URL (cloudagents_owner) are set, and fail rather
+// than skip when CLOUD_AGENTS_REQUIRE_LIVE_PG=1 (CI). Each test acts as a fresh
+// user with its own personal tenant, so tests, suites and repeated runs against
+// the same database never see each other's rows.
+func live(): Bool {
+  val ok = CloudAgents.Pg.serviceConfigured() and
+    Std.Environment.getVarOrDefault(CloudAgents.Pg.migrateDsnVar(), "").length.toInt() > 0
+  if ok {
+    return true
+  }
+  assertTrue(
+    Std.Environment.getVarOrDefault("CLOUD_AGENTS_REQUIRE_LIVE_PG", "") != "1",
+    "CLOUD_AGENTS_REQUIRE_LIVE_PG=1 but LYRIC_CONFIG_DB_CONNECTION_URL or CLOUD_AGENTS_MIGRATE_DATABASE_URL is not set"
+  )
+  println("SKIP: proxy tests need LYRIC_CONFIG_DB_CONNECTION_URL and CLOUD_AGENTS_MIGRATE_DATABASE_URL")
+  return false
+}
+
+func migrate(): Unit {
+  val conn = match CloudAgents.Pg.connectDsn(Std.Environment.getVarOrDefault(CloudAgents.Pg.migrateDsnVar(), "")) {
+    case Ok(c) -> c
+    case Err(e) -> panic(CloudAgents.Pg.pgErrorMessage(e))
+  }
+  defer {
+    conn.close()
+  }
+  match CloudAgents.Pg.Migrate.migrate(conn) {
+    case Ok(_) -> ()
+    case Err(e) -> panic("migrate failed: " + CloudAgents.Pg.pgErrorMessage(e))
+  }
+}
+
+/// A new user with a provisioned personal tenant. Does not change the request
+/// identity.
+func newUser(tag: in String): String {
+  val uid = "t-" + tag + "-" + Std.Uuid.uuidToString(Std.Uuid.newUuid())
+  match CloudAgents.PgStore.Tenancy.ensurePersonalTenant(uid) {
+    case Ok(_) -> ()
+    case Err(e) -> panic("provisioning " + uid + " failed: " + CloudAgents.Db.dbErrorMessage(e))
+  }
+  return uid
+}
+
+/// Migrate, then make a new user the request identity (what handlers read via
+/// CloudAgents.Auth.requestScope()).
+func freshUser(tag: in String): String {
+  migrate()
+  val uid = newUser(tag)
+  CloudAgents.Auth.setCurrentUserId(uid)
+  return uid
+}
+
+// ── Notes ─────────────────────────────────────────────────────────────────────
 //
 // NB: no network path is ever exercised here — the no-credential tests fail
 // closed at the vault lookup (404) before any outbound request could happen,
 // and everything else is a pure validator. ENCRYPTION_KEY is deliberately NOT
 // set: decryptedCredentialValue answers Ok(None) for an absent row before any
 // decryption, so an empty vault needs no crypto configuration.
-
-@externTarget("System.IO.File.Delete")
-func fileDelete(path: in String): Unit = ()
-
-func useFreshTestDb(tag: in String): String {
-  val path = "/tmp/cloud-agents-tests-" + tag + "-" + Std.Uuid.uuidToString(Std.Uuid.newUuid()) + ".db"
-  Env.SetEnvironmentVariable("CLOUD_AGENTS_DB_PATH", path)
-  match CloudAgents.Repository.initSchema() {
-    case Ok(_) -> ()
-    case Err(e) -> assertTrue(false, "initSchema failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
-  }
-  return path
-}
-
-func cleanupTestDb(path: in String): Unit {
-  try {
-    fileDelete(path)
-  } catch Bug as b {
-    // locked or already gone — fine for a temp file
-  }
-}
 
 // ── Pure validators ───────────────────────────────────────────────────────────
 
@@ -203,13 +245,13 @@ test "proxy handlers reject invalid inputs with 400 before any lookup" {
   }
 }
 
-// ── No-credential paths (live temp DB, empty vault, no network) ───────────────
+// ── No-credential paths (live Postgres, fresh user with an empty vault, no network) ───────────────
 
 test "GitHub proxy answers 404 when the vault has no GITHUB_TOKEN" {
-  val dbPath = useFreshTestDb("proxy-no-github-token")
-  defer {
-    cleanupTestDb(dbPath)
+  if not live() {
+    return
   }
+  val me = freshUser("proxy-no-github-token")
   match githubReposHandler("1") {
     case Ok(_) -> assertTrue(false, "empty vault must not reach GitHub")
     case Err(e) -> assertEqualInt(e.status, 404, "no vault token -> 404")
@@ -229,10 +271,10 @@ test "GitHub proxy answers 404 when the vault has no GITHUB_TOKEN" {
 }
 
 test "models proxy answers 404 when the vault has no provider keys" {
-  val dbPath = useFreshTestDb("proxy-no-model-keys")
-  defer {
-    cleanupTestDb(dbPath)
+  if not live() {
+    return
   }
+  val me = freshUser("proxy-no-model-keys")
   match modelsHandler("claude") {
     case Ok(_) -> assertTrue(false, "empty vault must not reach any provider")
     case Err(e) -> assertEqualInt(e.status, 404, "no provider keys -> 404")
@@ -245,13 +287,13 @@ test "models proxy answers 404 when the vault has no provider keys" {
 }
 
 test "decryptedCredentialValue is Ok(None) on an empty vault without crypto" {
-  val dbPath = useFreshTestDb("proxy-cred-lookup")
-  defer {
-    cleanupTestDb(dbPath)
+  if not live() {
+    return
   }
+  val me = freshUser("proxy-cred-lookup")
   // ENCRYPTION_KEY is not set in this suite: absence must be decided before
   // any decryption, so this returns Ok(None) rather than a crypto error.
-  match CloudAgents.Repository.decryptedCredentialValue(CloudAgents.Scope.userScope("default"), "GITHUB_TOKEN") {
+  match CloudAgents.Repository.decryptedCredentialValue(CloudAgents.Scope.userScope(me), "GITHUB_TOKEN") {
     case Ok(None) -> ()
     case Ok(Some(_)) -> assertTrue(false, "empty vault must have no value")
     case Err(e) -> assertTrue(false, "lookup failed: " + CloudAgents.Repository.credentialErrorMessage(e))
@@ -280,10 +322,10 @@ test "providersForHarness returns correct provider mappings" {
 }
 
 test "keyForProvider returns None for absent keys when vault is empty" {
-  val dbPath = useFreshTestDb("proxy-key-lookup-empty")
-  defer {
-    cleanupTestDb(dbPath)
+  if not live() {
+    return
   }
+  val me = freshUser("proxy-key-lookup-empty")
   match keyForProvider("opencode") {
     case Some(_) -> assertTrue(false, "empty vault must return None")
     case None -> ()

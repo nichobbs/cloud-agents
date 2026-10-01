@@ -22,7 +22,7 @@ import CloudAgents.OAuth
 import CloudAgents.Proxy
 import CloudAgents.RepoKey
 import CloudAgents.SessionStore
-import CloudAgents.Sqlite
+import CloudAgents.Db
 import CloudAgents.Streaming
 import CloudAgents.Text
 
@@ -36,8 +36,8 @@ val openPrUserAgent = "cloud-agents"
 /// this instead.
 val openPrRequestTimeoutMillis = 15000
 
-func sessionDbError(e: in CloudAgents.Sqlite.DbError): Web.ApiError {
-  return Web.internalError(CloudAgents.Sqlite.dbErrorMessage(e))
+func sessionDbError(e: in CloudAgents.Db.DbError): Web.ApiError {
+  return Web.internalError(CloudAgents.Db.dbErrorMessage(e))
 }
 
 /// Translate a github_api.l transport error into a Web.ApiError. A confirmed

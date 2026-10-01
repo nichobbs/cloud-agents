@@ -1,33 +1,88 @@
+//! Attachment tests: validation, on-disk storage and the attachment handlers
+//! over the Postgres store.
 @test_module
 package CloudAgents.AttachmentTests
 
 import Std.Core
+import Std.Environment
 import Std.File
 import Std.Testing
 import Std.Uuid
 import CloudAgents.Auth
 import CloudAgents.Handlers
+import CloudAgents.Pg
+import CloudAgents.Pg.Migrate
+import CloudAgents.PgStore.Tenancy
 import CloudAgents.Repository
 import CloudAgents.SessionStore
-import CloudAgents.Sqlite
+import CloudAgents.Db
 import extern System.Environment as Env
 import extern System.Text.Encoding as Utf8Encoding
 
-// ── Live-DB plumbing (same pattern as tests/callbacks_v2_tests.l) ─────────────
-func useFreshTestDb(tag: in String): String {
-  val path = "/tmp/cloud-agents-tests-" + tag + "-" + Std.Uuid.uuidToString(Std.Uuid.newUuid()) + ".db"
-  val attachmentsDir = "/tmp/cloud-agents-attachments-" + tag + "-" + Std.Uuid.uuidToString(Std.Uuid.newUuid())
-  Env.SetEnvironmentVariable("CLOUD_AGENTS_DB_PATH", path)
-  Env.SetEnvironmentVariable("CLOUD_AGENTS_ATTACHMENTS_DIR", attachmentsDir)
-  match CloudAgents.Repository.initSchema() {
-    case Ok(_) -> ()
-    case Err(e) -> assertTrue(false, "initSchema failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+// ── Live Postgres ─────────────────────────────────────────────────────────────
+//
+// The store is Postgres (docs/phase11-postgres-tenancy.md). These tests run iff
+// LYRIC_CONFIG_DB_CONNECTION_URL (cloudagents_app) and
+// CLOUD_AGENTS_MIGRATE_DATABASE_URL (cloudagents_owner) are set, and fail rather
+// than skip when CLOUD_AGENTS_REQUIRE_LIVE_PG=1 (CI). Each test acts as a fresh
+// user with its own personal tenant, so tests, suites and repeated runs against
+// the same database never see each other's rows.
+func live(): Bool {
+  val ok = CloudAgents.Pg.serviceConfigured() and
+    Std.Environment.getVarOrDefault(CloudAgents.Pg.migrateDsnVar(), "").length.toInt() > 0
+  if ok {
+    return true
   }
-  return path
+  assertTrue(
+    Std.Environment.getVarOrDefault("CLOUD_AGENTS_REQUIRE_LIVE_PG", "") != "1",
+    "CLOUD_AGENTS_REQUIRE_LIVE_PG=1 but LYRIC_CONFIG_DB_CONNECTION_URL or CLOUD_AGENTS_MIGRATE_DATABASE_URL is not set"
+  )
+  println("SKIP: attachment tests need LYRIC_CONFIG_DB_CONNECTION_URL and CLOUD_AGENTS_MIGRATE_DATABASE_URL")
+  return false
 }
 
-@externTarget("System.IO.File.Delete")
-func fileDelete(path: in String): Unit = ()
+func migrate(): Unit {
+  val conn = match CloudAgents.Pg.connectDsn(Std.Environment.getVarOrDefault(CloudAgents.Pg.migrateDsnVar(), "")) {
+    case Ok(c) -> c
+    case Err(e) -> panic(CloudAgents.Pg.pgErrorMessage(e))
+  }
+  defer {
+    conn.close()
+  }
+  match CloudAgents.Pg.Migrate.migrate(conn) {
+    case Ok(_) -> ()
+    case Err(e) -> panic("migrate failed: " + CloudAgents.Pg.pgErrorMessage(e))
+  }
+}
+
+/// A new user with a provisioned personal tenant. Does not change the request
+/// identity.
+func newUser(tag: in String): String {
+  val uid = "t-" + tag + "-" + Std.Uuid.uuidToString(Std.Uuid.newUuid())
+  match CloudAgents.PgStore.Tenancy.ensurePersonalTenant(uid) {
+    case Ok(_) -> ()
+    case Err(e) -> panic("provisioning " + uid + " failed: " + CloudAgents.Db.dbErrorMessage(e))
+  }
+  return uid
+}
+
+/// Migrate, then make a new user the request identity (what handlers read via
+/// CloudAgents.Auth.requestScope()).
+func freshUser(tag: in String): String {
+  migrate()
+  val uid = newUser(tag)
+  CloudAgents.Auth.setCurrentUserId(uid)
+  return uid
+}
+
+/// Point the attachment store at a fresh on-disk directory.
+func useFreshAttachmentsDir(tag: in String): Unit {
+  Env.SetEnvironmentVariable("CLOUD_AGENTS_ATTACHMENTS_DIR", "/tmp/cloud-agents-attachments-" + tag + "-" + Std.Uuid.uuidToString(Std.Uuid.newUuid()))
+}
+
+func uniq(prefix: in String): String {
+  return prefix + "-" + Std.Uuid.uuidToString(Std.Uuid.newUuid())
+}
 
 /// `Std.File.exists` is documented in docs/lyric/stdlib.md but does not
 /// resolve at runtime on this toolchain ("unsupported method 'exists' on the
@@ -43,20 +98,10 @@ func fileExistsForTest(path: in String): Bool {
   }
 }
 
-func cleanupTestDb(path: in String): Unit {
-  try {
-    fileDelete(path)
-  } catch Bug as b {
-    // locked or already gone — fine for a temp file
-  }
-  Env.SetEnvironmentVariable("CLOUD_AGENTS_ATTACHMENTS_DIR", "")
-  CloudAgents.Auth.setCurrentUserId("default")
-}
-
 func mkSession(id: in String): Unit {
   val s = makeAgentSession(
     sessionId = id,
-    repoUrl = "https://github.com/nic/repo",
+    repoUrl = "https://github.com/t/attachments",
     branch = "main",
     containerId = "",
     harness = "claude",
@@ -65,7 +110,7 @@ func mkSession(id: in String): Unit {
   )
   match addSession(s, CloudAgents.Auth.requestScope()) {
     case Ok(_) -> ()
-    case Err(e) -> panic("addSession failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+    case Err(e) -> panic("addSession failed: " + CloudAgents.Db.dbErrorMessage(e))
   }
 }
 
@@ -268,12 +313,12 @@ test "isDangerousAttachmentMimeType strips a MIME parameter suffix before compar
 
 // ── storeAttachments ────────────────────────────────────────────────────────
 test "storeAttachments rejects a dangerous mimeType before storing anything (#989)" {
-  val dbPath = useFreshTestDb("attach-dangerous-mime")
-  defer {
-    cleanupTestDb(dbPath)
+  if not live() {
+    return
   }
-  CloudAgents.Auth.setCurrentUserId("default")
-  val sid = "sess-attach-6"
+  val me = freshUser("attach-dangerous-mime")
+  useFreshAttachmentsDir("attach-dangerous-mime")
+  val sid = uniq("sess-attach-6")
   mkSession(sid)
 
   val inputs: slice[AttachmentInput] = [
@@ -285,17 +330,17 @@ test "storeAttachments rejects a dangerous mimeType before storing anything (#98
   }
   match CloudAgents.Repository.listAttachments(sid, CloudAgents.Auth.requestScope()) {
     case Ok(l) -> assertEqualInt(l.length.toInt(), 0, "nothing was stored for the rejected upload")
-    case Err(e) -> assertTrue(false, "list failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+    case Err(e) -> assertTrue(false, "list failed: " + CloudAgents.Db.dbErrorMessage(e))
   }
 }
 
 test "storeAttachments validates, writes to disk, and records metadata" {
-  val dbPath = useFreshTestDb("attach-roundtrip")
-  defer {
-    cleanupTestDb(dbPath)
+  if not live() {
+    return
   }
-  CloudAgents.Auth.setCurrentUserId("default")
-  val sid = "sess-attach-1"
+  val me = freshUser("attach-roundtrip")
+  useFreshAttachmentsDir("attach-roundtrip")
+  val sid = uniq("sess-attach-1")
   mkSession(sid)
 
   val noInputs: slice[AttachmentInput] = []
@@ -330,17 +375,17 @@ test "storeAttachments validates, writes to disk, and records metadata" {
   // The bytes are genuinely on disk at attachmentsBaseDir()/<sessionId>/<storedName>.
   match CloudAgents.Repository.listAttachments(sid, CloudAgents.Auth.requestScope()) {
     case Ok(l) -> assertEqualInt(l.length.toInt(), 2, "both rows are persisted")
-    case Err(e) -> assertTrue(false, "list failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+    case Err(e) -> assertTrue(false, "list failed: " + CloudAgents.Db.dbErrorMessage(e))
   }
 }
 
 test "storeAttachments accepts a genuine 0-byte file instead of rejecting it as 'required' (#1004)" {
-  val dbPath = useFreshTestDb("attach-empty-file")
-  defer {
-    cleanupTestDb(dbPath)
+  if not live() {
+    return
   }
-  CloudAgents.Auth.setCurrentUserId("default")
-  val sid = "sess-attach-7"
+  val me = freshUser("attach-empty-file")
+  useFreshAttachmentsDir("attach-empty-file")
+  val sid = uniq("sess-attach-7")
   mkSession(sid)
 
   // base64Of("") is itself "" — the empty string is valid base64 for a
@@ -359,12 +404,12 @@ test "storeAttachments accepts a genuine 0-byte file instead of rejecting it as 
 }
 
 test "storeAttachments rejects an oversize file before storing anything" {
-  val dbPath = useFreshTestDb("attach-oversize")
-  defer {
-    cleanupTestDb(dbPath)
+  if not live() {
+    return
   }
-  CloudAgents.Auth.setCurrentUserId("default")
-  val sid = "sess-attach-2"
+  val me = freshUser("attach-oversize")
+  useFreshAttachmentsDir("attach-oversize")
+  val sid = uniq("sess-attach-2")
   mkSession(sid)
 
   // A contentBase64 string longer than the pre-decode cap is rejected
@@ -379,17 +424,17 @@ test "storeAttachments rejects an oversize file before storing anything" {
   }
   match CloudAgents.Repository.listAttachments(sid, CloudAgents.Auth.requestScope()) {
     case Ok(l) -> assertEqualInt(l.length.toInt(), 0, "nothing was stored for the rejected upload")
-    case Err(e) -> assertTrue(false, "list failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+    case Err(e) -> assertTrue(false, "list failed: " + CloudAgents.Db.dbErrorMessage(e))
   }
 }
 
 test "storeAttachments rejects more than the per-message file cap" {
-  val dbPath = useFreshTestDb("attach-toomany")
-  defer {
-    cleanupTestDb(dbPath)
+  if not live() {
+    return
   }
-  CloudAgents.Auth.setCurrentUserId("default")
-  val sid = "sess-attach-3"
+  val me = freshUser("attach-toomany")
+  useFreshAttachmentsDir("attach-toomany")
+  val sid = uniq("sess-attach-3")
   mkSession(sid)
 
   var inputs: slice[AttachmentInput] = []
@@ -405,12 +450,12 @@ test "storeAttachments rejects more than the per-message file cap" {
 }
 
 test "storeAttachments rejects the whole request atomically when only a LATER file pushes the cumulative total over budget (#992)" {
-  val dbPath = useFreshTestDb("attach-cumulative")
-  defer {
-    cleanupTestDb(dbPath)
+  if not live() {
+    return
   }
-  CloudAgents.Auth.setCurrentUserId("default")
-  val sid = "sess-attach-5"
+  val me = freshUser("attach-cumulative")
+  useFreshAttachmentsDir("attach-cumulative")
+  val sid = uniq("sess-attach-5")
   mkSession(sid)
 
   // Two files right AT the 20 MiB per-file cap (each individually allowed),
@@ -436,7 +481,7 @@ test "storeAttachments rejects the whole request atomically when only a LATER fi
   // individually within the per-file cap — was written or recorded.
   match CloudAgents.Repository.listAttachments(sid, CloudAgents.Auth.requestScope()) {
     case Ok(l) -> assertEqualInt(l.length.toInt(), 0, "no rows were persisted for the rejected request")
-    case Err(e) -> assertTrue(false, "list failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+    case Err(e) -> assertTrue(false, "list failed: " + CloudAgents.Db.dbErrorMessage(e))
   }
 }
 
@@ -447,12 +492,12 @@ test "cleanupPartialAttachmentBatch best-effort deletes the rows and files it is
   // cleanup mechanism it calls on such a failure directly: given the rows/
   // files a hypothetical earlier part of the same batch already committed,
   // cleanupPartialAttachmentBatch must remove both.
-  val dbPath = useFreshTestDb("attach-cleanup")
-  defer {
-    cleanupTestDb(dbPath)
+  if not live() {
+    return
   }
-  CloudAgents.Auth.setCurrentUserId("default")
-  val sid = "sess-attach-cleanup"
+  val me = freshUser("attach-cleanup")
+  useFreshAttachmentsDir("attach-cleanup")
+  val sid = uniq("sess-attach-cleanup")
   mkSession(sid)
 
   val inputs: slice[AttachmentInput] = [
@@ -478,7 +523,7 @@ test "cleanupPartialAttachmentBatch best-effort deletes the rows and files it is
 
   match CloudAgents.Repository.listAttachments(sid, CloudAgents.Auth.requestScope()) {
     case Ok(l) -> assertEqualInt(l.length.toInt(), 0, "both rows are rolled back")
-    case Err(e) -> assertTrue(false, "list failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+    case Err(e) -> assertTrue(false, "list failed: " + CloudAgents.Db.dbErrorMessage(e))
   }
   var j = 0
   while j < paths.length {
@@ -488,12 +533,12 @@ test "cleanupPartialAttachmentBatch best-effort deletes the rows and files it is
 }
 
 test "storeAttachments mounts the session's existing attachment dir for a follow-up message with no new attachment (#1005)" {
-  val dbPath = useFreshTestDb("attach-followup-mount")
-  defer {
-    cleanupTestDb(dbPath)
+  if not live() {
+    return
   }
-  CloudAgents.Auth.setCurrentUserId("default")
-  val sid = "sess-attach-followup"
+  val me = freshUser("attach-followup-mount")
+  useFreshAttachmentsDir("attach-followup-mount")
+  val sid = uniq("sess-attach-followup")
   mkSession(sid)
 
   // Before any attachment has ever been uploaded, a text-only message still
@@ -535,18 +580,18 @@ test "storeAttachments mounts the session's existing attachment dir for a follow
   // the session, still under the same directory.
   match CloudAgents.Repository.listAttachments(sid, CloudAgents.Auth.requestScope()) {
     case Ok(l) -> assertEqualInt(l.length.toInt(), 1, "the follow-up did not touch the stored attachment")
-    case Err(e) -> assertTrue(false, "list failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+    case Err(e) -> assertTrue(false, "list failed: " + CloudAgents.Db.dbErrorMessage(e))
   }
 }
 
 // ── listAttachmentsHandler / downloadAttachmentHandler ─────────────────────
 test "listAttachmentsHandler and downloadAttachmentHandler serve what storeAttachments wrote" {
-  val dbPath = useFreshTestDb("attach-handlers")
-  defer {
-    cleanupTestDb(dbPath)
+  if not live() {
+    return
   }
-  CloudAgents.Auth.setCurrentUserId("default")
-  val sid = "sess-attach-4"
+  val me = freshUser("attach-handlers")
+  useFreshAttachmentsDir("attach-handlers")
+  val sid = uniq("sess-attach-4")
   mkSession(sid)
 
   val inputs: slice[AttachmentInput] = [
@@ -569,7 +614,7 @@ test "listAttachmentsHandler and downloadAttachmentHandler serve what storeAttac
 
   match CloudAgents.Repository.linkAttachmentToMessage(attachmentId, CloudAgents.Auth.requestScope(), "msg-1") {
     case Ok(_) -> ()
-    case Err(e) -> assertTrue(false, "link failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+    case Err(e) -> assertTrue(false, "link failed: " + CloudAgents.Db.dbErrorMessage(e))
   }
   match listAttachmentsHandler(sid) {
     case Ok(l) -> assertEqual(l.attachments[0].messageId, "msg-1", "messageId round-trips after linking")
@@ -582,8 +627,9 @@ test "listAttachmentsHandler and downloadAttachmentHandler serve what storeAttac
   }
 
   // A second, unrelated session can never download this one's attachment.
-  mkSession("sess-attach-4-other")
-  match downloadAttachmentHandler("sess-attach-4-other", attachmentId) {
+  val otherSid = uniq("sess-attach-4-other")
+  mkSession(otherSid)
+  match downloadAttachmentHandler(otherSid, attachmentId) {
     case Ok(_) -> assertTrue(false, "a foreign session must not be able to fetch another session's attachment")
     case Err(e) -> assertEqualInt(e.status, 404, "cross-session fetch is a 404, not a 200 or a 403 that would confirm existence")
   }

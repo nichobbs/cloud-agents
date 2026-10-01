@@ -14,7 +14,7 @@ import Std.Json
 import Web
 import CloudAgents.Auth
 import CloudAgents.Repository
-import CloudAgents.Sqlite
+import CloudAgents.Db
 import CloudAgents.Streaming
 import CloudAgents.Text
 
@@ -34,8 +34,8 @@ val maxMcpEnvCount = 64
 
 val maxMcpHeaderCount = 64
 
-func dbError(e: in CloudAgents.Sqlite.DbError): Web.ApiError {
-  return Web.internalError(CloudAgents.Sqlite.dbErrorMessage(e))
+func dbError(e: in CloudAgents.Db.DbError): Web.ApiError {
+  return Web.internalError(CloudAgents.Db.dbErrorMessage(e))
 }
 
 /// A library item name must be a filesystem-safe slug: a leading letter,

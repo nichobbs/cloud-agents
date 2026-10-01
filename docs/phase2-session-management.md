@@ -1,5 +1,10 @@
 # Phase 2: Session Management & Idle Recycling
 
+> Since phase 11 the store is Postgres, not SQLite (see
+> [`docs/phase11-postgres-tenancy.md`](phase11-postgres-tenancy.md)); the SQL
+> and migration references below are historical, and the live schema is in
+> `src/pg/schema.l`.
+
 Goal: Full session lifecycle, idle detection, automatic container stop/restart, concurrency control, and credential handling.
 
 Duration: 2-3 weeks

@@ -36,8 +36,8 @@ traffic.
 
 - **`src/`** — the API server, written in [Lyric](https://nichobbs.github.io/lyric-lang/)
   (a safety-oriented language targeting .NET 10). Handles session lifecycle,
-  Docker container orchestration, and a SQLite-backed transcript/comments/todos
-  store. See [`CLAUDE.md`](CLAUDE.md) for the Lyric-specific build/coding
+  Docker container orchestration, and a Postgres-backed (per-user tenants, row-level security)
+  transcript/comments/todos store. See [`CLAUDE.md`](CLAUDE.md) for the Lyric-specific build/coding
   conventions, and `docs/lyric/` for language reference material.
 - **`frontend/`** — a Vite + React + TypeScript single-page app: create
   sessions, send messages, watch output, and anchor comments/todos to
@@ -77,6 +77,27 @@ lyric restore && lyric build   # or: ./scripts/build-full.sh — succeeds as of 
 ./scripts/verify.sh            # runtime-verifies the core logic — genuinely passes
 ./scripts/run-api.sh           # builds + starts the API server on port 8080
 ```
+
+The store is Postgres (16+); there is no SQLite driver, native library or
+`CLOUD_AGENTS_DB_PATH` any more. The API requires
+`LYRIC_CONFIG_DB_CONNECTION_URL` (the `cloudagents_app` DSN) and refuses to
+start without it. To get a local database, provision the roles once as a
+superuser, apply the schema, and set the two DSNs:
+
+```sh
+psql -U postgres -v ON_ERROR_STOP=1 -v owner_password="'owner'" \
+  -v app_password="'app'" -v migrator_password="'migrator'" \
+  -f deploy/postgres/provision.sql
+export CLOUD_AGENTS_MIGRATE_DATABASE_URL=postgres://cloudagents_owner:owner@127.0.0.1:5432/cloudagents
+export LYRIC_CONFIG_DB_CONNECTION_URL=postgres://cloudagents_app:app@127.0.0.1:5432/cloudagents
+dotnet bin/CloudAgents.dll --migrate   # applies the schema as cloudagents_owner
+```
+
+Every user gets a personal tenant (`personal:<user id>`) on their first
+authenticated request. The compose stack in `deploy/` runs Postgres, the
+provisioning and the migration for you. See
+[`docs/phase11-postgres-tenancy.md`](docs/phase11-postgres-tenancy.md) and
+[`docs/BUILD.md`](docs/BUILD.md) "Running tests".
 
 ```sh
 cd frontend

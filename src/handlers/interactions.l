@@ -4,7 +4,7 @@ import Std.Core
 import Web
 import CloudAgents.Repository
 import CloudAgents.SessionStore
-import CloudAgents.Sqlite
+import CloudAgents.Db
 import CloudAgents.Streaming
 import CloudAgents.Text
 import CloudAgents.Capture
@@ -24,8 +24,8 @@ pub record AddTodoRequest {
 
 val maxBodyLen = 32768
 
-func dbError(e: in CloudAgents.Sqlite.DbError): Web.ApiError {
-  return Web.internalError(CloudAgents.Sqlite.dbErrorMessage(e))
+func dbError(e: in CloudAgents.Db.DbError): Web.ApiError {
+  return Web.internalError(CloudAgents.Db.dbErrorMessage(e))
 }
 
 // Every handler here is user-facing, and the message/todo/comment/event tables
@@ -148,7 +148,7 @@ pub func sessionEventsToJson(events: in slice[CloudAgents.Capture.CaptureEvent])
 /// events with seq strictly greater than `afterSeq` (empty = from the start),
 /// oldest first. Feeds the platform fetch-client → GraphIngest handoff. A
 /// non-numeric `afterSeq` is rejected rather than silently treated as 0 by
-/// SQLite's CAST. See docs/session-events-endpoint.md.
+/// a numeric cast. See docs/session-events-endpoint.md.
 pub func getSessionEvents(id: in String, afterSeq: in String): Result[String, Web.ApiError] {
   if id.length == 0 {
     return Err(Web.badRequest("id is required"))
@@ -567,7 +567,7 @@ pub func ingestAgentPlan(
   sc: in CloudAgents.Pg.TenantScope,
   messageId: in String,
   content: in String,
-): Result[Int, CloudAgents.Sqlite.DbError] {
+): Result[Int, CloudAgents.Db.DbError] {
   val items = parseAgentPlan(content)
   if items.length < 2 {
     return Ok(value = 0)

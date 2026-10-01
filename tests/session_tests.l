@@ -1,83 +1,110 @@
+//! Session store and session handler tests over the Postgres store. Session
+//! ids are globally unique (`session_routes`), so every id a test creates is
+//! suffixed with that test's own fresh user id.
 @test_module
 package CloudAgents.SessionTests
 
 import Std.Core
+import Std.Environment
 import CloudAgents.Pg
+import CloudAgents.Pg.Migrate
+import CloudAgents.PgStore.Tenancy
 import Std.Testing
 import Std.Uuid
 import CloudAgents.Handlers
 import CloudAgents.Repository
 import CloudAgents.SessionStore
-import CloudAgents.Sqlite
+import CloudAgents.Db
 import CloudAgents.Streaming
 import extern System.Environment as Env
-import extern System.String as DotNetString
 
-// ── Live-DB plumbing (same pattern as tests/prompt_tests.l) ───────────────────
-@externTarget("System.IO.File.Delete")
-func fileDelete(path: in String): Unit = ()
-
-func useFreshTestDb(tag: in String): String {
-  val path = "/tmp/cloud-agents-tests-" + tag + "-" + Std.Uuid.uuidToString(Std.Uuid.newUuid()) + ".db"
-  Env.SetEnvironmentVariable("CLOUD_AGENTS_DB_PATH", path)
-  match CloudAgents.Repository.initSchema() {
-    case Ok(_) -> ()
-    case Err(e) -> assertTrue(false, "initSchema failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+// ── Live Postgres ─────────────────────────────────────────────────────────────
+//
+// The store is Postgres (docs/phase11-postgres-tenancy.md). These tests run iff
+// LYRIC_CONFIG_DB_CONNECTION_URL (cloudagents_app) and
+// CLOUD_AGENTS_MIGRATE_DATABASE_URL (cloudagents_owner) are set, and fail rather
+// than skip when CLOUD_AGENTS_REQUIRE_LIVE_PG=1 (CI). Each test acts as a fresh
+// user with its own personal tenant, so tests, suites and repeated runs against
+// the same database never see each other's rows.
+func live(): Bool {
+  val ok = CloudAgents.Pg.serviceConfigured() and
+    Std.Environment.getVarOrDefault(CloudAgents.Pg.migrateDsnVar(), "").length.toInt() > 0
+  if ok {
+    return true
   }
-  return path
+  assertTrue(
+    Std.Environment.getVarOrDefault("CLOUD_AGENTS_REQUIRE_LIVE_PG", "") != "1",
+    "CLOUD_AGENTS_REQUIRE_LIVE_PG=1 but LYRIC_CONFIG_DB_CONNECTION_URL or CLOUD_AGENTS_MIGRATE_DATABASE_URL is not set"
+  )
+  println("SKIP: session tests need LYRIC_CONFIG_DB_CONNECTION_URL and CLOUD_AGENTS_MIGRATE_DATABASE_URL")
+  return false
 }
 
-func cleanupTestDb(path: in String): Unit {
-  try {
-    fileDelete(path)
-  } catch Bug as b {
-    // locked or already gone — fine for a temp file
+func migrate(): Unit {
+  val conn = match CloudAgents.Pg.connectDsn(Std.Environment.getVarOrDefault(CloudAgents.Pg.migrateDsnVar(), "")) {
+    case Ok(c) -> c
+    case Err(e) -> panic(CloudAgents.Pg.pgErrorMessage(e))
   }
+  defer {
+    conn.close()
+  }
+  match CloudAgents.Pg.Migrate.migrate(conn) {
+    case Ok(_) -> ()
+    case Err(e) -> panic("migrate failed: " + CloudAgents.Pg.pgErrorMessage(e))
+  }
+}
+
+/// A new user with a provisioned personal tenant. Does not change the request
+/// identity.
+func newUser(tag: in String): String {
+  val uid = "t-" + tag + "-" + Std.Uuid.uuidToString(Std.Uuid.newUuid())
+  match CloudAgents.PgStore.Tenancy.ensurePersonalTenant(uid) {
+    case Ok(_) -> ()
+    case Err(e) -> panic("provisioning " + uid + " failed: " + CloudAgents.Db.dbErrorMessage(e))
+  }
+  return uid
+}
+
+/// Migrate, then make a new user the request identity (what handlers read via
+/// CloudAgents.Auth.requestScope()).
+func freshUser(tag: in String): String {
+  migrate()
+  val uid = newUser(tag)
+  CloudAgents.Auth.setCurrentUserId(uid)
+  return uid
 }
 
 // Result convenience methods fail at runtime (docs/lyric/gotchas.md) —
 // unwrap via match+panic.
-func mustUnit(r: in Result[Unit, CloudAgents.Sqlite.DbError]): Unit {
+func mustUnit(r: in Result[Unit, CloudAgents.Db.DbError]): Unit {
   return match r {
     case Ok(_) -> ()
-    case Err(e) -> panic("session store op failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+    case Err(e) -> panic("session store op failed: " + CloudAgents.Db.dbErrorMessage(e))
   }
 }
 
-func mustOptSession(r: in Result[Option[AgentSession], CloudAgents.Sqlite.DbError]): Option[AgentSession] {
-  return match r {
-    case Ok(o) -> o
-    case Err(e) -> panic("session lookup failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
-  }
+func mustOptSession(r: in Result[Option[AgentSession], CloudAgents.Db.DbError]): Option[AgentSession] {
+  return match r { case Ok(o) -> o; case Err(e) -> panic("session lookup failed: " + CloudAgents.Db.dbErrorMessage(e)) }
 }
 
-func mustClaim(r: in Result[Bool, CloudAgents.Sqlite.DbError]): Bool {
-  return match r { case Ok(b) -> b; case Err(e) -> panic("run claim failed: " + CloudAgents.Sqlite.dbErrorMessage(e)) }
+func mustClaim(r: in Result[Bool, CloudAgents.Db.DbError]): Bool {
+  return match r { case Ok(b) -> b; case Err(e) -> panic("run claim failed: " + CloudAgents.Db.dbErrorMessage(e)) }
 }
 
-func mustInt(r: in Result[Int, CloudAgents.Sqlite.DbError]): Int {
-  return match r { case Ok(n) -> n; case Err(e) -> panic("expected Ok(Int): " + CloudAgents.Sqlite.dbErrorMessage(e)) }
+func mustInt(r: in Result[Int, CloudAgents.Db.DbError]): Int {
+  return match r { case Ok(n) -> n; case Err(e) -> panic("expected Ok(Int): " + CloudAgents.Db.dbErrorMessage(e)) }
 }
 
-func mustMessage(r: in Result[CloudAgents.Repository.Message, CloudAgents.Sqlite.DbError]): CloudAgents.Repository.Message {
-  return match r {
-    case Ok(m) -> m
-    case Err(e) -> panic("message op failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
-  }
+func mustMessage(r: in Result[CloudAgents.Repository.Message, CloudAgents.Db.DbError]): CloudAgents.Repository.Message {
+  return match r { case Ok(m) -> m; case Err(e) -> panic("message op failed: " + CloudAgents.Db.dbErrorMessage(e)) }
 }
 
-func mustComment(r: in Result[CloudAgents.Repository.Comment, CloudAgents.Sqlite.DbError]): CloudAgents.Repository.Comment {
-  return match r {
-    case Ok(c) -> c
-    case Err(e) -> panic("comment op failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
-  }
+func mustComment(r: in Result[CloudAgents.Repository.Comment, CloudAgents.Db.DbError]): CloudAgents.Repository.Comment {
+  return match r { case Ok(c) -> c; case Err(e) -> panic("comment op failed: " + CloudAgents.Db.dbErrorMessage(e)) }
 }
 
-func mustTodo(r: in Result[CloudAgents.Repository.Todo, CloudAgents.Sqlite.DbError]): CloudAgents.Repository.Todo {
-  return match r {
-    case Ok(t) -> t
-    case Err(e) -> panic("todo op failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
-  }
+func mustTodo(r: in Result[CloudAgents.Repository.Todo, CloudAgents.Db.DbError]): CloudAgents.Repository.Todo {
+  return match r { case Ok(t) -> t; case Err(e) -> panic("todo op failed: " + CloudAgents.Db.dbErrorMessage(e)) }
 }
 
 // Async wrapper so a run claim can be `spawn`ed inside a `scope` block (#206)
@@ -149,10 +176,10 @@ func verifyEscapedRoundTrip(p: in AgentSession): Unit {
   assertEqual(p.nativeSessionId, "esc-1", "last field intact")
 }
 
-func verifyListSessionsBody(body: in String): Unit {
+func verifyListSessionsBody(body: in String, sfx: in String): Unit {
   assertTrue(body.startsWith("{\"sessions\":["), "list body is a sessions object")
-  assertTrue(body.contains("\"sessionId\":\"ls-1\""), "first session listed")
-  assertTrue(body.contains("\"sessionId\":\"ls-2\""), "second session listed")
+  assertTrue(body.contains("\"sessionId\":\"ls-1" + sfx + "\""), "first session listed")
+  assertTrue(body.contains("\"sessionId\":\"ls-2" + sfx + "\""), "second session listed")
   // Bookkeeping columns the UI shows (when created / last active / running?).
   assertTrue(body.contains("\"status\":\"IDLE\""), "status included in list")
   assertTrue(body.contains("\"createdAt\":\""), "createdAt included in list")
@@ -164,13 +191,14 @@ func verifyListSessionsBody(body: in String): Unit {
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
 test "Test Session Store CRUD Operations" {
-  val dbPath = useFreshTestDb("session-crud")
-  defer {
-    cleanupTestDb(dbPath)
+  if not live() {
+    return
   }
+  val me = freshUser("sessioncrud")
+  val sfx = "-" + me
   println("Testing Session Store operations...")
 
-  val sessionId = "test-session-123"
+  val sessionId = "test-session-123" + sfx
   val session = CloudAgents.SessionStore.makeAgentSession(
     sessionId = sessionId,
     repoUrl = "https://github.com/nic/repos/cloud-agents",
@@ -190,10 +218,10 @@ test "Test Session Store CRUD Operations" {
     case None -> assertTrue(false, "session should exist in store")
   }
 
-  // 3. Update container ID ("default" = the operator identity addSession
-  // stored the session under on this test thread; the explicit-owner form is
-  // the only one — see #426)
-  mustUnit(CloudAgents.SessionStore.updateSessionContainerFor(sessionId, CloudAgents.Pg.personalScope("default"), "container-abc"))
+  // 3. Update container ID (the explicit-owner form is the only one — see #426)
+  mustUnit(
+    CloudAgents.SessionStore.updateSessionContainerFor(sessionId, CloudAgents.Pg.personalScope(me), "container-abc")
+  )
   match mustOptSession(CloudAgents.SessionStore.getSession(sessionId, CloudAgents.Auth.requestScope())) {
     case Some(s) -> verifyContainerUpdate(s)
     case None -> assertTrue(false, "session should still exist in store")
@@ -226,29 +254,43 @@ test "Test Session Store CRUD Operations" {
 }
 
 test "Run claim is exclusive per session" {
-  val dbPath = useFreshTestDb("session-claim")
-  defer {
-    cleanupTestDb(dbPath)
+  if not live() {
+    return
   }
+  val me = freshUser("sessionclaim")
+  val sfx = "-" + me
   mustUnit(
     addSession(
       makeAgentSession(
-        sessionId = "claim-1",
+        sessionId = "claim-1" + sfx,
         repoUrl = "https://github.com/nic/repo",
         branch = "main",
         containerId = "",
         harness = "claude",
         model = "claude-opus-4-8",
-        nativeSessionId = "claim-1"
-      )
-    , CloudAgents.Auth.requestScope())
+        nativeSessionId = "claim-1" + sfx
+      ),
+      CloudAgents.Auth.requestScope()
+    )
   )
 
-  assertTrue(mustClaim(CloudAgents.SessionStore.tryBeginRun("claim-1", CloudAgents.Auth.requestScope())), "first claim wins")
-  assertFalse(mustClaim(CloudAgents.SessionStore.tryBeginRun("claim-1", CloudAgents.Auth.requestScope())), "second claim refused while running")
-  mustUnit(CloudAgents.SessionStore.endRun("claim-1", CloudAgents.Auth.requestScope()))
-  assertTrue(mustClaim(CloudAgents.SessionStore.tryBeginRun("claim-1", CloudAgents.Auth.requestScope())), "claim available again after endRun")
-  assertFalse(mustClaim(CloudAgents.SessionStore.tryBeginRun("missing", CloudAgents.Auth.requestScope())), "claiming a nonexistent session fails")
+  assertTrue(
+    mustClaim(CloudAgents.SessionStore.tryBeginRun("claim-1" + sfx, CloudAgents.Auth.requestScope())),
+    "first claim wins"
+  )
+  assertFalse(
+    mustClaim(CloudAgents.SessionStore.tryBeginRun("claim-1" + sfx, CloudAgents.Auth.requestScope())),
+    "second claim refused while running"
+  )
+  mustUnit(CloudAgents.SessionStore.endRun("claim-1" + sfx, CloudAgents.Auth.requestScope()))
+  assertTrue(
+    mustClaim(CloudAgents.SessionStore.tryBeginRun("claim-1" + sfx, CloudAgents.Auth.requestScope())),
+    "claim available again after endRun"
+  )
+  assertFalse(
+    mustClaim(CloudAgents.SessionStore.tryBeginRun("missing", CloudAgents.Auth.requestScope())),
+    "claiming a nonexistent session fails"
+  )
 }
 
 test "Run claim is exclusive under real concurrent contention (#206)" {
@@ -261,27 +303,29 @@ test "Run claim is exclusive under real concurrent contention (#206)" {
   // `scope` — both `spawn`s are issued before either is `await`ed, so the two
   // underlying tryBeginRun UPDATEs are genuinely in flight together, not run
   // one at a time — and asserts exactly one wins.
-  val dbPath = useFreshTestDb("session-claim-concurrent")
-  defer {
-    cleanupTestDb(dbPath)
+  if not live() {
+    return
   }
+  val me = freshUser("sessionclaim")
+  val sfx = "-" + me
   mustUnit(
     addSession(
       makeAgentSession(
-        sessionId = "claim-race",
+        sessionId = "claim-race" + sfx,
         repoUrl = "https://github.com/nic/repo",
         branch = "main",
         containerId = "",
         harness = "claude",
         model = "claude-opus-4-8",
-        nativeSessionId = "claim-race"
-      )
-    , CloudAgents.Auth.requestScope())
+        nativeSessionId = "claim-race" + sfx
+      ),
+      CloudAgents.Auth.requestScope()
+    )
   )
 
   scope {
-    val t1 = spawn claimAsync("claim-race")
-    val t2 = spawn claimAsync("claim-race")
+    val t1 = spawn claimAsync("claim-race" + sfx)
+    val t2 = spawn claimAsync("claim-race" + sfx)
     val r1 = await t1
     val r2 = await t2
     assertTrue(r1 xor r2, "exactly one concurrent claim wins under real contention")
@@ -289,17 +333,24 @@ test "Run claim is exclusive under real concurrent contention (#206)" {
 
   // The loser's failure was contention, not a stuck row: the winner's run is
   // still open (endRun not yet called), so a further claim must still refuse.
-  assertFalse(mustClaim(CloudAgents.SessionStore.tryBeginRun("claim-race", CloudAgents.Auth.requestScope())), "session stays claimed after the race")
-  mustUnit(CloudAgents.SessionStore.endRun("claim-race", CloudAgents.Auth.requestScope()))
-  assertTrue(mustClaim(CloudAgents.SessionStore.tryBeginRun("claim-race", CloudAgents.Auth.requestScope())), "claim available again after endRun")
+  assertFalse(
+    mustClaim(CloudAgents.SessionStore.tryBeginRun("claim-race" + sfx, CloudAgents.Auth.requestScope())),
+    "session stays claimed after the race"
+  )
+  mustUnit(CloudAgents.SessionStore.endRun("claim-race" + sfx, CloudAgents.Auth.requestScope()))
+  assertTrue(
+    mustClaim(CloudAgents.SessionStore.tryBeginRun("claim-race" + sfx, CloudAgents.Auth.requestScope())),
+    "claim available again after endRun"
+  )
 }
 
 test "deleteSessionRecord removes the row and is a no-op when already gone (#310)" {
-  val dbPath = useFreshTestDb("session-delete-record")
-  defer {
-    cleanupTestDb(dbPath)
+  if not live() {
+    return
   }
-  val sessionId = "del-rec-1"
+  val me = freshUser("sessiondelet")
+  val sfx = "-" + me
+  val sessionId = "del-rec-1" + sfx
   mustUnit(
     addSession(
       makeAgentSession(
@@ -310,8 +361,9 @@ test "deleteSessionRecord removes the row and is a no-op when already gone (#310
         harness = "claude",
         model = "claude-opus-4-8",
         nativeSessionId = sessionId
-      )
-    , CloudAgents.Auth.requestScope())
+      ),
+      CloudAgents.Auth.requestScope()
+    )
   )
   // Present before the delete.
   match mustOptSession(CloudAgents.SessionStore.getSession(sessionId, CloudAgents.Auth.requestScope())) {
@@ -339,22 +391,36 @@ func addPlainSession(sessionId: in String): Unit {
         harness = "claude",
         model = "claude-opus-4-8",
         nativeSessionId = sessionId
-      )
-    , CloudAgents.Auth.requestScope())
+      ),
+      CloudAgents.Auth.requestScope()
+    )
   )
 }
 
-func setSessionColumns(sessionId: in String, assignments: in String): Unit {
-  match CloudAgents.Sqlite.execute("UPDATE sessions SET " + assignments + " WHERE id = '" + sessionId + "'") {
+/// Set raw session columns the store has no setter for (stale heartbeat, a
+/// WARM status), as the session's owner.
+func setSessionColumns(owner: in String, sessionId: in String, assignments: in String): Unit {
+  val u = match CloudAgents.PgStore.open(CloudAgents.Pg.personalScope(owner)) {
+    case Ok(x) -> x
+    case Err(e) -> panic("setup open failed: " + CloudAgents.Db.dbErrorMessage(e))
+  }
+  defer {
+    CloudAgents.PgStore.release(u)
+  }
+  match CloudAgents.PgStore.ex(u, "UPDATE sessions SET " + assignments + " WHERE id = @p0", [sessionId]) {
     case Ok(_) -> ()
-    case Err(e) -> assertTrue(false, "setup update failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+    case Err(e) -> assertTrue(false, "setup update failed: " + CloudAgents.Db.dbErrorMessage(e))
+  }
+  match CloudAgents.PgStore.commit(u) {
+    case Ok(_) -> ()
+    case Err(e) -> assertTrue(false, "setup commit failed: " + CloudAgents.Db.dbErrorMessage(e))
   }
 }
 
 func mustStranded(): slice[CloudAgents.SessionStore.StrandedRun] {
   return match CloudAgents.SessionStore.claimStrandedRuns(50) {
     case Ok(v) -> v
-    case Err(e) -> panic("claimStrandedRuns failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+    case Err(e) -> panic("claimStrandedRuns failed: " + CloudAgents.Db.dbErrorMessage(e))
   }
 }
 
@@ -375,194 +441,127 @@ func strandedFor(
 // its heartbeat is stale the maintenance sweep takes it over exactly once
 // and frees it.
 test "a run whose heartbeat stopped is taken over once and freed" {
-  val dbPath = useFreshTestDb("stranded-run")
-  defer {
-    cleanupTestDb(dbPath)
+  if not live() {
+    return
   }
-  addPlainSession("dangling-1")
-  assertTrue(mustClaim(CloudAgents.SessionStore.tryBeginRun("dangling-1", CloudAgents.Auth.requestScope())), "claim wins")
-  setSessionColumns("dangling-1", "run_heartbeat_at = '0', container_id = 'c-stranded'")
-  assertFalse(mustClaim(CloudAgents.SessionStore.tryBeginRun("dangling-1", CloudAgents.Auth.requestScope())), "still RUNNING")
+  val me = freshUser("strandedrun")
+  val sfx = "-" + me
+  addPlainSession("dangling-1" + sfx)
+  assertTrue(
+    mustClaim(CloudAgents.SessionStore.tryBeginRun("dangling-1" + sfx, CloudAgents.Auth.requestScope())),
+    "claim wins"
+  )
+  setSessionColumns(me, "dangling-1" + sfx, "run_heartbeat_at = to_timestamp(0), container_id = 'c-stranded'")
+  assertFalse(
+    mustClaim(CloudAgents.SessionStore.tryBeginRun("dangling-1" + sfx, CloudAgents.Auth.requestScope())),
+    "still RUNNING"
+  )
 
   val first = mustStranded()
-  val r = match strandedFor(first, "dangling-1") {
+  val r = match strandedFor(first, "dangling-1" + sfx) {
     case Some(v) -> v
     case None -> panic("a stale run is taken over")
   }
   assertEqual(r.containerId, "c-stranded", "the takeover carries the run's container")
   assertEqual(r.previousInstance, CloudAgents.SessionStore.instanceId(), "and the instance that stopped heartbeating")
   assertEqual(r.sweeper, CloudAgents.SessionStore.sweeperId(), "held under this instance's sweeper name")
-  match strandedFor(mustStranded(), "dangling-1") {
+  match strandedFor(mustStranded(), "dangling-1" + sfx) {
     case Some(_) -> assertTrue(false, "an overlapping sweep does not take the same run over")
     case None -> ()
   }
   assertFalse(
-    mustClaim(CloudAgents.SessionStore.heartbeatRun("dangling-1", CloudAgents.Auth.requestScope())),
+    mustClaim(CloudAgents.SessionStore.heartbeatRun("dangling-1" + sfx, CloudAgents.Auth.requestScope())),
     "the original instance's late heartbeat changes nothing after a takeover"
   )
-  mustUnit(CloudAgents.SessionStore.endRun("dangling-1", CloudAgents.Auth.requestScope()))
+  mustUnit(CloudAgents.SessionStore.endRun("dangling-1" + sfx, CloudAgents.Auth.requestScope()))
   assertFalse(
-    mustClaim(CloudAgents.SessionStore.tryBeginRun("dangling-1", CloudAgents.Auth.requestScope())),
+    mustClaim(CloudAgents.SessionStore.tryBeginRun("dangling-1" + sfx, CloudAgents.Auth.requestScope())),
     "the original instance's late endRun does not free a run the sweep holds"
   )
   assertTrue(mustClaim(CloudAgents.SessionStore.releaseStrandedRun(r)), "the sweep frees the session")
   assertFalse(mustClaim(CloudAgents.SessionStore.releaseStrandedRun(r)), "freeing it twice is a no-op")
-  assertTrue(mustClaim(CloudAgents.SessionStore.tryBeginRun("dangling-1", CloudAgents.Auth.requestScope())), "claim available again")
+  assertTrue(
+    mustClaim(CloudAgents.SessionStore.tryBeginRun("dangling-1" + sfx, CloudAgents.Auth.requestScope())),
+    "claim available again"
+  )
 }
 
 test "a run with a live heartbeat is never taken over" {
-  val dbPath = useFreshTestDb("live-run")
-  defer {
-    cleanupTestDb(dbPath)
+  if not live() {
+    return
   }
-  addPlainSession("live-1")
-  assertTrue(mustClaim(CloudAgents.SessionStore.tryBeginRun("live-1", CloudAgents.Auth.requestScope())), "claim wins")
-  assertTrue(mustClaim(CloudAgents.SessionStore.heartbeatRun("live-1", CloudAgents.Auth.requestScope())), "heartbeat renewed")
-  match strandedFor(mustStranded(), "live-1") {
+  val me = freshUser("liverun")
+  val sfx = "-" + me
+  addPlainSession("live-1" + sfx)
+  assertTrue(
+    mustClaim(CloudAgents.SessionStore.tryBeginRun("live-1" + sfx, CloudAgents.Auth.requestScope())),
+    "claim wins"
+  )
+  assertTrue(
+    mustClaim(CloudAgents.SessionStore.heartbeatRun("live-1" + sfx, CloudAgents.Auth.requestScope())),
+    "heartbeat renewed"
+  )
+  match strandedFor(mustStranded(), "live-1" + sfx) {
     case Some(_) -> assertTrue(false, "a run heartbeating now is not stranded")
     case None -> ()
   }
-  mustUnit(CloudAgents.SessionStore.endRun("live-1", CloudAgents.Auth.requestScope()))
+  mustUnit(CloudAgents.SessionStore.endRun("live-1" + sfx, CloudAgents.Auth.requestScope()))
   assertFalse(
-    mustClaim(CloudAgents.SessionStore.heartbeatRun("live-1", CloudAgents.Auth.requestScope())),
+    mustClaim(CloudAgents.SessionStore.heartbeatRun("live-1" + sfx, CloudAgents.Auth.requestScope())),
     "an ended run takes no heartbeat"
   )
 }
 
 // ── The reap sweep is operator-only ──────────────────────────────────────────
 test "reapContainers refuses a non-operator identity" {
-  val dbPath = useFreshTestDb("reap-auth-denied")
-  defer {
-    cleanupTestDb(dbPath)
+  if not live() {
+    return
   }
+  val me = freshUser("reapdenied")
+  val sfx = "-" + me
   // A stranded run that a successful sweep would take over: the refusal must
   // leave it untouched.
-  addPlainSession("reap-denied-1")
-  setSessionColumns("reap-denied-1", "status = 'RUNNING', run_heartbeat_at = '', run_instance = ''")
+  addPlainSession("reap-denied-1" + sfx)
+  setSessionColumns(me, "reap-denied-1" + sfx, "status = 'RUNNING', run_heartbeat_at = NULL, run_instance = ''")
   CloudAgents.Auth.setCurrentUserId("gh-42")
   match reapContainers() {
     case Ok(_) -> assertTrue(false, "a non-operator identity must not be able to run the reaping sweep")
     case Err(e) -> assertEqualInt(e.status, 401, "non-operator caller -> 401")
   }
-  CloudAgents.Auth.setCurrentUserId("")
-  match strandedFor(mustStranded(), "reap-denied-1") {
+  CloudAgents.Auth.setCurrentUserId(me)
+  match strandedFor(mustStranded(), "reap-denied-1" + sfx) {
     case Some(_) -> ()
     case None -> assertTrue(false, "a refused sweep leaves the stranded run in place")
   }
 }
 
-test "reapContainers runs for the operator identity when nothing is reapable" {
-  val dbPath = useFreshTestDb("reap-auth-allowed")
-  defer {
-    cleanupTestDb(dbPath)
+test "reapContainers runs for the operator identity" {
+  if not live() {
+    return
   }
-  // Nothing stranded or warm in a fresh DB, so the sweep never reaches
-  // CloudAgents.Docker and needs no Docker host.
+  migrate()
+  // The sweep is cross-tenant and the database is shared with the other
+  // suites, so only the shape of the summary is asserted, not the counts.
   CloudAgents.Auth.setCurrentUserId(CloudAgents.Auth.operatorUserId())
   match reapContainers() {
-    case Ok(body) -> assertEqual(body, "{\"reaped\":0,\"stranded\":0}", "empty sweep summary")
+    case Ok(body) -> assertTrue(body.startsWith("{\"reaped\":"), "sweep summary: " + body)
     case Err(e) -> assertTrue(false, "the operator identity must be allowed to run the sweep: " + toString(e.status))
   }
   CloudAgents.Auth.setCurrentUserId("")
 }
 
 test "a RUNNING session with no heartbeat at all is stranded" {
-  val dbPath = useFreshTestDb("no-heartbeat")
-  defer {
-    cleanupTestDb(dbPath)
+  if not live() {
+    return
   }
+  val me = freshUser("noheartbeat")
+  val sfx = "-" + me
   // A session left RUNNING by a version before migration 0040 has none.
-  addPlainSession("legacy-1")
-  setSessionColumns("legacy-1", "status = 'RUNNING', run_heartbeat_at = '', run_instance = ''")
-  match strandedFor(mustStranded(), "legacy-1") {
+  addPlainSession("legacy-1" + sfx)
+  setSessionColumns(me, "legacy-1" + sfx, "status = 'RUNNING', run_heartbeat_at = NULL, run_instance = ''")
+  match strandedFor(mustStranded(), "legacy-1" + sfx) {
     case Some(r) -> assertEqual(r.previousInstance, "", "no previous instance recorded")
     case None -> assertTrue(false, "a heartbeat-less RUNNING session is stranded")
-  }
-}
-
-test "importLegacyEnvSessions inserts env sessions into the store and clears the env (#198)" {
-  val dbPath = useFreshTestDb("legacy-import")
-  defer {
-    cleanupTestDb(dbPath)
-  }
-  val s = makeAgentSession(
-    sessionId = "legacy-import-1",
-    repoUrl = "https://github.com/nic/repo",
-    branch = "main",
-    containerId = "",
-    harness = "claude",
-    model = "claude-opus-4-8",
-    nativeSessionId = "legacy-import-1"
-  )
-  Env.SetEnvironmentVariable("CLOUD_AGENTS_SESSIONS_JSON", "{\"sessions\":[" + agentSessionToJson(s) + "]}")
-  importLegacyEnvSessions()
-  // The env session is now persisted in SQLite...
-  match mustOptSession(CloudAgents.SessionStore.getSession("legacy-import-1", CloudAgents.Auth.requestScope())) {
-    case Some(imported) -> assertEqual(imported.sessionId, "legacy-import-1", "imported session id matches")
-    case None -> assertTrue(false, "legacy env session should have been imported into the store")
-  }
-  // ...and the env var is cleared so a restart doesn't re-import it.
-  assertTrue(
-    DotNetString.IsNullOrEmpty(Env.GetEnvironmentVariable("CLOUD_AGENTS_SESSIONS_JSON")),
-    "CLOUD_AGENTS_SESSIONS_JSON cleared after a successful import"
-  )
-}
-
-test "importLegacyEnvSessions imports only sessions not already in the store (#323)" {
-  val dbPath = useFreshTestDb("legacy-import-mixed")
-  defer {
-    cleanupTestDb(dbPath)
-  }
-  // A session that already exists in the store.
-  mustUnit(
-    addSession(
-      makeAgentSession(
-        sessionId = "legacy-existing",
-        repoUrl = "https://github.com/nic/original",
-        branch = "main",
-        containerId = "",
-        harness = "claude",
-        model = "claude-opus-4-8",
-        nativeSessionId = "legacy-existing"
-      )
-    , CloudAgents.Auth.requestScope())
-  )
-  // The env carries a *changed* copy of that existing session plus a brand-new
-  // one. Import must insert only the new session and leave the existing row
-  // untouched (skipped), not overwrite it with the env copy.
-  val existingChanged = makeAgentSession(
-    sessionId = "legacy-existing",
-    repoUrl = "https://github.com/nic/CHANGED",
-    branch = "main",
-    containerId = "",
-    harness = "claude",
-    model = "claude-opus-4-8",
-    nativeSessionId = "legacy-existing"
-  )
-  val fresh = makeAgentSession(
-    sessionId = "legacy-new",
-    repoUrl = "https://github.com/nic/new",
-    branch = "main",
-    containerId = "",
-    harness = "claude",
-    model = "claude-opus-4-8",
-    nativeSessionId = "legacy-new"
-  )
-  Env.SetEnvironmentVariable(
-    "CLOUD_AGENTS_SESSIONS_JSON",
-    "{\"sessions\":[" + agentSessionToJson(existingChanged) + "," + agentSessionToJson(fresh) + "]}"
-  )
-  importLegacyEnvSessions()
-
-  // The new session was inserted.
-  match mustOptSession(CloudAgents.SessionStore.getSession("legacy-new", CloudAgents.Auth.requestScope())) {
-    case Some(_) -> ()
-    case None -> assertTrue(false, "the new legacy session should have been imported")
-  }
-  // The pre-existing session was skipped, not overwritten by the env copy.
-  match mustOptSession(CloudAgents.SessionStore.getSession("legacy-existing", CloudAgents.Auth.requestScope())) {
-    case Some(s) -> assertEqual(s.repoUrl, "https://github.com/nic/original", "existing session left untouched (not overwritten by the env copy)")
-    case None -> assertTrue(false, "existing session should still be present after import")
   }
 }
 
@@ -652,10 +651,11 @@ test "Session store parsing survives braces inside field values" {
 }
 
 test "Test Handler createSession validation" {
-  val dbPath = useFreshTestDb("session-create")
-  defer {
-    cleanupTestDb(dbPath)
+  if not live() {
+    return
   }
+  val me = freshUser("sessioncreat")
+  val sfx = "-" + me
   println("Testing Handler createSession validation...")
 
   // Test empty repoUrl validation
@@ -874,10 +874,11 @@ test "Handler createSession rejects unsafe inputs" {
 }
 
 test "createSession rejects a known-but-disabled harness (#560)" {
-  val dbPath = useFreshTestDb("session-create-harness-gate")
-  defer {
-    cleanupTestDb(dbPath)
+  if not live() {
+    return
   }
+  val me = freshUser("sessioncreat")
+  val sfx = "-" + me
   // Distinct from the "unknown harness" case above (isKnownHarness rejects a
   // name this deployment never recognizes at all); this exercises the
   // isHarnessEnabled gate specifically — a name isKnownHarness accepts, but
@@ -914,7 +915,10 @@ test "createSession rejects a known-but-disabled harness (#560)" {
   )
   match createSession(reenabled) {
     case Ok(_) -> ()
-    case Err(err) -> assertTrue(false, "claude should be accepted once re-enabled (status " + toString(err.status) + ")")
+    case Err(err) -> assertTrue(
+      false,
+      "claude should be accepted once re-enabled (status " + toString(err.status) + ")"
+    )
   }
 }
 
@@ -948,9 +952,7 @@ test "createSession rejects a known-but-disabled harness (#560)" {
 // the same reason (getRunOutput itself references CloudAgents.Docker in its
 // RUNNING branch and can't be invoked from here).
 func testMessage(role: in String, content: in String): CloudAgents.Repository.Message {
-  return Message(
-    id = "m", sessionId = "s", role = role, content = content, seq = "0", createdAt = "0"
-  )
+  return Message(id = "m", sessionId = "s", role = role, content = content, seq = "0", createdAt = "0")
 }
 
 test "lastAgentMessageContent returns the most recent agent message" {
@@ -964,11 +966,7 @@ test "lastAgentMessageContent returns the most recent agent message" {
     "only reply",
     "an agent message earlier in the transcript is still found"
   )
-  assertEqual(
-    lastAgentMessageContent([testMessage("user", "hi")]),
-    "",
-    "no agent message yet -> empty string"
-  )
+  assertEqual(lastAgentMessageContent([testMessage("user", "hi")]), "", "no agent message yet -> empty string")
   assertEqual(lastAgentMessageContent([]), "", "empty transcript -> empty string")
 }
 
@@ -1129,38 +1127,41 @@ test "advanceRunOutputCache re-renders from scratch when the log is shorter than
 }
 
 test "Handler listSessions returns stored sessions" {
-  val dbPath = useFreshTestDb("session-list")
-  defer {
-    cleanupTestDb(dbPath)
+  if not live() {
+    return
   }
+  val me = freshUser("sessionlist")
+  val sfx = "-" + me
   mustUnit(
     addSession(
       makeAgentSession(
-        sessionId = "ls-1",
+        sessionId = "ls-1" + sfx,
         repoUrl = "https://github.com/nic/repo",
         branch = "main",
         containerId = "",
         harness = "claude",
         model = "claude-opus-4-8",
-        nativeSessionId = "ls-1"
-      )
-    , CloudAgents.Auth.requestScope())
+        nativeSessionId = "ls-1" + sfx
+      ),
+      CloudAgents.Auth.requestScope()
+    )
   )
   mustUnit(
     addSession(
       makeAgentSession(
-        sessionId = "ls-2",
+        sessionId = "ls-2" + sfx,
         repoUrl = "https://github.com/nic/other",
         branch = "main",
         containerId = "",
         harness = "codex",
         model = "o4-mini",
-        nativeSessionId = "ls-2"
-      )
-    , CloudAgents.Auth.requestScope())
+        nativeSessionId = "ls-2" + sfx
+      ),
+      CloudAgents.Auth.requestScope()
+    )
   )
   match listSessions() {
-    case Ok(body) -> verifyListSessionsBody(body)
+    case Ok(body) -> verifyListSessionsBody(body, sfx)
     case Err(_) -> assertTrue(false, "listSessions should succeed")
   }
 }
@@ -1171,10 +1172,11 @@ test "Handler listSessions returns stored sessions" {
 // unwrapped and copied into a Lyric slice) but had no test coverage of its
 // own (#748) prior to this.
 test "Handler listSessionsResponse converts the stored session array to a typed response (#748)" {
-  val dbPath = useFreshTestDb("session-list-typed")
-  defer {
-    cleanupTestDb(dbPath)
+  if not live() {
+    return
   }
+  val me = freshUser("sessionlistt")
+  val sfx = "-" + me
   match listSessionsResponse() {
     case Ok(resp) -> assertEqualInt(resp.sessions.length.toInt(), 0, "empty store -> empty typed list")
     case Err(_) -> assertTrue(false, "listSessionsResponse should succeed on an empty store")
@@ -1182,28 +1184,30 @@ test "Handler listSessionsResponse converts the stored session array to a typed 
   mustUnit(
     addSession(
       makeAgentSession(
-        sessionId = "lst-1",
+        sessionId = "lst-1" + sfx,
         repoUrl = "https://github.com/nic/repo",
         branch = "main",
         containerId = "c-1",
         harness = "claude",
         model = "claude-opus-4-8",
-        nativeSessionId = "lst-1"
-      )
-    , CloudAgents.Auth.requestScope())
+        nativeSessionId = "lst-1" + sfx
+      ),
+      CloudAgents.Auth.requestScope()
+    )
   )
   mustUnit(
     addSession(
       makeAgentSession(
-        sessionId = "lst-2",
+        sessionId = "lst-2" + sfx,
         repoUrl = "https://github.com/nic/other",
         branch = "main",
         containerId = "c-2",
         harness = "codex",
         model = "o4-mini",
-        nativeSessionId = "lst-2"
-      )
-    , CloudAgents.Auth.requestScope())
+        nativeSessionId = "lst-2" + sfx
+      ),
+      CloudAgents.Auth.requestScope()
+    )
   )
   match listSessionsResponse() {
     case Ok(resp) -> {
@@ -1212,11 +1216,11 @@ test "Handler listSessionsResponse converts the stored session array to a typed 
       assertEqualInt(resp.sessions.length.toInt(), 2, "both stored sessions are converted")
       val first = resp.sessions[0]
       val second = resp.sessions[1]
-      val lst1 = if first.sessionId == "lst-1" { first } else { second }
-      val lst2 = if first.sessionId == "lst-1" { second } else { first }
-      assertEqual(lst1.sessionId, "lst-1", "first session id round-trips")
+      val lst1 = if first.sessionId == "lst-1" + sfx { first } else { second }
+      val lst2 = if first.sessionId == "lst-1" + sfx { second } else { first }
+      assertEqual(lst1.sessionId, "lst-1" + sfx, "first session id round-trips")
       assertEqual(lst1.repoUrl, "https://github.com/nic/repo", "first session repoUrl round-trips")
-      assertEqual(lst2.sessionId, "lst-2", "second session id round-trips")
+      assertEqual(lst2.sessionId, "lst-2" + sfx, "second session id round-trips")
       assertEqual(lst2.harness, "codex", "second session harness round-trips")
     }
     case Err(_) -> assertTrue(false, "listSessionsResponse should succeed with stored sessions")
@@ -1224,10 +1228,11 @@ test "Handler listSessionsResponse converts the stored session array to a typed 
 }
 
 test "getRuns 404s for an unknown session (#239)" {
-  val dbPath = useFreshTestDb("get-runs")
-  defer {
-    cleanupTestDb(dbPath)
+  if not live() {
+    return
   }
+  val me = freshUser("getruns")
+  val sfx = "-" + me
   match getRuns("nope") {
     case Ok(_) -> assertTrue(false, "unknown session should 404")
     case Err(err) -> assertEqualInt(err.status, 404, "unknown session -> 404")
@@ -1235,160 +1240,208 @@ test "getRuns 404s for an unknown session (#239)" {
   mustUnit(
     addSession(
       makeAgentSession(
-        sessionId = "gr-1",
+        sessionId = "gr-1" + sfx,
         repoUrl = "https://github.com/nic/repo",
         branch = "main",
         containerId = "",
         harness = "claude",
         model = "claude-opus-4-8",
-        nativeSessionId = "gr-1"
-      )
-    , CloudAgents.Auth.requestScope())
+        nativeSessionId = "gr-1" + sfx
+      ),
+      CloudAgents.Auth.requestScope()
+    )
   )
-  match getRuns("gr-1") {
+  match getRuns("gr-1" + sfx) {
     case Ok(rl) -> assertEqualInt(rl.runs.length.toInt(), 0, "known session with no runs -> empty list")
     case Err(_) -> assertTrue(false, "known session should succeed")
   }
 }
 
-test "reapableWarmContainers finds and frees aged WARM sessions (#241)" {
-  val dbPath = useFreshTestDb("reap")
-  defer {
-    cleanupTestDb(dbPath)
+// reapableWarmContainers sweeps every tenant, so pick out this test's own
+// target by its container id.
+func mustReapable(): slice[CloudAgents.SessionStore.ReapTarget] {
+  return match CloudAgents.SessionStore.reapableWarmContainers() {
+    case Ok(t) -> t
+    case Err(e) -> panic("reapableWarmContainers failed: " + CloudAgents.Db.dbErrorMessage(e))
   }
+}
+
+func reapTargetFor(
+  targets: in slice[CloudAgents.SessionStore.ReapTarget], containerId: in String
+): Option[CloudAgents.SessionStore.ReapTarget] {
+  for t in targets {
+    if t.containerId == containerId {
+      return Some(value = t)
+    }
+  }
+  return None
+}
+
+test "reapableWarmContainers finds and frees aged WARM sessions (#241)" {
+  if not live() {
+    return
+  }
+  val me = freshUser("reap")
+  val sfx = "-" + me
   mustUnit(
     addSession(
       makeAgentSession(
-        sessionId = "warm-1",
+        sessionId = "warm-1" + sfx,
         repoUrl = "https://github.com/nic/repo",
         branch = "main",
         containerId = "",
         harness = "claude",
         model = "claude-opus-4-8",
-        nativeSessionId = "warm-1"
-      )
-    , CloudAgents.Auth.requestScope())
+        nativeSessionId = "warm-1" + sfx
+      ),
+      CloudAgents.Auth.requestScope()
+    )
   )
   // Force it WARM with an ancient last_message_at (epoch 0) and a container id,
   // so it is unambiguously past the warm window.
-  match CloudAgents.Sqlite.execute("UPDATE sessions SET status = 'WARM', container_id = 'c-warm', last_message_at = '0' WHERE id = 'warm-1'") {
-    case Ok(_) -> ()
-    case Err(e) -> assertTrue(false, "setup update failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+  setSessionColumns(
+    me,
+    "warm-1" + sfx,
+    "status = 'WARM', container_id = 'c-warm" + sfx + "', last_message_at = to_timestamp(0)"
+  )
+  val target = match reapTargetFor(mustReapable(), "c-warm" + sfx) {
+    case Some(t) -> t
+    case None -> panic("aged warm session is reapable")
   }
-  val targets = match CloudAgents.SessionStore.reapableWarmContainers() {
-    case Ok(t) -> t
-    case Err(e) -> panic("reapableWarmContainers failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
-  }
-  assertEqualInt(targets.length.toInt(), 1, "aged warm session is reapable")
-  assertEqual(targets[0].containerId, "c-warm", "reap target carries the container id")
-  assertEqual(targets[0].tenantScope.userId, CloudAgents.Auth.requestScope().userId, "and the owner's scope")
+  assertEqual(target.tenantScope.userId, me, "reap target carries the owner's scope")
 
-  assertTrue(mustClaim(CloudAgents.SessionStore.reapWarmSession(targets[0])), "the first reaper frees the session")
-  assertFalse(mustClaim(CloudAgents.SessionStore.reapWarmSession(targets[0])), "an overlapping reaper does not")
-  val after = match CloudAgents.SessionStore.reapableWarmContainers() {
-    case Ok(t) -> t
-    case Err(e) -> panic("reapableWarmContainers failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+  assertTrue(mustClaim(CloudAgents.SessionStore.reapWarmSession(target)), "the first reaper frees the session")
+  assertFalse(mustClaim(CloudAgents.SessionStore.reapWarmSession(target)), "an overlapping reaper does not")
+  match reapTargetFor(mustReapable(), "c-warm" + sfx) {
+    case Some(_) -> assertTrue(false, "reaped session is no longer reapable")
+    case None -> ()
   }
-  assertEqualInt(after.length.toInt(), 0, "reaped session is no longer reapable")
 }
 
 test "a WARM session a run has since started on is not reaped" {
-  val dbPath = useFreshTestDb("reap-race")
-  defer {
-    cleanupTestDb(dbPath)
+  if not live() {
+    return
   }
-  addPlainSession("warm-2")
-  setSessionColumns("warm-2", "status = 'WARM', container_id = 'c-warm-2', last_message_at = '0'")
-  val targets = match CloudAgents.SessionStore.reapableWarmContainers() {
-    case Ok(t) -> t
-    case Err(e) -> panic("reapableWarmContainers failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+  val me = freshUser("reaprace")
+  val sfx = "-" + me
+  addPlainSession("warm-2" + sfx)
+  setSessionColumns(
+    me,
+    "warm-2" + sfx,
+    "status = 'WARM', container_id = 'c-warm-2" + sfx + "', last_message_at = to_timestamp(0)"
+  )
+  val target = match reapTargetFor(mustReapable(), "c-warm-2" + sfx) {
+    case Some(t) -> t
+    case None -> panic("found as reapable")
   }
-  assertEqualInt(targets.length.toInt(), 1, "found as reapable")
   // A message arrives between the scan and the reap.
-  assertTrue(mustClaim(CloudAgents.SessionStore.tryBeginRun("warm-2", CloudAgents.Auth.requestScope())), "run starts")
-  assertFalse(mustClaim(CloudAgents.SessionStore.reapWarmSession(targets[0])), "the reaper leaves a running session alone")
+  assertTrue(
+    mustClaim(CloudAgents.SessionStore.tryBeginRun("warm-2" + sfx, CloudAgents.Auth.requestScope())),
+    "run starts"
+  )
+  assertFalse(mustClaim(CloudAgents.SessionStore.reapWarmSession(target)), "the reaper leaves a running session alone")
 }
 
 test "Session ownership isolation hides other users' sessions (#207)" {
-  val dbPath = useFreshTestDb("session-isolation")
-  defer {
-    cleanupTestDb(dbPath)
+  if not live() {
+    return
   }
-  // Insert a session owned by another user directly (the store's own writes are
-  // hardcoded to the current user, so a raw insert is the only way to stage a
-  // cross-user row). profile_id defaults to ''.
-  match CloudAgents.Sqlite.execute("INSERT INTO sessions (id, user_id, repo_url, branch, container_id, harness, model, native_session_id, status, created_at, last_message_at) VALUES ('foreign-1', 'other-user', 'https://github.com/x/y', 'main', '', 'claude', 'm', 'foreign-1', 'IDLE', '1000', '1000')") {
-    case Ok(_) -> ()
-    case Err(e) -> assertTrue(false, "setup insert failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
-  }
-  // The current user ("default") cannot read another user's session by id...
-  match CloudAgents.SessionStore.getSession("foreign-1", CloudAgents.Auth.requestScope()) {
+  val me = freshUser("sessionisola")
+  val sfx = "-" + me
+  // A session owned by another user (and tenant).
+  val other = newUser("iso-other")
+  mustUnit(
+    addSession(
+      makeAgentSession(
+        sessionId = "foreign-1" + sfx,
+        repoUrl = "https://github.com/x/y",
+        branch = "main",
+        containerId = "",
+        harness = "claude",
+        model = "m",
+        nativeSessionId = "foreign-1" + sfx
+      ),
+      CloudAgents.Pg.personalScope(other)
+    )
+  )
+  // The current user cannot read another user's session by id...
+  match CloudAgents.SessionStore.getSession("foreign-1" + sfx, CloudAgents.Auth.requestScope()) {
     case Ok(Some(_)) -> assertTrue(false, "must not read another user's session")
     case Ok(None) -> ()
-    case Err(e) -> assertTrue(false, "getSession failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+    case Err(e) -> assertTrue(false, "getSession failed: " + CloudAgents.Db.dbErrorMessage(e))
   }
   // ...nor see it in the list.
   match CloudAgents.SessionStore.getSessions(CloudAgents.Auth.requestScope()) {
     case Ok(arr) -> assertEqualInt(CloudAgents.SessionStore.getSessionArrayLength(arr), 0, "foreign session not listed")
-    case Err(e) -> assertTrue(false, "getSessions failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+    case Err(e) -> assertTrue(false, "getSessions failed: " + CloudAgents.Db.dbErrorMessage(e))
   }
   // The current user's own session is visible.
   mustUnit(
     addSession(
       makeAgentSession(
-        sessionId = "mine-1",
+        sessionId = "mine-1" + sfx,
         repoUrl = "https://github.com/nic/repo",
         branch = "main",
         containerId = "",
         harness = "claude",
         model = "claude-opus-4-8",
-        nativeSessionId = "mine-1"
-      )
-    , CloudAgents.Auth.requestScope())
+        nativeSessionId = "mine-1" + sfx
+      ),
+      CloudAgents.Auth.requestScope()
+    )
   )
-  match CloudAgents.SessionStore.getSession("mine-1", CloudAgents.Auth.requestScope()) {
+  match CloudAgents.SessionStore.getSession("mine-1" + sfx, CloudAgents.Auth.requestScope()) {
     case Ok(Some(_)) -> ()
     case Ok(None) -> assertTrue(false, "own session should be visible")
-    case Err(e) -> assertTrue(false, "getSession failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+    case Err(e) -> assertTrue(false, "getSession failed: " + CloudAgents.Db.dbErrorMessage(e))
   }
   // The list now holds exactly my one session — the foreign row stays hidden.
   match CloudAgents.SessionStore.getSessions(CloudAgents.Auth.requestScope()) {
     case Ok(arr) -> assertEqualInt(CloudAgents.SessionStore.getSessionArrayLength(arr), 1, "only my own session listed")
-    case Err(e) -> assertTrue(false, "getSessions failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+    case Err(e) -> assertTrue(false, "getSessions failed: " + CloudAgents.Db.dbErrorMessage(e))
   }
 }
 
 // ── Session lifecycle: run history, cancel, profile wiring ────────────────────
-func mustRunId(r: in Result[String, CloudAgents.Sqlite.DbError]): String {
+func mustRunId(r: in Result[String, CloudAgents.Db.DbError]): String {
   return match r {
     case Ok(rid) -> rid
-    case Err(e) -> panic("recordRunStart failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+    case Err(e) -> panic("recordRunStart failed: " + CloudAgents.Db.dbErrorMessage(e))
   }
 }
 
-func mustRuns(r: in Result[slice[Run], CloudAgents.Sqlite.DbError]): slice[Run] {
-  return match r { case Ok(rs) -> rs; case Err(e) -> panic("listRuns failed: " + CloudAgents.Sqlite.dbErrorMessage(e)) }
+func mustRuns(r: in Result[slice[Run], CloudAgents.Db.DbError]): slice[Run] {
+  return match r { case Ok(rs) -> rs; case Err(e) -> panic("listRuns failed: " + CloudAgents.Db.dbErrorMessage(e)) }
 }
 
 test "Run history records, lists, and finishes write-once" {
-  val dbPath = useFreshTestDb("run-history")
-  defer {
-    cleanupTestDb(dbPath)
+  if not live() {
+    return
   }
-  val userId = "default"
-  val runId = mustRunId(CloudAgents.Repository.recordRunStart("rh-1", CloudAgents.Pg.personalScope(userId), "do a thing", "claude", "opus"))
+  val me = freshUser("runhistory")
+  val sfx = "-" + me
+  val userId = me
+  val runId = mustRunId(
+    CloudAgents.Repository.recordRunStart(
+      "rh-1" + sfx,
+      CloudAgents.Pg.personalScope(userId),
+      "do a thing",
+      "claude",
+      "opus"
+    )
+  )
   assertTrue(runId.length > 0, "run id returned")
 
-  val running = mustRuns(CloudAgents.Repository.listRuns("rh-1", CloudAgents.Pg.personalScope(userId)))
+  val running = mustRuns(CloudAgents.Repository.listRuns("rh-1" + sfx, CloudAgents.Pg.personalScope(userId)))
   assertEqualInt(running.length.toInt(), 1, "one run recorded")
   assertEqual(running[0].status, "running", "run starts running")
 
   match CloudAgents.Repository.recordRunEnd(runId, CloudAgents.Pg.personalScope(userId), "succeeded") {
     case Ok(_) -> ()
-    case Err(e) -> assertTrue(false, "recordRunEnd failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+    case Err(e) -> assertTrue(false, "recordRunEnd failed: " + CloudAgents.Db.dbErrorMessage(e))
   }
   assertEqual(
-    mustRuns(CloudAgents.Repository.listRuns("rh-1", CloudAgents.Pg.personalScope(userId)))[0].status,
+    mustRuns(CloudAgents.Repository.listRuns("rh-1" + sfx, CloudAgents.Pg.personalScope(userId)))[0].status,
     "succeeded",
     "run moved to succeeded"
   )
@@ -1399,7 +1452,7 @@ test "Run history records, lists, and finishes write-once" {
     case Err(_) -> ()
   }
   assertEqual(
-    mustRuns(CloudAgents.Repository.listRuns("rh-1", CloudAgents.Pg.personalScope(userId)))[0].status,
+    mustRuns(CloudAgents.Repository.listRuns("rh-1" + sfx, CloudAgents.Pg.personalScope(userId)))[0].status,
     "succeeded",
     "terminal status is write-once"
   )
@@ -1414,10 +1467,11 @@ test "Run history records, lists, and finishes write-once" {
 // unknown -> 404, not-running -> 409) mirrors the covered handlers; it
 // activates end-to-end once Lyric.Web dispatches HTTP requests.
 test "setSessionProfileHandler validates session and profile (#235)" {
-  val dbPath = useFreshTestDb("set-profile")
-  defer {
-    cleanupTestDb(dbPath)
+  if not live() {
+    return
   }
+  val me = freshUser("setprofile")
+  val sfx = "-" + me
   match setSessionProfileHandler("nope", SetProfileRequest(profileId = "")) {
     case Ok(_) -> assertTrue(false, "unknown session should 404")
     case Err(err) -> assertEqualInt(err.status, 404, "unknown session -> 404")
@@ -1425,42 +1479,43 @@ test "setSessionProfileHandler validates session and profile (#235)" {
   mustUnit(
     addSession(
       makeAgentSession(
-        sessionId = "sp-1",
+        sessionId = "sp-1" + sfx,
         repoUrl = "https://github.com/nic/repo",
         branch = "main",
         containerId = "",
         harness = "claude",
         model = "claude-opus-4-8",
-        nativeSessionId = "sp-1"
-      )
-    , CloudAgents.Auth.requestScope())
+        nativeSessionId = "sp-1" + sfx
+      ),
+      CloudAgents.Auth.requestScope()
+    )
   )
   // A session with no profile attached reports an empty profileId (#272).
-  match getSessionProfileHandler("sp-1") {
+  match getSessionProfileHandler("sp-1" + sfx) {
     case Ok(ref) -> assertEqual(ref.profileId, "", "no-profile session reports empty profileId")
     case Err(_) -> assertTrue(false, "getSessionProfileHandler should succeed for a known session")
   }
   // Unknown profile -> 400.
-  match setSessionProfileHandler("sp-1", SetProfileRequest(profileId = "ghost")) {
+  match setSessionProfileHandler("sp-1" + sfx, SetProfileRequest(profileId = "ghost")) {
     case Ok(_) -> assertTrue(false, "unknown profile should 400")
     case Err(err) -> assertEqualInt(err.status, 400, "unknown profile -> 400")
   }
   // Attach a real profile; it reads back on the session.
-  val prof = match CloudAgents.Repository.addProfile(CloudAgents.Pg.personalScope("default"), "p", "", "none", "all", [], [], [], [], "all", []) {
+  val prof = match CloudAgents.Repository.addProfile(CloudAgents.Pg.personalScope(me), "p", "", "none", "all", [], [], [], [], "all", []) {
     case Ok(p) -> p
-    case Err(e) -> panic("addProfile failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+    case Err(e) -> panic("addProfile failed: " + CloudAgents.Db.dbErrorMessage(e))
   }
-  match setSessionProfileHandler("sp-1", SetProfileRequest(profileId = prof.id)) {
+  match setSessionProfileHandler("sp-1" + sfx, SetProfileRequest(profileId = prof.id)) {
     case Ok(_) -> ()
     case Err(_) -> assertTrue(false, "attaching a valid profile should succeed")
   }
-  match CloudAgents.SessionStore.sessionProfileId("sp-1", CloudAgents.Auth.requestScope()) {
+  match CloudAgents.SessionStore.sessionProfileId("sp-1" + sfx, CloudAgents.Auth.requestScope()) {
     case Ok(Some(pid)) -> assertEqual(pid, prof.id, "profile attached to session")
     case Ok(None) -> assertTrue(false, "profile should be set")
-    case Err(e) -> assertTrue(false, "sessionProfileId failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+    case Err(e) -> assertTrue(false, "sessionProfileId failed: " + CloudAgents.Db.dbErrorMessage(e))
   }
   // getSessionProfileHandler reflects the attached profile (#270)...
-  match getSessionProfileHandler("sp-1") {
+  match getSessionProfileHandler("sp-1" + sfx) {
     case Ok(ref) -> assertEqual(ref.profileId, prof.id, "handler reports the attached profile")
     case Err(_) -> assertTrue(false, "getSessionProfileHandler should succeed")
   }
@@ -1499,10 +1554,11 @@ test "extraReposEnvValue formats url|branch entries space-separated" {
 }
 
 test "session-repo handlers validate, link, list and unlink (#multi-repo)" {
-  val dbPath = useFreshTestDb("session-repos")
-  defer {
-    cleanupTestDb(dbPath)
+  if not live() {
+    return
   }
+  val me = freshUser("sessionrepos")
+  val sfx = "-" + me
   // All three 404 for an unknown/foreign session.
   match listSessionReposHandler("nope") {
     case Ok(_) -> assertTrue(false, "list unknown session should 404")
@@ -1516,78 +1572,79 @@ test "session-repo handlers validate, link, list and unlink (#multi-repo)" {
   mustUnit(
     addSession(
       makeAgentSession(
-        sessionId = "sr-1",
+        sessionId = "sr-1" + sfx,
         repoUrl = "https://github.com/nic/repo",
         branch = "main",
         containerId = "",
         harness = "claude",
         model = "claude-opus-4-8",
-        nativeSessionId = "sr-1"
-      )
-    , CloudAgents.Auth.requestScope())
+        nativeSessionId = "sr-1" + sfx
+      ),
+      CloudAgents.Auth.requestScope()
+    )
   )
 
   // Initially empty.
-  match listSessionReposHandler("sr-1") {
+  match listSessionReposHandler("sr-1" + sfx) {
     case Ok(rl) -> assertEqualInt(rl.repos.length.toInt(), 0, "no linked repos initially")
     case Err(_) -> assertTrue(false, "list should succeed for a known session")
   }
 
   // Same validation as session creation: non-https, SSRF host, unsafe branch.
-  match addSessionRepoHandler("sr-1", AddRepoRequest(repoUrl = "http://github.com/a/b", branch = "main")) {
+  match addSessionRepoHandler("sr-1" + sfx, AddRepoRequest(repoUrl = "http://github.com/a/b", branch = "main")) {
     case Ok(_) -> assertTrue(false, "non-https should 400")
     case Err(err) -> assertEqualInt(err.status, 400, "non-https -> 400")
   }
-  match addSessionRepoHandler("sr-1", AddRepoRequest(repoUrl = "https://127.0.0.1/a/b", branch = "main")) {
+  match addSessionRepoHandler("sr-1" + sfx, AddRepoRequest(repoUrl = "https://127.0.0.1/a/b", branch = "main")) {
     case Ok(_) -> assertTrue(false, "loopback should 400")
     case Err(err) -> assertEqualInt(err.status, 400, "loopback repoUrl -> 400")
   }
-  match addSessionRepoHandler("sr-1", AddRepoRequest(repoUrl = "https://github.com/a/b", branch = "-bad")) {
+  match addSessionRepoHandler("sr-1" + sfx, AddRepoRequest(repoUrl = "https://github.com/a/b", branch = "-bad")) {
     case Ok(_) -> assertTrue(false, "leading-dash branch should 400")
     case Err(err) -> assertEqualInt(err.status, 400, "bad branch -> 400")
   }
   // A '|' in the url or branch would corrupt the EXTRA_REPOS "url|branch"
   // packing, so it is rejected specifically for linked repos (#449).
-  match addSessionRepoHandler("sr-1", AddRepoRequest(repoUrl = "https://github.com/a/b|c", branch = "main")) {
+  match addSessionRepoHandler("sr-1" + sfx, AddRepoRequest(repoUrl = "https://github.com/a/b|c", branch = "main")) {
     case Ok(_) -> assertTrue(false, "pipe in repoUrl should 400")
     case Err(err) -> assertEqualInt(err.status, 400, "pipe in repoUrl -> 400")
   }
-  match addSessionRepoHandler("sr-1", AddRepoRequest(repoUrl = "https://github.com/a/b", branch = "ma|in")) {
+  match addSessionRepoHandler("sr-1" + sfx, AddRepoRequest(repoUrl = "https://github.com/a/b", branch = "ma|in")) {
     case Ok(_) -> assertTrue(false, "pipe in branch should 400")
     case Err(err) -> assertEqualInt(err.status, 400, "pipe in branch -> 400")
   }
 
   // A valid link with an empty branch (the repo's default branch is allowed).
-  val addedId = match addSessionRepoHandler("sr-1", AddRepoRequest(repoUrl = "https://github.com/nic/extra", branch = "")) {
+  val addedId = match addSessionRepoHandler("sr-1" + sfx, AddRepoRequest(repoUrl = "https://github.com/nic/extra", branch = "")) {
     case Ok(repo) -> repo.id
     case Err(_) -> panic("linking a valid repo should have succeeded")
   }
   assertTrue(addedId.length > 0, "link returns a repo id")
 
   // Re-linking the same URL is a duplicate -> 400.
-  match addSessionRepoHandler("sr-1", AddRepoRequest(repoUrl = "https://github.com/nic/extra", branch = "dev")) {
+  match addSessionRepoHandler("sr-1" + sfx, AddRepoRequest(repoUrl = "https://github.com/nic/extra", branch = "dev")) {
     case Ok(_) -> assertTrue(false, "duplicate url should 400")
     case Err(err) -> assertEqualInt(err.status, 400, "duplicate -> 400")
   }
 
   // Now listed once.
-  match listSessionReposHandler("sr-1") {
+  match listSessionReposHandler("sr-1" + sfx) {
     case Ok(rl) -> assertEqualInt(rl.repos.length.toInt(), 1, "one linked repo after add")
     case Err(_) -> assertTrue(false, "list should succeed")
   }
 
   // Unlinking a repo id that isn't linked -> 404.
-  match deleteSessionRepoHandler("sr-1", "ghost") {
+  match deleteSessionRepoHandler("sr-1" + sfx, "ghost") {
     case Ok(_) -> assertTrue(false, "unknown repo id should 404")
     case Err(err) -> assertEqualInt(err.status, 404, "unknown repo -> 404")
   }
 
   // Unlink the real one, then the list is empty again.
-  match deleteSessionRepoHandler("sr-1", addedId) {
+  match deleteSessionRepoHandler("sr-1" + sfx, addedId) {
     case Ok(_) -> ()
     case Err(_) -> assertTrue(false, "unlinking a linked repo should succeed")
   }
-  match listSessionReposHandler("sr-1") {
+  match listSessionReposHandler("sr-1" + sfx) {
     case Ok(rl) -> assertEqualInt(rl.repos.length.toInt(), 0, "no linked repos after unlink")
     case Err(_) -> assertTrue(false, "list should succeed")
   }
@@ -1623,26 +1680,26 @@ test "promptExceedsMaxLength enforces the 131072-char cap streamSendMessage reli
 }
 
 test "checkHealth reports healthy against a live DB and 500s when the DB is unreachable (#334/#57)" {
-  val dbPath = useFreshTestDb("health-ok")
+  if not live() {
+    return
+  }
+  val me = freshUser("health")
+  val dsnVar = CloudAgents.Pg.serviceDsnVar()
+  val dsn = Std.Environment.getVarOrDefault(dsnVar, "")
   defer {
-    cleanupTestDb(dbPath)
-    // Otherwise this test's own next line leaves CLOUD_AGENTS_DB_PATH
-    // pointed at a permanently-broken path for the rest of the process
-    // (#579) — restore it to the fresh path useFreshTestDb set, exactly
-    // what it was before this test's own DB-unreachable mutation below.
-    Env.SetEnvironmentVariable("CLOUD_AGENTS_DB_PATH", dbPath)
+    // Restore the real DSN so a failed assertion below cannot leave the rest
+    // of the process pointed at an unreachable database (#579).
+    Env.SetEnvironmentVariable(dsnVar, dsn)
   }
   match checkHealth() {
     case Ok(msg) -> assertEqual(msg, "Healthy", "a live, migrated DB reports healthy")
     case Err(_) -> assertTrue(false, "checkHealth should succeed against a live, migrated DB")
   }
 
-  // Point CLOUD_AGENTS_DB_PATH at a file under a directory that does not
-  // exist: SQLite cannot open (or create) a database file there, so
-  // CloudAgents.Repository.ping() -> Err(OpenFailed) and checkHealth must map
-  // that to a 500 — not leak the raw DB error message to the unauthenticated
-  // /api/health caller (#55).
-  Env.SetEnvironmentVariable("CLOUD_AGENTS_DB_PATH", "/nonexistent-dir-cloud-agents-334/unreachable.db")
+  // Point the service DSN at a port nothing listens on: CloudAgents.Repository.ping()
+  // -> Err and checkHealth must map that to a 500 — not leak the raw DB error
+  // message to the unauthenticated /api/health caller (#55).
+  Env.SetEnvironmentVariable(dsnVar, "postgres://cloudagents_app:app-ci@127.0.0.1:1/unreachable")
   match checkHealth() {
     case Ok(_) -> assertTrue(false, "checkHealth must fail when the database is unreachable")
     case Err(err) -> assertEqualInt(err.status, 500, "DB failure maps to a 500 internal error")
@@ -1650,8 +1707,11 @@ test "checkHealth reports healthy against a live DB and 500s when the DB is unre
 }
 
 test "archive and unarchive sessions successfully persists changes in the DB" {
-  val dbPath = useFreshTestDb("archive-unarchive")
-  defer { cleanupTestDb(dbPath) }
+  if not live() {
+    return
+  }
+  val me = freshUser("archiveunarc")
+  val sfx = "-" + me
 
   val req = CreateSessionRequest(
     repoUrl = "https://github.com/nic/repos/cloud-agents",
@@ -1699,8 +1759,11 @@ test "archive and unarchive sessions successfully persists changes in the DB" {
 }
 
 test "branch session from message creates copy with parent reference and slices history" {
-  val dbPath = useFreshTestDb("branch-msg")
-  defer { cleanupTestDb(dbPath) }
+  if not live() {
+    return
+  }
+  val me = freshUser("branchmsg")
+  val sfx = "-" + me
 
   val req = CreateSessionRequest(
     repoUrl = "https://github.com/example/branch-test",
@@ -1718,21 +1781,23 @@ test "branch session from message creates copy with parent reference and slices 
 
   // Insert 3 messages into parent
   val m1 = mustMessage(CloudAgents.Repository.addMessage(parentId, CloudAgents.Auth.requestScope(), "user", "Hello 1"))
-  val m2 = mustMessage(CloudAgents.Repository.addMessage(parentId, CloudAgents.Auth.requestScope(), "assistant", "Answer 1"))
+  // Role is "agent": the Postgres messages table constrains role to user/agent.
+  val m2 = mustMessage(
+    CloudAgents.Repository.addMessage(parentId, CloudAgents.Auth.requestScope(), "agent", "Answer 1")
+  )
   val m3 = mustMessage(CloudAgents.Repository.addMessage(parentId, CloudAgents.Auth.requestScope(), "user", "Hello 2"))
   val msg1Id = m1.id
   val msg2Id = m2.id
   val msg3Id = m3.id
 
   // Add a comment to msg2 and a todo on msg2
-  mustComment(CloudAgents.Repository.addComment(msg2Id, CloudAgents.Auth.requestScope(), parentId, "Important note on turn 2"))
+  mustComment(
+    CloudAgents.Repository.addComment(msg2Id, CloudAgents.Auth.requestScope(), parentId, "Important note on turn 2")
+  )
   mustTodo(CloudAgents.Repository.addTodo(parentId, CloudAgents.Auth.requestScope(), msg2Id, "Review turn 2"))
 
   // Branch from msg2 (seq 2)
-  val branchReq = BranchSessionRequest(
-    messageId = msg2Id,
-    branch = "feature-thread-1"
-  )
+  val branchReq = BranchSessionRequest(messageId = msg2Id, branch = "feature-thread-1")
   val childId = match CloudAgents.Handlers.branchSession(parentId, branchReq) {
     case Ok(resp) -> resp.sessionId
     case Err(_) -> {
@@ -1756,7 +1821,7 @@ test "branch session from message creates copy with parent reference and slices 
   val childMsgs = match CloudAgents.Repository.listMessages(childId, CloudAgents.Auth.requestScope()) {
     case Ok(list) -> list
     case Err(_) -> {
-      assertTrue(false, "listMessages on child failed")
+      assertTrue(false, "listMessages on child failed");
       []
     }
   }
@@ -1769,7 +1834,7 @@ test "branch session from message creates copy with parent reference and slices 
   val childComments = match CloudAgents.Repository.listComments(childMsg2Id, CloudAgents.Auth.requestScope()) {
     case Ok(list) -> list
     case Err(_) -> {
-      assertTrue(false, "listComments on child failed")
+      assertTrue(false, "listComments on child failed");
       []
     }
   }
@@ -1780,7 +1845,7 @@ test "branch session from message creates copy with parent reference and slices 
   val childTodos = match CloudAgents.Repository.listTodos(childId, CloudAgents.Auth.requestScope()) {
     case Ok(list) -> list
     case Err(_) -> {
-      assertTrue(false, "listTodos on child failed")
+      assertTrue(false, "listTodos on child failed");
       []
     }
   }
@@ -1795,10 +1860,12 @@ test "branch session from message creates copy with parent reference and slices 
 // string. These also guard the message-string routing itself: if repository.l's
 // wording ever drifts from what the handler string-matches on, these tests fail
 // (falling through to the generic 500 branch) instead of silently misrouting.
-
 test "branchSession returns 404 when the parent session does not exist or is not owned by the user (#1033)" {
-  val dbPath = useFreshTestDb("branch-no-parent")
-  defer { cleanupTestDb(dbPath) }
+  if not live() {
+    return
+  }
+  val me = freshUser("branchnopare")
+  val sfx = "-" + me
 
   val branchReq = BranchSessionRequest(messageId = "", branch = "")
   match CloudAgents.Handlers.branchSession("session-does-not-exist", branchReq) {
@@ -1808,8 +1875,11 @@ test "branchSession returns 404 when the parent session does not exist or is not
 }
 
 test "branchSession returns 400 when the forked message does not exist (#1033)" {
-  val dbPath = useFreshTestDb("branch-no-msg")
-  defer { cleanupTestDb(dbPath) }
+  if not live() {
+    return
+  }
+  val me = freshUser("branchnomsg")
+  val sfx = "-" + me
 
   val req = CreateSessionRequest(
     repoUrl = "https://github.com/example/branch-nomsg",
@@ -1833,8 +1903,11 @@ test "branchSession returns 400 when the forked message does not exist (#1033)" 
 }
 
 test "branchSession returns 400 when the forked message belongs to a different session (#1033)" {
-  val dbPath = useFreshTestDb("branch-wrong-session")
-  defer { cleanupTestDb(dbPath) }
+  if not live() {
+    return
+  }
+  val me = freshUser("branchwrongs")
+  val sfx = "-" + me
 
   val reqA = CreateSessionRequest(
     repoUrl = "https://github.com/example/branch-a",
@@ -1865,11 +1938,12 @@ test "branchSession returns 400 when the forked message belongs to a different s
 
   // A message belonging to session B; branching session A from it must fail —
   // it is not session A's own history.
-  val msgB = mustMessage(CloudAgents.Repository.addMessage(sessionBId, CloudAgents.Auth.requestScope(), "user", "hello from B"))
+  val msgB = mustMessage(
+    CloudAgents.Repository.addMessage(sessionBId, CloudAgents.Auth.requestScope(), "user", "hello from B")
+  )
   val branchReq = BranchSessionRequest(messageId = msgB.id, branch = "")
   match CloudAgents.Handlers.branchSession(sessionAId, branchReq) {
     case Ok(_) -> assertTrue(false, "branching session A from a message owned by session B must fail")
     case Err(err) -> assertEqualInt(err.status, 400, "forked message belonging to a different session -> 400")
   }
 }
-

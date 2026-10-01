@@ -1,5 +1,10 @@
 # Spec: durable graph-ingest outbox (at-least-once runner → platform handoff)
 
+> Since phase 11 the store is Postgres, not SQLite (see
+> [`docs/phase11-postgres-tenancy.md`](phase11-postgres-tenancy.md)); the SQL
+> and migration references below are historical, and the live schema is in
+> `src/pg/schema.l`.
+
 Status: **Implemented.** Closes the deferred item named in both
 `docs/capture-runtime-handoff.md` §9 ("Durable outbox / retry") and
 AGENTS.md's "Provenance capture" section ("Still deferred: a durable

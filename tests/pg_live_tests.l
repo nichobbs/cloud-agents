@@ -595,12 +595,12 @@ test "claim functions are hardened: definer, fixed search_path, no PUBLIC execut
   assertEqual(
     str1(
       tx,
-      "SELECT (has_table_privilege('cloudagents_migrator', 'public.sessions', 'INSERT') " +
-        "AND NOT has_table_privilege('cloudagents_migrator', 'public.sessions', 'UPDATE'))::text AS v",
+      "SELECT (has_table_privilege('cloudagents_migrator', 'public.sessions', 'SELECT') " +
+        "OR has_table_privilege('cloudagents_migrator', 'public.sessions', 'INSERT'))::text AS v",
       []
     ),
-    "true",
-    "the migrator may read and insert, nothing else"
+    "false",
+    "the unused former export role has no table access (migration 0002)"
   )
   commit(tx)
 }

@@ -1,3 +1,6 @@
+//! CloudAgents.SessionStore — the session store facade. Its functions
+//! delegate to the Postgres implementation in `src/pgstore/sessions.l`
+//! (`CloudAgents.PgStore.Sessions`).
 package CloudAgents.SessionStore
 
 import Std.Core
@@ -5,10 +8,10 @@ import CloudAgents.Auth
 import CloudAgents.Pg
 import CloudAgents.Db
 import CloudAgents.Repository
-import CloudAgents.Sqlite
 import CloudAgents.Text
 import extern System.Environment as Env
 import extern System.String as DotNetString
+import CloudAgents.PgStore.Sessions
 
 @generate(Json)
 pub record AgentSession {
@@ -334,44 +337,6 @@ pub func parseSessionsJson(json: in String): AgentSessionArray {
   return list
 }
 
-// ─── SQLite-backed store ──────────────────────────────────────────────────────
-//
-// Sessions live in the same SQLite database as the transcript (schema created
-// by CloudAgents.Repository.initSchema), so they survive restarts and two
-// concurrent requests cannot lose each other's writes — both defects of the
-// previous CLOUD_AGENTS_SESSIONS_JSON env-var store. The env-var JSON
-// helpers below are retained for the one-time legacy import at startup (and
-// their tests).
-func colAt(cols: in CloudAgents.Sqlite.StringArray, i: in Int): String {
-  val len = CloudAgents.Sqlite.getStringArrayLength(cols)
-  if i < len {
-    return CloudAgents.Sqlite.getStringArrayValue(cols, i)
-  }
-  return ""
-}
-
-// Column order matches CloudAgents.Db's sessionColumns:
-// id, user_id, repo_url, branch, container_id, harness, model,
-// native_session_id, status, created_at, last_message_at, is_archived,
-// group_id, last_viewed_at, parent_session_id, forked_from_message_id.
-func rowToSession(r: in CloudAgents.Sqlite.Row): AgentSession {
-  return AgentSession(
-    sessionId = colAt(r.cols, 0),
-    repoUrl = colAt(r.cols, 2),
-    branch = colAt(r.cols, 3),
-    containerId = colAt(r.cols, 4),
-    harness = colAt(r.cols, 5),
-    model = colAt(r.cols, 6),
-    nativeSessionId = colAt(r.cols, 7),
-    status = colAt(r.cols, 8),
-    isArchived = colAt(r.cols, 11),
-    groupId = colAt(r.cols, 12),
-    lastViewedAt = colAt(r.cols, 13),
-    parentSessionId = colAt(r.cols, 14),
-    forkedFromMessageId = colAt(r.cols, 15)
-  )
-}
-
 /// The session-list projection as a complete `{"sessions":[...]}` JSON string,
 /// most recently active first. Unlike getSessions()/AgentSession this includes
 /// the bookkeeping columns the UI needs to show *when* things happened and
@@ -379,39 +344,12 @@ func rowToSession(r: in CloudAgents.Sqlite.Row): AgentSession {
 /// while still excluding infrastructure handles (container_id,
 /// native_session_id). Built here rather than in CloudAgents.Handlers because
 /// this package is where the raw rows (with those extra columns) are visible.
-pub func sessionSummariesJson(sc: in CloudAgents.Pg.TenantScope): Result[String, CloudAgents.Sqlite.DbError] {
-  val rows = CloudAgents.Sqlite.query(CloudAgents.Db.listSessionSummariesByUserSql(sc.userId))?
-  var acc: slice[SessionSummaryRow] = []
-  var i = 0
-  val len = CloudAgents.Sqlite.getRowArrayLength(rows)
-  while i < len {
-    val r = CloudAgents.Sqlite.getRowArrayValue(rows, i)
-    acc = acc.append(
-      SessionSummaryRow(
-        sessionId = colAt(r.cols, 0),
-        repoUrl = colAt(r.cols, 2),
-        branch = colAt(r.cols, 3),
-        harness = colAt(r.cols, 5),
-        model = colAt(r.cols, 6),
-        status = colAt(r.cols, 8),
-        createdAt = colAt(r.cols, 9),
-        lastMessageAt = colAt(r.cols, 10),
-        isArchived = colAt(r.cols, 11),
-        groupId = colAt(r.cols, 12),
-        lastViewedAt = colAt(r.cols, 13),
-        parentSessionId = colAt(r.cols, 14),
-        forkedFromMessageId = colAt(r.cols, 15),
-        pendingCount = colAt(r.cols, 16),
-        ledgerAttention = colAt(r.cols, 17)
-      )
-    )
-    i = i + 1
-  }
-  return Ok(value = sessionSummariesToJson(acc))
+pub func sessionSummariesJson(sc: in CloudAgents.Pg.TenantScope): Result[String, CloudAgents.Db.DbError] {
+  return CloudAgents.PgStore.Sessions.sessionSummariesJson(sc)
 }
 
 /// One row of the session-list projection, every value as the store's text
-/// form. Built by both the SQLite and the Postgres store so the JSON shape
+/// form. Built by the Postgres store so the JSON shape
 /// has a single definition (`sessionSummariesToJson`).
 pub record SessionSummaryRow {
   pub sessionId: String
@@ -496,16 +434,8 @@ pub func sessionSummariesToJson(rows: in slice[SessionSummaryRow]): String {
 }
 
 /// All of the current user's sessions, most recently active first.
-pub func getSessions(sc: in CloudAgents.Pg.TenantScope): Result[AgentSessionArray, CloudAgents.Sqlite.DbError] {
-  val rows = CloudAgents.Sqlite.query(CloudAgents.Db.listSessionsByUserSql(sc.userId))?
-  var list = createEmptySessionArray()
-  var i = 0
-  val len = CloudAgents.Sqlite.getRowArrayLength(rows)
-  while i < len {
-    list = appendSession(list, rowToSession(CloudAgents.Sqlite.getRowArrayValue(rows, i)))
-    i = i + 1
-  }
-  return Ok(value = list)
+pub func getSessions(sc: in CloudAgents.Pg.TenantScope): Result[AgentSessionArray, CloudAgents.Db.DbError] {
+  return CloudAgents.PgStore.Sessions.getSessions(sc)
 }
 
 // ── Control-character helpers ─────────────────────────────────────────────────
@@ -658,56 +588,35 @@ pub func agentSessionToJson(s: in AgentSession): String {
 
 /// Persist a new session (status defaults to IDLE unless `session.status`
 /// says otherwise, owned by the current user).
-pub func addSession(session: in AgentSession, sc: in CloudAgents.Pg.TenantScope): Result[Unit, CloudAgents.Sqlite.DbError] {
-  // Pass session.status through (#753) — insertSessionSql used to hardcode
-  // 'IDLE' regardless of what makeAgentSession's status parameter carried,
-  // silently discarding a non-default value.
-  CloudAgents.Sqlite.execute(CloudAgents.Db.insertSessionSql(session.sessionId, sc.userId, session.repoUrl, session.branch, session.containerId, session.harness, session.model, session.nativeSessionId, CloudAgents.Repository.nowMillis(), session.status))?
-  return Ok(value = ())
+pub func addSession(session: in AgentSession, sc: in CloudAgents.Pg.TenantScope): Result[Unit, CloudAgents.Db.DbError] {
+  return CloudAgents.PgStore.Sessions.addSession(session, sc)
 }
 
 /// The status column of a session (the authoritative RUNNING signal, set
 /// synchronously by tryBeginRun before the container exists), or None. Shaped
 /// like getMessageSessionId — a plain Option[String], deliberately avoiding a
 /// custom record on this path.
-pub func sessionStatus(sessionId: in String, sc: in CloudAgents.Pg.TenantScope): Result[Option[String], CloudAgents.Sqlite.DbError] {
-  val rows = CloudAgents.Sqlite.query(CloudAgents.Db.selectSessionByIdSql(sessionId, sc.userId))?
-  val len = CloudAgents.Sqlite.getRowArrayLength(rows)
-  if len == 0 {
-    return Ok(value = None)
-  }
-  // Column order (CloudAgents.Db.sessionColumns): status is index 8.
-  return Ok(value = Some(value = colAt(CloudAgents.Sqlite.getRowArrayValue(rows, 0).cols, 8)))
+pub func sessionStatus(sessionId: in String, sc: in CloudAgents.Pg.TenantScope): Result[Option[String], CloudAgents.Db.DbError] {
+  return CloudAgents.PgStore.Sessions.sessionStatus(sessionId, sc)
 }
 
 /// Associate a session with a profile (empty string clears it). Scoped to the
 /// current user. Kept off the AgentSession record — the profile drives
 /// container construction, not the client-facing session shape — and read back
 /// via sessionProfileId, mirroring sessionStatus.
-pub func setSessionProfile(sessionId: in String, sc: in CloudAgents.Pg.TenantScope, profileId: in String): Result[Unit, CloudAgents.Sqlite.DbError] {
-  CloudAgents.Sqlite.execute(CloudAgents.Db.updateSessionProfileSql(sessionId, sc.userId, profileId))?
-  return Ok(value = ())
+pub func setSessionProfile(sessionId: in String, sc: in CloudAgents.Pg.TenantScope, profileId: in String): Result[Unit, CloudAgents.Db.DbError] {
+  return CloudAgents.PgStore.Sessions.setSessionProfile(sessionId, sc, profileId)
 }
 
 /// The profile id a session runs under ("" when none), or None if the session
 /// does not exist / is not owned by the current user.
-pub func sessionProfileId(sessionId: in String, sc: in CloudAgents.Pg.TenantScope): Result[Option[String], CloudAgents.Sqlite.DbError] {
-  val rows = CloudAgents.Sqlite.query(CloudAgents.Db.selectSessionProfileIdSql(sessionId, sc.userId))?
-  val len = CloudAgents.Sqlite.getRowArrayLength(rows)
-  if len == 0 {
-    return Ok(value = None)
-  }
-  return Ok(value = Some(value = colAt(CloudAgents.Sqlite.getRowArrayValue(rows, 0).cols, 0)))
+pub func sessionProfileId(sessionId: in String, sc: in CloudAgents.Pg.TenantScope): Result[Option[String], CloudAgents.Db.DbError] {
+  return CloudAgents.PgStore.Sessions.sessionProfileId(sessionId, sc)
 }
 
 /// A single session owned by the current user, or None.
-pub func getSession(sessionId: in String, sc: in CloudAgents.Pg.TenantScope): Result[Option[AgentSession], CloudAgents.Sqlite.DbError] {
-  val rows = CloudAgents.Sqlite.query(CloudAgents.Db.selectSessionByIdSql(sessionId, sc.userId))?
-  val len = CloudAgents.Sqlite.getRowArrayLength(rows)
-  if len == 0 {
-    return Ok(value = None)
-  }
-  return Ok(value = Some(value = rowToSession(CloudAgents.Sqlite.getRowArrayValue(rows, 0))))
+pub func getSession(sessionId: in String, sc: in CloudAgents.Pg.TenantScope): Result[Option[AgentSession], CloudAgents.Db.DbError] {
+  return CloudAgents.PgStore.Sessions.getSession(sessionId, sc)
 }
 
 // The two container-bookkeeping writes below run on Docker's async worker
@@ -718,9 +627,8 @@ pub func getSession(sessionId: in String, sc: in CloudAgents.Pg.TenantScope): Re
 // wrong-tenant-on-a-worker-thread bug (#426).
 pub func updateSessionContainerFor(
   sessionId: in String, sc: in CloudAgents.Pg.TenantScope, containerId: in String
-): Result[Unit, CloudAgents.Sqlite.DbError] {
-  CloudAgents.Sqlite.execute(CloudAgents.Db.updateSessionContainerSql(sessionId, sc.userId, containerId))?
-  return Ok(value = ())
+): Result[Unit, CloudAgents.Db.DbError] {
+  return CloudAgents.PgStore.Sessions.updateSessionContainerFor(sessionId, sc, containerId)
 }
 
 /// Compare-and-clear the container id: only clears it if it still equals
@@ -728,55 +636,43 @@ pub func updateSessionContainerFor(
 /// newer run for the same session has since stored (#45).
 pub func clearSessionContainerIfMatchesFor(
   sessionId: in String, sc: in CloudAgents.Pg.TenantScope, containerId: in String
-): Result[Unit, CloudAgents.Sqlite.DbError] {
-  CloudAgents.Sqlite.execute(CloudAgents.Db.clearSessionContainerIfMatchesSql(sessionId, sc.userId, containerId))?
-  return Ok(value = ())
+): Result[Unit, CloudAgents.Db.DbError] {
+  return CloudAgents.PgStore.Sessions.clearSessionContainerIfMatchesFor(sessionId, sc, containerId)
 }
 
-pub func updateSessionModel(sessionId: in String, sc: in CloudAgents.Pg.TenantScope, model: in String): Result[Unit, CloudAgents.Sqlite.DbError] {
-  CloudAgents.Sqlite.execute(CloudAgents.Db.updateSessionModelSql(sessionId, sc.userId, model))?
-  return Ok(value = ())
+pub func updateSessionModel(sessionId: in String, sc: in CloudAgents.Pg.TenantScope, model: in String): Result[Unit, CloudAgents.Db.DbError] {
+  return CloudAgents.PgStore.Sessions.updateSessionModel(sessionId, sc, model)
 }
 
-pub func updateSessionArchived(sessionId: in String, sc: in CloudAgents.Pg.TenantScope, isArchived: in String): Result[Unit, CloudAgents.Sqlite.DbError] {
-  CloudAgents.Sqlite.execute(CloudAgents.Db.updateSessionArchivedSql(sessionId, sc.userId, isArchived))?
-  return Ok(value = ())
+pub func updateSessionArchived(sessionId: in String, sc: in CloudAgents.Pg.TenantScope, isArchived: in String): Result[Unit, CloudAgents.Db.DbError] {
+  return CloudAgents.PgStore.Sessions.updateSessionArchived(sessionId, sc, isArchived)
 }
 
 /// Associate a session with a group (empty string clears it). Scoped to the
 /// current user; group existence/ownership is validated in the handler
 /// (CloudAgents.Groups), mirroring setSessionProfile.
-pub func setSessionGroup(sessionId: in String, sc: in CloudAgents.Pg.TenantScope, groupId: in String): Result[Unit, CloudAgents.Sqlite.DbError] {
-  CloudAgents.Sqlite.execute(CloudAgents.Db.updateSessionGroupIdSql(sessionId, sc.userId, groupId))?
-  return Ok(value = ())
+pub func setSessionGroup(sessionId: in String, sc: in CloudAgents.Pg.TenantScope, groupId: in String): Result[Unit, CloudAgents.Db.DbError] {
+  return CloudAgents.PgStore.Sessions.setSessionGroup(sessionId, sc, groupId)
 }
 
 /// Stamp "the user looked at this session just now" (last_viewed_at =
 /// nowMillis). Scoped to the current user.
-pub func markSessionViewed(sessionId: in String, sc: in CloudAgents.Pg.TenantScope): Result[Unit, CloudAgents.Sqlite.DbError] {
-  CloudAgents.Sqlite.execute(CloudAgents.Db.updateSessionLastViewedSql(sessionId, sc.userId, CloudAgents.Repository.nowMillis()))?
-  return Ok(value = ())
+pub func markSessionViewed(sessionId: in String, sc: in CloudAgents.Pg.TenantScope): Result[Unit, CloudAgents.Db.DbError] {
+  return CloudAgents.PgStore.Sessions.markSessionViewed(sessionId, sc)
 }
 
 /// Remove a session, returning the record that was removed (None when it did
 /// not exist or is not owned by the current user).
-pub func removeSession(sessionId: in String, sc: in CloudAgents.Pg.TenantScope): Result[Option[AgentSession], CloudAgents.Sqlite.DbError] {
-  val existing = getSession(sessionId, sc)?
-  match existing {
-    case None -> return Ok(value = None)
-    case Some(_) -> ()
-  }
-  CloudAgents.Sqlite.execute(CloudAgents.Db.deleteSessionSql(sessionId, sc.userId))?
-  return Ok(value = existing)
+pub func removeSession(sessionId: in String, sc: in CloudAgents.Pg.TenantScope): Result[Option[AgentSession], CloudAgents.Db.DbError] {
+  return CloudAgents.PgStore.Sessions.removeSession(sessionId, sc)
 }
 
 /// Delete a session row without re-reading it first — for callers that have
 /// already fetched and existence-checked the session (e.g. deleteSession, which
 /// looks it up to terminate the container), avoiding a redundant second lookup
 /// (#172). The DELETE is owner-scoped and a no-op if the row is already gone.
-pub func deleteSessionRecord(sessionId: in String, sc: in CloudAgents.Pg.TenantScope): Result[Unit, CloudAgents.Sqlite.DbError] {
-  CloudAgents.Sqlite.execute(CloudAgents.Db.deleteSessionSql(sessionId, sc.userId))?
-  return Ok(value = ())
+pub func deleteSessionRecord(sessionId: in String, sc: in CloudAgents.Pg.TenantScope): Result[Unit, CloudAgents.Db.DbError] {
+  return CloudAgents.PgStore.Sessions.deleteSessionRecord(sessionId, sc)
 }
 
 // ─── Run status ───────────────────────────────────────────────────────────────
@@ -820,27 +716,20 @@ pub func sweeperId(): String {
 /// already in progress (the caller should respond 409); the single UPDATE
 /// with a status guard makes two concurrent sends unable to both win. The
 /// claim records this instance and the run's first heartbeat.
-pub func tryBeginRun(sessionId: in String, sc: in CloudAgents.Pg.TenantScope): Result[Bool, CloudAgents.Sqlite.DbError] {
-  val n = CloudAgents.Sqlite.execute(
-    CloudAgents.Db.tryBeginRunSql(sessionId, sc.userId, CloudAgents.Repository.nowMillis(), instanceId())
-  )?
-  return Ok(value = n > 0)
+pub func tryBeginRun(sessionId: in String, sc: in CloudAgents.Pg.TenantScope): Result[Bool, CloudAgents.Db.DbError] {
+  return CloudAgents.PgStore.Sessions.tryBeginRun(sessionId, sc)
 }
 
 /// Renew the heartbeat of a run this instance drives. Ok(false) when the
 /// session is no longer running here (it ended, or a sweep took it over).
-pub func heartbeatRun(sessionId: in String, sc: in CloudAgents.Pg.TenantScope): Result[Bool, CloudAgents.Sqlite.DbError] {
-  val n = CloudAgents.Sqlite.execute(
-    CloudAgents.Db.heartbeatRunSql(sessionId, sc.userId, CloudAgents.Repository.nowMillis(), instanceId())
-  )?
-  return Ok(value = n > 0)
+pub func heartbeatRun(sessionId: in String, sc: in CloudAgents.Pg.TenantScope): Result[Bool, CloudAgents.Db.DbError] {
+  return CloudAgents.PgStore.Sessions.heartbeatRun(sessionId, sc)
 }
 
 /// Return a session to IDLE after a run (success or failure) and record the
 /// activity time.
-pub func endRun(sessionId: in String, sc: in CloudAgents.Pg.TenantScope): Result[Unit, CloudAgents.Sqlite.DbError] {
-  CloudAgents.Sqlite.execute(CloudAgents.Db.endRunSql(sessionId, sc.userId, CloudAgents.Repository.nowMillis(), instanceId()))?
-  return Ok(value = ())
+pub func endRun(sessionId: in String, sc: in CloudAgents.Pg.TenantScope): Result[Unit, CloudAgents.Db.DbError] {
+  return CloudAgents.PgStore.Sessions.endRun(sessionId, sc)
 }
 
 /// A stranded run the sweep has taken over. `containerId` is the container
@@ -860,48 +749,14 @@ pub record StrandedRun {
 /// overlapping sweep on any instance does not take it too. The caller
 /// terminates the container, records the outcome and calls
 /// `releaseStrandedRun` (SessionStore cannot reach CloudAgents.Docker).
-pub func claimStrandedRuns(limit: in Int): Result[slice[StrandedRun], CloudAgents.Sqlite.DbError] {
-  val now = CloudAgents.Repository.nowMillis()
-  val sweeper = sweeperId()
-  val rows = CloudAgents.Sqlite.query(CloudAgents.Db.selectStaleRunningSessionsSql(now, strandedRunAfterMs, limit))?
-  var acc: slice[StrandedRun] = []
-  var i = 0
-  val len = CloudAgents.Sqlite.getRowArrayLength(rows)
-  while i < len {
-    val r = CloudAgents.Sqlite.getRowArrayValue(rows, i)
-    val id = colAt(r.cols, 0)
-    val n = CloudAgents.Sqlite.execute(CloudAgents.Db.takeOverStaleRunSql(id, colAt(r.cols, 2), sweeper, now))?
-    if n == 1 {
-      val sc = CloudAgents.Pg.personalScope(colAt(r.cols, 1))
-      acc = acc.append(
-        StrandedRun(
-          tenantScope = sc,
-          sessionId = id,
-          containerId = containerIdOf(id, sc)?,
-          previousInstance = colAt(r.cols, 3),
-          sweeper = sweeper
-        )
-      )
-    }
-    i = i + 1
-  }
-  return Ok(value = acc)
-}
-
-func containerIdOf(sessionId: in String, sc: in CloudAgents.Pg.TenantScope): Result[String, CloudAgents.Sqlite.DbError] {
-  return match getSession(sessionId, sc)? {
-    case Some(sess) -> Ok(value = sess.containerId)
-    case None -> Ok(value = "")
-  }
+pub func claimStrandedRuns(limit: in Int): Result[slice[StrandedRun], CloudAgents.Db.DbError] {
+  return CloudAgents.PgStore.Sessions.claimStrandedRuns(limit)
 }
 
 /// Return a stranded session to IDLE once its container is gone. Ok(false)
 /// when the sweep no longer holds it.
-pub func releaseStrandedRun(r: in StrandedRun): Result[Bool, CloudAgents.Sqlite.DbError] {
-  val n = CloudAgents.Sqlite.execute(
-    CloudAgents.Db.releaseStrandedRunSql(r.sessionId, r.sweeper, CloudAgents.Repository.nowMillis())
-  )?
-  return Ok(value = n > 0)
+pub func releaseStrandedRun(r: in StrandedRun): Result[Bool, CloudAgents.Db.DbError] {
+  return CloudAgents.PgStore.Sessions.releaseStrandedRun(r)
 }
 
 // ─── Idle container reaping ─────────────────────────────────────────────────────
@@ -916,23 +771,8 @@ pub record ReapTarget {
 /// the reaper to stop. System-wide (reaping is maintenance, not per-request).
 /// The age filter runs in SQL; the caller (which can reach CloudAgents.Docker)
 /// calls reapWarmSession and terminates the container only if that wins.
-pub func reapableWarmContainers(): Result[slice[ReapTarget], CloudAgents.Sqlite.DbError] {
-  val rows = CloudAgents.Sqlite.query(CloudAgents.Db.selectReapableWarmSql(CloudAgents.Repository.nowMillis(), toString(CloudAgents.Db.warmWindowMillis())))?
-  var acc: slice[ReapTarget] = []
-  var i = 0
-  val len = CloudAgents.Sqlite.getRowArrayLength(rows)
-  while i < len {
-    val r = CloudAgents.Sqlite.getRowArrayValue(rows, i)
-    acc = acc.append(
-      ReapTarget(
-        tenantScope = CloudAgents.Pg.personalScope(colAt(r.cols, 2)),
-        sessionId = colAt(r.cols, 0),
-        containerId = colAt(r.cols, 1)
-      )
-    )
-    i = i + 1
-  }
-  return Ok(value = acc)
+pub func reapableWarmContainers(): Result[slice[ReapTarget], CloudAgents.Db.DbError] {
+  return CloudAgents.PgStore.Sessions.reapableWarmContainers()
 }
 
 /// The warm window in seconds, for the Postgres reaper's claim.
@@ -943,17 +783,15 @@ pub func warmWindowSeconds(): String {
 /// Free a reap target's session row: Ok(true) when it was still WARM on the
 /// same container, in which case the caller terminates the container. Ok(false)
 /// when a run has started on it since, or another reaper got there first.
-pub func reapWarmSession(t: in ReapTarget): Result[Bool, CloudAgents.Sqlite.DbError] {
-  val n = CloudAgents.Sqlite.execute(CloudAgents.Db.reapWarmSessionSql(t.sessionId, t.containerId))?
-  return Ok(value = n > 0)
+pub func reapWarmSession(t: in ReapTarget): Result[Bool, CloudAgents.Db.DbError] {
+  return CloudAgents.PgStore.Sessions.reapWarmSession(t)
 }
 
 /// Return one of the caller's sessions to IDLE and drop its container
 /// reference, after the caller has terminated the container. A no-op while a
 /// run is in progress.
-pub func resetSessionContainer(sessionId: in String, sc: in CloudAgents.Pg.TenantScope): Result[Unit, CloudAgents.Sqlite.DbError] {
-  CloudAgents.Sqlite.execute(CloudAgents.Db.resetSessionContainerSql(sessionId, sc.userId))?
-  return Ok(value = ())
+pub func resetSessionContainer(sessionId: in String, sc: in CloudAgents.Pg.TenantScope): Result[Unit, CloudAgents.Db.DbError] {
+  return CloudAgents.PgStore.Sessions.resetSessionContainer(sessionId, sc)
 }
 
 // ─── Phase 6: MCP-callback bearer token ──────────────────────────────────────
@@ -974,11 +812,8 @@ pub func resetSessionContainer(sessionId: in String, sc: in CloudAgents.Pg.Tenan
 /// §2) — without introducing a new CSPRNG binding beyond the one Std.Uuid
 /// already provides. A fresh token is minted on every container start, which
 /// replaces the stored hash.
-pub func mintCallbackToken(sessionId: in String, sc: in CloudAgents.Pg.TenantScope): Result[String, CloudAgents.Sqlite.DbError] {
-  val token = Std.Uuid.uuidToString(Std.Uuid.newUuid()) + Std.Uuid.uuidToString(Std.Uuid.newUuid())
-  val tokenHash = CloudAgents.Auth.hashCallbackToken(token)
-  CloudAgents.Sqlite.execute(CloudAgents.Db.updateSessionCallbackTokenHashSql(sessionId, sc.userId, tokenHash))?
-  return Ok(value = token)
+pub func mintCallbackToken(sessionId: in String, sc: in CloudAgents.Pg.TenantScope): Result[String, CloudAgents.Db.DbError] {
+  return CloudAgents.PgStore.Sessions.mintCallbackToken(sessionId, sc)
 }
 
 /// A session's stored callback-token hash by id ONLY ("" / None handling
@@ -989,13 +824,8 @@ pub func mintCallbackToken(sessionId: in String, sc: in CloudAgents.Pg.TenantSco
 /// None only when the session id does not exist at all; an existing session
 /// that never minted a token (callbacks disabled, or a pre-migration-0036
 /// token that was cleared) reads back "".
-pub func callbackTokenHashForSession(sessionId: in String): Result[Option[String], CloudAgents.Sqlite.DbError] {
-  val rows = CloudAgents.Sqlite.query(CloudAgents.Db.selectSessionCallbackTokenHashSql(sessionId))?
-  val len = CloudAgents.Sqlite.getRowArrayLength(rows)
-  if len == 0 {
-    return Ok(value = None)
-  }
-  return Ok(value = Some(value = colAt(CloudAgents.Sqlite.getRowArrayValue(rows, 0).cols, 0)))
+pub func callbackTokenHashForSession(sessionId: in String): Result[Option[String], CloudAgents.Db.DbError] {
+  return CloudAgents.PgStore.Sessions.callbackTokenHashForSession(sessionId)
 }
 
 /// A session's owning user id by id ONLY — deliberately unscoped by the
@@ -1004,13 +834,8 @@ pub func callbackTokenHashForSession(sessionId: in String): Result[Option[String
 /// container-originated caller is stamped as the operator, not the session
 /// owner, so resolving whose credential store to check needs this unscoped
 /// lookup rather than the owner-scoped getSession above.
-pub func sessionOwnerUserId(sessionId: in String): Result[Option[String], CloudAgents.Sqlite.DbError] {
-  val rows = CloudAgents.Sqlite.query(CloudAgents.Db.selectSessionOwnerIdSql(sessionId))?
-  val len = CloudAgents.Sqlite.getRowArrayLength(rows)
-  if len == 0 {
-    return Ok(value = None)
-  }
-  return Ok(value = Some(value = colAt(CloudAgents.Sqlite.getRowArrayValue(rows, 0).cols, 0)))
+pub func sessionOwnerUserId(sessionId: in String): Result[Option[String], CloudAgents.Db.DbError] {
+  return CloudAgents.PgStore.Sessions.sessionOwnerUserId(sessionId)
 }
 
 /// The scope a session's container callbacks run under (spec §5.2's
@@ -1019,51 +844,7 @@ pub func sessionOwnerUserId(sessionId: in String): Result[Option[String], CloudA
 /// sessionOwnerUserId; callers authenticate the presented token against
 /// callbackTokenHashForSession before acting in this scope. The Postgres
 /// store reads the same answer from `session_routes`.
-pub func sessionRouteScope(sessionId: in String): Result[Option[CloudAgents.Pg.TenantScope], CloudAgents.Sqlite.DbError] {
-  return match sessionOwnerUserId(sessionId)? {
-    case Some(owner) -> Ok(value = Some(value = CloudAgents.Pg.personalScope(owner)))
-    case None -> Ok(value = None)
-  }
+pub func sessionRouteScope(sessionId: in String): Result[Option[CloudAgents.Pg.TenantScope], CloudAgents.Db.DbError] {
+  return CloudAgents.PgStore.Sessions.sessionRouteScope(sessionId)
 }
 
-// ─── Legacy env-var store import ──────────────────────────────────────────────
-/// One-time migration: sessions created before the SQLite store lived as JSON
-/// in CLOUD_AGENTS_SESSIONS_JSON. Import any that aren't already in the
-/// database, then clear the env var so this never re-runs. Best-effort — a
-/// failed import leaves the env var in place and warns rather than aborting
-/// startup.
-pub func importLegacyEnvSessions(): Unit {
-  val json = Env.GetEnvironmentVariable("CLOUD_AGENTS_SESSIONS_JSON")
-  if DotNetString.IsNullOrEmpty(json) {
-    return ()
-  }
-  val sessions = parseSessionsJson(json)
-  // Legacy env-var sessions predate multi-user support: they belong to the
-  // operator.
-  val legacyScope = CloudAgents.Pg.personalScope(CloudAgents.Auth.operatorUserId())
-  val len = getSessionArrayLength(sessions)
-  var i = 0
-  var failures = 0
-  var inserted = 0
-  while i < len {
-    val s = getSessionArrayValue(sessions, i)
-    match getSession(s.sessionId, legacyScope) {
-      case Ok(Some(_)) -> ()
-      case Ok(None) -> match addSession(s, legacyScope) { case Ok(_) -> { inserted = inserted + 1 }; case Err(e) -> { failures = failures + 1; println("WARNING: failed to import legacy session " + s.sessionId + ": " + CloudAgents.Sqlite.dbErrorMessage(e)) } }
-      case Err(e) -> {
-        failures = failures + 1
-        println("WARNING: failed to check legacy session " + s.sessionId + ": " + CloudAgents.Sqlite.dbErrorMessage(e))
-      }
-    }
-    i = i + 1
-  }
-  if failures == 0 {
-    Env.SetEnvironmentVariable("CLOUD_AGENTS_SESSIONS_JSON", "")
-    if inserted > 0 {
-      // Report rows actually inserted, not the total considered — sessions that
-      // already existed are skipped, so `len` would overstate the import (#209).
-      println("Imported " + toString(inserted) + " legacy session(s) from CLOUD_AGENTS_SESSIONS_JSON into SQLite")
-    }
-  }
-
-}

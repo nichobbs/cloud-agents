@@ -1,40 +1,81 @@
+//! Container callback tests (permission requests, user questions, progress
+//! reports, callback-token handling) against the Postgres store.
 @test_module
 package CloudAgents.CallbacksTests
 
 import Std.Core
+import Std.Environment
 import Std.Testing
 import Std.Uuid
 import CloudAgents.Auth
 import CloudAgents.Callbacks
-import CloudAgents.Db
+import CloudAgents.Pg
+import CloudAgents.Pg.Migrate
+import CloudAgents.PgStore.Tenancy
 import CloudAgents.Repository
 import CloudAgents.SessionStore
-import CloudAgents.Sqlite
+import CloudAgents.Db
 import extern System.Environment as Env
 
-// ── Live-DB plumbing (same pattern as tests/session_tests.l) ──────────────────
-@externTarget("System.IO.File.Delete")
-func fileDelete(path: in String): Unit = ()
-
-func useFreshTestDb(tag: in String): String {
-  val path = "/tmp/cloud-agents-tests-" + tag + "-" + Std.Uuid.uuidToString(Std.Uuid.newUuid()) + ".db"
-  Env.SetEnvironmentVariable("CLOUD_AGENTS_DB_PATH", path)
-  match CloudAgents.Repository.initSchema() {
-    case Ok(_) -> ()
-    case Err(e) -> assertTrue(false, "initSchema failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+// ── Live Postgres ─────────────────────────────────────────────────────────────
+//
+// The store is Postgres (docs/phase11-postgres-tenancy.md). These tests run iff
+// LYRIC_CONFIG_DB_CONNECTION_URL (cloudagents_app) and
+// CLOUD_AGENTS_MIGRATE_DATABASE_URL (cloudagents_owner) are set, and fail rather
+// than skip when CLOUD_AGENTS_REQUIRE_LIVE_PG=1 (CI). Each test acts as a fresh
+// user with its own personal tenant, so tests, suites and repeated runs against
+// the same database never see each other's rows.
+func live(): Bool {
+  val ok = CloudAgents.Pg.serviceConfigured() and
+    Std.Environment.getVarOrDefault(CloudAgents.Pg.migrateDsnVar(), "").length.toInt() > 0
+  if ok {
+    return true
   }
-  return path
+  assertTrue(
+    Std.Environment.getVarOrDefault("CLOUD_AGENTS_REQUIRE_LIVE_PG", "") != "1",
+    "CLOUD_AGENTS_REQUIRE_LIVE_PG=1 but LYRIC_CONFIG_DB_CONNECTION_URL or CLOUD_AGENTS_MIGRATE_DATABASE_URL is not set"
+  )
+  println("SKIP: callbacks tests need LYRIC_CONFIG_DB_CONNECTION_URL and CLOUD_AGENTS_MIGRATE_DATABASE_URL")
+  return false
 }
 
-func cleanupTestDb(path: in String): Unit {
-  try {
-    fileDelete(path)
-  } catch Bug as b {
-    // locked or already gone — fine for a temp file
+func migrate(): Unit {
+  val conn = match CloudAgents.Pg.connectDsn(Std.Environment.getVarOrDefault(CloudAgents.Pg.migrateDsnVar(), "")) {
+    case Ok(c) -> c
+    case Err(e) -> panic(CloudAgents.Pg.pgErrorMessage(e))
   }
-  // Reset the injectable timeout so it never leaks into a later test.
-  Env.SetEnvironmentVariable("CLOUD_AGENTS_CALLBACK_TIMEOUT_MS", "")
-  CloudAgents.Auth.setCurrentUserId("default")
+  defer {
+    conn.close()
+  }
+  match CloudAgents.Pg.Migrate.migrate(conn) {
+    case Ok(_) -> ()
+    case Err(e) -> panic("migrate failed: " + CloudAgents.Pg.pgErrorMessage(e))
+  }
+}
+
+/// A new user with a provisioned personal tenant. Does not change the request
+/// identity.
+func newUser(tag: in String): String {
+  val uid = "t-" + tag + "-" + Std.Uuid.uuidToString(Std.Uuid.newUuid())
+  match CloudAgents.PgStore.Tenancy.ensurePersonalTenant(uid) {
+    case Ok(_) -> ()
+    case Err(e) -> panic("provisioning " + uid + " failed: " + CloudAgents.Db.dbErrorMessage(e))
+  }
+  return uid
+}
+
+/// Migrate, then make a new user the request identity (what handlers read via
+/// CloudAgents.Auth.requestScope()).
+func freshUser(tag: in String): String {
+  migrate()
+  val uid = newUser(tag)
+  CloudAgents.Auth.setCurrentUserId(uid)
+  return uid
+}
+
+/// Session ids are global primary keys that persist across runs.
+func uniq(prefix: in String): String {
+  return prefix + "-" + Std.Uuid.uuidToString(Std.Uuid.newUuid())
 }
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
@@ -50,14 +91,14 @@ func mkSession(id: in String): Unit {
   )
   match addSession(s, CloudAgents.Auth.requestScope()) {
     case Ok(_) -> ()
-    case Err(e) -> panic("addSession failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+    case Err(e) -> panic("addSession failed: " + CloudAgents.Db.dbErrorMessage(e))
   }
 }
 
 func mintToken(id: in String, ownerUserId: in String): String {
   return match CloudAgents.SessionStore.mintCallbackToken(id, CloudAgents.Pg.personalScope(ownerUserId)) {
     case Ok(t) -> t
-    case Err(e) -> panic("mintCallbackToken failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+    case Err(e) -> panic("mintCallbackToken failed: " + CloudAgents.Db.dbErrorMessage(e))
   }
 }
 
@@ -65,35 +106,15 @@ func bearer(token: in String): String {
   return "Bearer " + token
 }
 
-func execSql(sql: in String): Unit {
-  match CloudAgents.Sqlite.execute(sql) {
-    case Ok(_) -> ()
-    case Err(e) -> panic("execute failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
-  }
-}
-
-/// The legacy (migration 0010) plaintext column, read raw — it must stay ''.
-func plaintextCallbackToken(sid: in String): String {
-  val rows = match CloudAgents.Sqlite.query("SELECT callback_token FROM sessions WHERE id = '" + sid + "'") {
-    case Ok(r) -> r
-    case Err(e) -> panic("query failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
-  }
-  if CloudAgents.Sqlite.getRowArrayLength(rows) == 0 {
-    panic("session " + sid + " not found")
-  }
-  return CloudAgents.Sqlite.getStringArrayValue(CloudAgents.Sqlite.getRowArrayValue(rows, 0).cols, 0)
-}
-
 // ── Permission requests ────────────────────────────────────────────────────
 test "permission request round trip: create -> poll pending -> answer allow -> poll allowed" {
-  val dbPath = useFreshTestDb("perm-roundtrip")
-  defer {
-    cleanupTestDb(dbPath)
+  if not live() {
+    return
   }
-  CloudAgents.Auth.setCurrentUserId("default")
-  val sid = "sess-perm-1"
+  val me = freshUser("perm-roundtrip")
+  val sid = uniq("sess-perm-1")
   mkSession(sid)
-  val token = mintToken(sid, "default")
+  val token = mintToken(sid, me)
 
   val created = match createPermissionRequestHandler(sid, bearer(token), CreatePermissionRequestRequest(toolName = "Bash", inputJson = "{\"command\":\"ls\"}")) {
     case Ok(r) -> r
@@ -127,14 +148,13 @@ test "permission request round trip: create -> poll pending -> answer allow -> p
 }
 
 test "allow-always rule short-circuits an identical second request" {
-  val dbPath = useFreshTestDb("perm-allow-always")
-  defer {
-    cleanupTestDb(dbPath)
+  if not live() {
+    return
   }
-  CloudAgents.Auth.setCurrentUserId("default")
-  val sid = "sess-perm-2"
+  val me = freshUser("perm-allow-always")
+  val sid = uniq("sess-perm-2")
   mkSession(sid)
-  val token = mintToken(sid, "default")
+  val token = mintToken(sid, me)
   val toolReq = CreatePermissionRequestRequest(toolName = "Bash", inputJson = "{\"command\":\"git status\"}")
 
   val first = match createPermissionRequestHandler(sid, bearer(token), toolReq) {
@@ -165,18 +185,20 @@ test "allow-always rule short-circuits an identical second request" {
 }
 
 test "deny-on-timeout backstop (injectable, no real sleep)" {
-  val dbPath = useFreshTestDb("perm-timeout")
-  defer {
-    cleanupTestDb(dbPath)
+  if not live() {
+    return
   }
-  CloudAgents.Auth.setCurrentUserId("default")
-  val sid = "sess-perm-3"
+  val me = freshUser("perm-timeout")
+  val sid = uniq("sess-perm-3")
   mkSession(sid)
-  val token = mintToken(sid, "default")
+  val token = mintToken(sid, me)
 
   // A 0ms timeout makes the request eligible for the fail-closed sweep on its
   // very first poll — no sleeping ten real minutes.
   Env.SetEnvironmentVariable("CLOUD_AGENTS_CALLBACK_TIMEOUT_MS", "0")
+  defer {
+    Env.SetEnvironmentVariable("CLOUD_AGENTS_CALLBACK_TIMEOUT_MS", "")
+  }
   val created = match createPermissionRequestHandler(sid, bearer(token), CreatePermissionRequestRequest(toolName = "Bash", inputJson = "{}")) {
     case Ok(r) -> r
     case Err(e) -> panic("create failed: " + toString(e.status))
@@ -197,17 +219,16 @@ test "deny-on-timeout backstop (injectable, no real sleep)" {
 }
 
 test "callback auth failures: bad token, missing header, cross-session token, non-owner answer" {
-  val dbPath = useFreshTestDb("callback-auth")
-  defer {
-    cleanupTestDb(dbPath)
+  if not live() {
+    return
   }
-  CloudAgents.Auth.setCurrentUserId("default")
-  val sidA = "sess-auth-a"
-  val sidB = "sess-auth-b"
+  val me = freshUser("callback-auth")
+  val sidA = uniq("sess-auth-a")
+  val sidB = uniq("sess-auth-b")
   mkSession(sidA)
   mkSession(sidB)
-  val tokenA = mintToken(sidA, "default")
-  val _tokenB = mintToken(sidB, "default")
+  val tokenA = mintToken(sidA, me)
+  val _tokenB = mintToken(sidB, me)
 
   // Bad token entirely.
   match createPermissionRequestHandler(sidA, bearer("not-the-real-token"), CreatePermissionRequestRequest(toolName = "Bash", inputJson = "{}")) {
@@ -227,18 +248,19 @@ test "callback auth failures: bad token, missing header, cross-session token, no
   }
 
   // Non-owner answer: session C is owned by a different user; a caller
-  // stamped as "default" must not be able to answer C's requests, even
+  // stamped as a different user must not be able to answer C's requests, even
   // though they know the request id (derived via getSession's owner scoping,
   // same as every other session sub-resource handler).
-  CloudAgents.Auth.setCurrentUserId("other-user")
-  val sidC = "sess-auth-c"
+  val other = newUser("callback-auth-other")
+  CloudAgents.Auth.setCurrentUserId(other)
+  val sidC = uniq("sess-auth-c")
   mkSession(sidC)
-  val tokenC = mintToken(sidC, "other-user")
+  val tokenC = mintToken(sidC, other)
   val reqC = match createPermissionRequestHandler(sidC, bearer(tokenC), CreatePermissionRequestRequest(toolName = "Bash", inputJson = "{}")) {
     case Ok(r) -> r
     case Err(e) -> panic("setup create failed: " + toString(e.status))
   }
-  CloudAgents.Auth.setCurrentUserId("default")
+  CloudAgents.Auth.setCurrentUserId(me)
   match answerPermissionRequestHandler(sidC, reqC.id, AnswerPermissionRequestRequest(decision = "allow", note = "", updatedInputJson = "")) {
     case Ok(_) -> assertTrue(false, "a caller who does not own the session must not answer its requests")
     case Err(e) -> assertEqualInt(e.status, 404, "non-owner answer returns 404 (no ownership leak)")
@@ -246,23 +268,21 @@ test "callback auth failures: bad token, missing header, cross-session token, no
 }
 
 test "callback token is persisted only as its SHA-256 hash" {
-  val dbPath = useFreshTestDb("callback-token-hash")
-  defer {
-    cleanupTestDb(dbPath)
+  if not live() {
+    return
   }
-  CloudAgents.Auth.setCurrentUserId("default")
-  val sid = "sess-token-hash"
+  val me = freshUser("callback-token-hash")
+  val sid = uniq("sess-token-hash")
   mkSession(sid)
-  val token = mintToken(sid, "default")
+  val token = mintToken(sid, me)
 
   val storedHash = match CloudAgents.SessionStore.callbackTokenHashForSession(sid) {
     case Ok(Some(h)) -> h
     case Ok(None) -> panic("session vanished")
-    case Err(e) -> panic("callbackTokenHashForSession failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+    case Err(e) -> panic("callbackTokenHashForSession failed: " + CloudAgents.Db.dbErrorMessage(e))
   }
   assertEqual(storedHash, CloudAgents.Auth.hashCallbackToken(token), "the stored value is the token's hash")
   assertTrue(storedHash != token, "the raw token is not what is stored")
-  assertEqual(plaintextCallbackToken(sid), "", "the legacy plaintext column is never written")
 
   // Hash round trip: the raw token authorizes; the stored hash does not.
   match createPermissionRequestHandler(sid, bearer(token), CreatePermissionRequestRequest(toolName = "Bash", inputJson = "{}")) {
@@ -275,7 +295,7 @@ test "callback token is persisted only as its SHA-256 hash" {
   }
 
   // Re-minting (a new container start) replaces the hash: the old token stops working.
-  val fresh = mintToken(sid, "default")
+  val fresh = mintToken(sid, me)
   match createPermissionRequestHandler(sid, bearer(token), CreatePermissionRequestRequest(toolName = "Bash", inputJson = "{}")) {
     case Ok(_) -> assertTrue(false, "a superseded token must be rejected")
     case Err(e) -> assertEqualInt(e.status, 401, "superseded token returns 401")
@@ -286,37 +306,50 @@ test "callback token is persisted only as its SHA-256 hash" {
   }
 }
 
-test "a pre-migration plaintext token with no hash fails closed" {
-  val dbPath = useFreshTestDb("callback-token-legacy")
-  defer {
-    cleanupTestDb(dbPath)
+test "a session route with an empty stored hash fails closed" {
+  if not live() {
+    return
   }
-  CloudAgents.Auth.setCurrentUserId("default")
-  val sid = "sess-token-legacy"
+  val me = freshUser("callback-token-empty-hash")
+  val sid = uniq("sess-token-empty-hash")
   mkSession(sid)
-  // A row as migration 0010 left it: plaintext token, no hash. Migration 0036
-  // clears the plaintext; even if one survived, it must never authorize.
-  execSql(
-    "UPDATE sessions SET callback_token = 'legacy-plaintext-token', callback_token_hash = '' WHERE id = '" + sid + "'"
-  )
-  match createPermissionRequestHandler(sid, bearer("legacy-plaintext-token"), CreatePermissionRequestRequest(toolName = "Bash", inputJson = "{}")) {
-    case Ok(_) -> assertTrue(false, "a legacy plaintext token must not authorize")
-    case Err(e) -> assertEqualInt(e.status, 401, "legacy plaintext token returns 401")
+  val token = mintToken(sid, me)
+  // A route that never minted a token (or was blanked) stores ''; nothing a
+  // caller can present may hash to it.
+  val u = match CloudAgents.PgStore.open(CloudAgents.Pg.personalScope(me)) {
+    case Ok(x) -> x
+    case Err(e) -> panic("open failed: " + CloudAgents.Db.dbErrorMessage(e))
   }
-  execSql(CloudAgents.Db.clearSessionsPlaintextCallbackTokensSql())
-  assertEqual(plaintextCallbackToken(sid), "", "migration 0036's clear statement blanks the plaintext column")
+  defer {
+    CloudAgents.PgStore.release(u)
+  }
+  match CloudAgents.PgStore.ex(u, "UPDATE session_routes SET callback_token_hash = '' WHERE session_id = @p0", [sid]) {
+    case Ok(n) -> assertEqualInt(n, 1, "the route's hash was blanked")
+    case Err(e) -> panic("blanking the hash failed: " + CloudAgents.Db.dbErrorMessage(e))
+  }
+  match CloudAgents.PgStore.commit(u) {
+    case Ok(_) -> ()
+    case Err(e) -> panic("commit failed: " + CloudAgents.Db.dbErrorMessage(e))
+  }
+  match createPermissionRequestHandler(sid, bearer(token), CreatePermissionRequestRequest(toolName = "Bash", inputJson = "{}")) {
+    case Ok(_) -> assertTrue(false, "a token must not authorize against an empty stored hash")
+    case Err(e) -> assertEqualInt(e.status, 401, "empty stored hash returns 401")
+  }
+  match createPermissionRequestHandler(sid, "Bearer ", CreatePermissionRequestRequest(toolName = "Bash", inputJson = "{}")) {
+    case Ok(_) -> assertTrue(false, "an empty bearer token must not authorize against an empty stored hash")
+    case Err(e) -> assertEqualInt(e.status, 401, "empty bearer returns 401")
+  }
 }
 
 // ── User questions ──────────────────────────────────────────────────────────
 test "user question round trip: create -> poll pending -> answer -> poll answered" {
-  val dbPath = useFreshTestDb("question-roundtrip")
-  defer {
-    cleanupTestDb(dbPath)
+  if not live() {
+    return
   }
-  CloudAgents.Auth.setCurrentUserId("default")
-  val sid = "sess-question-1"
+  val me = freshUser("question-roundtrip")
+  val sid = uniq("sess-question-1")
   mkSession(sid)
-  val token = mintToken(sid, "default")
+  val token = mintToken(sid, me)
 
   val created = match createUserQuestionHandler(sid, bearer(token), CreateUserQuestionRequest(question = "Which package?", optionsJson = "[\"A\",\"B\"]")) {
     case Ok(r) -> r
@@ -349,16 +382,18 @@ test "user question round trip: create -> poll pending -> answer -> poll answere
 }
 
 test "question timeout is distinct from an empty-string answer" {
-  val dbPath = useFreshTestDb("question-timeout")
-  defer {
-    cleanupTestDb(dbPath)
+  if not live() {
+    return
   }
-  CloudAgents.Auth.setCurrentUserId("default")
-  val sid = "sess-question-2"
+  val me = freshUser("question-timeout")
+  val sid = uniq("sess-question-2")
   mkSession(sid)
-  val token = mintToken(sid, "default")
+  val token = mintToken(sid, me)
 
   Env.SetEnvironmentVariable("CLOUD_AGENTS_CALLBACK_TIMEOUT_MS", "0")
+  defer {
+    Env.SetEnvironmentVariable("CLOUD_AGENTS_CALLBACK_TIMEOUT_MS", "")
+  }
   val created = match createUserQuestionHandler(sid, bearer(token), CreateUserQuestionRequest(question = "Proceed?", optionsJson = "")) {
     case Ok(r) -> r
     case Err(e) -> panic("create failed: " + toString(e.status))
@@ -374,14 +409,13 @@ test "question timeout is distinct from an empty-string answer" {
 
 // ── Progress reports ────────────────────────────────────────────────────────
 test "report_progress persists and validates percentComplete" {
-  val dbPath = useFreshTestDb("progress")
-  defer {
-    cleanupTestDb(dbPath)
+  if not live() {
+    return
   }
-  CloudAgents.Auth.setCurrentUserId("default")
-  val sid = "sess-progress-1"
+  val me = freshUser("progress")
+  val sid = uniq("sess-progress-1")
   mkSession(sid)
-  val token = mintToken(sid, "default")
+  val token = mintToken(sid, me)
 
   match reportProgressHandler(sid, bearer(token), ReportProgressRequest(summary = "cloning repo", percentComplete = "10")) {
     case Ok(_) -> ()
@@ -392,7 +426,7 @@ test "report_progress persists and validates percentComplete" {
       assertEqual(p.summary, "cloning repo", "summary persisted")
       assertEqual(p.percent, "10", "percent persisted")
     }
-    case Err(e) -> assertTrue(false, "sessionProgress lookup failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+    case Err(e) -> assertTrue(false, "sessionProgress lookup failed: " + CloudAgents.Db.dbErrorMessage(e))
   }
 
   // A later report replaces the prior one (latest-only, not a history log).
@@ -402,7 +436,7 @@ test "report_progress persists and validates percentComplete" {
   }
   match CloudAgents.Repository.sessionProgress(sid, CloudAgents.Auth.requestScope()) {
     case Ok(p) -> assertEqual(p.summary, "running tests", "latest report replaces the prior one")
-    case Err(e) -> assertTrue(false, "sessionProgress lookup failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+    case Err(e) -> assertTrue(false, "sessionProgress lookup failed: " + CloudAgents.Db.dbErrorMessage(e))
   }
 
   // Out-of-range percent is rejected before anything is written.
@@ -412,16 +446,16 @@ test "report_progress persists and validates percentComplete" {
   }
   match CloudAgents.Repository.sessionProgress(sid, CloudAgents.Auth.requestScope()) {
     case Ok(p) -> assertEqual(p.summary, "running tests", "rejected report leaves the prior state untouched")
-    case Err(e) -> assertTrue(false, "sessionProgress lookup failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+    case Err(e) -> assertTrue(false, "sessionProgress lookup failed: " + CloudAgents.Db.dbErrorMessage(e))
   }
 }
 
 // ── Validation ───────────────────────────────────────────────────────────────
 test "callback endpoints reject an empty session id before touching the database" {
-  val dbPath = useFreshTestDb("empty-id")
-  defer {
-    cleanupTestDb(dbPath)
+  if not live() {
+    return
   }
+  val me = freshUser("empty-id")
   match createPermissionRequestHandler("", "", CreatePermissionRequestRequest(toolName = "Bash", inputJson = "{}")) {
     case Ok(_) -> assertTrue(false, "an empty session id must be rejected")
     case Err(e) -> assertEqualInt(e.status, 400, "empty id returns 400")
@@ -437,14 +471,13 @@ test "callback endpoints reject an empty session id before touching the database
 }
 
 test "listPendingCallbacksHandler returns all currently active callbacks" {
-  val dbPath = useFreshTestDb("pending-callbacks")
-  defer {
-    cleanupTestDb(dbPath)
+  if not live() {
+    return
   }
-  CloudAgents.Auth.setCurrentUserId("default")
-  val sid = "sess-pending-1"
+  val me = freshUser("pending-callbacks")
+  val sid = uniq("sess-pending-1")
   mkSession(sid)
-  val token = mintToken(sid, "default")
+  val token = mintToken(sid, me)
 
   // Starts empty
   match CloudAgents.Callbacks.listPendingCallbacksHandler(sid) {

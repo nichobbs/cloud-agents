@@ -47,12 +47,15 @@ pub func runMigrateCommand(): Int {
   }
 }
 
-/// Run the service-role self-check when Postgres is configured. `Ok(())` when
-/// Postgres is not configured (the service is still on SQLite) or the check
-/// passes; `Err(message)` means the process must not serve.
+/// Run the service-role self-check. `Ok(())` when the check passes;
+/// `Err(message)` means the process must not serve, including when no
+/// service DSN is configured, since every store is in Postgres.
 pub func checkServiceRole(): Result[Unit, String] {
   if not CloudAgents.Pg.serviceConfigured() {
-    return Ok(value = ())
+    return Err(
+      error = CloudAgents.Pg.serviceDsnVar() +
+        " is not set; it must hold the cloudagents_app DSN (deploy/postgres/provision.sql)"
+    )
   }
   val conn = match CloudAgents.Pg.connectService() {
     case Ok(c) -> c

@@ -22,8 +22,8 @@
 //! rejected (by the policy's WITH CHECK, and by `NOT NULL` if it ever got that
 //! far).
 //!
-//! Types follow what the SQLite store actually writes (every SQLite column is
-//! TEXT): epoch-millisecond strings become `timestamptz`, with `''`/`'0'`
+//! Types follow what the earlier SQLite store wrote (every column was TEXT):
+//! epoch-millisecond strings become `timestamptz`, with `''`/`'0'`
 //! "unset" sentinels becoming NULL; `'0'`/`'1'` and `'true'`/`'false'` flags
 //! become `boolean` (nullable where `''` is a third state); counts, positions
 //! and sequence numbers become integers (12-digit zero padding on
@@ -32,14 +32,13 @@
 //! payloads, the ingest outbox body, permission rule inputs) or passed through
 //! verbatim, and none is queried by path.
 //!
-//! No foreign keys between tenant-owned tables yet: the SQLite store has none
-//! and its delete paths rely on application ordering, so each is added with
-//! its domain's port (slice C) once that ordering is verified. A stray
+//! No foreign keys between tenant-owned tables yet: the earlier SQLite store had
+//! none and its delete paths rely on application ordering, so each is added
+//! with its domain's port (slice C) once that ordering is verified. A stray
 //! cross-tenant id cannot be read through, because both rows are under RLS.
 //!
-//! `0001_baseline` may be edited in place until the production cut-over
-//! (slice E): no production Postgres database exists before then. After
-//! cut-over it is frozen and changes go in new migrations.
+//! `0001_baseline` is frozen: deployments applied it before the cut-over
+//! (slice E), so every change goes in a new migration.
 @runtime_checked
 package CloudAgents.Pg.Schema
 
@@ -51,11 +50,14 @@ pub record PgMigration {
 }
 
 pub func migrations(): slice[PgMigration] {
-  return [PgMigration(version = "0001_baseline", statements = baselineStatements())]
+  return [
+    PgMigration(version = "0001_baseline", statements = baselineStatements()),
+    PgMigration(version = "0002_cutover", statements = cutoverStatements())
+  ]
 }
 
 pub func latestVersion(): String {
-  return "0001_baseline"
+  return "0002_cutover"
 }
 
 // ─── Fragments ──────────────────────────────────────────────────────────────
@@ -530,7 +532,7 @@ func mcpServerPart(name: in String): slice[String] {
 // ─── Tenant-owned tables: capture handoff ───────────────────────────────────
 /// The graph-ingest outbox. `body` is canonical JSON whose exact bytes are
 /// hashed into `body_hash` and re-sent verbatim. `given_up_at` replaces the
-/// SQLite store's `next_attempt_at = '99999999999999'` terminal sentinel, and
+/// earlier SQLite store's `next_attempt_at = '99999999999999'` terminal sentinel, and
 /// `claimed_until` is the §5.3 lease. `user_id` is the session owner, whose
 /// scope a drain records the outcome under. The claimer may delete delivered
 /// rows only, for `prune_graph_ingest_outbox`.
@@ -632,7 +634,7 @@ func ledgerTables(): slice[String] {
         "session_id text NOT NULL, attempted_at timestamptz, last_error text NOT NULL DEFAULT '', " +
           "lease_until timestamptz, PRIMARY KEY (tenant_id, session_id)"
       ),
-      // config_key replaces the SQLite column misnamed config_hash: it is the
+      // config_key replaces the old column misnamed config_hash: it is the
       // plain `harness|model|repoAccess` string, not a hash.
       tenantTable(
         "ledger_observer",
@@ -878,8 +880,9 @@ func claimFunctions(): slice[String] {
   ]
 }
 
-/// The one-off SQLite export runs as the BYPASSRLS migrator (spec §7): it may
-/// read (for its precondition and count checks) and insert, nothing else.
+/// Grants for a one-off SQLite-export role, which slice D was to use. The
+/// export was dropped (spec §7) and `0002_cutover` revokes these; the baseline
+/// is frozen, so they stay here.
 func migratorGrants(): slice[String] {
   return ["GRANT SELECT, INSERT ON ALL TABLES IN SCHEMA public TO cloudagents_migrator"]
 }
@@ -899,4 +902,21 @@ func baselineStatements(): slice[String] {
       migratorGrants()
     ]
   )
+}
+
+/// `0002_cutover` (spec §9 slice E):
+/// - the ledger's repository-policy cache may record "unavailable", a
+///   transient GitHub failure the service retries (src/ledger/service.l), as
+///   the earlier SQLite store did;
+/// - the unused export role loses its table grants (the export was dropped,
+///   spec §7). Dropping the role itself needs a superuser; provision.sql no
+///   longer gives it BYPASSRLS, and the self-check still refuses to serve
+///   while it can log in.
+func cutoverStatements(): slice[String] {
+  return [
+    "ALTER TABLE public.ledger_sessions DROP CONSTRAINT ledger_sessions_policy_status_check",
+    "ALTER TABLE public.ledger_sessions ADD CONSTRAINT ledger_sessions_policy_status_check " +
+      "CHECK (policy_status IN ('', 'absent', 'loaded', 'invalid', 'unavailable'))",
+    "REVOKE ALL ON ALL TABLES IN SCHEMA public FROM cloudagents_migrator"
+  ]
 }

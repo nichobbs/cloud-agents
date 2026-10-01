@@ -12,7 +12,6 @@ import CloudAgents.NetworkPolicy
 import CloudAgents.Repository
 import CloudAgents.RunnerEnv
 import CloudAgents.SessionStore
-import CloudAgents.Sqlite
 import CloudAgents.Streaming
 import CloudAgents.Capture.Render
 import CloudAgents.CheckpointBridge
@@ -175,11 +174,11 @@ pub async func createRunnerContainer(
   val routeScope = match CloudAgents.SessionStore.sessionRouteScope(sessionId) {
     case Ok(Some(v)) -> v
     case Ok(None) -> return Err(error = "Failed to resolve the session's tenant: no route for session " + sessionId)
-    case Err(e) -> return Err(error = "Failed to resolve the session's tenant: " + CloudAgents.Sqlite.dbErrorMessage(e))
+    case Err(e) -> return Err(error = "Failed to resolve the session's tenant: " + CloudAgents.Db.dbErrorMessage(e))
   }
   val observer = match CloudAgents.Ledger.Store.observerRunInfo(sessionId, routeScope) {
     case Ok(o) -> o
-    case Err(e) -> return Err(error = "Failed to resolve the observer settings: " + CloudAgents.Sqlite.dbErrorMessage(e))
+    case Err(e) -> return Err(error = "Failed to resolve the observer settings: " + CloudAgents.Db.dbErrorMessage(e))
   }
   var isObserver = false
   match observer {
@@ -258,7 +257,7 @@ pub async func createRunnerContainer(
       }
       case Err(e) -> println(
         "WARNING: failed to mint MCP-callback token for session " + sessionId + ": " +
-          CloudAgents.Sqlite.dbErrorMessage(e)
+          CloudAgents.Db.dbErrorMessage(e)
       )
     }
   }
@@ -321,7 +320,7 @@ pub async func createRunnerContainer(
       }
       case Err(e) -> println(
         "WARNING: failed to resolve enabled tools for session " + sessionId + ": " +
-          CloudAgents.Sqlite.dbErrorMessage(e)
+          CloudAgents.Db.dbErrorMessage(e)
       )
     }
   }
@@ -343,7 +342,7 @@ pub async func createRunnerContainer(
       }
       case Err(e) -> println(
         "WARNING: failed to load granted skills for session " + sessionId + ": " +
-          CloudAgents.Sqlite.dbErrorMessage(e)
+          CloudAgents.Db.dbErrorMessage(e)
       )
     }
     match CloudAgents.Repository.subagentsForProfile(CloudAgents.Pg.personalScope(userId), profileId) {
@@ -354,7 +353,7 @@ pub async func createRunnerContainer(
       }
       case Err(e) -> println(
         "WARNING: failed to load granted subagents for session " + sessionId + ": " +
-          CloudAgents.Sqlite.dbErrorMessage(e)
+          CloudAgents.Db.dbErrorMessage(e)
       )
     }
     match CloudAgents.Repository.mcpServersForProfile(CloudAgents.Pg.personalScope(userId), profileId) {
@@ -365,7 +364,7 @@ pub async func createRunnerContainer(
       }
       case Err(e) -> println(
         "WARNING: failed to load granted MCP servers for session " + sessionId + ": " +
-          CloudAgents.Sqlite.dbErrorMessage(e)
+          CloudAgents.Db.dbErrorMessage(e)
       )
     }
   }
@@ -378,7 +377,7 @@ pub async func createRunnerContainer(
   // boundaries fail closed together.
   val policy = match CloudAgents.Repository.profileNetworkPolicy(CloudAgents.Pg.personalScope(userId), profileId) {
     case Ok(p) -> p
-    case Err(e) -> return Err(error = "Failed to resolve network policy: " + CloudAgents.Sqlite.dbErrorMessage(e))
+    case Err(e) -> return Err(error = "Failed to resolve network policy: " + CloudAgents.Db.dbErrorMessage(e))
   }
   val proxyEnv = CloudAgents.NetworkPolicy.proxyEnvForPolicy(policy)
   var pi = 0
@@ -700,8 +699,7 @@ func renewRunHeartbeat(sessionId: in String, userId: in String): Unit {
   match CloudAgents.SessionStore.heartbeatRun(sessionId, CloudAgents.Pg.personalScope(userId)) {
     case Ok(_) -> ()
     case Err(e) -> println(
-      "WARNING: run heartbeat failed for session " + sessionId + ": " +
-        CloudAgents.Sqlite.dbErrorMessage(e)
+      "WARNING: run heartbeat failed for session " + sessionId + ": " + CloudAgents.Db.dbErrorMessage(e)
     )
   }
 }
@@ -954,7 +952,7 @@ pub func streamSessionMessage(
     // WARNING (matches this file's other best-effort log lines).
     case Err(e) -> println(
       "WARNING: failed to resume capture hash-chain cursor for session " + sessionId + ": " +
-        CloudAgents.Sqlite.dbErrorMessage(e)
+        CloudAgents.Db.dbErrorMessage(e)
     )
   }
   var finished = false
@@ -1082,7 +1080,7 @@ pub func streamSessionMessage(
               " capture event(s) for session " +
               sessionId +
               ": " +
-              CloudAgents.Sqlite.dbErrorMessage(e)
+              CloudAgents.Db.dbErrorMessage(e)
           )
         }
       }
@@ -1370,7 +1368,7 @@ pub func streamSessionMessage(
             " final capture event(s) for session " +
             sessionId +
             ": " +
-            CloudAgents.Sqlite.dbErrorMessage(e)
+            CloudAgents.Db.dbErrorMessage(e)
         )
       }
     }

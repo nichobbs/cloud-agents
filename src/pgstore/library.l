@@ -1,10 +1,9 @@
-//! CloudAgents.PgStore.Library — the Postgres implementation of profiles and
+//! CloudAgents.PgStore.Library — the Postgres store for profiles and
 //! the per-user library (skills, subagents, MCP servers) and the grants that
-//! link them, mirroring the SQLite-backed functions in
-//! `CloudAgents.Repository` with the same signatures and semantics
+//! link them, behind the `CloudAgents.Repository` facade
 //! (docs/phase11-postgres-tenancy.md §9 slices B/C).
 //!
-//! Semantics carried over from the SQLite store:
+//! Semantics:
 //! - every read and write is also filtered by the caller's user id (creator-
 //!   only visibility within the tenant, spec §5.4);
 //! - names and grant ids sort in byte order (`COLLATE "C"`); MCP server
@@ -20,7 +19,7 @@
 //!   `mcpServersForProfile` returns only enabled servers.
 //!
 //! `decryptedCredentialsForProfile` reads the user-owned credential vault and
-//! is ported with the credentials domain.
+//! lives with the credentials domain.
 @runtime_checked
 package CloudAgents.PgStore.Library
 
@@ -30,7 +29,7 @@ import Db
 import CloudAgents.Pg
 import CloudAgents.PgStore
 import CloudAgents.Repository
-import CloudAgents.Sqlite
+import CloudAgents.Db
 import CloudAgents.ToolPolicy
 
 alias PgUnit = CloudAgents.PgStore.PgUnit
@@ -48,7 +47,7 @@ func stamps(prefix: in String): String {
     " AS updated_at"
 }
 
-func values(u: in PgUnit, sql: in String, params: in slice[String]): Result[slice[String], CloudAgents.Sqlite.DbError] {
+func values(u: in PgUnit, sql: in String, params: in slice[String]): Result[slice[String], CloudAgents.Db.DbError] {
   val rows = CloudAgents.PgStore.q(u, sql, params)?
   var acc: slice[String] = []
   for r in rows {
@@ -75,7 +74,7 @@ func grantColumn(table: in String): String {
 
 func grantValues(
   u: in PgUnit, table: in String, profileId: in String, userId: in String
-): Result[slice[String], CloudAgents.Sqlite.DbError] {
+): Result[slice[String], CloudAgents.Db.DbError] {
   val c = grantColumn(table)
   return values(
     u,
@@ -87,7 +86,7 @@ func grantValues(
 
 func replaceGrants(
   u: in PgUnit, table: in String, profileId: in String, userId: in String, items: in slice[String]
-): Result[Unit, CloudAgents.Sqlite.DbError] {
+): Result[Unit, CloudAgents.Db.DbError] {
   CloudAgents.PgStore.ex(u, "DELETE FROM " + table + " WHERE profile_id = @p0 AND user_id = @p1", [profileId, userId])?
   for item in items {
     CloudAgents.PgStore.ex(u, "INSERT INTO " + table + " (id, profile_id, user_id, " + grantColumn(table) + ") VALUES (@p0, @p1, @p2, @p3) " + "ON CONFLICT (tenant_id, profile_id, " + grantColumn(table) + ") DO NOTHING", [newId(), profileId, userId, item])?
@@ -104,7 +103,7 @@ func replaceAllGrants(
   subagentIds: in slice[String],
   mcpServerIds: in slice[String],
   tools: in slice[String],
-): Result[Unit, CloudAgents.Sqlite.DbError] {
+): Result[Unit, CloudAgents.Db.DbError] {
   replaceGrants(u, "profile_credentials", profileId, userId, credentials)?
   replaceGrants(u, "profile_skills", profileId, userId, skillIds)?
   replaceGrants(u, "profile_subagents", profileId, userId, subagentIds)?
@@ -117,7 +116,7 @@ func profileCols(): String {
   return "id, user_id, name, harness, network_policy, credential_mode, tool_mode, " + stamps("")
 }
 
-func toProfile(u: in PgUnit, r: in DbRow): Result[CloudAgents.Repository.Profile, CloudAgents.Sqlite.DbError] {
+func toProfile(u: in PgUnit, r: in DbRow): Result[CloudAgents.Repository.Profile, CloudAgents.Db.DbError] {
   val pid = col(r, "id")
   val uid = col(r, "user_id")
   // Hoisted: `?` inside a call argument can emit invalid IL (lyric-lang#6448).
@@ -148,7 +147,7 @@ func toProfile(u: in PgUnit, r: in DbRow): Result[CloudAgents.Repository.Profile
 
 func getProfileIn(
   u: in PgUnit, id: in String, userId: in String
-): Result[Option[CloudAgents.Repository.Profile], CloudAgents.Sqlite.DbError] {
+): Result[Option[CloudAgents.Repository.Profile], CloudAgents.Db.DbError] {
   val rows = CloudAgents.PgStore.q(u, "SELECT " + profileCols() + " FROM profiles WHERE id = @p0 AND user_id = @p1", [id, userId])?
   if rows.length == 0 {
     return Ok(value = None)
@@ -161,7 +160,7 @@ func getProfileIn(
 /// closed) for a profile id that no longer resolves.
 pub func profileNetworkPolicy(
   sc: in CloudAgents.Pg.TenantScope, profileId: in String
-): Result[String, CloudAgents.Sqlite.DbError] {
+): Result[String, CloudAgents.Db.DbError] {
   if profileId.length == 0 {
     return Ok(value = "full")
   }
@@ -183,7 +182,7 @@ pub func addProfile(
   mcpServerIds: in slice[String],
   toolMode: in String,
   tools: in slice[String],
-): Result[CloudAgents.Repository.Profile, CloudAgents.Sqlite.DbError] {
+): Result[CloudAgents.Repository.Profile, CloudAgents.Db.DbError] {
   val id = newId()
   val ts = CloudAgents.Repository.nowMillis()
   val u = CloudAgents.PgStore.open(sc)?
@@ -215,7 +214,7 @@ pub func addProfile(
 
 pub func listProfiles(
   sc: in CloudAgents.Pg.TenantScope
-): Result[slice[CloudAgents.Repository.Profile], CloudAgents.Sqlite.DbError] {
+): Result[slice[CloudAgents.Repository.Profile], CloudAgents.Db.DbError] {
   val u = CloudAgents.PgStore.open(sc)?
   defer {
     CloudAgents.PgStore.release(u)
@@ -232,13 +231,13 @@ pub func listProfiles(
 
 pub func profileIdByName(
   sc: in CloudAgents.Pg.TenantScope, name: in String
-): Result[Option[String], CloudAgents.Sqlite.DbError] {
+): Result[Option[String], CloudAgents.Db.DbError] {
   return idByName(sc, "profiles", name)
 }
 
 pub func getProfile(
   id: in String, sc: in CloudAgents.Pg.TenantScope
-): Result[Option[CloudAgents.Repository.Profile], CloudAgents.Sqlite.DbError] {
+): Result[Option[CloudAgents.Repository.Profile], CloudAgents.Db.DbError] {
   val u = CloudAgents.PgStore.open(sc)?
   defer {
     CloudAgents.PgStore.release(u)
@@ -261,7 +260,7 @@ pub func updateProfile(
   mcpServerIds: in slice[String],
   toolMode: in String,
   tools: in slice[String],
-): Result[Int, CloudAgents.Sqlite.DbError] {
+): Result[Int, CloudAgents.Db.DbError] {
   val u = CloudAgents.PgStore.open(sc)?
   defer {
     CloudAgents.PgStore.release(u)
@@ -274,7 +273,7 @@ pub func updateProfile(
   return Ok(value = n)
 }
 
-pub func deleteProfile(id: in String, sc: in CloudAgents.Pg.TenantScope): Result[Int, CloudAgents.Sqlite.DbError] {
+pub func deleteProfile(id: in String, sc: in CloudAgents.Pg.TenantScope): Result[Int, CloudAgents.Db.DbError] {
   val u = CloudAgents.PgStore.open(sc)?
   defer {
     CloudAgents.PgStore.release(u)
@@ -293,7 +292,7 @@ pub func deleteProfile(id: in String, sc: in CloudAgents.Pg.TenantScope): Result
 /// no profile or one that no longer resolves.
 pub func enabledToolsForProfile(
   sc: in CloudAgents.Pg.TenantScope, profileId: in String
-): Result[String, CloudAgents.Sqlite.DbError] {
+): Result[String, CloudAgents.Db.DbError] {
   if profileId.length == 0 {
     return Ok(value = "")
   }
@@ -306,7 +305,7 @@ pub func enabledToolsForProfile(
 // ─── Shared library helpers ─────────────────────────────────────────────────
 func idByName(
   sc: in CloudAgents.Pg.TenantScope, table: in String, name: in String
-): Result[Option[String], CloudAgents.Sqlite.DbError] {
+): Result[Option[String], CloudAgents.Db.DbError] {
   val u = CloudAgents.PgStore.open(sc)?
   defer {
     CloudAgents.PgStore.release(u)
@@ -327,7 +326,7 @@ func deleteLibraryItem(
   grantCol: in String,
   id: in String,
   children: in slice[String],
-): Result[Int, CloudAgents.Sqlite.DbError] {
+): Result[Int, CloudAgents.Db.DbError] {
   val u = CloudAgents.PgStore.open(sc)?
   defer {
     CloudAgents.PgStore.release(u)
@@ -362,7 +361,7 @@ func toSkill(r: in DbRow): CloudAgents.Repository.Skill {
 
 func getSkillIn(
   u: in PgUnit, id: in String, userId: in String
-): Result[Option[CloudAgents.Repository.Skill], CloudAgents.Sqlite.DbError] {
+): Result[Option[CloudAgents.Repository.Skill], CloudAgents.Db.DbError] {
   val rows = CloudAgents.PgStore.q(u, "SELECT " + skillCols() + " FROM skills WHERE id = @p0 AND user_id = @p1", [id, userId])?
   if rows.length == 0 {
     return Ok(value = None)
@@ -372,7 +371,7 @@ func getSkillIn(
 
 pub func addSkill(
   sc: in CloudAgents.Pg.TenantScope, name: in String, description: in String, body: in String
-): Result[CloudAgents.Repository.Skill, CloudAgents.Sqlite.DbError] {
+): Result[CloudAgents.Repository.Skill, CloudAgents.Db.DbError] {
   val id = newId()
   val ts = CloudAgents.Repository.nowMillis()
   val u = CloudAgents.PgStore.open(sc)?
@@ -396,7 +395,7 @@ pub func addSkill(
 
 pub func listSkills(
   sc: in CloudAgents.Pg.TenantScope
-): Result[slice[CloudAgents.Repository.Skill], CloudAgents.Sqlite.DbError] {
+): Result[slice[CloudAgents.Repository.Skill], CloudAgents.Db.DbError] {
   val u = CloudAgents.PgStore.open(sc)?
   defer {
     CloudAgents.PgStore.release(u)
@@ -412,13 +411,13 @@ pub func listSkills(
 
 pub func skillIdByName(
   sc: in CloudAgents.Pg.TenantScope, name: in String
-): Result[Option[String], CloudAgents.Sqlite.DbError] {
+): Result[Option[String], CloudAgents.Db.DbError] {
   return idByName(sc, "skills", name)
 }
 
 pub func getSkill(
   id: in String, sc: in CloudAgents.Pg.TenantScope
-): Result[Option[CloudAgents.Repository.Skill], CloudAgents.Sqlite.DbError] {
+): Result[Option[CloudAgents.Repository.Skill], CloudAgents.Db.DbError] {
   val u = CloudAgents.PgStore.open(sc)?
   defer {
     CloudAgents.PgStore.release(u)
@@ -434,7 +433,7 @@ pub func updateSkill(
   name: in String,
   description: in String,
   body: in String,
-): Result[Int, CloudAgents.Sqlite.DbError] {
+): Result[Int, CloudAgents.Db.DbError] {
   val u = CloudAgents.PgStore.open(sc)?
   defer {
     CloudAgents.PgStore.release(u)
@@ -444,7 +443,7 @@ pub func updateSkill(
   return Ok(value = n)
 }
 
-pub func deleteSkill(id: in String, sc: in CloudAgents.Pg.TenantScope): Result[Int, CloudAgents.Sqlite.DbError] {
+pub func deleteSkill(id: in String, sc: in CloudAgents.Pg.TenantScope): Result[Int, CloudAgents.Db.DbError] {
   val none: slice[String] = []
   return deleteLibraryItem(sc, "skills", "profile_skills", "skill_id", id, none)
 }
@@ -469,7 +468,7 @@ func toSubagent(r: in DbRow): CloudAgents.Repository.Subagent {
 
 func getSubagentIn(
   u: in PgUnit, id: in String, userId: in String
-): Result[Option[CloudAgents.Repository.Subagent], CloudAgents.Sqlite.DbError] {
+): Result[Option[CloudAgents.Repository.Subagent], CloudAgents.Db.DbError] {
   val rows = CloudAgents.PgStore.q(u, "SELECT " + subagentCols() + " FROM subagents WHERE id = @p0 AND user_id = @p1", [id, userId])?
   if rows.length == 0 {
     return Ok(value = None)
@@ -483,7 +482,7 @@ pub func addSubagent(
   description: in String,
   systemPrompt: in String,
   model: in String,
-): Result[CloudAgents.Repository.Subagent, CloudAgents.Sqlite.DbError] {
+): Result[CloudAgents.Repository.Subagent, CloudAgents.Db.DbError] {
   val id = newId()
   val ts = CloudAgents.Repository.nowMillis()
   val u = CloudAgents.PgStore.open(sc)?
@@ -508,7 +507,7 @@ pub func addSubagent(
 
 pub func listSubagents(
   sc: in CloudAgents.Pg.TenantScope
-): Result[slice[CloudAgents.Repository.Subagent], CloudAgents.Sqlite.DbError] {
+): Result[slice[CloudAgents.Repository.Subagent], CloudAgents.Db.DbError] {
   val u = CloudAgents.PgStore.open(sc)?
   defer {
     CloudAgents.PgStore.release(u)
@@ -524,13 +523,13 @@ pub func listSubagents(
 
 pub func subagentIdByName(
   sc: in CloudAgents.Pg.TenantScope, name: in String
-): Result[Option[String], CloudAgents.Sqlite.DbError] {
+): Result[Option[String], CloudAgents.Db.DbError] {
   return idByName(sc, "subagents", name)
 }
 
 pub func getSubagent(
   id: in String, sc: in CloudAgents.Pg.TenantScope
-): Result[Option[CloudAgents.Repository.Subagent], CloudAgents.Sqlite.DbError] {
+): Result[Option[CloudAgents.Repository.Subagent], CloudAgents.Db.DbError] {
   val u = CloudAgents.PgStore.open(sc)?
   defer {
     CloudAgents.PgStore.release(u)
@@ -547,7 +546,7 @@ pub func updateSubagent(
   description: in String,
   systemPrompt: in String,
   model: in String,
-): Result[Int, CloudAgents.Sqlite.DbError] {
+): Result[Int, CloudAgents.Db.DbError] {
   val u = CloudAgents.PgStore.open(sc)?
   defer {
     CloudAgents.PgStore.release(u)
@@ -557,7 +556,7 @@ pub func updateSubagent(
   return Ok(value = n)
 }
 
-pub func deleteSubagent(id: in String, sc: in CloudAgents.Pg.TenantScope): Result[Int, CloudAgents.Sqlite.DbError] {
+pub func deleteSubagent(id: in String, sc: in CloudAgents.Pg.TenantScope): Result[Int, CloudAgents.Db.DbError] {
   val none: slice[String] = []
   return deleteLibraryItem(sc, "subagents", "profile_subagents", "subagent_id", id, none)
 }
@@ -569,7 +568,7 @@ func mcpChildTables(): slice[String] {
 
 func mcpChildValues(
   u: in PgUnit, table: in String, serverId: in String, userId: in String
-): Result[slice[String], CloudAgents.Sqlite.DbError] {
+): Result[slice[String], CloudAgents.Db.DbError] {
   return values(
     u,
     "SELECT value AS v FROM " + table + " WHERE mcp_server_id = @p0 AND user_id = @p1 ORDER BY position",
@@ -584,7 +583,7 @@ func replaceMcpChildren(
   args: in slice[String],
   env: in slice[String],
   headers: in slice[String],
-): Result[Unit, CloudAgents.Sqlite.DbError] {
+): Result[Unit, CloudAgents.Db.DbError] {
   for t in mcpChildTables() {
     CloudAgents.PgStore.ex(u, "DELETE FROM " + t + " WHERE mcp_server_id = @p0 AND user_id = @p1", [serverId, userId])?
   }
@@ -596,7 +595,7 @@ func replaceMcpChildren(
 
 func insertMcpChildren(
   u: in PgUnit, table: in String, serverId: in String, userId: in String, items: in slice[String]
-): Result[Unit, CloudAgents.Sqlite.DbError] {
+): Result[Unit, CloudAgents.Db.DbError] {
   var i = 0
   while i < items.length {
     CloudAgents.PgStore.ex(u, "INSERT INTO " + table + " (id, mcp_server_id, user_id, position, value) VALUES (@p0, @p1, @p2, @p3::integer, @p4)", [newId(), serverId, userId, i.toString(), items[i]])?
@@ -609,7 +608,7 @@ func mcpCols(): String {
   return "id, user_id, name, transport, command, url, CASE WHEN enabled THEN '1' ELSE '0' END AS enabled, " + stamps("")
 }
 
-func toMcpServer(u: in PgUnit, r: in DbRow): Result[CloudAgents.Repository.McpServer, CloudAgents.Sqlite.DbError] {
+func toMcpServer(u: in PgUnit, r: in DbRow): Result[CloudAgents.Repository.McpServer, CloudAgents.Db.DbError] {
   val id = col(r, "id")
   val uid = col(r, "user_id")
   val args = mcpChildValues(u, "mcp_server_args", id, uid)?
@@ -635,7 +634,7 @@ func toMcpServer(u: in PgUnit, r: in DbRow): Result[CloudAgents.Repository.McpSe
 
 func getMcpServerIn(
   u: in PgUnit, id: in String, userId: in String
-): Result[Option[CloudAgents.Repository.McpServer], CloudAgents.Sqlite.DbError] {
+): Result[Option[CloudAgents.Repository.McpServer], CloudAgents.Db.DbError] {
   val rows = CloudAgents.PgStore.q(u, "SELECT " + mcpCols() + " FROM mcp_servers WHERE id = @p0 AND user_id = @p1", [id, userId])?
   if rows.length == 0 {
     return Ok(value = None)
@@ -654,7 +653,7 @@ pub func addMcpServer(
   env: in slice[String],
   enabled: in String = "1",
   headers: in slice[String] = [],
-): Result[CloudAgents.Repository.McpServer, CloudAgents.Sqlite.DbError] {
+): Result[CloudAgents.Repository.McpServer, CloudAgents.Db.DbError] {
   val id = newId()
   val ts = CloudAgents.Repository.nowMillis()
   val u = CloudAgents.PgStore.open(sc)?
@@ -684,7 +683,7 @@ pub func addMcpServer(
 
 pub func listMcpServers(
   sc: in CloudAgents.Pg.TenantScope
-): Result[slice[CloudAgents.Repository.McpServer], CloudAgents.Sqlite.DbError] {
+): Result[slice[CloudAgents.Repository.McpServer], CloudAgents.Db.DbError] {
   val u = CloudAgents.PgStore.open(sc)?
   defer {
     CloudAgents.PgStore.release(u)
@@ -701,13 +700,13 @@ pub func listMcpServers(
 
 pub func mcpServerIdByName(
   sc: in CloudAgents.Pg.TenantScope, name: in String
-): Result[Option[String], CloudAgents.Sqlite.DbError] {
+): Result[Option[String], CloudAgents.Db.DbError] {
   return idByName(sc, "mcp_servers", name)
 }
 
 pub func getMcpServer(
   id: in String, sc: in CloudAgents.Pg.TenantScope
-): Result[Option[CloudAgents.Repository.McpServer], CloudAgents.Sqlite.DbError] {
+): Result[Option[CloudAgents.Repository.McpServer], CloudAgents.Db.DbError] {
   val u = CloudAgents.PgStore.open(sc)?
   defer {
     CloudAgents.PgStore.release(u)
@@ -728,7 +727,7 @@ pub func updateMcpServer(
   env: in slice[String],
   enabled: in String = "1",
   headers: in slice[String] = [],
-): Result[Int, CloudAgents.Sqlite.DbError] {
+): Result[Int, CloudAgents.Db.DbError] {
   val u = CloudAgents.PgStore.open(sc)?
   defer {
     CloudAgents.PgStore.release(u)
@@ -741,14 +740,14 @@ pub func updateMcpServer(
   return Ok(value = n)
 }
 
-pub func deleteMcpServer(id: in String, sc: in CloudAgents.Pg.TenantScope): Result[Int, CloudAgents.Sqlite.DbError] {
+pub func deleteMcpServer(id: in String, sc: in CloudAgents.Pg.TenantScope): Result[Int, CloudAgents.Db.DbError] {
   return deleteLibraryItem(sc, "mcp_servers", "profile_mcp_servers", "mcp_server_id", id, mcpChildTables())
 }
 
 // ─── A profile's granted library items ──────────────────────────────────────
 pub func skillsForProfile(
   sc: in CloudAgents.Pg.TenantScope, profileId: in String
-): Result[slice[CloudAgents.Repository.Skill], CloudAgents.Sqlite.DbError] {
+): Result[slice[CloudAgents.Repository.Skill], CloudAgents.Db.DbError] {
   var acc: slice[CloudAgents.Repository.Skill] = []
   if profileId.length == 0 {
     return Ok(value = acc)
@@ -772,7 +771,7 @@ pub func skillsForProfile(
 
 pub func subagentsForProfile(
   sc: in CloudAgents.Pg.TenantScope, profileId: in String
-): Result[slice[CloudAgents.Repository.Subagent], CloudAgents.Sqlite.DbError] {
+): Result[slice[CloudAgents.Repository.Subagent], CloudAgents.Db.DbError] {
   var acc: slice[CloudAgents.Repository.Subagent] = []
   if profileId.length == 0 {
     return Ok(value = acc)
@@ -797,7 +796,7 @@ pub func subagentsForProfile(
 /// The profile's granted MCP servers, enabled ones only.
 pub func mcpServersForProfile(
   sc: in CloudAgents.Pg.TenantScope, profileId: in String
-): Result[slice[CloudAgents.Repository.McpServer], CloudAgents.Sqlite.DbError] {
+): Result[slice[CloudAgents.Repository.McpServer], CloudAgents.Db.DbError] {
   var acc: slice[CloudAgents.Repository.McpServer] = []
   if profileId.length == 0 {
     return Ok(value = acc)

@@ -20,7 +20,7 @@ import Web
 import CloudAgents.Auth
 import CloudAgents.Repository
 import CloudAgents.SessionStore
-import CloudAgents.Sqlite
+import CloudAgents.Db
 import CloudAgents.Text
 
 val maxGroupNameLen = 200
@@ -32,8 +32,8 @@ val maxGroupNameLen = 200
 /// before any write.
 val maxGroupDepth = 10
 
-func dbError(e: in CloudAgents.Sqlite.DbError): Web.ApiError {
-  return Web.internalError(CloudAgents.Sqlite.dbErrorMessage(e))
+func dbError(e: in CloudAgents.Db.DbError): Web.ApiError {
+  return Web.internalError(CloudAgents.Db.dbErrorMessage(e))
 }
 
 /// Small local copy of CloudAgents.Callbacks.requireOwnedSession (that one is

@@ -40,7 +40,7 @@ import CloudAgents.GitHubApi
 import CloudAgents.GraphIngestOutbox
 import CloudAgents.Pg
 import CloudAgents.Repository
-import CloudAgents.Sqlite
+import CloudAgents.Db
 
 /// Matches the timeout `docs/capture-runtime-handoff.md` §5.2 specified for
 /// the original inline POST — short, self-chosen (not the 120s LLM-tuned
@@ -54,8 +54,8 @@ val defaultDrainLimit = 25
 
 val defaultPruneRetentionDays = 30
 
-func dbError(e: in CloudAgents.Sqlite.DbError): Web.ApiError {
-  return Web.internalError(CloudAgents.Sqlite.dbErrorMessage(e))
+func dbError(e: in CloudAgents.Db.DbError): Web.ApiError {
+  return Web.internalError(CloudAgents.Db.dbErrorMessage(e))
 }
 
 func digitValue(c: in String): Int {
@@ -170,7 +170,7 @@ func recordFailure(
       case Ok(_) -> ()
       case Err(e) -> println(
         "WARNING: graph-ingest-outbox: failed to mark id=" + row.id + " terminal: " +
-          CloudAgents.Sqlite.dbErrorMessage(e)
+          CloudAgents.Db.dbErrorMessage(e)
       )
     }
   } else {
@@ -188,7 +188,7 @@ func recordFailure(
       case Ok(_) -> ()
       case Err(e) -> println(
         "WARNING: graph-ingest-outbox: failed to record attempt for id=" + row.id + ": " +
-          CloudAgents.Sqlite.dbErrorMessage(e)
+          CloudAgents.Db.dbErrorMessage(e)
       )
     }
   }
@@ -214,7 +214,7 @@ pub func attemptDeliverRow(row: in CloudAgents.Repository.GraphIngestOutboxRow, 
         case Ok(_) -> ()
         case Err(e) -> println(
           "WARNING: graph-ingest-outbox: delivered id=" + row.id + " but failed to mark delivered: " +
-            CloudAgents.Sqlite.dbErrorMessage(e)
+            CloudAgents.Db.dbErrorMessage(e)
         )
       }
       println("graph-ingest-outbox: delivered id=" + row.id + " session=" + row.sessionId + " url=" + row.url)
@@ -261,7 +261,7 @@ pub func enqueueAndAttemptDelivery(sessionId: in String, body: in String, sc: in
   match CloudAgents.Repository.enqueueGraphIngest(sessionId, body, ingestUrl, sc) {
     case Err(e) -> println(
       "WARNING: graph-ingest-outbox enqueue failed for session " + sessionId + ": " +
-        CloudAgents.Sqlite.dbErrorMessage(e)
+        CloudAgents.Db.dbErrorMessage(e)
     )
     case Ok(row) -> {
       if row.deliveredAt != "" {
@@ -285,7 +285,7 @@ pub func enqueueAndAttemptDelivery(sessionId: in String, body: in String, sc: in
           )
           case Err(e) -> println(
             "WARNING: graph-ingest-outbox: could not claim id=" + row.id + ": " +
-              CloudAgents.Sqlite.dbErrorMessage(e)
+              CloudAgents.Db.dbErrorMessage(e)
           )
         }
       }
@@ -332,7 +332,7 @@ pub func drainGraphIngestHandler(): Result[String, Web.ApiError] {
   val pruned = match CloudAgents.Repository.pruneDeliveredGraphIngest(pruneRetentionDaysConfigured()) {
     case Ok(n) -> n
     case Err(e) -> {
-      println("WARNING: graph-ingest-outbox: prune failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+      println("WARNING: graph-ingest-outbox: prune failed: " + CloudAgents.Db.dbErrorMessage(e))
       0
     }
   }

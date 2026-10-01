@@ -1,14 +1,19 @@
+//! Webhook tests: URL validation, and the webhook registry and event outbox
+//! on the Postgres store (phase 11 cut-over).
 @test_module
 package CloudAgents.WebhookTests
 
 import Std.Core
+import Std.Environment
 import Std.Testing
 import Std.Uuid
-import CloudAgents.Db
+import CloudAgents.Auth
+import CloudAgents.Pg
+import CloudAgents.Pg.Migrate
+import CloudAgents.PgStore.Tenancy
 import CloudAgents.Repository
-import CloudAgents.Sqlite
+import CloudAgents.Db
 import CloudAgents.Webhooks
-import extern System.Environment as Env
 
 // ── URL validation (pure) ─────────────────────────────────────────────────────
 
@@ -47,106 +52,127 @@ test "webhook URL validation requires a clean https URL" {
   assertTrue(not isValidWebhookUrl("https://0x7f000001/hook"), "hex ip literal rejected")
 }
 
-// ── SQL builder shape ─────────────────────────────────────────────────────────
-
-test "webhook SQL builders are scoped and outbox-shaped" {
-  assertTrue(webhooksSchemaSql().contains("UNIQUE(user_id, url)"), "one url per user")
-  assertTrue(insertWebhookSql("w1", "u1", "https://x", "1000").contains("ON CONFLICT(user_id, url) DO NOTHING"), "register idempotent")
-  assertTrue(selectWebhooksSql("u1").contains("WHERE user_id = 'u1'"), "list scoped by owner")
-  assertTrue(deleteWebhookSql("w1", "u1").endsWith("AND user_id = 'u1'"), "delete scoped by owner")
-  assertTrue(insertWebhookEventSql("e1", "u1", "s1", "r1", "succeeded", "1000").contains("'0'"), "event starts undelivered")
-  assertTrue(selectPendingWebhookEventsSql("u1").contains("delivered = '0'"), "pending = undelivered")
-  assertTrue(selectPendingWebhookEventsSql("u1").contains("ORDER BY created_at ASC"), "FIFO delivery")
-  assertTrue(markWebhookEventDeliveredSql("e1", "u1").contains("SET delivered = '1'"), "mark delivered")
+// ── Live Postgres ─────────────────────────────────────────────────────────────
+//
+// The store is Postgres (docs/phase11-postgres-tenancy.md). These tests run iff
+// LYRIC_CONFIG_DB_CONNECTION_URL (cloudagents_app) and
+// CLOUD_AGENTS_MIGRATE_DATABASE_URL (cloudagents_owner) are set, and fail rather
+// than skip when CLOUD_AGENTS_REQUIRE_LIVE_PG=1 (CI). Each test acts as a fresh
+// user with its own personal tenant, so tests, suites and repeated runs against
+// the same database never see each other's rows.
+func live(): Bool {
+  val ok = CloudAgents.Pg.serviceConfigured() and
+    Std.Environment.getVarOrDefault(CloudAgents.Pg.migrateDsnVar(), "").length.toInt() > 0
+  if ok {
+    return true
+  }
+  assertTrue(
+    Std.Environment.getVarOrDefault("CLOUD_AGENTS_REQUIRE_LIVE_PG", "") != "1",
+    "CLOUD_AGENTS_REQUIRE_LIVE_PG=1 but LYRIC_CONFIG_DB_CONNECTION_URL or CLOUD_AGENTS_MIGRATE_DATABASE_URL is not set"
+  )
+  println("SKIP: webhook tests need LYRIC_CONFIG_DB_CONNECTION_URL and CLOUD_AGENTS_MIGRATE_DATABASE_URL")
+  return false
 }
 
-// ── Live-database ─────────────────────────────────────────────────────────────
-
-@externTarget("System.IO.File.Delete")
-func fileDelete(path: in String): Unit = ()
-
-func useFreshTestDb(tag: in String): String {
-  val path = "/tmp/cloud-agents-tests-" + tag + "-" + Std.Uuid.uuidToString(Std.Uuid.newUuid()) + ".db"
-  Env.SetEnvironmentVariable("CLOUD_AGENTS_DB_PATH", path)
-  match CloudAgents.Repository.initSchema() {
+func migrate(): Unit {
+  val conn = match CloudAgents.Pg.connectDsn(Std.Environment.getVarOrDefault(CloudAgents.Pg.migrateDsnVar(), "")) {
+    case Ok(c) -> c
+    case Err(e) -> panic(CloudAgents.Pg.pgErrorMessage(e))
+  }
+  defer {
+    conn.close()
+  }
+  match CloudAgents.Pg.Migrate.migrate(conn) {
     case Ok(_) -> ()
-    case Err(e) -> assertTrue(false, "initSchema failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
-  }
-  return path
-}
-
-func cleanupTestDb(path: in String): Unit {
-  try {
-    fileDelete(path)
-  } catch Bug as b {
-    // fine
+    case Err(e) -> panic("migrate failed: " + CloudAgents.Pg.pgErrorMessage(e))
   }
 }
 
-func mustWebhook(r: in Result[Webhook, CloudAgents.Sqlite.DbError]): Webhook {
+/// A new user with a provisioned personal tenant. Does not change the request
+/// identity.
+func newUser(tag: in String): String {
+  val uid = "t-" + tag + "-" + Std.Uuid.uuidToString(Std.Uuid.newUuid())
+  match CloudAgents.PgStore.Tenancy.ensurePersonalTenant(uid) {
+    case Ok(_) -> ()
+    case Err(e) -> panic("provisioning " + uid + " failed: " + CloudAgents.Db.dbErrorMessage(e))
+  }
+  return uid
+}
+
+/// Migrate, then make a new user the request identity (what handlers read via
+/// CloudAgents.Auth.requestScope()).
+func freshUser(tag: in String): String {
+  migrate()
+  val uid = newUser(tag)
+  CloudAgents.Auth.setCurrentUserId(uid)
+  return uid
+}
+
+func mustWebhook(r: in Result[Webhook, CloudAgents.Db.DbError]): Webhook {
   return match r {
     case Ok(w) -> w
-    case Err(e) -> panic("webhook op failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+    case Err(e) -> panic("webhook op failed: " + CloudAgents.Db.dbErrorMessage(e))
   }
 }
 
-func mustWebhooks(r: in Result[slice[Webhook], CloudAgents.Sqlite.DbError]): slice[Webhook] {
+func mustWebhooks(r: in Result[slice[Webhook], CloudAgents.Db.DbError]): slice[Webhook] {
   return match r {
     case Ok(ws) -> ws
-    case Err(e) -> panic("webhook list failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+    case Err(e) -> panic("webhook list failed: " + CloudAgents.Db.dbErrorMessage(e))
   }
 }
 
-func mustEvents(r: in Result[slice[WebhookEvent], CloudAgents.Sqlite.DbError]): slice[WebhookEvent] {
+func mustEvents(r: in Result[slice[WebhookEvent], CloudAgents.Db.DbError]): slice[WebhookEvent] {
   return match r {
     case Ok(es) -> es
-    case Err(e) -> panic("event list failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+    case Err(e) -> panic("event list failed: " + CloudAgents.Db.dbErrorMessage(e))
   }
 }
 
-func mustRows(r: in Result[Int, CloudAgents.Sqlite.DbError]): Int {
+func mustRows(r: in Result[Int, CloudAgents.Db.DbError]): Int {
   return match r {
     case Ok(n) -> n
-    case Err(e) -> panic("webhook write failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+    case Err(e) -> panic("webhook write failed: " + CloudAgents.Db.dbErrorMessage(e))
   }
 }
 
 test "Webhook registration is idempotent and per-user" {
-  val dbPath = useFreshTestDb("webhook-crud")
-  defer {
-    cleanupTestDb(dbPath)
+  if not live() {
+    return
   }
-  val mine = mustWebhook(addWebhook(CloudAgents.Pg.personalScope("default"), "https://example.com/hook"))
+  val me = freshUser("wh-webhook-crud")
+  val mine = mustWebhook(addWebhook(CloudAgents.Pg.personalScope(me), "https://example.com/hook"))
   assertTrue(mine.id.length > 0, "registered webhook has an id")
   // Re-registering the same URL is a no-op (UNIQUE) and must return the SAME
   // persisted row, not a freshly-minted id/timestamp (#255).
-  val again = mustWebhook(addWebhook(CloudAgents.Pg.personalScope("default"), "https://example.com/hook"))
+  val again = mustWebhook(addWebhook(CloudAgents.Pg.personalScope(me), "https://example.com/hook"))
   assertEqual(again.id, mine.id, "re-register returns the existing row's id")
-  assertEqualInt(mustWebhooks(listWebhooks(CloudAgents.Pg.personalScope("default"))).length.toInt(), 1, "same url not duplicated")
+  assertEqualInt(mustWebhooks(listWebhooks(CloudAgents.Pg.personalScope(me))).length.toInt(), 1, "same url not duplicated")
 
   // Another user's webhook is invisible.
-  val _ = mustWebhook(addWebhook(CloudAgents.Pg.personalScope("someone-else"), "https://other.com/hook"))
-  assertEqualInt(mustWebhooks(listWebhooks(CloudAgents.Pg.personalScope("default"))).length.toInt(), 1, "only my webhook listed")
+  val other = newUser("wh-other")
+  val _ = mustWebhook(addWebhook(CloudAgents.Pg.personalScope(other), "https://other.com/hook"))
+  assertEqualInt(mustWebhooks(listWebhooks(CloudAgents.Pg.personalScope(me))).length.toInt(), 1, "only my webhook listed")
 
-  assertEqualInt(mustRows(deleteWebhook(mine.id, CloudAgents.Pg.personalScope("default"))), 1, "delete my webhook")
-  assertEqualInt(mustWebhooks(listWebhooks(CloudAgents.Pg.personalScope("default"))).length.toInt(), 0, "empty after delete")
+  assertEqualInt(mustRows(deleteWebhook(mine.id, CloudAgents.Pg.personalScope(me))), 1, "delete my webhook")
+  assertEqualInt(mustWebhooks(listWebhooks(CloudAgents.Pg.personalScope(me))).length.toInt(), 0, "empty after delete")
 }
 
 test "Run-completion events flow through the outbox" {
-  val dbPath = useFreshTestDb("webhook-outbox")
-  defer {
-    cleanupTestDb(dbPath)
+  if not live() {
+    return
   }
-  val userId = "default"
+  val me = freshUser("wh-webhook-outbox")
+  val userId = me
   // Events are only enqueued when the user has a registered webhook (#251).
   val _ = mustWebhook(addWebhook(CloudAgents.Pg.personalScope(userId), "https://example.com/hook"))
   match enqueueWebhookEvent(CloudAgents.Pg.personalScope(userId), "s1", "r1", "succeeded") {
     case Ok(_) -> ()
-    case Err(e) -> assertTrue(false, "enqueue failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+    case Err(e) -> assertTrue(false, "enqueue failed: " + CloudAgents.Db.dbErrorMessage(e))
   }
   match enqueueWebhookEvent(CloudAgents.Pg.personalScope(userId), "s2", "r2", "failed") {
     case Ok(_) -> ()
-    case Err(e) -> assertTrue(false, "enqueue failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+    case Err(e) -> assertTrue(false, "enqueue failed: " + CloudAgents.Db.dbErrorMessage(e))
   }
   val pending = mustEvents(listPendingWebhookEvents(CloudAgents.Pg.personalScope(userId)))
   assertEqualInt(pending.length.toInt(), 2, "two events pending")
@@ -161,22 +187,22 @@ test "Run-completion events flow through the outbox" {
 }
 
 test "Events are not enqueued without a registered webhook (#251)" {
-  val dbPath = useFreshTestDb("webhook-gate")
-  defer {
-    cleanupTestDb(dbPath)
+  if not live() {
+    return
   }
-  match enqueueWebhookEvent(CloudAgents.Pg.personalScope("default"), "s1", "r1", "succeeded") {
+  val me = freshUser("wh-webhook-gate")
+  match enqueueWebhookEvent(CloudAgents.Pg.personalScope(me), "s1", "r1", "succeeded") {
     case Ok(_) -> ()
-    case Err(e) -> assertTrue(false, "enqueue failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+    case Err(e) -> assertTrue(false, "enqueue failed: " + CloudAgents.Db.dbErrorMessage(e))
   }
-  assertEqualInt(mustEvents(listPendingWebhookEvents(CloudAgents.Pg.personalScope("default"))).length.toInt(), 0, "no event enqueued when no webhook is registered")
+  assertEqualInt(mustEvents(listPendingWebhookEvents(CloudAgents.Pg.personalScope(me))).length.toInt(), 0, "no event enqueued when no webhook is registered")
 }
 
 test "Webhook handlers validate and 404 correctly" {
-  val dbPath = useFreshTestDb("webhook-handlers")
-  defer {
-    cleanupTestDb(dbPath)
+  if not live() {
+    return
   }
+  val me = freshUser("wh-webhook-handlers")
   // Invalid URL -> 400.
   match registerWebhookHandler(RegisterWebhookRequest(url = "http://insecure")) {
     case Ok(_) -> assertTrue(false, "http url should be rejected")

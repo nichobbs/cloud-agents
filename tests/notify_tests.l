@@ -1,45 +1,93 @@
-//! Phase 7 §5 (docs/phase7-autonomy.md): the notify MCP tool's host handlers.
+//! Phase 7 §5 (docs/phase7-autonomy.md): the notify MCP tool's host handlers,
+//! against the Postgres store.
 //! Small live-DB prelude copied from tests/callbacks_v2_tests.l's own header
-//! (that file documents why: `@test_module` cannot invoke anything reached
-//! through a package that declares `async func`s, and CloudAgents.Callbacks
-//! itself is fine to import directly, but sharing helpers across
-//! `@test_module` files means duplicating them, not importing them).
+//! (`@test_module` cannot invoke anything reached through a package that
+//! declares `async func`s, and sharing helpers across `@test_module` files
+//! means duplicating them, not importing them).
 @test_module
 package CloudAgents.NotifyTests
 
 import Std.Core
+import Std.Environment
 import Std.Testing
 import Std.Uuid
 import CloudAgents.Auth
 import CloudAgents.Callbacks
+import CloudAgents.Pg
+import CloudAgents.Pg.Migrate
+import CloudAgents.PgStore.Tenancy
 import CloudAgents.Repository
 import CloudAgents.SessionStore
-import CloudAgents.Sqlite
+import CloudAgents.Db
 import extern System.Environment as Env
+
+// ── Live Postgres ─────────────────────────────────────────────────────────────
+//
+// The store is Postgres (docs/phase11-postgres-tenancy.md). These tests run iff
+// LYRIC_CONFIG_DB_CONNECTION_URL (cloudagents_app) and
+// CLOUD_AGENTS_MIGRATE_DATABASE_URL (cloudagents_owner) are set, and fail rather
+// than skip when CLOUD_AGENTS_REQUIRE_LIVE_PG=1 (CI). Each test acts as a fresh
+// user with its own personal tenant, so tests, suites and repeated runs against
+// the same database never see each other's rows.
+func live(): Bool {
+  val ok = CloudAgents.Pg.serviceConfigured() and
+    Std.Environment.getVarOrDefault(CloudAgents.Pg.migrateDsnVar(), "").length.toInt() > 0
+  if ok {
+    return true
+  }
+  assertTrue(
+    Std.Environment.getVarOrDefault("CLOUD_AGENTS_REQUIRE_LIVE_PG", "") != "1",
+    "CLOUD_AGENTS_REQUIRE_LIVE_PG=1 but LYRIC_CONFIG_DB_CONNECTION_URL or CLOUD_AGENTS_MIGRATE_DATABASE_URL is not set"
+  )
+  println("SKIP: notify tests need LYRIC_CONFIG_DB_CONNECTION_URL and CLOUD_AGENTS_MIGRATE_DATABASE_URL")
+  return false
+}
+
+func migrate(): Unit {
+  val conn = match CloudAgents.Pg.connectDsn(Std.Environment.getVarOrDefault(CloudAgents.Pg.migrateDsnVar(), "")) {
+    case Ok(c) -> c
+    case Err(e) -> panic(CloudAgents.Pg.pgErrorMessage(e))
+  }
+  defer {
+    conn.close()
+  }
+  match CloudAgents.Pg.Migrate.migrate(conn) {
+    case Ok(_) -> ()
+    case Err(e) -> panic("migrate failed: " + CloudAgents.Pg.pgErrorMessage(e))
+  }
+}
+
+/// A new user with a provisioned personal tenant. Does not change the request
+/// identity.
+func newUser(tag: in String): String {
+  val uid = "t-" + tag + "-" + Std.Uuid.uuidToString(Std.Uuid.newUuid())
+  match CloudAgents.PgStore.Tenancy.ensurePersonalTenant(uid) {
+    case Ok(_) -> ()
+    case Err(e) -> panic("provisioning " + uid + " failed: " + CloudAgents.Db.dbErrorMessage(e))
+  }
+  return uid
+}
+
+/// Migrate, then make a new user the request identity (what handlers read via
+/// CloudAgents.Auth.requestScope()).
+func freshUser(tag: in String): String {
+  migrate()
+  val uid = newUser(tag)
+  CloudAgents.Auth.setCurrentUserId(uid)
+  return uid
+}
+
+/// Session ids are global primary keys that persist across runs.
+func uniq(prefix: in String): String {
+  return prefix + "-" + Std.Uuid.uuidToString(Std.Uuid.newUuid())
+}
 
 val testKey = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="
 
-@externTarget("System.IO.File.Delete")
-func fileDelete(path: in String): Unit = ()
-
-func useFreshTestDb(tag: in String): String {
-  val path = "/tmp/cloud-agents-tests-" + tag + "-" + Std.Uuid.uuidToString(Std.Uuid.newUuid()) + ".db"
-  Env.SetEnvironmentVariable("CLOUD_AGENTS_DB_PATH", path)
+/// freshUser plus the encryption key the credential-backed handlers need.
+func fresh(tag: in String): String {
   Env.SetEnvironmentVariable("ENCRYPTION_KEY", testKey)
-  match CloudAgents.Repository.initSchema() {
-    case Ok(_) -> ()
-    case Err(e) -> assertTrue(false, "initSchema failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
-  }
-  return path
-}
-
-func cleanupTestDb(path: in String): Unit {
-  try {
-    fileDelete(path)
-  } catch Bug as b {
-    // locked or already gone — fine for a temp file
-  }
-  CloudAgents.Auth.setCurrentUserId("default")
+  return freshUser(tag)
 }
 
 func mkSession(id: in String): Unit {
@@ -54,14 +102,14 @@ func mkSession(id: in String): Unit {
   )
   match addSession(s, CloudAgents.Auth.requestScope()) {
     case Ok(_) -> ()
-    case Err(e) -> panic("addSession failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+    case Err(e) -> panic("addSession failed: " + CloudAgents.Db.dbErrorMessage(e))
   }
 }
 
 func mintToken(id: in String, ownerUserId: in String): String {
   return match CloudAgents.SessionStore.mintCallbackToken(id, CloudAgents.Pg.personalScope(ownerUserId)) {
     case Ok(t) -> t
-    case Err(e) -> panic("mintCallbackToken failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+    case Err(e) -> panic("mintCallbackToken failed: " + CloudAgents.Db.dbErrorMessage(e))
   }
 }
 
@@ -82,14 +130,13 @@ func atLeast(minLen: in Int): String {
 }
 
 test "notify creates a notification and defaults an empty level to info" {
-  val dbPath = useFreshTestDb("notify-create")
-  defer {
-    cleanupTestDb(dbPath)
+  if not live() {
+    return
   }
-  CloudAgents.Auth.setCurrentUserId("default")
-  val sid = "sess-notify-1"
+  val me = fresh("notify-create")
+  val sid = uniq("sess-notify-1")
   mkSession(sid)
-  val token = mintToken(sid, "default")
+  val token = mintToken(sid, me)
 
   val created = match createNotificationHandler(sid, bearer(token), NotifyRequest(summary = "build finished", level = "")) {
     case Ok(r) -> r
@@ -109,14 +156,13 @@ test "notify creates a notification and defaults an empty level to info" {
 }
 
 test "notify accepts info/done/blocked and rejects any other level" {
-  val dbPath = useFreshTestDb("notify-level")
-  defer {
-    cleanupTestDb(dbPath)
+  if not live() {
+    return
   }
-  CloudAgents.Auth.setCurrentUserId("default")
-  val sid = "sess-notify-2"
+  val me = fresh("notify-level")
+  val sid = uniq("sess-notify-2")
   mkSession(sid)
-  val token = mintToken(sid, "default")
+  val token = mintToken(sid, me)
 
   match createNotificationHandler(sid, bearer(token), NotifyRequest(summary = "still working", level = "info")) {
     case Ok(_) -> ()
@@ -137,14 +183,13 @@ test "notify accepts info/done/blocked and rejects any other level" {
 }
 
 test "notify validates summary presence and length" {
-  val dbPath = useFreshTestDb("notify-validation")
-  defer {
-    cleanupTestDb(dbPath)
+  if not live() {
+    return
   }
-  CloudAgents.Auth.setCurrentUserId("default")
-  val sid = "sess-notify-3"
+  val me = fresh("notify-validation")
+  val sid = uniq("sess-notify-3")
   mkSession(sid)
-  val token = mintToken(sid, "default")
+  val token = mintToken(sid, me)
 
   match createNotificationHandler(sid, bearer(token), NotifyRequest(summary = "", level = "")) {
     case Ok(_) -> assertTrue(false, "an empty summary must be rejected")
@@ -158,14 +203,13 @@ test "notify validates summary presence and length" {
 }
 
 test "notify rejects a summary whose UTF-8 byte size is over the cap even when its char count is not (#617)" {
-  val dbPath = useFreshTestDb("notify-validation-utf8")
-  defer {
-    cleanupTestDb(dbPath)
+  if not live() {
+    return
   }
-  CloudAgents.Auth.setCurrentUserId("default")
-  val sid = "sess-notify-3b"
+  val me = fresh("notify-validation-utf8")
+  val sid = uniq("sess-notify-3b")
   mkSession(sid)
-  val token = mintToken(sid, "default")
+  val token = mintToken(sid, me)
 
   // U+3042 (HIRAGANA A) is one Lyric character but three UTF-8 bytes
   // (docs/lyric/gotchas.md #64). 1400 copies is 1400 characters (well under
@@ -184,14 +228,13 @@ test "notify rejects a summary whose UTF-8 byte size is over the cap even when i
 }
 
 test "notify requires a valid callback token; the owner can list via the user route" {
-  val dbPath = useFreshTestDb("notify-auth")
-  defer {
-    cleanupTestDb(dbPath)
+  if not live() {
+    return
   }
-  CloudAgents.Auth.setCurrentUserId("default")
-  val sid = "sess-notify-4"
+  val me = fresh("notify-auth")
+  val sid = uniq("sess-notify-4")
   mkSession(sid)
-  val token = mintToken(sid, "default")
+  val token = mintToken(sid, me)
 
   match createNotificationHandler(sid, bearer("wrong-token"), NotifyRequest(summary = "x", level = "")) {
     case Ok(_) -> assertTrue(false, "a wrong callback token must be rejected")
@@ -208,10 +251,10 @@ test "notify requires a valid callback token; the owner can list via the user ro
 }
 
 test "notify rejects an empty session id before touching the database" {
-  val dbPath = useFreshTestDb("notify-empty-id")
-  defer {
-    cleanupTestDb(dbPath)
+  if not live() {
+    return
   }
+  val me = fresh("notify-empty-id")
   match createNotificationHandler("", "", NotifyRequest(summary = "x", level = "")) {
     case Ok(_) -> assertTrue(false, "an empty session id must be rejected")
     case Err(e) -> assertEqualInt(e.status, 400, "empty id returns 400")

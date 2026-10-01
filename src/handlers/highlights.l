@@ -37,15 +37,15 @@ import Std.Core
 import Web
 import CloudAgents.Repository
 import CloudAgents.SessionStore
-import CloudAgents.Sqlite
+import CloudAgents.Db
 import CloudAgents.Streaming
 import CloudAgents.Text
 import CloudAgents.GitHubApi
 import extern System.Environment as Env
 import extern System.String as DotNetString
 
-func dbError(e: in CloudAgents.Sqlite.DbError): Web.ApiError {
-  return Web.internalError(CloudAgents.Sqlite.dbErrorMessage(e))
+func dbError(e: in CloudAgents.Db.DbError): Web.ApiError {
+  return Web.internalError(CloudAgents.Db.dbErrorMessage(e))
 }
 
 /// Small local copy of CloudAgents.Callbacks.requireOwnedSession (that one is
@@ -342,7 +342,7 @@ pub func refreshHighlightsHandler(id: in String): Result[RefreshHighlightsRespon
     case Ok(s) -> s
     case Err(e) -> return Err(dbError(e))
   }
-  val msgs = match CloudAgents.Repository.agentMessagesAfterSeq(id, lastSeq) {
+  val msgs = match CloudAgents.Repository.agentMessagesAfterSeq(id, CloudAgents.Auth.requestScope(), lastSeq) {
     case Ok(ms) -> ms
     case Err(e) -> return Err(dbError(e))
   }

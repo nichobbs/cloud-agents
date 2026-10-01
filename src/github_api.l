@@ -39,7 +39,7 @@ extern type Encoding = "System.Text.Encoding"
 // no constructor-binding form of @externTarget in this toolchain — all object
 // creation goes through static factories, same as Aes.Create in crypto.l).
 // The declared return type narrows the BCL's WebRequest to HttpWebRequest,
-// the same way sqlite_driver.l narrows Array.GetValue's Object return.
+// the same way other extern bindings in this codebase narrow a base-typed return.
 @externTarget("System.Net.WebRequest.Create")
 func createRequest(url: in String): HttpWebRequest = ()
 

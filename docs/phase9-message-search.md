@@ -1,5 +1,11 @@
 # Phase 9 — Full-text search across message transcripts
 
+> Since phase 11 the store is Postgres, not SQLite (see
+> [`docs/phase11-postgres-tenancy.md`](phase11-postgres-tenancy.md)); the SQL
+> and migration references below are historical, and the live schema is in
+> `src/pg/schema.l`. Search now uses a Postgres `tsvector` (see §8); the
+> FTS5 design in §2-§3 is historical.
+
 Status: shipped (migration, backend route, frontend page, and tests). Not
 yet run through the real `lyric` toolchain — see "Verification status" at
 the end.

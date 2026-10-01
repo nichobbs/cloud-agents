@@ -1,14 +1,14 @@
-//! CloudAgents.PgStore.Messages — the Postgres implementation of a session's
-//! transcript and annotations (`messages`, `comments`, `todos`), mirroring
-//! the SQLite-backed functions in `CloudAgents.Repository` with the same
-//! signatures and semantics (docs/phase11-postgres-tenancy.md §9 slices B/C).
+//! CloudAgents.PgStore.Messages — the Postgres store for a session's
+//! transcript and annotations (`messages`, `comments`, `todos`), behind the
+//! `CloudAgents.Repository` facade (docs/phase11-postgres-tenancy.md §9
+//! slices B/C).
 //!
 //! These rows carry no user id of their own: ownership is reached through
 //! the session, which the handlers check (`requireOwnedSession`) before
-//! calling here, exactly as with SQLite. Row-level security adds the tenant
+//! calling here. Row-level security adds the tenant
 //! boundary underneath.
 //!
-//! Semantics carried over from the SQLite store:
+//! Semantics:
 //! - a message's sequence number is the session's message count at insert
 //!   time, rendered as 12-digit zero-padded text; appends to one session are
 //!   serialised by a transaction-scoped advisory lock, so concurrent inserts
@@ -20,13 +20,12 @@
 //!   human or tool created (`source = ''`);
 //! - the todo-update cursor is exclusive, and "" means "from the start".
 //!
-//!
 //! Full-text search (`searchMessages`) runs against the generated
-//! `messages.search_vector` (`to_tsvector('simple', content)`, GIN-indexed)
-//! instead of SQLite's FTS5 table, with the same contract: every word of the
-//! user's text must match as a case-insensitive prefix, operators in the
-//! text are inert, only the caller's own sessions are searched, and results
-//! come newest first. Tokenisation differs from FTS5 in the ways listed in
+//! `messages.search_vector` (`to_tsvector('simple', content)`, GIN-indexed):
+//! every word of the user's text must match as a case-insensitive prefix,
+//! operators in the text are inert, only the caller's own sessions are
+//! searched, and results come newest first. Tokenisation differs from the
+//! earlier SQLite FTS5 index in the ways listed in
 //! docs/phase9-message-search.md, "Postgres".
 @runtime_checked
 package CloudAgents.PgStore.Messages
@@ -37,7 +36,7 @@ import Db
 import CloudAgents.Pg
 import CloudAgents.PgStore
 import CloudAgents.Repository
-import CloudAgents.Sqlite
+import CloudAgents.Db
 
 func newId(): String {
   return Std.Uuid.uuidToString(Std.Uuid.newUuid())
@@ -63,7 +62,7 @@ func toMessage(r: in DbRow): CloudAgents.Repository.Message {
 /// session's next sequence number.
 pub func addMessage(
   sessionId: in String, sc: in CloudAgents.Pg.TenantScope, role: in String, content: in String
-): Result[CloudAgents.Repository.Message, CloudAgents.Sqlite.DbError] {
+): Result[CloudAgents.Repository.Message, CloudAgents.Db.DbError] {
   val u = CloudAgents.PgStore.open(sc)?
   defer {
     CloudAgents.PgStore.release(u)
@@ -91,7 +90,7 @@ pub func addMessage(
 /// All messages in a session, in sequence order.
 pub func listMessages(
   sessionId: in String, sc: in CloudAgents.Pg.TenantScope
-): Result[slice[CloudAgents.Repository.Message], CloudAgents.Sqlite.DbError] {
+): Result[slice[CloudAgents.Repository.Message], CloudAgents.Db.DbError] {
   val u = CloudAgents.PgStore.open(sc)?
   defer {
     CloudAgents.PgStore.release(u)
@@ -105,10 +104,29 @@ pub func listMessages(
   return Ok(value = acc)
 }
 
+/// A session's agent messages with a sequence number above `afterSeq`, in
+/// order. `afterSeq` is a stored (zero-padded) seq, or "" for all of them.
+pub func agentMessagesAfterSeq(
+  sessionId: in String, sc: in CloudAgents.Pg.TenantScope, afterSeq: in String
+): Result[slice[CloudAgents.Repository.Message], CloudAgents.Db.DbError] {
+  val after = if afterSeq.length == 0 { "0" } else { afterSeq }
+  val u = CloudAgents.PgStore.open(sc)?
+  defer {
+    CloudAgents.PgStore.release(u)
+  }
+  val rows = CloudAgents.PgStore.q(u, "SELECT " + messageCols() + " FROM messages WHERE session_id = @p0 AND role = 'agent' " + "AND seq > @p1::integer ORDER BY seq", [sessionId, after])?
+  CloudAgents.PgStore.commit(u)?
+  var acc: slice[CloudAgents.Repository.Message] = []
+  for r in rows {
+    acc = acc.append(toMessage(r))
+  }
+  return Ok(value = acc)
+}
+
 /// One column of one row by id, or None.
 func columnById(
   sc: in CloudAgents.Pg.TenantScope, table: in String, id: in String, column: in String
-): Result[Option[String], CloudAgents.Sqlite.DbError] {
+): Result[Option[String], CloudAgents.Db.DbError] {
   val u = CloudAgents.PgStore.open(sc)?
   defer {
     CloudAgents.PgStore.release(u)
@@ -124,7 +142,7 @@ func columnById(
 /// The session a message belongs to, or None.
 pub func getMessageSessionId(
   messageId: in String, sc: in CloudAgents.Pg.TenantScope
-): Result[Option[String], CloudAgents.Sqlite.DbError] {
+): Result[Option[String], CloudAgents.Db.DbError] {
   return columnById(sc, "messages", messageId, "session_id")
 }
 
@@ -143,7 +161,7 @@ func prefixQuery(n: in Int): String {
 /// with no words matches nothing.
 pub func searchMessages(
   sc: in CloudAgents.Pg.TenantScope, term: in String, limit: in Int
-): Result[slice[CloudAgents.Repository.Message], CloudAgents.Sqlite.DbError] {
+): Result[slice[CloudAgents.Repository.Message], CloudAgents.Db.DbError] {
   val u = CloudAgents.PgStore.open(sc)?
   defer {
     CloudAgents.PgStore.release(u)
@@ -168,7 +186,7 @@ pub func searchMessages(
 /// Attach a comment to a message.
 pub func addComment(
   messageId: in String, sc: in CloudAgents.Pg.TenantScope, sessionId: in String, body: in String
-): Result[CloudAgents.Repository.Comment, CloudAgents.Sqlite.DbError] {
+): Result[CloudAgents.Repository.Comment, CloudAgents.Db.DbError] {
   val u = CloudAgents.PgStore.open(sc)?
   defer {
     CloudAgents.PgStore.release(u)
@@ -191,7 +209,7 @@ pub func addComment(
 /// All comments on a message, oldest first.
 pub func listComments(
   messageId: in String, sc: in CloudAgents.Pg.TenantScope
-): Result[slice[CloudAgents.Repository.Comment], CloudAgents.Sqlite.DbError] {
+): Result[slice[CloudAgents.Repository.Comment], CloudAgents.Db.DbError] {
   val u = CloudAgents.PgStore.open(sc)?
   defer {
     CloudAgents.PgStore.release(u)
@@ -227,7 +245,7 @@ func insertTodoSql(): String {
 /// start "pending".
 pub func addTodo(
   sessionId: in String, sc: in CloudAgents.Pg.TenantScope, messageId: in String, note: in String
-): Result[CloudAgents.Repository.Todo, CloudAgents.Sqlite.DbError] {
+): Result[CloudAgents.Repository.Todo, CloudAgents.Db.DbError] {
   val u = CloudAgents.PgStore.open(sc)?
   defer {
     CloudAgents.PgStore.release(u)
@@ -259,7 +277,7 @@ pub func replacePlanTodos(
   messageId: in String,
   notes: in slice[String],
   statuses: in slice[String],
-): Result[Unit, CloudAgents.Sqlite.DbError] {
+): Result[Unit, CloudAgents.Db.DbError] {
   val u = CloudAgents.PgStore.open(sc)?
   defer {
     CloudAgents.PgStore.release(u)
@@ -283,7 +301,7 @@ pub func replacePlanTodos(
 /// Run one statement on a todo by id, `@p0` = id.
 func todoWrite(
   sc: in CloudAgents.Pg.TenantScope, sql: in String, params: in slice[String]
-): Result[Unit, CloudAgents.Sqlite.DbError] {
+): Result[Unit, CloudAgents.Db.DbError] {
   val u = CloudAgents.PgStore.open(sc)?
   defer {
     CloudAgents.PgStore.release(u)
@@ -296,7 +314,7 @@ func todoWrite(
 /// Set a todo's status directly; `done` follows it.
 pub func setTodoStatus(
   id: in String, sc: in CloudAgents.Pg.TenantScope, status: in String
-): Result[Unit, CloudAgents.Sqlite.DbError] {
+): Result[Unit, CloudAgents.Db.DbError] {
   return todoWrite(
     sc,
     "UPDATE todos SET status = @p1, done = (@p1 = 'done'), updated_at = " + CloudAgents.Pg.msIn(2) +
@@ -309,7 +327,7 @@ pub func setTodoStatus(
 /// initial cursor and matches every todo.
 pub func todosUpdatedAfter(
   sessionId: in String, sc: in CloudAgents.Pg.TenantScope, afterUpdatedAt: in String
-): Result[slice[CloudAgents.Repository.TodoUpdate], CloudAgents.Sqlite.DbError] {
+): Result[slice[CloudAgents.Repository.TodoUpdate], CloudAgents.Db.DbError] {
   val u = CloudAgents.PgStore.open(sc)?
   defer {
     CloudAgents.PgStore.release(u)
@@ -341,14 +359,14 @@ pub func todosUpdatedAfter(
 /// The session a todo belongs to, or None.
 pub func getTodoSessionId(
   id: in String, sc: in CloudAgents.Pg.TenantScope
-): Result[Option[String], CloudAgents.Sqlite.DbError] {
+): Result[Option[String], CloudAgents.Db.DbError] {
   return columnById(sc, "todos", id, "session_id")
 }
 
 /// All todos for a session, newest first.
 pub func listTodos(
   sessionId: in String, sc: in CloudAgents.Pg.TenantScope
-): Result[slice[CloudAgents.Repository.Todo], CloudAgents.Sqlite.DbError] {
+): Result[slice[CloudAgents.Repository.Todo], CloudAgents.Db.DbError] {
   val u = CloudAgents.PgStore.open(sc)?
   defer {
     CloudAgents.PgStore.release(u)
@@ -373,7 +391,7 @@ pub func listTodos(
 }
 
 /// Flip a todo's done flag; the status moves between "pending" and "done".
-pub func toggleTodo(id: in String, sc: in CloudAgents.Pg.TenantScope): Result[Unit, CloudAgents.Sqlite.DbError] {
+pub func toggleTodo(id: in String, sc: in CloudAgents.Pg.TenantScope): Result[Unit, CloudAgents.Db.DbError] {
   return todoWrite(
     sc,
     "UPDATE todos SET done = NOT done, status = CASE WHEN done THEN 'pending' ELSE 'done' END, " +
@@ -385,6 +403,6 @@ pub func toggleTodo(id: in String, sc: in CloudAgents.Pg.TenantScope): Result[Un
 }
 
 /// Delete a todo.
-pub func deleteTodo(id: in String, sc: in CloudAgents.Pg.TenantScope): Result[Unit, CloudAgents.Sqlite.DbError] {
+pub func deleteTodo(id: in String, sc: in CloudAgents.Pg.TenantScope): Result[Unit, CloudAgents.Db.DbError] {
   return todoWrite(sc, "DELETE FROM todos WHERE id = @p0", [id])
 }

@@ -16,7 +16,7 @@ import CloudAgents.Pg
 import CloudAgents.Pg.Migrate
 import CloudAgents.PgStore.GraphIngest as Outbox
 import CloudAgents.Repository
-import CloudAgents.Sqlite
+import CloudAgents.Db
 
 val url = "https://graph.example/api/ingest"
 

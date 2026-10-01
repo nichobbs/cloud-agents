@@ -28,17 +28,24 @@ mkdir -p ~/.lyric/bin && tar -xzf /tmp/lyric.tgz -C ~/.lyric/bin
 
 ## Dependencies
 
-`Lyric.Web`, `Lyric.Docker`, `Std.Logging`, and `Microsoft.Data.Sqlite` are
+`Lyric.Web`, `Lyric.Docker`, `Std.Logging`, `Lyric.Db`, and `Npgsql` are
 declared under `[nuget]` in `lyric.toml` and resolved as ordinary prebuilt
 binary packages — no sibling checkout, no source patching:
 
 ```toml
 [nuget]
 "Lyric.Web"             = "0.7.0"
-"Lyric.Docker"          = "0.7.0"
-"Std.Logging"           = "0.7.0"
-"Microsoft.Data.Sqlite" = "10.0.9"
+"Lyric.Docker"          = "0.7.4"
+"Std.Logging"           = "0.7.4"
+"Lyric.Db"              = "0.7.4"
+"Npgsql"                = "8.0.3"
 ```
+
+(The versions shown are the ones in `lyric.toml` today; that file is
+authoritative.) The store is Postgres (phase 11,
+`docs/phase11-postgres-tenancy.md`): `Lyric.Db` over `Npgsql`. The SQLite
+driver, `Microsoft.Data.Sqlite` and the SQLite native packages are gone, so
+there is no native library to put on the loader path.
 
 These track the latest published versions as of each package's own release
 cadence — `Lyric.Web`/`Lyric.Docker` and the compiler (`MIN_LYRIC_VERSION`)
@@ -63,10 +70,9 @@ the compiler's move to 0.7.3 (`MIN_LYRIC_VERSION`, see "Compiler notes").
 `Lyric.Docker` 0.7.0 takes a validated, opaque `ContainerId` and requires
 explicit `stopContainer`/`waitContainer` timeouts; `src/docker_manager.l`
 converts at that boundary and keeps container ids as strings elsewhere.**
-`Microsoft.Data.Sqlite` stays at 10.0.9 — the newest *stable*; the 11.0.0
-line is preview-only. The two SQLite-native packages
-(`SourceGear.sqlite3` 3.53.3, `SQLitePCLRaw.provider.dynamic_cdecl` 3.0.3)
-are likewise already at their latest stable.
+(Historical: before phase 11 this section also pinned `Microsoft.Data.Sqlite`
+10.0.9 and two SQLite-native packages; all three were removed with the
+SQLite driver.)
 
 `Lyric.Docker` used to be vendored (`vendor/lyric-docker`) rather than
 consumed from NuGet. Three gaps blocked switching to the published package,
@@ -377,24 +383,14 @@ compiler-side root cause. `scripts/verify.sh` remains a useful,
 `lyric build && lyric run`) and still genuinely passes all 24 checks, but
 `lyric test` is now the right entry point again — both agree.
 
-**Live-database suites need the native SQLite library on the loader path.**
-`tests/prompt_tests.l` (and later suites) open real `Microsoft.Data.Sqlite`
-connections against a temp file; `SqliteConnection`'s type initializer loads
-the native `libe_sqlite3.so`, which the test runner does not resolve from
-the NuGet cache by itself. Run `./scripts/build-full.sh` once (it copies the
-native runtimes to `bin/runtimes/`), then:
+**Live-database suites run against Postgres.** There are no SQLite native
+libraries and no `LD_LIBRARY_PATH` setup any more. Every suite that touches
+the store needs the Postgres DSNs below (the live suites are gated on them
+and skip visibly without them; CI sets `CLOUD_AGENTS_REQUIRE_LIVE_PG=1` so a
+missing database fails instead of skipping).
 
-```sh
-export LD_LIBRARY_PATH="$PWD/bin/runtimes/linux-x64/native:$LD_LIBRARY_PATH"
-lyric test
-```
-
-CI's "Run lyric test" step does exactly this. Without it the live-DB tests
-fail with `The type initializer for 'Microsoft.Data.Sqlite.SqliteConnection'
-threw an exception` while every non-DB suite still passes.
-
-**The live Postgres suite** (`tests/pg_live_tests.l`, phase 11) runs only
-when both Postgres DSNs are set, and otherwise records a visible skip. To run
+The Postgres live suites (`tests/pg_live_tests.l` and the store suites, phase 11)
+run only when both Postgres DSNs are set, and otherwise record a visible skip. To run
 it locally against Postgres 16+ (needed for `GRANT ... WITH INHERIT FALSE` in
 the provisioning script):
 
@@ -404,9 +400,16 @@ psql -U postgres -v ON_ERROR_STOP=1 -v owner_password="'owner'" \
   -f deploy/postgres/provision.sql
 export CLOUD_AGENTS_MIGRATE_DATABASE_URL=postgres://cloudagents_owner:owner@127.0.0.1:5432/cloudagents
 export LYRIC_CONFIG_DB_CONNECTION_URL=postgres://cloudagents_app:app@127.0.0.1:5432/cloudagents
+export CLOUD_AGENTS_REQUIRE_LIVE_PG=1   # optional: fail instead of skip
 dotnet bin/CloudAgents.dll --migrate
 lyric test
 ```
+
+`--migrate` applies the migrations in `src/pg/schema.l` (`0001_baseline`,
+`0002_cutover`) as `cloudagents_owner`. To run the API locally, set the same
+`LYRIC_CONFIG_DB_CONNECTION_URL` and use `./scripts/run-api.sh`; it refuses
+to start without it. The compose stack in `deploy/` runs Postgres, the
+provisioning and the migration for you.
 
 The suite must run as `cloudagents_app`: `FORCE ROW LEVEL SECURITY` does not
 bind a superuser or a `BYPASSRLS` role, so isolation tests under one would
@@ -463,7 +466,7 @@ daemon being completely unreachable (ruling out an earlier session's
 leading hypothesis about the Unix-socket transport), independent of
 `createRunnerContainer` actually succeeding, independent of the MCP
 callbacks feature flag, and independent of the surrounding request
-pipeline (JSON body decoding, the SQLite session lookup, auth) —
+pipeline (JSON body decoding, the session lookup, auth) —
 `streamSessionMessage` crashes the same way even called directly with a
 made-up, nonexistent session id. `dotnet-dump analyze`'s `dumpmt -md`/
 `dumpobj` on the crash dump showed the `Unbox` call's `toTypeHnd` resolves
@@ -868,7 +871,7 @@ calling straight into the Lyric-emitted `CloudAgents.Program.main()`) whose
 only job is to let `dotnet publish` turn the already-compiled
 `bin/CloudAgents.dll` (plus its full NuGet-restored dependency closure —
 `Lyric.Web`, `Lyric.Docker`, the `Lyric.Stdlib.*` closure,
-`Microsoft.Data.Sqlite` + `SQLitePCLRaw`) into one deployable artifact per
+`Lyric.Db` + `Npgsql`) into one deployable artifact per
 platform, mirroring the pattern `bootstrap/src/Lyric.Cli.Aot/` already uses
 to publish the `lyric` compiler itself.
 
@@ -897,24 +900,14 @@ to a normal `dotnet bin/CloudAgents.dll` run, including serving a real
 checks this on every build). Re-enable `PublishAot` once lyric-lang#5781 is
 fixed — no other change to this project should be needed.
 
-### The SQLite native-library wrapper script
+### No native-library wrapper script
 
-The trampoline project references `bin/*.dll` via a loose-file glob rather
-than a real project/package reference, so `dotnet publish` has no runtime-
-asset metadata telling it to copy `Microsoft.Data.Sqlite`'s native
-`libe_sqlite3.so` alongside the executable — and a bare
-`runtimes/<rid>/native/` directory placed next to the published executable
-was verified NOT to be auto-discovered in this project's publish shape
-(confirmed by direct experiment: the server starts but every SQLite call
-fails with `SqliteConnection`'s type initializer throwing). The release
-workflow works around this by staging the native library into
-`runtimes/<rid>/native/` next to the executable and renaming the real
-executable to `cloud-agents.bin`, then generating a `cloud-agents` wrapper
-shell script that sets `LD_LIBRARY_PATH` to that directory before `exec`-ing
-the real binary — verified working end-to-end (a real HTTP request against
-a real SQLite-backed endpoint succeeds through the wrapper, fails without
-it). Released archives should always be run via the `cloud-agents` wrapper,
-not `cloud-agents.bin` directly.
+Earlier releases shipped a `cloud-agents` wrapper script that set
+`LD_LIBRARY_PATH` so the SQLite native library (`libe_sqlite3.so`) could be
+found next to the executable. Since phase 11 the store is Postgres through
+the managed `Npgsql` driver, so there is no native library to locate and no
+wrapper is needed; run the published executable directly. The API still needs
+`LYRIC_CONFIG_DB_CONNECTION_URL` and a migrated database.
 
 ### Scope: Linux only
 

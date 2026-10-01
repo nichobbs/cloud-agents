@@ -30,7 +30,7 @@ import CloudAgents.Repository
 import CloudAgents.Scope
 import CloudAgents.RepoKey
 import CloudAgents.SessionStore
-import CloudAgents.Sqlite
+import CloudAgents.Db
 import CloudAgents.Text
 import extern System.Environment as Env
 import extern System.String as DotNetString
@@ -56,8 +56,8 @@ val maxAnswerLen = 8192
 
 val maxProgressSummaryLen = 4096
 
-func dbError(e: in CloudAgents.Sqlite.DbError): Web.ApiError {
-  return Web.internalError(CloudAgents.Sqlite.dbErrorMessage(e))
+func dbError(e: in CloudAgents.Db.DbError): Web.ApiError {
+  return Web.internalError(CloudAgents.Db.dbErrorMessage(e))
 }
 
 /// Host-side fail-closed timeout (docs/phase6 §3 step 4): a still-pending
@@ -330,7 +330,7 @@ pub func answerPermissionRequestHandler(
   if req.decision == "allow_always" {
     match CloudAgents.Repository.addPermissionRule(id, CloudAgents.Auth.requestScope(), pr.toolName, pr.inputJson) {
       case Ok(_) -> ()
-      case Err(e) -> println("WARNING: failed to persist allow-always rule for session " + id + ": " + CloudAgents.Sqlite.dbErrorMessage(e))
+      case Err(e) -> println("WARNING: failed to persist allow-always rule for session " + id + ": " + CloudAgents.Db.dbErrorMessage(e))
     }
   }
   return Ok(())
@@ -659,7 +659,7 @@ pub func answerSecretRequestHandler(
 //
 // docs/phase6-mcp-callbacks.md §7.3. Metadata lives in CloudAgents.Repository's
 // `artifacts` table; bytes live on disk under artifactsBaseDir()/<sessionId>/
-// <storedName> — never in SQLite. The 8 MiB cap is enforced twice: a cheap
+// <storedName> — never in the database. The 8 MiB cap is enforced twice: a cheap
 // pre-decode length check on the base64 text, then the authoritative check
 // on the actual decoded byte count (non-standard base64 padding can't be
 // used to sneak past the first check).
@@ -1027,9 +1027,9 @@ pub func listRepoArtifactsHandler(repoKey: in String): Result[ArtifactListRespon
   }
   // repoKey is a normalized, always-shorter derivative of a repo_url — bound
   // it the same as CloudAgents.Handlers.maxRepoUrlLen (#612) for consistency
-  // with every other user-supplied string in this file; it's already
-  // sqlLiteral-escaped before reaching SQL, so this is a sanity/consistency
-  // bound, not a security one.
+  // with every other user-supplied string in this file; it reaches SQL only
+  // as a bound parameter, so this is a sanity/consistency bound, not a
+  // security one.
   if not CloudAgents.Text.withinMaxLength(repoKey, maxRepoKeyQueryLen) {
     return Err(Web.badRequest("repoKey is too long (max " + toString(maxRepoKeyQueryLen) + " characters)"))
   }

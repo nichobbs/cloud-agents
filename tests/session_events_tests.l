@@ -1,39 +1,77 @@
-//! Live-SQLite round-trip tests for the session_events store
-//! (docs/session-events-store.md §4). Same live-DB harness as
-//! tests/session_tests.l / tests/prompt_tests.l: a fresh temp DB per test via
-//! CLOUD_AGENTS_DB_PATH + initSchema (which runs migrations, including
-//! 0030_session_events). No network, no wall-clock reads in assertions.
+//! Round-trip tests for the session_events store (docs/session-events-store.md
+//! §4) over Postgres. Each test runs as a fresh user (its own tenant), so the
+//! fixed session ids below never collide across tests or runs. No network, no
+//! wall-clock reads in assertions.
 @test_module
 package CloudAgents.SessionEventsTests
 
 import Std.Core
+import Std.Environment
 import Std.Testing
 import Std.Uuid
+import CloudAgents.Auth
+import CloudAgents.Pg
+import CloudAgents.Pg.Migrate
+import CloudAgents.PgStore.Tenancy
 import CloudAgents.Repository
 import CloudAgents.Scope as EvScope
-import CloudAgents.Sqlite
+import CloudAgents.Db
 import CloudAgents.Capture
-import extern System.Environment as Env
 
-@externTarget("System.IO.File.Delete")
-func fileDelete(path: in String): Unit = ()
-
-func useFreshTestDb(tag: in String): String {
-  val path = "/tmp/cloud-agents-tests-" + tag + "-" + Std.Uuid.uuidToString(Std.Uuid.newUuid()) + ".db"
-  Env.SetEnvironmentVariable("CLOUD_AGENTS_DB_PATH", path)
-  match CloudAgents.Repository.initSchema() {
-    case Ok(_) -> ()
-    case Err(e) -> assertTrue(false, "initSchema failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+// ── Live Postgres ─────────────────────────────────────────────────────────────
+//
+// The store is Postgres (docs/phase11-postgres-tenancy.md). These tests run iff
+// LYRIC_CONFIG_DB_CONNECTION_URL (cloudagents_app) and
+// CLOUD_AGENTS_MIGRATE_DATABASE_URL (cloudagents_owner) are set, and fail rather
+// than skip when CLOUD_AGENTS_REQUIRE_LIVE_PG=1 (CI). Each test acts as a fresh
+// user with its own personal tenant, so tests, suites and repeated runs against
+// the same database never see each other's rows.
+func live(): Bool {
+  val ok = CloudAgents.Pg.serviceConfigured() and
+    Std.Environment.getVarOrDefault(CloudAgents.Pg.migrateDsnVar(), "").length.toInt() > 0
+  if ok {
+    return true
   }
-  return path
+  assertTrue(
+    Std.Environment.getVarOrDefault("CLOUD_AGENTS_REQUIRE_LIVE_PG", "") != "1",
+    "CLOUD_AGENTS_REQUIRE_LIVE_PG=1 but LYRIC_CONFIG_DB_CONNECTION_URL or CLOUD_AGENTS_MIGRATE_DATABASE_URL is not set"
+  )
+  println("SKIP: session_events tests need LYRIC_CONFIG_DB_CONNECTION_URL and CLOUD_AGENTS_MIGRATE_DATABASE_URL")
+  return false
 }
 
-func cleanupTestDb(path: in String): Unit {
-  try {
-    fileDelete(path)
-  } catch Bug as b {
-    // locked or already gone — fine for a temp file
+func migrate(): Unit {
+  val conn = match CloudAgents.Pg.connectDsn(Std.Environment.getVarOrDefault(CloudAgents.Pg.migrateDsnVar(), "")) {
+    case Ok(c) -> c
+    case Err(e) -> panic(CloudAgents.Pg.pgErrorMessage(e))
   }
+  defer {
+    conn.close()
+  }
+  match CloudAgents.Pg.Migrate.migrate(conn) {
+    case Ok(_) -> ()
+    case Err(e) -> panic("migrate failed: " + CloudAgents.Pg.pgErrorMessage(e))
+  }
+}
+
+/// A new user with a provisioned personal tenant. Does not change the request
+/// identity.
+func newUser(tag: in String): String {
+  val uid = "t-" + tag + "-" + Std.Uuid.uuidToString(Std.Uuid.newUuid())
+  match CloudAgents.PgStore.Tenancy.ensurePersonalTenant(uid) {
+    case Ok(_) -> ()
+    case Err(e) -> panic("provisioning " + uid + " failed: " + CloudAgents.Db.dbErrorMessage(e))
+  }
+  return uid
+}
+
+/// Migrate, then make a new user the request identity (what handlers read via
+/// CloudAgents.Auth.requestScope()).
+func freshUser(tag: in String): String {
+  migrate()
+  val uid = newUser(tag)
+  CloudAgents.Auth.setCurrentUserId(uid)
+  return uid
 }
 
 // A small captured stream-json chunk (3 non-blank lines → seq 0,1,2).
@@ -48,26 +86,29 @@ func fixtureNdjson(): String {
 func mustAppend(sessionId: in String, events: in slice[CaptureEvent]): Int {
   return match CloudAgents.Repository.appendSessionEvents(sessionId, evScope(), events) {
     case Ok(n) -> n
-    case Err(e) -> panic("appendSessionEvents failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+    case Err(e) -> panic("appendSessionEvents failed: " + CloudAgents.Db.dbErrorMessage(e))
   }
 }
 
 func mustRead(sessionId: in String, afterSeq: in String): slice[CaptureEvent] {
   return match CloudAgents.Repository.sessionEventsAfterSeq(sessionId, evScope(), afterSeq) {
     case Ok(evs) -> evs
-    case Err(e) -> panic("sessionEventsAfterSeq failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+    case Err(e) -> panic("sessionEventsAfterSeq failed: " + CloudAgents.Db.dbErrorMessage(e))
   }
 }
 
 func mustLatestCursor(sessionId: in String): CloudAgents.Repository.SessionEventCursor {
   return match CloudAgents.Repository.latestSessionEventCursor(sessionId, evScope()) {
     case Ok(c) -> c
-    case Err(e) -> panic("latestSessionEventCursor failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+    case Err(e) -> panic("latestSessionEventCursor failed: " + CloudAgents.Db.dbErrorMessage(e))
   }
 }
 
 test "append then read back is verbatim, seq-ordered, and verifies the chain" {
-  val path = useFreshTestDb("sessevents-rt")
+  if not live() {
+    return
+  }
+  val me = freshUser("se")
   val batch = parseStreamJson(fixtureNdjson(), 0.toLong(), "")
   assertEqualInt(batch.events.length.toInt(), 3, "fixture parses to three events")
   assertEqualInt(mustAppend("sess-A", batch.events), 3, "append reports three events submitted")
@@ -82,12 +123,13 @@ test "append then read back is verbatim, seq-ordered, and verifies the chain" {
   assertEqualInt(back[2].seq.toInt(), 2, "last event seq is 2")
   // The stored chain re-verifies from genesis — persistence preserved it.
   assertTrue(verifyChain(back, ""), "read-back events verify against the genesis chain")
-
-  cleanupTestDb(path)
 }
 
 test "the after-seq cursor is exclusive and returns only the tail" {
-  val path = useFreshTestDb("sessevents-cursor")
+  if not live() {
+    return
+  }
+  val me = freshUser("se")
   val batch = parseStreamJson(fixtureNdjson(), 0.toLong(), "")
   val _ = mustAppend("sess-B", batch.events)
 
@@ -100,26 +142,28 @@ test "the after-seq cursor is exclusive and returns only the tail" {
   assertEqualInt(mustRead("sess-B", "2").length.toInt(), 0, "after=last yields no events")
   // A different session is isolated.
   assertEqualInt(mustRead("sess-does-not-exist", "").length.toInt(), 0, "unknown session yields no events")
-
-  cleanupTestDb(path)
 }
 
 test "re-appending an already-stored prefix is an idempotent no-op" {
-  val path = useFreshTestDb("sessevents-idem")
+  if not live() {
+    return
+  }
+  val me = freshUser("se")
   val batch = parseStreamJson(fixtureNdjson(), 0.toLong(), "")
   val _ = mustAppend("sess-C", batch.events)
-  // Append the identical batch again — INSERT OR IGNORE on (session_id, seq).
+  // Append the identical batch again — ON CONFLICT DO NOTHING on (session_id, seq).
   val _2 = mustAppend("sess-C", batch.events)
   assertEqualInt(mustRead("sess-C", "").length.toInt(), 3, "still exactly three rows after a duplicate append")
-
-  cleanupTestDb(path)
 }
 
 // #965: a re-append of an already-stored seq that carries DIFFERENT content
 // (a diverged re-parse, or tamper/corruption) must be rejected as a typed
 // DbError, not silently discarded by INSERT OR IGNORE.
 test "re-appending an existing seq with a different payload/hash surfaces a DbError and does not overwrite (#965)" {
-  val path = useFreshTestDb("sessevents-conflict")
+  if not live() {
+    return
+  }
+  val me = freshUser("se")
   val batch = parseStreamJson(fixtureNdjson(), 0.toLong(), "")
   val _ = mustAppend("sess-D", batch.events)
 
@@ -136,13 +180,13 @@ test "re-appending an existing seq with a different payload/hash surfaces a DbEr
   match CloudAgents.Repository.appendSessionEvents("sess-D", evScope(), [diverged]) {
     case Ok(_) -> assertTrue(false, "a content mismatch at an existing seq must not succeed silently")
     case Err(e) -> {
-      // ValidationFailed's message rendering (CloudAgents.Sqlite.dbErrorMessage)
+      // ValidationFailed's message rendering (CloudAgents.Db.dbErrorMessage)
       // is the message itself, with no prefix (unlike OpenFailed/ExecFailed) —
       // confirming that also confirms the DbError case, without a qualified
       // union-case match pattern (docs/lyric/gotchas.md territory).
       // .contains(), not .indexOf(...).isSome() — Option[T].isSome()/.isNone()
       // do not resolve at runtime in this toolchain (docs/lyric/gotchas.md).
-      val msg = CloudAgents.Sqlite.dbErrorMessage(e)
+      val msg = CloudAgents.Db.dbErrorMessage(e)
       assertTrue(msg.contains("conflict"), "error message names the conflict: " + msg)
     }
   }
@@ -152,15 +196,16 @@ test "re-appending an existing seq with a different payload/hash surfaces a DbEr
   assertEqualInt(back.length.toInt(), 3, "still exactly three rows — the conflicting append inserted nothing")
   assertEqual(back[1].payload, batch.events[1].payload, "the stored row was NOT overwritten by the conflicting append")
   assertEqual(back[1].hash, batch.events[1].hash, "the stored hash was NOT overwritten by the conflicting append")
-
-  cleanupTestDb(path)
 }
 
 // A batch that mixes a genuinely-new event with one that conflicts an existing
 // seq must reject the WHOLE batch (no partial insert) — appendSessionEvents
 // validates before it builds/executes the insert transaction.
 test "a conflicting event anywhere in the batch rejects the whole batch, not just the conflicting row (#965)" {
-  val path = useFreshTestDb("sessevents-conflict-batch")
+  if not live() {
+    return
+  }
+  val me = freshUser("se")
   val batch = parseStreamJson(fixtureNdjson(), 0.toLong(), "")
   val _ = mustAppend("sess-E", batch.events)
 
@@ -185,29 +230,29 @@ test "a conflicting event anywhere in the batch rejects the whole batch, not jus
 
   val back = mustRead("sess-E", "")
   assertEqualInt(back.length.toInt(), 3, "the new event (seq 3) was NOT inserted alongside the conflict")
-
-  cleanupTestDb(path)
 }
 
 test "latestSessionEventCursor defaults to (0, \"\") for a session with no captured events" {
-  val path = useFreshTestDb("sessevents-cursor-empty")
+  if not live() {
+    return
+  }
+  val me = freshUser("se")
   val cursor = mustLatestCursor("sess-does-not-exist")
   assertEqualInt(cursor.nextSeq.toInt(), 0, "a fresh session's cursor starts the chain at seq 0")
   assertEqual(cursor.lastHash, "", "a fresh session's cursor has no prevHash yet")
-
-  cleanupTestDb(path)
 }
 
 test "latestSessionEventCursor resumes one past the last stored seq, with that event's own hash" {
-  val path = useFreshTestDb("sessevents-cursor-resume")
+  if not live() {
+    return
+  }
+  val me = freshUser("se")
   val batch = parseStreamJson(fixtureNdjson(), 0.toLong(), "")
   val _ = mustAppend("sess-F", batch.events)
 
   val cursor = mustLatestCursor("sess-F")
   assertEqualInt(cursor.nextSeq.toInt(), 3, "resumes at one past the last stored seq (0, 1, 2 stored)")
   assertEqual(cursor.lastHash, batch.events[2].hash, "resumes from the last stored event's own hash")
-
-  cleanupTestDb(path)
 }
 
 // Regression test for the bug this cursor fixes: every run after a session's
@@ -221,7 +266,10 @@ test "latestSessionEventCursor resumes one past the last stored seq, with that e
 // multi-run (and retried) session hit in production. Seeding the second run's
 // parse from latestSessionEventCursor instead avoids the collision entirely.
 test "a second run's capture, seeded from the resumed cursor, extends the chain without conflicting the first run's events" {
-  val path = useFreshTestDb("sessevents-second-run")
+  if not live() {
+    return
+  }
+  val me = freshUser("se")
   // Run 1: a fresh container's log, parsed from genesis — its own log starts
   // at byte 0, so this is the correct startSeq/prevHash for a session's FIRST
   // run (exactly what latestSessionEventCursor itself returns for an empty
@@ -247,12 +295,8 @@ test "a second run's capture, seeded from the resumed cursor, extends the chain 
   val all = mustRead("sess-G", "")
   assertEqualInt(all.length.toInt(), 4, "both runs' events are stored — three from run 1, one from run 2")
   assertTrue(verifyChain(all, ""), "the whole session's chain, spanning both runs, verifies from genesis")
-
-  cleanupTestDb(path)
 }
 
-// SQLite keys session events by session alone; the scope is for the
-// Postgres store.
 func evScope(): EvScope.TenantScope {
-  return EvScope.personalScope("u")
+  return CloudAgents.Auth.requestScope()
 }

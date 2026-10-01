@@ -1,38 +1,76 @@
+//! Highlights tests: pure helpers plus the owner-scoped handlers over the
+//! Postgres store.
 @test_module
 package CloudAgents.HighlightsTests
 
 import Std.Core
+import Std.Environment
 import Std.Testing
 import Std.Uuid
 import CloudAgents.Auth
 import CloudAgents.Highlights
+import CloudAgents.Pg
+import CloudAgents.Pg.Migrate
+import CloudAgents.PgStore.Tenancy
 import CloudAgents.Repository
 import CloudAgents.SessionStore
-import CloudAgents.Sqlite
+import CloudAgents.Db
 import extern System.Environment as Env
 
-// ── Live-DB plumbing (same pattern as tests/callbacks_v2_tests.l) ────────────
-@externTarget("System.IO.File.Delete")
-func fileDelete(path: in String): Unit = ()
-
-func useFreshTestDb(tag: in String): String {
-  val path = "/tmp/cloud-agents-tests-" + tag + "-" + Std.Uuid.uuidToString(Std.Uuid.newUuid()) + ".db"
-  Env.SetEnvironmentVariable("CLOUD_AGENTS_DB_PATH", path)
-  match CloudAgents.Repository.initSchema() {
-    case Ok(_) -> ()
-    case Err(e) -> assertTrue(false, "initSchema failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+// ── Live Postgres ─────────────────────────────────────────────────────────────
+//
+// The store is Postgres (docs/phase11-postgres-tenancy.md). These tests run iff
+// LYRIC_CONFIG_DB_CONNECTION_URL (cloudagents_app) and
+// CLOUD_AGENTS_MIGRATE_DATABASE_URL (cloudagents_owner) are set, and fail rather
+// than skip when CLOUD_AGENTS_REQUIRE_LIVE_PG=1 (CI). Each test acts as a fresh
+// user with its own personal tenant, so tests, suites and repeated runs against
+// the same database never see each other's rows.
+func live(): Bool {
+  val ok = CloudAgents.Pg.serviceConfigured() and
+    Std.Environment.getVarOrDefault(CloudAgents.Pg.migrateDsnVar(), "").length.toInt() > 0
+  if ok {
+    return true
   }
-  return path
+  assertTrue(
+    Std.Environment.getVarOrDefault("CLOUD_AGENTS_REQUIRE_LIVE_PG", "") != "1",
+    "CLOUD_AGENTS_REQUIRE_LIVE_PG=1 but LYRIC_CONFIG_DB_CONNECTION_URL or CLOUD_AGENTS_MIGRATE_DATABASE_URL is not set"
+  )
+  println("SKIP: highlights tests need LYRIC_CONFIG_DB_CONNECTION_URL and CLOUD_AGENTS_MIGRATE_DATABASE_URL")
+  return false
 }
 
-func cleanupTestDb(path: in String): Unit {
-  try {
-    fileDelete(path)
-  } catch Bug as b {
-    // locked or already gone — fine for a temp file
+func migrate(): Unit {
+  val conn = match CloudAgents.Pg.connectDsn(Std.Environment.getVarOrDefault(CloudAgents.Pg.migrateDsnVar(), "")) {
+    case Ok(c) -> c
+    case Err(e) -> panic(CloudAgents.Pg.pgErrorMessage(e))
   }
-  Env.SetEnvironmentVariable("CLOUD_AGENTS_SUMMARIZER_URL", "")
-  CloudAgents.Auth.setCurrentUserId("default")
+  defer {
+    conn.close()
+  }
+  match CloudAgents.Pg.Migrate.migrate(conn) {
+    case Ok(_) -> ()
+    case Err(e) -> panic("migrate failed: " + CloudAgents.Pg.pgErrorMessage(e))
+  }
+}
+
+/// A new user with a provisioned personal tenant. Does not change the request
+/// identity.
+func newUser(tag: in String): String {
+  val uid = "t-" + tag + "-" + Std.Uuid.uuidToString(Std.Uuid.newUuid())
+  match CloudAgents.PgStore.Tenancy.ensurePersonalTenant(uid) {
+    case Ok(_) -> ()
+    case Err(e) -> panic("provisioning " + uid + " failed: " + CloudAgents.Db.dbErrorMessage(e))
+  }
+  return uid
+}
+
+/// Migrate, then make a new user the request identity (what handlers read via
+/// CloudAgents.Auth.requestScope()).
+func freshUser(tag: in String): String {
+  migrate()
+  val uid = newUser(tag)
+  CloudAgents.Auth.setCurrentUserId(uid)
+  return uid
 }
 
 func mkSession(id: in String): Unit {
@@ -47,7 +85,7 @@ func mkSession(id: in String): Unit {
   )
   match addSession(s, CloudAgents.Auth.requestScope()) {
     case Ok(_) -> ()
-    case Err(e) -> panic("addSession failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+    case Err(e) -> panic("addSession failed: " + CloudAgents.Db.dbErrorMessage(e))
   }
 }
 
@@ -141,12 +179,12 @@ test "isValidHighlightKind accepts exactly the six kinds" {
 
 // ── Handler-level ownership + config gating (#762) ───────────────────────────
 test "listHighlightsHandler is owner-scoped: owner lists, another user 404s" {
-  val dbPath = useFreshTestDb("highlights-ownership")
-  defer {
-    cleanupTestDb(dbPath)
+  if not live() {
+    return
   }
-  CloudAgents.Auth.setCurrentUserId("default")
-  val sid = "sess-highlights-1"
+  val me = freshUser("hl-own")
+  val intruder = newUser("hl-intruder")
+  val sid = "sess-highlights-1-" + me
   mkSession(sid)
 
   match listHighlightsHandler(sid) {
@@ -154,7 +192,7 @@ test "listHighlightsHandler is owner-scoped: owner lists, another user 404s" {
     case Err(e) -> assertTrue(false, "owner list failed: " + toString(e.status))
   }
 
-  CloudAgents.Auth.setCurrentUserId("intruder")
+  CloudAgents.Auth.setCurrentUserId(intruder)
   match listHighlightsHandler(sid) {
     case Ok(_) -> assertTrue(false, "another user must not list this session's highlights")
     case Err(e) -> assertEqualInt(e.status, 404, "another user's list -> 404, indistinguishable from absent")
@@ -162,22 +200,22 @@ test "listHighlightsHandler is owner-scoped: owner lists, another user 404s" {
 }
 
 test "refreshHighlightsHandler is owner-scoped and reports 'disabled' with no summarizer configured" {
-  val dbPath = useFreshTestDb("highlights-refresh-gating")
-  defer {
-    cleanupTestDb(dbPath)
+  if not live() {
+    return
   }
+  val me = freshUser("hl-refresh")
+  val intruder = newUser("hl-intruder")
   Env.SetEnvironmentVariable("CLOUD_AGENTS_SUMMARIZER_URL", "")
-  CloudAgents.Auth.setCurrentUserId("default")
-  val sid = "sess-highlights-2"
+  val sid = "sess-highlights-2-" + me
   mkSession(sid)
 
-  CloudAgents.Auth.setCurrentUserId("intruder")
+  CloudAgents.Auth.setCurrentUserId(intruder)
   match refreshHighlightsHandler(sid) {
     case Ok(_) -> assertTrue(false, "another user must not trigger a refresh for this session")
     case Err(e) -> assertEqualInt(e.status, 404, "another user's refresh -> 404")
   }
 
-  CloudAgents.Auth.setCurrentUserId("default")
+  CloudAgents.Auth.setCurrentUserId(me)
   match refreshHighlightsHandler(sid) {
     case Ok(r) -> {
       assertEqual(r.status, "disabled", "no summarizer URL -> feature reports disabled")

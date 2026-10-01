@@ -18,6 +18,14 @@
 # this script itself only needed 0.4.17+), dotnet 10.x, Docker (for runner
 # containers)
 # Env:
+#   LYRIC_CONFIG_DB_CONNECTION_URL  (required) Postgres DSN of the cloudagents_app
+#                            service role; the server exits at startup without it.
+#                            The schema must already be migrated (see below).
+#   CLOUD_AGENTS_MIGRATE_DATABASE_URL  cloudagents_owner DSN, used only by the
+#                            one-off `dotnet bin/CloudAgents.dll --migrate`
+#                            (provision the roles with deploy/postgres/provision.sql
+#                            first; see docs/phase11-postgres-tenancy.md). Not
+#                            needed to run the server itself.
 #   CLOUD_AGENTS_PORT        HTTP listen port (default: 8080)
 #   CLOUD_AGENTS_BIND        interface to bind (default: 127.0.0.1; set 0.0.0.0 for LAN)
 #   ENCRYPTION_KEY           (secret) key for session data encryption — read from env by .NET
@@ -59,30 +67,18 @@ OUT="$REPO_ROOT/bin/CloudAgents.dll"
 command -v lyric  >/dev/null || { echo "run-api: 'lyric' not on PATH"  >&2; exit 1; }
 command -v dotnet >/dev/null || { echo "run-api: 'dotnet' not on PATH" >&2; exit 1; }
 
+if [ -z "${LYRIC_CONFIG_DB_CONNECTION_URL:-}" ]; then
+  echo "run-api: LYRIC_CONFIG_DB_CONNECTION_URL is not set; it must hold the cloudagents_app Postgres DSN." >&2
+  echo "run-api: provision the roles with deploy/postgres/provision.sql, then apply the schema with" >&2
+  echo "run-api:   CLOUD_AGENTS_MIGRATE_DATABASE_URL=<cloudagents_owner DSN> dotnet bin/CloudAgents.dll --migrate" >&2
+  exit 1
+fi
+
 echo "==> restoring NuGet dependencies"
 ( cd "$REPO_ROOT" && lyric restore )
 
 echo "==> compiling CloudAgents"
 ( cd "$REPO_ROOT" && lyric build )
-
-# Copy native SQLite binaries to bin/ if Microsoft.Data.Sqlite is restored
-NUGET_DIR="${NUGET_PACKAGES:-$HOME/.nuget/packages}"
-if [ -d "$NUGET_DIR/sqlitepclraw.lib.e_sqlite3" ]; then
-  SQLITE_RUNTIMES_DIR=$(find "$NUGET_DIR/sqlitepclraw.lib.e_sqlite3" -maxdepth 2 -name "runtimes" | head -n 1)
-  if [ -n "$SQLITE_RUNTIMES_DIR" ] && [ -d "$SQLITE_RUNTIMES_DIR" ]; then
-    echo "==> copying native SQLite runtimes to bin/runtimes"
-    mkdir -p "$REPO_ROOT/bin"
-    cp -R "$SQLITE_RUNTIMES_DIR/" "$REPO_ROOT/bin/runtimes/"
-    
-    # On macOS, also copy the appropriate dylib to the root bin/ directory to ensure FFI loads it correctly
-    ARCH="$(uname -m)"
-    if [ "$ARCH" = "arm64" ] && [ -f "$SQLITE_RUNTIMES_DIR/osx-arm64/native/libe_sqlite3.dylib" ]; then
-      cp "$SQLITE_RUNTIMES_DIR/osx-arm64/native/libe_sqlite3.dylib" "$REPO_ROOT/bin/libe_sqlite3.dylib"
-    elif [ "$ARCH" = "x86_64" ] && [ -f "$SQLITE_RUNTIMES_DIR/osx-x64/native/libe_sqlite3.dylib" ]; then
-      cp "$SQLITE_RUNTIMES_DIR/osx-x64/native/libe_sqlite3.dylib" "$REPO_ROOT/bin/libe_sqlite3.dylib"
-    fi
-  fi
-fi
 
 echo "==> starting server on ${BIND}:${PORT}"
 

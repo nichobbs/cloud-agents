@@ -15,7 +15,7 @@ import Std.Core
 import CloudAgents.Pg
 import CloudAgents.Repository
 import CloudAgents.SessionStore
-import CloudAgents.Sqlite
+import CloudAgents.Db
 import CloudAgents.Capture
 import CloudAgents.Ledger.Model
 import CloudAgents.Ledger.Policy
@@ -64,8 +64,8 @@ func fail(msg: in String): LedgerFailure {
   return LedgerFailure(status = "invalid", message = msg)
 }
 
-func dbFailure(e: in CloudAgents.Sqlite.DbError): LedgerFailure {
-  return LedgerFailure(status = "error", message = CloudAgents.Sqlite.dbErrorMessage(e))
+func dbFailure(e: in CloudAgents.Db.DbError): LedgerFailure {
+  return LedgerFailure(status = "error", message = CloudAgents.Db.dbErrorMessage(e))
 }
 
 /// Build the next window after the cursor and remember where it ends, so the
@@ -463,7 +463,7 @@ func notify(target: in SessionContext, c: in Candidate): Unit {
   }
   match CloudAgents.Repository.createNotification(target.sessionId, target.tenantScope, "info", "Observer found " + what + ": " + c.summary) {
     case Ok(_) -> ()
-    case Err(e) -> println("WARNING: observer notification failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+    case Err(e) -> println("WARNING: observer notification failed: " + CloudAgents.Db.dbErrorMessage(e))
   }
 }
 
@@ -473,7 +473,7 @@ func notify(target: in SessionContext, c: in Candidate): Unit {
 /// no enabled observer.
 pub func observerSettingsForSession(
   sessionId: in String, sc: in CloudAgents.Pg.TenantScope
-): Result[Option[ObserverSettings], CloudAgents.Sqlite.DbError] {
+): Result[Option[ObserverSettings], CloudAgents.Db.DbError] {
   val facts = match sessionRunFacts(sessionId, sc)? { case Some(f) -> f; case _ -> return Ok(value = None) }
   if facts.observesSessionId.length.toInt() > 0 or facts.isArchived == "1" {
     return Ok(value = None)
@@ -495,7 +495,7 @@ func routeScope(sessionId: in String): Option[CloudAgents.Pg.TenantScope] {
   return match CloudAgents.SessionStore.sessionRouteScope(sessionId) {
     case Ok(found) -> found
     case Err(e) -> {
-      println("WARNING: resolving the scope of " + sessionId + " failed: " + CloudAgents.Sqlite.dbErrorMessage(e))
+      println("WARNING: resolving the scope of " + sessionId + " failed: " + CloudAgents.Db.dbErrorMessage(e))
       None
     }
   }
@@ -510,15 +510,14 @@ pub func onRunFinished(sessionId: in String): Unit {
       match markObserverPending(sessionId, sc) {
         case Ok(_) -> ()
         case Err(e) -> println(
-          "WARNING: queueing the observer for " + sessionId + " failed: " +
-            CloudAgents.Sqlite.dbErrorMessage(e)
+          "WARNING: queueing the observer for " + sessionId + " failed: " + CloudAgents.Db.dbErrorMessage(e)
         )
       }
     }
     case Ok(_) -> ()
     case Err(e) -> println(
       "WARNING: reading the observer settings for " + sessionId + " failed: " +
-        CloudAgents.Sqlite.dbErrorMessage(e)
+        CloudAgents.Db.dbErrorMessage(e)
     )
   }
 }
@@ -539,7 +538,7 @@ pub func midRunTick(sessionId: in String, runStartedAt: in String): Unit {
       case Ok(_) -> ()
       case Err(e) -> println(
         "WARNING: queueing a mid-run observer pass for " + sessionId + " failed: " +
-          CloudAgents.Sqlite.dbErrorMessage(e)
+          CloudAgents.Db.dbErrorMessage(e)
       )
     }
   }

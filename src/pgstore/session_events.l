@@ -1,10 +1,9 @@
-//! CloudAgents.PgStore.SessionEvents — the Postgres implementation of a
+//! CloudAgents.PgStore.SessionEvents — the Postgres store for a
 //! session's captured provenance events (`session_events`,
-//! docs/session-events-store.md), mirroring the SQLite-backed functions in
-//! `CloudAgents.Repository` with the same signatures and semantics
+//! docs/session-events-store.md), behind the `CloudAgents.Repository` facade
 //! (docs/phase11-postgres-tenancy.md §9 slices B/C).
 //!
-//! Semantics carried over from the SQLite store:
+//! Semantics:
 //! - an append is all-or-nothing, so a stored chain never has a hole;
 //! - re-appending a byte-identical, already-stored event is a no-op, but an
 //!   event whose stored payload or hash differs rejects the whole batch
@@ -24,12 +23,12 @@ import Db
 import CloudAgents.Pg
 import CloudAgents.PgStore
 import CloudAgents.Repository
-import CloudAgents.Sqlite
+import CloudAgents.Db
 import CloudAgents.Capture
 
 func query(
   sc: in CloudAgents.Pg.TenantScope, sql: in String, params: in slice[String]
-): Result[slice[DbRow], CloudAgents.Sqlite.DbError] {
+): Result[slice[DbRow], CloudAgents.Db.DbError] {
   val u = CloudAgents.PgStore.open(sc)?
   defer {
     CloudAgents.PgStore.release(u)
@@ -65,7 +64,7 @@ func toEvents(rows: in slice[DbRow]): slice[CaptureEvent] {
 /// for the idempotence and tamper-evidence rules.
 pub func appendSessionEvents(
   sessionId: in String, sc: in CloudAgents.Pg.TenantScope, events: in slice[CaptureEvent]
-): Result[Int, CloudAgents.Sqlite.DbError] {
+): Result[Int, CloudAgents.Db.DbError] {
   if events.length.toInt() == 0 {
     return Ok(value = 0)
   }
@@ -83,7 +82,7 @@ pub func appendSessionEvents(
       val stored = CloudAgents.PgStore.q(u, "SELECT payload, hash FROM session_events WHERE session_id = @p0 AND seq = @p1::bigint", [sessionId, seq])?
       if stored.length == 0 or CloudAgents.PgStore.col(stored[0], "payload") != e.payload or CloudAgents.PgStore.col(stored[0], "hash") != e.hash {
         return Err(
-          error = CloudAgents.Sqlite.ValidationFailed(
+          error = CloudAgents.Db.ValidationFailed(
             message = "session_events conflict for session " + sessionId + " seq " + seq +
               ": already-stored content differs from the re-appended content"
           )
@@ -100,7 +99,7 @@ pub func appendSessionEvents(
 /// ("" = from the start), oldest first.
 pub func sessionEventsAfterSeq(
   sessionId: in String, sc: in CloudAgents.Pg.TenantScope, afterSeq: in String
-): Result[slice[CaptureEvent], CloudAgents.Sqlite.DbError] {
+): Result[slice[CaptureEvent], CloudAgents.Db.DbError] {
   val normalized = if afterSeq.length == 0 { "-1" } else { afterSeq }
   val rows = query(sc, "SELECT " + eventCols + " FROM session_events WHERE session_id = @p0 AND seq > @p1::bigint ORDER BY session_events.seq", [sessionId, normalized])?
   return Ok(value = toEvents(rows))
@@ -113,7 +112,7 @@ pub func sessionEventsInRange(
   sc: in CloudAgents.Pg.TenantScope,
   fromExclusive: in String,
   toInclusive: in String,
-): Result[slice[CaptureEvent], CloudAgents.Sqlite.DbError] {
+): Result[slice[CaptureEvent], CloudAgents.Db.DbError] {
   val rows = query(sc, "SELECT " + eventCols + " FROM session_events WHERE session_id = @p0 AND seq > @p1::bigint AND seq <= @p2::bigint " + "ORDER BY session_events.seq LIMIT 500", [sessionId, fromExclusive, toInclusive])?
   return Ok(value = toEvents(rows))
 }
@@ -125,7 +124,7 @@ pub func sessionEventsAfterSeqLimited(
   sc: in CloudAgents.Pg.TenantScope,
   afterSeq: in String,
   limit: in Int,
-): Result[slice[CaptureEvent], CloudAgents.Sqlite.DbError] {
+): Result[slice[CaptureEvent], CloudAgents.Db.DbError] {
   val normalized = if afterSeq.length == 0 { "-1" } else { afterSeq }
   val rows = query(sc, "SELECT " + eventCols + " FROM session_events WHERE session_id = @p0 AND seq > @p1::bigint ORDER BY session_events.seq LIMIT " + toString(limit), [sessionId, normalized])?
   return Ok(value = toEvents(rows))
@@ -135,7 +134,7 @@ pub func sessionEventsAfterSeqLimited(
 /// captured yet.
 pub func latestSessionEventSeq(
   sessionId: in String, sc: in CloudAgents.Pg.TenantScope
-): Result[String, CloudAgents.Sqlite.DbError] {
+): Result[String, CloudAgents.Db.DbError] {
   val rows = query(sc, "SELECT max(seq)::text AS seq FROM session_events WHERE session_id = @p0", [sessionId])?
   if rows.length == 0 {
     return Ok(value = "")
@@ -147,7 +146,7 @@ pub func latestSessionEventSeq(
 /// highest stored seq and that event's hash, or (0, "") with no events.
 pub func latestSessionEventCursor(
   sessionId: in String, sc: in CloudAgents.Pg.TenantScope
-): Result[CloudAgents.Repository.SessionEventCursor, CloudAgents.Sqlite.DbError] {
+): Result[CloudAgents.Repository.SessionEventCursor, CloudAgents.Db.DbError] {
   val rows = query(sc, "SELECT seq::text AS seq, hash FROM session_events WHERE session_id = @p0 ORDER BY session_events.seq DESC LIMIT 1", [sessionId])?
   if rows.length == 0 {
     return Ok(value = SessionEventCursor())

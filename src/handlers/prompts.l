@@ -8,7 +8,7 @@ import Std.Core
 import Web
 import CloudAgents.Auth
 import CloudAgents.Repository
-import CloudAgents.Sqlite
+import CloudAgents.Db
 
 val maxPromptNameLen = 200
 
@@ -127,8 +127,8 @@ pub func renderTemplate(body: in String, keys: in slice[String], values: in slic
   return acc
 }
 
-func dbError(e: in CloudAgents.Sqlite.DbError): Web.ApiError {
-  return Web.internalError(CloudAgents.Sqlite.dbErrorMessage(e))
+func dbError(e: in CloudAgents.Db.DbError): Web.ApiError {
+  return Web.internalError(CloudAgents.Db.dbErrorMessage(e))
 }
 
 func validateSavePrompt(req: in SavePromptRequest): Option[Web.ApiError] {
