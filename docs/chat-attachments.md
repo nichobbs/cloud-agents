@@ -1,5 +1,10 @@
 # Spec: chat document/image attachments
 
+> Since phase 11 the store is Postgres, not SQLite (see
+> [`docs/phase11-postgres-tenancy.md`](phase11-postgres-tenancy.md)); the SQL
+> and migration references below are historical, and the live schema is in
+> `src/pg/schema.l`.
+
 Status: **Implemented** (backend + frontend). Adds upload support to a
 session's chat composer — images and documents alike — landing alongside the
 existing text-only `POST /api/sessions/{id}/messages`.

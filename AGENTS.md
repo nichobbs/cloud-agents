@@ -145,11 +145,28 @@ as of v0.4.18 (bug 6), and no longer fails on the top-level untyped
 Handler createSession validation` case read a top-level `val httpsPrefix =
 "https://"` via `.length`, exactly bug 7's trigger).
 `./scripts/verify.sh` also still genuinely passes. The live-database
-suites additionally need the native SQLite library on the loader path —
-see `docs/BUILD.md` "Running tests". More runtime gotchas found since
+suites run against Postgres (set `LYRIC_CONFIG_DB_CONNECTION_URL` and
+`CLOUD_AGENTS_MIGRATE_DATABASE_URL`; `CLOUD_AGENTS_REQUIRE_LIVE_PG=1` makes a
+missing database fail instead of skip) — see `docs/BUILD.md` "Running tests". More runtime gotchas found since
 (broken `Instant.now()`, `unwrapResult`-family methods, qualified record
 construction) are catalogued in `docs/lyric/gotchas.md` — read it before
 writing runtime-executed code.
+
+## Store (Postgres)
+
+Since phase 11 (`docs/phase11-postgres-tenancy.md`) the store is Postgres;
+SQLite, its driver, SQL builders and NuGet packages are gone, with no data
+migration. `CloudAgents.Repository`, `CloudAgents.SessionStore` and
+`CloudAgents.Ledger.Store` are thin facades over `src/pgstore/`. Every user
+gets a personal tenant (`personal:<user id>`) on their first authenticated
+request (`src/pgstore/tenancy.l`). The schema is applied by
+`dotnet bin/CloudAgents.dll --migrate` (migrations in `src/pg/schema.l`); the
+API needs `LYRIC_CONFIG_DB_CONNECTION_URL` (the `cloudagents_app` DSN) and
+refuses to start without it. For a local database, provision with
+`deploy/postgres/provision.sql`, run `--migrate` and set the DSNs (see
+`docs/BUILD.md` "Running tests"); the compose stack in `deploy/` runs
+Postgres for you. Message search uses Postgres `tsvector`
+(`docs/phase9-message-search.md` §8).
 
 Source files use `.l` extension. Entry point is `func main(): Unit` in the appropriate package.
 
@@ -270,7 +287,7 @@ Sequenced follow-ups:
 - **Persistence — store AND endpoint built.** The `session_events` table
   (migration `0030`) + `Repository` accessors (`appendSessionEvents` /
   `sessionEventsAfterSeq`, over `CaptureEvent`, idempotent batch append and an
-  exclusive after-seq cursor) are done and live-SQLite tested
+  exclusive after-seq cursor) are done and live-Postgres tested
   (`docs/session-events-store.md`, `tests/session_events_tests.l`). The
   `GET /api/sessions/{id}/events?after=seq` endpoint (the other half of the WP4
   acceptance) **shipped** — `getSessionEvents` in `src/handlers/interactions.l`,
@@ -358,7 +375,7 @@ Sequenced follow-ups:
   attempt cap gives up (default 50 attempts, ~2 days). The bearer token is
   never persisted (read fresh from env at every attempt); re-enqueuing an
   identical `(session, body)` pair is idempotent. Pure backoff/terminal logic
-  and the live-SQLite enqueue→due→attempt→delivered/terminal state machine are
+  and the live-Postgres enqueue→due→attempt→delivered/terminal state machine are
   unit-tested (`tests/graph_ingest_outbox_tests.l`); the actual bearer-authed
   POST to a real platform stays the same documented manual/live step as
   everything else in this arc. Still deferred: credential issuance/rotation
@@ -370,7 +387,7 @@ Sequenced follow-ups:
   (`derivePermissions` + `permissionForTool` + `permissionsForSession`,
   conservative `Denied > Granted > Auto` fold), replacing the single
   context-level mode. It ships the derivation + accessor + tests
-  (`tests/permission_enrichment_tests.l`, offline + live-SQLite). Attaching the
+  (`tests/permission_enrichment_tests.l`, offline + live-Postgres). Attaching the
   map to the emitted checkpoint steps is the remaining piece: the step-permission
   assignment lives in the **vendored** `Adapt.mapStreamJson`
   (`vendor/testamur-checkpoint-format/`, the drift-guard / content-address

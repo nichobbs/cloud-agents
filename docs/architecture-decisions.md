@@ -218,7 +218,7 @@ couples everything to one host:
   (`src/docker_manager.l`) and owns each live run: `streamSessionMessage`'s
   poll loop reads the container log, renders it and persists
   `session_events` in-process, so a deploy or crash drops in-flight runs.
-- State is one SQLite file with a TEXT-only driver (`src/db/sqlite_driver.l`);
+- State was one SQLite file with a TEXT-only driver (`src/db/sqlite_driver.l`, since removed: phase 11 moved the store to Postgres);
   artifacts and attachments are local directories; per-session workspaces
   and per-user harness homes (`workspaceVolumeBindFor`/`homeVolumeBindFor`)
   are named volumes on that host. Until #1135 the DB lived in the container
@@ -351,10 +351,10 @@ deployable after each):
 
 0. Persist state across deploys (#1135). Done.
 1. Postgres behind the repository seam, still single-node: typed schema,
-   organisation tenants and memberships, `tenant_id` + RLS, a one-shot SQLite-to-Postgres export tool, and live-PG
-   CI suites. SQLite remains only until the export has been run on the
-   production instance, then its driver is deleted rather than kept as a
-   second backend.
+   organisation tenants and memberships, `tenant_id` + RLS, and live-PG CI suites.
+   Done (phase 11): the app now runs on Postgres only; the SQLite driver was
+   deleted rather than kept as a second backend, with no data migration
+   (production had no data worth keeping, so the export tool was dropped).
 2. The `runs` table, the runner agent and the internal runner protocol,
    co-located with the API on today's VM, authenticated with a single
    runner credential held as a deployment secret. Moving run ownership out of the
