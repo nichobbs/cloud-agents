@@ -942,14 +942,10 @@ pub func streamSessionMessage(
   // capture provenance silently save for a WARNING.
   var nextSeq = 0.toLong()
   var lastHash = ""
-  println("[diag] streamSessionMessage " + sessionId + ": before latestSessionEventCursor")
   match CloudAgents.Repository.latestSessionEventCursor(sessionId, CloudAgents.Pg.personalScope(userId)) {
     case Ok(cursor) -> {
       nextSeq = cursor.nextSeq
       lastHash = cursor.lastHash
-      println(
-        "[diag] streamSessionMessage " + sessionId + ": after latestSessionEventCursor, nextSeq=" + toString(cursor.nextSeq)
-      )
     }
     // Best-effort: a lookup failure must never block the run. Falling back to
     // (0, "") reproduces the prior always-restart behavior for this one run
@@ -964,14 +960,6 @@ pub func streamSessionMessage(
   var finished = false
   var clientGone = false
   var timedOut = false
-  // Diagnostic-only (nichobbs/cloud-agents#1131 follow-up): the last two
-  // production crashes of the "datatype misalignment" fault printed every
-  // checkpoint through "after latestSessionEventCursor" and then nothing —
-  // so the fault is inside the poll loop below, most likely on its first
-  // tick (no assistant output or keepalive ever reached the client on
-  // either occurrence). Capped to the first 3 ticks to avoid spamming a
-  // long-running session's log.
-  var diagTickCount = 0
   // The container id is stored by the async task via updateSessionContainerFor
   // shortly after creation. Resolve it once and cache it — re-querying the DB
   // every ~400ms tick for the whole run is needless load (#483). getSession is
@@ -1021,59 +1009,26 @@ pub func streamSessionMessage(
     // bottom of the loop must count the tick just waited, not the tick
     // that's about to happen next (#704).
     val ticked = pollMs
-    diagTickCount = diagTickCount + 1
-    val diagTicking = diagTickCount <= 3
-    if diagTicking {
-      println("[diag] streamSessionMessage " + sessionId + ": tick " + toString(diagTickCount) + " before taskWaitMs")
-    }
     finished = taskWaitMs(t, pollMs)
-    if diagTicking {
-      println("[diag] streamSessionMessage " + sessionId + ": tick " + toString(diagTickCount) + " after taskWaitMs")
-    }
     if containerId.length == 0 {
       containerId = sessionContainerId(sessionId)
     }
-    if diagTicking {
-      println(
-        "[diag] streamSessionMessage " + sessionId + ": tick " + toString(diagTickCount) + " containerId=" + containerId
-      )
-    }
     if containerId.length > 0 {
-      if diagTicking {
-        println(
-          "[diag] streamSessionMessage " + sessionId + ": tick " + toString(diagTickCount) + " before partialContainerLogs"
-        )
-      }
-      val rawLogs = partialContainerLogs(containerId)
-      if diagTicking {
-        println(
-          "[diag] streamSessionMessage " + sessionId + ": tick " + toString(diagTickCount) +
-            " after partialContainerLogs, len=" +
-            toString(rawLogs.length)
-        )
-      }
       // Parse the NDJSON log delta into CaptureEvents + the visible text to
       // stream. Only complete lines are consumed; a partial trailing line is
       // re-read next tick (renderLogDelta). Works uniformly across Claude,
       // Gemini, Codex, and OpenCode NDJSON streams.
-      val rd = CloudAgents.Capture.Render.renderLogDelta(rawLogs, offset, nextSeq, lastHash, false)
-      if diagTicking {
-        println(
-          "[diag] streamSessionMessage " + sessionId + ": tick " + toString(diagTickCount) + " after renderLogDelta, events=" +
-            toString(rd.events.length.toInt()) +
-            " displayLen=" +
-            toString(rd.displayText.length)
-        )
-      }
+      val rd = CloudAgents.Capture.Render.renderLogDelta(
+        partialContainerLogs(containerId),
+        offset,
+        nextSeq,
+        lastHash,
+        false
+      )
       // Persist newly-captured events (idempotent batch append — safe to re-run
       // on a write-failure retry). Best-effort: a persistence failure must never
       // break the live stream, the same posture as the callback events below.
       if rd.events.length.toInt() > 0 {
-        if diagTicking {
-          println(
-            "[diag] streamSessionMessage " + sessionId + ": tick " + toString(diagTickCount) + " before appendSessionEvents"
-          )
-        }
         match CloudAgents.Repository.appendSessionEvents(sessionId, CloudAgents.Pg.personalScope(userId), rd.events) {
           case Ok(_) -> ()
           // Best-effort: a persistence failure must never break the live stream.
@@ -1093,11 +1048,6 @@ pub func streamSessionMessage(
       if rd.displayText.length > 0 {
         // Fresh visible output — stay responsive.
         pollMs = minPollMs
-        if diagTicking {
-          println(
-            "[diag] streamSessionMessage " + sessionId + ": tick " + toString(diagTickCount) + " before writeChunk (display)"
-          )
-        }
         match Web.writeChunk(w, CloudAgents.Streaming.toSseChunk(rd.displayText)) {
           case Ok(_) -> {
             // Only advance PAST complete lines actually delivered, so a failed

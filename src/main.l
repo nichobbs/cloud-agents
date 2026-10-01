@@ -79,7 +79,6 @@ pub record AuthMiddleware {
 
 impl Web.Middleware for AuthMiddleware {
   func wrap(req: in Web.Request, next: in Web.Handler): Web.Response {
-    println("[diag] AuthMiddleware.wrap: path=" + req.path + " method=" + req.method)
     if req.path == "/api/health" or req.path.startsWith("/api/auth/") or CloudAgents.Auth.isContainerCallbackRoute(req.path) {
       // These handlers never read the per-request identity, but stamp the
       // operator id anyway so a pooled thread can't carry a previous
@@ -96,7 +95,6 @@ impl Web.Middleware for AuthMiddleware {
       apiToken = ""
     }
     val authHeader = match Web.header(req, "Authorization") { case Some(h) -> h; case None -> "" }
-    println("[diag] AuthMiddleware.wrap: before authenticateRequest, path=" + req.path)
     match CloudAgents.OAuth.authenticateRequest(req.path, authHeader, apiToken) {
       case Allowed(userId) -> {
         // Tenant-owned rows reference the user's personal tenant, so it must
@@ -497,12 +495,8 @@ record SendMessageStreamHandler {
 
 impl Web.StreamingHandler for SendMessageStreamHandler {
   func streamHandle(req: in Web.Request, w: in Web.ResponseWriter): Unit {
-    println("[diag] SendMessageStreamHandler.streamHandle: entered, bodyLength=" + toString(req.body.length))
     val id = pparam(req, "id")
-    println("[diag] SendMessageStreamHandler.streamHandle: before patchMissingAttachmentsField, id=" + id)
-    val patched = CloudAgents.Handlers.patchMissingAttachmentsField(req.body)
-    println("[diag] SendMessageStreamHandler.streamHandle: before SendMessageRequest.fromJson")
-    val decoded = match SendMessageRequest.fromJson(patched) {
+    val decoded = match SendMessageRequest.fromJson(CloudAgents.Handlers.patchMissingAttachmentsField(req.body)) {
       case Ok(d) -> d
       case Err(_) -> {
         // No chunk written yet, so a real 400 is still possible — reuse the
@@ -511,7 +505,6 @@ impl Web.StreamingHandler for SendMessageStreamHandler {
         return ()
       }
     }
-    println("[diag] SendMessageStreamHandler.streamHandle: before streamSendMessage")
     CloudAgents.Handlers.streamSendMessage(id, decoded.text, decoded.attachments, w)
     return ()
   }
