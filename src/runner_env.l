@@ -47,6 +47,21 @@ pub func baseRunnerEnvs(
   ]
 }
 
+/// Force IPv4-first DNS resolution for the runner's Node-based harness
+/// process. api.anthropic.com's DNS advertises both A and AAAA records, but
+/// the runner container's Docker network typically has no IPv6 route at
+/// all; Node's dual-stack connect logic does not always fall back from a
+/// failed IPv6 attempt to IPv4 as cleanly or quickly as curl's
+/// Happy-Eyeballs does (especially under the streaming client's connection
+/// reuse), producing intermittent, generic "unknown"/null-status retries on
+/// the harness's own API calls rather than a clean, consistent failure.
+/// Always appended, unconditionally — this is a fact about the runner
+/// container's own network shape, not an operator-configurable escape
+/// hatch like NODE_TLS_REJECT_UNAUTHORIZED/NODE_EXTRA_CA_CERTS.
+pub func withIpv4DnsOrder(envs: in slice[String]): slice[String] {
+  return envs.append("NODE_OPTIONS=--dns-result-order=ipv4first")
+}
+
 /// Append EXTRA_REPOS only when non-empty, so single-repo sessions pass no
 /// EXTRA_REPOS at all (matches docker/reconcile-repos.sh's "unset means no
 /// extra repos" contract).

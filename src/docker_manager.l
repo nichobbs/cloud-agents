@@ -220,6 +220,10 @@ pub async func createRunnerContainer(
   // safe to embed in the env value verbatim.
   envs = CloudAgents.RunnerEnv.withExtraRepos(envs, extraRepos)
 
+  // Always on (not read from the host environment, unlike the two NODE_*
+  // passthroughs just below) — see withIpv4DnsOrder's doc comment.
+  envs = CloudAgents.RunnerEnv.withIpv4DnsOrder(envs)
+
   match Std.Environment.getVar("NODE_TLS_REJECT_UNAUTHORIZED") {
     case Ok(v) -> if v.length > 0 { envs = envs.append("NODE_TLS_REJECT_UNAUTHORIZED=" + v) }
     case Err(_) -> ()

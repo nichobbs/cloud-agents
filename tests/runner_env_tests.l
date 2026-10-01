@@ -6,7 +6,15 @@ import Std.Testing
 import CloudAgents.RunnerEnv
 
 test "baseRunnerEnvs emits the seven base vars in order" {
-  val envs = baseRunnerEnvs("do the thing", "https://github.com/o/r", "main", "claude", "claude-opus-4-8", "native-123", "sess-456")
+  val envs = baseRunnerEnvs(
+    "do the thing",
+    "https://github.com/o/r",
+    "main",
+    "claude",
+    "claude-opus-4-8",
+    "native-123",
+    "sess-456"
+  )
   assertEqualInt(envs.length.toInt(), 7, "seven base env vars")
   assertEqual(envs[0], "PROMPT=do the thing", "PROMPT first")
   assertEqual(envs[1], "REPO_URL=https://github.com/o/r", "REPO_URL second")
@@ -15,6 +23,14 @@ test "baseRunnerEnvs emits the seven base vars in order" {
   assertEqual(envs[4], "MODEL=claude-opus-4-8", "MODEL fifth")
   assertEqual(envs[5], "NATIVE_SESSION_ID=native-123", "NATIVE_SESSION_ID sixth")
   assertEqual(envs[6], "SESSION_ID=sess-456", "SESSION_ID seventh")
+}
+
+test "withIpv4DnsOrder appends NODE_OPTIONS forcing IPv4-first DNS resolution" {
+  val base = baseRunnerEnvs("p", "u", "b", "h", "m", "n", "s")
+  val withDnsOrder = withIpv4DnsOrder(base)
+  assertEqualInt(withDnsOrder.length.toInt(), 8, "appends exactly one entry")
+  assertEqual(withDnsOrder[7], "NODE_OPTIONS=--dns-result-order=ipv4first", "forces ipv4first")
+  assertEqual(withDnsOrder[0], "PROMPT=p", "base vars are untouched")
 }
 
 test "withExtraRepos only appends EXTRA_REPOS when non-empty" {
@@ -60,6 +76,10 @@ test "credential and EXTRA_REPOS env building compose the way createRunnerContai
   envs = withCredentialEnvs(envs, names, values)
 
   assertEqualInt(envs.length.toInt(), 9, "7 base + 1 EXTRA_REPOS + 1 credential")
-  assertEqual(envs[7], "EXTRA_REPOS=https://github.com/o/extra|", "EXTRA_REPOS lands before credentials, matching createRunnerContainer's own ordering")
+  assertEqual(
+    envs[7],
+    "EXTRA_REPOS=https://github.com/o/extra|",
+    "EXTRA_REPOS lands before credentials, matching createRunnerContainer's own ordering"
+  )
   assertEqual(envs[8], "GITHUB_TOKEN=ghp_secret", "credential lands last")
 }
