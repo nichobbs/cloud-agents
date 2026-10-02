@@ -158,6 +158,13 @@ async function errorMessage(res: Response): Promise<string> {
   } catch {
     /* not JSON */
   }
+  // A gateway/proxy error page (e.g. Cloudflare's 524 timeout) is a whole HTML
+  // document; never dump it into the UI.
+  if (/^\s*<(!doctype|html)/i.test(text)) {
+    return res.status >= 500
+      ? `${res.status} The server did not respond in time. Retrying automatically.`
+      : `${res.status} Unexpected HTML response from the server.`;
+  }
   return `${res.status} ${text}`;
 }
 
