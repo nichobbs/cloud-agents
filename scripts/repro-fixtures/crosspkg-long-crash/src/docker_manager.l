@@ -116,10 +116,6 @@ func imageForHarness(harness: in String): String {
   return "claude-code:base"
 }
 
-// Network-policy resolution (networkModeForPolicy / proxyEnvForPolicy) lives in
-// the pure CloudAgents.NetworkPolicy package so it can be unit-tested — a test
-// can't invoke functions in this async package without hitting the "signature
-// is incorrect" harness limitation (docs/lyric/gotchas.md), even pure ones.
 // Lyric.Docker 0.7+ takes a validated, opaque ContainerId rather than a raw
 // string; the frozen snapshot was ported to that API (everything else,
 // including the Long arithmetic under test, is unchanged).
@@ -133,6 +129,10 @@ func dockerContainerId(raw: in String): Result[ContainerId, String] {
 val stopGraceSec: Int = 10
 val waitClientTimeoutSec: Int = 600
 
+// Network-policy resolution (networkModeForPolicy / proxyEnvForPolicy) lives in
+// the pure CloudAgents.NetworkPolicy package so it can be unit-tested — a test
+// can't invoke functions in this async package without hitting the "signature
+// is incorrect" harness limitation (docs/lyric/gotchas.md), even pure ones.
 /// Create an ephemeral container for the given session.
 /// HARNESS, MODEL, and NATIVE_SESSION_ID are passed as env vars so each
 /// container image can invoke the right CLI with the right resume flag. The
