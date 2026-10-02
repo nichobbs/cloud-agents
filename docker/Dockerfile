@@ -165,8 +165,12 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # (confirmed: npm still failed SELF_SIGNED_CERT_IN_CHAIN after
 # update-ca-certificates alone reported the cert added). trust-extra-cas.sh
 # (#686) always (re)writes the combined pem, even empty, so
-# NODE_EXTRA_CA_CERTS can be set unconditionally below — Node treats a
-# missing or empty file as a harmless no-op (a warning at worst).
+# NODE_EXTRA_CA_CERTS can be set unconditionally below at the image level —
+# an empty file here does NOT mean "harmless no-op" at runtime (confirmed
+# false, docs/BUILD.md: it broke TLS validation for claude's bundled Node
+# runtime); docker/sanitize-empty-node-extra-ca-certs.sh, sourced by
+# entrypoint.sh, is what actually makes the empty case safe, by unsetting
+# this env var at container runtime before the harness is invoked.
 COPY docker/extra-ca-certs /tmp/extra-ca-certs
 COPY docker/split-ca-bundle.sh docker/trust-extra-cas.sh /usr/local/bin/
 RUN chmod +x /usr/local/bin/split-ca-bundle.sh /usr/local/bin/trust-extra-cas.sh \
