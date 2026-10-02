@@ -373,6 +373,14 @@ fi
 
 # ─── Everything below here runs as claude-user (#652) ───────────────────────
 
+# An empty NODE_EXTRA_CA_CERTS (the common case — no corporate/proxy root CA
+# baked in at build time) breaks TLS for claude's bundled Node runtime; see
+# sanitize-empty-node-extra-ca-certs.sh's header comment for the full
+# root-cause. Must run before anything that makes an HTTPS call as
+# claude-user (the clone below included).
+# shellcheck source=sanitize-empty-node-extra-ca-certs.sh
+source /usr/local/bin/sanitize-empty-node-extra-ca-certs.sh
+
 # If ~/.claude.json is missing, but backups exist, automatically restore the latest backup!
 if [ ! -f "$HOME/.claude.json" ]; then
     LATEST_BACKUP=$(ls -t "$HOME"/.claude/backups/.claude.json.backup.* 2>/dev/null | head -n 1 || true)

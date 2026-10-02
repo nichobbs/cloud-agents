@@ -191,6 +191,7 @@ jobs:
             scripts/test-entrypoint-privsep.sh \
             scripts/test-lyric-version-resolution.sh \
             scripts/test-split-ca-bundle.sh \
+            scripts/test-sanitize-empty-node-extra-ca-certs.sh \
             scripts/test-mcp-server-injection.sh \
             scripts/test-branch-policy-inject.sh \
             scripts/test-register-callbacks-mcp.sh \
@@ -200,6 +201,7 @@ jobs:
             docker/render-branch-policy.sh \
             docker/register-callbacks-mcp.sh \
             docker/restore-claude-credentials.sh \
+            docker/sanitize-empty-node-extra-ca-certs.sh \
             docker/split-ca-bundle.sh \
             docker/inject-library.sh \
             scripts/check-compose-paths.sh \
@@ -313,6 +315,12 @@ jobs:
       # (#714), and non-PEM passthrough.
       - name: Test split-ca-bundle.sh
         run: ./scripts/test-split-ca-bundle.sh
+
+      # Regression test for docker/sanitize-empty-node-extra-ca-certs.sh
+      # (#1263): an empty/missing NODE_EXTRA_CA_CERTS file unsets the var
+      # (the production bug); a non-empty file leaves it untouched.
+      - name: Test sanitize-empty-node-extra-ca-certs.sh
+        run: ./scripts/test-sanitize-empty-node-extra-ca-certs.sh
 
       # Regression test for docker/inject-library.sh's MCP-server rendering
       # (#764): the enabled/disabled seed feature's env-value ${VAR}

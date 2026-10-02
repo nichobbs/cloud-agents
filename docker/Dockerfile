@@ -165,8 +165,12 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # (confirmed: npm still failed SELF_SIGNED_CERT_IN_CHAIN after
 # update-ca-certificates alone reported the cert added). trust-extra-cas.sh
 # (#686) always (re)writes the combined pem, even empty, so
-# NODE_EXTRA_CA_CERTS can be set unconditionally below — Node treats a
-# missing or empty file as a harmless no-op (a warning at worst).
+# NODE_EXTRA_CA_CERTS can be set unconditionally below at the image level —
+# an empty file here does NOT mean "harmless no-op" at runtime (confirmed
+# false, docs/BUILD.md: it broke TLS validation for claude's bundled Node
+# runtime); docker/sanitize-empty-node-extra-ca-certs.sh, sourced by
+# entrypoint.sh, is what actually makes the empty case safe, by unsetting
+# this env var at container runtime before the harness is invoked.
 COPY docker/extra-ca-certs /tmp/extra-ca-certs
 COPY docker/split-ca-bundle.sh docker/trust-extra-cas.sh /usr/local/bin/
 RUN chmod +x /usr/local/bin/split-ca-bundle.sh /usr/local/bin/trust-extra-cas.sh \
@@ -262,12 +266,17 @@ COPY docker/render-branch-policy.sh /usr/local/bin/render-branch-policy.sh
 # the claude harness keeps its own MCP registration, so register_callbacks_mcp
 # itself is never called here.
 COPY docker/register-callbacks-mcp.sh /usr/local/bin/register-callbacks-mcp.sh
+# entrypoint.sh sources this (never runs it as its own process — see its own
+# header comment for why) to unset NODE_EXTRA_CA_CERTS before the harness
+# starts when no corporate/proxy root CA was baked in, avoiding the TLS
+# breakage an empty extra-combined.pem causes for Node-based CLIs.
+COPY docker/sanitize-empty-node-extra-ca-certs.sh /usr/local/bin/sanitize-empty-node-extra-ca-certs.sh
 COPY docker/mcp-callbacks.json.template /etc/claude/mcp-callbacks.json.template
 COPY docker/settings.json.template /etc/claude/settings.json.template
 COPY docker/settings-callbacks.json.template /etc/claude/settings-callbacks.json.template
 COPY docker/branch-policy-rules.md /etc/cloud-agents/branch-policy-rules.md
 COPY docker/session-tools-guide.md /etc/cloud-agents/session-tools-guide.md
-RUN chmod +x /usr/local/bin/entrypoint.sh /usr/local/bin/reconcile-repos.sh /usr/local/bin/create-fallback-branch.sh /usr/local/bin/inject-library.sh /usr/local/bin/render-branch-policy.sh /usr/local/bin/register-callbacks-mcp.sh /usr/local/bin/cloud-agents-shim
+RUN chmod +x /usr/local/bin/entrypoint.sh /usr/local/bin/reconcile-repos.sh /usr/local/bin/create-fallback-branch.sh /usr/local/bin/inject-library.sh /usr/local/bin/render-branch-policy.sh /usr/local/bin/register-callbacks-mcp.sh /usr/local/bin/sanitize-empty-node-extra-ca-certs.sh /usr/local/bin/cloud-agents-shim
 
 # Build-time shim smoke test (#805/#814, same as the other four runner
 # images): run the shim with no env and expect its own missing-required-env

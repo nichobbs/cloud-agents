@@ -19,6 +19,13 @@
 
 set -euo pipefail
 
+# An empty NODE_EXTRA_CA_CERTS (the common case — no corporate/proxy root CA
+# baked in at build time) breaks TLS for codex's bundled Node runtime; see
+# sanitize-empty-node-extra-ca-certs.sh's header comment for the full
+# root-cause (confirmed live for claude, same mechanism applies here).
+# shellcheck source=sanitize-empty-node-extra-ca-certs.sh
+source /usr/local/bin/sanitize-empty-node-extra-ca-certs.sh
+
 # Workspace-inspect mode (workspace inspector, src/handlers/workspace.l):
 # when CLOUD_AGENTS_INSPECT_MODE is set this container is a short-lived,
 # read-only look at /workspace — the API server started it with NO
