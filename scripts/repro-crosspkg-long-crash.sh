@@ -37,6 +37,13 @@
 # scripts/repro-fixtures/crosspkg-long-crash/lyric.toml) and re-run to
 # check, then consider reverting the workaround and retiring this script.
 #
+# 2026-10: the snapshot was ported to the Lyric.Docker 0.7 API (opaque
+# ContainerId, 3-arg stopContainer/waitContainer) and its stub binds made
+# valid, and the pins moved to 0.7.4. It reproduces on compiler 0.7.5 with
+# those libs, so the crash is not an old-library artefact. Compiler 0.7.6
+# cannot be judged by it: the fixture dies earlier with an unrelated
+# TypeLoadException, which this script reports as inconclusive (exit 2).
+#
 # Exit codes match this project's other repro-*.sh scripts: 0 = did not
 # reproduce (fixed upstream, or skipped because a tool/network was
 # unavailable), 1 = bug reproduced, 2 = couldn't run the check at all
@@ -123,7 +130,10 @@ echo "--- server output ---"
 cat "$SERVER_LOG"
 echo "---------------------"
 
-if grep -q "AccessViolationException" "$SERVER_LOG" 2>/dev/null && grep -q "streamSessionMessage" "$SERVER_LOG" 2>/dev/null; then
+if grep -aq "signature is incorrect" "$SERVER_LOG" 2>/dev/null; then
+  echo "==> Inconclusive: the request failed with TypeLoadException 'The signature is incorrect' before reaching the run-timeout check. That is a different, newer compiler regression (the generic @externInstance taskWaitMs[T] binding; see scripts/repro-generic-extern-instance-typeload.sh), so this run says nothing about whether the Long crash is fixed." >&2
+  exit 2
+elif grep -aq "AccessViolationException" "$SERVER_LOG" 2>/dev/null; then
   echo "==> Reproduced: streamSessionMessage's Long-subtract-and-compare run-timeout check still crashes the process with AccessViolationException (nichobbs/cloud-agents, see docs/BUILD.md)"
   SERVER_PID=""
   exit 1

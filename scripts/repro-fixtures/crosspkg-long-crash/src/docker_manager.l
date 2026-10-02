@@ -120,6 +120,19 @@ func imageForHarness(harness: in String): String {
 // the pure CloudAgents.NetworkPolicy package so it can be unit-tested — a test
 // can't invoke functions in this async package without hitting the "signature
 // is incorrect" harness limitation (docs/lyric/gotchas.md), even pure ones.
+// Lyric.Docker 0.7+ takes a validated, opaque ContainerId rather than a raw
+// string; the frozen snapshot was ported to that API (everything else,
+// including the Long arithmetic under test, is unchanged).
+func dockerContainerId(raw: in String): Result[ContainerId, String] {
+  match ContainerId.tryFrom(raw) {
+    case Ok(id) -> Ok(value = id)
+    case Err(e) -> Err(error = e.message + ": '" + raw + "'")
+  }
+}
+
+val stopGraceSec: Int = 10
+val waitClientTimeoutSec: Int = 600
+
 /// Create an ephemeral container for the given session.
 /// HARNESS, MODEL, and NATIVE_SESSION_ID are passed as env vars so each
 /// container image can invoke the right CLI with the right resume flag. The
@@ -306,7 +319,7 @@ pub async func createRunnerContainer(
   val image = imageForHarness(harness)
   val createRes = await createContainerWithNetwork(client, image, envs, binds, networkMode)
   match createRes {
-    case Ok(id) -> Ok(value = id)
+    case Ok(id) -> Ok(value = id.toString())
     case Err(e) -> {
       // Previously silent server-side (only the caller's SSE error frame
       // carried any detail, and even that was just e.message verbatim) —
@@ -332,7 +345,8 @@ pub async func createRunnerContainer(
 
 /// Start the created runner container.
 pub async func startRunnerContainer(client: in DockerClient, containerId: in String): Result[Unit, String] {
-  val startRes = await startContainer(client, containerId)
+  val cid = dockerContainerId(containerId)?
+  val startRes = await startContainer(client, cid)
   match startRes {
     case Ok(_) -> Ok(value = ())
     case Err(e) -> {
@@ -344,7 +358,8 @@ pub async func startRunnerContainer(client: in DockerClient, containerId: in Str
 
 /// Stop the running container.
 pub async func stopRunnerContainer(client: in DockerClient, containerId: in String): Result[Unit, String] {
-  val stopRes = await stopContainer(client, containerId)
+  val cid = dockerContainerId(containerId)?
+  val stopRes = await stopContainer(client, cid, stopGraceSec)
   match stopRes {
     case Ok(_) -> Ok(value = ())
     case Err(e) -> {
@@ -388,7 +403,11 @@ pub async func waitForContainer(client: in DockerClient, containerId: in String)
   var lastMessage = ""
   while not settled {
     attempts = attempts + 1
-    val waitRes = await waitContainer(client, containerId)
+    val cid = match dockerContainerId(containerId) {
+      case Ok(c) -> c
+      case Err(m) -> return Err(error = m)
+    }
+    val waitRes = await waitContainer(client, cid, waitClientTimeoutSec)
     match waitRes {
       case Ok(_) -> {
         succeeded = true
@@ -421,7 +440,8 @@ pub async func waitForContainer(client: in DockerClient, containerId: in String)
 
 /// Delete the container.
 pub async func deleteRunnerContainer(client: in DockerClient, containerId: in String): Result[Unit, String] {
-  val deleteRes = await removeContainer(client, containerId)
+  val cid = dockerContainerId(containerId)?
+  val deleteRes = await removeContainer(client, cid)
   match deleteRes {
     case Ok(_) -> Ok(value = ())
     case Err(e) -> Err(error = "Failed to delete container: " + e.message)
@@ -449,7 +469,8 @@ async func cleanupRunnerContainer(
 
 /// Retrieve output logs of the runner container.
 pub async func getRunnerLogs(client: in DockerClient, containerId: in String): Result[String, String] {
-  val logsRes = await getContainerLogs(client, containerId)
+  val cid = dockerContainerId(containerId)?
+  val logsRes = await getContainerLogs(client, cid)
   match logsRes {
     case Ok(logs) -> Ok(value = logs)
     case Err(e) -> Err(error = "Failed to retrieve logs: " + e.message)

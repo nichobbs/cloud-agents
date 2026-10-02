@@ -147,6 +147,16 @@ jobs:
         continue-on-error: true
         run: ./scripts/repro-web-request-crash.sh
 
+      # Diagnostic, not a gate: a Lyric 0.7.6 regression where the generic
+      # @externInstance binding src/docker_manager.l uses (taskWaitMs[T])
+      # builds but dies at startup with TypeLoadException "The signature is
+      # incorrect", breaking every call into CloudAgents.Docker. CI resolves the
+      # latest compiler, so this reports when a release fixes it (then the pins
+      # in lyric.toml and deploy/api.Dockerfile can move past 0.7.5).
+      - name: Check generic extern-instance TypeLoad regression status
+        continue-on-error: true
+        run: ./scripts/repro-generic-extern-instance-typeload.sh
+
       # Frontend: typecheck + production build (review #179). Node is pinned by
       # the "Set up Node" step above (#223), not taken from the runner image.
       - name: Build frontend
@@ -213,7 +223,8 @@ jobs:
             scripts/repro-web-bug.sh \
             scripts/repro-web-request-crash.sh \
             scripts/repro-docker-crash.sh \
-            scripts/repro-crosspkg-long-crash.sh; do
+            scripts/repro-crosspkg-long-crash.sh \
+            scripts/repro-generic-extern-instance-typeload.sh; do
             bash -n "$f" && echo "ok: $f"
           done
 
