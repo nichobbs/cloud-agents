@@ -262,12 +262,17 @@ COPY docker/render-branch-policy.sh /usr/local/bin/render-branch-policy.sh
 # the claude harness keeps its own MCP registration, so register_callbacks_mcp
 # itself is never called here.
 COPY docker/register-callbacks-mcp.sh /usr/local/bin/register-callbacks-mcp.sh
+# entrypoint.sh sources this (never runs it as its own process — see its own
+# header comment for why) to unset NODE_EXTRA_CA_CERTS before the harness
+# starts when no corporate/proxy root CA was baked in, avoiding the TLS
+# breakage an empty extra-combined.pem causes for Node-based CLIs.
+COPY docker/sanitize-empty-node-extra-ca-certs.sh /usr/local/bin/sanitize-empty-node-extra-ca-certs.sh
 COPY docker/mcp-callbacks.json.template /etc/claude/mcp-callbacks.json.template
 COPY docker/settings.json.template /etc/claude/settings.json.template
 COPY docker/settings-callbacks.json.template /etc/claude/settings-callbacks.json.template
 COPY docker/branch-policy-rules.md /etc/cloud-agents/branch-policy-rules.md
 COPY docker/session-tools-guide.md /etc/cloud-agents/session-tools-guide.md
-RUN chmod +x /usr/local/bin/entrypoint.sh /usr/local/bin/reconcile-repos.sh /usr/local/bin/create-fallback-branch.sh /usr/local/bin/inject-library.sh /usr/local/bin/render-branch-policy.sh /usr/local/bin/register-callbacks-mcp.sh /usr/local/bin/cloud-agents-shim
+RUN chmod +x /usr/local/bin/entrypoint.sh /usr/local/bin/reconcile-repos.sh /usr/local/bin/create-fallback-branch.sh /usr/local/bin/inject-library.sh /usr/local/bin/render-branch-policy.sh /usr/local/bin/register-callbacks-mcp.sh /usr/local/bin/sanitize-empty-node-extra-ca-certs.sh /usr/local/bin/cloud-agents-shim
 
 # Build-time shim smoke test (#805/#814, same as the other four runner
 # images): run the shim with no env and expect its own missing-required-env

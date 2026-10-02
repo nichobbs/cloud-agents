@@ -309,6 +309,37 @@ Dockerfiles' build-time `docker/extra-ca-certs/` handling, so every
 certificate gets its own hash symlink too and the warning goes away for
 the common case.
 
+Separately again: every runner Dockerfile sets `NODE_EXTRA_CA_CERTS`
+unconditionally at the image level, pointing at
+`/usr/local/share/ca-certificates/extra-combined.pem` — a file
+`docker/trust-extra-cas.sh` always writes, even empty, when no
+corporate/proxy root CA was dropped into `docker/extra-ca-certs/` before
+the build (the common case). The assumption behind doing this
+unconditionally, per that script's own header comment, was that Node
+treats a missing or empty `NODE_EXTRA_CA_CERTS` file as a harmless no-op.
+**Confirmed false**, root-caused live against a production container:
+pointing `NODE_EXTRA_CA_CERTS` at an empty file breaks TLS certificate
+validation for the Node runtime bundled inside `claude` (and, by the same
+mechanism, the other four harnesses), surfacing as a generic, undiagnosable
+connection failure — `{"type":"system","subtype":"api_retry",...,
+"error_status":null,"error":"unknown"}` — on literally the first request of
+every single run, with `curl` (which validates TLS via the system OpenSSL
+store, untouched by this) succeeding consistently from the very same
+container the whole time. An IPv6-route red herring (the container
+genuinely has none — `curl -6` fails fast with "Network is unreachable",
+and the request's own `durationMs: 5` in the harness's verbose log matched
+that kind of fast, local, synchronous failure) delayed finding this: pinning
+`api.anthropic.com` to its IPv4 address via `--add-host` (eliminating any
+IPv6 attempt entirely) reproduced the identical failure, ruling IPv6 out.
+Overriding `NODE_EXTRA_CA_CERTS` to empty for one test run fixed it
+immediately. Fixed by `docker/sanitize-empty-node-extra-ca-certs.sh`,
+sourced (never executed as its own process — a child can't `unset` a
+variable back into its parent's environment) by every entrypoint variant
+after privilege drop and before the harness is invoked: it unsets
+`NODE_EXTRA_CA_CERTS` whenever the file it points at is missing or empty,
+which is a no-op the moment an operator's real corporate CA (via
+`/etc/host-ca.pem`, see above) makes that file non-empty.
+
 **#387 does not share a root cause with the `getContainerLogs`
 raw/multiplex bug above** (checked per
 [#393](https://github.com/nichobbs/cloud-agents/issues/393), which raised

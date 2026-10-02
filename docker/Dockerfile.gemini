@@ -158,9 +158,14 @@ COPY docker/reconcile-repos.sh /usr/local/bin/reconcile-repos.sh
 COPY docker/create-fallback-branch.sh /usr/local/bin/create-fallback-branch.sh
 COPY docker/inject-library.sh /usr/local/bin/inject-library.sh
 COPY docker/render-branch-policy.sh /usr/local/bin/render-branch-policy.sh
+# entrypoint.sh sources this (never runs it as its own process — see its own
+# header comment for why) to unset NODE_EXTRA_CA_CERTS before the harness
+# starts when no corporate/proxy root CA was baked in, avoiding the TLS
+# breakage an empty extra-combined.pem causes for Node-based CLIs.
+COPY docker/sanitize-empty-node-extra-ca-certs.sh /usr/local/bin/sanitize-empty-node-extra-ca-certs.sh
 COPY docker/branch-policy-rules.md /etc/cloud-agents/branch-policy-rules.md
 COPY docker/session-tools-guide.md /etc/cloud-agents/session-tools-guide.md
-RUN chmod +x /usr/local/bin/entrypoint.sh /usr/local/bin/reconcile-repos.sh /usr/local/bin/create-fallback-branch.sh /usr/local/bin/inject-library.sh /usr/local/bin/render-branch-policy.sh
+RUN chmod +x /usr/local/bin/entrypoint.sh /usr/local/bin/reconcile-repos.sh /usr/local/bin/create-fallback-branch.sh /usr/local/bin/inject-library.sh /usr/local/bin/render-branch-policy.sh /usr/local/bin/sanitize-empty-node-extra-ca-certs.sh
 
 # ─── cloud-agents-shim (docs/phase6-mcp-callbacks.md) ───────────────────────
 # The in-container MCP callback server, giving this harness the same

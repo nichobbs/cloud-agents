@@ -16,14 +16,23 @@
 #
 # Always (re)writes /usr/local/share/ca-certificates/extra-combined.pem,
 # even when nothing was dropped into extra-ca-certs/ (an empty file in that
-# case) — Node treats a missing or empty NODE_EXTRA_CA_CERTS as a harmless
-# no-op, so the Node-based runner stages can set that env var
-# unconditionally rather than branching on whether any certs exist. The
-# non-Node shim-builder stage doesn't consume the combined file, but
-# writing an unused few-byte file there is harmless, and doing the same
-# work unconditionally is what keeps this script identical everywhere it's
-# called (docs/BUILD.md; see check-shim-stage-sync.sh for the stages this
-# feeds that must stay byte-identical).
+# case) — so the Node-based runner stages can set NODE_EXTRA_CA_CERTS to this
+# path unconditionally at the image level rather than branching on whether
+# any certs exist. The non-Node shim-builder stage doesn't consume the
+# combined file, but writing an unused few-byte file there is harmless, and
+# doing the same work unconditionally is what keeps this script identical
+# everywhere it's called (docs/BUILD.md; see check-shim-stage-sync.sh for
+# the stages this feeds that must stay byte-identical).
+#
+# CORRECTION (docs/BUILD.md): the ORIGINAL comment here claimed Node treats a
+# missing or empty NODE_EXTRA_CA_CERTS as a harmless no-op — confirmed FALSE,
+# root-caused live against a production container (an empty file broke TLS
+# certificate validation for every HTTPS call the runtime made). The
+# NODE_EXTRA_CA_CERTS env var this script's output feeds is unset at
+# container RUNTIME when the file is empty
+# (docker/sanitize-empty-node-extra-ca-certs.sh, sourced by every entrypoint
+# variant) — this script still always writes the file unconditionally;
+# emptiness just means the runtime-side env var never ends up pointing at it.
 set -eu
 
 : > /usr/local/share/ca-certificates/extra-combined.pem

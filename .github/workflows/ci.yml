@@ -200,6 +200,7 @@ jobs:
             docker/render-branch-policy.sh \
             docker/register-callbacks-mcp.sh \
             docker/restore-claude-credentials.sh \
+            docker/sanitize-empty-node-extra-ca-certs.sh \
             docker/split-ca-bundle.sh \
             docker/inject-library.sh \
             scripts/check-compose-paths.sh \
