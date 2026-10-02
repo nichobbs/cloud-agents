@@ -424,3 +424,14 @@ test "the sweep re-checks due users one at a time and suspends those without a u
   assertFalse(active(b, tenantId), "so was the second")
   assertFalse(containsId(claimedNow(), a), "a checked user is not due again")
 }
+
+test "a sweep stops when the queue is empty, at the user cap, or at the deadline" {
+  val now = 1000.toLong()
+  val deadline = 2000.toLong()
+  assertTrue(CloudAgents.OrgSync.sweepContinues(true, 0, now, deadline), "work left, under the cap and the budget")
+  assertFalse(CloudAgents.OrgSync.sweepContinues(false, 0, now, deadline), "the last claim found nobody")
+  assertTrue(CloudAgents.OrgSync.sweepContinues(true, 49, now, deadline), "one below the cap")
+  assertFalse(CloudAgents.OrgSync.sweepContinues(true, 50, now, deadline), "the cap of 50 users")
+  assertFalse(CloudAgents.OrgSync.sweepContinues(true, 0, deadline, deadline), "at the deadline")
+  assertFalse(CloudAgents.OrgSync.sweepContinues(true, 0, deadline + 1.toLong(), deadline), "past the deadline")
+}
