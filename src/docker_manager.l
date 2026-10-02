@@ -482,7 +482,7 @@ pub async func stopRunnerContainer(client: in DockerClient, containerId: in Stri
 // runSessionMessage), in milliseconds. Shared between waitForContainer's retry
 // deadline and the run-timeout checks of streamSessionMessage and
 // runSessionMessageBlocking.
-val runWallClockCapMs = 1800000.toLong()
+val runWallClockCapMs: Long = 1800000.toLong()
 
 /// How often a running session checks whether a mid-run observer pass is due.
 val observerCheckIntervalMs = 60000
