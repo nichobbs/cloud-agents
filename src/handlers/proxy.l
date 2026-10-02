@@ -424,7 +424,7 @@ pub func modelsHandler(harness: in String): Result[String, Web.ApiError] {
 // exists as a real, deliberate narrowing knob: an operator who wants to
 // disable a harness on their own deployment can still set it. Picking a
 // harness whose image genuinely isn't built fails at container-creation
-// time with a raw Docker "no such image" error (docker_manager.l's
+// time with a raw Docker "no such image" error (CloudAgents.Harnesses
 // imageForHarness) — this endpoint exists so the frontend picker can show
 // only what will actually work instead of only failing on submit.
 func envOr(name: in String): String {

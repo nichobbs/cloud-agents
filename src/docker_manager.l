@@ -7,6 +7,7 @@ import Std.Task
 import Web
 import Lyric.Docker
 import CloudAgents.Db
+import CloudAgents.Harnesses
 import CloudAgents.DockerPolicy
 import CloudAgents.NetworkPolicy
 import CloudAgents.Repository
@@ -107,22 +108,6 @@ func taskWaitMs[T](t: in T, timeoutMs: in Int): Bool = false
 // this package and `CloudAgents.Highlights` call one extern binding instead
 // of each declaring its own copy of the same binding and safety-margin
 // reasoning.
-/// Docker image name for the given harness.
-func imageForHarness(harness: in String): String {
-  if harness == "codex" {
-    return "codex:base"
-  }
-  if harness == "opencode" {
-    return "opencode:base"
-  }
-  if harness == "gemini" {
-    return "gemini:base"
-  }
-  if harness == "antigravity" {
-    return "antigravity:base"
-  }
-  return "claude-code:base"
-}
 
 // Network-policy resolution (networkModeForPolicy / proxyEnvForPolicy) lives in
 // the pure CloudAgents.NetworkPolicy package so it can be unit-tested — a test
@@ -407,7 +392,7 @@ pub async func createRunnerContainer(
   // empty.
   val dnsServers = CloudAgents.NetworkPolicy.runnerDnsServers(policy)
 
-  val image = imageForHarness(harness)
+  val image = CloudAgents.Harnesses.imageForHarness(harness)
   val createRes = await createContainerWithNetworkAndDns(client, image, envs, binds, networkMode, dnsServers)
   match createRes {
     case Ok(id) -> Ok(value = id.toString())
@@ -1658,7 +1643,7 @@ val inspectWallClockCapMs = 120000
 /// in this async package, docs/lyric/gotchas.md), not here.
 ///
 /// Least privilege by construction, deliberately narrower than a normal run:
-///   - image: the session's own harness image (imageForHarness — the image
+///   - image: the session's own harness image (CloudAgents.Harnesses.imageForHarness — the image
 ///     whose entrypoint carries the inspect block, and the only one
 ///     guaranteed pulled for this session);
 ///   - binds: ONLY the workspace volume (workspaceVolumeBindFor). No home
@@ -1745,7 +1730,7 @@ async func runInspectContainerAsync(
   if mode == "claude-login" {
     binds = [CloudAgents.Db.homeVolumeBindFor(userId, harness) + ":ro"]
   }
-  val image = imageForHarness(harness)
+  val image = CloudAgents.Harnesses.imageForHarness(harness)
   match await createContainerWithNetwork(dockerClient(), image, envs, binds, "none") {
     case Ok(id) -> {
       cell.containerId = id.toString()
