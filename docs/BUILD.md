@@ -549,7 +549,7 @@ directly unit-tested (#67, #56), just no longer called from
 
 **CI enforces a version floor matching this status**, read from the single
 checked-in [`MIN_LYRIC_VERSION`](../MIN_LYRIC_VERSION) file (currently
-`0.7.5`: 0.7.0 moved `Std.File.readBytes`/`writeBytes` to `slice[Byte]` and
+`0.7.8`: 0.7.0 moved `Std.File.readBytes`/`writeBytes` to `slice[Byte]` and
 made hint-less externs a build error (F0027), but miscompiles
 `@externTarget`s taking an array extern alias (lyric-lang#7610), which breaks
 this project's SQLite driver at runtime; 0.7.1 fixes that but its released
@@ -560,7 +560,11 @@ for union case construction (`T0101` — this project had several
 `Err(value = ...)` call sites that should always have been
 `Err(error = ...)`, now fixed) and fix the `&`/`slice[Byte].toList()`/
 `Int.toNat()` gotchas that used to be documented in docs/lyric/gotchas.md
-(now removed from that file since they no longer reproduce))
+(now removed from that file since they no longer reproduce). 0.7.6 made a direct
+call to an `async func` await in place, so `src/docker_manager.l` holds its run
+tasks with `spawn`; 0.7.6 and 0.7.7 specialise a generic over a `spawn` handle's
+result type instead of its task (`TypeLoadException: The signature is incorrect.`
+at startup, lyric-lang#8026), fixed in 0.7.8)
 rather than duplicated as a literal here and in
 `.github/workflows/ci.yml` — the "Verify minimum Lyric version" step fails
 fast with a clear diagnostic if a future release ever resolves to
