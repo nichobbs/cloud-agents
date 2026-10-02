@@ -95,7 +95,7 @@ fi
 
 PORT=8097
 echo "==> starting server on 127.0.0.1:$PORT"
-( cd "$WORK/proj" && dotnet bin/CrossPkgLongCrash.dll > "$SERVER_LOG" 2>&1 ) &
+( cd "$WORK/proj" && exec dotnet bin/CrossPkgLongCrash.dll > "$SERVER_LOG" 2>&1 ) &
 SERVER_PID=$!
 
 # Wait for the server to report it's listening (or crash before it gets that
@@ -132,6 +132,9 @@ echo "---------------------"
 
 if grep -aq "signature is incorrect" "$SERVER_LOG" 2>/dev/null; then
   echo "==> Inconclusive: the request failed with TypeLoadException 'The signature is incorrect' before reaching the run-timeout check. That is a different, newer compiler regression (the generic @externInstance taskWaitMs[T] binding; see scripts/repro-generic-extern-instance-typeload.sh), so this run says nothing about whether the Long crash is fixed." >&2
+  exit 2
+elif grep -aq "AccessViolationException" "$SERVER_LOG" 2>/dev/null && ! { grep -aq "CastHelpers.Unbox" "$SERVER_LOG" && grep -aq "streamSessionMessage" "$SERVER_LOG"; }; then
+  echo "==> Inconclusive: an AccessViolationException, but not the Long crash's signature (CastHelpers.Unbox under streamSessionMessage); e.g. the 0.7.6 generic @externInstance regression can surface as one in CastHelpers.IsInstanceOfClass. See scripts/repro-generic-extern-instance-typeload.sh." >&2
   exit 2
 elif grep -aq "AccessViolationException" "$SERVER_LOG" 2>/dev/null; then
   echo "==> Reproduced: streamSessionMessage's Long-subtract-and-compare run-timeout check still crashes the process with AccessViolationException (nichobbs/cloud-agents, see docs/BUILD.md)"
