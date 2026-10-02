@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { api } from '../lib/api';
 import {
   PROVIDERS,
@@ -24,8 +24,25 @@ function clearCachesFor(provider: ProviderId): void {
 ///  2. keeps a local copy on this device so the UI itself can call the
 ///     provider (live model discovery, GitHub repo/PR/CI panels).
 /// The vault is write-only, so the local copy is the only way the browser can
-/// use a key — deleting it here never touches the vault entry.
+/// use a key — deleting it here never touches the vault entry. The "connected"
+/// badge reflects the vault (the source of truth, same on every device), not
+/// just this browser's local copy.
 export function Integrations() {
+  // Names stored in the vault, or null until known / when the vault can't be
+  // reached (cards then fall back to what this device knows).
+  const [vaultNames, setVaultNames] = useState<Set<string> | null>(null);
+  const refreshVault = useCallback(async () => {
+    try {
+      const creds = await api.getCredentialNames();
+      setVaultNames(new Set(creds.map(c => c.name)));
+    } catch {
+      // Vault unreachable: keep whatever we last knew.
+    }
+  }, []);
+  useEffect(() => {
+    void refreshVault();
+  }, [refreshVault]);
+
   return (
     <div style={pageStyle}>
       <h2 style={titleStyle}>Integrations</h2>
@@ -36,14 +53,35 @@ export function Integrations() {
         call the provider itself.
       </p>
       {(Object.keys(PROVIDERS) as ProviderId[]).map(p => (
-        <ProviderCard key={p} provider={p} />
+        <ProviderCard
+          key={p}
+          provider={p}
+          inVault={vaultNames === null ? null : vaultNames.has(PROVIDERS[p].credentialName)}
+          onVaultChanged={refreshVault}
+        />
       ))}
-      <SmartImport />
+      <SmartImport onVaultChanged={refreshVault} />
     </div>
   );
 }
 
-function ProviderCard({ provider }: { provider: ProviderId }) {
+/** What the badge says: the vault is authoritative, the local copy only adds
+ *  whether this device can call the provider itself. */
+function badgeFor(inVault: boolean | null, local: boolean): { label: string; ok: boolean } {
+  if (inVault === true) return { label: local ? 'connected' : 'connected (vault)', ok: true };
+  if (local) return inVault === false ? { label: 'this device only', ok: false } : { label: 'connected', ok: true };
+  return { label: 'not connected', ok: false };
+}
+
+function ProviderCard({
+  provider,
+  inVault,
+  onVaultChanged,
+}: {
+  provider: ProviderId;
+  inVault: boolean | null;
+  onVaultChanged: () => Promise<void>;
+}) {
   const meta = PROVIDERS[provider];
   const [key, setKey] = useState('');
   const [connected, setConnected] = useState(false);
@@ -79,6 +117,7 @@ function ProviderCard({ provider }: { provider: ProviderId }) {
       try {
         await api.putCredential(meta.credentialName, value);
         setStatus(`Connected (${detail}) — uploaded to vault as ${meta.credentialName}.`);
+        void onVaultChanged();
       } catch (err) {
         setStatus(`Connected (${detail}).`);
         setError(
@@ -100,14 +139,13 @@ function ProviderCard({ provider }: { provider: ProviderId }) {
     setStatus('Disconnected on this device. The vault copy (if any) is unchanged — manage it on the Credentials page.');
   };
 
+  const badge = badgeFor(inVault, connected);
   return (
     <div style={cardStyle}>
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
         <div>
           <span style={providerNameStyle}>{meta.label}</span>
-          <span style={connected ? connectedBadgeStyle : disconnectedBadgeStyle}>
-            {connected ? 'connected' : 'not connected'}
-          </span>
+          <span style={badge.ok ? connectedBadgeStyle : disconnectedBadgeStyle}>{badge.label}</span>
         </div>
         {connected && (
           <button style={disconnectBtnStyle} onClick={disconnect}>
@@ -116,6 +154,13 @@ function ProviderCard({ provider }: { provider: ProviderId }) {
         )}
       </div>
       <div style={unlocksStyle}>{meta.unlocks}</div>
+      {inVault === true && !connected && (
+        <div style={mutedStyle}>
+          Stored in the vault, so agent containers already receive {meta.credentialName}. This
+          device has no local copy, so this browser can't call the provider itself: enter the key
+          here to enable that.
+        </div>
+      )}
       <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
         <input
           style={inputStyle}
@@ -149,7 +194,7 @@ function ProviderCard({ provider }: { provider: ProviderId }) {
 /// Paste a raw key or a whole harness credentials file (Claude Code
 /// `.credentials.json`, Codex `auth.json`, OpenCode `auth.json`) — recognised
 /// entries are uploaded to the vault under their canonical names in one click.
-function SmartImport() {
+function SmartImport({ onVaultChanged }: { onVaultChanged: () => Promise<void> }) {
   const [text, setText] = useState('');
   const [found, setFound] = useState<ImportedCredential[]>([]);
   const [busy, setBusy] = useState(false);
@@ -195,6 +240,7 @@ function SmartImport() {
     // Invalidate only the caches whose provider key actually changed (#418).
     for (const provider of connectedProviders) clearCachesFor(provider);
     if (done.length > 0) {
+      void onVaultChanged();
       setResult(`Uploaded to vault: ${done.join(', ')}.`);
       setText('');
       setFound([]);
