@@ -1093,7 +1093,7 @@ export function SessionDetail() {
   const childThreads = (sessions ?? []).filter(s => s.parentSessionId === sessionId);
 
   return (
-    <div style={dynamicPageStyle}>
+    <div className="sd-page" style={dynamicPageStyle}>
       {templatePrompt && createPortal(
         <div
           style={modalOverlayStyle}
@@ -1157,7 +1157,7 @@ export function SessionDetail() {
         </div>,
         document.body,
       )}
-      <div style={headerStyle}>
+      <div className="sd-header" style={headerStyle}>
         <div>
           <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '4px' }}>
             <div style={repoNameStyle}>{repoName}</div>
@@ -1165,7 +1165,7 @@ export function SessionDetail() {
               {getHarness(session.harness ?? 'claude').label}
             </span>
           </div>
-          <div style={metaStyle}>
+          <div className="sd-meta" style={metaStyle}>
             branch: <code style={{ color: '#79c0ff' }}>{session.branch}</code>
             <span style={{ margin: '0 8px', color: '#30363d' }}>·</span>
             model:{' '}
@@ -1228,7 +1228,7 @@ export function SessionDetail() {
             </div>
           )}
         </div>
-        <div style={{ display: 'flex', gap: '8px', flexShrink: 0 }}>
+        <div className="sd-actions" style={{ display: 'flex', gap: '8px', flexShrink: 0 }}>
           <button
             style={todosBtnStyle}
             onClick={() => { void handleCreateThread(); }}

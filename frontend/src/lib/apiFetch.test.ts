@@ -104,4 +104,19 @@ describe('apiFetch 401 handling', () => {
     expect(refreshCalls).toBe(1);
     expect(getApiToken()).toBe('gho_new');
   });
+
+  it('does not sign out when a 401 only means the vaulted GitHub connection expired', async () => {
+    completeLogin('gho_old', 'octocat');
+
+    const fetchMock = vi.fn().mockResolvedValueOnce(
+      new Response('Your GitHub connection has expired — please sign in with GitHub again.', { status: 401 }),
+    );
+    vi.stubGlobal('fetch', fetchMock);
+
+    const res = await apiFetch('/api/sessions/s1/pr', { headers: { Authorization: 'Bearer gho_old' } });
+    expect(res.status).toBe(401);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(isSignedIn()).toBe(true);
+    expect(getApiToken()).toBe('gho_old');
+  });
 });

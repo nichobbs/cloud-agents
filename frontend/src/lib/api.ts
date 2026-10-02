@@ -43,6 +43,14 @@ function authHeaders(): HeadersInit {
 
 let refreshPromise: Promise<string | null> | null = null;
 
+/** Mirrors CloudAgents.OAuth.reconnectGitHubMessage() on the server. */
+const GITHUB_RECONNECT_TEXT = 'GitHub connection has expired';
+
+async function isGitHubReconnectResponse(res: Response): Promise<boolean> {
+  const text = await res.clone().text().catch(() => '');
+  return text.includes(GITHUB_RECONNECT_TEXT);
+}
+
 /** Central fetch wrapper for API endpoints: intercepts HTTP 401 status when
  *  signed in, attempts transparent token refresh (queuing concurrent 401s behind
  *  one in-flight refresh), and redirects to /login on failure. */
@@ -77,6 +85,14 @@ export async function apiFetch(input: RequestInfo | URL, rawInit?: RequestInit):
       return res;
     }
 
+    // The PR/checks/GitHub-proxy handlers answer 401 when the *vaulted GitHub
+    // token* is dead, not when this bearer is. The session is still valid, so
+    // hand the caller the error to display instead of refreshing and signing
+    // out (which looped: login, open a session, PR panel 401s, logged out).
+    if (await isGitHubReconnectResponse(res)) {
+      return res;
+    }
+
     if (!refreshPromise) {
       refreshPromise = (async () => {
         try {
@@ -106,7 +122,7 @@ export async function apiFetch(input: RequestInfo | URL, rawInit?: RequestInit):
       // itself rejected (e.g. a whitelist revocation racing the refresh) —
       // treat it the same as "refresh failed" rather than handing the
       // caller a raw 401 to throw on.
-      if (retryRes.status !== 401) {
+      if (retryRes.status !== 401 || (await isGitHubReconnectResponse(retryRes))) {
         return retryRes;
       }
     }

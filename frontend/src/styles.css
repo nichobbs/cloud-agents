@@ -156,3 +156,38 @@ code {
   0%, 100% { opacity: 1; }
   50% { opacity: 0.45; }
 }
+
+/* Session detail on narrow screens: let the header stack and the action
+   buttons wrap instead of overflowing the viewport. Inline styles in
+   SessionDetail.tsx need !important to be overridden. */
+@media (max-width: 700px) {
+  .sd-page {
+    padding: 12px !important;
+    gap: 12px !important;
+  }
+
+  .sd-header {
+    flex-direction: column !important;
+    gap: 12px;
+  }
+
+  .sd-header > div:first-child {
+    min-width: 0;
+    max-width: 100%;
+  }
+
+  .sd-actions {
+    flex-wrap: wrap;
+    flex-shrink: 1 !important;
+    width: 100%;
+  }
+
+  .sd-meta {
+    overflow-wrap: anywhere;
+    line-height: 1.8;
+  }
+
+  .sd-meta select {
+    max-width: 100%;
+  }
+}
