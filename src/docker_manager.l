@@ -648,7 +648,7 @@ pub async func getRunnerLogs(client: in DockerClient, containerId: in String): R
 /// surface as a hard error to the client.
 pub func partialContainerLogs(containerId: in String): String {
   val cell = ResultCell(isSuccess = false, output = "", error = "")
-  val t = partialContainerLogsAsync(containerId, cell)
+  val t = spawn partialContainerLogsAsync(containerId, cell)
   // Cap the block at the client's ~1.5s poll interval, not 10s (#227): partial
   // log fetches are normally sub-second, and a longer block lets requests pile
   // up faster than they drain once Lyric.Web dispatches them concurrently. A
@@ -911,7 +911,7 @@ pub func streamSessionMessage(
   // The work since the run was claimed (attachments, run record) happened
   // outside any poll loop; start this one with a fresh heartbeat (#1194).
   renewRunHeartbeat(sessionId, userId)
-  val t = runSessionMessageAsync(
+  val t = spawn runSessionMessageAsync(
     repoUrl,
     branch,
     prompt,
@@ -1522,7 +1522,7 @@ pub func runSessionMessageBlocking(
   // The work since the run was claimed (attachments, run record) happened
   // outside any poll loop; start this one with a fresh heartbeat (#1194).
   renewRunHeartbeat(sessionId, userId)
-  val t = runSessionMessageAsync(
+  val t = spawn runSessionMessageAsync(
     repoUrl,
     branch,
     prompt,
@@ -1579,7 +1579,7 @@ pub func runSessionMessageBlocking(
 /// Terminate and delete a session container synchronously.
 pub func terminateSessionContainer(containerId: in String): Result[Unit, String] {
   val cell = ResultCell(isSuccess = false, output = "", error = "")
-  val t = terminateSessionContainerAsync(containerId, cell)
+  val t = spawn terminateSessionContainerAsync(containerId, cell)
   val completed = taskWaitMs(t, 60000) // 60-second cap for stop+delete
   if not completed {
     return Err(error = "Container terminate timed out after 60 seconds")
@@ -1672,7 +1672,7 @@ pub func runInspectContainer(
   path: in String,
 ): Result[String, String] {
   val cell = ResultCell(isSuccess = false, output = "", error = "")
-  val t = runInspectContainerAsync(sessionId, harness, userId, mode, path, cell)
+  val t = spawn runInspectContainerAsync(sessionId, harness, userId, mode, path, cell)
   val pollMs = 500
   var elapsedPollMs = 0
   var finished = false
