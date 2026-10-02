@@ -81,6 +81,7 @@ cp "$REPO_ROOT/docker/entrypoint.sh" \
    "$REPO_ROOT/docker/render-branch-policy.sh" \
    "$REPO_ROOT/docker/register-callbacks-mcp.sh" \
    "$REPO_ROOT/docker/split-ca-bundle.sh" \
+   "$REPO_ROOT/docker/sanitize-empty-node-extra-ca-certs.sh" \
    "$REPO_ROOT/docker/mcp-callbacks.json.template" \
    "$REPO_ROOT/docker/settings.json.template" \
    "$REPO_ROOT/docker/settings-callbacks.json.template" \
@@ -142,6 +143,7 @@ COPY inject-library.sh /usr/local/bin/inject-library.sh
 COPY render-branch-policy.sh /usr/local/bin/render-branch-policy.sh
 COPY register-callbacks-mcp.sh /usr/local/bin/register-callbacks-mcp.sh
 COPY split-ca-bundle.sh /usr/local/bin/split-ca-bundle.sh
+COPY sanitize-empty-node-extra-ca-certs.sh /usr/local/bin/sanitize-empty-node-extra-ca-certs.sh
 COPY mcp-callbacks.json.template /etc/claude/mcp-callbacks.json.template
 COPY settings.json.template /etc/claude/settings.json.template
 COPY settings-callbacks.json.template /etc/claude/settings-callbacks.json.template
@@ -154,7 +156,8 @@ COPY fake-claude /usr/local/bin/claude
 RUN chmod +x /usr/local/bin/entrypoint.sh /usr/local/bin/reconcile-repos.sh \
     /usr/local/bin/create-fallback-branch.sh /usr/local/bin/inject-library.sh \
     /usr/local/bin/render-branch-policy.sh /usr/local/bin/register-callbacks-mcp.sh \
-    /usr/local/bin/split-ca-bundle.sh /usr/local/bin/claude
+    /usr/local/bin/split-ca-bundle.sh /usr/local/bin/sanitize-empty-node-extra-ca-certs.sh \
+    /usr/local/bin/claude
 
 # Deliberately NO `USER claude-user` — the exact condition #652 is about:
 # the container starts as root, and entrypoint.sh itself must drop to
