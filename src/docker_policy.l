@@ -15,37 +15,12 @@ import Std.Core
 /// `nowMs` — the boundary condition (exactly at the cap does NOT count as
 /// exceeded; only strictly over it does) for the 30-minute hard cap
 /// `streamSessionMessage` enforces around the whole run (#481).
-///
-/// **Currently unused by production code** (#702): `streamSessionMessage`
-/// used to call this directly, but its `Long`-typed parameters are exactly
-/// the cross-package `Long`-arithmetic `AccessViolationException` root-caused
-/// in `docs/BUILD.md` ("Root-caused" / bug 9) — so `streamSessionMessage` now
-/// compares an `Int elapsedPollMs` accumulator against `runWallClockCapMs`
-/// inline instead (`docker_manager.l`). This function is kept only as the
-/// reference boundary condition with its own direct test coverage (#67),
-/// since the current toolchain's `@test_module` harness cannot import from
-/// the async `CloudAgents.Docker` package at all (see the module doc comment
-/// above) to exercise the inline copy directly. Revert `streamSessionMessage`
-/// to call this once the upstream `Long`-arithmetic crash is fixed.
 pub func hasExceededRunTimeout(nowMs: in Long, startMs: in Long, timeoutMs: in Long): Bool {
   return nowMs - startMs > timeoutMs
 }
 
 /// Whether a `/wait` call should be retried rather than surfacing the
 /// failure immediately (#56).
-///
-/// **Currently unused by production code** (#702): `waitForContainer` used
-/// to call this directly, but its `Long`-typed parameters are exactly the
-/// cross-package `Long`-arithmetic `AccessViolationException` root-caused in
-/// `docs/BUILD.md` ("Root-caused" / bug 9) — so `waitForContainer` now does
-/// `attempts < maxAttempts and tickCountMs() < deadlineTickMs` inline instead
-/// (`docker_manager.l`, against `tickCountMs()`'s `Int` accumulator, not this
-/// function's `Long nowMs`/`deadlineMs`). This function is kept only as the
-/// reference retry-decision logic with its own direct test coverage (#56),
-/// since the current toolchain's `@test_module` harness cannot import from
-/// the async `CloudAgents.Docker` package at all to exercise the inline copy
-/// directly. Revert `waitForContainer` to call this once the upstream
-/// `Long`-arithmetic crash is fixed.
 ///
 /// Docker's `/wait` endpoint long-polls until the container process exits,
 /// which can legitimately take up to the full 30-minute run cap — but the
