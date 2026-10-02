@@ -38,11 +38,17 @@
 # check, then consider reverting the workaround and retiring this script.
 #
 # 2026-10: the snapshot was ported to the Lyric.Docker 0.7 API (opaque
-# ContainerId, 3-arg stopContainer/waitContainer) and its stub binds made
-# valid, and the pins moved to 0.7.4. It reproduces on compiler 0.7.5 with
-# those libs, so the crash is not an old-library artefact. Compiler 0.7.6
-# cannot be judged by it: the fixture dies earlier with an unrelated
-# TypeLoadException, which this script reports as inconclusive (exit 2).
+# ContainerId, 3-arg stopContainer/waitContainer), its stub binds made valid,
+# its pins moved to 0.7.4, and its three run-task call sites changed to
+# `val t = spawn ...Async(...)`. Since lyric 0.7.6 a DIRECT call to an async func
+# awaits in place, so the old `val t = fooAsync(...)` form would hand the
+# generic taskWaitMs[T] binding a plain value instead of a task (a documented
+# language rule, not a compiler bug); `spawn` keeps the task, and a `spawn`
+# handle works with that generic binding from 0.7.8 on (nichobbs/lyric-lang#8026).
+# So the fixture now needs lyric >= 0.7.8 to build and run. The crash was
+# recorded on compiler 0.7.5 with the pre-0.7.6 call form; on 0.7.8 the run
+# reaches the Long subtract-and-compare each tick (checked with a marker print)
+# and the server survives.
 #
 # Exit codes match this project's other repro-*.sh scripts: 0 = did not
 # reproduce (fixed upstream, or skipped because a tool/network was
@@ -131,10 +137,10 @@ cat "$SERVER_LOG"
 echo "---------------------"
 
 if grep -aq "signature is incorrect" "$SERVER_LOG" 2>/dev/null; then
-  echo "==> Inconclusive: the request failed with TypeLoadException 'The signature is incorrect' before reaching the run-timeout check. That is a different, newer compiler regression (the generic @externInstance taskWaitMs[T] binding; see scripts/repro-generic-extern-instance-typeload.sh), so this run says nothing about whether the Long crash is fixed." >&2
+  echo "==> Inconclusive: the request failed with TypeLoadException 'The signature is incorrect' before reaching the run-timeout check. That means the run task handed to taskWaitMs[T] is not a task: either a direct async call (awaits in place on lyric >= 0.7.6; use spawn) or a compiler older than 0.7.8, which specialised the generic over a spawn handle's result type (nichobbs/lyric-lang#8026). It says nothing about the Long crash." >&2
   exit 2
 elif grep -aq "AccessViolationException" "$SERVER_LOG" 2>/dev/null && ! { grep -aq "CastHelpers.Unbox" "$SERVER_LOG" && grep -aq "streamSessionMessage" "$SERVER_LOG"; }; then
-  echo "==> Inconclusive: an AccessViolationException, but not the Long crash's signature (CastHelpers.Unbox under streamSessionMessage); e.g. the 0.7.6 generic @externInstance regression can surface as one in CastHelpers.IsInstanceOfClass. See scripts/repro-generic-extern-instance-typeload.sh." >&2
+  echo "==> Inconclusive: an AccessViolationException, but not the Long crash's signature (CastHelpers.Unbox under streamSessionMessage); e.g. handing a non-task value to the generic taskWaitMs[T] binding can surface as one in CastHelpers.IsInstanceOfClass. See scripts/repro-generic-extern-instance-typeload.sh." >&2
   exit 2
 elif grep -aq "AccessViolationException" "$SERVER_LOG" 2>/dev/null; then
   echo "==> Reproduced: streamSessionMessage's Long-subtract-and-compare run-timeout check still crashes the process with AccessViolationException (nichobbs/cloud-agents, see docs/BUILD.md)"

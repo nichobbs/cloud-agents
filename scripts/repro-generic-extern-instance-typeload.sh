@@ -1,18 +1,25 @@
 #!/usr/bin/env bash
-# repro-generic-extern-instance-typeload.sh: minimal, runnable reproduction of
-# a Lyric 0.7.6 regression: a generic function bound with @externInstance (the
-# `taskWaitMs[T]` idiom src/docker_manager.l uses to wait on an async call)
-# builds, then the program dies at startup with
-#   System.TypeLoadException: The signature is incorrect.
-# (or an AccessViolationException in CastHelpers.IsInstanceOfClass when the
-# async function returns a value). The same program prints `done true n=42` on
-# 0.7.5. In this project it makes every call into CloudAgents.Docker fail
-# (reapContainers, streamSessionMessage, terminateSessionContainer ...) even
-# though `lyric build` and every @test_module suite but two pass.
+# repro-generic-extern-instance-typeload.sh: check that a `spawn` handle can be
+# passed to a generic @externInstance binding of Task.Wait (the `taskWaitMs[T]`
+# idiom src/docker_manager.l uses to bound a wait on an async call).
 #
-# Exit codes match the other repro-*.sh scripts: 0 = did not reproduce (fixed,
-# or skipped because a tool was unavailable), 1 = reproduced, 2 = could not
-# run the check at all.
+# Two things are involved, neither a regression of the idiom itself:
+#  1. Since lyric 0.7.6 a DIRECT call to an `async func` awaits in place
+#     (docs/01 §7.1), so `val t = work(cell)` is the awaited Unit, not a task.
+#     Handing that to the generic Task.Wait binding builds, then dies at startup
+#     with `TypeLoadException: The signature is incorrect.` (or an
+#     AccessViolationException for a value-returning callee). The language
+#     documents this; the compiler does not diagnose it. Only `spawn` keeps the
+#     task: `val t = spawn work(cell)`.
+#  2. 0.7.6 and 0.7.7 also specialised a generic over a `spawn` handle's result
+#     type instead of its task, so even the `spawn` form failed. Fixed in 0.7.8
+#     (nichobbs/lyric-lang#8026).
+# So this script expects `done true n=42` on 0.7.8 and later, and fails on
+# 0.7.6/0.7.7. A failure of the `val t = work(cell)` form is the documented
+# behaviour, not a reason to reopen the compiler fix.
+#
+# Exit codes match the other repro-*.sh scripts: 0 = works (done true n=42),
+# 1 = TypeLoadException / AccessViolationException, 2 = could not run the check.
 
 set -uo pipefail
 
@@ -58,7 +65,7 @@ async func work(cell: in Cell): Unit {
 func main(): Unit {
   println("start")
   val cell = Cell(n = 0)
-  val t = work(cell)
+  val t = spawn work(cell)
   val done = taskWaitMs(t, 5000)
   println("done " + toString(done) + " n=" + toString(cell.n))
 }
@@ -75,10 +82,10 @@ fi
 out="$(cd "$WORK" && dotnet bin/ExternTypeLoad.dll 2>&1)"
 echo "$out" | head -6
 if echo "$out" | grep -q "done true n=42"; then
-  echo "==> Did NOT reproduce: the generic @externInstance binding works."
+  echo "==> OK: a spawn handle works with the generic @externInstance Task.Wait binding."
   exit 0
 elif echo "$out" | grep -aqE "TypeLoadException|AccessViolationException"; then
-  echo "==> Reproduced: generic @externInstance binding builds but fails at runtime (TypeLoadException / AccessViolationException)."
+  echo "==> FAILED: the generic @externInstance Task.Wait binding builds but fails at runtime (TypeLoadException / AccessViolationException) even with spawn; expected on lyric 0.7.6/0.7.7 (fixed in 0.7.8, nichobbs/lyric-lang#8026)."
   exit 1
 fi
 echo "==> Unexpected output; investigate separately" >&2
