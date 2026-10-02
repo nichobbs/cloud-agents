@@ -43,6 +43,14 @@ export function authHeaders(): HeadersInit {
 
 let refreshPromise: Promise<string | null> | null = null;
 
+/** Mirrors CloudAgents.OAuth.reconnectGitHubMessage() on the server. */
+const GITHUB_RECONNECT_TEXT = 'GitHub connection has expired';
+
+async function isGitHubReconnectResponse(res: Response): Promise<boolean> {
+  const text = await res.clone().text().catch(() => '');
+  return text.includes(GITHUB_RECONNECT_TEXT);
+}
+
 /** Central fetch wrapper for API endpoints: intercepts HTTP 401 status when
  *  signed in, attempts transparent token refresh (queuing concurrent 401s behind
  *  one in-flight refresh), and redirects to /login on failure. */
@@ -77,6 +85,14 @@ export async function apiFetch(input: RequestInfo | URL, rawInit?: RequestInit):
       return res;
     }
 
+    // The PR/checks/GitHub-proxy handlers answer 401 when the *vaulted GitHub
+    // token* is dead, not when this bearer is. The session is still valid, so
+    // hand the caller the error to display instead of refreshing and signing
+    // out (which looped: login, open a session, PR panel 401s, logged out).
+    if (await isGitHubReconnectResponse(res)) {
+      return res;
+    }
+
     if (!refreshPromise) {
       refreshPromise = (async () => {
         try {
@@ -106,7 +122,7 @@ export async function apiFetch(input: RequestInfo | URL, rawInit?: RequestInit):
       // itself rejected (e.g. a whitelist revocation racing the refresh) —
       // treat it the same as "refresh failed" rather than handing the
       // caller a raw 401 to throw on.
-      if (retryRes.status !== 401) {
+      if (retryRes.status !== 401 || (await isGitHubReconnectResponse(retryRes))) {
         return retryRes;
       }
     }
@@ -141,6 +157,13 @@ async function errorMessage(res: Response): Promise<string> {
     if (typeof parsed.message === 'string' && parsed.message) return parsed.message;
   } catch {
     /* not JSON */
+  }
+  // A gateway/proxy error page (e.g. Cloudflare's 524 timeout) is a whole HTML
+  // document; never dump it into the UI.
+  if (/^\s*<(!doctype|html)/i.test(text)) {
+    return res.status >= 500
+      ? `${res.status} The server did not respond in time. Retrying automatically.`
+      : `${res.status} Unexpected HTML response from the server.`;
   }
   return `${res.status} ${text}`;
 }
