@@ -283,7 +283,9 @@ pub func sqrt(x: in Double): Double
 
 **`await` is an expression, not a statement.** You can use it inline.
 
-**Calling async does not auto-await.** `fetchUser(id)` returns a task. `await fetchUser(id)` awaits it.
+**A direct call to an `async func` awaits in place (lyric 0.7.6+).** `val u = fetchUser(id)` is the awaited result, not a task; `await` only makes the wait explicit. In a sync function that is a blocking wait. To keep the task, use `spawn`: `val t = spawn fetchUser(id)`, then `await t` later.
+
+**A generic `@externInstance` binding over a task (for example `taskWaitMs[T](t: in T, ms: in Int): Bool` bound to `Task.Wait`) needs lyric 0.7.8 or later.** Earlier releases build it and then die at startup (`TypeLoadException: The signature is incorrect.` for a `Unit`-returning callee, `AccessViolationException` for a value-returning one), because a `spawn` handle was specialised over the callee's result type instead of the task (lyric-lang#8026). This project avoids the question: `src/docker_manager.l` binds the non-generic `RunTask` (a `Task.Run` handle) instead.
 
 **No fire-and-forget.** Tasks spawned in a `scope` block cannot outlive the scope.
 
