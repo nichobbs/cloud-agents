@@ -9,8 +9,8 @@
 # immediately on startup (lyric-lang#5177). See docs/BUILD.md "Compiler
 # notes" for full detail and current release status.
 #
-# Was crashing the whole process with an AccessViolationException on every
-# message sent (root-caused and worked around as of v0.4.36) — see
+# Used to crash the whole process with an AccessViolationException on every
+# message sent (a compiler bug, fixed in v0.7.7) — see
 # docs/BUILD.md "Compiler notes" (ninth entry) and
 # scripts/repro-crosspkg-long-crash.sh.
 #
