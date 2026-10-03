@@ -6,41 +6,33 @@
 # `System.Int64` against a garbage, non-object pointer — "this object has
 # an invalid CLASS field").
 #
-# ROOT CAUSE (as far as this was pinned down; not yet filed upstream):
-# `streamSessionMessage`'s run-timeout check did a `Long` (Int64)
-# subtract-and-compare once per poll tick — `nowMs - startMs > timeoutMs`
-# — either inline or via the cross-package `CloudAgents.DockerPolicy.
-# hasExceededRunTimeout(nowMs, startMs, timeoutMs)` call it originally used;
-# both crash identically. Five from-scratch standalone reconstructions
-# (matching local-variable count, real cross-package `Long` calls, real
-# package count/position, real `Lyric.Web`/`Lyric.Docker` NuGet deps) never
-# reproduced it — only using the ACTUAL, unmodified `docker_manager.l`/
-# `docker_policy.l` source did, which is why this script freezes a snapshot
-# of those two files (see `scripts/repro-fixtures/crosspkg-long-crash/
-# NOTE.md`) rather than generating equivalent code inline the way this
-# project's other `repro-*.sh` scripts do.
+# ROOT CAUSE (lyric-lang#8022, fixed in lyric v0.7.7): an untyped module-level
+# `val` initialised by a call or numeric conversion
+# (`val runWallClockCapMs = 1800000.toLong()`) had its type predicted as
+# `object` while its static field was `int64`; copying it into a local
+# (`val runTimeoutMs = runWallClockCapMs` in `streamSessionMessage`) stored a
+# raw `int64` into an `object` local, and the next use did `unbox.any Int64`.
+# The fixture is a snapshot of `docker_manager.l`/`docker_policy.l` from
+# before the workaround (see `scripts/repro-fixtures/crosspkg-long-crash/
+# NOTE.md`), ported to the Lyric.Docker 0.7 API and pinned to the same
+# `Lyric.Web`/`Lyric.Docker` versions as this project.
 #
-# The crash needs NO real Docker daemon, NO SQLite, NO auth, NO real
+# The crash needs NO real Docker daemon, NO database, NO auth, NO real
 # session — this script hits a bare streaming route that calls
 # `streamSessionMessage` directly with a made-up session id against an
 # unreachable Docker host, deterministically, in about two seconds.
 #
-# Workaround applied in `src/docker_manager.l` (see the comment at the
-# run-timeout check): approximate elapsed time with an Int accumulator of
-# each tick's `pollMs` instead of a `Long` epoch-millisecond subtraction —
-# so this script is expected to report "Reproduced" against the frozen
-# snapshot forever (that's the point: it's evidence of a real, still-open
-# upstream Lyric compiler bug), while the LIVE `src/docker_manager.l` no
-# longer hits it. If a future Lyric release fixes the underlying compiler
-# defect, this script will start reporting "did not reproduce" — bump the
-# snapshot's pinned NuGet versions (in
-# scripts/repro-fixtures/crosspkg-long-crash/lyric.toml) and re-run to
-# check, then consider reverting the workaround and retiring this script.
+# Expected: on lyric < 0.7.7 this reports "Reproduced" (exit 1); on 0.7.7+ the
+# server survives AND the handler reports the Docker connection error, proving
+# the run-timeout loop (where the `Long` subtract-and-compare lives) actually
+# executed. A survived-but-never-got-there run is "unexpected" (exit 2), not a
+# pass. The script is kept as a regression check for the fix.
 #
 # Exit codes match this project's other repro-*.sh scripts: 0 = did not
 # reproduce (fixed upstream, or skipped because a tool/network was
 # unavailable), 1 = bug reproduced, 2 = couldn't run the check at all
-# (missing tool, unexpected build failure).
+# (missing tool, unexpected build failure, the handler never reached the
+# run loop).
 
 set -uo pipefail
 
@@ -128,8 +120,12 @@ if grep -q "AccessViolationException" "$SERVER_LOG" 2>/dev/null && grep -q "stre
   SERVER_PID=""
   exit 1
 elif kill -0 "$SERVER_PID" 2>/dev/null; then
-  echo "==> Did NOT reproduce: server survived the request — the Lyric compiler bug behind this crash appears fixed upstream. Consider bumping this fixture's pinned NuGet versions and, if it stays fixed, reverting the Int-accumulator workaround in src/docker_manager.l and retiring this script."
-  exit 0
+  if grep -q "container creation failed" "$SERVER_LOG" 2>/dev/null; then
+    echo "==> Did NOT reproduce: the server survived a request that ran streamSessionMessage's poll loop (lyric $(lyric --version 2>/dev/null | awk '{print $2}'))."
+    exit 0
+  fi
+  echo "==> Unexpected: the server survived but the request never reached the run loop — investigate separately" >&2
+  exit 2
 else
   echo "==> Unexpected: server exited without the AccessViolationException signature — investigate separately" >&2
   exit 2

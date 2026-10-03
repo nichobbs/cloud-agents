@@ -1,5 +1,14 @@
 # Frozen snapshot — do not edit to match current `src/`
 
+The snapshot's logic is frozen, but it has been ported to compile against
+`Lyric.Docker` 0.7 (`ContainerId`, the `waitContainer` timeout and the
+`stopContainer` grace period), to run on lyric 0.7.7 (a direct call to an
+`async func` awaits in place, so the run is started through `Task.Run`, as in
+`src/docker_manager.l`), and the `CloudAgents.Db` stub returns valid bind specs
+(`Lyric.Docker` now validates them). `Lyric.Web`/`Lyric.Docker` are pinned to
+0.7.6. On lyric 0.7.5 it crashes with the `AccessViolationException`; on 0.7.7
+it survives (lyric-lang#8022).
+
 `docker_manager.l` and `docker_policy.l` in this directory are a **frozen
 snapshot** of `src/docker_manager.l` / `src/docker_policy.l` as they existed
 at commit

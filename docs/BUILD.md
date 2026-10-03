@@ -524,32 +524,30 @@ package they import, no SQLite, no auth, no real session) reproduced it**,
 which is why `./scripts/repro-crosspkg-long-crash.sh` freezes a snapshot of
 those two files rather than generating equivalent code inline the way this
 project's other `repro-*.sh` scripts do — see
-`scripts/repro-fixtures/crosspkg-long-crash/NOTE.md`. **Not yet filed
-upstream** (a fully minimized, dependency-free repro was not achieved
-despite the attempts above — whatever makes this reproduce is tied to the
-real file's actual compiled shape, not just its logical content). Worked
-around in `src/docker_manager.l`'s `streamSessionMessage` by approximating
-elapsed time with an Int accumulator of each tick's `pollMs` instead of a
-`Long` epoch-millisecond subtraction (coarser than true wall-clock time,
-adequate for a 30-minute safety cap) — revert once
-`./scripts/repro-crosspkg-long-crash.sh` reports the bug fixed upstream.
-`waitForContainer`'s retry-deadline check used the identical
-cross-package-`Long`-args shape (`CloudAgents.DockerPolicy.
-shouldRetryContainerWait(attempts, maxAttempts, nowMs, deadlineMs)`) —
-never confirmed to crash (no deterministic way to force a real
-Docker-daemon wait-and-retry scenario in the time available), but
-preemptively fixed the same way rather than left as an untested landmine:
-`nowMillisLong()`'s `Long` epoch milliseconds replaced with `Int`
-`System.Environment.TickCount` (`tickCountMs()`, NOT the 64-bit
-`TickCount64`) throughout, so neither function does `Long` arithmetic at
-all anymore. `hasExceededRunTimeout` and `shouldRetryContainerWait`
-themselves are untouched in `src/docker_policy.l` — both remain pure,
-directly unit-tested (#67, #56), just no longer called from
-`CloudAgents.Docker`.
+`scripts/repro-fixtures/crosspkg-long-crash/NOTE.md`. **Root cause and fix (lyric-lang#8022, released in v0.7.7).** The trigger
+was not `Long` arithmetic as such, and not the function's size. A module-level
+`val` with no type annotation whose initializer is a call or a numeric
+conversion (`val runWallClockCapMs = 1800000.toLong()`) had its type
+*predicted* as `object` by the MSIL backend's token pre-scan, while its static
+field really was `int64`. Copying it into a local
+(`val runTimeoutMs = runWallClockCapMs`) emitted `ldsfld int64; stloc` into an
+`object`-typed local with no `box`, and the next use did `unbox.any Int64` on
+a raw integer: the `invalid CLASS field` crash. It reproduces in 12 lines (see
+the PR) and also with `val a = mk()` and `val s = "x".length`. The five
+standalone reconstructions never crashed because none copied such a val into a
+local. v0.7.7 predicts those initializer types and fails the build with `F0047`
+where it still cannot, so this can no longer be silent. The `Int` accumulators
+and `TickCount` deadlines this entry's workaround introduced are reverted:
+`streamSessionMessage`, `runSessionMessageBlocking` and `waitForContainer` use
+real `Long` wall-clock time again (through `CloudAgents.DockerPolicy`'s
+`hasExceededRunTimeout` and `shouldRetryContainerWait`), and so does the
+highlights refresh budget. `scripts/repro-crosspkg-long-crash.sh` is now an
+A/B check: it crashes on lyric 0.7.5 and survives on 0.7.7, both on
+`Lyric.Web`/`Lyric.Docker` 0.7.6.
 
 **CI enforces a version floor matching this status**, read from the single
 checked-in [`MIN_LYRIC_VERSION`](../MIN_LYRIC_VERSION) file (currently
-`0.7.8`: 0.7.0 moved `Std.File.readBytes`/`writeBytes` to `slice[Byte]` and
+`0.7.8`: 0.7.7 fixes the `Long` unbox crash above and also changes the meaning of a direct call to an `async func` (it now awaits in place, so `val t = asyncFn()` no longer yields a `Task`; this project runs its background runs through `Task.Run` instead, see `taskRun` in `src/docker_manager.l`). 0.7.8 additionally fixes generic `@externInstance` bindings crashing at startup (lyric-lang#8026). Earlier floors: 0.7.0 moved `Std.File.readBytes`/`writeBytes` to `slice[Byte]` and
 made hint-less externs a build error (F0027), but miscompiles
 `@externTarget`s taking an array extern alias (lyric-lang#7610), which breaks
 this project's SQLite driver at runtime; 0.7.1 fixes that but its released

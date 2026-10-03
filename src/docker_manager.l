@@ -95,19 +95,20 @@ func dockerClient(): DockerClient {
   }
 }
 
+// A background run on a BCL thread-pool thread, polled with a timeout. A
+// direct call to an `async func` awaits in place (docs/01 §7.1), so the call
+// is wrapped in a closure handed to `Task.Run`: the worker thread does the
+// waiting and the caller keeps a `Task` it can `Wait` on with a timeout.
+extern type RunTask = "System.Threading.Tasks.Task"
+
+@externStatic
+@externTarget("System.Threading.Tasks.Task.Run")
+func taskRun(work: in () -> Unit): RunTask = ()
+
 /// Returns true if the task completed within timeoutMs, false on timeout.
 @externInstance
 @externTarget("System.Threading.Tasks.Task.Wait")
-func taskWaitMs[T](t: in T, timeoutMs: in Int): Bool = false
-
-// `CloudAgents.Repository.tickCountMs()` — an `Int` (not `Long`)
-// `System.Environment.TickCount` reading — is this package's wall-clock
-// budget primitive (`streamSessionMessage`'s and `waitForContainer`'s
-// workaround comments below, docs/BUILD.md, docs/lyric/gotchas.md explain
-// why `Int` not `Long`). Shared (#863) rather than bound locally here, so
-// this package and `CloudAgents.Highlights` call one extern binding instead
-// of each declaring its own copy of the same binding and safety-margin
-// reasoning.
+func taskWaitMs(t: in RunTask, timeoutMs: in Int): Bool = false
 
 // Network-policy resolution (networkModeForPolicy / proxyEnvForPolicy) lives in
 // the pure CloudAgents.NetworkPolicy package so it can be unit-tested — a test
@@ -437,17 +438,18 @@ func dockerContainerId(raw: in String): Result[ContainerId, String] {
 /// pre-0.7 `stopContainer` sent no `t`, so Docker applied this default.
 val stopGraceSec: Int = 10
 
-/// Seconds left until `deadlineTickMs`, as a `waitContainer` client-side
-/// timeout: at least 1, and at most the 2147483s its contract allows.
-func waitTimeoutSec(deadlineTickMs: in Int): Int {
-  val remainingSec = (deadlineTickMs - CloudAgents.Repository.tickCountMs()) / 1000
-  if remainingSec < 1 {
+/// Seconds left until `deadlineMs` (epoch milliseconds), as a
+/// `waitContainer` client-side timeout: at least 1, and at most the 2147483s
+/// its contract allows.
+func waitTimeoutSec(deadlineMs: in Long): Int {
+  val remainingSec = (deadlineMs - CloudAgents.Repository.nowMillisLong()) / 1000.toLong()
+  if remainingSec < 1.toLong() {
     return 1
   }
-  if remainingSec > 2147483 {
+  if remainingSec > 2147483.toLong() {
     return 2147483
   }
-  return remainingSec
+  return remainingSec.toInt()
 }
 
 /// Start the created runner container.
@@ -477,13 +479,10 @@ pub async func stopRunnerContainer(client: in DockerClient, containerId: in Stri
 }
 
 // 30-minute hard cap on a run's total wall-clock time (matches the old
-// runSessionMessage), as an `Int` millisecond count — see
-// `CloudAgents.Repository.tickCountMs`'s doc comment for why this is `Int`,
-// not the `Long` this file used to share between waitForContainer's retry
-// deadline and
-// streamSessionMessage's run-timeout check before both were found to crash
-// the process (#561 predates that discovery).
-val runWallClockCapMs = 1800000
+// runSessionMessage), in milliseconds. Shared between waitForContainer's retry
+// deadline and the run-timeout checks of streamSessionMessage and
+// runSessionMessageBlocking.
+val runWallClockCapMs: Long = 1800000.toLong()
 
 /// How often a running session checks whether a mid-run observer pass is due.
 val observerCheckIntervalMs = 60000
@@ -506,21 +505,17 @@ val maxContainerWaitAttempts = 20
 /// request timeout firing before the container actually finished rather
 /// than a real Docker-reported error. See
 /// `CloudAgents.DockerPolicy.shouldRetryContainerWait`'s doc comment for the
-/// rationale (#56) this retry logic still follows (attempt cap OR
-/// wall-clock deadline, whichever trips first) — this project cannot
-/// configure `DockerClient`'s HTTP timeout directly, so retrying is the
-/// only available mitigation. That function itself is NOT called here: its
-/// `Long`-typed parameters are exactly the AccessViolationException-crashing
-/// pattern documented on `CloudAgents.Repository.tickCountMs` above, so the
-/// same boundary condition is duplicated inline against
-/// `CloudAgents.Repository.tickCountMs()` instead.
+/// rationale (#56) for the retry decision (attempt cap OR wall-clock
+/// deadline, whichever trips first) — this project cannot configure
+/// `DockerClient`'s HTTP timeout directly, so retrying is the only available
+/// mitigation.
 ///
 /// The actual retry loop is `waitForContainerAttempt` below, recursive
 /// rather than a `while` loop (#635). This just computes the wall-clock
 /// deadline once and kicks off attempt 1.
 pub async func waitForContainer(client: in DockerClient, containerId: in String): Result[Unit, String] {
-  val deadlineTickMs = CloudAgents.Repository.tickCountMs() + runWallClockCapMs
-  return await waitForContainerAttempt(client, containerId, 1, deadlineTickMs)
+  val deadlineMs = CloudAgents.Repository.nowMillisLong() + runWallClockCapMs
+  return await waitForContainerAttempt(client, containerId, 1, deadlineMs)
 }
 
 /// One `/wait` attempt for `waitForContainer`, retrying itself by recursing
@@ -553,10 +548,7 @@ pub async func waitForContainer(client: in DockerClient, containerId: in String)
 /// means this code doesn't regress if a future toolchain change ever moves
 /// the pin backward.
 async func waitForContainerAttempt(
-  client: in DockerClient,
-  containerId: in String,
-  attempt: in Int,
-  deadlineTickMs: in Int,
+  client: in DockerClient, containerId: in String, attempt: in Int, deadlineMs: in Long
 ): Result[Unit, String] {
   val cid = match dockerContainerId(containerId) {
     case Ok(id) -> id
@@ -567,12 +559,17 @@ async func waitForContainerAttempt(
   }
   // Each attempt's client-side timeout is the time left before the run's
   // wall-clock deadline, so a single `/wait` can't outlive the cap.
-  match await waitContainer(client, cid, waitTimeoutSec(deadlineTickMs)) {
+  match await waitContainer(client, cid, waitTimeoutSec(deadlineMs)) {
     case Ok(_) -> {
       return Ok(value = ())
     }
     case Err(e) -> {
-      val retry = attempt < maxContainerWaitAttempts and CloudAgents.Repository.tickCountMs() < deadlineTickMs
+      val retry = CloudAgents.DockerPolicy.shouldRetryContainerWait(
+        attempt,
+        maxContainerWaitAttempts,
+        CloudAgents.Repository.nowMillisLong(),
+        deadlineMs
+      )
       if not retry {
         println("WARNING: failed to wait for container " + containerId + ": " + e.message)
         return Err(error = "Failed to wait for container: " + e.message)
@@ -582,7 +579,7 @@ async func waitForContainerAttempt(
       // this frame is read after this await; the recursive call below reads
       // only its own fresh parameters.
       await Std.Task.delay(containerWaitRetryDelayMs)
-      return await waitForContainerAttempt(client, containerId, attempt + 1, deadlineTickMs)
+      return await waitForContainerAttempt(client, containerId, attempt + 1, deadlineMs)
     }
   }
 }
@@ -648,7 +645,7 @@ pub async func getRunnerLogs(client: in DockerClient, containerId: in String): R
 /// surface as a hard error to the client.
 pub func partialContainerLogs(containerId: in String): String {
   val cell = ResultCell(isSuccess = false, output = "", error = "")
-  val t = spawn partialContainerLogsAsync(containerId, cell)
+  val t = taskRun({ -> partialContainerLogsAsync(containerId, cell) })
   // Cap the block at the client's ~1.5s poll interval, not 10s (#227): partial
   // log fetches are normally sub-second, and a longer block lets requests pile
   // up faster than they drain once Lyric.Web dispatches them concurrently. A
@@ -911,27 +908,25 @@ pub func streamSessionMessage(
   // The work since the run was claimed (attachments, run record) happened
   // outside any poll loop; start this one with a fresh heartbeat (#1194).
   renewRunHeartbeat(sessionId, userId)
-  val t = spawn runSessionMessageAsync(
-    repoUrl,
-    branch,
-    prompt,
-    sessionId,
-    harness,
-    model,
-    nativeSessionId,
-    profileId,
-    userId,
-    extraRepos,
-    attachmentsHostDir,
-    cell
+  val t = taskRun(
+    { ->
+      runSessionMessageAsync(
+        repoUrl,
+        branch,
+        prompt,
+        sessionId,
+        harness,
+        model,
+        nativeSessionId,
+        profileId,
+        userId,
+        extraRepos,
+        attachmentsHostDir,
+        cell
+      )
+    }
   )
   val startMs = CloudAgents.Repository.nowMillisLong()
-  // Int-accumulator stand-in for the wall-clock cap below — see the
-  // AccessViolationException workaround comment at the loop's timeout
-  // check for why this isn't a `Long` epoch-millisecond comparison.
-  // Shares runWallClockCapMs (also `Int`, for the same reason) with
-  // waitForContainer's deadline above.
-  var elapsedPollMs = 0
   // Give up on the client only after several CONSECUTIVE failed writes, not the
   // first (#491): a single writeChunk Err can be a transient proxy/network blip,
   // and terminating on it would discard an in-progress run the old buffered
@@ -942,7 +937,7 @@ pub func streamSessionMessage(
   var writeFailures = 0
   // Session ledger observer (docs/session-ledger.md §10): about once a minute,
   // ask whether this run is due a mid-run observer pass. The start time
-  // travels as text for the same cross-package Long reason as elapsedPollMs.
+  // travels as text.
   val runStartedAt = toString(startMs)
   var observerCheckMs = 0
   var heartbeatMs = 0
@@ -1036,9 +1031,9 @@ pub func streamSessionMessage(
   while not finished and not clientGone and not timedOut {
     // Capture the interval this tick actually waited on BEFORE pollMs is
     // mutated below (reset to minPollMs on fresh output, or backed off via
-    // nextPollMs on a quiet tick) — the elapsedPollMs accumulator at the
-    // bottom of the loop must count the tick just waited, not the tick
-    // that's about to happen next (#704).
+    // nextPollMs on a quiet tick) — the heartbeat accumulator at the bottom
+    // of the loop must count the tick just waited, not the tick that's about
+    // to happen next (#704).
     val ticked = pollMs
     finished = taskWaitMs(t, pollMs)
     if containerId.length == 0 {
@@ -1256,37 +1251,11 @@ pub func streamSessionMessage(
     }
     // Hard cap the whole run (#481): a hung container with a still-connected
     // client would otherwise hold the session's RUNNING claim forever. The
-    // boundary condition itself is pinned by a direct test against the pure
+    // boundary condition is pinned by a direct test against the pure
     // CloudAgents.DockerPolicy.hasExceededRunTimeout (#67) — this async
     // package's functions can't be reached from a @test_module at all, pure
-    // or not (docs/lyric/gotchas.md) — but doing a `Long` (Int64) subtract-
-    // and-compare AT ALL in this specific loop crashes the whole process
-    // with an AccessViolationException (Unbox against a corrupted
-    // System.Int64, confirmed via dotnet-dump) on every single tick,
-    // independent of Docker, MCP callbacks, the request pipeline, or
-    // whether the comparison happens inline or via the cross-package
-    // hasExceededRunTimeout call — both crash identically. Not yet filed
-    // upstream — see scripts/repro-crosspkg-long-crash.sh and
-    // docs/BUILD.md for the standalone repro and full narrative. Workaround:
-    // approximate elapsed time with an Int accumulator of each tick's
-    // `pollMs` instead of a `Long` epoch-millisecond subtraction — avoids
-    // `Long` arithmetic in this loop entirely. This is an APPROXIMATION,
-    // not a measurement: it only counts each tick's intended `pollMs` wait,
-    // not the actual wall-clock time that tick took — a slow
-    // `partialContainerLogs`/`writeChunk` call (or general scheduling
-    // delay) adds real elapsed time that never gets added to
-    // `elapsedPollMs`, so in the worst case this UNDERcounts by an
-    // unbounded amount, not just one poll interval. Acceptable for a
-    // 30-minute safety backstop (understating a timeout is far cheaper
-    // than the crash this works around), but not a substitute for real
-    // wall-clock timing if this cap's precision ever matters more. Revert
-    // to the cross-package `Long` comparison once fixed upstream. Accumulate
-    // `ticked` (captured at the top of this iteration, before pollMs was
-    // possibly reset/backed off above) rather than the now-possibly-mutated
-    // `pollMs`, so this counts the interval that was actually just waited on
-    // instead of the one planned for the NEXT tick (#704).
-    elapsedPollMs = elapsedPollMs + ticked
-    if elapsedPollMs > runWallClockCapMs {
+    // or not (docs/lyric/gotchas.md).
+    if CloudAgents.DockerPolicy.hasExceededRunTimeout(CloudAgents.Repository.nowMillisLong(), startMs, runWallClockCapMs) {
       timedOut = true
     }
     heartbeatMs = heartbeatMs + ticked
@@ -1491,11 +1460,8 @@ async func runSessionMessageAsync(
 /// Run a session message to completion with NO live SSE observer — for
 /// host-triggered background work (docs/phase8-scheduling.md's scheduled
 /// jobs) where no browser tab is watching. Mirrors streamSessionMessage's
-/// create -> poll -> resolve control flow exactly, including the Int-
-/// accumulator wall-clock cap (see streamSessionMessage's doc comment for why
-/// elapsedPollMs is an Int accumulator rather than a Long epoch-millisecond
-/// comparison — the same AccessViolationException workaround applies here),
-/// but skips every SSE write and the mid-run permission/question/progress/
+/// create -> poll -> resolve control flow exactly, including the wall-clock
+/// cap, but skips every SSE write and the mid-run permission/question/progress/
 /// secret/artifact/notification/todo event forwarding: there is no
 /// ResponseWriter to forward them to. Those events still land in their own
 /// tables via the container's own callback calls — a human reviewing the
@@ -1522,29 +1488,32 @@ pub func runSessionMessageBlocking(
   // The work since the run was claimed (attachments, run record) happened
   // outside any poll loop; start this one with a fresh heartbeat (#1194).
   renewRunHeartbeat(sessionId, userId)
-  val t = spawn runSessionMessageAsync(
-    repoUrl,
-    branch,
-    prompt,
-    sessionId,
-    harness,
-    model,
-    nativeSessionId,
-    profileId,
-    userId,
-    extraRepos,
-    "",
-    cell
+  val t = taskRun(
+    { ->
+      runSessionMessageAsync(
+        repoUrl,
+        branch,
+        prompt,
+        sessionId,
+        harness,
+        model,
+        nativeSessionId,
+        profileId,
+        userId,
+        extraRepos,
+        "",
+        cell
+      )
+    }
   )
   val pollMs = 1000
-  var elapsedPollMs = 0
+  val startMs = CloudAgents.Repository.nowMillisLong()
   var finished = false
   val runStartedAt = CloudAgents.Repository.nowMillis()
   var observerCheckMs = 0
   var heartbeatMs = 0
-  while not finished and elapsedPollMs <= runWallClockCapMs {
+  while not finished and not CloudAgents.DockerPolicy.hasExceededRunTimeout(CloudAgents.Repository.nowMillisLong(), startMs, runWallClockCapMs) {
     finished = taskWaitMs(t, pollMs)
-    elapsedPollMs = elapsedPollMs + pollMs
     heartbeatMs = heartbeatMs + pollMs
     if heartbeatMs >= CloudAgents.SessionStore.runHeartbeatIntervalMs {
       heartbeatMs = 0
@@ -1579,7 +1548,7 @@ pub func runSessionMessageBlocking(
 /// Terminate and delete a session container synchronously.
 pub func terminateSessionContainer(containerId: in String): Result[Unit, String] {
   val cell = ResultCell(isSuccess = false, output = "", error = "")
-  val t = spawn terminateSessionContainerAsync(containerId, cell)
+  val t = taskRun({ -> terminateSessionContainerAsync(containerId, cell) })
   val completed = taskWaitMs(t, 60000) // 60-second cap for stop+delete
   if not completed {
     return Err(error = "Container terminate timed out after 60 seconds")
@@ -1629,9 +1598,7 @@ pub func deleteWorkspaceVolume(userId: in String, sessionId: in String): Result[
 // Wall-clock cap for one inspect container run — an inspect is a few git
 // commands over an existing checkout, so two minutes is generous (covers a
 // cold image + a large repo's first `git status`) while still bounding a
-// wedged daemon. An `Int` millisecond count for the same
-// AccessViolationException reason as runWallClockCapMs (see
-// CloudAgents.Repository.tickCountMs's doc comment above).
+// wedged daemon.
 val inspectWallClockCapMs = 120000
 
 /// Run a short-lived "inspect" container against a session's workspace
@@ -1672,7 +1639,7 @@ pub func runInspectContainer(
   path: in String,
 ): Result[String, String] {
   val cell = ResultCell(isSuccess = false, output = "", error = "")
-  val t = spawn runInspectContainerAsync(sessionId, harness, userId, mode, path, cell)
+  val t = taskRun({ -> runInspectContainerAsync(sessionId, harness, userId, mode, path, cell) })
   val pollMs = 500
   var elapsedPollMs = 0
   var finished = false

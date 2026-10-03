@@ -177,9 +177,7 @@ the cap is claimed on a later poll. For each claimed job:
 5. Runs the container via `CloudAgents.Docker.runSessionMessageBlocking` — a
    new, non-SSE sibling of `streamSessionMessage` that drives the exact same
    `runSessionMessageAsync` task and `taskWaitMs` poll loop (including the
-   same `Int`-accumulator wall-clock cap workaround — see
-   `streamSessionMessage`'s doc comment for why that isn't a `Long`
-   comparison) but skips every `Web.writeChunk`/SSE-event-forwarding step:
+   same wall-clock cap) but skips every `Web.writeChunk`/SSE-event-forwarding step:
    there is no live browser tab watching a scheduler-triggered run. Mid-run
    permission requests, secret requests, progress reports, etc. still land in
    their normal tables via the container's own callback calls — a human
