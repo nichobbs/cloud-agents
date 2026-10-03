@@ -285,7 +285,7 @@ pub func sqrt(x: in Double): Double
 
 **A direct call to an `async func` awaits in place (lyric 0.7.6+).** `val u = fetchUser(id)` is the awaited result, not a task; `await` only makes the wait explicit. In a sync function that is a blocking wait. To keep the task, use `spawn`: `val t = spawn fetchUser(id)`, then `await t` later.
 
-**To bound a wait on a task, pass the `spawn` handle to a generic `@externInstance` binding of `Task.Wait`** (`taskWaitMs[T](t: in T, ms: in Int): Bool` in `src/docker_manager.l`). Passing the result of a direct call instead hands `Task.Wait` the awaited value, and the build succeeds but the program dies at startup: `TypeLoadException: The signature is incorrect.` for a `Unit`-returning callee (the specialisation has a `void` receiver), `AccessViolationException` for a value-returning one. A `spawn` handle only specialises correctly from the lyric release that includes nichobbs/lyric-lang#8026 (0.7.6 and earlier specialise it over the callee's result type and fail the same way).
+**A generic `@externInstance` binding over a task (for example `taskWaitMs[T](t: in T, ms: in Int): Bool` bound to `Task.Wait`) needs lyric 0.7.8 or later.** Earlier releases build it and then die at startup (`TypeLoadException: The signature is incorrect.` for a `Unit`-returning callee, `AccessViolationException` for a value-returning one), because a `spawn` handle was specialised over the callee's result type instead of the task (lyric-lang#8026). This project avoids the question: `src/docker_manager.l` binds the non-generic `RunTask` (a `Task.Run` handle) instead.
 
 **No fire-and-forget.** Tasks spawned in a `scope` block cannot outlive the scope.
 
