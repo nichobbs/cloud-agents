@@ -80,7 +80,7 @@ fi
 
 PORT=8097
 echo "==> starting server on 127.0.0.1:$PORT"
-( cd "$WORK/proj" && dotnet bin/CrossPkgLongCrash.dll > "$SERVER_LOG" 2>&1 ) &
+( cd "$WORK/proj" && exec dotnet bin/CrossPkgLongCrash.dll > "$SERVER_LOG" 2>&1 ) &
 SERVER_PID=$!
 
 # Wait for the server to report it's listening (or crash before it gets that

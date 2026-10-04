@@ -147,6 +147,16 @@ jobs:
         continue-on-error: true
         run: ./scripts/repro-web-request-crash.sh
 
+      # Diagnostic, not a gate: checks that a `spawn` handle can be passed to the
+      # generic @externInstance Task.Wait binding (taskWaitMs[T] in
+      # src/docker_manager.l). Lyric 0.7.6 and 0.7.7 specialised the generic over
+      # the handle's result type and failed at startup with TypeLoadException;
+      # fixed in 0.7.8 (nichobbs/lyric-lang#8026). CI resolves the latest
+      # compiler, so this flags a future regression of that fix.
+      - name: Check spawn handle works with the generic Task.Wait binding
+        continue-on-error: true
+        run: ./scripts/repro-generic-extern-instance-typeload.sh
+
       # Frontend: typecheck + production build (review #179). Node is pinned by
       # the "Set up Node" step above (#223), not taken from the runner image.
       - name: Build frontend
@@ -213,7 +223,8 @@ jobs:
             scripts/repro-web-bug.sh \
             scripts/repro-web-request-crash.sh \
             scripts/repro-docker-crash.sh \
-            scripts/repro-crosspkg-long-crash.sh; do
+            scripts/repro-crosspkg-long-crash.sh \
+            scripts/repro-generic-extern-instance-typeload.sh; do
             bash -n "$f" && echo "ok: $f"
           done
 
