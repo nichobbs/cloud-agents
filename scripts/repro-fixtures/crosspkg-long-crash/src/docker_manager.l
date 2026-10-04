@@ -97,10 +97,20 @@ func dockerClient(): DockerClient {
   }
 }
 
+// A background run on a BCL thread-pool thread, polled with a timeout. A
+// direct call to an `async func` awaits in place (docs/01 §7.1), so the call
+// is wrapped in a closure handed to `Task.Run`: the worker thread does the
+// waiting and the caller keeps a `Task` it can `Wait` on with a timeout.
+extern type RunTask = "System.Threading.Tasks.Task"
+
+@externStatic
+@externTarget("System.Threading.Tasks.Task.Run")
+func taskRun(work: in () -> Unit): RunTask = ()
+
 /// Returns true if the task completed within timeoutMs, false on timeout.
 @externInstance
 @externTarget("System.Threading.Tasks.Task.Wait")
-func taskWaitMs[T](t: in T, timeoutMs: in Int): Bool = false
+func taskWaitMs(t: in RunTask, timeoutMs: in Int): Bool = false
 
 /// Docker image name for the given harness.
 func imageForHarness(harness: in String): String {
@@ -115,19 +125,6 @@ func imageForHarness(harness: in String): String {
   }
   return "claude-code:base"
 }
-
-// Lyric.Docker 0.7+ takes a validated, opaque ContainerId rather than a raw
-// string; the frozen snapshot was ported to that API (everything else,
-// including the Long arithmetic under test, is unchanged).
-func dockerContainerId(raw: in String): Result[ContainerId, String] {
-  match ContainerId.tryFrom(raw) {
-    case Ok(id) -> Ok(value = id)
-    case Err(e) -> Err(error = e.message + ": '" + raw + "'")
-  }
-}
-
-val stopGraceSec: Int = 10
-val waitClientTimeoutSec: Int = 600
 
 // Network-policy resolution (networkModeForPolicy / proxyEnvForPolicy) lives in
 // the pure CloudAgents.NetworkPolicy package so it can be unit-tested — a test
@@ -179,7 +176,10 @@ pub async func createRunnerContainer(
     case Err(_) -> ()
   }
   match Std.Environment.getVar("NODE_EXTRA_CA_CERTS") {
-    case Ok(v) -> if v.length > 0 { envs = envs.append("NODE_EXTRA_CA_CERTS=/etc/host-ca.pem"); binds = binds.append(v + ":/etc/host-ca.pem:ro") }
+    case Ok(v) -> if v.length > 0 {
+      envs = envs.append("NODE_EXTRA_CA_CERTS=/etc/host-ca.pem")
+      binds = binds.append(v + ":/etc/host-ca.pem:ro")
+    }
     case Err(_) -> ()
   }
 
@@ -206,7 +206,10 @@ pub async func createRunnerContainer(
           envs = envs.append("CLOUD_AGENTS_CALLBACK_TIMEOUT_MS=" + timeoutOverride)
         }
       }
-      case Err(e) -> println("WARNING: failed to mint MCP-callback token for session " + sessionId + ": " + CloudAgents.Sqlite.dbErrorMessage(e))
+      case Err(e) -> println(
+        "WARNING: failed to mint MCP-callback token for session " + sessionId + ": " +
+          CloudAgents.Sqlite.dbErrorMessage(e)
+      )
     }
   }
 
@@ -255,7 +258,10 @@ pub async func createRunnerContainer(
         envs = envs.append("CLOUD_AGENTS_ENABLED_TOOLS=" + toolsEnv)
       }
     }
-    case Err(e) -> println("WARNING: failed to resolve enabled tools for session " + sessionId + ": " + CloudAgents.Sqlite.dbErrorMessage(e))
+    case Err(e) -> println(
+      "WARNING: failed to resolve enabled tools for session " + sessionId + ": " +
+        CloudAgents.Sqlite.dbErrorMessage(e)
+    )
   }
 
   // Inject the library items the profile grants (skills, subagents, MCP
@@ -272,7 +278,10 @@ pub async func createRunnerContainer(
         envs = envs.append("CLOUD_AGENTS_SKILLS_B64=" + base64Json(SkillList(skills = skills).toJson()))
       }
     }
-    case Err(e) -> println("WARNING: failed to load granted skills for session " + sessionId + ": " + CloudAgents.Sqlite.dbErrorMessage(e))
+    case Err(e) -> println(
+      "WARNING: failed to load granted skills for session " + sessionId + ": " +
+        CloudAgents.Sqlite.dbErrorMessage(e)
+    )
   }
   match CloudAgents.Repository.subagentsForProfile(userId, profileId) {
     case Ok(subagents) -> {
@@ -280,7 +289,10 @@ pub async func createRunnerContainer(
         envs = envs.append("CLOUD_AGENTS_SUBAGENTS_B64=" + base64Json(SubagentList(subagents = subagents).toJson()))
       }
     }
-    case Err(e) -> println("WARNING: failed to load granted subagents for session " + sessionId + ": " + CloudAgents.Sqlite.dbErrorMessage(e))
+    case Err(e) -> println(
+      "WARNING: failed to load granted subagents for session " + sessionId + ": " +
+        CloudAgents.Sqlite.dbErrorMessage(e)
+    )
   }
   match CloudAgents.Repository.mcpServersForProfile(userId, profileId) {
     case Ok(mcpServers) -> {
@@ -288,7 +300,10 @@ pub async func createRunnerContainer(
         envs = envs.append("CLOUD_AGENTS_MCP_SERVERS_B64=" + base64Json(McpServerList(mcpServers = mcpServers).toJson()))
       }
     }
-    case Err(e) -> println("WARNING: failed to load granted MCP servers for session " + sessionId + ": " + CloudAgents.Sqlite.dbErrorMessage(e))
+    case Err(e) -> println(
+      "WARNING: failed to load granted MCP servers for session " + sessionId + ": " +
+        CloudAgents.Sqlite.dbErrorMessage(e)
+    )
   }
 
   // Resolve the profile's network policy: sets the container NetworkMode and,
@@ -359,7 +374,7 @@ pub async func startRunnerContainer(client: in DockerClient, containerId: in Str
 /// Stop the running container.
 pub async func stopRunnerContainer(client: in DockerClient, containerId: in String): Result[Unit, String] {
   val cid = dockerContainerId(containerId)?
-  val stopRes = await stopContainer(client, cid, stopGraceSec)
+  val stopRes = await stopContainer(client, cid, 10)
   match stopRes {
     case Ok(_) -> Ok(value = ())
     case Err(e) -> {
@@ -404,10 +419,10 @@ pub async func waitForContainer(client: in DockerClient, containerId: in String)
   while not settled {
     attempts = attempts + 1
     val cid = match dockerContainerId(containerId) {
-      case Ok(c) -> c
-      case Err(m) -> return Err(error = m)
+      case Ok(id) -> id
+      case Err(msg) -> return Err(error = "Failed to wait for container: " + msg)
     }
-    val waitRes = await waitContainer(client, cid, waitClientTimeoutSec)
+    val waitRes = await waitContainer(client, cid, 1800)
     match waitRes {
       case Ok(_) -> {
         succeeded = true
@@ -436,6 +451,14 @@ pub async func waitForContainer(client: in DockerClient, containerId: in String)
   }
   println("WARNING: failed to wait for container " + containerId + ": " + lastMessage)
   return Err(error = "Failed to wait for container: " + lastMessage)
+}
+
+/// `raw` as a `ContainerId` (Lyric.Docker 0.7 API; ported into this frozen snapshot).
+func dockerContainerId(raw: in String): Result[ContainerId, String] {
+  match ContainerId.tryFrom(raw) {
+    case Ok(id) -> Ok(value = id)
+    case Err(e) -> Err(error = e.message + ": '" + raw + "'")
+  }
 }
 
 /// Delete the container.
@@ -485,7 +508,7 @@ pub async func getRunnerLogs(client: in DockerClient, containerId: in String): R
 /// surface as a hard error to the client.
 pub func partialContainerLogs(containerId: in String): String {
   val cell = ResultCell(isSuccess = false, output = "", error = "")
-  val t = spawn partialContainerLogsAsync(containerId, cell)
+  val t = taskRun({ -> partialContainerLogsAsync(containerId, cell) })
   // Cap the block at the client's ~1.5s poll interval, not 10s (#227): partial
   // log fetches are normally sub-second, and a longer block lets requests pile
   // up faster than they drain once Lyric.Web dispatches them concurrently. A
@@ -556,18 +579,22 @@ pub func streamSessionMessage(
   w: in Web.ResponseWriter,
 ): Result[String, String] {
   val cell = ResultCell(isSuccess = false, output = "", error = "")
-  val t = spawn runSessionMessageAsync(
-    repoUrl,
-    branch,
-    prompt,
-    sessionId,
-    harness,
-    model,
-    nativeSessionId,
-    profileId,
-    userId,
-    extraRepos,
-    cell
+  val t = taskRun(
+    { ->
+      runSessionMessageAsync(
+        repoUrl,
+        branch,
+        prompt,
+        sessionId,
+        harness,
+        model,
+        nativeSessionId,
+        profileId,
+        userId,
+        extraRepos,
+        cell
+      )
+    }
   )
   val startMs = CloudAgents.Repository.nowMillisLong()
   val runTimeoutMs = runWallClockCapMs
@@ -945,7 +972,7 @@ async func runSessionMessageAsync(
 /// Terminate and delete a session container synchronously.
 pub func terminateSessionContainer(containerId: in String): Result[Unit, String] {
   val cell = ResultCell(isSuccess = false, output = "", error = "")
-  val t = spawn terminateSessionContainerAsync(containerId, cell)
+  val t = taskRun({ -> terminateSessionContainerAsync(containerId, cell) })
   val completed = taskWaitMs(t, 60000) // 60-second cap for stop+delete
   if not completed {
     return Err(error = "Container terminate timed out after 60 seconds")

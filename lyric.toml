@@ -185,10 +185,10 @@ output_assembly = "CloudAgents.dll"
 "CloudAgents.PgStoreLedgerTests" = "tests/pgstore_ledger_tests.l"
 
 [nuget]
-"Lyric.Web"             = "0.7.0"
-"Lyric.Docker"          = "0.7.4"
-"Std.Logging"           = "0.7.4"
-# The store is Postgres (docs/phase11-postgres-tenancy.md). Lyric.Db 0.7.4 is
+"Lyric.Web"             = "0.7.6"
+"Lyric.Docker"          = "0.7.6"
+"Std.Logging"           = "0.7.6"
+# The store is Postgres (docs/phase11-postgres-tenancy.md). Lyric.Db 0.7.6 is
 # built against Npgsql 8.0.3.
-"Lyric.Db"              = "0.7.4"
+"Lyric.Db"              = "0.7.6"
 "Npgsql"                = "8.0.3"

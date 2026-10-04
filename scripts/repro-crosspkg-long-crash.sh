@@ -6,54 +6,33 @@
 # `System.Int64` against a garbage, non-object pointer — "this object has
 # an invalid CLASS field").
 #
-# ROOT CAUSE (as far as this was pinned down; not yet filed upstream):
-# `streamSessionMessage`'s run-timeout check did a `Long` (Int64)
-# subtract-and-compare once per poll tick — `nowMs - startMs > timeoutMs`
-# — either inline or via the cross-package `CloudAgents.DockerPolicy.
-# hasExceededRunTimeout(nowMs, startMs, timeoutMs)` call it originally used;
-# both crash identically. Five from-scratch standalone reconstructions
-# (matching local-variable count, real cross-package `Long` calls, real
-# package count/position, real `Lyric.Web`/`Lyric.Docker` NuGet deps) never
-# reproduced it — only using the ACTUAL, unmodified `docker_manager.l`/
-# `docker_policy.l` source did, which is why this script freezes a snapshot
-# of those two files (see `scripts/repro-fixtures/crosspkg-long-crash/
-# NOTE.md`) rather than generating equivalent code inline the way this
-# project's other `repro-*.sh` scripts do.
+# ROOT CAUSE (lyric-lang#8022, fixed in lyric v0.7.7): an untyped module-level
+# `val` initialised by a call or numeric conversion
+# (`val runWallClockCapMs = 1800000.toLong()`) had its type predicted as
+# `object` while its static field was `int64`; copying it into a local
+# (`val runTimeoutMs = runWallClockCapMs` in `streamSessionMessage`) stored a
+# raw `int64` into an `object` local, and the next use did `unbox.any Int64`.
+# The fixture is a snapshot of `docker_manager.l`/`docker_policy.l` from
+# before the workaround (see `scripts/repro-fixtures/crosspkg-long-crash/
+# NOTE.md`), ported to the Lyric.Docker 0.7 API and pinned to the same
+# `Lyric.Web`/`Lyric.Docker` versions as this project.
 #
-# The crash needs NO real Docker daemon, NO SQLite, NO auth, NO real
+# The crash needs NO real Docker daemon, NO database, NO auth, NO real
 # session — this script hits a bare streaming route that calls
 # `streamSessionMessage` directly with a made-up session id against an
 # unreachable Docker host, deterministically, in about two seconds.
 #
-# Workaround applied in `src/docker_manager.l` (see the comment at the
-# run-timeout check): approximate elapsed time with an Int accumulator of
-# each tick's `pollMs` instead of a `Long` epoch-millisecond subtraction —
-# so this script is expected to report "Reproduced" against the frozen
-# snapshot forever (that's the point: it's evidence of a real, still-open
-# upstream Lyric compiler bug), while the LIVE `src/docker_manager.l` no
-# longer hits it. If a future Lyric release fixes the underlying compiler
-# defect, this script will start reporting "did not reproduce" — bump the
-# snapshot's pinned NuGet versions (in
-# scripts/repro-fixtures/crosspkg-long-crash/lyric.toml) and re-run to
-# check, then consider reverting the workaround and retiring this script.
-#
-# 2026-10: the snapshot was ported to the Lyric.Docker 0.7 API (opaque
-# ContainerId, 3-arg stopContainer/waitContainer), its stub binds made valid,
-# its pins moved to 0.7.4, and its three run-task call sites changed to
-# `val t = spawn ...Async(...)`. Since lyric 0.7.6 a DIRECT call to an async func
-# awaits in place, so the old `val t = fooAsync(...)` form would hand the
-# generic taskWaitMs[T] binding a plain value instead of a task (a documented
-# language rule, not a compiler bug); `spawn` keeps the task, and a `spawn`
-# handle works with that generic binding from 0.7.8 on (nichobbs/lyric-lang#8026).
-# So the fixture now needs lyric >= 0.7.8 to build and run. The crash was
-# recorded on compiler 0.7.5 with the pre-0.7.6 call form; on 0.7.8 the run
-# reaches the Long subtract-and-compare each tick (checked with a marker print)
-# and the server survives.
+# Expected: on lyric < 0.7.7 this reports "Reproduced" (exit 1); on 0.7.7+ the
+# server survives AND the handler reports the Docker connection error, proving
+# the run-timeout loop (where the `Long` subtract-and-compare lives) actually
+# executed. A survived-but-never-got-there run is "unexpected" (exit 2), not a
+# pass. The script is kept as a regression check for the fix.
 #
 # Exit codes match this project's other repro-*.sh scripts: 0 = did not
 # reproduce (fixed upstream, or skipped because a tool/network was
 # unavailable), 1 = bug reproduced, 2 = couldn't run the check at all
-# (missing tool, unexpected build failure).
+# (missing tool, unexpected build failure, the handler never reached the
+# run loop).
 
 set -uo pipefail
 
@@ -136,19 +115,17 @@ echo "--- server output ---"
 cat "$SERVER_LOG"
 echo "---------------------"
 
-if grep -aq "signature is incorrect" "$SERVER_LOG" 2>/dev/null; then
-  echo "==> Inconclusive: the request failed with TypeLoadException 'The signature is incorrect' before reaching the run-timeout check. That means the run task handed to taskWaitMs[T] is not a task: either a direct async call (awaits in place on lyric >= 0.7.6; use spawn) or a compiler older than 0.7.8, which specialised the generic over a spawn handle's result type (nichobbs/lyric-lang#8026). It says nothing about the Long crash." >&2
-  exit 2
-elif grep -aq "AccessViolationException" "$SERVER_LOG" 2>/dev/null && ! { grep -aq "CastHelpers.Unbox" "$SERVER_LOG" && grep -aq "streamSessionMessage" "$SERVER_LOG"; }; then
-  echo "==> Inconclusive: an AccessViolationException, but not the Long crash's signature (CastHelpers.Unbox under streamSessionMessage); e.g. handing a non-task value to the generic taskWaitMs[T] binding can surface as one in CastHelpers.IsInstanceOfClass. See scripts/repro-generic-extern-instance-typeload.sh." >&2
-  exit 2
-elif grep -aq "AccessViolationException" "$SERVER_LOG" 2>/dev/null; then
+if grep -q "AccessViolationException" "$SERVER_LOG" 2>/dev/null && grep -q "streamSessionMessage" "$SERVER_LOG" 2>/dev/null; then
   echo "==> Reproduced: streamSessionMessage's Long-subtract-and-compare run-timeout check still crashes the process with AccessViolationException (nichobbs/cloud-agents, see docs/BUILD.md)"
   SERVER_PID=""
   exit 1
 elif kill -0 "$SERVER_PID" 2>/dev/null; then
-  echo "==> Did NOT reproduce: server survived the request — the Lyric compiler bug behind this crash appears fixed upstream. Consider bumping this fixture's pinned NuGet versions and, if it stays fixed, reverting the Int-accumulator workaround in src/docker_manager.l and retiring this script."
-  exit 0
+  if grep -q "container creation failed" "$SERVER_LOG" 2>/dev/null; then
+    echo "==> Did NOT reproduce: the server survived a request that ran streamSessionMessage's poll loop (lyric $(lyric --version 2>/dev/null | awk '{print $2}'))."
+    exit 0
+  fi
+  echo "==> Unexpected: the server survived but the request never reached the run loop — investigate separately" >&2
+  exit 2
 else
   echo "==> Unexpected: server exited without the AccessViolationException signature — investigate separately" >&2
   exit 2
