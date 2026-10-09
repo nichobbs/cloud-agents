@@ -265,7 +265,7 @@ test "a disabled seeded MCP server granted to a profile is excluded from contain
       assertTrue(false, "addProfile failed: " + CloudAgents.Db.dbErrorMessage(e))
       CloudAgents.Repository.Profile(
         id = "", userId = "", name = "", harness = "", networkPolicy = "", credentialMode = "", credentials = [],
-        skillIds = [], subagentIds = [], mcpServerIds = [], toolMode = "", tools = [], createdAt = "", updatedAt = ""
+        credentialMappings = [], skillIds = [], subagentIds = [], mcpServerIds = [], toolMode = "", tools = [], createdAt = "", updatedAt = ""
       )
     }
   }

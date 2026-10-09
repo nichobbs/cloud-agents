@@ -36,6 +36,7 @@ import CloudAgents.WorkspaceHandlers
 import CloudAgents.ObserverHandlers
 import CloudAgents.ObserverDocker
 import CloudAgents.Ledger.ObserverPolicy
+import CloudAgents.LlmGateway
 import extern System.Environment as Env
 import extern System.String as DotNetString
 
@@ -95,7 +96,19 @@ impl Web.Middleware for AuthMiddleware {
     if DotNetString.IsNullOrEmpty(apiToken) {
       apiToken = ""
     }
-    val authHeader = match Web.header(req, "Authorization") { case Some(h) -> h; case None -> "" }
+    var authHeader = match Web.header(req, "Authorization") { case Some(h) -> h; case None -> "" }
+    if authHeader.length == 0 {
+      authHeader = match Web.header(req, "x-api-key") {
+        case Some(k) -> if k.length > 0 { "Bearer " + k } else { "" }
+        case None -> ""
+      }
+    }
+    if authHeader.length == 0 {
+      authHeader = match Web.header(req, "X-Api-Key") {
+        case Some(k) -> if k.length > 0 { "Bearer " + k } else { "" }
+        case None -> ""
+      }
+    }
     match CloudAgents.OAuth.authenticateRequest(req.path, authHeader, apiToken) {
       case Allowed(userId) -> {
         // Tenant-owned rows reference the user's personal tenant, so it must
@@ -508,6 +521,57 @@ impl Web.StreamingHandler for SendMessageStreamHandler {
     }
     CloudAgents.Handlers.streamSendMessage(id, decoded.text, decoded.attachments, w)
     return ()
+  }
+}
+
+record LlmMessagesStreamHandler {
+}
+
+impl Web.StreamingHandler for LlmMessagesStreamHandler {
+  func streamHandle(req: in Web.Request, w: in Web.ResponseWriter): Unit {
+    CloudAgents.LlmGateway.messagesHandler("", req, w)
+    return ()
+  }
+}
+
+record LlmProfileMessagesStreamHandler {
+}
+
+impl Web.StreamingHandler for LlmProfileMessagesStreamHandler {
+  func streamHandle(req: in Web.Request, w: in Web.ResponseWriter): Unit {
+    val id = pparam(req, "id")
+    CloudAgents.LlmGateway.messagesHandler(id, req, w)
+    return ()
+  }
+}
+
+record LlmChatCompletionsStreamHandler {
+}
+
+impl Web.StreamingHandler for LlmChatCompletionsStreamHandler {
+  func streamHandle(req: in Web.Request, w: in Web.ResponseWriter): Unit {
+    CloudAgents.LlmGateway.chatCompletionsHandler("", req, w)
+    return ()
+  }
+}
+
+record LlmProfileChatCompletionsStreamHandler {
+}
+
+impl Web.StreamingHandler for LlmProfileChatCompletionsStreamHandler {
+  func streamHandle(req: in Web.Request, w: in Web.ResponseWriter): Unit {
+    val id = pparam(req, "id")
+    CloudAgents.LlmGateway.chatCompletionsHandler(id, req, w)
+    return ()
+  }
+}
+
+record RouteListModels {
+}
+
+impl Web.Handler for RouteListModels {
+  func handle(req: in Web.Request): Web.Response {
+    return CloudAgents.LlmGateway.listModelsHandler()
   }
 }
 
@@ -2469,6 +2533,12 @@ pub func main(): Unit {
   // Register health route
   router = Web.addGet(router, "/api/health", HealthHandler())
 
+  // LLM Gateway: Models discovery
+  router = Web.addGet(router, "/api/v1/models", RouteListModels())
+  router = Web.addGet(router, "/v1/models", RouteListModels())
+  router = Web.addGet(router, "/api/v1/profiles/{id}/models", RouteListModels())
+  router = Web.addGet(router, "/v1/profiles/{id}/models", RouteListModels())
+
   router = Web.withMiddleware(router, AuthMiddleware())
 
   // Streaming routes (Lyric.Web 0.4.33), served alongside the Router by
@@ -2478,6 +2548,22 @@ pub func main(): Unit {
   // identity-stamped exactly like every other route.
   var streaming = Web.emptyStreamingRoutes()
   streaming = Web.addStreamingPost(streaming, "/api/sessions/{id}/messages", SendMessageStreamHandler())
+
+  // LLM Gateway: Anthropic Messages API
+  streaming = Web.addStreamingPost(streaming, "/api/v1/messages", LlmMessagesStreamHandler())
+  streaming = Web.addStreamingPost(streaming, "/api/v1/profiles/{id}/messages", LlmProfileMessagesStreamHandler())
+  streaming = Web.addStreamingPost(streaming, "/api/v1/profiles/{id}/v1/messages", LlmProfileMessagesStreamHandler())
+  streaming = Web.addStreamingPost(streaming, "/v1/messages", LlmMessagesStreamHandler())
+  streaming = Web.addStreamingPost(streaming, "/v1/profiles/{id}/messages", LlmProfileMessagesStreamHandler())
+  streaming = Web.addStreamingPost(streaming, "/v1/profiles/{id}/v1/messages", LlmProfileMessagesStreamHandler())
+
+  // LLM Gateway: OpenAI Chat Completions API
+  streaming = Web.addStreamingPost(streaming, "/api/v1/chat/completions", LlmChatCompletionsStreamHandler())
+  streaming = Web.addStreamingPost(streaming, "/api/v1/profiles/{id}/chat/completions", LlmProfileChatCompletionsStreamHandler())
+  streaming = Web.addStreamingPost(streaming, "/api/v1/profiles/{id}/v1/chat/completions", LlmProfileChatCompletionsStreamHandler())
+  streaming = Web.addStreamingPost(streaming, "/v1/chat/completions", LlmChatCompletionsStreamHandler())
+  streaming = Web.addStreamingPost(streaming, "/v1/profiles/{id}/chat/completions", LlmProfileChatCompletionsStreamHandler())
+  streaming = Web.addStreamingPost(streaming, "/v1/profiles/{id}/v1/chat/completions", LlmProfileChatCompletionsStreamHandler())
 
   // Parse command line arguments for --port or -p
   val cmdLine = Env.get_CommandLine()

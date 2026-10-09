@@ -160,22 +160,22 @@ test "Profile handlers validate enums, grants, and reject duplicates" {
   }
   val me = freshUser("prof-profile-handlers")
   // Bad network policy -> 400.
-  match addProfileHandler(SaveProfileRequest(name = "p", harness = "", networkPolicy = "open", credentialMode = "all", credentials = [], skillIds = [], subagentIds = [], mcpServerIds = [], toolMode = "all", tools = [])) {
+  match addProfileHandler(SaveProfileRequest(name = "p", harness = "", networkPolicy = "open", credentialMode = "all", credentials = [], credentialMappings = [], skillIds = [], subagentIds = [], mcpServerIds = [], toolMode = "all", tools = [])) {
     case Ok(_) -> assertTrue(false, "bad policy should be rejected")
     case Err(err) -> assertEqualInt(err.status, 400, "bad policy -> 400")
   }
   // Invalid grant name (#237) -> 400.
-  match addProfileHandler(SaveProfileRequest(name = "p2", harness = "", networkPolicy = "none", credentialMode = "selected", credentials = ["bad name"], skillIds = [], subagentIds = [], mcpServerIds = [], toolMode = "all", tools = [])) {
+  match addProfileHandler(SaveProfileRequest(name = "p2", harness = "", networkPolicy = "none", credentialMode = "selected", credentials = ["bad name"], credentialMappings = [], skillIds = [], subagentIds = [], mcpServerIds = [], toolMode = "all", tools = [])) {
     case Ok(_) -> assertTrue(false, "bad grant name should be rejected")
     case Err(err) -> assertEqualInt(err.status, 400, "bad grant -> 400")
   }
   // Bad tool mode -> 400.
-  match addProfileHandler(SaveProfileRequest(name = "p3", harness = "", networkPolicy = "none", credentialMode = "all", credentials = [], skillIds = [], subagentIds = [], mcpServerIds = [], toolMode = "some", tools = [])) {
+  match addProfileHandler(SaveProfileRequest(name = "p3", harness = "", networkPolicy = "none", credentialMode = "all", credentials = [], credentialMappings = [], skillIds = [], subagentIds = [], mcpServerIds = [], toolMode = "some", tools = [])) {
     case Ok(_) -> assertTrue(false, "bad tool mode should be rejected")
     case Err(err) -> assertEqualInt(err.status, 400, "bad tool mode -> 400")
   }
   // Unknown tool name (docs/phase7-autonomy.md §7) -> 400.
-  match addProfileHandler(SaveProfileRequest(name = "p4", harness = "", networkPolicy = "none", credentialMode = "all", credentials = [], skillIds = [], subagentIds = [], mcpServerIds = [], toolMode = "selected", tools = ["not_a_real_tool"])) {
+  match addProfileHandler(SaveProfileRequest(name = "p4", harness = "", networkPolicy = "none", credentialMode = "all", credentials = [], credentialMappings = [], skillIds = [], subagentIds = [], mcpServerIds = [], toolMode = "selected", tools = ["not_a_real_tool"])) {
     case Ok(_) -> assertTrue(false, "unknown tool name should be rejected")
     case Err(err) -> assertEqualInt(err.status, 400, "unknown tool name -> 400")
   }
@@ -183,22 +183,22 @@ test "Profile handlers validate enums, grants, and reject duplicates" {
   // to 'all' (#616): the opposite of credentialMode's fail-closed behavior
   // for the analogous zero-grants case would otherwise surprise an operator
   // deselecting every tool expecting a locked-down profile.
-  match addProfileHandler(SaveProfileRequest(name = "p5", harness = "", networkPolicy = "none", credentialMode = "all", credentials = [], skillIds = [], subagentIds = [], mcpServerIds = [], toolMode = "selected", tools = [])) {
+  match addProfileHandler(SaveProfileRequest(name = "p5", harness = "", networkPolicy = "none", credentialMode = "all", credentials = [], credentialMappings = [], skillIds = [], subagentIds = [], mcpServerIds = [], toolMode = "selected", tools = [])) {
     case Ok(_) -> assertTrue(false, "'selected' toolMode with zero tools should be rejected")
     case Err(err) -> assertEqualInt(err.status, 400, "selected + zero tools -> 400")
   }
   // Happy path.
-  match addProfileHandler(SaveProfileRequest(name = "prod", harness = "", networkPolicy = "none", credentialMode = "all", credentials = [], skillIds = [], subagentIds = [], mcpServerIds = [], toolMode = "all", tools = [])) {
+  match addProfileHandler(SaveProfileRequest(name = "prod", harness = "", networkPolicy = "none", credentialMode = "all", credentials = [], credentialMappings = [], skillIds = [], subagentIds = [], mcpServerIds = [], toolMode = "all", tools = [])) {
     case Ok(p) -> assertEqual(p.name, "prod", "profile created")
     case Err(_) -> assertTrue(false, "valid profile should create")
   }
   // Duplicate name (#236) -> 400, not a 500 from the UNIQUE constraint.
-  match addProfileHandler(SaveProfileRequest(name = "prod", harness = "", networkPolicy = "full", credentialMode = "all", credentials = [], skillIds = [], subagentIds = [], mcpServerIds = [], toolMode = "all", tools = [])) {
+  match addProfileHandler(SaveProfileRequest(name = "prod", harness = "", networkPolicy = "full", credentialMode = "all", credentials = [], credentialMappings = [], skillIds = [], subagentIds = [], mcpServerIds = [], toolMode = "all", tools = [])) {
     case Ok(_) -> assertTrue(false, "duplicate name should be rejected")
     case Err(err) -> assertEqualInt(err.status, 400, "duplicate name -> 400")
   }
   // Unknown ids are 404s.
-  match updateProfileHandler("nope", SaveProfileRequest(name = "x", harness = "", networkPolicy = "full", credentialMode = "all", credentials = [], skillIds = [], subagentIds = [], mcpServerIds = [], toolMode = "all", tools = [])) {
+  match updateProfileHandler("nope", SaveProfileRequest(name = "x", harness = "", networkPolicy = "full", credentialMode = "all", credentials = [], credentialMappings = [], skillIds = [], subagentIds = [], mcpServerIds = [], toolMode = "all", tools = [])) {
     case Ok(_) -> assertTrue(false, "unknown update should 404")
     case Err(err) -> assertEqualInt(err.status, 404, "unknown update -> 404")
   }
@@ -217,13 +217,13 @@ test "an absent/empty toolMode (a not-yet-updated frontend) defaults to 'all', n
   // never populated. Must succeed, not 400 — every existing profile
   // create/update from the current UI would otherwise break the moment
   // this ships.
-  val created = match addProfileHandler(SaveProfileRequest(name = "legacy-client", harness = "", networkPolicy = "none", credentialMode = "all", credentials = [], skillIds = [], subagentIds = [], mcpServerIds = [], toolMode = "", tools = [])) {
+  val created = match addProfileHandler(SaveProfileRequest(name = "legacy-client", harness = "", networkPolicy = "none", credentialMode = "all", credentials = [], credentialMappings = [], skillIds = [], subagentIds = [], mcpServerIds = [], toolMode = "", tools = [])) {
     case Ok(p) -> p
     case Err(err) -> panic("an absent toolMode must not be rejected: " + toString(err.status))
   }
   assertEqual(created.toolMode, "all", "empty toolMode is normalized and stored as 'all'")
 
-  val updated = match updateProfileHandler(created.id, SaveProfileRequest(name = "legacy-client", harness = "", networkPolicy = "full", credentialMode = "all", credentials = [], skillIds = [], subagentIds = [], mcpServerIds = [], toolMode = "", tools = [])) {
+  val updated = match updateProfileHandler(created.id, SaveProfileRequest(name = "legacy-client", harness = "", networkPolicy = "full", credentialMode = "all", credentials = [], credentialMappings = [], skillIds = [], subagentIds = [], mcpServerIds = [], toolMode = "", tools = [])) {
     case Ok(p) -> p
     case Err(err) -> panic("an absent toolMode on update must not be rejected: " + toString(err.status))
   }
@@ -253,7 +253,7 @@ test "SaveProfileRequest.fromJson decodes a body that omits toolMode/tools entir
 
   // A body that already sends both fields must decode byte-identically to
   // patching nothing (no double-injected keys, no corrupted trailing JSON).
-  val alreadyPresent = "{\"name\":\"x\",\"harness\":\"\",\"networkPolicy\":\"none\",\"credentialMode\":\"all\",\"credentials\":[],\"skillIds\":[],\"subagentIds\":[],\"mcpServerIds\":[],\"toolMode\":\"selected\",\"tools\":[\"remember\"]}"
+  val alreadyPresent = "{\"name\":\"x\",\"harness\":\"\",\"networkPolicy\":\"none\",\"credentialMode\":\"all\",\"credentials\":[],\"credentialMappings\":[],\"skillIds\":[],\"subagentIds\":[],\"mcpServerIds\":[],\"toolMode\":\"selected\",\"tools\":[\"remember\"]}"
   assertEqual(
     patchMissingToolFields(alreadyPresent),
     alreadyPresent,
@@ -272,7 +272,7 @@ test "duplicate tool names in 'selected' mode are rejected (#615)" {
     return
   }
   val me = freshUser("prof-profile-toolmode-dup")
-  match addProfileHandler(SaveProfileRequest(name = "dup-tools", harness = "", networkPolicy = "none", credentialMode = "all", credentials = [], skillIds = [], subagentIds = [], mcpServerIds = [], toolMode = "selected", tools = ["remember", "recall", "remember"])) {
+  match addProfileHandler(SaveProfileRequest(name = "dup-tools", harness = "", networkPolicy = "none", credentialMode = "all", credentials = [], credentialMappings = [], skillIds = [], subagentIds = [], mcpServerIds = [], toolMode = "selected", tools = ["remember", "recall", "remember"])) {
     case Ok(_) -> assertTrue(false, "a repeated tool name must be rejected")
     case Err(err) -> assertEqualInt(err.status, 400, "duplicate tool name -> 400")
   }
@@ -375,7 +375,7 @@ test "Profile Resp helpers emit the raw profile JSON, not a double-encoded JSON 
     return
   }
   val me = freshUser("prof-profile-jsonresp")
-  val p = match addProfileHandler(SaveProfileRequest(name = "json-check", harness = "", networkPolicy = "none", credentialMode = "all", credentials = [], skillIds = [], subagentIds = [], mcpServerIds = [], toolMode = "all", tools = [])) {
+  val p = match addProfileHandler(SaveProfileRequest(name = "json-check", harness = "", networkPolicy = "none", credentialMode = "all", credentials = [], credentialMappings = [], skillIds = [], subagentIds = [], mcpServerIds = [], toolMode = "all", tools = [])) {
     case Ok(v) -> v
     case Err(_) -> panic("setup: profile create failed")
   }
@@ -626,4 +626,108 @@ test "Network policy resolves and fails closed for unknown profiles" {
     case Ok(p) -> assertEqual(p, "none", "unknown profile -> isolated (fail closed)")
     case Err(e) -> assertTrue(false, "policy read failed: " + CloudAgents.Db.dbErrorMessage(e))
   }
+}
+
+test "Profile credential mappings validate and map credentials in decryptedCredentialsForProfile" {
+  if not live() {
+    return
+  }
+  val me = freshUser("prof-profile-mappings")
+  val userId = me
+
+  // Validation: invalid target name -> 400
+  match addProfileHandler(SaveProfileRequest(
+    name = "bad-mapping",
+    harness = "claude",
+    networkPolicy = "full",
+    credentialMode = "selected",
+    credentials = [],
+    credentialMappings = [CloudAgents.Repository.CredentialMapping(source = "SRC", target = "bad name")],
+    skillIds = [],
+    subagentIds = [],
+    mcpServerIds = [],
+    toolMode = "all",
+    tools = []
+  )) {
+    case Ok(_) -> assertTrue(false, "bad mapping target name should be rejected")
+    case Err(err) -> assertEqualInt(err.status, 400, "bad target -> 400")
+  }
+
+  // Validation: duplicate target name -> 400
+  match addProfileHandler(SaveProfileRequest(
+    name = "dup-mapping",
+    harness = "claude",
+    networkPolicy = "full",
+    credentialMode = "selected",
+    credentials = [],
+    credentialMappings = [
+      CloudAgents.Repository.CredentialMapping(source = "SRC1", target = "TARGET"),
+      CloudAgents.Repository.CredentialMapping(source = "SRC2", target = "TARGET")
+    ],
+    skillIds = [],
+    subagentIds = [],
+    mcpServerIds = [],
+    toolMode = "all",
+    tools = []
+  )) {
+    case Ok(_) -> assertTrue(false, "duplicate mapping target should be rejected")
+    case Err(err) -> assertEqualInt(err.status, 400, "dup target -> 400")
+  }
+
+  // Set up credentials in vault
+  mustPutCredential(userId, "WORK_CLAUDE", "work-secret")
+  mustPutCredential(userId, "PERSONAL_CLAUDE", "personal-secret")
+
+  // Create profile with mapping WORK_CLAUDE -> CLAUDE_CREDENTIALS_JSON
+  val created = mustProfile(
+    addProfileWithMappings(
+      CloudAgents.Pg.personalScope(userId),
+      "work-profile",
+      "claude",
+      "full",
+      "selected",
+      [],
+      [CloudAgents.Repository.CredentialMapping(source = "WORK_CLAUDE", target = "CLAUDE_CREDENTIALS_JSON")],
+      [],
+      [],
+      [],
+      "all",
+      []
+    )
+  )
+
+  assertEqualInt(created.credentialMappings.length.toInt(), 1, "mapping stored")
+  assertEqual(created.credentialMappings[0].source, "WORK_CLAUDE", "source name matches")
+  assertEqual(created.credentialMappings[0].target, "CLAUDE_CREDENTIALS_JSON", "target name matches")
+
+  // Test decryptedCredentialsForProfile
+  val injected = mustProfileCreds(decryptedCredentialsForProfile(CloudAgents.Pg.personalScope(userId), created.id))
+  assertEqualInt(injected.length.toInt(), 1, "one mapped credential injected")
+  assertEqual(injected[0].name, "CLAUDE_CREDENTIALS_JSON", "target name is CLAUDE_CREDENTIALS_JSON")
+  assertEqual(injected[0].value, "work-secret", "mapped value matches WORK_CLAUDE")
+
+  // Update profile to point to PERSONAL_CLAUDE
+  val updatedRows = updateProfileWithMappings(
+    created.id,
+    CloudAgents.Pg.personalScope(userId),
+    "work-profile",
+    "claude",
+    "full",
+    "selected",
+    [],
+    [CloudAgents.Repository.CredentialMapping(source = "PERSONAL_CLAUDE", target = "CLAUDE_CREDENTIALS_JSON")],
+    [],
+    [],
+    [],
+    "all",
+    []
+  )
+  match updatedRows {
+    case Ok(n) -> assertEqualInt(n, 1, "1 row updated")
+    case Err(e) -> assertTrue(false, "update failed: " + CloudAgents.Db.dbErrorMessage(e))
+  }
+
+  val updatedInjected = mustProfileCreds(decryptedCredentialsForProfile(CloudAgents.Pg.personalScope(userId), created.id))
+  assertEqualInt(updatedInjected.length.toInt(), 1, "one mapped credential injected")
+  assertEqual(updatedInjected[0].value, "personal-secret", "mapped value now matches PERSONAL_CLAUDE")
 }

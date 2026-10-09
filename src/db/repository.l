@@ -577,6 +577,12 @@ pub func deleteGitHubOAuthRefresh(sc: in CloudAgents.Pg.UserScope): Result[Unit,
 // gets, and which credentials are injected (least privilege). See
 // CloudAgents.Db profiles DDL for the field vocabulary. The `credentials` slice
 // on the record is the set of granted credential names (empty unless
+@generate(Json)
+pub record CredentialMapping {
+  pub source: String
+  pub target: String
+}
+
 // credentialMode == "selected").
 @generate(Json)
 pub record Profile {
@@ -587,6 +593,7 @@ pub record Profile {
   pub networkPolicy: String
   pub credentialMode: String
   pub credentials: slice[String]
+  pub credentialMappings: slice[CredentialMapping]
   pub skillIds: slice[String]
   pub subagentIds: slice[String]
   pub mcpServerIds: slice[String]
@@ -896,13 +903,44 @@ pub func addProfile(
   toolMode: in String,
   tools: in slice[String],
 ): Result[Profile, CloudAgents.Db.DbError] {
-  return CloudAgents.PgStore.Library.addProfile(
+  return addProfileWithMappings(
     sc,
     name,
     harness,
     networkPolicy,
     credentialMode,
     credentials,
+    [],
+    skillIds,
+    subagentIds,
+    mcpServerIds,
+    toolMode,
+    tools
+  )
+}
+
+pub func addProfileWithMappings(
+  sc: in CloudAgents.Pg.TenantScope,
+  name: in String,
+  harness: in String,
+  networkPolicy: in String,
+  credentialMode: in String,
+  credentials: in slice[String],
+  credentialMappings: in slice[CredentialMapping],
+  skillIds: in slice[String],
+  subagentIds: in slice[String],
+  mcpServerIds: in slice[String],
+  toolMode: in String,
+  tools: in slice[String],
+): Result[Profile, CloudAgents.Db.DbError] {
+  return CloudAgents.PgStore.Library.addProfileWithMappings(
+    sc,
+    name,
+    harness,
+    networkPolicy,
+    credentialMode,
+    credentials,
+    credentialMappings,
     skillIds,
     subagentIds,
     mcpServerIds,
@@ -948,7 +986,7 @@ pub func updateProfile(
   toolMode: in String,
   tools: in slice[String],
 ): Result[Int, CloudAgents.Db.DbError] {
-  return CloudAgents.PgStore.Library.updateProfile(
+  return updateProfileWithMappings(
     id,
     sc,
     name,
@@ -956,6 +994,39 @@ pub func updateProfile(
     networkPolicy,
     credentialMode,
     credentials,
+    [],
+    skillIds,
+    subagentIds,
+    mcpServerIds,
+    toolMode,
+    tools
+  )
+}
+
+pub func updateProfileWithMappings(
+  id: in String,
+  sc: in CloudAgents.Pg.TenantScope,
+  name: in String,
+  harness: in String,
+  networkPolicy: in String,
+  credentialMode: in String,
+  credentials: in slice[String],
+  credentialMappings: in slice[CredentialMapping],
+  skillIds: in slice[String],
+  subagentIds: in slice[String],
+  mcpServerIds: in slice[String],
+  toolMode: in String,
+  tools: in slice[String],
+): Result[Int, CloudAgents.Db.DbError] {
+  return CloudAgents.PgStore.Library.updateProfileWithMappings(
+    id,
+    sc,
+    name,
+    harness,
+    networkPolicy,
+    credentialMode,
+    credentials,
+    credentialMappings,
     skillIds,
     subagentIds,
     mcpServerIds,

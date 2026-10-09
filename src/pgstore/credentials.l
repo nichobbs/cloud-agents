@@ -325,11 +325,33 @@ pub func decryptedCredentialsForProfile(
       return Ok(value = empty)
     }
     case Some(p) -> {
-      if p.credentialMode != "selected" {
-        return decryptedCredentials(user)
-      }
       val rows = match encryptedRows(user) { case Ok(r) -> r; case Err(e) -> return Err(error = dbErr(e)) }
-      return Ok(value = decryptRows(rows, false, p.credentials))
+      val baseCreds = if p.credentialMode == "selected" then decryptRows(rows, false, p.credentials) else decryptRows(rows, true, [])
+      if p.credentialMappings.length == 0 {
+        return Ok(value = baseCreds)
+      }
+      val allUserCreds = decryptRows(rows, true, [])
+      var mapped: slice[CloudAgents.Repository.CredentialValue] = []
+      for m in p.credentialMappings {
+        for c in allUserCreds {
+          if c.name == m.source {
+            mapped = mapped.append(CloudAgents.Repository.CredentialValue(name = m.target, value = c.value))
+          }
+        }
+      }
+      var result = mapped
+      for b in baseCreds {
+        var overridden = false
+        for m in p.credentialMappings {
+          if m.target == b.name {
+            overridden = true
+          }
+        }
+        if not overridden {
+          result = result.append(b)
+        }
+      }
+      return Ok(value = result)
     }
   }
 }

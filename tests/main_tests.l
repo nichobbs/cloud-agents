@@ -204,6 +204,7 @@ test "credential/profile Resp helpers map Ok to 200 and Err to the error's own s
     networkPolicy = "full",
     credentialMode = "all",
     credentials = noProfileCreds,
+    credentialMappings = [],
     skillIds = noProfileGrants,
     subagentIds = noProfileGrants,
     mcpServerIds = noProfileGrants,

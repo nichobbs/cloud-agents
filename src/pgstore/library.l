@@ -112,6 +112,45 @@ func replaceAllGrants(
   return Ok(value = ())
 }
 
+func mappingValues(
+  u: in PgUnit, profileId: in String, userId: in String
+): Result[slice[CloudAgents.Repository.CredentialMapping], CloudAgents.Db.DbError] {
+  val rows = CloudAgents.PgStore.q(
+    u,
+    "SELECT source_name, target_name FROM profile_credential_mappings WHERE profile_id = @p0 AND user_id = @p1 ORDER BY target_name COLLATE \"C\"",
+    [profileId, userId]
+  )?
+  var acc: slice[CloudAgents.Repository.CredentialMapping] = []
+  for r in rows {
+    acc = acc.append(
+      CloudAgents.Repository.CredentialMapping(
+        source = col(r, "source_name"),
+        target = col(r, "target_name")
+      )
+    )
+  }
+  return Ok(value = acc)
+}
+
+func replaceMappings(
+  u: in PgUnit,
+  profileId: in String,
+  userId: in String,
+  mappings: in slice[CloudAgents.Repository.CredentialMapping],
+): Result[Unit, CloudAgents.Db.DbError] {
+  CloudAgents.PgStore.ex(
+    u, "DELETE FROM profile_credential_mappings WHERE profile_id = @p0 AND user_id = @p1", [profileId, userId]
+  )?
+  for m in mappings {
+    CloudAgents.PgStore.ex(
+      u,
+      "INSERT INTO profile_credential_mappings (id, profile_id, user_id, source_name, target_name) VALUES (@p0, @p1, @p2, @p3, @p4) ON CONFLICT (tenant_id, profile_id, target_name) DO NOTHING",
+      [newId(), profileId, userId, m.source, m.target]
+    )?
+  }
+  return Ok(value = ())
+}
+
 func profileCols(): String {
   return "id, user_id, name, harness, network_policy, credential_mode, tool_mode, " + stamps("")
 }
@@ -125,6 +164,7 @@ func toProfile(u: in PgUnit, r: in DbRow): Result[CloudAgents.Repository.Profile
   val subagents = grantValues(u, "profile_subagents", pid, uid)?
   val servers = grantValues(u, "profile_mcp_servers", pid, uid)?
   val tools = grantValues(u, "profile_tools", pid, uid)?
+  val mappings = mappingValues(u, pid, uid)?
   return Ok(
     value = CloudAgents.Repository.Profile(
       id = pid,
@@ -134,6 +174,7 @@ func toProfile(u: in PgUnit, r: in DbRow): Result[CloudAgents.Repository.Profile
       networkPolicy = col(r, "network_policy"),
       credentialMode = col(r, "credential_mode"),
       credentials = creds,
+      credentialMappings = mappings,
       skillIds = skills,
       subagentIds = subagents,
       mcpServerIds = servers,
@@ -183,6 +224,36 @@ pub func addProfile(
   toolMode: in String,
   tools: in slice[String],
 ): Result[CloudAgents.Repository.Profile, CloudAgents.Db.DbError] {
+  return addProfileWithMappings(
+    sc,
+    name,
+    harness,
+    networkPolicy,
+    credentialMode,
+    credentials,
+    [],
+    skillIds,
+    subagentIds,
+    mcpServerIds,
+    toolMode,
+    tools
+  )
+}
+
+pub func addProfileWithMappings(
+  sc: in CloudAgents.Pg.TenantScope,
+  name: in String,
+  harness: in String,
+  networkPolicy: in String,
+  credentialMode: in String,
+  credentials: in slice[String],
+  credentialMappings: in slice[CloudAgents.Repository.CredentialMapping],
+  skillIds: in slice[String],
+  subagentIds: in slice[String],
+  mcpServerIds: in slice[String],
+  toolMode: in String,
+  tools: in slice[String],
+): Result[CloudAgents.Repository.Profile, CloudAgents.Db.DbError] {
   val id = newId()
   val ts = CloudAgents.Repository.nowMillis()
   val u = CloudAgents.PgStore.open(sc)?
@@ -191,6 +262,7 @@ pub func addProfile(
   }
   CloudAgents.PgStore.ex(u, "INSERT INTO profiles (id, user_id, name, harness, network_policy, credential_mode, tool_mode, created_at, updated_at) " + "VALUES (@p0, @p1, @p2, @p3, @p4, @p5, @p6, " + CloudAgents.Pg.msIn(7) + ", " + CloudAgents.Pg.msIn(7) + ")", [id, sc.userId, name, harness, networkPolicy, credentialMode, toolMode, ts])?
   replaceAllGrants(u, id, sc.userId, credentials, skillIds, subagentIds, mcpServerIds, tools)?
+  replaceMappings(u, id, sc.userId, credentialMappings)?
   CloudAgents.PgStore.commit(u)?
   return Ok(
     value = CloudAgents.Repository.Profile(
@@ -201,6 +273,7 @@ pub func addProfile(
       networkPolicy = networkPolicy,
       credentialMode = credentialMode,
       credentials = credentials,
+      credentialMappings = credentialMappings,
       skillIds = skillIds,
       subagentIds = subagentIds,
       mcpServerIds = mcpServerIds,
@@ -261,6 +334,38 @@ pub func updateProfile(
   toolMode: in String,
   tools: in slice[String],
 ): Result[Int, CloudAgents.Db.DbError] {
+  return updateProfileWithMappings(
+    id,
+    sc,
+    name,
+    harness,
+    networkPolicy,
+    credentialMode,
+    credentials,
+    [],
+    skillIds,
+    subagentIds,
+    mcpServerIds,
+    toolMode,
+    tools
+  )
+}
+
+pub func updateProfileWithMappings(
+  id: in String,
+  sc: in CloudAgents.Pg.TenantScope,
+  name: in String,
+  harness: in String,
+  networkPolicy: in String,
+  credentialMode: in String,
+  credentials: in slice[String],
+  credentialMappings: in slice[CloudAgents.Repository.CredentialMapping],
+  skillIds: in slice[String],
+  subagentIds: in slice[String],
+  mcpServerIds: in slice[String],
+  toolMode: in String,
+  tools: in slice[String],
+): Result[Int, CloudAgents.Db.DbError] {
   val u = CloudAgents.PgStore.open(sc)?
   defer {
     CloudAgents.PgStore.release(u)
@@ -268,6 +373,7 @@ pub func updateProfile(
   val n = CloudAgents.PgStore.ex(u, "UPDATE profiles SET name = @p2, harness = @p3, network_policy = @p4, credential_mode = @p5, tool_mode = @p6, " + "updated_at = " + CloudAgents.Pg.msIn(7) + " WHERE id = @p0 AND user_id = @p1", [id, sc.userId, name, harness, networkPolicy, credentialMode, toolMode, CloudAgents.Repository.nowMillis()])?
   if n > 0 {
     replaceAllGrants(u, id, sc.userId, credentials, skillIds, subagentIds, mcpServerIds, tools)?
+    replaceMappings(u, id, sc.userId, credentialMappings)?
   }
   CloudAgents.PgStore.commit(u)?
   return Ok(value = n)
@@ -283,6 +389,7 @@ pub func deleteProfile(id: in String, sc: in CloudAgents.Pg.TenantScope): Result
     for t in grantTables() {
       CloudAgents.PgStore.ex(u, "DELETE FROM " + t + " WHERE profile_id = @p0 AND user_id = @p1", [id, sc.userId])?
     }
+    CloudAgents.PgStore.ex(u, "DELETE FROM profile_credential_mappings WHERE profile_id = @p0 AND user_id = @p1", [id, sc.userId])?
   }
   CloudAgents.PgStore.commit(u)?
   return Ok(value = n)

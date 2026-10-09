@@ -41,6 +41,7 @@ pub record SaveProfileRequest {
   pub networkPolicy: String
   pub credentialMode: String
   pub credentials: slice[String]
+  pub credentialMappings: slice[CredentialMapping]
   pub skillIds: slice[String]
   pub subagentIds: slice[String]
   pub mcpServerIds: slice[String]
@@ -70,22 +71,16 @@ func lastIndexOfChar(s: in String, target: in String): Int {
 /// with "missing field '<name>'" before SaveProfileRequest.fromJson ever
 /// returns, so validateSaveProfile's own "" == default tolerance
 /// (isValidToolMode, normalizedToolMode) never even runs). Since `toolMode`/
-/// `tools` are NEW fields on an existing request shape (#614), a
-/// not-yet-updated frontend's save-profile request omits them entirely —
+/// `tools` and `credentialMappings` are NEW fields on an existing request shape,
+/// a not-yet-updated frontend's save-profile request omits them entirely —
 /// every such request would 400 at the decode boundary the moment this
 /// ships, regardless of the validation layer's own tolerance.
 ///
-/// Patches the two fields' JSON-default values ("" / []) into the raw body
-/// BEFORE decoding, but only for whichever of the two keys is actually
+/// Patches the missing fields' JSON-default values ("" / []) into the raw body
+/// BEFORE decoding, but only for whichever of the keys is actually
 /// absent (a body that already sends them is passed through byte-identical).
-/// Uses Std.Json's real parser to detect absence (not a blind string
-/// search, which could false-positive on a nested object/array that
-/// happens to contain the substring `"toolMode"` as a value) and splices
-/// the additions in right before the body's own closing '}' — safe because
-/// a string that already parsed successfully as one JSON object always has
-/// its own outermost closing brace as the last '}' character in the text
-/// (no valid JSON document has any unescaped '}' after the true end of its
-/// root object, whitespace aside).
+/// Uses Std.Json's real parser to detect absence and splices
+/// the additions in right before the body's own closing '}'.
 pub func patchMissingToolFields(body: in String): String {
   val doc = match Std.Json.tryParseJson(body) { case Ok(d) -> d; case Err(_) -> return body }
   defer {
@@ -102,6 +97,12 @@ pub func patchMissingToolFields(body: in String): String {
   match Std.Json.tryGetProperty(root, "tools") {
     case None -> {
       toAdd = toAdd + ",\"tools\":[]"
+    }
+    case Some(_) -> ()
+  }
+  match Std.Json.tryGetProperty(root, "credentialMappings") {
+    case None -> {
+      toAdd = toAdd + ",\"credentialMappings\":[]"
     }
     case Some(_) -> ()
   }
@@ -305,6 +306,24 @@ func validateSaveProfile(req: in SaveProfileRequest): Option[Web.ApiError] {
       ti = ti + 1
     }
   }
+  var mi = 0
+  while mi < req.credentialMappings.length {
+    val m = req.credentialMappings[mi]
+    if not isValidGrantName(m.source) {
+      return Some(value = Web.badRequest("mapping source names must be valid environment variable names"))
+    }
+    if not isValidGrantName(m.target) {
+      return Some(value = Web.badRequest("mapping target names must be valid environment variable names"))
+    }
+    var mj = 0
+    while mj < mi {
+      if req.credentialMappings[mj].target == m.target {
+        return Some(value = Web.badRequest("mapping target names must not repeat"))
+      }
+      mj = mj + 1
+    }
+    mi = mi + 1
+  }
   return None
 }
 
@@ -356,13 +375,14 @@ pub func addProfileHandler(req: in SaveProfileRequest): Result[Profile, Web.ApiE
     case Ok(None) -> ()
     case Err(e) -> return Err(dbError(e))
   }
-  match addProfile(
+  match addProfileWithMappings(
     sc,
     name,
     req.harness,
     req.networkPolicy,
     req.credentialMode,
     grantsFor(req),
+    req.credentialMappings,
     req.skillIds,
     req.subagentIds,
     req.mcpServerIds,
@@ -399,7 +419,7 @@ pub func updateProfileHandler(pid: in String, req: in SaveProfileRequest): Resul
     case Ok(None) -> ()
     case Err(e) -> return Err(dbError(e))
   }
-  val affected = match updateProfile(
+  val affected = match updateProfileWithMappings(
     pid,
     sc,
     name,
@@ -407,6 +427,7 @@ pub func updateProfileHandler(pid: in String, req: in SaveProfileRequest): Resul
     req.networkPolicy,
     req.credentialMode,
     grantsFor(req),
+    req.credentialMappings,
     req.skillIds,
     req.subagentIds,
     req.mcpServerIds,

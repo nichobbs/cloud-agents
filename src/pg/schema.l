@@ -52,12 +52,13 @@ pub record PgMigration {
 pub func migrations(): slice[PgMigration] {
   return [
     PgMigration(version = "0001_baseline", statements = baselineStatements()),
-    PgMigration(version = "0002_cutover", statements = cutoverStatements())
+    PgMigration(version = "0002_cutover", statements = cutoverStatements()),
+    PgMigration(version = "0003_profile_credential_mappings", statements = profileCredentialMappingsStatements())
   ]
 }
 
 pub func latestVersion(): String {
-  return "0002_cutover"
+  return "0003_profile_credential_mappings"
 }
 
 // ─── Fragments ──────────────────────────────────────────────────────────────
@@ -927,3 +928,24 @@ func cutoverStatements(): slice[String] {
     "REVOKE ALL ON ALL TABLES IN SCHEMA public FROM cloudagents_migrator"
   ]
 }
+
+/// `0003_profile_credential_mappings`:
+/// - stores explicit credential source-to-target environment variable mappings
+///   per profile, allowing profiles to bind specific credentials to harness/SDK
+///   expected environment variable names without fallback guessing.
+func profileCredentialMappingsStatements(): slice[String] {
+  return concat(
+    [
+      tenantTable(
+        "profile_credential_mappings",
+        "id text NOT NULL, profile_id text NOT NULL, user_id text NOT NULL, " +
+          "source_name text NOT NULL, target_name text NOT NULL, " +
+          "PRIMARY KEY (tenant_id, id), UNIQUE (tenant_id, profile_id, target_name)"
+      ),
+      [
+        "CREATE INDEX profile_credential_mappings_profile ON public.profile_credential_mappings (tenant_id, profile_id)"
+      ]
+    ]
+  )
+}
+
