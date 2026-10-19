@@ -48,6 +48,13 @@ case "$model" in
     finish "env dumped" ;;
   stub/silent)
     sleep 60 ;;
+  stub/child-hang)
+    # A long-running command the worker started, which must die with it.
+    ( sleep 4; echo "late write" >> calc.txt ) &
+    sleep 60 ;;
+  stub/edit-again)
+    echo "more" >> calc.txt
+    exit 4 ;;
   *)
     echo "unexpected model $model" >&2; exit 9 ;;
 esac
@@ -97,6 +104,13 @@ check "dirty: status failed_dirty"       [ "$(field .status)" = failed_dirty ]
 check "dirty: second model never ran"    [ "$(field '.attempts | length')" = 1 ]
 check "dirty: outcome records exit code" [ "$(field '.attempts[0].outcome')" = exit_3 ]
 
+# 2b. A failed attempt that only edits an already-modified file still counts.
+repo="$(new_repo dirty-again)"
+echo "caller edit" >> "$repo/calc.txt"
+rc=0; out="$(cd "$repo" && "$SCRIPT" -m stub/edit-again,stub/edit "fix calc")" || rc=$?
+check "dirty-again: status failed_dirty"    [ "$(field .status)" = failed_dirty ]
+check "dirty-again: second model never ran" [ "$(field '.attempts | length')" = 1 ]
+
 # 3. Ending without a final stop step is a failure and falls through.
 repo="$(new_repo incomplete)"
 rc=0; out="$(cd "$repo" && "$SCRIPT" -m stub/incomplete "x")" || rc=$?
@@ -107,6 +121,13 @@ check "incomplete: outcome"         [ "$(field '.attempts[0].outcome')" = incomp
 repo="$(new_repo idle)"
 rc=0; out="$(cd "$repo" && "$SCRIPT" -m stub/silent --idle 2 "x")" || rc=$?
 check "idle: outcome idle" [ "$(field '.attempts[0].outcome')" = idle ]
+
+# 4b. Killing an attempt also kills what the worker started.
+repo="$(new_repo child)"
+rc=0; out="$(cd "$repo" && "$SCRIPT" -m stub/child-hang --idle 2 "x")" || rc=$?
+sleep 4
+check "child: outcome idle"            [ "$(field '.attempts[0].outcome')" = idle ]
+check "child: orphan did not write"    [ "$(cat "$repo/calc.txt")" = start ]
 
 # 5. The worker gets a scrubbed environment and the preamble.
 repo="$(new_repo env)"
@@ -150,6 +171,9 @@ rc=0; (cd "$repo" && "$SCRIPT" -m stub/edit "") >/dev/null 2>&1 || rc=$?
 check "usage: empty spec exits 2"        [ "$rc" -eq 2 ]
 rc=0; (cd "$repo" && "$SCRIPT" -w 'bad/name' "x") >/dev/null 2>&1 || rc=$?
 check "usage: bad worktree name exits 2" [ "$rc" -eq 2 ]
+rc=0; (cd "$repo" && "$SCRIPT" -m ' , ' -w orphan "x") >/dev/null 2>&1 || rc=$?
+check "usage: empty model list exits 2"  [ "$rc" -eq 2 ]
+check "usage: no worktree left behind"   [ ! -e "$repo/.delegate/orphan" ]
 
 if [ "$fails" -gt 0 ]; then
   echo "test-delegate-task: $fails check(s) failed" >&2

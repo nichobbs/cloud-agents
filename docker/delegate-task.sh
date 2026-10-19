@@ -108,6 +108,9 @@ fi
 command -v jq >/dev/null 2>&1 || die_usage "jq is required"
 command -v "$OPENCODE_BIN" >/dev/null 2>&1 || die_usage "'$OPENCODE_BIN' not found on PATH"
 
+[ -n "${models//[[:space:],]/}" ] || die_usage "no models given"
+command -v setsid >/dev/null 2>&1 || die_usage "setsid is required"
+
 if [ -n "$workdir" ]; then
   cd "$workdir" || die_usage "cannot cd to $workdir"
 fi
@@ -167,10 +170,18 @@ for v in USER LC_ALL NODE_EXTRA_CA_CERTS SSL_CERT_FILE SSL_CERT_DIR \
   fi
 done
 
-status_snapshot() {
+changed_files() {
   [ "$in_git" -eq 1 ] && git status --porcelain --untracked-files=all 2>/dev/null
 }
-start_status="$(status_snapshot)"
+# Content, not just the file list: a worker that edits a file the caller had
+# already modified leaves `git status` unchanged.
+tree_fingerprint() {
+  [ "$in_git" -eq 1 ] || return 0
+  changed_files
+  git diff HEAD 2>/dev/null | sha1sum
+  git ls-files --others --exclude-standard -z 2>/dev/null | xargs -0 -r sha1sum 2>/dev/null
+}
+start_fingerprint="$(tree_fingerprint)"
 
 # Runs one attempt; sets attempt_outcome to ok|timeout|idle|provider_error|
 # exit_<n>|incomplete.
@@ -185,7 +196,10 @@ run_attempt() {
   fi
 
   : > "$out"; : > "$err"
-  env -i "${env_for[@]}" "$OPENCODE_BIN" run --print-logs --model "$model" --format json -- "$prompt" \
+  # Its own session and process group, so a kill also reaches the build and
+  # test commands the worker started; otherwise they would keep running (and
+  # editing) while the next model works.
+  setsid env -i "${env_for[@]}" "$OPENCODE_BIN" run --print-logs --model "$model" --format json -- "$prompt" \
     < /dev/null > "$out" 2> "$err" &
   local pid=$!
   local start now last_change last_size size err_seen=0 err_count error_at=0
@@ -211,9 +225,9 @@ run_attempt() {
       attempt_outcome="idle"
     fi
     if [ -n "$attempt_outcome" ]; then
-      kill "$pid" 2>/dev/null
+      kill -TERM -- "-$pid" 2>/dev/null
       sleep 1
-      kill -9 "$pid" 2>/dev/null
+      kill -KILL -- "-$pid" 2>/dev/null
       wait "$pid" 2>/dev/null
       return
     fi
@@ -254,13 +268,11 @@ for raw_model in "${model_list[@]}"; do
     final_status="ok"
     break
   fi
-  if [ "$(status_snapshot)" != "$start_status" ]; then
+  if [ "$(tree_fingerprint)" != "$start_fingerprint" ]; then
     final_status="failed_dirty"
     break
   fi
 done
-
-[ -n "$final_model" ] || die_usage "no models given"
 
 # Worker's own report and usage, from the attempt that ended the chain.
 final_text=""
@@ -278,7 +290,7 @@ if [ "${#final_text}" -gt "$max_text" ]; then
   final_text="${final_text:0:$max_text}... [truncated; full transcript in $final_out]"
 fi
 
-changed="$(status_snapshot)"
+changed="$(changed_files)"
 diffstat=""
 [ "$in_git" -eq 1 ] && diffstat="$(git diff HEAD --stat 2>/dev/null | tail -20)"
 
