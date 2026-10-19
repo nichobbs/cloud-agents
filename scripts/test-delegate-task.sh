@@ -154,6 +154,9 @@ check "check: status check_failed" [ "$(field .status)" = check_failed ]
 check "check: exit code reported"  [ "$(field .check.exit)" = 1 ]
 rc=0; out="$(cd "$repo" && git checkout -q -- calc.txt && "$SCRIPT" -m stub/edit --check 'grep -q fixed calc.txt' "x")" || rc=$?
 check "check: passing check is ok" [ "$(field .status)" = ok ]
+rc=0; out="$(cd "$repo" && git checkout -q -- calc.txt && GITHUB_TOKEN=secret-gh CLAUDE_CODE_OAUTH_TOKEN=secret-oauth \
+  "$SCRIPT" -m stub/edit --check 'test -z "${GITHUB_TOKEN:-}${CLAUDE_CODE_OAUTH_TOKEN:-}"' "x")" || rc=$?
+check "check: runs with the scrubbed env" [ "$(field .status)" = ok ]
 
 # 7. --worktree isolates the work on its own branch and commits it.
 repo="$(new_repo worktree)"

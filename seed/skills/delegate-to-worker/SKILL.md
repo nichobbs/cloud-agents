@@ -68,3 +68,5 @@ to diagnose a failure.
 - Trusting the worker's report that tests pass instead of the `check` result.
 - Delegating secrets handling: the worker runs with a scrubbed environment and cannot
   push, and should be kept that way.
+- Running the worker's code yourself (tests, scripts) before reading the diff. That runs
+  it with your full session credentials; `--check` runs it with the scrubbed environment.

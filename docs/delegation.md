@@ -30,7 +30,9 @@ image, next to `opencode-ai` (same pin as `docker/Dockerfile.opencode`). It:
   exiting;
 - stops the chain with `failed_dirty` if a failed attempt already changed files, rather
   than letting the next model build on a half-finished edit;
-- with `--check CMD`, runs the acceptance command itself and reports its exit code;
+- with `--check CMD`, runs the acceptance command itself and reports its exit code.
+  The command runs code the worker wrote, so it gets the worker's scrubbed
+  environment too;
 - with `--worktree NAME`, works in `.delegate/NAME` on branch `delegate/NAME` and commits
   the result there, so several delegations can run in parallel;
 - prints one JSON object (status, model, attempts, token usage, the worker's report,

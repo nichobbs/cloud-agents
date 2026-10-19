@@ -26,7 +26,9 @@
 #                        branch delegate/NAME; on success the worker's changes
 #                        are committed there for the caller to review and merge
 #       --check CMD      after a successful attempt, run CMD (bash -c) in the
-#                        working directory and report its exit code and tail
+#                        working directory and report its exit code and tail;
+#                        it runs worker-written code, so it gets the worker's
+#                        scrubbed environment, not the session's
 #       --max-text N     truncate the worker's final message to N characters
 #                        (default 2000)
 #       --raw            send SPEC as-is, without the worker preamble
@@ -297,7 +299,7 @@ diffstat=""
 check_json="null"
 if [ "$final_status" = "ok" ] && [ -n "$check_cmd" ]; then
   check_log="$log_root/check.log"
-  bash -c "$check_cmd" > "$check_log" 2>&1
+  env -i "${worker_env[@]}" bash -c "$check_cmd" > "$check_log" 2>&1
   check_rc=$?
   check_json="$(jq -n -c --arg c "$check_cmd" --argjson rc "$check_rc" --arg t "$(tail -c 1500 "$check_log")" \
     '{cmd: $c, exit: $rc, tail: $t}')"
