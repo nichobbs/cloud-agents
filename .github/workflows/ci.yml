@@ -196,6 +196,8 @@ jobs:
             scripts/test-lyric-config-env.sh \
             scripts/test-reconcile-repos.sh \
             scripts/test-opencode-entrypoint.sh \
+            scripts/test-delegate-task.sh \
+            docker/delegate-task.sh \
             scripts/test-inspect-tree-fallback.sh \
             scripts/test-entrypoint-session-resume.sh \
             scripts/test-entrypoint-privsep.sh \
@@ -279,6 +281,12 @@ jobs:
       # not attempt to fix.
       - name: Test opencode entrypoint invocation
         run: ./scripts/test-opencode-entrypoint.sh
+
+      # docker/delegate-task.sh (docs/delegation.md) against a stub `opencode`:
+      # fallback on a hung rate-limited model, the dirty-tree stop, the
+      # environment scrub, --check and --worktree. No network, no Docker.
+      - name: Test delegate-task.sh
+        run: ./scripts/test-delegate-task.sh
 
       # Regression test for docker/entrypoint.sh inspect `diff` mode section 3 —
       # the workspace tree hash that anchors the runner's terminal checkpoint
