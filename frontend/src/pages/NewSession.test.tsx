@@ -137,6 +137,7 @@ function makeProfile() {
     toolMode: 'all' as const,
     tools: [],
     setupScript: '',
+    delegateAllow: '',
     createdAt: '0',
     updatedAt: '0',
   };

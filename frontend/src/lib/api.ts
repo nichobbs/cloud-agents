@@ -892,6 +892,7 @@ export const api = {
     toolMode: string;
     tools: string[];
     setupScript: string;
+    delegateAllow: string;
   }): Promise<Profile> => {
     const res = await apiFetch(`${BASE}/api/profiles`, {
       method: 'POST',
@@ -916,6 +917,7 @@ export const api = {
       toolMode: string;
       tools: string[];
       setupScript: string;
+      delegateAllow: string;
     },
   ): Promise<Profile> => {
     const res = await apiFetch(`${BASE}/api/profiles/${profileId}`, {
@@ -1249,7 +1251,8 @@ export const api = {
 /** Ensure a profile's optional array fields are always arrays.
  *  Defaults for toolMode/tools cover a pre-#614 backend whose Profile
  *  response predates per-profile tool enablement, and setupScript one that
- *  predates profile setup scripts. */
+ *  predates profile setup scripts, and delegateAllow one that predates
+ *  delegation allowlists. */
 function normaliseProfile(p: Profile): Profile {
   return {
     ...p,
@@ -1260,6 +1263,7 @@ function normaliseProfile(p: Profile): Profile {
     toolMode: p.toolMode ?? 'all',
     tools: p.tools ?? [],
     setupScript: p.setupScript ?? '',
+    delegateAllow: p.delegateAllow ?? '',
   };
 }
 

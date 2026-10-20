@@ -113,7 +113,7 @@ func replaceAllGrants(
 }
 
 func profileCols(): String {
-  return "id, user_id, name, harness, network_policy, credential_mode, tool_mode, setup_script, " + stamps("")
+  return "id, user_id, name, harness, network_policy, credential_mode, tool_mode, setup_script, delegate_allow, " + stamps("")
 }
 
 func toProfile(u: in PgUnit, r: in DbRow): Result[CloudAgents.Repository.Profile, CloudAgents.Db.DbError] {
@@ -140,6 +140,7 @@ func toProfile(u: in PgUnit, r: in DbRow): Result[CloudAgents.Repository.Profile
       toolMode = col(r, "tool_mode"),
       tools = tools,
       setupScript = col(r, "setup_script"),
+      delegateAllow = col(r, "delegate_allow"),
       createdAt = col(r, "created_at"),
       updatedAt = col(r, "updated_at")
     )
@@ -184,10 +185,12 @@ pub func addProfile(
   toolMode: in String,
   tools: in slice[String],
 ): Result[CloudAgents.Repository.Profile, CloudAgents.Db.DbError] {
-  return addProfileWithSetupScript(sc, name, harness, networkPolicy, credentialMode, credentials, skillIds, subagentIds, mcpServerIds, toolMode, tools, "")
+  return addProfileWithRunnerSettings(sc, name, harness, networkPolicy, credentialMode, credentials, skillIds, subagentIds, mcpServerIds, toolMode, tools, "", "")
 }
 
-pub func addProfileWithSetupScript(
+/// addProfile plus the settings only the runner container reads: the setup
+/// script and the delegation allowlist.
+pub func addProfileWithRunnerSettings(
   sc: in CloudAgents.Pg.TenantScope,
   name: in String,
   harness: in String,
@@ -200,6 +203,7 @@ pub func addProfileWithSetupScript(
   toolMode: in String,
   tools: in slice[String],
   setupScript: in String,
+  delegateAllow: in String,
 ): Result[CloudAgents.Repository.Profile, CloudAgents.Db.DbError] {
   val id = newId()
   val ts = CloudAgents.Repository.nowMillis()
@@ -207,7 +211,7 @@ pub func addProfileWithSetupScript(
   defer {
     CloudAgents.PgStore.release(u)
   }
-  CloudAgents.PgStore.ex(u, "INSERT INTO profiles (id, user_id, name, harness, network_policy, credential_mode, tool_mode, setup_script, created_at, updated_at) " + "VALUES (@p0, @p1, @p2, @p3, @p4, @p5, @p6, @p7, " + CloudAgents.Pg.msIn(8) + ", " + CloudAgents.Pg.msIn(8) + ")", [id, sc.userId, name, harness, networkPolicy, credentialMode, toolMode, setupScript, ts])?
+  CloudAgents.PgStore.ex(u, "INSERT INTO profiles (id, user_id, name, harness, network_policy, credential_mode, tool_mode, setup_script, delegate_allow, created_at, updated_at) " + "VALUES (@p0, @p1, @p2, @p3, @p4, @p5, @p6, @p7, @p8, " + CloudAgents.Pg.msIn(9) + ", " + CloudAgents.Pg.msIn(9) + ")", [id, sc.userId, name, harness, networkPolicy, credentialMode, toolMode, setupScript, delegateAllow, ts])?
   replaceAllGrants(u, id, sc.userId, credentials, skillIds, subagentIds, mcpServerIds, tools)?
   CloudAgents.PgStore.commit(u)?
   return Ok(
@@ -225,6 +229,7 @@ pub func addProfileWithSetupScript(
       toolMode = toolMode,
       tools = tools,
       setupScript = setupScript,
+      delegateAllow = delegateAllow,
       createdAt = ts,
       updatedAt = ts
     )
@@ -266,7 +271,8 @@ pub func getProfile(
   return Ok(value = p)
 }
 
-/// Leaves the setup script as it is; updateProfileWithSetupScript sets it.
+/// Leaves the runner settings (setup script, delegation allowlist) as they
+/// are; updateProfileWithRunnerSettings sets them.
 pub func updateProfile(
   id: in String,
   sc: in CloudAgents.Pg.TenantScope,
@@ -293,7 +299,7 @@ pub func updateProfile(
   return Ok(value = n)
 }
 
-pub func updateProfileWithSetupScript(
+pub func updateProfileWithRunnerSettings(
   id: in String,
   sc: in CloudAgents.Pg.TenantScope,
   name: in String,
@@ -307,12 +313,13 @@ pub func updateProfileWithSetupScript(
   toolMode: in String,
   tools: in slice[String],
   setupScript: in String,
+  delegateAllow: in String,
 ): Result[Int, CloudAgents.Db.DbError] {
   val u = CloudAgents.PgStore.open(sc)?
   defer {
     CloudAgents.PgStore.release(u)
   }
-  val n = CloudAgents.PgStore.ex(u, "UPDATE profiles SET name = @p2, harness = @p3, network_policy = @p4, credential_mode = @p5, tool_mode = @p6, setup_script = @p7, " + "updated_at = " + CloudAgents.Pg.msIn(8) + " WHERE id = @p0 AND user_id = @p1", [id, sc.userId, name, harness, networkPolicy, credentialMode, toolMode, setupScript, CloudAgents.Repository.nowMillis()])?
+  val n = CloudAgents.PgStore.ex(u, "UPDATE profiles SET name = @p2, harness = @p3, network_policy = @p4, credential_mode = @p5, tool_mode = @p6, setup_script = @p7, delegate_allow = @p8, " + "updated_at = " + CloudAgents.Pg.msIn(9) + " WHERE id = @p0 AND user_id = @p1", [id, sc.userId, name, harness, networkPolicy, credentialMode, toolMode, setupScript, delegateAllow, CloudAgents.Repository.nowMillis()])?
   if n > 0 {
     replaceAllGrants(u, id, sc.userId, credentials, skillIds, subagentIds, mcpServerIds, tools)?
   }
@@ -346,6 +353,22 @@ pub func setupScriptForProfile(
   match getProfile(profileId, sc)? {
     case None -> return Ok(value = "")
     case Some(p) -> return Ok(value = p.setupScript)
+  }
+}
+
+/// The delegation allowlist a session's profile carries: "" (no limit) for no
+/// profile or one without a list. A profile that no longer resolves gets
+/// "none:", which matches no harness, consistent with credentials failing
+/// closed for a dangling profile.
+pub func delegateAllowForProfile(
+  sc: in CloudAgents.Pg.TenantScope, profileId: in String
+): Result[String, CloudAgents.Db.DbError] {
+  if profileId.length == 0 {
+    return Ok(value = "")
+  }
+  match getProfile(profileId, sc)? {
+    case None -> return Ok(value = "none:")
+    case Some(p) -> return Ok(value = p.delegateAllow)
   }
 }
 

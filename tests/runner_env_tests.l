@@ -52,6 +52,13 @@ test "withSetupScript only appends CLOUD_AGENTS_SETUP_SCRIPT_B64 when there is a
   assertEqual(some[1], "CLOUD_AGENTS_SETUP_SCRIPT_B64=ZWNobyBoaQ==", "entry carries the encoded script verbatim")
 }
 
+test "withDelegateAllow only appends CLOUD_AGENTS_DELEGATE_ALLOW when there is a list" {
+  val base: slice[String] = ["PROMPT=p"]
+  assertEqualInt(withDelegateAllow(base, "").length.toInt(), 1, "no list, no entry")
+  val some = withDelegateAllow(base, "opencode:*-free,claude")
+  assertEqual(some[1], "CLOUD_AGENTS_DELEGATE_ALLOW=opencode:*-free,claude", "entry carries the list verbatim")
+}
+
 test "withCredentialEnvs appends one NAME=VALUE per credential, preserving order" {
   val base = baseRunnerEnvs("p", "u", "b", "h", "m", "n", "s")
   val noNames: slice[String] = []

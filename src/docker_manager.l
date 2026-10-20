@@ -374,6 +374,20 @@ pub async func createRunnerContainer(
           CloudAgents.Db.dbErrorMessage(e)
       )
     }
+    // Which harnesses/models delegate-task may hand work to. A read failure
+    // limits delegation to nothing rather than lifting the profile's limit.
+    match CloudAgents.Repository.delegateAllowForProfile(CloudAgents.Pg.personalScope(userId), profileId) {
+      case Ok(allow) -> {
+        envs = CloudAgents.RunnerEnv.withDelegateAllow(envs, allow)
+      }
+      case Err(e) -> {
+        println(
+          "WARNING: failed to load the delegation allowlist for session " + sessionId + "; delegation disabled: " +
+            CloudAgents.Db.dbErrorMessage(e)
+        )
+        envs = CloudAgents.RunnerEnv.withDelegateAllow(envs, "none:")
+      }
+    }
   }
 
   // Resolve the profile's network policy: sets the container NetworkMode and,

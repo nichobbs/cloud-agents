@@ -595,6 +595,9 @@ pub record Profile {
   /// Run as the harness user before the harness, once per distinct content
   /// (docker/user-tools.sh, docs/tool-installs.md). "" for none.
   pub setupScript: String
+  /// Harnesses/models delegate-task may use: comma-separated HARNESS or
+  /// HARNESS:MODEL-GLOB patterns (docs/delegation.md). "" for no limit.
+  pub delegateAllow: String
   pub createdAt: String
   pub updatedAt: String
 }
@@ -914,8 +917,9 @@ pub func addProfile(
   )
 }
 
-/// addProfile, also storing the profile's setup script.
-pub func addProfileWithSetupScript(
+/// addProfile, also storing the runner settings (setup script, delegation
+/// allowlist).
+pub func addProfileWithRunnerSettings(
   sc: in CloudAgents.Pg.TenantScope,
   name: in String,
   harness: in String,
@@ -928,8 +932,9 @@ pub func addProfileWithSetupScript(
   toolMode: in String,
   tools: in slice[String],
   setupScript: in String,
+  delegateAllow: in String,
 ): Result[Profile, CloudAgents.Db.DbError] {
-  return CloudAgents.PgStore.Library.addProfileWithSetupScript(
+  return CloudAgents.PgStore.Library.addProfileWithRunnerSettings(
     sc,
     name,
     harness,
@@ -941,7 +946,8 @@ pub func addProfileWithSetupScript(
     mcpServerIds,
     toolMode,
     tools,
-    setupScript
+    setupScript,
+    delegateAllow
   )
 }
 
@@ -998,9 +1004,9 @@ pub func updateProfile(
   )
 }
 
-/// updateProfile, also replacing the profile's setup script (updateProfile
-/// leaves it unchanged).
-pub func updateProfileWithSetupScript(
+/// updateProfile, also replacing the runner settings (updateProfile leaves
+/// them unchanged).
+pub func updateProfileWithRunnerSettings(
   id: in String,
   sc: in CloudAgents.Pg.TenantScope,
   name: in String,
@@ -1014,8 +1020,9 @@ pub func updateProfileWithSetupScript(
   toolMode: in String,
   tools: in slice[String],
   setupScript: in String,
+  delegateAllow: in String,
 ): Result[Int, CloudAgents.Db.DbError] {
-  return CloudAgents.PgStore.Library.updateProfileWithSetupScript(
+  return CloudAgents.PgStore.Library.updateProfileWithRunnerSettings(
     id,
     sc,
     name,
@@ -1028,7 +1035,8 @@ pub func updateProfileWithSetupScript(
     mcpServerIds,
     toolMode,
     tools,
-    setupScript
+    setupScript,
+    delegateAllow
   )
 }
 
@@ -1085,6 +1093,16 @@ pub func setupScriptForProfile(
   sc: in CloudAgents.Pg.TenantScope, profileId: in String
 ): Result[String, CloudAgents.Db.DbError] {
   return CloudAgents.PgStore.Library.setupScriptForProfile(sc, profileId)
+}
+
+/// The CLOUD_AGENTS_DELEGATE_ALLOW value for a profile's session container:
+/// "" (no limit) for no profile; a dangling profile id gets a list matching
+/// nothing, so a session whose profile was deleted does not gain delegation
+/// it was limited from.
+pub func delegateAllowForProfile(
+  sc: in CloudAgents.Pg.TenantScope, profileId: in String
+): Result[String, CloudAgents.Db.DbError] {
+  return CloudAgents.PgStore.Library.delegateAllowForProfile(sc, profileId)
 }
 
 // ─── Library: skills, subagents, MCP servers ───────────────────────────────────

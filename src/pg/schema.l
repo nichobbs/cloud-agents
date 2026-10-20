@@ -53,12 +53,13 @@ pub func migrations(): slice[PgMigration] {
   return [
     PgMigration(version = "0001_baseline", statements = baselineStatements()),
     PgMigration(version = "0002_cutover", statements = cutoverStatements()),
-    PgMigration(version = "0003_profile_setup_script", statements = profileSetupScriptStatements())
+    PgMigration(version = "0003_profile_setup_script", statements = profileSetupScriptStatements()),
+    PgMigration(version = "0004_profile_delegate_allow", statements = profileDelegateAllowStatements())
   ]
 }
 
 pub func latestVersion(): String {
-  return "0003_profile_setup_script"
+  return "0004_profile_delegate_allow"
 }
 
 // ─── Fragments ──────────────────────────────────────────────────────────────
@@ -935,5 +936,14 @@ func cutoverStatements(): slice[String] {
 func profileSetupScriptStatements(): slice[String] {
   return [
     "ALTER TABLE public.profiles ADD COLUMN setup_script text NOT NULL DEFAULT ''"
+  ]
+}
+
+/// `0004_profile_delegate_allow`: which harnesses and models a session's
+/// agent may hand work to through delegate-task (CLOUD_AGENTS_DELEGATE_ALLOW,
+/// docs/delegation.md). Empty means no limit.
+func profileDelegateAllowStatements(): slice[String] {
+  return [
+    "ALTER TABLE public.profiles ADD COLUMN delegate_allow text NOT NULL DEFAULT ''"
   ]
 }
