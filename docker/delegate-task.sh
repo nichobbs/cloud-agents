@@ -209,8 +209,10 @@ fi
 # starting its fallback chain at a different entry (so candidates use
 # different workers when the chain has enough entries), then keep one.
 # Selection: a candidate whose status is ok (its --check passed, if given)
-# beats one that is not; among those, the smallest diff (lines added plus
-# removed) wins, then the earliest candidate.
+# beats one that is not; then one that changed something beats one that
+# changed nothing (an "ok" with an empty diff did not do the task, and
+# without a --check nothing else catches it); then the smallest diff (lines
+# added plus removed) wins, then the earliest candidate.
 if [ "$k" -gt 1 ]; then
   top="$(git rev-parse --show-toplevel 2>/dev/null)" || die_usage "--k needs a git repository"
   [ -n "$worktree" ] || worktree="cand-$(date +%Y%m%d%H%M%S)"
@@ -244,7 +246,7 @@ if [ "$k" -gt 1 ]; then
   done
   for pid in "${pids[@]}"; do wait "$pid"; done
 
-  candidates="[]"; best=0; best_ok=0; best_size=0
+  candidates="[]"; best=0; best_ok=0; best_size=0; best_rank=0
   for ((c = 1; c <= k; c++)); do
     res="$log_root/candidate-$c.json"
     if ! jq -e . "$res" >/dev/null 2>&1; then
@@ -261,8 +263,10 @@ if [ "$k" -gt 1 ]; then
              branch: $r[0].branch, commit: $r[0].commit, diff_lines: $size,
              check_exit: ($r[0].check.exit // null)}]' <<< "$candidates")"
     ok=0; [ "$st" = ok ] && ok=1
-    if [ "$best" -eq 0 ] || [ "$ok" -gt "$best_ok" ] || { [ "$ok" -eq "$best_ok" ] && [ "$ok" -eq 1 ] && [ "$size" -lt "$best_size" ]; }; then
-      best=$c; best_ok=$ok; best_size=$size
+    # rank: 2 = ok with changes, 1 = ok without, 0 = not ok
+    rank=0; [ "$ok" -eq 1 ] && rank=1; [ "$ok" -eq 1 ] && [ "$size" -gt 0 ] && rank=2
+    if [ "$best" -eq 0 ] || [ "$rank" -gt "$best_rank" ] || { [ "$rank" -eq "$best_rank" ] && [ "$rank" -eq 2 ] && [ "$size" -lt "$best_size" ]; }; then
+      best=$c; best_ok=$ok; best_size=$size; best_rank=$rank
     fi
   done
   [ "$best_ok" -eq 1 ] || best=0

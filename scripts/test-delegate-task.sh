@@ -52,6 +52,8 @@ case "$model" in
     # A long-running command the worker started, which must die with it.
     ( sleep 4; echo "late write" >> calc.txt ) &
     sleep 60 ;;
+  stub/noop)
+    finish "Nothing needed changing" ;;
   stub/edit-big)
     printf 'fixed\nmore\nand more\neven more\n' >> calc.txt
     finish "Changed calc.txt a lot" ;;
@@ -437,6 +439,8 @@ check "best-of-k: winner worktree kept"         [ -d "$repo/.delegate/bk-2" ]
 check "best-of-k: loser worktree removed"       [ ! -e "$repo/.delegate/bk-1" ]
 check "best-of-k: loser branch removed"         bash -c "! git -C '$repo' rev-parse -q --verify delegate/bk-1 >/dev/null"
 check "best-of-k: main checkout untouched"      [ "$(cat "$repo/calc.txt")" = start ]
+rc=0; out="$(cd "$repo" && "$SCRIPT" --k 2 -m stub/noop,stub/edit-big -w bk5 "x")" || rc=$?
+check "best-of-k: an empty ok diff does not win" [ "$(field '.selected')" = 2 ]
 rc=0; out="$(cd "$repo" && "$SCRIPT" --k 2 -m stub/dirty-fail,stub/edit-big -w bk2 "x")" || rc=$?
 check "best-of-k: a passing candidate beats a failing one" [ "$(field '.selected')" = 2 ]
 check "best-of-k: failed candidate recorded"    [ "$(field '.candidates[0].status')" = failed_dirty ]
