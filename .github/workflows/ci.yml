@@ -196,6 +196,7 @@ jobs:
             scripts/test-lyric-config-env.sh \
             scripts/test-reconcile-repos.sh \
             scripts/test-opencode-entrypoint.sh \
+            scripts/test-codex-entrypoint.sh \
             scripts/test-user-tools.sh \
             docker/user-tools.sh \
             scripts/test-delegate-task.sh \
@@ -283,6 +284,13 @@ jobs:
       # not attempt to fix.
       - name: Test opencode entrypoint invocation
         run: ./scripts/test-opencode-entrypoint.sh
+
+      # docker/entrypoint-codex.sh's launch: `codex exec` (the bare command is
+      # the TUI and exits 2 on --json), CODEX_API_KEY, CODEX_HOME creation and
+      # the git exclusion of Codex's runtime state. Runs the real file's tail
+      # against a stub codex; no Docker, no network.
+      - name: Test codex entrypoint invocation
+        run: ./scripts/test-codex-entrypoint.sh
 
       # docker/user-tools.sh (docs/tool-installs.md): the user-space install
       # environment and the profile setup-script runner (once per content,

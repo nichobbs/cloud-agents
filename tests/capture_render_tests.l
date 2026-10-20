@@ -267,15 +267,24 @@ test "renderLogDelta and displayTextOf support Gemini stream-json events" {
   assertEqual(resultText(finalResultText(rd.events)), "Hello from Gemini!", "final result text extracted from gemini response")
 }
 
-test "renderLogDelta and displayTextOf support Codex stream-json events" {
+// Event shapes from `codex exec --json` 0.145 (codex-rs/exec/src/exec_events.rs):
+// items are flattened, with `type` beside `id`. Only the completed
+// agent_message is the reply; reasoning carries `text` too but, like Claude's
+// thinking blocks, is not shown. turn.completed carries usage, not a result,
+// so the final result is the last agent message.
+test "renderLogDelta and displayTextOf support Codex exec --json events" {
   val codexLog = "{\"type\":\"thread.started\",\"thread_id\":\"t1\"}\n" +
-    "{\"type\":\"turn.started\",\"turn_id\":\"turn1\"}\n" +
-    "{\"type\":\"item.completed\",\"item\":{\"type\":\"message\",\"text\":\"Hello from Codex!\"}}\n" +
-    "{\"type\":\"turn.completed\",\"result\":\"Hello from Codex!\"}\n"
+    "{\"type\":\"turn.started\"}\n" +
+    "{\"type\":\"item.completed\",\"item\":{\"id\":\"item_0\",\"type\":\"reasoning\",\"text\":\"**Planning the reply**\"}}\n" +
+    "{\"type\":\"item.started\",\"item\":{\"id\":\"item_1\",\"type\":\"command_execution\",\"command\":\"ls\",\"aggregated_output\":\"\",\"exit_code\":null,\"status\":\"in_progress\"}}\n" +
+    "{\"type\":\"item.completed\",\"item\":{\"id\":\"item_1\",\"type\":\"command_execution\",\"command\":\"ls\",\"aggregated_output\":\"app.py\\n\",\"exit_code\":0,\"status\":\"completed\"}}\n" +
+    "{\"type\":\"item.completed\",\"item\":{\"id\":\"item_2\",\"type\":\"error\",\"message\":\"Model metadata not found\"}}\n" +
+    "{\"type\":\"item.completed\",\"item\":{\"id\":\"item_3\",\"type\":\"agent_message\",\"text\":\"Hello from Codex!\"}}\n" +
+    "{\"type\":\"turn.completed\",\"usage\":{\"input_tokens\":10,\"cached_input_tokens\":0,\"output_tokens\":5,\"reasoning_output_tokens\":2}}\n"
   val rd = renderLogDelta(codexLog, 0, 0.toLong(), "", true)
-  assertEqualInt(rd.events.length.toInt(), 4, "four codex events parsed")
-  assertEqual(rd.displayText, "Hello from Codex!", "visible assistant text extracted from codex item")
-  assertEqual(resultText(finalResultText(rd.events)), "Hello from Codex!", "final result text extracted from codex turn.completed")
+  assertEqualInt(rd.events.length.toInt(), 8, "eight codex events parsed")
+  assertEqual(rd.displayText, "Hello from Codex!", "only the agent message is visible; reasoning and tool items are not")
+  assertEqual(resultText(finalResultText(rd.events)), "Hello from Codex!", "codex final result is the last agent message")
 }
 
 test "renderLogDelta and displayTextOf support OpenCode json stream" {
