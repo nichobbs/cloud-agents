@@ -15,6 +15,12 @@ import CloudAgents.Repository
 import CloudAgents.Db
 
 val maxProfileNameLen = 200
+// A setup script reaches the container as one base64 environment variable,
+// and Linux caps a single one at 128 KiB (MAX_ARG_STRLEN). The length here is
+// in UTF-16 code units, each at most 3 UTF-8 bytes (a surrogate pair is 2
+// units for 4 bytes), so 24576 units is at most 73728 bytes, 98304 once
+// base64-encoded: under the cap whatever the script contains.
+val maxSetupScriptLen = 24576
 
 // The stable MCP tool names the in-container shim can register (see
 // shim/src/main.l — an entirely separate Lyric project with its own
@@ -46,6 +52,7 @@ pub record SaveProfileRequest {
   pub mcpServerIds: slice[String]
   pub toolMode: String
   pub tools: slice[String]
+  pub setupScript: String
 }
 
 /// The index of the last occurrence of a single-character `target` in `s`,
@@ -78,6 +85,8 @@ func lastIndexOfChar(s: in String, target: in String): Int {
 /// Patches the two fields' JSON-default values ("" / []) into the raw body
 /// BEFORE decoding, but only for whichever of the two keys is actually
 /// absent (a body that already sends them is passed through byte-identical).
+/// `setupScript` (docs/tool-installs.md) was added the same way later and is
+/// patched the same way, defaulting to "" (no script).
 /// Uses Std.Json's real parser to detect absence (not a blind string
 /// search, which could false-positive on a nested object/array that
 /// happens to contain the substring `"toolMode"` as a value) and splices
@@ -102,6 +111,12 @@ pub func patchMissingToolFields(body: in String): String {
   match Std.Json.tryGetProperty(root, "tools") {
     case None -> {
       toAdd = toAdd + ",\"tools\":[]"
+    }
+    case Some(_) -> ()
+  }
+  match Std.Json.tryGetProperty(root, "setupScript") {
+    case None -> {
+      toAdd = toAdd + ",\"setupScript\":\"\""
     }
     case Some(_) -> ()
   }
@@ -241,6 +256,9 @@ func validateSaveProfile(req: in SaveProfileRequest): Option[Web.ApiError] {
   if not isValidToolMode(req.toolMode) {
     return Some(value = Web.badRequest("toolMode must be one of: all, selected"))
   }
+  if req.setupScript.length > maxSetupScriptLen {
+    return Some(value = Web.badRequest("setupScript is too long (max 24576 characters)"))
+  }
   // In 'selected' mode, every granted name must be a valid env-var name, and
   // no name may repeat: profileCredentialStatements inserts one row per
   // credential into profile_credentials, whose own UNIQUE(profile_id,
@@ -356,7 +374,7 @@ pub func addProfileHandler(req: in SaveProfileRequest): Result[Profile, Web.ApiE
     case Ok(None) -> ()
     case Err(e) -> return Err(dbError(e))
   }
-  match addProfile(
+  match addProfileWithSetupScript(
     sc,
     name,
     req.harness,
@@ -368,6 +386,7 @@ pub func addProfileHandler(req: in SaveProfileRequest): Result[Profile, Web.ApiE
     req.mcpServerIds,
     normalizedToolMode(req.toolMode),
     toolsFor(req),
+    req.setupScript,
   ) {
     case Ok(p) -> return Ok(p)
     case Err(e) -> {
@@ -384,6 +403,30 @@ pub func addProfileHandler(req: in SaveProfileRequest): Result[Profile, Web.ApiE
 
 /// Update an existing profile.
 pub func updateProfileHandler(pid: in String, req: in SaveProfileRequest): Result[Profile, Web.ApiError] {
+  return updateProfileHandlerWith(pid, req, true)
+}
+
+/// Whether a raw save-profile body carries `setupScript` at all. An update
+/// from a frontend that predates the field omits it, and
+/// patchMissingToolFields then fills in "", which must not be read as "clear
+/// the script".
+pub func bodyHasSetupScript(body: in String): Bool {
+  val doc = match Std.Json.tryParseJson(body) { case Ok(d) -> d; case Err(_) -> return false }
+  defer {
+    Std.Json.disposeJson(doc)
+  }
+  match Std.Json.tryGetProperty(Std.Json.rootElement(doc), "setupScript") {
+    case Some(_) -> return true
+    case None -> return false
+  }
+}
+
+/// updateProfileHandler, replacing the setup script only when
+/// `replaceSetupScript` is set (the body named the field); otherwise the
+/// stored script is kept.
+pub func updateProfileHandlerWith(
+  pid: in String, req: in SaveProfileRequest, replaceSetupScript: in Bool
+): Result[Profile, Web.ApiError] {
   if pid.length == 0 {
     return Err(Web.badRequest("profile id is required"))
   }
@@ -399,7 +442,7 @@ pub func updateProfileHandler(pid: in String, req: in SaveProfileRequest): Resul
     case Ok(None) -> ()
     case Err(e) -> return Err(dbError(e))
   }
-  val affected = match updateProfile(
+  val written = if replaceSetupScript then updateProfileWithSetupScript(
     pid,
     sc,
     name,
@@ -412,7 +455,22 @@ pub func updateProfileHandler(pid: in String, req: in SaveProfileRequest): Resul
     req.mcpServerIds,
     normalizedToolMode(req.toolMode),
     toolsFor(req),
-  ) {
+    req.setupScript,
+  ) else updateProfile(
+    pid,
+    sc,
+    name,
+    req.harness,
+    req.networkPolicy,
+    req.credentialMode,
+    grantsFor(req),
+    req.skillIds,
+    req.subagentIds,
+    req.mcpServerIds,
+    normalizedToolMode(req.toolMode),
+    toolsFor(req),
+  )
+  val affected = match written {
     case Ok(n) -> n
     case Err(e) -> {
       // A concurrent rename onto the same name can slip past the pre-check

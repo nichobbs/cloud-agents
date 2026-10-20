@@ -60,6 +60,19 @@ Use `- [ ]` pending, `- [~]` in progress, `- [x]` done, one item per line,
 at least two items. Use `notify` (if available) when you finish or become
 blocked.
 
+## Installing tools
+
+You have no root, so `apt` is not available, but you may install what a task
+needs in user space: `npm i -g <pkg>`, `pip install <pkg>`,
+`uv tool install <pkg>`, `go install <pkg>@latest`, or a release binary
+copied into `~/.local/bin`. These land in `~/.local`, which is on `PATH` and
+persists across this user's sessions on this harness, so check with
+`command -v` before installing again. The image's own tools always come
+first on `PATH`. If the profile's setup script failed,
+`~/.cache/cloud-agents/setup/last-failure` names the log to read. Record an
+install a reviewer should know about (a new dependency, a pinned version) in
+the ledger.
+
 ## Surface the things humans miss
 
 Long responses bury important facts. ALWAYS end your final response for a

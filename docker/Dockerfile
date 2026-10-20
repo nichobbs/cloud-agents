@@ -273,6 +273,7 @@ COPY docker/restore-claude-credentials.sh /usr/local/bin/restore-claude-credenti
 COPY docker/reconcile-repos.sh /usr/local/bin/reconcile-repos.sh
 COPY docker/create-fallback-branch.sh /usr/local/bin/create-fallback-branch.sh
 COPY docker/inject-library.sh /usr/local/bin/inject-library.sh
+COPY docker/user-tools.sh /usr/local/bin/user-tools.sh
 COPY docker/render-branch-policy.sh /usr/local/bin/render-branch-policy.sh
 COPY docker/delegate-task.sh /usr/local/bin/delegate-task
 # Shipped for its exclude_from_git helper (entrypoint.sh sources it, #792) —

@@ -116,6 +116,7 @@ COPY docker/entrypoint-antigravity.sh /usr/local/bin/entrypoint.sh
 COPY docker/reconcile-repos.sh /usr/local/bin/reconcile-repos.sh
 COPY docker/create-fallback-branch.sh /usr/local/bin/create-fallback-branch.sh
 COPY docker/inject-library.sh /usr/local/bin/inject-library.sh
+COPY docker/user-tools.sh /usr/local/bin/user-tools.sh
 # Any harness can orchestrate workers on other harnesses (docs/delegation.md).
 COPY docker/delegate-task.sh /usr/local/bin/delegate-task
 COPY docker/render-branch-policy.sh /usr/local/bin/render-branch-policy.sh

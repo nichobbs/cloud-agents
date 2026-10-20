@@ -52,12 +52,13 @@ pub record PgMigration {
 pub func migrations(): slice[PgMigration] {
   return [
     PgMigration(version = "0001_baseline", statements = baselineStatements()),
-    PgMigration(version = "0002_cutover", statements = cutoverStatements())
+    PgMigration(version = "0002_cutover", statements = cutoverStatements()),
+    PgMigration(version = "0003_profile_setup_script", statements = profileSetupScriptStatements())
   ]
 }
 
 pub func latestVersion(): String {
-  return "0002_cutover"
+  return "0003_profile_setup_script"
 }
 
 // ─── Fragments ──────────────────────────────────────────────────────────────
@@ -925,5 +926,14 @@ func cutoverStatements(): slice[String] {
     "ALTER TABLE public.ledger_sessions ADD CONSTRAINT ledger_sessions_policy_status_check " +
       "CHECK (policy_status IN ('', 'absent', 'loaded', 'invalid', 'unavailable'))",
     "REVOKE ALL ON ALL TABLES IN SCHEMA public FROM cloudagents_migrator"
+  ]
+}
+
+/// `0003_profile_setup_script`: a profile's setup script, run as the harness
+/// user before the harness once per distinct content (docker/user-tools.sh,
+/// docs/tool-installs.md). Empty means none.
+func profileSetupScriptStatements(): slice[String] {
+  return [
+    "ALTER TABLE public.profiles ADD COLUMN setup_script text NOT NULL DEFAULT ''"
   ]
 }

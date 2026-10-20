@@ -107,6 +107,7 @@ function makeProfile(over: Partial<Profile>): Profile {
     mcpServerIds: [],
     toolMode: 'all',
     tools: [],
+    setupScript: '',
     createdAt: '0',
     updatedAt: '0',
     ...over,
@@ -522,6 +523,7 @@ describe('SessionDetail profile-attach-error handoff (#898)', () => {
       mcpServerIds: [],
       toolMode: 'all',
       tools: [],
+      setupScript: '',
       createdAt: '0',
       updatedAt: '0',
     };
@@ -594,6 +596,7 @@ describe('SessionDetail stale attached profile (#900/#901)', () => {
     mcpServerIds: [],
     toolMode: 'all',
     tools: [],
+    setupScript: '',
     createdAt: '0',
     updatedAt: '0',
   };

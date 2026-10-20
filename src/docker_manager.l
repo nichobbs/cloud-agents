@@ -359,6 +359,21 @@ pub async func createRunnerContainer(
           CloudAgents.Db.dbErrorMessage(e)
       )
     }
+    // The profile's setup script (docs/tool-installs.md), run by
+    // docker/user-tools.sh before the harness. Best-effort like the library
+    // grants: without it the run goes ahead with whatever the home volume
+    // already has installed.
+    match CloudAgents.Repository.setupScriptForProfile(CloudAgents.Pg.personalScope(userId), profileId) {
+      case Ok(script) -> {
+        if script.length > 0 {
+          envs = CloudAgents.RunnerEnv.withSetupScript(envs, base64Json(script))
+        }
+      }
+      case Err(e) -> println(
+        "WARNING: failed to load the profile setup script for session " + sessionId + ": " +
+          CloudAgents.Db.dbErrorMessage(e)
+      )
+    }
   }
 
   // Resolve the profile's network policy: sets the container NetworkMode and,

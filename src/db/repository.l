@@ -592,6 +592,9 @@ pub record Profile {
   pub mcpServerIds: slice[String]
   pub toolMode: String
   pub tools: slice[String]
+  /// Run as the harness user before the harness, once per distinct content
+  /// (docker/user-tools.sh, docs/tool-installs.md). "" for none.
+  pub setupScript: String
   pub createdAt: String
   pub updatedAt: String
 }
@@ -911,6 +914,37 @@ pub func addProfile(
   )
 }
 
+/// addProfile, also storing the profile's setup script.
+pub func addProfileWithSetupScript(
+  sc: in CloudAgents.Pg.TenantScope,
+  name: in String,
+  harness: in String,
+  networkPolicy: in String,
+  credentialMode: in String,
+  credentials: in slice[String],
+  skillIds: in slice[String],
+  subagentIds: in slice[String],
+  mcpServerIds: in slice[String],
+  toolMode: in String,
+  tools: in slice[String],
+  setupScript: in String,
+): Result[Profile, CloudAgents.Db.DbError] {
+  return CloudAgents.PgStore.Library.addProfileWithSetupScript(
+    sc,
+    name,
+    harness,
+    networkPolicy,
+    credentialMode,
+    credentials,
+    skillIds,
+    subagentIds,
+    mcpServerIds,
+    toolMode,
+    tools,
+    setupScript
+  )
+}
+
 /// All of a user's profiles (each with its granted credential names and
 /// library-item ids), by name.
 pub func listProfiles(sc: in CloudAgents.Pg.TenantScope): Result[slice[Profile], CloudAgents.Db.DbError] {
@@ -964,6 +998,40 @@ pub func updateProfile(
   )
 }
 
+/// updateProfile, also replacing the profile's setup script (updateProfile
+/// leaves it unchanged).
+pub func updateProfileWithSetupScript(
+  id: in String,
+  sc: in CloudAgents.Pg.TenantScope,
+  name: in String,
+  harness: in String,
+  networkPolicy: in String,
+  credentialMode: in String,
+  credentials: in slice[String],
+  skillIds: in slice[String],
+  subagentIds: in slice[String],
+  mcpServerIds: in slice[String],
+  toolMode: in String,
+  tools: in slice[String],
+  setupScript: in String,
+): Result[Int, CloudAgents.Db.DbError] {
+  return CloudAgents.PgStore.Library.updateProfileWithSetupScript(
+    id,
+    sc,
+    name,
+    harness,
+    networkPolicy,
+    credentialMode,
+    credentials,
+    skillIds,
+    subagentIds,
+    mcpServerIds,
+    toolMode,
+    tools,
+    setupScript
+  )
+}
+
 /// Delete a profile and every grant set (atomically, #230). Returns rows
 /// affected (0 = not found / not owned) — taken from the transaction's own
 /// DELETE on the profiles row (deliberately the last statement), not from the
@@ -1007,6 +1075,16 @@ pub func enabledToolsForProfile(
   sc: in CloudAgents.Pg.TenantScope, profileId: in String
 ): Result[String, CloudAgents.Db.DbError] {
   return CloudAgents.PgStore.Library.enabledToolsForProfile(sc, profileId)
+}
+
+/// The setup script to pass to a profile's session container: "" for no
+/// profile, one that no longer resolves, or one without a script. Unlike
+/// credentials, a dangling profile reference needs no fail-closed handling
+/// here: running no setup script grants nothing.
+pub func setupScriptForProfile(
+  sc: in CloudAgents.Pg.TenantScope, profileId: in String
+): Result[String, CloudAgents.Db.DbError] {
+  return CloudAgents.PgStore.Library.setupScriptForProfile(sc, profileId)
 }
 
 // ─── Library: skills, subagents, MCP servers ───────────────────────────────────

@@ -43,6 +43,15 @@ test "withExtraRepos only appends EXTRA_REPOS when non-empty" {
   assertEqual(withRepos[7], "EXTRA_REPOS=https://github.com/o/extra|main", "EXTRA_REPOS carries the raw value")
 }
 
+test "withSetupScript only appends CLOUD_AGENTS_SETUP_SCRIPT_B64 when there is a script" {
+  val base: slice[String] = ["PROMPT=p"]
+  val none = withSetupScript(base, "")
+  assertEqualInt(none.length.toInt(), 1, "no script, no entry")
+  val some = withSetupScript(base, "ZWNobyBoaQ==")
+  assertEqualInt(some.length.toInt(), 2, "a script adds one entry")
+  assertEqual(some[1], "CLOUD_AGENTS_SETUP_SCRIPT_B64=ZWNobyBoaQ==", "entry carries the encoded script verbatim")
+}
+
 test "withCredentialEnvs appends one NAME=VALUE per credential, preserving order" {
   val base = baseRunnerEnvs("p", "u", "b", "h", "m", "n", "s")
   val noNames: slice[String] = []

@@ -60,6 +60,7 @@ const EXISTING_PROFILE: Profile = {
   mcpServerIds: [],
   toolMode: 'all',
   tools: [],
+  setupScript: '',
   createdAt: '0',
   updatedAt: '0',
 };
@@ -83,6 +84,7 @@ beforeEach(() => {
     mcpServerIds: [],
     toolMode: 'all',
     tools: [],
+    setupScript: '',
     createdAt: '0',
     updatedAt: '0',
   });
@@ -162,6 +164,41 @@ describe('Profiles tool enablement (#614/#615/#616)', () => {
 
     expect(api.addProfile).toHaveBeenCalledWith(
       expect.objectContaining({ name: 'scoped', toolMode: 'selected', tools: ['remember', 'recall'] }),
+    );
+  });
+});
+
+describe('Profiles setup script', () => {
+  it('sends an empty setup script by default and the typed one when given', async () => {
+    const user = userEvent.setup();
+    render(<Profiles />);
+    await screen.findByText('No profiles yet — create one above.');
+
+    await user.type(screen.getByLabelText('Profile name'), 'tools');
+    await user.type(screen.getByLabelText('Setup script'), 'npm i -g pnpm');
+    await user.click(screen.getByRole('button', { name: 'Create profile' }));
+
+    expect(api.addProfile).toHaveBeenCalledWith(
+      expect.objectContaining({ name: 'tools', setupScript: 'npm i -g pnpm' }),
+    );
+  });
+
+  it('loads an existing script for editing and sends it back on update', async () => {
+    const user = userEvent.setup();
+    vi.mocked(api.getProfiles).mockResolvedValue([{ ...EXISTING_PROFILE, setupScript: 'uv tool install ruff' }]);
+    vi.mocked(api.updateProfile).mockResolvedValue({ ...EXISTING_PROFILE, setupScript: 'uv tool install ruff' });
+    render(<Profiles />);
+
+    expect(await screen.findByText('setup script')).toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: 'Edit prod' }));
+    expect(screen.getByLabelText('Setup script')).toHaveValue('uv tool install ruff');
+
+    await user.click(screen.getByRole('button', { name: 'Update profile' }));
+    await waitFor(() =>
+      expect(api.updateProfile).toHaveBeenCalledWith(
+        'p9',
+        expect.objectContaining({ setupScript: 'uv tool install ruff' }),
+      ),
     );
   });
 });

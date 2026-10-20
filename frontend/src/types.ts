@@ -157,6 +157,7 @@ export interface Profile {
   mcpServerIds: string[]; // granted McpServer ids
   toolMode: 'all' | 'selected';
   tools: string[]; // enabled shim tool names (selected mode)
+  setupScript: string; // run before the harness once per change; '' = none
   createdAt: string;
   updatedAt: string;
 }

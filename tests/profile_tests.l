@@ -160,22 +160,22 @@ test "Profile handlers validate enums, grants, and reject duplicates" {
   }
   val me = freshUser("prof-profile-handlers")
   // Bad network policy -> 400.
-  match addProfileHandler(SaveProfileRequest(name = "p", harness = "", networkPolicy = "open", credentialMode = "all", credentials = [], skillIds = [], subagentIds = [], mcpServerIds = [], toolMode = "all", tools = [])) {
+  match addProfileHandler(SaveProfileRequest(name = "p", harness = "", networkPolicy = "open", credentialMode = "all", credentials = [], skillIds = [], subagentIds = [], mcpServerIds = [], toolMode = "all", tools = [], setupScript = "")) {
     case Ok(_) -> assertTrue(false, "bad policy should be rejected")
     case Err(err) -> assertEqualInt(err.status, 400, "bad policy -> 400")
   }
   // Invalid grant name (#237) -> 400.
-  match addProfileHandler(SaveProfileRequest(name = "p2", harness = "", networkPolicy = "none", credentialMode = "selected", credentials = ["bad name"], skillIds = [], subagentIds = [], mcpServerIds = [], toolMode = "all", tools = [])) {
+  match addProfileHandler(SaveProfileRequest(name = "p2", harness = "", networkPolicy = "none", credentialMode = "selected", credentials = ["bad name"], skillIds = [], subagentIds = [], mcpServerIds = [], toolMode = "all", tools = [], setupScript = "")) {
     case Ok(_) -> assertTrue(false, "bad grant name should be rejected")
     case Err(err) -> assertEqualInt(err.status, 400, "bad grant -> 400")
   }
   // Bad tool mode -> 400.
-  match addProfileHandler(SaveProfileRequest(name = "p3", harness = "", networkPolicy = "none", credentialMode = "all", credentials = [], skillIds = [], subagentIds = [], mcpServerIds = [], toolMode = "some", tools = [])) {
+  match addProfileHandler(SaveProfileRequest(name = "p3", harness = "", networkPolicy = "none", credentialMode = "all", credentials = [], skillIds = [], subagentIds = [], mcpServerIds = [], toolMode = "some", tools = [], setupScript = "")) {
     case Ok(_) -> assertTrue(false, "bad tool mode should be rejected")
     case Err(err) -> assertEqualInt(err.status, 400, "bad tool mode -> 400")
   }
   // Unknown tool name (docs/phase7-autonomy.md §7) -> 400.
-  match addProfileHandler(SaveProfileRequest(name = "p4", harness = "", networkPolicy = "none", credentialMode = "all", credentials = [], skillIds = [], subagentIds = [], mcpServerIds = [], toolMode = "selected", tools = ["not_a_real_tool"])) {
+  match addProfileHandler(SaveProfileRequest(name = "p4", harness = "", networkPolicy = "none", credentialMode = "all", credentials = [], skillIds = [], subagentIds = [], mcpServerIds = [], toolMode = "selected", tools = ["not_a_real_tool"], setupScript = "")) {
     case Ok(_) -> assertTrue(false, "unknown tool name should be rejected")
     case Err(err) -> assertEqualInt(err.status, 400, "unknown tool name -> 400")
   }
@@ -183,22 +183,22 @@ test "Profile handlers validate enums, grants, and reject duplicates" {
   // to 'all' (#616): the opposite of credentialMode's fail-closed behavior
   // for the analogous zero-grants case would otherwise surprise an operator
   // deselecting every tool expecting a locked-down profile.
-  match addProfileHandler(SaveProfileRequest(name = "p5", harness = "", networkPolicy = "none", credentialMode = "all", credentials = [], skillIds = [], subagentIds = [], mcpServerIds = [], toolMode = "selected", tools = [])) {
+  match addProfileHandler(SaveProfileRequest(name = "p5", harness = "", networkPolicy = "none", credentialMode = "all", credentials = [], skillIds = [], subagentIds = [], mcpServerIds = [], toolMode = "selected", tools = [], setupScript = "")) {
     case Ok(_) -> assertTrue(false, "'selected' toolMode with zero tools should be rejected")
     case Err(err) -> assertEqualInt(err.status, 400, "selected + zero tools -> 400")
   }
   // Happy path.
-  match addProfileHandler(SaveProfileRequest(name = "prod", harness = "", networkPolicy = "none", credentialMode = "all", credentials = [], skillIds = [], subagentIds = [], mcpServerIds = [], toolMode = "all", tools = [])) {
+  match addProfileHandler(SaveProfileRequest(name = "prod", harness = "", networkPolicy = "none", credentialMode = "all", credentials = [], skillIds = [], subagentIds = [], mcpServerIds = [], toolMode = "all", tools = [], setupScript = "")) {
     case Ok(p) -> assertEqual(p.name, "prod", "profile created")
     case Err(_) -> assertTrue(false, "valid profile should create")
   }
   // Duplicate name (#236) -> 400, not a 500 from the UNIQUE constraint.
-  match addProfileHandler(SaveProfileRequest(name = "prod", harness = "", networkPolicy = "full", credentialMode = "all", credentials = [], skillIds = [], subagentIds = [], mcpServerIds = [], toolMode = "all", tools = [])) {
+  match addProfileHandler(SaveProfileRequest(name = "prod", harness = "", networkPolicy = "full", credentialMode = "all", credentials = [], skillIds = [], subagentIds = [], mcpServerIds = [], toolMode = "all", tools = [], setupScript = "")) {
     case Ok(_) -> assertTrue(false, "duplicate name should be rejected")
     case Err(err) -> assertEqualInt(err.status, 400, "duplicate name -> 400")
   }
   // Unknown ids are 404s.
-  match updateProfileHandler("nope", SaveProfileRequest(name = "x", harness = "", networkPolicy = "full", credentialMode = "all", credentials = [], skillIds = [], subagentIds = [], mcpServerIds = [], toolMode = "all", tools = [])) {
+  match updateProfileHandler("nope", SaveProfileRequest(name = "x", harness = "", networkPolicy = "full", credentialMode = "all", credentials = [], skillIds = [], subagentIds = [], mcpServerIds = [], toolMode = "all", tools = [], setupScript = "")) {
     case Ok(_) -> assertTrue(false, "unknown update should 404")
     case Err(err) -> assertEqualInt(err.status, 404, "unknown update -> 404")
   }
@@ -217,13 +217,13 @@ test "an absent/empty toolMode (a not-yet-updated frontend) defaults to 'all', n
   // never populated. Must succeed, not 400 — every existing profile
   // create/update from the current UI would otherwise break the moment
   // this ships.
-  val created = match addProfileHandler(SaveProfileRequest(name = "legacy-client", harness = "", networkPolicy = "none", credentialMode = "all", credentials = [], skillIds = [], subagentIds = [], mcpServerIds = [], toolMode = "", tools = [])) {
+  val created = match addProfileHandler(SaveProfileRequest(name = "legacy-client", harness = "", networkPolicy = "none", credentialMode = "all", credentials = [], skillIds = [], subagentIds = [], mcpServerIds = [], toolMode = "", tools = [], setupScript = "")) {
     case Ok(p) -> p
     case Err(err) -> panic("an absent toolMode must not be rejected: " + toString(err.status))
   }
   assertEqual(created.toolMode, "all", "empty toolMode is normalized and stored as 'all'")
 
-  val updated = match updateProfileHandler(created.id, SaveProfileRequest(name = "legacy-client", harness = "", networkPolicy = "full", credentialMode = "all", credentials = [], skillIds = [], subagentIds = [], mcpServerIds = [], toolMode = "", tools = [])) {
+  val updated = match updateProfileHandler(created.id, SaveProfileRequest(name = "legacy-client", harness = "", networkPolicy = "full", credentialMode = "all", credentials = [], skillIds = [], subagentIds = [], mcpServerIds = [], toolMode = "", tools = [], setupScript = "")) {
     case Ok(p) -> p
     case Err(err) -> panic("an absent toolMode on update must not be rejected: " + toString(err.status))
   }
@@ -253,7 +253,8 @@ test "SaveProfileRequest.fromJson decodes a body that omits toolMode/tools entir
 
   // A body that already sends both fields must decode byte-identically to
   // patching nothing (no double-injected keys, no corrupted trailing JSON).
-  val alreadyPresent = "{\"name\":\"x\",\"harness\":\"\",\"networkPolicy\":\"none\",\"credentialMode\":\"all\",\"credentials\":[],\"skillIds\":[],\"subagentIds\":[],\"mcpServerIds\":[],\"toolMode\":\"selected\",\"tools\":[\"remember\"]}"
+  // Includes setupScript, the later patched field, so the body is complete.
+  val alreadyPresent = "{\"name\":\"x\",\"harness\":\"\",\"networkPolicy\":\"none\",\"credentialMode\":\"all\",\"credentials\":[],\"skillIds\":[],\"subagentIds\":[],\"mcpServerIds\":[],\"toolMode\":\"selected\",\"tools\":[\"remember\"],\"setupScript\":\"\"}"
   assertEqual(
     patchMissingToolFields(alreadyPresent),
     alreadyPresent,
@@ -267,12 +268,96 @@ test "SaveProfileRequest.fromJson decodes a body that omits toolMode/tools entir
   assertEqualInt(decodedAlreadyPresent.tools.length.toInt(), 1, "an explicitly-sent tools list is preserved")
 }
 
+test "a body without setupScript still decodes, and an explicit one is kept" {
+  val legacy = "{\"name\":\"n\",\"harness\":\"\",\"networkPolicy\":\"none\",\"credentialMode\":\"all\",\"credentials\":[],\"skillIds\":[],\"subagentIds\":[],\"mcpServerIds\":[],\"toolMode\":\"all\",\"tools\":[]}"
+  val decoded = match SaveProfileRequest.fromJson(patchMissingToolFields(legacy)) {
+    case Ok(d) -> d
+    case Err(e) -> panic("a body omitting setupScript must still decode: " + toString(e))
+  }
+  assertEqual(decoded.setupScript, "", "an omitted setupScript decodes to no script")
+
+  val withScript = "{\"name\":\"n\",\"harness\":\"\",\"networkPolicy\":\"none\",\"credentialMode\":\"all\",\"credentials\":[],\"skillIds\":[],\"subagentIds\":[],\"mcpServerIds\":[],\"toolMode\":\"all\",\"tools\":[],\"setupScript\":\"npm i -g pnpm\"}"
+  assertEqual(patchMissingToolFields(withScript), withScript, "a complete body is passed through unchanged")
+  val decodedWith = match SaveProfileRequest.fromJson(withScript) {
+    case Ok(d) -> d
+    case Err(e) -> panic("a body with setupScript must decode: " + toString(e))
+  }
+  assertEqual(decodedWith.setupScript, "npm i -g pnpm", "an explicit setupScript is kept")
+}
+
+test "a profile's setup script is validated, stored, returned and replaced" {
+  if not live() {
+    return
+  }
+  val me = freshUser("prof-profile-setup-script")
+  val sc = CloudAgents.Pg.personalScope(me)
+  var tooLong = "#"
+  while tooLong.length <= 24576 {
+    tooLong = tooLong + tooLong
+  }
+  match addProfileHandler(SaveProfileRequest(name = "big", harness = "", networkPolicy = "none", credentialMode = "all", credentials = [], skillIds = [], subagentIds = [], mcpServerIds = [], toolMode = "all", tools = [], setupScript = tooLong)) {
+    case Ok(_) -> assertTrue(false, "a setup script over 24576 characters must be rejected")
+    case Err(err) -> assertEqualInt(err.status, 400, "oversized setup script -> 400")
+  }
+
+  val script = "set -e\nnpm i -g pnpm\nuv tool install ruff\n"
+  val created = match addProfileHandler(SaveProfileRequest(name = "with-setup", harness = "", networkPolicy = "full", credentialMode = "all", credentials = [], skillIds = [], subagentIds = [], mcpServerIds = [], toolMode = "all", tools = [], setupScript = script)) {
+    case Ok(p) -> p
+    case Err(err) -> panic("saving a profile with a setup script failed: " + toString(err.status))
+  }
+  assertEqual(created.setupScript, script, "the handler returns the stored script")
+  match getProfile(created.id, sc) {
+    case Ok(Some(p)) -> assertEqual(p.setupScript, script, "the script round-trips through the store")
+    case Ok(None) -> assertTrue(false, "created profile should exist")
+    case Err(e) -> assertTrue(false, "getProfile failed: " + CloudAgents.Db.dbErrorMessage(e))
+  }
+  match setupScriptForProfile(sc, created.id) {
+    case Ok(s) -> assertEqual(s, script, "setupScriptForProfile returns the script for the container")
+    case Err(e) -> assertTrue(false, "setupScriptForProfile failed: " + CloudAgents.Db.dbErrorMessage(e))
+  }
+
+  // The positional updateProfile (no setup script argument) leaves it alone.
+  mustRows(updateProfile(created.id, sc, "with-setup", "", "none", "all", [], [], [], [], "all", []))
+  match setupScriptForProfile(sc, created.id) {
+    case Ok(s) -> assertEqual(s, script, "updateProfile keeps the existing script")
+    case Err(e) -> assertTrue(false, "setupScriptForProfile failed: " + CloudAgents.Db.dbErrorMessage(e))
+  }
+
+  // An update whose body omitted setupScript (an older frontend) keeps it.
+  val legacyBody = "{\"name\":\"with-setup\",\"harness\":\"\",\"networkPolicy\":\"full\",\"credentialMode\":\"all\",\"credentials\":[],\"skillIds\":[],\"subagentIds\":[],\"mcpServerIds\":[],\"toolMode\":\"all\",\"tools\":[]}"
+  assertTrue(not bodyHasSetupScript(legacyBody), "a legacy body has no setupScript")
+  val legacyReq = match SaveProfileRequest.fromJson(patchMissingToolFields(legacyBody)) {
+    case Ok(d) -> d
+    case Err(e) -> panic("legacy body must decode: " + toString(e))
+  }
+  match updateProfileHandlerWith(created.id, legacyReq, bodyHasSetupScript(legacyBody)) {
+    case Ok(p) -> assertEqual(p.setupScript, script, "an update without setupScript keeps the stored script")
+    case Err(err) -> panic("legacy update failed: " + toString(err.status))
+  }
+  assertTrue(bodyHasSetupScript("{\"setupScript\":\"\"}"), "an explicit empty setupScript counts as present")
+
+  // The handler's update replaces it; "" clears it.
+  match updateProfileHandler(created.id, SaveProfileRequest(name = "with-setup", harness = "", networkPolicy = "full", credentialMode = "all", credentials = [], skillIds = [], subagentIds = [], mcpServerIds = [], toolMode = "all", tools = [], setupScript = "")) {
+    case Ok(p) -> assertEqual(p.setupScript, "", "an empty setupScript clears the script")
+    case Err(err) -> panic("clearing the setup script failed: " + toString(err.status))
+  }
+
+  match setupScriptForProfile(sc, "") {
+    case Ok(s) -> assertEqual(s, "", "no profile, no script")
+    case Err(e) -> assertTrue(false, "setupScriptForProfile failed: " + CloudAgents.Db.dbErrorMessage(e))
+  }
+  match setupScriptForProfile(sc, "no-such-profile") {
+    case Ok(s) -> assertEqual(s, "", "a dangling profile id, no script")
+    case Err(e) -> assertTrue(false, "setupScriptForProfile failed: " + CloudAgents.Db.dbErrorMessage(e))
+  }
+}
+
 test "duplicate tool names in 'selected' mode are rejected (#615)" {
   if not live() {
     return
   }
   val me = freshUser("prof-profile-toolmode-dup")
-  match addProfileHandler(SaveProfileRequest(name = "dup-tools", harness = "", networkPolicy = "none", credentialMode = "all", credentials = [], skillIds = [], subagentIds = [], mcpServerIds = [], toolMode = "selected", tools = ["remember", "recall", "remember"])) {
+  match addProfileHandler(SaveProfileRequest(name = "dup-tools", harness = "", networkPolicy = "none", credentialMode = "all", credentials = [], skillIds = [], subagentIds = [], mcpServerIds = [], toolMode = "selected", tools = ["remember", "recall", "remember"], setupScript = "")) {
     case Ok(_) -> assertTrue(false, "a repeated tool name must be rejected")
     case Err(err) -> assertEqualInt(err.status, 400, "duplicate tool name -> 400")
   }
@@ -375,7 +460,7 @@ test "Profile Resp helpers emit the raw profile JSON, not a double-encoded JSON 
     return
   }
   val me = freshUser("prof-profile-jsonresp")
-  val p = match addProfileHandler(SaveProfileRequest(name = "json-check", harness = "", networkPolicy = "none", credentialMode = "all", credentials = [], skillIds = [], subagentIds = [], mcpServerIds = [], toolMode = "all", tools = [])) {
+  val p = match addProfileHandler(SaveProfileRequest(name = "json-check", harness = "", networkPolicy = "none", credentialMode = "all", credentials = [], skillIds = [], subagentIds = [], mcpServerIds = [], toolMode = "all", tools = [], setupScript = "")) {
     case Ok(v) -> v
     case Err(_) -> panic("setup: profile create failed")
   }

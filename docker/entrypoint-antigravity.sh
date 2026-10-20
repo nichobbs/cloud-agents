@@ -149,6 +149,14 @@ create-fallback-branch.sh "entrypoint-antigravity" "${HARNESS}" "${BRANCH}" "${S
 # Antigravity's native config (.agents/skills, .gemini/antigravity-cli/settings.json).
 /usr/local/bin/inject-library.sh "antigravity" || echo "entrypoint-antigravity: library injection failed, continuing without it" >&2
 
+# User-space tool installs (~/.local, on the shared home volume) and the
+# profile's setup script, run once per script change (docker/user-tools.sh,
+# docs/tool-installs.md). Neither can block the prompt run.
+# shellcheck source=user-tools.sh
+source /usr/local/bin/user-tools.sh
+cloud_agents_user_tools_env
+cloud_agents_run_setup_script "entrypoint-antigravity"
+
 # Register (or strip) the cloud-agents MCP callback shim in .gemini/antigravity-cli/settings.json.
 if [ -f /usr/local/bin/register-callbacks-mcp.sh ]; then
     # shellcheck source=register-callbacks-mcp.sh

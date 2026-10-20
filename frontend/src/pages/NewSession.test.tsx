@@ -136,6 +136,7 @@ function makeProfile() {
     mcpServerIds: [],
     toolMode: 'all' as const,
     tools: [],
+    setupScript: '',
     createdAt: '0',
     updatedAt: '0',
   };
