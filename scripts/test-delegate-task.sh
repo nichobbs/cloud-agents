@@ -345,6 +345,17 @@ check "install: then ran the worker"            [ "$(field .status)" = ok ]
 rc=0; out="$(cd "$repo" && git checkout -q -- calc.txt && env PATH="$WORK/npmbin:$PATH" HOME="$WORK/nohome" DELEGATE_HOME="$WORK/home" \
   DELEGATE_AUTO_INSTALL=0 "$SCRIPT" -m codex:x "x")" || rc=$?
 check "install: disabled means not_installed"   [ "$(field '.attempts[0].outcome')" = not_installed ]
+mkdir -p "$WORK/npmbin2"
+cat > "$WORK/npmbin2/npm" <<STUB
+#!/usr/bin/env bash
+env > "$WORK/npm.env"
+sleep 30
+STUB
+chmod +x "$WORK/npmbin2/npm"
+rc=0; out="$(cd "$repo" && env -u DELEGATE_GEMINI_BIN PATH="$WORK/npmbin2:$PATH" HOME="$WORK/hanghome" DELEGATE_HOME="$WORK/home" \
+  DELEGATE_INSTALL_TIMEOUT=2 GITHUB_TOKEN=gh "$SCRIPT" -m gemini:x "x")" || rc=$?
+check "install: a hung install times out"       [ "$(field '.attempts[0].outcome')" = not_installed ]
+check "install: npm gets the scrubbed env"      bash -c "! grep -q '^GITHUB_TOKEN=' '$WORK/npm.env'"
 
 # 8. Usage errors.
 repo="$(new_repo usage)"

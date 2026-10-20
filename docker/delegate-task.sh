@@ -342,7 +342,10 @@ worker_bin() {
   [ "${DELEGATE_AUTO_INSTALL:-1}" != "0" ] || return 1
   pkg="$(npm_package "$h")"
   echo "delegate-task: installing $pkg into ~/.local (log: $log_root/install-$h.log)" >&2
-  npm install -g --prefix "$HOME/.local" "$pkg" > "$log_root/install-$h.log" 2>&1 || return 1
+  # Bounded, and with the scrubbed environment: a package's install scripts
+  # get no more of the session's credentials than a worker does.
+  timeout --kill-after=10 "${DELEGATE_INSTALL_TIMEOUT:-300}" env -i "${base_env[@]}" "HOME=$HOME" \
+    npm install -g --prefix "$HOME/.local" "$pkg" > "$log_root/install-$h.log" 2>&1 || return 1
   [ -x "$HOME/.local/bin/$bin" ] || return 1
   echo "$HOME/.local/bin/$bin"
 }
