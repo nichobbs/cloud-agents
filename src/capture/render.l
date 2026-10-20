@@ -120,37 +120,24 @@ func displayTextOfRoot(root: in JsonElement): String {
     case None -> ()
   }
 
-  // 2. Codex item format: root.item
+  // 2. Codex `exec --json` (codex-rs/exec/src/exec_events.rs, 0.145): the reply
+  // is an `item.completed` event whose item has type "agent_message" and a
+  // `text`. Other item types are not the visible transcript: "reasoning" also
+  // has a `text` (the equivalent of Claude's excluded thinking blocks), and
+  // command, file-change, tool-call, todo and error items are tool activity.
   match Std.Json.tryGetProperty(root, "item") {
     case Some(item) -> {
-      if Std.Json.valueKind(item) == jsonKindObject {
-        match Std.Json.tryGetProperty(item, "text") {
-          case Some(t) -> {
-            if Std.Json.valueKind(t) == jsonKindString {
-              val txt = safeString(t)
-              if txt.length.toInt() > 0 {
-                return txt
-              }
-            }
-          }
-          case None -> ()
-        }
-        match Std.Json.tryGetProperty(item, "content") {
-          case Some(c) -> {
-            if Std.Json.valueKind(c) == jsonKindString {
-              val txt = safeString(c)
-              if txt.length.toInt() > 0 {
-                return txt
-              }
-            } else if Std.Json.valueKind(c) == jsonKindArray {
-              val txt = textOfContent(c)
-              if txt.length.toInt() > 0 {
-                return txt
-              }
-            }
-          }
-          case None -> ()
-        }
+      if Std.Json.valueKind(item) != jsonKindObject {
+        return ""
+      }
+      val eventType = match Std.Json.tryGetProperty(root, "type") { case None -> ""; case Some(t) -> safeString(t) }
+      val itemType = match Std.Json.tryGetProperty(item, "type") { case None -> ""; case Some(t) -> safeString(t) }
+      if eventType != "item.completed" or itemType != "agent_message" {
+        return ""
+      }
+      return match Std.Json.tryGetProperty(item, "text") {
+        case None -> ""
+        case Some(t) -> safeString(t)
       }
     }
     case None -> ()

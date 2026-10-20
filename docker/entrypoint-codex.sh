@@ -161,9 +161,30 @@ fi
 # workspace — point it at the workspace .codex/ that this entrypoint and
 # inject-library.sh actually write (#808), so the MCP registration and the
 # library-granted subagents/servers rendered there are genuinely
-# discovered. Auth is env-based here (OPENAI_API_KEY) and each run is
-# stateless, so nothing in the default ~/.codex is lost by the override.
+# discovered. Auth is env-based here and each run is stateless, so nothing in
+# the default ~/.codex is lost by the override.
 export CODEX_HOME=/workspace/.codex
+# Codex 0.145 authenticates with CODEX_API_KEY; given only OPENAI_API_KEY it
+# sends no credentials and every request fails with 401 "Missing bearer".
+export CODEX_API_KEY="${CODEX_API_KEY:-$OPENAI_API_KEY}"
+# Codex refuses to start when CODEX_HOME does not exist, and nothing above is
+# guaranteed to have created it (both writers are best-effort).
+mkdir -p "$CODEX_HOME"
+# Codex also keeps its runtime state there: sqlite databases, logs, shell
+# snapshots, its bundled skills and a plugin checkout with its own .git. Keep
+# all of it out of the agent's commits. Only .codex/agents/ (inject-library.sh)
+# stays visible; config.toml is excluded too, which register-callbacks-mcp.sh
+# already requires because it carries the callback token. Appending a negation
+# for config.toml here would undo that, so there isn't one.
+codex_gitdir=$(git -C /workspace rev-parse --git-common-dir 2>/dev/null) || codex_gitdir=""
+if [ -n "$codex_gitdir" ]; then
+    case "$codex_gitdir" in /*) ;; *) codex_gitdir="/workspace/$codex_gitdir" ;; esac
+    mkdir -p "$codex_gitdir/info"
+    for pattern in '/.codex/*' '!/.codex/agents/'; do
+        grep -qxF -- "$pattern" "$codex_gitdir/info/exclude" 2>/dev/null \
+            || printf '%s\n' "$pattern" >> "$codex_gitdir/info/exclude"
+    done
+fi
 
 # Codex can't use a rules file for branch policy (it would override the
 # user's AGENTS.md), so the instruction is prepended to the prompt instead.
@@ -183,4 +204,10 @@ CODEX_BRANCH_INSTRUCTION="BRANCH POLICY: Before making any changes, rename the c
 CODEX_SESSION_INSTRUCTION="SESSION VISIBILITY: The human reviews a session ledger asynchronously, not your transcript; anything not in the ledger is invisible to them. If the cloud-agents MCP tools include ledger_get_state: call it at the start of every run and after context compaction; call ledger_register_items once you know the work items (issues like #12, or local:<slug> for a single task); call ledger_set_item_status on every state change (in_progress, pr_open, done, skipped); if an item needs other work first, set it blocked with blockedBy and/or prerequisiteProposal plus a recommendation, then move on instead of stopping; record a decision (ledger_record_decision) whenever a reviewer might have chosen differently and a deviation or shortcut (ledger_record_deviation) whenever you depart from the issue/plan or skip/weaken tests, stub, leave TODOs or suppress warnings, always with a recommendation; use ledger_ask with the default you proceed with instead of waiting; call ledger_check_feedback before each new item and before opening a PR, and apply it. If those tools are unavailable, instead restate your plan at the END of each response as a markdown checkbox list (- [ ] pending, - [~] in progress, - [x] done; one item per line, at least two items) — the session UI parses and displays it. Either way, end your final response with a '## Session notes' section listing (as short, specific bullets) any unexpected discoveries, issues/tickets opened or closed (with number/URL), workarounds, reverts, and incomplete or skipped work; omit the section only if none apply.
 
 "
-exec codex --model "${MODEL}" --full-auto --json -- "${CODEX_BRANCH_INSTRUCTION}${CODEX_SESSION_INSTRUCTION}${PROMPT}"
+# `codex exec` is the non-interactive mode; the bare `codex` command is the
+# TUI and rejects --json (and 0.145 has no --full-auto at all), so the old
+# invocation exited 2 before doing any work. The container is the sandbox, as
+# with --yolo in entrypoint-gemini.sh: Codex's own sandbox would block the
+# network the branch policy needs for `git push`. --ephemeral keeps session
+# files out of $CODEX_HOME, which is inside the repository checkout.
+exec codex exec --model "${MODEL}" --json --ephemeral --dangerously-bypass-approvals-and-sandbox -- "${CODEX_BRANCH_INSTRUCTION}${CODEX_SESSION_INSTRUCTION}${PROMPT}"
