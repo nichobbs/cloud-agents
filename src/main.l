@@ -1078,8 +1078,15 @@ impl Web.Handler for RouteUpdateProfile {
       case Ok(d) -> d
       case Err(_) -> return badBody()
     }
-    // An older frontend omits setupScript; keep the stored script then.
-    return profileResp(CloudAgents.Profiles.updateProfileHandlerWith(pid, decoded, CloudAgents.Profiles.bodyHasSetupScript(req.body)))
+    // An older frontend omits the runner settings; keep the stored values then.
+    return profileResp(
+      CloudAgents.Profiles.updateProfileHandlerWith(
+        pid,
+        decoded,
+        CloudAgents.Profiles.bodyHasField(req.body, "setupScript"),
+        CloudAgents.Profiles.bodyHasField(req.body, "delegateAllow")
+      )
+    )
   }
 }
 

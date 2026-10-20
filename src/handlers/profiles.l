@@ -21,6 +21,11 @@ val maxProfileNameLen = 200
 // units for 4 bytes), so 24576 units is at most 73728 bytes, 98304 once
 // base64-encoded: under the cap whatever the script contains.
 val maxSetupScriptLen = 24576
+val maxDelegateAllowLen = 2000
+// The harnesses delegate-task can run workers on (docker/delegate-task.sh's
+// HARNESSES). Not CloudAgents.Harnesses: antigravity is a session harness
+// but not a worker.
+val delegateWorkerHarnesses: slice[String] = ["opencode", "claude", "codex", "gemini"]
 
 // The stable MCP tool names the in-container shim can register (see
 // shim/src/main.l — an entirely separate Lyric project with its own
@@ -53,6 +58,7 @@ pub record SaveProfileRequest {
   pub toolMode: String
   pub tools: slice[String]
   pub setupScript: String
+  pub delegateAllow: String
 }
 
 /// The index of the last occurrence of a single-character `target` in `s`,
@@ -117,6 +123,12 @@ pub func patchMissingToolFields(body: in String): String {
   match Std.Json.tryGetProperty(root, "setupScript") {
     case None -> {
       toAdd = toAdd + ",\"setupScript\":\"\""
+    }
+    case Some(_) -> ()
+  }
+  match Std.Json.tryGetProperty(root, "delegateAllow") {
+    case None -> {
+      toAdd = toAdd + ",\"delegateAllow\":\"\""
     }
     case Some(_) -> ()
   }
@@ -201,6 +213,74 @@ pub func isValidToolName(name: in String): Bool {
   return false
 }
 
+/// A delegation allowlist: "" (no limit), or comma-separated entries, each a
+/// worker harness alone or HARNESS:GLOB where GLOB is letters, digits and
+/// . _ - / * ?. Mirrors what docker/delegate-task.sh's `allowed` matches, so
+/// a typo is rejected here instead of silently allowing nothing.
+pub func isValidDelegateAllow(list: in String): Bool {
+  if list.length > maxDelegateAllowLen {
+    return false
+  }
+  var entry = ""
+  var i = 0
+  while i <= list.length {
+    val atEnd = i == list.length
+    val c = if atEnd then "," else list.substring(i, 1)
+    if c == "," {
+      val e = entry.trim()
+      if e.length > 0 and not isValidDelegateEntry(e) {
+        return false
+      }
+      entry = ""
+    } else {
+      entry = entry + c
+    }
+    i = i + 1
+  }
+  return true
+}
+
+func isValidDelegateEntry(e: in String): Bool {
+  var colon = -1
+  var i = 0
+  while i < e.length {
+    if e.substring(i, 1) == ":" and colon < 0 {
+      colon = i
+    }
+    i = i + 1
+  }
+  val harness = if colon < 0 then e else e.substring(0, colon)
+  var known = false
+  var j = 0
+  while j < delegateWorkerHarnesses.length {
+    if delegateWorkerHarnesses[j] == harness {
+      known = true
+    }
+    j = j + 1
+  }
+  if not known {
+    return false
+  }
+  if colon < 0 {
+    return true
+  }
+  val glob = e.substring(colon + 1, e.length - colon - 1)
+  if glob.length == 0 {
+    return false
+  }
+  var k = 0
+  while k < glob.length {
+    val c = glob.substring(k, 1)
+    val ok = (c >= "a" and c <= "z") or (c >= "A" and c <= "Z") or (c >= "0" and c <= "9") or
+      c == "." or c == "_" or c == "-" or c == "/" or c == "*" or c == "?"
+    if not ok {
+      return false
+    }
+    k = k + 1
+  }
+  return true
+}
+
 /// Harness the profile pins, or "" to let the session choose. Mirrors the
 /// harnesses CloudAgents.Docker knows how to image.
 pub func isValidProfileHarness(h: in String): Bool {
@@ -258,6 +338,9 @@ func validateSaveProfile(req: in SaveProfileRequest): Option[Web.ApiError] {
   }
   if req.setupScript.length > maxSetupScriptLen {
     return Some(value = Web.badRequest("setupScript is too long (max 24576 characters)"))
+  }
+  if not isValidDelegateAllow(req.delegateAllow) {
+    return Some(value = Web.badRequest("delegateAllow must be comma-separated entries of opencode, claude, codex or gemini, optionally followed by :MODEL-GLOB (letters, digits, . _ - / * ?), at most 2000 characters"))
   }
   // In 'selected' mode, every granted name must be a valid env-var name, and
   // no name may repeat: profileCredentialStatements inserts one row per
@@ -374,7 +457,7 @@ pub func addProfileHandler(req: in SaveProfileRequest): Result[Profile, Web.ApiE
     case Ok(None) -> ()
     case Err(e) -> return Err(dbError(e))
   }
-  match addProfileWithSetupScript(
+  match addProfileWithRunnerSettings(
     sc,
     name,
     req.harness,
@@ -387,6 +470,7 @@ pub func addProfileHandler(req: in SaveProfileRequest): Result[Profile, Web.ApiE
     normalizedToolMode(req.toolMode),
     toolsFor(req),
     req.setupScript,
+    req.delegateAllow.trim(),
   ) {
     case Ok(p) -> return Ok(p)
     case Err(e) -> {
@@ -403,29 +487,29 @@ pub func addProfileHandler(req: in SaveProfileRequest): Result[Profile, Web.ApiE
 
 /// Update an existing profile.
 pub func updateProfileHandler(pid: in String, req: in SaveProfileRequest): Result[Profile, Web.ApiError] {
-  return updateProfileHandlerWith(pid, req, true)
+  return updateProfileHandlerWith(pid, req, true, true)
 }
 
-/// Whether a raw save-profile body carries `setupScript` at all. An update
-/// from a frontend that predates the field omits it, and
+/// Whether a raw save-profile body carries `field` at all. An update from a
+/// frontend that predates a runner setting omits it, and
 /// patchMissingToolFields then fills in "", which must not be read as "clear
-/// the script".
-pub func bodyHasSetupScript(body: in String): Bool {
+/// it".
+pub func bodyHasField(body: in String, field: in String): Bool {
   val doc = match Std.Json.tryParseJson(body) { case Ok(d) -> d; case Err(_) -> return false }
   defer {
     Std.Json.disposeJson(doc)
   }
-  match Std.Json.tryGetProperty(Std.Json.rootElement(doc), "setupScript") {
+  match Std.Json.tryGetProperty(Std.Json.rootElement(doc), field) {
     case Some(_) -> return true
     case None -> return false
   }
 }
 
-/// updateProfileHandler, replacing the setup script only when
-/// `replaceSetupScript` is set (the body named the field); otherwise the
-/// stored script is kept.
+/// updateProfileHandler, replacing each runner setting (setup script,
+/// delegation allowlist) only when its flag says the body named it; a setting
+/// the body omitted keeps its stored value.
 pub func updateProfileHandlerWith(
-  pid: in String, req: in SaveProfileRequest, replaceSetupScript: in Bool
+  pid: in String, req: in SaveProfileRequest, hasSetupScript: in Bool, hasDelegateAllow: in Bool
 ): Result[Profile, Web.ApiError] {
   if pid.length == 0 {
     return Err(Web.badRequest("profile id is required"))
@@ -442,7 +526,23 @@ pub func updateProfileHandlerWith(
     case Ok(None) -> ()
     case Err(e) -> return Err(dbError(e))
   }
-  val written = if replaceSetupScript then updateProfileWithSetupScript(
+  var setupScript = req.setupScript
+  var delegateAllow = req.delegateAllow.trim()
+  if not hasSetupScript or not hasDelegateAllow {
+    match getProfile(pid, sc) {
+      case Ok(Some(existing)) -> {
+        if not hasSetupScript {
+          setupScript = existing.setupScript
+        }
+        if not hasDelegateAllow {
+          delegateAllow = existing.delegateAllow
+        }
+      }
+      case Ok(None) -> return Err(Web.notFound("profile not found"))
+      case Err(e) -> return Err(dbError(e))
+    }
+  }
+  val written = updateProfileWithRunnerSettings(
     pid,
     sc,
     name,
@@ -455,20 +555,8 @@ pub func updateProfileHandlerWith(
     req.mcpServerIds,
     normalizedToolMode(req.toolMode),
     toolsFor(req),
-    req.setupScript,
-  ) else updateProfile(
-    pid,
-    sc,
-    name,
-    req.harness,
-    req.networkPolicy,
-    req.credentialMode,
-    grantsFor(req),
-    req.skillIds,
-    req.subagentIds,
-    req.mcpServerIds,
-    normalizedToolMode(req.toolMode),
-    toolsFor(req),
+    setupScript,
+    delegateAllow,
   )
   val affected = match written {
     case Ok(n) -> n

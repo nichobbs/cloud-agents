@@ -158,6 +158,7 @@ export interface Profile {
   toolMode: 'all' | 'selected';
   tools: string[]; // enabled shim tool names (selected mode)
   setupScript: string; // run before the harness once per change; '' = none
+  delegateAllow: string; // delegate-task allowlist, e.g. 'opencode:*-free,codex'; '' = no limit
   createdAt: string;
   updatedAt: string;
 }

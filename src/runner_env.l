@@ -82,6 +82,15 @@ pub func withSetupScript(envs: in slice[String], setupScriptB64: in String): sli
   return envs
 }
 
+/// Append the profile's delegation allowlist (docker/delegate-task.sh reads
+/// CLOUD_AGENTS_DELEGATE_ALLOW) only when there is one; none means no limit.
+pub func withDelegateAllow(envs: in slice[String], delegateAllow: in String): slice[String] {
+  if delegateAllow.length > 0 {
+    return envs.append("CLOUD_AGENTS_DELEGATE_ALLOW=" + delegateAllow)
+  }
+  return envs
+}
+
 /// Append one "NAME=VALUE" entry per decrypted credential, preserving the
 /// order the credential-injection call returned them in. Never logs a value.
 /// `names`/`values` are parallel slices (same index = same credential,

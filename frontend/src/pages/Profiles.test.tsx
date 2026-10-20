@@ -61,6 +61,7 @@ const EXISTING_PROFILE: Profile = {
   toolMode: 'all',
   tools: [],
   setupScript: '',
+  delegateAllow: '',
   createdAt: '0',
   updatedAt: '0',
 };
@@ -85,6 +86,7 @@ beforeEach(() => {
     toolMode: 'all',
     tools: [],
     setupScript: '',
+    delegateAllow: '',
     createdAt: '0',
     updatedAt: '0',
   });
@@ -199,6 +201,38 @@ describe('Profiles setup script', () => {
         'p9',
         expect.objectContaining({ setupScript: 'uv tool install ruff' }),
       ),
+    );
+  });
+});
+
+describe('Profiles delegation allowlist', () => {
+  it('sends an empty allowlist by default and the typed one, trimmed, when given', async () => {
+    const user = userEvent.setup();
+    render(<Profiles />);
+    await screen.findByText('No profiles yet — create one above.');
+
+    await user.type(screen.getByLabelText('Profile name'), 'limited');
+    await user.type(screen.getByLabelText('Delegation allowed to'), ' opencode:*-free, codex ');
+    await user.click(screen.getByRole('button', { name: 'Create profile' }));
+
+    expect(api.addProfile).toHaveBeenCalledWith(
+      expect.objectContaining({ name: 'limited', delegateAllow: 'opencode:*-free, codex' }),
+    );
+  });
+
+  it('shows and edits an existing allowlist', async () => {
+    const user = userEvent.setup();
+    vi.mocked(api.getProfiles).mockResolvedValue([{ ...EXISTING_PROFILE, delegateAllow: 'claude' }]);
+    vi.mocked(api.updateProfile).mockResolvedValue({ ...EXISTING_PROFILE, delegateAllow: 'claude' });
+    render(<Profiles />);
+
+    expect(await screen.findByText('delegate: claude')).toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: 'Edit prod' }));
+    expect(screen.getByLabelText('Delegation allowed to')).toHaveValue('claude');
+
+    await user.click(screen.getByRole('button', { name: 'Update profile' }));
+    await waitFor(() =>
+      expect(api.updateProfile).toHaveBeenCalledWith('p9', expect.objectContaining({ delegateAllow: 'claude' })),
     );
   });
 });

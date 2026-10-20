@@ -108,6 +108,7 @@ function makeProfile(over: Partial<Profile>): Profile {
     toolMode: 'all',
     tools: [],
     setupScript: '',
+    delegateAllow: '',
     createdAt: '0',
     updatedAt: '0',
     ...over,
@@ -524,6 +525,7 @@ describe('SessionDetail profile-attach-error handoff (#898)', () => {
       toolMode: 'all',
       tools: [],
       setupScript: '',
+      delegateAllow: '',
       createdAt: '0',
       updatedAt: '0',
     };
@@ -597,6 +599,7 @@ describe('SessionDetail stale attached profile (#900/#901)', () => {
     toolMode: 'all',
     tools: [],
     setupScript: '',
+    delegateAllow: '',
     createdAt: '0',
     updatedAt: '0',
   };

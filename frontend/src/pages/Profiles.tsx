@@ -93,6 +93,7 @@ export function Profiles() {
   const [toolMode, setToolMode] = useState('all');
   const [tools, setTools] = useState<string[]>([]);
   const [setupScript, setSetupScript] = useState('');
+  const [delegateAllow, setDelegateAllow] = useState('');
   const editingIdRef = useRef<string | null>(null);
   const [observer, setObserver] = useState<ObserverSettings>(DEFAULT_OBSERVER);
   const [observerLoading, setObserverLoading] = useState(false);
@@ -151,6 +152,7 @@ export function Profiles() {
     setToolMode('all');
     setTools([]);
     setSetupScript('');
+    setDelegateAllow('');
     setObserver(DEFAULT_OBSERVER);
     setObserverLoading(false);
   };
@@ -169,6 +171,7 @@ export function Profiles() {
     setToolMode(p.toolMode ?? 'all');
     setTools(p.tools ?? []);
     setSetupScript(p.setupScript ?? '');
+    setDelegateAllow(p.delegateAllow ?? '');
     setObserver(DEFAULT_OBSERVER);
     setObserverLoading(true);
     api
@@ -221,6 +224,7 @@ export function Profiles() {
       toolMode,
       tools: toolMode === 'selected' ? tools : [],
       setupScript,
+      delegateAllow: delegateAllow.trim(),
     };
     try {
       let profileId = editingId;
@@ -462,6 +466,25 @@ export function Profiles() {
         </div>
 
         <div style={grantsBoxStyle}>
+          <label style={fieldStyle}>
+            <span style={labelStyle}>Delegation allowed to</span>
+            <input
+              style={selectStyle}
+              value={delegateAllow}
+              onChange={e => setDelegateAllow(e.target.value)}
+              placeholder="any harness and model"
+              spellCheck={false}
+              aria-label="Delegation allowed to"
+            />
+          </label>
+          <div style={hintStyle}>
+            Which workers the agent may hand tasks to with <code>delegate-task</code>: comma-separated{' '}
+            <code>opencode</code>, <code>claude</code>, <code>codex</code> or <code>gemini</code>, optionally with{' '}
+            <code>:model</code> (wildcards allowed), e.g. <code>opencode:*-free, codex:gpt-5*</code>. Empty allows any.
+          </div>
+        </div>
+
+        <div style={grantsBoxStyle}>
           <label style={{ display: 'flex', alignItems: 'center', gap: '8px', ...labelStyle }}>
             <input
               type="checkbox"
@@ -597,6 +620,7 @@ export function Profiles() {
               tools: {p.toolMode === 'selected' ? `${p.tools.length} selected` : 'all'}
             </span>
             {p.setupScript && <span style={badgeStyle}>setup script</span>}
+            {p.delegateAllow && <span style={badgeStyle}>delegate: {p.delegateAllow}</span>}
           </div>
           {p.credentialMode === 'selected' && p.credentials.length > 0 && (
             <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px' }}>
