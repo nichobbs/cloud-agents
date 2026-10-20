@@ -117,6 +117,8 @@ COPY docker/reconcile-repos.sh /usr/local/bin/reconcile-repos.sh
 COPY docker/create-fallback-branch.sh /usr/local/bin/create-fallback-branch.sh
 COPY docker/inject-library.sh /usr/local/bin/inject-library.sh
 COPY docker/user-tools.sh /usr/local/bin/user-tools.sh
+# Any harness can orchestrate workers on other harnesses (docs/delegation.md).
+COPY docker/delegate-task.sh /usr/local/bin/delegate-task
 COPY docker/render-branch-policy.sh /usr/local/bin/render-branch-policy.sh
 # entrypoint.sh sources this (never runs it as its own process — see its own
 # header comment for why) to unset NODE_EXTRA_CA_CERTS before the harness
@@ -125,7 +127,7 @@ COPY docker/render-branch-policy.sh /usr/local/bin/render-branch-policy.sh
 COPY docker/sanitize-empty-node-extra-ca-certs.sh /usr/local/bin/sanitize-empty-node-extra-ca-certs.sh
 COPY docker/branch-policy-rules.md /etc/cloud-agents/branch-policy-rules.md
 COPY docker/session-tools-guide.md /etc/cloud-agents/session-tools-guide.md
-RUN chmod +x /usr/local/bin/entrypoint.sh /usr/local/bin/reconcile-repos.sh /usr/local/bin/create-fallback-branch.sh /usr/local/bin/inject-library.sh /usr/local/bin/render-branch-policy.sh /usr/local/bin/sanitize-empty-node-extra-ca-certs.sh
+RUN chmod +x /usr/local/bin/entrypoint.sh /usr/local/bin/reconcile-repos.sh /usr/local/bin/create-fallback-branch.sh /usr/local/bin/inject-library.sh /usr/local/bin/render-branch-policy.sh /usr/local/bin/sanitize-empty-node-extra-ca-certs.sh /usr/local/bin/delegate-task
 
 # ─── cloud-agents-shim (docs/phase6-mcp-callbacks.md) ───────────────────────
 # The in-container MCP callback server, giving this harness the same

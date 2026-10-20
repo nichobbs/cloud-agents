@@ -198,6 +198,8 @@ jobs:
             scripts/test-opencode-entrypoint.sh \
             scripts/test-user-tools.sh \
             docker/user-tools.sh \
+            scripts/test-delegate-task.sh \
+            docker/delegate-task.sh \
             scripts/test-inspect-tree-fallback.sh \
             scripts/test-entrypoint-session-resume.sh \
             scripts/test-entrypoint-privsep.sh \
@@ -288,6 +290,12 @@ jobs:
       # that all five entrypoints and images wire it in. No Docker, no network.
       - name: Test user-tools.sh
         run: ./scripts/test-user-tools.sh
+
+      # docker/delegate-task.sh (docs/delegation.md) against a stub `opencode`:
+      # fallback on a hung rate-limited model, the dirty-tree stop, the
+      # environment scrub, --check and --worktree. No network, no Docker.
+      - name: Test delegate-task.sh
+        run: ./scripts/test-delegate-task.sh
 
       # Regression test for docker/entrypoint.sh inspect `diff` mode section 3 —
       # the workspace tree hash that anchors the runner's terminal checkpoint

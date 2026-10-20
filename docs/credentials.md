@@ -164,6 +164,21 @@ without hand-typing names and values:
   `--claude-home` (see below); configure `CLOUD_AGENTS_URL` /
   `CLOUD_AGENTS_API_TOKEN`.
 
+## Codex and Gemini subscription logins (`CODEX_AUTH_JSON`, `GEMINI_OAUTH_CREDS_JSON`)
+
+These are used only by `delegate-task` workers (docs/delegation.md), not by the codex
+and gemini harnesses themselves, which still take API keys:
+
+- `CODEX_AUTH_JSON` is a ChatGPT login: the whole `~/.codex/auth.json` after
+  `codex login`, when it contains `tokens.refresh_token`.
+- `GEMINI_OAUTH_CREDS_JSON` is a Google login: the whole `~/.gemini/oauth_creds.json`
+  after signing in to Gemini CLI with Google.
+
+`scripts/upload-credentials.sh` uploads both when it finds them. A worker uses the login
+in preference to the matching API key. The refreshed copy lives on the home volume and is
+not written back to the vault, so after a long gap, or on a new home volume, re-upload if
+the worker reports an auth failure.
+
 ## Refreshable Claude login (`CLAUDE_CREDENTIALS_JSON`)
 
 Pasting `~/.claude/.credentials.json` on the Integrations page (or running

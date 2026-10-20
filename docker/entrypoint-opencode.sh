@@ -98,9 +98,13 @@ if [ -z "${PROMPT:-}" ]; then
     exit 64
 fi
 
-# Map legacy/unqualified free OpenCode models to the qualified 'opencode/' provider prefix.
+# Map unqualified free OpenCode Zen models to the 'opencode/' provider prefix.
+# Zen's free line-up changes every few weeks (a fixed list here went stale:
+# hy3-free and north-mini-code-free were withdrawn), so match the naming
+# convention instead: every free model but big-pickle carries a -free suffix.
 case "$MODEL" in
-  big-pickle|deepseek-v4-flash-free|hy3-free|mimo-v2.5-free|nemotron-3-ultra-free|north-mini-code-free)
+  */*) ;;
+  big-pickle|*-free)
     MODEL="opencode/${MODEL}"
     ;;
 esac
