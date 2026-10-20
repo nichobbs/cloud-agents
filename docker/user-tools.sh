@@ -51,7 +51,19 @@ cloud_agents_user_tools_env() {
 
 # $1: log label (e.g. "entrypoint-codex"). $2: directory to run in (default
 # /workspace).
+#
+# The work happens in a subshell so that nothing in it can abort the calling
+# entrypoint under `set -e`: not a failed write on a full or read-only home
+# volume, and not a failed `exec 9>` redirection, which would otherwise exit a
+# non-interactive shell outright. Nothing in the body needs to reach the
+# caller's environment.
 cloud_agents_run_setup_script() {
+    ( _cloud_agents_setup_script_body "$@" ) ||
+        echo "${1:-entrypoint}: WARNING: setup script step failed unexpectedly; continuing without it" >&2
+    return 0
+}
+
+_cloud_agents_setup_script_body() {
     local label="${1:-entrypoint}" workdir="${2:-/workspace}"
     [ -n "${CLOUD_AGENTS_SETUP_SCRIPT_B64:-}" ] || return 0
 
@@ -79,7 +91,10 @@ cloud_agents_run_setup_script() {
     # success makes this run unnecessary. Past CLOUD_AGENTS_SETUP_LOCK_WAIT
     # (default 120s) carry on without it rather than delay the session by up
     # to two script timeouts; the agent can install anything still missing.
-    exec 9> "$dir/lock"
+    if ! exec 9> "$dir/lock"; then
+        echo "$label: setup script $hash skipped: cannot open $dir/lock" >&2
+        return 0
+    fi
     if ! flock -w "${CLOUD_AGENTS_SETUP_LOCK_WAIT:-120}" 9; then
         exec 9>&-
         echo "$label: setup script $hash skipped: another session is still running it ($dir/lock)" >&2
