@@ -355,6 +355,7 @@ chmod +x "$WORK/npmbin2/npm"
 rc=0; out="$(cd "$repo" && env -u DELEGATE_GEMINI_BIN PATH="$WORK/npmbin2:$PATH" HOME="$WORK/hanghome" DELEGATE_HOME="$WORK/home" \
   DELEGATE_INSTALL_TIMEOUT=2 GITHUB_TOKEN=gh "$SCRIPT" -m gemini:x "x")" || rc=$?
 check "install: a hung install times out"       [ "$(field '.attempts[0].outcome')" = not_installed ]
+check "install: ...within the timeout"          [ "$(field '.attempts[0].seconds')" -lt 20 ]
 check "install: npm gets the scrubbed env"      bash -c "! grep -q '^GITHUB_TOKEN=' '$WORK/npm.env'"
 
 # 8. Usage errors.
