@@ -1,12 +1,13 @@
 ---
 name: delegate-to-worker
-description: Hand well-specified coding tasks to a cheaper worker model with delegate-task, keeping your own context small, and verify the result yourself
+description: Hand well-specified coding tasks to a worker on another model or harness (claude, codex, gemini, opencode) with delegate-task, keeping your own context small, and verify the result yourself
 ---
 
-Use this skill when `delegate-task` is on PATH (the claude runner image ships it) and a
-task is concrete enough to hand off: a bug with a reproduction, a function to write
-against a signature and tests, a mechanical refactor, a batch of similar edits. You stay
-the orchestrator; a cheaper model does the file reading, editing and build-retry loop.
+Use this skill when `delegate-task` is on PATH (every runner image ships it) and a task
+is concrete enough to hand off: a bug with a reproduction, a function to write against a
+signature and tests, a mechanical refactor, a batch of similar edits. You stay the
+orchestrator; a worker on another model or harness does the file reading, editing and
+build-retry loop.
 The saving only exists if you do not read the worker's transcript, so work from the
 JSON result and your own checks.
 
@@ -25,6 +26,29 @@ The worker has none of your context. A good spec has:
 - **Acceptance**: the exact command that must pass, such as `npm test -- calc` or
   `lyric test`.
 
+## Choosing a worker
+
+Workers run on four harnesses, each with its own credentials. Name them in the chain as
+`HARNESS:MODEL`:
+
+| Harness | Example entry | Good for |
+|---|---|---|
+| `codex` | `codex:gpt-5.5` | focused code changes against tests |
+| `claude` | `claude:sonnet`, `claude:haiku` | edits that need care with existing code |
+| `gemini` | `gemini:gemini-3-flash` | reading and changing a lot of code at once |
+| `opencode` | `opencode:big-pickle`, `opencode:deepseek-v4.1-flash` | free or cheap models for mechanical work |
+
+- Prefer workers backed by a subscription login. Each attempt reports `auth`
+  (`subscription`, `api_key` or `free`). Use the free OpenCode models as the first
+  entries for simple work and a stronger worker as the fallback.
+- Put alternatives in the chain rather than retrying by hand:
+  `-m opencode:big-pickle,codex:gpt-5.5,claude:sonnet`.
+- An attempt reported as `not_allowed` was excluded by the profile
+  (`CLOUD_AGENTS_DELEGATE_ALLOW`). Use one that is allowed; don't run that harness's CLI
+  directly to get around it.
+- `not_installed` means the CLI was missing and could not be installed (no network, or
+  `DELEGATE_AUTO_INSTALL=0`). Otherwise a missing CLI is installed on first use.
+
 ## Running it
 
 ```sh
@@ -37,12 +61,14 @@ delegate-task --check "<acceptance command>" --spec-file /tmp/spec.md
 - Without `--worktree`, `changed` and `diffstat` are measured against `HEAD`, so they
   include your own uncommitted edits. Commit or stash first if you want to see only the
   worker's changes.
-- `-m a,b,c` sets the model fallback chain; the default comes from `$DELEGATE_MODELS`,
-  else a chain of free OpenCode Zen models. A bare id means `opencode/<id>`.
+- `-m a,b,c` sets the fallback chain (see above); the default comes from
+  `$DELEGATE_MODELS`, else a chain of free OpenCode Zen models. An entry without a
+  harness is an OpenCode model.
 - `-t SECS` caps each attempt (default 900) and also the `--check` command.
 
 The script prints one JSON object: `status` (`ok`, `failed`, `failed_dirty`,
-`check_failed`), the `model` that finished, `attempts` with each model's outcome,
+`check_failed`), the `harness` and `model` that finished, `attempts` with each entry's
+outcome and auth,
 token `usage`, the worker's short `report`, `changed` files, `diffstat`, and the `check`
 command's exit code and output tail. Full transcripts are under `logs`; read them only
 to diagnose a failure.
@@ -57,9 +83,10 @@ to diagnose a failure.
    the spec is likely to fix it. If the same task fails twice, do it yourself.
 3. `failed_dirty`: a worker left partial edits. Inspect them with `git diff`, then keep
    them or discard them before trying again. Nothing was reset for you.
-4. `failed` with every attempt showing `provider_error` or `exit_1`: the free tier is
-   rate limiting or blocking this network. Use a chain with a paid model (needs
-   `OPENCODE_API_KEY` or a provider key granted to the profile), or do the task yourself.
+4. `failed` with every attempt showing `provider_error` or `exit_1`: the providers are
+   rate limiting or blocking this network, or a login has run out of quota. Try another
+   harness, a paid model (a provider key granted to the profile), or do the task
+   yourself.
 
 ## Failure modes to avoid
 

@@ -1,7 +1,8 @@
-# Delegating work to cheaper models
+# Delegating work to other models and harnesses
 
 Status: stage 1 built (`docker/delegate-task.sh`, the `delegate-to-worker` seed skill,
-OpenCode in the claude image). Stages 2 and 3 below are proposals.
+OpenCode in the claude image), extended so any harness can delegate to any other
+(stage 1b). Stages 2 and 3 below are proposals.
 
 ## Why
 
@@ -11,10 +12,11 @@ processes. Most of an agent's tokens go on the inner loop: reading files, runnin
 builds, re-reading errors, retrying. Delegation moves that loop to a cheaper or free
 model and leaves Opus to write the spec and check the result.
 
-The orchestrator has to be Claude Code. Subscription credentials are only meant for
-Claude Code, so Opus cannot run inside OpenCode on the subscription. The worker is the
-OpenCode CLI, which reaches OpenCode Zen's free models without a key and, with keys,
-most other providers (OpenAI, Gemini, DeepSeek and others through Zen).
+Subscription logins are only meant for their vendor's own CLI: a Claude subscription
+through Claude Code, a ChatGPT plan through Codex, a Google login through Gemini CLI. So
+every worker runs through the matching harness CLI, never a third-party one, and the
+orchestrator can be any harness. OpenCode adds Zen's free models (no key) and, with
+keys, most other providers.
 
 ## Stage 1: `delegate-task` (built)
 
@@ -84,6 +86,66 @@ Expect the saving to be large for tightly specified tasks with a test command, a
 small or negative for Lyric work, where free models have little training data and
 failures cost Opus review rounds.
 
+Also still to run live: codex and gemini as workers, with each kind of credential. The adapters are tested offline against stubs that emit the CLIs' real event
+shapes, but no run has used real credentials yet.
+
+## Stage 1b: any harness to any harness (built)
+
+`delegate-task` ships in all five runner images and runs workers on four harnesses:
+
+| Harness | Command | Success | Report | Usage |
+|---|---|---|---|---|
+| opencode | `opencode run --format json --print-logs` | last `step_finish` has `reason: stop` | last `text` part | `step_finish.tokens`, `cost` |
+| claude | `claude -p --output-format stream-json --verbose --dangerously-skip-permissions` | last `result` has `subtype: success`, not `is_error` | `result.result` | `result.usage`, `total_cost_usd` |
+| codex | `codex exec --json --skip-git-repo-check --dangerously-bypass-approvals-and-sandbox -o FILE` | a `turn.completed` and no `turn.failed` | the `-o` file | `turn.completed.usage` |
+| gemini | `gemini --yolo --output-format stream-json --prompt` | last `result` has `status: success` | joined assistant `message` deltas | `result.stats` |
+
+The event shapes were checked against the CLIs' own code at the pinned versions (Claude
+Code 2.1.304, Codex 0.145.0, Gemini CLI 0.51.0) and the repo's live Claude fixtures.
+The claude adapter has been run live on a subscription login: `claude:haiku` fixed a
+two-bug Python file in 8s for $0.0024, the check passed, and the login was linked into
+the worker's home rather than copied. The codex and gemini adapters have not been run
+live yet, because that needs their credentials (see "Still to measure").
+
+- **Chain entries** are `HARNESS:MODEL` (`codex:gpt-5.5`, `claude:sonnet`); `HARNESS:`
+  uses the CLI's default model; an entry with no harness is an OpenCode model, as
+  before.
+- **Credentials.** A worker gets only its own harness's credentials, preferring a
+  subscription login over an API key (the goal is to spend subscriptions):
+  - claude: the session's `~/.claude/.credentials.json`, linked rather than copied so a
+    token refresh by either process is seen by both. If a refresh writes a new file and
+    renames it over the link, the worker's copy is copied back over the session's file
+    after the attempt, if it is newer, and the link is restored, so the session never
+    keeps a rotated-out refresh token. Otherwise `CLAUDE_CREDENTIALS_JSON` or
+    `CLAUDE_CODE_OAUTH_TOKEN`; else `ANTHROPIC_API_KEY`.
+  - codex: `CODEX_AUTH_JSON` (a ChatGPT login's `~/.codex/auth.json`) installed as
+    `$CODEX_HOME/auth.json`; else `CODEX_API_KEY` / `OPENAI_API_KEY`.
+  - gemini: `GEMINI_OAUTH_CREDS_JSON` (a Google login's `~/.gemini/oauth_creds.json`)
+    with `GOOGLE_GENAI_USE_GCA=true`, which is how headless Gemini CLI selects a Google
+    login; else `GEMINI_API_KEY` / `GOOGLE_API_KEY`.
+  - opencode: Zen and provider keys; free models need none.
+
+  `scripts/upload-credentials.sh` now uploads the two new logins when it finds them.
+  Each worker harness has its own HOME on the home volume
+  (`~/.cache/cloud-agents/delegate/<harness>`). A vault login is written there only when
+  it is newer than the copy already there (by `last_refresh`, `expiry_date` or
+  `expiresAt`), because the CLIs refresh these files in place and refresh tokens rotate:
+  an older vault copy must not overwrite a refreshed one. Refreshed tokens are not
+  written back to the vault (unlike the claude harness's own login,
+  `writeBackClaudeLogin`), so on a fresh home volume an old vault copy may have expired
+  and need re-uploading.
+- **Profile limits.** `CLOUD_AGENTS_DELEGATE_ALLOW` is a comma-separated list of
+  `HARNESS` or `HARNESS:MODEL-GLOB` patterns (`opencode:*-free,codex:gpt-5*,claude`).
+  Entries matching none are skipped as `not_allowed`. The server sets it from the
+  profile's "Delegation allowed to" field (`delegateAllow`, #1299); empty means no limit,
+  and a deleted profile allows nothing. Like the environment scrub, this
+  steers a cooperating agent rather than enforcing a boundary: the agent could run a
+  CLI itself.
+- **On-demand install.** A missing CLI is installed with
+  `npm install -g --prefix ~/.local` at the image's pinned version on first use, and
+  stays on the home volume. It is reported as `not_installed` if that fails or
+  `DELEGATE_AUTO_INSTALL=0`.
+
 ## Stage 2: a `delegate_task` tool (proposal)
 
 Expose the same behaviour as a shim tool, so the server sees each delegation. That
@@ -102,9 +164,9 @@ stage 1 shows real savings and the single container becomes the bottleneck.
 
 ## Why not one image with every harness
 
-The claude image now carries OpenCode as a worker, but the five per-harness images stay.
-OpenCode reaches every provider the other harnesses do, so it is the only worker CLI the
-orchestrator needs. Merging all harnesses into one image would couple their version
-pins (one broken npm release, as happened on the first unpinned sibling image, would
-break every harness), grow every session's image, and put every CLI's credentials
+The five per-harness images stay. Every image carries `delegate-task`, the claude image
+also carries OpenCode, and any other worker CLI is installed into `~/.local` on first use
+and kept on the home volume. Merging all harnesses into one image would couple their
+version pins (one broken npm release, as happened on the first unpinned sibling image,
+would break every harness), grow every session's image, and put every CLI's credentials
 handling in every container, for no gain over this arrangement.

@@ -64,6 +64,65 @@ esac
 STUB
 chmod +x "$WORK/bin/opencode"
 
+# Stubs for the other harnesses, emitting each CLI's real event shapes
+# (checked against claude 2.1.304, codex 0.145.0 and gemini-cli 0.51.0). The
+# behaviour is picked by the model name; every stub dumps its environment and
+# argv to $STUB_DIR/<harness>.{env,argv} first.
+mkdir -p "$WORK/hbin" "$WORK/stub"
+cat > "$WORK/hbin/claude" <<'STUB'
+#!/usr/bin/env bash
+env > "$STUB_DIR/claude.env"; printf '%s\n' "$@" > "$STUB_DIR/claude.argv"
+model=""; while [ $# -gt 0 ]; do case "$1" in --model) model="$2"; shift 2 ;; --) shift; break ;; *) shift ;; esac; done
+echo '{"type":"system","subtype":"init"}'
+case "$model" in
+  fail) echo '{"type":"result","subtype":"error_during_execution","is_error":true,"result":"boom"}' ;;
+  refresh-rename|refresh-older|refresh-corrupt)
+    # Refresh the login the way an atomic writer does: new file, rename over.
+    exp=99; [ "$model" = refresh-older ] && exp=1
+    if [ "$model" = refresh-corrupt ]; then
+      printf '{"claudeAiOauth":{"expiresAt":999}}\n' > "$HOME/.claude/.credentials.json.new"
+    else
+      printf '{"claudeAiOauth":{"accessToken":"rotated","refreshToken":"r2","expiresAt":%s}}\n' "$exp" > "$HOME/.claude/.credentials.json.new"
+    fi
+    mv -f "$HOME/.claude/.credentials.json.new" "$HOME/.claude/.credentials.json"
+    echo "edit" >> calc.txt
+    echo '{"type":"result","subtype":"success","is_error":false,"result":"refreshed","usage":{}}' ;;
+  *) echo "edit" >> calc.txt
+     echo '{"type":"assistant","message":{"content":[{"type":"text","text":"working"}]}}'
+     echo '{"type":"result","subtype":"success","is_error":false,"result":"claude did it","total_cost_usd":0.25,"usage":{"input_tokens":7,"output_tokens":3,"cache_read_input_tokens":11}}' ;;
+esac
+STUB
+cat > "$WORK/hbin/codex" <<'STUB'
+#!/usr/bin/env bash
+env > "$STUB_DIR/codex.env"; printf '%s\n' "$@" > "$STUB_DIR/codex.argv"
+model=""; last=""; while [ $# -gt 0 ]; do case "$1" in --model) model="$2"; shift 2 ;; -o) last="$2"; shift 2 ;; --) shift; break ;; *) shift ;; esac; done
+echo '{"type":"thread.started","thread_id":"t1"}'
+echo '{"type":"turn.started"}'
+case "$model" in
+  fail) echo '{"type":"turn.failed","error":{"message":"usage limit reached"}}'; exit 1 ;;
+  *) echo "edit" >> calc.txt
+     echo '{"type":"item.completed","item":{"id":"i1","type":"agent_message","text":"from the stream"}}'
+     printf 'codex did it' > "$last"
+     echo '{"type":"turn.completed","usage":{"input_tokens":20,"cached_input_tokens":5,"output_tokens":4,"reasoning_output_tokens":2}}' ;;
+esac
+STUB
+cat > "$WORK/hbin/gemini" <<'STUB'
+#!/usr/bin/env bash
+env > "$STUB_DIR/gemini.env"; printf '%s\n' "$@" > "$STUB_DIR/gemini.argv"
+model=""; while [ $# -gt 0 ]; do case "$1" in --model) model="$2"; shift 2 ;; *) shift ;; esac; done
+echo '{"type":"init","timestamp":"t","session_id":"s","model":"m"}'
+echo '{"type":"message","timestamp":"t","role":"user","content":"task"}'
+case "$model" in
+  fail) echo '{"type":"error","timestamp":"t","severity":"error","message":"RESOURCE_EXHAUSTED"}'
+        echo '{"type":"result","timestamp":"t","status":"error","stats":{}}' ;;
+  *) echo "edit" >> calc.txt
+     echo '{"type":"message","timestamp":"t","role":"assistant","content":"gemini ","delta":true}'
+     echo '{"type":"message","timestamp":"t","role":"assistant","content":"did it","delta":true}'
+     echo '{"type":"result","timestamp":"t","status":"success","stats":{"total_tokens":9,"input_tokens":6,"output_tokens":3,"cached":1}}' ;;
+esac
+STUB
+chmod +x "$WORK/hbin/"*
+
 new_repo() {
   local d="$WORK/repo-$1"
   mkdir -p "$d"
@@ -79,6 +138,10 @@ new_repo() {
 export PATH="$WORK/bin:$PATH"
 export DELEGATE_POLL_SECS=1 DELEGATE_PROVIDER_ERROR_GRACE=2
 export DELEGATE_LOG_DIR="$WORK/logs" DELEGATE_HOME="$WORK/home"
+# Never the real home: delegate-task links ~/.claude/.credentials.json and
+# installs into ~/.local.
+mkdir -p "$WORK/testhome"
+export HOME="$WORK/testhome"
 
 fails=0
 check() {
@@ -155,7 +218,7 @@ check "env: status ok"                     [ "$(field .status)" = ok ]
 check "env: GITHUB_TOKEN not passed"       bash -c "! grep -q '^GITHUB_TOKEN=' '$STUB_ENV_DUMP'"
 check "env: subscription token not passed" bash -c "! grep -q '^CLAUDE_CODE_OAUTH_TOKEN=' '$STUB_ENV_DUMP'"
 check "env: allowlisted key passed"        grep -q '^OPENAI_API_KEY=sk-pass$' "$STUB_ENV_DUMP"
-check "env: separate HOME"                 grep -q "^HOME=$WORK/home$" "$STUB_ENV_DUMP"
+check "env: per-harness HOME"             grep -q "^HOME=$WORK/home/opencode$" "$STUB_ENV_DUMP"
 check "env: preamble sent"                 grep -q 'You are a worker agent' "$STUB_PROMPT_DUMP"
 check "env: spec sent"                     grep -q 'do the thing' "$STUB_PROMPT_DUMP"
 rc=0; out="$(cd "$repo" && env STUB_ENV_DUMP="$STUB_ENV_DUMP" STUB_PROMPT_DUMP="$STUB_PROMPT_DUMP" \
@@ -195,12 +258,156 @@ rc=0; out="$(cd "$repo" && "$SCRIPT" -m stub/edit -w task2 "x")" || rc=$?
 check "worktree: commit made with hooks present" [ "$(field .commit)" != null ]
 check "worktree: repo hooks not run on commit"   [ ! -e "$WORK/hook-ran" ]
 
+# 9. Other harnesses: success, failure fallback, report text and usage.
+export STUB_DIR="$WORK/stub"
+hb() { env DELEGATE_CLAUDE_BIN="$WORK/hbin/claude" DELEGATE_CODEX_BIN="$WORK/hbin/codex" \
+  DELEGATE_GEMINI_BIN="$WORK/hbin/gemini" DELEGATE_PASS_ENV="STUB_DIR" "$@"; }
+repo="$(new_repo claude)"
+rc=0; out="$(cd "$repo" && hb ANTHROPIC_API_KEY=sk-ant "$SCRIPT" -m claude:fail,claude:sonnet "x")" || rc=$?
+check "claude: ok after a failed attempt"       [ "$(field .status)" = ok ]
+check "claude: harness and model reported"      [ "$(field '.harness + ":" + .model')" = claude:sonnet ]
+check "claude: failed attempt is incomplete"    [ "$(field '.attempts[0].outcome')" = incomplete ]
+check "claude: report from the result event"    [ "$(field .report)" = "claude did it" ]
+check "claude: usage and cost"                  [ "$(field '[.usage.input,.usage.output,.usage.cache_read,.usage.cost] | map(tostring) | join(",")')" = "7,3,11,0.25" ]
+check "claude: runs headless, unattended"       bash -c "grep -qx -- '-p' '$STUB_DIR/claude.argv' && grep -qx -- '--dangerously-skip-permissions' '$STUB_DIR/claude.argv'"
+check "claude: api key used without a login"    [ "$(field '.attempts[1].auth')" = api_key ]
+
+repo="$(new_repo codex)"
+rc=0; out="$(cd "$repo" && hb OPENAI_API_KEY=sk-oai "$SCRIPT" -m codex:fail,codex:gpt-5.5 "x")" || rc=$?
+check "codex: ok after turn.failed"             [ "$(field .status)" = ok ]
+check "codex: turn.failed message recorded"     [ "$(field '.attempts[0].last_error')" = "usage limit reached" ]
+check "codex: report from the -o file"          [ "$(field .report)" = "codex did it" ]
+check "codex: usage summed"                     [ "$(field '[.usage.input,.usage.output,.usage.reasoning,.usage.cache_read] | map(tostring) | join(",")')" = "20,4,2,5" ]
+check "codex: exec --json"                      bash -c "head -2 '$STUB_DIR/codex.argv' | tr '\n' ' ' | grep -q '^exec --json'"
+check "codex: CODEX_API_KEY from OPENAI_API_KEY" grep -qx "CODEX_API_KEY=sk-oai" "$STUB_DIR/codex.env"
+
+repo="$(new_repo gemini)"
+rc=0; out="$(cd "$repo" && hb GEMINI_API_KEY=g-key "$SCRIPT" -m gemini:fail,gemini:gemini-3-flash "x")" || rc=$?
+check "gemini: ok after status error"           [ "$(field .status)" = ok ]
+check "gemini: report joins the deltas"         [ "$(field .report)" = "gemini did it" ]
+check "gemini: usage from stats"                [ "$(field '[.usage.input,.usage.output,.usage.cache_read] | map(tostring) | join(",")')" = "6,3,1" ]
+check "gemini: api key mode"                    bash -c "grep -qx 'GEMINI_API_KEY=g-key' '$STUB_DIR/gemini.env' && ! grep -q '^GOOGLE_GENAI_USE_GCA=' '$STUB_DIR/gemini.env'"
+
+# 10. Each worker gets only its own harness's credentials.
+repo="$(new_repo creds)"
+rc=0; out="$(cd "$repo" && hb ANTHROPIC_API_KEY=sk-ant OPENAI_API_KEY=sk-oai GEMINI_API_KEY=g-key GITHUB_TOKEN=gh \
+  "$SCRIPT" -m codex:x "x")" || rc=$?
+check "creds: codex gets no Anthropic key"      bash -c "! grep -q '^ANTHROPIC_API_KEY=' '$STUB_DIR/codex.env'"
+check "creds: codex gets no Gemini key"         bash -c "! grep -q '^GEMINI_API_KEY=' '$STUB_DIR/codex.env'"
+check "creds: codex gets no GITHUB_TOKEN"       bash -c "! grep -q '^GITHUB_TOKEN=' '$STUB_DIR/codex.env'"
+check "creds: codex CODEX_HOME in its home"     grep -qx "CODEX_HOME=$WORK/home/codex/.codex" "$STUB_DIR/codex.env"
+
+# 11. Subscription logins are preferred, installed newest-wins, and linked.
+repo="$(new_repo login)"
+auth_old='{"tokens":{"refresh_token":"old"},"last_refresh":"2026-10-01T00:00:00Z"}'
+auth_new='{"tokens":{"refresh_token":"new"},"last_refresh":"2026-10-10T00:00:00Z"}'
+rc=0; out="$(cd "$repo" && hb OPENAI_API_KEY=sk-oai CODEX_AUTH_JSON="$auth_new" "$SCRIPT" -m codex:x "x")" || rc=$?
+check "login: codex subscription preferred"     [ "$(field '.attempts[0].auth')" = subscription ]
+check "login: codex gets no api key with login"  bash -c "! grep -q '^CODEX_API_KEY=' '$STUB_DIR/codex.env'"
+check "login: codex auth.json installed"        [ "$(jq -r .tokens.refresh_token "$WORK/home/codex/.codex/auth.json")" = new ]
+check "login: auth.json is private"             [ "$(stat -c %a "$WORK/home/codex/.codex/auth.json")" = 600 ]
+rc=0; out="$(cd "$repo" && git checkout -q -- calc.txt && hb CODEX_AUTH_JSON="$auth_old" "$SCRIPT" -m codex:x "x")" || rc=$?
+check "login: older vault copy does not win"    [ "$(jq -r .tokens.refresh_token "$WORK/home/codex/.codex/auth.json")" = new ]
+rc=0; out="$(cd "$repo" && git checkout -q -- calc.txt && hb "$SCRIPT" -m codex:x "x")" || rc=$?
+check "login: stored login reused without env"  [ "$(field '.attempts[0].auth')" = subscription ]
+
+g_creds='{"access_token":"a","refresh_token":"r","expiry_date":1792000000000}'
+rc=0; out="$(cd "$repo" && git checkout -q -- calc.txt && hb GEMINI_API_KEY=g-key GEMINI_OAUTH_CREDS_JSON="$g_creds" "$SCRIPT" -m gemini:x "x")" || rc=$?
+check "login: gemini uses the Google login"     grep -qx "GOOGLE_GENAI_USE_GCA=true" "$STUB_DIR/gemini.env"
+check "login: gemini gets no api key with login" bash -c "! grep -q '^GEMINI_API_KEY=' '$STUB_DIR/gemini.env'"
+check "login: oauth_creds.json installed"       [ -s "$WORK/home/gemini/.gemini/oauth_creds.json" ]
+
+realhome="$WORK/realhome"; mkdir -p "$realhome/.claude"
+echo '{"claudeAiOauth":{"accessToken":"live","expiresAt":5}}' > "$realhome/.claude/.credentials.json"
+rc=0; out="$(cd "$repo" && git checkout -q -- calc.txt && hb HOME="$realhome" DELEGATE_HOME="$WORK/home" ANTHROPIC_API_KEY=sk-ant "$SCRIPT" -m claude:x "x")" || rc=$?
+check "login: claude session login linked"      [ "$(readlink "$WORK/home/claude/.claude/.credentials.json")" = "$realhome/.claude/.credentials.json" ]
+check "login: claude gets no api key with login" bash -c "! grep -q '^ANTHROPIC_API_KEY=' '$STUB_DIR/claude.env'"
+check "login: claude subscription reported"     [ "$(field '.attempts[0].auth')" = subscription ]
+rc=0; out="$(cd "$repo" && git checkout -q -- calc.txt && hb HOME="$realhome" DELEGATE_HOME="$WORK/home" "$SCRIPT" -m claude:refresh-rename "x")" || rc=$?
+check "login: a renamed-in refresh is written back" [ "$(jq -r .claudeAiOauth.refreshToken "$realhome/.claude/.credentials.json")" = r2 ]
+check "login: session copy stays private"       [ "$(stat -c %a "$realhome/.claude/.credentials.json")" = 600 ]
+check "login: link restored after the refresh"  [ "$(readlink "$WORK/home/claude/.claude/.credentials.json")" = "$realhome/.claude/.credentials.json" ]
+echo '{"claudeAiOauth":{"accessToken":"live","refreshToken":"keep","expiresAt":50}}' > "$realhome/.claude/.credentials.json"
+rc=0; out="$(cd "$repo" && git checkout -q -- calc.txt && hb HOME="$realhome" DELEGATE_HOME="$WORK/home" "$SCRIPT" -m claude:refresh-older "x")" || rc=$?
+check "login: an older worker copy is not written back" [ "$(jq -r .claudeAiOauth.refreshToken "$realhome/.claude/.credentials.json")" = keep ]
+rc=0; out="$(cd "$repo" && git checkout -q -- calc.txt && hb HOME="$realhome" DELEGATE_HOME="$WORK/home" "$SCRIPT" -m claude:refresh-corrupt "x")" || rc=$?
+check "login: a newer but incomplete copy is not written back" [ "$(jq -r .claudeAiOauth.refreshToken "$realhome/.claude/.credentials.json")" = keep ]
+
+# 12. Profile limits.
+repo="$(new_repo allow)"
+rm -f "$STUB_DIR/claude.argv"
+rc=0; out="$(cd "$repo" && hb OPENAI_API_KEY=k CLOUD_AGENTS_DELEGATE_ALLOW="opencode:*-free, codex:gpt-5*" \
+  "$SCRIPT" -m claude:sonnet,codex:o3,codex:gpt-5.5 "x")" || rc=$?
+check "allow: disallowed harness skipped"       [ "$(field '.attempts[0].outcome')" = not_allowed ]
+check "allow: disallowed model skipped"         [ "$(field '.attempts[1].outcome')" = not_allowed ]
+check "allow: allowed entry runs"               [ "$(field '.status + " " + .model')" = "ok gpt-5.5" ]
+check "allow: disallowed harness never ran"     [ ! -e "$STUB_DIR/claude.argv" ]
+rc=0; out="$(cd "$repo" && git checkout -q -- calc.txt && CLOUD_AGENTS_DELEGATE_ALLOW="opencode:*-free" "$SCRIPT" -m stub/edit "x")" || rc=$?
+check "allow: opencode glob applies"            [ "$(field '.attempts[0].outcome')" = not_allowed ]
+rc=0; out="$(cd "$repo" && CLOUD_AGENTS_DELEGATE_ALLOW="opencode" "$SCRIPT" -m stub/edit "x")" || rc=$?
+check "allow: bare harness allows any model"    [ "$(field .status)" = ok ]
+
+# 13. A missing CLI is installed into ~/.local on first use.
+repo="$(new_repo install)"
+inst_home="$WORK/insthome"; mkdir -p "$inst_home" "$WORK/npmbin"
+cat > "$WORK/npmbin/npm" <<STUB
+#!/usr/bin/env bash
+echo "\$@" > "$WORK/npm.args"
+prefix=""; while [ \$# -gt 0 ]; do case "\$1" in --prefix) prefix="\$2"; shift 2 ;; *) shift ;; esac; done
+mkdir -p "\$prefix/bin"; cp "$WORK/hbin/gemini" "\$prefix/bin/gemini"
+STUB
+chmod +x "$WORK/npmbin/npm"
+rc=0; out="$(cd "$repo" && env -u DELEGATE_GEMINI_BIN PATH="$WORK/npmbin:$PATH" HOME="$inst_home" DELEGATE_HOME="$WORK/home" \
+  GEMINI_API_KEY=k DELEGATE_PASS_ENV=STUB_DIR "$SCRIPT" -m gemini:x "x")" || rc=$?
+check "install: ran npm with the pinned package" grep -q "@google/gemini-cli@0.51.0" "$WORK/npm.args"
+check "install: into ~/.local"                  [ -x "$inst_home/.local/bin/gemini" ]
+check "install: then ran the worker"            [ "$(field .status)" = ok ]
+rc=0; out="$(cd "$repo" && git checkout -q -- calc.txt && env PATH="$WORK/npmbin:$PATH" HOME="$WORK/nohome" DELEGATE_HOME="$WORK/home" \
+  DELEGATE_AUTO_INSTALL=0 "$SCRIPT" -m codex:x "x")" || rc=$?
+check "install: disabled means not_installed"   [ "$(field '.attempts[0].outcome')" = not_installed ]
+# Two delegations needing the same missing CLI install it once, not twice
+# at the same time.
+cat > "$WORK/npmbin/npm" <<STUB
+#!/usr/bin/env bash
+echo start >> "$WORK/npm.trace"; sleep 2; echo end >> "$WORK/npm.trace"
+prefix=""; while [ \$# -gt 0 ]; do case "\$1" in --prefix) prefix="\$2"; shift 2 ;; *) shift ;; esac; done
+mkdir -p "\$prefix/bin"; cp "$WORK/hbin/gemini" "\$prefix/bin/gemini"
+STUB
+par_home="$WORK/parhome"; mkdir -p "$par_home"; rm -f "$WORK/npm.trace"
+repo2="$(new_repo install2)"
+( cd "$repo" && git checkout -q -- calc.txt && env -u DELEGATE_GEMINI_BIN PATH="$WORK/npmbin:$PATH" HOME="$par_home" DELEGATE_HOME="$WORK/home" \
+  GEMINI_API_KEY=k DELEGATE_PASS_ENV=STUB_DIR "$SCRIPT" -m gemini:x "x" > "$WORK/par1.json" ) &
+par_pid=$!
+sleep 0.5
+( cd "$repo2" && env -u DELEGATE_GEMINI_BIN PATH="$WORK/npmbin:$PATH" HOME="$par_home" DELEGATE_HOME="$WORK/home" \
+  GEMINI_API_KEY=k DELEGATE_PASS_ENV=STUB_DIR "$SCRIPT" -m gemini:x "x" > "$WORK/par2.json" )
+wait "$par_pid"
+check "install: parallel runs install once"     [ "$(tr '\n' ' ' < "$WORK/npm.trace")" = "start end " ]
+check "install: both parallel runs succeed"     [ "$(jq -r .status "$WORK/par1.json")$(jq -r .status "$WORK/par2.json")" = okok ]
+mkdir -p "$WORK/npmbin2"
+cat > "$WORK/npmbin2/npm" <<STUB
+#!/usr/bin/env bash
+env > "$WORK/npm.env"
+sleep 30
+STUB
+chmod +x "$WORK/npmbin2/npm"
+rc=0; out="$(cd "$repo" && env -u DELEGATE_GEMINI_BIN PATH="$WORK/npmbin2:$PATH" HOME="$WORK/hanghome" DELEGATE_HOME="$WORK/home" \
+  DELEGATE_INSTALL_TIMEOUT=2 GITHUB_TOKEN=gh "$SCRIPT" -m gemini:x "x")" || rc=$?
+check "install: a hung install times out"       [ "$(field '.attempts[0].outcome')" = not_installed ]
+check "install: ...within the timeout"          [ "$(field '.attempts[0].seconds')" -lt 20 ]
+check "install: npm gets the scrubbed env"      bash -c "! grep -q '^GITHUB_TOKEN=' '$WORK/npm.env'"
+
 # 8. Usage errors.
 repo="$(new_repo usage)"
 rc=0; (cd "$repo" && "$SCRIPT" -m stub/edit "") >/dev/null 2>&1 || rc=$?
 check "usage: empty spec exits 2"        [ "$rc" -eq 2 ]
 rc=0; (cd "$repo" && "$SCRIPT" -w 'bad/name' "x") >/dev/null 2>&1 || rc=$?
 check "usage: bad worktree name exits 2" [ "$rc" -eq 2 ]
+rc=0; (cd "$repo" && "$SCRIPT" -m 'cursor:fast' "x") >/dev/null 2>&1 || rc=$?
+check "usage: unknown harness exits 2"   [ "$rc" -eq 2 ]
+rc=0; out="$(cd "$repo" && "$SCRIPT" -m 'stub/edit,cursor:fast' "x" 2>/dev/null)" || rc=$?
+check "usage: a late typo exits 2 up front" [ "$rc" -eq 2 ]
+check "usage: nothing ran before it"     [ "$(cat "$repo/calc.txt")" = start ]
 rc=0; (cd "$repo" && "$SCRIPT" -m ' , ' -w orphan "x") >/dev/null 2>&1 || rc=$?
 check "usage: empty model list exits 2"  [ "$rc" -eq 2 ]
 check "usage: no worktree left behind"   [ ! -e "$repo/.delegate/orphan" ]

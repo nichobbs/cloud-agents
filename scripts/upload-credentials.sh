@@ -5,9 +5,11 @@
 # Detects (skipping anything not present):
 #   Claude Code : CLAUDE_CODE_OAUTH_TOKEN / ANTHROPIC_API_KEY env vars,
 #                 ~/.claude/.credentials.json (OAuth access token)
-#   Codex CLI   : OPENAI_API_KEY env var, ~/.codex/auth.json
+#   Codex CLI   : OPENAI_API_KEY env var, ~/.codex/auth.json (its API key,
+#                 and a ChatGPT login as CODEX_AUTH_JSON)
 #   OpenCode    : ~/.local/share/opencode/auth.json (per-provider API keys)
-#   Gemini CLI  : GEMINI_API_KEY / GOOGLE_API_KEY env vars
+#   Gemini CLI  : GEMINI_API_KEY / GOOGLE_API_KEY env vars, and a Google login
+#                 (~/.gemini/oauth_creds.json) as GEMINI_OAUTH_CREDS_JSON
 #   GitHub      : GITHUB_TOKEN env var, `gh auth token`
 #
 # Usage:
@@ -147,6 +149,13 @@ elif [ -f "$HOME/.codex/auth.json" ]; then
     key=$(json_extract "$HOME/.codex/auth.json" 'd["OPENAI_API_KEY"]')
     upload OPENAI_API_KEY "$key" "~/.codex/auth.json"
 fi
+# A ChatGPT login (auth.json with tokens) ships whole, so delegate-task can run
+# codex workers on the subscription (docs/delegation.md).
+if [ -f "$HOME/.codex/auth.json" ]; then
+    login=$(json_extract "$HOME/.codex/auth.json" \
+        'json.dumps(d) if (d.get("tokens") or {}).get("refresh_token") else ""')
+    upload CODEX_AUTH_JSON "$login" "~/.codex/auth.json (ChatGPT login)"
+fi
 
 # ── OpenCode ──────────────────────────────────────────────────────────────────
 opencode_auth="$HOME/.local/share/opencode/auth.json"
@@ -164,6 +173,12 @@ if [ -n "${GEMINI_API_KEY:-}" ]; then
     upload GEMINI_API_KEY "$GEMINI_API_KEY" "env"
 elif [ -n "${GOOGLE_API_KEY:-}" ]; then
     upload GEMINI_API_KEY "$GOOGLE_API_KEY" "env (GOOGLE_API_KEY)"
+fi
+# A Google login, for gemini workers on the subscription (docs/delegation.md).
+if [ -f "$HOME/.gemini/oauth_creds.json" ]; then
+    login=$(json_extract "$HOME/.gemini/oauth_creds.json" \
+        'json.dumps(d) if d.get("refresh_token") else ""')
+    upload GEMINI_OAUTH_CREDS_JSON "$login" "~/.gemini/oauth_creds.json (Google login)"
 fi
 
 # ── GitHub ────────────────────────────────────────────────────────────────────
