@@ -48,8 +48,9 @@ resets it.
 
 ## Profile setup script
 
-A profile has a `setupScript` field: up to 64 KiB of bash, edited on the
-profiles page. It is stored in `profiles.setup_script` (migration
+A profile has a `setupScript` field: up to 24576 characters of bash, edited
+on the profiles page. The limit keeps the base64-encoded script under Linux's
+128 KiB cap on a single environment variable, whatever characters it uses. It is stored in `profiles.setup_script` (migration
 `0003_profile_setup_script`) and passed to the profile's session containers as
 `CLOUD_AGENTS_SETUP_SCRIPT_B64`. Observer containers do not get it.
 
@@ -62,11 +63,18 @@ profiles page. It is stored in `profiles.setup_script` (migration
   `~/.cache/cloud-agents/setup/<sha256-prefix>.done` records a successful run.
   Its installs persist on the home volume, so running it on every message would
   only cost time. Editing the script makes it run again;
+- holds a lock (`flock`) on the home volume while it runs. A second session of
+  the same user and harness starting at the same moment waits, then sees the
+  marker and skips;
 - has a time limit of `CLOUD_AGENTS_SETUP_TIMEOUT` seconds (default 600);
 - never fails the run. On failure it writes a warning with the log tail to the
   container log and records the log path in
   `~/.cache/cloud-agents/setup/last-failure`, which the agent is told to check.
-  It writes no marker, so the next message retries.
+  It retries the same script only after `CLOUD_AGENTS_SETUP_RETRY_SECS` (default
+  3600), so a broken script does not add its timeout to every message.
+
+The container log shows the last 20 lines of a failed run. Avoid `set -x` or
+echoing secrets in the script, since that output ends up there.
 
 The script has the session's full environment, including its credentials. It
 is owner-authored profile configuration, unlike repository content, so it is
@@ -100,8 +108,9 @@ harness user. Options, roughly in order of effort:
 ## Tests
 
 - `scripts/test-user-tools.sh` (CI) covers the environment, `PATH` precedence,
-  run-once, re-run on change, retry after failure, timeout, bad input, and
-  that every entrypoint and image wires the helper in.
+  run-once, re-run on change, the lock between concurrent sessions, retry
+  backoff after failure, timeout, bad input, and that every entrypoint and image
+  wires the helper in.
 - `tests/profile_tests.l` covers the request decode with and without
   `setupScript`, the length limit, and storing, returning, preserving and
   clearing the script. `tests/runner_env_tests.l` covers the env entry.

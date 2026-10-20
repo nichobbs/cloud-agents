@@ -15,8 +15,11 @@
 #    profile's setupScript) once per distinct script content. Its results
 #    persist on the same home volume, so re-running it on every message would
 #    only cost time; editing the script runs it again. A failed run leaves no
-#    marker, so the next message retries it. Never fails the entrypoint: the
-#    prompt runs either way, and the agent can read the log.
+#    success marker and is retried once CLOUD_AGENTS_SETUP_RETRY_SECS (default
+#    3600) have passed, so a broken script does not add its timeout to every
+#    message. Runs hold a lock on the home volume, so two sessions starting
+#    together do not install the same things at once. Never fails the
+#    entrypoint: the prompt runs either way, and the agent can read the log.
 #
 # No `apt`: the harness user has no root. System packages need a custom image.
 # See docs/tool-installs.md.
@@ -70,20 +73,47 @@ cloud_agents_run_setup_script() {
         return 0
     fi
 
+    local timeout_secs="${CLOUD_AGENTS_SETUP_TIMEOUT:-600}"
+    # Another session of this user on this harness may be running the same
+    # script on the shared home volume. Wait for it (up to one run's timeout),
+    # then re-check: its success makes this run unnecessary.
+    exec 9> "$dir/lock"
+    if ! flock -w "$timeout_secs" 9; then
+        exec 9>&-
+        echo "$label: setup script $hash skipped: another session still holds $dir/lock" >&2
+        return 0
+    fi
+    if [ -f "$dir/$hash.done" ]; then
+        exec 9>&-
+        echo "$label: setup script $hash already ran on this home volume" >&2
+        return 0
+    fi
+
+    local now last_fail
+    now="$(date +%s)"
+    last_fail="$(cat "$dir/$hash.failed" 2>/dev/null || echo 0)"
+    if [ $((now - last_fail)) -lt "${CLOUD_AGENTS_SETUP_RETRY_SECS:-3600}" ]; then
+        exec 9>&-
+        echo "$label: setup script $hash failed recently; not retrying yet (see $dir/last-failure)" >&2
+        return 0
+    fi
+
     echo "$label: running setup script $hash (log: $dir/$hash.log)" >&2
     local rc=0
     ( cd "$workdir" 2>/dev/null || cd "$HOME"
-      timeout "${CLOUD_AGENTS_SETUP_TIMEOUT:-600}" bash "$dir/$hash.sh"
-    ) > "$dir/$hash.log" 2>&1 < /dev/null || rc=$?
+      timeout --kill-after=10 "$timeout_secs" bash "$dir/$hash.sh"
+    ) > "$dir/$hash.log" 2>&1 < /dev/null 9>&- || rc=$?
 
     if [ "$rc" -eq 0 ]; then
         date -u +%Y-%m-%dT%H:%M:%SZ > "$dir/$hash.done"
-        rm -f "$dir/last-failure"
+        rm -f "$dir/last-failure" "$dir/$hash.failed"
         echo "$label: setup script $hash finished" >&2
     else
+        echo "$now" > "$dir/$hash.failed"
         printf 'setup script %s exited %s; log: %s\n' "$hash" "$rc" "$dir/$hash.log" > "$dir/last-failure"
         echo "$label: WARNING: setup script $hash exited $rc; continuing. Last lines of $dir/$hash.log:" >&2
         tail -n 20 "$dir/$hash.log" >&2 || true
     fi
+    exec 9>&-
     return 0
 }

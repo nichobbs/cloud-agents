@@ -253,7 +253,8 @@ test "SaveProfileRequest.fromJson decodes a body that omits toolMode/tools entir
 
   // A body that already sends both fields must decode byte-identically to
   // patching nothing (no double-injected keys, no corrupted trailing JSON).
-  val alreadyPresent = "{\"name\":\"x\",\"harness\":\"\",\"networkPolicy\":\"none\",\"credentialMode\":\"all\",\"credentials\":[],\"skillIds\":[],\"subagentIds\":[],\"mcpServerIds\":[],\"toolMode\":\"selected\",\"tools\":[\"remember\"]}"
+  // Includes setupScript, the later patched field, so the body is complete.
+  val alreadyPresent = "{\"name\":\"x\",\"harness\":\"\",\"networkPolicy\":\"none\",\"credentialMode\":\"all\",\"credentials\":[],\"skillIds\":[],\"subagentIds\":[],\"mcpServerIds\":[],\"toolMode\":\"selected\",\"tools\":[\"remember\"],\"setupScript\":\"\"}"
   assertEqual(
     patchMissingToolFields(alreadyPresent),
     alreadyPresent,
@@ -291,11 +292,11 @@ test "a profile's setup script is validated, stored, returned and replaced" {
   val me = freshUser("prof-profile-setup-script")
   val sc = CloudAgents.Pg.personalScope(me)
   var tooLong = "#"
-  while tooLong.length <= 65536 {
+  while tooLong.length <= 24576 {
     tooLong = tooLong + tooLong
   }
   match addProfileHandler(SaveProfileRequest(name = "big", harness = "", networkPolicy = "none", credentialMode = "all", credentials = [], skillIds = [], subagentIds = [], mcpServerIds = [], toolMode = "all", tools = [], setupScript = tooLong)) {
-    case Ok(_) -> assertTrue(false, "a setup script over 64 KiB must be rejected")
+    case Ok(_) -> assertTrue(false, "a setup script over 24576 characters must be rejected")
     case Err(err) -> assertEqualInt(err.status, 400, "oversized setup script -> 400")
   }
 

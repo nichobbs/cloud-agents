@@ -15,9 +15,12 @@ import CloudAgents.Repository
 import CloudAgents.Db
 
 val maxProfileNameLen = 200
-// A setup script installs tools; 64 KiB is far more than that needs, and it
-// is passed to every container of the profile as one environment variable.
-val maxSetupScriptLen = 65536
+// A setup script reaches the container as one base64 environment variable,
+// and Linux caps a single one at 128 KiB (MAX_ARG_STRLEN). The length here is
+// in UTF-16 code units, each at most 3 UTF-8 bytes (a surrogate pair is 2
+// units for 4 bytes), so 24576 units is at most 73728 bytes, 98304 once
+// base64-encoded: under the cap whatever the script contains.
+val maxSetupScriptLen = 24576
 
 // The stable MCP tool names the in-container shim can register (see
 // shim/src/main.l — an entirely separate Lyric project with its own
@@ -254,7 +257,7 @@ func validateSaveProfile(req: in SaveProfileRequest): Option[Web.ApiError] {
     return Some(value = Web.badRequest("toolMode must be one of: all, selected"))
   }
   if req.setupScript.length > maxSetupScriptLen {
-    return Some(value = Web.badRequest("setupScript is too long (max 65536 characters)"))
+    return Some(value = Web.badRequest("setupScript is too long (max 24576 characters)"))
   }
   // In 'selected' mode, every granted name must be a valid env-var name, and
   // no name may repeat: profileCredentialStatements inserts one row per

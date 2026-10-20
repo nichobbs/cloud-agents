@@ -71,8 +71,11 @@ check "fail: warning names the exit code"       grep -q "exited 7" <<< "$out"
 check "fail: log tail is shown"                 grep -q "boom detail" <<< "$out"
 check "fail: last-failure written"              [ -f "$H/.cache/cloud-agents/setup/last-failure" ]
 check "fail: no marker"                         bash -c "! ls '$H/.cache/cloud-agents/setup/'*.done >/dev/null 2>&1"
-run_case "$H" WS="$WORK/ws" CLOUD_AGENTS_SETUP_SCRIPT_B64="$(b64 "$script")" > /dev/null
-check "fail: retried on the next run"           [ "$(wc -l < "$H/attempts")" -eq 2 ]
+run_case "$H" WS="$WORK/ws" CLOUD_AGENTS_SETUP_SCRIPT_B64="$(b64 "$script")" > "$WORK/out-backoff"
+check "fail: not retried within the backoff"    [ "$(wc -l < "$H/attempts")" -eq 1 ]
+check "fail: says it is backing off"            grep -q "failed recently" "$WORK/out-backoff"
+run_case "$H" WS="$WORK/ws" CLOUD_AGENTS_SETUP_RETRY_SECS=0 CLOUD_AGENTS_SETUP_SCRIPT_B64="$(b64 "$script")" > /dev/null
+check "fail: retried once the backoff passed"   [ "$(wc -l < "$H/attempts")" -eq 2 ]
 fixed='echo attempt >> "$HOME/attempts"'
 run_case "$H" WS="$WORK/ws" CLOUD_AGENTS_SETUP_SCRIPT_B64="$(b64 "$fixed")" > /dev/null
 check "fail: success clears last-failure"       [ ! -f "$H/.cache/cloud-agents/setup/last-failure" ]
@@ -82,6 +85,17 @@ H="$WORK/home4"
 rc=0; out="$(run_case "$H" WS="$WORK/ws" CLOUD_AGENTS_SETUP_TIMEOUT=1 CLOUD_AGENTS_SETUP_SCRIPT_B64="$(b64 'sleep 30')")" || rc=$?
 check "timeout: caller exits 0"                 [ "$rc" -eq 0 ]
 check "timeout: reported as exit 124"           grep -q "exited 124" <<< "$out"
+
+# 5b. Two sessions starting together run the script once, not concurrently.
+H="$WORK/home-lock"
+script='echo start >> "$HOME/trace"; sleep 2; echo end >> "$HOME/trace"'
+run_case "$H" WS="$WORK/ws" CLOUD_AGENTS_SETUP_SCRIPT_B64="$(b64 "$script")" > "$WORK/lock-a" &
+pid_a=$!
+sleep 0.5
+run_case "$H" WS="$WORK/ws" CLOUD_AGENTS_SETUP_SCRIPT_B64="$(b64 "$script")" > "$WORK/lock-b"
+wait "$pid_a"
+check "lock: script ran exactly once"           [ "$(tr '\n' ' ' < "$H/trace")" = "start end " ]
+check "lock: second session saw it had run"     grep -q "already ran" "$WORK/lock-b"
 
 # 6. Invalid base64 is skipped without failing.
 H="$WORK/home5"
