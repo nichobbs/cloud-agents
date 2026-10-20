@@ -133,7 +133,9 @@ live yet, because that needs their credentials (see "Still to measure").
   and need re-uploading.
 - **Profile limits.** `CLOUD_AGENTS_DELEGATE_ALLOW` is a comma-separated list of
   `HARNESS` or `HARNESS:MODEL-GLOB` patterns (`opencode:*-free,codex:gpt-5*,claude`).
-  Entries matching none are skipped as `not_allowed`. Like the environment scrub, this
+  Entries matching none are skipped as `not_allowed`. The server sets it from the
+  profile's "Delegation allowed to" field (`delegateAllow`, #1299); empty means no limit,
+  and a deleted profile allows nothing. Like the environment scrub, this
   steers a cooperating agent rather than enforcing a boundary: the agent could run a
   CLI itself.
 - **On-demand install.** A missing CLI is installed with
