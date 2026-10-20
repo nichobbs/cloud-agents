@@ -395,6 +395,27 @@ rc=0; out="$(cd "$repo" && git checkout -q -- calc.txt && env -u DELEGATE_GEMINI
   GEMINI_API_KEY=k DELEGATE_PASS_ENV=STUB_DIR "$SCRIPT" -m gemini:x "x")" || rc=$?
 check "install: failed refresh keeps the old"   [ "$(readlink -f "$managed")" = "$kept" ]
 check "install: ...and the worker still runs"   [ "$(field .status)" = ok ]
+# After a failed attempt, delegations within the retry window use the old
+# install without trying again; after it, they retry.
+printf '#!/usr/bin/env bash\necho called >> "%s"\nexit 1\n' "$WORK/npmfail.calls" > "$WORK/npmfail/npm"
+rm -f "$WORK/npmfail.calls"
+rc=0; out="$(cd "$repo" && git checkout -q -- calc.txt && env -u DELEGATE_GEMINI_BIN PATH="$WORK/npmfail:$PATH" HOME="$inst_home" DELEGATE_HOME="$WORK/home" \
+  GEMINI_API_KEY=k DELEGATE_PASS_ENV=STUB_DIR "$SCRIPT" -m gemini:x "x")" || rc=$?
+check "install: no retry within the window"     [ ! -e "$WORK/npmfail.calls" ]
+check "install: ...uses the old install at once" [ "$(field .status)" = ok ]
+check "install: ...without waiting"             [ "$(field '.attempts[0].seconds')" -lt 5 ]
+rc=0; out="$(cd "$repo" && git checkout -q -- calc.txt && env -u DELEGATE_GEMINI_BIN PATH="$WORK/npmfail:$PATH" HOME="$inst_home" DELEGATE_HOME="$WORK/home" \
+  DELEGATE_INSTALL_RETRY_SECS=0 GEMINI_API_KEY=k DELEGATE_PASS_ENV=STUB_DIR "$SCRIPT" -m gemini:x "x")" || rc=$?
+check "install: retried after the window"       [ -e "$WORK/npmfail.calls" ]
+# A failed first install is not retried within the window either.
+rm -f "$WORK/npmfail.calls"
+rc=0; out="$(cd "$repo" && git checkout -q -- calc.txt && env -u DELEGATE_GEMINI_BIN PATH="$WORK/npmfail:$PATH" HOME="$WORK/firstfail" DELEGATE_HOME="$WORK/home" \
+  GEMINI_API_KEY=k "$SCRIPT" -m gemini:x "x")" || rc=$?
+calls_after_first="$(wc -l < "$WORK/npmfail.calls")"
+rc=0; out="$(cd "$repo" && env -u DELEGATE_GEMINI_BIN PATH="$WORK/npmfail:$PATH" HOME="$WORK/firstfail" DELEGATE_HOME="$WORK/home" \
+  GEMINI_API_KEY=k "$SCRIPT" -m gemini:x "x")" || rc=$?
+check "install: failed first install backs off" [ "$(wc -l < "$WORK/npmfail.calls")" -eq "$calls_after_first" ]
+check "install: ...reported not_installed"      [ "$(field '.attempts[0].outcome')" = not_installed ]
 # The newest release failing the flag check falls back to the known-good one.
 mkdir -p "$WORK/npmold"
 cat > "$WORK/npmold/npm" <<STUB

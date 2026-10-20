@@ -84,8 +84,10 @@
 # A CLI the image doesn't ship is installed on first use into
 # ~/.cache/cloud-agents/delegate-cli/<harness> by install-harness-cli.sh: the
 # newest release, checked against the flags used here, with a known-good
-# fallback. It is refreshed once it is DELEGATE_REFRESH_DAYS old (default 7).
-# DELEGATE_AUTO_INSTALL=0 turns installing off.
+# fallback. It is refreshed once it is DELEGATE_REFRESH_DAYS old (default 7);
+# after a failed attempt the existing install, if any, is used without retrying
+# for DELEGATE_INSTALL_RETRY_SECS (default 3600). DELEGATE_AUTO_INSTALL=0 turns
+# installing off.
 #
 # Exit status: 0 when status is "ok", 1 for any other result, 2 for usage
 # errors. The JSON is printed either way (except for usage errors).
@@ -520,19 +522,33 @@ sync_claude_login() {
 # (tests use it); then the image's own copy (on PATH, outside $HOME); then the
 # managed install described in the header, installed or refreshed here.
 worker_bin() {
-  local h="$1" var p dir bin stamp now
+  local h="$1" var p dir bin stamp now failed
   var="DELEGATE_$(echo "$h" | tr '[:lower:]' '[:upper:]')_BIN"
   if [ -n "${!var:-}" ]; then echo "${!var}"; return 0; fi
   p="$(command -v "$h" 2>/dev/null || true)"
   if [ -n "$p" ] && [[ "$p" != "$HOME"/* ]]; then echo "$p"; return 0; fi
   dir="$HOME/.cache/cloud-agents/delegate-cli/$h"
   bin="$dir/bin/$h"
+  failed="$HOME/.cache/cloud-agents/delegate-cli/.$h.failed"
   cli_fresh() {
     [ -x "$bin" ] && stamp="$(cat "$dir/.installed" 2>/dev/null)" && [[ "$stamp" =~ ^[0-9]+$ ]] || return 1
     now="$(date +%s)"
     [ $(( now - stamp )) -lt $(( ${DELEGATE_REFRESH_DAYS:-7} * 86400 )) ]
   }
+  # recently_failed: an install attempt failed within the retry window
+  # (DELEGATE_INSTALL_RETRY_SECS, default an hour). Without it, every
+  # delegation would wait out another failing install (offline, registry
+  # outage) before using the old install or giving up.
+  recently_failed() {
+    local t
+    t="$(cat "$failed" 2>/dev/null)" && [[ "$t" =~ ^[0-9]+$ ]] || return 1
+    [ $(( $(date +%s) - t )) -lt "${DELEGATE_INSTALL_RETRY_SECS:-3600}" ]
+  }
   if cli_fresh; then echo "$bin"; return 0; fi
+  if recently_failed; then
+    [ -x "$bin" ] && { echo "$bin"; return 0; }
+    return 1
+  fi
   if [ "${DELEGATE_AUTO_INSTALL:-1}" = "0" ]; then
     [ -x "$bin" ] && { echo "$bin"; return 0; }
     return 1
@@ -543,6 +559,7 @@ worker_bin() {
   exec 8> "$HOME/.cache/cloud-agents/delegate-cli/.install.lock" || return 1
   flock -w "$(( ${DELEGATE_INSTALL_TIMEOUT:-300} + 30 ))" 8 || { exec 8>&-; return 1; }
   if cli_fresh; then exec 8>&-; echo "$bin"; return 0; fi
+  if recently_failed; then exec 8>&-; [ -x "$bin" ] && { echo "$bin"; return 0; }; return 1; fi
   echo "delegate-task: installing the newest $h CLI (log: $log_root/install-$h.log)" >&2
   # Into a new versioned prefix; the $dir symlink moves to it only once it has
   # passed the check, so a failed refresh leaves the previous install in use,
@@ -560,8 +577,10 @@ worker_bin() {
     [ -L "$dir" ] && touch "$(readlink -f "$dir")" 2>/dev/null
     ln -sfn "$new" "$dir.tmp" && mv -Tf "$dir.tmp" "$dir"
     find "$(dirname "$dir")" -maxdepth 1 -name "$h-*" ! -path "$new" -mmin +1440 -exec rm -rf {} + 2>/dev/null
+    rm -f "$failed"
   else
     rm -rf "$new"
+    date +%s > "$failed"
     echo "delegate-task: installing $h failed; see $log_root/install-$h.log" >&2
   fi
   exec 8>&-

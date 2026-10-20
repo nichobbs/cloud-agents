@@ -146,8 +146,11 @@ live yet, because that needs their credentials (see "Still to measure").
   `~/.cache/cloud-agents/delegate-cli/<harness>` on the home volume, at the newest
   release (see "CLI versions" below), and refreshed once it is `DELEGATE_REFRESH_DAYS`
   old (default 7). A refresh goes into a new versioned directory and only replaces
-  the previous install once it has passed the check. The attempt is reported as
-  `not_installed` if no install is available or `DELEGATE_AUTO_INSTALL=0`.
+  the previous install once it has passed the check. After a failed install or
+  refresh, delegations use the existing install, if any, without trying again for
+  `DELEGATE_INSTALL_RETRY_SECS` (default an hour), so an offline session doesn't wait
+  out a failing install every time. The attempt is reported as `not_installed` if no
+  install is available or `DELEGATE_AUTO_INSTALL=0`.
 
 ### CLI versions
 
@@ -172,6 +175,13 @@ bugs that shipped with pinned versions: `codex --full-auto --json` (fixed in #13
 `opencode run -q`. Limits: Claude Code's `--permission-prompt-tool` is hidden from its
 help, so for that flag the check only confirms the name still appears in the installed
 program. And a flag check can't catch a change in behaviour behind an unchanged flag.
+
+Trade-off: a newly published release reaches the images at their next build, and the
+on-demand installs within a week, with no integrity check beyond what npm and the uv
+installer do themselves. These CLIs run with the session's credentials. The flag check
+guards against breaking releases, not a compromised one; pins limited that exposure to
+releases someone had chosen. A cool-down (skip releases newer than a few days) would
+narrow the window again without going back to pins.
 
 ## Stage 1c: worker guidance and best-of-K (built)
 
