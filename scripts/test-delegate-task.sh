@@ -52,6 +52,11 @@ case "$model" in
     # A long-running command the worker started, which must die with it.
     ( sleep 4; echo "late write" >> calc.txt ) &
     sleep 60 ;;
+  stub/noop)
+    finish "Nothing needed changing" ;;
+  stub/edit-big)
+    printf 'fixed\nmore\nand more\neven more\n' >> calc.txt
+    finish "Changed calc.txt a lot" ;;
   stub/new-file-fail)
     echo "new" > other.txt
     exit 5 ;;
@@ -396,6 +401,59 @@ rc=0; out="$(cd "$repo" && env -u DELEGATE_GEMINI_BIN PATH="$WORK/npmbin2:$PATH"
 check "install: a hung install times out"       [ "$(field '.attempts[0].outcome')" = not_installed ]
 check "install: ...within the timeout"          [ "$(field '.attempts[0].seconds')" -lt 20 ]
 check "install: npm gets the scrubbed env"      bash -c "! grep -q '^GITHUB_TOKEN=' '$WORK/npm.env'"
+
+# 14. Worker guidance from .delegate-guidance/.
+repo="$(new_repo guidance)"
+mkdir -p "$repo/.delegate-guidance/skills/lyric"
+printf 'Always run lyric fmt.\nNever touch vendor/.\n' > "$repo/.delegate-guidance/AGENTS.md"
+printf -- '---\nname: lyric-basics\ndescription: Lyric syntax and gotchas\n---\nBody\n' > "$repo/.delegate-guidance/skills/lyric/SKILL.md"
+git -C "$repo" add .delegate-guidance && git -C "$repo" commit -q -m guidance
+genv() { env STUB_ENV_DUMP="$WORK/genv.txt" STUB_PROMPT_DUMP="$WORK/gprompt.txt" DELEGATE_PASS_ENV="STUB_ENV_DUMP STUB_PROMPT_DUMP" "$@"; }
+rc=0; out="$(cd "$repo" && genv "$SCRIPT" -m stub/env "the task")" || rc=$?
+check "guidance: AGENTS.md is in the prompt"    grep -q "Never touch vendor/" "$WORK/gprompt.txt"
+check "guidance: skill listed with its path"    grep -q -- "- lyric-basics: Lyric syntax and gotchas (.delegate-guidance/skills/lyric/SKILL.md)" "$WORK/gprompt.txt"
+check "guidance: before the task"               bash -c "awk '/Never touch vendor/{g=NR} /^Task:/{t=NR} END{exit !(g && t && g < t)}' '$WORK/gprompt.txt'"
+check "guidance: reported in the result"        [ "$(field '.guidance.skills | join(",")')" = lyric-basics ]
+rc=0; out="$(cd "$repo" && genv "$SCRIPT" --no-guidance -m stub/env "the task")" || rc=$?
+check "guidance: --no-guidance leaves it out"   bash -c "! grep -q 'Never touch vendor/' '$WORK/gprompt.txt'"
+check "guidance: null when not used"            [ "$(field .guidance)" = null ]
+rc=0; out="$(cd "$repo" && genv "$SCRIPT" --raw -m stub/env "the task")" || rc=$?
+check "guidance: --raw sends the spec alone"    [ "$(cat "$WORK/gprompt.txt")" = "the task" ]
+rc=0; out="$(cd "$repo" && genv DELEGATE_GUIDANCE_MAX=10 "$SCRIPT" -m stub/env "the task")" || rc=$?
+check "guidance: long AGENTS.md is truncated"   grep -q "truncated; the rest is in .delegate-guidance/AGENTS.md" "$WORK/gprompt.txt"
+mkdir -p "$WORK/extguide"; echo "External rule" > "$WORK/extguide/AGENTS.md"
+rc=0; out="$(cd "$repo" && genv "$SCRIPT" --guidance "$WORK/extguide" -m stub/env "the task")" || rc=$?
+check "guidance: --guidance DIR overrides"      bash -c "grep -q 'External rule' '$WORK/gprompt.txt' && ! grep -q 'Never touch vendor/' '$WORK/gprompt.txt'"
+rc=0; out="$(cd "$repo" && genv "$SCRIPT" -m stub/env -w gtree "the task")" || rc=$?
+check "guidance: found in a worktree too"       grep -q "(.delegate-guidance/skills/lyric/SKILL.md)" "$WORK/gprompt.txt"
+
+# 15. Best of K.
+repo="$(new_repo bestk)"
+rc=0; out="$(cd "$repo" && "$SCRIPT" --k 2 -m stub/edit-big,stub/edit --check 'grep -q fixed calc.txt' -w bk "x")" || rc=$?
+check "best-of-k: exit 0"                       [ "$rc" -eq 0 ]
+check "best-of-k: two candidates"               [ "$(field '.candidates | length')" = 2 ]
+check "best-of-k: each started elsewhere"       [ "$(field '[.candidates[].model] | join(",")')" = "stub/edit-big,stub/edit" ]
+check "best-of-k: smallest passing diff wins"   [ "$(field '.selected')" = 2 ]
+check "best-of-k: result is the winner's"       [ "$(field '.branch')" = delegate/bk-2 ]
+check "best-of-k: winner worktree kept"         [ -d "$repo/.delegate/bk-2" ]
+check "best-of-k: loser worktree removed"       [ ! -e "$repo/.delegate/bk-1" ]
+check "best-of-k: loser branch removed"         bash -c "! git -C '$repo' rev-parse -q --verify delegate/bk-1 >/dev/null"
+check "best-of-k: main checkout untouched"      [ "$(cat "$repo/calc.txt")" = start ]
+rc=0; out="$(cd "$repo" && "$SCRIPT" --k 2 -m stub/noop,stub/edit-big -w bk5 "x")" || rc=$?
+check "best-of-k: an empty ok diff does not win" [ "$(field '.selected')" = 2 ]
+rc=0; out="$(cd "$repo" && "$SCRIPT" --k 2 -m stub/dirty-fail,stub/edit-big -w bk2 "x")" || rc=$?
+check "best-of-k: a passing candidate beats a failing one" [ "$(field '.selected')" = 2 ]
+check "best-of-k: failed candidate recorded"    [ "$(field '.candidates[0].status')" = failed_dirty ]
+rc=0; out="$(cd "$repo" && "$SCRIPT" --k 2 -m stub/incomplete -w bk3 "x")" || rc=$?
+check "best-of-k: all failing exits 1"          [ "$rc" -eq 1 ]
+check "best-of-k: all failing selects none"     [ "$(field '.selected')" = null ]
+check "best-of-k: all worktrees removed"        bash -c "[ ! -e '$repo/.delegate/bk3-1' ] && [ ! -e '$repo/.delegate/bk3-2' ]"
+rc=0; out="$(cd "$repo" && "$SCRIPT" --k 2 --keep-candidates -m stub/edit-big,stub/edit -w bk4 "x")" || rc=$?
+check "best-of-k: --keep-candidates keeps losers" [ -d "$repo/.delegate/bk4-1" ]
+rc=0; out="$(cd "$repo" && "$SCRIPT" --k 2 -m stub/edit "x")" || rc=$?
+check "best-of-k: default worktree names"       bash -c '[[ "$1" == delegate/cand-*-[12] ]]' _ "$(field '.branch')"
+rc=0; (cd "$WORK" && "$SCRIPT" --k 2 -m stub/edit "x") >/dev/null 2>&1 || rc=$?
+check "best-of-k: needs a git repository"       [ "$rc" -eq 2 ]
 
 # 8. Usage errors.
 repo="$(new_repo usage)"

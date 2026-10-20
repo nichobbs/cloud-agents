@@ -49,6 +49,24 @@ Workers run on four harnesses, each with its own credentials. Name them in the c
 - `not_installed` means the CLI was missing and could not be installed (no network, or
   `DELEGATE_AUTO_INSTALL=0`). Otherwise a missing CLI is installed on first use.
 
+## Worker guidance
+
+Cheap workers do much better with good standing instructions. Keep them in the
+repository, in `.delegate-guidance/`, and commit them so worktrees get them too:
+
+- `.delegate-guidance/AGENTS.md`: rules every worker should follow in this repo
+  (build and test commands, conventions, things never to touch). It goes into every
+  worker's prompt, so keep it short.
+- `.delegate-guidance/skills/<name>/SKILL.md`: longer topic guides with `name` and
+  `description` frontmatter, for example the language reference for a niche language.
+  Workers are given the list and read the ones that apply.
+
+When a delegation fails in a way better instructions would have prevented, and you can
+point to the evidence (the failing check, the mistake in the diff), add that rule here
+in the same change. Don't add rules you have no evidence for.
+
+Use `--guidance DIR` for guidance kept elsewhere, and `--no-guidance` to leave it out.
+
 ## Running it
 
 ```sh
@@ -65,6 +83,11 @@ delegate-task --check "<acceptance command>" --spec-file /tmp/spec.md
   `$DELEGATE_MODELS`, else a chain of free OpenCode Zen models. An entry without a
   harness is an OpenCode model.
 - `-t SECS` caps each attempt (default 900) and also the `--check` command.
+- `--k N` runs N candidates in parallel, each in its own worktree and each starting
+  from a different entry in the chain. It keeps one whose status is `ok`, preferring the
+  smallest diff, and removes the others (`--keep-candidates` keeps them). Use it with a
+  `--check` and with cheap or free workers: two or three tries cost little and raise the
+  chance one passes. The result adds `selected` and a `candidates` summary.
 
 The script prints one JSON object: `status` (`ok`, `failed`, `failed_dirty`,
 `check_failed`), the `harness` and `model` that finished, `attempts` with each entry's

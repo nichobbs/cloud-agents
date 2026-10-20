@@ -36,7 +36,18 @@
 #                        same --timeout (a timeout reports exit 124)
 #       --max-text N     truncate the worker's final message to N characters
 #                        (default 2000)
-#       --raw            send SPEC as-is, without the worker preamble
+#       --raw            send SPEC as-is, without the worker preamble or guidance
+#       --guidance DIR   worker guidance to include (default: $DELEGATE_GUIDANCE_DIR,
+#                        else .delegate-guidance/ at the repository root, if any):
+#                        DIR/AGENTS.md is put in the prompt, and each
+#                        DIR/skills/*/SKILL.md is listed by name, description
+#                        and path for the worker to read when it applies
+#       --no-guidance    include no worker guidance
+#       --k N            best of N: run N candidates in parallel, each in its own
+#                        worktree (-w NAME gives NAME-1..NAME-N, default cand-<time>)
+#                        and starting at a different chain entry; keep a passing
+#                        one with the smallest diff and remove the others
+#       --keep-candidates  keep the worktrees and branches of unselected candidates
 #   -h, --help
 #
 # Fallback: the next entry is tried when an attempt times out, goes idle, hits
@@ -115,6 +126,10 @@ raw=0
 spec=""
 spec_file=""
 have_spec=0
+guidance_dir="${DELEGATE_GUIDANCE_DIR:-}"
+no_guidance=0
+k=1
+keep_candidates=0
 
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -127,6 +142,10 @@ while [ $# -gt 0 ]; do
     --max-text)    [ $# -ge 2 ] || die_usage "$1 needs a value"; max_text="$2"; shift 2 ;;
     --spec-file)   [ $# -ge 2 ] || die_usage "$1 needs a value"; spec_file="$2"; shift 2 ;;
     --raw)         raw=1; shift ;;
+    --guidance)    [ $# -ge 2 ] || die_usage "$1 needs a value"; guidance_dir="$2"; shift 2 ;;
+    --no-guidance) no_guidance=1; shift ;;
+    --k)           [ $# -ge 2 ] || die_usage "$1 needs a value"; k="$2"; shift 2 ;;
+    --keep-candidates) keep_candidates=1; shift ;;
     -h|--help)     usage; exit 0 ;;
     --)            shift; [ $# -ge 1 ] && { spec="$1"; have_spec=1; shift; } ;;
     -)             spec="$(cat)"; have_spec=1; shift ;;
@@ -141,7 +160,7 @@ if [ -n "$spec_file" ]; then
   spec="$(cat "$spec_file")"
 fi
 [ -n "${spec//[[:space:]]/}" ] || die_usage "empty SPEC (see --help)"
-for n in "$timeout_secs" "$idle_secs" "$max_text"; do
+for n in "$timeout_secs" "$idle_secs" "$max_text" "$k"; do
   [[ "$n" =~ ^[1-9][0-9]*$ ]] || die_usage "expected a positive integer, got '$n'"
 done
 if [ -n "$worktree" ] && ! [[ "$worktree" =~ ^[A-Za-z0-9._-]+$ ]]; then
@@ -176,9 +195,99 @@ for raw_entry in "${model_list[@]}"; do
   [ -n "$entry" ] && parse_entry "$entry"
 done
 command -v setsid >/dev/null 2>&1 || die_usage "setsid is required"
+if [ -n "$guidance_dir" ]; then
+  [ -d "$guidance_dir" ] || die_usage "guidance directory $guidance_dir not found"
+  guidance_dir="$(cd "$guidance_dir" && pwd)"
+fi
 
 if [ -n "$workdir" ]; then
   cd "$workdir" || die_usage "cannot cd to $workdir"
+fi
+
+# ── Best of K ────────────────────────────────────────────────────────────────
+# Run K copies of this script in parallel, each in its own worktree and each
+# starting its fallback chain at a different entry (so candidates use
+# different workers when the chain has enough entries), then keep one.
+# Selection: a candidate whose status is ok (its --check passed, if given)
+# beats one that is not; then one that changed something beats one that
+# changed nothing (an "ok" with an empty diff did not do the task, and
+# without a --check nothing else catches it); then the smallest diff (lines
+# added plus removed) wins, then the earliest candidate.
+if [ "$k" -gt 1 ]; then
+  top="$(git rev-parse --show-toplevel 2>/dev/null)" || die_usage "--k needs a git repository"
+  [ -n "$worktree" ] || worktree="cand-$(date +%Y%m%d%H%M%S)"
+  base_rev="$(git rev-parse HEAD)" || die_usage "--k needs a commit to start from"
+  for ((c = 1; c <= k; c++)); do
+    [ ! -e "$top/.delegate/$worktree-$c" ] || die_usage "$top/.delegate/$worktree-$c already exists"
+  done
+  run_id="$(date +%Y%m%d-%H%M%S)-$$"
+  log_root="${DELEGATE_LOG_DIR:-${TMPDIR:-/tmp}/delegate}/$run_id"
+  mkdir -p "$log_root"
+  printf '%s' "$spec" > "$log_root/spec.txt"
+  entries=()
+  for raw_entry in "${model_list[@]}"; do
+    entry="$(echo "$raw_entry" | tr -d '[:space:]')"
+    [ -n "$entry" ] && entries+=("$entry")
+  done
+  common=(-t "$timeout_secs" --idle "$idle_secs" --max-text "$max_text" --spec-file "$log_root/spec.txt")
+  [ -n "$check_cmd" ] && common+=(--check "$check_cmd")
+  [ "$raw" -eq 1 ] && common+=(--raw)
+  [ "$no_guidance" -eq 1 ] && common+=(--no-guidance)
+  [ -n "$guidance_dir" ] && common+=(--guidance "$guidance_dir")
+  pids=()
+  for ((c = 1; c <= k; c++)); do
+    n=${#entries[@]}; off=$(( (c - 1) % n )); chain=""
+    for ((j = 0; j < n; j++)); do
+      chain+="${chain:+,}${entries[$(( (off + j) % n ))]}"
+    done
+    DELEGATE_LOG_DIR="$log_root/candidates" "${BASH_SOURCE[0]}" "${common[@]}" -m "$chain" -w "$worktree-$c" \
+      > "$log_root/candidate-$c.json" 2> "$log_root/candidate-$c.log" &
+    pids+=($!)
+  done
+  for pid in "${pids[@]}"; do wait "$pid"; done
+
+  candidates="[]"; best=0; best_ok=0; best_size=0; best_rank=0
+  for ((c = 1; c <= k; c++)); do
+    res="$log_root/candidate-$c.json"
+    if ! jq -e . "$res" >/dev/null 2>&1; then
+      echo '{"status":"failed","attempts":[],"report":"candidate produced no result; see its log"}' > "$res"
+    fi
+    st="$(jq -r .status "$res")"
+    cm="$(jq -r '.commit // empty' "$res")"
+    size=0
+    if [ -n "$cm" ]; then
+      size="$(git diff --numstat "$base_rev" "$cm" 2>/dev/null | awk '{a += $1 + $2} END {print a + 0}')"
+    fi
+    candidates="$(jq -c --argjson c "$c" --argjson size "$size" --arg w "$worktree-$c" --slurpfile r "$res" \
+      '. + [{candidate: $c, worktree: $w, status: $r[0].status, harness: $r[0].harness, model: $r[0].model,
+             branch: $r[0].branch, commit: $r[0].commit, diff_lines: $size,
+             check_exit: ($r[0].check.exit // null)}]' <<< "$candidates")"
+    ok=0; [ "$st" = ok ] && ok=1
+    # rank: 2 = ok with changes, 1 = ok without, 0 = not ok
+    rank=0; [ "$ok" -eq 1 ] && rank=1; [ "$ok" -eq 1 ] && [ "$size" -gt 0 ] && rank=2
+    if [ "$best" -eq 0 ] || [ "$rank" -gt "$best_rank" ] || { [ "$rank" -eq "$best_rank" ] && [ "$rank" -eq 2 ] && [ "$size" -lt "$best_size" ]; }; then
+      best=$c; best_ok=$ok; best_size=$size; best_rank=$rank
+    fi
+  done
+  [ "$best_ok" -eq 1 ] || best=0
+
+  if [ "$keep_candidates" -eq 0 ]; then
+    for ((c = 1; c <= k; c++)); do
+      [ "$c" -eq "$best" ] && continue
+      git worktree remove --force "$top/.delegate/$worktree-$c" >/dev/null 2>&1
+      git branch -D "delegate/$worktree-$c" >/dev/null 2>&1
+    done
+  fi
+
+  if [ "$best" -gt 0 ]; then
+    jq --argjson cands "$candidates" --argjson sel "$best" --argjson kept "$keep_candidates" \
+      '. + {selected: $sel, candidates: $cands, candidates_kept: ($kept == 1)}' "$log_root/candidate-$best.json"
+    exit 0
+  fi
+  jq -n --argjson cands "$candidates" --argjson kept "$keep_candidates" --arg logs "$log_root" \
+    '{status: "failed", selected: null, candidates: $cands, candidates_kept: ($kept == 1), logs: $logs,
+      report: "no candidate succeeded"}'
+  exit 1
 fi
 
 branch=""
@@ -203,6 +312,58 @@ mkdir -p "$log_root"
 home_root="${DELEGATE_HOME:-$HOME/.cache/cloud-agents/delegate}"
 mkdir -p "$home_root"
 
+# ── Worker guidance (Harness2-style "harness" files, docs/delegation.md) ─────
+# A committed .delegate-guidance/ in the repository: AGENTS.md goes into the
+# prompt as is; skills are listed for the worker to read when relevant, so
+# nothing is written into the worker's tree and every harness CLI handles it
+# the same way.
+guidance_json="null"
+guidance_block=""
+if [ "$raw" -eq 0 ] && [ "$no_guidance" -eq 0 ]; then
+  if [ -z "$guidance_dir" ] && [ "$in_git" -eq 1 ]; then
+    candidate_dir="$(git rev-parse --show-toplevel)/.delegate-guidance"
+    [ -d "$candidate_dir" ] && guidance_dir="$candidate_dir"
+  fi
+fi
+if [ -n "$guidance_dir" ] && [ "$raw" -eq 0 ] && [ "$no_guidance" -eq 0 ]; then
+  case "$guidance_dir/" in
+    "$workdir"/*) shown_dir="${guidance_dir#"$workdir"/}" ;;
+    *)            shown_dir="$guidance_dir" ;;
+  esac
+  [ "$guidance_dir" = "$workdir" ] && shown_dir="."
+  agents_chars=0
+  if [ -s "$guidance_dir/AGENTS.md" ]; then
+    agents_text="$(cat "$guidance_dir/AGENTS.md")"
+    agents_chars=${#agents_text}
+    if [ "$agents_chars" -gt "${DELEGATE_GUIDANCE_MAX:-16000}" ]; then
+      agents_text="${agents_text:0:${DELEGATE_GUIDANCE_MAX:-16000}}
+[truncated; the rest is in $shown_dir/AGENTS.md]"
+    fi
+    guidance_block+="Project guidance (from $shown_dir/AGENTS.md):
+$agents_text
+
+"
+  fi
+  skills_list=""
+  skill_names="[]"
+  for f in "$guidance_dir"/skills/*/SKILL.md; do
+    [ -f "$f" ] || continue
+    sname="$(sed -n '/^---$/,/^---$/{s/^name:[[:space:]]*//p}' "$f" | head -1)"
+    sdesc="$(sed -n '/^---$/,/^---$/{s/^description:[[:space:]]*//p}' "$f" | head -1)"
+    [ -n "$sname" ] || sname="$(basename "$(dirname "$f")")"
+    skills_list+="- $sname: $sdesc ($shown_dir/skills/$(basename "$(dirname "$f")")/SKILL.md)
+"
+    skill_names="$(jq -c --arg n "$sname" '. + [$n]' <<< "$skill_names")"
+  done
+  if [ -n "$skills_list" ]; then
+    guidance_block+="Guidance files: before starting, read the ones that apply to this task.
+$skills_list
+"
+  fi
+  guidance_json="$(jq -n -c --arg d "$guidance_dir" --argjson a "$agents_chars" --argjson s "$skill_names" \
+    '{dir: $d, agents_md_chars: $a, skills: $s}')"
+fi
+
 if [ "$raw" -eq 1 ]; then
   prompt="$spec"
 else
@@ -215,7 +376,7 @@ Rules:
 - Run the build or tests the task names before you finish, and fix what fails.
 - Finish with a short plain-text report: what you changed (file paths), what you ran and its result, and anything left unresolved.
 
-Task:
+${guidance_block}Task:
 $spec"
 fi
 
@@ -665,8 +826,9 @@ jq -n \
   --arg branch "$branch" \
   --arg commit "$commit" \
   --arg logs "$log_root" \
+  --argjson guidance "$guidance_json" \
   '{status: $status, harness: $harness, model: $model, attempts: $attempts, usage: $usage,
-    report: $report,
+    report: $report, guidance: $guidance,
     changed: ($changed | split("\n") | map(select(length > 0))),
     diffstat: $diffstat, check: $check, workdir: $workdir, logs: $logs}
    + (if $branch == "" then {} else {branch: $branch, commit: (if $commit == "" then null else $commit end)} end)'
