@@ -76,6 +76,13 @@ model=""; while [ $# -gt 0 ]; do case "$1" in --model) model="$2"; shift 2 ;; --
 echo '{"type":"system","subtype":"init"}'
 case "$model" in
   fail) echo '{"type":"result","subtype":"error_during_execution","is_error":true,"result":"boom"}' ;;
+  refresh-rename|refresh-older)
+    # Refresh the login the way an atomic writer does: new file, rename over.
+    exp=99; [ "$model" = refresh-older ] && exp=1
+    printf '{"claudeAiOauth":{"accessToken":"rotated","refreshToken":"r2","expiresAt":%s}}\n' "$exp" > "$HOME/.claude/.credentials.json.new"
+    mv -f "$HOME/.claude/.credentials.json.new" "$HOME/.claude/.credentials.json"
+    echo "edit" >> calc.txt
+    echo '{"type":"result","subtype":"success","is_error":false,"result":"refreshed","usage":{}}' ;;
   *) echo "edit" >> calc.txt
      echo '{"type":"assistant","message":{"content":[{"type":"text","text":"working"}]}}'
      echo '{"type":"result","subtype":"success","is_error":false,"result":"claude did it","total_cost_usd":0.25,"usage":{"input_tokens":7,"output_tokens":3,"cache_read_input_tokens":11}}' ;;
@@ -312,6 +319,13 @@ rc=0; out="$(cd "$repo" && git checkout -q -- calc.txt && hb HOME="$realhome" DE
 check "login: claude session login linked"      [ "$(readlink "$WORK/home/claude/.claude/.credentials.json")" = "$realhome/.claude/.credentials.json" ]
 check "login: claude gets no api key with login" bash -c "! grep -q '^ANTHROPIC_API_KEY=' '$STUB_DIR/claude.env'"
 check "login: claude subscription reported"     [ "$(field '.attempts[0].auth')" = subscription ]
+rc=0; out="$(cd "$repo" && git checkout -q -- calc.txt && hb HOME="$realhome" DELEGATE_HOME="$WORK/home" "$SCRIPT" -m claude:refresh-rename "x")" || rc=$?
+check "login: a renamed-in refresh is written back" [ "$(jq -r .claudeAiOauth.refreshToken "$realhome/.claude/.credentials.json")" = r2 ]
+check "login: session copy stays private"       [ "$(stat -c %a "$realhome/.claude/.credentials.json")" = 600 ]
+check "login: link restored after the refresh"  [ "$(readlink "$WORK/home/claude/.claude/.credentials.json")" = "$realhome/.claude/.credentials.json" ]
+echo '{"claudeAiOauth":{"accessToken":"live","refreshToken":"keep","expiresAt":50}}' > "$realhome/.claude/.credentials.json"
+rc=0; out="$(cd "$repo" && git checkout -q -- calc.txt && hb HOME="$realhome" DELEGATE_HOME="$WORK/home" "$SCRIPT" -m claude:refresh-older "x")" || rc=$?
+check "login: an older worker copy is not written back" [ "$(jq -r .claudeAiOauth.refreshToken "$realhome/.claude/.credentials.json")" = keep ]
 
 # 12. Profile limits.
 repo="$(new_repo allow)"

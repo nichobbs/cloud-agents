@@ -113,7 +113,10 @@ live yet, because that needs their credentials (see "Still to measure").
 - **Credentials.** A worker gets only its own harness's credentials, preferring a
   subscription login over an API key (the goal is to spend subscriptions):
   - claude: the session's `~/.claude/.credentials.json`, linked rather than copied so a
-    token refresh by either process is seen by both; else `CLAUDE_CREDENTIALS_JSON` or
+    token refresh by either process is seen by both. If a refresh writes a new file and
+    renames it over the link, the worker's copy is copied back over the session's file
+    after the attempt, if it is newer, and the link is restored, so the session never
+    keeps a rotated-out refresh token. Otherwise `CLAUDE_CREDENTIALS_JSON` or
     `CLAUDE_CODE_OAUTH_TOKEN`; else `ANTHROPIC_API_KEY`.
   - codex: `CODEX_AUTH_JSON` (a ChatGPT login's `~/.codex/auth.json`) installed as
     `$CODEX_HOME/auth.json`; else `CODEX_API_KEY` / `OPENAI_API_KEY`.

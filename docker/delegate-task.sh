@@ -95,6 +95,10 @@ npm_package() {
 # error before it counts as stuck. opencode retries some errors itself
 # ("Endpoint is unavailable" has been seen to recover), so this is not zero.
 PROVIDER_ERROR_GRACE="${DELEGATE_PROVIDER_ERROR_GRACE:-20}"
+# The other harnesses only match a generic pattern on their stderr and retry
+# rate limits themselves with backoff, so they get longer before an attempt
+# counts as stuck.
+OTHER_PROVIDER_ERROR_GRACE="${DELEGATE_OTHER_PROVIDER_ERROR_GRACE:-90}"
 POLL_SECS="${DELEGATE_POLL_SECS:-2}"
 
 usage() { sed -n '2,/^set -uo/p' "$0" | sed -e '$d' -e 's/^# \{0,1\}//'; }
@@ -281,6 +285,9 @@ prepare_harness() {
       if [ "$wh" != "$HOME" ] && [ -f "$src" ] && [ ! "$src" -ef "$dest" ]; then
         # Linked so a token refresh by either process is seen by both.
         mkdir -p "$wh/.claude"; ln -sfn "$src" "$dest"; auth_mode="subscription"
+        claude_linked_src="$src"
+      elif [ "$wh" != "$HOME" ] && [ -f "$src" ]; then
+        auth_mode="subscription"; claude_linked_src="$src"
       elif [ -n "${CLAUDE_CREDENTIALS_JSON:-}" ] && write_login "$dest" "$CLAUDE_CREDENTIALS_JSON" '.claudeAiOauth.expiresAt'; then
         auth_mode="subscription"
       elif [ -s "$dest" ]; then
@@ -328,6 +335,24 @@ prepare_harness() {
       fi
       ;;
   esac
+}
+
+# A CLI that refreshes its login by writing a new file and renaming it into
+# place replaces the link with a regular file, leaving the newly rotated
+# refresh token only in the worker's copy and the session's own copy holding
+# a dead one. After a claude attempt, copy a newer worker login back over the
+# session's file and restore the link.
+sync_claude_login() {
+  local src="$1" dest="$home_root/claude/.claude/.credentials.json" new old
+  [ -n "$src" ] && [ -f "$src" ] || return 0
+  if [ -f "$dest" ] && [ ! -L "$dest" ]; then
+    new="$(jq -er '.claudeAiOauth.expiresAt // empty' "$dest" 2>/dev/null || echo 0)"
+    old="$(jq -er '.claudeAiOauth.expiresAt // empty' "$src" 2>/dev/null || echo 0)"
+    if [[ "$new" =~ ^[0-9]+$ && "$old" =~ ^[0-9]+$ ]] && [ "$new" -gt "$old" ]; then
+      ( umask 077; cp "$dest" "$src.tmp.$$" ) && mv -f "$src.tmp.$$" "$src"
+    fi
+  fi
+  ln -sfn "$src" "$dest"
 }
 
 # worker_bin H: path of the harness CLI, installing it into ~/.local on first
@@ -428,8 +453,9 @@ succeeded() {
 # exit_<n>|incomplete.
 run_attempt() {
   local h="$1" model="$2" bin="$3" out="$4" err="$5" lastmsg="$6"
-  local pattern
+  local pattern grace="$PROVIDER_ERROR_GRACE"
   pattern="$(provider_error_pattern "$h")"
+  [ "$h" = opencode ] || grace="$OTHER_PROVIDER_ERROR_GRACE"
   build_cmd "$h" "$model" "$bin" "$lastmsg"
 
   : > "$out"; : > "$err"; rm -f "$lastmsg"
@@ -455,7 +481,7 @@ run_attempt() {
     fi
     if [ $((now - start)) -ge "$timeout_secs" ]; then
       attempt_outcome="timeout"
-    elif [ "$error_at" -gt 0 ] && [ "$last_change" -le "$error_at" ] && [ $((now - error_at)) -ge "$PROVIDER_ERROR_GRACE" ]; then
+    elif [ "$error_at" -gt 0 ] && [ "$last_change" -le "$error_at" ] && [ $((now - error_at)) -ge "$grace" ]; then
       attempt_outcome="provider_error"
     elif [ $((now - last_change)) -ge "$idle_secs" ]; then
       attempt_outcome="idle"
@@ -513,8 +539,10 @@ for raw_entry in "${model_list[@]}"; do
   elif ! bin="$(worker_bin "$h")"; then
     attempt_outcome="not_installed"; : > "$out"; : > "$err"
   else
+    claude_linked_src=""
     prepare_harness "$h" "$model"
     run_attempt "$h" "$model" "$bin" "$out" "$err" "$lastmsg"
+    [ "$h" = claude ] && sync_claude_login "$claude_linked_src"
   fi
   secs=$(( $(date +%s) - t0 ))
   provider_error=""
