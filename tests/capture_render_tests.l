@@ -270,7 +270,8 @@ test "renderLogDelta and displayTextOf support Gemini stream-json events" {
 // Event shapes from `codex exec --json` 0.145 (codex-rs/exec/src/exec_events.rs):
 // items are flattened, with `type` beside `id`. Only the completed
 // agent_message is the reply; reasoning carries `text` too but, like Claude's
-// thinking blocks, is not shown. turn.completed carries usage, not a result.
+// thinking blocks, is not shown. turn.completed carries usage, not a result,
+// so the final result is the last agent message.
 test "renderLogDelta and displayTextOf support Codex exec --json events" {
   val codexLog = "{\"type\":\"thread.started\",\"thread_id\":\"t1\"}\n" +
     "{\"type\":\"turn.started\"}\n" +
@@ -283,6 +284,7 @@ test "renderLogDelta and displayTextOf support Codex exec --json events" {
   val rd = renderLogDelta(codexLog, 0, 0.toLong(), "", true)
   assertEqualInt(rd.events.length.toInt(), 8, "eight codex events parsed")
   assertEqual(rd.displayText, "Hello from Codex!", "only the agent message is visible; reasoning and tool items are not")
+  assertEqual(resultText(finalResultText(rd.events)), "Hello from Codex!", "codex final result is the last agent message")
 }
 
 test "renderLogDelta and displayTextOf support OpenCode json stream" {

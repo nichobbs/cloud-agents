@@ -260,14 +260,22 @@ func resultTextOfRoot(root: in JsonElement): Option[String] {
 
 /// The terminal result text of a captured turn — the `result` field of the LAST
 /// `result`-typed event whose `result` is a string, or `None` when the turn
-/// carries no such event (still running, or errored before a result). Useful for
-/// persisting the agent message / anchoring the checkpoint. Total: never throws.
+/// carries no such event (still running, or errored before a result). Codex
+/// `exec --json` has no result event (its turn.completed carries only usage), so
+/// there the result is the text of the last completed agent_message item. Useful
+/// for persisting the agent message / anchoring the checkpoint. Total: never
+/// throws.
 pub func finalResultText(events: in slice[CaptureEvent]): Option[String] {
   var found: Option[String] = None
   var i = 0
   while i < events.length.toInt() {
     val e = events[i]
-    if e.eventType == "result" or e.eventType == "turn.completed" {
+    if e.eventType == "item.completed" {
+      val txt = displayTextOf(e)
+      if txt.length.toInt() > 0 {
+        found = Some(txt)
+      }
+    } else if e.eventType == "result" {
       match Std.Json.tryParseJson(e.payload) {
         case Err(_) -> ()
         case Ok(doc) -> {
