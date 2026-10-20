@@ -3,7 +3,7 @@
 # `exec codex ...` launch. Runs that part of the real file against a temp
 # workspace with a stub `codex` that records its arguments and environment.
 #
-# Behaviour of the pinned Codex CLI (0.145.0), checked against the real binary:
+# Behaviour of the Codex CLI (0.145.0), checked against the real binary:
 #   - the bare `codex` command is the interactive TUI. It rejects --json and
 #     --full-auto (exit 2). `codex exec` is the non-interactive mode.
 #   - OPENAI_API_KEY alone is not used for auth (requests go out with no bearer

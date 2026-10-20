@@ -177,19 +177,23 @@ RUN chmod +x /usr/local/bin/split-ca-bundle.sh /usr/local/bin/trust-extra-cas.sh
     && /usr/local/bin/trust-extra-cas.sh
 ENV NODE_EXTRA_CA_CERTS=/usr/local/share/ca-certificates/extra-combined.pem
 
-RUN npm install -g @anthropic-ai/claude-code
+# Harness CLIs and uv are installed at their newest release and checked
+# against the flags cloud-agents passes them, falling back to a known-good
+# release if that check fails (docker/install-harness-cli.sh). Each ADD fetches
+# the registry's or installer's current `latest` on every build; Docker reruns
+# the install step only when that content changes, i.e. on a new release.
+COPY docker/check-harness-cli.sh docker/install-harness-cli.sh /usr/local/bin/
+RUN chmod +x /usr/local/bin/check-harness-cli.sh /usr/local/bin/install-harness-cli.sh
+
+ADD https://registry.npmjs.org/@anthropic-ai/claude-code/latest /tmp/cli-latest/claude.json
+RUN install-harness-cli.sh --latest-json /tmp/cli-latest/claude.json claude
 
 # OpenCode CLI, as a worker for docker/delegate-task.sh (docs/delegation.md):
 # Claude Code stays the orchestrator on the owner's subscription and hands
 # well-specified tasks to cheaper or free models through `opencode run`.
-# Same pin and retry loop as docker/Dockerfile.opencode, so both images run
-# the same worker version.
-RUN n=0; until npm install -g opencode-ai@1.18.4; do \
-      n=$((n + 1)); \
-      if [ "$n" -ge 3 ]; then echo "npm install -g opencode-ai failed after 3 attempts" >&2; exit 1; fi; \
-      echo "npm install -g opencode-ai failed (attempt $n/3), retrying in 5s..." >&2; \
-      sleep 5; \
-    done
+# Installed the same way as in docker/Dockerfile.opencode.
+ADD https://registry.npmjs.org/opencode-ai/latest /tmp/cli-latest/opencode.json
+RUN install-harness-cli.sh --latest-json /tmp/cli-latest/opencode.json opencode
 
 # GitHub CLI (gh): lets an agent session interact with GitHub (PRs, issues,
 # checks) via `gh`/`gh api` without needing a GitHub MCP server or hand-
@@ -202,7 +206,7 @@ RUN n=0; until npm install -g opencode-ai@1.18.4; do \
 # forces the Lyric compiler's redirect-based version resolution above).
 # Installed after the CA-trust step so the keyring/package fetch works
 # behind a TLS-intercepting proxy too. Deliberately NOT version-pinned,
-# unlike the other agent-facing CLIs in this file: the apt repo only ever
+# and with no known-good fallback: the apt repo only ever
 # serves the newest gh, so an exact `gh=<version>` pin fails the build as
 # soon as a new gh ships (2.100.0 did). Installs whatever is current when
 # this layer is (re)built.
@@ -224,12 +228,9 @@ RUN mkdir -p -m 755 /etc/apt/keyrings \
 # mcp-server-fetch` — deliberately the official reference implementation
 # (github.com/modelcontextprotocol/servers) rather than a smaller
 # single-maintainer npm alternative, since this ships to every user by
-# default. Pinned to a version confirmed to install cleanly (bump
-# deliberately, not by dropping the pin — same rationale as the CLI installs
-# above: astral.sh/uv/install.sh with no version in the path always serves
-# whatever uv shipped most recently, an untested "latest" that could break a
-# build without warning).
-RUN curl -LsSf --connect-timeout 10 --max-time 120 --retry 3 --retry-delay 3 https://astral.sh/uv/0.12.0/install.sh | env UV_INSTALL_DIR=/usr/local/bin sh
+# default. Installed by install-harness-cli.sh, like the CLIs above.
+ADD https://astral.sh/uv/install.sh /tmp/cli-latest/uv-install.sh
+RUN UV_INSTALL_DIR=/usr/local/bin UV_NO_MODIFY_PATH=1 install-harness-cli.sh --latest-json /tmp/cli-latest/uv-install.sh uv
 
 # Install the Lyric compiler to a system location — the EXACT SAME version
 # AND architecture RID the shim-builder stage above already resolved and

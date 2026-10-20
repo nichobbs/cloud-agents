@@ -202,4 +202,6 @@ if [ -f /usr/local/bin/register-callbacks-mcp.sh ]; then
     register_callbacks_mcp "opencode" /workspace || echo "entrypoint-opencode: callback MCP registration failed, continuing without it" >&2
 fi
 
-exec opencode run --model "${MODEL}" --format json -q -- "${PROMPT}"
+# No -q: `opencode run` has no such option and rejects it with its usage text
+# and exit 1 (1.18.4 and 1.19.3 alike), so with it no session ever started.
+exec opencode run --model "${MODEL}" --format json -- "${PROMPT}"

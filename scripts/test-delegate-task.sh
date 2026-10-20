@@ -113,6 +113,11 @@ esac
 STUB
 cat > "$WORK/hbin/gemini" <<'STUB'
 #!/usr/bin/env bash
+# Enough of `gemini --help` for check-harness-cli.sh (on-demand installs).
+case "${1:-}" in
+  --help) printf '  %s\n' --model --yolo --output-format --prompt 'stream-json'; exit 0 ;;
+  --version) echo 0.0.0-stub; exit 0 ;;
+esac
 env > "$STUB_DIR/gemini.env"; printf '%s\n' "$@" > "$STUB_DIR/gemini.argv"
 model=""; while [ $# -gt 0 ]; do case "$1" in --model) model="$2"; shift 2 ;; *) shift ;; esac; done
 echo '{"type":"init","timestamp":"t","session_id":"s","model":"m"}'
@@ -352,7 +357,8 @@ check "allow: opencode glob applies"            [ "$(field '.attempts[0].outcome
 rc=0; out="$(cd "$repo" && CLOUD_AGENTS_DELEGATE_ALLOW="opencode" "$SCRIPT" -m stub/edit "x")" || rc=$?
 check "allow: bare harness allows any model"    [ "$(field .status)" = ok ]
 
-# 13. A missing CLI is installed into ~/.local on first use.
+# 13. A CLI the image lacks is installed on first use, at the newest release,
+# into a managed prefix, and refreshed when old.
 repo="$(new_repo install)"
 inst_home="$WORK/insthome"; mkdir -p "$inst_home" "$WORK/npmbin"
 cat > "$WORK/npmbin/npm" <<STUB
@@ -364,9 +370,60 @@ STUB
 chmod +x "$WORK/npmbin/npm"
 rc=0; out="$(cd "$repo" && env -u DELEGATE_GEMINI_BIN PATH="$WORK/npmbin:$PATH" HOME="$inst_home" DELEGATE_HOME="$WORK/home" \
   GEMINI_API_KEY=k DELEGATE_PASS_ENV=STUB_DIR "$SCRIPT" -m gemini:x "x")" || rc=$?
-check "install: ran npm with the pinned package" grep -q "@google/gemini-cli@0.51.0" "$WORK/npm.args"
-check "install: into ~/.local"                  [ -x "$inst_home/.local/bin/gemini" ]
+managed="$inst_home/.cache/cloud-agents/delegate-cli/gemini"
+check "install: ran npm for the newest release" grep -q "@google/gemini-cli@latest" "$WORK/npm.args"
+check "install: into the managed prefix"        [ -x "$managed/bin/gemini" ]
+check "install: the prefix is a versioned dir"  [ -L "$managed" ]
 check "install: then ran the worker"            [ "$(field .status)" = ok ]
+first_dir="$(readlink -f "$managed")"
+rm -f "$WORK/npm.args"
+rc=0; out="$(cd "$repo" && git checkout -q -- calc.txt && env -u DELEGATE_GEMINI_BIN PATH="$WORK/npmbin:$PATH" HOME="$inst_home" DELEGATE_HOME="$WORK/home" \
+  GEMINI_API_KEY=k DELEGATE_PASS_ENV=STUB_DIR "$SCRIPT" -m gemini:x "x")" || rc=$?
+check "install: a fresh install is reused"      [ ! -e "$WORK/npm.args" ]
+echo 0 > "$managed/.installed"
+sleep 1
+rc=0; out="$(cd "$repo" && git checkout -q -- calc.txt && env -u DELEGATE_GEMINI_BIN PATH="$WORK/npmbin:$PATH" HOME="$inst_home" DELEGATE_HOME="$WORK/home" \
+  GEMINI_API_KEY=k DELEGATE_PASS_ENV=STUB_DIR "$SCRIPT" -m gemini:x "x")" || rc=$?
+check "install: an old install is refreshed"    [ -e "$WORK/npm.args" ]
+check "install: ...into a new versioned dir"    [ "$(readlink -f "$managed")" != "$first_dir" ]
+check "install: ...keeping the previous one"    [ -x "$first_dir/bin/gemini" ]
+check "install: ...and ran the worker"          [ "$(field .status)" = ok ]
+# A refresh that fails leaves the previous install in use.
+mkdir -p "$WORK/npmfail"; printf '#!/usr/bin/env bash\nexit 1\n' > "$WORK/npmfail/npm"; chmod +x "$WORK/npmfail/npm"
+kept="$(readlink -f "$managed")"; echo 0 > "$managed/.installed"
+rc=0; out="$(cd "$repo" && git checkout -q -- calc.txt && env -u DELEGATE_GEMINI_BIN PATH="$WORK/npmfail:$PATH" HOME="$inst_home" DELEGATE_HOME="$WORK/home" \
+  GEMINI_API_KEY=k DELEGATE_PASS_ENV=STUB_DIR "$SCRIPT" -m gemini:x "x")" || rc=$?
+check "install: failed refresh keeps the old"   [ "$(readlink -f "$managed")" = "$kept" ]
+check "install: ...and the worker still runs"   [ "$(field .status)" = ok ]
+# The newest release failing the flag check falls back to the known-good one.
+mkdir -p "$WORK/npmold"
+cat > "$WORK/npmold/npm" <<STUB
+#!/usr/bin/env bash
+echo "\$@" >> "$WORK/npmold.args"
+prefix=""; pkg=""; while [ \$# -gt 0 ]; do case "\$1" in --prefix) prefix="\$2"; shift 2 ;; -*) shift ;; install) shift ;; *) pkg="\$1"; shift ;; esac; done
+mkdir -p "\$prefix/bin"
+if [ "\${pkg##*@}" = latest ]; then
+  printf '#!/usr/bin/env bash\necho "  --model --prompt"\n' > "\$prefix/bin/gemini"; chmod +x "\$prefix/bin/gemini"
+else
+  cp "$WORK/hbin/gemini" "\$prefix/bin/gemini"
+fi
+STUB
+chmod +x "$WORK/npmold/npm"
+rm -f "$WORK/npmold.args"
+rc=0; out="$(cd "$repo" && git checkout -q -- calc.txt && env -u DELEGATE_GEMINI_BIN PATH="$WORK/npmold:$PATH" HOME="$WORK/oldhome" DELEGATE_HOME="$WORK/home" \
+  GEMINI_API_KEY=k DELEGATE_PASS_ENV=STUB_DIR "$SCRIPT" -m gemini:x "x")" || rc=$?
+check "install: newest fails check -> fallback" grep -q "@google/gemini-cli@$("$REPO_ROOT/docker/install-harness-cli.sh" --fallback gemini)" "$WORK/npmold.args"
+check "install: ...and the worker runs"         [ "$(field .status)" = ok ]
+# The image's own CLI wins; one under $HOME (a user's ~/.local install) does not.
+mkdir -p "$WORK/imgbin" "$WORK/homebin/.local/bin"
+cp "$WORK/hbin/gemini" "$WORK/imgbin/gemini"; cp "$WORK/hbin/gemini" "$WORK/homebin/.local/bin/gemini"
+rm -f "$WORK/npm.args"
+rc=0; out="$(cd "$repo" && git checkout -q -- calc.txt && env -u DELEGATE_GEMINI_BIN PATH="$WORK/npmbin:$WORK/imgbin:$PATH" HOME="$WORK/homebin" DELEGATE_HOME="$WORK/home" \
+  GEMINI_API_KEY=k DELEGATE_PASS_ENV=STUB_DIR "$SCRIPT" -m gemini:x "x")" || rc=$?
+check "install: the image's CLI is used as is"  [ ! -e "$WORK/npm.args" ]
+rc=0; out="$(cd "$repo" && git checkout -q -- calc.txt && env -u DELEGATE_GEMINI_BIN PATH="$WORK/npmbin:$WORK/homebin/.local/bin:$PATH" HOME="$WORK/homebin" DELEGATE_HOME="$WORK/home" \
+  GEMINI_API_KEY=k DELEGATE_PASS_ENV=STUB_DIR "$SCRIPT" -m gemini:x "x")" || rc=$?
+check "install: a CLI under \$HOME is not"       [ -e "$WORK/npm.args" ]
 rc=0; out="$(cd "$repo" && git checkout -q -- calc.txt && env PATH="$WORK/npmbin:$PATH" HOME="$WORK/nohome" DELEGATE_HOME="$WORK/home" \
   DELEGATE_AUTO_INSTALL=0 "$SCRIPT" -m codex:x "x")" || rc=$?
 check "install: disabled means not_installed"   [ "$(field '.attempts[0].outcome')" = not_installed ]
