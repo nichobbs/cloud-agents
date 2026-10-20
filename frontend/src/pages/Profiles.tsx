@@ -92,6 +92,7 @@ export function Profiles() {
   const [mcpServerGrants, setMcpServerGrants] = useState<string[]>([]);
   const [toolMode, setToolMode] = useState('all');
   const [tools, setTools] = useState<string[]>([]);
+  const [setupScript, setSetupScript] = useState('');
   const editingIdRef = useRef<string | null>(null);
   const [observer, setObserver] = useState<ObserverSettings>(DEFAULT_OBSERVER);
   const [observerLoading, setObserverLoading] = useState(false);
@@ -149,6 +150,7 @@ export function Profiles() {
     setMcpServerGrants([]);
     setToolMode('all');
     setTools([]);
+    setSetupScript('');
     setObserver(DEFAULT_OBSERVER);
     setObserverLoading(false);
   };
@@ -166,6 +168,7 @@ export function Profiles() {
     setMcpServerGrants(p.mcpServerIds);
     setToolMode(p.toolMode ?? 'all');
     setTools(p.tools ?? []);
+    setSetupScript(p.setupScript ?? '');
     setObserver(DEFAULT_OBSERVER);
     setObserverLoading(true);
     api
@@ -217,6 +220,7 @@ export function Profiles() {
       mcpServerIds: mcpServerGrants,
       toolMode,
       tools: toolMode === 'selected' ? tools : [],
+      setupScript,
     };
     try {
       let profileId = editingId;
@@ -438,6 +442,26 @@ export function Profiles() {
         </div>
 
         <div style={grantsBoxStyle}>
+          <label style={fieldStyle}>
+            <span style={labelStyle}>Setup script</span>
+            <textarea
+              style={textareaStyle}
+              value={setupScript}
+              onChange={e => setSetupScript(e.target.value)}
+              placeholder={'# e.g.\nnpm i -g pnpm\nuv tool install ruff'}
+              rows={5}
+              spellCheck={false}
+              aria-label="Setup script"
+            />
+          </label>
+          <div style={hintStyle}>
+            Bash, run as the harness user before the agent starts, once per change to the script. Installs go to{' '}
+            <code>~/.local</code> on your home volume and stay for later sessions on the same harness. No root, so
+            no <code>apt</code>. A failure is logged and the session still runs.
+          </div>
+        </div>
+
+        <div style={grantsBoxStyle}>
           <label style={{ display: 'flex', alignItems: 'center', gap: '8px', ...labelStyle }}>
             <input
               type="checkbox"
@@ -572,6 +596,7 @@ export function Profiles() {
             <span style={badgeStyle}>
               tools: {p.toolMode === 'selected' ? `${p.tools.length} selected` : 'all'}
             </span>
+            {p.setupScript && <span style={badgeStyle}>setup script</span>}
           </div>
           {p.credentialMode === 'selected' && p.credentials.length > 0 && (
             <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px' }}>
@@ -636,6 +661,14 @@ const selectStyle: React.CSSProperties = {
 };
 
 const hintStyle: React.CSSProperties = { fontSize: '12px', color: '#8b949e', lineHeight: 1.5 };
+
+const textareaStyle: React.CSSProperties = {
+  ...selectStyle,
+  fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace',
+  fontSize: '12px',
+  resize: 'vertical',
+  minHeight: '90px',
+};
 
 const grantsBoxStyle: React.CSSProperties = {
   display: 'flex',

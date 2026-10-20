@@ -15,6 +15,9 @@ import CloudAgents.Repository
 import CloudAgents.Db
 
 val maxProfileNameLen = 200
+// A setup script installs tools; 64 KiB is far more than that needs, and it
+// is passed to every container of the profile as one environment variable.
+val maxSetupScriptLen = 65536
 
 // The stable MCP tool names the in-container shim can register (see
 // shim/src/main.l — an entirely separate Lyric project with its own
@@ -46,6 +49,7 @@ pub record SaveProfileRequest {
   pub mcpServerIds: slice[String]
   pub toolMode: String
   pub tools: slice[String]
+  pub setupScript: String
 }
 
 /// The index of the last occurrence of a single-character `target` in `s`,
@@ -78,6 +82,8 @@ func lastIndexOfChar(s: in String, target: in String): Int {
 /// Patches the two fields' JSON-default values ("" / []) into the raw body
 /// BEFORE decoding, but only for whichever of the two keys is actually
 /// absent (a body that already sends them is passed through byte-identical).
+/// `setupScript` (docs/tool-installs.md) was added the same way later and is
+/// patched the same way, defaulting to "" (no script).
 /// Uses Std.Json's real parser to detect absence (not a blind string
 /// search, which could false-positive on a nested object/array that
 /// happens to contain the substring `"toolMode"` as a value) and splices
@@ -102,6 +108,12 @@ pub func patchMissingToolFields(body: in String): String {
   match Std.Json.tryGetProperty(root, "tools") {
     case None -> {
       toAdd = toAdd + ",\"tools\":[]"
+    }
+    case Some(_) -> ()
+  }
+  match Std.Json.tryGetProperty(root, "setupScript") {
+    case None -> {
+      toAdd = toAdd + ",\"setupScript\":\"\""
     }
     case Some(_) -> ()
   }
@@ -241,6 +253,9 @@ func validateSaveProfile(req: in SaveProfileRequest): Option[Web.ApiError] {
   if not isValidToolMode(req.toolMode) {
     return Some(value = Web.badRequest("toolMode must be one of: all, selected"))
   }
+  if req.setupScript.length > maxSetupScriptLen {
+    return Some(value = Web.badRequest("setupScript is too long (max 65536 characters)"))
+  }
   // In 'selected' mode, every granted name must be a valid env-var name, and
   // no name may repeat: profileCredentialStatements inserts one row per
   // credential into profile_credentials, whose own UNIQUE(profile_id,
@@ -356,7 +371,7 @@ pub func addProfileHandler(req: in SaveProfileRequest): Result[Profile, Web.ApiE
     case Ok(None) -> ()
     case Err(e) -> return Err(dbError(e))
   }
-  match addProfile(
+  match addProfileWithSetupScript(
     sc,
     name,
     req.harness,
@@ -368,6 +383,7 @@ pub func addProfileHandler(req: in SaveProfileRequest): Result[Profile, Web.ApiE
     req.mcpServerIds,
     normalizedToolMode(req.toolMode),
     toolsFor(req),
+    req.setupScript,
   ) {
     case Ok(p) -> return Ok(p)
     case Err(e) -> {
@@ -399,7 +415,7 @@ pub func updateProfileHandler(pid: in String, req: in SaveProfileRequest): Resul
     case Ok(None) -> ()
     case Err(e) -> return Err(dbError(e))
   }
-  val affected = match updateProfile(
+  val affected = match updateProfileWithSetupScript(
     pid,
     sc,
     name,
@@ -412,6 +428,7 @@ pub func updateProfileHandler(pid: in String, req: in SaveProfileRequest): Resul
     req.mcpServerIds,
     normalizedToolMode(req.toolMode),
     toolsFor(req),
+    req.setupScript,
   ) {
     case Ok(n) -> n
     case Err(e) -> {

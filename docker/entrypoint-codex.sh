@@ -139,6 +139,14 @@ create-fallback-branch.sh "entrypoint-codex" "${HARNESS}" "${BRANCH}" "${SESSION
 # run.
 /usr/local/bin/inject-library.sh "codex" || echo "entrypoint-codex: library injection failed, continuing without it" >&2
 
+# User-space tool installs (~/.local, on the shared home volume) and the
+# profile's setup script, run once per script change (docker/user-tools.sh,
+# docs/tool-installs.md). Neither can block the prompt run.
+# shellcheck source=user-tools.sh
+source /usr/local/bin/user-tools.sh
+cloud_agents_user_tools_env
+cloud_agents_run_setup_script "entrypoint-codex"
+
 # Register (or strip) the cloud-agents MCP callback shim in
 # .codex/config.toml, reconciled every message — gives Codex the ledger_*/
 # report_progress/... tools (docker/register-callbacks-mcp.sh).

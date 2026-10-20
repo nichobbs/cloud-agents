@@ -113,7 +113,7 @@ func replaceAllGrants(
 }
 
 func profileCols(): String {
-  return "id, user_id, name, harness, network_policy, credential_mode, tool_mode, " + stamps("")
+  return "id, user_id, name, harness, network_policy, credential_mode, tool_mode, setup_script, " + stamps("")
 }
 
 func toProfile(u: in PgUnit, r: in DbRow): Result[CloudAgents.Repository.Profile, CloudAgents.Db.DbError] {
@@ -139,6 +139,7 @@ func toProfile(u: in PgUnit, r: in DbRow): Result[CloudAgents.Repository.Profile
       mcpServerIds = servers,
       toolMode = col(r, "tool_mode"),
       tools = tools,
+      setupScript = col(r, "setup_script"),
       createdAt = col(r, "created_at"),
       updatedAt = col(r, "updated_at")
     )
@@ -183,13 +184,30 @@ pub func addProfile(
   toolMode: in String,
   tools: in slice[String],
 ): Result[CloudAgents.Repository.Profile, CloudAgents.Db.DbError] {
+  return addProfileWithSetupScript(sc, name, harness, networkPolicy, credentialMode, credentials, skillIds, subagentIds, mcpServerIds, toolMode, tools, "")
+}
+
+pub func addProfileWithSetupScript(
+  sc: in CloudAgents.Pg.TenantScope,
+  name: in String,
+  harness: in String,
+  networkPolicy: in String,
+  credentialMode: in String,
+  credentials: in slice[String],
+  skillIds: in slice[String],
+  subagentIds: in slice[String],
+  mcpServerIds: in slice[String],
+  toolMode: in String,
+  tools: in slice[String],
+  setupScript: in String,
+): Result[CloudAgents.Repository.Profile, CloudAgents.Db.DbError] {
   val id = newId()
   val ts = CloudAgents.Repository.nowMillis()
   val u = CloudAgents.PgStore.open(sc)?
   defer {
     CloudAgents.PgStore.release(u)
   }
-  CloudAgents.PgStore.ex(u, "INSERT INTO profiles (id, user_id, name, harness, network_policy, credential_mode, tool_mode, created_at, updated_at) " + "VALUES (@p0, @p1, @p2, @p3, @p4, @p5, @p6, " + CloudAgents.Pg.msIn(7) + ", " + CloudAgents.Pg.msIn(7) + ")", [id, sc.userId, name, harness, networkPolicy, credentialMode, toolMode, ts])?
+  CloudAgents.PgStore.ex(u, "INSERT INTO profiles (id, user_id, name, harness, network_policy, credential_mode, tool_mode, setup_script, created_at, updated_at) " + "VALUES (@p0, @p1, @p2, @p3, @p4, @p5, @p6, @p7, " + CloudAgents.Pg.msIn(8) + ", " + CloudAgents.Pg.msIn(8) + ")", [id, sc.userId, name, harness, networkPolicy, credentialMode, toolMode, setupScript, ts])?
   replaceAllGrants(u, id, sc.userId, credentials, skillIds, subagentIds, mcpServerIds, tools)?
   CloudAgents.PgStore.commit(u)?
   return Ok(
@@ -206,6 +224,7 @@ pub func addProfile(
       mcpServerIds = mcpServerIds,
       toolMode = toolMode,
       tools = tools,
+      setupScript = setupScript,
       createdAt = ts,
       updatedAt = ts
     )
@@ -247,6 +266,7 @@ pub func getProfile(
   return Ok(value = p)
 }
 
+/// Leaves the setup script as it is; updateProfileWithSetupScript sets it.
 pub func updateProfile(
   id: in String,
   sc: in CloudAgents.Pg.TenantScope,
@@ -273,6 +293,33 @@ pub func updateProfile(
   return Ok(value = n)
 }
 
+pub func updateProfileWithSetupScript(
+  id: in String,
+  sc: in CloudAgents.Pg.TenantScope,
+  name: in String,
+  harness: in String,
+  networkPolicy: in String,
+  credentialMode: in String,
+  credentials: in slice[String],
+  skillIds: in slice[String],
+  subagentIds: in slice[String],
+  mcpServerIds: in slice[String],
+  toolMode: in String,
+  tools: in slice[String],
+  setupScript: in String,
+): Result[Int, CloudAgents.Db.DbError] {
+  val u = CloudAgents.PgStore.open(sc)?
+  defer {
+    CloudAgents.PgStore.release(u)
+  }
+  val n = CloudAgents.PgStore.ex(u, "UPDATE profiles SET name = @p2, harness = @p3, network_policy = @p4, credential_mode = @p5, tool_mode = @p6, setup_script = @p7, " + "updated_at = " + CloudAgents.Pg.msIn(8) + " WHERE id = @p0 AND user_id = @p1", [id, sc.userId, name, harness, networkPolicy, credentialMode, toolMode, setupScript, CloudAgents.Repository.nowMillis()])?
+  if n > 0 {
+    replaceAllGrants(u, id, sc.userId, credentials, skillIds, subagentIds, mcpServerIds, tools)?
+  }
+  CloudAgents.PgStore.commit(u)?
+  return Ok(value = n)
+}
+
 pub func deleteProfile(id: in String, sc: in CloudAgents.Pg.TenantScope): Result[Int, CloudAgents.Db.DbError] {
   val u = CloudAgents.PgStore.open(sc)?
   defer {
@@ -286,6 +333,20 @@ pub func deleteProfile(id: in String, sc: in CloudAgents.Pg.TenantScope): Result
   }
   CloudAgents.PgStore.commit(u)?
   return Ok(value = n)
+}
+
+/// The setup script a session's profile carries: "" for no profile, one that
+/// no longer resolves, or one without a script.
+pub func setupScriptForProfile(
+  sc: in CloudAgents.Pg.TenantScope, profileId: in String
+): Result[String, CloudAgents.Db.DbError] {
+  if profileId.length == 0 {
+    return Ok(value = "")
+  }
+  match getProfile(profileId, sc)? {
+    case None -> return Ok(value = "")
+    case Some(p) -> return Ok(value = p.setupScript)
+  }
 }
 
 /// CLOUD_AGENTS_ENABLED_TOOLS for a profile's session. Fails open ("") for

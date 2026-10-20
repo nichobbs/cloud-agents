@@ -78,6 +78,7 @@ cp "$REPO_ROOT/docker/entrypoint.sh" \
    "$REPO_ROOT/docker/reconcile-repos.sh" \
    "$REPO_ROOT/docker/create-fallback-branch.sh" \
    "$REPO_ROOT/docker/inject-library.sh" \
+   "$REPO_ROOT/docker/user-tools.sh" \
    "$REPO_ROOT/docker/render-branch-policy.sh" \
    "$REPO_ROOT/docker/register-callbacks-mcp.sh" \
    "$REPO_ROOT/docker/split-ca-bundle.sh" \
@@ -140,6 +141,7 @@ COPY entrypoint.sh /usr/local/bin/entrypoint.sh
 COPY reconcile-repos.sh /usr/local/bin/reconcile-repos.sh
 COPY create-fallback-branch.sh /usr/local/bin/create-fallback-branch.sh
 COPY inject-library.sh /usr/local/bin/inject-library.sh
+COPY user-tools.sh /usr/local/bin/user-tools.sh
 COPY render-branch-policy.sh /usr/local/bin/render-branch-policy.sh
 COPY register-callbacks-mcp.sh /usr/local/bin/register-callbacks-mcp.sh
 COPY split-ca-bundle.sh /usr/local/bin/split-ca-bundle.sh

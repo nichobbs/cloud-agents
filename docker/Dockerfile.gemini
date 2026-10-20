@@ -160,6 +160,7 @@ COPY docker/entrypoint-gemini.sh /usr/local/bin/entrypoint.sh
 COPY docker/reconcile-repos.sh /usr/local/bin/reconcile-repos.sh
 COPY docker/create-fallback-branch.sh /usr/local/bin/create-fallback-branch.sh
 COPY docker/inject-library.sh /usr/local/bin/inject-library.sh
+COPY docker/user-tools.sh /usr/local/bin/user-tools.sh
 COPY docker/render-branch-policy.sh /usr/local/bin/render-branch-policy.sh
 # entrypoint.sh sources this (never runs it as its own process — see its own
 # header comment for why) to unset NODE_EXTRA_CA_CERTS before the harness

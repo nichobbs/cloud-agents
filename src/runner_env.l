@@ -72,6 +72,16 @@ pub func withExtraRepos(envs: in slice[String], extraRepos: in String): slice[St
   return envs
 }
 
+/// Append the profile's setup script (already base64-encoded by the caller)
+/// only when there is one, so a profile without a script passes nothing and
+/// docker/user-tools.sh's cloud_agents_run_setup_script stays a no-op.
+pub func withSetupScript(envs: in slice[String], setupScriptB64: in String): slice[String] {
+  if setupScriptB64.length > 0 {
+    return envs.append("CLOUD_AGENTS_SETUP_SCRIPT_B64=" + setupScriptB64)
+  }
+  return envs
+}
+
 /// Append one "NAME=VALUE" entry per decrypted credential, preserving the
 /// order the credential-injection call returned them in. Never logs a value.
 /// `names`/`values` are parallel slices (same index = same credential,

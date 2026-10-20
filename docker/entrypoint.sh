@@ -618,6 +618,14 @@ fi
 # never blocks the actual prompt run.
 /usr/local/bin/inject-library.sh "claude" || echo "entrypoint: library injection failed, continuing without it" >&2
 
+# User-space tool installs (~/.local, on the shared home volume) and the
+# profile's setup script, run once per script change (docker/user-tools.sh,
+# docs/tool-installs.md). Neither can block the prompt run.
+# shellcheck source=user-tools.sh
+source /usr/local/bin/user-tools.sh
+cloud_agents_user_tools_env
+cloud_agents_run_setup_script "entrypoint"
+
 # No recursive /workspace chown here any more (#652): everything above
 # (clone/reconcile-repos.sh/inject-library.sh/the mcp.json and settings.json
 # rendering) now runs as claude-user, the same user that owns /workspace

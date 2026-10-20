@@ -209,6 +209,7 @@ test "credential/profile Resp helpers map Ok to 200 and Err to the error's own s
     mcpServerIds = noProfileGrants,
     toolMode = "all",
     tools = noProfileGrants,
+    setupScript = "",
     createdAt = "1",
     updatedAt = "1"
   )

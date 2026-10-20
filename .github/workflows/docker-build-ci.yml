@@ -50,6 +50,7 @@ on:
       - 'docker/reconcile-repos.sh'
       - 'docker/create-fallback-branch.sh'
       - 'docker/inject-library.sh'
+      - 'docker/user-tools.sh'
       - 'docker/render-branch-policy.sh'
       - 'docker/register-callbacks-mcp.sh'
       - 'docker/split-ca-bundle.sh'
