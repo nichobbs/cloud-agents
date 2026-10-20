@@ -146,6 +146,38 @@ live yet, because that needs their credentials (see "Still to measure").
   stays on the home volume. It is reported as `not_installed` if that fails or
   `DELEGATE_AUTO_INSTALL=0`.
 
+## Stage 1c: worker guidance and best-of-K (built)
+
+Two ideas taken from Harness2 (google-research/harness2, arXiv 2610.14224). There, a
+strong model improves the "harness" (instructions, skills, guardrails) that cheap fixed
+models work with, and keeps evidence-backed lessons per domain.
+
+- **Worker guidance.** A repository can commit `.delegate-guidance/`.
+  `AGENTS.md` there is put into every worker's prompt, before the task. Each
+  `skills/<name>/SKILL.md` is listed by name, description and path for the worker to
+  read when it applies. Nothing is written into the worker's tree, and every harness
+  CLI handles it the same way. `--guidance DIR` uses another directory, `--no-guidance`
+  and `--raw` leave it out, and `DELEGATE_GUIDANCE_MAX` (16000 characters) caps the
+  inlined `AGENTS.md`. The skill tells the orchestrator to add a rule only when a
+  failed delegation shows the need for it. That is Harness2's "evidence-supported
+  lessons", kept in the repository where they can be reviewed with the code.
+- **Best of K.** `--k N` runs N candidates in parallel, each in its own worktree
+  (`NAME-1`..`NAME-N`) and each starting its chain at a different entry. A candidate
+  with status `ok` (its `--check` passed, if given) wins over one without, then the
+  smallest diff, then the earliest. The other worktrees and branches are removed unless
+  `--keep-candidates` is set. This is Harness2's probe-and-compare step with a real
+  check in place of behavioural contrast, which is cheap when the workers are free.
+
+Live check: a repository whose `AGENTS.md` required a header line in every changed
+Python file. `--k 2` with `opencode:nemotron-3.5-lightning-free` and `claude:haiku`
+took 26s. Both candidates followed the rule and passed a check that tested for the
+line, and the free one was kept on the tie.
+
+Not taken from Harness2: its per-task improvement loop (proposing, probing and composing
+harness edits with a strong model on every task). That spends orchestrator tokens on
+every task, the opposite of this design's aim, and pays off only across many similar
+tasks. It may be worth running occasionally over a batch of failed delegations.
+
 ## Stage 2: a `delegate_task` tool (proposal)
 
 Expose the same behaviour as a shim tool, so the server sees each delegation. That
