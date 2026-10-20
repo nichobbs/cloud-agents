@@ -403,6 +403,30 @@ pub func addProfileHandler(req: in SaveProfileRequest): Result[Profile, Web.ApiE
 
 /// Update an existing profile.
 pub func updateProfileHandler(pid: in String, req: in SaveProfileRequest): Result[Profile, Web.ApiError] {
+  return updateProfileHandlerWith(pid, req, true)
+}
+
+/// Whether a raw save-profile body carries `setupScript` at all. An update
+/// from a frontend that predates the field omits it, and
+/// patchMissingToolFields then fills in "", which must not be read as "clear
+/// the script".
+pub func bodyHasSetupScript(body: in String): Bool {
+  val doc = match Std.Json.tryParseJson(body) { case Ok(d) -> d; case Err(_) -> return false }
+  defer {
+    Std.Json.disposeJson(doc)
+  }
+  match Std.Json.tryGetProperty(Std.Json.rootElement(doc), "setupScript") {
+    case Some(_) -> return true
+    case None -> return false
+  }
+}
+
+/// updateProfileHandler, replacing the setup script only when
+/// `replaceSetupScript` is set (the body named the field); otherwise the
+/// stored script is kept.
+pub func updateProfileHandlerWith(
+  pid: in String, req: in SaveProfileRequest, replaceSetupScript: in Bool
+): Result[Profile, Web.ApiError] {
   if pid.length == 0 {
     return Err(Web.badRequest("profile id is required"))
   }
@@ -418,7 +442,7 @@ pub func updateProfileHandler(pid: in String, req: in SaveProfileRequest): Resul
     case Ok(None) -> ()
     case Err(e) -> return Err(dbError(e))
   }
-  val affected = match updateProfileWithSetupScript(
+  val written = if replaceSetupScript then updateProfileWithSetupScript(
     pid,
     sc,
     name,
@@ -432,7 +456,21 @@ pub func updateProfileHandler(pid: in String, req: in SaveProfileRequest): Resul
     normalizedToolMode(req.toolMode),
     toolsFor(req),
     req.setupScript,
-  ) {
+  ) else updateProfile(
+    pid,
+    sc,
+    name,
+    req.harness,
+    req.networkPolicy,
+    req.credentialMode,
+    grantsFor(req),
+    req.skillIds,
+    req.subagentIds,
+    req.mcpServerIds,
+    normalizedToolMode(req.toolMode),
+    toolsFor(req),
+  )
+  val affected = match written {
     case Ok(n) -> n
     case Err(e) -> {
       // A concurrent rename onto the same name can slip past the pre-check

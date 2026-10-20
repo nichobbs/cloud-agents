@@ -323,6 +323,19 @@ test "a profile's setup script is validated, stored, returned and replaced" {
     case Err(e) -> assertTrue(false, "setupScriptForProfile failed: " + CloudAgents.Db.dbErrorMessage(e))
   }
 
+  // An update whose body omitted setupScript (an older frontend) keeps it.
+  val legacyBody = "{\"name\":\"with-setup\",\"harness\":\"\",\"networkPolicy\":\"full\",\"credentialMode\":\"all\",\"credentials\":[],\"skillIds\":[],\"subagentIds\":[],\"mcpServerIds\":[],\"toolMode\":\"all\",\"tools\":[]}"
+  assertTrue(not bodyHasSetupScript(legacyBody), "a legacy body has no setupScript")
+  val legacyReq = match SaveProfileRequest.fromJson(patchMissingToolFields(legacyBody)) {
+    case Ok(d) -> d
+    case Err(e) -> panic("legacy body must decode: " + toString(e))
+  }
+  match updateProfileHandlerWith(created.id, legacyReq, bodyHasSetupScript(legacyBody)) {
+    case Ok(p) -> assertEqual(p.setupScript, script, "an update without setupScript keeps the stored script")
+    case Err(err) -> panic("legacy update failed: " + toString(err.status))
+  }
+  assertTrue(bodyHasSetupScript("{\"setupScript\":\"\"}"), "an explicit empty setupScript counts as present")
+
   // The handler's update replaces it; "" clears it.
   match updateProfileHandler(created.id, SaveProfileRequest(name = "with-setup", harness = "", networkPolicy = "full", credentialMode = "all", credentials = [], skillIds = [], subagentIds = [], mcpServerIds = [], toolMode = "all", tools = [], setupScript = "")) {
     case Ok(p) -> assertEqual(p.setupScript, "", "an empty setupScript clears the script")
