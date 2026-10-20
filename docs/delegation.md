@@ -41,11 +41,13 @@ image, next to `opencode-ai` (same pin as `docker/Dockerfile.opencode`). It:
 
 The worker runs under `env -i` with only locale, proxy, CA and the model keys named in
 `DELEGATE_PASS_ENV`. `CLAUDE_CODE_OAUTH_TOKEN`, `GITHUB_TOKEN` and the callback shim's
-token do not reach it, so it cannot push (the git credential helper reads
-`GITHUB_TOKEN`). It has its own `HOME` (`DELEGATE_HOME`, default under `$TMPDIR`).
-It runs as the same OS user, so this keeps it out of the session's home volume but is
-not a security boundary: a worker that went looking could still read files the session
-user can read.
+token are not in its environment, so a worker doing what it was asked will not push
+(the git credential helper reads `GITHUB_TOKEN`) or reach the subscription. It has its
+own `HOME` (`DELEGATE_HOME`, default under `$TMPDIR`). This is hygiene, not a security
+boundary: the worker runs as the same OS user, so one that went looking could read the
+session user's files and the environment of the session's own processes
+(`/proc/<pid>/environ`), including those credentials. Treat a worker model as you would
+any code you run in the session; real isolation is stage 3's separate container.
 
 The `delegate-to-worker` seed skill tells the orchestrator when to delegate, how to
 write a spec, and how to act on each status. Like every seed item it is only added to a

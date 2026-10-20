@@ -39,7 +39,7 @@ delegate-task --check "<acceptance command>" --spec-file /tmp/spec.md
   worker's changes.
 - `-m a,b,c` sets the model fallback chain; the default comes from `$DELEGATE_MODELS`,
   else a chain of free OpenCode Zen models. A bare id means `opencode/<id>`.
-- `-t SECS` caps each attempt (default 900).
+- `-t SECS` caps each attempt (default 900) and also the `--check` command.
 
 The script prints one JSON object: `status` (`ok`, `failed`, `failed_dirty`,
 `check_failed`), the `model` that finished, `attempts` with each model's outcome,
@@ -66,7 +66,7 @@ to diagnose a failure.
 - Pasting the worker's whole transcript or full diff into your own context.
 - Delegating a vague task, then spending more effort correcting it than doing it.
 - Trusting the worker's report that tests pass instead of the `check` result.
-- Delegating secrets handling: the worker runs with a scrubbed environment and cannot
-  push, and should be kept that way.
+- Delegating secrets handling. The worker's environment is scrubbed of credentials, but
+  it runs as the same OS user, so this is hygiene rather than isolation.
 - Running the worker's code yourself (tests, scripts) before reading the diff. That runs
   it with your full session credentials; `--check` runs it with the scrubbed environment.

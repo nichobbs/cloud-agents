@@ -28,7 +28,8 @@
 #       --check CMD      after a successful attempt, run CMD (bash -c) in the
 #                        working directory and report its exit code and tail;
 #                        it runs worker-written code, so it gets the worker's
-#                        scrubbed environment, not the session's
+#                        scrubbed environment, not the session's, and the
+#                        same --timeout (a timeout reports exit 124)
 #       --max-text N     truncate the worker's final message to N characters
 #                        (default 2000)
 #       --raw            send SPEC as-is, without the worker preamble
@@ -42,10 +43,12 @@
 # build on a half-finished edit; nothing is reset for you.
 #
 # Isolation: the worker runs with a scrubbed environment. Only locale, proxy,
-# CA and the model keys in DELEGATE_PASS_ENV reach it, so the subscription
-# token, GITHUB_TOKEN and the callback shim's credentials do not. It runs as
-# the same OS user with its own HOME (DELEGATE_HOME), which keeps its state out
-# of the session's home volume but is not a security boundary.
+# CA and the model keys in DELEGATE_PASS_ENV are passed, so the subscription
+# token, GITHUB_TOKEN and the callback shim's credentials are not in its
+# environment. It runs as the same OS user with its own HOME (DELEGATE_HOME),
+# which keeps its state out of the session's home volume. This is hygiene, not
+# a security boundary: a same-user process can still read the session user's
+# files and other processes' /proc/<pid>/environ.
 #
 # Exit status: 0 when status is "ok", 1 for any other result, 2 for usage
 # errors. The JSON is printed either way (except for usage errors).
@@ -299,7 +302,9 @@ diffstat=""
 check_json="null"
 if [ "$final_status" = "ok" ] && [ -n "$check_cmd" ]; then
   check_log="$log_root/check.log"
-  env -i "${worker_env[@]}" bash -c "$check_cmd" > "$check_log" 2>&1
+  # Worker-written tests can hang; bound the check like an attempt, in its own
+  # process group so the timeout also stops anything the test started.
+  timeout --kill-after=5 "$timeout_secs" setsid env -i "${worker_env[@]}" bash -c "$check_cmd" > "$check_log" 2>&1
   check_rc=$?
   check_json="$(jq -n -c --arg c "$check_cmd" --argjson rc "$check_rc" --arg t "$(tail -c 1500 "$check_log")" \
     '{cmd: $c, exit: $rc, tail: $t}')"
