@@ -32,6 +32,11 @@ H="$WORK/home1"
 out="$(run_case "$H" WS="$WORK/ws")"
 check "env: ~/.local/bin created"               [ -d "$H/.local/bin" ]
 check "env: ~/.local/bin appended to PATH"      grep -qx "PATH=/usr/local/bin:/usr/bin:/bin:$H/.local/bin:$H/.cargo/bin" <<< "$out"
+# If this ever fails, show what case 1 printed (an empty capture points at the
+# command substitution itself failing, e.g. fork errors on a loaded machine).
+if ! grep -qx "PATH=/usr/local/bin:/usr/bin:/bin:$H/.local/bin:$H/.cargo/bin" <<< "$out"; then
+  printf 'case 1 output was:\n%s\n' "$out" >&2
+fi
 check "env: npm global prefix is ~/.local"      grep -qx "NPM_CONFIG_PREFIX=$H/.local" <<< "$out"
 check "env: pip may fall back to --user"        grep -qx "PIP_BREAK_SYSTEM_PACKAGES=1" <<< "$out"
 check "env: PIP_USER left unset (venv-safe)"    grep -qx "PIP_USER=" <<< "$out"
@@ -96,6 +101,14 @@ run_case "$H" WS="$WORK/ws" CLOUD_AGENTS_SETUP_SCRIPT_B64="$(b64 "$script")" > "
 wait "$pid_a"
 check "lock: script ran exactly once"           [ "$(tr '\n' ' ' < "$H/trace")" = "start end " ]
 check "lock: second session saw it had run"     grep -q "already ran" "$WORK/lock-b"
+H="$WORK/home-lock2"
+script='sleep 4; echo done >> "$HOME/trace"'
+run_case "$H" WS="$WORK/ws" CLOUD_AGENTS_SETUP_SCRIPT_B64="$(b64 "$script")" > /dev/null &
+pid_a=$!
+sleep 0.5
+run_case "$H" WS="$WORK/ws" CLOUD_AGENTS_SETUP_LOCK_WAIT=1 CLOUD_AGENTS_SETUP_SCRIPT_B64="$(b64 "$script")" > "$WORK/lock-c"
+check "lock: gives up waiting after LOCK_WAIT"  grep -q "still running it" "$WORK/lock-c"
+wait "$pid_a"
 
 # 6. Invalid base64 is skipped without failing.
 H="$WORK/home5"

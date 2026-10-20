@@ -64,8 +64,9 @@ on the profiles page. The limit keeps the base64-encoded script under Linux's
   Its installs persist on the home volume, so running it on every message would
   only cost time. Editing the script makes it run again;
 - holds a lock (`flock`) on the home volume while it runs. A second session of
-  the same user and harness starting at the same moment waits, then sees the
-  marker and skips;
+  the same user and harness starting at the same moment waits up to
+  `CLOUD_AGENTS_SETUP_LOCK_WAIT` seconds (default 120), then sees the marker and
+  skips, or carries on without the script if the other run is still going;
 - has a time limit of `CLOUD_AGENTS_SETUP_TIMEOUT` seconds (default 600);
 - never fails the run. On failure it writes a warning with the log tail to the
   container log and records the log path in

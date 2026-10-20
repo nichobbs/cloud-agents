@@ -75,12 +75,14 @@ cloud_agents_run_setup_script() {
 
     local timeout_secs="${CLOUD_AGENTS_SETUP_TIMEOUT:-600}"
     # Another session of this user on this harness may be running the same
-    # script on the shared home volume. Wait for it (up to one run's timeout),
-    # then re-check: its success makes this run unnecessary.
+    # script on the shared home volume. Wait briefly for it, then re-check: its
+    # success makes this run unnecessary. Past CLOUD_AGENTS_SETUP_LOCK_WAIT
+    # (default 120s) carry on without it rather than delay the session by up
+    # to two script timeouts; the agent can install anything still missing.
     exec 9> "$dir/lock"
-    if ! flock -w "$timeout_secs" 9; then
+    if ! flock -w "${CLOUD_AGENTS_SETUP_LOCK_WAIT:-120}" 9; then
         exec 9>&-
-        echo "$label: setup script $hash skipped: another session still holds $dir/lock" >&2
+        echo "$label: setup script $hash skipped: another session is still running it ($dir/lock)" >&2
         return 0
     fi
     if [ -f "$dir/$hash.done" ]; then
