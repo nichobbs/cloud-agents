@@ -17,13 +17,16 @@ check() {
 }
 
 # Each case runs in a fresh bash under `set -euo pipefail`, like the
-# entrypoints, with its own HOME and workspace.
+# entrypoints, with its own HOME and workspace. --norc and stdin from
+# /dev/null matter: a non-interactive bash whose stdin is a socket reads the
+# system bashrc (Debian's SSH_SOURCE_BASHRC), which on some hosts prepends to
+# PATH and made the PATH checks flaky.
 run_case() {
   local home="$1"; shift
   mkdir -p "$home" "$WORK/ws"
   env -i PATH="/usr/local/bin:/usr/bin:/bin" HOME="$home" "$@" \
-    bash -c 'set -euo pipefail; source "$0"; cloud_agents_user_tools_env; cloud_agents_run_setup_script test "$WS"; echo "PATH=$PATH"; echo "NPM_CONFIG_PREFIX=${NPM_CONFIG_PREFIX:-}"; echo "PIP_BREAK_SYSTEM_PACKAGES=${PIP_BREAK_SYSTEM_PACKAGES:-}"; echo "PIP_USER=${PIP_USER:-}"; echo "GOBIN=${GOBIN:-}"; echo "UV_TOOL_BIN_DIR=${UV_TOOL_BIN_DIR:-}"' \
-    "$HELPER" 2>&1
+    bash --norc --noprofile -c 'set -euo pipefail; source "$0"; cloud_agents_user_tools_env; cloud_agents_run_setup_script test "$WS"; echo "PATH=$PATH"; echo "NPM_CONFIG_PREFIX=${NPM_CONFIG_PREFIX:-}"; echo "PIP_BREAK_SYSTEM_PACKAGES=${PIP_BREAK_SYSTEM_PACKAGES:-}"; echo "PIP_USER=${PIP_USER:-}"; echo "GOBIN=${GOBIN:-}"; echo "UV_TOOL_BIN_DIR=${UV_TOOL_BIN_DIR:-}"' \
+    "$HELPER" 2>&1 < /dev/null
 }
 b64() { printf '%s' "$1" | base64 | tr -d '\n'; }
 
@@ -47,10 +50,10 @@ check "env: no setup cache without a script"    [ ! -d "$H/.cache/cloud-agents/s
 # 2. An image binary is not shadowed by a user install of the same name.
 mkdir -p "$H/.local/bin"
 printf '#!/bin/sh\necho shadow\n' > "$H/.local/bin/ls"; chmod +x "$H/.local/bin/ls"
-shadow="$(env -i PATH=/usr/bin:/bin HOME="$H" bash -c 'source "$0"; cloud_agents_user_tools_env; command -v ls' "$HELPER")"
+shadow="$(env -i PATH=/usr/bin:/bin HOME="$H" bash --norc --noprofile -c 'source "$0"; cloud_agents_user_tools_env; command -v ls' "$HELPER" < /dev/null)"
 check "env: image binary wins over ~/.local/bin" [ "$shadow" != "$H/.local/bin/ls" ]
 printf '#!/bin/sh\necho user-tool\n' > "$H/.local/bin/my-tool"; chmod +x "$H/.local/bin/my-tool"
-user_tool="$(env -i PATH=/usr/bin:/bin HOME="$H" bash -c 'source "$0"; cloud_agents_user_tools_env; my-tool' "$HELPER")"
+user_tool="$(env -i PATH=/usr/bin:/bin HOME="$H" bash --norc --noprofile -c 'source "$0"; cloud_agents_user_tools_env; my-tool' "$HELPER" < /dev/null)"
 check "env: user-installed tool is on PATH"     [ "$user_tool" = user-tool ]
 
 # 3. Setup script runs once, in the workspace, with the user env in place.
@@ -60,7 +63,7 @@ out="$(run_case "$H" WS="$WORK/ws" CLOUD_AGENTS_SETUP_SCRIPT_B64="$(b64 "$script
 check "setup: ran"                              [ "$(cat "$H/runs")" = ran ]
 check "setup: ran in the workspace"             [ "$(cat "$H/cwd")" = "$WORK/ws" ]
 check "setup: saw the user-tools env"           [ "$(cat "$H/prefix")" = "$H/.local" ]
-check "setup: marker written"                   bash -c "ls '$H/.cache/cloud-agents/setup/'*.done >/dev/null"
+check "setup: marker written"                   bash --norc --noprofile -c "ls '$H/.cache/cloud-agents/setup/'*.done >/dev/null"
 run_case "$H" WS="$WORK/ws" CLOUD_AGENTS_SETUP_SCRIPT_B64="$(b64 "$script")" > "$WORK/out2"
 check "setup: same script not rerun"            [ "$(wc -l < "$H/runs")" -eq 1 ]
 check "setup: says it already ran"              grep -q "already ran" "$WORK/out2"
@@ -75,7 +78,7 @@ check "fail: caller still exits 0"              [ "$rc" -eq 0 ]
 check "fail: warning names the exit code"       grep -q "exited 7" <<< "$out"
 check "fail: log tail is shown"                 grep -q "boom detail" <<< "$out"
 check "fail: last-failure written"              [ -f "$H/.cache/cloud-agents/setup/last-failure" ]
-check "fail: no marker"                         bash -c "! ls '$H/.cache/cloud-agents/setup/'*.done >/dev/null 2>&1"
+check "fail: no marker"                         bash --norc --noprofile -c "! ls '$H/.cache/cloud-agents/setup/'*.done >/dev/null 2>&1"
 run_case "$H" WS="$WORK/ws" CLOUD_AGENTS_SETUP_SCRIPT_B64="$(b64 "$script")" > "$WORK/out-backoff"
 check "fail: not retried within the backoff"    [ "$(wc -l < "$H/attempts")" -eq 1 ]
 check "fail: says it is backing off"            grep -q "failed recently" "$WORK/out-backoff"
