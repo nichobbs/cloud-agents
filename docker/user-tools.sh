@@ -93,7 +93,12 @@ cloud_agents_run_setup_script() {
 
     local now last_fail
     now="$(date +%s)"
-    last_fail="$(cat "$dir/$hash.failed" 2>/dev/null || echo 0)"
+    last_fail="$(cat "$dir/$hash.failed" 2>/dev/null || true)"
+    # A corrupt marker (partial write, full disk) must not break the
+    # arithmetic below, which would abort the entrypoint under `set -e`.
+    case "$last_fail" in
+        ''|*[!0-9]*) last_fail=0 ;;
+    esac
     if [ $((now - last_fail)) -lt "${CLOUD_AGENTS_SETUP_RETRY_SECS:-3600}" ]; then
         exec 9>&-
         echo "$label: setup script $hash failed recently; not retrying yet (see $dir/last-failure)" >&2

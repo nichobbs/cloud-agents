@@ -90,7 +90,10 @@ command -v ruff >/dev/null || uv tool install ruff
 ```
 
 Because it runs once per content, it is for installing things, not for
-per-run setup. Exports in the script do not reach the harness.
+per-run setup. Exports in the script do not reach the harness, and anything it
+changes outside the home volume (`/workspace` aside, which persists per
+session) is lost when the container exits and is not redone on the next run.
+Install into `~/.local`, not system paths.
 
 ## Not covered: system packages
 

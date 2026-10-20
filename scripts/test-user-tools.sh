@@ -88,6 +88,17 @@ fixed='echo attempt >> "$HOME/attempts"'
 run_case "$H" WS="$WORK/ws" CLOUD_AGENTS_SETUP_SCRIPT_B64="$(b64 "$fixed")" > /dev/null
 check "fail: success clears last-failure"       [ ! -f "$H/.cache/cloud-agents/setup/last-failure" ]
 
+# 4b. A corrupt failure marker is ignored rather than breaking the caller.
+H="$WORK/home-corrupt"
+script='echo ran >> "$HOME/runs"; exit 1'
+mkdir -p "$H/.cache/cloud-agents/setup"
+hash="$(printf '%s' "$script" | sha256sum | cut -c1-16)"
+printf 'garbage\n' > "$H/.cache/cloud-agents/setup/$hash.failed"
+rc=0; run_case "$H" WS="$WORK/ws" CLOUD_AGENTS_SETUP_SCRIPT_B64="$(b64 "$script")" > "$WORK/out-corrupt" || rc=$?
+check "corrupt marker: caller exits 0"         [ "$rc" -eq 0 ]
+check "corrupt marker: script still ran"       [ "$(cat "$H/runs")" = ran ]
+check "corrupt marker: caller printed its env" grep -q "^NPM_CONFIG_PREFIX=" "$WORK/out-corrupt"
+
 # 5. A script that runs too long is stopped and treated as a failure.
 H="$WORK/home4"
 rc=0; out="$(run_case "$H" WS="$WORK/ws" CLOUD_AGENTS_SETUP_TIMEOUT=1 CLOUD_AGENTS_SETUP_SCRIPT_B64="$(b64 'sleep 30')")" || rc=$?
