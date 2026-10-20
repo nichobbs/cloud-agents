@@ -226,13 +226,13 @@ services:
   # `npm install -g @openai/codex` failed mid-build against an unpinned
   # `@latest`), which is why codex-base/opencode-base/gemini-base used to be
   # gated behind Compose `profiles:` (opt-in only). All five now build
-  # unconditionally instead, because the two things that actually caused
-  # that failure are both fixed at the source: each of the four
-  # Dockerfile.<harness> files now pins its CLI to a specific version
-  # confirmed to install cleanly (rather than floating on `@latest`, which
-  # can introduce a breaking change with zero warning), and each install is
-  # wrapped in a 3-attempt retry with a delay, guarding against transient
-  # npm-registry failures. If a harness image ever fails to build again
+  # unconditionally instead, because both causes of that failure are handled
+  # at the source by docker/install-harness-cli.sh: each install retries
+  # three times against transient npm-registry failures, and the newest
+  # release is checked against the flags cloud-agents passes it, with the
+  # last known-good release installed instead if it fails, so a breaking
+  # CLI release produces a warning in the build log rather than a failed
+  # build. If a harness image ever fails to build again
   # despite that: `docker build -f docker/Dockerfile.<harness> .` (repo-root context) to
   # reproduce and fix it standalone first; if you need to unblock a deploy
   # immediately, temporarily comment out that one service block below and

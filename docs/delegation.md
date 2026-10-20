@@ -21,7 +21,7 @@ keys, most other providers.
 ## Stage 1: `delegate-task` (built)
 
 `docker/delegate-task.sh` is installed as `/usr/local/bin/delegate-task` in the claude
-image, next to `opencode-ai` (same pin as `docker/Dockerfile.opencode`). It:
+image, next to `opencode-ai` (installed as in `docker/Dockerfile.opencode`). It:
 
 - runs `opencode run --format json --print-logs` with a worker preamble (no commits, no
   questions, run the named checks, end with a short report);
@@ -100,8 +100,9 @@ shapes, but no run has used real credentials yet.
 | codex | `codex exec --json --skip-git-repo-check --dangerously-bypass-approvals-and-sandbox -o FILE` | a `turn.completed` and no `turn.failed` | the `-o` file | `turn.completed.usage` |
 | gemini | `gemini --yolo --output-format stream-json --prompt` | last `result` has `status: success` | joined assistant `message` deltas | `result.stats` |
 
-The event shapes were checked against the CLIs' own code at the pinned versions (Claude
-Code 2.1.304, Codex 0.145.0, Gemini CLI 0.51.0) and the repo's live Claude fixtures.
+The event shapes were checked against the CLIs' own code (Claude Code 2.1.304, Codex
+0.145.0, Gemini CLI 0.51.0) and the repo's live Claude fixtures. The images and on-demand
+installs now take the newest release of each CLI; see "CLI versions" below.
 The claude adapter has been run live on a subscription login: `claude:haiku` fixed a
 two-bug Python file in 8s for $0.0024, the check passed, and the login was linked into
 the worker's home rather than copied. The codex and gemini adapters have not been run
@@ -141,10 +142,46 @@ live yet, because that needs their credentials (see "Still to measure").
   and a deleted profile allows nothing. Like the environment scrub, this
   steers a cooperating agent rather than enforcing a boundary: the agent could run a
   CLI itself.
-- **On-demand install.** A missing CLI is installed with
-  `npm install -g --prefix ~/.local` at the image's pinned version on first use, and
-  stays on the home volume. It is reported as `not_installed` if that fails or
-  `DELEGATE_AUTO_INSTALL=0`.
+- **On-demand install.** A CLI the image doesn't ship is installed on first use into
+  `~/.cache/cloud-agents/delegate-cli/<harness>` on the home volume, at the newest
+  release (see "CLI versions" below), and refreshed once it is `DELEGATE_REFRESH_DAYS`
+  old (default 7). A refresh goes into a new versioned directory and only replaces
+  the previous install once it has passed the check. After a failed install or
+  refresh, delegations use the existing install, if any, without trying again for
+  `DELEGATE_INSTALL_RETRY_SECS` (default an hour), so an offline session doesn't wait
+  out a failing install every time. The attempt is reported as `not_installed` if no
+  install is available or `DELEGATE_AUTO_INSTALL=0`.
+
+### CLI versions
+
+The runner images and the on-demand installs use the newest release of each harness
+CLI and of uv, not pinned versions. `docker/install-harness-cli.sh` installs it and then
+runs `docker/check-harness-cli.sh`, which checks that the CLI still accepts every flag
+the entrypoints and `delegate-task` pass it (`codex exec --help`, `opencode run --help`
+and so on). If the newest release fails the check, a warning is logged and the
+known-good release listed in `install-harness-cli.sh` is installed instead. The image
+build fails only if that fails too. A fallback rather than a failed build matters
+because Coolify builds every image in one `docker compose build`, so one broken harness
+image would also block the API deploy.
+
+In the Dockerfiles, each install step is preceded by an `ADD` of the npm registry's
+`latest` metadata (or uv's installer script). Docker re-fetches it on every build and
+reruns the install only when it changes, that is, when a new version is published.
+Without that, an unversioned install layer would stay cached indefinitely.
+
+`scripts/test-check-harness-cli.sh` (CI) fails if a launch line uses a flag the check
+doesn't cover, or if an image still pins a version. The check would have caught two
+bugs that shipped with pinned versions: `codex --full-auto --json` (fixed in #1310) and
+`opencode run -q`. Limits: Claude Code's `--permission-prompt-tool` is hidden from its
+help, so for that flag the check only confirms the name still appears in the installed
+program. And a flag check can't catch a change in behaviour behind an unchanged flag.
+
+Trade-off: a newly published release reaches the images at their next build, and the
+on-demand installs within a week, with no integrity check beyond what npm and the uv
+installer do themselves. These CLIs run with the session's credentials. The flag check
+guards against breaking releases, not a compromised one; pins limited that exposure to
+releases someone had chosen. A cool-down (skip releases newer than a few days) would
+narrow the window again without going back to pins.
 
 ## Stage 1c: worker guidance and best-of-K (built)
 

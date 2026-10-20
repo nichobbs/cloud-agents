@@ -186,12 +186,12 @@ against an unpinned `@latest` and took the entire deploy down with it, even
 though nothing about `api`/`frontend` had changed — which is why
 `codex-base`/`opencode-base`/`gemini-base` used to be gated behind Compose
 `profiles:` (opt-in only, off by default). Both root causes of that
-failure are now fixed at the source instead of worked around: each
-`docker/Dockerfile.<harness>` pins its CLI to a specific version already
-confirmed to install cleanly (rather than floating on `@latest`, which can
-introduce a breaking change with zero warning), and each `npm install` is
-wrapped in a 3-attempt retry with a delay, guarding against transient
-npm-registry failures.
+failure are now handled at the source by `docker/install-harness-cli.sh`
+instead of worked around. Each install retries three times against transient
+npm-registry failures. The newest release is checked against the flags
+cloud-agents passes it, and if it fails, the last known-good release is
+installed instead, with a warning in the build log, so a breaking CLI release
+doesn't fail the build (`docs/delegation.md`, "CLI versions").
 
 If a harness image ever fails to build again despite that:
 

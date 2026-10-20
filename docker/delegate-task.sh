@@ -81,26 +81,24 @@
 # list of HARNESS or HARNESS:MODEL-GLOB patterns (opencode:*-free, codex:gpt-5*,
 # claude); entries matching none are skipped as "not_allowed".
 #
-# Missing CLIs are installed on first use into ~/.local (npm, pinned to the
-# image versions) unless DELEGATE_AUTO_INSTALL=0.
+# A CLI the image doesn't ship is installed on first use into
+# ~/.cache/cloud-agents/delegate-cli/<harness> by install-harness-cli.sh: the
+# newest release, checked against the flags used here, with a known-good
+# fallback. It is refreshed once it is DELEGATE_REFRESH_DAYS old (default 7);
+# after a failed attempt the existing install, if any, is used without retrying
+# for DELEGATE_INSTALL_RETRY_SECS (default 3600). DELEGATE_AUTO_INSTALL=0 turns
+# installing off.
 #
 # Exit status: 0 when status is "ok", 1 for any other result, 2 for usage
 # errors. The JSON is printed either way (except for usage errors).
 set -uo pipefail
 
+script_dir="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
+
 DEFAULT_MODELS="opencode/nemotron-3.5-lightning-free,opencode/nemotron-3.5-super-vl-free,opencode/big-pickle,opencode/glm-5.3-flash-free,opencode/deepseek-v4.1-flash-free"
 OPENCODE_KEYS="OPENCODE_API_KEY OPENCODE_ZEN_API_KEY ANTHROPIC_API_KEY OPENAI_API_KEY GEMINI_API_KEY GOOGLE_API_KEY GOOGLE_GENERATIVE_AI_API_KEY DEEPSEEK_API_KEY OPENROUTER_API_KEY"
 HARNESSES="opencode claude codex gemini"
 
-# npm packages for on-demand installs, pinned to the runner images' versions.
-npm_package() {
-  case "$1" in
-    opencode) echo "opencode-ai@1.18.4" ;;
-    claude)   echo "@anthropic-ai/claude-code@2.1.304" ;;
-    codex)    echo "@openai/codex@0.145.0" ;;
-    gemini)   echo "@google/gemini-cli@0.51.0" ;;
-  esac
-}
 
 # Seconds an attempt may stay silent after the main agent logged a provider
 # error before it counts as stuck. opencode retries some errors itself
@@ -520,31 +518,74 @@ sync_claude_login() {
   ln -sfn "$src" "$dest"
 }
 
-# worker_bin H: path of the harness CLI, installing it into ~/.local on first
-# use. DELEGATE_<HARNESS>_BIN overrides (tests use it).
+# worker_bin H: path of the harness CLI. DELEGATE_<HARNESS>_BIN overrides
+# (tests use it); then the image's own copy (on PATH, outside $HOME); then the
+# managed install described in the header, installed or refreshed here.
 worker_bin() {
-  local h="$1" var bin pkg
+  local h="$1" var p dir bin stamp now failed
   var="DELEGATE_$(echo "$h" | tr '[:lower:]' '[:upper:]')_BIN"
   if [ -n "${!var:-}" ]; then echo "${!var}"; return 0; fi
-  bin="$h"
-  if command -v "$bin" >/dev/null 2>&1; then command -v "$bin"; return 0; fi
-  if [ -x "$HOME/.local/bin/$bin" ]; then echo "$HOME/.local/bin/$bin"; return 0; fi
-  [ "${DELEGATE_AUTO_INSTALL:-1}" != "0" ] || return 1
-  pkg="$(npm_package "$h")"
-  # Parallel delegations (background worktrees) must not run two npm installs
-  # into the same prefix at once; the second waits, then finds the binary.
-  mkdir -p "$HOME/.local"
-  exec 8> "$HOME/.local/.delegate-install.lock" || return 1
+  p="$(command -v "$h" 2>/dev/null || true)"
+  if [ -n "$p" ] && [[ "$p" != "$HOME"/* ]]; then echo "$p"; return 0; fi
+  dir="$HOME/.cache/cloud-agents/delegate-cli/$h"
+  bin="$dir/bin/$h"
+  failed="$HOME/.cache/cloud-agents/delegate-cli/.$h.failed"
+  cli_fresh() {
+    [ -x "$bin" ] && stamp="$(cat "$dir/.installed" 2>/dev/null)" && [[ "$stamp" =~ ^[0-9]+$ ]] || return 1
+    now="$(date +%s)"
+    [ $(( now - stamp )) -lt $(( ${DELEGATE_REFRESH_DAYS:-7} * 86400 )) ]
+  }
+  # recently_failed: an install attempt failed within the retry window
+  # (DELEGATE_INSTALL_RETRY_SECS, default an hour). Without it, every
+  # delegation would wait out another failing install (offline, registry
+  # outage) before using the old install or giving up.
+  recently_failed() {
+    local t
+    t="$(cat "$failed" 2>/dev/null)" && [[ "$t" =~ ^[0-9]+$ ]] || return 1
+    [ $(( $(date +%s) - t )) -lt "${DELEGATE_INSTALL_RETRY_SECS:-3600}" ]
+  }
+  if cli_fresh; then echo "$bin"; return 0; fi
+  if recently_failed; then
+    [ -x "$bin" ] && { echo "$bin"; return 0; }
+    return 1
+  fi
+  if [ "${DELEGATE_AUTO_INSTALL:-1}" = "0" ]; then
+    [ -x "$bin" ] && { echo "$bin"; return 0; }
+    return 1
+  fi
+  # Parallel delegations (background worktrees) must not install the same CLI
+  # at once; the second waits, then finds it fresh.
+  mkdir -p "$HOME/.cache/cloud-agents/delegate-cli"
+  exec 8> "$HOME/.cache/cloud-agents/delegate-cli/.install.lock" || return 1
   flock -w "$(( ${DELEGATE_INSTALL_TIMEOUT:-300} + 30 ))" 8 || { exec 8>&-; return 1; }
-  if [ -x "$HOME/.local/bin/$bin" ]; then exec 8>&-; echo "$HOME/.local/bin/$bin"; return 0; fi
-  echo "delegate-task: installing $pkg into ~/.local (log: $log_root/install-$h.log)" >&2
-  # Bounded, and with the scrubbed environment: a package's install scripts
-  # get no more of the session's credentials than a worker does.
-  timeout --kill-after=10 "${DELEGATE_INSTALL_TIMEOUT:-300}" env -i "${base_env[@]}" "HOME=$HOME" \
-    npm install -g --prefix "$HOME/.local" "$pkg" > "$log_root/install-$h.log" 2>&1 8>&- || { exec 8>&-; return 1; }
+  if cli_fresh; then exec 8>&-; echo "$bin"; return 0; fi
+  if recently_failed; then exec 8>&-; [ -x "$bin" ] && { echo "$bin"; return 0; }; return 1; fi
+  echo "delegate-task: installing the newest $h CLI (log: $log_root/install-$h.log)" >&2
+  # Into a new versioned prefix; the $dir symlink moves to it only once it has
+  # passed the check, so a failed refresh leaves the previous install in use,
+  # and a delegation still running the previous one keeps its files (they are
+  # pruned a day later). Bounded, and with the scrubbed environment: a
+  # package's install scripts get no more of the session's credentials than a
+  # worker does.
+  local new
+  new="$dir-$(date +%s)"
+  if timeout --kill-after=10 "${DELEGATE_INSTALL_TIMEOUT:-300}" env -i "${base_env[@]}" "HOME=$HOME" \
+       "$script_dir/install-harness-cli.sh" --prefix "$new" "$h" > "$log_root/install-$h.log" 2>&1 8>&- \
+     && [ -x "$new/bin/$h" ]; then
+    date +%s > "$new/.installed"
+    # Restart the superseded install's day before it is pruned.
+    [ -L "$dir" ] && touch "$(readlink -f "$dir")" 2>/dev/null
+    ln -sfn "$new" "$dir.tmp" && mv -Tf "$dir.tmp" "$dir"
+    find "$(dirname "$dir")" -maxdepth 1 -name "$h-*" ! -path "$new" -mmin +1440 -exec rm -rf {} + 2>/dev/null
+    rm -f "$failed"
+  else
+    rm -rf "$new"
+    date +%s > "$failed"
+    echo "delegate-task: installing $h failed; see $log_root/install-$h.log" >&2
+  fi
   exec 8>&-
-  [ -x "$HOME/.local/bin/$bin" ] || return 1
-  echo "$HOME/.local/bin/$bin"
+  [ -x "$bin" ] || return 1
+  echo "$bin"
 }
 
 

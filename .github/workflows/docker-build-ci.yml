@@ -51,6 +51,8 @@ on:
       - 'docker/create-fallback-branch.sh'
       - 'docker/inject-library.sh'
       - 'docker/user-tools.sh'
+      - 'docker/check-harness-cli.sh'
+      - 'docker/install-harness-cli.sh'
       - 'docker/render-branch-policy.sh'
       - 'docker/register-callbacks-mcp.sh'
       - 'docker/split-ca-bundle.sh'
