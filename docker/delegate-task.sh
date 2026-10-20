@@ -348,7 +348,11 @@ sync_claude_login() {
   if [ -f "$dest" ] && [ ! -L "$dest" ]; then
     new="$(jq -er '.claudeAiOauth.expiresAt // empty' "$dest" 2>/dev/null || echo 0)"
     old="$(jq -er '.claudeAiOauth.expiresAt // empty' "$src" 2>/dev/null || echo 0)"
-    if [[ "$new" =~ ^[0-9]+$ && "$old" =~ ^[0-9]+$ ]] && [ "$new" -gt "$old" ]; then
+    # Only a complete login may replace the session's: a newer but corrupt
+    # file would break the session's own login.
+    if [[ "$new" =~ ^[0-9]+$ && "$old" =~ ^[0-9]+$ ]] && [ "$new" -gt "$old" ] &&
+       jq -e '(.claudeAiOauth.accessToken | type == "string" and length > 0) and
+              (.claudeAiOauth.refreshToken | type == "string" and length > 0)' "$dest" >/dev/null 2>&1; then
       ( umask 077; cp "$dest" "$src.tmp.$$" ) && mv -f "$src.tmp.$$" "$src"
     fi
   fi
@@ -366,11 +370,18 @@ worker_bin() {
   if [ -x "$HOME/.local/bin/$bin" ]; then echo "$HOME/.local/bin/$bin"; return 0; fi
   [ "${DELEGATE_AUTO_INSTALL:-1}" != "0" ] || return 1
   pkg="$(npm_package "$h")"
+  # Parallel delegations (background worktrees) must not run two npm installs
+  # into the same prefix at once; the second waits, then finds the binary.
+  mkdir -p "$HOME/.local"
+  exec 8> "$HOME/.local/.delegate-install.lock" || return 1
+  flock -w "$(( ${DELEGATE_INSTALL_TIMEOUT:-300} + 30 ))" 8 || { exec 8>&-; return 1; }
+  if [ -x "$HOME/.local/bin/$bin" ]; then exec 8>&-; echo "$HOME/.local/bin/$bin"; return 0; fi
   echo "delegate-task: installing $pkg into ~/.local (log: $log_root/install-$h.log)" >&2
   # Bounded, and with the scrubbed environment: a package's install scripts
   # get no more of the session's credentials than a worker does.
   timeout --kill-after=10 "${DELEGATE_INSTALL_TIMEOUT:-300}" env -i "${base_env[@]}" "HOME=$HOME" \
-    npm install -g --prefix "$HOME/.local" "$pkg" > "$log_root/install-$h.log" 2>&1 || return 1
+    npm install -g --prefix "$HOME/.local" "$pkg" > "$log_root/install-$h.log" 2>&1 8>&- || { exec 8>&-; return 1; }
+  exec 8>&-
   [ -x "$HOME/.local/bin/$bin" ] || return 1
   echo "$HOME/.local/bin/$bin"
 }

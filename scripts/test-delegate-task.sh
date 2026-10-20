@@ -76,10 +76,14 @@ model=""; while [ $# -gt 0 ]; do case "$1" in --model) model="$2"; shift 2 ;; --
 echo '{"type":"system","subtype":"init"}'
 case "$model" in
   fail) echo '{"type":"result","subtype":"error_during_execution","is_error":true,"result":"boom"}' ;;
-  refresh-rename|refresh-older)
+  refresh-rename|refresh-older|refresh-corrupt)
     # Refresh the login the way an atomic writer does: new file, rename over.
     exp=99; [ "$model" = refresh-older ] && exp=1
-    printf '{"claudeAiOauth":{"accessToken":"rotated","refreshToken":"r2","expiresAt":%s}}\n' "$exp" > "$HOME/.claude/.credentials.json.new"
+    if [ "$model" = refresh-corrupt ]; then
+      printf '{"claudeAiOauth":{"expiresAt":999}}\n' > "$HOME/.claude/.credentials.json.new"
+    else
+      printf '{"claudeAiOauth":{"accessToken":"rotated","refreshToken":"r2","expiresAt":%s}}\n' "$exp" > "$HOME/.claude/.credentials.json.new"
+    fi
     mv -f "$HOME/.claude/.credentials.json.new" "$HOME/.claude/.credentials.json"
     echo "edit" >> calc.txt
     echo '{"type":"result","subtype":"success","is_error":false,"result":"refreshed","usage":{}}' ;;
@@ -326,6 +330,8 @@ check "login: link restored after the refresh"  [ "$(readlink "$WORK/home/claude
 echo '{"claudeAiOauth":{"accessToken":"live","refreshToken":"keep","expiresAt":50}}' > "$realhome/.claude/.credentials.json"
 rc=0; out="$(cd "$repo" && git checkout -q -- calc.txt && hb HOME="$realhome" DELEGATE_HOME="$WORK/home" "$SCRIPT" -m claude:refresh-older "x")" || rc=$?
 check "login: an older worker copy is not written back" [ "$(jq -r .claudeAiOauth.refreshToken "$realhome/.claude/.credentials.json")" = keep ]
+rc=0; out="$(cd "$repo" && git checkout -q -- calc.txt && hb HOME="$realhome" DELEGATE_HOME="$WORK/home" "$SCRIPT" -m claude:refresh-corrupt "x")" || rc=$?
+check "login: a newer but incomplete copy is not written back" [ "$(jq -r .claudeAiOauth.refreshToken "$realhome/.claude/.credentials.json")" = keep ]
 
 # 12. Profile limits.
 repo="$(new_repo allow)"
@@ -359,6 +365,25 @@ check "install: then ran the worker"            [ "$(field .status)" = ok ]
 rc=0; out="$(cd "$repo" && git checkout -q -- calc.txt && env PATH="$WORK/npmbin:$PATH" HOME="$WORK/nohome" DELEGATE_HOME="$WORK/home" \
   DELEGATE_AUTO_INSTALL=0 "$SCRIPT" -m codex:x "x")" || rc=$?
 check "install: disabled means not_installed"   [ "$(field '.attempts[0].outcome')" = not_installed ]
+# Two delegations needing the same missing CLI install it once, not twice
+# at the same time.
+cat > "$WORK/npmbin/npm" <<STUB
+#!/usr/bin/env bash
+echo start >> "$WORK/npm.trace"; sleep 2; echo end >> "$WORK/npm.trace"
+prefix=""; while [ \$# -gt 0 ]; do case "\$1" in --prefix) prefix="\$2"; shift 2 ;; *) shift ;; esac; done
+mkdir -p "\$prefix/bin"; cp "$WORK/hbin/gemini" "\$prefix/bin/gemini"
+STUB
+par_home="$WORK/parhome"; mkdir -p "$par_home"; rm -f "$WORK/npm.trace"
+repo2="$(new_repo install2)"
+( cd "$repo" && git checkout -q -- calc.txt && env -u DELEGATE_GEMINI_BIN PATH="$WORK/npmbin:$PATH" HOME="$par_home" DELEGATE_HOME="$WORK/home" \
+  GEMINI_API_KEY=k DELEGATE_PASS_ENV=STUB_DIR "$SCRIPT" -m gemini:x "x" > "$WORK/par1.json" ) &
+par_pid=$!
+sleep 0.5
+( cd "$repo2" && env -u DELEGATE_GEMINI_BIN PATH="$WORK/npmbin:$PATH" HOME="$par_home" DELEGATE_HOME="$WORK/home" \
+  GEMINI_API_KEY=k DELEGATE_PASS_ENV=STUB_DIR "$SCRIPT" -m gemini:x "x" > "$WORK/par2.json" )
+wait "$par_pid"
+check "install: parallel runs install once"     [ "$(tr '\n' ' ' < "$WORK/npm.trace")" = "start end " ]
+check "install: both parallel runs succeed"     [ "$(jq -r .status "$WORK/par1.json")$(jq -r .status "$WORK/par2.json")" = okok ]
 mkdir -p "$WORK/npmbin2"
 cat > "$WORK/npmbin2/npm" <<STUB
 #!/usr/bin/env bash
