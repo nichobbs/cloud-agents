@@ -324,7 +324,9 @@ fi
 commit=""
 if [ -n "$branch" ] && [ "$final_status" = "ok" ] && [ -n "$changed" ]; then
   git add -A
-  if git -c user.name="${GIT_AUTHOR_NAME:-$(git config user.name || echo delegate-worker)}" \
+  # Hooks off: .git/hooks is writable by the worker (same user) and a hook
+  # would run here with the session's full environment.
+  if git -c core.hooksPath=/dev/null -c user.name="${GIT_AUTHOR_NAME:-$(git config user.name || echo delegate-worker)}" \
          -c user.email="${GIT_AUTHOR_EMAIL:-$(git config user.email || echo delegate-worker@localhost)}" \
          commit -q -m "delegate($worktree): worker changes from $final_model" >&2; then
     commit="$(git rev-parse HEAD)"

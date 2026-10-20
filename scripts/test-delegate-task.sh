@@ -188,6 +188,12 @@ check "worktree: commit on branch"        [ "$(field .commit)" = "$(git -C "$rep
 check "worktree: main checkout untouched" [ "$(cat "$repo/calc.txt")" = start ]
 check "worktree: main checkout clean"     [ -z "$(git -C "$repo" status --porcelain)" ]
 check "worktree: change is on the branch" bash -c "git -C '$repo' show delegate/task1:calc.txt | grep -q fixed"
+printf '#!/bin/sh\ntouch "%s/hook-ran"\n' "$WORK" > "$repo/.git/hooks/pre-commit"
+cp "$repo/.git/hooks/pre-commit" "$repo/.git/hooks/post-commit"
+chmod +x "$repo/.git/hooks/pre-commit" "$repo/.git/hooks/post-commit"
+rc=0; out="$(cd "$repo" && "$SCRIPT" -m stub/edit -w task2 "x")" || rc=$?
+check "worktree: commit made with hooks present" [ "$(field .commit)" != null ]
+check "worktree: repo hooks not run on commit"   [ ! -e "$WORK/hook-ran" ]
 
 # 8. Usage errors.
 repo="$(new_repo usage)"
