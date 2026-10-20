@@ -354,6 +354,9 @@ rc=0; (cd "$repo" && "$SCRIPT" -w 'bad/name' "x") >/dev/null 2>&1 || rc=$?
 check "usage: bad worktree name exits 2" [ "$rc" -eq 2 ]
 rc=0; (cd "$repo" && "$SCRIPT" -m 'cursor:fast' "x") >/dev/null 2>&1 || rc=$?
 check "usage: unknown harness exits 2"   [ "$rc" -eq 2 ]
+rc=0; out="$(cd "$repo" && "$SCRIPT" -m 'stub/edit,cursor:fast' "x" 2>/dev/null)" || rc=$?
+check "usage: a late typo exits 2 up front" [ "$rc" -eq 2 ]
+check "usage: nothing ran before it"     [ "$(cat "$repo/calc.txt")" = start ]
 rc=0; (cd "$repo" && "$SCRIPT" -m ' , ' -w orphan "x") >/dev/null 2>&1 || rc=$?
 check "usage: empty model list exits 2"  [ "$rc" -eq 2 ]
 check "usage: no worktree left behind"   [ ! -e "$repo/.delegate/orphan" ]

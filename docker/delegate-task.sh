@@ -146,6 +146,31 @@ fi
 command -v jq >/dev/null 2>&1 || die_usage "jq is required"
 
 [ -n "${models//[[:space:],]/}" ] || die_usage "no models given"
+
+# parse_entry ENTRY: sets ent_harness and ent_model.
+parse_entry() {
+  local e="$1" prefix
+  ent_harness="opencode"; ent_model="$e"
+  if [[ "$e" == *:* ]]; then
+    prefix="${e%%:*}"
+    if [[ " $HARNESSES " == *" $prefix "* ]]; then
+      ent_harness="$prefix"; ent_model="${e#*:}"
+    elif [[ "$prefix" =~ ^[a-z]+$ ]]; then
+      die_usage "unknown harness '$prefix' in '$e' (one of: $HARNESSES)"
+    fi
+  fi
+  if [ "$ent_harness" = opencode ] && [ -n "$ent_model" ] && [[ "$ent_model" != */* ]]; then
+    ent_model="opencode/$ent_model"
+  fi
+}
+
+# Check every entry before anything runs, so a typo late in the chain is a
+# usage error up front, not an exit after earlier attempts already ran.
+IFS=',' read -r -a model_list <<< "$models"
+for raw_entry in "${model_list[@]}"; do
+  entry="$(echo "$raw_entry" | tr -d '[:space:]')"
+  [ -n "$entry" ] && parse_entry "$entry"
+done
 command -v setsid >/dev/null 2>&1 || die_usage "setsid is required"
 
 if [ -n "$workdir" ]; then
@@ -322,22 +347,6 @@ worker_bin() {
   echo "$HOME/.local/bin/$bin"
 }
 
-# parse_entry ENTRY: sets ent_harness and ent_model.
-parse_entry() {
-  local e="$1" prefix
-  ent_harness="opencode"; ent_model="$e"
-  if [[ "$e" == *:* ]]; then
-    prefix="${e%%:*}"
-    if [[ " $HARNESSES " == *" $prefix "* ]]; then
-      ent_harness="$prefix"; ent_model="${e#*:}"
-    elif [[ "$prefix" =~ ^[a-z]+$ ]]; then
-      die_usage "unknown harness '$prefix' in '$e' (one of: $HARNESSES)"
-    fi
-  fi
-  if [ "$ent_harness" = opencode ] && [ -n "$ent_model" ] && [[ "$ent_model" != */* ]]; then
-    ent_model="opencode/$ent_model"
-  fi
-}
 
 # allowed H MODEL: whether CLOUD_AGENTS_DELEGATE_ALLOW permits this entry.
 allowed() {
@@ -485,7 +494,6 @@ final_harness=""
 final_out=""
 final_lastmsg=""
 i=0
-IFS=',' read -r -a model_list <<< "$models"
 for raw_entry in "${model_list[@]}"; do
   entry="$(echo "$raw_entry" | tr -d '[:space:]')"
   [ -n "$entry" ] || continue
