@@ -179,6 +179,18 @@ ENV NODE_EXTRA_CA_CERTS=/usr/local/share/ca-certificates/extra-combined.pem
 
 RUN npm install -g @anthropic-ai/claude-code
 
+# OpenCode CLI, as a worker for docker/delegate-task.sh (docs/delegation.md):
+# Claude Code stays the orchestrator on the owner's subscription and hands
+# well-specified tasks to cheaper or free models through `opencode run`.
+# Same pin and retry loop as docker/Dockerfile.opencode, so both images run
+# the same worker version.
+RUN n=0; until npm install -g opencode-ai@1.18.4; do \
+      n=$((n + 1)); \
+      if [ "$n" -ge 3 ]; then echo "npm install -g opencode-ai failed after 3 attempts" >&2; exit 1; fi; \
+      echo "npm install -g opencode-ai failed (attempt $n/3), retrying in 5s..." >&2; \
+      sleep 5; \
+    done
+
 # GitHub CLI (gh): lets an agent session interact with GitHub (PRs, issues,
 # checks) via `gh`/`gh api` without needing a GitHub MCP server or hand-
 # rolled curl+jq calls. Installed from the official apt repository
@@ -263,6 +275,7 @@ COPY docker/create-fallback-branch.sh /usr/local/bin/create-fallback-branch.sh
 COPY docker/inject-library.sh /usr/local/bin/inject-library.sh
 COPY docker/user-tools.sh /usr/local/bin/user-tools.sh
 COPY docker/render-branch-policy.sh /usr/local/bin/render-branch-policy.sh
+COPY docker/delegate-task.sh /usr/local/bin/delegate-task
 # Shipped for its exclude_from_git helper (entrypoint.sh sources it, #792) —
 # the claude harness keeps its own MCP registration, so register_callbacks_mcp
 # itself is never called here.
@@ -277,7 +290,7 @@ COPY docker/settings.json.template /etc/claude/settings.json.template
 COPY docker/settings-callbacks.json.template /etc/claude/settings-callbacks.json.template
 COPY docker/branch-policy-rules.md /etc/cloud-agents/branch-policy-rules.md
 COPY docker/session-tools-guide.md /etc/cloud-agents/session-tools-guide.md
-RUN chmod +x /usr/local/bin/entrypoint.sh /usr/local/bin/reconcile-repos.sh /usr/local/bin/create-fallback-branch.sh /usr/local/bin/inject-library.sh /usr/local/bin/render-branch-policy.sh /usr/local/bin/register-callbacks-mcp.sh /usr/local/bin/sanitize-empty-node-extra-ca-certs.sh /usr/local/bin/cloud-agents-shim
+RUN chmod +x /usr/local/bin/entrypoint.sh /usr/local/bin/reconcile-repos.sh /usr/local/bin/create-fallback-branch.sh /usr/local/bin/inject-library.sh /usr/local/bin/render-branch-policy.sh /usr/local/bin/register-callbacks-mcp.sh /usr/local/bin/sanitize-empty-node-extra-ca-certs.sh /usr/local/bin/cloud-agents-shim /usr/local/bin/delegate-task
 
 # Build-time shim smoke test (#805/#814, same as the other four runner
 # images): run the shim with no env and expect its own missing-required-env

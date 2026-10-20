@@ -261,10 +261,12 @@ pub func seedDefaultSubagentsIfEmpty(userId: in String): Unit {
 // Skills are freshly authored here (seed/skills/*/SKILL.md), not lifted from
 // .claude/skills/ at all — every entry there is oh-my-claudecode-plugin
 // content (see the module doc comment above), so there was nothing portable
-// to curate down from. These five are harness-agnostic, self-contained
+// to curate down from. The first five are harness-agnostic, self-contained
 // instructions (commit style, PR descriptions, debugging method, a pre-submit
 // self-review checklist, and dependency vetting) that need nothing beyond
-// the tools any coding session already has.
+// the tools any coding session already has. delegate-to-worker drives
+// docker/delegate-task.sh, which only the claude image ships; the skill says
+// to use it only when `delegate-task` is on PATH (docs/delegation.md).
 
 /// Directory the seed skill folders are read from (each holds a SKILL.md),
 /// mirroring seedSubagentsDir's env-override convention.
@@ -286,6 +288,7 @@ pub func defaultSkillNames(): slice[String] {
   acc = acc.append("systematic-debugging")
   acc = acc.append("self-code-review")
   acc = acc.append("dependency-vetting")
+  acc = acc.append("delegate-to-worker")
   return acc
 }
 

@@ -286,9 +286,9 @@ test "seedSkillsDir defaults to seed/skills and honors CLOUD_AGENTS_SEED_SKILLS_
   Env.SetEnvironmentVariable("CLOUD_AGENTS_SEED_SKILLS_DIR", "")
 }
 
-test "defaultSkillNames is the fixed curated set of five" {
+test "defaultSkillNames is the fixed curated set of six" {
   val names = defaultSkillNames()
-  assertEqualInt(names.length.toInt(), 5, "five curated skills")
+  assertEqualInt(names.length.toInt(), 6, "six curated skills")
   assertEqual(names[0], "conventional-commits", "first entry")
 }
 
