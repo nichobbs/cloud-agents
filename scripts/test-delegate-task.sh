@@ -52,6 +52,9 @@ case "$model" in
     # A long-running command the worker started, which must die with it.
     ( sleep 4; echo "late write" >> calc.txt ) &
     sleep 60 ;;
+  stub/new-file-fail)
+    echo "new" > other.txt
+    exit 5 ;;
   stub/edit-again)
     echo "more" >> calc.txt
     exit 4 ;;
@@ -111,6 +114,18 @@ rc=0; out="$(cd "$repo" && "$SCRIPT" -m stub/edit-again,stub/edit "fix calc")" |
 check "dirty-again: status failed_dirty"    [ "$(field .status)" = failed_dirty ]
 check "dirty-again: second model never ran" [ "$(field '.attempts | length')" = 1 ]
 
+# 2c. Outside a git repo, a failed attempt's edits still stop the chain.
+nogit="$WORK/nogit"; mkdir -p "$nogit"; echo start > "$nogit/calc.txt"
+sleep 1
+rc=0; out="$(cd "$nogit" && "$SCRIPT" -m stub/dirty-fail,stub/edit "fix calc")" || rc=$?
+check "no-git: modified file is failed_dirty"  [ "$(field .status)" = failed_dirty ]
+nogit2="$WORK/nogit2"; mkdir -p "$nogit2"
+rc=0; out="$(cd "$nogit2" && "$SCRIPT" -m stub/new-file-fail,stub/edit "x")" || rc=$?
+check "no-git: new file is failed_dirty"       [ "$(field .status)" = failed_dirty ]
+nogit3="$WORK/nogit3"; mkdir -p "$nogit3"; echo start > "$nogit3/calc.txt"
+rc=0; out="$(cd "$nogit3" && "$SCRIPT" -m stub/incomplete,stub/edit "x")" || rc=$?
+check "no-git: clean failure still falls back" [ "$(field .status)" = ok ]
+
 # 3. Ending without a final stop step is a failure and falls through.
 repo="$(new_repo incomplete)"
 rc=0; out="$(cd "$repo" && "$SCRIPT" -m stub/incomplete "x")" || rc=$?
@@ -160,6 +175,9 @@ check "check: runs with the scrubbed env" [ "$(field .status)" = ok ]
 rc=0; out="$(cd "$repo" && git checkout -q -- calc.txt && "$SCRIPT" -m stub/edit -t 2 --check 'sleep 30' "x")" || rc=$?
 check "check: a hanging check is stopped"  [ "$(field .status)" = check_failed ]
 check "check: timeout reported as 124"     [ "$(field .check.exit)" = 124 ]
+rc=0; out="$(cd "$repo" && git checkout -q -- calc.txt && "$SCRIPT" -m stub/edit -t 2 --check '( sleep 4; echo late >> calc.txt ) & sleep 30' "x")" || rc=$?
+sleep 4
+check "check: timeout also stops what the check started" bash -c "! grep -q late '$repo/calc.txt'"
 
 # 7. --worktree isolates the work on its own branch and commits it.
 repo="$(new_repo worktree)"

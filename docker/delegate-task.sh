@@ -180,11 +180,19 @@ changed_files() {
 }
 # Content, not just the file list: a worker that edits a file the caller had
 # already modified leaves `git status` unchanged.
+# Outside git: the file list (adds and deletes) plus any file modified after
+# the run started, using only stat calls so a large tree stays cheap.
+start_marker="$log_root/.start"
+: > "$start_marker"
 tree_fingerprint() {
-  [ "$in_git" -eq 1 ] || return 0
-  changed_files
-  git diff HEAD 2>/dev/null | sha1sum
-  git ls-files --others --exclude-standard -z 2>/dev/null | xargs -0 -r sha1sum 2>/dev/null
+  if [ "$in_git" -eq 1 ]; then
+    changed_files
+    git diff HEAD 2>/dev/null | sha1sum
+    git ls-files --others --exclude-standard -z 2>/dev/null | xargs -0 -r sha1sum 2>/dev/null
+  else
+    find . -type f -print 2>/dev/null | LC_ALL=C sort | sha1sum
+    find . -type f -newer "$start_marker" -print 2>/dev/null | LC_ALL=C sort
+  fi
 }
 start_fingerprint="$(tree_fingerprint)"
 
@@ -302,9 +310,11 @@ diffstat=""
 check_json="null"
 if [ "$final_status" = "ok" ] && [ -n "$check_cmd" ]; then
   check_log="$log_root/check.log"
-  # Worker-written tests can hang; bound the check like an attempt, in its own
-  # process group so the timeout also stops anything the test started.
-  timeout --kill-after=5 "$timeout_secs" setsid env -i "${worker_env[@]}" bash -c "$check_cmd" > "$check_log" 2>&1
+  # Worker-written tests can hang; bound the check like an attempt. GNU
+  # timeout runs the command in its own process group and signals that whole
+  # group, so this also stops anything the test started (no setsid here: it
+  # would move the command out of that group).
+  timeout --kill-after=5 "$timeout_secs" env -i "${worker_env[@]}" bash -c "$check_cmd" > "$check_log" 2>&1
   check_rc=$?
   check_json="$(jq -n -c --arg c "$check_cmd" --argjson rc "$check_rc" --arg t "$(tail -c 1500 "$check_log")" \
     '{cmd: $c, exit: $rc, tail: $t}')"
