@@ -158,13 +158,15 @@ live yet, because that needs their credentials (see "Still to measure").
 The runner images and the on-demand installs use the newest stable release of each
 harness CLI and of uv that was published at least `HARNESS_CLI_MIN_AGE_DAYS` ago (default
 7), not pinned versions. `docker/install-harness-cli.sh` picks it from the registry's
-publish times (`npm view <package> time`, or PyPI for uv), skipping pre-releases and
-anything above the registry's `latest` tag, installs it, and then
+publish times (`npm view <package> time versions`, or PyPI for uv), skipping
+pre-releases, unpublished npm versions, yanked PyPI releases and anything above the
+registry's `latest` tag, installs it, and then
 runs `docker/check-harness-cli.sh`, which checks that the CLI still accepts every flag
 the entrypoints and `delegate-task` pass it (`codex exec --help`, `opencode run --help`
-and so on). If the newest release fails the check, a warning is logged and the
-known-good release listed in `install-harness-cli.sh` is installed instead; the same
-happens if no release is old enough or the publish times can't be read. The image
+and so on). If that release fails to install or fails the check, the next two settled
+releases are tried, and then the known-good release listed in `install-harness-cli.sh`,
+each with a warning; the known-good release is also used if no release is old enough
+or the publish times can't be read. The image
 build fails only if that fails too. A fallback rather than a failed build matters
 because Coolify builds every image in one `docker compose build`, so one broken harness
 image would also block the API deploy.

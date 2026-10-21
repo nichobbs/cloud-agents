@@ -121,11 +121,11 @@ if ! [[ "$min_age" =~ ^[0-9]+$ ]]; then
   exit 2
 fi
 
-# settled_version CUTOFF NEWEST: reads {"x.y.z": "publish time", ...} on stdin
-# and prints the highest x.y.z published before CUTOFF and no higher than
-# NEWEST (the `latest` tag, so a release kept off it, such as a pulled one or
-# a pre-release line, is never chosen). Pre-releases are skipped.
-settled_version() {
+# settled_versions CUTOFF NEWEST: reads {"x.y.z": "publish time", ...} on stdin
+# and prints, highest first, the three highest x.y.z published before CUTOFF
+# and no higher than NEWEST (the `latest` tag, so a release kept off it, such
+# as a pre-release line, is never chosen). Pre-releases are skipped.
+settled_versions() {
   jq -r --arg cutoff "$1" --arg newest "$2" '
     def num: split(".") | map(tonumber);
     def stable: test("^[0-9]+\\.[0-9]+\\.[0-9]+$");
@@ -134,17 +134,22 @@ settled_version() {
         | select((.key | stable) and (.value | type == "string") and .value < $cutoff)
         | .key | num
         | select($max == null or . <= $max) ]
-    | (max // empty) | map(tostring) | join(".")'
+    | sort | reverse | .[:3][] | map(tostring) | join(".")'
 }
 
-# release_times / newest_release: the publish time of every release, and the
-# release the registry currently calls latest.
+# release_times / newest_release: the publish time of every release that can
+# still be installed, and the release the registry currently calls latest.
+# npm keeps publish times for unpublished versions, so only versions it still
+# lists count; on PyPI a release whose files are all yanked doesn't count.
 release_times() {
   if [ "$tool" = uv ]; then
     curl -fsS --connect-timeout 10 --max-time 120 --retry 3 --retry-delay 3 https://pypi.org/pypi/uv/json \
-      | jq '.releases | with_entries(select(.value | length > 0) | .value |= (map(.upload_time_iso_8601) | min))'
+      | jq '.releases | with_entries(.value |= map(select(.yanked != true)) | select(.value | length > 0)
+                                     | .value |= (map(.upload_time_iso_8601) | min))'
   else
-    retry npm view "$pkg" time --json
+    retry npm view "$pkg" time versions --json \
+      | jq '(.versions | if type == "array" then . else [.] end) as $listed
+            | .time | with_entries(select(.key as $k | $listed | index($k)))'
   fi
 }
 newest_release() {
@@ -155,30 +160,34 @@ newest_release() {
   fi
 }
 
+# candidates: the versions to try, best first.
 if [ "$min_age" -eq 0 ]; then
-  latest="latest"
+  candidates="latest"
   if [ "$tool" != uv ] && [ -n "$latest_json" ]; then
-    latest="$(jq -r '.version // empty' "$latest_json" 2>/dev/null || true)"
-    [ -n "$latest" ] || latest="latest"
+    candidates="$(jq -r '.version // empty' "$latest_json" 2>/dev/null || true)"
+    [ -n "$candidates" ] || candidates="latest"
   fi
 else
   cutoff="$(date -u -d "@$(( $(date +%s) - min_age * 86400 ))" +%Y-%m-%dT%H:%M:%SZ)"
   newest="$(newest_release 2>/dev/null || true)"
-  latest="$(release_times 2>/dev/null | settled_version "$cutoff" "$newest" 2>/dev/null || true)"
-  if [ -z "$latest" ]; then
-    fb="$(fallback "$tool")"
-    echo "install-harness-cli: WARNING: could not find a $pkg release at least $min_age days old; installing the known-good $fb" >&2
-    install_version "$fb"
-    exec "$check" --bin "$(bin_path)" "$tool"
+  candidates="$(release_times 2>/dev/null | settled_versions "$cutoff" "$newest" 2>/dev/null || true)"
+  if [ -n "$candidates" ]; then
+    echo "install-harness-cli: $pkg: newest release $newest; trying the newest at least $min_age days old: $(echo $candidates)" >&2
+  else
+    echo "install-harness-cli: WARNING: could not find a $pkg release at least $min_age days old" >&2
   fi
-  echo "install-harness-cli: $pkg: newest release $newest, installing $latest (the newest at least $min_age days old)" >&2
 fi
 
-if install_version "$latest" && "$check" --bin "$(bin_path)" "$tool"; then
-  exit 0
-fi
+# A candidate that fails to install or fails its check is followed by the next
+# one, so one bad release doesn't drop all the way to the known-good fallback.
+for version in $candidates; do
+  if install_version "$version" && "$check" --bin "$(bin_path)" "$tool"; then
+    exit 0
+  fi
+  echo "install-harness-cli: WARNING: $pkg@$version failed to install or failed its check" >&2
+done
 
 fb="$(fallback "$tool")"
-echo "install-harness-cli: WARNING: $pkg@$latest failed to install or failed its check; installing the known-good $fb" >&2
+echo "install-harness-cli: WARNING: installing the known-good $pkg@$fb" >&2
 install_version "$fb"
 "$check" --bin "$(bin_path)" "$tool"

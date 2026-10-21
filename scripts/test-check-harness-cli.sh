@@ -126,7 +126,7 @@ cat > "$WORK/npm/npm" <<STUB
 echo "\$*" >> "$WORK/npm.args"
 if [ "\$1" = view ]; then
   case "\$3" in
-    time) cat "$WORK/times.json" ;;
+    time) jq -n --slurpfile t "$WORK/times.json" --slurpfile v "$WORK/versions.json" '{time: \$t[0], versions: \$v[0]}' ;;
     dist-tags.latest) cat "$WORK/dist-latest" ;;
   esac
   exit 0
@@ -135,7 +135,7 @@ prefix=""; pkg=""
 while [ \$# -gt 0 ]; do case "\$1" in --prefix) prefix="\$2"; shift 2 ;; install|-g) shift ;; *) pkg="\$1"; shift ;; esac; done
 mkdir -p "\$prefix/bin"
 case "\$pkg" in
-  *@broken|*@9.9.9-broken) cp "$(stub codex --json)" "\$prefix/bin/codex" ;;
+  *@broken|*@9.9.9-broken|*@\$(cat "$WORK/broken-version" 2>/dev/null)) cp "$(stub codex --json)" "\$prefix/bin/codex" ;;
   *@fail) exit 1 ;;
   *) cp "$(stub codex)" "\$prefix/bin/codex" ;;
 esac
@@ -168,15 +168,25 @@ cat > "$WORK/times.json" <<JSON
 {"created": "$(ago 400)", "modified": "$(ago 1)",
  "1.9.0": "$(ago 300)", "1.10.0": "$(ago 20)", "1.10.1": "$(ago 8)",
  "1.11.0-alpha.1": "$(ago 10)", "1.10.2-linux-x64": "$(ago 9)",
- "1.11.0": "$(ago 2)", "9.0.0": "$(ago 30)"}
+ "1.11.0": "$(ago 2)", "9.0.0": "$(ago 30)", "1.10.5": "$(ago 9)"}
 JSON
+# 1.10.5 has a publish time but was unpublished: npm no longer lists it.
+jq '[keys[] | select(. != "created" and . != "modified" and . != "1.10.5")]' "$WORK/times.json" > "$WORK/versions.json"
 echo "1.11.0" > "$WORK/dist-latest"
 cool() { PATH="$WORK/npm:$PATH" HARNESS_CLI_MIN_AGE_DAYS="$1" "$INSTALL" --prefix "$WORK/c$1" codex > "$WORK/inst.out" 2>&1; }
 rm -f "$WORK/npm.args"
 check "cool-down: installs"                     cool 7
 check "cool-down: newest release 7+ days old"   grep -q '@openai/codex@1.10.1$' "$WORK/npm.args"
+check "cool-down: ...skipping an unpublished one" bash -c '! grep -q "@openai/codex@1.10.5" "$0"' "$WORK/npm.args"
 check "cool-down: ...compared as versions"      bash -c '! grep -q "@openai/codex@1.9.0" "$0"' "$WORK/npm.args"
-check "cool-down: ...says what it skipped"      grep -q 'newest release 1.11.0, installing 1.10.1' "$WORK/inst.out"
+check "cool-down: ...says what it skipped"      grep -q 'newest release 1.11.0; trying the newest at least 7 days old: 1.10.1 1.10.0 1.9.0' "$WORK/inst.out"
+# A chosen release that fails its check is followed by the next settled one.
+echo 1.10.1 > "$WORK/broken-version"
+rm -f "$WORK/npm.args"
+check "cool-down: failing choice tries the next" cool 7
+check "cool-down: ...which is 1.10.0"            grep -q '@openai/codex@1.10.0$' "$WORK/npm.args"
+check "cool-down: ...not the known-good"         bash -c '! grep -q "@$1" "$0"' "$WORK/npm.args" "$("$INSTALL" --fallback codex)"
+rm -f "$WORK/broken-version"
 rm -f "$WORK/npm.args"
 check "cool-down: a longer window"              cool 15
 check "cool-down: ...goes further back"         grep -q '@openai/codex@1.10.0$' "$WORK/npm.args"
@@ -185,10 +195,41 @@ rm -f "$WORK/npm.args"
 check "cool-down: nothing old enough"           cool 1000
 check "cool-down: ...falls back to known-good"  grep -q "@openai/codex@$("$INSTALL" --fallback codex)" "$WORK/npm.args"
 check "cool-down: ...with a warning"            grep -q 'WARNING: could not find' "$WORK/inst.out"
-echo '{}' > "$WORK/times.json"
+echo '{}' > "$WORK/times.json"; echo '[]' > "$WORK/versions.json"
 rm -f "$WORK/npm.args"
 check "cool-down: registry gives no times"      cool 7
 check "cool-down: ...falls back to known-good"  grep -q "@openai/codex@$("$INSTALL" --fallback codex)" "$WORK/npm.args"
+# uv's cool-down reads PyPI: yanked and file-less releases don't count.
+mkdir -p "$WORK/curlbin" "$WORK/uvdir" "$WORK/uvstub"
+printf '#!/bin/sh\ncase "$1" in --version) echo "uv 9.9" ;; *) printf "Commands:\\n  tool  Tools\\n" ;; esac\n' > "$WORK/uvstub/uv"
+printf '#!/bin/sh\necho "uvx 9.9"\n' > "$WORK/uvstub/uvx"
+chmod +x "$WORK/uvstub/uv" "$WORK/uvstub/uvx"
+cat > "$WORK/pypi.json" <<JSON
+{"info": {"version": "0.13.4"},
+ "releases": {
+   "0.13.4": [{"upload_time_iso_8601": "$(ago 2)", "yanked": false}],
+   "0.14.0a1": [{"upload_time_iso_8601": "$(ago 9)", "yanked": false}],
+   "0.13.3": [{"upload_time_iso_8601": "$(ago 10)", "yanked": true}, {"upload_time_iso_8601": "$(ago 10)", "yanked": true}],
+   "0.13.2": [{"upload_time_iso_8601": "$(ago 11)", "yanked": true}, {"upload_time_iso_8601": "$(ago 11)", "yanked": false}],
+   "0.13.10": [],
+   "0.13.1": [{"upload_time_iso_8601": "$(ago 12)", "yanked": false}]}}
+JSON
+cat > "$WORK/curlbin/curl" <<STUB
+#!/usr/bin/env bash
+url="\${@: -1}"
+echo "\$url" >> "$WORK/curl.urls"
+case "\$url" in
+  https://pypi.org/pypi/uv/json) cat "$WORK/pypi.json" ;;
+  https://astral.sh/uv/*/install.sh) printf 'cp "%s/uv" "%s/uvx" "\$UV_INSTALL_DIR/"\n' "$WORK/uvstub" "$WORK/uvstub" ;;
+  *) exit 22 ;;
+esac
+STUB
+chmod +x "$WORK/curlbin/curl"
+rm -f "$WORK/curl.urls"
+check "cool-down: uv installs"                  env PATH="$WORK/curlbin:$PATH" UV_INSTALL_DIR="$WORK/uvdir" HARNESS_CLI_MIN_AGE_DAYS=7 "$INSTALL" uv
+check "cool-down: uv skips yanked and empty releases" grep -qx 'https://astral.sh/uv/0.13.2/install.sh' "$WORK/curl.urls"
+check "cool-down: ...and pre-releases"          bash -c '! grep -q "0.14.0a1" "$0"' "$WORK/curl.urls"
+
 rc=0; HARNESS_CLI_MIN_AGE_DAYS=soon "$INSTALL" codex 2>/dev/null || rc=$?
 check "cool-down: a bad setting is a usage error" [ "$rc" -eq 2 ]
 for img in $images; do
