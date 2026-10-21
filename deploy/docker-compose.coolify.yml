@@ -229,7 +229,8 @@ services:
   # unconditionally instead, because both causes of that failure are handled
   # at the source by docker/install-harness-cli.sh: each install retries
   # three times against transient npm-registry failures, and the newest
-  # release is checked against the flags cloud-agents passes it, with the
+  # release at least a week old (a cool-down against compromised releases)
+  # is checked against the flags cloud-agents passes it, with the
   # last known-good release installed instead if it fails, so a breaking
   # CLI release produces a warning in the build log rather than a failed
   # build. If a harness image ever fails to build again

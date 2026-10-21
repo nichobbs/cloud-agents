@@ -83,8 +83,8 @@
 #
 # A CLI the image doesn't ship is installed on first use into
 # ~/.cache/cloud-agents/delegate-cli/<harness> by install-harness-cli.sh: the
-# newest release, checked against the flags used here, with a known-good
-# fallback. It is refreshed once it is DELEGATE_REFRESH_DAYS old (default 7);
+# newest release at least HARNESS_CLI_MIN_AGE_DAYS old (default 7), checked
+# against the flags used here, with a known-good fallback. It is refreshed once it is DELEGATE_REFRESH_DAYS old (default 7);
 # after a failed attempt the existing install, if any, is used without retrying
 # for DELEGATE_INSTALL_RETRY_SECS (default 3600). DELEGATE_AUTO_INSTALL=0 turns
 # installing off.
@@ -570,7 +570,7 @@ worker_bin() {
   local new
   new="$dir-$(date +%s)"
   if timeout --kill-after=10 "${DELEGATE_INSTALL_TIMEOUT:-300}" env -i "${base_env[@]}" "HOME=$HOME" \
-       "$script_dir/install-harness-cli.sh" --prefix "$new" "$h" > "$log_root/install-$h.log" 2>&1 8>&- \
+       "HARNESS_CLI_MIN_AGE_DAYS=${HARNESS_CLI_MIN_AGE_DAYS:-7}" "$script_dir/install-harness-cli.sh" --prefix "$new" "$h" > "$log_root/install-$h.log" 2>&1 8>&- \
      && [ -x "$new/bin/$h" ]; then
     date +%s > "$new/.installed"
     # Restart the superseded install's day before it is pruned.

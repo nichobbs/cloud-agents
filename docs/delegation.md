@@ -102,7 +102,8 @@ shapes, but no run has used real credentials yet.
 
 The event shapes were checked against the CLIs' own code (Claude Code 2.1.304, Codex
 0.145.0, Gemini CLI 0.51.0) and the repo's live Claude fixtures. The images and on-demand
-installs now take the newest release of each CLI; see "CLI versions" below.
+installs now take the newest release of each CLI that is at least a week old; see "CLI
+versions" below.
 The claude adapter has been run live on a subscription login: `claude:haiku` fixed a
 two-bug Python file in 8s for $0.0024, the check passed, and the login was linked into
 the worker's home rather than copied. The codex and gemini adapters have not been run
@@ -144,7 +145,7 @@ live yet, because that needs their credentials (see "Still to measure").
   CLI itself.
 - **On-demand install.** A CLI the image doesn't ship is installed on first use into
   `~/.cache/cloud-agents/delegate-cli/<harness>` on the home volume, at the newest
-  release (see "CLI versions" below), and refreshed once it is `DELEGATE_REFRESH_DAYS`
+  release that has passed the cool-down (see "CLI versions" below), and refreshed once it is `DELEGATE_REFRESH_DAYS`
   old (default 7). A refresh goes into a new versioned directory and only replaces
   the previous install once it has passed the check. After a failed install or
   refresh, delegations use the existing install, if any, without trying again for
@@ -154,12 +155,16 @@ live yet, because that needs their credentials (see "Still to measure").
 
 ### CLI versions
 
-The runner images and the on-demand installs use the newest release of each harness
-CLI and of uv, not pinned versions. `docker/install-harness-cli.sh` installs it and then
+The runner images and the on-demand installs use the newest stable release of each
+harness CLI and of uv that was published at least `HARNESS_CLI_MIN_AGE_DAYS` ago (default
+7), not pinned versions. `docker/install-harness-cli.sh` picks it from the registry's
+publish times (`npm view <package> time`, or PyPI for uv), skipping pre-releases and
+anything above the registry's `latest` tag, installs it, and then
 runs `docker/check-harness-cli.sh`, which checks that the CLI still accepts every flag
 the entrypoints and `delegate-task` pass it (`codex exec --help`, `opencode run --help`
 and so on). If the newest release fails the check, a warning is logged and the
-known-good release listed in `install-harness-cli.sh` is installed instead. The image
+known-good release listed in `install-harness-cli.sh` is installed instead; the same
+happens if no release is old enough or the publish times can't be read. The image
 build fails only if that fails too. A fallback rather than a failed build matters
 because Coolify builds every image in one `docker compose build`, so one broken harness
 image would also block the API deploy.
@@ -167,7 +172,11 @@ image would also block the API deploy.
 In the Dockerfiles, each install step is preceded by an `ADD` of the npm registry's
 `latest` metadata (or uv's installer script). Docker re-fetches it on every build and
 reruns the install only when it changes, that is, when a new version is published.
-Without that, an unversioned install layer would stay cached indefinitely.
+Without that, an unversioned install layer would stay cached indefinitely. Because the
+rerun is triggered by a new release rather than by time passing, a release that clears
+the cool-down is picked up at the first build after the package's next release (or
+any uncached build). For these CLIs, which release several times a week, that is
+little later.
 
 `scripts/test-check-harness-cli.sh` (CI) fails if a launch line uses a flag the check
 doesn't cover, or if an image still pins a version. The check would have caught two
@@ -176,12 +185,13 @@ bugs that shipped with pinned versions: `codex --full-auto --json` (fixed in #13
 help, so for that flag the check only confirms the name still appears in the installed
 program. And a flag check can't catch a change in behaviour behind an unchanged flag.
 
-Trade-off: a newly published release reaches the images at their next build, and the
-on-demand installs within a week, with no integrity check beyond what npm and the uv
-installer do themselves. These CLIs run with the session's credentials. The flag check
-guards against breaking releases, not a compromised one; pins limited that exposure to
-releases someone had chosen. A cool-down (skip releases newer than a few days) would
-narrow the window again without going back to pins.
+**The cool-down (#1314).** These CLIs run with the session's credentials, and the flag
+check guards against breaking releases, not a compromised one. A compromised npm or
+PyPI release is usually caught and pulled within days, so a release only reaches the
+images and the on-demand installs once it is `HARNESS_CLI_MIN_AGE_DAYS` old. Set it as a
+Docker build argument (`--build-arg HARNESS_CLI_MIN_AGE_DAYS=3`; 0 takes the newest
+release) or in a session's environment for `delegate-task`. Beyond the cool-down there
+is no integrity check other than what npm and the uv installer do themselves.
 
 ## Stage 1c: worker guidance and best-of-K (built)
 

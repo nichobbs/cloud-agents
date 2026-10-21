@@ -152,6 +152,9 @@ export DELEGATE_LOG_DIR="$WORK/logs" DELEGATE_HOME="$WORK/home"
 # installs into ~/.local.
 mkdir -p "$WORK/testhome"
 export HOME="$WORK/testhome"
+# On-demand installs take the newest release here; the cool-down is tested in
+# test-check-harness-cli.sh.
+export HARNESS_CLI_MIN_AGE_DAYS=0
 
 fails=0
 check() {
@@ -479,6 +482,7 @@ rc=0; out="$(cd "$repo" && env -u DELEGATE_GEMINI_BIN PATH="$WORK/npmbin2:$PATH"
 check "install: a hung install times out"       [ "$(field '.attempts[0].outcome')" = not_installed ]
 check "install: ...within the timeout"          [ "$(field '.attempts[0].seconds')" -lt 20 ]
 check "install: npm gets the scrubbed env"      bash -c "! grep -q '^GITHUB_TOKEN=' '$WORK/npm.env'"
+check "install: ...plus the cool-down setting"  grep -qx 'HARNESS_CLI_MIN_AGE_DAYS=0' "$WORK/npm.env"
 
 # 14. Worker guidance from .delegate-guidance/.
 repo="$(new_repo guidance)"

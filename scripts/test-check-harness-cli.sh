@@ -124,6 +124,13 @@ mkdir -p "$WORK/npm"
 cat > "$WORK/npm/npm" <<STUB
 #!/usr/bin/env bash
 echo "\$*" >> "$WORK/npm.args"
+if [ "\$1" = view ]; then
+  case "\$3" in
+    time) cat "$WORK/times.json" ;;
+    dist-tags.latest) cat "$WORK/dist-latest" ;;
+  esac
+  exit 0
+fi
 prefix=""; pkg=""
 while [ \$# -gt 0 ]; do case "\$1" in --prefix) prefix="\$2"; shift 2 ;; install|-g) shift ;; *) pkg="\$1"; shift ;; esac; done
 mkdir -p "\$prefix/bin"
@@ -134,7 +141,8 @@ case "\$pkg" in
 esac
 STUB
 chmod +x "$WORK/npm/npm"
-inst() { PATH="$WORK/npm:$PATH" "$INSTALL" "$@" > "$WORK/inst.out" 2>&1; }
+# The cool-down is covered separately below; these cases take the newest.
+inst() { PATH="$WORK/npm:$PATH" HARNESS_CLI_MIN_AGE_DAYS=0 "$INSTALL" "$@" > "$WORK/inst.out" 2>&1; }
 rm -f "$WORK/npm.args"
 check "installer: newest release passing is kept" inst --prefix "$WORK/p1" codex
 check "installer: ...installed @latest"         grep -q '@openai/codex@latest' "$WORK/npm.args"
@@ -149,9 +157,44 @@ check "installer: failing newest falls back"    inst --prefix "$WORK/p3" --lates
 check "installer: ...to the known-good version" grep -q "@openai/codex@$("$INSTALL" --fallback codex)" "$WORK/npm.args"
 check "installer: ...with a warning"            grep -q WARNING "$WORK/inst.out"
 mkdir -p "$WORK/npmfail"; printf '#!/usr/bin/env bash\nexit 1\n' > "$WORK/npmfail/npm"; chmod +x "$WORK/npmfail/npm"
-check "installer: both failing fails"           bash -c '! PATH="$1:$PATH" "$0" --prefix "$2" codex >/dev/null 2>&1' "$INSTALL" "$WORK/npmfail" "$WORK/p4"
+check "installer: both failing fails"           bash -c '! PATH="$1:$PATH" HARNESS_CLI_MIN_AGE_DAYS=0 "$0" --prefix "$2" codex >/dev/null 2>&1' "$INSTALL" "$WORK/npmfail" "$WORK/p4"
 rc=0; "$INSTALL" nosuchtool 2>/dev/null || rc=$?
 check "installer: unknown tool is a usage error" [ "$rc" -eq 2 ]
+
+# The cool-down: the newest stable release at least HARNESS_CLI_MIN_AGE_DAYS
+# old, never above the registry's `latest` tag.
+ago() { date -u -d "@$(( $(date +%s) - $1 * 86400 ))" +%Y-%m-%dT%H:%M:%S.000Z; }
+cat > "$WORK/times.json" <<JSON
+{"created": "$(ago 400)", "modified": "$(ago 1)",
+ "1.9.0": "$(ago 300)", "1.10.0": "$(ago 20)", "1.10.1": "$(ago 8)",
+ "1.11.0-alpha.1": "$(ago 10)", "1.10.2-linux-x64": "$(ago 9)",
+ "1.11.0": "$(ago 2)", "9.0.0": "$(ago 30)"}
+JSON
+echo "1.11.0" > "$WORK/dist-latest"
+cool() { PATH="$WORK/npm:$PATH" HARNESS_CLI_MIN_AGE_DAYS="$1" "$INSTALL" --prefix "$WORK/c$1" codex > "$WORK/inst.out" 2>&1; }
+rm -f "$WORK/npm.args"
+check "cool-down: installs"                     cool 7
+check "cool-down: newest release 7+ days old"   grep -q '@openai/codex@1.10.1$' "$WORK/npm.args"
+check "cool-down: ...compared as versions"      bash -c '! grep -q "@openai/codex@1.9.0" "$0"' "$WORK/npm.args"
+check "cool-down: ...says what it skipped"      grep -q 'newest release 1.11.0, installing 1.10.1' "$WORK/inst.out"
+rm -f "$WORK/npm.args"
+check "cool-down: a longer window"              cool 15
+check "cool-down: ...goes further back"         grep -q '@openai/codex@1.10.0$' "$WORK/npm.args"
+check "cool-down: never above latest's tag"     bash -c '! grep -q "@openai/codex@9.0.0" "$0"' "$WORK/npm.args"
+rm -f "$WORK/npm.args"
+check "cool-down: nothing old enough"           cool 1000
+check "cool-down: ...falls back to known-good"  grep -q "@openai/codex@$("$INSTALL" --fallback codex)" "$WORK/npm.args"
+check "cool-down: ...with a warning"            grep -q 'WARNING: could not find' "$WORK/inst.out"
+echo '{}' > "$WORK/times.json"
+rm -f "$WORK/npm.args"
+check "cool-down: registry gives no times"      cool 7
+check "cool-down: ...falls back to known-good"  grep -q "@openai/codex@$("$INSTALL" --fallback codex)" "$WORK/npm.args"
+rc=0; HARNESS_CLI_MIN_AGE_DAYS=soon "$INSTALL" codex 2>/dev/null || rc=$?
+check "cool-down: a bad setting is a usage error" [ "$rc" -eq 2 ]
+for img in $images; do
+  check "$img: cool-down default is set"        grep -qxF 'ARG HARNESS_CLI_MIN_AGE_DAYS=7' "$D/$img"
+done
+check "delegate-task passes the cool-down on"   grep -q '"HARNESS_CLI_MIN_AGE_DAYS=${HARNESS_CLI_MIN_AGE_DAYS:-7}"' "$D/delegate-task.sh"
 
 # 5. Real CLIs, when provided.
 if [ -n "${REAL_CLI_DIR:-}" ]; then

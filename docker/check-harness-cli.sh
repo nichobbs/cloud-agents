@@ -3,8 +3,9 @@
 # entrypoints and delegate-task.sh pass it.
 #
 # The runner images install the newest release of each harness CLI and of uv
-# at build time (no version pins), and delegate-task.sh installs the newest
-# worker CLI on demand. A release that drops or renames a flag would otherwise
+# that is past its cool-down (install-harness-cli.sh) at build time, with no
+# version pins, and delegate-task.sh installs worker CLIs the same way on
+# demand. A release that drops or renames a flag would otherwise
 # only show up as every session failing at launch, as `codex --full-auto` and
 # `opencode run -q` once did. Each Dockerfile runs this right after the
 # install, so such a release fails the image build instead.

@@ -188,7 +188,8 @@ though nothing about `api`/`frontend` had changed — which is why
 `profiles:` (opt-in only, off by default). Both root causes of that
 failure are now handled at the source by `docker/install-harness-cli.sh`
 instead of worked around. Each install retries three times against transient
-npm-registry failures. The newest release is checked against the flags
+npm-registry failures. The newest release at least a week old (a
+cool-down against compromised releases) is checked against the flags
 cloud-agents passes it, and if it fails, the last known-good release is
 installed instead, with a warning in the build log, so a breaking CLI release
 doesn't fail the build (`docs/delegation.md`, "CLI versions").

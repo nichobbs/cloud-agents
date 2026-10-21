@@ -1,18 +1,19 @@
 #!/usr/bin/env bash
-# install-harness-cli.sh: installs the newest release of a harness CLI or of uv,
-# verified with check-harness-cli.sh, falling back to the last release known to
-# work when the newest one fails the check.
+# install-harness-cli.sh: installs the newest release of a harness CLI or of uv
+# that is at least HARNESS_CLI_MIN_AGE_DAYS old (default 7), verified with
+# check-harness-cli.sh, falling back to the last release known to work when
+# that release fails the check.
 #
 # Usage: install-harness-cli.sh [--prefix DIR] [--latest-json FILE] TOOL
 #        install-harness-cli.sh --package TOOL | --fallback TOOL
 #   TOOL           claude | codex | gemini | opencode | uv
 #   --prefix DIR   npm install prefix (default: npm's global prefix). Ignored
 #                  for uv, which installs into UV_INSTALL_DIR.
-#   --latest-json  the npm registry's `latest` metadata for the package, which
-#                  the Dockerfiles ADD so that Docker reruns the install layer
-#                  exactly when a new version is published. Without it, the
-#                  `latest` dist-tag is resolved by npm. For uv this is the
-#                  installer script instead.
+#   --latest-json  the npm registry's `latest` metadata for the package (for
+#                  uv, its installer script), which the Dockerfiles ADD so that
+#                  Docker reruns the install layer when a new version is
+#                  published. With HARNESS_CLI_MIN_AGE_DAYS=0 its version is
+#                  installed directly; otherwise it only triggers the rerun.
 #   --package / --fallback  print TOOL's package name / known-good version.
 #
 # Used by every runner image at build time and by delegate-task.sh for workers
@@ -109,10 +110,68 @@ install_version() {
   if [ "$tool" = uv ]; then uv_install "$1"; else npm_install "$1"; fi
 }
 
-latest="latest"
-if [ "$tool" != uv ] && [ -n "$latest_json" ]; then
-  latest="$(jq -r '.version // empty' "$latest_json" 2>/dev/null || true)"
-  [ -n "$latest" ] || latest="latest"
+# The cool-down: take the newest stable release published at least
+# HARNESS_CLI_MIN_AGE_DAYS days ago (default 7). A compromised release is
+# usually caught and pulled within days, so this keeps the images close to
+# current without installing a release on the day it ships. 0 takes the
+# newest release.
+min_age="${HARNESS_CLI_MIN_AGE_DAYS:-7}"
+if ! [[ "$min_age" =~ ^[0-9]+$ ]]; then
+  echo "install-harness-cli: HARNESS_CLI_MIN_AGE_DAYS must be a whole number of days, not '$min_age'" >&2
+  exit 2
+fi
+
+# settled_version CUTOFF NEWEST: reads {"x.y.z": "publish time", ...} on stdin
+# and prints the highest x.y.z published before CUTOFF and no higher than
+# NEWEST (the `latest` tag, so a release kept off it, such as a pulled one or
+# a pre-release line, is never chosen). Pre-releases are skipped.
+settled_version() {
+  jq -r --arg cutoff "$1" --arg newest "$2" '
+    def num: split(".") | map(tonumber);
+    def stable: test("^[0-9]+\\.[0-9]+\\.[0-9]+$");
+    (if ($newest | stable) then ($newest | num) else null end) as $max
+    | [ to_entries[]
+        | select((.key | stable) and (.value | type == "string") and .value < $cutoff)
+        | .key | num
+        | select($max == null or . <= $max) ]
+    | (max // empty) | map(tostring) | join(".")'
+}
+
+# release_times / newest_release: the publish time of every release, and the
+# release the registry currently calls latest.
+release_times() {
+  if [ "$tool" = uv ]; then
+    curl -fsS --connect-timeout 10 --max-time 120 --retry 3 --retry-delay 3 https://pypi.org/pypi/uv/json \
+      | jq '.releases | with_entries(select(.value | length > 0) | .value |= (map(.upload_time_iso_8601) | min))'
+  else
+    retry npm view "$pkg" time --json
+  fi
+}
+newest_release() {
+  if [ "$tool" = uv ]; then
+    curl -fsS --connect-timeout 10 --max-time 120 --retry 3 --retry-delay 3 https://pypi.org/pypi/uv/json | jq -r '.info.version'
+  else
+    retry npm view "$pkg" dist-tags.latest
+  fi
+}
+
+if [ "$min_age" -eq 0 ]; then
+  latest="latest"
+  if [ "$tool" != uv ] && [ -n "$latest_json" ]; then
+    latest="$(jq -r '.version // empty' "$latest_json" 2>/dev/null || true)"
+    [ -n "$latest" ] || latest="latest"
+  fi
+else
+  cutoff="$(date -u -d "@$(( $(date +%s) - min_age * 86400 ))" +%Y-%m-%dT%H:%M:%SZ)"
+  newest="$(newest_release 2>/dev/null || true)"
+  latest="$(release_times 2>/dev/null | settled_version "$cutoff" "$newest" 2>/dev/null || true)"
+  if [ -z "$latest" ]; then
+    fb="$(fallback "$tool")"
+    echo "install-harness-cli: WARNING: could not find a $pkg release at least $min_age days old; installing the known-good $fb" >&2
+    install_version "$fb"
+    exec "$check" --bin "$(bin_path)" "$tool"
+  fi
+  echo "install-harness-cli: $pkg: newest release $newest, installing $latest (the newest at least $min_age days old)" >&2
 fi
 
 if install_version "$latest" && "$check" --bin "$(bin_path)" "$tool"; then

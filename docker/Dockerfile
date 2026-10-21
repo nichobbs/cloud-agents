@@ -177,11 +177,14 @@ RUN chmod +x /usr/local/bin/split-ca-bundle.sh /usr/local/bin/trust-extra-cas.sh
     && /usr/local/bin/trust-extra-cas.sh
 ENV NODE_EXTRA_CA_CERTS=/usr/local/share/ca-certificates/extra-combined.pem
 
-# Harness CLIs and uv are installed at their newest release and checked
-# against the flags cloud-agents passes them, falling back to a known-good
-# release if that check fails (docker/install-harness-cli.sh). Each ADD fetches
-# the registry's or installer's current `latest` on every build; Docker reruns
-# the install step only when that content changes, i.e. on a new release.
+# Harness CLIs and uv are installed at their newest release that is at least
+# HARNESS_CLI_MIN_AGE_DAYS old (a cool-down against compromised releases; 0
+# takes the newest) and checked against the flags cloud-agents passes them,
+# falling back to a known-good release if that check fails
+# (docker/install-harness-cli.sh). Each ADD fetches the registry's or
+# installer's current `latest` on every build; Docker reruns the install step
+# only when that content changes, i.e. on a new release.
+ARG HARNESS_CLI_MIN_AGE_DAYS=7
 COPY docker/check-harness-cli.sh docker/install-harness-cli.sh /usr/local/bin/
 RUN chmod +x /usr/local/bin/check-harness-cli.sh /usr/local/bin/install-harness-cli.sh
 
