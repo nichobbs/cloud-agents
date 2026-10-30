@@ -98,13 +98,25 @@ each run (no repository needed). Its environment must have:
 - A dedicated environment used only by the importer. Its network access is a
   custom allowlist containing only `agents.playdium.games`, beyond what the
   platform always permits.
-- A setup script that writes `~/.claude/settings.json` with `permissions.deny`
-  rules for every remote-session tool the importer does not need:
-  `send_message`, `create_session`, `archive_session`, `unarchive_session`,
-  `interrupt_session`, the scheduled-task tools, `add_repo` and
-  `request_computer_folder`. The importer keeps only `list_sessions`,
-  `get_session`, `list_events` and `get_event`, plus Bash for `curl`.
-  §11 explains why.
+- A setup script that installs an **allowlist**, not a denylist, so a tool the
+  platform adds later is blocked by default. The script writes
+  `deploy/importer/managed-settings.json` to the managed-settings path
+  (`/etc/claude-code/managed-settings.json`). That file sets:
+  - `permissions.defaultMode: "dontAsk"`, so anything not explicitly allowed
+    is refused without a prompt;
+  - `allowManagedPermissionRulesOnly: true`, so rules in user or project
+    settings, including any the session writes itself, are ignored;
+  - `permissions.allow` with exactly
+    `mcp__claude-code-remote__list_sessions`,
+    `mcp__claude-code-remote__get_session`,
+    `mcp__claude-code-remote__list_events`,
+    `mcp__claude-code-remote__get_event` and
+    `Bash(curl -sS --fail-with-body -H * https://agents.playdium.games/api/imports/claude/*)`.
+
+  No file-writing tools are allowed. §11 explains why, and covers the
+  residual risk that `curl` itself can write files. The first run's
+  acceptance check (§13) confirms the scheduled-task session honours this:
+  calling a tool outside the allowlist must be refused.
 
 The task prompt is checked in at `deploy/importer/claude-session-importer.md`,
 so it is reviewed like code. The prompt is short: almost all of the extraction
@@ -162,10 +174,28 @@ Recovery, decided by the importer for each session:
    follows the stored `throughEventId` (the importer sends `afterEventId`),
    then accepts the new numbering from that point on.
 3. **Cursor event no longer found**: the importer re-imports the session from
-   the start with `resync: "restart"` and `fromOrdinal: 0`. Findings that
-   repeat earlier ones are absorbed by Reconcile's duplicate rule. Ordinals may
-   have shifted, so the rule's similarity path (>= 90% summary match, no seq
-   overlap needed) is what catches them.
+   the start with `resync: "restart"` and `fromOrdinal: 0`.
+
+**Deduplicating a restart.** Reconcile's `findDuplicate`
+(`src/ledger/reconcile.l`) has two paths: a summary similarity of >= 90% with
+no range check, or overlapping ranges with >= 50% similarity. After a restart
+the ordinals may have shifted, so only the first path is reliable, and it is
+too strict for this case. A model re-reading a session rewords its findings,
+and two phrasings of the same shortcut rarely reach 90% word overlap. So:
+
+- During a `restart` (from the restart chunk until the cursor passes the old
+  `throughOrdinal`), `acceptImportChunk` uses the session's existing observed
+  entries as the duplicate set, with a looser, range-free rule:
+  `findDuplicateBySimilarity(c, observed, restartDedupPct)`. That means same
+  kind family, same item, and similarity >= `restartDedupPct` (default 50).
+  It is a new pure function in `CloudAgents.Ledger.Reconcile` beside
+  `findDuplicate`. The live observer path does not change.
+- The state endpoint returns, for a session in restart, the summaries of its
+  existing findings (`knownFindings`, capped at 200). The importer prompt
+  tells it not to re-report them. That cuts duplicates at the source, and the
+  server rule catches what slips through.
+- Tests pin both: a reworded duplicate at ~60% similarity is dropped in
+  restart mode and kept outside it, and an exact repeat is dropped in both.
 
 A `restart` is limited to one per session per `restartCooldownHours` (default
 24). A second one inside the window gets 429, so a session whose events keep
@@ -218,13 +248,16 @@ All three are under `/api/imports/claude/` and require an import token.
   "budgets": { "maxSessionsPerRun": 5, "maxEventsPerChunk": 200, "settleMinutes": 60 },
   "sessions": [
     { "ccrSessionId": "session_...", "throughEventId": "1bff...", "throughOrdinal": 412,
-      "lastEventAt": "2026-10-30T09:19:23Z" }
+      "lastEventAt": "2026-10-30T09:19:23Z", "restarting": false, "deleted": false }
   ]
 }
 ```
 
-`sessions` lists every imported session in the token's tenant. It is small
-(one row per session), so no pagination in v1.
+`sessions` lists every imported session in the token's tenant, tombstones
+included (`deleted: true`), so the importer skips them without a 410
+round trip. It is small (one row per session), so no pagination in v1. A
+session in restart (§4.3) also carries `knownFindings`: up to 200
+`{ kind, summary }` pairs of its existing observed entries.
 
 ### 6.2 `GET /api/imports/claude/prompt`
 
@@ -287,6 +320,13 @@ tool-calling steps with:
 - 429 if the token's chunk rate cap (§8) or the session's restart cooldown
   (§4.3) is hit.
 - 422 if a candidate fails validation (§7.2).
+- 413 if the request body exceeds `CLOUDAGENTS_IMPORT_MAX_BODY_BYTES`
+  (default 512 KiB). The candidate, field and word caps limit what is stored,
+  but not the raw payload (unknown fields, whitespace), so the handler checks
+  the body length before parsing JSON. The per-field caps alone would allow
+  more than 512 KiB in the worst case (50 candidates × 8000-byte `detail`, plus
+  `files`), but real findings are far smaller. On a 413 the importer splits the
+  chunk in half by ordinal and retries each half.
 
 ## 7. cloud-agents side
 
@@ -414,6 +454,8 @@ by `maxNotificationsPerReport`.
 | `CLOUDAGENTS_IMPORTS_ENABLED` | `0` | `1` enables the routes; otherwise 404 |
 | `CLOUDAGENTS_IMPORT_MAX_CHUNKS_PER_HOUR` | `120` | per-token cap on accepted findings POSTs; over it, 429 |
 | `CLOUDAGENTS_IMPORT_RESTART_COOLDOWN_HOURS` | `24` | minimum gap between `resync: "restart"` imports of one session (§4.3) |
+| `CLOUDAGENTS_IMPORT_RESTART_DEDUP_PCT` | `50` | similarity at which a restart candidate counts as a duplicate (§4.3) |
+| `CLOUDAGENTS_IMPORT_MAX_BODY_BYTES` | `524288` | findings POST body cap; over it, 413 |
 
 Budgets are served by cloud-agents rather than baked into the importer prompt,
 so cost can be tuned without editing the scheduled task.
@@ -457,7 +499,22 @@ so cost can be tuned without editing the scheduled task.
 - **Redaction (`tests/ledger_redact_tests.l`):** one positive and one
   near-miss case per pattern in §12, idempotence (`redactText` applied twice
   gives the same result), and the evidence word cap still applied after
-  redaction.
+  redaction. The high-entropy exclusions get their own near-miss cases, each
+  of which must come through unchanged:
+  - a 40-hex git SHA, a 7-hex abbreviated SHA and a 64-hex SHA-256;
+  - a UUID event id, and `session_` / `cse_` ids;
+  - a `files` entry containing a long mixed-case segment, and a URL path
+    segment.
+
+  And one positive case: the same 40-hex value after `api_key=` is redacted.
+- **Restart dedup (`tests/ledger_import_tests.l`):**
+  - `findDuplicate` drops a candidate with >= 90% similarity and a
+    non-overlapping range, which confirms the range-free path the spec relies
+    on.
+  - `findDuplicateBySimilarity` drops a ~60%-similar rewording in restart mode,
+    and the same candidate is kept outside restart mode.
+- **Body cap:** a body over `CLOUDAGENTS_IMPORT_MAX_BODY_BYTES` gets 413
+  before any JSON parse.
 - **Frontend (`LedgerEntryCard.test.tsx`):** an entry whose summary, detail and
   evidence contain `<img src=x onerror=...>`, a `javascript:` link and markdown
   renders them as literal text, with no element or link created.
@@ -480,7 +537,8 @@ while it holds an import token and some tools.
 | Fabricate findings, inflate severity, or flood the inbox | The token can write only findings to the owner's own tenant. The caps are 50 candidates per chunk, `maxEventsPerChunk`, and `CLOUDAGENTS_IMPORT_MAX_CHUNKS_PER_HOUR` per token. Severity comes from `effectiveSeverity`, not from the candidate. Backfill sends no notifications. |
 | Write findings against a different `ccrSessionId` | Limited to sessions in the same tenant, so the owner's own inbox. It is noise, not an escalation. The handler also rejects a `ccrSessionId` that doesn't have the `session_` prefix shape. |
 | Move cursors to skip sessions | Only skips signal. `restart` is rate-limited (§4.3). |
-| Act through other tools: message or start other sessions, create scheduled tasks, add repos | Denied by the importer environment's permission rules (§4.1). The importer keeps only the read tools and `curl`. |
+| Act through other tools: message or start other sessions, create scheduled tasks, add repos | Not on the managed allowlist (§4.1), so refused, including tools the platform adds later. Only the four read tools and one `curl` shape are allowed. |
+| Loosen its own permissions (write a settings file, then use a now-allowed tool) | Managed settings with `allowManagedPermissionRulesOnly` ignore user and project rules, and no file-writing tool is allowed. Residual risk, accepted: `curl` can write files (`-o`), and the session runs as root, so in principle it could overwrite the managed settings file. The allowed `Bash` pattern pins the URL prefix but not every flag. The bound is the same as the exfiltration row: the environment can only reach `agents.playdium.games`, and the token can only post findings to the owner's own inbox. A loosened importer can do nothing a compliant one can't, except call tools it then allows itself, which would be read-only remote-session tools or ones that need network the environment doesn't have. |
 | Exfiltrate data | The network allowlist holds only `agents.playdium.games`. The token is a network secret, so it never enters the VM. The importer can still put data in findings, but those land in the owner's own inbox. |
 | Use the token elsewhere | Import tokens are refused on every non-import route (§5), and the owner can revoke them. |
 
@@ -524,8 +582,23 @@ pasted into chat, command output. A short quote is enough to leak one.
    - URLs with embedded credentials (`scheme://user:pass@`)
    - `KEY=value` and `"key": "value"` pairs whose key contains `secret`,
      `token`, `password`, `passwd`, `api_key`, `apikey` or `private_key`
-   - long high-entropy runs: 32 or more base64/hex characters with no spaces
-     outside a file path
+   - long high-entropy runs: 32 or more characters from the base64 alphabet
+     (`A-Z a-z 0-9 + / = _ -`) with no spaces, that mix upper case, lower
+     case and digits.
+
+   The high-entropy rule is the one most likely to hit legitimate evidence,
+   so it has explicit exclusions:
+   - **Pure hex runs are never matched by it**, whatever their length. That
+     covers git SHA-1 (40), SHA-256 (64), abbreviated SHAs and content hashes.
+     A hex value is redacted only by the key-name rule, for example
+     `api_key=3f9a…`.
+   - **UUIDs** (`8-4-4-4-12` hex) are excluded. CCR event ids and session ids
+     are UUIDs or `session_…` ids and appear in evidence on purpose.
+   - **`session_` / `cse_` prefixed ids** are excluded.
+   - **Path segments:** runs touching `/` on either side (part of a path or
+     URL path) are excluded, and the rule is not applied to `files` entries
+     at all. The prefixed-token, PEM and credential-URL rules still apply
+     there.
 
    Redaction runs before validation (§7.2) and applies to every stored text
    field. The live observer path should adopt the same scrub. That is a
@@ -558,8 +631,13 @@ applies to imported ones too.
    redacted.
 8. Ledger entry text containing HTML or markdown renders as literal text.
 9. A session whose cursor event disappears re-imports once via `restart`
-   without duplicating findings. A deleted imported session is never
-   re-imported unless its tombstone is cleared.
+   without duplicating findings, including reworded ones (§4.3). A deleted
+   imported session is never re-imported unless its tombstone is cleared.
+10. On the first live run, the importer session refuses a tool outside the
+    managed allowlist (§4.1). If the scheduled-task session doesn't honour
+    managed settings, the importer is not enabled until it does.
+11. Commit SHAs, UUIDs and file paths in evidence come through redaction
+    unchanged.
 
 ## 14. Deferred
 
@@ -598,7 +676,8 @@ applies to imported ones too.
 | `src/ledger/import.l` (new) | `CloudAgents.Ledger.Import.acceptImportChunk` | pure acceptance (§7.2) |
 | `src/ledger/redact.l` (new) | `CloudAgents.Ledger.Redact.redactText` | secret scrub (§12) |
 | `src/pgstore/sessions.l` | `updateOwnedWhen` status writers | `AND imported_from = ''` (§7.1) |
-| `deploy/importer/settings.json` (new) | importer environment setup script output | permission deny rules (§4.1, §11) |
+| `deploy/importer/managed-settings.json`, `deploy/importer/setup.sh` (new) | importer environment setup script | managed permission allowlist (§4.1, §11) |
+| `src/ledger/reconcile.l` | new `findDuplicateBySimilarity` | restart dedup (§4.3) |
 | `src/ledger/observer.l` | `candidateProblem`, `observerPrompt`, new `importerPrompt` | window predicate parameter; shared guidance helper |
 | `src/handlers/imports.l` (new) | state, prompt, findings, token CRUD | §5, §6 |
 | `src/main.l` | `AuthMiddleware`, routes | `cai_` bearer, import-only route allowlist, new routes |
