@@ -212,6 +212,6 @@ pub func importerPrompt(): String {
     "\n\nEach candidate is a JSON object with: kind (decision, deviation, shortcut, blocker or question), summary (at most 140 characters), " +
     "detail, item (always \"\"), seqStart, seqEnd, tags (strings), files (paths), reversible (\"true\", \"false\" or \"\"), " +
     "confidence (a number from 0 to 1, as a string) and evidence (a short quote of at most 30 words, beginning with the event's uuid, " +
-    "e.g. \"event 7f3a…: ...\"). Give an honest confidence: low-confidence findings are dropped, so a guess is better marked as one than left acc." +
+    "e.g. \"event 7f3a…: ...\"). Give an honest confidence: low-confidence findings are dropped, so a guess is better marked as one than left out." +
     "\n\nWhen re-importing a session, its known findings are listed in the state response: do not report those again."
 }

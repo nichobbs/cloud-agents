@@ -456,3 +456,72 @@ func candidateOf(c: in JsonElement): Result[Candidate, String] {
     )
   )
 }
+
+/// The findings POST of a Claude session import
+/// (docs/claude-session-import.md §6.3), everything but its candidates
+/// (`decodeObserverReport` reads those from the same body). Ordinals stay
+/// text here; the handler parses and checks them.
+pub record ImportEnvelope {
+  pub title: String
+  pub repoUrl: String
+  pub branch: String
+  pub createdAt: String
+  pub updatedAt: String
+  pub fromOrdinal: String
+  pub throughOrdinal: String
+  pub throughEventId: String
+  pub afterEventId: String
+  pub lastEventAt: String
+  pub backfill: String
+  pub resync: String
+}
+
+pub func decodeImportEnvelope(json: in String): Result[ImportEnvelope, String] {
+  val doc = withRoot(json)?
+  defer {
+    Std.Json.disposeJson(doc)
+  }
+  val root = Std.Json.rootElement(doc)
+  var title = ""
+  var repoUrl = ""
+  var branch = ""
+  var createdAt = ""
+  var updatedAt = ""
+  match propOf(root, "session") {
+    case Some(s) -> {
+      if kindOf(s) == kindObject {
+        title = str(s, "title")?
+        repoUrl = str(s, "repoUrl")?
+        branch = str(s, "branch")?
+        createdAt = str(s, "createdAt")?
+        updatedAt = str(s, "updatedAt")?
+      } else if kindOf(s) != kindNull {
+        return Err(error = "'session' must be an object")
+      }
+    }
+    case None -> ()
+  }
+  val fromOrdinal = str(root, "fromOrdinal")?
+  val throughOrdinal = str(root, "throughOrdinal")?
+  val throughEventId = str(root, "throughEventId")?
+  val afterEventId = str(root, "afterEventId")?
+  val lastEventAt = str(root, "lastEventAt")?
+  val backfill = boolText(root, "backfill")?
+  val resync = str(root, "resync")?
+  return Ok(
+    value = ImportEnvelope(
+      title = title,
+      repoUrl = repoUrl.trim(),
+      branch = branch.trim(),
+      createdAt = createdAt.trim(),
+      updatedAt = updatedAt.trim(),
+      fromOrdinal = fromOrdinal.trim(),
+      throughOrdinal = throughOrdinal.trim(),
+      throughEventId = throughEventId.trim(),
+      afterEventId = afterEventId.trim(),
+      lastEventAt = lastEventAt.trim(),
+      backfill = backfill,
+      resync = resync.trim()
+    )
+  )
+}

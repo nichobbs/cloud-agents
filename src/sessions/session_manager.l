@@ -367,6 +367,11 @@ pub record SessionSummaryRow {
   pub forkedFromMessageId: String
   pub pendingCount: String
   pub ledgerAttention: String
+  /// "" for a cloud-agents session; "claude-cloud" for one imported from a
+  /// Claude Code cloud session (docs/claude-session-import.md §7.1), whose
+  /// id there is `ccrSessionId`.
+  pub importedFrom: String
+  pub ccrSessionId: String
 }
 
 /// The `{"sessions":[...]}` document for the session list, in row order.
@@ -427,6 +432,10 @@ pub func sessionSummariesToJson(rows: in slice[SessionSummaryRow]): String {
       jsonEscapeField(r.ledgerAttention) +
       "\",\"attention\":\"" +
       attention +
+      "\",\"importedFrom\":\"" +
+      jsonEscapeField(r.importedFrom) +
+      "\",\"ccrSessionId\":\"" +
+      jsonEscapeField(r.ccrSessionId) +
       "\"}"
     i = i + 1
   }

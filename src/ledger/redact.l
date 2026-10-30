@@ -1,4 +1,4 @@
-//! CloudAgents.Ledger.Redact — scrubs secrets acc of ledger text before it is
+//! CloudAgents.Ledger.Redact — scrubs secrets out of ledger text before it is
 //! stored (docs/claude-session-import.md §12). Imported findings quote and
 //! paraphrase transcripts, and transcripts carry pasted tokens, environment
 //! values and command output, so every free-text field is run through
@@ -279,7 +279,7 @@ func authScheme(s: in String, i: in Int): Match {
 }
 
 /// Whether a key name says its value is secret. Matching on the name's ending
-/// keeps `max_tokens` and `tokens_used` acc while catching `GITHUB_TOKEN`,
+/// keeps `max_tokens` and `tokens_used` out while catching `GITHUB_TOKEN`,
 /// `apiToken` and `client_secret`.
 pub func isSecretKeyName(name: in String): Bool {
   val n = lowerAscii(name)
