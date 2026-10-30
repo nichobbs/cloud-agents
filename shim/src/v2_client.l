@@ -133,7 +133,7 @@ func writeSecretFile(name: in String, value: in String): Result[String, String] 
   var chosen = ""
   var lastErr = ""
   var i = 0
-  while i < candidates.length and chosen.length == 0 {
+  while i < candidates.count and chosen.length == 0 {
     val cand = candidates[i]
     val created = match Std.File.createDir(cand) {
       case Ok(_) -> true
