@@ -5,6 +5,8 @@ obj/
 lyric.lock
 *-restore.csproj
 lyric.toml.bak
+# scripts/ci-test-shard.sh writes this beside lyric.toml.
+lyric.shard.toml
 cloud-agents.db*
 .env
 .api_token

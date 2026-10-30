@@ -448,6 +448,18 @@ bind a superuser or a `BYPASSRLS` role, so isolation tests under one would
 pass vacuously (its self-check test fails the suite if so). CI's "Provision
 and migrate Postgres" step does the same against a `postgres:16` service.
 
+**CI shards the suites.** `lyric test` compiles the whole project into a
+separate assembly for every `[project.tests]` entry, so the full run is
+about 70 project compiles (~45 minutes on a GitHub runner) while the tests
+themselves take seconds. `ci.yml`'s `test` job runs six matrix shards, each
+with its own Postgres service, and each calls `scripts/ci-test-shard.sh
+<index> <count>`. That script writes `lyric.shard.toml` (gitignored), a
+copy of `lyric.toml` holding every `<count>`-th suite, and runs
+`lyric test --manifest lyric.shard.toml`, so a new suite needs no CI change.
+The same script runs one shard locally, e.g. `scripts/ci-test-shard.sh 0 6`.
+The `Build & verify` check that `auto-merge.yml` gates on is an aggregate
+job that passes only when the checks, build and every shard pass.
+
 One unrelated suite can fail in a sandbox with an intercepting egress proxy:
 `OAuthTests`' "refreshOAuthToken returns refreshed token" sends an unknown
 token to `api.github.com/user` and expects GitHub's 401; a proxy that
@@ -570,12 +582,14 @@ found and fixed — this section's prose above will need updating too, but
 the CI floor itself only needs the one file changed.
 
 **This is checked into the repo as a runnable reproduction, not just
-prose**: `scripts/repro-compiler-bug.sh` checks all seven bugs — checks 1-4
-and 6-7 against trivial scratch projects, check 5 (which needed this
-project's own real scale/shape to reproduce — see below) against the real
-manifest in place via `lyric test`. Checks 1–2 need only `lyric` on PATH
+prose**: `scripts/repro-compiler-bug.sh` checks the bugs against trivial
+scratch projects. Check 5 (bug 5, which needed this project's own real
+scale/shape to reproduce — see below) used to run a full `lyric test`
+against the real manifest, duplicating CI's "Run lyric test" step and
+doubling CI time; it was removed, since that step fails on a regression
+anyway. Checks 1–2 need only `lyric` on PATH
 (both bugs occur before the compiler would invoke the .NET toolchain);
-checks 3–7 need `dotnet` (3–5 additionally need a real `[nuget]` restore),
+checks 3–8 need `dotnet` (3–4 additionally need a real `[nuget]` restore),
 and are skipped (not failed) without it. Run it yourself; exit 0 means
 every bug that could be checked is fixed on your compiler and it's safe to
 remove this script and the workaround notes below.
