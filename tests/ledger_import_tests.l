@@ -12,6 +12,7 @@ import CloudAgents.Ledger.Reconcile
 import CloudAgents.Ledger.Service
 import CloudAgents.Ledger.Redact
 import CloudAgents.Ledger.Import
+import CloudAgents.Ledger.Observer
 
 func ctx(): SessionContext {
   return SessionContext(
@@ -229,7 +230,7 @@ test "a reworded restatement is a duplicate only while restarting" {
 }
 
 test "the importer prompt carries the observer's guidance" {
-  assertTrue(importerPrompt().contains(CloudAgents.Ledger.Observer.whatToLookFor()), "shared guidance")
-  assertTrue(CloudAgents.Ledger.Observer.observerPrompt(true).contains(CloudAgents.Ledger.Observer.whatToLookFor()), "the observer too")
+  assertTrue(importerPrompt().contains(whatToLookFor()), "shared guidance")
+  assertTrue(observerPrompt(true).contains(whatToLookFor()), "the observer too")
   assertTrue(importerPrompt().contains("prompt-injection"), "injection is reported, not obeyed")
 }
