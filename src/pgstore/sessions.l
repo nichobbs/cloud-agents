@@ -87,7 +87,9 @@ func updateOwnedWhen(
   defer {
     CloudAgents.PgStore.release(u)
   }
-  val n = CloudAgents.PgStore.ex(u, "UPDATE sessions SET " + set + ownedWhere() + guard, params)?
+  // Every guarded write here changes run state, which an imported session
+  // (a read-only record with no container) never has.
+  val n = CloudAgents.PgStore.ex(u, "UPDATE sessions SET " + set + ownedWhere() + guard + " AND imported_from = ''", params)?
   CloudAgents.PgStore.commit(u)?
   return Ok(value = n)
 }
@@ -283,6 +285,9 @@ func deleteOwned(sessionId: in String, sc: in CloudAgents.Pg.TenantScope): Resul
   val n = CloudAgents.PgStore.ex(u, "DELETE FROM sessions" + ownedWhere(), [sessionId, sc.userId])?
   if n > 0 {
     CloudAgents.PgStore.ex(u, "DELETE FROM session_routes WHERE session_id = @p0 AND tenant_id = @p1", [sessionId, sc.tenantId])?
+    // An imported session leaves a tombstone, so the importer never brings
+    // it back (docs/claude-session-import.md §7.1).
+    CloudAgents.PgStore.ex(u, "UPDATE claude_session_imports SET deleted_at = now(), session_id = '', updated_at = now() " + "WHERE session_id = @p0", [sessionId])?
   }
   CloudAgents.PgStore.commit(u)?
   return Ok(value = n)
