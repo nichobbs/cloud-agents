@@ -1,6 +1,10 @@
 # Spec: Claude cloud session import (findings-only, inbox-only)
 
-Status: **Proposed.** Not built. Extends the session ledger
+Status: **Implemented** (server, PWA and the importer's deploy files). The
+importer itself has not yet run against real sessions: that first live run is
+the remaining manual step, with acceptance criterion 10 checked on it. Where the
+build differs from the first draft of this spec, the text below describes what
+was built, and §15 lists the differences. Extends the session ledger
 (`docs/session-ledger.md` §10, the observer) to Claude Code cloud sessions that
 cloud-agents did not run: sessions started from claude.ai/code, the Claude app,
 `claude --cloud` or a scheduled task, in any repository.
@@ -133,8 +137,10 @@ Each run:
 3. Page `list_sessions` from newest to oldest and pick candidates:
    - Skip sessions that are still working (status bucket `working`), or whose
      `updated_at` is under `settleMinutes` old (default 60).
-   - Skip sessions tagged `cloudagents-importer`. The importer tags its own
-     sessions with that tag when it starts, so it never imports itself.
+   - Skip the importer's own session (`get_session` with no id names it) and
+     any session titled "Claude session importer", the scheduled task's name,
+     so it never imports itself. The managed allowlist (§4.1) has no tagging
+     tool, so a tag can't be used for this.
    - Skip sessions whose `updated_at` is not newer than the state's
      `lastEventAt` for that session.
    - Stop after `maxSessionsPerRun` sessions (default 5).
@@ -214,28 +220,37 @@ Imported findings must belong to a real user and tenant, and must reach that
 user's inbox. The operator token (`CLOUD_AGENTS_API_TOKEN`) authenticates as the
 `default` operator user, so it is the wrong principal for this.
 
-New table `import_tokens` (tenant-owned, migration §9):
+New table `import_tokens` (migration §9). It is **global**, like
+`invitations`, because a token is resolved before any tenant is known. Every
+query on it checks the caller's active membership itself
+(`CloudAgents.PgStore.Imports`):
 
 | Column | Type | Notes |
 |---|---|---|
-| `id` | text | PK with `tenant_id` |
+| `id` | text | PK |
+| `tenant_id` | text | the tenant its imports land in |
 | `user_id` | text | owner of the imports |
 | `token_hash` | text UNIQUE | SHA-256 of the raw token, same scheme as invitations |
 | `label` | text | e.g. "claude importer" |
 | `created_at` | timestamptz | |
 | `last_used_at` | timestamptz NULL | |
 | `revoked_at` | timestamptz NULL | |
+| `window_start`, `window_count` | timestamptz NULL, integer | the hourly chunk cap's fixed window (§8) |
 
 - The token is created with `POST /api/imports/tokens` (an authenticated user in
   their current request scope). The raw token is returned once, prefixed
   `cai_`. Revoke with `DELETE /api/imports/tokens/{id}`; list with `GET`.
-- `AuthMiddleware` recognises a `cai_` bearer, looks up the hash in a global
-  route table (like `session_routes`), checks it is not revoked and that the
-  membership is still active, and sets the request's user and tenant scope.
+- `AuthMiddleware` recognises a `cai_` bearer, resolves its hash in
+  `import_tokens`, checks it is not revoked and that the membership is still
+  active, and stamps the request's user, tenant and token id
+  (`CloudAgents.Auth.setCurrentImportTokenId`). The importer endpoints refuse a
+  request without a token id, and the owner endpoints refuse one with a token
+  id.
 - An import token authorises **only** the `/api/imports/claude/*` routes. Every
   other route refuses it with 403, so a leaked token cannot read sessions or
   start runs.
-- The PWA gets a small "Imports" section under settings: create, list, revoke.
+- The PWA's **Imports** page (`/imports`) creates, lists and revokes tokens,
+  and clears tombstones (`DELETE /api/imports/tombstones/{ccrSessionId}`).
 
 ## 6. Endpoints
 
@@ -420,9 +435,18 @@ Before validating, `acceptImportChunk` runs every free-text field through
 `files` and `tags`. Validation then runs on the redacted text, so a redaction
 marker can never push a field over its limit after the check.
 
+Imported sessions are judged on the default policy rules (`defaultRules()`),
+not `rulesFor`. Their repository's policy file may not be readable by this
+installation's GitHub access, and fetching it would add a GitHub call per
+chunk.
+
 The handler (`src/handlers/imports.l`) does the I/O: it authorises, upserts the
 session and mapping, loads existing entries, calls `acceptImportChunk`, inserts
-the entries and advances the cursor in one transaction.
+the entries, then advances the cursor. The inserts and the cursor update are
+separate units (each `insertEntry` is its own unit), so they are not one
+transaction. A failure between them leaves the cursor where it was, the
+importer resends the same chunk, and the repeated findings come back with 100%
+summary similarity, which Reconcile drops as duplicates.
 
 No new `source` or `origin` value is needed, so `ledger_entries` and its CHECK
 constraints are unchanged. "Imported" is a property of the session, not the
@@ -468,10 +492,11 @@ so cost can be tuned without editing the scheduled task.
   ccr_session_id)` constraint, plus `deleted_at timestamptz` (tombstone) and
   `last_restart_at timestamptz` (restart cooldown). `session_id` is nullable
   for tombstones.
-- New tenant table `import_tokens` (§5), plus a global `import_token_routes`
-  (`token_hash` PK → `tenant_id`, `user_id`, `token_id`) so the middleware can
-  find the tenant before RLS scope is set, mirroring `session_routes`.
-- `list_sessions_to_sync`: add the `imported_from = ''` filter.
+- New global table `import_tokens` (§5).
+- `list_sessions_to_sync`: add the `imported_from = ''` filter. The function is
+  owned by `cloudagents_claimer`, so the migration replaces it as that role
+  (`SET ROLE`) with a body derived from the frozen baseline text, and grants
+  the claimer `SELECT (imported_from)` on `sessions`.
 
 ## 10. Test strategy
 
@@ -481,9 +506,17 @@ so cost can be tuned without editing the scheduled task.
   fields, `provisional = false`, and severity via `effectiveSeverity`. Plus
   `importerPrompt` vs `observerPrompt` sharing the common guidance (a drift
   test asserting the shared helper's text appears in both).
-- **Fixture:** a sanitized real `list_events` page captured from a cloud
-  session (`tests/fixtures/ccr-events/`), used to check the documented ordinal
-  rules against real event shapes.
+- **No CCR-event fixture.** The server never parses `list_events` output:
+  findings-only means the importer does the numbering and cloud-agents sees
+  only ordinals. The ordinal rules are tested through the handler instead,
+  and the importer's own numbering is checked on its first live run.
+- **Handler (`tests/claude_import_handler_tests.l`):** the pure guards (which
+  routes are read-only for an imported session, CCR id validation, the import
+  route check, the restart cooldown), and, against live Postgres, the findings
+  handler with the identity the middleware would stamp: first chunk, replay,
+  gap (409 with the cursor), realign, restart with dedup and its 429, body cap
+  (413), a candidate outside its chunk (422), a deleted session (410), and
+  refusal without a token or with imports off.
 - **Live Postgres (`tests/claude_import_store_tests.l`):**
   - token create → auth → revoke
   - an import token refused on a non-import route
@@ -496,7 +529,7 @@ so cost can be tuned without editing the scheduled task.
   - `realign` and `restart` resync, and the restart cooldown's 429
   - delete leaves a tombstone, and the next POST gets 410
   - the per-token chunk cap returns 429
-- **Redaction (`tests/ledger_redact_tests.l`):** one positive and one
+- **Redaction (`tests/ledger_import_tests.l`):** one positive and one
   near-miss case per pattern in §12, idempotence (`redactText` applied twice
   gives the same result), and the evidence word cap still applied after
   redaction. The high-entropy exclusions get their own near-miss cases, each
@@ -610,10 +643,11 @@ and also gets a 500-character cap. `detail` keeps its 8000-byte cap.
 
 **Retention.** Imported findings are retained data derived from transcripts.
 They live in `ledger_entries` like other entries and are deleted with their
-session (§7.1). Revoking an import token does not delete what it imported. The
-Imports settings page offers "delete all imported sessions", which deletes them
-all and leaves tombstones. Any future retention policy for ledger entries
-applies to imported ones too.
+session (§7.1). Revoking an import token does not delete what it imported. A
+bulk "delete all imported sessions" action is deferred (§14): today each
+imported session is deleted from the session list like any other, leaving a
+tombstone. Any future retention policy for ledger entries applies to imported
+ones too.
 
 ## 13. Acceptance criteria
 
@@ -661,10 +695,24 @@ applies to imported ones too.
   they are.
 - **Re-extracting old imports** with a newer prompt (needs the transcript
   again; see the first item).
+- **"Delete all imported sessions"** in the Imports page (§12).
 - **Applying `redactText` to the live observer and declared entries**, so all
   ledger text gets the same scrub.
 - **Linking imported findings to work items** (`gh:` items from `prUrls`),
   which would need a decision on GitHub sync for imported sessions.
+
+## 15. Differences from the first draft
+
+- `import_tokens` is one global table instead of a tenant table plus a global
+  route table. The membership check runs in SQL on every resolve.
+- The importer excludes itself by its own session id and the scheduled task's
+  title, not by a tag, since the allowlist has no tagging tool.
+- Imported sessions use the default policy rules (§7.2).
+- Inserting findings and moving the cursor are not one transaction; replays
+  are deduplicated instead (§7.2).
+- The bulk delete action is deferred (§12).
+- `importerPrompt` lives in `CloudAgents.Ledger.Import`. The shared guidance
+  is `CloudAgents.Ledger.Observer.whatToLookFor`.
 
 ## Exact call sites / functions / files touched
 
@@ -684,9 +732,8 @@ applies to imported ones too.
 | session mutation handlers (`src/handlers/sessions.l` and friends) | send/run/fork/profile/observer enable | read-only guard for imported sessions |
 | `frontend/src/` | session list, session view, settings | "imported" badge and claude.ai link, no composer, Imports token UI |
 | `deploy/importer/claude-session-importer.md` (new) | scheduled task prompt | §4 |
-| `tests/ledger_import_tests.l`, `tests/claude_import_store_tests.l`, `tests/ledger_redact_tests.l` (new) | | §10 |
+| `tests/ledger_import_tests.l` (redaction, chunks, restart dedup), `tests/claude_import_store_tests.l` (live PG store), `tests/claude_import_handler_tests.l` (guards + live PG findings handler) (new) | | §10 |
 | `frontend/src/components/LedgerEntryCard.test.tsx` | | plain-text rendering test (§11) |
-| `tests/fixtures/ccr-events/` (new) | | sanitized real `list_events` page |
 | `lyric.toml` | packages, `[project.tests]` | register new packages and suites |
 | `docs/session-ledger.md` | §10 | pointer to this spec |
 | `AGENTS.md` | Session ledger section | one paragraph on imports |
