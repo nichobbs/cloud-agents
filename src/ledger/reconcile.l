@@ -301,6 +301,23 @@ pub func findDuplicate(c: in Candidate, start: in Long, finish: in Long, observe
   return ""
 }
 
+/// An earlier observation this candidate restates, judged on wording alone:
+/// same kind family and item, and summary similarity of at least `minPct`.
+/// For a re-import whose transcript seqs may have shifted, where ranges can't
+/// be compared and the same finding comes back reworded
+/// (docs/claude-session-import.md §4.3). The live observer uses `findDuplicate`.
+pub func findDuplicateBySimilarity(c: in Candidate, observed: in slice[LedgerEntry], minPct: in Int): String {
+  var i = 0
+  while i < observed.length.toInt() {
+    val o = observed[i]
+    if o.source == "observed" and kindFamily(o.kind) == kindFamily(c.kind) and o.itemId == c.itemId and similarityPct(c.summary, o.summary) >= minPct {
+      return o.id
+    }
+    i = i + 1
+  }
+  return ""
+}
+
 /// The verdict on one candidate against the session's current entries
 /// (declared and observed, as stored).
 pub func reconcile(c: in Candidate, entries: in slice[LedgerEntry], cfg: in ReconcileConfig): Verdict {
