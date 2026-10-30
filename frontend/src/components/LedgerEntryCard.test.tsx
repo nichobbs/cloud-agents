@@ -119,4 +119,25 @@ describe('LedgerEntryCard', () => {
     expect(screen.getByText('I will just skip the flaky test')).toBeInTheDocument();
     expect(screen.getByText('Matches an entry the agent recorded.')).toBeInTheDocument();
   });
+
+  it('renders imported text as literal text, never as HTML or links', async () => {
+    // Imported findings quote untrusted transcripts (docs/claude-session-import.md §11).
+    const hostile = '<img src=x onerror="alert(1)"> [click](javascript:alert(1)) **bold**';
+    const e = entry({
+      id: 'h',
+      severity: 'review',
+      reviewState: 'pending',
+      source: 'observed',
+      summary: hostile,
+      detail: hostile,
+      evidence: hostile,
+    });
+    vi.mocked(api.getLedgerEntry).mockResolvedValue(detailOf(e, []));
+    const { container } = render(card(e));
+    fireEvent.click(screen.getByText('Details'));
+    await waitFor(() => expect(screen.getAllByText(hostile).length).toBeGreaterThanOrEqual(3));
+    expect(container.querySelector('img')).toBeNull();
+    expect(container.querySelector('a[href^="javascript:"]')).toBeNull();
+    expect(container.querySelector('strong')).toBeNull();
+  });
 });

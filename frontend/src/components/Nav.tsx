@@ -18,6 +18,7 @@ const NAV_ITEMS: Array<{ to: string; label: string }> = [
   { to: '/credentials', label: 'Credentials' },
   { to: '/integrations', label: 'Integrations' },
   { to: '/webhooks', label: 'Webhooks' },
+  { to: '/imports', label: 'Imports' },
   { to: '/orgs', label: 'Organisations' },
 ];
 

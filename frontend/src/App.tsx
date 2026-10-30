@@ -14,6 +14,7 @@ import { Login } from './pages/Login';
 import { NewSession } from './pages/NewSession';
 import { Profiles } from './pages/Profiles';
 import { Organisations } from './pages/Organisations';
+import { Imports } from './pages/Imports';
 import { Prompts } from './pages/Prompts';
 import { Repos } from './pages/Repos';
 import { Search } from './pages/Search';
@@ -75,6 +76,7 @@ export function App() {
             />
             <Route path="/webhooks" element={<RequireAuth><Webhooks /></RequireAuth>} />
             <Route path="/orgs" element={<RequireAuth><Organisations /></RequireAuth>} />
+            <Route path="/imports" element={<RequireAuth><Imports /></RequireAuth>} />
             <Route path="/invite/:token" element={<RequireAuth><AcceptInvitation /></RequireAuth>} />
           </Routes>
         </Router>

@@ -26,6 +26,11 @@ export interface Session {
   /** Server-derived attention state: working | pending | viewed | idle.
    *  Absent on older backends — use lib/attention.ts sessionAttention(). */
   attention?: string;
+  /** 'claude-cloud' for a read-only session imported from a Claude Code cloud
+   *  session (docs/claude-session-import.md); '' or absent otherwise. */
+  importedFrom?: string;
+  /** The Claude Code session id of an imported session. */
+  ccrSessionId?: string;
 }
 
 /// A folder in the session tree. Groups nest via parentId ('' = root) and

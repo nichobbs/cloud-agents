@@ -56,6 +56,11 @@ export function SessionCard({ session, compact }: SessionCardProps) {
               </span>
             )}
             {status === 'RUNNING' && <span style={runningBadgeStyle}>running</span>}
+            {session.importedFrom && (
+              <span style={importedBadgeStyle} title="Imported from a Claude Code cloud session; read-only">
+                imported
+              </span>
+            )}
             {toReview > 0 && (
               <span style={reviewBadgeStyle} title="Session ledger entries awaiting your review">
                 {toReview} to review
@@ -118,6 +123,17 @@ const runningBadgeStyle: React.CSSProperties = {
   fontWeight: 600,
   color: '#d29922',
   border: '1px solid #d29922',
+  borderRadius: '999px',
+  padding: '1px 7px',
+  textTransform: 'uppercase',
+  letterSpacing: '0.03em',
+};
+
+const importedBadgeStyle: React.CSSProperties = {
+  fontSize: '10px',
+  fontWeight: 600,
+  color: '#a371f7',
+  border: '1px solid #a371f7',
   borderRadius: '999px',
   padding: '1px 7px',
   textTransform: 'uppercase',
