@@ -369,11 +369,18 @@ func isPathWord(seg: in String): Bool {
   return true
 }
 
+/// Whether a `.` at `stop` starts a file extension (`.md`, `.ts`): a letter
+/// or digit follows it. A `.` that ends a sentence is followed by a space, a
+/// quote or nothing, so a secret at the end of a sentence still counts.
+func extensionAt(s: in String, stop: in Int): Bool {
+  return stop + 1 < s.length.toInt() and charAt(s, stop) == "." and isAlnum(charAt(s, stop + 1))
+}
+
 /// Whether a run containing `/` is a path rather than a standard-base64
-/// secret: it ends in `/`, has an empty segment, is followed by `.` (a file
-/// extension), or has a segment that reads like a path component.
+/// secret: it ends in `/`, has an empty segment, is followed by a file
+/// extension, or has a segment that reads like a path component.
 func looksLikePath(s: in String, run: in String, stop: in Int): Bool {
-  if run.endsWith("/") or run.contains("//") or (stop < s.length.toInt() and charAt(s, stop) == ".") {
+  if run.endsWith("/") or run.contains("//") or extensionAt(s, stop) {
     return true
   }
   val segs = run.split("/")

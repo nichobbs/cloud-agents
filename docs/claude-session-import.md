@@ -108,8 +108,9 @@ each run (no repository needed). Its environment must have:
   filesystem supports `chattr`, immutable:
   - `/opt/claude-importer/post.sh`, the only shell command the importer may
     run. It takes the endpoint path (`state`, `prompt` or
-    `sessions/<id>/findings`) and the JSON body as its second argument or on
-    stdin. It checks the path (a `session_`/`cse_` id of letters, digits and
+    `sessions/<id>/findings`) and the JSON body on stdin (a heredoc, the form
+    the importer prompt uses) or, for small bodies, as its second argument.
+    Linux caps a single argument at 128 KiB, below the 512 KiB body cap. It checks the path (a `session_`/`cse_` id of letters, digits and
     `_`), and it sets every `curl` flag itself (`-sS --fail-with-body
     --max-time --proto =https`, the content type and the token header). No
     caller-supplied flag reaches `curl`: a second argument is always the body.

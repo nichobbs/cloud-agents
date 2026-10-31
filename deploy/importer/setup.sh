@@ -19,7 +19,9 @@ cat > /opt/claude-importer/post.sh <<'SCRIPT'
 # Claude session importer: call one cloud-agents import endpoint.
 #   post.sh state
 #   post.sh prompt
-#   post.sh sessions/<ccr session id>/findings '<json>'   (or the JSON on stdin)
+#   post.sh sessions/<ccr session id>/findings < chunk.json   (JSON on stdin; a heredoc)
+#   post.sh sessions/<ccr session id>/findings '<json>'       (small bodies only: Linux caps
+#                                                              one argument at 128 KiB)
 set -eu
 base="https://agents.playdium.games/api/imports/claude"
 if [ $# -lt 1 ] || [ $# -gt 2 ]; then

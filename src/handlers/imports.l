@@ -459,6 +459,12 @@ pub func importFindingsHandler(ccrSessionId: in String, body: in String): Import
         case Ok(v) -> v
         case Err(e) -> return dbReply(e)
       }
+      // Deleted while this chunk was being judged: tell the importer to skip
+      // it, as for any other deleted session.
+      val deleted = match now { case Some(c) -> c.deleted; case None -> false }
+      if deleted {
+        return reply(410, errJson("this session's import was deleted; skip it"))
+      }
       return reply(409, conflictJson("the cursor moved while this chunk was being judged; resync from the stored cursor", now))
     }
     case Err(e) -> return dbReply(e)

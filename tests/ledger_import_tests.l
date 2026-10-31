@@ -136,6 +136,7 @@ test "standard-base64 secrets are judged whole, slashes and all, but paths are n
   assertEqual(redactText(relative), relative, "a relative path with a path-like segment")
   val withExt = "open Zk9QmT3v/Lp7Rw2Xy5Bn8Cd1Fg4Hj6Ks0Ae.md now"
   assertEqual(redactText(withExt), withExt, "a path ending in an extension")
+  assertEqual(redactText("It was Zk9QmT3v/Lp7Rw2Xy5Bn8Cd1Fg4Hj6Ks0Ae."), "It was [redacted:high-entropy].", "a secret ending a sentence")
 }
 
 test "accepted redaction gaps are pinned so a change to them is deliberate" {
