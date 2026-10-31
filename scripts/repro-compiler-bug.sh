@@ -3,21 +3,15 @@
 # compiler bugs referenced throughout docs/BUILD.md, docs/PROGRESS.md,
 # AGENTS.md, and this project's build scripts.
 #
-# "Minimal" applies to checks 1-4 and 6-8, each a tiny scratch project in a
-# mktemp'd workdir. Check 5 (lyric-lang#5177) is the one exception (#119):
-# it needs this project's own real, multi-package build to reproduce at all
-# (see that check's own comment), so it runs a full `lyric restore` + `lyric
-# test` against REPO_ROOT in place — effectively duplicating the restore/
-# build work the later "Build full server" step does and the `lyric test`
-# run the later "Run lyric test" step does (not "Run tests", which runs
-# scripts/verify.sh — a separate, dependency-free scratch harness that
-# never touches the real manifest), moments later in the same job. That's
-# an accepted, currently
-# un-cached cost (not this script's own network/NuGet restore, so no
-# `actions/cache` wiring shares it with those later steps) for catching a
-# bug that genuinely can't be reproduced any smaller.
+# Every check is a tiny scratch project in a mktemp'd workdir. Check 5
+# (lyric-lang#5177) used to run a full `lyric restore` + `lyric test` against
+# REPO_ROOT, duplicating CI's own "Run lyric test" step and roughly doubling
+# CI time; it was removed once that bug had been fixed for many releases.
+# That step already fails on a regression (the bug surfaced there as
+# MissingFieldException/FieldAccessException). The remaining checks keep
+# their numbers so references to "check 6"/"check 8" elsewhere stay valid.
 #
-# Checks eight independent, known compiler bugs, in order:
+# Checks seven independent, known compiler bugs (check 5 retired), in order:
 #
 # 1. lyric-lang#4925/#4955 (fixed as of v0.4.11): a trivial, dependency-free
 #    "hello world" project crashed `lyric build` with an unhandled
@@ -50,23 +44,9 @@
 #    bin/ and running the already-built DLL directly via `dotnet` worked
 #    fine. Fixed upstream in lyric-lang#5074.
 #
-# 5. lyric-lang#5177 (fixed as of v0.4.17): once #5066's fix let this
-#    project's own real, multi-package build actually execute for the
-#    first time, running/testing the real `cloud-agents` project itself
-#    (not the minimal synthetic project checks 1-4 use) hit
-#    `MissingFieldException`/`FieldAccessException` on enum literals that
-#    provably exist in the built assembly's own metadata (confirmed via raw
-#    PE/metadata inspection) — wrong metadata tokens after merging
-#    separately-compiled packages into one output assembly. Root-caused
-#    (after gaining direct access to nichobbs/lyric-lang) to an `async
-#    func` awaiting an unqualified call into a package declared *later* in
-#    `[project.packages]` (this project's `CloudAgents.Docker` → its
-#    `import Lyric.Docker`, the last package in the bundle); a minimal
-#    4-package repro is in this issue's history. Fixed upstream in
-#    lyric-lang#5220. This check runs against the real manifest in place
-#    (via `lyric test`) rather than a scratch project, since it was never
-#    reproducible in an isolated synthetic project no matter how it was
-#    scaled.
+# 5. lyric-lang#5177 (fixed as of v0.4.17): cross-package metadata token
+#    corruption on this project's real multi-package build. Check retired;
+#    see the note at the top of this file and docs/BUILD.md "Bug 5".
 #
 # 6. lyric-lang#5244 (fixed as of v0.4.18): `slice[T].append(x)` — the
 #    compiler's own documented idiom for building up a slice — threw
@@ -127,7 +107,7 @@
 #
 # Checks 1 and 2 only require `lyric` on PATH — no `dotnet` needed, since
 # both bugs occur before the compiler would invoke the .NET toolchain.
-# Checks 3-8 all need `dotnet` on PATH (to run the built output); checks 3-5
+# Checks 3-8 all need `dotnet` on PATH (to run the built output); checks 3-4
 # additionally need a `[nuget]` restore (a real published Lyric.Web
 # package), so they also require network access to nuget.org. Checks 6-8
 # need neither NuGet nor network — just `dotnet` to run a plain,
@@ -234,9 +214,9 @@ else
   echo "==> Did NOT fail: this compiler can resolve Std.Core's Option/Result — bug #4980 is fixed"
 fi
 
-# --- Checks 3-8 need dotnet (3-5 also need a real [nuget] restore) ---------
+# --- Checks 3-8 need dotnet (3-4 also need a real [nuget] restore) ---------
 if ! command -v dotnet >/dev/null; then
-  echo "==> [3-8/8] skipped (lyric-lang#5004/#5066/#5177/#5244/#5298/#6249): 'dotnet' not on PATH"
+  echo "==> [3-8/8] skipped (lyric-lang#5004/#5066/#5244/#5298/#6249): 'dotnet' not on PATH"
   exit "$worst"
 fi
 
@@ -304,77 +284,12 @@ else
   fi
 fi
 
-# --- Check 5: lyric-lang#5177 (cross-package metadata token corruption) ----
-# Not reproducible in a synthetic project like checks 1-4 no matter how many
-# packages/features were added — needs this project's own real, multi-package
-# build, so this runs against the real manifest in place via `lyric test`
-# rather than a scratch project. Always runs regardless of checks 3-4's
-# outcome — its own restore/build is entirely independent of the synthetic
-# nugetzero project those checks use, so a failure there (or `dotnet` itself
-# being unavailable, already checked above) must not skip this one too.
-echo "==> [5/8] lyric test against this project's own real manifest (lyric-lang#5177)"
-real_restore_output="$(cd "$REPO_ROOT" && lyric restore 2>&1)"
-real_restore_status=$?
-if [ "$real_restore_status" -ne 0 ]; then
-  echo "$real_restore_output" >&2
-  echo "==> [5/8] skipped (lyric-lang#5177): 'lyric restore' failed (exit $real_restore_status)" \
-       "— likely no network access to nuget.org, not a compiler bug" >&2
-else
-  real_test_output="$(cd "$REPO_ROOT" && lyric test 2>&1)"
-  real_test_status=$?
-  echo "$real_test_output"
-
-  not_ok_count="$(echo "$real_test_output" | grep -c '^not ok')"
-  # Positional pairing, not a raw count comparison: for each `not ok` line,
-  # look at the very next line (this harness's TAP-like output always prints
-  # exactly one indented failure-detail line right after `not ok`) and
-  # require it to match a KNOWN signature — either #5244's or #5298's (both
-  # now fixed upstream, kept here to catch a regression). A count comparison
-  # alone would be
-  # fooled if either substring ever appeared more than once for a single
-  # failing test; this can't be, since it checks each failure's own detail
-  # line individually. Resets `detail` before each `getline` and checks its
-  # return value AND content explicitly: `getline` returns <= 0 only on true
-  # EOF (a trailing `not ok` with nothing after it) — it does NOT fail on
-  # two back-to-back `not ok` lines, since reading the next `not ok` line
-  # into `detail` is a perfectly normal successful read. Also reject that
-  # case explicitly (`detail` itself starting with `not ok`), rather than
-  # relying on it happening to fail the signature match below by accident.
-  unmatched_failure_detail="$(echo "$real_test_output" | awk '
-    /^not ok/ {
-      detail = ""
-      got = getline detail
-      if (got <= 0 || detail ~ /^not ok/) { print "(no detail line found after: " $0 ")"; next }
-      if (detail !~ /unsupported method .append. on the receiver type/ && detail !~ /Unable to cast object of type .System.String. to type .System.Collections.IList./) print detail
-    }
-  ')"
-
-  if echo "$real_test_output" | grep -qE "Field not found:|to access field '.*' failed"; then
-    echo "==> Reproduced: this compiler still corrupts cross-package field/method metadata tokens in real multi-package builds (lyric-lang#5177)"
-    note_reproduced
-  elif [ "$real_test_status" -ne 0 ] && [ "$not_ok_count" -gt 0 ] && [ -z "$unmatched_failure_detail" ]; then
-    # lyric test may still fail on a regression of lyric-lang#5244 (checked
-    # separately by check 6) and/or #5298 (checked by check 7), not #5177's
-    # signature. Every failing test's own detail line must match one of
-    # those known signatures for this branch — if even one doesn't (e.g.
-    # some other, unrelated failure), that's a mismatch and falls through to
-    # the unexpected-failure branch below, rather than being silently masked
-    # by the known failures alongside it.
-    echo "==> Did NOT reproduce: this compiler no longer corrupts cross-package metadata tokens — bug #5177 is fixed (remaining failures are lyric-lang#5244/#5298, see checks 6-7)"
-  elif [ "$real_test_status" -ne 0 ]; then
-    echo "==> Unexpected failure (exit $real_test_status) — not a known signature, investigate separately" >&2
-    note_unexpected
-  else
-    echo "==> Did NOT reproduce: this compiler no longer corrupts cross-package metadata tokens — bug #5177 is fixed"
-  fi
-fi
-
 # --- Check 6: lyric-lang#5244 (slice[T].append() unsupported at runtime) ---
 # The compiler's own documented idiom for building up a slice, verbatim.
 # Reproduces in complete isolation — no packages, no NuGet, no async — so
-# unlike check 5 this runs against a trivial scratch project like checks 1-2.
-# Always runs, regardless of what checks 3-5 found — this bug is completely
-# independent of NuGet/network availability and of anything checks 3-5 hit.
+# this runs against a trivial scratch project like checks 1-4.
+# Always runs, regardless of what checks 3-4 found — this bug is completely
+# independent of NuGet/network availability and of anything checks 3-4 hit.
 # Fixed as of v0.4.18 — kept here so this script still catches a regression
 # or flags an older compiler that hasn't picked up the fix yet.
 mkdir -p "$WORK/appendtest/src"

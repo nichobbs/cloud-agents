@@ -22,6 +22,8 @@ import CloudAgents.ToolPolicy
 import CloudAgents.Ledger.Store
 import CloudAgents.Ledger.ObserverPolicy
 import CloudAgents.Ledger.Observer
+import CloudAgents.Auth
+import CloudAgents.Scope
 
 pub record ResultCell {
   pub var isSuccess: Bool = false

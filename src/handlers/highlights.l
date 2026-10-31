@@ -41,6 +41,7 @@ import CloudAgents.Db
 import CloudAgents.Streaming
 import CloudAgents.Text
 import CloudAgents.GitHubApi
+import CloudAgents.Auth
 import extern System.Environment as Env
 import extern System.String as DotNetString
 

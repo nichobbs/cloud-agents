@@ -8,6 +8,7 @@ import CloudAgents.Db
 import CloudAgents.Streaming
 import CloudAgents.Text
 import CloudAgents.Capture
+import CloudAgents.Auth
 import extern System.Environment as Env
 import extern System.String as DotNetString
 
