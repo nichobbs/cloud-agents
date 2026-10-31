@@ -25,6 +25,7 @@ import extern System.Environment as Env
 import CloudAgents.Ledger.Model
 import CloudAgents.Ledger.Service
 import CloudAgents.LedgerHandlers
+import CloudAgents.PgStore
 
 // ── Live Postgres ─────────────────────────────────────────────────────────────
 //

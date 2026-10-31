@@ -25,6 +25,7 @@ import CloudAgents.PermissionEnrichment
 import CloudAgents.Repository
 import CloudAgents.Db
 import Testamur.CheckpointFormat.Model
+import CloudAgents.Auth
 
 // ── Small helpers ────────────────────────────────────────────────────────────
 // Build ToolPermission through the home-package constructor func, not by

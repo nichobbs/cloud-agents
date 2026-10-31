@@ -37,6 +37,7 @@ import CloudAgents.Ledger.ObserverPolicy
 import CloudAgents.Ledger.Observer
 import CloudAgents.LedgerHandlers
 import CloudAgents.ObserverHandlers
+import CloudAgents.PgStore
 import extern System.Text.Encoding as Encoding
 
 @externTarget("System.Text.Encoding.get_UTF8")
