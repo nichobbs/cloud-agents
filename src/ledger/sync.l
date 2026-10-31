@@ -24,6 +24,7 @@ import CloudAgents.Ledger.Store
 import CloudAgents.Ledger.Service
 import CloudAgents.Ledger.GitHubSync
 import CloudAgents.Ledger.GitHubPort
+import CloudAgents.Db
 
 /// What one session's pass did.
 pub record SyncOutcome {
