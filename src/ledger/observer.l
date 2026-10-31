@@ -218,7 +218,7 @@ pub func clipEvidence(s: in String): String {
 
 /// A candidate's problem ("" when it is acceptable). `low` is the cursor the
 /// window starts after and `high` its last seq.
-func candidateProblem(c: in Candidate, low: in Long, high: in Long): String {
+pub func candidateProblem(c: in Candidate, low: in Long, high: in Long): String {
   if not isObservableKind(c.kind) {
     return "kind must be one of: decision, deviation, shortcut, blocker, question"
   }
@@ -256,7 +256,7 @@ func candidateProblem(c: in Candidate, low: in Long, high: in Long): String {
   return ""
 }
 
-func withItem(c: in Candidate, itemId: in String): Candidate {
+pub func withItem(c: in Candidate, itemId: in String): Candidate {
   return Candidate(
     kind = c.kind,
     summary = c.summary,
@@ -398,7 +398,7 @@ pub func acceptReport(
   )
 }
 
-func observedEntry(
+pub func observedEntry(
   target: in SessionContext,
   c: in Candidate,
   verdict: in Verdict,
@@ -456,7 +456,7 @@ func observedEntry(
   )
 }
 
-func notify(target: in SessionContext, c: in Candidate): Unit {
+pub func notify(target: in SessionContext, c: in Candidate): Unit {
   var what = "an undeclared " + c.kind
   if c.reversible == "false" {
     what = what + " that can't easily be undone"
@@ -544,6 +544,15 @@ pub func midRunTick(sessionId: in String, runStartedAt: in String): Unit {
   }
 }
 
+/// What counts as worth surfacing, shared by the observer and the importer
+/// (docs/claude-session-import.md §6.2) so the two can't drift apart.
+pub func whatToLookFor(): String {
+  return "decisions a reviewer might have made differently; deviations from the task, issue or plan, including changes outside the task's scope; " +
+    "shortcuts such as skipping, deleting or weakening tests, lowering coverage thresholds, suppressing warnings or type errors " +
+    "(eslint-disable, @ts-ignore, @SuppressWarnings, any casts), broad catch blocks, TODO or FIXME left behind, --no-verify, force pushes, " +
+    "new or upgraded dependencies, and approaches abandoned after failures; and blockers it hit."
+}
+
 /// The message that starts an observer pass. The observer is a long-lived
 /// session: this is what it is told each time it is woken.
 pub func observerPrompt(final: in Bool): String {
@@ -554,10 +563,7 @@ pub func observerPrompt(final: in Bool): String {
   return "You are the ledger observer for another agent's coding session. " + stage +
     "\n\n1. Call observer_get_window. If empty is true, stop." +
     "\n2. Read the transcript. Find what the agent did but did NOT record in its ledger (the window lists what it recorded): " +
-    "decisions a reviewer might have made differently; deviations from the task, issue or plan, including changes outside the task's scope; " +
-    "shortcuts such as skipping, deleting or weakening tests, lowering coverage thresholds, suppressing warnings or type errors " +
-    "(eslint-disable, @ts-ignore, @SuppressWarnings, any casts), broad catch blocks, TODO or FIXME left behind, --no-verify, force pushes, " +
-    "new or upgraded dependencies, and approaches abandoned after failures; and blockers it hit." +
+    whatToLookFor() +
     "\n3. Call observer_report once with a candidate for each, citing the [seq N] range and a short quote. Report only what the window shows; " +
     "if unsure, give a lower confidence rather than leaving it out. Send an empty candidates list when there is nothing to report." +
     "\n4. If the reply says more is true, go back to step 1." +

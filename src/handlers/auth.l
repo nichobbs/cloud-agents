@@ -243,6 +243,29 @@ pub func setCurrentUserId(userId: in String): Unit {
   // A new identity starts in its personal organisation; the middleware then
   // selects a validated organisation with setCurrentTenantId.
   threadSetData(getNamedDataSlot("cloud-agents-current-tenant"), "")
+  threadSetData(getNamedDataSlot("cloud-agents-import-token"), "")
+}
+
+/// Stamp the import token that authenticated the current request
+/// (docs/claude-session-import.md §5). Only the auth middleware calls this,
+/// after resolving the token and stamping its user and tenant.
+pub func setCurrentImportTokenId(tokenId: in String): Unit {
+  threadSetData(getNamedDataSlot("cloud-agents-import-token"), tokenId)
+}
+
+/// The import token behind the current request, or "" when the request was
+/// not authenticated by one.
+pub func currentImportTokenId(): String {
+  val t = threadGetData(getNamedDataSlot("cloud-agents-import-token"))
+  if DotNetString.IsNullOrEmpty(t) {
+    return ""
+  }
+  return t
+}
+
+/// The routes an import token may call; every other route refuses one.
+pub func isImportRoute(path: in String): Bool {
+  return path.startsWith("/api/imports/claude/")
 }
 
 /// Stamp the active organisation for the current request's thread. Only the

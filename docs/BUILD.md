@@ -437,7 +437,8 @@ lyric test
 ```
 
 `--migrate` applies the migrations in `src/pg/schema.l` (`0001_baseline`,
-`0002_cutover`, `0003_profile_setup_script`, `0004_profile_delegate_allow`) as
+`0002_cutover`, `0003_profile_setup_script`, `0004_profile_delegate_allow`,
+`0005_claude_session_import`) as
 `cloudagents_owner`. To run the API locally, set the same
 `LYRIC_CONFIG_DB_CONNECTION_URL` and use `./scripts/run-api.sh`; it refuses
 to start without it. The compose stack in `deploy/` runs Postgres, the

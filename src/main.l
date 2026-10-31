@@ -20,6 +20,8 @@ import CloudAgents.OpenPr
 import CloudAgents.Pg.Startup
 import CloudAgents.PgStore.Tenancy
 import CloudAgents.PgStore.Orgs
+import CloudAgents.PgStore.Imports
+import CloudAgents.ImportHandlers
 import CloudAgents.Orgs
 import CloudAgents.OrgSync
 import CloudAgents.Scope
@@ -96,6 +98,28 @@ impl Web.Middleware for AuthMiddleware {
       apiToken = ""
     }
     val authHeader = match Web.header(req, "Authorization") { case Some(h) -> h; case None -> "" }
+    // An import token (docs/claude-session-import.md §5) acts for one user in
+    // one tenant, and only on the import routes: a leaked token cannot read
+    // sessions or start runs.
+    val bearer = if authHeader.startsWith("Bearer ") then authHeader.substring(7, authHeader.length.toInt() - 7).trim() else ""
+    if bearer.startsWith(CloudAgents.PgStore.Imports.importTokenPrefix) {
+      if not CloudAgents.Auth.isImportRoute(req.path) {
+        return Web.errorResponse(Web.forbidden("an import token can only call /api/imports/claude/*"))
+      }
+      match CloudAgents.PgStore.Imports.resolveImportToken(bearer) {
+        case Ok(Some(p)) -> {
+          CloudAgents.Auth.setCurrentUserId(p.userId)
+          CloudAgents.Auth.setCurrentTenantId(p.tenantId)
+          CloudAgents.Auth.setCurrentImportTokenId(p.tokenId)
+          return next.handle(req)
+        }
+        case Ok(None) -> return Web.errorResponse(Web.unauthorized("unknown or revoked import token"))
+        case Err(e) -> {
+          println("ERROR: could not resolve an import token: " + CloudAgents.Db.dbErrorMessage(e))
+          return Web.errorResponse(Web.internalError("database unavailable"))
+        }
+      }
+    }
     match CloudAgents.OAuth.authenticateRequest(req.path, authHeader, apiToken) {
       case Allowed(userId) -> {
         // Tenant-owned rows reference the user's personal tenant, so it must
@@ -125,6 +149,12 @@ impl Web.Middleware for AuthMiddleware {
               return Web.errorResponse(Web.internalError("database unavailable"))
             }
           }
+        }
+        // A session imported from Claude Code is a read-only record
+        // (docs/claude-session-import.md §7.1).
+        match CloudAgents.ImportHandlers.readOnlyRefusal(req.method, req.path) {
+          case Some(e) -> return Web.errorResponse(e)
+          case None -> ()
         }
         return next.handle(req)
       }
@@ -893,6 +923,78 @@ record RouteDeletePrompt {
 impl Web.Handler for RouteDeletePrompt {
   func handle(req: in Web.Request): Web.Response {
     return unitResp(CloudAgents.Prompts.deletePromptHandler(pparam(req, "pid")))
+  }
+}
+
+// ─── CloudAgents.ImportHandlers routes (imports.l) ──────────────────────────
+record RouteImportState {
+}
+
+impl Web.Handler for RouteImportState {
+  func handle(req: in Web.Request): Web.Response {
+    return jsonStringResp(CloudAgents.ImportHandlers.importStateHandler())
+  }
+}
+
+record RouteImportPrompt {
+}
+
+impl Web.Handler for RouteImportPrompt {
+  func handle(req: in Web.Request): Web.Response {
+    return match CloudAgents.ImportHandlers.importPromptHandler() {
+      case Ok(body) -> Web.text(200, body)
+      case Err(e) -> Web.errorResponse(e)
+    }
+  }
+}
+
+record RouteImportFindings {
+}
+
+impl Web.Handler for RouteImportFindings {
+  func handle(req: in Web.Request): Web.Response {
+    val r = CloudAgents.ImportHandlers.importFindingsHandler(pparam(req, "ccr"), req.body)
+    return jsonResp(r.status, r.body)
+  }
+}
+
+record RouteListImportTokens {
+}
+
+impl Web.Handler for RouteListImportTokens {
+  func handle(req: in Web.Request): Web.Response {
+    return jsonStringResp(CloudAgents.ImportHandlers.listImportTokensHandler())
+  }
+}
+
+record RouteCreateImportToken {
+}
+
+impl Web.Handler for RouteCreateImportToken {
+  func handle(req: in Web.Request): Web.Response {
+    val decoded = match CloudAgents.ImportHandlers.CreateImportTokenRequest.fromJson(req.body) {
+      case Ok(d) -> d
+      case Err(_) -> return badBody()
+    }
+    return jsonStringResp(CloudAgents.ImportHandlers.createImportTokenHandler(decoded))
+  }
+}
+
+record RouteRevokeImportToken {
+}
+
+impl Web.Handler for RouteRevokeImportToken {
+  func handle(req: in Web.Request): Web.Response {
+    return unitResp(CloudAgents.ImportHandlers.revokeImportTokenHandler(pparam(req, "tid")))
+  }
+}
+
+record RouteClearImportTombstone {
+}
+
+impl Web.Handler for RouteClearImportTombstone {
+  func handle(req: in Web.Request): Web.Response {
+    return unitResp(CloudAgents.ImportHandlers.clearImportTombstoneHandler(pparam(req, "ccr")))
   }
 }
 
@@ -2305,6 +2407,13 @@ pub func main(): Unit {
   router = Web.addDelete(router, "/api/prompts/{pid}", RouteDeletePrompt())
 
   // Organisations (docs/phase11-postgres-tenancy.md §6.3, §6.4).
+  router = Web.addGet(router, "/api/imports/claude/state", RouteImportState())
+  router = Web.addGet(router, "/api/imports/claude/prompt", RouteImportPrompt())
+  router = Web.addPost(router, "/api/imports/claude/sessions/{ccr}/findings", RouteImportFindings())
+  router = Web.addGet(router, "/api/imports/tokens", RouteListImportTokens())
+  router = Web.addPost(router, "/api/imports/tokens", RouteCreateImportToken())
+  router = Web.addDelete(router, "/api/imports/tokens/{tid}", RouteRevokeImportToken())
+  router = Web.addDelete(router, "/api/imports/tombstones/{ccr}", RouteClearImportTombstone())
   router = Web.addGet(router, "/api/orgs", RouteListOrgs())
   router = Web.addPost(router, "/api/orgs", RouteCreateOrg())
   router = Web.addPost(router, "/api/orgs/github", RouteConnectGitHubOrg())

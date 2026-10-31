@@ -11,6 +11,7 @@ import { PendingCallbacksPanel } from '../components/PendingCallbacksPanel';
 import { SessionPRsPanel } from '../components/SessionPRsPanel';
 import { TodoPanel } from '../components/TodoPanel';
 import { WorkspacePanel } from '../components/WorkspacePanel';
+import { claudeSessionUrl } from '../lib/imports';
 import { useSessions } from '../context/SessionsContext';
 import { useStreamMessage } from '../hooks/useStreamMessage';
 import { clearFailedDraft, saveFailedDraft, takeFailedDraft } from '../lib/drafts';
@@ -1436,6 +1437,17 @@ export function SessionDetail() {
             )}
           </div>
 
+          {session?.importedFrom ? (
+            <div style={importedNoticeStyle} role="note">
+              Imported from a Claude Code cloud session. It is read-only here: review its findings in the
+              ledger, and continue the conversation on{' '}
+              <a href={claudeSessionUrl(session.ccrSessionId ?? '')} target="_blank" rel="noreferrer" style={{ color: '#58a6ff' }}>
+                claude.ai
+              </a>
+              .
+            </div>
+          ) : (
+          <>
           <div style={composerToolsStyle}>
             {prompts.length > 0 && (
               <select
@@ -1536,6 +1548,8 @@ export function SessionDetail() {
               {isStreaming ? 'Running…' : 'Send'}
             </button>
           </div>
+          </>
+          )}
         </div>
 
         {isDesktop ? (
@@ -2100,4 +2114,15 @@ const sidebarColumnStyle: React.CSSProperties = {
   gap: '16px',
   position: 'sticky',
   top: '24px',
+};
+
+const importedNoticeStyle: React.CSSProperties = {
+  margin: '12px 0',
+  padding: '10px 14px',
+  fontSize: '13px',
+  lineHeight: 1.5,
+  color: '#c9d1d9',
+  background: 'rgba(163, 113, 247, 0.08)',
+  border: '1px solid rgba(163, 113, 247, 0.35)',
+  borderRadius: '8px',
 };

@@ -331,6 +331,10 @@ telling them to reconnect GitHub.
 
 ## 10. Observer (Phase 4)
 
+> Findings about Claude Code cloud sessions that cloud-agents did not run are
+> imported through the same reconciliation, without an observer session: see
+> `docs/claude-session-import.md`.
+
 The observer finds what the agent did but didn't declare: decisions a
 reviewer might have made differently, deviations, shortcuts and blockers. It
 is another agent session, not a direct model call: the owner picks its

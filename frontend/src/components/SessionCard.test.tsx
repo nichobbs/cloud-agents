@@ -37,4 +37,13 @@ describe('SessionCard', () => {
     );
     expect(screen.getByText('🧵 thread')).toBeInTheDocument();
   });
+
+  it('marks a session imported from Claude Code', () => {
+    render(
+      <MemoryRouter>
+        <SessionCard session={{ ...baseSession, importedFrom: 'claude-cloud', ccrSessionId: 'session_abc' }} />
+      </MemoryRouter>
+    );
+    expect(screen.getByText('imported')).toBeInTheDocument();
+  });
 });

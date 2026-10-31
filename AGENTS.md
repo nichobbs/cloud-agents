@@ -230,6 +230,22 @@ logic behind an `ObserverRunner` interface (`CloudAgents.ObserverDocker` is the
 real one). The observer tools are not profile-grantable and stay out of the
 tool-name sync list.
 
+**Claude session import** (`docs/claude-session-import.md`) brings the same
+review signal to Claude Code cloud sessions cloud-agents did not run, in any
+repo, old ones included. There is no supported sessions API, so an importer
+(a claude.ai scheduled task, `deploy/importer/`) reads sessions with the
+remote-session tools, extracts findings itself and POSTs only those to
+`/api/imports/claude/*` with a `cai_` import token (`CloudAgents.ImportHandlers`;
+the token works on no other route). `CloudAgents.Ledger.Import` (pure) judges
+each chunk with the observer's validation and `Reconcile`, after
+`CloudAgents.Ledger.Redact` scrubs secrets; findings are stored as observed
+entries on a read-only `sessions` row (`imported_from = 'claude-cloud'`,
+`CloudAgents.PgStore.Imports`, migration `0005`) and reach `/inbox` only:
+imported sessions are excluded from GitHub sync and the observer sweep, and
+run-changing routes refuse them. Off unless `CLOUDAGENTS_IMPORTS_ENABLED=1`.
+The importer's guidance on what to report is the observer's own
+(`CloudAgents.Ledger.Observer.whatToLookFor`), so change it in one place.
+
 ## Provenance capture (Testamur §4.1 / ADR-0004; audit WP4)
 
 `CloudAgents.Capture` (`src/capture/stream_json.l`,

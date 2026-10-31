@@ -54,12 +54,13 @@ pub func migrations(): slice[PgMigration] {
     PgMigration(version = "0001_baseline", statements = baselineStatements()),
     PgMigration(version = "0002_cutover", statements = cutoverStatements()),
     PgMigration(version = "0003_profile_setup_script", statements = profileSetupScriptStatements()),
-    PgMigration(version = "0004_profile_delegate_allow", statements = profileDelegateAllowStatements())
+    PgMigration(version = "0004_profile_delegate_allow", statements = profileDelegateAllowStatements()),
+    PgMigration(version = "0005_claude_session_import", statements = claudeSessionImportStatements())
   ]
 }
 
 pub func latestVersion(): String {
-  return "0004_profile_delegate_allow"
+  return "0005_claude_session_import"
 }
 
 // ─── Fragments ──────────────────────────────────────────────────────────────
@@ -946,4 +947,56 @@ func profileDelegateAllowStatements(): slice[String] {
   return [
     "ALTER TABLE public.profiles ADD COLUMN delegate_allow text NOT NULL DEFAULT ''"
   ]
+}
+
+/// Importing findings about Claude Code cloud sessions cloud-agents did not
+/// run (docs/claude-session-import.md §9): the imported marker on sessions,
+/// the per-session import cursor, and import tokens. `import_tokens` is
+/// global, like `invitations`: a token is resolved before any tenant is set,
+/// and `CloudAgents.PgStore.Imports` authorises each call itself.
+func claudeSessionImportStatements(): slice[String] {
+  return concat(
+    [
+      [
+        "ALTER TABLE public.sessions ADD COLUMN imported_from text NOT NULL DEFAULT '' " +
+          "CHECK (imported_from IN ('', 'claude-cloud'))"
+      ],
+      tenantTable(
+        "claude_session_imports",
+        "ccr_session_id text NOT NULL, session_id text NOT NULL DEFAULT '', " +
+          "through_event_id text NOT NULL DEFAULT '', through_ordinal bigint NOT NULL DEFAULT -1, " +
+          "last_event_at text NOT NULL DEFAULT '', last_counts text NOT NULL DEFAULT '', " +
+          "restart_until_ordinal bigint NOT NULL DEFAULT -1, last_restart_at timestamptz, deleted_at timestamptz, " +
+          "imported_at timestamptz NOT NULL DEFAULT now(), updated_at timestamptz NOT NULL DEFAULT now(), " +
+          "PRIMARY KEY (tenant_id, ccr_session_id)"
+      ),
+      ["CREATE INDEX claude_session_imports_session ON public.claude_session_imports (tenant_id, session_id)"],
+      [
+        "CREATE TABLE public.import_tokens (" + "id text PRIMARY KEY, " +
+          "tenant_id text NOT NULL REFERENCES public.tenants (id), " +
+          "user_id text NOT NULL REFERENCES public.users (id), " +
+          "token_hash text NOT NULL UNIQUE, " +
+          "label text NOT NULL, " +
+          "created_at timestamptz NOT NULL DEFAULT now(), " +
+          "last_used_at timestamptz, " +
+          "revoked_at timestamptz, " +
+          "window_start timestamptz, " +
+          "window_count integer NOT NULL DEFAULT 0)",
+        "CREATE INDEX import_tokens_tenant_user ON public.import_tokens (tenant_id, user_id)",
+        "GRANT SELECT, INSERT, UPDATE, DELETE ON public.import_tokens TO cloudagents_app",
+        // GitHub sync never touches an imported session (§7.4). The function
+        // is owned by the claimer, so it is replaced as the claimer; the
+        // baseline's own text stays frozen, so the new body is derived from it.
+        "GRANT SELECT (imported_from) ON public.sessions TO cloudagents_claimer",
+        "GRANT CREATE ON SCHEMA public TO cloudagents_claimer",
+        "SET ROLE cloudagents_claimer",
+        listSessionsToSyncFn().replace("CREATE FUNCTION", "CREATE OR REPLACE FUNCTION").replace(
+          "AND NOT s.is_archived AND NOT EXISTS",
+          "AND NOT s.is_archived AND s.imported_from = '' AND NOT EXISTS"
+        ),
+        "RESET ROLE",
+        "REVOKE CREATE ON SCHEMA public FROM cloudagents_claimer"
+      ]
+    ]
+  )
 }

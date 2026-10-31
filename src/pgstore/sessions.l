@@ -87,7 +87,9 @@ func updateOwnedWhen(
   defer {
     CloudAgents.PgStore.release(u)
   }
-  val n = CloudAgents.PgStore.ex(u, "UPDATE sessions SET " + set + ownedWhere() + guard, params)?
+  // Every guarded write here changes run state, which an imported session
+  // (a read-only record with no container) never has.
+  val n = CloudAgents.PgStore.ex(u, "UPDATE sessions SET " + set + ownedWhere() + guard + " AND imported_from = ''", params)?
   CloudAgents.PgStore.commit(u)?
   return Ok(value = n)
 }
@@ -105,6 +107,7 @@ pub func sessionSummariesJson(sc: in CloudAgents.Pg.TenantScope): Result[String,
     " + (SELECT count(*) FROM secret_requests r WHERE r.session_id = s.id AND r.status = 'pending'))::text AS pending_count" +
     ", (SELECT count(*) FROM ledger_entries l WHERE l.session_id = s.id AND l.review_state = 'pending' " +
     "AND l.severity IN ('review', 'blocking'))::text AS ledger_attention" +
+    ", s.imported_from, CASE WHEN s.imported_from <> '' THEN s.native_session_id ELSE '' END AS ccr_session_id" +
     " FROM sessions s WHERE s.user_id = @p0 AND s.observes_session_id = '' ORDER BY s.last_message_at DESC"
   val rows = CloudAgents.PgStore.q(u, sql, [sc.userId])?
   CloudAgents.PgStore.commit(u)?
@@ -126,7 +129,9 @@ pub func sessionSummariesJson(sc: in CloudAgents.Pg.TenantScope): Result[String,
         parentSessionId = CloudAgents.PgStore.col(r, "parent_session_id"),
         forkedFromMessageId = CloudAgents.PgStore.col(r, "forked_from_message_id"),
         pendingCount = CloudAgents.PgStore.col(r, "pending_count"),
-        ledgerAttention = CloudAgents.PgStore.col(r, "ledger_attention")
+        ledgerAttention = CloudAgents.PgStore.col(r, "ledger_attention"),
+        importedFrom = CloudAgents.PgStore.col(r, "imported_from"),
+        ccrSessionId = CloudAgents.PgStore.col(r, "ccr_session_id")
       )
     )
   }
@@ -283,6 +288,9 @@ func deleteOwned(sessionId: in String, sc: in CloudAgents.Pg.TenantScope): Resul
   val n = CloudAgents.PgStore.ex(u, "DELETE FROM sessions" + ownedWhere(), [sessionId, sc.userId])?
   if n > 0 {
     CloudAgents.PgStore.ex(u, "DELETE FROM session_routes WHERE session_id = @p0 AND tenant_id = @p1", [sessionId, sc.tenantId])?
+    // An imported session leaves a tombstone, so the importer never brings
+    // it back (docs/claude-session-import.md §7.1).
+    CloudAgents.PgStore.ex(u, "UPDATE claude_session_imports SET deleted_at = now(), session_id = '', updated_at = now() " + "WHERE session_id = @p0", [sessionId])?
   }
   CloudAgents.PgStore.commit(u)?
   return Ok(value = n)
