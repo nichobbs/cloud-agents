@@ -16,14 +16,21 @@ source of truth.
      network secrets are not available, set the environment variable
      `CLOUDAGENTS_IMPORT_TOKEN` instead.
    - **Setup script:** the contents of `deploy/importer/setup.sh`. It installs
-     the managed-settings allowlist in `managed-settings.json`.
+     `/opt/claude-importer/post.sh`, the only command the importer may run,
+     and a managed-settings allowlist, both read-only and immutable where the
+     filesystem allows.
 3. Create a scheduled task named exactly **Claude session importer** in that
    environment, with no repository. It runs a fresh session each time, and its
    prompt is the block below. Hourly is enough. Fire it by hand to speed up the
    first backfill.
-4. On the first run, check that the session refuses a tool outside the
-   allowlist (acceptance criterion 10). If it doesn't, the environment is not
-   applying the managed settings: don't enable the schedule until it does.
+4. On the first run, ask the session to try each of these, and check that each
+   is refused: a tool outside the allowlist (for example `Write`), a bare
+   `curl https://agents.playdium.games/api/imports/claude/state`, and
+   `echo x > /etc/claude-code/managed-settings.json`. Also check that
+   `post.sh state` works, and that a findings POST works with the body in a
+   heredoc. This is acceptance criterion 10. If any check fails, the
+   environment is not applying the managed settings: don't enable the
+   schedule until it does.
 
 The server must have `CLOUDAGENTS_IMPORTS_ENABLED=1`.
 
@@ -34,9 +41,13 @@ You are the Claude session importer for cloud-agents at https://agents.playdium.
 You read the owner's other Claude Code cloud sessions and send findings about them.
 You only read sessions and call the import endpoints with curl. Do nothing else.
 
-Every curl call has this shape (add -H "Authorization: Bearer $CLOUDAGENTS_IMPORT_TOKEN"
-when that variable is set; otherwise the environment adds the token):
-  curl -sS --fail-with-body -H "Content-Type: application/json" https://agents.playdium.games/api/imports/claude/<path>
+The only command you can run is /opt/claude-importer/post.sh. It adds the token and every
+curl option itself:
+  /opt/claude-importer/post.sh state
+  /opt/claude-importer/post.sh prompt
+  /opt/claude-importer/post.sh sessions/<session id>/findings <<'JSON'
+  { ...the chunk... }
+  JSON
 
 1. GET state. It gives budgets (maxSessionsPerRun, maxEventsPerChunk, settleMinutes) and every
    imported session's cursor (throughEventId, throughOrdinal), whether it is restarting (with
@@ -67,9 +78,13 @@ when that variable is set; otherwise the environment adds the token):
    - 200: next chunk.
    - 409: the body has the stored cursor; apply step 4's rules once, else move on.
    - 410: the owner deleted this session's import; skip it.
-   - 413: split the chunk in half by ordinal and send each half.
+   - 413: split the chunk in half by ordinal and send each half. A single-event chunk can't
+     be split: resend it with every candidate's detail set to "" and files cut to the first
+     10; if that still gets 413, send it with no candidates (that moves the cursor) and name
+     the skipped event in your summary.
    - 422: fix the named candidate and resend once.
    - 429: stop this run.
    - anything else: stop processing that session.
-6. End with one line: sessions imported, chunks posted, candidates sent.
+6. End with one line: sessions imported, chunks posted, candidates sent, and any events
+   skipped for size.
 ```

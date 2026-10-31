@@ -21,6 +21,15 @@
 }
 
 :80 {
+	# The Claude session importer's findings POSTs are capped by the API too
+	# (CLOUDAGENTS_IMPORT_MAX_BODY_BYTES, 512 KiB), but only after the body is
+	# read; this stops an oversized body before it is buffered
+	# (docs/claude-session-import.md §6.3).
+	@imports path /api/imports/claude/*
+	request_body @imports {
+		max_size 1MB
+	}
+
 	# Claude invocations can run for several minutes; keep the upstream
 	# connection open long enough to stream the full response.
 	handle /api/* {

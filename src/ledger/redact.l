@@ -12,9 +12,10 @@
 //!     AWS access key ids (`AKIA`/`ASIA` + 16);
 //!   - `Bearer`/`Basic` credentials;
 //!   - the value of a secret-named key (`API_KEY=…`, `"password": "…"`);
-//!   - long high-entropy runs (32+ base64 characters mixing upper case, lower
-//!     case and digits), except pure hex, `session_`/`cse_` ids and anything
-//!     touching `/`. That rule is skipped for file paths (`redactPath`).
+//!   - long high-entropy runs (32+ base64 characters, `/` included, mixing
+//!     upper case, lower case and digits), except pure hex, `session_`/`cse_`
+//!     ids and anything that looks like a path. That rule is skipped for file
+//!     paths (`redactPath`).
 //! Pure, and idempotent: redacting redacted text changes nothing.
 package CloudAgents.Ledger.Redact
 
@@ -350,15 +351,73 @@ func isAllHex(run: in String): Bool {
   return true
 }
 
-/// A long run mixing upper case, lower case and digits, outside a path.
+/// Whether a `/`-separated segment reads like a path component: three or
+/// more characters, all lower-case letters, `-` or `_` (`src`, `docs`,
+/// `node_modules`). A random base64 segment that long is rarely all lower case.
+func isPathWord(seg: in String): Bool {
+  if seg.length.toInt() < 3 {
+    return false
+  }
+  var k = 0
+  while k < seg.length.toInt() {
+    val c = charAt(seg, k)
+    if not (isLower(c) or c == "-" or c == "_") {
+      return false
+    }
+    k = k + 1
+  }
+  return true
+}
+
+/// Whether a `.` at `stop` starts a file extension (`.md`, `.ts`): a letter
+/// or digit follows it. A `.` that ends a sentence is followed by a space, a
+/// quote or nothing, so a secret at the end of a sentence still counts.
+func extensionAt(s: in String, stop: in Int): Bool {
+  return stop + 1 < s.length.toInt() and charAt(s, stop) == "." and isAlnum(charAt(s, stop + 1))
+}
+
+/// Whether a run containing `/` is a path rather than a standard-base64
+/// secret: it ends in `/`, has an empty segment, is followed by a file
+/// extension, or has a segment that reads like a path component.
+func looksLikePath(s: in String, run: in String, stop: in Int): Bool {
+  if run.endsWith("/") or run.contains("//") or extensionAt(s, stop) {
+    return true
+  }
+  val segs = run.split("/")
+  var k = 0
+  while k < segs.length.toInt() {
+    if isPathWord(segs[k]) {
+      return true
+    }
+    k = k + 1
+  }
+  return false
+}
+
+/// A long run mixing upper case, lower case and digits. The run is made of
+/// base64 characters including `/`, so a standard-base64 secret is judged
+/// whole; a run that starts right after `/` (inside a path or URL path) or
+/// that looks like a path is left alone. Accepted gaps, kept deliberately:
+/// pure hex of any length (commit SHAs and content hashes are common in
+/// evidence; a hex secret after a secret-named key is still caught by
+/// `secretAssignment`), and runs without all three character classes (for
+/// example lower-case base32 tokens).
 func highEntropy(s: in String, i: in Int): Match {
-  val stop = scanRun(s, i)
+  if i > 0 and charAt(s, i - 1) == "/" {
+    return noMatch()
+  }
+  var stop = i
+  while stop < s.length.toInt() and (isRunChar(charAt(s, stop)) or charAt(s, stop) == "/") {
+    stop = stop + 1
+  }
   if stop - i < 32 {
     return noMatch()
   }
-  val touchesSlash = (i > 0 and charAt(s, i - 1) == "/") or (stop < s.length.toInt() and charAt(s, stop) == "/")
   val run = s.substring(i, stop - i)
-  if touchesSlash or isAllHex(run) or run.startsWith("session_") or run.startsWith("cse_") {
+  if run.contains("/") and looksLikePath(s, run, stop) {
+    return noMatch()
+  }
+  if isAllHex(run) or run.startsWith("session_") or run.startsWith("cse_") {
     return noMatch()
   }
   var upper = false
