@@ -39,6 +39,7 @@ import CloudAgents.Ledger.ObserverWindow
 import CloudAgents.Ledger.Observer
 import CloudAgents.Ledger.ToolArgs
 import CloudAgents.LedgerHandlers
+import CloudAgents.PgStore
 import extern System.Text.Encoding as Encoding
 
 @externTarget("System.Text.Encoding.get_UTF8")
@@ -278,7 +279,7 @@ func window(sid: in String, final: Bool): ObserverWindowView {
 
 func observedEntries(sid: in String): slice[LedgerEntry] {
   var acc: slice[LedgerEntry] = []
-  match listEntries(sid, testScope()) {
+  match CloudAgents.Ledger.Store.listEntries(sid, testScope()) {
     case Ok(es) -> {
       var i = 0
       while i < es.length.toInt() {

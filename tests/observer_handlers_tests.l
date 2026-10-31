@@ -37,6 +37,7 @@ import CloudAgents.Ledger.ObserverPolicy
 import CloudAgents.Ledger.Observer
 import CloudAgents.LedgerHandlers
 import CloudAgents.ObserverHandlers
+import CloudAgents.PgStore
 import extern System.Text.Encoding as Encoding
 
 @externTarget("System.Text.Encoding.get_UTF8")
@@ -200,7 +201,7 @@ func stateOf(sid: in String): ObserverState {
 
 func observedCount(sid: in String): Int {
   var n = 0
-  match listEntries(sid, testScope()) {
+  match CloudAgents.Ledger.Store.listEntries(sid, testScope()) {
     case Ok(es) -> {
       var i = 0
       while i < es.length.toInt() {
@@ -555,7 +556,7 @@ test "a mid-run pass sees the run as live and its findings are provisional" {
   assertEqual(runner.windowFinal, "false", "the window says the run is still going")
   assertTrue(runner.lastPrompt.contains("still going"), "and so does the prompt")
   assertEqualInt(runner.diffCalls, 0, "no repo access, no diff")
-  match listEntries(s1, testScope()) {
+  match CloudAgents.Ledger.Store.listEntries(s1, testScope()) {
     case Ok(es) -> {
       var provisional = 0
       var i = 0
