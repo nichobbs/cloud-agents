@@ -279,7 +279,7 @@ func window(sid: in String, final: Bool): ObserverWindowView {
 
 func observedEntries(sid: in String): slice[LedgerEntry] {
   var acc: slice[LedgerEntry] = []
-  match listEntries(sid, testScope()) {
+  match CloudAgents.Ledger.Store.listEntries(sid, testScope()) {
     case Ok(es) -> {
       var i = 0
       while i < es.length.toInt() {
