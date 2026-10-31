@@ -130,6 +130,22 @@ test "high-entropy runs are redacted, but not hashes, ids or paths" {
   assertEqual(redactText("api_key=" + sha1), "api_key=[redacted:secret]", "hex after a secret key name")
 }
 
+test "standard-base64 secrets are judged whole, slashes and all, but paths are not secrets" {
+  assertEqual(redactText("key Zk9QmT3v/Lp7Rw2Xy5Bn8+Cd1Fg4Hj6Ks0Ae== end"), "key [redacted:high-entropy] end", "base64 with / and +")
+  val relative = "see docs/Zk9QmT3vLp7Rw2Xy5Bn8Cd1Fg4Hj6Ks0Ae/notes"
+  assertEqual(redactText(relative), relative, "a relative path with a path-like segment")
+  val withExt = "open Zk9QmT3v/Lp7Rw2Xy5Bn8Cd1Fg4Hj6Ks0Ae.md now"
+  assertEqual(redactText(withExt), withExt, "a path ending in an extension")
+}
+
+test "accepted redaction gaps are pinned so a change to them is deliberate" {
+  val hex64 = "token 9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08 end"
+  assertEqual(redactText(hex64), hex64, "unlabelled pure hex passes: hashes are evidence (docs/claude-session-import.md §12)")
+  assertEqual(redactText("secret=9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08"), "secret=[redacted:secret]", "labelled hex is caught")
+  val base32 = "id mzxw6ytboi2dqnrvgq3tmojzhaytgnzu end"
+  assertEqual(redactText(base32), base32, "lower-case base32 without upper case passes")
+}
+
 test "file paths skip the high-entropy rule but not the others" {
   val p = "src/Zk9QmT3vLp7Rw2Xy5Bn8Cd1Fg4Hj6Ks0AeQq.ts"
   assertEqual(redactPath(p), p, "a long segment in a path")

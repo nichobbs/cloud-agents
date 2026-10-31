@@ -414,6 +414,9 @@ pub func importFindingsHandler(ccrSessionId: in String, body: in String): Import
     case Ok(v) -> v
     case Err(e) -> return dbReply(e)
   }
+  if sessionId.length.toInt() == 0 {
+    return reply(410, errJson("this session's import was deleted; skip it"))
+  }
   val target = SessionContext(sessionId = sessionId, ownerUserId = sc.userId, ownerRepo = "", tenantScope = sc)
   val existing = match listEntries(sessionId, sc) {
     case Ok(v) -> v
@@ -430,15 +433,6 @@ pub func importFindingsHandler(ccrSessionId: in String, body: in String): Import
   if decision.problem.length.toInt() > 0 {
     return reply(422, errJson(decision.problem))
   }
-  for e in decision.toInsert {
-    match insertEntry(sc, e) {
-      case Ok(_) -> ()
-      case Err(err) -> return dbReply(err)
-    }
-  }
-  for c in decision.notify {
-    notify(target, c)
-  }
   // The re-import ends once it has caught up with the old cursor.
   var nextRestartUntil = -2.toLong()
   if startedRestart {
@@ -447,9 +441,30 @@ pub func importFindingsHandler(ccrSessionId: in String, body: in String): Import
     nextRestartUntil = -1.toLong()
   }
   val counts = countsJson(sessionId, decision, through)
-  match advanceImportCursor(sc, ccrSessionId, env.throughEventId, through, env.lastEventAt, counts, nextRestartUntil, startedRestart) {
-    case Ok(_) -> ()
+  val advance = CursorAdvance(
+    throughEventId = env.throughEventId,
+    throughOrdinal = through,
+    lastEventAt = env.lastEventAt,
+    countsJson = counts,
+    restartUntilOrdinal = nextRestartUntil,
+    startedRestart = startedRestart
+  )
+  // Findings and cursor move together, and only from the cursor read above:
+  // a concurrent POST for the same session that got there first wins, and
+  // this one is told where the cursor now is.
+  match commitImportChunk(sc, ccrSessionId, oldThrough, storedEventId, decision.toInsert, advance) {
+    case Ok(true) -> ()
+    case Ok(false) -> {
+      val now = match getImportCursor(sc, ccrSessionId) {
+        case Ok(v) -> v
+        case Err(e) -> return dbReply(e)
+      }
+      return reply(409, conflictJson("the cursor moved while this chunk was being judged; resync from the stored cursor", now))
+    }
     case Err(e) -> return dbReply(e)
+  }
+  for c in decision.notify {
+    notify(target, c)
   }
   return reply(200, counts)
 }

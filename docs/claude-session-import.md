@@ -102,10 +102,18 @@ each run (no repository needed). Its environment must have:
 - A dedicated environment used only by the importer. Its network access is a
   custom allowlist containing only `agents.playdium.games`, beyond what the
   platform always permits.
-- A setup script that installs an **allowlist**, not a denylist, so a tool the
-  platform adds later is blocked by default. The script writes
-  `deploy/importer/managed-settings.json` to the managed-settings path
-  (`/etc/claude-code/managed-settings.json`). That file sets:
+- A setup script (`deploy/importer/setup.sh`) that installs an **allowlist**,
+  not a denylist, so a tool the platform adds later is blocked by default.
+  It writes two files and makes both root-owned, read-only and, where the
+  filesystem supports `chattr`, immutable:
+  - `/opt/claude-importer/post.sh`, the only shell command the importer may
+    run. It takes the endpoint path (`state`, `prompt` or
+    `sessions/<id>/findings`) and the JSON body as its second argument or on
+    stdin. It checks the path (a `session_`/`cse_` id of letters, digits and
+    `_`), and it sets every `curl` flag itself (`-sS --fail-with-body
+    --max-time --proto =https`, the content type and the token header). No
+    caller-supplied flag reaches `curl`: a second argument is always the body.
+  - `/etc/claude-code/managed-settings.json`, which sets:
   - `permissions.defaultMode: "dontAsk"`, so anything not explicitly allowed
     is refused without a prompt;
   - `allowManagedPermissionRulesOnly: true`, so rules in user or project
@@ -115,12 +123,12 @@ each run (no repository needed). Its environment must have:
     `mcp__claude-code-remote__get_session`,
     `mcp__claude-code-remote__list_events`,
     `mcp__claude-code-remote__get_event` and
-    `Bash(curl -sS --fail-with-body -H * https://agents.playdium.games/api/imports/claude/*)`.
+    `Bash(/opt/claude-importer/post.sh *)`.
 
-  No file-writing tools are allowed. §11 explains why, and covers the
-  residual risk that `curl` itself can write files. The first run's
-  acceptance check (§13) confirms the scheduled-task session honours this:
-  calling a tool outside the allowlist must be refused.
+  No file-writing tool and no other command is allowed. §11 explains why.
+  The first run's acceptance checks (§13) confirm the scheduled-task session
+  honours this: a tool outside the allowlist, a bare `curl`, and a write to
+  either file must all be refused.
 
 The task prompt is checked in at `deploy/importer/claude-session-importer.md`,
 so it is reviewed like code. The prompt is short: almost all of the extraction
@@ -336,12 +344,25 @@ tool-calling steps with:
   (§4.3) is hit.
 - 422 if a candidate fails validation (§7.2).
 - 413 if the request body exceeds `CLOUDAGENTS_IMPORT_MAX_BODY_BYTES`
-  (default 512 KiB). The candidate, field and word caps limit what is stored,
-  but not the raw payload (unknown fields, whitespace), so the handler checks
-  the body length before parsing JSON. The per-field caps alone would allow
-  more than 512 KiB in the worst case (50 candidates × 8000-byte `detail`, plus
-  `files`), but real findings are far smaller. On a 413 the importer splits the
-  chunk in half by ordinal and retries each half.
+  (default 512 KiB). The handler checks the body length before parsing JSON,
+  so the cap bounds parsing work. Lyric.Web has already read the body by then,
+  so the reverse proxy also caps the import routes at 1 MB before buffering
+  (`request_body` in `deploy/Caddyfile` and `deploy/Caddyfile.coolify`).
+  The cap, not the field limits, is what binds. Per candidate, validation
+  allows a 140-character `summary`, an 8,000-byte `detail`, 100 `files` of
+  500 characters (50,000), and 10 `tags` of 32 (320): about 58,500 characters
+  before JSON escaping. `evidence` is clipped server-side, so the raw value is
+  bounded only by the body cap. So 50 candidates could reach roughly 2.9 MB,
+  well over 512 KiB, while real findings are a few hundred bytes each.
+- On a 413 the importer splits the chunk in half by ordinal and retries each
+  half. A single-event chunk can't be split, so the importer then:
+  1. resends it with every candidate's `detail` emptied and `files` cut to
+     the first 10;
+  2. if that is still too large, sends it with no candidates, which moves the
+     cursor past the event, and names the skipped event in its run summary.
+
+  A finding is lost only in the second step, and only for one event whose
+  findings alone exceed the cap.
 
 ## 7. cloud-agents side
 
@@ -440,13 +461,28 @@ not `rulesFor`. Their repository's policy file may not be readable by this
 installation's GitHub access, and fetching it would add a GitHub call per
 chunk.
 
-The handler (`src/handlers/imports.l`) does the I/O: it authorises, upserts the
-session and mapping, loads existing entries, calls `acceptImportChunk`, inserts
-the entries, then advances the cursor. The inserts and the cursor update are
-separate units (each `insertEntry` is its own unit), so they are not one
-transaction. A failure between them leaves the cursor where it was, the
-importer resends the same chunk, and the repeated findings come back with 100%
-summary similarity, which Reconcile drops as duplicates.
+The handler (`src/handlers/imports.l`) does the I/O. It authorises, upserts
+the session and mapping, loads the existing entries and calls
+`acceptImportChunk`. It then calls `CloudAgents.PgStore.Imports.commitImportChunk`,
+which stores the findings and moves the cursor in **one transaction**, with a
+**compare-and-set** on the cursor:
+
+- It locks the session's `claude_session_imports` row (`SELECT … FOR UPDATE`).
+- It checks the cursor is still the `through_ordinal`/`through_event_id` the
+  handler read, and that the session hasn't been deleted.
+- Only then does it insert the entries (`CloudAgents.PgStore.Ledger.insertEntryIn`,
+  the same insert as `insertEntry`, inside the caller's unit) and update the
+  cursor.
+
+If the cursor moved in between, for example because a retry overlapped a slow
+first request, nothing is written and the handler answers 409 with the
+current cursor. A failure part-way rolls back the findings with the cursor, so
+a retried chunk never meets half its own findings.
+
+`ensureImportedSession` claims the cursor row (`INSERT … ON CONFLICT DO
+NOTHING`) before locking it, so two first chunks for a new session serialise
+instead of each creating a `sessions` row. It never recreates a tombstoned
+session, and the handler answers 410.
 
 No new `source` or `origin` value is needed, so `ledger_entries` and its CHECK
 constraints are unchanged. "Imported" is a property of the session, not the
@@ -517,6 +553,10 @@ so cost can be tuned without editing the scheduled task.
   gap (409 with the cursor), realign, restart with dedup and its 429, body cap
   (413), a candidate outside its chunk (422), a deleted session (410), and
   refusal without a token or with imports off.
+- **Compare-and-set commit (`tests/claude_import_store_tests.l`):** a chunk
+  commits its findings and cursor together; a second commit from the stale
+  cursor is refused and writes nothing; a tombstoned session's chunk is
+  refused and its session is not recreated.
 - **Live Postgres (`tests/claude_import_store_tests.l`):**
   - token create → auth → revoke
   - an import token refused on a non-import route
@@ -529,7 +569,10 @@ so cost can be tuned without editing the scheduled task.
   - `realign` and `restart` resync, and the restart cooldown's 429
   - delete leaves a tombstone, and the next POST gets 410
   - the per-token chunk cap returns 429
-- **Redaction (`tests/ledger_import_tests.l`):** one positive and one
+- **Redaction (`tests/ledger_import_tests.l`):** a standard-base64 secret
+  with `/` and `+` is redacted whole; a relative path with a path-like segment
+  and a path ending in an extension are not; the accepted gaps (unlabelled
+  pure hex, lower-case base32) are pinned. And one positive and one
   near-miss case per pattern in §12, idempotence (`redactText` applied twice
   gives the same result), and the evidence word cap still applied after
   redaction. The high-entropy exclusions get their own near-miss cases, each
@@ -570,8 +613,8 @@ while it holds an import token and some tools.
 | Fabricate findings, inflate severity, or flood the inbox | The token can write only findings to the owner's own tenant. The caps are 50 candidates per chunk, `maxEventsPerChunk`, and `CLOUDAGENTS_IMPORT_MAX_CHUNKS_PER_HOUR` per token. Severity comes from `effectiveSeverity`, not from the candidate. Backfill sends no notifications. |
 | Write findings against a different `ccrSessionId` | Limited to sessions in the same tenant, so the owner's own inbox. It is noise, not an escalation. The handler also rejects a `ccrSessionId` that doesn't have the `session_` prefix shape. |
 | Move cursors to skip sessions | Only skips signal. `restart` is rate-limited (§4.3). |
-| Act through other tools: message or start other sessions, create scheduled tasks, add repos | Not on the managed allowlist (§4.1), so refused, including tools the platform adds later. Only the four read tools and one `curl` shape are allowed. |
-| Loosen its own permissions (write a settings file, then use a now-allowed tool) | Managed settings with `allowManagedPermissionRulesOnly` ignore user and project rules, and no file-writing tool is allowed. Residual risk, accepted: `curl` can write files (`-o`), and the session runs as root, so in principle it could overwrite the managed settings file. The allowed `Bash` pattern pins the URL prefix but not every flag. The bound is the same as the exfiltration row: the environment can only reach `agents.playdium.games`, and the token can only post findings to the owner's own inbox. A loosened importer can do nothing a compliant one can't, except call tools it then allows itself, which would be read-only remote-session tools or ones that need network the environment doesn't have. |
+| Act through other tools: message or start other sessions, create scheduled tasks, add repos | Not on the managed allowlist (§4.1), so refused, including tools the platform adds later. Only the four read tools and `post.sh` are allowed. |
+| Loosen its own permissions (write a settings file, then use a now-allowed tool) | Managed settings with `allowManagedPermissionRulesOnly` ignore user and project rules, no file-writing tool is allowed, and the only allowed command is `post.sh`. That script fixes every `curl` flag and checks its path argument, so `-o`, `-K`, `--config` or another URL cannot be passed through it: a second argument is always the request body. Both files are root-owned, read-only and, where supported, immutable. Residual risk: a bug in the platform's permission matching that let another command run. The bound is then the same as the exfiltration row: the environment reaches only `agents.playdium.games`, and the token can only post findings to the owner's own inbox. |
 | Exfiltrate data | The network allowlist holds only `agents.playdium.games`. The token is a network secret, so it never enters the VM. The importer can still put data in findings, but those land in the owner's own inbox. |
 | Use the token elsewhere | Import tokens are refused on every non-import route (§5), and the owner can revoke them. |
 
@@ -615,23 +658,39 @@ pasted into chat, command output. A short quote is enough to leak one.
    - URLs with embedded credentials (`scheme://user:pass@`)
    - `KEY=value` and `"key": "value"` pairs whose key contains `secret`,
      `token`, `password`, `passwd`, `api_key`, `apikey` or `private_key`
-   - long high-entropy runs: 32 or more characters from the base64 alphabet
-     (`A-Z a-z 0-9 + / = _ -`) with no spaces, that mix upper case, lower
-     case and digits.
+   - long high-entropy runs: 32 or more characters that mix upper case,
+     lower case and digits. A run is a maximal sequence of the base64
+     alphabet **including `/`** (`A-Z a-z 0-9 + / = _ -`), so a
+     standard-base64 secret is judged whole rather than split at its slashes.
 
    The high-entropy rule is the one most likely to hit legitimate evidence,
    so it has explicit exclusions:
-   - **Pure hex runs are never matched by it**, whatever their length. That
-     covers git SHA-1 (40), SHA-256 (64), abbreviated SHAs and content hashes.
-     A hex value is redacted only by the key-name rule, for example
-     `api_key=3f9a…`.
+   - **Paths.** A run that starts right after a `/` (inside a path or a URL
+     path) is not considered. A run containing `/` is treated as a path, not a
+     secret, when any of these hold:
+     - it ends in `/` or contains `//`;
+     - it is followed by `.` (a file extension);
+     - one of its segments reads like a path component: three or more
+       characters, all lower-case letters, `-` or `_` (`src`, `docs`,
+       `node_modules`).
+
+     The rule is not applied to `files` entries at all. The prefixed-token,
+     PEM and credential-URL rules still apply there.
    - **UUIDs** (`8-4-4-4-12` hex) are excluded. CCR event ids and session ids
      are UUIDs or `session_…` ids and appear in evidence on purpose.
    - **`session_` / `cse_` prefixed ids** are excluded.
-   - **Path segments:** runs touching `/` on either side (part of a path or
-     URL path) are excluded, and the rule is not applied to `files` entries
-     at all. The prefixed-token, PEM and credential-URL rules still apply
-     there.
+
+   **Accepted gaps**, each pinned by a test so that changing one is a
+   deliberate decision:
+   - **Pure hex of any length passes this rule.** Commit SHAs (7 to 40),
+     SHA-256 digests (64) and content hashes are common, legitimate
+     evidence. A narrower "only 40/64 in a git context" exclusion would need
+     context the scrubber can't see reliably. A hex secret next to a
+     secret-named key (`api_key=3f9a…`) is still caught by the key-name rule.
+   - **Runs without all three character classes pass**, for example
+     lower-case base32 or base36 tokens. Lowering the bar would catch ordinary
+     long identifiers. Prefixed tokens and secret-named assignments still
+     cover the common secret formats.
 
    Redaction runs before validation (§7.2) and applies to every stored text
    field. The live observer path should adopt the same scrub. That is a
@@ -668,8 +727,11 @@ ones too.
    without duplicating findings, including reworded ones (§4.3). A deleted
    imported session is never re-imported unless its tombstone is cleared.
 10. On the first live run, the importer session refuses a tool outside the
-    managed allowlist (§4.1). If the scheduled-task session doesn't honour
-    managed settings, the importer is not enabled until it does.
+    managed allowlist (§4.1), a bare `curl`, and a write to
+    `/etc/claude-code/managed-settings.json` or `/opt/claude-importer/post.sh`,
+    and `post.sh` works with the body passed on stdin (a heredoc) as well as
+    as an argument. If the scheduled-task session doesn't honour managed
+    settings, the importer is not enabled until it does.
 11. Commit SHAs, UUIDs and file paths in evidence come through redaction
     unchanged.
 
@@ -708,8 +770,8 @@ ones too.
 - The importer excludes itself by its own session id and the scheduled task's
   title, not by a tag, since the allowlist has no tagging tool.
 - Imported sessions use the default policy rules (§7.2).
-- Inserting findings and moving the cursor are not one transaction; replays
-  are deduplicated instead (§7.2).
+- (Since fixed.) The first build stored findings and moved the cursor in
+  separate units; they now commit together under a compare-and-set (§7.2).
 - The bulk delete action is deferred (§12).
 - `importerPrompt` lives in `CloudAgents.Ledger.Import`. The shared guidance
   is `CloudAgents.Ledger.Observer.whatToLookFor`.
@@ -724,7 +786,8 @@ ones too.
 | `src/ledger/import.l` (new) | `CloudAgents.Ledger.Import.acceptImportChunk` | pure acceptance (§7.2) |
 | `src/ledger/redact.l` (new) | `CloudAgents.Ledger.Redact.redactText` | secret scrub (§12) |
 | `src/pgstore/sessions.l` | `updateOwnedWhen` status writers | `AND imported_from = ''` (§7.1) |
-| `deploy/importer/managed-settings.json`, `deploy/importer/setup.sh` (new) | importer environment setup script | managed permission allowlist (§4.1, §11) |
+| `deploy/importer/setup.sh` (new) | importer environment setup script | installs `post.sh` and the managed permission allowlist, read-only and immutable (§4.1, §11) |
+| `deploy/Caddyfile`, `deploy/Caddyfile.coolify` | `request_body` on `/api/imports/claude/*` | 1 MB proxy cap before buffering (§6.3) |
 | `src/ledger/reconcile.l` | new `findDuplicateBySimilarity` | restart dedup (§4.3) |
 | `src/ledger/observer.l` | `candidateProblem`, `observerPrompt`, new `importerPrompt` | window predicate parameter; shared guidance helper |
 | `src/handlers/imports.l` (new) | state, prompt, findings, token CRUD | §5, §6 |
