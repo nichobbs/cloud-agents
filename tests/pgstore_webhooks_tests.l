@@ -8,6 +8,7 @@
 package CloudAgents.PgStoreWebhooksTests
 
 import Std.Core
+import Db as LyricDb
 import Std.Environment
 import Std.Testing
 import Std.Uuid
@@ -112,7 +113,7 @@ func seedToken(tokenHash: in String, userId: in String, login: in String, expire
   defer {
     conn.close()
   }
-  match conn.execute("INSERT INTO github_token_cache (token_hash, user_id, login, expires_at) VALUES (@p0, @p1, @p2, " + CloudAgents.Pg.msIn(3) + ")", [tokenHash, userId, login, expiresAt]) {
+  match conn.execute(LyricDb.sql("INSERT INTO github_token_cache (token_hash, user_id, login, expires_at) VALUES (@p0, @p1, @p2, " + CloudAgents.Pg.msIn(3) + ")"), [tokenHash, userId, login, expiresAt]) {
     case Ok(_) -> ()
     case Err(e) -> panic("seed failed: " + e.message)
   }
@@ -229,7 +230,7 @@ test "the token cache hides expired entries, keeps identities for the grace wind
   defer {
     conn.close()
   }
-  match conn.query("SELECT token_hash FROM github_token_cache WHERE token_hash IN (@p0, @p1)", [recent, stale]) {
+  match conn.query(LyricDb.sql("SELECT token_hash FROM github_token_cache WHERE token_hash IN (@p0, @p1)"), [recent, stale]) {
     case Ok(rows) -> {
       assertEqualInt(rows.length.toInt(), 1, "the stale row was swept")
       assertEqual(CloudAgents.PgStore.col(rows[0], "token_hash"), recent, "the recent row was kept")
@@ -243,11 +244,11 @@ test "the token cache hides expired entries, keeps identities for the grace wind
   unit(Tokens.cacheGitHubToken(valid, user, "octo"))
   // Expiry windows, checked against the database clock with a few seconds of slack for clock skew.
   val window = "SELECT token_hash FROM github_token_cache WHERE token_hash = @p0 AND expires_at > now() + @p1::bigint * interval '1 millisecond' AND expires_at <= now() + @p2::bigint * interval '1 millisecond'"
-  match conn.query(window, [denied, "0", "65000"]) {
+  match conn.query(LyricDb.sql(window), [denied, "0", "65000"]) {
     case Ok(rows) -> assertEqualInt(rows.length.toInt(), 1, "a denial lasts a minute")
     case Err(e) -> panic(e.message)
   }
-  match conn.query(window, [valid, "540000", "605000"]) {
+  match conn.query(LyricDb.sql(window), [valid, "540000", "605000"]) {
     case Ok(rows) -> assertEqualInt(rows.length.toInt(), 1, "an identity lasts ten minutes")
     case Err(e) -> panic(e.message)
   }

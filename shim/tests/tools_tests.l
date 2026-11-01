@@ -4,7 +4,7 @@ package CloudAgents.Shim.ToolsTests
 import Std.Core
 import Std.Testing
 import Std.Collections
-import JsonRpc.Json
+import Std.JsonValue
 import Mcp
 import CloudAgents.Shim.Transport
 import CloudAgents.Shim.Tools

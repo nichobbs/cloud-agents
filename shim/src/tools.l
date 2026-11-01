@@ -18,7 +18,7 @@
 package CloudAgents.Shim.Tools
 
 import Std.Core
-import JsonRpc.Json
+import Std.JsonValue
 import Mcp
 import CloudAgents.Shim.Transport
 import CloudAgents.Shim.Callbacks

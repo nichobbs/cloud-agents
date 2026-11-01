@@ -6,7 +6,7 @@ import Std.Testing
 import Std.Collections
 import Std.Environment
 import Std.File
-import JsonRpc.Json
+import Std.JsonValue
 import Mcp
 import CloudAgents.Shim.V2Transport
 import CloudAgents.Shim.V2Tools

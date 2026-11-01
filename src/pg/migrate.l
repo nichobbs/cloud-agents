@@ -33,7 +33,7 @@ pub func requiredRole(): String {
 }
 
 func currentRole(conn: in DbConnection): Result[String, CloudAgents.Pg.PgError] {
-  return match conn.query("SELECT current_user::text AS r", []) {
+  return match conn.query(Db.sql("SELECT current_user::text AS r"), []) {
     case Ok(rows) -> if rows.length > 0 then Ok(value = Db.dbGetString(rows[0], "r")) else Ok(value = "")
     case Err(e) -> Err(error = CloudAgents.Pg.Query(message = e.message))
   }
@@ -66,7 +66,9 @@ func applyInTx(tx: in DbTransaction, m: in CloudAgents.Pg.Schema.PgMigration): R
     return Ok(value = false)
   }
   for stmt in m.statements {
-    match tx.execute(stmt, []) {
+    // Migration DDL is fixed, checked-in text (policies, functions with $$ bodies,
+    // comments) that Db.sql rejects by design; nothing here is built from input.
+    match tx.execute(Db.unsafeRawSql(stmt), []) {
       case Ok(_) -> ()
       case Err(e) -> return Err(error = CloudAgents.Pg.Query(message = m.version + ": " + e.message))
     }

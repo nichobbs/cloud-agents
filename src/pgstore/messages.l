@@ -166,14 +166,17 @@ pub func searchMessages(
   defer {
     CloudAgents.PgStore.release(u)
   }
-  val sql = "SELECT m.id, m.session_id, m.role, m.content, lpad(m.seq::text, 12, '0') AS seq, " +
+  // Full-text match: the `@@` operator is rejected by Db.sql, so this goes through
+  // qOps. The statement is fixed text (limit is an Int rendered by toString; the
+  // user term is bound as @p1), so nothing untrusted is spliced in.
+  val stmtText = "SELECT m.id, m.session_id, m.role, m.content, lpad(m.seq::text, 12, '0') AS seq, " +
     CloudAgents.Pg.msOut("m.created_at") +
     " AS created_at FROM messages m JOIN sessions s ON s.id = m.session_id " +
     "WHERE s.user_id = @p0 AND m.search_vector @@ " +
     prefixQuery(1) +
     " ORDER BY m.created_at DESC, m.id COLLATE \"C\" LIMIT " +
     toString(limit)
-  val rows = CloudAgents.PgStore.q(u, sql, [sc.userId, term])?
+  val rows = CloudAgents.PgStore.qOps(u, stmtText, [sc.userId, term])?
   CloudAgents.PgStore.commit(u)?
   var acc: slice[CloudAgents.Repository.Message] = []
   for r in rows {
