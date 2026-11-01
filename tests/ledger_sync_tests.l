@@ -27,6 +27,7 @@ import CloudAgents.Ledger.GitHubSync
 import CloudAgents.Ledger.GitHubPort
 import CloudAgents.Ledger.Sync
 import CloudAgents.LedgerHandlers
+import CloudAgents.PgStore
 
 // ── Live Postgres ─────────────────────────────────────────────────────────────
 //

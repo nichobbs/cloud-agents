@@ -10,6 +10,7 @@ import CloudAgents.Text
 import CloudAgents.Capture
 import extern System.Environment as Env
 import extern System.String as DotNetString
+import CloudAgents.Auth
 
 @generate(Json)
 pub record AddCommentRequest {

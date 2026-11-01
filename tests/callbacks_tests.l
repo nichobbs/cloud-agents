@@ -16,6 +16,7 @@ import CloudAgents.Repository
 import CloudAgents.SessionStore
 import CloudAgents.Db
 import extern System.Environment as Env
+import CloudAgents.PgStore
 
 // ── Live Postgres ─────────────────────────────────────────────────────────────
 //

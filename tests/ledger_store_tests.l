@@ -23,6 +23,7 @@ import CloudAgents.Ledger.StateMachine
 import CloudAgents.Ledger.Store
 import CloudAgents.Scope as TestScope
 import CloudAgents.Ledger.Summary
+import CloudAgents.PgStore
 
 // ── Live Postgres ─────────────────────────────────────────────────────────────
 //

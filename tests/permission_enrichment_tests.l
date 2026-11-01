@@ -25,6 +25,7 @@ import CloudAgents.PermissionEnrichment
 import CloudAgents.Repository
 import CloudAgents.Db
 import Testamur.CheckpointFormat.Model
+import CloudAgents.Auth.{setCurrentUserId, requestScope}
 
 // ── Small helpers ────────────────────────────────────────────────────────────
 // Build ToolPermission through the home-package constructor func, not by
@@ -65,7 +66,7 @@ test "secret tool key namespaces the credential name" {
 test "distinct tools fold to one entry each, sorted by tool key" {
   val rows: List[ToolPermission] = newList()
   rows.add(tp("Write", Granted))
-  rows.add(tp("Bash", Denied))
+  rows.add(tp("Bash", Permission.Denied))
   rows.add(tp("Read", Auto))
   val derived = derivePermissions(rows)
   assertEqualInt(derived.count, 3, "three distinct tools")
@@ -82,7 +83,7 @@ test "a tool denied even once folds to denied (Denied > Granted > Auto)" {
   val rows: List[ToolPermission] = newList()
   // Same tool, three rows, different outcomes and orderings.
   rows.add(tp("Bash", Granted))
-  rows.add(tp("Bash", Denied))
+  rows.add(tp("Bash", Permission.Denied))
   rows.add(tp("Bash", Auto))
   val derived = derivePermissions(rows)
   assertEqualInt(derived.count, 1, "one folded entry for Bash")
@@ -110,7 +111,7 @@ test "empty input derives an empty map" {
 // ── Offline: the accessor ────────────────────────────────────────────────────
 test "permissionForTool returns the folded outcome, Auto for unknown tools" {
   val rows: List[ToolPermission] = newList()
-  rows.add(tp("Bash", Denied))
+  rows.add(tp("Bash", Permission.Denied))
   rows.add(tp("Write", Granted))
   val derived = derivePermissions(rows)
   assertEqual(lookup(derived, "Bash"), "denied", "Bash → denied")
@@ -167,44 +168,44 @@ func newUser(tag: in String): String {
 }
 
 /// Migrate, then make a new user the request identity (what handlers read via
-/// CloudAgents.Auth.requestScope()).
+/// requestScope()).
 func freshUser(tag: in String): String {
   migrate()
   val uid = newUser(tag)
-  CloudAgents.Auth.setCurrentUserId(uid)
+  setCurrentUserId(uid)
   return uid
 }
 
 func mustCreatePerm(sessionId: in String, tool: in String): String {
-  return match CloudAgents.Repository.createPermissionRequest(sessionId, CloudAgents.Auth.requestScope(), tool, "{}", false) {
+  return match CloudAgents.Repository.createPermissionRequest(sessionId, requestScope(), tool, "{}", false) {
     case Ok(r) -> r.id
     case Err(e) -> panic("createPermissionRequest failed: " + CloudAgents.Db.dbErrorMessage(e))
   }
 }
 
 func mustAnswerPerm(id: in String, status: in String): Unit {
-  match CloudAgents.Repository.answerPermissionRequest(id, CloudAgents.Auth.requestScope(), status, "", "") {
+  match CloudAgents.Repository.answerPermissionRequest(id, requestScope(), status, "", "") {
     case Ok(_) -> ()
     case Err(e) -> panic("answerPermissionRequest failed: " + CloudAgents.Db.dbErrorMessage(e))
   }
 }
 
 func mustCreateSecret(sessionId: in String, name: in String): String {
-  return match CloudAgents.Repository.createSecretRequest(sessionId, CloudAgents.Auth.requestScope(), name, "why") {
+  return match CloudAgents.Repository.createSecretRequest(sessionId, requestScope(), name, "why") {
     case Ok(r) -> r.id
     case Err(e) -> panic("createSecretRequest failed: " + CloudAgents.Db.dbErrorMessage(e))
   }
 }
 
 func mustAnswerSecret(id: in String, status: in String): Unit {
-  match CloudAgents.Repository.answerSecretRequest(id, CloudAgents.Auth.requestScope(), status) {
+  match CloudAgents.Repository.answerSecretRequest(id, requestScope(), status) {
     case Ok(_) -> ()
     case Err(e) -> panic("answerSecretRequest failed: " + CloudAgents.Db.dbErrorMessage(e))
   }
 }
 
 func mustDerive(sessionId: in String): List[ToolPermission] {
-  return match CloudAgents.PermissionEnrichment.permissionsForSession(sessionId, CloudAgents.Auth.requestScope()) {
+  return match CloudAgents.PermissionEnrichment.permissionsForSession(sessionId, requestScope()) {
     case Ok(perms) -> perms
     case Err(e) -> panic("permissionsForSession failed: " + CloudAgents.Db.dbErrorMessage(e))
   }

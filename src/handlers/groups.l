@@ -22,6 +22,7 @@ import CloudAgents.Repository
 import CloudAgents.SessionStore
 import CloudAgents.Db
 import CloudAgents.Text
+import CloudAgents.Pg
 
 val maxGroupNameLen = 200
 

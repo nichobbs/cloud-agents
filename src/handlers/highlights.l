@@ -43,6 +43,7 @@ import CloudAgents.Text
 import CloudAgents.GitHubApi
 import extern System.Environment as Env
 import extern System.String as DotNetString
+import CloudAgents.Auth
 
 func dbError(e: in CloudAgents.Db.DbError): Web.ApiError {
   return Web.internalError(CloudAgents.Db.dbErrorMessage(e))
