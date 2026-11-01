@@ -25,7 +25,7 @@ import CloudAgents.PermissionEnrichment
 import CloudAgents.Repository
 import CloudAgents.Db
 import Testamur.CheckpointFormat.Model
-import CloudAgents.Auth.{setCurrentUserId, requestScope}
+import CloudAgents.Auth
 
 // ── Small helpers ────────────────────────────────────────────────────────────
 // Build ToolPermission through the home-package constructor func, not by
@@ -168,44 +168,44 @@ func newUser(tag: in String): String {
 }
 
 /// Migrate, then make a new user the request identity (what handlers read via
-/// requestScope()).
+/// CloudAgents.Auth.requestScope()).
 func freshUser(tag: in String): String {
   migrate()
   val uid = newUser(tag)
-  setCurrentUserId(uid)
+  CloudAgents.Auth.setCurrentUserId(uid)
   return uid
 }
 
 func mustCreatePerm(sessionId: in String, tool: in String): String {
-  return match CloudAgents.Repository.createPermissionRequest(sessionId, requestScope(), tool, "{}", false) {
+  return match CloudAgents.Repository.createPermissionRequest(sessionId, CloudAgents.Auth.requestScope(), tool, "{}", false) {
     case Ok(r) -> r.id
     case Err(e) -> panic("createPermissionRequest failed: " + CloudAgents.Db.dbErrorMessage(e))
   }
 }
 
 func mustAnswerPerm(id: in String, status: in String): Unit {
-  match CloudAgents.Repository.answerPermissionRequest(id, requestScope(), status, "", "") {
+  match CloudAgents.Repository.answerPermissionRequest(id, CloudAgents.Auth.requestScope(), status, "", "") {
     case Ok(_) -> ()
     case Err(e) -> panic("answerPermissionRequest failed: " + CloudAgents.Db.dbErrorMessage(e))
   }
 }
 
 func mustCreateSecret(sessionId: in String, name: in String): String {
-  return match CloudAgents.Repository.createSecretRequest(sessionId, requestScope(), name, "why") {
+  return match CloudAgents.Repository.createSecretRequest(sessionId, CloudAgents.Auth.requestScope(), name, "why") {
     case Ok(r) -> r.id
     case Err(e) -> panic("createSecretRequest failed: " + CloudAgents.Db.dbErrorMessage(e))
   }
 }
 
 func mustAnswerSecret(id: in String, status: in String): Unit {
-  match CloudAgents.Repository.answerSecretRequest(id, requestScope(), status) {
+  match CloudAgents.Repository.answerSecretRequest(id, CloudAgents.Auth.requestScope(), status) {
     case Ok(_) -> ()
     case Err(e) -> panic("answerSecretRequest failed: " + CloudAgents.Db.dbErrorMessage(e))
   }
 }
 
 func mustDerive(sessionId: in String): List[ToolPermission] {
-  return match CloudAgents.PermissionEnrichment.permissionsForSession(sessionId, requestScope()) {
+  return match CloudAgents.PermissionEnrichment.permissionsForSession(sessionId, CloudAgents.Auth.requestScope()) {
     case Ok(perms) -> perms
     case Err(e) -> panic("permissionsForSession failed: " + CloudAgents.Db.dbErrorMessage(e))
   }

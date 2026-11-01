@@ -437,6 +437,15 @@ pub func insertEntry(sc: in CloudAgents.Pg.TenantScope, e: in LedgerEntry): Resu
   defer {
     CloudAgents.PgStore.release(u)
   }
+  val stored = insertEntryIn(u, e)?
+  CloudAgents.PgStore.commit(u)?
+  return Ok(value = stored)
+}
+
+/// `insertEntry` inside a unit the caller opened and commits, so the insert
+/// can share a transaction with other writes (the Claude session import
+/// stores a chunk's findings and moves its cursor together).
+pub func insertEntryIn(u: in CloudAgents.PgStore.PgUnit, e: in LedgerEntry): Result[LedgerEntry, CloudAgents.Db.DbError] {
   val id = newId()
   val ts = now()
   val seq = bump(u, e.sessionId, ts)?
@@ -492,9 +501,7 @@ pub func insertEntry(sc: in CloudAgents.Pg.TenantScope, e: in LedgerEntry): Resu
   if rows.length == 0 {
     return Err(error = CloudAgents.Db.ExecFailed(sql = "SELECT ledger entry", message = "entry vanished after insert"))
   }
-  val stored = toEntry(rows[0])
-  CloudAgents.PgStore.commit(u)?
-  return Ok(value = stored)
+  return Ok(value = toEntry(rows[0]))
 }
 
 pub func getEntry(

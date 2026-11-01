@@ -18,6 +18,7 @@ import CloudAgents.PgStore.Imports
 import CloudAgents.PgStore.Sessions as Sessions
 import CloudAgents.PgStore.Ledger as Store
 import CloudAgents.Db
+import CloudAgents.Ledger.Model
 
 func live(): Bool {
   val ok = CloudAgents.Pg.serviceConfigured() and
@@ -86,6 +87,17 @@ func cursor(sc: in CloudAgents.Pg.TenantScope, ccr: in String): ImportCursor {
   }
 }
 
+func adv(eventId: in String, through: in Int, lastEventAt: in String, counts: in String, restartUntil: in Int, started: in Bool): CursorAdvance {
+  return CursorAdvance(
+    throughEventId = eventId,
+    throughOrdinal = through.toLong(),
+    lastEventAt = lastEventAt,
+    countsJson = counts,
+    restartUntilOrdinal = restartUntil.toLong(),
+    startedRestart = started
+  )
+}
+
 func ok[T](r: in Result[T, DbError]): T {
   return match r { case Ok(v) -> v; case Err(e) -> panic("store call failed: " + dbErrorMessage(e)) }
 }
@@ -150,13 +162,13 @@ test "an imported session is a read-only row with a cursor" {
   val c0 = cursor(sc, ccr)
   assertEqual(c0.sessionId, sid, "mapped")
   assertTrue(c0.throughOrdinal == -1.toLong(), "nothing imported yet")
-  ok(advanceImportCursor(sc, ccr, "ev-199", 199.toLong(), "2026-10-30T09:19:23Z", "{\"undeclared\":1}", -2.toLong(), false))
+  ok(advanceImportCursor(sc, ccr, adv("ev-199", 199, "2026-10-30T09:19:23Z", "{\"undeclared\":1}", -2, false)))
   val c1 = cursor(sc, ccr)
   assertTrue(c1.throughOrdinal == 199.toLong(), "advanced")
   assertEqual(c1.throughEventId, "ev-199", "event id")
   assertEqual(c1.lastCounts, "{\"undeclared\":1}", "counts kept for replays")
   assertTrue(c1.restartUntilOrdinal == -1.toLong(), "not restarting")
-  ok(advanceImportCursor(sc, ccr, "ev-9", 9.toLong(), "", "{}", 199.toLong(), true))
+  ok(advanceImportCursor(sc, ccr, adv("ev-9", 9, "", "{}", 199, true)))
   val c2 = cursor(sc, ccr)
   assertTrue(c2.restartUntilOrdinal == 199.toLong(), "restarting until the old cursor")
   assertTrue(c2.lastRestartAt.length.toInt() > 0, "cooldown stamped")
@@ -214,4 +226,82 @@ test "GitHub sync never lists an imported session" {
     }
   }
   assertTrue(not found, "excluded even with a GitHub-backed item")
+}
+
+func finding(sid: in String, summary: in String): LedgerEntry {
+  val none: slice[String] = []
+  return LedgerEntry(
+    id = "",
+    sessionId = sid,
+    itemId = "",
+    kind = "shortcut",
+    severity = "review",
+    declaredSeverity = "",
+    summary = summary,
+    detail = "",
+    optionsConsidered = none,
+    chosen = "",
+    rationale = "",
+    recommendation = "",
+    proceedingWith = "",
+    reversible = "",
+    files = none,
+    tags = none,
+    source = "observed",
+    undeclared = "true",
+    matchedEntryId = "",
+    origin = "",
+    supersedes = "",
+    transcriptSeq = "3",
+    reviewState = "pending",
+    reviewBy = "",
+    reviewAt = "",
+    reviewComment = "",
+    createdAt = "",
+    createdSeq = "",
+    updatedSeq = "",
+    observedFrom = "1",
+    confidence = "0.9",
+    evidence = "",
+    provisional = "false"
+  )
+}
+
+func entryCount(sid: in String, sc: in CloudAgents.Pg.TenantScope): Int {
+  return match Store.listEntries(sid, sc) { case Ok(v) -> v.length.toInt(); case Err(e) -> panic(dbErrorMessage(e)) }
+}
+
+test "a chunk commits its findings and cursor together, only from the cursor it read" {
+  if not live() {
+    return ()
+  }
+  migrate()
+  val sc = fresh()
+  val ccr = "session_" + uid().replace("-", "")
+  val sid = ensure(sc, ccr)
+  val first: slice[LedgerEntry] = [finding(sid, "Skipped the flaky refund test")]
+  assertTrue(ok(commitImportChunk(sc, ccr, -1.toLong(), "", first, adv("e9", 9, "", "{}", -2, false))), "the first chunk commits")
+  assertEqualInt(entryCount(sid, sc), 1, "its finding is stored")
+  assertTrue(cursor(sc, ccr).throughOrdinal == 9.toLong(), "and the cursor moved")
+  // A second POST that read the cursor before the first committed loses.
+  val stale: slice[LedgerEntry] = [finding(sid, "Deleted a snapshot test")]
+  assertTrue(not ok(commitImportChunk(sc, ccr, -1.toLong(), "", stale, adv("e9b", 9, "", "{}", -2, false))), "a stale cursor is refused")
+  assertEqualInt(entryCount(sid, sc), 1, "and stores nothing")
+  assertEqual(cursor(sc, ccr).throughEventId, "e9", "nor moves the cursor")
+  assertTrue(ok(commitImportChunk(sc, ccr, 9.toLong(), "e9", stale, adv("e19", 19, "", "{}", -2, false))), "from the current cursor it commits")
+  assertEqualInt(entryCount(sid, sc), 2, "both findings")
+}
+
+test "a deleted session's chunk is refused and its session is not recreated" {
+  if not live() {
+    return ()
+  }
+  migrate()
+  val sc = fresh()
+  val ccr = "session_" + uid().replace("-", "")
+  val sid = ensure(sc, ccr)
+  ok(Sessions.deleteSessionRecord(sid, sc))
+  val none: slice[LedgerEntry] = []
+  assertTrue(not ok(commitImportChunk(sc, ccr, -1.toLong(), "", none, adv("e9", 9, "", "{}", -2, false))), "tombstoned")
+  assertEqual(ensure(sc, ccr), "", "ensureImportedSession does not bring it back")
 }

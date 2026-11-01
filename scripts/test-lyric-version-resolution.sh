@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Regression test for the Lyric-version-resolution shell logic shared by
-# ci.yml's "Resolve latest Lyric release" step and docker/Dockerfile's
+# the "Resolve latest Lyric release" step of .github/actions/setup-lyric
+# (used by ci.yml) and docker/Dockerfile's
 # shim-builder stage (#654), plus the empty-vs-pinned ARG parsing added to
 # ci.yml's "(if pinned)" floor/existence checks.
 #
