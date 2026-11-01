@@ -39,7 +39,6 @@ import CloudAgents.LedgerHandlers
 import CloudAgents.ObserverHandlers
 import CloudAgents.PgStore
 import extern System.Text.Encoding as Encoding
-import CloudAgents.PgStore
 
 @externTarget("System.Text.Encoding.get_UTF8")
 func utf8Encoding(): Encoding = ()
