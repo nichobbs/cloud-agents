@@ -3,6 +3,7 @@ package CloudAgents.MainTests
 
 import Std.Core
 import Std.Testing
+import Std.File
 import CloudAgents
 import CloudAgents.Callbacks
 import CloudAgents.Handlers
@@ -326,4 +327,12 @@ test "isValidPort rejects invalid values" {
   assertFalse(isValidPort("80a"), "trailing non-digit")
   assertFalse(isValidPort("-1"), "negative")
   assertFalse(isValidPort(" 80"), "leading space")
+}
+
+test "buildInfoBanner prints the file's contents, and is empty when absent (#1342)" {
+  val path = "tests/fixtures/build-info-sample.txt"
+  val banner = buildInfoBanner(path)
+  assertTrue(banner.startsWith("build-info:\n"), "banner header")
+  assertTrue(banner.contains("lyric: 9.8.7"), "file contents included")
+  assertEqual(buildInfoBanner("tests/fixtures/no-such-build-info.txt"), "", "absent file -> empty banner")
 }

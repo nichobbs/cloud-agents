@@ -2636,11 +2636,30 @@ pub func main(): Unit {
   // The deployed image records the compiler and library versions it was built
   // with (scripts/write-build-info.sh); they float to the latest release, so this
   // is where an operator reads what is actually running. Absent in a dev build.
-  match Std.File.readText("build-info.txt") {
-    case Ok(info) -> println("build-info:\n" + info)
-    case Err(_) -> ()
+  val banner = buildInfoBanner(buildInfoPath())
+  if banner.length > 0 {
+    println(banner)
   }
   Web.startStreaming(router, streaming)
+}
+
+/// Where the build-info file lives: CLOUDAGENTS_BUILD_INFO if set, else
+/// "build-info.txt" next to the API (the image's WORKDIR is /app, like seed/).
+pub func buildInfoPath(): String {
+  val fromEnv = Env.GetEnvironmentVariable("CLOUDAGENTS_BUILD_INFO")
+  if DotNetString.IsNullOrEmpty(fromEnv) {
+    return "build-info.txt"
+  }
+  return fromEnv
+}
+
+/// The startup banner for the build-info file at `path`, or "" when the file is
+/// absent or unreadable (a dev build has none; never fatal).
+pub func buildInfoBanner(path: in String): String {
+  match Std.File.readText(path) {
+    case Ok(info) -> return "build-info:\n" + info
+    case Err(_) -> return ""
+  }
 }
 
 func digitValue(c: in String): Int {
