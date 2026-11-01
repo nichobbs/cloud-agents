@@ -62,7 +62,7 @@ func ensureTenant(tenantId: in String): Unit {
   defer {
     conn.close()
   }
-  match conn.execute("INSERT INTO tenants (id, name, kind) VALUES (@p0, @p0, 'personal') ON CONFLICT (id) DO NOTHING", [tenantId]) {
+  match conn.execute(Db.sql("INSERT INTO tenants (id, name, kind) VALUES (@p0, @p0, 'personal') ON CONFLICT (id) DO NOTHING"), [tenantId]) {
     case Ok(_) -> ()
     case Err(e) -> panic("tenant insert failed: " + e.message)
   }
@@ -75,7 +75,7 @@ func fresh(): CloudAgents.Pg.TenantScope {
 }
 
 /// Run one statement in a scope (fixtures for tables other domains own).
-func execScoped(sc: in CloudAgents.Pg.TenantScope, sql: in String, params: in slice[String]): Unit {
+func execScoped(sc: in CloudAgents.Pg.TenantScope, stmtText: in String, params: in slice[String]): Unit {
   val conn = match CloudAgents.Pg.connectService() {
     case Ok(c) -> c
     case Err(e) -> panic(CloudAgents.Pg.pgErrorMessage(e))
@@ -87,7 +87,7 @@ func execScoped(sc: in CloudAgents.Pg.TenantScope, sql: in String, params: in sl
     case Ok(t) -> t
     case Err(e) -> panic(CloudAgents.Pg.pgErrorMessage(e))
   }
-  match CloudAgents.Pg.execIn(tx, sql, params) {
+  match CloudAgents.Pg.execIn(tx, stmtText, params) {
     case Ok(_) -> ()
     case Err(e) -> panic(CloudAgents.Pg.pgErrorMessage(e))
   }

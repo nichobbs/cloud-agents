@@ -16,7 +16,7 @@
 package CloudAgents.Shim.V2Tools
 
 import Std.Core
-import JsonRpc.Json
+import Std.JsonValue
 import Mcp
 import CloudAgents.Shim.V2Transport
 import CloudAgents.Shim.V2Client

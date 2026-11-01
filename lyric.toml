@@ -192,10 +192,12 @@ output_assembly = "CloudAgents.dll"
 "CloudAgents.PgStoreLedgerTests" = "tests/pgstore_ledger_tests.l"
 
 [nuget]
-"Lyric.Web"             = "0.7.6"
-"Lyric.Docker"          = "0.7.6"
-"Std.Logging"           = "0.7.6"
+# Ecosystem libraries float to the latest release ("*"), in lockstep with the
+# latest released compiler; the toolchain is never pinned (see AGENTS.md).
+"Lyric.Web"             = "*"
+"Lyric.Docker"          = "*"
+"Std.Logging"           = "*"
 # The store is Postgres (docs/phase11-postgres-tenancy.md). Lyric.Db 0.7.6 is
 # built against Npgsql 8.0.3.
-"Lyric.Db"              = "0.7.6"
+"Lyric.Db"              = "*"
 "Npgsql"                = "8.0.3"

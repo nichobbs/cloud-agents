@@ -6,7 +6,7 @@ package CloudAgents.Shim.LedgerToolsTests
 
 import Std.Core
 import Std.Testing
-import JsonRpc.Json
+import Std.JsonValue
 import Mcp
 import CloudAgents.Shim.LedgerTools
 

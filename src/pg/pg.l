@@ -143,7 +143,7 @@ func beginRaw(conn: in DbConnection): Result[DbTransaction, PgError] {
 pub func beginTenantUnit(conn: in DbConnection, sc: in TenantScope): Result[DbTransaction, PgError] {
   checkTenantScope(sc)?
   val tx = beginRaw(conn)?
-  match tx.query(setTenantSql(), [sc.tenantId, sc.userId]) {
+  match tx.query(Db.sql(setTenantSql()), [sc.tenantId, sc.userId]) {
     case Ok(_) -> ()
     case Err(e) -> {
       rollbackUnit(tx)
@@ -157,7 +157,7 @@ pub func beginTenantUnit(conn: in DbConnection, sc: in TenantScope): Result[DbTr
 pub func beginUserUnit(conn: in DbConnection, sc: in UserScope): Result[DbTransaction, PgError] {
   checkUserScope(sc)?
   val tx = beginRaw(conn)?
-  match tx.query(setUserSql(), [sc.userId]) {
+  match tx.query(Db.sql(setUserSql()), [sc.userId]) {
     case Ok(_) -> ()
     case Err(e) -> {
       rollbackUnit(tx)
@@ -187,16 +187,16 @@ pub func rollbackUnit(tx: in DbTransaction): Unit {
 }
 
 /// Run a statement inside a unit, mapping the error.
-pub func execIn(tx: in DbTransaction, sql: in String, params: in slice[String]): Result[Int, PgError] {
-  return match tx.execute(sql, params) {
+pub func execIn(tx: in DbTransaction, stmtText: in String, params: in slice[String]): Result[Int, PgError] {
+  return match tx.execute(Db.sql(stmtText), params) {
     case Ok(n) -> Ok(value = n)
     case Err(e) -> Err(error = Query(message = e.message))
   }
 }
 
 /// Run a query inside a unit, mapping the error.
-pub func queryIn(tx: in DbTransaction, sql: in String, params: in slice[String]): Result[slice[DbRow], PgError] {
-  return match tx.query(sql, params) {
+pub func queryIn(tx: in DbTransaction, stmtText: in String, params: in slice[String]): Result[slice[DbRow], PgError] {
+  return match tx.query(Db.sql(stmtText), params) {
     case Ok(rows) -> Ok(value = rows)
     case Err(e) -> Err(error = Query(message = e.message))
   }

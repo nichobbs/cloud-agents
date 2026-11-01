@@ -93,27 +93,29 @@ func unscoped(conn: in DbConnection): DbTransaction {
   }
 }
 
-func exec(tx: in DbTransaction, sql: in String, params: in slice[String]): Int {
-  return match tx.execute(sql, params) {
+func exec(tx: in DbTransaction, stmtText: in String, params: in slice[String]): Int {
+  return match tx.execute(Db.sql(stmtText), params) {
     case Ok(n) -> n
-    case Err(e) -> panic("execute failed: " + e.message + " — " + sql)
+    case Err(e) -> panic("execute failed: " + e.message + " — " + stmtText)
   }
 }
 
 /// Execute expecting failure; returns the error message ("" if it succeeded).
-func execErr(tx: in DbTransaction, sql: in String, params: in slice[String]): String {
-  return match tx.execute(sql, params) { case Ok(_) -> ""; case Err(e) -> e.message }
+func execErr(tx: in DbTransaction, stmtText: in String, params: in slice[String]): String {
+  return match tx.execute(Db.sql(stmtText), params) { case Ok(_) -> ""; case Err(e) -> e.message }
 }
 
-func rows(tx: in DbTransaction, sql: in String, params: in slice[String]): slice[DbRow] {
-  return match tx.query(sql, params) {
+// Test helper over fixed, checked-in statements; some use the `@>` operator that
+// Db.sql rejects (it allows only @pN placeholders), so this takes unsafeRawSql.
+func rows(tx: in DbTransaction, stmtText: in String, params: in slice[String]): slice[DbRow] {
+  return match tx.query(Db.unsafeRawSql(stmtText), params) {
     case Ok(r) -> r
-    case Err(e) -> panic("query failed: " + e.message + " — " + sql)
+    case Err(e) -> panic("query failed: " + e.message + " — " + stmtText)
   }
 }
 
-func str1(tx: in DbTransaction, sql: in String, params: in slice[String]): String {
-  val r = rows(tx, sql, params)
+func str1(tx: in DbTransaction, stmtText: in String, params: in slice[String]): String {
+  val r = rows(tx, stmtText, params)
   if r.length == 0 {
     return "<no rows>"
   }

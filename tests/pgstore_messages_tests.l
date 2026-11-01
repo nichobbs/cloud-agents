@@ -7,6 +7,7 @@
 package CloudAgents.PgStoreMessagesTests
 
 import Std.Core
+import Db as LyricDb
 import Std.Environment
 import Std.Testing
 import Std.Uuid
@@ -247,7 +248,7 @@ func ensureTenant(tenantId: in String): Unit {
   defer {
     conn.close()
   }
-  match conn.execute("INSERT INTO tenants (id, name, kind) VALUES (@p0, @p0, 'personal') ON CONFLICT (id) DO NOTHING", [tenantId]) {
+  match conn.execute(LyricDb.sql("INSERT INTO tenants (id, name, kind) VALUES (@p0, @p0, 'personal') ON CONFLICT (id) DO NOTHING"), [tenantId]) {
     case Ok(_) -> ()
     case Err(e) -> panic("tenant insert failed: " + e.message)
   }

@@ -10,30 +10,17 @@
 
 FROM mcr.microsoft.com/dotnet/sdk:10.0 AS build
 
-# Pinned explicitly rather than `curl .../install.sh | sh`'s old approach of
-# always fetching "latest": that RUN step has no cache-busting mechanism of
-# its own, so once Docker caches this layer it stays cached indefinitely
-# regardless of new commits or new upstream Lyric releases — this image
-# could silently keep compiling with whatever version happened to be
-# "latest" the very first time it was ever built on a given host, with no
-# visible signal that anything's stale. An explicit version pin makes an
-# upgrade a deliberate, visible Dockerfile change that naturally busts the
-# cache on its own.
-#
-# Relationship to MIN_LYRIC_VERSION (repo root): that file is the floor
-# ci.yml enforces against whatever "latest" resolves to at CI run time —
-# it's a check on the compiler's own release stream, unrelated to what any
-# particular built artifact happens to be pinned to. LYRIC_VERSION here is
-# the actual version THIS image compiles with, and should never be pinned
-# below MIN_LYRIC_VERSION (that would mean deliberately deploying with a
-# compiler older than the documented known-good floor) — but it doesn't need
-# to equal it either; being ahead of the floor is normal and fine. Bump this
-# whenever you want the deployed image to use a newer compiler; there's no
-# requirement to bump it in lockstep with MIN_LYRIC_VERSION.
-# Downloads the exact tarball directly rather than trusting install.sh's own
-# --version flag, mirroring .github/workflows/ci.yml's same reasoning
-# (see its "Install Lyric compiler" step and docs/BUILD.md).
-ARG LYRIC_VERSION=0.7.7
+# The compiler version defaults to "" and resolves to the latest lyric-lang
+# release at build time, matching docker/Dockerfile and install.sh's own
+# no-argument behavior: the toolchain is deliberately not pinned. Pass
+# --build-arg LYRIC_VERSION=X.Y.Z only to reproduce an old build. The RUN step
+# below has no cache-busting input of its own, so a host that has cached the
+# layer keeps its resolved version until the layer is invalidated (a change to
+# MIN_LYRIC_VERSION, which is COPY'd in just before it, does that; so does
+# `docker build --no-cache`). The resolved version is checked against
+# MIN_LYRIC_VERSION (repo root), the documented known-good floor, and the
+# tarball is verified against the release's SHASUMS256.txt.
+ARG LYRIC_VERSION=""
 # RID matches THIS build's actual architecture (this FROM has no --platform
 # override, so it's whatever amd64/arm64 host actually runs the build) — the
 # x86_64->linux-x64 / aarch64->linux-arm64 mapping now lives in one place,
@@ -51,8 +38,22 @@ ARG LYRIC_VERSION=0.7.7
 # script docker/Dockerfile's two stages and its four sibling runner
 # Dockerfiles use.
 COPY scripts/lyric-rid.sh scripts/verify-lyric-checksum.sh /usr/local/bin/
+COPY MIN_LYRIC_VERSION /tmp/min-lyric-version.txt
 RUN apt-get update && apt-get install -y --no-install-recommends curl ca-certificates \
     && chmod +x /usr/local/bin/lyric-rid.sh /usr/local/bin/verify-lyric-checksum.sh \
+    && if [ -z "$LYRIC_VERSION" ]; then \
+         for attempt in 1 2 3; do \
+           LYRIC_VERSION="$(curl -sI --connect-timeout 10 --max-time 30 https://github.com/nichobbs/lyric-lang/releases/latest | sed -n 's/.*tag\/v\([0-9.]*\).*/\1/p' | tr -d '\r')"; \
+           [ -n "$LYRIC_VERSION" ] && break; \
+           echo "attempt $attempt: could not resolve latest Lyric release tag, retrying..." >&2; \
+           sleep 3; \
+         done; \
+       fi \
+    && if [ -z "$LYRIC_VERSION" ]; then echo "ERROR: could not resolve the latest Lyric version after 3 attempts" >&2; exit 1; fi \
+    && MIN_VERSION="$(cat /tmp/min-lyric-version.txt)" \
+    && LOWEST="$(printf '%s\n%s\n' "$MIN_VERSION" "$LYRIC_VERSION" | sort -V | head -1)" \
+    && if [ "$LOWEST" != "$MIN_VERSION" ]; then echo "ERROR: Lyric version $LYRIC_VERSION is below the documented floor MIN_LYRIC_VERSION ($MIN_VERSION)" >&2; exit 1; fi \
+    && echo "Installing Lyric compiler v${LYRIC_VERSION}" \
     && LYRIC_RID="$(/usr/local/bin/lyric-rid.sh)" \
     && LYRIC_ARCHIVE="lyric-${LYRIC_VERSION}-${LYRIC_RID}.tar.gz" \
     && curl -fsSL --connect-timeout 10 --max-time 120 --retry 3 --retry-delay 3 \

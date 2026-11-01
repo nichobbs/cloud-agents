@@ -23,8 +23,8 @@ import Db
 import CloudAgents.Pg
 import CloudAgents.Pg.Schema
 
-func one(conn: in DbConnection, sql: in String): Result[Option[DbRow], String] {
-  return match conn.query(sql, []) {
+func one(conn: in DbConnection, stmtText: in String): Result[Option[DbRow], String] {
+  return match conn.query(Db.sql(stmtText), []) {
     case Ok(rows) -> if rows.length > 0 then Ok(value = Some(value = rows[0])) else Ok(value = None)
     case Err(e) -> Err(error = "self-check query failed: " + e.message)
   }
@@ -81,7 +81,7 @@ pub func check(conn: in DbConnection): Result[Unit, String] {
     return Err(error = "service role '" + name + "' owns schema public" + provisionHint())
   }
   for role in ["cloudagents_owner", "cloudagents_claimer", "cloudagents_migrator"] {
-    val found = match conn.query("SELECT rolcanlogin::text AS login FROM pg_roles WHERE rolname = @p0", [role]) {
+    val found = match conn.query(Db.sql("SELECT rolcanlogin::text AS login FROM pg_roles WHERE rolname = @p0"), [role]) {
       case Ok(rows) -> rows
       case Err(e) -> return Err(error = "self-check query failed: " + e.message)
     }

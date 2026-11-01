@@ -10,6 +10,7 @@
 package CloudAgents.PgStoreJobsTests
 
 import Std.Core
+import Db as LyricDb
 import Std.Environment
 import Std.Testing
 import Std.Uuid
@@ -330,7 +331,7 @@ test "concurrent claims never fire the same job" {
     case Ok(t) -> t
     case Err(e) -> panic(CloudAgents.Pg.pgErrorMessage(e))
   }
-  val got1 = match t1.query("SELECT id FROM public.claim_scheduled_jobs(100)", []) {
+  val got1 = match t1.query(LyricDb.sql("SELECT id FROM public.claim_scheduled_jobs(100)"), []) {
     case Ok(rs) -> rs
     case Err(e) -> panic(e.message)
   }

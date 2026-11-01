@@ -41,6 +41,17 @@ that MCP server, not a real permission denial — retrying the same call won't f
 ask the user to grant access via the Claude GitHub settings UI (claude.ai admin
 settings) instead of continuing to retry the tool call.
 
+## Toolchain policy: always the latest
+
+The Lyric compiler is never pinned: CI, `deploy/api.Dockerfile` and `docker/Dockerfile` resolve the latest
+lyric-lang release at build time, and the NuGet libraries in `lyric.toml` / `shim/lyric.toml` float (`"*"`) in
+lockstep with it. `MIN_LYRIC_VERSION` is only the floor the source needs (builds fail if the resolved compiler is
+below it); `--build-arg LYRIC_VERSION=X.Y.Z` still reproduces an old build. `Lyric.Db` takes a `SqlText`: use
+`Db.sql("...")` for statements (checked: one well-formed statement, `@pN` placeholders only) and
+`Db.unsafeRawSql(...)` only for fixed text `Db.sql` rejects (migration DDL), with a comment saying why. Never
+name a parameter or local `sql`: it shadows the qualified `Db.sql(...)` call and fails at runtime with a
+`System.String` to `Func` cast error, not at compile time.
+
 ## Build and run
 
 ```sh
@@ -120,7 +131,7 @@ recurring production crash) was filed as
 [lyric-lang#6249](https://github.com/nichobbs/lyric-lang/issues/6249),
 **open as of v0.4.35** but **fixed upstream as of v0.7.3** (confirmed by
 re-running the fixed version of `./scripts/repro-compiler-bug.sh` check 8
-directly against a freshly-installed 0.7.3; this project now pins 0.7.5,
+directly against a freshly-installed 0.7.3; this project now floats to the latest release,
 which also has the fix).
 It never blocked build/run/test, and needed a source-level workaround —
 see `src/docker_manager.l`'s doc comments for the `runSessionMessageAsync`/

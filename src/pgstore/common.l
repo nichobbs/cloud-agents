@@ -103,17 +103,28 @@ pub func commit(u: in PgUnit): Result[Unit, CloudAgents.Db.DbError] {
   }
 }
 
-pub func q(u: in PgUnit, sql: in String, params: in slice[String]): Result[slice[DbRow], CloudAgents.Db.DbError] {
-  return match u.tx.query(sql, params) {
+/// Like `q`, for the few fixed statements `Db.sql` cannot scan: it rejects any
+/// `@` that is not an `@pN` placeholder, so the Postgres operators `@@` (full-text
+/// match) and `@>` (containment) need this. The statement must still be fixed
+/// text assembled from literals (values go in `params`); callers say why.
+pub func qOps(u: in PgUnit, stmtText: in String, params: in slice[String]): Result[slice[DbRow], CloudAgents.Db.DbError] {
+  return match u.tx.query(Db.unsafeRawSql(stmtText), params) {
     case Ok(rows) -> Ok(value = rows)
-    case Err(e) -> Err(error = CloudAgents.Db.ExecFailed(sql = sql, message = e.message))
+    case Err(e) -> Err(error = CloudAgents.Db.ExecFailed(sql = stmtText, message = e.message))
   }
 }
 
-pub func ex(u: in PgUnit, sql: in String, params: in slice[String]): Result[Int, CloudAgents.Db.DbError] {
-  return match u.tx.execute(sql, params) {
+pub func q(u: in PgUnit, stmtText: in String, params: in slice[String]): Result[slice[DbRow], CloudAgents.Db.DbError] {
+  return match u.tx.query(Db.sql(stmtText), params) {
+    case Ok(rows) -> Ok(value = rows)
+    case Err(e) -> Err(error = CloudAgents.Db.ExecFailed(sql = stmtText, message = e.message))
+  }
+}
+
+pub func ex(u: in PgUnit, stmtText: in String, params: in slice[String]): Result[Int, CloudAgents.Db.DbError] {
+  return match u.tx.execute(Db.sql(stmtText), params) {
     case Ok(n) -> Ok(value = n)
-    case Err(e) -> Err(error = CloudAgents.Db.ExecFailed(sql = sql, message = e.message))
+    case Err(e) -> Err(error = CloudAgents.Db.ExecFailed(sql = stmtText, message = e.message))
   }
 }
 

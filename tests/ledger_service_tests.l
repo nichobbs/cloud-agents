@@ -10,6 +10,7 @@
 package CloudAgents.LedgerServiceTests
 
 import Std.Core
+import Db as LyricDb
 import Std.Environment
 import Std.Testing
 import Std.Uuid
@@ -540,7 +541,7 @@ test "no next-run nudge when MCP callbacks are off" {
 
 // Run one DDL/DML statement as the schema owner: the service role cannot
 // create triggers.
-func ownerExec(sql: in String): Unit {
+func ownerExec(stmtText: in String): Unit {
   val conn = match CloudAgents.Pg.connectDsn(Std.Environment.getVarOrDefault(CloudAgents.Pg.migrateDsnVar(), "")) {
     case Ok(c) -> c
     case Err(e) -> panic(CloudAgents.Pg.pgErrorMessage(e))
@@ -548,7 +549,8 @@ func ownerExec(sql: in String): Unit {
   defer {
     conn.close()
   }
-  match conn.execute(sql, []) {
+  // Fixed test DDL (triggers with $$ bodies) that Db.sql rejects by design.
+  match conn.execute(LyricDb.unsafeRawSql(stmtText), []) {
     case Ok(_) -> ()
     case Err(e) -> panic("owner statement failed: " + e.message)
   }

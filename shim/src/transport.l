@@ -128,7 +128,7 @@ pub func encGetBytes(enc: in Encoding, s: in String): slice[Byte] = []
 pub func encGetStringRange(enc: in Encoding, bytes: in slice[Byte], index: in Int, count: in Int): String = ()
 
 // ── stderr — never write to stdout ──────────────────────────────────────────
-// serveStdio (Mcp.Server, via JsonRpc.Stdio's NdjsonTransport) frames every
+// serveStdio (Mcp.Server, via Std.JsonRpc.Stdio's NdjsonTransport) frames every
 // protocol message as one NDJSON line on stdout. Any other stdout write
 // (println, an uncaught printed exception, ...) corrupts that framing for
 // the whole session. Diagnostics from this shim MUST go to stderr instead.
