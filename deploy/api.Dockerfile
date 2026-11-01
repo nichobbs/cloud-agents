@@ -72,12 +72,14 @@ COPY . .
 # test`-free harness this image builds against. `lyric test` itself needs a
 # migrated Postgres (LYRIC_CONFIG_DB_CONNECTION_URL) for its live suites,
 # which an image build doesn't have, so verify.sh is what's wired in here.
-RUN ./scripts/build-full.sh && ./scripts/verify.sh
+RUN ./scripts/build-full.sh && ./scripts/verify.sh && ./scripts/write-build-info.sh
 
 FROM mcr.microsoft.com/dotnet/aspnet:10.0
 RUN apt-get update && apt-get install -y --no-install-recommends docker.io \
     && rm -rf /var/lib/apt/lists/*
 WORKDIR /app
+# bin/ also carries build-info.txt: the compiler and NuGet versions this image
+# actually resolved (they float), printed by the API at startup.
 COPY --from=build /src/bin/ /app/
 # CloudAgents.LibrarySeed/CloudAgents.McpServerSeed read these at sign-in time
 # (CLOUD_AGENTS_SEED_SUBAGENTS_DIR / CLOUD_AGENTS_SEED_SKILLS_DIR /

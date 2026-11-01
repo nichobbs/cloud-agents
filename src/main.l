@@ -1,6 +1,7 @@
 package CloudAgents
 
 import Std.Core
+import Std.File
 import Web
 import CloudAgents.Auth
 import CloudAgents.Callbacks
@@ -2632,6 +2633,13 @@ pub func main(): Unit {
   Env.SetEnvironmentVariable("LYRIC_CONFIG_WEB_SERVER_PORT", portStr)
 
   println("Starting Cloud Agents API Server on port " + portStr + "...")
+  // The deployed image records the compiler and library versions it was built
+  // with (scripts/write-build-info.sh); they float to the latest release, so this
+  // is where an operator reads what is actually running. Absent in a dev build.
+  match Std.File.readText("build-info.txt") {
+    case Ok(info) -> println("build-info:\n" + info)
+    case Err(_) -> ()
+  }
   Web.startStreaming(router, streaming)
 }
 
