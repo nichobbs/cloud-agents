@@ -334,5 +334,5 @@ test "buildInfoBanner prints the file's contents, and is empty when absent (#134
   val banner = buildInfoBanner(path)
   assertTrue(banner.startsWith("build-info:\n"), "banner header")
   assertTrue(banner.contains("lyric: 9.8.7"), "file contents included")
-  assertEqualString(buildInfoBanner("tests/fixtures/no-such-build-info.txt"), "", "absent file -> empty banner")
+  assertEqual(buildInfoBanner("tests/fixtures/no-such-build-info.txt"), "", "absent file -> empty banner")
 }
