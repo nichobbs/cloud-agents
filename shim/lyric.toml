@@ -40,7 +40,7 @@ output_assembly = "cloud-agents-shim.dll"
 "CloudAgents.Shim.LedgerToolsTests"     = "tests/ledger_tools_tests.l"
 
 [nuget]
-# Lyric.JsonRpc is a transitive dependency of Lyric.Mcp's own published
-# nuspec and
-# does not need a separate pin here.
+# Lyric.Mcp floats to the latest release with the compiler (AGENTS.md "Toolchain
+# policy"). Its JSON-RPC support comes with it (the stdlib's Std.JsonRpc), so
+# nothing else needs listing here.
 "Lyric.Mcp" = "*"

@@ -89,6 +89,8 @@ jobs:
             scripts/test-entrypoint-session-resume.sh \
             scripts/test-entrypoint-privsep.sh \
             scripts/test-lyric-version-resolution.sh \
+            scripts/write-build-info.sh \
+            scripts/test-write-build-info.sh \
             scripts/test-split-ca-bundle.sh \
             scripts/test-sanitize-empty-node-extra-ca-certs.sh \
             scripts/test-mcp-server-injection.sh \
@@ -237,6 +239,10 @@ jobs:
       # shim-builder stage, plus this file's pinned-ARG parsing below (#660).
       - name: Test Lyric version-resolution shell logic
         run: ./scripts/test-lyric-version-resolution.sh
+
+      # build-info.txt records the resolved compiler/library versions (#1340).
+      - name: Test build-info writer
+        run: ./scripts/test-write-build-info.sh
 
       # Regression test for docker/split-ca-bundle.sh (#716): single-cert
       # passthrough, multi-cert bundle split, mixed cert+CRL bundle split
