@@ -9,6 +9,7 @@ import CloudAgents.Shim.V2Transport
 import CloudAgents.Shim.Callbacks
 import CloudAgents.Shim.V2Client
 import CloudAgents.Shim.V2TestFakes
+import Std.Environment
 
 // request_secret writes to /run/cloud-agents-secrets when /run exists, else
 // /tmp/cloud-agents-secrets (CloudAgents.Shim.V2Client.secretsBaseDir). CI
