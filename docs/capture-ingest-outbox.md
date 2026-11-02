@@ -150,8 +150,8 @@ CREATE INDEX IF NOT EXISTS idx_graph_ingest_outbox_due
 Design notes (all mirroring existing conventions in this schema, cited
 per-choice so a reviewer can check each against precedent):
 
-- **No `tenant`/bearer column, ever.** The bearer token is read fresh from
-  `CLOUDAGENTS_GRAPH_INGEST_TOKEN` at the moment of every delivery attempt
+- **No `tenant`/bearer column, ever.** The bearer token is resolved fresh (the
+  tenant's own token, else `CLOUDAGENTS_GRAPH_INGEST_TOKEN`; §5.1) at the moment of every delivery attempt
   (`CloudAgents.GraphIngestDrain`), never persisted. A row is pure metadata —
   content, destination, and retry state — nothing an attacker who reads the
   SQLite file gains a credential from.
@@ -192,10 +192,34 @@ per-choice so a reviewer can check each against precedent):
 | Env var | Meaning | Default |
 |---|---|---|
 | `CLOUDAGENTS_GRAPH_INGEST_URL` | platform ingest endpoint (unchanged from `docs/capture-runtime-handoff.md`) | empty ⇒ no enqueue at all (§6) |
-| `CLOUDAGENTS_GRAPH_INGEST_TOKEN` | bearer token, read fresh at every delivery attempt (unchanged in spirit; now read by the drain layer too, not just the producer) | empty ⇒ every attempt fails with a typed, non-terminal (until the cap) error |
+| `CLOUDAGENTS_GRAPH_INGEST_TOKEN` | **fallback** bearer token, read fresh at every delivery attempt; used when the row's tenant has no token of its own (§5.1) | empty ⇒ every attempt fails with a typed, non-terminal (until the cap) error |
 | `CLOUDAGENTS_GRAPH_INGEST_DRAIN_LIMIT` | max due rows one `POST /api/maintenance/drain-graph-ingest` call attempts | `25` |
 | `CLOUDAGENTS_GRAPH_INGEST_MAX_ATTEMPTS` | attempts before a row is given up on (marked terminal) | `50` |
 | `CLOUDAGENTS_GRAPH_INGEST_PRUNE_DAYS` | delivered rows older than this are deleted on every drain call | `30` |
+
+### 5.1 Per-organisation token
+
+Each tenant (an organisation, or a user's personal tenant) may hold its own
+graph-ingest bearer, so provenance reaches the platform under that tenant's
+identity (testamur ADR-0032: `tmk_<keyId>_<secret>` keys; mint it with
+`scope=ingest`, which can reach only `POST /api/ingest`). cloud-agents treats the
+value as opaque. It lives in `tenant_graph_ingest_tokens` (migration
+`0006_graph_ingest_tokens`, one tenant-RLS row per tenant), encrypted at rest with
+`CloudAgents.Crypto` like the credential vault, and is never returned by any
+endpoint.
+
+- `POST /api/orgs/{id}/graph-ingest-token` `{"token":"…"}` sets or replaces it,
+  `DELETE` clears it, `GET` reports `{"configured":bool,"updatedAt":…}`. Owner or
+  admin of the org only (members get 403, non-members 404); for a personal tenant
+  (`personal:<user id>`) the user themself.
+- At every delivery attempt `CloudAgents.GraphIngestDrain.resolveIngestToken`
+  reads the row's tenant's token fresh: **org token, else
+  `CLOUDAGENTS_GRAPH_INGEST_TOKEN`, else the attempt fails** (never an
+  unauthenticated POST). A stored token that cannot be decrypted fails the
+  attempt instead of falling back to the global token, so one tenant's data is
+  never sent under another identity.
+- The outbox row still carries no credential, and the URL/enqueue/retry rules
+  above are unchanged.
 
 `CLOUDAGENTS_GRAPH_INGEST_DRAIN_SECS` (named in the originating task brief)
 does not exist — see §3 for why, and what an operator configures instead (the

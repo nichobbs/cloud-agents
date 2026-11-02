@@ -55,12 +55,13 @@ pub func migrations(): slice[PgMigration] {
     PgMigration(version = "0002_cutover", statements = cutoverStatements()),
     PgMigration(version = "0003_profile_setup_script", statements = profileSetupScriptStatements()),
     PgMigration(version = "0004_profile_delegate_allow", statements = profileDelegateAllowStatements()),
-    PgMigration(version = "0005_claude_session_import", statements = claudeSessionImportStatements())
+    PgMigration(version = "0005_claude_session_import", statements = claudeSessionImportStatements()),
+    PgMigration(version = "0006_graph_ingest_tokens", statements = graphIngestTokenStatements())
   ]
 }
 
 pub func latestVersion(): String {
-  return "0005_claude_session_import"
+  return "0006_graph_ingest_tokens"
 }
 
 // ─── Fragments ──────────────────────────────────────────────────────────────
@@ -998,5 +999,16 @@ func claudeSessionImportStatements(): slice[String] {
         "REVOKE CREATE ON SCHEMA public FROM cloudagents_claimer"
       ]
     ]
+  )
+}
+
+/// 0006: a per-tenant bearer for the platform graph service's `POST
+/// /api/ingest` (docs/capture-ingest-outbox.md §5.1). One row per tenant; the
+/// value is encrypted at rest and never read back by an endpoint.
+func graphIngestTokenStatements(): slice[String] {
+  return tenantTable(
+    "tenant_graph_ingest_tokens",
+    "value_encrypted text NOT NULL, updated_by text NOT NULL, updated_at timestamptz NOT NULL DEFAULT now(), " +
+      "PRIMARY KEY (tenant_id)"
   )
 }

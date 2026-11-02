@@ -791,3 +791,22 @@ pub func connectGitHubOrg(callerId: in String, orgId: in String, orgLogin: in St
   commitO(u)?
   return Ok(value = org)
 }
+
+/// Authorise managing a tenant's graph-ingest token: an active owner or admin
+/// of the organisation, or the owner of their own personal tenant. A
+/// non-member sees "not found", as elsewhere in this package.
+pub func requireGraphIngestManager(callerId: in String, tenantId: in String): Result[Unit, OrgFailure] {
+  val u = openU()?
+  defer {
+    CloudAgents.PgStore.release(u)
+  }
+  val role = activeRole(u, tenantId, callerId)?
+  commitO(u)?
+  if role.length == 0 {
+    return Err(error = NotFound(message = "organisation not found"))
+  }
+  if role != "owner" and role != "admin" {
+    return Err(error = Forbidden(message = "only an owner or admin can manage the graph ingest token"))
+  }
+  return Ok(value = ())
+}

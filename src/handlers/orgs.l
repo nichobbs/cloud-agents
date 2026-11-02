@@ -11,6 +11,9 @@ import CloudAgents.Auth
 import CloudAgents.Scope
 import CloudAgents.Streaming
 import CloudAgents.PgStore.Orgs
+import CloudAgents.Pg
+import CloudAgents.Repository
+import CloudAgents.Db
 
 @generate(Json)
 pub record CreateOrgRequest {
@@ -26,6 +29,11 @@ pub record SetRoleRequest {
 pub record CreateInvitationRequest {
   pub githubLogin: String
   pub role: String
+}
+
+@generate(Json)
+pub record SetGraphIngestTokenRequest {
+  pub token: String
 }
 
 @generate(Json)
@@ -197,5 +205,71 @@ pub func acceptInvitationHandler(req: in AcceptInvitationRequest): Result[String
   return match CloudAgents.PgStore.Orgs.acceptInvitation(userId, req.token.trim()) {
     case Ok(o) -> Ok(value = "{\"org\":" + orgJson(o) + "}")
     case Err(f) -> Err(apiErrorOf(f))
+  }
+}
+
+/// Largest accepted graph-ingest token (an opaque bearer; cloud-agents does not interpret it).
+pub val maxGraphIngestTokenLen = 4096
+
+/// The scope an owner/admin acts under on `orgId`'s graph-ingest token, or the failure.
+func graphIngestScope(orgId: in String): Result[CloudAgents.Pg.TenantScope, Web.ApiError] {
+  val userId = CloudAgents.Auth.currentUserId()
+  match CloudAgents.PgStore.Orgs.requireGraphIngestManager(userId, orgId) {
+    case Ok(_) -> ()
+    case Err(f) -> return Err(apiErrorOf(f))
+  }
+  return Ok(value = CloudAgents.Pg.TenantScope(tenantId = orgId, userId = userId))
+}
+
+func graphIngestStatusJson(updatedAt: in Option[String]): String {
+  return match updatedAt {
+    case Some(t) -> "{\"configured\":true,\"updatedAt\":" + str(t) + "}"
+    case None -> "{\"configured\":false}"
+  }
+}
+
+/// `GET /api/orgs/{id}/graph-ingest-token`: whether a token is set. Owner/admin
+/// only. The token itself is never returned.
+pub func getGraphIngestTokenHandler(orgId: in String): Result[String, Web.ApiError] {
+  val sc = graphIngestScope(orgId)?
+  return match CloudAgents.Repository.tenantGraphIngestTokenStatus(sc) {
+    case Ok(s) -> Ok(value = graphIngestStatusJson(s))
+    case Err(e) -> {
+      println("ERROR: graph ingest token status: " + CloudAgents.Db.dbErrorMessage(e))
+      Err(Web.internalError("database unavailable"))
+    }
+  }
+}
+
+/// `POST /api/orgs/{id}/graph-ingest-token`: set or replace the token (encrypted
+/// at rest). Owner/admin only; the response never echoes it.
+pub func setGraphIngestTokenHandler(orgId: in String, req: in SetGraphIngestTokenRequest): Result[String, Web.ApiError] {
+  val sc = graphIngestScope(orgId)?
+  val token = req.token.trim()
+  if token.length == 0 {
+    return Err(Web.badRequest("token is required"))
+  }
+  if token.length > maxGraphIngestTokenLen {
+    return Err(Web.badRequest("token is too long (max 4096 characters)"))
+  }
+  match CloudAgents.Repository.putTenantGraphIngestToken(token, sc) {
+    case Ok(_) -> ()
+    case Err(e) -> {
+      println("ERROR: graph ingest token store: " + CloudAgents.Repository.credentialErrorMessage(e))
+      return Err(Web.internalError("failed to store the graph ingest token"))
+    }
+  }
+  return getGraphIngestTokenHandler(orgId)
+}
+
+/// `DELETE /api/orgs/{id}/graph-ingest-token`: clear it (the env fallback then applies).
+pub func clearGraphIngestTokenHandler(orgId: in String): Result[String, Web.ApiError] {
+  val sc = graphIngestScope(orgId)?
+  return match CloudAgents.Repository.deleteTenantGraphIngestToken(sc) {
+    case Ok(_) -> Ok(value = okJson())
+    case Err(e) -> {
+      println("ERROR: graph ingest token clear: " + CloudAgents.Db.dbErrorMessage(e))
+      Err(Web.internalError("database unavailable"))
+    }
   }
 }
