@@ -190,13 +190,18 @@ COPY docker/register-callbacks-mcp.sh /usr/local/bin/register-callbacks-mcp.sh
 # No image-wide DOTNET_* ENV here (#806): the wrapper script exports
 # DOTNET_ROOT / DOTNET_SYSTEM_GLOBALIZATION_INVARIANT for the shim process
 # alone, so the agent's own session environment is untouched.
+# Run from /tmp with core dumps off: the shim's missing-env panic aborts the process, and where
+# the build host's kernel core_pattern is a bare "core" (Colima/Lima VMs) the dump lands in the
+# cwd, /workspace, was baked into the image, and made every new session's workspace volume
+# non-empty, so the entrypoint's `git clone` into /workspace failed. The rm clears any leftover.
 RUN ln -s /usr/share/dotnet/dotnet /usr/local/bin/dotnet \
     && chmod +x /usr/local/bin/cloud-agents-shim /usr/local/bin/register-callbacks-mcp.sh \
-    && shim_out=$(cloud-agents-shim 2>&1 || true) \
+    && shim_out=$(cd /tmp && ulimit -c 0 && cloud-agents-shim 2>&1 || true) \
     && case "$shim_out" in \
          *CLOUD_AGENTS_API_URL*) echo "shim smoke test ok" ;; \
          *) echo "shim smoke test FAILED — expected the missing-env panic, got: $shim_out" >&2; exit 1 ;; \
-       esac
+       esac \
+    && rm -f /workspace/core /workspace/core.*
 
 USER opencode-user
 ENV HOME=/home/opencode-user

@@ -299,11 +299,16 @@ RUN chmod +x /usr/local/bin/entrypoint.sh /usr/local/bin/reconcile-repos.sh /usr
 # Build-time shim smoke test (#805/#814, same as the other four runner
 # images): run the shim with no env and expect its own missing-required-env
 # panic — proving the wrapper, dotnet, and the copied DLLs genuinely execute.
-RUN shim_out=$(cloud-agents-shim 2>&1 || true) \
+# Run from /tmp with core dumps off: the shim's missing-env panic aborts the process, and where
+# the build host's kernel core_pattern is a bare "core" (Colima/Lima VMs) the dump lands in the
+# cwd, /workspace, was baked into the image, and made every new session's workspace volume
+# non-empty, so the entrypoint's `git clone` into /workspace failed. The rm clears any leftover.
+RUN shim_out=$(cd /tmp && ulimit -c 0 && cloud-agents-shim 2>&1 || true) \
     && case "$shim_out" in \
          *CLOUD_AGENTS_API_URL*) echo "shim smoke test ok" ;; \
          *) echo "shim smoke test FAILED — expected the missing-env panic, got: $shim_out" >&2; exit 1 ;; \
-       esac
+       esac \
+    && rm -f /workspace/core /workspace/core.*
 
 ENV HOME=/home/claude-user
 
