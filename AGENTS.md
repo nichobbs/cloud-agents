@@ -384,8 +384,13 @@ Sequenced follow-ups:
   service's `POST /api/ingest` (objects form, `{"objects":[…]}` via the new pure
   `CheckpointBridge.objectsToIngestJson`), gated behind the existing
   `CLOUDAGENTS_CAPTURE_CHECKPOINTS` flag plus `CLOUDAGENTS_GRAPH_INGEST_URL`
-  (empty ⇒ log-only, today's behavior exactly) and `CLOUDAGENTS_GRAPH_INGEST_TOKEN`
-  (empty ⇒ skip, never POST unauthenticated). The POST reuses
+  (empty ⇒ log-only, today's behavior exactly) and a bearer: the tenant's own encrypted
+  graph-ingest token (set by an org owner/admin via
+  `POST /api/orgs/{id}/graph-ingest-token`, table `tenant_graph_ingest_tokens`,
+  resolved fresh per attempt by `GraphIngestDrain.resolveIngestToken`; opaque
+  to cloud-agents, mint it `scope=ingest`), else the global
+  `CLOUDAGENTS_GRAPH_INGEST_TOKEN` fallback (neither ⇒ skip, never POST
+  unauthenticated). The POST reuses
   `GitHubApi.httpPostJsonWithBearerTimeout` (bearer, bounded 15s timeout,
   2xx-only, now no-redirect via `setAllowAutoRedirect(false)` — bearer-leak
   defense); best-effort throughout (every hop logged and swallowed, never fails

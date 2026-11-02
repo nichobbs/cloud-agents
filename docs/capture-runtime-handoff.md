@@ -102,7 +102,7 @@ config plumbing, no manifest change.
 |---|---|---|
 | `CLOUDAGENTS_CAPTURE_CHECKPOINTS` | master opt-in (unchanged) | unset ⇒ `emitRunnerCheckpoint` returns immediately, zero cost |
 | `CLOUDAGENTS_GRAPH_INGEST_URL` | platform ingest endpoint, e.g. `https://platform.example/api/ingest` | **empty ⇒ emit + log only, no POST** (preserves today's behavior exactly; capture can run without a destination) |
-| `CLOUDAGENTS_GRAPH_INGEST_TOKEN` | per-tenant bearer token | empty ⇒ POST is skipped and logged (`WARNING: graph ingest URL set but token empty`); never POST unauthenticated |
+| `CLOUDAGENTS_GRAPH_INGEST_TOKEN` | **fallback** bearer, used when the session's tenant has no stored token of its own (per-organisation tokens: `docs/capture-ingest-outbox.md` §5.1) | empty (and no tenant token) ⇒ POST is skipped and logged (`WARNING: graph ingest URL set but token empty`); never POST unauthenticated |
 
 Tenant scoping rides the bearer token (the platform resolves tenant from the
 token, per the `/api/ingest` contract). If the platform instead wants an

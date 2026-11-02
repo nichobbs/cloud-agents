@@ -1084,6 +1084,37 @@ impl Web.Handler for RouteRevokeOrgInvitation {
   }
 }
 
+record RouteGetGraphIngestToken {
+}
+
+impl Web.Handler for RouteGetGraphIngestToken {
+  func handle(req: in Web.Request): Web.Response {
+    return jsonStringResp(CloudAgents.Orgs.getGraphIngestTokenHandler(pparam(req, "oid")))
+  }
+}
+
+record RouteSetGraphIngestToken {
+}
+
+impl Web.Handler for RouteSetGraphIngestToken {
+  func handle(req: in Web.Request): Web.Response {
+    val decoded = match CloudAgents.Orgs.SetGraphIngestTokenRequest.fromJson(req.body) {
+      case Ok(d) -> d
+      case Err(_) -> return badBody()
+    }
+    return jsonStringResp(CloudAgents.Orgs.setGraphIngestTokenHandler(pparam(req, "oid"), decoded))
+  }
+}
+
+record RouteClearGraphIngestToken {
+}
+
+impl Web.Handler for RouteClearGraphIngestToken {
+  func handle(req: in Web.Request): Web.Response {
+    return jsonStringResp(CloudAgents.Orgs.clearGraphIngestTokenHandler(pparam(req, "oid")))
+  }
+}
+
 record RouteAcceptInvitation {
 }
 
@@ -2424,6 +2455,9 @@ pub func main(): Unit {
   router = Web.addGet(router, "/api/orgs/{oid}/invitations", RouteListOrgInvitations())
   router = Web.addPost(router, "/api/orgs/{oid}/invitations", RouteCreateOrgInvitation())
   router = Web.addDelete(router, "/api/orgs/{oid}/invitations/{iid}", RouteRevokeOrgInvitation())
+  router = Web.addGet(router, "/api/orgs/{oid}/graph-ingest-token", RouteGetGraphIngestToken())
+  router = Web.addPost(router, "/api/orgs/{oid}/graph-ingest-token", RouteSetGraphIngestToken())
+  router = Web.addDelete(router, "/api/orgs/{oid}/graph-ingest-token", RouteClearGraphIngestToken())
   router = Web.addPost(router, "/api/invitations/accept", RouteAcceptInvitation())
 
   // Credential store: per-user secrets injected into runner containers.

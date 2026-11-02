@@ -2553,3 +2553,25 @@ pub func markGraphIngestDelivered(
 pub func pruneDeliveredGraphIngest(retentionDays: in Int): Result[Int, CloudAgents.Db.DbError] {
   return CloudAgents.PgStore.GraphIngest.pruneDeliveredGraphIngest(retentionDays)
 }
+
+// ─── Per-tenant graph-ingest bearer (docs/capture-ingest-outbox.md §5.1) ──────
+/// Store (or replace) the tenant's graph-ingest bearer, encrypted at rest.
+pub func putTenantGraphIngestToken(token: in String, sc: in CloudAgents.Pg.TenantScope): Result[Unit, CredentialError] {
+  return CloudAgents.PgStore.GraphIngest.putTenantGraphIngestToken(token, sc)
+}
+
+/// Remove the tenant's graph-ingest bearer; rows affected (0 = none stored).
+pub func deleteTenantGraphIngestToken(sc: in CloudAgents.Pg.TenantScope): Result[Int, CloudAgents.Db.DbError] {
+  return CloudAgents.PgStore.GraphIngest.deleteTenantGraphIngestToken(sc)
+}
+
+/// `Some(updatedAt epoch-ms text)` when a bearer is stored, else `None`.
+/// Never decrypts.
+pub func tenantGraphIngestTokenStatus(sc: in CloudAgents.Pg.TenantScope): Result[Option[String], CloudAgents.Db.DbError] {
+  return CloudAgents.PgStore.GraphIngest.tenantGraphIngestTokenStatus(sc)
+}
+
+/// The tenant's decrypted bearer, server-side use only; `None` when unset.
+pub func tenantGraphIngestToken(sc: in CloudAgents.Pg.TenantScope): Result[Option[String], CredentialError] {
+  return CloudAgents.PgStore.GraphIngest.tenantGraphIngestToken(sc)
+}

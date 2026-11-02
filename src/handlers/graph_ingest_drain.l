@@ -26,10 +26,13 @@
 //!    (`CloudAgents.GraphIngestOutbox`), gives up (marks terminal) past a
 //!    configurable attempt cap, and prunes old delivered rows.
 //!
-//! The bearer token is read fresh from `CLOUDAGENTS_GRAPH_INGEST_TOKEN` on
-//! every delivery attempt (never stored on the row) — an operator can rotate
-//! or add the token after rows are already queued and the very next drain
-//! (or the next `emitRunnerCheckpoint`) picks it up.
+//! The bearer token is resolved fresh on every delivery attempt (never stored
+//! on the row): the row's tenant's own encrypted token
+//! (`CloudAgents.Repository.tenantGraphIngestToken`, set through
+//! `/api/orgs/{id}/graph-ingest-token`) if present, else the global
+//! `CLOUDAGENTS_GRAPH_INGEST_TOKEN` fallback, else the attempt fails (never an
+//! unauthenticated POST). Rotating or adding either after rows are queued is
+//! picked up by the very next drain (or `emitRunnerCheckpoint`).
 package CloudAgents.GraphIngestDrain
 
 import Std.Core
@@ -126,6 +129,25 @@ func ingestTokenConfigured(): String {
   return Std.Environment.getVarOrDefault("CLOUDAGENTS_GRAPH_INGEST_TOKEN", "")
 }
 
+/// The bearer for a delivery attempt in tenant `sc`: that tenant's stored
+/// token, else the env fallback; `Ok("")` when neither is set (the caller
+/// must skip, never POST unauthenticated). A tenant token that exists but
+/// cannot be read or decrypted is an `Err`, NOT a silent fall back to the
+/// global token: that would send one tenant's provenance under another
+/// identity. Read fresh each call; the value is never logged or persisted.
+pub func resolveIngestToken(sc: in CloudAgents.Pg.TenantScope): Result[String, String] {
+  match CloudAgents.Repository.tenantGraphIngestToken(sc) {
+    case Ok(Some(t)) -> {
+      if t != "" {
+        return Ok(value = t)
+      }
+    }
+    case Ok(None) -> ()
+    case Err(e) -> return Err(error = "tenant graph ingest token unreadable: " + CloudAgents.Repository.credentialErrorMessage(e))
+  }
+  return Ok(value = ingestTokenConfigured())
+}
+
 /// Rows attempted per `drainGraphIngestHandler` call — bounds one call's
 /// wall-clock time the same way `maxJobsPerTrigger` bounds
 /// `triggerDueJobsHandler`'s, though far cheaper per row here (one bounded
@@ -203,9 +225,19 @@ func recordFailure(
 /// The caller must hold the row's claim (`claimGraphIngest` or
 /// `claimDueGraphIngest`); recording the outcome releases it.
 pub func attemptDeliverRow(row: in CloudAgents.Repository.GraphIngestOutboxRow, sc: in CloudAgents.Pg.TenantScope): Bool {
-  val ingestToken = ingestTokenConfigured()
+  val ingestToken = match resolveIngestToken(sc) {
+    case Ok(t) -> t
+    case Err(m) -> {
+      recordFailure(row, m, sc)
+      return false
+    }
+  }
   if ingestToken == "" {
-    recordFailure(row, "graph ingest token not configured (CLOUDAGENTS_GRAPH_INGEST_TOKEN is empty)", sc)
+    recordFailure(
+      row,
+      "graph ingest token not configured (no organisation token and CLOUDAGENTS_GRAPH_INGEST_TOKEN is empty)",
+      sc
+    )
     return false
   }
   return match CloudAgents.GitHubApi.httpPostJsonWithBearerTimeout(row.url, row.body, ingestToken, graphIngestUserAgent, graphIngestTimeoutMillis) {

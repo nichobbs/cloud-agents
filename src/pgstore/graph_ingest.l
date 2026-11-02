@@ -212,3 +212,72 @@ pub func pruneDeliveredGraphIngest(retentionDays: in Int): Result[Int, CloudAgen
   }
   return Ok(value = CloudAgents.Repository.parseNatString(c(rows[0], "n")))
 }
+
+func cryptoErr(e: in CloudAgents.Crypto.CryptoError): CloudAgents.Repository.CredentialError {
+  return CloudAgents.Repository.Crypto(error = e)
+}
+
+func dbErr(e: in CloudAgents.Db.DbError): CloudAgents.Repository.CredentialError {
+  return CloudAgents.Repository.Db(error = e)
+}
+
+/// Store (or replace) the tenant's graph-ingest bearer, encrypted at rest.
+pub func putTenantGraphIngestToken(
+  token: in String, sc: in CloudAgents.Pg.TenantScope
+): Result[Unit, CloudAgents.Repository.CredentialError] {
+  val encrypted = match CloudAgents.Crypto.encrypt(token) {
+    case Ok(blob) -> blob
+    case Err(e) -> return Err(error = cryptoErr(e))
+  }
+  match exec(sc, "INSERT INTO tenant_graph_ingest_tokens (value_encrypted, updated_by, updated_at) VALUES (@p0, @p1, now()) " + "ON CONFLICT (tenant_id) DO UPDATE SET value_encrypted = EXCLUDED.value_encrypted, " + "updated_by = EXCLUDED.updated_by, updated_at = now()", [encrypted, sc.userId]) {
+    case Ok(_) -> return Ok(value = ())
+    case Err(e) -> return Err(error = dbErr(e))
+  }
+}
+
+/// Remove the tenant's graph-ingest bearer; rows affected (0 = none stored).
+pub func deleteTenantGraphIngestToken(sc: in CloudAgents.Pg.TenantScope): Result[Int, CloudAgents.Db.DbError] {
+  return exec(sc, "DELETE FROM tenant_graph_ingest_tokens", [])
+}
+
+/// Whether a bearer is stored, and when it was last set (epoch ms text, "" if
+/// none). Never decrypts.
+pub func tenantGraphIngestTokenStatus(sc: in CloudAgents.Pg.TenantScope): Result[Option[String], CloudAgents.Db.DbError] {
+  val u = CloudAgents.PgStore.open(sc)?
+  defer {
+    CloudAgents.PgStore.release(u)
+  }
+  val rows = CloudAgents.PgStore.q(u, "SELECT " + CloudAgents.Pg.msOut("updated_at") + " AS updated_at FROM tenant_graph_ingest_tokens", [])?
+  CloudAgents.PgStore.commit(u)?
+  if rows.length == 0 {
+    return Ok(value = None)
+  }
+  return Ok(value = Some(value = c(rows[0], "updated_at")))
+}
+
+/// The tenant's decrypted bearer for server-side use only (the delivery
+/// attempt). `Ok(None)` when none is stored; a stored but undecryptable value
+/// is an error.
+pub func tenantGraphIngestToken(
+  sc: in CloudAgents.Pg.TenantScope
+): Result[Option[String], CloudAgents.Repository.CredentialError] {
+  val u = match CloudAgents.PgStore.open(sc) { case Ok(x) -> x; case Err(e) -> return Err(error = dbErr(e)) }
+  defer {
+    CloudAgents.PgStore.release(u)
+  }
+  val rows = match CloudAgents.PgStore.q(u, "SELECT value_encrypted FROM tenant_graph_ingest_tokens", []) {
+    case Ok(r) -> r
+    case Err(e) -> return Err(error = dbErr(e))
+  }
+  match CloudAgents.PgStore.commit(u) {
+    case Ok(_) -> ()
+    case Err(e) -> return Err(error = dbErr(e))
+  }
+  if rows.length == 0 {
+    return Ok(value = None)
+  }
+  return match CloudAgents.Crypto.decrypt(c(rows[0], "value_encrypted")) {
+    case Ok(p) -> Ok(value = Some(value = p))
+    case Err(e) -> Err(error = cryptoErr(e))
+  }
+}
