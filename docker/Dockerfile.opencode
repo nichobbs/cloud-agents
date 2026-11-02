@@ -198,10 +198,9 @@ RUN ln -s /usr/share/dotnet/dotnet /usr/local/bin/dotnet \
     && chmod +x /usr/local/bin/cloud-agents-shim /usr/local/bin/register-callbacks-mcp.sh \
     && shim_out=$(cd /tmp && ulimit -c 0 && cloud-agents-shim 2>&1 || true) \
     && case "$shim_out" in \
-         *CLOUD_AGENTS_API_URL*) echo "shim smoke test ok" ;; \
+         *CLOUD_AGENTS_API_URL*) echo "shim smoke test ok"; rm -f /workspace/core /workspace/core.* ;; \
          *) echo "shim smoke test FAILED — expected the missing-env panic, got: $shim_out" >&2; exit 1 ;; \
-       esac \
-    && rm -f /workspace/core /workspace/core.*
+       esac
 
 USER opencode-user
 ENV HOME=/home/opencode-user

@@ -305,10 +305,9 @@ RUN chmod +x /usr/local/bin/entrypoint.sh /usr/local/bin/reconcile-repos.sh /usr
 # non-empty, so the entrypoint's `git clone` into /workspace failed. The rm clears any leftover.
 RUN shim_out=$(cd /tmp && ulimit -c 0 && cloud-agents-shim 2>&1 || true) \
     && case "$shim_out" in \
-         *CLOUD_AGENTS_API_URL*) echo "shim smoke test ok" ;; \
+         *CLOUD_AGENTS_API_URL*) echo "shim smoke test ok"; rm -f /workspace/core /workspace/core.* ;; \
          *) echo "shim smoke test FAILED — expected the missing-env panic, got: $shim_out" >&2; exit 1 ;; \
-       esac \
-    && rm -f /workspace/core /workspace/core.*
+       esac
 
 ENV HOME=/home/claude-user
 
