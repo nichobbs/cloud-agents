@@ -36,7 +36,7 @@ pub record SyncOutcome {
 
 // Issue facts fetched this pass, keyed by item ref (parallel slices: record
 // appends in a hot loop can miscompile, docs/lyric/gotchas.md).
-record FactsCache {
+ref record FactsCache {
   pub var refs: slice[String]
   pub var states: slice[String]
   pub var labelLists: slice[String]
@@ -44,7 +44,7 @@ record FactsCache {
 }
 
 // The per-pass mutable counters.
-record Pass {
+ref record Pass {
   pub var calls: Int
   pub var budget: Int
   pub var transitions: Int

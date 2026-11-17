@@ -110,6 +110,12 @@ see `shim/src/ledger_tools.l`'s `fieldList` / `stringValues`.
 **A `pub` record with private fields cannot be directly constructed outside the package.**
 Provide a constructor function. Callers outside use the function; callers inside use record syntax.
 
+**A record with `var` fields must be `ref record` to be mutated through an `in` parameter (0.7.13+).** `record Cell { pub var n: Int }` has value semantics: `cell.n = 1` on an `in` parameter is `V0038`, and the declaration gets `W0031`. Declare `ref record Cell` for a mutable shared object (as `ResultCell` in `src/docker_manager.l`).
+
+**`@generate(Json)` records can hit an internal compiler error on 0.7.13/0.7.14.** `T0120 ... a call to 'X.fromJsonElement/1' ... expected at most 1 argument(s), got 2` on a plain record, toggled by unrelated source layout (one extra comment line elsewhere in the file can hide or restore it). Not fixable in the source; 0.7.12 builds the same code.
+
+**A parameter list longer than the SQL's highest `@pN` placeholder is rejected by `Lyric.Db`** ("statement expects N parameter(s) ... but M were supplied"). Build the list to match the SQL (see `advanceIn` in `src/pgstore/imports.l`).
+
 ---
 
 ## Pattern matching
@@ -218,6 +224,8 @@ package Foo
 //! This is correct module-level doc — goes before `package`
 package Foo
 ```
+
+**Imports are not transitive (0.7.13+).** A name from another package needs that package's own `import`, even for a qualified reference (`CloudAgents.Pg.TenantScope` needs `import CloudAgents.Pg`) and even when an imported package already uses it; `tryParseInt`/`tryParseLong` need `import Std.Parse`. Older compilers resolved these through a sibling's import. Symptom: `T0020 unknown name ... add import X`, or `T0211 dependency '...' does not resolve` pointing at a type in a dependency.
 
 ---
 
