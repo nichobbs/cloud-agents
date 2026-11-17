@@ -300,7 +300,7 @@ func advanceIn(u: in CloudAgents.PgStore.PgUnit, ccrSessionId: in String, a: in 
   val restart = if a.restartUntilOrdinal < -1.toLong() then "restart_until_ordinal" else "@p5::bigint"
   val stamp = if a.startedRestart then "now()" else "last_restart_at"
   // The driver rejects a parameter list longer than the highest placeholder, so @p5 is only supplied when the SQL uses it.
-  val params = if a.restartUntilOrdinal < -1.toLong() then [ccrSessionId, a.throughEventId, toString(a.throughOrdinal), a.lastEventAt, a.countsJson] else [ccrSessionId, a.throughEventId, toString(a.throughOrdinal), a.lastEventAt, a.countsJson, toString(a.restartUntilOrdinal)]
+  val params: slice[String] = if a.restartUntilOrdinal < -1.toLong() then [ccrSessionId, a.throughEventId, toString(a.throughOrdinal), a.lastEventAt, a.countsJson] else [ccrSessionId, a.throughEventId, toString(a.throughOrdinal), a.lastEventAt, a.countsJson, toString(a.restartUntilOrdinal)]
   CloudAgents.PgStore.ex(u, "UPDATE claude_session_imports SET through_event_id = @p1, through_ordinal = @p2::bigint, " + "last_event_at = CASE WHEN @p3 = '' THEN last_event_at ELSE @p3 END, last_counts = @p4, " + "restart_until_ordinal = " + restart + ", last_restart_at = " + stamp + ", updated_at = now() " + "WHERE ccr_session_id = @p0", params)?
   return Ok(value = ())
 }

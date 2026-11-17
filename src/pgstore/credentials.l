@@ -363,7 +363,7 @@ pub func upsertGitHubOAuthRefresh(
     ") ON CONFLICT (user_id) DO UPDATE SET refresh_token = EXCLUDED.refresh_token, " +
     "access_expires_at = EXCLUDED.access_expires_at, refresh_expires_at = EXCLUDED.refresh_expires_at, " +
     "updated_at = EXCLUDED.updated_at"
-  val params = [
+  val params: slice[String] = [
     sc.userId,
     encrypted,
     CloudAgents.Repository.nowMillis(),
