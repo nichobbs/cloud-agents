@@ -116,15 +116,15 @@ func add(sc: in CloudAgents.Pg.TenantScope, id: in String): Unit {
   }
 }
 
-func opt(r: in Result[Option[AgentSession], DbError]): Option[AgentSession] {
+func opt(r: in Result[Option[AgentSession], CloudAgents.Db.DbError]): Option[AgentSession] {
   return match r { case Ok(v) -> v; case Err(e) -> panic("store call failed: " + dbErrorMessage(e)) }
 }
 
-func absent(r: in Result[Option[AgentSession], DbError]): Bool {
+func absent(r: in Result[Option[AgentSession], CloudAgents.Db.DbError]): Bool {
   return match opt(r) { case Some(_) -> false; case None -> true }
 }
 
-func optStr(r: in Result[Option[String], DbError]): String {
+func optStr(r: in Result[Option[String], CloudAgents.Db.DbError]): String {
   return match r {
     case Ok(Some(v)) -> v
     case Ok(None) -> "<none>"
@@ -132,11 +132,11 @@ func optStr(r: in Result[Option[String], DbError]): String {
   }
 }
 
-func claim(r: in Result[Bool, DbError]): Bool {
+func claim(r: in Result[Bool, CloudAgents.Db.DbError]): Bool {
   return match r { case Ok(v) -> v; case Err(e) -> panic("store call failed: " + dbErrorMessage(e)) }
 }
 
-func unit(r: in Result[Unit, DbError]): Unit {
+func unit(r: in Result[Unit, CloudAgents.Db.DbError]): Unit {
   match r {
     case Ok(_) -> ()
     case Err(e) -> panic("store call failed: " + dbErrorMessage(e))
