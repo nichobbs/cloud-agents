@@ -58,7 +58,7 @@ func fresh(): CloudAgents.Pg.TenantScope {
   return CloudAgents.Pg.personalScope("gh-pgj-" + uid())
 }
 
-func job(r: in Result[ScheduledJob, DbError]): ScheduledJob {
+func job(r: in Result[ScheduledJob, CloudAgents.Db.DbError]): ScheduledJob {
   return match r { case Ok(v) -> v; case Err(e) -> panic("store call failed: " + dbErrorMessage(e)) }
 }
 
@@ -70,11 +70,11 @@ func get(id: in String, sc: in CloudAgents.Pg.TenantScope): ScheduledJob {
   }
 }
 
-func int(r: in Result[Int, DbError]): Int {
+func int(r: in Result[Int, CloudAgents.Db.DbError]): Int {
   return match r { case Ok(v) -> v; case Err(e) -> panic("store call failed: " + dbErrorMessage(e)) }
 }
 
-func unit(r: in Result[Unit, DbError]): Unit {
+func unit(r: in Result[Unit, CloudAgents.Db.DbError]): Unit {
   match r {
     case Ok(_) -> ()
     case Err(e) -> panic("store call failed: " + dbErrorMessage(e))

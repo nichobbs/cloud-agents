@@ -25,7 +25,7 @@ import CloudAgents.Ledger.Observer
 import CloudAgents.Auth
 import CloudAgents.Scope
 
-pub record ResultCell {
+pub ref record ResultCell {
   pub var isSuccess: Bool = false
   pub var output: String = ""
   pub var error: String = ""

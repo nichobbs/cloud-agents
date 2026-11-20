@@ -110,6 +110,12 @@ see `shim/src/ledger_tools.l`'s `fieldList` / `stringValues`.
 **A `pub` record with private fields cannot be directly constructed outside the package.**
 Provide a constructor function. Callers outside use the function; callers inside use record syntax.
 
+**A record with `var` fields must be `ref record` to be mutated through an `in` parameter (0.7.13+).** `record Cell { pub var n: Int }` has value semantics: `cell.n = 1` on an `in` parameter is `V0038`, and the declaration gets `W0031`. Declare `ref record Cell` for a mutable shared object (as `ResultCell` in `src/docker_manager.l`).
+
+**`@generate(Json)` records can hit an internal compiler error on 0.7.13/0.7.14.** `T0120 ... a call to 'X.fromJsonElement/1' ... expected at most 1 argument(s), got 2` on a plain record, toggled by unrelated source layout (one extra comment line elsewhere in the file can hide or restore it). Not fixable in the source; 0.7.12 builds the same code.
+
+**A parameter list longer than the SQL's highest `@pN` placeholder is rejected by `Lyric.Db`** ("statement expects N parameter(s) ... but M were supplied"). Build the list to match the SQL (see `advanceIn` in `src/pgstore/imports.l`).
+
 ---
 
 ## Pattern matching
@@ -219,6 +225,8 @@ package Foo
 package Foo
 ```
 
+**Imports are not transitive (0.7.13+).** A name from another package needs that package's own `import`, even for a qualified reference (`CloudAgents.Pg.TenantScope` needs `import CloudAgents.Pg`) and even when an imported package already uses it; `tryParseInt`/`tryParseLong` need `import Std.Parse`. Older compilers resolved these through a sibling's import. Symptom: `T0020 unknown name ... add import X`, or `T0211 dependency '...' does not resolve` pointing at a type in a dependency.
+
 ---
 
 ## Enums
@@ -274,6 +282,8 @@ pub func sqrt(x: in Double): Double
 **`Unit` is not `void`.** It's a real type with one value `()`. Can be stored, returned explicitly, used as a generic type argument.
 
 **Adding a case to a `pub` union is a breaking change.** Every downstream `match` breaks. Use an interface instead if you expect extension.
+
+**An unannotated `val`/`var` initialised from a list literal with a call, member access or index element compiles to a `List<object>`, not an array (Lyric 0.7.12 to 0.7.14, memory-unsafe).** `val params = [id, sc.userId, x.toString()]` is fine until `params` is passed (directly or through a wrapper such as `CloudAgents.PgStore.ex`/`q`) to another assembly whose parameter is `slice[String]` (a CLR `String[]`): every `Lyric.Db` call, `Lyric.Web`, `Lyric.Docker`, any `@externTarget`. The callee then reads a `List` as an array: wrong or empty results, `SQL statement expects N parameter(s) ... but <garbage> were supplied`, `Arithmetic operation resulted in an overflow`, or `AccessViolationException`. Under the default tiered JIT it usually works for the first thousands of calls and then fails persistently, so short test runs pass while a long-running server breaks; **`export DOTNET_TieredCompilation=0` makes it fail from the first call**, so run the live-Postgres suites that way to flush it out. Same for `if`/`match` initialisers whose arms are such lists. Safe forms: an explicit annotation (`val params: slice[String] = [ ... ]`, also with `if`/`match` initialisers), an inline literal written directly in the call, a list returned from a function declared `: slice[String]`, or a literal whose elements are only literals/locals/parameters. Rule for this repo: always annotate list bindings that can reach a store, web, docker or extern call (`src/pgstore/imports.l` `advanceIn`, `credentials.l` `upsertGitHubOAuthRefresh` and `session_data.l` `deleteSessionGroupReparenting` were the affected sites).
 
 **A literal `${...}` inside a plain double-quoted string is interpolation, not text.** `"Authorization=Bearer ${GITHUB_TOKEN}"` tries to resolve `GITHUB_TOKEN` as a name in scope and fails to compile (`T0115: cannot resolve name ... to a value here`) if nothing by that name exists — it does NOT produce the literal four characters `$`, `{`, `...`, `}`. This bites test fixtures for a value that is itself a `${VAR}`-style placeholder meant for something else to expand later (e.g. an MCP server env/header entry docker/inject-library.sh's `envsubst` pass expands at container-injection time, not at Lyric compile time) — use a raw string instead: `r"Authorization=Bearer ${GITHUB_TOKEN}"`. Not an issue for the same text sitting in a data file (JSON, `seed/mcp-servers/*.json`) or in a `//`/`///`/`//!` comment — only inside a live, compiled string literal.
 

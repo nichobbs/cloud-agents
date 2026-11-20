@@ -25,6 +25,7 @@ import Std.File
 import Std.Testing
 import CloudAgents.Capture
 import CloudAgents.CheckpointBridge
+import Testamur.CheckpointFormat.Adapt.{InvocationContext, StreamJsonMapping}
 import Testamur.CheckpointFormat.Model
 import Testamur.CheckpointFormat.Canon
 import extern System.Text.Encoding as Encoding

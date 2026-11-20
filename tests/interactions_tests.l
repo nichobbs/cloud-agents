@@ -4,6 +4,7 @@
 package CloudAgents.InteractionsTests
 
 import Std.Core
+import Std.Collections
 import Std.Environment
 import Std.Testing
 import Std.Uuid

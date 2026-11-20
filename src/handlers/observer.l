@@ -19,6 +19,7 @@
 //! logic is tested against a fake (CloudAgents.ObserverDocker is the real one).
 package CloudAgents.ObserverHandlers
 
+import CloudAgents.Pg
 import Std.Core
 import Web
 import CloudAgents.Auth

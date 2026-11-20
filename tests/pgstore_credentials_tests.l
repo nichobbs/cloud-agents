@@ -135,7 +135,7 @@ func cache(userId: in String, provider: in String, body: in String): Unit {
   }
 }
 
-func int(r: in Result[Int, DbError]): Int {
+func int(r: in Result[Int, CloudAgents.Db.DbError]): Int {
   return match r { case Ok(v) -> v; case Err(e) -> panic("store call failed: " + dbErrorMessage(e)) }
 }
 

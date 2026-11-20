@@ -207,7 +207,7 @@ func stateOf(sid: in String, id: in String): String {
 // ── An in-memory GitHub ───────────────────────────────────────────────────────
 // Issues are keyed "owner/repo#n"; labels travel "\n"-joined. Parallel
 // slices rather than record lists (docs/lyric/gotchas.md).
-record FakeGitHub {
+ref record FakeGitHub {
   pub var issueKeys: slice[String]
   pub var issueStates: slice[String]
   pub var issueLabels: slice[String]

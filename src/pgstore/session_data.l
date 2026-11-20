@@ -251,7 +251,7 @@ pub func deleteSessionGroupReparenting(
   defer {
     CloudAgents.PgStore.release(u)
   }
-  val params = [id, sc.userId, newParentId]
+  val params: slice[String] = [id, sc.userId, newParentId]
   CloudAgents.PgStore.ex(u, "UPDATE session_groups SET parent_id = @p2 WHERE parent_id = @p0 AND user_id = @p1", params)?
   CloudAgents.PgStore.ex(u, "UPDATE sessions SET group_id = @p2 WHERE group_id = @p0 AND user_id = @p1", params)?
   CloudAgents.PgStore.ex(u, "DELETE FROM session_groups WHERE id = @p0 AND user_id = @p1", [id, sc.userId])?

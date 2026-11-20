@@ -1569,7 +1569,7 @@ func sweepStrandedRun(r: in CloudAgents.SessionStore.StrandedRun): Bool {
   }
   match CloudAgents.Repository.listRuns(r.sessionId, r.tenantScope) {
     case Ok(rl) -> {
-      val runs: slice[CloudAgents.Repository.Run] = rl.runs
+      val runs: slice[CloudAgents.Repository.Run] = rl
       for run in runs {
         if run.status == "running" {
           val _ = CloudAgents.Repository.recordRunEnd(run.id, r.tenantScope, "failed")

@@ -18,6 +18,7 @@
 @runtime_checked
 package CloudAgents.PgStore.SessionEvents
 
+import Std.Collections
 import Std.Core
 import Db
 import CloudAgents.Pg
