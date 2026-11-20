@@ -415,6 +415,85 @@ pub func authorize(authHeaderValue: in String, apiToken: in String, allowUnauthe
   }
 }
 
+// ─── Maintenance routes (/api/maintenance/*) ─────────────────────────────────
+//
+// The maintenance routes are an operator control plane polled by the
+// `maintenance` container (deploy/maintenance.sh). They get their own
+// credential, CLOUD_AGENTS_MAINTENANCE_TOKEN, so that container does not need
+// the operator token, and the token is honoured on these routes ONLY: every
+// other route treats it as any other unknown bearer. The decision below is
+// pure (configuration is passed in) so it is unit-testable; the auth
+// middleware calls it before any other bearer handling, and these routes
+// never admit an OAuth identity or open (unauthenticated) mode.
+/// The shortest CLOUD_AGENTS_MAINTENANCE_TOKEN accepted. Shorter values are
+/// treated as misconfiguration and never match anything.
+pub func minMaintenanceTokenLength(): Int {
+  return 32
+}
+
+/// Whether `path` is under the maintenance prefix. Deliberately broader than
+/// "/api/maintenance/" (also catches "/api/maintenance" and look-alikes), so
+/// any near-miss gets the stricter check rather than the ordinary one.
+pub func isMaintenanceRoute(path: in String): Bool {
+  return path.startsWith("/api/maintenance")
+}
+
+/// Whether the configured maintenance token is usable: long enough and
+/// distinct from the operator token (equal tokens would defeat the scoping).
+pub func maintenanceTokenUsable(maintenanceToken: in String, apiToken: in String): Bool {
+  if maintenanceToken.length < minMaintenanceTokenLength() {
+    return false
+  }
+  if apiToken.length > 0 and constantTimeEquals(maintenanceToken, apiToken) {
+    return false
+  }
+  return true
+}
+
+/// Whether the operator token is also accepted on maintenance routes.
+/// `setting` is CLOUD_AGENTS_MAINTENANCE_ALLOW_OPERATOR_TOKEN: "1" allows,
+/// "0" denies, unset/empty means "yes only while no maintenance token is
+/// configured" (the legacy single-token deployment keeps working; once a
+/// maintenance token is set the operator token stops working here), and any
+/// other value denies (fail closed).
+pub func operatorTokenAllowedOnMaintenance(setting: in String, maintenanceTokenConfigured: in Bool): Bool {
+  if setting == "1" {
+    return true
+  }
+  if setting == "" {
+    return not maintenanceTokenConfigured
+  }
+  return false
+}
+
+/// The decision for a request to a maintenance route. Allowed carries the
+/// identity the handlers run as (the operator).
+pub func authorizeMaintenance(
+  authHeaderValue: in String,
+  maintenanceToken: in String,
+  apiToken: in String,
+  operatorSetting: in String,
+): AuthOutcome {
+  val configured = maintenanceToken.length > 0
+  val usable = maintenanceTokenUsable(maintenanceToken, apiToken)
+  val operatorOk = operatorTokenAllowedOnMaintenance(operatorSetting, configured) and apiToken.length > 0
+  if not usable and not operatorOk {
+    return Denied(error = AuthNotConfigured)
+  }
+  match extractBearerToken(authHeaderValue) {
+    case None -> return Denied(error = MissingToken)
+    case Some(token) -> {
+      if usable and constantTimeEquals(token, maintenanceToken) {
+        return Allowed(userId = operatorUserId())
+      }
+      if operatorOk and constantTimeEquals(token, apiToken) {
+        return Allowed(userId = operatorUserId())
+      }
+      return Denied(error = InvalidToken)
+    }
+  }
+}
+
 /// Whether a route that must never run unauthenticated (credential storage)
 /// may proceed. Distinct from `authorize`: here a missing/empty configured
 /// token is a denial even when the operator opted in to unauthenticated

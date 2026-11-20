@@ -18,13 +18,16 @@ compose file for what differs and why.
    (see `.env.example` for what each does):
    - `ENCRYPTION_KEY` (required — generate with `openssl rand -base64 32`)
    - `CLOUD_AGENTS_API_TOKEN` (required — generate with `openssl rand -hex 32`).
-     The maintenance poller authenticates with it (see "Maintenance
-     poller" below). Signing in with GitHub keeps working; the static token
+     Signing in with GitHub keeps working; the static token
      is an extra operator credential. The web UI has no field for the
      static token, so browser users need GitHub OAuth (below) to sign in.
    - `CLOUD_AGENTS_PG_SUPERUSER_PASSWORD`, `CLOUD_AGENTS_PG_OWNER_PASSWORD`,
      `CLOUD_AGENTS_PG_APP_PASSWORD` (required — letters and digits only,
      generate each with `openssl rand -hex 24`; see "Postgres" below)
+   - `CLOUD_AGENTS_MAINTENANCE_TOKEN` (required — at least 32 characters,
+     different from the operator token; generate with `openssl rand -hex 32`).
+     The maintenance poller authenticates with it, and the API accepts it only
+     on `/api/maintenance/*` (see "Maintenance poller" below).
    - `MAINTENANCE_*_SECONDS` (optional — poller intervals, see
      "Maintenance poller" below)
    - `CLOUD_AGENTS_WHITELIST` (optional)
@@ -103,8 +106,9 @@ deleted once the new deploy is healthy.
 
 The API has no in-process timer, so periodic work is done by POSTing its
 operator-only maintenance endpoints. The `maintenance` service
-(`deploy/maintenance.sh`) does that on a schedule, authenticating with
-`CLOUD_AGENTS_API_TOKEN`:
+(`deploy/maintenance.sh`) does that on a schedule, authenticating with its own
+credential, `CLOUD_AGENTS_MAINTENANCE_TOKEN` (see "Credential and exposure"
+below), reaching the API directly at `http://api:8080`:
 
 | Endpoint | Interval (default) | Timeout (default) | What it does |
 |---|---|---|---|
@@ -120,6 +124,28 @@ loop, so a long call (`trigger-jobs` runs due jobs inline) never delays the
 others, and each call is abandoned after its endpoint's timeout, so a hung
 connection cannot stall a loop for long. `trigger-jobs` and `observe` run
 their work inline, hence their longer timeouts. The `maintenance` container's logs show every call and its result.
+
+### Credential and exposure
+
+- `/api/maintenance/*` is an operator control plane for the poller, never for
+  browsers: both Caddyfiles answer `404` for it on the public listener, and the
+  poller calls the API over the internal network.
+- `CLOUD_AGENTS_MAINTENANCE_TOKEN` is accepted only on those routes; on every
+  other route it is just an unknown bearer. The `maintenance` container is
+  given this token and nothing else, so it holds no credential that works on
+  any other route.
+- The API ignores a maintenance token shorter than 32 characters or equal to
+  `CLOUD_AGENTS_API_TOKEN` (and logs a warning at startup), so a bad value
+  leaves the routes refusing callers, never open.
+- Maintenance routes never admit a GitHub OAuth identity or open
+  (`CLOUD_AGENTS_ALLOW_UNAUTHENTICATED`) mode.
+- While a maintenance token is set, the operator token is not accepted on
+  these routes. `CLOUD_AGENTS_MAINTENANCE_ALLOW_OPERATOR_TOKEN=1` accepts both;
+  any other non-empty value (`0`, a typo) accepts the maintenance token only.
+  With no maintenance token configured (a deployment not yet migrated), the
+  operator token still works there, as before.
+- To rotate, change the variable and redeploy the `api` and `maintenance`
+  services together.
 
 `reap` matters most: the API no longer resets sessions at startup, so after a
 redeploy, crash or Docker restart, a session whose run was cut off stays

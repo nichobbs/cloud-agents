@@ -38,6 +38,11 @@ an *external* scheduler poll it.
 - `GET /api/webhooks/pending` + `POST /api/webhooks/events/{id}/delivered` —
   the webhook outbox.
 
+The maintenance endpoints authenticate with a scoped credential,
+`CLOUD_AGENTS_MAINTENANCE_TOKEN`, accepted only on `/api/maintenance/*` (never
+an OAuth identity or open mode), and the reverse proxy does not serve them
+publicly; see `deploy/COOLIFY.md` "Credential and exposure".
+
 Scheduled jobs follow the exact same idiom: `POST /api/maintenance/trigger-jobs`
 scans for jobs whose `next_run_at` has arrived and runs them, safe to call
 repeatedly (a job not yet due is untouched). The operator is responsible for

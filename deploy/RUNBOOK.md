@@ -27,7 +27,7 @@ credentials), not in the containers.
 sudo ./install-docker.sh                 # install Docker + build all five runner images
 sudo mkdir -p /opt/cloud-agents && sudo rsync -a . /opt/cloud-agents/
 cd /opt/cloud-agents/deploy
-cp .env.example .env && edit .env        # set ENCRYPTION_KEY, CLOUD_AGENTS_API_TOKEN, the CLOUD_AGENTS_PG_* passwords
+cp .env.example .env && edit .env        # set ENCRYPTION_KEY, CLOUD_AGENTS_API_TOKEN, CLOUD_AGENTS_MAINTENANCE_TOKEN, the CLOUD_AGENTS_PG_* passwords
 docker compose up -d
 ```
 
@@ -93,8 +93,9 @@ prune `session-*` workspace volumes for deleted sessions.
   (`POST /api/maintenance/reap`, called every minute by the `maintenance`
   container) stops its container, marks the run failed and returns the
   session to `IDLE`. To free such sessions sooner after a restart, call that
-  endpoint by hand once two minutes have passed:
-  `curl -X POST -H "Authorization: Bearer $CLOUD_AGENTS_API_TOKEN" https://<domain>/api/maintenance/reap`. On the
+  endpoint by hand once two minutes have passed, from inside the compose
+  network (the public proxy answers 404 for `/api/maintenance/*`):
+  `docker compose exec maintenance sh -c 'curl -X POST -H "Authorization: Bearer $CLOUD_AGENTS_MAINTENANCE_TOKEN" http://api:8080/api/maintenance/reap'`. On the
   next message the API recreates a fresh container from the session's
   volumes.
 - **API crash loop:** check `docker compose logs api`. `ENCRYPTION_KEY` is
@@ -131,12 +132,21 @@ their personal tenant, created on their first authenticated request.
 ## Maintenance poller
 
 The `maintenance` container POSTs the API's operator-only maintenance
-endpoints with `CLOUD_AGENTS_API_TOKEN`: `reap`, `trigger-jobs`,
+endpoints with `CLOUD_AGENTS_MAINTENANCE_TOKEN`, a credential the API accepts
+only on those routes (the container holds no operator token): `reap`, `trigger-jobs`,
 `drain-graph-ingest` and `observe` every 60 s, and `ledger-sync` and
 `membership-sync` every 300 s.
 Each interval is set by a `MAINTENANCE_*_SECONDS` variable in `.env` (0
 disables it); `COOLIFY.md` "Maintenance poller" lists them. Every call and
 its result is logged: `docker compose logs maintenance`.
+
+The reverse proxy answers `404` for `/api/maintenance/*` on the public
+listener (both Caddyfiles); the poller reaches the API directly at
+`http://api:8080`. A maintenance token under 32 characters, or equal to the
+operator token, is ignored by the API (startup warning) and the routes then
+refuse callers. `COOLIFY.md` "Credential and exposure" has the full rules,
+including `CLOUD_AGENTS_MAINTENANCE_ALLOW_OPERATOR_TOKEN`. To rotate the
+token, change it in `.env` and run `docker compose up -d api maintenance`.
 
 ## Rollback
 

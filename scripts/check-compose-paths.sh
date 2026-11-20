@@ -86,7 +86,8 @@ PYEOF
 # `docker compose config` renders them; only paths are checked here.
 export ENCRYPTION_KEY=ci-check CLOUD_AGENTS_API_TOKEN=ci-check \
   CLOUD_AGENTS_PG_SUPERUSER_PASSWORD=cicheck CLOUD_AGENTS_PG_OWNER_PASSWORD=cicheck \
-  CLOUD_AGENTS_PG_APP_PASSWORD=cicheck
+  CLOUD_AGENTS_PG_APP_PASSWORD=cicheck \
+  CLOUD_AGENTS_MAINTENANCE_TOKEN=ci-check-maintenance-token-0123456789
 
 echo "== docker-compose.yml (cd deploy/ invocation, per RUNBOOK.md) =="
 json_std="$(cd "$REPO_ROOT/deploy" && docker compose config --format json)"

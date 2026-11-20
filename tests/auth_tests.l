@@ -299,3 +299,77 @@ test "isContainerCallbackRoute exempts container create/poll routes but not the 
   assertFalse(isContainerCallbackRoute("/api/sessions/abc-123"), "an unrelated route is never exempt")
   assertFalse(isContainerCallbackRoute("/api/health"), "the health route is unaffected by this predicate")
 }
+
+// ─── Maintenance routes: scoped credential (nichobbs/testamur#357) ──────────
+
+func maintDenied(o: in AuthOutcome): Bool {
+  return match o { case Allowed(_) -> false; case Denied(_) -> true }
+}
+
+func maintAllowed(o: in AuthOutcome): Bool {
+  return match o { case Allowed(_) -> true; case Denied(_) -> false }
+}
+
+test "Maintenance route predicate" {
+  assertTrue(isMaintenanceRoute("/api/maintenance/reap"), "reap")
+  assertTrue(isMaintenanceRoute("/api/maintenance/membership-sync"), "membership-sync")
+  assertTrue(isMaintenanceRoute("/api/maintenance"), "bare prefix gets the strict check")
+  assertTrue(isMaintenanceRoute("/api/maintenance/"), "trailing slash")
+  assertFalse(isMaintenanceRoute("/api/sessions"), "ordinary route")
+  assertFalse(isMaintenanceRoute("/api/health"), "health")
+}
+
+test "Maintenance token usability is fail closed" {
+  val good = "m-0123456789abcdef0123456789abcdef"
+  assertTrue(maintenanceTokenUsable(good, "operator-token"), "long distinct token is usable")
+  assertFalse(maintenanceTokenUsable("short", "operator-token"), "short token is not usable")
+  assertFalse(maintenanceTokenUsable("", "operator-token"), "unset token is not usable")
+  assertFalse(maintenanceTokenUsable(good, good), "token equal to the operator token is not usable")
+}
+
+test "Operator token on maintenance routes: setting parsing" {
+  assertTrue(operatorTokenAllowedOnMaintenance("", false), "unset, no maintenance token: legacy, allowed")
+  assertFalse(operatorTokenAllowedOnMaintenance("", true), "unset, maintenance token set: denied")
+  assertTrue(operatorTokenAllowedOnMaintenance("1", true), "explicit 1 allows")
+  assertFalse(operatorTokenAllowedOnMaintenance("0", false), "explicit 0 denies")
+  assertFalse(operatorTokenAllowedOnMaintenance("true", false), "garbage denies")
+  assertFalse(operatorTokenAllowedOnMaintenance("yes", true), "garbage denies")
+}
+
+test "Maintenance token authorizes maintenance routes" {
+  val good = "m-0123456789abcdef0123456789abcdef"
+  assertTrue(maintAllowed(authorizeMaintenance("Bearer " + good, good, "op-token", "")), "maintenance token accepted")
+  assertTrue(maintDenied(authorizeMaintenance("Bearer wrong", good, "op-token", "")), "wrong token refused")
+  assertTrue(maintDenied(authorizeMaintenance("", good, "op-token", "")), "no header refused")
+  assertTrue(maintDenied(authorizeMaintenance("Basic " + good, good, "op-token", "")), "wrong scheme refused")
+}
+
+test "Operator token is refused on maintenance routes once the scoped token is set" {
+  val good = "m-0123456789abcdef0123456789abcdef"
+  assertTrue(maintDenied(authorizeMaintenance("Bearer op-token", good, "op-token", "")), "operator refused by default")
+  assertTrue(maintAllowed(authorizeMaintenance("Bearer op-token", good, "op-token", "1")), "operator allowed by explicit opt-in")
+  assertTrue(maintDenied(authorizeMaintenance("Bearer op-token", good, "op-token", "maybe")), "garbage setting denies")
+}
+
+test "Legacy deployment without a maintenance token keeps the operator token" {
+  assertTrue(maintAllowed(authorizeMaintenance("Bearer op-token", "", "op-token", "")), "operator accepted")
+  assertTrue(maintDenied(authorizeMaintenance("Bearer ", "", "op-token", "")), "empty bearer refused")
+  assertTrue(maintDenied(authorizeMaintenance("Bearer op-token", "", "op-token", "0")), "explicit 0 refuses it")
+}
+
+test "Maintenance routes refuse everything when nothing usable is configured" {
+  assertTrue(maintDenied(authorizeMaintenance("Bearer anything", "", "", "")), "no tokens at all")
+  assertTrue(maintDenied(authorizeMaintenance("", "", "", "")), "no tokens, no header (open mode does not apply)")
+  assertTrue(maintDenied(authorizeMaintenance("Bearer short", "short", "op-token", "0")), "short token, operator denied")
+  assertTrue(maintDenied(authorizeMaintenance("Bearer short", "short", "op-token", "")), "short token is set, so operator is denied too")
+  val same = "m-0123456789abcdef0123456789abcdef"
+  assertTrue(maintDenied(authorizeMaintenance("Bearer " + same, same, same, "")), "token equal to operator token refused")
+}
+
+test "The maintenance token works on no other route" {
+  val good = "m-0123456789abcdef0123456789abcdef"
+  // The ordinary decision (static token, no OAuth) knows only the operator token.
+  assertTrue(maintDenied(authorize("Bearer " + good, "op-token", false)), "authorize refuses it")
+  assertTrue(maintDenied(authorize("Bearer " + good, "op-token", true)), "open mode does not admit it either")
+  assertTrue(maintAllowed(authorize("Bearer op-token", "op-token", false)), "the operator token still works elsewhere")
+}
