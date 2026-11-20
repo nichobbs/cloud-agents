@@ -101,6 +101,33 @@ impl Web.Middleware for AuthMiddleware {
       apiToken = ""
     }
     val authHeader = match Web.header(req, "Authorization") { case Some(h) -> h; case None -> "" }
+    // /api/maintenance/* is the operator control plane the maintenance poller
+    // calls: it has its own scoped credential and never admits an OAuth
+    // identity or open mode (CloudAgents.Auth.authorizeMaintenance).
+    if CloudAgents.Auth.isMaintenanceRoute(req.path) {
+      var maintToken = Env.GetEnvironmentVariable("CLOUD_AGENTS_MAINTENANCE_TOKEN")
+      if DotNetString.IsNullOrEmpty(maintToken) {
+        maintToken = ""
+      }
+      var operatorSetting = Env.GetEnvironmentVariable("CLOUD_AGENTS_MAINTENANCE_ALLOW_OPERATOR_TOKEN")
+      if DotNetString.IsNullOrEmpty(operatorSetting) {
+        operatorSetting = ""
+      }
+      match CloudAgents.Auth.authorizeMaintenance(authHeader, maintToken, apiToken, operatorSetting) {
+        case Allowed(userId) -> {
+          match CloudAgents.PgStore.Tenancy.ensurePersonalTenant(userId) {
+            case Ok(_) -> ()
+            case Err(e) -> {
+              println("ERROR: could not provision the personal tenant for " + userId + ": " + CloudAgents.Db.dbErrorMessage(e))
+              return Web.errorResponse(Web.internalError("database unavailable"))
+            }
+          }
+          CloudAgents.Auth.setCurrentUserId(userId)
+          return next.handle(req)
+        }
+        case Denied(e) -> return Web.errorResponse(Web.unauthorized(CloudAgents.Auth.authErrorMessage(e)))
+      }
+    }
     // An import token (docs/claude-session-import.md §5) acts for one user in
     // one tenant, and only on the import routes: a leaked token cannot read
     // sessions or start runs.
@@ -2334,6 +2361,18 @@ pub func main(): Unit {
     }
   } else {
     println("NOTE: ENCRYPTION_KEY is not set — the credential store is disabled")
+  }
+
+  // Maintenance routes: say whether the scoped credential is usable.
+  val maintTokenEnv = Env.GetEnvironmentVariable("CLOUD_AGENTS_MAINTENANCE_TOKEN")
+  if not DotNetString.IsNullOrEmpty(maintTokenEnv) {
+    val apiTokenEnv = Env.GetEnvironmentVariable("CLOUD_AGENTS_API_TOKEN")
+    val apiTokenForCheck = if DotNetString.IsNullOrEmpty(apiTokenEnv) then "" else apiTokenEnv
+    if not CloudAgents.Auth.maintenanceTokenUsable(maintTokenEnv, apiTokenForCheck) {
+      println(
+        "WARNING: CLOUD_AGENTS_MAINTENANCE_TOKEN is too short (minimum 32 characters) or equals CLOUD_AGENTS_API_TOKEN — it is ignored and /api/maintenance/* refuses it"
+      )
+    }
   }
 
   // Say at startup how the API authenticates, so a deployment that refuses
