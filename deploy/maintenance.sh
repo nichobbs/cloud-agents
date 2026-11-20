@@ -10,7 +10,10 @@
 # its work first.
 #
 # Environment:
-#   CLOUD_AGENTS_API_TOKEN     required; the operator bearer token.
+#   CLOUD_AGENTS_MAINTENANCE_TOKEN required; at least 32 characters. A scoped
+#                              credential the API accepts only on
+#                              /api/maintenance/*. This container holds no
+#                              other credential (not the operator token).
 #   CLOUD_AGENTS_API_URL       default http://api:8080
 #   MAINTENANCE_REAP_SECONDS               default 60
 #   MAINTENANCE_TRIGGER_JOBS_SECONDS       default 60
@@ -31,8 +34,12 @@
 #   MAINTENANCE_MEMBERSHIP_SYNC_TIMEOUT_SECONDS    default 1800
 set -eu
 
-if [ -z "${CLOUD_AGENTS_API_TOKEN:-}" ]; then
-  echo "maintenance: CLOUD_AGENTS_API_TOKEN is not set; the maintenance endpoints only run for the operator" >&2
+if [ -z "${CLOUD_AGENTS_MAINTENANCE_TOKEN:-}" ]; then
+  echo "maintenance: CLOUD_AGENTS_MAINTENANCE_TOKEN is not set; the maintenance endpoints require it" >&2
+  exit 1
+fi
+if [ "${#CLOUD_AGENTS_MAINTENANCE_TOKEN}" -lt 32 ]; then
+  echo "maintenance: CLOUD_AGENTS_MAINTENANCE_TOKEN must be at least 32 characters (the API ignores a shorter one)" >&2
   exit 1
 fi
 API_URL="${CLOUD_AGENTS_API_URL:-http://api:8080}"
@@ -47,7 +54,7 @@ call() {
   # The timeout only stops a hung connection from stalling the loop for
   # good; the connect timeout catches an API that is down.
   if out=$(curl -sS --connect-timeout 10 --max-time "$timeout" -X POST \
-    -H "Authorization: Bearer ${CLOUD_AGENTS_API_TOKEN}" \
+    -H "Authorization: Bearer ${CLOUD_AGENTS_MAINTENANCE_TOKEN}" \
     -w ' [HTTP %{http_code}]' \
     "${API_URL}/api/maintenance/${path}" 2>&1); then
     log "${path}: ${out}"

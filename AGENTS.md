@@ -184,6 +184,13 @@ refuses to start without it. For a local database, provision with
 Postgres for you. Message search uses Postgres `tsvector`
 (`docs/phase9-message-search.md` §8).
 
+**Maintenance routes** (`/api/maintenance/*`, polled by `deploy/maintenance.sh`)
+authenticate with their own `CLOUD_AGENTS_MAINTENANCE_TOKEN` (`CloudAgents.Auth.authorizeMaintenance`,
+called first in `AuthMiddleware`): accepted only on those routes, at least 32 characters and different from the
+operator token or it is ignored, never an OAuth identity or open mode. While it is set the operator token is not
+accepted there unless `CLOUD_AGENTS_MAINTENANCE_ALLOW_OPERATOR_TOKEN=1`. Both Caddyfiles answer 404 for the prefix on
+the public listener; the poller holds no other credential. See `deploy/COOLIFY.md` "Credential and exposure".
+
 Source files use `.l` extension. Entry point is `func main(): Unit` in the appropriate package.
 
 ## Before writing any Lyric code

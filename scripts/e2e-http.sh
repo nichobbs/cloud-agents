@@ -136,7 +136,7 @@ assert() {
   # instead of stalling CI for hours (#494). These endpoints all answer in
   # milliseconds; 20s is pure slack.
   local args=(-sS --connect-timeout 5 --max-time 20 -X "$method" -w $'\n%{http_code}')
-  [ "$auth" = "yes" ] && args+=(-H "Authorization: Bearer ${TOKEN}")
+  [ "$auth" = "yes" ] && args+=(-H "Authorization: Bearer ${BEARER:-$TOKEN}")
   [ -n "$body" ] && args+=(-H "Content-Type: application/json" --data "$body")
   [ -n "$org" ] && args+=(-H "X-CloudAgents-Org: ${org}")
   local out code out_body
@@ -467,8 +467,10 @@ assert "oauth: health stays open"              GET  "/api/health"               
 assert "oauth: auth config stays open"         GET  "/api/auth/github/config"   no 200 '"configured":"true"'
 assert "oauth: session list needs a bearer"    GET  "/api/sessions"             no 401 "missing Authorization bearer token"
 assert "oauth: session creation needs a bearer" POST "/api/sessions"            no 401 "missing Authorization bearer token" '{}'
-assert "oauth: reap needs a bearer"            POST "/api/maintenance/reap"     no 401 "missing Authorization bearer token"
-assert "oauth: trigger-jobs needs a bearer"    POST "/api/maintenance/trigger-jobs" no 401 "missing Authorization bearer token"
+# Maintenance routes never admit an OAuth identity or open mode: with no
+# static or maintenance token configured they refuse every caller.
+assert "oauth: reap refused (no maintenance credential)" POST "/api/maintenance/reap" no 401 "authentication is not configured"
+assert "oauth: trigger-jobs refused (no maintenance credential)" POST "/api/maintenance/trigger-jobs" no 401 "authentication is not configured"
 assert "oauth: credentials need a bearer"      GET  "/api/credentials"          no 401 "missing Authorization bearer token"
 
 # Nothing configured: refused unless the operator opts in.
@@ -482,6 +484,31 @@ restart_server CLOUD_AGENTS_ALLOW_UNAUTHENTICATED=1
 echo "==> restarted: no static token, no OAuth, CLOUD_AGENTS_ALLOW_UNAUTHENTICATED=1"
 assert "opted in: session list open"           GET  "/api/sessions"             no 200 ""
 assert "opted in: credentials still refused"   GET  "/api/credentials"          no 401 "authentication is not configured"
+
+
+# Scoped maintenance credential: with CLOUD_AGENTS_MAINTENANCE_TOKEN set, the
+# operator token stops working on /api/maintenance/*, the maintenance token
+# works there and on no other route. (The token below is a throwaway test
+# value; the fixture is 32+ characters, as the API requires.)
+MAINT_TOKEN="e2e-maintenance-token-0123456789abcdef"
+restart_server CLOUD_AGENTS_API_TOKEN="$TOKEN" CLOUD_AGENTS_MAINTENANCE_TOKEN="$MAINT_TOKEN"
+echo "==> restarted: operator token + scoped maintenance token"
+BEARER="$MAINT_TOKEN"
+assert "maintenance token on maintenance route" POST "/api/maintenance/membership-sync" yes 200 '"synced":'
+assert "maintenance token refused on other routes" GET "/api/sessions" yes 401 "invalid or expired token"
+assert "maintenance token refused on credentials" GET "/api/credentials" yes 401 "invalid or expired token"
+BEARER="$TOKEN"
+assert "operator token refused on maintenance route" POST "/api/maintenance/membership-sync" yes 401 "invalid or expired token"
+assert "operator token still works elsewhere" GET "/api/sessions" yes 200 ""
+BEARER=""
+assert "maintenance route needs a bearer" POST "/api/maintenance/reap" no 401 "missing Authorization bearer token"
+restart_server CLOUD_AGENTS_API_TOKEN="$TOKEN" CLOUD_AGENTS_MAINTENANCE_TOKEN="short"
+echo "==> restarted: operator token + too-short maintenance token"
+BEARER="short"
+assert "short maintenance token ignored" POST "/api/maintenance/reap" yes 401 ""
+BEARER="$TOKEN"
+assert "operator refused beside an unusable maintenance token" POST "/api/maintenance/reap" yes 401 ""
+BEARER=""
 
 if [ "$fails" -ne 0 ]; then
   echo "==> e2e-http: ${fails} assertion(s) failed" >&2

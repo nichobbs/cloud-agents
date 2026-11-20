@@ -13,6 +13,15 @@ agent.example.com {
 		max_size 1MB
 	}
 
+	# The maintenance endpoints are an operator control plane for the internal
+	# poller (deploy/maintenance.sh, which reaches the API directly as
+	# api:8080). They are never served on the public listener. This must stay
+	# the first handle block so it wins over the /api/* proxy below.
+	@maintenance path /api/maintenance*
+	handle @maintenance {
+		respond "Not Found" 404
+	}
+
 	# API routes go to the Lyric API server.
 	handle /api/* {
 		reverse_proxy api:8080

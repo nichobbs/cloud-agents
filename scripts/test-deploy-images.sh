@@ -13,6 +13,7 @@ set -euo pipefail
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 PG_IMAGE=cloud-agents-postgres-test
 MAINT_IMAGE=cloud-agents-maintenance-test
+MAINT_TOKEN=test-maintenance-token-0123456789abcdef
 GOOD=ca-deploy-test-pg-good
 BAD=ca-deploy-test-pg-bad
 IDLE=ca-deploy-test-maint-idle
@@ -84,21 +85,29 @@ echo "ok"
 
 echo "== maintenance refuses a missing token, a malformed interval and a zero timeout =="
 if docker run --rm "$MAINT_IMAGE" >/dev/null 2>&1; then
-  echo "FAIL: maintenance started without CLOUD_AGENTS_API_TOKEN" >&2
+  echo "FAIL: maintenance started without CLOUD_AGENTS_MAINTENANCE_TOKEN" >&2
   exit 1
 fi
-if docker run --rm -e CLOUD_AGENTS_API_TOKEN=t -e MAINTENANCE_REAP_SECONDS=1m "$MAINT_IMAGE" >/dev/null 2>&1; then
+if docker run --rm -e CLOUD_AGENTS_API_TOKEN="$MAINT_TOKEN" "$MAINT_IMAGE" >/dev/null 2>&1; then
+  echo "FAIL: maintenance started with only the operator token" >&2
+  exit 1
+fi
+if docker run --rm -e CLOUD_AGENTS_MAINTENANCE_TOKEN=short "$MAINT_IMAGE" >/dev/null 2>&1; then
+  echo "FAIL: maintenance accepted a too-short CLOUD_AGENTS_MAINTENANCE_TOKEN" >&2
+  exit 1
+fi
+if docker run --rm -e CLOUD_AGENTS_MAINTENANCE_TOKEN="$MAINT_TOKEN" -e MAINTENANCE_REAP_SECONDS=1m "$MAINT_IMAGE" >/dev/null 2>&1; then
   echo "FAIL: maintenance accepted MAINTENANCE_REAP_SECONDS=1m" >&2
   exit 1
 fi
-if docker run --rm -e CLOUD_AGENTS_API_TOKEN=t -e MAINTENANCE_REAP_TIMEOUT_SECONDS=0 "$MAINT_IMAGE" >/dev/null 2>&1; then
+if docker run --rm -e CLOUD_AGENTS_MAINTENANCE_TOKEN="$MAINT_TOKEN" -e MAINTENANCE_REAP_TIMEOUT_SECONDS=0 "$MAINT_IMAGE" >/dev/null 2>&1; then
   echo "FAIL: maintenance accepted MAINTENANCE_REAP_TIMEOUT_SECONDS=0" >&2
   exit 1
 fi
 echo "ok"
 
 echo "== maintenance stays up with every endpoint disabled =="
-docker run -d --name "$IDLE" -e CLOUD_AGENTS_API_TOKEN=t -e MAINTENANCE_START_DELAY_SECONDS=0 \
+docker run -d --name "$IDLE" -e CLOUD_AGENTS_MAINTENANCE_TOKEN="$MAINT_TOKEN" -e MAINTENANCE_START_DELAY_SECONDS=0 \
   -e MAINTENANCE_REAP_SECONDS=0 -e MAINTENANCE_TRIGGER_JOBS_SECONDS=0 \
   -e MAINTENANCE_DRAIN_GRAPH_INGEST_SECONDS=0 -e MAINTENANCE_OBSERVE_SECONDS=0 \
   -e MAINTENANCE_LEDGER_SYNC_SECONDS=0 -e MAINTENANCE_MEMBERSHIP_SYNC_SECONDS=0 "$MAINT_IMAGE" >/dev/null

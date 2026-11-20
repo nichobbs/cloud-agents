@@ -107,10 +107,17 @@ services:
       - CLOUD_AGENTS_ARTIFACTS_DIR=/var/lib/cloud-agents/artifacts
       - CLOUD_AGENTS_ATTACHMENTS_DIR=/var/lib/cloud-agents/attachments
       - LYRIC_CONFIG_WEB_SERVER_PORT=8080
-      # The operator bearer token. Required: the maintenance poller below
-      # authenticates with it. Without it or GitHub OAuth, the API refuses
-      # every request (docs/CAPABILITY_AUDIT.md §2.2).
+      # The operator bearer token. Required. Without it or GitHub OAuth, the
+      # API refuses every request (docs/CAPABILITY_AUDIT.md §2.2). The
+      # maintenance poller does NOT use it.
       - CLOUD_AGENTS_API_TOKEN=${CLOUD_AGENTS_API_TOKEN:?set CLOUD_AGENTS_API_TOKEN in Coolify's environment variables}
+      # The maintenance poller's own credential, accepted only on
+      # /api/maintenance/* (at least 32 characters, different from the
+      # operator token). While it is set the operator token is not accepted
+      # on those routes (CLOUD_AGENTS_MAINTENANCE_ALLOW_OPERATOR_TOKEN=1
+      # re-allows it).
+      - CLOUD_AGENTS_MAINTENANCE_TOKEN=${CLOUD_AGENTS_MAINTENANCE_TOKEN:?set CLOUD_AGENTS_MAINTENANCE_TOKEN in Coolify's environment variables}
+      - CLOUD_AGENTS_MAINTENANCE_ALLOW_OPERATOR_TOKEN=${CLOUD_AGENTS_MAINTENANCE_ALLOW_OPERATOR_TOKEN:-}
       # The Postgres service role (docs/phase11-postgres-tenancy.md §5.1),
       # where every store lives. Startup checks that the role cannot bypass
       # row-level security, that the provisioned roles exist and that the
@@ -176,7 +183,7 @@ services:
       context: .
       dockerfile: deploy/maintenance.Dockerfile
     environment:
-      - CLOUD_AGENTS_API_TOKEN=${CLOUD_AGENTS_API_TOKEN:?set CLOUD_AGENTS_API_TOKEN in Coolify's environment variables}
+      - CLOUD_AGENTS_MAINTENANCE_TOKEN=${CLOUD_AGENTS_MAINTENANCE_TOKEN:?set CLOUD_AGENTS_MAINTENANCE_TOKEN in Coolify's environment variables}
       - CLOUD_AGENTS_API_URL=http://api:8080
       - MAINTENANCE_REAP_SECONDS=${MAINTENANCE_REAP_SECONDS:-60}
       - MAINTENANCE_TRIGGER_JOBS_SECONDS=${MAINTENANCE_TRIGGER_JOBS_SECONDS:-60}
